@@ -3,14 +3,10 @@
         <el-form :model="form" class="login-form">
             <h3 class="title">python222 Django后台管理系统</h3>
             <el-form-item label="账号">
-                <el-input v-model="form.username" type="text" placeholder="密码">
-                    <template #prefix> <SvgIcon name="user" class="username-icon"></SvgIcon></template>
-                </el-input>
+                <el-input v-model="form.username" type="text" placeholder="账号" />
             </el-form-item>
             <el-form-item label="密码">
-                <el-input v-model="form.password" type="password" placeholder="密码">
-                    <template #prefix> <SvgIcon name="password" class="username-icon"></SvgIcon></template>
-            </el-input>
+                <el-input v-model="form.password" type="password" placeholder="密码" />
             </el-form-item>
             <el-checkbox style="margin:0px 0px 25px 0px;">记住密码</el-checkbox>
             <el-form-item style="width:100%;">
@@ -27,18 +23,14 @@
 </template>
 <script setup>
 import { reactive } from 'vue'
-
-const  form = reactive({
+const form = reactive({
     username: '',
     password: ''
 
 })
+
 </script>
 <style lang="scss" scoped>
-a {
-    color: white
-}
-
 .login {
     display: flex;
     justify-content: center;
@@ -48,46 +40,18 @@ a {
     background-size: cover;
     background-repeat: no-repeat;
 }
-
 .title {
     margin: 0px auto 30px auto;
     text-align: center;
     color: #707070;
 }
-
 .login-form {
     border-radius: 6px;
     background: #ffffff;
     width: 400px;
     padding: 25px 25px 5px 25px;
-
     .el-input {
         height: 40px;
     }
-
-  
-}
-
-
-.username-icon {
-        // margin-left: 30px;
-    }
-
-.el-login-footer {
-    height: 40px;
-    line-height: 40px;
-    position: fixed;
-    bottom: 0;
-    width: 100%;
-    text-align: center;
-    color: #fff;
-    font-family: Arial;
-    font-size: 12px;
-    letter-spacing: 1px;
-}
-
-.login-code-img {
-    height: 40px;
-    padding-left: 12px;
 }
 </style>

@@ -1,93 +1,136 @@
 <template>
     <div class="login">
-        <el-form :model="form" class="login-form">
-            <h3 class="title">python222 Django后台管理系统</h3>
-            <el-form-item label="账号">
-                <el-input v-model="form.username" type="text" placeholder="密码">
-                    <template #prefix> <SvgIcon name="user" class="username-icon"></SvgIcon></template>
-                </el-input>
-            </el-form-item>
-            <el-form-item label="密码">
-                <el-input v-model="form.password" type="password" placeholder="密码">
-                    <template #prefix> <SvgIcon name="password" class="username-icon"></SvgIcon></template>
-            </el-input>
-            </el-form-item>
-            <el-checkbox style="margin:0px 0px 25px 0px;">记住密码</el-checkbox>
-            <el-form-item style="width:100%;">
-                <el-button size="large" type="primary" style="width:100%;">
-                    <span>登 录</span>
-                </el-button>
-            </el-form-item>
-        </el-form>
-        <!-- 底部 -->
-        <!-- <div class="el-login-footer">
-            <span>Copyright © 2013-2025 <a href="http://www.python222.com" target="_blank">python222.com</a> 版权所有.</span>
-        </div> -->
+        <a-form
+      :model="loginForm"
+      name="basic"
+      :label-col="{ span: 4 }"
+      :wrapper-col="{ span: 20 }"
+      autocomplete="off"
+      @finish="onFinish"
+      @finishFailed="onFinishFailed"
+      class="login-form"
+    >
+    <a-row>
+    <a-col :span="24">
+        <h3 class="title">djadmin 管理平台</h3>
+    </a-col>
+  </a-row>
+    
+      <a-form-item
+        label="账号"
+        name="username"
+        :rules="[{ required: true, message: '请输入账号!' }]">
+        
+        <a-input v-model:value="loginForm.username">
+            <template #prefix> <SvgIcon name="user" class="username-icon"></SvgIcon></template>
+            </a-input>
+      </a-form-item>
+  
+      <a-form-item
+        label="密码"
+        name="password"
+        :rules="[{ required: true, message: '请输入密码!' }]"
+      >
+        <a-input-password v-model:value="loginForm.password">
+            <template #prefix> <SvgIcon name="password" class="username-icon"></SvgIcon></template>
+            </a-input-password>
+      </a-form-item>
+  
+      <a-form-item name="remember" :wrapper-col="{ offset: 0, span: 16 }">
+        <a-checkbox v-model:checked="loginForm.remember">记住密码</a-checkbox>
+      </a-form-item>
+  
+      <a-form-item :wrapper-col="{ offset: 0, span: 24 }" class="login-btn">
+        <a-button type="primary" html-type="submit" style="width: 100%;"><span>登录</span></a-button>
+      </a-form-item>
+    </a-form>
     </div>
-</template>
-<script setup>
-import { reactive } from 'vue'
+   
+  </template>
+  <script setup>
+  import { reactive } from 'vue';
+  import requestUtil from '@/util/request';
+  import { encrypt, decrypt } from "@/util/jsencrypt";
+  import  Cookies from 'js-cookie';
 
-const  form = reactive({
+ import  qs from 'qs'
+  const loginForm = reactive({
     username: '',
-    password: ''
-
-})
-</script>
-<style lang="scss" scoped>
-a {
-    color: white
-}
-
-.login {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    background-image: url("../assets/images/login-background.jpg");
-    background-size: cover;
-    background-repeat: no-repeat;
-}
-
-.title {
-    margin: 0px auto 30px auto;
-    text-align: center;
-    color: #707070;
-}
-
-.login-form {
-    border-radius: 6px;
-    background: #ffffff;
-    width: 400px;
-    padding: 25px 25px 5px 25px;
-
-    .el-input {
-        height: 40px;
-    }
+    password: '',
+    remember: false
+  });
 
   
-}
+  const onFinish = values => {
+    console.log(qs.stringify(loginForm.value));
+    let result = requestUtil.post("auth/login" , qs.stringify(values));
+    if(result.token) {
+        //登录成功
+        if( loginForm.remember === true) {
+            Cookies.set("username",loginForm.username,{expires:30});
+        Cookies.set("password",encrypt(loginForm.password,{expires:30}));
+        Cookies.set("remember",loginForm.remember,{expires:30});
+        }
 
+    } 
+    
+    // windows.sessionStorage.setItem("token",data.token)
+  };
+  const onFinishFailed = errorInfo => {
+    console.log('Failed:', errorInfo);
+  };
 
-.username-icon {
-        // margin-left: 30px;
-    }
+  if(loginForm.remember) {
+    Cookies.set("username",loginForm.username,{expires:30});
+    Cookies.set("password",encrypt(loginForm.password,{expires:30}));
+    Cookies.set("remember",loginForm.remember,{expires:30});
+  }else {
+    Cookies.remove("username");
+    Cookies.remove("password");
+    Cookies.remove("remember");
+  }
 
-.el-login-footer {
-    height: 40px;
-    line-height: 40px;
-    position: fixed;
-    bottom: 0;
-    width: 100%;
+  function getCookie() {
+    var username = Cookies.get("username");
+    var password = Cookies.get("password");
+    console.log(username)
+    // var remember = Cookies.get("remember");
+    // loginForm= {
+    //     username: username === undefined ? loginForm.username : username,
+    //     password: password === undefined ? loginForm.password : decrypt(password),
+    //     remember: remember === undefined ? false : Boolean(remember)
+    // }
+  }
+getCookie()
+  </script>
+
+  <style scoped>
+  .login {
+    display: flex;
+    justify-content: center;
+    height: 100%;
+    background-image: url("../assets/images/login-background.jpg");
+    background-repeat: no-repeat;
+    background-size: cover;
+  }
+  .login-form {
+    padding: 25px 25px 5px 25px;
+    background-color: white;
+    height:400px;
+    margin-top: 50px;
+    
+  }
+  .login-form > a-form-item {
+    height:100px;
+  }
+  .title {
+    font-size: 20px;
+    margin-bottom: 30px;
     text-align: center;
-    color: #fff;
-    font-family: Arial;
-    font-size: 12px;
-    letter-spacing: 1px;
-}
-
-.login-code-img {
-    height: 40px;
-    padding-left: 12px;
-}
+    
+  }
+  .login-btn {
+    width: 100%;
+    display: inline-block;
+  }
 </style>

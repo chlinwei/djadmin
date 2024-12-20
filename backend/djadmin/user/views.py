@@ -72,11 +72,11 @@ class TestView(View):
 #             return JsonResponse({'code': 500, 'info': '用户名或者密码错误！'})
 #         return JsonResponse({'code': 200, 'token': token, 'info': '登录成功！'})
 
+
 class LoginView(APIView):
     def post(self,request,format=None):
         username = request.POST.get("username")
         password = request.POST.get("password")
-
 
             
         try:
@@ -89,7 +89,7 @@ class LoginView(APIView):
             user = None
         if user == None:
             return JsonResponse({
-            'code':200,
+            'code':300,
             'data': None
         })
         else:

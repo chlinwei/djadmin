@@ -65,7 +65,6 @@ export function post(url, params = {}) {
             method: 'post',
             data: params
         }).then(response => {
-            console.log(response)
             resolve(response);
         }).catch(error => {
             console.log(error)
@@ -86,7 +85,6 @@ export function del(url, params = {}) {
             method: 'delete',
             data: params
         }).then(response => {
-            console.log(response)
             resolve(response);
         }).catch(error => {
             console.log(error)

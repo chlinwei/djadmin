@@ -2,6 +2,8 @@ from django.shortcuts import render
 
 from rest_framework.generics import ListCreateAPIView
 
+from django.db import connection
+
 from django.views import View
 from django.http import JsonResponse,request
 # Create your views here.
@@ -18,6 +20,9 @@ from django.core.exceptions import ObjectDoesNotExist
 
 #login
 from rest_framework_jwt.settings import api_settings
+from role.models import SysRole
+
+from role.serializer import SysRoleSerializer
 
 
 
@@ -53,32 +58,62 @@ class TestView(View):
 
 
 
-# class LoginView(View):
-#     def post(self, request):
-#         username = request.GET.get('username')
-#         print(username)
-#         password = request.GET.get('password')
-#         print(password)
-#         try:
-#             user = SysUser.objects.get(username=username, password=password)
-#             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER # 小写快捷键
-#             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
-#             # 将用户对象传递进去，获取到该对象的属性值
-#             payload = jwt_payload_handler(user)
-#         # 将属性值编码成jwt格式的字符串
-#             token = jwt_encode_handler(payload)
-#         except Exception as e:
-#             print(e)
-#             return JsonResponse({'code': 500, 'info': '用户名或者密码错误！'})
-#         return JsonResponse({'code': 200, 'token': token, 'info': '登录成功！'})
-
-
 class LoginView(APIView):
+
+
+            
+                
+
+    #根据用户id查询menu(一级和二级菜单)
+    def _getMenuList(self,userId: int):
+        menu_list = []
+        with connection.cursor() as cursor:
+            cursor.execute("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s))",[userId])
+            
+            for row in cursor.fetchall():
+                menu = {
+                    'id': row[0],
+                    'name': row[1],
+                    'icon': row[2],
+                    'parent_id': row[3],
+                    'order_num': row[4],
+                    'path': row[5],
+                    'component': row[6],
+                    'menu_type': row[7],
+                    'perms': row[8],
+                    'create_time': row[9],
+                    'update_time': row[10],
+                    'remark': row[11]
+                }
+                menu_list.append(menu)
+               
+        menu2_list = []
+        for menu_m in menu_list:
+            for menu_c in menu_list:
+                #寻找子节点
+                if menu_c['parent_id'] == menu_m['id']:
+                    if 'children' not in menu_m:
+                        menu_m['children'] = []
+                    menu_m['children'].append(menu_c)
+                #判断父节点
+            if menu_m['parent_id'] == 0:
+                menu2_list.append(menu_m)
+        return menu2_list
+        
+
+        
+        
+                    
+    
+            
+
+                    
+                # print(row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8],row[9],row[10],row[11])
+            # for role in roleList:
+            #     print(SysRoleSerializer(role).data)
     def post(self,request,format=None):
         username = request.POST.get("username")
         password = request.POST.get("password")
-
-            
         try:
             user = SysUser.objects.get(username=username, password=password)
             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER
@@ -93,8 +128,13 @@ class LoginView(APIView):
             'data': None
         })
         else:
+            menu_list = self._getMenuList(user.id)
+            # self.test(user.id)
             return JsonResponse({
                 'code':200,
-                'data': SysUserSerializer(user).data,
-                'token': token,
+                'data': {
+                    'currentUser':SysUserSerializer(user).data,
+                    'token': token,
+                    'menuList': menu_list
+                },
             })

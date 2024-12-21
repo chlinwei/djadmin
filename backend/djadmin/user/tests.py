@@ -1,3 +1,5 @@
 from django.test import TestCase
 
 # Create your tests here.
+{'id': 2, 'name': '业务管理', 'icon': 'monitor', 'parent_id': 0, 'order_num': 2, 'path': '/bsns', 'component': '', 'menu_type': 'M', 'perms': '', 'create_time': datetime.date(2024, 7, 4), 'update_time': datetime.date(2024, 7, 4), 'remark': '业务管理目\r\n录', 'children': [{'id': 6, 'name': '部门管理', 'icon': 'tree', 'parent_id': 2, 'order_num': 1, 'path': '/bsns/department', 'component': 'bsns/Department', 'menu_type': 'C', 'perms': '', 'create_time': datetime.date(2024, 7, 4), 'update_time': datetime.date(2024, 7, 4), 'remark': '部门管理菜单'}, {'id': 7, 'name': '岗位管理', 'icon': 'post', 'parent_id': 2, 'order_num': 2, 'path': '/bsns/post', 'component': 'bsns/Post', 'menu_type': 'C', 'perms': '', 'create_time': datetime.date(2024, 7, 4), 'update_time': datetime.date(2024, 7, 4), 'remark': '岗位管理菜单'}]}    
+[21/Dec/2024 15:26:17] "POST /auth/login HTTP/1.1" 200 516

@@ -79,10 +79,10 @@ function clear_cookie() {
 const onFinish = values => {
     requestUtil.post("auth/login", qs.stringify(values)).then(result => {
     let data = result.data
-    console.log(data)
     if (data.code == 200) {
          //token存在session storage
-        sessionStorage.setItem("token",data.token)
+        sessionStorage.setItem("token",data.data.token)
+        console.log("currentUser:",data.data.currentUser)
         //登录成功
         if (loginForm.remember == true) {
             // 30天过期

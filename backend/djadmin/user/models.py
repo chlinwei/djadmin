@@ -17,3 +17,10 @@ class SysUser(models.Model):
     remark = models.CharField(max_length=500, null=True, verbose_name="备注")
     class Meta:
         db_table = "sys_user"
+
+
+
+
+
+
+

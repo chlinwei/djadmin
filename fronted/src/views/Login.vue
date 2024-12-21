@@ -57,32 +57,17 @@ function clear_cookie() {
     Cookies.remove("remember");
 
 }
-// const onFinish = values => {
-//     let result =  requestUtil.post("auth/login", qs.stringify(values));
-//     console.log(result)
-//     if (result.code == 200) {
-//         //登录成功
-//         console.log(type(loginForm.remember))
-//         console.log(loginForm.remember)
-//         if (loginForm.remember == true) {
-//             // 30天过期
-//             Cookies.set("username", loginForm.username, { expires: 30 });
-//             Cookies.set("password", encrypt(loginForm.password, { expires: 30 }));
-//             Cookies.set("remember", true, { expires: 30 });
-//         } else {
-//             //没有remember就清楚cookie
-//             clear_cookie()
-//         }
-//     }else {
-//         clear_cookie()
-//     }
 const onFinish = values => {
     requestUtil.post("auth/login", qs.stringify(values)).then(result => {
     let data = result.data
     if (data.code == 200) {
          //token存在session storage
         sessionStorage.setItem("token",data.data.token)
-        console.log("currentUser:",data.data.currentUser)
+        //currentUser存到session storage中
+        sessionStorage.setItem("currentUser",JSON.stringify(data.data.currentUser))
+        //menuList,存到session storage
+        sessionStorage.setItem("menuList",JSON.stringify(data.data.menuList))
+        
         //登录成功
         if (loginForm.remember == true) {
             // 30天过期

@@ -100,17 +100,6 @@ class LoginView(APIView):
                 menu2_list.append(menu_m)
         return menu2_list
         
-
-        
-        
-                    
-    
-            
-
-                    
-                # print(row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8],row[9],row[10],row[11])
-            # for role in roleList:
-            #     print(SysRoleSerializer(role).data)
     def post(self,request,format=None):
         username = request.POST.get("username")
         password = request.POST.get("password")

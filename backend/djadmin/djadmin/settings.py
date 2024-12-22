@@ -162,3 +162,8 @@ CORS_ALLOW_METHODS = [
 'PATCH',
 'DELETE',
 ]
+
+
+#media
+MEDIA_ROOT= BASE_DIR / 'media'
+# MEDIA_URL = 'auth/media/'

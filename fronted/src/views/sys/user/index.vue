@@ -1,12 +1,7 @@
 <template>
-   
-   login2
+    用户管理
 </template>
 <script setup>
-
-
-
 </script>
-<style  scoped>
-
+<style scoped>
 </style>

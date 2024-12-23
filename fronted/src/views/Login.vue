@@ -37,10 +37,9 @@
 </template>
 <script setup>
 import { reactive } from 'vue';
-import requestUtil from '@/util/request';
-import { encrypt, decrypt } from "@/util/jsencrypt";
-import Cookies from 'js-cookie';
 import router from '@/router'
+import {doLogin,saveCurrentUser,saveToken,saveMenuList,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
+
 
 import qs from 'qs'
 const loginForm = reactive({
@@ -49,39 +48,29 @@ const loginForm = reactive({
     remember: false
 });
 
-
-
-function clear_cookie() {
-    Cookies.remove("username");
-    Cookies.remove("password");
-    Cookies.remove("remember");
-
-}
 const onFinish = values => {
-    requestUtil.post("auth/login", qs.stringify(values)).then(result => {
+    doLogin(qs.stringify(values)).then(result => {
     let data = result.data
     if (data.code == 200) {
-         //token存在session storage
-        sessionStorage.setItem("token",data.data.token)
-        //currentUser存到session storage中
-        sessionStorage.setItem("currentUser",JSON.stringify(data.data.currentUser))
-        //menuList,存到session storage
-        sessionStorage.setItem("menuList",JSON.stringify(data.data.menuList))
-        
+        saveToken(data.data.token);
+        saveCurrentUser(data.data.currentUser);
+        saveMenuList(data.data.menuList);
         //登录成功
         if (loginForm.remember == true) {
             // 30天过期
-            Cookies.set("username", loginForm.username, { expires: 30 });
-            Cookies.set("password", encrypt(loginForm.password, { expires: 30 }));
-            Cookies.set("remember", true, { expires: 30 });
+            const user = {
+                username: loginForm.username,
+                password: loginForm.password,
+                remember: true
+            }
+            setRemeberMe(user);
         } else {
-            //没有remember就清楚cookie
-            clear_cookie()
+            clearRemeberMe()
         }
         //跳转主页
-        router.replace("/")
+        router.replace("/index")
     }else {
-        clear_cookie()
+        clearRemeberMe()
     }
     })
     
@@ -91,27 +80,15 @@ const onFinishFailed = errorInfo => {
     console.log('Failed:', errorInfo);
 };
 
-
-
-function getCookie() {
-    const username = Cookies.get("username");
-    const password = Cookies.get("password");
-    const remember = Cookies.get("remember");
-    if (username) {
-        loginForm.username = username
-    }
-    if(password) {
-        loginForm.password = decrypt(password)
-    }
-    if(remember) {
-        loginForm.remember = Boolean(remember)
-        Cookies.set("username", loginForm.username, { expires: 30 });
-        Cookies.set("password", encrypt(loginForm.password, { expires: 30 }));
-        Cookies.set("remember", loginForm.remember, { expires: 30 });
+function setRemeberMeInfo() {
+    let user = getRemeberMeInfo();
+    if(user) {
+        loginForm.username = user.username;
+        loginForm.password = user.password;
+        loginForm.remember = Boolean(user.remember);
     }
 }
-getCookie()
-
+setRemeberMeInfo()
 </script>
 
 <style scoped>

@@ -12,11 +12,13 @@
             <!-- content -->
             <a-layout-content style="margin: 0 16px">
                 <Tabs />
+                layout index1
             </a-layout-content>
 
             <!-- footer -->
             <a-layout-footer style="text-align: center">
                 <Footer />
+            
             </a-layout-footer>
         </a-layout>
 

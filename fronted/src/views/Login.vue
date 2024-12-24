@@ -38,8 +38,8 @@
 <script setup>
 import { reactive } from 'vue';
 import router from '@/router'
+import {addDynamicRoutes} from '@/router/index.js';
 import {doLogin,saveCurrentUser,saveToken,saveMenuList,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
-
 
 import qs from 'qs'
 const loginForm = reactive({
@@ -67,6 +67,8 @@ const onFinish = values => {
         } else {
             clearRemeberMe()
         }
+        //登录成功后，加载动态路由
+        addDynamicRoutes();
         //跳转主页
         router.replace("/index")
     }else {

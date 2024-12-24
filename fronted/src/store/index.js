@@ -43,7 +43,6 @@ export default createStore({
                 });
                 //   删除被删除的key
                 state.tabs = state.tabs.filter(tab => tab.key !== targetKey);
-                console.log(state.tabs)
                 //如果被删除的那个正好和活动的tab是同一个，且lastindex存在，则选择被删的的tab的前一个tab
                 if (state.tabs.length && state.activeKey === targetKey) {
                     if (lastIndex >= 0) {

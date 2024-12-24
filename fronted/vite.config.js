@@ -20,7 +20,7 @@ export default defineConfig({
   },
   plugins: [
     vue(),
-       // vueDevTools(),
+       vueDevTools(),
     createSvgIconsPlugin({
         iconDirs: [
             path.resolve(__dirname,"src/assets/icons/svg")

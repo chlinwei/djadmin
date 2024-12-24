@@ -11,14 +11,13 @@
             </a-layout-header>
             <!-- content -->
             <a-layout-content style="margin: 0 16px">
-                <Tabs />
-                layout index1
+               <Tabs />
+               <router-view></router-view>
             </a-layout-content>
 
             <!-- footer -->
             <a-layout-footer style="text-align: center">
                 <Footer />
-            
             </a-layout-footer>
         </a-layout>
 

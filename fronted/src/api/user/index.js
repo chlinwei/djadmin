@@ -10,46 +10,43 @@ export const doLogin = (data) => {
 // 存储个人信息
 export function saveCurrentUser(currentUser) {
     currentUser = JSON.stringify(currentUser);
-    sessionStorage.setItem("currentUser",currentUser);
+    localStorage.setItem("currentUser",currentUser);
 }
 
 // 删除个人信息
 export function removeCurrentUser(currentUser) {
-    sessionStorage.removeItem("currentUser");
+    localStorage.removeItem("currentUser");
 }
     
-
-    
-
 //存储token
 export function saveToken(token) {
-    sessionStorage.setItem("token",token);
+    localStorage.setItem("token",token);
 }
 //获取token
 export function getToken() {
-    return sessionStorage.getItem("token");
+    return localStorage.getItem("token");
 }
 
 
 //删除token
 export function removeToken() {
-    sessionStorage.removeItem("token");
+    localStorage.removeItem("token");
 }
 
 //保存权限菜单
 export function saveMenuList(menuList){
     menuList = JSON.stringify(menuList);
-    sessionStorage.setItem("menuList",menuList);
+    localStorage.setItem("menuList",menuList);
 }
 
 //获取权限菜单
 export function getMenuList(){
-    let menuList = sessionStorage.getItem("menuList");
+    let menuList = localStorage.getItem("menuList");
     return JSON.parse(menuList);
 }
 //删除权限菜单
 export function removeMenuList(){
-    sessionStorage.removeItem("menuList")
+    localStorage.removeItem("menuList")
 }
 
 // 存储账号密码

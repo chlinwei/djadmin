@@ -1,8 +1,8 @@
 import { createStore } from 'vuex'
-import { ref } from 'vue'
 
 export default createStore({
     state: {
+        selectedKeys: [],
         activeKey: '/index',
         tabs: [
             {
@@ -55,17 +55,20 @@ export default createStore({
            
             
         },
-        reset_tab: (state) => {
-            state.activeKey = '/index';
+        reset_tab: (state,tab) => {
+            state.activeKey = tab.key;
             state.tabs = [
                 {
-                    title: '首页',
-                    key: '/index'
+                    'title': tab.title,
+                    'key': tab.key
                 }
             ];
             
+        },
+        set_selectedKeys:(state,selectedKeys) => {
+            state.selectedKeys = [selectedKeys];
         }
-
+        ,
     },
     actions: {},
     modules: {}

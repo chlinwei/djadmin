@@ -12,12 +12,14 @@ watch(route,(to,from,next) => {
             title: to.name,
             key: to.path
         }
-        console.log("==========")
-        console.log(obj);
         store.commit('add_tab',obj)
-        // next(false);
+        store.commit('set_selectedKeys',[])
     }
+    
 }, {deep: true, immediate: true})
+import {useRouter} from 'vue-router';
+console.log("====app====")
+console.log(useRouter().currentRoute.value)
 </script>
 
 <style>

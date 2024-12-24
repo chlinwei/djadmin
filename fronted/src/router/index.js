@@ -17,28 +17,22 @@ export const staticRouterMap = [
     name: 'test',
     component: () => import('../layout/test.vue')
   },
-//   {
-//     path: '/userCenter',
-//     name: '个人中心',
-//     component: () => import('../views/userCenter/index.vue')
-//   },
   {
     path: '/index',
     name: '主页',
-    alias: ['/'],
     component: () => import('../layout/index.vue'),
     children: [
-        // {
-        //     path: '/sys/userCenter',
-        //     name: '个人中心',
-        //     component: () => import('../views/userCenter/index.vue')
-        //   },
+        {
+            path: '/sys/userCenter',
+            name: '个人中心',
+            component: () => import('../views/sys/user/index.vue'),
+        }
     ]
   },
 ]
 export  function getDynamicalRoutes(menuList) {
     let indexRoute = staticRouterMap.filter(v=>v.path === '/index')[0]; 
-    indexRoute.children = [];
+    // indexRoute.children = [];
     if(menuList) { 
         menuList.forEach(item => {
                 item.children.forEach(item2 => {
@@ -72,12 +66,12 @@ export function addDynamicRoutes() {
         let menuList = getMenuList();
         if(menuList.length >=1) {
             let dyroutes = getDynamicalRoutes(menuList);
-            let component_url = "../views/userCenter/index.vue"
-            dyroutes.children.push({
-                path: '/userCenter',
-                name: '个人中心',
-                component: modules[`${component_url}`]
-            })
+            // let component_url = "../views/sys/user/index.vue"
+            // dyroutes.children.push({
+            //     path: '/sys/userCenter',
+            //     name: '个人中心',
+            //     component: modules[`${component_url}`]
+            // })
             console.log(dyroutes);
             router.addRoute(dyroutes);
         }

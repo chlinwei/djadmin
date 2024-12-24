@@ -20,7 +20,6 @@ const app = createApp(App)
 app.use(store)
 //解决刷新页面后，出现空白的情况，这里是直接加载动态路由
 addDynamicRoutes()
-
 app.use(router)
 setupIcon(app)
 app.use(Antd)

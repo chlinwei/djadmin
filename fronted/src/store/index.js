@@ -30,6 +30,7 @@ export default createStore({
                 );
             }
             state.activeKey = tab.key;
+            state.selectedKeys = [tab.key];
 
         },
         remove_tab: (state, targetKey) => {
@@ -65,6 +66,7 @@ export default createStore({
             ];
             
         },
+        //左边menu用的
         set_selectedKeys:(state,selectedKeys) => {
             state.selectedKeys = [selectedKeys];
         }

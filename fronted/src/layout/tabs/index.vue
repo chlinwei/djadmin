@@ -1,9 +1,7 @@
 <template>
 <div>
     <a-tabs v-model:activeKey="activeKey" type="editable-card" @edit="onEdit" :hideAdd="true">
-    <a-tab-pane v-for="pane in panes" :key="pane.key" :tab="pane.title" :closable="pane.closable" @click="remove_tab(pane)">
-        <!-- <router-view></router-view> -->
-    </a-tab-pane>
+    <a-tab-pane v-for="pane in panes" :key="pane.key" :tab="pane.title" :closable="pane.key == '/index' ? false:true" @click="remove_tab(pane)"></a-tab-pane>
 </a-tabs>
 </div>
 </template>
@@ -27,18 +25,36 @@ const activeKey = computed({
 })
 
 watch(activeKey,(New,Old)=>{
-    console.log("activekey new:" + New)
-    console.log("activekey old:" + Old)
-
-    router.replace(New);
+    router.push(New);
 })
+
+import {useRoute} from 'vue-router'
+const route = useRoute();
+
+// 如果点击返回
+watch(route,(New) => {
+    let tab = {
+        title: New.name,
+        key: New.path
+    }
+    store.commit('add_tab',tab);
+})
+
+
 const panes = computed(()=>{
     return store.state.tabs;
 });
 
 const onEdit = (targetKey, action) => {
     if(action == "remove") {
-      store.commit('remove_tab',targetKey)
+    store.commit('remove_tab',targetKey)
+      if(store.state.tabs.length==0) {
+        store.commit("add_tab", {
+            title:'首页',
+            key: '/index'
+        })
+      }
+     
     }
 };
 function reset_tabs() {
@@ -49,8 +65,6 @@ function reset_tabs() {
     store.commit('reset_tab',tab)
 }
 reset_tabs()
-console.log(store.state.tabs)
-console.log(store.state.activeKey)
 </script>
 <style>
 

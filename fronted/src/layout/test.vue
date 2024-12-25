@@ -10,7 +10,6 @@
   <router-view></router-view>
 </template>
 <script setup>
-import { ref } from 'vue';
 import User  from '@/views/sys/user/index.vue'
 import Role  from '@/views/sys/role/index.vue'
 </script>

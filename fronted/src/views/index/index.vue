@@ -1,5 +1,5 @@
 <template>
-    首页2
+    首页
 </template>
 <script setup>
 </script>

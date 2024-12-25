@@ -39,8 +39,6 @@ function init_selectedKeys() {
     // 刷新高亮当前选中的
     store.commit('set_selectedKeys',useRouter().currentRoute.value.path)
 }
-console.log("menu:")
-console.log(useRouter().currentRoute.value.path)
 init_selectedKeys();
 const menuList = getMenuList();
 const  openKeys = ref([])
@@ -58,8 +56,10 @@ const add_tab = (item) => {
         title: item.name,
         key: item.path
     }
-    store.commit('add_tab',tab);;
+    store.commit('add_tab',tab);
 }
+
+
 </script>
 <style scoped>
 </style>

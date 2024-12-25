@@ -18,10 +18,16 @@ export const staticRouterMap = [
     component: () => import('../layout/test.vue')
   },
   {
-    path: '/index',
-    name: '主页',
+    path: '/',
+    name: 'dashbaord',
     component: () => import('../layout/index.vue'),
+    redirect: '/index',
     children: [
+        {
+            path: '/index',
+            name: '首页',
+            component: () => import('../views/index/index.vue'),
+        },
         {
             path: '/sys/userCenter',
             name: '个人中心',
@@ -30,21 +36,52 @@ export const staticRouterMap = [
     ]
   },
 ]
+// export  function getDynamicalRoutes(menuList) {
+//     let indexRoute = staticRouterMap.filter(v=>v.path === '/')[0]; 
+//     // indexRoute.children = [];
+//     if(menuList) { 
+//         menuList.forEach(item => {
+//                 item.children.forEach(item2 => {
+//                     if(item2.component) {
+//                         let component_url = `../views/${item2.component}.vue`;
+//                         indexRoute.children.push({
+//                             path: item2.path,
+//                             name: item2.name,
+//                             component: modules[`${component_url}`]
+//                     })
+//                     }
+//                 })
+//         })  
+//         return indexRoute;
+//     }
+// }
 export  function getDynamicalRoutes(menuList) {
-    let indexRoute = staticRouterMap.filter(v=>v.path === '/index')[0]; 
+    let indexRoute = staticRouterMap.filter(v=>v.path === '/')[0]; 
     // indexRoute.children = [];
     if(menuList) { 
         menuList.forEach(item => {
+            let component_url_parent = `../views/${item.component}.vue`;
+                let first_item = {
+                    path: item.path,
+                    name: item.name,
+                    component: modules[`${component_url_parent}`],
+                    children:[]
+                }
                 item.children.forEach(item2 => {
-                    if(item2.component) {
                         let component_url = `../views/${item2.component}.vue`;
-                        indexRoute.children.push({
+                        first_item.children.push({
                             path: item2.path,
                             name: item2.name,
                             component: modules[`${component_url}`]
-                    })
-                    }
+                        })
+                        // indexRoute.children.push({
+                        //     path: item2.path,
+                        //     name: item2.name,
+                        //     component: modules[`${component_url}`]
+                        //  })
+                    
                 })
+                indexRoute.children.push(first_item);
         })  
         return indexRoute;
     }
@@ -66,12 +103,7 @@ export function addDynamicRoutes() {
         let menuList = getMenuList();
         if(menuList.length >=1) {
             let dyroutes = getDynamicalRoutes(menuList);
-            // let component_url = "../views/sys/user/index.vue"
-            // dyroutes.children.push({
-            //     path: '/sys/userCenter',
-            //     name: '个人中心',
-            //     component: modules[`${component_url}`]
-            // })
+            console.log("==========动态路由=============")
             console.log(dyroutes);
             router.addRoute(dyroutes);
         }

@@ -1,5 +1,5 @@
 <template>
-    <div>
+    <div class="breadcrumb">
         <a-breadcrumb>
             <a-breadcrumb-item href="">
                 <home-outlined />
@@ -22,12 +22,19 @@ const route = useRoute();
 const breadcrumbList = ref([])
 function setBreadcrumbList() {
     breadcrumbList.value = route.matched;
+    console.log("fds")
+    console.log(route.matched)
 }
 setBreadcrumbList();
 watch(route,(New,Old) => {
     setBreadcrumbList();
 })
-// console.log(breadcrumbList)
 </script>
 
-<style scoped></style>
+<style scoped>
+.breadcrumb {
+    display: flex;
+    align-items: center;
+    height: 100%;
+}
+</style>

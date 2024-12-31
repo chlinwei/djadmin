@@ -25,6 +25,10 @@ from role.models import SysRole
 from role.serializer import SysRoleSerializer
 
 
+from menu.serializer import SysMenuDynamicListSerializer
+from menu.models import SysMenu
+
+
 
 
 class TestView(APIView):
@@ -59,7 +63,10 @@ class TestView(View):
 
 
 class LoginView(APIView):
-
+    def getMenuList(self,userId: int):
+        menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s))",[userId])
+        menu_list_data = SysMenuDynamicListSerializer(menu_list)
+        return menu_list_data.data
 
             
                 
@@ -117,7 +124,8 @@ class LoginView(APIView):
             'data': None
         })
         else:
-            menu_list = self._getMenuList(user.id)
+            # menu_list = self._getMenuList(user.id)
+            menu_list = self.getMenuList(user.id)
             # self.test(user.id)
             return JsonResponse({
                 'code':200,

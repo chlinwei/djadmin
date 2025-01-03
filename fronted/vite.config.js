@@ -6,6 +6,9 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 import { createSvgIconsPlugin } from 'vite-plugin-svg-icons'
 import path from 'path'
 
+
+
+
 // https://vite.dev/config/
 function resolve(dir) {
     return resolve.join(__dirname, dir)
@@ -20,7 +23,8 @@ export default defineConfig({
   },
   plugins: [
     vue(),
-       vueDevTools(),
+    
+    vueDevTools(),
     createSvgIconsPlugin({
         iconDirs: [
             path.resolve(__dirname,"src/assets/icons/svg")

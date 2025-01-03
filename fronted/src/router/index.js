@@ -31,7 +31,7 @@ export const staticRouterMap = [
             {
                 path: '/sys/userCenter',
                 name: '个人中心',
-                component: () => import('../views/sys/user/index.vue'),
+                component: () => import('../views/userCenter/index.vue'),
             }
         ]
     },

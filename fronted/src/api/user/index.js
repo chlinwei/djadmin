@@ -17,6 +17,12 @@ export function saveCurrentUser(currentUser) {
 export function removeCurrentUser(currentUser) {
     localStorage.removeItem("currentUser");
 }
+
+// 获取个人信息
+export function getCurrentUser() {
+    let currentUser = localStorage.getItem("currentUser");
+    return JSON.parse(currentUser);
+}
     
 //存储token
 export function saveToken(token) {

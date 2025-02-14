@@ -5,7 +5,7 @@ from rest_framework.generics import ListCreateAPIView
 from django.db import connection
 
 from django.views import View
-from django.http import JsonResponse,request
+from django.http import JsonResponse
 # Create your views here.
 from django_filters import rest_framework as filters
 from rest_framework.views import APIView
@@ -18,6 +18,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 
 
+from datetime import datetime
 #login
 from rest_framework_jwt.settings import api_settings
 from role.models import SysRole
@@ -28,7 +29,11 @@ from role.serializer import SysRoleSerializer
 from menu.serializer import SysMenuDynamicListSerializer
 from menu.models import SysMenu
 
+from user.utils import getCurrentUser
 
+
+#缓存
+from django.core.cache import cache
 
 
 class TestView(APIView):
@@ -116,6 +121,7 @@ class LoginView(APIView):
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
             payload = jwt_payload_handler(user)
             token = jwt_encode_handler(payload)
+            
         except ObjectDoesNotExist as e:
             user = None
         if user == None:
@@ -126,12 +132,38 @@ class LoginView(APIView):
         else:
             # menu_list = self._getMenuList(user.id)
             menu_list = self.getMenuList(user.id)
+            current_user = SysUserSerializer(user).data
+
+            #缓存到cache中
+            
             # self.test(user.id)
             return JsonResponse({
                 'code':200,
                 'data': {
-                    'currentUser':SysUserSerializer(user).data,
+                    'currentUser':current_user,
                     'token': token,
                     'menuList': menu_list
                 },
             })
+        
+
+
+#修改基础信息
+class UpdateUserInfoView(APIView):
+    def post(self,request):
+        phonenumber = request.data['phonenumber']
+        email = request.data['email']
+        user = getCurrentUser(request)
+        user_id = user['user_id']
+        db_user = SysUser.objects.get(id=user_id)
+        db_user.phonenumber = phonenumber
+        db_user.email = email
+        db_user.update_time = datetime.now().date()
+        db_user.save()
+        return JsonResponse({
+            'code':200,
+            'data': {
+                'user': SysUserSerializer(db_user).data
+            },
+            'msg':'success'
+        })

@@ -167,3 +167,17 @@ CORS_ALLOW_METHODS = [
 #media
 MEDIA_ROOT= BASE_DIR / 'media'
 # MEDIA_URL = 'auth/media/'
+
+
+#本地内存缓存
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'my_unique_cache_key',  # 唯一标识符，用于区分多个缓存实例
+        'TIMEOUT': 3000,                     # 默认缓存时间（秒），设为 None 表示永不过期
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000,            # 缓存最大条目数（超出时自动清理旧缓存）
+            'CULL_FREQUENCY': 3,            # 超出 MAX_ENTRIES 时清理 1/CULL_FREQUENCY 的条目
+        }
+    }
+}

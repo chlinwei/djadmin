@@ -15,6 +15,7 @@ import { computed } from 'vue';
 import {useRouter} from 'vue-router'
 
 
+
 const activeKey = computed({
   get:()=>{
     return store.state.activeKey;
@@ -46,8 +47,17 @@ const panes = computed(()=>{
 });
 
 const onEdit = (targetKey, action) => {
+  console.log("on edit")
+     let all_routes = router.getRoutes()
+     all_routes.forEach(e => {
+      if(e.path == targetKey) {
+        e.meta.cached = false;
+        console.log(e)
+      }
+     })
     if(action == "remove") {
     store.commit('remove_tab',targetKey)
+    console.log("================remove==============")
       if(store.state.tabs.length==0) {
         store.commit("add_tab", {
             title:'首页',

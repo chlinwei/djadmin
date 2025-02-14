@@ -19,10 +19,10 @@ from djadmin import settings
 from django.views.static import serve
 
 urlpatterns = [
-    path('auth/',include('user.urls')),
+    path('user/',include('user.urls')),
     re_path('media/(?P<path>.*)', serve, {'document_root': settings.MEDIA_ROOT},
 name='media'),
-    # path('role/',include('role.urls')),
+    path('role/',include('role.urls')),
     # path('menu/',include('menu.urls')),
 
 ]

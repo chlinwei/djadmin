@@ -5,7 +5,7 @@
   <script setup>
   import requestUtil from '@/util/request'
   const handleLogin=async()=>{
-  let result=await requestUtil.get("auth/test");
+  let result=await requestUtil.get("user/test");
   let data=result.data;
   if(data.code==200){
   const token=data.token;
@@ -16,7 +16,7 @@
   }
   }
   const handleUserList=async ()=>{
-  let result=await requestUtil.get("auth/users");
+  let result=await requestUtil.get("user/users");
   let data=result.data;
   if(data.code==200){
   const userList=data.data;

@@ -4,6 +4,7 @@
 <script setup>
 import {  RouterView, useRoute } from 'vue-router';
 import {watch} from 'vue';
+import router from '@/router';
 const route = useRoute();
 import store from '@/store'
 watch(route,(to,from,next) => {
@@ -14,6 +15,15 @@ watch(route,(to,from,next) => {
         }
         store.commit('add_tab',obj)
         store.commit('set_selectedKeys',[])
+        let all_routes = router.getRoutes()
+     all_routes.forEach(e => {
+      if(e.path == to.path) {
+        e.meta.cached = true;
+        console.log("=======hahahh=========")
+        console.log(e)
+      }
+     })
+
     }
     
 }, {deep: true, immediate: true})

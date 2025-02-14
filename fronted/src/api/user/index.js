@@ -4,7 +4,7 @@ import { encrypt, decrypt } from "@/util/jsencrypt";
 
 // 登录
 export const doLogin = (data) => {
-    return requestUtil.post("auth/login",data);
+    return requestUtil.post("user/login",data);
 }
 
 // 存储个人信息
@@ -73,4 +73,13 @@ export function getRemeberMeInfo() {
 // 清除账号密码
 export function clearRemeberMe() {
     Cookies.remove("user");
+}
+
+
+//更新基本资料
+export function updateUserInfo(user,callback) {
+    requestUtil.post("user/updateUserInfo",user).then(result => {
+        saveCurrentUser(result.data.data.user);
+        callback(result);
+    })
 }

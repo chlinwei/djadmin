@@ -31,7 +31,7 @@ export const staticRouterMap = [
             {
                 path: '/sys/userCenter',
                 name: '个人中心',
-                component: () => import('../views/userCenter/index.vue'),
+                component: () => import('../views/userCenter/index.vue')
             }
         ]
     },
@@ -79,7 +79,7 @@ function addTree(indexRoute, treeList) {
             treeRoute = {
                 path: tree.path,
                 name: tree.name,
-                component: modules[`${component_url}`],
+                component: modules[`${component_url}`]
             }
         }
         indexRoute.children.push(treeRoute)

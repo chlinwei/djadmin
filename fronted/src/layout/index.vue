@@ -12,7 +12,14 @@
             <!-- content -->
             <a-layout-content style="margin: 0 16px">
                <Tabs />
-               <router-view></router-view>
+
+                <router-view v-slot="{Component,route}" >
+                    <keep-alive :include="tab_includes">
+                          <component :is="Component" :key="$route.path" />
+                    </keep-alive>
+               </router-view>
+
+
             </a-layout-content>
 
             <!-- footer -->
@@ -29,8 +36,37 @@ import Header from "@/layout/header/index.vue"
 import Footer from "@/layout/footer/index.vue"
 import Tabs from "@/layout/tabs/index.vue"
 import {ref} from 'vue'
+import store from '@/store/index.js';
+import router from '@/router/index.js';
+import {computed} from 'vue';
 
 
+
+const tab_includes = computed(()=>{
+    var tmp_tab_includes = []
+    store.state.tabs.forEach(element => {
+        router.getRoutes().forEach(e2 => {
+            if(e2.path == element.key) {
+                if(e2.components) {
+                    if(e2.components.default.name) {
+                        tmp_tab_includes.push(e2.components.default.name)
+                    }
+                }
+            }
+        })
+
+    });
+    return tmp_tab_includes;
+})
+
+
+function test(){
+    console.log("============test===============")
+      console.log(router.getRoutes())
+
+}
+
+test()
 const collapsed = ref(false)
 </script>
 

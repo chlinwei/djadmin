@@ -1,5 +1,5 @@
 <template>
-    <svg :style="{ width,height }">
+    <svg :style="{ width,height,verticalAlign }">
         <use :href="prefix + name" :fill="color"></use>
     </svg>
 </template>
@@ -23,6 +23,11 @@
         height: {
             type: String,
             default: "16px"          
+        },
+        verticalAlign: {
+            type: String,
+            default: "middle" 
         }
+        
     })
 </script>

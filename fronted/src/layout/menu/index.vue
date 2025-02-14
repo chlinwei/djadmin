@@ -1,24 +1,6 @@
 <template>
   <div>
     <div class="logo" />
-    <!-- <a-menu theme="dark" mode="inline" v-model:openKeys="openKeys" v-model:selectedKeys="selectedKeys">
-      <a-menu-item key="/index" @click="add_tab({ name: '首页', path: '/index' })">
-        <HomeOutlined />
-        <span>首页</span>
-      </a-menu-item>
-      <a-sub-menu :key="menu.path" v-for="menu in menuList">
-        <template #title>
-          <SvgIcon :name="menu.icon"></SvgIcon>
-          &nbsp; <span>{{ menu.name }}</span>
-        </template>
-        <a-menu-item :key="subMen.path" v-for="subMen in menu.children"
-          @click="add_tab(subMen)">{{ subMen.name }}</a-menu-item>
-      </a-sub-menu>
-
-    </a-menu> -->
-     <!-- <a-menu theme="dark" mode="inline" >
-        <SubMenu :menu="menu" v-for="menu in menuList" />
-    </a-menu>  -->
     <a-menu theme="dark" mode="inline"  v-model:openKeys="openKeys" v-model:selectedKeys="selectedKeys" >
       <a-menu-item key="/index" @click="add_tab({ name: '首页', path: '/index' })">
         <HomeOutlined />
@@ -37,6 +19,7 @@ import {getMenuList} from '@/api/user/index.js'
 import { useRouter } from 'vue-router';
 import { computed } from 'vue';
 import SubMenu from '@/layout/menu/subMenu.vue';
+
 
 const selectedKeys = computed({
   get:()=>{

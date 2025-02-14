@@ -1,5 +1,7 @@
 // 引入axios
 import axios from 'axios';
+import {getToken} from '@/api/user'
+import router from '@/router';
 
 
 let baseUrl="http://localhost:8000/";
@@ -16,7 +18,9 @@ const httpService = axios.create({
 // 添加请求拦截器
 httpService.interceptors.request.use(function (config) {
     // 在发送请求之前做些什么
-    config.headers.AUTHORIZATION=window.sessionStorage.getItem('token');
+    config.headers.AUTHORIZATION=getToken();
+    console.log("request:")
+    console.log(config.headers.AUTHORIZATION)
     return config;
 }, function (error) {
     // 对请求错误做些什么
@@ -46,7 +50,11 @@ export function get(url, params = {}) {
             method: 'get',
             params: params
         }).then(response => {
-            resolve(response);
+            if(response.data.code == 200) {
+                resolve(response);
+            }else if(response.data.code == 301) {
+                router.push("/login");
+            }
         }).catch(error => {
             reject(error);
         });

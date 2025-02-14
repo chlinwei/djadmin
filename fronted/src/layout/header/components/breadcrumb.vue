@@ -22,8 +22,6 @@ const route = useRoute();
 const breadcrumbList = ref([])
 function setBreadcrumbList() {
     breadcrumbList.value = route.matched;
-    console.log("fds")
-    console.log(route.matched)
 }
 setBreadcrumbList();
 watch(route,(New,Old) => {

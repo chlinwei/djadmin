@@ -2,9 +2,10 @@
 import axios from 'axios';
 import {getToken} from '@/api/user'
 import router from '@/router';
+import { message } from 'ant-design-vue';
 
 
-let baseUrl="http://localhost:8000/";
+let baseUrl="http://localhost:8000";
 // 创建axios实例
 const httpService = axios.create({
     // url前缀-'http:xxx.xxx'
@@ -50,10 +51,11 @@ export function get(url, params = {}) {
             method: 'get',
             params: params
         }).then(response => {
-            if(response.data.code == 200) {
-                resolve(response);
-            }else if(response.data.code == 301) {
+             if(response.data.code == 301) {
+                message.error("登录过期，请重新登陆");
                 router.push("/login");
+            }else{
+                resolve(response);
             }
         }).catch(error => {
             reject(error);
@@ -73,7 +75,12 @@ export function post(url, params = {}) {
             method: 'post',
             data: params
         }).then(response => {
-            resolve(response);
+           if(response.data.code == 301) {
+                message.error("登录过期，请重新登陆");
+                router.push("/login");
+            }else{
+                resolve(response);
+            }
         }).catch(error => {
             console.log(error)
             reject(error);

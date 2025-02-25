@@ -39,6 +39,7 @@
 import { reactive } from 'vue';
 import router from '@/router'
 import {addDynamicRoutes} from '@/router/index.js';
+import { message } from 'ant-design-vue';
 import {doLogin,saveCurrentUser,saveToken,saveMenuList,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
 
 import qs from 'qs'
@@ -72,6 +73,7 @@ const onFinish = values => {
         //跳转主页
         router.replace("/index")
     }else {
+        message.error("用户或者密码错误，请重新登陆...")
         clearRemeberMe()
     }
     })

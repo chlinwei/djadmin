@@ -1,20 +1,21 @@
 import requestUtil from '@/util/request'
 import Cookies from 'js-cookie';
 import { encrypt, decrypt } from "@/util/jsencrypt";
-
+import { message } from 'ant-design-vue';
+import router from '@/router';
 // 登录
 export const doLogin = (data) => {
-    return requestUtil.post("user/login",data);
+    return requestUtil.post("user/login", data);
 }
 
 // 存储个人信息
 export function saveCurrentUser(currentUser) {
     currentUser = JSON.stringify(currentUser);
-    localStorage.setItem("currentUser",currentUser);
+    localStorage.setItem("currentUser", currentUser);
 }
 
 // 删除个人信息
-export function removeCurrentUser(currentUser) {
+export function removeCurrentUser() {
     localStorage.removeItem("currentUser");
 }
 
@@ -23,10 +24,10 @@ export function getCurrentUser() {
     let currentUser = localStorage.getItem("currentUser");
     return JSON.parse(currentUser);
 }
-    
+
 //存储token
 export function saveToken(token) {
-    localStorage.setItem("token",token);
+    localStorage.setItem("token", token);
 }
 //获取token
 export function getToken() {
@@ -40,18 +41,18 @@ export function removeToken() {
 }
 
 //保存权限菜单
-export function saveMenuList(menuList){
+export function saveMenuList(menuList) {
     menuList = JSON.stringify(menuList);
-    localStorage.setItem("menuList",menuList);
+    localStorage.setItem("menuList", menuList);
 }
 
 //获取权限菜单
-export function getMenuList(){
+export function getMenuList() {
     let menuList = localStorage.getItem("menuList");
     return JSON.parse(menuList);
 }
 //删除权限菜单
-export function removeMenuList(){
+export function removeMenuList() {
     localStorage.removeItem("menuList")
 }
 
@@ -59,12 +60,12 @@ export function removeMenuList(){
 export function setRemeberMe(user) {
     user.password = encrypt(user.password);
     user = JSON.stringify(user);
-    Cookies.set("user",user, { expires: 30 });
+    Cookies.set("user", user, { expires: 30 });
 }
 // 获取账号密码
 export function getRemeberMeInfo() {
     let user = Cookies.get("user");
-    if(user) {
+    if (user) {
         user = JSON.parse(user);
         user.password = decrypt(user.password);
         return user;
@@ -77,9 +78,29 @@ export function clearRemeberMe() {
 
 
 //更新基本资料
-export function updateUserInfo(user,callback) {
-    requestUtil.post("user/updateUserInfo",user).then(result => {
+export function updateUserInfo(user, callback) {
+    requestUtil.post("user/updateUserInfo", user).then(result => {
         saveCurrentUser(result.data.data.user);
         callback(result);
+    })
+}
+
+export function updateUserPassword(password_pair) {
+    requestUtil.post("user/updateUserPassword", password_pair).then(result => {
+        console.log("===========test2222===================");
+        console.log(result);
+        if (result.data.code == 200) {
+            message.success("密码更新成功，请重新登陆...");
+            // 删除个人信息
+            removeCurrentUser();
+            // 删除token
+            removeToken();
+            router.push("/login");
+        } else if (result.data.code == 1001) {
+            message.error("旧密码错误，请重新输入旧密码...");
+        } else {
+            message.error("服务器错误...");
+        }
+
     })
 }

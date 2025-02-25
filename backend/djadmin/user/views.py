@@ -15,6 +15,7 @@ from .serializer import SysUserSerializer
 from .filters import SysUserFilter
 
 from django.core.exceptions import ObjectDoesNotExist
+from djadmin.utils import Response_200,Response_error
 
 
 
@@ -32,8 +33,16 @@ from menu.models import SysMenu
 from user.utils import getCurrentUser
 
 
+import os
+
+
 #缓存
 from django.core.cache import cache
+
+#错误常量
+from djadmin.errordict import UserError
+
+from djadmin import settings
 
 
 class TestView(APIView):
@@ -167,3 +176,41 @@ class UpdateUserInfoView(APIView):
             },
             'msg':'success'
         })
+    
+
+# 修改用户密码
+class UpdateUserPasswordView(APIView):
+    def post(self,request):
+        user = getCurrentUser(request)
+        user_id = user['user_id']
+        db_user = SysUser.objects.get(id=user_id)
+        old_password = request.data['old_password']
+        new_password = request.data['new_password']
+        if old_password != db_user.password:
+            return Response_error(UserError.update_password_error)
+        else:
+            db_user.password = new_password
+            db_user.save()
+            return Response_200()
+
+
+class ChangeAvatarView(APIView):
+    def post(self, request):
+        file = request.FILES.get('avatar')
+        print("file:", file)
+        if file:
+            file_name = file.name
+            suffixName = file_name[file_name.rfind("."):]
+            new_file_name = datetime.now().strftime('%Y%m%d%H%M%S') + suffixName
+            file_path = os.path.join(str(settings.MEDIA_ROOT),"userAvatar",new_file_name)
+            try:
+                with open(file_path, 'wb') as f:
+                    for chunk in file.chunks():
+                        f.write(chunk)
+                return Response_200(data={"new_file_name": new_file_name})
+            except:
+                return Response_error(UserError.change_avatar_error)
+            
+
+
+

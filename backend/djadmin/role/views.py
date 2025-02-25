@@ -10,8 +10,6 @@ from .serializer import SysRoleSerializer
 
 
 class currentUserRoleListView(APIView):
-
-
     # SysRole.objects.raw("select ")
     def get(self,request):
         # 获取当前用户id

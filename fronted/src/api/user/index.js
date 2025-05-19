@@ -84,7 +84,12 @@ export function updateUserInfo(user, callback) {
         callback(result);
     })
 }
+//获取用户列表
+export function getUserList(params = {page:1,size:3}) {
+   return requestUtil.get("user/list",params)
+}
 
+// 修改用户密码
 export function updateUserPassword(password_pair) {
     requestUtil.post("user/updateUserPassword", password_pair).then(result => {
         console.log("===========test2222===================");

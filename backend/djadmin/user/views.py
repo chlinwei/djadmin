@@ -44,17 +44,18 @@ from djadmin.errordict import UserError
 
 from djadmin import settings
 
-
+from djadmin.utils import CustomPagination
 class TestView(APIView):
     def get(self,request):
         return Response("hello,world")
     
 
 class UserListOrCreateView(ListCreateAPIView):
-    queryset = SysUser.objects.all()
+    queryset = SysUser.objects.all().order_by("-id")
     serializer_class = SysUserSerializer
     filter_backends = (filters.DjangoFilterBackend,)
     filterset_class = SysUserFilter
+    pagination_class = CustomPagination
 
 
 class TestView(View):
@@ -211,6 +212,11 @@ class ChangeAvatarView(APIView):
             except:
                 return Response_error(UserError.change_avatar_error)
             
+
+
+
+
+
 
 
 

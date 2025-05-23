@@ -85,7 +85,7 @@ export function updateUserInfo(user, callback) {
     })
 }
 //获取用户列表
-export function getUserList(params = {page:1,size:3}) {
+export function getUserList(params = {page:1,size:3,keyword}) {
    return requestUtil.get("sys/user",params)
 }
 

@@ -26,5 +26,5 @@ from rest_framework.pagination import PageNumberPagination
 # 自定义分页类（可选）
 class CustomPagination(PageNumberPagination):
     page_size_query_param = 'size'  # 允许客户端动态设置分页大小
-    max_page_size = 3  # 最大允许每页记录数:ml-citation{ref="3,6" data="citationList"}
+    max_page_size = 30  # 最大允许每页记录数:ml-citation{ref="3,6" data="citationList"}
 

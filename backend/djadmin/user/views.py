@@ -59,8 +59,8 @@ class UserListOrCreateView(ListCreateAPIView):
         Prefetch('sysuserrole_set', queryset=SysUserRole.objects.select_related('role'))
     ).order_by('-id')
     serializer_class = SysUserRoleSerializer
-    # filter_backends = (filters.DjangoFilterBackend,)
-    # filterset_class = SysUserFilter
+    filter_backends = (filters.DjangoFilterBackend,)
+    filterset_class = SysUserFilter
     pagination_class = CustomPagination
 
 

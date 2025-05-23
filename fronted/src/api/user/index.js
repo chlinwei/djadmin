@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue';
 import router from '@/router';
 // 登录
 export const doLogin = (data) => {
-    return requestUtil.post("user/login", data);
+    return requestUtil.post("sys/login", data);
 }
 
 // 存储个人信息
@@ -79,20 +79,20 @@ export function clearRemeberMe() {
 
 //更新基本资料
 export function updateUserInfo(user, callback) {
-    requestUtil.post("user/updateUserInfo", user).then(result => {
+    requestUtil.post("sys/updateUserInfo", user).then(result => {
         saveCurrentUser(result.data.data.user);
         callback(result);
     })
 }
 //获取用户列表
 export function getUserList(params = {page:1,size:3}) {
-   return requestUtil.get("user/list",params)
+   return requestUtil.get("sys/user",params)
 }
+
 
 // 修改用户密码
 export function updateUserPassword(password_pair) {
-    requestUtil.post("user/updateUserPassword", password_pair).then(result => {
-        console.log("===========test2222===================");
+    requestUtil.post("sys/updateUserPassword", password_pair).then(result => {
         console.log(result);
         if (result.data.code == 200) {
             message.success("密码更新成功，请重新登陆...");

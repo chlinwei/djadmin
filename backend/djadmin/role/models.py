@@ -1,5 +1,4 @@
 from django.db import models
-from user.models import SysUser
 
 # Create your models here.
 class SysRole(models.Model):
@@ -12,10 +11,4 @@ class SysRole(models.Model):
     class Meta:
         db_table = "sys_role"
 
-# 系统用户角色关联类
-class SysUserRole(models.Model):
-    id = models.AutoField(primary_key=True)
-    role = models.ForeignKey(SysRole, on_delete=models.CASCADE)
-    user = models.ForeignKey(SysUser, on_delete=models.CASCADE)
-    class Meta:
-        db_table = "sys_user_role"
+

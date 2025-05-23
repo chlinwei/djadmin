@@ -181,3 +181,10 @@ CACHES = {
         }
     }
 }
+
+#django-jwt 设置
+from datetime import timedelta
+JWT_AUTH = {
+    'JWT_EXPIRATION_DELTA': timedelta(days=1),  # 设置 token 过期时间为1天
+    'JWT_REFRESH_EXPIRATION_DELTA': timedelta(days=7),  # 刷新 token 过期时间为7天
+}

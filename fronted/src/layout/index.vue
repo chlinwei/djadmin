@@ -45,6 +45,7 @@ import {computed} from 'vue';
 const tab_includes = computed(()=>{
     var tmp_tab_includes = []
     store.state.tabs.forEach(element => {
+        console.log(element.key)
         router.getRoutes().forEach(e2 => {
             if(e2.path == element.key) {
                 if(e2.components) {
@@ -60,13 +61,6 @@ const tab_includes = computed(()=>{
 })
 
 
-function test(){
-    console.log("============test===============")
-      console.log(router.getRoutes())
-
-}
-
-test()
 const collapsed = ref(false)
 </script>
 

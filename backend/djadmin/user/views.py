@@ -32,6 +32,7 @@ from menu.models import SysMenu
 
 from user.utils import getCurrentUser
 
+from .serializer import SysUserRoleSerializer
 
 import os
 
@@ -49,12 +50,17 @@ class TestView(APIView):
     def get(self,request):
         return Response("hello,world")
     
-
+from django.db.models import Prefetch
+from .models import SysUserRole
 class UserListOrCreateView(ListCreateAPIView):
-    queryset = SysUser.objects.all().order_by("-id")
-    serializer_class = SysUserSerializer
-    filter_backends = (filters.DjangoFilterBackend,)
-    filterset_class = SysUserFilter
+    # queryset = SysUser.objects.all().order_by("-id")
+
+    queryset = SysUser.objects.prefetch_related(
+        Prefetch('sysuserrole_set', queryset=SysUserRole.objects.select_related('role'))
+    ).order_by('-id')
+    serializer_class = SysUserRoleSerializer
+    # filter_backends = (filters.DjangoFilterBackend,)
+    # filterset_class = SysUserFilter
     pagination_class = CustomPagination
 
 
@@ -131,6 +137,7 @@ class LoginView(APIView):
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
             payload = jwt_payload_handler(user)
             token = jwt_encode_handler(payload)
+            
             
         except ObjectDoesNotExist as e:
             user = None

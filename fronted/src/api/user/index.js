@@ -93,7 +93,7 @@ export function getUserList(params = {page:1,size:3,keyword}) {
 // 修改用户密码
 export function updateUserPassword(password_pair) {
     requestUtil.post("sys/updateUserPassword", password_pair).then(result => {
-        console.log(result);
+
         if (result.data.code == 200) {
             message.success("密码更新成功，请重新登陆...");
             // 删除个人信息
@@ -109,3 +109,8 @@ export function updateUserPassword(password_pair) {
 
     })
 }
+// 修改用户状态
+export function changeUserStatus(user_id,status) {
+    return requestUtil.post("sys/user/changeStatus",{user_id:user_id,status:status})
+}
+

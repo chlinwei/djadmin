@@ -222,6 +222,23 @@ class ChangeAvatarView(APIView):
 
 
 
+from .serializer import StatusSerializer
+#修改用户的状态
+class ChangeStatusView(APIView):
+    def post(self,request):
+        serializer = StatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)  # 自动返回400错误
+        if serializer.is_valid():
+            try:
+                user = SysUser.objects.get(id=serializer.validated_data['user_id'])
+                print(user)
+                print(serializer.validated_data)
+                user.status = serializer.validated_data['status']
+                user.save()
+                return Response_200()
+            except:
+                return Response_error(UserError.change_status_error)
+
 
 
 

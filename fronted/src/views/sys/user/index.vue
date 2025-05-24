@@ -1,4 +1,5 @@
 <template>
+    <Dialog :open="open" @update:open="(value)=>{open=value}" :user_id="user_id" :title="title"/>
     <a-row class="search" :gutter="16">
       <a-col :span="7">
       <a-input-search
@@ -37,7 +38,7 @@
         </template>
               <template v-else-if="column.key === 'status'">
           <span>
-            <a-switch :checked="record.status === 1"  @change="changeStatus" />
+            <a-switch :checked="record.status === 1"  @change="(checked) => onChangeStatus(checked, record.id)"  />
             
           </span>
         </template>
@@ -50,7 +51,7 @@
                       <a-button >重置密码</a-button>
                   </a-col>
                   <a-col>
-                      <a-button type="primary"><FontAwesomeIcon :icon="faEdit" /></a-button>
+                      <a-button type="primary" @click="onSaveorChanageUser(record.id)"><FontAwesomeIcon :icon="faEdit" /></a-button>
                   </a-col>
                   <a-col>
                       <a-button class="delBtn" danger type="primary"><FontAwesomeIcon :icon="faTrash" /></a-button>
@@ -75,7 +76,10 @@
   import { faEdit } from '@fortawesome/free-solid-svg-icons'
   import { faTrash } from '@fortawesome/free-solid-svg-icons'
   import { computed } from 'vue';
-  import axios from 'axios';
+  import { changeUserStatus } from '@/api/user/index.js';
+  import { message } from 'ant-design-vue';
+  import Dialog from '@/views/sys/user/components/Dialog.vue';
+
 const SearchText = ref('')
   const columns = [
     { title: '用户名', dataIndex: 'username',key: 'username' ,sorter: (a, b) => a.username.localeCompare(b.username),sortDirections: ['ascend', 'descend']},
@@ -92,10 +96,16 @@ const SearchText = ref('')
   }
 
 
+  const open=ref(false)
 
 
-const changeStatus = (e) => {
-    
+const onChangeStatus = (e1,e2) => {
+    var status = e1 === true ? 1 : 0
+    var user_id = e2
+    changeUserStatus(user_id,status).then((result) => {
+        message.success("执行成功")
+        run({ page: current, size: pageSize.value })
+    })
   }
 const total = ref(1)
 const queryData = params => {
@@ -129,29 +139,40 @@ const pagination = computed(() => ({
 }))
 
 const handleTableChange = (page,filters, sorter) => {
-    console.log("sorter")
-    console.log(sorter)
-    if(sorter) {
-        let sorter_str = "order="
+    
+    var sorter_str = ""
+    if(sorter.field) {
+        // 不为空，说明有排序
         if(sorter.order == "descend") {
             sorter_str = sorter_str + '-' + sorter.field
         }else {
             sorter_str = sorter_str  + sorter.field
         }
-        console.log(sorter_str)
-    }
-
-
-    run({
+        run({
         size: page.pageSize,
         page: page?.current,
         order: sorter_str,
-        ...filters,
-    })
+        ...filters,})
+    } else {
+        run({
+        size: page.pageSize,
+        page: page?.current,
+        ...filters,})
+    }
+
+
+
 };
 
 const onSearch = (keyword) => {
     run({ page: current, size: pageSize.value, keyword })
+}
+
+const title = ref("")
+const onSaveorChanageUser = (user_id) => {
+    open.value = true;
+    title.value = "用户修改"
+    console.log("编辑user_id:" + user_id);
 }
 console.log("=============count===============")
 

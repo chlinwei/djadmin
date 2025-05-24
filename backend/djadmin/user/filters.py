@@ -1,6 +1,6 @@
 from django_filters import rest_framework as filters
-from .models import SysUser,SysUserRole
-from django.db.models import Q,fields
+from .models import SysUser
+from django.db.models import Q
  
  
 

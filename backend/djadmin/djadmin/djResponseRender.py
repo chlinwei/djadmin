@@ -7,8 +7,10 @@ class DjAdminResponse_render(JSONRenderer):
     def render(self, data, accepted_media_type=None, renderer_context=None):
         if renderer_context:
             if isinstance(data,dict):
-                msg = data.pop('msg','success')
-                code = data.pop('code',1)
+                # msg = data.pop('msg','success')
+                # code = data.pop('code',2)
+                msg = 'error'
+                code = 300
             else:
                 msg = 'success'
                 code = 200

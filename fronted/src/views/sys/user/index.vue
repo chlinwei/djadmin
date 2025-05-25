@@ -1,14 +1,21 @@
 <template>
-    <Dialog :open="open" @update:open="(value)=>{open=value}" :user_id="user_id" :title="title" />
-    <a-row class="search" :gutter="16">
+    <Dialog :open="open" @update:open="(value)=>{open=value}" :user_id="user_id" :title="title" @initUserList="HandleInitUserList"/>
+    
+    
+     <a-row class="tools" :gutter="16">
       <a-col :span="7">
       <a-input-search
+        class="tool-item"
         v-model:value="SearchText"
         placeholder="用户名/邮箱/手机号"
         enter-button
+        size="large"
         @search="onSearch"
       />
-  
+      
+      </a-col>
+      <a-col class="AddUserBtn tool-item">
+        <a-button size="large" @click="HandleAddUser" >新增</a-button>
       </a-col>
     </a-row>
     <!-- 注意需要rowKey -->
@@ -56,7 +63,6 @@
                   </a-col>
                   <a-col>
                       <a-button class="delBtn" danger type="primary"><FontAwesomeIcon :icon="faTrash" /></a-button>
-                      
                   </a-col>
               </a-row>
         </template>
@@ -92,29 +98,26 @@ const SearchText = ref('')
     { title: '备注', dataIndex: 'remark',key: 'remark' },
     { title: '操作', key: 'action' }
   ]
-  const editUser = (user) => {
-    // 编辑逻辑
-  }
-
-
-  
-
-
+var lastSearchKeyword = null
 const onChangeStatus = (e1,e2) => {
     var status = e1 === true ? 1 : 0
     var user_id = e2
     changeUserStatus(user_id,status).then((result) => {
         message.success("执行成功")
-        run({ page: current, size: pageSize.value,keyworkd:SearchText.value })
+        run({ page: current, size: pageSize.value,keyworkd: lastSearchKeyword })
     })
   }
 const total = ref(1)
+
 const queryData = params => {
   return getUserList(params).then(res => {
-    total.value = res.data.data.count
-    console.log("user list")
-    console.log(res.data.data.results)
-    return res.data.data.results
+    if(res.data.code == 200) {
+        lastSearchKeyword = res.config.params.keyword
+        total.value = res.data.data.count
+        return res.data.data.results
+
+    }
+
   });
 };
 
@@ -126,6 +129,7 @@ const queryData = params => {
     pageSize,
 } = usePagination(queryData,
 {
+    // 这里疑问？？formatResult没什么用
     formatResult:(res) => {
         console.log("fdsfdaf")
         return "hello"
@@ -154,14 +158,14 @@ const handleTableChange = (page,filters, sorter) => {
         run({
         size: page.pageSize,
         page: page?.current,
-        keyword: SearchText.value,
+        keyword: lastSearchKeyword,
         order: sorter_str,
         ...filters,})
     } else {
         run({
         size: page.pageSize,
         page: page?.current,
-        keyword: SearchText.value,
+        keyword: lastSearchKeyword,
         ...filters,})
     }
 };
@@ -177,10 +181,16 @@ const onSaveorChanageUser = (id) => {
     open.value = true;
     title.value = "用户修改"
     user_id.value = id
-    console.log("父组件编辑用户:"+user_id.value)
 }
-
-
+const HandleInitUserList = (res) => {
+    run({page: current,size: pageSize.value,keyword:lastSearchKeyword})
+}
+// 新增用户
+const HandleAddUser = () => {
+    open.value = true;
+    title.value = "用户添加"
+    user_id.value = -1
+}
   </script>
 
   <style scoped>
@@ -200,6 +210,17 @@ const onSaveorChanageUser = (id) => {
       background-color: orange;
       color: white;
   }
-  
+
+  .AddUserBtn >:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
+      background-color: green;
+      color: white;
+  }
+.tools { 
+    margin-bottom: 20px;
+    height: 50px;;
+}
+.tool-item {
+    height: 200px !important;
+}
 </style>
  

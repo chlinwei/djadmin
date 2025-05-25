@@ -243,7 +243,7 @@ class ChangeStatusView(APIView):
 #查询用户detail,编辑用户，新增用户
 from rest_framework import generics
 from .serializer import UserDetailCreateSerializer
-class UserDetailCreateView(generics.RetrieveUpdateAPIView,generics.CreateAPIView):
+class UserManageView(generics.RetrieveUpdateAPIView,generics.CreateAPIView,generics.DestroyAPIView):
     """
     集成功能：
     GET /users/<id>/ - 查询指定用户
@@ -255,6 +255,13 @@ class UserDetailCreateView(generics.RetrieveUpdateAPIView,generics.CreateAPIView
     lookup_field = 'id'
 
 
+class CheckUsername(APIView):
+    def get(self,request):
+        username = request.query_params.get('username')
+        if not username:
+            return Response_error(error="请输入用户名")
+        exists = SysUser.objects.filter(username=username).exists()
+        return Response_200(data={"exists":exists})
 
 
 

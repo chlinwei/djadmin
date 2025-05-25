@@ -8,6 +8,11 @@ urlpatterns = [
     path('updateUserPassword',UpdateUserPasswordView.as_view(),name='updateUserPassword'),
     path('changeAvatar',ChangeAvatarView.as_view(),name="ChangeAvatarView"),
     path('user/changeStatus',ChangeStatusView.as_view(),name="user/ChangeStatusView"),
-    path('users',UserDetailCreateView.as_view(),name="user-create"),
-    path('users/<int:id>/',UserDetailCreateView.as_view(),name="user-detail")
+    
+    path('users/',UserManageView.as_view(),name="user-create"),
+    path('users/<int:id>/',UserManageView.as_view(),name="user-detail"),
+    path('users/<int:id>/',UserManageView.as_view(),name="updateUser"),
+    path('users/<int:id>/',UserManageView.as_view(),name="deleteUser"),
+    # 检查用户是否存在
+    path('users/CheckUsername',CheckUsername.as_view(),name="CheckUsername"),
 ]

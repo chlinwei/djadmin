@@ -46,3 +46,6 @@ class UserDetailCreateSerializer(ModelSerializer):
     class Meta:
         model = SysUser
         fields = ["id","username","email","phonenumber","status","remark"]
+    def create(self, validated_data):
+        user = SysUser.objects.create(**validated_data)
+        return user

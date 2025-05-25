@@ -118,3 +118,17 @@ export function changeUserStatus(user_id,status) {
 export function getUserById(user_id) {
     return requestUtil.get("sys/users/" + user_id + '/');
 }
+
+// 保存用户信息
+export function saveUserInfo(userInfo) {
+    return requestUtil.patch("sys/users/" + userInfo.id + "/",userInfo)
+}
+// 新增用户
+export function addUser(userInfo) {
+    return requestUtil.post("sys/users/" ,userInfo)
+}
+
+// 检查用户是否存在
+export function checkUserName(username) {
+    return requestUtil.get("sys/users/CheckUsername",{"username": username});
+}

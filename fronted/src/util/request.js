@@ -133,10 +133,27 @@ export function getServerUrl(){
     return baseUrl;
 }
 
+
+export function patch(url, params = {}) {
+    return new Promise((resolve, reject) => {
+        httpService({
+            url: url,
+            method: 'patch',
+            data: params
+        }).then(response => {
+            resolve(response);
+        }).catch(error => {
+            console.log(error)
+            reject(error);
+        });
+    });
+}
+
 export default {
     get,
     post,
     del,
     fileUpload,
-    getServerUrl
+    getServerUrl,
+    patch,
 }

@@ -1,6 +1,6 @@
 from django.shortcuts import render
 
-from rest_framework.generics import ListCreateAPIView
+from rest_framework.generics import ListAPIView
 
 from django.db import connection
 
@@ -52,7 +52,7 @@ class TestView(APIView):
     
 from django.db.models import Prefetch
 from .models import SysUserRole
-class UserListOrCreateView(ListCreateAPIView):
+class UserListView(ListAPIView):
     # queryset = SysUser.objects.all().order_by("-id")
 
     queryset = SysUser.objects.prefetch_related(
@@ -238,6 +238,21 @@ class ChangeStatusView(APIView):
                 return Response_200()
             except:
                 return Response_error(UserError.change_status_error)
+            
+
+#查询用户detail,编辑用户，新增用户
+from rest_framework import generics
+from .serializer import UserDetailCreateSerializer
+class UserDetailCreateView(generics.RetrieveUpdateAPIView,generics.CreateAPIView):
+    """
+    集成功能：
+    GET /users/<id>/ - 查询指定用户
+    PUT/PATCH /users/<id>/ - 编辑用户
+    POST /users/ - 创建新用户
+    """
+    queryset = SysUser.objects.all()
+    serializer_class = UserDetailCreateSerializer
+    lookup_field = 'id'
 
 
 

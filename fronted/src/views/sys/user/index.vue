@@ -1,5 +1,5 @@
 <template>
-    <Dialog :open="open" @update:open="(value)=>{open=value}" :user_id="user_id" :title="title"/>
+    <Dialog :open="open" @update:open="(value)=>{open=value}" :user_id="user_id" :title="title" />
     <a-row class="search" :gutter="16">
       <a-col :span="7">
       <a-input-search
@@ -11,7 +11,8 @@
   
       </a-col>
     </a-row>
-    <a-table :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
+    <!-- 注意需要rowKey -->
+    <a-table  rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
       <template #headerCell="{ column }">
         <template v-if="column.key === 'name'">
           <span>
@@ -96,7 +97,7 @@ const SearchText = ref('')
   }
 
 
-  const open=ref(false)
+  
 
 
 const onChangeStatus = (e1,e2) => {
@@ -104,13 +105,15 @@ const onChangeStatus = (e1,e2) => {
     var user_id = e2
     changeUserStatus(user_id,status).then((result) => {
         message.success("执行成功")
-        run({ page: current, size: pageSize.value })
+        run({ page: current, size: pageSize.value,keyworkd:SearchText.value })
     })
   }
 const total = ref(1)
 const queryData = params => {
   return getUserList(params).then(res => {
     total.value = res.data.data.count
+    console.log("user list")
+    console.log(res.data.data.results)
     return res.data.data.results
   });
 };
@@ -151,30 +154,32 @@ const handleTableChange = (page,filters, sorter) => {
         run({
         size: page.pageSize,
         page: page?.current,
+        keyword: SearchText.value,
         order: sorter_str,
         ...filters,})
     } else {
         run({
         size: page.pageSize,
         page: page?.current,
+        keyword: SearchText.value,
         ...filters,})
     }
-
-
-
 };
 
 const onSearch = (keyword) => {
-    run({ page: current, size: pageSize.value, keyword })
+    run({size: pageSize.value, keyword })
 }
 
 const title = ref("")
-const onSaveorChanageUser = (user_id) => {
+const user_id = ref(-1)
+const open = ref(false)
+const onSaveorChanageUser = (id) => {
     open.value = true;
     title.value = "用户修改"
-    console.log("编辑user_id:" + user_id);
+    user_id.value = id
+    console.log("父组件编辑用户:"+user_id.value)
 }
-console.log("=============count===============")
+
 
   </script>
 

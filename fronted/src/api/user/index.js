@@ -86,7 +86,7 @@ export function updateUserInfo(user, callback) {
 }
 //获取用户列表
 export function getUserList(params = {page:1,size:3,keyword}) {
-   return requestUtil.get("sys/user",params)
+   return requestUtil.get("sys/userList",params)
 }
 
 
@@ -114,3 +114,7 @@ export function changeUserStatus(user_id,status) {
     return requestUtil.post("sys/user/changeStatus",{user_id:user_id,status:status})
 }
 
+// 根据用户id获取用户信息
+export function getUserById(user_id) {
+    return requestUtil.get("sys/users/" + user_id + '/');
+}

@@ -3,8 +3,9 @@ from rest_framework import status
 from djadmin import settings
 
 
-def djadmin_handler(err,context: dict):
+def djadmin_handler(err,context):
     #获取rest 标准的错误响应对象
+    print("===========异常====================")
     response: Response = exception_handler(err,context)
     if response is None:
         #Debug模式下，不处理系统异常
@@ -26,8 +27,8 @@ def djadmin_handler(err,context: dict):
                 if isinstance(v,list):
                     data.append(k+v[0])
         res = {}
-        res.update(response.data)
+        # res.update(response.data)
         res['msg'] = msg
-        res['code'] = 200
+        res['code'] = 600
         res['data'] = data
         return Response(res,status=response.status_code,exception=True)

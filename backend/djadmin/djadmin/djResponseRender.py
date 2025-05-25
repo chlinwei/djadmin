@@ -1,27 +1,35 @@
 from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from rest_framework import status
 
 
 
 
 class DjAdminResponse_render(JSONRenderer):
     def render(self, data, accepted_media_type=None, renderer_context=None):
-        if renderer_context:
-            if isinstance(data,dict):
-                # msg = data.pop('msg','success')
-                # code = data.pop('code',2)
-                msg = 'error'
-                code = 300
+
+        print("========render===============")
+        if isinstance(data,dict):
+            if 'msg' in data and 'code' in data and 'data' in data:
+                # 证明格式是正确的
+                if data['code'] != 200:
+                #  证明这个data来自于自定义异常
+                    print("正常格式且来自异常")
+                    return super().render(data, accepted_media_type, renderer_context)
+                else:
+                    print("正常格式")
+                    return super().render(data, accepted_media_type, renderer_context)
             else:
-                msg = 'success'
-                code = 200
-            ret = {
-                'msg': msg,
-                'code': code,
-                'data': data,
-            }
-            return super().render(ret, accepted_media_type, renderer_context)
-        else:
-            return super().render(data, accepted_media_type, renderer_context)
+                print("不正常格式来自系统的json返回")
+                print(data)
+                ret = {
+                }
+                #这个不是正常格式的json
+                ret['msg'] = 'sucess'
+                ret['code'] = 200
+                ret['data'] = data
+                return super().render(ret, accepted_media_type, renderer_context)
+
 
     
 

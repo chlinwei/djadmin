@@ -137,6 +137,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 #django-filter
 REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'djadmin.djException.djadmin_handler',
     'DEFAULT_RENDERER_CLASSES': [
         # 'rest_framework.renderers.JSONRenderer',
         'djadmin.djResponseRender.DjAdminResponse_render',
@@ -146,7 +147,7 @@ REST_FRAMEWORK = {
         'django_filters.rest_framework.DjangoFilterBackend',
         # ...
     ),
-    'EXCEPTOIN_HANDLER': 'djadmin.djException.djadmin_handler',
+   
     
 }
 

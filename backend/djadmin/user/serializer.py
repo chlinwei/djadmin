@@ -38,3 +38,11 @@ class StatusSerializer(serializers.Serializer):
         if value <= 0:
             raise serializers.ValidationError("用户id必须是正数")
         return value
+    
+
+
+# 用户修改和添加
+class UserDetailCreateSerializer(ModelSerializer):
+    class Meta:
+        model = SysUser
+        fields = ["id","username","email","phonenumber","status","remark"]

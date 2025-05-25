@@ -3,6 +3,8 @@
 from django.http import JsonResponse
 from .errordict import ErrorMixin
 
+
+
 def Response_200(data=None,msg="success"):
         return JsonResponse({
             'code':200,

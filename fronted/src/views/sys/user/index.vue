@@ -17,9 +17,12 @@
       <a-col class="AddUserBtn tool-item">
         <a-button size="large" @click="HandleAddUser" >新增</a-button>
       </a-col>
+          <a-col class="BatchDelUserBtn tool-item">
+        <a-button size="large" type="primary" danger @click="HandleAddUser" ><FontAwesomeIcon :icon="faTrash" />批量删除</a-button>
+      </a-col>
     </a-row>
     <!-- 注意需要rowKey -->
-    <a-table  rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
+    <a-table :row-selection="rowSelection"  rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
       <template #headerCell="{ column }">
         <template v-if="column.key === 'name'">
           <span>
@@ -86,6 +89,9 @@
   import { changeUserStatus } from '@/api/user/index.js';
   import { message } from 'ant-design-vue';
   import Dialog from '@/views/sys/user/components/Dialog.vue';
+
+
+
 
 const SearchText = ref('')
   const columns = [
@@ -191,6 +197,21 @@ const HandleAddUser = () => {
     title.value = "用户添加"
     user_id.value = -1
 }
+
+// 批量选择
+  // 
+  const rowSelection = ref({
+  checkStrictly: false,
+  onChange: (selectedRowKeys, selectedRows) => {
+    console.log(`selectedRowKeys: ${selectedRowKeys}`, 'selectedRows: ', selectedRows);
+  },
+  onSelect: (record, selected, selectedRows) => {
+    console.log(record, selected, selectedRows);
+  },
+  onSelectAll: (selected, selectedRows, changeRows) => {
+    console.log(selected, selectedRows, changeRows);
+  },
+});
   </script>
 
   <style scoped>
@@ -221,6 +242,10 @@ const HandleAddUser = () => {
 }
 .tool-item {
     height: 200px !important;
+}
+.BatchDelUserBtn  >:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
+      background-color: orange;
+      color: white;
 }
 </style>
  

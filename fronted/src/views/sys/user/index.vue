@@ -17,12 +17,25 @@
       <a-col class="AddUserBtn tool-item">
         <a-button size="large" @click="HandleAddUser" >新增</a-button>
       </a-col>
-          <a-col class="BatchDelUserBtn tool-item">
-        <a-button size="large" type="primary" danger @click="HandleAddUser" ><FontAwesomeIcon :icon="faTrash" />批量删除</a-button>
+          <a-col class="BatchDelUserBtn tool-item" v-show="batchDelUserBtnVisiable">
+            <a-popconfirm
+    placement="top"
+    title="您确定要删除么？"
+    ok-text="确认"
+    cancel-text="取消"
+    @confirm="confirm"
+    @cancel="cancel"
+    :overlayStyle="{ width: '300px', minHeight: '200px' }"  
+  >
+         <a-button size="large" type="primary" :loading="state.loading" danger>
+            <FontAwesomeIcon :icon="faTrash" />批量删除</a-button>
+  </a-popconfirm>
+        <!-- <a-button size="large" type="primary" :loading="state.loading" danger @click="HandleBatchDelUser" >
+            <FontAwesomeIcon :icon="faTrash" />批量删除</a-button> -->
       </a-col>
     </a-row>
     <!-- 注意需要rowKey -->
-    <a-table :row-selection="rowSelection"  rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
+    <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }"  rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"  @change="handleTableChange">
       <template #headerCell="{ column }">
         <template v-if="column.key === 'name'">
           <span>
@@ -85,7 +98,7 @@
   import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
   import { faEdit } from '@fortawesome/free-solid-svg-icons'
   import { faTrash } from '@fortawesome/free-solid-svg-icons'
-  import { computed } from 'vue';
+  import { computed,reactive } from 'vue';
   import { changeUserStatus } from '@/api/user/index.js';
   import { message } from 'ant-design-vue';
   import Dialog from '@/views/sys/user/components/Dialog.vue';
@@ -197,21 +210,44 @@ const HandleAddUser = () => {
     title.value = "用户添加"
     user_id.value = -1
 }
-
-// 批量选择
-  // 
-  const rowSelection = ref({
-  checkStrictly: false,
-  onChange: (selectedRowKeys, selectedRows) => {
-    console.log(`selectedRowKeys: ${selectedRowKeys}`, 'selectedRows: ', selectedRows);
-  },
-  onSelect: (record, selected, selectedRows) => {
-    console.log(record, selected, selectedRows);
-  },
-  onSelectAll: (selected, selectedRows, changeRows) => {
-    console.log(selected, selectedRows, changeRows);
-  },
+// 删除用户
+const batchDelUserBtnVisiable = ref(false)
+const state = reactive({
+  selectedRowKeys: [],
+  // Check here to configure the default column
+  loading: false,
 });
+
+const onSelectChange = selectedRowKeys => {
+    if(selectedRowKeys.length >= 1) {
+        batchDelUserBtnVisiable.value = true
+    }else {
+        batchDelUserBtnVisiable.value = false
+        
+    }
+    state.selectedRowKeys = selectedRowKeys;
+};
+
+
+import {batchDeleteUser} from '@/api/user/index.js';
+// 批量删除用户
+const HandleBatchDelUser = ()=>{
+    state.loading = true;
+    batchDeleteUser(state.selectedRowKeys).then((res)=>{
+        if(res.data.code == 200) {
+            HandleInitUserList();
+            state.loading = false;
+            message.success("删除成功");
+        }else {
+            message.error("删除失败 ");
+        }
+    })
+}
+const confirm = ()=> {
+    HandleBatchDelUser()
+}
+const cancel = ()=> {
+}
   </script>
 
   <style scoped>

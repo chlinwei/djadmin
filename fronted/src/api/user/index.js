@@ -132,3 +132,12 @@ export function addUser(userInfo) {
 export function checkUserName(username) {
     return requestUtil.get("sys/users/CheckUsername",{"username": username});
 }
+
+export function batchDeleteUser(ids) {
+    if(ids.length <=0) {
+        message.error("用户id数组必须大于1")
+        return;
+    }else {
+        return requestUtil.del("sys/users/batch-delete/",{user_ids:ids})
+    }
+}

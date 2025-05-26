@@ -254,7 +254,7 @@ class UserManageView(generics.RetrieveUpdateAPIView,generics.CreateAPIView,gener
     serializer_class = UserDetailCreateSerializer
     lookup_field = 'id'
 
-
+#检查用户名是否存在
 class CheckUsername(APIView):
     def get(self,request):
         username = request.query_params.get('username')
@@ -262,7 +262,20 @@ class CheckUsername(APIView):
             return Response_error(error="请输入用户名")
         exists = SysUser.objects.filter(username=username).exists()
         return Response_200(data={"exists":exists})
-
+    
+# 批量删除用户
+class UserBatchDeleteAPI(APIView):
+    def delete(self, request):
+        # 获取用户ID数组参数
+        user_ids = request.data.get('user_ids', [])
+        if not user_ids:
+            return Response_error(error=UserError.user_ids_empty)
+        # 先查询主表删除数量
+        user_role_deleted_count = SysUserRole.objects.filter(user_id__in=user_ids).delete()
+        # 再执行删除（此时deleted_count包含关联表）
+        user_deleted_count, _ = SysUser.objects.filter(id__in=user_ids).delete()
+        # 实际用户删除数即user_count
+        return Response_200(data={"user_role_deleted_count":user_role_deleted_count,"user_deleted_count":user_deleted_count})
 
 
 

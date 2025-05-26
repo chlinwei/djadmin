@@ -14,6 +14,7 @@ class UserError(ErrorMixin, Enum):
     update_password_error = (1001, "旧密码错误，更新密码失败")
     change_avatar_error = (1002, "头像上传失败")
     change_status_error = (1003,"修改状态失败")
+    user_ids_empty = (1004,"用户id数组为空错误")
 
 
 class ServerError(ErrorMixin, Enum):

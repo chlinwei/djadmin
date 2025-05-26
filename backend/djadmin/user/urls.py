@@ -14,5 +14,8 @@ urlpatterns = [
     path('users/<int:id>/',UserManageView.as_view(),name="updateUser"),
     path('users/<int:id>/',UserManageView.as_view(),name="deleteUser"),
     # 检查用户是否存在
-    path('users/CheckUsername',CheckUsername.as_view(),name="CheckUsername"),
+    path('users/CheckUsername/',CheckUsername.as_view(),name="CheckUsername"),
+
+    #批量删除用户
+    path('users/batch-delete/',UserBatchDeleteAPI.as_view(),name="user-batch-delete"),
 ]

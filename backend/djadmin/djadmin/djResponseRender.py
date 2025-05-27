@@ -29,6 +29,16 @@ class DjAdminResponse_render(JSONRenderer):
                 ret['code'] = 200
                 ret['data'] = data
                 return super().render(ret, accepted_media_type, renderer_context)
+        else:
+            print("不正常格式来自系统的json返回")
+            print(data)
+            ret = {
+            }
+            #这个不是正常格式的json
+            ret['msg'] = 'sucess'
+            ret['code'] = 200
+            ret['data'] = data
+            return super().render(ret, accepted_media_type, renderer_context)
 
 
     

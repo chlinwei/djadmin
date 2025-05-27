@@ -1,36 +1,29 @@
 <template>
-    <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open2"  v-model:user_id2="props.user_id2" @ok="handleOk" @cancel="handleCancel">
+    <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open2" v-model:user_id2="props.user_id2" @ok="handleOk"
+        @cancel="handleCancel">
         <div>
-    <a-transfer
-      v-model:target-keys="targetKeys"
-      v-model:selected-keys="selectedKeys"
-      :data-source="mockData"
-      :titles="['所有角色', '当前用户']"
-      :render="item => item.title"
-      :disabled="disabled"
-      @change="handleChange"
-      @selectChange="handleSelectChange"
-      @scroll="handleScroll"
-    />
-    <a-switch
-      v-model:checked="disabled"
-      un-checked-children="enabled"
-      checked-children="disabled"
-      style="margin-top: 16px"
-    />
-  </div>
-    </a-modal>
+            <a-transfer v-model:target-keys="user_roleKey_list" v-model:selected-keys="selected_keys" show-search
+                :data-source="roleList_ref" :titles="['所有角色', '当前用户']" :render="item => item.title" @change="handleChange"
+                :locale="locale"
+                @selectChange="handleSelectChange" />
 
-    
+        </div>
+    </a-modal>
 </template>
 
 <script setup>
-import { ref } from 'vue';
-  const props = defineProps(
+
+import { ref ,reactive} from 'vue';
+import { getRoleList, getUserRoleListByUserId } from '@/api/role';
+import { watch } from 'vue';
+const locale = reactive(
+    { itemUnit: '项', itemsUnit: '项', notFoundContent: '列表为空', searchPlaceholder: '请输入搜索内容' }
+)
+const props = defineProps(
     {
         open2: {
             type: Boolean,
-            default:false,
+            default: false,
             required: true
         },
         user_id2: {
@@ -39,44 +32,78 @@ import { ref } from 'vue';
             required: true
         },
     }
-  )
+)
 
-  const emits = defineEmits(['update:open2','initUserList'])
-  const handleCancel = ()=>{
-    emits('update:open2',false)
-  }
-  const handleOk = ()=> {
-    console.log("ok")
-  }
-
-
-
-  const mockData = [];
-for (let i = 0; i < 20; i++) {
-  mockData.push({
-    key: i.toString(),
-    title: `content${i + 1}`,
-    description: `description of content${i + 1}`,
-    disabled: i % 3 < 1,
-  });
+const emits = defineEmits(['update:open2', 'initUserList'])
+const handleCancel = () => {
+    emits('update:open2', false)
 }
-const oriTargetKeys = mockData.filter(item => +item.key % 3 > 1).map(item => item.key);
-const disabled = ref(false);
-const targetKeys = ref(oriTargetKeys);
-const selectedKeys = ref(['1', '4']);
+const handleOk = () => {
+    console.log("ok")
+}
+var  roleList = []
+const roleList_ref = ref([])
+
+var  user_roleKey_list = []
+const user_roleKey_list_ref = ref([])
+
+const selected_keys = ref([])
+watch(
+    () => props.open2,
+    () => {
+        let id = props.user_id2
+        console.log("id:" + id)
+        if (props.open2) {
+            // 获取角色列表
+            getRoleList().then((res) => {
+                if (res.data.code === 200) {
+                    res.data.data.forEach(role => {
+                        roleList.push({
+                            key: role.id.toString(),
+                            title: role.name,
+                            description: role.name,
+                        })
+                    });
+                    roleList_ref.value = roleList
+
+                }
+            })
+            // 正常的id
+            
+            getUserRoleListByUserId(id).then((res) => {
+                res.data.data.roleList.forEach(role =>{
+                    user_roleKey_list.push(role.id.toString())
+                })
+                user_roleKey_list_ref.value = user_roleKey_list
+            })
+        }else {
+            user_roleKey_list = []
+            roleList = []
+            console.log("清空")
+        }
+
+    }
+)
+
+
+const mockData = [];
+for (let i = 0; i < 20; i++) {
+    mockData.push({
+        key: i.toString(),
+        title: `content${i + 1}`,
+        description: `description of content${i + 1}`,
+        disabled: i % 3 < 1,
+    });
+}
+
 const handleChange = (nextTargetKeys, direction, moveKeys) => {
-  console.log('targetKeys: ', nextTargetKeys);
-  console.log('direction: ', direction);
-  console.log('moveKeys: ', moveKeys);
+    console.log('targetKeys: ', nextTargetKeys);
+    console.log('direction: ', direction);
+    console.log('moveKeys: ', moveKeys);
 };
 const handleSelectChange = (sourceSelectedKeys, targetSelectedKeys) => {
-  console.log('sourceSelectedKeys: ', sourceSelectedKeys);
-  console.log('targetSelectedKeys: ', targetSelectedKeys);
-};
-const handleScroll = (direction, e) => {
-  console.log('direction:', direction);
-  console.log('target:', e.target);
+    console.log('sourceSelectedKeys: ', sourceSelectedKeys);
+    console.log('targetSelectedKeys: ', targetSelectedKeys);
 };
 </script>
-<style scoped>
-</style>
+<style scoped></style>

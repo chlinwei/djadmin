@@ -57,7 +57,7 @@
         <div :key="record.id">
         <a-row :gutter="6" class="action_row">
           <a-col>
-            <a-button type="primary" id="assignRole" @click="handleRoleAssign">分配角色</a-button>
+            <a-button type="primary" id="assignRole" @click="handleRoleAssign(record.id)">分配角色</a-button>
           </a-col>
           <a-col class="resetPwd">
               <a-popconfirm placement="bottom" title="您确定要重置密码？" ok-text="确认" cancel-text="取消" @confirm="resetPwdconfirm(record.id)"
@@ -295,9 +295,9 @@ const cancel = () => {
 const open2=ref(false)
 const user_id2=ref(-1)
 
-const handleRoleAssign = ()=> {
+const handleRoleAssign = (id)=> {
   open2.value = true
-  console.log("分配角色")
+  user_id2.value = id
 }
 </script>
 

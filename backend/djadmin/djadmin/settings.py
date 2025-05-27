@@ -189,3 +189,23 @@ JWT_AUTH = {
     'JWT_EXPIRATION_DELTA': timedelta(days=1),  # 设置 token 过期时间为1天
     'JWT_REFRESH_EXPIRATION_DELTA': timedelta(days=7),  # 刷新 token 过期时间为7天
 }
+
+
+#打印sql日志
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'django.db.backends': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    }
+}

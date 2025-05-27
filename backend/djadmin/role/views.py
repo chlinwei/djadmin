@@ -8,6 +8,8 @@ from .serializer import SysRoleSerializer
 from rest_framework import generics
 # Create your views here.
 
+from djadmin.utils import CustomPagination
+from djadmin.utils import Response_200,Response_error
 
 
 class currentUserRoleListView(APIView):
@@ -32,3 +34,16 @@ class currentUserRoleListView(APIView):
 class RoleListView(generics.ListAPIView):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
+
+
+
+
+
+class GetUserRolesByIdView(APIView):
+    def get(self,request):
+        # 获取当前用户id
+        user_id = request.query_params.get('user_id')
+        #查询用户角色根据用户id
+        raw_data = SysRole.objects.raw("select sr.id as id,sr.name as name,sr.code as code,sr.create_time  as create_time,sr.update_time as update_time ,sr.remark as remark  from sys_user_role sur   inner join sys_role sr ON sur.role_id = sr.id  WHERE sur.user_id  = %s",[user_id])
+        roleList = SysRoleSerializer(raw_data,many=True).data
+        return Response_200(data={"roleList":roleList})

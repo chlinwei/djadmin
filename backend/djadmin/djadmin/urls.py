@@ -22,7 +22,7 @@ urlpatterns = [
     path('sys/',include('user.urls')),
     re_path('media/(?P<path>.*)', serve, {'document_root': settings.MEDIA_ROOT},
 name='media'),
-    path('role/',include('role.urls')),
+    path('sys/',include('role.urls')),
     # path('menu/',include('menu.urls')),
 
 ]

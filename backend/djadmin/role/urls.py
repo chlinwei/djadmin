@@ -1,5 +1,6 @@
 from django.urls import path,include
-from .views import currentUserRoleListView
+from .views import *
 urlpatterns = [
-    path('getCurrentUserRoleList',currentUserRoleListView.as_view(),name='getCurrentUserRoleListView')
+    path('roles/getCurrentUserRoleList',currentUserRoleListView.as_view(),name='getCurrentUserRoleListView'),
+    path('roles/getRoleList/',RoleListView.as_view(),name='getRoleList'),
 ]

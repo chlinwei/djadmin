@@ -5,6 +5,7 @@ from user.utils import getCurrentUser
 from django.http import JsonResponse
 from .models import SysRole
 from .serializer import SysRoleSerializer
+from rest_framework import generics
 # Create your views here.
 
 
@@ -24,3 +25,10 @@ class currentUserRoleListView(APIView):
             },
             'msg': 'success'
         })
+    
+
+
+# 获取当前所有角色
+class RoleListView(generics.ListAPIView):
+    queryset = SysRole.objects.all()
+    serializer_class = SysRoleSerializer

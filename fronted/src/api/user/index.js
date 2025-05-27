@@ -141,3 +141,8 @@ export function batchDeleteUser(ids) {
         return requestUtil.del("sys/users/batch-delete/",{user_ids:ids})
     }
 }
+
+// 重置密码
+export function resetPwd(id) {
+    return requestUtil.post("sys/users/resetPwd/",{id:id})
+}

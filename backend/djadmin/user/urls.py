@@ -18,4 +18,6 @@ urlpatterns = [
 
     #批量删除用户
     path('users/batch-delete/',UserBatchDeleteAPI.as_view(),name="user-batch-delete"),
+    #重置密码
+    path('users/resetPwd/',ResetPasswdView.as_view(),name="user-resetPwd"),
 ]

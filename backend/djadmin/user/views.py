@@ -231,8 +231,7 @@ class ChangeStatusView(APIView):
         if serializer.is_valid():
             try:
                 user = SysUser.objects.get(id=serializer.validated_data['user_id'])
-                print(user)
-                print(serializer.validated_data)
+                user.update_time = datetime.now().date()
                 user.status = serializer.validated_data['status']
                 user.save()
                 return Response_200()
@@ -243,7 +242,7 @@ class ChangeStatusView(APIView):
 #查询用户detail,编辑用户，新增用户
 from rest_framework import generics
 from .serializer import UserDetailCreateSerializer
-class UserManageView(generics.RetrieveUpdateAPIView,generics.CreateAPIView,generics.DestroyAPIView):
+class UserManageView(generics.RetrieveUpdateAPIView,generics.CreateAPIView):
     """
     集成功能：
     GET /users/<id>/ - 查询指定用户
@@ -276,6 +275,19 @@ class UserBatchDeleteAPI(APIView):
         user_deleted_count, _ = SysUser.objects.filter(id__in=user_ids).delete()
         # 实际用户删除数即user_count
         return Response_200(data={"user_role_deleted_count":user_role_deleted_count,"user_deleted_count":user_deleted_count})
+    
+# 重置密码
+class ResetPasswdView(APIView):
+    def post(self,request):
+        id = request.data.get("id")
+        print(id)
+        if not id:
+            return Response_error(UserError.user_not_exists)
+        user = SysUser.objects.get(id=id)
+        user.password = "123456"
+        user.update_time = datetime.now().date()
+        user.save()
+        return Response_200()
 
 
 

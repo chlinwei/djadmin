@@ -1,6 +1,6 @@
 <template>
     <div>
-      <a-modal cancelText="取消" okText="保存" destroyOnClose v-model:open="props.open" v-model:title="props.title" v-model:user_id="props.user_id" @ok="handleOk" @cancel="handleCancel">
+      <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:user_id="props.user_id" @ok="handleOk" @cancel="handleCancel">
         <a-form
     :model="form"
     ref="formRef"
@@ -31,7 +31,7 @@
         <a-radio value="0">禁止</a-radio>
       </a-radio-group>
     </a-form-item>
-    <a-form-item :name="remark" label="备注">
+    <a-form-item name="remark" label="备注">
       <a-textarea v-model:value="form.remark" />
     </a-form-item>
   </a-form>

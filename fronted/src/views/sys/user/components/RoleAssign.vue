@@ -2,14 +2,17 @@
     <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open2" v-model:user_id2="props.user_id2" @ok="handleOk"
         @cancel="handleCancel">
         <div>
-            <a-transfer v-model:target-keys="user_roleKey_list_ref" v-model:selected-keys="selected_keys" show-search
-                :data-source="roleList_ref" :titles="['所有角色', '当前包含角色']" :render="item => item.title" @change="handleChange"
+            <a-spin :spinning="transferLoading">
+                <a-transfer v-if="!transferLoading" v-model:target-keys="user_roleKey_list_ref" v-model:selected-keys="selected_keys" show-search
+                :data-source="roleList_ref" :titles="['所有角色', '已拥有角色']" :render="item => item.title" @change="handleChange"
                 :locale="locale"
                     :list-style="{
                         width: '300px',
-                        height: '600px',
+                        height: '500px',
                     }"
                 @selectChange="handleSelectChange" />
+            </a-spin>
+            
 
         </div>
     </a-modal>
@@ -25,6 +28,7 @@ import { message } from 'ant-design-vue';
 const locale = reactive(
     { itemUnit: '项', itemsUnit: '项', notFoundContent: '列表为空', searchPlaceholder: '请输入搜索内容' }
 )
+const transferLoading = ref(true)
 const props = defineProps(
     {
         open2: {
@@ -67,8 +71,8 @@ watch(
     () => props.open2,
     () => {
         let id = props.user_id2
-        console.log("id:" + id)
         if (props.open2) {
+            transferLoading.value = true
             // 获取角色列表
             getRoleList().then((res) => {
                 if (res.data.code === 200) {
@@ -90,10 +94,11 @@ watch(
                     user_roleKey_list.push(role.id.toString())
                 })
                 user_roleKey_list_ref.value = user_roleKey_list
-                console.log("当前的角色id")
-                console.log(user_roleKey_list_ref.value)
-                console.log(user_roleKey_list)
+                
+            }).finally(()=>{
+                transferLoading.value = false
             })
+            
         }else {
             user_roleKey_list = []
             roleList = []

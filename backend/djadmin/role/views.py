@@ -9,7 +9,7 @@ from rest_framework import generics
 # Create your views here.
 
 from djadmin.utils import CustomPagination
-from djadmin.utils import Response_200,Response_error
+from djadmin.utils import Response_200
 
 
 class currentUserRoleListView(APIView):
@@ -30,15 +30,20 @@ class currentUserRoleListView(APIView):
     
 
 
-# 获取当前所有角色
-class RoleListView(generics.ListAPIView):
+# 角色 列表，新增
+class RoleListCreate(generics.ListCreateAPIView):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
+    pagination_class = CustomPagination
+# 角色 detail,
+class RoleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = SysRole.objects.all()
+    serializer_class = SysRoleSerializer
+    pagination_class = CustomPagination
+    lookup_field = 'id'
 
 
-
-
-
+#根据用户id获取用户包含的角色列表
 class GetUserRolesByIdView(APIView):
     def get(self,request):
         # 获取当前用户id

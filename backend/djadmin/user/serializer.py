@@ -3,7 +3,7 @@ from  rest_framework import serializers
 from .models import SysUser
 from role.serializer import SysRoleSerializer
 from role.models import SysRole
-from django.db import models
+from datetime import datetime
 class SysUserSerializer(ModelSerializer):
     class Meta:
         model = SysUser
@@ -49,5 +49,6 @@ class UserDetailCreateSerializer(ModelSerializer):
     # 创建用户
     def create(self, validated_data):
         validated_data["password"] = "123456"
+        validated_data["create_time"] = datetime.now().date()
         user = SysUser.objects.create(**validated_data)
         return user

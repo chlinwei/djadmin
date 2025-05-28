@@ -14,5 +14,5 @@ export const getUserRoleListByUserId = (user_id) => {
 
 // 获取角色列表
 export const getRoleList = () => {
-    return requestUtil.get("sys/roles/list/");
+    return requestUtil.get("sys/roles/");
 }

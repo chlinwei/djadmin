@@ -201,7 +201,7 @@ class UpdateUserPasswordView(APIView):
             db_user.save()
             return Response_200()
 
-
+# 修改头像
 class ChangeAvatarView(APIView):
     def post(self, request):
         file = request.FILES.get('avatar')

@@ -30,7 +30,7 @@
     </a-col>
   </a-row>
   <!-- 注意需要rowKey -->
-  <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
+  <a-table :scroll="{ x: 2000 }" :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
     :columns="columns" :data-source="users" :pagination="pagination" :loading="loading" @change="handleTableChange">
     <template #headerCell="{ column }">
       <template v-if="column.key === 'name'">
@@ -120,14 +120,14 @@ const roleassign_title = ref("角色分配")
 
 const SearchText = ref('')
 const columns = [
-  { title: '用户名', dataIndex: 'username', key: 'username', sorter: (a, b) => a.username.localeCompare(b.username), sortDirections: ['ascend', 'descend'] },
-  { title: '角色', dataIndex: 'roles', key: 'roles' },
-  { title: '邮箱', dataIndex: 'email', key: 'email' },
-  { title: '手机号', dataIndex: 'phonenumber', key: 'phonenumber' },
-  { title: '状态', dataIndex: 'status', key: 'status' },
-  { title: '创建时间', dataIndex: 'create_time', key: 'create_time' },
-  { title: '备注', dataIndex: 'remark', key: 'remark' },
-  { title: '操作', key: 'action' }
+  { title: '用户名', dataIndex: 'username',fixed:true,width:100, key: 'username', sorter: (a, b) => a.username.localeCompare(b.username), sortDirections: ['ascend', 'descend'] },
+  { title: '角色', dataIndex: 'roles', key: 'roles' ,width:150},
+  { title: '邮箱', dataIndex: 'email', key: 'email',width:100 },
+  { title: '手机号', dataIndex: 'phonenumber', key: 'phonenumber',width:100 },
+  { title: '状态', dataIndex: 'status', key: 'status',width:80 },
+  { title: '创建时间', dataIndex: 'create_time', key: 'create_time',width:80 },
+  { title: '备注', dataIndex: 'remark', key: 'remark',width:200 },
+  { title: '操作', key: 'action',fixed: 'right',width: 330 }
 ]
 var lastSearchKeyword = null
 const onChangeStatus = (e1, e2) => {

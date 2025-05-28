@@ -2,7 +2,7 @@
   <Dialog :open="open" @update:open="(value) => { open = value }" :user_id="user_id" :title="title"
     @initUserList="HandleInitUserList" />
 
-  <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" title="角色分配"
+  <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
     @initUserList="HandleInitUserList" />
 
   <a-row class="tools" :gutter="16">
@@ -21,6 +21,12 @@
           <FontAwesomeIcon :icon="faTrash" />批量删除
         </a-button>
       </a-popconfirm>
+    </a-col>
+    <a-col>
+          <div class="selectedItems" v-if="state.selectedRowKeys.length>=1" >
+            <span style="height: 100%;">已选择{{state.selectedRowKeys.length}}项</span>
+          </div>
+
     </a-col>
   </a-row>
   <!-- 注意需要rowKey -->
@@ -57,9 +63,9 @@
         <div :key="record.id">
         <a-row :gutter="6" class="action_row">
           <a-col>
-            <a-button type="primary" id="assignRole" @click="handleRoleAssign(record.id)">分配角色</a-button>
+            <a-button type="primary" id="assignRole" @click="handleRoleAssign(record.id,record.username)">分配角色</a-button>
           </a-col>
-          <a-col class="resetPwd">
+          <a-col class="resetPwd" v-if="record.username !='admin'">
               <a-popconfirm placement="bottom" title="您确定要重置密码？" ok-text="确认" cancel-text="取消" @confirm="resetPwdconfirm(record.id)"
               @cancel="cancel" :overlayStyle="{ width: '200px', minHeight: '150px' }">
             <a-button  :loading="rowLoadingStates2[record.id]">
@@ -67,12 +73,12 @@
             </a-button>
             </a-popconfirm>
           </a-col>
-          <a-col>
+          <a-col v-if="record.username !='admin'">
             <a-button type="primary" @click="onSaveorChanageUser(record.id)">
               <FontAwesomeIcon :icon="faEdit" />
             </a-button>
           </a-col>
-          <a-col>
+          <a-col v-if="record.username !='admin'">
             
             <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="delUserconfirm(record.id)"
               @cancel="cancel" :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -110,6 +116,7 @@ import Dialog from '@/views/sys/user/components/Dialog.vue';
 import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
 
 
+const roleassign_title = ref("角色分配")
 
 const SearchText = ref('')
 const columns = [
@@ -127,8 +134,14 @@ const onChangeStatus = (e1, e2) => {
   var status = e1 === true ? 1 : 0
   var user_id = e2
   changeUserStatus(user_id, status).then((result) => {
-    message.success("执行成功")
-    run({ page: current, size: pageSize.value, keyworkd: lastSearchKeyword })
+    
+    if(result.data.code==200) {
+      run({ page: current, size: pageSize.value, keyworkd: lastSearchKeyword })
+      message.success("状态修改成功")
+    }else {
+      message.success("状态修改失败")
+    }
+    
   })
 }
 const total = ref(1)
@@ -295,9 +308,11 @@ const cancel = () => {
 const open2=ref(false)
 const user_id2=ref(-1)
 
-const handleRoleAssign = (id)=> {
+const handleRoleAssign = (id,username)=> {
   open2.value = true
   user_id2.value = id
+  roleassign_title.value = "角色分配-" + username
+  
 }
 </script>
 
@@ -337,5 +352,11 @@ const handleRoleAssign = (id)=> {
 .BatchDelUserBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
   background-color: orange;
   color: white;
+}
+
+.selectedItems span {
+  line-height: 40px;  /* 匹配按钮高度 */
+  vertical-align: middle;
+  font-size:20px;
 }
 </style>

@@ -21,7 +21,6 @@ class DjAdminResponse_render(JSONRenderer):
                     return super().render(data, accepted_media_type, renderer_context)
             else:
                 print("不正常格式来自系统的json返回")
-                print(data)
                 ret = {
                 }
                 #这个不是正常格式的json
@@ -31,7 +30,6 @@ class DjAdminResponse_render(JSONRenderer):
                 return super().render(ret, accepted_media_type, renderer_context)
         else:
             print("不正常格式来自系统的json返回")
-            print(data)
             ret = {
             }
             #这个不是正常格式的json

@@ -2,9 +2,13 @@
     <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open2" v-model:user_id2="props.user_id2" @ok="handleOk"
         @cancel="handleCancel">
         <div>
-            <a-transfer v-model:target-keys="user_roleKey_list" v-model:selected-keys="selected_keys" show-search
-                :data-source="roleList_ref" :titles="['所有角色', '当前用户']" :render="item => item.title" @change="handleChange"
+            <a-transfer v-model:target-keys="user_roleKey_list_ref" v-model:selected-keys="selected_keys" show-search
+                :data-source="roleList_ref" :titles="['所有角色', '当前包含角色']" :render="item => item.title" @change="handleChange"
                 :locale="locale"
+                    :list-style="{
+                        width: '300px',
+                        height: '600px',
+                    }"
                 @selectChange="handleSelectChange" />
 
         </div>
@@ -15,7 +19,9 @@
 
 import { ref ,reactive} from 'vue';
 import { getRoleList, getUserRoleListByUserId } from '@/api/role';
+import {saveUserPwd} from '@/api/user';
 import { watch } from 'vue';
+import { message } from 'ant-design-vue';
 const locale = reactive(
     { itemUnit: '项', itemsUnit: '项', notFoundContent: '列表为空', searchPlaceholder: '请输入搜索内容' }
 )
@@ -39,7 +45,16 @@ const handleCancel = () => {
     emits('update:open2', false)
 }
 const handleOk = () => {
-    console.log("ok")
+    let id = props.user_id2
+    saveUserPwd(id,user_roleKey_list_ref.value).then(res=>{
+        if(res.data.code==200) {
+            emits('initUserList')
+            emits('update:open2', false)
+            message.success("保存角色成功")
+        }else {
+            message.error("保存角色失败:" + res.data.msg)
+        }
+    })
 }
 var  roleList = []
 const roleList_ref = ref([])
@@ -75,10 +90,14 @@ watch(
                     user_roleKey_list.push(role.id.toString())
                 })
                 user_roleKey_list_ref.value = user_roleKey_list
+                console.log("当前的角色id")
+                console.log(user_roleKey_list_ref.value)
+                console.log(user_roleKey_list)
             })
         }else {
             user_roleKey_list = []
             roleList = []
+            selected_keys.value = []
             console.log("清空")
         }
 
@@ -86,24 +105,13 @@ watch(
 )
 
 
-const mockData = [];
-for (let i = 0; i < 20; i++) {
-    mockData.push({
-        key: i.toString(),
-        title: `content${i + 1}`,
-        description: `description of content${i + 1}`,
-        disabled: i % 3 < 1,
-    });
-}
+
 
 const handleChange = (nextTargetKeys, direction, moveKeys) => {
-    console.log('targetKeys: ', nextTargetKeys);
-    console.log('direction: ', direction);
-    console.log('moveKeys: ', moveKeys);
+
 };
 const handleSelectChange = (sourceSelectedKeys, targetSelectedKeys) => {
-    console.log('sourceSelectedKeys: ', sourceSelectedKeys);
-    console.log('targetSelectedKeys: ', targetSelectedKeys);
+
 };
 </script>
 <style scoped></style>

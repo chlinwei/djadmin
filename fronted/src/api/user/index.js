@@ -146,3 +146,8 @@ export function batchDeleteUser(ids) {
 export function resetPwd(id) {
     return requestUtil.post("sys/users/resetPwd/",{id:id})
 }
+
+//保存用户角色
+export function saveUserPwd(user_id,roleIds) {
+    return requestUtil.post("sys/users/assginRoles/",{user_id:user_id,roleIds:roleIds})
+}

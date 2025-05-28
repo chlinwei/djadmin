@@ -288,6 +288,21 @@ class ResetPasswdView(APIView):
         user.update_time = datetime.now().date()
         user.save()
         return Response_200()
+    
+
+# 保存用户角色
+class SaveUserRolesView(APIView):
+    def post(self,request):
+        user_id = request.data['user_id']
+        roleIds = request.data['roleIds']
+        # 清除当前用户的所有角色
+        #删除和用户关联的角色
+        user_roles = []
+        SysUserRole.objects.filter(user_id=user_id).delete()
+        for id in roleIds:
+            user_roles.append(SysUserRole(user_id=user_id,role_id=id))
+        SysUserRole.objects.bulk_create(user_roles)
+        return Response_200()
 
 
 

@@ -14,7 +14,7 @@
     <a-col class="AddUserBtn tool-item">
       <a-button size="large" @click="HandleAddUser">新增</a-button>
     </a-col>
-    <a-col class="BatchDelUserBtn tool-item" v-show="batchDelUserBtnVisiable">
+    <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length>=1">
       <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
         :overlayStyle="{ width: '300px', minHeight: '200px' }">
         <a-button size="large" type="primary" :loading="state.loading" danger>
@@ -231,7 +231,6 @@ const HandleAddUser = () => {
   user_id.value = -1
 }
 // 删除用户
-const batchDelUserBtnVisiable = ref(false)
 const state = reactive({
   selectedRowKeys: [],
   // Check here to configure the default column
@@ -239,12 +238,6 @@ const state = reactive({
 });
 
 const onSelectChange = selectedRowKeys => {
-  if (selectedRowKeys.length >= 1) {
-    batchDelUserBtnVisiable.value = true
-  } else {
-    batchDelUserBtnVisiable.value = false
-
-  }
   state.selectedRowKeys = selectedRowKeys;
 };
 
@@ -258,9 +251,12 @@ const confirm = () => {
     if (res.data.code == 200) {
       HandleInitUserList();
       message.success("删除成功");
+      state.selectedRowKeys = [];
     } else {
       message.error("删除失败:" + res.data.msg);
     }
+    
+  }).finally(()=>{
     state.loading = false;
   })
 }

@@ -7,9 +7,11 @@ from .models import SysRole
 from .serializer import SysRoleSerializer
 from rest_framework import generics
 # Create your views here.
-
+from user.models import SysUserRole
+from menu.models import SysRoleMenu
 from djadmin.utils import CustomPagination
-from djadmin.utils import Response_200
+from djadmin.utils import Response_200,Response_error
+from djadmin.errordict import RoleError
 
 
 class currentUserRoleListView(APIView):
@@ -35,12 +37,28 @@ class RoleListCreate(generics.ListCreateAPIView):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
     pagination_class = CustomPagination
-# 角色 detail,
-class RoleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+# 角色 detail,update
+class RoleRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
     pagination_class = CustomPagination
     lookup_field = 'id'
+
+# 批量删除角色
+class RoleBatchDeleteAPI(APIView):
+    def delete(self, request):
+        # 获取ID数组参数
+        role_ids = request.data.get('role_ids', [])
+        if not role_ids:
+            return Response_error(error=RoleError.role_ids_empty)
+        # 先查用户角色列表
+        SysUserRole.objects.filter(role_id__in=role_ids).delete()
+        # 再执行删除（此时deleted_count包含关联表）
+        SysRoleMenu.objects.filter(role_id__in=role_ids).delete()
+        #删除角色
+        SysRole.objects.filter(id__in=role_ids).delete() 
+        return Response_200()
+
 
 
 #根据用户id获取用户包含的角色列表

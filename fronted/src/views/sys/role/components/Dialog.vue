@@ -1,6 +1,6 @@
 <template>
     <div>
-      <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:user_id="props.user_id" @ok="handleOk" @cancel="handleCancel">
+      <a-modal cancelText="取消" okText="保存" destroyOnClose :open="props.open" v-model:title="props.title" v-model:role_id="props.role_id" @ok="handleOk" @cancel="handleCancel">
         <a-form
     :model="form"
     ref="formRef"
@@ -33,7 +33,6 @@
 
   import { ref } from 'vue';
   import { watch } from 'vue';
-  import {getUserById,checkUserName} from '@/api/user/index.js';
   const formRef = ref(null)
   const props = defineProps(
     {
@@ -47,7 +46,7 @@
             default: '错误界面',
             required: true
         },
-        user_id: {
+        role_id: {
             type: Number,
             default: -1,
             required: true
@@ -85,24 +84,21 @@ const userEdit_rules = {
 
 const emits = defineEmits(['update:open','initList'])
 
-import { saveUserInfo,addUser } from '@/api/user/index.js';
+import { savOrCreateRole,getRoleById } from '@/api/role/index.js';
 const handleOk = e => {
     // 校验
     const res = formRef.value?.validate().then((r1)=>{
-        let userInfo = form.value;
-        if(userInfo.id==-1) {
+        let role = form.value;
+        console.log(res)
+        if(role.id==-1) {
             // 表示是新增
-            if(userInfo.status == null) {
-                userInfo.status = 0
-            }
-            addUser(userInfo).then(result => {
-                console.log(result)
+            savOrCreateRole(role).then(result => {
                 message.success("新增角色成功");
                 emits('initList')
                 emits('update:open',false)
             })
         }else {
-            saveUserInfo(userInfo).then(result => {
+            savOrCreateRole(role).then(result => {
             message.success("保存角色成功");
             emits('initList')
             emits('update:open',false);
@@ -114,34 +110,30 @@ const handleOk = e => {
   watch(
     () => props.open,
     () => {
-        let id = props.user_id
+        let id = props.role_id
         if(id === -1) {
             // 添加角色
             form.value = {
                 id: -1,
-                username: "",
-                password: "123456",
+                name: "",
                 status: 0,
-                phonenumber: "",
-                email: "",
                 remark: ""
             }
             
         }else {
             if(props.open) {
                 // 进入编辑界面
-                getUserById(id).then(res => {
+                console.log("编辑")
+                getRoleById(id).then(res => {
+                    console.log(res)
                 form.value = res.data.data
             })
             }else{
                 // 关闭编辑框框
                 form.value = {
                     id: -1,
-                    username: "",
-                    password: "123456",
-                    status: null,
-                    phonenumber: "",
-                    email: "",
+                    name: "",
+                    status: 0,
                     remark: ""
                 }
             }

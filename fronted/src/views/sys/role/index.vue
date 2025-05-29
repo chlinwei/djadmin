@@ -1,9 +1,9 @@
 <template>
-    <Dialog :open="open" @update:open="(value) => { open = value }" :user_id="user_id" :title="title"
-      @initUserList="HandleInitUserList" />
+    <Dialog :open="open" @update:open="(value) => { open = value }" :role_id="role_id" :title="title"
+      @initUserList="HandleInitList" />
   
     <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
-      @initUserList="HandleInitUserList" />
+      @initUserList="HandleInitList" />
   
     <a-row class="tools" :gutter="16">
       <a-col :span="7">
@@ -12,9 +12,9 @@
   
       </a-col>
       <a-col class="AddUserBtn tool-item">
-        <a-button size="large" @click="HandleAddUser">新增</a-button>
+        <a-button size="large" @click="HandleAdd">新增</a-button>
       </a-col>
-      <a-col class="BatchDelUserBtn tool-item" v-show="batchDelUserBtnVisiable">
+      <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length>=1">
         <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
           :overlayStyle="{ width: '300px', minHeight: '200px' }">
           <a-button size="large" type="primary" :loading="state.loading" danger>
@@ -46,33 +46,20 @@
             {{ record.name }}
           </a>
         </template>
-        <template v-else-if="column.key === 'roles'">
-          <span>
-            <a-tag color="orange" v-for="role in record.roles" :key="role.id">
-              {{ role.name }}
-            </a-tag>
-          </span>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <span>
-            <a-switch :checked="record.status === 1" @change="(checked) => onChangeStatus(checked, record.id)" />
-  
-          </span>
-        </template>
         <template v-else-if="column.key === 'action'">
           <div :key="record.id">
           <a-row :gutter="6" class="action_row">
             <a-col>
-              <a-button type="primary" id="assignRole" @click="handlePermissionAssign(record.id,record.username)">分配权限</a-button>
+              <a-button type="primary" id="assignRole" @click="handlePermissionAssign(record.id,record.name)">分配权限</a-button>
             </a-col>
-            <a-col v-if="record.username !='admin'">
+            <a-col v-if="record.name !='admin'">
               <a-button type="primary" @click="onSaveorChanageRole(record.id)">
                 <FontAwesomeIcon :icon="faEdit" />
               </a-button>
             </a-col>
             <a-col v-if="record.username !='admin'">
               
-              <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="delUserconfirm(record.id)"
+              <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="delconfirm(record.id)"
                 @cancel="cancel" :overlayStyle="{ width: '200px', minHeight: '150px' }">
               <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
                 <FontAwesomeIcon :icon="faTrash" />
@@ -104,8 +91,8 @@
   import { computed, reactive } from 'vue';
   import { changeUserStatus } from '@/api/user/index.js';
   import { message } from 'ant-design-vue';
-  import Dialog from '@/views/sys/user/components/Dialog.vue';
-  import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
+  import Dialog from '@/views/sys/role/components/Dialog.vue';
+  import RoleAssign from '@/views/sys/role/components/RoleAssign.vue';
   
   
   const roleassign_title = ref("权限分配")
@@ -202,24 +189,23 @@
   }
   
   const title = ref("")
-  const user_id = ref(-1)
+  const role_id = ref(-1)
   const open = ref(false)
   const onSaveorChanageRole = (id) => {
     open.value = true;
-    title.value = "权限修改"
-    user_id.value = id
+    title.value = "角色修改"
+    role_id.value = id
   }
-  const HandleInitUserList = (res) => {
+  const HandleInitList = (res) => {
     run({ page: current, size: pageSize.value, keyword: lastSearchKeyword })
   }
-  // 新增用户
-  const HandleAddUser = () => {
+  // 新增角色
+  const HandleAdd = () => {
     open.value = true;
-    title.value = "权限添加"
-    user_id.value = -1
+    title.value = "角色添加"
+    role_id.value = -1
   }
-  // 删除用户
-  const batchDelUserBtnVisiable = ref(false)
+  // 删除角色
   const state = reactive({
     selectedRowKeys: [],
     // Check here to configure the default column
@@ -227,29 +213,26 @@
   });
   
   const onSelectChange = selectedRowKeys => {
-    if (selectedRowKeys.length >= 1) {
-      batchDelUserBtnVisiable.value = true
-    } else {
-      batchDelUserBtnVisiable.value = false
-  
-    }
     state.selectedRowKeys = selectedRowKeys;
   };
   
   
-  import { batchDeleteUser } from '@/api/user/index.js';
+  import { batchDeleteRole } from '@/api/role/index.js';
   
   // 批量删除权限
   const confirm = () => {
       state.loading = true;
-    batchDeleteUser(state.selectedRowKeys).then((res) => {
+    batchDeleteRole(state.selectedRowKeys).then((res) => {
       if (res.data.code == 200) {
-        HandleInitUserList();
-        message.success("删除成功");
+        HandleInitList();
+        message.success("删除角色成功");
+        state.selectedRowKeys = []
       } else {
-        message.error("删除失败:" + res.data.msg);
+        message.error("删除角色失败:" + res.data.msg);
       }
-      state.loading = false;
+      
+    }).finally(()=>{
+        state.loading = false;
     })
   }
   
@@ -258,16 +241,18 @@
   const setRowLoading = (id, isLoading) => {
     rowLoadingStates[id] = isLoading;
   };
-  const delUserconfirm = (user_id) => {
-        setRowLoading(user_id,true)
-    batchDeleteUser([user_id]).then((res) => {
+  const delconfirm = (id) => {
+        setRowLoading(id,true)
+    batchDeleteRole([id]).then((res) => {
       if (res.data.code == 200) {
-        HandleInitUserList();
+        HandleInitList();
         message.success("删除成功");
       } else {
         message.error("删除失败: "+ res.data.msg);
       }
-      setRowLoading(user_id,false)
+      
+    }).finally(()=>{
+        setRowLoading(user_id,false)
     })
   }
   const rowLoadingStates2 = reactive({

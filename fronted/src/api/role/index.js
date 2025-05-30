@@ -13,7 +13,7 @@ export const getUserRoleListByUserId = (user_id) => {
 }
 
 // 获取角色列表
-export const getRoleList = (params = {page:1,size:3,keyword}) => {
+export const getRoleList = (params) => {
     return requestUtil.get("sys/roles/",params);
 }
 

@@ -2,7 +2,7 @@
     <Dialog :open="open" @update:open="(value) => { open = value }" :role_id="role_id" :title="title"
       @initList="initList" />
   
-    <MenuAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
+    <MenuAssign :open="menuAssignVisible" @update:menuAssignVisible="(value) => { menuAssignVisible = value}" :role_id="role_id" :title="menu_assign_title"
       @initList="initList" />
   
     <a-row class="tools" :gutter="16">
@@ -50,7 +50,7 @@
           <div :key="record.id">
           <a-row :gutter="6" class="action_row">
             <a-col>
-              <a-button type="primary" id="assignRole" @click="handlePermissionAssign(record.id,record.name)">分配权限</a-button>
+              <a-button type="primary" id="assignRole" @click="handleMenuAssign(record.id,record.name)">分配权限</a-button>
             </a-col>
             <a-col v-if="record.name !='admin'">
               <a-button type="primary" @click="onSaveorChanageRole(record.id)">
@@ -93,6 +93,7 @@
   import Dialog from '@/views/sys/role/components/Dialog.vue';
   import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
   
+  const menu_assign_title = ref("")
 
   // 取消删除
   const cancel = ()=>{
@@ -255,13 +256,14 @@
   };
 
   // 角色分配
-  const open2=ref(false)
+  const menuAssignVisible=ref(false)
   const user_id2=ref(-1)
   
-  const handlePermissionAssign = (id,name)=> {
-    open2.value = true
-    user_id2.value = id
-    permisssion_assign_title.value = "权限分配-" + name
+  const handleMenuAssign = (id,name)=> {
+    menuAssignVisible.value = true
+    role_id.value = id
+    console.log(role_id.value)
+    menu_assign_title.value = "权限分配-" + name + "id:" + id
     
   }
   </script>

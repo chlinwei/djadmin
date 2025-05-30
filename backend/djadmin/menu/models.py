@@ -33,3 +33,4 @@ class SysRoleMenu(models.Model):
     menu = models.ForeignKey(SysMenu, on_delete=models.CASCADE)
     class Meta:
         db_table = "sys_role_menu"
+        unique_together = ('menu', 'role')

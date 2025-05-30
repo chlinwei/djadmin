@@ -1,9 +1,9 @@
 <template>
     <Dialog :open="open" @update:open="(value) => { open = value }" :role_id="role_id" :title="title"
-      @initUserList="HandleInitList" />
+      @initList="initList" />
   
-    <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
-      @initUserList="HandleInitList" />
+    <MenuAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
+      @initList="initList" />
   
     <a-row class="tools" :gutter="16">
       <a-col :span="7">
@@ -89,11 +89,15 @@
   import { faEdit } from '@fortawesome/free-solid-svg-icons'
   import { faTrash } from '@fortawesome/free-solid-svg-icons'
   import { computed, reactive } from 'vue';
-  import { changeUserStatus } from '@/api/user/index.js';
   import { message } from 'ant-design-vue';
   import Dialog from '@/views/sys/role/components/Dialog.vue';
-  import RoleAssign from '@/views/sys/role/components/RoleAssign.vue';
+  import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
   
+
+  // 取消删除
+  const cancel = ()=>{
+    
+  }
   
   const roleassign_title = ref("权限分配")
   
@@ -106,20 +110,6 @@
     { title: '操作', key: 'action',fixed: 'right',width: 330 }
   ]
   var lastSearchKeyword = null
-  const onChangeStatus = (e1, e2) => {
-    var status = e1 === true ? 1 : 0
-    var user_id = e2
-    changeUserStatus(user_id, status).then((result) => {
-      
-      if(result.data.code==200) {
-        run({ page: current, size: pageSize.value, keyworkd: lastSearchKeyword })
-        message.success("状态修改成功")
-      }else {
-        message.success("状态修改失败")
-      }
-      
-    })
-  }
   const total = ref(1)
   
   const queryData = params => {
@@ -127,7 +117,10 @@
       if (res.data.code == 200) {
         lastSearchKeyword = res.config.params.keyword
         total.value = res.data.data.count
-        return res.data.data
+        return res.data.data.results
+      }else {
+        message.error("获取角色列表失败")
+        return []
       }
   
     });
@@ -196,7 +189,7 @@
     title.value = "角色修改"
     role_id.value = id
   }
-  const HandleInitList = (res) => {
+  const initList = (res) => {
     run({ page: current, size: pageSize.value, keyword: lastSearchKeyword })
   }
   // 新增角色
@@ -224,7 +217,7 @@
       state.loading = true;
     batchDeleteRole(state.selectedRowKeys).then((res) => {
       if (res.data.code == 200) {
-        HandleInitList();
+        initList();
         message.success("删除角色成功");
         state.selectedRowKeys = []
       } else {
@@ -245,7 +238,7 @@
         setRowLoading(id,true)
     batchDeleteRole([id]).then((res) => {
       if (res.data.code == 200) {
-        HandleInitList();
+        initList();
         message.success("删除成功");
       } else {
         message.error("删除失败: "+ res.data.msg);

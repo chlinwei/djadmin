@@ -12,8 +12,9 @@ from menu.models import SysRoleMenu
 from djadmin.utils import CustomPagination
 from djadmin.utils import Response_200,Response_error
 from djadmin.errordict import RoleError
+from django_filters import rest_framework as filters
 
-
+from .filters import SysRoleFilter
 class currentUserRoleListView(APIView):
     # SysRole.objects.raw("select ")
     def get(self,request):
@@ -37,6 +38,8 @@ class RoleListCreate(generics.ListCreateAPIView):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
     pagination_class = CustomPagination
+    filter_backends = (filters.DjangoFilterBackend,)
+    filterset_class = SysRoleFilter
 # 角色 detail,update
 class RoleRetrieveUpdateAPIView(generics.RetrieveUpdateAPIView):
     queryset = SysRole.objects.all()
@@ -70,3 +73,4 @@ class GetUserRolesByIdView(APIView):
         raw_data = SysRole.objects.raw("select sr.id as id,sr.name as name,sr.code as code,sr.create_time  as create_time,sr.update_time as update_time ,sr.remark as remark  from sys_user_role sur   inner join sys_role sr ON sur.role_id = sr.id  WHERE sur.user_id  = %s",[user_id])
         roleList = SysRoleSerializer(raw_data,many=True).data
         return Response_200(data={"roleList":roleList})
+    

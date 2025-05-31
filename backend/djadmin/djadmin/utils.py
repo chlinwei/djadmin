@@ -19,6 +19,12 @@ def Response_error(error:ErrorMixin,data=None):
             'msg':error.msg
         })
 
+def Response_error_str(msg,code=400,data=None):
+        return JsonResponse({
+            'code':code,
+            'data': data,
+            'msg':msg
+        })
 
 
 

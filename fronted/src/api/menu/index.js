@@ -13,3 +13,11 @@ export const getMenuListByRoleId = (role_id) => {
 export const grantMenu =  (role_id,menuIds) =>{
     return requestUtil.post("sys/menus/GrantMenu/",{role_id:role_id,menuIds:menuIds})
 }
+export const saveOrCreateMenu = (menu) => {
+    return requestUtil.post("sys/menus/SaveOrCreateMenuView/",menu)
+}
+
+// 获取一个菜单menu
+export const getMenuById = (id) => {
+    return requestUtil.get("sys/menus/GetMenuById/",{"id":id})
+}

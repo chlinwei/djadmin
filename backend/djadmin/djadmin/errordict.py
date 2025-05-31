@@ -8,9 +8,11 @@ class ErrorMixin:
 
     def __str__(self):
         return f"[{self.code}] {self.msg}"
+class MenuError(ErrorMixin,Enum):
+    menu_saveOrcreate_error = (3001,"菜单创建失败")
     
 class RoleError(ErrorMixin,Enum):
-    role_ids_empty = (2004,"roleid数组为空错误")
+    role_ids_empty = (2001,"roleid数组为空错误")
 
 class UserError(ErrorMixin, Enum):
     """认证相关错误（继承顺序必须Mixin在前）"""

@@ -17,8 +17,8 @@ class SysUser(models.Model):
     phonenumber = models.CharField(max_length=11, null=True,blank=True, verbose_name="手机号码")
     login_date = models.DateField(null=True, verbose_name="最后登录时间")
     status = models.SmallIntegerField(choices=STATUS_CHOICES, default=1)
-    create_time = models.DateField(null=True, verbose_name="创建时间", )
-    update_time = models.DateField(null=True, verbose_name="更新时间")
+    create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )
+    update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
     remark = models.CharField(max_length=500, null=True,blank=True,verbose_name="备注")
     class Meta:
         db_table = "sys_user"

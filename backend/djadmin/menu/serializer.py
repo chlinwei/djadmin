@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import SysMenu,SysRoleMenu
 from rest_framework.renderers import JSONRenderer
+from datetime import datetime
 class SysMenuSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     def get_children(self, obj):
@@ -55,6 +56,16 @@ class SysMenuSerializer2(serializers.ModelSerializer):
     class Meta:
         model = SysMenu
         fields = '__all__'
+    
+    # 创建
+    def create(self, validated_data):
+        print("create")
+        print(validated_data)
+        validated_data["create_time"] = datetime.now().date()
+        menu = SysMenu.objects.create(**validated_data)
+        return menu
+
+
 
 
 

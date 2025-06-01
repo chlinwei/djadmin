@@ -10,7 +10,9 @@ from .serializer import SysMenuDynamicListSerializer,SysMenuSerializer,SysMenuSe
 from role.models import SysRole
 from djadmin.utils import Response_200,Response_error_str,Response_error
 from djadmin.errordict import MenuError
-from datetime import datetime
+from rest_framework import generics
+from rest_framework.mixins import CreateModelMixin,UpdateModelMixin
+
 
 
 # 获取权限树(所有权限)
@@ -41,27 +43,26 @@ class GrantMenu(APIView):
             for menuId in menuIdList
         ]
         SysRoleMenu.objects.bulk_create(role_menus)
-        return Response_error_str("保存菜单权限失败")
+        return Response_200()
 
 
         
-# 新建和保存menu
-class SaveOrCreateMenuView(APIView):
-    def post(self,request):
-        serializer = SysMenuSerializer2(data=request.data)
-        if serializer.is_valid():
-            menu = SysMenu(**serializer.validated_data)
-            if menu.id == -1:
-                # 新增
-                menu.create_time = datetime.now().date()
-                SysMenu.objects.create(menu)
-            else:
-                #保存
-                menu.update_time = datetime.now().date()
-                SysMenu.objects.update(menu)
-            return Response_200(menu)
-        else:
-            return Response_error(MenuError.menu_saveOrcreate_error)
+# 新建
+class CreateOrUpdateMenuView(generics.GenericAPIView,CreateModelMixin,UpdateModelMixin):
+    queryset = SysMenu.objects.all()
+    serializer_class = SysMenuSerializer2
+    def patch(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+    lookup_field = 'id'
+    def post(self, request, *args, **kwargs):
+        return self.create(request, *args, **kwargs)
+
+class DeleteMenuById(APIView):
+    def delete(self,request):
+        menuId = request.data.get('id')
+        SysRoleMenu.objects.filter(menu_id=menuId).delete()
+        SysMenu.objects.filter(id=menuId).delete()
+        return Response_200()
         
 # 根据菜单ID获取菜单
 class GetMenuById(APIView):

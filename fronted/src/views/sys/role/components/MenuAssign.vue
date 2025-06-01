@@ -8,6 +8,7 @@
              </a-spin>
             <a-tree v-if="!loading"
              default-expand-all checkable
+             checkStrictly
             :tree-data="treeData" 
             @check="check"
             :checkedKeys="checkedKeys">
@@ -86,6 +87,7 @@ watch(
                 loading.value = false;
             })
             getMenuListByRoleId(props.role_id).then((res)=>{
+                // selectedKeys.value = res.data.data
                 checkedKeys.value = res.data.data
             })
         }else {
@@ -95,12 +97,9 @@ watch(
     }
 )
 
-watch(checkedKeys, () => {
-  console.log('checkedKeys', checkedKeys);
-});
 // 点击menu就会触发这个
 const check = (res) => {
-    checkedKeys.value  = res
+    checkedKeys.value  = res.checked
 }
 
 const formRef = ref(null)

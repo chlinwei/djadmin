@@ -13,9 +13,9 @@ class SysMenu(models.Model):
     component = models.CharField(max_length=255, null=True, verbose_name="组件路径")
     menu_type = models.CharField(max_length=1, null=True, verbose_name="菜单类型（M目录 C菜单 F按钮）")
     perms = models.CharField(max_length=100, null=True, verbose_name="权限标识")
-    create_time = models.DateField(null=True, verbose_name="创建时间", )
-    update_time = models.DateField(null=True, verbose_name="更新时间")
-    remark = models.CharField(max_length=500, null=True, verbose_name="备注")
+    create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )
+    update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
+    remark = models.CharField(max_length=500,blank=True, null=True, verbose_name="备注")
     class Meta:
         db_table = "sys_menu"
 

@@ -49,6 +49,10 @@ export function getDynamicalRoutes(menuList) {
                 component: modules[`${component_url_parent}`],
                 children: []
             }
+            console.log("children:" + item.children + "|")
+            if (!('children' in item)) {
+                item.children = [];
+              }
             item.children.forEach(item2 => {
                 let component_url = `../views/${item2.component}.vue`;
                 first_item.children.push({

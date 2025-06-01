@@ -14,10 +14,23 @@ export const grantMenu =  (role_id,menuIds) =>{
     return requestUtil.post("sys/menus/GrantMenu/",{role_id:role_id,menuIds:menuIds})
 }
 export const saveOrCreateMenu = (menu) => {
-    return requestUtil.post("sys/menus/SaveOrCreateMenuView/",menu)
+    if(menu.id != -1) {
+        // 保存
+        // return requestUtil.post("sys/menus/CreateMenuView/",menu)
+        return requestUtil.patch("sys/menus/CreateOrUpdateMenuView/" + menu.id + "/",menu)
+    } else {
+        // 新增
+        return requestUtil.post("sys/menus/CreateOrUpdateMenuView/",menu)
+    }
+    
 }
 
 // 获取一个菜单menu
 export const getMenuById = (id) => {
     return requestUtil.get("sys/menus/GetMenuById/",{"id":id})
+}
+
+// 删除一个menu
+export const deleteMenuById =(id) => {
+    return requestUtil.del("/sys/menus/DeleteMenuById/",{"id":id})
 }

@@ -12,7 +12,7 @@ const httpService = axios.create({
     // baseURL: process.env.BASE_API, // 需自定义
     baseURL:baseUrl,
     // 请求超时时间
-    timeout: 3000 // 需自定义
+    timeout: 10000 // 需自定义
 });
 
 //添加请求和响应拦截器

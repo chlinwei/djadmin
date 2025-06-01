@@ -1,6 +1,6 @@
 <template>
- <Dialog :open="itemAssignVisible" @update:itemAssignVisible="(value) => { itemAssignVisible = value }"
-        :menu_id="menu_id" :title="menu_assign_title" @initList="initList" />
+ <Dialog :open="itemAssignVisible" @update:open="(value) => { itemAssignVisible = value }"
+        :item_id="menu_id" :title="menu_assign_title" :treeData="treeData2" @initList="initList" />
     <a-row class="tools" :gutter="16">
         <a-col class="AddBtn tool-item">
             <a-button size="large" @click="HandleAdd">
@@ -18,22 +18,22 @@
         <a-col :span="24">
             <a-table v-if="treeData.length" 
             :columns="columns" :defaultExpandAllRows="true" :data-source="treeData"
-            :row-selection="rowSelection">
+            >
                
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
                                 <a-col>
-                                    <a-button type="primary" @click="onSaveorChanageMenu(record.id)">
+                                    <a-button type="primary" @click="saveItem(record.key,record.name)">
                                         <FontAwesomeIcon :icon="faEdit" />
                                     </a-button>
                                 </a-col>
                                 <a-col>
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
-                                        @confirm="delconfirm(record.id)" @cancel="cancel"
+                                        @confirm="delconfirm(record.key)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
+                                        <a-button class="delBtn" :loading="rowLoadingStates[record.key]" danger
                                             type="primary">
                                             <FontAwesomeIcon :icon="faTrash" />
                                         </a-button>
@@ -53,11 +53,13 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { faEdit } from '@fortawesome/free-solid-svg-icons'
 import { faTrash, faPlusCircle } from '@fortawesome/free-solid-svg-icons'
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
+import { message } from 'ant-design-vue';
 const itemAssignVisible = ref(false)
 // 缓存
 defineOptions({
     name: 'menu'
 })
+const menu_id = ref(-1)
 const columns = [
     {
         title: '菜单名称',
@@ -103,7 +105,8 @@ const columns = [
 const rowLoadingStates = reactive({
 });
 const treeData = ref([])
-import { getMenuTree,saveOrCreateMenu } from '@/api/menu';
+const treeData2 = ref([])
+import { getMenuTree,deleteMenuById } from '@/api/menu';
 
 const parseTreeData = (data) => {
     return data.map(item => ({
@@ -115,7 +118,6 @@ const parseTreeData = (data) => {
         path: item.path,
         menu_type: item.menu_type,
         create_time: item.create_time,
-        // icon: <a-icon type={item.icon} />,  // 注意：这里使用了Ant Design的图标组件，需要根据实际情况调整
         children: item.children ? parseTreeData(item.children) : null,
     }));
 };
@@ -125,6 +127,8 @@ const initList = () => {
     getMenuTree().then((res) => {
         var data = parseTreeData(res.data.data)
         treeData.value = data
+        treeData2.value = [{"name":"根系统目录","key":0,"children":treeData.value}]
+        console.log(treeData2)
         loading.value = false
     }).finally(() => {
         loading.value = false;
@@ -132,21 +136,11 @@ const initList = () => {
 }
 
 initList()
-const rowSelection = ref({
-    checkStrictly: false,
-    onChange: (selectedRowKeys, selectedRows) => {
-        console.log(`selectedRowKeys: ${selectedRowKeys}`, 'selectedRows: ', selectedRows);
-    },
-    onSelect: (record, selected, selectedRows) => {
-        console.log(record, selected, selectedRows);
-    },
-    onSelectAll: (selected, selectedRows, changeRows) => {
-        console.log(selected, selectedRows, changeRows);
-    },
-});
-
-const onSaveorChanageMenu = (res) => {
-    console.log(res)
+const menu_assign_title = ref("错误界面")
+const saveItem = (id,name) => {
+    itemAssignVisible.value = true
+    menu_id.value = id
+    menu_assign_title.value = "编辑" + "-" + name
 }
 const cancel = () => {
 }
@@ -155,6 +149,26 @@ const cancel = () => {
 const HandleAdd = () => {
     itemAssignVisible.value = true
     menu_assign_title.value = "菜单添加"
+    menu_id.value = -1
+
+}
+// 删除
+const setRowLoading = (id, isLoading) => {
+    rowLoadingStates[id] = isLoading;
+};
+const delconfirm = (id) => {
+    setRowLoading(id, true)
+    deleteMenuById(id).then((res) => {
+        if (res.data.code == 200) {
+            initList();
+            message.success("删除成功");
+        } else {
+            message.error("删除失败: " + res.data.msg);
+        }
+
+    }).finally(() => {
+        setRowLoading(id, false)
+    })
 }
 </script>
 <style scoped>

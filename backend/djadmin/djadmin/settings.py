@@ -209,3 +209,6 @@ LOGGING = {
         },
     }
 }
+
+#关闭自动添加/
+APPEND_SLASH = False

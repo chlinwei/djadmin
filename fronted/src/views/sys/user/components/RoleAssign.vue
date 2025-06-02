@@ -75,6 +75,7 @@ watch(
             transferLoading.value = true
             // 获取角色列表
             getRoleList().then((res) => {
+                console.log('角色列表')
                 console.log(res)
                 if (res.data.code === 200) {
                     res.data.data.forEach(role => {

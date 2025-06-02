@@ -111,6 +111,7 @@ const total = ref(1)
 
 const queryData = params => {
     return getRoleList(params).then(res => {
+        console.log(res)
         if (res.data.code == 200) {
             lastSearchKeyword = res.config.params.keyword
             total.value = res.data.data.count
@@ -242,7 +243,7 @@ const delconfirm = (id) => {
         }
 
     }).finally(() => {
-        setRowLoading(user_id, false)
+        setRowLoading(id, false)
     })
 }
 const rowLoadingStates2 = reactive({
@@ -253,7 +254,6 @@ const setRowLoading2 = (id, isLoading) => {
 
 // 角色分配
 const menuAssignVisible = ref(false)
-const user_id2 = ref(-1)
 
 const handleMenuAssign = (id, name) => {
     menuAssignVisible.value = true

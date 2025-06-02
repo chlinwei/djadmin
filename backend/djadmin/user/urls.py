@@ -1,25 +1,14 @@
 from django.urls import path,include
+from rest_framework.routers import DefaultRouter
+from .views import UserCenterManage,UserManage
+router = DefaultRouter()
+router.register(r'usercenter',UserCenterManage,basename="usercenter")
+router.register(r'users',UserManage,basename="users")
 from .views import *
 urlpatterns = [
-    path('userList',UserListView.as_view(),name='listOrcreate'),
     path('test',TestView.as_view(),name='test'),
     path('login',LoginView.as_view(),name='login'),
-    path('updateUserInfo',UpdateUserInfoView.as_view(),name='updateUserInfo'),
-    path('updateUserPassword',UpdateUserPasswordView.as_view(),name='updateUserPassword'),
+    path('', include(router.urls)),
     path('changeAvatar',ChangeAvatarView.as_view(),name="ChangeAvatarView"),
-    path('user/changeStatus',ChangeStatusView.as_view(),name="user/ChangeStatusView"),
-    
-    path('users/',UserManageView.as_view(),name="user-create"),
-    path('users/<int:id>/',UserManageView.as_view(),name="user-detail"),
-    path('users/<int:id>/',UserManageView.as_view(),name="updateUser"),
-    path('users/<int:id>/',UserManageView.as_view(),name="deleteUser"),
-    # 检查用户是否存在
-    path('users/CheckUsername/',CheckUsername.as_view(),name="CheckUsername"),
 
-    #批量删除用户
-    path('users/batch-delete/',UserBatchDeleteAPI.as_view(),name="user-batch-delete"),
-    #重置密码
-    path('users/resetPwd/',ResetPasswdView.as_view(),name="user-resetPwd"),
-    # 保存用户角色
-    path('users/assginRoles/',SaveUserRolesView.as_view(),name="user-assginRoles"),
 ]

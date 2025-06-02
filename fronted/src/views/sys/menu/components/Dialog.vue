@@ -95,7 +95,7 @@ const edit_rules = {
 const form = ref({
     id: -1,
     parent_id: '',
-    menu_type: "M",
+    menu_type: "C",
     icon: '',
     name: '',
     perms: '',
@@ -116,8 +116,6 @@ const handleOk = e => {
         if (obj.id == -1) {
             // 表示是新增
             saveOrCreateMenu(obj).then(result => {
-                console.log("results:")
-                console.log(result)
                 message.success("新增菜单成功");
                 emits('initList')
                 emits('update:open', false)
@@ -141,7 +139,7 @@ watch(
             form.value = {
                 id: -1,
                 parent_id: '',
-                menu_type: "M",
+                menu_type: "C",
                 icon: '',
                 name: '',
                 perms: '',
@@ -150,16 +148,11 @@ watch(
                 order_num: 1,
                 remark: ''
             }
-            console.log(props.treeData)
-
-
         } else {
             if (props.open) {
                 // 进入编辑界面
                 loading.value = true
-                console.log("编辑")
                 getMenuById(id).then(res => {
-                    console.log(res)
                     form.value = res.data.data
                 }).finally(()=>{
                     loading.value = false

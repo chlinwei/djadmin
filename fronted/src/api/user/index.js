@@ -79,20 +79,20 @@ export function clearRemeberMe() {
 
 //更新基本资料
 export function updateUserInfo(user, callback) {
-    requestUtil.post("sys/updateUserInfo", user).then(result => {
+    requestUtil.post("sys/usercenter/updateUserInfo/", user).then(result => {
         saveCurrentUser(result.data.data.user);
         callback(result);
     })
 }
 //获取用户列表
 export function getUserList(params = {page:1,size:3,keyword}) {
-   return requestUtil.get("sys/userList",params)
+   return requestUtil.get("sys/users/",params)
 }
 
 
 // 修改用户密码
 export function updateUserPassword(password_pair) {
-    requestUtil.post("sys/updateUserPassword", password_pair).then(result => {
+    requestUtil.post("sys/usercenter/updateUserPassword/", password_pair).then(result => {
 
         if (result.data.code == 200) {
             message.success("密码更新成功，请重新登陆...");
@@ -111,7 +111,7 @@ export function updateUserPassword(password_pair) {
 }
 // 修改用户状态
 export function changeUserStatus(user_id,status) {
-    return requestUtil.post("sys/user/changeStatus",{user_id:user_id,status:status})
+    return requestUtil.post("sys/users/changeUserStatus/",{user_id:user_id,status:status})
 }
 
 // 根据用户id获取用户信息
@@ -130,24 +130,25 @@ export function addUser(userInfo) {
 
 // 检查用户是否存在
 export function checkUserName(username) {
-    return requestUtil.get("sys/users/CheckUsername",{"username": username});
+    return requestUtil.get("sys/users/checkUserName/",{"username": username});
 }
 
+// 批量删除用户
 export function batchDeleteUser(ids) {
     if(ids.length <=0) {
         message.error("用户id数组必须大于1")
         return;
     }else {
-        return requestUtil.del("sys/users/batch-delete/",{user_ids:ids})
+        return requestUtil.del("sys/users/userBatchDelete/",{user_ids:ids})
     }
 }
 
 // 重置密码
 export function resetPwd(id) {
-    return requestUtil.post("sys/users/resetPwd/",{id:id})
+    return requestUtil.post("sys/users/resetUserPwd/",{id:id})
 }
 
 //保存用户角色
 export function saveUserPwd(user_id,roleIds) {
-    return requestUtil.post("sys/users/assginRoles/",{user_id:user_id,roleIds:roleIds})
+    return requestUtil.post("sys/users/assginUserRoles/",{user_id:user_id,roleIds:roleIds})
 }

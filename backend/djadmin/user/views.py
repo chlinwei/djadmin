@@ -16,8 +16,10 @@ from .filters import SysUserFilter
 
 from django.core.exceptions import ObjectDoesNotExist
 from djadmin.utils import Response_200,Response_error
-
-
+from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveModelMixin
+from rest_framework.mixins import ListModelMixin
+from rest_framework.viewsets import GenericViewSet
+from rest_framework.decorators import action
 
 from datetime import datetime
 #login
@@ -52,17 +54,6 @@ class TestView(APIView):
     
 from django.db.models import Prefetch
 from .models import SysUserRole
-class UserListView(ListAPIView):
-    # queryset = SysUser.objects.all().order_by("-id")
-
-    queryset = SysUser.objects.prefetch_related(
-        Prefetch('sysuserrole_set', queryset=SysUserRole.objects.select_related('role'))
-    ).order_by('-id')
-    serializer_class = SysUserRoleSerializer
-    filter_backends = (filters.DjangoFilterBackend,)
-    filterset_class = SysUserFilter
-    pagination_class = CustomPagination
-
 
 class TestView(View):
     def get(self, request):
@@ -82,15 +73,12 @@ class TestView(View):
 
 
 
-
+# 登录
 class LoginView(APIView):
     def getMenuList(self,userId: int):
         menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s))",[userId])
         menu_list_data = SysMenuDynamicListSerializer(menu_list)
         return menu_list_data.data
-
-            
-                
 
     #根据用户id查询menu(一级和二级菜单)
     def _getMenuList(self,userId: int):
@@ -164,10 +152,11 @@ class LoginView(APIView):
             })
         
 
-
-#修改基础信息
-class UpdateUserInfoView(APIView):
-    def post(self,request):
+# 个人中心
+class UserCenterManage(GenericViewSet):
+     #修改基础信息
+    @action(detail=False,methods=['post'],url_path="updateUserInfo")
+    def updateUserInfo(self,request):
         phonenumber = request.data['phonenumber']
         email = request.data['email']
         user = getCurrentUser(request)
@@ -185,10 +174,9 @@ class UpdateUserInfoView(APIView):
             'msg':'success'
         })
     
-
-# 修改用户密码
-class UpdateUserPasswordView(APIView):
-    def post(self,request):
+   #修改密码
+    @action(detail=False,methods=['post'],url_path="updateUserPassword")
+    def updateUserPassword(self,request):
         user = getCurrentUser(request)
         user_id = user['user_id']
         db_user = SysUser.objects.get(id=user_id)
@@ -200,7 +188,6 @@ class UpdateUserPasswordView(APIView):
             db_user.password = new_password
             db_user.save()
             return Response_200()
-
 # 修改头像
 class ChangeAvatarView(APIView):
     def post(self, request):
@@ -218,9 +205,6 @@ class ChangeAvatarView(APIView):
                 return Response_200(data={"new_file_name": new_file_name})
             except:
                 return Response_error(UserError.change_avatar_error)
-            
-
-
 
 from .serializer import StatusSerializer
 #修改用户的状态
@@ -242,29 +226,45 @@ class ChangeStatusView(APIView):
 #查询用户detail,编辑用户，新增用户
 from rest_framework import generics
 from .serializer import UserDetailCreateSerializer
-class UserManageView(generics.RetrieveUpdateAPIView,generics.CreateAPIView):
-    """
-    集成功能：
-    GET /users/<id>/ - 查询指定用户
-    PUT/PATCH /users/<id>/ - 编辑用户
-    POST /users/ - 创建新用户
-    """
-    queryset = SysUser.objects.all()
-    serializer_class = UserDetailCreateSerializer
-    lookup_field = 'id'
 
-#检查用户名是否存在
-class CheckUsername(APIView):
-    def get(self,request):
+#用户管理
+#查询列表，单个，修改，创建
+class UserManage(
+    GenericViewSet,
+    UpdateModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    ListModelMixin
+):
+    lookup_field = 'id'
+    filter_backends = (filters.DjangoFilterBackend,)
+    filterset_class = SysUserFilter
+    pagination_class = CustomPagination
+    default_queryset = SysUser.objects.all()
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return SysUserRoleSerializer
+        return UserDetailCreateSerializer
+
+    def get_queryset(self):
+        if self.action == 'list':
+            list_queryset = SysUser.objects.prefetch_related(
+        Prefetch('sysuserrole_set', 
+                queryset=SysUserRole.objects.select_related('role'))
+    ).order_by('-id')
+            return list_queryset
+        return self.default_queryset
+    # 检查用户是否存在
+    @action(detail=False,methods=['get'],url_path="checkUserName")
+    def checkUserName(self,request):
         username = request.query_params.get('username')
         if not username:
             return Response_error(error="请输入用户名")
         exists = SysUser.objects.filter(username=username).exists()
         return Response_200(data={"exists":exists})
-    
-# 批量删除用户
-class UserBatchDeleteAPI(APIView):
-    def delete(self, request):
+    #批量删除用户
+    @action(detail=False,methods=['delete'],url_path="userBatchDelete")
+    def userBatchDelete(self,request):
         # 获取用户ID数组参数
         user_ids = request.data.get('user_ids', [])
         if not user_ids:
@@ -275,10 +275,9 @@ class UserBatchDeleteAPI(APIView):
         user_deleted_count, _ = SysUser.objects.filter(id__in=user_ids).delete()
         # 实际用户删除数即user_count
         return Response_200(data={"user_role_deleted_count":user_role_deleted_count,"user_deleted_count":user_deleted_count})
-    
-# 重置密码
-class ResetPasswdView(APIView):
-    def post(self,request):
+    # 重置密码
+    @action(detail=False,methods=['post'],url_path="resetUserPwd")
+    def resetUserPwd(self,request):
         id = request.data.get("id")
         print(id)
         if not id:
@@ -288,11 +287,9 @@ class ResetPasswdView(APIView):
         user.update_time = datetime.now().date()
         user.save()
         return Response_200()
-    
-
-# 保存用户角色
-class SaveUserRolesView(APIView):
-    def post(self,request):
+    # 给用户分配角色
+    @action(detail=False,methods=['post'],url_path="assginUserRoles")
+    def assginUserRoles(self,request):
         user_id = request.data['user_id']
         roleIds = request.data['roleIds']
         # 清除当前用户的所有角色
@@ -303,6 +300,19 @@ class SaveUserRolesView(APIView):
             user_roles.append(SysUserRole(user_id=user_id,role_id=id))
         SysUserRole.objects.bulk_create(user_roles)
         return Response_200()
-
+    # 修改用户状态
+    @action(detail=False,methods=['post'],url_path="changeUserStatus")
+    def changeUserStatus(self,request):
+        serializer = StatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)  # 自动返回400错误
+        if serializer.is_valid():
+            try:
+                user = SysUser.objects.get(id=serializer.validated_data['user_id'])
+                user.update_time = datetime.now().date()
+                user.status = serializer.validated_data['status']
+                user.save()
+                return Response_200()
+            except:
+                return Response_error(UserError.change_status_error)
 
 

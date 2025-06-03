@@ -12,7 +12,7 @@
         </a-col>
     <a-col class="AddBtn tool-item">
       <a-button size="large" @click="HandleAddUser">
-        <FontAwesomeIcon :icon="faPlusCircle"></FontAwesomeIcon>
+        <FontAwesomeIcon :icon="['fas','fa-plus-circle']"></FontAwesomeIcon>
         <span>&nbsp;新增</span>
     </a-button>
     </a-col>
@@ -20,7 +20,7 @@
             <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
                 :overlayStyle="{ width: '300px', minHeight: '200px' }">
                 <a-button size="large" type="primary" :loading="state.loading" danger>
-                    <FontAwesomeIcon :icon="faTrash" />批量删除
+                    <FontAwesomeIcon :icon="'fa-trash'" />批量删除
                 </a-button>
             </a-popconfirm>
         </a-col>
@@ -69,7 +69,7 @@
                             </a-col>
                             <a-col v-if="record.username != 'admin'">
                                 <a-button type="primary" @click="onSaveorChanageUser(record.id)">
-                                    <FontAwesomeIcon :icon="faEdit" />
+                                    <FontAwesomeIcon :icon="['fa','edit']" />
                                 </a-button>
                             </a-col>
                             <a-col v-if="record.username != 'admin'">
@@ -78,7 +78,7 @@
                                     @confirm="delUserconfirm(record.id)" @cancel="cancel"
                                     :overlayStyle="{ width: '200px', minHeight: '150px' }">
                                     <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
-                                        <FontAwesomeIcon :icon="faTrash" />
+                                        <FontAwesomeIcon :icon="['fa','trash']" />
                                     </a-button>
                                 </a-popconfirm>
                             </a-col>
@@ -101,9 +101,6 @@ defineOptions({
 import { ref } from 'vue'
 import { getUserList } from '@/api/user/index.js';
 import { usePagination } from 'vue-request';
-import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
-import { faEdit, faPlusCircle } from '@fortawesome/free-solid-svg-icons'
-import { faTrash } from '@fortawesome/free-solid-svg-icons'
 import { computed, reactive } from 'vue';
 import { changeUserStatus } from '@/api/user/index.js';
 import { message } from 'ant-design-vue';

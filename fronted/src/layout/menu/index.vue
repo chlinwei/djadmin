@@ -3,7 +3,7 @@
     <div class="logo" />
     <a-menu theme="dark" mode="inline"  v-model:openKeys="openKeys" v-model:selectedKeys="selectedKeys" >
       <a-menu-item key="/index" @click="add_tab({ name: '首页', path: '/index' })">
-        <HomeOutlined />
+         <FontAwesomeIcon :icon="'fa-home'" />
         <span>首页</span>
       </a-menu-item>
         <SubMenu v-for="menu in menuList" :menu="menu"/>
@@ -11,7 +11,7 @@
   </div>
 </template>
 <script setup >
-import {HomeOutlined} from '@ant-design/icons-vue';
+
 import store from '@/store/index.js'
 import {ref} from 'vue'
 import {onMounted} from 'vue'
@@ -36,6 +36,8 @@ function init_selectedKeys() {
 }
 init_selectedKeys();
 const menuList = getMenuList();
+console.log("menuList")
+console.log(menuList)
 const  openKeys = ref([])
 
 onMounted(() => {

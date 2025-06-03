@@ -4,7 +4,7 @@
     <a-row class="tools" :gutter="16">
         <a-col class="AddBtn tool-item">
             <a-button size="large" @click="HandleAdd">
-                <FontAwesomeIcon :icon="faPlusCircle" />
+                <FontAwesomeIcon :icon="['fas','fa-plus-circle']" />
                 <span>&nbsp新增</span>
             </a-button>
         </a-col>
@@ -21,12 +21,15 @@
             >
                
                 <template #bodyCell="{ column, record }">
+                    <template v-if="column.key === 'icon'">
+                        <FontAwesomeIcon :icon="record.icon" />
+                    </template>
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
                                 <a-col>
                                     <a-button type="primary" @click="saveItem(record.key,record.name)">
-                                        <FontAwesomeIcon :icon="faEdit" />
+                                        <FontAwesomeIcon :icon="['fa','edit']" />
                                     </a-button>
                                 </a-col>
                                 <a-col>
@@ -35,7 +38,7 @@
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
                                         <a-button class="delBtn" :loading="rowLoadingStates[record.key]" danger
                                             type="primary">
-                                            <FontAwesomeIcon :icon="faTrash" />
+                                            <FontAwesomeIcon :icon="['fa','trash']" />
                                         </a-button>
                                     </a-popconfirm>
                                 </a-col>
@@ -49,9 +52,6 @@
 </template>
 <script setup>
 import { ref, reactive } from 'vue';
-import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
-import { faEdit } from '@fortawesome/free-solid-svg-icons'
-import { faTrash, faPlusCircle } from '@fortawesome/free-solid-svg-icons'
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
 const itemAssignVisible = ref(false)
@@ -108,8 +108,11 @@ const treeData = ref([])
 const treeData2 = ref([])
 import { getMenuTree,deleteMenuById } from '@/api/menu';
 
+
+
 const parseTreeData = (data) => {
-    return data.map(item => ({
+    return data.map(function(item) {
+        return {
         name: item.name,
         key: item.id,
         icon: item.icon,
@@ -119,7 +122,7 @@ const parseTreeData = (data) => {
         menu_type: item.menu_type,
         create_time: item.create_time,
         children: item.children ? parseTreeData(item.children) : null,
-    }));
+    }});
 };
 const loading = ref(false)
 const initList = () => {

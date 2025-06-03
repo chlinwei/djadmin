@@ -36,8 +36,6 @@ function init_selectedKeys() {
 }
 init_selectedKeys();
 const menuList = getMenuList();
-console.log("menuList")
-console.log(menuList)
 const  openKeys = ref([])
 
 onMounted(() => {

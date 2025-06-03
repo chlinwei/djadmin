@@ -13,18 +13,23 @@
                 <a-form-item  name="parent_id" label="上级菜单">
                     <a-tree-select v-model:value="form.parent_id" show-search style="width: 100%"
                         :dropdown-style="{ maxHeight: '400px', overflow: 'auto' }" placeholder="请选上级菜单" allow-clear
-                        tree-default-expand-all :tree-data="treeData" tree-node-filter-prop="label"
+                        tree-default-expand-all :tree-data="getTreeDataByMenuType(treeData,form.menu_type)" tree-node-filter-prop="label"
                         :fieldNames="{ label: 'name', value: 'key', key: 'key', children: 'children' }">
                     </a-tree-select>
                 </a-form-item>
                 <a-form-item name="menu_type" label="菜单类型">
-                    <a-radio-group v-model:value="form.menu_type" name="menu_type">
+                    <a-radio-group v-model:value="form.menu_type" name="menu_type" disabled="true">
                     <a-radio value="M">目录</a-radio>
                     <a-radio value="C">菜单</a-radio>
+                    <a-radio value="F">按钮</a-radio>
                 </a-radio-group>
                 </a-form-item>
-
-                <a-form-item name="icon" label="菜单图标">
+             
+                <a-form-item name="icon">
+                    <template #label>
+                    <FontAwesomeIcon :icon="form.icon" />
+                    <span>&nbsp;菜单图标</span>
+                    </template>
                     <a-input v-model:value="form.icon" />
                 </a-form-item>
                 <a-form-item label="菜单名称" name="name">
@@ -130,9 +135,11 @@ const handleOk = e => {
     })
 
 };
+
 watch(
     () => props.open,
     () => {
+        
         let id = props.item_id
         if (id === -1) {
             // 添加菜单
@@ -176,6 +183,30 @@ watch(
     }
 )
 
+
+
+const getTreeDataByMenuType = (data, menu_type) => {
+  return data.map(item => ({
+    name: item.name,
+    disabled: getDisabledState(item.menu_type, menu_type),
+    key: item.key,
+    icon: item.icon,
+    order_num: item.order_num,
+    perms: item.perms,
+    path: item.path,
+    component: item.component,
+    menu_type: item.menu_type,
+    create_time: item.create_time,
+    children: item.children ? getTreeDataByMenuType(item.children, menu_type) : null
+  }));
+};
+
+function getDisabledState(currentType, targetType) {
+  if (targetType === "M") return currentType !== "M";
+  if (targetType === "C") return currentType !== "M"; 
+  if (targetType === "F") return currentType === "F";
+  return false;
+}
 
 import { message } from 'ant-design-vue';
 // 取消窗口

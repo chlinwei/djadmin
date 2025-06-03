@@ -81,10 +81,15 @@ const columns = [
         dataIndex: 'perms',
         key: 'perms',
     },
-    {
-        title: '组件路径',
+        {
+        title: '路由路径',
         dataIndex: 'path',
         key: 'path',
+    },
+    {
+        title: '组件路径',
+        dataIndex: 'component',
+        key: 'component',
     },
     {
         title: '菜单类型',
@@ -105,6 +110,7 @@ const columns = [
 const rowLoadingStates = reactive({
 });
 const treeData = ref([])
+// 给Dialog界面的
 const treeData2 = ref([])
 import { getMenuTree,deleteMenuById } from '@/api/menu';
 
@@ -119,6 +125,7 @@ const parseTreeData = (data) => {
         order_num: item.order_num,
         perms: item.perms,
         path: item.path,
+        component: item.component,
         menu_type: item.menu_type,
         create_time: item.create_time,
         children: item.children ? parseTreeData(item.children) : null,
@@ -130,7 +137,7 @@ const initList = () => {
     getMenuTree().then((res) => {
         var data = parseTreeData(res.data.data)
         treeData.value = data
-        treeData2.value = [{"name":"根系统目录","key":0,"children":treeData.value}]
+        treeData2.value = [{"name":"根系统目录","key":0,"menu_type":"M","children":treeData.value}]
         console.log(treeData2)
         loading.value = false
     }).finally(() => {

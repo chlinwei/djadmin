@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getMenuList, getToken } from '@/api/user/index.js'
 export const modules = import.meta.glob("../views/**");
+
 export const staticRouterMap = [
     {
         path: '/login',
@@ -118,10 +119,10 @@ export function addDynamicRoutes() {
         let menuList = getMenuList();
         if (menuList.length >= 1) {
             let dyroutes = getDynamicalRoutes(menuList);
-            let dyroutes2 = getDynamicalRoutes2(menuList);
+            // let dyroutes2 = getDynamicalRoutes2(menuList);
             console.log(dyroutes);
-            console.log("==========动态路由2=============")
-            console.log(dyroutes2)
+            // console.log("==========动态路由2=============")
+            // console.log(dyroutes2)
             router.addRoute(dyroutes);
         }
     } else {

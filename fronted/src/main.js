@@ -16,6 +16,8 @@ import {addDynamicRoutes} from '@/router/index.js';
 import { library } from '@fortawesome/fontawesome-svg-core'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { fas } from '@fortawesome/free-solid-svg-icons'
+import {checkPermission} from '@/directives/permission/permission'
+
 
 
 library.add(fas)
@@ -24,6 +26,16 @@ library.add(fas)
 import {setup as setupIcon} from './components/SvgIcon/index.js'
 
 const app = createApp(App)
+
+
+// 权限
+// 注册权限指令
+app.directive('permission', {
+  mounted(el, binding) {
+    const hasPermission = checkPermission(binding.value)
+    if (!hasPermission) el.parentNode?.removeChild(el)
+  }
+})
 // app.component('font-awesome-icon', FontAwesomeIcon)
 app.component('FontAwesomeIcon', FontAwesomeIcon)
 app.use(store)

@@ -15,14 +15,28 @@ from rest_framework.mixins import ListModelMixin
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
 from .filters import SysRoleFilter
+from rest_framework.filters import OrderingFilter,SearchFilter
+from menu.permisssion import CustomMenuPermission
 #detail,update,crate,list
 class RoleManage(GenericViewSet,ListModelMixin,CreateModelMixin,RetrieveModelMixin,UpdateModelMixin):
     queryset = SysRole.objects.all()
     serializer_class = SysRoleSerializer
     pagination_class = CustomPagination
-    filter_backends = (filters.DjangoFilterBackend,)
-    filterset_class = SysRoleFilter
+    # filterset_class = SysRoleFilter
+    filter_backends = (OrderingFilter,filters.DjangoFilterBackend,SearchFilter)
+    search_fields = ['name', 'code','remark'] 
+    ordering_fields = [ 'name','create_time'] 
     lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'system:roles:view',
+        'batch-delete': 'system:roles:delete',
+        'partial_update': 'system:roles:update',
+        'perform_update': 'system:roles:update',
+        'create': 'system:roles:create',
+        'retrieve': 'system:roles:view',
+        
+    }
     # 获取当前用户所包含的角色
     @action(detail=False,methods=['get'],url_path='getCurrentUserRoleList')
     def getCurrentUserRoleList(self,request):
@@ -52,12 +66,3 @@ class RoleManage(GenericViewSet,ListModelMixin,CreateModelMixin,RetrieveModelMix
         #删除角色
         SysRole.objects.filter(id__in=role_ids).delete() 
         return Response_200()
-    # 根据用户id获取用户包含的角色列表
-    @action(detail=False,methods=['get'],url_path='getUserRolesById')
-    def getUserRolesById(self,request):
-        # 获取当前用户id
-        user_id = request.query_params.get('user_id')
-        #查询用户角色根据用户id
-        raw_data = SysRole.objects.raw("select sr.id as id,sr.name as name,sr.code as code,sr.create_time  as create_time,sr.update_time as update_time ,sr.remark as remark  from sys_user_role sur   inner join sys_role sr ON sur.role_id = sr.id  WHERE sur.user_id  = %s",[user_id])
-        roleList = SysRoleSerializer(raw_data,many=True).data
-        return Response_200(data={"roleList":roleList})

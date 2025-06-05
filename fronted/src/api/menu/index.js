@@ -34,3 +34,59 @@ export const getMenuById = (id) => {
 export const deleteMenuById =(id) => {
     return requestUtil.del("/sys/menus/deleteMenuById/",{"id":id})
 }
+// 根据menuList生成pers
+//获取权限标识
+function extractPerms(menuTree) {
+  const perms = [];
+  function traverse(nodes) {
+    nodes.forEach(node => {
+      if (node.perms && node.perms.trim()) {
+        perms.push(node.perms);
+      }
+      if (node.children) {
+        traverse(node.children);
+      }
+    });
+  }
+
+  traverse(menuTree);
+  return perms;
+}
+function setPerms(perms) {
+    perms = JSON.stringify(perms);
+    localStorage.setItem("perms", perms);
+}
+function removePerms() {
+     localStorage.removeItem("perms")
+}
+export function getPerms() {
+    let perms = localStorage.getItem("perms");
+    return JSON.parse(perms);
+}
+
+//保存权限菜单
+export function saveMenuList(menuList) {
+    setPerms(extractPerms(menuList))
+    menuList = JSON.stringify(menuList);
+    localStorage.setItem("menuList", menuList);
+    
+}
+
+//获取权限菜单
+export function getMenuList() {
+    let menuList = localStorage.getItem("menuList");
+    return JSON.parse(menuList);
+}
+//删除权限菜单
+export function removeMenuList() {
+    localStorage.removeItem("menuList")
+    removePerms()
+}
+
+
+
+
+
+
+
+

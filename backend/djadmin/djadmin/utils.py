@@ -2,6 +2,7 @@
 
 from django.http import JsonResponse
 from .errordict import ErrorMixin
+from djadmin.errordict import DjadminException
 
 
 
@@ -18,6 +19,7 @@ def Response_error(error:ErrorMixin,data=None):
             'data': data,
             'msg':error.msg
         })
+        
 
 def Response_error_str(msg,code=400,data=None):
         return JsonResponse({
@@ -25,7 +27,12 @@ def Response_error_str(msg,code=400,data=None):
             'data': data,
             'msg':msg
         })
-
+def Response_djerror(djerror: DjadminException,data=None):
+        return JsonResponse({
+            'code':djerror.code,
+            'data': data,
+            'msg':djerror.message
+        })
 
 
 from rest_framework.pagination import PageNumberPagination

@@ -1,5 +1,4 @@
 from enum import Enum
-
 class ErrorMixin:
     """错误码基础类，封装公共属性"""
     def __init__(self, code, msg):
@@ -8,6 +7,10 @@ class ErrorMixin:
 
     def __str__(self):
         return f"[{self.code}] {self.msg}"
+    
+
+class CommonError(ErrorMixin,Enum):
+    NO_PERMISSION = (4001,"没有权限")
 class MenuError(ErrorMixin,Enum):
     menu_saveOrcreate_error = (3001,"菜单创建失败")
     
@@ -22,9 +25,19 @@ class UserError(ErrorMixin, Enum):
     user_ids_empty = (1004,"用户id数组为空错误")
     user_not_exists = (1005,"用户不存在错误")
 
-class ServerError(ErrorMixin, Enum):
+
+
+
+class ServerError(ErrorMixin, Enum):    
     """服务器相关错误"""
     INTERNAL_ERROR = (2001, "服务器内部错误")
+
+
+class DjadminException(Exception):
+    def __init__(self, error_code: ErrorMixin, extra_msg=None):
+        self.code = error_code.code
+        self.message = f"{error_code.msg}({extra_msg})" if extra_msg else error_code.message
+
 
 
 

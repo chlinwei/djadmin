@@ -7,7 +7,7 @@
 
     <a-row class="tools" :gutter="16">
         <a-col :span="7">
-            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/邮箱/手机号" enter-button size="large"
+            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="角色名/权限字符/备注" enter-button size="large"
                 @search="onSearch" />
 
         </a-col>
@@ -42,16 +42,16 @@
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
-                                <a-col>
+                                <a-col  v-permission="'system:roles:delete'">
                                     <a-button type="primary" id="assignRole"
                                         @click="handleMenuAssign(record.id, record.name)">分配权限</a-button>
                                 </a-col>
-                                <a-col v-if="record.name != 'admin'">
+                                <a-col v-if="record.name != 'admin'"  v-permission="'system:roles:update'">
                                     <a-button type="primary" @click="onSaveorChanageRole(record.id)">
                                         <FontAwesomeIcon :icon="['fa','edit']" />
                                     </a-button>
                                 </a-col>
-                                <a-col>
+                                <a-col v-permission="'system:roles:delete'">
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                         @confirm="delconfirm(record.id)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -97,9 +97,9 @@ const roleassign_title = ref("权限分配")
 
 const SearchText = ref('')
 const columns = [
-    { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name', sorter: (a, b) => a.name.localeCompare(b.name), sortDirections: ['ascend', 'descend'] },
+    { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name', sorter: true, sortDirections: ['ascend', 'descend'] },
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
-    { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80 },
+    { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80,sorter: true},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
     { title: '操作', key: 'action', fixed: 'right', width: 330 }
 ]
@@ -110,7 +110,7 @@ const queryData = params => {
     return getRoleList(params).then(res => {
         console.log(res)
         if (res.data.code == 200) {
-            lastSearchKeyword = res.config.params.keyword
+            lastSearchKeyword = res.config.params.search
             total.value = res.data.data.count
             return res.data.data.results
         } else {
@@ -148,7 +148,7 @@ const pagination = computed(() => ({
 const handleTableChange = (page, filters, sorter) => {
 
     var sorter_str = ""
-    if (sorter.field) {
+    if (sorter.order) {
         // 不为空，说明有排序
         if (sorter.order == "descend") {
             sorter_str = sorter_str + '-' + sorter.field
@@ -158,22 +158,22 @@ const handleTableChange = (page, filters, sorter) => {
         run({
             size: page.pageSize,
             page: page?.current,
-            keyword: lastSearchKeyword,
-            order: sorter_str,
+            search: lastSearchKeyword,
+            ordering: sorter_str,
             ...filters,
         })
     } else {
         run({
             size: page.pageSize,
             page: page?.current,
-            keyword: lastSearchKeyword,
+            search: lastSearchKeyword,
             ...filters,
         })
     }
 };
 
 const onSearch = (keyword) => {
-    run({ size: pageSize.value, keyword })
+    run({ size: pageSize.value, search:keyword })
 }
 
 const title = ref("")

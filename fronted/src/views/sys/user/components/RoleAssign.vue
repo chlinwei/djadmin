@@ -21,7 +21,8 @@
 <script setup>
 
 import { ref ,reactive} from 'vue';
-import { getRoleList, getUserRoleListByUserId } from '@/api/role';
+import { getRoleList,  } from '@/api/role';
+import { getUserRoleListByUserId } from '@/api/user';
 import {saveUserPwd} from '@/api/user';
 import { watch } from 'vue';
 import { message } from 'ant-design-vue';

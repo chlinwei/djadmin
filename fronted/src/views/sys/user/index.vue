@@ -7,16 +7,16 @@
 
     <a-row class="tools" :gutter="16">
         <a-col :span="7">
-            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/邮箱/手机号" enter-button size="large"
+            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/邮箱/手机号/备注" enter-button size="large"
                 @search="onSearch" />
         </a-col>
-    <a-col class="AddBtn tool-item">
+    <a-col class="AddBtn tool-item" v-permission="'system:users:create'">
       <a-button size="large" @click="HandleAddUser">
         <FontAwesomeIcon :icon="['fas','fa-plus-circle']"></FontAwesomeIcon>
         <span>&nbsp;新增</span>
     </a-button>
     </a-col>
-        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1">
+        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'system:users:delete'">
             <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
                 :overlayStyle="{ width: '300px', minHeight: '200px' }">
                 <a-button size="large" type="primary" :loading="state.loading" danger>
@@ -48,17 +48,17 @@
                 <template v-else-if="column.key === 'status'">
                     <span>
                         <a-switch :checked="record.status === 1"
-                            @change="(checked) => onChangeStatus(checked, record.id)" />
+                            @change="(checked) => onChangeStatus(checked, record.id)" :disabled="user_status" />
                     </span>
                 </template>
                 <template v-else-if="column.key === 'action'">
                     <div :key="record.id">
                         <a-row :gutter="6" class="action_row">
-                            <a-col>
+                            <a-col v-permission="'system:users:update'">
                                 <a-button type="primary" id="assignRole"
                                     @click="handleRoleAssign(record.id, record.username)">分配角色</a-button>
                             </a-col>
-                            <a-col class="resetPwd" v-if="record.username != 'admin'">
+                            <a-col class="resetPwd" v-if="!record.roles.some(role => role.code === 'admin')"  v-permission="'system:users:update'">
                                 <a-popconfirm placement="bottom" title="您确定要重置密码？" ok-text="确认" cancel-text="取消"
                                     @confirm="resetPwdconfirm(record.id)" @cancel="cancel"
                                     :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -67,13 +67,12 @@
                                     </a-button>
                                 </a-popconfirm>
                             </a-col>
-                            <a-col v-if="record.username != 'admin'">
+                            <a-col v-if="record.username != 'admin'" v-permission="'system:users:update'">
                                 <a-button type="primary" @click="onSaveorChanageUser(record.id)">
                                     <FontAwesomeIcon :icon="['fa','edit']" />
                                 </a-button>
                             </a-col>
-                            <a-col v-if="record.username != 'admin'">
-
+                            <a-col v-if="record.username != 'admin'" v-permission="'system:users:update'">
                                 <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                     @confirm="delUserconfirm(record.id)" @cancel="cancel"
                                     :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -107,17 +106,19 @@ import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/user/components/Dialog.vue';
 import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
 
-
+import {checkPermission} from '@/directives/permission/permission'
+const user_status = ref()
+user_status.value = !checkPermission("system:users:update")
 const roleassign_title = ref("角色分配")
 
 const SearchText = ref('')
 const columns = [
-    { title: '用户名', dataIndex: 'username', fixed: true, width: 100, key: 'username', sorter: (a, b) => a.username.localeCompare(b.username), sortDirections: ['ascend', 'descend'] },
+    { title: '用户名', dataIndex: 'username', fixed: true, width: 100, key: 'username', sorter:true, sortDirections: ['ascend', 'descend'] },
     { title: '角色', dataIndex: 'roles', key: 'roles', width: 150 },
     { title: '邮箱', dataIndex: 'email', key: 'email', width: 100 },
     { title: '手机号', dataIndex: 'phonenumber', key: 'phonenumber', width: 100 },
     { title: '状态', dataIndex: 'status', key: 'status', width: 80 },
-    { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80 },
+    { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80 ,sorter:true,sortDirections: ['ascend', 'descend']},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
     { title: '操作', key: 'action', fixed: 'right', width: 330 }
 ]
@@ -141,7 +142,7 @@ const total = ref(1)
 const queryData = params => {
     return getUserList(params).then(res => {
         if (res.data.code == 200) {
-            lastSearchKeyword = res.config.params.keyword
+            lastSearchKeyword = res.config.params.search
             total.value = res.data.data.count
             return res.data.data.results
 
@@ -177,7 +178,7 @@ const pagination = computed(() => ({
 const handleTableChange = (page, filters, sorter) => {
 
     var sorter_str = ""
-    if (sorter.field) {
+    if (sorter.order) {
         // 不为空，说明有排序
         if (sorter.order == "descend") {
             sorter_str = sorter_str + '-' + sorter.field
@@ -187,22 +188,22 @@ const handleTableChange = (page, filters, sorter) => {
         run({
             size: page.pageSize,
             page: page?.current,
-            keyword: lastSearchKeyword,
-            order: sorter_str,
+            search: lastSearchKeyword,
+            ordering: sorter_str,
             ...filters,
         })
     } else {
         run({
             size: page.pageSize,
             page: page?.current,
-            keyword: lastSearchKeyword,
+            search: lastSearchKeyword,
             ...filters,
         })
     }
 };
 
 const onSearch = (keyword) => {
-    run({ size: pageSize.value, keyword })
+    run({ size: pageSize.value, search:keyword })
 }
 
 const title = ref("")
@@ -214,7 +215,7 @@ const onSaveorChanageUser = (id) => {
     user_id.value = id
 }
 const HandleInitUserList = (res) => {
-    run({ page: current, size: pageSize.value, keyword: lastSearchKeyword })
+    run({ page: current, size: pageSize.value, search: lastSearchKeyword })
 }
 // 新增用户
 const HandleAddUser = () => {
@@ -286,6 +287,7 @@ const resetPwdconfirm = (id) => {
         } else {
             message.error("重置密码失败:" + res.data.msg);
         }
+    }).finally(()=>{
         setRowLoading2(id, false)
     })
 }

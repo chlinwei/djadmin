@@ -40,7 +40,8 @@ import { reactive } from 'vue';
 import router from '@/router'
 import {addDynamicRoutes} from '@/router/index.js';
 import { message } from 'ant-design-vue';
-import {doLogin,saveCurrentUser,saveToken,saveMenuList,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
+import {doLogin,saveCurrentUser,saveToken,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
+import {saveMenuList} from '@/api/menu/index.js'
 
 import qs from 'qs'
 const loginForm = reactive({

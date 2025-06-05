@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getMenuList, getToken } from '@/api/user/index.js'
+import { getToken } from '@/api/user/index.js'
+import { getMenuList } from '@/api/menu/index.js'
 export const modules = import.meta.glob("../views/**");
 
 export const staticRouterMap = [

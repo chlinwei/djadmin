@@ -31,7 +31,13 @@ httpService.interceptors.request.use(function (config) {
 // 添加响应拦截器
 httpService.interceptors.response.use(function (response) {
     // 对响应数据做点什么
+    console.log(response.data)
+    if(response.data.code != 200){
+        message.error(response.data.msg)
+        return Promise.reject(new Error(response.data.msg))
+    }
     return response;
+
 }, function (error) {
     // 对响应错误做点什么
     return Promise.reject(error);

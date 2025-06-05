@@ -40,21 +40,7 @@ export function removeToken() {
     localStorage.removeItem("token");
 }
 
-//保存权限菜单
-export function saveMenuList(menuList) {
-    menuList = JSON.stringify(menuList);
-    localStorage.setItem("menuList", menuList);
-}
 
-//获取权限菜单
-export function getMenuList() {
-    let menuList = localStorage.getItem("menuList");
-    return JSON.parse(menuList);
-}
-//删除权限菜单
-export function removeMenuList() {
-    localStorage.removeItem("menuList")
-}
 
 // 存储账号密码
 export function setRemeberMe(user) {
@@ -85,7 +71,7 @@ export function updateUserInfo(user, callback) {
     })
 }
 //获取用户列表
-export function getUserList(params = {page:1,size:3,keyword}) {
+export function getUserList(params = {page:1,size:3,search}) {
    return requestUtil.get("sys/users/",params)
 }
 
@@ -109,6 +95,11 @@ export function updateUserPassword(password_pair) {
 
     })
 }
+// 获取用户角色列表根据用户id
+export const getUserRoleListByUserId = (user_id) => {
+    return requestUtil.get("sys/users/getUserRolesById/",{"user_id":user_id});
+}
+
 // 修改用户状态
 export function changeUserStatus(user_id,status) {
     return requestUtil.post("sys/users/changeUserStatus/",{user_id:user_id,status:status})

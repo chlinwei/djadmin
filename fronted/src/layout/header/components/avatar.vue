@@ -30,6 +30,7 @@ console.log(useRouter().currentRoute.value.fullPath)
 const currentUser = getCurrentUser()
 const logout = () => {
     window.sessionStorage.clear()
+    window.localStorage.clear()
     router.replace("/login")
 }
 

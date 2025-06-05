@@ -4,15 +4,21 @@ from role.models import SysRole
 
 
 class SysMenu(models.Model):
+    LOCATIONS_CHOICES = [
+        (1, '左侧菜单'),
+        (2, '用户中心')
+    ]
+    
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=50, unique=True, verbose_name="菜单名称")
-    icon = models.CharField(max_length=100, null=True, verbose_name="菜单图标")
+    icon = models.CharField(max_length=100, null=True, blank=True,verbose_name="菜单图标")
     parent_id = models.IntegerField(null=True, verbose_name="父菜单ID")
     order_num = models.IntegerField(null=True, verbose_name="显示顺序")
-    path = models.CharField(max_length=200, null=True, verbose_name="路由地址")
+    path = models.CharField(max_length=200, null=True, blank=True,verbose_name="路由地址")
     component = models.CharField(max_length=255, null=True,blank=True,verbose_name="组件路径")
     menu_type = models.CharField(max_length=1, null=True, verbose_name="菜单类型（M目录 C菜单 F按钮）")
-    perms = models.CharField(max_length=100, null=True, verbose_name="权限标识")
+    perms = models.CharField(max_length=100, null=True, blank=True,verbose_name="权限标识")
+    location = models.SmallIntegerField(choices=LOCATIONS_CHOICES, default=1,verbose_name="权限位置")
     create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )
     update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
     remark = models.CharField(max_length=500,blank=True, null=True, verbose_name="备注")

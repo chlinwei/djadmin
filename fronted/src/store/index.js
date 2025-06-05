@@ -10,7 +10,9 @@ export default createStore({
                 key: '/index'
             }
 
-        ]
+        ],
+        users: {},
+        perms: [],
     },
     getters: {},
     mutations: {
@@ -71,6 +73,12 @@ export default createStore({
             state.selectedKeys = [selectedKeys];
         }
         ,
+        add_user:(user) => {
+            state.user = user
+        },
+        clear_user:()=>{
+            state.user = {}
+        }
     },
     actions: {},
     modules: {}

@@ -6,10 +6,8 @@
             
             <a-spin :spinning="loading">
              </a-spin>
-
-            <a-form v-if="!loading" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }"
-                autocomplete="off" :rules="props.user_id === -1 ? add_rules : edit_rules">
-
+  <a-form v-if="!loading" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }"
+                autocomplete="off" :rules="get_rules(form)">
                 <a-form-item  name="parent_id" label="上级菜单">
                     <a-tree-select v-model:value="form.parent_id" show-search style="width: 100%"
                         :dropdown-style="{ maxHeight: '400px', overflow: 'auto' }" placeholder="请选上级菜单" allow-clear
@@ -18,14 +16,14 @@
                     </a-tree-select>
                 </a-form-item>
                 <a-form-item name="menu_type" label="菜单类型">
-                    <a-radio-group v-model:value="form.menu_type" name="menu_type" disabled="true">
+                    <a-radio-group v-model:value="form.menu_type" name="menu_type" :disabled="form.id !==-1">
                     <a-radio value="M">目录</a-radio>
                     <a-radio value="C">菜单</a-radio>
                     <a-radio value="F">按钮</a-radio>
                 </a-radio-group>
                 </a-form-item>
              
-                <a-form-item name="icon">
+                <a-form-item name="icon" v-if="form.menu_type!=='F'">
                     <template #label>
                     <FontAwesomeIcon :icon="form.icon" />
                     <span>&nbsp;菜单图标</span>
@@ -35,14 +33,20 @@
                 <a-form-item label="菜单名称" name="name">
                     <a-input v-model:value="form.name" />
                 </a-form-item>
-                <a-form-item label="权限标识" name="perms">
+                <a-form-item label="权限标识" name="perms" v-if="form.menu_type!=='M'">
                     <a-input v-model:value="form.perms"/>
                 </a-form-item>
-                <a-form-item label="路由路径" name="path">
+                <a-form-item label="路由路径" name="path" v-if="form.menu_type!=='F'">
                     <a-input v-model:value="form.path"/>
                 </a-form-item>
-                <a-form-item label="组件路径" name="component">
+                <a-form-item label="组件路径" name="component" v-if="form.menu_type==='C'">
                     <a-input v-model:value="form.component"/>
+                </a-form-item>
+                <a-form-item name="location" label="组件位置" v-if="form.menu_type === 'C' || form.menu_type === 'M'">
+                    <a-radio-group v-model:value="form.location" name="location">
+                    <a-radio :value="1">左侧菜单</a-radio>
+                    <a-radio :value="2">用户中心</a-radio>
+                </a-radio-group>
                 </a-form-item>
                 <a-form-item label="显示顺序" name="order_num">
                     <a-input v-model:value="form.order_num"/>
@@ -85,11 +89,72 @@ const props = defineProps(
 )
 
 
+const get_rules = (menu)=>{
+
+            
+         var    M_rules = {
+                parent_id: [
+                     { required: true, message: "必填字段" },
+                ],
+                menu_type: [
+                    { required: true, message: "必填字段" },
+                ],     
+                name: [
+                     { required: true, message: "必填字段" },
+                ],
+                path: [
+                     { required: true, message: "必填字段" },
+                ],
+            }
+        var    C_rules = {
+                parent_id: [
+                     { required: true, message: "必填字段" },
+                ],
+                menu_type: [
+                    { required: true, message: "必填字段" },
+                ],     
+                name: [
+                     { required: true, message: "必填字段" },
+                ],
+                perms: [
+                     { required: true, message: "必填字段" },
+                ],
+                path: [
+                     { required: true, message: "必填字段" },
+                ],
+                component: [
+                     { required: true, message: "必填字段" },
+                ],
+            }
+        var    F_rules = {
+                parent_id: [
+                     { required: true, message: "必填字段" },
+                ],
+                menu_type: [
+                    { required: true, message: "必填字段" },
+                ],     
+                name: [
+                     { required: true, message: "必填字段" },
+                ],
+                perms: [
+                     { required: true, message: "必填字段" },
+                ],
+            }
+        if(menu.menu_type==="M") {
+            return M_rules
+        }else if(menu.menu_type==="C") {
+            return C_rules
+        }else{
+            return F_rules
+        }
+
+}
 
 const add_rules = {
     name: [
         { required: true, message: "必填字段" },
     ],
+    
 }
 const edit_rules = {
     name: [
@@ -100,14 +165,15 @@ const edit_rules = {
 const form = ref({
     id: -1,
     parent_id: '',
-    menu_type: "C",
+    menu_type: "F",
     icon: '',
     name: '',
     perms: '',
     path: '',
     component: '',
     order_num: 1,
-    remark: ''
+    remark: '',
+    location: 1,
 })
 
 
@@ -146,14 +212,15 @@ watch(
             form.value = {
                 id: -1,
                 parent_id: '',
-                menu_type: "C",
+                menu_type: "F",
                 icon: '',
                 name: '',
                 perms: '',
                 path: '',
                 component: '',
                 order_num: 1,
-                remark: ''
+                remark: '',
+                location: 1,
             }
         } else {
             if (props.open) {
@@ -169,14 +236,15 @@ watch(
                 form.value = {
                     id: -1,
                     parent_id: '',
-                    menu_type: "M",
+                    menu_type: "F",
                     icon: '',
                     name: '',
                     perms: '',
                     path: '',
                     component: '',
                     order_num: 1,
-                    remark: ''
+                    remark: '',
+                    location: 1,
                 }
             }
         }

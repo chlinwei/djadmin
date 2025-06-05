@@ -14,21 +14,22 @@ from .models import SysUser
 from .serializer import SysUserSerializer
 from .filters import SysUserFilter
 
+from rest_framework.filters import SearchFilter,OrderingFilter
+
 from django.core.exceptions import ObjectDoesNotExist
 from djadmin.utils import Response_200,Response_error
 from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveModelMixin
 from rest_framework.mixins import ListModelMixin
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
+from role.models import SysRole
 
 from datetime import datetime
 #login
 from rest_framework_jwt.settings import api_settings
-from role.models import SysRole
-
-from role.serializer import SysRoleSerializer
 
 
+from menu.permisssion import CustomMenuPermission
 from menu.serializer import SysMenuDynamicListSerializer
 from menu.models import SysMenu
 
@@ -54,6 +55,7 @@ class TestView(APIView):
     
 from django.db.models import Prefetch
 from .models import SysUserRole
+from role.serializer import SysRoleSerializer
 
 class TestView(View):
     def get(self, request):
@@ -76,7 +78,7 @@ class TestView(View):
 # 登录
 class LoginView(APIView):
     def getMenuList(self,userId: int):
-        menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
+        menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
         menu_list_data = SysMenuDynamicListSerializer(menu_list)
         return menu_list_data.data
 
@@ -115,7 +117,18 @@ class LoginView(APIView):
             if menu_m['parent_id'] == 0:
                 menu2_list.append(menu_m)
         return menu2_list
-        
+
+    def extract_perms(self,menu_list):
+        perms = []
+        for item in menu_list:
+            # 添加当前节点权限
+            if item.get('perms') and item['perms'].strip():
+                perms.append(item['perms'])
+            # 递归处理子节点
+            if item.get('children'):
+                perms.extend(self.extract_perms(item['children']))
+        return perms
+            
     def post(self,request,format=None):
         username = request.POST.get("username")
         password = request.POST.get("password")
@@ -123,10 +136,6 @@ class LoginView(APIView):
             user = SysUser.objects.get(username=username, password=password)
             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
-            payload = jwt_payload_handler(user)
-            token = jwt_encode_handler(payload)
-            
-            
         except ObjectDoesNotExist as e:
             user = None
         if user == None:
@@ -138,23 +147,30 @@ class LoginView(APIView):
             # menu_list = self._getMenuList(user.id)
             menu_list = self.getMenuList(user.id)
             current_user = SysUserSerializer(user).data
-
+            perms = self.extract_perms(menu_list)
+            print(menu_list)
+            user.perms = perms
+            payload = jwt_payload_handler(user)
+            token = jwt_encode_handler(payload)
             #缓存到cache中
-            
-            # self.test(user.id)
             return JsonResponse({
                 'code':200,
                 'data': {
                     'currentUser':current_user,
                     'token': token,
-                    'menuList': menu_list
+                    'menuList': menu_list,
                 },
             })
         
 
 # 个人中心
 class UserCenterManage(GenericViewSet):
-     #修改基础信息
+    # permission_classes = [CustomMenuPermission]
+    # 权限标识配置
+    # action_perms_map = {
+    #     'updateUserInfo': 'system:usercenter:updateUserInfo',
+    #     'updateUserPassword': 'system:usercenter:updateUserPassword',
+    # }
     @action(detail=False,methods=['post'],url_path="updateUserInfo")
     def updateUserInfo(self,request):
         phonenumber = request.data['phonenumber']
@@ -207,20 +223,7 @@ class ChangeAvatarView(APIView):
                 return Response_error(UserError.change_avatar_error)
 
 from .serializer import StatusSerializer
-#修改用户的状态
-class ChangeStatusView(APIView):
-    def post(self,request):
-        serializer = StatusSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)  # 自动返回400错误
-        if serializer.is_valid():
-            try:
-                user = SysUser.objects.get(id=serializer.validated_data['user_id'])
-                user.update_time = datetime.now().date()
-                user.status = serializer.validated_data['status']
-                user.save()
-                return Response_200()
-            except:
-                return Response_error(UserError.change_status_error)
+
             
 
 #查询用户detail,编辑用户，新增用户
@@ -236,9 +239,24 @@ class UserManage(
     RetrieveModelMixin,
     ListModelMixin
 ):
+    permission_classes = [CustomMenuPermission]
+    # 权限标识配置
+    action_perms_map = {
+        'list': 'system:users:view',
+        'retrive':'system:users:view',
+        'userBatchDelete': 'system:users:delete',
+        'resetUserPwd': 'system:users:update',
+        'assginUserRoles': 'system:users:update',
+        'changeUserStatus': 'system:users:update',
+        'update': 'system:users:update',
+        'create': 'system:users:add',
+        'getUserRolesById': 'system:users:view',
+    }
     lookup_field = 'id'
-    filter_backends = (filters.DjangoFilterBackend,)
-    filterset_class = SysUserFilter
+    filter_backends = (OrderingFilter,filters.DjangoFilterBackend,SearchFilter)
+    # filterset_class = SysUserFilter
+    search_fields = ['username', 'email','phonenumber','remark'] 
+    ordering_fields = [ 'username','create_time'] 
     pagination_class = CustomPagination
     default_queryset = SysUser.objects.all()
     def get_serializer_class(self):
@@ -314,5 +332,14 @@ class UserManage(
                 return Response_200()
             except:
                 return Response_error(UserError.change_status_error)
+        # 根据用户id获取用户包含的角色列表
+    @action(detail=False,methods=['get'],url_path='getUserRolesById')
+    def getUserRolesById(self,request):
+        # 获取当前用户id
+        user_id = request.query_params.get('user_id')
+        #查询用户角色根据用户id
+        raw_data = SysRole.objects.raw("select sr.id as id,sr.name as name,sr.code as code,sr.create_time  as create_time,sr.update_time as update_time ,sr.remark as remark  from sys_user_role sur   inner join sys_role sr ON sur.role_id = sr.id  WHERE sur.user_id  = %s",[user_id])
+        roleList = SysRoleSerializer(raw_data,many=True).data
+        return Response_200(data={"roleList":roleList})
 
 

@@ -36,7 +36,8 @@ class SysMenuDynamicListSerializer(serializers.BaseSerializer):
             'perms': node.perms,
             'create_time':node.create_time,
             'update_time':node.update_time,
-            'remark':node.remark
+            'remark':node.remark,
+            'location':node.location,
         }
         for menu in menuList:
             if menu.parent_id == dict_menu['id']:

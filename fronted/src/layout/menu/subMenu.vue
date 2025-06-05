@@ -1,12 +1,12 @@
 <template>
-    <a-menu-item v-if="!menu.children" :key="menu.path" @click="add_tab(menu)"><FontAwesomeIcon :icon="menu.icon" />&nbsp;{{ menu.name }}</a-menu-item>
-    <a-sub-menu v-else :key="menu.path">
+    <a-menu-item v-if="menu.menu_type ==='C'" :key="menu.path" @click="add_tab(menu)"><FontAwesomeIcon :icon="menu.icon" />&nbsp;{{ menu.name }}</a-menu-item>
+    <a-sub-menu v-else-if="menu.menu_type === 'M'"  :key="menu.path">
         <!-- 下面的template的title就是目录名称,例如系统管理 -->
         <template #title>
             <FontAwesomeIcon :icon="menu.icon" />
             <span>&nbsp;{{ menu.name }}</span>
         </template>
-        <subMenu v-for="children in menu.children" :menu="children" />
+        <subMenu  v-for="children in menu.children" :menu="children" />
     </a-sub-menu>
 
     <!-- 传统的从文件加载图标 -->

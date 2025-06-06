@@ -18,7 +18,8 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { fas } from '@fortawesome/free-solid-svg-icons'
 import {checkPermission} from '@/directives/permission/permission'
 
-
+// 初始化
+import dj_init from '@/init'
 
 library.add(fas)
 
@@ -26,7 +27,9 @@ library.add(fas)
 import {setup as setupIcon} from './components/SvgIcon/index.js'
 
 const app = createApp(App)
-
+dj_init()
+console.log("perms")
+console.log(store.state.perms)
 
 // 权限
 // 注册权限指令

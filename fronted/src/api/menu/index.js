@@ -1,4 +1,5 @@
 import requestUtil from '@/util/request'
+import store from '@/store'
 // 获取权限树
 export const getMenuTree = () => {
     return requestUtil.get("sys/menus/getMenuTree/");
@@ -53,7 +54,10 @@ function extractPerms(menuTree) {
   return perms;
 }
 function setPerms(perms) {
+    //将权限存储在vuex中
+    store.commit("add_perms",perms)
     perms = JSON.stringify(perms);
+    // 将权限存储在localstorage中
     localStorage.setItem("perms", perms);
 }
 function removePerms() {
@@ -63,6 +67,8 @@ export function getPerms() {
     let perms = localStorage.getItem("perms");
     return JSON.parse(perms);
 }
+
+
 
 //保存权限菜单
 export function saveMenuList(menuList) {

@@ -11,14 +11,14 @@
                 @search="onSearch" />
 
         </a-col>
-        <a-col class="AddBtn tool-item">
+        <a-col class="AddBtn tool-item" v-permission="'system:roles:create'">
             <a-button size="large" @click="HandleAdd">
                 <FontAwesomeIcon :icon="['fas','fa-plus-circle']">
                 </FontAwesomeIcon>
                 <span>&nbsp;新增</span>
             </a-button>
         </a-col>
-        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1">
+        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'system:roles:delete'">
             <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
                 :overlayStyle="{ width: '300px', minHeight: '200px' }">
                 <a-button size="large" type="primary" :loading="state.loading" danger>

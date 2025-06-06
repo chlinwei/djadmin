@@ -3,6 +3,7 @@ import Cookies from 'js-cookie';
 import { encrypt, decrypt } from "@/util/jsencrypt";
 import { message } from 'ant-design-vue';
 import router from '@/router';
+import store from '@/store'
 // 登录
 export const doLogin = (data) => {
     return requestUtil.post("sys/login", data);
@@ -10,6 +11,7 @@ export const doLogin = (data) => {
 
 // 存储个人信息
 export function saveCurrentUser(currentUser) {
+    store.commit("add_user",currentUser);
     currentUser = JSON.stringify(currentUser);
     localStorage.setItem("currentUser", currentUser);
 }

@@ -1,10 +1,9 @@
 import { getPerms } from "@/api/menu";
-import { getCurrentUser } from "@/api/user";
+import store from "@/store";
 
 // 权限检查函数
 export function checkPermission(permissionCode) {
-    const perms  = getPerms();
- // 从Vuex获取权限列表
+    var  perms  = store.state.perms
     return perms.includes(permissionCode)
 }
 

@@ -73,11 +73,17 @@ export default createStore({
             state.selectedKeys = [selectedKeys];
         }
         ,
-        add_user:(user) => {
+        add_user:(state,user) => {
             state.user = user
         },
         clear_user:()=>{
             state.user = {}
+        },
+        add_perms:(state,perms) => {
+            state.perms = perms
+        },
+        clear_perms:()=>{
+            state.perms = []
         }
     },
     actions: {},

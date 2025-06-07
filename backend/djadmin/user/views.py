@@ -77,7 +77,7 @@ class TestView(View):
 
 # 登录
 class LoginView(APIView):
-    def getMenusAndRoleNames(self,userId: int):
+    def getMenusAndRoleCodes(self,userId: int):
         # 原始
         # menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
         #先查询角色
@@ -152,7 +152,7 @@ class LoginView(APIView):
         })
         else:
             # menu_list = self._getMenuList(user.id)
-            menu_list,role_codes = self.getMenusAndRoleNames(user.id)
+            menu_list,role_codes = self.getMenusAndRoleCodes(user.id)
             current_user = SysUserSerializer(user).data
             perms = self.extract_perms(menu_list)
             user.perms = perms

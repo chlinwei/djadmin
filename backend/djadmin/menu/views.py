@@ -6,10 +6,25 @@ from djadmin.utils import Response_200
 from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveModelMixin
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
-
+from menu.permisssion import CustomMenuPermission
 
 # 自带新增,更新
 class MenuManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin):
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        # 查看
+        'getMenuTree': 'system:roles:list',
+        'retrieve': 'system:roles:list',
+        'getMenuListByRoleId':'system:roles:list',
+        # 修改
+        'partial_update': 'system:menus:update',
+        'perform_update': 'system:menus:update',
+        # 新增
+        'create': 'system:menus:create',   
+        # 删除
+        'deleteMenuById':'system:menus:delete', 
+        
+    }
     queryset = SysMenu.objects.all()
     serializer_class = SysMenuSerializer2
     lookup_field = 'id'

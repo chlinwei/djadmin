@@ -11,7 +11,7 @@
                 @search="onSearch" />
 
         </a-col>
-        <a-col class="AddBtn tool-item" v-permission="'system:roles:create'">
+        <a-col class="AddBtn tool-item" v-permission.remove="'system:roles:create'">
             <a-button size="large" @click="HandleAdd">
                 <FontAwesomeIcon :icon="['fas','fa-plus-circle']">
                 </FontAwesomeIcon>
@@ -42,16 +42,16 @@
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
-                                <a-col  v-permission="'system:roles:delete'">
+                                <a-col  v-permission.remove="'system:roles:update'">
                                     <a-button type="primary" id="assignRole"
                                         @click="handleMenuAssign(record.id, record.name)">分配权限</a-button>
                                 </a-col>
-                                <a-col v-if="record.name != 'admin'"  v-permission="'system:roles:update'">
+                                <a-col v-if="record.name != 'admin'"  v-permission.remove="'system:roles:update'">
                                     <a-button type="primary" @click="onSaveorChanageRole(record.id)">
                                         <FontAwesomeIcon :icon="['fa','edit']" />
                                     </a-button>
                                 </a-col>
-                                <a-col v-permission="'system:roles:delete'">
+                                <a-col v-permission.remove="'system:roles:delete'">
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                         @confirm="delconfirm(record.id)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -85,6 +85,7 @@ import { computed, reactive } from 'vue';
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
+import {checkPermission} from '@/directives/permission/permission'
 
 const menu_assign_title = ref("")
 
@@ -101,8 +102,11 @@ const columns = [
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80,sorter: true},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
-    { title: '操作', key: 'action', fixed: 'right', width: 330 }
 ]
+if(checkPermission(['system:roles:update','system:roles:delete'])) {
+    columns.push({ title: '操作', key: 'action', fixed: 'right', width: 330 })
+}
+
 var lastSearchKeyword = null
 const total = ref(1)
 

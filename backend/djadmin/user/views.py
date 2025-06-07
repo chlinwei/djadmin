@@ -56,7 +56,7 @@ class TestView(APIView):
 from django.db.models import Prefetch
 from .models import SysUserRole
 from role.serializer import SysRoleSerializer
-
+from role.models import SysRole
 class TestView(View):
     def get(self, request):
         token = request.META.get('HTTP_AUTHORIZATION')
@@ -77,10 +77,17 @@ class TestView(View):
 
 # 登录
 class LoginView(APIView):
-    def getMenuList(self,userId: int):
-        menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
+    def getMenusAndRoleNames(self,userId: int):
+        # 原始
+        # menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
+        #先查询角色
+        roles = SysUserRole.objects.filter(user_id=userId)
+        role_id_list = roles.values_list('role_id', flat=True)
+        role_id_tuple = tuple(role_id_list) if role_id_list else (0,)
+        role_codes = SysRole.objects.filter(id__in=role_id_list).values_list('code',flat=True)
+        menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in %s) order by sm.order_num",[role_id_tuple])
         menu_list_data = SysMenuDynamicListSerializer(menu_list)
-        return menu_list_data.data
+        return menu_list_data.data,list(role_codes)
 
     #根据用户id查询menu(一级和二级菜单)
     def _getMenuList(self,userId: int):
@@ -145,13 +152,14 @@ class LoginView(APIView):
         })
         else:
             # menu_list = self._getMenuList(user.id)
-            menu_list = self.getMenuList(user.id)
+            menu_list,role_codes = self.getMenusAndRoleNames(user.id)
             current_user = SysUserSerializer(user).data
             perms = self.extract_perms(menu_list)
-            print(menu_list)
             user.perms = perms
             payload = jwt_payload_handler(user)
             token = jwt_encode_handler(payload)
+            # 获取角色
+            
             #缓存到cache中
             return JsonResponse({
                 'code':200,
@@ -159,6 +167,7 @@ class LoginView(APIView):
                     'currentUser':current_user,
                     'token': token,
                     'menuList': menu_list,
+                    'role_codes':role_codes,
                 },
             })
         

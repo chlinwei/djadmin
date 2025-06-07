@@ -1,4 +1,5 @@
 import { getPerms } from "@/api/menu"
+import { getRoleCodes } from "@/api/role"
 import { getCurrentUser } from "@/api/user"
 import store from '@/store'
 
@@ -7,6 +8,8 @@ export default  function() {
     loadUser()
     // 从localstorage加载perms
     loadPerms()
+    // 从localstorage加载role_codes
+    loadRole_codes()
 }
 
 function loadUser() {
@@ -16,4 +19,8 @@ function loadUser() {
 function loadPerms() {
     var perms = getPerms()
     store.commit("add_perms",perms)
+}
+function loadRole_codes() {
+    var role_codes = getRoleCodes()
+    store.commit("add_role_codes",role_codes)
 }

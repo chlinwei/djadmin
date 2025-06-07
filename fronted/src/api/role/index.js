@@ -42,3 +42,15 @@ export function batchDeleteRole(ids) {
         return requestUtil.del("sys/roles/batch-delete/",{role_ids:ids})
     }
 }
+
+// 保存一个用户的角色列表到Localstorage
+export function saveRoleCodes(role_codes) {
+    var data = JSON.stringify(role_codes)
+    localStorage.setItem("role_codes", data);
+}
+
+// 获取角色列表从Localstorage
+export function getRoleCodes() {
+    var data = localStorage.getItem("role_codes");
+    return JSON.parse(data) 
+}

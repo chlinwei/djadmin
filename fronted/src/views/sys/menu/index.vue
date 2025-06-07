@@ -2,7 +2,7 @@
  <Dialog :open="itemAssignVisible" @update:open="(value) => { itemAssignVisible = value }"
         :item_id="menu_id" :title="menu_assign_title" :treeData="treeData2" @initList="initList" />
     <a-row class="tools" :gutter="16">
-        <a-col class="AddBtn tool-item">
+        <a-col class="AddBtn tool-item" v-permission="'system:menus:create'">
             <a-button size="large" @click="HandleAdd">
                 <FontAwesomeIcon :icon="['fas','fa-plus-circle']" />
                 <span>&nbsp新增</span>
@@ -27,12 +27,12 @@
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
-                                <a-col>
+                                <a-col v-permission="'system:menus:update'">
                                     <a-button type="primary" @click="saveItem(record.key,record.name)">
                                         <FontAwesomeIcon :icon="['fa','edit']" />
                                     </a-button>
                                 </a-col>
-                                <a-col>
+                                <a-col v-permission="'system:menus:delete'">
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                         @confirm="delconfirm(record.key)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
@@ -54,6 +54,7 @@
 import { ref, reactive } from 'vue';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
+import { checkPermission } from '@/directives/permission/permission';
 const itemAssignVisible = ref(false)
 // 缓存
 defineOptions({
@@ -101,12 +102,13 @@ const columns = [
         dataIndex: 'create_time',
         key: 'create_time',
     },
-    {
+];
+if(checkPermission(['system:menus:update','system:menus:delete'])) {
+    columns.push({
         title: '操作',
         key: 'action',
-    },
-
-];
+    })
+}
 const rowLoadingStates = reactive({
 });
 const treeData = ref([])

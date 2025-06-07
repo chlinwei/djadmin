@@ -13,6 +13,8 @@ export default createStore({
         ],
         users: {},
         perms: [],
+        // 用户角色列表
+        role_codes: [],
     },
     getters: {},
     mutations: {
@@ -84,7 +86,13 @@ export default createStore({
         },
         clear_perms:()=>{
             state.perms = []
-        }
+        },
+        add_role_codes:(state,role_codes) => {
+            state.role_codes = role_codes
+        },
+        clear_role_codes:()=>{
+            state.role_codes = []
+        },
     },
     actions: {},
     modules: {}

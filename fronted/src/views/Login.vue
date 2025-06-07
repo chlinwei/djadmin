@@ -42,7 +42,7 @@ import {addDynamicRoutes} from '@/router/index.js';
 import { message } from 'ant-design-vue';
 import {doLogin,saveCurrentUser,saveToken,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
 import {saveMenuList} from '@/api/menu/index.js'
-
+import {saveRoleCodes} from '@/api/role/index.js'
 import qs from 'qs'
 const loginForm = reactive({
     username: '',
@@ -57,6 +57,7 @@ const onFinish = values => {
         saveToken(data.data.token);
         saveCurrentUser(data.data.currentUser);
         saveMenuList(data.data.menuList);
+        saveRoleCodes(data.data.role_codes);
         //登录成功
         if (loginForm.remember == true) {
             // 30天过期

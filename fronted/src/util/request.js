@@ -20,7 +20,6 @@ const httpService = axios.create({
 httpService.interceptors.request.use(function (config) {
     // 在发送请求之前做些什么
     config.headers.AUTHORIZATION=getToken();
-    console.log("request:")
     console.log(config.headers.AUTHORIZATION)
     return config;
 }, function (error) {
@@ -31,7 +30,6 @@ httpService.interceptors.request.use(function (config) {
 // 添加响应拦截器
 httpService.interceptors.response.use(function (response) {
     // 对响应数据做点什么
-    console.log(response.data)
     if(response.data.code != 200){
         message.error(response.data.msg)
         return Promise.reject(new Error(response.data.msg))

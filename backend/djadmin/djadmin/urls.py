@@ -24,6 +24,5 @@ urlpatterns = [
 name='media'),
     path('sys/',include('role.urls')),
     path('sys/',include('menu.urls')),
-    # path('menu/',include('menu.urls')),
-
+    path('assets/',include('assets.urls')),
 ]

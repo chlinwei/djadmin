@@ -5,15 +5,15 @@ from .models import *
 
 
 # host user
-class Host_UserSerializer(ModelSerializer):
+class CredentialSerializer(ModelSerializer):
     class Meta:
-        model = Host_User
+        model = Credential
         fields = '__all__'
     
     # 创建
     def create(self, validated_data):
         validated_data["create_time"] = datetime.now().date()
-        data = Host_User.objects.create(**validated_data)
+        data = Credential.objects.create(**validated_data)
         return data
 # host type
 class Host_TypeSerializer(ModelSerializer):

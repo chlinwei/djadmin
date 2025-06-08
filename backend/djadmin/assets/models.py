@@ -5,7 +5,7 @@ from djadmin.basemodel import BaseModel
 
 
 # SSh User
-class Host_User(BaseModel):
+class Credential(BaseModel):
     STATUS = (
         ('0', u'启用'),
         ('1', u'停用'),
@@ -15,7 +15,7 @@ class Host_User(BaseModel):
 
     class Meta:
         ordering = ['-id']
-        db_table = 'assets_host_User'
+        db_table = 'assets_credential'
 
 class Host_Type(BaseModel):
     name = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='Host类别')
@@ -31,7 +31,7 @@ class Host(BaseModel):
     )
     host_type = models.ForeignKey(Host_Type,default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='主机类别')
     hostname = models.CharField(default='',blank=True,null=True,max_length=200,verbose_name='主机名')
-    ssh_user = models.ForeignKey(Host_User, default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='SSH用户')
+    host_credential = models.ForeignKey(Credential, default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='SSH用户')
     ssh_ip = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='SSH IP地址')
     ssh_port = models.PositiveIntegerField(default=22, null=True, blank=True, verbose_name='SSH 端口')
     cpu = models.CharField(default='', max_length=64, null=True, blank=True, verbose_name='CPU')

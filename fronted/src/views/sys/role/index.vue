@@ -18,7 +18,7 @@
                 <span>&nbsp;新增</span>
             </a-button>
         </a-col>
-        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'system:roles:delete'">
+        <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission.remove="'system:roles:delete'">
             <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
                 :overlayStyle="{ width: '300px', minHeight: '200px' }">
                 <a-button size="large" type="primary" :loading="state.loading" danger>
@@ -30,7 +30,6 @@
             <div class="selectedItems" v-if="state.selectedRowKeys.length >= 1">
                 <span style="height: 100%;">已选择{{ state.selectedRowKeys.length }}项</span>
             </div>
-
         </a-col>
     </a-row>
     <a-row>
@@ -147,8 +146,10 @@ const pagination = computed(() => ({
     total: total.value,
     current: current.value,
     pageSize: pageSize.value,
+    showTotal: (total) => `共有${total}条数据`,
+    pageSizeOptions: ['10', '20', '30'],
+    showQuickJumper: true,
 }))
-
 const handleTableChange = (page, filters, sorter) => {
 
     var sorter_str = ""
@@ -293,7 +294,6 @@ const handleMenuAssign = (id, name) => {
 .tools {
     margin-bottom: 20px;
     height: 50px;
-    ;
 }
 
 .tool-item {
@@ -310,4 +310,5 @@ const handleMenuAssign = (id, name) => {
     /* 匹配按钮高度 */
     vertical-align: middle;
     font-size: 20px;
-}</style>
+}
+</style>

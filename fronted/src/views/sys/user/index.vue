@@ -177,8 +177,10 @@ const pagination = computed(() => ({
     total: total.value,
     current: current.value,
     pageSize: pageSize.value,
+    showTotal: (total) => `共有${total}条数据`,
+    pageSizeOptions: ['10', '20', '30'],
+    showQuickJumper: true,
 }))
-
 const handleTableChange = (page, filters, sorter) => {
 
     var sorter_str = ""

@@ -14,6 +14,9 @@
                 <a-form-item name="password" label="ssh密码">
                     <a-input-password v-model:value="form.password" />
                 </a-form-item>
+                <a-form-item name="private_key" label="SSH私钥">
+                    <a-textarea v-model:value="form.private_key" />
+                </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" />
                 </a-form-item>
@@ -71,6 +74,7 @@ const form = ref({
     id: -1,
     name: '',
     password: '',
+    private_key: null,
     remark: '',
 })
 
@@ -115,6 +119,7 @@ watch(
                 id: -1,
                 name: '',
                 password: '',
+                private_key: null,
                 remark: '',
             }
         } else {
@@ -132,6 +137,7 @@ watch(
                     id: -1,
                     name: '',
                     password: '',
+                    private_key: null,
                     remark: '',
                 }
             }

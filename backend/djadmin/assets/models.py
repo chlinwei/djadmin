@@ -12,16 +12,18 @@ class Credential(BaseModel):
     )
     name = models.CharField(default='', max_length=200, null=True, blank=True, verbose_name='SSH 用户')
     password = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='SSH 密码')
+    private_key  = models.TextField(default=None, max_length=8192, null=True,blank=True, verbose_name='SSH 私钥')
 
     class Meta:
         ordering = ['-id']
         db_table = 'assets_credential'
 
-class Host_Type(BaseModel):
-    name = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='Host类别')
+class Application(BaseModel):
+    name = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='应用名称',unique=True)
+    version = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='应用')
     class Meta:
         ordering = ['-id']
-        db_table = 'assets_host_type'
+        db_table = 'assets_application'
 
 
 class Host(BaseModel):
@@ -29,7 +31,7 @@ class Host(BaseModel):
         ('0', u'下线'),
         ('1', u'在线'),
     )
-    host_type = models.ForeignKey(Host_Type,default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='主机类别')
+    application = models.ForeignKey(Application,default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='主机类别')
     hostname = models.CharField(default='',blank=True,null=True,max_length=200,verbose_name='主机名')
     host_credential = models.ForeignKey(Credential, default='', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='SSH用户')
     ssh_ip = models.CharField(default='', max_length=128, null=True, blank=True, verbose_name='SSH IP地址')

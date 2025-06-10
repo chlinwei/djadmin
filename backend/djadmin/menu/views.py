@@ -13,9 +13,9 @@ class MenuManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelM
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
         # 查看
-        'getMenuTree': 'system:roles:list',
-        'retrieve': 'system:roles:list',
-        'getMenuListByRoleId':'system:roles:list',
+        'getMenuTree': 'system:roles:view',
+        'retrieve': 'system:roles:view',
+        'getMenuListByRoleId':'system:roles:view',
         # 修改
         'partial_update': 'system:menus:update',
         'perform_update': 'system:menus:update',

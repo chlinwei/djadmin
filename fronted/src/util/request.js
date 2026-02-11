@@ -30,7 +30,10 @@ httpService.interceptors.request.use(function (config) {
 // 添加响应拦截器
 httpService.interceptors.response.use(function (response) {
     // 对响应数据做点什么
-    if(response.data.code != 200){
+    if(response.data.code === 300) {
+        message.error("账号或者密码输入错误")
+        return Promise.reject(new Error(response.data.msg))
+    }else if(response.data.code != 200){
         message.error(response.data.msg)
         return Promise.reject(new Error(response.data.msg))
     }

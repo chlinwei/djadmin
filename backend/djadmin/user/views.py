@@ -148,7 +148,8 @@ class LoginView(APIView):
         if user == None:
             return JsonResponse({
             'code':300,
-            'data': None
+            'data': None,
+            'msg':"账号或者密码输入错误"
         })
         else:
             # menu_list = self._getMenuList(user.id)

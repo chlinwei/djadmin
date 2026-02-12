@@ -41,6 +41,7 @@
             <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
                 :columns="columns" :data-source="datasources" :pagination="pagination" :loading="loading"
                 onSelectChange="onSelectChange" @change="handleTableChange">
+                
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
@@ -63,6 +64,28 @@
                             </a-row>
                         </div>
                     </template>
+                    <template v-else-if="column.key === 'name'">
+                        <span>
+                        <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-key']" />&nbsp; 
+                        {{ record.name }}
+                        </span>
+                    </template>
+                    <template v-else-if="column.key === 'username'">
+                        <span>
+                        <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-user']" />&nbsp; 
+                        {{ record.username }}
+                        </span>
+                    </template>
+                    <template v-else-if="column.key === 'port'">
+                        <span>
+                        <FontAwesomeIcon v-if="record.port" :icon="['fas', 'ethernet']" />&nbsp; 
+                        {{ record.port }}
+                        </span>
+                    </template>
+                    <template v-else-if="column.key === 'auth_type'">
+                        <span> <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-lock']" />&nbsp; {{ AUTH_TYPE_MAP[record.auth_type] }}</span>
+                    </template>
+                    
                 </template>
             </a-table>
         </a-col>
@@ -87,13 +110,35 @@ const state = reactive({
     loading: false,
 });
 import { getCredentailList } from '@/api/assets/credential';
-
+const AUTH_TYPE_MAP = {
+    1: "密码认证",
+    2: "公钥认证"
+}
 const columns = [
     {
-        title: '名称',
+        title: '凭证名称',
         dataIndex: 'name',
         key: 'name',
         sorter: true,
+    },
+    {
+        title: '用户名称',
+        dataIndex: 'username',
+        key: 'username',
+        sorter: true,
+    },
+    {
+        title: '端口',
+        dataIndex: 'port',
+        key: 'port',
+        sorter: true,
+    },
+    {
+        title: '认证类型',
+        dataIndex: 'auth_type',
+        key: 'auth_type',
+        sorter: true,
+        customRender: ({ text }) => AUTH_TYPE_MAP[text] || text,
     },
     {
         title: '创建时间',
@@ -272,13 +317,13 @@ const item_id = ref(-1)
 const onSaveOrCreate = (id, name) => {
     itemAssignVisible.value = true
     item_id.value = id
-    item_assign_title.value = "编辑" + "-" + name
+    item_assign_title.value = "修改凭证" + "-" + name
 }
 // 新增
 const HandleAdd = () => {
     item_id.value = -1
     itemAssignVisible.value = true
-    item_assign_title.value = "新增"
+    item_assign_title.value = "创建凭证"
 }
 
 

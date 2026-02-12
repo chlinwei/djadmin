@@ -6,17 +6,32 @@
 
             <a-spin :spinning="loading">
             </a-spin>
-            <a-form v-if="!loading" :model="form" ref="formRef" name="basic" :label-col="{ span: 8 }"
-                :wrapper-col="{ span: 16 }" autocomplete="off" :rules="get_rules(form)">
-                <a-form-item name="name" label="ssh用户">
+            <a-form v-if="!loading" :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }" :model="form" ref="formRef" name="basic"  autocomplete="off" :rules="get_rules(form)">
+                <a-form-item name="name" label="凭证名称" text-align="right" >
                     <a-input v-model:value="form.name" />
                 </a-form-item>
-                <a-form-item name="password" label="ssh密码">
-                    <a-input-password v-model:value="form.password" />
+                <a-form-item name="auth_type" label="认证类型">
+                    <a-radio-group v-model:value="form.auth_type">
+                        <a-radio :value="1">密码</a-radio>
+                        <a-radio :value="2">密钥</a-radio>
+                    </a-radio-group>
                 </a-form-item>
-                <a-form-item name="private_key" label="SSH私钥">
+                
+                <a-form-item name="username" label="用户名">
+                    <a-input v-model:value="form.username" />
+                </a-form-item>
+
+                <a-form-item name="port" label="端口">
+                    <a-input v-model:value="form.port" />
+                </a-form-item>
+            
+                <a-form-item v-if="form.auth_type === 2" name="private_key" label="SSH私钥">
                     <a-textarea v-model:value="form.private_key" />
                 </a-form-item>
+                <a-form-item v-if="form.auth_type === 1" name="password" label="密码">
+                    <a-input-password v-model:value="form.password" />
+                </a-form-item>
+                
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" />
                 </a-form-item>
@@ -118,6 +133,9 @@ watch(
             form.value = {
                 id: -1,
                 name: '',
+                username: '',
+                auth_type: '',
+                port: 22,
                 password: '',
                 private_key: null,
                 remark: '',
@@ -136,6 +154,9 @@ watch(
                 form.value = {
                     id: -1,
                     name: '',
+                    username: '',
+                    auth_type: '',
+                    port: 22,
                     password: '',
                     private_key: null,
                     remark: '',
@@ -153,4 +174,11 @@ import { message } from 'ant-design-vue';
 const handleCancel = () => {
     emits('update:open', false);
 }
+
+
+
 </script>
+
+<style scoped>
+
+</style>

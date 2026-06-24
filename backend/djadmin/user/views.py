@@ -140,7 +140,11 @@ class LoginView(APIView):
         username = request.POST.get("username")
         password = request.POST.get("password")
         try:
-            user = SysUser.objects.get(username=username, password=password)
+            user = SysUser.objects.get(username=username)
+            if user.status == 0:
+                return Response_error(UserError.login_disabled_error)
+            if user.password != password:
+                user = None
             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
         except ObjectDoesNotExist as e:
@@ -311,10 +315,11 @@ class UserManage(
         if not id:
             return Response_error(UserError.user_not_exists)
         user = SysUser.objects.get(id=id)
-        user.password = "123456"
+        reset_password = "123456"
+        user.password = reset_password
         user.update_time = datetime.now().date()
         user.save()
-        return Response_200()
+        return Response_200(data={"password": reset_password})
     # 给用户分配角色
     @action(detail=False,methods=['post'],url_path="assginUserRoles")
     def assginUserRoles(self,request):

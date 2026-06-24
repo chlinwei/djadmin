@@ -289,7 +289,7 @@ const resetPwdconfirm = (id) => {
     resetPwd(id).then((res) => {
         if (res.data.code == 200) {
             HandleInitUserList();
-            message.success("重置密码成功");
+            message.success("重置密码成功，新密码为：" + res.data.data.password);
         } else {
             message.error("重置密码失败:" + res.data.msg);
         }

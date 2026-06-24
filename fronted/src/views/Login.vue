@@ -38,12 +38,14 @@
 <script setup>
 import { reactive } from 'vue';
 import router from '@/router'
+import { useRoute } from 'vue-router';
 import {addDynamicRoutes} from '@/router/index.js';
 import { message } from 'ant-design-vue';
 import {doLogin,saveCurrentUser,saveToken,setRemeberMe,clearRemeberMe,getRemeberMeInfo} from '@/api/user/index.js'
 import {saveMenuList} from '@/api/menu/index.js'
 import {saveRoleCodes} from '@/api/role/index.js'
 import qs from 'qs'
+const route = useRoute();
 const loginForm = reactive({
     username: '',
     password: '',
@@ -72,8 +74,9 @@ const onFinish = values => {
         }
         //登录成功后，加载动态路由
         addDynamicRoutes();
-        //跳转主页
-        router.replace("/index")
+        // 优先跳回原页面，没有就进首页
+        const redirect = route.query.redirect || '/index';
+        router.replace(redirect)
     }else {
         message.error("用户或者密码错误，请重新登陆...")
         clearRemeberMe()

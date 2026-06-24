@@ -24,6 +24,7 @@ class UserError(ErrorMixin, Enum):
     change_status_error = (1003,"修改状态失败")
     user_ids_empty = (1004,"用户id数组为空错误")
     user_not_exists = (1005,"用户不存在错误")
+    login_disabled_error = (1006,"用户已被禁用，无法登录")
 
 class AssetsError(ErrorMixin,Enum):
     FILE_NOT_ENDSWITH_CSV = (5001,"文件后缀必须是CSV")

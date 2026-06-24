@@ -79,6 +79,7 @@ class CloudAccount(BaseModel):
 
     
 class Host(BaseModel):
+    instance_name = models.CharField(max_length=128, blank=True, null=True)
     name = models.CharField(max_length=128,null=False,default='')
     ip = models.GenericIPAddressField(null=True)
     instance_id = models.CharField(max_length=128, blank=True, null=True)

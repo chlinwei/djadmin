@@ -35,6 +35,7 @@ httpService.interceptors.response.use(function (response) {
         return Promise.reject(new Error(response.data.msg))
     }else if(response.data.code != 200){
         message.error(response.data.msg)
+        console.log(response)
         return Promise.reject(new Error(response.data.msg))
     }
     return response;

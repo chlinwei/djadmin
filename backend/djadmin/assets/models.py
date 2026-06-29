@@ -99,6 +99,7 @@ class Host(BaseModel):
     )
     status = models.CharField(max_length=32, default="running")
     is_deleted_in_cloud = models.BooleanField(default=False)
+    port = models.PositiveIntegerField(default=22)
 
     def __str__(self):
         return f"{self.name} ({self.ip})"

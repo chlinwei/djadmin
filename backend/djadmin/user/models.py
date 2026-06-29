@@ -20,6 +20,7 @@ class SysUser(models.Model):
     create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )
     update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
     remark = models.CharField(max_length=500, null=True,blank=True,verbose_name="备注")
+    timezone = models.CharField(max_length=50, default='UTC', verbose_name="时区")
     class Meta:
         db_table = "sys_user"
 

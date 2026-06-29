@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Scheduler</h1>
+    <div class="btn-group">
+        <a href="{% url 'start' %}" class="btn btn-success">Start</a>
+        <a href="{% url 'stop' %}" class="btn btn-danger">Stop</a>
+        <a href="{% url 'pause' %}" class="btn btn-warning">Pause</a>
+        <a href="{% url 'resume' %}" class="btn btn-info">Resume</a>
+        <a href="{% url 'logs' %}" class="btn btn-primary">View Logs</a>
+    </div>
+</div>
+{% endblock %}

@@ -20,10 +20,6 @@
                 <a-form-item name="username" label="用户名">
                     <a-input v-model:value="form.username" />
                 </a-form-item>
-
-                <a-form-item name="port" label="端口">
-                    <a-input v-model:value="form.port" />
-                </a-form-item>
             
                 <a-form-item v-if="form.auth_type === 2" name="private_key" label="SSH私钥">
                     <a-textarea v-model:value="form.private_key" />

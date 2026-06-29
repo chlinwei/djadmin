@@ -5,6 +5,7 @@ from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
 from .models import *
 from .serializer import *
+from .tasks import collect_host_info, collect_all_hosts_info
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters.rest_framework  import DjangoFilterBackend
@@ -195,6 +196,16 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         'batch-delete': 'assets:hosts:delete',
     }
 
+    def _get_group_and_subgroups(self, group_id):
+        """递归获取分组及其所有子分组的ID列表"""
+        group_ids = [group_id]
+        group = HostGroup.objects.filter(id=group_id).first()
+        if group:
+            children = HostGroup.objects.filter(parent_id=group_id)
+            for child in children:
+                group_ids.extend(self._get_group_and_subgroups(child.id))
+        return group_ids
+
     def get_queryset(self):
         queryset = Host.objects.select_related('group').prefetch_related(
             Prefetch('hostcredential_set', queryset=HostCredential.objects.select_related('credential').filter(is_default=True)),
@@ -204,7 +215,9 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         ).order_by('-id')
         group_id = self.request.query_params.get('group_id')
         if group_id not in [None, '', '0', 0]:
-            queryset = queryset.filter(group_id=group_id)
+            # 查询该分组及其所有子分组下的主机
+            group_ids = self._get_group_and_subgroups(int(group_id))
+            queryset = queryset.filter(group_id__in=group_ids)
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -233,5 +246,31 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             return Response_200(data=[])
         deleted_count, _ = Host.objects.filter(id__in=ids).delete()
         return Response_200(data={"deleted_count": deleted_count})
+
+    @action(detail=True, methods=['post'], url_path='collect-info')
+    def collect_info(self, request, id=None):
+        host = self.get_object()
+        try:
+            collect_host_info(host)
+            return Response_200(data={'id': host.id, 'status': 'collected'})
+        except Exception as exc:
+            raise DjadminException(AssetsError.BATCH_UPLOAD_ERROR, str(exc))
+
+    @action(detail=False, methods=['post'], url_path='batch-collect-info')
+    def batch_collect_info(self, request):
+        ids = request.data.get('ids', [])
+        results = []
+        for host in Host.objects.filter(id__in=ids):
+            try:
+                collect_host_info(host)
+                results.append({'id': host.id, 'status': 'collected'})
+            except Exception as exc:
+                results.append({'id': host.id, 'status': 'failed', 'error': str(exc)})
+        return Response_200(data={'results': results})
+
+    @action(detail=False, methods=['post'], url_path='collect-all')
+    def collect_all(self, request):
+        collect_all_hosts_info()
+        return Response_200(data={'status': 'collect_all_started'})
 
     

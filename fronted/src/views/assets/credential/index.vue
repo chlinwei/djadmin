@@ -72,18 +72,12 @@
                     </template>
                     <template v-else-if="column.key === 'username'">
                         <span>
-                        <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-user']" />&nbsp; 
+                        <FontAwesomeIcon v-if="record.password || record.private_key" :icon="['fas', 'fa-user']" />&nbsp; 
                         {{ record.username }}
                         </span>
                     </template>
-                    <template v-else-if="column.key === 'port'">
-                        <span>
-                        <FontAwesomeIcon v-if="record.port" :icon="['fas', 'ethernet']" />&nbsp; 
-                        {{ record.port }}
-                        </span>
-                    </template>
                     <template v-else-if="column.key === 'auth_type'">
-                        <span> <FontAwesomeIcon v-if="record.port" :icon="['fas', 'fa-lock']" />&nbsp; {{ AUTH_TYPE_MAP[record.auth_type] }}</span>
+                        <span> <FontAwesomeIcon v-if="record.password || record.private_key" :icon="['fas', 'fa-lock']" />&nbsp; {{ AUTH_TYPE_MAP[record.auth_type] }}</span>
                     </template>
                     
                 </template>
@@ -125,12 +119,6 @@ const columns = [
         title: '用户名称',
         dataIndex: 'username',
         key: 'username',
-        sorter: true,
-    },
-    {
-        title: '端口',
-        dataIndex: 'port',
-        key: 'port',
         sorter: true,
     },
     {

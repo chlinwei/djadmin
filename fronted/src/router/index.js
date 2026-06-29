@@ -34,6 +34,11 @@ export const staticRouterMap = [
                 path: '/sys/userCenter',
                 name: '个人中心',
                 component: () => import('../views/userCenter/index.vue')
+            },
+            {
+                path: '/sys/scheduler',
+                name: '定时任务中心',
+                component: () => import('../views/sys/scheduler/index.vue'),
             }
         ]
     },

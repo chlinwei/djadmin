@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-)u8f%(0xc-i*ft3n-kzl=(dm-_8fuyx4sq84_1=90du_jgg_m^
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_apscheduler',
     'rest_framework',
     'django_filters',
     'corsheaders',
@@ -44,6 +45,8 @@ INSTALLED_APPS = [
     'role.apps.RoleConfig',
     'menu.apps.MenuConfig',
     'assets.apps.AssetsConfig',
+    'scheduler.apps.SchedulerConfig',
+    'sys_config.apps.SysConfigConfig',
 ]
 
 MIDDLEWARE = [

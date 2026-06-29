@@ -11,8 +11,8 @@ const httpService = axios.create({
     // url前缀-'http:xxx.xxx'
     // baseURL: process.env.BASE_API, // 需自定义
     baseURL:baseUrl,
-    // 请求超时时间
-    timeout: 10000 // 需自定义
+    // 请求超时时间（默认30秒，针对长时间运行的任务如主机信息采集）
+    timeout: 30000 // 需自定义
 });
 
 //添加请求和响应拦截器
@@ -75,14 +75,20 @@ export function get(url, params = {}) {
  *  post请求
  *  url:请求地址
  *  params:参数
+ *  timeout:自定义超时时间(可选，毫秒)
  * */
-export function post(url, params = {}) {
+export function post(url, params = {}, timeout = null) {
     return new Promise((resolve, reject) => {
-        httpService({
+        const config = {
             url: url,
             method: 'post',
             data: params
-        }).then(response => {
+        }
+        // 如果指定了自定义超时，则覆盖默认超时
+        if (timeout) {
+            config.timeout = timeout
+        }
+        httpService(config).then(response => {
            if(response.data.code == 301) {
                 message.error("登录过期，请重新登陆");
                 router.push("/login");

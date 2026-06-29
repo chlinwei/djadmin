@@ -49,7 +49,13 @@ class HostGroupSerializer(ModelSerializer):
         return ''
 
     def get_host_count(self, obj):
-        return obj.host_set.count()
+        # 递归统计该分组及所有子分组的主机总数
+        def count_hosts_recursive(group):
+            count = group.host_set.count()
+            for child in group.children.all():
+                count += count_hosts_recursive(child)
+            return count
+        return count_hosts_recursive(obj)
 
     def _get_group_depth(self, group):
         depth = 1
@@ -96,6 +102,16 @@ class HostSerializer(ModelSerializer):
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     disks = serializers.SerializerMethodField()
+    # 系统信息顶级字段
+    os_type = serializers.SerializerMethodField()
+    os_version = serializers.SerializerMethodField()
+    kernel_version = serializers.SerializerMethodField()
+    hostname = serializers.SerializerMethodField()
+    cpu_cores = serializers.SerializerMethodField()
+    cpu_model = serializers.SerializerMethodField()
+    memory_gb = serializers.SerializerMethodField()
+    disk_total_gb = serializers.SerializerMethodField()
+    architecture = serializers.SerializerMethodField()
 
     class Meta:
         model = Host
@@ -160,6 +176,43 @@ class HostSerializer(ModelSerializer):
             }
             for disk in obj.disks.all()
         ]
+
+    # 系统信息顶级字段的 getter 方法
+    def get_os_type(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.os_type if system else None
+
+    def get_os_version(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.os_version if system else None
+
+    def get_kernel_version(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.kernel_version if system else None
+
+    def get_hostname(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.hostname if system else None
+
+    def get_cpu_cores(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        return hardware.cpu_cores if hardware else None
+
+    def get_cpu_model(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        return hardware.cpu_model if hardware else None
+
+    def get_memory_gb(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        return hardware.memory_gb if hardware else None
+
+    def get_disk_total_gb(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        return hardware.disk_total_gb if hardware else None
+
+    def get_architecture(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        return hardware.architecture if hardware else None
     
     # 创建
     def create(self, validated_data):

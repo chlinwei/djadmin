@@ -265,6 +265,7 @@ class UserManage(
         'update': 'system:users:update',
         'create': 'system:users:add',
         'getUserRolesById': 'system:users:view',
+        'get_current_user': 'system:users:view',
     }
     lookup_field = 'id'
     filter_backends = (OrderingFilter,filters.DjangoFilterBackend,SearchFilter)
@@ -357,4 +358,14 @@ class UserManage(
         roleList = SysRoleSerializer(raw_data,many=True).data
         return Response_200(data={"roleList":roleList})
 
+    # 获取当前用户信息（包含时区）
+    @action(detail=False, methods=['get'], url_path='current')
+    def get_current_user(self, request):
+        user = getCurrentUser(request)
+        user_id = user['user_id']
+        try:
+            db_user = SysUser.objects.get(id=user_id)
+            return Response_200(data=SysUserSerializer(db_user).data)
+        except SysUser.DoesNotExist:
+            return Response_error(error="用户不存在")
 

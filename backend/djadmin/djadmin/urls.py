@@ -17,6 +17,9 @@ Including another URLconf
 from django.urls import path,include,re_path
 from djadmin import settings
 from django.views.static import serve
+from apscheduler.schedulers.background import BackgroundScheduler
+from django_apscheduler.jobstores import DjangoJobStore
+from django.core.management import call_command
 
 urlpatterns = [
     path('sys/',include('user.urls')),
@@ -24,5 +27,7 @@ urlpatterns = [
 name='media'),
     path('sys/',include('role.urls')),
     path('sys/',include('menu.urls')),
+    path('sys/scheduler/', include('scheduler.urls')),
+    path('sys/', include('sys_config.urls')),
     path('assets/',include('assets.urls')),
 ]

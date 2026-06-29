@@ -66,6 +66,13 @@
                                     :rules="[{ type: 'email' }, { required: true }]">
                                     <a-input v-model:value="formState.email" />
                                 </a-form-item>
+                                <a-form-item label="时区" name="timezone">
+                                    <a-select 
+                                        v-model:value="formState.timezone"
+                                        :options="timezoneOptions"
+                                        @change="handleTimezoneChange"
+                                    />
+                                </a-form-item>
                                 <a-form-item>
                                     <a-button type="primary" html-type="submit" style="margin-left: 10px;">保存</a-button>
                                 </a-form-item>
@@ -105,9 +112,11 @@ import { reactive } from 'vue';
 import { getCurrentUser } from '@/api/user/index.js';
 import { getCurrentUserRoleList } from '@/api/role';
 import { updateUserInfo, updateUserPassword } from '@/api/user';
+import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Avatar from '@/views/userCenter/components/Avatar.vue';
+import { TIMEZONE_LIST } from '@/util/timezone'
 
 
 
@@ -118,17 +127,34 @@ const currentUser = reactive({ 'user': getCurrentUser() });
 const activeKey = ref('1');
 const formState = reactive({
     phonenumber: currentUser.user.phonenumber,
-    email: currentUser.user.email
+    email: currentUser.user.email,
+    timezone: currentUser.user.timezone || 'UTC'
 });
 const password_formState = reactive({
     old_password: '',
     new_password: '',
     confirm_password: ''
 })
+
+// 时区选项
+const timezoneOptions = ref(TIMEZONE_LIST.map(tz => ({
+    label: tz.label,
+    value: tz.value
+})))
+
 const onFinish_updateUserInfo = values => {
     updateUserInfo(values, (result) => {
         currentUser.user = getCurrentUser();
-        message.success("更新成功")
+        // 同时保存时区
+        if (formState.timezone && currentUser.user && currentUser.user.id) {
+            updateUserTimezone(currentUser.user.id, formState.timezone).then(() => {
+                message.success("更新成功")
+            }).catch(error => {
+                console.error('保存时区失败:', error)
+            })
+        } else {
+            message.success("更新成功")
+        }
     });
 };
 const onFinishFailed_updateUserInfo = errorInfo => {
@@ -152,14 +178,48 @@ const onFinishFailed_updateUserPassword = errorInfo => {
 };
 var roleList = ref('');
 
+// 处理时区变更 - 实时保存
+const handleTimezoneChange = (value) => {
+    if (currentUser.user && currentUser.user.id) {
+        updateUserTimezone(currentUser.user.id, value).then(() => {
+            message.success("时区已保存")
+        }).catch(error => {
+            console.error('保存时区失败:', error)
+            message.error("保存时区失败")
+        })
+    }
+}
+
 onMounted(() => {
+    // 从API加载最新用户信息（包括时区）
+    getCurrentUserInfo().then(res => {
+        if (res.data && res.data.data) {
+            const userData = res.data.data
+            // 更新currentUser
+            currentUser.user = userData
+            // 更新表单字段
+            formState.phonenumber = userData.phonenumber || ''
+            formState.email = userData.email || ''
+            formState.timezone = userData.timezone || 'UTC'
+        }
+    }).catch(error => {
+        console.error('获取用户信息失败:', error)
+        // 降级处理
+        const localUser = getCurrentUser()
+        if (localUser) {
+            formState.phonenumber = localUser.phonenumber || ''
+            formState.email = localUser.email || ''
+            formState.timezone = localUser.timezone || 'UTC'
+        }
+    })
+    
     // 初始化基本资料
     formState.phonenumber = currentUser.user.phonenumber;
     formState.email = currentUser.user.email;
+    formState.timezone = currentUser.user.timezone || 'UTC'
     getCurrentUserRoleList().then(result => {
         result.data.data.roleList.forEach(element => {
             roleList.value = roleList.value + element.name + ' ';
-
         });
     })
 

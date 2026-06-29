@@ -7,7 +7,7 @@ from datetime import datetime
 class SysUserSerializer(ModelSerializer):
     class Meta:
         model = SysUser
-        fields = ["id","username","avatar","email","phonenumber","login_date","status","create_time","update_time","remark"]
+        fields = ["id","username","avatar","email","phonenumber","login_date","status","create_time","update_time","remark","timezone"]
         read_only_fields = ['username']
 
 
@@ -21,7 +21,7 @@ class SysUserRoleSerializer(ModelSerializer):
         return SysRoleSerializer(roles, many=True).data
     class Meta:
         model = SysUser
-        fields = ["id","username","avatar","email","phonenumber","login_date","status","create_time","update_time","roles","remark"]
+        fields = ["id","username","avatar","email","phonenumber","login_date","status","create_time","update_time","roles","remark","timezone"]
 
 
 class StatusSerializer(serializers.Serializer):
@@ -45,7 +45,7 @@ class StatusSerializer(serializers.Serializer):
 class UserDetailCreateSerializer(ModelSerializer):
     class Meta:
         model = SysUser
-        fields = ["id","username","email","phonenumber","status","remark"]
+        fields = ["id","username","email","phonenumber","status","remark","timezone"]
     # 创建用户
     def create(self, validated_data):
         validated_data["password"] = "123456"

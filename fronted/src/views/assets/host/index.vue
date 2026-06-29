@@ -55,6 +55,11 @@
                         <span>&nbsp;新增主机</span>
                     </a-button>
                 </a-col>
+                <a-col class="BatchCollectBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:update'">
+                    <a-button size="large" type="primary" :loading="state.collectLoading" @click="confirmBatchCollect">
+                        <FontAwesomeIcon :icon="['fas', 'download']" />批量采集
+                    </a-button>
+                </a-col>
                 <a-col class="BatchDelBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:delete'">
                     <a-popconfirm
                         placement="top"
@@ -124,6 +129,11 @@
                                         </a-button>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:update'">
+                                        <a-button @click="handleCollect(record.id)" :loading="rowLoadingStates[record.id]" type="default">
+                                            <FontAwesomeIcon :icon="['fas', 'download']" />
+                                        </a-button>
+                                    </a-col>
+                                    <a-col v-permission="'assets:hosts:update'">
                                         <a-button type="primary" @click="onSaveOrCreate(record.id)">
                                             <FontAwesomeIcon :icon="['fa', 'edit']" />
                                         </a-button>
@@ -138,7 +148,7 @@
                                             @cancel="cancel"
                                             :overlayStyle="{ width: '200px', minHeight: '150px' }"
                                         >
-                                            <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
+                                            <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary">
                                                 <FontAwesomeIcon :icon="['fas', 'trash']" />
                                             </a-button>
                                         </a-popconfirm>
@@ -174,6 +184,7 @@
                 <a-descriptions-item label="IP 地址">{{ detailHost.ip || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="主机分组">{{ getGroupName(detailHost) }}</a-descriptions-item>
                 <a-descriptions-item label="SSH 凭证">{{ getCredentialName(detailHost) }}</a-descriptions-item>
+                <a-descriptions-item label="SSH 端口">{{ detailHost.port || 22 }}</a-descriptions-item>
                 <a-descriptions-item label="OS 类型">{{ detailHost.system?.os_type || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="OS 版本">{{ detailHost.system?.os_version || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="内核版本">{{ detailHost.system?.kernel_version || '-' }}</a-descriptions-item>
@@ -246,6 +257,9 @@
                         optionFilterProp="label"
                     />
                 </a-form-item>
+                <a-form-item name="port" label="SSH 端口">
+                    <a-input-number v-model:value="form.port" :min="1" :max="65535" placeholder="默认：22" />
+                </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写业务用途、负责人等信息" />
                 </a-form-item>
@@ -261,7 +275,7 @@ defineOptions({
 
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { batchDeleteHost, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
+import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList } from '@/api/assets/credential/index.js'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
@@ -286,6 +300,7 @@ const formRef = ref(null)
 const state = reactive({
     selectedRowKeys: [],
     loading: false,
+    collectLoading: false,
 })
 
 const rowLoadingStates = reactive({})
@@ -300,6 +315,7 @@ const form = reactive({
     ip: '',
     group_id: undefined,
     credential_id: undefined,
+    port: 22,
     remark: '',
     instance_name: '',
 })
@@ -308,6 +324,7 @@ const rules = {
     instance_name: [{ required: true, message: '请输入实例名' }],
     ip: [{ required: true, message: '请输入 IP 地址' }],
     credential_id: [{ required: true, message: '请选择 SSH 凭证' }],
+    port: [{ required: true, message: '请输入 SSH 端口' }],
 }
 
 const columns = [
@@ -315,6 +332,7 @@ const columns = [
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
+    { title: 'SSH 端口', dataIndex: 'port', key: 'port', width: 100 },
     { title: 'SSH 凭证', dataIndex: 'credential_name', key: 'credential_name', width: 170 },
     { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
     { title: 'OS 版本', dataIndex: 'os_version', key: 'os_version', width: 160 },
@@ -506,6 +524,8 @@ const onGroupSelect = async (selectedKeys, info) => {
     const key = selectedKeys && selectedKeys.length ? selectedKeys[0] : 0
     selectedGroupId.value = key || 0
     selectedGroupName.value = key === 0 ? '全部分组' : (info?.node?.dataRef?.name || '当前分组')
+    searchText.value = ''
+    activeSearchText.value = ''
     pagination.current = 1
     await refreshList()
 }
@@ -516,6 +536,7 @@ const resetForm = () => {
     form.ip = ''
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
     form.credential_id = undefined
+    form.port = 22
     form.remark = ''
 }
 
@@ -538,6 +559,7 @@ const onSaveOrCreate = (id) => {
                 form.ip = data.ip || ''
                 form.group_id = data.group ?? data.group_id ?? undefined
                 form.credential_id = data.credential?.id ?? undefined
+                form.port = data.port ?? 22
                 form.remark = data.remark || ''
             } else {
                 message.error(res.data.msg || '获取主机详情失败')
@@ -592,7 +614,7 @@ const onSelectChange = (selectedRowKeys) => {
 const cancel = () => {}
 
 const delconfirm = (id) => {
-    rowLoadingStates[id] = true
+    rowLoadingStates['delete_' + id] = true
     deleteHostById(id)
         .then((res) => {
             if (res.data.code === 200) {
@@ -606,7 +628,47 @@ const delconfirm = (id) => {
             message.error(error?.response?.data?.msg || error?.message || '删除失败')
         })
         .finally(() => {
+            rowLoadingStates['delete_' + id] = false
+        })
+}
+
+const handleCollect = (id) => {
+    rowLoadingStates[id] = true
+    collectHostInfo(id)
+        .then((res) => {
+            if (res.data.code === 200) {
+                message.success('采集成功')
+                refreshList()
+            } else {
+                message.error(res.data.msg || '采集失败')
+            }
+        })
+        .catch((error) => {
+            message.error(error?.response?.data?.msg || error?.message || '采集失败')
+        })
+        .finally(() => {
             rowLoadingStates[id] = false
+        })
+}
+
+const confirmBatchCollect = () => {
+    state.collectLoading = true
+    batchCollectHostInfo(state.selectedRowKeys)
+        .then((res) => {
+            if (res.data.code === 200) {
+                const successCount = (res.data.data.results || []).filter((item) => item.status === 'collected').length
+                const failedCount = (res.data.data.results || []).filter((item) => item.status === 'failed').length
+                message.success(`已采集 ${successCount} 台主机${failedCount ? `，${failedCount} 台失败` : ''}`)
+                refreshList()
+            } else {
+                message.error(res.data.msg || '批量采集失败')
+            }
+        })
+        .catch((error) => {
+            message.error(error?.response?.data?.msg || error?.message || '批量采集失败')
+        })
+        .finally(() => {
+            state.collectLoading = false
         })
 }
 

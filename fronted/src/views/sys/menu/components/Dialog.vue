@@ -63,6 +63,8 @@ import { ref } from 'vue';
 import { watch } from 'vue';
 const formRef = ref(null)
 const loading = ref(false)
+
+// 菜单树最大层级（含虚拟根节点），可按需调整
 const props = defineProps(
     {
         open: {
@@ -84,7 +86,11 @@ const props = defineProps(
             type: Array,
             default: [],
             required: true
-        }
+        },
+        max_tree_depth: {
+            type: Number,
+            default: 5,
+        },
     }
 )
 
@@ -180,26 +186,49 @@ const form = ref({
 const emits = defineEmits(['update:open', 'initList'])
 
 import { saveOrCreateMenu, getMenuById } from '@/api/menu/index.js';
+
+const handleApiError = (err) => {
+    // 从响应中提取错误数据
+    const responseData = err?.response?.data || err?.data
+    // 如果是统一格式的错误响应（code 和 msg），data 字段才是实际错误内容
+    let errorObj = responseData
+    if (responseData && responseData.data && typeof responseData.data === 'object') {
+        errorObj = responseData.data
+    }
+    
+    if (errorObj && typeof errorObj === 'object') {
+        const firstKey = Object.keys(errorObj)[0]
+        const msg = Array.isArray(errorObj[firstKey]) ? errorObj[firstKey][0] : errorObj[firstKey]
+        if (msg) { message.error(msg); return }
+    }
+    message.error('操作失败，请稍后重试')
+}
+
 const handleOk = e => {
-    // 校验
-    const res = formRef.value?.validate().then((r1) => {
+    formRef.value?.validate().then((r1) => {
         let obj = form.value;
         if (obj.id == -1) {
-            // 表示是新增
             saveOrCreateMenu(obj).then(result => {
-                message.success("新增菜单成功");
-                emits('initList')
-                emits('update:open', false)
-            })
+                if (result.data.code === 200) {
+                    message.success("新增菜单成功");
+                    emits('initList')
+                    emits('update:open', false)
+                } else {
+                    handleApiError({data: result.data})
+                }
+            }).catch(handleApiError)
         } else {
             saveOrCreateMenu(obj).then(result => {
-                message.success("保存菜单成功");
-                emits('initList')
-                emits('update:open', false);
-            })
+                if (result.data.code === 200) {
+                    message.success("保存菜单成功");
+                    emits('initList')
+                    emits('update:open', false);
+                } else {
+                    handleApiError({data: result.data})
+                }
+            }).catch(handleApiError)
         }
     })
-
 };
 
 watch(
@@ -253,10 +282,10 @@ watch(
 
 
 
-const getTreeDataByMenuType = (data, menu_type) => {
+const getTreeDataByMenuType = (data, menu_type, depth = 0) => {
   return data.map(item => ({
     name: item.name,
-    disabled: getDisabledState(item.menu_type, menu_type),
+    disabled: getDisabledState(item.menu_type, menu_type) || depth >= props.max_tree_depth,
     key: item.key,
     icon: item.icon,
     order_num: item.order_num,
@@ -265,7 +294,7 @@ const getTreeDataByMenuType = (data, menu_type) => {
     component: item.component,
     menu_type: item.menu_type,
     create_time: item.create_time,
-    children: item.children ? getTreeDataByMenuType(item.children, menu_type) : null
+    children: item.children ? getTreeDataByMenuType(item.children, menu_type, depth + 1) : null
   }));
 };
 

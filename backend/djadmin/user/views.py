@@ -3,6 +3,7 @@ from django.shortcuts import render
 from rest_framework.generics import ListAPIView
 
 from django.db import connection
+from django.db.models import Prefetch
 
 from django.views import View
 from django.http import JsonResponse
@@ -10,19 +11,20 @@ from django.http import JsonResponse
 from django_filters import rest_framework as filters
 from rest_framework.views import APIView
 from rest_framework.response import Response 
-from .models import SysUser
+from .models import SysUser, SysUserRole
 from .serializer import SysUserSerializer
 from .filters import SysUserFilter
 
 from rest_framework.filters import SearchFilter,OrderingFilter
 
 from django.core.exceptions import ObjectDoesNotExist
-from djadmin.utils import Response_200,Response_error
+from djadmin.utils import Response_200, Response_error, Response_error_str
 from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveModelMixin
 from rest_framework.mixins import ListModelMixin
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
 from role.models import SysRole
+from role.serializer import SysRoleSerializer
 
 from datetime import datetime
 #login
@@ -40,38 +42,13 @@ from .serializer import SysUserRoleSerializer
 import os
 
 
-#缓存
-from django.core.cache import cache
-
 #错误常量
 from djadmin.errordict import UserError
 
 from djadmin import settings
 
 from djadmin.utils import CustomPagination
-class TestView(APIView):
-    def get(self,request):
-        return Response("hello,world")
-    
-from django.db.models import Prefetch
-from .models import SysUserRole
-from role.serializer import SysRoleSerializer
-from role.models import SysRole
-class TestView(View):
-    def get(self, request):
-        token = request.META.get('HTTP_AUTHORIZATION')
-        print("token:", token)
-        if token != None and token != '':
-            userList_obj = SysUser.objects.all()
-            print(userList_obj, type(userList_obj))
-            userList_dict = userList_obj.values() # 转存字典
-            print(userList_dict, type(userList_dict))
-            userList = list(userList_dict) # 把外层的容器转为List
-            print(userList, type(userList))
-            return JsonResponse({'code': 200, 'info': '测试！', 'data':
-            userList})
-        else:
-            return JsonResponse({'code': 401, 'info': '没有'})
+
 
 
 
@@ -137,8 +114,8 @@ class LoginView(APIView):
         return perms
             
     def post(self,request,format=None):
-        username = request.POST.get("username")
-        password = request.POST.get("password")
+        username = request.data.get("username")
+        password = request.data.get("password")
         try:
             user = SysUser.objects.get(username=username)
             if user.status == 0:
@@ -150,30 +127,23 @@ class LoginView(APIView):
         except ObjectDoesNotExist as e:
             user = None
         if user == None:
-            return JsonResponse({
-            'code':300,
-            'data': None,
-            'msg':"账号或者密码输入错误"
-        })
+            return Response_error_str('账号或者密码输入错误', code=300)
         else:
             # menu_list = self._getMenuList(user.id)
             menu_list,role_codes = self.getMenusAndRoleCodes(user.id)
             current_user = SysUserSerializer(user).data
             perms = self.extract_perms(menu_list)
-            user.perms = perms
-            payload = jwt_payload_handler(user)
-            token = jwt_encode_handler(payload)
+            user.perms = perms  # type: ignore[attr-defined]
+            payload = jwt_payload_handler(user)  # type: ignore[operator]
+            token = jwt_encode_handler(payload)  # type: ignore[operator]
             # 获取角色
             
             #缓存到cache中
-            return JsonResponse({
-                'code':200,
-                'data': {
-                    'currentUser':current_user,
-                    'token': token,
-                    'menuList': menu_list,
-                    'role_codes':role_codes,
-                },
+            return Response_200(data={
+                'currentUser':current_user,
+                'token': token,
+                'menuList': menu_list,
+                'role_codes':role_codes,
             })
         
 
@@ -196,12 +166,8 @@ class UserCenterManage(GenericViewSet):
         db_user.email = email
         db_user.update_time = datetime.now().date()
         db_user.save()
-        return JsonResponse({
-            'code':200,
-            'data': {
-                'user': SysUserSerializer(db_user).data
-            },
-            'msg':'success'
+        return Response_200(data={
+            'user': SysUserSerializer(db_user).data
         })
     
    #修改密码
@@ -241,7 +207,6 @@ from .serializer import StatusSerializer
             
 
 #查询用户detail,编辑用户，新增用户
-from rest_framework import generics
 from .serializer import UserDetailCreateSerializer
 
 #用户管理
@@ -265,7 +230,6 @@ class UserManage(
         'update': 'system:users:update',
         'create': 'system:users:add',
         'getUserRolesById': 'system:users:view',
-        'get_current_user': 'system:users:view',
     }
     lookup_field = 'id'
     filter_backends = (OrderingFilter,filters.DjangoFilterBackend,SearchFilter)
@@ -282,17 +246,23 @@ class UserManage(
     def get_queryset(self):
         if self.action == 'list':
             list_queryset = SysUser.objects.prefetch_related(
-        Prefetch('sysuserrole_set', 
-                queryset=SysUserRole.objects.select_related('role'))
-    ).order_by('-id')
+                Prefetch('sysuserrole_set', 
+                        queryset=SysUserRole.objects.select_related('role'))
+            ).order_by('-id')
             return list_queryset
         return self.default_queryset
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     # 检查用户是否存在
     @action(detail=False,methods=['get'],url_path="checkUserName")
     def checkUserName(self,request):
         username = request.query_params.get('username')
         if not username:
-            return Response_error(error="请输入用户名")
+            return Response_error_str('请输入用户名')
         exists = SysUser.objects.filter(username=username).exists()
         return Response_200(data={"exists":exists})
     #批量删除用户
@@ -341,9 +311,9 @@ class UserManage(
         serializer.is_valid(raise_exception=True)  # 自动返回400错误
         if serializer.is_valid():
             try:
-                user = SysUser.objects.get(id=serializer.validated_data['user_id'])
+                user = SysUser.objects.get(id=serializer.validated_data['user_id'])  # type: ignore[index]
                 user.update_time = datetime.now().date()
-                user.status = serializer.validated_data['status']
+                user.status = serializer.validated_data['status']  # type: ignore[index]
                 user.save()
                 return Response_200()
             except:
@@ -367,5 +337,5 @@ class UserManage(
             db_user = SysUser.objects.get(id=user_id)
             return Response_200(data=SysUserSerializer(db_user).data)
         except SysUser.DoesNotExist:
-            return Response_error(error="用户不存在")
+            return Response_error_str('用户不存在', code=404)
 

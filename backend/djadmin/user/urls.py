@@ -6,7 +6,6 @@ router.register(r'usercenter',UserCenterManage,basename="usercenter")
 router.register(r'users',UserManage,basename="users")
 from .views import *
 urlpatterns = [
-    path('test',TestView.as_view(),name='test'),
     path('login',LoginView.as_view(),name='login'),
     path('', include(router.urls)),
     path('changeAvatar',ChangeAvatarView.as_view(),name="ChangeAvatarView"),

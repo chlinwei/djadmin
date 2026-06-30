@@ -33,7 +33,7 @@ httpService.interceptors.response.use(function (response) {
     if(response.data.code === 300) {
         message.error("账号或者密码输入错误")
         return Promise.reject(new Error(response.data.msg))
-    }else if(response.data.code != 200){
+    }else if(response.data.code != 200 && response.data.code !== undefined){
         message.error(response.data.msg)
         console.log(response)
         return Promise.reject(new Error(response.data.msg))
@@ -42,6 +42,7 @@ httpService.interceptors.response.use(function (response) {
 
 }, function (error) {
     // 对响应错误做点什么
+    // 不在拦截器中显示消息，让各个页面自己处理
     return Promise.reject(error);
 });
 

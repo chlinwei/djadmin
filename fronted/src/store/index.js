@@ -70,6 +70,16 @@ export default createStore({
             ];
             
         },
+        close_all_tabs: (state) => {
+            state.activeKey = '/index';
+            state.selectedKeys = ['/index'];
+            state.tabs = [
+                {
+                    title: '首页',
+                    key: '/index'
+                }
+            ];
+        },
         //左边menu用的
         set_selectedKeys:(state,selectedKeys) => {
             state.selectedKeys = [selectedKeys];

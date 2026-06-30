@@ -26,6 +26,7 @@ def ensure_scheduler_log_configs():
         {
             'key': LOG_RETENTION_DAYS_KEY,
             'value': '30',
+            'default_value': '30',
             'value_type': 'int',
             'name': '调度日志保留天数',
             'description': '保留最近 N 天日志，0 表示不按天数清理',
@@ -34,6 +35,7 @@ def ensure_scheduler_log_configs():
         {
             'key': LOG_MAX_ROWS_PER_TASK_KEY,
             'value': '2000',
+            'default_value': '2000',
             'value_type': 'int',
             'name': '每任务最大日志条数',
             'description': '每个任务最多保留 N 条日志，0 表示不按条数清理',
@@ -114,7 +116,7 @@ def ensure_default_tasks():
         defaults=defaults,
     )
     if not created and task.menu is None and menu is not None:
-        task.menu = menu
+        task.menu = menu  # type: ignore[assignment]
         task.save(update_fields=['menu'])
 
 
@@ -122,17 +124,37 @@ def calculate_next_run_time(task):
     """Calculate and update the next run time for a task"""
     if not task.enabled or not task.interval_minutes:
         return None
-    
+
+    now = timezone.now()
     # Calculate next run time based on last run time
     if task.last_run_time:
         next_time = task.last_run_time + timezone.timedelta(minutes=task.interval_minutes)
+        # If calculated time is already in the past, advance to future
+        if next_time <= now:
+            next_time = now + timezone.timedelta(minutes=task.interval_minutes)
     else:
         # If never run, schedule for now + interval
-        next_time = timezone.now() + timezone.timedelta(minutes=task.interval_minutes)
-    
+        next_time = now + timezone.timedelta(minutes=task.interval_minutes)
+
     task.next_run_time = next_time
     task.save(update_fields=['next_run_time'])
     return next_time
+
+
+def sync_next_run_time_from_scheduler(task_code):
+    """Sync next_run_time from APScheduler's actual next fire time back to DB."""
+    if not scheduler.running:
+        return
+    job_id = f'task_{task_code}'
+    job = scheduler.get_job(job_id)
+    if not job or job.next_run_time is None:
+        return
+    try:
+        task = ScheduledTask.objects.get(code=task_code)
+        task.next_run_time = job.next_run_time
+        task.save(update_fields=['next_run_time'])
+    except ScheduledTask.DoesNotExist:
+        pass
 
 
 def re_register_task(task_code):
@@ -175,6 +197,8 @@ def re_register_task(task_code):
                     replace_existing=True,
                 )
                 print(f"Re-registered job for task '{task.name}' with interval {task.interval_minutes} minutes")
+                # Sync actual next fire time from APScheduler back to DB
+                sync_next_run_time_from_scheduler(task_code)
                 return True
     except ScheduledTask.DoesNotExist:
         print(f"Task '{task_code}' not found")
@@ -182,23 +206,6 @@ def re_register_task(task_code):
     except Exception as e:
         print(f"Error re-registering task: {e}")
         return False
-
-
-def calculate_next_run_time(task):
-    """Calculate and update the next run time for a task"""
-    if not task.enabled or not task.interval_minutes:
-        return None
-    
-    # Calculate next run time based on last run time
-    if task.last_run_time:
-        next_time = task.last_run_time + timezone.timedelta(minutes=task.interval_minutes)
-    else:
-        # If never run, schedule for now + interval
-        next_time = timezone.now() + timezone.timedelta(minutes=task.interval_minutes)
-    
-    task.next_run_time = next_time
-    task.save(update_fields=['next_run_time'])
-    return next_time
 
 
 def run_scheduled_task(task_code, func, *args, **kwargs):
@@ -335,6 +342,12 @@ def start():
     print(f"Starting scheduler...")
     scheduler.start()
     print(f"Scheduler started successfully. Jobs: {len(scheduler.get_jobs())}")
+
+    # Sync actual next fire times from APScheduler back to DB
+    for job in scheduler.get_jobs():
+        task_code = job.id.replace('task_', '', 1)
+        sync_next_run_time_from_scheduler(task_code)
+
     return scheduler
 
 

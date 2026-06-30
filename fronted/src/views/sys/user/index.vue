@@ -325,16 +325,6 @@ const handleRoleAssign = (id, username) => {
     height: 100%;
 }
 
-.resetPwd>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: orange;
-    color: white;
-}
-
-.AddBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: green;
-    color: white;
-}
-
 .tools {
     margin-bottom: 20px;
     height: 50px;
@@ -343,11 +333,6 @@ const handleRoleAssign = (id, username) => {
 
 .tool-item {
     height: 200px !important;
-}
-
-.BatchDelUserBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: orange;
-    color: white;
 }
 
 .selectedItems span {

@@ -1,6 +1,7 @@
 <template>
  <Dialog :open="itemAssignVisible" @update:open="(value) => { itemAssignVisible = value }"
-        :item_id="menu_id" :title="menu_assign_title" :treeData="treeData2" @initList="initList" />
+        :item_id="menu_id" :title="menu_assign_title" :treeData="treeData2"
+        :max_tree_depth="menuMaxTreeDepth" @initList="initList" />
     <a-row class="tools" :gutter="16">
         <a-col class="AddBtn tool-item" v-permission="'system:menus:create'">
             <a-button size="large" @click="HandleAdd">
@@ -17,7 +18,7 @@
             </a-col>
         <a-col :span="24">
             <a-table v-if="treeData.length" 
-            :columns="columns" :defaultExpandAllRows="true" :data-source="treeData"
+            :columns="columns" :data-source="treeData"
             >
                
                 <template #bodyCell="{ column, record }">
@@ -51,11 +52,14 @@
     </a-row>
 </template>
 <script setup>
-import { ref, reactive } from 'vue';
+import { ref, reactive, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
 import { checkPermission } from '@/directives/permission/permission';
 const itemAssignVisible = ref(false)
+const route = useRoute()
+const router = useRouter()
 // 缓存
 defineOptions({
     name: 'menu'
@@ -115,6 +119,12 @@ const treeData = ref([])
 // 给Dialog界面的
 const treeData2 = ref([])
 import { getMenuTree,deleteMenuById } from '@/api/menu';
+import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js';
+
+const menuMaxTreeDepth = ref(5)
+getConfigByKey(CONFIG_KEYS.MENU_MAX_TREE_DEPTH).then(res => {
+    if (res.data?.value) menuMaxTreeDepth.value = Number(res.data.value) || 5
+}).catch(() => {})
 
 
 
@@ -134,6 +144,36 @@ const parseTreeData = (data) => {
     }});
 };
 const loading = ref(false)
+const findMenuNameById = (nodes, id) => {
+    for (const node of nodes) {
+        if (node.key === id) {
+            return node.name || '菜单'
+        }
+        if (node.children && node.children.length) {
+            const childName = findMenuNameById(node.children, id)
+            if (childName) {
+                return childName
+            }
+        }
+    }
+    return ''
+}
+
+const tryOpenFocusedMenu = () => {
+    const focusMenuId = Number(route.query.focusMenuId)
+    if (!focusMenuId || Number.isNaN(focusMenuId)) {
+        return
+    }
+    const name = findMenuNameById(treeData.value, focusMenuId) || '菜单'
+    itemAssignVisible.value = true
+    menu_id.value = focusMenuId
+    menu_assign_title.value = '编辑' + '-' + name
+
+    const query = { ...route.query }
+    delete query.focusMenuId
+    router.replace({ path: route.path, query })
+}
+
 const initList = () => {
     loading.value = true
     getMenuTree().then((res) => {
@@ -141,6 +181,7 @@ const initList = () => {
         treeData.value = data
         treeData2.value = [{"name":"根系统目录","key":0,"menu_type":"M","children":treeData.value}]
         console.log(treeData2)
+        tryOpenFocusedMenu()
         loading.value = false
     }).finally(() => {
         loading.value = false;
@@ -184,10 +225,6 @@ const delconfirm = (id) => {
 }
 </script>
 <style scoped>
-.AddBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: green;
-    color: white;
-}
 .tools {
     margin-bottom: 20px;
 }

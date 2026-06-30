@@ -3,17 +3,26 @@
     <a-row class="tools" :gutter="16">
       <a-col :span="16">
         <a-input-search
+          class="tool-item"
           v-model:value="filterText"
           placeholder="搜索任务名称 / 任务编码"
           allow-clear
           enter-button
+          size="large"
           @search="loadTasks"
         />
       </a-col>
       <a-col :span="8" class="right-actions">
-        <a-button type="primary" @click="reload" :loading="loading">
-          刷新
-        </a-button>
+        <a-space>
+          <a-button size="large" @click="openCreateModal">
+            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+            <span>&nbsp;新增任务</span>
+          </a-button>
+          <a-button size="large" type="primary" ghost class="refresh-btn" @click="reload" :disabled="loading">
+            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
+            <span>&nbsp;刷新</span>
+          </a-button>
+        </a-space>
       </a-col>
     </a-row>
 
@@ -40,18 +49,35 @@
               就绪
             </a-tag>
           </template>
+          <template v-else-if="column.key === 'menu_name'">
+            <a-button
+              v-if="record.menu && record.menu_name"
+              type="link"
+              size="small"
+              @click="goToMenu(record)"
+            >
+              {{ record.menu_name }}
+            </a-button>
+            <span v-else>-</span>
+          </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-button size="small" @click="openEditModal(record)">编辑</a-button>
-              <a-button size="small" type="primary" @click="viewLogs(record)">日志</a-button>
+              <a-button size="small" type="primary" @click="openEditModal(record)">
+                <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+              </a-button>
+              <a-button size="small" @click="viewLogs(record)">
+                <FontAwesomeIcon :icon="['fas', 'eye']" />
+              </a-button>
               <a-button
                 size="small"
                 type="primary"
+                ghost
                 @click="runNow(record)"
                 :loading="runningTaskId === record.id"
                 :disabled="record.is_running || runningTaskId === record.id"
               >
-                立即执行
+                <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
+                <span>&nbsp;立即执行</span>
               </a-button>
               <a-button
                 size="small"
@@ -71,6 +97,16 @@
               >
                 启用
               </a-button>
+              <a-popconfirm
+                title="确认删除该任务吗？"
+                ok-text="确认"
+                cancel-text="取消"
+                @confirm="removeTask(record)"
+              >
+                <a-button size="small" type="primary" danger :disabled="record.is_running">
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                </a-button>
+              </a-popconfirm>
             </a-space>
           </template>
           <template
@@ -83,22 +119,32 @@
     </a-card>
 
     <a-modal
-      title="编辑调度任务"
+      :title="isCreateMode ? '新增调度任务' : '编辑调度任务'"
       :open="editVisible"
-      width="520"
+      :width="520"
       :confirmLoading="editLoading"
-      @ok="submitEdit"
+      @ok="submitTask"
       @cancel="editVisible = false"
     >
       <a-form layout="vertical">
-        <a-form-item label="任务名称">
-          <a-input v-model:value="editForm.name" disabled />
+        <a-form-item label="任务名称" required>
+          <a-input v-model:value="editForm.name" :disabled="!isCreateMode" />
         </a-form-item>
-        <a-form-item label="任务编码">
-          <a-input v-model:value="editForm.code" disabled />
+        <a-form-item label="任务编码" required>
+          <a-input v-model:value="editForm.code" :disabled="!isCreateMode" />
         </a-form-item>
         <a-form-item label="关联菜单">
-          <a-input v-model:value="editForm.menu_name" disabled />
+          <a-select
+            v-model:value="editForm.menu"
+            :options="menuOptions"
+            placeholder="可选：关联一个菜单页面"
+            allow-clear
+            show-search
+            optionFilterProp="label"
+          />
+        </a-form-item>
+        <a-form-item label="启用状态">
+          <a-switch v-model:checked="editForm.enabled" checked-children="启用" un-checked-children="禁用" />
         </a-form-item>
         <a-form-item label="间隔(分钟)" required>
           <a-input-number
@@ -116,10 +162,67 @@
     <a-modal
       title="任务执行日志"
       :open="logsVisible"
-      width="1000"
+      :width="1100"
       :footer="null"
       @cancel="logsVisible = false"
     >
+      <div class="log-filter-toolbar">
+        <a-space>
+          <a-button @click="toggleLogFilterPanel">过滤</a-button>
+          <a-tag v-if="hasLogFilters" color="blue">已启用筛选</a-tag>
+          <a-button v-if="hasLogFilters" type="link" @click="resetLogFilters">重置</a-button>
+        </a-space>
+      </div>
+
+      <a-card v-if="logFilterVisible" size="small" class="log-filter-panel">
+        <a-form layout="inline">
+          <a-form-item label="执行状态">
+            <a-select
+              v-model:value="logFilters.status"
+              :options="logStatusOptions"
+              style="width: 140px"
+              placeholder="全部"
+              allow-clear
+            />
+          </a-form-item>
+          <a-form-item label="日志内容">
+            <a-input
+              v-model:value="logFilters.content"
+              style="width: 220px"
+              placeholder="输入关键词匹配日志"
+              allow-clear
+            />
+          </a-form-item>
+          <a-form-item label="耗时最小(秒)">
+            <a-input-number
+              v-model:value="logFilters.durationMin"
+              :min="0"
+              :max="logFilters.durationMax ?? undefined"
+              :precision="2"
+              style="width: 140px"
+              placeholder="不限"
+              @change="handleDurationMinChange"
+            />
+          </a-form-item>
+          <a-form-item label="耗时最大(秒)">
+            <a-input-number
+              v-model:value="logFilters.durationMax"
+              :min="logFilters.durationMin ?? 0"
+              :precision="2"
+              style="width: 140px"
+              placeholder="不限"
+              @change="handleDurationMaxChange"
+            />
+          </a-form-item>
+          <a-form-item>
+            <a-space>
+              <a-button type="primary" @click="applyLogFilters">应用</a-button>
+              <a-button @click="resetLogFilters">清空</a-button>
+            </a-space>
+          </a-form-item>
+        </a-form>
+      </a-card>
+
       <a-table
         :columns="logColumns"
         :data-source="logs"
@@ -131,6 +234,9 @@
         @change="handleLogTableChange"
       >
         <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'run_time'">
+            {{ formatTimeDisplay(record.run_time) }}
+          </template>
           <template v-if="column.key === 'action'">
             <a-button size="small" type="link" @click="viewLogDetail(record)">
               查看详情
@@ -143,7 +249,7 @@
     <a-modal
       title="任务执行详细日志"
       :open="logDetailVisible"
-      width="1000"
+      :width="1100"
       :footer="null"
       @cancel="logDetailVisible = false"
     >
@@ -168,6 +274,12 @@
           </a-descriptions-item>
         </a-descriptions>
 
+        <div class="log-detail-actions">
+          <a-button type="primary" @click="downloadCurrentLog">
+            下载日志
+          </a-button>
+        </div>
+
         <div v-if="currentLogDetail.output" class="log-output">
           <div class="log-title">执行日志输出：</div>
           <pre class="log-content">{{ currentLogDetail.output }}</pre>
@@ -179,11 +291,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
+import { useRouter } from 'vue-router'
+import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, createTask, deleteTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { getMenuTree } from '@/api/menu'
 import { formatTimeWithTimezone } from '@/util/timezone'
 
 const filterText = ref('')
@@ -193,17 +307,33 @@ const logsVisible = ref(false)
 const logDetailVisible = ref(false)
 const editVisible = ref(false)
 const editLoading = ref(false)
+const isCreateMode = ref(false)
 const runningTaskId = ref(null)
+const router = useRouter()
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 const currentTask = ref(null)
 const currentLogDetail = ref(null)
 const tasks = ref([])
 const logs = ref([])
+const menuOptions = ref([])
+const logFilterVisible = ref(false)
+const logFilters = reactive({
+  status: undefined,
+  content: '',
+  durationMin: null,
+  durationMax: null,
+})
+const logStatusOptions = [
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+]
 const editForm = reactive({
   id: null,
   name: '',
   code: '',
+  menu: undefined,
   menu_name: '',
+  enabled: true,
   interval_minutes: 15,
   remark: '',
 })
@@ -224,6 +354,15 @@ const logsPagination = reactive({
   showQuickJumper: true,
 })
 
+const hasLogFilters = computed(() => {
+  return !!(
+    logFilters.status ||
+    (logFilters.content && String(logFilters.content).trim()) ||
+    logFilters.durationMin !== null ||
+    logFilters.durationMax !== null
+  )
+})
+
 const columns = [
   { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '任务编码', dataIndex: 'code', key: 'code', width: 180 },
@@ -235,18 +374,63 @@ const columns = [
   { title: '下次运行时间', dataIndex: 'next_run_time', key: 'next_run_time', width: 180 },
   { title: '最近结果', dataIndex: 'last_status', key: 'last_status', width: 120 },
   { title: '备注', dataIndex: 'remark', key: 'remark' },
-  { title: '操作', key: 'action', fixed: 'right', width: 260 },
+  { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
 
-const logColumns = [
+const buildMenuOptions = (nodes, collector = []) => {
+  nodes.forEach((item) => {
+    if (item.menu_type === 'C') {
+      collector.push({
+        label: item.name,
+        value: item.id,
+      })
+    }
+    if (item.children && item.children.length) {
+      buildMenuOptions(item.children, collector)
+    }
+  })
+  return collector
+}
+
+const loadMenuOptions = () => {
+  getMenuTree()
+    .then((res) => {
+      const tree = res?.data?.data || []
+      menuOptions.value = buildMenuOptions(tree)
+    })
+    .catch(() => {
+      menuOptions.value = []
+    })
+}
+
+const logColumns = ref([
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '执行时间', dataIndex: 'run_time', key: 'run_time', width: 200 },
   { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 180 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '耗时(s)', dataIndex: 'duration_seconds', key: 'duration_seconds', width: 100 },
+  {
+    title: '状态',
+    dataIndex: 'status',
+    key: 'status',
+    width: 100,
+    sorter: true,
+    sortOrder: null,
+  },
+  {
+    title: '耗时(s)',
+    dataIndex: 'duration_seconds',
+    key: 'duration_seconds',
+    width: 100,
+    sorter: true,
+    sortOrder: null,
+  },
   { title: '信息', dataIndex: 'message', key: 'message', width: 150 },
   { title: '操作', key: 'action', fixed: 'right', width: 80 },
-]
+])
+
+const logsSort = reactive({
+  field: null,
+  order: null,
+})
 
 const normalizeUtcTime = (timeValue) => {
   if (!timeValue || typeof timeValue !== 'string') {
@@ -300,9 +484,19 @@ const loadTasks = () => {
     page_size: pagination.pageSize,
   })
     .then((res) => {
-      const data = res.data.data
-      tasks.value = data.results || data
-      pagination.total = data.count || data.length || 0
+      const data = res?.data?.data
+      if (data && typeof data === 'object') {
+        tasks.value = data.results || data || []
+        pagination.total = data.count || data.length || 0
+      } else {
+        tasks.value = []
+        pagination.total = 0
+      }
+    })
+    .catch((error) => {
+      message.error('加载定时任务列表失败: ' + (error.message || '未知错误'))
+      tasks.value = []
+      pagination.total = 0
     })
     .finally(() => {
       loading.value = false
@@ -311,15 +505,45 @@ const loadTasks = () => {
 
 const loadLogs = (taskId) => {
   logsLoading.value = true
-  getTaskLogList({
+  const params = {
     task_id: taskId,
     page: logsPagination.current,
     size: logsPagination.pageSize,
+  }
+  if (logFilters.status) {
+    params.status = logFilters.status
+  }
+  if (logFilters.content && String(logFilters.content).trim()) {
+    params.content = String(logFilters.content).trim()
+  }
+  if (logFilters.durationMin !== null) {
+    params.duration_min = logFilters.durationMin
+  }
+  if (logFilters.durationMax !== null) {
+    params.duration_max = logFilters.durationMax
+  }
+  if (logsSort.field && logsSort.order) {
+    const sortPrefix = logsSort.order === 'descend' ? '-' : ''
+    params.ordering = `${sortPrefix}${logsSort.field}`
+  }
+
+  getTaskLogList({
+    ...params,
   })
     .then((res) => {
-      const data = res.data.data
-      logs.value = data.results || data
-      logsPagination.total = data.count || data.length || 0
+      const data = res?.data?.data
+      if (data && typeof data === 'object') {
+        logs.value = data.results || data || []
+        logsPagination.total = data.count || data.length || 0
+      } else {
+        logs.value = []
+        logsPagination.total = 0
+      }
+    })
+    .catch((error) => {
+      message.error('加载执行日志失败: ' + (error.message || '未知错误'))
+      logs.value = []
+      logsPagination.total = 0
     })
     .finally(() => {
       logsLoading.value = false
@@ -337,9 +561,28 @@ const handleTableChange = (paginationInfo) => {
   loadTasks()
 }
 
-const handleLogTableChange = (paginationInfo) => {
+const handleLogTableChange = (paginationInfo, _filters, sorter) => {
   logsPagination.current = paginationInfo.current
   logsPagination.pageSize = paginationInfo.pageSize
+
+  const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+  const sortableFields = ['status', 'duration_seconds']
+  if (nextSorter?.field && sortableFields.includes(nextSorter.field) && nextSorter.order) {
+    logsSort.field = nextSorter.field
+    logsSort.order = nextSorter.order
+  } else {
+    logsSort.field = null
+    logsSort.order = null
+  }
+
+  logColumns.value.forEach((column) => {
+    if (column.key === logsSort.field) {
+      column.sortOrder = logsSort.order
+    } else if (column.key === 'status' || column.key === 'duration_seconds') {
+      column.sortOrder = null
+    }
+  })
+
   if (currentTask.value?.id) {
     loadLogs(currentTask.value.id)
   }
@@ -352,44 +595,190 @@ const viewLogs = (record) => {
   loadLogs(record.id)
 }
 
+const toggleLogFilterPanel = () => {
+  logFilterVisible.value = !logFilterVisible.value
+}
+
+const applyLogFilters = () => {
+  if (
+    logFilters.durationMin !== null &&
+    logFilters.durationMax !== null &&
+    Number(logFilters.durationMin) > Number(logFilters.durationMax)
+  ) {
+    message.warning('耗时最小值不能大于最大值')
+    return
+  }
+
+  logsPagination.current = 1
+  if (currentTask.value?.id) {
+    loadLogs(currentTask.value.id)
+  }
+}
+
+const handleDurationMinChange = (value) => {
+  if (value === null || value === undefined || logFilters.durationMax === null || logFilters.durationMax === undefined) {
+    return
+  }
+  if (Number(value) > Number(logFilters.durationMax)) {
+    logFilters.durationMax = value
+  }
+}
+
+const handleDurationMaxChange = (value) => {
+  if (value === null || value === undefined || logFilters.durationMin === null || logFilters.durationMin === undefined) {
+    return
+  }
+  if (Number(value) < Number(logFilters.durationMin)) {
+    logFilters.durationMin = value
+  }
+}
+
+const resetLogFilters = () => {
+  logFilters.status = undefined
+  logFilters.content = ''
+  logFilters.durationMin = null
+  logFilters.durationMax = null
+  logsPagination.current = 1
+  if (currentTask.value?.id) {
+    loadLogs(currentTask.value.id)
+  }
+}
+
 const viewLogDetail = (record) => {
   currentLogDetail.value = record
   logDetailVisible.value = true
 }
 
+const toSafeFileSegment = (value) => {
+  return String(value || '')
+    .replace(/[\\/:*?"<>|\s]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+const downloadCurrentLog = () => {
+  if (!currentLogDetail.value) {
+    message.warning('暂无可下载的日志')
+    return
+  }
+
+  const log = currentLogDetail.value
+  const displayRunTime = formatTimeDisplay(log.run_time)
+  const fileName = [
+    'task_log',
+    toSafeFileSegment(log.task_name || 'unknown'),
+    toSafeFileSegment(displayRunTime === '-' ? Date.now() : displayRunTime),
+  ].join('_') + '.txt'
+
+  const content = [
+    `任务名称: ${log.task_name || '-'}`,
+    `执行时间: ${formatTimeDisplay(log.run_time)}`,
+    `执行状态: ${log.status || '-'}`,
+    `耗时(秒): ${log.duration_seconds ?? '-'}`,
+    `简述: ${log.message || '-'}`,
+    '',
+    '执行日志输出:',
+    log.output || '(无输出)',
+  ].join('\n')
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+const goToMenu = (record) => {
+  if (!record.menu_path) {
+    message.warning('该任务未配置可跳转的菜单路由')
+    return
+  }
+  router.push({ path: record.menu_path })
+}
+
 const openEditModal = (record) => {
+  isCreateMode.value = false
   editForm.id = record.id
   editForm.name = record.name
   editForm.code = record.code
+  editForm.menu = record.menu || undefined
   editForm.menu_name = record.menu_name || ''
+  editForm.enabled = !!record.enabled
   editForm.interval_minutes = record.interval_minutes || 15
   editForm.remark = record.remark || ''
   editVisible.value = true
 }
 
-const submitEdit = () => {
-  if (!editForm.id) {
+const openCreateModal = () => {
+  isCreateMode.value = true
+  editForm.id = null
+  editForm.name = ''
+  editForm.code = ''
+  editForm.menu = undefined
+  editForm.menu_name = ''
+  editForm.enabled = true
+  editForm.interval_minutes = 15
+  editForm.remark = ''
+  editVisible.value = true
+}
+
+const submitTask = () => {
+  if (!editForm.name || !String(editForm.name).trim()) {
+    message.error('请输入任务名称')
+    return
+  }
+  if (!editForm.code || !String(editForm.code).trim()) {
+    message.error('请输入任务编码')
     return
   }
   if (!editForm.interval_minutes || editForm.interval_minutes < 1) {
     message.error('请输入有效的间隔分钟数')
     return
   }
-  editLoading.value = true
-  updateTask(editForm.id, {
+
+  const payload = {
+    name: String(editForm.name).trim(),
+    code: String(editForm.code).trim(),
+    menu: editForm.menu || null,
+    enabled: !!editForm.enabled,
     interval_minutes: editForm.interval_minutes,
     remark: editForm.remark,
-  })
+  }
+
+  editLoading.value = true
+  const request = isCreateMode.value
+    ? createTask(payload)
+    : updateTask(editForm.id, payload)
+
+  request
     .then((res) => {
-      message.success('保存成功')
+      message.success(isCreateMode.value ? '新增成功' : '保存成功')
       editVisible.value = false
       loadTasks()
     })
-    .catch(() => {
-      message.error('保存失败')
+    .catch((error) => {
+      message.error(error?.response?.data?.error || '保存失败')
     })
     .finally(() => {
       editLoading.value = false
+    })
+}
+
+const removeTask = (record) => {
+  deleteTask(record.id)
+    .then((res) => {
+      if (res.data?.code && res.data.code !== 200) {
+        message.error(res.data.msg || '删除失败')
+        return
+      }
+      message.success('删除成功')
+      loadTasks()
+    })
+    .catch((error) => {
+      message.error(error?.response?.data?.error || '删除失败')
     })
 }
 
@@ -515,6 +904,7 @@ const runNow = (record) => {
 
 onMounted(() => {
   loadUserTimezone()
+  loadMenuOptions()
   loadTasks()
 })
 </script>
@@ -522,6 +912,7 @@ onMounted(() => {
 <style scoped>
 .scheduler-page {
   padding: 16px;
+  position: relative;
 }
 .tools {
   margin-bottom: 20px;
@@ -559,8 +950,18 @@ onMounted(() => {
   line-height: 1.5;
   max-height: 400px;
 }
+.log-detail-actions {
+  margin-bottom: 12px;
+  text-align: right;
+}
 .text-muted {
   color: #999;
   font-style: italic;
+}
+.log-filter-toolbar {
+  margin-bottom: 12px;
+}
+.log-filter-panel {
+  margin-bottom: 12px;
 }
 </style>

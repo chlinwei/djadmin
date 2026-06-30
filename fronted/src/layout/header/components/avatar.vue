@@ -1,7 +1,10 @@
 <template>
 
-    <div style="display: flex; gap: 24px; align-items: center;">
-        <span class="current-time">{{ currentTime }}</span>
+    <div class="header-user-wrap">
+        <div class="current-time-badge" title="当前时间（按用户时区显示）">
+            <div class="current-time-date">{{ currentDate }}</div>
+            <div class="current-time-clock">{{ currentClock }}</div>
+        </div>
         
         <a-dropdown>
             <a class="ant-dropdown-link" @click.prevent>
@@ -27,7 +30,7 @@ import { useRouter } from 'vue-router';
 import { getCurrentUser } from '@/api/user';
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import router from '@/router'
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 
 console.log("avatar:")
@@ -36,6 +39,9 @@ const currentUser = ref(getCurrentUser() || {})
 const currentTime = ref('')
 const userTimezone = ref('UTC')
 let timeInterval = null
+
+const currentDate = computed(() => currentTime.value.split(' ')[0] || '--')
+const currentClock = computed(() => currentTime.value.split(' ')[1] || '--:--:--')
 
 const formatTime = () => {
     try {
@@ -97,10 +103,40 @@ const logout = () => {
     color: #fff !important;
 }
 
-.current-time {
+.header-user-wrap {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
+}
+
+.current-time-badge {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    min-width: 170px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid #d9e6f6;
+    background: linear-gradient(135deg, #f8fbff 0%, #eef5ff 100%);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.current-time-date {
     font-size: 12px;
-    color: #666;
+    color: #4b5563;
+    line-height: 1.2;
+}
+
+.current-time-clock {
+    margin-top: 2px;
+    font-size: 17px;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.2;
+    letter-spacing: 0.4px;
     font-family: 'Courier New', monospace;
-    white-space: nowrap;
 }
 </style>

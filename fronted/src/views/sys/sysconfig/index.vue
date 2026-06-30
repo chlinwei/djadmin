@@ -11,14 +11,23 @@
         />
       </a-col>
       <a-col :span="8" class="right-actions">
-        <a-button type="primary" @click="loadConfigs" :loading="loading">刷新</a-button>
+        <a-space>
+          <a-radio-group v-model:value="valueFilter" button-style="solid" size="small">
+            <a-radio-button value="all">全部</a-radio-button>
+            <a-radio-button value="changed">仅已修改</a-radio-button>
+          </a-radio-group>
+          <a-button type="primary" ghost class="refresh-btn" @click="loadConfigs" :disabled="loading">
+            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
+            <span>&nbsp;刷新</span>
+          </a-button>
+        </a-space>
       </a-col>
     </a-row>
 
     <a-card size="small">
       <a-table
         :columns="columns"
-        :data-source="configs"
+        :data-source="filteredConfigs"
         :loading="loading"
         rowKey="id"
         :pagination="false"
@@ -36,14 +45,24 @@
             {{ formatDateTime(record.update_time) }}
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-button
-              size="small"
-              type="primary"
-              :disabled="record.is_readonly"
-              @click="openEdit(record)"
-            >
-              编辑
-            </a-button>
+            <a-space>
+              <a-button
+                size="small"
+                type="primary"
+                :disabled="record.is_readonly"
+                @click="openEdit(record)"
+              >
+                编辑
+              </a-button>
+              <a-popconfirm
+                title="确认重置为默认值吗？"
+                ok-text="确认"
+                cancel-text="取消"
+                @confirm="handleResetDefault(record)"
+              >
+                <a-button size="small" :disabled="record.is_readonly">重置默认</a-button>
+              </a-popconfirm>
+            </a-space>
           </template>
         </template>
       </a-table>
@@ -52,6 +71,7 @@
     <!-- 编辑弹窗 -->
     <a-modal
       v-model:open="editVisible"
+      :width="520"
       title="修改参数"
       @ok="saveEdit"
       :confirm-loading="saveLoading"
@@ -71,35 +91,58 @@
         <a-form-item label="参数值" required>
           <a-input v-model:value="editForm.value" />
         </a-form-item>
+        <a-form-item label="默认值">
+          <a-input v-model:value="editForm.default_value" placeholder="留空表示不设置默认值" />
+        </a-form-item>
       </a-form>
     </a-modal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { message } from 'ant-design-vue'
-import { getConfigList, updateConfig } from '@/api/sys/sysconfig'
+import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysconfig'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
 
 const filterText = ref('')
 const loading = ref(false)
 const configs = ref([])
+const valueFilter = ref('all')
 const editVisible = ref(false)
 const saveLoading = ref(false)
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-const editForm = reactive({ id: null, name: '', key: '', value: '', description: '' })
+const editForm = reactive({ id: null, name: '', key: '', value: '', default_value: '', description: '' })
+
+const toComparableValue = (value) => {
+  if (value === null || value === undefined) {
+    return ''
+  }
+  return String(value)
+}
+
+const isChangedFromDefault = (item) => {
+  return toComparableValue(item.value) !== toComparableValue(item.default_value)
+}
+
+const filteredConfigs = computed(() => {
+  if (valueFilter.value === 'changed') {
+    return configs.value.filter(isChangedFromDefault)
+  }
+  return configs.value
+})
 
 const columns = [
   { title: '参数名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '参数键', dataIndex: 'key', key: 'key', width: 220 },
   { title: '当前值', dataIndex: 'value', key: 'value' },
+  { title: '默认值', dataIndex: 'default_value', key: 'default_value' },
   { title: '类型', dataIndex: 'value_type', key: 'value_type', width: 100 },
   { title: '属性', dataIndex: 'is_readonly', key: 'is_readonly', width: 100 },
   { title: '修改时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description' },
-  { title: '操作', key: 'action', width: 100 },
+  { title: '操作', key: 'action', width: 180 },
 ]
 
 const valueTypeLabel = (type) => {
@@ -147,7 +190,8 @@ const loadConfigs = () => {
   if (filterText.value) params.search = filterText.value
   getConfigList(params)
     .then((res) => {
-      const list = res.data.data || res.data || []
+      const data = res.data.data
+      const list = Array.isArray(data) ? data : (data?.results || [])
       configs.value = [...list].sort((a, b) => String(a.key || '').localeCompare(String(b.key || '')))
     })
     .catch(() => {
@@ -163,23 +207,40 @@ const openEdit = (record) => {
   editForm.name = record.name
   editForm.key = record.key
   editForm.value = record.value
+  editForm.default_value = record.default_value ?? ''
   editForm.description = record.description || ''
   editVisible.value = true
 }
 
 const saveEdit = () => {
   saveLoading.value = true
-  updateConfig(editForm.id, editForm.value)
+  updateConfig(editForm.id, {
+    value: editForm.value,
+    default_value: editForm.default_value === '' ? null : editForm.default_value,
+  })
     .then(() => {
       message.success('保存成功')
       editVisible.value = false
       loadConfigs()
     })
-    .catch(() => {
-      message.error('保存失败')
+    .catch((error) => {
+      const msg = error?.response?.data?.error || '保存失败'
+      message.error(msg)
     })
     .finally(() => {
       saveLoading.value = false
+    })
+}
+
+const handleResetDefault = (record) => {
+  resetConfigDefault(record.id)
+    .then(() => {
+      message.success('已重置为默认值')
+      loadConfigs()
+    })
+    .catch((error) => {
+      const msg = error?.response?.data?.error || '重置失败'
+      message.error(msg)
     })
 }
 
@@ -190,6 +251,7 @@ loadConfigs()
 <style scoped>
 .sysconfig-page {
   padding: 16px;
+  position: relative;
 }
 .tools {
   margin-bottom: 16px;

@@ -1,0 +1,122 @@
+/* Global button theme for consistent actions: add/refresh/delete/edit */
+
+:root {
+  --btn-radius: 8px;
+  --btn-font-weight: 500;
+  --btn-transition: all 0.18s ease;
+}
+
+.ant-btn {
+  border-radius: var(--btn-radius);
+  font-weight: var(--btn-font-weight);
+  transition: var(--btn-transition);
+  box-shadow: none;
+}
+
+.ant-btn:hover,
+.ant-btn:focus-visible {
+  transform: translateY(-1px);
+}
+
+.ant-btn:active {
+  transform: translateY(0);
+}
+
+/* Size consistency */
+.ant-btn-lg {
+  min-height: 40px;
+}
+
+.ant-btn-sm {
+  min-height: 26px;
+}
+
+/* Icon spacing consistency */
+.ant-btn .svg-inline--fa {
+  margin-right: 6px;
+}
+
+.ant-btn-icon-only .svg-inline--fa,
+.ant-btn > .svg-inline--fa:only-child {
+  margin-right: 0;
+}
+
+/* Primary buttons */
+.ant-btn-primary {
+  background: #1677ff;
+  border-color: #1677ff;
+}
+
+.ant-btn-primary:hover,
+.ant-btn-primary:focus {
+  background: #4096ff;
+  border-color: #4096ff;
+}
+
+/* Default buttons */
+.ant-btn-default {
+  border-color: #d0d7e2;
+  color: #334155;
+  background: #ffffff;
+}
+
+.ant-btn-default:hover,
+.ant-btn-default:focus {
+  border-color: #1677ff;
+  color: #1677ff;
+  background: #f5faff;
+}
+
+/* Dangerous buttons */
+.ant-btn-dangerous:not(.ant-btn-primary),
+.ant-btn-color-dangerous:not(.ant-btn-primary) {
+  border-color: #ff4d4f;
+  color: #ff4d4f;
+}
+
+.ant-btn-dangerous:not(.ant-btn-primary):hover,
+.ant-btn-color-dangerous:not(.ant-btn-primary):hover,
+.ant-btn-dangerous:not(.ant-btn-primary):focus,
+.ant-btn-color-dangerous:not(.ant-btn-primary):focus {
+  border-color: #ff7875;
+  color: #ff7875;
+}
+
+/* Primary + dangerous buttons should stay red, not inherit primary blue border */
+.ant-btn-primary.ant-btn-dangerous,
+.ant-btn-primary.ant-btn-color-dangerous {
+  background: #ff4d4f;
+  border-color: #ff4d4f;
+  color: #ffffff;
+}
+
+.ant-btn-primary.ant-btn-dangerous:hover,
+.ant-btn-primary.ant-btn-color-dangerous:hover,
+.ant-btn-primary.ant-btn-dangerous:focus,
+.ant-btn-primary.ant-btn-color-dangerous:focus {
+  background: #ff7875;
+  border-color: #ff7875;
+  color: #ffffff;
+}
+
+/* Link buttons used as actions should still look clickable */
+.ant-btn-link {
+  font-weight: 500;
+}
+
+/* Refresh action button pattern */
+.ant-btn.refresh-btn {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+.ant-btn.refresh-btn:hover,
+.ant-btn.refresh-btn:focus,
+.ant-btn.refresh-btn:active,
+.ant-btn.refresh-btn:disabled,
+.ant-btn.refresh-btn[disabled] {
+  background: transparent !important;
+  border-color: #4096ff !important;
+  color: #4096ff !important;
+  box-shadow: none;
+}

@@ -22,7 +22,7 @@
             <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
                 :overlayStyle="{ width: '300px', minHeight: '200px' }">
                 <a-button size="large" type="primary" :loading="state.loading" danger>
-                    <FontAwesomeIcon :icon="['fas','trash']" />批量删除
+                    <FontAwesomeIcon :icon="['fas','trash-can']" />批量删除
                 </a-button>
             </a-popconfirm>
         </a-col>
@@ -56,7 +56,7 @@
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
                                         <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
                                             type="primary">
-                                            <FontAwesomeIcon :icon="['fas','trash']" />
+                                            <FontAwesomeIcon :icon="['fas','trash-can']" />
                                         </a-button>
                                     </a-popconfirm>
                                 </a-col>
@@ -281,16 +281,6 @@ const handleMenuAssign = (id, name) => {
     height: 100%;
 }
 
-.resetPwd>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: orange;
-    color: white;
-}
-
-.AddBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: green;
-    color: white;
-}
-
 .tools {
     margin-bottom: 20px;
     height: 50px;
@@ -298,11 +288,6 @@ const handleMenuAssign = (id, name) => {
 
 .tool-item {
     height: 200px !important;
-}
-
-.BatchDelUserBtn>:where(.css-dev-only-do-not-override-1p3hq3p).ant-btn-default {
-    background-color: orange;
-    color: white;
 }
 
 .selectedItems span {

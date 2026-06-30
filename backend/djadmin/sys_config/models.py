@@ -14,6 +14,7 @@ class SysConfig(BaseModel):
 
     key = models.CharField(max_length=128, unique=True, verbose_name='参数键')
     value = models.TextField(verbose_name='参数值')
+    default_value = models.TextField(blank=True, null=True, verbose_name='默认值')
     value_type = models.CharField(max_length=16, choices=VALUE_TYPE_CHOICES, default='string', verbose_name='值类型')
     name = models.CharField(max_length=128, verbose_name='参数名称')
     description = models.TextField(blank=True, null=True, verbose_name='说明')

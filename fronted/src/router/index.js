@@ -44,34 +44,61 @@ export const staticRouterMap = [
     },
 ]
 
-export function getDynamicalRoutes(menuList) {
-    let indexRoute = staticRouterMap.filter(v => v.path === '/')[0];
-    // indexRoute.children = [];
-    if (menuList) {
-        menuList.forEach(item => {
-            let component_url_parent = `../views/${item.component}.vue`;
-            let first_item = {
+function resolveMenuComponent(componentPath) {
+    if (!componentPath) {
+        return null
+    }
+
+    const normalized = String(componentPath)
+        .trim()
+        .replace(/^\/+/, '')
+        .replace(/\.vue$/i, '')
+
+    const candidateKeys = [
+        `../views/${normalized}.vue`,
+        `../views/${normalized}`,
+        `../views/${normalized}.vue`
+            .replace('/applications/', '/application/')
+            .replace('/credentials/', '/credential/')
+            .replace('/usercenter/', '/userCenter/'),
+    ]
+
+    for (const key of candidateKeys) {
+        if (modules[key]) {
+            return modules[key]
+        }
+    }
+
+    return null
+}
+
+function collectLeafRoutes(menuList, collector = []) {
+    if (!Array.isArray(menuList)) {
+        return collector
+    }
+
+    menuList.forEach((item) => {
+        const children = Array.isArray(item?.children) ? item.children : []
+        const component = resolveMenuComponent(item?.component)
+
+        if (item?.path && component) {
+            collector.push({
                 path: item.path,
                 name: item.name,
-                component: modules[`${component_url_parent}`],
-                children: []
-            }
-            console.log("children:" + item.children + "|")
-            if (!('children' in item)) {
-                item.children = [];
-              }
-            item.children.forEach(item2 => {
-                let component_url = `../views/${item2.component}.vue`;
-                first_item.children.push({
-                    path: item2.path,
-                    name: item2.name,
-                    component: modules[`${component_url}`]
-                })
+                component,
             })
-            indexRoute.children.push(first_item);
-        })
-        return indexRoute;
-    }
+        }
+
+        if (children.length) {
+            collectLeafRoutes(children, collector)
+        }
+    })
+
+    return collector
+}
+
+export function getDynamicalRoutes(menuList) {
+    return collectLeafRoutes(menuList, [])
 }
 
 function addTree(indexRoute, treeList) {
@@ -123,31 +150,38 @@ export function addDynamicRoutes() {
     if (getToken()) {
         //已经登录
         let menuList = getMenuList();
-        if (menuList.length >= 1) {
-            let dyroutes = getDynamicalRoutes(menuList);
-            // let dyroutes2 = getDynamicalRoutes2(menuList);
-            console.log(dyroutes);
-            // console.log("==========动态路由2=============")
-            // console.log(dyroutes2)
-            router.addRoute(dyroutes);
+        if (Array.isArray(menuList) && menuList.length >= 1) {
+            const dynamicChildren = getDynamicalRoutes(menuList)
+            dynamicChildren.forEach((routeItem) => {
+                const exists = router.getRoutes().some((r) => r.path === routeItem.path)
+                if (!exists) {
+                    router.addRoute('dashbaord', routeItem)
+                }
+            })
         }
-    } else {
-        router.replace('/login');
     }
 }
 
 
 //路由守卫
 router.beforeEach((to, from, next) => {
-    if (to.path == '/login') {
+    const token = getToken()
+
+    if (to.path === '/login') {
+        if (token) {
+            next('/index')
+        } else {
+            next()
+        }
+        return
+    }
+
+    if (token) {
         next()
     } else {
-        //   检查是否已登录
-        let token = getToken()
-        if (token) {
-            next();
-        } else {
-            router.replace('/login');
-        }
+        next({
+            path: '/login',
+            query: { redirect: to.fullPath }
+        })
     }
 }) 

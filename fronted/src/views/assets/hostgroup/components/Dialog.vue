@@ -35,7 +35,8 @@ import { getHostGroupById, saveOrCreateHostGroup } from '@/api/assets/hostgroup/
 
 const formRef = ref(null)
 const loading = ref(false)
-const MAX_TREE_DEPTH = 5
+// 最大层级从 props 接收（由父组件从 sys_config 动态加载）
+// 前端默认值 5 仅作为 fallback
 
 const props = defineProps({
     open: {
@@ -58,6 +59,14 @@ const props = defineProps({
         default: () => [],
         required: true,
     },
+    default_parent_id: {
+        type: Number,
+        default: null,
+    },
+    max_tree_depth: {
+        type: Number,
+        default: 5,
+    },
 })
 
 const form = ref({
@@ -76,24 +85,46 @@ const emits = defineEmits(['update:open', 'initList'])
 const markSelectableTree = (nodes) => {
     return nodes.map((item) => ({
         ...item,
-        disabled: item.depth >= MAX_TREE_DEPTH,
+        disabled: item.depth >= props.max_tree_depth,
         children: item.children ? markSelectableTree(item.children) : undefined,
     }))
 }
 
 const treeSelectData = computed(() => markSelectableTree(props.treeData))
 
+const handleApiError = (err) => {
+    // 从响应中提取错误数据
+    const responseData = err?.response?.data || err?.data
+    // 如果是统一格式的错误响应（code 和 msg），data 字段才是实际错误内容
+    let errorObj = responseData
+    if (responseData && responseData.data && typeof responseData.data === 'object') {
+        errorObj = responseData.data
+    }
+    
+    if (errorObj && typeof errorObj === 'object') {
+        const firstKey = Object.keys(errorObj)[0]
+        const msg = Array.isArray(errorObj[firstKey]) ? errorObj[firstKey][0] : errorObj[firstKey]
+        if (msg) { message.error(msg); return }
+    }
+    message.error('操作失败，请稍后重试')
+}
+
 const handleOk = () => {
     formRef.value?.validate().then(() => {
-        saveOrCreateHostGroup(form.value).then((res) => {
+        const payload = {
+            ...form.value,
+            parent_id: form.value.parent_id ?? 0,
+        }
+        saveOrCreateHostGroup(payload).then((res) => {
             if (res.data.code === 200) {
                 message.success(form.value.id === -1 ? '新增分组成功' : '保存分组成功')
                 emits('initList')
                 emits('update:open', false)
             } else {
-                message.error(res.data.msg || '保存失败')
+                // 任何非 200 的返回都认为是错误
+                handleApiError({data: res.data})
             }
-        })
+        }).catch(handleApiError)
     })
 }
 
@@ -108,7 +139,7 @@ watch(
         if (id === -1) {
             form.value = {
                 id: -1,
-                parent_id: 0,
+                parent_id: (props.default_parent_id && props.default_parent_id !== 0) ? props.default_parent_id : null,
                 name: '',
                 remark: '',
             }
@@ -132,7 +163,7 @@ watch(
         } else {
             form.value = {
                 id: -1,
-                parent_id: 0,
+                parent_id: (props.default_parent_id && props.default_parent_id !== 0) ? props.default_parent_id : null,
                 name: '',
                 remark: '',
             }

@@ -38,6 +38,11 @@ class RoleManage(GenericViewSet,ListModelMixin,CreateModelMixin,RetrieveModelMix
         
     }
     # 获取当前用户所包含的角色
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     @action(detail=False,methods=['get'],url_path='getCurrentUserRoleList')
     def getCurrentUserRoleList(self,request):
         # 获取当前用户id
@@ -45,12 +50,8 @@ class RoleManage(GenericViewSet,ListModelMixin,CreateModelMixin,RetrieveModelMix
         #查询用户角色根据用户id
         raw_data = SysRole.objects.raw("select sr.id as id,sr.name as name,sr.code as code,sr.create_time  as create_time,sr.update_time as update_time ,sr.remark as remark  from sys_user_role sur   inner join sys_role sr ON sur.role_id = sr.id  WHERE sur.user_id  = %s",[userInfo['user_id']])
         roleList = SysRoleSerializer(raw_data,many=True).data
-        return JsonResponse({
-            'code':200,
-            'data': {
-                'roleList': roleList,
-            },
-            'msg': 'success'
+        return Response_200(data={
+            'roleList': roleList,
         })
     # 批量删除角色
     @action(detail=False,methods=['delete'],url_path='batch-delete')

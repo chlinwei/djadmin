@@ -38,6 +38,30 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         'create': 'assets:credentials:create',
         'batch-create': 'assets:credentials:create',
     }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        data = serializer.data
+        if page is not None:
+            paginator = self.paginator
+            return Response_200(data={
+                'count': paginator.page.paginator.count,
+                'results': data,
+                'pageNumber': paginator.page.number,
+                'pageSize': paginator.page_size,
+                'totalPages': paginator.page.paginator.num_pages,
+                'next': paginator.get_next_link(),
+                'previous': paginator.get_previous_link(),
+            })
+        return Response_200(data=data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     # 批量删除credential
     @action(detail=False,methods=['delete'],url_path='batch-delete')
     def batchDelete(self,request):
@@ -85,6 +109,30 @@ class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retriev
         # create
         'create': 'assets:applications:create',
     }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        data = serializer.data
+        if page is not None:
+            paginator = self.paginator
+            return Response_200(data={
+                'count': paginator.page.paginator.count,
+                'results': data,
+                'pageNumber': paginator.page.number,
+                'pageSize': paginator.page_size,
+                'totalPages': paginator.page.paginator.num_pages,
+                'next': paginator.get_next_link(),
+                'previous': paginator.get_previous_link(),
+            })
+        return Response_200(data=data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     # 批量删除Application
     @action(detail=False,methods=['delete'],url_path='batch-delete')
     def batchDelete(self,request):
@@ -154,6 +202,11 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
             })
         return Response_200(data=data)
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     @action(detail=False, methods=['get'], url_path='tree')
     def tree(self, request):
         queryset = self.filter_queryset(self.get_queryset())
@@ -203,7 +256,7 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         if group:
             children = HostGroup.objects.filter(parent_id=group_id)
             for child in children:
-                group_ids.extend(self._get_group_and_subgroups(child.id))
+                group_ids.extend(self._get_group_and_subgroups(child.id))  # type: ignore[attr-defined]
         return group_ids
 
     def get_queryset(self):
@@ -213,7 +266,7 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             'system',
             'disks',
         ).order_by('-id')
-        group_id = self.request.query_params.get('group_id')
+        group_id = self.request.query_params.get('group_id')  # type: ignore[union-attr]
         if group_id not in [None, '', '0', 0]:
             # 查询该分组及其所有子分组下的主机
             group_ids = self._get_group_and_subgroups(int(group_id))
@@ -232,6 +285,11 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
                 'results': data,
             })
         return Response_200(data=data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -263,9 +321,9 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         for host in Host.objects.filter(id__in=ids):
             try:
                 collect_host_info(host)
-                results.append({'id': host.id, 'status': 'collected'})
+                results.append({'id': host.id, 'status': 'collected'})  # type: ignore[attr-defined]
             except Exception as exc:
-                results.append({'id': host.id, 'status': 'failed', 'error': str(exc)})
+                results.append({'id': host.id, 'status': 'failed', 'error': str(exc)})  # type: ignore[attr-defined]
         return Response_200(data={'results': results})
 
     @action(detail=False, methods=['post'], url_path='collect-all')

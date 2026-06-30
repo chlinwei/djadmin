@@ -7,7 +7,7 @@
                         <a-button size="small" v-permission="'assets:hostgroups:create'" @click="handleCreateGroup">
                             <FontAwesomeIcon :icon="['fas', 'fa-plus']" />
                         </a-button>
-                        <a-button size="small" @click="refreshGroups">刷新</a-button>
+                        <a-button size="small" type="primary" ghost class="refresh-btn" @click="refreshGroups">刷新</a-button>
                     </a-space>
                 </template>
 
@@ -32,8 +32,41 @@
                         :expanded-keys="groupTreeExpandedKeys"
                         :selected-keys="selectedGroupKeys"
                         @select="onGroupSelect"
+                        @rightClick="onGroupRightClick"
                     />
                 </a-spin>
+
+                <!-- 右键上下文菜单 -->
+                <div
+                    v-if="groupContextMenu.visible"
+                    class="group-context-menu"
+                    :style="{ left: groupContextMenu.x + 'px', top: groupContextMenu.y + 'px' }"
+                    @mouseleave="closeGroupContextMenu"
+                >
+                    <a-menu>
+                        <a-menu-item key="create" @click="handleContextCreate">
+                            <FontAwesomeIcon :icon="['fas', 'fa-plus']" />
+                            <span>&nbsp;新增</span>
+                        </a-menu-item>
+                        <a-menu-item
+                            key="edit"
+                            :disabled="groupContextMenu.node?.key === 0"
+                            @click="handleContextEdit"
+                        >
+                            <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                            <span>&nbsp;修改</span>
+                        </a-menu-item>
+                        <a-menu-item
+                            key="delete"
+                            danger
+                            :disabled="groupContextMenu.node?.key === 0"
+                            @click="handleContextDelete"
+                        >
+                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                            <span>&nbsp;删除</span>
+                        </a-menu-item>
+                    </a-menu>
+                </div>
             </a-card>
         </a-col>
 
@@ -55,6 +88,12 @@
                         <span>&nbsp;新增主机</span>
                     </a-button>
                 </a-col>
+                <a-col class="tool-item" v-permission="'assets:hosts:view'">
+                    <a-button size="large" type="primary" ghost class="refresh-btn" @click="refreshList" :disabled="loading">
+                        <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
+                        <span>&nbsp;刷新</span>
+                    </a-button>
+                </a-col>
                 <a-col class="BatchCollectBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:update'">
                     <a-button size="large" type="primary" :loading="state.collectLoading" @click="confirmBatchCollect">
                         <FontAwesomeIcon :icon="['fas', 'download']" />批量采集
@@ -71,7 +110,7 @@
                         :overlayStyle="{ width: '300px', minHeight: '200px' }"
                     >
                         <a-button size="large" type="primary" :loading="state.loading" danger>
-                            <FontAwesomeIcon :icon="['fas', 'trash']" />批量删除
+                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />批量删除
                         </a-button>
                     </a-popconfirm>
                 </a-col>
@@ -120,6 +159,9 @@
                         <template v-else-if="column.key === 'disk_total_gb'">
                             <span>{{ formatSize(record.hardware?.disk_total_gb) }}</span>
                         </template>
+                        <template v-else-if="column.key === 'disk_used_percent'">
+                            <span>{{ formatPercent(record.hardware?.disk_used_percent ?? record.disk_used_percent) }}</span>
+                        </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
                                 <a-row :gutter="6" class="action_row" :wrap="false">
@@ -149,7 +191,7 @@
                                             :overlayStyle="{ width: '200px', minHeight: '150px' }"
                                         >
                                             <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary">
-                                                <FontAwesomeIcon :icon="['fas', 'trash']" />
+                                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                                             </a-button>
                                         </a-popconfirm>
                                     </a-col>
@@ -168,6 +210,8 @@
         :item_id="groupDialogId"
         :title="groupDialogTitle"
         :treeData="groupDialogTreeData"
+        :default_parent_id="groupDialogDefaultParentId"
+        :max_tree_depth="groupMaxTreeDepth"
         @initList="refreshGroups"
     />
 
@@ -179,6 +223,11 @@
         :closable="true"
     >
         <a-spin :spinning="detailLoading">
+            <div v-if="detailHost" class="collect-time-banner">
+                <div class="collect-time-title">最后采集时间</div>
+                <div class="collect-time-value">{{ formatDateTime(detailHost.last_collect_time) }}</div>
+            </div>
+
             <a-descriptions bordered :column="2" size="small" v-if="detailHost">
                 <a-descriptions-item label="实例名">{{ detailHost.instance_name || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="IP 地址">{{ detailHost.ip || '-' }}</a-descriptions-item>
@@ -192,6 +241,7 @@
                 <a-descriptions-item label="CPU 核数">{{ detailHost.hardware?.cpu_cores ?? '-' }}</a-descriptions-item>
                 <a-descriptions-item label="内存">{{ formatSize(detailHost.hardware?.memory_gb) }}</a-descriptions-item>
                 <a-descriptions-item label="磁盘总量">{{ formatSize(detailHost.hardware?.disk_total_gb) }}</a-descriptions-item>
+                <a-descriptions-item label="磁盘使用率">{{ formatPercent(detailHost.hardware?.disk_used_percent ?? detailHost.disk_used_percent) }}</a-descriptions-item>
                 <a-descriptions-item label="备注" :span="2">{{ detailHost.remark || '-' }}</a-descriptions-item>
             </a-descriptions>
 
@@ -203,6 +253,9 @@
                         </template>
                         <template v-else-if="column.key === 'used_gb'">
                             {{ formatSize(record.used_gb) }}
+                        </template>
+                        <template v-else-if="column.key === 'usage_percent'">
+                            {{ formatPercent(record.usage_percent) }}
                         </template>
                     </template>
                 </a-table>
@@ -238,13 +291,14 @@
                     <a-input v-model:value="form.ip" placeholder="例如：192.168.1.10" />
                 </a-form-item>
                 <a-form-item name="group_id" label="主机分组">
-                    <a-select
+                    <a-tree-select
                         v-model:value="form.group_id"
                         placeholder="请选择分组"
-                        :options="groupOptions"
+                        :tree-data="groupTreeSelectData"
                         allowClear
                         show-search
-                        optionFilterProp="label"
+                        treeNodeFilterProp="title"
+                        :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
                     />
                 </a-form-item>
                 <a-form-item name="credential_id" label="SSH 凭证">
@@ -273,12 +327,14 @@ defineOptions({
     name: 'host'
 })
 
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
-import { getHostGroupTree } from '@/api/assets/hostgroup/index.js'
+import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList } from '@/api/assets/credential/index.js'
+import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
+import { formatTimeWithTimezone } from '@/util/timezone'
 
 const searchText = ref('')
 const groupSearchText = ref('')
@@ -288,6 +344,9 @@ const selectedGroupName = ref('全部分组')
 const groupDialogVisible = ref(false)
 const groupDialogTitle = ref('新增分组')
 const groupDialogId = ref(-1)
+const groupDialogDefaultParentId = ref(null)
+const groupMaxTreeDepth = ref(5)
+const loading = ref(false)
 const groupLoading = ref(false)
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增主机')
@@ -306,7 +365,6 @@ const state = reactive({
 const rowLoadingStates = reactive({})
 const groupTreeData = ref([])
 const expandedGroupKeys = ref([])
-const groupOptions = ref([])
 const credentialOptions = ref([])
 const datasources = ref([])
 
@@ -340,6 +398,7 @@ const columns = [
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
     { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
+    { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '操作', key: 'action', fixed: 'right', width: 220 },
 ]
@@ -349,6 +408,7 @@ const diskColumns = [
     { title: '挂载点', dataIndex: 'mount_point', key: 'mount_point' },
     { title: '容量', dataIndex: 'size_gb', key: 'size_gb' },
     { title: '已用', dataIndex: 'used_gb', key: 'used_gb' },
+    { title: '使用率', dataIndex: 'usage_percent', key: 'usage_percent' },
     { title: '文件系统', dataIndex: 'filesystem', key: 'filesystem' },
 ]
 
@@ -361,8 +421,6 @@ const pagination = reactive({
     showQuickJumper: true,
 })
 
-const MAX_TREE_DEPTH = 5
-
 const buildTreeData = (nodes, depth = 1) => {
     return nodes.map((item) => ({
         title: `${item.name}${item.host_count !== undefined && item.host_count !== null ? ` (${item.host_count})` : ''}`,
@@ -370,18 +428,17 @@ const buildTreeData = (nodes, depth = 1) => {
         name: item.name,
         host_count: item.host_count,
         depth,
-        children: item.children && item.children.length && depth < MAX_TREE_DEPTH ? buildTreeData(item.children, depth + 1) : undefined,
+        children: item.children && item.children.length && depth < groupMaxTreeDepth.value ? buildTreeData(item.children, depth + 1) : undefined,
     }))
 }
 
-const buildGroupOptions = (nodes, collector = []) => {
-    nodes.forEach((item) => {
-        collector.push({ label: item.name, value: item.id })
-        if (item.children && item.children.length) {
-            buildGroupOptions(item.children, collector)
-        }
-    })
-    return collector
+const buildGroupTreeSelectData = (nodes = []) => {
+    return nodes.map((item) => ({
+        title: item.name,
+        value: item.key,
+        key: item.key,
+        children: item.children && item.children.length ? buildGroupTreeSelectData(item.children) : undefined,
+    }))
 }
 
 const filterGroupTree = (nodes, keyword) => {
@@ -431,6 +488,11 @@ const groupDialogTreeData = computed(() => {
     return groupTreeData.value[0]?.children || []
 })
 
+const groupTreeSelectData = computed(() => {
+    const children = groupTreeData.value[0]?.children || []
+    return buildGroupTreeSelectData(children)
+})
+
 const loadGroupTree = async () => {
     groupLoading.value = true
     try {
@@ -447,7 +509,6 @@ const loadGroupTree = async () => {
                 },
             ]
             expandedGroupKeys.value = collectExpandedKeys(groupTreeData.value)
-            groupOptions.value = buildGroupOptions(data)
         } else {
             message.error(res.data.msg || '获取分组失败')
         }
@@ -472,23 +533,28 @@ const loadCredentialOptions = async () => {
 }
 
 const loadHostList = async () => {
-    const params = {
-        page: pagination.current,
-        size: pagination.pageSize,
-        search: activeSearchText.value,
-    }
-    if (selectedGroupId.value && selectedGroupId.value !== 0) {
-        params.group_id = selectedGroupId.value
-    }
+    loading.value = true
+    try {
+        const params = {
+            page: pagination.current,
+            size: pagination.pageSize,
+            search: activeSearchText.value,
+        }
+        if (selectedGroupId.value && selectedGroupId.value !== 0) {
+            params.group_id = selectedGroupId.value
+        }
 
-    const res = await getHostList(params)
-    if (res.data.code === 200) {
-        datasources.value = res.data.data.results || []
-        pagination.total = res.data.data.count || 0
-    } else {
-        message.error(res.data.msg || '获取主机列表失败')
-        datasources.value = []
-        pagination.total = 0
+        const res = await getHostList(params)
+        if (res.data.code === 200) {
+            datasources.value = res.data.data.results || []
+            pagination.total = res.data.data.count || 0
+        } else {
+            message.error(res.data.msg || '获取主机列表失败')
+            datasources.value = []
+            pagination.total = 0
+        }
+    } finally {
+        loading.value = false
     }
 }
 
@@ -510,9 +576,70 @@ const selectAllGroups = async () => {
     await refreshList()
 }
 
+// 右键菜单状态
+const groupContextMenu = reactive({
+    visible: false,
+    x: 0,
+    y: 0,
+    node: null,
+})
+
+const onGroupRightClick = ({ event, node }) => {
+    event.preventDefault()
+    groupContextMenu.node = node
+    groupContextMenu.x = event.clientX
+    groupContextMenu.y = event.clientY
+    groupContextMenu.visible = true
+}
+
+const closeGroupContextMenu = () => {
+    groupContextMenu.visible = false
+}
+
+const handleContextCreate = () => {
+    const node = groupContextMenu.node
+    closeGroupContextMenu()
+    groupDialogId.value = -1
+    groupDialogTitle.value = '新增分组'
+    groupDialogDefaultParentId.value = (node && node.key !== 0) ? node.key : null
+    groupDialogVisible.value = true
+}
+
+const handleContextEdit = () => {
+    const node = groupContextMenu.node
+    closeGroupContextMenu()
+    if (!node || node.key === 0) return
+    groupDialogId.value = node.key
+    groupDialogTitle.value = '编辑分组'
+    groupDialogVisible.value = true
+}
+
+const handleContextDelete = async () => {
+    const node = groupContextMenu.node
+    closeGroupContextMenu()
+    if (!node || node.key === 0) return
+    try {
+        const res = await deleteHostGroupById(node.key)
+        if (res.data.code === 200 || res.status === 204) {
+            message.success('删除成功')
+            await loadGroupTree()
+            if (selectedGroupId.value === node.key) {
+                selectedGroupId.value = 0
+                selectedGroupName.value = '全部分组'
+                await refreshList()
+            }
+        } else {
+            message.error(res.data?.msg || '删除失败')
+        }
+    } catch (e) {
+        message.error('删除失败')
+    }
+}
+
 const handleCreateGroup = () => {
     groupDialogId.value = -1
     groupDialogTitle.value = '新增分组'
+    groupDialogDefaultParentId.value = null
     groupDialogVisible.value = true
 }
 
@@ -544,6 +671,23 @@ const handleAdd = () => {
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
+}
+
+const handleApiError = (err) => {
+    // 从响应中提取错误数据
+    const responseData = err?.response?.data || err?.data
+    // 如果是统一格式的错误响应（code 和 msg），data 字段才是实际错误内容
+    let errorObj = responseData
+    if (responseData && responseData.data && typeof responseData.data === 'object') {
+        errorObj = responseData.data
+    }
+    
+    if (errorObj && typeof errorObj === 'object') {
+        const firstKey = Object.keys(errorObj)[0]
+        const msg = Array.isArray(errorObj[firstKey]) ? errorObj[firstKey][0] : errorObj[firstKey]
+        if (msg) { message.error(msg); return }
+    }
+    message.error('操作失败，请稍后重试')
 }
 
 const onSaveOrCreate = (id) => {
@@ -582,9 +726,11 @@ const handleOk = () => {
                     dialogVisible.value = false
                     refreshGroups()
                 } else {
-                    message.error(res.data.msg || '保存主机失败')
+                    // 任何非 200 的返回都认为是错误
+                    handleApiError({data: res.data})
                 }
             })
+            .catch(handleApiError)
             .finally(() => {
                 dialogLoading.value = false
             })
@@ -724,9 +870,51 @@ const formatSize = (value) => {
     return `${value} GB`
 }
 
+const formatPercent = (value) => {
+    if (value === null || value === undefined || value === '') {
+        return '-'
+    }
+    return `${Number(value).toFixed(2)}%`
+}
+
+const normalizeUtcTime = (value) => {
+    if (!value || typeof value !== 'string') {
+        return value
+    }
+    const text = value.trim()
+    if (!text) {
+        return value
+    }
+    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
+        return text
+    }
+    return `${text.replace(' ', 'T')}Z`
+}
+
+const formatDateTime = (value) => {
+    if (!value) {
+        return '-'
+    }
+    try {
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+        return formatTimeWithTimezone(normalizeUtcTime(value), timezone, 'YYYY-MM-DD HH:mm:ss')
+    } catch (error) {
+        return value
+    }
+}
+
 onMounted(async () => {
+    // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
+    await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
+        if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
+    }).catch(() => {})
     await Promise.all([loadGroupTree(), loadCredentialOptions()])
     await refreshList()
+    document.addEventListener('click', closeGroupContextMenu)
+})
+
+onBeforeUnmount(() => {
+    document.removeEventListener('click', closeGroupContextMenu)
 })
 </script>
 
@@ -743,6 +931,27 @@ onMounted(async () => {
 
 .group-toolbar {
     margin-bottom: 12px;
+}
+
+.collect-time-banner {
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid #91caff;
+    background: linear-gradient(90deg, #e6f4ff 0%, #f0f5ff 100%);
+}
+
+.collect-time-title {
+    font-size: 12px;
+    color: #1d39c4;
+    margin-bottom: 4px;
+}
+
+.collect-time-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.3px;
 }
 
 .list-card {
@@ -871,6 +1080,23 @@ onMounted(async () => {
     background: #e2e8f0;
     color: #334155;
     border: 0;
+}
+
+/* 分组右键菜单 */
+.group-context-menu {
+    position: fixed;
+    z-index: 9999;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+    min-width: 120px;
+    padding: 4px 0;
+    user-select: none;
+}
+
+.group-context-menu :deep(.ant-menu) {
+    border: none;
+    box-shadow: none;
 }
 
 .host-page :deep(.ant-card-head-title),

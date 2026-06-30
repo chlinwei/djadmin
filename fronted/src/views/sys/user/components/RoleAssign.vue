@@ -79,7 +79,8 @@ watch(
                 console.log('角色列表')
                 console.log(res)
                 if (res.data.code === 200) {
-                    res.data.data.forEach(role => {
+                    const roles = res.data.data.results || res.data.data
+                    roles.forEach(role => {
                         roleList.push({
                             key: role.id.toString(),
                             title: role.name,

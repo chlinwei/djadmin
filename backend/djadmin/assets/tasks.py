@@ -65,6 +65,27 @@ def _parse_os_release(text):
     return os_type, os_version
 
 
+def _parse_size_to_gb(size_text):
+    """Parse size strings like 10G/1.5T/900M into GB float."""
+    if not size_text:
+        return None
+
+    text = str(size_text).strip().upper()
+    matched = re.match(r'^(\d+(?:\.\d+)?)([KMGT])$', text)
+    if not matched:
+        return None
+
+    value = float(matched.group(1))
+    unit = matched.group(2)
+    factor = {
+        'K': 1 / (1024 * 1024),
+        'M': 1 / 1024,
+        'G': 1,
+        'T': 1024,
+    }
+    return round(value * factor[unit], 3)
+
+
 def _collect_linux_info(host, credential):
     result = {}
     os_release = _run_ssh_command(host, credential, 'cat /etc/os-release 2>/dev/null || true')
@@ -75,9 +96,7 @@ def _collect_linux_info(host, credential):
     cpu_model = _run_ssh_command(host, credential, "grep -m 1 'model name' /proc/cpuinfo | cut -d':' -f2 | sed 's/^ //'" )
     memory_mb = _run_ssh_command(host, credential, "free -m | awk '/^Mem:/ {print $2}'")
     disk_total = _run_ssh_command(host, credential, "df -BG --total --exclude-type=tmpfs --exclude-type=devtmpfs | tail -1 | awk '{print $2}'")
-    disk_total_gb = None
-    if disk_total.endswith('G'):
-        disk_total_gb = float(disk_total[:-1])
+    disk_total_gb = _parse_size_to_gb(disk_total)
 
     result['system'] = {
         'os_type': os_type or 'Linux',
@@ -93,18 +112,48 @@ def _collect_linux_info(host, credential):
         'disk_total_gb': disk_total_gb,
         'architecture': _run_ssh_command(host, credential, 'uname -m'),
     }
-    mount_output = _run_ssh_command(host, credential, 'df -BG --total --exclude-type=tmpfs --exclude-type=devtmpfs | awk "NR>1 {print $1\\",\\"$6\\",\\"$2\\",\\"$3\\",\\"$5}"')
+    # Use df --output to avoid brittle awk quoting and field-position issues.
+    mount_output = _run_ssh_command(
+        host,
+        credential,
+        'df -BG --output=source,target,size,used,fstype --exclude-type=tmpfs --exclude-type=devtmpfs | tail -n +2',
+    )
     disks = []
     for line in mount_output.splitlines():
-        parts = line.split(',')
+        parts = line.split()
         if len(parts) < 5:
             continue
-        device, mount_point, size_gb, used_gb, filesystem = parts
+        device, mount_point, size_gb, used_gb, filesystem = parts[:5]
+        device = (device or '').strip()
+        mount_point = (mount_point or '').strip()
+        filesystem = (filesystem or '').strip()
+
+        # Skip invalid/blank rows to avoid writing empty HostDisk records.
+        if not device and not mount_point:
+            continue
+
+        parsed_size = _parse_size_to_gb(size_gb)
+        parsed_used = _parse_size_to_gb(used_gb)
+
+        # Strong guard: only keep rows with valid path-like device/mount and parseable sizes.
+        # This prevents intermittent malformed `df` outputs from polluting HostDisk with blanks.
+        if not device.startswith('/'):
+            continue
+        if not mount_point.startswith('/'):
+            continue
+        if parsed_size is None or parsed_used is None:
+            continue
+        if parsed_size <= 0:
+            continue
+
+        if parsed_size is None and parsed_used is None and not filesystem:
+            continue
+
         disks.append({
             'device': device,
             'mount_point': mount_point,
-            'size_gb': float(size_gb[:-1]) if size_gb.endswith('G') else None,
-            'used_gb': float(used_gb[:-1]) if used_gb.endswith('G') else None,
+            'size_gb': parsed_size,
+            'used_gb': parsed_used,
             'filesystem': filesystem,
         })
     result['disks'] = disks
@@ -119,6 +168,8 @@ def collect_host_info(host):
 
     data = _collect_linux_info(host, credential)
 
+    collected_at = timezone.now()
+
     with transaction.atomic():
         HostSystem.objects.update_or_create(
             host=host,
@@ -128,6 +179,7 @@ def collect_host_info(host):
                 'kernel_version': data['system']['kernel_version'],
                 'hostname': data['system']['hostname'],
                 'agent_version': data['system']['agent_version'],
+                'collected_at': collected_at,
                 'update_time': timezone.now(),
             }
         )
@@ -139,12 +191,16 @@ def collect_host_info(host):
                 'memory_gb': data['hardware']['memory_gb'],
                 'disk_total_gb': data['hardware']['disk_total_gb'],
                 'architecture': data['hardware']['architecture'],
+                'collected_at': collected_at,
                 'update_time': timezone.now(),
             }
         )
-        HostDisk.objects.filter(host=host).delete()
         disk_objs = [HostDisk(host=host, **disk) for disk in data['disks']]
-        HostDisk.objects.bulk_create(disk_objs)
+        if disk_objs:
+            HostDisk.objects.filter(host=host).delete()
+            HostDisk.objects.bulk_create(disk_objs)
+        else:
+            print(f'[WARN] Host {host.id} disk parsing returned empty result, keep existing HostDisk records.')
 
     return data
 

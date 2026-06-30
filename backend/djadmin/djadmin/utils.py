@@ -36,11 +36,28 @@ def Response_djerror(djerror: DjadminException,data=None):
 
 
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
 
 # 自定义分页类（可选）
 class CustomPagination(PageNumberPagination):
-    page_size_query_param = 'size'  # 允许客户端动态设置分页大小
-    max_page_size = 30  # 最大允许每页记录数:ml-citation{ref="3,6" data="citationList"}
+    page_size = 10  # 默认每页记录数
+    page_size_query_param = 'page_size'  # 前端传递的参数名
+    max_page_size = 30  # 最大允许每页记录数
+    
+    def get_paginated_response(self, data):
+        return Response({
+            'code': 200,
+            'msg': 'success',
+            'data': {
+                'results': data,  # 实际的数据列表
+                'count': self.page.paginator.count,  # 总数
+                'next': self.get_next_link(),  # 下一页链接
+                'previous': self.get_previous_link(),  # 上一页链接
+                'pageSize': self.page_size,  # 每页大小
+                'pageNumber': self.page.number,  # 当前页号
+                'totalPages': self.page.paginator.num_pages  # 总页数
+            }
+        })
 
 

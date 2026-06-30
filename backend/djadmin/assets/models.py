@@ -142,6 +142,7 @@ class HostHardware(BaseModel):
     disk_total_gb = models.FloatField(null=True, blank=True)
 
     architecture = models.CharField(max_length=64, blank=True, null=True)
+    collected_at = models.DateTimeField(null=True, blank=True, verbose_name='最后采集时间')
 
     def __str__(self):
         return f"Hardware of {self.host.name}"
@@ -162,6 +163,7 @@ class HostSystem(BaseModel):
     hostname = models.CharField(max_length=128, blank=True, null=True)
 
     agent_version = models.CharField(max_length=64, blank=True, null=True)
+    collected_at = models.DateTimeField(null=True, blank=True, verbose_name='最后采集时间')
 
 
     def __str__(self):

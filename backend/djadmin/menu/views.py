@@ -28,6 +28,12 @@ class MenuManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelM
     queryset = SysMenu.objects.all()
     serializer_class = SysMenuSerializer2
     lookup_field = 'id'
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
     @action(detail=False,methods=['get'])
     # 获取权限树
     def getMenuTree(self,request,url_path="getMenuTree"):

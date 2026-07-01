@@ -1,0 +1,4 @@
+test_output.txt
+
+# 遗留的 sqlite 文件（本项目运行时用 MySQL）
+*.sqlite3

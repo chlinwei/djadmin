@@ -7,13 +7,11 @@ from djadmin.errordict import CommonError,ErrorMixin
 
 def djadmin_handler(err,context):
     #获取rest 标准的错误响应对象
-    print("===========异常====================")
     response = exception_handler(err,context)
     if response is None:
         #自定义异常,会在这里
         if isinstance(err,DjadminException):
             # 自定义异常
-            print("========DjadminException================")
             return Response_djerror(err)
         # res = {}
         # # res.update(response.data)

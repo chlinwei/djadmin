@@ -65,6 +65,22 @@ python manage.py runserver 0.0.0.0:8000
 - Windows: ./start_scheduler.ps1
 - Or: cd backend/djadmin && python manage.py runapscheduler
 
+### Tests & Test Report
+
+- Run backend tests (use test settings + keepdb):
+  - `cd backend/djadmin`
+  - `python manage.py test user role assets --settings=djadmin.test_settings --keepdb`
+- Generate the Markdown test report:
+  - `cd backend/djadmin`
+  - `python generate_test_report.py`
+  - Optional flags: `--apps user role assets` (which apps to test), `--output ../../TEST_REPORT.md` (report path).
+  - Output is written to `TEST_REPORT.md` at the repo root by default.
+  - The report includes a summary, a per-module summary, and a per-case detail table (module, test class, case name, description, duration, result).
+- Test conventions:
+  - API format compliance is verified inside business test cases via `BaseTestCase.assertResponseOK` (checks `{code, msg, data}` structure + `code==200`). Do NOT add a separate format-only test file; assert format alongside business assertions.
+  - Use `assertSuccess` when the case also requires `msg == 'success'` (pure CRUD success paths).
+  - SSH collection tests against fake IPs print connection-timeout tracebacks — these are expected, not failures.
+
 ## Default Credentials
 
 - **Username:** admin

@@ -101,6 +101,18 @@ class Host(BaseModel):
     is_deleted_in_cloud = models.BooleanField(default=False)
     port = models.PositiveIntegerField(default=22)
 
+    # 采集状态（用于在列表中突出无法连接的主机）
+    class CollectStatus(models.TextChoices):
+        UNKNOWN = "unknown", "未采集"
+        SUCCESS = "success", "成功"
+        FAILED = "failed", "失败"
+
+    collect_status = models.CharField(
+        max_length=16, default=CollectStatus.UNKNOWN, verbose_name="采集状态"
+    )
+    collect_message = models.TextField(blank=True, default="", verbose_name="采集失败原因")
+    collect_time = models.DateTimeField(null=True, blank=True, verbose_name="最后采集时间")
+
     def __str__(self):
         return f"{self.name} ({self.ip})"
     

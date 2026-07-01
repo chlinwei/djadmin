@@ -113,8 +113,6 @@ class SysMenuSerializer2(serializers.ModelSerializer):
 
     # 创建
     def create(self, validated_data):
-        print("create")
-        print(validated_data)
         validated_data["create_time"] = datetime.now().date()
         menu = SysMenu.objects.create(**validated_data)
         return menu

@@ -44,7 +44,6 @@ class MenuManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelM
     @action(detail=False,methods=['get'],url_path="getMenuListByRoleId")
     def getMenuListByRoleId(self,request):
         role_id = request.query_params.get("role_id")
-        print(role_id)
         menuList = SysRoleMenu.objects.filter(role_id=role_id).values("menu_id")
         menuIdList = [m['menu_id'] for m in menuList]
         return Response_200(menuIdList)

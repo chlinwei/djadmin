@@ -188,7 +188,6 @@ class UserCenterManage(GenericViewSet):
 class ChangeAvatarView(APIView):
     def post(self, request):
         file = request.FILES.get('avatar')
-        print("file:", file)
         if file:
             file_name = file.name
             suffixName = file_name[file_name.rfind("."):]
@@ -257,6 +256,19 @@ class UserManage(
         serializer = self.get_serializer(instance)
         return Response_200(data=serializer.data)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response_200(data=serializer.data)
+
     # 检查用户是否存在
     @action(detail=False,methods=['get'],url_path="checkUserName")
     def checkUserName(self,request):
@@ -282,7 +294,6 @@ class UserManage(
     @action(detail=False,methods=['post'],url_path="resetUserPwd")
     def resetUserPwd(self,request):
         id = request.data.get("id")
-        print(id)
         if not id:
             return Response_error(UserError.user_not_exists)
         user = SysUser.objects.get(id=id)

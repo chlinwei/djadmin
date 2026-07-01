@@ -71,7 +71,7 @@ const props = defineProps({
 
 const form = ref({
     id: -1,
-    parent_id: 0,
+    parent_id: null,
     name: '',
     remark: '',
 })
@@ -150,7 +150,8 @@ watch(
                     const data = res.data.data || {}
                     form.value = {
                         id: data.id ?? id,
-                        parent_id: data.parent_id ?? data.parent?.id ?? 0,
+                        // 顶级分组在后端是 null，前端也保持 null，避免树选择器显示为原始值 "0"
+                        parent_id: data.parent_id ?? data.parent?.id ?? null,
                         name: data.name || '',
                         remark: data.remark || '',
                     }

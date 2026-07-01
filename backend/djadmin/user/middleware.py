@@ -10,9 +10,7 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
         white_list = ["/sys/login"]  # 请求白名单
         path = request.path
         if path not in white_list and not path.startswith("/media"):
-            print("要进行token验证")
             token = request.META.get('HTTP_AUTHORIZATION')
-            print("token:", token)
             err_ret = {
                 'code':301,
                 'msg': ''
@@ -20,7 +18,6 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
             try:
                 jwt_decode_handler = api_settings.JWT_DECODE_HANDLER
                 a = jwt_decode_handler(token)
-                print(a)
                 
             except ExpiredSignatureError:
                 err_ret['msg'] = 'Token过期，请重新登录！'
@@ -32,5 +29,4 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
                 err_ret['msg'] = 'Token验证异常！'
                 return JsonResponse(err_ret)
         else:
-            print("不需要token验证")
             return None

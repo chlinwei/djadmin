@@ -16,7 +16,7 @@ from menu.permisssion import CustomMenuPermission
 from django.db.models import Prefetch
 
 
-class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
+class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
     queryset =  Credential.objects.all()
     serializer_class = CredentialSerializer
     pagination_class = CustomPagination
@@ -30,6 +30,7 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         'list': 'assets:credentials:view',
         'retrieve': 'assets:credentials:view',
         # delete
+        'destroy': 'assets:credentials:delete',
         'batch-delete': 'assets:credentials:delete',
         # update
         'partial_update': 'assets:credentials:update',
@@ -61,6 +62,32 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         instance = self.get_object()
         serializer = self.get_serializer(instance)
         return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        deleted_id = instance.id
+        self.perform_destroy(instance)
+        return Response_200(data={"id": deleted_id})
 
     # 批量删除credential
     @action(detail=False,methods=['delete'],url_path='batch-delete')
@@ -131,6 +158,26 @@ class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retriev
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response_200(data=serializer.data)
 
     # 批量删除Application
@@ -207,6 +254,26 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         serializer = self.get_serializer(instance)
         return Response_200(data=serializer.data)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
     @action(detail=False, methods=['get'], url_path='tree')
     def tree(self, request):
         queryset = self.filter_queryset(self.get_queryset())
@@ -267,11 +334,24 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             'disks',
         ).order_by('-id')
         group_id = self.request.query_params.get('group_id')  # type: ignore[union-attr]
+        collect_status = self.request.query_params.get('collect_status')  # type: ignore[union-attr]
         if group_id not in [None, '', '0', 0]:
             # 查询该分组及其所有子分组下的主机
             group_ids = self._get_group_and_subgroups(int(group_id))
             queryset = queryset.filter(group_id__in=group_ids)
+        if collect_status in {
+            Host.CollectStatus.UNKNOWN,
+            Host.CollectStatus.SUCCESS,
+            Host.CollectStatus.FAILED,
+        }:
+            queryset = queryset.filter(collect_status=collect_status)
         return queryset
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -289,6 +369,20 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
         return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
@@ -310,9 +404,20 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         host = self.get_object()
         try:
             collect_host_info(host)
-            return Response_200(data={'id': host.id, 'status': 'collected'})
+            return Response_200(data={
+                'id': host.id, 
+                'status': 'collected',
+                'message': f'主机 {host.name} 采集成功'
+            })
         except Exception as exc:
-            raise DjadminException(AssetsError.BATCH_UPLOAD_ERROR, str(exc))
+            error_msg = str(exc)
+            # 返回失败结果而不是抛异常，这样前端能看到具体的错误信息
+            return Response_200(data={
+                'id': host.id,
+                'status': 'failed',
+                'error': error_msg,
+                'message': f'主机 {host.name} 采集失败：{error_msg}'
+            })
 
     @action(detail=False, methods=['post'], url_path='batch-collect-info')
     def batch_collect_info(self, request):

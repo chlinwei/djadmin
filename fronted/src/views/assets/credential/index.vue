@@ -88,7 +88,8 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { usePagination } from 'vue-request';
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue';
 const SearchText = ref('')
 const lastSearchKeyword = ref('')
@@ -314,6 +315,15 @@ const HandleAdd = () => {
     item_assign_title.value = "创建凭证"
 }
 
+// 从主机列表点击凭证名跳转过来时，自动按凭证名搜索定位
+const route = useRoute()
+onMounted(() => {
+    const keyword = route.query.search
+    if (keyword) {
+        SearchText.value = String(keyword)
+        onSearch(SearchText.value)
+    }
+})
 
 </script>
 <style scoped>

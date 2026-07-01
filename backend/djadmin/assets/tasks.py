@@ -1,13 +1,19 @@
 import io
 import re
+import logging
 from django.db import transaction
 from .models import Host, HostCredential, HostSystem, HostHardware, HostDisk
 from django.utils import timezone
 
+logger = logging.getLogger(__name__)
+
 try:
     import paramiko
+    from paramiko.ssh_exception import AuthenticationException, SSHException
 except ImportError:
     paramiko = None
+    AuthenticationException = Exception  # type: ignore
+    SSHException = Exception  # type: ignore
 
 
 def _get_connection_port(host, credential):
@@ -24,12 +30,15 @@ def _run_ssh_command(host, credential, command, timeout=30):
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
     connect_kwargs = {
         'hostname': host.ip,
         'port': _get_connection_port(host, credential),
         'username': credential.username if credential else 'root',
         'timeout': timeout,
         'banner_timeout': timeout,
+        'allow_agent': False,  # 禁止使用 SSH Agent
+        'look_for_keys': False,  # 禁止查找本地密钥
     }
 
     if credential and credential.auth_type == credential.AuthType.SSH_KEY:
@@ -44,7 +53,19 @@ def _run_ssh_command(host, credential, command, timeout=30):
     else:
         raise ValueError(f'Unsupported credential type for Host {host.id}.')
 
-    client.connect(**connect_kwargs)
+    try:
+        client.connect(**connect_kwargs)
+    except AuthenticationException as e:
+        raise ValueError(f'SSH 认证失败：{str(e)}')
+    except (SSHException, OSError) as e:
+        error_msg = str(e)
+        if 'refused' in error_msg.lower():
+            raise ValueError(f'SSH 连接被拒绝：{error_msg}')
+        elif 'name or service not known' in error_msg.lower() or 'getaddrinfo failed' in error_msg.lower():
+            raise ValueError(f'DNS 解析失败或网络不可达：{error_msg}')
+        else:
+            raise ValueError(f'SSH 连接失败：{error_msg}')
+    
     stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
     out = stdout.read().decode('utf-8', errors='ignore')
     err = stderr.read().decode('utf-8', errors='ignore')
@@ -161,12 +182,54 @@ def _collect_linux_info(host, credential):
 
 
 def collect_host_info(host):
+    """采集主机信息，并把成功/失败状态持久化到 Host，便于在列表中突出无法连接的主机。"""
+    try:
+        result = _collect_host_info_impl(host)
+    except Exception as e:
+        host.collect_status = Host.CollectStatus.FAILED
+        host.collect_message = str(e)
+        host.collect_time = timezone.now()
+        host.save(update_fields=['collect_status', 'collect_message', 'collect_time'])
+        raise
+    host.collect_status = Host.CollectStatus.SUCCESS
+    host.collect_message = ''
+    host.collect_time = timezone.now()
+    host.save(update_fields=['collect_status', 'collect_message', 'collect_time'])
+    return result
+
+
+def _collect_host_info_impl(host):
+    logger.info(f'[COLLECT] 开始采集主机: {host.name}({host.ip})')
     credential = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
     if not credential or not credential.credential:
-        raise ValueError(f'Host {host.id} has no default credential configured.')
+        error = f'主机 {host.name}({host.ip}) 没有配置默认凭证'
+        logger.error(f'[COLLECT] {error}')
+        raise ValueError(error)
     credential = credential.credential
+    
+    if not credential.username:
+        error = f'主机 {host.name}({host.ip}) 的凭证没有配置用户名'
+        logger.error(f'[COLLECT] {error}')
+        raise ValueError(error)
+    
+    if credential.auth_type == credential.AuthType.PASSWORD and not credential.password:
+        error = f'主机 {host.name}({host.ip}) 的凭证没有配置密码'
+        logger.error(f'[COLLECT] {error}')
+        raise ValueError(error)
+    
+    if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
+        error = f'主机 {host.name}({host.ip}) 的凭证没有配置私钥'
+        logger.error(f'[COLLECT] {error}')
+        raise ValueError(error)
 
-    data = _collect_linux_info(host, credential)
+    try:
+        logger.info(f'[COLLECT] 开始收集主机信息: {host.name}({host.ip}), 用户: {credential.username}')
+        data = _collect_linux_info(host, credential)
+        logger.info(f'[COLLECT] 成功收集主机信息: {host.name}({host.ip})')
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f'[COLLECT] 主机 {host.name}({host.ip}) 采集失败: {error_msg}', exc_info=True)
+        raise ValueError(error_msg)
 
     collected_at = timezone.now()
 
@@ -218,13 +281,13 @@ def collect_all_hosts_info():
     
     for host in hosts:
         try:
-            print(f'[COLLECTING] Host {host.id} ({host.ip}) - {host.name}')
+            print(f'[COLLECTING] Host {host.id} ({host.ip}) - {host.name}')  # type: ignore
             collect_host_info(host)
             success_count += 1
-            print(f'[SUCCESS] Host {host.id} collected successfully')
+            print(f'[SUCCESS] Host {host.id} collected successfully')  # type: ignore
         except Exception as e:
             failed_count += 1
-            print(f'[ERROR] Host {host.id} failed: {e}')
+            print(f'[ERROR] Host {host.id} failed: {e}')  # type: ignore
     
     print(f'[SUMMARY] Collection completed: {success_count} successful, {failed_count} failed')
     print(f'[END] Finished at {timezone.now()}')

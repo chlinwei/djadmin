@@ -308,6 +308,16 @@ def start():
 
     ensure_default_tasks()
 
+    # Reset stale "is_running" flags left over from a previous process that was
+    # killed/restarted mid-execution. A freshly started process cannot have any
+    # task actually running, so any is_running=True here is a zombie state and
+    # would otherwise block run_now forever ("Task is already running").
+    stale = ScheduledTask.objects.filter(is_running=True)
+    stale_count = stale.count()
+    if stale_count:
+        stale.update(is_running=False)
+        print(f"Reset {stale_count} stale is_running flag(s) on startup")
+
     # Recalculate next_run_time on every startup to avoid stale values after downtime/restart.
     for task in ScheduledTask.objects.all():
         if task.enabled and task.interval_minutes:

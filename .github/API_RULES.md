@@ -243,8 +243,79 @@ except DjadminException as e:
     return Response_djerror(e)
 ```
 
-## 测试检查清单
+## 测试覆盖规则 🧪
 
+### 强制规则：每个 API 更新都必须添加对应的 Test Case
+
+**原则**：新增或修改后端 API 时，必须添加对应的单元测试，无异议。
+
+### 测试要求
+
+1. **测试文件位置**
+   - 测试用例必须放在对应模块的 `tests.py` 文件中
+   - 例如：user 模块的 API 测试放在 `user/tests.py`
+
+2. **测试覆盖范围**
+   - ✅ **成功场景** - 正常请求返回 200 和正确数据结构
+   - ✅ **失败场景** - 参数错误、权限不足、资源不存在等返回相应错误码
+   - ✅ **响应格式** - 验证返回格式符合 `{code, msg, data}` 结构
+   - ✅ **分页** - 列表接口验证分页返回格式正确
+   - ✅ **认证** - 验证 token 过期/无效时返回 301
+   - ✅ **权限** - 验证无权限用户访问时返回相应错误
+
+3. **测试命名规则**
+   ```python
+   # 成功场景：test_<接口功能>_success 或 test_<接口功能>
+   test_create_user
+   test_login_success
+   test_list_users_returns_paginated
+   
+   # 失败场景：test_<接口功能>_<失败原因>
+   test_login_wrong_password
+   test_create_user_duplicate_username
+   test_list_without_token
+   test_list_users_without_token_returns_301
+   ```
+
+4. **测试框架**
+   - 使用 Django TestCase 和 DRF APIClient
+   - 每个测试用例一个 `def test_xxx(self):` 方法
+   - 示例：
+   ```python
+   from rest_framework.test import APIClient
+   from django.test import TestCase
+
+   class UserAPITest(TestCase):
+       def setUp(self):
+           self.client = APIClient()
+       
+       def test_create_user(self):
+           response = self.client.post('/api/user/list', {...})
+           self.assertEqual(response.status_code, 200)
+           self.assertEqual(response.data['code'], 200)
+           self.assertIn('data', response.data)
+   ```
+
+5. **测试运行**
+   ```bash
+   # 运行所有测试
+   python manage.py test user role assets --settings=djadmin.test_settings --keepdb
+   
+   # 生成测试报告（按模块分类）
+   python generate_test_report_final.py
+   ```
+
+6. **持续集成**
+   - 代码 review 时，检查是否添加了对应的测试
+   - 没有测试的 API 修改 ❌ 不应该被合并
+   - 所有测试必须通过才能发版
+
+### 测试检查清单
+
+- [ ] 每个新增/修改的 API 都有对应的 test case
+- [ ] 测试同时覆盖成功和失败场景
+- [ ] 测试用例位置正确（在 `{module}/tests.py` 中）
+- [ ] 测试命名清晰易懂（test_xxx_success 或 test_xxx_failure）
 - [ ] 所有 API 返回都调用了 `Response_xxx` 函数
 - [ ] 成功返回使用 `Response_200()`
 - [ ] 异常返回使用相应的 `Response_error()`、`Response_error_str()` 或 `Response_djerror()`
@@ -254,3 +325,4 @@ except DjadminException as e:
 - [ ] 异常返回 code 300/301 和错误消息
 - [ ] 前端能正确解析 response.data.data
 - [ ] 前端分页参数与后端配置匹配
+- [ ] 运行 `python generate_test_report_final.py` 确保所有测试通过

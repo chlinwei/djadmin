@@ -5,8 +5,6 @@ class CustomMenuPermission(permissions.BasePermission):
     
     
     def has_permission(self, request, view):
-        print("view action")
-        print(view.action)
         userInfo = getCurrentUser(request)
         action = view.action
         if userInfo['username'] == "admin":

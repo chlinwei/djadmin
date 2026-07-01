@@ -82,6 +82,18 @@
                         @search="onSearch"
                     />
                 </a-col>
+                <a-col :span="4">
+                    <a-select
+                        v-model:value="collectStatusFilter"
+                        class="tool-item"
+                        size="large"
+                        style="width: 100%;"
+                        :options="collectStatusOptions"
+                        placeholder="采集状态"
+                        allowClear
+                        @change="onCollectStatusChange"
+                    />
+                </a-col>
                 <a-col class="AddBtn tool-item" v-permission="'assets:hosts:create'">
                     <a-button size="large" @click="handleAdd">
                         <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
@@ -129,13 +141,14 @@
                 </template>
 
                 <a-table
-                    :scroll="{ x: 1500 }"
+                    :scroll="{ x: 1600 }"
                     :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }"
                     rowKey="id"
                     :columns="columns"
                     :data-source="datasources"
                     :pagination="pagination"
                     :loading="loading"
+                    :row-class-name="getRowClassName"
                     @change="handleTableChange"
                 >
                     <template #bodyCell="{ column, record }">
@@ -146,9 +159,26 @@
                             <a-tag color="blue">{{ getGroupName(record) }}</a-tag>
                         </template>
                         <template v-else-if="column.key === 'credential_name'">
-                            <span>
+                            <a v-if="getCredentialName(record) !== '-'" class="credential-link"
+                                @click="goCredential(getCredentialName(record))">
                                 <FontAwesomeIcon :icon="['fas', 'fa-key']" />&nbsp;{{ getCredentialName(record) }}
+                            </a>
+                            <span v-else>
+                                <FontAwesomeIcon :icon="['fas', 'fa-key']" />&nbsp;-
                             </span>
+                        </template>
+                        <template v-else-if="column.key === 'collect_status'">
+                            <a-tooltip v-if="record.collect_status === 'failed'">
+                                <template #title>
+                                    <div>{{ record.collect_message || '无法连接到该主机' }}</div>
+                                    <div v-if="record.collect_time" style="margin-top: 4px; opacity: 0.85;">
+                                        失败时间：{{ formatDateTime(record.collect_time) }}
+                                    </div>
+                                </template>
+                                <a-tag color="error" style="cursor: default;">无法连接</a-tag>
+                            </a-tooltip>
+                            <a-tag v-else-if="record.collect_status === 'success'" color="success">正常</a-tag>
+                            <a-tag v-else color="default">未采集</a-tag>
                         </template>
                         <template v-else-if="column.key === 'cpu_cores'">
                             <span>{{ record.hardware?.cpu_cores ?? '-' }} 核</span>
@@ -329,6 +359,7 @@ defineOptions({
 
 import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { useRouter } from 'vue-router'
 import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList } from '@/api/assets/credential/index.js'
@@ -339,6 +370,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 const searchText = ref('')
 const groupSearchText = ref('')
 const activeSearchText = ref('')
+const collectStatusFilter = ref(undefined)
 const selectedGroupId = ref(0)
 const selectedGroupName = ref('全部分组')
 const groupDialogVisible = ref(false)
@@ -387,6 +419,7 @@ const rules = {
 
 const columns = [
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
+    { title: '采集状态', dataIndex: 'collect_status', key: 'collect_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
@@ -401,6 +434,13 @@ const columns = [
     { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '操作', key: 'action', fixed: 'right', width: 220 },
+]
+
+const collectStatusOptions = [
+    { label: '全部状态', value: undefined },
+    { label: '无法连接', value: 'failed' },
+    { label: '正常', value: 'success' },
+    { label: '未采集', value: 'unknown' },
 ]
 
 const diskColumns = [
@@ -539,6 +579,9 @@ const loadHostList = async () => {
             page: pagination.current,
             size: pagination.pageSize,
             search: activeSearchText.value,
+        }
+        if (collectStatusFilter.value) {
+            params.collect_status = collectStatusFilter.value
         }
         if (selectedGroupId.value && selectedGroupId.value !== 0) {
             params.group_id = selectedGroupId.value
@@ -747,6 +790,11 @@ const onSearch = async () => {
     await refreshList()
 }
 
+const onCollectStatusChange = async () => {
+    pagination.current = 1
+    await refreshList()
+}
+
 const handleTableChange = async (pageConfig) => {
     pagination.current = pageConfig.current
     pagination.pageSize = pageConfig.pageSize
@@ -783,7 +831,15 @@ const handleCollect = (id) => {
     collectHostInfo(id)
         .then((res) => {
             if (res.data.code === 200) {
-                message.success('采集成功')
+                const result = res.data.data
+                // 检查采集状态：status 应该是 'collected' 或 'failed'
+                if (result.status === 'collected') {
+                    message.success(result.message || '采集成功')
+                } else if (result.status === 'failed') {
+                    message.error(result.message || result.error || '采集失败')
+                } else {
+                    message.success(result.message || '采集成功')
+                }
                 refreshList()
             } else {
                 message.error(res.data.msg || '采集失败')
@@ -859,6 +915,16 @@ const getCredentialName = (record) => {
     return record.credential_name || record.credential?.name || '-'
 }
 
+const router = useRouter()
+const goCredential = (name) => {
+    if (!name || name === '-') return
+    router.push({ path: '/assets/credentials/index', query: { search: name } })
+}
+
+const getRowClassName = (record) => {
+    return record.collect_status === 'failed' ? 'row-collect-failed' : ''
+}
+
 const getDisks = (record) => {
     return record.disks || []
 }
@@ -919,6 +985,23 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.credential-link {
+    color: #1677ff;
+    cursor: pointer;
+}
+
+.credential-link:hover {
+    text-decoration: underline;
+}
+
+:deep(.row-collect-failed) > td {
+    background-color: #fff1f0;
+}
+
+:deep(.row-collect-failed:hover) > td {
+    background-color: #ffe0de !important;
+}
+
 .host-page {
     align-items: flex-start;
     font-size: 15px;

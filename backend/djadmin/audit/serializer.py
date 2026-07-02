@@ -39,7 +39,9 @@ class WebSSHSessionLogAuditSerializer(serializers.ModelSerializer):
         ]
 
     def get_host_name(self, obj):
-        return obj.host.instance_name or obj.host.name
+        system = getattr(obj.host, 'system', None)
+        hostname = getattr(system, 'hostname', None) if system else None
+        return obj.host.instance_name or hostname or f'Host-{obj.host.id}'
 
     def get_host_ip(self, obj):
         return obj.host.ip

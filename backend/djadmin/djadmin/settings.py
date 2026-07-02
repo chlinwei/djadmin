@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -31,6 +32,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'automation.apps.AutomationConfig',
     'daphne',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -231,3 +233,7 @@ JWT_AUTH = {
 
 #关闭自动添加/
 APPEND_SLASH = False
+
+# Runserver default binding. Can be overridden by command args.
+SERVER_HOST = os.getenv('DJADMIN_SERVER_HOST', '0.0.0.0')
+SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '8000'))

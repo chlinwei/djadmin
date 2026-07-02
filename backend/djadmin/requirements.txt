@@ -12,3 +12,4 @@ sqlparse==0.5.3
 tzdata==2024.2
 apscheduler==3.10.1
 paramiko==3.4.0
+ansible-core==2.21.1

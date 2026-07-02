@@ -60,7 +60,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.audit_client_ip = self._get_client_ip()
         self.audit_user_agent = self._get_header('user-agent')
 
-        host, credential, error_msg = await self._get_host_and_default_credential(self.host_id)
+        host, credential, host_display_name, error_msg = await self._get_host_and_default_credential(self.host_id)
         if error_msg:
             await self.accept()
             await self._send_event('error', {'message': error_msg})
@@ -91,7 +91,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         WebSSHRuntimeRegistry.mark_active(self.audit_session_id, self)
         await self._send_event('connected', {
             'host_id': self.host_id,
-            'host_name': host.name,
+            'host_name': host_display_name,
             'ip': host.ip,
             'session_id': self.audit_session_id,
         })
@@ -269,25 +269,29 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_host_and_default_credential(self, host_id):
-        host = Host.objects.filter(id=host_id).first()
+        host = Host.objects.select_related('system').filter(id=host_id).first()
         if not host:
-            return None, None, '主机不存在'
+            return None, None, '', '主机不存在'
+
+        system = getattr(host, 'system', None)
+        hostname = getattr(system, 'hostname', None) if system else None
+        host_display_name = host.instance_name or hostname or f'Host-{host_id}'
 
         relation = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
         if not relation or not relation.credential:
-            return None, None, '主机未配置默认 SSH 凭证'
+            return None, None, host_display_name, '主机未配置默认 SSH 凭证'
 
         credential = relation.credential
         if not credential.username:
-            return None, None, 'SSH 凭证缺少用户名'
+            return None, None, host_display_name, 'SSH 凭证缺少用户名'
 
         if credential.auth_type == credential.AuthType.PASSWORD and not credential.password:
-            return None, None, 'SSH 凭证缺少密码'
+            return None, None, host_display_name, 'SSH 凭证缺少密码'
 
         if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
-            return None, None, 'SSH 凭证缺少私钥'
+            return None, None, host_display_name, 'SSH 凭证缺少私钥'
 
-        return host, credential, ''
+        return host, credential, host_display_name, ''
 
     def _get_token_from_query_string(self):
         raw_query = self.scope.get('query_string', b'').decode('utf-8')

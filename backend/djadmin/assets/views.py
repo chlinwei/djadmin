@@ -302,8 +302,8 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
     serializer_class = HostSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['instance_name', 'name', 'ip', 'remark']
-    ordering_fields = ['name', 'create_time']
+    search_fields = ['instance_name', 'system__hostname', 'ip', 'remark']
+    ordering_fields = ['instance_name', 'create_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -326,6 +326,11 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             for child in children:
                 group_ids.extend(self._get_group_and_subgroups(child.id))  # type: ignore[attr-defined]
         return group_ids
+
+    def _display_host_name(self, host):
+        system = getattr(host, 'system', None)
+        hostname = getattr(system, 'hostname', None) if system else None
+        return host.instance_name or hostname or f'Host-{host.id}'
 
     def get_queryset(self):
         queryset = Host.objects.select_related('group').prefetch_related(
@@ -435,12 +440,13 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
     @action(detail=True, methods=['post'], url_path='collect-info')
     def collect_info(self, request, id=None):
         host = self.get_object()
+        host_display_name = self._display_host_name(host)
         try:
             collect_host_info(host)
             return Response_200(data={
                 'id': host.id, 
                 'status': 'collected',
-                'message': f'主机 {host.name} 采集成功'
+                'message': f'主机 {host_display_name} 采集成功'
             })
         except Exception as exc:
             error_msg = str(exc)
@@ -449,7 +455,7 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
                 'id': host.id,
                 'status': 'failed',
                 'error': error_msg,
-                'message': f'主机 {host.name} 采集失败：{error_msg}'
+                'message': f'主机 {host_display_name} 采集失败：{error_msg}'
             })
 
     @action(detail=False, methods=['post'], url_path='batch-collect-info')

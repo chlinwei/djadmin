@@ -390,6 +390,7 @@ import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/in
 import { getCredentailList } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { getWebSocketBaseUrl } from '@/util/request'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
@@ -953,9 +954,7 @@ const openDetail = (id) => {
 
 const buildWebSocketUrl = (hostId) => {
     const token = getToken() || ''
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const wsHost = `${window.location.hostname}:8000`
-    return `${protocol}://${wsHost}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
+    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
 }
 
 const WEBSSH_BLOCKED_SHORTCUTS = new Set(['w', 'r', 't', 'n', 'l', 'p', 'j', 'k'])

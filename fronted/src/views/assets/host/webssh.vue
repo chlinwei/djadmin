@@ -32,6 +32,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { getHostById } from '@/api/assets/host/index.js'
 import { getToken } from '@/api/user/index.js'
+import { getWebSocketBaseUrl } from '@/util/request'
 
 const route = useRoute()
 const terminalRef = ref(null)
@@ -68,9 +69,7 @@ const statusColor = computed(() => {
 
 const buildWebSocketUrl = () => {
     const token = getToken() || ''
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const wsHost = `${window.location.hostname}:8000`
-    return `${protocol}://${wsHost}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
+    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
 }
 
 const disposeTerminal = () => {

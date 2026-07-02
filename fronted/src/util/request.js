@@ -148,6 +148,12 @@ export function getServerUrl(){
     return baseUrl;
 }
 
+export function getWebSocketBaseUrl() {
+    const parsed = new URL(baseUrl, window.location.origin)
+    const wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${wsProtocol}//${parsed.host}`
+}
+
 
 export function patch(url, params = {}) {
     return new Promise((resolve, reject) => {
@@ -185,6 +191,7 @@ export default {
     del,
     fileUpload,
     getServerUrl,
+    getWebSocketBaseUrl,
     patch,
     download,
 }

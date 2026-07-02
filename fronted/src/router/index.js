@@ -44,6 +44,16 @@ export const staticRouterMap = [
                 path: '/sys/scheduler',
                 name: '定时任务中心',
                 component: () => import('../views/sys/scheduler/index.vue'),
+            },
+            {
+                path: '/sys/automation',
+                name: '自动化执行中心',
+                component: () => import('../views/sys/automation/index.vue'),
+            },
+            {
+                path: '/sys/automation/playbooks',
+                name: 'Playbook模板',
+                component: () => import('../views/sys/playbookTemplate/index.vue'),
             }
         ]
     },

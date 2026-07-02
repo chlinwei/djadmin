@@ -339,3 +339,133 @@ media/      → 静态文件（头像等）
 - 会话录屏/命令审计回放。
 - 文件上传下载（SFTP）。
 - 终端多标签与会话共享。
+
+---
+
+## 项目启动步骤（开发环境）
+
+以下步骤基于当前仓库代码，可用于本地或 Linux 远程开发环境。
+
+### 1. 后端环境准备
+
+在 `backend/djadmin` 目录执行：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Windows PowerShell 激活方式：
+
+```powershell
+(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& .\.venv\Scripts\Activate.ps1)
+```
+
+### 2. 数据库迁移与健康检查
+
+在 `backend/djadmin` 目录执行：
+
+```bash
+python manage.py migrate
+python manage.py check
+```
+
+### 3. 启动 Django 服务
+
+保持命令不变，直接执行：
+
+```bash
+python manage.py runserver
+```
+
+说明：
+- 默认监听地址和端口由 `settings.py` 中的 `SERVER_HOST`、`SERVER_PORT` 控制。
+- 也可通过环境变量覆盖：`DJADMIN_SERVER_HOST`、`DJADMIN_SERVER_PORT`。
+
+### 4. 启动前端服务
+
+在 `fronted` 目录执行：
+
+```bash
+npm install
+npm run dev
+```
+
+### 5. 启动调度器（独立进程）
+
+必须使用独立终端启动，不与 Django Web 进程复用。
+
+在 `backend/djadmin` 目录执行：
+
+```bash
+python manage.py runapscheduler
+```
+
+或使用仓库脚本：
+- Windows：`backend/start_scheduler.ps1`
+- Linux/Mac：`backend/start_scheduler.sh`
+
+### 6. 验收清单
+
+1. 后端接口可访问（登录接口返回正常）。
+2. 前端页面可打开并正常登录。
+3. 菜单加载正常，角色权限可生效。
+4. 自动化执行中心可进入并提交任务。
+5. 调度器运行后，任务最近执行时间会更新。
+
+### 7. 端口联动注意事项
+
+如果修改后端端口，需同步确认以下配置：
+
+1. 后端监听端口：`backend/djadmin/djadmin/settings.py`。
+2. 前端 HTTP 基础地址：`fronted/src/util/request.js`。
+3. WebSSH 地址已改为复用前端统一基础地址配置，无需单独硬编码端口。
+
+### 8. 后端端口修改方法
+
+后端端口支持两种修改方式。
+
+方式 A：修改配置文件（长期固定）
+
+在 `backend/djadmin/djadmin/settings.py` 修改：
+
+```python
+SERVER_HOST = os.getenv('DJADMIN_SERVER_HOST', '0.0.0.0')
+SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '8000'))
+```
+
+例如改为 9000：
+
+```python
+SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '9000'))
+```
+
+然后使用原命令启动：
+
+```bash
+python manage.py runserver
+```
+
+方式 B：环境变量覆盖（不改代码）
+
+Linux/Mac：
+
+```bash
+export DJADMIN_SERVER_HOST=0.0.0.0
+export DJADMIN_SERVER_PORT=9000
+python manage.py runserver
+```
+
+Windows PowerShell：
+
+```powershell
+$env:DJADMIN_SERVER_HOST = "0.0.0.0"
+$env:DJADMIN_SERVER_PORT = "9000"
+python manage.py runserver
+```
+
+修改后端端口后，前端联调请同时确认：
+
+1. `fronted/src/util/request.js` 中的后端基础地址端口与后端一致。
+2. WebSSH 连接地址会复用基础地址配置，无需额外修改端口常量。

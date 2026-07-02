@@ -201,6 +201,41 @@ class HostDisk(models.Model):
         return f"{self.device} ({self.host.name})"
 
 
+class WebSSHSessionLog(models.Model):
+    class Status(models.TextChoices):
+        CONNECTED = 'connected', '已连接'
+        CLOSED = 'closed', '已关闭'
+        FAILED = 'failed', '连接失败'
+
+    session_id = models.CharField(max_length=36, unique=True)
+    host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='webssh_sessions')
+    user_id = models.IntegerField(null=True, blank=True)
+    username = models.CharField(max_length=100, blank=True, default='')
+    client_ip = models.CharField(max_length=64, blank=True, default='')
+    user_agent = models.CharField(max_length=255, blank=True, default='')
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.CONNECTED)
+    start_time = models.DateTimeField(auto_now_add=True)
+    end_time = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.IntegerField(null=True, blank=True)
+    close_code = models.IntegerField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default='')
+
+    input_bytes = models.IntegerField(default=0)
+    command_count = models.IntegerField(default=0)
+    input_content = models.TextField(blank=True, default='')
+    output_content = models.TextField(blank=True, default='')
+    recorded_content_bytes = models.IntegerField(default=0)
+    is_content_truncated = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'assets_webssh_session_log'
+        ordering = ['-start_time']
+
+    def __str__(self):
+        return f"{self.session_id} {self.username} {self.host.id}"
+
+
 
 
 

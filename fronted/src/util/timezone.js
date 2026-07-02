@@ -89,6 +89,28 @@ export function formatTimeWithTimezone(utcTime, timezone = 'UTC', format = 'YYYY
 }
 
 /**
+ * 将日期对象转换为 UTC ISO 字符串，供后端查询参数使用。
+ * 仅返回标准 ISO（含 Z），避免后端把无时区字符串误判为 UTC。
+ * @param {any} value - dayjs/moment/Date
+ * @returns {string|undefined}
+ */
+export function toUtcQueryISOString(value) {
+    if (!value) {
+        return undefined
+    }
+
+    if (typeof value?.toDate === 'function') {
+        return value.toDate().toISOString()
+    }
+
+    if (value instanceof Date) {
+        return value.toISOString()
+    }
+
+    return undefined
+}
+
+/**
  * 获取时区的偏移小时数
  * @param {string} timezone - 时区标识符
  * @returns {number} 相对于UTC的偏移小时数

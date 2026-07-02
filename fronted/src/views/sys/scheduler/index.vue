@@ -291,7 +291,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, createTask, deleteTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
@@ -299,6 +299,7 @@ import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getMenuTree } from '@/api/menu'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 const filterText = ref('')
 const loading = ref(false)
@@ -315,6 +316,7 @@ const currentTask = ref(null)
 const currentLogDetail = ref(null)
 const tasks = ref([])
 const logs = ref([])
+let stopListenTimezone = null
 const menuOptions = ref([])
 const logFilterVisible = ref(false)
 const logFilters = reactive({
@@ -342,6 +344,8 @@ const pagination = reactive({
   current: 1,
   pageSize: 10,
   total: 0,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '30'],
   showTotal: (total) => `共 ${total} 条`,
   showQuickJumper: true,
 })
@@ -350,6 +354,8 @@ const logsPagination = reactive({
   current: 1,
   pageSize: 10,
   total: 0,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '30'],
   showTotal: (total) => `共 ${total} 条`,
   showQuickJumper: true,
 })
@@ -474,6 +480,12 @@ const loadUserTimezone = () => {
       }
     })
     .catch(() => {})
+}
+
+const handleTimezoneChanged = (timezone) => {
+  if (timezone) {
+    userTimezone.value = timezone
+  }
 }
 
 const loadTasks = () => {
@@ -903,9 +915,16 @@ const runNow = (record) => {
 }
 
 onMounted(() => {
+  stopListenTimezone = listenUserTimezoneChanged(handleTimezoneChanged)
   loadUserTimezone()
   loadMenuOptions()
   loadTasks()
+})
+
+onUnmounted(() => {
+  if (stopListenTimezone) {
+    stopListenTimezone()
+  }
 })
 </script>
 

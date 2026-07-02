@@ -8,6 +8,7 @@
 - **前端**: Vue 3 + Vite + Ant Design Vue
 - **调度**: APScheduler（独立进程）
 - **认证**: JWT（rest_framework_jwt，1天有效期）
+- **远程连接（规划）**: Web SSH（基于 Channels + Paramiko + xterm）
 
 ---
 
@@ -138,7 +139,7 @@ media/      → 静态文件（头像等）
 #### 4.4 主机管理（Host）
 
 **数据模型**
-- `Host`：主机（id, instance_name, name, ip, instance_id, cloud_account[FK], group[FK], status, is_deleted_in_cloud, port[默认22], create_time, update_time, remark）
+- `Host`：主机（id, instance_name, name, ip, instance_id, cloud_account[FK], group[FK], status, is_deleted_in_cloud, port[默认22], collect_status[unknown/success/failed], collect_message, collect_time, create_time, update_time, remark）
 - `HostCredential`：主机-凭证关联（host, credential, is_default）
 - `HostHardware`：硬件信息（host[1:1], cpu_cores, cpu_model, memory_gb, disk_total_gb, architecture, collected_at）
 - `HostSystem`：系统信息（host[1:1], os_type, os_version, kernel_version, hostname, agent_version, collected_at）
@@ -146,7 +147,7 @@ media/      → 静态文件（头像等）
 
 | 方法 | 路径 | 功能 |
 |------|------|------|
-| GET | `/assets/hosts/` | 主机列表（支持 group_id 过滤、递归子分组、搜索/排序/分页） |
+| GET | `/assets/hosts/` | 主机列表（支持 group_id 过滤、递归子分组、collect_status 过滤、搜索/排序/分页） |
 | GET | `/assets/hosts/{id}/` | 主机详情（含硬件、系统、磁盘信息） |
 | POST | `/assets/hosts/` | 新增主机 |
 | PATCH | `/assets/hosts/{id}/` | 编辑主机 |
@@ -155,6 +156,12 @@ media/      → 静态文件（头像等）
 | POST | `/assets/hosts/{id}/collect-info` | 采集单台主机信息（SSH 连接，更新硬件/系统/磁盘） |
 | POST | `/assets/hosts/batch-collect-info` | 批量采集指定主机信息 |
 | POST | `/assets/hosts/collect-all` | 采集所有主机信息 |
+
+**采集状态说明**
+- `collect_status`：`unknown`（未采集）/ `success`（采集成功）/ `failed`（采集失败）
+- `collect_message`：最近一次采集失败原因（成功时为空字符串）
+- `collect_time`：最近一次采集时间（UTC）
+- 前端主机列表支持按 `collect_status` 过滤，并对失败主机高亮显示
 
 ---
 
@@ -177,6 +184,10 @@ media/      → 静态文件（头像等）
 | POST | `/sys/scheduler/tasks/{id}/run-now` | 立即执行（有并发保护，is_running 防重入） |
 | POST | `/sys/scheduler/tasks/start-scheduler` | 启动 APScheduler 进程 |
 | POST | `/sys/scheduler/tasks/stop-scheduler` | 停止 APScheduler 进程 |
+
+**主机批量采集任务状态语义**
+- `collect_all_hosts_info` 对单台主机失败采取“记录并继续”策略，不会因为单台失败中断整个批次。
+- 因此定时任务总体状态通常按“任务函数是否抛异常”判定：单台失败不一定导致任务总体失败。
 
 ---
 
@@ -254,3 +265,77 @@ media/      → 静态文件（头像等）
 | `Response_error_str(msg, code, data)` | 自定义错误响应 |
 | `Response_djerror(djerror, data)` | Django 异常响应 |
 | `CustomPagination` | 分页器（默认10条/页，最大30，参数名 `page_size`） |
+
+---
+
+## Web SSH（单机最小可用技术方案）
+
+### 目标
+- 在主机列表页面提供浏览器内 SSH 终端能力，减少本地 SSH 工具切换。
+
+### 最小技术栈（去除可选项）
+- 后端：`paramiko` + `channels` + `daphne`
+- 前端：`@xterm/xterm` + `@xterm/addon-fit`
+- 通道层：`InMemoryChannelLayer`（单机开发）
+
+### 各组件作用
+- `paramiko`：建立 SSH 连接并读写远程 shell。
+- `channels`：为 Django 提供 WebSocket 双向通信能力。
+- `daphne`：ASGI 服务承载 WebSocket 连接。
+- `@xterm/xterm`：浏览器终端渲染与键盘输入处理。
+- `@xterm/addon-fit`：终端尺寸自适应弹窗/容器。
+- `InMemoryChannelLayer`：单机内消息分发（不依赖 Redis）。
+
+### 单机开发边界
+- 单机开发阶段可不引入 Redis。
+- 多实例生产部署时再升级到 `channels-redis`。
+
+### 依赖安装命令（当前推荐）
+- 后端：`pip install paramiko channels daphne`
+- 前端：`npm install @xterm/xterm @xterm/addon-fit`
+
+> 说明：旧包名 `xterm`、`xterm-addon-fit` 已弃用，建议统一使用 `@xterm/*` 命名空间。
+
+### 功能点（规划）
+
+#### 前端功能点（主机列表）
+- 在主机列表操作列新增「Web SSH」按钮（建议图标：`terminal`）。
+- 点击按钮弹出终端弹窗：显示主机名、IP、连接状态。
+- 弹窗内嵌 `xterm`，支持键盘输入、回车执行、终端输出滚动。
+- 终端窗口支持自适应（`fit`），弹窗大小变化时自动重排。
+- 连接失败时给出明确错误提示（认证失败/连接超时/网络不可达）。
+- 关闭弹窗时主动断开会话，避免僵尸连接。
+
+#### 后端功能点
+- 基于主机默认凭证建立 SSH 会话，不允许前端直接传入密码/私钥。
+- WebSocket 握手校验当前用户是否有 Web SSH 权限。
+- 会话生命周期管理：连接创建、心跳存活、断开清理。
+- 双向数据转发：浏览器输入 -> SSH stdin；SSH stdout/stderr -> 浏览器。
+- 异常兜底：任一异常都关闭 SSH 连接并回传错误事件。
+
+#### 权限与安全
+- 新增权限码：`assets:hosts:webssh`。
+- 仅允许连接资产库中已登记的主机（按 `host_id` 建连）。
+- 连接使用超时与空闲超时（建议：连接超时 10-20s，空闲 15-30min）。
+- 日志中禁止打印明文密码、私钥等敏感信息。
+
+#### 接口与事件建议（最小版）
+- HTTP（可选）：`POST /assets/hosts/{id}/webssh-token`（签发短时连接令牌）。
+- WS：`/ws/assets/hosts/{id}/webssh/?token=...`
+- 事件类型建议：
+  - `connected`：连接成功
+  - `output`：终端输出
+  - `error`：错误信息
+  - `closed`：会话关闭
+
+#### 验收标准（MVP）
+- 用户在主机列表可打开终端并执行基础命令（如 `hostname`、`uname -a`）。
+- 无权限用户点击时返回统一格式无权限提示（403）。
+- 主机不可达/认证失败时，前端能看到明确失败原因。
+- 关闭终端弹窗后，后端 SSH 会话被释放（无残留连接）。
+
+#### 暂不包含（后续增强）
+- 多实例水平扩展（Redis Channel Layer）。
+- 会话录屏/命令审计回放。
+- 文件上传下载（SFTP）。
+- 终端多标签与会话共享。

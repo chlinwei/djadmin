@@ -1,7 +1,7 @@
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host
+from .models import Credential, Application, HostGroup, Host, WebSSHSessionLog
 from user.models import SysUser
 
 
@@ -250,6 +250,24 @@ class HostTest(BaseTestCase):
         self.assertEqual(body['data']['name'], 'renamed_host')
         host.refresh_from_db()
         self.assertEqual(host.name, 'renamed_host')
+
+    def test_list_webssh_sessions(self):
+        """可按主机查询 Web SSH 会话审计记录"""
+        host = Host.objects.create(name='ws_host', instance_name='ws_host', ip='192.168.1.2', port=22)
+        WebSSHSessionLog.objects.create(
+            session_id='11111111-1111-1111-1111-111111111111',
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CLOSED,
+            command_count=3,
+            input_bytes=30,
+        )
+        res = self.client.get(f'/assets/hosts/{host.id}/webssh-sessions/?page=1&page_size=10')  # type: ignore[attr-defined]
+        body = self.assertResponseOK(res)
+        self.assertIn('results', body['data'])
+        self.assertEqual(body['data']['count'], 1)
+        self.assertEqual(body['data']['results'][0]['host_name'], 'ws_host')
 
 
 # ─────────────────────────────────────────────

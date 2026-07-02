@@ -44,6 +44,36 @@ class CustomPagination(PageNumberPagination):
     page_size = 10  # 默认每页记录数
     page_size_query_param = 'page_size'  # 前端传递的参数名
     max_page_size = 30  # 最大允许每页记录数
+
+    def get_page_number(self, request, paginator):
+        # 兼容历史前端参数 pageNumber，避免分页点击后始终回到第1页
+        page_number = (
+            request.query_params.get(self.page_query_param)
+            or request.query_params.get('pageNumber')
+            or 1
+        )
+        if page_number in self.last_page_strings:
+            return paginator.num_pages
+        return page_number
+
+    def get_page_size(self, request):
+        # 兼容历史前端参数 pageSize，标准参数仍为 page_size
+        raw_size = None
+        if self.page_size_query_param:
+            raw_size = request.query_params.get(self.page_size_query_param) or request.query_params.get('pageSize')
+
+        if raw_size is None:
+            return self.page_size
+
+        try:
+            page_size = int(raw_size)
+            if page_size <= 0:
+                return self.page_size
+            if self.max_page_size is not None:
+                return min(page_size, self.max_page_size)
+            return page_size
+        except (TypeError, ValueError):
+            return self.page_size
     
     def get_paginated_response(self, data):
         return Response({
@@ -54,7 +84,7 @@ class CustomPagination(PageNumberPagination):
                 'count': self.page.paginator.count,  # 总数
                 'next': self.get_next_link(),  # 下一页链接
                 'previous': self.get_previous_link(),  # 上一页链接
-                'pageSize': self.page_size,  # 每页大小
+                'pageSize': self.page.paginator.per_page,  # 每页大小
                 'pageNumber': self.page.number,  # 当前页号
                 'totalPages': self.page.paginator.num_pages  # 总页数
             }

@@ -54,6 +54,26 @@ from djadmin.utils import CustomPagination
 
 # 登录
 class LoginView(APIView):
+    @staticmethod
+    def _get_client_ip(request):
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            return x_forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR', '')
+
+    def _write_login_audit_log(self, request, username, status, user_id=None, message=''):
+        # 延迟导入，避免 app 初始化阶段出现循环依赖。
+        from audit.models import LoginAuditLog
+
+        LoginAuditLog.objects.create(
+            username=username or '',
+            user_id=user_id,
+            status=status,
+            client_ip=self._get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            message=message or '',
+        )
+
     def getMenusAndRoleCodes(self,userId: int):
         # 原始
         # menu_list = SysMenu.objects.raw("select sm.id,sm.name,sm.icon,sm.parent_id,sm.order_num,sm.path,sm.component,sm.menu_type,sm.perms,sm.create_time,sm.update_time,sm.remark,sm.location from sys_menu sm where id in (select menu_id as id from sys_role_menu srm where srm.role_id in (select role_id from sys_user_role sur  where sur.user_id = %s)) order by sm.order_num",[userId])
@@ -119,14 +139,27 @@ class LoginView(APIView):
         try:
             user = SysUser.objects.get(username=username)
             if user.status == 0:
+                self._write_login_audit_log(
+                    request,
+                    username=username,
+                    status='failed',
+                    user_id=user.id,
+                    message='用户已被禁用',
+                )
                 return Response_error(UserError.login_disabled_error)
-            if user.password != password:
+            if not user.check_password(password, auto_upgrade=True):
                 user = None
             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
         except ObjectDoesNotExist as e:
             user = None
         if user == None:
+            self._write_login_audit_log(
+                request,
+                username=username,
+                status='failed',
+                message='账号或者密码输入错误',
+            )
             return Response_error_str('账号或者密码输入错误', code=300)
         else:
             # menu_list = self._getMenuList(user.id)
@@ -136,6 +169,13 @@ class LoginView(APIView):
             user.perms = perms  # type: ignore[attr-defined]
             payload = jwt_payload_handler(user)  # type: ignore[operator]
             token = jwt_encode_handler(payload)  # type: ignore[operator]
+            self._write_login_audit_log(
+                request,
+                username=user.username,
+                status='success',
+                user_id=user.id,
+                message='登录成功',
+            )
             # 获取角色
             
             #缓存到cache中
@@ -178,10 +218,10 @@ class UserCenterManage(GenericViewSet):
         db_user = SysUser.objects.get(id=user_id)
         old_password = request.data['old_password']
         new_password = request.data['new_password']
-        if old_password != db_user.password:
+        if not db_user.check_password(old_password, auto_upgrade=True):
             return Response_error(UserError.update_password_error)
         else:
-            db_user.password = new_password
+            db_user.set_password(new_password)
             db_user.save()
             return Response_200()
 # 修改头像
@@ -298,7 +338,7 @@ class UserManage(
             return Response_error(UserError.user_not_exists)
         user = SysUser.objects.get(id=id)
         reset_password = "123456"
-        user.password = reset_password
+        user.set_password(reset_password)
         user.update_time = datetime.now().date()
         user.save()
         return Response_200(data={"password": reset_password})

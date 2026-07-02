@@ -4,10 +4,10 @@
     </div> -->
 
     <a-row>
-        <a-col :span="18">
+        <a-col :span="16">
             <BreadCrumb />
         </a-col>
-        <a-col :span="6">
+        <a-col :span="8">
             <Avatar />
         </a-col>
         

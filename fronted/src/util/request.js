@@ -164,6 +164,21 @@ export function patch(url, params = {}) {
     });
 }
 
+export function download(url, params = {}) {
+    return new Promise((resolve, reject) => {
+        httpService({
+            url: url,
+            method: 'get',
+            params: params,
+            responseType: 'blob'
+        }).then(response => {
+            resolve(response)
+        }).catch(error => {
+            reject(error)
+        })
+    })
+}
+
 export default {
     get,
     post,
@@ -171,4 +186,5 @@ export default {
     fileUpload,
     getServerUrl,
     patch,
+    download,
 }

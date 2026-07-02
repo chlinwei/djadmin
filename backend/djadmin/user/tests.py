@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.contrib.auth.hashers import check_password, make_password
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import SysUser, SysUserRole
@@ -20,7 +21,7 @@ class BaseTestCase(TestCase):
         self.client = APIClient()
         self.user = SysUser.objects.create(
             username='admin',
-            password='admin123',
+            password=make_password('admin123'),
             status=1,
             email='admin@test.com',
             timezone='Asia/Shanghai',
@@ -47,7 +48,7 @@ class BaseTestCase(TestCase):
 class LoginViewTest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        SysUser.objects.create(username='testuser', password='pass123', status=1)
+        SysUser.objects.create(username='testuser', password=make_password('pass123'), status=1)
         SysUser.objects.create(username='disabled', password='pass123', status=0)
 
     def test_login_success(self):
@@ -170,13 +171,13 @@ class UserManageTest(BaseTestCase):
 
     def test_reset_password(self):
         """重置用户密码为 123456"""
-        u = SysUser.objects.create(username='resetme', password='oldpass', status=1)
+        u = SysUser.objects.create(username='resetme', password=make_password('oldpass'), status=1)
         res = self.client.post('/sys/users/resetUserPwd/', {
             'id': u.id
         }, format='json')
         self.assertResponseOK(res)
         u.refresh_from_db()
-        self.assertEqual(u.password, '123456')
+        self.assertTrue(check_password('123456', u.password))
 
     def test_change_user_status(self):
         """修改用户状态为禁用"""
@@ -251,7 +252,19 @@ class UserCenterTest(BaseTestCase):
         }, format='json')
         self.assertResponseOK(res)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.password, 'newpass456')
+        self.assertTrue(check_password('newpass456', self.user.password))
+
+    def test_login_plaintext_password_auto_migrates_to_hash(self):
+        """历史明文密码用户登录成功后自动迁移为哈希"""
+        legacy_user = SysUser.objects.create(username='legacy', password='legacy123', status=1)
+        res = self.client.post('/sys/login', {
+            'username': 'legacy', 'password': 'legacy123'
+        }, format='json')
+        body = res.json()
+        self.assertEqual(body['code'], 200)
+        legacy_user.refresh_from_db()
+        self.assertNotEqual(legacy_user.password, 'legacy123')
+        self.assertTrue(check_password('legacy123', legacy_user.password))
 
     def test_update_password_wrong_old(self):
         """旧密码错误修改失败"""

@@ -38,6 +38,9 @@
                 :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"
                 @change="handleTableChange">
                 <template #bodyCell="{ column, record }">
+                    <template v-if="column.key === 'create_time'">
+                        <span>{{ formatDateTime(record.create_time) }}</span>
+                    </template>
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
@@ -80,11 +83,14 @@ defineOptions({
 import { ref } from 'vue'
 import { getRoleList } from '@/api/role/index.js';
 import { usePagination } from 'vue-request';
-import { computed, reactive } from 'vue';
+import { computed, reactive, onMounted, onUnmounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
 import {checkPermission} from '@/directives/permission/permission'
+import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 const menu_assign_title = ref("")
 
@@ -96,6 +102,8 @@ const cancel = () => {
 const roleassign_title = ref("权限分配")
 
 const SearchText = ref('')
+const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+let stopListenTimezone = null
 const columns = [
     { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name', sorter: true, sortDirections: ['ascend', 'descend'] },
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
@@ -104,6 +112,42 @@ const columns = [
 ]
 if(checkPermission(['system:roles:update','system:roles:delete'])) {
     columns.push({ title: '操作', key: 'action', fixed: 'right', width: 330 })
+}
+
+const normalizeUtcTime = (value) => {
+    if (!value || typeof value !== 'string') {
+        return value
+    }
+    const text = value.trim()
+    if (!text) {
+        return value
+    }
+    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
+        return text
+    }
+    return `${text.replace(' ', 'T')}Z`
+}
+
+const formatDateTime = (value) => {
+    if (!value) {
+        return '-'
+    }
+    try {
+        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+    } catch (error) {
+        return value
+    }
+}
+
+const loadUserTimezone = () => {
+    getCurrentUserInfo()
+        .then((res) => {
+            const timezone = res?.data?.data?.timezone
+            if (timezone) {
+                userTimezone.value = timezone
+            }
+        })
+        .catch(() => {})
 }
 
 var lastSearchKeyword = null
@@ -146,6 +190,7 @@ const pagination = computed(() => ({
     total: total.value,
     current: current.value,
     pageSize: pageSize.value,
+    showSizeChanger: true,
     showTotal: (total) => `共有${total}条数据`,
     pageSizeOptions: ['10', '20', '30'],
     showQuickJumper: true,
@@ -265,14 +310,23 @@ const handleMenuAssign = (id, name) => {
 
 }
 
+onMounted(() => {
+    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
+        userTimezone.value = timezone
+    })
+    loadUserTimezone()
+})
+
+onUnmounted(() => {
+    if (stopListenTimezone) {
+        stopListenTimezone()
+    }
+})
+
 
 </script>
   
 <style scoped>
-.search {}
-
-#assignRole {}
-
 .actionRow {
     vertical-align: middle;
 }

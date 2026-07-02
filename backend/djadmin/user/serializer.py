@@ -48,7 +48,8 @@ class UserDetailCreateSerializer(ModelSerializer):
         fields = ["id","username","email","phonenumber","status","remark","timezone"]
     # 创建用户
     def create(self, validated_data):
-        validated_data["password"] = "123456"
         validated_data["create_time"] = datetime.now().date()
-        user = SysUser.objects.create(**validated_data)
+        user = SysUser(**validated_data)
+        user.set_password("123456")
+        user.save()
         return user

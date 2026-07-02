@@ -33,6 +33,9 @@
                 :columns="columns" :data-source="datasources" :pagination="pagination" :loading="loading"
                 onSelectChange="onSelectChange" @change="handleTableChange">
                 <template #bodyCell="{ column, record }">
+                    <template v-if="column.key === 'create_time'">
+                        {{ formatDateTime(record.create_time) }}
+                    </template>
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
@@ -60,13 +63,18 @@
     </a-row>
 </template>
 <script setup>
-import { ref, reactive } from 'vue';
+import { ref, reactive, onMounted, onUnmounted } from 'vue';
 import { usePagination } from 'vue-request';
 import { computed } from 'vue'
 import { message } from 'ant-design-vue';
+import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 const appname = "应用类型"
 const SearchText = ref('')
 const lastSearchKeyword = ref('')
+const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+let stopListenTimezone = null
 const rowLoadingStates = reactive({
 });
 
@@ -110,6 +118,42 @@ const columns = [
     }
 ];
 
+const normalizeUtcTime = (value) => {
+    if (!value || typeof value !== 'string') {
+        return value
+    }
+    const text = value.trim()
+    if (!text) {
+        return value
+    }
+    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
+        return text
+    }
+    return `${text.replace(' ', 'T')}Z`
+}
+
+const formatDateTime = (value) => {
+    if (!value) {
+        return '-'
+    }
+    try {
+        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+    } catch (error) {
+        return value
+    }
+}
+
+const loadUserTimezone = () => {
+    getCurrentUserInfo()
+        .then((res) => {
+            const timezone = res?.data?.data?.timezone
+            if (timezone) {
+                userTimezone.value = timezone
+            }
+        })
+        .catch(() => {})
+}
+
 const total = ref(0)
 
 const queryData = params => {
@@ -151,6 +195,7 @@ const pagination = computed(() => ({
     total: total.value,
     current: current.value,
     pageSize: pageSize.value,
+    showSizeChanger: true,
     showTotal: (total) => `共有${total}条数据`,
     pageSizeOptions: ['10', '20', '30'],
     showQuickJumper: true,
@@ -254,6 +299,19 @@ const HandleAdd = () => {
     itemAssignVisible.value = true
     item_assign_title.value = "新增"
 }
+
+onMounted(() => {
+    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
+        userTimezone.value = timezone
+    })
+    loadUserTimezone()
+})
+
+onUnmounted(() => {
+    if (stopListenTimezone) {
+        stopListenTimezone()
+    }
+})
 
 
 </script>

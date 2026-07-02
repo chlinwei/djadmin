@@ -31,11 +31,13 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'django_apscheduler',
     'rest_framework',
     'django_filters',
@@ -45,6 +47,7 @@ INSTALLED_APPS = [
     'role.apps.RoleConfig',
     'menu.apps.MenuConfig',
     'assets.apps.AssetsConfig',
+    'audit.apps.AuditConfig',
     'scheduler.apps.SchedulerConfig',
     'sys_config.apps.SysConfigConfig',
 ]
@@ -79,6 +82,13 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'djadmin.wsgi.application'
+ASGI_APPLICATION = 'djadmin.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    }
+}
 
 
 # Database
@@ -166,6 +176,10 @@ CORS_ALLOW_METHODS = [
 'PUT',
 'PATCH',
 'DELETE',
+]
+
+CORS_EXPOSE_HEADERS = [
+    'Content-Disposition',
 ]
 
 

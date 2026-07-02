@@ -314,6 +314,7 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         'partial_update': 'assets:hosts:update',
         'perform_update': 'assets:hosts:update',
         'batch-delete': 'assets:hosts:delete',
+        'webssh_sessions': 'assets:hosts:view',
     }
 
     def _get_group_and_subgroups(self, group_id):
@@ -398,6 +399,38 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             return Response_200(data=[])
         deleted_count, _ = Host.objects.filter(id__in=ids).delete()
         return Response_200(data={"deleted_count": deleted_count})
+
+    @action(detail=True, methods=['get'], url_path='webssh-sessions')
+    def webssh_sessions(self, request, id=None):
+        host = self.get_object()
+        queryset = WebSSHSessionLog.objects.filter(host=host).order_by('-start_time')
+
+        username = request.query_params.get('username')
+        status = request.query_params.get('status')
+        if username:
+            queryset = queryset.filter(username__icontains=username)
+        if status in {
+            WebSSHSessionLog.Status.CONNECTED,
+            WebSSHSessionLog.Status.CLOSED,
+            WebSSHSessionLog.Status.FAILED,
+        }:
+            queryset = queryset.filter(status=status)
+
+        page = self.paginate_queryset(queryset)
+        serializer = WebSSHSessionLogSerializer(page if page is not None else queryset, many=True)
+        data = serializer.data
+        if page is not None:
+            paginator = self.paginator
+            return Response_200(data={
+                'count': paginator.page.paginator.count,
+                'results': data,
+                'pageNumber': paginator.page.number,
+                'pageSize': paginator.page_size,
+                'totalPages': paginator.page.paginator.num_pages,
+                'next': paginator.get_next_link(),
+                'previous': paginator.get_previous_link(),
+            })
+        return Response_200(data=data)
 
     @action(detail=True, methods=['post'], url_path='collect-info')
     def collect_info(self, request, id=None):

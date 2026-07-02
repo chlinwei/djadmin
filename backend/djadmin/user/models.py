@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.hashers import check_password, identify_hasher, make_password
 
 # Create your models here.
 from role.models import SysRole
@@ -21,6 +22,38 @@ class SysUser(models.Model):
     update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
     remark = models.CharField(max_length=500, null=True,blank=True,verbose_name="备注")
     timezone = models.CharField(max_length=50, default='UTC', verbose_name="时区")
+
+    def set_password(self, raw_password):
+        self.password = make_password(raw_password)
+
+    def _is_hashed_password(self):
+        try:
+            identify_hasher(self.password)
+            return True
+        except Exception:
+            return False
+
+    def check_password(self, raw_password, auto_upgrade=False):
+        if self._is_hashed_password():
+            if not auto_upgrade:
+                return check_password(raw_password, self.password)
+
+            def setter(new_raw_password):
+                self.set_password(new_raw_password)
+                if self.pk:
+                    self.save(update_fields=['password'])
+
+            return check_password(raw_password, self.password, setter=setter)
+
+        # 兼容历史明文密码：登录成功后自动迁移为哈希
+        if raw_password == self.password:
+            if auto_upgrade:
+                self.set_password(raw_password)
+                if self.pk:
+                    self.save(update_fields=['password'])
+            return True
+        return False
+
     class Meta:
         db_table = "sys_user"
 

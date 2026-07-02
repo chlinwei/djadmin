@@ -23,8 +23,11 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'djadmin.test_settings')
 import django
 django.setup()
 
+from django.db import connections
 from django.test.utils import get_runner
 from django.conf import settings
+
+import MySQLdb
 
 
 class TimingTestResult(unittest.TextTestResult):
@@ -69,8 +72,10 @@ class TimingTestResult(unittest.TextTestResult):
 
 def run_tests(app_labels):
     """运行测试并收集结果。返回 (result, total, duration)。"""
+    _reset_test_database()
+
     TestRunner = get_runner(settings)
-    runner = TestRunner(verbosity=1, keepdb=True)
+    runner = TestRunner(verbosity=1, keepdb=False, interactive=False)
 
     suite = runner.build_suite(app_labels)
     total = suite.countTestCases()
@@ -88,6 +93,34 @@ def run_tests(app_labels):
         runner.teardown_databases(old_config)
     duration = time.perf_counter() - start
     return result, total, duration
+
+
+def _reset_test_database():
+    """删除并重建固定测试库，避免 Django 询问 database exists。"""
+    db_config = settings.DATABASES.get('default', {})
+    test_name = db_config.get('TEST', {}).get('NAME') or db_config.get('NAME')
+    if not test_name:
+        return
+
+    host = db_config.get('HOST') or 'localhost'
+    port = int(db_config.get('PORT') or 3306)
+    user = db_config.get('USER') or 'root'
+    password = db_config.get('PASSWORD') or ''
+
+    connections.close_all()
+    connection = MySQLdb.connect(
+        host=host,
+        port=port,
+        user=user,
+        passwd=password,
+        charset='utf8mb4',
+    )
+    try:
+        connection.autocommit(True)
+        with connection.cursor() as cursor:
+            cursor.execute(f'DROP DATABASE IF EXISTS `{test_name}`')
+    finally:
+        connection.close()
 
 
 def status_icon(status):
@@ -181,7 +214,7 @@ def generate_markdown(result, total, duration):
 
 def main():
     parser = argparse.ArgumentParser(description='生成 Markdown 测试报告')
-    parser.add_argument('--apps', nargs='+', default=['user', 'role', 'assets'],
+    parser.add_argument('--apps', nargs='+', default=['user', 'role', 'assets', 'audit'],
                         help='要测试的 app 列表')
     parser.add_argument('--output', default=os.path.join('..', '..', 'TEST_REPORT.md'),
                         help='报告输出路径')

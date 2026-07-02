@@ -26,6 +26,7 @@
 - **Pylance 类型优先**: 修改后端代码时，首先使用 `get_errors` 检查并解决 Pylance 报告的类型问题，再提交最终方案。区分真正的类型错误（需修复代码）和库的误报（加 `# type: ignore`）。
 - Do not break existing API contracts unless user explicitly asks for API changes.
 - Prefer minimal, targeted edits and keep current code style.
+- **注释规范**: 对非直观逻辑（复杂分支、关键边界条件、协议/时区/权限等）必须补充简洁注释；禁止无信息量注释（如“给变量赋值”）。
 - For frontend UI work, use Ant Design Vue components and patterns by default.
 - Do not introduce new Element Plus-based UI changes unless user explicitly requests it.
 - Keep button icons globally consistent across all pages: use the same icon mapping/style for the same action (add, edit, delete, refresh, save, details) and avoid mixing multiple icon styles for identical actions.

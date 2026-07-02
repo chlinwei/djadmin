@@ -1,18 +1,18 @@
 <template>
-
     <div class="header-user-wrap">
         <div class="current-time-badge" title="当前时间（按用户时区显示）">
             <div class="current-time-date">{{ currentDate }}</div>
+            <div class="current-time-weekday">{{ currentWeekday }}</div>
             <div class="current-time-clock">{{ currentClock }}</div>
         </div>
-        
+
         <a-dropdown>
             <a class="ant-dropdown-link" @click.prevent>
                 {{ currentUser?.username || '用户' }}
             </a>
             <template #overlay>
                 <a-menu>
-                    <a-menu-item >
+                    <a-menu-item>
                         <router-link class="hoverColoir" :to="{ name: '个人中心' }">个人中心</router-link>
                     </a-menu-item>
                     <a-menu-item>
@@ -22,34 +22,44 @@
             </template>
         </a-dropdown>
     </div>
-
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router';
-import { getCurrentUser } from '@/api/user';
+import { useRouter } from 'vue-router'
+import { getCurrentUser } from '@/api/user'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
-console.log("avatar:")
+console.log('avatar:')
 console.log(useRouter().currentRoute.value.fullPath)
+
 const currentUser = ref(getCurrentUser() || {})
 const currentTime = ref('')
-const userTimezone = ref('UTC')
+const userTimezone = ref(currentUser.value?.timezone || 'UTC')
 let timeInterval = null
+let stopListenTimezone = null
 
 const currentDate = computed(() => currentTime.value.split(' ')[0] || '--')
 const currentClock = computed(() => currentTime.value.split(' ')[1] || '--:--:--')
+const currentWeekday = computed(() => {
+    try {
+        return new Intl.DateTimeFormat('zh-CN', {
+            weekday: 'long',
+            timeZone: userTimezone.value,
+        }).format(new Date())
+    } catch (error) {
+        return '--'
+    }
+})
 
 const formatTime = () => {
     try {
         const now = new Date()
-        // 使用用户选择的时区格式化时间
         return formatTimeWithTimezone(now, userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
-        // 如果时区格式化失败，使用本地时间
         const now = new Date()
         const year = now.getFullYear()
         const month = String(now.getMonth() + 1).padStart(2, '0')
@@ -62,22 +72,27 @@ const formatTime = () => {
 }
 
 onMounted(() => {
-    // 从API加载当前用户的时区，用于时间显示
+    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
+        userTimezone.value = timezone
+        currentTime.value = formatTime()
+    })
+
     try {
-        getCurrentUserInfo().then(res => {
-            if (res.data && res.data.data && res.data.data.timezone) {
-                userTimezone.value = res.data.data.timezone
-            }
-        }).catch(error => {
-            console.error('获取用户时区失败:', error)
-            // 降级：使用默认时区
-            userTimezone.value = 'UTC'
-        })
+        getCurrentUserInfo()
+            .then((res) => {
+                if (res.data && res.data.data && res.data.data.timezone) {
+                    userTimezone.value = res.data.data.timezone
+                }
+            })
+            .catch((error) => {
+                console.error('获取用户时区失败:', error)
+                userTimezone.value = 'UTC'
+            })
     } catch (error) {
         console.error('API 调用异常:', error)
         userTimezone.value = 'UTC'
     }
-    
+
     currentTime.value = formatTime()
     timeInterval = setInterval(() => {
         currentTime.value = formatTime()
@@ -85,6 +100,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+    if (stopListenTimezone) {
+        stopListenTimezone()
+    }
     if (timeInterval) {
         clearInterval(timeInterval)
     }
@@ -93,10 +111,10 @@ onBeforeUnmount(() => {
 const logout = () => {
     window.sessionStorage.clear()
     window.localStorage.clear()
-    router.replace("/login")
+    router.replace('/login')
 }
-
 </script>
+
 <style scoped>
 .hoverColoir:hover {
     background-color: #1677ff;
@@ -105,10 +123,11 @@ const logout = () => {
 
 .header-user-wrap {
     display: flex;
-    gap: 16px;
+    gap: 12px;
     align-items: center;
     justify-content: flex-end;
     padding-right: 8px;
+    white-space: nowrap;
 }
 
 .current-time-badge {
@@ -116,7 +135,7 @@ const logout = () => {
     flex-direction: column;
     align-items: flex-end;
     justify-content: center;
-    min-width: 170px;
+    min-width: 180px;
     padding: 6px 10px;
     border-radius: 10px;
     border: 1px solid #d9e6f6;
@@ -127,6 +146,13 @@ const logout = () => {
 .current-time-date {
     font-size: 12px;
     color: #4b5563;
+    line-height: 1.2;
+}
+
+.current-time-weekday {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #64748b;
     line-height: 1.2;
 }
 

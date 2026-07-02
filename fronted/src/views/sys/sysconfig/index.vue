@@ -27,10 +27,11 @@
     <a-card size="small">
       <a-table
         :columns="columns"
-        :data-source="filteredConfigs"
+        :data-source="pagedConfigs"
         :loading="loading"
         rowKey="id"
-        :pagination="false"
+        :pagination="tablePagination"
+        @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'value_type'">
@@ -100,11 +101,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysconfig'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 const filterText = ref('')
 const loading = ref(false)
@@ -113,6 +115,7 @@ const valueFilter = ref('all')
 const editVisible = ref(false)
 const saveLoading = ref(false)
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+let stopListenTimezone = null
 const editForm = reactive({ id: null, name: '', key: '', value: '', default_value: '', description: '' })
 
 const toComparableValue = (value) => {
@@ -131,6 +134,43 @@ const filteredConfigs = computed(() => {
     return configs.value.filter(isChangedFromDefault)
   }
   return configs.value
+})
+
+const pagination = reactive({
+  current: 1,
+  pageSize: 10,
+})
+
+const tablePagination = computed(() => ({
+  current: pagination.current,
+  pageSize: pagination.pageSize,
+  total: filteredConfigs.value.length,
+  showSizeChanger: true,
+  pageSizeOptions: ['10', '20', '30', '50'],
+  showQuickJumper: true,
+  showTotal: (total) => `共 ${total} 条`,
+}))
+
+const pagedConfigs = computed(() => {
+  const start = (pagination.current - 1) * pagination.pageSize
+  const end = start + pagination.pageSize
+  return filteredConfigs.value.slice(start, end)
+})
+
+const handleTableChange = (pager) => {
+  pagination.current = pager.current
+  pagination.pageSize = pager.pageSize
+}
+
+watch([filterText, valueFilter], () => {
+  pagination.current = 1
+})
+
+watch(filteredConfigs, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / pagination.pageSize))
+  if (pagination.current > maxPage) {
+    pagination.current = maxPage
+  }
 })
 
 const columns = [
@@ -186,6 +226,7 @@ const loadUserTimezone = () => {
 
 const loadConfigs = () => {
   loading.value = true
+  pagination.current = 1
   const params = {}
   if (filterText.value) params.search = filterText.value
   getConfigList(params)
@@ -244,8 +285,19 @@ const handleResetDefault = (record) => {
     })
 }
 
-loadUserTimezone()
-loadConfigs()
+onMounted(() => {
+  stopListenTimezone = listenUserTimezoneChanged((timezone) => {
+    userTimezone.value = timezone
+  })
+  loadUserTimezone()
+  loadConfigs()
+})
+
+onUnmounted(() => {
+  if (stopListenTimezone) {
+    stopListenTimezone()
+  }
+})
 </script>
 
 <style scoped>

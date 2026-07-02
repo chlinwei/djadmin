@@ -210,6 +210,11 @@
                                             <FontAwesomeIcon :icon="['fa', 'edit']" />
                                         </a-button>
                                     </a-col>
+                                    <a-col v-permission="'assets:hosts:view'">
+                                        <a-button @click="openWebSsh(record)">
+                                            <FontAwesomeIcon :icon="['fas', 'terminal']" />
+                                        </a-button>
+                                    </a-col>
                                     <a-col v-permission="'assets:hosts:delete'">
                                         <a-popconfirm
                                             placement="bottom"
@@ -290,6 +295,7 @@
                     </template>
                 </a-table>
             </a-card>
+
         </a-spin>
     </a-drawer>
 
@@ -350,6 +356,24 @@
             </a-form>
         </a-spin>
     </a-modal>
+
+    <a-modal
+        v-model:open="webSshVisible"
+        :title="`Web SSH - ${webSshHostTitle}`"
+        :footer="null"
+        :width="980"
+        destroyOnClose
+        @cancel="closeWebSsh"
+    >
+        <a-alert
+            v-if="webSshMessage"
+            :message="webSshMessage"
+            :type="webSshMessageType"
+            show-icon
+            style="margin-bottom: 10px"
+        />
+        <div ref="webSshContainerRef" class="webssh-terminal" />
+    </a-modal>
 </template>
 
 <script setup>
@@ -357,15 +381,21 @@ defineOptions({
     name: 'host'
 })
 
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
+import { getToken } from '@/api/user/index.js'
 import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
+import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 
 const searchText = ref('')
 const groupSearchText = ref('')
@@ -387,6 +417,19 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailHost = ref(null)
 const formRef = ref(null)
+const webSshVisible = ref(false)
+const webSshHostTitle = ref('')
+const webSshContainerRef = ref(null)
+const webSshMessage = ref('')
+const webSshMessageType = ref('info')
+const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+let stopListenTimezone = null
+
+let webSshSocket = null
+let webSshTerminal = null
+let webSshFitAddon = null
+let webSshOnDataDisposable = null
+let webSshOnResizeDisposable = null
 
 const state = reactive({
     selectedRowKeys: [],
@@ -433,7 +476,7 @@ const columns = [
     { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
     { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
-    { title: '操作', key: 'action', fixed: 'right', width: 220 },
+    { title: '操作', key: 'action', fixed: 'right', width: 280 },
 ]
 
 const collectStatusOptions = [
@@ -894,6 +937,7 @@ const confirmBatchDelete = () => {
 const openDetail = (id) => {
     detailVisible.value = true
     detailLoading.value = true
+
     getHostById(id)
         .then((res) => {
             if (res.data.code === 200) {
@@ -905,6 +949,145 @@ const openDetail = (id) => {
         .finally(() => {
             detailLoading.value = false
         })
+}
+
+const buildWebSocketUrl = (hostId) => {
+    const token = getToken() || ''
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const wsHost = `${window.location.hostname}:8000`
+    return `${protocol}://${wsHost}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
+}
+
+const WEBSSH_BLOCKED_SHORTCUTS = new Set(['w', 'r', 't', 'n', 'l', 'p', 'j', 'k'])
+
+const handleWebSshGlobalKeydown = (event) => {
+    if (!webSshVisible.value) return
+
+    const key = String(event.key || '').toLowerCase()
+    const ctrlOrMeta = event.ctrlKey || event.metaKey
+
+    if (event.key === 'F5' || (ctrlOrMeta && WEBSSH_BLOCKED_SHORTCUTS.has(key))) {
+        // Prevent browser actions like close tab / refresh while terminal is active.
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.stopImmediatePropagation) {
+            event.stopImmediatePropagation()
+        }
+        event.returnValue = false
+        if (webSshTerminal) {
+            webSshTerminal.focus()
+        }
+        return false
+    }
+
+    return true
+}
+
+const bindWebSshShortcutGuard = () => {
+    if (!webSshTerminal) return
+
+    // Keep browser-level shortcuts from hijacking terminal key combos.
+    webSshTerminal.attachCustomKeyEventHandler((event) => {
+        const key = String(event.key || '').toLowerCase()
+        const ctrlOrMeta = event.ctrlKey || event.metaKey
+        const blockedCtrlMetaKeys = ['w', 'r', 't', 'n', 'l', 'p', 'j', 'k']
+
+        if (event.key === 'F5' || (ctrlOrMeta && blockedCtrlMetaKeys.includes(key))) {
+            event.preventDefault()
+            event.stopPropagation()
+            if (event.stopImmediatePropagation) {
+                event.stopImmediatePropagation()
+            }
+            event.returnValue = false
+            return false
+        }
+
+        return true
+    })
+}
+
+const disposeWebSshTerminal = () => {
+    if (webSshOnDataDisposable) {
+        webSshOnDataDisposable.dispose()
+        webSshOnDataDisposable = null
+    }
+    if (webSshOnResizeDisposable) {
+        webSshOnResizeDisposable.dispose()
+        webSshOnResizeDisposable = null
+    }
+    if (webSshTerminal) {
+        webSshTerminal.dispose()
+        webSshTerminal = null
+    }
+    webSshFitAddon = null
+}
+
+const initWebSshTerminal = async () => {
+    await nextTick()
+    if (!webSshContainerRef.value) return
+
+    // Recreate terminal instance every session to avoid stale renderer/socket state.
+    disposeWebSshTerminal()
+
+    webSshTerminal = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'Consolas, Menlo, monospace',
+        fontSize: 13,
+        theme: {
+            background: '#0b1220',
+            foreground: '#e2e8f0',
+        },
+        convertEol: true,
+        scrollback: 5000,
+    })
+    webSshFitAddon = new FitAddon()
+    webSshTerminal.loadAddon(webSshFitAddon)
+    bindWebSshShortcutGuard()
+
+    webSshContainerRef.value.innerHTML = ''
+    webSshTerminal.open(webSshContainerRef.value)
+    webSshFitAddon.fit()
+    webSshTerminal.focus()
+
+    webSshOnDataDisposable = webSshTerminal.onData((data) => {
+        if (webSshSocket && webSshSocket.readyState === WebSocket.OPEN) {
+            webSshSocket.send(JSON.stringify({ type: 'input', data }))
+        }
+    })
+
+    webSshOnResizeDisposable = webSshTerminal.onResize(({ cols, rows }) => {
+        if (webSshSocket && webSshSocket.readyState === WebSocket.OPEN) {
+            webSshSocket.send(JSON.stringify({ type: 'resize', cols, rows }))
+        }
+    })
+}
+
+const openWebSsh = (record) => {
+    const routeData = router.resolve({
+        path: '/assets/hosts/webssh',
+        query: {
+            host_id: record.id,
+            instance_name: record.instance_name || record.name || '',
+            ip: record.ip || '',
+        },
+    })
+    window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
+}
+
+const closeWebSsh = () => {
+    webSshVisible.value = false
+    if (webSshSocket) {
+        try {
+            if (webSshSocket.readyState === WebSocket.OPEN) {
+                webSshSocket.send(JSON.stringify({ type: 'close' }))
+            }
+            webSshSocket.close()
+        } catch (error) {
+            // ignore close exception
+        }
+        webSshSocket = null
+    }
+    disposeWebSshTerminal()
 }
 
 const getGroupName = (record) => {
@@ -962,14 +1145,28 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-        return formatTimeWithTimezone(normalizeUtcTime(value), timezone, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
 }
 
+const loadUserTimezone = () => {
+    getCurrentUserInfo()
+        .then((res) => {
+            const timezone = res?.data?.data?.timezone
+            if (timezone) {
+                userTimezone.value = timezone
+            }
+        })
+        .catch(() => {})
+}
+
 onMounted(async () => {
+    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
+        userTimezone.value = timezone
+    })
+    loadUserTimezone()
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
         if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
@@ -977,10 +1174,18 @@ onMounted(async () => {
     await Promise.all([loadGroupTree(), loadCredentialOptions()])
     await refreshList()
     document.addEventListener('click', closeGroupContextMenu)
+    window.addEventListener('keydown', handleWebSshGlobalKeydown, true)
+    document.addEventListener('keydown', handleWebSshGlobalKeydown, true)
 })
 
 onBeforeUnmount(() => {
+    if (stopListenTimezone) {
+        stopListenTimezone()
+    }
     document.removeEventListener('click', closeGroupContextMenu)
+    window.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
+    document.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
+    closeWebSsh()
 })
 </script>
 
@@ -1210,6 +1415,14 @@ onBeforeUnmount(() => {
 
 .action_row :deep(.ant-col) {
     flex: 0 0 auto;
+}
+
+.webssh-terminal {
+    width: 100%;
+    height: 460px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #1f2937;
 }
 
 .host-page :deep(.ant-btn-lg),

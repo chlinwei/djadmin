@@ -322,3 +322,38 @@ class HostSerializer(ModelSerializer):
         return instance
 
 
+class WebSSHSessionLogSerializer(ModelSerializer):
+    host_name = serializers.SerializerMethodField()
+    host_ip = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WebSSHSessionLog
+        fields = [
+            'id',
+            'session_id',
+            'host',
+            'host_name',
+            'host_ip',
+            'user_id',
+            'username',
+            'client_ip',
+            'user_agent',
+            'status',
+            'start_time',
+            'end_time',
+            'duration_seconds',
+            'close_code',
+            'error_message',
+            'input_bytes',
+            'command_count',
+            'recorded_content_bytes',
+            'is_content_truncated',
+        ]
+
+    def get_host_name(self, obj):
+        return obj.host.instance_name or obj.host.name
+
+    def get_host_ip(self, obj):
+        return obj.host.ip
+
+

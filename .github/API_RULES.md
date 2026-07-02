@@ -55,19 +55,27 @@
 2. **响应渲染器** - `djResponseRender.py` 的 `DjAdminResponse_render` 必须确保所有响应返回完整值
 3. **分页配置** - `utils.py` 的 `CustomPagination` 必须：
    - 设置 `page_size_query_param = 'page_size'` 以匹配前端参数
+  - 兼容历史别名参数：`pageNumber`、`pageSize`
    - 实现 `get_paginated_response()` 返回上述结构
 4. **异常处理** - `djException.py` 的 `djadmin_handler` 必须将所有异常转换为统一格式
 5. **ViewSet 配置** - 所有列表 ViewSet 必须声明 `pagination_class = CustomPagination`
 
 ### 前端 (Vue 3)
 
-1. **请求参数** - 分页时必须发送 `page` 和 `page_size` 参数
+1. **请求参数** - 分页时优先发送 `page` 和 `page_size` 参数（历史别名 `pageNumber/pageSize` 仅作兼容）
 2. **响应处理** - 必须：
    - 验证 `response.data.code === 200` 
    - 特殊处理 code 301（重新登录）
    - 提取实际数据：`response.data.data`
 3. **错误处理** - 显示 `response.data.msg` 给用户
 4. **防御编码** - 使用可选链操作符 `?.` 处理可能缺失的字段
+5. **时间显示（时区）** - 必须：
+  - 后端时间字段统一以 UTC 存储/返回
+  - 前端展示时必须按当前登录用户的 `timezone` 转换后显示
+  - 前端向后端传递时间筛选参数时，必须使用带时区的 UTC ISO 字符串（例如 `2026-07-01T06:00:00.000Z`）
+  - 禁止传无时区时间字符串作为查询参数（例如 `YYYY-MM-DD HH:mm:ss`），避免查询窗口偏移
+  - 禁止直接按浏览器本地时区渲染业务时间（如直接 `new Date(value).toLocaleString()`）
+  - 用户修改时区后，页面时间显示必须无需重新登录即可生效（事件广播或等价机制）
 
 ## 常见错误
 
@@ -162,10 +170,12 @@ return Response_error_str('操作失败', code=400)
 
 | 前端参数 | 后端参数名 | 说明 |
 |---------|----------|------|
-| page | page_size_query_param | 分页数，从 1 开始 |
+| page | page_query_param | 分页数，从 1 开始 |
 | page_size | page_size_query_param | 每页条数，默认 10 |
+| pageNumber | page_query_param（兼容） | 历史别名，建议逐步替换 |
+| pageSize | page_size_query_param（兼容） | 历史别名，建议逐步替换 |
 
-> **注意**：前端发送 `page_size`，后端 CustomPagination 的 `page_size_query_param` 必须设置为 `'page_size'`，否则分页失效。
+> **注意**：标准参数为 `page/page_size`。后端必须兼容 `pageNumber/pageSize`，防止旧页面出现“切到第2页仍回第1页”。
 
 ## Response_xxx 函数详解
 

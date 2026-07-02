@@ -28,6 +28,7 @@ name='media'),
     path('sys/',include('role.urls')),
     path('sys/',include('menu.urls')),
     path('sys/scheduler/', include('scheduler.urls')),
+    path('sys/audit/', include('audit.urls')),
     path('sys/', include('sys_config.urls')),
     path('assets/',include('assets.urls')),
 ]

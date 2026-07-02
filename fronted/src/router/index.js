@@ -20,6 +20,11 @@ export const staticRouterMap = [
         component: () => import('../layout/test.vue')
     },
     {
+        path: '/assets/hosts/webssh',
+        name: 'webssh-page',
+        component: () => import('../views/assets/host/webssh.vue')
+    },
+    {
         path: '/',
         name: 'dashbaord',
         component: () => import('../layout/index.vue'),

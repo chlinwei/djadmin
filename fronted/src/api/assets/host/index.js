@@ -41,6 +41,10 @@ export function batchCollectHostInfo(ids) {
     return requestUtil.post(prefix + 'batch-collect-info/', { ids })
 }
 
+export function getHostWebSshSessions(id, params) {
+    return requestUtil.get(prefix + `${id}/webssh-sessions/`, params)
+}
+
 export function getHostGroupList(params) {
     return requestUtil.get('assets/host-groups/', params)
 }

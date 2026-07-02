@@ -43,7 +43,7 @@
                             <SvgIcon name="date"></SvgIcon>
                             <div class="iten-wrapper">
                                 <div class="item-name">创建时间</div>
-                                <div class="item-value">{{ currentUser.user.create_time }}</div>
+                                <div class="item-value">{{ formatDateTime(currentUser.user.create_time) }}</div>
                             </div>
                         </li>
 
@@ -109,14 +109,15 @@
 <script setup>
 import { ref } from 'vue';
 import { reactive } from 'vue';
-import { getCurrentUser } from '@/api/user/index.js';
+import { getCurrentUser, saveCurrentUser } from '@/api/user/index.js';
 import { getCurrentUserRoleList } from '@/api/role';
 import { updateUserInfo, updateUserPassword } from '@/api/user';
 import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Avatar from '@/views/userCenter/components/Avatar.vue';
-import { TIMEZONE_LIST } from '@/util/timezone'
+import { TIMEZONE_LIST, formatTimeWithTimezone } from '@/util/timezone'
+import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 
 
@@ -142,12 +143,69 @@ const timezoneOptions = ref(TIMEZONE_LIST.map(tz => ({
     value: tz.value
 })))
 
+const normalizeUtcTime = (value) => {
+    if (!value || typeof value !== 'string') {
+        return value
+    }
+    const text = value.trim()
+    if (!text) {
+        return value
+    }
+    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
+        return text
+    }
+    return `${text.replace(' ', 'T')}Z`
+}
+
+const formatDateTime = (value) => {
+    if (!value) {
+        return '-'
+    }
+    try {
+        const timezone = formState.timezone || 'UTC'
+        return formatTimeWithTimezone(normalizeUtcTime(value), timezone, 'YYYY-MM-DD HH:mm:ss')
+    } catch (error) {
+        return value
+    }
+}
+
+const syncTimezoneToLocalUser = (timezone) => {
+    const localUser = getCurrentUser()
+    if (!localUser) {
+        return
+    }
+    localUser.timezone = timezone
+    saveCurrentUser(localUser)
+    emitUserTimezoneChanged(timezone)
+}
+
+const refreshCurrentUserCache = async () => {
+    try {
+        const res = await getCurrentUserInfo()
+        const userData = res?.data?.data
+        if (userData) {
+            currentUser.user = userData
+            formState.phonenumber = userData.phonenumber || ''
+            formState.email = userData.email || ''
+            formState.timezone = userData.timezone || 'UTC'
+            saveCurrentUser(userData)
+            if (userData.timezone) {
+                emitUserTimezoneChanged(userData.timezone)
+            }
+        }
+    } catch (error) {
+        console.error('刷新用户缓存失败:', error)
+    }
+}
+
 const onFinish_updateUserInfo = values => {
     updateUserInfo(values, (result) => {
         currentUser.user = getCurrentUser();
         // 同时保存时区
         if (formState.timezone && currentUser.user && currentUser.user.id) {
             updateUserTimezone(currentUser.user.id, formState.timezone).then(() => {
+                syncTimezoneToLocalUser(formState.timezone)
+                refreshCurrentUserCache()
                 message.success("更新成功")
             }).catch(error => {
                 console.error('保存时区失败:', error)
@@ -182,6 +240,8 @@ var roleList = ref('');
 const handleTimezoneChange = (value) => {
     if (currentUser.user && currentUser.user.id) {
         updateUserTimezone(currentUser.user.id, value).then(() => {
+            syncTimezoneToLocalUser(value)
+            refreshCurrentUserCache()
             message.success("时区已保存")
         }).catch(error => {
             console.error('保存时区失败:', error)
@@ -201,6 +261,7 @@ onMounted(() => {
             formState.phonenumber = userData.phonenumber || ''
             formState.email = userData.email || ''
             formState.timezone = userData.timezone || 'UTC'
+            saveCurrentUser(userData)
         }
     }).catch(error => {
         console.error('获取用户信息失败:', error)

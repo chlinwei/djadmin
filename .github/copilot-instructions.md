@@ -13,7 +13,7 @@
 - Database: MySQL
 - Frontend: Vue 3 + Vite
 - Frontend UI: Ant Design Vue (primary)
-- Scheduler: APScheduler (separate process required)
+- Scheduler: Celery + RabbitMQ (worker + beat separate processes required)
 
 ## Repository Layout
 
@@ -30,9 +30,20 @@
 - For frontend UI work, use Ant Design Vue components and patterns by default.
 - Do not introduce new Element Plus-based UI changes unless user explicitly requests it.
 - Keep button icons globally consistent across all pages: use the same icon mapping/style for the same action (add, edit, delete, refresh, save, details) and avoid mixing multiple icon styles for identical actions.
+- **前端按钮样式强制流程**（必须执行，禁止跳步）:
+  - 先锁定唯一基准页面；未得到用户确认前，不得直接修改按钮样式。
+  - 默认基准为 `fronted/src/views/assets/credential/index.vue` 的新增按钮样式（大号默认按钮 + plus-circle 图标 + 文本）。如用户明确指定其他基准，以用户指定为准。
+  - 先提交“差异清单”（页面范围 + 按钮类型：新增/操作列/弹窗 + 计划改法），用户确认后再实施代码修改。
+  - 同类按钮需一次性统一完成，禁止只改部分页面或只改一种按钮类型导致风格再次分叉。
+  - 修改完成后，必须提供逐页对照结果（改动文件 + 统一项清单 + 验证结果）。
+- **前端表格操作列强制规则**（必须执行）:
+  - 所有列表页存在“操作”列时，必须设置 `fixed: 'right'`，并为操作列配置明确 `width`。
+  - 同一表格必须开启横向滚动（`a-table` 配置 `:scroll="{ x: ... }"`），禁止仅固定操作列而不配置横向滚动，避免列挤压。
+  - 优先对齐 `fronted/src/views/sys/user/index.vue` 的可用体验（操作列固定在右侧，主内容可横向滚动）。
+  - 新增或改造列表页时，若未满足上述两项，视为不合格实现，必须在本次改动内补齐。
 - Time handling rule: backend timestamps should be stored/returned in UTC, and frontend must convert and display date/time using the current user's timezone.
 - For backend changes, include migration impact notes when models are changed.
-- For scheduler-related issues, always verify whether APScheduler process is running.
+- For scheduler-related issues, always verify whether Celery worker and beat processes are running.
 - For bug fixes, provide quick verification steps (commands + expected result).
 
 ## Common Run Commands
@@ -63,8 +74,10 @@ python manage.py runserver 0.0.0.0:8000
 
 ### Scheduler
 
-- Windows: ./start_scheduler.ps1
-- Or: cd backend/djadmin && python manage.py runapscheduler
+- Recommended one-command startup: `cd backend/djadmin && python manage.py runscheduler` (starts worker + beat)
+- Split mode (for debugging):
+  - Worker: `cd backend/djadmin && python manage.py runceleryworker --loglevel=info --concurrency=2`
+  - Beat: `cd backend/djadmin && python manage.py runcelerybeat --loglevel=info`
 
 ### Tests & Test Report
 
@@ -131,4 +144,3 @@ Pagination response format (for list endpoints):
 
 - User prefers not to repeat project context in every conversation.
 - When possible, infer missing context from repository and this instruction file first.
-

@@ -133,7 +133,7 @@ const pagination = reactive({
   total: 0,
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total) => `共有${total}条数据`,
   showQuickJumper: true,
 })
 

@@ -7,6 +7,8 @@ from user.utils import getCurrentUser
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
 import json
 
+from scheduler_manager import ensure_scheduler_log_configs
+
 
 class SysConfigViewSet(viewsets.ModelViewSet):
     queryset = SysConfig.objects.all()
@@ -15,6 +17,9 @@ class SysConfigViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'patch', 'post']  # 只允许查询和修改，不允许新增/删除
 
     def get_queryset(self):
+        # Ensure scheduler-related default config keys are present even if user opens
+        # system config page before visiting scheduler task center.
+        ensure_scheduler_log_configs()
         queryset = SysConfig.objects.all()
         search = self.request.query_params.get('search')  # type: ignore[union-attr]
         if search:

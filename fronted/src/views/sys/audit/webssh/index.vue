@@ -5,7 +5,7 @@
         <a-input-search
           v-model:value="filters.keyword"
           class="tool-item"
-          placeholder="会话ID / 实例名 / IP / 用户"
+          placeholder="ID / 实例名 / IP / 用户"
           allow-clear
           enter-button
           size="large"
@@ -49,7 +49,7 @@
         <a-space wrap>
           <a-button size="large" type="primary" ghost @click="downloadFilteredSessions" :disabled="loading">
             <FontAwesomeIcon :icon="['fas', 'download']" />
-            <span>&nbsp;{{ selectedCount > 0 ? `导出已选(${selectedCount})` : '批量导出' }}</span>
+            <span>&nbsp;{{ selectedCount > 0 ? `下载已选(${selectedCount})` : '批量下载日志' }}</span>
           </a-button>
           <a-button size="large" type="primary" ghost class="refresh-btn" @click="reload" :disabled="loading">
             <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
@@ -66,7 +66,7 @@
         :loading="loading"
         :pagination="pagination"
         :row-selection="rowSelection"
-        rowKey="session_id"
+        rowKey="id"
         :scroll="{ x: 1300 }"
         @change="handleTableChange"
       >
@@ -99,12 +99,12 @@
             <a-tag v-if="record.is_content_truncated" color="orange" style="margin-left: 6px">已截断</a-tag>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-space :size="8">
+            <a-space :size="8" class="action-links" wrap>
               <a-button size="small" type="link" @click="openSessionContent(record)">
                 查看内容
               </a-button>
               <a-button size="small" type="link" @click="downloadSessionLog(record)">
-                导出
+                下载日志
               </a-button>
             </a-space>
           </template>
@@ -162,7 +162,6 @@ const contentInput = ref('')
 const contentOutput = ref('')
 const readableInputCommands = ref([])
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-const selectedSessionIds = ref([])
 const selectedLogIds = ref([])
 const selectedRecords = ref([])
 let stopListenTimezone = null
@@ -182,7 +181,7 @@ const pagination = reactive({
   total: 0,
   showSizeChanger: true,
   showQuickJumper: true,
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total) => `共有${total}条数据`,
 })
 
 const statusOptions = [
@@ -196,7 +195,6 @@ const rowSelection = reactive({
   onChange: (selectedKeys, selectedRows) => {
     rowSelection.selectedRowKeys = selectedKeys
     selectedRecords.value = selectedRows
-    selectedSessionIds.value = selectedRows.map((row) => row.session_id).filter(Boolean)
     selectedLogIds.value = selectedRows.map((row) => row.id).filter((id) => id != null)
   },
 })
@@ -207,13 +205,6 @@ const columns = [
     dataIndex: 'id',
     key: 'id',
     width: 80,
-  },
-  {
-    title: '会话ID',
-    dataIndex: 'session_id',
-    key: 'session_id',
-    width: 220,
-    ellipsis: true,
   },
   {
     title: '实例名',
@@ -236,7 +227,7 @@ const columns = [
   {
     title: '操作',
     key: 'action',
-    width: 140,
+    width: 180,
   },
   {
     title: '开始时间',
@@ -337,14 +328,12 @@ function buildDownloadQueryParams() {
     start_time_to: toUtcQueryISOString(endTime),
     status: filters.status || undefined,
     ids: hasSelected ? selectedLogIds.value.join(',') : undefined,
-    session_ids: hasSelected ? selectedSessionIds.value.join(',') : undefined,
   }
 }
 
 function clearSelection() {
   rowSelection.selectedRowKeys = []
   selectedRecords.value = []
-  selectedSessionIds.value = []
   selectedLogIds.value = []
 }
 
@@ -422,7 +411,7 @@ function reload() {
 async function openSessionContent(record) {
   contentModalVisible.value = true
   contentLoading.value = true
-  activeSessionId.value = record.session_id
+  activeSessionId.value = String(record.id || '')
   contentInput.value = ''
   contentOutput.value = ''
   readableInputCommands.value = []
@@ -504,9 +493,9 @@ async function downloadFilteredSessions() {
     anchor.click()
     document.body.removeChild(anchor)
     window.URL.revokeObjectURL(url)
-    message.success(selectedCount.value > 0 ? `已导出 ${selectedCount.value} 条勾选记录` : '批量导出成功')
+    message.success(selectedCount.value > 0 ? `已下载 ${selectedCount.value} 条勾选记录` : '批量下载日志成功')
   } catch (error) {
-    message.error(error?.message || '批量导出失败')
+    message.error(error?.message || '批量下载日志失败')
   }
 }
 
@@ -551,6 +540,10 @@ onUnmounted(() => {
 .host-ip {
   color: #888;
   font-size: 12px;
+}
+
+.action-links {
+  white-space: nowrap;
 }
 
 .session-log-content {

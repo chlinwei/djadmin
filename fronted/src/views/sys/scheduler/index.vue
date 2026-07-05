@@ -14,10 +14,6 @@
       </a-col>
       <a-col :span="8" class="right-actions">
         <a-space>
-          <a-button size="large" @click="openCreateModal">
-            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-            <span>&nbsp;新增任务</span>
-          </a-button>
           <a-button size="large" type="primary" ghost class="refresh-btn" @click="reload" :disabled="loading">
             <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
             <span>&nbsp;刷新</span>
@@ -32,6 +28,7 @@
         :data-source="tasks"
         :loading="loading"
         :pagination="pagination"
+        :scroll="{ x: 1850 }"
         rowKey="id"
         @change="handleTableChange"
       >
@@ -97,16 +94,6 @@
               >
                 启用
               </a-button>
-              <a-popconfirm
-                title="确认删除该任务吗？"
-                ok-text="确认"
-                cancel-text="取消"
-                @confirm="removeTask(record)"
-              >
-                <a-button size="small" type="primary" danger :disabled="record.is_running">
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
-              </a-popconfirm>
             </a-space>
           </template>
           <template
@@ -119,7 +106,7 @@
     </a-card>
 
     <a-modal
-      :title="isCreateMode ? '新增调度任务' : '编辑调度任务'"
+      title="编辑调度任务"
       :open="editVisible"
       :width="520"
       :confirmLoading="editLoading"
@@ -128,15 +115,16 @@
     >
       <a-form layout="vertical">
         <a-form-item label="任务名称" required>
-          <a-input v-model:value="editForm.name" :disabled="!isCreateMode" />
+          <a-input v-model:value="editForm.name" disabled />
         </a-form-item>
         <a-form-item label="任务编码" required>
-          <a-input v-model:value="editForm.code" :disabled="!isCreateMode" />
+          <a-input v-model:value="editForm.code" disabled />
         </a-form-item>
         <a-form-item label="关联菜单">
           <a-select
             v-model:value="editForm.menu"
             :options="menuOptions"
+            disabled
             placeholder="可选：关联一个菜单页面"
             allow-clear
             show-search
@@ -154,7 +142,7 @@
           />
         </a-form-item>
         <a-form-item label="备注">
-          <a-textarea v-model:value="editForm.remark" rows="3" />
+          <a-textarea v-model:value="editForm.description" rows="3" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -294,7 +282,7 @@
 import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
-import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, createTask, deleteTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
+import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getMenuTree } from '@/api/menu'
@@ -308,7 +296,6 @@ const logsVisible = ref(false)
 const logDetailVisible = ref(false)
 const editVisible = ref(false)
 const editLoading = ref(false)
-const isCreateMode = ref(false)
 const runningTaskId = ref(null)
 const router = useRouter()
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
@@ -337,7 +324,7 @@ const editForm = reactive({
   menu_name: '',
   enabled: true,
   interval_minutes: 15,
-  remark: '',
+  description: '',
 })
 
 const pagination = reactive({
@@ -346,7 +333,7 @@ const pagination = reactive({
   total: 0,
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total) => `共有${total}条数据`,
   showQuickJumper: true,
 })
 
@@ -356,7 +343,7 @@ const logsPagination = reactive({
   total: 0,
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total) => `共有${total}条数据`,
   showQuickJumper: true,
 })
 
@@ -379,7 +366,7 @@ const columns = [
   { title: '最近执行时间', dataIndex: 'last_run_time', key: 'last_run_time', width: 180 },
   { title: '下次运行时间', dataIndex: 'next_run_time', key: 'next_run_time', width: 180 },
   { title: '最近结果', dataIndex: 'last_status', key: 'last_status', width: 120 },
-  { title: '备注', dataIndex: 'remark', key: 'remark' },
+  { title: '备注', dataIndex: 'description', key: 'description' },
   { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
 
@@ -712,7 +699,6 @@ const goToMenu = (record) => {
 }
 
 const openEditModal = (record) => {
-  isCreateMode.value = false
   editForm.id = record.id
   editForm.name = record.name
   editForm.code = record.code
@@ -720,20 +706,7 @@ const openEditModal = (record) => {
   editForm.menu_name = record.menu_name || ''
   editForm.enabled = !!record.enabled
   editForm.interval_minutes = record.interval_minutes || 15
-  editForm.remark = record.remark || ''
-  editVisible.value = true
-}
-
-const openCreateModal = () => {
-  isCreateMode.value = true
-  editForm.id = null
-  editForm.name = ''
-  editForm.code = ''
-  editForm.menu = undefined
-  editForm.menu_name = ''
-  editForm.enabled = true
-  editForm.interval_minutes = 15
-  editForm.remark = ''
+  editForm.description = record.description || ''
   editVisible.value = true
 }
 
@@ -757,40 +730,21 @@ const submitTask = () => {
     menu: editForm.menu || null,
     enabled: !!editForm.enabled,
     interval_minutes: editForm.interval_minutes,
-    remark: editForm.remark,
+    description: editForm.description,
   }
 
   editLoading.value = true
-  const request = isCreateMode.value
-    ? createTask(payload)
-    : updateTask(editForm.id, payload)
-
-  request
+  updateTask(editForm.id, payload)
     .then((res) => {
-      message.success(isCreateMode.value ? '新增成功' : '保存成功')
+      message.success('保存成功')
       editVisible.value = false
       loadTasks()
     })
     .catch((error) => {
-      message.error(error?.response?.data?.error || '保存失败')
+      message.error(error?.response?.data?.msg || error?.response?.data?.error || error?.message || '保存失败')
     })
     .finally(() => {
       editLoading.value = false
-    })
-}
-
-const removeTask = (record) => {
-  deleteTask(record.id)
-    .then((res) => {
-      if (res.data?.code && res.data.code !== 200) {
-        message.error(res.data.msg || '删除失败')
-        return
-      }
-      message.success('删除成功')
-      loadTasks()
-    })
-    .catch((error) => {
-      message.error(error?.response?.data?.error || '删除失败')
     })
 }
 

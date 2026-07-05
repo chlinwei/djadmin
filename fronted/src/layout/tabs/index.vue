@@ -47,7 +47,7 @@ watch(activeKey, (newPath) => {
 watch(route, (newRoute) => {
   const tab = {
     title: newRoute.name,
-    key: newRoute.path,
+    key: newRoute.fullPath || newRoute.path,
   }
   store.commit('add_tab', tab)
 })

@@ -1,0 +1,357 @@
+{
+  "numTotalTestSuites": 10,
+  "numPassedTestSuites": 10,
+  "numFailedTestSuites": 0,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 27,
+  "numPassedTests": 27,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "startTime": 1783234916036,
+  "success": true,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils keeps Date object identity for convertUTCToTimezone",
+          "status": "passed",
+          "title": "keeps Date object identity for convertUTCToTimezone",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils supports timestamp input for convertUTCToTimezone",
+          "status": "passed",
+          "title": "supports timestamp input for convertUTCToTimezone",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils formats UTC time with user timezone",
+          "status": "passed",
+          "title": "formats UTC time with user timezone",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns local string for invalid time input",
+          "status": "passed",
+          "title": "returns local string for invalid time input",
+          "duration": 2,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns ISO string for Date input",
+          "status": "passed",
+          "title": "returns ISO string for Date input",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns undefined for empty input",
+          "status": "passed",
+          "title": "returns undefined for empty input",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns ISO string for object with toDate method",
+          "status": "passed",
+          "title": "returns ISO string for object with toDate method",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns UTC offset and label for known timezone",
+          "status": "passed",
+          "title": "returns UTC offset and label for known timezone",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "timezone utils"
+          ],
+          "fullName": " timezone utils returns fallback values for unknown timezone",
+          "status": "passed",
+          "title": "returns fallback values for unknown timezone",
+          "duration": 1,
+          "failureMessages": []
+        }
+      ],
+      "startTime": 1783234917743,
+      "endTime": 1783234917751,
+      "status": "passed",
+      "message": "",
+      "name": "/home/lw/workspace/python/djadmin/fronted/src/util/__tests__/timezone.spec.js"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "",
+            "userTimezoneSync"
+          ],
+          "fullName": " userTimezoneSync triggers listener with emitted timezone",
+          "status": "passed",
+          "title": "triggers listener with emitted timezone",
+          "duration": 5,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "userTimezoneSync"
+          ],
+          "fullName": " userTimezoneSync does not emit event when timezone is empty",
+          "status": "passed",
+          "title": "does not emit event when timezone is empty",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "userTimezoneSync"
+          ],
+          "fullName": " userTimezoneSync returns noop stop function when handler is invalid",
+          "status": "passed",
+          "title": "returns noop stop function when handler is invalid",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "userTimezoneSync"
+          ],
+          "fullName": " userTimezoneSync removes listener after stop is called",
+          "status": "passed",
+          "title": "removes listener after stop is called",
+          "duration": 1,
+          "failureMessages": []
+        }
+      ],
+      "startTime": 1783234917739,
+      "endTime": 1783234917747,
+      "status": "passed",
+      "message": "",
+      "name": "/home/lw/workspace/python/djadmin/fronted/src/util/__tests__/userTimezoneSync.spec.js"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "",
+            "inventory route query auto search"
+          ],
+          "fullName": " inventory route query auto search uses search query when opening page",
+          "status": "passed",
+          "title": "uses search query when opening page",
+          "duration": 31,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "inventory route query auto search"
+          ],
+          "fullName": " inventory route query auto search falls back to inventory_name when search is missing",
+          "status": "passed",
+          "title": "falls back to inventory_name when search is missing",
+          "duration": 5,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "inventory route query auto search"
+          ],
+          "fullName": " inventory route query auto search reloads list when route query changes after mount",
+          "status": "passed",
+          "title": "reloads list when route query changes after mount",
+          "duration": 6,
+          "failureMessages": []
+        }
+      ],
+      "startTime": 1783234919701,
+      "endTime": 1783234919743,
+      "status": "passed",
+      "message": "",
+      "name": "/home/lw/workspace/python/djadmin/fronted/src/views/sys/automation/__tests__/inventory.route-query.spec.js"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "",
+            "automation navigation helpers"
+          ],
+          "fullName": " automation navigation helpers builds playbook route with search when template name exists",
+          "status": "passed",
+          "title": "builds playbook route with search when template name exists",
+          "duration": 2,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "automation navigation helpers"
+          ],
+          "fullName": " automation navigation helpers builds playbook route with empty query when template name is blank",
+          "status": "passed",
+          "title": "builds playbook route with empty query when template name is blank",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "automation navigation helpers"
+          ],
+          "fullName": " automation navigation helpers builds inventory route with search and inventory id",
+          "status": "passed",
+          "title": "builds inventory route with search and inventory id",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "automation navigation helpers"
+          ],
+          "fullName": " automation navigation helpers builds empty query when inventory name is blank and id is invalid",
+          "status": "passed",
+          "title": "builds empty query when inventory name is blank and id is invalid",
+          "duration": 0,
+          "failureMessages": []
+        }
+      ],
+      "startTime": 1783234917743,
+      "endTime": 1783234917746,
+      "status": "passed",
+      "message": "",
+      "name": "/home/lw/workspace/python/djadmin/fronted/src/views/sys/automation/__tests__/navigation.spec.js"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers builds path map recursively for nested groups",
+          "status": "passed",
+          "title": "builds path map recursively for nested groups",
+          "duration": 2,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers returns all-hosts text when no groups and no hosts are selected",
+          "status": "passed",
+          "title": "returns all-hosts text when no groups and no hosts are selected",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers keeps full group path in preview labels",
+          "status": "passed",
+          "title": "keeps full group path in preview labels",
+          "duration": 1,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers returns selected-host summary when only hosts are selected",
+          "status": "passed",
+          "title": "returns selected-host summary when only hosts are selected",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers supports non-default empty label when configured",
+          "status": "passed",
+          "title": "supports non-default empty label when configured",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers falls back to generated group label when map is missing",
+          "status": "passed",
+          "title": "falls back to generated group label when map is missing",
+          "duration": 0,
+          "failureMessages": []
+        },
+        {
+          "ancestorTitles": [
+            "",
+            "scopeSummary helpers"
+          ],
+          "fullName": " scopeSummary helpers uses truncation when selected group count exceeds preview limit",
+          "status": "passed",
+          "title": "uses truncation when selected group count exceeds preview limit",
+          "duration": 0,
+          "failureMessages": []
+        }
+      ],
+      "startTime": 1783234917754,
+      "endTime": 1783234917757,
+      "status": "passed",
+      "message": "",
+      "name": "/home/lw/workspace/python/djadmin/fronted/src/views/sys/automation/__tests__/scopeSummary.spec.js"
+    }
+  ]
+}

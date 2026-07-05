@@ -26,10 +26,6 @@ export function createTask(params) {
   return requestUtil.post(prefix + 'tasks/', params)
 }
 
-export function deleteTask(id) {
-  return requestUtil.del(prefix + `tasks/${id}/`)
-}
-
 export function runTaskNow(id) {
   // Return immediately, task runs in background
   return requestUtil.post(prefix + `tasks/${id}/run_now/`, {})

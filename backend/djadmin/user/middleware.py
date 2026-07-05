@@ -118,25 +118,42 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
             return ''
 
         content_type = (request.META.get('CONTENT_TYPE') or '').lower()
+        body_payload = None
         try:
             if 'application/json' in content_type:
                 raw_body = request.body.decode('utf-8') if request.body else ''
                 if raw_body:
-                    parsed_body = json.loads(raw_body)
-                    return self._truncate_text(json.dumps(parsed_body, ensure_ascii=False, default=str))
-                return ''
-            if 'multipart/form-data' in content_type:
+                    body_payload = json.loads(raw_body)
+            elif 'multipart/form-data' in content_type:
                 payload = request.POST.dict()
                 if payload:
-                    return self._truncate_text(json.dumps(payload, ensure_ascii=False, default=str))
-                return ''
-            payload = request.POST.dict()
-            if payload:
-                return self._truncate_text(json.dumps(payload, ensure_ascii=False, default=str))
-            raw_body = request.body.decode('utf-8', errors='ignore') if request.body else ''
-            return self._truncate_text(raw_body)
+                    body_payload = payload
+            else:
+                payload = request.POST.dict()
+                if payload:
+                    body_payload = payload
+                else:
+                    raw_body = request.body.decode('utf-8', errors='ignore') if request.body else ''
+                    if raw_body:
+                        body_payload = raw_body
         except Exception:
-            return ''
+            body_payload = None
+
+        query_payload = request.GET.dict() if request.GET else {}
+        path_kwargs = getattr(getattr(request, 'resolver_match', None), 'kwargs', None) or {}
+
+        combined_payload = {}
+        if query_payload:
+            combined_payload['query'] = query_payload
+        if path_kwargs:
+            combined_payload['path'] = path_kwargs
+        if body_payload not in (None, '', {}):
+            combined_payload['body'] = body_payload
+
+        if combined_payload:
+            return self._truncate_text(json.dumps(combined_payload, ensure_ascii=False, default=str))
+
+        return ''
 
     @staticmethod
     def _extract_response_data(response):

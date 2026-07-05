@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 import os
 from pathlib import Path
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -40,7 +41,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'channels',
-    'django_apscheduler',
     'rest_framework',
     'django_filters',
     'corsheaders',
@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'audit.apps.AuditConfig',
     'scheduler.apps.SchedulerConfig',
     'sys_config.apps.SysConfigConfig',
+    'transfer.apps.TransferConfig',
 ]
 
 MIDDLEWARE = [
@@ -132,7 +133,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 
@@ -180,8 +181,15 @@ CORS_ALLOW_METHODS = [
 'DELETE',
 ]
 
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'Range',
+]
+
 CORS_EXPOSE_HEADERS = [
     'Content-Disposition',
+    'Content-Length',
+    'Content-Range',
+    'Accept-Ranges',
 ]
 
 
@@ -210,6 +218,37 @@ JWT_AUTH = {
     'JWT_REFRESH_EXPIRATION_DELTA': timedelta(days=7),  # 刷新 token 过期时间为7天
     'JWT_PAYLOAD_HANDLER': 'djadmin.custom_jwt.jwt_payload_handler',
 }
+
+# Celery
+CELERY_BROKER_URL = os.getenv(
+    'CELERY_BROKER_URL',
+    'amqp://admin:admin123@10.25.66.150:5672//',
+)
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'rpc://')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+CELERY_BEAT_SCHEDULE = {
+    'dispatch-due-scheduled-tasks': {
+        'task': 'scheduler.dispatch_due_tasks',
+        'schedule': 60.0,
+    },
+}
+
+# Transfer service
+TRANSFER_SERVICE_BASE_URL = os.getenv('TRANSFER_SERVICE_BASE_URL', 'http://127.0.0.1:9101')
+TRANSFER_TICKET_SECRET = os.getenv('TRANSFER_TICKET_SECRET', SECRET_KEY)
+TRANSFER_TICKET_EXPIRE_SECONDS = int(os.getenv('TRANSFER_TICKET_EXPIRE_SECONDS', '7200'))
+TRANSFER_SSH_POOL_MAX_PER_KEY = int(os.getenv('TRANSFER_SSH_POOL_MAX_PER_KEY', '4'))
+TRANSFER_SSH_POOL_IDLE_SECONDS = int(os.getenv('TRANSFER_SSH_POOL_IDLE_SECONDS', '120'))
+TRANSFER_STREAM_FIRST_CHUNK_BYTES = int(os.getenv('TRANSFER_STREAM_FIRST_CHUNK_BYTES', str(256 * 1024)))
+TRANSFER_STREAM_CHUNK_BYTES = int(os.getenv('TRANSFER_STREAM_CHUNK_BYTES', str(8 * 1024 * 1024)))
+TRANSFER_STREAM_PROGRESS_LOG_SECONDS = int(os.getenv('TRANSFER_STREAM_PROGRESS_LOG_SECONDS', '5'))
+TRANSFER_SFTP_WINDOW_SIZE = int(os.getenv('TRANSFER_SFTP_WINDOW_SIZE', str(8 * 1024 * 1024)))
+TRANSFER_SFTP_MAX_PACKET_SIZE = int(os.getenv('TRANSFER_SFTP_MAX_PACKET_SIZE', str(256 * 1024)))
+TRANSFER_SFTP_PREFETCH_REQUESTS = int(os.getenv('TRANSFER_SFTP_PREFETCH_REQUESTS', '32'))
 
 
 #打印sql日志

@@ -6,9 +6,9 @@
 
 - **后端**: Django 5.1 + Django REST Framework + MySQL
 - **前端**: Vue 3 + Vite + Ant Design Vue
-- **调度**: APScheduler（独立进程）
+- **调度**: Celery + RabbitMQ（Worker / Beat 独立进程）
 - **认证**: JWT（rest_framework_jwt，1天有效期）
-- **远程连接（规划）**: Web SSH（基于 Channels + Paramiko + xterm）
+- **远程连接（已实现）**: Web SSH（基于 Channels + Paramiko + xterm，含在线会话与文件管理）
 
 ---
 
@@ -156,6 +156,30 @@ media/      → 静态文件（头像等）
 | POST | `/assets/hosts/{id}/collect-info` | 采集单台主机信息（SSH 连接，更新硬件/系统/磁盘） |
 | POST | `/assets/hosts/batch-collect-info` | 批量采集指定主机信息 |
 | POST | `/assets/hosts/collect-all` | 采集所有主机信息 |
+| GET | `/assets/hosts/{id}/webssh-sessions/` | 获取主机 WebSSH 会话日志列表 |
+| GET | `/assets/hosts/{id}/webssh-active-count/` | 获取当前在线会话人数 |
+| GET | `/assets/hosts/{id}/webssh-active-sessions/` | 获取当前在线会话明细（会话ID、用户名、开始时间） |
+| GET | `/assets/hosts/{id}/files/list/?path=...` | 获取远端目录列表 |
+| GET | `/assets/hosts/{id}/files/download/?path=...` | 下载远端文件（旧直连接口，支持流式与 HTTP Range） |
+| POST | `/assets/hosts/{id}/files/download-ticket/` | 签发下载票据（前端默认先调用，再访问 transfer 服务） |
+| POST | `/assets/hosts/{id}/files/upload/` | 上传文件到远端目录（旧直传接口） |
+| POST | `/assets/hosts/{id}/files/upload-ticket/` | 签发上传票据（前端默认先调用，再访问 transfer 服务） |
+| POST | `/assets/hosts/{id}/files/upload/chunk/` | 分片上传远端文件（旧接口，支持断点续传） |
+| GET | `/assets/hosts/{id}/files/upload/status/` | 查询旧分片上传状态 |
+| POST | `/assets/hosts/{id}/files/upload/cancel/` | 取消旧分片上传并清理远端临时分片 |
+| POST | `/assets/hosts/{id}/files/rename/` | 重命名远端文件/目录 |
+| DELETE | `/assets/hosts/{id}/files/delete/` | 删除远端文件/目录（目录支持递归） |
+| POST | `/assets/hosts/{id}/files/create-dir/` | 新建远端目录 |
+| POST | `/assets/hosts/{id}/files/create-file/` | 新建远端空文件（后端能力保留） |
+
+**Transfer Service（独立数据面）接口**
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/transfer/download/?ticket=...` | 按下载票据流式下载（支持 Range） |
+| POST | `/transfer/upload/chunk/` | 按上传票据上传分片 |
+| GET | `/transfer/upload/status/?ticket=...&upload_id=...` | 按上传票据查询续传状态 |
+| POST | `/transfer/upload/cancel/` | 按上传票据取消分片上传 |
 
 **采集状态说明**
 - `collect_status`：`unknown`（未采集）/ `success`（采集成功）/ `failed`（采集失败）
@@ -181,13 +205,27 @@ media/      → 静态文件（头像等）
 | POST | `/sys/scheduler/tasks/{id}/toggle-enabled` | 切换启用/禁用状态 |
 | POST | `/sys/scheduler/tasks/{id}/enable` | 启用任务 |
 | POST | `/sys/scheduler/tasks/{id}/disable` | 禁用任务 |
-| POST | `/sys/scheduler/tasks/{id}/run-now` | 立即执行（有并发保护，is_running 防重入） |
-| POST | `/sys/scheduler/tasks/start-scheduler` | 启动 APScheduler 进程 |
-| POST | `/sys/scheduler/tasks/stop-scheduler` | 停止 APScheduler 进程 |
+| POST | `/sys/scheduler/tasks/{id}/run-now` | 立即执行（有并发保护，is_running 防重入；若 Worker 不在线会直接返回错误） |
+| POST | `/sys/scheduler/tasks/start-scheduler` | 启用调度分发开关（Celery Beat 仍需独立进程运行） |
+| POST | `/sys/scheduler/tasks/stop-scheduler` | 关闭调度分发开关（Celery Beat 进程可继续运行） |
 
 **主机批量采集任务状态语义**
 - `collect_all_hosts_info` 对单台主机失败采取“记录并继续”策略，不会因为单台失败中断整个批次。
 - 因此定时任务总体状态通常按“任务函数是否抛异常”判定：单台失败不一定导致任务总体失败。
+- `dispatch_due_tasks` 在 Worker 不可用时不会继续投递执行任务，并会在任务记录中写入“Worker 不可用，任务未投递”的失败提示，避免静默 pending。
+
+**Celery 任务清单（当前全量）**
+
+| Celery 任务名 | 定义位置 | 触发方式 | 说明 |
+|---|---|---|---|
+| `scheduler.dispatch_due_tasks` | `backend/djadmin/scheduler/tasks.py` | Celery Beat 周期触发（`CELERY_BEAT_SCHEDULE`，每 60 秒） | 调度扫描器：检查 `ScheduledTask` 是否到期，并投递执行任务 |
+| `scheduler.execute_scheduled_task` | `backend/djadmin/scheduler/tasks.py` | 由 `dispatch_due_tasks` 投递；或 `/sys/scheduler/tasks/{id}/run-now` 手动投递 | 执行具体定时任务（例如 `collect_all_hosts_info`） |
+| `automation.execute_ansible_job` | `backend/djadmin/automation/tasks.py` | `/sys/automation/playbooks/{id}/run` 与 `/sys/automation/tasks/{id}/run_now` 投递 | 自动化中心 Ansible 作业执行任务（已从线程执行迁移到 Celery） |
+
+补充说明：
+- `scheduler.dispatch_due_tasks` 是唯一依赖 **Beat** 的任务。
+- `scheduler.execute_scheduled_task` 与 `automation.execute_ansible_job` 只依赖 **Worker**，不依赖 Beat。
+- `python manage.py runscheduler` 会同时启动 Worker + Beat，覆盖上述全部任务场景。
 
 ---
 
@@ -268,77 +306,63 @@ media/      → 静态文件（头像等）
 
 ---
 
-## Web SSH（单机最小可用技术方案）
+## Web SSH（已上线能力）
 
-### 目标
-- 在主机列表页面提供浏览器内 SSH 终端能力，减少本地 SSH 工具切换。
-
-### 最小技术栈（去除可选项）
+### 技术栈
 - 后端：`paramiko` + `channels` + `daphne`
-- 前端：`@xterm/xterm` + `@xterm/addon-fit`
+- 前端：`@xterm/xterm` + `@xterm/addon-fit` + Ant Design Vue
 - 通道层：`InMemoryChannelLayer`（单机开发）
 
-### 各组件作用
-- `paramiko`：建立 SSH 连接并读写远程 shell。
-- `channels`：为 Django 提供 WebSocket 双向通信能力。
-- `daphne`：ASGI 服务承载 WebSocket 连接。
-- `@xterm/xterm`：浏览器终端渲染与键盘输入处理。
-- `@xterm/addon-fit`：终端尺寸自适应弹窗/容器。
-- `InMemoryChannelLayer`：单机内消息分发（不依赖 Redis）。
+### 当前已实现功能
 
-### 单机开发边界
-- 单机开发阶段可不引入 Redis。
-- 多实例生产部署时再升级到 `channels-redis`。
+#### 1) 终端与会话能力
+- 主机列表支持打开独立 WebSSH 页面（新窗口）。
+- 终端连接状态可视化：未连接/连接中/已连接/连接失败。
+- 支持重连、关闭、全屏切换、终端自动 fit。
+- 展示当前会话 ID，并支持下载当前会话日志。
 
-### 依赖安装命令（当前推荐）
-- 后端：`pip install paramiko channels daphne`
-- 前端：`npm install @xterm/xterm @xterm/addon-fit`
+#### 2) 在线会话监控
+- 页面展示当前主机在线 WebSSH 人数。
+- 支持查看在线会话列表（会话ID、用户名、开始时间）。
+- 在线人数与会话列表支持轮询刷新。
 
-> 说明：旧包名 `xterm`、`xterm-addon-fit` 已弃用，建议统一使用 `@xterm/*` 命名空间。
+#### 3) 左侧文件管理（SFTP）
+- 目录浏览、进入目录、返回上级、手动输入路径跳转。
+- 文件列表关键字过滤（当前目录内按名称过滤）。
+- 上传文件、下载文件、重命名、删除、新建目录。
+- 支持显示/隐藏文件管理面板。
+- 支持拖拽分隔条调整文件面板与终端区宽度。
+- 文件操作入口已调整为右键菜单（文件/目录按能力显示）。
+- “返回”按钮改为向上箭头，行为为“返回上一次访问目录”（类似 `cd -`）。
+- 右键菜单支持“复制目录路径”：对文件与目录都复制其父目录路径（例如 `/home/a.txt` 与 `/home/test` 都复制 `/home`）。
+- 右键打开菜单时，当前行会高亮显示为选中态。
 
-### 功能点（规划）
+#### 4) 下载能力增强
+- 后端下载改为流式传输，避免整文件读入内存。
+- 下载接口支持 `Range`（HTTP 206）与 `Accept-Ranges`，可进行分块下载。
+- 前端增加下载任务面板，支持暂停/继续/取消与失败后继续下载。
+- 跨域下载相关 CORS 头已补齐（`Range`、`Content-Length`、`Content-Range` 等）。
+- 当前前端默认走「API 签发票据 + transfer-service 数据传输」链路。
 
-#### 前端功能点（主机列表）
-- 在主机列表操作列新增「Web SSH」按钮（建议图标：`terminal`）。
-- 点击按钮弹出终端弹窗：显示主机名、IP、连接状态。
-- 弹窗内嵌 `xterm`，支持键盘输入、回车执行、终端输出滚动。
-- 终端窗口支持自适应（`fit`），弹窗大小变化时自动重排。
-- 连接失败时给出明确错误提示（认证失败/连接超时/网络不可达）。
-- 关闭弹窗时主动断开会话，避免僵尸连接。
+#### 5) 上传能力增强
+- 上传改为前后端协同分片上传，支持暂停/继续/取消。
+- 继续上传基于同一 `upload_id` 从未完成分片继续传输，不再从 0 重新上传。
+- 取消上传会调用后端清理远端 `.part` 临时分片文件。
+- 页面刷新后会恢复上传断点元信息；需重新选择同名同大小文件后可继续上传。
+- 当前前端默认走「API 签发票据 + transfer-service 分片上传」链路。
 
-#### 后端功能点
-- 基于主机默认凭证建立 SSH 会话，不允许前端直接传入密码/私钥。
-- WebSocket 握手校验当前用户是否有 Web SSH 权限。
-- 会话生命周期管理：连接创建、心跳存活、断开清理。
-- 双向数据转发：浏览器输入 -> SSH stdin；SSH stdout/stderr -> 浏览器。
-- 异常兜底：任一异常都关闭 SSH 连接并回传错误事件。
-
-#### 权限与安全
-- 新增权限码：`assets:hosts:webssh`。
-- 仅允许连接资产库中已登记的主机（按 `host_id` 建连）。
-- 连接使用超时与空闲超时（建议：连接超时 10-20s，空闲 15-30min）。
-- 日志中禁止打印明文密码、私钥等敏感信息。
-
-#### 接口与事件建议（最小版）
-- HTTP（可选）：`POST /assets/hosts/{id}/webssh-token`（签发短时连接令牌）。
+### WebSocket 路径与事件
 - WS：`/ws/assets/hosts/{id}/webssh/?token=...`
-- 事件类型建议：
+- 事件类型：
   - `connected`：连接成功
   - `output`：终端输出
   - `error`：错误信息
   - `closed`：会话关闭
 
-#### 验收标准（MVP）
-- 用户在主机列表可打开终端并执行基础命令（如 `hostname`、`uname -a`）。
-- 无权限用户点击时返回统一格式无权限提示（403）。
-- 主机不可达/认证失败时，前端能看到明确失败原因。
-- 关闭终端弹窗后，后端 SSH 会话被释放（无残留连接）。
-
-#### 暂不包含（后续增强）
-- 多实例水平扩展（Redis Channel Layer）。
-- 会话录屏/命令审计回放。
-- 文件上传下载（SFTP）。
-- 终端多标签与会话共享。
+### 生产部署建议（当前项目约束）
+- 文件传输已改为控制面/数据面分离：Django API 负责签发票据，transfer-service 负责上传下载数据流。
+- 建议将 WebSSH/文件传输流量与普通业务 API 进程隔离部署。
+- 多实例生产场景建议升级 `channels-redis`，并独立扩展 WebSSH 与传输 worker。
 
 ---
 
@@ -392,29 +416,73 @@ npm install
 npm run dev
 ```
 
-### 5. 启动调度器（独立进程）
+### 5. 启动调度器（Celery 独立进程）
 
 必须使用独立终端启动，不与 Django Web 进程复用。
 
 在 `backend/djadmin` 目录执行：
 
 ```bash
-python manage.py runapscheduler
+python manage.py runscheduler
 ```
 
-或使用仓库脚本：
+该命令会同时拉起 Celery Worker 与 Beat，适合日常使用。
+
+如需分开调试，可分别执行：
+
+```bash
+python manage.py runceleryworker --loglevel=info --concurrency=2
+python manage.py runcelerybeat --loglevel=info
+```
+
+兼容脚本入口：
 - Windows：`backend/start_scheduler.ps1`
 - Linux/Mac：`backend/start_scheduler.sh`
 
-### 6. 验收清单
+### 6. 启动传输服务（独立传输数据面）
+
+用于 WebSSH 上传/下载加速，建议与 Django 主服务分开进程运行。
+
+在 `backend/djadmin` 目录执行：
+
+```bash
+python manage.py runtransfer --host 0.0.0.0 --port 9101
+```
+
+说明：`runtransfer` 内部使用 Daphne 启动，并自动设置 `DJANGO_SETTINGS_MODULE=djadmin.transfer_settings`。
+
+前端默认读取：
+- `VITE_TRANSFER_BASE_URL`（默认 `http://{当前主机}:9101`）
+
+后端/transfer 服务相关环境变量：
+- `TRANSFER_SERVICE_BASE_URL`（默认 `http://127.0.0.1:9101`）
+- `TRANSFER_TICKET_EXPIRE_SECONDS`（默认 `7200` 秒）
+- `TRANSFER_SSH_POOL_MAX_PER_KEY`（默认 `4`，单主机连接池上限）
+- `TRANSFER_SSH_POOL_IDLE_SECONDS`（默认 `120`，连接池空闲回收秒数）
+- `TRANSFER_STREAM_FIRST_CHUNK_BYTES`（默认 `262144`，首包块大小）
+- `TRANSFER_STREAM_CHUNK_BYTES`（默认 `8388608`，流式下载块大小）
+- `TRANSFER_STREAM_PROGRESS_LOG_SECONDS`（默认 `5`，下载进度日志间隔秒）
+- `TRANSFER_SFTP_WINDOW_SIZE`（默认 `8388608`）
+- `TRANSFER_SFTP_MAX_PACKET_SIZE`（默认 `262144`）
+- `TRANSFER_SFTP_PREFETCH_REQUESTS`（默认 `32`）
+- `DJANGO_SETTINGS_MODULE=djadmin.transfer_settings`（仅 Daphne 启动 transfer 时必需）
+
+无效配置说明（当前代码未读取）：
+- `TRANSFER_SFTP_PREFETCH_REQUESTS_RANGE`（不生效，可移除）
+
+### 7. 验收清单
 
 1. 后端接口可访问（登录接口返回正常）。
 2. 前端页面可打开并正常登录。
 3. 菜单加载正常，角色权限可生效。
 4. 自动化执行中心可进入并提交任务。
 5. 调度器运行后，任务最近执行时间会更新。
+6. 自动化执行中心的 Playbook 执行任务会投递到 Celery Worker 执行（不再依赖 Web 线程）。
+7. WebSSH 下载会先请求 `/assets/hosts/{id}/files/download-ticket/`，再由 transfer 服务 `/transfer/download/` 实际传输。
+8. WebSSH 上传会先请求 `/assets/hosts/{id}/files/upload-ticket/`，再由 transfer 服务 `/transfer/upload/*` 执行分片上传/状态查询/取消。
+9. 自动化“任务运行记录”中，`pending` 状态任务不展示“下载日志”按钮。
 
-### 7. 端口联动注意事项
+### 8. 端口联动注意事项
 
 如果修改后端端口，需同步确认以下配置：
 
@@ -422,7 +490,7 @@ python manage.py runapscheduler
 2. 前端 HTTP 基础地址：`fronted/src/util/request.js`。
 3. WebSSH 地址已改为复用前端统一基础地址配置，无需单独硬编码端口。
 
-### 8. 后端端口修改方法
+### 9. 后端端口修改方法
 
 后端端口支持两种修改方式。
 

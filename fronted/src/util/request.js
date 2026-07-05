@@ -5,7 +5,10 @@ import router from '@/router';
 import { message } from 'ant-design-vue';
 
 
-let baseUrl="http://localhost:8000";
+const defaultBaseUrl = `${window.location.protocol}//${window.location.hostname}:9000`
+const defaultTransferUrl = `${window.location.protocol}//${window.location.hostname}:9101`
+let baseUrl = import.meta.env.VITE_API_BASE_URL || defaultBaseUrl;
+let transferBaseUrl = import.meta.env.VITE_TRANSFER_BASE_URL || defaultTransferUrl;
 // 创建axios实例
 const httpService = axios.create({
     // url前缀-'http:xxx.xxx'
@@ -30,13 +33,22 @@ httpService.interceptors.request.use(function (config) {
 // 添加响应拦截器
 httpService.interceptors.response.use(function (response) {
     // 对响应数据做点什么
-    if(response.data.code === 300) {
+    const responseData = response?.data
+    const isBusinessEnvelope =
+        responseData &&
+        typeof responseData === 'object' &&
+        Object.prototype.hasOwnProperty.call(responseData, 'code') &&
+        Object.prototype.hasOwnProperty.call(responseData, 'msg') &&
+        Object.prototype.hasOwnProperty.call(responseData, 'data')
+
+    // 仅在标准业务响应结构下按业务 code 处理，避免把普通业务字段 code 误判为状态码。
+    if (isBusinessEnvelope && responseData.code === 300) {
         message.error("账号或者密码输入错误")
-        return Promise.reject(new Error(response.data.msg))
-    }else if(response.data.code != 200 && response.data.code !== undefined){
-        message.error(response.data.msg)
+        return Promise.reject(new Error(responseData.msg))
+    } else if (isBusinessEnvelope && responseData.code != 200 && responseData.code !== undefined) {
+        message.error(responseData.msg)
         console.log(response)
-        return Promise.reject(new Error(response.data.msg))
+        return Promise.reject(new Error(responseData.msg))
     }
     return response;
 
@@ -129,13 +141,22 @@ export function del(url, params = {}) {
  *  url:请求地址
  *  params:参数
  * */
-export function fileUpload(url, params = {}) {
+export function fileUpload(url, params = {}, options = {}) {
     return new Promise((resolve, reject) => {
-        httpService({
+        const config = {
             url: url,
             method: 'post',
             data: params,
             headers: { 'Content-Type': 'multipart/form-data' }
+        }
+        if (options?.signal) {
+            config.signal = options.signal
+        }
+        if (options?.onUploadProgress) {
+            config.onUploadProgress = options.onUploadProgress
+        }
+        httpService({
+            ...config
         }).then(response => {
             resolve(response);
         }).catch(error => {
@@ -154,6 +175,10 @@ export function getWebSocketBaseUrl() {
     return `${wsProtocol}//${parsed.host}`
 }
 
+export function getTransferServerUrl() {
+    return transferBaseUrl
+}
+
 
 export function patch(url, params = {}) {
     return new Promise((resolve, reject) => {
@@ -170,14 +195,18 @@ export function patch(url, params = {}) {
     });
 }
 
-export function download(url, params = {}) {
+export function download(url, params = {}, timeout = null) {
     return new Promise((resolve, reject) => {
-        httpService({
+        const config = {
             url: url,
             method: 'get',
             params: params,
             responseType: 'blob'
-        }).then(response => {
+        }
+        if (timeout !== null && timeout !== undefined) {
+            config.timeout = timeout
+        }
+        httpService(config).then(response => {
             resolve(response)
         }).catch(error => {
             reject(error)
@@ -192,6 +221,7 @@ export default {
     fileUpload,
     getServerUrl,
     getWebSocketBaseUrl,
+    getTransferServerUrl,
     patch,
     download,
 }

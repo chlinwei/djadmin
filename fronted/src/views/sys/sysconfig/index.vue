@@ -148,7 +148,7 @@ const tablePagination = computed(() => ({
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '30', '50'],
   showQuickJumper: true,
-  showTotal: (total) => `共 ${total} 条`,
+  showTotal: (total) => `共有${total}条数据`,
 }))
 
 const pagedConfigs = computed(() => {
@@ -224,23 +224,44 @@ const loadUserTimezone = () => {
     .catch(() => {})
 }
 
-const loadConfigs = () => {
+const loadConfigs = async () => {
   loading.value = true
   pagination.current = 1
-  const params = {}
-  if (filterText.value) params.search = filterText.value
-  getConfigList(params)
-    .then((res) => {
-      const data = res.data.data
-      const list = Array.isArray(data) ? data : (data?.results || [])
-      configs.value = [...list].sort((a, b) => String(a.key || '').localeCompare(String(b.key || '')))
-    })
-    .catch(() => {
-      message.error('加载失败')
-    })
-    .finally(() => {
-      loading.value = false
-    })
+  try {
+    const baseParams = { page_size: 30 }
+    if (filterText.value) baseParams.search = filterText.value
+
+    const firstRes = await getConfigList({ ...baseParams, page: 1 })
+    const firstData = firstRes.data.data
+
+    // Backward compatible: some endpoints may return full array directly.
+    if (Array.isArray(firstData)) {
+      configs.value = [...firstData].sort((a, b) => String(a.key || '').localeCompare(String(b.key || '')))
+      return
+    }
+
+    const firstResults = firstData?.results || []
+    const totalPages = Number(firstData?.totalPages || 1)
+    const allRows = [...firstResults]
+
+    if (totalPages > 1) {
+      const tasks = []
+      for (let page = 2; page <= totalPages; page += 1) {
+        tasks.push(getConfigList({ ...baseParams, page }))
+      }
+      const responses = await Promise.all(tasks)
+      responses.forEach((res) => {
+        const rows = res?.data?.data?.results || []
+        allRows.push(...rows)
+      })
+    }
+
+    configs.value = allRows.sort((a, b) => String(a.key || '').localeCompare(String(b.key || '')))
+  } catch (error) {
+    message.error('加载失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 const openEdit = (record) => {

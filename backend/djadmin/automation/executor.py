@@ -4,6 +4,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -59,7 +61,8 @@ def _collect_hosts(host_ids: list[int], group_ids: list[int]) -> list[Host]:
         conditions.append({'group_id__in': list(group_id_set)})
 
     if not conditions:
-        return []
+        # Empty scope means "all hosts with IP" for automation task execution.
+        return list(queryset)
 
     combined_ids = set()
     for condition in conditions:
@@ -72,6 +75,38 @@ def _collect_hosts(host_ids: list[int], group_ids: list[int]) -> list[Host]:
     return list(queryset.filter(id__in=list(combined_ids)).order_by('id'))
 
 
+def _build_group_path_map(group_ids: list[int]) -> dict[int, str]:
+    normalized_ids = [int(item) for item in group_ids if isinstance(item, int)]
+    if not normalized_ids:
+        return {}
+
+    group_rows = list(HostGroup.objects.all().values('id', 'name', 'parent_id'))
+    group_lookup = {int(item['id']): item for item in group_rows if item.get('id') is not None}
+    cache: dict[int, str] = {}
+
+    def resolve_path(group_id: int) -> str:
+        if group_id in cache:
+            return cache[group_id]
+        row = group_lookup.get(group_id)
+        if not row:
+            cache[group_id] = ''
+            return ''
+
+        name = str(row.get('name') or '').strip()
+        parent_id_raw = row.get('parent_id')
+        parent_id = int(parent_id_raw) if isinstance(parent_id_raw, int) else None
+        if parent_id and parent_id != group_id:
+            parent_path = resolve_path(parent_id)
+            cache[group_id] = f'{parent_path}/{name}' if parent_path else name
+        else:
+            cache[group_id] = name
+        return cache[group_id]
+
+    for gid in normalized_ids:
+        resolve_path(gid)
+    return cache
+
+
 def _get_default_credential(host: Host) -> Credential | None:
     relation = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
     if not relation or not relation.credential_id:
@@ -82,6 +117,8 @@ def _get_default_credential(host: Host) -> Credential | None:
 def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[str, Any]:
     hosts = _collect_hosts(host_ids, group_ids)
     snapshot_hosts: list[dict[str, Any]] = []
+    snapshot_group_ids = [int(host.group_id) for host in hosts if host.group_id is not None]
+    group_path_map = _build_group_path_map(snapshot_group_ids)
 
     for host in hosts:
         snapshot_hosts.append({
@@ -89,6 +126,8 @@ def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[
             'host_name': _display_host_name(host),
             'host_ip': host.ip,
             'group_id': host.group_id,
+            'group_name': host.group.name if getattr(host, 'group', None) else '',
+            'group_path': group_path_map.get(int(host.group_id), '') if host.group_id is not None else '',
         })
 
     return {
@@ -168,6 +207,8 @@ def _write_inventory_file(work_dir: str, contexts: list[HostExecutionContext]) -
             f'ansible_port={port}',
             f'ansible_user={username}',
             'ansible_connection=ssh',
+            # Avoid noisy interpreter discovery warnings while keeping auto detection.
+            'ansible_python_interpreter=auto_silent',
         ]
 
         if ctx.credential.auth_type == Credential.AuthType.PASSWORD:
@@ -211,22 +252,99 @@ def _run_single_host_playbook(job: AnsibleExecutionJob, target: AnsibleExecution
     if isinstance(job.extra_vars, dict) and job.extra_vars:
         cmd.extend(['--extra-vars', json.dumps(job.extra_vars, ensure_ascii=False)])
 
+    host_label = target.host_name or target.host_ip or alias
+
+    def _append_job_log(stream_name: str, text_chunk: str) -> None:
+        if not text_chunk:
+            return
+        # Log lines use raw Django process current time without timezone conversion.
+        timestamp_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lines = []
+        for line in text_chunk.splitlines(keepends=True):
+            if line.endswith('\n'):
+                lines.append(f'[{timestamp_text}][{host_label}][{stream_name}] {line}')
+            else:
+                lines.append(f'[{timestamp_text}][{host_label}][{stream_name}] {line}\n')
+        job.job_output = (job.job_output or '') + ''.join(lines)
+        job.save(update_fields=['job_output'])
+
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            bufsize=1,
+        )
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        lock = threading.Lock()
+
+        def _consume_stream(stream, collector):
+            if stream is None:
+                return
+            try:
+                for line in iter(stream.readline, ''):
+                    with lock:
+                        collector.append(line)
+            finally:
+                stream.close()
+
+        stdout_thread = threading.Thread(target=_consume_stream, args=(proc.stdout, stdout_chunks), daemon=True)
+        stderr_thread = threading.Thread(target=_consume_stream, args=(proc.stderr, stderr_chunks), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+
+        last_stdout_len = 0
+        last_stderr_len = 0
+
+        while proc.poll() is None:
+            with lock:
+                current_stdout = ''.join(stdout_chunks)
+                current_stderr = ''.join(stderr_chunks)
+
+            stdout_delta = current_stdout[last_stdout_len:]
+            stderr_delta = current_stderr[last_stderr_len:]
+
+            last_stdout_len = len(current_stdout)
+            last_stderr_len = len(current_stderr)
+
+            if stdout_delta:
+                _append_job_log('stdout', stdout_delta)
+            if stderr_delta:
+                _append_job_log('stderr', stderr_delta)
+
+            time.sleep(1.0)
+
+        stdout_thread.join(timeout=2.0)
+        stderr_thread.join(timeout=2.0)
+
+        with lock:
+            final_stdout = ''.join(stdout_chunks)
+            final_stderr = ''.join(stderr_chunks)
+
+        final_stdout_delta = final_stdout[last_stdout_len:]
+        final_stderr_delta = final_stderr[last_stderr_len:]
+        if final_stdout_delta:
+            _append_job_log('stdout', final_stdout_delta)
+        if final_stderr_delta:
+            _append_job_log('stderr', final_stderr_delta)
+
         end_time = timezone.now()
         target.end_time = end_time
         if target.start_time:
             target.duration_seconds = (end_time - target.start_time).total_seconds()
         target.rc = proc.returncode
-        target.stdout = proc.stdout or ''
-        target.stderr = proc.stderr or ''
-        if proc.returncode != 0 and os.name == 'nt' and 'WinError 1' in target.stderr:
+        target.stderr = ''
+        if proc.returncode != 0 and os.name == 'nt' and 'WinError 1' in final_stderr:
             target.stderr = (
-                f"{target.stderr}\n"
+                f"{final_stderr}\n"
                 'Current runtime is Windows. Run Ansible from Linux/WSL and set ANSIBLE_PLAYBOOK_PATH if needed.'
             )
         target.status = AnsibleExecutionTarget.Status.SUCCESS if proc.returncode == 0 else AnsibleExecutionTarget.Status.FAILED
-        target.save(update_fields=['end_time', 'duration_seconds', 'rc', 'stdout', 'stderr', 'status'])
+        target.save(update_fields=['end_time', 'duration_seconds', 'rc', 'stderr', 'status'])
     except FileNotFoundError:
         end_time = timezone.now()
         target.end_time = end_time
@@ -236,6 +354,7 @@ def _run_single_host_playbook(job: AnsibleExecutionJob, target: AnsibleExecution
         target.status = AnsibleExecutionTarget.Status.FAILED
         target.stderr = 'ansible-playbook command not found. Please install Ansible on server runtime.'
         target.save(update_fields=['end_time', 'duration_seconds', 'rc', 'status', 'stderr'])
+        _append_job_log('stderr', target.stderr)
 
 
 def execute_ansible_job(job_id: int) -> None:
@@ -273,8 +392,12 @@ def execute_ansible_job(job_id: int) -> None:
 
     with tempfile.TemporaryDirectory(prefix='djadmin_ansible_') as work_dir:
         playbook_path = os.path.join(work_dir, 'playbook.yml')
+        template_content = (job.template_content_snapshot or '').strip()
+        if not template_content:
+            template_content = job.template.content or ''
+
         with open(playbook_path, 'w', encoding='utf-8') as playbook_fp:
-            playbook_fp.write(job.template.content)
+            playbook_fp.write(template_content)
 
         inventory_path, _ = _write_inventory_file(work_dir, contexts)
 

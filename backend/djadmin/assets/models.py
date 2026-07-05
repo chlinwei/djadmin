@@ -80,7 +80,6 @@ class CloudAccount(BaseModel):
     
 class Host(BaseModel):
     instance_name = models.CharField(max_length=128, blank=True, null=True)
-    name = models.CharField(max_length=128,null=False,default='')
     ip = models.GenericIPAddressField(null=True)
     instance_id = models.CharField(max_length=128, blank=True, null=True)
 
@@ -112,9 +111,13 @@ class Host(BaseModel):
     )
     collect_message = models.TextField(blank=True, default="", verbose_name="采集失败原因")
     collect_time = models.DateTimeField(null=True, blank=True, verbose_name="最后采集时间")
+    auth_failed_count = models.PositiveIntegerField(default=0, verbose_name="连续认证失败次数")
+    last_auth_failed_time = models.DateTimeField(null=True, blank=True, verbose_name="最后认证失败时间")
+    auth_lock_until = models.DateTimeField(null=True, blank=True, verbose_name="认证失败保护截止时间")
 
     def __str__(self):
-        return f"{self.name} ({self.ip})"
+        display_name = self.instance_name or f"Host-{self.id}"
+        return f"{display_name} ({self.ip})"
     
 
 
@@ -157,7 +160,8 @@ class HostHardware(BaseModel):
     collected_at = models.DateTimeField(null=True, blank=True, verbose_name='最后采集时间')
 
     def __str__(self):
-        return f"Hardware of {self.host.name}"
+        host_label = self.host.instance_name or f"Host-{self.host_id}"
+        return f"Hardware of {host_label}"
     
 
 class HostSystem(BaseModel):
@@ -179,7 +183,8 @@ class HostSystem(BaseModel):
 
 
     def __str__(self):
-        return f"System of {self.host.name}"
+        host_label = self.host.instance_name or f"Host-{self.host_id}"
+        return f"System of {host_label}"
 
 
 class HostDisk(models.Model):
@@ -198,7 +203,8 @@ class HostDisk(models.Model):
     filesystem = models.CharField(max_length=64, blank=True, null=True)
 
     def __str__(self):
-        return f"{self.device} ({self.host.name})"
+        host_label = self.host.instance_name or f"Host-{self.host_id}"
+        return f"{self.device} ({host_label})"
 
 
 class WebSSHSessionLog(models.Model):
@@ -207,7 +213,6 @@ class WebSSHSessionLog(models.Model):
         CLOSED = 'closed', '已关闭'
         FAILED = 'failed', '连接失败'
 
-    session_id = models.CharField(max_length=36, unique=True)
     host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='webssh_sessions')
     user_id = models.IntegerField(null=True, blank=True)
     username = models.CharField(max_length=100, blank=True, default='')
@@ -233,8 +238,7 @@ class WebSSHSessionLog(models.Model):
         ordering = ['-start_time']
 
     def __str__(self):
-        return f"{self.session_id} {self.username} {self.host.id}"
-
+        return f"{self.id} {self.username} {self.host.id}"
 
 
 

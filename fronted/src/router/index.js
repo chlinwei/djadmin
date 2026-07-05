@@ -51,9 +51,19 @@ export const staticRouterMap = [
                 component: () => import('../views/sys/automation/index.vue'),
             },
             {
+                path: '/sys/automation/logs',
+                name: '任务运行记录',
+                component: () => import('../views/sys/automation/logs.vue'),
+            },
+            {
                 path: '/sys/automation/playbooks',
                 name: 'Playbook模板',
                 component: () => import('../views/sys/playbookTemplate/index.vue'),
+            },
+            {
+                path: '/sys/automation/inventory',
+                name: 'Inventory管理',
+                component: () => import('../views/sys/automation/inventory.vue'),
             }
         ]
     },

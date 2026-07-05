@@ -13,6 +13,7 @@
 import argparse
 import io
 import os
+import re
 import sys
 import time
 import unittest
@@ -30,6 +31,190 @@ from django.conf import settings
 import MySQLdb
 
 
+def fallback_description_from_test_name(test_name):
+    """基于测试方法名生成可读说明，避免报告中出现大量 '-'。"""
+    if not test_name:
+        return '-'
+
+    name = str(test_name)
+    if name.startswith('test_'):
+        name = name[5:]
+    name = name.strip('_')
+    if not name:
+        return '-'
+
+    return name.replace('_', ' ')
+
+
+def contains_chinese(text):
+    return bool(re.search(r'[\u4e00-\u9fff]', text or ''))
+
+
+def _translate_token_to_cn(token):
+    token_map = {
+        'admin': '管理员',
+        'all': '全部',
+        'and': '并且',
+        'are': '被',
+        'as': '为',
+        'attachment': '附件',
+        'audit': '审计',
+        'batch': '批量',
+        'by': '按',
+        'cancel': '取消',
+        'celery': 'Celery',
+        'cleanup': '清理',
+        'completed': '完成',
+        'config': '配置',
+        'connect': '连接',
+        'contains': '包含',
+        'content': '内容',
+        'create': '创建',
+        'created': '创建',
+        'default': '默认',
+        'dispatches': '派发',
+        'dispatch': '派发',
+        'download': '下载',
+        'entries': '条目',
+        'error': '错误',
+        'execution': '执行',
+        'exists': '存在',
+        'extension': '扩展名',
+        'falls': '回退',
+        'fallback': '回退',
+        'file': '文件',
+        'filter': '过滤',
+        'filtered': '已过滤',
+        'filters': '过滤',
+        'finished': '已完成',
+        'for': '用于',
+        'found': '不存在',
+        'from': '来自',
+        'get': '获取',
+        'has': '有',
+        'ids': 'ID 列表',
+        'in': '在',
+        'invalid': '非法',
+        'job': '任务',
+        'keyword': '关键字',
+        'list': '列表',
+        'login': '登录',
+        'log': '日志',
+        'logs': '日志',
+        'menu': '菜单',
+        'middleware': '中间件',
+        'missing': '缺失',
+        'more': '更多',
+        'now': '立即',
+        'offline': '离线',
+        'on': '在',
+        'online': '在线',
+        'operation': '操作',
+        'output': '输出',
+        'paginated': '分页',
+        'patch': '更新',
+        'permission': '权限',
+        'permissions': '权限',
+        'playbook': 'Playbook',
+        'rejects': '拒绝',
+        'removes': '移除',
+        'respects': '遵循',
+        'retention': '保留',
+        'retrieve': '查询',
+        'returns': '返回',
+        'retries': '重试',
+        'role': '角色',
+        'run': '执行',
+        'running': '运行中',
+        'sanitized': '脱敏',
+        'scope': '范围',
+        'search': '搜索',
+        'selected': '选中',
+        'sends': '发送',
+        'session': '会话',
+        'sessions': '会话',
+        'snapshot': '快照',
+        'status': '状态',
+        'submits': '提交',
+        'success': '成功',
+        'successful': '成功',
+        'supports': '支持',
+        'summary': '摘要',
+        'task': '任务',
+        'template': '模板',
+        'three': '三个',
+        'to': '到',
+        'token': '令牌',
+        'tree': '树',
+        'two': '两个',
+        'update': '更新',
+        'upload': '上传',
+        'uses': '使用',
+        'validate': '校验',
+        'view': '查看',
+        'webssh': 'WebSSH',
+        'when': '当',
+        'window': '窗口',
+        'with': '带',
+        'without': '不带',
+        'worker': 'Worker',
+        'yaml': 'YAML',
+        'zip': '压缩包',
+    }
+    return token_map.get(token, token)
+
+
+def english_text_to_cn_style(text):
+    normalized = (text or '').strip().lower()
+    if not normalized:
+        return ''
+
+    normalized = normalized.replace('-', ' ').replace('_', ' ')
+
+    phrase_map = {
+        'not found': '未找到',
+        'falls back to': '回退到',
+        'fall back to': '回退到',
+        'run now': '立即执行',
+        'job list': '任务列表',
+        'when worker offline': '当 Worker 离线',
+        'when worker online': '当 Worker 在线',
+    }
+    for src, dst in phrase_map.items():
+        normalized = normalized.replace(src, dst)
+
+    tokens = [t for t in re.split(r'\s+', normalized) if t]
+    if not tokens:
+        return ''
+
+    translated = []
+    for tok in tokens:
+        if contains_chinese(tok):
+            translated.append(tok)
+            continue
+        translated.append(_translate_token_to_cn(tok))
+
+    sentence = ' '.join(translated).strip()
+    if not sentence:
+        return ''
+    return f'验证：{sentence}'
+
+
+def normalize_description_to_chinese(doc, test_name):
+    """统一说明为中文风格：优先保留中文，英文说明自动转中文模板。"""
+    raw = (doc or '').strip()
+    if not raw:
+        raw = fallback_description_from_test_name(test_name)
+
+    if contains_chinese(raw):
+        return raw
+
+    converted = english_text_to_cn_style(raw)
+    if converted:
+        return converted
+    return f'验证：{raw}'
+
+
 class TimingTestResult(unittest.TextTestResult):
     """记录每个用例的耗时与结果。"""
 
@@ -44,11 +229,13 @@ class TimingTestResult(unittest.TextTestResult):
 
     def _record(self, test, status):
         elapsed = (time.perf_counter() - self._start) if self._start else 0.0
+        doc = normalize_description_to_chinese(test.shortDescription(), test._testMethodName)
+
         self.cases.append({
             'module': type(test).__module__.split('.')[0],
             'class': test.__class__.__name__,
             'name': test._testMethodName,
-            'doc': (test.shortDescription() or '').strip(),
+            'doc': doc,
             'duration': elapsed,
             'status': status,
         })
@@ -214,7 +401,7 @@ def generate_markdown(result, total, duration):
 
 def main():
     parser = argparse.ArgumentParser(description='生成 Markdown 测试报告')
-    parser.add_argument('--apps', nargs='+', default=['user', 'role', 'assets', 'audit'],
+    parser.add_argument('--apps', nargs='+', default=['user', 'role', 'menu', 'assets', 'audit', 'automation', 'scheduler'],
                         help='要测试的 app 列表')
     parser.add_argument('--output', default=os.path.join('..', '..', 'TEST_REPORT.md'),
                         help='报告输出路径')

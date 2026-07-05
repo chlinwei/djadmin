@@ -5,8 +5,8 @@ from .models import PlaybookTemplate, AnsibleExecutionJob, AnsibleExecutionTarge
 
 @admin.register(PlaybookTemplate)
 class PlaybookTemplateAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'code', 'enabled', 'create_time', 'update_time')
-    search_fields = ('name', 'code')
+    list_display = ('id', 'name', 'create_time', 'update_time')
+    search_fields = ('name',)
 
 
 @admin.register(AnsibleExecutionJob)

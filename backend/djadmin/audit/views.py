@@ -34,7 +34,7 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
     serializer_class = WebSSHSessionLogAuditSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['session_id', 'username', 'host__name', 'host__instance_name', 'host__ip']
+    search_fields = ['username', 'host__name', 'host__instance_name', 'host__ip']
     ordering_fields = ['start_time', 'end_time', 'duration_seconds', 'command_count', 'input_bytes']
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -57,14 +57,14 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
         if status == WebSSHSessionLog.Status.CONNECTED:
             queryset = queryset.filter(
                 status=WebSSHSessionLog.Status.CONNECTED,
-                session_id__in=active_session_ids,
+                id__in=active_session_ids,
             )
         elif status == WebSSHSessionLog.Status.CLOSED:
             queryset = queryset.filter(
                 Q(status=WebSSHSessionLog.Status.CLOSED)
                 | (
                     Q(status=WebSSHSessionLog.Status.CONNECTED)
-                    & ~Q(session_id__in=active_session_ids)
+                    & ~Q(id__in=active_session_ids)
                 )
             )
         elif status == WebSSHSessionLog.Status.FAILED:
@@ -73,8 +73,7 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
             queryset = queryset.filter(username__icontains=username)
         if keyword:
             queryset = queryset.filter(
-                Q(session_id__icontains=keyword)
-                | Q(username__icontains=keyword)
+                Q(username__icontains=keyword)
                 | Q(host__name__icontains=keyword)
                 | Q(host__instance_name__icontains=keyword)
                 | Q(host__ip__icontains=keyword)
@@ -135,7 +134,6 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
     def _build_session_log_content(payload):
         lines = [
             'Web SSH Session Log',
-            f"Session ID: {payload.get('session_id') or ''}",
             f"Status: {payload.get('status') or ''}",
             f"Start Time: {payload.get('start_time') or ''}",
             f"End Time: {payload.get('end_time') or ''}",
@@ -144,7 +142,7 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
             f"Is Content Truncated: {bool(payload.get('is_content_truncated'))}",
             '',
             '=== Output ===',
-            payload.get('raw_output_content') or payload.get('output_content') or '',
+            payload.get('output_content') or payload.get('raw_output_content') or '',
             '',
         ]
         return '\n'.join(lines)
@@ -170,7 +168,7 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
     @action(detail=True, methods=['get'], url_path='content')
     def content(self, request, pk=None):
         instance = self.get_object()
-        async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(instance.session_id)
+        async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(instance.id)
         instance.refresh_from_db()
         serializer = WebSSHSessionLogContentSerializer(instance)
         return Response_200(data=serializer.data)
@@ -178,7 +176,7 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
     @action(detail=True, methods=['get'], url_path='download')
     def download(self, request, pk=None):
         instance = self.get_object()
-        async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(instance.session_id)
+        async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(instance.id)
         instance.refresh_from_db()
         serializer = WebSSHSessionLogContentSerializer(instance)
         payload = serializer.data
@@ -194,7 +192,6 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
         queryset = self.filter_queryset(self.get_queryset())
 
         selected_ids_raw = self._parse_list_param(request.query_params, 'ids')
-        selected_session_ids = self._parse_list_param(request.query_params, 'session_ids')
         selected_ids = []
         for value in selected_ids_raw:
             try:
@@ -202,17 +199,15 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
             except (TypeError, ValueError):
                 continue
 
-        if selected_ids or selected_session_ids:
+        if selected_ids:
             selected_filter = Q()
             if selected_ids:
                 selected_filter |= Q(id__in=selected_ids)
-            if selected_session_ids:
-                selected_filter |= Q(session_id__in=selected_session_ids)
             queryset = queryset.filter(selected_filter)
 
         entries = []
         for item in queryset:
-            async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(item.session_id)
+            async_to_sync(WebSSHRuntimeRegistry.flush_session_buffers)(item.id)
             item.refresh_from_db()
             payload = WebSSHSessionLogContentSerializer(item).data
             entries.append((self._build_session_log_filename(item), self._build_session_log_content(payload)))

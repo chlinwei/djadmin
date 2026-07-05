@@ -1,5 +1,6 @@
 from rest_framework.serializers import ModelSerializer
 from datetime import datetime
+import re
 from .models import *
 from rest_framework import serializers
 
@@ -192,6 +193,8 @@ class HostSerializer(ModelSerializer):
         total_size = 0.0
         total_used = 0.0
         for disk in obj.disks.all():
+            if _should_ignore_disk_device(disk.device):
+                continue
             if disk.size_gb is None or disk.used_gb is None:
                 continue
             if disk.size_gb <= 0:
@@ -217,6 +220,7 @@ class HostSerializer(ModelSerializer):
                 else None,
             }
             for disk in obj.disks.all()
+            if not _should_ignore_disk_device(disk.device)
         ]
 
     # 系统信息顶级字段的 getter 方法
@@ -303,6 +307,10 @@ class HostSerializer(ModelSerializer):
         group_id = validated_data.pop('group_id', serializers.empty)
         credential_id = validated_data.pop('credential_id', serializers.empty)
 
+        relation = HostCredential.objects.filter(host=instance, is_default=True).select_related('credential').first()
+        previous_credential_id = relation.credential_id if relation else None
+        credential_changed = False
+
         if group_id is not serializers.empty:
             if group_id in (0, '0', '', None):
                 instance.group_id = None
@@ -310,9 +318,20 @@ class HostSerializer(ModelSerializer):
                 instance.group_id = group_id
 
         if credential_id is not serializers.empty:
+            normalized_credential_id = None if credential_id in (0, '0', '', None) else int(credential_id)
+            credential_changed = normalized_credential_id != previous_credential_id
             HostCredential.objects.filter(host=instance).delete()
             if credential_id not in (0, '0', '', None):
                 HostCredential.objects.create(host=instance, credential_id=credential_id, is_default=True)
+
+        if credential_changed:
+            # 凭证变更后清理旧采集结论，避免继续显示历史“无法连接”误导用户。
+            instance.collect_status = Host.CollectStatus.UNKNOWN
+            instance.collect_message = ''
+            instance.collect_time = None
+            instance.auth_failed_count = 0
+            instance.last_auth_failed_time = None
+            instance.auth_lock_until = None
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -330,7 +349,6 @@ class WebSSHSessionLogSerializer(ModelSerializer):
         model = WebSSHSessionLog
         fields = [
             'id',
-            'session_id',
             'host',
             'host_name',
             'host_ip',
@@ -359,3 +377,5 @@ class WebSSHSessionLogSerializer(ModelSerializer):
         return obj.host.ip
 
 
+def _should_ignore_disk_device(device):
+    return bool(re.match(r'^/dev/sr\d+$', (device or '').strip()))

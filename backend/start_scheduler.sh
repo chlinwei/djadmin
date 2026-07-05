@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start APScheduler in the background
+# Start Celery worker + beat in one command
 
 cd "$(dirname "$0")"
 
@@ -10,8 +10,8 @@ fi
 
 cd djadmin
 
-echo "Starting APScheduler..."
-echo "This will run in the background collecting host information every 15 minutes"
+echo "Starting Celery Worker + Beat..."
+echo "No need to open two terminals."
 echo ""
 echo "To stop the scheduler, press Ctrl+C"
 echo ""

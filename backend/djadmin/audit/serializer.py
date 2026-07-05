@@ -18,7 +18,6 @@ class WebSSHSessionLogAuditSerializer(serializers.ModelSerializer):
         model = WebSSHSessionLog
         fields = [
             'id',
-            'session_id',
             'host',
             'host_name',
             'host_ip',
@@ -51,7 +50,7 @@ class WebSSHSessionLogAuditSerializer(serializers.ModelSerializer):
             return obj.status
         return (
             WebSSHSessionLog.Status.CONNECTED
-            if WebSSHRuntimeRegistry.is_active(obj.session_id)
+            if WebSSHRuntimeRegistry.is_active(obj.id)
             else WebSSHSessionLog.Status.CLOSED
         )
 
@@ -87,7 +86,6 @@ class WebSSHSessionLogContentSerializer(serializers.ModelSerializer):
         model = WebSSHSessionLog
         fields = [
             'id',
-            'session_id',
             'status',
             'start_time',
             'end_time',

@@ -1,27 +1,26 @@
-import sys
 import io
 import traceback
-from django.db import connection
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from django.conf import settings
+
 from django.utils import timezone
-from assets.tasks import collect_all_hosts_info
+
+from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs
+from automation.tasks import cleanup_ansible_execution_logs
+from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
 from menu.models import SysMenu
 from scheduler.models import ScheduledTask, ScheduledTaskLog
 from sys_config.models import SysConfig
 
-scheduler = BackgroundScheduler(timezone=settings.TIME_ZONE)
-
-# Log retention policy. Loaded from sys_config.
 LOG_RETENTION_DAYS = 30
 LOG_MAX_ROWS_PER_TASK = 2000
 LOG_RETENTION_DAYS_KEY = 'sys.scheduler.log_retention_days'
 LOG_MAX_ROWS_PER_TASK_KEY = 'sys.scheduler.log_max_rows_per_task'
+SCHEDULER_ENABLED_KEY = 'sys.scheduler.enabled'
+AUTOMATION_LOG_RETENTION_DAYS_KEY = 'sys.automation.logs.retention_days'
+AUDIT_LOGIN_LOG_RETENTION_DAYS_KEY = 'sys.audit.login_logs.retention_days'
+AUDIT_OPERATION_LOG_RETENTION_DAYS_KEY = 'sys.audit.operation_logs.retention_days'
 
 
 def ensure_scheduler_log_configs():
-    """Ensure scheduler log retention configs exist in sys_config."""
     defaults = [
         {
             'key': LOG_RETENTION_DAYS_KEY,
@@ -41,6 +40,42 @@ def ensure_scheduler_log_configs():
             'description': '每个任务最多保留 N 条日志，0 表示不按条数清理',
             'is_readonly': False,
         },
+        {
+            'key': SCHEDULER_ENABLED_KEY,
+            'value': 'true',
+            'default_value': 'true',
+            'value_type': 'bool',
+            'name': '调度总开关',
+            'description': 'true 启用调度，false 停止调度分发',
+            'is_readonly': False,
+        },
+        {
+            'key': AUTOMATION_LOG_RETENTION_DAYS_KEY,
+            'value': '30',
+            'default_value': '30',
+            'value_type': 'int',
+            'name': '自动化执行日志保留天数',
+            'description': '自动化作业与主机执行明细在数据库中的保留天数',
+            'is_readonly': False,
+        },
+        {
+            'key': AUDIT_LOGIN_LOG_RETENTION_DAYS_KEY,
+            'value': '90',
+            'default_value': '90',
+            'value_type': 'int',
+            'name': '登录日志保留天数',
+            'description': '登录审计日志在数据库中的保留天数',
+            'is_readonly': False,
+        },
+        {
+            'key': AUDIT_OPERATION_LOG_RETENTION_DAYS_KEY,
+            'value': '90',
+            'default_value': '90',
+            'value_type': 'int',
+            'name': '操作日志保留天数',
+            'description': '操作审计日志在数据库中的保留天数',
+            'is_readonly': False,
+        },
     ]
 
     for item in defaults:
@@ -58,28 +93,50 @@ def _get_int_config_value(key, default_value):
         return default_value
 
 
-def refresh_log_retention_config():
-    """Refresh retention settings from sys_config."""
-    global LOG_RETENTION_DAYS, LOG_MAX_ROWS_PER_TASK
+def _parse_bool(value):
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
+
+def refresh_log_retention_config():
+    global LOG_RETENTION_DAYS, LOG_MAX_ROWS_PER_TASK
     LOG_RETENTION_DAYS = max(0, _get_int_config_value(LOG_RETENTION_DAYS_KEY, 30))
     LOG_MAX_ROWS_PER_TASK = max(0, _get_int_config_value(LOG_MAX_ROWS_PER_TASK_KEY, 2000))
 
 
+def is_scheduler_enabled():
+    ensure_scheduler_log_configs()
+    config = SysConfig.objects.filter(key=SCHEDULER_ENABLED_KEY).first()
+    if not config:
+        return True
+    return _parse_bool(config.value)
+
+
+def set_scheduler_enabled(enabled):
+    ensure_scheduler_log_configs()
+    value = 'true' if enabled else 'false'
+    SysConfig.objects.update_or_create(
+        key=SCHEDULER_ENABLED_KEY,
+        defaults={
+            'value': value,
+            'default_value': 'true',
+            'value_type': 'bool',
+            'name': '调度总开关',
+            'description': 'true 启用调度，false 停止调度分发',
+            'is_readonly': False,
+        },
+    )
+
+
 def cleanup_task_logs(task):
-    """Cleanup old scheduler logs to prevent unbounded table growth."""
     if not task:
         return
 
-    # Pick up latest config values so runtime changes in sys_config take effect.
     refresh_log_retention_config()
 
-    # 1) Remove logs older than retention days.
     if LOG_RETENTION_DAYS > 0:
         cutoff = timezone.now() - timezone.timedelta(days=LOG_RETENTION_DAYS)
         ScheduledTaskLog.objects.filter(task=task, run_time__lt=cutoff).delete()
 
-    # 2) Keep only latest N logs per task.
     if LOG_MAX_ROWS_PER_TASK > 0:
         keep_ids = list(
             ScheduledTaskLog.objects.filter(task=task)
@@ -93,6 +150,10 @@ def cleanup_task_logs(task):
 def get_task_menu(code):
     mapping = {
         'collect_all_hosts_info': '/assets/hosts/index',
+        'cleanup_webssh_session_logs': '/audit/webssh',
+        'cleanup_ansible_execution_logs': '/sys/automation/logs',
+        'cleanup_login_audit_logs': '/audit/login',
+        'cleanup_operation_audit_logs': '/audit/operation-log',
     }
     menu_path = mapping.get(code)
     if not menu_path:
@@ -101,39 +162,92 @@ def get_task_menu(code):
 
 
 def ensure_default_tasks():
-    defaults = {
-        'name': '主机信息采集',
-        'description': '定时采集所有主机信息',
-        'enabled': True,
-        'interval_minutes': 15,
-        'update_time': timezone.now().date(),
-    }
-    menu = get_task_menu('collect_all_hosts_info')
-    if menu:
-        defaults['menu'] = menu
-    task, created = ScheduledTask.objects.get_or_create(
-        code='collect_all_hosts_info',
-        defaults=defaults,
-    )
-    if not created and task.menu is None and menu is not None:
-        task.menu = menu  # type: ignore[assignment]
-        task.save(update_fields=['menu'])
+    ensure_scheduler_log_configs()
+    task_defs = [
+        {
+            'code': 'collect_all_hosts_info',
+            'name': '主机信息采集',
+            'description': '定时采集所有主机信息',
+            'enabled': True,
+            'interval_minutes': 15,
+        },
+        {
+            'code': 'cleanup_webssh_session_logs',
+            'name': 'WebSSH 会话日志清理',
+            'description': '按保留天数清理过期 WebSSH 会话审计日志',
+            'enabled': True,
+            'interval_minutes': 24 * 60,
+        },
+        {
+            'code': 'cleanup_ansible_execution_logs',
+            'name': '自动化执行日志清理',
+            'description': '按保留天数清理过期自动化作业日志与目标明细',
+            'enabled': True,
+            'interval_minutes': 24 * 60,
+        },
+        {
+            'code': 'cleanup_login_audit_logs',
+            'name': '登录日志清理',
+            'description': '按保留天数清理登录审计日志',
+            'enabled': True,
+            'interval_minutes': 24 * 60,
+        },
+        {
+            'code': 'cleanup_operation_audit_logs',
+            'name': '操作日志清理',
+            'description': '按保留天数清理操作审计日志',
+            'enabled': True,
+            'interval_minutes': 24 * 60,
+        },
+    ]
+
+    first_task = None
+    for item in task_defs:
+        defaults = {
+            'name': item['name'],
+            'description': item['description'],
+            'enabled': item['enabled'],
+            'interval_minutes': item['interval_minutes'],
+            'update_time': timezone.now().date(),
+        }
+        menu = get_task_menu(item['code'])
+        if menu:
+            defaults['menu'] = menu
+
+        task, created = ScheduledTask.objects.get_or_create(
+            code=item['code'],
+            defaults=defaults,
+        )
+
+        if not created and task.menu is None and menu is not None:
+            task.menu = menu  # type: ignore[assignment]
+            task.save(update_fields=['menu'])
+
+        if task.enabled and task.interval_minutes and task.next_run_time is None:
+            calculate_next_run_time(task)
+
+        if first_task is None:
+            first_task = task
+
+    # Remove deprecated combined audit cleanup task to avoid confusion in task center.
+    ScheduledTask.objects.filter(code='cleanup_audit_logs').delete()
+
+    return first_task
 
 
 def calculate_next_run_time(task):
-    """Calculate and update the next run time for a task"""
     if not task.enabled or not task.interval_minutes:
+        if task.next_run_time is not None:
+            task.next_run_time = None
+            task.save(update_fields=['next_run_time'])
         return None
 
     now = timezone.now()
-    # Calculate next run time based on last run time
     if task.last_run_time:
         next_time = task.last_run_time + timezone.timedelta(minutes=task.interval_minutes)
-        # If calculated time is already in the past, advance to future
         if next_time <= now:
             next_time = now + timezone.timedelta(minutes=task.interval_minutes)
     else:
-        # If never run, schedule for now + interval
         next_time = now + timezone.timedelta(minutes=task.interval_minutes)
 
     task.next_run_time = next_time
@@ -141,228 +255,76 @@ def calculate_next_run_time(task):
     return next_time
 
 
-def sync_next_run_time_from_scheduler(task_code):
-    """Sync next_run_time from APScheduler's actual next fire time back to DB."""
-    if not scheduler.running:
-        return
-    job_id = f'task_{task_code}'
-    job = scheduler.get_job(job_id)
-    if not job or job.next_run_time is None:
-        return
-    try:
-        task = ScheduledTask.objects.get(code=task_code)
-        task.next_run_time = job.next_run_time
-        task.save(update_fields=['next_run_time'])
-    except ScheduledTask.DoesNotExist:
-        pass
+def resolve_task_callable(task_code):
+    if task_code == 'collect_all_hosts_info':
+        return collect_all_hosts_info
+    if task_code == 'cleanup_webssh_session_logs':
+        return cleanup_webssh_session_logs
+    if task_code == 'cleanup_ansible_execution_logs':
+        return cleanup_ansible_execution_logs
+    if task_code == 'cleanup_login_audit_logs':
+        return cleanup_login_audit_logs
+    if task_code == 'cleanup_operation_audit_logs':
+        return cleanup_operation_audit_logs
+    return None
 
 
-def re_register_task(task_code):
-    """Re-register a task in APScheduler with updated interval"""
-    try:
-        task = ScheduledTask.objects.get(code=task_code)
-        if not task.enabled or not task.interval_minutes:
-            if task.next_run_time is not None:
-                task.next_run_time = None
-                task.save(update_fields=['next_run_time'])
-            # Remove job if task is disabled or has no interval
-            try:
-                job_id = f'task_{task_code}'
-                if scheduler.running and scheduler.get_job(job_id):
-                    scheduler.remove_job(job_id)
-                    print(f"Removed job for task '{task.name}'")
-            except Exception:
-                pass
-            return False
-        
-        # Recalculate next run time
-        calculate_next_run_time(task)
-        
-        # Remove old job if exists
-        job_id = f'task_{task_code}'
-        try:
-            if scheduler.running and scheduler.get_job(job_id):
-                scheduler.remove_job(job_id)
-        except Exception:
-            pass
-        
-        # Register new job with updated interval
-        if scheduler.running:
-            if task_code == 'collect_all_hosts_info':
-                scheduler.add_job(
-                    run_scheduled_task,
-                    trigger=IntervalTrigger(minutes=task.interval_minutes),
-                    id=job_id,
-                    args=[task_code, collect_all_hosts_info],
-                    replace_existing=True,
-                )
-                print(f"Re-registered job for task '{task.name}' with interval {task.interval_minutes} minutes")
-                # Sync actual next fire time from APScheduler back to DB
-                sync_next_run_time_from_scheduler(task_code)
-                return True
-    except ScheduledTask.DoesNotExist:
-        print(f"Task '{task_code}' not found")
-        return False
-    except Exception as e:
-        print(f"Error re-registering task: {e}")
-        return False
-
-
-def run_scheduled_task(task_code, func, *args, **kwargs):
-    """Execute a scheduled task with proper database connection handling"""
-    # Close old database connections in thread
-    from django.db import close_old_connections
-    close_old_connections()
-    
+def run_scheduled_task(task_code):
     task = ScheduledTask.objects.filter(code=task_code).first()
+    if not task:
+        raise ValueError(f"Task '{task_code}' not found")
+    if task.is_running:
+        return False
+
+    func = resolve_task_callable(task_code)
+    if func is None:
+        raise ValueError(f'Unknown task code: {task_code}')
+
     start_time = timezone.now()
     status = '成功'
     message = '执行成功'
     output = ''
-    
-    # Set task as running
-    if task:
-        task.is_running = True
-        task.save(update_fields=['is_running'])
-    
-    # Capture stdout and stderr
-    old_stdout = sys.stdout
-    old_stderr = sys.stderr
-    sys.stdout = io.StringIO()
-    sys.stderr = io.StringIO()
-    
+    old_stdout = io.StringIO()
+    old_stderr = io.StringIO()
+
+    task.is_running = True
+    task.save(update_fields=['is_running'])
+
     try:
-        result = func(*args, **kwargs)
-        # Get captured output
-        output = sys.stdout.getvalue()
-        if sys.stderr.getvalue():
-            output += '\n[STDERR]\n' + sys.stderr.getvalue()
-        return result
+        from contextlib import redirect_stdout, redirect_stderr
+        with redirect_stdout(old_stdout), redirect_stderr(old_stderr):
+            func()
     except Exception as exc:
         status = '失败'
         message = str(exc) or '执行失败'
-        output = sys.stdout.getvalue()
-        if sys.stderr.getvalue():
-            output += '\n[STDERR]\n' + sys.stderr.getvalue()
+        output = old_stdout.getvalue()
+        if old_stderr.getvalue():
+            output += '\n[STDERR]\n' + old_stderr.getvalue()
         output += '\n[EXCEPTION]\n' + traceback.format_exc()
-        return False
     finally:
-        # Restore stdout and stderr
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-        
-        if task:
-            try:
-                now = timezone.now()
-                
-                # Refresh task from database to avoid stale data
-                task.refresh_from_db()
-                
-                # Update task execution info
-                task.last_run_time = now
-                task.last_status = status
-                task.last_message = message
-                task.update_time = now.date()
-                task.save(update_fields=['last_run_time', 'last_status', 'last_message', 'update_time'])
-                
-                # Calculate and update next run time
-                calculate_next_run_time(task)
-                
-                # Ensure is_running is reset to False AFTER all other updates
-                task.is_running = False
-                task.save(update_fields=['is_running'])
-                
-                # Create task log
-                ScheduledTaskLog.objects.create(
-                    task=task,
-                    run_time=now,
-                    status=status,
-                    message=message,
-                    duration_seconds=(now - start_time).total_seconds(),
-                    output=output,
-                )
+        if not output:
+            output = old_stdout.getvalue()
+            if old_stderr.getvalue():
+                output += '\n[STDERR]\n' + old_stderr.getvalue()
 
-                cleanup_task_logs(task)
-                
-                # Explicitly commit transaction
-                connection.commit()
-                
-            except Exception as e:
-                # If error occurs in finally block, still try to reset is_running
-                print(f"Error updating task status: {e}")
-                try:
-                    task.is_running = False
-                    task.save(update_fields=['is_running'])
-                except Exception:
-                    pass
+        now = timezone.now()
+        task.refresh_from_db()
+        task.last_run_time = now
+        task.last_status = status
+        task.last_message = message
+        task.update_time = now.date()
+        task.is_running = False
+        task.save(update_fields=['last_run_time', 'last_status', 'last_message', 'update_time', 'is_running'])
+        calculate_next_run_time(task)
 
+        ScheduledTaskLog.objects.create(
+            task=task,
+            run_time=now,
+            status=status,
+            message=message,
+            duration_seconds=(now - start_time).total_seconds(),
+            output=output,
+        )
+        cleanup_task_logs(task)
 
-def start():
-    # STATE_STOPPED = 0, STATE_RUNNING = 1
-    if scheduler.running:
-        print(f"Scheduler is already running")
-        return scheduler
-
-    ensure_scheduler_log_configs()
-    refresh_log_retention_config()
-
-    ensure_default_tasks()
-
-    # Reset stale "is_running" flags left over from a previous process that was
-    # killed/restarted mid-execution. A freshly started process cannot have any
-    # task actually running, so any is_running=True here is a zombie state and
-    # would otherwise block run_now forever ("Task is already running").
-    stale = ScheduledTask.objects.filter(is_running=True)
-    stale_count = stale.count()
-    if stale_count:
-        stale.update(is_running=False)
-        print(f"Reset {stale_count} stale is_running flag(s) on startup")
-
-    # Recalculate next_run_time on every startup to avoid stale values after downtime/restart.
-    for task in ScheduledTask.objects.all():
-        if task.enabled and task.interval_minutes:
-            calculate_next_run_time(task)
-        elif task.next_run_time is not None:
-            task.next_run_time = None
-            task.save(update_fields=['next_run_time'])
-
-    # Remove existing jobs
-    try:
-        for job in scheduler.get_jobs():
-            scheduler.remove_job(job.id)
-    except Exception:
-        pass
-
-    # Add jobs for all enabled tasks with their configured intervals
-    tasks = ScheduledTask.objects.filter(enabled=True)
-    for task in tasks:
-        interval_minutes = task.interval_minutes or 15  # Default to 15 if not set
-        job_id = f'task_{task.code}'
-        
-        if task.code == 'collect_all_hosts_info':
-            print(f"Adding job for task '{task.name}' with interval {interval_minutes} minutes")
-            scheduler.add_job(
-                run_scheduled_task,
-                trigger=IntervalTrigger(minutes=interval_minutes),
-                id=job_id,
-                args=[task.code, collect_all_hosts_info],
-                replace_existing=True,
-            )
-    
-    print(f"Starting scheduler...")
-    scheduler.start()
-    print(f"Scheduler started successfully. Jobs: {len(scheduler.get_jobs())}")
-
-    # Sync actual next fire times from APScheduler back to DB
-    for job in scheduler.get_jobs():
-        task_code = job.id.replace('task_', '', 1)
-        sync_next_run_time_from_scheduler(task_code)
-
-    return scheduler
-
-
-def shutdown():
-    if scheduler.running:
-        print(f"Shutting down scheduler...")
-        scheduler.shutdown()
-        print(f"Scheduler shut down successfully")
+    return status == '成功'

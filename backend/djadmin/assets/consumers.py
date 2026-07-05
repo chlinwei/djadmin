@@ -3,19 +3,26 @@ import io
 import json
 import socket
 import time
-import uuid
+import warnings
 from datetime import timedelta
 from typing import Any, Callable, cast
 from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from cryptography.utils import CryptographyDeprecationWarning
 from django.utils import timezone
 from rest_framework_jwt.settings import api_settings
 
 from .models import Host, HostCredential, WebSSHSessionLog
 from .webssh_runtime import WebSSHRuntimeRegistry
 from sys_config.models import SysConfig
+
+warnings.filterwarnings(
+    'ignore',
+    message='.*TripleDES has been moved to cryptography\.hazmat\.decrepit\.ciphers\.algorithms\.TripleDES.*',
+    category=CryptographyDeprecationWarning,
+)
 
 try:
     import paramiko
@@ -72,7 +79,8 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
-        self.audit_retention_days, self.audit_max_content_bytes = await self._load_webssh_audit_configs()
+        self.audit_retention_days, self.audit_max_content_bytes, idle_timeout_seconds = await self._load_webssh_audit_configs()
+        self.heartbeat_timeout_seconds = idle_timeout_seconds
         await self._cleanup_expired_session_logs(self.audit_retention_days)
         self.audit_session_pk, self.audit_started_at = await self._create_session_log()
 
@@ -88,12 +96,12 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             return
 
         self.connected = True
-        WebSSHRuntimeRegistry.mark_active(self.audit_session_id, self)
+        WebSSHRuntimeRegistry.mark_active(self.audit_session_pk, self, self.host_id)
         await self._send_event('connected', {
             'host_id': self.host_id,
             'host_name': host_display_name,
             'ip': host.ip,
-            'session_id': self.audit_session_id,
+            'log_id': self.audit_session_pk,
         })
 
         # Trigger initial shell prompt for servers that wait for first input.
@@ -101,13 +109,13 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             await asyncio.to_thread(self.ssh_channel.send, '\n')
 
         self.reader_task = asyncio.create_task(self._reader_loop())
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_watchdog())
 
     def _init_audit_runtime_state(self):
         self.audit_user_id = None
         self.audit_username = ''
         self.audit_client_ip = ''
         self.audit_user_agent = ''
-        self.audit_session_id = str(uuid.uuid4())
         self.audit_session_pk = None
         self.audit_started_at = None
         self.audit_input_bytes = 0
@@ -126,6 +134,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.audit_last_sync_monotonic = time.monotonic()
         self.audit_flush_lock = asyncio.Lock()
         self.audit_close_notified = False
+        self.heartbeat_timeout_seconds = 30 * 60
+        self.heartbeat_check_interval_seconds = 10
+        self.last_client_activity_monotonic = time.monotonic()
+        self.heartbeat_task = None
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
@@ -139,9 +151,13 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         event_type = payload.get('type')
         if event_type == 'input':
+            self.last_client_activity_monotonic = time.monotonic()
             await self._handle_input_event(payload)
         elif event_type == 'resize':
+            self.last_client_activity_monotonic = time.monotonic()
             await self._handle_resize_event(payload)
+        elif event_type == 'transfer_activity':
+            self.last_client_activity_monotonic = time.monotonic()
         elif event_type == 'ping':
             await self._send_event('pong', {})
         elif event_type == 'close':
@@ -176,7 +192,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         self.connected = False
-        WebSSHRuntimeRegistry.mark_inactive(self.audit_session_id)
+        WebSSHRuntimeRegistry.mark_inactive(self.audit_session_pk)
         await self._teardown_ssh_resources()
 
         await self._flush_content_buffer(force=True)
@@ -185,6 +201,14 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             await self._close_session_log(close_code=close_code, status=WebSSHSessionLog.Status.CLOSED)
 
     async def _teardown_ssh_resources(self):
+        if self.heartbeat_task is not None:
+            self.heartbeat_task.cancel()
+            try:
+                await self.heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self.heartbeat_task = None
+
         if self.reader_task is not None:
             self.reader_task.cancel()
             try:
@@ -225,6 +249,21 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         if self.connected:
             await self._close_due_to_dead_ssh('SSH 会话已断开')
+
+    async def _heartbeat_watchdog(self):
+        while self.connected:
+            await asyncio.sleep(self.heartbeat_check_interval_seconds)
+            if not self.connected:
+                return
+
+            idle_seconds = time.monotonic() - self.last_client_activity_monotonic
+            if idle_seconds <= self.heartbeat_timeout_seconds:
+                continue
+
+            await self._send_event('closed', {'message': '连接超时，已自动断开'})
+            self.audit_close_notified = True
+            await self.close(code=4000)
+            return
 
     async def _open_ssh(self, host, credential):
         if paramiko is None:
@@ -439,7 +478,6 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_session_log(self):
         log = WebSSHSessionLog.objects.create(
-            session_id=self.audit_session_id,
             host_id=self.host_id,
             user_id=self.audit_user_id,
             username=self.audit_username,
@@ -517,6 +555,17 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                 'is_readonly': False,
             },
         )
+        idle_timeout_cfg, _ = SysConfig.objects.get_or_create(
+            key='sys.webssh.idle_timeout_minutes',
+            defaults={
+                'value': '30',
+                'default_value': '30',
+                'value_type': 'int',
+                'name': 'WebSSH 空闲断开时长(分钟)',
+                'description': '客户端无终端输入/窗口调整达到该时长后自动断开',
+                'is_readonly': False,
+            },
+        )
 
         try:
             retention_days = max(1, int(str(retention_cfg.value).strip()))
@@ -528,7 +577,12 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         except (ValueError, TypeError):
             max_mb = 20
 
-        return retention_days, max_mb * 1024 * 1024
+        try:
+            idle_timeout_minutes = max(1, int(str(idle_timeout_cfg.value).strip()))
+        except (ValueError, TypeError):
+            idle_timeout_minutes = 30
+
+        return retention_days, max_mb * 1024 * 1024, idle_timeout_minutes * 60
 
     @database_sync_to_async
     def _cleanup_expired_session_logs(self, retention_days):

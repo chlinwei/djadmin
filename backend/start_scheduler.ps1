@@ -1,4 +1,4 @@
-# Start APScheduler in the background for Windows
+# Start Celery worker + beat for Windows
 
 # Set the working directory
 Set-Location $PSScriptRoot
@@ -14,10 +14,10 @@ if (-not (Test-Path $projectDir)) {
 Set-Location $projectDir
 
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "Starting APScheduler" -ForegroundColor Green
+Write-Host "Starting Celery Worker + Beat" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "This will run in the background collecting host information every 15 minutes" -ForegroundColor Yellow
+Write-Host "No need to open two terminals." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "To stop the scheduler, press Ctrl+C" -ForegroundColor Yellow
 Write-Host ""

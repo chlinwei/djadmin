@@ -31,6 +31,7 @@
                         :tree-data="filteredGroupTreeData"
                         :expanded-keys="groupTreeExpandedKeys"
                         :selected-keys="selectedGroupKeys"
+                        @expand="onGroupExpand"
                         @select="onGroupSelect"
                         @rightClick="onGroupRightClick"
                     />
@@ -72,7 +73,7 @@
 
         <a-col :span="18">
             <a-row class="tools" :gutter="16">
-                <a-col :span="10">
+                <a-col :span="7">
                     <a-input-search
                         class="tool-item"
                         v-model:value="searchText"
@@ -80,6 +81,16 @@
                         enter-button
                         size="large"
                         @search="onSearch"
+                    />
+                </a-col>
+                <a-col :span="5">
+                    <a-input-search
+                        class="tool-item"
+                        v-model:value="instanceNameFilter"
+                        placeholder="按实例名过滤"
+                        enter-button
+                        size="large"
+                        @search="onInstanceNameSearch"
                     />
                 </a-col>
                 <a-col :span="4">
@@ -106,8 +117,14 @@
                         <span>&nbsp;刷新</span>
                     </a-button>
                 </a-col>
+                <a-col class="tool-item" v-permission="'assets:hosts:view'">
+                    <a-button size="large" @click="resetAllFilters" :disabled="loading">
+                        <FontAwesomeIcon :icon="['fas', 'rotate-left']" />
+                        <span>&nbsp;重置</span>
+                    </a-button>
+                </a-col>
                 <a-col class="BatchCollectBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:update'">
-                    <a-button size="large" type="primary" :loading="state.collectLoading" @click="confirmBatchCollect">
+                    <a-button size="large" type="primary" :disabled="selectedHostsNoCredentialCount > 0" :loading="state.collectLoading" @click="confirmBatchCollect">
                         <FontAwesomeIcon :icon="['fas', 'download']" />批量采集
                     </a-button>
                 </a-col>
@@ -168,9 +185,21 @@
                             </span>
                         </template>
                         <template v-else-if="column.key === 'collect_status'">
-                            <a-tooltip v-if="record.collect_status === 'failed'">
+                            <a-tooltip v-if="!hasHostCredential(record)">
+                                <template #title>
+                                    <div>该主机未配置 SSH 凭证，请先绑定凭证后再执行采集或 WebSSH 登录</div>
+                                </template>
+                                <a-tag color="warning" style="cursor: default;">未配置凭证</a-tag>
+                            </a-tooltip>
+                            <a-tooltip v-else-if="record.collect_status === 'failed'">
                                 <template #title>
                                     <div>{{ record.collect_message || '无法连接到该主机' }}</div>
+                                    <div v-if="Number(record.auth_failed_count || 0) > 0" style="margin-top: 4px; opacity: 0.9;">
+                                        连续认证失败：{{ Number(record.auth_failed_count || 0) }} 次
+                                    </div>
+                                    <div v-if="record.auth_lock_until" style="margin-top: 4px; opacity: 0.85;">
+                                        保护截止：{{ formatDateTime(record.auth_lock_until) }}
+                                    </div>
                                     <div v-if="record.collect_time" style="margin-top: 4px; opacity: 0.85;">
                                         失败时间：{{ formatDateTime(record.collect_time) }}
                                     </div>
@@ -192,6 +221,12 @@
                         <template v-else-if="column.key === 'disk_used_percent'">
                             <span>{{ formatPercent(record.hardware?.disk_used_percent ?? record.disk_used_percent) }}</span>
                         </template>
+                        <template v-else-if="column.key === 'auth_failed_count'">
+                            <a-tag v-if="Number(record.auth_failed_count || 0) > 0" color="error">
+                                {{ Number(record.auth_failed_count || 0) }} 次
+                            </a-tag>
+                            <span v-else>-</span>
+                        </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
                                 <a-row :gutter="6" class="action_row" :wrap="false">
@@ -201,7 +236,7 @@
                                         </a-button>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:update'">
-                                        <a-button @click="handleCollect(record.id)" :loading="rowLoadingStates[record.id]" type="default">
+                                        <a-button :disabled="!hasHostCredential(record)" @click="handleCollect(record)" :loading="rowLoadingStates[record.id]" type="default">
                                             <FontAwesomeIcon :icon="['fas', 'download']" />
                                         </a-button>
                                     </a-col>
@@ -211,7 +246,7 @@
                                         </a-button>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-button @click="openWebSsh(record)">
+                                        <a-button :disabled="!hasHostCredential(record)" @click="openWebSsh(record)">
                                             <FontAwesomeIcon :icon="['fas', 'terminal']" />
                                         </a-button>
                                     </a-col>
@@ -277,6 +312,12 @@
                 <a-descriptions-item label="内存">{{ formatSize(detailHost.hardware?.memory_gb) }}</a-descriptions-item>
                 <a-descriptions-item label="磁盘总量">{{ formatSize(detailHost.hardware?.disk_total_gb) }}</a-descriptions-item>
                 <a-descriptions-item label="磁盘使用率">{{ formatPercent(detailHost.hardware?.disk_used_percent ?? detailHost.disk_used_percent) }}</a-descriptions-item>
+                <a-descriptions-item label="连续认证失败次数">
+                    {{ Number(detailHost.auth_failed_count || 0) }} 次
+                </a-descriptions-item>
+                <a-descriptions-item label="认证保护截止时间">
+                    {{ formatDateTime(detailHost.auth_lock_until) }}
+                </a-descriptions-item>
                 <a-descriptions-item label="备注" :span="2">{{ detailHost.remark || '-' }}</a-descriptions-item>
             </a-descriptions>
 
@@ -381,9 +422,9 @@ defineOptions({
     name: 'host'
 })
 
-import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getToken } from '@/api/user/index.js'
 import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
@@ -401,6 +442,9 @@ import '@xterm/xterm/css/xterm.css'
 const searchText = ref('')
 const groupSearchText = ref('')
 const activeSearchText = ref('')
+const instanceNameFilter = ref('')
+const activeInstanceNameFilter = ref('')
+const activeHostIdFilter = ref(null)
 const collectStatusFilter = ref(undefined)
 const selectedGroupId = ref(0)
 const selectedGroupName = ref('全部分组')
@@ -425,6 +469,7 @@ const webSshMessage = ref('')
 const webSshMessageType = ref('info')
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 let stopListenTimezone = null
+const syncingRouteFilters = ref(false)
 
 let webSshSocket = null
 let webSshTerminal = null
@@ -476,16 +521,26 @@ const columns = [
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
     { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
     { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
+    { title: '连续认证失败', dataIndex: 'auth_failed_count', key: 'auth_failed_count', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '操作', key: 'action', fixed: 'right', width: 280 },
 ]
 
 const collectStatusOptions = [
     { label: '全部状态', value: undefined },
+    { label: '未配置凭证', value: 'no_credential' },
     { label: '无法连接', value: 'failed' },
     { label: '正常', value: 'success' },
     { label: '未采集', value: 'unknown' },
 ]
+
+const selectedHostsNoCredentialCount = computed(() => {
+    const selectedIdSet = new Set((state.selectedRowKeys || []).map((id) => Number(id)))
+    return (datasources.value || []).filter((item) => {
+        const hostId = Number(item?.id)
+        return selectedIdSet.has(hostId) && !hasHostCredential(item)
+    }).length
+})
 
 const diskColumns = [
     { title: '设备', dataIndex: 'device', key: 'device' },
@@ -564,6 +619,10 @@ const groupTreeExpandedKeys = computed(() => {
     return expandedGroupKeys.value
 })
 
+const onGroupExpand = (expandedKeys) => {
+    expandedGroupKeys.value = Array.isArray(expandedKeys) ? expandedKeys : []
+}
+
 const filteredGroupTreeData = computed(() => {
     return filterGroupTree(groupTreeData.value, groupSearchText.value)
 })
@@ -624,7 +683,15 @@ const loadHostList = async () => {
             size: pagination.pageSize,
             search: activeSearchText.value,
         }
-        if (collectStatusFilter.value) {
+        if (activeInstanceNameFilter.value) {
+            params.instance_name = activeInstanceNameFilter.value
+        }
+        if (activeHostIdFilter.value) {
+            params.host_id = activeHostIdFilter.value
+        }
+        if (collectStatusFilter.value === 'no_credential') {
+            params.has_default_credential = 'false'
+        } else if (collectStatusFilter.value) {
             params.collect_status = collectStatusFilter.value
         }
         if (selectedGroupId.value && selectedGroupId.value !== 0) {
@@ -646,7 +713,7 @@ const loadHostList = async () => {
 }
 
 const refreshList = async () => {
-    await loadHostList()
+    await Promise.all([loadHostList(), loadCredentialOptions()])
 }
 
 const refreshGroups = async () => {
@@ -659,6 +726,7 @@ const selectedGroupKeys = computed(() => [selectedGroupId.value])
 const selectAllGroups = async () => {
     selectedGroupId.value = 0
     selectedGroupName.value = '全部分组'
+    activeHostIdFilter.value = null
     pagination.current = 1
     await refreshList()
 }
@@ -735,11 +803,21 @@ const onGroupSearch = () => {}
 const onGroupSearchChange = () => {}
 
 const onGroupSelect = async (selectedKeys, info) => {
+    if (syncingRouteFilters.value) {
+        return
+    }
+    const isUserTriggered = !!info?.event
+    if (!isUserTriggered) {
+        return
+    }
     const key = selectedKeys && selectedKeys.length ? selectedKeys[0] : 0
     selectedGroupId.value = key || 0
     selectedGroupName.value = key === 0 ? '全部分组' : (info?.node?.dataRef?.name || '当前分组')
     searchText.value = ''
     activeSearchText.value = ''
+    instanceNameFilter.value = ''
+    activeInstanceNameFilter.value = ''
+    activeHostIdFilter.value = null
     pagination.current = 1
     await refreshList()
 }
@@ -754,7 +832,8 @@ const resetForm = () => {
     form.remark = ''
 }
 
-const handleAdd = () => {
+const handleAdd = async () => {
+    await loadCredentialOptions()
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
@@ -777,7 +856,8 @@ const handleApiError = (err) => {
     message.error('操作失败，请稍后重试')
 }
 
-const onSaveOrCreate = (id) => {
+const onSaveOrCreate = async (id) => {
+    await loadCredentialOptions()
     dialogTitle.value = '编辑主机'
     dialogVisible.value = true
     dialogLoading.value = true
@@ -830,6 +910,39 @@ const handleCancel = () => {
 
 const onSearch = async () => {
     activeSearchText.value = searchText.value.trim()
+    instanceNameFilter.value = ''
+    activeInstanceNameFilter.value = ''
+    activeHostIdFilter.value = null
+    pagination.current = 1
+    await refreshList()
+}
+
+const resetAllFilters = async () => {
+    searchText.value = ''
+    activeSearchText.value = ''
+    instanceNameFilter.value = ''
+    activeInstanceNameFilter.value = ''
+    activeHostIdFilter.value = null
+    collectStatusFilter.value = undefined
+    selectedGroupId.value = 0
+    selectedGroupName.value = '全部分组'
+    pagination.current = 1
+
+    const hasRouteFilters = Boolean(
+        route.query.group_id || route.query.search || route.query.instance_name || route.query.host_id
+    )
+    if (hasRouteFilters) {
+        await router.replace({ path: route.path, query: {} })
+        return
+    }
+    await refreshList()
+}
+
+const onInstanceNameSearch = async () => {
+    activeInstanceNameFilter.value = instanceNameFilter.value.trim()
+    searchText.value = ''
+    activeSearchText.value = ''
+    activeHostIdFilter.value = null
     pagination.current = 1
     await refreshList()
 }
@@ -870,7 +983,13 @@ const delconfirm = (id) => {
         })
 }
 
-const handleCollect = (id) => {
+const handleCollect = (target) => {
+    const id = typeof target === 'object' && target !== null ? target.id : target
+    const record = typeof target === 'object' && target !== null ? target : datasources.value.find((item) => item.id === id)
+    if (!hasHostCredential(record)) {
+        message.warning('该主机未配置 SSH 凭证，无法采集')
+        return
+    }
     rowLoadingStates[id] = true
     collectHostInfo(id)
         .then((res) => {
@@ -898,6 +1017,10 @@ const handleCollect = (id) => {
 }
 
 const confirmBatchCollect = () => {
+    if (selectedHostsNoCredentialCount.value > 0) {
+        message.warning(`已选主机中有 ${selectedHostsNoCredentialCount.value} 台未配置凭证，无法批量采集`)
+        return
+    }
     state.collectLoading = true
     batchCollectHostInfo(state.selectedRowKeys)
         .then((res) => {
@@ -1062,11 +1185,15 @@ const initWebSshTerminal = async () => {
 }
 
 const openWebSsh = (record) => {
+    if (!hasHostCredential(record)) {
+        message.warning('该主机未配置 SSH 凭证，无法打开 WebSSH')
+        return
+    }
     const routeData = router.resolve({
         path: '/assets/hosts/webssh',
         query: {
             host_id: record.id,
-            instance_name: record.instance_name || record.name || '',
+            instance_name: record.instance_name || '',
             ip: record.ip || '',
         },
     })
@@ -1097,13 +1224,57 @@ const getCredentialName = (record) => {
     return record.credential_name || record.credential?.name || '-'
 }
 
+const hasHostCredential = (record) => {
+    const directName = String(record?.credential_name || '').trim()
+    if (directName) {
+        return true
+    }
+    const nestedName = String(record?.credential?.name || '').trim()
+    if (nestedName) {
+        return true
+    }
+    const nestedId = Number(record?.credential?.id || 0)
+    return Number.isFinite(nestedId) && nestedId > 0
+}
+
 const router = useRouter()
+const route = useRoute()
+
+const applyRouteFilters = async () => {
+    syncingRouteFilters.value = true
+    const initialHostId = Number(route.query.host_id || 0)
+    const normalizedHostId = Number.isInteger(initialHostId) && initialHostId > 0 ? initialHostId : 0
+
+    const initialGroupId = Number(route.query.group_id || 0)
+    selectedGroupId.value = Number.isInteger(initialGroupId) && initialGroupId > 0 ? initialGroupId : 0
+    selectedGroupName.value = selectedGroupId.value > 0 ? '当前分组' : '全部分组'
+
+    const initialInstanceName = String(route.query.instance_name || '').trim()
+    const initialSearchText = initialInstanceName ? '' : String(route.query.search || '').trim()
+
+    searchText.value = initialSearchText
+    activeSearchText.value = initialSearchText
+    instanceNameFilter.value = initialInstanceName
+    activeInstanceNameFilter.value = initialInstanceName
+    activeHostIdFilter.value = normalizedHostId || null
+
+    pagination.current = 1
+    try {
+        await refreshList()
+    } finally {
+        syncingRouteFilters.value = false
+    }
+}
+
 const goCredential = (name) => {
     if (!name || name === '-') return
     router.push({ path: '/assets/credentials/index', query: { search: name } })
 }
 
 const getRowClassName = (record) => {
+    if (!hasHostCredential(record)) {
+        return 'row-no-credential'
+    }
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
 }
 
@@ -1171,11 +1342,18 @@ onMounted(async () => {
         if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
     }).catch(() => {})
     await Promise.all([loadGroupTree(), loadCredentialOptions()])
-    await refreshList()
     document.addEventListener('click', closeGroupContextMenu)
     window.addEventListener('keydown', handleWebSshGlobalKeydown, true)
     document.addEventListener('keydown', handleWebSshGlobalKeydown, true)
 })
+
+watch(
+    () => [route.query.group_id, route.query.search, route.query.instance_name, route.query.host_id],
+    async () => {
+        await applyRouteFilters()
+    },
+    { immediate: true }
+)
 
 onBeforeUnmount(() => {
     if (stopListenTimezone) {
@@ -1204,6 +1382,14 @@ onBeforeUnmount(() => {
 
 :deep(.row-collect-failed:hover) > td {
     background-color: #ffe0de !important;
+}
+
+:deep(.row-no-credential) > td {
+    background-color: #fffbe6;
+}
+
+:deep(.row-no-credential:hover) > td {
+    background-color: #fff1b8 !important;
 }
 
 .host-page {

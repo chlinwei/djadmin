@@ -25,6 +25,24 @@ DEFAULT_CONFIGS = [
         'description': '系统菜单树形结构的最大嵌套层数',
         'is_readonly': False,
     },
+    {
+        'key': 'sys.assets.collect.auth_failure_threshold',
+        'value': '3',
+        'default_value': '3',
+        'value_type': 'int',
+        'name': '主机采集认证失败阈值',
+        'description': '连续认证失败达到该次数后，主机进入自动采集保护期',
+        'is_readonly': False,
+    },
+    {
+        'key': 'sys.assets.collect.auth_lock_minutes',
+        'value': '30',
+        'default_value': '30',
+        'value_type': 'int',
+        'name': '主机采集认证保护时长（分钟）',
+        'description': '进入保护期后，定时采集跳过该主机的时长（分钟）',
+        'is_readonly': False,
+    },
 ]
 
 

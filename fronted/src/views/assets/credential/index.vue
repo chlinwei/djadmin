@@ -239,8 +239,12 @@ const pagination = computed(() => ({
     showQuickJumper: true,
 }))
 
+const refreshCredentialList = () => {
+    run({ page: current.value, size: pageSize.value, search: lastSearchKeyword.value })
+}
+
 const initList = () => {
-    run({ page: current, size: pageSize.value, keyword: lastSearchKeyword.value })
+    refreshCredentialList()
 }
 
 const handleTableChange = (page, filters, sorter) => {
@@ -287,6 +291,8 @@ const delconfirm = (id) => {
     batchDeleteCredential(ids).then((res) => {
         if (res.data.code == 200) {
             message.success("删除Credential成功")
+            refreshCredentialList()
+            state.selectedRowKeys = state.selectedRowKeys.filter((item) => item !== id)
         } else {
             message.error("删除Credential失败")
         }
@@ -305,7 +311,7 @@ const confirm = () => {
     })
     batchDeleteCredential(state.selectedRowKeys).then((res) => {
         if (res.data.code == 200) {
-            initList();
+            refreshCredentialList();
             message.success("删除Credential成功");
             state.selectedRowKeys = []
         } else {

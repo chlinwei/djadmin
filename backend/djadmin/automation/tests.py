@@ -291,3 +291,115 @@ class AutomationRunDispatchTest(BaseTestCase):
 			self.assertIn(self.host.id, host_ids)
 			self.assertIn(host_b.id, host_ids)
 			mock_delay.assert_called_once()
+
+
+class AutomationWorkflowTest(BaseTestCase):
+	def setUp(self):
+		super().setUp()
+		self.template = PlaybookTemplate.objects.create(
+			name='Workflow Template',
+			description='for workflow tests',
+			content='---\n- hosts: all\n  tasks: []\n',
+		)
+		self.host = Host.objects.create(instance_name='workflow_host', ip='10.0.0.21')
+		self.task = AutomationTask.objects.create(
+			name='Workflow Task',
+			code='workflow-task',
+			template=self.template,
+			selected_host_ids=[self.host.id],
+			selected_group_ids=[],
+			env_vars={},
+			enabled=True,
+		)
+
+	def _create_workflow(self):
+		res = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': '发布工作流',
+				'description': 'workflow mvp',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': '执行任务', 'node_type': 'task', 'task_id': self.task.id},
+				],
+				'edges': [],
+				'default_extra_vars': {'env': 'test'},
+			},
+			format='json',
+		)
+		return self.assertResponseOK(res)['data']
+
+	def test_create_workflow_draft_without_nodes(self):
+		res = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': '草稿工作流',
+				'description': 'draft only',
+				'enabled': True,
+				'nodes': [],
+				'edges': [],
+				'entry_node_key': '',
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+
+		body = self.assertResponseOK(res)
+		self.assertEqual(body['data']['node_count'], 0)
+		self.assertEqual(body['data']['edge_count'], 0)
+		self.assertEqual(body['data']['entry_node_key'], '')
+
+	def test_create_workflow_and_preview(self):
+		workflow = self._create_workflow()
+
+		res = self.client.post(
+			f"/sys/automation/workflows/{workflow['id']}/preview/",
+			{},
+			format='json',
+		)
+
+		body = self.assertResponseOK(res)
+		self.assertEqual(body['data']['planned_steps'], 1)
+		self.assertEqual(body['data']['plan'][0]['node_key'], 'n1')
+
+	def test_preview_workflow_with_multiple_roots(self):
+		res = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': '多入口工作流',
+				'description': 'multi root',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': '任务A', 'node_type': 'task', 'task_id': self.task.id},
+					{'key': 'n2', 'name': '任务B', 'node_type': 'task', 'task_id': self.task.id},
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow = self.assertResponseOK(res)['data']
+
+		preview_res = self.client.post(
+			f"/sys/automation/workflows/{workflow['id']}/preview/",
+			{},
+			format='json',
+		)
+		body = self.assertResponseOK(preview_res)
+		self.assertEqual(body['data']['planned_steps'], 2)
+		planned_keys = {item['node_key'] for item in body['data']['plan']}
+		self.assertEqual(planned_keys, {'n1', 'n2'})
+
+	def test_launch_workflow_dispatches_task_jobs(self):
+		workflow = self._create_workflow()
+
+		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+			res = self.client.post(
+				f"/sys/automation/workflows/{workflow['id']}/launch/",
+				{},
+				format='json',
+			)
+			body = self.assertResponseOK(res)
+			self.assertIn(body['data']['status'], ['running', 'success'])
+			self.assertGreaterEqual(len(body['data']['node_results']), 1)
+			mock_delay.assert_called_once()

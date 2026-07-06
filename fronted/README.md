@@ -52,6 +52,11 @@ npm run test:report
 - `pending` 状态任务不显示“下载日志”按钮。
 - 仅在任务有可用执行结果时显示下载入口。
 
+### 3) Workflow 前端文档
+
+- 详细说明见 `fronted/WORKFLOW_FRONTEND_GUIDE.md`。
+- 包含页面职责、数据结构、状态映射、交互约束、后端契约与联调建议。
+
 ## 相关联后端依赖
 
 - 自动化执行依赖 Celery Worker 消费任务。

@@ -105,3 +105,43 @@ export function getJobLog(id) {
 export function getTargetList(params) {
   return requestUtil.get(prefix + 'targets/', params)
 }
+
+export function getWorkflowList(params) {
+  return requestUtil.get(prefix + 'workflows/', params)
+}
+
+export function getWorkflowDetail(id) {
+  return requestUtil.get(prefix + `workflows/${id}/`)
+}
+
+export function createWorkflow(params) {
+  return requestUtil.post(prefix + 'workflows/', params)
+}
+
+export function updateWorkflow(id, params) {
+  return requestUtil.patch(prefix + `workflows/${id}/`, params)
+}
+
+export function deleteWorkflow(id) {
+  return requestUtil.del(prefix + `workflows/${id}/`)
+}
+
+export function previewWorkflow(id, params = {}) {
+  return requestUtil.post(prefix + `workflows/${id}/preview/`, params)
+}
+
+export function launchWorkflow(id, params = {}) {
+  return requestUtil.post(prefix + `workflows/${id}/launch/`, params)
+}
+
+export function getWorkflowRunList(params) {
+  return requestUtil.get(prefix + 'workflow-runs/', params)
+}
+
+export function getWorkflowRunDetail(id) {
+  return requestUtil.get(prefix + `workflow-runs/${id}/`)
+}
+
+export function cancelWorkflowRun(id) {
+  return requestUtil.post(prefix + `workflow-runs/${id}/cancel/`)
+}

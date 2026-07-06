@@ -192,10 +192,21 @@
           <a-switch v-model:checked="jobLogWrap" size="small" />
         </a-space>
         <a-space size="small">
+          <span>自动追尾</span>
+          <a-switch :checked="jobLogAutoFollowEnabled" size="small" @change="toggleJobLogAutoFollow" />
+        </a-space>
+        <a-space size="small">
           <a-button size="small" @click="decreaseJobLogFontSize">A-</a-button>
           <span>{{ jobLogFontSize }}px</span>
           <a-button size="small" @click="increaseJobLogFontSize">A+</a-button>
         </a-space>
+        <a-button
+          v-if="jobLogAutoFollowEnabled && jobLogAutoFollowSuspended"
+          size="small"
+          type="primary"
+          ghost
+          @click="resumeJobLogAutoFollow"
+        >回到底部</a-button>
         <a-button
           size="small"
           danger
@@ -207,7 +218,11 @@
         <a-button size="small" @click="copyJobLog">复制</a-button>
         <a-button size="small" @click="downloadJobLogText">下载</a-button>
       </a-space>
-      <div class="log-viewer-shell">
+      <div
+        ref="jobLogViewerShellRef"
+        class="log-viewer-shell"
+        @scroll="handleJobLogViewerScroll"
+      >
         <pre
           :class="['log-viewer-content', { 'is-nowrap': !jobLogWrap }]"
           :style="{ fontSize: `${jobLogFontSize}px` }"
@@ -261,7 +276,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
@@ -314,6 +329,9 @@ const logViewerJobOutput = ref('')
 const jobLogViewerVisible = ref(false)
 const jobLogViewerJobId = ref(null)
 const jobLogText = ref('')
+const jobLogViewerShellRef = ref(null)
+const jobLogAutoFollowEnabled = ref(true)
+const jobLogAutoFollowSuspended = ref(false)
 const logWrap = ref(true)
 const jobLogWrap = ref(true)
 const logFontSize = ref(13)
@@ -758,18 +776,97 @@ async function openLogViewer(record) {
 }
 
 async function openJobLogViewer(record) {
-  jobLogViewerJobId.value = record.id
+  const targetJobId = Number(record?.id)
+  if (!Number.isInteger(targetJobId) || targetJobId <= 0) {
+    message.error('作业ID无效，无法打开统一日志')
+    return
+  }
+  jobLogViewerJobId.value = targetJobId
   jobLogViewerVisible.value = true
+  jobLogAutoFollowEnabled.value = true
+  jobLogAutoFollowSuspended.value = false
   updateStreamJobStatus(record?.status)
-  connectJobLogSocket(record.id)
-  await loadJobLog(record.id)
+  connectJobLogSocket(targetJobId)
+  await loadJobLog(targetJobId)
+  await nextTick()
+  scrollJobLogToBottom(true)
+}
+
+async function openJobLogViewerById(jobId) {
+  const targetJobId = Number(jobId)
+  if (!Number.isInteger(targetJobId) || targetJobId <= 0) {
+    return
+  }
+  const matched = (jobs.value || []).find((item) => Number(item.id) === targetJobId)
+  await openJobLogViewer({
+    id: targetJobId,
+    status: matched?.status || '',
+  })
 }
 
 function closeJobLogViewer() {
   jobLogViewerVisible.value = false
+  clearJobIdQueryFromRoute()
   if (!logViewerVisible.value) {
     closeJobLogSocket()
   }
+}
+
+function clearJobIdQueryFromRoute() {
+  const query = route.query || {}
+  const currentJobId = Array.isArray(query.job_id) ? query.job_id[0] : query.job_id
+  if (!currentJobId) {
+    return
+  }
+
+  const nextQuery = { ...query }
+  delete nextQuery.job_id
+  router.replace({ path: route.path, query: nextQuery }).catch(() => {})
+}
+
+function isNearBottom(element, threshold = 24) {
+  if (!element) {
+    return true
+  }
+  const distance = element.scrollHeight - element.scrollTop - element.clientHeight
+  return distance <= threshold
+}
+
+function scrollJobLogToBottom(force = false) {
+  const shell = jobLogViewerShellRef.value
+  if (!shell) {
+    return
+  }
+  if (!force && (!jobLogAutoFollowEnabled.value || jobLogAutoFollowSuspended.value)) {
+    return
+  }
+  shell.scrollTop = shell.scrollHeight
+}
+
+function handleJobLogViewerScroll() {
+  const shell = jobLogViewerShellRef.value
+  if (!shell || !jobLogViewerVisible.value || !jobLogAutoFollowEnabled.value) {
+    return
+  }
+  jobLogAutoFollowSuspended.value = !isNearBottom(shell)
+}
+
+function toggleJobLogAutoFollow(checked) {
+  jobLogAutoFollowEnabled.value = Boolean(checked)
+  if (jobLogAutoFollowEnabled.value) {
+    jobLogAutoFollowSuspended.value = false
+    nextTick(() => {
+      scrollJobLogToBottom(true)
+    })
+  }
+}
+
+function resumeJobLogAutoFollow() {
+  jobLogAutoFollowEnabled.value = true
+  jobLogAutoFollowSuspended.value = false
+  nextTick(() => {
+    scrollJobLogToBottom(true)
+  })
 }
 
 function closeDetailLogViewer() {
@@ -1305,9 +1402,26 @@ function startPolling() {
   }, 1000)
 }
 
+watch(jobLogText, async () => {
+  if (!jobLogViewerVisible.value) {
+    return
+  }
+  await nextTick()
+  scrollJobLogToBottom(false)
+})
+
+watch(jobLogViewerVisible, async (visible) => {
+  if (!visible) {
+    return
+  }
+  await nextTick()
+  scrollJobLogToBottom(true)
+})
+
 onMounted(async () => {
   const queryTaskId = route.query.task_id
   const queryTaskName = route.query.task_name
+  const queryJobId = route.query.job_id
   if (queryTaskId && String(queryTaskId).trim()) {
     const parsedId = Number(queryTaskId)
     selectedTaskId.value = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null
@@ -1323,6 +1437,10 @@ onMounted(async () => {
     selectedTaskName.value = taskNameMap.value[selectedTaskId.value] || ''
   }
   await loadJobs(true)
+  const parsedJobId = Number(Array.isArray(queryJobId) ? queryJobId[0] : queryJobId)
+  if (Number.isInteger(parsedJobId) && parsedJobId > 0) {
+    await openJobLogViewerById(parsedJobId)
+  }
   startPolling()
 })
 

@@ -2666,7 +2666,6 @@ onMounted(async () => {
     }
 
     await restoreUploadResumeTask()
-    void loadFiles('/root')
     void connectWebSsh()
     nextTick(() => {
         setupFilePanelResizeObserver()

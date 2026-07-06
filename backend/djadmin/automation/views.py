@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import fnmatch
@@ -5,6 +6,7 @@ from urllib.parse import quote
 
 from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
+from django.utils import timezone
 from django.db.models import Q
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
@@ -18,17 +20,124 @@ from menu.permisssion import CustomMenuPermission
 from user.utils import getCurrentUser
 from assets.models import Host, HostGroup
 
-from .models import PlaybookTemplate, AutomationTask, AutomationInventory, AnsibleExecutionJob, AnsibleExecutionTarget
+from .models import (
+    PlaybookTemplate,
+    AutomationTask,
+    AutomationInventory,
+    AnsibleExecutionJob,
+    AnsibleExecutionTarget,
+    AutomationWorkflowTemplate,
+    AutomationWorkflowRun,
+)
 from .serializer import (
     PlaybookTemplateSerializer,
     AutomationTaskSerializer,
     AutomationInventorySerializer,
     AnsibleExecutionJobSerializer,
     AnsibleExecutionTargetSerializer,
+    AutomationWorkflowTemplateSerializer,
+    AutomationWorkflowRunSerializer,
     validate_playbook_content_or_raise,
 )
 from .executor import build_inventory_snapshot
 from .tasks import execute_ansible_job_task
+
+
+WORKFLOW_OUTCOME_DEFAULT = 'success'
+
+
+def _normalize_outcome(value: str) -> str:
+    text = str(value or '').strip().lower()
+    if text in {'success', 'failure'}:
+        return text
+    return WORKFLOW_OUTCOME_DEFAULT
+
+
+def _build_workflow_graph_maps(nodes: list[dict], edges: list[dict]) -> tuple[dict, dict]:
+    node_map = {}
+    outgoing_map = {}
+    for item in nodes:
+        if not isinstance(item, dict):
+            continue
+        node_key = str(item.get('key') or '').strip()
+        if not node_key:
+            continue
+        node_map[node_key] = item
+        outgoing_map[node_key] = []
+
+    for item in edges:
+        if not isinstance(item, dict):
+            continue
+        source_key = str(item.get('source_key') or '').strip()
+        target_key = str(item.get('target_key') or '').strip()
+        condition = str(item.get('condition') or 'success').strip().lower()
+        if source_key in outgoing_map and target_key in node_map:
+            outgoing_map[source_key].append({'target_key': target_key, 'condition': condition})
+
+    return node_map, outgoing_map
+
+
+def _select_workflow_next_edges(outgoing_edges: list[dict], outcome: str) -> list[dict]:
+    normalized_outcome = _normalize_outcome(outcome)
+    selected = []
+    for item in outgoing_edges:
+        condition = str(item.get('condition') or '').strip().lower()
+        if condition == 'always' or condition == normalized_outcome:
+            selected.append(item)
+    return selected
+
+
+def _simulate_workflow_execution(template: AutomationWorkflowTemplate, outcome_map: dict[str, str] | None = None) -> list[dict]:
+    source_outcome_map = outcome_map if isinstance(outcome_map, dict) else {}
+    node_map, outgoing_map = _build_workflow_graph_maps(template.nodes, template.edges)
+    if len(node_map) == 0:
+        return []
+
+    incoming_count = {node_key: 0 for node_key in node_map.keys()}
+    for source_key, outgoing_edges in outgoing_map.items():
+        if source_key not in node_map:
+            continue
+        for edge in outgoing_edges:
+            target_key = str(edge.get('target_key') or '').strip()
+            if target_key in incoming_count:
+                incoming_count[target_key] += 1
+
+    queue = [node_key for node_key in node_map.keys() if incoming_count.get(node_key, 0) == 0]
+    if len(queue) == 0:
+        queue = [next(iter(node_map.keys()))]
+
+    visited = set()
+    plan = []
+    step_limit = max(200, len(node_map) * 4)
+    steps = 0
+
+    while queue and steps < step_limit:
+        node_key = queue.pop(0)
+        steps += 1
+        if node_key not in node_map or node_key in visited:
+            continue
+        visited.add(node_key)
+
+        node = node_map[node_key]
+        node_type = str(node.get('node_type') or '').strip().lower()
+        outcome = _normalize_outcome(source_outcome_map.get(node_key, WORKFLOW_OUTCOME_DEFAULT))
+        plan.append({
+            'node_key': node_key,
+            'node_name': str(node.get('name') or node_key),
+            'node_type': node_type,
+            'task_id': node.get('task_id'),
+            'workflow_id': node.get('workflow_id'),
+            'convergence': str(node.get('convergence') or 'any').strip().lower() or 'any',
+            'outcome': outcome,
+        })
+
+        next_edges = _select_workflow_next_edges(outgoing_map.get(node_key, []), outcome)
+        for edge in next_edges:
+            target_key = str(edge.get('target_key') or '').strip()
+            if target_key and target_key not in visited:
+                queue.append(target_key)
+
+    return plan
 
 
 def _parse_limit_tokens(limit_text: str) -> tuple[list[str], list[str]]:
@@ -137,6 +246,582 @@ def _apply_limit_to_inventory_snapshot(inventory_snapshot: dict, limit_text: str
     next_snapshot['hosts'] = _sort_inventory_hosts(filtered_hosts)
     next_snapshot['limit'] = normalized_limit
     return next_snapshot
+
+
+def _read_workflow_ancestor_template_ids(run: AutomationWorkflowRun) -> list[int]:
+    # 祖先链保存在当前 run 的 summary 中，用于运行时递归检测。
+    result_summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    raw_ids = result_summary.get('workflow_ancestor_template_ids', [])
+    ancestor_ids = []
+    if isinstance(raw_ids, list):
+        for item in raw_ids:
+            if not str(item).isdigit():
+                continue
+            workflow_id = int(item)
+            if workflow_id > 0 and workflow_id not in ancestor_ids:
+                ancestor_ids.append(workflow_id)
+
+    if run.workflow_id and int(run.workflow_id) > 0 and int(run.workflow_id) not in ancestor_ids:
+        ancestor_ids.append(int(run.workflow_id))
+
+    return ancestor_ids
+
+
+def _format_workflow_spawn_chain_display(spawn_workflow_id: int, ancestor_template_ids: list[int]) -> str:
+    # 生成便于排障的链路文案：当前目标 -> 最近父级 -> 更上层祖先。
+    display_ids = [spawn_workflow_id]
+    display_ids.extend(reversed([item for item in ancestor_template_ids if item != spawn_workflow_id]))
+
+    template_rows = AutomationWorkflowTemplate.objects.filter(id__in=display_ids).values('id', 'name')
+    template_name_map = {int(item['id']): str(item.get('name') or '') for item in template_rows}
+
+    display_parts = []
+    for workflow_id in display_ids:
+        workflow_name = template_name_map.get(workflow_id, '')
+        if workflow_name:
+            display_parts.append(f"{workflow_name}#{workflow_id}")
+        else:
+            display_parts.append(f"#{workflow_id}")
+
+    return ' -> '.join(display_parts)
+
+
+def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict, launch_limit: str) -> tuple[bool, str | None, int | None]:
+    task_id = node_result.get('task_id')
+    if task_id is None or not str(task_id).isdigit():
+        return False, 'Task node missing valid task_id', None
+
+    task = AutomationTask.objects.filter(id=int(task_id)).select_related('template', 'inventory').first()
+    if task is None or task.template is None:
+        return False, f'Task {task_id} not found or template missing', None
+
+    default_host_ids = task.selected_host_ids
+    default_group_ids = task.selected_group_ids
+    if task.inventory_id and task.inventory is not None:
+        default_host_ids = task.inventory.selected_host_ids
+        default_group_ids = task.inventory.selected_group_ids
+
+    host_ids = [int(item) for item in (default_host_ids or []) if str(item).isdigit()]
+    group_ids = [int(item) for item in (default_group_ids or []) if str(item).isdigit()]
+    effective_limit = launch_limit or (task.default_limit or '')
+
+    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+    inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, effective_limit)
+    hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
+    if not isinstance(hosts, list) or len(hosts) == 0:
+        return False, f'Task {task_id} resolved empty host scope', None
+
+    node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
+    job = AnsibleExecutionJob.objects.create(
+        template=task.template,
+        task=task,
+        status=AnsibleExecutionJob.Status.PENDING,
+        trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
+        inventory_snapshot=inventory_snapshot,
+        task_name_snapshot=task.name or '',
+        template_name_snapshot=task.template.name or '',
+        template_content_snapshot=task.template.content or '',
+        extra_vars=run.extra_vars if isinstance(run.extra_vars, dict) else {},
+        limit=effective_limit,
+        requested_user_id=run.requested_user_id,
+        requested_username=run.requested_username or '',
+        result_summary={'message': f'Workflow node {node_name} dispatched'},
+    )
+
+    try:
+        execute_ansible_job_task.delay(job.id)
+    except Exception as exc:
+        job.status = AnsibleExecutionJob.Status.FAILED
+        job.result_summary = {'message': f'Failed to enqueue job: {str(exc)}'}
+        job.save(update_fields=['status', 'result_summary'])
+        return False, f'Failed to enqueue task job: {str(exc)}', None
+
+    return True, None, job.id
+
+
+def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict, launch_limit: str) -> tuple[bool, str | None, int | None]:
+    workflow_id = node_result.get('workflow_id')
+    if workflow_id is None or not str(workflow_id).isdigit():
+        return False, 'Workflow node missing valid workflow_id', None
+
+    child_workflow = AutomationWorkflowTemplate.objects.filter(id=int(workflow_id)).first()
+    if child_workflow is None:
+        return False, f'Workflow {workflow_id} not found', None
+    if not child_workflow.enabled:
+        return False, f'Workflow {workflow_id} is disabled', None
+
+    target_workflow_id = int(workflow_id)
+    ancestor_template_ids = _read_workflow_ancestor_template_ids(run)
+    # AWX 风格：允许模板保存时自引用，但在运行时按祖先链阻断递归派生。
+    if target_workflow_id in set(ancestor_template_ids):
+        chain_text = _format_workflow_spawn_chain_display(target_workflow_id, ancestor_template_ids)
+        return False, f'Recursion detected (spawn order, most recent first): {chain_text}', None
+
+    execution_plan = _simulate_workflow_execution(child_workflow, outcome_map={})
+    if len(execution_plan) == 0:
+        return False, f'Workflow {workflow_id} plan is empty', None
+
+    child_ancestor_template_ids = list(ancestor_template_ids)
+    child_ancestor_template_ids.append(target_workflow_id)
+
+    child_run = AutomationWorkflowRun.objects.create(
+        workflow=child_workflow,
+        status=AutomationWorkflowRun.Status.RUNNING,
+        trigger_type=AutomationWorkflowRun.TriggerType.MANUAL,
+        workflow_name_snapshot=child_workflow.name or '',
+        workflow_code_snapshot='',
+        planned_node_keys=[item['node_key'] for item in execution_plan],
+        node_results=[],
+        extra_vars=run.extra_vars if isinstance(run.extra_vars, dict) else {},
+        result_summary={'message': 'Workflow run created from workflow node'},
+        requested_user_id=run.requested_user_id,
+        requested_username=run.requested_username or '',
+        start_time=timezone.now(),
+    )
+
+    child_node_results = []
+    for step in execution_plan:
+        node_key = str(step.get('node_key') or '')
+        node_name = str(step.get('node_name') or node_key)
+        child_node_results.append({
+            'node_key': node_key,
+            'node_name': node_name,
+            'node_type': str(step.get('node_type') or 'task'),
+            'convergence': str(step.get('convergence') or 'any').strip().lower() or 'any',
+            'status': 'waiting',
+            'task_id': int(step.get('task_id')) if str(step.get('task_id', '')).isdigit() else None,
+            'workflow_id': int(step.get('workflow_id')) if str(step.get('workflow_id', '')).isdigit() else None,
+        })
+
+    child_workflow_nodes_snapshot = child_workflow.nodes if isinstance(child_workflow.nodes, list) else []
+    child_workflow_edges_snapshot = child_workflow.edges if isinstance(child_workflow.edges, list) else []
+    child_run.node_results = child_node_results
+    child_run.result_summary = {
+        'message': 'Workflow run created from workflow node',
+        'launch_limit': launch_limit,
+        'queued_job_count': 0,
+        'queued_job_ids': [],
+        'parent_run_id': run.id,
+        # 子 run 继承并扩展祖先模板链，供后续嵌套节点继续做递归检测。
+        'workflow_ancestor_template_ids': child_ancestor_template_ids,
+        'workflow_nodes_snapshot': json.loads(json.dumps(child_workflow_nodes_snapshot, ensure_ascii=False)),
+        'workflow_edges_snapshot': json.loads(json.dumps(child_workflow_edges_snapshot, ensure_ascii=False)),
+    }
+    child_run.save(update_fields=['node_results', 'result_summary'])
+    _refresh_workflow_run_progress(child_run)
+
+    return True, None, child_run.id
+
+
+def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
+    if run.status in (
+        AutomationWorkflowRun.Status.SUCCESS,
+    ):
+        return
+
+    node_results = [item for item in (run.node_results or []) if isinstance(item, dict)]
+    if len(node_results) == 0:
+        return
+
+    launch_limit = ''
+    if isinstance(run.result_summary, dict):
+        launch_limit = str(run.result_summary.get('launch_limit', '') or '').strip()
+
+    job_ids = [int(item['job_id']) for item in node_results if str(item.get('job_id', '')).isdigit()]
+    child_run_ids = [int(item['child_run_id']) for item in node_results if str(item.get('child_run_id', '')).isdigit()]
+    job_status_map = {}
+    child_run_status_map = {}
+    if job_ids:
+        rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('id', 'status')
+        job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
+    if child_run_ids:
+        rows = AutomationWorkflowRun.objects.filter(id__in=list(set(child_run_ids))).values('id', 'status')
+        child_run_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
+
+    for item in node_results:
+        job_id = item.get('job_id')
+        if not str(job_id).isdigit():
+            continue
+        job_status = job_status_map.get(int(job_id), '')
+        if not job_status:
+            continue
+        if job_status == 'pending':
+            item['status'] = 'queued'
+        elif job_status == 'running':
+            item['status'] = 'running'
+        elif job_status == 'success':
+            item['status'] = 'success'
+        elif job_status == 'failed':
+            item['status'] = 'failed'
+        elif job_status == 'cancelled':
+            item['status'] = 'cancelled'
+
+    for item in node_results:
+        child_run_id = item.get('child_run_id')
+        if not str(child_run_id).isdigit():
+            continue
+        child_status = child_run_status_map.get(int(child_run_id), '')
+        if not child_status:
+            continue
+        if child_status in {'pending', 'running', 'waiting_approval'}:
+            item['status'] = 'running'
+        elif child_status == 'success':
+            item['status'] = 'success'
+        elif child_status == 'failed':
+            item['status'] = 'failed'
+
+    result_summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    is_cancelled_by_user = bool(result_summary.get('cancelled'))
+    snapshot_nodes = result_summary.get('workflow_nodes_snapshot', [])
+    workflow_nodes = snapshot_nodes if isinstance(snapshot_nodes, list) else []
+    if len(workflow_nodes) == 0:
+        workflow = getattr(run, 'workflow', None)
+        workflow_nodes = workflow.nodes if workflow is not None and isinstance(workflow.nodes, list) else []
+
+    node_order_map = {}
+    for node in workflow_nodes:
+        if not isinstance(node, dict):
+            continue
+        node_key = str(node.get('key') or '').strip()
+        if not node_key:
+            continue
+        node_order_map[node_key] = {
+            'y': float(node.get('y') or 0),
+            'x': float(node.get('x') or 0),
+        }
+
+    snapshot_edges = result_summary.get('workflow_edges_snapshot', [])
+    workflow_edges = snapshot_edges if isinstance(snapshot_edges, list) else []
+    if len(workflow_edges) == 0:
+        workflow = getattr(run, 'workflow', None)
+        workflow_edges = workflow.edges if workflow is not None and isinstance(workflow.edges, list) else []
+
+    node_result_map = {}
+    for item in node_results:
+        node_key = str(item.get('node_key') or '').strip()
+        if node_key:
+            node_result_map[node_key] = item
+            if node_key not in node_order_map:
+                node_order_map[node_key] = {'y': 0.0, 'x': 0.0}
+
+    incoming_edge_map = {}
+    outgoing_edge_map = {key: [] for key in node_order_map.keys()}
+    incoming_count_map = {key: 0 for key in node_order_map.keys()}
+    for edge in workflow_edges:
+        if not isinstance(edge, dict):
+            continue
+        source_key = str(edge.get('source_key') or '').strip()
+        target_key = str(edge.get('target_key') or '').strip()
+        if not source_key or not target_key:
+            continue
+        incoming_edge_map.setdefault(target_key, []).append({
+            'source_key': source_key,
+            'condition': str(edge.get('condition') or 'success').strip().lower() or 'success',
+        })
+        if source_key in outgoing_edge_map and target_key in incoming_count_map:
+            outgoing_edge_map[source_key].append(target_key)
+            incoming_count_map[target_key] = int(incoming_count_map.get(target_key, 0)) + 1
+
+    def _node_sort_tuple(node_key: str, node_name: str = ''):
+        info = node_order_map.get(node_key, {})
+        return (
+            float(info.get('y', 0)),
+            float(info.get('x', 0)),
+            str(node_name or ''),
+            str(node_key or ''),
+        )
+
+    # 对 snapshot 图做拓扑分层：只推进当前最浅未完成层，避免越层执行。
+    node_depth_map = {key: 1 for key in node_order_map.keys()}
+    depth_queue = sorted(
+        [key for key, count in incoming_count_map.items() if int(count) == 0],
+        key=lambda item: _node_sort_tuple(item),
+    )
+
+    while depth_queue:
+        current_key = depth_queue.pop(0)
+        current_depth = int(node_depth_map.get(current_key, 1))
+        for child_key in outgoing_edge_map.get(current_key, []):
+            node_depth_map[child_key] = max(int(node_depth_map.get(child_key, 1)), current_depth + 1)
+            incoming_count_map[child_key] = int(incoming_count_map.get(child_key, 0)) - 1
+            if int(incoming_count_map.get(child_key, 0)) == 0:
+                depth_queue.append(child_key)
+        depth_queue.sort(key=lambda item: _node_sort_tuple(item))
+
+    terminal_statuses = {'success', 'failed', 'cancelled', 'skipped'}
+
+    def _edge_condition_matched(condition: str, parent_status: str) -> bool:
+        if condition == 'always':
+            return parent_status in terminal_statuses
+        if condition == 'failure':
+            return parent_status in {'failed', 'cancelled'}
+        return parent_status == 'success'
+
+    def _evaluate_node_state(item: dict) -> str:
+        node_key = str(item.get('node_key') or '').strip()
+        convergence = str(item.get('convergence') or 'any').strip().lower() or 'any'
+        incoming_edges = incoming_edge_map.get(node_key, [])
+        if len(incoming_edges) == 0:
+            return 'ready'
+
+        all_edges_matched = True
+        matched_any_edge = False
+        all_parents_finished = True
+
+        for edge in incoming_edges:
+            source_key = str(edge.get('source_key') or '').strip()
+            parent = node_result_map.get(source_key)
+            if parent is None:
+                all_parents_finished = False
+                all_edges_matched = False
+                continue
+
+            parent_status = str(parent.get('status') or '').lower()
+            if parent_status not in terminal_statuses:
+                all_parents_finished = False
+                all_edges_matched = False
+
+            matched = _edge_condition_matched(str(edge.get('condition') or 'success'), parent_status)
+            if matched:
+                matched_any_edge = True
+            else:
+                all_edges_matched = False
+
+        if convergence == 'all':
+            if all_parents_finished and all_edges_matched:
+                return 'ready'
+            if all_parents_finished and not all_edges_matched:
+                return 'skipped'
+            return 'waiting'
+
+        if matched_any_edge:
+            return 'ready'
+        if all_parents_finished:
+            return 'skipped'
+        return 'waiting'
+
+    level_unfinished_nodes = []
+    for item in node_results:
+        node_key = str(item.get('node_key') or '').strip()
+        status = str(item.get('status') or '').lower()
+        if not node_key:
+            continue
+        if status in {'waiting', 'pending', 'queued', 'running'}:
+            level_unfinished_nodes.append(item)
+
+    if is_cancelled_by_user:
+        for item in node_results:
+            status = str(item.get('status') or '').lower()
+            if status not in {'waiting', 'pending', 'queued', 'running', 'waiting_approval'}:
+                continue
+
+            if str(item.get('job_id', '')).isdigit():
+                item['status'] = 'cancelled'
+            else:
+                item['status'] = 'skipped'
+            item['message'] = 'Workflow run cancelled by user'
+
+        level_unfinished_nodes = []
+
+    if level_unfinished_nodes:
+        active_depth = min(
+            int(node_depth_map.get(str(item.get('node_key') or '').strip(), 1))
+            for item in level_unfinished_nodes
+        )
+        current_level_nodes = [
+            item
+            for item in level_unfinished_nodes
+            if int(node_depth_map.get(str(item.get('node_key') or '').strip(), 1)) == active_depth
+        ]
+
+        current_level_running = [
+            item for item in current_level_nodes if str(item.get('status') or '').lower() in {'queued', 'running'}
+        ]
+        current_level_waiting = [
+            item for item in current_level_nodes if str(item.get('status') or '').lower() in {'waiting', 'pending'}
+        ]
+        node_eval_map = {}
+        level_ready_nodes = []
+        for item in current_level_waiting:
+            node_key = str(item.get('node_key') or '').strip()
+            eval_state = _evaluate_node_state(item)
+            if node_key:
+                node_eval_map[node_key] = eval_state
+            if eval_state == 'ready':
+                level_ready_nodes.append(item)
+
+        level_ready_nodes.sort(
+            key=lambda item: _node_sort_tuple(
+                str(item.get('node_key') or '').strip(),
+                str(item.get('node_name') or ''),
+            )
+        )
+
+        def _build_same_child_groups(level_nodes: list[dict]) -> list[list[dict]]:
+            # 同层中共享子节点的父节点归为一组，组内并发、组间串行。
+            if not level_nodes:
+                return []
+
+            level_map = {}
+            for node in level_nodes:
+                key = str(node.get('node_key') or '').strip()
+                if key:
+                    level_map[key] = node
+
+            if len(level_map) <= 1:
+                return [list(level_map.values())] if level_map else []
+
+            child_parents_map = {}
+            for edge in workflow_edges:
+                if not isinstance(edge, dict):
+                    continue
+                source_key = str(edge.get('source_key') or '').strip()
+                target_key = str(edge.get('target_key') or '').strip()
+                if source_key not in level_map or not target_key:
+                    continue
+                child_parents_map.setdefault(target_key, set()).add(source_key)
+
+            adjacency = {key: set() for key in level_map.keys()}
+            for parent_keys in child_parents_map.values():
+                keys = sorted(parent_keys)
+                if len(keys) < 2:
+                    continue
+                for idx, current in enumerate(keys):
+                    for other in keys[idx + 1:]:
+                        adjacency[current].add(other)
+                        adjacency[other].add(current)
+
+            visited = set()
+            groups = []
+            for key in level_map.keys():
+                if key in visited:
+                    continue
+                queue = [key]
+                visited.add(key)
+                group_keys = []
+
+                while queue:
+                    current = queue.pop(0)
+                    group_keys.append(current)
+                    for neighbor in adjacency.get(current, set()):
+                        if neighbor in visited:
+                            continue
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+
+                group_nodes = [level_map[item] for item in group_keys if item in level_map]
+                group_nodes.sort(
+                    key=lambda item: _node_sort_tuple(
+                        str(item.get('node_key') or '').strip(),
+                        str(item.get('node_name') or ''),
+                    )
+                )
+                if group_nodes:
+                    groups.append(group_nodes)
+
+            groups.sort(
+                key=lambda group: _node_sort_tuple(
+                    str(group[0].get('node_key') or '').strip(),
+                    str(group[0].get('node_name') or ''),
+                )
+            )
+            return groups
+
+        groups = _build_same_child_groups(level_ready_nodes)
+        dispatch_candidates = []
+        if not current_level_running and groups:
+            dispatch_candidates = groups[0]
+        elif not current_level_running and level_ready_nodes:
+            dispatch_candidates = [level_ready_nodes[0]]
+
+        dispatch_keys = {
+            str(item.get('node_key') or '').strip()
+            for item in dispatch_candidates
+            if str(item.get('node_key') or '').strip()
+        }
+
+        for waiting_node in current_level_waiting:
+            node_key = str(waiting_node.get('node_key') or '').strip()
+            if node_key in dispatch_keys:
+                continue
+            eval_state = node_eval_map.get(node_key, 'waiting')
+            if eval_state == 'skipped':
+                waiting_node['status'] = 'skipped'
+                waiting_node['message'] = '条件不满足，节点已跳过'
+                continue
+            if str(waiting_node.get('status') or '').lower() == 'waiting' and eval_state == 'ready':
+                waiting_node['status'] = 'pending'
+
+        if dispatch_candidates:
+            queued_ids = result_summary.get('queued_job_ids', [])
+            queued_ids = queued_ids if isinstance(queued_ids, list) else []
+
+            for waiting_node in dispatch_candidates:
+                node_type = str(waiting_node.get('node_type') or '').lower()
+                if node_type == 'workflow':
+                    ok, error_msg, child_run_id = _dispatch_workflow_child_run(run, waiting_node, launch_limit)
+                    if ok and child_run_id is not None:
+                        waiting_node['status'] = 'queued'
+                        waiting_node['child_run_id'] = child_run_id
+                    else:
+                        waiting_node['status'] = 'failed'
+                        waiting_node['message'] = error_msg or 'Workflow node dispatch failed'
+                    continue
+
+                ok, error_msg, job_id = _dispatch_workflow_task_job(run, waiting_node, launch_limit)
+                if ok and job_id is not None:
+                    waiting_node['status'] = 'queued'
+                    waiting_node['job_id'] = job_id
+                    queued_ids.append(job_id)
+                else:
+                    waiting_node['status'] = 'failed'
+                    waiting_node['message'] = error_msg or 'Node dispatch failed'
+
+            result_summary['queued_job_ids'] = queued_ids
+            result_summary['queued_job_count'] = len(queued_ids)
+            result_summary['launch_limit'] = launch_limit
+            run.result_summary = result_summary
+
+    statuses = [str(item.get('status') or '').lower() for item in node_results]
+    has_unfinished = any(status in {'waiting', 'queued', 'pending', 'running', 'waiting_approval'} for status in statuses)
+
+    error_handler_sources = set()
+    for edge in workflow_edges:
+        if not isinstance(edge, dict):
+            continue
+        source_key = str(edge.get('source_key') or '').strip()
+        condition = str(edge.get('condition') or 'success').strip().lower() or 'success'
+        if source_key and condition in {'failure', 'always'}:
+            error_handler_sources.add(source_key)
+
+    has_unhandled_failure = False
+    for item in node_results:
+        status = str(item.get('status') or '').lower()
+        if status not in {'failed', 'cancelled'}:
+            continue
+        node_key = str(item.get('node_key') or '').strip()
+        if node_key not in error_handler_sources:
+            has_unhandled_failure = True
+            break
+
+    # AWX 风格聚合：先看是否仍在运行，再看是否存在无错误处理路径的失败。
+    if has_unfinished:
+        run.status = AutomationWorkflowRun.Status.RUNNING
+    elif has_unhandled_failure:
+        run.status = AutomationWorkflowRun.Status.FAILED
+    else:
+        run.status = AutomationWorkflowRun.Status.SUCCESS
+
+    now = timezone.now()
+    run.node_results = node_results
+    if run.status in (AutomationWorkflowRun.Status.SUCCESS, AutomationWorkflowRun.Status.FAILED):
+        run.end_time = now
+        run.duration_seconds = (now - run.start_time).total_seconds() if run.start_time else None
+    else:
+        run.end_time = None
+        run.duration_seconds = None
+
+    run.save(update_fields=['status', 'node_results', 'result_summary', 'end_time', 'duration_seconds'])
 
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
@@ -918,6 +1603,292 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         )
 
         return Response_200(data=AnsibleExecutionJobSerializer(job).data)
+
+
+class AutomationWorkflowTemplateManage(
+    GenericViewSet,
+    CreateModelMixin,
+    UpdateModelMixin,
+    RetrieveModelMixin,
+    ListModelMixin,
+    DestroyModelMixin,
+):
+    queryset = AutomationWorkflowTemplate.objects.all()
+    serializer_class = AutomationWorkflowTemplateSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    search_fields = ['name', 'description', 'remark']
+    ordering_fields = ['name', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'automation:workflow:view',
+        'retrieve': 'automation:workflow:view',
+        'create': 'automation:workflow:create',
+        'destroy': 'automation:workflow:delete',
+        'partial_update': 'automation:workflow:update',
+        'perform_update': 'automation:workflow:update',
+        'preview': 'automation:workflow:view',
+        'launch': 'automation:workflow:launch',
+    }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        data = serializer.data
+        if page is not None:
+            paginator = self.paginator
+            return Response_200(data={
+                'count': paginator.page.paginator.count,
+                'results': data,
+                'pageNumber': paginator.page.number,
+                'pageSize': paginator.page_size,
+                'totalPages': paginator.page.paginator.num_pages,
+                'next': paginator.get_next_link(),
+                'previous': paginator.get_previous_link(),
+            })
+        return Response_200(data=data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        deleted_id = instance.id
+        self.perform_destroy(instance)
+        return Response_200(data={'id': deleted_id})
+
+    @action(detail=True, methods=['post'], url_path='preview')
+    def preview(self, request, id=None):
+        workflow = self.get_object()
+        outcome_map = request.data.get('node_outcomes', {})
+        if outcome_map is not None and not isinstance(outcome_map, dict):
+            return Response_error_str('node_outcomes must be an object', code=400)
+
+        plan = _simulate_workflow_execution(workflow, outcome_map=outcome_map)
+        return Response_200(data={
+            'workflow_id': workflow.id,
+            'workflow_name': workflow.name,
+            'planned_steps': len(plan),
+            'plan': plan,
+        })
+
+    @action(detail=True, methods=['post'], url_path='launch')
+    def launch(self, request, id=None):
+        workflow = self.get_object()
+        if not workflow.enabled:
+            return Response_error_str('Workflow is disabled', code=400)
+
+        user_info = getCurrentUser(request)
+        outcome_map = request.data.get('node_outcomes', {})
+        extra_vars = request.data.get('extra_vars', workflow.default_extra_vars)
+        launch_limit = str(request.data.get('limit', '') or '').strip()
+
+        if outcome_map is not None and not isinstance(outcome_map, dict):
+            return Response_error_str('node_outcomes must be an object', code=400)
+        if not isinstance(extra_vars, dict):
+            return Response_error_str('extra_vars must be an object', code=400)
+
+        execution_plan = _simulate_workflow_execution(workflow, outcome_map=outcome_map)
+        if len(execution_plan) == 0:
+            return Response_error_str('Workflow plan is empty, please check nodes and edges', code=400)
+
+        run = AutomationWorkflowRun.objects.create(
+            workflow=workflow,
+            status=AutomationWorkflowRun.Status.RUNNING,
+            trigger_type=AutomationWorkflowRun.TriggerType.MANUAL,
+            workflow_name_snapshot=workflow.name or '',
+            workflow_code_snapshot='',
+            planned_node_keys=[item['node_key'] for item in execution_plan],
+            node_results=[],
+            extra_vars=extra_vars,
+            result_summary={'message': 'Workflow run created'},
+            requested_user_id=user_info.get('user_id'),
+            requested_username=user_info.get('username', ''),
+            start_time=timezone.now(),
+        )
+
+        node_results = []
+        for step in execution_plan:
+            node_type = step.get('node_type')
+            node_key = str(step.get('node_key') or '')
+            node_name = str(step.get('node_name') or node_key)
+            node_results.append({
+                'node_key': node_key,
+                'node_name': node_name,
+                'node_type': node_type,
+                'convergence': str(step.get('convergence') or 'any').strip().lower() or 'any',
+                'status': 'waiting',
+                'task_id': int(step.get('task_id')) if str(step.get('task_id', '')).isdigit() else None,
+                'workflow_id': int(step.get('workflow_id')) if str(step.get('workflow_id', '')).isdigit() else None,
+            })
+
+        run.node_results = node_results
+        workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
+        workflow_edges_snapshot = workflow.edges if isinstance(workflow.edges, list) else []
+        run.result_summary = {
+            'message': 'Workflow run created',
+            'launch_limit': launch_limit,
+            'queued_job_count': 0,
+            'queued_job_ids': [],
+            'workflow_ancestor_template_ids': [workflow.id],
+            # Keep immutable graph snapshot for this run so later workflow edits do not affect history.
+            'workflow_nodes_snapshot': json.loads(json.dumps(workflow_nodes_snapshot, ensure_ascii=False)),
+            'workflow_edges_snapshot': json.loads(json.dumps(workflow_edges_snapshot, ensure_ascii=False)),
+        }
+        run.save(update_fields=['node_results', 'result_summary'])
+        _refresh_workflow_run_progress(run)
+
+        return Response_200(data=AutomationWorkflowRunSerializer(run).data)
+
+
+class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelMixin):
+    queryset = AutomationWorkflowRun.objects.select_related('workflow').all()
+    serializer_class = AutomationWorkflowRunSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    search_fields = ['workflow__name', 'requested_username', 'remark']
+    ordering_fields = ['create_time', 'update_time', 'start_time', 'end_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'automation:workflow:view',
+        'retrieve': 'automation:workflow:view',
+        'cancel': 'automation:jobs:cancel',
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        workflow_id = self.request.query_params.get('workflow_id')  # type: ignore[union-attr]
+        status_value = self.request.query_params.get('status')  # type: ignore[union-attr]
+        if workflow_id:
+            queryset = queryset.filter(workflow_id=workflow_id)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        run_items = list(page) if page is not None else list(queryset)
+        for item in run_items:
+            _refresh_workflow_run_progress(item)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        data = serializer.data
+        if page is not None:
+            paginator = self.paginator
+            return Response_200(data={
+                'count': paginator.page.paginator.count,
+                'results': data,
+                'pageNumber': paginator.page.number,
+                'pageSize': paginator.page_size,
+                'totalPages': paginator.page.paginator.num_pages,
+                'next': paginator.get_next_link(),
+                'previous': paginator.get_previous_link(),
+            })
+        return Response_200(data=data)
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _refresh_workflow_run_progress(instance)
+        serializer = self.get_serializer(instance)
+        return Response_200(data=serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, id=None):
+        run = self.get_object()
+        if run.status in (AutomationWorkflowRun.Status.SUCCESS, AutomationWorkflowRun.Status.FAILED):
+            return Response_error_str('Workflow run is already finished', code=400)
+
+        now = timezone.now()
+        node_results = [dict(item) for item in (run.node_results or []) if isinstance(item, dict)]
+        job_ids = [int(item['job_id']) for item in node_results if str(item.get('job_id', '')).isdigit()]
+        cancel_job_ids = []
+
+        if job_ids:
+            jobs = AnsibleExecutionJob.objects.filter(
+                id__in=list(set(job_ids)),
+                status__in=[AnsibleExecutionJob.Status.PENDING, AnsibleExecutionJob.Status.RUNNING],
+            )
+
+            for job in jobs:
+                if not job.start_time:
+                    job.start_time = now
+                job.end_time = now
+                job.duration_seconds = (job.end_time - job.start_time).total_seconds() if job.start_time else None
+                job.status = AnsibleExecutionJob.Status.CANCELLED
+                summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+                summary['message'] = 'Cancelled by workflow run cancellation'
+                job.result_summary = summary
+                job.save(update_fields=['status', 'start_time', 'end_time', 'duration_seconds', 'result_summary'])
+                cancel_job_ids.append(job.id)
+
+                AnsibleExecutionTarget.objects.filter(job=job, status__in=[
+                    AnsibleExecutionTarget.Status.PENDING,
+                    AnsibleExecutionTarget.Status.RUNNING,
+                ]).update(
+                    status=AnsibleExecutionTarget.Status.SKIPPED,
+                    end_time=now,
+                    stderr='Cancelled by workflow run cancellation',
+                )
+
+        cancelled_job_id_set = set(cancel_job_ids)
+        for item in node_results:
+            node_status = str(item.get('status') or '').lower()
+            node_job_id = int(item['job_id']) if str(item.get('job_id', '')).isdigit() else None
+
+            if node_job_id in cancelled_job_id_set:
+                item['status'] = 'cancelled'
+                item['message'] = 'Workflow run cancelled by user'
+                continue
+
+            if node_status in {'waiting', 'pending', 'queued', 'running', 'waiting_approval'} and node_job_id is None:
+                item['status'] = 'skipped'
+                item['message'] = 'Workflow run cancelled by user'
+
+        summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+        summary['cancelled'] = True
+        summary['cancelled_at'] = now.isoformat()
+        summary['cancelled_by'] = str(request.user)
+        summary['cancelled_job_count'] = len(cancel_job_ids)
+        summary['cancelled_job_ids'] = cancel_job_ids
+        summary['message'] = 'Workflow run cancelled by user'
+
+        if not run.start_time:
+            run.start_time = now
+        run.end_time = now
+        run.duration_seconds = (run.end_time - run.start_time).total_seconds() if run.start_time else None
+        run.status = AutomationWorkflowRun.Status.FAILED
+        run.node_results = node_results
+        run.result_summary = summary
+        run.save(update_fields=['status', 'node_results', 'result_summary', 'start_time', 'end_time', 'duration_seconds'])
+
+        _refresh_workflow_run_progress(run)
+        serializer = self.get_serializer(run)
+        return Response_200(data=serializer.data)
 
 
 class AnsibleExecutionTargetManage(GenericViewSet, RetrieveModelMixin, ListModelMixin):

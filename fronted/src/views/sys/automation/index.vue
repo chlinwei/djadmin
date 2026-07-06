@@ -20,6 +20,10 @@
             <FontAwesomeIcon :icon="['fas', 'list']" />
             <span>&nbsp;任务运行记录</span>
           </a-button>
+          <a-button @click="goToWorkflow" v-permission="'automation:workflow:view'">
+            <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
+            <span>&nbsp;Workflow编排</span>
+          </a-button>
           <a-button type="primary" ghost :loading="taskLoading || playbookLoading" @click="reloadAll">
             <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="taskLoading || playbookLoading" />
             <span>&nbsp;刷新</span>
@@ -394,7 +398,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   getPlaybookList,
   getInventoryList,
@@ -412,6 +416,7 @@ import { checkPermission } from '@/directives/permission/permission'
 import { buildScopeSummaryText, flattenGroupPathMap } from './scopeSummary'
 import { buildAutomationInventoryRoute, buildAutomationPlaybookRoute } from './navigation'
 
+const route = useRoute()
 const router = useRouter()
 const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 const canEditTask = computed(() => checkPermission('automation:tasks:update'))
@@ -864,6 +869,51 @@ async function loadTasks(resetPage = false) {
   } finally {
     taskLoading.value = false
   }
+}
+
+async function findTaskRecordById(taskId) {
+  const direct = tasks.value.find((item) => Number(item?.id) === taskId)
+  if (direct) {
+    return direct
+  }
+
+  const pageSize = 200
+  let page = 1
+
+  while (page <= 50) {
+    const res = await getTaskList({ page, page_size: pageSize, ordering: '-id' })
+    const data = res?.data?.data || {}
+    const records = Array.isArray(data.results) ? data.results : []
+    const hit = records.find((item) => Number(item?.id) === taskId)
+    if (hit) {
+      return hit
+    }
+    if (!data.next) {
+      break
+    }
+    page += 1
+  }
+
+  return null
+}
+
+async function openTaskFromRouteQuery() {
+  const rawTaskId = Array.isArray(route.query.task_id) ? route.query.task_id[0] : route.query.task_id
+  const taskId = Number(rawTaskId)
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    return
+  }
+
+  const target = await findTaskRecordById(taskId)
+  if (target) {
+    openEditModal(target)
+  } else {
+    message.warning(`未找到任务 #${taskId}`)
+  }
+
+  const nextQuery = { ...route.query }
+  delete nextQuery.task_id
+  await router.replace({ path: route.path, query: nextQuery })
 }
 
 async function loadGroupTree() {
@@ -1592,9 +1642,10 @@ async function confirmRunNow() {
   runningTaskId.value = runNowTask.value.id
   runNowSubmitting.value = true
   try {
-    await runTaskNow(runNowTask.value.id, { limit: runtimeLimit })
+    const res = await runTaskNow(runNowTask.value.id, { limit: runtimeLimit })
+    const createdJobId = Number(res?.data?.data?.id || 0)
     message.success('任务已提交，正在后台执行')
-    goToLogs(runNowTask.value)
+    goToLogs(runNowTask.value, createdJobId)
     closeRunNowModal()
   } finally {
     runningTaskId.value = null
@@ -1602,9 +1653,20 @@ async function confirmRunNow() {
   }
 }
 
-function goToLogs(record = null) {
+function goToLogs(record = null, jobId = null) {
   if (record && record.id) {
-    router.push({ path: '/sys/automation/logs', query: { task_id: String(record.id), task_name: record.name || '' } })
+    const query = {
+      task_id: String(record.id),
+      task_name: record.name || '',
+    }
+    if (Number.isInteger(Number(jobId)) && Number(jobId) > 0) {
+      query.job_id = String(Number(jobId))
+    }
+    router.push({ path: '/sys/automation/logs', query })
+    return
+  }
+  if (Number.isInteger(Number(jobId)) && Number(jobId) > 0) {
+    router.push({ path: '/sys/automation/logs', query: { job_id: String(Number(jobId)) } })
     return
   }
   router.push('/sys/automation/logs')
@@ -1616,6 +1678,10 @@ function goToPlaybookTemplate(record) {
 
 function goToInventory(record) {
   router.push(buildAutomationInventoryRoute(record))
+}
+
+function goToWorkflow() {
+  router.push('/sys/automation/workflow')
 }
 
 function viewTaskLogs(record) {
@@ -1673,6 +1739,7 @@ onMounted(async () => {
   await loadInventories()
   await loadTasks(true)
   await loadGroupTree()
+  await openTaskFromRouteQuery()
 })
 </script>
 

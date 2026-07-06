@@ -64,6 +64,26 @@ export const staticRouterMap = [
                 path: '/sys/automation/inventory',
                 name: 'Inventory管理',
                 component: () => import('../views/sys/automation/inventory.vue'),
+            },
+            {
+                path: '/sys/automation/workflow',
+                name: 'Workflow编排',
+                component: () => import('../views/sys/automation/workflow.vue'),
+            },
+            {
+                path: '/sys/automation/workflow/create',
+                name: 'Workflow创建',
+                component: () => import('../views/sys/automation/workflowCreate.vue'),
+            },
+            {
+                path: '/sys/automation/workflow/editor',
+                name: 'Workflow编排编辑',
+                component: () => import('../views/sys/automation/workflowEditor.vue'),
+            },
+            {
+                path: '/sys/automation/workflow/run',
+                name: 'Workflow运行状态',
+                component: () => import('../views/sys/automation/workflowRun.vue'),
             }
         ]
     },

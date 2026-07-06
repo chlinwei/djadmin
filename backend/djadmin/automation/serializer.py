@@ -1,15 +1,32 @@
 from datetime import datetime
 import fnmatch
+import json
 import re
 
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
+from django.db import IntegrityError, connection
 from django.db.models import Q
+from django.utils import timezone
 import yaml
 
 from assets.models import Host, HostGroup
 
-from .models import PlaybookTemplate, AutomationTask, AutomationInventory, AnsibleExecutionJob, AnsibleExecutionTarget
+from .models import (
+    PlaybookTemplate,
+    AutomationTask,
+    AutomationInventory,
+    AnsibleExecutionJob,
+    AnsibleExecutionTarget,
+    AutomationWorkflowTemplate,
+    AutomationWorkflowRun,
+)
+
+
+WORKFLOW_NODE_TYPES = {'task', 'workflow'}
+WORKFLOW_NODE_CONVERGENCE = {'any', 'all'}
+WORKFLOW_EDGE_CONDITIONS = {'success', 'failure', 'always'}
+_WORKFLOW_TABLE_CODE_COLUMN_CACHE = None
 
 
 def validate_playbook_content_or_raise(content):
@@ -614,3 +631,341 @@ class AutomationInventorySerializer(ModelSerializer):
     def create(self, validated_data):
         validated_data['create_time'] = datetime.now().date()
         return AutomationInventory.objects.create(**validated_data)
+
+
+def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=False, current_workflow_id=None):
+    # 这里只做模板结构合法性校验（字段/引用/DAG），不做运行时递归链拦截。
+    if not isinstance(nodes, list):
+        raise serializers.ValidationError('nodes must be a list')
+    if not isinstance(edges, list):
+        raise serializers.ValidationError('edges must be a list')
+
+    if len(nodes) == 0:
+        if len(edges) > 0:
+            raise serializers.ValidationError('edges must be empty when nodes is empty')
+        if allow_empty:
+            return [], [], ''
+        raise serializers.ValidationError('nodes must be a non-empty list')
+
+    node_map = {}
+    normalized_nodes = []
+    task_ids = []
+    workflow_ids = []
+    for index, node in enumerate(nodes, start=1):
+        if not isinstance(node, dict):
+            raise serializers.ValidationError(f'nodes[{index}] must be an object')
+
+        node_name = str(node.get('name') or '').strip()
+        if not node_name:
+            raise serializers.ValidationError(f'nodes[{index}] name is required')
+
+        node_key = str(node.get('key') or '').strip()
+        if not node_key:
+            node_key = f'node-{index}'
+        if node_key in node_map:
+            raise serializers.ValidationError(f'duplicate node key: {node_key}')
+
+        node_type = str(node.get('node_type') or '').strip().lower()
+        if node_type not in WORKFLOW_NODE_TYPES:
+            raise serializers.ValidationError(f'nodes[{index}] node_type must be one of {sorted(WORKFLOW_NODE_TYPES)}')
+
+        normalized_node = {
+            'key': node_key,
+            'name': node_name,
+            'node_type': node_type,
+            'convergence': 'any',
+        }
+
+        convergence = str(node.get('convergence') or 'any').strip().lower()
+        if convergence not in WORKFLOW_NODE_CONVERGENCE:
+            raise serializers.ValidationError(
+                f'nodes[{index}] convergence must be one of {sorted(WORKFLOW_NODE_CONVERGENCE)}'
+            )
+        normalized_node['convergence'] = convergence
+
+        x_value = node.get('x')
+        y_value = node.get('y')
+        if isinstance(x_value, (int, float)):
+            normalized_node['x'] = float(x_value)
+        if isinstance(y_value, (int, float)):
+            normalized_node['y'] = float(y_value)
+
+        if node_type == 'task':
+            task_id_raw = node.get('task_id')
+            if task_id_raw is None or not str(task_id_raw).isdigit():
+                raise serializers.ValidationError(f'nodes[{index}] task_id is required for task node')
+            task_id = int(task_id_raw)
+            task_ids.append(task_id)
+            normalized_node['task_id'] = task_id
+        else:
+            workflow_id_raw = node.get('workflow_id')
+            if workflow_id_raw is None or not str(workflow_id_raw).isdigit():
+                raise serializers.ValidationError(f'nodes[{index}] workflow_id is required for workflow node')
+            workflow_id = int(workflow_id_raw)
+            workflow_ids.append(workflow_id)
+            normalized_node['workflow_id'] = workflow_id
+
+        node_map[node_key] = normalized_node
+        normalized_nodes.append(normalized_node)
+
+    if task_ids:
+        existing_task_ids = set(AutomationTask.objects.filter(id__in=task_ids).values_list('id', flat=True))
+        missing_task_ids = sorted(set(task_ids) - existing_task_ids)
+        if missing_task_ids:
+            raise serializers.ValidationError(f'task nodes reference missing tasks: {missing_task_ids}')
+
+    if workflow_ids:
+        existing_workflow_ids = set(AutomationWorkflowTemplate.objects.filter(id__in=workflow_ids).values_list('id', flat=True))
+        missing_workflow_ids = sorted(set(workflow_ids) - existing_workflow_ids)
+        if missing_workflow_ids:
+            raise serializers.ValidationError(f'workflow nodes reference missing workflows: {missing_workflow_ids}')
+
+    normalized_edges = []
+    graph = {node_key: [] for node_key in node_map.keys()}
+    for index, edge in enumerate(edges, start=1):
+        if not isinstance(edge, dict):
+            raise serializers.ValidationError(f'edges[{index}] must be an object')
+
+        source_key = str(edge.get('source_key') or '').strip()
+        target_key = str(edge.get('target_key') or '').strip()
+        condition = str(edge.get('condition') or '').strip().lower() or 'success'
+        if source_key not in node_map:
+            raise serializers.ValidationError(f'edges[{index}] source_key does not exist: {source_key}')
+        if target_key not in node_map:
+            raise serializers.ValidationError(f'edges[{index}] target_key does not exist: {target_key}')
+        if condition not in WORKFLOW_EDGE_CONDITIONS:
+            raise serializers.ValidationError(
+                f'edges[{index}] condition must be one of {sorted(WORKFLOW_EDGE_CONDITIONS)}'
+            )
+
+        normalized_edge = {
+            'source_key': source_key,
+            'target_key': target_key,
+            'condition': condition,
+        }
+        normalized_edges.append(normalized_edge)
+        graph[source_key].append(target_key)
+
+    # 标准 DFS 染色法检测环：0=未访问，1=访问中，2=访问完成。
+    color = {node_key: 0 for node_key in node_map.keys()}
+
+    def _visit(node_key):
+        if color[node_key] == 1:
+            return True
+        if color[node_key] == 2:
+            return False
+
+        color[node_key] = 1
+        for child in graph.get(node_key, []):
+            if _visit(child):
+                return True
+        color[node_key] = 2
+        return False
+
+    for node_key in node_map.keys():
+        if color[node_key] == 0 and _visit(node_key):
+            raise serializers.ValidationError('workflow graph must be a DAG; cycle detected')
+
+    # Entry node is no longer used by workflow runtime; keep it empty for backward-compatible storage.
+    return normalized_nodes, normalized_edges, ''
+
+
+class AutomationWorkflowTemplateSerializer(ModelSerializer):
+    node_count = serializers.SerializerMethodField()
+    edge_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AutomationWorkflowTemplate
+        fields = '__all__'
+        extra_kwargs = {
+            'entry_node_key': {'required': False, 'allow_blank': True},
+        }
+
+    def get_node_count(self, obj):
+        return len(obj.nodes) if isinstance(obj.nodes, list) else 0
+
+    def get_edge_count(self, obj):
+        return len(obj.edges) if isinstance(obj.edges, list) else 0
+
+    def validate_default_extra_vars(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('default_extra_vars must be an object')
+        return value
+
+    def validate(self, attrs):
+        source_nodes = attrs.get('nodes', self.instance.nodes if self.instance is not None else None)
+        source_edges = attrs.get('edges', self.instance.edges if self.instance is not None else None)
+        source_entry = ''
+        allow_empty_graph = self.instance is None
+
+        normalized_nodes, normalized_edges, normalized_entry = validate_workflow_graph_or_raise(
+            source_nodes,
+            source_edges,
+            source_entry,
+            allow_empty=allow_empty_graph,
+            current_workflow_id=self.instance.id if self.instance is not None else None,
+        )
+        attrs['nodes'] = normalized_nodes
+        attrs['edges'] = normalized_edges
+        attrs['entry_node_key'] = ''
+        return attrs
+
+    def create(self, validated_data):
+        validated_data['create_time'] = datetime.now().date()
+        try:
+            return AutomationWorkflowTemplate.objects.create(**validated_data)
+        except IntegrityError as exc:
+            # Backward compatibility: some databases still keep a required `code` column.
+            if 'code' not in str(exc).lower() or not _workflow_table_has_code_column():
+                raise
+            return _create_workflow_with_legacy_code(validated_data)
+
+
+def _workflow_table_has_code_column():
+    global _WORKFLOW_TABLE_CODE_COLUMN_CACHE
+    if _WORKFLOW_TABLE_CODE_COLUMN_CACHE is not None:
+        return _WORKFLOW_TABLE_CODE_COLUMN_CACHE
+
+    table_name = AutomationWorkflowTemplate._meta.db_table
+    with connection.cursor() as cursor:
+        description = connection.introspection.get_table_description(cursor, table_name)
+    column_names = {item.name for item in description}
+    _WORKFLOW_TABLE_CODE_COLUMN_CACHE = 'code' in column_names
+    return _WORKFLOW_TABLE_CODE_COLUMN_CACHE
+
+
+def _create_workflow_with_legacy_code(validated_data):
+    table_name = AutomationWorkflowTemplate._meta.db_table
+    now_date = timezone.localdate()
+    code_value = f"wf-{int(datetime.now().timestamp() * 1000)}"
+    nodes_json = json.dumps(validated_data.get('nodes', []), ensure_ascii=False)
+    edges_json = json.dumps(validated_data.get('edges', []), ensure_ascii=False)
+    default_extra_vars_json = json.dumps(validated_data.get('default_extra_vars', {}), ensure_ascii=False)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {table_name}
+            (name, description, enabled, entry_node_key, nodes, edges, default_extra_vars, remark, create_time, update_time, code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                validated_data.get('name', ''),
+                validated_data.get('description', ''),
+                bool(validated_data.get('enabled', True)),
+                validated_data.get('entry_node_key', ''),
+                nodes_json,
+                edges_json,
+                default_extra_vars_json,
+                validated_data.get('remark', ''),
+                validated_data.get('create_time', now_date),
+                now_date,
+                code_value,
+            ],
+        )
+        new_id = cursor.lastrowid
+
+    return AutomationWorkflowTemplate.objects.get(id=new_id)
+
+
+class AutomationWorkflowRunSerializer(ModelSerializer):
+    workflow_name = serializers.SerializerMethodField()
+    workflow_nodes = serializers.SerializerMethodField()
+    workflow_edges = serializers.SerializerMethodField()
+    node_results_runtime = serializers.SerializerMethodField()
+    runtime_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AutomationWorkflowRun
+        fields = '__all__'
+
+    def get_workflow_name(self, obj):
+        return obj.workflow.name if obj.workflow_id else ''
+
+    def get_workflow_nodes(self, obj):
+        summary = obj.result_summary if isinstance(obj.result_summary, dict) else {}
+        snapshot_nodes = summary.get('workflow_nodes_snapshot', [])
+        if isinstance(snapshot_nodes, list):
+            return snapshot_nodes
+
+        workflow = getattr(obj, 'workflow', None)
+        nodes = getattr(workflow, 'nodes', []) if workflow is not None else []
+        return nodes if isinstance(nodes, list) else []
+
+    def get_workflow_edges(self, obj):
+        summary = obj.result_summary if isinstance(obj.result_summary, dict) else {}
+        snapshot_edges = summary.get('workflow_edges_snapshot', [])
+        if isinstance(snapshot_edges, list):
+            return snapshot_edges
+
+        workflow = getattr(obj, 'workflow', None)
+        edges = getattr(workflow, 'edges', []) if workflow is not None else []
+        return edges if isinstance(edges, list) else []
+
+    def get_node_results_runtime(self, obj):
+        source_results = obj.node_results if isinstance(obj.node_results, list) else []
+        if not source_results:
+            return []
+
+        job_ids = []
+        normalized_results = []
+        for item in source_results:
+            if not isinstance(item, dict):
+                continue
+            copied = dict(item)
+            job_id = copied.get('job_id')
+            if str(job_id).isdigit():
+                job_ids.append(int(job_id))
+            normalized_results.append(copied)
+
+        job_status_map = {}
+        if job_ids:
+            rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('id', 'status')
+            job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
+
+        for item in normalized_results:
+            job_id = item.get('job_id')
+            if not str(job_id).isdigit():
+                continue
+
+            live_status = job_status_map.get(int(job_id), '')
+            if not live_status:
+                continue
+
+            if live_status in {'pending', 'running', 'success', 'failed', 'cancelled'}:
+                item['status'] = live_status
+
+        return normalized_results
+
+    def get_runtime_status(self, obj):
+        node_results = self.get_node_results_runtime(obj)
+        statuses = [str(item.get('status') or '').lower() for item in node_results if isinstance(item, dict)]
+
+        if any(status in {'running', 'pending', 'queued', 'waiting', 'waiting_approval'} for status in statuses):
+            return 'running'
+
+        workflow_edges = self.get_workflow_edges(obj)
+        error_handler_sources = set()
+        for edge in workflow_edges:
+            if not isinstance(edge, dict):
+                continue
+            source_key = str(edge.get('source_key') or '').strip()
+            condition = str(edge.get('condition') or 'success').strip().lower() or 'success'
+            if source_key and condition in {'failure', 'always'}:
+                error_handler_sources.add(source_key)
+
+        has_unhandled_failure = False
+        for item in node_results:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get('status') or '').lower()
+            if status not in {'failed', 'cancelled'}:
+                continue
+            node_key = str(item.get('node_key') or '').strip()
+            if node_key not in error_handler_sources:
+                has_unhandled_failure = True
+                break
+
+        if statuses:
+            return 'failed' if has_unhandled_failure else 'success'
+        return str(obj.status or '').lower()

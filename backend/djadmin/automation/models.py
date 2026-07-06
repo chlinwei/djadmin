@@ -135,3 +135,57 @@ class AnsibleExecutionTarget(BaseModel):
 
     def __str__(self):
         return f'{self.job.job_id} - {self.host_name or self.host_ip}'
+
+
+class AutomationWorkflowTemplate(BaseModel):
+    name = models.CharField(max_length=128, unique=True)
+    description = models.CharField(max_length=255, blank=True, default='')
+    enabled = models.BooleanField(default=True)
+    entry_node_key = models.CharField(max_length=128)
+    nodes = models.JSONField(default=list, blank=True)
+    edges = models.JSONField(default=list, blank=True)
+    default_extra_vars = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'automation_workflow_template'
+        ordering = ['-id']
+
+    def __str__(self):
+        return self.name
+
+
+class AutomationWorkflowRun(BaseModel):
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        RUNNING = 'running', 'Running'
+        WAITING_APPROVAL = 'waiting_approval', 'Waiting Approval'
+        SUCCESS = 'success', 'Success'
+        FAILED = 'failed', 'Failed'
+
+    class TriggerType(models.TextChoices):
+        MANUAL = 'manual', 'Manual'
+        SCHEDULE = 'schedule', 'Schedule'
+
+    workflow = models.ForeignKey(AutomationWorkflowTemplate, on_delete=models.CASCADE, related_name='runs')
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.MANUAL)
+    workflow_name_snapshot = models.CharField(max_length=128, blank=True, default='')
+    workflow_code_snapshot = models.CharField(max_length=128, blank=True, default='')
+    planned_node_keys = models.JSONField(default=list, blank=True)
+    node_results = models.JSONField(default=list, blank=True)
+    extra_vars = models.JSONField(default=dict, blank=True)
+    result_summary = models.JSONField(default=dict, blank=True)
+
+    requested_user_id = models.IntegerField(null=True, blank=True)
+    requested_username = models.CharField(max_length=100, blank=True, default='')
+
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'automation_workflow_run'
+        ordering = ['-id']
+
+    def __str__(self):
+        return f'{self.workflow_name_snapshot or self.workflow_id} [{self.status}]'

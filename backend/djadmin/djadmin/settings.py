@@ -275,4 +275,4 @@ APPEND_SLASH = False
 
 # Runserver default binding. Can be overridden by command args.
 SERVER_HOST = os.getenv('DJADMIN_SERVER_HOST', '0.0.0.0')
-SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '8000'))
+SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '9000'))

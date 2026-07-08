@@ -54,12 +54,17 @@
           </template>
           <template #node-workflow-node="nodeProps">
             <div class="workflow-node-wrap">
-              <div
-                class="workflow-node-card"
-                :class="`status-${normalizeNodeStatus(nodeProps.data?.status)}`"
+              <a-tooltip
+                :title="nodeProps.data?.nodeMessage || ''"
+                :visible="!!(nodeProps.data?.nodeMessage)"
+                placement="topLeft"
               >
-                <Handle type="target" :position="Position.Left" :connectable="false" />
-                <Handle type="source" :position="Position.Right" :connectable="false" />
+                <div
+                  class="workflow-node-card"
+                  :class="`status-${normalizeNodeStatus(nodeProps.data?.status)}`"
+                >
+                  <Handle type="target" :position="Position.Left" :connectable="false" />
+                  <Handle type="source" :position="Position.Right" :connectable="false" />
 
                 <div class="workflow-node-state-icon" :class="`icon-${normalizeNodeStatus(nodeProps.data?.status)}`">
                   {{ getNodeStatusIcon(nodeProps.data?.status) }}
@@ -125,6 +130,7 @@
                 </div>
                 <div class="workflow-node-runtime">{{ toNodeStatusLabel(nodeProps.data?.status) }}</div>
               </div>
+              </a-tooltip>
               <div
                 class="workflow-node-name"
               >
@@ -422,12 +428,17 @@ function buildGraph(data) {
   const nodeJobTemplateNameMap = {}
   const nodeJobTaskIdMap = {}
   const nodeJobTemplateIdMap = {}
+  const nodeMessageMap = {}
   nodeResults.forEach((item) => {
     const key = String(item?.node_key || '').trim()
     if (!key) {
       return
     }
     nodeStatusMap[key] = normalizeNodeStatus(item?.status)
+    const message = String(item?.message || '').trim()
+    if (message) {
+      nodeMessageMap[key] = message
+    }
     const jobId = Number(item?.job_id)
     if (Number.isInteger(jobId) && jobId > 0) {
       nodeJobIdMap[key] = jobId
@@ -526,6 +537,7 @@ function buildGraph(data) {
           : null,
         convergence: String(item?.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
         jobId: nodeJobIdMap[key] || null,
+        nodeMessage: nodeMessageMap[key] || null,
       },
       style: {
         border: 'none',

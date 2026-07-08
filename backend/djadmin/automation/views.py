@@ -38,6 +38,7 @@ from .serializer import (
     AutomationWorkflowTemplateSerializer,
     AutomationWorkflowRunSerializer,
     validate_playbook_content_or_raise,
+    check_workflow_cycle_at_runtime,
 )
 from .executor import build_inventory_snapshot
 from .tasks import execute_ansible_job_task
@@ -340,6 +341,11 @@ def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict) 
     child_workflow_nodes_snapshot = child_workflow.nodes if isinstance(child_workflow.nodes, list) else []
     if len(child_workflow_nodes_snapshot) == 0:
         return False, f'Workflow {workflow_id} plan is empty', None, None
+
+    # 在派发前检测该工作流内部是否存在循环引用
+    is_cycle, cycle_error_msg = check_workflow_cycle_at_runtime(target_workflow_id, child_workflow_nodes_snapshot)
+    if is_cycle:
+        return False, cycle_error_msg, None, None
 
     child_ancestor_template_ids = list(ancestor_template_ids)
     child_ancestor_template_ids.append(target_workflow_id)

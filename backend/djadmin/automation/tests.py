@@ -409,3 +409,209 @@ class AutomationWorkflowTest(BaseTestCase):
 			self.assertEqual(node_result['template_name_snapshot'], self.template.name)
 			self.assertTrue(node_result.get('job_id'))
 			mock_delay.assert_called_once()
+
+	def test_workflow_can_be_edited_with_circular_reference(self):
+		"""Test that workflows can be edited to contain circular references (validation deferred to runtime)."""
+		# 创建工作流 A
+		res1 = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow A for edit cycle test',
+				'description': 'workflow A',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': 'task in A', 'node_type': 'task', 'task_id': self.task.id}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow_a = self.assertResponseOK(res1)['data']
+
+		# 创建工作流 B
+		res2 = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow B for edit cycle test',
+				'description': 'workflow B',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow_b = self.assertResponseOK(res2)['data']
+
+		# 编辑 A 引用 B（应该成功 - 编辑时不检测循环）
+		res3 = self.client.patch(
+			f'/sys/automation/workflows/{workflow_a["id"]}/',
+			{
+				'nodes': [
+					{'key': 'n1', 'name': 'task in A', 'node_type': 'task', 'task_id': self.task.id},
+					{'key': 'n2', 'name': 'ref to B', 'node_type': 'workflow', 'workflow_id': workflow_b['id']}
+				],
+			},
+			format='json',
+		)
+		body = self.assertResponseOK(res3)
+		self.assertEqual(res3.status_code, 200)
+
+		# 编辑 B 引用 A，形成循环（应该成功 - 编辑时不检测循环）
+		res4 = self.client.patch(
+			f'/sys/automation/workflows/{workflow_b["id"]}/',
+			{
+				'nodes': [
+					{'key': 'n1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id},
+					{'key': 'n2', 'name': 'ref to A', 'node_type': 'workflow', 'workflow_id': workflow_a['id']}
+				],
+			},
+			format='json',
+		)
+		body = self.assertResponseOK(res4)
+		self.assertEqual(res4.status_code, 200)
+		# 验证编辑成功，工作流现在有 2 个节点
+		self.assertEqual(body['data']['node_count'], 2)
+
+	def test_workflow_with_valid_nested_workflow_node(self):
+		"""Test that valid workflow nesting (without cycles) works in edit and at runtime."""
+		res1 = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow B - referenceable',
+				'description': 'simple workflow to be referenced',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow_b = self.assertResponseOK(res1)['data']
+
+		res2 = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow A - container',
+				'description': 'workflow containing a task and a reference to B',
+				'enabled': True,
+				'nodes': [
+					{'key': 'n1', 'name': 'task in A', 'node_type': 'task', 'task_id': self.task.id},
+					{'key': 'n2', 'name': 'ref to B', 'node_type': 'workflow', 'workflow_id': workflow_b['id']}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		body = self.assertResponseOK(res2)
+		self.assertEqual(res2.status_code, 200)
+		self.assertEqual(body['data']['node_count'], 2)
+
+	def test_workflow_cycle_detected_at_runtime(self):
+		"""Test that workflow cycles are detected when executing workflow nodes.
+		
+		This test verifies that:
+		1. Launching a workflow with cycle succeeds initially (status='running')
+		2. When the workflow node is dispatched, cycle is detected
+		3. The workflow node fails with cycle error message
+		4. The workflow itself becomes failed
+		5. Error message is visible in API response
+		"""
+		# 创建工作流 B - 稍后会被 A 引用
+		res_b = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow B',
+				'description': 'workflow B',
+				'enabled': True,
+				'nodes': [
+					{'key': 'nb1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow_b = self.assertResponseOK(res_b)['data']
+		workflow_b_id = workflow_b['id']
+
+		# 创建工作流 A，引用 B
+		res_a = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow A',
+				'description': 'workflow A references B',
+				'enabled': True,
+				'nodes': [
+					{'key': 'na1', 'name': 'ref to B', 'node_type': 'workflow', 'workflow_id': workflow_b_id}
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow_a = self.assertResponseOK(res_a)['data']
+		workflow_a_id = workflow_a['id']
+
+		# 编辑 B，引用 A，形成循环 A -> B -> A
+		res_patch_b = self.client.patch(
+			f'/sys/automation/workflows/{workflow_b_id}/',
+			{
+				'nodes': [
+					{'key': 'nb1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id},
+					{'key': 'nb2', 'name': 'ref to A', 'node_type': 'workflow', 'workflow_id': workflow_a_id}
+				],
+				'edges': [
+					{'source_key': 'nb1', 'target_key': 'nb2', 'condition': 'success'}
+				],
+			},
+			format='json',
+		)
+		self.assertResponseOK(res_patch_b)
+
+		# 启动工作流 A
+		res_launch = self.client.post(
+			f'/sys/automation/workflows/{workflow_a_id}/launch/',
+			{},
+			format='json',
+		)
+		launch_body = self.assertResponseOK(res_launch)
+		run_id = launch_body['data']['id']
+		
+		# 启动应该成功，状态可能是 running 或 failed（如果立即检测到循环）
+		self.assertEqual(res_launch.status_code, 200)
+		self.assertIn(launch_body['data']['status'], {'running', 'pending', 'failed'})
+
+		# 获取运行状态
+		res_detail = self.client.get(
+			f'/sys/automation/workflow-runs/{run_id}/',
+			format='json',
+		)
+		detail_body = self.assertResponseOK(res_detail)
+		node_results = detail_body['data'].get('node_results_runtime', [])
+		
+		# 验证包含循环检测的错误消息
+		self.assertTrue(len(node_results) > 0, f'Expected node_results_runtime, got: {node_results}')
+		
+		cycle_error_found = False
+		for node in node_results:
+			node_key = node.get('node_key', '')
+			node_status = node.get('status', '')
+			message = node.get('message', '')
+			
+			# 派发到 B 时应该检测到循环
+			if node_key == 'na1' and node_status == 'failed':
+				error_msg_lower = str(message).lower()
+				# 检查是否包含循环检测相关的关键词
+				if 'circular' in error_msg_lower or 'cycle' in error_msg_lower:
+					cycle_error_found = True
+					print(f'✓ Cycle detected with error message: {message}')
+		
+		self.assertTrue(cycle_error_found, 
+			f'Expected cycle error message in node. Nodes: {node_results}')

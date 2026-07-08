@@ -27,6 +27,139 @@ from .workflow_runtime import get_workflow_runtime_status
 WORKFLOW_NODE_TYPES = {'task', 'workflow'}
 WORKFLOW_NODE_CONVERGENCE = {'any', 'all'}
 WORKFLOW_EDGE_CONDITIONS = {'success', 'failure', 'always'}
+
+
+def _build_workflow_refs_graph(start_workflow_id, workflow_ids, nodes_snapshot=None):
+    """
+    构建工作流引用图。
+    
+    Args:
+        start_workflow_id: 当前工作流 ID
+        workflow_ids: 被引用的工作流 ID 列表
+        nodes_snapshot: 当前工作流的 nodes 快照（用于运行时）
+    
+    Returns:
+        workflow_refs: {workflow_id -> set of referenced workflow_ids}
+    """
+    if not start_workflow_id or not workflow_ids:
+        return {}
+
+    all_workflows = AutomationWorkflowTemplate.objects.filter(
+        id__in=set([start_workflow_id] + list(workflow_ids))
+    ).values('id', 'nodes')
+    
+    workflow_refs = {}
+    for wf in all_workflows:
+        wf_id = wf['id']
+        workflow_refs.setdefault(wf_id, set())
+        
+        # 对于当前工作流，优先使用 nodes_snapshot；否则从数据库查询
+        nodes = nodes_snapshot if wf_id == start_workflow_id and nodes_snapshot else (wf.get('nodes') or [])
+        for node in nodes:
+            if isinstance(node, dict) and node.get('node_type') == 'workflow':
+                ref_id = node.get('workflow_id')
+                if ref_id and isinstance(ref_id, int):
+                    workflow_refs[wf_id].add(ref_id)
+    
+    return workflow_refs
+
+
+def _dfs_detect_cycle(start_wf_id, workflow_refs):
+    """
+    DFS 遍历检测循环，返回循环路径或 None。
+    
+    Args:
+        start_wf_id: 起始工作流 ID
+        workflow_refs: 工作流引用图
+    
+    Returns:
+        (is_cycle, cycle_path_str) - is_cycle: bool, cycle_path_str: 循环路径描述或 None
+    """
+    visited = set()
+    visiting = set()
+    path_stack = []  # 记录访问路径用于错误信息
+    
+    def dfs(wf_id):
+        if wf_id in visiting:
+            # 找到环：构建环路径描述
+            cycle_start_idx = next((i for i, x in enumerate(path_stack) if x == wf_id), 0)
+            cycle_path = ' → '.join(str(x) for x in path_stack[cycle_start_idx:] + [wf_id])
+            return cycle_path
+        
+        if wf_id in visited:
+            return None
+        
+        visiting.add(wf_id)
+        path_stack.append(wf_id)
+        
+        for ref_id in workflow_refs.get(wf_id, set()):
+            result = dfs(ref_id)
+            if result:  # 找到了循环
+                return result
+        
+        path_stack.pop()
+        visiting.discard(wf_id)
+        visited.add(wf_id)
+        return None
+    
+    if start_wf_id:
+        cycle_path = dfs(start_wf_id)
+        return (bool(cycle_path), cycle_path)
+    
+    return (False, None)
+
+
+def _detect_workflow_cycle(start_workflow_id, referenced_workflow_ids, new_nodes=None):
+    """
+    检测跨工作流的循环引用（例如：workflow A → B → A）。
+    用于序列化器验证阶段，抛出异常。
+    """
+    if not start_workflow_id or not referenced_workflow_ids:
+        return
+
+    workflow_refs = _build_workflow_refs_graph(start_workflow_id, referenced_workflow_ids, new_nodes)
+    is_cycle, cycle_path = _dfs_detect_cycle(start_workflow_id, workflow_refs)
+    
+    if is_cycle:
+        raise serializers.ValidationError(
+            f'cross-workflow cycle detected: {cycle_path}'
+        )
+
+
+def check_workflow_cycle_at_runtime(workflow_id, nodes_snapshot):
+    """
+    在运行时检测工作流循环。
+    
+    Args:
+        workflow_id: 要执行的工作流 ID
+        nodes_snapshot: 工作流的 nodes 快照
+    
+    Returns:
+        (is_cycle, error_message) - is_cycle: bool, error_message: 错误描述或 None
+    """
+    if not workflow_id or not nodes_snapshot:
+        return (False, None)
+    
+    # 提取引用的工作流 ID
+    referenced_workflow_ids = {
+        node.get('workflow_id')
+        for node in nodes_snapshot
+        if isinstance(node, dict) and node.get('node_type') == 'workflow' and node.get('workflow_id')
+    }
+    
+    if not referenced_workflow_ids:
+        return (False, None)
+    
+    workflow_refs = _build_workflow_refs_graph(workflow_id, referenced_workflow_ids, nodes_snapshot)
+    is_cycle, cycle_path = _dfs_detect_cycle(workflow_id, workflow_refs)
+    
+    if is_cycle:
+        error_msg = f'Workflow execution blocked: circular reference detected - {cycle_path}'
+        return (True, error_msg)
+    
+    return (False, None)
+
+
 _WORKFLOW_TABLE_CODE_COLUMN_CACHE = None
 
 
@@ -863,10 +996,19 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
     workflow_edges = serializers.SerializerMethodField()
     node_results_runtime = serializers.SerializerMethodField()
     runtime_status = serializers.SerializerMethodField()
+    error_message = serializers.SerializerMethodField()
 
     class Meta:
         model = AutomationWorkflowRun
         fields = '__all__'
+
+    def get_error_message(self, instance):
+        """如果运行失败，从 result_summary 中提取错误信息。"""
+        if instance.status != AutomationWorkflowRun.Status.FAILED:
+            return None
+        if not isinstance(instance.result_summary, dict):
+            return None
+        return instance.result_summary.get('error')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

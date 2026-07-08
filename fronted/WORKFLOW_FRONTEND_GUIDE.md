@@ -14,7 +14,7 @@
 ### 1.1 workflow.vue（列表页）
 
 - 展示 workflow 模板列表。
-- 支持新增、编辑、预演、启动、删除。
+- 支持新增、编辑、启动、删除。
 - 展示 workflow 运行记录并支持取消运行。
 - 从列表中的运行记录跳转到状态图页面。
 
@@ -47,7 +47,6 @@
   - createWorkflow
   - updateWorkflow
   - deleteWorkflow
-  - previewWorkflow
   - launchWorkflow
 - 运行：
   - getWorkflowRunList

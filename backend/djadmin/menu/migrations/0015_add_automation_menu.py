@@ -91,7 +91,7 @@ def add_automation_menu(apps, schema_editor):
     automation_page = _ensure_menu(
         SysMenu,
         today,
-        name='自动化执行中心',
+        name='自动化任务',
         menu_type='C',
         perms='automation:playbooks:view',
         path='/sys/automation',

@@ -121,8 +121,9 @@
                   <FontAwesomeIcon :icon="['fas', 'play']" />
                 </a-button>
               </a-tooltip>
-              <a-tooltip title="日志列表">
+              <a-tooltip title="历史记录">
                 <a-button size="small" @click="viewTaskLogs(record)" v-permission="'automation:jobs:view'">
+                  历史记录
                   <FontAwesomeIcon :icon="['fas', 'list']" />
                 </a-button>
               </a-tooltip>
@@ -244,6 +245,52 @@
             placeholder='例如: {"env":"prod","batch":20}'
           />
         </a-form-item>
+
+        <a-divider orientation="left" style="margin: 16px 0">权限提升配置</a-divider>
+
+        <a-row :gutter="12">
+          <a-col :span="12">
+            <a-form-item label="权限提升">
+              <a-switch
+                v-model:checked="taskForm.become_enabled"
+                checked-children="启用"
+                un-checked-children="禁用"
+              />
+              <span style="margin-left: 8px; color: #666; font-size: 12px">
+                在目标主机上以指定用户（如 root）身份执行任务
+              </span>
+            </a-form-item>
+          </a-col>
+        </a-row>
+
+        <a-row :gutter="12" v-if="taskForm.become_enabled">
+          <a-col :span="12">
+            <a-form-item label="提升方式">
+              <a-select
+                v-model:value="taskForm.become_method"
+                :options="[
+                  { label: 'sudo', value: 'sudo' },
+                  { label: 'su', value: 'su' }
+                ]"
+                placeholder="选择权限提升方式"
+              />
+              <a-alert
+                type="info"
+                show-icon
+                message="sudo: 安全且可配置免密，推荐使用；su: 需要目标用户密码"
+                style="margin-top: 8px"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="目标用户">
+              <a-input
+                v-model:value="taskForm.become_user"
+                placeholder="root"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
 
         <a-form-item label="备注">
           <a-textarea v-model:value="taskForm.remark" :rows="2" />
@@ -495,6 +542,10 @@ const taskForm = reactive({
   env_vars_text: '',
   enabled: true,
   remark: '',
+  // 权限提升配置
+  become_enabled: false,
+  become_method: 'sudo',
+  become_user: 'root',
 })
 
 const taskColumns = [
@@ -1365,6 +1416,10 @@ function resetTaskForm() {
   taskForm.env_vars_text = ''
   taskForm.enabled = true
   taskForm.remark = ''
+  // 权限提升配置
+  taskForm.become_enabled = false
+  taskForm.become_method = 'sudo'
+  taskForm.become_user = 'root'
   groupScopeEditorVisible.value = false
   groupScopeCheckedKeys.value = []
   clearTaskLimitPrecheckTimer()
@@ -1398,6 +1453,10 @@ function openEditModal(record, options = {}) {
   taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
   taskForm.enabled = !!record.enabled
   taskForm.remark = record.remark || ''
+  // 权限提升配置
+  taskForm.become_enabled = !!record.become_enabled
+  taskForm.become_method = record.become_method || 'sudo'
+  taskForm.become_user = record.become_user || 'root'
   taskModalVisible.value = showTaskModal
   groupScopeEditorVisible.value = false
   syncGroupScopeCheckedKeys()
@@ -1458,6 +1517,10 @@ async function submitTask() {
     env_vars: envVars,
     enabled: !!taskForm.enabled,
     remark: taskForm.remark || '',
+    // 权限提升配置
+    become_enabled: !!taskForm.become_enabled,
+    become_method: taskForm.become_method || 'sudo',
+    become_user: taskForm.become_user || 'root',
   }
 
   modalSubmitting.value = true

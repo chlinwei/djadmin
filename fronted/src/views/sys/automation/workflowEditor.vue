@@ -22,25 +22,53 @@
           :nodes-draggable="true"
           :nodes-connectable="true"
           :elements-selectable="true"
-          class="workflow-canvas"
+          :connection-mode="ConnectionMode.Strict"
+          :class="['workflow-canvas', { 'is-connecting': isConnecting }]"
           @connect="handleConnect"
+          @connect-start="handleConnectStart"
+          @connect-end="handleConnectEnd"
           @node-click="handleNodeClick"
           @edge-click="handleEdgeClick"
           @pane-click="clearSelection"
         >
           <template #node-workflow-start-node>
             <div class="workflow-start-node-card">
-              <Handle type="source" :position="Position.Right" :connectable="false" />
+              <Handle
+                type="source"
+                :position="Position.Right"
+                :connectable="false"
+                :connectable-start="false"
+                :connectable-end="false"
+              />
               START
             </div>
           </template>
           <template #node-workflow-node="nodeProps">
             <div class="workflow-node-wrap">
               <div class="workflow-node-card" @click.stop="handleNodeCardClick(nodeProps.id)">
-                <Handle type="target" :position="Position.Left" />
-                <Handle type="source" :position="Position.Right" />
+                <Handle
+                  type="target"
+                  :position="Position.Left"
+                  class="workflow-target-handle"
+                  :connectable-start="false"
+                  :connectable-end="true"
+                />
+                <Handle
+                  type="source"
+                  :position="Position.Right"
+                  class="workflow-source-handle"
+                  :connectable-start="true"
+                  :connectable-end="false"
+                />
 
-                <div class="workflow-node-subtitle">{{ nodeProps.data?.node_type === 'workflow' ? 'Workflow节点' : '任务节点' }}</div>
+                <div
+                  class="workflow-node-type-icon"
+                  :class="nodeProps.data?.node_type === 'workflow' ? 'is-workflow' : 'is-task'"
+                  :title="nodeProps.data?.node_type === 'workflow' ? 'Workflow 节点' : '任务节点'"
+                >
+                  <ApartmentOutlined v-if="nodeProps.data?.node_type === 'workflow'" />
+                  <ToolOutlined v-else />
+                </div>
                 <div
                   v-if="String(nodeProps.data?.convergence || 'any').toLowerCase() === 'all'"
                   class="workflow-node-convergence-tag"
@@ -49,7 +77,30 @@
                 </div>
 
                 <div v-if="nodeProps.data?.node_type === 'task'" class="workflow-node-quick-actions">
-                  <button type="button" class="node-quick-btn" @click.stop="openTaskDetailByNodeId(nodeProps.id)">任务</button>
+                  <span class="node-quick-ref-name" :title="resolveTaskNameByNodeData(nodeProps.data)">
+                    {{ resolveTaskNameByNodeData(nodeProps.data) }}
+                  </span>
+                  <button
+                    type="button"
+                    class="node-quick-btn"
+                    :title="resolveTaskNameByNodeData(nodeProps.data)"
+                    @click.stop="openTaskDetailByNodeId(nodeProps.id)"
+                  >
+                    详细
+                  </button>
+                </div>
+                <div v-else-if="nodeProps.data?.node_type === 'workflow'" class="workflow-node-quick-actions">
+                  <span class="node-quick-ref-name" :title="resolveWorkflowNameByNodeData(nodeProps.data)">
+                    {{ resolveWorkflowNameByNodeData(nodeProps.data) }}
+                  </span>
+                  <button
+                    type="button"
+                    class="node-quick-btn"
+                    :title="resolveWorkflowNameByNodeData(nodeProps.data)"
+                    @click.stop="openWorkflowDetailByNodeId(nodeProps.id)"
+                  >
+                    详细
+                  </button>
                 </div>
 
                 <div class="workflow-node-tools" :class="{ visible: selectedNodeId === nodeProps.id }">
@@ -153,7 +204,7 @@
               </a-form-item>
 
               <a-form-item label="节点名称" required>
-                <a-input v-model:value="addNodeWizardForm.name" placeholder="例如：任务节点1" />
+                <a-input v-model:value="addNodeWizardForm.name" placeholder="例如：任务节点" />
               </a-form-item>
 
               <a-form-item v-if="addNodeWizardForm.node_type === 'task'" label="执行任务" required>
@@ -306,27 +357,6 @@
       </div>
     </a-modal>
 
-    <a-modal
-      title="编辑连线"
-      :open="edgeEditVisible"
-      ok-text="保存"
-      cancel-text="取消"
-      @ok="saveEdgeEdit"
-      @cancel="edgeEditVisible = false"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="来源节点">
-          <a-input :value="resolveNodeNameByKey(edgeEditForm.source)" readonly />
-        </a-form-item>
-        <a-form-item label="目标节点">
-          <a-input :value="resolveNodeNameByKey(edgeEditForm.target)" readonly />
-        </a-form-item>
-        <a-form-item label="条件">
-          <a-select v-model:value="edgeEditForm.condition" :options="edgeConditionOptions" />
-        </a-form-item>
-        <a-button danger @click="removeCurrentEditingEdge">删除连线</a-button>
-      </a-form>
-    </a-modal>
   </div>
 </template>
 
@@ -334,7 +364,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
-import { VueFlow, Handle, Position, MarkerType } from '@vue-flow/core'
+import { ApartmentOutlined, ToolOutlined } from '@ant-design/icons-vue'
+import { VueFlow, Handle, Position, MarkerType, ConnectionMode } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import {
   getTaskList,
@@ -350,6 +381,8 @@ const START_NODE_ID = 'start'
 const START_EDGE_PREFIX = 'start-edge-'
 const WORKFLOW_EDGE_TYPE = 'smoothstep'
 const WORKFLOW_EDGE_PATH_OPTIONS = { borderRadius: 18, offset: 20 }
+const TASK_DEFAULT_NODE_NAME = '任务节点'
+const WORKFLOW_DEFAULT_NODE_NAME = 'Workflow节点'
 
 function normalizeEdgeCondition(condition) {
   const text = String(condition || 'success').trim().toLowerCase()
@@ -402,22 +435,38 @@ const flowEdges = ref([])
 const canvasWrapRef = ref(null)
 const selectedNodeId = ref('')
 const selectedEdgeId = ref('')
+const isConnecting = ref(false)
 const edgeQuickPosition = reactive({ top: 12, left: 12 })
 
-const edgeConditionOptions = [
-  { label: '成功 (success)', value: 'success' },
-  { label: '失败 (failure)', value: 'failure' },
-  { label: '总是 (always)', value: 'always' },
-]
 const convergenceOptions = [
   { label: 'Any（任一父节点满足即可）', value: 'any' },
   { label: 'All（所有父节点都要满足）', value: 'all' },
 ]
 
 const taskOptions = computed(() => taskRecords.value.map((item) => ({ label: `${item.name} (${item.code})`, value: item.id })))
+const taskNameMap = computed(() => {
+  const map = new Map()
+  taskRecords.value.forEach((item) => {
+    const id = Number(item.id)
+    if (Number.isInteger(id) && id > 0) {
+      map.set(id, String(item.name || '').trim())
+    }
+  })
+  return map
+})
 const workflowOptions = computed(() => workflowRecords.value
   .filter((item) => Number(item.id || 0) > 0)
   .map((item) => ({ label: `${item.name}`, value: item.id })))
+const workflowNameMap = computed(() => {
+  const map = new Map()
+  workflowRecords.value.forEach((item) => {
+    const id = Number(item.id)
+    if (Number.isInteger(id) && id > 0) {
+      map.set(id, String(item.name || '').trim())
+    }
+  })
+  return map
+})
 const selectedNode = computed(() => flowNodes.value.find((item) => item.id === selectedNodeId.value))
 const selectedEdge = computed(() => flowEdges.value.find((item) => item.id === selectedEdgeId.value))
 const selectedEditableEdge = computed(() => {
@@ -449,7 +498,6 @@ const routeWorkflowId = computed(() => {
 const addNodeWizardVisible = ref(false)
 const basicInfoVisible = ref(false)
 const nodeConfigVisible = ref(false)
-const edgeEditVisible = ref(false)
 
 const nodeConfigForm = reactive({
   id: '',
@@ -466,18 +514,11 @@ const nodeConfigHasParentCondition = ref(false)
 const nodeConfigRunTypeEditable = ref(false)
 const nodeConfigRunTypeHint = ref('')
 
-const edgeEditForm = reactive({
-  id: '',
-  source: '',
-  target: '',
-  condition: 'success',
-})
-
 const addNodeWizardForm = reactive({
   parent_node_key: '',
   run_type: 'success',
   node_type: 'task',
-  name: '任务节点1',
+  name: TASK_DEFAULT_NODE_NAME,
   task_id: undefined,
   workflow_id: undefined,
   convergence: 'any',
@@ -564,6 +605,23 @@ function openTaskInNewWindowByNode(node) {
   return true
 }
 
+function openWorkflowInNewWindowByNode(node) {
+  const workflowId = Number(node?.data?.workflow_id)
+  if (!Number.isInteger(workflowId) || workflowId <= 0) {
+    return false
+  }
+
+  const target = router.resolve({
+    path: '/sys/automation/workflow/editor',
+    query: {
+      id: String(workflowId),
+    },
+  })
+
+  window.open(target.href, '_blank', 'noopener,noreferrer')
+  return true
+}
+
 function handleNodeCardClick(nodeId) {
   if (!nodeId || nodeId === START_NODE_ID) {
     return
@@ -580,13 +638,29 @@ function openTaskDetailByNodeId(nodeId) {
   openTaskInNewWindowByNode(target)
 }
 
-function resolveTaskNameById(taskId) {
-  const id = Number(taskId)
-  const target = taskRecords.value.find((item) => Number(item.id) === id)
+function openWorkflowDetailByNodeId(nodeId) {
+  const target = flowNodes.value.find((item) => item.id === nodeId)
   if (!target) {
-    return '-'
+    return
   }
-  return `${target.name} (${target.code})`
+  focusNode(nodeId)
+  openWorkflowInNewWindowByNode(target)
+}
+
+function resolveTaskNameByNodeData(nodeData) {
+  const taskId = Number(nodeData?.task_id)
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    return '未选择任务'
+  }
+  return taskNameMap.value.get(taskId) || `任务#${taskId}`
+}
+
+function resolveWorkflowNameByNodeData(nodeData) {
+  const workflowId = Number(nodeData?.workflow_id)
+  if (!Number.isInteger(workflowId) || workflowId <= 0) {
+    return '未选择Workflow'
+  }
+  return workflowNameMap.value.get(workflowId) || `Workflow#${workflowId}`
 }
 
 function openNodeConfigDialog(nodeId) {
@@ -691,38 +765,6 @@ function selectNodeConfigRunType(condition) {
   nodeConfigForm.run_type = String(condition || 'success')
 }
 
-function openEdgeEditDialog(edge) {
-  if (!edge || isSystemEdge(edge)) {
-    return
-  }
-  edgeEditForm.id = String(edge.id || '')
-  edgeEditForm.source = String(edge.source || '')
-  edgeEditForm.target = String(edge.target || '')
-  edgeEditForm.condition = String(edge.data?.condition || edge.label || 'success')
-  edgeEditVisible.value = true
-}
-
-function saveEdgeEdit() {
-  const target = flowEdges.value.find((item) => item.id === edgeEditForm.id)
-  if (!target || isSystemEdge(target)) {
-    return
-  }
-  const condition = normalizeEdgeCondition(edgeEditForm.condition)
-  target.data = { ...(target.data || {}), condition }
-  target.label = condition
-  target.style = buildWorkflowEdgeStyle(condition)
-  flowEdges.value = [...flowEdges.value]
-  edgeEditVisible.value = false
-}
-
-function removeCurrentEditingEdge() {
-  if (!edgeEditForm.id) {
-    return
-  }
-  removeEdge(edgeEditForm.id)
-  edgeEditVisible.value = false
-}
-
 function makeEdgeFromConfig(config, index = 0) {
   const condition = normalizeEdgeCondition(config.condition)
   return {
@@ -818,6 +860,7 @@ function ensureStartEdges() {
 }
 
 function autoLayoutTree() {
+  // Workflow 编排按树形布局：从左到右展开，同一层节点按从上到下排序。
   const START_X = 60
   const START_Y = 220
   const START_NODE_HEIGHT = 64
@@ -954,7 +997,7 @@ function resetAddNodeWizardForm() {
   addNodeWizardForm.parent_node_key = ''
   addNodeWizardForm.run_type = 'success'
   addNodeWizardForm.node_type = 'task'
-  addNodeWizardForm.name = '任务节点1'
+  addNodeWizardForm.name = TASK_DEFAULT_NODE_NAME
   addNodeWizardForm.task_id = taskOptions.value[0]?.value
   addNodeWizardForm.workflow_id = workflowOptions.value[0]?.value
   addNodeWizardForm.convergence = 'any'
@@ -1004,6 +1047,7 @@ function openAddNodeWizard(options = {}) {
 
   resetAddNodeWizardForm()
   addNodeWizardForm.node_type = String(options.presetNodeType || 'task') === 'workflow' ? 'workflow' : 'task'
+  addNodeWizardForm.name = addNodeWizardForm.node_type === 'workflow' ? WORKFLOW_DEFAULT_NODE_NAME : TASK_DEFAULT_NODE_NAME
   addNodeWizardForm.parent_node_key = hasRuntimeNode ? parentNodeId : ''
   if (!addNodeWizardForm.parent_node_key) {
     addNodeWizardForm.run_type = 'success'
@@ -1102,27 +1146,6 @@ function createNodeFromWizard() {
   message.success('节点已创建，请继续编排并保存')
 }
 
-function updateSelectedNodeField(field, value) {
-  const target = selectedNode.value
-  if (!target || target.id === START_NODE_ID) {
-    return
-  }
-
-  if (field === 'name') {
-    const normalized = String(value || '').trim()
-    if (!normalized) {
-      return
-    }
-    target.data.name = normalized
-  } else if (field === 'task_id') {
-    target.data.task_id = Number(value)
-  } else if (field === 'workflow_id') {
-    target.data.workflow_id = Number(value)
-  }
-  target.label = formatNodeLabel(target.data)
-  flowNodes.value = [...flowNodes.value]
-}
-
 function collectCascadeNodeIds(rootNodeId) {
   const collected = new Set()
   const queue = [rootNodeId]
@@ -1194,7 +1217,6 @@ function removeEdge(edgeId) {
   }
   flowEdges.value = flowEdges.value.filter((item) => item.id !== edgeId)
   selectedEdgeId.value = ''
-  autoLayoutTree()
   ensureStartEdges()
 }
 
@@ -1240,8 +1262,16 @@ function handleConnect(params) {
     labelStyle: buildWorkflowEdgeLabelStyle(),
   }
   flowEdges.value.push(edge)
-  autoLayoutTree()
   ensureStartEdges()
+  isConnecting.value = false
+}
+
+function handleConnectStart() {
+  isConnecting.value = true
+}
+
+function handleConnectEnd() {
+  isConnecting.value = false
 }
 
 function handleNodeClick(payload) {
@@ -1437,6 +1467,17 @@ function goBack() {
 watch(routeWorkflowId, async () => {
   await initEditor()
 }, { immediate: true })
+
+watch(() => addNodeWizardForm.node_type, (nextType, prevType) => {
+  const currentName = String(addNodeWizardForm.name || '').trim()
+  const prevDefault = prevType === 'workflow' ? WORKFLOW_DEFAULT_NODE_NAME : TASK_DEFAULT_NODE_NAME
+  const nextDefault = nextType === 'workflow' ? WORKFLOW_DEFAULT_NODE_NAME : TASK_DEFAULT_NODE_NAME
+
+  // 仅在空值或仍是上一类型默认名时自动切换，避免覆盖用户手工输入。
+  if (!currentName || currentName === prevDefault) {
+    addNodeWizardForm.name = nextDefault
+  }
+})
 </script>
 
 <style scoped>
@@ -1466,12 +1507,6 @@ watch(routeWorkflowId, async () => {
 .editor-title .name {
   font-size: 16px;
   font-weight: 600;
-}
-
-.builder-layout {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 12px;
 }
 
 .canvas-wrap {
@@ -1584,6 +1619,38 @@ watch(routeWorkflowId, async () => {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
+:deep(.workflow-node-card .workflow-target-handle) {
+  left: 2px;
+  top: 2px;
+  width: calc(100% - 26px);
+  height: calc(100% - 4px);
+  transform: none;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  opacity: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+:deep(.workflow-canvas.is-connecting .workflow-node-card .workflow-target-handle) {
+  pointer-events: auto;
+}
+
+:deep(.workflow-node-card .workflow-source-handle) {
+  right: -7px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translateY(-50%);
+  border: 1px solid #1677ff;
+  border-radius: 50%;
+  background: #fff;
+  cursor: crosshair;
+  opacity: 1;
+  z-index: 3;
+}
+
 .workflow-start-node-card {
   position: relative;
   min-width: 112px;
@@ -1611,12 +1678,30 @@ watch(routeWorkflowId, async () => {
   cursor: pointer;
 }
 
-.workflow-node-subtitle {
+.workflow-node-type-icon {
   position: absolute;
   left: 14px;
   bottom: 8px;
-  color: #8c8c8c;
-  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.workflow-node-type-icon.is-task {
+  color: #1677ff;
+  background: #e6f4ff;
+  border-color: #91caff;
+}
+
+.workflow-node-type-icon.is-workflow {
+  color: #722ed1;
+  background: #f9f0ff;
+  border-color: #d3adf7;
 }
 
 .workflow-node-convergence-tag {
@@ -1638,7 +1723,20 @@ watch(routeWorkflowId, async () => {
   right: 10px;
   bottom: 6px;
   display: inline-flex;
+  align-items: center;
   gap: 6px;
+  max-width: 174px;
+}
+
+.node-quick-ref-name {
+  display: inline-block;
+  max-width: 104px;
+  color: #8c8c8c;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .node-quick-btn {
@@ -1767,10 +1865,6 @@ watch(routeWorkflowId, async () => {
   cursor: not-allowed;
 }
 
-.property-panel :deep(.ant-card-body) {
-  min-height: 620px;
-}
-
 .wizard-help-link {
   margin-top: 6px;
   color: #8c8c8c;
@@ -1778,16 +1872,8 @@ watch(routeWorkflowId, async () => {
 }
 
 @media (max-width: 1200px) {
-  .builder-layout {
-    grid-template-columns: 1fr;
-  }
-
   .workflow-canvas {
     height: 500px;
-  }
-
-  .property-panel :deep(.ant-card-body) {
-    min-height: 220px;
   }
 }
 

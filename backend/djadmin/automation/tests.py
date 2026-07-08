@@ -9,7 +9,7 @@ from rest_framework_jwt.settings import api_settings
 from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
-from .models import AutomationTask, PlaybookTemplate
+from .models import AutomationTask, AutomationWorkflowRun, PlaybookTemplate
 
 
 def _get_token(user: SysUser) -> str:
@@ -401,5 +401,11 @@ class AutomationWorkflowTest(BaseTestCase):
 			)
 			body = self.assertResponseOK(res)
 			self.assertIn(body['data']['status'], ['running', 'success'])
-			self.assertGreaterEqual(len(body['data']['node_results']), 1)
+			run = AutomationWorkflowRun.objects.get(id=body['data']['id'])
+			self.assertGreaterEqual(len(run.node_results), 1)
+			node_result = run.node_results[0]
+			self.assertEqual(node_result['task_id'], self.task.id)
+			self.assertEqual(node_result['task_name_snapshot'], self.task.name)
+			self.assertEqual(node_result['template_name_snapshot'], self.template.name)
+			self.assertTrue(node_result.get('job_id'))
 			mock_delay.assert_called_once()

@@ -49,16 +49,12 @@
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
-              <a-tooltip title="预演">
-                <a-button size="small" @click="preview(record)" v-permission="'automation:workflow:view'">
-                  <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="启动">
+              <a-tooltip :title="isWorkflowLaunchDisabled(record) ? '已禁用，无法启动' : '启动'">
                 <a-button
                   size="small"
                   type="primary"
                   ghost
+                  :disabled="isWorkflowLaunchDisabled(record)"
                   :loading="launchingId === record.id"
                   @click="launch(record)"
                   v-permission="'automation:workflow:launch'"
@@ -92,12 +88,6 @@
           <template v-if="column.key === 'status'">
             <a-tag :color="getRunStatusColor(record.status)">{{ record.status || '-' }}</a-tag>
           </template>
-          <template v-else-if="column.key === 'result_summary'">
-            <span>{{ record.result_summary?.message || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'node_results'">
-            <span>{{ Array.isArray(record.node_results) ? record.node_results.length : 0 }} 条</span>
-          </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
               <a-button size="small" type="primary" ghost @click="openRunStatus(record)">
@@ -126,7 +116,7 @@
     </a-card>
 
     <a-modal
-      title="启动 Workflow"
+      title="确认启动 Workflow"
       :open="launchModalVisible"
       :confirm-loading="launchSubmitting"
       ok-text="确认启动"
@@ -138,34 +128,9 @@
         <a-form-item label="Workflow">
           <a-input :value="launchTarget?.name || '-'" readonly />
         </a-form-item>
-        <a-form-item label="全局 Limit（可选）">
-          <a-input
-            v-model:value="launchLimit"
-            placeholder="为空时使用每个任务节点自身默认 Limit"
-            allow-clear
-          />
-          <div class="launch-help-text">Workflow 运行时仅在这里确认一次，不会逐节点弹出运行确认。</div>
-        </a-form-item>
       </a-form>
     </a-modal>
 
-    <a-modal
-      title="Workflow 预演结果"
-      :open="previewVisible"
-      :footer="null"
-      :width="820"
-      @cancel="previewVisible = false"
-    >
-      <a-alert type="info" show-icon :message="`总步骤：${previewPlan.length}`" style="margin-bottom: 12px" />
-      <a-table
-        :columns="previewColumns"
-        :data-source="previewPlan"
-        :pagination="false"
-        :scroll="{ x: 760 }"
-        rowKey="node_name"
-        size="small"
-      />
-    </a-modal>
   </div>
 </template>
 
@@ -176,7 +141,6 @@ import { message } from 'ant-design-vue'
 import {
   getWorkflowList,
   deleteWorkflow,
-  previewWorkflow,
   launchWorkflow,
   getWorkflowRunList,
   cancelWorkflowRun,
@@ -187,14 +151,11 @@ const router = useRouter()
 const loading = ref(false)
 const runLoading = ref(false)
 const runCancelingId = ref(null)
-const previewVisible = ref(false)
 const launchingId = ref(null)
 const launchSubmitting = ref(false)
 const launchModalVisible = ref(false)
 const launchTarget = ref(null)
-const launchLimit = ref('')
 const keyword = ref('')
-const previewPlan = ref([])
 
 const records = ref([])
 const runRecords = ref([])
@@ -230,17 +191,8 @@ const runColumns = [
   { title: 'Workflow', dataIndex: 'workflow_name', key: 'workflow_name', width: 180 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 140 },
   { title: '触发人', dataIndex: 'requested_username', key: 'requested_username', width: 130 },
-  { title: '节点结果', dataIndex: 'node_results', key: 'node_results', width: 120 },
-  { title: '摘要', dataIndex: 'result_summary', key: 'result_summary', width: 320 },
   { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 140 },
   { title: '操作', key: 'action', width: 220, fixed: 'right' },
-]
-
-const previewColumns = [
-  { title: '节点名称', dataIndex: 'node_name', key: 'node_name', width: 180 },
-  { title: '类型', dataIndex: 'node_type', key: 'node_type', width: 120 },
-  { title: '分支结果', dataIndex: 'outcome', key: 'outcome', width: 120 },
-  { title: '任务 ID', dataIndex: 'task_id', key: 'task_id', width: 120 },
 ]
 
 async function loadWorkflows(resetPage = false) {
@@ -296,24 +248,23 @@ async function removeRecord(record) {
   await loadWorkflows(false)
 }
 
-async function preview(record) {
-  const res = await previewWorkflow(record.id, {})
-  const data = res?.data?.data || {}
-  previewPlan.value = Array.isArray(data.plan) ? data.plan : []
-  previewVisible.value = true
+function launch(record) {
+  if (isWorkflowLaunchDisabled(record)) {
+    message.warning('该 Workflow 已禁用，无法启动')
+    return
+  }
+  launchTarget.value = record || null
+  launchModalVisible.value = true
 }
 
-function launch(record) {
-  launchTarget.value = record || null
-  launchLimit.value = ''
-  launchModalVisible.value = true
+function isWorkflowLaunchDisabled(record) {
+  return !Boolean(record?.enabled)
 }
 
 function closeLaunchModal() {
   launchModalVisible.value = false
   launchSubmitting.value = false
   launchTarget.value = null
-  launchLimit.value = ''
 }
 
 async function confirmLaunch() {
@@ -323,9 +274,7 @@ async function confirmLaunch() {
   launchingId.value = launchTarget.value.id
   launchSubmitting.value = true
   try {
-    const res = await launchWorkflow(launchTarget.value.id, {
-      limit: String(launchLimit.value || '').trim(),
-    })
+    const res = await launchWorkflow(launchTarget.value.id, {})
     const runId = Number(res?.data?.data?.id || 0)
     message.success('Workflow 已启动')
     closeLaunchModal()
@@ -360,7 +309,7 @@ function normalizeRunStatus(record) {
 }
 
 function canCancelWorkflowRunRecord(record) {
-  return ['pending', 'running', 'waiting_approval'].includes(normalizeRunStatus(record))
+  return ['pending', 'running'].includes(normalizeRunStatus(record))
 }
 
 async function cancelRunRecord(record) {
@@ -386,9 +335,6 @@ function getRunStatusColor(status) {
   }
   if (status === 'failed') {
     return 'red'
-  }
-  if (status === 'waiting_approval') {
-    return 'orange'
   }
   if (status === 'running') {
     return 'blue'

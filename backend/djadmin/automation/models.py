@@ -20,6 +20,10 @@ class PlaybookTemplate(BaseModel):
 
 
 class AutomationTask(BaseModel):
+    class BecomeMethod(models.TextChoices):
+        SUDO = 'sudo', 'sudo'
+        SU = 'su', 'su'
+    
     name = models.CharField(max_length=128, unique=True)
     code = models.CharField(max_length=128, unique=True)
     template = models.ForeignKey(PlaybookTemplate, on_delete=models.PROTECT, related_name='tasks')
@@ -29,6 +33,11 @@ class AutomationTask(BaseModel):
     env_vars = models.JSONField(default=dict, blank=True)
     default_limit = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
+    
+    # 权限提升配置
+    become_enabled = models.BooleanField(default=False, help_text='是否启用权限提升')
+    become_method = models.CharField(max_length=16, choices=BecomeMethod.choices, default=BecomeMethod.SUDO, help_text='权限提升方式')
+    become_user = models.CharField(max_length=100, default='root', help_text='目标用户')
 
     class Meta:
         db_table = 'automation_task'
@@ -88,6 +97,11 @@ class AnsibleExecutionJob(BaseModel):
     limit = models.CharField(max_length=255, blank=True, default='')
     result_summary = models.JSONField(default=dict, blank=True)
     job_output = models.TextField(blank=True, default='')
+    
+    # 权限提升配置快照
+    become_enabled_snapshot = models.BooleanField(default=False)
+    become_method_snapshot = models.CharField(max_length=16, default='sudo')
+    become_user_snapshot = models.CharField(max_length=100, default='root')
 
     requested_user_id = models.IntegerField(null=True, blank=True)
     requested_username = models.CharField(max_length=100, blank=True, default='')
@@ -158,7 +172,6 @@ class AutomationWorkflowRun(BaseModel):
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
         RUNNING = 'running', 'Running'
-        WAITING_APPROVAL = 'waiting_approval', 'Waiting Approval'
         SUCCESS = 'success', 'Success'
         FAILED = 'failed', 'Failed'
 

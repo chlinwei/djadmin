@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import yaml
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -231,6 +232,41 @@ def _write_inventory_file(work_dir: str, contexts: list[HostExecutionContext]) -
     return inventory_path, private_key_files
 
 
+def _inject_become_config(template_content: str, job: AnsibleExecutionJob) -> str:
+    """
+    动态注入 become 配置到 playbook 中
+    
+    如果 job.become_enabled_snapshot 为 False，返回原始内容
+    否则，为 playbook 中每个 play 添加 become 配置
+    """
+    if not job.become_enabled_snapshot:
+        return template_content
+    
+    try:
+        plays = yaml.safe_load(template_content)
+        if not isinstance(plays, list):
+            # 如果不是列表，尝试包装成列表
+            if isinstance(plays, dict):
+                plays = [plays]
+            else:
+                # 无法解析，返回原始内容
+                return template_content
+        
+        # 为每个 play 添加 become 配置
+        for play in plays:
+            if isinstance(play, dict):
+                play['become'] = job.become_enabled_snapshot
+                play['become_method'] = job.become_method_snapshot
+                play['become_user'] = job.become_user_snapshot
+        
+        # 转回 YAML 字符串
+        result = yaml.dump(plays, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        return result
+    except Exception:
+        # YAML 解析失败，返回原始内容
+        return template_content
+
+
 def _resolve_ansible_playbook_command() -> list[str] | None:
     configured_path = os.getenv('ANSIBLE_PLAYBOOK_PATH', '').strip()
     if configured_path:
@@ -395,6 +431,9 @@ def execute_ansible_job(job_id: int) -> None:
         template_content = (job.template_content_snapshot or '').strip()
         if not template_content:
             template_content = job.template.content or ''
+
+        # 动态注入 become 配置到 playbook
+        template_content = _inject_become_config(template_content, job)
 
         with open(playbook_path, 'w', encoding='utf-8') as playbook_fp:
             playbook_fp.write(template_content)

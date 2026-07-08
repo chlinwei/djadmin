@@ -90,10 +90,17 @@ AutomationWorkflowTemplateManage.launch 主要步骤：
 3. 创建 AutomationWorkflowRun
 4. 写入 node_results 初始状态（waiting）
 5. 写入 result_summary 快照：
-  - workflow_nodes_snapshot
-  - workflow_edges_snapshot
-  - workflow_ancestor_template_ids（初始化为当前 workflow.id）
+
+- workflow_nodes_snapshot
+- workflow_edges_snapshot
+- workflow_ancestor_template_ids（初始化为当前 workflow.id）
+
 6. 调用 _refresh_workflow_run_progress 推进运行
+
+补充说明：
+
+- workflow 运行图按树形理解：从左到右展开。
+- 同一层节点按从上到下的顺序进行调度观察与展示。
 
 ### 4.2 节点派发
 
@@ -136,12 +143,12 @@ node_results[].status 主要状态：
 - failed: 失败
 - cancelled: 取消
 - skipped: 已跳过（条件不满足）
-- waiting_approval: 预留状态
 
 ### 6.1 Job/子 run 回写
 
 - task 节点依据 job_id 读取作业状态并映射到节点状态
 - workflow 节点依据 child_run_id 读取子 run 状态并映射到节点状态
+- 前端运行图中节点名称右侧显示的 `耗时 00:00:00` 是节点耗时，表示从开始执行到当前时刻或结束时刻的累计耗时
 
 ### 6.2 convergence 规则
 
@@ -154,17 +161,46 @@ convergence 支持 any 与 all：
 ### 6.3 调度节奏
 
 - 按最浅未完成层推进
-- 同层存在 running/queued 时，不再派发新组
-- 同层 ready 节点会按共享子节点关系分组
-- 每轮只派发一个组，其余 ready 标记 pending
+- 同层存在 running/queued 时，不再派发新节点
+- 同层 ready 节点按从上到下顺序进入候选
+- 每轮只派发 1 个节点，其余 ready 标记 pending
+- 运行顺序的直观展示遵循树形排布：左到右分层，同层从上到下。
 
 ## 7. Run 状态聚合
 
+说明：这里说的 workflow 状态，实际指 AutomationWorkflowRun.runtime_status 的聚合结果，不是简单把所有节点状态直接合并。
+
 规则（AWX 风格）：
 
-1. 存在未完成节点（waiting/pending/queued/running/waiting_approval）-> running
+1. 存在未完成节点（waiting/pending/queued/running）-> running
 2. 若存在未处理失败（failed/cancelled 且无 failure/always 出边兜底）-> failed
 3. 其他已结束场景 -> success
+
+### 7.1 详细计算流程
+
+```mermaid
+flowchart TD
+  A[开始计算 runtime_status] --> B[读取 node_results]
+  B --> C{是否存在未完成节点?\nwaiting / pending / queued / running}
+  C -- 是 --> D[runtime_status = running]
+  C -- 否 --> E[读取 workflow_edges]
+  E --> F[收集失败兜底边\ncondition = failure 或 always]
+  F --> G{是否存在 failed / cancelled 节点?}
+  G -- 否 --> H[runtime_status = success]
+  G -- 是 --> I{失败节点是否都被兜底边覆盖?}
+  I -- 否 --> J[runtime_status = failed]
+  I -- 是 --> H
+  D --> K[返回 runtime_status]
+  H --> K
+  J --> K
+```
+
+补充说明：
+
+- 节点未结束时，run 一定先显示 running。
+- 只有所有节点都结束后，才进入失败/成功聚合。
+- failed / cancelled 节点如果有 failure 或 always 分支承接，run 最终仍可视为 success。
+- 如果没有 node_results，运行态会回退为 run 自身的 status 字段。
 
 ## 8. 取消语义
 

@@ -18,6 +18,29 @@ const httpService = axios.create({
     timeout: 30000 // 需自定义
 });
 
+let redirectingToLogin = false
+
+function clearAuthState() {
+    localStorage.removeItem('token')
+    localStorage.removeItem('currentUser')
+}
+
+function handleAuthExpired(msg) {
+    clearAuthState()
+    message.error(msg || '登录过期，请重新登陆')
+    if (redirectingToLogin) {
+        return
+    }
+    redirectingToLogin = true
+    const currentPath = router.currentRoute?.value?.fullPath || '/index'
+    router.push({
+        path: '/login',
+        query: { redirect: currentPath }
+    }).finally(() => {
+        redirectingToLogin = false
+    })
+}
+
 //添加请求和响应拦截器
 // 添加请求拦截器
 httpService.interceptors.request.use(function (config) {
@@ -41,6 +64,12 @@ httpService.interceptors.response.use(function (response) {
         Object.prototype.hasOwnProperty.call(responseData, 'msg') &&
         Object.prototype.hasOwnProperty.call(responseData, 'data')
 
+    // 301 在后端定义为登录过期，统一在拦截器里处理，确保所有 HTTP 方法都能自动跳转登录页。
+    if (responseData && typeof responseData === 'object' && Number(responseData.code) === 301) {
+        handleAuthExpired(responseData.msg)
+        return Promise.reject(new Error(responseData.msg || '登录过期，请重新登陆'))
+    }
+
     // 仅在标准业务响应结构下按业务 code 处理，避免把普通业务字段 code 误判为状态码。
     if (isBusinessEnvelope && responseData.code === 300) {
         message.error("账号或者密码输入错误")
@@ -54,7 +83,11 @@ httpService.interceptors.response.use(function (response) {
 
 }, function (error) {
     // 对响应错误做点什么
-    // 不在拦截器中显示消息，让各个页面自己处理
+    // 对接某些网关/代理场景，HTTP 401/403 也按登录过期处理。
+    if (error?.response && [401, 403].includes(Number(error.response.status))) {
+        handleAuthExpired('登录状态失效，请重新登陆')
+    }
+    // 其余错误不在拦截器中显示消息，让各个页面自己处理
     return Promise.reject(error);
 });
 
@@ -72,12 +105,7 @@ export function get(url, params = {}) {
             method: 'get',
             params: params
         }).then(response => {
-             if(response.data.code == 301) {
-                message.error("登录过期，请重新登陆");
-                router.push("/login");
-            }else{
-                resolve(response);
-            }
+            resolve(response);
         }).catch(error => {
             reject(error);
         });
@@ -102,12 +130,7 @@ export function post(url, params = {}, timeout = null) {
             config.timeout = timeout
         }
         httpService(config).then(response => {
-           if(response.data.code == 301) {
-                message.error("登录过期，请重新登陆");
-                router.push("/login");
-            }else{
-                resolve(response);
-            }
+            resolve(response);
         }).catch(error => {
             console.log(error)
             reject(error);

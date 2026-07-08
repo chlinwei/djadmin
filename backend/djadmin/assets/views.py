@@ -269,6 +269,14 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
 
         return roots
 
+    def _get_group_and_subgroups(self, group_id):
+        """递归获取分组及其所有子分组 ID。"""
+        group_ids = [int(group_id)]
+        children = HostGroup.objects.filter(parent_id=group_id).values_list('id', flat=True)
+        for child_id in children:
+            group_ids.extend(self._get_group_and_subgroups(int(child_id)))
+        return group_ids
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
@@ -319,10 +327,13 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         instance = self.get_object()
         from automation.models import AutomationInventory
 
+        target_group_ids = self._get_group_and_subgroups(instance.id)
+        target_group_id_set = set(target_group_ids)
+
         referenced = []
         for inventory in AutomationInventory.objects.only('id', 'name', 'selected_group_ids'):
             group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
-            if instance.id in group_ids:
+            if target_group_id_set.intersection(set(group_ids)):
                 referenced.append(inventory)
 
         if referenced:
@@ -334,7 +345,9 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
             )
 
         deleted_id = instance.id
-        self.perform_destroy(instance)
+        # 删除分组前先删除该分组树下所有主机，避免 Host.group=SET_NULL 导致主机残留。
+        Host.objects.filter(group_id__in=target_group_ids).delete()
+        HostGroup.objects.filter(id__in=target_group_ids).delete()
         return Response_200(data={"id": deleted_id})
 
     @action(detail=False, methods=['delete'], url_path='batch-delete')
@@ -346,10 +359,14 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         from automation.models import AutomationInventory
 
         normalized_ids = [int(item) for item in ids if str(item).isdigit()]
+        delete_group_ids = set()
+        for group_id in normalized_ids:
+            delete_group_ids.update(self._get_group_and_subgroups(group_id))
+
         referenced_pairs = []
         for inventory in AutomationInventory.objects.only('id', 'name', 'selected_group_ids'):
             group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
-            hit_ids = sorted(set(group_ids).intersection(set(normalized_ids)))
+            hit_ids = sorted(set(group_ids).intersection(delete_group_ids))
             if hit_ids:
                 referenced_pairs.append((inventory.name, hit_ids))
 
@@ -361,7 +378,9 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
                 code=400,
             )
 
-        deleted_count, _ = HostGroup.objects.filter(id__in=ids).delete()
+        # 批量删除时，统一删除目标分组树下主机与分组。
+        Host.objects.filter(group_id__in=list(delete_group_ids)).delete()
+        deleted_count, _ = HostGroup.objects.filter(id__in=list(delete_group_ids)).delete()
         return Response_200(data={"deleted_count": deleted_count})
 
 

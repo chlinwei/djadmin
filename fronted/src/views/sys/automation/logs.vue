@@ -4,6 +4,12 @@
       <template #extra>
         <a-space>
           <a-input-search
+            v-model:value="jobRecordId"
+            placeholder="按执行记录ID搜索"
+            allow-clear
+            @search="onJobRecordIdSearch"
+          />
+          <a-input-search
             v-model:value="jobKeyword"
             placeholder="搜索任务ID/发起人"
             allow-clear
@@ -270,6 +276,9 @@
       :footer="null"
       @cancel="closeRuntimeTemplateViewer"
     >
+      <div class="runtime-template-toolbar">
+        <a-button size="small" @click="copyRuntimeTemplate">复制</a-button>
+      </div>
       <pre class="runtime-template-content">{{ runtimeTemplateContent || '-' }}</pre>
     </a-modal>
   </div>
@@ -292,6 +301,7 @@ const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UT
 
 const jobs = ref([])
 const jobLoading = ref(false)
+const jobRecordId = ref('')
 const jobKeyword = ref('')
 const selectedJobStatus = ref(null)
 const jobOutputKeyword = ref('')
@@ -598,6 +608,16 @@ function openRuntimeTemplateViewer(record) {
 
 function closeRuntimeTemplateViewer() {
   runtimeTemplateVisible.value = false
+}
+
+async function copyRuntimeTemplate() {
+  const text = runtimeTemplateContent.value || ''
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('运行模板已复制')
+  } catch (error) {
+    message.error('复制失败，请检查浏览器权限')
+  }
 }
 
 function getInventoryHostList(record) {
@@ -1172,8 +1192,11 @@ function connectJobLogSocket(jobId) {
 
   socket.onclose = () => {
     jobLogSocketConnected = false
-    streamConnectionState.value = shouldStreamForJob(jobId) ? 'reconnecting' : 'disconnected'
-    if (shouldStreamForJob(jobId)) {
+    const status = normalizeJobStatus(streamJobStatus.value)
+    // 如果任务已完成（success/failed/cancelled），则不重新连接
+    const isJobCompleted = ['success', 'failed', 'cancelled'].includes(status)
+    streamConnectionState.value = !isJobCompleted && shouldStreamForJob(jobId) ? 'reconnecting' : 'disconnected'
+    if (!isJobCompleted && shouldStreamForJob(jobId)) {
       scheduleJobLogReconnect(jobId)
     }
   }
@@ -1252,6 +1275,17 @@ async function loadTaskOptions() {
   taskNameMap.value = nextNameMap
 }
 
+function onJobRecordIdSearch(value) {
+  // 按执行记录ID精确搜索，清空其他过滤条件
+  jobKeyword.value = ''
+  selectedJobStatus.value = null
+  jobOutputKeyword.value = ''
+  selectedTaskId.value = null
+  selectedTaskName.value = ''
+  jobRecordId.value = value.trim()
+  loadJobs(true)
+}
+
 function onTaskFilterChange(value) {
   if (value) {
     selectedTaskName.value = taskNameMap.value[value] || ''
@@ -1278,7 +1312,8 @@ async function loadJobs(resetPage = false) {
       page: jobPagination.current,
       page_size: jobPagination.pageSize,
       ordering: '-id',
-      keyword: jobKeyword.value || undefined,
+      ...(jobRecordId.value ? { job_id: jobRecordId.value } : {}),
+      ...(jobKeyword.value && !jobRecordId.value ? { keyword: jobKeyword.value } : {}),
       status: selectedJobStatus.value || undefined,
       output_keyword: jobOutputKeyword.value || undefined,
       task_id: selectedTaskId.value || undefined,
@@ -1369,6 +1404,13 @@ function reloadPage() {
   loadJobs(false)
 }
 
+function stopPolling() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
 function goTaskCenter() {
   router.push('/sys/automation')
 }
@@ -1385,6 +1427,16 @@ function startPolling() {
   }
   pollTimer = window.setInterval(() => {
     streamClockTick.value = Date.now()
+    
+    // 如果通过 job_id 精确搜索且任务已完成，停止轮询
+    if (jobRecordId.value && jobs.value.length > 0) {
+      const job = jobs.value[0]
+      if (isJobFinished(job?.status)) {
+        stopPolling()
+        return
+      }
+    }
+    
     loadJobs(false)
     if (targetDrawerVisible.value && targetDrawerJobId.value) {
       getTargetList({ job_id: targetDrawerJobId.value, page_size: 1000 }).then((res) => {
@@ -1421,13 +1473,27 @@ watch(jobLogViewerVisible, async (visible) => {
 onMounted(async () => {
   const queryTaskId = route.query.task_id
   const queryTaskName = route.query.task_name
+  const queryKeyword = route.query.keyword
   const queryJobId = route.query.job_id
-  if (queryTaskId && String(queryTaskId).trim()) {
-    const parsedId = Number(queryTaskId)
-    selectedTaskId.value = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null
-  }
-  if (queryTaskName) {
-    selectedTaskName.value = String(queryTaskName)
+  
+  // 优先级：job_id > keyword > 其他参数
+  if (queryJobId) {
+    jobRecordId.value = String(queryJobId).trim()
+    selectedTaskId.value = null
+    selectedTaskName.value = ''
+  } else if (queryKeyword) {
+    jobRecordId.value = String(queryKeyword).trim()
+    selectedTaskId.value = null
+    selectedTaskName.value = ''
+  } else {
+    // 否则按原有逻辑处理其他参数
+    if (queryTaskId && String(queryTaskId).trim()) {
+      const parsedId = Number(queryTaskId)
+      selectedTaskId.value = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null
+    }
+    if (queryTaskName) {
+      selectedTaskName.value = String(queryTaskName)
+    }
   }
 
   loadUserTimezone()
@@ -1437,10 +1503,16 @@ onMounted(async () => {
     selectedTaskName.value = taskNameMap.value[selectedTaskId.value] || ''
   }
   await loadJobs(true)
-  const parsedJobId = Number(Array.isArray(queryJobId) ? queryJobId[0] : queryJobId)
-  if (Number.isInteger(parsedJobId) && parsedJobId > 0) {
-    await openJobLogViewerById(parsedJobId)
+  
+  // 只有同时有 job_id 和 task_id 参数（从"日志"按钮跳转），才自动打开日志界面
+  // "详细"按钮只传 job_id，不传 task_id，所以不会自动打开
+  if (queryJobId && queryTaskId) {
+    const parsedJobId = Number(Array.isArray(queryJobId) ? queryJobId[0] : queryJobId)
+    if (Number.isInteger(parsedJobId) && parsedJobId > 0) {
+      await openJobLogViewerById(parsedJobId)
+    }
   }
+  
   startPolling()
 })
 
@@ -1545,6 +1617,11 @@ onBeforeUnmount(() => {
 
 .runtime-template-link {
   padding-left: 0;
+}
+
+.runtime-template-toolbar {
+  margin-bottom: 16px;
+  display: block;
 }
 
 .runtime-template-content {

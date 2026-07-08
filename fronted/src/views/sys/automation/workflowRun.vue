@@ -5,6 +5,7 @@
         <span class="name">{{ workflowName }}</span>
         <a-tag :color="runStatusColor">{{ runStatusLabel }}</a-tag>
         <a-tag color="blue">运行ID: #{{ runId || '-' }}</a-tag>
+        <a-tag color="cyan">{{ runTotalDurationLabel }}</a-tag>
       </div>
       <a-space>
         <a-button @click="goBack">返回列表</a-button>
@@ -64,7 +65,14 @@
                   {{ getNodeStatusIcon(nodeProps.data?.status) }}
                 </div>
 
-                <div class="workflow-node-subtitle">{{ nodeProps.data?.nodeTypeLabel || '任务节点' }}</div>
+                <div
+                  class="workflow-node-type-icon"
+                  :class="String(nodeProps.data?.nodeType || '').toLowerCase() === 'workflow' ? 'is-workflow' : 'is-task'"
+                  :title="String(nodeProps.data?.nodeType || '').toLowerCase() === 'workflow' ? 'Workflow节点' : '任务节点'"
+                >
+                  <ApartmentOutlined v-if="String(nodeProps.data?.nodeType || '').toLowerCase() === 'workflow'" />
+                  <ToolOutlined v-else />
+                </div>
                 <div
                   v-if="String(nodeProps.data?.convergence || 'any').toLowerCase() === 'all'"
                   class="workflow-node-convergence-tag"
@@ -72,11 +80,12 @@
                   ALL
                 </div>
                 <div v-if="String(nodeProps.data?.nodeType || '').toLowerCase() === 'task'" class="workflow-node-quick-actions">
+                  <span class="node-quick-ref-name" :title="resolveTaskRefLabel(nodeProps.data)">{{ resolveTaskRefLabel(nodeProps.data) }}</span>
                   <button
                     type="button"
                     class="node-quick-btn"
                     @click.stop="handleTaskDetailAction(nodeProps.data, nodeProps.id)"
-                  >任务</button>
+                  >详细</button>
                   <button
                     v-if="hasNodeLogs(nodeProps.data)"
                     type="button"
@@ -100,12 +109,31 @@
                     </button>
                   </a-popconfirm>
                 </div>
+                <div v-else-if="String(nodeProps.data?.nodeType || '').toLowerCase() === 'workflow'" class="workflow-node-quick-actions">
+                  <span class="node-quick-ref-name" :title="resolveWorkflowRefLabel(nodeProps.data)">{{ resolveWorkflowRefLabel(nodeProps.data) }}</span>
+                  <button
+                    type="button"
+                    class="node-quick-btn"
+                    @click.stop="handleWorkflowDetailAction(nodeProps.data, nodeProps.id)"
+                  >详细</button>
+                  <button
+                    v-if="canOpenWorkflowRunGraph(nodeProps.data)"
+                    type="button"
+                    class="node-quick-btn"
+                    @click.stop="handleWorkflowRunGraphAction(nodeProps.data, nodeProps.id)"
+                  >运行图</button>
+                </div>
                 <div class="workflow-node-runtime">{{ toNodeStatusLabel(nodeProps.data?.status) }}</div>
               </div>
               <div
                 class="workflow-node-name"
               >
-                {{ nodeProps.data?.name || nodeProps.id }}
+                <span class="workflow-node-name-text" :title="nodeProps.data?.name || nodeProps.id">{{ nodeProps.data?.name || nodeProps.id }}</span>
+                <span
+                  v-if="getNodeDurationText(nodeProps.data)"
+                  class="workflow-node-duration"
+                  :title="getNodeDurationTitle(nodeProps.data)"
+                >耗时 {{ getNodeDurationText(nodeProps.data) }}</span>
               </div>
             </div>
           </template>
@@ -120,6 +148,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { ApartmentOutlined, ToolOutlined } from '@ant-design/icons-vue'
 import { VueFlow, Handle, MarkerType, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { cancelJob, cancelWorkflowRun, getWorkflowRunDetail } from '@/api/sys/automation'
@@ -170,6 +199,39 @@ const runId = computed(() => {
 const runStatus = computed(() => String(runDetail.value?.runtime_status || runDetail.value?.status || '').toLowerCase())
 const workflowName = computed(() => String(runDetail.value?.workflow_name || runDetail.value?.workflow_name_snapshot || 'Workflow 运行状态'))
 
+const runTotalDurationSeconds = computed(() => {
+  const explicitDuration = Number(runDetail.value?.duration_seconds)
+  if (Number.isFinite(explicitDuration) && explicitDuration >= 0) {
+    return explicitDuration
+  }
+
+  const startTimeText = String(runDetail.value?.start_time || '').trim()
+  if (!startTimeText) {
+    return null
+  }
+
+  const startTimestamp = Date.parse(startTimeText)
+  if (!Number.isFinite(startTimestamp)) {
+    return null
+  }
+
+  const endTimeText = String(runDetail.value?.end_time || '').trim()
+  const endTimestamp = endTimeText ? Date.parse(endTimeText) : Date.now()
+  if (!Number.isFinite(endTimestamp)) {
+    return null
+  }
+
+  return Math.max(0, (endTimestamp - startTimestamp) / 1000)
+})
+
+const runTotalDurationLabel = computed(() => {
+  const seconds = runTotalDurationSeconds.value
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return '总耗时 --:--:--'
+  }
+  return `总耗时 ${formatDuration(seconds)}`
+})
+
 const runStatusLabel = computed(() => {
   if (runStatus.value === 'running') {
     return '运行中'
@@ -182,9 +244,6 @@ const runStatusLabel = computed(() => {
   }
   if (runStatus.value === 'failed') {
     return '已失败'
-  }
-  if (runStatus.value === 'waiting_approval') {
-    return '等待审批'
   }
   return runStatus.value || '-'
 })
@@ -202,18 +261,15 @@ const runStatusColor = computed(() => {
   if (runStatus.value === 'failed') {
     return 'red'
   }
-  if (runStatus.value === 'waiting_approval') {
-    return 'orange'
-  }
   return 'default'
 })
 
-const canCancelCurrentRun = computed(() => ['pending', 'running', 'waiting_approval'].includes(runStatus.value))
+const canCancelCurrentRun = computed(() => ['pending', 'running'].includes(runStatus.value))
 
 const nodeStatuses = computed(() => {
   const source = Array.isArray(runDetail.value?.node_results_runtime)
     ? runDetail.value.node_results_runtime
-    : (Array.isArray(runDetail.value?.node_results) ? runDetail.value.node_results : [])
+    : []
 
   return source
     .filter((item) => item && typeof item === 'object')
@@ -235,7 +291,7 @@ const summaryText = computed(() => {
 
 function normalizeNodeStatus(status) {
   const text = String(status || '').toLowerCase()
-  if (['queued', 'pending', 'waiting', 'running', 'success', 'failed', 'cancelled', 'waiting_approval', 'skipped'].includes(text)) {
+  if (['queued', 'pending', 'waiting', 'running', 'success', 'failed', 'cancelled', 'skipped'].includes(text)) {
     return text
   }
   return 'pending'
@@ -258,9 +314,6 @@ function toNodeStatusLabel(status) {
   if (normalized === 'cancelled') {
     return '已取消'
   }
-  if (normalized === 'waiting_approval') {
-    return '等待审批'
-  }
   if (normalized === 'queued') {
     return '排队中'
   }
@@ -271,6 +324,27 @@ function toNodeStatusLabel(status) {
     return '等待前置节点'
   }
   return '待执行'
+}
+
+function formatDuration(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0))
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0')
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0')
+  const remainingSeconds = String(totalSeconds % 60).padStart(2, '0')
+  return `${hours}:${minutes}:${remainingSeconds}`
+}
+
+function getNodeDurationText(nodeData) {
+  const durationSeconds = Number(nodeData?.durationSeconds)
+  if (!Number.isFinite(durationSeconds) || durationSeconds < 0) {
+    return ''
+  }
+  return formatDuration(durationSeconds)
+}
+
+function getNodeDurationTitle(nodeData) {
+  const statusText = toNodeStatusLabel(nodeData?.status)
+  return `耗时：从开始执行到当前时刻或结束时刻的总耗时，格式为 HH:MM:SS。当前状态：${statusText}`
 }
 
 function getNodeStatusIcon(status) {
@@ -290,9 +364,6 @@ function getNodeStatusIcon(status) {
   if (normalized === 'running') {
     return '...'
   }
-  if (normalized === 'waiting_approval') {
-    return '?'
-  }
   if (normalized === 'queued') {
     return 'Q'
   }
@@ -302,53 +373,55 @@ function getNodeStatusIcon(status) {
   return 'P'
 }
 
-function resolveNodeStyle(status) {
-  const normalized = normalizeNodeStatus(status)
-  if (normalized === 'running') {
-    return {
-      background: '#e6f7ff',
-      border: '2px solid #1677ff',
-      color: '#0958d9',
-    }
+function resolveTaskRefLabel(nodeData) {
+  const runtimeTaskName = String(nodeData?.runtimeTaskName || '').trim()
+  const runtimeTemplateName = String(nodeData?.runtimeTemplateName || '').trim()
+  if (runtimeTaskName && runtimeTemplateName) {
+    return `${runtimeTaskName} @ ${runtimeTemplateName}`
   }
-  if (normalized === 'success') {
-    return {
-      background: '#f6ffed',
-      border: '2px solid #52c41a',
-      color: '#237804',
-    }
+  if (runtimeTaskName) {
+    return runtimeTaskName
   }
-  if (normalized === 'failed' || normalized === 'cancelled') {
-    return {
-      background: '#fff2f0',
-      border: '2px solid #ff4d4f',
-      color: '#a8071a',
-    }
+  const taskName = String(nodeData?.taskName || '').trim()
+  if (taskName) {
+    return taskName
   }
-  if (normalized === 'waiting_approval') {
-    return {
-      background: '#fffbe6',
-      border: '2px solid #faad14',
-      color: '#ad6800',
-    }
+  const taskId = Number(nodeData?.taskId)
+  if (Number.isInteger(taskId) && taskId > 0) {
+    return `任务#${taskId}`
   }
-  return {
-    background: '#fafafa',
-    border: '1px solid #d9d9d9',
-    color: '#595959',
+  return '未绑定任务'
+}
+
+function resolveWorkflowRefLabel(nodeData) {
+  const workflowName = String(nodeData?.workflowName || '').trim()
+  if (workflowName) {
+    return workflowName
   }
+  const workflowId = Number(nodeData?.workflowId)
+  if (Number.isInteger(workflowId) && workflowId > 0) {
+    return `Workflow#${workflowId}`
+  }
+  return '未绑定Workflow'
 }
 
 function buildGraph(data) {
   // 运行图使用 run 快照数据，避免模板后续变更影响历史运行回放。
+  // 运行图也按同一棵树理解：从左到右分层，同一层按从上到下的顺序摆放。
   const workflowNodes = Array.isArray(data?.workflow_nodes) ? data.workflow_nodes : []
   const workflowEdges = Array.isArray(data?.workflow_edges) ? data.workflow_edges : []
   const nodeResults = Array.isArray(data?.node_results_runtime)
     ? data.node_results_runtime
-    : (Array.isArray(data?.node_results) ? data.node_results : [])
+    : []
 
   const nodeStatusMap = {}
   const nodeJobIdMap = {}
+  const nodeChildRunIdMap = {}
+  const nodeDurationSecondsMap = {}
+  const nodeJobTaskNameMap = {}
+  const nodeJobTemplateNameMap = {}
+  const nodeJobTaskIdMap = {}
+  const nodeJobTemplateIdMap = {}
   nodeResults.forEach((item) => {
     const key = String(item?.node_key || '').trim()
     if (!key) {
@@ -358,6 +431,30 @@ function buildGraph(data) {
     const jobId = Number(item?.job_id)
     if (Number.isInteger(jobId) && jobId > 0) {
       nodeJobIdMap[key] = jobId
+    }
+    const childRunId = Number(item?.child_run_id)
+    if (Number.isInteger(childRunId) && childRunId > 0) {
+      nodeChildRunIdMap[key] = childRunId
+    }
+    const durationSeconds = Number(item?.duration_seconds)
+    if (Number.isFinite(durationSeconds) && durationSeconds >= 0) {
+      nodeDurationSecondsMap[key] = durationSeconds
+    }
+    const jobTaskName = String(item?.job_task_name_snapshot || '').trim()
+    if (jobTaskName) {
+      nodeJobTaskNameMap[key] = jobTaskName
+    }
+    const jobTemplateName = String(item?.job_template_name_snapshot || '').trim()
+    if (jobTemplateName) {
+      nodeJobTemplateNameMap[key] = jobTemplateName
+    }
+    const jobTaskId = Number(item?.job_task_id)
+    if (Number.isInteger(jobTaskId) && jobTaskId > 0) {
+      nodeJobTaskIdMap[key] = jobTaskId
+    }
+    const jobTemplateId = Number(item?.job_template_id)
+    if (Number.isInteger(jobTemplateId) && jobTemplateId > 0) {
+      nodeJobTemplateIdMap[key] = jobTemplateId
     }
   })
 
@@ -411,9 +508,22 @@ function buildGraph(data) {
       data: {
         status,
         name: item?.name || key,
-        nodeTypeLabel: String(item?.node_type || '').toLowerCase() === 'approval' ? '审批节点' : '任务节点',
         nodeType: String(item?.node_type || '').toLowerCase(),
+        nodeTypeLabel: String(item?.node_type || '').toLowerCase() === 'workflow'
+          ? 'Workflow节点'
+          : '任务节点',
         taskId: Number(item?.task_id) || null,
+        taskName: String(item?.task_name || '').trim(),
+        runtimeTaskId: nodeJobTaskIdMap[key] || null,
+        runtimeTemplateId: nodeJobTemplateIdMap[key] || null,
+        runtimeTaskName: String(nodeJobTaskNameMap[key] || '').trim(),
+        runtimeTemplateName: String(nodeJobTemplateNameMap[key] || '').trim(),
+        workflowId: Number(item?.workflow_id) || null,
+        workflowName: String(item?.workflow_name || '').trim(),
+        childRunId: nodeChildRunIdMap[key] || null,
+        durationSeconds: Object.prototype.hasOwnProperty.call(nodeDurationSecondsMap, key)
+          ? nodeDurationSecondsMap[key]
+          : null,
         convergence: String(item?.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
         jobId: nodeJobIdMap[key] || null,
       },
@@ -477,25 +587,51 @@ function buildGraph(data) {
   flowEdges.value = [...startEdges, ...runtimeEdges]
 }
 
-function openTaskInNewWindowByNodeData(nodeData, fallbackNodeId = '') {
+function openTaskInNewWindowByNodeData(nodeData) {
   const isTaskNode = String(nodeData?.nodeType || '').toLowerCase() === 'task'
   if (!isTaskNode) {
     return false
   }
 
-  const taskId = Number(nodeData?.taskId)
-  if (!Number.isInteger(taskId) || taskId <= 0) {
+  const jobId = Number(nodeData?.jobId)
+  if (!Number.isInteger(jobId) || jobId <= 0) {
+    return false
+  }
+
+  const runtimeTaskName = String(nodeData?.runtimeTaskName || '').trim()
+  const staticNodeName = String(nodeData?.name || '').trim()
+  const resolvedTaskName = runtimeTaskName || staticNodeName
+
+  const target = router.resolve({
+    path: '/sys/automation/logs',
+    query: {
+      job_id: String(jobId),
+    },
+  })
+
+  // 运行态“详细”打开任务运行记录列表，并按当前运行记录 ID 精确过滤。
+  window.open(target.href, '_blank', 'noopener,noreferrer')
+  return true
+}
+
+function openWorkflowInNewWindowByNodeData(nodeData) {
+  const isWorkflowNode = String(nodeData?.nodeType || '').toLowerCase() === 'workflow'
+  if (!isWorkflowNode) {
+    return false
+  }
+
+  const workflowId = Number(nodeData?.workflowId)
+  if (!Number.isInteger(workflowId) || workflowId <= 0) {
     return false
   }
 
   const target = router.resolve({
-    path: '/sys/automation',
+    path: '/sys/automation/workflow/editor',
     query: {
-      task_id: String(taskId),
+      id: String(workflowId),
     },
   })
 
-  // 仅在新窗口打开，不在当前页做 fallback 跳转，防止双跳转。
   window.open(target.href, '_blank', 'noopener,noreferrer')
   return true
 }
@@ -504,9 +640,52 @@ function suppressNextNodeClick() {
   skipNextNodeClick.value = true
 }
 
-function handleTaskDetailAction(nodeData, fallbackNodeId = '') {
+function handleTaskDetailAction(nodeData) {
   suppressNextNodeClick()
-  return openTaskInNewWindowByNodeData(nodeData, fallbackNodeId)
+  return openTaskInNewWindowByNodeData(nodeData)
+}
+
+function handleWorkflowDetailAction(nodeData) {
+  suppressNextNodeClick()
+  const opened = openWorkflowInNewWindowByNodeData(nodeData)
+  if (!opened) {
+    message.info('当前 Workflow 节点未绑定可打开的 Workflow')
+  }
+  return opened
+}
+
+function canOpenWorkflowRunGraph(nodeData) {
+  const isWorkflowNode = String(nodeData?.nodeType || '').toLowerCase() === 'workflow'
+  if (!isWorkflowNode) {
+    return false
+  }
+  const childRunId = Number(nodeData?.childRunId)
+  return Number.isInteger(childRunId) && childRunId > 0
+}
+
+function openWorkflowRunGraphByNodeData(nodeData) {
+  if (!canOpenWorkflowRunGraph(nodeData)) {
+    return false
+  }
+
+  const childRunId = Number(nodeData?.childRunId)
+  const target = router.resolve({
+    path: '/sys/automation/workflow/run',
+    query: {
+      run_id: String(childRunId),
+    },
+  })
+  window.open(target.href, '_blank', 'noopener,noreferrer')
+  return true
+}
+
+function handleWorkflowRunGraphAction(nodeData) {
+  suppressNextNodeClick()
+  const opened = openWorkflowRunGraphByNodeData(nodeData)
+  if (!opened) {
+    message.info('当前 Workflow 节点暂无可查看的子流程运行图')
+  }
+  return opened
 }
 
 function hasNodeLogs(nodeData) {
@@ -524,7 +703,7 @@ function canCancelNodeJob(nodeData) {
   return hasNodeLogs(nodeData) && status === 'running'
 }
 
-function openTaskLogsByNodeData(nodeData, fallbackNodeId = '') {
+function openTaskLogsByNodeData(nodeData, nodeId = '') {
   if (!hasNodeLogs(nodeData)) {
     return false
   }
@@ -536,7 +715,7 @@ function openTaskLogsByNodeData(nodeData, fallbackNodeId = '') {
 
   const query = {
     task_id: String(taskId),
-    task_name: String(nodeData?.name || fallbackNodeId || ''),
+    task_name: String(nodeData?.name || nodeId || ''),
   }
 
   const jobId = Number(nodeData?.jobId)
@@ -553,12 +732,12 @@ function openTaskLogsByNodeData(nodeData, fallbackNodeId = '') {
   return true
 }
 
-function handleTaskLogAction(nodeData, fallbackNodeId = '') {
+function handleTaskLogAction(nodeData, nodeId = '') {
   suppressNextNodeClick()
-  return openTaskLogsByNodeData(nodeData, fallbackNodeId)
+  return openTaskLogsByNodeData(nodeData, nodeId)
 }
 
-async function cancelNodeJob(nodeData, fallbackNodeId = '') {
+async function cancelNodeJob(nodeData) {
   suppressNextNodeClick()
   const jobId = Number(nodeData?.jobId)
   if (!Number.isInteger(jobId) || jobId <= 0) {
@@ -607,7 +786,7 @@ async function loadRunDetail(showError = false) {
 }
 
 function isFinalRunStatus() {
-  return ['success', 'failed', 'waiting_approval', 'cancelled'].includes(runStatus.value)
+  return ['success', 'failed', 'cancelled'].includes(runStatus.value)
 }
 
 function getPollDelayMs() {
@@ -839,11 +1018,6 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 
-.workflow-node-state-icon.icon-waiting_approval {
-  background: #faad14;
-  color: #fff;
-}
-
 .workflow-node-card.status-pending,
 .workflow-node-card.status-queued {
   border-color: #d9d9d9;
@@ -880,28 +1054,63 @@ onBeforeUnmount(() => {
   background: #fff2f0;
 }
 
-.workflow-node-card.status-waiting_approval {
-  border-color: #faad14;
-  background: #fffbe6;
-}
-
 .workflow-node-name {
   margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   font-size: 16px;
   color: #1f1f1f;
   line-height: 1.2;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 
-.workflow-node-subtitle {
+.workflow-node-name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.workflow-node-duration {
+  flex: none;
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f0f5ff;
+  color: #1677ff;
+  font-size: 12px;
+  line-height: 20px;
+  vertical-align: middle;
+}
+
+.workflow-node-type-icon {
   position: absolute;
   left: 14px;
   bottom: 8px;
-  color: #8c8c8c;
-  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.workflow-node-type-icon.is-task {
+  color: #1677ff;
+  background: #e6f4ff;
+  border-color: #91caff;
+}
+
+.workflow-node-type-icon.is-workflow {
+  color: #722ed1;
+  background: #f9f0ff;
+  border-color: #d3adf7;
 }
 
 .workflow-node-convergence-tag {
@@ -923,7 +1132,20 @@ onBeforeUnmount(() => {
   right: 10px;
   bottom: 6px;
   display: inline-flex;
+  align-items: center;
   gap: 6px;
+  max-width: 224px;
+}
+
+.node-quick-ref-name {
+  display: inline-block;
+  max-width: 82px;
+  color: #8c8c8c;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .node-quick-btn {

@@ -47,7 +47,7 @@ export const staticRouterMap = [
             },
             {
                 path: '/sys/automation',
-                name: '自动化执行中心',
+                name: '自动化任务',
                 component: () => import('../views/sys/automation/index.vue'),
             },
             {

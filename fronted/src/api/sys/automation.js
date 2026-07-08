@@ -126,10 +126,6 @@ export function deleteWorkflow(id) {
   return requestUtil.del(prefix + `workflows/${id}/`)
 }
 
-export function previewWorkflow(id, params = {}) {
-  return requestUtil.post(prefix + `workflows/${id}/preview/`, params)
-}
-
 export function launchWorkflow(id, params = {}) {
   return requestUtil.post(prefix + `workflows/${id}/launch/`, params)
 }

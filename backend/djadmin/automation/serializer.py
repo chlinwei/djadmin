@@ -21,6 +21,7 @@ from .models import (
     AutomationWorkflowTemplate,
     AutomationWorkflowRun,
 )
+from .workflow_runtime import get_workflow_runtime_status
 
 
 WORKFLOW_NODE_TYPES = {'task', 'workflow'}
@@ -452,21 +453,6 @@ class AutomationTaskSerializer(ModelSerializer):
             raise serializers.ValidationError('default_limit length must be <= 255')
         return text
 
-    def validate(self, attrs):
-        host_ids = attrs.get('selected_host_ids')
-        group_ids = attrs.get('selected_group_ids')
-
-        # Support partial update by falling back to current instance values.
-        if host_ids is None and self.instance is not None:
-            host_ids = self.instance.selected_host_ids
-        if group_ids is None and self.instance is not None:
-            group_ids = self.instance.selected_group_ids
-
-        host_ids = host_ids if isinstance(host_ids, list) else []
-        group_ids = group_ids if isinstance(group_ids, list) else []
-
-        return attrs
-
     def create(self, validated_data):
         validated_data['create_time'] = datetime.now().date()
         return AutomationTask.objects.create(**validated_data)
@@ -486,6 +472,9 @@ class AnsibleExecutionJobSerializer(ModelSerializer):
         return obj.template.name if obj.template_id else ''
 
     def get_task_name(self, obj):
+        # 优先使用快照字段（任务删除后仍能显示历史名称）
+        if obj.task_name_snapshot:
+            return obj.task_name_snapshot
         return obj.task.name if obj.task_id else ''
 
     def get_job_id(self, obj):
@@ -879,35 +868,85 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         model = AutomationWorkflowRun
         fields = '__all__'
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # result_summary is internal runtime bookkeeping (snapshots/dispatch meta),
+        # no longer exposed as a user-facing "摘要" field.
+        data.pop('result_summary', None)
+        data.pop('node_results', None)
+        return data
+
+    @staticmethod
+    def _enrich_node_reference_names(nodes):
+        if not isinstance(nodes, list) or len(nodes) == 0:
+            return []
+
+        task_ids = set()
+        workflow_ids = set()
+        normalized_nodes = []
+
+        for item in nodes:
+            if not isinstance(item, dict):
+                continue
+            copied = dict(item)
+            task_id = copied.get('task_id')
+            workflow_id = copied.get('workflow_id')
+            if str(task_id).isdigit():
+                task_ids.add(int(task_id))
+            if str(workflow_id).isdigit():
+                workflow_ids.add(int(workflow_id))
+            normalized_nodes.append(copied)
+
+        task_name_map = {}
+        if task_ids:
+            rows = AutomationTask.objects.filter(id__in=list(task_ids)).values('id', 'name')
+            task_name_map = {int(row['id']): str(row.get('name') or '') for row in rows}
+
+        workflow_name_map = {}
+        if workflow_ids:
+            rows = AutomationWorkflowTemplate.objects.filter(id__in=list(workflow_ids)).values('id', 'name')
+            workflow_name_map = {int(row['id']): str(row.get('name') or '') for row in rows}
+
+        for item in normalized_nodes:
+            task_id = item.get('task_id')
+            if str(task_id).isdigit() and not str(item.get('task_name') or '').strip():
+                item['task_name'] = task_name_map.get(int(task_id), '')
+
+            workflow_id = item.get('workflow_id')
+            if str(workflow_id).isdigit() and not str(item.get('workflow_name') or '').strip():
+                item['workflow_name'] = workflow_name_map.get(int(workflow_id), '')
+
+        return normalized_nodes
+
+    @staticmethod
+    def _resolve_snapshot_list(obj, summary_key: str, model_attr: str, field_name: str):
+        summary = obj.result_summary if isinstance(obj.result_summary, dict) else {}
+        snapshot_items = summary.get(summary_key, [])
+        if isinstance(snapshot_items, list):
+            return snapshot_items
+
+        model_obj = getattr(obj, model_attr, None)
+        items = getattr(model_obj, field_name, []) if model_obj is not None else []
+        return items if isinstance(items, list) else []
+
     def get_workflow_name(self, obj):
         return obj.workflow.name if obj.workflow_id else ''
 
     def get_workflow_nodes(self, obj):
-        summary = obj.result_summary if isinstance(obj.result_summary, dict) else {}
-        snapshot_nodes = summary.get('workflow_nodes_snapshot', [])
-        if isinstance(snapshot_nodes, list):
-            return snapshot_nodes
-
-        workflow = getattr(obj, 'workflow', None)
-        nodes = getattr(workflow, 'nodes', []) if workflow is not None else []
-        return nodes if isinstance(nodes, list) else []
+        nodes = self._resolve_snapshot_list(obj, 'workflow_nodes_snapshot', 'workflow', 'nodes')
+        return self._enrich_node_reference_names(nodes)
 
     def get_workflow_edges(self, obj):
-        summary = obj.result_summary if isinstance(obj.result_summary, dict) else {}
-        snapshot_edges = summary.get('workflow_edges_snapshot', [])
-        if isinstance(snapshot_edges, list):
-            return snapshot_edges
-
-        workflow = getattr(obj, 'workflow', None)
-        edges = getattr(workflow, 'edges', []) if workflow is not None else []
-        return edges if isinstance(edges, list) else []
+        return self._resolve_snapshot_list(obj, 'workflow_edges_snapshot', 'workflow', 'edges')
 
     def get_node_results_runtime(self, obj):
         source_results = obj.node_results if isinstance(obj.node_results, list) else []
         if not source_results:
             return []
 
+        now = timezone.now()
         job_ids = []
+        child_run_ids = []
         normalized_results = []
         for item in source_results:
             if not isinstance(item, dict):
@@ -916,14 +955,76 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
             job_id = copied.get('job_id')
             if str(job_id).isdigit():
                 job_ids.append(int(job_id))
+            child_run_id = copied.get('child_run_id')
+            if str(child_run_id).isdigit():
+                child_run_ids.append(int(child_run_id))
             normalized_results.append(copied)
 
         job_status_map = {}
+        job_time_map = {}
+        job_meta_map = {}
         if job_ids:
-            rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('id', 'status')
+            rows = list(AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values(
+                'id', 'status', 'start_time', 'end_time', 'duration_seconds',
+                'task_id', 'template_id', 'task_name_snapshot', 'template_name_snapshot'
+            ))
             job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
+            job_time_map = {int(row['id']): row for row in rows}
+            job_meta_map = {int(row['id']): row for row in rows}
+
+        child_run_status_map = {}
+        child_run_time_map = {}
+        if child_run_ids:
+            rows = list(AutomationWorkflowRun.objects.filter(id__in=list(set(child_run_ids))).values(
+                'id', 'status', 'start_time', 'end_time', 'duration_seconds'
+            ))
+            child_run_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
+            child_run_time_map = {int(row['id']): row for row in rows}
+
+        def _resolve_duration_seconds(row: dict | None, live_status: str) -> float | None:
+            if not isinstance(row, dict):
+                return None
+
+            duration_value = row.get('duration_seconds')
+            if duration_value is not None:
+                try:
+                    return max(float(duration_value), 0.0)
+                except (TypeError, ValueError):
+                    return None
+
+            start_time = row.get('start_time')
+            end_time = row.get('end_time')
+            if start_time is None:
+                return None
+
+            if live_status in {'running', 'pending', 'queued'}:
+                end_time = now
+            if end_time is None:
+                return None
+
+            try:
+                return max((end_time - start_time).total_seconds(), 0.0)
+            except Exception:
+                return None
 
         for item in normalized_results:
+            item['job_task_id'] = item.get('job_task_id') if str(item.get('job_task_id', '')).isdigit() else item.get('task_id')
+            item['job_template_id'] = (
+                item.get('job_template_id')
+                if str(item.get('job_template_id', '')).isdigit()
+                else item.get('template_id_snapshot')
+            )
+            item['job_task_name_snapshot'] = str(
+                item.get('job_task_name_snapshot')
+                or item.get('task_name_snapshot')
+                or ''
+            ).strip()
+            item['job_template_name_snapshot'] = str(
+                item.get('job_template_name_snapshot')
+                or item.get('template_name_snapshot')
+                or ''
+            ).strip()
+
             job_id = item.get('job_id')
             if not str(job_id).isdigit():
                 continue
@@ -934,38 +1035,29 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
 
             if live_status in {'pending', 'running', 'success', 'failed', 'cancelled'}:
                 item['status'] = live_status
+                item['duration_seconds'] = _resolve_duration_seconds(job_time_map.get(int(job_id)), live_status)
+                job_meta = job_meta_map.get(int(job_id), {})
+                item['job_task_id'] = int(job_meta['task_id']) if str(job_meta.get('task_id', '')).isdigit() else None
+                item['job_template_id'] = int(job_meta['template_id']) if str(job_meta.get('template_id', '')).isdigit() else None
+                item['job_task_name_snapshot'] = str(job_meta.get('task_name_snapshot') or '').strip()
+                item['job_template_name_snapshot'] = str(job_meta.get('template_name_snapshot') or '').strip()
+
+        for item in normalized_results:
+            child_run_id = item.get('child_run_id')
+            if not str(child_run_id).isdigit():
+                continue
+
+            live_status = child_run_status_map.get(int(child_run_id), '')
+            if not live_status:
+                continue
+
+            if live_status in {'pending', 'running', 'success', 'failed'}:
+                item['status'] = live_status if live_status != 'pending' else 'running'
+                item['duration_seconds'] = _resolve_duration_seconds(child_run_time_map.get(int(child_run_id)), live_status)
 
         return normalized_results
 
     def get_runtime_status(self, obj):
         node_results = self.get_node_results_runtime(obj)
-        statuses = [str(item.get('status') or '').lower() for item in node_results if isinstance(item, dict)]
-
-        if any(status in {'running', 'pending', 'queued', 'waiting', 'waiting_approval'} for status in statuses):
-            return 'running'
-
         workflow_edges = self.get_workflow_edges(obj)
-        error_handler_sources = set()
-        for edge in workflow_edges:
-            if not isinstance(edge, dict):
-                continue
-            source_key = str(edge.get('source_key') or '').strip()
-            condition = str(edge.get('condition') or 'success').strip().lower() or 'success'
-            if source_key and condition in {'failure', 'always'}:
-                error_handler_sources.add(source_key)
-
-        has_unhandled_failure = False
-        for item in node_results:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get('status') or '').lower()
-            if status not in {'failed', 'cancelled'}:
-                continue
-            node_key = str(item.get('node_key') or '').strip()
-            if node_key not in error_handler_sources:
-                has_unhandled_failure = True
-                break
-
-        if statuses:
-            return 'failed' if has_unhandled_failure else 'success'
-        return str(obj.status or '').lower()
+        return get_workflow_runtime_status(node_results, workflow_edges, fallback_status=obj.status)

@@ -23,7 +23,8 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
             token = request.META.get('HTTP_AUTHORIZATION')
             err_ret = {
                 'code':301,
-                'msg': ''
+                'msg': '',
+                'data': {}
             }
             try:
                 jwt_decode_handler = api_settings.JWT_DECODE_HANDLER

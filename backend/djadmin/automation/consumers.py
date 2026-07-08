@@ -143,7 +143,6 @@ class AutomationWorkflowRunConsumer(AsyncWebsocketConsumer):
     FINAL_STATUSES = {
         AutomationWorkflowRun.Status.SUCCESS,
         AutomationWorkflowRun.Status.FAILED,
-        AutomationWorkflowRun.Status.WAITING_APPROVAL,
     }
 
     async def connect(self):

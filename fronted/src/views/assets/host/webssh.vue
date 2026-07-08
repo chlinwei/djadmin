@@ -231,8 +231,8 @@ const activeSessions = ref([])
 const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 const fileEntries = ref([])
 const fileFilterKeyword = ref('')
-const fileCurrentPath = ref('/root')
-const filePathInput = ref('/root')
+const fileCurrentPath = ref('')
+const filePathInput = ref('')
 const previousDirectoryPath = ref('')
 const fileLoading = ref(false)
 const fileErrorText = ref('')
@@ -2504,9 +2504,13 @@ const connectWebSsh = async () => {
                     statusText.value = '已连接'
                     messageText.value = ''
                     currentLogId.value = msg.log_id || null
+                    // 使用返回的家目录，如果没有则使用默认的 /root
+                    const homeDir = msg.home_dir || '/root'
+                    fileCurrentPath.value = homeDir
+                    filePathInput.value = homeDir
                     fetchActiveUserCount()
                     if (!fileEntries.value.length) {
-                        loadFiles(fileCurrentPath.value || '/root')
+                        loadFiles(fileCurrentPath.value)
                     }
                     writeSystemLine(`Connected to ${msg.host_name} (${msg.ip})`)
                 } else if (msg.type === 'error') {

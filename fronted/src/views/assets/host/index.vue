@@ -415,6 +415,42 @@
         />
         <div ref="webSshContainerRef" class="webssh-terminal" />
     </a-modal>
+
+    <a-modal
+        v-model:open="groupDeleteConfirmVisible"
+        title="确认删除主机分组"
+        ok-text="确认删除"
+        cancel-text="取消"
+        :ok-button-props="{ danger: true }"
+        :confirm-loading="groupDeleteLoading"
+        @ok="confirmDeleteGroupWithPreview"
+    >
+        <a-alert
+            v-if="groupDeleteHostCount > 0"
+            type="warning"
+            show-icon
+            :message="`该分组树下共有 ${groupDeleteHostCount} 台主机，删除前请确认影响清单`"
+            description="提示按分组树展示，便于核对。"
+            style="margin-bottom: 12px"
+        />
+        <a-alert
+            v-else
+            type="info"
+            show-icon
+            message="该分组树下没有主机"
+            description="可直接确认删除分组。"
+            style="margin-bottom: 12px"
+        />
+        <a-tree
+            v-if="groupDeletePreviewTreeData.length"
+            block-node
+            show-line
+            :expanded-keys="groupDeleteExpandedKeys"
+            :auto-expand-parent="true"
+            :tree-data="groupDeletePreviewTreeData"
+            @expand="onGroupDeletePreviewExpand"
+        />
+    </a-modal>
 </template>
 
 <script setup>
@@ -455,6 +491,7 @@ const groupDialogDefaultParentId = ref(null)
 const groupMaxTreeDepth = ref(5)
 const loading = ref(false)
 const groupLoading = ref(false)
+const groupDeleteLoading = ref(false)
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增主机')
 const dialogLoading = ref(false)
@@ -485,6 +522,10 @@ const state = reactive({
 
 const rowLoadingStates = reactive({})
 const groupTreeData = ref([])
+const groupDeleteConfirmVisible = ref(false)
+const groupDeletePreviewTreeData = ref([])
+const groupDeleteExpandedKeys = ref([])
+const pendingDeleteGroupNode = ref(null)
 const expandedGroupKeys = ref([])
 const credentialOptions = ref([])
 const datasources = ref([])
@@ -558,6 +599,25 @@ const pagination = reactive({
     showTotal: (value) => `共有${value}条数据`,
     pageSizeOptions: ['10', '20', '30'],
     showQuickJumper: true,
+})
+
+const groupDeleteHostCount = computed(() => {
+    const rootNodes = Array.isArray(groupDeletePreviewTreeData.value) ? groupDeletePreviewTreeData.value : []
+    let total = 0
+    const walk = (nodes) => {
+        nodes.forEach((node) => {
+            const children = Array.isArray(node.children) ? node.children : []
+            if (String(node.key || '').startsWith('host-')) {
+                total += 1
+                return
+            }
+            if (children.length) {
+                walk(children)
+            }
+        })
+    }
+    walk(rootNodes)
+    return total
 })
 
 const buildTreeData = (nodes, depth = 1) => {
@@ -751,6 +811,168 @@ const closeGroupContextMenu = () => {
     groupContextMenu.visible = false
 }
 
+const findGroupNodeByKey = (nodes, key) => {
+    for (const node of nodes || []) {
+        if (Number(node?.key) === Number(key)) {
+            return node
+        }
+        const childNode = findGroupNodeByKey(node?.children || [], key)
+        if (childNode) {
+            return childNode
+        }
+    }
+    return null
+}
+
+const getGroupNodeLabel = (node) => {
+    if (!node) {
+        return '未命名分组'
+    }
+    const rawTitle = String(node.title || node.name || '未命名分组')
+    return rawTitle.replace(/\s*\(\d+\)\s*$/, '')
+}
+
+const getHostDisplayName = (host) => {
+    const instanceName = String(host?.instance_name || '').trim()
+    const hostname = String(host?.system?.hostname || '').trim()
+    const ip = String(host?.ip || '').trim()
+    return instanceName || hostname || ip || `Host-${host?.id || '-'}`
+}
+
+const getHostGroupId = (host) => {
+    if (Number.isInteger(Number(host?.group_id)) && Number(host?.group_id) > 0) {
+        return Number(host.group_id)
+    }
+    if (Number.isInteger(Number(host?.group)) && Number(host?.group) > 0) {
+        return Number(host.group)
+    }
+    if (Number.isInteger(Number(host?.group?.id)) && Number(host?.group?.id) > 0) {
+        return Number(host.group.id)
+    }
+    return null
+}
+
+const loadHostsByGroupTree = async (groupId) => {
+    const allHosts = []
+    const pageSize = 200
+    let page = 1
+    let total = 0
+
+    do {
+        const res = await getHostList({ page, size: pageSize, group_id: groupId })
+        if (res.data.code !== 200) {
+            throw new Error(res.data.msg || '获取主机分组清单失败')
+        }
+        const payload = res.data.data || {}
+        const rows = Array.isArray(payload.results) ? payload.results : []
+        total = Number(payload.count || 0)
+        allHosts.push(...rows)
+        page += 1
+    } while (allHosts.length < total)
+
+    return allHosts
+}
+
+const buildDeletePreviewTree = (groupNode, hosts) => {
+    const hostRows = Array.isArray(hosts) ? hosts : []
+    const groupHostsMap = new Map()
+    hostRows.forEach((host) => {
+        const gid = getHostGroupId(host)
+        if (!gid) {
+            return
+        }
+        const list = groupHostsMap.get(gid) || []
+        list.push(host)
+        groupHostsMap.set(gid, list)
+    })
+
+    const buildNode = (node) => {
+        const nodeId = Number(node?.key || 0)
+        const groupLabel = getGroupNodeLabel(node)
+        const childGroups = Array.isArray(node?.children) ? node.children.map((item) => buildNode(item)) : []
+        const groupHosts = (groupHostsMap.get(nodeId) || []).map((host) => ({
+            title: `${getHostDisplayName(host)} (${host.ip || '-'})`,
+            key: `host-${host.id}`,
+            isLeaf: true,
+        }))
+
+        return {
+            title: `${groupLabel}`,
+            key: `group-${nodeId}`,
+            children: [...childGroups, ...groupHosts],
+        }
+    }
+
+    return groupNode ? [buildNode(groupNode)] : []
+}
+
+const collectTreeKeys = (nodes) => {
+    const keys = []
+    const walk = (items) => {
+        ;(items || []).forEach((item) => {
+            keys.push(item.key)
+            if (Array.isArray(item.children) && item.children.length) {
+                walk(item.children)
+            }
+        })
+    }
+    walk(nodes)
+    return keys
+}
+
+const onGroupDeletePreviewExpand = (expandedKeys) => {
+    groupDeleteExpandedKeys.value = Array.isArray(expandedKeys) ? expandedKeys : []
+}
+
+const openGroupDeleteConfirm = async (groupNode) => {
+    pendingDeleteGroupNode.value = groupNode
+    groupDeleteLoading.value = true
+    try {
+        const hosts = await loadHostsByGroupTree(groupNode.key)
+        groupDeletePreviewTreeData.value = buildDeletePreviewTree(groupNode, hosts)
+        groupDeleteConfirmVisible.value = true
+    } catch (error) {
+        message.error(error?.message || '获取分组主机清单失败')
+    } finally {
+        groupDeleteLoading.value = false
+    }
+}
+
+const confirmDeleteGroupWithPreview = async () => {
+    const node = pendingDeleteGroupNode.value
+    if (!node || Number(node.key) === 0) {
+        groupDeleteConfirmVisible.value = false
+        return
+    }
+
+    groupDeleteLoading.value = true
+    try {
+        const res = await deleteHostGroupById(node.key)
+        if (res.data.code === 200 || res.status === 204) {
+            message.success('删除成功')
+            groupDeleteConfirmVisible.value = false
+            groupDeletePreviewTreeData.value = []
+            pendingDeleteGroupNode.value = null
+            await loadGroupTree()
+            if (selectedGroupId.value === node.key) {
+                selectedGroupId.value = 0
+                selectedGroupName.value = '全部分组'
+                await refreshList()
+            }
+        } else {
+            message.error(res.data?.msg || '删除失败')
+        }
+    } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || '删除失败')
+    } finally {
+        groupDeleteLoading.value = false
+    }
+}
+
+watch(groupDeletePreviewTreeData, (nodes) => {
+    groupDeleteExpandedKeys.value = collectTreeKeys(nodes)
+}, { deep: true })
+
 const handleContextCreate = () => {
     const node = groupContextMenu.node
     closeGroupContextMenu()
@@ -773,22 +995,12 @@ const handleContextDelete = async () => {
     const node = groupContextMenu.node
     closeGroupContextMenu()
     if (!node || node.key === 0) return
-    try {
-        const res = await deleteHostGroupById(node.key)
-        if (res.data.code === 200 || res.status === 204) {
-            message.success('删除成功')
-            await loadGroupTree()
-            if (selectedGroupId.value === node.key) {
-                selectedGroupId.value = 0
-                selectedGroupName.value = '全部分组'
-                await refreshList()
-            }
-        } else {
-            message.error(res.data?.msg || '删除失败')
-        }
-    } catch (e) {
-        message.error('删除失败')
+    const groupNode = findGroupNodeByKey(groupTreeData.value, node.key)
+    if (!groupNode) {
+        message.error('分组信息不存在，请刷新后重试')
+        return
     }
+    await openGroupDeleteConfirm(groupNode)
 }
 
 const handleCreateGroup = () => {

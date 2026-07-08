@@ -97,11 +97,16 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         self.connected = True
         WebSSHRuntimeRegistry.mark_active(self.audit_session_pk, self, self.host_id)
+        
+        # 根据登录用户名推导家目录
+        home_dir = self._get_home_directory(credential.username)
+        
         await self._send_event('connected', {
             'host_id': self.host_id,
             'host_name': host_display_name,
             'ip': host.ip,
             'log_id': self.audit_session_pk,
+            'home_dir': home_dir,
         })
 
         # Trigger initial shell prompt for servers that wait for first input.
@@ -305,6 +310,15 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             return True, ''
         except Exception as exc:
             return False, f'SSH 连接失败：{exc}'
+
+    def _get_home_directory(self, username):
+        """根据用户名推导家目录"""
+        if not username:
+            return '/root'
+        # root 用户的家目录是 /root，其他用户是 /home/{username}
+        if username == 'root':
+            return '/root'
+        return f'/home/{username}'
 
     @database_sync_to_async
     def _get_host_and_default_credential(self, host_id):

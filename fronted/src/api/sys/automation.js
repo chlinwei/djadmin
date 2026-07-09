@@ -130,6 +130,10 @@ export function launchWorkflow(id, params = {}) {
   return requestUtil.post(prefix + `workflows/${id}/launch/`, params)
 }
 
+export function precheckWorkflowLaunch(id, params = {}) {
+  return requestUtil.post(prefix + `workflows/${id}/precheck-launch/`, params)
+}
+
 export function getWorkflowRunList(params) {
   return requestUtil.get(prefix + 'workflow-runs/', params)
 }

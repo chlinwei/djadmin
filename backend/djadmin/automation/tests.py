@@ -9,7 +9,7 @@ from rest_framework_jwt.settings import api_settings
 from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
-from .models import AutomationTask, AutomationWorkflowRun, PlaybookTemplate
+from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate
 
 
 def _get_token(user: SysUser) -> str:
@@ -408,6 +408,52 @@ class AutomationWorkflowTest(BaseTestCase):
 			self.assertEqual(node_result['task_name_snapshot'], self.task.name)
 			self.assertEqual(node_result['template_name_snapshot'], self.template.name)
 			self.assertTrue(node_result.get('job_id'))
+			mock_delay.assert_called_once()
+
+	def test_launch_workflow_uses_workflow_default_inventory_scope(self):
+		host_b = Host.objects.create(instance_name='workflow_scope_host_b', ip='10.0.0.22')
+		inventory = AutomationInventory.objects.create(
+			name='workflow-scope-inventory',
+			selected_host_ids=[host_b.id],
+			selected_group_ids=[],
+			enabled=True,
+		)
+
+		res = self.client.post(
+			'/sys/automation/workflows/',
+			{
+				'name': 'workflow with default inventory',
+				'description': 'workflow default scope test',
+				'enabled': True,
+				'default_inventory': inventory.id,
+				'nodes': [
+					{'key': 'n1', 'name': '执行任务', 'node_type': 'task', 'task_id': self.task.id},
+				],
+				'edges': [],
+				'default_extra_vars': {},
+			},
+			format='json',
+		)
+		workflow = self.assertResponseOK(res)['data']
+
+		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+			launch_res = self.client.post(
+				f"/sys/automation/workflows/{workflow['id']}/launch/",
+				{},
+				format='json',
+			)
+			launch_body = self.assertResponseOK(launch_res)
+			run = AutomationWorkflowRun.objects.get(id=launch_body['data']['id'])
+			node_result = run.node_results[0]
+			job_id = node_result.get('job_id')
+			self.assertTrue(str(job_id).isdigit())
+
+			detail_res = self.client.get(f'/sys/automation/jobs/{job_id}/')
+			detail_body = self.assertResponseOK(detail_res)
+			inventory_hosts = detail_body['data']['inventory_snapshot']['hosts']
+			host_ids = {item['host_id'] for item in inventory_hosts}
+			self.assertIn(host_b.id, host_ids)
+			self.assertNotIn(self.host.id, host_ids)
 			mock_delay.assert_called_once()
 
 	def test_workflow_can_be_edited_with_circular_reference(self):

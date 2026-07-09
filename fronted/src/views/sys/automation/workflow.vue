@@ -128,6 +128,31 @@
         <a-form-item label="Workflow">
           <a-input :value="launchTarget?.name || '-'" readonly />
         </a-form-item>
+        <a-form-item label="覆盖 Inventory">
+          <a-select
+            v-model:value="launchScopeForm.inventory_id"
+            :options="inventoryOptions"
+            show-search
+            allow-clear
+            optionFilterProp="label"
+            placeholder="未选择则使用 Workflow 默认/任务节点范围"
+            @change="refreshLaunchPrecheck"
+          />
+        </a-form-item>
+        <a-form-item label="覆盖 Limit">
+          <a-input
+            v-model:value="launchScopeForm.limit"
+            placeholder="可选，留空则使用 Workflow 默认/任务节点 limit"
+            @blur="refreshLaunchPrecheck"
+            @pressEnter="refreshLaunchPrecheck"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button size="small" :loading="launchPrecheckLoading" @click="refreshLaunchPrecheck">预检范围</a-button>
+            <span class="scope-precheck-text">{{ launchPrecheckMessage }}</span>
+          </a-space>
+        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -144,6 +169,8 @@ import {
   launchWorkflow,
   getWorkflowRunList,
   cancelWorkflowRun,
+  getInventoryList,
+  precheckWorkflowLaunch,
 } from '@/api/sys/automation'
 
 const router = useRouter()
@@ -155,10 +182,17 @@ const launchingId = ref(null)
 const launchSubmitting = ref(false)
 const launchModalVisible = ref(false)
 const launchTarget = ref(null)
+const launchPrecheckLoading = ref(false)
+const launchPrecheckMessage = ref('可选：为本次启动覆盖 Inventory 与 Limit')
 const keyword = ref('')
 
 const records = ref([])
 const runRecords = ref([])
+const inventoryOptions = ref([])
+const launchScopeForm = reactive({
+  inventory_id: undefined,
+  limit: '',
+})
 
 const pagination = reactive({
   current: 1,
@@ -234,6 +268,15 @@ async function loadWorkflowRuns(resetPage = false) {
   }
 }
 
+async function loadInventoryOptions() {
+  const res = await getInventoryList({ page: 1, page_size: 500, ordering: '-id' })
+  const data = res?.data?.data || {}
+  const items = Array.isArray(data.results) ? data.results : []
+  inventoryOptions.value = items
+    .filter((item) => Number(item.id || 0) > 0)
+    .map((item) => ({ label: String(item.name || ''), value: Number(item.id) }))
+}
+
 function openBuilderForCreate() {
   router.push('/sys/automation/workflow/create')
 }
@@ -254,7 +297,11 @@ function launch(record) {
     return
   }
   launchTarget.value = record || null
+  launchScopeForm.inventory_id = Number(record?.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  launchScopeForm.limit = String(record?.default_limit || '')
+  launchPrecheckMessage.value = '可选：为本次启动覆盖 Inventory 与 Limit'
   launchModalVisible.value = true
+  refreshLaunchPrecheck()
 }
 
 function isWorkflowLaunchDisabled(record) {
@@ -265,6 +312,48 @@ function closeLaunchModal() {
   launchModalVisible.value = false
   launchSubmitting.value = false
   launchTarget.value = null
+  launchScopeForm.inventory_id = undefined
+  launchScopeForm.limit = ''
+  launchPrecheckMessage.value = '可选：为本次启动覆盖 Inventory 与 Limit'
+}
+
+function buildLaunchPayload() {
+  const payload = {}
+  if (Number(launchScopeForm.inventory_id || 0) > 0) {
+    payload.inventory_id = Number(launchScopeForm.inventory_id)
+  }
+  payload.limit = String(launchScopeForm.limit || '').trim()
+  return payload
+}
+
+async function refreshLaunchPrecheck() {
+  if (!launchTarget.value?.id) {
+    return
+  }
+
+  launchPrecheckLoading.value = true
+  try {
+    const res = await precheckWorkflowLaunch(launchTarget.value.id, buildLaunchPayload())
+    const data = res?.data?.data || {}
+    const ok = Boolean(data.ok)
+    const scopeLabel = data.use_global_scope
+      ? `Inventory: ${String(data.inventory_name || '-')}`
+      : '未启用 Workflow 全局 Inventory'
+    if (ok) {
+      const hostCount = Number(data.resolved_host_count || 0)
+      if (data.use_global_scope) {
+        launchPrecheckMessage.value = `${scopeLabel}，匹配主机 ${hostCount} 台`
+      } else {
+        launchPrecheckMessage.value = `${scopeLabel}，将按各任务节点执行范围运行`
+      }
+    } else {
+      launchPrecheckMessage.value = String(data.message || '预检失败，请检查范围配置')
+    }
+  } catch (error) {
+    launchPrecheckMessage.value = '预检失败，请稍后重试'
+  } finally {
+    launchPrecheckLoading.value = false
+  }
 }
 
 async function confirmLaunch() {
@@ -274,7 +363,7 @@ async function confirmLaunch() {
   launchingId.value = launchTarget.value.id
   launchSubmitting.value = true
   try {
-    const res = await launchWorkflow(launchTarget.value.id, {})
+    const res = await launchWorkflow(launchTarget.value.id, buildLaunchPayload())
     const runId = Number(res?.data?.data?.id || 0)
     message.success('Workflow 已启动')
     closeLaunchModal()
@@ -360,7 +449,7 @@ function reloadAll() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadWorkflows(true), loadWorkflowRuns(true)])
+  await Promise.all([loadWorkflows(true), loadWorkflowRuns(true), loadInventoryOptions()])
 })
 </script>
 
@@ -379,6 +468,10 @@ onMounted(async () => {
 
 .block-card :deep(.ant-card-body) {
   padding-top: 12px;
+}
+
+.scope-precheck-text {
+  color: #595959;
 }
 
 @media (max-width: 992px) {

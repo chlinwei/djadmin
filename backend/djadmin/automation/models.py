@@ -155,6 +155,14 @@ class AutomationWorkflowTemplate(BaseModel):
     name = models.CharField(max_length=128, unique=True)
     description = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
+    default_inventory = models.ForeignKey(
+        'AutomationInventory',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='workflows',
+    )
+    default_limit = models.CharField(max_length=255, blank=True, default='')
     entry_node_key = models.CharField(max_length=128)
     nodes = models.JSONField(default=list, blank=True)
     edges = models.JSONField(default=list, blank=True)

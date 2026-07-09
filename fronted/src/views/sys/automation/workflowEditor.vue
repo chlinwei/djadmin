@@ -260,6 +260,19 @@
         <a-form-item label="描述">
           <a-input v-model:value="form.description" placeholder="可选" />
         </a-form-item>
+        <a-form-item label="默认 Inventory">
+          <a-select
+            v-model:value="form.default_inventory"
+            :options="inventoryOptions"
+            show-search
+            allow-clear
+            optionFilterProp="label"
+            placeholder="未选择则按任务节点各自范围执行"
+          />
+        </a-form-item>
+        <a-form-item label="默认 Limit">
+          <a-input v-model:value="form.default_limit" placeholder="可选，未填写则按任务节点 Limit" />
+        </a-form-item>
         <a-form-item label="默认变量 JSON">
           <a-textarea v-model:value="form.default_extra_vars_text" :rows="3" placeholder='例如：{"env":"prod"}' />
         </a-form-item>
@@ -373,6 +386,7 @@ import {
   getWorkflowDetail,
   createWorkflow,
   updateWorkflow,
+  getInventoryList,
 } from '@/api/sys/automation'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -421,11 +435,14 @@ const editingId = ref(null)
 
 const taskRecords = ref([])
 const workflowRecords = ref([])
+const inventoryRecords = ref([])
 
 const form = reactive({
   name: '',
   description: '',
   enabled: true,
+  default_inventory: undefined,
+  default_limit: '',
   default_extra_vars_text: '{}',
   remark: '',
 })
@@ -455,6 +472,9 @@ const taskNameMap = computed(() => {
   return map
 })
 const workflowOptions = computed(() => workflowRecords.value
+  .filter((item) => Number(item.id || 0) > 0)
+  .map((item) => ({ label: `${item.name}`, value: item.id })))
+const inventoryOptions = computed(() => inventoryRecords.value
   .filter((item) => Number(item.id || 0) > 0)
   .map((item) => ({ label: `${item.name}`, value: item.id })))
 const workflowNameMap = computed(() => {
@@ -988,6 +1008,8 @@ function resetForm() {
   form.name = ''
   form.description = ''
   form.enabled = true
+  form.default_inventory = undefined
+  form.default_limit = ''
   form.default_extra_vars_text = '{}'
   form.remark = ''
   resetBuilderGraph()
@@ -1008,6 +1030,8 @@ function fillForm(record) {
   form.name = record.name || ''
   form.description = record.description || ''
   form.enabled = Boolean(record.enabled)
+  form.default_inventory = Number(record.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  form.default_limit = String(record.default_limit || '')
   form.default_extra_vars_text = JSON.stringify(record.default_extra_vars || {}, null, 2)
   form.remark = record.remark || ''
 
@@ -1377,6 +1401,8 @@ function buildPayloadFromGraph() {
     name: String(form.name || '').trim(),
     description: String(form.description || '').trim(),
     enabled: Boolean(form.enabled),
+    default_inventory: Number(form.default_inventory || 0) > 0 ? Number(form.default_inventory) : null,
+    default_limit: String(form.default_limit || '').trim(),
     entry_node_key: '',
     nodes,
     edges,
@@ -1398,6 +1424,12 @@ async function loadWorkflowOptions() {
   workflowRecords.value = Array.isArray(data.results) ? data.results : []
 }
 
+async function loadInventoryOptions() {
+  const res = await getInventoryList({ page: 1, page_size: 500, ordering: '-id' })
+  const data = res?.data?.data || {}
+  inventoryRecords.value = Array.isArray(data.results) ? data.results : []
+}
+
 async function loadWorkflowDetail(id) {
   const res = await getWorkflowDetail(id)
   const data = res?.data?.data || {}
@@ -1407,7 +1439,7 @@ async function loadWorkflowDetail(id) {
 async function initEditor() {
   pageLoading.value = true
   try {
-    await loadTaskOptions()
+    await Promise.all([loadTaskOptions(), loadInventoryOptions()])
     const id = routeWorkflowId.value
     if (id) {
       isCreateMode.value = false

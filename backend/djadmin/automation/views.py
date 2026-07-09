@@ -259,6 +259,125 @@ def _format_workflow_spawn_chain_display(spawn_workflow_id: int, ancestor_templa
     return ' -> '.join(display_parts)
 
 
+def _extract_workflow_runtime_scope(run: AutomationWorkflowRun) -> dict:
+    result_summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    runtime_scope = result_summary.get('runtime_scope', {})
+    if not isinstance(runtime_scope, dict):
+        runtime_scope = {}
+
+    host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
+    group_ids = [int(item) for item in (runtime_scope.get('group_ids') or []) if str(item).isdigit()]
+
+    return {
+        'use_global_scope': bool(runtime_scope.get('use_global_scope')),
+        'inventory_id': int(runtime_scope['inventory_id']) if str(runtime_scope.get('inventory_id', '')).isdigit() else None,
+        'inventory_name': str(runtime_scope.get('inventory_name') or ''),
+        'host_ids': host_ids,
+        'group_ids': group_ids,
+        'limit': str(runtime_scope.get('limit') or '').strip(),
+        'limit_locked': bool(runtime_scope.get('limit_locked')),
+    }
+
+
+def _build_workflow_runtime_scope(workflow: AutomationWorkflowTemplate, request_data: dict) -> tuple[bool, str | None, dict | None]:
+    inventory_from_request = request_data.get('inventory_id')
+    selected_inventory = None
+
+    if str(inventory_from_request or '').isdigit():
+        selected_inventory = AutomationInventory.objects.filter(id=int(inventory_from_request)).first()
+        if selected_inventory is None:
+            return False, f'Inventory {inventory_from_request} not found', None
+    elif getattr(workflow, 'default_inventory_id', None):
+        selected_inventory = getattr(workflow, 'default_inventory', None)
+        if selected_inventory is None:
+            selected_inventory = AutomationInventory.objects.filter(id=workflow.default_inventory_id).first()
+        if selected_inventory is None:
+            return False, 'Workflow default inventory not found', None
+
+    if selected_inventory is not None and not selected_inventory.enabled:
+        return False, f'Inventory [{selected_inventory.name or selected_inventory.id}] is disabled', None
+
+    host_ids = []
+    group_ids = []
+    inventory_id = None
+    inventory_name = ''
+    use_global_scope = False
+    if selected_inventory is not None:
+        use_global_scope = True
+        inventory_id = selected_inventory.id
+        inventory_name = selected_inventory.name or ''
+        host_ids = [int(item) for item in (selected_inventory.selected_host_ids or []) if str(item).isdigit()]
+        group_ids = [int(item) for item in (selected_inventory.selected_group_ids or []) if str(item).isdigit()]
+
+    limit_locked = 'limit' in request_data or bool(str(getattr(workflow, 'default_limit', '') or '').strip())
+    if 'limit' in request_data:
+        limit_text = str(request_data.get('limit') or '').strip()
+    else:
+        limit_text = str(getattr(workflow, 'default_limit', '') or '').strip()
+
+    return True, None, {
+        'use_global_scope': use_global_scope,
+        'inventory_id': inventory_id,
+        'inventory_name': inventory_name,
+        'host_ids': host_ids,
+        'group_ids': group_ids,
+        'limit': limit_text,
+        'limit_locked': limit_locked,
+    }
+
+
+def _precheck_workflow_runtime_scope(runtime_scope: dict) -> tuple[bool, str, dict]:
+    use_global_scope = bool(runtime_scope.get('use_global_scope'))
+    limit_text = str(runtime_scope.get('limit') or '').strip()
+
+    if not use_global_scope:
+        return True, 'ok', {
+            'resolved_host_count': 0,
+            'matched_hosts_preview': [],
+            'matched_hosts_preview_total': 0,
+            'effective_limit': limit_text,
+            'message': '未配置 Workflow 全局 Inventory，任务节点将使用各自任务范围',
+        }
+
+    host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
+    group_ids = [int(item) for item in (runtime_scope.get('group_ids') or []) if str(item).isdigit()]
+
+    existing_group_ids = set(HostGroup.objects.filter(id__in=group_ids).values_list('id', flat=True))
+    missing_group_ids = sorted(set(group_ids) - existing_group_ids)
+    if missing_group_ids:
+        return False, 'inventory_invalid', {
+            'resolved_host_count': 0,
+            'matched_hosts_preview': [],
+            'matched_hosts_preview_total': 0,
+            'effective_limit': limit_text,
+            'missing_group_ids': missing_group_ids,
+            'message': f'执行范围包含已删除主机组: {", ".join(str(item) for item in missing_group_ids)}',
+        }
+
+    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+    inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, limit_text)
+    hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
+    resolved_host_count = len(hosts) if isinstance(hosts, list) else 0
+
+    if resolved_host_count == 0:
+        inventory_name = str(runtime_scope.get('inventory_name') or '-')
+        return False, 'inventory_empty', {
+            'resolved_host_count': 0,
+            'matched_hosts_preview': [],
+            'matched_hosts_preview_total': 0,
+            'effective_limit': limit_text,
+            'message': f'Inventory [{inventory_name}] 当前无匹配主机',
+        }
+
+    return True, 'ok', {
+        'resolved_host_count': resolved_host_count,
+        'matched_hosts_preview': _build_limit_matched_hosts_preview(inventory_snapshot),
+        'matched_hosts_preview_total': resolved_host_count,
+        'effective_limit': limit_text,
+        'message': f'预检通过，可匹配主机 {resolved_host_count} 台',
+    }
+
+
 def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -> tuple[bool, str | None, int | None, dict | None]:
     task_id = node_result.get('task_id')
     if task_id is None or not str(task_id).isdigit():
@@ -268,20 +387,31 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     if task is None or task.template is None:
         return False, f'Task {task_id} not found or template missing', None, None
 
-    default_host_ids = task.selected_host_ids
-    default_group_ids = task.selected_group_ids
-    if task.inventory_id and task.inventory is not None:
-        default_host_ids = task.inventory.selected_host_ids
-        default_group_ids = task.inventory.selected_group_ids
+    runtime_scope = _extract_workflow_runtime_scope(run)
+    if runtime_scope.get('use_global_scope'):
+        default_host_ids = runtime_scope.get('host_ids') or []
+        default_group_ids = runtime_scope.get('group_ids') or []
+    else:
+        default_host_ids = task.selected_host_ids
+        default_group_ids = task.selected_group_ids
+        if task.inventory_id and task.inventory is not None:
+            default_host_ids = task.inventory.selected_host_ids
+            default_group_ids = task.inventory.selected_group_ids
 
     host_ids = [int(item) for item in (default_host_ids or []) if str(item).isdigit()]
     group_ids = [int(item) for item in (default_group_ids or []) if str(item).isdigit()]
-    effective_limit = task.default_limit or ''
+    if runtime_scope.get('limit_locked'):
+        effective_limit = str(runtime_scope.get('limit') or '').strip()
+    else:
+        effective_limit = task.default_limit or ''
 
     inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
     inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, effective_limit)
     hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
     if not isinstance(hosts, list) or len(hosts) == 0:
+        if runtime_scope.get('use_global_scope'):
+            scope_name = str(runtime_scope.get('inventory_name') or '-')
+            return False, f'Workflow scope inventory [{scope_name}] resolved empty host scope', None, None
         return False, f'Task {task_id} resolved empty host scope', None, None
 
     node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
@@ -373,6 +503,7 @@ def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict) 
         'queued_job_count': 0,
         'queued_job_ids': [],
         'parent_run_id': run.id,
+        'runtime_scope': _extract_workflow_runtime_scope(run),
         # 子 run 继承并扩展祖先模板链，供后续嵌套节点继续做递归检测。
         'workflow_ancestor_template_ids': child_ancestor_template_ids,
         'workflow_nodes_snapshot': json.loads(json.dumps(child_workflow_nodes_snapshot, ensure_ascii=False)),
@@ -1518,7 +1649,7 @@ class AutomationWorkflowTemplateManage(
     ListModelMixin,
     DestroyModelMixin,
 ):
-    queryset = AutomationWorkflowTemplate.objects.all()
+    queryset = AutomationWorkflowTemplate.objects.select_related('default_inventory').all()
     serializer_class = AutomationWorkflowTemplateSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
@@ -1534,6 +1665,7 @@ class AutomationWorkflowTemplateManage(
         'partial_update': 'automation:workflow:update',
         'perform_update': 'automation:workflow:update',
         'launch': 'automation:workflow:launch',
+        'precheck_launch': 'automation:workflow:view',
     }
 
     def list(self, request, *args, **kwargs):
@@ -1585,6 +1717,50 @@ class AutomationWorkflowTemplateManage(
         self.perform_destroy(instance)
         return Response_200(data={'id': deleted_id})
 
+    @action(detail=True, methods=['post'], url_path='precheck-launch')
+    def precheck_launch(self, request, id=None):
+        workflow = self.get_object()
+        if not workflow.enabled:
+            return Response_200(data={
+                'ok': False,
+                'status': 'workflow_disabled',
+                'message': 'Workflow 已禁用，无法启动',
+                'resolved_host_count': 0,
+                'effective_limit': '',
+                'matched_hosts_preview': [],
+                'matched_hosts_preview_total': 0,
+            })
+
+        ok, error_msg, runtime_scope = _build_workflow_runtime_scope(workflow, request.data)
+        if not ok or runtime_scope is None:
+            return Response_200(data={
+                'ok': False,
+                'status': 'invalid_scope',
+                'message': error_msg or '启动范围配置无效',
+                'resolved_host_count': 0,
+                'effective_limit': '',
+                'matched_hosts_preview': [],
+                'matched_hosts_preview_total': 0,
+            })
+
+        check_ok, check_status, check_data = _precheck_workflow_runtime_scope(runtime_scope)
+        response_data = {
+            'ok': check_ok,
+            'status': check_status,
+            'message': check_data.get('message') or '',
+            'resolved_host_count': check_data.get('resolved_host_count') or 0,
+            'effective_limit': check_data.get('effective_limit') or '',
+            'matched_hosts_preview': check_data.get('matched_hosts_preview') or [],
+            'matched_hosts_preview_total': check_data.get('matched_hosts_preview_total') or 0,
+            'use_global_scope': bool(runtime_scope.get('use_global_scope')),
+            'inventory_id': runtime_scope.get('inventory_id'),
+            'inventory_name': runtime_scope.get('inventory_name') or '',
+        }
+        if 'missing_group_ids' in check_data:
+            response_data['missing_group_ids'] = check_data.get('missing_group_ids') or []
+
+        return Response_200(data=response_data)
+
     @action(detail=True, methods=['post'], url_path='launch')
     def launch(self, request, id=None):
         workflow = self.get_object()
@@ -1603,6 +1779,14 @@ class AutomationWorkflowTemplateManage(
         workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
         if len(workflow_nodes_snapshot) == 0:
             return Response_error_str('Workflow plan is empty, please check nodes and edges', code=400)
+
+        ok, error_msg, runtime_scope = _build_workflow_runtime_scope(workflow, request.data)
+        if not ok or runtime_scope is None:
+            return Response_error_str(error_msg or 'Workflow runtime scope is invalid', code=400)
+
+        check_ok, _, check_data = _precheck_workflow_runtime_scope(runtime_scope)
+        if not check_ok:
+            return Response_error_str(check_data.get('message') or 'Workflow runtime scope precheck failed', code=400)
 
         run = AutomationWorkflowRun.objects.create(
             workflow=workflow,
@@ -1628,6 +1812,7 @@ class AutomationWorkflowTemplateManage(
             'queued_job_count': 0,
             'queued_job_ids': [],
             'workflow_ancestor_template_ids': [workflow.id],
+            'runtime_scope': runtime_scope,
             # Keep immutable graph snapshot for this run so later workflow edits do not affect history.
             'workflow_nodes_snapshot': json.loads(json.dumps(workflow_nodes_snapshot, ensure_ascii=False)),
             'workflow_edges_snapshot': json.loads(json.dumps(workflow_edges_snapshot, ensure_ascii=False)),

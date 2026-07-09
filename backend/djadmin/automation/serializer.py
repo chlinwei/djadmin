@@ -895,6 +895,7 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
 class AutomationWorkflowTemplateSerializer(ModelSerializer):
     node_count = serializers.SerializerMethodField()
     edge_count = serializers.SerializerMethodField()
+    default_inventory_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AutomationWorkflowTemplate
@@ -909,10 +910,18 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
     def get_edge_count(self, obj):
         return len(obj.edges) if isinstance(obj.edges, list) else 0
 
+    def get_default_inventory_name(self, obj):
+        if getattr(obj, 'default_inventory_id', None) and getattr(obj, 'default_inventory', None) is not None:
+            return obj.default_inventory.name or ''
+        return ''
+
     def validate_default_extra_vars(self, value):
         if not isinstance(value, dict):
             raise serializers.ValidationError('default_extra_vars must be an object')
         return value
+
+    def validate_default_limit(self, value):
+        return str(value or '').strip()
 
     def validate(self, attrs):
         source_nodes = attrs.get('nodes', self.instance.nodes if self.instance is not None else None)

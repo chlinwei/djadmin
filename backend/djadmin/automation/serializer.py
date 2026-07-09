@@ -312,9 +312,20 @@ class AutomationTaskSerializer(ModelSerializer):
         return cache
 
     def _match_limit_token(self, host_item, token):
-        pattern = str(token or '').strip().lower()
-        if not pattern:
+        raw_token = str(token or '').strip().lower()
+        if not raw_token:
             return False
+
+        scope = ''
+        has_scope = False
+        pattern = raw_token
+        if ':' in raw_token:
+            has_scope = True
+            scope, pattern = raw_token.split(':', 1)
+            scope = scope.strip()
+            pattern = pattern.strip()
+            if not pattern:
+                return False
 
         host_id_text = str(host_item.get('id') or '')
         host_name = str(host_item.get('name') or '').lower()
@@ -322,12 +333,18 @@ class AutomationTaskSerializer(ModelSerializer):
         group_name = str(host_item.get('group_name') or '').lower()
         group_path = str(host_item.get('group_path') or '').lower()
 
+        if scope in ('host', 'hostname', 'name'):
+            return fnmatch.fnmatch(host_name, pattern)
+        if scope in ('id', 'host_id'):
+            return fnmatch.fnmatch(host_id_text, pattern)
+        if scope in ('path', 'group_path'):
+            return fnmatch.fnmatch(group_path, pattern)
+        if has_scope:
+            return False
+
         return (
             fnmatch.fnmatch(host_id_text, pattern)
-            or fnmatch.fnmatch(host_name, pattern)
             or fnmatch.fnmatch(host_ip, pattern)
-            or fnmatch.fnmatch(group_name, pattern)
-            or fnmatch.fnmatch(group_path, pattern)
         )
 
     def _build_limit_preview(self, obj, preview_size=None):

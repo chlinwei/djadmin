@@ -349,26 +349,36 @@ class AutomationWorkflowTest(BaseTestCase):
 		self.assertEqual(body['data']['edge_count'], 0)
 		self.assertEqual(body['data']['entry_node_key'], '')
 
-	def test_create_workflow_and_preview(self):
+	def test_create_workflow_and_precheck_launch_without_global_inventory(self):
 		workflow = self._create_workflow()
 
 		res = self.client.post(
-			f"/sys/automation/workflows/{workflow['id']}/preview/",
+			f"/sys/automation/workflows/{workflow['id']}/precheck-launch/",
 			{},
 			format='json',
 		)
 
 		body = self.assertResponseOK(res)
-		self.assertEqual(body['data']['planned_steps'], 1)
-		self.assertEqual(body['data']['plan'][0]['node_key'], 'n1')
+		self.assertTrue(body['data']['ok'])
+		self.assertEqual(body['data']['status'], 'ok')
+		self.assertEqual(body['data']['resolved_host_count'], 0)
+		self.assertFalse(body['data']['use_global_scope'])
 
-	def test_preview_workflow_with_multiple_roots(self):
+	def test_precheck_launch_with_multiple_roots_and_global_inventory(self):
+		inventory = AutomationInventory.objects.create(
+			name='workflow-precheck-inventory',
+			selected_host_ids=[self.host.id],
+			selected_group_ids=[],
+			enabled=True,
+		)
+
 		res = self.client.post(
 			'/sys/automation/workflows/',
 			{
 				'name': '多入口工作流',
 				'description': 'multi root',
 				'enabled': True,
+				'default_inventory': inventory.id,
 				'nodes': [
 					{'key': 'n1', 'name': '任务A', 'node_type': 'task', 'task_id': self.task.id},
 					{'key': 'n2', 'name': '任务B', 'node_type': 'task', 'task_id': self.task.id},
@@ -381,14 +391,17 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow = self.assertResponseOK(res)['data']
 
 		preview_res = self.client.post(
-			f"/sys/automation/workflows/{workflow['id']}/preview/",
+			f"/sys/automation/workflows/{workflow['id']}/precheck-launch/",
 			{},
 			format='json',
 		)
 		body = self.assertResponseOK(preview_res)
-		self.assertEqual(body['data']['planned_steps'], 2)
-		planned_keys = {item['node_key'] for item in body['data']['plan']}
-		self.assertEqual(planned_keys, {'n1', 'n2'})
+		self.assertTrue(body['data']['ok'])
+		self.assertEqual(body['data']['status'], 'ok')
+		self.assertTrue(body['data']['use_global_scope'])
+		self.assertEqual(body['data']['inventory_id'], inventory.id)
+		self.assertEqual(body['data']['resolved_host_count'], 1)
+		self.assertEqual(body['data']['matched_hosts_preview_total'], 1)
 
 	def test_launch_workflow_dispatches_task_jobs(self):
 		workflow = self._create_workflow()

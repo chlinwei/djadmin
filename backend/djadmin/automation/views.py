@@ -126,24 +126,39 @@ def _parse_limit_tokens(limit_text: str) -> tuple[list[str], list[str]]:
 
 
 def _match_limit_token(host_item: dict, token: str) -> bool:
-    pattern = str(token or '').strip().lower()
-    if not pattern:
+    raw_token = str(token or '').strip().lower()
+    if not raw_token:
         return False
+
+    scope = ''
+    has_scope = False
+    pattern = raw_token
+    if ':' in raw_token:
+        has_scope = True
+        scope, pattern = raw_token.split(':', 1)
+        scope = scope.strip()
+        pattern = pattern.strip()
+        if not pattern:
+            return False
 
     host_id_text = str(host_item.get('host_id') or '')
     host_name = str(host_item.get('host_name') or '').lower()
     host_ip = str(host_item.get('host_ip') or '').lower()
     group_name = str(host_item.get('group_name') or '').lower()
     group_path = str(host_item.get('group_path') or '').lower()
+
+    if scope in ('host', 'hostname', 'name'):
+        return fnmatch.fnmatch(host_name, pattern)
+    if scope in ('id', 'host_id'):
+        return fnmatch.fnmatch(host_id_text, pattern)
+    if scope in ('path', 'group_path'):
+        return fnmatch.fnmatch(group_path, pattern)
+    if has_scope:
+        return False
+
     if fnmatch.fnmatch(host_id_text, pattern):
         return True
-    if fnmatch.fnmatch(host_name, pattern):
-        return True
     if fnmatch.fnmatch(host_ip, pattern):
-        return True
-    if fnmatch.fnmatch(group_name, pattern):
-        return True
-    if fnmatch.fnmatch(group_path, pattern):
         return True
     return False
 
@@ -378,6 +393,52 @@ def _precheck_workflow_runtime_scope(runtime_scope: dict) -> tuple[bool, str, di
     }
 
 
+def _validate_workflow_task_nodes(workflow_nodes: list[dict]) -> tuple[bool, str | None]:
+    task_ids = set()
+    for node in workflow_nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get('node_type') or '').strip().lower() != 'task':
+            continue
+        task_id_text = str(node.get('task_id') or '').strip()
+        if not task_id_text.isdigit():
+            continue
+        task_ids.add(int(task_id_text))
+
+    if not task_ids:
+        return True, None
+
+    task_map = {
+        int(getattr(task, 'pk')): task
+        for task in AutomationTask.objects.filter(id__in=list(task_ids)).select_related('template', 'inventory')
+        if getattr(task, 'pk', None) is not None
+    }
+
+    for node in workflow_nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get('node_type') or '').strip().lower() != 'task':
+            continue
+        task_id_text = str(node.get('task_id') or '').strip()
+        if not task_id_text.isdigit():
+            continue
+
+        task_id = int(task_id_text)
+        node_name = str(node.get('name') or node.get('key') or f'Task-{task_id}').strip()
+        task = task_map.get(task_id)
+        if task is None:
+            return False, f'节点 [{node_name}] 引用的任务不存在 (task_id={task_id})'
+        if not task.enabled:
+            return False, f'节点 [{node_name}] 引用的任务已禁用: {task.name or task_id}'
+        if task.template is None:
+            return False, f'节点 [{node_name}] 引用任务缺少模板: {task.name or task_id}'
+        task_inventory = task.inventory
+        if task_inventory is not None and not task_inventory.enabled:
+            return False, f'节点 [{node_name}] 引用任务的 Inventory 已禁用: {task_inventory.name or "-"}'
+
+    return True, None
+
+
 def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -> tuple[bool, str | None, int | None, dict | None]:
     task_id = node_result.get('task_id')
     if task_id is None or not str(task_id).isdigit():
@@ -386,6 +447,9 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     task = AutomationTask.objects.filter(id=int(task_id)).select_related('template', 'inventory').first()
     if task is None or task.template is None:
         return False, f'Task {task_id} not found or template missing', None, None
+
+    # 已创建的 workflow run 视为快照语义：
+    # 运行中节点派发不再受任务/Inventory 后续启用状态变更影响。
 
     runtime_scope = _extract_workflow_runtime_scope(run)
     if runtime_scope.get('use_global_scope'):
@@ -1743,6 +1807,19 @@ class AutomationWorkflowTemplateManage(
                 'matched_hosts_preview_total': 0,
             })
 
+        workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
+        nodes_ok, nodes_error = _validate_workflow_task_nodes(workflow_nodes_snapshot)
+        if not nodes_ok:
+            return Response_200(data={
+                'ok': False,
+                'status': 'node_task_invalid',
+                'message': nodes_error or 'Workflow 节点任务配置无效',
+                'resolved_host_count': 0,
+                'effective_limit': str(runtime_scope.get('limit') or ''),
+                'matched_hosts_preview': [],
+                'matched_hosts_preview_total': 0,
+            })
+
         check_ok, check_status, check_data = _precheck_workflow_runtime_scope(runtime_scope)
         response_data = {
             'ok': check_ok,
@@ -1779,6 +1856,10 @@ class AutomationWorkflowTemplateManage(
         workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
         if len(workflow_nodes_snapshot) == 0:
             return Response_error_str('Workflow plan is empty, please check nodes and edges', code=400)
+
+        nodes_ok, nodes_error = _validate_workflow_task_nodes(workflow_nodes_snapshot)
+        if not nodes_ok:
+            return Response_error_str(nodes_error or 'Workflow task nodes are invalid', code=400)
 
         ok, error_msg, runtime_scope = _build_workflow_runtime_scope(workflow, request.data)
         if not ok or runtime_scope is None:

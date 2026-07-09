@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -288,11 +289,20 @@ def _run_single_host_playbook(job: AnsibleExecutionJob, target: AnsibleExecution
     if isinstance(job.extra_vars, dict) and job.extra_vars:
         cmd.extend(['--extra-vars', json.dumps(job.extra_vars, ensure_ascii=False)])
 
-    host_label = target.host_name or target.host_ip or alias
+    host_name = str(target.host_name or '').strip()
+    host_ip = str(target.host_ip or '').strip()
+    if host_name and host_ip and host_name != host_ip:
+        host_label = f'{host_name}({host_ip})'
+    else:
+        host_label = host_name or host_ip or alias
+
+    alias_regex = re.compile(rf'\b{re.escape(alias)}\b') if alias else None
 
     def _append_job_log(stream_name: str, text_chunk: str) -> None:
         if not text_chunk:
             return
+        if alias_regex is not None:
+            text_chunk = alias_regex.sub(host_label, text_chunk)
         # Log lines use raw Django process current time without timezone conversion.
         timestamp_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         lines = []

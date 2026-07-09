@@ -136,22 +136,32 @@
             allow-clear
             optionFilterProp="label"
             placeholder="未选择则使用 Workflow 默认/任务节点范围"
-            @change="refreshLaunchPrecheck"
           />
         </a-form-item>
         <a-form-item label="覆盖 Limit">
           <a-input
             v-model:value="launchScopeForm.limit"
-            placeholder="可选，留空则使用 Workflow 默认/任务节点 limit"
-            @blur="refreshLaunchPrecheck"
-            @pressEnter="refreshLaunchPrecheck"
+            :placeholder="LIMIT_INPUT_PLACEHOLDER"
           />
         </a-form-item>
         <a-form-item>
           <a-space>
             <a-button size="small" :loading="launchPrecheckLoading" @click="refreshLaunchPrecheck">预检范围</a-button>
-            <span class="scope-precheck-text">{{ launchPrecheckMessage }}</span>
           </a-space>
+          <ScopePrecheckPanel
+            :precheck-ok="launchPrecheckOk"
+            :prechecking="launchPrecheckLoading"
+            :message="launchPrecheckMessage"
+            :hosts="launchAllHosts"
+            :matched-hosts="launchMatchedHosts"
+            :show-host-link="true"
+            :show-limit-toggle="true"
+            :show-target-filter="true"
+            :limit-text="launchScopeForm.limit"
+            @host-click="handleLaunchHostClick"
+            @toggle-limit-host="handleLaunchLimitToggle"
+            @remove-limit-token="handleLaunchRemoveLimitToken"
+          />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -160,7 +170,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -172,6 +182,15 @@ import {
   getInventoryList,
   precheckWorkflowLaunch,
 } from '@/api/sys/automation'
+import ScopePrecheckPanel from './components/ScopePrecheckPanel.vue'
+import {
+  LIMIT_INPUT_PLACEHOLDER,
+  goToAssetHost,
+  mapInventoryOptions,
+  removeLimitToken,
+  resolveMatchedHostLimitToken,
+  toggleLimitToken,
+} from './utils/scopeHelpers'
 
 const router = useRouter()
 
@@ -183,8 +202,12 @@ const launchSubmitting = ref(false)
 const launchModalVisible = ref(false)
 const launchTarget = ref(null)
 const launchPrecheckLoading = ref(false)
+const launchPrecheckOk = ref(false)
 const launchPrecheckMessage = ref('可选：为本次启动覆盖 Inventory 与 Limit')
+const launchAllHosts = ref([])
+const launchMatchedHosts = ref([])
 const keyword = ref('')
+let launchPrecheckTimer = null
 
 const records = ref([])
 const runRecords = ref([])
@@ -271,10 +294,7 @@ async function loadWorkflowRuns(resetPage = false) {
 async function loadInventoryOptions() {
   const res = await getInventoryList({ page: 1, page_size: 500, ordering: '-id' })
   const data = res?.data?.data || {}
-  const items = Array.isArray(data.results) ? data.results : []
-  inventoryOptions.value = items
-    .filter((item) => Number(item.id || 0) > 0)
-    .map((item) => ({ label: String(item.name || ''), value: Number(item.id) }))
+  inventoryOptions.value = mapInventoryOptions(data.results)
 }
 
 function openBuilderForCreate() {
@@ -283,6 +303,19 @@ function openBuilderForCreate() {
 
 function openBuilderForEdit(record) {
   router.push({ path: '/sys/automation/workflow/editor', query: { id: record.id } })
+}
+
+function handleLaunchHostClick(item) {
+  goToAssetHost(router, message, item?.host_id, item?.host_name)
+}
+
+function handleLaunchLimitToggle(item) {
+  const token = resolveMatchedHostLimitToken(item)
+  launchScopeForm.limit = toggleLimitToken(launchScopeForm.limit, token)
+}
+
+function handleLaunchRemoveLimitToken(token) {
+  launchScopeForm.limit = removeLimitToken(launchScopeForm.limit, token)
 }
 
 async function removeRecord(record) {
@@ -299,6 +332,9 @@ function launch(record) {
   launchTarget.value = record || null
   launchScopeForm.inventory_id = Number(record?.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
   launchScopeForm.limit = String(record?.default_limit || '')
+  launchPrecheckOk.value = false
+  launchAllHosts.value = []
+  launchMatchedHosts.value = []
   launchPrecheckMessage.value = '可选：为本次启动覆盖 Inventory 与 Limit'
   launchModalVisible.value = true
   refreshLaunchPrecheck()
@@ -309,12 +345,30 @@ function isWorkflowLaunchDisabled(record) {
 }
 
 function closeLaunchModal() {
+  clearLaunchPrecheckTimer()
   launchModalVisible.value = false
   launchSubmitting.value = false
   launchTarget.value = null
   launchScopeForm.inventory_id = undefined
   launchScopeForm.limit = ''
+  launchPrecheckOk.value = false
+  launchAllHosts.value = []
+  launchMatchedHosts.value = []
   launchPrecheckMessage.value = '可选：为本次启动覆盖 Inventory 与 Limit'
+}
+
+function clearLaunchPrecheckTimer() {
+  if (launchPrecheckTimer) {
+    clearTimeout(launchPrecheckTimer)
+    launchPrecheckTimer = null
+  }
+}
+
+function scheduleLaunchPrecheck(delay = 250) {
+  clearLaunchPrecheckTimer()
+  launchPrecheckTimer = setTimeout(() => {
+    refreshLaunchPrecheck()
+  }, delay)
 }
 
 function buildLaunchPayload() {
@@ -333,9 +387,21 @@ async function refreshLaunchPrecheck() {
 
   launchPrecheckLoading.value = true
   try {
-    const res = await precheckWorkflowLaunch(launchTarget.value.id, buildLaunchPayload())
-    const data = res?.data?.data || {}
+    const payload = buildLaunchPayload()
+    const basePayload = { ...payload, limit: '' }
+    const baseRes = await precheckWorkflowLaunch(launchTarget.value.id, basePayload)
+    const baseData = baseRes?.data?.data || {}
+
+    let data = baseData
+    if (String(payload.limit || '').trim()) {
+      const narrowedRes = await precheckWorkflowLaunch(launchTarget.value.id, payload)
+      data = narrowedRes?.data?.data || {}
+    }
+
     const ok = Boolean(data.ok)
+    launchPrecheckOk.value = ok
+    launchAllHosts.value = Array.isArray(baseData.matched_hosts_preview) ? baseData.matched_hosts_preview : []
+    launchMatchedHosts.value = Array.isArray(data.matched_hosts_preview) ? data.matched_hosts_preview : []
     const scopeLabel = data.use_global_scope
       ? `Inventory: ${String(data.inventory_name || '-')}`
       : '未启用 Workflow 全局 Inventory'
@@ -350,6 +416,9 @@ async function refreshLaunchPrecheck() {
       launchPrecheckMessage.value = String(data.message || '预检失败，请检查范围配置')
     }
   } catch (error) {
+    launchPrecheckOk.value = false
+    launchAllHosts.value = []
+    launchMatchedHosts.value = []
     launchPrecheckMessage.value = '预检失败，请稍后重试'
   } finally {
     launchPrecheckLoading.value = false
@@ -451,6 +520,21 @@ function reloadAll() {
 onMounted(async () => {
   await Promise.all([loadWorkflows(true), loadWorkflowRuns(true), loadInventoryOptions()])
 })
+
+watch(
+  () => [launchScopeForm.inventory_id, launchScopeForm.limit, launchModalVisible.value],
+  ([, , visible]) => {
+    if (!visible) {
+      return
+    }
+    launchPrecheckMessage.value = '正在预检...'
+    scheduleLaunchPrecheck(250)
+  },
+)
+
+onBeforeUnmount(() => {
+  clearLaunchPrecheckTimer()
+})
 </script>
 
 <style scoped>
@@ -468,10 +552,6 @@ onMounted(async () => {
 
 .block-card :deep(.ant-card-body) {
   padding-top: 12px;
-}
-
-.scope-precheck-text {
-  color: #595959;
 }
 
 @media (max-width: 992px) {

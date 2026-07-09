@@ -35,6 +35,9 @@
         @change="handlePlaybookTableChange"
       >
         <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'update_time'">
+            {{ formatRecentUpdateTime(record.update_time) }}
+          </template>
           <template v-if="column.key === 'action'">
             <a-space>
               <a-tooltip title="编辑">
@@ -162,8 +165,28 @@ const playbookEdit = reactive({
 const playbookColumns = [
   { title: '名称', dataIndex: 'name', key: 'name' },
   { title: '描述', dataIndex: 'description', key: 'description' },
+  { title: '最近更新时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
   { title: '操作', key: 'action', width: 220 },
 ]
+
+function formatRecentUpdateTime(value) {
+  const text = String(value || '').trim()
+  if (!text) {
+    return '-'
+  }
+  const date = new Date(text)
+  if (Number.isNaN(date.getTime())) {
+    return text
+  }
+
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`
+}
 
 function parseDownloadFilename(contentDisposition, fallbackName) {
   if (!contentDisposition) {

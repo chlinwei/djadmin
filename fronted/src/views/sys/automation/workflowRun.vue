@@ -54,17 +54,18 @@
           </template>
           <template #node-workflow-node="nodeProps">
             <div class="workflow-node-wrap">
-              <a-tooltip
-                :title="nodeProps.data?.nodeMessage || ''"
-                :visible="!!(nodeProps.data?.nodeMessage)"
-                placement="topLeft"
+              <div
+                v-if="nodeProps.data?.nodeMessage"
+                class="workflow-node-message"
               >
-                <div
-                  class="workflow-node-card"
-                  :class="`status-${normalizeNodeStatus(nodeProps.data?.status)}`"
-                >
-                  <Handle type="target" :position="Position.Left" :connectable="false" />
-                  <Handle type="source" :position="Position.Right" :connectable="false" />
+                {{ nodeProps.data?.nodeMessage }}
+              </div>
+              <div
+                class="workflow-node-card"
+                :class="`status-${normalizeNodeStatus(nodeProps.data?.status)}`"
+              >
+                <Handle type="target" :position="Position.Left" :connectable="false" />
+                <Handle type="source" :position="Position.Right" :connectable="false" />
 
                 <div class="workflow-node-state-icon" :class="`icon-${normalizeNodeStatus(nodeProps.data?.status)}`">
                   {{ getNodeStatusIcon(nodeProps.data?.status) }}
@@ -130,7 +131,6 @@
                 </div>
                 <div class="workflow-node-runtime">{{ toNodeStatusLabel(nodeProps.data?.status) }}</div>
               </div>
-              </a-tooltip>
               <div
                 class="workflow-node-name"
               >
@@ -158,27 +158,15 @@ import { ApartmentOutlined, ToolOutlined } from '@ant-design/icons-vue'
 import { VueFlow, Handle, MarkerType, Position } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { cancelJob, cancelWorkflowRun, getWorkflowRunDetail } from '@/api/sys/automation'
+import {
+  buildWorkflowEdgeLabelStyle,
+  buildWorkflowEdgeStyle,
+  normalizeEdgeCondition,
+  resolveWorkflowEdgePathOptions,
+  resolveWorkflowEdgeType,
+} from './utils/workflowGraph'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
-
-function normalizeEdgeCondition(condition) {
-  const text = String(condition || 'success').trim().toLowerCase()
-  if (text === 'failure' || text === 'always') {
-    return text
-  }
-  return 'success'
-}
-
-function resolveEdgeColor(condition) {
-  const normalized = normalizeEdgeCondition(condition)
-  if (normalized === 'failure') {
-    return '#ff4d4f'
-  }
-  if (normalized === 'always') {
-    return '#1677ff'
-  }
-  return '#52c41a'
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -568,31 +556,31 @@ function buildGraph(data) {
     id: `start-edge-${index}`,
     source: 'start',
     target: targetKey,
-    type: 'smoothstep',
+    type: resolveWorkflowEdgeType('always'),
     label: 'always',
     data: { condition: 'always' },
-    pathOptions: { borderRadius: 18, offset: 20 },
     markerEnd: MarkerType.ArrowClosed,
-    style: { stroke: resolveEdgeColor('always') },
-    labelStyle: { fill: '#333', fontSize: '12px' },
+    style: buildWorkflowEdgeStyle('always'),
+    labelStyle: buildWorkflowEdgeLabelStyle(),
   }))
 
   flowNodes.value = [startNode, ...runtimeNodes]
 
   const runtimeEdges = workflowEdges.map((item, index) => {
     const condition = normalizeEdgeCondition(item?.condition)
+    const pathOptions = resolveWorkflowEdgePathOptions(condition)
     return {
       id: `edge-${index}`,
       source: String(item?.source_key || ''),
       target: String(item?.target_key || ''),
       label: condition,
-      type: 'smoothstep',
+      type: resolveWorkflowEdgeType(condition),
       animated: false,
       data: { condition },
-      pathOptions: { borderRadius: 18, offset: 20 },
+      ...(pathOptions ? { pathOptions } : {}),
       markerEnd: MarkerType.ArrowClosed,
-      style: { stroke: resolveEdgeColor(condition) },
-      labelStyle: { fill: '#333', fontSize: '12px' },
+      style: buildWorkflowEdgeStyle(condition),
+      labelStyle: buildWorkflowEdgeLabelStyle(),
     }
   })
 
@@ -935,7 +923,44 @@ onBeforeUnmount(() => {
 }
 
 .workflow-node-wrap {
+  position: relative;
   width: 220px;
+}
+
+.workflow-node-message {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 8px;
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #1f1f1f;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
+  z-index: 12;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.workflow-node-message::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 100%;
+  border-width: 6px;
+  border-style: solid;
+  border-color: #1f1f1f transparent transparent transparent;
+}
+
+.workflow-node-wrap:hover .workflow-node-message {
+  opacity: 1;
+  visibility: visible;
 }
 
 .workflow-start-node-card {
@@ -957,7 +982,7 @@ onBeforeUnmount(() => {
 .workflow-node-card {
   position: relative;
   width: 220px;
-  height: 86px;
+  height: 72px;
   box-sizing: border-box;
   display: flex;
   align-items: center;

@@ -75,6 +75,17 @@
                 >
                   ALL
                 </div>
+                <div
+                  v-if="resolveNodeEnableStatus(nodeProps.data).visible"
+                  class="workflow-node-enable-tag"
+                  :class="{
+                    'is-enabled': resolveNodeEnableStatus(nodeProps.data).status === 'enabled',
+                    'is-disabled': resolveNodeEnableStatus(nodeProps.data).status === 'disabled',
+                    'is-missing': resolveNodeEnableStatus(nodeProps.data).status === 'missing',
+                  }"
+                >
+                  {{ resolveNodeEnableStatus(nodeProps.data).label }}
+                </div>
 
                 <div v-if="nodeProps.data?.node_type === 'task'" class="workflow-node-quick-actions">
                   <span class="node-quick-ref-name" :title="resolveTaskNameByNodeData(nodeProps.data)">
@@ -173,7 +184,7 @@
                 @click="selectRunType('success')"
               >
                 <div class="card-title">On Success</div>
-                <div class="card-desc">Execute when the parent node results in a successful state.</div>
+                <div class="card-desc">当父节点执行成功时，才执行当前节点。</div>
               </div>
               <div
                 class="run-type-card"
@@ -181,7 +192,7 @@
                 @click="selectRunType('failure')"
               >
                 <div class="card-title">On Failure</div>
-                <div class="card-desc">Execute when the parent node results in a failed state.</div>
+                <div class="card-desc">当父节点执行失败时，才执行当前节点。</div>
               </div>
               <div
                 class="run-type-card"
@@ -189,7 +200,7 @@
                 @click="selectRunType('always')"
               >
                 <div class="card-title">Always</div>
-                <div class="card-desc">Execute regardless of the parent node's final state.</div>
+                <div class="card-desc">无论父节点最终状态如何，都执行当前节点。</div>
               </div>
             </div>
           </div>
@@ -245,9 +256,10 @@
     <a-modal
       title="基础信息"
       :open="basicInfoVisible"
+      :confirm-loading="submitting"
       ok-text="确认"
       cancel-text="取消"
-      @ok="basicInfoVisible = false"
+      @ok="handleBasicInfoConfirm"
       @cancel="basicInfoVisible = false"
     >
       <a-form layout="vertical">
@@ -260,7 +272,7 @@
         <a-form-item label="描述">
           <a-input v-model:value="form.description" placeholder="可选" />
         </a-form-item>
-        <a-form-item label="默认 Inventory">
+        <a-form-item label="选择Inventory">
           <a-select
             v-model:value="form.default_inventory"
             :options="inventoryOptions"
@@ -271,7 +283,21 @@
           />
         </a-form-item>
         <a-form-item label="默认 Limit">
-          <a-input v-model:value="form.default_limit" placeholder="可选，未填写则按任务节点 Limit" />
+          <a-input v-model:value="form.default_limit" :placeholder="LIMIT_INPUT_PLACEHOLDER" />
+          <ScopePrecheckPanel
+            :precheck-ok="basicLimitPrecheckOk"
+            :prechecking="basicLimitPrechecking"
+            :message="basicLimitPrecheckText"
+            :hosts="basicLimitAllHosts"
+            :matched-hosts="basicLimitMatchedHosts"
+            :show-host-link="true"
+            :show-limit-toggle="true"
+            :show-target-filter="true"
+            :limit-text="form.default_limit"
+            @host-click="handleBasicLimitHostClick"
+            @toggle-limit-host="handleBasicLimitLimitToggle"
+            @remove-limit-token="handleBasicLimitRemoveToken"
+          />
         </a-form-item>
         <a-form-item label="默认变量 JSON">
           <a-textarea v-model:value="form.default_extra_vars_text" :rows="3" placeholder='例如：{"env":"prod"}' />
@@ -306,7 +332,7 @@
                 @click="selectNodeConfigRunType('success')"
               >
                 <div class="card-title">On Success</div>
-                <div class="card-desc">Execute when the parent node results in a successful state.</div>
+                <div class="card-desc">当父节点执行成功时，才执行当前节点。</div>
               </div>
               <div
                 class="run-type-card"
@@ -314,7 +340,7 @@
                 @click="selectNodeConfigRunType('failure')"
               >
                 <div class="card-title">On Failure</div>
-                <div class="card-desc">Execute when the parent node results in a failed state.</div>
+                <div class="card-desc">当父节点执行失败时，才执行当前节点。</div>
               </div>
               <div
                 class="run-type-card"
@@ -322,7 +348,7 @@
                 @click="selectNodeConfigRunType('always')"
               >
                 <div class="card-title">Always</div>
-                <div class="card-desc">Execute regardless of the parent node's final state.</div>
+                <div class="card-desc">无论父节点最终状态如何，都执行当前节点。</div>
               </div>
             </div>
           </div>
@@ -374,12 +400,28 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal, message } from 'ant-design-vue'
 import { ApartmentOutlined, ToolOutlined } from '@ant-design/icons-vue'
 import { VueFlow, Handle, Position, MarkerType, ConnectionMode } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
+import ScopePrecheckPanel from './components/ScopePrecheckPanel.vue'
+import {
+  LIMIT_INPUT_PLACEHOLDER,
+  goToAssetHost,
+  removeLimitToken,
+  resolveMatchedHostLimitToken,
+  toggleLimitToken,
+} from './utils/scopeHelpers'
+import {
+  START_EDGE_TYPE,
+  buildWorkflowEdgeLabelStyle,
+  buildWorkflowEdgeStyle,
+  normalizeEdgeCondition,
+  resolveWorkflowEdgePathOptions,
+  resolveWorkflowEdgeType,
+} from './utils/workflowGraph'
 import {
   getTaskList,
   getWorkflowList,
@@ -387,42 +429,28 @@ import {
   createWorkflow,
   updateWorkflow,
   getInventoryList,
+  precheckInventoryLimit,
 } from '@/api/sys/automation'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 
 const START_NODE_ID = 'start'
 const START_EDGE_PREFIX = 'start-edge-'
-const WORKFLOW_EDGE_TYPE = 'smoothstep'
-const WORKFLOW_EDGE_PATH_OPTIONS = { borderRadius: 18, offset: 20 }
 const TASK_DEFAULT_NODE_NAME = '任务节点'
 const WORKFLOW_DEFAULT_NODE_NAME = 'Workflow节点'
 
-function normalizeEdgeCondition(condition) {
-  const text = String(condition || 'success').trim().toLowerCase()
-  if (text === 'failure' || text === 'always') {
-    return text
-  }
-  return 'success'
-}
-
-function resolveEdgeColor(condition) {
+function applyBusinessEdgeVisual(edge, condition) {
   const normalized = normalizeEdgeCondition(condition)
-  if (normalized === 'failure') {
-    return '#ff4d4f'
+  edge.type = resolveWorkflowEdgeType(normalized)
+  const pathOptions = resolveWorkflowEdgePathOptions(normalized)
+  if (pathOptions) {
+    edge.pathOptions = pathOptions
+  } else {
+    delete edge.pathOptions
   }
-  if (normalized === 'always') {
-    return '#1677ff'
-  }
-  return '#52c41a'
-}
-
-function buildWorkflowEdgeStyle(condition = 'success') {
-  return { stroke: resolveEdgeColor(condition) }
-}
-
-function buildWorkflowEdgeLabelStyle() {
-  return { fill: '#333', fontSize: '12px' }
+  edge.data = { ...(edge.data || {}), condition: normalized }
+  edge.label = normalized
+  edge.style = buildWorkflowEdgeStyle(normalized)
 }
 
 const route = useRoute()
@@ -487,6 +515,26 @@ const workflowNameMap = computed(() => {
   })
   return map
 })
+const taskEnabledMap = computed(() => {
+  const map = new Map()
+  taskRecords.value.forEach((item) => {
+    const id = Number(item.id)
+    if (Number.isInteger(id) && id > 0) {
+      map.set(id, item.enabled !== false)
+    }
+  })
+  return map
+})
+const workflowEnabledMap = computed(() => {
+  const map = new Map()
+  workflowRecords.value.forEach((item) => {
+    const id = Number(item.id)
+    if (Number.isInteger(id) && id > 0) {
+      map.set(id, item.enabled !== false)
+    }
+  })
+  return map
+})
 const selectedNode = computed(() => flowNodes.value.find((item) => item.id === selectedNodeId.value))
 const selectedEdge = computed(() => flowEdges.value.find((item) => item.id === selectedEdgeId.value))
 const selectedEditableEdge = computed(() => {
@@ -518,6 +566,13 @@ const routeWorkflowId = computed(() => {
 const addNodeWizardVisible = ref(false)
 const basicInfoVisible = ref(false)
 const nodeConfigVisible = ref(false)
+const basicLimitPrechecking = ref(false)
+const basicLimitPrecheckOk = ref(false)
+const basicLimitPrecheckMessage = ref('请选择 Inventory 后输入 Limit，系统将实时预检')
+const basicLimitAllHosts = ref([])
+const basicLimitMatchedHosts = ref([])
+let basicLimitPrecheckTimer = null
+let basicLimitPrecheckSeq = 0
 
 const nodeConfigForm = reactive({
   id: '',
@@ -528,6 +583,93 @@ const nodeConfigForm = reactive({
   convergence: 'any',
   run_type: 'success',
 })
+
+const basicLimitPrecheckText = computed(() => {
+  if (basicLimitPrechecking.value && basicLimitPrecheckMessage.value === '正在预检...') {
+    return '正在预检...'
+  }
+  return basicLimitPrecheckMessage.value
+})
+
+function clearBasicLimitPrecheckTimer() {
+  if (basicLimitPrecheckTimer) {
+    clearTimeout(basicLimitPrecheckTimer)
+    basicLimitPrecheckTimer = null
+  }
+}
+
+function scheduleBasicLimitPrecheck(delay = 300) {
+  clearBasicLimitPrecheckTimer()
+  basicLimitPrecheckTimer = setTimeout(() => {
+    doBasicLimitPrecheck()
+  }, delay)
+}
+
+async function doBasicLimitPrecheck() {
+  if (!basicInfoVisible.value) {
+    return
+  }
+
+  const inventoryId = Number(form.default_inventory)
+  if (!Number.isInteger(inventoryId) || inventoryId <= 0) {
+    basicLimitPrecheckOk.value = false
+    basicLimitPrechecking.value = false
+    basicLimitAllHosts.value = []
+    basicLimitMatchedHosts.value = []
+    basicLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
+    return
+  }
+
+  const currentSeq = ++basicLimitPrecheckSeq
+  basicLimitPrechecking.value = true
+  try {
+    const limitText = String(form.default_limit || '').trim()
+    const baseRes = await precheckInventoryLimit(inventoryId, { limit: '' })
+    if (currentSeq !== basicLimitPrecheckSeq) {
+      return
+    }
+
+    let data = baseRes?.data?.data || {}
+    if (limitText) {
+      const narrowedRes = await precheckInventoryLimit(inventoryId, { limit: limitText })
+      if (currentSeq !== basicLimitPrecheckSeq) {
+        return
+      }
+      data = narrowedRes?.data?.data || {}
+    }
+
+    const baseData = baseRes?.data?.data || {}
+    basicLimitPrecheckOk.value = !!data.ok
+    basicLimitAllHosts.value = Array.isArray(baseData.matched_hosts_preview) ? baseData.matched_hosts_preview : []
+    basicLimitMatchedHosts.value = Array.isArray(data.matched_hosts_preview) ? data.matched_hosts_preview : []
+    basicLimitPrecheckMessage.value = data.message || '预检完成'
+  } catch (error) {
+    if (currentSeq !== basicLimitPrecheckSeq) {
+      return
+    }
+    basicLimitPrecheckOk.value = false
+    basicLimitAllHosts.value = []
+    basicLimitMatchedHosts.value = []
+    basicLimitPrecheckMessage.value = error?.message || '预检失败，请稍后重试'
+  } finally {
+    if (currentSeq === basicLimitPrecheckSeq) {
+      basicLimitPrechecking.value = false
+    }
+  }
+}
+
+function handleBasicLimitHostClick(item) {
+  goToAssetHost(router, message, item?.host_id, item?.host_name)
+}
+
+function handleBasicLimitLimitToggle(item) {
+  const token = resolveMatchedHostLimitToken(item)
+  form.default_limit = toggleLimitToken(form.default_limit, token)
+}
+
+function handleBasicLimitRemoveToken(token) {
+  form.default_limit = removeLimitToken(form.default_limit, token)
+}
 
 const nodeConfigIncomingEdgeId = ref('')
 const nodeConfigHasParentCondition = ref(false)
@@ -683,6 +825,37 @@ function resolveWorkflowNameByNodeData(nodeData) {
   return workflowNameMap.value.get(workflowId) || `Workflow#${workflowId}`
 }
 
+function resolveNodeEnableStatus(nodeData) {
+  const nodeType = String(nodeData?.node_type || '').toLowerCase()
+  if (nodeType === 'task') {
+    const taskId = Number(nodeData?.task_id)
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      return { visible: true, status: 'missing', label: '任务未配置' }
+    }
+    if (!taskEnabledMap.value.has(taskId)) {
+      return { visible: false, status: 'unknown', label: '' }
+    }
+    return taskEnabledMap.value.get(taskId)
+      ? { visible: true, status: 'enabled', label: '任务已启用' }
+      : { visible: true, status: 'disabled', label: '任务已禁用' }
+  }
+
+  if (nodeType === 'workflow') {
+    const workflowId = Number(nodeData?.workflow_id)
+    if (!Number.isInteger(workflowId) || workflowId <= 0) {
+      return { visible: true, status: 'missing', label: 'Workflow未配置' }
+    }
+    if (!workflowEnabledMap.value.has(workflowId)) {
+      return { visible: false, status: 'unknown', label: '' }
+    }
+    return workflowEnabledMap.value.get(workflowId)
+      ? { visible: true, status: 'enabled', label: 'Workflow已启用' }
+      : { visible: true, status: 'disabled', label: 'Workflow已禁用' }
+  }
+
+  return { visible: false, status: 'unknown', label: '' }
+}
+
 function openNodeConfigDialog(nodeId) {
   const target = flowNodes.value.find((item) => item.id === nodeId)
   if (!target || nodeId === START_NODE_ID) {
@@ -764,10 +937,7 @@ function saveNodeConfig() {
   if (nodeConfigRunTypeEditable.value && nodeConfigIncomingEdgeId.value) {
     const incoming = flowEdges.value.find((item) => item.id === nodeConfigIncomingEdgeId.value)
     if (incoming && !isSystemEdge(incoming)) {
-      const condition = normalizeEdgeCondition(nodeConfigForm.run_type)
-      incoming.data = { ...(incoming.data || {}), condition }
-      incoming.label = condition
-      incoming.style = buildWorkflowEdgeStyle(condition)
+      applyBusinessEdgeVisual(incoming, nodeConfigForm.run_type)
     }
   }
 
@@ -787,14 +957,15 @@ function selectNodeConfigRunType(condition) {
 
 function makeEdgeFromConfig(config, index = 0) {
   const condition = normalizeEdgeCondition(config.condition)
+  const pathOptions = resolveWorkflowEdgePathOptions(condition)
   return {
     id: `edge-${config.source_key}-${config.target_key}-${condition}-${index}`,
-    type: WORKFLOW_EDGE_TYPE,
+    type: resolveWorkflowEdgeType(condition),
     source: config.source_key,
     target: config.target_key,
     label: condition,
     data: { condition },
-    pathOptions: WORKFLOW_EDGE_PATH_OPTIONS,
+    ...(pathOptions ? { pathOptions } : {}),
     markerEnd: MarkerType.ArrowClosed,
     style: buildWorkflowEdgeStyle(condition),
     labelStyle: buildWorkflowEdgeLabelStyle(),
@@ -863,12 +1034,11 @@ function ensureStartEdges() {
   rootKeys.forEach((nodeKey) => {
     flowEdges.value.push({
       id: `${START_EDGE_PREFIX}${nodeKey}`,
-      type: WORKFLOW_EDGE_TYPE,
+      type: START_EDGE_TYPE,
       source: START_NODE_ID,
       target: nodeKey,
       label: 'always',
       data: { condition: 'always' },
-      pathOptions: WORKFLOW_EDGE_PATH_OPTIONS,
       markerEnd: MarkerType.ArrowClosed,
       style: buildWorkflowEdgeStyle('always'),
       labelStyle: buildWorkflowEdgeLabelStyle(),
@@ -1144,18 +1314,19 @@ function createNodeFromWizard() {
   const parentNodeKey = String(addNodeWizardForm.parent_node_key || '').trim()
   if (runtimeNodes.length > 1 && parentNodeKey && parentNodeKey !== node.id) {
     const condition = normalizeEdgeCondition(addNodeWizardForm.run_type)
+    const pathOptions = resolveWorkflowEdgePathOptions(condition)
     const duplicate = flowEdges.value.some(
       (item) => item.source === parentNodeKey && item.target === node.id,
     )
     if (!duplicate) {
       flowEdges.value.push({
         id: `edge-${parentNodeKey}-${node.id}-${Date.now()}`,
-        type: WORKFLOW_EDGE_TYPE,
+        type: resolveWorkflowEdgeType(condition),
         source: parentNodeKey,
         target: node.id,
         label: condition,
         data: { condition },
-        pathOptions: WORKFLOW_EDGE_PATH_OPTIONS,
+        ...(pathOptions ? { pathOptions } : {}),
         markerEnd: MarkerType.ArrowClosed,
         style: buildWorkflowEdgeStyle(condition),
         labelStyle: buildWorkflowEdgeLabelStyle(),
@@ -1249,10 +1420,7 @@ function updateSelectedEdgeCondition(condition) {
   if (!target || isSystemEdge(target)) {
     return
   }
-  const normalized = normalizeEdgeCondition(condition)
-  target.data = { ...(target.data || {}), condition: normalized }
-  target.label = normalized
-  target.style = buildWorkflowEdgeStyle(normalized)
+  applyBusinessEdgeVisual(target, condition)
   flowEdges.value = [...flowEdges.value]
 }
 
@@ -1275,12 +1443,12 @@ function handleConnect(params) {
 
   const edge = {
     id: `edge-${source}-${target}-${Date.now()}`,
-    type: WORKFLOW_EDGE_TYPE,
+    type: resolveWorkflowEdgeType('success'),
     source,
     target,
     label: 'success',
     data: { condition: 'success' },
-    pathOptions: WORKFLOW_EDGE_PATH_OPTIONS,
+    ...(resolveWorkflowEdgePathOptions('success') ? { pathOptions: resolveWorkflowEdgePathOptions('success') } : {}),
     markerEnd: MarkerType.ArrowClosed,
     style: buildWorkflowEdgeStyle('success'),
     labelStyle: buildWorkflowEdgeLabelStyle(),
@@ -1470,7 +1638,7 @@ async function saveWorkflow() {
     payload = buildPayloadFromGraph()
   } catch (error) {
     message.error(error.message || '编排内容不合法')
-    return
+    return false
   }
 
   submitting.value = true
@@ -1487,8 +1655,16 @@ async function saveWorkflow() {
       await updateWorkflow(editingId.value, payload)
       message.success('Workflow 更新成功')
     }
+    return true
   } finally {
     submitting.value = false
+  }
+}
+
+async function handleBasicInfoConfirm() {
+  const saved = await saveWorkflow()
+  if (saved) {
+    basicInfoVisible.value = false
   }
 }
 
@@ -1509,6 +1685,21 @@ watch(() => addNodeWizardForm.node_type, (nextType, prevType) => {
   if (!currentName || currentName === prevDefault) {
     addNodeWizardForm.name = nextDefault
   }
+})
+
+watch(
+  () => [form.default_inventory, form.default_limit, basicInfoVisible.value],
+  ([, , visible]) => {
+    if (!visible) {
+      return
+    }
+    basicLimitPrecheckMessage.value = '正在预检...'
+    scheduleBasicLimitPrecheck(300)
+  },
+)
+
+onBeforeUnmount(() => {
+  clearBasicLimitPrecheckTimer()
 })
 </script>
 
@@ -1748,6 +1939,36 @@ watch(() => addNodeWizardForm.node_type, (nextType, prevType) => {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.2px;
+}
+
+.workflow-node-enable-tag {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.workflow-node-enable-tag.is-enabled {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.workflow-node-enable-tag.is-disabled {
+  border-color: #ffccc7;
+  background: #fff2f0;
+  color: #cf1322;
+}
+
+.workflow-node-enable-tag.is-missing {
+  border-color: #ffe58f;
+  background: #fffbe6;
+  color: #ad6800;
 }
 
 .workflow-node-quick-actions {

@@ -206,36 +206,22 @@
         <a-form-item label="默认 Limit（可选）">
           <a-input
             v-model:value="taskForm.default_limit"
-            placeholder="例如：web-* !web-03（支持实例名/IP/ID与*通配，空格或逗号分隔）"
+            :placeholder="LIMIT_INPUT_PLACEHOLDER"
           />
-          <a-alert
-            :type="taskLimitPrecheckOk ? 'success' : 'warning'"
-            show-icon
+          <ScopePrecheckPanel
+            :precheck-ok="taskLimitPrecheckOk"
+            :prechecking="taskLimitPrechecking"
             :message="taskLimitPrecheckText"
-            style="margin-top: 8px"
+            :hosts="taskLimitAllHosts"
+            :matched-hosts="taskLimitMatchedHosts"
+            :show-host-link="true"
+            :show-limit-toggle="true"
+            :show-target-filter="true"
+            :limit-text="taskForm.default_limit"
+            @host-click="handleTaskLimitHostClick"
+            @toggle-limit-host="handleTaskLimitToggle"
+            @remove-limit-token="handleTaskLimitRemoveToken"
           />
-          <div class="task-limit-preview-head">
-            <span>匹配预览</span>
-            <a-spin size="small" :spinning="taskLimitPrechecking" />
-          </div>
-          <div class="task-limit-preview-body">
-            <a-empty v-if="taskLimitMatchedHosts.length === 0 && !taskLimitPrechecking" description="暂无匹配主机" />
-            <ul v-else class="task-limit-preview-list">
-              <li v-for="item in taskLimitMatchedHosts" :key="`task-limit-${item.host_id}-${item.host_ip}`">
-                <a-button
-                  v-if="Number(item.host_id) > 0"
-                  type="link"
-                  size="small"
-                  class="scope-host-link-btn"
-                  @click.stop="goToAssetHost(item.host_id, item.host_name)"
-                >
-                  {{ formatMatchedHostTitle(item) }}
-                </a-button>
-                <span v-else>{{ formatMatchedHostTitle(item) }}</span>
-                <span> [{{ item.group_path || item.group_name || '-' }}]</span>
-              </li>
-            </ul>
-          </div>
         </a-form-item>
 
         <a-form-item label="环境变量 JSON（可选）">
@@ -357,40 +343,25 @@
           <a-input
             v-model:value="runNowLimit"
             allow-clear
-            placeholder="例如：web-* !web-03（支持实例名/IP/ID/组名）"
+            :placeholder="LIMIT_INPUT_PLACEHOLDER"
           />
         </a-form-item>
       </a-form>
 
-      <a-alert
-        :type="runNowPrecheckOk ? 'success' : 'warning'"
-        show-icon
+      <ScopePrecheckPanel
+        :precheck-ok="runNowPrecheckOk"
+        :prechecking="runNowPrechecking"
         :message="runNowPrecheckText"
-        style="margin-bottom: 12px"
+        :hosts="runNowAllHosts"
+        :matched-hosts="runNowMatchedHosts"
+        :show-host-link="true"
+        :show-limit-toggle="true"
+        :show-target-filter="true"
+        :limit-text="runNowLimit"
+        @host-click="handleRunNowHostClick"
+        @toggle-limit-host="handleRunNowLimitToggle"
+        @remove-limit-token="handleRunNowRemoveToken"
       />
-
-      <div class="run-now-preview-head">
-        <span>匹配预览</span>
-        <a-spin size="small" :spinning="runNowPrechecking" />
-      </div>
-      <div class="run-now-preview-body">
-        <a-empty v-if="runNowMatchedHosts.length === 0 && !runNowPrechecking" description="暂无匹配主机" />
-        <ul v-else class="run-now-preview-list">
-          <li v-for="item in runNowMatchedHosts" :key="`${item.host_id}-${item.host_ip}`">
-            <a-button
-              v-if="Number(item.host_id) > 0"
-              type="link"
-              size="small"
-              class="scope-host-link-btn"
-              @click.stop="goToAssetHost(item.host_id, item.host_name)"
-            >
-              {{ formatMatchedHostTitle(item) }}
-            </a-button>
-            <span v-else>{{ formatMatchedHostTitle(item) }}</span>
-            <span> [{{ item.group_path || item.group_name || '-' }}]</span>
-          </li>
-        </ul>
-      </div>
     </a-modal>
 
     <a-modal
@@ -462,6 +433,13 @@ import {
 import { checkPermission } from '@/directives/permission/permission'
 import { buildScopeSummaryText, flattenGroupPathMap } from './scopeSummary'
 import { buildAutomationInventoryRoute, buildAutomationPlaybookRoute } from './navigation'
+import ScopePrecheckPanel from './components/ScopePrecheckPanel.vue'
+import {
+  LIMIT_INPUT_PLACEHOLDER,
+  removeLimitToken,
+  resolveMatchedHostLimitToken,
+  toggleLimitToken,
+} from './utils/scopeHelpers'
 
 const route = useRoute()
 const router = useRouter()
@@ -519,6 +497,7 @@ const runNowTask = ref(null)
 const runNowLimit = ref('')
 const runNowHostCount = ref(0)
 const runNowEffectiveLimit = ref('')
+const runNowAllHosts = ref([])
 const runNowMatchedHosts = ref([])
 const runNowPrecheckOk = ref(false)
 const runNowPrecheckMessage = ref('请输入 Limit，系统将实时预检匹配结果')
@@ -527,6 +506,7 @@ let runNowPrecheckSeq = 0
 const taskLimitPrechecking = ref(false)
 const taskLimitPrecheckOk = ref(false)
 const taskLimitPrecheckMessage = ref('请选择 Inventory 后输入 Limit，系统将实时预检')
+const taskLimitAllHosts = ref([])
 const taskLimitMatchedHosts = ref([])
 let taskLimitPrecheckTimer = null
 let taskLimitPrecheckSeq = 0
@@ -1426,6 +1406,7 @@ function resetTaskForm() {
   taskLimitPrecheckSeq += 1
   taskLimitPrechecking.value = false
   taskLimitPrecheckOk.value = false
+  taskLimitAllHosts.value = []
   taskLimitMatchedHosts.value = []
   taskLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
 }
@@ -1575,6 +1556,7 @@ async function doTaskLimitPrecheck() {
   if (!Number.isInteger(inventoryId) || inventoryId <= 0) {
     taskLimitPrecheckOk.value = false
     taskLimitPrechecking.value = false
+    taskLimitAllHosts.value = []
     taskLimitMatchedHosts.value = []
     taskLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
     return
@@ -1584,12 +1566,23 @@ async function doTaskLimitPrecheck() {
   taskLimitPrechecking.value = true
   try {
     const limitText = String(taskForm.default_limit || '').trim()
-    const res = await precheckInventoryLimit(inventoryId, { limit: limitText })
+    const baseRes = await precheckInventoryLimit(inventoryId, { limit: '' })
     if (currentSeq !== taskLimitPrecheckSeq) {
       return
     }
-    const data = res?.data?.data || {}
+
+    let data = baseRes?.data?.data || {}
+    if (limitText) {
+      const narrowedRes = await precheckInventoryLimit(inventoryId, { limit: limitText })
+      if (currentSeq !== taskLimitPrecheckSeq) {
+        return
+      }
+      data = narrowedRes?.data?.data || {}
+    }
+
+    const baseData = baseRes?.data?.data || {}
     taskLimitPrecheckOk.value = !!data.ok
+    taskLimitAllHosts.value = Array.isArray(baseData.matched_hosts_preview) ? baseData.matched_hosts_preview : []
     taskLimitMatchedHosts.value = Array.isArray(data.matched_hosts_preview) ? data.matched_hosts_preview : []
     taskLimitPrecheckMessage.value = data.message || '预检完成'
   } catch (error) {
@@ -1597,6 +1590,7 @@ async function doTaskLimitPrecheck() {
       return
     }
     taskLimitPrecheckOk.value = false
+    taskLimitAllHosts.value = []
     taskLimitMatchedHosts.value = []
     taskLimitPrecheckMessage.value = error?.message || '预检失败，请稍后重试'
   } finally {
@@ -1613,6 +1607,19 @@ function scheduleTaskLimitPrecheck(delay = 300) {
   }, delay)
 }
 
+function handleTaskLimitHostClick(item) {
+  goToAssetHost(item?.host_id, item?.host_name)
+}
+
+function handleTaskLimitToggle(item) {
+  const token = resolveMatchedHostLimitToken(item)
+  taskForm.default_limit = toggleLimitToken(taskForm.default_limit, token)
+}
+
+function handleTaskLimitRemoveToken(token) {
+  taskForm.default_limit = removeLimitToken(taskForm.default_limit, token)
+}
+
 async function doRunNowPrecheck() {
   if (!runNowModalVisible.value || !runNowTask.value?.id) {
     return
@@ -1623,15 +1630,27 @@ async function doRunNowPrecheck() {
 
   try {
     const limitText = String(runNowLimit.value || '').trim()
-    const precheckRes = await precheckTaskRun(runNowTask.value.id, { limit: limitText })
+    const baseRes = await precheckTaskRun(runNowTask.value.id, { limit: '' })
     if (currentSeq !== runNowPrecheckSeq) {
       return
     }
 
-    const precheckData = precheckRes?.data?.data || {}
+    let precheckData = baseRes?.data?.data || {}
+    if (limitText) {
+      const narrowedRes = await precheckTaskRun(runNowTask.value.id, { limit: limitText })
+      if (currentSeq !== runNowPrecheckSeq) {
+        return
+      }
+      precheckData = narrowedRes?.data?.data || {}
+    }
+
+    const baseData = baseRes?.data?.data || {}
     const hostCount = Number(precheckData.resolved_host_count || 0)
     runNowHostCount.value = hostCount
     runNowEffectiveLimit.value = String(precheckData.effective_limit || limitText)
+    runNowAllHosts.value = Array.isArray(baseData.matched_hosts_preview)
+      ? baseData.matched_hosts_preview
+      : []
     runNowMatchedHosts.value = Array.isArray(precheckData.matched_hosts_preview)
       ? precheckData.matched_hosts_preview
       : []
@@ -1649,6 +1668,7 @@ async function doRunNowPrecheck() {
     }
     runNowPrecheckOk.value = false
     runNowHostCount.value = 0
+    runNowAllHosts.value = []
     runNowMatchedHosts.value = []
     runNowPrecheckMessage.value = error?.message || '预检失败，请稍后重试'
   } finally {
@@ -1665,11 +1685,25 @@ function scheduleRunNowPrecheck(delay = 300) {
   }, delay)
 }
 
+function handleRunNowHostClick(item) {
+  goToAssetHost(item?.host_id, item?.host_name)
+}
+
+function handleRunNowLimitToggle(item) {
+  const token = resolveMatchedHostLimitToken(item)
+  runNowLimit.value = toggleLimitToken(runNowLimit.value, token)
+}
+
+function handleRunNowRemoveToken(token) {
+  runNowLimit.value = removeLimitToken(runNowLimit.value, token)
+}
+
 function openRunNowModal(record) {
   runNowTask.value = record
   runNowLimit.value = String(record?.default_limit || '').trim()
   runNowHostCount.value = 0
   runNowEffectiveLimit.value = ''
+  runNowAllHosts.value = []
   runNowMatchedHosts.value = []
   runNowPrecheckOk.value = false
   runNowPrecheckMessage.value = '正在预检...'
@@ -1681,6 +1715,8 @@ function closeRunNowModal() {
   runNowModalVisible.value = false
   runNowSubmitting.value = false
   runNowTask.value = null
+  runNowAllHosts.value = []
+  runNowMatchedHosts.value = []
   clearRunNowPrecheckTimer()
   runNowPrecheckSeq += 1
 }

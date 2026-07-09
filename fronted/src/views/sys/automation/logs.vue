@@ -294,6 +294,12 @@ import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 import { getToken } from '@/api/user'
 import { getWebSocketBaseUrl } from '@/util/request'
 import { getJobList, cancelJob, getTargetList, getTaskList, getJobLog } from '@/api/sys/automation'
+import {
+  buildHostScopedLogText,
+  copyTextWithFallback,
+  formatInventoryHostLabel,
+  normalizeUnifiedLogAliases,
+} from './logHelpers'
 
 const route = useRoute()
 const router = useRouter()
@@ -612,10 +618,10 @@ function closeRuntimeTemplateViewer() {
 
 async function copyRuntimeTemplate() {
   const text = runtimeTemplateContent.value || ''
-  try {
-    await navigator.clipboard.writeText(text)
+  const copied = await copyTextWithFallback(text)
+  if (copied) {
     message.success('运行模板已复制')
-  } catch (error) {
+  } else {
     message.error('复制失败，请检查浏览器权限')
   }
 }
@@ -627,15 +633,6 @@ function getInventoryHostList(record) {
   }
   const hosts = snapshot.hosts
   return Array.isArray(hosts) ? hosts : []
-}
-
-function formatInventoryHostLabel(host) {
-  const instanceName = String(host?.instance_name || host?.host_name || '').trim()
-  const hostIp = String(host?.host_ip || '').trim()
-  if (instanceName && hostIp && instanceName !== hostIp) {
-    return `${instanceName}(${hostIp})`
-  }
-  return instanceName || hostIp || '-'
 }
 
 function openJobHostViewer(record) {
@@ -914,20 +911,20 @@ function decreaseJobLogFontSize() {
 
 async function copyCurrentLog() {
   const text = currentLogText.value || ''
-  try {
-    await navigator.clipboard.writeText(text)
+  const copied = await copyTextWithFallback(text)
+  if (copied) {
     message.success('日志已复制')
-  } catch (error) {
+  } else {
     message.error('复制失败，请检查浏览器权限')
   }
 }
 
 async function copyJobLog() {
   const text = jobLogText.value || ''
-  try {
-    await navigator.clipboard.writeText(text)
+  const copied = await copyTextWithFallback(text)
+  if (copied) {
     message.success('统一日志已复制')
-  } catch (error) {
+  } else {
     message.error('复制失败，请检查浏览器权限')
   }
 }
@@ -972,57 +969,6 @@ function buildMergedLogText(record) {
   return ''
 }
 
-function buildHostScopedLogText(jobOutput, record) {
-  const source = String(jobOutput || '')
-  if (!source.trim() || !record) {
-    return ''
-  }
-
-  const hostLabel = String(record.host_name || record.host_ip || '').trim()
-  if (!hostLabel) {
-    return ''
-  }
-
-  const escapedHost = hostLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Support both formats and keep timestamp/stream markers in detailed logs:
-  // 1) [host][stdout] ...
-  // 2) [YYYY-MM-DD HH:mm:ss][host][stdout] ...
-  const hostLineRegex = new RegExp(
-    `^(?:\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\])?\\[${escapedHost}\\](?:\\[(stdout|stderr)\\])?\\s?(.*)$`
-  )
-
-  const lines = source
-    .split('\n')
-    .filter((line) => hostLineRegex.test(line))
-    .map((line) => {
-      const matched = line.match(hostLineRegex)
-      if (!matched) {
-        return line
-      }
-      const timestampText = matched[1] || ''
-      const streamText = matched[2] || ''
-      const contentText = matched[3] || ''
-
-      const prefixes = []
-      if (timestampText) {
-        prefixes.push(`[${timestampText}]`)
-      }
-      if (streamText) {
-        prefixes.push(`[${streamText}]`)
-      }
-
-      if (!prefixes.length) {
-        return contentText
-      }
-      if (!contentText) {
-        return prefixes.join('')
-      }
-      return `${prefixes.join('')} ${contentText}`
-    })
-
-  return lines.join('\n').trim()
-}
-
 function triggerTextDownload(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
   const url = window.URL.createObjectURL(blob)
@@ -1060,7 +1006,7 @@ async function loadJobLog(jobId) {
     return
   }
   const res = await getJobLog(jobId)
-  const output = res?.data?.data?.job_output || ''
+  const output = normalizeUnifiedLogAliases(res?.data?.data?.job_output || '')
   const oldLength = String(jobLogText.value || '').length
   jobLogText.value = output
   logViewerJobOutput.value = output
@@ -1160,7 +1106,7 @@ function connectJobLogSocket(jobId) {
       const payload = messageData?.data || {}
 
       if (type === 'snapshot') {
-        const snapshot = String(payload.data || '')
+        const snapshot = normalizeUnifiedLogAliases(payload.data || '')
         jobLogText.value = snapshot
         logViewerJobOutput.value = snapshot
         updateServerOutputTimeFromText(snapshot)
@@ -1169,9 +1115,10 @@ function connectJobLogSocket(jobId) {
         }
       } else if (type === 'output') {
         const delta = String(payload.data || '')
-        jobLogText.value += delta
-        logViewerJobOutput.value += delta
-        updateServerOutputTimeFromText(delta)
+        const merged = normalizeUnifiedLogAliases(`${jobLogText.value}${delta}`)
+        jobLogText.value = merged
+        logViewerJobOutput.value = merged
+        updateServerOutputTimeFromText(merged)
         if (delta.trim()) {
           markStreamOutputUpdated()
         }

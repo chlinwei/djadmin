@@ -26,6 +26,44 @@
           <a-input v-model:value="form.description" placeholder="可选" />
         </a-form-item>
 
+        <a-form-item label="选择Inventory（可选）">
+          <a-select
+            v-model:value="form.default_inventory"
+            :options="inventoryOptions"
+            show-search
+            allow-clear
+            optionFilterProp="label"
+            placeholder="未选择则按任务节点各自范围执行"
+          />
+        </a-form-item>
+
+        <a-form-item>
+          <a-alert
+            type="info"
+            show-icon
+            message="Workflow 全局范围由所选 Inventory 决定；主机组请在 Inventory 管理中维护"
+          />
+        </a-form-item>
+
+        <a-form-item label="默认 Limit（可选）">
+          <a-input
+            v-model:value="form.default_limit"
+            :placeholder="LIMIT_INPUT_PLACEHOLDER"
+          />
+          <ScopePrecheckPanel
+            :precheck-ok="limitPrecheckOk"
+            :prechecking="limitPrechecking"
+            :message="limitPrecheckText"
+            :hosts="limitAllHosts"
+            :matched-hosts="limitMatchedHosts"
+            :show-limit-toggle="true"
+            :show-target-filter="true"
+            :limit-text="form.default_limit"
+            @toggle-limit-host="handleCreateLimitToggle"
+            @remove-limit-token="handleCreateRemoveLimitToken"
+          />
+        </a-form-item>
+
         <a-form-item label="默认变量 JSON">
           <a-textarea v-model:value="form.default_extra_vars_text" :rows="3" placeholder='例如：{"env":"prod"}' />
         </a-form-item>
@@ -41,21 +79,115 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { createWorkflow } from '@/api/sys/automation'
+import { createWorkflow, getInventoryList, precheckInventoryLimit } from '@/api/sys/automation'
+import ScopePrecheckPanel from './components/ScopePrecheckPanel.vue'
+import {
+  LIMIT_INPUT_PLACEHOLDER,
+  mapInventoryOptions,
+  removeLimitToken,
+  resolveMatchedHostLimitToken,
+  toggleLimitToken,
+} from './utils/scopeHelpers'
 
 const router = useRouter()
 const submitting = ref(false)
+const inventoryOptions = ref([])
+const limitPrechecking = ref(false)
+const limitPrecheckOk = ref(false)
+const limitPrecheckMessage = ref('请选择 Inventory 后输入 Limit，系统将实时预检')
+const limitAllHosts = ref([])
+const limitMatchedHosts = ref([])
+let limitPrecheckTimer = null
+let limitPrecheckSeq = 0
 
 const form = reactive({
   name: '',
   description: '',
   enabled: true,
+  default_inventory: undefined,
+  default_limit: '',
   default_extra_vars_text: '{}',
   remark: '',
 })
+
+const limitPrecheckText = computed(() => {
+  if (limitPrechecking.value && limitPrecheckMessage.value === '正在预检...') {
+    return '正在预检...'
+  }
+  return limitPrecheckMessage.value
+})
+
+function clearLimitPrecheckTimer() {
+  if (limitPrecheckTimer) {
+    clearTimeout(limitPrecheckTimer)
+    limitPrecheckTimer = null
+  }
+}
+
+async function loadInventoryOptions() {
+  const res = await getInventoryList({ page: 1, page_size: 500, ordering: '-id' })
+  const data = res?.data?.data || {}
+  inventoryOptions.value = mapInventoryOptions(data.results)
+}
+
+async function doLimitPrecheck() {
+  const inventoryId = Number(form.default_inventory)
+  if (!Number.isInteger(inventoryId) || inventoryId <= 0) {
+    limitPrecheckOk.value = false
+    limitPrechecking.value = false
+    limitAllHosts.value = []
+    limitMatchedHosts.value = []
+    limitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
+    return
+  }
+
+  const currentSeq = ++limitPrecheckSeq
+  limitPrechecking.value = true
+  try {
+    const limitText = String(form.default_limit || '').trim()
+    const baseRes = await precheckInventoryLimit(inventoryId, { limit: '' })
+    if (currentSeq !== limitPrecheckSeq) {
+      return
+    }
+
+    let data = baseRes?.data?.data || {}
+    if (limitText) {
+      const narrowedRes = await precheckInventoryLimit(inventoryId, { limit: limitText })
+      if (currentSeq !== limitPrecheckSeq) {
+        return
+      }
+      data = narrowedRes?.data?.data || {}
+    }
+
+    const baseData = baseRes?.data?.data || {}
+    limitPrecheckOk.value = !!data.ok
+    limitAllHosts.value = Array.isArray(baseData.matched_hosts_preview) ? baseData.matched_hosts_preview : []
+    limitMatchedHosts.value = Array.isArray(data.matched_hosts_preview) ? data.matched_hosts_preview : []
+    limitPrecheckMessage.value = data.message || '预检完成'
+  } catch (error) {
+    if (currentSeq !== limitPrecheckSeq) {
+      return
+    }
+    limitPrecheckOk.value = false
+    limitAllHosts.value = []
+    limitMatchedHosts.value = []
+    limitPrecheckMessage.value = error?.message || '预检失败，请稍后重试'
+  } finally {
+    if (currentSeq === limitPrecheckSeq) {
+      limitPrechecking.value = false
+    }
+  }
+}
+
+function scheduleLimitPrecheck(delay = 300) {
+  clearLimitPrecheckTimer()
+  limitPrecheckTimer = setTimeout(() => {
+    doLimitPrecheck()
+  }, delay)
+}
 
 function parseDefaultExtraVars() {
   const rawText = String(form.default_extra_vars_text || '').trim() || '{}'
@@ -91,6 +223,8 @@ async function submitCreate() {
       name,
       description: String(form.description || '').trim(),
       enabled: Boolean(form.enabled),
+      default_inventory: Number(form.default_inventory || 0) > 0 ? Number(form.default_inventory) : null,
+      default_limit: String(form.default_limit || '').trim(),
       default_extra_vars: defaultExtraVars,
       remark: String(form.remark || '').trim(),
       nodes: [],
@@ -118,6 +252,31 @@ async function submitCreate() {
 function goBack() {
   router.push('/sys/automation/workflow')
 }
+
+function handleCreateLimitToggle(item) {
+  const token = resolveMatchedHostLimitToken(item)
+  form.default_limit = toggleLimitToken(form.default_limit, token)
+}
+
+function handleCreateRemoveLimitToken(token) {
+  form.default_limit = removeLimitToken(form.default_limit, token)
+}
+
+watch(
+  () => [form.default_inventory, form.default_limit],
+  () => {
+    limitPrecheckMessage.value = '正在预检...'
+    scheduleLimitPrecheck(300)
+  },
+)
+
+onMounted(async () => {
+  await loadInventoryOptions()
+})
+
+onBeforeUnmount(() => {
+  clearLimitPrecheckTimer()
+})
 </script>
 
 <style scoped>

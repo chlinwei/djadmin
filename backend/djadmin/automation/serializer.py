@@ -944,7 +944,8 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
         source_nodes = attrs.get('nodes', self.instance.nodes if self.instance is not None else None)
         source_edges = attrs.get('edges', self.instance.edges if self.instance is not None else None)
         source_entry = ''
-        allow_empty_graph = self.instance is None
+        # 创建和编辑时都允许空节点，执行时才需要节点
+        allow_empty_graph = True
 
         normalized_nodes, normalized_edges, normalized_entry = validate_workflow_graph_or_raise(
             source_nodes,
@@ -1098,7 +1099,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         return items if isinstance(items, list) else []
 
     def get_workflow_name(self, obj):
-        return obj.workflow.name if obj.workflow_id else ''
+        return obj.workflow_name_snapshot or ''
 
     def get_workflow_nodes(self, obj):
         nodes = self._resolve_snapshot_list(obj, 'workflow_nodes_snapshot', 'workflow', 'nodes')

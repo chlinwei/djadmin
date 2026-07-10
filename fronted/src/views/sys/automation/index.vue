@@ -40,6 +40,7 @@
         :pagination="taskPagination"
         rowKey="id"
         size="small"
+        :scroll="{ x: 1700 }"
         @change="handleTaskTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -100,6 +101,9 @@
           </template>
           <template v-else-if="column.key === 'env_vars'">
             <div class="json-cell">{{ formatJsonCell(record.env_vars) }}</div>
+          </template>
+          <template v-else-if="column.key === 'update_time'">
+            <span>{{ record.update_time ? formatTimeWithTimezone(record.update_time, store.state.user?.timezone || 'Asia/Shanghai') : '-' }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
@@ -173,18 +177,21 @@
                 :options="playbookOptions"
                 show-search
                 optionFilterProp="label"
+                :getPopupContainer="getDropdownContainer"
                 placeholder="请选择模板"
               />
             </a-form-item>
           </a-col>
           <a-col :span="8">
-            <a-form-item label="选择Inventory" required>
+            <a-form-item label="选择Inventory">
               <a-select
                 v-model:value="taskForm.inventory"
                 :options="inventoryOptions"
                 show-search
                 optionFilterProp="label"
-                placeholder="请选择 Inventory"
+                :getPopupContainer="getDropdownContainer"
+                placeholder="可选"
+                allow-clear
               />
             </a-form-item>
           </a-col>
@@ -258,6 +265,7 @@
                   { label: 'sudo', value: 'sudo' },
                   { label: 'su', value: 'su' }
                 ]"
+                :getPopupContainer="getDropdownContainer"
                 placeholder="选择权限提升方式"
               />
               <a-alert
@@ -417,6 +425,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 import {
   getPlaybookList,
   getInventoryList,
@@ -443,6 +453,15 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const getDropdownContainer = (triggerNode) => {
+  if (triggerNode && typeof triggerNode.closest === 'function') {
+    const modal = triggerNode.closest('.ant-modal')
+    if (modal) {
+      return modal
+    }
+  }
+  return triggerNode?.parentNode || document.body
+}
 const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 const canEditTask = computed(() => checkPermission('automation:tasks:update'))
 const tasks = ref([])
@@ -536,7 +555,8 @@ const taskColumns = [
   { title: '执行范围', dataIndex: 'selected_group_ids', key: 'selected_group_ids', width: 260 },
   { title: '环境变量', dataIndex: 'env_vars', key: 'env_vars', width: 220 },
   { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 90 },
-  { title: '备注', dataIndex: 'remark', key: 'remark' },
+  { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 120 },
+  { title: '备注', dataIndex: 'remark', key: 'remark', width: 160 },
   { title: '操作', key: 'action', width: 320, fixed: 'right' },
 ]
 
@@ -1427,6 +1447,18 @@ function openEditModal(record, options = {}) {
   taskForm.code = record.code || ''
   taskForm.template = record.template || null
   taskForm.inventory = record.inventory || null
+  // 检查已保存的 inventory 是否仍存在（可能已被删除或尚未配置）
+  if (!taskForm.inventory) {
+    if (record.id) {
+      message.warning('该任务未配置 Inventory 或已被删除，请重新选择')
+    }
+  } else if (inventoryOptions.value.length > 0) {
+    const exists = inventoryOptions.value.some((opt) => Number(opt.value) === Number(taskForm.inventory))
+    if (!exists) {
+      message.warning('该任务绑定的 Inventory 已被删除，请重新选择')
+      taskForm.inventory = null
+    }
+  }
   taskForm.default_limit = record.default_limit || ''
   const selectedGroupIds = Array.isArray(record.selected_group_ids) ? [...record.selected_group_ids] : []
   taskForm.selected_host_ids = Array.isArray(record.selected_host_ids) ? [...record.selected_host_ids] : []
@@ -1474,10 +1506,6 @@ async function submitTask() {
     message.error('请选择模板')
     return
   }
-  if (!taskForm.inventory) {
-    message.error('请选择 Inventory')
-    return
-  }
 
   let envVars = {}
   try {
@@ -1491,7 +1519,7 @@ async function submitTask() {
     name: String(taskForm.name).trim(),
     code: String(taskForm.code).trim(),
     template: Number(taskForm.template),
-    inventory: Number(taskForm.inventory),
+    inventory: Number(taskForm.inventory) > 0 ? Number(taskForm.inventory) : null,
     default_limit: String(taskForm.default_limit || '').trim(),
     selected_host_ids: [],
     selected_group_ids: [],
@@ -1622,6 +1650,17 @@ function handleTaskLimitRemoveToken(token) {
 
 async function doRunNowPrecheck() {
   if (!runNowModalVisible.value || !runNowTask.value?.id) {
+    return
+  }
+
+  // 检查任务是否有inventory，没有则不能预检
+  if (!runNowTask.value.inventory) {
+    runNowPrecheckOk.value = false
+    runNowHostCount.value = 0
+    runNowAllHosts.value = []
+    runNowMatchedHosts.value = []
+    runNowPrechecking.value = false
+    runNowPrecheckMessage.value = '任务未配置 Inventory，无法执行'
     return
   }
 

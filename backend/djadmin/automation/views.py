@@ -12,8 +12,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModelMixin, RetrieveModelMixin, UpdateModelMixin
-from rest_framework import serializers
+from rest_framework import serializers, status
 from rest_framework.viewsets import GenericViewSet
+from rest_framework.response import Response
 
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
 from menu.permisssion import CustomMenuPermission
@@ -308,6 +309,10 @@ def _build_workflow_runtime_scope(workflow: AutomationWorkflowTemplate, request_
             selected_inventory = AutomationInventory.objects.filter(id=workflow.default_inventory_id).first()
         if selected_inventory is None:
             return False, 'Workflow default inventory not found', None
+
+    # inventory 是必选的，未配置或已被删除时拒绝启动
+    if selected_inventory is None:
+        return False, 'Workflow 未配置 Inventory，无法启动', None
 
     if selected_inventory is not None and not selected_inventory.enabled:
         return False, f'Inventory [{selected_inventory.name or selected_inventory.id}] is disabled', None
@@ -883,8 +888,14 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
     now = timezone.now()
     run.node_results = node_results
     if run.status in WORKFLOW_RUNTIME_FINAL_STATUSES:
-        run.end_time = now
-        run.duration_seconds = (now - run.start_time).total_seconds() if run.start_time else None
+        # 终态只在首次收敛时写入 end_time；后续刷新不可持续覆盖，
+        # 否则列表/详情每次查询都会把“耗时”越算越大。
+        if run.end_time is None:
+            run.end_time = now
+
+        # duration 优先保持已落库值；仅在缺失时做一次回填。
+        if run.duration_seconds is None and run.start_time and run.end_time:
+            run.duration_seconds = max((run.end_time - run.start_time).total_seconds(), 0.0)
     else:
         run.end_time = None
         run.duration_seconds = None
@@ -1377,6 +1388,9 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             return Response_error_str('Task is disabled', code=400)
         if not task.template:
             return Response_error_str('Template is missing', code=400)
+        # inventory 是必选的，未配置或已被删除时拒绝执行
+        if not task.inventory_id:
+            return Response_error_str('Task 未配置 Inventory，无法执行', code=400)
         if task.inventory_id and task.inventory is not None and not task.inventory.enabled:
             return Response_error_str('Inventory is disabled', code=400)
 
@@ -1776,10 +1790,70 @@ class AutomationWorkflowTemplateManage(
         return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        deleted_id = instance.id
-        self.perform_destroy(instance)
-        return Response_200(data={'id': deleted_id})
+        try:
+            instance = self.get_object()
+            
+            # 检查该 workflow 是否被其他 workflow 引用
+            referenced_by = self._find_referencing_workflows(instance.id)
+            if referenced_by:
+                workflow_names = ', '.join([wf.name for wf in referenced_by])
+                return Response(
+                    {
+                        'code': 600,
+                        'msg': f'Workflow "{instance.name}" 被以下 Workflow 引用，无法删除：{workflow_names}',
+                        'data': None
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            deleted_id = instance.id
+            # 删除 Workflow，WorkflowRun 记录会保留（设置 workflow_id 为 NULL）
+            self.perform_destroy(instance)
+            return Response_200(data={'id': deleted_id})
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(f"Error deleting workflow: {str(e)}")
+            return Response(
+                {
+                    'code': 500,
+                    'msg': f'删除失败: {str(e)}',
+                    'data': None
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def _find_referencing_workflows(self, workflow_id: int) -> list:
+        """
+        查找所有引用了指定 workflow 的其他 workflow。
+        返回引用了该 workflow 的 workflow 列表。
+        """
+        # 从所有 workflow 中查找包含该 workflow_id 引用的
+        all_workflows = AutomationWorkflowTemplate.objects.all()
+        referencing = []
+        
+        for workflow in all_workflows:
+            if workflow.id == workflow_id:
+                continue  # 跳过自身
+            
+            # 检查 nodes 中是否有引用该 workflow 的节点
+            if not workflow.nodes or not isinstance(workflow.nodes, list):
+                continue  # nodes 为空或不是列表，跳过
+            
+            for node in workflow.nodes:
+                if not isinstance(node, dict):
+                    continue  # 节点不是字典，跳过
+                
+                try:
+                    if (node.get('node_type') == 'workflow' and 
+                        int(node.get('workflow_id', 0)) == workflow_id):
+                        referencing.append(workflow)
+                        break  # 找到一个引用就加入列表
+                except (ValueError, TypeError):
+                    # workflow_id 无法转换为 int，跳过该节点
+                    continue
+        
+        return referencing
 
     @action(detail=True, methods=['post'], url_path='precheck-launch')
     def precheck_launch(self, request, id=None):
@@ -1909,7 +1983,7 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
     serializer_class = AutomationWorkflowRunSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['workflow__name', 'requested_username', 'remark']
+    search_fields = ['workflow_name_snapshot', 'requested_username', 'remark']
     ordering_fields = ['create_time', 'update_time', 'start_time', 'end_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -1921,12 +1995,28 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        workflow_id = self.request.query_params.get('workflow_id')  # type: ignore[union-attr]
-        status_value = self.request.query_params.get('status')  # type: ignore[union-attr]
-        if workflow_id:
-            queryset = queryset.filter(workflow_id=workflow_id)
+        params = self.request.query_params  # type: ignore[union-attr]
+
+        workflow_id = params.get('workflow_id')
+        if workflow_id and str(workflow_id).isdigit():
+            queryset = queryset.filter(workflow_id=int(workflow_id))
+
+        status_value = params.get('status')
         if status_value:
             queryset = queryset.filter(status=status_value)
+
+        requested_username = str(params.get('requested_username') or '').strip()
+        if requested_username:
+            queryset = queryset.filter(requested_username__icontains=requested_username)
+
+        start_time_after = str(params.get('start_time_after') or '').strip()
+        if start_time_after:
+            queryset = queryset.filter(start_time__gte=start_time_after)
+
+        start_time_before = str(params.get('start_time_before') or '').strip()
+        if start_time_before:
+            queryset = queryset.filter(start_time__lte=start_time_before)
+
         return queryset
 
     def list(self, request, *args, **kwargs):

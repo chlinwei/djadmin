@@ -103,14 +103,13 @@ defineOptions({
 import { ref } from 'vue'
 import { getUserList } from '@/api/user/index.js';
 import { usePagination } from 'vue-request';
-import { computed, reactive, onMounted, onUnmounted } from 'vue';
+import { computed, reactive } from 'vue';
 import { changeUserStatus } from '@/api/user/index.js';
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/user/components/Dialog.vue';
 import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 import {checkPermission} from '@/directives/permission/permission'
 const user_status = ref()
@@ -118,8 +117,6 @@ user_status.value = !checkPermission("system:users:update")
 const roleassign_title = ref("角色分配")
 
 const SearchText = ref('')
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const columns = [
     { title: '用户名', dataIndex: 'username', fixed: true, width: 100, key: 'username', sorter:true, sortDirections: ['ascend', 'descend'] },
     { title: '角色', dataIndex: 'roles', key: 'roles', width: 150 },
@@ -153,21 +150,10 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
-}
-
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
 }
 
 var lastSearchKeyword = null
@@ -356,18 +342,7 @@ const handleRoleAssign = (id, username) => {
 
 }
 
-onMounted(() => {
-    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-        userTimezone.value = timezone
-    })
-    loadUserTimezone()
-})
 
-onUnmounted(() => {
-    if (stopListenTimezone) {
-        stopListenTimezone()
-    }
-})
 </script>
 
 <style scoped>

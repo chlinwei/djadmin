@@ -55,14 +55,13 @@
     </a-row>
 </template>
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
 import { checkPermission } from '@/directives/permission/permission';
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 const itemAssignVisible = ref(false)
 const route = useRoute()
 const router = useRouter()
@@ -71,8 +70,6 @@ defineOptions({
     name: 'menu'
 })
 const menu_id = ref(-1)
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const columns = [
     {
         title: '菜单名称',
@@ -172,22 +169,13 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
 }
 
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
-}
+
 const findMenuNameById = (nodes, id) => {
     for (const node of nodes) {
         if (node.key === id) {
@@ -234,16 +222,6 @@ const initList = () => {
 
 initList()
 onMounted(() => {
-    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-        userTimezone.value = timezone
-    })
-    loadUserTimezone()
-})
-
-onUnmounted(() => {
-    if (stopListenTimezone) {
-        stopListenTimezone()
-    }
 })
 const menu_assign_title = ref("错误界面")
 const saveItem = (id,name) => {

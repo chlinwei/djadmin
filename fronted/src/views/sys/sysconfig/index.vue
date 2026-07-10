@@ -101,12 +101,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysconfig'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 const filterText = ref('')
 const loading = ref(false)
@@ -114,8 +113,6 @@ const configs = ref([])
 const valueFilter = ref('all')
 const editVisible = ref(false)
 const saveLoading = ref(false)
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const editForm = reactive({ id: null, name: '', key: '', value: '', default_value: '', description: '' })
 
 const toComparableValue = (value) => {
@@ -207,22 +204,12 @@ const normalizeUtcTime = (value) => {
 const formatDateTime = (value) => {
   if (!value) return '-'
   try {
-    return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+    return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
   } catch (error) {
     return value
   }
 }
 
-const loadUserTimezone = () => {
-  getCurrentUserInfo()
-    .then((res) => {
-      const timezone = res?.data?.data?.timezone
-      if (timezone) {
-        userTimezone.value = timezone
-      }
-    })
-    .catch(() => {})
-}
 
 const loadConfigs = async () => {
   loading.value = true
@@ -307,17 +294,7 @@ const handleResetDefault = (record) => {
 }
 
 onMounted(() => {
-  stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-    userTimezone.value = timezone
-  })
-  loadUserTimezone()
   loadConfigs()
-})
-
-onUnmounted(() => {
-  if (stopListenTimezone) {
-    stopListenTimezone()
-  }
 })
 </script>
 

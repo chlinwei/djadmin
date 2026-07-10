@@ -1,20 +1,38 @@
 <template>
   <div class="scheduler-page">
     <a-row class="tools" :gutter="16">
-      <a-col :span="16">
-        <a-input-search
-          class="tool-item"
-          v-model:value="filterText"
-          placeholder="搜索任务名称 / 任务编码"
-          allow-clear
-          enter-button
-          size="large"
-          @search="loadTasks"
-        />
+      <a-col :flex="1">
+        <a-space wrap>
+          <a-input-search
+            class="tool-item"
+            v-model:value="filterText"
+            placeholder="搜索任务名称 / 任务编码"
+            allow-clear
+            enter-button
+            @search="reload"
+            style="width: 280px"
+          />
+          <a-select
+            v-model:value="filterEnabled"
+            :options="enabledFilterOptions"
+            allow-clear
+            placeholder="启用状态"
+            style="width: 120px"
+            @change="reload"
+          />
+          <a-select
+            v-model:value="filterRunning"
+            :options="runningFilterOptions"
+            allow-clear
+            placeholder="运行状态"
+            style="width: 120px"
+            @change="reload"
+          />
+        </a-space>
       </a-col>
-      <a-col :span="8" class="right-actions">
+      <a-col class="right-actions">
         <a-space>
-          <a-button size="large" type="primary" ghost class="refresh-btn" @click="reload" :disabled="loading">
+          <a-button type="primary" ghost :disabled="loading" @click="reload">
             <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
             <span>&nbsp;刷新</span>
           </a-button>
@@ -279,17 +297,26 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getMenuTree } from '@/api/menu'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 const filterText = ref('')
+const filterEnabled = ref(undefined)
+const filterRunning = ref(undefined)
+const enabledFilterOptions = [
+  { label: '已启用', value: 'true' },
+  { label: '已禁用', value: 'false' },
+]
+const runningFilterOptions = [
+  { label: '运行中', value: 'true' },
+  { label: '就绪', value: 'false' },
+]
 const loading = ref(false)
 const logsLoading = ref(false)
 const logsVisible = ref(false)
@@ -298,12 +325,10 @@ const editVisible = ref(false)
 const editLoading = ref(false)
 const runningTaskId = ref(null)
 const router = useRouter()
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 const currentTask = ref(null)
 const currentLogDetail = ref(null)
 const tasks = ref([])
 const logs = ref([])
-let stopListenTimezone = null
 const menuOptions = ref([])
 const logFilterVisible = ref(false)
 const logFilters = reactive({
@@ -450,7 +475,7 @@ const formatTimeDisplay = (timeValue) => {
   try {
     return formatTimeWithTimezone(
       normalizeUtcTime(timeValue),
-      userTimezone.value,
+      store.state.user?.timezone || 'Asia/Shanghai',
       'YYYY-MM-DD HH:mm:ss'
     )
   } catch (error) {
@@ -458,30 +483,20 @@ const formatTimeDisplay = (timeValue) => {
   }
 }
 
-const loadUserTimezone = () => {
-  getCurrentUserInfo()
-    .then((res) => {
-      const timezone = res?.data?.data?.timezone
-      if (timezone) {
-        userTimezone.value = timezone
-      }
-    })
-    .catch(() => {})
-}
-
-const handleTimezoneChanged = (timezone) => {
-  if (timezone) {
-    userTimezone.value = timezone
-  }
-}
-
 const loadTasks = () => {
   loading.value = true
-  getTaskList({
+  const params = {
     search: filterText.value,
     page: pagination.current,
     page_size: pagination.pageSize,
-  })
+  }
+  if (filterEnabled.value !== undefined && filterEnabled.value !== null && filterEnabled.value !== '') {
+    params.enabled = filterEnabled.value
+  }
+  if (filterRunning.value !== undefined && filterRunning.value !== null && filterRunning.value !== '') {
+    params.is_running = filterRunning.value
+  }
+  getTaskList(params)
     .then((res) => {
       const data = res?.data?.data
       if (data && typeof data === 'object') {
@@ -552,6 +567,13 @@ const loadLogs = (taskId) => {
 const reload = () => {
   pagination.current = 1
   loadTasks()
+}
+
+const resetFilters = () => {
+  filterText.value = ''
+  filterEnabled.value = undefined
+  filterRunning.value = undefined
+  reload()
 }
 
 const handleTableChange = (paginationInfo) => {
@@ -869,16 +891,8 @@ const runNow = (record) => {
 }
 
 onMounted(() => {
-  stopListenTimezone = listenUserTimezoneChanged(handleTimezoneChanged)
-  loadUserTimezone()
   loadMenuOptions()
   loadTasks()
-})
-
-onUnmounted(() => {
-  if (stopListenTimezone) {
-    stopListenTimezone()
-  }
 })
 </script>
 

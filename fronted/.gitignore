@@ -31,3 +31,9 @@ coverage
 
 
 .vscode
+
+# Playwright (Python) artifacts
+e2e_py/.auth/
+e2e_py/.playwright/
+playwright-report/
+test-results/

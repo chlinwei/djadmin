@@ -4,7 +4,7 @@ import traceback
 from django.utils import timezone
 
 from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs
-from automation.tasks import cleanup_ansible_execution_logs
+from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
 from menu.models import SysMenu
 from scheduler.models import ScheduledTask, ScheduledTaskLog
@@ -152,6 +152,7 @@ def get_task_menu(code):
         'collect_all_hosts_info': '/assets/hosts/index',
         'cleanup_webssh_session_logs': '/audit/webssh',
         'cleanup_ansible_execution_logs': '/sys/automation/logs',
+        'cleanup_workflow_run_logs': '/sys/automation/workflow',
         'cleanup_login_audit_logs': '/audit/login',
         'cleanup_operation_audit_logs': '/audit/operation-log',
     }
@@ -196,6 +197,13 @@ def ensure_default_tasks():
             'code': 'cleanup_operation_audit_logs',
             'name': '操作日志清理',
             'description': '按保留天数清理操作审计日志',
+            'enabled': True,
+            'interval_minutes': 24 * 60,
+        },
+        {
+            'code': 'cleanup_workflow_run_logs',
+            'name': 'Workflow 运行记录清理',
+            'description': '按保留天数清理过期 Workflow 运行记录',
             'enabled': True,
             'interval_minutes': 24 * 60,
         },
@@ -266,6 +274,8 @@ def resolve_task_callable(task_code):
         return cleanup_login_audit_logs
     if task_code == 'cleanup_operation_audit_logs':
         return cleanup_operation_audit_logs
+    if task_code == 'cleanup_workflow_run_logs':
+        return cleanup_workflow_run_logs
     return None
 
 

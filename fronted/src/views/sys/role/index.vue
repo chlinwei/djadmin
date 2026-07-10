@@ -83,14 +83,13 @@ defineOptions({
 import { ref } from 'vue'
 import { getRoleList } from '@/api/role/index.js';
 import { usePagination } from 'vue-request';
-import { computed, reactive, onMounted, onUnmounted } from 'vue';
+import { computed, reactive, onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
 import {checkPermission} from '@/directives/permission/permission'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 const menu_assign_title = ref("")
 
@@ -102,8 +101,6 @@ const cancel = () => {
 const roleassign_title = ref("权限分配")
 
 const SearchText = ref('')
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const columns = [
     { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name', sorter: true, sortDirections: ['ascend', 'descend'] },
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
@@ -133,21 +130,10 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
-}
-
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
 }
 
 var lastSearchKeyword = null
@@ -310,18 +296,7 @@ const handleMenuAssign = (id, name) => {
 
 }
 
-onMounted(() => {
-    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-        userTimezone.value = timezone
-    })
-    loadUserTimezone()
-})
 
-onUnmounted(() => {
-    if (stopListenTimezone) {
-        stopListenTimezone()
-    }
-})
 
 
 </script>

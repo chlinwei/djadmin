@@ -4,6 +4,7 @@ import re
 import stat
 import warnings
 from urllib.parse import quote
+from asgiref.sync import async_to_sync
 
 from cryptography.utils import CryptographyDeprecationWarning
 from django.http import HttpResponse, StreamingHttpResponse
@@ -102,18 +103,56 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         serializer.save()
         return Response_200(data=serializer.data)
 
+    def _force_close_webssh_sessions_for_credential(self, credential_id):
+        # 仅影响“把该凭证作为默认凭证”的主机，避免误踢无关会话。
+        host_ids = list(
+            HostCredential.objects.filter(
+                credential_id=credential_id,
+                is_default=True,
+            ).values_list('host_id', flat=True)
+        )
+        if not host_ids:
+            return 0
+        return async_to_sync(WebSSHRuntimeRegistry.close_active_sessions_for_hosts)(
+            host_ids,
+            message='SSH 凭证已变更，连接已关闭',
+            close_code=4411,
+        )
+
+    @staticmethod
+    def _get_credential_connection_signature(credential):
+        # 连接签名用于判断“会话连接参数”是否发生变化。
+        return (
+            str(credential.username or ''),
+            str(credential.password or ''),
+            str(credential.private_key or ''),
+            int(credential.port or 22),
+            int(credential.auth_type or 0),
+        )
+
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        # 先比较变更前后签名，只有连接关键字段变化才断开会话。
+        previous_signature = self._get_credential_connection_signature(instance)
         serializer = self.get_serializer(instance, data=request.data, partial=False)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        instance.refresh_from_db()
+        current_signature = self._get_credential_connection_signature(instance)
+        if previous_signature != current_signature:
+            self._force_close_webssh_sessions_for_credential(instance.id)
         return Response_200(data=serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
+        previous_signature = self._get_credential_connection_signature(instance)
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        instance.refresh_from_db()
+        current_signature = self._get_credential_connection_signature(instance)
+        if previous_signature != current_signature:
+            self._force_close_webssh_sessions_for_credential(instance.id)
         return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
@@ -506,6 +545,32 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
             return
         sftp_client.remove(remote_path)
 
+    def _force_close_webssh_sessions_for_hosts(self, host_ids):
+        normalized_host_ids = []
+        for host_id in host_ids or []:
+            try:
+                value = int(host_id)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                normalized_host_ids.append(value)
+
+        if not normalized_host_ids:
+            return 0
+
+        return async_to_sync(WebSSHRuntimeRegistry.close_active_sessions_for_hosts)(
+            normalized_host_ids,
+            message='关联主机已删除，连接已关闭',
+            close_code=4410,
+        )
+
+    @staticmethod
+    def _get_default_credential_id_for_host(host):
+        relation = HostCredential.objects.filter(host=host, is_default=True).values('credential_id').first()
+        if not relation:
+            return None
+        return relation.get('credential_id')
+
     def _guard_webssh_file_access(self, request, host):
         """Require an active WebSSH session for the current user before file operations.
 
@@ -599,21 +664,50 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        # 主机连接签名：IP + SSH 端口 + 默认凭证。
+        previous_signature = (
+            str(instance.ip or ''),
+            int(instance.port or 22),
+            self._get_default_credential_id_for_host(instance),
+        )
         serializer = self.get_serializer(instance, data=request.data, partial=False)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
+        instance.refresh_from_db()
+        current_signature = (
+            str(instance.ip or ''),
+            int(instance.port or 22),
+            self._get_default_credential_id_for_host(instance),
+        )
+        if previous_signature != current_signature:
+            # 连接参数变化后，已有 SSH 通道不再可信，需强制重建。
+            self._force_close_webssh_sessions_for_hosts([instance.id])
         return Response_200(data=serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
+        previous_signature = (
+            str(instance.ip or ''),
+            int(instance.port or 22),
+            self._get_default_credential_id_for_host(instance),
+        )
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
+        instance.refresh_from_db()
+        current_signature = (
+            str(instance.ip or ''),
+            int(instance.port or 22),
+            self._get_default_credential_id_for_host(instance),
+        )
+        if previous_signature != current_signature:
+            self._force_close_webssh_sessions_for_hosts([instance.id])
         return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         deleted_id = instance.id
+        self._force_close_webssh_sessions_for_hosts([deleted_id])
         self.perform_destroy(instance)
         return Response_200(data={"id": deleted_id})
 
@@ -622,7 +716,18 @@ class HostManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMi
         ids = request.data.get('ids', [])
         if not ids:
             return Response_200(data=[])
-        deleted_count, _ = Host.objects.filter(id__in=ids).delete()
+        normalized_ids = []
+        for item in ids:
+            text = str(item).strip()
+            if not text.isdigit():
+                continue
+            value = int(text)
+            if value > 0:
+                normalized_ids.append(value)
+        self._force_close_webssh_sessions_for_hosts(normalized_ids)
+        host_queryset = Host.objects.filter(id__in=normalized_ids)
+        deleted_count = host_queryset.count()
+        host_queryset.delete()
         return Response_200(data={"deleted_count": deleted_count})
 
     @action(detail=True, methods=['get'], url_path='webssh-sessions')

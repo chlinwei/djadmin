@@ -62,6 +62,12 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             await self.close(code=4403)
             return
 
+        # 握手阶段先记录 token 到期时间；已过期则拒绝建立连接。
+        self.token_expire_at = self._extract_token_expire_at(payload)
+        if self._is_token_expired():
+            await self.close(code=4401)
+            return
+
         self.audit_user_id = payload.get('user_id')
         self.audit_username = payload.get('username') or ''
         self.audit_client_ip = self._get_client_ip()
@@ -115,6 +121,9 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         self.reader_task = asyncio.create_task(self._reader_loop())
         self.heartbeat_task = asyncio.create_task(self._heartbeat_watchdog())
+        if self.token_expire_at is not None:
+            # 在线会话也需要在 token 过期时主动下线，避免“连上后长期有效”。
+            self.token_expiry_task = asyncio.create_task(self._token_expiry_watchdog())
 
     def _init_audit_runtime_state(self):
         self.audit_user_id = None
@@ -143,9 +152,19 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.heartbeat_check_interval_seconds = 10
         self.last_client_activity_monotonic = time.monotonic()
         self.heartbeat_task = None
+        self.token_expire_at = None
+        self.token_expiry_task = None
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
+            return
+
+        # 兜底校验：watchdog 存在调度间隔，消息入口再次检查可更及时断开。
+        if self._is_token_expired():
+            if not self.audit_close_notified:
+                await self._send_event('closed', {'message': '登录已过期，请重新登录后再连接'})
+                self.audit_close_notified = True
+            await self.close(code=4401)
             return
 
         try:
@@ -206,6 +225,14 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             await self._close_session_log(close_code=close_code, status=WebSSHSessionLog.Status.CLOSED)
 
     async def _teardown_ssh_resources(self):
+        if self.token_expiry_task is not None:
+            self.token_expiry_task.cancel()
+            try:
+                await self.token_expiry_task
+            except asyncio.CancelledError:
+                pass
+            self.token_expiry_task = None
+
         if self.heartbeat_task is not None:
             self.heartbeat_task.cancel()
             try:
@@ -269,6 +296,21 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             self.audit_close_notified = True
             await self.close(code=4000)
             return
+
+    async def _token_expiry_watchdog(self):
+        while self.connected:
+            if self.token_expire_at is None:
+                return
+
+            remaining_seconds = self.token_expire_at - time.time()
+            if remaining_seconds <= 0:
+                if not self.audit_close_notified:
+                    await self._send_event('closed', {'message': '登录已过期，请重新登录后再连接'})
+                    self.audit_close_notified = True
+                await self.close(code=4401)
+                return
+
+            await asyncio.sleep(min(remaining_seconds, 30))
 
     async def _open_ssh(self, host, credential):
         if paramiko is None:
@@ -358,6 +400,20 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             return jwt_decode_handler(token)
         except Exception:
             return None
+
+    def _extract_token_expire_at(self, payload):
+        exp = payload.get('exp') if isinstance(payload, dict) else None
+        if exp in [None, '']:
+            return None
+        try:
+            return float(exp)
+        except (TypeError, ValueError):
+            return None
+
+    def _is_token_expired(self):
+        if self.token_expire_at is None:
+            return False
+        return time.time() >= self.token_expire_at
 
     def _has_webssh_permission(self, payload):
         if payload.get('username') == 'admin':

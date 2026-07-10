@@ -289,9 +289,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 import { getToken } from '@/api/user'
+import store from '@/store'
 import { getWebSocketBaseUrl } from '@/util/request'
 import { getJobList, cancelJob, getTargetList, getTaskList, getJobLog } from '@/api/sys/automation'
 import {
@@ -303,7 +302,6 @@ import {
 
 const route = useRoute()
 const router = useRouter()
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 
 const jobs = ref([])
 const jobLoading = ref(false)
@@ -368,7 +366,6 @@ const jobHostViewerKeyword = ref('')
 const jobHostViewerHosts = ref([])
 
 let pollTimer = null
-let stopListenTimezone = null
 let jobLogSocket = null
 let jobLogSocketConnected = false
 let jobLogReconnectTimer = null
@@ -1169,7 +1166,7 @@ function formatDateTime(value) {
   if (!value) {
     return '-'
   }
-  return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+  return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
 }
 
 function normalizeUtcTime(timeValue) {
@@ -1187,23 +1184,6 @@ function normalizeUtcTime(timeValue) {
     return text
   }
   return `${text.replace(' ', 'T')}Z`
-}
-
-function loadUserTimezone() {
-  getCurrentUserInfo()
-    .then((res) => {
-      const timezone = res?.data?.data?.timezone
-      if (timezone) {
-        userTimezone.value = timezone
-      }
-    })
-    .catch(() => {})
-}
-
-function handleTimezoneChanged(timezone) {
-  if (timezone) {
-    userTimezone.value = timezone
-  }
 }
 
 async function loadTaskOptions() {
@@ -1443,8 +1423,6 @@ onMounted(async () => {
     }
   }
 
-  loadUserTimezone()
-  stopListenTimezone = listenUserTimezoneChanged(handleTimezoneChanged)
   await loadTaskOptions()
   if (selectedTaskId.value && !selectedTaskName.value) {
     selectedTaskName.value = taskNameMap.value[selectedTaskId.value] || ''
@@ -1471,9 +1449,6 @@ onBeforeUnmount(() => {
   }
   if (streamClockTimer) {
     window.clearInterval(streamClockTimer)
-  }
-  if (stopListenTimezone) {
-    stopListenTimezone()
   }
 })
 </script>

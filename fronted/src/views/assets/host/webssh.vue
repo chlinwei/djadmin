@@ -208,10 +208,16 @@ import {
 import { getToken } from '@/api/user/index.js'
 import { downloadAuditWebSshSession } from '@/api/sys/audit.js'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getTransferServerUrl, getWebSocketBaseUrl } from '@/util/request'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import {
+    normalizeUtcTime,
+    formatFileSize,
+    resolveFileParentDirectory,
+    formatDateTime as _formatDateTime,
+    formatFileMtime as _formatFileMtime,
+} from './websshUtils.js'
 import { message } from 'ant-design-vue'
+import store from '@/store'
 
 const route = useRoute()
 const websshPageRef = ref(null)
@@ -228,7 +234,6 @@ const activeUserCount = ref(0)
 const activeSessionsVisible = ref(false)
 const activeSessionsLoading = ref(false)
 const activeSessions = ref([])
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 const fileEntries = ref([])
 const fileFilterKeyword = ref('')
 const fileCurrentPath = ref('')
@@ -903,58 +908,8 @@ const statusColor = computed(() => {
     return 'default'
 })
 
-const normalizeUtcTime = (timeValue) => {
-    if (!timeValue || typeof timeValue !== 'string') {
-        return timeValue
-    }
-    const text = timeValue.trim()
-    if (!text) {
-        return timeValue
-    }
-    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
-        return text
-    }
-    return `${text.replace(' ', 'T')}Z`
-}
-
-const formatDateTime = (value) => {
-    if (!value) {
-        return '-'
-    }
-    return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
-}
-
-const formatFileMtime = (value) => {
-    if (!value && value !== 0) return '-'
-    return formatDateTime(new Date(Number(value) * 1000).toISOString())
-}
-
-const formatFileSize = (size) => {
-    if (size === null || size === undefined) return '-'
-    const bytes = Number(size)
-    if (!Number.isFinite(bytes) || bytes < 0) return '-'
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
-}
-
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
-}
-
-const handleTimezoneChanged = (timezone) => {
-    if (timezone) {
-        userTimezone.value = timezone
-    }
-}
+const formatDateTime = (value) => _formatDateTime(value, store.state.user?.timezone)
+const formatFileMtime = (value) => _formatFileMtime(value, store.state.user?.timezone)
 
 const buildWebSocketUrl = () => {
     const token = getToken() || ''
@@ -973,6 +928,7 @@ const loadFiles = async (path = fileCurrentPath.value, options = {}) => {
             fileCurrentPath.value = resolvedCurrentPath
             filePathInput.value = fileCurrentPath.value
             fileEntries.value = Array.isArray(payload.entries) ? payload.entries : []
+            fileErrorText.value = ''
             fileErrorText.value = ''
             if (historyFromPath && historyFromPath !== resolvedCurrentPath) {
                 previousDirectoryPath.value = historyFromPath
@@ -1001,17 +957,6 @@ const openDirectory = (path) => {
     if (!ensureFileOperationsEnabled()) return
     closeFileContextMenu()
     loadFiles(path, { historyFromPath: fileCurrentPath.value })
-}
-
-const resolveFileParentDirectory = (path) => {
-    const rawPath = String(path || '').trim()
-    if (!rawPath || rawPath === '.') return '.'
-    if (rawPath === '/') return '/'
-    const normalized = rawPath.endsWith('/') && rawPath.length > 1 ? rawPath.slice(0, -1) : rawPath
-    const separatorIndex = normalized.lastIndexOf('/')
-    if (separatorIndex < 0) return '.'
-    if (separatorIndex === 0) return '/'
-    return normalized.slice(0, separatorIndex)
 }
 
 const handlePathEnter = () => {
@@ -2647,12 +2592,11 @@ onMounted(async () => {
     window.addEventListener('click', hideContextMenuByGlobalClick)
     window.addEventListener('resize', hideContextMenuByGlobalClick)
     window.addEventListener('resize', updateFileTableScrollY)
+    window.addEventListener('resize', syncTerminalFit)
     window.addEventListener('keydown', hideContextMenuByEscape)
     window.addEventListener('dragover', preventGlobalFileDrop)
     window.addEventListener('drop', preventGlobalFileDrop)
     document.addEventListener('fullscreenchange', updateFullscreenState)
-    stopListenTimezone = listenUserTimezoneChanged(handleTimezoneChanged)
-    loadUserTimezone()
     startActiveUserPolling()
 
     if (hostId) {
@@ -2683,6 +2627,7 @@ onBeforeUnmount(() => {
     window.removeEventListener('click', hideContextMenuByGlobalClick)
     window.removeEventListener('resize', hideContextMenuByGlobalClick)
     window.removeEventListener('resize', updateFileTableScrollY)
+    window.removeEventListener('resize', syncTerminalFit)
     window.removeEventListener('keydown', hideContextMenuByEscape)
     window.removeEventListener('dragover', preventGlobalFileDrop)
     window.removeEventListener('drop', preventGlobalFileDrop)
@@ -2701,10 +2646,6 @@ onBeforeUnmount(() => {
     disposeTerminal()
     stopActiveUserPolling()
     stopActiveSessionsPolling()
-    if (stopListenTimezone) {
-        stopListenTimezone()
-        stopListenTimezone = null
-    }
 })
 </script>
 

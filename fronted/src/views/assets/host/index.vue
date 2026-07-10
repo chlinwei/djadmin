@@ -466,11 +466,10 @@ import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById,
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { getWebSocketBaseUrl } from '@/util/request'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -504,8 +503,6 @@ const webSshHostTitle = ref('')
 const webSshContainerRef = ref(null)
 const webSshMessage = ref('')
 const webSshMessageType = ref('info')
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const syncingRouteFilters = ref(false)
 
 let webSshSocket = null
@@ -1527,28 +1524,13 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
 }
 
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
-}
-
 onMounted(async () => {
-    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-        userTimezone.value = timezone
-    })
-    loadUserTimezone()
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
         if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
@@ -1568,9 +1550,6 @@ watch(
 )
 
 onBeforeUnmount(() => {
-    if (stopListenTimezone) {
-        stopListenTimezone()
-    }
     document.removeEventListener('click', closeGroupContextMenu)
     window.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
     document.removeEventListener('keydown', handleWebSshGlobalKeydown, true)

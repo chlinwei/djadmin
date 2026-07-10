@@ -64,3 +64,55 @@ class WebSSHRuntimeRegistry:
             return False
         await consumer._flush_content_buffer(force=True)
         return True
+
+    @classmethod
+    async def close_active_sessions_for_hosts(
+        cls,
+        host_ids,
+        message='关联主机已删除，终端连接已断开',
+        close_code=4410,
+    ):
+        if not host_ids:
+            return 0
+
+        target_host_ids = set()
+        for host_id in host_ids:
+            try:
+                value = int(host_id)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                target_host_ids.add(value)
+
+        if not target_host_ids:
+            return 0
+
+        target_session_ids = [
+            session_id
+            for session_id, mapped_host_id in list(cls._active_session_host_ids.items())
+            if mapped_host_id in target_host_ids
+        ]
+
+        closed_count = 0
+        for session_id in target_session_ids:
+            consumer = cls._active_consumers.get(session_id)
+            if consumer is None:
+                cls.mark_inactive(session_id)
+                continue
+
+            try:
+                await consumer._send_event('closed', {'message': message})
+                if hasattr(consumer, 'audit_close_notified'):
+                    consumer.audit_close_notified = True
+            except Exception:
+                pass
+
+            try:
+                await consumer.close(code=close_code)
+            except Exception:
+                cls.mark_inactive(session_id)
+            finally:
+                cls.mark_inactive(session_id)
+            closed_count += 1
+
+        return closed_count

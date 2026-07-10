@@ -187,7 +187,7 @@ class AutomationWorkflowRun(BaseModel):
         MANUAL = 'manual', 'Manual'
         SCHEDULE = 'schedule', 'Schedule'
 
-    workflow = models.ForeignKey(AutomationWorkflowTemplate, on_delete=models.CASCADE, related_name='runs')
+    workflow = models.ForeignKey(AutomationWorkflowTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name='runs')
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
     trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.MANUAL)
     workflow_name_snapshot = models.CharField(max_length=128, blank=True, default='')

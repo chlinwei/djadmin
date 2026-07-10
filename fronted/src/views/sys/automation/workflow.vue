@@ -74,12 +74,40 @@
     </a-card>
 
     <a-card title="运行记录" size="small" class="block-card">
+      <template #extra>
+        <a-space wrap>
+          <a-input-search
+            v-model:value="runFilterKeyword"
+            placeholder="Workflow 名称 / 触发人"
+            allow-clear
+            style="width: 220px"
+            @search="loadWorkflowRuns(true)"
+          />
+          <a-select
+            v-model:value="runFilterStatus"
+            :options="runStatusOptions"
+            allow-clear
+            placeholder="运行状态"
+            style="width: 120px"
+            @change="loadWorkflowRuns(true)"
+          />
+          <a-range-picker
+            v-model:value="runFilterTimeRange"
+            show-time
+            format="YYYY-MM-DD HH:mm"
+            :placeholder="['开始时间', '结束时间']"
+            style="width: 320px"
+            @change="loadWorkflowRuns(true)"
+          />
+          <a-button type="link" size="small" :disabled="!hasRunFilters" @click="resetRunFilters">重置</a-button>
+        </a-space>
+      </template>
       <a-table
         :columns="runColumns"
         :data-source="runRecords"
         :loading="runLoading"
         :pagination="runPagination"
-        :scroll="{ x: 1100 }"
+        :scroll="{ x: 1400 }"
         rowKey="id"
         size="small"
         @change="onRunTableChange"
@@ -87,6 +115,12 @@
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
             <a-tag :color="getRunStatusColor(record.status)">{{ record.status || '-' }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'start_time'">
+            <span>{{ formatDateTime(record.start_time) }}</span>
+          </template>
+          <template v-else-if="column.key === 'duration_seconds'">
+            <span>{{ formatDuration(record.duration_seconds) }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
@@ -128,14 +162,13 @@
         <a-form-item label="Workflow">
           <a-input :value="launchTarget?.name || '-'" readonly />
         </a-form-item>
-        <a-form-item label="覆盖 Inventory">
+        <a-form-item label="选择 Inventory（必填）" required>
           <a-select
             v-model:value="launchScopeForm.inventory_id"
             :options="inventoryOptions"
             show-search
-            allow-clear
             optionFilterProp="label"
-            placeholder="未选择则使用 Workflow 默认/任务节点范围"
+            placeholder="请选择 Inventory"
           />
         </a-form-item>
         <a-form-item label="覆盖 Limit">
@@ -170,9 +203,11 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 import {
   getWorkflowList,
   deleteWorkflow,
@@ -208,6 +243,27 @@ const launchAllHosts = ref([])
 const launchMatchedHosts = ref([])
 const keyword = ref('')
 let launchPrecheckTimer = null
+
+const runFilterKeyword = ref('')
+const runFilterStatus = ref(undefined)
+const runFilterTimeRange = ref([])
+const runStatusOptions = [
+  { label: '运行中', value: 'running' },
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+  { label: '已取消', value: 'cancelled' },
+  { label: '等待中', value: 'pending' },
+]
+const hasRunFilters = computed(() => {
+  return !!(runFilterKeyword.value || runFilterStatus.value || (runFilterTimeRange.value && runFilterTimeRange.value.length === 2))
+})
+
+function resetRunFilters() {
+  runFilterKeyword.value = ''
+  runFilterStatus.value = undefined
+  runFilterTimeRange.value = []
+  loadWorkflowRuns(true)
+}
 
 const records = ref([])
 const runRecords = ref([])
@@ -249,6 +305,8 @@ const runColumns = [
   { title: '状态', dataIndex: 'status', key: 'status', width: 140 },
   { title: '触发人', dataIndex: 'requested_username', key: 'requested_username', width: 130 },
   { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 140 },
+  { title: '开始运行', dataIndex: 'start_time', key: 'start_time', width: 160 },
+  { title: '耗时', dataIndex: 'duration_seconds', key: 'duration_seconds', width: 100 },
   { title: '操作', key: 'action', width: 220, fixed: 'right' },
 ]
 
@@ -279,10 +337,22 @@ async function loadWorkflowRuns(resetPage = false) {
 
   runLoading.value = true
   try {
-    const res = await getWorkflowRunList({
+    const params = {
       page: runPagination.current,
       page_size: runPagination.pageSize,
-    })
+    }
+    const kw = String(runFilterKeyword.value || '').trim()
+    if (kw) {
+      params.search = kw
+    }
+    if (runFilterStatus.value) {
+      params.status = runFilterStatus.value
+    }
+    if (runFilterTimeRange.value && runFilterTimeRange.value.length === 2) {
+      params.start_time_after = runFilterTimeRange.value[0].toISOString()
+      params.start_time_before = runFilterTimeRange.value[1].toISOString()
+    }
+    const res = await getWorkflowRunList(params)
     const data = res?.data?.data || {}
     runRecords.value = Array.isArray(data.results) ? data.results : []
     runPagination.total = Number(data.count || 0)
@@ -319,9 +389,14 @@ function handleLaunchRemoveLimitToken(token) {
 }
 
 async function removeRecord(record) {
-  await deleteWorkflow(record.id)
-  message.success('删除成功')
-  await loadWorkflows(false)
+  try {
+    await deleteWorkflow(record.id)
+    message.success('删除成功')
+    await loadWorkflows(false)
+  } catch (err) {
+    const errMsg = err?.response?.data?.msg || err?.message || '删除失败'
+    message.error(errMsg)
+  }
 }
 
 function launch(record) {
@@ -330,12 +405,24 @@ function launch(record) {
     return
   }
   launchTarget.value = record || null
-  launchScopeForm.inventory_id = Number(record?.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  const defaultInventoryId = Number(record?.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  // 检查默认 inventory 是否仍存在（可能已被删除）
+  if (defaultInventoryId) {
+    const exists = inventoryOptions.value.some((opt) => Number(opt.value) === defaultInventoryId)
+    if (!exists) {
+      message.warning('该 Workflow 绑定的 Inventory 已被删除，请重新选择')
+      launchScopeForm.inventory_id = undefined
+    } else {
+      launchScopeForm.inventory_id = defaultInventoryId
+    }
+  } else {
+    launchScopeForm.inventory_id = undefined
+  }
   launchScopeForm.limit = String(record?.default_limit || '')
   launchPrecheckOk.value = false
   launchAllHosts.value = []
   launchMatchedHosts.value = []
-  launchPrecheckMessage.value = '可选：为本次启动覆盖 Inventory 与 Limit'
+  launchPrecheckMessage.value = '请选择 Inventory 后启动'
   launchModalVisible.value = true
   refreshLaunchPrecheck()
 }
@@ -429,6 +516,10 @@ async function confirmLaunch() {
   if (!launchTarget.value?.id) {
     return
   }
+  if (!Number(launchScopeForm.inventory_id || 0)) {
+    message.error('请选择 Inventory')
+    return
+  }
   launchingId.value = launchTarget.value.id
   launchSubmitting.value = true
   try {
@@ -485,6 +576,43 @@ async function cancelRunRecord(record) {
   } finally {
     runCancelingId.value = null
   }
+}
+
+function formatDateTime(dateStr) {
+  if (!dateStr) return '-'
+  try {
+    const date = new Date(dateStr)
+    if (Number.isNaN(date.getTime())) return '-'
+    const tz = store.state.user?.timezone || 'Asia/Shanghai'
+    return formatTimeWithTimezone(date, tz)
+  } catch {
+    return '-'
+  }
+}
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return '-'
+  const num = Number(seconds)
+  if (!Number.isFinite(num) || num < 0) return '-'
+  
+  // 如果少于1秒，显示毫秒
+  if (num < 1) {
+    return `${(num * 1000).toFixed(0)}ms`
+  }
+  // 如果少于60秒
+  if (num < 60) {
+    return `${num.toFixed(2)}s`
+  }
+  // 如果少于3600秒（1小时）
+  if (num < 3600) {
+    const mins = Math.floor(num / 60)
+    const secs = (num % 60).toFixed(0)
+    return `${mins}m ${secs}s`
+  }
+  // 超过1小时
+  const hours = Math.floor(num / 3600)
+  const mins = Math.floor((num % 3600) / 60)
+  return `${hours}h ${mins}m`
 }
 
 function getRunStatusColor(status) {

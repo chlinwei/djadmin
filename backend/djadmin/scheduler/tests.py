@@ -40,6 +40,7 @@ class BaseSchedulerTestCase(TestCase):
             '/assets/hosts/index',
             '/audit/webssh',
             '/sys/automation/logs',
+            '/sys/automation/workflow',
             '/audit/login',
             '/audit/operation-log',
         ], start=1):
@@ -242,3 +243,88 @@ class ScheduledTaskApiTest(BaseSchedulerTestCase):
         self.assertEqual(body.get('code'), 200)
         self.assertEqual(body.get('data', {}).get('status'), 'submitted')
         mock_delay.assert_called_once_with(task.code)
+
+
+class WorkflowRunCleanupTaskTest(BaseSchedulerTestCase):
+    """cleanup_workflow_run_logs 任务：函数行为 + run_now 接口"""
+
+    def setUp(self):
+        super().setUp()
+        self._create_task_menus()
+        ensure_default_tasks()
+
+    def _make_workflow_run(self, status, days_ago):
+        from automation.models import AutomationWorkflowRun, AutomationWorkflowTemplate
+        workflow = AutomationWorkflowTemplate.objects.create(
+            name=f'wf-{status}-{days_ago}d',
+            enabled=True,
+            nodes=[],
+            edges=[],
+        )
+        run = AutomationWorkflowRun.objects.create(
+            workflow=workflow,
+            workflow_name_snapshot=workflow.name,
+            status=status,
+            node_results=[],
+        )
+        AutomationWorkflowRun.objects.filter(pk=run.pk).update(
+            start_time=timezone.now() - timedelta(days=days_ago)
+        )
+        return run
+
+    def test_cleanup_removes_finished_runs_older_than_retention(self):
+        from automation.tasks import cleanup_workflow_run_logs
+
+        SysConfig.objects.update_or_create(
+            key='sys.workflow.logs.retention_days',
+            defaults={
+                'value': '7',
+                'default_value': '7',
+                'value_type': 'int',
+                'name': 'Workflow 运行记录保留天数',
+                'description': 'test',
+                'is_readonly': False,
+            },
+        )
+
+        # 应被删除：已完成且超过保留期
+        old_success = self._make_workflow_run('success', days_ago=10)
+        old_failed = self._make_workflow_run('failed', days_ago=8)
+        # 应保留：已完成但未超期
+        recent_success = self._make_workflow_run('success', days_ago=3)
+        # 应保留：运行中，不管时间
+        running = self._make_workflow_run('running', days_ago=10)
+
+        deleted = cleanup_workflow_run_logs()
+
+        self.assertEqual(deleted, 2)
+        from automation.models import AutomationWorkflowRun
+        remaining_ids = set(AutomationWorkflowRun.objects.values_list('id', flat=True))
+        self.assertNotIn(old_success.id, remaining_ids)
+        self.assertNotIn(old_failed.id, remaining_ids)
+        self.assertIn(recent_success.id, remaining_ids)
+        self.assertIn(running.id, remaining_ids)
+
+    def test_run_scheduled_task_executes_workflow_cleanup(self):
+        """run_scheduled_task 能正常调度 cleanup_workflow_run_logs 且写成功日志。"""
+        ok = run_scheduled_task('cleanup_workflow_run_logs')
+
+        self.assertTrue(ok)
+        task = ScheduledTask.objects.get(code='cleanup_workflow_run_logs')
+        self.assertEqual(task.last_status, '成功')
+        log = ScheduledTaskLog.objects.filter(task=task).order_by('-id').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.status, '成功')
+
+    @patch('scheduler.views.execute_scheduled_task.delay')
+    @patch('scheduler.views.has_active_celery_worker', return_value=True)
+    def test_run_now_api_submits_workflow_cleanup_task(self, _mock_worker, mock_delay):
+        """run_now 接口能正常提交 cleanup_workflow_run_logs 任务。"""
+        task = ScheduledTask.objects.get(code='cleanup_workflow_run_logs')
+
+        response = self.client.post(f'/sys/scheduler/tasks/{task.id}/run_now/', {}, format='json')
+
+        body = response.json()
+        self.assertEqual(body.get('code'), 200, msg=body)
+        self.assertEqual(body.get('data', {}).get('status'), 'submitted')
+        mock_delay.assert_called_once_with('cleanup_workflow_run_logs')

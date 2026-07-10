@@ -27,6 +27,7 @@
 - Do not break existing API contracts unless user explicitly asks for API changes.
 - Prefer minimal, targeted edits and keep current code style.
 - **注释规范**: 对非直观逻辑（复杂分支、关键边界条件、协议/时区/权限等）必须补充简洁注释；禁止无信息量注释（如“给变量赋值”）。
+- **全局影响/复杂改动注释强制规则**: 任何会影响全局行为的代码（如全局配置、路由守卫、全局拦截器、共享状态、权限/鉴权链路）以及复杂实现（跨模块联动、异步并发、回退/兜底策略）必须补充“为什么这样做”的简洁注释；PR 或回复中需说明影响范围与回归验证点。
 - For frontend UI work, use Ant Design Vue components and patterns by default.
 - Do not introduce new Element Plus-based UI changes unless user explicitly requests it.
 - Keep button icons globally consistent across all pages: use the same icon mapping/style for the same action (add, edit, delete, refresh, save, details) and avoid mixing multiple icon styles for identical actions.
@@ -41,7 +42,13 @@
   - 同一表格必须开启横向滚动（`a-table` 配置 `:scroll="{ x: ... }"`），禁止仅固定操作列而不配置横向滚动，避免列挤压。
   - 优先对齐 `fronted/src/views/sys/user/index.vue` 的可用体验（操作列固定在右侧，主内容可横向滚动）。
   - 新增或改造列表页时，若未满足上述两项，视为不合格实现，必须在本次改动内补齐。
-- Time handling rule: backend timestamps should be stored/returned in UTC, and frontend must convert and display date/time using the current user's timezone.
+- **时间显示强制规则（每次写前端时间显示代码都必须遵守，禁止跳过）**:
+  - ❌ 禁止：`new Date(x).toLocaleString('zh-CN')`、`toLocaleString()`、任何硬编码 locale 或 timezone
+  - ✅ 必须：从用户 store 取时区，配合 `formatTimeWithTimezone` 显示
+  - 时区工具：`import { formatTimeWithTimezone } from '@/util/timezone'`
+  - 用户时区：从 pinia store 中读取（先用 `grep_search` 查找实际字段名，不要猜测）
+  - 后端时间戳以 UTC 存储返回，前端负责转换为用户当前时区显示
+  - **实际用法（已验证）**：`import store from '@/store'`，时区取 `store.state.user?.timezone || 'Asia/Shanghai'`，显示用 `formatTimeWithTimezone(value, tz)`
 - For backend changes, include migration impact notes when models are changed.
 - For scheduler-related issues, always verify whether Celery worker and beat processes are running.
 - For bug fixes, provide quick verification steps (commands + expected result).

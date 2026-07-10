@@ -146,12 +146,11 @@ defineOptions({
   name: 'websshAudit'
 })
 
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { downloadAuditWebSshSession, downloadAuditWebSshSessions, getAuditWebSshSessionContent, getAuditWebSshSessions } from '@/api/sys/audit.js'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 const loading = ref(false)
 const sessions = ref([])
@@ -161,10 +160,8 @@ const activeSessionId = ref('')
 const contentInput = ref('')
 const contentOutput = ref('')
 const readableInputCommands = ref([])
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 const selectedLogIds = ref([])
 const selectedRecords = ref([])
-let stopListenTimezone = null
 
 const selectedCount = computed(() => selectedLogIds.value.length)
 
@@ -281,7 +278,7 @@ function formatDateTime(value) {
   if (Number.isNaN(date.getTime())) {
     return '-'
   }
-  return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+  return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
 }
 
 function normalizeUtcTime(value) {
@@ -375,17 +372,6 @@ async function loadSessions() {
   }
 }
 
-async function loadUserTimezone() {
-  try {
-    const res = await getCurrentUserInfo()
-    const timezone = res?.data?.data?.timezone
-    if (timezone) {
-      userTimezone.value = timezone
-    }
-  } catch (error) {
-    // fallback: keep browser timezone
-  }
-}
 
 function handleTableChange(pager) {
   pagination.current = pager.current
@@ -500,17 +486,7 @@ async function downloadFilteredSessions() {
 }
 
 onMounted(() => {
-  stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-    userTimezone.value = timezone
-  })
-  loadUserTimezone()
   loadSessions()
-})
-
-onUnmounted(() => {
-  if (stopListenTimezone) {
-    stopListenTimezone()
-  }
 })
 </script>
 

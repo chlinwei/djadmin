@@ -1,5 +1,7 @@
 <template>
-  <RouterView />
+  <a-config-provider :getPopupContainer="resolvePopupContainer">
+    <RouterView />
+  </a-config-provider>
 </template>
 <script setup>
 import {  RouterView, useRoute } from 'vue-router';
@@ -7,6 +9,17 @@ import {watch} from 'vue';
 import router from '@/router';
 const route = useRoute();
 import store from '@/store'
+
+const resolvePopupContainer = (triggerNode) => {
+  // 统一挂到触发节点父容器，避免弹层挂载到错误层级后出现可见但点击不生效。
+  const parent = triggerNode?.parentElement
+  if (parent && document.body.contains(parent)) {
+    return parent
+  }
+  // 回退到 body，兜底保证稳定。
+  return document.body
+}
+
 watch(route,(to,from,next) => {
     if(to.name == '个人中心') {
         let obj = {

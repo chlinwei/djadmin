@@ -91,16 +91,13 @@
 <script setup>
 import { ref, reactive } from 'vue';
 import { usePagination } from 'vue-request';
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue';
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 const SearchText = ref('')
 const lastSearchKeyword = ref('')
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 const rowLoadingStates = reactive({
 });
 
@@ -174,21 +171,10 @@ const formatDateTime = (value) => {
         return '-'
     }
     try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
     } catch (error) {
         return value
     }
-}
-
-const loadUserTimezone = () => {
-    getCurrentUserInfo()
-        .then((res) => {
-            const timezone = res?.data?.data?.timezone
-            if (timezone) {
-                userTimezone.value = timezone
-            }
-        })
-        .catch(() => {})
 }
 
 const total = ref(0)
@@ -370,20 +356,10 @@ const HandleAdd = () => {
 // 从主机列表点击凭证名跳转过来时，自动按凭证名搜索定位
 const route = useRoute()
 onMounted(() => {
-    stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-        userTimezone.value = timezone
-    })
-    loadUserTimezone()
     const keyword = route.query.search
     if (keyword) {
         SearchText.value = String(keyword)
         onSearch(SearchText.value)
-    }
-})
-
-onUnmounted(() => {
-    if (stopListenTimezone) {
-        stopListenTimezone()
     }
 })
 

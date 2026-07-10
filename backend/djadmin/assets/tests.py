@@ -1,10 +1,11 @@
 from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host, HostDisk, HostHardware, WebSSHSessionLog
+from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog
+from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
 from user.models import SysUser
 
@@ -115,6 +116,72 @@ class CredentialTest(BaseTestCase):
         client = APIClient()
         res = client.get('/assets/credentials/')
         self.assertEqual(res.json()['code'], 301)  # type: ignore[attr-defined]
+
+    def test_update_credential_connection_config_should_force_close_related_webssh_sessions(self):
+        """修改凭证连接配置后，应断开使用该默认凭证的主机 WebSSH 会话。"""
+        credential = Credential.objects.create(
+            name='cred-close-session',
+            username='root',
+            password='secret',
+            port=22,
+            auth_type=Credential.AuthType.PASSWORD,
+        )
+        host = Host.objects.create(instance_name='cred_host', ip='192.168.1.120', port=22)
+        HostCredential.objects.create(host=host, credential=credential, is_default=True)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/credentials/{credential.id}/',  # type: ignore[attr-defined]
+                {'password': 'new-secret'},
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_awaited_once()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
+
+    def test_update_credential_non_connection_fields_should_not_force_close_sessions(self):
+        """仅修改凭证展示字段（如名称）时，不应误断开在线 WebSSH 会话。"""
+        credential = Credential.objects.create(
+            name='cred-keep-session',
+            username='root',
+            password='secret',
+            port=22,
+            auth_type=Credential.AuthType.PASSWORD,
+        )
+        host = Host.objects.create(instance_name='cred_host_keep', ip='192.168.1.121', port=22)
+        HostCredential.objects.create(host=host, credential=credential, is_default=True)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/credentials/{credential.id}/',  # type: ignore[attr-defined]
+                {'name': 'cred-keep-session-renamed'},
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_not_awaited()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 1)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
 
 
 # ─────────────────────────────────────────────
@@ -297,6 +364,217 @@ class HostTest(BaseTestCase):
         self.assertEqual(body['data']['instance_name'], 'renamed_host')
         host.refresh_from_db()
         self.assertEqual(host.instance_name, 'renamed_host')
+
+    def test_delete_host_should_force_close_active_webssh_sessions(self):
+        """删除主机时应主动关闭该主机在线 WebSSH 会话。"""
+        host = Host.objects.create(instance_name='ws_host_del', ip='192.168.1.200', port=22)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.delete(f'/assets/hosts/{host.id}/')  # type: ignore[attr-defined]
+            self.assertResponseOK(res)
+            self.assertFalse(Host.objects.filter(id=host.id).exists())  # type: ignore[attr-defined]
+            fake_consumer._send_event.assert_awaited_once()
+            fake_consumer.close.assert_awaited_once()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
+
+    def test_batch_delete_hosts_with_mixed_ids_should_close_only_target_active_sessions(self):
+        """批量删除混合合法/非法 id 时，只关闭合法且在线目标主机会话。"""
+        host_a = Host.objects.create(instance_name='ws_batch_a', ip='192.168.2.10', port=22)
+        host_b = Host.objects.create(instance_name='ws_batch_b', ip='192.168.2.11', port=22)
+        host_c = Host.objects.create(instance_name='ws_batch_c', ip='192.168.2.12', port=22)
+
+        session_a = WebSSHSessionLog.objects.create(
+            host=host_a,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        session_b = WebSSHSessionLog.objects.create(
+            host=host_b,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        session_c = WebSSHSessionLog.objects.create(
+            host=host_c,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+
+        fake_consumer_a = MagicMock()
+        fake_consumer_a._send_event = AsyncMock(return_value=None)
+        fake_consumer_a.close = AsyncMock(return_value=None)
+
+        fake_consumer_b = MagicMock()
+        fake_consumer_b._send_event = AsyncMock(return_value=None)
+        fake_consumer_b.close = AsyncMock(return_value=None)
+
+        fake_consumer_c = MagicMock()
+        fake_consumer_c._send_event = AsyncMock(return_value=None)
+        fake_consumer_c.close = AsyncMock(return_value=None)
+
+        WebSSHRuntimeRegistry.mark_active(session_a.id, consumer=fake_consumer_a, host_id=host_a.id)  # type: ignore[arg-type]
+        WebSSHRuntimeRegistry.mark_active(session_b.id, consumer=fake_consumer_b, host_id=host_b.id)  # type: ignore[arg-type]
+        WebSSHRuntimeRegistry.mark_active(session_c.id, consumer=fake_consumer_c, host_id=host_c.id)  # type: ignore[arg-type]
+
+        try:
+            res = self.client.delete(
+                '/assets/hosts/batch-delete/',
+                {
+                    # 仅 host_a / host_b 是有效目标；其余为非法或无效值
+                    'ids': [host_a.id, 'x', '', None, '999999', host_b.id, -1, 0],
+                },
+                format='json',
+            )
+            body = self.assertResponseOK(res)
+            self.assertEqual(body['data']['deleted_count'], 2)
+
+            # 目标主机会话被关闭
+            fake_consumer_a.close.assert_awaited_once()
+            fake_consumer_b.close.assert_awaited_once()
+
+            # 非目标主机会话不受影响
+            fake_consumer_c.close.assert_not_awaited()
+
+            self.assertFalse(Host.objects.filter(id=host_a.id).exists())  # type: ignore[attr-defined]
+            self.assertFalse(Host.objects.filter(id=host_b.id).exists())  # type: ignore[attr-defined]
+            self.assertTrue(Host.objects.filter(id=host_c.id).exists())  # type: ignore[attr-defined]
+
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host_a.id), 0)
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host_b.id), 0)
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host_c.id), 1)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session_a.id)  # type: ignore[arg-type]
+            WebSSHRuntimeRegistry.mark_inactive(session_b.id)  # type: ignore[arg-type]
+            WebSSHRuntimeRegistry.mark_inactive(session_c.id)  # type: ignore[arg-type]
+
+    def test_update_host_ip_should_force_close_active_webssh_sessions(self):
+        """修改主机 IP 后，应主动断开该主机在线 WebSSH 会话。"""
+        host = Host.objects.create(instance_name='ws_host_ip', ip='192.168.1.210', port=22)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
+                {'ip': '192.168.1.211'},
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_awaited_once()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
+
+    def test_update_host_port_should_force_close_active_webssh_sessions(self):
+        """修改主机 SSH 端口后，应主动断开该主机在线 WebSSH 会话。"""
+        host = Host.objects.create(instance_name='ws_host_port', ip='192.168.1.220', port=22)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
+                {'port': 2222},
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_awaited_once()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
+
+    def test_update_host_default_credential_should_force_close_active_webssh_sessions(self):
+        """切换主机默认凭证后，应主动断开该主机在线 WebSSH 会话。"""
+        credential_a = Credential.objects.create(
+            name='cred-a',
+            username='root',
+            password='secret-a',
+            port=22,
+            auth_type=Credential.AuthType.PASSWORD,
+        )
+        credential_b = Credential.objects.create(
+            name='cred-b',
+            username='root',
+            password='secret-b',
+            port=22,
+            auth_type=Credential.AuthType.PASSWORD,
+        )
+        host = Host.objects.create(instance_name='ws_host_cred', ip='192.168.1.230', port=22)
+        HostCredential.objects.create(host=host, credential=credential_a, is_default=True)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
+                {'credential_id': credential_b.id},  # type: ignore[attr-defined]
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_awaited_once()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
+
+    def test_update_host_non_connection_fields_should_not_force_close_active_webssh_sessions(self):
+        """仅修改主机展示字段（如名称）时，不应误断开在线 WebSSH 会话。"""
+        host = Host.objects.create(instance_name='ws_host_no_close', ip='192.168.1.240', port=22)
+        session = WebSSHSessionLog.objects.create(
+            host=host,
+            user_id=self.user.id,
+            username=self.user.username,
+            status=WebSSHSessionLog.Status.CONNECTED,
+        )
+        fake_consumer = MagicMock()
+        fake_consumer._send_event = AsyncMock(return_value=None)
+        fake_consumer.close = AsyncMock(return_value=None)
+        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
+        try:
+            res = self.client.patch(
+                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
+                {'instance_name': 'ws_host_no_close_renamed'},
+                format='json',
+            )
+            self.assertResponseOK(res)
+            fake_consumer.close.assert_not_awaited()
+            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 1)
+        finally:
+            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
 
     def test_list_webssh_sessions(self):
         """可按主机查询 Web SSH 会话审计记录"""
@@ -659,7 +937,6 @@ class HostCollectTest(BaseTestCase):
 
     def test_collect_host_with_invalid_connection(self):
         """采集主机时凭证错误应该返回 failed 状态"""
-        # 创建凭证和主机
         cred = Credential.objects.create(
             name='wrong_cred',
             username='root',
@@ -670,10 +947,11 @@ class HostCollectTest(BaseTestCase):
         host = Host.objects.create(instance_name='test_host', ip='192.168.1.100', port=22)
         from .models import HostCredential
         HostCredential.objects.create(host=host, credential=cred, is_default=True)
-        
-        res = self.client.post(f'/assets/hosts/{host.id}/collect-info/')  # type: ignore[attr-defined]
+
+        # 直接让 SSH 连接立即抛出认证失败，跳过真实网络 TCP 超时（原本约 30s）
+        with patch('assets.tasks._run_ssh_command', side_effect=Exception('Authentication failed.')):
+            res = self.client.post(f'/assets/hosts/{host.id}/collect-info/')  # type: ignore[attr-defined]
         body = self.assertResponseOK(res)
-        # 应该返回 failed 状态
         self.assertEqual(body['data']['status'], 'failed')
         self.assertIn('error', body['data'])
 
@@ -743,6 +1021,71 @@ class HostCollectTest(BaseTestCase):
         host.refresh_from_db()
         self.assertEqual(host.collect_status, 'unknown')
         self.assertIn('处于保护期', host.collect_message)
+
+
+# ─────────────────────────────────────────────
+# WebSSH Consumer
+# ─────────────────────────────────────────────
+class HostWebSSHConsumerTest(TestCase):
+
+    def test_extract_token_expire_at_from_payload(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        expire_at = consumer._extract_token_expire_at({'exp': 1893456000})
+        self.assertEqual(expire_at, 1893456000.0)
+
+    def test_extract_token_expire_at_invalid_value(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        self.assertIsNone(consumer._extract_token_expire_at({'exp': 'not-a-number'}))
+        self.assertIsNone(consumer._extract_token_expire_at({}))
+
+    def test_receive_should_close_when_token_expired(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        consumer.token_expire_at = 1.0
+        consumer.audit_close_notified = False
+        consumer._send_event = AsyncMock(return_value=None)
+        consumer.close = AsyncMock(return_value=None)
+
+        with patch('assets.consumers.time.time', return_value=2.0):
+            import asyncio
+            asyncio.run(consumer.receive(text_data='{"type":"ping"}'))
+
+        consumer._send_event.assert_awaited_once_with('closed', {'message': '登录已过期，请重新登录后再连接'})
+        consumer.close.assert_awaited_once_with(code=4401)
+
+    def test_token_expiry_watchdog_should_close_when_token_expired(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        consumer.connected = True
+        consumer.token_expire_at = 1.0
+        consumer.audit_close_notified = False
+        consumer._send_event = AsyncMock(return_value=None)
+        consumer.close = AsyncMock(return_value=None)
+
+        with patch('assets.consumers.time.time', return_value=2.0):
+            import asyncio
+            asyncio.run(consumer._token_expiry_watchdog())
+
+        consumer._send_event.assert_awaited_once_with('closed', {'message': '登录已过期，请重新登录后再连接'})
+        consumer.close.assert_awaited_once_with(code=4401)
+
+    def test_token_expiry_watchdog_should_not_close_before_expiry(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        consumer.connected = True
+        consumer.token_expire_at = 100.0
+        consumer.audit_close_notified = False
+        consumer._send_event = AsyncMock(return_value=None)
+        consumer.close = AsyncMock(return_value=None)
+
+        async def _break_loop(_seconds):
+            consumer.connected = False
+            return None
+
+        with patch('assets.consumers.time.time', return_value=50.0), \
+             patch('assets.consumers.asyncio.sleep', side_effect=_break_loop):
+            import asyncio
+            asyncio.run(consumer._token_expiry_watchdog())
+
+        consumer._send_event.assert_not_awaited()
+        consumer.close.assert_not_awaited()
 
     def test_collect_persists_success_status_on_host(self):
         """采集成功应把 collect_status 持久化为 success 并清空失败原因"""

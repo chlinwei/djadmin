@@ -16,7 +16,7 @@ class SysUser(models.Model):
     avatar = models.CharField(max_length=255, null=True, verbose_name="用户头像")
     email = models.CharField(max_length=100, null=True, verbose_name="用户邮箱")
     phonenumber = models.CharField(max_length=11, null=True,blank=True, verbose_name="手机号码")
-    login_date = models.DateField(null=True, verbose_name="最后登录时间")
+    login_date = models.DateTimeField(null=True, verbose_name="最后登录时间")
     status = models.SmallIntegerField(choices=STATUS_CHOICES, default=1)
     create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )
     update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")

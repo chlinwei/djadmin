@@ -24,19 +24,33 @@ class ScheduledTaskViewSet(
     queryset = ScheduledTask.objects.all()
     serializer_class = ScheduledTaskSerializer
     pagination_class = CustomPagination
-    http_method_names = ['get', 'patch', 'head', 'options']
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
-        """Override to support search functionality"""
+        """Override to support search and filter functionality"""
         ensure_default_tasks()
         queryset = ScheduledTask.objects.all()
-        search = self.request.query_params.get('search')  # type: ignore[union-attr]
+        params = self.request.query_params  # type: ignore[union-attr]
+
+        search = params.get('search')
         if search:
-            # Search by task name or code (case-insensitive)
             from django.db.models import Q
             queryset = queryset.filter(
                 Q(name__icontains=search) | Q(code__icontains=search)
             )
+
+        enabled_param = params.get('enabled')
+        if enabled_param in ('true', 'True', '1'):
+            queryset = queryset.filter(enabled=True)
+        elif enabled_param in ('false', 'False', '0'):
+            queryset = queryset.filter(enabled=False)
+
+        is_running_param = params.get('is_running')
+        if is_running_param in ('true', 'True', '1'):
+            queryset = queryset.filter(is_running=True)
+        elif is_running_param in ('false', 'False', '0'):
+            queryset = queryset.filter(is_running=False)
+
         return queryset.order_by('-id')
 
     def perform_update(self, serializer):

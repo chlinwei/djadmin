@@ -107,19 +107,16 @@ defineOptions({
   name: 'operationAudit'
 })
 
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getAuditOperationLogs } from '@/api/sys/audit.js'
-import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
-import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
+import store from '@/store'
 
 const loading = ref(false)
 const logs = ref([])
 const detailModalVisible = ref(false)
 const activeLog = ref(null)
-const userTimezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-let stopListenTimezone = null
 
 const filters = reactive({
   keyword: '',
@@ -179,7 +176,7 @@ function formatDateTime(value) {
     return '-'
   }
   try {
-    return formatTimeWithTimezone(normalizeUtcTime(value), userTimezone.value, 'YYYY-MM-DD HH:mm:ss')
+    return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
   } catch (error) {
     return value
   }
@@ -230,18 +227,6 @@ async function loadLogs() {
   }
 }
 
-async function loadUserTimezone() {
-  try {
-    const res = await getCurrentUserInfo()
-    const timezone = res?.data?.data?.timezone
-    if (timezone) {
-      userTimezone.value = timezone
-    }
-  } catch (error) {
-    // fallback: keep browser timezone
-  }
-}
-
 function handleTableChange(pager) {
   pagination.current = pager.current
   pagination.pageSize = pager.pageSize
@@ -259,17 +244,7 @@ function reload() {
 }
 
 onMounted(() => {
-  stopListenTimezone = listenUserTimezoneChanged((timezone) => {
-    userTimezone.value = timezone
-  })
-  loadUserTimezone()
   loadLogs()
-})
-
-onUnmounted(() => {
-  if (stopListenTimezone) {
-    stopListenTimezone()
-  }
 })
 </script>
 

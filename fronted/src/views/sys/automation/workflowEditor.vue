@@ -277,9 +277,9 @@
             v-model:value="form.default_inventory"
             :options="inventoryOptions"
             show-search
-            allow-clear
             optionFilterProp="label"
-            placeholder="未选择则按任务节点各自范围执行"
+            placeholder="可选"
+            allow-clear
           />
         </a-form-item>
         <a-form-item label="默认 Limit">
@@ -1200,7 +1200,19 @@ function fillForm(record) {
   form.name = record.name || ''
   form.description = record.description || ''
   form.enabled = Boolean(record.enabled)
-  form.default_inventory = Number(record.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  const savedInventoryId = Number(record.default_inventory || 0) > 0 ? Number(record.default_inventory) : undefined
+  // 检查已保存的 inventory 是否仍存在（可能已被删除）
+  if (savedInventoryId && inventoryRecords.value.length > 0) {
+    const exists = inventoryRecords.value.some((item) => Number(item.id) === savedInventoryId)
+    if (!exists) {
+      message.warning('该 Workflow 绑定的 Inventory 已被删除，请重新选择')
+      form.default_inventory = undefined
+    } else {
+      form.default_inventory = savedInventoryId
+    }
+  } else {
+    form.default_inventory = savedInventoryId
+  }
   form.default_limit = String(record.default_limit || '')
   form.default_extra_vars_text = JSON.stringify(record.default_extra_vars || {}, null, 2)
   form.remark = record.remark || ''
@@ -1522,9 +1534,6 @@ function buildPayloadFromGraph() {
   }
 
   const runtimeNodes = flowNodes.value.filter((item) => item.id !== START_NODE_ID)
-  if (runtimeNodes.length === 0) {
-    throw new Error('请至少添加一个节点')
-  }
 
   const nodes = runtimeNodes.map((item) => {
     const data = item.data || {}

@@ -14,10 +14,10 @@
     "e2e": "playwright test",
     "e2e:headless": "playwright test",
     "e2e:ui": "playwright test --ui",
-    "e2e:headed": "PW_HEADED=1 playwright test",
-    "e2e:remote": "PW_SKIP_BACKEND_SERVER=1 playwright test",
-    "e2e:remote:headed": "PW_SKIP_BACKEND_SERVER=1 PW_HEADED=1 playwright test",
-    "e2e:headed:xvfb": "PW_HEADED=1 xvfb-run -a playwright test",
+    "e2e:headed": "cross-env PW_HEADED=1 playwright test",
+    "e2e:remote": "cross-env PW_SKIP_BACKEND_SERVER=1 playwright test",
+    "e2e:remote:headed": "cross-env PW_SKIP_BACKEND_SERVER=1 PW_HEADED=1 playwright test",
+    "e2e:headed:xvfb": "cross-env PW_HEADED=1 xvfb-run -a playwright test",
     "e2e:setup": "playwright test --project=setup",
     "e2e:codegen": "playwright codegen http://127.0.0.1:5173/login"
   },
@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.54.1",
+    "cross-env": "^7.0.3",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vitest/coverage-v8": "^0.34.6",
     "@vue/test-utils": "^2.4.11",

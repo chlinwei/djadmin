@@ -1,4 +1,7 @@
 test_output.txt
 
-# 遗留的 sqlite 文件（本项目运行时用 MySQL）
+# 锟斤拷锟斤拷锟斤拷 sqlite 锟侥硷拷锟斤拷锟斤拷锟斤拷目锟斤拷锟斤拷时锟斤拷 MySQL锟斤拷
 *.sqlite3
+
+# Celery Beat runtime state file
+backend/djadmin/celerybeat-schedule

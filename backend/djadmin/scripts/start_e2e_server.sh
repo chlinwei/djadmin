@@ -56,4 +56,4 @@ PY
 python manage.py migrate --settings=djadmin.e2e_settings --noinput
 python scripts/seed_e2e_data.py
 
-exec python manage.py runserver 127.0.0.1:19000 --settings=djadmin.e2e_settings
+exec python manage.py runserver 0.0.0.0:19000 --settings=djadmin.e2e_settings

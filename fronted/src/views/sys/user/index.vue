@@ -58,30 +58,38 @@
                     <div :key="record.id">
                         <a-row :gutter="6" class="action_row">
                             <a-col v-permission.remove="'system:users:update'">
-                                <a-button type="primary" id="assignRole"
-                                    @click="handleRoleAssign(record.id, record.username)">分配角色</a-button>
+                                <a-tooltip title="分配角色">
+                                    <a-button type="primary" id="assignRole"
+                                        @click="handleRoleAssign(record.id, record.username)">分配角色</a-button>
+                                </a-tooltip>
                             </a-col>
                             <a-col class="resetPwd" v-if="!record.roles.some(role => role.code === 'admin')"  v-permission.remove="'system:users:update'">
                                 <a-popconfirm placement="bottom" title="您确定要重置密码？" ok-text="确认" cancel-text="取消"
                                     @confirm="resetPwdconfirm(record.id)" @cancel="cancel"
                                     :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                    <a-button :loading="rowLoadingStates2[record.id]">
-                                        重置密码
-                                    </a-button>
+                                    <a-tooltip title="重置密码">
+                                        <a-button :loading="rowLoadingStates2[record.id]">
+                                            重置密码
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-popconfirm>
                             </a-col>
                             <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:update'">
-                                <a-button type="primary" @click="onSaveorChanageUser(record.id)">
-                                    <FontAwesomeIcon :icon="['fa','edit']" />
-                                </a-button>
+                                <a-tooltip title="编辑">
+                                    <a-button type="primary" @click="onSaveorChanageUser(record.id)">
+                                        <FontAwesomeIcon :icon="['fa','edit']" />
+                                    </a-button>
+                                </a-tooltip>
                             </a-col>
                             <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:delete'">
                                 <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                     @confirm="delUserconfirm(record.id)" @cancel="cancel"
                                     :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                    <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
-                                        <FontAwesomeIcon :icon="['fa','trash']" />
-                                    </a-button>
+                                    <a-tooltip title="删除">
+                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
+                                            <FontAwesomeIcon :icon="['fa','trash']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-popconfirm>
                             </a-col>
                         </a-row>

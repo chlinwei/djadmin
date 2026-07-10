@@ -12,14 +12,18 @@
       </a-col>
       <a-col :span="10" class="right-tools">
         <a-space>
-          <a-button size="large" @click="openPlaybookModal()" v-permission="'automation:playbooks:create'">
-            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-            <span>&nbsp新增模板</span>
-          </a-button>
-          <a-button type="primary" ghost :loading="playbookLoading" @click="loadPlaybooks">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="playbookLoading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
+          <a-tooltip title="新增">
+            <a-button size="large" @click="openPlaybookModal()" v-permission="'automation:playbooks:create'">
+              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+              <span>&nbsp新增模板</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="playbookLoading" @click="loadPlaybooks">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="playbookLoading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
         </a-space>
       </a-col>
     </a-row>
@@ -56,9 +60,11 @@
                 cancel-text="取消"
                 @confirm="onDeletePlaybook(record)"
               >
-                <a-button size="small" type="primary" danger v-permission="'automation:playbooks:delete'">
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
+                <a-tooltip title="删除">
+                  <a-button size="small" type="primary" danger v-permission="'automation:playbooks:delete'">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
               </a-popconfirm>
             </a-space>
           </template>

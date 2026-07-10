@@ -12,22 +12,30 @@
       </a-col>
       <a-col :span="8" class="right-actions">
         <a-space>
-          <a-button size="large" @click="openCreateModal" v-permission="'automation:tasks:create'">
-            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-            <span>&nbsp新增任务</span>
-          </a-button>
-          <a-button @click="goToLogs" v-permission="'automation:jobs:view'">
-            <FontAwesomeIcon :icon="['fas', 'list']" />
-            <span>&nbsp;任务运行记录</span>
-          </a-button>
-          <a-button @click="goToWorkflow" v-permission="'automation:workflow:view'">
-            <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
-            <span>&nbsp;Workflow编排</span>
-          </a-button>
-          <a-button type="primary" ghost :loading="taskLoading || playbookLoading" @click="reloadAll">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="taskLoading || playbookLoading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
+          <a-tooltip title="新增">
+            <a-button size="large" @click="openCreateModal" v-permission="'automation:tasks:create'">
+              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+              <span>&nbsp新增任务</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="历史记录">
+            <a-button @click="goToLogs" v-permission="'automation:jobs:view'">
+              <FontAwesomeIcon :icon="['fas', 'list']" />
+              <span>&nbsp;任务运行记录</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="打开/跳转">
+            <a-button @click="goToWorkflow" v-permission="'automation:workflow:view'">
+              <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
+              <span>&nbsp;Workflow编排</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="taskLoading || playbookLoading" @click="reloadAll">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="taskLoading || playbookLoading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
         </a-space>
       </a-col>
     </a-row>
@@ -137,9 +145,11 @@
                 cancel-text="取消"
                 @confirm="removeTask(record)"
               >
-                <a-button size="small" type="primary" danger v-permission="'automation:tasks:delete'">
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
+                <a-tooltip title="删除">
+                  <a-button size="small" type="primary" danger v-permission="'automation:tasks:delete'">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
               </a-popconfirm>
             </a-space>
           </template>

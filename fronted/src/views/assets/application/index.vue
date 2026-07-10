@@ -40,18 +40,22 @@
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
                                 <a-col v-permission="'assets:applications:update'">
-                                    <a-button type="primary" @click="onSaveOrCreate(record.id, record.name)">
-                                        <FontAwesomeIcon :icon="['fa', 'edit']" />
-                                    </a-button>
+                                    <a-tooltip title="编辑">
+                                        <a-button type="primary" @click="onSaveOrCreate(record.id, record.name)">
+                                            <FontAwesomeIcon :icon="['fa', 'edit']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-col>
                                 <a-col v-permission="'assets:applications:delete'">
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                         @confirm="delconfirm(record.id)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
-                                            type="primary">
-                                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                                        </a-button>
+                                        <a-tooltip title="删除">
+                                            <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
+                                                type="primary">
+                                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-popconfirm>
                                 </a-col>
                             </a-row>

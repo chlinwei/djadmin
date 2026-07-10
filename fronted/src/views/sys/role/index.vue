@@ -45,22 +45,28 @@
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
                                 <a-col  v-permission.remove="'system:roles:update'">
-                                    <a-button type="primary" id="assignRole"
-                                        @click="handleMenuAssign(record.id, record.name)">分配权限</a-button>
+                                    <a-tooltip title="分配权限">
+                                        <a-button type="primary" id="assignRole"
+                                            @click="handleMenuAssign(record.id, record.name)">分配权限</a-button>
+                                    </a-tooltip>
                                 </a-col>
                                 <a-col v-if="record.name != 'admin'"  v-permission.remove="'system:roles:update'">
-                                    <a-button type="primary" @click="onSaveorChanageRole(record.id)">
-                                        <FontAwesomeIcon :icon="['fa','edit']" />
-                                    </a-button>
+                                    <a-tooltip title="编辑">
+                                        <a-button type="primary" @click="onSaveorChanageRole(record.id)">
+                                            <FontAwesomeIcon :icon="['fa','edit']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-col>
                                 <a-col v-permission.remove="'system:roles:delete'">
                                     <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
                                         @confirm="delconfirm(record.id)" @cancel="cancel"
                                         :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
-                                            type="primary">
-                                            <FontAwesomeIcon :icon="['fas','trash-can']" />
-                                        </a-button>
+                                        <a-tooltip title="删除">
+                                            <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
+                                                type="primary">
+                                                <FontAwesomeIcon :icon="['fas','trash-can']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-popconfirm>
                                 </a-col>
                             </a-row>

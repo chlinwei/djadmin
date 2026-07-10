@@ -52,11 +52,13 @@
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
-              <a-popconfirm title="确认删除该 Inventory 吗？" ok-text="确认" cancel-text="取消" @confirm="removeRecord(record)">
-                <a-button size="small" type="primary" danger v-permission="'automation:inventory:delete'">
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
-              </a-popconfirm>
+              <a-tooltip title="删除">
+                <a-popconfirm title="确认删除该 Inventory 吗？" ok-text="确认" cancel-text="取消" @confirm="removeRecord(record)">
+                  <a-button size="small" type="primary" danger v-permission="'automation:inventory:delete'">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-popconfirm>
+              </a-tooltip>
             </a-space>
           </template>
         </template>

@@ -12,14 +12,18 @@
       </a-col>
       <a-col :span="8" class="right-actions">
         <a-space>
-          <a-button size="large" @click="openBuilderForCreate" v-permission="'automation:workflow:create'">
-            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-            <span>&nbsp新增Workflow</span>
-          </a-button>
-          <a-button type="primary" ghost :loading="loading || runLoading" @click="reloadAll">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading || runLoading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
+          <a-tooltip v-bind="actionTooltipProps" title="新增">
+            <a-button size="large" @click="openBuilderForCreate" v-permission="'automation:workflow:create'">
+              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+              <span>&nbsp新增Workflow</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip v-bind="actionTooltipProps" title="刷新">
+            <a-button type="primary" ghost :loading="loading || runLoading" @click="reloadAll">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading || runLoading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
         </a-space>
       </a-col>
     </a-row>
@@ -44,12 +48,12 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="编辑编排">
+              <a-tooltip v-bind="actionTooltipProps" title="编辑">
                 <a-button size="small" type="primary" @click="openBuilderForEdit(record)" v-permission="'automation:workflow:update'">
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
-              <a-tooltip :title="isWorkflowLaunchDisabled(record) ? '已禁用，无法启动' : '启动'">
+              <a-tooltip v-bind="actionTooltipProps" title="运行">
                 <a-button
                   size="small"
                   type="primary"
@@ -63,9 +67,11 @@
                 </a-button>
               </a-tooltip>
               <a-popconfirm title="确认删除该 Workflow 吗？" ok-text="确认" cancel-text="取消" @confirm="removeRecord(record)">
-                <a-button size="small" type="primary" danger v-permission="'automation:workflow:delete'">
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
+                <a-tooltip v-bind="actionTooltipProps" title="删除">
+                  <a-button size="small" type="primary" danger v-permission="'automation:workflow:delete'">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
               </a-popconfirm>
             </a-space>
           </template>
@@ -124,9 +130,11 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-button size="small" type="primary" ghost @click="openRunStatus(record)">
-                查看状态图
-              </a-button>
+              <a-tooltip v-bind="actionTooltipProps" title="查看状态图">
+                <a-button size="small" type="primary" ghost @click="openRunStatus(record)">
+                  查看状态图
+                </a-button>
+              </a-tooltip>
               <a-popconfirm
                 v-if="canCancelWorkflowRunRecord(record)"
                 title="确认取消该 Workflow 运行吗？"
@@ -134,14 +142,16 @@
                 cancel-text="取消"
                 @confirm="cancelRunRecord(record)"
               >
-                <a-button
-                  size="small"
-                  danger
-                  :loading="runCancelingId === record.id"
-                  v-permission="'automation:jobs:cancel'"
-                >
-                  取消运行
-                </a-button>
+                <a-tooltip v-bind="actionTooltipProps" title="取消运行">
+                  <a-button
+                    size="small"
+                    danger
+                    :loading="runCancelingId === record.id"
+                    v-permission="'automation:jobs:cancel'"
+                  >
+                    取消运行
+                  </a-button>
+                </a-tooltip>
               </a-popconfirm>
             </a-space>
           </template>
@@ -254,6 +264,15 @@ const runStatusOptions = [
   { label: '已取消', value: 'cancelled' },
   { label: '等待中', value: 'pending' },
 ]
+
+const actionTooltipProps = {
+  placement: 'top',
+  autoAdjustOverflow: false,
+  // Keep tooltip visually above buttons and avoid hover layer hijacking click focus.
+  align: { offset: [0, -10] },
+  overlayClassName: 'dj-action-tooltip',
+}
+
 const hasRunFilters = computed(() => {
   return !!(runFilterKeyword.value || runFilterStatus.value || (runFilterTimeRange.value && runFilterTimeRange.value.length === 2))
 })
@@ -680,6 +699,16 @@ onBeforeUnmount(() => {
 
 .block-card :deep(.ant-card-body) {
   padding-top: 12px;
+}
+
+.workflow-page :deep(.ant-btn:not(:disabled)),
+.workflow-page :deep(.ant-btn:not(:disabled) *) {
+  cursor: pointer;
+}
+
+.workflow-page :deep(.ant-btn:disabled),
+.workflow-page :deep(.ant-btn:disabled *) {
+  cursor: not-allowed;
 }
 
 @media (max-width: 992px) {

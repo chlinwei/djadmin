@@ -64,7 +64,9 @@
             {{ record.duration_ms ?? '-' }}
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
+            <a-tooltip title="查看详情">
+              <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
+            </a-tooltip>
           </template>
         </template>
       </a-table>

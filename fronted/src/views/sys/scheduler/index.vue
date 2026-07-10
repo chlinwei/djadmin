@@ -32,10 +32,12 @@
       </a-col>
       <a-col class="right-actions">
         <a-space>
-          <a-button type="primary" ghost :disabled="loading" @click="reload">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :disabled="loading" @click="reload">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
         </a-space>
       </a-col>
     </a-row>
@@ -77,41 +79,49 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-button size="small" type="primary" @click="openEditModal(record)">
-                <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
-              </a-button>
-              <a-button size="small" @click="viewLogs(record)">
-                <FontAwesomeIcon :icon="['fas', 'eye']" />
-              </a-button>
-              <a-button
-                size="small"
-                type="primary"
-                ghost
-                @click="runNow(record)"
-                :loading="runningTaskId === record.id"
-                :disabled="record.is_running || runningTaskId === record.id"
-              >
-                <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
-                <span>&nbsp;立即执行</span>
-              </a-button>
-              <a-button
-                size="small"
-                v-if="record.enabled"
-                danger
-                @click="toggleEnable(record, false)"
-                :disabled="record.is_running"
-              >
-                禁用
-              </a-button>
-              <a-button
-                size="small"
-                v-else
-                type="primary"
-                @click="toggleEnable(record, true)"
-                :disabled="record.is_running"
-              >
-                启用
-              </a-button>
+              <a-tooltip title="编辑">
+                <a-button size="small" type="primary" @click="openEditModal(record)">
+                  <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="查看详情">
+                <a-button size="small" @click="viewLogs(record)">
+                  <FontAwesomeIcon :icon="['fas', 'eye']" />
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="运行">
+                <a-button
+                  size="small"
+                  type="primary"
+                  ghost
+                  @click="runNow(record)"
+                  :loading="runningTaskId === record.id"
+                  :disabled="record.is_running || runningTaskId === record.id"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
+                  <span>&nbsp;立即执行</span>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-if="record.enabled" title="禁用">
+                <a-button
+                  size="small"
+                  danger
+                  @click="toggleEnable(record, false)"
+                  :disabled="record.is_running"
+                >
+                  禁用
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-else title="启用">
+                <a-button
+                  size="small"
+                  type="primary"
+                  @click="toggleEnable(record, true)"
+                  :disabled="record.is_running"
+                >
+                  启用
+                </a-button>
+              </a-tooltip>
             </a-space>
           </template>
           <template
@@ -244,9 +254,11 @@
             {{ formatTimeDisplay(record.run_time) }}
           </template>
           <template v-if="column.key === 'action'">
-            <a-button size="small" type="link" @click="viewLogDetail(record)">
-              查看详情
-            </a-button>
+            <a-tooltip title="查看详情">
+              <a-button size="small" type="link" @click="viewLogDetail(record)">
+                查看详情
+              </a-button>
+            </a-tooltip>
           </template>
         </template>
       </a-table>

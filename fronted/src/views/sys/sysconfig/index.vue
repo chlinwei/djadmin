@@ -16,10 +16,12 @@
             <a-radio-button value="all">全部</a-radio-button>
             <a-radio-button value="changed">仅已修改</a-radio-button>
           </a-radio-group>
-          <a-button type="primary" ghost class="refresh-btn" @click="loadConfigs" :disabled="loading">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost class="refresh-btn" @click="loadConfigs" :disabled="loading">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
         </a-space>
       </a-col>
     </a-row>
@@ -47,21 +49,25 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-button
-                size="small"
-                type="primary"
-                :disabled="record.is_readonly"
-                @click="openEdit(record)"
-              >
-                编辑
-              </a-button>
+              <a-tooltip title="编辑">
+                <a-button
+                  size="small"
+                  type="primary"
+                  :disabled="record.is_readonly"
+                  @click="openEdit(record)"
+                >
+                  编辑
+                </a-button>
+              </a-tooltip>
               <a-popconfirm
                 title="确认重置为默认值吗？"
                 ok-text="确认"
                 cancel-text="取消"
                 @confirm="handleResetDefault(record)"
               >
-                <a-button size="small" :disabled="record.is_readonly">重置默认</a-button>
+                <a-tooltip title="重置默认">
+                  <a-button size="small" :disabled="record.is_readonly">重置默认</a-button>
+                </a-tooltip>
               </a-popconfirm>
             </a-space>
           </template>

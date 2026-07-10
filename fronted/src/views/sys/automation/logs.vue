@@ -46,12 +46,18 @@
             @change="loadJobs(true)"
           />
           <a-tag v-if="selectedTaskName" color="blue">任务: {{ selectedTaskName }}</a-tag>
-          <a-button v-if="selectedTaskId" type="link" @click="clearTaskFilter">清除筛选</a-button>
-          <a-button type="primary" ghost :loading="jobLoading" @click="reloadPage">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="jobLoading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
-          <a-button type="primary" ghost @click="goTaskCenter">返回任务中心</a-button>
+          <a-tooltip v-if="selectedTaskId" title="清除筛选">
+            <a-button type="link" @click="clearTaskFilter">清除筛选</a-button>
+          </a-tooltip>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="jobLoading" @click="reloadPage">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="jobLoading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="打开/跳转">
+            <a-button type="primary" ghost @click="goTaskCenter">返回任务中心</a-button>
+          </a-tooltip>
         </a-space>
       </template>
       <a-table
@@ -89,35 +95,41 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-button
-                size="small"
-                :disabled="!isJobFinished(record.status)"
-                @click="showTargets(record)"
-                v-permission="'automation:targets:view'"
-              >
-                详细日志
-              </a-button>
-              <a-button size="small" @click="openJobLogViewer(record)" v-permission="'automation:jobs:view'">
-                统一日志
-              </a-button>
-              <a-button
-                v-if="canDownloadJobLog(record)"
-                size="small"
-                :loading="downloadingJobLogId === record.id"
-                @click="downloadJobLog(record)"
-                v-permission="'automation:targets:view'"
-              >
-                下载日志
-              </a-button>
-              <a-button
-                size="small"
-                danger
-                v-if="record.status === 'pending' || record.status === 'running'"
-                @click="onCancelJob(record)"
-                v-permission="'automation:jobs:cancel'"
-              >
-                取消
-              </a-button>
+              <a-tooltip title="详细日志">
+                <a-button
+                  size="small"
+                  :disabled="!isJobFinished(record.status)"
+                  @click="showTargets(record)"
+                  v-permission="'automation:targets:view'"
+                >
+                  详细日志
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="统一日志">
+                <a-button size="small" @click="openJobLogViewer(record)" v-permission="'automation:jobs:view'">
+                  统一日志
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-if="canDownloadJobLog(record)" title="下载日志">
+                <a-button
+                  size="small"
+                  :loading="downloadingJobLogId === record.id"
+                  @click="downloadJobLog(record)"
+                  v-permission="'automation:targets:view'"
+                >
+                  下载日志
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-if="record.status === 'pending' || record.status === 'running'" title="取消">
+                <a-button
+                  size="small"
+                  danger
+                  @click="onCancelJob(record)"
+                  v-permission="'automation:jobs:cancel'"
+                >
+                  取消
+                </a-button>
+              </a-tooltip>
             </a-space>
           </template>
         </template>
@@ -169,12 +181,20 @@
           <a-switch v-model:checked="logWrap" size="small" />
         </a-space>
         <a-space size="small">
-          <a-button size="small" @click="decreaseLogFontSize">A-</a-button>
+          <a-tooltip title="减小字号">
+            <a-button size="small" @click="decreaseLogFontSize">A-</a-button>
+          </a-tooltip>
           <span>{{ logFontSize }}px</span>
-          <a-button size="small" @click="increaseLogFontSize">A+</a-button>
+          <a-tooltip title="增大字号">
+            <a-button size="small" @click="increaseLogFontSize">A+</a-button>
+          </a-tooltip>
         </a-space>
-        <a-button size="small" @click="copyCurrentLog">复制</a-button>
-        <a-button size="small" @click="downloadCurrentLog">下载</a-button>
+        <a-tooltip title="复制">
+          <a-button size="small" @click="copyCurrentLog">复制</a-button>
+        </a-tooltip>
+        <a-tooltip title="下载日志">
+          <a-button size="small" @click="downloadCurrentLog">下载</a-button>
+        </a-tooltip>
       </a-space>
       <div class="log-viewer-shell">
         <pre
@@ -202,27 +222,41 @@
           <a-switch :checked="jobLogAutoFollowEnabled" size="small" @change="toggleJobLogAutoFollow" />
         </a-space>
         <a-space size="small">
-          <a-button size="small" @click="decreaseJobLogFontSize">A-</a-button>
+          <a-tooltip title="减小字号">
+            <a-button size="small" @click="decreaseJobLogFontSize">A-</a-button>
+          </a-tooltip>
           <span>{{ jobLogFontSize }}px</span>
-          <a-button size="small" @click="increaseJobLogFontSize">A+</a-button>
+          <a-tooltip title="增大字号">
+            <a-button size="small" @click="increaseJobLogFontSize">A+</a-button>
+          </a-tooltip>
         </a-space>
-        <a-button
+        <a-tooltip
           v-if="jobLogAutoFollowEnabled && jobLogAutoFollowSuspended"
-          size="small"
-          type="primary"
-          ghost
-          @click="resumeJobLogAutoFollow"
-        >回到底部</a-button>
-        <a-button
-          size="small"
-          danger
-          :loading="cancellingJobId === Number(jobLogViewerJobId)"
-          :disabled="!canCancelViewerJob"
-          @click="onCancelViewerJob"
-          v-permission="'automation:jobs:cancel'"
-        >取消任务</a-button>
-        <a-button size="small" @click="copyJobLog">复制</a-button>
-        <a-button size="small" @click="downloadJobLogText">下载</a-button>
+          title="回到底部"
+        >
+          <a-button
+            size="small"
+            type="primary"
+            ghost
+            @click="resumeJobLogAutoFollow"
+          >回到底部</a-button>
+        </a-tooltip>
+        <a-tooltip title="取消">
+          <a-button
+            size="small"
+            danger
+            :loading="cancellingJobId === Number(jobLogViewerJobId)"
+            :disabled="!canCancelViewerJob"
+            @click="onCancelViewerJob"
+            v-permission="'automation:jobs:cancel'"
+          >取消任务</a-button>
+        </a-tooltip>
+        <a-tooltip title="复制">
+          <a-button size="small" @click="copyJobLog">复制</a-button>
+        </a-tooltip>
+        <a-tooltip title="下载日志">
+          <a-button size="small" @click="downloadJobLogText">下载</a-button>
+        </a-tooltip>
       </a-space>
       <div
         ref="jobLogViewerShellRef"
@@ -277,7 +311,9 @@
       @cancel="closeRuntimeTemplateViewer"
     >
       <div class="runtime-template-toolbar">
-        <a-button size="small" @click="copyRuntimeTemplate">复制</a-button>
+        <a-tooltip title="复制">
+          <a-button size="small" @click="copyRuntimeTemplate">复制</a-button>
+        </a-tooltip>
       </div>
       <pre class="runtime-template-content">{{ runtimeTemplateContent || '-' }}</pre>
     </a-modal>

@@ -120,3 +120,8 @@
   color: #4096ff !important;
   box-shadow: none;
 }
+
+/* Unified operation-tooltip behavior: always above buttons and never block hover/click. */
+.dj-action-tooltip {
+  pointer-events: none;
+}

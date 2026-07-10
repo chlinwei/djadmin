@@ -100,12 +100,16 @@
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space :size="8" class="action-links" wrap>
-              <a-button size="small" type="link" @click="openSessionContent(record)">
-                查看内容
-              </a-button>
-              <a-button size="small" type="link" @click="downloadSessionLog(record)">
-                下载日志
-              </a-button>
+              <a-tooltip title="查看详情">
+                <a-button size="small" type="link" @click="openSessionContent(record)">
+                  查看内容
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="下载日志">
+                <a-button size="small" type="link" @click="downloadSessionLog(record)">
+                  下载日志
+                </a-button>
+              </a-tooltip>
             </a-space>
           </template>
         </template>

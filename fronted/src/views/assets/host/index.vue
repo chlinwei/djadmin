@@ -231,24 +231,32 @@
                             <div :key="record.id">
                                 <a-row :gutter="6" class="action_row" :wrap="false">
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-button @click="openDetail(record.id)">
-                                            <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
-                                        </a-button>
+                                        <a-tooltip title="查看详情">
+                                            <a-button @click="openDetail(record.id)">
+                                                <FontAwesomeIcon :icon="['fas', 'fa-circle-info']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:update'">
-                                        <a-button :disabled="!hasHostCredential(record)" @click="handleCollect(record)" :loading="rowLoadingStates[record.id]" type="default">
-                                            <FontAwesomeIcon :icon="['fas', 'download']" />
-                                        </a-button>
+                                        <a-tooltip title="下载/采集">
+                                            <a-button :disabled="!hasHostCredential(record)" @click="handleCollect(record)" :loading="rowLoadingStates[record.id]" type="default">
+                                                <FontAwesomeIcon :icon="['fas', 'download']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:update'">
-                                        <a-button type="primary" @click="onSaveOrCreate(record.id)">
-                                            <FontAwesomeIcon :icon="['fa', 'edit']" />
-                                        </a-button>
+                                        <a-tooltip title="编辑">
+                                            <a-button type="primary" @click="onSaveOrCreate(record.id)">
+                                                <FontAwesomeIcon :icon="['fa', 'edit']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-button :disabled="!hasHostCredential(record)" @click="openWebSsh(record)">
-                                            <FontAwesomeIcon :icon="['fas', 'terminal']" />
-                                        </a-button>
+                                        <a-tooltip title="打开/跳转">
+                                            <a-button :disabled="!hasHostCredential(record)" @click="openWebSsh(record)">
+                                                <FontAwesomeIcon :icon="['fas', 'terminal']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:delete'">
                                         <a-popconfirm
@@ -260,9 +268,11 @@
                                             @cancel="cancel"
                                             :overlayStyle="{ width: '200px', minHeight: '150px' }"
                                         >
-                                            <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary">
-                                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                                            </a-button>
+                                            <a-tooltip title="删除">
+                                                <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary">
+                                                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                                </a-button>
+                                            </a-tooltip>
                                         </a-popconfirm>
                                     </a-col>
                                 </a-row>

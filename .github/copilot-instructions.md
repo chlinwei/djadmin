@@ -23,6 +23,9 @@
 
 ## Working Rules
 
+- **默认禁止兼容层**: 未经用户明确要求，禁止新增 legacy/fallback/shim/向后兼容分支；优先统一到当前唯一实现路径。
+- **兼容代码准入**: 只有在用户明确要求“兼容旧数据/旧接口/灰度迁移”时，才允许引入兼容代码，并且必须标注移除条件与目标版本。
+
 - **Pylance 类型优先**: 修改后端代码时，首先使用 `get_errors` 检查并解决 Pylance 报告的类型问题，再提交最终方案。区分真正的类型错误（需修复代码）和库的误报（加 `# type: ignore`）。
 - Do not break existing API contracts unless user explicitly asks for API changes.
 - Prefer minimal, targeted edits and keep current code style.
@@ -53,6 +56,20 @@
   - 操作按钮 Tooltip 默认在按钮上方展示（`placement: 'top'`），优先保证不挡按钮、不挡主要操作路径。
   - 统一优先于局部最优：禁止单页自定义一套 tooltip 规则，新增页面必须复用既有动作词和交互模式。
   - 规则必须可回归验证：涉及 tooltip 的改动应至少覆盖“可见性 + 可点击 + 位置”三类验证点，避免仅靠肉眼判断。
+- **前端删除交互强制规则（必须执行）**:
+  - 所有“删除”动作（单删/批删）必须复用统一公共删除确认代码：`fronted/src/util/deleteConfirm.js` 的 `openDeleteConfirm`，禁止新增 `a-popconfirm` 式删除确认分支。
+  - 删除按钮必须使用统一样式类 `delBtn`，确保点击与 loading 状态宽度不抖动；禁止出现“有的删除按钮会变宽、有的不会”的不一致。
+  - 删除确认弹窗必须居中显示，并展示待删除清单（至少包含实体名称或 ID），禁止只给“您确定要删除吗”而不展示影响对象。
+  - 主机分组删除等已有“树形影响清单”特化弹窗属于可保留特例；其余删除交互默认统一到公共删除确认代码。
+- **前端下拉弹层强制规则（必须执行）**:
+  - 所有 `a-select` 必须显式配置 `:getPopupContainer`，禁止依赖默认挂载行为。
+  - `:getPopupContainer` 必须复用 `fronted/src/util/popupContainer.js` 的 `resolvePopupContainerByContext`，禁止每个页面重复造轮子。
+  - 页面内统一定义 `const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)`，并绑定到该页面全部 `a-select`。
+  - 禁止在 `App.vue` 做全局 `getPopupContainer` 强绑定，防止跨页面场景冲突导致“有时可选、有时不可选”。
+  - 新增/改造包含 `a-select` 的页面时，必须同步检查是否遗漏 `:getPopupContainer`。
+- **Inventory 字段规则（前端表单）**:
+  - 默认按业务页面语义实现，**不得擅自将 Inventory 改为必填**。
+  - 仅当用户明确要求“该页面 Inventory 必填”时，才允许添加 `required`、必填文案和提交拦截。
 - **时间显示强制规则（每次写前端时间显示代码都必须遵守，禁止跳过）**:
   - ❌ 禁止：`new Date(x).toLocaleString('zh-CN')`、`toLocaleString()`、任何硬编码 locale 或 timezone
   - ✅ 必须：从用户 store 取时区，配合 `formatTimeWithTimezone` 显示

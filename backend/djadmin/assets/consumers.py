@@ -109,7 +109,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         
         await self._send_event('connected', {
             'host_id': self.host_id,
-            'host_name': host_display_name,
+            'instance_name': host_display_name,
             'ip': host.ip,
             'log_id': self.audit_session_pk,
             'home_dir': home_dir,

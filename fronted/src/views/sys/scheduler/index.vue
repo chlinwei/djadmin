@@ -14,6 +14,7 @@
           />
           <a-select
             v-model:value="filterEnabled"
+            :getPopupContainer="getPopupContainer"
             :options="enabledFilterOptions"
             allow-clear
             placeholder="启用状态"
@@ -22,6 +23,7 @@
           />
           <a-select
             v-model:value="filterRunning"
+            :getPopupContainer="getPopupContainer"
             :options="runningFilterOptions"
             allow-clear
             placeholder="运行状态"
@@ -151,6 +153,7 @@
         <a-form-item label="关联菜单">
           <a-select
             v-model:value="editForm.menu"
+            :getPopupContainer="getPopupContainer"
             :options="menuOptions"
             disabled
             placeholder="可选：关联一个菜单页面"
@@ -162,12 +165,12 @@
         <a-form-item label="启用状态">
           <a-switch v-model:checked="editForm.enabled" checked-children="启用" un-checked-children="禁用" />
         </a-form-item>
-        <a-form-item label="间隔(分钟)" required>
-          <a-input-number
-            v-model:value="editForm.interval_minutes"
-            :min="1"
-            style="width: 100%"
+        <a-form-item label="Cron 表达式" required>
+          <a-input
+            v-model:value="editForm.cron_expression"
+            placeholder="例如：*/15 * * * *"
           />
+          <div class="cron-help">使用 5 段 Cron：分 时 日 月 周</div>
         </a-form-item>
         <a-form-item label="备注">
           <a-textarea v-model:value="editForm.description" rows="3" />
@@ -195,6 +198,7 @@
           <a-form-item label="执行状态">
             <a-select
               v-model:value="logFilters.status"
+              :getPopupContainer="getPopupContainer"
               :options="logStatusOptions"
               style="width: 140px"
               placeholder="全部"
@@ -312,6 +316,7 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { getMenuTree } from '@/api/menu'
@@ -336,6 +341,7 @@ const logDetailVisible = ref(false)
 const editVisible = ref(false)
 const editLoading = ref(false)
 const runningTaskId = ref(null)
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const router = useRouter()
 const currentTask = ref(null)
 const currentLogDetail = ref(null)
@@ -360,6 +366,7 @@ const editForm = reactive({
   menu: undefined,
   menu_name: '',
   enabled: true,
+  cron_expression: '',
   interval_minutes: 15,
   description: '',
 })
@@ -372,6 +379,11 @@ const pagination = reactive({
   pageSizeOptions: ['10', '20', '30'],
   showTotal: (total) => `共有${total}条数据`,
   showQuickJumper: true,
+})
+
+const taskSort = reactive({
+  field: null,
+  order: null,
 })
 
 const logsPagination = reactive({
@@ -397,15 +409,23 @@ const columns = [
   { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '任务编码', dataIndex: 'code', key: 'code', width: 180 },
   { title: '关联菜单', dataIndex: 'menu_name', key: 'menu_name', width: 180 },
-  { title: '间隔(分钟)', dataIndex: 'interval_minutes', key: 'interval_minutes', width: 120 },
+  { title: 'Cron 表达式', dataIndex: 'effective_cron_expression', key: 'effective_cron_expression', width: 180 },
   { title: '启用状态', dataIndex: 'enabled', key: 'enabled', width: 100 },
   { title: '运行状态', dataIndex: 'is_running', key: 'is_running', width: 100 },
-  { title: '最近执行时间', dataIndex: 'last_run_time', key: 'last_run_time', width: 180 },
-  { title: '下次运行时间', dataIndex: 'next_run_time', key: 'next_run_time', width: 180 },
+  { title: '最近执行时间', dataIndex: 'last_run_time', key: 'last_run_time', width: 180, sorter: true },
+  { title: '下次运行时间', dataIndex: 'next_run_time', key: 'next_run_time', width: 180, sorter: true },
   { title: '最近结果', dataIndex: 'last_status', key: 'last_status', width: 120 },
   { title: '备注', dataIndex: 'description', key: 'description' },
   { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
+
+const resolveTaskOrdering = () => {
+  if (!taskSort.field || !taskSort.order) {
+    return undefined
+  }
+  const sortPrefix = taskSort.order === 'descend' ? '-' : ''
+  return `${sortPrefix}${taskSort.field}`
+}
 
 const buildMenuOptions = (nodes, collector = []) => {
   nodes.forEach((item) => {
@@ -508,6 +528,10 @@ const loadTasks = () => {
   if (filterRunning.value !== undefined && filterRunning.value !== null && filterRunning.value !== '') {
     params.is_running = filterRunning.value
   }
+  const ordering = resolveTaskOrdering()
+  if (ordering) {
+    params.ordering = ordering
+  }
   getTaskList(params)
     .then((res) => {
       const data = res?.data?.data
@@ -588,9 +612,20 @@ const resetFilters = () => {
   reload()
 }
 
-const handleTableChange = (paginationInfo) => {
+const handleTableChange = (paginationInfo, _filters, sorter) => {
   pagination.current = paginationInfo.current
   pagination.pageSize = paginationInfo.pageSize
+
+  const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+  const sortableFields = ['last_run_time', 'next_run_time']
+  if (nextSorter?.field && sortableFields.includes(nextSorter.field) && nextSorter.order) {
+    taskSort.field = nextSorter.field
+    taskSort.order = nextSorter.order
+  } else {
+    taskSort.field = null
+    taskSort.order = null
+  }
+
   loadTasks()
 }
 
@@ -739,6 +774,7 @@ const openEditModal = (record) => {
   editForm.menu = record.menu || undefined
   editForm.menu_name = record.menu_name || ''
   editForm.enabled = !!record.enabled
+  editForm.cron_expression = record.effective_cron_expression || record.cron_expression || ''
   editForm.interval_minutes = record.interval_minutes || 15
   editForm.description = record.description || ''
   editVisible.value = true
@@ -753,8 +789,8 @@ const submitTask = () => {
     message.error('请输入任务编码')
     return
   }
-  if (!editForm.interval_minutes || editForm.interval_minutes < 1) {
-    message.error('请输入有效的间隔分钟数')
+  if (!editForm.cron_expression || !String(editForm.cron_expression).trim()) {
+    message.error('请输入有效的 Cron 表达式')
     return
   }
 
@@ -763,7 +799,7 @@ const submitTask = () => {
     code: String(editForm.code).trim(),
     menu: editForm.menu || null,
     enabled: !!editForm.enabled,
-    interval_minutes: editForm.interval_minutes,
+    cron_expression: String(editForm.cron_expression).trim(),
     description: editForm.description,
   }
 
@@ -962,5 +998,11 @@ onMounted(() => {
 }
 .log-filter-panel {
   margin-bottom: 12px;
+}
+
+.cron-help {
+  margin-top: 6px;
+  color: #888;
+  font-size: 12px;
 }
 </style>

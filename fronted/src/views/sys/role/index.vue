@@ -19,12 +19,9 @@
             </a-button>
         </a-col>
         <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission.remove="'system:roles:delete'">
-            <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
-                :overlayStyle="{ width: '300px', minHeight: '200px' }">
-                <a-button size="large" type="primary" :loading="state.loading" danger>
-                    <FontAwesomeIcon :icon="['fas','trash-can']" />批量删除
-                </a-button>
-            </a-popconfirm>
+            <a-button size="large" type="primary" :loading="state.loading" danger @click="openBatchDeleteConfirm">
+                <FontAwesomeIcon :icon="['fas','trash-can']" />批量删除
+            </a-button>
         </a-col>
         <a-col>
             <div class="selectedItems" v-if="state.selectedRowKeys.length >= 1">
@@ -58,16 +55,12 @@
                                     </a-tooltip>
                                 </a-col>
                                 <a-col v-permission.remove="'system:roles:delete'">
-                                    <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
-                                        @confirm="delconfirm(record.id)" @cancel="cancel"
-                                        :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-tooltip title="删除">
-                                            <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
-                                                type="primary">
-                                                <FontAwesomeIcon :icon="['fas','trash-can']" />
-                                            </a-button>
-                                        </a-tooltip>
-                                    </a-popconfirm>
+                                    <a-tooltip title="删除">
+                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
+                                            type="primary" @click="openDeleteRoleConfirm(record)">
+                                            <FontAwesomeIcon :icon="['fas','trash-can']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-col>
                             </a-row>
                         </div>
@@ -94,6 +87,7 @@ import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
 import {checkPermission} from '@/directives/permission/permission'
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 
@@ -108,7 +102,7 @@ const roleassign_title = ref("权限分配")
 
 const SearchText = ref('')
 const columns = [
-    { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name', sorter: true, sortDirections: ['ascend', 'descend'] },
+    { title: '角色名', dataIndex: 'name', fixed: true, width: 100, key: 'name' },
     { title: '权限字符', dataIndex: 'code', key: 'code', width: 150 },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80,sorter: true},
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
@@ -160,6 +154,35 @@ const queryData = params => {
     });
 };
 
+const resolveSelectedDeleteItems = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    const rows = Array.isArray(users.value) ? users.value : []
+    const selectedRows = rows.filter((item) => selectedIds.includes(item.id))
+    if (selectedRows.length) {
+        return selectedRows.map((item) => `角色: ${item.name || `#${item.id}`}`)
+    }
+    return selectedIds.map((id) => `角色ID: ${id}`)
+}
+
+const openBatchDeleteConfirm = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    openDeleteConfirm({
+        title: '确认批量删除角色',
+        summary: `即将删除 ${selectedIds.length} 个角色，请确认影响清单。`,
+        items: resolveSelectedDeleteItems(),
+        onConfirm: () => confirm(),
+    })
+}
+
+const openDeleteRoleConfirm = (record) => {
+    openDeleteConfirm({
+        title: '确认删除角色',
+        summary: '删除后不可恢复。',
+        items: [`角色: ${record?.name || `#${record?.id || '-'}`}`],
+        onConfirm: () => delconfirm(record.id),
+    })
+}
+
 const {
     data: users,
     run,
@@ -188,15 +211,12 @@ const pagination = computed(() => ({
     showQuickJumper: true,
 }))
 const handleTableChange = (page, filters, sorter) => {
+    let sorter_str = ""
+    if (sorter.order && sorter.field === 'create_time') {
+        sorter_str = sorter.order === 'descend' ? '-create_time' : 'create_time'
+    }
 
-    var sorter_str = ""
-    if (sorter.order) {
-        // 不为空，说明有排序
-        if (sorter.order == "descend") {
-            sorter_str = sorter_str + '-' + sorter.field
-        } else {
-            sorter_str = sorter_str + sorter.field
-        }
+    if (sorter_str) {
         run({
             size: page.pageSize,
             page: page?.current,

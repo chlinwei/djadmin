@@ -39,16 +39,12 @@
                                     </a-tooltip>
                                 </a-col>
                                 <a-col v-permission="'system:menus:delete'">
-                                    <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
-                                        @confirm="delconfirm(record.key)" @cancel="cancel"
-                                        :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-tooltip title="删除">
-                                            <a-button class="delBtn" :loading="rowLoadingStates[record.key]" danger
-                                                type="primary">
-                                                <FontAwesomeIcon :icon="['fa','trash']" />
-                                            </a-button>
-                                        </a-tooltip>
-                                    </a-popconfirm>
+                                    <a-tooltip title="删除">
+                                        <a-button class="delBtn" :loading="rowLoadingStates[record.key]" danger
+                                            type="primary" @click="openDeleteMenuConfirm(record)">
+                                            <FontAwesomeIcon :icon="['fa','trash']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-col>
                             </a-row>
                         </div>
@@ -63,6 +59,7 @@ import { ref, reactive, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission';
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
@@ -259,6 +256,15 @@ const delconfirm = (id) => {
 
     }).finally(() => {
         setRowLoading(id, false)
+    })
+}
+
+const openDeleteMenuConfirm = (record) => {
+    openDeleteConfirm({
+        title: '确认删除菜单',
+        summary: '删除后不可恢复，且可能影响菜单树结构。',
+        items: [`菜单: ${record?.name || `#${record?.key || '-'}`}`],
+        onConfirm: () => delconfirm(record.key),
     })
 }
 </script>

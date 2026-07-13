@@ -351,12 +351,12 @@ def _precheck_workflow_runtime_scope(runtime_scope: dict) -> tuple[bool, str, di
     limit_text = str(runtime_scope.get('limit') or '').strip()
 
     if not use_global_scope:
-        return True, 'ok', {
+        return False, 'inventory_missing', {
             'resolved_host_count': 0,
             'matched_hosts_preview': [],
             'matched_hosts_preview_total': 0,
             'effective_limit': limit_text,
-            'message': '未配置 Workflow 全局 Inventory，任务节点将使用各自任务范围',
+            'message': 'Workflow 未配置 Inventory，无法启动',
         }
 
     host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
@@ -1207,7 +1207,7 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     search_fields = ['name', 'code', 'template__name', 'inventory__name', 'remark']
-    ordering_fields = ['name', 'code', 'create_time', 'update_time']
+    ordering_fields = ['name', 'code', 'enabled', 'create_time', 'update_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -1309,6 +1309,14 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
                 'resolved_host_count': 0,
             })
 
+        if not task.inventory_id:
+            return Response_200(data={
+                'ok': False,
+                'status': 'inventory_missing',
+                'message': '任务未配置 Inventory，无法预检执行范围',
+                'resolved_host_count': 0,
+            })
+
         if task.inventory_id and task.inventory is not None and not task.inventory.enabled:
             return Response_200(data={
                 'ok': False,
@@ -1317,8 +1325,8 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
                 'resolved_host_count': 0,
             })
 
-        default_host_ids = task.selected_host_ids
-        default_group_ids = task.selected_group_ids
+        default_host_ids = []
+        default_group_ids = []
         inventory_name = ''
         if task.inventory_id and task.inventory is not None:
             default_host_ids = task.inventory.selected_host_ids
@@ -1395,8 +1403,8 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             return Response_error_str('Inventory is disabled', code=400)
 
         user_info = getCurrentUser(request)
-        default_host_ids = task.selected_host_ids
-        default_group_ids = task.selected_group_ids
+        default_host_ids = []
+        default_group_ids = []
         if task.inventory_id and task.inventory is not None:
             default_host_ids = task.inventory.selected_host_ids
             default_group_ids = task.inventory.selected_group_ids
@@ -1603,7 +1611,7 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     search_fields = ['job_id', 'requested_username', 'template__name', 'task__name', 'remark']
-    ordering_fields = ['create_time', 'update_time', 'start_time', 'end_time']
+    ordering_fields = ['id', 'status', 'duration_seconds', 'create_time', 'update_time', 'start_time', 'end_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -1732,7 +1740,7 @@ class AutomationWorkflowTemplateManage(
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     search_fields = ['name', 'description', 'remark']
-    ordering_fields = ['name', 'create_time', 'update_time']
+    ordering_fields = ['name', 'enabled', 'create_time', 'update_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -1984,7 +1992,7 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     search_fields = ['workflow_name_snapshot', 'requested_username', 'remark']
-    ordering_fields = ['create_time', 'update_time', 'start_time', 'end_time']
+    ordering_fields = ['id', 'status', 'duration_seconds', 'create_time', 'update_time', 'start_time', 'end_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {

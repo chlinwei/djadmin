@@ -24,6 +24,15 @@ class ScheduledTaskViewSet(
     queryset = ScheduledTask.objects.all()
     serializer_class = ScheduledTaskSerializer
     pagination_class = CustomPagination
+    allowed_ordering_fields = {
+        'id',
+        'name',
+        'enabled',
+        'is_running',
+        'last_run_time',
+        'next_run_time',
+        'update_time',
+    }
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
@@ -50,6 +59,13 @@ class ScheduledTaskViewSet(
             queryset = queryset.filter(is_running=True)
         elif is_running_param in ('false', 'False', '0'):
             queryset = queryset.filter(is_running=False)
+
+        ordering = params.get('ordering')
+        if ordering:
+            normalized = str(ordering).strip()
+            order_field = normalized.lstrip('-')
+            if order_field in self.allowed_ordering_fields:
+                return queryset.order_by(normalized, '-id')
 
         return queryset.order_by('-id')
 

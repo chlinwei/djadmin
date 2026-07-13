@@ -99,6 +99,20 @@
   color: #ffffff;
 }
 
+/* Keep icon-only delete buttons visually stable in normal/loading states. */
+.ant-btn.delBtn {
+  width: 48px;
+  min-width: 48px;
+  padding-inline: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ant-btn.delBtn .ant-btn-loading-icon {
+  margin-inline-end: 0;
+}
+
 /* Link buttons used as actions should still look clickable */
 .ant-btn-link {
   font-weight: 500;

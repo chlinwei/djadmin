@@ -13,14 +13,14 @@ class Command(BaseCommand):
                 'name': '主机信息采集',
                 'description': '定时采集所有主机信息',
                 'enabled': True,
-                'interval_minutes': 15,
+                'cron_expression': '*/15 * * * *',
             },
             {
                 'code': 'cleanup_webssh_session_logs',
                 'name': 'WebSSH 会话日志清理',
                 'description': '按保留天数清理过期 WebSSH 会话审计日志',
                 'enabled': True,
-                'interval_minutes': 24 * 60,
+                'cron_expression': '0 0 * * *',
             },
         ]
 
@@ -29,7 +29,8 @@ class Command(BaseCommand):
                 'name': item['name'],
                 'description': item['description'],
                 'enabled': item['enabled'],
-                'interval_minutes': item['interval_minutes'],
+                'cron_expression': item['cron_expression'],
+                'interval_minutes': None,
             }
             task, created = ScheduledTask.objects.get_or_create(
                 code=item['code'],

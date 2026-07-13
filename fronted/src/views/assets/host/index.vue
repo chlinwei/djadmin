@@ -96,6 +96,7 @@
                 <a-col :span="4">
                     <a-select
                         v-model:value="collectStatusFilter"
+                        :getPopupContainer="getPopupContainer"
                         class="tool-item"
                         size="large"
                         style="width: 100%;"
@@ -129,19 +130,9 @@
                     </a-button>
                 </a-col>
                 <a-col class="BatchDelBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:delete'">
-                    <a-popconfirm
-                        placement="top"
-                        title="您确定要删除选中的主机么？"
-                        ok-text="确认"
-                        cancel-text="取消"
-                        @confirm="confirmBatchDelete"
-                        @cancel="cancel"
-                        :overlayStyle="{ width: '300px', minHeight: '200px' }"
-                    >
-                        <a-button size="large" type="primary" :loading="state.loading" danger>
-                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />批量删除
-                        </a-button>
-                    </a-popconfirm>
+                    <a-button size="large" type="primary" :loading="state.loading" danger @click="openBatchDeleteHostConfirm">
+                        <FontAwesomeIcon :icon="['fas', 'trash-can']" />批量删除
+                    </a-button>
                 </a-col>
                 <a-col>
                     <div class="selectedItems" v-if="state.selectedRowKeys.length >= 1">
@@ -259,21 +250,12 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:delete'">
-                                        <a-popconfirm
-                                            placement="bottom"
-                                            title="您确定要删除么？"
-                                            ok-text="确认"
-                                            cancel-text="取消"
-                                            @confirm="delconfirm(record.id)"
-                                            @cancel="cancel"
-                                            :overlayStyle="{ width: '200px', minHeight: '150px' }"
-                                        >
-                                            <a-tooltip title="删除">
-                                                <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary">
-                                                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                                                </a-button>
-                                            </a-tooltip>
-                                        </a-popconfirm>
+                                        <a-tooltip title="删除">
+                                            <a-button class="delBtn" :loading="rowLoadingStates['delete_' + record.id]" danger type="primary"
+                                                @click="openDeleteHostConfirm(record)">
+                                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                            </a-button>
+                                        </a-tooltip>
                                     </a-col>
                                 </a-row>
                             </div>
@@ -391,6 +373,7 @@
                 <a-form-item name="credential_id" label="SSH 凭证">
                     <a-select
                         v-model:value="form.credential_id"
+                        :getPopupContainer="getPopupContainer"
                         placeholder="请选择凭证"
                         :options="credentialOptions"
                         allowClear
@@ -477,9 +460,32 @@ import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/in
 import { getCredentailList } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { getWebSocketBaseUrl } from '@/util/request'
+import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+import {
+    buildDeletePreviewTree,
+    buildGroupTreeSelectData,
+    buildTreeData,
+    collectExpandedKeys,
+    collectTreeKeys,
+    filterGroupTree,
+    findGroupNodeByKey,
+    getGroupNodeLabel,
+    getHostDisplayName,
+    getHostGroupId,
+} from './hostGroupTreeUtils'
+import {
+    formatDateTimeWithTimezone,
+    formatPercent,
+    formatSize,
+    getCredentialName,
+    getDisks,
+    getGroupName,
+    hasHostCredential,
+} from './hostDisplayUtils'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -520,6 +526,8 @@ let webSshTerminal = null
 let webSshFitAddon = null
 let webSshOnDataDisposable = null
 let webSshOnResizeDisposable = null
+
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const state = reactive({
     selectedRowKeys: [],
@@ -627,61 +635,6 @@ const groupDeleteHostCount = computed(() => {
     return total
 })
 
-const buildTreeData = (nodes, depth = 1) => {
-    return nodes.map((item) => ({
-        title: `${item.name}${item.host_count !== undefined && item.host_count !== null ? ` (${item.host_count})` : ''}`,
-        key: item.id,
-        name: item.name,
-        host_count: item.host_count,
-        depth,
-        children: item.children && item.children.length && depth < groupMaxTreeDepth.value ? buildTreeData(item.children, depth + 1) : undefined,
-    }))
-}
-
-const buildGroupTreeSelectData = (nodes = []) => {
-    return nodes.map((item) => ({
-        title: item.name,
-        value: item.key,
-        key: item.key,
-        children: item.children && item.children.length ? buildGroupTreeSelectData(item.children) : undefined,
-    }))
-}
-
-const filterGroupTree = (nodes, keyword) => {
-    const search = keyword.trim().toLowerCase()
-    if (!search) {
-        return nodes
-    }
-
-    return nodes
-        .map((item) => {
-            const children = item.children ? filterGroupTree(item.children, search) : []
-            const matched = String(item.name || '').toLowerCase().includes(search)
-            if (matched || children.length) {
-                return {
-                    ...item,
-                    children: children.length ? children : undefined,
-                }
-            }
-            return null
-        })
-        .filter(Boolean)
-}
-
-const collectExpandedKeys = (nodes) => {
-    const keys = [0]
-    const walk = (items) => {
-        items.forEach((item) => {
-            if (item.children && item.children.length) {
-                keys.push(item.key)
-                walk(item.children)
-            }
-        })
-    }
-    walk(nodes)
-    return Array.from(new Set(keys))
-}
-
 const groupTreeExpandedKeys = computed(() => {
     return expandedGroupKeys.value
 })
@@ -715,7 +668,7 @@ const loadGroupTree = async () => {
                     key: 0,
                     name: '全部分组',
                     host_count: null,
-                    children: buildTreeData(data, 1),
+                    children: buildTreeData(data, groupMaxTreeDepth.value, 1),
                 },
             ]
             expandedGroupKeys.value = collectExpandedKeys(groupTreeData.value)
@@ -818,47 +771,6 @@ const closeGroupContextMenu = () => {
     groupContextMenu.visible = false
 }
 
-const findGroupNodeByKey = (nodes, key) => {
-    for (const node of nodes || []) {
-        if (Number(node?.key) === Number(key)) {
-            return node
-        }
-        const childNode = findGroupNodeByKey(node?.children || [], key)
-        if (childNode) {
-            return childNode
-        }
-    }
-    return null
-}
-
-const getGroupNodeLabel = (node) => {
-    if (!node) {
-        return '未命名分组'
-    }
-    const rawTitle = String(node.title || node.name || '未命名分组')
-    return rawTitle.replace(/\s*\(\d+\)\s*$/, '')
-}
-
-const getHostDisplayName = (host) => {
-    const instanceName = String(host?.instance_name || '').trim()
-    const hostname = String(host?.system?.hostname || '').trim()
-    const ip = String(host?.ip || '').trim()
-    return instanceName || hostname || ip || `Host-${host?.id || '-'}`
-}
-
-const getHostGroupId = (host) => {
-    if (Number.isInteger(Number(host?.group_id)) && Number(host?.group_id) > 0) {
-        return Number(host.group_id)
-    }
-    if (Number.isInteger(Number(host?.group)) && Number(host?.group) > 0) {
-        return Number(host.group)
-    }
-    if (Number.isInteger(Number(host?.group?.id)) && Number(host?.group?.id) > 0) {
-        return Number(host.group.id)
-    }
-    return null
-}
-
 const loadHostsByGroupTree = async (groupId) => {
     const allHosts = []
     const pageSize = 200
@@ -880,55 +792,37 @@ const loadHostsByGroupTree = async (groupId) => {
     return allHosts
 }
 
-const buildDeletePreviewTree = (groupNode, hosts) => {
-    const hostRows = Array.isArray(hosts) ? hosts : []
-    const groupHostsMap = new Map()
-    hostRows.forEach((host) => {
-        const gid = getHostGroupId(host)
-        if (!gid) {
-            return
-        }
-        const list = groupHostsMap.get(gid) || []
-        list.push(host)
-        groupHostsMap.set(gid, list)
-    })
-
-    const buildNode = (node) => {
-        const nodeId = Number(node?.key || 0)
-        const groupLabel = getGroupNodeLabel(node)
-        const childGroups = Array.isArray(node?.children) ? node.children.map((item) => buildNode(item)) : []
-        const groupHosts = (groupHostsMap.get(nodeId) || []).map((host) => ({
-            title: `${getHostDisplayName(host)} (${host.ip || '-'})`,
-            key: `host-${host.id}`,
-            isLeaf: true,
-        }))
-
-        return {
-            title: `${groupLabel}`,
-            key: `group-${nodeId}`,
-            children: [...childGroups, ...groupHosts],
-        }
-    }
-
-    return groupNode ? [buildNode(groupNode)] : []
-}
-
-const collectTreeKeys = (nodes) => {
-    const keys = []
-    const walk = (items) => {
-        ;(items || []).forEach((item) => {
-            keys.push(item.key)
-            if (Array.isArray(item.children) && item.children.length) {
-                walk(item.children)
-            }
-        })
-    }
-    walk(nodes)
-    return keys
-}
-
 const onGroupDeletePreviewExpand = (expandedKeys) => {
     groupDeleteExpandedKeys.value = Array.isArray(expandedKeys) ? expandedKeys : []
+}
+
+const resolveSelectedHostDeleteItems = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    const rows = Array.isArray(datasources.value) ? datasources.value : []
+    const selectedRows = rows.filter((item) => selectedIds.includes(item.id))
+    if (selectedRows.length) {
+        return selectedRows.map((item) => `主机: ${getHostDisplayName(item)} (${item.ip || '-'})`)
+    }
+    return selectedIds.map((id) => `主机ID: ${id}`)
+}
+
+const openBatchDeleteHostConfirm = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    openDeleteConfirm({
+        title: '确认批量删除主机',
+        summary: `即将删除 ${selectedIds.length} 台主机，请确认影响清单。`,
+        items: resolveSelectedHostDeleteItems(),
+        onConfirm: () => confirmBatchDelete(),
+    })
+}
+
+const openDeleteHostConfirm = (record) => {
+    openDeleteConfirm({
+        title: '确认删除主机',
+        summary: '删除后不可恢复。',
+        items: [`主机: ${getHostDisplayName(record)} (${record?.ip || '-'})`],
+        onConfirm: () => delconfirm(record.id),
+    })
 }
 
 const openGroupDeleteConfirm = async (groupNode) => {
@@ -1435,27 +1329,6 @@ const closeWebSsh = () => {
     disposeWebSshTerminal()
 }
 
-const getGroupName = (record) => {
-    return record.group_name || record.group?.name || '-'
-}
-
-const getCredentialName = (record) => {
-    return record.credential_name || record.credential?.name || '-'
-}
-
-const hasHostCredential = (record) => {
-    const directName = String(record?.credential_name || '').trim()
-    if (directName) {
-        return true
-    }
-    const nestedName = String(record?.credential?.name || '').trim()
-    if (nestedName) {
-        return true
-    }
-    const nestedId = Number(record?.credential?.id || 0)
-    return Number.isFinite(nestedId) && nestedId > 0
-}
-
 const router = useRouter()
 const route = useRoute()
 
@@ -1497,47 +1370,8 @@ const getRowClassName = (record) => {
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
 }
 
-const getDisks = (record) => {
-    return record.disks || []
-}
-
-const formatSize = (value) => {
-    if (value === null || value === undefined || value === '') {
-        return '-'
-    }
-    return `${value} GB`
-}
-
-const formatPercent = (value) => {
-    if (value === null || value === undefined || value === '') {
-        return '-'
-    }
-    return `${Number(value).toFixed(2)}%`
-}
-
-const normalizeUtcTime = (value) => {
-    if (!value || typeof value !== 'string') {
-        return value
-    }
-    const text = value.trim()
-    if (!text) {
-        return value
-    }
-    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(text)) {
-        return text
-    }
-    return `${text.replace(' ', 'T')}Z`
-}
-
 const formatDateTime = (value) => {
-    if (!value) {
-        return '-'
-    }
-    try {
-        return formatTimeWithTimezone(normalizeUtcTime(value), store.state.user?.timezone || 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss')
-    } catch (error) {
-        return value
-    }
+    return formatDateTimeWithTimezone(value, formatTimeWithTimezone, store.state.user?.timezone || 'Asia/Shanghai')
 }
 
 onMounted(async () => {

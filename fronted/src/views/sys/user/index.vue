@@ -17,12 +17,9 @@
     </a-button>
     </a-col>
         <a-col class="BatchDelUserBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission.remove="'system:users:delete'">
-            <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm" @cancel="cancel"
-                :overlayStyle="{ width: '300px', minHeight: '200px' }">
-                <a-button size="large" type="primary" :loading="state.loading" danger>
-                    <FontAwesomeIcon :icon="'fa-trash'" />批量删除
-                </a-button>
-            </a-popconfirm>
+            <a-button size="large" type="primary" :loading="state.loading" danger @click="openBatchDeleteConfirm">
+                <FontAwesomeIcon :icon="'fa-trash'" />批量删除
+            </a-button>
         </a-col>
         <a-col>
             <div class="selectedItems" v-if="state.selectedRowKeys.length >= 1">
@@ -82,15 +79,12 @@
                                 </a-tooltip>
                             </a-col>
                             <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:delete'">
-                                <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
-                                    @confirm="delUserconfirm(record.id)" @cancel="cancel"
-                                    :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                    <a-tooltip title="删除">
-                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary">
-                                            <FontAwesomeIcon :icon="['fa','trash']" />
-                                        </a-button>
-                                    </a-tooltip>
-                                </a-popconfirm>
+                                <a-tooltip title="删除">
+                                    <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger type="primary"
+                                        @click="openDeleteUserConfirm(record)">
+                                        <FontAwesomeIcon :icon="['fa','trash']" />
+                                    </a-button>
+                                </a-tooltip>
                             </a-col>
                         </a-row>
                     </div>
@@ -114,6 +108,7 @@ import { usePagination } from 'vue-request';
 import { computed, reactive } from 'vue';
 import { changeUserStatus } from '@/api/user/index.js';
 import { message } from 'ant-design-vue';
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import Dialog from '@/views/sys/user/components/Dialog.vue';
 import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -192,6 +187,35 @@ const queryData = params => {
 
     });
 };
+
+const resolveSelectedDeleteItems = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    const rows = Array.isArray(users.value) ? users.value : []
+    const selectedRows = rows.filter((item) => selectedIds.includes(item.id))
+    if (selectedRows.length) {
+        return selectedRows.map((item) => `用户: ${item.username || `#${item.id}`}`)
+    }
+    return selectedIds.map((id) => `用户ID: ${id}`)
+}
+
+const openBatchDeleteConfirm = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    openDeleteConfirm({
+        title: '确认批量删除用户',
+        summary: `即将删除 ${selectedIds.length} 个用户，请确认影响清单。`,
+        items: resolveSelectedDeleteItems(),
+        onConfirm: () => confirm(),
+    })
+}
+
+const openDeleteUserConfirm = (record) => {
+    openDeleteConfirm({
+        title: '确认删除用户',
+        summary: '删除后不可恢复。',
+        items: [`用户: ${record?.username || `#${record?.id || '-'}`}`],
+        onConfirm: () => delUserconfirm(record.id),
+    })
+}
 
 const {
     data: users,

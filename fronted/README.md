@@ -20,6 +20,20 @@ npm run dev
 npm run build
 ```
 
+## 质量守卫
+
+1. 一键质量守卫（唯一入口）
+
+```bash
+npm run check:ui-rules
+```
+
+- 说明：按顺序执行“时间显示一致性检查 + 列表排序一致性检查 + 删除交互一致性检查”，任一步失败即退出。
+
+2. 列表排序功能规范
+
+- 规范文档：`fronted/LIST_SORTING_GUIDELINES.md`
+
 ## 前端测试
 
 ```bash

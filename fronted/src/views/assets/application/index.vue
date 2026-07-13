@@ -14,12 +14,9 @@
         </a-col>
         <a-col class="BatchDelBtn tool-item" v-if="state.selectedRowKeys.length >= 1" 
             v-permission="'assets:applications:delete'">
-            <a-popconfirm placement="top" title="您确定要删除么？" ok-text="确认" cancel-text="取消" @confirm="confirm"
-                @cancel="cancel" :overlayStyle="{ width: '300px', minHeight: '200px' }">
-                <a-button size="large" type="primary" :loading="state.loading" danger>
-                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />批量删除
-                </a-button>
-            </a-popconfirm>
+            <a-button size="large" type="primary" :loading="state.loading" danger @click="openBatchDeleteConfirm">
+                <FontAwesomeIcon :icon="['fas', 'trash-can']" />批量删除
+            </a-button>
         </a-col>
         <a-col>
             <div class="selectedItems" v-if="state.selectedRowKeys.length >= 1">
@@ -47,16 +44,12 @@
                                     </a-tooltip>
                                 </a-col>
                                 <a-col v-permission="'assets:applications:delete'">
-                                    <a-popconfirm placement="bottom" title="您确定要删除么？" ok-text="确认" cancel-text="取消"
-                                        @confirm="delconfirm(record.id)" @cancel="cancel"
-                                        :overlayStyle="{ width: '200px', minHeight: '150px' }">
-                                        <a-tooltip title="删除">
-                                            <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
-                                                type="primary">
-                                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                                            </a-button>
-                                        </a-tooltip>
-                                    </a-popconfirm>
+                                    <a-tooltip title="删除">
+                                        <a-button class="delBtn" :loading="rowLoadingStates[record.id]" danger
+                                            type="primary" @click="openDeleteRecordConfirm(record)">
+                                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                        </a-button>
+                                    </a-tooltip>
                                 </a-col>
                             </a-row>
                         </div>
@@ -71,6 +64,7 @@ import { ref, reactive, onMounted } from 'vue';
 import { usePagination } from 'vue-request';
 import { computed } from 'vue'
 import { message } from 'ant-design-vue';
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 const appname = "应用类型"
@@ -193,6 +187,35 @@ const pagination = computed(() => ({
 
 const initList = () => {
     run({ page: current, size: pageSize.value, keyword: lastSearchKeyword.value })
+}
+
+const resolveSelectedDeleteItems = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    const rows = Array.isArray(datasources.value) ? datasources.value : []
+    const selectedRows = rows.filter((item) => selectedIds.includes(item.id))
+    if (selectedRows.length) {
+        return selectedRows.map((item) => `应用: ${item.name || `#${item.id}`}`)
+    }
+    return selectedIds.map((id) => `应用ID: ${id}`)
+}
+
+const openBatchDeleteConfirm = () => {
+    const selectedIds = Array.isArray(state.selectedRowKeys) ? state.selectedRowKeys : []
+    openDeleteConfirm({
+        title: '确认批量删除应用',
+        summary: `即将删除 ${selectedIds.length} 项应用，请确认影响清单。`,
+        items: resolveSelectedDeleteItems(),
+        onConfirm: () => confirm(),
+    })
+}
+
+const openDeleteRecordConfirm = (record) => {
+    openDeleteConfirm({
+        title: '确认删除应用',
+        summary: '删除后不可恢复。',
+        items: [`应用: ${record?.name || `#${record?.id || '-'}`}`],
+        onConfirm: () => delconfirm(record.id),
+    })
 }
 
 const handleTableChange = (page, filters, sorter) => {

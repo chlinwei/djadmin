@@ -11,7 +11,7 @@ import {
     resolveFileParentDirectory,
     formatDateTime,
     formatFileMtime,
-} from '../websshUtils.js'
+} from '../webssh/helpers/websshUtils.js'
 
 // ─── normalizeUtcTime ────────────────────────────────────────────────────────
 

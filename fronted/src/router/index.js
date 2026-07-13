@@ -22,7 +22,7 @@ export const staticRouterMap = [
     {
         path: '/assets/hosts/webssh',
         name: 'webssh-page',
-        component: () => import('../views/assets/host/webssh.vue')
+        component: () => import('../views/assets/host/webssh/index.vue')
     },
     {
         path: '/',
@@ -48,42 +48,42 @@ export const staticRouterMap = [
             {
                 path: '/sys/automation',
                 name: '自动化任务',
-                component: () => import('../views/sys/automation/index.vue'),
+                component: () => import('../views/automation/automationtask/index.vue'),
             },
             {
                 path: '/sys/automation/logs',
-                name: '任务运行记录',
-                component: () => import('../views/sys/automation/logs.vue'),
+                name: '运行记录中心',
+                component: () => import('../views/automation/logs/index.vue'),
             },
             {
                 path: '/sys/automation/playbooks',
                 name: 'Playbook模板',
-                component: () => import('../views/sys/playbookTemplate/index.vue'),
+                component: () => import('../views/automation/playbooks/index.vue'),
             },
             {
                 path: '/sys/automation/inventory',
                 name: 'Inventory管理',
-                component: () => import('../views/sys/automation/inventory.vue'),
+                component: () => import('../views/automation/inventory/index.vue'),
             },
             {
                 path: '/sys/automation/workflow',
                 name: 'Workflow编排',
-                component: () => import('../views/sys/automation/workflow.vue'),
+                component: () => import('../views/automation/workflow/index.vue'),
             },
             {
                 path: '/sys/automation/workflow/create',
                 name: 'Workflow创建',
-                component: () => import('../views/sys/automation/workflowCreate.vue'),
+                component: () => import('../views/automation/workflow/create.vue'),
             },
             {
                 path: '/sys/automation/workflow/editor',
                 name: 'Workflow编排编辑',
-                component: () => import('../views/sys/automation/workflowEditor.vue'),
+                component: () => import('../views/automation/workflow/editor.vue'),
             },
             {
                 path: '/sys/automation/workflow/run',
                 name: 'Workflow运行状态',
-                component: () => import('../views/sys/automation/workflowRun.vue'),
+                component: () => import('../views/automation/workflow/run.vue'),
             }
         ]
     },
@@ -103,6 +103,7 @@ function resolveMenuComponent(componentPath) {
         `../views/${normalized}.vue`,
         `../views/${normalized}`,
         `../views/${normalized}.vue`
+            .replace('sys/audit/', 'audit/')
             .replace('/applications/', '/application/')
             .replace('/credentials/', '/credential/')
             .replace('/usercenter/', '/userCenter/'),
@@ -148,7 +149,9 @@ export function getDynamicalRoutes(menuList) {
 
 function addTree(indexRoute, treeList) {
     treeList.forEach(tree => {
-        let component_url = `../views/${tree.component}.vue`;
+        const normalizedComponent = String(tree.component || '')
+            .replace('sys/audit/', 'audit/')
+        let component_url = `../views/${normalizedComponent}.vue`;
         let treeRoute = {}
         if (tree.children) {
             treeRoute = {

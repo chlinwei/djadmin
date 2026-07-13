@@ -69,6 +69,7 @@
                                 <a-form-item label="时区" name="timezone">
                                     <a-select 
                                         v-model:value="formState.timezone"
+                                        :getPopupContainer="getPopupContainer"
                                         :options="timezoneOptions"
                                         @change="handleTimezoneChange"
                                     />
@@ -116,6 +117,7 @@ import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Avatar from '@/views/userCenter/components/Avatar.vue';
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { TIMEZONE_LIST, formatTimeWithTimezone } from '@/util/timezone'
 import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
 
@@ -125,6 +127,7 @@ defineOptions({
     name: 'userCenter'
 })
 const currentUser = reactive({ 'user': getCurrentUser() });
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const activeKey = ref('1');
 const formState = reactive({
     phonenumber: currentUser.user.phonenumber,

@@ -196,7 +196,7 @@ class ScheduledTaskApiTest(BaseSchedulerTestCase):
 
         response = self.client.patch(
             f'/sys/scheduler/tasks/{task.id}/',
-            {'description': 'updated by test', 'interval_minutes': 30},
+            {'description': 'updated by test', 'cron_expression': '*/30 * * * *'},
             format='json',
         )
 
@@ -204,7 +204,7 @@ class ScheduledTaskApiTest(BaseSchedulerTestCase):
         body = response.json()
         task.refresh_from_db()
         self.assertEqual(task.description, 'updated by test')
-        self.assertEqual(task.interval_minutes, 30)
+        self.assertEqual(task.cron_expression, '*/30 * * * *')
         self.assertEqual(body.get('description'), 'updated by test')
 
     def test_update_with_legacy_remark_field_does_not_change_description(self):

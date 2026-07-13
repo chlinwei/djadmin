@@ -1,11 +1,9 @@
 from datetime import datetime
 import fnmatch
-import json
 import re
 
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
-from django.db import IntegrityError, connection
 from django.db.models import Q
 from django.utils import timezone
 import yaml
@@ -158,9 +156,6 @@ def check_workflow_cycle_at_runtime(workflow_id, nodes_snapshot):
         return (True, error_msg)
     
     return (False, None)
-
-
-_WORKFLOW_TABLE_CODE_COLUMN_CACHE = None
 
 
 def validate_playbook_content_or_raise(content):
@@ -416,9 +411,10 @@ class AutomationTaskSerializer(ModelSerializer):
             group_ids = [int(item) for item in (source_inventory.selected_group_ids or []) if str(item).isdigit()]
             is_all_hosts = False
         else:
-            host_ids = [int(item) for item in (obj.selected_host_ids or []) if str(item).isdigit()]
-            group_ids = [int(item) for item in (obj.selected_group_ids or []) if str(item).isdigit()]
-            is_all_hosts = len(host_ids) == 0 and len(group_ids) == 0
+            # Inventory is now the single source of execution scope.
+            host_ids = []
+            group_ids = []
+            is_all_hosts = False
         group_id_set = self._build_group_descendants(group_ids)
 
         filters = Q()
@@ -913,6 +909,7 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
     node_count = serializers.SerializerMethodField()
     edge_count = serializers.SerializerMethodField()
     default_inventory_name = serializers.SerializerMethodField()
+    execution_scope_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = AutomationWorkflowTemplate
@@ -931,6 +928,61 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
         if getattr(obj, 'default_inventory_id', None) and getattr(obj, 'default_inventory', None) is not None:
             return obj.default_inventory.name or ''
         return ''
+
+    def _build_group_descendants(self, group_ids):
+        if not group_ids:
+            return set()
+
+        id_set = set(group_ids)
+        queue = list(group_ids)
+        while queue:
+            current = queue.pop(0)
+            children = HostGroup.objects.filter(parent_id=current).values_list('id', flat=True)
+            for child_id in children:
+                if child_id not in id_set:
+                    id_set.add(child_id)
+                    queue.append(child_id)
+        return id_set
+
+    def get_execution_scope_summary(self, obj):
+        inventory = getattr(obj, 'default_inventory', None)
+        if inventory is None:
+            return {
+                'label': '未设置 Inventory',
+                'group_count': 0,
+                'host_count': 0,
+                'has_inventory': False,
+                'is_empty_scope': True,
+                'limit': str(getattr(obj, 'default_limit', '') or '').strip(),
+            }
+
+        group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
+        host_ids = [int(item) for item in (inventory.selected_host_ids or []) if str(item).isdigit()]
+        is_empty_scope = len(group_ids) == 0 and len(host_ids) == 0
+
+        host_count = 0
+        if not is_empty_scope:
+            conditions = Q()
+            if host_ids:
+                conditions |= Q(id__in=host_ids)
+            descendant_ids = self._build_group_descendants(group_ids)
+            if descendant_ids:
+                conditions |= Q(group_id__in=list(descendant_ids))
+            host_count = Host.objects.filter(ip__isnull=False).filter(conditions).distinct().count() if conditions else 0
+
+        if is_empty_scope:
+            label = 'Inventory 无主机'
+        else:
+            label = f'{len(group_ids)}组 / {host_count}台主机'
+
+        return {
+            'label': label,
+            'group_count': len(group_ids),
+            'host_count': host_count,
+            'has_inventory': True,
+            'is_empty_scope': is_empty_scope,
+            'limit': str(getattr(obj, 'default_limit', '') or '').strip(),
+        }
 
     def validate_default_extra_vars(self, value):
         if not isinstance(value, dict):
@@ -961,60 +1013,7 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
 
     def create(self, validated_data):
         validated_data['create_time'] = datetime.now().date()
-        try:
-            return AutomationWorkflowTemplate.objects.create(**validated_data)
-        except IntegrityError as exc:
-            # Backward compatibility: some databases still keep a required `code` column.
-            if 'code' not in str(exc).lower() or not _workflow_table_has_code_column():
-                raise
-            return _create_workflow_with_legacy_code(validated_data)
-
-
-def _workflow_table_has_code_column():
-    global _WORKFLOW_TABLE_CODE_COLUMN_CACHE
-    if _WORKFLOW_TABLE_CODE_COLUMN_CACHE is not None:
-        return _WORKFLOW_TABLE_CODE_COLUMN_CACHE
-
-    table_name = AutomationWorkflowTemplate._meta.db_table
-    with connection.cursor() as cursor:
-        description = connection.introspection.get_table_description(cursor, table_name)
-    column_names = {item.name for item in description}
-    _WORKFLOW_TABLE_CODE_COLUMN_CACHE = 'code' in column_names
-    return _WORKFLOW_TABLE_CODE_COLUMN_CACHE
-
-
-def _create_workflow_with_legacy_code(validated_data):
-    table_name = AutomationWorkflowTemplate._meta.db_table
-    now_date = timezone.localdate()
-    code_value = f"wf-{int(datetime.now().timestamp() * 1000)}"
-    nodes_json = json.dumps(validated_data.get('nodes', []), ensure_ascii=False)
-    edges_json = json.dumps(validated_data.get('edges', []), ensure_ascii=False)
-    default_extra_vars_json = json.dumps(validated_data.get('default_extra_vars', {}), ensure_ascii=False)
-
-    with connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            INSERT INTO {table_name}
-            (name, description, enabled, entry_node_key, nodes, edges, default_extra_vars, remark, create_time, update_time, code)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            [
-                validated_data.get('name', ''),
-                validated_data.get('description', ''),
-                bool(validated_data.get('enabled', True)),
-                validated_data.get('entry_node_key', ''),
-                nodes_json,
-                edges_json,
-                default_extra_vars_json,
-                validated_data.get('remark', ''),
-                validated_data.get('create_time', now_date),
-                now_date,
-                code_value,
-            ],
-        )
-        new_id = cursor.lastrowid
-
-    return AutomationWorkflowTemplate.objects.get(id=new_id)
+        return AutomationWorkflowTemplate.objects.create(**validated_data)
 
 
 class AutomationWorkflowRunSerializer(ModelSerializer):
@@ -1024,6 +1023,8 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
     node_results_runtime = serializers.SerializerMethodField()
     runtime_status = serializers.SerializerMethodField()
     error_message = serializers.SerializerMethodField()
+    runtime_hosts_preview = serializers.SerializerMethodField()
+    runtime_hosts_total = serializers.SerializerMethodField()
 
     class Meta:
         model = AutomationWorkflowRun
@@ -1036,6 +1037,59 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         if not isinstance(instance.result_summary, dict):
             return None
         return instance.result_summary.get('error')
+
+    def _collect_runtime_hosts_preview(self, obj):
+        node_results = obj.node_results if isinstance(obj.node_results, list) else []
+        job_ids = [int(item['job_id']) for item in node_results if isinstance(item, dict) and str(item.get('job_id', '')).isdigit()]
+        if not job_ids:
+            return []
+
+        rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('inventory_snapshot')
+        host_map = {}
+
+        for row in rows:
+            snapshot = row.get('inventory_snapshot')
+            if not isinstance(snapshot, dict):
+                continue
+            hosts = snapshot.get('hosts')
+            if not isinstance(hosts, list):
+                continue
+
+            for host in hosts:
+                if not isinstance(host, dict):
+                    continue
+                host_id = int(host['host_id']) if str(host.get('host_id', '')).isdigit() else None
+                host_name = str(host.get('host_name') or '').strip()
+                host_ip = str(host.get('host_ip') or '').strip()
+                group_path = str(host.get('group_path') or '').strip()
+                group_name = str(host.get('group_name') or '').strip()
+
+                dedup_key = str(host_id) if host_id is not None else f"{host_name}|{host_ip}|{group_path}|{group_name}"
+                if dedup_key in host_map:
+                    continue
+
+                host_map[dedup_key] = {
+                    'host_id': host_id,
+                    'host_name': host_name or host_ip or '-',
+                    'host_ip': host_ip or '-',
+                    'group_path': group_path,
+                    'group_name': group_name,
+                }
+
+        return sorted(
+            host_map.values(),
+            key=lambda item: (
+                str(item.get('group_path') or item.get('group_name') or '').lower(),
+                str(item.get('host_name') or '').lower(),
+                str(item.get('host_ip') or ''),
+            ),
+        )
+
+    def get_runtime_hosts_preview(self, obj):
+        return self._collect_runtime_hosts_preview(obj)
+
+    def get_runtime_hosts_total(self, obj):
+        return len(self._collect_runtime_hosts_preview(obj))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

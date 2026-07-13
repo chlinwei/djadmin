@@ -17,7 +17,8 @@ defaults = {
     'name': '主机信息采集',
     'description': '定时采集所有主机信息',
     'enabled': True,
-    'interval_minutes': 15,
+    'cron_expression': '*/15 * * * *',
+    'interval_minutes': None,
 }
 task, created = ScheduledTask.objects.get_or_create(
     code='collect_all_hosts_info',

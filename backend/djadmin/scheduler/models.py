@@ -16,6 +16,7 @@ class ScheduledTask(BaseModel):
     )
     enabled = models.BooleanField(default=True)
     is_running = models.BooleanField(default=False, verbose_name='正在运行')
+    cron_expression = models.CharField(max_length=120, blank=True, null=True)
     interval_minutes = models.IntegerField(blank=True, null=True)
     last_run_time = models.DateTimeField(blank=True, null=True)
     next_run_time = models.DateTimeField(blank=True, null=True, verbose_name='下次运行时间')

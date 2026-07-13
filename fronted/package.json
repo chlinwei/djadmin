@@ -10,6 +10,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "coverage": "vitest run --coverage",
+    "check:ui-rules": "node scripts/check-time-format-consistency.mjs && node scripts/check-sort.mjs && node scripts/check-delete-confirm-consistency.mjs",
     "test:report": "node generate_test_report.mjs",
     "e2e": "playwright test",
     "e2e:headless": "playwright test",

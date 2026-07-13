@@ -178,12 +178,17 @@ class AutomationTaskScopeTest(BaseTestCase):
 		self.host_b = Host.objects.create(instance_name='10.25.66.208', ip='10.25.66.208', group=self.child_group)
 		HostSystem.objects.create(host=self.host_a, hostname='fidsdb')
 		HostSystem.objects.create(host=self.host_b, hostname='pvg-esb4-208')
+		self.inventory = AutomationInventory.objects.create(name='scope-inventory')
+		self.inventory.selected_host_ids = [self.host_a.id]
+		self.inventory.selected_group_ids = [self.root_group.id]
+		self.inventory.save()
 		AutomationTask.objects.create(
 			name='Scope Task',
 			code='scope-task',
 			template=self.template,
-			selected_host_ids=[self.host_a.id],
-			selected_group_ids=[self.root_group.id],
+			inventory=self.inventory,
+			selected_host_ids=[],
+			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
@@ -206,7 +211,7 @@ class AutomationTaskScopeTest(BaseTestCase):
 		host_node = tree[0]['children'][0]['children'][0]
 		self.assertEqual(host_node['search'], 'test3')
 
-	def test_task_list_empty_scope_is_all_hosts(self):
+	def test_task_list_without_inventory_has_empty_scope(self):
 		AutomationTask.objects.create(
 			name='All Hosts Task',
 			code='all-hosts-task',
@@ -222,9 +227,9 @@ class AutomationTaskScopeTest(BaseTestCase):
 		body = self.assertResponseOK(res)
 		record = body['data']['results'][0]
 		summary = record['execution_scope_summary']
-		self.assertEqual(summary['label'], '全部主机（2台）')
+		self.assertEqual(summary['label'], '-')
 		self.assertEqual(summary['group_count'], 0)
-		self.assertEqual(summary['host_count'], 2)
+		self.assertEqual(summary['host_count'], 0)
 
 
 class AutomationRunDispatchTest(BaseTestCase):

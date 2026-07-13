@@ -1,0 +1,65 @@
+.workflow-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.right-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.block-card :deep(.ant-card-body) {
+  padding-top: 12px;
+}
+
+.workflow-page :deep(.ant-btn:not(:disabled)),
+.workflow-page :deep(.ant-btn:not(:disabled) *) {
+  cursor: pointer;
+}
+
+.workflow-page :deep(.ant-btn:disabled),
+.workflow-page :deep(.ant-btn:disabled *) {
+  cursor: not-allowed;
+}
+
+@media (max-width: 992px) {
+  .right-actions {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+}
+.scope-empty {
+  color: #999;
+}
+
+.scope-compact-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 280px;
+}
+
+.scope-limit-tag {
+  margin-inline-end: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-limit-empty {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.scope-match-empty {
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.2;
+}
+
+.scope-host-count-link {
+  padding: 0;
+  height: auto;
+}

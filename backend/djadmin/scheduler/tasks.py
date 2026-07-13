@@ -6,6 +6,7 @@ from scheduler.models import ScheduledTask
 from scheduler_manager import (
     calculate_next_run_time,
     ensure_default_tasks,
+    has_task_schedule,
     is_scheduler_enabled,
     run_scheduled_task,
 )
@@ -24,9 +25,11 @@ def dispatch_due_tasks():
 
     now = timezone.now()
     queued = 0
-    tasks = ScheduledTask.objects.filter(enabled=True, interval_minutes__gt=0).order_by('id')
+    tasks = ScheduledTask.objects.filter(enabled=True).order_by('id')
     worker_online = has_active_celery_worker()
     for task in tasks:
+        if not has_task_schedule(task):
+            continue
         if task.is_running:
             continue
 
@@ -41,9 +44,8 @@ def dispatch_due_tasks():
                 task.update_time = now.date()
                 task.save(update_fields=['last_status', 'last_message', 'update_time'])
                 continue
-            # Advance next_run_time on dispatch to avoid repeated queueing while worker picks up.
-            task.next_run_time = now + timezone.timedelta(minutes=task.interval_minutes or 15)
-            task.save(update_fields=['next_run_time'])
+            # 派发后立刻推进下一次执行时间，避免 worker 接管前重复入队。
+            calculate_next_run_time(task)
             execute_scheduled_task.delay(task.code)
             queued += 1
 

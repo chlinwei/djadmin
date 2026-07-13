@@ -1,6 +1,7 @@
 import io
 import traceback
 
+from celery.schedules import crontab
 from django.utils import timezone
 
 from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs
@@ -18,6 +19,40 @@ SCHEDULER_ENABLED_KEY = 'sys.scheduler.enabled'
 AUTOMATION_LOG_RETENTION_DAYS_KEY = 'sys.automation.logs.retention_days'
 AUDIT_LOGIN_LOG_RETENTION_DAYS_KEY = 'sys.audit.login_logs.retention_days'
 AUDIT_OPERATION_LOG_RETENTION_DAYS_KEY = 'sys.audit.operation_logs.retention_days'
+
+
+def validate_cron_expression(expression):
+    cron_text = str(expression or '').strip()
+    if not cron_text:
+        return False, 'cron 表达式不能为空'
+    try:
+        parse_cron_expression(cron_text)
+    except Exception as exc:
+        return False, f'cron 表达式无效: {exc}'
+    return True, None
+
+
+def parse_cron_expression(expression):
+    cron_text = str(expression or '').strip()
+    parts = cron_text.split()
+    if len(parts) != 5:
+        raise ValueError('cron 必须为 5 段：分 时 日 月 周')
+    return crontab(
+        minute=parts[0],
+        hour=parts[1],
+        day_of_month=parts[2],
+        month_of_year=parts[3],
+        day_of_week=parts[4],
+    )
+
+
+def get_task_cron_expression(task):
+    cron_text = str(getattr(task, 'cron_expression', '') or '').strip()
+    return cron_text
+
+
+def has_task_schedule(task):
+    return bool(get_task_cron_expression(task))
 
 
 def ensure_scheduler_log_configs():
@@ -170,42 +205,42 @@ def ensure_default_tasks():
             'name': '主机信息采集',
             'description': '定时采集所有主机信息',
             'enabled': True,
-            'interval_minutes': 15,
+            'cron_expression': '*/15 * * * *',
         },
         {
             'code': 'cleanup_webssh_session_logs',
             'name': 'WebSSH 会话日志清理',
             'description': '按保留天数清理过期 WebSSH 会话审计日志',
             'enabled': True,
-            'interval_minutes': 24 * 60,
+            'cron_expression': '0 0 * * *',
         },
         {
             'code': 'cleanup_ansible_execution_logs',
             'name': '自动化执行日志清理',
             'description': '按保留天数清理过期自动化作业日志与目标明细',
             'enabled': True,
-            'interval_minutes': 24 * 60,
+            'cron_expression': '0 0 * * *',
         },
         {
             'code': 'cleanup_login_audit_logs',
             'name': '登录日志清理',
             'description': '按保留天数清理登录审计日志',
             'enabled': True,
-            'interval_minutes': 24 * 60,
+            'cron_expression': '0 0 * * *',
         },
         {
             'code': 'cleanup_operation_audit_logs',
             'name': '操作日志清理',
             'description': '按保留天数清理操作审计日志',
             'enabled': True,
-            'interval_minutes': 24 * 60,
+            'cron_expression': '0 0 * * *',
         },
         {
             'code': 'cleanup_workflow_run_logs',
             'name': 'Workflow 运行记录清理',
             'description': '按保留天数清理过期 Workflow 运行记录',
             'enabled': True,
-            'interval_minutes': 24 * 60,
+            'cron_expression': '0 0 * * *',
         },
     ]
 
@@ -215,7 +250,8 @@ def ensure_default_tasks():
             'name': item['name'],
             'description': item['description'],
             'enabled': item['enabled'],
-            'interval_minutes': item['interval_minutes'],
+            'cron_expression': item['cron_expression'],
+            'interval_minutes': None,
             'update_time': timezone.now().date(),
         }
         menu = get_task_menu(item['code'])
@@ -231,7 +267,7 @@ def ensure_default_tasks():
             task.menu = menu  # type: ignore[assignment]
             task.save(update_fields=['menu'])
 
-        if task.enabled and task.interval_minutes and task.next_run_time is None:
+        if task.enabled and has_task_schedule(task) and task.next_run_time is None:
             calculate_next_run_time(task)
 
         if first_task is None:
@@ -244,19 +280,31 @@ def ensure_default_tasks():
 
 
 def calculate_next_run_time(task):
-    if not task.enabled or not task.interval_minutes:
+    if not task.enabled:
         if task.next_run_time is not None:
             task.next_run_time = None
             task.save(update_fields=['next_run_time'])
         return None
 
+    cron_text = get_task_cron_expression(task)
+
     now = timezone.now()
-    if task.last_run_time:
-        next_time = task.last_run_time + timezone.timedelta(minutes=task.interval_minutes)
-        if next_time <= now:
-            next_time = now + timezone.timedelta(minutes=task.interval_minutes)
+    if cron_text:
+        schedule = parse_cron_expression(cron_text)
+        due_state = schedule.is_due(now)
+        next_seconds = float(getattr(due_state, 'next', 0) or 0)
+        # is_due 恰好命中时 next 可能为 0，至少推进到下一分钟，避免重复触发。
+        if next_seconds <= 0:
+            next_seconds = 60.0
+        next_time = now + timezone.timedelta(seconds=next_seconds)
     else:
-        next_time = now + timezone.timedelta(minutes=task.interval_minutes)
+        next_time = None
+
+    if next_time is None:
+        if task.next_run_time is not None:
+            task.next_run_time = None
+            task.save(update_fields=['next_run_time'])
+        return None
 
     task.next_run_time = next_time
     task.save(update_fields=['next_run_time'])

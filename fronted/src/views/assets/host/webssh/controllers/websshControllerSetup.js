@@ -45,28 +45,20 @@ export function createWebsshDownloadSetup(ctx) {
 export function createWebsshUploadSetup(ctx) {
     const {
         hostState,
-        UPLOAD_CHUNK_SIZE,
         refs,
         message,
         ensureFileOperationsEnabled,
         ensureTransferPanelVisible,
         trimUploadQueueToLimit,
         formatBytes,
-        saveUploadResumeTask,
-        clearUploadResumeTask,
         deps,
     } = ctx
 
     return {
         getHostId: () => hostState.hostId,
-        UPLOAD_CHUNK_SIZE,
         state: {
             get uploadAbortController() { return hostState.uploadAbortController },
             set uploadAbortController(value) { hostState.uploadAbortController = value },
-            get pendingUploadTask() { return hostState.pendingUploadTask },
-            set pendingUploadTask(value) { hostState.pendingUploadTask = value },
-            get uploadStopAction() { return hostState.uploadStopAction },
-            set uploadStopAction(value) { hostState.uploadStopAction = value },
             nextUploadSeq: hostState.nextUploadSeq,
         },
         refs,
@@ -75,8 +67,6 @@ export function createWebsshUploadSetup(ctx) {
         ensureTransferPanelVisible,
         trimUploadQueueToLimit,
         formatBytes,
-        saveUploadResumeTask,
-        clearUploadResumeTask,
         ...deps,
     }
 }
@@ -84,7 +74,7 @@ export function createWebsshUploadSetup(ctx) {
 export function createWebsshInteractionSetup(ctx) {
     const {
         hostState,
-        DOWNLOAD_MODE_TICKET_STREAM,
+        DOWNLOAD_MODE_DIRECT,
         message,
         refs,
         ensureFileOperationsEnabled,
@@ -93,11 +83,7 @@ export function createWebsshInteractionSetup(ctx) {
         openDirectory,
         enqueueDownloadTask,
         cancelDownload,
-        removeDownloadQueueItem,
-        toggleUploadQueueItem,
         removeUploadQueueItem,
-        pauseUpload,
-        resumeUpload,
         cancelUpload,
         uploadRawFileToPath,
         renameHostWebSshFile,
@@ -109,23 +95,16 @@ export function createWebsshInteractionSetup(ctx) {
 
     return {
         getHostId: () => hostState.hostId,
-        DOWNLOAD_MODE_TICKET_STREAM,
+        DOWNLOAD_MODE_DIRECT,
         message,
         refs,
-        state: {
-            get pendingUploadTask() { return hostState.pendingUploadTask },
-        },
         ensureFileOperationsEnabled,
         closeFileContextMenu,
         closeTransferContextMenu,
         openDirectory,
         enqueueDownloadTask,
         cancelDownload,
-        removeDownloadQueueItem,
-        toggleUploadQueueItem,
         removeUploadQueueItem,
-        pauseUpload,
-        resumeUpload,
         cancelUpload,
         uploadRawFileToPath,
         renameHostWebSshFile,

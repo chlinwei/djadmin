@@ -115,11 +115,7 @@ import {
     getHostWebSshActiveCount,
     getHostWebSshActiveSessions,
     getHostWebSshFiles,
-    getHostWebSshDownloadTicket,
-    getHostWebSshUploadTicket,
-    uploadHostWebSshFileChunkByTicket,
-    getHostWebSshFileUploadStatusByTicket,
-    cancelHostWebSshFileUploadByTicket,
+    uploadHostWebSshFile,
     renameHostWebSshFile,
     deleteHostWebSshFile,
     createHostWebSshDir,
@@ -127,7 +123,7 @@ import {
 import { getToken } from '@/api/user/index.js'
 import { downloadAuditWebSshSession } from '@/api/sys/audit.js'
 import { formatTimeWithTimezone } from '@/util/timezone'
-import { getTransferServerUrl, getWebSocketBaseUrl } from '@/util/request'
+import { getServerUrl, getTransferServerUrl, getWebSocketBaseUrl } from '@/util/request'
 import {
     normalizeUtcTime,
     formatFileSize,
@@ -136,17 +132,12 @@ import {
     formatFileMtime as _formatFileMtime,
 } from '@/views/assets/host/webssh/helpers/websshUtils.js'
 import {
-    UPLOAD_CHUNK_SIZE,
     TRANSFER_LIST_LIMIT,
     DOWNLOAD_ACTION_DEDUP_MS,
     DOWNLOAD_PROGRESS_TICK_MS,
     DOWNLOAD_PROGRESS_SMOOTH_FACTOR,
     DOWNLOAD_PROGRESS_MIN_STEP_BYTES,
-    DOWNLOAD_MODE_TICKET_STREAM,
-    getUploadResumeStorageKey,
-    saveUploadResumeTask as persistUploadResumeTask,
-    clearUploadResumeTask as clearPersistedUploadResumeTask,
-    trimDownloadQueueToLimit as trimDownloadQueueToLimitByHelper,
+    DOWNLOAD_MODE_DIRECT,
     trimUploadQueueToLimit as trimUploadQueueToLimitByHelper,
     getTransferStatusMeta,
     buildDownloadRows,
@@ -158,7 +149,6 @@ import {
     supportsStreamFileDownload,
     parseDownloadFilename,
     parseResponseError,
-    resolveDownloadUrlFromPayload,
     buildDownloadTargetFilename,
 } from '@/views/assets/host/webssh/helpers/websshTransferHelpers.js'
 import { createWebsshLayoutController } from '@/views/assets/host/webssh/controllers/websshLayoutController.js'
@@ -229,11 +219,8 @@ const uploadProgressPercent = ref(0)
 const uploadProgressStatus = ref('active')
 const uploadProgressText = ref('')
 const uploadFileName = ref('')
-const uploadCanResume = ref(false)
 const uploadRunning = ref(false)
-const downloadQueue = ref([])
 const uploadQueue = ref([])
-let downloadQueueSeq = 0
 let uploadQueueSeq = 0
 let lastDownloadActionKey = ''
 let lastDownloadActionAt = 0
@@ -261,30 +248,19 @@ let downloadProgressTotalBytes = 0
 let downloadProgressElapsedMs = 0
 let downloadProgressTickAt = 0
 let uploadAbortController = null
-let pendingUploadTask = null
 const currentUploadContext = ref(null)
-let uploadStopAction = null
 
 const websshOpsController = createWebsshOpsController({
     computed,
     message,
     statusText,
-    getHostId: () => hostId,
-    getPendingUploadTask: () => pendingUploadTask,
-    downloadQueue,
     uploadQueue,
-    trimDownloadQueueToLimitByHelper,
     trimUploadQueueToLimitByHelper,
     transferListLimit: TRANSFER_LIST_LIMIT,
-    persistUploadResumeTask,
-    clearPersistedUploadResumeTask,
 })
 
 const fileOperationsEnabled = websshOpsController.fileOperationsEnabled
 const ensureFileOperationsEnabled = websshOpsController.ensureFileOperationsEnabled
-const saveUploadResumeTask = websshOpsController.saveUploadResumeTask
-const clearUploadResumeTask = websshOpsController.clearUploadResumeTask
-const trimDownloadQueueToLimit = websshOpsController.trimDownloadQueueToLimit
 const trimUploadQueueToLimit = websshOpsController.trimUploadQueueToLimit
 
 const websshDataController = createWebsshDataController({
@@ -299,9 +275,7 @@ const websshDataController = createWebsshDataController({
         downloadFileName,
         currentDownloadRecord,
         downloadProgressText,
-        downloadQueue,
         uploadRunning,
-        uploadCanResume,
         uploadProgressStatus,
         uploadFileName,
         currentUploadContext,
@@ -309,9 +283,7 @@ const websshDataController = createWebsshDataController({
         fileCurrentPath,
         uploadQueue,
     },
-    state: {
-        pendingUploadTask: () => pendingUploadTask,
-    },
+    state: {},
     helpers: {
         buildDownloadRows,
         buildUploadRows,
@@ -677,12 +649,8 @@ const hostState = {
     set lastDownloadActionKey(value) { lastDownloadActionKey = value },
     get lastDownloadActionAt() { return lastDownloadActionAt },
     set lastDownloadActionAt(value) { lastDownloadActionAt = value },
-    get pendingUploadTask() { return pendingUploadTask },
-    set pendingUploadTask(value) { pendingUploadTask = value },
     get uploadAbortController() { return uploadAbortController },
     set uploadAbortController(value) { uploadAbortController = value },
-    get uploadStopAction() { return uploadStopAction },
-    set uploadStopAction(value) { uploadStopAction = value },
     nextUploadSeq: () => (uploadQueueSeq += 1),
 }
 
@@ -694,7 +662,7 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
         DOWNLOAD_PROGRESS_TICK_MS,
         DOWNLOAD_PROGRESS_SMOOTH_FACTOR,
         DOWNLOAD_PROGRESS_MIN_STEP_BYTES,
-        DOWNLOAD_MODE_TICKET_STREAM,
+        DOWNLOAD_MODE_DIRECT,
     },
     refs: {
         downloadRunning,
@@ -703,7 +671,6 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
         downloadProgressStatus,
         downloadProgressText,
         downloadFileName,
-        downloadQueue,
         currentDownloadRecord,
     },
     message,
@@ -713,21 +680,20 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
         formatBytes,
         supportsStreamFileDownload,
         buildDownloadTargetFilename,
-        resolveDownloadUrlFromPayload,
         getDownloadModeLabel,
         parseResponseError,
         triggerFileDownload,
     },
     deps: {
-        getHostWebSshDownloadTicket,
+        getServerUrl,
         getTransferServerUrl,
+        getToken,
     },
 }))
 
 const resetDownloadProgress = websshDownloadController.resetDownloadProgress
 const stopDownloadProgressTicker = websshDownloadController.stopDownloadProgressTicker
 const enqueueDownloadTask = websshDownloadController.enqueueDownloadTask
-const removeDownloadQueueItem = websshDownloadController.removeDownloadQueueItem
 const cancelDownload = websshDownloadController.cancelDownload
 const cancelActiveDownload = websshDownloadController.cancelActiveDownload
 
@@ -741,7 +707,6 @@ const dismissDownloadProgress = () => {
 
 const websshUploadController = createWebsshUploadController(createWebsshUploadSetup({
     hostState,
-    UPLOAD_CHUNK_SIZE,
     refs: {
         uploadRunning,
         uploadProgressVisible,
@@ -749,36 +714,25 @@ const websshUploadController = createWebsshUploadController(createWebsshUploadSe
         uploadProgressText,
         uploadProgressPercent,
         uploadFileName,
-        uploadCanResume,
         uploadQueue,
         fileCurrentPath,
         currentUploadContext,
-        getUploadResumeStorageKey,
     },
     message,
     ensureFileOperationsEnabled,
     ensureTransferPanelVisible,
     trimUploadQueueToLimit,
     formatBytes,
-    saveUploadResumeTask,
-    clearUploadResumeTask,
     deps: {
-        getHostWebSshUploadTicket,
-        getHostWebSshFileUploadStatusByTicket,
-        uploadHostWebSshFileChunkByTicket,
-        cancelHostWebSshFileUploadByTicket,
+        uploadHostWebSshFile,
         loadFiles,
     },
 }))
 
-const restoreUploadResumeTask = websshUploadController.restoreUploadResumeTask
 const enqueueUploadTask = websshUploadController.enqueueUploadTask
-const toggleUploadQueueItem = websshUploadController.toggleUploadQueueItem
 const removeUploadQueueItem = websshUploadController.removeUploadQueueItem
 const uploadRawFileToPath = websshUploadController.uploadRawFileToPath
 const uploadFile = websshUploadController.uploadFile
-const resumeUpload = websshUploadController.resumeUpload
-const pauseUpload = websshUploadController.pauseUpload
 const cancelUpload = websshUploadController.cancelUpload
 
 const dismissUploadProgress = () => {
@@ -791,7 +745,7 @@ const dismissUploadProgress = () => {
 
 const websshInteractionController = createWebsshInteractionController(createWebsshInteractionSetup({
     hostState,
-    DOWNLOAD_MODE_TICKET_STREAM,
+    DOWNLOAD_MODE_DIRECT,
     message,
     refs: {
         fileCurrentPath,
@@ -799,7 +753,6 @@ const websshInteractionController = createWebsshInteractionController(createWebs
         transferContextMenuTarget,
         downloadRunning,
         uploadRunning,
-        uploadCanResume,
         dragUploadDirPath,
     },
     ensureFileOperationsEnabled,
@@ -808,11 +761,7 @@ const websshInteractionController = createWebsshInteractionController(createWebs
     openDirectory,
     enqueueDownloadTask,
     cancelDownload,
-    removeDownloadQueueItem,
-    toggleUploadQueueItem,
     removeUploadQueueItem,
-    pauseUpload,
-    resumeUpload,
     cancelUpload,
     uploadRawFileToPath,
     renameHostWebSshFile,
@@ -848,7 +797,6 @@ const websshLifecycleController = createWebsshLifecycleController(createWebsshLi
         preventGlobalFileDrop,
         updateFullscreenState,
         startActiveUserPolling,
-        restoreUploadResumeTask,
         connectWebSsh,
         setupFilePanelResizeObserver,
         scheduleFileTableScrollYSync,

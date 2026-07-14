@@ -1,8 +1,6 @@
 import requestUtil from '@/util/request'
 
 const prefix = 'assets/hosts/'
-const getTransferBaseUrl = () => String(requestUtil.getTransferServerUrl() || '').replace(/\/$/, '')
-const buildTransferUrl = (path) => `${getTransferBaseUrl()}${path}`
 
 export function getHostList(params) {
     return requestUtil.get(prefix, params)
@@ -59,44 +57,11 @@ export function getHostWebSshFiles(id, path) {
     return requestUtil.get(prefix + `${id}/files/list/`, { path })
 }
 
-export function downloadHostWebSshFile(id, path) {
-    return requestUtil.download(prefix + `${id}/files/download/`, { path }, 0)
-}
-
-export function getHostWebSshDownloadTicket(id, payload) {
-    return requestUtil.post(prefix + `${id}/files/download-ticket/`, payload)
-}
-
-export function getHostWebSshUploadTicket(id, payload) {
-    return requestUtil.post(prefix + `${id}/files/upload-ticket/`, payload)
-}
-
 export function uploadHostWebSshFile(id, formData, options = {}) {
-    return requestUtil.fileUpload(prefix + `${id}/files/upload/`, formData, options)
-}
-
-export function uploadHostWebSshFileChunk(id, formData, options = {}) {
-    return requestUtil.fileUpload(prefix + `${id}/files/upload/chunk/`, formData, options)
-}
-
-export function uploadHostWebSshFileChunkByTicket(formData, options = {}) {
-    return requestUtil.fileUpload(buildTransferUrl('/transfer/upload/chunk/'), formData, options)
-}
-
-export function getHostWebSshFileUploadStatus(id, params) {
-    return requestUtil.get(prefix + `${id}/files/upload/status/`, params)
-}
-
-export function getHostWebSshFileUploadStatusByTicket(params) {
-    return requestUtil.get(buildTransferUrl('/transfer/upload/status/'), params)
-}
-
-export function cancelHostWebSshFileUpload(id, payload) {
-    return requestUtil.post(prefix + `${id}/files/upload/cancel/`, payload)
-}
-
-export function cancelHostWebSshFileUploadByTicket(payload) {
-    return requestUtil.post(buildTransferUrl('/transfer/upload/cancel/'), payload)
+    const transferBaseUrl = String(requestUtil.getTransferServerUrl?.() || '').replace(/\/$/, '')
+    const uploadPath = `${prefix}${id}/files/upload/chunk/`
+    const uploadUrl = transferBaseUrl ? `${transferBaseUrl}/${uploadPath}` : uploadPath
+    return requestUtil.fileUpload(uploadUrl, formData, options)
 }
 
 export function renameHostWebSshFile(id, payload) {

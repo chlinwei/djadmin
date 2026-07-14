@@ -40,7 +40,6 @@ export function createWebsshLifecycleController(options) {
                 })
         }
 
-        await actions.restoreUploadResumeTask()
         void actions.connectWebSsh()
         nextTick(() => {
             actions.setupFilePanelResizeObserver()

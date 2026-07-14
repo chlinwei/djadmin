@@ -61,7 +61,10 @@ export function createWebsshDownloadController(options) {
             Number(state.downloadProgressActualBytes || 0),
             totalSize > 0 ? totalSize : Number(state.downloadProgressActualBytes || 0),
         )
-        if (state.downloadProgressDisplayBytes < targetDone) {
+        // Known total size should display real progress; smoothing is only useful when total is unknown.
+        if (totalSize > 0) {
+            state.downloadProgressDisplayBytes = targetDone
+        } else if (state.downloadProgressDisplayBytes < targetDone) {
             const gap = targetDone - state.downloadProgressDisplayBytes
             const step = Math.max(constants.DOWNLOAD_PROGRESS_MIN_STEP_BYTES, gap * constants.DOWNLOAD_PROGRESS_SMOOTH_FACTOR)
             state.downloadProgressDisplayBytes = Math.min(targetDone, state.downloadProgressDisplayBytes + step)
@@ -84,6 +87,9 @@ export function createWebsshDownloadController(options) {
         state.downloadProgressActualBytes = Math.max(0, Number(downloaded || 0))
         state.downloadProgressTotalBytes = Math.max(0, Number(total || 0))
         state.downloadProgressElapsedMs = Math.max(0, Number(elapsedMs || 0))
+        if (state.downloadProgressTotalBytes > 0) {
+            state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
+        }
         if (!Number.isFinite(state.downloadProgressDisplayBytes) || state.downloadProgressDisplayBytes < 0) {
             state.downloadProgressDisplayBytes = 0
         }
@@ -100,13 +106,13 @@ export function createWebsshDownloadController(options) {
         tickDownloadProgress()
     }
 
-    const issueDownloadTicketUrl = async (path) => {
-        const ticketResponse = await deps.getHostWebSshDownloadTicket(getHostId(), { path })
-        if (ticketResponse?.data?.code !== 200) {
-            throw new Error(ticketResponse?.data?.msg || '下载票据获取失败')
+    const issueDirectDownloadUrl = (path) => {
+        const baseUrl = String(deps.getTransferServerUrl?.() || deps.getServerUrl?.() || '').replace(/\/$/, '')
+        const encodedPath = encodeURIComponent(String(path || '').trim())
+        if (!encodedPath) {
+            throw new Error('下载路径不能为空')
         }
-        const payload = ticketResponse?.data?.data || {}
-        return helpers.resolveDownloadUrlFromPayload(payload, deps.getTransferServerUrl)
+        return `${baseUrl}/assets/hosts/${getHostId()}/files/download/?path=${encodedPath}`
     }
 
     const requestDownloadSaveHandle = async (record) => {
@@ -125,22 +131,7 @@ export function createWebsshDownloadController(options) {
         }
     }
 
-    const startNextDownloadFromQueue = async () => {
-        if (refs.downloadRunning.value) return
-        const nextIndex = refs.downloadQueue.value.findIndex((item) => !item.paused)
-        if (nextIndex < 0) return
-        const [nextItem] = refs.downloadQueue.value.splice(nextIndex, 1)
-        await downloadFile(
-            nextItem.record,
-            {
-                targetFilename: nextItem.record?.targetFilename || nextItem.record?.name || (nextItem.record?.is_dir ? 'directory.tar.gz' : 'download.bin'),
-                downloadMode: nextItem.downloadMode || constants.DOWNLOAD_MODE_TICKET_STREAM,
-            },
-            nextItem.saveHandle || null,
-        )
-    }
-
-    const enqueueDownloadTask = async (record, downloadMode = constants.DOWNLOAD_MODE_TICKET_STREAM) => {
+    const enqueueDownloadTask = async (record, downloadMode = constants.DOWNLOAD_MODE_DIRECT) => {
         const recordPath = String(record?.path || '').trim()
         const actionKey = `${recordPath}|${downloadMode}`
         const now = Date.now()
@@ -176,11 +167,6 @@ export function createWebsshDownloadController(options) {
         await downloadFile(record, { targetFilename, downloadMode }, saveHandle)
     }
 
-    const removeDownloadQueueItem = (queueId) => {
-        const nextQueue = refs.downloadQueue.value.filter((item) => item.id !== queueId)
-        refs.downloadQueue.value = nextQueue
-    }
-
     const clearDownloadProgressUi = () => {
         refs.downloadProgressVisible.value = false
         refs.downloadProgressStatus.value = 'active'
@@ -198,7 +184,7 @@ export function createWebsshDownloadController(options) {
         let finalStopAction = null
 
         let downloadUrl = String(resumeState?.downloadUrl || '')
-        const downloadMode = String(resumeState?.downloadMode || constants.DOWNLOAD_MODE_TICKET_STREAM)
+        const downloadMode = String(resumeState?.downloadMode || constants.DOWNLOAD_MODE_DIRECT)
         const downloadModeLabel = helpers.getDownloadModeLabel(downloadMode)
         const targetFilename = String(resumeState?.targetFilename || helpers.buildDownloadTargetFilename(record))
         let useStreamingDownload = Boolean(selectedSaveHandle) || helpers.supportsStreamFileDownload()
@@ -226,7 +212,7 @@ export function createWebsshDownloadController(options) {
             message.info(`开始下载（${downloadModeLabel}），请查看页面顶部进度条`)
 
             if (!downloadUrl) {
-                downloadUrl = await issueDownloadTicketUrl(record.path)
+                downloadUrl = issueDirectDownloadUrl(record.path)
             }
 
             if (!fileSize) {
@@ -250,15 +236,23 @@ export function createWebsshDownloadController(options) {
                 fileWriter = await saveHandle.createWritable()
                 useStreamWriter = true
             }
-            refs.downloadProgressText.value = `正在建立流式传输通道（${downloadModeLabel}）...`
+            refs.downloadProgressText.value = `正在连接目标主机（${downloadModeLabel}）...`
+            const requestHeaders = {}
+            const token = String(deps.getToken?.() || '').trim()
+            if (token) {
+                requestHeaders.AUTHORIZATION = token
+            }
+
             const response = await fetch(downloadUrl, {
                 method: 'GET',
+                headers: requestHeaders,
                 signal: state.downloadAbortController.signal,
             })
             if (response.status !== 200 && response.status !== 206) {
                 const messageText = await helpers.parseResponseError(response)
                 throw new Error(messageText || `下载失败（HTTP ${response.status}）`)
             }
+            refs.downloadProgressText.value = `目标主机已连接，正在读取远端文件（${downloadModeLabel}）...`
             const contentRange = response.headers.get('content-range') || ''
             const contentLength = Number(response.headers.get('content-length') || '0')
             const totalMatch = contentRange.match(/\/(\d+)$/)
@@ -345,7 +339,6 @@ export function createWebsshDownloadController(options) {
                 // Cancellation should always leave the header clean, even if browser errors are non-standard.
                 clearDownloadProgressUi()
             }
-            void startNextDownloadFromQueue()
         }
     }
 
@@ -378,7 +371,6 @@ export function createWebsshDownloadController(options) {
         refs.downloadProgressText.value = ''
         refs.downloadFileName.value = ''
         refs.downloadRunning.value = false
-        refs.downloadQueue.value = []
         refs.currentDownloadRecord.value = null
     }
 
@@ -392,11 +384,8 @@ export function createWebsshDownloadController(options) {
         stopDownloadProgressTicker,
         startDownloadProgressTicker,
         updateDownloadProgress,
-        issueDownloadTicketUrl,
         requestDownloadSaveHandle,
-        startNextDownloadFromQueue,
         enqueueDownloadTask,
-        removeDownloadQueueItem,
         downloadFile,
         cancelDownload,
         cancelActiveDownload,

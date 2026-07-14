@@ -47,15 +47,8 @@ export function createWebsshDataController(options) {
         const itemType = target.type
         const item = target.item
         if (!item) return []
-        if (itemType === 'download-queue') {
-            return [
-                { key: 'cancel', label: '取消', danger: true },
-                { key: 'open-dir', label: '打开文件所在目录' },
-            ]
-        }
         if (itemType === 'upload-queue') {
             return [
-                { key: 'toggle', label: item.paused ? '继续' : '暂停' },
                 { key: 'cancel', label: '取消', danger: true },
                 { key: 'open-dir', label: '打开文件所在目录' },
             ]
@@ -69,7 +62,6 @@ export function createWebsshDataController(options) {
         }
         if (itemType === 'upload-active') {
             return [
-                { key: 'toggle', label: refs.uploadRunning.value ? '暂停' : '继续', disabled: !refs.uploadRunning.value && !refs.uploadCanResume.value },
                 { key: 'cancel', label: '取消', danger: true, disabled: !refs.uploadRunning.value },
                 { key: 'open-dir', label: '打开文件所在目录' },
             ]
@@ -84,7 +76,6 @@ export function createWebsshDataController(options) {
             downloadFileName: refs.downloadFileName,
             currentDownloadRecord: refs.currentDownloadRecord,
             downloadProgressText: refs.downloadProgressText,
-            downloadQueue: refs.downloadQueue,
             getStatusMeta: helpers.getTransferStatusMeta,
         })
     })
@@ -92,11 +83,9 @@ export function createWebsshDataController(options) {
     const uploadRows = computed(() => {
         return helpers.buildUploadRows({
             uploadRunning: refs.uploadRunning,
-            uploadCanResume: refs.uploadCanResume,
             uploadProgressStatus: refs.uploadProgressStatus,
             uploadFileName: refs.uploadFileName,
             currentUploadContext: refs.currentUploadContext,
-            pendingUploadTask: state.pendingUploadTask(),
             uploadProgressText: refs.uploadProgressText,
             fileCurrentPath: refs.fileCurrentPath,
             uploadQueue: refs.uploadQueue,
@@ -105,7 +94,7 @@ export function createWebsshDataController(options) {
     })
 
     // Auto-show transfer panel only for active/queued tasks; history alone should not occupy layout space.
-    const hasDownloadTask = computed(() => refs.downloadRunning.value || refs.downloadQueue.value.length > 0)
+    const hasDownloadTask = computed(() => refs.downloadRunning.value)
     const hasUploadTask = computed(() => refs.uploadRunning.value || refs.uploadQueue.value.length > 0)
     const displayedDownloadRows = computed(() => downloadRows.value.slice(0, TRANSFER_LIST_LIMIT))
     const displayedUploadRows = computed(() => uploadRows.value.slice(0, TRANSFER_LIST_LIMIT))

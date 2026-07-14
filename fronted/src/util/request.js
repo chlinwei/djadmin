@@ -46,7 +46,6 @@ function handleAuthExpired(msg) {
 httpService.interceptors.request.use(function (config) {
     // 在发送请求之前做些什么
     config.headers.AUTHORIZATION=getToken();
-    console.log(config.headers.AUTHORIZATION)
     return config;
 }, function (error) {
     // 对请求错误做些什么
@@ -171,6 +170,9 @@ export function fileUpload(url, params = {}, options = {}) {
             method: 'post',
             data: params,
             headers: { 'Content-Type': 'multipart/form-data' }
+        }
+        if (options?.timeout !== undefined && options?.timeout !== null) {
+            config.timeout = options.timeout
         }
         if (options?.signal) {
             config.signal = options.signal

@@ -3,17 +3,10 @@ export function createWebsshOpsController(options) {
         computed,
         message,
         statusText,
-        getHostId,
-        getPendingUploadTask,
-        downloadQueue,
         uploadQueue,
-        trimDownloadQueueToLimitByHelper,
         trimUploadQueueToLimitByHelper,
         transferListLimit,
-        persistUploadResumeTask,
-        clearPersistedUploadResumeTask,
     } = options
-
     const fileOperationsEnabled = computed(() => statusText.value === '已连接')
     let lastFileOpsOfflineNoticeAt = 0
 
@@ -36,21 +29,6 @@ export function createWebsshOpsController(options) {
         return false
     }
 
-    const saveUploadResumeTask = () => {
-        persistUploadResumeTask(getPendingUploadTask(), getHostId())
-    }
-
-    const clearUploadResumeTask = () => {
-        clearPersistedUploadResumeTask(getHostId())
-    }
-
-    const trimDownloadQueueToLimit = () => {
-        trimDownloadQueueToLimitByHelper({
-            downloadQueue,
-            transferListLimit,
-        })
-    }
-
     const trimUploadQueueToLimit = () => {
         trimUploadQueueToLimitByHelper({
             uploadQueue,
@@ -61,9 +39,6 @@ export function createWebsshOpsController(options) {
     return {
         fileOperationsEnabled,
         ensureFileOperationsEnabled,
-        saveUploadResumeTask,
-        clearUploadResumeTask,
-        trimDownloadQueueToLimit,
         trimUploadQueueToLimit,
     }
 }

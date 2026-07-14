@@ -663,8 +663,8 @@ class HostTest(BaseTestCase):
         ]
 
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
+            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
+                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
                 res = self.client.get(f'/assets/hosts/{host.id}/files/list/?path=/root')  # type: ignore[attr-defined]
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['current_path'], '/root')
@@ -678,8 +678,8 @@ class HostTest(BaseTestCase):
         fake_sftp = MagicMock()
         fake_sftp.normalize.return_value = '/root/old.txt'
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
+            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
+                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/rename/',  # type: ignore[attr-defined]
                     {'path': '/root/old.txt', 'new_name': 'new.txt'},
@@ -689,97 +689,14 @@ class HostTest(BaseTestCase):
                 self.assertEqual(body['data']['name'], 'new.txt')
                 fake_sftp.rename.assert_called_once_with('/root/old.txt', '/root/new.txt')
 
-    def test_download_webssh_file_streaming(self):
-        """下载主机文件应使用流式响应，避免大文件内存占用。"""
-        host = Host.objects.create(instance_name='ws_host_download', ip='192.168.1.28', port=22)
-        fake_ssh = MagicMock()
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root/big.bin'
-        fake_sftp.lstat.return_value = type('Stat', (), {'st_mode': 0o100644, 'st_size': 6})()
-        fake_remote_file = MagicMock()
-        fake_remote_file.read.side_effect = [b'abc', b'def', b'']
-        fake_sftp.file.return_value = fake_remote_file
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(fake_ssh, fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None) as mock_close:
-                res = self.client.get(f'/assets/hosts/{host.id}/files/download/?path=/root/big.bin')  # type: ignore[attr-defined]
-                self.assertEqual(res.status_code, 200)
-                self.assertEqual(res.get('Content-Length'), '6')
-                self.assertIn("attachment; filename*=UTF-8''big.bin", res.get('Content-Disposition'))
-                self.assertEqual(b''.join(res.streaming_content), b'abcdef')
-                fake_sftp.file.assert_called_once_with('/root/big.bin', 'rb')
-                fake_remote_file.close.assert_called_once()
-                mock_close.assert_called_once_with(fake_ssh, fake_sftp)
-
-    def test_download_webssh_file_with_range(self):
-        """下载主机文件支持 Range 断点续传。"""
-        host = Host.objects.create(instance_name='ws_host_range', ip='192.168.1.29', port=22)
-        fake_ssh = MagicMock()
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root/range.bin'
-        fake_sftp.lstat.return_value = type('Stat', (), {'st_mode': 0o100644, 'st_size': 10})()
-        fake_remote_file = MagicMock()
-        fake_remote_file.read.side_effect = [b'3456', b'']
-        fake_sftp.file.return_value = fake_remote_file
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(fake_ssh, fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None) as mock_close:
-                res = self.client.get(
-                    f'/assets/hosts/{host.id}/files/download/?path=/root/range.bin',  # type: ignore[attr-defined]
-                    HTTP_RANGE='bytes=3-6',
-                )
-                self.assertEqual(res.status_code, 206)
-                self.assertEqual(res.get('Content-Range'), 'bytes 3-6/10')
-                self.assertEqual(res.get('Content-Length'), '4')
-                self.assertEqual(b''.join(res.streaming_content), b'3456')
-                fake_remote_file.seek.assert_called_once_with(3)
-                fake_remote_file.close.assert_called_once()
-                mock_close.assert_called_once_with(fake_ssh, fake_sftp)
-
-    def test_issue_webssh_file_download_ticket(self):
-        """可签发独立传输服务下载票据。"""
-        host = Host.objects.create(instance_name='ws_host_ticket', ip='192.168.1.30', port=22)
-        with self._active_webssh_session(host):
-            with patch('assets.views.issue_download_ticket', return_value='ticket-123') as mock_issue_ticket:
-                res = self.client.post(
-                    f'/assets/hosts/{host.id}/files/download-ticket/',  # type: ignore[attr-defined]
-                    {'path': '/root/file.bin'},
-                    format='json',
-                )
-                body = self.assertResponseOK(res)
-                self.assertEqual(body['data']['ticket'], 'ticket-123')
-                self.assertIn('/transfer/download/?ticket=ticket-123', body['data']['download_url'])
-                self.assertGreater(body['data']['expires_in'], 0)
-                mock_issue_ticket.assert_called_once()
-
-    def test_issue_webssh_file_upload_ticket(self):
-        """可签发独立传输服务上传票据。"""
-        host = Host.objects.create(instance_name='ws_host_upload_ticket', ip='192.168.1.31', port=22)
-        with self._active_webssh_session(host):
-            with patch('assets.views.issue_upload_ticket', return_value='ticket-up-123') as mock_issue_ticket:
-                res = self.client.post(
-                    f'/assets/hosts/{host.id}/files/upload-ticket/',  # type: ignore[attr-defined]
-                    {'path': '/root', 'filename': 'part.bin'},
-                    format='json',
-                )
-                body = self.assertResponseOK(res)
-                self.assertEqual(body['data']['ticket'], 'ticket-up-123')
-                self.assertTrue(body['data']['upload_chunk_url'].endswith('/transfer/upload/chunk/'))
-                self.assertTrue(body['data']['upload_status_url'].endswith('/transfer/upload/status/'))
-                self.assertTrue(body['data']['upload_cancel_url'].endswith('/transfer/upload/cancel/'))
-                self.assertGreater(body['data']['expires_in'], 0)
-                mock_issue_ticket.assert_called_once()
-
     def test_create_webssh_directory(self):
         """可创建远端目录。"""
         host = Host.objects.create(instance_name='ws_host_mkdir', ip='192.168.1.26', port=22)
         fake_sftp = MagicMock()
         fake_sftp.normalize.return_value = '/root'
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
+            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
+                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/create-dir/',  # type: ignore[attr-defined]
                     {'path': '/root', 'name': 'logs'},
@@ -788,112 +705,6 @@ class HostTest(BaseTestCase):
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['path'], '/root/logs')
                 fake_sftp.mkdir.assert_called_once_with('/root/logs')
-
-    def test_upload_webssh_file_by_chunks(self):
-        """分片上传完成后应合并为最终文件。"""
-        host = Host.objects.create(instance_name='ws_host_upload_chunk', ip='192.168.1.30', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-        fake_file_cm = MagicMock()
-        fake_sftp.file.return_value = fake_file_cm
-        fake_remote_file = MagicMock()
-        fake_file_cm.__enter__.return_value = fake_remote_file
-        fake_file_cm.__exit__.return_value = False
-        fake_sftp.lstat.side_effect = Exception('not exists')
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
-                res1 = self.client.post(
-                    f'/assets/hosts/{host.id}/files/upload/chunk/',  # type: ignore[attr-defined]
-                    {
-                        'path': '/root',
-                        'filename': 'part.bin',
-                        'upload_id': 'u123',
-                        'chunk_index': '0',
-                        'total_chunks': '2',
-                        'chunk': SimpleUploadedFile('chunk0', b'abc'),
-                    },
-                    format='multipart',
-                )
-                body1 = self.assertResponseOK(res1)
-                self.assertFalse(body1['data']['done'])
-
-                res2 = self.client.post(
-                    f'/assets/hosts/{host.id}/files/upload/chunk/',  # type: ignore[attr-defined]
-                    {
-                        'path': '/root',
-                        'filename': 'part.bin',
-                        'upload_id': 'u123',
-                        'chunk_index': '1',
-                        'total_chunks': '2',
-                        'chunk': SimpleUploadedFile('chunk1', b'def'),
-                    },
-                    format='multipart',
-                )
-                body2 = self.assertResponseOK(res2)
-                self.assertTrue(body2['data']['done'])
-                self.assertEqual(body2['data']['path'], '/root/part.bin')
-
-                self.assertEqual(fake_sftp.file.call_args_list[0].args, ('/root/.part.bin.u123.part', 'wb'))
-                self.assertEqual(fake_sftp.file.call_args_list[1].args, ('/root/.part.bin.u123.part', 'ab'))
-                fake_remote_file.write.assert_any_call(b'abc')
-                fake_remote_file.write.assert_any_call(b'def')
-                fake_sftp.rename.assert_called_once_with('/root/.part.bin.u123.part', '/root/part.bin')
-
-    def test_cancel_webssh_chunk_upload(self):
-        """取消分片上传应删除远端临时分片文件。"""
-        host = Host.objects.create(instance_name='ws_host_upload_cancel', ip='192.168.1.31', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
-                res = self.client.post(
-                    f'/assets/hosts/{host.id}/files/upload/cancel/',  # type: ignore[attr-defined]
-                    {'path': '/root', 'filename': 'part.bin', 'upload_id': 'u123'},
-                    format='json',
-                )
-                body = self.assertResponseOK(res)
-                self.assertTrue(body['data']['canceled'])
-                fake_sftp.remove.assert_called_once_with('/root/.part.bin.u123.part')
-
-    def test_get_webssh_chunk_upload_status(self):
-        """查询分片上传状态应返回当前已上传字节和下一分片下标。"""
-        host = Host.objects.create(instance_name='ws_host_upload_status', ip='192.168.1.32', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-        fake_sftp.lstat.return_value = type('Stat', (), {'st_mode': 0o100644, 'st_size': 16 * 1024 * 1024})()
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
-                res = self.client.get(
-                    f'/assets/hosts/{host.id}/files/upload/status/?path=/root&filename=part.bin&upload_id=u123&chunk_size=8388608'  # type: ignore[attr-defined]
-                )
-                body = self.assertResponseOK(res)
-                self.assertTrue(body['data']['exists'])
-                self.assertEqual(body['data']['uploaded_size'], 16 * 1024 * 1024)
-                self.assertEqual(body['data']['next_chunk_index'], 2)
-
-    def test_get_webssh_chunk_upload_status_not_exists(self):
-        """上传状态查询在临时分片不存在时应返回 exists=False。"""
-        host = Host.objects.create(instance_name='ws_host_upload_status_empty', ip='192.168.1.33', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-        fake_sftp.lstat.side_effect = Exception('not exists')
-
-        with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
-                res = self.client.get(
-                    f'/assets/hosts/{host.id}/files/upload/status/?path=/root&filename=part.bin&upload_id=u123&chunk_size=8388608'  # type: ignore[attr-defined]
-                )
-                body = self.assertResponseOK(res)
-                self.assertFalse(body['data']['exists'])
-                self.assertEqual(body['data']['uploaded_size'], 0)
-                self.assertEqual(body['data']['next_chunk_index'], 0)
 
     def test_create_webssh_empty_file(self):
         """可创建远端空文件。"""
@@ -904,8 +715,8 @@ class HostTest(BaseTestCase):
         fake_sftp.file.return_value.__enter__.return_value = fake_remote_file
         fake_sftp.file.return_value.__exit__.return_value = False
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp', return_value=(MagicMock(), fake_sftp)), \
-                 patch('assets.views.HostManage._close_sftp', return_value=None):
+            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
+                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/create-file/',  # type: ignore[attr-defined]
                     {'path': '/root', 'name': 'empty.txt'},

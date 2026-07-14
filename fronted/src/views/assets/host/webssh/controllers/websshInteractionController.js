@@ -10,11 +10,7 @@ export function createWebsshInteractionController(options) {
         openDirectory,
         enqueueDownloadTask,
         cancelDownload,
-        removeDownloadQueueItem,
-        toggleUploadQueueItem,
         removeUploadQueueItem,
-        pauseUpload,
-        resumeUpload,
         cancelUpload,
         uploadRawFileToPath,
         renameHostWebSshFile,
@@ -47,7 +43,7 @@ export function createWebsshInteractionController(options) {
             return
         }
         if (actionKey === 'download') {
-            await enqueueDownloadTask(record, options.DOWNLOAD_MODE_TICKET_STREAM)
+            await enqueueDownloadTask(record, options.DOWNLOAD_MODE_DIRECT)
             return
         }
         if (actionKey === 'copy-dir-path') {
@@ -110,22 +106,7 @@ export function createWebsshInteractionController(options) {
         const target = refs.transferContextMenuTarget.value
         closeTransferContextMenu()
         if (!target?.item) return
-        if (target.type === 'download-queue') {
-            if (action.key === 'cancel') {
-                removeDownloadQueueItem(target.item.id)
-                return
-            }
-            if (action.key === 'open-dir') {
-                const filePath = String(target.item?.record?.path || '')
-                openDirectory(helpers.resolveFileParentDirectory(filePath))
-            }
-            return
-        }
         if (target.type === 'upload-queue') {
-            if (action.key === 'toggle') {
-                toggleUploadQueueItem(target.item.id)
-                return
-            }
             if (action.key === 'cancel') {
                 removeUploadQueueItem(target.item.id)
                 return
@@ -148,14 +129,6 @@ export function createWebsshInteractionController(options) {
             return
         }
         if (target.type === 'upload-active') {
-            if (action.key === 'toggle') {
-                if (refs.uploadRunning.value) {
-                    pauseUpload()
-                } else if (refs.uploadCanResume.value) {
-                    void resumeUpload()
-                }
-                return
-            }
             if (action.key === 'cancel') {
                 void cancelUpload()
                 return

@@ -1,46 +1,9 @@
-export const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 export const TRANSFER_LIST_LIMIT = 5
 export const DOWNLOAD_ACTION_DEDUP_MS = 800
 export const DOWNLOAD_PROGRESS_TICK_MS = 120
 export const DOWNLOAD_PROGRESS_SMOOTH_FACTOR = 0.35
 export const DOWNLOAD_PROGRESS_MIN_STEP_BYTES = 256 * 1024
-export const DOWNLOAD_MODE_TICKET_STREAM = 'ticket-stream'
-
-export const getUploadResumeStorageKey = (hostId) => `webssh-upload-resume:${hostId || 'unknown'}`
-
-export const saveUploadResumeTask = (pendingUploadTask, hostId) => {
-    const key = getUploadResumeStorageKey(hostId)
-    if (!pendingUploadTask) {
-        window.localStorage.removeItem(key)
-        return
-    }
-    const payload = {
-        uploadId: pendingUploadTask.uploadId,
-        uploadTicket: pendingUploadTask.uploadTicket || '',
-        targetPath: pendingUploadTask.targetPath,
-        fileName: pendingUploadTask.fileName || pendingUploadTask.file?.name || '',
-        totalSize: pendingUploadTask.totalSize || 0,
-        totalChunks: pendingUploadTask.totalChunks || 0,
-        nextChunkIndex: pendingUploadTask.nextChunkIndex || 0,
-        uploadedBytes: pendingUploadTask.uploadedBytes || 0,
-        chunkSize: pendingUploadTask.chunkSize || UPLOAD_CHUNK_SIZE,
-        savedAt: Date.now(),
-    }
-    window.localStorage.setItem(key, JSON.stringify(payload))
-}
-
-export const clearUploadResumeTask = (hostId) => {
-    window.localStorage.removeItem(getUploadResumeStorageKey(hostId))
-}
-
-export const trimDownloadQueueToLimit = ({
-    downloadQueue,
-    transferListLimit = TRANSFER_LIST_LIMIT,
-}) => {
-    while (downloadQueue.value.length > transferListLimit) {
-        downloadQueue.value.pop()
-    }
-}
+export const DOWNLOAD_MODE_DIRECT = 'direct'
 
 export const trimUploadQueueToLimit = ({
     uploadQueue,
@@ -67,7 +30,6 @@ export const buildDownloadRows = ({
     downloadFileName,
     currentDownloadRecord,
     downloadProgressText,
-    downloadQueue,
     getStatusMeta = getTransferStatusMeta,
 }) => {
     const rows = []
@@ -86,29 +48,14 @@ export const buildDownloadRows = ({
             },
         })
     }
-    downloadQueue.value.forEach((item) => {
-        const queueMeta = getStatusMeta(item.paused ? 'paused' : 'queued')
-        rows.push({
-            id: item.id,
-            type: 'download-queue',
-            isCurrent: false,
-            name: item?.record?.name || item?.record?.path || '未命名文件',
-            detail: item?.record?.path || '-',
-            statusLabel: queueMeta.label,
-            tagColor: queueMeta.color,
-            contextItem: item,
-        })
-    })
     return rows
 }
 
 export const buildUploadRows = ({
     uploadRunning,
-    uploadCanResume,
     uploadProgressStatus,
     uploadFileName,
     currentUploadContext,
-    pendingUploadTask,
     uploadProgressText,
     fileCurrentPath,
     uploadQueue,
@@ -116,7 +63,7 @@ export const buildUploadRows = ({
 }) => {
     const rows = []
     if (uploadRunning.value) {
-        const activeMeta = getStatusMeta(uploadRunning.value ? 'running' : (uploadCanResume.value ? 'paused' : uploadProgressStatus.value))
+        const activeMeta = getStatusMeta(uploadRunning.value ? 'running' : uploadProgressStatus.value)
         rows.push({
             id: 'upload-active-row',
             type: 'upload-active',
@@ -126,7 +73,7 @@ export const buildUploadRows = ({
             statusLabel: activeMeta.label,
             tagColor: activeMeta.color,
             contextItem: {
-                targetPath: currentUploadContext.value?.targetPath || pendingUploadTask?.targetPath || fileCurrentPath.value || '.',
+                targetPath: currentUploadContext.value?.targetPath || fileCurrentPath.value || '.',
             },
         })
     }
@@ -180,8 +127,7 @@ export const formatAverageSpeed = (downloaded, elapsedMs) => {
 }
 
 export const getDownloadModeLabel = (mode) => {
-    void mode
-    return '票据流'
+    return String(mode || '') === DOWNLOAD_MODE_DIRECT ? '直连' : '下载'
 }
 
 export const supportsStreamFileDownload = () => {
@@ -238,23 +184,6 @@ export const parseResponseError = async (response) => {
         }
     }
     return null
-}
-
-export const resolveDownloadUrlFromPayload = (payload, getTransferServerUrl) => {
-    const ticket = String(payload?.ticket || '').trim()
-    const ticketDownloadUrl = String(payload?.download_url || '').trim()
-    if (!ticket && !ticketDownloadUrl) {
-        throw new Error('下载票据无效')
-    }
-    if (ticketDownloadUrl) {
-        return ticketDownloadUrl
-    }
-    if (ticket) {
-        const transferBaseUrl = String(getTransferServerUrl() || '').replace(/\/$/, '')
-        // Prefer stable legacy path for compatibility with not-yet-restarted transfer instances.
-        return `${transferBaseUrl}/transfer/download/?ticket=${encodeURIComponent(ticket)}`
-    }
-    throw new Error('下载票据无效')
 }
 
 export const buildDownloadTargetFilename = (record) => {

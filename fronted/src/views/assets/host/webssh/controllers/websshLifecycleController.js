@@ -58,7 +58,6 @@ export function createWebsshLifecycleController(options) {
         window.removeEventListener('dragover', actions.preventGlobalFileDrop)
         window.removeEventListener('drop', actions.preventGlobalFileDrop)
         document.removeEventListener('fullscreenchange', actions.updateFullscreenState)
-        actions.stopDownloadProgressTicker()
         actions.closeFileContextMenu()
         actions.cancelActiveDownload()
         actions.cancelUpload()

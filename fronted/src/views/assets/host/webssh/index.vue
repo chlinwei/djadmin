@@ -122,10 +122,8 @@ import {
 } from '@/api/assets/host/index.js'
 import { getToken } from '@/api/user/index.js'
 import { downloadAuditWebSshSession } from '@/api/sys/audit.js'
-import { formatTimeWithTimezone } from '@/util/timezone'
 import { getServerUrl, getTransferServerUrl, getWebSocketBaseUrl } from '@/util/request'
 import {
-    normalizeUtcTime,
     formatFileSize,
     resolveFileParentDirectory,
     formatDateTime as _formatDateTime,
@@ -134,17 +132,12 @@ import {
 import {
     TRANSFER_LIST_LIMIT,
     DOWNLOAD_ACTION_DEDUP_MS,
-    DOWNLOAD_PROGRESS_TICK_MS,
-    DOWNLOAD_PROGRESS_SMOOTH_FACTOR,
-    DOWNLOAD_PROGRESS_MIN_STEP_BYTES,
     DOWNLOAD_MODE_DIRECT,
     trimUploadQueueToLimit as trimUploadQueueToLimitByHelper,
     getTransferStatusMeta,
     buildDownloadRows,
     buildUploadRows,
     formatBytes,
-    formatDuration,
-    formatAverageSpeed,
     getDownloadModeLabel,
     supportsStreamFileDownload,
     parseDownloadFilename,
@@ -235,7 +228,6 @@ let onDataDisposable = null
 let onResizeDisposable = null
 let activeCountTimer = null
 let activeSessionsTimer = null
-let stopListenTimezone = null
 let websshHeartbeatTimer = null
 let websshTransferActivityTimer = null
 let downloadAbortController = null
@@ -549,11 +541,7 @@ const websshSessionController = createWebsshSessionController({
 
 const disposeTerminal = websshSessionController.disposeTerminal
 const closeSocket = websshSessionController.closeSocket
-const startWebsshHeartbeat = websshSessionController.startWebsshHeartbeat
-const stopWebsshHeartbeat = websshSessionController.stopWebsshHeartbeat
-const sendWebsshTransferActivity = websshSessionController.sendWebsshTransferActivity
 const syncWebsshTransferActivityTimer = websshSessionController.syncWebsshTransferActivityTimer
-const initTerminal = websshSessionController.initTerminal
 const connectWebSsh = websshSessionController.connectWebSsh
 
 const websshViewController = createWebsshViewController({
@@ -609,7 +597,6 @@ const closeFileContextMenu = websshFilePanelController.closeFileContextMenu
 const closeTransferContextMenu = websshFilePanelController.closeTransferContextMenu
 const openFileContextMenu = websshFilePanelController.openFileContextMenu
 const openTransferContextMenu = websshFilePanelController.openTransferContextMenu
-const resolveDropTargetPath = websshFilePanelController.resolveDropTargetPath
 const bindFileRowEvents = websshFilePanelController.bindFileRowEvents
 const triggerFileDownload = (blob, filename) => {
     const url = window.URL.createObjectURL(blob)
@@ -659,9 +646,6 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
     hostState,
     constants: {
         DOWNLOAD_ACTION_DEDUP_MS,
-        DOWNLOAD_PROGRESS_TICK_MS,
-        DOWNLOAD_PROGRESS_SMOOTH_FACTOR,
-        DOWNLOAD_PROGRESS_MIN_STEP_BYTES,
         DOWNLOAD_MODE_DIRECT,
     },
     refs: {
@@ -675,8 +659,6 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
     },
     message,
     helpers: {
-        formatAverageSpeed,
-        formatDuration,
         formatBytes,
         supportsStreamFileDownload,
         buildDownloadTargetFilename,
@@ -692,7 +674,6 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
 }))
 
 const resetDownloadProgress = websshDownloadController.resetDownloadProgress
-const stopDownloadProgressTicker = websshDownloadController.stopDownloadProgressTicker
 const enqueueDownloadTask = websshDownloadController.enqueueDownloadTask
 const cancelDownload = websshDownloadController.cancelDownload
 const cancelActiveDownload = websshDownloadController.cancelActiveDownload
@@ -800,7 +781,6 @@ const websshLifecycleController = createWebsshLifecycleController(createWebsshLi
         connectWebSsh,
         setupFilePanelResizeObserver,
         scheduleFileTableScrollYSync,
-        stopDownloadProgressTicker,
         closeFileContextMenu,
         cancelActiveDownload,
         cancelUpload,

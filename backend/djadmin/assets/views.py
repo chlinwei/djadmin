@@ -1,17 +1,7 @@
-import io
-import logging
-import posixpath
-import re
-import stat
-import time
-import uuid
 import warnings
-from hashlib import sha256
-from urllib.parse import quote
 from asgiref.sync import async_to_sync
 
 from cryptography.utils import CryptographyDeprecationWarning
-from django.http import HttpResponse, StreamingHttpResponse
 from djadmin.utils import Response_200, Response_error_str
 from rest_framework.mixins import CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin
 from rest_framework.viewsets import GenericViewSet
@@ -26,38 +16,15 @@ from djadmin.errordict import DjadminException,AssetsError
 from io import TextIOWrapper
 import csv
 from menu.permisssion import CustomMenuPermission
-from user.utils import getCurrentUser
 from django.db.models import Prefetch
 from .webssh_runtime import WebSSHRuntimeRegistry
-from .connection_pool import SSHConnectionPool
 from .webssh_host_mixin import WebSSHHostMixin
-from django.conf import settings
 
 warnings.filterwarnings(
     'ignore',
     message='.*TripleDES has been moved to cryptography\\.hazmat\\.decrepit\\.ciphers\\.algorithms\\.TripleDES.*',
     category=CryptographyDeprecationWarning,
 )
-
-try:
-    import paramiko
-except ImportError:  # pragma: no cover
-    paramiko = None
-
-
-TRANSFER_STREAM_FIRST_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_FIRST_CHUNK_BYTES', 256 * 1024)), 64 * 1024)
-TRANSFER_STREAM_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_CHUNK_BYTES', 8 * 1024 * 1024)), 512 * 1024)
-TRANSFER_STREAM_PROGRESS_LOG_SECONDS = max(int(getattr(settings, 'TRANSFER_STREAM_PROGRESS_LOG_SECONDS', 5)), 1)
-TRANSFER_SFTP_WINDOW_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_WINDOW_SIZE', 8 * 1024 * 1024)), 1024 * 1024)
-TRANSFER_SFTP_MAX_PACKET_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_MAX_PACKET_SIZE', 256 * 1024)), 32 * 1024)
-TRANSFER_SFTP_PREFETCH_REQUESTS = max(int(getattr(settings, 'TRANSFER_SFTP_PREFETCH_REQUESTS', 32)), 1)
-
-ASSETS_SSH_POOL = SSHConnectionPool(
-    max_per_key=int(getattr(settings, 'TRANSFER_SSH_POOL_MAX_PER_KEY', 2)),
-    idle_seconds=int(getattr(settings, 'TRANSFER_SSH_POOL_IDLE_SECONDS', 120)),
-)
-logger = logging.getLogger(__name__)
-
 
 class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
     queryset =  Credential.objects.all()

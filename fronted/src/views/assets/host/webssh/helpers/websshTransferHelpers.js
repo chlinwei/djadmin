@@ -1,8 +1,5 @@
 export const TRANSFER_LIST_LIMIT = 5
 export const DOWNLOAD_ACTION_DEDUP_MS = 800
-export const DOWNLOAD_PROGRESS_TICK_MS = 120
-export const DOWNLOAD_PROGRESS_SMOOTH_FACTOR = 0.35
-export const DOWNLOAD_PROGRESS_MIN_STEP_BYTES = 256 * 1024
 export const DOWNLOAD_MODE_DIRECT = 'direct'
 
 export const trimUploadQueueToLimit = ({

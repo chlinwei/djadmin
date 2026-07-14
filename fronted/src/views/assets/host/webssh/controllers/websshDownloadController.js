@@ -10,22 +10,13 @@ export function createWebsshDownloadController(options) {
         deps,
     } = options
 
-    const applyDownloadProgressDisplay = (downloaded, total, elapsedMs = 0) => {
+    const applyDownloadProgressDisplay = (downloaded, total) => {
         const totalSize = Number(total || 0)
         const doneSize = Number(downloaded || 0)
         if (!Number.isFinite(totalSize) || totalSize <= 0) {
-            const avgSpeed = helpers.formatAverageSpeed(doneSize, elapsedMs)
-            const totalTime = helpers.formatDuration(elapsedMs)
-            // Directory tar stream has unknown total size; estimate a smooth progress curve and cap at 95% until completion.
-            if (refs.downloadRunning.value) {
-                const doneMb = doneSize / (1024 * 1024)
-                const estimated = Math.log2(1 + Math.max(doneMb, 0)) * 12
-                refs.downloadProgressPercent.value = Number(Math.min(95, Math.max(1, estimated)).toFixed(1))
-            } else {
-                refs.downloadProgressPercent.value = 100
-            }
+            refs.downloadProgressPercent.value = refs.downloadRunning.value ? 0 : 100
             if (doneSize > 0) {
-                refs.downloadProgressText.value = `已下载 ${helpers.formatBytes(doneSize)} | 平均: ${avgSpeed} | 耗时: ${totalTime} | 总大小未知`
+                refs.downloadProgressText.value = `已下载 ${helpers.formatBytes(doneSize)} | 总大小未知`
             } else {
                 refs.downloadProgressText.value = '正在下载（总大小未知）...'
             }
@@ -37,73 +28,15 @@ export function createWebsshDownloadController(options) {
         } else {
             refs.downloadProgressPercent.value = Number(Math.min(100, rawPercent).toFixed(1))
         }
-        const avgSpeed = helpers.formatAverageSpeed(doneSize, elapsedMs)
-        const totalTime = helpers.formatDuration(elapsedMs)
-        refs.downloadProgressText.value = `${helpers.formatBytes(doneSize)} / ${helpers.formatBytes(totalSize)} | 平均: ${avgSpeed} | 耗时: ${totalTime}`
-    }
-
-    const stopDownloadProgressTicker = () => {
-        if (state.downloadProgressTicker) {
-            window.clearInterval(state.downloadProgressTicker)
-            state.downloadProgressTicker = null
-        }
-    }
-
-    const tickDownloadProgress = () => {
-        const now = performance.now()
-        const tickDelta = Math.max(0, now - state.downloadProgressTickAt)
-        state.downloadProgressTickAt = now
-        if (refs.downloadRunning.value) {
-            state.downloadProgressElapsedMs += tickDelta
-        }
-        const totalSize = Number(state.downloadProgressTotalBytes || 0)
-        const targetDone = Math.min(
-            Number(state.downloadProgressActualBytes || 0),
-            totalSize > 0 ? totalSize : Number(state.downloadProgressActualBytes || 0),
-        )
-        // Known total size should display real progress; smoothing is only useful when total is unknown.
-        if (totalSize > 0) {
-            state.downloadProgressDisplayBytes = targetDone
-        } else if (state.downloadProgressDisplayBytes < targetDone) {
-            const gap = targetDone - state.downloadProgressDisplayBytes
-            const step = Math.max(constants.DOWNLOAD_PROGRESS_MIN_STEP_BYTES, gap * constants.DOWNLOAD_PROGRESS_SMOOTH_FACTOR)
-            state.downloadProgressDisplayBytes = Math.min(targetDone, state.downloadProgressDisplayBytes + step)
-        } else if (state.downloadProgressDisplayBytes > targetDone) {
-            state.downloadProgressDisplayBytes = targetDone
-        }
-        applyDownloadProgressDisplay(state.downloadProgressDisplayBytes, totalSize, state.downloadProgressElapsedMs)
-        if (!refs.downloadRunning.value && state.downloadProgressDisplayBytes >= targetDone) {
-            stopDownloadProgressTicker()
-        }
-    }
-
-    const startDownloadProgressTicker = () => {
-        if (state.downloadProgressTicker) return
-        state.downloadProgressTickAt = performance.now()
-        state.downloadProgressTicker = window.setInterval(tickDownloadProgress, constants.DOWNLOAD_PROGRESS_TICK_MS)
+        refs.downloadProgressText.value = `${helpers.formatBytes(doneSize)} / ${helpers.formatBytes(totalSize)}`
     }
 
     const updateDownloadProgress = (downloaded, total, elapsedMs = 0) => {
         state.downloadProgressActualBytes = Math.max(0, Number(downloaded || 0))
         state.downloadProgressTotalBytes = Math.max(0, Number(total || 0))
         state.downloadProgressElapsedMs = Math.max(0, Number(elapsedMs || 0))
-        if (state.downloadProgressTotalBytes > 0) {
-            state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
-        }
-        if (!Number.isFinite(state.downloadProgressDisplayBytes) || state.downloadProgressDisplayBytes < 0) {
-            state.downloadProgressDisplayBytes = 0
-        }
-        if (state.downloadProgressDisplayBytes > state.downloadProgressActualBytes) {
-            state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
-        }
-        if (!refs.downloadRunning.value) {
-            state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
-            applyDownloadProgressDisplay(state.downloadProgressDisplayBytes, state.downloadProgressTotalBytes, state.downloadProgressElapsedMs)
-            stopDownloadProgressTicker()
-            return
-        }
-        startDownloadProgressTicker()
-        tickDownloadProgress()
+        state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
+        applyDownloadProgressDisplay(state.downloadProgressDisplayBytes, state.downloadProgressTotalBytes)
     }
 
     const issueDirectDownloadUrl = (path) => {
@@ -298,11 +231,8 @@ export function createWebsshDownloadController(options) {
             refs.downloadProgressStatus.value = 'success'
             elapsedMs = getElapsedMs()
             updateDownloadProgress(downloaded, fileSize, elapsedMs)
-            stopDownloadProgressTicker()
-            const avgSpeed = helpers.formatAverageSpeed(downloaded, elapsedMs)
-            const totalTime = helpers.formatDuration(elapsedMs)
             refs.downloadProgressPercent.value = 100
-            refs.downloadProgressText.value = `下载完成 | 平均: ${avgSpeed} | 总耗时: ${totalTime}`
+            refs.downloadProgressText.value = '下载完成'
             message.success('文件下载成功')
         } catch (error) {
             const cancelErrorText = String(error?.message || '')
@@ -311,7 +241,6 @@ export function createWebsshDownloadController(options) {
                 || /aborted|canceled|cancelled|取消/i.test(cancelErrorText)
 
             if (isCanceled) {
-                stopDownloadProgressTicker()
                 if (useStreamWriter && fileWriter) {
                     try {
                         await fileWriter.abort?.()
@@ -324,7 +253,6 @@ export function createWebsshDownloadController(options) {
                 message.info('已取消下载')
                 return
             }
-            stopDownloadProgressTicker()
             refs.downloadProgressStatus.value = 'exception'
             const errorText = error?.message || '下载失败'
             refs.downloadProgressText.value = `下载失败：${errorText}`
@@ -355,7 +283,6 @@ export function createWebsshDownloadController(options) {
     }
 
     const resetDownloadProgress = () => {
-        stopDownloadProgressTicker()
         if (state.downloadAbortController) {
             state.downloadStopAction = 'cancel'
             state.downloadAbortController.abort()
@@ -381,8 +308,6 @@ export function createWebsshDownloadController(options) {
     return {
         resetDownloadProgress,
         applyDownloadProgressDisplay,
-        stopDownloadProgressTicker,
-        startDownloadProgressTicker,
         updateDownloadProgress,
         requestDownloadSaveHandle,
         enqueueDownloadTask,

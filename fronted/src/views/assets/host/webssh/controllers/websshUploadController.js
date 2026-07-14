@@ -12,17 +12,6 @@ export function createWebsshUploadController(options) {
         loadFiles,
     } = options
 
-    const triggerFileDownload = (blob, filename) => {
-        const url = window.URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = filename
-        document.body.appendChild(anchor)
-        anchor.click()
-        document.body.removeChild(anchor)
-        window.URL.revokeObjectURL(url)
-    }
-
     const resetUploadProgress = () => {
         if (state.uploadAbortController) {
             state.uploadAbortController.abort()
@@ -35,23 +24,6 @@ export function createWebsshUploadController(options) {
         refs.uploadRunning.value = false
         refs.uploadQueue.value = []
         refs.currentUploadContext.value = null
-    }
-
-    const formatDuration = (ms) => {
-        const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000))
-        const minutes = Math.floor(totalSeconds / 60)
-        const seconds = totalSeconds % 60
-        return `${minutes}m ${String(seconds).padStart(2, '0')}s`
-    }
-
-    const formatUploadSpeed = (bytes, elapsedMs) => {
-        const value = Number(bytes || 0)
-        const cost = Number(elapsedMs || 0)
-        if (!Number.isFinite(value) || !Number.isFinite(cost) || value <= 0 || cost <= 0) {
-            return '0 B/s'
-        }
-        const speed = (value * 1000) / cost
-        return `${formatBytes(speed)}/s`
     }
 
     const startUpload = async (task, callbacks = {}) => {
@@ -70,10 +42,7 @@ export function createWebsshUploadController(options) {
         const totalSize = Number(task.totalSize || rawFile.size || 0)
         const targetPath = task.targetPath || refs.fileCurrentPath.value || '.'
         let uploadedBytes = 0
-        const startedAt = performance.now()
         let lastProgressUiAt = 0
-        let hasShownServerConfirmStage = false
-        const getElapsedMs = () => Math.max(0, performance.now() - startedAt)
         refs.currentUploadContext.value = {
             fileName,
             targetPath,
@@ -93,33 +62,22 @@ export function createWebsshUploadController(options) {
             formData.append('filename', fileName)
             formData.append('file', rawFile, fileName)
 
-            refs.uploadProgressText.value = '正在连接目标主机...'
+            refs.uploadProgressText.value = '正在上传...'
             await uploadHostWebSshFile(getHostId(), formData, {
+                // Keep upload timeout longer than axios default 30s for large file transfer.
                 timeout: 15 * 60 * 1000,
                 signal: state.uploadAbortController.signal,
                 onUploadProgress: (event) => {
                     uploadedBytes = Math.min(totalSize, Number(event?.loaded || 0))
-                    const elapsedMs = getElapsedMs()
-                    const transferPercent = (uploadedBytes / Math.max(totalSize, 1)) * 100
                     const now = performance.now()
-                    const reachedServerConfirmStage = uploadedBytes >= totalSize && totalSize > 0
-                    const shouldRefreshUi = reachedServerConfirmStage
-                        ? !hasShownServerConfirmStage
-                        : (now - lastProgressUiAt) >= 120
-
-                    if (!shouldRefreshUi) {
+                    const reachedEnd = uploadedBytes >= totalSize && totalSize > 0
+                    // Progress events can be extremely frequent; throttle UI updates to keep page responsive.
+                    if (!reachedEnd && now - lastProgressUiAt < 120) {
                         return
                     }
-
                     lastProgressUiAt = now
-                    hasShownServerConfirmStage = reachedServerConfirmStage
-                    // Keep progress below 100% until server confirms remote write success.
-                    refs.uploadProgressPercent.value = Number(Math.min(99, transferPercent).toFixed(1))
-                    if (reachedServerConfirmStage) {
-                        refs.uploadProgressText.value = `${formatBytes(uploadedBytes)} / ${formatBytes(totalSize)} | 正在等待服务端确认...`
-                    } else {
-                        refs.uploadProgressText.value = `${formatBytes(uploadedBytes)} / ${formatBytes(totalSize)} | 平均: ${formatUploadSpeed(uploadedBytes, elapsedMs)} | 耗时: ${formatDuration(elapsedMs)}`
-                    }
+                    refs.uploadProgressPercent.value = Number(Math.min(100, (uploadedBytes / Math.max(totalSize, 1)) * 100).toFixed(1))
+                    refs.uploadProgressText.value = `${formatBytes(uploadedBytes)} / ${formatBytes(totalSize)}`
                     if (onProgress) {
                         onProgress({ percent: refs.uploadProgressPercent.value })
                     }
@@ -128,8 +86,7 @@ export function createWebsshUploadController(options) {
 
             refs.uploadProgressPercent.value = 100
             refs.uploadProgressStatus.value = 'success'
-            const elapsedMs = getElapsedMs()
-            refs.uploadProgressText.value = `上传完成 | 平均: ${formatUploadSpeed(totalSize, elapsedMs)} | 总耗时: ${formatDuration(elapsedMs)}`
+            refs.uploadProgressText.value = '上传完成'
             message.success('文件上传成功')
             await loadFiles(refs.fileCurrentPath.value)
             if (onSuccess) onSuccess()
@@ -218,7 +175,6 @@ export function createWebsshUploadController(options) {
     }
 
     return {
-        triggerFileDownload,
         resetUploadProgress,
         startNextUploadFromQueue,
         enqueueUploadTask,

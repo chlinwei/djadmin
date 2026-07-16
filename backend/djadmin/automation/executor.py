@@ -1,12 +1,7 @@
 import json
 import os
-import re
 import stat
-import subprocess
-import sys
 import tempfile
-import threading
-import time
 import yaml
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,7 +12,12 @@ from django.utils import timezone
 
 from assets.models import Credential, Host, HostCredential, HostGroup
 
-from .models import AnsibleExecutionJob, AnsibleExecutionTarget
+from .models import AnsibleExecutionJob
+
+try:
+    import ansible_runner  # type: ignore[import-not-found]
+except ImportError:
+    ansible_runner = None
 
 
 @dataclass
@@ -27,10 +27,12 @@ class HostExecutionContext:
     alias: str
 
 
-def _display_host_name(host: Host) -> str:
-    system = getattr(host, 'system', None)
-    hostname = getattr(system, 'hostname', None) if system else None
-    return host.instance_name or hostname or f'Host-{host.id}'
+def _build_inventory_alias(host: Host) -> str:
+    display_name = str(host.instance_name).strip()
+    host_ip = str(getattr(host, 'ip', '') or '').strip()
+    alias_text = f'{display_name}({host_ip})'
+    # Inventory host token cannot contain whitespace.
+    return ' '.join(alias_text.split()).replace(' ', '_')
 
 
 def _build_group_descendants(group_ids: list[int]) -> set[int]:
@@ -125,7 +127,7 @@ def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[
     for host in hosts:
         snapshot_hosts.append({
             'host_id': host.id,
-            'host_name': _display_host_name(host),
+            'host_name': str(host.instance_name).strip(),
             'host_ip': host.ip,
             'group_id': host.group_id,
             'group_name': host.group.name if getattr(host, 'group', None) else '',
@@ -139,7 +141,7 @@ def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[
     }
 
 
-def _prepare_target_rows(job: AnsibleExecutionJob) -> list[HostExecutionContext]:
+def _prepare_target_rows(job: AnsibleExecutionJob) -> tuple[list[HostExecutionContext], int]:
     snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
     host_ids = [item.get('host_id') for item in snapshot_hosts if isinstance(item, dict) and item.get('host_id')]
     host_map = {
@@ -147,7 +149,7 @@ def _prepare_target_rows(job: AnsibleExecutionJob) -> list[HostExecutionContext]
     }
 
     contexts: list[HostExecutionContext] = []
-    now_date = datetime.now().date()
+    invalid_target_count = 0
 
     for item in snapshot_hosts:
         if not isinstance(item, dict):
@@ -155,42 +157,18 @@ def _prepare_target_rows(job: AnsibleExecutionJob) -> list[HostExecutionContext]
         host_id = item.get('host_id')
         host = host_map.get(host_id)
         if not host:
-            AnsibleExecutionTarget.objects.create(
-                job=job,
-                host_id=None,
-                host_name=str(item.get('host_name') or ''),
-                host_ip=str(item.get('host_ip') or ''),
-                status=AnsibleExecutionTarget.Status.FAILED,
-                stderr='Host not found during execution',
-                create_time=now_date,
-            )
+            invalid_target_count += 1
             continue
 
         credential = _get_default_credential(host)
         if not credential:
-            AnsibleExecutionTarget.objects.create(
-                job=job,
-                host=host,
-                host_name=_display_host_name(host),
-                host_ip=str(host.ip or ''),
-                status=AnsibleExecutionTarget.Status.FAILED,
-                stderr='Default credential not configured',
-                create_time=now_date,
-            )
+            invalid_target_count += 1
             continue
 
-        alias = f'host_{host.id}'
-        AnsibleExecutionTarget.objects.create(
-            job=job,
-            host=host,
-            host_name=_display_host_name(host),
-            host_ip=str(host.ip or ''),
-            status=AnsibleExecutionTarget.Status.PENDING,
-            create_time=now_date,
-        )
+        alias = _build_inventory_alias(host)
         contexts.append(HostExecutionContext(host=host, credential=credential, alias=alias))
 
-    return contexts
+    return contexts, invalid_target_count
 
 
 def _write_inventory_file(work_dir: str, contexts: list[HostExecutionContext]) -> tuple[str, dict[str, str]]:
@@ -268,169 +246,210 @@ def _inject_become_config(template_content: str, job: AnsibleExecutionJob) -> st
         return template_content
 
 
-def _resolve_ansible_playbook_command() -> list[str] | None:
-    configured_path = os.getenv('ANSIBLE_PLAYBOOK_PATH', '').strip()
-    if configured_path:
-        return [configured_path]
+def _parse_runner_stats(raw_stats: Any) -> dict[str, dict[str, int]]:
+    stats_by_host: dict[str, dict[str, int]] = {}
+    if not isinstance(raw_stats, dict):
+        return stats_by_host
 
-    # Default to ansible-core module execution; does not depend on PATH command lookup.
-    # If ansible-core is missing, subprocess stderr will provide guidance.
-    return [sys.executable, '-m', 'ansible.cli.playbook']
+    required = ('ok', 'changed', 'unreachable', 'failed', 'skipped', 'rescued', 'ignored')
+    for host_key, stat_value in raw_stats.items():
+        if not isinstance(stat_value, dict):
+            continue
+        host_name = str(host_key or '').strip()
+        if not host_name:
+            continue
+
+        normalized: dict[str, int] = {}
+        for metric in required:
+            value = stat_value.get(metric, 0)
+            try:
+                normalized[metric] = int(value)
+            except (TypeError, ValueError):
+                normalized[metric] = 0
+        stats_by_host[host_name] = normalized
+
+    return stats_by_host
 
 
-def _run_single_host_playbook(job: AnsibleExecutionJob, target: AnsibleExecutionTarget, inventory_path: str, playbook_path: str, alias: str) -> None:
-    now = timezone.now()
-    target.status = AnsibleExecutionTarget.Status.RUNNING
-    target.start_time = now
-    target.save(update_fields=['status', 'start_time'])
+def _run_playbook_for_inventory(
+    job: AnsibleExecutionJob,
+    contexts: list[HostExecutionContext],
+    inventory_path: str,
+    playbook_path: str,
+) -> tuple[bool, int]:
 
-    cmd_prefix = _resolve_ansible_playbook_command()
-    cmd = [*cmd_prefix, '-i', inventory_path, playbook_path, '--limit', alias]
-    if isinstance(job.extra_vars, dict) and job.extra_vars:
-        cmd.extend(['--extra-vars', json.dumps(job.extra_vars, ensure_ascii=False)])
+    work_dir = os.path.dirname(playbook_path)
 
-    host_name = str(target.host_name or '').strip()
-    host_ip = str(target.host_ip or '').strip()
-    if host_name and host_ip and host_name != host_ip:
-        host_label = f'{host_name}({host_ip})'
-    else:
-        host_label = host_name or host_ip or alias
+    host_label_lookup: dict[str, str] = {}
+    for ctx in contexts:
+        host_name = str(ctx.host.instance_name or '').strip()
+        host_ip = str(ctx.host.ip or '').strip()
+        host_label = f'{host_name}({host_ip})' if host_name and host_ip and host_name != host_ip else (host_name or host_ip or '-')
+        for key in {ctx.alias, host_name, host_ip, host_label}:
+            lowered = str(key or '').strip().lower()
+            if lowered:
+                host_label_lookup[lowered] = host_label
 
-    alias_regex = re.compile(rf'\b{re.escape(alias)}\b') if alias else None
+    def _normalize_event_type(event_name: str) -> str:
+        normalized_event_name = str(event_name or '').strip().lower()
+        if normalized_event_name == 'playbook_on_play_start':
+            return 'play_start'
+        if normalized_event_name == 'playbook_on_task_start':
+            return 'task_start'
+        if normalized_event_name == 'playbook_on_stats':
+            return 'recap'
+        if normalized_event_name.startswith('runner_on_') or normalized_event_name.startswith('runner_item_on_'):
+            return 'task_result'
+        if 'warning' in normalized_event_name:
+            return 'warning'
+        return 'log'
 
-    def _append_job_log(stream_name: str, text_chunk: str) -> None:
+    def _resolve_host_label_from_runner_event(data: dict[str, Any]) -> str:
+        event_data_raw = data.get('event_data')
+        event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
+        delegated_raw = event_data.get('delegated_vars')
+        delegated: dict[str, Any] = delegated_raw if isinstance(delegated_raw, dict) else {}
+
+        host_candidates = [
+            event_data.get('host'),
+            event_data.get('host_name'),
+            event_data.get('remote_addr'),
+            delegated.get('ansible_host'),
+            delegated.get('inventory_hostname'),
+        ]
+
+        for candidate in host_candidates:
+            key = str(candidate or '').strip().lower()
+            if not key:
+                continue
+            matched = host_label_lookup.get(key)
+            if matched:
+                return matched
+        return '-'
+
+    def _append_job_event_lines(
+        stream_name: str,
+        text_chunk: str,
+        preferred_host_label: str = '-',
+        event_type_hint: str = '',
+        play_name_hint: str = '',
+        task_name_hint: str = '',
+    ) -> None:
         if not text_chunk:
             return
-        if alias_regex is not None:
-            text_chunk = alias_regex.sub(host_label, text_chunk)
-        # Log lines use raw Django process current time without timezone conversion.
-        timestamp_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        lines = []
+
+        host_label = preferred_host_label or '-'
+
+        now_text = timezone.now().strftime('%Y-%m-%d %H:%M:%S')
+        normalized_lines = []
         for line in text_chunk.splitlines(keepends=True):
             if line.endswith('\n'):
-                lines.append(f'[{timestamp_text}][{host_label}][{stream_name}] {line}')
+                normalized_lines.append(f'[{now_text}][{host_label}][{stream_name}] {line}')
             else:
-                lines.append(f'[{timestamp_text}][{host_label}][{stream_name}] {line}\n')
-        job.job_output = (job.job_output or '') + ''.join(lines)
+                normalized_lines.append(f'[{now_text}][{host_label}][{stream_name}] {line}\n')
+
+        if not normalized_lines:
+            return
+
+        job.job_output = (job.job_output or '') + ''.join(normalized_lines)
         job.save(update_fields=['job_output'])
 
+    def _runner_event_handler(data: dict[str, Any]) -> bool:
+        event_name = str(data.get('event') or '').strip()
+        event_data_raw = data.get('event_data')
+        event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
+        preferred_host_label = _resolve_host_label_from_runner_event(data)
+
+        # Use ansible-runner event_data fields directly.
+        play_name_hint = str(event_data.get('play') or event_data.get('play_name') or '').strip()
+        task_name_hint = str(event_data.get('task') or event_data.get('task_name') or '').strip()
+
+        raw_stdout = str(data.get('stdout') or '')
+        if not raw_stdout:
+            return True
+
+        # Keep raw runner stdout for recap parsing while storing formatted lines for UI rendering.
+        line = raw_stdout.rstrip('\n')
+        if not line:
+            return True
+        _append_job_event_lines(
+            'stdout',
+            f'{line}\n',
+            preferred_host_label=preferred_host_label,
+            event_type_hint=_normalize_event_type(event_name),
+            play_name_hint=play_name_hint,
+            task_name_hint=task_name_hint,
+        )
+        return True
+
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            bufsize=1,
+        if ansible_runner is None:
+            raise ModuleNotFoundError('ansible-runner is not installed')
+
+        run_result = ansible_runner.run(
+            private_data_dir=work_dir,
+            project_dir=work_dir,
+            playbook=os.path.basename(playbook_path),
+            inventory=inventory_path,
+            extravars=job.extra_vars if isinstance(job.extra_vars, dict) and job.extra_vars else None,
+            event_handler=_runner_event_handler,
         )
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-        lock = threading.Lock()
+        stderr_text = ''
+        artifact_dir = str(getattr(getattr(run_result, 'config', None), 'artifact_dir', '') or '')
+        if artifact_dir:
+            stderr_path = os.path.join(artifact_dir, 'stderr')
+            if os.path.exists(stderr_path):
+                with open(stderr_path, 'r', encoding='utf-8', errors='replace') as stderr_fp:
+                    stderr_text = str(stderr_fp.read() or '')
+                if stderr_text:
+                    _append_job_event_lines('stderr', stderr_text)
 
-        def _consume_stream(stream, collector):
-            if stream is None:
-                return
-            try:
-                for line in iter(stream.readline, ''):
-                    with lock:
-                        collector.append(line)
-            finally:
-                stream.close()
-
-        stdout_thread = threading.Thread(target=_consume_stream, args=(proc.stdout, stdout_chunks), daemon=True)
-        stderr_thread = threading.Thread(target=_consume_stream, args=(proc.stderr, stderr_chunks), daemon=True)
-        stdout_thread.start()
-        stderr_thread.start()
-
-        last_stdout_len = 0
-        last_stderr_len = 0
-
-        while proc.poll() is None:
-            with lock:
-                current_stdout = ''.join(stdout_chunks)
-                current_stderr = ''.join(stderr_chunks)
-
-            stdout_delta = current_stdout[last_stdout_len:]
-            stderr_delta = current_stderr[last_stderr_len:]
-
-            last_stdout_len = len(current_stdout)
-            last_stderr_len = len(current_stderr)
-
-            if stdout_delta:
-                _append_job_log('stdout', stdout_delta)
-            if stderr_delta:
-                _append_job_log('stderr', stderr_delta)
-
-            time.sleep(1.0)
-
-        stdout_thread.join(timeout=2.0)
-        stderr_thread.join(timeout=2.0)
-
-        with lock:
-            final_stdout = ''.join(stdout_chunks)
-            final_stderr = ''.join(stderr_chunks)
-
-        final_stdout_delta = final_stdout[last_stdout_len:]
-        final_stderr_delta = final_stderr[last_stderr_len:]
-        if final_stdout_delta:
-            _append_job_log('stdout', final_stdout_delta)
-        if final_stderr_delta:
-            _append_job_log('stderr', final_stderr_delta)
-
-        end_time = timezone.now()
-        target.end_time = end_time
-        if target.start_time:
-            target.duration_seconds = (end_time - target.start_time).total_seconds()
-        target.rc = proc.returncode
-        target.stderr = ''
-        if proc.returncode != 0 and os.name == 'nt' and 'WinError 1' in final_stderr:
-            target.stderr = (
-                f"{final_stderr}\n"
-                'Current runtime is Windows. Run Ansible from Linux/WSL and set ANSIBLE_PLAYBOOK_PATH if needed.'
-            )
-        target.status = AnsibleExecutionTarget.Status.SUCCESS if proc.returncode == 0 else AnsibleExecutionTarget.Status.FAILED
-        target.save(update_fields=['end_time', 'duration_seconds', 'rc', 'stderr', 'status'])
-    except FileNotFoundError:
-        end_time = timezone.now()
-        target.end_time = end_time
-        if target.start_time:
-            target.duration_seconds = (end_time - target.start_time).total_seconds()
-        target.rc = -1
-        target.status = AnsibleExecutionTarget.Status.FAILED
-        target.stderr = 'ansible-playbook command not found. Please install Ansible on server runtime.'
-        target.save(update_fields=['end_time', 'duration_seconds', 'rc', 'status', 'stderr'])
-        _append_job_log('stderr', target.stderr)
+        run_status = str(getattr(run_result, 'status', '') or '').strip().lower()
+        run_success = run_status == 'successful'
+        return_code = int(getattr(run_result, 'rc', 1) or 1)
+        return run_success, return_code
+    except Exception as exc:
+        error_text = f'ansible-runner execution failed: {exc}'
+        _append_job_event_lines('stderr', error_text)
+        return False, -1
 
 
 def execute_ansible_job(job_id: int) -> None:
     # Ensure thread uses a valid DB connection lifecycle.
     close_old_connections()
 
-    job = AnsibleExecutionJob.objects.select_related('template').filter(id=job_id).first()
-    if not job:
-        return
-
-    if job.status == AnsibleExecutionJob.Status.CANCELLED:
-        return
-
+    # Claim the job via an atomic state transition so duplicate deliveries cannot execute twice.
     start_time = timezone.now()
-    job.status = AnsibleExecutionJob.Status.RUNNING
-    job.start_time = start_time
-    job.result_summary = {'message': 'Job is running'}
-    job.save(update_fields=['status', 'start_time', 'result_summary'])
+    claimed = AnsibleExecutionJob.objects.filter(
+        id=job_id,
+        status=AnsibleExecutionJob.Status.PENDING,
+    ).update(
+        status=AnsibleExecutionJob.Status.RUNNING,
+        start_time=start_time,
+        result_summary={'message': 'Job is running'},
+    )
+    if claimed == 0:
+        close_old_connections()
+        return
 
-    contexts = _prepare_target_rows(job)
+    job = AnsibleExecutionJob.objects.filter(id=job_id).first()
+    if not job:
+        close_old_connections()
+        return
+
+    contexts, invalid_target_count = _prepare_target_rows(job)
     if not contexts:
         end_time = timezone.now()
         job.status = AnsibleExecutionJob.Status.FAILED
         job.end_time = end_time
         job.duration_seconds = (end_time - start_time).total_seconds()
+        total_targets = invalid_target_count or len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
         job.result_summary = {
             'message': 'No executable targets. Check host selection and credentials.',
-            'total': 0,
+            'total': total_targets,
             'success': 0,
-            'failed': 0,
+            'failed': total_targets,
         }
         job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
         close_old_connections()
@@ -440,7 +459,19 @@ def execute_ansible_job(job_id: int) -> None:
         playbook_path = os.path.join(work_dir, 'playbook.yml')
         template_content = (job.template_content_snapshot or '').strip()
         if not template_content:
-            template_content = job.template.content or ''
+            end_time = timezone.now()
+            job.status = AnsibleExecutionJob.Status.FAILED
+            job.end_time = end_time
+            job.duration_seconds = (end_time - start_time).total_seconds()
+            job.result_summary = {
+                'message': 'Template snapshot is empty. Cannot execute without immutable snapshot content.',
+                'total': 0,
+                'success': 0,
+                'failed': 0,
+            }
+            job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
+            close_old_connections()
+            return
 
         # 动态注入 become 配置到 playbook
         template_content = _inject_become_config(template_content, job)
@@ -449,22 +480,20 @@ def execute_ansible_job(job_id: int) -> None:
             playbook_fp.write(template_content)
 
         inventory_path, _ = _write_inventory_file(work_dir, contexts)
+        run_success = False
+        return_code = -1
 
-        for ctx in contexts:
-            latest_job = AnsibleExecutionJob.objects.filter(id=job.id).values('status').first()
-            if latest_job and latest_job.get('status') == AnsibleExecutionJob.Status.CANCELLED:
-                break
-            target = AnsibleExecutionTarget.objects.filter(job=job, host=ctx.host).order_by('-id').first()
-            if not target:
-                continue
-            _run_single_host_playbook(job, target, inventory_path, playbook_path, ctx.alias)
+        latest_job = AnsibleExecutionJob.objects.filter(id=job.id).values('status').first()
+        if not (latest_job and latest_job.get('status') == AnsibleExecutionJob.Status.CANCELLED):
+            run_success, return_code = _run_playbook_for_inventory(job, contexts, inventory_path, playbook_path)
 
-    all_targets = list(AnsibleExecutionTarget.objects.filter(job=job))
-    success_count = sum(1 for item in all_targets if item.status == AnsibleExecutionTarget.Status.SUCCESS)
-    failed_count = sum(1 for item in all_targets if item.status in (
-        AnsibleExecutionTarget.Status.FAILED,
-        AnsibleExecutionTarget.Status.UNREACHABLE,
-    ))
+    total_targets = len(contexts) + invalid_target_count
+    if run_success:
+        success_count = len(contexts)
+        failed_count = invalid_target_count
+    else:
+        success_count = 0
+        failed_count = total_targets
 
     final_status = AnsibleExecutionJob.Status.SUCCESS if failed_count == 0 else AnsibleExecutionJob.Status.FAILED
     latest_status = AnsibleExecutionJob.objects.filter(id=job.id).values_list('status', flat=True).first()
@@ -477,9 +506,10 @@ def execute_ansible_job(job_id: int) -> None:
     job.duration_seconds = (end_time - start_time).total_seconds()
     job.result_summary = {
         'message': 'Execution finished',
-        'total': len(all_targets),
+        'total': total_targets,
         'success': success_count,
         'failed': failed_count,
+        'rc': return_code,
     }
     job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
 

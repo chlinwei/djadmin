@@ -9,11 +9,7 @@ export function createWebsshFilePanelController(options) {
         fileContextMenuVisible,
         fileContextMenuRecord,
         fileContextMenuRowPath,
-        transferContextMenuVisible,
-        transferContextMenuTarget,
-        transferContextMenuRowId,
         fileContextMenuStyle,
-        transferContextMenuStyle,
         dragUploadDirPath,
         resolveFileParentDirectory,
         handleDirectoryDragOver,
@@ -30,12 +26,6 @@ export function createWebsshFilePanelController(options) {
         fileContextMenuVisible.value = false
         fileContextMenuRecord.value = null
         fileContextMenuRowPath.value = ''
-    }
-
-    const closeTransferContextMenu = () => {
-        transferContextMenuVisible.value = false
-        transferContextMenuTarget.value = null
-        transferContextMenuRowId.value = ''
     }
 
     const openDirectory = (path) => {
@@ -68,7 +58,6 @@ export function createWebsshFilePanelController(options) {
             return
         }
         event.preventDefault()
-        closeTransferContextMenu()
         fileContextMenuRecord.value = record
         fileContextMenuRowPath.value = String(record?.path || '')
         fileContextMenuStyle.value = {
@@ -76,19 +65,6 @@ export function createWebsshFilePanelController(options) {
             top: `${event.clientY}px`,
         }
         fileContextMenuVisible.value = true
-    }
-
-    const openTransferContextMenu = (event, type, item, rowId = '') => {
-        if (!item) return
-        event.preventDefault()
-        closeFileContextMenu()
-        transferContextMenuTarget.value = { type, item }
-        transferContextMenuRowId.value = rowId
-        transferContextMenuStyle.value = {
-            left: `${event.clientX}px`,
-            top: `${event.clientY}px`,
-        }
-        transferContextMenuVisible.value = true
     }
 
     const resolveDropTargetPath = (record) => {
@@ -136,9 +112,7 @@ export function createWebsshFilePanelController(options) {
         handlePathEnter,
         goParentDir,
         closeFileContextMenu,
-        closeTransferContextMenu,
         openFileContextMenu,
-        openTransferContextMenu,
         resolveDropTargetPath,
         bindFileRowEvents,
     }

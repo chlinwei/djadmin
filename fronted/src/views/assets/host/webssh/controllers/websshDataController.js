@@ -2,9 +2,6 @@ export function createWebsshDataController(options) {
     const {
         computed,
         refs,
-        state,
-        helpers,
-        TRANSFER_LIST_LIMIT,
     } = options
 
     const activeSessionColumns = [
@@ -31,7 +28,6 @@ export function createWebsshDataController(options) {
         const actions = []
         if (record.is_dir) {
             actions.push({ key: 'open', label: '打开目录' })
-            actions.push({ key: 'download', label: '下载' })
         } else {
             actions.push({ key: 'download', label: '下载' })
         }
@@ -41,75 +37,10 @@ export function createWebsshDataController(options) {
         return actions
     })
 
-    const transferContextMenuActions = computed(() => {
-        const target = refs.transferContextMenuTarget.value
-        if (!target) return []
-        const itemType = target.type
-        const item = target.item
-        if (!item) return []
-        if (itemType === 'upload-queue') {
-            return [
-                { key: 'cancel', label: '取消', danger: true },
-                { key: 'open-dir', label: '打开文件所在目录' },
-            ]
-        }
-        if (itemType === 'download-active') {
-            const activePath = String(item?.record?.path || '')
-            return [
-                { key: 'cancel', label: '取消', danger: true, disabled: !refs.downloadRunning.value },
-                { key: 'open-dir', label: '打开文件所在目录', disabled: !activePath },
-            ]
-        }
-        if (itemType === 'upload-active') {
-            return [
-                { key: 'cancel', label: '取消', danger: true, disabled: !refs.uploadRunning.value },
-                { key: 'open-dir', label: '打开文件所在目录' },
-            ]
-        }
-        return []
-    })
-
-    const downloadRows = computed(() => {
-        return helpers.buildDownloadRows({
-            downloadRunning: refs.downloadRunning,
-            downloadProgressStatus: refs.downloadProgressStatus,
-            downloadFileName: refs.downloadFileName,
-            currentDownloadRecord: refs.currentDownloadRecord,
-            downloadProgressText: refs.downloadProgressText,
-            getStatusMeta: helpers.getTransferStatusMeta,
-        })
-    })
-
-    const uploadRows = computed(() => {
-        return helpers.buildUploadRows({
-            uploadRunning: refs.uploadRunning,
-            uploadProgressStatus: refs.uploadProgressStatus,
-            uploadFileName: refs.uploadFileName,
-            currentUploadContext: refs.currentUploadContext,
-            uploadProgressText: refs.uploadProgressText,
-            fileCurrentPath: refs.fileCurrentPath,
-            uploadQueue: refs.uploadQueue,
-            getStatusMeta: helpers.getTransferStatusMeta,
-        })
-    })
-
-    // Auto-show transfer panel only for active/queued tasks; history alone should not occupy layout space.
-    const hasDownloadTask = computed(() => refs.downloadRunning.value)
-    const hasUploadTask = computed(() => refs.uploadRunning.value || refs.uploadQueue.value.length > 0)
-    const displayedDownloadRows = computed(() => downloadRows.value.slice(0, TRANSFER_LIST_LIMIT))
-    const displayedUploadRows = computed(() => uploadRows.value.slice(0, TRANSFER_LIST_LIMIT))
-
     return {
         activeSessionColumns,
         fileColumns,
         filteredFileEntries,
         fileContextMenuActions,
-        transferContextMenuActions,
-        downloadRows,
-        uploadRows,
-        hasDownloadTask,
-        hasUploadTask,
-        displayedDownloadRows,
-        displayedUploadRows,
     }
 }

@@ -62,7 +62,6 @@ export function createWebsshLifecycleController(options) {
         actions.cancelActiveDownload()
         actions.cancelUpload()
         actions.stopResize()
-        actions.stopTransferResize()
         actions.disconnectFilePanelResizeObserver()
         actions.closeSocket()
         actions.disposeTerminal()

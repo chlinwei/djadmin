@@ -2,7 +2,6 @@ import uuid
 
 from django.db import models
 
-from assets.models import Host
 from djadmin.basemodel import BaseModel
 
 
@@ -33,6 +32,11 @@ class AutomationTask(BaseModel):
     env_vars = models.JSONField(default=dict, blank=True)
     default_limit = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
+    execution_timeout_seconds = models.PositiveIntegerField(
+        default=3600,
+        help_text='任务执行超时时间（秒），最大4小时(14400秒)',
+        validators=[lambda x: x <= 14400 or (_ for _ in ()).throw(ValueError('Timeout cannot exceed 4 hours (14400 seconds)'))],
+    )
     
     # 权限提升配置
     become_enabled = models.BooleanField(default=False, help_text='是否启用权限提升')
@@ -85,7 +89,6 @@ class AnsibleExecutionJob(BaseModel):
         SCHEDULE = 'schedule', 'Schedule'
 
     job_id = models.CharField(max_length=36, unique=True, default=uuid.uuid4)
-    template = models.ForeignKey(PlaybookTemplate, on_delete=models.PROTECT, related_name='jobs')
     task = models.ForeignKey(AutomationTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='jobs')
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.MANUAL)
@@ -116,39 +119,6 @@ class AnsibleExecutionJob(BaseModel):
 
     def __str__(self):
         return f'{self.job_id} [{self.status}]'
-
-
-class AnsibleExecutionTarget(BaseModel):
-    class Status(models.TextChoices):
-        PENDING = 'pending', 'Pending'
-        RUNNING = 'running', 'Running'
-        SUCCESS = 'success', 'Success'
-        FAILED = 'failed', 'Failed'
-        SKIPPED = 'skipped', 'Skipped'
-        UNREACHABLE = 'unreachable', 'Unreachable'
-
-    job = models.ForeignKey(AnsibleExecutionJob, on_delete=models.CASCADE, related_name='targets')
-    host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, related_name='ansible_targets')
-
-    host_name = models.CharField(max_length=128, blank=True, default='')
-    host_ip = models.CharField(max_length=64, blank=True, default='')
-
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
-    rc = models.IntegerField(null=True, blank=True)
-
-    stdout = models.TextField(blank=True, default='')
-    stderr = models.TextField(blank=True, default='')
-
-    start_time = models.DateTimeField(null=True, blank=True)
-    end_time = models.DateTimeField(null=True, blank=True)
-    duration_seconds = models.FloatField(null=True, blank=True)
-
-    class Meta:
-        db_table = 'automation_ansible_execution_target'
-        ordering = ['id']
-
-    def __str__(self):
-        return f'{self.job.job_id} - {self.host_name or self.host_ip}'
 
 
 class AutomationWorkflowTemplate(BaseModel):

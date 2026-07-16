@@ -1,4 +1,3 @@
-from datetime import datetime
 import fnmatch
 import re
 
@@ -15,7 +14,6 @@ from .models import (
     AutomationTask,
     AutomationInventory,
     AnsibleExecutionJob,
-    AnsibleExecutionTarget,
     AutomationWorkflowTemplate,
     AutomationWorkflowRun,
 )
@@ -192,14 +190,8 @@ class PlaybookTemplateSerializer(ModelSerializer):
         return value
 
     def create(self, validated_data):
-        validated_data['create_time'] = datetime.now().date()
+        validated_data['create_time'] = timezone.now()
         return PlaybookTemplate.objects.create(**validated_data)
-
-
-class AnsibleExecutionTargetSerializer(ModelSerializer):
-    class Meta:
-        model = AnsibleExecutionTarget
-        fields = '__all__'
 
 
 class AutomationTaskSerializer(ModelSerializer):
@@ -600,13 +592,12 @@ class AutomationTaskSerializer(ModelSerializer):
         return text
 
     def create(self, validated_data):
-        validated_data['create_time'] = datetime.now().date()
+        validated_data['create_time'] = timezone.now()
         return AutomationTask.objects.create(**validated_data)
 
 
 class AnsibleExecutionJobSerializer(ModelSerializer):
     job_id = serializers.SerializerMethodField()
-    targets = AnsibleExecutionTargetSerializer(many=True, read_only=True)
     template_name = serializers.SerializerMethodField()
     task_name = serializers.SerializerMethodField()
 
@@ -615,7 +606,7 @@ class AnsibleExecutionJobSerializer(ModelSerializer):
         fields = '__all__'
 
     def get_template_name(self, obj):
-        return obj.template.name if obj.template_id else ''
+        return str(obj.template_name_snapshot or '').strip()
 
     def get_task_name(self, obj):
         # 优先使用快照字段（任务删除后仍能显示历史名称）
@@ -628,7 +619,7 @@ class AnsibleExecutionJobSerializer(ModelSerializer):
         return obj.id
 
     def create(self, validated_data):
-        validated_data['create_time'] = datetime.now().date()
+        validated_data['create_time'] = timezone.now()
         return AnsibleExecutionJob.objects.create(**validated_data)
 
 
@@ -764,7 +755,7 @@ class AutomationInventorySerializer(ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data['create_time'] = datetime.now().date()
+        validated_data['create_time'] = timezone.now()
         return AutomationInventory.objects.create(**validated_data)
 
 
@@ -1012,7 +1003,7 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        validated_data['create_time'] = datetime.now().date()
+        validated_data['create_time'] = timezone.now()
         return AutomationWorkflowTemplate.objects.create(**validated_data)
 
 
@@ -1189,7 +1180,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         if job_ids:
             rows = list(AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values(
                 'id', 'status', 'start_time', 'end_time', 'duration_seconds',
-                'task_id', 'template_id', 'task_name_snapshot', 'template_name_snapshot'
+                'task_id', 'task__template_id', 'task_name_snapshot', 'template_name_snapshot'
             ))
             job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
             job_time_map = {int(row['id']): row for row in rows}
@@ -1232,11 +1223,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
 
         for item in normalized_results:
             item['job_task_id'] = item.get('job_task_id') if str(item.get('job_task_id', '')).isdigit() else item.get('task_id')
-            item['job_template_id'] = (
-                item.get('job_template_id')
-                if str(item.get('job_template_id', '')).isdigit()
-                else item.get('template_id_snapshot')
-            )
+            item['job_template_id'] = item.get('job_template_id') if str(item.get('job_template_id', '')).isdigit() else None
             item['job_task_name_snapshot'] = str(
                 item.get('job_task_name_snapshot')
                 or item.get('task_name_snapshot')
@@ -1261,7 +1248,8 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
                 item['duration_seconds'] = _resolve_duration_seconds(job_time_map.get(int(job_id)), live_status)
                 job_meta = job_meta_map.get(int(job_id), {})
                 item['job_task_id'] = int(job_meta['task_id']) if str(job_meta.get('task_id', '')).isdigit() else None
-                item['job_template_id'] = int(job_meta['template_id']) if str(job_meta.get('template_id', '')).isdigit() else None
+                # AnsibleExecutionJob 不再直接关联 template，模板 ID 通过 task 反查（若存在）。
+                item['job_template_id'] = int(job_meta['task__template_id']) if str(job_meta.get('task__template_id', '')).isdigit() else None
                 item['job_task_name_snapshot'] = str(job_meta.get('task_name_snapshot') or '').strip()
                 item['job_template_name_snapshot'] = str(job_meta.get('template_name_snapshot') or '').strip()
 

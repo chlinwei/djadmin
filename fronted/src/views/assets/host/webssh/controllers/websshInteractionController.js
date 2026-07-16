@@ -3,15 +3,10 @@ export function createWebsshInteractionController(options) {
         getHostId,
         message,
         refs,
-        state,
         ensureFileOperationsEnabled,
         closeFileContextMenu,
-        closeTransferContextMenu,
         openDirectory,
         enqueueDownloadTask,
-        cancelDownload,
-        removeUploadQueueItem,
-        cancelUpload,
         uploadRawFileToPath,
         renameHostWebSshFile,
         deleteHostWebSshFile,
@@ -91,53 +86,11 @@ export function createWebsshInteractionController(options) {
             return
         }
         closeFileContextMenu()
-        closeTransferContextMenu()
     }
 
     const hideContextMenuByEscape = (event) => {
         if (event.key === 'Escape') {
             closeFileContextMenu()
-            closeTransferContextMenu()
-        }
-    }
-
-    const handleTransferContextAction = (action) => {
-        if (!action || action.disabled) return
-        const target = refs.transferContextMenuTarget.value
-        closeTransferContextMenu()
-        if (!target?.item) return
-        if (target.type === 'upload-queue') {
-            if (action.key === 'cancel') {
-                removeUploadQueueItem(target.item.id)
-                return
-            }
-            if (action.key === 'open-dir') {
-                const targetPath = String(target.item?.task?.targetPath || refs.fileCurrentPath.value || '.')
-                openDirectory(targetPath)
-            }
-            return
-        }
-        if (target.type === 'download-active') {
-            if (action.key === 'cancel') {
-                cancelDownload()
-                return
-            }
-            if (action.key === 'open-dir') {
-                const filePath = String(target.item?.record?.path || '')
-                openDirectory(helpers.resolveFileParentDirectory(filePath))
-            }
-            return
-        }
-        if (target.type === 'upload-active') {
-            if (action.key === 'cancel') {
-                void cancelUpload()
-                return
-            }
-            if (action.key === 'open-dir') {
-                const targetPath = String(target.item?.targetPath || refs.fileCurrentPath.value || '.')
-                openDirectory(targetPath)
-            }
-            return
         }
     }
 
@@ -199,7 +152,6 @@ export function createWebsshInteractionController(options) {
         handleFileContextAction,
         hideContextMenuByGlobalClick,
         hideContextMenuByEscape,
-        handleTransferContextAction,
         handleDirectoryDragOver,
         handleDirectoryDragLeave,
         handleDirectoryDrop,

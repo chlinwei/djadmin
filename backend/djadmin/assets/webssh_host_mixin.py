@@ -1,10 +1,12 @@
 import io
+import importlib
 import logging
+import os
 import posixpath
 import re
 import stat
+import tempfile
 import time
-import uuid
 import warnings
 from hashlib import sha256
 from typing import Any, cast
@@ -35,13 +37,16 @@ try:
 except ImportError:  # pragma: no cover
     paramiko = None
 
+try:
+    asyncssh = importlib.import_module('asyncssh')
+except ImportError:  # pragma: no cover
+    asyncssh = None
+
 
 TRANSFER_STREAM_FIRST_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_FIRST_CHUNK_BYTES', 256 * 1024)), 64 * 1024)
 TRANSFER_STREAM_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_CHUNK_BYTES', 8 * 1024 * 1024)), 512 * 1024)
-TRANSFER_STREAM_PROGRESS_LOG_SECONDS = max(int(getattr(settings, 'TRANSFER_STREAM_PROGRESS_LOG_SECONDS', 5)), 1)
 TRANSFER_SFTP_WINDOW_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_WINDOW_SIZE', 8 * 1024 * 1024)), 1024 * 1024)
 TRANSFER_SFTP_MAX_PACKET_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_MAX_PACKET_SIZE', 256 * 1024)), 32 * 1024)
-TRANSFER_SFTP_PREFETCH_REQUESTS = max(int(getattr(settings, 'TRANSFER_SFTP_PREFETCH_REQUESTS', 32)), 1)
 
 ASSETS_SSH_POOL = SSHConnectionPool(
     max_per_key=int(getattr(settings, 'TRANSFER_SSH_POOL_MAX_PER_KEY', 2)),
@@ -135,6 +140,75 @@ class WebSSHHostMixin:
             ASSETS_SSH_POOL.discard(ssh_client)
             raise
 
+    def _build_asyncssh_connect_kwargs(self, host, credential):
+        port = self._get_host_connection_port(host, credential)
+        connect_kwargs = {
+            'host': host.ip,
+            'port': port,
+            'username': credential.username,
+            # Keep parity with previous behavior which didn't enforce host key pinning.
+            'known_hosts': None,
+        }
+        if credential.auth_type == credential.AuthType.SSH_KEY:
+            connect_kwargs['client_keys'] = [str(credential.private_key or '').encode('utf-8')]
+        elif credential.auth_type == credential.AuthType.PASSWORD:
+            connect_kwargs['password'] = credential.password
+        else:
+            raise ValueError('不支持的凭证类型')
+        return connect_kwargs
+
+    async def _download_remote_file_via_asyncssh(self, connect_kwargs, remote_path, local_path):
+        if asyncssh is None:
+            raise RuntimeError('asyncssh 未安装，无法执行下载操作')
+
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            async with conn.start_sftp_client() as sftp_client:
+                target_path = str(await sftp_client.realpath(remote_path))
+                target_stat = await sftp_client.stat(target_path)
+                permissions = int(getattr(target_stat, 'permissions', 0) or 0)
+                if stat.S_ISDIR(permissions):
+                    raise ValueError('目录下载功能已关闭，请改为逐个下载文件')
+
+                await sftp_client.get(target_path, local_path)
+                file_size = int(getattr(target_stat, 'size', 0) or 0)
+                return target_path, file_size
+
+    async def _upload_local_file_via_asyncssh(self, connect_kwargs, target_path, file_name, local_path):
+        if asyncssh is None:
+            raise RuntimeError('asyncssh 未安装，无法执行上传操作')
+
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            async with conn.start_sftp_client() as sftp_client:
+                normalized_dir = str(await sftp_client.realpath(target_path))
+                remote_target_path = posixpath.join(normalized_dir.rstrip('/'), file_name) if normalized_dir != '/' else f'/{file_name}'
+                temp_name = f'.{file_name}.uploading.part'
+                remote_temp_path = posixpath.join(normalized_dir.rstrip('/'), temp_name) if normalized_dir != '/' else f'/{temp_name}'
+
+                # Use AsyncSSH native transfer path to reduce Python-level per-chunk write overhead.
+                await sftp_client.put(local_path, remote_temp_path)
+
+                try:
+                    existing_stat = await sftp_client.stat(remote_target_path)
+                    permissions = int(getattr(existing_stat, 'permissions', 0) or 0)
+                    if not stat.S_ISDIR(permissions):
+                        await sftp_client.remove(remote_target_path)
+                except Exception:
+                    pass
+
+                await sftp_client.rename(remote_temp_path, remote_target_path)
+                return remote_target_path
+
+    @staticmethod
+    def _remove_local_temp_file(path):
+        if not path:
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
     @staticmethod
     def _release_stream_sftp(ssh_client, sftp_client, pool_key=None, broken=False):
         if sftp_client is not None:
@@ -157,7 +231,8 @@ class WebSSHHostMixin:
     @staticmethod
     def _parse_download_range(range_header, file_size):
         start = 0
-        end = max(file_size - 1, 0)
+        # 对于空文件（file_size=0），end应为-1，这样remaining=(−1−0+1)=0，Content-Length正确为0
+        end = file_size - 1 if file_size > 0 else -1
         status_code = 200
         if not range_header:
             return start, end, status_code
@@ -173,13 +248,16 @@ class WebSSHHostMixin:
         if start_text == '':
             suffix_length = int(end_text)
             start = max(file_size - suffix_length, 0)
-            end = max(file_size - 1, 0)
+            # 保持与无Range请求时的一致性：空文件时end=-1
+            end = file_size - 1 if file_size > 0 else -1
         else:
             start = int(start_text)
-            end = int(end_text) if end_text else max(file_size - 1, 0)
+            end = int(end_text) if end_text else (file_size - 1 if file_size > 0 else -1)
 
-        if start >= file_size or end < start:
-            raise ValueError('invalid_range')
+        # 对于空文件，不进行范围验证；对于普通文件，验证start/end有效性
+        if file_size > 0:
+            if start >= file_size or end < start:
+                raise ValueError('invalid_range')
 
         end = min(end, file_size - 1)
         return start, end, 206
@@ -219,13 +297,6 @@ class WebSSHHostMixin:
         if not relation:
             return None
         return relation.get('credential_id')
-
-    @staticmethod
-    def _safe_upload_id(upload_id):
-        value = str(upload_id or '').strip()
-        if not value:
-            return ''
-        return value if re.fullmatch(r'[A-Za-z0-9._-]{1,128}', value) else ''
 
     def _guard_webssh_file_access(self, request, host):
         active_session_ids = WebSSHRuntimeRegistry.get_active_session_ids_for_host(host.id)
@@ -359,160 +430,67 @@ class WebSSHHostMixin:
 
     @action(detail=True, methods=['get'], url_path='files/download')
     def webssh_file_download(self, request, id=None):
-        trace_id = str(uuid.uuid4())[:8]
-        started_at = time.perf_counter()
-        guard_ms = -1
-        connect_ms = -1
-        stat_ms = -1
-        first_chunk_ms = -1
         host = cast(Any, self).get_object()
-        t_guard = time.perf_counter()
         guard_response = self._guard_webssh_file_access(request, host)
-        guard_ms = int((time.perf_counter() - t_guard) * 1000)
         if guard_response is not None:
-            logger.warning('[assets-direct-download:%s] guard_blocked host=%s elapsed=%sms', trace_id, host.id, guard_ms)
             return guard_response
         remote_path = (request.query_params.get('path') or '').strip()
         if not remote_path:
             return Response_error_str('path 不能为空', code=400)
 
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        remote_file = None
+        target_path = remote_path
+        local_temp_file = None
         try:
-            t_connect = time.perf_counter()
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            connect_ms = int((time.perf_counter() - t_connect) * 1000)
+            fd, local_temp_file = tempfile.mkstemp(prefix='webssh-download-', suffix='.tmp')
+            os.close(fd)
 
-            t_stat = time.perf_counter()
-            target_path = sftp_client.normalize(remote_path)
-            target_stat = sftp_client.lstat(target_path)
-            stat_ms = int((time.perf_counter() - t_stat) * 1000)
-            if stat.S_ISDIR(int(target_stat.st_mode or 0)):
-                self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=False)
-                return Response_error_str('目录下载暂不支持', code=400)
+            # ORM query must stay in sync context; async function only handles network I/O.
+            credential = self._get_default_credential(host)
+            connect_kwargs = self._build_asyncssh_connect_kwargs(host, credential)
 
-            file_size = int(target_stat.st_size or 0)
+            target_path, file_size = async_to_sync(self._download_remote_file_via_asyncssh)(
+                connect_kwargs,
+                remote_path,
+                local_temp_file,
+            )
             range_header = request.headers.get('Range') or request.META.get('HTTP_RANGE')
             try:
                 start, end, status_code = self._parse_download_range(range_header, file_size)
             except ValueError:
+                self._remove_local_temp_file(local_temp_file)
                 return self._range_not_satisfiable_response(file_size)
-
-            remote_file = sftp_client.file(target_path, 'rb', bufsize=TRANSFER_STREAM_CHUNK_BYTES)
-            if start > 0:
-                remote_file.seek(start)
-            try:
-                remote_file.prefetch(max_concurrent_requests=TRANSFER_SFTP_PREFETCH_REQUESTS)
-            except Exception:
-                pass
 
             def stream_file():
                 remaining = (end - start + 1) if file_size > 0 else 0
                 first_chunk = True
-                stream_broken = False
-                transfer_started = time.perf_counter()
-                last_progress_log_at = transfer_started
-                upstream_read_seconds = 0.0
-                downstream_send_seconds = 0.0
-                sent = 0
                 try:
-                    while remaining > 0:
-                        chunk_limit = TRANSFER_STREAM_FIRST_CHUNK_BYTES if first_chunk else TRANSFER_STREAM_CHUNK_BYTES
-                        t_read = time.perf_counter()
-                        chunk = remote_file.read(min(chunk_limit, remaining))
-                        upstream_read_seconds += max(time.perf_counter() - t_read, 0.0)
-                        if not chunk:
-                            break
-                        if first_chunk:
-                            first_chunk_ms = int((time.perf_counter() - transfer_started) * 1000)
-                            logger.warning(
-                                '[assets-direct-download:%s] host=%s path=%s size=%s guard=%sms connect=%sms stat=%sms first_chunk=%sms first_bytes=%s',
-                                trace_id,
-                                host.id,
-                                target_path,
-                                file_size,
-                                guard_ms,
-                                connect_ms,
-                                stat_ms,
-                                first_chunk_ms,
-                                len(chunk),
-                            )
-                        sent += len(chunk)
-                        remaining -= len(chunk)
-                        t_send = time.perf_counter()
-                        first_chunk = False
-                        yield chunk
-                        downstream_send_seconds += max(time.perf_counter() - t_send, 0.0)
-
-                        now = time.perf_counter()
-                        if now - last_progress_log_at >= TRANSFER_STREAM_PROGRESS_LOG_SECONDS:
-                            elapsed = max(now - transfer_started, 0.001)
-                            speed_mb = (sent / 1024 / 1024) / elapsed
-                            logger.warning(
-                                '[assets-direct-download:%s] progress host=%s sent=%s avg_speed=%.2fMB/s upstream_read=%.2fs downstream_send=%.2fs',
-                                trace_id,
-                                host.id,
-                                sent,
-                                speed_mb,
-                                upstream_read_seconds,
-                                downstream_send_seconds,
-                            )
-                            last_progress_log_at = now
-                except Exception:
-                    stream_broken = True
-                    raise
+                    with open(local_temp_file, 'rb', buffering=TRANSFER_STREAM_CHUNK_BYTES) as local_file:
+                        if start > 0:
+                            local_file.seek(start)
+                        while remaining > 0:
+                            chunk_limit = TRANSFER_STREAM_FIRST_CHUNK_BYTES if first_chunk else TRANSFER_STREAM_CHUNK_BYTES
+                            chunk = local_file.read(min(chunk_limit, remaining))
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                            first_chunk = False
+                            yield chunk
                 finally:
-                    elapsed = max(time.perf_counter() - transfer_started, 0.001)
-                    sent = max(sent, max(end - start + 1 - remaining, 0))
-                    speed_mb = (sent / 1024 / 1024) / elapsed
-                    logger.warning(
-                        '[assets-direct-download:%s] completed host=%s sent=%s elapsed=%.2fs avg_speed=%.2fMB/s upstream_read=%.2fs downstream_send=%.2fs total=%sms',
-                        trace_id,
-                        host.id,
-                        sent,
-                        elapsed,
-                        speed_mb,
-                        upstream_read_seconds,
-                        downstream_send_seconds,
-                        int((time.perf_counter() - started_at) * 1000),
-                    )
-                    try:
-                        remote_file.close()
-                    except Exception:
-                        pass
-                    self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=stream_broken)
+                    self._remove_local_temp_file(local_temp_file)
 
             file_name = target_path.split('/')[-1] or 'download.bin'
+            content_length = max(end - start + 1, 0)
             response = StreamingHttpResponse(stream_file(), status=status_code, content_type='application/octet-stream')
             response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(file_name)}"
             response['Accept-Ranges'] = 'bytes'
-            response['Content-Length'] = str(max(end - start + 1, 0))
+            response['Content-Length'] = str(content_length)
             if status_code == 206:
                 response['Content-Range'] = f'bytes {start}-{end}/{file_size}'
             response['X-Accel-Buffering'] = 'no'
             response['Cache-Control'] = 'no-cache'
             return response
         except Exception as exc:
-            if remote_file is not None:
-                try:
-                    remote_file.close()
-                except Exception:
-                    pass
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=True)
-            logger.exception(
-                '[assets-direct-download:%s] failed host=%s path=%s guard=%sms connect=%sms stat=%sms total=%sms err=%s',
-                trace_id,
-                host.id,
-                remote_path,
-                guard_ms,
-                connect_ms,
-                stat_ms,
-                int((time.perf_counter() - started_at) * 1000),
-                exc,
-            )
+            self._remove_local_temp_file(local_temp_file)
             return Response_error_str(str(exc), code=400)
 
     @action(detail=True, methods=['post'], url_path='files/upload/chunk')
@@ -532,40 +510,24 @@ class WebSSHHostMixin:
         if '/' in file_name:
             return Response_error_str('filename 不能包含路径分隔符', code=400)
 
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+        local_temp_file = None
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            normalized_dir = sftp_client.normalize(target_path)
-            remote_target_path = posixpath.join(normalized_dir.rstrip('/'), file_name) if normalized_dir != '/' else f'/{file_name}'
-            temp_name = f'.{file_name}.uploading.part'
-            remote_temp_path = posixpath.join(normalized_dir.rstrip('/'), temp_name) if normalized_dir != '/' else f'/{temp_name}'
-
-            # Match download-side transfer sizing to reduce Python loop overhead and SSH packet churn.
-            with sftp_client.file(remote_temp_path, 'wb', bufsize=TRANSFER_STREAM_CHUNK_BYTES) as remote_file:
-                try:
-                    remote_file.set_pipelined(True)
-                except Exception:
-                    pass
+            # Keep Django upload handling in sync context, then hand over to AsyncSSH for remote transfer.
+            fd, local_temp_file = tempfile.mkstemp(prefix='webssh-upload-', suffix='.part')
+            with os.fdopen(fd, 'wb') as local_file:
                 for chunk in upload_file.chunks(chunk_size=TRANSFER_STREAM_CHUNK_BYTES):
                     if not chunk:
                         continue
-                    remote_file.write(chunk)
-                try:
-                    remote_file.flush()
-                except Exception:
-                    pass
+                    local_file.write(chunk)
 
-            try:
-                existing_stat = sftp_client.lstat(remote_target_path)
-                if not stat.S_ISDIR(int(existing_stat.st_mode or 0)):
-                    sftp_client.remove(remote_target_path)
-            except Exception:
-                pass
-            sftp_client.rename(remote_temp_path, remote_target_path)
+            credential = self._get_default_credential(host)
+            connect_kwargs = self._build_asyncssh_connect_kwargs(host, credential)
+            remote_target_path = async_to_sync(self._upload_local_file_via_asyncssh)(
+                connect_kwargs,
+                target_path,
+                file_name,
+                local_temp_file,
+            )
             return Response_200(data={
                 'done': True,
                 'path': remote_target_path,
@@ -573,10 +535,9 @@ class WebSSHHostMixin:
                 'size': int(upload_file.size or 0),
             })
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
         finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+            self._remove_local_temp_file(local_temp_file)
 
     @action(detail=True, methods=['post'], url_path='files/rename')
     def webssh_file_rename(self, request, id=None):

@@ -130,14 +130,10 @@ import {
     formatFileMtime as _formatFileMtime,
 } from '@/views/assets/host/webssh/helpers/websshUtils.js'
 import {
-    TRANSFER_LIST_LIMIT,
     DOWNLOAD_ACTION_DEDUP_MS,
     DOWNLOAD_MODE_DIRECT,
-    trimUploadQueueToLimit as trimUploadQueueToLimitByHelper,
-    getTransferStatusMeta,
-    buildDownloadRows,
-    buildUploadRows,
     formatBytes,
+    formatDuration,
     getDownloadModeLabel,
     supportsStreamFileDownload,
     parseDownloadFilename,
@@ -197,10 +193,6 @@ const fileContextMenuStyle = ref({})
 const fileContextMenuRecord = ref(null)
 const fileContextMenuRowPath = ref('')
 const dragUploadDirPath = ref('')
-const transferContextMenuVisible = ref(false)
-const transferContextMenuStyle = ref({})
-const transferContextMenuTarget = ref(null)
-const transferContextMenuRowId = ref('')
 const downloadProgressVisible = ref(false)
 const downloadProgressPercent = ref(0)
 const downloadProgressStatus = ref('active')
@@ -213,8 +205,6 @@ const uploadProgressStatus = ref('active')
 const uploadProgressText = ref('')
 const uploadFileName = ref('')
 const uploadRunning = ref(false)
-const uploadQueue = ref([])
-let uploadQueueSeq = 0
 let lastDownloadActionKey = ''
 let lastDownloadActionAt = 0
 
@@ -246,14 +236,10 @@ const websshOpsController = createWebsshOpsController({
     computed,
     message,
     statusText,
-    uploadQueue,
-    trimUploadQueueToLimitByHelper,
-    transferListLimit: TRANSFER_LIST_LIMIT,
 })
 
 const fileOperationsEnabled = websshOpsController.fileOperationsEnabled
 const ensureFileOperationsEnabled = websshOpsController.ensureFileOperationsEnabled
-const trimUploadQueueToLimit = websshOpsController.trimUploadQueueToLimit
 
 const websshDataController = createWebsshDataController({
     computed,
@@ -261,46 +247,13 @@ const websshDataController = createWebsshDataController({
         fileFilterKeyword,
         fileEntries,
         fileContextMenuRecord,
-        transferContextMenuTarget,
-        downloadRunning,
-        downloadProgressStatus,
-        downloadFileName,
-        currentDownloadRecord,
-        downloadProgressText,
-        uploadRunning,
-        uploadProgressStatus,
-        uploadFileName,
-        currentUploadContext,
-        uploadProgressText,
-        fileCurrentPath,
-        uploadQueue,
     },
-    state: {},
-    helpers: {
-        buildDownloadRows,
-        buildUploadRows,
-        getTransferStatusMeta,
-    },
-    TRANSFER_LIST_LIMIT,
 })
 
 const activeSessionColumns = websshDataController.activeSessionColumns
 const fileColumns = websshDataController.fileColumns
 const filteredFileEntries = websshDataController.filteredFileEntries
 const fileContextMenuActions = websshDataController.fileContextMenuActions
-const transferContextMenuActions = websshDataController.transferContextMenuActions
-const downloadRows = websshDataController.downloadRows
-const uploadRows = websshDataController.uploadRows
-const hasDownloadTask = websshDataController.hasDownloadTask
-const hasUploadTask = websshDataController.hasUploadTask
-const displayedDownloadRows = websshDataController.displayedDownloadRows
-const displayedUploadRows = websshDataController.displayedUploadRows
-
-const transferPanelDismissed = ref(false)
-const transferPanelPinned = ref(false)
-const transferPanelCollapsed = ref(false)
-const transferPanelVisible = computed(() => false)
-const transferPanelHeight = ref(230)
 const fileTableWrapRef = ref(null)
 
 const layoutController = createWebsshLayoutController({
@@ -311,24 +264,15 @@ const layoutController = createWebsshLayoutController({
     filePanelRef,
     fileTableWrapRef,
     showFilePanel,
-    transferPanelVisible,
-    transferPanelDismissed,
-    transferPanelPinned,
-    transferPanelCollapsed,
     fileErrorText,
     fileCurrentPath,
     filteredFileEntries,
     fileLoading,
     fileTableScrollY,
     filePanelWidth,
-    transferPanelHeight,
     isFullscreen,
 })
 
-const ensureTransferPanelVisible = layoutController.ensureTransferPanelVisible
-const closeTransferPanel = layoutController.closeTransferPanel
-const toggleTransferPanelCollapsed = layoutController.toggleTransferPanelCollapsed
-const toggleTransferPanelVisibility = layoutController.toggleTransferPanelVisibility
 const syncTerminalFit = layoutController.syncTerminalFit
 const updateFileTableScrollY = layoutController.updateFileTableScrollY
 const scheduleFileTableScrollYSync = layoutController.scheduleFileTableScrollYSync
@@ -338,19 +282,10 @@ const updateFullscreenState = layoutController.updateFullscreenState
 const toggleFilePanel = layoutController.toggleFilePanel
 const startResize = layoutController.startResize
 const stopResize = layoutController.stopResize
-const startTransferResize = layoutController.startTransferResize
-const stopTransferResize = layoutController.stopTransferResize
 
 const handlePageUnload = () => {
     closeSocket()
 }
-
-watch(
-    layoutController.watchTransferPanelDeps,
-    () => {
-        syncTerminalFit()
-    },
-)
 
 watch(
     layoutController.watchFilePanelErrorDeps,
@@ -577,11 +512,7 @@ const websshFilePanelController = createWebsshFilePanelController({
     fileContextMenuVisible,
     fileContextMenuRecord,
     fileContextMenuRowPath,
-    transferContextMenuVisible,
-    transferContextMenuTarget,
-    transferContextMenuRowId,
     fileContextMenuStyle,
-    transferContextMenuStyle,
     dragUploadDirPath,
     resolveFileParentDirectory,
     handleDirectoryDragOver: (path) => handleDirectoryDragOver(path),
@@ -594,9 +525,7 @@ const openDirectory = websshFilePanelController.openDirectory
 const handlePathEnter = websshFilePanelController.handlePathEnter
 const goParentDir = websshFilePanelController.goParentDir
 const closeFileContextMenu = websshFilePanelController.closeFileContextMenu
-const closeTransferContextMenu = websshFilePanelController.closeTransferContextMenu
 const openFileContextMenu = websshFilePanelController.openFileContextMenu
-const openTransferContextMenu = websshFilePanelController.openTransferContextMenu
 const bindFileRowEvents = websshFilePanelController.bindFileRowEvents
 const triggerFileDownload = (blob, filename) => {
     const url = window.URL.createObjectURL(blob)
@@ -638,7 +567,6 @@ const hostState = {
     set lastDownloadActionAt(value) { lastDownloadActionAt = value },
     get uploadAbortController() { return uploadAbortController },
     set uploadAbortController(value) { uploadAbortController = value },
-    nextUploadSeq: () => (uploadQueueSeq += 1),
 }
 
 const websshDownloadController = createWebsshDownloadController(createWebsshDownloadSetup({
@@ -660,6 +588,7 @@ const websshDownloadController = createWebsshDownloadController(createWebsshDown
     message,
     helpers: {
         formatBytes,
+        formatDuration,
         supportsStreamFileDownload,
         buildDownloadTargetFilename,
         getDownloadModeLabel,
@@ -695,15 +624,13 @@ const websshUploadController = createWebsshUploadController(createWebsshUploadSe
         uploadProgressText,
         uploadProgressPercent,
         uploadFileName,
-        uploadQueue,
         fileCurrentPath,
         currentUploadContext,
     },
     message,
     ensureFileOperationsEnabled,
-    ensureTransferPanelVisible,
-    trimUploadQueueToLimit,
     formatBytes,
+    formatDuration,
     deps: {
         uploadHostWebSshFile,
         loadFiles,
@@ -711,7 +638,6 @@ const websshUploadController = createWebsshUploadController(createWebsshUploadSe
 }))
 
 const enqueueUploadTask = websshUploadController.enqueueUploadTask
-const removeUploadQueueItem = websshUploadController.removeUploadQueueItem
 const uploadRawFileToPath = websshUploadController.uploadRawFileToPath
 const uploadFile = websshUploadController.uploadFile
 const cancelUpload = websshUploadController.cancelUpload
@@ -731,19 +657,14 @@ const websshInteractionController = createWebsshInteractionController(createWebs
     refs: {
         fileCurrentPath,
         fileContextMenuRecord,
-        transferContextMenuTarget,
         downloadRunning,
         uploadRunning,
         dragUploadDirPath,
     },
     ensureFileOperationsEnabled,
     closeFileContextMenu,
-    closeTransferContextMenu,
     openDirectory,
     enqueueDownloadTask,
-    cancelDownload,
-    removeUploadQueueItem,
-    cancelUpload,
     uploadRawFileToPath,
     renameHostWebSshFile,
     deleteHostWebSshFile,
@@ -758,7 +679,6 @@ const createDirectory = websshInteractionController.createDirectory
 const handleFileContextAction = websshInteractionController.handleFileContextAction
 const hideContextMenuByGlobalClick = websshInteractionController.hideContextMenuByGlobalClick
 const hideContextMenuByEscape = websshInteractionController.hideContextMenuByEscape
-const handleTransferContextAction = websshInteractionController.handleTransferContextAction
 const handleDirectoryDragOver = websshInteractionController.handleDirectoryDragOver
 const handleDirectoryDragLeave = websshInteractionController.handleDirectoryDragLeave
 const handleDirectoryDrop = websshInteractionController.handleDirectoryDrop
@@ -785,7 +705,6 @@ const websshLifecycleController = createWebsshLifecycleController(createWebsshLi
         cancelActiveDownload,
         cancelUpload,
         stopResize,
-        stopTransferResize,
         disconnectFilePanelResizeObserver,
         closeSocket,
         disposeTerminal,

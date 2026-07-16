@@ -29,27 +29,53 @@ class AutomationJobFilterTest(TestCase):
             content='---\n- hosts: all\n  tasks: []\n',
         )
 
-    def test_job_list_supports_status_and_output_keyword_filter(self):
+    def test_job_list_ignores_output_keyword_after_detail_log_removal(self):
         matched = AnsibleExecutionJob.objects.create(
-            template=self.template,
             status=AnsibleExecutionJob.Status.SUCCESS,
             requested_username='alice',
-            job_output='deploy finished successfully',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
         )
-        AnsibleExecutionJob.objects.create(
-            template=self.template,
+        non_match = AnsibleExecutionJob.objects.create(
             status=AnsibleExecutionJob.Status.SUCCESS,
             requested_username='bob',
-            job_output='rollback due to timeout',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
         )
-        AnsibleExecutionJob.objects.create(
-            template=self.template,
+        failed = AnsibleExecutionJob.objects.create(
             status=AnsibleExecutionJob.Status.FAILED,
             requested_username='carol',
-            job_output='deploy finished successfully but later failed',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
+        )
+        res = self.client.get('/sys/automation/jobs/?status=success&output_keyword=finished')
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body.get('code'), 200)
+        data = body.get('data', {})
+        self.assertEqual(data.get('count'), 2)
+        result_ids = {item['id'] for item in data.get('results', [])}
+        self.assertIn(matched.id, result_ids)
+        self.assertIn(non_match.id, result_ids)
+
+    def test_job_list_keyword_matches_initiator_not_job_uuid(self):
+        keyword = 'owner-alice'
+        matched = AnsibleExecutionJob.objects.create(
+            status=AnsibleExecutionJob.Status.SUCCESS,
+            requested_username=keyword,
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
+        )
+        AnsibleExecutionJob.objects.create(
+            status=AnsibleExecutionJob.Status.SUCCESS,
+            requested_username='bob',
+            job_id=f'{keyword}-job-id',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
         )
 
-        res = self.client.get('/sys/automation/jobs/?status=success&output_keyword=finished')
+        res = self.client.get(f'/sys/automation/jobs/?keyword={keyword}')
 
         self.assertEqual(res.status_code, 200)
         body = res.json()
@@ -57,3 +83,19 @@ class AutomationJobFilterTest(TestCase):
         data = body.get('data', {})
         self.assertEqual(data.get('count'), 1)
         self.assertEqual(data.get('results', [])[0]['id'], matched.id)
+
+    def test_job_list_keyword_no_longer_matches_execution_record_id(self):
+        unmatched = AnsibleExecutionJob.objects.create(
+            status=AnsibleExecutionJob.Status.SUCCESS,
+            requested_username='operator',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
+        )
+
+        res = self.client.get(f'/sys/automation/jobs/?keyword={unmatched.id}')
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body.get('code'), 200)
+        data = body.get('data', {})
+        self.assertEqual(data.get('count'), 0)

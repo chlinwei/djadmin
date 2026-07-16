@@ -18,18 +18,6 @@
               <span>&nbsp新增任务</span>
             </a-button>
           </a-tooltip>
-          <a-tooltip title="历史记录">
-            <a-button @click="goToLogs" v-permission="'automation:jobs:view'">
-              <FontAwesomeIcon :icon="['fas', 'list']" />
-              <span>&nbsp;运行记录中心</span>
-            </a-button>
-          </a-tooltip>
-          <a-tooltip title="打开/跳转">
-            <a-button @click="goToWorkflow" v-permission="'automation:workflow:view'">
-              <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
-              <span>&nbsp;Workflow编排</span>
-            </a-button>
-          </a-tooltip>
           <a-tooltip title="刷新">
             <a-button type="primary" ghost :loading="taskLoading || playbookLoading" @click="reloadAll">
               <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="taskLoading || playbookLoading" />
@@ -1291,10 +1279,6 @@ function goToPlaybookTemplate(record) {
 
 function goToInventory(record) {
   router.push(buildAutomationInventoryRoute(record))
-}
-
-function goToWorkflow() {
-  router.push('/sys/automation/workflow')
 }
 
 function viewTaskLogs(record) {

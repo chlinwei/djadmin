@@ -75,13 +75,12 @@ class AutomationJobLogConsumerTest(TestCase):
 
     def test_connect_sends_snapshot_status_and_completed_for_finished_job(self):
         job = AnsibleExecutionJob.objects.create(
-            template=self.template,
             status=AnsibleExecutionJob.Status.SUCCESS,
-            job_output='[2026-07-04 10:00:00] done\n',
+            template_name_snapshot=self.template.name,
+            template_content_snapshot=self.template.content,
             requested_user_id=self.user.id,
             requested_username=self.user.username,
         )
-
         async def scenario():
             token = self._build_token(self.user, perms=['automation:jobs:view'])
             communicator = WebsocketCommunicator(
@@ -98,7 +97,7 @@ class AutomationJobLogConsumerTest(TestCase):
             self.assertEqual(first['type'], 'snapshot')
             self.assertEqual(first['data']['job_id'], job.id)
             self.assertEqual(first['data']['status'], AnsibleExecutionJob.Status.SUCCESS)
-            self.assertIn('done', first['data']['data'])
+            self.assertEqual(first['data']['data'], '')
 
             self.assertEqual(second['type'], 'status')
             self.assertEqual(second['data']['status'], AnsibleExecutionJob.Status.SUCCESS)

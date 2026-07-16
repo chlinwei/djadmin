@@ -1,5 +1,3 @@
-t
-
 # 项目上下文文档 - djadmin 运维管理平台
 
 ## 项目概述
@@ -169,26 +167,14 @@ media/      → 静态文件（头像等）
 | GET    | `/assets/hosts/{id}/webssh-active-count/`     | 获取当前在线会话人数                                                            |
 | GET    | `/assets/hosts/{id}/webssh-active-sessions/`  | 获取当前在线会话明细（会话ID、用户名、开始时间）                                |
 | GET    | `/assets/hosts/{id}/files/list/?path=...`     | 获取远端目录列表                                                                |
-| GET    | `/assets/hosts/{id}/files/download/?path=...` | 下载远端文件（旧直连接口，支持流式与 HTTP Range）                               |
-| POST   | `/assets/hosts/{id}/files/download-ticket/`   | 签发下载票据（前端默认先调用，再访问 transfer 服务）                            |
-| POST   | `/assets/hosts/{id}/files/upload/`            | 上传文件到远端目录（旧直传接口）                                                |
-| POST   | `/assets/hosts/{id}/files/upload-ticket/`     | 签发上传票据（前端默认先调用，再访问 transfer 服务）                            |
-| POST   | `/assets/hosts/{id}/files/upload/chunk/`      | 分片上传远端文件（旧接口，支持断点续传）                                        |
-| GET    | `/assets/hosts/{id}/files/upload/status/`     | 查询旧分片上传状态                                                              |
-| POST   | `/assets/hosts/{id}/files/upload/cancel/`     | 取消旧分片上传并清理远端临时分片                                                |
+| GET    | `/assets/hosts/{id}/files/download/?path=...` | 下载远端文件（流式返回，支持 HTTP Range）                                       |
+| POST   | `/assets/hosts/{id}/files/upload/chunk/`      | 上传文件到远端目录（当前上传接口名保留为 chunk，单请求上传）                    |
 | POST   | `/assets/hosts/{id}/files/rename/`            | 重命名远端文件/目录                                                             |
 | DELETE | `/assets/hosts/{id}/files/delete/`            | 删除远端文件/目录（目录支持递归）                                               |
 | POST   | `/assets/hosts/{id}/files/create-dir/`        | 新建远端目录                                                                    |
 | POST   | `/assets/hosts/{id}/files/create-file/`       | 新建远端空文件（后端能力保留）                                                  |
 
-**Transfer Service（独立数据面）接口**
-
-| 方法 | 路径                                                  | 功能                             |
-| ---- | ----------------------------------------------------- | -------------------------------- |
-| GET  | `/transfer/download/?ticket=...`                    | 按下载票据流式下载（支持 Range） |
-| POST | `/transfer/upload/chunk/`                           | 按上传票据上传分片               |
-| GET  | `/transfer/upload/status/?ticket=...&upload_id=...` | 按上传票据查询续传状态           |
-| POST | `/transfer/upload/cancel/`                          | 按上传票据取消分片上传           |
+说明：历史上的 ticket/status/cancel 相关接口文档已下线，当前实现以 hosts 下的 WebSSH 文件接口为准。
 
 **采集状态说明**
 
@@ -323,11 +309,11 @@ media/      → 静态文件（头像等）
 
 ---
 
-## Web SSH（已上线能力）
+## Web SSH（当前功能盘点）
 
 ### 技术栈
 
-- 后端：`paramiko` + `channels` + `daphne`
+- 后端：`channels` + `daphne` + `paramiko`（终端链路）+ `asyncssh`（下载/上传主链路）
 - 前端：`@xterm/xterm` + `@xterm/addon-fit` + Ant Design Vue
 - 通道层：`InMemoryChannelLayer`（单机开发）
 
@@ -335,44 +321,38 @@ media/      → 静态文件（头像等）
 
 #### 1) 终端与会话能力
 
-- 主机列表支持打开独立 WebSSH 页面（新窗口）。
-- 终端连接状态可视化：未连接/连接中/已连接/连接失败。
-- 支持重连、关闭、全屏切换、终端自动 fit。
-- 展示当前会话 ID，并支持下载当前会话日志。
+- 主机页面支持建立 WebSSH 终端连接（JWT 校验 + 权限校验）。
+- 终端支持输入、输出、窗口 resize、重连、关闭、全屏切换。
+- 连接成功后返回会话 ID、主机信息、推导的 home_dir。
+- 支持下载当前会话日志。
 
 #### 2) 在线会话监控
 
-- 页面展示当前主机在线 WebSSH 人数。
-- 支持查看在线会话列表（会话ID、用户名、开始时间）。
-- 在线人数与会话列表支持轮询刷新。
+- 页面展示当前主机在线会话人数。
+- 支持查看在线会话列表（会话 ID、用户名、开始时间）。
+- 凭证/主机连接关键字段变化时，会强制关闭相关在线会话。
 
 #### 3) 左侧文件管理（SFTP）
 
-- 目录浏览、进入目录、返回上级、手动输入路径跳转。
-- 文件列表关键字过滤（当前目录内按名称过滤）。
-- 上传文件、下载文件、重命名、删除、新建目录。
-- 支持显示/隐藏文件管理面板。
-- 支持拖拽分隔条调整文件面板与终端区宽度。
-- 文件操作入口已调整为右键菜单（文件/目录按能力显示）。
-- “返回”按钮改为向上箭头，行为为“返回上一次访问目录”（类似 `cd -`）。
-- 右键菜单支持“复制目录路径”：对文件与目录都复制其父目录路径（例如 `/home/a.txt` 与 `/home/test` 都复制 `/home`）。
-- 右键打开菜单时，当前行会高亮显示为选中态。
+- 支持目录浏览、进入目录、回到上级、路径输入跳转、关键字过滤。
+- 支持文件上传、文件下载、重命名、删除、新建目录、新建空文件（后端能力）。
+- 文件操作要求当前主机存在在线 WebSSH 会话，否则拒绝并提示离线。
+- 文件管理类接口（list/rename/delete/create-dir/create-file）当前仍基于 Paramiko SFTP。
 
 #### 4) 下载能力增强
 
-- 后端下载改为流式传输，避免整文件读入内存。
-- 下载接口支持 `Range`（HTTP 206）与 `Accept-Ranges`，可进行分块下载。
-- 前端增加下载任务面板，支持暂停/继续/取消与失败后继续下载。
-- 跨域下载相关 CORS 头已补齐（`Range`、`Content-Length`、`Content-Range` 等）。
-- 当前前端默认走「API 签发票据 + transfer-service 数据传输」链路。
+- 后端下载链路：AsyncSSH `get` 到本地临时文件，再以 StreamingHttpResponse 返回。
+- 支持 HTTP Range（206）与 Accept-Ranges。
+- 前端显示下载进度、已用时/总耗时，支持取消。
+- 同时仅允许一个下载任务，下载中再次触发会提示稍后重试。
+- 目录下载已关闭（前后端均拦截并提示）。
 
 #### 5) 上传能力增强
 
-- 上传改为前后端协同分片上传，支持暂停/继续/取消。
-- 继续上传基于同一 `upload_id` 从未完成分片继续传输，不再从 0 重新上传。
-- 取消上传会调用后端清理远端 `.part` 临时分片文件。
-- 页面刷新后会恢复上传断点元信息；需重新选择同名同大小文件后可继续上传。
-- 当前前端默认走「API 签发票据 + transfer-service 分片上传」链路。
+- 后端上传链路：先接收请求文件到本地临时文件，再 AsyncSSH `put` 到远端临时文件并 rename。
+- 前端显示上传进度、已用时/总耗时，支持取消。
+- 同时仅允许一个上传任务，上传中再次触发会提示稍后重试。
+- 已移除上传传输列表与排队机制，不再提供队列可视化。
 
 ### WebSocket 路径与事件
 
@@ -385,9 +365,9 @@ media/      → 静态文件（头像等）
 
 ### 生产部署建议（当前项目约束）
 
-- 文件传输已改为控制面/数据面分离：Django API 负责签发票据，transfer-service 负责上传下载数据流。
 - 建议将 WebSSH/文件传输流量与普通业务 API 进程隔离部署。
-- 多实例生产场景建议升级 `channels-redis`，并独立扩展 WebSSH 与传输 worker。
+- 多实例生产场景建议升级 `channels-redis`，并独立扩展 WebSSH 相关 worker。
+- 当前文件传输接口以 `/assets/hosts/{id}/files/*` 为主，文档与实现需保持同步。
 
 ---
 
@@ -508,8 +488,8 @@ python manage.py runtransfer --host 0.0.0.0 --port 9101
 4. 自动化任务可进入并提交任务。
 5. 调度器运行后，任务最近执行时间会更新。
 6. 自动化任务的 Playbook 执行任务会投递到 Celery Worker 执行（不再依赖 Web 线程）。
-7. WebSSH 下载会先请求 `/assets/hosts/{id}/files/download-ticket/`，再由 transfer 服务 `/transfer/download/` 实际传输。
-8. WebSSH 上传会先请求 `/assets/hosts/{id}/files/upload-ticket/`，再由 transfer 服务 `/transfer/upload/*` 执行分片上传/状态查询/取消。
+7. WebSSH 下载使用 `/assets/hosts/{id}/files/download/?path=...`，支持 Range 与流式返回。
+8. WebSSH 上传使用 `/assets/hosts/{id}/files/upload/chunk/`，上传中再次上传会提示稍后重试（无传输列表/无排队）。
 9. 自动化“任务运行记录”中，`pending` 状态任务不展示“下载日志”按钮。
 
 ### 8. 端口联动注意事项

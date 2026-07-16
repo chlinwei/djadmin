@@ -5,9 +5,8 @@ export function createWebsshUploadController(options) {
         refs,
         message,
         ensureFileOperationsEnabled,
-        ensureTransferPanelVisible,
-        trimUploadQueueToLimit,
         formatBytes,
+        formatDuration,
         uploadHostWebSshFile,
         loadFiles,
     } = options
@@ -22,7 +21,6 @@ export function createWebsshUploadController(options) {
         refs.uploadProgressText.value = ''
         refs.uploadFileName.value = ''
         refs.uploadRunning.value = false
-        refs.uploadQueue.value = []
         refs.currentUploadContext.value = null
     }
 
@@ -43,6 +41,8 @@ export function createWebsshUploadController(options) {
         const targetPath = task.targetPath || refs.fileCurrentPath.value || '.'
         let uploadedBytes = 0
         let lastProgressUiAt = 0
+        const startedAt = performance.now()
+        const getElapsedMs = () => Math.max(0, performance.now() - startedAt)
         refs.currentUploadContext.value = {
             fileName,
             targetPath,
@@ -55,14 +55,14 @@ export function createWebsshUploadController(options) {
             refs.uploadProgressStatus.value = 'active'
             refs.uploadFileName.value = fileName
             refs.uploadProgressPercent.value = Number(Math.min(100, (uploadedBytes / Math.max(totalSize, 1)) * 100).toFixed(1))
-            refs.uploadProgressText.value = '正在准备上传...'
+            refs.uploadProgressText.value = `正在准备上传... | 已用时 ${formatDuration(getElapsedMs())}`
 
             const formData = new FormData()
             formData.append('path', targetPath)
             formData.append('filename', fileName)
             formData.append('file', rawFile, fileName)
 
-            refs.uploadProgressText.value = '正在上传...'
+            refs.uploadProgressText.value = `正在上传... | 已用时 ${formatDuration(getElapsedMs())}`
             await uploadHostWebSshFile(getHostId(), formData, {
                 // Keep upload timeout longer than axios default 30s for large file transfer.
                 timeout: 15 * 60 * 1000,
@@ -77,7 +77,12 @@ export function createWebsshUploadController(options) {
                     }
                     lastProgressUiAt = now
                     refs.uploadProgressPercent.value = Number(Math.min(100, (uploadedBytes / Math.max(totalSize, 1)) * 100).toFixed(1))
-                    refs.uploadProgressText.value = `${formatBytes(uploadedBytes)} / ${formatBytes(totalSize)}`
+                    const elapsedText = formatDuration(getElapsedMs())
+                    if (Number.isFinite(totalSize) && totalSize > 0) {
+                        refs.uploadProgressText.value = `${formatBytes(uploadedBytes)} / ${formatBytes(totalSize)} | 已用时 ${elapsedText}`
+                    } else {
+                        refs.uploadProgressText.value = `已上传 ${formatBytes(uploadedBytes)} | 总大小未知 | 已用时 ${elapsedText}`
+                    }
                     if (onProgress) {
                         onProgress({ percent: refs.uploadProgressPercent.value })
                     }
@@ -86,7 +91,7 @@ export function createWebsshUploadController(options) {
 
             refs.uploadProgressPercent.value = 100
             refs.uploadProgressStatus.value = 'success'
-            refs.uploadProgressText.value = '上传完成'
+            refs.uploadProgressText.value = `上传完成 | 总耗时 ${formatDuration(getElapsedMs())}`
             message.success('文件上传成功')
             await loadFiles(refs.fileCurrentPath.value)
             if (onSuccess) onSuccess()
@@ -108,35 +113,15 @@ export function createWebsshUploadController(options) {
         } finally {
             refs.uploadRunning.value = false
             state.uploadAbortController = null
-            void startNextUploadFromQueue()
         }
-    }
-
-    const startNextUploadFromQueue = async () => {
-        if (refs.uploadRunning.value) return
-        const nextItem = refs.uploadQueue.value.shift()
-        if (!nextItem) return
-        await startUpload(nextItem.task, nextItem.callbacks)
     }
 
     const enqueueUploadTask = (task, callbacks = {}) => {
-        ensureTransferPanelVisible()
-        refs.uploadQueue.value.unshift({
-            id: `upload-${Date.now()}-${state.nextUploadSeq()}`,
-            task,
-            callbacks,
-        })
-        trimUploadQueueToLimit()
         if (refs.uploadRunning.value) {
-            message.info(`已加入上传队列（待处理 ${refs.uploadQueue.value.length} 个）`)
+            message.warning('当前有上传任务进行中，请稍后再试')
             return
         }
-        void startNextUploadFromQueue()
-    }
-
-    const removeUploadQueueItem = (queueId) => {
-        const nextQueue = refs.uploadQueue.value.filter((item) => item.id !== queueId)
-        refs.uploadQueue.value = nextQueue
+        void startUpload(task, callbacks)
     }
 
     const uploadRawFileToPath = async (rawFile, targetPath, callbacks = {}) => {
@@ -176,9 +161,7 @@ export function createWebsshUploadController(options) {
 
     return {
         resetUploadProgress,
-        startNextUploadFromQueue,
         enqueueUploadTask,
-        removeUploadQueueItem,
         uploadRawFileToPath,
         uploadFile,
         cancelUpload,

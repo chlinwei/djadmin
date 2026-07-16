@@ -3,9 +3,6 @@ export function createWebsshOpsController(options) {
         computed,
         message,
         statusText,
-        uploadQueue,
-        trimUploadQueueToLimitByHelper,
-        transferListLimit,
     } = options
     const fileOperationsEnabled = computed(() => statusText.value === '已连接')
     let lastFileOpsOfflineNoticeAt = 0
@@ -29,16 +26,8 @@ export function createWebsshOpsController(options) {
         return false
     }
 
-    const trimUploadQueueToLimit = () => {
-        trimUploadQueueToLimitByHelper({
-            uploadQueue,
-            transferListLimit,
-        })
-    }
-
     return {
         fileOperationsEnabled,
         ensureFileOperationsEnabled,
-        trimUploadQueueToLimit,
     }
 }

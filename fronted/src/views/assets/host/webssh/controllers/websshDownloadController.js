@@ -10,15 +10,25 @@ export function createWebsshDownloadController(options) {
         deps,
     } = options
 
-    const applyDownloadProgressDisplay = (downloaded, total) => {
+    const applyDownloadProgressDisplay = (downloaded, total, elapsedMs = 0) => {
         const totalSize = Number(total || 0)
         const doneSize = Number(downloaded || 0)
-        if (!Number.isFinite(totalSize) || totalSize <= 0) {
+        const elapsedText = helpers.formatDuration(Math.max(0, Number(elapsedMs || 0)))
+        
+        // 空文件的特殊处理：总大小为0
+        if (totalSize === 0) {
+            refs.downloadProgressPercent.value = 100
+            refs.downloadProgressText.value = `文件为空 | 已用时 ${elapsedText}`
+            return
+        }
+        
+        if (!Number.isFinite(totalSize) || totalSize < 0) {
+            // 总大小未知的情况
             refs.downloadProgressPercent.value = refs.downloadRunning.value ? 0 : 100
             if (doneSize > 0) {
-                refs.downloadProgressText.value = `已下载 ${helpers.formatBytes(doneSize)} | 总大小未知`
+                refs.downloadProgressText.value = `已下载 ${helpers.formatBytes(doneSize)} | 总大小未知 | 已用时 ${elapsedText}`
             } else {
-                refs.downloadProgressText.value = '正在下载（总大小未知）...'
+                refs.downloadProgressText.value = `正在下载（总大小未知）... | 已用时 ${elapsedText}`
             }
             return
         }
@@ -28,7 +38,7 @@ export function createWebsshDownloadController(options) {
         } else {
             refs.downloadProgressPercent.value = Number(Math.min(100, rawPercent).toFixed(1))
         }
-        refs.downloadProgressText.value = `${helpers.formatBytes(doneSize)} / ${helpers.formatBytes(totalSize)}`
+        refs.downloadProgressText.value = `${helpers.formatBytes(doneSize)} / ${helpers.formatBytes(totalSize)} | 已用时 ${elapsedText}`
     }
 
     const updateDownloadProgress = (downloaded, total, elapsedMs = 0) => {
@@ -36,7 +46,11 @@ export function createWebsshDownloadController(options) {
         state.downloadProgressTotalBytes = Math.max(0, Number(total || 0))
         state.downloadProgressElapsedMs = Math.max(0, Number(elapsedMs || 0))
         state.downloadProgressDisplayBytes = state.downloadProgressActualBytes
-        applyDownloadProgressDisplay(state.downloadProgressDisplayBytes, state.downloadProgressTotalBytes)
+        applyDownloadProgressDisplay(
+            state.downloadProgressDisplayBytes,
+            state.downloadProgressTotalBytes,
+            state.downloadProgressElapsedMs,
+        )
     }
 
     const issueDirectDownloadUrl = (path) => {
@@ -65,6 +79,10 @@ export function createWebsshDownloadController(options) {
     }
 
     const enqueueDownloadTask = async (record, downloadMode = constants.DOWNLOAD_MODE_DIRECT) => {
+        if (record?.is_dir) {
+            message.error('目录下载功能已关闭，请改为逐个下载文件')
+            return
+        }
         const recordPath = String(record?.path || '').trim()
         const actionKey = `${recordPath}|${downloadMode}`
         const now = Date.now()
@@ -190,7 +208,8 @@ export function createWebsshDownloadController(options) {
             const contentLength = Number(response.headers.get('content-length') || '0')
             const totalMatch = contentRange.match(/\/(\d+)$/)
             const streamTotalSize = totalMatch?.[1] ? Number(totalMatch[1]) : (Number.isFinite(contentLength) ? contentLength : fileSize)
-            if (streamTotalSize > 0) {
+            // 后端响应头中获取的真实文件大小应该覆盖列表中的值（包括空文件的 0 字节）
+            if (Number.isFinite(streamTotalSize)) {
                 fileSize = streamTotalSize
             }
             const reader = response.body?.getReader()
@@ -232,7 +251,7 @@ export function createWebsshDownloadController(options) {
             elapsedMs = getElapsedMs()
             updateDownloadProgress(downloaded, fileSize, elapsedMs)
             refs.downloadProgressPercent.value = 100
-            refs.downloadProgressText.value = '下载完成'
+            refs.downloadProgressText.value = `下载完成 | 总耗时 ${helpers.formatDuration(elapsedMs)}`
             message.success('文件下载成功')
         } catch (error) {
             const cancelErrorText = String(error?.message || '')

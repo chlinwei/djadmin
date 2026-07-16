@@ -11,7 +11,9 @@ from rest_framework_jwt.settings import api_settings
 from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
+from .executor import execute_ansible_job
 from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate
+from .models import AnsibleExecutionJob
 
 
 def _get_token(user: SysUser) -> str:
@@ -37,6 +39,43 @@ class BaseTestCase(TestCase):
 		self.assertIn('data', body)
 		self.assertEqual(body['code'], 200, msg=f"Expected code=200, got: {body}")
 		return body
+
+
+class AnsibleExecutionJobIdempotencyTest(TestCase):
+	def test_running_job_is_not_reexecuted(self):
+		start_time = timezone.now() - timedelta(minutes=1)
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.RUNNING,
+			start_time=start_time,
+			result_summary={'message': 'already running'},
+		)
+
+		with patch('automation.executor.close_old_connections'):
+			execute_ansible_job(job.id)
+
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.RUNNING)
+		self.assertEqual(job.result_summary, {'message': 'already running'})
+		self.assertEqual(job.start_time, start_time)
+
+	def test_replayed_message_after_completion_is_ignored(self):
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.PENDING,
+			template_content_snapshot='',
+			inventory_snapshot={'hosts': []},
+		)
+
+		with patch('automation.executor.close_old_connections'):
+			execute_ansible_job(job.id)
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		first_end_time = job.end_time
+
+		with patch('automation.executor.close_old_connections'):
+			execute_ansible_job(job.id)
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertEqual(job.end_time, first_end_time)
 
 
 class PlaybookTemplateFileTest(BaseTestCase):
@@ -258,7 +297,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 		)
 
 	def test_run_template_dispatches_to_celery(self):
-		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
 			res = self.client.post(
 				f'/sys/automation/playbooks/{self.template.id}/run/',  # type: ignore[attr-defined]
 				{'host_ids': [self.host.id], 'group_ids': [], 'extra_vars': {}},
@@ -269,7 +308,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			mock_delay.assert_called_once()
 
 	def test_run_now_dispatches_to_celery(self):
-		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
 			res = self.client.post(
 				f'/sys/automation/tasks/{self.task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
@@ -297,7 +336,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
 			res = self.client.post(
 				f'/sys/automation/tasks/{task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
@@ -394,6 +433,101 @@ class AutomationRunDispatchTest(BaseTestCase):
 		body = res_run.json()
 		self.assertEqual(body['code'], 400)
 		self.assertIn('未配置 Inventory', body['msg'])
+
+
+class AutomationJobEventsApiTest(BaseTestCase):
+	def test_job_events_endpoint_returns_empty_list(self):
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.RUNNING,
+		)
+
+		res = self.client.get(f'/sys/automation/jobs/{job.id}/events/?stream=stderr&host_name=host-b')
+		body = self.assertResponseOK(res)
+		self.assertEqual(body['data'], [])
+
+	def test_job_host_summary_endpoint_keeps_zero_event_counters(self):
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.RUNNING,
+			inventory_snapshot={
+				'hosts': [
+					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
+					{'host_name': 'host-b', 'host_ip': '10.0.0.2'},
+				]
+			},
+		)
+
+		res = self.client.get(f'/sys/automation/jobs/{job.id}/host_summary/')
+		body = self.assertResponseOK(res)
+		self.assertEqual(body['data']['count'], 2)
+
+		items = body['data']['results']
+		host_a = next(item for item in items if item['host_name'] == 'host-a')
+		self.assertEqual(host_a['status'], AnsibleExecutionJob.Status.RUNNING)
+		self.assertEqual(host_a['total_events'], 0)
+		self.assertEqual(host_a['stdout_events'], 0)
+		self.assertEqual(host_a['stderr_events'], 0)
+
+		res_failed = self.client.get(f'/sys/automation/jobs/{job.id}/host_summary/?status=running')
+		body_failed = self.assertResponseOK(res_failed)
+		self.assertEqual(body_failed['data']['count'], 2)
+		host_names = {item['host_name'] for item in body_failed['data']['results']}
+		self.assertSetEqual(host_names, {'host-a', 'host-b'})
+
+	def test_job_status_summary_endpoint_counts_by_target_status(self):
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.RUNNING,
+			inventory_snapshot={
+				'hosts': [
+					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
+					{'host_name': 'host-b', 'host_ip': '10.0.0.2'},
+					{'host_name': 'host-c', 'host_ip': '10.0.0.3'},
+					{'host_name': 'host-d', 'host_ip': '10.0.0.4'},
+				]
+			},
+		)
+
+		res = self.client.get(f'/sys/automation/jobs/{job.id}/status_summary/')
+		body = self.assertResponseOK(res)
+		data = body['data']
+		self.assertEqual(data['job_id'], job.id)
+		self.assertEqual(data['job_status'], AnsibleExecutionJob.Status.RUNNING)
+		self.assertEqual(data['total_hosts'], 4)
+		self.assertEqual(data['finished_hosts'], 0)
+		self.assertEqual(data['success'], 0)
+		self.assertEqual(data['failed'], 0)
+		self.assertEqual(data['unreachable'], 0)
+		self.assertEqual(data['pending'], 4)
+		self.assertEqual(data['running'], 0)
+		self.assertEqual(data['skipped'], 0)
+
+	def test_jobs_list_optionally_includes_status_summary(self):
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.SUCCESS,
+			inventory_snapshot={
+				'hosts': [
+					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
+					{'host_name': 'host-b', 'host_ip': '10.0.0.2'},
+				]
+			},
+		)
+
+		res_plain = self.client.get(f'/sys/automation/jobs/?job_id={job.id}')
+		body_plain = self.assertResponseOK(res_plain)
+		plain_item = body_plain['data']['results'][0]
+		self.assertNotIn('status_summary', plain_item)
+
+		res_with_summary = self.client.get(
+			f'/sys/automation/jobs/?job_id={job.id}&include_status_summary=1'
+		)
+		body_with_summary = self.assertResponseOK(res_with_summary)
+		item = body_with_summary['data']['results'][0]
+		self.assertIn('status_summary', item)
+		summary = item['status_summary']
+		self.assertEqual(summary['total_hosts'], 2)
+		self.assertEqual(summary['finished_hosts'], 2)
+		self.assertEqual(summary['success'], 2)
+		self.assertEqual(summary['failed'], 0)
+		self.assertEqual(summary['pending'], 0)
 
 
 class AutomationWorkflowTest(BaseTestCase):
@@ -661,7 +795,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow = self._create_workflow()
 		self._setup_workflow_with_inventory(workflow)
 
-		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -704,7 +838,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		)
 		workflow = self.assertResponseOK(res)['data']
 
-		with patch('automation.views.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
 			launch_res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -1096,7 +1230,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow_id = workflow['id']
 
 		# 创建一个运行记录
-		with patch('automation.views.execute_ansible_job_task.delay'):
+		with patch('automation.tasks.execute_ansible_job_task.delay'):
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow_id}/launch/",
 				{},
@@ -1403,3 +1537,82 @@ class AutomationWorkflowTest(BaseTestCase):
 		run.refresh_from_db()
 		self.assertEqual(run.duration_seconds, 300.0)
 		self.assertEqual(run.end_time, end_at)
+
+
+class JobTimeoutDetectionTest(TestCase):
+	"""测试job超时自动失败检测"""
+
+	def test_pending_job_timeout_after_5_minutes(self):
+		"""Pending超过5分钟应自动标记为失败"""
+		from automation.tasks import check_and_fail_stale_jobs
+
+		# 创建一个5分钟前就处于pending的job
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.PENDING,
+			result_summary={'message': 'waiting'},
+		)
+		old_time = timezone.now() - timedelta(minutes=6)
+		AnsibleExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
+
+		# 运行检测任务
+		result = check_and_fail_stale_jobs()
+
+		# 验证job被标记为失败
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertIn('worker_unavailable', job.result_summary.get('fail_reason', ''))
+		self.assertEqual(result['pending_failed'], 1)
+
+	def test_running_job_timeout_with_task_timeout(self):
+		"""Running超过task的timeout应自动标记为失败"""
+		from automation.tasks import check_and_fail_stale_jobs
+
+		# 创建playbook和task
+		playbook = PlaybookTemplate.objects.create(
+			name='test-pb',
+			content='---\n- hosts: all\n  tasks:\n    - debug: msg=hello',
+		)
+		task = AutomationTask.objects.create(
+			name='test-task',
+			code='test-task',
+			template=playbook,
+			execution_timeout_seconds=300,  # 5分钟超时
+		)
+
+		# 创建一个10分钟前就处于running的job
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.RUNNING,
+			task=task,
+			result_summary={'message': 'running...'},
+		)
+		old_time = timezone.now() - timedelta(minutes=11)
+		AnsibleExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
+
+		# 运行检测任务
+		result = check_and_fail_stale_jobs()
+
+		# 验证job被标记为失败
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertIn('execution_timeout', job.result_summary.get('fail_reason', ''))
+		self.assertEqual(job.result_summary.get('timeout_seconds'), 300)
+		self.assertEqual(result['running_failed'], 1)
+
+	def test_recent_jobs_not_failed_by_timeout(self):
+		"""最近创建的job不应被标记为超时失败"""
+		from automation.tasks import check_and_fail_stale_jobs
+
+		# 创建一个最近1分钟创建的pending job
+		job = AnsibleExecutionJob.objects.create(
+			status=AnsibleExecutionJob.Status.PENDING,
+			result_summary={'message': 'just created'},
+		)
+
+		# 运行检测任务
+		result = check_and_fail_stale_jobs()
+
+		# 验证job仍然是pending
+		job.refresh_from_db()
+		self.assertEqual(job.status, AnsibleExecutionJob.Status.PENDING)
+		self.assertEqual(result['pending_failed'], 0)
+		self.assertEqual(result['running_failed'], 0)

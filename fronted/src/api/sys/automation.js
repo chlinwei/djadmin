@@ -102,8 +102,12 @@ export function getJobLog(id) {
   return requestUtil.get(prefix + `jobs/${id}/log/`)
 }
 
-export function getTargetList(params) {
-  return requestUtil.get(prefix + 'targets/', params)
+export function getJobHostSummary(id) {
+  return requestUtil.get(prefix + `jobs/${id}/host_summary/`)
+}
+
+export function getJobStatusSummary(id) {
+  return requestUtil.get(prefix + `jobs/${id}/status_summary/`)
 }
 
 export function getWorkflowList(params) {

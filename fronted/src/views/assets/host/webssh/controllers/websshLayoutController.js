@@ -7,23 +7,17 @@ export function createWebsshLayoutController(options) {
         filePanelRef,
         fileTableWrapRef,
         showFilePanel,
-        transferPanelVisible,
-        transferPanelDismissed,
-        transferPanelPinned,
-        transferPanelCollapsed,
         fileErrorText,
         fileCurrentPath,
         filteredFileEntries,
         fileLoading,
         fileTableScrollY,
         filePanelWidth,
-        transferPanelHeight,
         isFullscreen,
     } = options
 
     let filePanelResizeObserver = null
     let resizing = false
-    let transferResizing = false
 
     const updateFileTableScrollY = () => {
         const tableWrapEl = fileTableWrapRef.value
@@ -77,33 +71,6 @@ export function createWebsshLayoutController(options) {
         }
     }
 
-    const ensureTransferPanelVisible = () => {
-        transferPanelDismissed.value = false
-        transferPanelPinned.value = true
-    }
-
-    const closeTransferPanel = () => {
-        transferPanelDismissed.value = true
-        transferPanelPinned.value = false
-        syncTerminalFit()
-    }
-
-    const toggleTransferPanelCollapsed = () => {
-        transferPanelCollapsed.value = !transferPanelCollapsed.value
-        syncTerminalFit()
-    }
-
-    const toggleTransferPanelVisibility = () => {
-        if (transferPanelVisible.value) {
-            closeTransferPanel()
-            return
-        }
-        transferPanelDismissed.value = false
-        transferPanelPinned.value = true
-        transferPanelCollapsed.value = false
-        syncTerminalFit()
-    }
-
     const updateFullscreenState = () => {
         isFullscreen.value = Boolean(document.fullscreenElement)
         syncTerminalFit()
@@ -148,40 +115,6 @@ export function createWebsshLayoutController(options) {
         handleResizeMove(event)
     }
 
-    const clampTransferPanelHeight = (nextHeight) => {
-        const minHeight = 150
-        const pageHeight = websshPageRef.value?.clientHeight || window.innerHeight
-        const maxHeight = Math.max(minHeight, pageHeight - 280)
-        transferPanelHeight.value = Math.min(maxHeight, Math.max(minHeight, Number(nextHeight) || minHeight))
-        syncTerminalFit()
-    }
-
-    const handleTransferResizeMove = (event) => {
-        if (!transferResizing || !websshPageRef.value) return
-        const rect = websshPageRef.value.getBoundingClientRect()
-        const nextHeight = rect.bottom - event.clientY
-        clampTransferPanelHeight(nextHeight)
-    }
-
-    const stopTransferResize = () => {
-        if (!transferResizing) return
-        transferResizing = false
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        window.removeEventListener('mousemove', handleTransferResizeMove)
-        window.removeEventListener('mouseup', stopTransferResize)
-    }
-
-    const startTransferResize = (event) => {
-        if (!websshPageRef.value) return
-        transferResizing = true
-        document.body.style.cursor = 'row-resize'
-        document.body.style.userSelect = 'none'
-        window.addEventListener('mousemove', handleTransferResizeMove)
-        window.addEventListener('mouseup', stopTransferResize)
-        handleTransferResizeMove(event)
-    }
-
     const toggleFilePanel = () => {
         showFilePanel.value = !showFilePanel.value
         stopResize()
@@ -192,15 +125,10 @@ export function createWebsshLayoutController(options) {
         })
     }
 
-    const watchTransferPanelDeps = () => [transferPanelVisible.value, transferPanelCollapsed.value]
     const watchFilePanelErrorDeps = () => [showFilePanel.value, fileErrorText.value]
     const watchFileListDeps = () => [fileCurrentPath.value, filteredFileEntries.value.length, fileLoading.value]
 
     return {
-        ensureTransferPanelVisible,
-        closeTransferPanel,
-        toggleTransferPanelCollapsed,
-        toggleTransferPanelVisibility,
         syncTerminalFit,
         updateFileTableScrollY,
         scheduleFileTableScrollYSync,
@@ -210,9 +138,6 @@ export function createWebsshLayoutController(options) {
         toggleFilePanel,
         startResize,
         stopResize,
-        startTransferResize,
-        stopTransferResize,
-        watchTransferPanelDeps,
         watchFilePanelErrorDeps,
         watchFileListDeps,
     }

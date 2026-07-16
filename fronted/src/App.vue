@@ -20,7 +20,6 @@ watch(route,(to,from,next) => {
      all_routes.forEach(e => {
       if(e.path == to.path) {
         e.meta.cached = true;
-        console.log("=======hahahh=========")
         console.log(e)
       }
      })

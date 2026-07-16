@@ -234,6 +234,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'scheduler.dispatch_due_tasks',
         'schedule': 60.0,
     },
+    'check-and-fail-stale-jobs': {
+        'task': 'automation.check_and_fail_stale_jobs',
+        'schedule': 60.0,  # 每分钟运行一次，检查超时的pending和running任务
+    },
 }
 
 # Transfer service
@@ -243,10 +247,8 @@ TRANSFER_SSH_POOL_IDLE_SECONDS = int(os.getenv('TRANSFER_SSH_POOL_IDLE_SECONDS',
 TRANSFER_STREAM_FIRST_CHUNK_BYTES = int(os.getenv('TRANSFER_STREAM_FIRST_CHUNK_BYTES', str(256 * 1024)))
 # Increase default stream chunk to reduce read-loop overhead on large files.
 TRANSFER_STREAM_CHUNK_BYTES = int(os.getenv('TRANSFER_STREAM_CHUNK_BYTES', str(16 * 1024 * 1024)))
-TRANSFER_STREAM_PROGRESS_LOG_SECONDS = int(os.getenv('TRANSFER_STREAM_PROGRESS_LOG_SECONDS', '5'))
 TRANSFER_SFTP_WINDOW_SIZE = int(os.getenv('TRANSFER_SFTP_WINDOW_SIZE', str(16 * 1024 * 1024)))
 TRANSFER_SFTP_MAX_PACKET_SIZE = int(os.getenv('TRANSFER_SFTP_MAX_PACKET_SIZE', str(512 * 1024)))
-TRANSFER_SFTP_PREFETCH_REQUESTS = int(os.getenv('TRANSFER_SFTP_PREFETCH_REQUESTS', '64'))
 
 
 #打印sql日志

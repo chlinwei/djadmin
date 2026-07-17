@@ -1,6 +1,7 @@
 from urllib.parse import unquote
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from datetime import timedelta
+import subprocess
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -12,7 +13,7 @@ from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
 from .executor import execute_ansible_job
-from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate
+from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate, ShellScriptTemplate
 from .models import AnsibleExecutionJob
 
 
@@ -93,11 +94,14 @@ class PlaybookTemplateFileTest(BaseTestCase):
 			b'---\n- hosts: web\n  gather_facts: false\n',
 			content_type='application/x-yaml',
 		)
-
-		res = self.client.post(
-			f'/sys/automation/playbooks/{self.template.id}/upload/',  # type: ignore[attr-defined]
-			{'file': upload},
-		)
+		with patch(
+			'automation.views_playbook.subprocess.run',
+			return_value=subprocess.CompletedProcess(args=['ansible-playbook'], returncode=0, stdout='', stderr=''),
+		):
+			res = self.client.post(
+				f'/sys/automation/playbooks/{self.template.id}/upload/',  # type: ignore[attr-defined]
+				{'file': upload},
+			)
 
 		body = self.assertResponseOK(res)
 		self.template.refresh_from_db()
@@ -142,15 +146,23 @@ class PlaybookTemplateFileTest(BaseTestCase):
 			b'---\n- hosts: web\n  tasks:\n    - name: bad\n      debug: "msg"\n      - invalid\n',
 			content_type='application/x-yaml',
 		)
-
-		res = self.client.post(
-			f'/sys/automation/playbooks/{self.template.id}/upload/',  # type: ignore[attr-defined]
-			{'file': upload},
-		)
+		with patch(
+			'automation.views_playbook.subprocess.run',
+			return_value=subprocess.CompletedProcess(
+				args=['ansible-playbook'],
+				returncode=1,
+				stdout='',
+				stderr='syntax error while loading YAML',
+			),
+		):
+			res = self.client.post(
+				f'/sys/automation/playbooks/{self.template.id}/upload/',  # type: ignore[attr-defined]
+				{'file': upload},
+			)
 
 		body = res.json()
 		self.assertEqual(body['code'], 400)
-		self.assertIn('Playbook YAML syntax error', body['msg'])
+		self.assertIn('Playbook Ansible syntax error', body['msg'])
 
 	def test_create_playbook_rejects_invalid_yaml_structure(self):
 		res = self.client.post(
@@ -169,29 +181,42 @@ class PlaybookTemplateFileTest(BaseTestCase):
 		self.assertIn('content', body.get('data', {}))
 
 	def test_validate_playbook_content_success(self):
-		res = self.client.post(
-			'/sys/automation/playbooks/validate/',
-			{
-				'content': '---\n- hosts: all\n  gather_facts: false\n  tasks: []\n',
-			},
-			format='json',
-		)
+		with patch(
+			'automation.views_playbook.subprocess.run',
+			return_value=subprocess.CompletedProcess(args=['ansible-playbook'], returncode=0, stdout='', stderr=''),
+		):
+			res = self.client.post(
+				'/sys/automation/playbooks/validate/',
+				{
+					'content': '---\n- hosts: all\n  gather_facts: false\n  tasks: []\n',
+				},
+				format='json',
+			)
 
 		body = self.assertResponseOK(res)
 		self.assertTrue(body['data']['valid'])
 
 	def test_validate_playbook_content_rejects_invalid_yaml(self):
-		res = self.client.post(
-			'/sys/automation/playbooks/validate/',
-			{
-				'content': '---\n- hosts: all\n  tasks:\n    - name: bad\n      debug: "x"\n      - invalid\n',
-			},
-			format='json',
-		)
+		with patch(
+			'automation.views_playbook.subprocess.run',
+			return_value=subprocess.CompletedProcess(
+				args=['ansible-playbook'],
+				returncode=1,
+				stdout='',
+				stderr='no action detected in task',
+			),
+		):
+			res = self.client.post(
+				'/sys/automation/playbooks/validate/',
+				{
+					'content': '---\n- hosts: all\n  tasks:\n    - name: bad\n      debug: "x"\n      - invalid\n',
+				},
+				format='json',
+			)
 
 		body = res.json()
 		self.assertEqual(body['code'], 400)
-		self.assertIn('Playbook YAML syntax error', body['msg'])
+		self.assertIn('Playbook Ansible syntax error', body['msg'])
 
 	def test_download_playbook_returns_attachment(self):
 		res = self.client.get(f'/sys/automation/playbooks/{self.template.id}/download/')  # type: ignore[attr-defined]
@@ -223,8 +248,7 @@ class AutomationTaskScopeTest(BaseTestCase):
 		self.inventory.save()
 		AutomationTask.objects.create(
 			name='Scope Task',
-			code='scope-task',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=self.inventory,
 			selected_host_ids=[],
 			selected_group_ids=[],
@@ -253,15 +277,14 @@ class AutomationTaskScopeTest(BaseTestCase):
 	def test_task_list_without_inventory_has_empty_scope(self):
 		AutomationTask.objects.create(
 			name='All Hosts Task',
-			code='all-hosts-task',
-			template=self.template,
+			playbook_template=self.template,
 			selected_host_ids=[],
 			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
 
-		res = self.client.get('/sys/automation/tasks/?search=all-hosts-task&page=1&page_size=10')
+		res = self.client.get('/sys/automation/tasks/?search=All Hosts Task&page=1&page_size=10')
 
 		body = self.assertResponseOK(res)
 		record = body['data']['results'][0]
@@ -287,8 +310,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 		self.inventory.save()
 		self.task = AutomationTask.objects.create(
 			name='Dispatch Task',
-			code='dispatch-task',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=self.inventory,
 			selected_host_ids=[self.host.id],
 			selected_group_ids=[],
@@ -318,6 +340,39 @@ class AutomationRunDispatchTest(BaseTestCase):
 			self.assertEqual(body['data']['status'], 'pending')
 			mock_delay.assert_called_once()
 
+	def test_run_now_shell_task_persists_shell_snapshots(self):
+		shell_template = ShellScriptTemplate.objects.create(
+			name='dispatch-shell-template',
+			description='dispatch shell',
+			content='#!/bin/bash\necho "$1"\n',
+		)
+		shell_task = AutomationTask.objects.create(
+			name='Dispatch Shell Task',
+			shell_script_template=shell_template,
+			inventory=self.inventory,
+			selected_host_ids=[self.host.id],
+			selected_group_ids=[],
+			env_vars={'TARGET': 'prod'},
+			shell_parameters='from-task',
+			enabled=True,
+		)
+
+		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+			res = self.client.post(
+				f'/sys/automation/tasks/{shell_task.id}/run_now/',
+				{'shell_parameters': 'from-request', 'shell_env_vars': {'K': 'V'}},
+				format='json',
+			)
+			body = self.assertResponseOK(res)
+			self.assertEqual(body['data']['status'], 'pending')
+			job = AnsibleExecutionJob.objects.get(id=body['data']['id'])
+			self.assertEqual(job.task_id, shell_task.id)
+			self.assertEqual(job.template_name_snapshot, shell_template.name)
+			self.assertEqual(job.shell_parameters, 'from-request')
+			self.assertEqual(job.shell_env_vars, {'K': 'V'})
+			self.assertEqual(job.extra_vars, {})
+			mock_delay.assert_called_once()
+
 	def test_run_now_with_empty_scope_defaults_to_all_hosts(self):
 		host_b = Host.objects.create(instance_name='dispatch_host_b', ip='10.0.0.11')
 		inventory = AutomationInventory.objects.create(
@@ -327,8 +382,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 		inventory.save()
 		task = AutomationTask.objects.create(
 			name='Dispatch All Task',
-			code='dispatch-all-task',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=inventory,
 			selected_host_ids=[],
 			selected_group_ids=[],
@@ -353,8 +407,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 	def test_run_now_fails_without_inventory(self):
 		task = AutomationTask.objects.create(
 			name='No Inventory Task',
-			code='no-inventory-task',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=None,
 			selected_host_ids=[self.host.id],
 			selected_group_ids=[],
@@ -379,8 +432,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			'/sys/automation/tasks/',
 			{
 				'name': 'Task Without Inventory',
-				'code': 'task-without-inventory',
-				'template': self.template.id,
+				'playbook_template': self.template.id,
 				'inventory': None,
 				'selected_host_ids': [],
 				'selected_group_ids': [],
@@ -401,8 +453,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			'/sys/automation/tasks/',
 			{
 				'name': 'Task To Remove Inventory',
-				'code': 'task-remove-inventory',
-				'template': self.template.id,
+				'playbook_template': self.template.id,
 				'inventory': self.inventory.id,
 				'selected_host_ids': [self.host.id],
 				'selected_group_ids': [],
@@ -546,8 +597,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		self.inventory.save()
 		self.task = AutomationTask.objects.create(
 			name='Workflow Task',
-			code='workflow-task',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=self.inventory,
 			selected_host_ids=[self.host.id],
 			selected_group_ids=[],
@@ -1169,8 +1219,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		# 创建另一个任务（始终保持启用）
 		other_task = AutomationTask.objects.create(
 			name='Other Task Not Disabled',
-			code='other-task-not-disabled',
-			template=self.template,
+			playbook_template=self.template,
 			inventory=self.inventory,
 			selected_host_ids=[self.host.id],
 			selected_group_ids=[],
@@ -1574,8 +1623,7 @@ class JobTimeoutDetectionTest(TestCase):
 		)
 		task = AutomationTask.objects.create(
 			name='test-task',
-			code='test-task',
-			template=playbook,
+			playbook_template=playbook,
 			execution_timeout_seconds=300,  # 5分钟超时
 		)
 

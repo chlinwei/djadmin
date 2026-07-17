@@ -3,7 +3,7 @@
     <div class="editor-toolbar">
       <div class="editor-title">
         <span class="name">{{ form.name || 'Workflow 编排' }}</span>
-        <a-tag :color="form.enabled ? 'green' : 'default'">{{ form.enabled ? '启用' : '禁用' }}</a-tag>
+        <a-switch :checked="form.enabled === true" :disabled="true" />
       </div>
       <a-space>
         <a-button @click="goBack">返回列表</a-button>
@@ -220,14 +220,21 @@
 
               <a-form-item v-if="addNodeWizardForm.node_type === 'task'" label="执行任务" required>
                 <a-select
+                  v-model:value="addNodeWizardForm.task_template_type"
+                  :getPopupContainer="getPopupContainer"
+                  :options="taskTemplateTypeOptions"
+                  class="workflow-task-type-select"
+                />
+                <div class="workflow-task-type-hint">先按模板类型筛选，再选择自动化任务。</div>
+                <a-select
                   v-model:value="addNodeWizardForm.task_id"
                   :getPopupContainer="getPopupContainer"
-                  :options="taskOptions"
+                  :options="addNodeTaskOptions"
                   show-search
                   optionFilterProp="label"
                   placeholder="请选择任务"
                 />
-                <div v-if="taskOptions.length === 0" class="wizard-help-link">
+                <div v-if="addNodeTaskOptions.length === 0" class="wizard-help-link">
                   当前暂无可选任务，请先去
                   <a @click="goToTaskPage">任务管理</a>
                   创建任务。
@@ -371,9 +378,16 @@
 
               <a-form-item v-if="nodeConfigForm.node_type === 'task'" label="执行任务" required>
                 <a-select
+                  v-model:value="nodeConfigForm.task_template_type"
+                  :getPopupContainer="getPopupContainer"
+                  :options="taskTemplateTypeOptions"
+                  class="workflow-task-type-select"
+                />
+                <div class="workflow-task-type-hint">先按模板类型筛选，再选择自动化任务。</div>
+                <a-select
                   v-model:value="nodeConfigForm.task_id"
                   :getPopupContainer="getPopupContainer"
-                  :options="taskOptions"
+                  :options="nodeConfigTaskOptions"
                   show-search
                   optionFilterProp="label"
                   placeholder="请选择任务"
@@ -426,7 +440,9 @@ const {
   selectedNodeId,
   isConnecting,
   convergenceOptions,
-  taskOptions,
+  taskTemplateTypeOptions,
+  addNodeTaskOptions,
+  nodeConfigTaskOptions,
   workflowOptions,
   inventoryOptions,
   selectedEditableEdge,

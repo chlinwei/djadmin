@@ -29,7 +29,6 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         task_id = self.request.query_params.get('task_id')  # type: ignore[union-attr]
         job_id = self.request.query_params.get('job_id')  # type: ignore[union-attr]
         keyword = self.request.query_params.get('keyword')  # type: ignore[union-attr]
-        output_keyword = self.request.query_params.get('output_keyword')  # type: ignore[union-attr]
         start_time_from = self.request.query_params.get('start_time_from')  # type: ignore[union-attr]
         start_time_to = self.request.query_params.get('start_time_to')  # type: ignore[union-attr]
 
@@ -48,10 +47,6 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
                 Q(task_name_snapshot__icontains=keyword)
             )
             queryset = queryset.filter(condition)
-
-        if output_keyword:
-            # 详细日志已下线，保留参数兼容但不参与过滤。
-            pass
 
         if start_time_from:
             parsed_from = parse_datetime(start_time_from)

@@ -3,11 +3,13 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { checkPermission } from '@/directives/permission/permission'
 import store from '@/store'
 import {
   getWorkflowList,
   getWorkflowDetail,
   createWorkflow,
+  updateWorkflow,
   deleteWorkflow,
   launchWorkflow,
   precheckWorkflowLaunch,
@@ -43,6 +45,7 @@ const router = useRouter()
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const loading = ref(false)
+const workflowStatusUpdatingId = ref(null)
 const launchingId = ref(null)
 const cloningId = ref(null)
 const cloneSubmitting = ref(false)
@@ -62,6 +65,7 @@ const scopePreviewTitle = ref('执行范围主机预览')
 const scopePreviewHosts = ref([])
 const scopePreviewTotal = ref(0)
 const keyword = ref('')
+const canUpdateWorkflow = computed(() => checkPermission('automation:workflow:update'))
 let launchPrecheckTimer = null
 
 
@@ -294,6 +298,35 @@ async function removeRecord(record) {
   }
 }
 
+async function onChangeWorkflowStatus(checked, record) {
+  if (!record?.id) {
+    return
+  }
+  if (!canUpdateWorkflow.value) {
+    message.warning('没有状态修改权限')
+    return
+  }
+
+  const targetEnabled = checked === true
+  const originalEnabled = record.enabled === true
+  if (targetEnabled === originalEnabled) {
+    return
+  }
+
+  workflowStatusUpdatingId.value = record.id
+  record.enabled = targetEnabled
+  try {
+    await updateWorkflow(record.id, { enabled: targetEnabled })
+    message.success('状态修改成功')
+  } catch (error) {
+    record.enabled = originalEnabled
+    const errMsg = error?.response?.data?.msg || error?.message || '状态修改失败'
+    message.error(errMsg)
+  } finally {
+    workflowStatusUpdatingId.value = null
+  }
+}
+
 function openDeleteWorkflowConfirm(record) {
   const workflowName = String(record?.name || '').trim() || `#${record?.id || '-'}`
   openDeleteConfirm({
@@ -459,7 +492,9 @@ onBeforeUnmount(() => {
     loadWorkflows,
     actionTooltipProps,
     openBuilderForCreate,
+    canUpdateWorkflow,
     loading,
+    workflowStatusUpdatingId,
     reloadAll,
     columns,
     records,
@@ -477,6 +512,7 @@ onBeforeUnmount(() => {
     launch,
     openWorkflowRunCenter,
     openDeleteWorkflowConfirm,
+    onChangeWorkflowStatus,
     cloneModalVisible,
     cloneSubmitting,
     confirmClone,

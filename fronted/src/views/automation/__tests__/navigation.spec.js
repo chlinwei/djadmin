@@ -1,27 +1,45 @@
-import { buildAutomationInventoryRoute, buildAutomationPlaybookRoute } from '../navigation'
+import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../navigation'
 
 describe('automation navigation helpers', () => {
-  it('builds playbook route with search when template name exists', () => {
-    const route = buildAutomationPlaybookRoute({
+  it('builds template route with playbook type and search when template name exists', () => {
+    const route = buildAutomationTemplateRoute({
       template_name: 'Deploy Nginx',
     })
 
     expect(route).toEqual({
-      path: '/sys/automation/playbooks',
+      path: '/sys/automation/templates',
       query: {
         search: 'Deploy Nginx',
+        type: 'playbook',
       },
     })
   })
 
-  it('builds playbook route with empty query when template name is blank', () => {
-    const route = buildAutomationPlaybookRoute({
+  it('builds template route with shell type when task uses shell template', () => {
+    const route = buildAutomationTemplateRoute({
+      template_name: '[ShellScript] check-disk',
+      shell_script_template: 9,
+    })
+
+    expect(route).toEqual({
+      path: '/sys/automation/templates',
+      query: {
+        search: 'check-disk',
+        type: 'shell_script',
+      },
+    })
+  })
+
+  it('builds template route with playbook type when template name is blank', () => {
+    const route = buildAutomationTemplateRoute({
       template_name: '   ',
     })
 
     expect(route).toEqual({
-      path: '/sys/automation/playbooks',
-      query: {},
+      path: '/sys/automation/templates',
+      query: {
+        type: 'playbook',
+      },
     })
   })
 

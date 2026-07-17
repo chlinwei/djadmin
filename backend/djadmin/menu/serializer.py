@@ -72,6 +72,7 @@ class SysMenuDynamicListSerializer(serializers.BaseSerializer):
             'path': node.path,
             'component': node.component,
             'menu_type': node.menu_type,
+            'is_expanded': bool(getattr(node, 'is_expanded', True)),
             'perms': node.perms,
             'create_time':node.create_time,
             'update_time':node.update_time,

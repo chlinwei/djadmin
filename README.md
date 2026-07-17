@@ -38,7 +38,6 @@ cd backend/djadmin
 python manage.py runscheduler
 ```
 
-说明：`python manage.py runsscheduler` 也可用，作为历史误拼兼容别名（内部转发到 `runscheduler`）。
 
 ### 传输服务（transfer）
 

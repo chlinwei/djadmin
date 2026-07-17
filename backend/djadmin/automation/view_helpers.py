@@ -26,6 +26,7 @@ from assets.models import Host, HostGroup
 
 from .models import (
     PlaybookTemplate,
+    ShellScriptTemplate,
     AutomationTask,
     AutomationInventory,
     AnsibleExecutionJob,
@@ -34,6 +35,7 @@ from .models import (
 )
 from .serializer import (
     PlaybookTemplateSerializer,
+    ShellScriptTemplateSerializer,
     AutomationTaskSerializer,
     AutomationInventorySerializer,
     AnsibleExecutionJobSerializer,
@@ -47,16 +49,20 @@ from .tasks import execute_ansible_job_task
 from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runtime_status
 
 
+def _resolve_task_template(task: AutomationTask):
+    return task.playbook_template or task.shell_script_template
+
+
 def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
     task_ids = {
-        int(node.get('task_id'))
+        int(str(node.get('task_id') or '0'))
         for node in nodes
         if isinstance(node, dict)
         and str(node.get('task_id', '')).isdigit()
         and str(node.get('node_type') or '').strip().lower() == 'task'
     }
     workflow_ids = {
-        int(node.get('workflow_id'))
+        int(str(node.get('workflow_id') or '0'))
         for node in nodes
         if isinstance(node, dict)
         and str(node.get('workflow_id', '')).isdigit()
@@ -65,17 +71,15 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
 
     task_snapshot_map = {}
     if task_ids:
-        rows = AutomationTask.objects.filter(id__in=list(task_ids)).select_related('template').values(
-            'id', 'name', 'template_id', 'template__name'
-        )
-        task_snapshot_map = {
-            int(row['id']): {
-                'task_name_snapshot': str(row.get('name') or '').strip(),
-                'job_template_id': int(row['template_id']) if str(row.get('template_id', '')).isdigit() else None,
-                'template_name_snapshot': str(row.get('template__name') or '').strip(),
+        rows = AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template', 'shell_script_template')
+        for row in rows:
+            task_template = _resolve_task_template(row)
+            task_id = int(getattr(row, 'pk'))
+            task_snapshot_map[task_id] = {
+                'task_name_snapshot': str(getattr(row, 'name', '') or '').strip(),
+                'job_template_id': int(task_template.id) if task_template is not None else None,
+                'template_name_snapshot': str(task_template.name or '').strip() if task_template is not None else '',
             }
-            for row in rows
-        }
 
     workflow_snapshot_map = {}
     if workflow_ids:
@@ -90,8 +94,10 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
         if not node_key:
             continue
         node_type = str(node.get('node_type') or 'task').strip().lower() or 'task'
-        task_id_value = int(node.get('task_id')) if str(node.get('task_id', '')).isdigit() else None
-        workflow_id_value = int(node.get('workflow_id')) if str(node.get('workflow_id', '')).isdigit() else None
+        task_id_text = str(node.get('task_id', '') or '').strip()
+        workflow_id_text = str(node.get('workflow_id', '') or '').strip()
+        task_id_value = int(task_id_text) if task_id_text.isdigit() else None
+        workflow_id_value = int(workflow_id_text) if workflow_id_text.isdigit() else None
         task_snapshot = task_snapshot_map.get(task_id_value, {}) if task_id_value else {}
 
         initial_results.append({
@@ -416,7 +422,7 @@ def _validate_workflow_task_nodes(workflow_nodes: list[dict]) -> tuple[bool, str
 
     task_map = {
         int(getattr(task, 'pk')): task
-        for task in AutomationTask.objects.filter(id__in=list(task_ids)).select_related('template', 'inventory')
+        for task in AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template', 'shell_script_template', 'inventory')
         if getattr(task, 'pk', None) is not None
     }
 
@@ -436,7 +442,7 @@ def _validate_workflow_task_nodes(workflow_nodes: list[dict]) -> tuple[bool, str
             return False, f'节点 [{node_name}] 引用的任务不存在 (task_id={task_id})'
         if not task.enabled:
             return False, f'节点 [{node_name}] 引用的任务已禁用: {task.name or task_id}'
-        if task.template is None:
+        if _resolve_task_template(task) is None:
             return False, f'节点 [{node_name}] 引用任务缺少模板: {task.name or task_id}'
         task_inventory = task.inventory
         if task_inventory is not None and not task_inventory.enabled:
@@ -450,8 +456,9 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     if task_id is None or not str(task_id).isdigit():
         return False, 'Task node missing valid task_id', None, None
 
-    task = AutomationTask.objects.filter(id=int(task_id)).select_related('template', 'inventory').first()
-    if task is None or task.template is None:
+    task = AutomationTask.objects.filter(id=int(task_id)).select_related('playbook_template', 'shell_script_template', 'inventory').first()
+    task_template = _resolve_task_template(task) if task is not None else None
+    if task is None or task_template is None:
         return False, f'Task {task_id} not found or template missing', None, None
 
     # 已创建的 workflow run 视为快照语义：
@@ -485,15 +492,18 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
         return False, f'Task {task_id} resolved empty host scope', None, None
 
     node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
+    is_shell_task = task.shell_script_template_id is not None
     job = AnsibleExecutionJob.objects.create(
         task=task,
         status=AnsibleExecutionJob.Status.PENDING,
         trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
         inventory_snapshot=inventory_snapshot,
         task_name_snapshot=task.name or '',
-        template_name_snapshot=task.template.name or '',
-        template_content_snapshot=task.template.content or '',
-        extra_vars=run.extra_vars if isinstance(run.extra_vars, dict) else {},
+        template_name_snapshot=task_template.name or '',
+        template_content_snapshot=task_template.content or '',
+        extra_vars=run.extra_vars if (not is_shell_task and isinstance(run.extra_vars, dict)) else {},
+        shell_parameters=task.shell_parameters if is_shell_task else '',
+        shell_env_vars=task.env_vars if is_shell_task else {},
         limit=effective_limit,
         requested_user_id=run.requested_user_id,
         requested_username=run.requested_username or '',
@@ -514,8 +524,8 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
 
     return True, None, job.id, {
         'task_name_snapshot': task.name or '',
-        'job_template_id': task.template_id,
-        'template_name_snapshot': task.template.name or '',
+        'job_template_id': int(task_template.id),
+        'template_name_snapshot': task_template.name or '',
     }
 
 

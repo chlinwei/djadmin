@@ -28,6 +28,9 @@
                     <template v-else-if="column.key === 'create_time'">
                         {{ formatDateTime(record.create_time) }}
                     </template>
+                    <template v-else-if="column.key === 'is_expanded'">
+                        <span>{{ record.menu_type === 'M' ? (record.is_expanded === false ? '否' : '是') : '-' }}</span>
+                    </template>
                     <template v-if="column.key === 'action'">
                         <div :key="record.id">
                             <a-row :gutter="6" class="action_row">
@@ -108,6 +111,11 @@ const columns = [
         key: 'menu_type',
     },
     {
+        title: '目录默认展开',
+        dataIndex: 'is_expanded',
+        key: 'is_expanded',
+    },
+    {
         title: '创建时间',
         dataIndex: 'create_time',
         key: 'create_time',
@@ -145,6 +153,7 @@ const parseTreeData = (data) => {
         path: item.path,
         component: item.component,
         menu_type: item.menu_type,
+        is_expanded: item.is_expanded !== false,
         create_time: item.create_time,
         children: item.children ? parseTreeData(item.children) : null,
     }});
@@ -212,7 +221,7 @@ const initList = () => {
     getMenuTree().then((res) => {
         var data = parseTreeData(res.data.data)
         treeData.value = data
-        treeData2.value = [{"name":"根系统目录","key":0,"menu_type":"M","children":treeData.value}]
+        treeData2.value = [{"name":"根系统目录","key":0,"menu_type":"M","is_expanded":true,"children":treeData.value}]
         console.log(treeData2)
         tryOpenFocusedMenu()
         loading.value = false

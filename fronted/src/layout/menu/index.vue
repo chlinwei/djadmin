@@ -43,9 +43,19 @@ const menuList = getMenuList();
 const openKeys = ref([])
 
 onMounted(() => {
-  menuList.forEach(menu => {
-    openKeys.value.push(menu.path)
-  });
+  const nextOpenKeys = []
+  const walk = (nodes) => {
+    ;(Array.isArray(nodes) ? nodes : []).forEach((menu) => {
+      if (menu?.menu_type === 'M' && menu?.is_expanded !== false && menu?.path) {
+        nextOpenKeys.push(menu.path)
+      }
+      if (Array.isArray(menu?.children) && menu.children.length > 0) {
+        walk(menu.children)
+      }
+    })
+  }
+  walk(menuList)
+  openKeys.value = nextOpenKeys
 })
 
 const add_tab = (item) => {

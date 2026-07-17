@@ -22,7 +22,6 @@ cd backend/djadmin
 python manage.py runscheduler
 ```
 
-兼容说明：`python manage.py runsscheduler` 也支持，作为误拼兼容别名，实际等价于 `runscheduler`。
 
 也可用脚本：
 

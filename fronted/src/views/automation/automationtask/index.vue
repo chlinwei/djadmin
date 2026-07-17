@@ -4,7 +4,7 @@
       <a-col :span="16">
         <a-input-search
           v-model:value="taskKeyword"
-          placeholder="搜索任务名称 / 任务编码"
+          placeholder="搜索任务名称"
           allow-clear
           enter-button
           @search="loadTasks(true)"
@@ -52,13 +52,13 @@
             </a-button>
             <span v-else>{{ record.name || '-' }}</span>
           </template>
-          <template v-else-if="column.key === 'code'">
-            <span>{{ record.code || '-' }}</span>
-          </template>
           <template v-else-if="column.key === 'enabled'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">
-              {{ record.enabled ? '启用' : '禁用' }}
-            </a-tag>
+            <a-switch
+              :checked="record.enabled === true"
+              :disabled="!canEditTask || taskLoading || taskStatusUpdatingId === record.id"
+              :loading="taskStatusUpdatingId === record.id"
+              @change="(checked) => onChangeTaskStatus(checked, record)"
+            />
           </template>
           <template v-else-if="column.key === 'template_name'">
             <a-button type="link" size="small" class="task-code-link" @click="goToPlaybookTemplate(record)">
@@ -100,7 +100,9 @@
             </div>
           </template>
           <template v-else-if="column.key === 'env_vars'">
-            <div class="json-cell">{{ formatJsonCell(record.env_vars) }}</div>
+            <a-tooltip :title="formatEnvVarCellFullText(record.env_vars)">
+              <div class="json-cell">{{ formatEnvVarCell(record.env_vars) }}</div>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'update_time'">
             <span>{{ record.update_time ? formatTimeWithTimezone(record.update_time, store.state.user?.timezone || 'Asia/Shanghai') : '-' }}</span>
@@ -164,23 +166,32 @@
               <a-input v-model:value="taskForm.name" placeholder="例如：生产环境健康巡检" />
             </a-form-item>
           </a-col>
-          <a-col :span="12">
-            <a-form-item label="任务编码" required>
-              <a-input v-model:value="taskForm.code" placeholder="例如：prod-health-check" />
-            </a-form-item>
-          </a-col>
         </a-row>
 
         <a-row :gutter="12">
           <a-col :span="8">
+            <a-form-item label="模板类型" required>
+              <a-select
+                v-model:value="taskForm.template_type"
+                :options="[
+                  { label: 'Playbook', value: 'playbook' },
+                  { label: 'Shell脚本', value: 'shell_script' }
+                ]"
+                :getPopupContainer="getTaskModalPopupContainer"
+                @change="handleTemplateTypeChange"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
             <a-form-item label="选择模板" required>
               <a-select
                 v-model:value="taskForm.template"
-                :options="playbookOptions"
+                :options="taskTemplateOptions"
+                :loading="taskTemplateLoading"
                 show-search
                 optionFilterProp="label"
                 :getPopupContainer="getTaskModalPopupContainer"
-                placeholder="请选择模板"
+                :placeholder="taskTemplatePlaceholder"
               />
             </a-form-item>
           </a-col>
@@ -197,12 +208,11 @@
               />
             </a-form-item>
           </a-col>
-          <a-col :span="8">
-            <a-form-item label="启用状态">
-              <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="禁用" />
-            </a-form-item>
-          </a-col>
         </a-row>
+
+        <a-form-item label="启用状态">
+          <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="禁用" />
+        </a-form-item>
 
         <a-form-item>
           <a-alert
@@ -233,11 +243,34 @@
           />
         </a-form-item>
 
-        <a-form-item label="环境变量 JSON（可选）">
+        <a-form-item :label="taskEnvVarsLabel">
           <a-textarea
             v-model:value="taskForm.env_vars_text"
             :rows="6"
-            placeholder='例如: {"env":"prod","batch":20}'
+            :placeholder="taskEnvVarsPlaceholder"
+          />
+          <a-alert
+            v-if="taskForm.template_type === 'shell_script'"
+            type="info"
+            show-icon
+            style="margin-top: 8px"
+            message="这里填写的是环境变量（key=value），执行时会以 export 注入脚本运行环境。"
+          />
+        </a-form-item>
+
+        <a-form-item
+          v-if="taskForm.template_type === 'shell_script'"
+          label="Shell 参数字符串（可选）"
+        >
+          <a-input
+            v-model:value="taskForm.shell_args_text"
+            :placeholder="taskShellArgsPlaceholder"
+          />
+          <a-alert
+            type="info"
+            show-icon
+            style="margin-top: 8px"
+            message="按空格分割的参数字符串，执行时按顺序映射到 $1、$2...（示例：prod 8080 --force）"
           />
         </a-form-item>
 
@@ -313,6 +346,13 @@
             :placeholder="LIMIT_INPUT_PLACEHOLDER"
           />
         </a-form-item>
+        <a-form-item v-if="runNowIsShellTask" label="本次参数字符串（可选）">
+          <a-input
+            v-model:value="runNowShellArgs"
+            allow-clear
+            placeholder="例如: prod 8080 --force"
+          />
+        </a-form-item>
       </a-form>
 
       <ScopePrecheckPanel
@@ -351,6 +391,7 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 import {
   getPlaybookList,
+  getShellScriptTemplateList,
   getInventoryList,
   getTaskList,
   createTask,
@@ -364,7 +405,7 @@ import {
 } from '@/api/sys/automation'
 import { checkPermission } from '@/directives/permission/permission'
 import { buildScopeSummaryText, flattenGroupPathMap } from '../scopeSummary'
-import { buildAutomationInventoryRoute, buildAutomationPlaybookRoute } from '../navigation'
+import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../navigation'
 import ScopePrecheckPanel from '../components/ScopePrecheckPanel.vue'
 import ExecutionScopePreviewModal from '../components/ExecutionScopePreviewModal.vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -397,7 +438,7 @@ import {
   resolveTaskListOrdering,
   parseJsonObjectText,
   flattenGroupNameMap,
-  formatJsonCellText,
+  formatEnvVarCellText,
   getScopeTreeNode,
 } from '../utils/automationTaskHelpers'
 
@@ -420,6 +461,9 @@ const taskPagination = reactive({
 const playbooks = ref([])
 const playbookLoading = ref(false)
 const playbookOptions = ref([])
+const shellScriptTemplates = ref([])
+const shellScriptLoading = ref(false)
+const shellScriptOptions = ref([])
 const inventories = ref([])
 const inventoryOptions = ref([])
 
@@ -447,11 +491,13 @@ const modalSubmitting = ref(false)
 const isCreateMode = ref(true)
 const editingTaskId = ref(null)
 const runningTaskId = ref(null)
+const taskStatusUpdatingId = ref(null)
 const runNowModalVisible = ref(false)
 const runNowSubmitting = ref(false)
 const runNowPrechecking = ref(false)
 const runNowTask = ref(null)
 const runNowLimit = ref('')
+const runNowShellArgs = ref('')
 const runNowHostCount = ref(0)
 const runNowEffectiveLimit = ref('')
 const runNowAllHosts = ref([])
@@ -470,13 +516,14 @@ let taskLimitPrecheckSeq = 0
 
 const taskForm = reactive({
   name: '',
-  code: '',
+  template_type: 'playbook',
   template: null,
   inventory: null,
   default_limit: '',
   selected_host_ids: [],
   selected_group_ids: [],
   env_vars_text: '',
+  shell_args_text: '',
   enabled: true,
   remark: '',
   // 权限提升配置
@@ -487,10 +534,92 @@ const taskForm = reactive({
 
 const taskColumns = TASK_COLUMNS
 
+const taskTemplateOptions = computed(() => {
+  if (taskForm.template_type === 'shell_script') {
+    return shellScriptOptions.value
+  }
+  return playbookOptions.value
+})
+
+const taskTemplateLoading = computed(() => {
+  if (taskForm.template_type === 'shell_script') {
+    return shellScriptLoading.value
+  }
+  return playbookLoading.value
+})
+
+const taskTemplatePlaceholder = computed(() => {
+  if (taskForm.template_type === 'shell_script') {
+    return '请选择 Shell 脚本模板'
+  }
+  return '请选择 Playbook 模板'
+})
+
+const taskEnvVarsLabel = computed(() => {
+  if (taskForm.template_type === 'shell_script') {
+    return 'Shell 环境变量（可选）'
+  }
+  return '环境变量 JSON（可选）'
+})
+
+const taskEnvVarsPlaceholder = computed(() => {
+  if (taskForm.template_type === 'shell_script') {
+    return '例如: var1=a;var2=b'
+  }
+  return '{"env":"prod","batch":20}'
+})
+
+const taskShellArgsPlaceholder = computed(() => '例如: prod 8080 --force')
+
+function parseShellEnvText(text) {
+  const input = String(text || '').trim()
+  if (!input) return {}
+  const result = {}
+  for (const item of input.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean)) {
+    const i = item.indexOf('=')
+    if (i <= 0) throw new Error(`Shell 环境变量格式错误: ${item}`)
+    const key = item.slice(0, i).trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Shell 环境变量名不合法: ${key}`)
+    result[key] = item.slice(i + 1).trim()
+  }
+  return result
+}
+
+function formatShellEnvText(envVars) {
+  if (!envVars || typeof envVars !== 'object' || Array.isArray(envVars)) return ''
+  return Object.entries(envVars).map(([k, v]) => `${k}=${String(v ?? '')}`).join(';')
+}
+
+function resolveTaskSubmitErrorMessage(error) {
+  const response = error?.response?.data
+  const fieldErrors = response?.data
+  if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
+    const labels = { name: '任务名称', inventory: 'Inventory', shell_parameters: 'Shell 参数字符串', env_vars: '环境变量' }
+    const messages = []
+    for (const [field, value] of Object.entries(fieldErrors)) {
+      const text = (Array.isArray(value) ? value.join('；') : String(value || '')).trim()
+      if (!text) continue
+      if (field === 'name' && /already exists/i.test(text)) { messages.push('任务名称已存在'); continue }
+      messages.push(field === 'non_field_errors' ? text : `${labels[field] || field}: ${text}`)
+    }
+    if (messages.length) return messages.join('；')
+  }
+  return response?.msg || error?.message || '任务保存失败'
+}
+
+function buildRunNowPayload(limit, isShellTask, shellArgs) {
+  const runtimeLimit = String(limit || '').trim()
+  return isShellTask
+    ? { limit: runtimeLimit, shell_parameters: String(shellArgs || '').trim() }
+    : { limit: runtimeLimit }
+}
+
 const taskSort = reactive({
   field: null,
   order: null,
 })
+
+const runNowIsShellTask = computed(() => Number(runNowTask.value?.shell_script_template || 0) > 0)
 
 function resolveTaskOrdering() {
   return resolveTaskListOrdering(taskSort)
@@ -505,8 +634,28 @@ function getTaskScopeSummaryText(record) {
   })
 }
 
-function formatJsonCell(value) {
-  return formatJsonCellText(value)
+function formatEnvVarCell(value) {
+  return formatEnvVarCellText(value)
+}
+
+function formatEnvVarCellFullText(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '-'
+  }
+  const entries = Object.entries(value)
+  if (!entries.length) {
+    return '{}'
+  }
+  const isFlat = entries.every(([key, item]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(key))) {
+      return false
+    }
+    const itemType = typeof item
+    return item == null || itemType === 'string' || itemType === 'number' || itemType === 'boolean'
+  })
+  return isFlat
+    ? entries.map(([key, item]) => `${key}=${String(item ?? '')}`).join('; ')
+    : JSON.stringify(value)
 }
 
 const filteredScopePreviewTreeData = computed(() => {
@@ -521,7 +670,7 @@ const scopePreviewVisibleHostCount = computed(() => {
 function openScopePreviewModal(record) {
   scopePreviewHosts.value = Array.isArray(record?.limit_preview_hosts) ? [...record.limit_preview_hosts] : []
   scopePreviewTotal.value = Number(record?.limit_preview_total || 0)
-  scopePreviewTitle.value = `执行范围主机预览 / ${record?.name || '-'} (${record?.code || '-'})`
+  scopePreviewTitle.value = `执行范围主机预览 / ${record?.name || '-'}`
   scopePreviewModalVisible.value = true
 }
 
@@ -590,6 +739,19 @@ async function loadPlaybooks() {
   }
 }
 
+async function loadShellScriptTemplates() {
+  shellScriptLoading.value = true
+  try {
+    const res = await getShellScriptTemplateList({ page: 1, page_size: 200, ordering: '-id' })
+    const data = res?.data?.data || {}
+    shellScriptTemplates.value = data.results || []
+    shellScriptOptions.value = shellScriptTemplates.value
+      .map((item) => ({ value: item.id, label: item.name }))
+  } finally {
+    shellScriptLoading.value = false
+  }
+}
+
 async function loadInventories() {
   const res = await getInventoryList({ page: 1, page_size: 500, ordering: '-id' })
   const data = res?.data?.data || {}
@@ -604,11 +766,14 @@ async function loadTasks(resetPage = false) {
   }
   taskLoading.value = true
   try {
+    const normalizedKeyword = String(taskKeyword.value || '').trim()
+    const exactTaskId = /^\d+$/.test(normalizedKeyword) ? Number(normalizedKeyword) : 0
     const res = await getTaskList({
       page: taskPagination.current,
       page_size: taskPagination.pageSize,
       ordering: resolveTaskOrdering(),
-      search: taskKeyword.value || undefined,
+      search: exactTaskId > 0 ? undefined : (normalizedKeyword || undefined),
+      task_id: exactTaskId > 0 ? String(exactTaskId) : undefined,
     })
     const data = res?.data?.data || {}
     tasks.value = data.results || []
@@ -650,6 +815,9 @@ async function openTaskFromRouteQuery() {
   if (!Number.isInteger(taskId) || taskId <= 0) {
     return
   }
+
+  taskKeyword.value = String(taskId)
+  await loadTasks(true)
 
   const target = await findTaskRecordById(taskId)
   if (target) {
@@ -791,7 +959,7 @@ function openGroupScopeViewer(record) {
   groupScopeViewKeyword.value = ''
   const executionTree = Array.isArray(record?.execution_scope_tree) ? record.execution_scope_tree : []
   if (executionTree.length > 0) {
-    groupScopeViewTitle.value = `查看执行范围 / ${record?.name || '-'} (${record?.code || '-'})`
+    groupScopeViewTitle.value = `查看执行范围 / ${record?.name || '-'}`
     groupScopeViewTreeData.value = appendGroupHostCount(cloneTreeNodes(executionTree))
     const summaryHostCount = Number(record?.execution_scope_summary?.host_count || 0)
     groupScopeViewSummary.value = `当前范围：${summaryHostCount}台主机`
@@ -803,7 +971,7 @@ function openGroupScopeViewer(record) {
   const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
   const isAllHostsScope = selectedGroupIds.length === 0 && selectedHostIds.length === 0
 
-  groupScopeViewTitle.value = `查看主机组范围 / ${record?.name || '-'} (${record?.code || '-'})`
+  groupScopeViewTitle.value = `查看主机组范围 / ${record?.name || '-'}`
 
   if (isAllHostsScope) {
     // 全主机场景：展示全树，但会自动去掉没有任何主机节点的空分组。
@@ -860,13 +1028,14 @@ function onGroupScopeCheck(checkedKeys) {
 
 function resetTaskForm() {
   taskForm.name = ''
-  taskForm.code = ''
+  taskForm.template_type = 'playbook'
   taskForm.template = null
   taskForm.inventory = null
   taskForm.default_limit = ''
   taskForm.selected_host_ids = []
   taskForm.selected_group_ids = []
   taskForm.env_vars_text = ''
+  taskForm.shell_args_text = ''
   taskForm.enabled = true
   taskForm.remark = ''
   // 权限提升配置
@@ -884,6 +1053,11 @@ function resetTaskForm() {
   taskLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
 }
 
+function handleTemplateTypeChange() {
+  taskForm.template = null
+  taskForm.shell_args_text = ''
+}
+
 function openCreateModal() {
   isCreateMode.value = true
   editingTaskId.value = null
@@ -897,8 +1071,17 @@ function openEditModal(record, options = {}) {
   isCreateMode.value = false
   editingTaskId.value = record.id
   taskForm.name = record.name || ''
-  taskForm.code = record.code || ''
-  taskForm.template = record.template || null
+  if (Number(record?.shell_script_template) > 0) {
+    taskForm.template_type = 'shell_script'
+    taskForm.template = Number(record.shell_script_template)
+    taskForm.shell_args_text = String(record.shell_parameters || '').trim()
+    taskForm.env_vars_text = formatShellEnvText(record.env_vars || {})
+  } else {
+    taskForm.template_type = 'playbook'
+    taskForm.template = Number(record.playbook_template || 0) || null
+    taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
+    taskForm.shell_args_text = ''
+  }
   taskForm.inventory = record.inventory || null
   // 检查已保存的 inventory 是否仍存在（可能已被删除或尚未配置）
   if (!taskForm.inventory) {
@@ -916,7 +1099,6 @@ function openEditModal(record, options = {}) {
   const selectedGroupIds = Array.isArray(record.selected_group_ids) ? [...record.selected_group_ids] : []
   taskForm.selected_host_ids = Array.isArray(record.selected_host_ids) ? [...record.selected_host_ids] : []
   taskForm.selected_group_ids = selectedGroupIds
-  taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
   taskForm.enabled = !!record.enabled
   taskForm.remark = record.remark || ''
   // 权限提升配置
@@ -951,18 +1133,20 @@ async function submitTask() {
     message.error('请输入任务名称')
     return
   }
-  if (!taskForm.code || !String(taskForm.code).trim()) {
-    message.error('请输入任务编码')
-    return
-  }
   if (!taskForm.template) {
     message.error('请选择模板')
     return
   }
 
   let envVars = {}
+  let shellParameters = ''
   try {
-    envVars = parseJsonObjectText(taskForm.env_vars_text, '环境变量 JSON')
+    if (taskForm.template_type === 'shell_script') {
+      envVars = parseShellEnvText(taskForm.env_vars_text)
+      shellParameters = String(taskForm.shell_args_text || '').trim()
+    } else {
+      envVars = parseJsonObjectText(taskForm.env_vars_text, '环境变量 JSON')
+    }
   } catch (error) {
     message.error(error.message)
     return
@@ -970,13 +1154,14 @@ async function submitTask() {
 
   const payload = {
     name: String(taskForm.name).trim(),
-    code: String(taskForm.code).trim(),
-    template: Number(taskForm.template),
+    playbook_template: taskForm.template_type === 'playbook' ? Number(taskForm.template) : null,
+    shell_script_template: taskForm.template_type === 'shell_script' ? Number(taskForm.template) : null,
     inventory: Number(taskForm.inventory) > 0 ? Number(taskForm.inventory) : null,
     default_limit: String(taskForm.default_limit || '').trim(),
     selected_host_ids: [],
     selected_group_ids: [],
     env_vars: envVars,
+    shell_parameters: shellParameters,
     enabled: !!taskForm.enabled,
     remark: taskForm.remark || '',
     // 权限提升配置
@@ -996,6 +1181,8 @@ async function submitTask() {
     }
     taskModalVisible.value = false
     await loadTasks(false)
+  } catch (error) {
+    message.error(resolveTaskSubmitErrorMessage(error))
   } finally {
     modalSubmitting.value = false
   }
@@ -1005,6 +1192,35 @@ async function removeTask(record) {
   await deleteTask(record.id)
   message.success('任务已删除')
   await loadTasks(false)
+}
+
+async function onChangeTaskStatus(checked, record) {
+  if (!record?.id) {
+    return
+  }
+
+  if (!canEditTask.value) {
+    message.warning('没有状态修改权限')
+    return
+  }
+
+  const targetEnabled = checked === true
+  const originalEnabled = record.enabled === true
+  if (targetEnabled === originalEnabled) {
+    return
+  }
+
+  taskStatusUpdatingId.value = record.id
+  record.enabled = targetEnabled
+  try {
+    await updateTask(record.id, { enabled: targetEnabled })
+    message.success('状态修改成功')
+  } catch (error) {
+    record.enabled = originalEnabled
+    message.error(error?.response?.data?.msg || error?.message || '状态修改失败')
+  } finally {
+    taskStatusUpdatingId.value = null
+  }
 }
 
 function openDeleteTaskConfirm(record) {
@@ -1203,6 +1419,9 @@ function handleRunNowRemoveToken(token) {
 function openRunNowModal(record) {
   runNowTask.value = record
   runNowLimit.value = String(record?.default_limit || '').trim()
+  runNowShellArgs.value = Number(record?.shell_script_template || 0) > 0
+    ? String(record?.shell_parameters || '').trim()
+    : ''
   runNowHostCount.value = 0
   runNowEffectiveLimit.value = ''
   runNowAllHosts.value = []
@@ -1217,6 +1436,7 @@ function closeRunNowModal() {
   runNowModalVisible.value = false
   runNowSubmitting.value = false
   runNowTask.value = null
+  runNowShellArgs.value = ''
   runNowAllHosts.value = []
   runNowMatchedHosts.value = []
   clearRunNowPrecheckTimer()
@@ -1239,11 +1459,12 @@ async function confirmRunNow() {
     return
   }
 
-  const runtimeLimit = String(runNowLimit.value || '').trim()
   runningTaskId.value = runNowTask.value.id
   runNowSubmitting.value = true
   try {
-    const res = await runTaskNow(runNowTask.value.id, { limit: runtimeLimit })
+    const payload = buildRunNowPayload(runNowLimit.value, runNowIsShellTask.value, runNowShellArgs.value)
+
+    const res = await runTaskNow(runNowTask.value.id, payload)
     const createdJobId = Number(res?.data?.data?.id || 0)
     message.success('任务已提交，正在后台执行')
     goToLogs(runNowTask.value, createdJobId)
@@ -1274,7 +1495,7 @@ function goToLogs(record = null, jobId = null) {
 }
 
 function goToPlaybookTemplate(record) {
-  router.push(buildAutomationPlaybookRoute(record))
+  router.push(buildAutomationTemplateRoute(record))
 }
 
 function goToInventory(record) {
@@ -1304,6 +1525,7 @@ function handleTaskTableChange(page, _filters, sorter) {
 
 function reloadAll() {
   loadPlaybooks()
+  loadShellScriptTemplates()
   loadTasks(false)
 }
 
@@ -1344,6 +1566,7 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   await loadPlaybooks()
+  await loadShellScriptTemplates()
   await loadInventories()
   await loadTasks(true)
   await loadGroupTree()

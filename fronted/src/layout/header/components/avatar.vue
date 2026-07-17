@@ -5,6 +5,7 @@
             <div class="current-time-weekday">{{ currentWeekday }}</div>
             <div class="current-time-clock">{{ currentClock }}</div>
         </div>
+        <div class="current-time-timezone">{{ currentTimezoneLabel }}</div>
 
         <a-dropdown>
             <a class="ant-dropdown-link" @click.prevent>
@@ -30,7 +31,7 @@ import { getCurrentUser } from '@/api/user'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { formatTimeWithTimezone } from '@/util/timezone'
+import { formatTimeWithTimezone, getTimezoneLabel } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 console.log('avatar:')
@@ -44,6 +45,7 @@ let stopListenTimezone = null
 
 const currentDate = computed(() => currentTime.value.split(' ')[0] || '--')
 const currentClock = computed(() => currentTime.value.split(' ')[1] || '--:--:--')
+const currentTimezoneLabel = computed(() => `时区: ${getTimezoneLabel(userTimezone.value || 'UTC')}`)
 const currentWeekday = computed(() => {
     try {
         return new Intl.DateTimeFormat('zh-CN', {
@@ -164,5 +166,12 @@ const logout = () => {
     line-height: 1.2;
     letter-spacing: 0.4px;
     font-family: 'Courier New', monospace;
+}
+
+.current-time-timezone {
+    margin-top: 2px;
+    font-size: 11px;
+    color: #475569;
+    line-height: 1.2;
 }
 </style>

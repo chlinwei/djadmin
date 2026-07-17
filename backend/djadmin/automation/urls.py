@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     PlaybookTemplateManage,
+    ShellScriptTemplateManage,
     AutomationTaskManage,
     AutomationInventoryManage,
     AnsibleExecutionJobManage,
@@ -12,6 +13,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r'playbooks', PlaybookTemplateManage, basename='playbooks')
+router.register(r'shell-script-templates', ShellScriptTemplateManage, basename='shell-script-templates')
 router.register(r'tasks', AutomationTaskManage, basename='automation-tasks')
 router.register(r'inventories', AutomationInventoryManage, basename='automation-inventories')
 router.register(r'workflows', AutomationWorkflowTemplateManage, basename='automation-workflows')

@@ -48,6 +48,9 @@
                     <a-radio :value="2">用户中心</a-radio>
                 </a-radio-group>
                 </a-form-item>
+                <a-form-item name="is_expanded" label="目录默认展开" v-if="form.menu_type === 'M'">
+                    <a-switch v-model:checked="form.is_expanded" checked-children="展开" un-checked-children="收起" />
+                </a-form-item>
                 <a-form-item label="显示顺序" name="order_num">
                     <a-input v-model:value="form.order_num"/>
                 </a-form-item>
@@ -180,6 +183,7 @@ const form = ref({
     order_num: 1,
     remark: '',
     location: 1,
+    is_expanded: true,
 })
 
 
@@ -250,6 +254,7 @@ watch(
                 order_num: 1,
                 remark: '',
                 location: 1,
+                is_expanded: true,
             }
         } else {
             if (props.open) {
@@ -274,6 +279,7 @@ watch(
                     order_num: 1,
                     remark: '',
                     location: 1,
+                    is_expanded: true,
                 }
             }
         }
@@ -293,6 +299,7 @@ const getTreeDataByMenuType = (data, menu_type, depth = 0) => {
     path: item.path,
     component: item.component,
     menu_type: item.menu_type,
+        is_expanded: item.is_expanded !== false,
     create_time: item.create_time,
     children: item.children ? getTreeDataByMenuType(item.children, menu_type, depth + 1) : null
   }));

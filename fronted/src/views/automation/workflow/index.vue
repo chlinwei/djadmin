@@ -41,7 +41,12 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '禁用' }}</a-tag>
+            <a-switch
+              :checked="record.enabled === true"
+              :disabled="!canUpdateWorkflow || loading || workflowStatusUpdatingId === record.id"
+              :loading="workflowStatusUpdatingId === record.id"
+              @change="(checked) => onChangeWorkflowStatus(checked, record)"
+            />
           </template>
           <template v-else-if="column.key === 'node_count'">
             <span>{{ Number(record.node_count || 0) }} 节点 / {{ Number(record.edge_count || 0) }} 连线</span>
@@ -218,7 +223,9 @@ const {
   loadWorkflows,
   actionTooltipProps,
   openBuilderForCreate,
+  canUpdateWorkflow,
   loading,
+  workflowStatusUpdatingId,
   reloadAll,
   columns,
   records,
@@ -236,6 +243,7 @@ const {
   launch,
   openWorkflowRunCenter,
   openDeleteWorkflowConfirm,
+  onChangeWorkflowStatus,
   cloneModalVisible,
   cloneSubmitting,
   confirmClone,

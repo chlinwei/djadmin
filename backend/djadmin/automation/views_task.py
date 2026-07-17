@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from .view_helpers import *
-from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview
+from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
 
 class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
-    queryset = AutomationTask.objects.select_related('template', 'inventory').all()
+    queryset = AutomationTask.objects.select_related('playbook_template', 'shell_script_template', 'inventory').all()
     serializer_class = AutomationTaskSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['name', 'code', 'template__name', 'inventory__name', 'remark']
-    ordering_fields = ['name', 'code', 'enabled', 'create_time', 'update_time']
+    search_fields = ['name', 'playbook_template__name', 'shell_script_template__name', 'inventory__name', 'remark']
+    ordering_fields = ['name', 'enabled', 'create_time', 'update_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
@@ -25,6 +25,10 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        # 支持按 task_id 精确过滤，避免仅靠模糊 search 无法命中 ID。
+        raw_task_id = str(request.query_params.get('task_id', '')).strip()
+        if raw_task_id.isdigit():
+            queryset = queryset.filter(id=int(raw_task_id))
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page if page is not None else queryset, many=True)
         data = serializer.data
@@ -103,7 +107,7 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
                 'resolved_host_count': 0,
             })
 
-        if not task.template:
+        if _resolve_task_template(task) is None:
             return Response_200(data={
                 'ok': False,
                 'status': 'template_missing',
@@ -194,9 +198,10 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
     @action(detail=True, methods=['post'], url_path='run_now')
     def run_now(self, request, id=None):
         task = self.get_object()
+        task_template = _resolve_task_template(task)
         if not task.enabled:
             return Response_error_str('Task is disabled', code=400)
-        if not task.template:
+        if task_template is None:
             return Response_error_str('Template is missing', code=400)
         # inventory 是必选的，未配置或已被删除时拒绝执行
         if not task.inventory_id:
@@ -215,13 +220,18 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         host_ids_raw = request.data.get('host_ids', default_host_ids)
         group_ids_raw = request.data.get('group_ids', default_group_ids)
-        extra_vars_raw = request.data.get('extra_vars', task.env_vars)
+        is_shell_task = task.shell_script_template_id is not None
+        extra_vars_raw = request.data.get('extra_vars', task.env_vars if not is_shell_task else {})
+        shell_parameters_raw = request.data.get('shell_parameters', task.shell_parameters if is_shell_task else '')
+        shell_env_vars_raw = request.data.get('shell_env_vars', task.env_vars if is_shell_task else {})
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
         group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
         group_ids = [int(item) for item in group_ids if str(item).isdigit()]
         extra_vars = extra_vars_raw if isinstance(extra_vars_raw, dict) else {}
+        shell_parameters = str(shell_parameters_raw or '').strip()
+        shell_env_vars = shell_env_vars_raw if isinstance(shell_env_vars_raw, dict) else {}
 
         if task.inventory_id and task.inventory is not None and len(host_ids) == 0 and len(group_ids) == 0:
             inventory_name = task.inventory.name or '-'
@@ -248,9 +258,11 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
             inventory_snapshot=inventory_snapshot,
             task_name_snapshot=task.name or '',
-            template_name_snapshot=task.template.name or '',
-            template_content_snapshot=task.template.content or '',
-            extra_vars=extra_vars,
+            template_name_snapshot=task_template.name or '',
+            template_content_snapshot=task_template.content or '',
+            extra_vars=extra_vars if not is_shell_task else {},
+            shell_parameters=shell_parameters if is_shell_task else '',
+            shell_env_vars=shell_env_vars if is_shell_task else {},
             limit=limit_text,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),

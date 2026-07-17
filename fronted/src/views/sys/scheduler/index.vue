@@ -56,9 +56,11 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">
-              {{ record.enabled ? '启用' : '禁用' }}
-            </a-tag>
+            <a-switch
+              :checked="record.enabled === true"
+              :disabled="record.is_running"
+              @change="(checked) => toggleEnable(record, checked)"
+            />
           </template>
           <template v-else-if="column.key === 'is_running'">
             <a-tag v-if="record.is_running" color="orange" icon="loading">
@@ -102,26 +104,6 @@
                 >
                   <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
                   <span>&nbsp;立即执行</span>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip v-if="record.enabled" title="禁用">
-                <a-button
-                  size="small"
-                  danger
-                  @click="toggleEnable(record, false)"
-                  :disabled="record.is_running"
-                >
-                  禁用
-                </a-button>
-              </a-tooltip>
-              <a-tooltip v-else title="启用">
-                <a-button
-                  size="small"
-                  type="primary"
-                  @click="toggleEnable(record, true)"
-                  :disabled="record.is_running"
-                >
-                  启用
                 </a-button>
               </a-tooltip>
             </a-space>

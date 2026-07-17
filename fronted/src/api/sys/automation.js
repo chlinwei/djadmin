@@ -26,12 +26,36 @@ export function downloadPlaybookFile(id) {
   return requestUtil.download(prefix + `playbooks/${id}/download/`)
 }
 
-export function runPlaybook(id, params) {
-  return requestUtil.post(prefix + `playbooks/${id}/run/`, params)
-}
-
 export function validatePlaybookContent(params) {
   return requestUtil.post(prefix + 'playbooks/validate/', params)
+}
+
+export function validateShellScriptContent(params) {
+  return requestUtil.post(prefix + 'shell-script-templates/validate/', params)
+}
+
+export function getShellScriptTemplateList(params) {
+  return requestUtil.get(prefix + 'shell-script-templates/', params)
+}
+
+export function createShellScriptTemplate(params) {
+  return requestUtil.post(prefix + 'shell-script-templates/', params)
+}
+
+export function updateShellScriptTemplate(id, params) {
+  return requestUtil.patch(prefix + `shell-script-templates/${id}/`, params)
+}
+
+export function deleteShellScriptTemplate(id) {
+  return requestUtil.del(prefix + `shell-script-templates/${id}/`)
+}
+
+export function uploadShellScriptTemplateFile(id, formData) {
+  return requestUtil.fileUpload(prefix + `shell-script-templates/${id}/upload/`, formData)
+}
+
+export function downloadShellScriptTemplateFile(id) {
+  return requestUtil.download(prefix + `shell-script-templates/${id}/download/`)
 }
 
 export function getTaskList(params) {

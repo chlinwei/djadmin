@@ -33,7 +33,12 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '禁用' }}</a-tag>
+            <a-switch
+              :checked="record.enabled === true"
+              :disabled="!canUpdateInventory || loading || inventoryStatusUpdatingId === record.id"
+              :loading="inventoryStatusUpdatingId === record.id"
+              @change="(checked) => onChangeInventoryStatus(checked, record)"
+            />
           </template>
           <template v-else-if="column.key === 'resolved_host_count'">
             <a-button size="small" type="link" @click.stop="openScopeViewer(record)">
@@ -181,6 +186,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { checkPermission } from '@/directives/permission/permission'
 import {
   getInventoryList,
   createInventory,
@@ -197,6 +203,7 @@ const router = useRouter()
 
 const loading = ref(false)
 const submitting = ref(false)
+const inventoryStatusUpdatingId = ref(null)
 const modalVisible = ref(false)
 const scopeModalVisible = ref(false)
 const scopeViewVisible = ref(false)
@@ -208,6 +215,7 @@ const scopeEditKeyword = ref('')
 const isCreateMode = ref(true)
 const editingId = ref(null)
 const keyword = ref('')
+const canUpdateInventory = computed(() => checkPermission('automation:inventory:update'))
 
 const records = ref([])
 const groupTreeData = ref([])
@@ -789,6 +797,34 @@ async function removeRecord(record) {
   await deleteInventory(record.id)
   message.success('Inventory 已删除')
   await loadInventories(false)
+}
+
+async function onChangeInventoryStatus(checked, record) {
+  if (!record?.id) {
+    return
+  }
+  if (!canUpdateInventory.value) {
+    message.warning('没有状态修改权限')
+    return
+  }
+
+  const targetEnabled = checked === true
+  const originalEnabled = record.enabled === true
+  if (targetEnabled === originalEnabled) {
+    return
+  }
+
+  inventoryStatusUpdatingId.value = record.id
+  record.enabled = targetEnabled
+  try {
+    await updateInventory(record.id, { enabled: targetEnabled })
+    message.success('状态修改成功')
+  } catch (error) {
+    record.enabled = originalEnabled
+    message.error(error?.response?.data?.msg || error?.message || '状态修改失败')
+  } finally {
+    inventoryStatusUpdatingId.value = null
+  }
 }
 
 function openDeleteInventoryConfirm(record) {

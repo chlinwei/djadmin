@@ -17,6 +17,7 @@ class SysMenu(models.Model):
     path = models.CharField(max_length=200, null=True, blank=True,verbose_name="路由地址")
     component = models.CharField(max_length=255, null=True,blank=True,verbose_name="组件路径")
     menu_type = models.CharField(max_length=1, null=True, verbose_name="菜单类型（M目录 C菜单 F按钮）")
+    is_expanded = models.BooleanField(default=True, verbose_name="目录默认展开")
     perms = models.CharField(max_length=100, null=True, blank=True,verbose_name="权限标识")
     location = models.SmallIntegerField(choices=LOCATIONS_CHOICES, default=1,verbose_name="权限位置")
     create_time = models.DateField(null=True,blank=True, verbose_name="创建时间", )

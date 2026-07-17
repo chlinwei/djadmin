@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
+
+from ansible.errors import AnsibleError, AnsibleParserError
+
 from .view_helpers import *
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
@@ -44,6 +50,45 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             return str(first_value)
         return str(detail)
 
+    @staticmethod
+    def _validate_ansible_playbook_syntax_or_raise(content: str) -> None:
+        content_text = str(content or '').strip()
+        if not content_text:
+            raise serializers.ValidationError('Playbook content cannot be empty')
+
+        temp_path = ''
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False, encoding='utf-8') as temp_file:
+                temp_file.write(content_text)
+                temp_file.flush()
+                temp_path = temp_file.name
+
+            env = os.environ.copy()
+            env.setdefault('ANSIBLE_NOCOLOR', '1')
+            result = subprocess.run(
+                ['ansible-playbook', '--syntax-check', '-i', 'localhost,', temp_path],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            if result.returncode != 0:
+                raw_message = '\n'.join(
+                    part.strip() for part in [result.stderr, result.stdout] if part and part.strip()
+                ).strip()
+                message_text = raw_message or 'syntax check failed'
+                raise serializers.ValidationError(f'Playbook Ansible syntax error: {message_text}')
+        except serializers.ValidationError:
+            raise
+        except FileNotFoundError as exc:
+            raise serializers.ValidationError('Playbook Ansible syntax error: ansible-playbook command not found') from exc
+        except (AnsibleParserError, AnsibleError, Exception) as exc:
+            error_text = str(exc).replace(temp_path, '<playbook>').strip() if temp_path else str(exc).strip()
+            raise serializers.ValidationError(f'Playbook Ansible syntax error: {error_text}') from exc
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+
     def _build_group_tree(self, groups_data):
         nodes = {}
         roots = []
@@ -70,7 +115,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
     def validate_content(self, request):
         content = request.data.get('content', '')
         try:
-            validate_playbook_content_or_raise(content)
+            self._validate_ansible_playbook_syntax_or_raise(content)
         except serializers.ValidationError as exc:
             return Response_error_str(self._validation_error_to_text(exc), code=400)
         return Response_200(data={'valid': True})
@@ -190,7 +235,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             return Response_error_str('Template file is empty', code=400)
 
         try:
-            validate_playbook_content_or_raise(content)
+            self._validate_ansible_playbook_syntax_or_raise(content)
         except serializers.ValidationError as exc:
             return Response_error_str(self._validation_error_to_text(exc), code=400)
 

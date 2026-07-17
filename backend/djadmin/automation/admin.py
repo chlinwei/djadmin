@@ -1,12 +1,18 @@
 from django.contrib import admin
 
-from .models import PlaybookTemplate, AnsibleExecutionJob
+from .models import PlaybookTemplate, ShellScriptTemplate, AnsibleExecutionJob
 
 
 @admin.register(PlaybookTemplate)
 class PlaybookTemplateAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'create_time', 'update_time')
     search_fields = ('name',)
+
+
+@admin.register(ShellScriptTemplate)
+class ShellScriptTemplateAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'create_time', 'update_time')
+    search_fields = ('name', 'description')
 
 
 @admin.register(AnsibleExecutionJob)

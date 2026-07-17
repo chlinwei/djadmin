@@ -18,11 +18,13 @@ export function buildAutomationInventoryRoute(record) {
   }
 }
 
-export function buildAutomationPlaybookRoute(record) {
-  const keyword = String(record?.template_name || '').trim()
+export function buildAutomationTemplateRoute(record) {
+  const rawTemplateName = String(record?.template_name || '').trim()
+  const keyword = rawTemplateName.replace(/^\[(Playbook|ShellScript)\]\s*/, '')
+  const templateType = Number(record?.shell_script_template) > 0 ? 'shell_script' : 'playbook'
 
   return {
-    path: '/sys/automation/playbooks',
-    query: keyword ? { search: keyword } : {},
+    path: '/sys/automation/templates',
+    query: keyword ? { search: keyword, type: templateType } : { type: templateType },
   }
 }

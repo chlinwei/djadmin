@@ -12,7 +12,8 @@ from django.utils import timezone
 
 from assets.models import Credential, Host, HostCredential, HostGroup
 
-from .models import AnsibleExecutionJob
+from .models import AnsibleExecutionJob, ShellScriptTemplate
+from .executor_shell_script import execute_shell_script_job
 
 try:
     import ansible_runner  # type: ignore[import-not-found]
@@ -438,62 +439,75 @@ def execute_ansible_job(job_id: int) -> None:
         close_old_connections()
         return
 
-    contexts, invalid_target_count = _prepare_target_rows(job)
-    if not contexts:
+    template_content = (job.template_content_snapshot or '').strip()
+    if not template_content:
         end_time = timezone.now()
         job.status = AnsibleExecutionJob.Status.FAILED
         job.end_time = end_time
         job.duration_seconds = (end_time - start_time).total_seconds()
-        total_targets = invalid_target_count or len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
         job.result_summary = {
-            'message': 'No executable targets. Check host selection and credentials.',
-            'total': total_targets,
+            'message': 'Template snapshot is empty. Cannot execute without immutable snapshot content.',
+            'total': 0,
             'success': 0,
-            'failed': total_targets,
+            'failed': 0,
         }
         job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
         close_old_connections()
         return
 
-    with tempfile.TemporaryDirectory(prefix='djadmin_ansible_') as work_dir:
-        playbook_path = os.path.join(work_dir, 'playbook.yml')
-        template_content = (job.template_content_snapshot or '').strip()
-        if not template_content:
+    # Detect template type: shell script or playbook
+    is_shell_script = job.task and hasattr(job.task, 'shell_script_template_id') and job.task.shell_script_template_id
+
+    if is_shell_script:
+        # ===== SHELL SCRIPT EXECUTION PATH =====
+        run_success, return_code = execute_shell_script_job(job)
+        total_targets = len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
+        success_count = total_targets if run_success else 0
+        failed_count = 0 if run_success else total_targets
+        invalid_target_count = 0
+    else:
+        # ===== PLAYBOOK EXECUTION PATH =====
+        contexts, invalid_target_count = _prepare_target_rows(job)
+        if not contexts:
             end_time = timezone.now()
             job.status = AnsibleExecutionJob.Status.FAILED
             job.end_time = end_time
             job.duration_seconds = (end_time - start_time).total_seconds()
+            total_targets = invalid_target_count or len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
             job.result_summary = {
-                'message': 'Template snapshot is empty. Cannot execute without immutable snapshot content.',
-                'total': 0,
+                'message': 'No executable targets. Check host selection and credentials.',
+                'total': total_targets,
                 'success': 0,
-                'failed': 0,
+                'failed': total_targets,
             }
             job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
             close_old_connections()
             return
 
-        # 动态注入 become 配置到 playbook
-        template_content = _inject_become_config(template_content, job)
+        with tempfile.TemporaryDirectory(prefix='djadmin_ansible_') as work_dir:
+            playbook_path = os.path.join(work_dir, 'playbook.yml')
+            
+            # 动态注入 become 配置到 playbook
+            template_content = _inject_become_config(template_content, job)
 
-        with open(playbook_path, 'w', encoding='utf-8') as playbook_fp:
-            playbook_fp.write(template_content)
+            with open(playbook_path, 'w', encoding='utf-8') as playbook_fp:
+                playbook_fp.write(template_content)
 
-        inventory_path, _ = _write_inventory_file(work_dir, contexts)
-        run_success = False
-        return_code = -1
+            inventory_path, _ = _write_inventory_file(work_dir, contexts)
+            run_success = False
+            return_code = -1
 
-        latest_job = AnsibleExecutionJob.objects.filter(id=job.id).values('status').first()
-        if not (latest_job and latest_job.get('status') == AnsibleExecutionJob.Status.CANCELLED):
-            run_success, return_code = _run_playbook_for_inventory(job, contexts, inventory_path, playbook_path)
+            latest_job = AnsibleExecutionJob.objects.filter(id=job.id).values('status').first()
+            if not (latest_job and latest_job.get('status') == AnsibleExecutionJob.Status.CANCELLED):
+                run_success, return_code = _run_playbook_for_inventory(job, contexts, inventory_path, playbook_path)
 
-    total_targets = len(contexts) + invalid_target_count
-    if run_success:
-        success_count = len(contexts)
-        failed_count = invalid_target_count
-    else:
-        success_count = 0
-        failed_count = total_targets
+        total_targets = len(contexts) + invalid_target_count
+        if run_success:
+            success_count = len(contexts)
+            failed_count = invalid_target_count
+        else:
+            success_count = 0
+            failed_count = total_targets
 
     final_status = AnsibleExecutionJob.Status.SUCCESS if failed_count == 0 else AnsibleExecutionJob.Status.FAILED
     latest_status = AnsibleExecutionJob.objects.filter(id=job.id).values_list('status', flat=True).first()

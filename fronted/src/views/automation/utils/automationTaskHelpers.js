@@ -6,7 +6,6 @@ export const GROUP_TAG_PREVIEW_COUNT = 2
 
 export const TASK_COLUMNS = [
   { title: '任务名称', dataIndex: 'name', key: 'name', width: 160, sorter: true },
-  { title: '任务编码', dataIndex: 'code', key: 'code', width: 170 },
   { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 90, sorter: true },
   { title: 'Inventory', dataIndex: 'inventory_name', key: 'inventory_name', width: 180 },
   { title: '模板', dataIndex: 'template_name', key: 'template_name', width: 140 },
@@ -54,6 +53,31 @@ export function formatJsonCellText(value) {
   }
   const text = JSON.stringify(value)
   return text.length > 64 ? `${text.slice(0, 64)}...` : text
+}
+
+export function formatEnvVarCellText(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '-'
+  }
+
+  const entries = Object.entries(value)
+  if (!entries.length) {
+    return '{}'
+  }
+
+  const isFlat = entries.every(([key, item]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(key))) {
+      return false
+    }
+    const itemType = typeof item
+    return item == null || itemType === 'string' || itemType === 'number' || itemType === 'boolean'
+  })
+
+  const text = isFlat
+    ? entries.map(([key, item]) => `${key}=${String(item ?? '')}`).join('; ')
+    : JSON.stringify(value)
+
+  return text.length > 96 ? `${text.slice(0, 96)}...` : text
 }
 
 export function getScopeTreeNode(node) {

@@ -319,7 +319,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 		)
 
 	def test_run_template_dispatches_to_celery(self):
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.views_playbook.execute_ansible_job') as mock_execute:
 			res = self.client.post(
 				f'/sys/automation/playbooks/{self.template.id}/run/',  # type: ignore[attr-defined]
 				{'host_ids': [self.host.id], 'group_ids': [], 'extra_vars': {}},
@@ -327,18 +327,24 @@ class AutomationRunDispatchTest(BaseTestCase):
 			)
 			body = self.assertResponseOK(res)
 			self.assertEqual(body['data']['status'], 'pending')
-			mock_delay.assert_called_once()
+			mock_execute.assert_called_once()
 
 	def test_run_now_dispatches_to_celery(self):
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
+			'status': 'success',
+			'exit_code': 0,
+			'stdout': 'ok',
+			'stderr': '',
+			'error_message': '',
+		}) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{self.task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
 				format='json',
 			)
 			body = self.assertResponseOK(res)
-			self.assertEqual(body['data']['status'], 'pending')
-			mock_delay.assert_called_once()
+			self.assertEqual(body['data']['status'], 'success')
+			mock_exec.assert_called_once()
 
 	def test_run_now_shell_task_persists_shell_snapshots(self):
 		shell_template = ShellScriptTemplate.objects.create(
@@ -357,21 +363,27 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
+			'status': 'success',
+			'exit_code': 0,
+			'stdout': 'ok',
+			'stderr': '',
+			'error_message': '',
+		}) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{shell_task.id}/run_now/',
 				{'shell_parameters': 'from-request', 'shell_env_vars': {'K': 'V'}},
 				format='json',
 			)
 			body = self.assertResponseOK(res)
-			self.assertEqual(body['data']['status'], 'pending')
+			self.assertEqual(body['data']['status'], 'success')
 			job = AnsibleExecutionJob.objects.get(id=body['data']['id'])
 			self.assertEqual(job.task_id, shell_task.id)
 			self.assertEqual(job.template_name_snapshot, shell_template.name)
 			self.assertEqual(job.shell_parameters, 'from-request')
 			self.assertEqual(job.shell_env_vars, {'K': 'V'})
 			self.assertEqual(job.extra_vars, {})
-			mock_delay.assert_called_once()
+			mock_exec.assert_called_once()
 
 	def test_run_now_with_empty_scope_defaults_to_all_hosts(self):
 		host_b = Host.objects.create(instance_name='dispatch_host_b', ip='10.0.0.11')
@@ -390,19 +402,25 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
+			'status': 'success',
+			'exit_code': 0,
+			'stdout': 'ok',
+			'stderr': '',
+			'error_message': '',
+		}) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
 				format='json',
 			)
 			body = self.assertResponseOK(res)
-			self.assertEqual(body['data']['status'], 'pending')
+			self.assertEqual(body['data']['status'], 'success')
 			inventory_hosts = body['data']['inventory_snapshot']['hosts']
 			host_ids = {item['host_id'] for item in inventory_hosts}
 			self.assertIn(self.host.id, host_ids)
 			self.assertIn(host_b.id, host_ids)
-			mock_delay.assert_called_once()
+			self.assertEqual(mock_exec.call_count, 2)
 
 	def test_run_now_fails_without_inventory(self):
 		task = AutomationTask.objects.create(
@@ -845,7 +863,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow = self._create_workflow()
 		self._setup_workflow_with_inventory(workflow)
 
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.view_helpers.execute_ansible_job') as mock_execute:
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -860,7 +878,7 @@ class AutomationWorkflowTest(BaseTestCase):
 			self.assertEqual(node_result['task_name_snapshot'], self.task.name)
 			self.assertEqual(node_result['template_name_snapshot'], self.template.name)
 			self.assertTrue(node_result.get('job_id'))
-			mock_delay.assert_called_once()
+			mock_execute.assert_called_once()
 
 	def test_launch_workflow_uses_workflow_default_inventory_scope(self):
 		host_b = Host.objects.create(instance_name='workflow_scope_host_b', ip='10.0.0.22')
@@ -888,7 +906,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		)
 		workflow = self.assertResponseOK(res)['data']
 
-		with patch('automation.tasks.execute_ansible_job_task.delay') as mock_delay:
+		with patch('automation.view_helpers.execute_ansible_job') as mock_execute:
 			launch_res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -906,7 +924,7 @@ class AutomationWorkflowTest(BaseTestCase):
 			host_ids = {item['host_id'] for item in inventory_hosts}
 			self.assertIn(host_b.id, host_ids)
 			self.assertNotIn(self.host.id, host_ids)
-			mock_delay.assert_called_once()
+			mock_execute.assert_called_once()
 
 	def test_workflow_can_be_edited_with_circular_reference(self):
 		"""Test that workflows can be edited to contain circular references (validation deferred to runtime)."""
@@ -1279,7 +1297,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow_id = workflow['id']
 
 		# 创建一个运行记录
-		with patch('automation.tasks.execute_ansible_job_task.delay'):
+		with patch('automation.view_helpers.execute_ansible_job'):
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow_id}/launch/",
 				{},

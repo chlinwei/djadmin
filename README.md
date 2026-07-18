@@ -10,6 +10,7 @@
 - API 规范：[`.github/API_RULES.md`](./.github/API_RULES.md)
 - API 合规报告：[`.github/API_COMPLIANCE_REPORT.md`](./.github/API_COMPLIANCE_REPORT.md)
 - API 合规摘要：[`.github/API_COMPLIANCE_SUMMARY.md`](./.github/API_COMPLIANCE_SUMMARY.md)
+- Agent 作业控制面 API：[`backend/djadmin/assets/AGENT_JOB_API.md`](./backend/djadmin/assets/AGENT_JOB_API.md)
 
 ## 快速启动（开发环境）
 

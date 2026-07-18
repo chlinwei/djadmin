@@ -77,34 +77,35 @@
                     <a-input-search
                         class="tool-item"
                         v-model:value="searchText"
-                        placeholder="主机名 / IP / 备注"
+                        placeholder="实例名 / IP / 备注"
+                        allow-clear
                         enter-button
                         size="large"
                         @search="onSearch"
                     />
                 </a-col>
-                <a-col :span="5">
+                <a-col :span="4">
                     <a-input-search
                         class="tool-item"
-                        v-model:value="instanceNameFilter"
-                        placeholder="按实例名过滤"
+                        v-model:value="hostIdSearchText"
+                        placeholder="按ID查找"
+                        allow-clear
                         enter-button
                         size="large"
-                        @search="onInstanceNameSearch"
+                        @search="onHostIdSearch"
                     />
                 </a-col>
-                <a-col :span="4">
-                    <a-select
-                        v-model:value="collectStatusFilter"
-                        :getPopupContainer="getPopupContainer"
-                        class="tool-item"
+                <a-col :span="5" class="tool-item">
+                    <a-radio-group
+                        v-model:value="agentStatusFilter"
+                        button-style="solid"
                         size="large"
-                        style="width: 100%;"
-                        :options="collectStatusOptions"
-                        placeholder="采集状态"
-                        allowClear
-                        @change="onCollectStatusChange"
-                    />
+                        @change="onAgentStatusChange"
+                    >
+                        <a-radio-button value="all">全部状态</a-radio-button>
+                        <a-radio-button value="online">在线</a-radio-button>
+                        <a-radio-button value="offline">离线</a-radio-button>
+                    </a-radio-group>
                 </a-col>
                 <a-col class="AddBtn tool-item" v-permission="'assets:hosts:create'">
                     <a-button size="large" @click="handleAdd">
@@ -122,11 +123,6 @@
                     <a-button size="large" @click="resetAllFilters" :disabled="loading">
                         <FontAwesomeIcon :icon="['fas', 'rotate-left']" />
                         <span>&nbsp;重置</span>
-                    </a-button>
-                </a-col>
-                <a-col class="BatchCollectBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:update'">
-                    <a-button size="large" type="primary" :disabled="selectedHostsNoCredentialCount > 0" :loading="state.collectLoading" @click="confirmBatchCollect">
-                        <FontAwesomeIcon :icon="['fas', 'download']" />批量采集
                     </a-button>
                 </a-col>
                 <a-col class="BatchDelBtn tool-item" v-if="state.selectedRowKeys.length >= 1" v-permission="'assets:hosts:delete'">
@@ -175,30 +171,26 @@
                                 <FontAwesomeIcon :icon="['fas', 'fa-key']" />&nbsp;-
                             </span>
                         </template>
-                        <template v-else-if="column.key === 'collect_status'">
-                            <a-tooltip v-if="!hasHostCredential(record)">
+                        <template v-else-if="column.key === 'agent_status'">
+                            <a-tooltip v-if="record.system?.agent_online">
                                 <template #title>
-                                    <div>该主机未配置 SSH 凭证，请先绑定凭证后再执行采集或 WebSSH 登录</div>
-                                </template>
-                                <a-tag color="warning" style="cursor: default;">未配置凭证</a-tag>
-                            </a-tooltip>
-                            <a-tooltip v-else-if="record.collect_status === 'failed'">
-                                <template #title>
-                                    <div>{{ record.collect_message || '无法连接到该主机' }}</div>
-                                    <div v-if="Number(record.auth_failed_count || 0) > 0" style="margin-top: 4px; opacity: 0.9;">
-                                        连续认证失败：{{ Number(record.auth_failed_count || 0) }} 次
-                                    </div>
-                                    <div v-if="record.auth_lock_until" style="margin-top: 4px; opacity: 0.85;">
-                                        保护截止：{{ formatDateTime(record.auth_lock_until) }}
-                                    </div>
-                                    <div v-if="record.collect_time" style="margin-top: 4px; opacity: 0.85;">
-                                        失败时间：{{ formatDateTime(record.collect_time) }}
+                                    <div>状态由心跳判定</div>
+                                    <div v-if="record.system?.agent_last_seen_at" style="margin-top: 4px; opacity: 0.85;">
+                                        最后心跳：{{ formatDateTime(record.system.agent_last_seen_at) }}
                                     </div>
                                 </template>
-                                <a-tag color="error" style="cursor: default;">无法连接</a-tag>
+                                <a-tag color="success">在线</a-tag>
                             </a-tooltip>
-                            <a-tag v-else-if="record.collect_status === 'success'" color="success">正常</a-tag>
-                            <a-tag v-else color="default">未采集</a-tag>
+                            <a-tooltip v-else>
+                                <template #title>
+                                    <div>状态由心跳判定</div>
+                                    <div v-if="record.system?.agent_last_seen_at" style="margin-top: 4px; opacity: 0.85;">
+                                        最后心跳：{{ formatDateTime(record.system.agent_last_seen_at) }}
+                                    </div>
+                                    <div v-else style="margin-top: 4px; opacity: 0.85;">暂无心跳</div>
+                                </template>
+                                <a-tag color="error">离线</a-tag>
+                            </a-tooltip>
                         </template>
                         <template v-else-if="column.key === 'cpu_cores'">
                             <span>{{ record.hardware?.cpu_cores ?? '-' }} 核</span>
@@ -212,11 +204,8 @@
                         <template v-else-if="column.key === 'disk_used_percent'">
                             <span>{{ formatPercent(record.hardware?.disk_used_percent ?? record.disk_used_percent) }}</span>
                         </template>
-                        <template v-else-if="column.key === 'auth_failed_count'">
-                            <a-tag v-if="Number(record.auth_failed_count || 0) > 0" color="error">
-                                {{ Number(record.auth_failed_count || 0) }} 次
-                            </a-tag>
-                            <span v-else>-</span>
+                        <template v-else-if="column.key === 'agent_version'">
+                            <span>{{ record.system?.agent_version || '-' }}</span>
                         </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
@@ -229,13 +218,6 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:update'">
-                                        <a-tooltip title="下载/采集">
-                                            <a-button :disabled="!hasHostCredential(record)" @click="handleCollect(record)" :loading="rowLoadingStates[record.id]" type="default">
-                                                <FontAwesomeIcon :icon="['fas', 'download']" />
-                                            </a-button>
-                                        </a-tooltip>
-                                    </a-col>
-                                    <a-col v-permission="'assets:hosts:update'">
                                         <a-tooltip title="编辑">
                                             <a-button type="primary" @click="onSaveOrCreate(record.id)">
                                                 <FontAwesomeIcon :icon="['fa', 'edit']" />
@@ -243,8 +225,8 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-tooltip title="打开/跳转">
-                                            <a-button :disabled="!hasHostCredential(record)" @click="openWebSsh(record)">
+                                        <a-tooltip :title="getWebSshActionTooltip(record)">
+                                            <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
                                             </a-button>
                                         </a-tooltip>
@@ -299,17 +281,12 @@
                 <a-descriptions-item label="OS 类型">{{ detailHost.system?.os_type || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="OS 版本">{{ detailHost.system?.os_version || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="内核版本">{{ detailHost.system?.kernel_version || '-' }}</a-descriptions-item>
+                <a-descriptions-item label="Agent 版本">{{ detailHost.system?.agent_version || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="主机名称">{{ detailHost.system?.hostname || '-' }}</a-descriptions-item>
                 <a-descriptions-item label="CPU 核数">{{ detailHost.hardware?.cpu_cores ?? '-' }}</a-descriptions-item>
                 <a-descriptions-item label="内存">{{ formatSize(detailHost.hardware?.memory_gb) }}</a-descriptions-item>
                 <a-descriptions-item label="磁盘总量">{{ formatSize(detailHost.hardware?.disk_total_gb) }}</a-descriptions-item>
                 <a-descriptions-item label="磁盘使用率">{{ formatPercent(detailHost.hardware?.disk_used_percent ?? detailHost.disk_used_percent) }}</a-descriptions-item>
-                <a-descriptions-item label="连续认证失败次数">
-                    {{ Number(detailHost.auth_failed_count || 0) }} 次
-                </a-descriptions-item>
-                <a-descriptions-item label="认证保护截止时间">
-                    {{ formatDateTime(detailHost.auth_lock_until) }}
-                </a-descriptions-item>
                 <a-descriptions-item label="备注" :span="2">{{ detailHost.remark || '-' }}</a-descriptions-item>
             </a-descriptions>
 
@@ -370,12 +347,23 @@
                         :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
                     />
                 </a-form-item>
-                <a-form-item name="credential_id" label="SSH 凭证">
+                <a-form-item name="credential_ids" label="SSH 凭证（可选）">
                     <a-select
-                        v-model:value="form.credential_id"
+                        v-model:value="form.credential_ids"
                         :getPopupContainer="getPopupContainer"
-                        placeholder="请选择凭证"
+                        placeholder="请选择一个或多个凭证"
                         :options="credentialOptions"
+                        mode="multiple"
+                        show-search
+                        optionFilterProp="label"
+                    />
+                </a-form-item>
+                <a-form-item name="default_credential_id" label="默认凭证（可选）">
+                    <a-select
+                        v-model:value="form.default_credential_id"
+                        :getPopupContainer="getPopupContainer"
+                        placeholder="请选择默认凭证"
+                        :options="defaultCredentialOptions"
                         allowClear
                         show-search
                         optionFilterProp="label"
@@ -407,6 +395,74 @@
             style="margin-bottom: 10px"
         />
         <div ref="webSshContainerRef" class="webssh-terminal" />
+    </a-modal>
+
+    <a-modal
+        v-model:open="webSshCredentialSelectorVisible"
+        title="选择 WebSSH 凭证"
+        ok-text="打开终端"
+        cancel-text="取消"
+        :confirm-loading="webSshCredentialOpening"
+        @ok="confirmOpenWebSshWithCredential"
+        @cancel="cancelOpenWebSshWithCredential"
+    >
+        <a-form layout="vertical">
+            <a-form-item label="目标主机">
+                <a-input :value="webSshHostTitle" disabled />
+            </a-form-item>
+            <a-form-item label="已绑定凭证（可选）">
+                <a-select
+                    v-model:value="webSshSelectedCredentialId"
+                    :getPopupContainer="getPopupContainer"
+                    :options="webSshCredentialOptions"
+                    placeholder="留空则手动输入"
+                    allowClear
+                    show-search
+                    optionFilterProp="label"
+                    @change="onWebSshCredentialSelectionChange"
+                />
+            </a-form-item>
+            <a-alert
+                type="info"
+                show-icon
+                message="请确认本次登录认证方式"
+                :description="isWebSshManualCredentialMode ? '当前为手动输入模式：将创建并绑定新凭证后再连接。' : '当前为已绑定凭证模式：将直接使用所选凭证连接。'"
+                style="margin-bottom: 12px"
+            />
+            <a-form-item v-if="isWebSshManualCredentialMode" label="用户名" required>
+                <a-input v-model:value="webSshInlineCredentialForm.username" placeholder="例如：root" />
+            </a-form-item>
+            <a-form-item v-if="isWebSshManualCredentialMode" label="认证方式" required>
+                <a-radio-group v-model:value="webSshInlineCredentialForm.authType">
+                    <a-radio :value="1">密码</a-radio>
+                    <a-radio :value="2">密钥</a-radio>
+                </a-radio-group>
+            </a-form-item>
+            <a-form-item v-if="isWebSshManualCredentialMode && webSshInlineCredentialForm.authType === 1" label="密码" required>
+                <a-input-password
+                    v-model:value="webSshInlineCredentialForm.password"
+                    placeholder="请输入密码"
+                />
+            </a-form-item>
+            <a-form-item v-if="isWebSshManualCredentialMode && webSshInlineCredentialForm.authType === 2" label="私钥" required>
+                <a-textarea
+                    v-model:value="webSshInlineCredentialForm.privateKey"
+                    :rows="6"
+                    placeholder="请输入 OpenSSH 私钥内容"
+                />
+                <a-space style="margin-top: 8px">
+                    <a-button @click="triggerWebSshPrivateKeyFilePicker">上传密钥文件</a-button>
+                    <span v-if="webSshInlineCredentialForm.privateKeyFileName">{{ webSshInlineCredentialForm.privateKeyFileName }}</span>
+                </a-space>
+                <input
+                    ref="webSshPrivateKeyFileInputRef"
+                    type="file"
+                    style="display: none"
+                    accept=".pem,.key,.txt"
+                    @change="handleWebSshPrivateKeyFileChange"
+                />
+            </a-form-item>
+        </a-form>
     </a-modal>
 
     <a-modal
@@ -455,9 +511,9 @@ import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } 
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getToken } from '@/api/user/index.js'
-import { batchDeleteHost, collectHostInfo, batchCollectHostInfo, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
+import { batchDeleteHost, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
-import { getCredentailList } from '@/api/assets/credential/index.js'
+import { getCredentailList, SaveOrCreateCredential } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { getWebSocketBaseUrl } from '@/util/request'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -493,10 +549,9 @@ import '@xterm/xterm/css/xterm.css'
 const searchText = ref('')
 const groupSearchText = ref('')
 const activeSearchText = ref('')
-const instanceNameFilter = ref('')
-const activeInstanceNameFilter = ref('')
+const hostIdSearchText = ref('')
 const activeHostIdFilter = ref(null)
-const collectStatusFilter = ref(undefined)
+const agentStatusFilter = ref('all')
 const selectedGroupId = ref(0)
 const selectedGroupName = ref('全部分组')
 const groupDialogVisible = ref(false)
@@ -519,6 +574,21 @@ const webSshHostTitle = ref('')
 const webSshContainerRef = ref(null)
 const webSshMessage = ref('')
 const webSshMessageType = ref('info')
+const webSshCredentialSelectorVisible = ref(false)
+const webSshSelectedCredentialId = ref(undefined)
+const webSshCredentialOpening = ref(false)
+const webSshPendingHostRecord = ref(null)
+const webSshDefaultCredentialId = ref(undefined)
+const webSshPrivateKeyFileInputRef = ref(null)
+const webSshInlineCredentialForm = reactive({
+    username: 'root',
+    authType: 1,
+    password: '',
+    privateKey: '',
+    privateKeyFileName: '',
+})
+const WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY = 'webssh-default-credentials-by-host'
+const webSshDefaultCredentialsByHost = ref({})
 const syncingRouteFilters = ref(false)
 
 let webSshSocket = null
@@ -532,7 +602,6 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const state = reactive({
     selectedRowKeys: [],
     loading: false,
-    collectLoading: false,
 })
 
 const rowLoadingStates = reactive({})
@@ -544,12 +613,73 @@ const pendingDeleteGroupNode = ref(null)
 const expandedGroupKeys = ref([])
 const credentialOptions = ref([])
 const datasources = ref([])
+const defaultCredentialOptions = computed(() => {
+    const selectedIds = Array.isArray(form.credential_ids) ? form.credential_ids : []
+    if (!selectedIds.length) {
+        return []
+    }
+    const selectedSet = new Set(selectedIds)
+    return credentialOptions.value.filter((item) => selectedSet.has(item.value))
+})
+
+const webSshCredentialOptions = computed(() => {
+    const record = webSshPendingHostRecord.value
+    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
+    const optionMap = new Map((credentialOptions.value || []).map((item) => [item.value, item]))
+
+    const scopedOptions = hostCredentials.length
+        ? hostCredentials.map((item) => {
+            const fallback = optionMap.get(item.id)
+            const label = (item?.name && item?.username)
+                ? `${item.name} (${item.username}@${item.port || 22})`
+                : (fallback?.label || `Credential-${item.id}`)
+            return {
+                label,
+                value: item.id,
+            }
+        })
+        : []
+
+    return scopedOptions.map((item) => {
+        if (item.value === webSshDefaultCredentialId.value) {
+            return {
+                ...item,
+                label: `${item.label}（默认）`,
+            }
+        }
+        return item
+    })
+})
+
+const isWebSshManualCredentialMode = computed(() => !webSshSelectedCredentialId.value)
+
+const resolveHostDefaultCredentialMeta = (record) => {
+    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
+    const defaultByList = hostCredentials.find((item) => item?.is_default)
+    if (defaultByList) {
+        return defaultByList
+    }
+    if (record?.credential?.id) {
+        return record.credential
+    }
+    return null
+}
+
+const getWebSshCredentialMetaById = (record, credentialId) => {
+    const id = Number(credentialId || 0)
+    if (id <= 0) {
+        return null
+    }
+    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
+    return hostCredentials.find((item) => Number(item?.id || 0) === id) || null
+}
 
 const form = reactive({
     id: -1,
     ip: '',
     group_id: undefined,
-    credential_id: undefined,
+    credential_ids: [],
+    default_credential_id: undefined,
     port: 22,
     remark: '',
     instance_name: '',
@@ -558,13 +688,28 @@ const form = reactive({
 const rules = {
     instance_name: [{ required: true, message: '请输入实例名' }],
     ip: [{ required: true, message: '请输入 IP 地址' }],
-    credential_id: [{ required: true, message: '请选择 SSH 凭证' }],
     port: [{ required: true, message: '请输入 SSH 端口' }],
 }
 
+watch(
+    () => form.credential_ids,
+    (nextValue) => {
+        const selectedIds = Array.isArray(nextValue) ? nextValue : []
+        if (!selectedIds.length) {
+            form.default_credential_id = undefined
+            return
+        }
+        if (!selectedIds.includes(form.default_credential_id)) {
+            form.default_credential_id = selectedIds[0]
+        }
+    },
+    { deep: true },
+)
+
 const columns = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
-    { title: '采集状态', dataIndex: 'collect_status', key: 'collect_status', width: 110 },
+    { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
@@ -573,30 +718,14 @@ const columns = [
     { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
     { title: 'OS 版本', dataIndex: 'os_version', key: 'os_version', width: 160 },
     { title: '内核版本', dataIndex: 'kernel_version', key: 'kernel_version', width: 160 },
+    { title: 'Agent 版本', dataIndex: 'agent_version', key: 'agent_version', width: 160 },
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
     { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
     { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
-    { title: '连续认证失败', dataIndex: 'auth_failed_count', key: 'auth_failed_count', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '操作', key: 'action', fixed: 'right', width: 280 },
 ]
-
-const collectStatusOptions = [
-    { label: '全部状态', value: undefined },
-    { label: '未配置凭证', value: 'no_credential' },
-    { label: '无法连接', value: 'failed' },
-    { label: '正常', value: 'success' },
-    { label: '未采集', value: 'unknown' },
-]
-
-const selectedHostsNoCredentialCount = computed(() => {
-    const selectedIdSet = new Set((state.selectedRowKeys || []).map((id) => Number(id)))
-    return (datasources.value || []).filter((item) => {
-        const hostId = Number(item?.id)
-        return selectedIdSet.has(hostId) && !hasHostCredential(item)
-    }).length
-})
 
 const diskColumns = [
     { title: '设备', dataIndex: 'device', key: 'device' },
@@ -695,6 +824,54 @@ const loadCredentialOptions = async () => {
     }
 }
 
+const loadWebSshDefaultCredentialMap = () => {
+    try {
+        const raw = localStorage.getItem(WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY)
+        if (!raw) {
+            webSshDefaultCredentialsByHost.value = {}
+            return
+        }
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            webSshDefaultCredentialsByHost.value = parsed
+            return
+        }
+        webSshDefaultCredentialsByHost.value = {}
+    } catch (error) {
+        webSshDefaultCredentialsByHost.value = {}
+    }
+}
+
+const saveWebSshDefaultCredentialMap = () => {
+    try {
+        localStorage.setItem(
+            WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY,
+            JSON.stringify(webSshDefaultCredentialsByHost.value || {}),
+        )
+    } catch (error) {
+        // ignore storage failure
+    }
+}
+
+const resolveWebSshDefaultCredentialId = (record) => {
+    const hostId = Number(record?.id || 0)
+    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
+    const scopedIds = hostCredentials.length
+        ? hostCredentials.map((item) => item.id)
+        : (record?.credential?.id ? [record.credential.id] : [])
+    const availableIds = new Set(scopedIds)
+    const fromStorage = webSshDefaultCredentialsByHost.value[String(hostId)]
+    if (fromStorage && availableIds.has(fromStorage)) {
+        return fromStorage
+    }
+    const fromHost = record?.credential?.id
+    if (fromHost && availableIds.has(fromHost)) {
+        return fromHost
+    }
+    const first = scopedIds[0]
+    return first || undefined
+}
+
 const loadHostList = async () => {
     loading.value = true
     try {
@@ -703,16 +880,11 @@ const loadHostList = async () => {
             size: pagination.pageSize,
             search: activeSearchText.value,
         }
-        if (activeInstanceNameFilter.value) {
-            params.instance_name = activeInstanceNameFilter.value
-        }
         if (activeHostIdFilter.value) {
             params.host_id = activeHostIdFilter.value
         }
-        if (collectStatusFilter.value === 'no_credential') {
-            params.has_default_credential = 'false'
-        } else if (collectStatusFilter.value) {
-            params.collect_status = collectStatusFilter.value
+        if (agentStatusFilter.value && agentStatusFilter.value !== 'all') {
+            params.agent_status = agentStatusFilter.value
         }
         if (selectedGroupId.value && selectedGroupId.value !== 0) {
             params.group_id = selectedGroupId.value
@@ -928,8 +1100,7 @@ const onGroupSelect = async (selectedKeys, info) => {
     selectedGroupName.value = key === 0 ? '全部分组' : (info?.node?.dataRef?.name || '当前分组')
     searchText.value = ''
     activeSearchText.value = ''
-    instanceNameFilter.value = ''
-    activeInstanceNameFilter.value = ''
+    hostIdSearchText.value = ''
     activeHostIdFilter.value = null
     pagination.current = 1
     await refreshList()
@@ -940,7 +1111,8 @@ const resetForm = () => {
     form.instance_name = ''
     form.ip = ''
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
-    form.credential_id = undefined
+    form.credential_ids = []
+    form.default_credential_id = undefined
     form.port = 22
     form.remark = ''
 }
@@ -982,7 +1154,14 @@ const onSaveOrCreate = async (id) => {
                 form.instance_name = data.instance_name || ''
                 form.ip = data.ip || ''
                 form.group_id = data.group ?? data.group_id ?? undefined
-                form.credential_id = data.credential?.id ?? undefined
+                const credentialRows = Array.isArray(data.credentials) ? data.credentials : []
+                form.credential_ids = credentialRows.map((item) => item.id)
+                form.default_credential_id = (
+                    credentialRows.find((item) => item.is_default)?.id
+                    || data.credential?.id
+                    || form.credential_ids[0]
+                    || undefined
+                )
                 form.port = data.port ?? 22
                 form.remark = data.remark || ''
             } else {
@@ -999,6 +1178,9 @@ const handleOk = () => {
         dialogLoading.value = true
         const payload = { ...form }
         delete payload.name
+        payload.credential_ids = Array.isArray(form.credential_ids) ? form.credential_ids : []
+        payload.default_credential_id = form.default_credential_id
+        payload.credential_id = form.default_credential_id
         saveOrCreateHost(payload)
             .then((res) => {
                 if (res.data.code === 200) {
@@ -1023,9 +1205,24 @@ const handleCancel = () => {
 
 const onSearch = async () => {
     activeSearchText.value = searchText.value.trim()
-    instanceNameFilter.value = ''
-    activeInstanceNameFilter.value = ''
+    hostIdSearchText.value = ''
     activeHostIdFilter.value = null
+    pagination.current = 1
+    await refreshList()
+}
+
+const onHostIdSearch = async () => {
+    const text = String(hostIdSearchText.value || '').trim()
+    if (!text) {
+        activeHostIdFilter.value = null
+    } else if (!/^\d+$/.test(text) || Number(text) <= 0) {
+        message.warning('请输入有效的主机ID（正整数）')
+        return
+    } else {
+        activeHostIdFilter.value = Number(text)
+    }
+    searchText.value = ''
+    activeSearchText.value = ''
     pagination.current = 1
     await refreshList()
 }
@@ -1033,16 +1230,15 @@ const onSearch = async () => {
 const resetAllFilters = async () => {
     searchText.value = ''
     activeSearchText.value = ''
-    instanceNameFilter.value = ''
-    activeInstanceNameFilter.value = ''
+    hostIdSearchText.value = ''
     activeHostIdFilter.value = null
-    collectStatusFilter.value = undefined
+    agentStatusFilter.value = 'all'
     selectedGroupId.value = 0
     selectedGroupName.value = '全部分组'
     pagination.current = 1
 
     const hasRouteFilters = Boolean(
-        route.query.group_id || route.query.search || route.query.instance_name || route.query.host_id
+        route.query.group_id || route.query.search || route.query.host_id
     )
     if (hasRouteFilters) {
         await router.replace({ path: route.path, query: {} })
@@ -1051,16 +1247,7 @@ const resetAllFilters = async () => {
     await refreshList()
 }
 
-const onInstanceNameSearch = async () => {
-    activeInstanceNameFilter.value = instanceNameFilter.value.trim()
-    searchText.value = ''
-    activeSearchText.value = ''
-    activeHostIdFilter.value = null
-    pagination.current = 1
-    await refreshList()
-}
-
-const onCollectStatusChange = async () => {
+const onAgentStatusChange = async () => {
     pagination.current = 1
     await refreshList()
 }
@@ -1093,64 +1280,6 @@ const delconfirm = (id) => {
         })
         .finally(() => {
             rowLoadingStates['delete_' + id] = false
-        })
-}
-
-const handleCollect = (target) => {
-    const id = typeof target === 'object' && target !== null ? target.id : target
-    const record = typeof target === 'object' && target !== null ? target : datasources.value.find((item) => item.id === id)
-    if (!hasHostCredential(record)) {
-        message.warning('该主机未配置 SSH 凭证，无法采集')
-        return
-    }
-    rowLoadingStates[id] = true
-    collectHostInfo(id)
-        .then((res) => {
-            if (res.data.code === 200) {
-                const result = res.data.data
-                // 检查采集状态：status 应该是 'collected' 或 'failed'
-                if (result.status === 'collected') {
-                    message.success(result.message || '采集成功')
-                } else if (result.status === 'failed') {
-                    message.error(result.message || result.error || '采集失败')
-                } else {
-                    message.success(result.message || '采集成功')
-                }
-                refreshList()
-            } else {
-                message.error(res.data.msg || '采集失败')
-            }
-        })
-        .catch((error) => {
-            message.error(error?.response?.data?.msg || error?.message || '采集失败')
-        })
-        .finally(() => {
-            rowLoadingStates[id] = false
-        })
-}
-
-const confirmBatchCollect = () => {
-    if (selectedHostsNoCredentialCount.value > 0) {
-        message.warning(`已选主机中有 ${selectedHostsNoCredentialCount.value} 台未配置凭证，无法批量采集`)
-        return
-    }
-    state.collectLoading = true
-    batchCollectHostInfo(state.selectedRowKeys)
-        .then((res) => {
-            if (res.data.code === 200) {
-                const successCount = (res.data.data.results || []).filter((item) => item.status === 'collected').length
-                const failedCount = (res.data.data.results || []).filter((item) => item.status === 'failed').length
-                message.success(`已采集 ${successCount} 台主机${failedCount ? `，${failedCount} 台失败` : ''}`)
-                refreshList()
-            } else {
-                message.error(res.data.msg || '批量采集失败')
-            }
-        })
-        .catch((error) => {
-            message.error(error?.response?.data?.msg || error?.message || '批量采集失败')
-        })
-        .finally(() => {
-            state.collectLoading = false
         })
 }
 
@@ -1297,20 +1426,206 @@ const initWebSshTerminal = async () => {
     })
 }
 
-const openWebSsh = (record) => {
-    if (!hasHostCredential(record)) {
-        message.warning('该主机未配置 SSH 凭证，无法打开 WebSSH')
+const openWebSsh = async (record) => {
+    if (!canOpenWebSsh(record)) {
+        message.warning('该主机未绑定 agent 实例，无法打开 WebSSH')
         return
     }
-    const routeData = router.resolve({
-        path: '/assets/hosts/webssh',
-        query: {
-            host_id: record.id,
-            instance_name: record.instance_name || '',
-            ip: record.ip || '',
+
+    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
+    if (!hostCredentials.length && !credentialOptions.value.length) {
+        await loadCredentialOptions()
+    }
+
+    webSshPendingHostRecord.value = record
+    webSshHostTitle.value = getHostDisplayName(record)
+    webSshDefaultCredentialId.value = resolveWebSshDefaultCredentialId(record)
+    webSshSelectedCredentialId.value = webSshDefaultCredentialId.value
+    const defaultCredentialMeta = getWebSshCredentialMetaById(record, webSshDefaultCredentialId.value) || resolveHostDefaultCredentialMeta(record)
+    webSshInlineCredentialForm.username = String(defaultCredentialMeta?.username || 'root')
+    webSshInlineCredentialForm.authType = Number(defaultCredentialMeta?.auth_type || 1)
+    webSshInlineCredentialForm.password = ''
+    webSshInlineCredentialForm.privateKey = ''
+    webSshInlineCredentialForm.privateKeyFileName = ''
+    webSshCredentialSelectorVisible.value = true
+}
+
+const onWebSshCredentialSelectionChange = (value) => {
+    const credentialId = Number(value || 0)
+    if (credentialId <= 0) {
+        return
+    }
+
+    const record = webSshPendingHostRecord.value
+    const selectedCredential = getWebSshCredentialMetaById(record, credentialId)
+    if (!selectedCredential) {
+        return
+    }
+
+    webSshInlineCredentialForm.username = String(selectedCredential?.username || webSshInlineCredentialForm.username || 'root')
+    webSshInlineCredentialForm.authType = Number(selectedCredential?.auth_type || webSshInlineCredentialForm.authType || 1)
+    webSshInlineCredentialForm.password = ''
+    webSshInlineCredentialForm.privateKey = ''
+    webSshInlineCredentialForm.privateKeyFileName = ''
+}
+
+const triggerWebSshPrivateKeyFilePicker = () => {
+    webSshPrivateKeyFileInputRef.value?.click()
+}
+
+const handleWebSshPrivateKeyFileChange = async (event) => {
+    const target = event?.target
+    const file = target?.files?.[0]
+    if (!file) {
+        return
+    }
+    try {
+        const content = await file.text()
+        webSshInlineCredentialForm.privateKey = String(content || '')
+        webSshInlineCredentialForm.privateKeyFileName = String(file.name || '')
+    } catch (error) {
+        message.error('读取密钥文件失败')
+    } finally {
+        target.value = ''
+    }
+}
+
+const buildCredentialLabel = (credential) => {
+    const name = credential?.name || 'webssh-credential'
+    const username = credential?.username || 'root'
+    const port = credential?.port || 22
+    return `${name} (${username}@${port})`
+}
+
+const createAndBindWebSshCredential = async (record) => {
+    const username = String(webSshInlineCredentialForm.username || '').trim()
+    if (!username) {
+        message.warning('请输入用户名')
+        return null
+    }
+
+    const authType = Number(webSshInlineCredentialForm.authType || 1)
+    if (authType === 1) {
+        const password = String(webSshInlineCredentialForm.password || '')
+        if (!password) {
+            message.warning('请输入密码')
+            return null
+        }
+    } else {
+        const privateKey = String(webSshInlineCredentialForm.privateKey || '').trim()
+        if (!privateKey) {
+            message.warning('请填写或上传私钥')
+            return null
+        }
+    }
+
+    const credentialPayload = {
+        id: -1,
+        name: `webssh-${record.instance_name || record.ip || record.id}-${Date.now()}`,
+        username,
+        auth_type: authType,
+        password: authType === 1 ? String(webSshInlineCredentialForm.password || '') : '',
+        private_key: authType === 2 ? String(webSshInlineCredentialForm.privateKey || '') : '',
+        port: Number(record?.port || 22),
+    }
+    const credentialRes = await SaveOrCreateCredential(credentialPayload)
+    if (credentialRes?.data?.code !== 200 || !credentialRes?.data?.data?.id) {
+        message.error(credentialRes?.data?.msg || '创建凭证失败')
+        return null
+    }
+
+    const createdCredential = credentialRes.data.data
+    const existingIds = Array.isArray(record?.credentials)
+        ? record.credentials.map((item) => item.id)
+        : (record?.credential?.id ? [record.credential.id] : [])
+    const mergedIds = Array.from(new Set([...existingIds, createdCredential.id]))
+    const hostPayload = {
+        id: record.id,
+        credential_ids: mergedIds,
+        default_credential_id: createdCredential.id,
+        credential_id: createdCredential.id,
+    }
+    const hostRes = await saveOrCreateHost(hostPayload)
+    if (hostRes?.data?.code !== 200) {
+        message.error(hostRes?.data?.msg || '绑定凭证到主机失败')
+        return null
+    }
+
+    const createdOption = {
+        value: createdCredential.id,
+        label: buildCredentialLabel(createdCredential),
+    }
+    credentialOptions.value = [...credentialOptions.value, createdOption]
+
+    const refreshedHost = hostRes?.data?.data || {}
+    record.credentials = Array.isArray(refreshedHost.credentials) ? refreshedHost.credentials : [
+        {
+            id: createdCredential.id,
+            name: createdCredential.name,
+            username: createdCredential.username,
+            port: createdCredential.port,
+            auth_type: createdCredential.auth_type,
+            is_default: true,
         },
-    })
-    window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
+    ]
+    record.credential = refreshedHost.credential || {
+        id: createdCredential.id,
+        name: createdCredential.name,
+        username: createdCredential.username,
+        port: createdCredential.port,
+        auth_type: createdCredential.auth_type,
+    }
+
+    return createdCredential.id
+}
+
+const confirmOpenWebSshWithCredential = async () => {
+    const record = webSshPendingHostRecord.value
+    if (!record?.id) {
+        message.error('主机信息不存在，请刷新后重试')
+        return
+    }
+
+    webSshCredentialOpening.value = true
+    let credentialId = Number(webSshSelectedCredentialId.value || 0) || null
+
+    try {
+        if (!credentialId) {
+            credentialId = await createAndBindWebSshCredential(record)
+            if (!credentialId) {
+                return
+            }
+        }
+
+        const hostId = String(record.id)
+        webSshDefaultCredentialsByHost.value = {
+            ...(webSshDefaultCredentialsByHost.value || {}),
+            [hostId]: credentialId,
+        }
+        webSshDefaultCredentialId.value = credentialId
+        saveWebSshDefaultCredentialMap()
+
+        const routeData = router.resolve({
+            path: '/assets/hosts/webssh',
+            query: {
+                host_id: record.id,
+                instance_name: record.instance_name || '',
+                ip: record.ip || '',
+                credential_id: credentialId,
+            },
+        })
+        window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
+        webSshCredentialSelectorVisible.value = false
+        webSshPendingHostRecord.value = null
+    } finally {
+        webSshCredentialOpening.value = false
+    }
+}
+
+const cancelOpenWebSshWithCredential = () => {
+    webSshCredentialSelectorVisible.value = false
+    webSshCredentialOpening.value = false
+    webSshPendingHostRecord.value = null
 }
 
 const closeWebSsh = () => {
@@ -1341,13 +1656,11 @@ const applyRouteFilters = async () => {
     selectedGroupId.value = Number.isInteger(initialGroupId) && initialGroupId > 0 ? initialGroupId : 0
     selectedGroupName.value = selectedGroupId.value > 0 ? '当前分组' : '全部分组'
 
-    const initialInstanceName = String(route.query.instance_name || '').trim()
-    const initialSearchText = initialInstanceName ? '' : String(route.query.search || '').trim()
+    const initialSearchText = String(route.query.search || '').trim()
 
     searchText.value = initialSearchText
     activeSearchText.value = initialSearchText
-    instanceNameFilter.value = initialInstanceName
-    activeInstanceNameFilter.value = initialInstanceName
+    hostIdSearchText.value = normalizedHostId ? String(normalizedHostId) : ''
     activeHostIdFilter.value = normalizedHostId || null
 
     pagination.current = 1
@@ -1370,11 +1683,28 @@ const getRowClassName = (record) => {
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
 }
 
+const canOpenWebSsh = (record) => {
+    const hasAgentInstance = Boolean(String(record?.instance_name || '').trim())
+    const isAgentOnline = Boolean(record?.system?.agent_online)
+    return hasAgentInstance && isAgentOnline
+}
+
+const getWebSshActionTooltip = (record) => {
+    if (!String(record?.instance_name || '').trim()) {
+        return '未绑定 agent 实例，无法打开 WebSSH'
+    }
+    if (!record?.system?.agent_online) {
+        return 'Agent 离线，禁止打开 WebSSH'
+    }
+    return '打开 Agent WebSSH 终端（需先选择凭证）'
+}
+
 const formatDateTime = (value) => {
     return formatDateTimeWithTimezone(value, formatTimeWithTimezone, store.state.user?.timezone || 'Asia/Shanghai')
 }
 
 onMounted(async () => {
+    loadWebSshDefaultCredentialMap()
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
         if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
@@ -1386,7 +1716,7 @@ onMounted(async () => {
 })
 
 watch(
-    () => [route.query.group_id, route.query.search, route.query.instance_name, route.query.host_id],
+    () => [route.query.group_id, route.query.search, route.query.host_id],
     async () => {
         await applyRouteFilters()
     },

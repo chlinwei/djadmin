@@ -333,12 +333,13 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         )
 
         try:
-            cast(Any, execute_ansible_job_task).delay(job.id)
+            # Run directly in API process per current execution mode requirement.
+            execute_ansible_job(int(job.id))
         except Exception as exc:
             job.status = AnsibleExecutionJob.Status.FAILED
-            job.result_summary = {'message': f'Failed to enqueue job: {str(exc)}'}
+            job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
             job.save(update_fields=['status', 'result_summary'])
-            return Response_error_str(f'Job enqueue failed: {str(exc)}', code=400)
+            return Response_error_str(f'Job execution failed: {str(exc)}', code=400)
 
         serializer = AnsibleExecutionJobSerializer(job)
         return Response_200(data=serializer.data)

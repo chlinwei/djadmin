@@ -70,3 +70,33 @@ class SysUserRole(models.Model):
     class Meta:
         db_table = "sys_user_role"
         unique_together = ('user', 'role')
+
+
+class ApiToken(models.Model):
+    BIND_MODE_CHOICES = [
+        ('agent', 'Agent共享'),
+        ('api', 'Api绑定'),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    agent_id = models.CharField(max_length=128, verbose_name="Api绑定标识")
+    bind_mode = models.CharField(max_length=32, choices=BIND_MODE_CHOICES, default='api', verbose_name="绑定模式")
+    token_hash = models.CharField(max_length=255, verbose_name="Token哈希")
+    name = models.CharField(max_length=128, null=True, blank=True, verbose_name="名称")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    expires_at = models.DateTimeField(null=True, blank=True, verbose_name="过期时间")
+    last_used_at = models.DateTimeField(null=True, blank=True, verbose_name="最后使用时间")
+    created_by = models.ForeignKey(
+        SysUser,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='created_api_tokens',
+        verbose_name="创建人",
+    )
+    remark = models.CharField(max_length=500, null=True, blank=True, verbose_name="备注")
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    update_time = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    class Meta:
+        db_table = "sys_agent_token"

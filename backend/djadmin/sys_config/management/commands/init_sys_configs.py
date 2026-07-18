@@ -8,6 +8,15 @@ from sys_config.models import SysConfig
 
 DEFAULT_CONFIGS = [
     {
+        'key': 'sys.assets.collect.interval_seconds',
+        'value': '40',
+        'default_value': '40',
+        'value_type': 'int',
+        'name': '主机信息采集间隔（秒）',
+        'description': 'Agent 主机信息周期上报间隔（秒）',
+        'is_readonly': False,
+    },
+    {
         'key': 'sys.assets.hostgroup.max_tree_depth',
         'value': '5',
         'default_value': '5',
@@ -23,24 +32,6 @@ DEFAULT_CONFIGS = [
         'value_type': 'int',
         'name': '菜单最大层级',
         'description': '系统菜单树形结构的最大嵌套层数',
-        'is_readonly': False,
-    },
-    {
-        'key': 'sys.assets.collect.auth_failure_threshold',
-        'value': '3',
-        'default_value': '3',
-        'value_type': 'int',
-        'name': '主机采集认证失败阈值',
-        'description': '连续认证失败达到该次数后，主机进入自动采集保护期',
-        'is_readonly': False,
-    },
-    {
-        'key': 'sys.assets.collect.auth_lock_minutes',
-        'value': '30',
-        'default_value': '30',
-        'value_type': 'int',
-        'name': '主机采集认证保护时长（分钟）',
-        'description': '进入保护期后，定时采集跳过该主机的时长（分钟）',
         'is_readonly': False,
     },
 ]

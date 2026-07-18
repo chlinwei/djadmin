@@ -1,15 +1,16 @@
 import io
-import math
 import re
 import logging
 import warnings
 from datetime import timedelta
+
 from django.db import transaction
-from .models import Host, HostCredential, HostSystem, HostHardware, HostDisk, WebSSHSessionLog
 from django.utils import timezone
-from django.conf import settings
-from sys_config.models import SysConfig
 from cryptography.utils import CryptographyDeprecationWarning
+
+from .models import Host, HostCredential, HostSystem, HostHardware, HostDisk, WebSSHSessionLog
+from .credential_crypto import decrypt_secret
+from sys_config.models import SysConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,6 @@ except ImportError:
     SSHException = Exception  # type: ignore
 
 
-class CollectAuthFailureError(ValueError):
-    """标记 SSH 认证失败，供上层计数与熔断策略精确识别。"""
-
-
 def _get_connection_port(host, credential):
     if host.port:
         return host.port
@@ -46,7 +43,7 @@ def _run_ssh_command(host, credential, command, timeout=30):
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     connect_kwargs = {
         'hostname': host.ip,
         'port': _get_connection_port(host, credential),
@@ -65,25 +62,24 @@ def _run_ssh_command(host, credential, command, timeout=30):
         pkey = paramiko.RSAKey.from_private_key(key_file)
         connect_kwargs['pkey'] = pkey
     elif credential and credential.auth_type == credential.AuthType.PASSWORD:
-        connect_kwargs['password'] = credential.password
+        connect_kwargs['password'] = decrypt_secret(credential.password)
     else:
         raise ValueError(f'Unsupported credential type for Host {host.id}.')
 
     try:
         client.connect(**connect_kwargs)
     except AuthenticationException as e:
-        raise CollectAuthFailureError(f'SSH 认证失败：{str(e)}')
+        raise ValueError(f'SSH 认证失败：{str(e)}')
     except (SSHException, OSError) as e:
         error_msg = str(e)
         if 'refused' in error_msg.lower():
             raise ValueError(f'SSH 连接被拒绝：{error_msg}')
-        elif 'name or service not known' in error_msg.lower() or 'getaddrinfo failed' in error_msg.lower():
+        if 'name or service not known' in error_msg.lower() or 'getaddrinfo failed' in error_msg.lower():
             raise ValueError(f'DNS 解析失败或网络不可达：{error_msg}')
-        elif 'authentication failed' in error_msg.lower() or 'permission denied' in error_msg.lower():
-            raise CollectAuthFailureError(f'SSH 认证失败：{error_msg}')
-        else:
-            raise ValueError(f'SSH 连接失败：{error_msg}')
-    
+        if 'authentication failed' in error_msg.lower() or 'permission denied' in error_msg.lower():
+            raise ValueError(f'SSH 认证失败：{error_msg}')
+        raise ValueError(f'SSH 连接失败：{error_msg}')
+
     stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
     out = stdout.read().decode('utf-8', errors='ignore')
     err = stderr.read().decode('utf-8', errors='ignore')
@@ -137,7 +133,7 @@ def _collect_linux_info(host, credential):
     hostname = _run_ssh_command(host, credential, 'hostname')
     kernel_version = _run_ssh_command(host, credential, 'uname -r')
     cpu_cores = _run_ssh_command(host, credential, "grep -c '^processor' /proc/cpuinfo")
-    cpu_model = _run_ssh_command(host, credential, "grep -m 1 'model name' /proc/cpuinfo | cut -d':' -f2 | sed 's/^ //'" )
+    cpu_model = _run_ssh_command(host, credential, "grep -m 1 'model name' /proc/cpuinfo | cut -d':' -f2 | sed 's/^ //'")
     memory_mb = _run_ssh_command(host, credential, "free -m | awk '/^Mem:/ {print $2}'")
     architecture = _run_ssh_command(host, credential, 'uname -m')
 
@@ -155,6 +151,7 @@ def _collect_linux_info(host, credential):
         'disk_total_gb': None,
         'architecture': architecture,
     }
+
     # Use df --output to avoid brittle awk quoting and field-position issues.
     mount_output = _run_ssh_command(
         host,
@@ -178,8 +175,7 @@ def _collect_linux_info(host, credential):
         parsed_size = _parse_size_to_gb(size_gb)
         parsed_used = _parse_size_to_gb(used_gb)
 
-        # Strong guard: only keep rows with valid path-like device/mount and parseable sizes.
-        # This prevents intermittent malformed `df` outputs from polluting HostDisk with blanks.
+        # Keep only valid disk rows to avoid malformed df output polluting HostDisk.
         if not device.startswith('/'):
             continue
         if not mount_point.startswith('/'):
@@ -191,108 +187,19 @@ def _collect_linux_info(host, credential):
         if _should_ignore_disk_device(device):
             continue
 
-        if parsed_size is None and parsed_used is None and not filesystem:
-            continue
+        disks.append(
+            {
+                'device': device,
+                'mount_point': mount_point,
+                'size_gb': parsed_size,
+                'used_gb': parsed_used,
+                'filesystem': filesystem,
+            }
+        )
 
-        disks.append({
-            'device': device,
-            'mount_point': mount_point,
-            'size_gb': parsed_size,
-            'used_gb': parsed_used,
-            'filesystem': filesystem,
-        })
     result['hardware']['disk_total_gb'] = round(sum(disk['size_gb'] for disk in disks), 3) if disks else None
     result['disks'] = disks
     return result
-
-
-def _get_auth_failure_policy():
-    """读取认证失败保护策略，支持 settings 覆盖。"""
-    threshold = None
-    cooldown_minutes = None
-
-    try:
-        from sys_config.models import SysConfig
-
-        threshold_cfg, _ = SysConfig.objects.get_or_create(
-            key='sys.assets.collect.auth_failure_threshold',
-            defaults={
-                'value': '3',
-                'default_value': '3',
-                'value_type': 'int',
-                'name': '主机采集认证失败阈值',
-                'description': '连续认证失败达到该次数后，主机进入自动采集保护期',
-                'is_readonly': False,
-            },
-        )
-        lock_cfg, _ = SysConfig.objects.get_or_create(
-            key='sys.assets.collect.auth_lock_minutes',
-            defaults={
-                'value': '30',
-                'default_value': '30',
-                'value_type': 'int',
-                'name': '主机采集认证保护时长（分钟）',
-                'description': '进入保护期后，定时采集跳过该主机的时长（分钟）',
-                'is_readonly': False,
-            },
-        )
-
-        threshold = int(str(threshold_cfg.value).strip())
-        cooldown_minutes = int(str(lock_cfg.value).strip())
-    except Exception:
-        # 保底兼容 settings 参数，避免 sys_config 异常导致采集中断。
-        threshold = int(getattr(settings, 'HOST_COLLECT_AUTH_FAILURE_THRESHOLD', 3) or 3)
-        cooldown_minutes = int(getattr(settings, 'HOST_COLLECT_AUTH_LOCK_MINUTES', 30) or 30)
-
-    return max(1, threshold), max(1, cooldown_minutes)
-
-
-def _is_auth_failure_error(error_msg):
-    if isinstance(error_msg, CollectAuthFailureError):
-        return True
-
-    text = str(error_msg or '').lower()
-    if not text:
-        return False
-    keywords = [
-        'ssh 认证失败',
-        'authentication failed',
-        'auth fail',
-        'permission denied',
-    ]
-    return any(keyword in text for keyword in keywords)
-
-
-def _clear_auth_guard_state(host):
-    host.auth_failed_count = 0
-    host.last_auth_failed_time = None
-    host.auth_lock_until = None
-
-
-def _record_auth_failure_and_maybe_lock(host, now):
-    threshold, cooldown_minutes = _get_auth_failure_policy()
-    host.auth_failed_count = int(host.auth_failed_count or 0) + 1
-    host.last_auth_failed_time = now
-
-    lock_tip = ''
-    if host.auth_failed_count >= threshold:
-        host.auth_lock_until = now + timedelta(minutes=cooldown_minutes)
-        lock_tip = (
-            f'连续认证失败已达到 {host.auth_failed_count} 次，'
-            f'定时采集将暂停至 {host.auth_lock_until.strftime("%Y-%m-%d %H:%M:%S")}。'
-        )
-    return lock_tip
-
-
-def _get_auth_lock_skip_reason(host, now=None):
-    now = now or timezone.now()
-    lock_until = host.auth_lock_until
-    if not lock_until or lock_until <= now:
-        return ''
-
-    remaining_seconds = max(0, int((lock_until - now).total_seconds()))
-    remaining_minutes = max(1, int(math.ceil(remaining_seconds / 60)))
-    return f'认证失败次数过多，处于保护期（剩余约 {remaining_minutes} 分钟）'
 
 
 def collect_host_info(host):
@@ -301,62 +208,42 @@ def collect_host_info(host):
         result = _collect_host_info_impl(host)
     except Exception as e:
         now = timezone.now()
-        error_msg = str(e)
-        lock_tip = ''
-
-        if _is_auth_failure_error(e):
-            lock_tip = _record_auth_failure_and_maybe_lock(host, now)
-        else:
-            # 仅统计认证失败，其他错误不累计，以免误触发凭证锁定保护。
-            _clear_auth_guard_state(host)
-
         host.collect_status = Host.CollectStatus.FAILED
-        host.collect_message = f'{error_msg}；{lock_tip}' if lock_tip else error_msg
+        host.collect_message = str(e)
         host.collect_time = now
-        host.save(update_fields=[
-            'collect_status',
-            'collect_message',
-            'collect_time',
-            'auth_failed_count',
-            'last_auth_failed_time',
-            'auth_lock_until',
-        ])
+        host.save(update_fields=['collect_status', 'collect_message', 'collect_time'])
         raise
-    _clear_auth_guard_state(host)
+
     host.collect_status = Host.CollectStatus.SUCCESS
     host.collect_message = ''
     host.collect_time = timezone.now()
-    host.save(update_fields=[
-        'collect_status',
-        'collect_message',
-        'collect_time',
-        'auth_failed_count',
-        'last_auth_failed_time',
-        'auth_lock_until',
-    ])
+    host.save(update_fields=['collect_status', 'collect_message', 'collect_time'])
     return result
 
 
 def _collect_host_info_impl(host):
     host_label = host.instance_name or f'Host-{host.id}'
     logger.info(f'[COLLECT] 开始采集主机: {host_label}({host.ip})')
-    credential = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
-    if not credential or not credential.credential:
+    credential_relation = (
+        HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
+    )
+    if not credential_relation or not credential_relation.credential:
         error = f'主机 {host_label}({host.ip}) 没有配置默认凭证'
         logger.error(f'[COLLECT] {error}')
         raise ValueError(error)
-    credential = credential.credential
-    
+
+    credential = credential_relation.credential
+
     if not credential.username:
         error = f'主机 {host_label}({host.ip}) 的凭证没有配置用户名'
         logger.error(f'[COLLECT] {error}')
         raise ValueError(error)
-    
+
     if credential.auth_type == credential.AuthType.PASSWORD and not credential.password:
         error = f'主机 {host_label}({host.ip}) 的凭证没有配置密码'
         logger.error(f'[COLLECT] {error}')
         raise ValueError(error)
-    
+
     if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
         error = f'主机 {host_label}({host.ip}) 的凭证没有配置私钥'
         logger.error(f'[COLLECT] {error}')
@@ -366,10 +253,6 @@ def _collect_host_info_impl(host):
         logger.info(f'[COLLECT] 开始收集主机信息: {host_label}({host.ip}), 用户: {credential.username}')
         data = _collect_linux_info(host, credential)
         logger.info(f'[COLLECT] 成功收集主机信息: {host_label}({host.ip})')
-    except CollectAuthFailureError as e:
-        error_msg = str(e)
-        logger.error(f'[COLLECT] 主机 {host_label}({host.ip}) 采集失败: {error_msg}', exc_info=True)
-        raise
     except Exception as e:
         error_msg = str(e)
         logger.error(f'[COLLECT] 主机 {host_label}({host.ip}) 采集失败: {error_msg}', exc_info=True)
@@ -386,9 +269,11 @@ def _collect_host_info_impl(host):
                 'kernel_version': data['system']['kernel_version'],
                 'hostname': data['system']['hostname'],
                 'agent_version': data['system']['agent_version'],
+                # 明确标记为 ssh 来源；agent 主动上报会覆盖为 agent。
+                'collector_source': data['system'].get('collector_source') or 'ssh',
                 'collected_at': collected_at,
                 'update_time': timezone.now(),
-            }
+            },
         )
         HostHardware.objects.update_or_create(
             host=host,
@@ -400,7 +285,7 @@ def _collect_host_info_impl(host):
                 'architecture': data['hardware']['architecture'],
                 'collected_at': collected_at,
                 'update_time': timezone.now(),
-            }
+            },
         )
         disk_objs = [HostDisk(host=host, **disk) for disk in data['disks']]
         if disk_objs:
@@ -413,8 +298,6 @@ def _collect_host_info_impl(host):
 
 
 def collect_all_hosts_info():
-    from django.utils import timezone
-
     def _get_invalid_credential_reason(host):
         relation = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
         if not relation or not relation.credential:
@@ -428,27 +311,16 @@ def collect_all_hosts_info():
         if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
             return '默认凭证缺少私钥'
         return ''
-    
+
     print(f'[START] Starting host collection at {timezone.now()}')
-    # Use filter(ip__isnull=False) only, as GenericIPAddressField doesn't work well with exclude(ip='')
     hosts = Host.objects.filter(ip__isnull=False)
     print(f'[INFO] Found {hosts.count()} hosts to collect')
-    
+
     success_count = 0
     failed_count = 0
     skipped_count = 0
-    
-    for host in hosts:
-        auth_lock_reason = _get_auth_lock_skip_reason(host)
-        if auth_lock_reason:
-            skipped_count += 1
-            host.collect_status = Host.CollectStatus.UNKNOWN
-            host.collect_message = f'定时采集已跳过：{auth_lock_reason}'
-            host.collect_time = timezone.now()
-            host.save(update_fields=['collect_status', 'collect_message', 'collect_time'])
-            print(f'[SKIPPED] Host {host.id} skipped: {auth_lock_reason}')  # type: ignore
-            continue
 
+    for host in hosts:
         invalid_reason = _get_invalid_credential_reason(host)
         if invalid_reason:
             skipped_count += 1
@@ -468,8 +340,10 @@ def collect_all_hosts_info():
         except Exception as e:
             failed_count += 1
             print(f'[ERROR] Host {host.id} failed: {e}')  # type: ignore
-    
-    print(f'[SUMMARY] Collection completed: {success_count} successful, {failed_count} failed, {skipped_count} skipped')
+
+    print(
+        f'[SUMMARY] Collection completed: {success_count} successful, {failed_count} failed, {skipped_count} skipped'
+    )
     print(f'[END] Finished at {timezone.now()}')
     return True
 

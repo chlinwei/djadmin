@@ -1,8 +1,11 @@
 from django.test import TestCase
 from django.contrib.auth.hashers import check_password, make_password
+from django.utils import timezone
+from datetime import timedelta
+from datetime import timezone as dt_timezone
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import SysUser, SysUserRole
+from .models import ApiToken, SysUser, SysUserRole
 from role.models import SysRole
 
 
@@ -273,3 +276,168 @@ class UserCenterTest(BaseTestCase):
             'new_password': 'newpass456',
         }, format='json')
         self.assertNotEqual(res.json()['code'], 200)
+
+
+class ApiTokenTest(BaseTestCase):
+
+    def test_create_agent_token_defaults_to_global(self):
+        """不传 agent_id 时创建 agent 共享 token，agent_id 固定为 global"""
+        res = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'agent',
+            'name': '共享令牌',
+        }, format='json')
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['agent_id'], 'global')
+        self.assertEqual(body['data']['bind_mode'], 'agent')
+        record = ApiToken.objects.filter(agent_id='global', bind_mode='agent').order_by('-id').first()
+        if record is None:
+            self.fail('expected a global agent token record')
+        self.assertEqual(record.bind_mode, 'agent')
+
+    def test_create_agent_token_can_be_multiple(self):
+        """agent 共享 token 允许创建多个"""
+        first = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'agent',
+            'name': '共享令牌1',
+        }, format='json')
+        self.assertResponseOK(first)
+
+        second = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'agent',
+            'name': '共享令牌2',
+        }, format='json')
+        self.assertResponseOK(second)
+
+        self.assertEqual(ApiToken.objects.filter(bind_mode='agent', agent_id='global').count(), 2)
+
+    def test_create_api_token(self):
+        """api 模式必须绑定具体 agent_id"""
+        res = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'api',
+            'agent_id': 'agent-001',
+            'name': '独占令牌',
+        }, format='json')
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['agent_id'], 'agent-001')
+        self.assertEqual(body['data']['bind_mode'], 'api')
+        record = ApiToken.objects.get(agent_id='agent-001')
+        self.assertEqual(record.bind_mode, 'api')
+
+    def test_create_api_token_expires_at_uses_user_timezone_and_store_utc(self):
+        """api 模式无时区 expires_at 按用户时区解释并转为 UTC 存储"""
+        # 当前测试用户时区为 Asia/Shanghai，12:00 本地时间应入库为 04:00 UTC。
+        res = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'api',
+            'agent_id': 'agent-tz-001',
+            'name': '时区测试',
+            'expires_at': '2030-01-01T12:00:00',
+        }, format='json')
+        self.assertResponseOK(res)
+
+        record = ApiToken.objects.get(agent_id='agent-tz-001')
+        self.assertIsNotNone(record.expires_at)
+        expires_at = record.expires_at
+        if expires_at is None:
+            self.fail('expected expires_at to be set for api token')
+        self.assertEqual(expires_at.tzinfo, dt_timezone.utc)
+        self.assertEqual(expires_at.year, 2030)
+        self.assertEqual(expires_at.month, 1)
+        self.assertEqual(expires_at.day, 1)
+        self.assertEqual(expires_at.hour, 4)
+        self.assertEqual(expires_at.minute, 0)
+
+    def test_create_agent_token_ignores_expires_at(self):
+        """agent 模式即使传 expires_at 也应永不过期"""
+        future_time = (timezone.now() + timedelta(days=30)).isoformat()
+        res = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'agent',
+            'name': '共享令牌',
+            'expires_at': future_time,
+        }, format='json')
+        body = self.assertResponseOK(res)
+        self.assertIsNone(body['data']['expires_at'])
+        record = ApiToken.objects.filter(agent_id='global', bind_mode='agent').order_by('-id').first()
+        if record is None:
+            self.fail('expected a global agent token record')
+        self.assertIsNone(record.expires_at)
+
+    def test_create_token_invalid_bind_mode(self):
+        """非法 bind_mode 应返回错误"""
+        res = self.client.post('/sys/usercenter/createApiToken/', {
+            'bind_mode': 'invalid_mode',
+            'agent_id': 'agent-002',
+        }, format='json')
+        self.assertNotEqual(res.json()['code'], 200)
+
+    def test_agent_tokens_list_contains_bind_mode_and_creator(self):
+        """列表接口应返回 bind_mode 与创建人用户名"""
+        ApiToken.objects.create(
+            agent_id='agent-003',
+            bind_mode='api',
+            token_hash=make_password('x'),
+            created_by=self.user,
+        )
+        res = self.client.get('/sys/usercenter/apiTokens/')
+        body = self.assertResponseOK(res)
+        self.assertGreaterEqual(body['data']['count'], 1)
+        first = body['data']['results'][0]
+        self.assertIn('bind_mode', first)
+        self.assertIn('created_by_username', first)
+
+    def test_rotate_disabled_token_should_fail(self):
+        """已禁用 token 不允许轮换"""
+        ApiToken.objects.create(
+            agent_id='agent-004',
+            bind_mode='api',
+            token_hash=make_password('x'),
+            is_active=False,
+            created_by=self.user,
+        )
+        res = self.client.post('/sys/usercenter/rotateApiToken/', {
+            'id': ApiToken.objects.get(agent_id='agent-004').id,
+        }, format='json')
+        self.assertNotEqual(res.json()['code'], 200)
+
+    def test_disable_token_and_repeat_disable(self):
+        """禁用接口首次成功，再次禁用返回错误"""
+        ApiToken.objects.create(
+            agent_id='agent-005',
+            bind_mode='api',
+            token_hash=make_password('x'),
+            is_active=True,
+            created_by=self.user,
+        )
+        token_id = ApiToken.objects.get(agent_id='agent-005').id
+        first = self.client.post('/sys/usercenter/disableApiToken/', {
+            'id': token_id,
+        }, format='json')
+        first_body = self.assertResponseOK(first)
+        self.assertEqual(first_body['data']['is_active'], False)
+
+        second = self.client.post('/sys/usercenter/disableApiToken/', {
+            'id': token_id,
+        }, format='json')
+        self.assertNotEqual(second.json()['code'], 200)
+
+    def test_delete_token_success_and_repeat_delete(self):
+        """删除接口首次成功，再次删除返回不存在"""
+        ApiToken.objects.create(
+            agent_id='agent-006',
+            bind_mode='api',
+            token_hash=make_password('x'),
+            is_active=True,
+            created_by=self.user,
+        )
+        token_id = ApiToken.objects.get(agent_id='agent-006').id
+
+        first = self.client.post('/sys/usercenter/deleteApiToken/', {
+            'id': token_id,
+        }, format='json')
+        first_body = self.assertResponseOK(first)
+        self.assertEqual(first_body['data']['deleted'], True)
+        self.assertFalse(ApiToken.objects.filter(agent_id='agent-006').exists())
+
+        second = self.client.post('/sys/usercenter/deleteApiToken/', {
+            'id': token_id,
+        }, format='json')
+        self.assertNotEqual(second.json()['code'], 200)

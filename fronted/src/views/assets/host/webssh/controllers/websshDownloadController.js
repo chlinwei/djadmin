@@ -53,13 +53,20 @@ export function createWebsshDownloadController(options) {
         )
     }
 
-    const issueDirectDownloadUrl = (path) => {
-        const baseUrl = String(deps.getTransferServerUrl?.() || deps.getServerUrl?.() || '').replace(/\/$/, '')
+    const issueDirectDownloadUrls = (path) => {
+        const baseCandidates = [
+            String(deps.getServerUrl?.() || ''),
+            String(deps.getTransferServerUrl?.() || ''),
+        ]
+            .map((item) => item.trim().replace(/\/$/, ''))
+            .filter(Boolean)
+
+        const uniqueBases = [...new Set(baseCandidates)]
         const encodedPath = encodeURIComponent(String(path || '').trim())
         if (!encodedPath) {
             throw new Error('下载路径不能为空')
         }
-        return `${baseUrl}/assets/hosts/${getHostId()}/files/download/?path=${encodedPath}`
+        return uniqueBases.map((baseUrl) => `${baseUrl}/assets/hosts/${getHostId()}/files/download/?path=${encodedPath}`)
     }
 
     const requestDownloadSaveHandle = async (record) => {
@@ -162,9 +169,9 @@ export function createWebsshDownloadController(options) {
             await nextTick()
             message.info(`开始下载（${downloadModeLabel}），请查看页面顶部进度条`)
 
-            if (!downloadUrl) {
-                downloadUrl = issueDirectDownloadUrl(record.path)
-            }
+            const downloadUrlCandidates = downloadUrl
+                ? [downloadUrl]
+                : issueDirectDownloadUrls(record.path)
 
             if (!fileSize) {
                 const listedFileSize = Number(record.size || 0)
@@ -194,14 +201,38 @@ export function createWebsshDownloadController(options) {
                 requestHeaders.AUTHORIZATION = token
             }
 
-            const response = await fetch(downloadUrl, {
-                method: 'GET',
-                headers: requestHeaders,
-                signal: state.downloadAbortController.signal,
-            })
-            if (response.status !== 200 && response.status !== 206) {
-                const messageText = await helpers.parseResponseError(response)
-                throw new Error(messageText || `下载失败（HTTP ${response.status}）`)
+            let response = null
+            let lastFetchError = null
+            for (const candidateUrl of downloadUrlCandidates) {
+                try {
+                    response = await fetch(candidateUrl, {
+                        method: 'GET',
+                        headers: requestHeaders,
+                        signal: state.downloadAbortController.signal,
+                    })
+                    downloadUrl = candidateUrl
+                    if (response.status === 200 || response.status === 206) {
+                        break
+                    }
+
+                    const messageText = await helpers.parseResponseError(response)
+                    lastFetchError = new Error(messageText || `下载失败（HTTP ${response.status}）`)
+
+                    // 除 404/5xx 之外的错误通常是业务错误，不再切换地址重试。
+                    if (response.status < 500 && response.status !== 404) {
+                        throw lastFetchError
+                    }
+                } catch (fetchError) {
+                    lastFetchError = fetchError
+                    // 用户取消下载时，不再尝试下一个地址。
+                    if (fetchError?.name === 'AbortError') {
+                        throw fetchError
+                    }
+                }
+            }
+
+            if (!response || (response.status !== 200 && response.status !== 206)) {
+                throw lastFetchError || new Error('下载失败')
             }
             refs.downloadProgressText.value = `目标主机已连接，正在读取远端文件（${downloadModeLabel}）...`
             const contentRange = response.headers.get('content-range') || ''

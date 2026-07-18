@@ -16,3 +16,4 @@ asyncssh==2.21.0
 ansible-core==2.17.14
 ansible-runner==2.4.1
 uvicorn==0.49.0
+nats-py==2.15.0

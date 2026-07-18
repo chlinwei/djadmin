@@ -10,6 +10,7 @@ export function createWebsshSessionController(options) {
         messageText,
         messageType,
         currentLogId,
+        supportsFileOps,
         fileCurrentPath,
         filePathInput,
         fileEntries,
@@ -20,6 +21,7 @@ export function createWebsshSessionController(options) {
         writeSystemLine,
         fetchActiveUserCount,
         loadFiles,
+        selectedCredentialId,
     } = options
 
     const disposeTerminal = () => {
@@ -158,6 +160,7 @@ export function createWebsshSessionController(options) {
 
             statusText.value = '连接中'
             currentLogId.value = null
+            supportsFileOps.value = false
             messageText.value = '正在建立 SSH 连接...'
             messageType.value = 'info'
             writeSystemLine('Connecting...')
@@ -174,7 +177,6 @@ export function createWebsshSessionController(options) {
                 if (state.term) {
                     state.term.focus()
                     state.socket.send(JSON.stringify({ type: 'resize', cols: state.term.cols || 120, rows: state.term.rows || 32 }))
-                    sendTerminalInput('\r')
                 }
             }
 
@@ -187,13 +189,20 @@ export function createWebsshSessionController(options) {
                         statusText.value = '已连接'
                         messageText.value = ''
                         currentLogId.value = msg.log_id || null
+                        supportsFileOps.value = Boolean(msg.supports_file_ops)
                         const homeDir = msg.home_dir || '/root'
                         const instanceName = String(msg.instance_name || '').trim() || 'unknown'
                         fileCurrentPath.value = homeDir
                         filePathInput.value = homeDir
                         fetchActiveUserCount()
-                        if (!fileEntries.value.length) {
+                        if (supportsFileOps.value && !fileEntries.value.length) {
                             loadFiles(fileCurrentPath.value)
+                        }
+                        if (msg.terminal_mode === 'agent_local_pty' && selectedCredentialId.value) {
+                            const warningText = `当前会话是 Agent 本地终端，未使用所选凭证(ID=${selectedCredentialId.value})登录远端 SSH。`
+                            messageText.value = warningText
+                            messageType.value = 'warning'
+                            writeSystemLine(`[WARN] ${warningText}`)
                         }
                         writeSystemLine(`Connected to ${instanceName} (${msg.ip})`)
                     } else if (msg.type === 'error') {

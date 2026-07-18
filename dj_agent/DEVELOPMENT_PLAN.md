@@ -12,19 +12,18 @@
   - `internal/config`
   - `internal/executor`
   - `internal/logger`
-  - `internal/mq`
+  - `internal/nats`
   - `internal/protocol`
   - `internal/registry`
-  - `internal/reporter`
 
 ## 2. 建设目标
 
 将 dj_agent 建成可部署的“任务执行代理”，具备如下能力：
 
-- 接收任务（初期可轮询，后续 MQ 推送）
+- 接收任务（NATS 订阅：单机/组播/全量）
 - 执行脚本/命令（支持超时、取消、并发控制）
 - 采集执行结果（stdout/stderr/退出码/耗时）
-- 上报状态与结果（开始、运行中、成功、失败、取消）
+- 上报状态与结果（事件、结果、心跳）
 - 可靠性保障（重试、幂等、心跳、崩溃恢复）
 - 可观测性（结构化日志、指标、健康检查）
 
@@ -46,8 +45,7 @@
 - 推荐增强：`viper`（支持 env + file + default）
 - 配置拆分：
   - `agent`：实例标识、并发、心跳间隔
-  - `backend`：上报地址、认证信息
-  - `mq`：broker 地址、队列名、prefetch
+  - `nats`：地址、订阅组、主题前缀
   - `executor`：默认超时、shell、工作目录、白名单
 
 ### 3.3 日志与可观测
@@ -61,8 +59,8 @@
 
 ### 3.4 通信协议
 
-- P0/P1：HTTP + JSON（开发效率最高）
-- P2：MQ（RabbitMQ）作为任务分发主通道
+- P0/P1：NATS + JSON（直接走实时主链路）
+- P2：JetStream（可选持久化与重放）
 - 协议定义位置：`internal/protocol`
 - 约束：
   - 所有消息有 `version`
@@ -82,18 +80,21 @@
   - 目录隔离（工作目录）
   - 禁止高危命令（可配置）
 
-### 3.6 消息队列（P2 启用）
+### 3.6 消息总线（NATS）
 
-- Broker：RabbitMQ（与主项目调度生态一致）
-- Go 客户端：推荐 `amqp091-go`
+- Broker：NATS Server
+- Go 客户端：`nats.go`
+- 主题约定：
+  - 下发：`cmd.agent.<id>` / `cmd.group.<name>` / `cmd.all`
+  - 上报：`ret.job.<job_id>` / `evt.job.<job_id>.<status>` / `hb.agent.<id>`
 - 关键点：
-  - 手动 ack
-  - 失败重试 + 死信队列
-  - 消费幂等（重复消息不重复执行）
+  - 订阅幂等（同一 job_id 不重复执行）
+  - 失败重试（执行层）
+  - 需要持久化时接入 JetStream
 
 ### 3.7 注册与发现
 
-- P1：启动时注册 + 周期心跳（HTTP 上报）
+- P1：启动后周期心跳（NATS 上报）
 - P3：支持动态标签与能力上报（如 shell/script/python）
 - 建议上报字段：
   - `agent_id`、`hostname`、`ip`
@@ -119,17 +120,17 @@
 - 关闭信号可在 5 秒内优雅退出
 - `go test ./...` 可通过（至少含 smoke test）
 
-## Phase P1：HTTP 拉取/上报闭环（3-5 天）
+## Phase P1：NATS 下发/上报闭环（3-5 天）
 
-目标：形成“取任务 -> 执行 -> 上报”最小闭环。
+目标：形成“订阅任务 -> 执行 -> 上报”最小闭环。
 
 交付：
 
 - `internal/protocol`：任务/结果结构定义
 - `internal/executor`：命令执行器（含超时）
-- `internal/reporter`：HTTP 上报客户端
 - `internal/registry`：注册 + 心跳
-- 轮询器：定期从后端拉取待执行任务
+- NATS 订阅器：消费 `cmd.agent.*` / `cmd.group.*` / `cmd.all`
+- NATS 上报器：发布 `ret.job.*` / `evt.job.*` / `hb.agent.*`
 
 验收标准：
 
@@ -137,15 +138,15 @@
 - 失败任务可上报错误信息和退出码
 - 同一 `job_id` 不会重复执行（本地去重缓存可接受）
 
-## Phase P2：MQ 消费与可靠性（5-8 天）
+## Phase P2：可靠性增强（5-8 天）
 
-目标：切换到 RabbitMQ 消费，提升吞吐与可靠性。
+目标：提升 NATS 主链路的吞吐与可靠性。
 
 交付：
 
-- `internal/mq`：连接、消费、ack/nack 封装
+- `internal/nats`：连接、订阅、重连封装
 - 失败重试策略：指数退避（上限可配）
-- 死信队列对接
+- JetStream（可选）对接
 - 并发 worker 池
 
 验收标准：
@@ -198,12 +199,10 @@
   - 任务/状态/上报 DTO
 - `internal/executor`
   - 任务执行与结果采集
-- `internal/mq`
-  - MQ 连接与消费语义
+- `internal/nats`
+  - NATS 连接与订阅语义
 - `internal/registry`
   - 注册、心跳、实例元数据
-- `internal/reporter`
-  - 上报请求封装（重试/超时）
 
 ## 6. 推荐目录落地（目标结构）
 
@@ -226,13 +225,11 @@ dj_agent/
     executor/
       executor.go
       worker_pool.go
-    mq/
+    nats/
       consumer.go
       publisher.go
     registry/
       registry.go
-    reporter/
-      reporter.go
   pkg/
     version/
       version.go
@@ -251,16 +248,11 @@ agent:
   heartbeat_interval: "15s"
   max_workers: 3
 
-backend:
-  base_url: "http://127.0.0.1:8000"
-  token: "${DJ_AGENT_TOKEN}"
-  report_timeout: "10s"
-
-mq:
-  enabled: false
-  url: "amqp://guest:guest@127.0.0.1:5672/"
-  queue: "djadmin.jobs"
-  prefetch: 10
+nats:
+  url: "nats://127.0.0.1:4222"
+  groups: ["prod-linux"]
+  subject_prefix_cmd: "cmd"
+  subject_prefix_ret: "ret"
 
 executor:
   shell: "/bin/bash"
@@ -274,8 +266,8 @@ executor:
 ## 8. 开发顺序（你后续可以按这个来）
 
 1. 先完成 P0：配置、日志、优雅退出。
-2. 再完成 P1：HTTP 闭环，确保功能可跑通。
-3. 接入 P2：RabbitMQ 消费和重试。
+2. 再完成 P1：NATS 闭环，确保功能可跑通。
+3. 接入 P2：可靠性增强（重试/JetStream）。
 4. 增强 P3：健康检查 + 指标 + tracing。
 5. 最后做 P4：安全策略和审计治理。
 
@@ -284,10 +276,9 @@ executor:
 - 单元测试：
   - config 解析
   - executor 超时/退出码
-  - reporter 重试
 - 集成测试：
-  - 模拟 backend 回包
-  - 模拟 MQ 消息消费
+  - 模拟 NATS 命令下发
+  - 模拟 NATS 结果/事件上报
 - 可靠性测试：
   - 任务执行中断电/kill 后恢复
   - 网络抖动下的重试行为
@@ -317,8 +308,8 @@ executor:
 你可以直接发下面这种指令，我会按文档顺序落地：
 
 - "按 DEVELOPMENT_PLAN.md 的 P0，先实现 config + logger + 优雅退出。"
-- "继续 P1，只做 protocol + executor，先不接 MQ。"
-- "把 P2 的 RabbitMQ 消费落地，并补最小可测样例。"
+- "继续 P1，只做 protocol + executor，先不接 JetStream。"
+- "把 P2 的 NATS 可靠性增强落地，并补最小可测样例。"
 
 ## 13. 当前进度快照（2026-07-17）
 

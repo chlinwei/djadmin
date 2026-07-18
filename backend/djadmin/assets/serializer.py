@@ -1,8 +1,10 @@
 from rest_framework.serializers import ModelSerializer
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from .models import *
+from .credential_crypto import encrypt_secret
 from rest_framework import serializers
+from django.utils import timezone
 
 
 
@@ -11,12 +13,23 @@ class CredentialSerializer(ModelSerializer):
     class Meta:
         model = Credential
         fields = '__all__'
+
+    @staticmethod
+    def _encrypt_password_if_provided(validated_data):
+        if 'password' in validated_data:
+            validated_data['password'] = encrypt_secret(validated_data.get('password'))
     
     # 创建
     def create(self, validated_data):
-        validated_data["create_time"] = datetime.now().date()
+        self._encrypt_password_if_provided(validated_data)
+        validated_data["create_time"] = timezone.now()
         data = Credential.objects.create(**validated_data)
         return data
+
+    def update(self, instance, validated_data):
+        self._encrypt_password_if_provided(validated_data)
+        return super().update(instance, validated_data)
+
     def validate_private_key(self, value):
         if value and len(value) > 8192:
             raise serializers.ValidationError("私钥长度超过限制")
@@ -118,8 +131,16 @@ class HostGroupSerializer(ModelSerializer):
 class HostSerializer(ModelSerializer):
     group_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     credential_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    credential_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    default_credential_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     group_name = serializers.SerializerMethodField()
     credential = serializers.SerializerMethodField()
+    credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     disks = serializers.SerializerMethodField()
@@ -164,16 +185,50 @@ class HostSerializer(ModelSerializer):
             'auth_type': credential.auth_type,
         }
 
+    def get_credentials(self, obj):
+        relations = HostCredential.objects.filter(host=obj).select_related('credential').order_by('-is_default', 'id')
+        result = []
+        for relation in relations:
+            if not relation.credential:
+                continue
+            credential = relation.credential
+            result.append({
+                'id': credential.id,
+                'name': credential.name,
+                'username': credential.username,
+                'port': credential.port,
+                'auth_type': credential.auth_type,
+                'is_default': bool(relation.is_default),
+            })
+        return result
+
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
         if not system:
             return None
+        agent_version = system.agent_version
+        # 兼容历史脏值：ssh-collector 仅表示采集方式，不应作为 agent 版本展示。
+        if str(agent_version or '').strip().lower() == 'ssh-collector':
+            agent_version = None
+
+        agent_last_seen_at = None
+        agent_online = None
+        if str(system.collector_source or '').strip().lower() == 'agent':
+            agent_last_seen_at = getattr(obj, 'collect_time', None)
+            if agent_last_seen_at is not None:
+                agent_online = agent_last_seen_at >= (timezone.now() - timedelta(seconds=30))
+            else:
+                agent_online = False
+
         return {
             'os_type': system.os_type,
             'os_version': system.os_version,
             'kernel_version': system.kernel_version,
             'hostname': system.hostname,
-            'agent_version': system.agent_version,
+            'agent_version': agent_version,
+            'collector_source': system.collector_source,
+            'agent_last_seen_at': agent_last_seen_at,
+            'agent_online': agent_online,
         }
 
     def get_hardware(self, obj):
@@ -289,26 +344,78 @@ class HostSerializer(ModelSerializer):
     def create(self, validated_data):
         group_id = validated_data.pop('group_id', None)
         credential_id = validated_data.pop('credential_id', None)
+        credential_ids = validated_data.pop('credential_ids', serializers.empty)
+        default_credential_id = validated_data.pop('default_credential_id', serializers.empty)
         if group_id in (0, '0', '', None):
             group_id = None
         validated_data['group_id'] = group_id
         validated_data["create_time"] = datetime.now().date()
         data = Host.objects.create(**validated_data)
-        self._sync_default_credential(data, credential_id)
+        resolved_credential_ids = self._normalize_credential_ids(credential_ids, credential_id)
+        resolved_default_credential_id = self._resolve_default_credential_id(
+            resolved_credential_ids,
+            default_credential_id,
+        )
+        self._sync_host_credentials(data, resolved_credential_ids, resolved_default_credential_id)
         return data
 
-    def _sync_default_credential(self, host, credential_id):
+    def _normalize_credential_ids(self, credential_ids, credential_id):
+        normalized_ids = []
+        seen = set()
+
+        if credential_ids is serializers.empty:
+            raw_ids = [] if credential_id in (0, '0', '', None, serializers.empty) else [credential_id]
+        else:
+            raw_ids = credential_ids or []
+
+        for value in raw_ids:
+            if value in (0, '0', '', None):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed <= 0 or parsed in seen:
+                continue
+            seen.add(parsed)
+            normalized_ids.append(parsed)
+
+        return normalized_ids
+
+    def _resolve_default_credential_id(self, credential_ids, default_credential_id):
+        if not credential_ids:
+            return None
+
+        if default_credential_id not in (serializers.empty, None, '', '0', 0):
+            try:
+                parsed_default = int(default_credential_id)
+            except (TypeError, ValueError):
+                parsed_default = None
+            if parsed_default in credential_ids:
+                return parsed_default
+
+        return credential_ids[0]
+
+    def _sync_host_credentials(self, host, credential_ids, default_credential_id):
         HostCredential.objects.filter(host=host).delete()
-        if credential_id in (0, '0', '', None):
+        if not credential_ids:
             return
-        HostCredential.objects.create(host=host, credential_id=credential_id, is_default=True)
+
+        for current_id in credential_ids:
+            HostCredential.objects.create(
+                host=host,
+                credential_id=current_id,
+                is_default=(current_id == default_credential_id),
+            )
 
     def update(self, instance, validated_data):
         group_id = validated_data.pop('group_id', serializers.empty)
         credential_id = validated_data.pop('credential_id', serializers.empty)
+        credential_ids = validated_data.pop('credential_ids', serializers.empty)
+        default_credential_id = validated_data.pop('default_credential_id', serializers.empty)
 
         relation = HostCredential.objects.filter(host=instance, is_default=True).select_related('credential').first()
-        previous_credential_id = relation.credential_id if relation else None
+        previous_credential_id = relation.credential.id if (relation and relation.credential) else None
         credential_changed = False
 
         if group_id is not serializers.empty:
@@ -317,21 +424,21 @@ class HostSerializer(ModelSerializer):
             else:
                 instance.group_id = group_id
 
-        if credential_id is not serializers.empty:
-            normalized_credential_id = None if credential_id in (0, '0', '', None) else int(credential_id)
-            credential_changed = normalized_credential_id != previous_credential_id
-            HostCredential.objects.filter(host=instance).delete()
-            if credential_id not in (0, '0', '', None):
-                HostCredential.objects.create(host=instance, credential_id=credential_id, is_default=True)
+        should_sync_credentials = credential_ids is not serializers.empty or credential_id is not serializers.empty
+        if should_sync_credentials:
+            normalized_credential_ids = self._normalize_credential_ids(credential_ids, credential_id)
+            resolved_default_credential_id = self._resolve_default_credential_id(
+                normalized_credential_ids,
+                default_credential_id,
+            )
+            credential_changed = resolved_default_credential_id != previous_credential_id
+            self._sync_host_credentials(instance, normalized_credential_ids, resolved_default_credential_id)
 
         if credential_changed:
             # 凭证变更后清理旧采集结论，避免继续显示历史“无法连接”误导用户。
             instance.collect_status = Host.CollectStatus.UNKNOWN
             instance.collect_message = ''
             instance.collect_time = None
-            instance.auth_failed_count = 0
-            instance.last_auth_failed_time = None
-            instance.auth_lock_until = None
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

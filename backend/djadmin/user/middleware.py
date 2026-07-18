@@ -1,11 +1,13 @@
 import json
 
+from django.contrib.auth.hashers import check_password
 from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
 from django.utils import timezone
 from jwt import ExpiredSignatureError, InvalidTokenError, PyJWTError
 from rest_framework_jwt.settings import api_settings
 
+from djadmin.utils import Response_error_str
 from user.utils import getCurrentUser
 
 
@@ -13,19 +15,23 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
 
     _AUDIT_SKIP_PREFIXES = ('/sys/audit/', '/media', '/static')
     _AUDIT_SKIP_PATHS = {'/sys/login', '/sys/login2'}
+    _AGENT_PATH_PREFIXES = ('/api/agent/', '/sys/agent/')
+    _AGENT_RUNTIME_PATHS = (
+        '/api/agent/jobs/poll',
+        '/api/agent/jobs/report',
+        '/api/agent/configs/',
+    )
 
     def process_request(self, request):
         request._operation_audit_started_at = timezone.now()
         request._operation_audit_request_data = self._extract_request_data(request)
         white_list = ["/sys/login"]  # 请求白名单
         path = request.path
+        if self._is_agent_path(path):
+            return self._authenticate_agent_or_user_request(request)
+
         if path not in white_list and not path.startswith("/media"):
             token = request.META.get('HTTP_AUTHORIZATION')
-            err_ret = {
-                'code':301,
-                'msg': '',
-                'data': {}
-            }
             try:
                 jwt_decode_handler = api_settings.JWT_DECODE_HANDLER
                 if not callable(jwt_decode_handler):
@@ -33,16 +39,72 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
                 jwt_decode_handler(token)
                 
             except ExpiredSignatureError:
-                err_ret['msg'] = 'Token过期，请重新登录！'
-                return JsonResponse(err_ret)
+                return Response_error_str('Token过期，请重新登录！', code=301, data={})
             except InvalidTokenError:
-                err_ret['msg'] = 'Token验证失败！'
-                return JsonResponse(err_ret)
+                return Response_error_str('Token验证失败！', code=301, data={})
             except PyJWTError:
-                err_ret['msg'] = 'Token验证异常！'
-                return JsonResponse(err_ret)
+                return Response_error_str('Token验证异常！', code=301, data={})
         else:
             return None
+
+    def _is_agent_path(self, path):
+        if not path:
+            return False
+        return any(path.startswith(prefix) for prefix in self._AGENT_PATH_PREFIXES)
+
+    def _is_agent_runtime_path(self, path):
+        if not path:
+            return False
+        return any(path.startswith(prefix) for prefix in self._AGENT_RUNTIME_PATHS)
+
+    def _decode_jwt_token(self, token):
+        jwt_decode_handler = api_settings.JWT_DECODE_HANDLER
+        if not callable(jwt_decode_handler):
+            raise InvalidTokenError()
+        jwt_decode_handler(token)
+
+    def _authenticate_agent_or_user_request(self, request):
+        path = request.path
+        # agent 运行时链路（poll/report）只接受 ApiToken。
+        if self._is_agent_runtime_path(path):
+            return self._authenticate_agent_request(request)
+
+        # 控制面接口（create/query/cancel/retry...）走用户 JWT，便于前端管理页面直接调用。
+        token = request.META.get('HTTP_AUTHORIZATION')
+        try:
+            self._decode_jwt_token(token)
+            return None
+        except ExpiredSignatureError:
+            return Response_error_str('Token过期，请重新登录！', code=301, data={})
+        except InvalidTokenError:
+            return Response_error_str('Token验证失败！', code=301, data={})
+        except PyJWTError:
+            return Response_error_str('Token验证异常！', code=301, data={})
+
+    def _authenticate_agent_request(self, request):
+        token = (request.META.get('HTTP_AUTHORIZATION') or '').strip()
+        if token == '':
+            return Response_error_str('Api Token不能为空', code=301, data={})
+
+        from user.models import ApiToken
+
+        now = timezone.now()
+        # Token 哈希不可逆，必须遍历候选记录逐个校验哈希。
+        candidates = ApiToken.objects.filter(is_active=True)
+        for record in candidates:
+            # 业务规则：agent 共享 token 永不过期，仅 api 绑定 token 受 expires_at 约束。
+            if record.bind_mode == 'api' and record.expires_at is not None and record.expires_at <= now:
+                continue
+            if not check_password(token, record.token_hash):
+                continue
+
+            record.last_used_at = now
+            record.save(update_fields=['last_used_at'])
+            request.agent_id = record.agent_id
+            request.bind_mode = record.bind_mode
+            return None
+
+        return Response_error_str('Api Token验证失败！', code=301, data={})
 
     def process_response(self, request, response):
         self._write_operation_audit_log(request, response)

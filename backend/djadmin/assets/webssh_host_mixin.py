@@ -22,6 +22,7 @@ from djadmin.utils import Response_200, Response_error_str
 from user.utils import getCurrentUser
 
 from .connection_pool import SSHConnectionPool
+from .credential_crypto import decrypt_secret
 from .models import HostCredential, WebSSHSessionLog
 from .serializer import WebSSHSessionLogSerializer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -72,6 +73,8 @@ class WebSSHHostMixin:
         credential = relation.credential
         if not credential.username:
             raise ValueError('SSH 凭证缺少用户名')
+        if credential.auth_type == credential.AuthType.PASSWORD:
+            credential.password = decrypt_secret(credential.password)
         if credential.auth_type == credential.AuthType.PASSWORD and not credential.password:
             raise ValueError('SSH 凭证缺少密码')
         if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:

@@ -4,6 +4,9 @@ from rest_framework.generics import ListAPIView
 
 from django.db import connection
 from django.db.models import Prefetch
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.contrib.auth.hashers import make_password
 
 from django.views import View
 from django.http import JsonResponse
@@ -27,6 +30,8 @@ from role.models import SysRole
 from role.serializer import SysRoleSerializer
 
 from datetime import datetime
+from datetime import timezone as dt_timezone
+from zoneinfo import ZoneInfo
 #login
 from rest_framework_jwt.settings import api_settings
 
@@ -40,6 +45,7 @@ from user.utils import getCurrentUser
 from .serializer import SysUserRoleSerializer
 
 import os
+import secrets
 
 
 #错误常量
@@ -224,6 +230,185 @@ class UserCenterManage(GenericViewSet):
             db_user.set_password(new_password)
             db_user.save()
             return Response_200()
+
+    @action(detail=False, methods=['get'], url_path='apiTokens')
+    def apiTokens(self, request):
+        from .models import ApiToken
+
+        queryset = ApiToken.objects.select_related('created_by').all().order_by('-id')
+        data = []
+        for item in queryset:
+            # 历史数据可能还没有bind_mode，回退到agent_id推断，避免列表兼容性问题。
+            bind_mode = item.bind_mode or ('agent' if item.agent_id == 'global' else 'api')
+            data.append({
+                'id': item.id,
+                'agent_id': item.agent_id,
+                'bind_mode': bind_mode,
+                'name': item.name,
+                'is_active': item.is_active,
+                'expires_at': item.expires_at,
+                'last_used_at': item.last_used_at,
+                # 显式通过对象主键读取，避免静态分析对created_by_id的误报。
+                'created_by': item.created_by.pk if item.created_by else None,
+                'created_by_username': item.created_by.username if item.created_by else None,
+                'remark': item.remark,
+                'create_time': item.create_time,
+                'update_time': item.update_time,
+            })
+        return Response_200(data={'results': data, 'count': len(data)})
+
+    @action(detail=False, methods=['post'], url_path='createApiToken')
+    def createApiToken(self, request):
+        from .models import ApiToken
+
+        agent_id = str(request.data.get('agent_id') or '').strip()
+        bind_mode = str(request.data.get('bind_mode') or '').strip().lower().replace('-', '_').replace(' ', '_')
+        if bind_mode == '':
+            bind_mode = 'agent' if agent_id == '' else 'api'
+
+        if bind_mode not in ('api', 'agent'):
+            return Response_error_str('bind_mode仅支持api或agent')
+
+        if bind_mode == 'agent':
+            agent_id = 'global'
+        else:
+            if agent_id == '':
+                return Response_error_str('api模式下agent_id不能为空')
+            if agent_id == 'global':
+                return Response_error_str('agent_id不能为global保留字')
+
+        if bind_mode == 'api' and ApiToken.objects.filter(bind_mode='api', agent_id=agent_id).exists():
+            return Response_error_str('agent_id已存在')
+
+        current_user = getCurrentUser(request)
+        created_by_id = current_user.get('user_id') if isinstance(current_user, dict) else None
+
+        expires_at = None
+        # 业务规则：agent 共享 token 永不过期，忽略前端传入的 expires_at。
+        if bind_mode == 'api':
+            # api 绑定 token 的过期时间按用户时区解释，并统一转成 UTC 入库。
+            user_timezone = timezone.get_current_timezone()
+            if created_by_id:
+                user_obj = SysUser.objects.filter(id=created_by_id).only('timezone').first()
+                user_timezone_name = (user_obj.timezone or '').strip() if user_obj else ''
+                if user_timezone_name:
+                    try:
+                        user_timezone = ZoneInfo(user_timezone_name)
+                    except Exception:
+                        user_timezone = timezone.get_current_timezone()
+
+            expires_at_raw = request.data.get('expires_at')
+            if expires_at_raw not in (None, ''):
+                expires_at = parse_datetime(str(expires_at_raw))
+                if expires_at is None:
+                    return Response_error_str('expires_at格式错误，需使用ISO时间格式')
+                if timezone.is_naive(expires_at):
+                    expires_at = timezone.make_aware(expires_at, user_timezone)
+                expires_at = expires_at.astimezone(dt_timezone.utc)
+                if expires_at <= timezone.now():
+                    return Response_error_str('expires_at必须晚于当前时间')
+
+        token_plain = secrets.token_urlsafe(32)
+
+        record = ApiToken.objects.create(
+            agent_id=agent_id,
+            bind_mode=bind_mode,
+            token_hash=make_password(token_plain),
+            name=str(request.data.get('name') or '').strip() or ('全局Agent共享令牌' if bind_mode == 'agent' else None),
+            is_active=bool(request.data.get('is_active', True)),
+            expires_at=expires_at,
+            created_by_id=created_by_id,
+            remark=str(request.data.get('remark') or '').strip() or None,
+        )
+
+        return Response_200(data={
+            'id': record.id,
+            'agent_id': record.agent_id,
+            'bind_mode': record.bind_mode,
+            'token': token_plain,
+            'expires_at': record.expires_at,
+            'is_active': record.is_active,
+        })
+
+    @action(detail=False, methods=['post'], url_path='rotateApiToken')
+    def rotateApiToken(self, request):
+        from .models import ApiToken
+
+        token_id = request.data.get('id')
+        if token_id in (None, ''):
+            return Response_error_str('id不能为空')
+
+        try:
+            record = ApiToken.objects.get(id=token_id)
+        except ApiToken.DoesNotExist:
+            return Response_error_str('ApiToken不存在')
+
+        if not record.is_active:
+            return Response_error_str('ApiToken已禁用')
+
+        token_plain = secrets.token_urlsafe(32)
+        record.token_hash = make_password(token_plain)
+        record.last_used_at = None
+        record.is_active = True
+        record.save(update_fields=['token_hash', 'last_used_at', 'is_active', 'update_time'])
+
+        return Response_200(data={
+            'id': record.id,
+            'agent_id': record.agent_id,
+            'bind_mode': record.bind_mode,
+            'token': token_plain,
+        })
+
+    @action(detail=False, methods=['post'], url_path='disableApiToken')
+    def disableApiToken(self, request):
+        from .models import ApiToken
+
+        token_id = request.data.get('id')
+        if token_id in (None, ''):
+            return Response_error_str('id不能为空')
+
+        try:
+            record = ApiToken.objects.get(id=token_id)
+        except ApiToken.DoesNotExist:
+            return Response_error_str('ApiToken不存在')
+
+        if not record.is_active:
+            return Response_error_str('ApiToken已禁用')
+
+        record.is_active = False
+        record.save(update_fields=['is_active', 'update_time'])
+
+        return Response_200(data={
+            'id': record.id,
+            'agent_id': record.agent_id,
+            'bind_mode': record.bind_mode,
+            'is_active': record.is_active,
+        })
+
+    @action(detail=False, methods=['post'], url_path='deleteApiToken')
+    def deleteApiToken(self, request):
+        from .models import ApiToken
+
+        token_id = request.data.get('id')
+        if token_id in (None, ''):
+            return Response_error_str('id不能为空')
+
+        try:
+            record = ApiToken.objects.get(id=token_id)
+        except ApiToken.DoesNotExist:
+            return Response_error_str('ApiToken不存在')
+
+        record_id = record.id
+        agent_id = record.agent_id
+        bind_mode = record.bind_mode
+        record.delete()
+
+        return Response_200(data={
+            'id': record_id,
+            'agent_id': agent_id,
+            'bind_mode': bind_mode,
+            'deleted': True,
+        })
 # 修改头像
 class ChangeAvatarView(APIView):
     def post(self, request):

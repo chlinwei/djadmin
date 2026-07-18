@@ -52,7 +52,7 @@ const loginForm = reactive({
     remember: false
 });
 
-const onFinish = values => {
+const onFinish = async (values) => {
     doLogin(qs.stringify(values)).then(result => {
     let data = result.data
     if (data.code == 200) {
@@ -72,11 +72,14 @@ const onFinish = values => {
         } else {
             clearRemeberMe()
         }
-        //登录成功后，加载动态路由
+        // 登录成功后，加载动态路由
         addDynamicRoutes();
-        // 优先跳回原页面，没有就进首页
-        const redirect = route.query.redirect || '/index';
-        router.replace(redirect)
+        // 优先跳回原页面，没有就进首页。
+        const redirectRaw = route.query.redirect
+        const redirect = (typeof redirectRaw === 'string' && redirectRaw.startsWith('/')) ? redirectRaw : '/index'
+        // 使用整页跳转，彻底规避 SPA 导航状态错乱导致的“URL已变但页面未切换”。
+        const finalPath = redirect === '/index' ? '/' : redirect
+        window.location.assign(finalPath)
     }else {
         message.error("用户或者密码错误，请重新登陆...")
         clearRemeberMe()

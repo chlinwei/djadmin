@@ -42,6 +42,23 @@ init_selectedKeys();
 const menuList = getMenuList();
 const openKeys = ref([])
 
+function collectParentPathsByCurrentRoute(nodes, currentPath, parents = [], result = []) {
+  for (const menu of Array.isArray(nodes) ? nodes : []) {
+    const nextParents = menu?.menu_type === 'M' && menu?.path ? [...parents, menu.path] : parents
+    if (menu?.path === currentPath) {
+      result.push(...parents)
+      return true
+    }
+    if (Array.isArray(menu?.children) && menu.children.length > 0) {
+      const found = collectParentPathsByCurrentRoute(menu.children, currentPath, nextParents, result)
+      if (found) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 onMounted(() => {
   const nextOpenKeys = []
   const walk = (nodes) => {
@@ -55,7 +72,12 @@ onMounted(() => {
     })
   }
   walk(menuList)
-  openKeys.value = nextOpenKeys
+
+  // 仅初始化时把当前路由的父级目录展开，后续展开/折叠以用户当前操作状态为准。
+  const currentPath = useRouter().currentRoute.value.path
+  const parentPaths = []
+  collectParentPathsByCurrentRoute(menuList, currentPath, [], parentPaths)
+  openKeys.value = Array.from(new Set([...nextOpenKeys, ...parentPaths]))
 })
 
 const add_tab = (item) => {

@@ -15,7 +15,7 @@ class Credential(BaseModel):
     name = models.CharField(max_length=200, blank=True, null=True)
     username = models.CharField(max_length=128, null=False, default="root")
 
-    password = models.CharField(max_length=128, blank=True, null=True)
+    password = models.CharField(max_length=512, blank=True, null=True)
     private_key = models.TextField(blank=True, null=True)
     port = models.PositiveIntegerField(default=22)
 
@@ -111,9 +111,6 @@ class Host(BaseModel):
     )
     collect_message = models.TextField(blank=True, default="", verbose_name="采集失败原因")
     collect_time = models.DateTimeField(null=True, blank=True, verbose_name="最后采集时间")
-    auth_failed_count = models.PositiveIntegerField(default=0, verbose_name="连续认证失败次数")
-    last_auth_failed_time = models.DateTimeField(null=True, blank=True, verbose_name="最后认证失败时间")
-    auth_lock_until = models.DateTimeField(null=True, blank=True, verbose_name="认证失败保护截止时间")
 
     def __str__(self):
         display_name = self.instance_name or f"Host-{self.id}"
@@ -179,12 +176,66 @@ class HostSystem(BaseModel):
     hostname = models.CharField(max_length=128, blank=True, null=True)
 
     agent_version = models.CharField(max_length=64, blank=True, null=True)
+    collector_source = models.CharField(max_length=32, blank=True, null=True)
     collected_at = models.DateTimeField(null=True, blank=True, verbose_name='最后采集时间')
 
 
     def __str__(self):
         host_label = self.host.instance_name or f"Host-{self.host_id}"
         return f"System of {host_label}"
+
+
+class AgentJob(BaseModel):
+    class JobStatus(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        RUNNING = 'running', 'Running'
+        SUCCESS = 'success', 'Success'
+        FAILED = 'failed', 'Failed'
+        CANCELED = 'canceled', 'Canceled'
+        TIMEOUT = 'timeout', 'Timeout'
+
+    job_id = models.CharField(max_length=128, unique=True)
+    client_request_id = models.CharField(max_length=128, null=True, blank=True, unique=True)
+    agent_id = models.CharField(max_length=128)
+    host = models.ForeignKey('Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='agent_jobs')
+    job_type = models.CharField(max_length=32)
+    action = models.CharField(max_length=64)
+    params = models.JSONField(default=dict, blank=True)
+    timeout_seconds = models.PositiveIntegerField(default=30)
+    status = models.CharField(max_length=16, choices=JobStatus.choices, default=JobStatus.QUEUED)
+    picked_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    result_data = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, default='')
+
+    class Meta:
+        db_table = 'assets_agent_job'
+        indexes = [
+            models.Index(fields=['agent_id', 'status']),
+            models.Index(fields=['status', 'create_time']),
+        ]
+
+    def __str__(self):
+        return f"{self.job_id} ({self.status})"
+
+
+class AgentJobEvent(BaseModel):
+    tag = models.CharField(max_length=255)
+    job_id = models.CharField(max_length=128, blank=True, default='')
+    agent_id = models.CharField(max_length=128, blank=True, default='')
+    event_type = models.CharField(max_length=64, blank=True, default='')
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'assets_agent_job_event'
+        indexes = [
+            models.Index(fields=['job_id', 'create_time']),
+            models.Index(fields=['agent_id', 'create_time']),
+            models.Index(fields=['tag', 'create_time']),
+        ]
+
+    def __str__(self):
+        return f"{self.tag} ({self.job_id})"
 
 
 class HostDisk(models.Model):

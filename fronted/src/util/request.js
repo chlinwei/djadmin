@@ -9,25 +9,6 @@ const defaultBaseUrl = `${window.location.protocol}//${window.location.hostname}
 const defaultTransferUrl = `${window.location.protocol}//${window.location.hostname}:9101`
 let baseUrl = import.meta.env.VITE_API_BASE_URL || defaultBaseUrl;
 let transferBaseUrl = import.meta.env.VITE_TRANSFER_BASE_URL || defaultTransferUrl;
-
-function normalizePort(urlText, fallbackPort) {
-    try {
-        const parsed = new URL(urlText, window.location.origin)
-        if (parsed.port) {
-            return parsed.port
-        }
-        return parsed.protocol === 'https:' ? '443' : '80'
-    } catch (error) {
-        return fallbackPort
-    }
-}
-
-const apiPort = normalizePort(baseUrl, '9000')
-const transferPort = normalizePort(transferBaseUrl, '9101')
-if (apiPort === transferPort) {
-    // Prevent routing all business APIs to transfer service, which can make the whole UI stall during uploads.
-    baseUrl = defaultBaseUrl
-}
 // 创建axios实例
 const httpService = axios.create({
     // url前缀-'http:xxx.xxx'

@@ -4,8 +4,6 @@ import { shallowMount } from '@vue/test-utils'
 
 vi.mock('@/api/assets/host/index.js', () => ({
   batchDeleteHost: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
-  collectHostInfo: vi.fn(() => Promise.resolve({ data: { code: 200, data: { status: 'collected' } } })),
-  batchCollectHostInfo: vi.fn(() => Promise.resolve({ data: { code: 200, data: { results: [] } } })),
   deleteHostById: vi.fn(() => Promise.resolve({ data: { code: 200 } })),
   getHostById: vi.fn(() =>
     Promise.resolve({

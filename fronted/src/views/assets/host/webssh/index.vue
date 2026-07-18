@@ -33,6 +33,7 @@
 
         <div ref="websshMainRef" class="webssh-main">
             <WebsshFilePanel
+                v-if="supportsFileOps"
                 :show-file-panel="showFilePanel"
                 :set-file-panel-ref="(el) => (filePanelRef = el)"
                 :file-operations-enabled="fileOperationsEnabled"
@@ -63,8 +64,8 @@
                 @handle-file-context-action="handleFileContextAction"
             />
 
-            <div v-if="showFilePanel" class="panel-resizer" @mousedown="startResize" />
-            <div class="panel-toggle-handle" @click="toggleFilePanel">
+            <div v-if="supportsFileOps && showFilePanel" class="panel-resizer" @mousedown="startResize" />
+            <div v-if="supportsFileOps" class="panel-toggle-handle" @click="toggleFilePanel">
                 {{ showFilePanel ? '◀' : '▶' }}
             </div>
 
@@ -188,6 +189,7 @@ const fileErrorText = ref('')
 const fileTableScrollY = ref(520)
 const filePanelWidth = ref(380)
 const showFilePanel = ref(true)
+const supportsFileOps = ref(false)
 const fileContextMenuVisible = ref(false)
 const fileContextMenuStyle = ref({})
 const fileContextMenuRecord = ref(null)
@@ -211,6 +213,7 @@ let lastDownloadActionAt = 0
 let hostId = null
 let instanceName = ''
 let hostIp = ''
+const selectedCredentialId = ref(null)
 let socket = null
 let term = null
 let fitAddon = null
@@ -236,6 +239,7 @@ const websshOpsController = createWebsshOpsController({
     computed,
     message,
     statusText,
+    supportsFileOps,
 })
 
 const fileOperationsEnabled = websshOpsController.fileOperationsEnabled
@@ -373,7 +377,8 @@ const formatFileMtime = (value) => _formatFileMtime(value, store.state.user?.tim
 
 const buildWebSocketUrl = () => {
     const token = getToken() || ''
-    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
+    const credentialQuery = selectedCredentialId.value ? `&credential_id=${encodeURIComponent(selectedCredentialId.value)}` : ''
+    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}${credentialQuery}`
 }
 
 const loadFiles = async (path = fileCurrentPath.value, options = {}) => {
@@ -462,6 +467,7 @@ const websshSessionController = createWebsshSessionController({
     messageText,
     messageType,
     currentLogId,
+    supportsFileOps,
     fileCurrentPath,
     filePathInput,
     fileEntries,
@@ -472,6 +478,7 @@ const websshSessionController = createWebsshSessionController({
     writeSystemLine,
     fetchActiveUserCount,
     loadFiles,
+    selectedCredentialId,
 })
 
 const disposeTerminal = websshSessionController.disposeTerminal
@@ -545,6 +552,8 @@ const hostState = {
     set instanceName(value) { instanceName = value },
     get hostIp() { return hostIp },
     set hostIp(value) { hostIp = value },
+    get selectedCredentialId() { return selectedCredentialId.value },
+    set selectedCredentialId(value) { selectedCredentialId.value = value },
     get downloadAbortController() { return downloadAbortController },
     set downloadAbortController(value) { downloadAbortController = value },
     get downloadStopAction() { return downloadStopAction },

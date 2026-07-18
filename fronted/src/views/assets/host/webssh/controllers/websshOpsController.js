@@ -3,8 +3,9 @@ export function createWebsshOpsController(options) {
         computed,
         message,
         statusText,
+        supportsFileOps,
     } = options
-    const fileOperationsEnabled = computed(() => statusText.value === '已连接')
+    const fileOperationsEnabled = computed(() => statusText.value === '已连接' && Boolean(supportsFileOps?.value))
     let lastFileOpsOfflineNoticeAt = 0
 
     const notifyFileOpsOffline = () => {

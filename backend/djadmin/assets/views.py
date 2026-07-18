@@ -1,14 +1,20 @@
 import warnings
+import re
+import time
+import uuid
+import asyncio
+import json
+import importlib
+from datetime import timedelta
 from asgiref.sync import async_to_sync
 
 from cryptography.utils import CryptographyDeprecationWarning
 from djadmin.utils import Response_200, Response_error_str
 from rest_framework.mixins import CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin
 from rest_framework.viewsets import GenericViewSet
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view
 from .models import *
 from .serializer import *
-from .tasks import collect_host_info, collect_all_hosts_info
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters.rest_framework  import DjangoFilterBackend
@@ -17,6 +23,10 @@ from io import TextIOWrapper
 import csv
 from menu.permisssion import CustomMenuPermission
 from django.db.models import Prefetch
+from django.db import IntegrityError, transaction
+from django.conf import settings
+from django.utils import timezone
+from .credential_crypto import decrypt_secret
 from .webssh_runtime import WebSSHRuntimeRegistry
 from .webssh_host_mixin import WebSSHHostMixin
 
@@ -25,6 +35,226 @@ warnings.filterwarnings(
     message='.*TripleDES has been moved to cryptography\\.hazmat\\.decrepit\\.ciphers\\.algorithms\\.TripleDES.*',
     category=CryptographyDeprecationWarning,
 )
+
+# 自动下发主机采集任务的最小间隔（秒）。
+AGENT_AUTO_COLLECT_MIN_INTERVAL_SECONDS = 300
+
+
+def _resolve_nats_subject(target_type, target_value):
+    """解析 NATS 下发主题，统一支持单机、组播和全量。"""
+    normalized_target_type = str(target_type or '').strip().lower()
+    normalized_target_value = str(target_value or '').strip()
+
+    if normalized_target_type == 'group':
+        if normalized_target_value == '':
+            raise RuntimeError('target_type=group 时 target_value 不能为空')
+        return f'cmd.group.{normalized_target_value}'
+
+    if normalized_target_type == 'all':
+        return 'cmd.all'
+
+    if normalized_target_value == '':
+        raise RuntimeError('target_type=single 时 target_value 不能为空')
+    return f'cmd.agent.{normalized_target_value}'
+
+
+def _resolve_target_agent_ids(target_type, target_value, fallback_agent_id):
+    """按目标类型解析要下发的 agent 列表。"""
+    normalized_target_type = str(target_type or 'single').strip().lower()
+    normalized_target_value = str(target_value or '').strip()
+    normalized_agent_id = str(fallback_agent_id or '').strip()
+
+    if normalized_target_type == 'single':
+        final_agent_id = normalized_target_value or normalized_agent_id
+        if final_agent_id == '':
+            raise RuntimeError('agent_id不能为空')
+        return [final_agent_id]
+
+    if normalized_target_type == 'group':
+        if normalized_target_value == '':
+            raise RuntimeError('target_type=group 时 target_value不能为空')
+        rows = Host.objects.filter(group__name=normalized_target_value).exclude(
+            instance_name__isnull=True,
+        ).exclude(instance_name='').values_list('instance_name', flat=True)
+        return list(dict.fromkeys([str(item).strip() for item in rows if str(item).strip()]))
+
+    if normalized_target_type == 'all':
+        rows = Host.objects.exclude(instance_name__isnull=True).exclude(
+            instance_name='',
+        ).values_list('instance_name', flat=True)
+        return list(dict.fromkeys([str(item).strip() for item in rows if str(item).strip()]))
+
+    raise RuntimeError('target_type仅支持single/group/all')
+
+
+def _emit_agent_job_event(job, event_type, payload):
+    """写入 Salt 风格作业事件，便于后续接入事件总线。"""
+    if job is None:
+        return
+    job_id = str(getattr(job, 'job_id', '') or '').strip()
+    agent_id = str(getattr(job, 'agent_id', '') or '').strip()
+    if event_type == 'new':
+        tag = f'salt/job/{job_id}/new'
+    elif event_type == 'ret':
+        safe_agent_id = agent_id or 'unknown'
+        tag = f'salt/job/{job_id}/ret/{safe_agent_id}'
+    else:
+        tag = f'salt/job/{job_id}/{event_type}'
+
+    AgentJobEvent.objects.create(
+        tag=tag,
+        job_id=job_id,
+        agent_id=agent_id,
+        event_type=event_type,
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+def _publish_agent_job_to_mq(job):
+    """将作业发布到 NATS，供 agent 实时消费。"""
+    if job is None:
+        return
+
+    agent_id = str(getattr(job, 'agent_id', '') or '').strip()
+    if agent_id == '':
+        return
+
+    nats_url = str(getattr(settings, 'NATS_URL', 'nats://127.0.0.1:4222') or '').strip()
+    if nats_url == '':
+        raise RuntimeError('NATS_URL未配置，无法发布agent任务')
+
+    # 当前任务模型默认按单机下发；组播和全量在同一解析函数中预留。
+    subject = _resolve_nats_subject('single', agent_id)
+    message = {
+        'command_id': f'cmd-{uuid.uuid4().hex[:16]}',
+        'client_request_id': str(getattr(job, 'client_request_id', '') or ''),
+        'job_id': str(getattr(job, 'job_id', '') or ''),
+        'target_type': 'single',
+        'target_value': agent_id,
+        'type': str(getattr(job, 'job_type', '') or ''),
+        'action': str(getattr(job, 'action', '') or ''),
+        'params': getattr(job, 'params', {}) or {},
+        'timeout_seconds': int(getattr(job, 'timeout_seconds', 30) or 30),
+        'created_at': timezone.now().isoformat(),
+    }
+
+    async def _publish():
+        nats_module = importlib.import_module('nats.aio.client')
+        nats_client_cls = getattr(nats_module, 'Client', None)
+        if nats_client_cls is None:
+            raise RuntimeError('nats.aio.client.Client 不可用，请安装 nats-py')
+
+        nc = nats_client_cls()
+        await nc.connect(servers=[nats_url], connect_timeout=2)
+        await nc.publish(subject, json.dumps(message, ensure_ascii=False).encode('utf-8'))
+        await nc.flush(timeout=1)
+        await nc.close()
+
+    asyncio.run(_publish())
+
+
+def dispatch_host_report_interval_update(interval_seconds, client_request_id=''):
+    """将主机上报间隔更新任务下发到全部 agent。"""
+    try:
+        normalized_interval_seconds = int(interval_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError('interval_seconds必须是整数') from exc
+
+    agent_ids = _resolve_target_agent_ids('all', '', '')
+    if len(agent_ids) == 0:
+        return {
+            'target_type': 'all',
+            'target_value': 'all',
+            'created_count': 0,
+            'failed_count': 0,
+            'results': [],
+        }
+
+    params = {
+        'interval_seconds': normalized_interval_seconds,
+    }
+    timeout_seconds = 10
+    result_rows = []
+    created_count = 0
+    failed_count = 0
+
+    for current_agent_id in agent_ids:
+        host = Host.objects.filter(instance_name=current_agent_id).first()
+        if host is None:
+            failed_count += 1
+            result_rows.append({
+                'agent_id': current_agent_id,
+                'ok': False,
+                'error': 'agent_id未绑定主机',
+            })
+            continue
+
+        item_request_id = f'{client_request_id}:{current_agent_id}' if client_request_id else ''
+        if item_request_id:
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is not None:
+                result_rows.append({
+                    'agent_id': current_agent_id,
+                    'ok': True,
+                    'job_id': existed_job.job_id,
+                    'status': existed_job.status,
+                    'reused': True,
+                })
+                continue
+
+        current_job_id = f'set_host_report_interval-{uuid.uuid4().hex[:16]}'
+        try:
+            job = AgentJob.objects.create(
+                job_id=current_job_id,
+                client_request_id=item_request_id or None,
+                agent_id=current_agent_id,
+                host=host,
+                job_type='custom',
+                action='set_host_report_interval',
+                params=params,
+                timeout_seconds=timeout_seconds,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+        except IntegrityError:
+            if not item_request_id:
+                raise
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is None:
+                raise
+            result_rows.append({
+                'agent_id': current_agent_id,
+                'ok': True,
+                'job_id': existed_job.job_id,
+                'status': existed_job.status,
+                'reused': True,
+            })
+            continue
+
+        created_count += 1
+        result_rows.append({
+            'agent_id': current_agent_id,
+            'ok': True,
+            'job_id': job.job_id,
+            'status': job.status,
+            'reused': False,
+        })
+
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        _publish_agent_job_to_mq(job)
+
+    return {
+        'target_type': 'all',
+        'target_value': 'all',
+        'created_count': created_count,
+        'failed_count': failed_count,
+        'results': result_rows,
+    }
 
 class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
     queryset =  Credential.objects.all()
@@ -98,9 +328,10 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
     @staticmethod
     def _get_credential_connection_signature(credential):
         # 连接签名用于判断“会话连接参数”是否发生变化。
+        decrypted_password = decrypt_secret(credential.password)
         return (
             str(credential.username or ''),
-            str(credential.password or ''),
+            str(decrypted_password or ''),
             str(credential.private_key or ''),
             int(credential.port or 22),
             int(credential.auth_type or 0),
@@ -404,7 +635,8 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
     serializer_class = HostSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['instance_name', 'system__hostname', 'ip', 'remark']
+    # 通用 search 对应前端主搜索框（实例名/IP/备注）；ID检索走 host_id 参数。
+    search_fields = ['instance_name', 'ip', 'remark']
     ordering_fields = ['instance_name', 'create_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -454,6 +686,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         host_id = self.request.query_params.get('host_id')  # type: ignore[union-attr]
         instance_name = (self.request.query_params.get('instance_name') or '').strip()  # type: ignore[union-attr]
         collect_status = self.request.query_params.get('collect_status')  # type: ignore[union-attr]
+        agent_status = (self.request.query_params.get('agent_status') or '').strip().lower()  # type: ignore[union-attr]
         has_default_credential = (self.request.query_params.get('has_default_credential') or '').strip().lower()  # type: ignore[union-attr]
         if host_id not in [None, '', '0', 0]:
             try:
@@ -476,6 +709,16 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             Host.CollectStatus.FAILED,
         }:
             queryset = queryset.filter(collect_status=collect_status)
+        if agent_status in {'online', 'offline'}:
+            heartbeat_threshold = timezone.now() - timedelta(seconds=30)
+            online_queryset = queryset.filter(
+                system__collector_source='agent',
+                collect_time__gte=heartbeat_threshold,
+            )
+            queryset = online_queryset if agent_status == 'online' else queryset.exclude(
+                system__collector_source='agent',
+                collect_time__gte=heartbeat_threshold,
+            )
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):
@@ -570,42 +813,657 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         host_queryset.delete()
         return Response_200(data={"deleted_count": deleted_count})
 
-    @action(detail=True, methods=['post'], url_path='collect-info')
-    def collect_info(self, request, id=None):
-        host = self.get_object()
-        host_display_name = self._display_host_name(host)
+@api_view(['GET'])
+def agent_poll_job(request):
+    """旧 HTTP 轮询入口已下线，统一改为 NATS 下发。"""
+    return Response_error_str('agent HTTP 轮询接口已下线，请改用 NATS 订阅 cmd.agent/cmd.group/cmd.all')
+
+
+@api_view(['POST'])
+def agent_create_job(request):
+    """创建并下发 agent 任务（支持单机/组播/全量）。"""
+    payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
+
+    agent_id = str(payload.get('agent_id') or '').strip()
+    target_type = str(payload.get('target_type') or 'single').strip().lower()
+    target_value = str(payload.get('target_value') or '').strip()
+    job_type = str(payload.get('type') or '').strip()
+    action = str(payload.get('action') or '').strip()
+    client_request_id = str(payload.get('client_request_id') or '').strip()
+    raw_params = payload.get('params')
+    params = raw_params if isinstance(raw_params, dict) else {}
+    timeout_seconds_raw = payload.get('timeout_seconds', 30)
+
+    if job_type == '':
+        return Response_error_str('type不能为空')
+    if action == '':
+        return Response_error_str('action不能为空')
+
+    try:
+        timeout_seconds = int(timeout_seconds_raw)
+    except (TypeError, ValueError):
+        return Response_error_str('timeout_seconds必须是整数')
+    if timeout_seconds <= 0:
+        return Response_error_str('timeout_seconds必须大于0')
+
+    try:
+        agent_ids = _resolve_target_agent_ids(target_type, target_value, agent_id)
+    except RuntimeError as exc:
+        return Response_error_str(str(exc))
+
+    if len(agent_ids) == 0:
+        return Response_error_str('未解析到可下发的agent')
+
+    if target_type == 'single' and len(agent_ids) == 1:
+        final_agent_id = agent_ids[0]
+        host = Host.objects.filter(instance_name=final_agent_id).first()
+        if host is None:
+            return Response_error_str('agent_id未绑定主机')
+
+        if client_request_id:
+            existed_job = AgentJob.objects.filter(client_request_id=client_request_id).first()
+            if existed_job is not None:
+                return Response_200(data={
+                    'job_id': existed_job.job_id,
+                    'agent_id': existed_job.agent_id,
+                    'type': existed_job.job_type,
+                    'action': existed_job.action,
+                    'status': existed_job.status,
+                    'reused': True,
+                    'target_type': 'single',
+                    'target_value': final_agent_id,
+                })
+
+        job_id = f'{action}-{uuid.uuid4().hex[:16]}'
         try:
-            collect_host_info(host)
+            job = AgentJob.objects.create(
+                job_id=job_id,
+                client_request_id=client_request_id or None,
+                agent_id=final_agent_id,
+                host=host,
+                job_type=job_type,
+                action=action,
+                params=params,
+                timeout_seconds=timeout_seconds,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+        except IntegrityError:
+            if not client_request_id:
+                raise
+            existed_job = AgentJob.objects.filter(client_request_id=client_request_id).first()
+            if existed_job is None:
+                raise
             return Response_200(data={
-                'id': host.id, 
-                'status': 'collected',
-                'message': f'主机 {host_display_name} 采集成功'
-            })
-        except Exception as exc:
-            error_msg = str(exc)
-            # 返回失败结果而不是抛异常，这样前端能看到具体的错误信息
-            return Response_200(data={
-                'id': host.id,
-                'status': 'failed',
-                'error': error_msg,
-                'message': f'主机 {host_display_name} 采集失败：{error_msg}'
+                'job_id': existed_job.job_id,
+                'agent_id': existed_job.agent_id,
+                'type': existed_job.job_type,
+                'action': existed_job.action,
+                'status': existed_job.status,
+                'reused': True,
+                'target_type': 'single',
+                'target_value': final_agent_id,
             })
 
-    @action(detail=False, methods=['post'], url_path='batch-collect-info')
-    def batch_collect_info(self, request):
-        ids = request.data.get('ids', [])
-        results = []
-        for host in Host.objects.filter(id__in=ids):
-            try:
-                collect_host_info(host)
-                results.append({'id': host.id, 'status': 'collected'})  # type: ignore[attr-defined]
-            except Exception as exc:
-                results.append({'id': host.id, 'status': 'failed', 'error': str(exc)})  # type: ignore[attr-defined]
-        return Response_200(data={'results': results})
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        _publish_agent_job_to_mq(job)
 
-    @action(detail=False, methods=['post'], url_path='collect-all')
-    def collect_all(self, request):
-        collect_all_hosts_info()
-        return Response_200(data={'status': 'collect_all_started'})
+        return Response_200(data={
+            'job_id': job.job_id,
+            'agent_id': job.agent_id,
+            'type': job.job_type,
+            'action': job.action,
+            'status': job.status,
+            'reused': False,
+            'target_type': 'single',
+            'target_value': final_agent_id,
+        })
+
+    # 组播和全量统一展开为逐 agent 作业，保证状态追踪与重试链路一致。
+    result_rows = []
+    created_count = 0
+    failed_count = 0
+    for current_agent_id in agent_ids:
+        host = Host.objects.filter(instance_name=current_agent_id).first()
+        if host is None:
+            failed_count += 1
+            result_rows.append({
+                'agent_id': current_agent_id,
+                'ok': False,
+                'error': 'agent_id未绑定主机',
+            })
+            continue
+
+        item_request_id = f'{client_request_id}:{current_agent_id}' if client_request_id else ''
+        if item_request_id:
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is not None:
+                result_rows.append({
+                    'agent_id': current_agent_id,
+                    'ok': True,
+                    'job_id': existed_job.job_id,
+                    'status': existed_job.status,
+                    'reused': True,
+                })
+                continue
+
+        current_job_id = f'{action}-{uuid.uuid4().hex[:16]}'
+        try:
+            job = AgentJob.objects.create(
+                job_id=current_job_id,
+                client_request_id=item_request_id or None,
+                agent_id=current_agent_id,
+                host=host,
+                job_type=job_type,
+                action=action,
+                params=params,
+                timeout_seconds=timeout_seconds,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+        except IntegrityError:
+            if not item_request_id:
+                raise
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is None:
+                raise
+            result_rows.append({
+                'agent_id': current_agent_id,
+                'ok': True,
+                'job_id': existed_job.job_id,
+                'status': existed_job.status,
+                'reused': True,
+            })
+            continue
+
+        created_count += 1
+        result_rows.append({
+            'agent_id': current_agent_id,
+            'ok': True,
+            'job_id': job.job_id,
+            'status': job.status,
+            'reused': False,
+        })
+
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        _publish_agent_job_to_mq(job)
+
+    return Response_200(data={
+        'target_type': target_type,
+        'target_value': target_value if target_type != 'all' else 'all',
+        'created_count': created_count,
+        'failed_count': failed_count,
+        'results': result_rows,
+    })
+
+
+@api_view(['POST'])
+def agent_create_jobs_batch(request):
+    """批量创建 agent 任务（逐 agent 写入 queued）。"""
+    payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
+
+    raw_agent_ids = payload.get('agent_ids')
+    job_type = str(payload.get('type') or '').strip()
+    action = str(payload.get('action') or '').strip()
+    client_request_id = str(payload.get('client_request_id') or '').strip()
+    raw_params = payload.get('params')
+    params = raw_params if isinstance(raw_params, dict) else {}
+    timeout_seconds_raw = payload.get('timeout_seconds', 30)
+
+    if not isinstance(raw_agent_ids, list) or len(raw_agent_ids) == 0:
+        return Response_error_str('agent_ids不能为空数组')
+    if job_type == '':
+        return Response_error_str('type不能为空')
+    if action == '':
+        return Response_error_str('action不能为空')
+
+    try:
+        timeout_seconds = int(timeout_seconds_raw)
+    except (TypeError, ValueError):
+        return Response_error_str('timeout_seconds必须是整数')
+    if timeout_seconds <= 0:
+        return Response_error_str('timeout_seconds必须大于0')
+
+    # 去重并保持输入顺序，避免重复 agent 被重复下发。
+    agent_ids = []
+    seen_agent_id = set()
+    for item in raw_agent_ids:
+        current_agent_id = str(item or '').strip()
+        if current_agent_id == '' or current_agent_id in seen_agent_id:
+            continue
+        seen_agent_id.add(current_agent_id)
+        agent_ids.append(current_agent_id)
+
+    if len(agent_ids) == 0:
+        return Response_error_str('agent_ids不能为空数组')
+
+    result_rows = []
+    created_count = 0
+    failed_count = 0
+
+    for agent_id in agent_ids:
+        host = Host.objects.filter(instance_name=agent_id).first()
+        if host is None:
+            failed_count += 1
+            result_rows.append({
+                'agent_id': agent_id,
+                'ok': False,
+                'error': 'agent_id未绑定主机',
+            })
+            continue
+
+        item_request_id = f'{client_request_id}:{agent_id}' if client_request_id else ''
+        if item_request_id:
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is not None:
+                result_rows.append({
+                    'agent_id': agent_id,
+                    'ok': True,
+                    'job_id': existed_job.job_id,
+                    'status': existed_job.status,
+                    'reused': True,
+                })
+                continue
+
+        job_id = f'{action}-{uuid.uuid4().hex[:16]}'
+        try:
+            job = AgentJob.objects.create(
+                job_id=job_id,
+                client_request_id=item_request_id or None,
+                agent_id=agent_id,
+                host=host,
+                job_type=job_type,
+                action=action,
+                params=params,
+                timeout_seconds=timeout_seconds,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+        except IntegrityError:
+            if not item_request_id:
+                raise
+            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
+            if existed_job is None:
+                raise
+            result_rows.append({
+                'agent_id': agent_id,
+                'ok': True,
+                'job_id': existed_job.job_id,
+                'status': existed_job.status,
+                'reused': True,
+            })
+            continue
+
+        created_count += 1
+        result_rows.append({
+            'agent_id': agent_id,
+            'ok': True,
+            'job_id': job.job_id,
+            'status': job.status,
+            'reused': False,
+        })
+
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        _publish_agent_job_to_mq(job)
+
+    return Response_200(data={
+        'created_count': created_count,
+        'failed_count': failed_count,
+        'results': result_rows,
+    })
+
+
+@api_view(['POST'])
+def agent_retry_job(request):
+    """按 job_id 重试任务（仅允许 failed/timeout/canceled）。"""
+    payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
+    source_job_id = str(payload.get('job_id') or '').strip()
+
+    if source_job_id == '':
+        return Response_error_str('job_id不能为空')
+
+    with transaction.atomic():
+        source_job = AgentJob.objects.select_for_update().filter(job_id=source_job_id).first()
+        if source_job is None:
+            return Response_error_str('任务不存在')
+
+        if source_job.status not in {
+            AgentJob.JobStatus.FAILED,
+            AgentJob.JobStatus.TIMEOUT,
+            AgentJob.JobStatus.CANCELED,
+        }:
+            return Response_error_str('仅失败/超时/取消任务允许重试')
+
+        if source_job.host is None:
+            return Response_error_str('任务未绑定主机，不能重试')
+
+        new_job_id = f'{source_job.action}-{uuid.uuid4().hex[:16]}'
+        retried_job = AgentJob.objects.create(
+            job_id=new_job_id,
+            agent_id=source_job.agent_id,
+            host=source_job.host,
+            job_type=source_job.job_type,
+            action=source_job.action,
+            params=source_job.params,
+            timeout_seconds=int(source_job.timeout_seconds or 30),
+            status=AgentJob.JobStatus.QUEUED,
+            remark=f'retry_from:{source_job.job_id}',
+        )
+
+    _emit_agent_job_event(retried_job, 'new', {
+        'jid': retried_job.job_id,
+        'tgt': retried_job.agent_id,
+        'tgt_type': 'agent_id',
+        'fun': retried_job.action,
+        'arg': retried_job.params,
+        'minions': [retried_job.agent_id],
+        'retry_from': source_job.job_id,
+    })
+    _publish_agent_job_to_mq(retried_job)
+
+    return Response_200(data={
+        'source_job_id': source_job.job_id,
+        'job_id': retried_job.job_id,
+        'agent_id': retried_job.agent_id,
+        'type': retried_job.job_type,
+        'action': retried_job.action,
+        'status': retried_job.status,
+    })
+
+
+@api_view(['GET'])
+def agent_query_jobs(request):
+    """查询 agent 任务列表与状态，支持按 job_id/agent_id/status 过滤。"""
+    job_id = str(request.query_params.get('job_id') or '').strip()  # type: ignore[attr-defined]
+    agent_id = str(request.query_params.get('agent_id') or '').strip()  # type: ignore[attr-defined]
+    status = str(request.query_params.get('status') or '').strip().lower()  # type: ignore[attr-defined]
+    limit_raw = request.query_params.get('limit', 50)  # type: ignore[attr-defined]
+
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        return Response_error_str('limit必须是整数')
+    if limit <= 0:
+        return Response_error_str('limit必须大于0')
+    if limit > 200:
+        limit = 200
+
+    queryset = AgentJob.objects.all().order_by('-create_time')
+
+    if job_id:
+        queryset = queryset.filter(job_id=job_id)
+    if agent_id:
+        queryset = queryset.filter(agent_id=agent_id)
+
+    summary_queryset = queryset
+
+    if status:
+        valid_status = {
+            AgentJob.JobStatus.QUEUED,
+            AgentJob.JobStatus.RUNNING,
+            AgentJob.JobStatus.SUCCESS,
+            AgentJob.JobStatus.FAILED,
+            AgentJob.JobStatus.CANCELED,
+            AgentJob.JobStatus.TIMEOUT,
+        }
+        if status not in valid_status:
+            return Response_error_str('status非法')
+        queryset = queryset.filter(status=status)
+
+    jobs = []
+    for item in queryset[:limit]:
+        jobs.append({
+            'job_id': item.job_id,
+            'agent_id': item.agent_id,
+            'host_id': int(getattr(item, 'host_id', 0) or 0) or None,
+            'type': item.job_type,
+            'action': item.action,
+            'status': item.status,
+            'timeout_seconds': int(item.timeout_seconds or 0),
+            'params': item.params,
+            'result_data': item.result_data,
+            'error_message': item.error_message,
+            'create_time': item.create_time,
+            'picked_at': item.picked_at,
+            'finished_at': item.finished_at,
+        })
+
+    summary = {
+        'total': summary_queryset.count(),
+        'queued': summary_queryset.filter(status=AgentJob.JobStatus.QUEUED).count(),
+        'running': summary_queryset.filter(status=AgentJob.JobStatus.RUNNING).count(),
+        'success': summary_queryset.filter(status=AgentJob.JobStatus.SUCCESS).count(),
+        'failed': summary_queryset.filter(status=AgentJob.JobStatus.FAILED).count(),
+        'canceled': summary_queryset.filter(status=AgentJob.JobStatus.CANCELED).count(),
+        'timeout': summary_queryset.filter(status=AgentJob.JobStatus.TIMEOUT).count(),
+    }
+
+    recent_failed_jobs = summary_queryset.filter(
+        status__in=[AgentJob.JobStatus.FAILED, AgentJob.JobStatus.TIMEOUT],
+    ).order_by('-finished_at', '-update_time')[:5]
+
+    recent_failure_reasons = []
+    for failed_item in recent_failed_jobs:
+        recent_failure_reasons.append({
+            'job_id': failed_item.job_id,
+            'status': failed_item.status,
+            'action': failed_item.action,
+            'error_message': failed_item.error_message,
+            'finished_at': failed_item.finished_at,
+        })
+
+    return Response_200(data={
+        'count': len(jobs),
+        'results': jobs,
+        'summary': summary,
+        'recent_failure_reasons': recent_failure_reasons,
+    })
+
+
+@api_view(['GET'])
+def agent_query_job_chain(request):
+    """查询任务重试链路，返回节点与父子边关系。"""
+    job_id = str(request.query_params.get('job_id') or '').strip()  # type: ignore[attr-defined]
+    if job_id == '':
+        return Response_error_str('job_id不能为空')
+
+    def _parse_parent_job_id(remark_text):
+        text = str(remark_text or '').strip()
+        prefix = 'retry_from:'
+        if not text.startswith(prefix):
+            return ''
+        return text[len(prefix):].strip()
+
+    def _serialize_job(item):
+        return {
+            'job_id': item.job_id,
+            'agent_id': item.agent_id,
+            'host_id': int(getattr(item, 'host_id', 0) or 0) or None,
+            'type': item.job_type,
+            'action': item.action,
+            'status': item.status,
+            'timeout_seconds': int(item.timeout_seconds or 0),
+            'error_message': item.error_message,
+            'create_time': item.create_time,
+            'picked_at': item.picked_at,
+            'finished_at': item.finished_at,
+            'parent_job_id': _parse_parent_job_id(item.remark),
+        }
+
+    seed_job = AgentJob.objects.filter(job_id=job_id).first()
+    if seed_job is None:
+        return Response_error_str('任务不存在')
+
+    max_depth = 50
+    node_map = {}
+    edges = []
+
+    # 向上追溯父链，拿到根节点。
+    current_job = seed_job
+    depth = 0
+    while current_job is not None and depth < max_depth:
+        node_map[current_job.job_id] = current_job
+        parent_job_id = _parse_parent_job_id(current_job.remark)
+        if parent_job_id == '':
+            break
+        parent_job = AgentJob.objects.filter(job_id=parent_job_id).first()
+        if parent_job is None:
+            break
+        edges.append({'from_job_id': parent_job.job_id, 'to_job_id': current_job.job_id})
+        current_job = parent_job
+        depth += 1
+
+    root_job = current_job if current_job is not None else seed_job
+
+    # 从根节点向下展开所有重试分支。
+    queue = [root_job.job_id]
+    visited = set(queue)
+    while queue and len(visited) < 1000:
+        parent_id = queue.pop(0)
+        children = AgentJob.objects.filter(remark=f'retry_from:{parent_id}').order_by('create_time')
+        for child in children:
+            edges.append({'from_job_id': parent_id, 'to_job_id': child.job_id})
+            if child.job_id not in node_map:
+                node_map[child.job_id] = child
+            if child.job_id not in visited:
+                visited.add(child.job_id)
+                queue.append(child.job_id)
+
+    # 去重边，避免父链和子链阶段重复添加。
+    unique_edge_keys = set()
+    unique_edges = []
+    for edge in edges:
+        key = f"{edge['from_job_id']}->{edge['to_job_id']}"
+        if key in unique_edge_keys:
+            continue
+        unique_edge_keys.add(key)
+        unique_edges.append(edge)
+
+    nodes = [_serialize_job(item) for item in sorted(node_map.values(), key=lambda x: x.create_time)]
+
+    return Response_200(data={
+        'root_job_id': root_job.job_id,
+        'focus_job_id': seed_job.job_id,
+        'node_count': len(nodes),
+        'edge_count': len(unique_edges),
+        'nodes': nodes,
+        'edges': unique_edges,
+    })
+
+
+@api_view(['GET'])
+def agent_query_job_events(request):
+    """查询作业事件流（Salt风格 tag：salt/job/<jid>/new|ret/<mid>）。"""
+    job_id = str(request.query_params.get('job_id') or '').strip()  # type: ignore[attr-defined]
+    agent_id = str(request.query_params.get('agent_id') or '').strip()  # type: ignore[attr-defined]
+    tag = str(request.query_params.get('tag') or '').strip()  # type: ignore[attr-defined]
+    event_type = str(request.query_params.get('event_type') or '').strip()  # type: ignore[attr-defined]
+    limit_raw = request.query_params.get('limit', 100)  # type: ignore[attr-defined]
+
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        return Response_error_str('limit必须是整数')
+    if limit <= 0:
+        return Response_error_str('limit必须大于0')
+    if limit > 500:
+        limit = 500
+
+    queryset = AgentJobEvent.objects.all().order_by('-create_time')
+    if job_id:
+        queryset = queryset.filter(job_id=job_id)
+    if agent_id:
+        queryset = queryset.filter(agent_id=agent_id)
+    if tag:
+        queryset = queryset.filter(tag__icontains=tag)
+    if event_type:
+        queryset = queryset.filter(event_type=event_type)
+
+    rows = []
+    for item in queryset[:limit]:
+        rows.append({
+            'id': int(getattr(item, 'pk', 0) or 0),
+            'tag': item.tag,
+            'job_id': item.job_id,
+            'agent_id': item.agent_id,
+            'event_type': item.event_type,
+            'payload': item.payload,
+            'create_time': item.create_time,
+        })
+
+    return Response_200(data={
+        'count': len(rows),
+        'results': rows,
+    })
+
+
+@api_view(['POST'])
+def agent_cancel_job(request):
+    """取消任务（仅允许 queued/running -> canceled）。"""
+    payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
+    job_id = str(payload.get('job_id') or '').strip()
+    reason = str(payload.get('reason') or '').strip()
+
+    if job_id == '':
+        return Response_error_str('job_id不能为空')
+
+    with transaction.atomic():
+        job = AgentJob.objects.select_for_update().filter(job_id=job_id).first()
+        if job is None:
+            return Response_error_str('任务不存在')
+
+        if job.status in {
+            AgentJob.JobStatus.SUCCESS,
+            AgentJob.JobStatus.FAILED,
+            AgentJob.JobStatus.CANCELED,
+            AgentJob.JobStatus.TIMEOUT,
+        }:
+            return Response_error_str('任务已结束，不能取消')
+
+        now = timezone.now()
+        job.status = AgentJob.JobStatus.CANCELED
+        job.finished_at = now
+        if reason:
+            job.error_message = reason
+        elif job.error_message == '':
+            job.error_message = 'job canceled by operator'
+        job.save(update_fields=['status', 'finished_at', 'error_message', 'update_time'])
+
+        _emit_agent_job_event(job, 'ret', {
+            'id': job.agent_id,
+            'jid': job.job_id,
+            'retcode': 1,
+            'fun': job.action,
+            'return': {'status': job.status, 'error': job.error_message},
+        })
+
+    return Response_200(data={
+        'job_id': job.job_id,
+        'status': job.status,
+    })
+
+
+@api_view(['POST'])
+def agent_report_job(request):
+    """旧 HTTP 上报入口已下线，统一改为 NATS 上行。"""
+    return Response_error_str('agent HTTP 上报接口已下线，请改用 NATS 发布 ret.job/evt.job/hb.agent/rpt.host')
 
     

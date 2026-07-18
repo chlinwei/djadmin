@@ -733,39 +733,6 @@ class HostTest(BaseTestCase):
 # ─────────────────────────────────────────────
 class HostCollectTest(BaseTestCase):
 
-    def test_collect_host_without_credential(self):
-        """采集主机时没有配置凭证应该返回 failed 状态"""
-        host = Host.objects.create(instance_name='test_host', ip='192.168.1.100', port=22)
-        res = self.client.post(f'/assets/hosts/{host.id}/collect-info/')  # type: ignore[attr-defined]
-        body = self.assertResponseOK(res)
-        # 单个采集应该返回 collected 或 failed 状态
-        self.assertIn('status', body['data'])
-        self.assertIn(body['data']['status'], ['collected', 'failed'])
-        # 没有凭证应该返回 failed
-        self.assertEqual(body['data']['status'], 'failed')
-        self.assertIn('error', body['data'])
-        self.assertIn('凭证', body['data']['message'])
-
-    def test_collect_host_with_invalid_connection(self):
-        """采集主机时凭证错误应该返回 failed 状态"""
-        cred = Credential.objects.create(
-            name='wrong_cred',
-            username='root',
-            password='wrong_password',
-            auth_type=1,  # PASSWORD
-            port=22
-        )
-        host = Host.objects.create(instance_name='test_host', ip='192.168.1.100', port=22)
-        from .models import HostCredential
-        HostCredential.objects.create(host=host, credential=cred, is_default=True)
-
-        # 直接让 SSH 连接立即抛出认证失败，跳过真实网络 TCP 超时（原本约 30s）
-        with patch('assets.tasks._run_ssh_command', side_effect=Exception('Authentication failed.')):
-            res = self.client.post(f'/assets/hosts/{host.id}/collect-info/')  # type: ignore[attr-defined]
-        body = self.assertResponseOK(res)
-        self.assertEqual(body['data']['status'], 'failed')
-        self.assertIn('error', body['data'])
-
     def test_collect_persists_failed_status_on_host(self):
         """采集失败（无凭证）应把 collect_status 持久化为 failed，并写入原因和时间"""
         from .tasks import collect_host_info
@@ -787,52 +754,6 @@ class HostCollectTest(BaseTestCase):
         self.assertEqual(host.collect_status, 'unknown')
         self.assertIn('定时采集已跳过', host.collect_message)
         self.assertIsNotNone(host.collect_time)
-
-    def test_collect_auth_failure_reaches_lock_threshold(self):
-        """连续认证失败达到阈值后，应触发自动采集保护期。"""
-        from .tasks import collect_host_info
-        from .models import HostCredential
-
-        cred = Credential.objects.create(
-            name='bad_auth_cred', username='root', password='wrong', auth_type=1, port=22
-        )
-        host = Host.objects.create(instance_name='auth_lock_host', ip='10.0.0.8', port=22)
-        HostCredential.objects.create(host=host, credential=cred, is_default=True)
-
-        with patch('assets.tasks._collect_linux_info', side_effect=ValueError('SSH 认证失败：Authentication failed.')):
-            for _ in range(3):
-                with self.assertRaises(Exception):
-                    collect_host_info(host)
-
-        host.refresh_from_db()
-        self.assertGreaterEqual(host.auth_failed_count, 3)
-        self.assertIsNotNone(host.last_auth_failed_time)
-        self.assertIsNotNone(host.auth_lock_until)
-        self.assertIn('连续认证失败已达到', host.collect_message)
-
-    def test_scheduled_collect_skips_locked_host(self):
-        """定时任务应跳过处于认证保护期的主机，避免持续触发账号锁定。"""
-        from django.utils import timezone
-        from datetime import timedelta
-        from .tasks import collect_all_hosts_info
-
-        host = Host.objects.create(
-            instance_name='locked_host',
-            ip='10.0.0.9',
-            port=22,
-            auth_failed_count=3,
-            auth_lock_until=timezone.now() + timedelta(minutes=15),
-        )
-
-        with patch('assets.tasks.collect_host_info') as mocked_collect:
-            result = collect_all_hosts_info()
-
-        self.assertTrue(result)
-        mocked_collect.assert_not_called()
-        host.refresh_from_db()
-        self.assertEqual(host.collect_status, 'unknown')
-        self.assertIn('处于保护期', host.collect_message)
-
 
 # ─────────────────────────────────────────────
 # WebSSH Consumer

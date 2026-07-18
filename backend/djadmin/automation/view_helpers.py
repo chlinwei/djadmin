@@ -3,7 +3,7 @@ import json
 import os
 import re
 import fnmatch
-from typing import Any, cast
+from typing import Any
 from urllib.parse import quote
 
 from django.http import HttpResponse
@@ -44,8 +44,7 @@ from .serializer import (
     validate_playbook_content_or_raise,
     check_workflow_cycle_at_runtime,
 )
-from .executor import build_inventory_snapshot
-from .tasks import execute_ansible_job_task
+from .executor import build_inventory_snapshot, execute_ansible_job
 from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runtime_status
 
 
@@ -515,12 +514,13 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     )
 
     try:
-        cast(Any, execute_ansible_job_task).delay(job.id)
+        # Run directly in API process per current execution mode requirement.
+        execute_ansible_job(int(job.id))
     except Exception as exc:
         job.status = AnsibleExecutionJob.Status.FAILED
-        job.result_summary = {'message': f'Failed to enqueue job: {str(exc)}'}
+        job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
         job.save(update_fields=['status', 'result_summary'])
-        return False, f'Failed to enqueue task job: {str(exc)}', None, None
+        return False, f'Failed to execute task job in process: {str(exc)}', None, None
 
     return True, None, job.id, {
         'task_name_snapshot': task.name or '',

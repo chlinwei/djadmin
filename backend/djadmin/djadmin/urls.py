@@ -17,8 +17,20 @@ Including another URLconf
 from django.urls import path,include,re_path
 from djadmin import settings
 from django.views.static import serve
+from assets import views as assets_views
+from sys_config import views as sys_config_views
 
 urlpatterns = [
+    path('api/agent/configs/by-key/<path:key>', sys_config_views.agent_config_by_key),
+    path('api/agent/jobs/create', assets_views.agent_create_job),
+    path('api/agent/jobs/create-batch', assets_views.agent_create_jobs_batch),
+    path('api/agent/jobs/retry', assets_views.agent_retry_job),
+    path('api/agent/jobs/cancel', assets_views.agent_cancel_job),
+    path('api/agent/jobs/query', assets_views.agent_query_jobs),
+    path('api/agent/jobs/query-chain', assets_views.agent_query_job_chain),
+    path('api/agent/jobs/events', assets_views.agent_query_job_events),
+    path('api/agent/jobs/poll', assets_views.agent_poll_job),
+    path('api/agent/jobs/report', assets_views.agent_report_job),
     path('sys/',include('user.urls')),
     re_path('media/(?P<path>.*)', serve, {'document_root': settings.MEDIA_ROOT},
 name='media'),

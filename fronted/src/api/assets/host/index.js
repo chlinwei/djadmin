@@ -33,14 +33,6 @@ export function batchCheckHostConnection(ids) {
     return requestUtil.post(prefix + 'batch-check-connection/', { ids })
 }
 
-export function collectHostInfo(id) {
-    return requestUtil.post(prefix + `${id}/collect-info/`)
-}
-
-export function batchCollectHostInfo(ids) {
-    return requestUtil.post(prefix + 'batch-collect-info/', { ids })
-}
-
 export function getHostWebSshSessions(id, params) {
     return requestUtil.get(prefix + `${id}/webssh-sessions/`, params)
 }
@@ -86,4 +78,20 @@ export function getHostGroupList(params) {
 
 export function getCredentialOptionList(params) {
     return requestUtil.get('assets/credentials/', params)
+}
+
+export function createAgentJob(payload) {
+    return requestUtil.post('api/agent/jobs/create', payload)
+}
+
+export function queryAgentJobs(params) {
+    return requestUtil.get('api/agent/jobs/query', params)
+}
+
+export function cancelAgentJob(payload) {
+    return requestUtil.post('api/agent/jobs/cancel', payload)
+}
+
+export function retryAgentJob(payload) {
+    return requestUtil.post('api/agent/jobs/retry', payload)
 }

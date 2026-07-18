@@ -95,7 +95,7 @@ test.describe('automation ops pages', () => {
     const visibleSearchSelectors = [
       'input[placeholder="按执行记录ID搜索"]:visible',
       'input[placeholder="搜索任务ID/发起人"]:visible',
-      'input[placeholder="按统一日志过滤"]:visible',
+      'input[placeholder="按查看日志过滤"]:visible',
     ]
 
     for (const selector of visibleSearchSelectors) {

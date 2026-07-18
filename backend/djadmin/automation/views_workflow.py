@@ -311,9 +311,8 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
-        run_items = list(page) if page is not None else list(queryset)
-        for item in run_items:
-            _refresh_workflow_run_progress(item)
+        # 注：dj-agent 已负责异步更新 workflow run 状态，无需在列表查询时逐个调用 _refresh_workflow_run_progress
+        # 该操作会导致大量 N+1 数据库查询，造成主 API 卡死。仅在 retrieve (详情) 时刷新最新状态。
         serializer = self.get_serializer(page if page is not None else queryset, many=True)
         data = serializer.data
         if page is not None:

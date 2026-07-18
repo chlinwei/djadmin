@@ -226,6 +226,14 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
+
+# RabbitMQ (for dj-agent communication)
+RABBITMQ_URL = os.getenv(
+    'RABBITMQ_URL',
+    'amqp://admin:admin123@10.25.66.150:5672//',
+)
+RABBITMQ_AGENT_TASKS_QUEUE = 'agent.tasks'
+RABBITMQ_AGENT_REPORTS_QUEUE = 'agent.reports'
 CELERY_BEAT_SCHEDULE = {
     'dispatch-due-scheduled-tasks': {
         'task': 'scheduler.dispatch_due_tasks',

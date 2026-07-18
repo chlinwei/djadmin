@@ -5,6 +5,8 @@ import uuid
 import asyncio
 import json
 import importlib
+import pika
+import logging
 from datetime import timedelta
 from asgiref.sync import async_to_sync
 
@@ -30,11 +32,9 @@ from .credential_crypto import decrypt_secret
 from .webssh_runtime import WebSSHRuntimeRegistry
 from .webssh_host_mixin import WebSSHHostMixin
 
-warnings.filterwarnings(
-    'ignore',
-    message='.*TripleDES has been moved to cryptography\\.hazmat\\.decrepit\\.ciphers\\.algorithms\\.TripleDES.*',
-    category=CryptographyDeprecationWarning,
-)
+# 日志记录器
+logger = logging.getLogger(__name__)
+
 
 # 自动下发主机采集任务的最小间隔（秒）。
 AGENT_AUTO_COLLECT_MIN_INTERVAL_SECONDS = 300
@@ -110,7 +110,7 @@ def _emit_agent_job_event(job, event_type, payload):
     )
 
 def _publish_agent_job_to_mq(job):
-    """将作业发布到 NATS，供 agent 实时消费。"""
+    """将作业发布到 RabbitMQ，供 agent 实时消费。"""
     if job is None:
         return
 
@@ -118,12 +118,11 @@ def _publish_agent_job_to_mq(job):
     if agent_id == '':
         return
 
-    nats_url = str(getattr(settings, 'NATS_URL', 'nats://127.0.0.1:4222') or '').strip()
-    if nats_url == '':
-        raise RuntimeError('NATS_URL未配置，无法发布agent任务')
+    rabbitmq_url = str(getattr(settings, 'RABBITMQ_URL', 'amqp://127.0.0.1:5672//') or '').strip()
+    if rabbitmq_url == '':
+        raise RuntimeError('RABBITMQ_URL未配置，无法发布agent任务')
 
-    # 当前任务模型默认按单机下发；组播和全量在同一解析函数中预留。
-    subject = _resolve_nats_subject('single', agent_id)
+    # 当前任务模型默认按单机下发
     message = {
         'command_id': f'cmd-{uuid.uuid4().hex[:16]}',
         'client_request_id': str(getattr(job, 'client_request_id', '') or ''),
@@ -137,19 +136,20 @@ def _publish_agent_job_to_mq(job):
         'created_at': timezone.now().isoformat(),
     }
 
-    async def _publish():
-        nats_module = importlib.import_module('nats.aio.client')
-        nats_client_cls = getattr(nats_module, 'Client', None)
-        if nats_client_cls is None:
-            raise RuntimeError('nats.aio.client.Client 不可用，请安装 nats-py')
-
-        nc = nats_client_cls()
-        await nc.connect(servers=[nats_url], connect_timeout=2)
-        await nc.publish(subject, json.dumps(message, ensure_ascii=False).encode('utf-8'))
-        await nc.flush(timeout=1)
-        await nc.close()
-
-    asyncio.run(_publish())
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(rabbitmq_url))
+        channel = connection.channel()
+        queue_name = getattr(settings, 'RABBITMQ_AGENT_TASKS_QUEUE', 'agent.tasks')
+        channel.queue_declare(queue=queue_name, durable=True, auto_delete=False)
+        channel.basic_publish(
+            exchange='',
+            routing_key=queue_name,
+            body=json.dumps(message, ensure_ascii=False),
+            properties=pika.BasicProperties(delivery_mode=2),  # 消息持久化
+        )
+        connection.close()
+    except Exception as exc:
+        raise RuntimeError(f'发布RabbitMQ消息失败: {exc}') from exc
 
 
 def dispatch_host_report_interval_update(interval_seconds, client_request_id=''):
@@ -1466,4 +1466,185 @@ def agent_report_job(request):
     """旧 HTTP 上报入口已下线，统一改为 NATS 上行。"""
     return Response_error_str('agent HTTP 上报接口已下线，请改用 NATS 发布 ret.job/evt.job/hb.agent/rpt.host')
 
+
+# === dj-agent RabbitMQ HTTP 上报端点 ===
+
+@api_view(['POST'])
+def agent_heartbeat(request):
+    """接收 dj-agent 心跳：更新 agent 在线状态。"""
+    payload = request.data if isinstance(request.data, dict) else {}
+    agent_id = str(payload.get('agent_id') or '').strip()
+    
+    if agent_id == '':
+        return Response_error_str('agent_id不能为空')
+    
+    # 查找或创建主机记录（通过 instance_name = agent_id）
+    host = Host.objects.filter(instance_name=agent_id).first()
+    if host is None:
+        logger.warning(f"heartbeat from unknown agent: {agent_id}")
+        return Response_200(data={'message': 'agent not registered'})
+    
+    # 更新 agent 在线状态
+    host.agent_online = True
+    host.save(update_fields=['agent_online', 'update_time'])
+    
+    return Response_200(data={'message': 'heartbeat received'})
+
+
+@api_view(['POST'])
+def agent_report_host_snapshot(request):
+    """接收主机快照：存储主机信息采集结果。"""
+    payload = request.data if isinstance(request.data, dict) else {}
+    agent_id = str(payload.get('agent_id') or '').strip()
+    action = str(payload.get('action') or '').strip()
+    status = str(payload.get('status') or '').strip()
+    result_data = payload.get('result_data', {})
+    error = str(payload.get('error') or '').strip()
+    
+    if agent_id == '':
+        return Response_error_str('agent_id不能为空')
+    
+    # 查找主机
+    host = Host.objects.filter(instance_name=agent_id).first()
+    if host is None:
+        return Response_error_str('agent not registered')
+    
+    # 存储主机快照数据（如 CPU、内存、磁盘等）
+    if isinstance(result_data, dict) and len(result_data) > 0:
+        # 可选：存储到专门的快照表或更新 host 记录的字段
+        host.host_snapshot = result_data
+    
+    host.save(update_fields=['host_snapshot', 'update_time'])
+    
+    return Response_200(data={'message': 'host snapshot received'})
+
+
+@api_view(['POST'])
+def agent_report_job_result(request):
+    """接收任务执行结果：更新 AgentJob 状态和输出。"""
+    payload = request.data if isinstance(request.data, dict) else {}
+    agent_id = str(payload.get('agent_id') or '').strip()
+    job_id = str(payload.get('job_id') or '').strip()
+    status = str(payload.get('status') or '').strip()
+    retcode = payload.get('retcode', -1)
+    stdout = str(payload.get('stdout') or '').strip()
+    stderr = str(payload.get('stderr') or '').strip()
+    data = payload.get('data', {})
+    error = str(payload.get('error') or '').strip()
+    
+    if job_id == '':
+        return Response_error_str('job_id不能为空')
+    
+    # 查找任务
+    job = AgentJob.objects.filter(job_id=job_id, agent_id=agent_id).first()
+    if job is None:
+        return Response_error_str('job not found')
+    
+    # 映射 protocol.JobStatus 到 AgentJob.JobStatus
+    status_map = {
+        'success': AgentJob.JobStatus.SUCCESS,
+        'failed': AgentJob.JobStatus.FAILED,
+        'running': AgentJob.JobStatus.RUNNING,
+        'timeout': AgentJob.JobStatus.TIMEOUT,
+        'canceled': AgentJob.JobStatus.CANCELED,
+    }
+    mapped_status = status_map.get(status.lower(), AgentJob.JobStatus.FAILED)
+    
+    # 更新任务记录
+    job.status = mapped_status
+    job.exit_code = int(retcode) if isinstance(retcode, int) else -1
+    job.stdout = stdout
+    job.stderr = stderr
+    job.result_data = data if isinstance(data, dict) else {}
+    if error:
+        job.error_message = error
+    
+    if mapped_status in {AgentJob.JobStatus.SUCCESS, AgentJob.JobStatus.FAILED, 
+                         AgentJob.JobStatus.TIMEOUT, AgentJob.JobStatus.CANCELED}:
+        job.finished_at = timezone.now()
+    elif mapped_status == AgentJob.JobStatus.RUNNING and job.picked_at is None:
+        job.picked_at = timezone.now()
+    
+    job.save(update_fields=['status', 'exit_code', 'stdout', 'stderr', 'result_data', 
+                            'error_message', 'finished_at', 'picked_at', 'update_time'])
+    
+    # 发出事件通知
+    _emit_agent_job_event(job, 'ret', {
+        'id': agent_id,
+        'jid': job_id,
+        'retcode': job.exit_code,
+        'fun': job.action,
+        'return': {
+            'status': job.status,
+            'data': job.result_data,
+            'error': job.error_message,
+        },
+    })
+    
+    return Response_200(data={'message': 'job result received'})
+
+
+@api_view(['POST'])
+def agent_report_job_event(request):
+    """接收任务事件：记录任务执行进度。"""
+    payload = request.data if isinstance(request.data, dict) else {}
+    agent_id = str(payload.get('agent_id') or '').strip()
+    job_id = str(payload.get('job_id') or '').strip()
+    status = str(payload.get('status') or '').strip()
+    error = str(payload.get('error') or '').strip()
+    
+    if job_id == '':
+        return Response_error_str('job_id不能为空')
+    
+    # 查找任务
+    job = AgentJob.objects.filter(job_id=job_id, agent_id=agent_id).first()
+    if job is None:
+        return Response_error_str('job not found')
+    
+    # 记录事件
+    tag = f'salt/job/{job_id}/evt/{status}'
+    AgentJobEvent.objects.create(
+        job_id=job_id,
+        agent_id=agent_id,
+        tag=tag,
+        event_type=status,
+        payload={
+            'status': status,
+            'error': error,
+            'ts': timezone.now().isoformat(),
+        },
+    )
+    
+    return Response_200(data={'message': 'job event received'})
+
+
+@api_view(['POST'])
+def agent_report_terminal_event(request):
+    """接收终端事件：记录终端会话事件（connected、output、closed、error）。"""
+    payload = request.data if isinstance(request.data, dict) else {}
+    agent_id = str(payload.get('agent_id') or '').strip()
+    session_id = str(payload.get('session_id') or '').strip()
+    event_type = str(payload.get('type') or '').strip()
+    
+    if agent_id == '' or session_id == '':
+        return Response_error_str('agent_id 和 session_id 不能为空')
+    
+    if event_type == '':
+        return Response_error_str('event type 不能为空')
+    
+    # 记录事件（可扩展为专门的数据库模型）
+    slog.info(
+        'Terminal event received',
+        extra={
+            'agent_id': agent_id,
+            'session_id': session_id,
+            'event_type': event_type,
+            'payload': payload,
+        }
+    )
+    
+    # 后续可通过 WebSocket 或其他方式实时推送给前端
+    # 这里暂时只记录到日志
+    
+    return Response_200(data={'message': 'terminal event received'})
     

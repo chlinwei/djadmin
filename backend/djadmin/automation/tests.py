@@ -514,7 +514,7 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		body = self.assertResponseOK(res)
 		self.assertEqual(body['data'], [])
 
-	def test_job_host_summary_endpoint_keeps_zero_event_counters(self):
+	def test_job_host_summary_endpoint_removed(self):
 		job = AnsibleExecutionJob.objects.create(
 			status=AnsibleExecutionJob.Status.RUNNING,
 			inventory_snapshot={
@@ -526,21 +526,7 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		)
 
 		res = self.client.get(f'/sys/automation/jobs/{job.id}/host_summary/')
-		body = self.assertResponseOK(res)
-		self.assertEqual(body['data']['count'], 2)
-
-		items = body['data']['results']
-		host_a = next(item for item in items if item['host_name'] == 'host-a')
-		self.assertEqual(host_a['status'], AnsibleExecutionJob.Status.RUNNING)
-		self.assertEqual(host_a['total_events'], 0)
-		self.assertEqual(host_a['stdout_events'], 0)
-		self.assertEqual(host_a['stderr_events'], 0)
-
-		res_failed = self.client.get(f'/sys/automation/jobs/{job.id}/host_summary/?status=running')
-		body_failed = self.assertResponseOK(res_failed)
-		self.assertEqual(body_failed['data']['count'], 2)
-		host_names = {item['host_name'] for item in body_failed['data']['results']}
-		self.assertSetEqual(host_names, {'host-a', 'host-b'})
+		self.assertEqual(res.status_code, 404)
 
 	def test_job_status_summary_endpoint_counts_by_target_status(self):
 		job = AnsibleExecutionJob.objects.create(

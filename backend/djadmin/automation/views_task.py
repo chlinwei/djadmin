@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from .view_helpers import *
 from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
+from .executor import execute_ansible_job
 from assets.models import AgentJob, Host
 
 
@@ -96,6 +97,162 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
         'precheck': 'automation:jobs:create',
         'run_now': 'automation:jobs:create',
     }
+
+    def _run_now_via_agent(self, task, task_template, user_info, started_at, inventory_snapshot, hosts, 
+                           is_shell_task, extra_vars, shell_parameters, shell_env_vars, limit_text):
+        """通过 dj-agent HTTP 执行 shell 任务。"""
+        job = AnsibleExecutionJob.objects.create(
+            task=task,
+            status=AnsibleExecutionJob.Status.RUNNING,
+            trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
+            inventory_snapshot=inventory_snapshot,
+            task_name_snapshot=task.name or '',
+            template_name_snapshot=task_template.name or '',
+            template_content_snapshot=task_template.content or '',
+            extra_vars=extra_vars if not is_shell_task else {},
+            shell_parameters=shell_parameters if is_shell_task else '',
+            shell_env_vars=shell_env_vars if is_shell_task else {},
+            limit=limit_text,
+            requested_user_id=user_info.get('user_id'),
+            requested_username=user_info.get('username', ''),
+            result_summary={'message': 'Job created and executing via agent http'},
+            start_time=started_at,
+            # 权限提升配置快照
+            become_enabled_snapshot=task.become_enabled,
+            become_method_snapshot=task.become_method,
+            become_user_snapshot=task.become_user,
+        )
+
+        target_host_ids = [
+            int(item.get('host_id'))
+            for item in hosts
+            if isinstance(item, dict) and str(item.get('host_id') or '').isdigit()
+        ]
+        host_map = {
+            row.id: row
+            for row in Host.objects.filter(id__in=target_host_ids)
+        }
+
+        created_count = 0
+        success_count = 0
+        failed_count = 0
+        failed_rows = []
+        output_chunks = []
+
+        for item in hosts:
+            if not isinstance(item, dict):
+                continue
+            host_id_raw = item.get('host_id')
+            host_id_text = str(host_id_raw or '')
+            if not host_id_text.isdigit():
+                failed_count += 1
+                failed_rows.append({'host_id': host_id_raw, 'error': 'invalid host_id'})
+                continue
+
+            host_id = int(host_id_text)
+            host = host_map.get(host_id)
+            if host is None:
+                failed_count += 1
+                failed_rows.append({'host_id': host_id, 'error': 'host not found'})
+                continue
+
+            agent_id = str(host.instance_name or '').strip()
+            if agent_id == '':
+                failed_count += 1
+                failed_rows.append({'host_id': host_id, 'error': 'host has empty instance_name'})
+                continue
+
+            current_job_id = f'run_automation_task-{uuid.uuid4().hex[:16]}'
+            current_params = {
+                'template_type': 'shell_script' if is_shell_task else 'playbook',
+                'template_content': task_template.content or '',
+                'shell_parameters': shell_parameters if is_shell_task else '',
+                'env_vars': shell_env_vars if is_shell_task else {},
+                'extra_vars': extra_vars if not is_shell_task else {},
+                'become_enabled': bool(task.become_enabled),
+                'become_method': str(task.become_method or 'sudo'),
+                'become_user': str(task.become_user or 'root'),
+                'automation_execution_job_id': int(job.id),
+                'automation_task_id': int(task.id),
+                'host_id': int(host_id),
+                'host_ip': str(host.ip or ''),
+            }
+
+            created_count += 1
+            timeout_seconds = int(task.execution_timeout_seconds or 3600)
+            try:
+                exec_result = _execute_automation_task_via_agent_http(
+                    host=host,
+                    job_id=current_job_id,
+                    params=current_params,
+                    timeout_seconds=timeout_seconds,
+                )
+                current_status = str(exec_result.get('status') or '').strip().lower()
+                stdout_text = str(exec_result.get('stdout') or '')
+                stderr_text = str(exec_result.get('stderr') or '')
+                error_text = str(exec_result.get('error_message') or '')
+
+                if current_status == AgentJob.JobStatus.SUCCESS:
+                    success_count += 1
+                else:
+                    failed_count += 1
+                    failed_rows.append({
+                        'host_id': host_id,
+                        'error': error_text or f'agent status={current_status or "unknown"}',
+                    })
+
+                output_chunks.append(
+                    f"\n\n===== Agent Host #{host_id} ({host.ip or '-'}) | status={current_status or 'unknown'} | job={current_job_id} =====\n"
+                )
+                if stdout_text:
+                    output_chunks.append(stdout_text.rstrip('\n') + '\n')
+                if stderr_text:
+                    output_chunks.append('[stderr]\n' + stderr_text.rstrip('\n') + '\n')
+                if error_text:
+                    output_chunks.append('[error]\n' + error_text.rstrip('\n') + '\n')
+            except Exception as exc:
+                failed_count += 1
+                failed_rows.append({'host_id': host_id, 'error': str(exc)})
+                output_chunks.append(
+                    f"\n\n===== Agent Host #{host_id} ({host.ip or '-'}) | status=failed | job={current_job_id} =====\n"
+                )
+                output_chunks.append('[error]\n' + str(exc).rstrip('\n') + '\n')
+
+        if created_count == 0:
+            finished_at = timezone.now()
+            job.status = AnsibleExecutionJob.Status.FAILED
+            job.end_time = finished_at
+            job.duration_seconds = (finished_at - started_at).total_seconds()
+            job.job_output = ''.join(output_chunks)
+            job.result_summary = {
+                'message': 'Failed to dispatch any agent task',
+                'created_count': 0,
+                'success_count': 0,
+                'failed_count': failed_count,
+                'failed_rows': failed_rows,
+                'execution_mode': 'agent_http_sync',
+            }
+            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds', 'job_output'])
+            return Response_error_str('Job dispatch failed: no agent task created', code=400)
+
+        finished_at = timezone.now()
+        final_status = AnsibleExecutionJob.Status.SUCCESS if failed_count == 0 else AnsibleExecutionJob.Status.FAILED
+        job.status = final_status
+        job.end_time = finished_at
+        job.duration_seconds = (finished_at - started_at).total_seconds()
+        job.job_output = ''.join(output_chunks)
+        job.result_summary = {
+            'message': 'Job executed synchronously via agent http',
+            'created_count': created_count,
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'failed_rows': failed_rows,
+            'execution_mode': 'agent_http_sync',
+        }
+        job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds', 'job_output'])
+
+        serializer = AnsibleExecutionJobSerializer(job)
+        return Response_200(data=serializer.data)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -327,157 +484,60 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             return Response_error_str('当前任务无可用主机，请检查执行范围配置', code=400)
 
         started_at = timezone.now()
-        job = AnsibleExecutionJob.objects.create(
-            task=task,
-            status=AnsibleExecutionJob.Status.RUNNING,
-            trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
-            inventory_snapshot=inventory_snapshot,
-            task_name_snapshot=task.name or '',
-            template_name_snapshot=task_template.name or '',
-            template_content_snapshot=task_template.content or '',
-            extra_vars=extra_vars if not is_shell_task else {},
-            shell_parameters=shell_parameters if is_shell_task else '',
-            shell_env_vars=shell_env_vars if is_shell_task else {},
-            limit=limit_text,
-            requested_user_id=user_info.get('user_id'),
-            requested_username=user_info.get('username', ''),
-            result_summary={'message': 'Job created and executing via agent http'},
-            start_time=started_at,
-            # 权限提升配置快照
-            become_enabled_snapshot=task.become_enabled,
-            become_method_snapshot=task.become_method,
-            become_user_snapshot=task.become_user,
-        )
-
-        target_host_ids = [
-            int(item.get('host_id'))
-            for item in hosts
-            if isinstance(item, dict) and str(item.get('host_id') or '').isdigit()
-        ]
-        host_map = {
-            row.id: row
-            for row in Host.objects.filter(id__in=target_host_ids)
-        }
-
-        created_count = 0
-        success_count = 0
-        failed_count = 0
-        failed_rows = []
-        output_chunks = []
-
-        for item in hosts:
-            if not isinstance(item, dict):
-                continue
-            host_id_raw = item.get('host_id')
-            host_id_text = str(host_id_raw or '')
-            if not host_id_text.isdigit():
-                failed_count += 1
-                failed_rows.append({'host_id': host_id_raw, 'error': 'invalid host_id'})
-                continue
-
-            host_id = int(host_id_text)
-            host = host_map.get(host_id)
-            if host is None:
-                failed_count += 1
-                failed_rows.append({'host_id': host_id, 'error': 'host not found'})
-                continue
-
-            agent_id = str(host.instance_name or '').strip()
-            if agent_id == '':
-                failed_count += 1
-                failed_rows.append({'host_id': host_id, 'error': 'host has empty instance_name'})
-                continue
-
-            current_job_id = f'run_automation_task-{uuid.uuid4().hex[:16]}'
-            current_params = {
-                'template_type': 'shell_script' if is_shell_task else 'playbook',
-                'template_content': task_template.content or '',
-                'shell_parameters': shell_parameters if is_shell_task else '',
-                'env_vars': shell_env_vars if is_shell_task else {},
-                'extra_vars': extra_vars if not is_shell_task else {},
-                'become_enabled': bool(task.become_enabled),
-                'become_method': str(task.become_method or 'sudo'),
-                'become_user': str(task.become_user or 'root'),
-                'automation_execution_job_id': int(job.id),
-                'automation_task_id': int(task.id),
-                'host_id': int(host_id),
-                'host_ip': str(host.ip or ''),
-            }
-
-            created_count += 1
-            timeout_seconds = int(task.execution_timeout_seconds or 3600)
+        
+        # 区分执行路径：Playbook 走本地，Shell 走 dj-agent
+        if is_shell_task:
+            # Shell 模板：通过 dj-agent HTTP 执行
+            return self._run_now_via_agent(
+                task=task,
+                task_template=task_template,
+                user_info=user_info,
+                started_at=started_at,
+                inventory_snapshot=inventory_snapshot,
+                hosts=hosts,
+                is_shell_task=is_shell_task,
+                extra_vars=extra_vars,
+                shell_parameters=shell_parameters,
+                shell_env_vars=shell_env_vars,
+                limit_text=limit_text,
+            )
+        else:
+            # Playbook 模板：在本地 backend API 进程执行
+            job = AnsibleExecutionJob.objects.create(
+                task=task,
+                status=AnsibleExecutionJob.Status.PENDING,
+                trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
+                inventory_snapshot=inventory_snapshot,
+                task_name_snapshot=task.name or '',
+                template_name_snapshot=task_template.name or '',
+                template_content_snapshot=task_template.content or '',
+                extra_vars=extra_vars,
+                shell_parameters='',
+                shell_env_vars={},
+                limit=limit_text,
+                requested_user_id=user_info.get('user_id'),
+                requested_username=user_info.get('username', ''),
+                result_summary={'message': 'Job created and executing locally in backend API'},
+                start_time=started_at,
+                # 权限提升配置快照
+                become_enabled_snapshot=task.become_enabled,
+                become_method_snapshot=task.become_method,
+                become_user_snapshot=task.become_user,
+            )
+            
             try:
-                exec_result = _execute_automation_task_via_agent_http(
-                    host=host,
-                    job_id=current_job_id,
-                    params=current_params,
-                    timeout_seconds=timeout_seconds,
-                )
-                current_status = str(exec_result.get('status') or '').strip().lower()
-                stdout_text = str(exec_result.get('stdout') or '')
-                stderr_text = str(exec_result.get('stderr') or '')
-                error_text = str(exec_result.get('error_message') or '')
-
-                if current_status == AgentJob.JobStatus.SUCCESS:
-                    success_count += 1
-                else:
-                    failed_count += 1
-                    failed_rows.append({
-                        'host_id': host_id,
-                        'error': error_text or f'agent status={current_status or "unknown"}',
-                    })
-
-                output_chunks.append(
-                    f"\n\n===== Agent Host #{host_id} ({host.ip or '-'}) | status={current_status or 'unknown'} | job={current_job_id} =====\n"
-                )
-                if stdout_text:
-                    output_chunks.append(stdout_text.rstrip('\n') + '\n')
-                if stderr_text:
-                    output_chunks.append('[stderr]\n' + stderr_text.rstrip('\n') + '\n')
-                if error_text:
-                    output_chunks.append('[error]\n' + error_text.rstrip('\n') + '\n')
+                # 直接在本进程执行
+                execute_ansible_job(int(job.id))
             except Exception as exc:
-                failed_count += 1
-                failed_rows.append({'host_id': host_id, 'error': str(exc)})
-                output_chunks.append(
-                    f"\n\n===== Agent Host #{host_id} ({host.ip or '-'}) | status=failed | job={current_job_id} =====\n"
-                )
-                output_chunks.append('[error]\n' + str(exc).rstrip('\n') + '\n')
-
-        if created_count == 0:
-            finished_at = timezone.now()
-            job.status = AnsibleExecutionJob.Status.FAILED
-            job.end_time = finished_at
-            job.duration_seconds = (finished_at - started_at).total_seconds()
-            job.job_output = ''.join(output_chunks)
-            job.result_summary = {
-                'message': 'Failed to dispatch any agent task',
-                'created_count': 0,
-                'success_count': 0,
-                'failed_count': failed_count,
-                'failed_rows': failed_rows,
-                'execution_mode': 'agent_http_sync',
-            }
-            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds', 'job_output'])
-            return Response_error_str('Job dispatch failed: no agent task created', code=400)
-
-        finished_at = timezone.now()
-        final_status = AnsibleExecutionJob.Status.SUCCESS if failed_count == 0 else AnsibleExecutionJob.Status.FAILED
-        job.status = final_status
-        job.end_time = finished_at
-        job.duration_seconds = (finished_at - started_at).total_seconds()
-        job.job_output = ''.join(output_chunks)
-        job.result_summary = {
-            'message': 'Job executed synchronously via agent http',
-            'created_count': created_count,
-            'success_count': success_count,
-            'failed_count': failed_count,
-            'failed_rows': failed_rows,
-            'execution_mode': 'agent_http_sync',
-        }
-        job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds', 'job_output'])
-
-        serializer = AnsibleExecutionJobSerializer(job)
-        return Response_200(data=serializer.data)
+                job.status = AnsibleExecutionJob.Status.FAILED
+                job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
+                job.save(update_fields=['status', 'result_summary'])
+                return Response_error_str(f'Task execution failed: {str(exc)}', code=500)
+            
+            return Response_200(data={
+                'job_id': job.id,
+                'status': job.status,
+                'result_summary': job.result_summary,
+            })
 
 

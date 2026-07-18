@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/nats-io/nats.go"
 )
 
 type termCommand struct {
@@ -31,17 +29,17 @@ type termSession struct {
 }
 
 type terminalManager struct {
-	agentID  string
-	nc       *nats.Conn
-	mu       sync.Mutex
-	sessions map[string]*termSession
+	agentID    string
+	reportFunc func(eventType string, payload map[string]any) // 用于上报终端事件
+	mu         sync.Mutex
+	sessions   map[string]*termSession
 }
 
-func newTerminalManager(agentID string, nc *nats.Conn) *terminalManager {
+func newTerminalManager(agentID string) *terminalManager {
 	return &terminalManager{
-		agentID:  agentID,
-		nc:       nc,
-		sessions: make(map[string]*termSession),
+		agentID:    agentID,
+		reportFunc: nil, // 由调用者设置
+		sessions:   make(map[string]*termSession),
 	}
 }
 
@@ -206,7 +204,8 @@ func (m *terminalManager) waitProcess(sessionID string, cmd *exec.Cmd) {
 }
 
 func (m *terminalManager) publishEvent(sessionID, eventType string, payload map[string]any) {
-	if m.nc == nil {
+	if m.reportFunc == nil {
+		slog.Warn("terminal event reporter not set", "session_id", sessionID, "event_type", eventType)
 		return
 	}
 	data := map[string]any{
@@ -218,15 +217,7 @@ func (m *terminalManager) publishEvent(sessionID, eventType string, payload map[
 	for k, v := range payload {
 		data[k] = v
 	}
-
-	body, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	subject := fmt.Sprintf("evt.term.%s", sessionID)
-	if err = m.nc.Publish(subject, body); err != nil {
-		slog.Warn("publish term event failed", "subject", subject, "err", err)
-	}
+	m.reportFunc(eventType, data)
 }
 
 func (m *terminalManager) getSession(sessionID string) *termSession {

@@ -16,7 +16,6 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         'cancel': 'automation:jobs:cancel',
         'log': 'automation:jobs:view',
         'events': 'automation:jobs:view',
-        'host_summary': 'automation:jobs:view',
         'status_summary': 'automation:jobs:view',
     }
 
@@ -117,73 +116,6 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         job = self.get_object()
         self.get_object()
         return Response_200(data=[])
-
-    @action(detail=True, methods=['get'])
-    def host_summary(self, request, id=None):
-        job = self.get_object()
-        inventory_snapshot = job.inventory_snapshot if isinstance(job.inventory_snapshot, dict) else {}
-        hosts = inventory_snapshot.get('hosts') if isinstance(inventory_snapshot, dict) else []
-        host_rows = hosts if isinstance(hosts, list) else []
-        summary_list: list[dict[str, Any]] = []
-        for row in host_rows:
-            if not isinstance(row, dict):
-                continue
-            summary_list.append({
-                'target_id': None,
-                'host_name': str(row.get('host_name') or '').strip(),
-                'host_ip': str(row.get('host_ip') or '').strip(),
-                'status': str(job.status or '').strip(),
-                'rc': None,
-                'duration_seconds': job.duration_seconds,
-                'total_events': 0,
-                'stdout_events': 0,
-                'stderr_events': 0,
-                'last_line_no': 0,
-            })
-
-
-        host_name = str(request.query_params.get('host_name') or '').strip().lower()
-        host_ip = str(request.query_params.get('host_ip') or '').strip().lower()
-        status_value = str(request.query_params.get('status') or '').strip().lower()
-
-        if host_name:
-            summary_list = [
-                item for item in summary_list
-                if host_name in str(item.get('host_name') or '').lower()
-            ]
-        if host_ip:
-            summary_list = [
-                item for item in summary_list
-                if host_ip in str(item.get('host_ip') or '').lower()
-            ]
-        if status_value:
-            summary_list = [
-                item for item in summary_list
-                if status_value == str(item.get('status') or '').lower()
-            ]
-
-        summary_list.sort(
-            key=lambda item: (
-                int(item.get('target_id') or 0),
-                str(item.get('host_name') or ''),
-                str(item.get('host_ip') or ''),
-            )
-        )
-
-        page = self.paginate_queryset(summary_list)
-        page_data = page if page is not None else summary_list
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': page_data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=page_data)
 
     @action(detail=True, methods=['get'])
     def status_summary(self, request, id=None):

@@ -111,6 +111,10 @@ class Host(BaseModel):
     )
     collect_message = models.TextField(blank=True, default="", verbose_name="采集失败原因")
     collect_time = models.DateTimeField(null=True, blank=True, verbose_name="最后采集时间")
+    
+    # dj-agent 在线状态和主机快照
+    agent_online = models.BooleanField(default=False, verbose_name="Agent在线状态")
+    host_snapshot = models.JSONField(default=dict, blank=True, verbose_name="主机快照数据")
 
     def __str__(self):
         display_name = self.instance_name or f"Host-{self.id}"
@@ -207,6 +211,11 @@ class AgentJob(BaseModel):
     finished_at = models.DateTimeField(null=True, blank=True)
     result_data = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True, default='')
+    
+    # 任务执行结果字段 - 用于 RabbitMQ/HTTP 上报
+    exit_code = models.IntegerField(default=-1, verbose_name="退出码")
+    stdout = models.TextField(blank=True, default='', verbose_name="标准输出")
+    stderr = models.TextField(blank=True, default='', verbose_name="标准错误")
 
     class Meta:
         db_table = 'assets_agent_job'

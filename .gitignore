@@ -5,3 +5,8 @@ test_output.txt
 
 # Celery Beat runtime state file
 backend/djadmin/celerybeat-schedule
+
+# dj-agent 编译产物
+dj_agent/agent
+dj_agent/agent.exe
+dj_agent/bin/

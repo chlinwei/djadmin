@@ -130,6 +130,10 @@ export function getJobStatusSummary(id) {
   return requestUtil.get(prefix + `jobs/${id}/status_summary/`)
 }
 
+export function getJobTargetLogs(id, params) {
+  return requestUtil.get(prefix + `jobs/${id}/target_logs/`, params)
+}
+
 export function getWorkflowList(params) {
   return requestUtil.get(prefix + 'workflows/', params)
 }

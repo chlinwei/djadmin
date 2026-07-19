@@ -1,9 +1,27 @@
 from __future__ import annotations
 from .view_helpers import *
+from .models import AutomationExecutionTargetLog
 
-class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMixin):
-    queryset = AnsibleExecutionJob.objects.select_related('task').all()
-    serializer_class = AnsibleExecutionJobSerializer
+
+def _build_unified_log_text(job: AutomationExecutionJob) -> str:
+    job_pk = int(getattr(job, 'pk', 0) or 0)
+    rows = AutomationExecutionTargetLog.objects.filter(job_id=job_pk).order_by('id')
+    chunks: list[str] = []
+    for row in rows:
+        chunks.append(
+            f"\n\n===== Agent Host #{row.host_id_snapshot or '-'} ({row.host_ip_snapshot or '-'}) | status={row.status or 'unknown'} | job={row.agent_job_id or '-'} =====\n"
+        )
+        if row.stdout:
+            chunks.append(str(row.stdout).rstrip('\n') + '\n')
+        if row.stderr:
+            chunks.append('[stderr]\n' + str(row.stderr).rstrip('\n') + '\n')
+        if row.error_message:
+            chunks.append('[error]\n' + str(row.error_message).rstrip('\n') + '\n')
+    return ''.join(chunks)
+
+class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMixin):
+    queryset = AutomationExecutionJob.objects.select_related('task').all()
+    serializer_class = AutomationExecutionJobSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     search_fields = ['job_id', 'requested_username', 'template_name_snapshot', 'task_name_snapshot', 'remark']
@@ -15,6 +33,7 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         'retrieve': 'automation:jobs:view',
         'cancel': 'automation:jobs:cancel',
         'log': 'automation:jobs:view',
+        'target_logs': 'automation:jobs:view',
         'events': 'automation:jobs:view',
         'status_summary': 'automation:jobs:view',
     }
@@ -49,8 +68,12 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
             queryset = queryset.filter(condition)
 
         if output_keyword:
-            # 搜索日志输出内容
-            queryset = queryset.filter(job_output__icontains=output_keyword)
+            # 统一日志从 target 明细聚合：按 stdout/stderr/error_message 三个维度搜索。
+            queryset = queryset.filter(
+                Q(target_logs__stdout__icontains=output_keyword)
+                | Q(target_logs__stderr__icontains=output_keyword)
+                | Q(target_logs__error_message__icontains=output_keyword)
+            ).distinct()
 
         if start_time_from:
             parsed_from = parse_datetime(start_time_from)
@@ -76,9 +99,9 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
                 hosts = inventory_snapshot.get('hosts') if isinstance(inventory_snapshot, dict) else []
                 total_hosts = len(hosts) if isinstance(hosts, list) else 0
                 job_status = str(item.get('status') or '').lower()
-                success = total_hosts if job_status == AnsibleExecutionJob.Status.SUCCESS else 0
-                failed = total_hosts if job_status == AnsibleExecutionJob.Status.FAILED else 0
-                pending = total_hosts if job_status in {AnsibleExecutionJob.Status.PENDING, AnsibleExecutionJob.Status.RUNNING} else 0
+                success = total_hosts if job_status == AutomationExecutionJob.Status.SUCCESS else 0
+                failed = total_hosts if job_status == AutomationExecutionJob.Status.FAILED else 0
+                pending = total_hosts if job_status in {AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING} else 0
                 item['status_summary'] = {
                     'total_hosts': total_hosts,
                     'finished_hosts': success + failed,
@@ -113,7 +136,43 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         return Response_200(data={
             'job_id': job.id,
             'status': job.status,
-            'job_output': job.job_output or '',
+            'job_output': _build_unified_log_text(job),
+        })
+
+    @action(detail=True, methods=['get'])
+    def target_logs(self, request, id=None):
+        job = self.get_object()
+        rows = job.target_logs.select_related('host').all().order_by('id')
+        status_value = str(request.query_params.get('status') or '').strip().lower()
+        host_id_value = str(request.query_params.get('host_id') or '').strip()
+
+        if status_value:
+            rows = rows.filter(status=status_value)
+        if host_id_value.isdigit():
+            rows = rows.filter(host_id_snapshot=int(host_id_value))
+
+        data = []
+        for row in rows:
+            data.append({
+                'id': row.id,
+                'job_id': row.job_id,
+                'host_id': row.host_id_snapshot,
+                'host_name': row.host_name_snapshot,
+                'host_ip': row.host_ip_snapshot,
+                'agent_job_id': row.agent_job_id,
+                'status': row.status,
+                'exit_code': row.exit_code,
+                'stdout': row.stdout or '',
+                'stderr': row.stderr or '',
+                'error_message': row.error_message or '',
+                'result_data': row.result_data if isinstance(row.result_data, dict) else {},
+                'create_time': row.create_time,
+                'update_time': row.update_time,
+            })
+
+        return Response_200(data={
+            'count': len(data),
+            'results': data,
         })
 
     @action(detail=True, methods=['get'])
@@ -136,13 +195,13 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
             'skipped': 0,
             'unreachable': 0,
         }
-        if job.status in {AnsibleExecutionJob.Status.PENDING, AnsibleExecutionJob.Status.RUNNING}:
+        if job.status in {AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING}:
             status_counts['pending'] = total_hosts
-        elif job.status == AnsibleExecutionJob.Status.SUCCESS:
+        elif job.status == AutomationExecutionJob.Status.SUCCESS:
             status_counts['success'] = total_hosts
-        elif job.status == AnsibleExecutionJob.Status.FAILED:
+        elif job.status == AutomationExecutionJob.Status.FAILED:
             status_counts['failed'] = total_hosts
-        elif job.status == AnsibleExecutionJob.Status.CANCELLED:
+        elif job.status == AutomationExecutionJob.Status.CANCELLED:
             status_counts['skipped'] = total_hosts
 
         finished_hosts = total_hosts - status_counts['pending'] - status_counts['running']
@@ -163,7 +222,7 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
     @action(detail=True, methods=['post'])
     def cancel(self, request, id=None):
         job = self.get_object()
-        if job.status in (AnsibleExecutionJob.Status.SUCCESS, AnsibleExecutionJob.Status.FAILED, AnsibleExecutionJob.Status.CANCELLED):
+        if job.status in (AutomationExecutionJob.Status.SUCCESS, AutomationExecutionJob.Status.FAILED, AutomationExecutionJob.Status.CANCELLED):
             return Response_error_str('Job is already finished', code=400)
 
         now = timezone.now()
@@ -172,8 +231,8 @@ class AnsibleExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModelMix
         job.end_time = now
         if job.start_time:
             job.duration_seconds = (job.end_time - job.start_time).total_seconds()
-        job.status = AnsibleExecutionJob.Status.CANCELLED
+        job.status = AutomationExecutionJob.Status.CANCELLED
         job.result_summary = {'message': 'Cancelled by user'}
         job.save(update_fields=['status', 'start_time', 'end_time', 'duration_seconds', 'result_summary'])
 
-        return Response_200(data=AnsibleExecutionJobSerializer(job).data)
+        return Response_200(data=AutomationExecutionJobSerializer(job).data)

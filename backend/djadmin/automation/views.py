@@ -3,7 +3,7 @@ from .views_shell_script import ShellScriptTemplateManage
 from .views_task import AutomationTaskManage
 from .views_inventory import AutomationInventoryManage
 from .views_job_target import (
-    AnsibleExecutionJobManage,
+    AutomationExecutionJobManage,
 )
 from .views_workflow import (
     AutomationWorkflowTemplateManage,
@@ -15,7 +15,7 @@ __all__ = [
     'ShellScriptTemplateManage',
     'AutomationTaskManage',
     'AutomationInventoryManage',
-    'AnsibleExecutionJobManage',
+    'AutomationExecutionJobManage',
     'AutomationWorkflowTemplateManage',
     'AutomationWorkflowRunManage',
 ]

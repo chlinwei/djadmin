@@ -12,9 +12,9 @@ from rest_framework_jwt.settings import api_settings
 from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
-from .executor import execute_ansible_job
+from .executor import execute_automation_job
 from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate, ShellScriptTemplate
-from .models import AnsibleExecutionJob
+from .models import AutomationExecutionJob
 
 
 def _get_token(user: SysUser) -> str:
@@ -42,40 +42,40 @@ class BaseTestCase(TestCase):
 		return body
 
 
-class AnsibleExecutionJobIdempotencyTest(TestCase):
+class AutomationExecutionJobIdempotencyTest(TestCase):
 	def test_running_job_is_not_reexecuted(self):
 		start_time = timezone.now() - timedelta(minutes=1)
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.RUNNING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
 			start_time=start_time,
 			result_summary={'message': 'already running'},
 		)
 
 		with patch('automation.executor.close_old_connections'):
-			execute_ansible_job(job.id)
+			execute_automation_job(job.id)
 
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.RUNNING)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.RUNNING)
 		self.assertEqual(job.result_summary, {'message': 'already running'})
 		self.assertEqual(job.start_time, start_time)
 
 	def test_replayed_message_after_completion_is_ignored(self):
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.PENDING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.PENDING,
 			template_content_snapshot='',
 			inventory_snapshot={'hosts': []},
 		)
 
 		with patch('automation.executor.close_old_connections'):
-			execute_ansible_job(job.id)
+			execute_automation_job(job.id)
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.FAILED)
 		first_end_time = job.end_time
 
 		with patch('automation.executor.close_old_connections'):
-			execute_ansible_job(job.id)
+			execute_automation_job(job.id)
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.FAILED)
 		self.assertEqual(job.end_time, first_end_time)
 
 
@@ -319,7 +319,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 		)
 
 	def test_run_template_dispatches_to_celery(self):
-		with patch('automation.views_playbook.execute_ansible_job') as mock_execute:
+		with patch('automation.views_playbook.execute_automation_job') as mock_execute:
 			res = self.client.post(
 				f'/sys/automation/playbooks/{self.template.id}/run/',  # type: ignore[attr-defined]
 				{'host_ids': [self.host.id], 'group_ids': [], 'extra_vars': {}},
@@ -377,7 +377,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			)
 			body = self.assertResponseOK(res)
 			self.assertEqual(body['data']['status'], 'success')
-			job = AnsibleExecutionJob.objects.get(id=body['data']['id'])
+			job = AutomationExecutionJob.objects.get(id=body['data']['id'])
 			self.assertEqual(job.task_id, shell_task.id)
 			self.assertEqual(job.template_name_snapshot, shell_template.name)
 			self.assertEqual(job.shell_parameters, 'from-request')
@@ -506,8 +506,8 @@ class AutomationRunDispatchTest(BaseTestCase):
 
 class AutomationJobEventsApiTest(BaseTestCase):
 	def test_job_events_endpoint_returns_empty_list(self):
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.RUNNING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
 		)
 
 		res = self.client.get(f'/sys/automation/jobs/{job.id}/events/?stream=stderr&host_name=host-b')
@@ -515,8 +515,8 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		self.assertEqual(body['data'], [])
 
 	def test_job_host_summary_endpoint_removed(self):
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.RUNNING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
 			inventory_snapshot={
 				'hosts': [
 					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
@@ -529,8 +529,8 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		self.assertEqual(res.status_code, 404)
 
 	def test_job_status_summary_endpoint_counts_by_target_status(self):
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.RUNNING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
 			inventory_snapshot={
 				'hosts': [
 					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
@@ -545,7 +545,7 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		body = self.assertResponseOK(res)
 		data = body['data']
 		self.assertEqual(data['job_id'], job.id)
-		self.assertEqual(data['job_status'], AnsibleExecutionJob.Status.RUNNING)
+		self.assertEqual(data['job_status'], AutomationExecutionJob.Status.RUNNING)
 		self.assertEqual(data['total_hosts'], 4)
 		self.assertEqual(data['finished_hosts'], 0)
 		self.assertEqual(data['success'], 0)
@@ -556,8 +556,8 @@ class AutomationJobEventsApiTest(BaseTestCase):
 		self.assertEqual(data['skipped'], 0)
 
 	def test_jobs_list_optionally_includes_status_summary(self):
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.SUCCESS,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.SUCCESS,
 			inventory_snapshot={
 				'hosts': [
 					{'host_name': 'host-a', 'host_ip': '10.0.0.1'},
@@ -849,7 +849,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow = self._create_workflow()
 		self._setup_workflow_with_inventory(workflow)
 
-		with patch('automation.view_helpers.execute_ansible_job') as mock_execute:
+		with patch('automation.view_helpers.execute_automation_job') as mock_execute:
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -892,7 +892,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		)
 		workflow = self.assertResponseOK(res)['data']
 
-		with patch('automation.view_helpers.execute_ansible_job') as mock_execute:
+		with patch('automation.view_helpers.execute_automation_job') as mock_execute:
 			launch_res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -1283,7 +1283,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow_id = workflow['id']
 
 		# 创建一个运行记录
-		with patch('automation.view_helpers.execute_ansible_job'):
+		with patch('automation.view_helpers.execute_automation_job'):
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow_id}/launch/",
 				{},
@@ -1600,19 +1600,19 @@ class JobTimeoutDetectionTest(TestCase):
 		from automation.tasks import check_and_fail_stale_jobs
 
 		# 创建一个5分钟前就处于pending的job
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.PENDING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.PENDING,
 			result_summary={'message': 'waiting'},
 		)
 		old_time = timezone.now() - timedelta(minutes=6)
-		AnsibleExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
+		AutomationExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
 
 		# 运行检测任务
 		result = check_and_fail_stale_jobs()
 
 		# 验证job被标记为失败
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.FAILED)
 		self.assertIn('worker_unavailable', job.result_summary.get('fail_reason', ''))
 		self.assertEqual(result['pending_failed'], 1)
 
@@ -1632,20 +1632,20 @@ class JobTimeoutDetectionTest(TestCase):
 		)
 
 		# 创建一个10分钟前就处于running的job
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.RUNNING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
 			task=task,
 			result_summary={'message': 'running...'},
 		)
 		old_time = timezone.now() - timedelta(minutes=11)
-		AnsibleExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
+		AutomationExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
 
 		# 运行检测任务
 		result = check_and_fail_stale_jobs()
 
 		# 验证job被标记为失败
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.FAILED)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.FAILED)
 		self.assertIn('execution_timeout', job.result_summary.get('fail_reason', ''))
 		self.assertEqual(job.result_summary.get('timeout_seconds'), 300)
 		self.assertEqual(result['running_failed'], 1)
@@ -1655,8 +1655,8 @@ class JobTimeoutDetectionTest(TestCase):
 		from automation.tasks import check_and_fail_stale_jobs
 
 		# 创建一个最近1分钟创建的pending job
-		job = AnsibleExecutionJob.objects.create(
-			status=AnsibleExecutionJob.Status.PENDING,
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.PENDING,
 			result_summary={'message': 'just created'},
 		)
 
@@ -1665,6 +1665,26 @@ class JobTimeoutDetectionTest(TestCase):
 
 		# 验证job仍然是pending
 		job.refresh_from_db()
-		self.assertEqual(job.status, AnsibleExecutionJob.Status.PENDING)
+		self.assertEqual(job.status, AutomationExecutionJob.Status.PENDING)
 		self.assertEqual(result['pending_failed'], 0)
 		self.assertEqual(result['running_failed'], 0)
+
+	def test_running_job_timeout_without_task_uses_600_seconds_default(self):
+		"""Running job 在 task 缺失时，应使用 600 秒默认超时。"""
+		from automation.tasks import check_and_fail_stale_jobs
+
+		job = AutomationExecutionJob.objects.create(
+			status=AutomationExecutionJob.Status.RUNNING,
+			task=None,
+			result_summary={'message': 'running without task'},
+		)
+		old_time = timezone.now() - timedelta(minutes=11)
+		AutomationExecutionJob.objects.filter(id=job.id).update(create_time=old_time)
+
+		result = check_and_fail_stale_jobs()
+
+		job.refresh_from_db()
+		self.assertEqual(job.status, AutomationExecutionJob.Status.FAILED)
+		self.assertIn('execution_timeout', job.result_summary.get('fail_reason', ''))
+		self.assertEqual(job.result_summary.get('timeout_seconds'), 600)
+		self.assertEqual(result['running_failed'], 1)

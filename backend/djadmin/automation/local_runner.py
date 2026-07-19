@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from .executor import execute_ansible_job
+from .executor import execute_automation_job
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +15,16 @@ def run_job_in_background(job_id: int) -> None:
 
     def _worker() -> None:
         try:
-            execute_ansible_job(normalized_job_id)
+            execute_automation_job(normalized_job_id)
         except Exception as exc:
             try:
-                from .models import AnsibleExecutionJob
+                from .models import AutomationExecutionJob
 
-                job = AnsibleExecutionJob.objects.filter(id=normalized_job_id).first()
+                job = AutomationExecutionJob.objects.filter(id=normalized_job_id).first()
                 if job is not None and str(job.status).lower() in {"pending", "running"}:
                     summary = job.result_summary if isinstance(job.result_summary, dict) else {}
                     summary["message"] = f"Local background runner failed: {exc}"
-                    job.status = AnsibleExecutionJob.Status.FAILED
+                    job.status = AutomationExecutionJob.Status.FAILED
                     job.result_summary = summary
                     job.save(update_fields=["status", "result_summary", "update_time"])
             except Exception:

@@ -4,9 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog
+from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog, AgentJob
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
+from .management.commands.runagentconsumer import Command as AgentConsumerCommand
+from monitor.models import MonitorTarget
 from user.models import SysUser
 
 
@@ -325,6 +327,92 @@ class HostTest(BaseTestCase):
         }, format='json')
         self.assertResponseOK(res)
         self.assertTrue(Host.objects.filter(instance_name='new_host').exists())
+
+    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
+    def test_create_host_default_monitor_enabled_should_enqueue_node_exporter_install(self, _mock_publish):
+        """新增主机默认开启监控，并自动下发 node_exporter 安装任务。"""
+        res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-01',
+            'ip': '192.168.1.101',
+            'port': 22,
+        }, format='json')
+        self.assertResponseOK(res)
+
+        host = Host.objects.get(instance_name='agent-host-01')
+        target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
+        self.assertTrue(target.managed_enabled)
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
+        self.assertTrue('已下发安装任务' in target.install_message)
+
+    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
+    def test_create_host_monitor_disabled_should_not_enqueue_install(self, _mock_publish):
+        """新增主机关闭监控时，不下发 node_exporter 安装任务。"""
+        res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-02',
+            'ip': '192.168.1.102',
+            'port': 22,
+            'monitor_enabled': False,
+        }, format='json')
+        self.assertResponseOK(res)
+
+        host = Host.objects.get(instance_name='agent-host-02')
+        target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
+        self.assertFalse(target.managed_enabled)
+        self.assertFalse('已下发安装任务' in target.install_message)
+
+    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
+    def test_disable_monitor_with_uninstall_option_should_enqueue_uninstall_job(self, _mock_publish):
+        """监控从开启切到关闭且勾选卸载时，应下发 node_exporter 卸载任务。"""
+        create_res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-03',
+            'ip': '192.168.1.103',
+            'port': 22,
+            'monitor_enabled': True,
+        }, format='json')
+        self.assertResponseOK(create_res)
+        host_id = create_res.json()['data']['id']
+
+        patch_res = self.client.patch(f'/assets/hosts/{host_id}/', {
+            'monitor_enabled': False,
+            'monitor_uninstall_on_disable': True,
+        }, format='json')
+        self.assertResponseOK(patch_res)
+
+        host = Host.objects.get(id=host_id)
+        target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
+        self.assertFalse(target.managed_enabled)
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
+        self.assertTrue('已下发卸载任务' in target.install_message)
+
+    def test_agent_consumer_should_sync_monitor_target_status_from_job_result(self):
+        """agent 上报安装结果后，应同步 monitor_target 状态。"""
+        host = Host.objects.create(instance_name='agent-host-04', ip='192.168.1.104', port=22)
+        target = MonitorTarget.objects.create(
+            host=host,
+            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
+            managed_enabled=True,
+            install_status=MonitorTarget.InstallStatus.PENDING,
+            install_message='已下发安装任务',
+        )
+        job = AgentJob.objects.create(
+            job_id='job-install-node-exporter-1',
+            agent_id='agent-host-04',
+            host=host,
+            job_type='custom',
+            action='install_node_exporter',
+            params={'exporter_port': 9100},
+            status=AgentJob.JobStatus.RUNNING,
+            stdout='node_exporter installed',
+            stderr='',
+            error_message='',
+            exit_code=0,
+        )
+
+        AgentConsumerCommand()._sync_monitor_target_install_status(job, 'success')
+        target.refresh_from_db()
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.SUCCESS)
+        self.assertTrue(target.managed_enabled)
+        self.assertTrue('installed' in target.install_message)
 
     def test_get_host_detail(self):
         """获取主机详情"""

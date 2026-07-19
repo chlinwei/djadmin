@@ -6,7 +6,7 @@ from .views import (
     ShellScriptTemplateManage,
     AutomationTaskManage,
     AutomationInventoryManage,
-    AnsibleExecutionJobManage,
+    AutomationExecutionJobManage,
     AutomationWorkflowTemplateManage,
     AutomationWorkflowRunManage,
 )
@@ -18,7 +18,7 @@ router.register(r'tasks', AutomationTaskManage, basename='automation-tasks')
 router.register(r'inventories', AutomationInventoryManage, basename='automation-inventories')
 router.register(r'workflows', AutomationWorkflowTemplateManage, basename='automation-workflows')
 router.register(r'workflow-runs', AutomationWorkflowRunManage, basename='automation-workflow-runs')
-router.register(r'jobs', AnsibleExecutionJobManage, basename='automation-jobs')
+router.register(r'jobs', AutomationExecutionJobManage, basename='automation-jobs')
 
 urlpatterns = [
     path('', include(router.urls)),

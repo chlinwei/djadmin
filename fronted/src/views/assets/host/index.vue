@@ -192,6 +192,14 @@
                                 <a-tag color="error">离线</a-tag>
                             </a-tooltip>
                         </template>
+                        <template v-else-if="column.key === 'monitor_enabled'">
+                            <a-tag :color="record.monitor_enabled ? 'green' : 'default'">{{ record.monitor_enabled ? '开启' : '关闭' }}</a-tag>
+                        </template>
+                        <template v-else-if="column.key === 'monitor_install_status'">
+                            <a-tag :color="monitorInstallStatusColor(record.monitor_install_status)">
+                                {{ monitorInstallStatusText(record.monitor_install_status) }}
+                            </a-tag>
+                        </template>
                         <template v-else-if="column.key === 'cpu_cores'">
                             <span>{{ record.hardware?.cpu_cores ?? '-' }} 核</span>
                         </template>
@@ -328,6 +336,21 @@
                 </a-form-item>
                 <a-form-item name="port" label="SSH 端口">
                     <a-input-number v-model:value="form.port" :min="1" :max="65535" placeholder="默认：22" />
+                </a-form-item>
+                <a-form-item name="monitor_enabled" label="是否监控">
+                    <a-space>
+                        <a-switch
+                            v-model:checked="form.monitor_enabled"
+                            checked-children="开启"
+                            un-checked-children="关闭"
+                        />
+                        <span class="monitor-hint">开启后自动安装 node_exporter</span>
+                    </a-space>
+                </a-form-item>
+                <a-form-item v-if="!form.monitor_enabled" name="monitor_uninstall_on_disable" label="关闭监控时">
+                    <a-checkbox v-model:checked="form.monitor_uninstall_on_disable">
+                        同时下发卸载 node_exporter（可选）
+                    </a-checkbox>
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写业务用途、负责人等信息" />
@@ -640,6 +663,8 @@ const form = reactive({
     credential_ids: [],
     default_credential_id: undefined,
     port: 22,
+    monitor_enabled: true,
+    monitor_uninstall_on_disable: false,
     remark: '',
     instance_name: '',
 })
@@ -674,6 +699,8 @@ const columns = [
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
     { title: 'SSH 端口', dataIndex: 'port', key: 'port', width: 100 },
     { title: 'SSH 凭证', dataIndex: 'credential_name', key: 'credential_name', width: 170 },
+    { title: '监控', dataIndex: 'monitor_enabled', key: 'monitor_enabled', width: 90 },
+    { title: '安装状态', dataIndex: 'monitor_install_status', key: 'monitor_install_status', width: 120 },
     { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
     { title: 'OS 版本', dataIndex: 'os_version', key: 'os_version', width: 160 },
     { title: '内核版本', dataIndex: 'kernel_version', key: 'kernel_version', width: 160 },
@@ -1104,6 +1131,8 @@ const resetForm = () => {
     form.credential_ids = []
     form.default_credential_id = undefined
     form.port = 22
+    form.monitor_enabled = true
+    form.monitor_uninstall_on_disable = false
     form.remark = ''
 }
 
@@ -1153,6 +1182,8 @@ const onSaveOrCreate = async (id) => {
                     || undefined
                 )
                 form.port = data.port ?? 22
+                form.monitor_enabled = typeof data.monitor_enabled === 'boolean' ? data.monitor_enabled : true
+                form.monitor_uninstall_on_disable = false
                 form.remark = data.remark || ''
             } else {
                 message.error(res.data.msg || '获取主机详情失败')
@@ -1171,6 +1202,8 @@ const handleOk = () => {
         payload.credential_ids = Array.isArray(form.credential_ids) ? form.credential_ids : []
         payload.default_credential_id = form.default_credential_id
         payload.credential_id = form.default_credential_id
+        payload.monitor_enabled = Boolean(form.monitor_enabled)
+        payload.monitor_uninstall_on_disable = Boolean(form.monitor_uninstall_on_disable)
         saveOrCreateHost(payload)
             .then((res) => {
                 if (res.data.code === 200) {
@@ -1675,6 +1708,22 @@ const getRowClassName = (record) => {
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
 }
 
+const monitorInstallStatusColor = (status) => {
+    const normalized = String(status || '').toLowerCase()
+    if (normalized === 'success') return 'green'
+    if (normalized === 'failed') return 'red'
+    if (normalized === 'pending') return 'orange'
+    return 'default'
+}
+
+const monitorInstallStatusText = (status) => {
+    const normalized = String(status || '').toLowerCase()
+    if (normalized === 'success') return '成功'
+    if (normalized === 'failed') return '失败'
+    if (normalized === 'pending') return '处理中'
+    return '未知'
+}
+
 const canOpenWebSsh = (record) => {
     const hasAgentInstance = Boolean(String(record?.instance_name || '').trim())
     const isAgentOnline = Boolean(record?.system?.agent_online)
@@ -1734,6 +1783,10 @@ onBeforeUnmount(() => {
 
 .credential-link:hover {
     text-decoration: underline;
+}
+
+.monitor-hint {
+    color: #64748b;
 }
 
 :deep(.row-collect-failed) > td {

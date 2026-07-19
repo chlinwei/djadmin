@@ -55,7 +55,7 @@ class AutomationTask(BaseModel):
     default_limit = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
     execution_timeout_seconds = models.PositiveIntegerField(
-        default=3600,
+        default=600,
         help_text='任务执行超时时间（秒），最大4小时(14400秒)',
         validators=[validate_timeout],
     )
@@ -98,7 +98,7 @@ class AutomationInventory(BaseModel):
         return self.name
 
 
-class AnsibleExecutionJob(BaseModel):
+class AutomationExecutionJob(BaseModel):
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
         RUNNING = 'running', 'Running'
@@ -123,7 +123,6 @@ class AnsibleExecutionJob(BaseModel):
     extra_vars = models.JSONField(default=dict, blank=True)
     limit = models.CharField(max_length=255, blank=True, default='')
     result_summary = models.JSONField(default=dict, blank=True)
-    job_output = models.TextField(blank=True, default='')
     
     # 权限提升配置快照
     become_enabled_snapshot = models.BooleanField(default=False)
@@ -138,11 +137,42 @@ class AnsibleExecutionJob(BaseModel):
     duration_seconds = models.FloatField(null=True, blank=True)
 
     class Meta:
-        db_table = 'automation_ansible_execution_job'
+        db_table = 'automation_execution_job'
         ordering = ['-id']
 
     def __str__(self):
         return f'{self.job_id} [{self.status}]'
+
+
+class AutomationExecutionTargetLog(BaseModel):
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        RUNNING = 'running', 'Running'
+        SUCCESS = 'success', 'Success'
+        FAILED = 'failed', 'Failed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    job = models.ForeignKey(AutomationExecutionJob, on_delete=models.CASCADE, related_name='target_logs')
+    host = models.ForeignKey('assets.Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='automation_host_logs')
+    host_id_snapshot = models.IntegerField(null=True, blank=True)
+    host_name_snapshot = models.CharField(max_length=128, blank=True, default='')
+    host_ip_snapshot = models.CharField(max_length=64, blank=True, default='')
+    agent_job_id = models.CharField(max_length=64, blank=True, default='')
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.FAILED)
+    exit_code = models.IntegerField(null=True, blank=True)
+    stdout = models.TextField(blank=True, default='')
+    stderr = models.TextField(blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
+    result_data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'automation_execution_host_log'
+        ordering = ['id']
+
+    def __str__(self):
+        host_label = self.host_name_snapshot or (f'Host-{self.host_id_snapshot}' if self.host_id_snapshot else 'Unknown')
+        job_pk = getattr(self, 'job_id', None)
+        return f'job={job_pk} host={host_label} status={self.status}'
 
 
 class AutomationWorkflowTemplate(BaseModel):
@@ -203,4 +233,5 @@ class AutomationWorkflowRun(BaseModel):
         ordering = ['-id']
 
     def __str__(self):
-        return f'{self.workflow_name_snapshot or self.workflow_id} [{self.status}]'
+        workflow_id = getattr(self, 'workflow_id', None)
+        return f'{self.workflow_name_snapshot or workflow_id} [{self.status}]'

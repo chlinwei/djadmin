@@ -14,7 +14,7 @@ from .models import (
     ShellScriptTemplate,
     AutomationTask,
     AutomationInventory,
-    AnsibleExecutionJob,
+    AutomationExecutionJob,
     AutomationWorkflowTemplate,
     AutomationWorkflowRun,
 )
@@ -633,13 +633,13 @@ class AutomationTaskSerializer(ModelSerializer):
         return AutomationTask.objects.create(**validated_data)
 
 
-class AnsibleExecutionJobSerializer(ModelSerializer):
+class AutomationExecutionJobSerializer(ModelSerializer):
     job_id = serializers.SerializerMethodField()
     template_name = serializers.SerializerMethodField()
     task_name = serializers.SerializerMethodField()
 
     class Meta:
-        model = AnsibleExecutionJob
+        model = AutomationExecutionJob
         fields = '__all__'
 
     def get_template_name(self, obj):
@@ -657,7 +657,7 @@ class AnsibleExecutionJobSerializer(ModelSerializer):
 
     def create(self, validated_data):
         validated_data['create_time'] = timezone.now()
-        return AnsibleExecutionJob.objects.create(**validated_data)
+        return AutomationExecutionJob.objects.create(**validated_data)
 
 
 class AutomationInventorySerializer(ModelSerializer):
@@ -1072,7 +1072,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         if not job_ids:
             return []
 
-        rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('inventory_snapshot')
+        rows = AutomationExecutionJob.objects.filter(id__in=list(set(job_ids))).values('inventory_snapshot')
         host_map = {}
 
         for row in rows:
@@ -1215,7 +1215,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         job_time_map = {}
         job_meta_map = {}
         if job_ids:
-            rows = list(AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values(
+            rows = list(AutomationExecutionJob.objects.filter(id__in=list(set(job_ids))).values(
                 'id', 'status', 'start_time', 'end_time', 'duration_seconds',
                 'task_id', 'task__playbook_template_id', 'task__shell_script_template_id',
                 'task_name_snapshot', 'template_name_snapshot'
@@ -1286,7 +1286,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
                 item['duration_seconds'] = _resolve_duration_seconds(job_time_map.get(int(job_id)), live_status)
                 job_meta = job_meta_map.get(int(job_id), {})
                 item['job_task_id'] = int(job_meta['task_id']) if str(job_meta.get('task_id', '')).isdigit() else None
-                # AnsibleExecutionJob 不再直接关联 template，模板 ID 通过 task 的 playbook/shell 字段反查。
+                # AutomationExecutionJob 不再直接关联 template，模板 ID 通过 task 的 playbook/shell 字段反查。
                 playbook_template_id = job_meta.get('task__playbook_template_id')
                 shell_template_id = job_meta.get('task__shell_script_template_id')
                 if str(playbook_template_id or '').isdigit():

@@ -6,7 +6,7 @@ from channels.testing import WebsocketCommunicator
 from django.test import TestCase
 from rest_framework_jwt.settings import api_settings
 
-from automation.models import AnsibleExecutionJob, PlaybookTemplate
+from automation.models import AutomationExecutionJob, PlaybookTemplate
 from automation.routing import websocket_urlpatterns
 from user.models import SysUser
 
@@ -74,8 +74,8 @@ class AutomationJobLogConsumerTest(TestCase):
         async_to_sync(scenario)()
 
     def test_connect_sends_snapshot_status_and_completed_for_finished_job(self):
-        job = AnsibleExecutionJob.objects.create(
-            status=AnsibleExecutionJob.Status.SUCCESS,
+        job = AutomationExecutionJob.objects.create(
+            status=AutomationExecutionJob.Status.SUCCESS,
             template_name_snapshot=self.template.name,
             template_content_snapshot=self.template.content,
             requested_user_id=self.user.id,
@@ -96,14 +96,14 @@ class AutomationJobLogConsumerTest(TestCase):
 
             self.assertEqual(first['type'], 'snapshot')
             self.assertEqual(first['data']['job_id'], job.id)
-            self.assertEqual(first['data']['status'], AnsibleExecutionJob.Status.SUCCESS)
+            self.assertEqual(first['data']['status'], AutomationExecutionJob.Status.SUCCESS)
             self.assertEqual(first['data']['data'], '')
 
             self.assertEqual(second['type'], 'status')
-            self.assertEqual(second['data']['status'], AnsibleExecutionJob.Status.SUCCESS)
+            self.assertEqual(second['data']['status'], AutomationExecutionJob.Status.SUCCESS)
 
             self.assertEqual(third['type'], 'completed')
             self.assertEqual(third['data']['job_id'], job.id)
-            self.assertEqual(third['data']['status'], AnsibleExecutionJob.Status.SUCCESS)
+            self.assertEqual(third['data']['status'], AutomationExecutionJob.Status.SUCCESS)
 
         async_to_sync(scenario)()

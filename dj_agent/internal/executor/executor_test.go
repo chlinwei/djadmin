@@ -97,3 +97,66 @@ func TestResolveAutomationWorkDir_DefaultToTmp(t *testing.T) {
 		t.Fatalf("resolved default workdir is not a directory: %s", resolved)
 	}
 }
+
+func TestResolveNodeExporterPort_Default(t *testing.T) {
+	port, err := resolveNodeExporterPort(map[string]any{})
+	if err != nil {
+		t.Fatalf("resolveNodeExporterPort returned error: %v", err)
+	}
+	if port != defaultNodeExporterPort {
+		t.Fatalf("expected default port %d, got %d", defaultNodeExporterPort, port)
+	}
+}
+
+func TestResolveNodeExporterPort_Invalid(t *testing.T) {
+	_, err := resolveNodeExporterPort(map[string]any{"exporter_port": 70000})
+	if err == nil {
+		t.Fatalf("expected invalid port error")
+	}
+}
+
+func TestResolveNodeExporterVersion_FromParams(t *testing.T) {
+	version := resolveNodeExporterVersion(map[string]any{"version": "1.7.0"})
+	if version != "1.7.0" {
+		t.Fatalf("expected version 1.7.0, got %s", version)
+	}
+}
+
+func TestResolveNodeExporterVersion_StripsVPrefix(t *testing.T) {
+	version := resolveNodeExporterVersion(map[string]any{"version": "v1.8.2"})
+	if version != "1.8.2" {
+		t.Fatalf("expected version 1.8.2, got %s", version)
+	}
+}
+
+func TestRun_CustomInstallNodeExporter_ShouldHandleBuiltin(t *testing.T) {
+	e := New(1 * time.Second)
+	job := protocol.Job{
+		JobID:  "job-install-node-exporter",
+		Type:   protocol.TaskTypeCustom,
+		Action: actionInstallNodeExporter,
+		Params: map[string]any{"exporter_port": 0},
+	}
+
+	res, err := e.Run(context.Background(), job)
+	if err != nil {
+		t.Fatalf("run should not return transport error, got: %v", err)
+	}
+	if res.Action != actionInstallNodeExporter {
+		t.Fatalf("unexpected action: %s", res.Action)
+	}
+	if res.Status != protocol.StatusFailed {
+		t.Fatalf("expected failed status for invalid params, got: %s", res.Status)
+	}
+}
+
+func TestValidateJobByType_CustomInstallNodeExporter_NoParamsAllowed(t *testing.T) {
+	err := validateJobByType(protocol.Job{
+		JobID:  "job-install-validate",
+		Type:   protocol.TaskTypeCustom,
+		Action: actionInstallNodeExporter,
+	})
+	if err != nil {
+		t.Fatalf("expected no validation error, got: %v", err)
+	}
+}

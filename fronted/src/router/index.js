@@ -86,6 +86,11 @@ export const staticRouterMap = [
                 component: () => import('../views/automation/workflow/run.vue'),
             },
             {
+                path: '/sys/monitor',
+                name: '智能监控',
+                component: () => import('../views/monitor/index.vue'),
+            },
+            {
                 path: '/assets/hosts/detail/:id',
                 name: '主机详情页',
                 component: () => import('../views/assets/host/detail.vue'),

@@ -29,7 +29,7 @@ from .models import (
     ShellScriptTemplate,
     AutomationTask,
     AutomationInventory,
-    AnsibleExecutionJob,
+    AutomationExecutionJob,
     AutomationWorkflowTemplate,
     AutomationWorkflowRun,
 )
@@ -38,7 +38,7 @@ from .serializer import (
     ShellScriptTemplateSerializer,
     AutomationTaskSerializer,
     AutomationInventorySerializer,
-    AnsibleExecutionJobSerializer,
+    AutomationExecutionJobSerializer,
     AutomationWorkflowTemplateSerializer,
     AutomationWorkflowRunSerializer,
     validate_playbook_content_or_raise,
@@ -508,10 +508,10 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
 
     node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
     is_shell_task = task.shell_script_template_id is not None
-    job = AnsibleExecutionJob.objects.create(
+    job = AutomationExecutionJob.objects.create(
         task=task,
-        status=AnsibleExecutionJob.Status.PENDING,
-        trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
+        status=AutomationExecutionJob.Status.PENDING,
+        trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
         inventory_snapshot=inventory_snapshot,
         task_name_snapshot=task.name or '',
         template_name_snapshot=task_template.name or '',
@@ -533,7 +533,7 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
         # 非 Celery：改为本地后台线程执行，避免阻塞当前 HTTP 请求。
         run_job_in_background(int(job.id))
     except Exception as exc:
-        job.status = AnsibleExecutionJob.Status.FAILED
+        job.status = AutomationExecutionJob.Status.FAILED
         job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
         job.save(update_fields=['status', 'result_summary'])
         return False, f'Failed to start local runner: {str(exc)}', None, None
@@ -627,7 +627,7 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
     job_status_map = {}
     child_run_status_map = {}
     if job_ids:
-        rows = AnsibleExecutionJob.objects.filter(id__in=list(set(job_ids))).values('id', 'status')
+        rows = AutomationExecutionJob.objects.filter(id__in=list(set(job_ids))).values('id', 'status')
         job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
     if child_run_ids:
         rows = AutomationWorkflowRun.objects.filter(id__in=list(set(child_run_ids))).values('id', 'status')

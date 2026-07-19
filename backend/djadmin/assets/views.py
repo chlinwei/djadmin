@@ -718,8 +718,11 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         return HostSerializer
 
     def get_queryset(self):
+        from monitor.models import MonitorTarget
+
         queryset = Host.objects.select_related('group').prefetch_related(
             Prefetch('hostcredential_set', queryset=HostCredential.objects.select_related('credential').filter(is_default=True)),
+            Prefetch('monitor_targets', queryset=MonitorTarget.objects.filter(exporter_type='node_exporter').order_by('-id')),
             'hardware',
             'system',
             'disks',
@@ -772,9 +775,12 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):
+        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=True)
+        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        host = serializer.save()
+        self._sync_monitor_state_for_host(host, monitor_enabled, monitor_uninstall_on_disable)
         return Response_200(data=serializer.data)
 
     def list(self, request, *args, **kwargs):
@@ -808,6 +814,8 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=None)
+        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
         # 主机连接签名：IP + SSH 端口 + 默认凭证。
         previous_signature = (
             str(instance.ip or ''),
@@ -826,10 +834,13 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         if previous_signature != current_signature:
             # 连接参数变化后，已有 SSH 通道不再可信，需强制重建。
             self._force_close_webssh_sessions_for_hosts([instance.id])
+        self._sync_monitor_state_for_host(instance, monitor_enabled, monitor_uninstall_on_disable)
         return Response_200(data=serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
+        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=None)
+        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
         previous_signature = (
             str(instance.ip or ''),
             int(instance.port or 22),
@@ -846,7 +857,170 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         )
         if previous_signature != current_signature:
             self._force_close_webssh_sessions_for_hosts([instance.id])
+        self._sync_monitor_state_for_host(instance, monitor_enabled, monitor_uninstall_on_disable)
         return Response_200(data=serializer.data)
+
+    @staticmethod
+    def _parse_bool_flag(raw_value, default_value=None):
+        if raw_value is None:
+            return default_value
+        if isinstance(raw_value, bool):
+            return raw_value
+        normalized = str(raw_value).strip().lower()
+        if normalized in {'1', 'true', 'yes', 'on'}:
+            return True
+        if normalized in {'0', 'false', 'no', 'off'}:
+            return False
+        return default_value
+
+    def _resolve_monitor_enabled_from_request(self, request, default_value=None):
+        raw_value = request.data.get('monitor_enabled', None)
+        return self._parse_bool_flag(raw_value, default_value=default_value)
+
+    def _resolve_monitor_uninstall_on_disable_from_request(self, request, default_value=False):
+        raw_value = request.data.get('monitor_uninstall_on_disable', None)
+        return self._parse_bool_flag(raw_value, default_value=default_value)
+
+    def _sync_monitor_state_for_host(self, host, monitor_enabled, monitor_uninstall_on_disable=False):
+        if monitor_enabled is None:
+            return
+
+        from monitor.models import MonitorTarget
+
+        target, created = MonitorTarget.objects.get_or_create(
+            host=host,
+            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
+            defaults={
+                'exporter_port': 9100,
+                'managed_enabled': bool(monitor_enabled),
+            },
+        )
+
+        previous_enabled = bool(target.managed_enabled)
+        if previous_enabled != bool(monitor_enabled):
+            target.managed_enabled = bool(monitor_enabled)
+            target.save(update_fields=['managed_enabled', 'update_time'])
+
+        if not bool(monitor_enabled):
+            target.install_message = '已关闭监控（未卸载 node_exporter）'
+            target.save(update_fields=['install_message', 'update_time'])
+            if previous_enabled and bool(monitor_uninstall_on_disable):
+                self._dispatch_node_exporter_uninstall_job(host, target)
+            return
+
+        # 仅在首次开启或新建监控目标时自动触发安装，避免每次编辑主机重复下发。
+        if created or not previous_enabled:
+            self._dispatch_node_exporter_install_job(host, target)
+
+    def _dispatch_node_exporter_install_job(self, host, monitor_target):
+        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        if agent_id == '':
+            monitor_target.install_status = monitor_target.InstallStatus.FAILED
+            monitor_target.install_message = '主机未绑定 agent 实例，无法下发 node_exporter 安装任务'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
+
+        existing_job = AgentJob.objects.filter(
+            host=host,
+            action='install_node_exporter',
+            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
+        ).first()
+        if existing_job is not None:
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = f'安装任务已存在（{existing_job.job_id}）'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
+
+        job = AgentJob.objects.create(
+            job_id=f'install-node-exporter-{uuid.uuid4().hex[:16]}',
+            agent_id=agent_id,
+            host=host,
+            job_type='custom',
+            action='install_node_exporter',
+            params={
+                'exporter_port': int(monitor_target.exporter_port or 9100),
+            },
+            timeout_seconds=600,
+            status=AgentJob.JobStatus.QUEUED,
+        )
+
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+
+        try:
+            _publish_agent_job_to_mq(job)
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = f'已下发安装任务（{job.job_id}）'
+        except Exception as exc:
+            monitor_target.install_status = monitor_target.InstallStatus.FAILED
+            monitor_target.install_message = f'下发安装任务失败：{exc}'
+            job.status = AgentJob.JobStatus.FAILED
+            job.error_message = str(exc)
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error_message', 'finished_at', 'update_time'])
+
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+
+    def _dispatch_node_exporter_uninstall_job(self, host, monitor_target):
+        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        if agent_id == '':
+            monitor_target.install_status = monitor_target.InstallStatus.FAILED
+            monitor_target.install_message = '主机未绑定 agent 实例，无法下发 node_exporter 卸载任务'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
+
+        existing_job = AgentJob.objects.filter(
+            host=host,
+            action='uninstall_node_exporter',
+            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
+        ).first()
+        if existing_job is not None:
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = f'卸载任务已存在（{existing_job.job_id}）'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
+
+        job = AgentJob.objects.create(
+            job_id=f'uninstall-node-exporter-{uuid.uuid4().hex[:16]}',
+            agent_id=agent_id,
+            host=host,
+            job_type='custom',
+            action='uninstall_node_exporter',
+            params={
+                'exporter_port': int(monitor_target.exporter_port or 9100),
+            },
+            timeout_seconds=600,
+            status=AgentJob.JobStatus.QUEUED,
+        )
+
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+
+        try:
+            _publish_agent_job_to_mq(job)
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = f'已下发卸载任务（{job.job_id}）'
+        except Exception as exc:
+            monitor_target.install_status = monitor_target.InstallStatus.FAILED
+            monitor_target.install_message = f'下发卸载任务失败：{exc}'
+            job.status = AgentJob.JobStatus.FAILED
+            job.error_message = str(exc)
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error_message', 'finished_at', 'update_time'])
+
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

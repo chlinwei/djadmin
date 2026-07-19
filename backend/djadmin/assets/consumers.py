@@ -115,6 +115,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.heartbeat_task = asyncio.create_task(self._heartbeat_watchdog())
         if self.token_expire_at is not None:
             self.token_expiry_task = asyncio.create_task(self._token_expiry_watchdog())
+        self.audit_flush_task = asyncio.create_task(self._audit_flush_loop())
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
@@ -175,7 +176,16 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                 pass
             self.heartbeat_task = None
 
+        if self.audit_flush_task is not None:
+            self.audit_flush_task.cancel()
+            try:
+                await self.audit_flush_task
+            except asyncio.CancelledError:
+                pass
+            self.audit_flush_task = None
+
         await self._close_ssh_session()
+        await self._flush_content_buffer(force=True)
 
         await self._close_session_log(close_code=close_code, status=WebSSHSessionLog.Status.CLOSED)
 
@@ -408,6 +418,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.audit_closed = False
         self.audit_input_content_chunks = []
         self.audit_output_content_chunks = []
+        self.audit_flush_task = None
+        self.audit_flush_interval_seconds = 0.5
+        self.audit_flush_min_bytes = 8192
+        self.audit_last_flush_monotonic = time.monotonic()
         self.audit_recorded_content_bytes = 0
         self.audit_is_content_truncated = False
         self.audit_max_content_bytes = 20 * 1024 * 1024
@@ -510,7 +524,33 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         else:
             self.audit_output_content_chunks.append(chunk)
 
-        await self._append_session_content(chunk if direction == 'input' else '', chunk if direction == 'output' else '')
+        await self._flush_content_buffer(force=False)
+
+    async def _audit_flush_loop(self):
+        while self.connected:
+            await asyncio.sleep(self.audit_flush_interval_seconds)
+            if not self.connected:
+                return
+            await self._flush_content_buffer(force=False)
+
+    async def _flush_content_buffer(self, force=False):
+        if self.audit_session_pk is None:
+            return
+
+        input_chunk = ''.join(self.audit_input_content_chunks)
+        output_chunk = ''.join(self.audit_output_content_chunks)
+        pending_bytes = len(input_chunk.encode('utf-8', errors='ignore')) + len(output_chunk.encode('utf-8', errors='ignore'))
+
+        if not input_chunk and not output_chunk:
+            return
+
+        if not force and pending_bytes < self.audit_flush_min_bytes:
+            return
+
+        self.audit_input_content_chunks.clear()
+        self.audit_output_content_chunks.clear()
+        self.audit_last_flush_monotonic = time.monotonic()
+        await self._append_session_content(input_chunk, output_chunk)
 
     def _get_client_ip(self):
         client = self.scope.get('client')

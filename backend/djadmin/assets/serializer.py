@@ -42,7 +42,7 @@ class ApplicationSerializer(ModelSerializer):
     
     # 创建
     def create(self, validated_data):
-        validated_data["create_time"] = datetime.now().date()
+        validated_data["create_time"] = timezone.now()
         data = Application.objects.create(**validated_data)
         return data
 
@@ -123,7 +123,7 @@ class HostGroupSerializer(ModelSerializer):
         instance.parent_id = parent_id
         instance.name = validated_data.get("name", instance.name)
         instance.remark = validated_data.get("remark", instance.remark)
-        instance.update_time = datetime.now().date()
+        instance.update_time = timezone.now()
         instance.save()
         return instance
 
@@ -156,6 +156,10 @@ class HostSerializer(ModelSerializer):
     disk_used_percent = serializers.SerializerMethodField()
     last_collect_time = serializers.SerializerMethodField()
     architecture = serializers.SerializerMethodField()
+    monitor_enabled = serializers.SerializerMethodField()
+    monitor_install_status = serializers.SerializerMethodField()
+    create_time = serializers.SerializerMethodField()
+    update_time = serializers.SerializerMethodField()
 
     class Meta:
         model = Host
@@ -319,6 +323,36 @@ class HostSerializer(ModelSerializer):
     def get_last_collect_time(self, obj):
         # 统一以 Host.collect_time 为准，避免与在线状态/子表时间戳出现口径分叉。
         return getattr(obj, 'collect_time', None)
+
+    def get_monitor_enabled(self, obj):
+        # 监控开关与 monitor_target 的 managed_enabled 保持一致。
+        target = obj.monitor_targets.filter(
+            exporter_type='node_exporter',
+        ).order_by('-id').first()
+        return bool(target and target.managed_enabled)
+
+    def get_monitor_install_status(self, obj):
+        target = obj.monitor_targets.filter(
+            exporter_type='node_exporter',
+        ).order_by('-id').first()
+        if not target:
+            return 'unknown'
+        return str(target.install_status or 'unknown')
+
+    def _serialize_datetime_like(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if hasattr(value, 'year') and hasattr(value, 'month') and hasattr(value, 'day'):
+            return datetime(value.year, value.month, value.day)
+        return value
+
+    def get_create_time(self, obj):
+        return self._serialize_datetime_like(getattr(obj, 'create_time', None))
+
+    def get_update_time(self, obj):
+        return self._serialize_datetime_like(getattr(obj, 'update_time', None))
     
     # 创建
     def create(self, validated_data):
@@ -437,6 +471,8 @@ class HostListSerializer(ModelSerializer):
     os_type = serializers.SerializerMethodField()
     os_version = serializers.SerializerMethodField()
     kernel_version = serializers.SerializerMethodField()
+    monitor_enabled = serializers.SerializerMethodField()
+    monitor_install_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Host
@@ -455,6 +491,8 @@ class HostListSerializer(ModelSerializer):
             'os_type',
             'os_version',
             'kernel_version',
+            'monitor_enabled',
+            'monitor_install_status',
         ]
 
     def _get_default_host_credential(self, obj):
@@ -561,6 +599,24 @@ class HostListSerializer(ModelSerializer):
     def get_kernel_version(self, obj):
         system = getattr(obj, 'system', None)
         return system.kernel_version if system else None
+
+    def _get_monitor_target(self, obj):
+        cached_targets = getattr(obj, 'monitor_targets', None)
+        if cached_targets is not None:
+            for item in cached_targets.all():
+                if str(getattr(item, 'exporter_type', '') or '') == 'node_exporter':
+                    return item
+        return obj.monitor_targets.filter(exporter_type='node_exporter').order_by('-id').first()
+
+    def get_monitor_enabled(self, obj):
+        target = self._get_monitor_target(obj)
+        return bool(target and target.managed_enabled)
+
+    def get_monitor_install_status(self, obj):
+        target = self._get_monitor_target(obj)
+        if not target:
+            return 'unknown'
+        return str(target.install_status or 'unknown')
 
 
 class WebSSHSessionLogSerializer(ModelSerializer):

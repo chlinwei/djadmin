@@ -316,9 +316,9 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         if not isinstance(extra_vars, dict):
             return Response_error_str('extra_vars must be an object', code=400)
 
-        job = AnsibleExecutionJob.objects.create(
-            status=AnsibleExecutionJob.Status.PENDING,
-            trigger_type=AnsibleExecutionJob.TriggerType.MANUAL,
+        job = AutomationExecutionJob.objects.create(
+            status=AutomationExecutionJob.Status.PENDING,
+            trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
             inventory_snapshot=inventory_snapshot,
             task_name_snapshot='',
             template_name_snapshot=template.name or '',
@@ -337,12 +337,12 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             # 非 Celery：改为本地后台线程执行，避免阻塞 API 响应。
             run_job_in_background(int(job.id))
         except Exception as exc:
-            job.status = AnsibleExecutionJob.Status.FAILED
+            job.status = AutomationExecutionJob.Status.FAILED
             job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
             job.save(update_fields=['status', 'result_summary'])
             return Response_error_str(f'Job execution failed: {str(exc)}', code=400)
 
-        serializer = AnsibleExecutionJobSerializer(job)
+        serializer = AutomationExecutionJobSerializer(job)
         return Response_200(data=serializer.data)
 
 

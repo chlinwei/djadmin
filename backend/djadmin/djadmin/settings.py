@@ -34,6 +34,7 @@ ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
     'automation.apps.AutomationConfig',
+    'monitor.apps.MonitorConfig',
     'daphne',
     'django.contrib.auth',
     'django.contrib.contenttypes',

@@ -6,18 +6,7 @@ from django.utils import timezone
 
 from sys_config.models import SysConfig
 
-from .executor import execute_ansible_job
-from .models import AnsibleExecutionJob
-
-
-@shared_task(
-    name='automation.execute_ansible_job',
-    acks_late=True,
-    acks_on_failure_or_timeout=False,
-    reject_on_worker_lost=True,
-)
-def execute_ansible_job_task(job_id):
-    execute_ansible_job(int(job_id))
+from .models import AutomationExecutionJob
 
 
 def cleanup_ansible_execution_logs():
@@ -41,12 +30,12 @@ def cleanup_ansible_execution_logs():
 
     cutoff = timezone.now() - timedelta(days=retention_days)
     finished_statuses = [
-        AnsibleExecutionJob.Status.SUCCESS,
-        AnsibleExecutionJob.Status.FAILED,
-        AnsibleExecutionJob.Status.CANCELLED,
+        AutomationExecutionJob.Status.SUCCESS,
+        AutomationExecutionJob.Status.FAILED,
+        AutomationExecutionJob.Status.CANCELLED,
     ]
 
-    queryset = AnsibleExecutionJob.objects.filter(status__in=finished_statuses).filter(
+    queryset = AutomationExecutionJob.objects.filter(status__in=finished_statuses).filter(
         Q(end_time__lt=cutoff) |
         Q(end_time__isnull=True, create_time__lt=cutoff)
     )
@@ -105,13 +94,13 @@ def check_and_fail_stale_jobs():
     
     # 1. Pending超过5分钟 → 失败（MQ或worker可能不可用）
     pending_timeout = now - timedelta(minutes=5)
-    stale_pending = AnsibleExecutionJob.objects.filter(
-        status=AnsibleExecutionJob.Status.PENDING,
+    stale_pending = AutomationExecutionJob.objects.filter(
+        status=AutomationExecutionJob.Status.PENDING,
         create_time__lt=pending_timeout
     )
     pending_count = 0
     for job in stale_pending:
-        job.status = AnsibleExecutionJob.Status.FAILED
+        job.status = AutomationExecutionJob.Status.FAILED
         job.result_summary = {
             'message': 'Pending timeout (5min): No worker picked up this job. '
                        'Check Celery worker and RabbitMQ status.',
@@ -121,22 +110,23 @@ def check_and_fail_stale_jobs():
         pending_count += 1
     
     # 2. Running超过task的timeout时间 → 失败（任务执行卡住了）
-    running_jobs = AnsibleExecutionJob.objects.filter(
-        status=AnsibleExecutionJob.Status.RUNNING
+    running_jobs = AutomationExecutionJob.objects.filter(
+        status=AutomationExecutionJob.Status.RUNNING
     )
     running_count = 0
     for job in running_jobs:
-        # 从task获取timeout，如果task被删除则使用默认1小时
-        timeout_seconds = 3600
-        if job.task_id:
+        # 从 task 获取 timeout；任务不存在时使用默认 10 分钟。
+        timeout_seconds = 600
+        task_ref = getattr(job, 'task', None)
+        if task_ref is not None:
             try:
-                timeout_seconds = job.task.execution_timeout_seconds or 3600
+                timeout_seconds = int(getattr(task_ref, 'execution_timeout_seconds', 0) or 600)
             except Exception:
                 pass
         
         running_timeout = now - timedelta(seconds=timeout_seconds)
         if job.create_time < running_timeout:
-            job.status = AnsibleExecutionJob.Status.FAILED
+            job.status = AutomationExecutionJob.Status.FAILED
             job.result_summary = {
                 'message': f'Running timeout ({timeout_seconds}s): Job execution exceeded maximum time. '
                            'Possible causes: SSH hang, network timeout, or infinite loop in playbook.',

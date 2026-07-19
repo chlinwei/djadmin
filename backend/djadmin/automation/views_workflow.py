@@ -346,9 +346,9 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
         cancel_job_ids = []
 
         if job_ids:
-            jobs = AnsibleExecutionJob.objects.filter(
+            jobs = AutomationExecutionJob.objects.filter(
                 id__in=list(set(job_ids)),
-                status__in=[AnsibleExecutionJob.Status.PENDING, AnsibleExecutionJob.Status.RUNNING],
+                status__in=[AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING],
             )
 
             for job in jobs:
@@ -356,7 +356,7 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
                     job.start_time = now
                 job.end_time = now
                 job.duration_seconds = (job.end_time - job.start_time).total_seconds() if job.start_time else None
-                job.status = AnsibleExecutionJob.Status.CANCELLED
+                job.status = AutomationExecutionJob.Status.CANCELLED
                 summary = job.result_summary if isinstance(job.result_summary, dict) else {}
                 summary['message'] = 'Cancelled by workflow run cancellation'
                 job.result_summary = summary

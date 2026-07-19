@@ -243,6 +243,23 @@
           />
         </a-form-item>
 
+        <a-form-item label="执行超时（秒）" required>
+          <a-input-number
+            v-model:value="taskForm.execution_timeout_seconds"
+            :min="1"
+            :max="14400"
+            :step="60"
+            style="width: 100%"
+            placeholder="默认 600"
+          />
+          <a-alert
+            type="info"
+            show-icon
+            style="margin-top: 8px"
+            message="任务总执行超时（秒）。超过该时间后 dj-agent 会终止执行进程（保底退出）。"
+          />
+        </a-form-item>
+
         <a-form-item :label="taskEnvVarsLabel">
           <a-textarea
             v-model:value="taskForm.env_vars_text"
@@ -521,6 +538,7 @@ const taskForm = reactive({
   template: null,
   inventory: null,
   default_limit: '',
+  execution_timeout_seconds: 600,
   selected_host_ids: [],
   selected_group_ids: [],
   env_vars_text: '',
@@ -1033,6 +1051,7 @@ function resetTaskForm() {
   taskForm.template = null
   taskForm.inventory = null
   taskForm.default_limit = ''
+  taskForm.execution_timeout_seconds = 600
   taskForm.selected_host_ids = []
   taskForm.selected_group_ids = []
   taskForm.env_vars_text = ''
@@ -1097,6 +1116,9 @@ function openEditModal(record, options = {}) {
     }
   }
   taskForm.default_limit = record.default_limit || ''
+  taskForm.execution_timeout_seconds = Number(record.execution_timeout_seconds) > 0
+    ? Number(record.execution_timeout_seconds)
+    : 600
   const selectedGroupIds = Array.isArray(record.selected_group_ids) ? [...record.selected_group_ids] : []
   taskForm.selected_host_ids = Array.isArray(record.selected_host_ids) ? [...record.selected_host_ids] : []
   taskForm.selected_group_ids = selectedGroupIds
@@ -1153,12 +1175,19 @@ async function submitTask() {
     return
   }
 
+  const timeoutSeconds = Number(taskForm.execution_timeout_seconds)
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 14400) {
+    message.error('执行超时必须是 1-14400 之间的整数秒')
+    return
+  }
+
   const payload = {
     name: String(taskForm.name).trim(),
     playbook_template: taskForm.template_type === 'playbook' ? Number(taskForm.template) : null,
     shell_script_template: taskForm.template_type === 'shell_script' ? Number(taskForm.template) : null,
     inventory: Number(taskForm.inventory) > 0 ? Number(taskForm.inventory) : null,
     default_limit: String(taskForm.default_limit || '').trim(),
+    execution_timeout_seconds: timeoutSeconds,
     selected_host_ids: [],
     selected_group_ids: [],
     env_vars: envVars,

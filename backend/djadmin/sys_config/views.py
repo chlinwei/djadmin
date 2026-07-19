@@ -17,6 +17,9 @@ AGENT_HOST_COLLECT_INTERVAL_SECONDS_MIN = 30
 AGENT_HOST_COLLECT_INTERVAL_SECONDS_MAX = 12 * 60 * 60
 HOST_MANAGE_REFRESH_INTERVAL_SECONDS_KEY = 'sys.assets.host.manage.refresh_interval_seconds'
 HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY = 'sys.assets.host.detail.collect_dispatch_interval_seconds'
+AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS_KEY = 'sys.automation.logs.refresh_interval_seconds'
+AUTOMATION_WS_JOB_LOG_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.job_log_poll_interval_seconds'
+AUTOMATION_WS_WORKFLOW_RUN_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.workflow_run_poll_interval_seconds'
 
 
 def ensure_agent_collect_configs():
@@ -61,6 +64,48 @@ def ensure_host_detail_collect_dispatch_interval_config():
     )
 
 
+def ensure_automation_logs_refresh_interval_config():
+    SysConfig.objects.get_or_create(
+        key=AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS_KEY,
+        defaults={
+            'value': '5',
+            'default_value': '5',
+            'value_type': 'int',
+            'name': '运行记录中心刷新间隔（秒）',
+            'description': '自动化运行记录中心列表自动刷新间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
+def ensure_automation_ws_job_log_poll_interval_config():
+    SysConfig.objects.get_or_create(
+        key=AUTOMATION_WS_JOB_LOG_POLL_INTERVAL_SECONDS_KEY,
+        defaults={
+            'value': '0.5',
+            'default_value': '0.5',
+            'value_type': 'string',
+            'name': '自动化作业日志WS轮询间隔（秒）',
+            'description': '自动化作业日志 WebSocket 拉取后端增量的轮询间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
+def ensure_automation_ws_workflow_run_poll_interval_config():
+    SysConfig.objects.get_or_create(
+        key=AUTOMATION_WS_WORKFLOW_RUN_POLL_INTERVAL_SECONDS_KEY,
+        defaults={
+            'value': '0.5',
+            'default_value': '0.5',
+            'value_type': 'string',
+            'name': '工作流运行状态WS轮询间隔（秒）',
+            'description': '工作流运行状态 WebSocket 拉取后端状态的轮询间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
 @api_view(['GET'])
 def agent_config_by_key(request, key=None):
     # Agent 启动只允许读取白名单参数，避免暴露全量系统配置。
@@ -93,6 +138,9 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         ensure_agent_collect_configs()
         ensure_host_manage_refresh_interval_config()
         ensure_host_detail_collect_dispatch_interval_config()
+        ensure_automation_logs_refresh_interval_config()
+        ensure_automation_ws_job_log_poll_interval_config()
+        ensure_automation_ws_workflow_run_poll_interval_config()
         queryset = SysConfig.objects.all()
         search = self.request.query_params.get('search')  # type: ignore[union-attr]
         if search:

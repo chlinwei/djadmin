@@ -150,8 +150,11 @@ class Command(BaseCommand):
         # 更新任务状态
         try:
             if status in {'success', 'failed', 'canceled', 'timeout'}:
+                raw_result_data = payload.get('result_data')
+                # RabbitMQ 上报中 result_data 可能为 null，数据库列不允许 NULL。
+                normalized_result_data = raw_result_data if isinstance(raw_result_data, dict) else {}
                 job.status = status
-                job.result_data = payload.get('result_data', {})
+                job.result_data = normalized_result_data
                 job.error_message = str(payload.get('error_message') or '')
                 job.stdout = str(payload.get('stdout') or '')
                 job.stderr = str(payload.get('stderr') or '')
@@ -161,9 +164,52 @@ class Command(BaseCommand):
                     'status', 'result_data', 'error_message', 
                     'stdout', 'stderr', 'exit_code', 'finished_at', 'update_time'
                 ])
+                self._sync_monitor_target_install_status(job, status)
                 logger.info(f'Updated job {job_id} status to {status}')
         except Exception as e:
             logger.error(f'Error updating job {job_id}: {e}', exc_info=True)
+
+    def _sync_monitor_target_install_status(self, job, status):
+        action = str(getattr(job, 'action', '') or '').strip().lower()
+        if action not in {'install_node_exporter', 'uninstall_node_exporter'}:
+            return
+
+        host = getattr(job, 'host', None)
+        if host is None:
+            return
+
+        from monitor.models import MonitorTarget
+
+        target = MonitorTarget.objects.filter(
+            host=host,
+            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
+        ).first()
+        if target is None:
+            return
+
+        error_message = str(getattr(job, 'error_message', '') or '').strip()
+        stdout = str(getattr(job, 'stdout', '') or '').strip()
+        stderr = str(getattr(job, 'stderr', '') or '').strip()
+
+        def _clip(text):
+            return text if len(text) <= 300 else text[:297] + '...'
+
+        if status == 'success':
+            target.install_status = MonitorTarget.InstallStatus.SUCCESS
+            if action == 'install_node_exporter':
+                target.managed_enabled = True
+                target.install_message = _clip(stdout or 'node_exporter 安装成功')
+            else:
+                target.managed_enabled = False
+                target.install_message = _clip(stdout or 'node_exporter 卸载成功')
+        else:
+            target.install_status = MonitorTarget.InstallStatus.FAILED
+            if action == 'install_node_exporter':
+                target.install_message = _clip(error_message or stderr or 'node_exporter 安装失败')
+            else:
+                target.install_message = _clip(error_message or stderr or 'node_exporter 卸载失败')
+
+        target.save(update_fields=['install_status', 'managed_enabled', 'install_message', 'update_time'])
     
     def _handle_host_snapshot(self, payload):
         """处理 agent 主机快照消息，解析 result_data 写入 HostSystem/HostHardware。"""

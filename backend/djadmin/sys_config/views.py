@@ -15,6 +15,8 @@ AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY = 'sys.assets.collect.interval_seconds'
 AGENT_CONFIG_EXPOSED_KEYS = {AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY}
 AGENT_HOST_COLLECT_INTERVAL_SECONDS_MIN = 30
 AGENT_HOST_COLLECT_INTERVAL_SECONDS_MAX = 12 * 60 * 60
+HOST_MANAGE_REFRESH_INTERVAL_SECONDS_KEY = 'sys.assets.host.manage.refresh_interval_seconds'
+HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY = 'sys.assets.host.detail.collect_dispatch_interval_seconds'
 
 
 def ensure_agent_collect_configs():
@@ -26,6 +28,34 @@ def ensure_agent_collect_configs():
             'value_type': 'int',
             'name': '主机信息采集间隔（秒）',
             'description': 'Agent 主机信息周期上报间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
+def ensure_host_manage_refresh_interval_config():
+    SysConfig.objects.get_or_create(
+        key=HOST_MANAGE_REFRESH_INTERVAL_SECONDS_KEY,
+        defaults={
+            'value': '5',
+            'default_value': '5',
+            'value_type': 'int',
+            'name': '主机管理页刷新间隔（秒）',
+            'description': '主机管理列表自动刷新间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
+def ensure_host_detail_collect_dispatch_interval_config():
+    SysConfig.objects.get_or_create(
+        key=HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY,
+        defaults={
+            'value': '8',
+            'default_value': '8',
+            'value_type': 'int',
+            'name': '主机详情主动采集下发间隔（秒）',
+            'description': '主机详情页主动下发 dj-agent 采集任务的间隔（秒）',
             'is_readonly': False,
         },
     )
@@ -61,6 +91,8 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         # system config page before visiting scheduler task center.
         ensure_scheduler_log_configs()
         ensure_agent_collect_configs()
+        ensure_host_manage_refresh_interval_config()
+        ensure_host_detail_collect_dispatch_interval_config()
         queryset = SysConfig.objects.all()
         search = self.request.query_params.get('search')  # type: ignore[union-attr]
         if search:

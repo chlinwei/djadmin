@@ -1,12 +1,16 @@
 <template>
-    <a-menu-item v-if="menu.menu_type ==='C'" :key="menu.path" @click="add_tab(menu)"><FontAwesomeIcon :icon="menu.icon" />&nbsp;{{ menu.name }}</a-menu-item>
-    <a-sub-menu v-else-if="menu.menu_type === 'M'"  :key="menu.path">
+    <a-menu-item v-if="menu.menu_type === 'C'" :key="menu.path || menu.id" @click="add_tab(menu)"><FontAwesomeIcon :icon="menu.icon" />&nbsp;{{ menu.name }}</a-menu-item>
+    <a-sub-menu v-else-if="menu.menu_type === 'M'" :key="menu.path || menu.id">
         <!-- 下面的template的title就是目录名称,例如系统管理 -->
         <template #title>
             <FontAwesomeIcon :icon="menu.icon" />
             <span>&nbsp;{{ menu.name }}</span>
         </template>
-        <subMenu  v-for="children in menu.children" :menu="children" />
+        <SubMenu
+            v-for="children in normalizedChildren"
+            :key="children.path || children.id"
+            :menu="children"
+        />
     </a-sub-menu>
 
     <!-- 传统的从文件加载图标 -->
@@ -20,7 +24,12 @@
 <script setup>
 import store from '@/store/index.js';
 import router from '@/router';
-import { defineProps } from 'vue';
+import { computed, defineProps } from 'vue';
+
+defineOptions({
+    name: 'SubMenu',
+})
+
 const props = defineProps(
     {
         menu: {
@@ -29,6 +38,11 @@ const props = defineProps(
         }
     }
 )
+
+const normalizedChildren = computed(() => {
+    return Array.isArray(props.menu?.children) ? props.menu.children : []
+})
+
 const add_tab = (item) => {
     let tab = {
         title: item.name,

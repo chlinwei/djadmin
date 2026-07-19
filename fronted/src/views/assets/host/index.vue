@@ -225,6 +225,13 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
+                                        <a-tooltip title="查看 Agent 状态">
+                                            <a-button @click="openAgentRuntimePage(record)">
+                                                <FontAwesomeIcon :icon="['fas', 'server']" />
+                                            </a-button>
+                                        </a-tooltip>
+                                    </a-col>
+                                    <a-col v-permission="'assets:hosts:view'">
                                         <a-tooltip :title="getWebSshActionTooltip(record)">
                                             <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
@@ -258,56 +265,6 @@
         :max_tree_depth="groupMaxTreeDepth"
         @initList="refreshGroups"
     />
-
-    <a-drawer
-        v-model:open="detailVisible"
-        title="主机详情"
-        width="760"
-        destroyOnClose
-        :closable="true"
-    >
-        <a-spin :spinning="detailLoading">
-            <div v-if="detailHost" class="collect-time-banner">
-                <div class="collect-time-title">最后采集时间</div>
-                <div class="collect-time-value">{{ formatDateTime(detailHost.last_collect_time) }}</div>
-            </div>
-
-            <a-descriptions bordered :column="2" size="small" v-if="detailHost">
-                <a-descriptions-item label="实例名">{{ detailHost.instance_name || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="IP 地址">{{ detailHost.ip || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="主机分组">{{ getGroupName(detailHost) }}</a-descriptions-item>
-                <a-descriptions-item label="SSH 凭证">{{ getCredentialName(detailHost) }}</a-descriptions-item>
-                <a-descriptions-item label="SSH 端口">{{ detailHost.port || 22 }}</a-descriptions-item>
-                <a-descriptions-item label="OS 类型">{{ detailHost.system?.os_type || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="OS 版本">{{ detailHost.system?.os_version || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="内核版本">{{ detailHost.system?.kernel_version || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="Agent 版本">{{ detailHost.system?.agent_version || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="主机名称">{{ detailHost.system?.hostname || '-' }}</a-descriptions-item>
-                <a-descriptions-item label="CPU 核数">{{ detailHost.hardware?.cpu_cores ?? '-' }}</a-descriptions-item>
-                <a-descriptions-item label="内存">{{ formatSize(detailHost.hardware?.memory_gb) }}</a-descriptions-item>
-                <a-descriptions-item label="磁盘总量">{{ formatSize(detailHost.hardware?.disk_total_gb) }}</a-descriptions-item>
-                <a-descriptions-item label="磁盘使用率">{{ formatPercent(detailHost.hardware?.disk_used_percent ?? detailHost.disk_used_percent) }}</a-descriptions-item>
-                <a-descriptions-item label="备注" :span="2">{{ detailHost.remark || '-' }}</a-descriptions-item>
-            </a-descriptions>
-
-            <a-card title="磁盘信息" style="margin-top: 16px;" v-if="detailHost && getDisks(detailHost).length">
-                <a-table :columns="diskColumns" :data-source="getDisks(detailHost)" :pagination="false" rowKey="device" size="small">
-                    <template #bodyCell="{ column, record }">
-                        <template v-if="column.key === 'size_gb'">
-                            {{ formatSize(record.size_gb) }}
-                        </template>
-                        <template v-else-if="column.key === 'used_gb'">
-                            {{ formatSize(record.used_gb) }}
-                        </template>
-                        <template v-else-if="column.key === 'usage_percent'">
-                            {{ formatPercent(record.usage_percent) }}
-                        </template>
-                    </template>
-                </a-table>
-            </a-card>
-
-        </a-spin>
-    </a-drawer>
 
     <a-modal
         cancelText="取消"
@@ -538,7 +495,6 @@ import {
     formatPercent,
     formatSize,
     getCredentialName,
-    getDisks,
     getGroupName,
     hasHostCredential,
 } from './hostDisplayUtils'
@@ -565,9 +521,6 @@ const groupDeleteLoading = ref(false)
 const dialogVisible = ref(false)
 const dialogTitle = ref('新增主机')
 const dialogLoading = ref(false)
-const detailVisible = ref(false)
-const detailLoading = ref(false)
-const detailHost = ref(null)
 const formRef = ref(null)
 const webSshVisible = ref(false)
 const webSshHostTitle = ref('')
@@ -596,6 +549,12 @@ let webSshTerminal = null
 let webSshFitAddon = null
 let webSshOnDataDisposable = null
 let webSshOnResizeDisposable = null
+let hostListAutoRefreshTimer = null
+
+const DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS = 5
+const MIN_HOST_LIST_REFRESH_INTERVAL_SECONDS = 3
+const MAX_HOST_LIST_REFRESH_INTERVAL_SECONDS = 300
+const hostListRefreshIntervalSeconds = ref(DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS)
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
@@ -724,16 +683,7 @@ const columns = [
     { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
     { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
-    { title: '操作', key: 'action', fixed: 'right', width: 280 },
-]
-
-const diskColumns = [
-    { title: '设备', dataIndex: 'device', key: 'device' },
-    { title: '挂载点', dataIndex: 'mount_point', key: 'mount_point' },
-    { title: '容量', dataIndex: 'size_gb', key: 'size_gb' },
-    { title: '已用', dataIndex: 'used_gb', key: 'used_gb' },
-    { title: '使用率', dataIndex: 'usage_percent', key: 'usage_percent' },
-    { title: '文件系统', dataIndex: 'filesystem', key: 'filesystem' },
+    { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
 
 const pagination = reactive({
@@ -901,6 +851,46 @@ const loadHostList = async () => {
         }
     } finally {
         loading.value = false
+    }
+}
+
+const resolveConfigIntValue = (response, fallbackValue) => {
+    const rawValue = response?.data?.value ?? response?.data?.data?.value
+    const parsed = Number(rawValue)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return fallbackValue
+    }
+    return Math.floor(parsed)
+}
+
+const stopHostListAutoRefresh = () => {
+    if (hostListAutoRefreshTimer) {
+        window.clearInterval(hostListAutoRefreshTimer)
+        hostListAutoRefreshTimer = null
+    }
+}
+
+const startHostListAutoRefresh = () => {
+    stopHostListAutoRefresh()
+    // 轮询用于实时同步 agent 在线状态，间隔由系统参数控制。
+    hostListAutoRefreshTimer = window.setInterval(() => {
+        if (loading.value || dialogVisible.value || webSshVisible.value) {
+            return
+        }
+        loadHostList()
+    }, hostListRefreshIntervalSeconds.value * 1000)
+}
+
+const loadHostListRefreshIntervalConfig = async () => {
+    try {
+        const res = await getConfigByKey(CONFIG_KEYS.HOST_MANAGE_REFRESH_INTERVAL_SECONDS)
+        const configValue = resolveConfigIntValue(res, DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS)
+        hostListRefreshIntervalSeconds.value = Math.max(
+            MIN_HOST_LIST_REFRESH_INTERVAL_SECONDS,
+            Math.min(MAX_HOST_LIST_REFRESH_INTERVAL_SECONDS, configValue),
+        )
+    } catch (error) {
+        hostListRefreshIntervalSeconds.value = DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS
     }
 }
 
@@ -1301,20 +1291,7 @@ const confirmBatchDelete = () => {
 }
 
 const openDetail = (id) => {
-    detailVisible.value = true
-    detailLoading.value = true
-
-    getHostById(id)
-        .then((res) => {
-            if (res.data.code === 200) {
-                detailHost.value = res.data.data || null
-            } else {
-                message.error(res.data.msg || '获取主机详情失败')
-            }
-        })
-        .finally(() => {
-            detailLoading.value = false
-        })
+    router.push({ path: `/assets/hosts/detail/${id}` })
 }
 
 const buildWebSocketUrl = (hostId) => {
@@ -1396,7 +1373,7 @@ const initWebSshTerminal = async () => {
     webSshTerminal = new Terminal({
         cursorBlink: true,
         fontFamily: 'Consolas, Menlo, monospace',
-        fontSize: 13,
+        fontSize: 16,
         theme: {
             background: '#0b1220',
             foreground: '#e2e8f0',
@@ -1448,6 +1425,21 @@ const openWebSsh = async (record) => {
     webSshInlineCredentialForm.privateKey = ''
     webSshInlineCredentialForm.privateKeyFileName = ''
     webSshCredentialSelectorVisible.value = true
+}
+
+const openAgentRuntimePage = (record) => {
+    if (!record?.id) {
+        message.warning('主机信息不存在，请刷新后重试')
+        return
+    }
+
+    router.push({
+        path: `/assets/hosts/agent-runtime/${record.id}`,
+        query: {
+            instance_name: record.instance_name || '',
+            ip: record.ip || '',
+        },
+    })
 }
 
 const onWebSshCredentialSelectionChange = (value) => {
@@ -1707,9 +1699,11 @@ onMounted(async () => {
     loadWebSshDefaultCredentialMap()
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
-        if (res.data?.value) groupMaxTreeDepth.value = Number(res.data.value) || 5
+        groupMaxTreeDepth.value = resolveConfigIntValue(res, 5)
     }).catch(() => {})
+    await loadHostListRefreshIntervalConfig()
     await Promise.all([loadGroupTree(), loadCredentialOptions()])
+    startHostListAutoRefresh()
     document.addEventListener('click', closeGroupContextMenu)
     window.addEventListener('keydown', handleWebSshGlobalKeydown, true)
     document.addEventListener('keydown', handleWebSshGlobalKeydown, true)
@@ -1724,6 +1718,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+    stopHostListAutoRefresh()
     document.removeEventListener('click', closeGroupContextMenu)
     window.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
     document.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
@@ -1769,27 +1764,6 @@ onBeforeUnmount(() => {
 
 .group-toolbar {
     margin-bottom: 12px;
-}
-
-.collect-time-banner {
-    margin-bottom: 14px;
-    padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid #91caff;
-    background: linear-gradient(90deg, #e6f4ff 0%, #f0f5ff 100%);
-}
-
-.collect-time-title {
-    font-size: 12px;
-    color: #1d39c4;
-    margin-bottom: 4px;
-}
-
-.collect-time-value {
-    font-size: 20px;
-    font-weight: 700;
-    color: #0f172a;
-    letter-spacing: 0.3px;
 }
 
 .list-card {

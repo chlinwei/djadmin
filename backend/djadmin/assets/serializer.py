@@ -213,12 +213,10 @@ class HostSerializer(ModelSerializer):
 
         agent_last_seen_at = None
         agent_online = None
-        if str(system.collector_source or '').strip().lower() == 'agent':
-            agent_last_seen_at = getattr(obj, 'collect_time', None)
-            if agent_last_seen_at is not None:
-                agent_online = agent_last_seen_at >= (timezone.now() - timedelta(seconds=30))
-            else:
-                agent_online = False
+        # agent_online_time 有值说明该主机有 dj-agent 接入，不受 collector_source 限制
+        if getattr(obj, 'agent_online_time', None) is not None or getattr(obj, 'agent_online', False):
+            agent_last_seen_at = getattr(obj, 'agent_online_time', None)
+            agent_online = getattr(obj, 'agent_online', False)
 
         return {
             'os_type': system.os_type,
@@ -319,26 +317,8 @@ class HostSerializer(ModelSerializer):
         return hardware.architecture if hardware else None
 
     def get_last_collect_time(self, obj):
-        candidates = []
-        system = getattr(obj, 'system', None)
-        hardware = getattr(obj, 'hardware', None)
-
-        if system and system.collected_at:
-            candidates.append(system.collected_at)
-        if hardware and hardware.collected_at:
-            candidates.append(hardware.collected_at)
-
-        # fallback for historical rows before collected_at field exists
-        if not candidates:
-            if system and system.update_time:
-                candidates.append(system.update_time)
-            if hardware and hardware.update_time:
-                candidates.append(hardware.update_time)
-
-        if not candidates:
-            return None
-
-        return max(candidates)
+        # 统一以 Host.collect_time 为准，避免与在线状态/子表时间戳出现口径分叉。
+        return getattr(obj, 'collect_time', None)
     
     # 创建
     def create(self, validated_data):
@@ -446,6 +426,141 @@ class HostSerializer(ModelSerializer):
         instance.update_time = datetime.now().date()
         instance.save()
         return instance
+
+
+class HostListSerializer(ModelSerializer):
+    group_name = serializers.SerializerMethodField()
+    credential = serializers.SerializerMethodField()
+    credentials = serializers.SerializerMethodField()
+    system = serializers.SerializerMethodField()
+    hardware = serializers.SerializerMethodField()
+    os_type = serializers.SerializerMethodField()
+    os_version = serializers.SerializerMethodField()
+    kernel_version = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Host
+        fields = [
+            'id',
+            'instance_name',
+            'ip',
+            'port',
+            'remark',
+            'collect_status',
+            'group_name',
+            'credential',
+            'credentials',
+            'system',
+            'hardware',
+            'os_type',
+            'os_version',
+            'kernel_version',
+        ]
+
+    def _get_default_host_credential(self, obj):
+        cached_credentials = getattr(obj, 'hostcredential_set', None)
+        if cached_credentials is not None:
+            for relation in cached_credentials.all():
+                if relation.is_default and relation.credential:
+                    return relation
+        return HostCredential.objects.filter(host=obj, is_default=True).select_related('credential').first()
+
+    def get_group_name(self, obj):
+        return obj.group.name if obj.group else ''
+
+    def get_credential(self, obj):
+        relation = self._get_default_host_credential(obj)
+        if not relation or not relation.credential:
+            return None
+        credential = relation.credential
+        return {
+            'id': credential.id,
+            'name': credential.name,
+            'username': credential.username,
+            'port': credential.port,
+            'auth_type': credential.auth_type,
+        }
+
+    def get_credentials(self, obj):
+        relations = HostCredential.objects.filter(host=obj).select_related('credential').order_by('-is_default', 'id')
+        result = []
+        for relation in relations:
+            if not relation.credential:
+                continue
+            credential = relation.credential
+            result.append({
+                'id': credential.id,
+                'name': credential.name,
+                'username': credential.username,
+                'port': credential.port,
+                'auth_type': credential.auth_type,
+                'is_default': bool(relation.is_default),
+            })
+        return result
+
+    def get_system(self, obj):
+        system = getattr(obj, 'system', None)
+        if not system:
+            return None
+        agent_version = system.agent_version
+        if str(agent_version or '').strip().lower() == 'ssh-collector':
+            agent_version = None
+
+        agent_last_seen_at = None
+        agent_online = None
+        if getattr(obj, 'agent_online_time', None) is not None or getattr(obj, 'agent_online', False):
+            agent_last_seen_at = getattr(obj, 'agent_online_time', None)
+            agent_online = getattr(obj, 'agent_online', False)
+
+        return {
+            'hostname': system.hostname,
+            'agent_version': agent_version,
+            'agent_last_seen_at': agent_last_seen_at,
+            'agent_online': agent_online,
+        }
+
+    def get_hardware(self, obj):
+        hardware = getattr(obj, 'hardware', None)
+        if not hardware:
+            return None
+        return {
+            'cpu_cores': hardware.cpu_cores,
+            'cpu_model': hardware.cpu_model,
+            'memory_gb': hardware.memory_gb,
+            'disk_total_gb': hardware.disk_total_gb,
+            'disk_used_percent': self._calc_disk_usage_percent(obj),
+            'architecture': hardware.architecture,
+        }
+
+    def _calc_disk_usage_percent(self, obj):
+        total_size = 0.0
+        total_used = 0.0
+        for disk in obj.disks.all():
+            if _should_ignore_disk_device(disk.device):
+                continue
+            if disk.size_gb is None or disk.used_gb is None:
+                continue
+            if disk.size_gb <= 0:
+                continue
+            total_size += float(disk.size_gb)
+            total_used += float(disk.used_gb)
+
+        if total_size <= 0:
+            return None
+
+        return round((total_used / total_size) * 100, 2)
+
+    def get_os_type(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.os_type if system else None
+
+    def get_os_version(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.os_version if system else None
+
+    def get_kernel_version(self, obj):
+        system = getattr(obj, 'system', None)
+        return system.kernel_version if system else None
 
 
 class WebSSHSessionLogSerializer(ModelSerializer):

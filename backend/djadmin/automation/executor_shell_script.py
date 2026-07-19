@@ -207,14 +207,17 @@ async def _execute_script_on_hosts_async(
     contexts: list[tuple[Host, Credential]],
     script_content: str,
     script_args: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, int, str]:
     """
-    Execute shell script on multiple hosts concurrently.
-    Returns: (success_count, failed_count)
+    Execute shell script hosts in order. Fail fast on first host failure.
+    Returns: (success_count, failed_count, skipped_count, stop_reason)
     """
-    results = []
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    stop_reason = ''
 
-    for host, credential in contexts:
+    for idx, (host, credential) in enumerate(contexts):
         host_name = str(host.instance_name or '').strip()
         host_ip = str(host.ip or '').strip()
         host_label = f'{host_name}({host_ip})' if host_name and host_ip else (host_name or host_ip or '-')
@@ -227,11 +230,34 @@ async def _execute_script_on_hosts_async(
             job=job,
             host_label=host_label,
         )
-        results.append(result)
+        success, err_msg = result
+        if success:
+            success_count += 1
+            continue
 
-    success_count = sum(1 for success, _ in results if success)
-    failed_count = len(results) - success_count
-    return success_count, failed_count
+        # Fail-fast: stop remaining hosts once one host fails.
+        failed_count = 1
+        remaining_contexts = contexts[idx + 1:]
+        skipped_count = len(remaining_contexts)
+        stop_reason = str(err_msg or 'Host execution failed')
+
+        for skipped_host, _ in remaining_contexts:
+            skipped_name = str(skipped_host.instance_name or '').strip()
+            skipped_ip = str(skipped_host.ip or '').strip()
+            skipped_label = (
+                f'{skipped_name}({skipped_ip})'
+                if skipped_name and skipped_ip
+                else (skipped_name or skipped_ip or '-')
+            )
+            await _append_script_output_lines_async(
+                job,
+                'Skipped due to previous host failure (fail-fast mode)',
+                'stderr',
+                skipped_label,
+            )
+        break
+
+    return success_count, failed_count, skipped_count, stop_reason
 
 
 def execute_shell_script_job(job: AnsibleExecutionJob) -> tuple[bool, int]:
@@ -290,13 +316,29 @@ def execute_shell_script_job(job: AnsibleExecutionJob) -> tuple[bool, int]:
     if shell_env_vars:
         script_content = inject_shell_env_exports(script_content, shell_env_vars)
 
-    # Execute scripts concurrently
+    # Execute scripts in host order; stop at first failure.
     try:
-        success_count, failed_count = asyncio.run(
+        success_count, failed_count, skipped_count, stop_reason = asyncio.run(
             _execute_script_on_hosts_async(job, contexts, script_content, shell_parameters)
         )
+        if failed_count > 0 and stop_reason:
+            _append_script_output_lines(job, f'Execution stopped: {stop_reason}', 'stderr')
+
         overall_success = failed_count == 0
         return_code = 0 if overall_success else 1
+        summary = {
+            'message': 'Shell script execution finished',
+            'total': len(contexts),
+            'success': success_count,
+            'failed': failed_count,
+            'skipped': skipped_count,
+            'rc': return_code,
+            'mode': 'serial_fail_fast',
+        }
+        existing_summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+        existing_summary.update(summary)
+        job.result_summary = existing_summary
+        job.save(update_fields=['result_summary'])
         return overall_success, return_code
     except Exception as e:
         error_msg = f'Script execution failed: {e}'

@@ -34,6 +34,7 @@ func (a *App) startHTTPServer(exec *executor.Executor, errCh chan<- error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(httpExecuteResponse{Code: 200, Msg: "ok", Data: map[string]any{"agent_id": a.cfg.AgentID}})
 	})
+	mux.HandleFunc("/api/v1/agent/status", a.handleAgentStatus())
 	mux.HandleFunc("/api/v1/automation/execute", a.handleAutomationExecute(exec))
 
 	a.httpServer = &http.Server{
@@ -48,6 +49,25 @@ func (a *App) startHTTPServer(exec *executor.Executor, errCh chan<- error) {
 			errCh <- fmt.Errorf("agent http server failed: %w", err)
 		}
 	}()
+}
+
+func (a *App) handleAgentStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			a.writeHTTPJSON(w, http.StatusMethodNotAllowed, httpExecuteResponse{Code: 405, Msg: "method not allowed"})
+			return
+		}
+		if !a.checkHTTPAuth(r) {
+			a.writeHTTPJSON(w, http.StatusUnauthorized, httpExecuteResponse{Code: 401, Msg: "unauthorized"})
+			return
+		}
+
+		a.writeHTTPJSON(w, http.StatusOK, httpExecuteResponse{
+			Code: 200,
+			Msg:  "success",
+			Data: a.getRuntimeStatusData(),
+		})
+	}
 }
 
 func (a *App) stopHTTPServer(ctx context.Context) error {

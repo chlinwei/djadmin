@@ -24,7 +24,48 @@ export function createWebsshSessionController(options) {
         selectedCredentialId,
     } = options
 
+    const MIN_TERMINAL_FONT_SIZE = 10
+    const MAX_TERMINAL_FONT_SIZE = 28
+    const TERMINAL_FONT_ZOOM_STEP = 1
+    let terminalFontSize = 16
+    let terminalWheelEventTarget = null
+    let terminalWheelHandler = null
+
+    const unbindTerminalWheelZoom = () => {
+        if (terminalWheelEventTarget && terminalWheelHandler) {
+            terminalWheelEventTarget.removeEventListener('wheel', terminalWheelHandler)
+        }
+        terminalWheelEventTarget = null
+        terminalWheelHandler = null
+    }
+
+    const bindTerminalWheelZoom = () => {
+        unbindTerminalWheelZoom()
+        const target = terminalRef.value
+        if (!target) {
+            return
+        }
+
+        terminalWheelHandler = (event) => {
+            const ctrlOrMeta = event.ctrlKey || event.metaKey
+            if (!ctrlOrMeta || !state.term) {
+                return
+            }
+
+            // Keep browser page zoom from hijacking terminal font scaling.
+            event.preventDefault()
+            event.stopPropagation()
+
+            const delta = event.deltaY < 0 ? TERMINAL_FONT_ZOOM_STEP : -TERMINAL_FONT_ZOOM_STEP
+            applyTerminalFontDelta(delta)
+        }
+
+        target.addEventListener('wheel', terminalWheelHandler, { passive: false })
+        terminalWheelEventTarget = target
+    }
+
     const disposeTerminal = () => {
+        unbindTerminalWheelZoom()
         if (state.onDataDisposable) {
             state.onDataDisposable.dispose()
             state.onDataDisposable = null
@@ -119,7 +160,7 @@ export function createWebsshSessionController(options) {
         state.term = new Terminal({
             cursorBlink: true,
             fontFamily: 'Consolas, Menlo, monospace',
-            fontSize: 14,
+            fontSize: terminalFontSize,
             theme: {
                 background: '#0b1220',
                 foreground: '#e2e8f0',
@@ -134,6 +175,7 @@ export function createWebsshSessionController(options) {
         state.term.open(terminalRef.value)
         state.fitAddon.fit()
         state.term.focus()
+        bindTerminalWheelZoom()
 
         state.onDataDisposable = state.term.onData((data) => {
             sendTerminalInput(data)
@@ -145,6 +187,38 @@ export function createWebsshSessionController(options) {
             }
         })
     }
+
+    const applyTerminalFontDelta = (deltaStep) => {
+        const safeDelta = Number(deltaStep || 0)
+        if (!Number.isFinite(safeDelta) || safeDelta === 0 || !state.term) {
+            return terminalFontSize
+        }
+
+        const nextSize = Math.max(
+            MIN_TERMINAL_FONT_SIZE,
+            Math.min(MAX_TERMINAL_FONT_SIZE, terminalFontSize + safeDelta),
+        )
+        if (nextSize === terminalFontSize) {
+            return terminalFontSize
+        }
+
+        terminalFontSize = nextSize
+        state.term.options.fontSize = terminalFontSize
+        state.fitAddon?.fit()
+
+        if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+            state.socket.send(JSON.stringify({
+                type: 'resize',
+                cols: state.term.cols || 120,
+                rows: state.term.rows || 32,
+            }))
+        }
+
+        return terminalFontSize
+    }
+
+    const increaseTerminalFontSize = () => applyTerminalFontDelta(TERMINAL_FONT_ZOOM_STEP)
+    const decreaseTerminalFontSize = () => applyTerminalFontDelta(-TERMINAL_FONT_ZOOM_STEP)
 
     const connectWebSsh = async () => {
         if (!getHostId()) {
@@ -268,5 +342,7 @@ export function createWebsshSessionController(options) {
         syncWebsshTransferActivityTimer,
         initTerminal,
         connectWebSsh,
+        increaseTerminalFontSize,
+        decreaseTerminalFontSize,
     }
 }

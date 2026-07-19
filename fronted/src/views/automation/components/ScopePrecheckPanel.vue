@@ -53,7 +53,8 @@
             {{ formatMatchedHostTitle(item) }}
           </a-button>
           <span v-else>{{ formatMatchedHostTitle(item) }}</span>
-          <span> [{{ item.group_path || item.group_name || '-' }}]</span>
+          <span class="scope-host-group"> [{{ item.group_path || item.group_name || '-' }}]</span>
+          <a-tag v-if="item.agent_online === false" color="default" class="scope-agent-offline-tag">Agent离线</a-tag>
         </span>
         <a-button
           v-if="showLimitToggle"
@@ -288,7 +289,21 @@ const displayHosts = computed(() => {
 }
 
 .scope-host-main {
+  display: inline-flex;
+  align-items: center;
+  flex: 1;
   min-width: 0;
+  gap: 2px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.scope-agent-offline-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  margin-inline-end: 0;
+  line-height: 18px;
+  padding: 0 4px;
 }
 
 .scope-limit-toggle-btn {

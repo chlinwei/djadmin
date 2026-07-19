@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +26,18 @@ type App struct {
 	cfg                          config.Config
 	hostReportIntervalUpdateChan chan time.Duration
 	httpServer                   *http.Server
+	rabbitmqChannel              *amqp091.Channel
+	statusMu                     sync.RWMutex
+	startedAt                    time.Time
+	heartbeatInterval            time.Duration
+	currentHostReportInterval    time.Duration
+	lastHeartbeatAt              time.Time
+	lastHeartbeatStatus          string
+	lastHeartbeatError           string
+	lastHostSnapshotAt           time.Time
+	lastHostSnapshotStatus       string
+	lastHostSnapshotError        string
+	isRunning                    bool
 }
 
 const minHostReportInterval = 30 * time.Second
@@ -49,11 +61,15 @@ type rabbitCommand struct {
 }
 
 func New(cfg config.Config) *App {
-	return &App{cfg: cfg}
+	return &App{
+		cfg:               cfg,
+		heartbeatInterval: 10 * time.Second,
+	}
 }
 
 func (a *App) Run() error {
 	slog.Info("app run begin", "agent_id", a.cfg.AgentID)
+	a.markStarted()
 	exec := executor.New(0)
 
 	// 连接 RabbitMQ - 用于任务下发、终端命令、上报
@@ -72,12 +88,24 @@ func (a *App) Run() error {
 	if err != nil {
 		return fmt.Errorf("create rabbitmq channel failed: %w", err)
 	}
-	defer channel.Close()
+	a.rabbitmqChannel = channel // 保存 channel 供 reportToBackend 使用
+	// 不在此处 defer 关闭，让 channel 保持打开供主循环使用
+	defer func() {
+		if a.rabbitmqChannel != nil {
+			a.rabbitmqChannel.Close()
+		}
+	}() // 在程序退出时才关闭
 
 	// 声明队列
 	tasksQueue := "agent.tasks"
 	if _, err := channel.QueueDeclare(tasksQueue, true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare tasks queue failed: %w", err)
+	}
+
+	// 声明上报队列
+	reportsQueue := "agent.reports"
+	if _, err := channel.QueueDeclare(reportsQueue, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare reports queue failed: %w", err)
 	}
 
 	// 声明终端命令队列 - 每个 agent 有独立队列
@@ -86,11 +114,11 @@ func (a *App) Run() error {
 		return fmt.Errorf("declare term queue failed: %w", err)
 	}
 
-	// 初始化终端管理器（不再依赖 NATS）
+	// 初始化终端管理器（当前通过 RabbitMQ 上报事件）
 	termMgr := newTerminalManager(a.cfg.AgentID)
 	// 设置终端事件上报回调
 	termMgr.reportFunc = func(eventType string, payload map[string]any) {
-		a.reportToBackend("term_event", payload)
+		_ = a.reportToBackend("term_event", payload)
 	}
 
 	// 启动背景服务
@@ -106,11 +134,19 @@ func (a *App) Run() error {
 
 	a.hostReportIntervalUpdateChan = make(chan time.Duration, 1)
 	hostReportInterval := a.resolveHostReportInterval()
+	a.setCurrentHostReportInterval(hostReportInterval)
 	hostReportTicker := time.NewTicker(hostReportInterval)
 	defer hostReportTicker.Stop()
 
 	// 启动后立即上报一次主机快照
-	a.reportToBackend("host_snapshot", a.buildHostSnapshot(exec))
+	a.markHostSnapshotTick(time.Now())
+	initialSnapshotPayload := a.buildHostSnapshot(exec)
+	initialSnapshotStatus := strings.TrimSpace(fmt.Sprintf("%v", initialSnapshotPayload["status"]))
+	initialSnapshotError := strings.TrimSpace(fmt.Sprintf("%v", initialSnapshotPayload["error"]))
+	a.markHostSnapshotResult(initialSnapshotStatus, initialSnapshotError)
+	if err = a.reportToBackend("host_snapshot", initialSnapshotPayload); err != nil {
+		a.markHostSnapshotResult("failed", err.Error())
+	}
 
 	// 启动 RabbitMQ 任务 consumer goroutine
 	taskConsumerErrCh := make(chan error, 1)
@@ -119,6 +155,13 @@ func (a *App) Run() error {
 	// 启动 RabbitMQ 终端命令 consumer goroutine
 	termConsumerErrCh := make(chan error, 1)
 	go a.terminalCommandConsumer(ctx, channel, termMgr, termConsumerErrCh)
+
+	// 启动准备完成后立即上报一次上线事件，避免等待首个 ticker 周期。
+	_ = a.reportToBackend("agent_status", map[string]any{
+		"status": "online",
+		"reason": "startup",
+	})
+	slog.Info("startup status event published", "agent_id", a.cfg.AgentID)
 
 	for {
 		select {
@@ -136,6 +179,7 @@ func (a *App) Run() error {
 			}
 		case <-ctx.Done():
 			slog.Info("shutdown signal received", "agent_id", a.cfg.AgentID)
+			a.markStopped()
 			termMgr.CloseAll()
 
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
@@ -143,20 +187,203 @@ func (a *App) Run() error {
 
 			return a.gracefulShutdown(shutdownCtx)
 		case <-heartbeatTicker.C:
-			a.reportToBackend("heartbeat", map[string]any{
+			a.markHeartbeatTick(time.Now())
+			if err = a.reportToBackend("heartbeat", map[string]any{
 				"agent_id": a.cfg.AgentID,
 				"ts":       time.Now().UTC().Format(time.RFC3339),
-			})
+			}); err != nil {
+				a.markHeartbeatResult("failed", err.Error())
+			} else {
+				a.markHeartbeatResult("success", "")
+			}
 		case <-hostReportTicker.C:
-			a.reportToBackend("host_snapshot", a.buildHostSnapshot(exec))
+			a.markHostSnapshotTick(time.Now())
+			snapshotPayload := a.buildHostSnapshot(exec)
+			snapshotStatus := strings.TrimSpace(fmt.Sprintf("%v", snapshotPayload["status"]))
+			snapshotError := strings.TrimSpace(fmt.Sprintf("%v", snapshotPayload["error"]))
+			a.markHostSnapshotResult(snapshotStatus, snapshotError)
+			if err = a.reportToBackend("host_snapshot", snapshotPayload); err != nil {
+				a.markHostSnapshotResult("failed", err.Error())
+			}
 		case nextInterval := <-a.hostReportIntervalUpdateChan:
 			if nextInterval == hostReportInterval {
 				continue
 			}
 			hostReportInterval = nextInterval
+			a.setCurrentHostReportInterval(hostReportInterval)
 			hostReportTicker.Reset(hostReportInterval)
 			slog.Info("host report interval updated", "interval", hostReportInterval.String())
 		}
+	}
+}
+
+func (a *App) markStarted() {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.startedAt = time.Now()
+	a.isRunning = true
+	a.lastHeartbeatAt = time.Time{}
+	a.lastHeartbeatStatus = ""
+	a.lastHeartbeatError = ""
+	a.lastHostSnapshotAt = time.Time{}
+	a.lastHostSnapshotStatus = ""
+	a.lastHostSnapshotError = ""
+}
+
+func (a *App) markStopped() {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.isRunning = false
+}
+
+func (a *App) setCurrentHostReportInterval(interval time.Duration) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.currentHostReportInterval = interval
+}
+
+func (a *App) markHeartbeatTick(ts time.Time) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.lastHeartbeatAt = ts
+}
+
+func (a *App) markHostSnapshotTick(ts time.Time) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.lastHostSnapshotAt = ts
+}
+
+func (a *App) markHeartbeatResult(status string, errText string) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.lastHeartbeatStatus = strings.TrimSpace(status)
+	a.lastHeartbeatError = strings.TrimSpace(errText)
+}
+
+func (a *App) markHostSnapshotResult(status string, errText string) {
+	a.statusMu.Lock()
+	defer a.statusMu.Unlock()
+	a.lastHostSnapshotStatus = strings.TrimSpace(status)
+	a.lastHostSnapshotError = strings.TrimSpace(errText)
+}
+
+func (a *App) getRuntimeStatusData() map[string]any {
+	a.statusMu.RLock()
+	startedAt := a.startedAt
+	isRunning := a.isRunning
+	heartbeatInterval := a.heartbeatInterval
+	hostReportInterval := a.currentHostReportInterval
+	lastHeartbeatAt := a.lastHeartbeatAt
+	lastHeartbeatStatus := strings.TrimSpace(a.lastHeartbeatStatus)
+	lastHeartbeatError := strings.TrimSpace(a.lastHeartbeatError)
+	lastHostSnapshotAt := a.lastHostSnapshotAt
+	lastHostSnapshotStatus := strings.TrimSpace(a.lastHostSnapshotStatus)
+	lastHostSnapshotError := strings.TrimSpace(a.lastHostSnapshotError)
+	a.statusMu.RUnlock()
+
+	now := time.Now()
+	if hostReportInterval <= 0 {
+		hostReportInterval = a.cfg.HostReportInterval
+	}
+
+	resolveNextRunAt := func(lastRunAt time.Time, interval time.Duration) string {
+		if interval <= 0 {
+			return ""
+		}
+		if !lastRunAt.IsZero() {
+			return lastRunAt.Add(interval).UTC().Format(time.RFC3339)
+		}
+		return now.Add(interval).UTC().Format(time.RFC3339)
+	}
+
+	toRFC3339 := func(ts time.Time) string {
+		if ts.IsZero() {
+			return ""
+		}
+		return ts.UTC().Format(time.RFC3339)
+	}
+
+	uptimeSeconds := 0
+	if !startedAt.IsZero() {
+		uptimeSeconds = int(now.Sub(startedAt).Seconds())
+		if uptimeSeconds < 0 {
+			uptimeSeconds = 0
+		}
+	}
+
+	registeredTasks := []map[string]any{
+		{
+			"name":             "heartbeat",
+			"task_type":        "periodic",
+			"source":           "builtin",
+			"enabled":          true,
+			"status":           "running",
+			"job_id":           "",
+			"command_id":       "",
+			"interval_seconds": int(heartbeatInterval.Seconds()),
+			"last_run_at":      toRFC3339(lastHeartbeatAt),
+			"next_run_at":      resolveNextRunAt(lastHeartbeatAt, heartbeatInterval),
+			"updated_at":       toRFC3339(lastHeartbeatAt),
+			"error":            lastHeartbeatError,
+			"last_result":      lastHeartbeatStatus,
+		},
+		{
+			"name":             "host_snapshot",
+			"task_type":        "periodic",
+			"source":           "builtin",
+			"enabled":          true,
+			"status":           "running",
+			"job_id":           "",
+			"command_id":       "",
+			"interval_seconds": int(hostReportInterval.Seconds()),
+			"last_run_at":      toRFC3339(lastHostSnapshotAt),
+			"next_run_at":      resolveNextRunAt(lastHostSnapshotAt, hostReportInterval),
+			"updated_at":       toRFC3339(lastHostSnapshotAt),
+			"error":            lastHostSnapshotError,
+			"last_result":      lastHostSnapshotStatus,
+		},
+	}
+
+	return map[string]any{
+		"agent_id": a.cfg.AgentID,
+		"version":  "dev",
+		"process": map[string]any{
+			"pid":            os.Getpid(),
+			"running":        isRunning,
+			"started_at":     toRFC3339(startedAt),
+			"uptime_seconds": uptimeSeconds,
+		},
+		"http": map[string]any{
+			"listen_addr":  a.cfg.HTTPListenAddr,
+			"auth_enabled": strings.TrimSpace(a.cfg.HTTPAuthToken) != "",
+		},
+		"config": map[string]any{
+			"backend_base_url":                      a.cfg.BackendBaseURL,
+			"max_workers":                           a.cfg.MaxWorkers,
+			"shutdown_timeout_seconds":              int(a.cfg.ShutdownTimeout.Seconds()),
+			"host_report_interval_fallback_raw":     a.cfg.HostReportIntervalRaw,
+			"host_report_interval_fallback_seconds": int(a.cfg.HostReportInterval.Seconds()),
+			"host_report_interval_current_seconds":  int(hostReportInterval.Seconds()),
+		},
+		"schedulers": map[string]any{
+			"heartbeat": map[string]any{
+				"enabled":          true,
+				"interval_seconds": int(heartbeatInterval.Seconds()),
+				"last_run_at":      toRFC3339(lastHeartbeatAt),
+				"next_run_at":      resolveNextRunAt(lastHeartbeatAt, heartbeatInterval),
+			},
+			"host_snapshot": map[string]any{
+				"enabled":          true,
+				"interval_seconds": int(hostReportInterval.Seconds()),
+				"last_run_at":      toRFC3339(lastHostSnapshotAt),
+				"next_run_at":      resolveNextRunAt(lastHostSnapshotAt, hostReportInterval),
+			},
+		},
+		"runtime": map[string]any{
+			"mq_connected": a.rabbitmqChannel != nil,
+		},
+		"registered_tasks": registeredTasks,
 	}
 }
 
@@ -264,7 +491,7 @@ func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
 
 	// 特殊处理：设置主机上报间隔
 	if strings.EqualFold(job.Action, "set_host_report_interval") {
-		a.reportToBackend("job_event", map[string]any{
+		_ = a.reportToBackend("job_event", map[string]any{
 			"job_id":   job.JobID,
 			"agent_id": a.cfg.AgentID,
 			"action":   job.Action,
@@ -304,7 +531,7 @@ func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
 	}
 
 	// 上报任务开始事件
-	a.reportToBackend("job_event", map[string]any{
+	_ = a.reportToBackend("job_event", map[string]any{
 		"job_id":   job.JobID,
 		"agent_id": a.cfg.AgentID,
 		"action":   job.Action,
@@ -493,78 +720,72 @@ func (a *App) buildHostSnapshot(exec *executor.Executor) map[string]any {
 // reportJobResult 上报任务执行结果给后端
 func (a *App) reportJobResult(result protocol.JobResult) {
 	payload := map[string]any{
-		"job_id":  result.JobID,
-		"status":  result.Status,
-		"retcode": result.ExitCode,
-		"stdout":  result.Stdout,
-		"stderr":  result.Stderr,
-		"data":    result.Data,
-		"error":   result.Error,
+		"job_id":        result.JobID,
+		"status":        result.Status,
+		"exit_code":     result.ExitCode,
+		"stdout":        result.Stdout,
+		"stderr":        result.Stderr,
+		"result_data":   result.Data,
+		"error_message": result.Error,
 	}
-	a.reportToBackend("job_result", payload)
+	_ = a.reportToBackend("job_result", payload)
 }
 
-// reportToBackend 通过 HTTP POST 上报数据给后端
-func (a *App) reportToBackend(reportType string, payload map[string]any) {
-	baseURL := strings.TrimSpace(a.cfg.BackendBaseURL)
-	token := strings.TrimSpace(a.cfg.BackendToken)
-	if baseURL == "" || token == "" {
-		slog.Warn("backend config is empty, skip reporting", "type", reportType)
-		return
+// reportToBackend 通过 RabbitMQ 上报数据给后端
+func (a *App) reportToBackend(reportType string, payload map[string]any) error {
+	if a.rabbitmqChannel == nil {
+		err := fmt.Errorf("rabbitmq channel not initialized")
+		slog.Error("rabbitmq channel not initialized", "type", reportType)
+		return err
 	}
 
-	// 根据上报类型路由到不同的后端端点
-	var endpoint string
-	switch reportType {
-	case "heartbeat":
-		endpoint = fmt.Sprintf("%s/api/agent/heartbeat", strings.TrimRight(baseURL, "/"))
-		payload["agent_id"] = a.cfg.AgentID
+	// 添加必要的字段
+	payload["type"] = reportType
+	payload["agent_id"] = a.cfg.AgentID
+	if reportType == "heartbeat" || reportType == "agent_status" {
 		payload["ts"] = time.Now().UTC().Format(time.RFC3339)
-	case "host_snapshot":
-		endpoint = fmt.Sprintf("%s/api/agent/report-host-snapshot", strings.TrimRight(baseURL, "/"))
-		payload["agent_id"] = a.cfg.AgentID
-	case "job_result":
-		endpoint = fmt.Sprintf("%s/api/agent/report-job-result", strings.TrimRight(baseURL, "/"))
-		payload["agent_id"] = a.cfg.AgentID
-	case "job_event":
-		endpoint = fmt.Sprintf("%s/api/agent/report-job-event", strings.TrimRight(baseURL, "/"))
-		payload["agent_id"] = a.cfg.AgentID
-	default:
-		slog.Error("unknown report type", "type", reportType)
-		return
 	}
 
+	// 序列化为 JSON
 	body, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("marshal payload failed", "type", reportType, "err", err)
-		return
+		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	// 发送到 RabbitMQ agent.reports 队列
+	err = a.rabbitmqChannel.PublishWithContext(
+		context.Background(),
+		"",              // exchange
+		"agent.reports", // routing key (queue name)
+		false,           // mandatory
+		false,           // immediate
+		amqp091.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+		},
+	)
 	if err != nil {
-		slog.Error("build request failed", "endpoint", endpoint, "err", err)
-		return
+		slog.Warn("publish to rabbitmq failed", "type", reportType, "err", err)
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Warn("report to backend failed", "type", reportType, "endpoint", endpoint, "err", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		slog.Warn("backend returned non-200 status", "type", reportType, "status", resp.StatusCode)
-	}
+	slog.Info("report published to rabbitmq", "type", reportType, "agent_id", a.cfg.AgentID)
+	return nil
 }
 
 func (a *App) gracefulShutdown(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Best-effort offline signal: notify backend before stopping services.
+	_ = a.reportToBackend("agent_status", map[string]any{
+		"status": "offline",
+		"reason": "shutdown",
+	})
+	slog.Info("offline status event published", "agent_id", a.cfg.AgentID)
+
 	if err := a.stopHTTPServer(ctx); err != nil {
 		return err
 	}

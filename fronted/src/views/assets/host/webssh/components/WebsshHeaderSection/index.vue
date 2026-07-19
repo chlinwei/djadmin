@@ -11,6 +11,12 @@
             </div>
             <a-space>
                 <a-tag :color="statusColor">{{ statusText }}</a-tag>
+                <a-tooltip title="缩小终端字体（Ctrl/⌘ + 滚轮也可）">
+                    <a-button size="small" @click="decreaseFontSize">A-</a-button>
+                </a-tooltip>
+                <a-tooltip title="放大终端字体（Ctrl/⌘ + 滚轮也可）">
+                    <a-button size="small" @click="increaseFontSize">A+</a-button>
+                </a-tooltip>
                 <a-button size="small" :disabled="!currentLogId" :loading="downloadingLog" @click="downloadCurrentLog">下载日志</a-button>
                 <a-button size="small" @click="toggleFullscreen">{{ getFullscreenButtonText(isFullscreen) }}</a-button>
                 <a-button size="small" @click="reconnect">重连</a-button>
@@ -64,6 +70,8 @@ const {
     cancelUpload,
     dismissDownloadProgress,
     dismissUploadProgress,
+    increaseFontSize,
+    decreaseFontSize,
     getFullscreenButtonText,
 } = createWebsshHeaderSectionController(emit)
 </script>

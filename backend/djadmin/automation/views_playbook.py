@@ -7,6 +7,7 @@ import tempfile
 from ansible.errors import AnsibleError, AnsibleParserError
 
 from .view_helpers import *
+from .local_runner import run_job_in_background
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
     queryset = PlaybookTemplate.objects.all()
@@ -333,11 +334,11 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         )
 
         try:
-            # Run directly in API process per current execution mode requirement.
-            execute_ansible_job(int(job.id))
+            # 非 Celery：改为本地后台线程执行，避免阻塞 API 响应。
+            run_job_in_background(int(job.id))
         except Exception as exc:
             job.status = AnsibleExecutionJob.Status.FAILED
-            job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
+            job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
             job.save(update_fields=['status', 'result_summary'])
             return Response_error_str(f'Job execution failed: {str(exc)}', code=400)
 

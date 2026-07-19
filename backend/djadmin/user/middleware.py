@@ -17,8 +17,6 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
     _AUDIT_SKIP_PATHS = {'/sys/login', '/sys/login2'}
     _AGENT_PATH_PREFIXES = ('/api/agent/', '/sys/agent/')
     _AGENT_RUNTIME_PATHS = (
-        '/api/agent/jobs/poll',
-        '/api/agent/jobs/report',
         '/api/agent/configs/',
     )
 
@@ -65,7 +63,7 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
 
     def _authenticate_agent_or_user_request(self, request):
         path = request.path
-        # agent 运行时链路（poll/report）只接受 ApiToken。
+        # agent 运行时链路（configs）只接受 ApiToken。
         if self._is_agent_runtime_path(path):
             return self._authenticate_agent_request(request)
 

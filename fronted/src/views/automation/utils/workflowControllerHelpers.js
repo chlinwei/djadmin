@@ -85,6 +85,11 @@ export function buildWorkflowPrecheckMessage(data) {
     return String(data.message || '预检失败，请检查范围配置')
   }
 
+  // 优先使用后端返回的 message（含离线警告等），降级到本地拼接
+  if (data.message) {
+    return data.message
+  }
+
   const hostCount = Number(data.resolved_host_count || 0)
   if (data.use_global_scope) {
     return `${scopeLabel}，匹配主机 ${hostCount} 台`

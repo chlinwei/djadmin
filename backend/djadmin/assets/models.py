@@ -114,6 +114,7 @@ class Host(BaseModel):
     
     # dj-agent 在线状态和主机快照
     agent_online = models.BooleanField(default=False, verbose_name="Agent在线状态")
+    agent_online_time = models.DateTimeField(null=True, blank=True, verbose_name="Agent最后心跳时间")
     host_snapshot = models.JSONField(default=dict, blank=True, verbose_name="主机快照数据")
 
     def __str__(self):

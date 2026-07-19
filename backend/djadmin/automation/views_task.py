@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from .view_helpers import *
 from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
-from .executor import execute_ansible_job
+from .local_runner import run_job_in_background
 from assets.models import AgentJob, Host
 
 
@@ -416,11 +416,27 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
                 'resolved_host_count': 0,
             })
 
+        hosts_list = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
+        offline_count = sum(1 for h in hosts_list if isinstance(h, dict) and not h.get('agent_online'))
+
+        if offline_count > 0:
+            return Response_200(data={
+                'ok': False,
+                'status': 'has_offline_hosts',
+                'message': f'有 {offline_count} 台主机 Agent 离线，请确保所有目标主机在线后再执行',
+                'resolved_host_count': resolved_host_count,
+                'offline_hosts_count': offline_count,
+                'effective_limit': limit_text,
+                'matched_hosts_preview': _build_limit_matched_hosts_preview(inventory_snapshot),
+                'matched_hosts_preview_total': resolved_host_count,
+            })
+
         return Response_200(data={
             'ok': True,
             'status': 'ok',
             'message': f'预检通过，可执行主机 {resolved_host_count} 台',
             'resolved_host_count': resolved_host_count,
+            'offline_hosts_count': 0,
             'effective_limit': limit_text,
             'matched_hosts_preview': _build_limit_matched_hosts_preview(inventory_snapshot),
             'matched_hosts_preview_total': resolved_host_count,
@@ -526,18 +542,15 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             )
             
             try:
-                # 直接在本进程执行
-                execute_ansible_job(int(job.id))
+                # 非 Celery：改为本地后台线程执行，避免阻塞 API 响应。
+                run_job_in_background(int(job.id))
             except Exception as exc:
                 job.status = AnsibleExecutionJob.Status.FAILED
-                job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
+                job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
                 job.save(update_fields=['status', 'result_summary'])
                 return Response_error_str(f'Task execution failed: {str(exc)}', code=500)
             
-            return Response_200(data={
-                'job_id': job.id,
-                'status': job.status,
-                'result_summary': job.result_summary,
-            })
+            serializer = AnsibleExecutionJobSerializer(job)
+            return Response_200(data=serializer.data)
 
 

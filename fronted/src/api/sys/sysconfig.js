@@ -25,5 +25,7 @@ export const CONFIG_KEYS = {
   SSH_CONNECT_TIMEOUT:      'sys.scheduler.ssh_connect_timeout',
   SYSTEM_TITLE:             'sys.system_title',
   HOSTGROUP_MAX_TREE_DEPTH: 'sys.assets.hostgroup.max_tree_depth',
+  HOST_MANAGE_REFRESH_INTERVAL_SECONDS: 'sys.assets.host.manage.refresh_interval_seconds',
+  HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS: 'sys.assets.host.detail.collect_dispatch_interval_seconds',
   MENU_MAX_TREE_DEPTH:      'sys.menu.max_tree_depth',
 }

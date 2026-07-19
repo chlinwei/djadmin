@@ -159,11 +159,12 @@
     </a-modal>
 
     <a-modal
-      title="确认启动 Workflow"
+      title="立即执行 Workflow"
       :open="launchModalVisible"
       :confirm-loading="launchSubmitting"
-      ok-text="确认启动"
+      ok-text="立即执行"
       cancel-text="取消"
+      :ok-button-props="{ disabled: !launchPrecheckOk }"
       @ok="confirmLaunch"
       @cancel="closeLaunchModal"
     >

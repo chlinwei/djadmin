@@ -5,9 +5,12 @@ import uuid
 import asyncio
 import json
 import importlib
+import os
 import pika
 import logging
 from datetime import timedelta
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from asgiref.sync import async_to_sync
 
 from cryptography.utils import CryptographyDeprecationWarning
@@ -24,7 +27,7 @@ from djadmin.errordict import DjadminException,AssetsError
 from io import TextIOWrapper
 import csv
 from menu.permisssion import CustomMenuPermission
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Count
 from django.db import IntegrityError, transaction
 from django.conf import settings
 from django.utils import timezone
@@ -40,22 +43,55 @@ logger = logging.getLogger(__name__)
 AGENT_AUTO_COLLECT_MIN_INTERVAL_SECONDS = 300
 
 
-def _resolve_nats_subject(target_type, target_value):
-    """解析 NATS 下发主题，统一支持单机、组播和全量。"""
-    normalized_target_type = str(target_type or '').strip().lower()
-    normalized_target_value = str(target_value or '').strip()
+def _build_agent_status_url(host):
+    scheme = str(getattr(settings, 'AGENT_HTTP_SCHEME', os.getenv('AGENT_HTTP_SCHEME', 'http')) or 'http').strip() or 'http'
+    port_text = str(getattr(settings, 'AGENT_HTTP_PORT', os.getenv('AGENT_HTTP_PORT', '19090')) or '19090').strip() or '19090'
+    endpoint = str(
+        getattr(settings, 'AGENT_HTTP_STATUS_ENDPOINT', os.getenv('AGENT_HTTP_STATUS_ENDPOINT', '/api/v1/agent/status'))
+        or '/api/v1/agent/status'
+    ).strip() or '/api/v1/agent/status'
+    if not endpoint.startswith('/'):
+        endpoint = '/' + endpoint
+    return f"{scheme}://{host.ip}:{port_text}{endpoint}"
 
-    if normalized_target_type == 'group':
-        if normalized_target_value == '':
-            raise RuntimeError('target_type=group 时 target_value 不能为空')
-        return f'cmd.group.{normalized_target_value}'
 
-    if normalized_target_type == 'all':
-        return 'cmd.all'
+def _fetch_agent_runtime_status(host):
+    if not host or not str(getattr(host, 'ip', '') or '').strip():
+        raise RuntimeError('主机IP为空，无法获取 agent 状态')
 
-    if normalized_target_value == '':
-        raise RuntimeError('target_type=single 时 target_value 不能为空')
-    return f'cmd.agent.{normalized_target_value}'
+    url = _build_agent_status_url(host)
+    req = urllib_request.Request(url=url, method='GET')
+
+    token = str(getattr(settings, 'AGENT_HTTP_TOKEN', os.getenv('DJ_AGENT_HTTP_TOKEN', '')) or '').strip()
+    if token != '':
+        req.add_header('Authorization', f'Bearer {token}')
+
+    configured_timeout = getattr(settings, 'AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', os.getenv('AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', 15))
+    try:
+        request_timeout = max(3, min(30, int(str(configured_timeout).strip())))
+    except (TypeError, ValueError):
+        request_timeout = 15
+
+    try:
+        with urllib_request.urlopen(req, timeout=request_timeout) as resp:
+            raw_text = resp.read().decode('utf-8', errors='replace')
+            if int(resp.status) != 200:
+                raise RuntimeError(f'agent http status={resp.status}: {raw_text}')
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f'agent request failed: {exc}') from exc
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f'agent response is not valid json: {raw_text}') from exc
+
+    if int(payload.get('code') or 0) != 200:
+        raise RuntimeError(str(payload.get('msg') or 'agent business error'))
+
+    data = payload.get('data')
+    if not isinstance(data, dict):
+        raise RuntimeError('agent response missing data')
+    return data
 
 
 def _resolve_target_agent_ids(target_type, target_value, fallback_agent_id):
@@ -651,6 +687,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         'webssh_sessions': 'assets:hosts:view',
         'webssh_active_count': 'assets:hosts:view',
         'webssh_active_sessions': 'assets:hosts:view',
+        'agent_runtime_status': 'assets:hosts:view',
         'webssh_files': 'assets:hosts:view',
         'webssh_file_download': 'assets:hosts:view',
         'webssh_file_upload_chunk': 'assets:hosts:update',
@@ -674,6 +711,11 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         system = getattr(host, 'system', None)
         hostname = getattr(system, 'hostname', None) if system else None
         return host.instance_name or hostname or f'Host-{host.id}'
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return HostListSerializer
+        return HostSerializer
 
     def get_queryset(self):
         queryset = Host.objects.select_related('group').prefetch_related(
@@ -710,15 +752,23 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         }:
             queryset = queryset.filter(collect_status=collect_status)
         if agent_status in {'online', 'offline'}:
-            heartbeat_threshold = timezone.now() - timedelta(seconds=30)
-            online_queryset = queryset.filter(
-                system__collector_source='agent',
-                collect_time__gte=heartbeat_threshold,
-            )
-            queryset = online_queryset if agent_status == 'online' else queryset.exclude(
-                system__collector_source='agent',
-                collect_time__gte=heartbeat_threshold,
-            )
+            # dj-agent 每 10 秒发一次心跳，取 3 倍间隔（30 秒）作为超时阈值
+            # 可容忍 2 次连续丢包，避免网络抖动导致误报离线
+            heartbeat_timeout = timezone.now() - timedelta(seconds=30)
+            # 每次列表查询都同步超时状态到 DB，保证序列化器直接读 DB 字段准确
+            Host.objects.filter(
+                agent_online=True,
+                agent_online_time__lt=heartbeat_timeout,
+            ).update(agent_online=False)
+            # 基于 agent_online 标志判断在线状态
+            queryset = queryset.filter(agent_online=(agent_status == 'online'))
+        else:
+            # 即使不按 agent_status 过滤，也需同步超时状态，确保详情/WebSSH 判断准确
+            heartbeat_timeout = timezone.now() - timedelta(seconds=30)
+            Host.objects.filter(
+                agent_online=True,
+                agent_online_time__lt=heartbeat_timeout,
+            ).update(agent_online=False)
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):
@@ -744,6 +794,17 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         instance = self.get_object()
         serializer = self.get_serializer(instance)
         return Response_200(data=serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='agent-runtime-status')
+    def agent_runtime_status(self, request, id=None):
+        host = self.get_object()
+        if not str(getattr(host, 'instance_name', '') or '').strip():
+            return Response_error_str('主机未绑定 agent 实例，无法获取状态')
+        try:
+            data = _fetch_agent_runtime_status(host)
+        except RuntimeError as exc:
+            return Response_error_str(str(exc))
+        return Response_200(data=data)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -812,12 +873,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         deleted_count = host_queryset.count()
         host_queryset.delete()
         return Response_200(data={"deleted_count": deleted_count})
-
-@api_view(['GET'])
-def agent_poll_job(request):
-    """旧 HTTP 轮询入口已下线，统一改为 NATS 下发。"""
-    return Response_error_str('agent HTTP 轮询接口已下线，请改用 NATS 订阅 cmd.agent/cmd.group/cmd.all')
-
 
 @api_view(['POST'])
 def agent_create_job(request):
@@ -1194,17 +1249,28 @@ def agent_query_jobs(request):
     """查询 agent 任务列表与状态，支持按 job_id/agent_id/status 过滤。"""
     job_id = str(request.query_params.get('job_id') or '').strip()  # type: ignore[attr-defined]
     agent_id = str(request.query_params.get('agent_id') or '').strip()  # type: ignore[attr-defined]
+    host_id_raw = request.query_params.get('host_id')  # type: ignore[attr-defined]
+    action = str(request.query_params.get('action') or '').strip()  # type: ignore[attr-defined]
+    group_by = str(request.query_params.get('group_by') or '').strip().lower()  # type: ignore[attr-defined]
     status = str(request.query_params.get('status') or '').strip().lower()  # type: ignore[attr-defined]
-    limit_raw = request.query_params.get('limit', 50)  # type: ignore[attr-defined]
+    page_raw = request.query_params.get('page', 1)  # type: ignore[attr-defined]
+    size_raw = request.query_params.get('size', 20)  # type: ignore[attr-defined]
 
     try:
-        limit = int(limit_raw)
+        page = int(page_raw)
     except (TypeError, ValueError):
-        return Response_error_str('limit必须是整数')
-    if limit <= 0:
-        return Response_error_str('limit必须大于0')
-    if limit > 200:
-        limit = 200
+        return Response_error_str('page必须是整数')
+    if page <= 0:
+        return Response_error_str('page必须大于0')
+
+    try:
+        size = int(size_raw)
+    except (TypeError, ValueError):
+        return Response_error_str('size必须是整数')
+    if size <= 0:
+        return Response_error_str('size必须大于0')
+    if size > 200:
+        size = 200
 
     queryset = AgentJob.objects.all().order_by('-create_time')
 
@@ -1212,6 +1278,34 @@ def agent_query_jobs(request):
         queryset = queryset.filter(job_id=job_id)
     if agent_id:
         queryset = queryset.filter(agent_id=agent_id)
+    if host_id_raw not in (None, ''):
+        try:
+            host_id = int(host_id_raw)
+        except (TypeError, ValueError):
+            return Response_error_str('host_id必须是整数')
+        if host_id <= 0:
+            return Response_error_str('host_id必须大于0')
+        queryset = queryset.filter(host_id=host_id)
+    if action:
+        queryset = queryset.filter(action=action)
+
+    if group_by:
+        if group_by != 'action':
+            return Response_error_str('group_by仅支持action')
+
+        grouped = queryset.values('action').annotate(total=Count('id')).order_by('-total', 'action')
+        rows = []
+        for item in grouped:
+            action_name = str(item.get('action') or '').strip() or '-'
+            rows.append({
+                'action': action_name,
+                'count': int(item.get('total') or 0),
+            })
+
+        return Response_200(data={
+            'count': len(rows),
+            'results': rows,
+        })
 
     summary_queryset = queryset
 
@@ -1228,8 +1322,10 @@ def agent_query_jobs(request):
             return Response_error_str('status非法')
         queryset = queryset.filter(status=status)
 
+    total_count = queryset.count()
+    offset = (page - 1) * size
     jobs = []
-    for item in queryset[:limit]:
+    for item in queryset[offset:offset + size]:
         jobs.append({
             'job_id': item.job_id,
             'agent_id': item.agent_id,
@@ -1272,6 +1368,10 @@ def agent_query_jobs(request):
 
     return Response_200(data={
         'count': len(jobs),
+        'pageNumber': page,
+        'pageSize': size,
+        'total': total_count,
+        'totalPages': (total_count + size - 1) // size,
         'results': jobs,
         'summary': summary,
         'recent_failure_reasons': recent_failure_reasons,
@@ -1459,192 +1559,3 @@ def agent_cancel_job(request):
         'job_id': job.job_id,
         'status': job.status,
     })
-
-
-@api_view(['POST'])
-def agent_report_job(request):
-    """旧 HTTP 上报入口已下线，统一改为 NATS 上行。"""
-    return Response_error_str('agent HTTP 上报接口已下线，请改用 NATS 发布 ret.job/evt.job/hb.agent/rpt.host')
-
-
-# === dj-agent RabbitMQ HTTP 上报端点 ===
-
-@api_view(['POST'])
-def agent_heartbeat(request):
-    """接收 dj-agent 心跳：更新 agent 在线状态。"""
-    payload = request.data if isinstance(request.data, dict) else {}
-    agent_id = str(payload.get('agent_id') or '').strip()
-    
-    if agent_id == '':
-        return Response_error_str('agent_id不能为空')
-    
-    # 查找或创建主机记录（通过 instance_name = agent_id）
-    host = Host.objects.filter(instance_name=agent_id).first()
-    if host is None:
-        logger.warning(f"heartbeat from unknown agent: {agent_id}")
-        return Response_200(data={'message': 'agent not registered'})
-    
-    # 更新 agent 在线状态
-    host.agent_online = True
-    host.save(update_fields=['agent_online', 'update_time'])
-    
-    return Response_200(data={'message': 'heartbeat received'})
-
-
-@api_view(['POST'])
-def agent_report_host_snapshot(request):
-    """接收主机快照：存储主机信息采集结果。"""
-    payload = request.data if isinstance(request.data, dict) else {}
-    agent_id = str(payload.get('agent_id') or '').strip()
-    action = str(payload.get('action') or '').strip()
-    status = str(payload.get('status') or '').strip()
-    result_data = payload.get('result_data', {})
-    error = str(payload.get('error') or '').strip()
-    
-    if agent_id == '':
-        return Response_error_str('agent_id不能为空')
-    
-    # 查找主机
-    host = Host.objects.filter(instance_name=agent_id).first()
-    if host is None:
-        return Response_error_str('agent not registered')
-    
-    # 存储主机快照数据（如 CPU、内存、磁盘等）
-    if isinstance(result_data, dict) and len(result_data) > 0:
-        # 可选：存储到专门的快照表或更新 host 记录的字段
-        host.host_snapshot = result_data
-    
-    host.save(update_fields=['host_snapshot', 'update_time'])
-    
-    return Response_200(data={'message': 'host snapshot received'})
-
-
-@api_view(['POST'])
-def agent_report_job_result(request):
-    """接收任务执行结果：更新 AgentJob 状态和输出。"""
-    payload = request.data if isinstance(request.data, dict) else {}
-    agent_id = str(payload.get('agent_id') or '').strip()
-    job_id = str(payload.get('job_id') or '').strip()
-    status = str(payload.get('status') or '').strip()
-    retcode = payload.get('retcode', -1)
-    stdout = str(payload.get('stdout') or '').strip()
-    stderr = str(payload.get('stderr') or '').strip()
-    data = payload.get('data', {})
-    error = str(payload.get('error') or '').strip()
-    
-    if job_id == '':
-        return Response_error_str('job_id不能为空')
-    
-    # 查找任务
-    job = AgentJob.objects.filter(job_id=job_id, agent_id=agent_id).first()
-    if job is None:
-        return Response_error_str('job not found')
-    
-    # 映射 protocol.JobStatus 到 AgentJob.JobStatus
-    status_map = {
-        'success': AgentJob.JobStatus.SUCCESS,
-        'failed': AgentJob.JobStatus.FAILED,
-        'running': AgentJob.JobStatus.RUNNING,
-        'timeout': AgentJob.JobStatus.TIMEOUT,
-        'canceled': AgentJob.JobStatus.CANCELED,
-    }
-    mapped_status = status_map.get(status.lower(), AgentJob.JobStatus.FAILED)
-    
-    # 更新任务记录
-    job.status = mapped_status
-    job.exit_code = int(retcode) if isinstance(retcode, int) else -1
-    job.stdout = stdout
-    job.stderr = stderr
-    job.result_data = data if isinstance(data, dict) else {}
-    if error:
-        job.error_message = error
-    
-    if mapped_status in {AgentJob.JobStatus.SUCCESS, AgentJob.JobStatus.FAILED, 
-                         AgentJob.JobStatus.TIMEOUT, AgentJob.JobStatus.CANCELED}:
-        job.finished_at = timezone.now()
-    elif mapped_status == AgentJob.JobStatus.RUNNING and job.picked_at is None:
-        job.picked_at = timezone.now()
-    
-    job.save(update_fields=['status', 'exit_code', 'stdout', 'stderr', 'result_data', 
-                            'error_message', 'finished_at', 'picked_at', 'update_time'])
-    
-    # 发出事件通知
-    _emit_agent_job_event(job, 'ret', {
-        'id': agent_id,
-        'jid': job_id,
-        'retcode': job.exit_code,
-        'fun': job.action,
-        'return': {
-            'status': job.status,
-            'data': job.result_data,
-            'error': job.error_message,
-        },
-    })
-    
-    return Response_200(data={'message': 'job result received'})
-
-
-@api_view(['POST'])
-def agent_report_job_event(request):
-    """接收任务事件：记录任务执行进度。"""
-    payload = request.data if isinstance(request.data, dict) else {}
-    agent_id = str(payload.get('agent_id') or '').strip()
-    job_id = str(payload.get('job_id') or '').strip()
-    status = str(payload.get('status') or '').strip()
-    error = str(payload.get('error') or '').strip()
-    
-    if job_id == '':
-        return Response_error_str('job_id不能为空')
-    
-    # 查找任务
-    job = AgentJob.objects.filter(job_id=job_id, agent_id=agent_id).first()
-    if job is None:
-        return Response_error_str('job not found')
-    
-    # 记录事件
-    tag = f'salt/job/{job_id}/evt/{status}'
-    AgentJobEvent.objects.create(
-        job_id=job_id,
-        agent_id=agent_id,
-        tag=tag,
-        event_type=status,
-        payload={
-            'status': status,
-            'error': error,
-            'ts': timezone.now().isoformat(),
-        },
-    )
-    
-    return Response_200(data={'message': 'job event received'})
-
-
-@api_view(['POST'])
-def agent_report_terminal_event(request):
-    """接收终端事件：记录终端会话事件（connected、output、closed、error）。"""
-    payload = request.data if isinstance(request.data, dict) else {}
-    agent_id = str(payload.get('agent_id') or '').strip()
-    session_id = str(payload.get('session_id') or '').strip()
-    event_type = str(payload.get('type') or '').strip()
-    
-    if agent_id == '' or session_id == '':
-        return Response_error_str('agent_id 和 session_id 不能为空')
-    
-    if event_type == '':
-        return Response_error_str('event type 不能为空')
-    
-    # 记录事件（可扩展为专门的数据库模型）
-    slog.info(
-        'Terminal event received',
-        extra={
-            'agent_id': agent_id,
-            'session_id': session_id,
-            'event_type': event_type,
-            'payload': payload,
-        }
-    )
-    
-    # 后续可通过 WebSocket 或其他方式实时推送给前端
-    # 这里暂时只记录到日志
-    
-    return Response_200(data={'message': 'terminal event received'})
-    

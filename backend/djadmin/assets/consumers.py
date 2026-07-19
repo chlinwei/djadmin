@@ -26,18 +26,13 @@ warnings.filterwarnings(
 )
 
 try:
-    from nats.aio.client import Client as NATS
-except ImportError:  # pragma: no cover
-    NATS = None
-
-try:
     asyncssh = importlib.import_module('asyncssh')
 except ImportError:  # pragma: no cover
     asyncssh = None
 
 
 class HostWebSSHConsumer(AsyncWebsocketConsumer):
-    """WebSSH over agent bridge (frontend WS <-> backend WS consumer <-> NATS <-> agent PTY)."""
+    """WebSSH over agent bridge (frontend WS <-> backend WS consumer <-> agent PTY)."""
 
     async def connect(self):
         route = self.scope.get('url_route')
@@ -49,8 +44,6 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         self.host_id = int(host_id_value)
         self.connected = False
-        self.nats_client = None
-        self.nats_subscription = None
         self.ssh_conn = None
         self.ssh_process = None
         self.ssh_output_task = None
@@ -438,15 +431,8 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         host_display_name = host.instance_name or hostname or f'Host-{host_id}'
 
         agent_id = str(host.instance_name or '').strip()
-        # WebSSH 入口统一要求 Agent 在线，避免离线主机仍可建立终端会话。
-        system_collector_source = str(getattr(system, 'collector_source', '') or '').strip().lower() if system else ''
-        collect_time = getattr(host, 'collect_time', None)
-        heartbeat_threshold = timezone.now() - timedelta(seconds=30)
-        is_agent_online = bool(
-            system_collector_source == 'agent'
-            and collect_time
-            and collect_time >= heartbeat_threshold
-        )
+        # WebSSH 准入仅以 Host.agent_online 字段为准。
+        is_agent_online = bool(getattr(host, 'agent_online', False))
         if not is_agent_online:
             return None, host_display_name, agent_id, 'Agent 离线，禁止打开 WebSSH'
 

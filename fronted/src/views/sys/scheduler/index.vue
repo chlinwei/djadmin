@@ -540,7 +540,7 @@ const loadLogs = (taskId) => {
   const params = {
     task_id: taskId,
     page: logsPagination.current,
-    size: logsPagination.pageSize,
+    page_size: logsPagination.pageSize,
   }
   if (logFilters.status) {
     params.status = logFilters.status

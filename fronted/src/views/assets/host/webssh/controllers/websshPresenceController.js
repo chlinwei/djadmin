@@ -1,6 +1,7 @@
 export function createWebsshPresenceController(options) {
     const {
         getHostId,
+        getHostById,
         state,
         activeSessionsVisible,
         activeSessionsLoading,
@@ -9,7 +10,10 @@ export function createWebsshPresenceController(options) {
         getHostWebSshActiveCount,
         getHostWebSshActiveSessions,
         message,
+        onHostOffline,
     } = options
+
+    let hostOfflineNotified = false
 
     const fetchActiveUserCount = async () => {
         if (!getHostId()) return
@@ -30,10 +34,38 @@ export function createWebsshPresenceController(options) {
         }
     }
 
+    const checkHostOnlineStatus = async () => {
+        if (!getHostId() || typeof getHostById !== 'function') return
+        try {
+            const res = await getHostById(getHostId())
+            if (res?.data?.code !== 200) {
+                return
+            }
+            const host = res?.data?.data || {}
+            const isOnline = Boolean(host?.system?.agent_online)
+            if (isOnline) {
+                hostOfflineNotified = false
+                return
+            }
+
+            if (!hostOfflineNotified && typeof onHostOffline === 'function') {
+                hostOfflineNotified = true
+                onHostOffline(host)
+            }
+        } catch (error) {
+            // keep previous state when fetch fails
+        }
+    }
+
+    const pollPresenceAndHostStatus = () => {
+        void fetchActiveUserCount()
+        void checkHostOnlineStatus()
+    }
+
     const startActiveUserPolling = () => {
         stopActiveUserPolling()
-        fetchActiveUserCount()
-        state.activeCountTimer = window.setInterval(fetchActiveUserCount, 5000)
+        pollPresenceAndHostStatus()
+        state.activeCountTimer = window.setInterval(pollPresenceAndHostStatus, 5000)
     }
 
     const fetchActiveSessions = async (showError = false) => {

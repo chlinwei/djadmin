@@ -218,7 +218,7 @@ media/      → 静态文件（头像等）
 | ------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `scheduler.dispatch_due_tasks`     | `backend/djadmin/scheduler/tasks.py`  | Celery Beat 周期触发（`CELERY_BEAT_SCHEDULE`，每 60 秒）                            | 调度扫描器：检查`ScheduledTask` 是否到期，并投递执行任务   |
 | `scheduler.execute_scheduled_task` | `backend/djadmin/scheduler/tasks.py`  | 由`dispatch_due_tasks` 投递；或 `/sys/scheduler/tasks/{id}/run-now` 手动投递      | 执行具体定时任务（例如`collect_all_hosts_info`）           |
-| `automation.execute_ansible_job`   | `backend/djadmin/automation/tasks.py` | `/sys/automation/playbooks/{id}/run` 与 `/sys/automation/tasks/{id}/run_now` 投递 | 自动化中心 Ansible 作业执行任务（已从线程执行迁移到 Celery） |
+| `automation.execute_ansible_job`   | `backend/djadmin/automation/tasks.py` | 兼容保留（当前默认执行路径不依赖该任务） | 自动化中心 Ansible 作业执行任务（保留 Celery 入口，默认改为本地后台线程执行） |
 
 补充说明：
 
@@ -487,7 +487,7 @@ python manage.py runtransfer --host 0.0.0.0 --port 9101
 3. 菜单加载正常，角色权限可生效。
 4. 自动化任务可进入并提交任务。
 5. 调度器运行后，任务最近执行时间会更新。
-6. 自动化任务的 Playbook 执行任务会投递到 Celery Worker 执行（不再依赖 Web 线程）。
+6. 自动化任务的 Playbook / Task / Workflow 节点执行默认走本地后台线程（非 Celery），请求快速返回，不阻塞 Web 线程。
 7. WebSSH 下载使用 `/assets/hosts/{id}/files/download/?path=...`，支持 Range 与流式返回。
 8. WebSSH 上传使用 `/assets/hosts/{id}/files/upload/chunk/`，上传中再次上传会提示稍后重试（无传输列表/无排队）。
 9. 自动化“任务运行记录”中，`pending` 状态任务不展示“下载日志”按钮。

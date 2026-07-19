@@ -44,7 +44,8 @@ from .serializer import (
     validate_playbook_content_or_raise,
     check_workflow_cycle_at_runtime,
 )
-from .executor import build_inventory_snapshot, execute_ansible_job
+from .executor import build_inventory_snapshot
+from .local_runner import run_job_in_background
 from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runtime_status
 
 
@@ -204,6 +205,7 @@ def _build_limit_matched_hosts_preview(inventory_snapshot: dict, preview_size: i
             'host_ip': item.get('host_ip') or '',
             'group_name': item.get('group_name') or '',
             'group_path': item.get('group_path') or '',
+            'agent_online': bool(item.get('agent_online')),
         })
     return preview_items
 
@@ -395,8 +397,22 @@ def _precheck_workflow_runtime_scope(runtime_scope: dict) -> tuple[bool, str, di
             'message': f'Inventory [{inventory_name}] 当前无匹配主机',
         }
 
+    hosts_list = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
+    offline_count = sum(1 for h in hosts_list if isinstance(h, dict) and not h.get('agent_online'))
+
+    if offline_count > 0:
+        return False, 'has_offline_hosts', {
+            'resolved_host_count': resolved_host_count,
+            'offline_hosts_count': offline_count,
+            'matched_hosts_preview': _build_limit_matched_hosts_preview(inventory_snapshot),
+            'matched_hosts_preview_total': resolved_host_count,
+            'effective_limit': limit_text,
+            'message': f'有 {offline_count} 台主机 Agent 离线，请确保所有目标主机在线后再执行',
+        }
+
     return True, 'ok', {
         'resolved_host_count': resolved_host_count,
+        'offline_hosts_count': 0,
         'matched_hosts_preview': _build_limit_matched_hosts_preview(inventory_snapshot),
         'matched_hosts_preview_total': resolved_host_count,
         'effective_limit': limit_text,
@@ -514,13 +530,13 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     )
 
     try:
-        # Run directly in API process per current execution mode requirement.
-        execute_ansible_job(int(job.id))
+        # 非 Celery：改为本地后台线程执行，避免阻塞当前 HTTP 请求。
+        run_job_in_background(int(job.id))
     except Exception as exc:
         job.status = AnsibleExecutionJob.Status.FAILED
-        job.result_summary = {'message': f'Failed to execute job in process: {str(exc)}'}
+        job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
         job.save(update_fields=['status', 'result_summary'])
-        return False, f'Failed to execute task job in process: {str(exc)}', None, None
+        return False, f'Failed to start local runner: {str(exc)}', None, None
 
     return True, None, job.id, {
         'task_name_snapshot': task.name or '',

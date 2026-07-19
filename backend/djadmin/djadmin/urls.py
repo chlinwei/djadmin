@@ -29,8 +29,6 @@ urlpatterns = [
     path('api/agent/jobs/query', assets_views.agent_query_jobs),
     path('api/agent/jobs/query-chain', assets_views.agent_query_job_chain),
     path('api/agent/jobs/events', assets_views.agent_query_job_events),
-    path('api/agent/jobs/poll', assets_views.agent_poll_job),
-    path('api/agent/jobs/report', assets_views.agent_report_job),
     path('sys/',include('user.urls')),
     re_path('media/(?P<path>.*)', serve, {'document_root': settings.MEDIA_ROOT},
 name='media'),

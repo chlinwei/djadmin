@@ -230,7 +230,7 @@ CELERY_ENABLE_UTC = True
 # RabbitMQ (for dj-agent communication)
 RABBITMQ_URL = os.getenv(
     'RABBITMQ_URL',
-    'amqp://admin:admin123@10.25.66.150:5672//',
+    'amqp://admin:admin123@10.25.66.150:5672/',
 )
 RABBITMQ_AGENT_TASKS_QUEUE = 'agent.tasks'
 RABBITMQ_AGENT_REPORTS_QUEUE = 'agent.reports'
@@ -281,3 +281,14 @@ APPEND_SLASH = False
 # Runserver default binding. Can be overridden by command args.
 SERVER_HOST = os.getenv('DJADMIN_SERVER_HOST', '0.0.0.0')
 SERVER_PORT = int(os.getenv('DJADMIN_SERVER_PORT', '9000'))
+
+# CORS Configuration - Allow frontend development server and production hosts
+CORS_ALLOWED_ORIGINS = [
+    "http://10.25.66.150:5173",  # Vite dev server
+    "http://localhost:5173",      # Local dev
+    "http://127.0.0.1:5173",      # Local dev alternative
+    "http://10.25.66.150:8080",   # Alternative prod port
+]
+
+# For development, can temporarily use this to allow all origins:
+# CORS_ALLOW_ALL_ORIGINS = True

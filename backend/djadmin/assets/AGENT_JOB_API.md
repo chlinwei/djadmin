@@ -289,25 +289,7 @@ agent：
 说明：
 - 批量幂等键按 `client_request_id:agent_id` 派生。
 
-## 3) 轮询任务（agent）
-
-- `GET /api/agent/jobs/poll?agent_id=host-001`
-
-状态：已下线（返回错误）。
-
-说明：
-- 旧 HTTP 轮询模式已禁用，统一改为 NATS 订阅：`cmd.agent.<agent_id>` / `cmd.group.<group>` / `cmd.all`。
-
-## 4) 回报执行结果（agent）
-
-- `POST /api/agent/jobs/report`
-
-状态：已下线（返回错误）。
-
-说明：
-- 旧 HTTP 上报模式已禁用，统一改为 NATS 发布：`ret.job.<job_id>`、`evt.job.<job_id>.<status>`、`hb.agent.<agent_id>`、`rpt.host.<agent_id>`。
-
-## 5) 查询任务列表
+## 3) 查询任务列表
 
 - `GET /api/agent/jobs/query?agent_id=host-001&status=running&limit=50`
 
@@ -322,7 +304,7 @@ agent：
 - `summary`：状态计数
 - `recent_failure_reasons`：最近失败/超时原因（最多 5 条）
 
-## 6) 查询重试链路
+## 4) 查询重试链路
 
 - `GET /api/agent/jobs/query-chain?job_id=<job_id>`
 
@@ -334,7 +316,7 @@ agent：
 
 链路来源：`remark=retry_from:<source_job_id>`。
 
-## 7) 取消任务
+## 5) 取消任务
 
 - `POST /api/agent/jobs/cancel`
 
@@ -351,7 +333,7 @@ agent：
 - 仅允许 `queued/running -> canceled`
 - 已结束任务不可取消
 
-## 8) 重试任务
+## 6) 重试任务
 
 - `POST /api/agent/jobs/retry`
 

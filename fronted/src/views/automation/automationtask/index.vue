@@ -335,6 +335,7 @@
       :confirmLoading="runNowSubmitting"
       ok-text="立即执行"
       cancel-text="取消"
+      :ok-button-props="{ disabled: !runNowPrecheckOk }"
       @ok="confirmRunNow"
       @cancel="closeRunNowModal"
     >
@@ -1375,7 +1376,8 @@ async function doRunNowPrecheck() {
 
     if (precheckData.ok) {
       runNowPrecheckOk.value = true
-      runNowPrecheckMessage.value = `预检通过，可执行主机 ${hostCount} 台（Limit: ${runNowEffectiveLimit.value || '（空）'}）`
+      // 直接使用后端 message，包含离线主机等警告信息
+      runNowPrecheckMessage.value = precheckData.message || `预检通过，可执行主机 ${hostCount} 台`
     } else {
       runNowPrecheckOk.value = false
       runNowPrecheckMessage.value = precheckData.message || '任务预检未通过'

@@ -29,6 +29,8 @@
             @cancel-upload="cancelUpload"
             @dismiss-download-progress="dismissDownloadProgress"
             @dismiss-upload-progress="dismissUploadProgress"
+            @increase-font-size="increaseTerminalFontSize"
+            @decrease-font-size="decreaseTerminalFontSize"
         />
 
         <div ref="websshMainRef" class="webssh-main">
@@ -340,8 +342,21 @@ const writeSystemLine = (text) => {
     term?.writeln(text)
 }
 
+const handleHostOffline = (host) => {
+    const displayName = String(
+        host?.instance_name || host?.system?.hostname || hostIp || hostId || '当前主机',
+    )
+    const warningText = `检测到 ${displayName} 已离线，WebSSH 会话已断开`
+    messageText.value = warningText
+    messageType.value = 'warning'
+    writeSystemLine(`[CLOSED] ${warningText}`)
+    closeSocket()
+    message.warning(warningText)
+}
+
 const websshPresenceController = createWebsshPresenceController({
     getHostId: () => hostId,
+    getHostById,
     state: {
         get activeCountTimer() {
             return activeCountTimer
@@ -363,6 +378,7 @@ const websshPresenceController = createWebsshPresenceController({
     getHostWebSshActiveCount,
     getHostWebSshActiveSessions,
     message,
+    onHostOffline: handleHostOffline,
 })
 
 const fetchActiveUserCount = websshPresenceController.fetchActiveUserCount
@@ -485,6 +501,8 @@ const disposeTerminal = websshSessionController.disposeTerminal
 const closeSocket = websshSessionController.closeSocket
 const syncWebsshTransferActivityTimer = websshSessionController.syncWebsshTransferActivityTimer
 const connectWebSsh = websshSessionController.connectWebSsh
+const increaseTerminalFontSize = websshSessionController.increaseTerminalFontSize
+const decreaseTerminalFontSize = websshSessionController.decreaseTerminalFontSize
 
 const websshViewController = createWebsshViewController({
     computed,

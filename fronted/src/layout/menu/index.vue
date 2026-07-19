@@ -1,28 +1,24 @@
 <template>
   <div>
     <div class="logo" />
-    <a-menu theme="dark" mode="inline" v-model:openKeys="openKeys" v-model:selectedKeys="selectedKeys">
-      <a-menu-item key="/index" @click="add_tab({ name: '首页', path: '/index' })">
-        <FontAwesomeIcon :icon="'fa-home'" />
-        <span>首页</span>
-      </a-menu-item>
-      <template v-for="menu in menuList">
-        <SubMenu v-if="menu.location === 1" :menu="menu" />
-      </template>
-
-      <!-- <SubMenu v-for="menu in menuList" :menu="menu"/> -->
-    </a-menu>
+    <a-menu
+      theme="dark"
+      mode="inline"
+      v-model:openKeys="openKeys"
+      v-model:selectedKeys="selectedKeys"
+      :items="menuItems"
+      @click="handleMenuClick"
+    />
   </div>
 </template>
 <script setup>
 
 import store from '@/store/index.js'
-import { ref } from 'vue'
+import { h, ref, resolveComponent } from 'vue'
 import { onMounted } from 'vue'
 import { getMenuList } from '@/api/menu/index.js'
 import { useRouter } from 'vue-router';
 import { computed } from 'vue';
-import SubMenu from '@/layout/menu/subMenu.vue';
 
 
 const selectedKeys = computed({
@@ -32,6 +28,68 @@ const selectedKeys = computed({
   set: (val) => {
     store.state.selectedKeys = val;
   }
+})
+
+const menuPathNameMap = new Map([['/index', '首页']])
+const FontAwesomeIconComp = resolveComponent('FontAwesomeIcon')
+
+const normalizeMenuKey = (menu, prefix) => {
+  const rawPath = String(menu?.path || '').trim()
+  if (rawPath) {
+    return rawPath
+  }
+  return `${prefix}-${menu?.id || 'no-id'}`
+}
+
+const buildMenuItems = (menus = [], parentPrefix = 'menu') => {
+  const rows = []
+  ;(Array.isArray(menus) ? menus : []).forEach((menu, index) => {
+    const menuType = String(menu?.menu_type || '').trim()
+    if (menuType !== 'M' && menuType !== 'C') {
+      return
+    }
+
+    const key = normalizeMenuKey(menu, `${parentPrefix}-${index}`)
+    const title = String(menu?.name || key)
+    const iconName = String(menu?.icon || '').trim() || 'fa-folder'
+    const iconVNode = () => h('span', { class: 'menu-icon-wrap' }, [h(FontAwesomeIconComp, { icon: iconName })])
+
+    if (menuType === 'C') {
+      menuPathNameMap.set(key, title)
+      rows.push({
+        key,
+        label: title,
+        icon: iconVNode,
+      })
+      return
+    }
+
+    const children = buildMenuItems(menu?.children, `${parentPrefix}-${index}`)
+    rows.push({
+      key,
+      label: title,
+      icon: iconVNode,
+      children,
+    })
+  })
+  return rows
+}
+
+const visibleMenuList = computed(() => {
+  return (Array.isArray(menuList) ? menuList : []).filter((menu) => Number(menu?.location || 0) === 1)
+})
+
+const menuItems = computed(() => {
+  menuPathNameMap.clear()
+  menuPathNameMap.set('/index', '首页')
+  return [
+    {
+      key: '/index',
+      label: '首页',
+      icon: () => h('span', { class: 'menu-icon-wrap' }, [h(FontAwesomeIconComp, { icon: 'fa-home' })]),
+    },
+    ...buildMenuItems(visibleMenuList.value, 'root'),
+  ]
 })
 
 function init_selectedKeys() {
@@ -86,6 +144,17 @@ const add_tab = (item) => {
     key: item.path
   }
   store.commit('add_tab', tab);
+}
+
+const handleMenuClick = ({ key }) => {
+  const keyText = String(key || '').trim()
+  if (!keyText) {
+    return
+  }
+  add_tab({
+    name: menuPathNameMap.get(keyText) || keyText,
+    path: keyText,
+  })
 }
 </script>
 <style scoped></style>

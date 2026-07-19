@@ -133,6 +133,8 @@ def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[
             'group_id': host.group_id,
             'group_name': host.group.name if getattr(host, 'group', None) else '',
             'group_path': group_path_map.get(int(host.group_id), '') if host.group_id is not None else '',
+            # agent 在线状态（来自 DB 字段，由 runagentconsumer 维护）
+            'agent_online': bool(getattr(host, 'agent_online', False)),
         })
 
     return {
@@ -462,8 +464,11 @@ def execute_ansible_job(job_id: int) -> None:
         # ===== SHELL SCRIPT EXECUTION PATH =====
         run_success, return_code = execute_shell_script_job(job)
         total_targets = len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
-        success_count = total_targets if run_success else 0
-        failed_count = 0 if run_success else total_targets
+        shell_summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+        # Shell 路径已在 executor_shell_script 中写入 serial/fail-fast 统计。
+        success_count = int(shell_summary.get('success', total_targets if run_success else 0) or 0)
+        failed_count = int(shell_summary.get('failed', 0 if run_success else total_targets) or 0)
+        skipped_count = int(shell_summary.get('skipped', 0) or 0)
         invalid_target_count = 0
     else:
         # ===== PLAYBOOK EXECUTION PATH =====
@@ -518,13 +523,18 @@ def execute_ansible_job(job_id: int) -> None:
     job.status = final_status
     job.end_time = end_time
     job.duration_seconds = (end_time - start_time).total_seconds()
-    job.result_summary = {
+    result_summary = {
         'message': 'Execution finished',
         'total': total_targets,
         'success': success_count,
         'failed': failed_count,
         'rc': return_code,
     }
+    if is_shell_script:
+        result_summary['skipped'] = int(locals().get('skipped_count', 0) or 0)
+        result_summary['mode'] = 'serial_fail_fast'
+
+    job.result_summary = result_summary
     job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
 
     close_old_connections()

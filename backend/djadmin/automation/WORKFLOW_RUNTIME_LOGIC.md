@@ -108,7 +108,7 @@ _refresh_workflow_run_progress 按层推进，识别可运行节点并派发：
 
 - task 节点：调用 _dispatch_workflow_task_job
   - 创建 AnsibleExecutionJob
-  - 异步投递 execute_ansible_job_task
+  - 启动本地后台线程执行 run_job_in_background（非 Celery）
 - workflow 节点：调用 _dispatch_workflow_child_run
   - 创建子 AutomationWorkflowRun
   - 将 child_run_id 回写到父节点结果

@@ -6,7 +6,6 @@ After=network.target
 Type=simple
 User=lw
 Environment=DJ_AGENT_ID=localhost
-Environment=DJ_AGENT_NATS_URL=nats://127.0.0.1:4222
 # Build before each start without relying on WorkingDirectory.
 ExecStartPre=/bin/bash -lc 'cd /home/lw/workspace/python/djadmin/dj_agent && mkdir -p bin && /data/apps/golang/go/bin/go build -o bin/dj-agent ./cmd/agent'
 ExecStart=/home/lw/workspace/python/djadmin/dj_agent/bin/dj-agent

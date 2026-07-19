@@ -8,6 +8,8 @@ const WEBSSH_HEADER_EVENTS = [
     'cancel-upload',
     'dismiss-download-progress',
     'dismiss-upload-progress',
+    'increase-font-size',
+    'decrease-font-size',
 ]
 
 export const websshHeaderSectionProps = {
@@ -42,6 +44,8 @@ export const createWebsshHeaderSectionController = (emit) => {
     const cancelUpload = () => emit('cancel-upload')
     const dismissDownloadProgress = () => emit('dismiss-download-progress')
     const dismissUploadProgress = () => emit('dismiss-upload-progress')
+    const increaseFontSize = () => emit('increase-font-size')
+    const decreaseFontSize = () => emit('decrease-font-size')
 
     const getFullscreenButtonText = (isFullscreen) => (isFullscreen ? '退出全屏' : '进入全屏')
 
@@ -55,6 +59,8 @@ export const createWebsshHeaderSectionController = (emit) => {
         cancelUpload,
         dismissDownloadProgress,
         dismissUploadProgress,
+        increaseFontSize,
+        decreaseFontSize,
         getFullscreenButtonText,
     }
 }

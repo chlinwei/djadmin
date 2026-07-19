@@ -84,7 +84,17 @@ export const staticRouterMap = [
                 path: '/sys/automation/workflow/run',
                 name: 'Workflow运行状态',
                 component: () => import('../views/automation/workflow/run.vue'),
-            }
+            },
+            {
+                path: '/assets/hosts/detail/:id',
+                name: '主机详情页',
+                component: () => import('../views/assets/host/detail.vue'),
+            },
+            {
+                path: '/assets/hosts/agent-runtime/:id',
+                name: '主机 Agent 运行状态页',
+                component: () => import('../views/assets/host/agent-runtime.vue'),
+            },
         ]
     },
 ]

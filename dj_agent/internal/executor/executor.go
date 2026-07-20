@@ -17,6 +17,9 @@ const defaultTimeout = 30 * time.Second
 // Executor 负责执行单个任务并采集结果。
 type Executor struct {
 	DefaultTimeout time.Duration
+	// BackendBaseURL 指向 backend 基础地址，用于从本地软件仓库（media）下载待安装的二进制包；
+	// 为空时内置安装脚本回退到官方下载源。
+	BackendBaseURL string
 }
 
 // New 创建一个新的 Executor 实例
@@ -110,11 +113,10 @@ func validateJobByType(job protocol.Job) error {
 			return fmt.Errorf("command is required for type=%s", job.Type)
 		}
 	case protocol.TaskTypeInventory, protocol.TaskTypeCustom:
-		// 内置操作不需要 params，其他情况需要
+		// 内置操作不需要 params，其他情况需要（通用 exporter 动作始终依赖 backend 下发的
+		// exporter_name/脚本内容等 params，不再像旧版 node_exporter 动作那样允许空参数）
 		if job.Action != actionGetAgentVersion &&
 			job.Action != actionGetHostInfo &&
-			job.Action != actionInstallNodeExporter &&
-			job.Action != actionUninstallNodeExporter &&
 			len(job.Params) == 0 {
 			return fmt.Errorf("params is required for type=%s", job.Type)
 		}

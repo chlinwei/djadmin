@@ -337,20 +337,30 @@
                 <a-form-item name="port" label="SSH 端口">
                     <a-input-number v-model:value="form.port" :min="1" :max="65535" placeholder="默认：22" />
                 </a-form-item>
-                <a-form-item name="monitor_enabled" label="是否监控">
-                    <a-space>
+                <a-form-item label="监控设置">
+                    <div class="monitor-row" v-for="(item, index) in form.monitors" :key="index">
+                        <a-select
+                            v-model:value="item.name"
+                            :getPopupContainer="getPopupContainer"
+                            placeholder="请选择监控组件"
+                            :options="monitorNameOptions"
+                            show-search
+                            optionFilterProp="label"
+                            style="width: 160px"
+                        />
                         <a-switch
-                            v-model:checked="form.monitor_enabled"
+                            v-model:checked="item.enabled"
                             checked-children="开启"
                             un-checked-children="关闭"
                         />
-                        <span class="monitor-hint">开启后自动安装 node_exporter</span>
-                    </a-space>
-                </a-form-item>
-                <a-form-item v-if="!form.monitor_enabled" name="monitor_uninstall_on_disable" label="关闭监控时">
-                    <a-checkbox v-model:checked="form.monitor_uninstall_on_disable">
-                        同时下发卸载 node_exporter（可选）
-                    </a-checkbox>
+                        <a-checkbox v-if="!item.enabled" v-model:checked="item.uninstall_on_disable">
+                            关闭时卸载
+                        </a-checkbox>
+                        <a-button type="link" danger @click="removeMonitorRow(index)">删除</a-button>
+                    </div>
+                    <a-button type="dashed" block @click="addMonitorRow">
+                        + 添加监控项
+                    </a-button>
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" :rows="3" placeholder="可填写业务用途、负责人等信息" />
@@ -476,6 +486,7 @@ import { batchDeleteHost, deleteHostById, getHostById, getHostList, saveOrCreate
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList, SaveOrCreateCredential } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
+import { getSoftwarePackages } from '@/api/sys/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
@@ -631,11 +642,32 @@ const form = reactive({
     credential_ids: [],
     default_credential_id: undefined,
     port: 22,
-    monitor_enabled: true,
-    monitor_uninstall_on_disable: false,
+    monitors: [],
     remark: '',
     instance_name: '',
 })
+
+// 监控名称下拉选项：仅来自监控软件仓库中 enabled=true 的包（按名称去重）
+const monitorNameOptions = ref([])
+
+const loadMonitorNameOptions = async () => {
+    try {
+        const res = await getSoftwarePackages({ enabled: true, page_size: 200, ordering: '-id' })
+        const results = Array.isArray(res?.data?.data?.results) ? res.data.data.results : []
+        const names = [...new Set(results.map((item) => item.name).filter(Boolean))]
+        monitorNameOptions.value = names.map((name) => ({ label: name, value: name }))
+    } catch (error) {
+        monitorNameOptions.value = []
+    }
+}
+
+const addMonitorRow = () => {
+    form.monitors.push({ name: undefined, enabled: true, uninstall_on_disable: false })
+}
+
+const removeMonitorRow = (index) => {
+    form.monitors.splice(index, 1)
+}
 
 const rules = {
     instance_name: [{ required: true, message: '请输入实例名' }],
@@ -1099,13 +1131,12 @@ const resetForm = () => {
     form.credential_ids = []
     form.default_credential_id = undefined
     form.port = 22
-    form.monitor_enabled = true
-    form.monitor_uninstall_on_disable = false
+    form.monitors = []
     form.remark = ''
 }
 
 const handleAdd = async () => {
-    await loadCredentialOptions()
+    await Promise.all([loadCredentialOptions(), loadMonitorNameOptions()])
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
@@ -1129,7 +1160,7 @@ const handleApiError = (err) => {
 }
 
 const onSaveOrCreate = async (id) => {
-    await loadCredentialOptions()
+    await Promise.all([loadCredentialOptions(), loadMonitorNameOptions()])
     dialogTitle.value = '编辑主机'
     dialogVisible.value = true
     dialogLoading.value = true
@@ -1150,8 +1181,13 @@ const onSaveOrCreate = async (id) => {
                     || undefined
                 )
                 form.port = data.port ?? 22
-                form.monitor_enabled = typeof data.monitor_enabled === 'boolean' ? data.monitor_enabled : true
-                form.monitor_uninstall_on_disable = false
+                const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
+                // uninstall_on_disable 为一次性操作指令，后端不回传，每次打开编辑默认重置为 false
+                form.monitors = monitorRows.map((item) => ({
+                    name: item.name,
+                    enabled: Boolean(item.enabled),
+                    uninstall_on_disable: false,
+                }))
                 form.remark = data.remark || ''
             } else {
                 message.error(res.data.msg || '获取主机详情失败')
@@ -1164,14 +1200,23 @@ const onSaveOrCreate = async (id) => {
 
 const handleOk = () => {
     formRef.value?.validate().then(() => {
+        // 提交前校验：监控行必须选择名称，避免提交空名称导致后端静默跳过该行
+        const invalidRow = form.monitors.find((item) => !item.name)
+        if (invalidRow) {
+            message.warning('请为每个监控项选择监控组件名称，或删除该行')
+            return
+        }
         dialogLoading.value = true
         const payload = { ...form }
         delete payload.name
         payload.credential_ids = Array.isArray(form.credential_ids) ? form.credential_ids : []
         payload.default_credential_id = form.default_credential_id
         payload.credential_id = form.default_credential_id
-        payload.monitor_enabled = Boolean(form.monitor_enabled)
-        payload.monitor_uninstall_on_disable = Boolean(form.monitor_uninstall_on_disable)
+        payload.monitors = form.monitors.map((item) => ({
+            name: item.name,
+            enabled: Boolean(item.enabled),
+            uninstall_on_disable: Boolean(item.uninstall_on_disable),
+        }))
         saveOrCreateHost(payload)
             .then((res) => {
                 if (res.data.code === 200) {
@@ -1632,8 +1677,11 @@ onBeforeUnmount(() => {
     text-decoration: underline;
 }
 
-.monitor-hint {
-    color: #64748b;
+.monitor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
 }
 
 :deep(.row-collect-failed) > td {

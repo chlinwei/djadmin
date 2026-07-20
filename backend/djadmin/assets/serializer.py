@@ -156,8 +156,7 @@ class HostSerializer(ModelSerializer):
     disk_used_percent = serializers.SerializerMethodField()
     last_collect_time = serializers.SerializerMethodField()
     architecture = serializers.SerializerMethodField()
-    monitor_enabled = serializers.SerializerMethodField()
-    monitor_install_status = serializers.SerializerMethodField()
+    monitors = serializers.SerializerMethodField()
     create_time = serializers.SerializerMethodField()
     update_time = serializers.SerializerMethodField()
 
@@ -340,20 +339,22 @@ class HostSerializer(ModelSerializer):
         # 统一以 Host.collect_time 为准，避免与在线状态/子表时间戳出现口径分叉。
         return getattr(obj, 'collect_time', None)
 
-    def get_monitor_enabled(self, obj):
-        # 监控开关与 monitor_target 的 managed_enabled 保持一致。
-        target = obj.monitor_targets.filter(
-            exporter_type='node_exporter',
-        ).order_by('-id').first()
-        return bool(target and target.managed_enabled)
-
-    def get_monitor_install_status(self, obj):
-        target = obj.monitor_targets.filter(
-            exporter_type='node_exporter',
-        ).order_by('-id').first()
-        if not target:
-            return 'unknown'
-        return str(target.install_status or 'unknown')
+    def get_monitors(self, obj):
+        # 一台主机可能纳管多个监控项（exporter_type 各不相同），供主机编辑表单展示/编辑监控设置；
+        # 脚本内容等详细字段请通过 /sys/monitor/targets/{id}/ 单独获取，避免主机详情负载过大。
+        targets = obj.monitor_targets.all()
+        return [
+            {
+                'id': target.id,
+                'name': target.exporter_type,
+                'enabled': bool(target.managed_enabled),
+                'install_status': str(target.install_status or 'unknown'),
+                'install_message': target.install_message,
+                'retry_count': target.retry_count,
+                'update_time': self._serialize_datetime_like(target.update_time),
+            }
+            for target in targets
+        ]
 
     def _serialize_datetime_like(self, value):
         if value is None:

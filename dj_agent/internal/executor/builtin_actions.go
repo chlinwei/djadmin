@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	actionGetAgentVersion       = "get_agent_version"
-	actionGetHostInfo           = "get_host_info"
-	actionRunAutomationTask     = "run_automation_task"
-	actionInstallNodeExporter   = "install_node_exporter"
-	actionUninstallNodeExporter = "uninstall_node_exporter"
-	defaultAgentVersion         = "v1"
+	actionGetAgentVersion     = "get_agent_version"
+	actionGetHostInfo         = "get_host_info"
+	actionRunAutomationTask   = "run_automation_task"
+	actionStartExporter       = "start_exporter"
+	actionStopExporter        = "stop_exporter"
+	actionCheckExporterStatus = "check_exporter_status"
+	defaultAgentVersion       = "v1"
 )
 
 // runBuiltinAction 分发并执行内置操作
@@ -31,10 +32,12 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.getHostInfo(ctx, job), true
 	case actionRunAutomationTask:
 		return e.runAutomationTask(ctx, job), true
-	case actionInstallNodeExporter:
-		return e.installNodeExporter(ctx, job), true
-	case actionUninstallNodeExporter:
-		return e.uninstallNodeExporter(ctx, job), true
+	case actionStartExporter:
+		return e.startExporter(ctx, job), true
+	case actionStopExporter:
+		return e.stopExporter(ctx, job), true
+	case actionCheckExporterStatus:
+		return e.checkExporterStatus(ctx, job), true
 	default:
 		return protocol.JobResult{}, false
 	}

@@ -171,18 +171,25 @@ class Command(BaseCommand):
 
     def _sync_monitor_target_install_status(self, job, status):
         action = str(getattr(job, 'action', '') or '').strip().lower()
-        if action not in {'install_node_exporter', 'uninstall_node_exporter'}:
+        if action not in {'install_exporter', 'uninstall_exporter'}:
             return
 
         host = getattr(job, 'host', None)
         if host is None:
             return
 
+        # exporter 名称来自下发时写入 job.params 的 exporter_name，用于定位到具体的 MonitorTarget
+        # （一台主机可能同时纳管多个 exporter，不能再像旧版那样固定按 node_exporter 查找）。
+        params = getattr(job, 'params', None) or {}
+        exporter_name = str(params.get('exporter_name') or '').strip()
+        if not exporter_name:
+            return
+
         from monitor.models import MonitorTarget
 
         target = MonitorTarget.objects.filter(
             host=host,
-            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
+            exporter_type=exporter_name,
         ).first()
         if target is None:
             return
@@ -195,21 +202,45 @@ class Command(BaseCommand):
             return text if len(text) <= 300 else text[:297] + '...'
 
         if status == 'success':
+            # 成功后清零重试计数，避免下一轮操作继承历史失败次数
+            target.retry_count = 0
             target.install_status = MonitorTarget.InstallStatus.SUCCESS
-            if action == 'install_node_exporter':
+            if action == 'install_exporter':
                 target.managed_enabled = True
-                target.install_message = _clip(stdout or 'node_exporter 安装成功')
+                target.install_message = _clip(stdout or f'{exporter_name} 安装成功')
             else:
                 target.managed_enabled = False
-                target.install_message = _clip(stdout or 'node_exporter 卸载成功')
-        else:
-            target.install_status = MonitorTarget.InstallStatus.FAILED
-            if action == 'install_node_exporter':
-                target.install_message = _clip(error_message or stderr or 'node_exporter 安装失败')
-            else:
-                target.install_message = _clip(error_message or stderr or 'node_exporter 卸载失败')
+                target.install_message = _clip(stdout or f'{exporter_name} 卸载成功')
+            target.save(update_fields=['retry_count', 'install_status', 'managed_enabled', 'install_message', 'update_time'])
+            return
 
-        target.save(update_fields=['install_status', 'managed_enabled', 'install_message', 'update_time'])
+        # 失败/超时/取消：仅当该任务是系统自动下发（非人工点击"重试"）时才自动重新下发同类型任务，
+        # 达到上限或本次是人工重试时立即终止，状态保持 FAILED，需人工在前端再次点击"重试"。
+        # 人工重试必须只尝试 1 次，不能借着失败重新落入自动重试链，否则用户点一次"重试"
+        # 背后却悄悄执行了最多 3 次安装/卸载，行为与预期不符。
+        is_manual_retry = bool(params.get('manual_retry'))
+        failure_reason = _clip(error_message or stderr or (f'{exporter_name} 安装失败' if action == 'install_exporter' else f'{exporter_name} 卸载失败'))
+        target.retry_count = (target.retry_count or 0) + 1
+        if not is_manual_retry and target.retry_count < MonitorTarget.MAX_AUTO_RETRY:
+            target.install_status = MonitorTarget.InstallStatus.PENDING
+            target.install_message = f'{failure_reason}，自动重试中（第 {target.retry_count + 1}/{MonitorTarget.MAX_AUTO_RETRY} 次尝试）'
+            target.save(update_fields=['retry_count', 'install_status', 'install_message', 'update_time'])
+
+            from assets.views import dispatch_exporter_install_job, dispatch_exporter_uninstall_job
+
+            if action == 'install_exporter':
+                dispatch_exporter_install_job(host, target)
+            else:
+                dispatch_exporter_uninstall_job(host, target)
+            return
+
+        if is_manual_retry:
+            target.install_message = f'{failure_reason}，人工重试失败，如需再次尝试请再次点击"重试"'
+        else:
+            target.install_message = f'{failure_reason}，已自动重试 {MonitorTarget.MAX_AUTO_RETRY} 次仍失败，需人工重试'
+        target.install_status = MonitorTarget.InstallStatus.FAILED
+        target.save(update_fields=['retry_count', 'install_status', 'install_message', 'update_time'])
+
     
     def _handle_host_snapshot(self, payload):
         """处理 agent 主机快照消息，解析 result_data 写入 HostSystem/HostHardware。"""

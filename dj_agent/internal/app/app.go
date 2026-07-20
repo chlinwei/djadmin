@@ -71,6 +71,8 @@ func (a *App) Run() error {
 	slog.Info("app run begin", "agent_id", a.cfg.AgentID)
 	a.markStarted()
 	exec := executor.New(0)
+	// 注入 backend 地址，供内置安装脚本从本地软件仓库（media）下载二进制包
+	exec.BackendBaseURL = a.cfg.BackendBaseURL
 
 	// 连接 RabbitMQ - 用于任务下发、终端命令、上报
 	rabbitmqURL := strings.TrimSpace(os.Getenv("DJ_AGENT_RABBITMQ_URL"))

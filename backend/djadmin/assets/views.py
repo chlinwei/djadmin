@@ -674,6 +674,219 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         return Response_200(data={"deleted_count": deleted_count})
 
 
+def dispatch_exporter_install_job(host, monitor_target, manual=False):
+    """下发监控组件（exporter）安装任务；供主机监控设置及自动/人工重试共用。
+    安装/卸载已彻底改为复用“自动化任务”功能（automation.PlaybookTemplate + automation.AutomationTask），
+    不再由 dj-agent 按 manage_script 驱动：这里只是创建一个范围收窄到单台主机的
+    AutomationExecutionJob，并复用 automation 模块现成的本地后台 runner 执行，
+    exporter 名称/版本/校验值/systemd unit 内容通过 extra_vars 传给 playbook。
+    manual=True 表示由用户在前端点击“重试”手动触发：这类任务失败后不进入 runagentconsumer 的
+    自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。"""
+    exporter_name = monitor_target.exporter_type
+    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    if agent_id == '':
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'主机未绑定 agent 实例，无法下发 {exporter_name} 安装任务'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    from monitor.models import SoftwarePackage
+
+    latest_pkg = SoftwarePackage.objects.filter(
+        name=exporter_name, enabled=True,
+    ).order_by('-create_time').first()
+    if latest_pkg is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = (
+            f'本地软件仓库缺少 {exporter_name} 的启用安装包，无法下发安装任务'
+            '（dj-agent 仅允许通过 backend 下载安装包，请先在监控软件仓库上传/启用对应包）'
+        )
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    if latest_pkg.install_task_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 未配置安装任务（Playbook），请在监控软件仓库中选择'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    task = latest_pkg.install_task
+    if task is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的安装任务已不存在，请重新在监控软件仓库中选择'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+    if not task.enabled:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的安装任务（{task.name}）已被禁用'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    template = task.playbook_template
+    if template is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的安装任务（{task.name}）未配置 Playbook 模板内容'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    # 同一监控目标若已有排队/运行中的安装任务，则不重复下发（按上一次记录的 AutomationExecutionJob 判断）。
+    from automation.models import AutomationExecutionJob
+    if monitor_target.last_install_job_id and AutomationExecutionJob.objects.filter(
+        id=monitor_target.last_install_job_id,
+        status__in=[AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING],
+    ).exists():
+        monitor_target.install_status = monitor_target.InstallStatus.PENDING
+        monitor_target.install_message = f'安装任务已存在（automation job #{monitor_target.last_install_job_id}）'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    from automation.executor import build_inventory_snapshot
+    from automation.local_runner import run_job_in_background
+
+    checksums = {}
+    for pkg in SoftwarePackage.objects.filter(
+        name=exporter_name, version=latest_pkg.version, enabled=True,
+    ):
+        if pkg.sha256:
+            checksums[f'{pkg.os}-{pkg.arch}'] = pkg.sha256
+
+    extra_vars = {
+        'exporter_name': exporter_name,
+        'exporter_version': latest_pkg.version,
+        'service_name': latest_pkg.service_unit_name,
+        'service_file_content': latest_pkg.service_file_content,
+        'package_base_path': 'media/monitor_packages',
+        'checksums': checksums,
+    }
+
+    job = AutomationExecutionJob.objects.create(
+        task=task,
+        status=AutomationExecutionJob.Status.PENDING,
+        trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
+        inventory_snapshot=build_inventory_snapshot(host_ids=[host.id], group_ids=[]),
+        task_name_snapshot=task.name or '',
+        template_name_snapshot=template.name or '',
+        template_content_snapshot=template.content or '',
+        extra_vars=extra_vars,
+        result_summary={'message': f'{exporter_name} 安装任务已创建，等待后台 runner 下发（manual_retry={bool(manual)}）'},
+        start_time=timezone.now(),
+        become_enabled_snapshot=task.become_enabled,
+        become_method_snapshot=task.become_method,
+        become_user_snapshot=task.become_user,
+    )
+
+    try:
+        run_job_in_background(int(job.id))  # type: ignore[attr-defined]  # objects.create() 返回的实例已保存，pk 必为非空，Pylance 无法识别
+        monitor_target.install_status = monitor_target.InstallStatus.PENDING
+        monitor_target.install_message = f'已下发安装任务（automation job #{job.id}）'  # type: ignore[attr-defined]
+        monitor_target.last_install_job_id = job.id  # type: ignore[attr-defined]
+    except Exception as exc:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'下发安装任务失败：{exc}'
+        job.status = AutomationExecutionJob.Status.FAILED
+        job.result_summary = {'message': str(exc)}
+        job.save(update_fields=['status', 'result_summary', 'update_time'])
+
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'update_time'])
+
+
+def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
+    """下发监控组件（exporter）卸载任务（停止服务并清理安装文件）；供主机监控设置及自动/人工重试共用。
+    同 dispatch_exporter_install_job，改为下发一个范围收窄到单台主机的 AutomationExecutionJob，
+    使用监控软件仓库该 exporter 绑定的 uninstall_task（Playbook）执行。manual 含义同上。"""
+    exporter_name = monitor_target.exporter_type
+    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    if agent_id == '':
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'主机未绑定 agent 实例，无法下发 {exporter_name} 卸载任务'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    from monitor.models import SoftwarePackage
+
+    latest_pkg = SoftwarePackage.objects.filter(
+        name=exporter_name, enabled=True,
+    ).order_by('-create_time').first()
+    if latest_pkg is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'本地软件仓库缺少 {exporter_name} 的启用安装包，无法下发卸载任务'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    if latest_pkg.uninstall_task_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 未配置卸载任务（Playbook），请在监控软件仓库中选择'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    task = latest_pkg.uninstall_task
+    if task is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务已不存在，请重新在监控软件仓库中选择'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+    if not task.enabled:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务（{task.name}）已被禁用'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    template = task.playbook_template
+    if template is None:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务（{task.name}）未配置 Playbook 模板内容'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    from automation.models import AutomationExecutionJob
+    if monitor_target.last_install_job_id and AutomationExecutionJob.objects.filter(
+        id=monitor_target.last_install_job_id,
+        status__in=[AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING],
+    ).exists():
+        monitor_target.install_status = monitor_target.InstallStatus.PENDING
+        monitor_target.install_message = f'卸载任务已存在（automation job #{monitor_target.last_install_job_id}）'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    from automation.executor import build_inventory_snapshot
+    from automation.local_runner import run_job_in_background
+
+    extra_vars = {
+        'exporter_name': exporter_name,
+        'service_name': latest_pkg.service_unit_name,
+    }
+
+    job = AutomationExecutionJob.objects.create(
+        task=task,
+        status=AutomationExecutionJob.Status.PENDING,
+        trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
+        inventory_snapshot=build_inventory_snapshot(host_ids=[host.id], group_ids=[]),
+        task_name_snapshot=task.name or '',
+        template_name_snapshot=template.name or '',
+        template_content_snapshot=template.content or '',
+        extra_vars=extra_vars,
+        result_summary={'message': f'{exporter_name} 卸载任务已创建，等待后台 runner 下发（manual_retry={bool(manual)}）'},
+        start_time=timezone.now(),
+        become_enabled_snapshot=task.become_enabled,
+        become_method_snapshot=task.become_method,
+        become_user_snapshot=task.become_user,
+    )
+
+    try:
+        run_job_in_background(int(job.id))  # type: ignore[attr-defined]  # objects.create() 返回的实例已保存，pk 必为非空，Pylance 无法识别
+        monitor_target.install_status = monitor_target.InstallStatus.PENDING
+        monitor_target.install_message = f'已下发卸载任务（automation job #{job.id}）'  # type: ignore[attr-defined]
+        monitor_target.last_install_job_id = job.id  # type: ignore[attr-defined]
+    except Exception as exc:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'下发卸载任务失败：{exc}'
+        job.status = AutomationExecutionJob.Status.FAILED
+        job.result_summary = {'message': str(exc)}
+        job.save(update_fields=['status', 'result_summary', 'update_time'])
+
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'update_time'])
+
+
 class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
     queryset = Host.objects.all()
     serializer_class = HostSerializer
@@ -730,7 +943,8 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
         queryset = Host.objects.select_related('group').prefetch_related(
             Prefetch('hostcredential_set', queryset=HostCredential.objects.select_related('credential').filter(is_default=True)),
-            Prefetch('monitor_targets', queryset=MonitorTarget.objects.filter(exporter_type='node_exporter').order_by('-id')),
+            # 一台主机可能纳管多个 exporter（node_exporter/自定义 exporter 等），不再按 node_exporter 过滤
+            Prefetch('monitor_targets', queryset=MonitorTarget.objects.order_by('-id')),
             'hardware',
             'system',
             'disks',
@@ -783,12 +997,11 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):
-        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=True)
-        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
+        monitors_payload = self._resolve_monitors_from_request(request)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         host = serializer.save()
-        self._sync_monitor_state_for_host(host, monitor_enabled, monitor_uninstall_on_disable)
+        self._sync_monitors_for_host(host, monitors_payload)
         return Response_200(data=serializer.data)
 
     def list(self, request, *args, **kwargs):
@@ -822,8 +1035,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=None)
-        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
+        monitors_payload = self._resolve_monitors_from_request(request)
         # 主机连接签名：IP + SSH 端口 + 默认凭证。
         previous_signature = (
             str(instance.ip or ''),
@@ -842,13 +1054,12 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         if previous_signature != current_signature:
             # 连接参数变化后，已有 SSH 通道不再可信，需强制重建。
             self._force_close_webssh_sessions_for_hosts([instance.id])
-        self._sync_monitor_state_for_host(instance, monitor_enabled, monitor_uninstall_on_disable)
+        self._sync_monitors_for_host(instance, monitors_payload)
         return Response_200(data=serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
-        monitor_enabled = self._resolve_monitor_enabled_from_request(request, default_value=None)
-        monitor_uninstall_on_disable = self._resolve_monitor_uninstall_on_disable_from_request(request, default_value=False)
+        monitors_payload = self._resolve_monitors_from_request(request)
         previous_signature = (
             str(instance.ip or ''),
             int(instance.port or 22),
@@ -865,7 +1076,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         )
         if previous_signature != current_signature:
             self._force_close_webssh_sessions_for_hosts([instance.id])
-        self._sync_monitor_state_for_host(instance, monitor_enabled, monitor_uninstall_on_disable)
+        self._sync_monitors_for_host(instance, monitors_payload)
         return Response_200(data=serializer.data)
 
     @staticmethod
@@ -881,154 +1092,79 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             return False
         return default_value
 
-    def _resolve_monitor_enabled_from_request(self, request, default_value=None):
-        raw_value = request.data.get('monitor_enabled', None)
-        return self._parse_bool_flag(raw_value, default_value=default_value)
+    def _resolve_monitors_from_request(self, request):
+        """解析请求中的 monitors 数组：[{name, enabled, uninstall_on_disable}, ...]。
+        请求体中不包含 'monitors' 键时返回 None，表示本次请求不涉及监控配置改动（如仅编辑主机基础信息），
+        避免每次编辑主机都重新遍历/下发监控任务。"""
+        if 'monitors' not in request.data:
+            return None
+        raw_list = request.data.get('monitors') or []
+        if not isinstance(raw_list, list):
+            return []
+        monitors = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            if not name:
+                continue
+            monitors.append({
+                'name': name,
+                'enabled': self._parse_bool_flag(item.get('enabled'), default_value=True),
+                'uninstall_on_disable': self._parse_bool_flag(item.get('uninstall_on_disable'), default_value=False),
+            })
+        return monitors
 
-    def _resolve_monitor_uninstall_on_disable_from_request(self, request, default_value=False):
-        raw_value = request.data.get('monitor_uninstall_on_disable', None)
-        return self._parse_bool_flag(raw_value, default_value=default_value)
-
-    def _sync_monitor_state_for_host(self, host, monitor_enabled, monitor_uninstall_on_disable=False):
-        if monitor_enabled is None:
+    def _sync_monitors_for_host(self, host, monitors_payload):
+        """按 monitors 数组同步该主机纳管的监控目标（每个 name 对应一个 MonitorTarget）：
+        安装/卸载所需的 Playbook 任务、systemd unit 内容均直接来自监控软件仓库（SoftwarePackage）
+        在下发时实时读取，MonitorTarget 本身不再保留脚本副本；仅在开启状态发生切换（或新建即开启）
+        时自动下发安装任务，关闭且勾选 uninstall_on_disable 时下发卸载任务；未在本次请求中提交的
+        已有监控目标保持原状，不做隐式禁用/删除（多监控项独立维护，编辑其中一个不影响其他）。"""
+        if monitors_payload is None:
             return
 
         from monitor.models import MonitorTarget
 
-        target, created = MonitorTarget.objects.get_or_create(
-            host=host,
-            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
-            defaults={
-                'exporter_port': 9100,
-                'managed_enabled': bool(monitor_enabled),
-            },
-        )
+        for entry in monitors_payload:
+            name = entry['name']
+            enabled = bool(entry['enabled'])
+            uninstall_on_disable = bool(entry['uninstall_on_disable'])
 
-        previous_enabled = bool(target.managed_enabled)
-        if previous_enabled != bool(monitor_enabled):
-            target.managed_enabled = bool(monitor_enabled)
-            target.save(update_fields=['managed_enabled', 'update_time'])
+            target, created = MonitorTarget.objects.get_or_create(
+                host=host,
+                exporter_type=name,
+                defaults={
+                    'managed_enabled': enabled,
+                },
+            )
 
-        if not bool(monitor_enabled):
-            target.install_message = '已关闭监控（未卸载 node_exporter）'
-            target.save(update_fields=['install_message', 'update_time'])
-            if previous_enabled and bool(monitor_uninstall_on_disable):
-                self._dispatch_node_exporter_uninstall_job(host, target)
-            return
+            update_fields = []
 
-        # 仅在首次开启或新建监控目标时自动触发安装，避免每次编辑主机重复下发。
-        if created or not previous_enabled:
-            self._dispatch_node_exporter_install_job(host, target)
+            previous_enabled = bool(target.managed_enabled)
+            if previous_enabled != enabled:
+                target.managed_enabled = enabled
+                update_fields.append('managed_enabled')
 
-    def _dispatch_node_exporter_install_job(self, host, monitor_target):
-        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
-        if agent_id == '':
-            monitor_target.install_status = monitor_target.InstallStatus.FAILED
-            monitor_target.install_message = '主机未绑定 agent 实例，无法下发 node_exporter 安装任务'
-            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-            return
+            if update_fields:
+                target.save(update_fields=update_fields + ['update_time'])
 
-        existing_job = AgentJob.objects.filter(
-            host=host,
-            action='install_node_exporter',
-            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
-        ).first()
-        if existing_job is not None:
-            monitor_target.install_status = monitor_target.InstallStatus.PENDING
-            monitor_target.install_message = f'安装任务已存在（{existing_job.job_id}）'
-            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-            return
+            if not enabled:
+                target.install_message = f'已关闭监控（未卸载 {name}）'
+                target.save(update_fields=['install_message', 'update_time'])
+                if previous_enabled and uninstall_on_disable:
+                    # 新一轮卸载周期：重置自动重试计数，确保重试上限从 0 开始计算
+                    target.retry_count = 0
+                    target.save(update_fields=['retry_count', 'update_time'])
+                    dispatch_exporter_uninstall_job(host, target)
+                continue
 
-        job = AgentJob.objects.create(
-            job_id=f'install-node-exporter-{uuid.uuid4().hex[:16]}',
-            agent_id=agent_id,
-            host=host,
-            job_type='custom',
-            action='install_node_exporter',
-            params={
-                'exporter_port': int(monitor_target.exporter_port or 9100),
-            },
-            timeout_seconds=600,
-            status=AgentJob.JobStatus.QUEUED,
-        )
-
-        _emit_agent_job_event(job, 'new', {
-            'jid': job.job_id,
-            'tgt': job.agent_id,
-            'tgt_type': 'agent_id',
-            'fun': job.action,
-            'arg': job.params,
-            'minions': [job.agent_id],
-        })
-
-        try:
-            _publish_agent_job_to_mq(job)
-            monitor_target.install_status = monitor_target.InstallStatus.PENDING
-            monitor_target.install_message = f'已下发安装任务（{job.job_id}）'
-        except Exception as exc:
-            monitor_target.install_status = monitor_target.InstallStatus.FAILED
-            monitor_target.install_message = f'下发安装任务失败：{exc}'
-            job.status = AgentJob.JobStatus.FAILED
-            job.error_message = str(exc)
-            job.finished_at = timezone.now()
-            job.save(update_fields=['status', 'error_message', 'finished_at', 'update_time'])
-
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-
-    def _dispatch_node_exporter_uninstall_job(self, host, monitor_target):
-        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
-        if agent_id == '':
-            monitor_target.install_status = monitor_target.InstallStatus.FAILED
-            monitor_target.install_message = '主机未绑定 agent 实例，无法下发 node_exporter 卸载任务'
-            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-            return
-
-        existing_job = AgentJob.objects.filter(
-            host=host,
-            action='uninstall_node_exporter',
-            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
-        ).first()
-        if existing_job is not None:
-            monitor_target.install_status = monitor_target.InstallStatus.PENDING
-            monitor_target.install_message = f'卸载任务已存在（{existing_job.job_id}）'
-            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-            return
-
-        job = AgentJob.objects.create(
-            job_id=f'uninstall-node-exporter-{uuid.uuid4().hex[:16]}',
-            agent_id=agent_id,
-            host=host,
-            job_type='custom',
-            action='uninstall_node_exporter',
-            params={
-                'exporter_port': int(monitor_target.exporter_port or 9100),
-            },
-            timeout_seconds=600,
-            status=AgentJob.JobStatus.QUEUED,
-        )
-
-        _emit_agent_job_event(job, 'new', {
-            'jid': job.job_id,
-            'tgt': job.agent_id,
-            'tgt_type': 'agent_id',
-            'fun': job.action,
-            'arg': job.params,
-            'minions': [job.agent_id],
-        })
-
-        try:
-            _publish_agent_job_to_mq(job)
-            monitor_target.install_status = monitor_target.InstallStatus.PENDING
-            monitor_target.install_message = f'已下发卸载任务（{job.job_id}）'
-        except Exception as exc:
-            monitor_target.install_status = monitor_target.InstallStatus.FAILED
-            monitor_target.install_message = f'下发卸载任务失败：{exc}'
-            job.status = AgentJob.JobStatus.FAILED
-            job.error_message = str(exc)
-            job.finished_at = timezone.now()
-            job.save(update_fields=['status', 'error_message', 'finished_at', 'update_time'])
-
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            # 仅在首次开启或新建监控目标时自动触发安装，避免每次编辑主机重复下发。
+            if created or not previous_enabled:
+                # 新一轮安装周期：重置自动重试计数
+                target.retry_count = 0
+                target.save(update_fields=['retry_count', 'update_time'])
+                dispatch_exporter_install_job(host, target)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

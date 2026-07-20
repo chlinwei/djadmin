@@ -427,3 +427,46 @@ def cleanup_orphan_temp_credentials():
     print(f'[CLEANUP] Orphan temp credentials cleaned: {cleaned_count}')
     logger.info('[CLEANUP] Orphan temp credentials cleaned: %d', cleaned_count)
     return cleaned_count
+
+
+@shared_task(name='assets.sync_monitor_target_status_from_automation_jobs')
+def sync_monitor_target_status_from_automation_jobs():
+    """定期把 MonitorTarget.last_install_job_id 指向的 AutomationExecutionJob 最终状态
+    同步回 install_status/install_message。
+
+    背景：安装/卸载已改为下发到独立的“自动化任务”执行链路（AutomationExecutionJob，
+    在本地后台线程里异步跑 ansible playbook），dispatch_exporter_install_job/uninstall_job
+    下发后立即把 install_status 置为 pending 并返回，不等待、也不会被同步回调通知结果。
+    若不主动轮询同步，install_status 会永远停在 pending：前端“重试”按钮只在
+    install_status == 'failed' 时可点，用户将永远无法自行恢复。
+    AutomationExecutionJob 自身的 pending/running 超时兜底由 automation.check_and_fail_stale_jobs
+    负责（会把卡住的任务标记为 failed），这里只需要在下一轮轮询里把已经有终态
+    （success/failed/cancelled）的任务结果映射回 MonitorTarget。"""
+    from monitor.models import MonitorTarget
+    from automation.models import AutomationExecutionJob
+
+    pending_targets = MonitorTarget.objects.filter(
+        install_status=MonitorTarget.InstallStatus.PENDING,
+        last_install_job_id__isnull=False,
+    )
+    synced_count = 0
+    for target in pending_targets:
+        job = AutomationExecutionJob.objects.filter(id=target.last_install_job_id).first()
+        if job is None:
+            continue
+        if job.status == AutomationExecutionJob.Status.SUCCESS:
+            target.install_status = MonitorTarget.InstallStatus.SUCCESS
+            target.install_message = f'automation job #{job.id} 执行成功'  # type: ignore[attr-defined]
+            target.retry_count = 0
+            target.save(update_fields=['install_status', 'install_message', 'retry_count', 'update_time'])
+            synced_count += 1
+        elif job.status in (AutomationExecutionJob.Status.FAILED, AutomationExecutionJob.Status.CANCELLED):
+            summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+            target.install_status = MonitorTarget.InstallStatus.FAILED
+            target.install_message = f'automation job #{job.id} 执行失败：{summary.get("message", "")}'  # type: ignore[attr-defined]
+            target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            synced_count += 1
+
+    if synced_count:
+        print(f'[SYNC_MONITOR_TARGET] synced={synced_count}')
+    return synced_count

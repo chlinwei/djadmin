@@ -8,8 +8,25 @@ from .models import Credential, Application, HostGroup, Host, HostCredential, Ho
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
 from .management.commands.runagentconsumer import Command as AgentConsumerCommand
-from monitor.models import MonitorTarget
+from monitor.models import MonitorTarget, SoftwarePackage
+from automation.models import AutomationExecutionJob, AutomationTask, PlaybookTemplate
 from user.models import SysUser
+
+
+def _make_playbook_task(name, become_enabled=True):
+    """安装/卸载 Playbook 任务的测试夹具：创建一个启用的 AutomationTask + PlaybookTemplate，
+    供 SoftwarePackage.install_task/uninstall_task 绑定使用。"""
+    template = PlaybookTemplate.objects.create(
+        name=f'{name}-template',
+        content='- hosts: all\n  tasks:\n    - debug:\n        msg: noop\n',
+    )
+    return AutomationTask.objects.create(
+        name=name,
+        playbook_template=template,
+        enabled=True,
+        become_enabled=become_enabled,
+    )
+
 
 
 def _get_token(user: SysUser) -> str:
@@ -328,13 +345,19 @@ class HostTest(BaseTestCase):
         self.assertResponseOK(res)
         self.assertTrue(Host.objects.filter(instance_name='new_host').exists())
 
-    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
-    def test_create_host_default_monitor_enabled_should_enqueue_node_exporter_install(self, _mock_publish):
-        """新增主机默认开启监控，并自动下发 node_exporter 安装任务。"""
+    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, _mock_run_job):
+        """新增主机时通过 monitors 数组纳管 node_exporter 并开启，应下发安装用 automation job。"""
+        install_task = _make_playbook_task('node_exporter-install')
+        SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_task=install_task,
+        )
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-01',
             'ip': '192.168.1.101',
             'port': 22,
+            'monitors': [{'name': 'node_exporter', 'enabled': True}],
         }, format='json')
         self.assertResponseOK(res)
 
@@ -343,15 +366,53 @@ class HostTest(BaseTestCase):
         self.assertTrue(target.managed_enabled)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发安装任务' in target.install_message)
+        self.assertIsNotNone(target.last_install_job_id)
+        self.assertTrue(AutomationExecutionJob.objects.filter(id=target.last_install_job_id, task=install_task).exists())  # type: ignore[attr-defined]
 
-    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
-    def test_create_host_monitor_disabled_should_not_enqueue_install(self, _mock_publish):
-        """新增主机关闭监控时，不下发 node_exporter 安装任务。"""
+    def test_dispatch_exporter_install_job_without_local_package_should_reject(self):
+        """dispatch_exporter_install_job 在本地软件仓库没有该 exporter 的启用包时应直接拒绝下发，
+        不应创建任何 automation job。使用 node_exporter 以外的 exporter 名称，
+        避开迁移预置的默认 node_exporter 软件包，确保命中“本地无包”这一分支。"""
+        from assets.views import dispatch_exporter_install_job
+
+        host = Host.objects.create(instance_name='agent-host-no-pkg', ip='192.168.1.199', port=22)
+        target = MonitorTarget.objects.create(
+            host=host,
+            exporter_type='custom_exporter_without_pkg',
+            managed_enabled=True,
+        )
+        dispatch_exporter_install_job(host, target)
+
+        target.refresh_from_db()
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.FAILED)
+        self.assertIn('本地软件仓库缺少', target.install_message)
+        self.assertIsNone(target.last_install_job_id)
+
+    def test_create_host_without_monitors_payload_should_not_create_monitor_target(self):
+        """未提交 monitors 数组时不应自动创建任何监控目标（不再有默认 node_exporter 隐式行为）。"""
+        res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-00',
+            'ip': '192.168.1.100',
+            'port': 22,
+        }, format='json')
+        self.assertResponseOK(res)
+
+        host = Host.objects.get(instance_name='agent-host-00')
+        self.assertFalse(MonitorTarget.objects.filter(host=host).exists())
+
+    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    def test_create_host_monitor_disabled_should_not_enqueue_install(self, _mock_run_job):
+        """monitors 数组中 enabled=False 时，不下发安装任务。"""
+        install_task = _make_playbook_task('node_exporter-install-2')
+        SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_task=install_task,
+        )
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-02',
             'ip': '192.168.1.102',
             'port': 22,
-            'monitor_enabled': False,
+            'monitors': [{'name': 'node_exporter', 'enabled': False}],
         }, format='json')
         self.assertResponseOK(res)
 
@@ -360,21 +421,35 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertFalse('已下发安装任务' in target.install_message)
 
-    @patch('assets.views._publish_agent_job_to_mq', return_value=None)
-    def test_disable_monitor_with_uninstall_option_should_enqueue_uninstall_job(self, _mock_publish):
-        """监控从开启切到关闭且勾选卸载时，应下发 node_exporter 卸载任务。"""
+    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    def test_disable_monitor_with_uninstall_option_should_enqueue_uninstall_job(self, _mock_run_job):
+        """监控从开启切到关闭且勾选 uninstall_on_disable 时，应下发卸载任务。"""
+        install_task = _make_playbook_task('node_exporter-install-3')
+        uninstall_task = _make_playbook_task('node_exporter-uninstall-3')
+        SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_task=install_task, uninstall_task=uninstall_task,
+        )
         create_res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-03',
             'ip': '192.168.1.103',
             'port': 22,
-            'monitor_enabled': True,
+            'monitors': [{'name': 'node_exporter', 'enabled': True}],
         }, format='json')
         self.assertResponseOK(create_res)
         host_id = create_res.json()['data']['id']
 
+        # 模拟安装 automation job 已经真实执行完成（生产环境中后台线程很快会把状态从
+        # pending 推进到 success），否则 dispatch_exporter_uninstall_job 的“上一个任务
+        # 仍在进行中”去重检查会误判为安装还没结束而拒绝下发卸载。
+        host = Host.objects.get(id=host_id)
+        pre_target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
+        AutomationExecutionJob.objects.filter(id=pre_target.last_install_job_id).update(  # type: ignore[attr-defined]
+            status=AutomationExecutionJob.Status.SUCCESS,
+        )
+
         patch_res = self.client.patch(f'/assets/hosts/{host_id}/', {
-            'monitor_enabled': False,
-            'monitor_uninstall_on_disable': True,
+            'monitors': [{'name': 'node_exporter', 'enabled': False, 'uninstall_on_disable': True}],
         }, format='json')
         self.assertResponseOK(patch_res)
 
@@ -383,9 +458,10 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发卸载任务' in target.install_message)
+        self.assertTrue(AutomationExecutionJob.objects.filter(id=target.last_install_job_id, task=uninstall_task).exists())  # type: ignore[attr-defined]
 
     def test_agent_consumer_should_sync_monitor_target_status_from_job_result(self):
-        """agent 上报安装结果后，应同步 monitor_target 状态。"""
+        """agent 上报安装结果后，应按 job.params 中的 exporter_name 同步对应 monitor_target 状态。"""
         host = Host.objects.create(instance_name='agent-host-04', ip='192.168.1.104', port=22)
         target = MonitorTarget.objects.create(
             host=host,
@@ -395,12 +471,12 @@ class HostTest(BaseTestCase):
             install_message='已下发安装任务',
         )
         job = AgentJob.objects.create(
-            job_id='job-install-node-exporter-1',
+            job_id='job-install-exporter-1',
             agent_id='agent-host-04',
             host=host,
             job_type='custom',
-            action='install_node_exporter',
-            params={'exporter_port': 9100},
+            action='install_exporter',
+            params={'exporter_name': 'node_exporter'},
             status=AgentJob.JobStatus.RUNNING,
             stdout='node_exporter installed',
             stderr='',

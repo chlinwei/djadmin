@@ -244,6 +244,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'automation.check_and_fail_stale_jobs',
         'schedule': 60.0,  # 每分钟运行一次，检查超时的pending和running任务
     },
+    'sync-monitor-target-status-from-automation-jobs': {
+        'task': 'assets.sync_monitor_target_status_from_automation_jobs',
+        'schedule': 60.0,  # 每分钟运行一次，把安装/卸载的 automation job 终态同步回 MonitorTarget
+    },
 }
 
 # Transfer service

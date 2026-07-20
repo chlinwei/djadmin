@@ -98,65 +98,77 @@ func TestResolveAutomationWorkDir_DefaultToTmp(t *testing.T) {
 	}
 }
 
-func TestResolveNodeExporterPort_Default(t *testing.T) {
-	port, err := resolveNodeExporterPort(map[string]any{})
-	if err != nil {
-		t.Fatalf("resolveNodeExporterPort returned error: %v", err)
-	}
-	if port != defaultNodeExporterPort {
-		t.Fatalf("expected default port %d, got %d", defaultNodeExporterPort, port)
-	}
-}
-
-func TestResolveNodeExporterPort_Invalid(t *testing.T) {
-	_, err := resolveNodeExporterPort(map[string]any{"exporter_port": 70000})
-	if err == nil {
-		t.Fatalf("expected invalid port error")
-	}
-}
-
-func TestResolveNodeExporterVersion_FromParams(t *testing.T) {
-	version := resolveNodeExporterVersion(map[string]any{"version": "1.7.0"})
-	if version != "1.7.0" {
-		t.Fatalf("expected version 1.7.0, got %s", version)
-	}
-}
-
-func TestResolveNodeExporterVersion_StripsVPrefix(t *testing.T) {
-	version := resolveNodeExporterVersion(map[string]any{"version": "v1.8.2"})
-	if version != "1.8.2" {
-		t.Fatalf("expected version 1.8.2, got %s", version)
-	}
-}
-
-func TestRun_CustomInstallNodeExporter_ShouldHandleBuiltin(t *testing.T) {
+func TestRun_CustomStartExporter_MissingServiceName_ShouldFail(t *testing.T) {
 	e := New(1 * time.Second)
 	job := protocol.Job{
-		JobID:  "job-install-node-exporter",
+		JobID:  "job-start-exporter",
 		Type:   protocol.TaskTypeCustom,
-		Action: actionInstallNodeExporter,
-		Params: map[string]any{"exporter_port": 0},
+		Action: actionStartExporter,
+		Params: map[string]any{"exporter_name": "node_exporter"},
 	}
 
 	res, err := e.Run(context.Background(), job)
 	if err != nil {
 		t.Fatalf("run should not return transport error, got: %v", err)
 	}
-	if res.Action != actionInstallNodeExporter {
+	if res.Action != actionStartExporter {
 		t.Fatalf("unexpected action: %s", res.Action)
 	}
 	if res.Status != protocol.StatusFailed {
-		t.Fatalf("expected failed status for invalid params, got: %s", res.Status)
+		t.Fatalf("expected failed status when service_name missing, got: %s", res.Status)
 	}
 }
 
-func TestValidateJobByType_CustomInstallNodeExporter_NoParamsAllowed(t *testing.T) {
+func TestValidateJobByType_CustomStartExporter_RequiresParams(t *testing.T) {
 	err := validateJobByType(protocol.Job{
-		JobID:  "job-install-validate",
+		JobID:  "job-start-validate",
 		Type:   protocol.TaskTypeCustom,
-		Action: actionInstallNodeExporter,
+		Action: actionStartExporter,
 	})
+	if err == nil {
+		t.Fatalf("expected validation error when params is empty for generic exporter action")
+	}
+}
+
+func TestResolveServiceName_Valid(t *testing.T) {
+	name, err := resolveServiceName(map[string]any{"service_name": "node_exporter.service"})
 	if err != nil {
-		t.Fatalf("expected no validation error, got: %v", err)
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if name != "node_exporter.service" {
+		t.Fatalf("unexpected service name: %s", name)
+	}
+}
+
+func TestResolveServiceName_Missing_ShouldFail(t *testing.T) {
+	if _, err := resolveServiceName(map[string]any{}); err == nil {
+		t.Fatalf("expected error when service_name is missing")
+	}
+}
+
+func TestResolveServiceName_InvalidFormat_ShouldFail(t *testing.T) {
+	cases := []string{"node_exporter", "node_exporter.service; rm -rf /", "../etc/passwd.service", ""}
+	for _, raw := range cases {
+		if _, err := resolveServiceName(map[string]any{"service_name": raw}); err == nil {
+			t.Fatalf("expected error for invalid service_name %q", raw)
+		}
+	}
+}
+
+func TestRun_CustomCheckExporterStatus_InvalidServiceName_ShouldFail(t *testing.T) {
+	e := New(1 * time.Second)
+	job := protocol.Job{
+		JobID:  "job-status-exporter-invalid",
+		Type:   protocol.TaskTypeCustom,
+		Action: actionCheckExporterStatus,
+		Params: map[string]any{"service_name": "not a service"},
+	}
+
+	res, err := e.Run(context.Background(), job)
+	if err != nil {
+		t.Fatalf("run should not return transport error, got: %v", err)
+	}
+	if res.Status != protocol.StatusFailed {
+		t.Fatalf("expected failed status for invalid service_name, got: %s", res.Status)
 	}
 }

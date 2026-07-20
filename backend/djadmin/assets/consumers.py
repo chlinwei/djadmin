@@ -14,7 +14,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework_jwt.settings import api_settings
 
-from .models import Host, HostCredential, WebSSHSessionLog
+from .models import Host, HostCredential, WebSSHSessionLog, Credential
 from .credential_crypto import decrypt_secret
 from .webssh_runtime import WebSSHRuntimeRegistry
 from sys_config.models import SysConfig
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover
 
 
 class HostWebSSHConsumer(AsyncWebsocketConsumer):
-    """WebSSH over agent bridge (frontend WS <-> backend WS consumer <-> agent PTY)."""
+    """WebSSH 终端：前端 WS <-> 后端 consumer <-> asyncssh 直连目标主机 SSH。"""
 
     async def connect(self):
         route = self.scope.get('url_route')
@@ -47,11 +47,9 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.ssh_conn = None
         self.ssh_process = None
         self.ssh_output_task = None
-        self.agent_id = ''
         self.selected_credential_id = None
+        self.temporary_credential_id = None  # 会话结束后自动删除的临时凭证 ID
         self.session_id = f'term-{self.host_id}-{int(time.time() * 1000)}'
-        self.term_ready_event = asyncio.Event()
-        self.term_connected_payload = {}
         self._init_audit_runtime_state()
 
         token = self._get_token_from_query_string()
@@ -79,7 +77,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         self.audit_user_agent = self._get_header('user-agent')
         self.selected_credential_id = self._get_credential_id_from_query_string()
 
-        host, host_display_name, agent_id, error_msg = await self._get_host_and_agent(self.host_id)
+        host, host_display_name, error_msg = await self._get_host_and_agent(self.host_id)
         if error_msg:
             await self.accept()
             await self._send_event('error', {'message': error_msg})
@@ -88,8 +86,6 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         if host is None:
             await self.close(code=4404)
             return
-
-        self.agent_id = agent_id
 
         await self.accept()
 
@@ -189,6 +185,26 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         await self._close_session_log(close_code=close_code, status=WebSSHSessionLog.Status.CLOSED)
 
+        # 会话结束后删除临时凭证，确保不留残留
+        if self.temporary_credential_id:
+            await self._delete_temporary_credential(self.temporary_credential_id)
+            self.temporary_credential_id = None
+
+    @database_sync_to_async
+    def _delete_temporary_credential(self, credential_id):
+        from .models import Credential as CredentialModel, WebSSHTempCredential
+        # 只删除有 temp_credential_info 记录的凭证（即临时凭证）
+        if WebSSHTempCredential.objects.filter(credential_id=credential_id).exists():
+            CredentialModel.objects.filter(id=credential_id).delete()
+
+    @database_sync_to_async
+    def _bind_temporary_credential_to_session(self, credential_id, session_pk):
+        """SSH 连接成功后，将临时凭证与 WebSSH 会话绑定，便于清理任务关联"""
+        from .models import WebSSHTempCredential
+        WebSSHTempCredential.objects.filter(credential_id=credential_id).update(
+            session_pk=session_pk
+        )
+
     async def _open_ssh_terminal(self, host, host_display_name, host_ip):
         if asyncssh is None:
             return False, 'asyncssh 未安装，无法建立 SSH 终端'
@@ -198,6 +214,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             return False, error_msg
         if not credential:
             return False, '主机未配置可用 SSH 凭证'
+
+        # 临时凭证：记录 ID，SSH 连接成功后绑定 session_pk，会话结束时删除
+        if credential.get('is_temporary'):
+            self.temporary_credential_id = credential.get('id')
 
         connect_kwargs = {
             'host': host_ip,
@@ -217,7 +237,17 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                 term_type='xterm',
                 term_size=(120, 32),
             )
+            # 必须在创建输出读取任务前置为 True：_ssh_output_loop 的循环条件依赖 self.connected，
+            # 否则后续 await（如临时凭证绑定的数据库调用）让出事件循环时，输出任务会因 connected 仍为 False 立即退出，
+            # 导致 shell 提示符与命令回显永远读取不到。
+            self.connected = True
             self.ssh_output_task = asyncio.create_task(self._ssh_output_loop())
+
+            # SSH 连接成功，绑定临时凭证与当前会话的关联，便于清理任务识别
+            if self.temporary_credential_id and self.audit_session_pk:
+                await self._bind_temporary_credential_to_session(
+                    self.temporary_credential_id, self.audit_session_pk
+                )
 
             await self._send_event(
                 'connected',
@@ -231,6 +261,8 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                     'supports_file_ops': True,
                     'terminal_mode': 'ssh_credential',
                     'credential_id': credential.get('id'),
+                    # 临时凭证会话结束后凭证即被删除，前端据此隐藏"重连"按钮（重连必然失败）。
+                    'is_temporary': bool(self.temporary_credential_id),
                 },
             )
             return True, ''
@@ -307,20 +339,34 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _resolve_credential_for_host(self, host_id, selected_credential_id):
-        relation = None
+        credential = None
         if selected_credential_id not in (None, '', 0, '0'):
             relation = HostCredential.objects.filter(
                 host_id=host_id,
                 credential_id=int(selected_credential_id),
-            ).select_related('credential').first()
+            ).select_related('credential', 'credential__temp_credential_info').first()
+            if relation is not None:
+                credential = relation.credential
+            else:
+                # 临时凭证是本次 WebSSH 专用的一次性凭证，其 HostCredential 关联可能从未建立，
+                # 或已被后续主机保存（_sync_host_credentials 会先 delete 再重建，而临时凭证被序列化层过滤）清除。
+                # 此时按 id 直接解析该临时凭证，避免回退到默认凭证导致 is_temporary 误判、
+                # session_pk 无法绑定、会话结束后临时凭证不被删除。
+                credential = Credential.objects.filter(
+                    id=int(selected_credential_id),
+                    temp_credential_info__isnull=False,
+                ).select_related('temp_credential_info').first()
 
-        if relation is None:
-            relation = HostCredential.objects.filter(host_id=host_id, is_default=True).select_related('credential').first()
+        if credential is None:
+            relation = HostCredential.objects.filter(
+                host_id=host_id, is_default=True
+            ).select_related('credential', 'credential__temp_credential_info').first()
+            if relation is not None:
+                credential = relation.credential
 
-        if relation is None or relation.credential is None:
+        if credential is None:
             return None, '主机未配置默认 SSH 凭证，请先在主机配置中绑定凭证'
 
-        credential = relation.credential
         if not credential.username:
             return None, 'SSH 凭证缺少用户名'
         decrypted_password = ''
@@ -336,45 +382,15 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             return None, 'SSH 凭证缺少私钥'
 
         return {
-            'id': credential.id,
+            'id': credential.pk,
             'username': credential.username,
             'password': decrypted_password,
             'private_key': credential.private_key,
             'port': credential.port,
             'auth_type': credential.auth_type,
+            # 通过关联表判断是否临时凭证
+            'is_temporary': hasattr(credential, 'temp_credential_info'),
         }, ''
-
-    async def _handle_term_event_message(self, raw_data):
-        try:
-            payload = json.loads(raw_data.decode('utf-8'))
-        except Exception:
-            return
-
-        event_type = str(payload.get('type') or '').strip().lower()
-        if event_type in {'connected', 'ready'}:
-            self.term_connected_payload = payload
-            self.term_ready_event.set()
-            return
-
-        if event_type == 'output':
-            output = str(payload.get('data') or '')
-            if output:
-                await self._append_audit_content('output', output)
-            await self._send_event('output', {'data': output})
-            return
-
-        if event_type == 'error':
-            message = str(payload.get('message') or 'Agent 终端异常')
-            await self._send_event('error', {'message': message})
-            return
-
-        if event_type == 'closed':
-            message = str(payload.get('message') or '会话已关闭')
-            if not self.audit_close_notified:
-                await self._send_event('closed', {'message': message})
-                self.audit_close_notified = True
-            await self.close(code=4000)
-            return
 
     async def _heartbeat_watchdog(self):
         while self.connected:
@@ -438,19 +454,18 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
     def _get_host_and_agent(self, host_id):
         host = Host.objects.select_related('system').filter(id=host_id).first()
         if not host:
-            return None, '', '', '主机不存在'
+            return None, '', '主机不存在'
 
         system = getattr(host, 'system', None)
         hostname = getattr(system, 'hostname', None) if system else None
         host_display_name = host.instance_name or hostname or f'Host-{host_id}'
 
-        agent_id = str(host.instance_name or '').strip()
         # WebSSH 准入仅以 Host.agent_online 字段为准。
         is_agent_online = bool(getattr(host, 'agent_online', False))
         if not is_agent_online:
-            return None, host_display_name, agent_id, 'Agent 离线，禁止打开 WebSSH'
+            return None, host_display_name, 'Agent 离线，禁止打开 WebSSH'
 
-        return host, host_display_name, agent_id, ''
+        return host, host_display_name, ''
 
     def _get_token_from_query_string(self):
         raw_query = self.scope.get('query_string', b'').decode('utf-8')

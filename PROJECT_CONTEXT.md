@@ -313,9 +313,10 @@ media/      → 静态文件（头像等）
 
 ### 技术栈
 
-- 后端：`channels` + `daphne` + `paramiko`（终端链路）+ `asyncssh`（下载/上传主链路）
-- 前端：`@xterm/xterm` + `@xterm/addon-fit` + Ant Design Vue
+- 后端：`channels` + `daphne` + `asyncssh`（终端链路直连）+ `paramiko`（文件列表/重命名/删除/新建）+ `asyncssh`（上传/下载数据面）
+- 前端：`@xterm/xterm` + `@xterm/addon-fit` + Ant Design Vue，独立窗口（`window.open`）打开
 - 通道层：`InMemoryChannelLayer`（单机开发）
+- 连接方式：`asyncssh.connect()` + `create_process(term_type='xterm', term_size=(120, 32))`，后端 `_ssh_output_loop` 持续读取 4KB 块回传前端
 
 ### 当前已实现功能
 
@@ -323,51 +324,80 @@ media/      → 静态文件（头像等）
 
 - 主机页面支持建立 WebSSH 终端连接（JWT 校验 + 权限校验）。
 - 终端支持输入、输出、窗口 resize、重连、关闭、全屏切换。
-- 连接成功后返回会话 ID、主机信息、推导的 home_dir。
+- 连接成功后返回 `log_id`、主机信息、推导的 `home_dir`、`supports_file_ops`、`is_temporary`、`credential_id`、`terminal_mode`。
 - 支持下载当前会话日志。
+- 心跳保活：前端 20s 发送 `ping`，后端回 `pong`。
 
-#### 2) 在线会话监控
+#### 2) 认证、鉴权与超时看门狗
 
-- 页面展示当前主机在线会话人数。
-- 支持查看在线会话列表（会话 ID、用户名、开始时间）。
-- 凭证/主机连接关键字段变化时，会强制关闭相关在线会话。
+- JWT 校验：连接握手从查询参数 `?token=<jwt>` 解码；权限要求 admin 或具备 `assets:hosts:webssh` / `assets:hosts:view`。
+- Token 过期看门狗：`_token_expiry_watchdog` 监控 `exp`，到期自动断开（close code 4401）。
+- 空闲超时看门狗：`_heartbeat_watchdog` 监控活动事件（input/resize/transfer_activity），超过 `sys.webssh.idle_timeout_minutes`（默认 30 分钟）自动断开（close code 4000）。
 
-#### 3) 左侧文件管理（SFTP）
+#### 3) 凭证机制（普通凭证 / 临时凭证 / 多凭证选择）
+
+- 支持通过 `credential_id` 参数指定连接凭证；`_resolve_credential_for_host` 解析顺序：先按 `HostCredential` 关系查询 → 关系不存在但该 ID 为临时凭证时按 id 直连 → 否则降级到默认凭证（`is_default=True`）。
+- 普通凭证：UI 预先创建并绑定主机，持久存在；WebSSH 会话保留「重连」按钮。
+- 临时凭证：连接时前端以 `is_temporary=true` 创建，仅供本次会话使用；连接成功后绑定 `session_pk`，会话断开时主动删除。
+- 临时凭证会话隐藏「重连」按钮：因临时凭证在会话结束后即被删除，重连必然失败；前端依据 `connected` 事件的 `is_temporary` 字段控制按钮显隐。
+
+#### 4) 在线会话监控
+
+- 页面展示当前主机在线会话人数（`webssh-active-count`）。
+- 支持查看在线会话列表（会话 ID、用户名、开始时间，`webssh-active-sessions`）。
+- 会话审计日志按主机分页查询（`webssh-sessions`，支持 username/status 过滤）。
+- 凭证连接关键字段变化（username/password/private_key/port/auth_type）时，会强制关闭以该凭证为默认凭证的相关主机在线会话。
+
+#### 5) 左侧文件管理（SFTP）
 
 - 支持目录浏览、进入目录、回到上级、路径输入跳转、关键字过滤。
-- 支持文件上传、文件下载、重命名、删除、新建目录、新建空文件（后端能力）。
-- 文件操作要求当前主机存在在线 WebSSH 会话，否则拒绝并提示离线。
-- 文件管理类接口（list/rename/delete/create-dir/create-file）当前仍基于 Paramiko SFTP。
+- 支持文件上传、文件下载、重命名、删除、新建目录、新建空文件。
+- 文件操作前置 `_guard_webssh_file_access` 校验：要求当前用户在该主机存在在线 WebSSH 会话，否则拒绝并提示离线。
+- 底层双栈：list/rename/delete/create-dir/create-file 走 Paramiko SFTP；upload/download 走 AsyncSSH。
 
-#### 4) 下载能力增强
+#### 6) 下载能力
 
 - 后端下载链路：AsyncSSH `get` 到本地临时文件，再以 StreamingHttpResponse 返回。
-- 支持 HTTP Range（206）与 Accept-Ranges。
-- 前端显示下载进度、已用时/总耗时，支持取消。
-- 同时仅允许一个下载任务，下载中再次触发会提示稍后重试。
-- 目录下载已关闭（前后端均拦截并提示）。
+- 支持 HTTP Range（206 Partial Content）与 Accept-Ranges（含 `bytes=-N` 后缀范围）。
+- 前端显示下载进度、耗时，支持取消（AbortController）。
+- 同时仅允许一个下载任务，短时间同路径重复请求会被去重丢弃。
+- 目录下载已关闭（检测到目录即拦截并提示）。
 
-#### 5) 上传能力增强
+#### 7) 上传能力
 
-- 后端上传链路：先接收请求文件到本地临时文件，再 AsyncSSH `put` 到远端临时文件并 rename。
-- 前端显示上传进度、已用时/总耗时，支持取消。
-- 同时仅允许一个上传任务，上传中再次触发会提示稍后重试。
-- 已移除上传传输列表与排队机制，不再提供队列可视化。
+- 整文件上传（非分片）：接收到本地 `.uploading.part` 临时文件 → AsyncSSH `put` 到远端 → rename 为最终文件。
+- 前端显示上传进度（axios `onUploadProgress`）、耗时，支持取消（AbortController）。
+- 同时仅允许一个上传任务（`uploadRunning` 状态机限制）。
+- 已移除上传传输列表与排队机制，不再提供队列可视化；transfer-service/ticket 数据面当前未启用，直接走 HTTP。
+
+#### 8) 清理任务（Celery）
+
+- `cleanup_webssh_session_logs`：删除 `start_time` 早于 `now - sys.audit.webssh.retention_days`（默认 30 天）的会话日志。
+- `cleanup_orphan_temp_credentials`：清理孤立临时凭证——（a）`session_pk` 已绑定但会话已结束/日志被清理；（b）`session_pk` 为空且创建超过 2 小时。作为断开时主动删除的兜底，已注册到「定时任务」UI（默认 `*/10 * * * *`，无关联菜单）。
 
 ### WebSocket 路径与事件
 
-- WS：`/ws/assets/hosts/{id}/webssh/?token=...`
-- 事件类型：
-  - `connected`：连接成功
+- WS：`/ws/assets/hosts/{id}/webssh/?token=...&credential_id=...`
+- 前端 → 后端：`input`（输入）、`resize`（窗口大小）、`ping`（心跳）、`transfer_activity`（刷新空闲计时）、`close`（主动关闭）。
+- 后端 → 前端：
+  - `connected`：连接成功（含 `log_id`/`host_id`/`ip`/`instance_name`/`home_dir`/`supports_file_ops`/`is_temporary`/`credential_id`/`terminal_mode`）
   - `output`：终端输出
   - `error`：错误信息
   - `closed`：会话关闭
+  - `pong`：心跳应答
+
+### 前端结构（`fronted/src/views/assets/host/webssh/`）
+
+- 独立窗口打开，模块化控制器架构：`controllers/`（会话/视图/布局/交互/在线统计/数据/下载/上传/操作授权/生命周期/启动器等）。
+- 组件：`WebsshHeaderSection`（标题栏：重连/全屏/日志下载）、终端面板、文件面板。
+- Helpers：时间/文件大小/路径处理、传输进度与 Range 解析。
 
 ### 生产部署建议（当前项目约束）
 
 - 建议将 WebSSH/文件传输流量与普通业务 API 进程隔离部署。
 - 多实例生产场景建议升级 `channels-redis`，并独立扩展 WebSSH 相关 worker。
 - 当前文件传输接口以 `/assets/hosts/{id}/files/*` 为主，文档与实现需保持同步。
+- 注意：`consumers.py` 等 Channels consumer 改动需完整重启 ASGI 服务（`runserver`）才生效，autoreload 常会遗漏。
 
 ---
 

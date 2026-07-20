@@ -11,6 +11,7 @@ export function createWebsshSessionController(options) {
         messageType,
         currentLogId,
         supportsFileOps,
+        isTemporaryCredential,
         fileCurrentPath,
         filePathInput,
         fileEntries,
@@ -21,7 +22,6 @@ export function createWebsshSessionController(options) {
         writeSystemLine,
         fetchActiveUserCount,
         loadFiles,
-        selectedCredentialId,
     } = options
 
     const MIN_TERMINAL_FONT_SIZE = 10
@@ -264,6 +264,7 @@ export function createWebsshSessionController(options) {
                         messageText.value = ''
                         currentLogId.value = msg.log_id || null
                         supportsFileOps.value = Boolean(msg.supports_file_ops)
+                        isTemporaryCredential.value = Boolean(msg.is_temporary)
                         const homeDir = msg.home_dir || '/root'
                         const instanceName = String(msg.instance_name || '').trim() || 'unknown'
                         fileCurrentPath.value = homeDir
@@ -271,12 +272,6 @@ export function createWebsshSessionController(options) {
                         fetchActiveUserCount()
                         if (supportsFileOps.value && !fileEntries.value.length) {
                             loadFiles(fileCurrentPath.value)
-                        }
-                        if (msg.terminal_mode === 'agent_local_pty' && selectedCredentialId.value) {
-                            const warningText = `当前会话是 Agent 本地终端，未使用所选凭证(ID=${selectedCredentialId.value})登录远端 SSH。`
-                            messageText.value = warningText
-                            messageType.value = 'warning'
-                            writeSystemLine(`[WARN] ${warningText}`)
                         }
                         writeSystemLine(`Connected to ${instanceName} (${msg.ip})`)
                     } else if (msg.type === 'error') {

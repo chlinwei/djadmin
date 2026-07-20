@@ -48,14 +48,6 @@ export function flattenGroupNameMap(nodes, collector = {}) {
   return collector
 }
 
-export function formatJsonCellText(value) {
-  if (!value || typeof value !== 'object') {
-    return '-'
-  }
-  const text = JSON.stringify(value)
-  return text.length > 64 ? `${text.slice(0, 64)}...` : text
-}
-
 export function formatEnvVarCellText(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return '-'

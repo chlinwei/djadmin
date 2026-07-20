@@ -293,7 +293,8 @@ def dispatch_host_report_interval_update(interval_seconds, client_request_id='')
     }
 
 class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
-    queryset =  Credential.objects.all()
+    # 临时凭证有关联的 WebSSHTempCredential 记录，排除在凭证管理列表之外
+    queryset = Credential.objects.filter(temp_credential_info__isnull=True)
     serializer_class = CredentialSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
@@ -340,9 +341,16 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         return Response_200(data=serializer.data)
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        # 检测临时凭证标志（前端传入 is_temporary=true），剔除后单独处理
+        is_temporary = bool(request.data.get('is_temporary', False))
+        data = {k: v for k, v in request.data.items() if k != 'is_temporary'}
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        instance = serializer.save()
+        # 临时凭证：创建关联记录，后续 WebSSH 会话关闭时自动删除
+        if is_temporary:
+            from .models import WebSSHTempCredential
+            WebSSHTempCredential.objects.create(credential=instance)
         return Response_200(data=serializer.data)
 
     def _force_close_webssh_sessions_for_credential(self, credential_id):

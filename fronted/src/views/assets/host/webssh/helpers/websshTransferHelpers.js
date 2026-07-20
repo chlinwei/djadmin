@@ -21,19 +21,6 @@ export const formatDuration = (ms) => {
     return `${minutes}m ${String(seconds).padStart(2, '0')}s`
 }
 
-export const formatAverageSpeed = (downloaded, elapsedMs) => {
-    const bytes = Number(downloaded || 0)
-    const costMs = Number(elapsedMs || 0)
-    if (!Number.isFinite(bytes) || !Number.isFinite(costMs) || bytes <= 0 || costMs <= 0) {
-        return '0.00 B/s'
-    }
-    const speed = (bytes * 1000) / costMs
-    if (speed < 1024) return `${speed.toFixed(2)} B/s`
-    if (speed < 1024 * 1024) return `${(speed / 1024).toFixed(2)} KB/s`
-    if (speed < 1024 * 1024 * 1024) return `${(speed / 1024 / 1024).toFixed(2)} MB/s`
-    return `${(speed / 1024 / 1024 / 1024).toFixed(2)} GB/s`
-}
-
 export const getDownloadModeLabel = (mode) => {
     return String(mode || '') === DOWNLOAD_MODE_DIRECT ? '直连' : '下载'
 }

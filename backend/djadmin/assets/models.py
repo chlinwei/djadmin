@@ -302,5 +302,25 @@ class WebSSHSessionLog(models.Model):
         return f"{self.id} {self.username} {self.host.id}"
 
 
+class WebSSHTempCredential(models.Model):
+    """临时 WebSSH 凭证追踪表：记录手动输入的临时凭证与 WebSSH 会话的绑定关系。
+    
+    生命周期：
+    1. 前端手动输入凭证 → 创建 Credential + 此记录（session_pk=null）
+    2. SSH 连接建立后 → 写入 session_pk
+    3. WebSSH 会话关闭时 → 删除此记录及关联凭证
+    4. 兜底清理：Celery 任务定期清理超过 2 小时且会话已结束的孤立记录
+    """
+    credential = models.OneToOneField(
+        Credential,
+        on_delete=models.CASCADE,
+        related_name='temp_credential_info',
+    )
+    # SSH 连接建立后绑定，用于判断会话是否仍在运行
+    session_pk = models.IntegerField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'assets_webssh_temp_credential'
 
 

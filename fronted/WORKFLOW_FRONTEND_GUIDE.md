@@ -2,25 +2,28 @@
 
 适用范围：
 
-- fronted/src/views/sys/automation/workflow.vue
-- fronted/src/views/sys/automation/workflowEditor.vue
-- fronted/src/views/sys/automation/workflowRun.vue
+- fronted/src/views/automation/workflow/index.vue（列表页）
+- fronted/src/views/automation/workflow/create.vue（新建基础信息页）
+- fronted/src/views/automation/workflow/editor.vue（编排编辑器）
+- fronted/src/views/automation/workflow/run.vue（运行状态图）
+- fronted/src/views/automation/workflow/controller.js、editorController.js（页面控制器）
 - fronted/src/api/sys/automation.js
 
 本文描述当前前端实现与后端契约。
 
 ## 1. 页面职责
 
-### 1.1 workflow.vue（列表页）
+### 1.1 index.vue（列表页）
 
 - 展示 workflow 模板列表。
 - 支持新增、编辑、启动、删除。
 - 展示 workflow 运行记录并支持取消运行。
 - 从列表中的运行记录跳转到状态图页面。
 
-### 1.2 workflowEditor.vue（编排编辑器）
+### 1.2 create.vue + editor.vue（新建与编排编辑器）
 
-- 使用 Vue Flow 维护节点与连线。
+- create.vue：填写 workflow 基础信息（名称、启用状态、描述、可选 Inventory），保存后进入编排。
+- editor.vue：使用 Vue Flow 维护节点与连线。
 - 支持节点类型：
   - task 节点（task_id）
   - workflow 节点（workflow_id）
@@ -28,7 +31,7 @@
 - 支持 convergence：any/all。
 - 保存时提交 nodes + edges + default_extra_vars。
 
-### 1.3 workflowRun.vue（运行状态图）
+### 1.3 run.vue（运行状态图）
 
 - 只读渲染一次 run 的节点状态。
 - 提供运行轮询刷新。
@@ -160,4 +163,4 @@ workflow 节点允许在编辑器中选择当前 workflow。
 
 1. 启动前端：npm run dev
 2. 启动后端与调度：python manage.py runserver + python manage.py runscheduler
-3. 在 workflow.vue 启动一个 workflow 并跳转到运行页观察状态推进
+3. 在 index.vue 列表页启动一个 workflow 并跳转到运行页观察状态推进

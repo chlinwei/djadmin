@@ -20,6 +20,7 @@ export const websshHeaderSectionProps = {
     statusText: { type: String, default: '' },
     downloadingLog: { type: Boolean, default: false },
     isFullscreen: { type: Boolean, default: false },
+    isTemporaryCredential: { type: Boolean, default: false },
     downloadProgressVisible: { type: Boolean, default: false },
     downloadProgressPercent: { type: Number, default: 0 },
     downloadProgressStatus: { type: String, default: 'active' },

@@ -8,6 +8,7 @@
             :status-text="statusText"
             :downloading-log="downloadingLog"
             :is-fullscreen="isFullscreen"
+            :is-temporary-credential="isTemporaryCredential"
             :download-progress-visible="downloadProgressVisible"
             :download-progress-percent="downloadProgressPercent"
             :download-progress-status="downloadProgressStatus"
@@ -192,6 +193,7 @@ const fileTableScrollY = ref(520)
 const filePanelWidth = ref(380)
 const showFilePanel = ref(true)
 const supportsFileOps = ref(false)
+const isTemporaryCredential = ref(false)  // 临时凭证会话：隐藏重连按钮（凭证已删除，重连必失败）
 const fileContextMenuVisible = ref(false)
 const fileContextMenuStyle = ref({})
 const fileContextMenuRecord = ref(null)
@@ -484,6 +486,7 @@ const websshSessionController = createWebsshSessionController({
     messageType,
     currentLogId,
     supportsFileOps,
+    isTemporaryCredential,
     fileCurrentPath,
     filePathInput,
     fileEntries,
@@ -494,7 +497,6 @@ const websshSessionController = createWebsshSessionController({
     writeSystemLine,
     fetchActiveUserCount,
     loadFiles,
-    selectedCredentialId,
 })
 
 const disposeTerminal = websshSessionController.disposeTerminal

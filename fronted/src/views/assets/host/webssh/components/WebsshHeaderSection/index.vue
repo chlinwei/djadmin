@@ -19,7 +19,7 @@
                 </a-tooltip>
                 <a-button size="small" :disabled="!currentLogId" :loading="downloadingLog" @click="downloadCurrentLog">下载日志</a-button>
                 <a-button size="small" @click="toggleFullscreen">{{ getFullscreenButtonText(isFullscreen) }}</a-button>
-                <a-button size="small" @click="reconnect">重连</a-button>
+                <a-button v-if="!isTemporaryCredential" size="small" @click="reconnect">重连</a-button>
                 <a-button size="small" type="primary" @click="closeTab">关闭</a-button>
             </a-space>
         </div>

@@ -360,24 +360,6 @@
     </a-modal>
 
     <a-modal
-        v-model:open="webSshVisible"
-        :title="`Web SSH - ${webSshHostTitle}`"
-        :footer="null"
-        :width="980"
-        destroyOnClose
-        @cancel="closeWebSsh"
-    >
-        <a-alert
-            v-if="webSshMessage"
-            :message="webSshMessage"
-            :type="webSshMessageType"
-            show-icon
-            style="margin-bottom: 10px"
-        />
-        <div ref="webSshContainerRef" class="webssh-terminal" />
-    </a-modal>
-
-    <a-modal
         v-model:open="webSshCredentialSelectorVisible"
         title="选择 WebSSH 凭证"
         ok-text="打开终端"
@@ -487,15 +469,13 @@ defineOptions({
     name: 'host'
 })
 
-import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getToken } from '@/api/user/index.js'
 import { batchDeleteHost, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getCredentailList, SaveOrCreateCredential } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
-import { getWebSocketBaseUrl } from '@/util/request'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
@@ -521,9 +501,6 @@ import {
     getGroupName,
     hasHostCredential,
 } from './hostDisplayUtils'
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import '@xterm/xterm/css/xterm.css'
 
 const searchText = ref('')
 const groupSearchText = ref('')
@@ -545,11 +522,7 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新增主机')
 const dialogLoading = ref(false)
 const formRef = ref(null)
-const webSshVisible = ref(false)
 const webSshHostTitle = ref('')
-const webSshContainerRef = ref(null)
-const webSshMessage = ref('')
-const webSshMessageType = ref('info')
 const webSshCredentialSelectorVisible = ref(false)
 const webSshSelectedCredentialId = ref(undefined)
 const webSshCredentialOpening = ref(false)
@@ -567,11 +540,6 @@ const WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY = 'webssh-default-credentials-by-ho
 const webSshDefaultCredentialsByHost = ref({})
 const syncingRouteFilters = ref(false)
 
-let webSshSocket = null
-let webSshTerminal = null
-let webSshFitAddon = null
-let webSshOnDataDisposable = null
-let webSshOnResizeDisposable = null
 let hostListAutoRefreshTimer = null
 
 const DEFAULT_HOST_LIST_REFRESH_INTERVAL_SECONDS = 5
@@ -901,7 +869,7 @@ const startHostListAutoRefresh = () => {
     stopHostListAutoRefresh()
     // 轮询用于实时同步 agent 在线状态，间隔由系统参数控制。
     hostListAutoRefreshTimer = window.setInterval(() => {
-        if (loading.value || dialogVisible.value || webSshVisible.value) {
+        if (loading.value || dialogVisible.value) {
             return
         }
         loadHostList()
@@ -1327,115 +1295,6 @@ const openDetail = (id) => {
     router.push({ path: `/assets/hosts/detail/${id}` })
 }
 
-const buildWebSocketUrl = (hostId) => {
-    const token = getToken() || ''
-    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}`
-}
-
-const WEBSSH_BLOCKED_SHORTCUTS = new Set(['w', 'r', 't', 'n', 'l', 'p', 'j', 'k'])
-
-const handleWebSshGlobalKeydown = (event) => {
-    if (!webSshVisible.value) return
-
-    const key = String(event.key || '').toLowerCase()
-    const ctrlOrMeta = event.ctrlKey || event.metaKey
-
-    if (event.key === 'F5' || (ctrlOrMeta && WEBSSH_BLOCKED_SHORTCUTS.has(key))) {
-        // Prevent browser actions like close tab / refresh while terminal is active.
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.stopImmediatePropagation) {
-            event.stopImmediatePropagation()
-        }
-        event.returnValue = false
-        if (webSshTerminal) {
-            webSshTerminal.focus()
-        }
-        return false
-    }
-
-    return true
-}
-
-const bindWebSshShortcutGuard = () => {
-    if (!webSshTerminal) return
-
-    // Keep browser-level shortcuts from hijacking terminal key combos.
-    webSshTerminal.attachCustomKeyEventHandler((event) => {
-        const key = String(event.key || '').toLowerCase()
-        const ctrlOrMeta = event.ctrlKey || event.metaKey
-        const blockedCtrlMetaKeys = ['w', 'r', 't', 'n', 'l', 'p', 'j', 'k']
-
-        if (event.key === 'F5' || (ctrlOrMeta && blockedCtrlMetaKeys.includes(key))) {
-            event.preventDefault()
-            event.stopPropagation()
-            if (event.stopImmediatePropagation) {
-                event.stopImmediatePropagation()
-            }
-            event.returnValue = false
-            return false
-        }
-
-        return true
-    })
-}
-
-const disposeWebSshTerminal = () => {
-    if (webSshOnDataDisposable) {
-        webSshOnDataDisposable.dispose()
-        webSshOnDataDisposable = null
-    }
-    if (webSshOnResizeDisposable) {
-        webSshOnResizeDisposable.dispose()
-        webSshOnResizeDisposable = null
-    }
-    if (webSshTerminal) {
-        webSshTerminal.dispose()
-        webSshTerminal = null
-    }
-    webSshFitAddon = null
-}
-
-const initWebSshTerminal = async () => {
-    await nextTick()
-    if (!webSshContainerRef.value) return
-
-    // Recreate terminal instance every session to avoid stale renderer/socket state.
-    disposeWebSshTerminal()
-
-    webSshTerminal = new Terminal({
-        cursorBlink: true,
-        fontFamily: 'Consolas, Menlo, monospace',
-        fontSize: 16,
-        theme: {
-            background: '#0b1220',
-            foreground: '#e2e8f0',
-        },
-        convertEol: true,
-        scrollback: 5000,
-    })
-    webSshFitAddon = new FitAddon()
-    webSshTerminal.loadAddon(webSshFitAddon)
-    bindWebSshShortcutGuard()
-
-    webSshContainerRef.value.innerHTML = ''
-    webSshTerminal.open(webSshContainerRef.value)
-    webSshFitAddon.fit()
-    webSshTerminal.focus()
-
-    webSshOnDataDisposable = webSshTerminal.onData((data) => {
-        if (webSshSocket && webSshSocket.readyState === WebSocket.OPEN) {
-            webSshSocket.send(JSON.stringify({ type: 'input', data }))
-        }
-    })
-
-    webSshOnResizeDisposable = webSshTerminal.onResize(({ cols, rows }) => {
-        if (webSshSocket && webSshSocket.readyState === WebSocket.OPEN) {
-            webSshSocket.send(JSON.stringify({ type: 'resize', cols, rows }))
-        }
-    })
-}
-
 const openWebSsh = async (record) => {
     if (!canOpenWebSsh(record)) {
         message.warning('该主机未绑定 agent 实例，无法打开 WebSSH')
@@ -1552,6 +1411,7 @@ const createAndBindWebSshCredential = async (record) => {
         password: authType === 1 ? String(webSshInlineCredentialForm.password || '') : '',
         private_key: authType === 2 ? String(webSshInlineCredentialForm.privateKey || '') : '',
         port: Number(record?.port || 22),
+        is_temporary: true,  // 标记为临时凭证，WebSSH 会话结束后自动删除
     }
     const credentialRes = await SaveOrCreateCredential(credentialPayload)
     if (credentialRes?.data?.code !== 200 || !credentialRes?.data?.data?.id) {
@@ -1564,11 +1424,15 @@ const createAndBindWebSshCredential = async (record) => {
         ? record.credentials.map((item) => item.id)
         : (record?.credential?.id ? [record.credential.id] : [])
     const mergedIds = Array.from(new Set([...existingIds, createdCredential.id]))
+    // 临时凭证仅用于本次 WebSSH 连接，不能顶掉主机原有默认凭证；保留原默认，无原默认时才用临时凭证兜底
+    const originalDefaultId = (Array.isArray(record?.credentials)
+        ? (record.credentials.find((item) => item.is_default)?.id)
+        : null) || record?.credential?.id || null
     const hostPayload = {
         id: record.id,
         credential_ids: mergedIds,
-        default_credential_id: createdCredential.id,
-        credential_id: createdCredential.id,
+        default_credential_id: originalDefaultId || createdCredential.id,
+        credential_id: originalDefaultId || createdCredential.id,
     }
     const hostRes = await saveOrCreateHost(hostPayload)
     if (hostRes?.data?.code !== 200) {
@@ -1628,7 +1492,11 @@ const confirmOpenWebSshWithCredential = async () => {
             [hostId]: credentialId,
         }
         webSshDefaultCredentialId.value = credentialId
-        saveWebSshDefaultCredentialMap()
+        // 临时凭证（id 来自 createAndBindWebSshCredential）不持久化到本地存储
+        const isTemporaryCredential = !webSshSelectedCredentialId.value
+        if (!isTemporaryCredential) {
+            saveWebSshDefaultCredentialMap()
+        }
 
         const routeData = router.resolve({
             path: '/assets/hosts/webssh',
@@ -1651,22 +1519,6 @@ const cancelOpenWebSshWithCredential = () => {
     webSshCredentialSelectorVisible.value = false
     webSshCredentialOpening.value = false
     webSshPendingHostRecord.value = null
-}
-
-const closeWebSsh = () => {
-    webSshVisible.value = false
-    if (webSshSocket) {
-        try {
-            if (webSshSocket.readyState === WebSocket.OPEN) {
-                webSshSocket.send(JSON.stringify({ type: 'close' }))
-            }
-            webSshSocket.close()
-        } catch (error) {
-            // ignore close exception
-        }
-        webSshSocket = null
-    }
-    disposeWebSshTerminal()
 }
 
 const router = useRouter()
@@ -1737,7 +1589,7 @@ const getWebSshActionTooltip = (record) => {
     if (!record?.system?.agent_online) {
         return 'Agent 离线，禁止打开 WebSSH'
     }
-    return '打开 Agent WebSSH 终端（需先选择凭证）'
+    return '打开WebSSH 终端'
 }
 
 const formatDateTime = (value) => {
@@ -1754,8 +1606,6 @@ onMounted(async () => {
     await Promise.all([loadGroupTree(), loadCredentialOptions()])
     startHostListAutoRefresh()
     document.addEventListener('click', closeGroupContextMenu)
-    window.addEventListener('keydown', handleWebSshGlobalKeydown, true)
-    document.addEventListener('keydown', handleWebSshGlobalKeydown, true)
 })
 
 watch(
@@ -1769,9 +1619,6 @@ watch(
 onBeforeUnmount(() => {
     stopHostListAutoRefresh()
     document.removeEventListener('click', closeGroupContextMenu)
-    window.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
-    document.removeEventListener('keydown', handleWebSshGlobalKeydown, true)
-    closeWebSsh()
 })
 </script>
 
@@ -1992,14 +1839,6 @@ onBeforeUnmount(() => {
 
 .action_row :deep(.ant-col) {
     flex: 0 0 auto;
-}
-
-.webssh-terminal {
-    width: 100%;
-    height: 460px;
-    border-radius: 8px;
-    overflow: hidden;
-    border: 1px solid #1f2937;
 }
 
 .host-page :deep(.ant-btn-lg),

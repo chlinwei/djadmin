@@ -4,7 +4,7 @@ import traceback
 from celery.schedules import crontab
 from django.utils import timezone
 
-from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs
+from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
 from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
 from menu.models import SysMenu
@@ -242,6 +242,13 @@ def ensure_default_tasks():
             'enabled': True,
             'cron_expression': '0 0 * * *',
         },
+        {
+            'code': 'cleanup_orphan_temp_credentials',
+            'name': 'WebSSH 临时凭证清理',
+            'description': '清理异常断开遗留的 WebSSH 临时凭证（会话已结束或超过 2 小时未绑定）',
+            'enabled': True,
+            'cron_expression': '*/10 * * * *',
+        },
     ]
 
     first_task = None
@@ -324,6 +331,8 @@ def resolve_task_callable(task_code):
         return cleanup_operation_audit_logs
     if task_code == 'cleanup_workflow_run_logs':
         return cleanup_workflow_run_logs
+    if task_code == 'cleanup_orphan_temp_credentials':
+        return cleanup_orphan_temp_credentials
     return None
 
 

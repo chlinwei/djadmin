@@ -169,9 +169,20 @@ class HostSerializer(ModelSerializer):
         cached_credentials = getattr(obj, 'hostcredential_set', None)
         if cached_credentials is not None:
             for relation in cached_credentials.all():
-                if relation.is_default and relation.credential:
+                # 临时凭证（WebSSH 手动输入）不作为对外展示的默认凭证
+                if relation.is_default and relation.credential and not self._is_temporary_credential(relation.credential):
                     return relation
-        return HostCredential.objects.filter(host=obj, is_default=True).select_related('credential').first()
+        return (
+            HostCredential.objects.filter(host=obj, is_default=True)
+            .select_related('credential', 'credential__temp_credential_info')
+            .filter(credential__temp_credential_info__isnull=True)
+            .first()
+        )
+
+    @staticmethod
+    def _is_temporary_credential(credential):
+        # 通过 OneToOne 反向关系判断是否为临时凭证，避免其出现在主机凭证展示中
+        return hasattr(credential, 'temp_credential_info')
 
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
@@ -190,7 +201,12 @@ class HostSerializer(ModelSerializer):
         }
 
     def get_credentials(self, obj):
-        relations = HostCredential.objects.filter(host=obj).select_related('credential').order_by('-is_default', 'id')
+        relations = (
+            HostCredential.objects.filter(host=obj)
+            .select_related('credential', 'credential__temp_credential_info')
+            .filter(credential__temp_credential_info__isnull=True)
+            .order_by('-is_default', 'id')
+        )
         result = []
         for relation in relations:
             if not relation.credential:
@@ -499,9 +515,20 @@ class HostListSerializer(ModelSerializer):
         cached_credentials = getattr(obj, 'hostcredential_set', None)
         if cached_credentials is not None:
             for relation in cached_credentials.all():
-                if relation.is_default and relation.credential:
+                # 临时凭证（WebSSH 手动输入）不作为对外展示的默认凭证
+                if relation.is_default and relation.credential and not self._is_temporary_credential(relation.credential):
                     return relation
-        return HostCredential.objects.filter(host=obj, is_default=True).select_related('credential').first()
+        return (
+            HostCredential.objects.filter(host=obj, is_default=True)
+            .select_related('credential', 'credential__temp_credential_info')
+            .filter(credential__temp_credential_info__isnull=True)
+            .first()
+        )
+
+    @staticmethod
+    def _is_temporary_credential(credential):
+        # 通过 OneToOne 反向关系判断是否为临时凭证，避免其出现在主机凭证展示中
+        return hasattr(credential, 'temp_credential_info')
 
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
@@ -520,7 +547,12 @@ class HostListSerializer(ModelSerializer):
         }
 
     def get_credentials(self, obj):
-        relations = HostCredential.objects.filter(host=obj).select_related('credential').order_by('-is_default', 'id')
+        relations = (
+            HostCredential.objects.filter(host=obj)
+            .select_related('credential', 'credential__temp_credential_info')
+            .filter(credential__temp_credential_info__isnull=True)
+            .order_by('-is_default', 'id')
+        )
         result = []
         for relation in relations:
             if not relation.credential:

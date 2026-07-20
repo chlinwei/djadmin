@@ -436,7 +436,6 @@ import {
 import {
   appendGroupHostCount,
   buildGroupTreeWithAll,
-  buildScopePreviewTreeData,
   cloneTreeNodes,
   collectCheckedHostCountByNode,
   collectCheckedScope,

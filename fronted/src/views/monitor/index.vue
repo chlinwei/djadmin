@@ -11,7 +11,7 @@
       <a-col :span="8" class="right-actions">
         <a-space>
           <a-switch v-model:checked="autoRefreshEnabled" checked-children="自动刷新" un-checked-children="手动" />
-          <a-select v-model:value="refreshIntervalSeconds" style="width: 120px" :options="refreshIntervalOptions" :disabled="!autoRefreshEnabled" />
+          <a-select v-model:value="refreshIntervalSeconds" style="width: 120px" :options="refreshIntervalOptions" :disabled="!autoRefreshEnabled" :getPopupContainer="getPopupContainer" />
           <a-tooltip title="刷新">
             <a-button type="primary" ghost :loading="loading" @click="loadAllData">
               刷新
@@ -86,11 +86,10 @@
             :data-source="managedTargets"
             :loading="loading"
             size="small"
-            :scroll="{ x: 1200 }"
+            :scroll="{ x: 1680 }"
             :pagination="managedPagination"
             @change="handleManagedTableChange"
-          >
-            <template #bodyCell="{ column, record }">
+          >            <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'managed_enabled'">
                 <a-tag :color="record.managed_enabled ? 'green' : 'default'">{{ record.managed_enabled ? '启用' : '禁用' }}</a-tag>
               </template>
@@ -103,30 +102,112 @@
               <template v-else-if="column.key === 'last_scrape_status'">
                 <a-tag :color="scrapeColor(record.last_scrape_status)">{{ record.last_scrape_status || 'unknown' }}</a-tag>
               </template>
+              <template v-else-if="column.key === 'service_status'">
+                <a-tag v-if="managedServiceStatusLoading[record.id]" color="processing">查询中...</a-tag>
+                <a-tooltip v-else-if="serviceStatusMap[record.id]" :title="serviceStatusSummary(serviceStatusMap[record.id])">
+                  <a-tag
+                    :color="serviceStatusColor(serviceStatusMap[record.id])"
+                    style="cursor: pointer"
+                    @click="openServiceStatusModal(record)"
+                  >
+                    {{ serviceStatusText(serviceStatusMap[record.id]) }}
+                  </a-tag>
+                </a-tooltip>
+                <a-tag v-else color="default">未查询</a-tag>
+              </template>
               <template v-else-if="column.key === 'action'">
                 <a-space>
-                  <a-tooltip :title="record.install_status === 'failed' ? '重试' : '自动重试进行中或已成功，无需操作'">
+                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                    ? 'dj-agent 离线，操作不可用'
+                    : (record.managed_enabled ? '重新安装' : '重新卸载')">
                     <a-button
                       type="primary"
                       ghost
                       size="small"
-                      :disabled="record.install_status !== 'failed'"
+                      :disabled="isManagedTargetActionDisabledByAgent(record)"
                       :loading="managedRetryLoading[record.id]"
-                      @click="handleManagedRetry(record)"
+                      @click="openManagedTargetRetryConfirm(record)"
                     >
                       <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                      重试
+                      {{ record.managed_enabled ? '重新安装' : '重新卸载' }}
                     </a-button>
                   </a-tooltip>
-                  <a-tooltip :title="record.last_install_job_id ? '查看日志' : '暂无安装/卸载任务记录'">
+                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                    ? 'dj-agent 离线，操作不可用'
+                    : (managedRetryLoading[record.id]
+                      ? '任务重新下发中，请稍候查看最新日志'
+                      : '查看监控安装历史日志')">
                     <a-button
                       type="primary"
                       ghost
                       size="small"
-                      :disabled="!record.last_install_job_id"
+                      :disabled="isManagedTargetActionDisabledByAgent(record) || managedRetryLoading[record.id]"
                       @click="openManagedTargetJobLog(record)"
                     >
                       <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                    ? 'dj-agent 离线，操作不可用'
+                    : (record.install_status !== 'success' ? '尚未安装成功，无法启动' : '启动服务')">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
+                      :loading="managedStartLoading[record.id]"
+                      @click="handleStartService(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'play']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                    ? 'dj-agent 离线，操作不可用'
+                    : (record.install_status !== 'success' ? '尚未安装成功，无法停止' : '停止服务')">
+                    <a-button
+                      danger
+                      ghost
+                      size="small"
+                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
+                      :loading="managedStopLoading[record.id]"
+                      @click="handleStopService(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'stop']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip
+                    :title="!canCancelManagedTarget(record)
+                      ? '当前任务已结束，无需取消'
+                      : '取消'"
+                  >
+                    <a-button
+                      danger
+                      ghost
+                      size="small"
+                      :disabled="!canCancelManagedTarget(record)"
+                      :loading="managedCancelLoading[record.id]"
+                      @click="onCancelManagedTarget(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'ban']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip
+                    :title="isManagedTargetActionDisabledByAgent(record)
+                      ? 'dj-agent 离线，操作不可用'
+                      : (record.managed_enabled
+                      ? '请先关闭纳管（会自动下发卸载）后再删除'
+                      : (record.install_status === 'pending' ? '卸载任务尚未结束，暂不可删除' : '删除'))"
+                  >
+                    <a-button
+                      class="delBtn"
+                      danger
+                      type="primary"
+                      size="small"
+                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.managed_enabled || record.install_status === 'pending'"
+                      :loading="managedDeleteLoading[record.id]"
+                      @click="openManagedTargetDeleteConfirm(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                     </a-button>
                   </a-tooltip>
                 </a-space>
@@ -232,30 +313,29 @@
         <a-form-item label="软件包">
           <span>{{ packageEditTarget ? `${packageEditTarget.name} (${packageEditTarget.os}-${packageEditTarget.arch})` : '-' }}</span>
         </a-form-item>
-        <a-form-item label="安装任务（Playbook）">
-          <a-select
-            v-model:value="packageEditForm.install_task"
-            allow-clear
-            show-search
-            :loading="playbookTaskOptionsLoading"
-            :options="playbookTaskOptions"
-            :filter-option="filterTaskOption"
-            :get-popup-container="getPopupContainer"
-            placeholder="请选择安装该软件包使用的自动化任务"
+        <a-form-item label="安装 Playbook 内容">
+          <a-textarea
+            v-model:value="packageEditForm.install_playbook_content"
+            :rows="8"
+            class="package-playbook-textarea"
+            placeholder="安装该软件包使用的 Playbook YAML 内容，留空表示不配置安装（仅本软件包自身生效，与其他软件包相互独立）"
           />
-          <div class="form-item-hint">Playbook 内容在“模板 -&gt; Playbook 模板”中维护</div>
+          <div class="form-item-hint">直接在此编辑安装用 Playbook 内容，与下方“卸载 Playbook 内容”成对维护，无需再去“模板管理”页单独创建/挑选模板</div>
         </a-form-item>
-        <a-form-item label="卸载任务（Playbook）">
-          <a-select
-            v-model:value="packageEditForm.uninstall_task"
-            allow-clear
-            show-search
-            :loading="playbookTaskOptionsLoading"
-            :options="playbookTaskOptions"
-            :filter-option="filterTaskOption"
-            :get-popup-container="getPopupContainer"
-            placeholder="请选择卸载该软件包使用的自动化任务"
+        <a-form-item label="卸载 Playbook 内容">
+          <a-textarea
+            v-model:value="packageEditForm.uninstall_playbook_content"
+            :rows="8"
+            class="package-playbook-textarea"
+            placeholder="卸载该软件包使用的 Playbook YAML 内容，留空表示不配置卸载"
           />
+        </a-form-item>
+        <a-form-item label="执行工作目录">
+          <a-input
+            v-model:value="packageEditForm.work_directory"
+            placeholder="默认 /tmp"
+          />
+          <div class="form-item-hint">安装/卸载 Playbook 执行时的工作目录；安装/卸载过程本身固定以 root 身份执行（需要创建系统用户、写 systemd unit 等），不可配置</div>
         </a-form-item>
         <a-form-item label="systemd 服务名">
           <span>{{ packageEditTarget ? packageEditTarget.name + '.service' : '-' }}</span>
@@ -267,7 +347,39 @@
             placeholder="安装 Playbook 中通过 extra_vars.service_file_content 拿到后写入 /usr/lib/systemd/system/<name>.service"
           />
         </a-form-item>
+        <a-form-item label="服务运行用户" required>
+          <a-input
+            v-model:value="packageEditForm.service_run_as_user"
+            placeholder="默认 dj-agent，必填"
+          />
+          <div class="form-item-hint">安装后 systemd 服务常驻运行使用的系统用户，安装 Playbook 会据此创建该系统用户；与"安装任务"本身的执行身份无关，默认与 dj-agent 自身运行账号保持一致</div>
+        </a-form-item>
+        <a-form-item label="服务运行用户组">
+          <a-input
+            v-model:value="packageEditForm.service_run_as_group"
+            placeholder="默认 dj-agent，留空则使用服务运行用户的主组"
+          />
+        </a-form-item>
       </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="serviceStatusModalVisible"
+      title="服务运行状态"
+      :footer="null"
+      width="720px"
+    >
+      <template v-if="serviceStatusModalRecord && serviceStatusModalResult">
+        <p>
+          主机：{{ serviceStatusModalRecord.host_name || serviceStatusModalRecord.host_ip }}
+          &nbsp;|&nbsp; Exporter：{{ serviceStatusModalRecord.exporter_type }}
+          &nbsp;|&nbsp;
+          <a-tag :color="serviceStatusModalResult.exit_code === 0 ? 'green' : 'red'">
+            {{ serviceStatusModalResult.exit_code === 0 ? 'active' : (serviceStatusModalResult.status === 'success' ? 'inactive/failed' : serviceStatusModalResult.status) }}
+          </a-tag>
+        </p>
+        <pre class="service-status-output">{{ serviceStatusModalResult.stdout || serviceStatusModalResult.stderr || '(无输出)' }}</pre>
+      </template>
     </a-modal>
   </div>
 </template>
@@ -277,19 +389,25 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
+  checkManagedTargetServiceStatus,
+  deleteManagedTarget,
   deleteSoftwarePackage,
   getManagedTargets,
+  getMonitorInstallHistoryList,
   getMonitorSummary,
   getPrometheusAlerts,
   getPrometheusOverview,
   getPrometheusTargets,
   getSoftwarePackages,
   retryManagedTarget,
+  cancelManagedTarget,
+  startManagedTargetService,
+  stopManagedTargetService,
   syncSoftwarePackageFromOfficial,
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
 } from '@/api/sys/monitor'
-import { getTaskList } from '@/api/sys/automation'
+import { queryAgentJobs } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 
@@ -315,6 +433,17 @@ const promTargets = ref([])
 const alerts = ref([])
 const managedTargets = ref([])
 const managedRetryLoading = reactive({})
+const managedCancelLoading = reactive({})
+const managedServiceStatusLoading = reactive({})
+const managedStartLoading = reactive({})
+const managedStopLoading = reactive({})
+const managedDeleteLoading = reactive({})
+// 按 record.id 缓存每行最近一次查询到的服务运行状态，让“服务状态”列常驻展示，
+// 不需要每次都重新打开弹窗；弹窗仍用于查看完整 systemctl 输出。
+const serviceStatusMap = reactive({})
+const serviceStatusModalVisible = ref(false)
+const serviceStatusModalRecord = ref(null)
+const serviceStatusModalResult = ref(null)
 
 const managedPagination = reactive({
   current: 1,
@@ -363,8 +492,9 @@ const managedColumns = [
   { title: '纳管', dataIndex: 'managed_enabled', key: 'managed_enabled', width: 90 },
   { title: '安装状态', dataIndex: 'install_status', key: 'install_status', width: 120 },
   { title: '采集状态', dataIndex: 'last_scrape_status', key: 'last_scrape_status', width: 120 },
+  { title: '服务状态', key: 'service_status', width: 130 },
   { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
-  { title: '操作', key: 'action', width: 160, fixed: 'right' },
+  { title: '操作', key: 'action', width: 400, fixed: 'right' },
 ]
 
 const packageColumns = [
@@ -393,10 +523,14 @@ const syncModalVersion = ref('')
 const packageEditModalVisible = ref(false)
 const packageEditModalSubmitting = ref(false)
 const packageEditTarget = ref(null)
-const packageEditForm = reactive({ install_task: undefined, uninstall_task: undefined, service_file_content: '' })
-// 安装/卸载只能选择 Playbook 类型的自动化任务（dj-agent 仅对 Playbook 任务支持 become 提权，Shell 脚本任务不适用于安装/卸载）
-const playbookTaskOptions = ref([])
-const playbookTaskOptionsLoading = ref(false)
+const packageEditForm = reactive({
+  install_playbook_content: '',
+  uninstall_playbook_content: '',
+  service_file_content: '',
+  service_run_as_user: '',
+  service_run_as_group: '',
+  work_directory: '',
+})
 const packagePagination = reactive({
   current: 1,
   pageSize: 10,
@@ -450,31 +584,6 @@ async function loadPackages() {
 // 首次打开软件仓库页面时，默认软件包由后端一次性数据迁移预置，前端不再自动调用预置接口，
 // 避免用户删除后因每次进页自动重建而“删不掉”。
 
-async function loadPlaybookTaskOptions() {
-  playbookTaskOptionsLoading.value = true
-  try {
-    const res = await getTaskList({ page: 1, page_size: 200, ordering: '-id' })
-    const data = parseApiData(res)
-    const records = Array.isArray(data.results) ? data.results : []
-    // 只保留 playbook_template 非空的任务（Playbook 类型），与后端 dispatch_exporter_install_job/
-    // uninstall_job 仅支持 playbook 任务的限制保持一致。
-    playbookTaskOptions.value = records
-      .filter((item) => item?.playbook_template)
-      .map((item) => ({
-        label: `${item.name}${item.enabled ? '' : '（已禁用）'}`,
-        value: item.id,
-      }))
-  } catch (error) {
-    message.warning(error?.response?.data?.msg || error?.message || '加载自动化任务列表失败')
-  } finally {
-    playbookTaskOptionsLoading.value = false
-  }
-}
-
-function filterTaskOption(input, option) {
-  return String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
-}
-
 function openSyncOfficialModal(record) {
   syncModalTarget.value = record
   syncModalVersion.value = String(record.version || '')
@@ -483,24 +592,35 @@ function openSyncOfficialModal(record) {
 
 function openPackageEditModal(record) {
   packageEditTarget.value = record
-  packageEditForm.install_task = record.install_task || undefined
-  packageEditForm.uninstall_task = record.uninstall_task || undefined
+  // 安装/卸载 Playbook 内容直接来自后端 to_representation 补充的 install/uninstall_playbook_content
+  // （实际存放在关联 PlaybookTemplate.content 上，这里只是展示成对内联编辑，不再要求先去模板页选择）
+  packageEditForm.install_playbook_content = record.install_playbook_content || ''
+  packageEditForm.uninstall_playbook_content = record.uninstall_playbook_content || ''
   packageEditForm.service_file_content = record.service_file_content || ''
+  // 历史记录可能仍是迁移前的空值，这里兜底回填默认账号 dj-agent，与后端模型默认值保持一致
+  packageEditForm.service_run_as_user = record.service_run_as_user || 'dj-agent'
+  packageEditForm.service_run_as_group = record.service_run_as_group || 'dj-agent'
+  packageEditForm.work_directory = record.work_directory || '/tmp'
   packageEditModalVisible.value = true
-  if (!playbookTaskOptions.value.length) {
-    loadPlaybookTaskOptions()
-  }
 }
 
 async function submitPackageEdit() {
   const record = packageEditTarget.value
   if (!record) return
+  // 服务运行用户为必填项，前端提前拦截空值，避免打到后端才因 allow_blank=False 报错
+  if (!packageEditForm.service_run_as_user.trim()) {
+    message.error('服务运行用户为必填项')
+    return
+  }
   packageEditModalSubmitting.value = true
   try {
     await updateSoftwarePackage(record.id, {
-      install_task: packageEditForm.install_task ?? null,
-      uninstall_task: packageEditForm.uninstall_task ?? null,
+      install_playbook_content: packageEditForm.install_playbook_content,
+      uninstall_playbook_content: packageEditForm.uninstall_playbook_content,
       service_file_content: packageEditForm.service_file_content,
+      service_run_as_user: packageEditForm.service_run_as_user,
+      service_run_as_group: packageEditForm.service_run_as_group,
+      work_directory: packageEditForm.work_directory,
     })
     message.success('保存成功')
     packageEditModalVisible.value = false
@@ -620,6 +740,26 @@ function scrapeColor(status) {
   return 'default'
 }
 
+// 服务状态列的展示：以 exit_code === 0 视为 active（systemctl status 对运行中服务返回 0），
+// 任务本身成功但 exit_code 非 0 视为 inactive/failed，任务未成功完成（超时/失败）则展示任务自身状态。
+function serviceStatusColor(entry) {
+  if (!entry) return 'default'
+  if (entry.status !== 'success') return 'default'
+  return entry.exitCode === 0 ? 'green' : 'red'
+}
+
+function serviceStatusText(entry) {
+  if (!entry) return '未查询'
+  if (entry.status !== 'success') return entry.status
+  return entry.exitCode === 0 ? 'active' : 'inactive'
+}
+
+function serviceStatusSummary(entry) {
+  if (!entry) return ''
+  const firstLine = String(entry.stdout || entry.stderr || '').split('\n').find((line) => line.trim())
+  return firstLine ? `${firstLine}（点击查看完整详情）` : '点击查看完整详情'
+}
+
 function severityColor(severity) {
   const value = String(severity || '').toLowerCase()
   if (value === 'critical') return 'red'
@@ -692,6 +832,24 @@ async function loadManagedTargets() {
   const data = parseApiData(res)
   managedTargets.value = Array.isArray(data.results) ? data.results : []
   managedPagination.total = Number(data.count || 0)
+  // 纳管目标数据一加载/刷新完成，就主动为已启用且安装成功的目标查询一次 systemd 运行状态，
+  // 无需用户手动点击按钮；未启用或安装未成功的目标没有可核实的服务，跳过以避免无意义的
+  // AgentJob/RabbitMQ 调度开销。
+  refreshManagedServiceStatuses()
+}
+
+function refreshManagedServiceStatuses() {
+  for (const record of managedTargets.value) {
+    if (isManagedTargetActionDisabledByAgent(record)) continue
+    if (!record.managed_enabled) continue
+    if (record.install_status !== 'success') continue
+    if (managedServiceStatusLoading[record.id]) continue // 上一轮查询还没结束，跳过避免重复轮询同一行
+    handleCheckServiceStatus(record)
+  }
+}
+
+function isManagedTargetActionDisabledByAgent(record) {
+  return !Boolean(record?.host_agent_online)
 }
 
 async function loadAllData() {
@@ -756,24 +914,263 @@ function handleManagedTableChange(pagination) {
   loadManagedTargets()
 }
 
-async function handleManagedRetry(record) {
+// 重新下发：统一入口，无论当前 install_status 是什么（success/failed/pending）都可以点。
+// 后端 retry 接口本身只看 managed_enabled 决定装还是卸（不校验 install_status），
+// 这里去掉前端原来“必须 install_status===failed 才能点”的限制，用一个按钮同时覆盖
+// “重试失败的任务”和“修复历史遗留问题需要重新执行一次已成功的任务”（如 unit 文件里
+// User/Group 是旧版本 Playbook 生成的、需要用最新 Playbook 重新生成）两种场景。
+async function handleManagedRedispatch(record) {
   managedRetryLoading[record.id] = true
   try {
-    await retryManagedTarget(record.id)
+    const res = await retryManagedTarget(record.id)
+    const latest = parseApiData(res)
+    // 立即同步后端返回的新 job_id，避免列表刷新前仍指向旧任务。
+    if (latest && typeof latest === 'object') {
+      Object.assign(record, latest)
+    }
     message.success('已重新下发任务')
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '重试失败')
+    message.error(error?.response?.data?.msg || error?.message || '重新下发失败')
   } finally {
     managedRetryLoading[record.id] = false
     await loadManagedTargets()
   }
 }
 
-function openManagedTargetJobLog(record) {
-  if (!record.last_install_job_id) return
-  // 安装/卸载执行日志统一由“自动化任务”的执行记录页承载，跳转时通过 job_id 定位到具体记录，
-  // 与 automation/logs 页面已有的 route.query.job_id 打开逻辑保持一致。
-  router.push({ path: '/sys/automation/logs', query: { job_id: record.last_install_job_id } })
+async function openManagedTargetRetryConfirm(record) {
+  if (isManagedTargetActionDisabledByAgent(record)) {
+    return
+  }
+  const isInstall = Boolean(record?.managed_enabled)
+  const actionText = isInstall ? '重新安装' : '重新卸载'
+  const summary = isInstall
+    ? '将重新下发安装任务（无论当前安装状态是否已成功），请确认影响范围。'
+    : '将重新下发卸载任务（无论当前安装状态是否已成功），请确认影响范围。'
+  const hostLabel = record?.host_name || record?.host_ip || String(record?.host_id || '-')
+  await openDeleteConfirm({
+    title: `确认${actionText}`,
+    okText: '确认',
+    summary,
+    items: [`${hostLabel} - ${record.exporter_type}`],
+    onConfirm: () => {
+      void handleManagedRedispatch(record)
+    },
+  })
+}
+
+async function onCancelManagedTarget(record) {
+  if (!canCancelManagedTarget(record)) {
+    return
+  }
+  managedCancelLoading[record.id] = true
+  try {
+    await cancelManagedTarget(record.id)
+    message.success('任务已取消')
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
+  } finally {
+    managedCancelLoading[record.id] = false
+    await loadManagedTargets()
+  }
+}
+
+function canCancelManagedTarget(record) {
+  const status = String(record?.install_status || '').toLowerCase()
+  return status === 'pending' || status === 'running'
+}
+
+async function openManagedTargetJobLog(record) {
+  if (managedRetryLoading[record?.id]) {
+    message.info('任务重新下发中，请稍候再查看日志')
+    return
+  }
+
+  // 仅以“监控安装历史”作为日志来源：优先打开该目标最新一条历史记录详情。
+  let latestHistoryId = null
+  try {
+    const historyRes = await getMonitorInstallHistoryList({
+      page: 1,
+      page_size: 1,
+      ordering: '-id',
+      target_id: String(record.id),
+    })
+    const historyData = parseApiData(historyRes)
+    const rows = Array.isArray(historyData?.results) ? historyData.results : []
+    const latestId = Number(rows[0]?.id)
+    if (Number.isInteger(latestId) && latestId > 0) {
+      latestHistoryId = latestId
+    }
+  } catch (_error) {
+    // 查询最新历史失败时，回退为仅按 target_id 打开历史页签。
+  }
+
+  const query = {
+    tab: 'monitor_history',
+    target_id: String(record.id),
+    keyword: String(record.host_ip || record.host_name || ''),
+  }
+  if (latestHistoryId) {
+    query.history_id = String(latestHistoryId)
+  }
+
+  router.push({
+    path: '/sys/automation/logs',
+    query,
+  })
+}
+
+// 删除操作统一走公共确认弹窗（openDeleteConfirm），禁止自行用 a-popconfirm 拼一套删除确认。
+// 前置校验（managed_enabled===false 且 install_status!=='pending'）已由按钮 disabled 状态和后端 destroy() 双重把关，
+// 这里的确认弹窗只负责二次确认 + 展示待删除对象，不重复做业务校验。
+function openManagedTargetDeleteConfirm(record) {
+  openDeleteConfirm({
+    title: '确认删除纳管目标',
+    summary: '删除后将无法再追踪该主机这项监控的安装/卸载历史记录，如需重新纳管请到主机编辑页重新开启。',
+    items: [`${record.host_name || record.host_ip || record.host_id} - ${record.exporter_type}`],
+    onConfirm: async () => {
+      managedDeleteLoading[record.id] = true
+      try {
+        await deleteManagedTarget(record.id)
+        message.success('删除成功')
+      } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || '删除失败')
+      } finally {
+        managedDeleteLoading[record.id] = false
+        await loadManagedTargets()
+      }
+    },
+  })
+}
+
+// 轮询间隔/次数：查询走 AgentJob + RabbitMQ 异步通道（非实时），下发后到 dj-agent 消费、
+// 执行 systemctl、再回传结果，通常在几百毫秒到数秒内完成，轮询 1.2s * 10 次(12s)足够覆盖
+// 正常场景；超时仍未完成则提示用户稍后重试，不无限轮询避免页面残留定时器。
+const SERVICE_STATUS_POLL_INTERVAL_MS = 1200
+const SERVICE_STATUS_POLL_MAX_TIMES = 10
+const TERMINAL_JOB_STATUSES = ['success', 'failed', 'canceled', 'timeout']
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// 轮询 AgentJob 直到进入终态（success/failed/canceled/timeout）或轮询次数耗尽（未达终态时返回 null），
+// check/start/stop 三个动作共用同一套轮询节奏，避免各自重复实现。
+async function pollAgentJobUntilTerminal(jobId) {
+  let job = null
+  for (let attempt = 0; attempt < SERVICE_STATUS_POLL_MAX_TIMES; attempt += 1) {
+    await sleep(SERVICE_STATUS_POLL_INTERVAL_MS)
+    const queryRes = await queryAgentJobs({ job_id: jobId })
+    const results = parseApiData(queryRes)?.results || []
+    job = results[0] || null
+    if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
+      break
+    }
+  }
+  return TERMINAL_JOB_STATUSES.includes(job?.status) ? job : null
+}
+
+async function handleCheckServiceStatus(record) {
+  managedServiceStatusLoading[record.id] = true
+  try {
+    const createRes = await checkManagedTargetServiceStatus(record.id)
+    // requestUtil.post 返回完整 axios response，业务数据在 response.data.data（{code,msg,data} 信封），
+    // 不是 response.data，否则 job_id 永远取不到。
+    const jobId = parseApiData(createRes)?.job_id
+    if (!jobId) {
+      // 该查询现在是进入页面/自动刷新时后台静默触发的（按钮已去掉），
+      // 不再用 message 弹全局提示打扰用户，失败原因只记录在控制台 + 列内标签上。
+      console.warn('[service_status] 下发查询任务失败：未返回 job_id', record.id)
+      return
+    }
+
+    const job = await pollAgentJobUntilTerminal(jobId)
+    if (!job) {
+      console.warn('[service_status] 查询任务未在预期时间内返回结果', record.id)
+      return
+    }
+
+    // 写入“服务状态”列缓存（常驻展示），同时保留完整 stdout/stderr 供点击标签时查看详情。
+    serviceStatusMap[record.id] = {
+      status: job.status,
+      exitCode: job.exit_code,
+      stdout: job.stdout,
+      stderr: job.stderr,
+      checkedAt: new Date().toISOString(),
+    }
+  } catch (error) {
+    console.warn('[service_status] 查询运行状态失败', record.id, error?.response?.data?.msg || error?.message)
+  } finally {
+    managedServiceStatusLoading[record.id] = false
+  }
+}
+
+async function handleStartService(record) {
+  managedStartLoading[record.id] = true
+  try {
+    const createRes = await startManagedTargetService(record.id)
+    const jobId = parseApiData(createRes)?.job_id
+    if (!jobId) {
+      message.error('下发启动任务失败：未返回 job_id')
+      return
+    }
+    const job = await pollAgentJobUntilTerminal(jobId)
+    if (!job) {
+      message.warning('启动任务未在预期时间内返回结果，请稍后查看服务状态列')
+      return
+    }
+    if (job.status === 'success' && job.exit_code === 0) {
+      message.success('启动命令已执行成功')
+    } else {
+      message.error(`启动失败：${job.stderr || job.stdout || job.status}`)
+    }
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '启动服务失败')
+  } finally {
+    managedStartLoading[record.id] = false
+    // 启动/停止命令本身的 exit_code 不直接等价于最终服务状态，命令执行完成后主动刷新一次
+    // “服务状态”列（真正调用 systemctl status），确保展示的是权威结果而不是猜测。
+    handleCheckServiceStatus(record)
+  }
+}
+
+async function handleStopService(record) {
+  managedStopLoading[record.id] = true
+  try {
+    const createRes = await stopManagedTargetService(record.id)
+    const jobId = parseApiData(createRes)?.job_id
+    if (!jobId) {
+      message.error('下发停止任务失败：未返回 job_id')
+      return
+    }
+    const job = await pollAgentJobUntilTerminal(jobId)
+    if (!job) {
+      message.warning('停止任务未在预期时间内返回结果，请稍后查看服务状态列')
+      return
+    }
+    if (job.status === 'success' && job.exit_code === 0) {
+      message.success('停止命令已执行成功')
+    } else {
+      message.error(`停止失败：${job.stderr || job.stdout || job.status}`)
+    }
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '停止服务失败')
+  } finally {
+    managedStopLoading[record.id] = false
+    handleCheckServiceStatus(record)
+  }
+}
+
+function openServiceStatusModal(record) {
+  const cached = serviceStatusMap[record.id]
+  if (!cached) return
+  serviceStatusModalRecord.value = record
+  serviceStatusModalResult.value = {
+    status: cached.status,
+    exit_code: cached.exitCode,
+    stdout: cached.stdout,
+    stderr: cached.stderr,
+  }
+  serviceStatusModalVisible.value = true
 }
 
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)
@@ -807,6 +1204,19 @@ onBeforeUnmount(() => {
   color: #1f1f1f;
 }
 
+.service-status-output {
+  max-height: 400px;
+  overflow: auto;
+  background: #1f1f1f;
+  color: #d9d9d9;
+  padding: 12px;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .monitor-card {
   border-radius: 12px;
 }
@@ -825,6 +1235,11 @@ onBeforeUnmount(() => {
 .form-item-hint {
   margin-top: 4px;
   color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
+.package-playbook-textarea {
+  font-family: 'Courier New', Consolas, Monaco, monospace;
   font-size: 12px;
 }
 </style>

@@ -31,6 +31,8 @@ export function createWebsshDataController(options) {
         } else {
             actions.push({ key: 'download', label: '下载' })
         }
+        // 右键上传：无论文件或文件夹，都上传到该项所在的目录（父目录）
+        actions.push({ key: 'upload', label: '上传到此目录' })
         actions.push({ key: 'copy-dir-path', label: '复制目录路径' })
         actions.push({ key: 'rename', label: '重命名' })
         actions.push({ key: 'delete', label: '删除', danger: true })

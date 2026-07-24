@@ -1,6 +1,8 @@
 import asyncio
-import importlib
+import codecs
 import json
+import logging
+import re
 import time
 import warnings
 from datetime import timedelta
@@ -14,9 +16,9 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework_jwt.settings import api_settings
 
-from .models import Host, HostCredential, WebSSHSessionLog, Credential
-from .credential_crypto import decrypt_secret
+from .models import Host, WebSSHSessionLog
 from .webssh_runtime import WebSSHRuntimeRegistry
+from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from sys_config.models import SysConfig
 
 warnings.filterwarnings(
@@ -25,14 +27,16 @@ warnings.filterwarnings(
     category=CryptographyDeprecationWarning,
 )
 
-try:
-    asyncssh = importlib.import_module('asyncssh')
-except ImportError:  # pragma: no cover
-    asyncssh = None
+logger = logging.getLogger(__name__)
 
 
 class HostWebSSHConsumer(AsyncWebsocketConsumer):
-    """WebSSH 终端：前端 WS <-> 后端 consumer <-> asyncssh 直连目标主机 SSH。"""
+    """WebSSH 终端：前端 WS <-> 后端 consumer <-> agent gRPC 长连接 <-> 目标主机本地 PTY。
+
+    终端 I/O 全程走 agent（agent 主动拨入的 AgentChannel.Session），backend 不再直连
+    目标主机 SSH。因此终端以 agent 进程用户（通常 root）打开本地 shell，不需要 SSH 凭证。
+    准入要求主机 agent 在线且已建立 gRPC 通道，否则拒绝打开。
+    """
 
     async def connect(self):
         route = self.scope.get('url_route')
@@ -44,11 +48,12 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         self.host_id = int(host_id_value)
         self.connected = False
-        self.ssh_conn = None
-        self.ssh_process = None
-        self.ssh_output_task = None
-        self.selected_credential_id = None
-        self.temporary_credential_id = None  # 会话结束后自动删除的临时凭证 ID
+        self.agent_client = None
+        self.term_session = None
+        self.term_output_task = None
+        # agent 回传的 PTY 输出是按字节分片的，多字节 UTF-8 可能跨分片，用增量解码器
+        # 避免在分片边界把一个字符拆坏（例如中文/emoji 显示为乱码）。
+        self._term_decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.session_id = f'term-{self.host_id}-{int(time.time() * 1000)}'
         self._init_audit_runtime_state()
 
@@ -73,9 +78,26 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         self.audit_user_id = payload.get('user_id')
         self.audit_username = payload.get('username') or ''
+        query = self._parse_query_string()
+        raw_query = str(self.scope.get('query_string', b'').decode('utf-8', errors='ignore') or '')
+        raw_target_user = str(query.get('target_user', [''])[0] or '').strip()
+        logger.info(
+            '[webssh] connect query parsed: host_id=%s raw_query=%s target_user=%s',
+            self.host_id,
+            raw_query,
+            raw_target_user,
+        )
+        self.audit_requested_username = self._get_target_user_from_query_string()
+        if raw_target_user and not self.audit_requested_username:
+            await self.accept()
+            await self._send_event('error', {'message': 'target_user 参数格式非法'})
+            await self.close(code=4400)
+            return
+        self.audit_effective_username = ''
+        self.audit_switch_user_status = 'none'
+        self.audit_switch_user_error = ''
         self.audit_client_ip = self._get_client_ip()
         self.audit_user_agent = self._get_header('user-agent')
-        self.selected_credential_id = self._get_credential_id_from_query_string()
 
         host, host_display_name, error_msg = await self._get_host_and_agent(self.host_id)
         if error_msg:
@@ -94,7 +116,7 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
         await self._cleanup_expired_session_logs(self.audit_retention_days)
         self.audit_session_pk, self.audit_started_at = await self._create_session_log()
 
-        ok, error = await self._open_ssh_terminal(host, host_display_name, host.ip)
+        ok, error = await self._open_agent_terminal(host, host_display_name, host.ip)
         if not ok:
             await self._close_session_log(
                 close_code=4500,
@@ -138,10 +160,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                 self.audit_input_bytes += len(str(data).encode('utf-8', errors='ignore'))
                 self.audit_command_count += str(data).count('\n') + str(data).count('\r')
                 await self._append_audit_content('input', str(data))
-                await self._write_ssh_input(str(data))
+                await self._write_terminal_input(str(data))
         elif event_type == 'resize':
             self.last_client_activity_monotonic = time.monotonic()
-            await self._resize_ssh_terminal(
+            await self._resize_terminal(
                 int(payload.get('cols') or 120),
                 int(payload.get('rows') or 32),
             )
@@ -180,217 +202,197 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
                 pass
             self.audit_flush_task = None
 
-        await self._close_ssh_session()
+        await self._close_agent_terminal()
         await self._flush_content_buffer(force=True)
 
         await self._close_session_log(close_code=close_code, status=WebSSHSessionLog.Status.CLOSED)
 
-        # 会话结束后删除临时凭证，确保不留残留
-        if self.temporary_credential_id:
-            await self._delete_temporary_credential(self.temporary_credential_id)
-            self.temporary_credential_id = None
-
-    @database_sync_to_async
-    def _delete_temporary_credential(self, credential_id):
-        from .models import Credential as CredentialModel, WebSSHTempCredential
-        # 只删除有 temp_credential_info 记录的凭证（即临时凭证）
-        if WebSSHTempCredential.objects.filter(credential_id=credential_id).exists():
-            CredentialModel.objects.filter(id=credential_id).delete()
-
-    @database_sync_to_async
-    def _bind_temporary_credential_to_session(self, credential_id, session_pk):
-        """SSH 连接成功后，将临时凭证与 WebSSH 会话绑定，便于清理任务关联"""
-        from .models import WebSSHTempCredential
-        WebSSHTempCredential.objects.filter(credential_id=credential_id).update(
-            session_pk=session_pk
-        )
-
-    async def _open_ssh_terminal(self, host, host_display_name, host_ip):
-        if asyncssh is None:
-            return False, 'asyncssh 未安装，无法建立 SSH 终端'
-
-        credential, error_msg = await self._resolve_credential_for_host(host.id, self.selected_credential_id)
-        if error_msg:
-            return False, error_msg
-        if not credential:
-            return False, '主机未配置可用 SSH 凭证'
-
-        # 临时凭证：记录 ID，SSH 连接成功后绑定 session_pk，会话结束时删除
-        if credential.get('is_temporary'):
-            self.temporary_credential_id = credential.get('id')
-
-        connect_kwargs = {
-            'host': host_ip,
-            'port': int(host.port or credential.get('port') or 22),
-            'username': credential.get('username'),
-            'known_hosts': None,
-        }
-        auth_type = int(credential.get('auth_type') or 0)
-        if auth_type == 2:
-            connect_kwargs['client_keys'] = [str(credential.get('private_key') or '').encode('utf-8')]
-        else:
-            connect_kwargs['password'] = credential.get('password')
+    async def _open_agent_terminal(self, host, host_display_name, host_ip):
+        # 终端全程走 agent gRPC 通道：backend 不再直连目标主机 SSH，
+        # 由 agent 在目标主机本地开一个登录交互 shell（以 agent 进程用户身份，通常 root）。
+        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        if not agent_id:
+            return False, '主机未绑定 agent 标识（instance_name 为空）'
 
         try:
-            self.ssh_conn = await asyncssh.connect(**connect_kwargs)
-            self.ssh_process = await self.ssh_conn.create_process(
-                term_type='xterm',
-                term_size=(120, 32),
+            # AgentChannelClient 构造 + open_shell 都会阻塞（open_shell 等待 agent 的 open ack），
+            # 放到线程里执行，避免阻塞 consumer 的事件循环。
+            self.agent_client, self.term_session = await asyncio.to_thread(
+                self._blocking_open_agent_terminal,
+                agent_id,
+                120,
+                32,
+                self.audit_requested_username,
             )
-            # 必须在创建输出读取任务前置为 True：_ssh_output_loop 的循环条件依赖 self.connected，
-            # 否则后续 await（如临时凭证绑定的数据库调用）让出事件循环时，输出任务会因 connected 仍为 False 立即退出，
-            # 导致 shell 提示符与命令回显永远读取不到。
-            self.connected = True
-            self.ssh_output_task = asyncio.create_task(self._ssh_output_loop())
+        except AgentGrpcTransferError as exc:
+            if self.audit_requested_username:
+                self.audit_switch_user_status = 'failed'
+                self.audit_switch_user_error = str(exc)
+            return False, self._build_user_friendly_open_error(str(exc), self.audit_requested_username)
+        except Exception as exc:
+            if self.audit_requested_username:
+                self.audit_switch_user_status = 'failed'
+                self.audit_switch_user_error = str(exc)
+            return False, self._build_user_friendly_open_error(str(exc), self.audit_requested_username)
 
-            # SSH 连接成功，绑定临时凭证与当前会话的关联，便于清理任务识别
-            if self.temporary_credential_id and self.audit_session_pk:
-                await self._bind_temporary_credential_to_session(
-                    self.temporary_credential_id, self.audit_session_pk
+        effective_user = str(getattr(self.term_session, 'effective_user', '') or '').strip()
+        if self.audit_requested_username:
+            # 强校验：请求了 target_user 时，agent 必须明确返回 effective_user 且与请求一致。
+            # 否则通常是 agent 版本过低（忽略 target_user）或切换未生效，不能静默退回 root。
+            if not effective_user:
+                await self._close_agent_terminal()
+                self.audit_switch_user_status = 'failed'
+                self.audit_switch_user_error = 'agent 未返回 effective_user，可能版本过低或未支持按用户切换'
+                logger.warning(
+                    '[webssh] user-switch failed: host_id=%s requested=%s effective=(empty) reason=%s',
+                    self.host_id,
+                    self.audit_requested_username,
+                    self.audit_switch_user_error,
                 )
-
-            await self._send_event(
-                'connected',
-                {
-                    'host_id': self.host_id,
-                    'instance_name': host_display_name,
-                    'ip': host_ip,
-                    'log_id': self.audit_session_pk,
-                    'home_dir': '/root',
-                    # Re-enable legacy direct SFTP file operations for non-agent WebSSH mode.
-                    'supports_file_ops': True,
-                    'terminal_mode': 'ssh_credential',
-                    'credential_id': credential.get('id'),
-                    # 临时凭证会话结束后凭证即被删除，前端据此隐藏"重连"按钮（重连必然失败）。
-                    'is_temporary': bool(self.temporary_credential_id),
-                },
+                return False, 'Agent 不支持按指定用户打开终端，请升级 dj-agent 后重试'
+            if effective_user != self.audit_requested_username:
+                await self._close_agent_terminal()
+                self.audit_switch_user_status = 'failed'
+                self.audit_switch_user_error = (
+                    f'请求用户 {self.audit_requested_username}，实际生效用户 {effective_user}'
+                )
+                logger.warning(
+                    '[webssh] user-switch failed: host_id=%s requested=%s effective=%s',
+                    self.host_id,
+                    self.audit_requested_username,
+                    effective_user,
+                )
+                return False, (
+                    f'切换用户失败：请求 {self.audit_requested_username}，实际生效 {effective_user}'
+                )
+            self.audit_switch_user_status = 'success'
+            self.audit_switch_user_error = ''
+            logger.info(
+                '[webssh] user-switch success: host_id=%s requested=%s effective=%s',
+                self.host_id,
+                self.audit_requested_username,
+                effective_user,
             )
-            return True, ''
-        except Exception as exc:
-            await self._close_ssh_session()
-            return False, f'SSH 终端建立失败：{exc}'
 
-    async def _ssh_output_loop(self):
+        self.audit_effective_username = effective_user or self.audit_username or ''
+
+        self.connected = True
+        self.term_output_task = asyncio.create_task(self._agent_output_loop())
+
+        await self._send_event(
+            'connected',
+            {
+                'host_id': self.host_id,
+                'instance_name': host_display_name,
+                'ip': host_ip,
+                'log_id': self.audit_session_pk,
+                'home_dir': '/root',
+                # 文件操作走 agent gRPC（webssh_host_mixin），前端保留文件面板能力。
+                'supports_file_ops': True,
+                'terminal_mode': 'agent',
+                'requested_user': self.audit_requested_username,
+                'effective_user': self.audit_effective_username,
+                'switch_user_status': self.audit_switch_user_status,
+            },
+        )
+        return True, ''
+
+    @staticmethod
+    def _build_user_friendly_open_error(raw_error, requested_user=''):
+        text = str(raw_error or '').strip()
+        target = str(requested_user or '').strip()
+        low = text.lower()
+
+        if 'unknown user' in low or 'does not exist' in low or 'no such user' in low:
+            if target:
+                return f'用户 {target} 不存在，无法登录该主机'
+            return '目标用户不存在，无法登录该主机'
+
+        if '目标用户不在允许列表中' in text:
+            if target:
+                return f'用户 {target} 不在允许登录名单中，请联系管理员放行'
+            return '目标用户不在允许登录名单中，请联系管理员放行'
+
+        if 'agent 非 root 运行，无法切换到其他系统用户' in text:
+            if target:
+                return f'当前 Agent 非 root 运行，无法切换到用户 {target}'
+            return '当前 Agent 非 root 运行，无法切换到指定用户'
+
+        if 'agent 未返回 effective_user' in text or '不支持按指定用户打开终端' in text:
+            return '当前 Agent 版本不支持按指定用户登录，请升级 Agent 后重试'
+
+        if target:
+            return f'无法以用户 {target} 打开终端：{text or "未知错误"}'
+        return f'终端建立失败：{text or "未知错误"}'
+
+    @staticmethod
+    def _blocking_open_agent_terminal(agent_id, cols, rows, target_user=''):
+        client = AgentChannelClient(agent_id)
+        term_session = client.open_shell(cols=cols, rows=rows, target_user=target_user)
+        return client, term_session
+
+    async def _agent_output_loop(self):
         try:
-            while self.connected and self.ssh_process and self.ssh_process.stdout:
-                output = await self.ssh_process.stdout.read(4096)
-                if not output:
+            while self.connected and self.term_session is not None:
+                # 在线程里阻塞等待下一帧（带 1s 超时，便于周期性检查 connected 与退出条件）。
+                frame = await asyncio.to_thread(self.term_session.recv, 1.0)
+                if isinstance(frame, str):
+                    # recv 在超时（queue.Empty）时返回 'timeout' 字符串哨兵。
+                    continue
+                if frame is None:
+                    # agent 通道断开：registry 关闭会话时会向等待队列投递 None。
                     break
-                data = str(output)
-                await self._append_audit_content('output', data)
-                await self._send_event('output', {'data': data})
+                kind = frame.WhichOneof('payload')
+                if kind == 'terminal_data_response':
+                    # 多字节 UTF-8 可能跨帧被切分，使用增量解码器避免乱码。
+                    text = self._term_decoder.decode(frame.terminal_data_response.data)
+                    if text:
+                        await self._append_audit_content('output', text)
+                        await self._send_event('output', {'data': text})
+                elif kind == 'terminal_exit_response':
+                    break
         except Exception as exc:
-            await self._send_event('error', {'message': f'SSH 输出读取失败：{exc}'})
+            await self._send_event('error', {'message': f'终端输出读取失败：{exc}'})
         finally:
             if self.connected and not self.audit_close_notified:
                 self.audit_close_notified = True
-                await self._send_event('closed', {'message': 'SSH 会话已关闭'})
+                await self._send_event('closed', {'message': '终端会话已关闭'})
                 await self.close(code=4000)
 
-    async def _write_ssh_input(self, data):
-        if not self.ssh_process or not getattr(self.ssh_process, 'stdin', None):
+    async def _write_terminal_input(self, data):
+        if self.term_session is None:
             return
         try:
-            self.ssh_process.stdin.write(data)
+            # send_stdin 仅向发送队列投递帧（非阻塞），可直接在事件循环中调用。
+            self.term_session.send_stdin(data)
         except Exception as exc:
-            await self._send_event('error', {'message': f'SSH 输入失败：{exc}'})
+            await self._send_event('error', {'message': f'终端输入失败：{exc}'})
 
-    async def _resize_ssh_terminal(self, cols, rows):
-        if not self.ssh_process:
+    async def _resize_terminal(self, cols, rows):
+        if self.term_session is None:
             return
-        safe_cols = int(cols or 120)
-        safe_rows = int(rows or 32)
         try:
-            resize_fn = getattr(self.ssh_process, 'set_terminal_size', None)
-            if callable(resize_fn):
-                resize_fn(safe_cols, safe_rows)
-                return
-            channel = getattr(self.ssh_process, 'channel', None)
-            if channel and hasattr(channel, 'change_terminal_size'):
-                channel.change_terminal_size(safe_cols, safe_rows)
+            self.term_session.resize(int(cols or 120), int(rows or 32))
         except Exception:
-            # Ignore resize errors to keep session usable.
+            # 忽略 resize 异常，保持会话可用。
             return
 
-    async def _close_ssh_session(self):
-        if self.ssh_output_task is not None:
-            self.ssh_output_task.cancel()
+    async def _close_agent_terminal(self):
+        if self.term_output_task is not None:
+            self.term_output_task.cancel()
             try:
-                await self.ssh_output_task
+                await self.term_output_task
             except asyncio.CancelledError:
                 pass
-            self.ssh_output_task = None
+            self.term_output_task = None
 
-        if self.ssh_process is not None:
+        if self.term_session is not None:
             try:
-                if getattr(self.ssh_process, 'stdin', None):
-                    self.ssh_process.stdin.write_eof()
+                self.term_session.close()
             except Exception:
                 pass
-            self.ssh_process = None
-
-        if self.ssh_conn is not None:
-            try:
-                self.ssh_conn.close()
-                await self.ssh_conn.wait_closed()
-            except Exception:
-                pass
-            self.ssh_conn = None
-
-    @database_sync_to_async
-    def _resolve_credential_for_host(self, host_id, selected_credential_id):
-        credential = None
-        if selected_credential_id not in (None, '', 0, '0'):
-            relation = HostCredential.objects.filter(
-                host_id=host_id,
-                credential_id=int(selected_credential_id),
-            ).select_related('credential', 'credential__temp_credential_info').first()
-            if relation is not None:
-                credential = relation.credential
-            else:
-                # 临时凭证是本次 WebSSH 专用的一次性凭证，其 HostCredential 关联可能从未建立，
-                # 或已被后续主机保存（_sync_host_credentials 会先 delete 再重建，而临时凭证被序列化层过滤）清除。
-                # 此时按 id 直接解析该临时凭证，避免回退到默认凭证导致 is_temporary 误判、
-                # session_pk 无法绑定、会话结束后临时凭证不被删除。
-                credential = Credential.objects.filter(
-                    id=int(selected_credential_id),
-                    temp_credential_info__isnull=False,
-                ).select_related('temp_credential_info').first()
-
-        if credential is None:
-            relation = HostCredential.objects.filter(
-                host_id=host_id, is_default=True
-            ).select_related('credential', 'credential__temp_credential_info').first()
-            if relation is not None:
-                credential = relation.credential
-
-        if credential is None:
-            return None, '主机未配置默认 SSH 凭证，请先在主机配置中绑定凭证'
-
-        if not credential.username:
-            return None, 'SSH 凭证缺少用户名'
-        decrypted_password = ''
-        if credential.auth_type == credential.AuthType.PASSWORD:
-            try:
-                decrypted_password = str(decrypt_secret(credential.password) or '')
-            except ValueError as exc:
-                return None, str(exc)
-
-        if credential.auth_type == credential.AuthType.PASSWORD and not decrypted_password:
-            return None, 'SSH 凭证缺少密码'
-        if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
-            return None, 'SSH 凭证缺少私钥'
-
-        return {
-            'id': credential.pk,
-            'username': credential.username,
-            'password': decrypted_password,
-            'private_key': credential.private_key,
-            'port': credential.port,
-            'auth_type': credential.auth_type,
-            # 通过关联表判断是否临时凭证
-            'is_temporary': hasattr(credential, 'temp_credential_info'),
-        }, ''
+            self.term_session = None
+        self.agent_client = None
 
     async def _heartbeat_watchdog(self):
         while self.connected:
@@ -425,6 +427,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
     def _init_audit_runtime_state(self):
         self.audit_user_id = None
         self.audit_username = ''
+        self.audit_requested_username = ''
+        self.audit_effective_username = ''
+        self.audit_switch_user_status = 'none'
+        self.audit_switch_user_error = ''
         self.audit_client_ip = ''
         self.audit_user_agent = ''
         self.audit_session_pk = None
@@ -467,23 +473,23 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
 
         return host, host_display_name, ''
 
-    def _get_token_from_query_string(self):
+    def _parse_query_string(self):
         raw_query = self.scope.get('query_string', b'').decode('utf-8')
-        query = parse_qs(raw_query)
+        return parse_qs(raw_query)
+
+    def _get_token_from_query_string(self):
+        query = self._parse_query_string()
         token = query.get('token', [''])[0]
         return token.strip()
 
-    def _get_credential_id_from_query_string(self):
-        raw_query = self.scope.get('query_string', b'').decode('utf-8')
-        query = parse_qs(raw_query)
-        credential_raw = (query.get('credential_id', [''])[0] or '').strip()
-        if credential_raw == '':
-            return None
-        try:
-            parsed = int(credential_raw)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
+    def _get_target_user_from_query_string(self):
+        query = self._parse_query_string()
+        target_user = str(query.get('target_user', [''])[0] or '').strip()
+        if not target_user:
+            return ''
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9._-]{0,63}$', target_user):
+            return ''
+        return target_user
 
     def _decode_token(self, token):
         try:
@@ -586,6 +592,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             host_id=self.host_id,
             user_id=self.audit_user_id,
             username=self.audit_username,
+            requested_username=self.audit_requested_username,
+            effective_username=self.audit_effective_username,
+            switch_user_status=self.audit_switch_user_status,
+            switch_user_error=self.audit_switch_user_error,
             client_ip=self.audit_client_ip,
             user_agent=self.audit_user_agent,
             status=WebSSHSessionLog.Status.CONNECTED,
@@ -694,6 +704,10 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
             close_code=close_code,
             status=status,
             error_message=error_message or '',
+            requested_username=self.audit_requested_username,
+            effective_username=self.audit_effective_username,
+            switch_user_status=self.audit_switch_user_status,
+            switch_user_error=self.audit_switch_user_error,
             input_bytes=self.audit_input_bytes,
             command_count=self.audit_command_count,
             recorded_content_bytes=self.audit_recorded_content_bytes,

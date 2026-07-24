@@ -277,20 +277,6 @@
   border-color: #d3adf7;
 }
 
-.workflow-node-convergence-tag {
-  position: absolute;
-  right: 10px;
-  bottom: 28px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  border: 1px solid #faad14;
-  background: #fffbe6;
-  color: #ad6800;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-}
-
 .workflow-node-quick-actions {
   position: absolute;
   right: 10px;

@@ -10,23 +10,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'djadmin.settings')
 django.setup()
 
-from scheduler.models import ScheduledTask, ScheduledTaskLog
+from scheduler_manager import ensure_default_tasks
+from scheduler.models import ScheduledTask
 
-# Initialize default task
-defaults = {
-    'name': '主机信息采集',
-    'description': '定时采集所有主机信息',
-    'enabled': True,
-    'cron_expression': '*/15 * * * *',
-    'interval_minutes': None,
-}
-task, created = ScheduledTask.objects.get_or_create(
-    code='collect_all_hosts_info',
-    defaults=defaults,
-)
+ensure_default_tasks()
 
-print(f"{'✓ Created' if created else '✓ Found'} task: {task.name}")
 print(f"Total tasks in database: {ScheduledTask.objects.count()}")
 print("\nAll tasks:")
-for t in ScheduledTask.objects.all():
+for t in ScheduledTask.objects.all().order_by('id'):
     print(f"  - {t.name} ({t.code}) - Enabled: {t.enabled}")

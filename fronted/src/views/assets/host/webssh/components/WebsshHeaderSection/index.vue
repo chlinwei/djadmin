@@ -24,28 +24,36 @@
             </a-space>
         </div>
 
-        <div v-if="downloadProgressVisible" class="page-download-progress">
-            <div class="download-progress-text">
-                <span>{{ downloadFileName || '下载中' }}</span>
-                <span>{{ downloadProgressText }}</span>
+        <div v-if="downloadProgressVisible" class="page-transfer-progress">
+            <div class="transfer-progress-meta">
+                <span class="transfer-progress-name">{{ downloadFileName || '下载中' }}</span>
+                <span class="transfer-progress-info">{{ downloadProgressText }}</span>
+                <span class="transfer-progress-percent">{{ downloadProgressPercent }}%</span>
+                <a-button v-if="downloadRunning" size="small" type="link" danger class="transfer-progress-action" @click="cancelDownload">取消</a-button>
+                <a-button v-else size="small" type="link" class="transfer-progress-action" @click="dismissDownloadProgress">关闭</a-button>
             </div>
-            <a-progress :percent="downloadProgressPercent" :status="downloadProgressStatus" size="small" />
-            <div class="download-progress-actions">
-                <a-button v-if="downloadRunning" size="small" type="link" danger @click="cancelDownload">取消</a-button>
-                <a-button v-else size="small" type="link" @click="dismissDownloadProgress">关闭</a-button>
-            </div>
+            <a-progress
+                :percent="downloadProgressPercent"
+                :show-info="false"
+                :stroke-color="downloadProgressStatus === 'exception' ? '#ff4d4f' : '#52c41a'"
+                size="small"
+            />
         </div>
 
-        <div v-if="uploadProgressVisible" class="page-download-progress">
-            <div class="download-progress-text">
-                <span>{{ uploadFileName || '上传中' }}</span>
-                <span>{{ uploadProgressText }}</span>
+        <div v-if="uploadProgressVisible" class="page-transfer-progress">
+            <div class="transfer-progress-meta">
+                <span class="transfer-progress-name">{{ uploadFileName || '上传中' }}</span>
+                <span class="transfer-progress-info">{{ uploadProgressText }}</span>
+                <span class="transfer-progress-percent">{{ uploadProgressPercent }}%</span>
+                <a-button v-if="uploadRunning" size="small" type="link" danger class="transfer-progress-action" @click="cancelUpload">取消</a-button>
+                <a-button v-else size="small" type="link" class="transfer-progress-action" @click="dismissUploadProgress">关闭</a-button>
             </div>
-            <a-progress :percent="uploadProgressPercent" :status="uploadProgressStatus" size="small" />
-            <div class="download-progress-actions">
-                <a-button v-if="uploadRunning" size="small" type="link" danger @click="cancelUpload">取消</a-button>
-                <a-button v-else size="small" type="link" @click="dismissUploadProgress">关闭</a-button>
-            </div>
+            <a-progress
+                :percent="uploadProgressPercent"
+                :show-info="false"
+                :stroke-color="uploadProgressStatus === 'exception' ? '#ff4d4f' : '#52c41a'"
+                size="small"
+            />
         </div>
     </div>
 </template>

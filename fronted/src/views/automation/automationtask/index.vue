@@ -291,54 +291,36 @@
           />
         </a-form-item>
 
-        <a-divider orientation="left" style="margin: 16px 0">权限提升配置</a-divider>
+        <a-divider orientation="left" style="margin: 16px 0">执行身份配置</a-divider>
 
         <a-row :gutter="12">
-          <a-col :span="12">
-            <a-form-item label="权限提升">
-              <a-switch
-                v-model:checked="taskForm.become_enabled"
-                checked-children="启用"
-                un-checked-children="禁用"
-              />
-              <span style="margin-left: 8px; color: #666; font-size: 12px">
-                在目标主机上以指定用户（如 root）身份执行任务
-              </span>
-            </a-form-item>
-          </a-col>
-        </a-row>
-
-        <a-row :gutter="12" v-if="taskForm.become_enabled">
-          <a-col :span="12">
-            <a-form-item label="提升方式">
-              <a-select
-                v-model:value="taskForm.become_method"
-                :options="[
-                  { label: 'sudo', value: 'sudo' },
-                  { label: 'su', value: 'su' }
-                ]"
-                :getPopupContainer="getTaskModalPopupContainer"
-                placeholder="选择权限提升方式"
+          <a-col :span="8">
+            <a-form-item label="执行用户" required>
+              <a-input
+                v-model:value="taskForm.run_as_user"
+                placeholder="必填，例如 node_exporter"
               />
               <a-alert
                 type="info"
                 show-icon
-                message="sudo: 安全且可配置免密，推荐使用；su: 需要目标用户密码"
+                message="dj-agent 以 root 运行，任务实际执行时会 setuid/setgid 降权到该用户，不再使用 sudo/su"
                 style="margin-top: 8px"
               />
             </a-form-item>
           </a-col>
-          <a-col :span="12">
-            <a-form-item label="目标用户">
+          <a-col :span="8">
+            <a-form-item label="执行组（可选）">
               <a-input
-                v-model:value="taskForm.become_user"
-                placeholder="默认为 root"
+                v-model:value="taskForm.run_as_group"
+                placeholder="留空则使用执行用户的主组"
               />
-              <a-alert
-                type="warning"
-                show-icon
-                message="请确保该用户有执行权限，建议在凭证中配置免密sudo"
-                style="margin-top: 8px"
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="工作目录">
+              <a-input
+                v-model:value="taskForm.work_directory"
+                placeholder="默认为 /tmp"
               />
             </a-form-item>
           </a-col>
@@ -544,10 +526,10 @@ const taskForm = reactive({
   shell_args_text: '',
   enabled: true,
   remark: '',
-  // 权限提升配置
-  become_enabled: false,
-  become_method: 'sudo',
-  become_user: 'root',
+  // 执行身份配置：dj-agent 以 root 运行，任务实际执行时 setuid/setgid 降权到 run_as_user/run_as_group
+  run_as_user: '',
+  run_as_group: '',
+  work_directory: '/tmp',
 })
 
 const taskColumns = TASK_COLUMNS
@@ -1057,10 +1039,10 @@ function resetTaskForm() {
   taskForm.shell_args_text = ''
   taskForm.enabled = true
   taskForm.remark = ''
-  // 权限提升配置
-  taskForm.become_enabled = false
-  taskForm.become_method = 'sudo'
-  taskForm.become_user = 'root'
+  // 执行身份配置
+  taskForm.run_as_user = ''
+  taskForm.run_as_group = ''
+  taskForm.work_directory = '/tmp'
   groupScopeEditorVisible.value = false
   groupScopeCheckedKeys.value = []
   clearTaskLimitPrecheckTimer()
@@ -1123,10 +1105,10 @@ function openEditModal(record, options = {}) {
   taskForm.selected_group_ids = selectedGroupIds
   taskForm.enabled = !!record.enabled
   taskForm.remark = record.remark || ''
-  // 权限提升配置
-  taskForm.become_enabled = !!record.become_enabled
-  taskForm.become_method = record.become_method || 'sudo'
-  taskForm.become_user = record.become_user || 'root'
+  // 执行身份配置
+  taskForm.run_as_user = record.run_as_user || ''
+  taskForm.run_as_group = record.run_as_group || ''
+  taskForm.work_directory = record.work_directory || '/tmp'
   taskModalVisible.value = showTaskModal
   groupScopeEditorVisible.value = false
   syncGroupScopeCheckedKeys()
@@ -1180,6 +1162,12 @@ async function submitTask() {
     return
   }
 
+  const runAsUser = String(taskForm.run_as_user || '').trim()
+  if (!runAsUser) {
+    message.error('请输入执行用户（dj-agent 以 root 运行，任务必须显式指定降权执行的系统用户）')
+    return
+  }
+
   const payload = {
     name: String(taskForm.name).trim(),
     playbook_template: taskForm.template_type === 'playbook' ? Number(taskForm.template) : null,
@@ -1193,10 +1181,10 @@ async function submitTask() {
     shell_parameters: shellParameters,
     enabled: !!taskForm.enabled,
     remark: taskForm.remark || '',
-    // 权限提升配置
-    become_enabled: !!taskForm.become_enabled,
-    become_method: taskForm.become_method || 'sudo',
-    become_user: taskForm.become_user || 'root',
+    // 执行身份配置
+    run_as_user: runAsUser,
+    run_as_group: String(taskForm.run_as_group || '').trim(),
+    work_directory: String(taskForm.work_directory || '').trim() || '/tmp',
   }
 
   modalSubmitting.value = true

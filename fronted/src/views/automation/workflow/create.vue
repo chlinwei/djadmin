@@ -232,7 +232,6 @@ async function submitCreate() {
       remark: String(form.remark || '').trim(),
       nodes: [],
       edges: [],
-      entry_node_key: '',
     })
 
     const data = res?.data?.data || {}

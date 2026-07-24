@@ -4,9 +4,10 @@ import traceback
 from celery.schedules import crontab
 from django.utils import timezone
 
-from assets.tasks import collect_all_hosts_info, cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
+from assets.tasks import cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
 from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
+from monitor.tasks import cleanup_monitor_install_histories
 from menu.models import SysMenu
 from scheduler.models import ScheduledTask, ScheduledTaskLog
 from sys_config.models import SysConfig
@@ -19,6 +20,7 @@ SCHEDULER_ENABLED_KEY = 'sys.scheduler.enabled'
 AUTOMATION_LOG_RETENTION_DAYS_KEY = 'sys.automation.logs.retention_days'
 AUDIT_LOGIN_LOG_RETENTION_DAYS_KEY = 'sys.audit.login_logs.retention_days'
 AUDIT_OPERATION_LOG_RETENTION_DAYS_KEY = 'sys.audit.operation_logs.retention_days'
+MONITOR_INSTALL_HISTORY_RETENTION_DAYS_KEY = 'sys.monitor.install_history.retention_days'
 
 
 def validate_cron_expression(expression):
@@ -111,6 +113,15 @@ def ensure_scheduler_log_configs():
             'description': '操作审计日志在数据库中的保留天数',
             'is_readonly': False,
         },
+        {
+            'key': MONITOR_INSTALL_HISTORY_RETENTION_DAYS_KEY,
+            'value': '180',
+            'default_value': '180',
+            'value_type': 'int',
+            'name': '监控安装历史保留天数',
+            'description': '监控安装/卸载历史记录保留天数，清理时每个纳管目标至少保留最新一条',
+            'is_readonly': False,
+        },
     ]
 
     for item in defaults:
@@ -184,9 +195,9 @@ def cleanup_task_logs(task):
 
 def get_task_menu(code):
     mapping = {
-        'collect_all_hosts_info': '/assets/hosts/index',
         'cleanup_webssh_session_logs': '/audit/webssh',
         'cleanup_ansible_execution_logs': '/sys/automation/logs',
+        'cleanup_monitor_install_histories': '/sys/automation/logs',
         'cleanup_workflow_run_logs': '/sys/automation/workflow',
         'cleanup_login_audit_logs': '/audit/login',
         'cleanup_operation_audit_logs': '/audit/operation-log',
@@ -201,13 +212,6 @@ def ensure_default_tasks():
     ensure_scheduler_log_configs()
     task_defs = [
         {
-            'code': 'collect_all_hosts_info',
-            'name': '主机信息采集',
-            'description': '定时采集所有主机信息',
-            'enabled': True,
-            'cron_expression': '*/15 * * * *',
-        },
-        {
             'code': 'cleanup_webssh_session_logs',
             'name': 'WebSSH 会话日志清理',
             'description': '按保留天数清理过期 WebSSH 会话审计日志',
@@ -220,6 +224,13 @@ def ensure_default_tasks():
             'description': '按保留天数清理过期自动化作业日志与目标明细',
             'enabled': True,
             'cron_expression': '0 0 * * *',
+        },
+        {
+            'code': 'cleanup_monitor_install_histories',
+            'name': '监控安装历史清理',
+            'description': '按保留天数清理过期监控安装历史，且每个纳管目标至少保留一条',
+            'enabled': True,
+            'cron_expression': '15 0 * * *',
         },
         {
             'code': 'cleanup_login_audit_logs',
@@ -319,12 +330,12 @@ def calculate_next_run_time(task):
 
 
 def resolve_task_callable(task_code):
-    if task_code == 'collect_all_hosts_info':
-        return collect_all_hosts_info
     if task_code == 'cleanup_webssh_session_logs':
         return cleanup_webssh_session_logs
     if task_code == 'cleanup_ansible_execution_logs':
         return cleanup_ansible_execution_logs
+    if task_code == 'cleanup_monitor_install_histories':
+        return cleanup_monitor_install_histories
     if task_code == 'cleanup_login_audit_logs':
         return cleanup_login_audit_logs
     if task_code == 'cleanup_operation_audit_logs':
@@ -379,7 +390,7 @@ def run_scheduled_task(task_code):
         task.last_run_time = now
         task.last_status = status
         task.last_message = message
-        task.update_time = now.date()
+        task.update_time = now.date()  # type: ignore[assignment]
         task.is_running = False
         task.save(update_fields=['last_run_time', 'last_status', 'last_message', 'update_time', 'is_running'])
         calculate_next_run_time(task)

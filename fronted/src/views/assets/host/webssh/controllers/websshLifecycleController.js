@@ -13,7 +13,7 @@ export function createWebsshLifecycleController(options) {
         state.hostId = Number(routeHostId)
         state.instanceName = String(route.query.instance_name || '')
         state.hostIp = String(route.query.ip || '')
-        state.selectedCredentialId = route.query.credential_id ? Number(route.query.credential_id) : null
+        state.targetUsername = String(route.query.target_user || '').trim()
 
         window.addEventListener('pagehide', actions.handlePageUnload)
         window.addEventListener('beforeunload', actions.handlePageUnload)

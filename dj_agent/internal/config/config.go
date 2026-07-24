@@ -15,10 +15,9 @@ type Config struct {
 	ShutdownTimeout       time.Duration
 	BackendBaseURL        string
 	BackendToken          string
-	HTTPListenAddr        string
-	HTTPAuthToken         string
 	HostReportInterval    time.Duration
 	HostReportIntervalRaw string
+	GRPCFileAddr          string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -29,8 +28,8 @@ func LoadFromEnv() (Config, error) {
 		ShutdownTimeout: 5 * time.Second,
 		BackendBaseURL:  strings.TrimRight(getEnv("DJ_AGENT_BACKEND_BASE_URL", "http://127.0.0.1:9000"), "/"),
 		BackendToken:    strings.TrimSpace(os.Getenv("DJ_AGENT_BACKEND_TOKEN")),
-		HTTPListenAddr:  strings.TrimSpace(getEnv("DJ_AGENT_HTTP_ADDR", ":19090")),
-		HTTPAuthToken:   strings.TrimSpace(os.Getenv("DJ_AGENT_HTTP_TOKEN")),
+		// 文件传输 gRPC 通道：agent 主动拨号连接 backend（与 RabbitMQ 同向）。
+		GRPCFileAddr: strings.TrimSpace(getEnv("DJ_AGENT_GRPC_FILE_ADDR", "127.0.0.1:9001")),
 	}
 
 	rawHostReportInterval := strings.TrimSpace(os.Getenv("DJ_AGENT_HOST_REPORT_INTERVAL"))
@@ -78,9 +77,6 @@ func (c Config) Validate() error {
 	}
 	if c.HostReportInterval <= 0 {
 		return fmt.Errorf("host_report_interval must be > 0")
-	}
-	if strings.TrimSpace(c.HTTPListenAddr) == "" {
-		return fmt.Errorf("http_listen_addr is required")
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

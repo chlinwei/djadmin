@@ -113,7 +113,7 @@ class HostGroupSerializer(ModelSerializer):
         parent_id = validated_data.pop("parent_id", None)
         parent_id = self._validate_parent_depth(parent_id)
         validated_data["parent_id"] = parent_id
-        validated_data["create_time"] = datetime.now().date()
+        validated_data["create_time"] = timezone.now()
         data = HostGroup.objects.create(**validated_data)
         return data
 
@@ -130,17 +130,7 @@ class HostGroupSerializer(ModelSerializer):
 # host 
 class HostSerializer(ModelSerializer):
     group_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
-    credential_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
-    credential_ids = serializers.ListField(
-        child=serializers.IntegerField(min_value=1),
-        required=False,
-        allow_empty=True,
-        write_only=True,
-    )
-    default_credential_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     group_name = serializers.SerializerMethodField()
-    credential = serializers.SerializerMethodField()
-    credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     disks = serializers.SerializerMethodField()
@@ -164,62 +154,39 @@ class HostSerializer(ModelSerializer):
         model = Host
         fields = '__all__'
 
-    def _get_default_host_credential(self, obj):
-        cached_credentials = getattr(obj, 'hostcredential_set', None)
-        if cached_credentials is not None:
-            for relation in cached_credentials.all():
-                # 临时凭证（WebSSH 手动输入）不作为对外展示的默认凭证
-                if relation.is_default and relation.credential and not self._is_temporary_credential(relation.credential):
-                    return relation
-        return (
-            HostCredential.objects.filter(host=obj, is_default=True)
-            .select_related('credential', 'credential__temp_credential_info')
-            .filter(credential__temp_credential_info__isnull=True)
-            .first()
-        )
-
     @staticmethod
-    def _is_temporary_credential(credential):
-        # 通过 OneToOne 反向关系判断是否为临时凭证，避免其出现在主机凭证展示中
-        return hasattr(credential, 'temp_credential_info')
+    def _normalize_webssh_user_list(raw_value):
+        username_regexp = re.compile(r'^[a-zA-Z_][a-zA-Z0-9._-]{0,63}$')
+        tokens = [
+            token.strip()
+            for token in str(raw_value or '').split()
+            if token.strip() and username_regexp.match(token.strip())
+        ]
+        unique_tokens = list(dict.fromkeys(tokens))
+        return unique_tokens or ['root']
+
+    def _normalize_webssh_preferences(self, data, instance=None):
+        if instance is not None and 'webssh_login_users' not in data and 'webssh_default_username' not in data:
+            return data
+
+        raw_users = data.get('webssh_login_users')
+        if raw_users is None and instance is not None:
+            raw_users = instance.webssh_login_users
+
+        raw_default = data.get('webssh_default_username')
+        if raw_default is None and instance is not None:
+            raw_default = instance.webssh_default_username
+
+        users = self._normalize_webssh_user_list(raw_users)
+        default_user = str(raw_default or '').strip()
+        if default_user not in users:
+            default_user = users[0]
+        data['webssh_login_users'] = ' '.join(users)
+        data['webssh_default_username'] = default_user
+        return data
 
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
-
-    def get_credential(self, obj):
-        relation = self._get_default_host_credential(obj)
-        if not relation or not relation.credential:
-            return None
-        credential = relation.credential
-        return {
-            'id': credential.id,
-            'name': credential.name,
-            'username': credential.username,
-            'port': credential.port,
-            'auth_type': credential.auth_type,
-        }
-
-    def get_credentials(self, obj):
-        relations = (
-            HostCredential.objects.filter(host=obj)
-            .select_related('credential', 'credential__temp_credential_info')
-            .filter(credential__temp_credential_info__isnull=True)
-            .order_by('-is_default', 'id')
-        )
-        result = []
-        for relation in relations:
-            if not relation.credential:
-                continue
-            credential = relation.credential
-            result.append({
-                'id': credential.id,
-                'name': credential.name,
-                'username': credential.username,
-                'port': credential.port,
-                'auth_type': credential.auth_type,
-                'is_default': bool(relation.is_default),
-            })
-        return result
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
@@ -265,7 +232,7 @@ class HostSerializer(ModelSerializer):
         total_size = 0.0
         total_used = 0.0
         for disk in obj.disks.all():
-            if _should_ignore_disk_device(disk.device):
+            if _should_ignore_disk(disk.device, disk.filesystem):
                 continue
             if disk.size_gb is None or disk.used_gb is None:
                 continue
@@ -292,7 +259,7 @@ class HostSerializer(ModelSerializer):
                 else None,
             }
             for disk in obj.disks.all()
-            if not _should_ignore_disk_device(disk.device)
+            if not _should_ignore_disk(disk.device, disk.filesystem)
         ]
 
     # 系统信息顶级字段的 getter 方法
@@ -373,81 +340,17 @@ class HostSerializer(ModelSerializer):
     
     # 创建
     def create(self, validated_data):
+        validated_data = self._normalize_webssh_preferences(validated_data)
         group_id = validated_data.pop('group_id', None)
-        credential_id = validated_data.pop('credential_id', None)
-        credential_ids = validated_data.pop('credential_ids', serializers.empty)
-        default_credential_id = validated_data.pop('default_credential_id', serializers.empty)
         if group_id in (0, '0', '', None):
             group_id = None
         validated_data['group_id'] = group_id
-        validated_data["create_time"] = datetime.now().date()
-        data = Host.objects.create(**validated_data)
-        resolved_credential_ids = self._normalize_credential_ids(credential_ids, credential_id)
-        resolved_default_credential_id = self._resolve_default_credential_id(
-            resolved_credential_ids,
-            default_credential_id,
-        )
-        self._sync_host_credentials(data, resolved_credential_ids, resolved_default_credential_id)
-        return data
-
-    def _normalize_credential_ids(self, credential_ids, credential_id):
-        normalized_ids = []
-        seen = set()
-
-        if credential_ids is serializers.empty:
-            raw_ids = [] if credential_id in (0, '0', '', None, serializers.empty) else [credential_id]
-        else:
-            raw_ids = credential_ids or []
-
-        for value in raw_ids:
-            if value in (0, '0', '', None):
-                continue
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError):
-                continue
-            if parsed <= 0 or parsed in seen:
-                continue
-            seen.add(parsed)
-            normalized_ids.append(parsed)
-
-        return normalized_ids
-
-    def _resolve_default_credential_id(self, credential_ids, default_credential_id):
-        if not credential_ids:
-            return None
-
-        if default_credential_id not in (serializers.empty, None, '', '0', 0):
-            try:
-                parsed_default = int(default_credential_id)
-            except (TypeError, ValueError):
-                parsed_default = None
-            if parsed_default in credential_ids:
-                return parsed_default
-
-        return credential_ids[0]
-
-    def _sync_host_credentials(self, host, credential_ids, default_credential_id):
-        HostCredential.objects.filter(host=host).delete()
-        if not credential_ids:
-            return
-
-        for current_id in credential_ids:
-            HostCredential.objects.create(
-                host=host,
-                credential_id=current_id,
-                is_default=(current_id == default_credential_id),
-            )
+        validated_data["create_time"] = timezone.now()
+        return Host.objects.create(**validated_data)
 
     def update(self, instance, validated_data):
+        validated_data = self._normalize_webssh_preferences(validated_data, instance=instance)
         group_id = validated_data.pop('group_id', serializers.empty)
-        credential_id = validated_data.pop('credential_id', serializers.empty)
-        credential_ids = validated_data.pop('credential_ids', serializers.empty)
-        default_credential_id = validated_data.pop('default_credential_id', serializers.empty)
-
-        relation = HostCredential.objects.filter(host=instance, is_default=True).select_related('credential').first()
-        previous_credential_id = relation.credential.id if (relation and relation.credential) else None
-        credential_changed = False
 
         if group_id is not serializers.empty:
             if group_id in (0, '0', '', None):
@@ -455,34 +358,16 @@ class HostSerializer(ModelSerializer):
             else:
                 instance.group_id = group_id
 
-        should_sync_credentials = credential_ids is not serializers.empty or credential_id is not serializers.empty
-        if should_sync_credentials:
-            normalized_credential_ids = self._normalize_credential_ids(credential_ids, credential_id)
-            resolved_default_credential_id = self._resolve_default_credential_id(
-                normalized_credential_ids,
-                default_credential_id,
-            )
-            credential_changed = resolved_default_credential_id != previous_credential_id
-            self._sync_host_credentials(instance, normalized_credential_ids, resolved_default_credential_id)
-
-        if credential_changed:
-            # 凭证变更后清理旧采集结论，避免继续显示历史“无法连接”误导用户。
-            instance.collect_status = Host.CollectStatus.UNKNOWN
-            instance.collect_message = ''
-            instance.collect_time = None
-
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-        instance.update_time = datetime.now().date()
+        instance.update_time = timezone.now()
         instance.save()
         return instance
 
 
 class HostListSerializer(ModelSerializer):
     group_name = serializers.SerializerMethodField()
-    credential = serializers.SerializerMethodField()
-    credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     os_type = serializers.SerializerMethodField()
@@ -497,12 +382,11 @@ class HostListSerializer(ModelSerializer):
             'id',
             'instance_name',
             'ip',
-            'port',
             'remark',
+            'webssh_default_username',
+            'webssh_login_users',
             'collect_status',
             'group_name',
-            'credential',
-            'credentials',
             'system',
             'hardware',
             'os_type',
@@ -512,62 +396,8 @@ class HostListSerializer(ModelSerializer):
             'monitor_install_status',
         ]
 
-    def _get_default_host_credential(self, obj):
-        cached_credentials = getattr(obj, 'hostcredential_set', None)
-        if cached_credentials is not None:
-            for relation in cached_credentials.all():
-                # 临时凭证（WebSSH 手动输入）不作为对外展示的默认凭证
-                if relation.is_default and relation.credential and not self._is_temporary_credential(relation.credential):
-                    return relation
-        return (
-            HostCredential.objects.filter(host=obj, is_default=True)
-            .select_related('credential', 'credential__temp_credential_info')
-            .filter(credential__temp_credential_info__isnull=True)
-            .first()
-        )
-
-    @staticmethod
-    def _is_temporary_credential(credential):
-        # 通过 OneToOne 反向关系判断是否为临时凭证，避免其出现在主机凭证展示中
-        return hasattr(credential, 'temp_credential_info')
-
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
-
-    def get_credential(self, obj):
-        relation = self._get_default_host_credential(obj)
-        if not relation or not relation.credential:
-            return None
-        credential = relation.credential
-        return {
-            'id': credential.id,
-            'name': credential.name,
-            'username': credential.username,
-            'port': credential.port,
-            'auth_type': credential.auth_type,
-        }
-
-    def get_credentials(self, obj):
-        relations = (
-            HostCredential.objects.filter(host=obj)
-            .select_related('credential', 'credential__temp_credential_info')
-            .filter(credential__temp_credential_info__isnull=True)
-            .order_by('-is_default', 'id')
-        )
-        result = []
-        for relation in relations:
-            if not relation.credential:
-                continue
-            credential = relation.credential
-            result.append({
-                'id': credential.id,
-                'name': credential.name,
-                'username': credential.username,
-                'port': credential.port,
-                'auth_type': credential.auth_type,
-                'is_default': bool(relation.is_default),
-            })
-        return result
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
@@ -607,7 +437,7 @@ class HostListSerializer(ModelSerializer):
         total_size = 0.0
         total_used = 0.0
         for disk in obj.disks.all():
-            if _should_ignore_disk_device(disk.device):
+            if _should_ignore_disk(disk.device, disk.filesystem):
                 continue
             if disk.size_gb is None or disk.used_gb is None:
                 continue
@@ -665,6 +495,10 @@ class WebSSHSessionLogSerializer(ModelSerializer):
             'host_ip',
             'user_id',
             'username',
+            'requested_username',
+            'effective_username',
+            'switch_user_status',
+            'switch_user_error',
             'client_ip',
             'user_agent',
             'status',
@@ -688,5 +522,7 @@ class WebSSHSessionLogSerializer(ModelSerializer):
         return obj.host.ip
 
 
-def _should_ignore_disk_device(device):
-    return bool(re.match(r'^/dev/sr\d+$', (device or '').strip()))
+def _should_ignore_disk(device, filesystem=None):
+    if bool(re.match(r'^/dev/sr\d+$', (device or '').strip())):
+        return True
+    return str(filesystem or '').strip().lower() == 'squashfs'

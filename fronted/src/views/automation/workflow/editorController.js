@@ -11,16 +11,13 @@ import {
 } from '../utils/scopeHelpers'
 import {
   START_EDGE_TYPE,
-  applyWorkflowEdgeVisual,
   buildWorkflowEdgeLabelStyle,
   buildWorkflowEdgeStyle,
-  normalizeEdgeCondition,
   resolveWorkflowEdgePathOptions,
   resolveWorkflowEdgeType,
 } from '../utils/workflowGraph'
 import {
   autoLayoutTreeNodes,
-  collectCascadeNodeIds as collectCascadeNodeIdsFromGraph,
   createStartNode,
   ensureStartEdgesForGraph,
   formatNodeLabel,
@@ -77,11 +74,6 @@ const selectedNodeId = ref('')
 const selectedEdgeId = ref('')
 const isConnecting = ref(false)
 const edgeQuickPosition = reactive({ top: 12, left: 12 })
-
-const convergenceOptions = [
-  { label: 'Any（任一父节点满足即可）', value: 'any' },
-  { label: 'All（所有父节点都要满足）', value: 'all' },
-]
 
 const taskTemplateTypeOptions = [
   { label: '全部任务', value: 'all' },
@@ -169,11 +161,9 @@ const selectedEditableEdge = computed(() => {
   }
   return target
 })
-const selectedEdgeCondition = computed(() => {
-  if (!selectedEditableEdge.value) {
-    return 'success'
-  }
-  return String(selectedEditableEdge.value.data?.condition || selectedEditableEdge.value.label || 'success')
+const canShowAddRootTaskButton = computed(() => {
+  const runtimeNodes = flowNodes.value.filter((item) => item.id !== START_NODE_ID)
+  return runtimeNodes.length === 0
 })
 const edgeQuickEditorStyle = computed(() => ({
   top: `${edgeQuickPosition.top}px`,
@@ -206,8 +196,6 @@ const nodeConfigForm = reactive({
   task_template_type: 'all',
   task_id: undefined,
   workflow_id: undefined,
-  convergence: 'any',
-  run_type: 'success',
 })
 
 const basicLimitPrecheckText = computed(() => {
@@ -297,20 +285,13 @@ function handleBasicLimitRemoveToken(token) {
   form.default_limit = removeLimitToken(form.default_limit, token)
 }
 
-const nodeConfigIncomingEdgeId = ref('')
-const nodeConfigHasParentCondition = ref(false)
-const nodeConfigRunTypeEditable = ref(false)
-const nodeConfigRunTypeHint = ref('')
-
 const addNodeWizardForm = reactive({
   parent_node_key: '',
-  run_type: 'success',
   node_type: 'task',
   name: TASK_DEFAULT_NODE_NAME,
   task_template_type: 'all',
   task_id: undefined,
   workflow_id: undefined,
-  convergence: 'any',
 })
 
 function resolveTaskTemplateType(taskRecord) {
@@ -335,14 +316,70 @@ function resolveTaskTemplateTypeByTaskId(taskId) {
   return resolveTaskTemplateType(taskRecordMap.value.get(normalizedId))
 }
 
-const addNodeWizardHasParentCondition = computed(() => Boolean(String(addNodeWizardForm.parent_node_key || '').trim()))
-
 function createEditorStartNode() {
   return createStartNode(START_NODE_ID)
 }
 
 function isEditorSystemEdge(edge) {
   return isSystemEdge(edge, START_NODE_ID, START_EDGE_PREFIX)
+}
+
+function getBusinessEdges() {
+  return flowEdges.value.filter((item) => !isEditorSystemEdge(item))
+}
+
+function hasOutgoingBusinessEdge(nodeKey) {
+  return getBusinessEdges().some((item) => item.source === nodeKey)
+}
+
+function canShowAddChildButton(nodeKey) {
+  if (!nodeKey || nodeKey === START_NODE_ID) {
+    return false
+  }
+  return !hasOutgoingBusinessEdge(nodeKey)
+}
+
+function hasIncomingBusinessEdge(nodeKey) {
+  return getBusinessEdges().some((item) => item.target === nodeKey)
+}
+
+function hasPathBetweenNodes(fromNodeKey, toNodeKey) {
+  if (!fromNodeKey || !toNodeKey) {
+    return false
+  }
+
+  const adjacency = new Map()
+  getBusinessEdges().forEach((item) => {
+    const source = String(item.source || '').trim()
+    const target = String(item.target || '').trim()
+    if (!source || !target) {
+      return
+    }
+    if (!adjacency.has(source)) {
+      adjacency.set(source, [])
+    }
+    adjacency.get(source).push(target)
+  })
+
+  const queue = [fromNodeKey]
+  const visited = new Set()
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || visited.has(current)) {
+      continue
+    }
+    if (current === toNodeKey) {
+      return true
+    }
+    visited.add(current)
+    const children = adjacency.get(current) || []
+    children.forEach((child) => {
+      if (!visited.has(child)) {
+        queue.push(child)
+      }
+    })
+  }
+  return false
 }
 
 function focusNode(nodeId) {
@@ -439,32 +476,6 @@ function openNodeConfigDialog(nodeId) {
     ? resolveTaskTemplateTypeByTaskId(nodeConfigForm.task_id)
     : 'all'
   nodeConfigForm.workflow_id = target.data?.workflow_id
-  nodeConfigForm.convergence = String(target.data?.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any'
-
-  const incomingBusinessEdges = flowEdges.value.filter(
-    (item) => !isEditorSystemEdge(item) && item.target === nodeId,
-  )
-
-  if (incomingBusinessEdges.length === 1) {
-    nodeConfigHasParentCondition.value = true
-    const incoming = incomingBusinessEdges[0]
-    nodeConfigIncomingEdgeId.value = String(incoming.id || '')
-    nodeConfigForm.run_type = String(incoming.data?.condition || incoming.label || 'success')
-    nodeConfigRunTypeEditable.value = true
-    nodeConfigRunTypeHint.value = ''
-  } else if (incomingBusinessEdges.length === 0) {
-    nodeConfigHasParentCondition.value = false
-    nodeConfigIncomingEdgeId.value = ''
-    nodeConfigForm.run_type = 'success'
-    nodeConfigRunTypeEditable.value = false
-    nodeConfigRunTypeHint.value = ''
-  } else {
-    nodeConfigHasParentCondition.value = true
-    nodeConfigIncomingEdgeId.value = ''
-    nodeConfigForm.run_type = String(incomingBusinessEdges[0].data?.condition || incomingBusinessEdges[0].label || 'success')
-    nodeConfigRunTypeEditable.value = false
-    nodeConfigRunTypeHint.value = '当前节点存在多个父节点，请在连线上分别修改运行条件。'
-  }
 
   nodeConfigVisible.value = true
 }
@@ -504,15 +515,6 @@ function saveNodeConfig() {
     target.data.task_id = taskId
     target.data.workflow_id = undefined
   }
-  target.data.convergence = String(nodeConfigForm.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any'
-
-  if (nodeConfigRunTypeEditable.value && nodeConfigIncomingEdgeId.value) {
-    const incoming = flowEdges.value.find((item) => item.id === nodeConfigIncomingEdgeId.value)
-    if (incoming && !isEditorSystemEdge(incoming)) {
-      applyWorkflowEdgeVisual(incoming, nodeConfigForm.run_type)
-    }
-  }
-
   target.data.name = nodeName
   target.label = formatNodeLabel(target.data)
   flowNodes.value = [...flowNodes.value]
@@ -520,22 +522,14 @@ function saveNodeConfig() {
   nodeConfigVisible.value = false
 }
 
-function selectNodeConfigRunType(condition) {
-  if (!nodeConfigRunTypeEditable.value) {
-    return
-  }
-  nodeConfigForm.run_type = String(condition || 'success')
-}
-
 function makeEdgeFromConfig(config, index = 0) {
-  const condition = normalizeEdgeCondition(config.condition)
+  const condition = 'success'
   const pathOptions = resolveWorkflowEdgePathOptions(condition)
   return {
     id: `edge-${config.source_key}-${config.target_key}-${condition}-${index}`,
     type: resolveWorkflowEdgeType(condition),
     source: config.source_key,
     target: config.target_key,
-    label: condition,
     data: { condition },
     ...(pathOptions ? { pathOptions } : {}),
     markerEnd: MarkerType.ArrowClosed,
@@ -619,13 +613,11 @@ function resetForm() {
 
 function resetAddNodeWizardForm() {
   addNodeWizardForm.parent_node_key = ''
-  addNodeWizardForm.run_type = 'success'
   addNodeWizardForm.node_type = 'task'
   addNodeWizardForm.name = TASK_DEFAULT_NODE_NAME
   addNodeWizardForm.task_template_type = 'all'
   addNodeWizardForm.task_id = taskOptions.value[0]?.value
   addNodeWizardForm.workflow_id = workflowOptions.value[0]?.value
-  addNodeWizardForm.convergence = 'any'
 }
 
 function fillForm(record) {
@@ -684,13 +676,20 @@ function openAddNodeWizard(options = {}) {
   const incomingParentNodeId = String(options.parentNodeId || '').trim()
   const parentNodeId = forceRoot ? '' : (incomingParentNodeId || selectedParentNode)
 
+  if (hasRuntimeNode && forceRoot) {
+    message.error('线性工作流只允许一个起点，请从已有节点添加后续节点')
+    return
+  }
+
+  if (parentNodeId && hasOutgoingBusinessEdge(parentNodeId)) {
+    message.error('当前节点已存在后继节点，线性工作流每个节点只能连接一个后继')
+    return
+  }
+
   resetAddNodeWizardForm()
   addNodeWizardForm.node_type = String(options.presetNodeType || 'task') === 'workflow' ? 'workflow' : 'task'
   addNodeWizardForm.name = addNodeWizardForm.node_type === 'workflow' ? WORKFLOW_DEFAULT_NODE_NAME : TASK_DEFAULT_NODE_NAME
   addNodeWizardForm.parent_node_key = hasRuntimeNode ? parentNodeId : ''
-  if (!addNodeWizardForm.parent_node_key) {
-    addNodeWizardForm.run_type = 'success'
-  }
   addNodeWizardVisible.value = true
 }
 
@@ -698,17 +697,22 @@ function closeAddNodeWizard() {
   addNodeWizardVisible.value = false
 }
 
-function selectRunType(condition) {
-  if (!addNodeWizardForm.parent_node_key) {
-    return
-  }
-  addNodeWizardForm.run_type = String(condition || 'success')
-}
-
 function createNodeFromWizard() {
   const nodeName = String(addNodeWizardForm.name || '').trim()
   if (!nodeName) {
     message.error('请填写节点名称')
+    return
+  }
+
+  const existingRuntimeNodes = flowNodes.value.filter((item) => item.id !== START_NODE_ID)
+  const parentNodeKey = String(addNodeWizardForm.parent_node_key || '').trim()
+  if (!parentNodeKey && existingRuntimeNodes.length > 0) {
+    message.error('线性工作流只允许一个起点，请为新节点选择父节点')
+    return
+  }
+
+  if (parentNodeKey && hasOutgoingBusinessEdge(parentNodeKey)) {
+    message.error('当前父节点已存在后继节点，无法再添加新的后继')
     return
   }
 
@@ -728,7 +732,6 @@ function createNodeFromWizard() {
         name: nodeName,
         node_type: 'workflow',
         workflow_id: workflowId,
-        convergence: String(addNodeWizardForm.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
       },
       index,
     )
@@ -744,7 +747,6 @@ function createNodeFromWizard() {
         name: nodeName,
         node_type: 'task',
         task_id: taskId,
-        convergence: String(addNodeWizardForm.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
       },
       index,
     )
@@ -756,9 +758,8 @@ function createNodeFromWizard() {
 
   const runtimeNodes = flowNodes.value.filter((item) => item.id !== START_NODE_ID)
 
-  const parentNodeKey = String(addNodeWizardForm.parent_node_key || '').trim()
   if (runtimeNodes.length > 1 && parentNodeKey && parentNodeKey !== node.id) {
-    const condition = normalizeEdgeCondition(addNodeWizardForm.run_type)
+    const condition = 'success'
     const pathOptions = resolveWorkflowEdgePathOptions(condition)
     const duplicate = flowEdges.value.some(
       (item) => item.source === parentNodeKey && item.target === node.id,
@@ -769,7 +770,6 @@ function createNodeFromWizard() {
         type: resolveWorkflowEdgeType(condition),
         source: parentNodeKey,
         target: node.id,
-        label: condition,
         data: { condition },
         ...(pathOptions ? { pathOptions } : {}),
         markerEnd: MarkerType.ArrowClosed,
@@ -786,33 +786,19 @@ function createNodeFromWizard() {
   message.success('节点已创建，请继续编排并保存')
 }
 
-function deleteNodesCascade(nodeIds) {
-  if (!(nodeIds instanceof Set) || nodeIds.size === 0) {
-    return
-  }
-  flowNodes.value = flowNodes.value.filter((item) => !nodeIds.has(item.id))
-  flowEdges.value = flowEdges.value.filter((item) => !nodeIds.has(item.source) && !nodeIds.has(item.target))
-  selectedNodeId.value = ''
-  selectedEdgeId.value = ''
-  autoLayoutTree()
-  ensureStartEdges()
-}
-
 function removeNode(nodeId) {
   if (!nodeId || nodeId === START_NODE_ID) {
     return
   }
 
-  const cascadeNodeIds = collectCascadeNodeIdsFromGraph(
-    nodeId,
-    flowEdges.value,
-    START_NODE_ID,
-    START_EDGE_PREFIX,
-  )
-  const removeCount = cascadeNodeIds.size
+  const businessEdges = getBusinessEdges()
+  const incomingEdge = businessEdges.find((item) => String(item.target || '') === nodeId)
+  const outgoingEdge = businessEdges.find((item) => String(item.source || '') === nodeId)
+  const predecessorKey = String(incomingEdge?.source || '').trim()
+  const successorKey = String(outgoingEdge?.target || '').trim()
   const targetName = resolveNodeNameByKey(nodeId)
-  const content = removeCount > 1
-    ? `确认删除节点“${targetName}”以及其 ${removeCount - 1} 个子节点吗？`
+  const content = predecessorKey && successorKey
+    ? `确认删除节点“${targetName}”吗？删除后将自动重连为 ${resolveNodeNameByKey(predecessorKey)} -> ${resolveNodeNameByKey(successorKey)}`
     : `确认删除节点“${targetName}”吗？`
 
   Modal.confirm({
@@ -822,8 +808,44 @@ function removeNode(nodeId) {
     okType: 'danger',
     cancelText: '取消',
     onOk: () => {
-      deleteNodesCascade(cascadeNodeIds)
-      message.success(removeCount > 1 ? '节点及其子节点已删除' : '节点已删除')
+      const condition = 'success'
+      const pathOptions = resolveWorkflowEdgePathOptions(condition)
+
+      const nextEdges = flowEdges.value.filter(
+        (item) => String(item.source || '') !== nodeId && String(item.target || '') !== nodeId,
+      )
+
+      if (predecessorKey && successorKey && predecessorKey !== successorKey) {
+        const hasReconnectEdge = nextEdges.some(
+          (item) => !isEditorSystemEdge(item)
+            && String(item.source || '') === predecessorKey
+            && String(item.target || '') === successorKey,
+        )
+
+        if (!hasReconnectEdge) {
+          nextEdges.push({
+            id: `edge-${predecessorKey}-${successorKey}-${Date.now()}`,
+            type: resolveWorkflowEdgeType(condition),
+            source: predecessorKey,
+            target: successorKey,
+            data: { condition },
+            ...(pathOptions ? { pathOptions } : {}),
+            markerEnd: MarkerType.ArrowClosed,
+            style: buildWorkflowEdgeStyle(condition),
+            labelStyle: buildWorkflowEdgeLabelStyle(),
+          })
+        }
+      }
+
+      flowNodes.value = flowNodes.value.filter((item) => item.id !== nodeId)
+      flowEdges.value = nextEdges
+      if (selectedNodeId.value === nodeId) {
+        selectedNodeId.value = ''
+      }
+      selectedEdgeId.value = ''
+      autoLayoutTree()
+      ensureStartEdges()
+      message.success('节点已删除')
     },
   })
 }
@@ -837,15 +859,6 @@ function removeEdge(edgeId) {
   ensureStartEdges()
 }
 
-function updateSelectedEdgeCondition(condition) {
-  const target = selectedEdge.value
-  if (!target || isEditorSystemEdge(target)) {
-    return
-  }
-  applyWorkflowEdgeVisual(target, condition)
-  flowEdges.value = [...flowEdges.value]
-}
-
 function handleConnect(params) {
   const source = String(params.source || '')
   const target = String(params.target || '')
@@ -853,6 +866,21 @@ function handleConnect(params) {
     return
   }
   if (source === START_NODE_ID || target === START_NODE_ID) {
+    return
+  }
+
+  if (hasOutgoingBusinessEdge(source)) {
+    message.error('线性工作流中，每个节点只能连接一个后继节点')
+    return
+  }
+
+  if (hasIncomingBusinessEdge(target)) {
+    message.error('线性工作流中，每个节点只能有一个前驱节点')
+    return
+  }
+
+  if (hasPathBetweenNodes(target, source)) {
+    message.error('不允许形成环，工作流必须按直线顺序执行')
     return
   }
 
@@ -868,7 +896,6 @@ function handleConnect(params) {
     type: resolveWorkflowEdgeType('success'),
     source,
     target,
-    label: 'success',
     data: { condition: 'success' },
     ...(resolveWorkflowEdgePathOptions('success') ? { pathOptions: resolveWorkflowEdgePathOptions('success') } : {}),
     markerEnd: MarkerType.ArrowClosed,
@@ -922,10 +949,6 @@ function handleEdgeClick(payload) {
   edgeQuickPosition.top = Math.min(maxTop, Math.max(padding, rawTop))
 }
 
-function setSelectedEdgeCondition(condition) {
-  updateSelectedEdgeCondition(String(condition || 'success'))
-}
-
 function removeSelectedEdge() {
   if (!selectedEditableEdge.value) {
     return
@@ -951,7 +974,6 @@ function buildPayloadFromGraph() {
       key: item.id,
       name: String(data.name || '').trim(),
       node_type: String(data.node_type || 'task').trim(),
-      convergence: String(data.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
       x: Number(item.position?.x || 0),
       y: Number(item.position?.y || 0),
     }
@@ -981,7 +1003,7 @@ function buildPayloadFromGraph() {
     .map((item) => ({
       source_key: item.source,
       target_key: item.target,
-      condition: String(item.data?.condition || item.label || 'success').toLowerCase(),
+      condition: 'success',
     }))
 
   return {
@@ -990,7 +1012,6 @@ function buildPayloadFromGraph() {
     enabled: Boolean(form.enabled),
     default_inventory: Number(form.default_inventory || 0) > 0 ? Number(form.default_inventory) : null,
     default_limit: String(form.default_limit || '').trim(),
-    entry_node_key: '',
     nodes,
     edges,
     default_extra_vars: parseDefaultExtraVars(),
@@ -1164,10 +1185,10 @@ onBeforeUnmount(() => {
     form,
     flowNodes,
     flowEdges,
+    canShowAddRootTaskButton,
     canvasWrapRef,
     selectedNodeId,
     isConnecting,
-    convergenceOptions,
     taskTemplateTypeOptions,
     taskOptions,
     addNodeTaskOptions,
@@ -1175,7 +1196,6 @@ onBeforeUnmount(() => {
     workflowOptions,
     inventoryOptions,
     selectedEditableEdge,
-    selectedEdgeCondition,
     edgeQuickEditorStyle,
     addNodeWizardVisible,
     basicInfoVisible,
@@ -1186,12 +1206,9 @@ onBeforeUnmount(() => {
     basicLimitMatchedHosts,
     nodeConfigForm,
     basicLimitPrecheckText,
-    nodeConfigHasParentCondition,
-    nodeConfigRunTypeEditable,
-    nodeConfigRunTypeHint,
     addNodeWizardForm,
-    addNodeWizardHasParentCondition,
     handleNodeCardClick,
+    canShowAddChildButton,
     openTaskDetailByNodeId,
     openWorkflowDetailByNodeId,
     resolveTaskNameByNodeData,
@@ -1199,17 +1216,14 @@ onBeforeUnmount(() => {
     resolveNodeEnableStatus,
     openNodeEditDialog,
     removeNode,
-    setSelectedEdgeCondition,
     removeSelectedEdge,
     closeAddNodeWizard,
-    selectRunType,
     createNodeFromWizard,
     handleBasicInfoConfirm,
     handleBasicLimitHostClick,
     handleBasicLimitLimitToggle,
     handleBasicLimitRemoveToken,
     saveNodeConfig,
-    selectNodeConfigRunType,
     openAddNodeWizard,
     goToTaskPage,
     goBack,

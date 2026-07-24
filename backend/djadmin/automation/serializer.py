@@ -22,8 +22,6 @@ from .workflow_runtime import get_workflow_runtime_status
 
 
 WORKFLOW_NODE_TYPES = {'task', 'workflow'}
-WORKFLOW_NODE_CONVERGENCE = {'any', 'all'}
-WORKFLOW_EDGE_CONDITIONS = {'success', 'failure', 'always'}
 
 
 def _build_workflow_refs_graph(start_workflow_id, workflow_ids, nodes_snapshot=None):
@@ -796,8 +794,9 @@ class AutomationInventorySerializer(ModelSerializer):
         return AutomationInventory.objects.create(**validated_data)
 
 
-def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=False, current_workflow_id=None):
-    # 这里只做模板结构合法性校验（字段/引用/DAG），不做运行时递归链拦截。
+def validate_workflow_graph_or_raise(nodes, edges, allow_empty=False, current_workflow_id=None):
+    # Workflow 执行模型已收敛为线性串行：start -> ... -> end。
+    # 这里统一做保存时结构校验，确保运行时不再处理复杂分支/汇聚。
     if not isinstance(nodes, list):
         raise serializers.ValidationError('nodes must be a list')
     if not isinstance(edges, list):
@@ -807,7 +806,7 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
         if len(edges) > 0:
             raise serializers.ValidationError('edges must be empty when nodes is empty')
         if allow_empty:
-            return [], [], ''
+            return [], []
         raise serializers.ValidationError('nodes must be a non-empty list')
 
     node_map = {}
@@ -836,15 +835,7 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
             'key': node_key,
             'name': node_name,
             'node_type': node_type,
-            'convergence': 'any',
         }
-
-        convergence = str(node.get('convergence') or 'any').strip().lower()
-        if convergence not in WORKFLOW_NODE_CONVERGENCE:
-            raise serializers.ValidationError(
-                f'nodes[{index}] convergence must be one of {sorted(WORKFLOW_NODE_CONVERGENCE)}'
-            )
-        normalized_node['convergence'] = convergence
 
         x_value = node.get('x')
         y_value = node.get('y')
@@ -885,6 +876,9 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
 
     normalized_edges = []
     graph = {node_key: [] for node_key in node_map.keys()}
+    outgoing_count_map = {node_key: 0 for node_key in node_map.keys()}
+    incoming_count_map = {node_key: 0 for node_key in node_map.keys()}
+    seen_edge_pairs = set()
     for index, edge in enumerate(edges, start=1):
         if not isinstance(edge, dict):
             raise serializers.ValidationError(f'edges[{index}] must be an object')
@@ -896,10 +890,23 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
             raise serializers.ValidationError(f'edges[{index}] source_key does not exist: {source_key}')
         if target_key not in node_map:
             raise serializers.ValidationError(f'edges[{index}] target_key does not exist: {target_key}')
-        if condition not in WORKFLOW_EDGE_CONDITIONS:
-            raise serializers.ValidationError(
-                f'edges[{index}] condition must be one of {sorted(WORKFLOW_EDGE_CONDITIONS)}'
-            )
+        if source_key == target_key:
+            raise serializers.ValidationError(f'edges[{index}] self loop is not allowed: {source_key} -> {target_key}')
+        if condition != 'success':
+            raise serializers.ValidationError('workflow only supports linear execution; edges[*].condition must be "success"')
+
+        edge_pair = (source_key, target_key)
+        if edge_pair in seen_edge_pairs:
+            raise serializers.ValidationError(f'duplicate edge is not allowed: {source_key} -> {target_key}')
+        seen_edge_pairs.add(edge_pair)
+
+        outgoing_count_map[source_key] = int(outgoing_count_map.get(source_key, 0)) + 1
+        if int(outgoing_count_map[source_key]) > 1:
+            raise serializers.ValidationError(f'node [{source_key}] can only point to one next node')
+
+        incoming_count_map[target_key] = int(incoming_count_map.get(target_key, 0)) + 1
+        if int(incoming_count_map[target_key]) > 1:
+            raise serializers.ValidationError(f'node [{target_key}] can only have one previous node')
 
         normalized_edge = {
             'source_key': source_key,
@@ -927,10 +934,38 @@ def validate_workflow_graph_or_raise(nodes, edges, entry_node_key, allow_empty=F
 
     for node_key in node_map.keys():
         if color[node_key] == 0 and _visit(node_key):
-            raise serializers.ValidationError('workflow graph must be a DAG; cycle detected')
+            raise serializers.ValidationError('workflow linear chain must not contain cycles')
 
-    # Entry node is no longer used by workflow runtime; keep it empty for backward-compatible storage.
-    return normalized_nodes, normalized_edges, ''
+    node_count = len(node_map)
+    edge_count = len(normalized_edges)
+
+    if node_count == 1:
+        if edge_count != 0:
+            raise serializers.ValidationError('single-node workflow must not contain edges')
+    else:
+        if edge_count != node_count - 1:
+            raise serializers.ValidationError('workflow must be a single linear chain; edges count must equal nodes-1')
+
+        start_nodes = [key for key in node_map.keys() if int(incoming_count_map.get(key, 0)) == 0]
+        end_nodes = [key for key in node_map.keys() if int(outgoing_count_map.get(key, 0)) == 0]
+        if len(start_nodes) != 1:
+            raise serializers.ValidationError('workflow must have exactly one start node')
+        if len(end_nodes) != 1:
+            raise serializers.ValidationError('workflow must have exactly one end node')
+
+        visited = set()
+        cursor = start_nodes[0]
+        while cursor:
+            if cursor in visited:
+                raise serializers.ValidationError('workflow linear chain traversal failed: cycle detected')
+            visited.add(cursor)
+            next_nodes = graph.get(cursor, [])
+            cursor = next_nodes[0] if next_nodes else ''
+
+        if len(visited) != node_count:
+            raise serializers.ValidationError('workflow must be fully connected from start to end')
+
+    return normalized_nodes, normalized_edges
 
 
 class AutomationWorkflowTemplateSerializer(ModelSerializer):
@@ -942,9 +977,6 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
     class Meta:
         model = AutomationWorkflowTemplate
         fields = '__all__'
-        extra_kwargs = {
-            'entry_node_key': {'required': False, 'allow_blank': True},
-        }
 
     def get_node_count(self, obj):
         return len(obj.nodes) if isinstance(obj.nodes, list) else 0
@@ -1023,20 +1055,17 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
     def validate(self, attrs):
         source_nodes = attrs.get('nodes', self.instance.nodes if self.instance is not None else None)
         source_edges = attrs.get('edges', self.instance.edges if self.instance is not None else None)
-        source_entry = ''
         # 创建和编辑时都允许空节点，执行时才需要节点
         allow_empty_graph = True
 
-        normalized_nodes, normalized_edges, normalized_entry = validate_workflow_graph_or_raise(
+        normalized_nodes, normalized_edges = validate_workflow_graph_or_raise(
             source_nodes,
             source_edges,
-            source_entry,
             allow_empty=allow_empty_graph,
             current_workflow_id=self.instance.id if self.instance is not None else None,
         )
         attrs['nodes'] = normalized_nodes
         attrs['edges'] = normalized_edges
-        attrs['entry_node_key'] = ''
         return attrs
 
     def create(self, validated_data):

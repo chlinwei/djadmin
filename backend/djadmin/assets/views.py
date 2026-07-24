@@ -8,9 +8,9 @@ import importlib
 import os
 import pika
 import logging
+import threading
 from datetime import timedelta
-from urllib import error as urllib_error
-from urllib import request as urllib_request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from asgiref.sync import async_to_sync
 
 from cryptography.utils import CryptographyDeprecationWarning
@@ -28,12 +28,14 @@ from io import TextIOWrapper
 import csv
 from menu.permisssion import CustomMenuPermission
 from django.db.models import Prefetch, Count
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, transaction, connections, close_old_connections, DatabaseError
 from django.conf import settings
 from django.utils import timezone
 from .credential_crypto import decrypt_secret
 from .webssh_runtime import WebSSHRuntimeRegistry
 from .webssh_host_mixin import WebSSHHostMixin
+from .host_info import refresh_host_info
+from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 
 # 日志记录器
 logger = logging.getLogger(__name__)
@@ -43,54 +45,33 @@ logger = logging.getLogger(__name__)
 AGENT_AUTO_COLLECT_MIN_INTERVAL_SECONDS = 300
 
 
-def _build_agent_status_url(host):
-    scheme = str(getattr(settings, 'AGENT_HTTP_SCHEME', os.getenv('AGENT_HTTP_SCHEME', 'http')) or 'http').strip() or 'http'
-    port_text = str(getattr(settings, 'AGENT_HTTP_PORT', os.getenv('AGENT_HTTP_PORT', '19090')) or '19090').strip() or '19090'
-    endpoint = str(
-        getattr(settings, 'AGENT_HTTP_STATUS_ENDPOINT', os.getenv('AGENT_HTTP_STATUS_ENDPOINT', '/api/v1/agent/status'))
-        or '/api/v1/agent/status'
-    ).strip() or '/api/v1/agent/status'
-    if not endpoint.startswith('/'):
-        endpoint = '/' + endpoint
-    return f"{scheme}://{host.ip}:{port_text}{endpoint}"
-
-
 def _fetch_agent_runtime_status(host):
-    if not host or not str(getattr(host, 'ip', '') or '').strip():
-        raise RuntimeError('主机IP为空，无法获取 agent 状态')
-
-    url = _build_agent_status_url(host)
-    req = urllib_request.Request(url=url, method='GET')
-
-    token = str(getattr(settings, 'AGENT_HTTP_TOKEN', os.getenv('DJ_AGENT_HTTP_TOKEN', '')) or '').strip()
-    if token != '':
-        req.add_header('Authorization', f'Bearer {token}')
-
-    configured_timeout = getattr(settings, 'AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', os.getenv('AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', 15))
-    try:
-        request_timeout = max(3, min(30, int(str(configured_timeout).strip())))
-    except (TypeError, ValueError):
-        request_timeout = 15
+    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    if not agent_id:
+        raise RuntimeError('主机未绑定 agent 实例，无法获取状态')
 
     try:
-        with urllib_request.urlopen(req, timeout=request_timeout) as resp:
-            raw_text = resp.read().decode('utf-8', errors='replace')
-            if int(resp.status) != 200:
-                raise RuntimeError(f'agent http status={resp.status}: {raw_text}')
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f'agent request failed: {exc}') from exc
+        client = AgentChannelClient(agent_id, timeout=20)
+        result = client.execute_automation(
+            job_id=f'agent-runtime-{uuid.uuid4().hex[:12]}',
+            params={},
+            timeout_seconds=20,
+            task_type='custom',
+            action='get_agent_runtime_status',
+        )
+    except AgentGrpcTransferError as exc:
+        raise RuntimeError(str(exc)) from exc
+    except Exception as exc:
+        raise RuntimeError(f'通过 gRPC 获取 agent 状态失败: {exc}') from exc
 
-    try:
-        payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f'agent response is not valid json: {raw_text}') from exc
+    status = str(result.get('status') or '').strip().lower()
+    if status != 'success':
+        error_message = str(result.get('error_message') or '').strip()
+        raise RuntimeError(error_message or f'agent 返回状态异常: {status or "unknown"}')
 
-    if int(payload.get('code') or 0) != 200:
-        raise RuntimeError(str(payload.get('msg') or 'agent business error'))
-
-    data = payload.get('data')
+    data = result.get('result_data')
     if not isinstance(data, dict):
-        raise RuntimeError('agent response missing data')
+        raise RuntimeError('agent gRPC 状态响应缺少 data')
     return data
 
 
@@ -187,110 +168,6 @@ def _publish_agent_job_to_mq(job):
     except Exception as exc:
         raise RuntimeError(f'发布RabbitMQ消息失败: {exc}') from exc
 
-
-def dispatch_host_report_interval_update(interval_seconds, client_request_id=''):
-    """将主机上报间隔更新任务下发到全部 agent。"""
-    try:
-        normalized_interval_seconds = int(interval_seconds)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError('interval_seconds必须是整数') from exc
-
-    agent_ids = _resolve_target_agent_ids('all', '', '')
-    if len(agent_ids) == 0:
-        return {
-            'target_type': 'all',
-            'target_value': 'all',
-            'created_count': 0,
-            'failed_count': 0,
-            'results': [],
-        }
-
-    params = {
-        'interval_seconds': normalized_interval_seconds,
-    }
-    timeout_seconds = 10
-    result_rows = []
-    created_count = 0
-    failed_count = 0
-
-    for current_agent_id in agent_ids:
-        host = Host.objects.filter(instance_name=current_agent_id).first()
-        if host is None:
-            failed_count += 1
-            result_rows.append({
-                'agent_id': current_agent_id,
-                'ok': False,
-                'error': 'agent_id未绑定主机',
-            })
-            continue
-
-        item_request_id = f'{client_request_id}:{current_agent_id}' if client_request_id else ''
-        if item_request_id:
-            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
-            if existed_job is not None:
-                result_rows.append({
-                    'agent_id': current_agent_id,
-                    'ok': True,
-                    'job_id': existed_job.job_id,
-                    'status': existed_job.status,
-                    'reused': True,
-                })
-                continue
-
-        current_job_id = f'set_host_report_interval-{uuid.uuid4().hex[:16]}'
-        try:
-            job = AgentJob.objects.create(
-                job_id=current_job_id,
-                client_request_id=item_request_id or None,
-                agent_id=current_agent_id,
-                host=host,
-                job_type='custom',
-                action='set_host_report_interval',
-                params=params,
-                timeout_seconds=timeout_seconds,
-                status=AgentJob.JobStatus.QUEUED,
-            )
-        except IntegrityError:
-            if not item_request_id:
-                raise
-            existed_job = AgentJob.objects.filter(client_request_id=item_request_id).first()
-            if existed_job is None:
-                raise
-            result_rows.append({
-                'agent_id': current_agent_id,
-                'ok': True,
-                'job_id': existed_job.job_id,
-                'status': existed_job.status,
-                'reused': True,
-            })
-            continue
-
-        created_count += 1
-        result_rows.append({
-            'agent_id': current_agent_id,
-            'ok': True,
-            'job_id': job.job_id,
-            'status': job.status,
-            'reused': False,
-        })
-
-        _emit_agent_job_event(job, 'new', {
-            'jid': job.job_id,
-            'tgt': job.agent_id,
-            'tgt_type': 'agent_id',
-            'fun': job.action,
-            'arg': job.params,
-            'minions': [job.agent_id],
-        })
-        _publish_agent_job_to_mq(job)
-
-    return {
-        'target_type': 'all',
-        'target_value': 'all',
-        'created_count': created_count,
-        'failed_count': failed_count,
-        'results': result_rows,
-    }
 
 class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
     # 临时凭证有关联的 WebSSHTempCredential 记录，排除在凭证管理列表之外
@@ -674,14 +551,266 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         return Response_200(data={"deleted_count": deleted_count})
 
 
-def dispatch_exporter_install_job(host, monitor_target, manual=False):
+def _build_single_host_snapshot(host):
+    return [{
+        'host_id': int(getattr(host, 'id', 0) or 0),
+        'host_name': str(getattr(host, 'instance_name', '') or ''),
+        'host_ip': str(getattr(host, 'ip', '') or ''),
+    }]
+
+
+def _split_monitor_output_snapshots(output_text):
+    """把 execute_job_via_agent_grpc 的统一输出拆分为 stdout/stderr/error 三类快照。"""
+    text = str(output_text or '')
+    if not text.strip():
+        return {'stdout': '', 'stderr': '', 'error': ''}
+
+    host_header = re.compile(r'^=+\s*Agent Host\s*#\d+\s*\(([^)]*)\).*?=+\s*$')
+    stdout_parts = []
+    stderr_parts = []
+    error_parts = []
+
+    current_host = '-'
+    section = 'stdout'
+    section_lines = []
+
+    def _flush_section():
+        nonlocal section_lines
+        payload = '\n'.join(section_lines).strip()
+        section_lines = []
+        if not payload:
+            return
+        block = f'[{current_host}]\n{payload}'
+        if section == 'stdout':
+            stdout_parts.append(block)
+        elif section == 'stderr':
+            stderr_parts.append(block)
+        else:
+            error_parts.append(block)
+
+    for raw_line in text.splitlines():
+        line = str(raw_line or '')
+        matched = host_header.match(line.strip())
+        if matched:
+            _flush_section()
+            host_value = str(matched.group(1) or '').strip()
+            current_host = host_value or '-'
+            section = 'stdout'
+            continue
+
+        marker = line.strip().lower()
+        if marker == '[stderr]':
+            _flush_section()
+            section = 'stderr'
+            continue
+        if marker == '[error]':
+            _flush_section()
+            section = 'error'
+            continue
+
+        section_lines.append(line)
+
+    _flush_section()
+    return {
+        'stdout': '\n\n'.join(stdout_parts),
+        'stderr': '\n\n'.join(stderr_parts),
+        'error': '\n\n'.join(error_parts),
+    }
+
+
+def _resolve_monitor_timeout_seconds():
+    """监控安装/卸载执行超时秒数（默认 600 秒，可在 settings 覆盖）。"""
+    raw_value = getattr(settings, 'MONITOR_EXECUTION_TIMEOUT_SECONDS', 600)
+    try:
+        timeout_seconds = int(raw_value)
+    except (TypeError, ValueError):
+        timeout_seconds = 600
+    return max(timeout_seconds, 30)
+
+
+def _resolve_monitor_pending_stale_seconds(timeout_seconds):
+    """pending 判定为“卡死”的阈值：执行超时 + 90 秒缓冲。"""
+    raw_value = getattr(settings, 'MONITOR_PENDING_STALE_SECONDS', None)
+    if raw_value is None:
+        return int(timeout_seconds) + 90
+    try:
+        stale_seconds = int(raw_value)
+    except (TypeError, ValueError):
+        stale_seconds = int(timeout_seconds) + 90
+    return max(stale_seconds, int(timeout_seconds))
+
+
+def _expire_stale_monitor_pending(target, action, stale_seconds):
+    """若最新 pending/running 历史已超时，自动转 failed 并允许本次重新下发。"""
+    from monitor.models import MonitorTargetInstallHistory
+
+    latest_history = MonitorTargetInstallHistory.objects.filter(
+        target_id=target.id,
+        action=action,
+        status__in=[
+            MonitorTargetInstallHistory.Status.PENDING,
+            MonitorTargetInstallHistory.Status.RUNNING,
+        ],
+    ).order_by('-id').first()
+
+    if latest_history is None:
+        return False
+
+    reference_time = latest_history.start_time or latest_history.create_time
+    if reference_time is None:
+        return False
+
+    elapsed_seconds = (timezone.now() - reference_time).total_seconds()
+    if elapsed_seconds < float(stale_seconds):
+        return False
+
+    timeout_message = f'执行超时（超过 {int(stale_seconds)} 秒），已标记失败，请重新下发'
+    latest_history.status = MonitorTargetInstallHistory.Status.FAILED
+    latest_history.summary_message = timeout_message
+    latest_history.error_message_snapshot = timeout_message
+    latest_history.end_time = timezone.now()
+    start_ts = latest_history.start_time
+    end_ts = latest_history.end_time
+    if start_ts is not None and end_ts is not None:
+        latest_history.duration_seconds = (end_ts - start_ts).total_seconds()
+    latest_history.save(update_fields=[
+        'status', 'summary_message', 'error_message_snapshot', 'end_time', 'duration_seconds', 'update_time',
+    ])
+
+    target.install_status = target.InstallStatus.FAILED
+    target.install_message = timeout_message
+    target.save(update_fields=['install_status', 'install_message', 'update_time'])
+    return True
+
+
+def _run_monitor_playbook_and_update_history(*, target, host, history, template_content, extra_vars, work_directory, timeout_seconds):
+    """执行监控安装/卸载并直接回写 MonitorTarget + MonitorTargetInstallHistory。"""
+    from automation.agent_grpc_runner import execute_job_via_agent_grpc
+    from monitor.models import MonitorTargetInstallHistory
+
+    close_old_connections()
+    history_id = int(getattr(history, 'id', 0) or 0)
+    target_id = int(getattr(target, 'id', 0) or 0)
+
+    def _safe_history_save(fields):
+        """异步线程可能晚于测试清库/删除动作执行；记录不存在时静默退出。"""
+        if history_id <= 0:
+            return False
+        try:
+            history.save(update_fields=fields)
+            return True
+        except DatabaseError:
+            logger.debug('Skip monitor history save: history row disappeared (id=%s)', history_id)
+            return False
+
+    def _safe_target_save(fields):
+        if target_id <= 0:
+            return False
+        try:
+            target.save(update_fields=fields)
+            return True
+        except DatabaseError:
+            logger.debug('Skip monitor target save: target row disappeared (id=%s)', target_id)
+            return False
+
+    def _is_history_cancelled():
+        if history_id <= 0:
+            return False
+        current_status = MonitorTargetInstallHistory.objects.filter(id=history_id).values_list('status', flat=True).first()
+        return current_status == MonitorTargetInstallHistory.Status.CANCELLED
+
+    started_at = timezone.now()
+    if _is_history_cancelled():
+        logger.info('Monitor history already cancelled before execution start, skip run (history_id=%s)', history_id)
+        return
+
+    history.status = MonitorTargetInstallHistory.Status.RUNNING
+    history.start_time = started_at
+    if not _safe_history_save(['status', 'start_time', 'update_time']):
+        return
+
+    try:
+        success, summary, output_text = execute_job_via_agent_grpc(
+            automation_execution_job_id=0,
+            automation_task_id=0,
+            template_content=str(template_content or ''),
+            template_type='playbook',
+            hosts=_build_single_host_snapshot(host),
+            shell_parameters='',
+            shell_env_vars={},
+            extra_vars=extra_vars if isinstance(extra_vars, dict) else {},
+            run_as_user='root',
+            run_as_group='root',
+            work_directory=str(work_directory or '/tmp'),
+            timeout_seconds=int(timeout_seconds),
+        )
+        finished_at = timezone.now()
+        duration_seconds = (finished_at - started_at).total_seconds()
+        snapshots = _split_monitor_output_snapshots(output_text)
+        message_text = str((summary or {}).get('message', '') or '')
+
+        if _is_history_cancelled():
+            logger.info('Monitor history cancelled during execution, skip final write-back (history_id=%s)', history_id)
+            return
+
+        if success:
+            target.install_status = target.InstallStatus.SUCCESS
+            target.install_message = '执行成功'
+            target.retry_count = 0
+            _safe_target_save(['install_status', 'install_message', 'retry_count', 'update_time'])
+            history.status = MonitorTargetInstallHistory.Status.SUCCESS
+            history.summary_message = target.install_message
+        else:
+            target.install_status = target.InstallStatus.FAILED
+            if target.last_dispatch_manual:
+                target.install_message = (
+                    f'执行失败：{message_text}，人工重试失败，如需再次尝试请再次点击“重试”'
+                )
+            else:
+                target.install_message = f'执行失败：{message_text}，需人工重试'
+            _safe_target_save(['install_status', 'install_message', 'update_time'])
+            history.status = MonitorTargetInstallHistory.Status.FAILED
+            history.summary_message = target.install_message
+
+        history.stdout_snapshot = snapshots['stdout']
+        history.stderr_snapshot = snapshots['stderr']
+        history.error_message_snapshot = snapshots['error']
+        history.result_summary_snapshot = summary if isinstance(summary, dict) else {}
+        history.end_time = finished_at
+        history.duration_seconds = duration_seconds
+        _safe_history_save([
+            'status', 'summary_message', 'stdout_snapshot', 'stderr_snapshot', 'error_message_snapshot',
+            'result_summary_snapshot', 'end_time', 'duration_seconds', 'update_time',
+        ])
+    except Exception as exc:
+        finished_at = timezone.now()
+        duration_seconds = (finished_at - started_at).total_seconds()
+        target.install_status = target.InstallStatus.FAILED
+        target.install_message = f'执行失败：{exc}'
+        _safe_target_save(['install_status', 'install_message', 'update_time'])
+        history.status = MonitorTargetInstallHistory.Status.FAILED
+        history.summary_message = target.install_message
+        history.error_message_snapshot = str(exc)
+        history.result_summary_snapshot = {'message': str(exc)}
+        history.end_time = finished_at
+        history.duration_seconds = duration_seconds
+        _safe_history_save([
+            'status', 'summary_message', 'error_message_snapshot', 'result_summary_snapshot',
+            'end_time', 'duration_seconds', 'update_time',
+        ])
+    finally:
+        close_old_connections()
+
+
+def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execute=False):
     """下发监控组件（exporter）安装任务；供主机监控设置及自动/人工重试共用。
-    安装/卸载已彻底改为复用“自动化任务”功能（automation.PlaybookTemplate + automation.AutomationTask），
-    不再由 dj-agent 按 manage_script 驱动：这里只是创建一个范围收窄到单台主机的
-    AutomationExecutionJob，并复用 automation 模块现成的本地后台 runner 执行，
-    exporter 名称/版本/校验值/systemd unit 内容通过 extra_vars 传给 playbook。
+    安装/卸载直接复用监控软件仓库（monitor.SoftwarePackage）绑定的 install_playbook_template
+    （automation.PlaybookTemplate），不再经由 AutomationTask 中转，这里只是创建一个范围收窄到单台主机的 AutomationExecutionJob，
+    并复用 automation 模块现成的本地后台 runner 执行，exporter 名称/版本/校验值/systemd unit
+    内容通过 extra_vars 传给 playbook。
     manual=True 表示由用户在前端点击“重试”手动触发：这类任务失败后不进入 runagentconsumer 的
-    自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。"""
+    自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。
+    sync_execute=True 时，不走后台线程，当前请求内同步执行（底层仍是 agent gRPC 通道）。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'instance_name', '') or '').strip()
     if agent_id == '':
@@ -704,44 +833,37 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    if latest_pkg.install_task_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
+    if latest_pkg.install_playbook_template_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 未配置安装任务（Playbook），请在监控软件仓库中选择'
+        monitor_target.install_message = f'{exporter_name} 未配置安装 Playbook，请在监控软件仓库中选择'
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    task = latest_pkg.install_task
-    if task is None:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的安装任务已不存在，请重新在监控软件仓库中选择'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
-    if not task.enabled:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的安装任务（{task.name}）已被禁用'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
-
-    template = task.playbook_template
+    template = latest_pkg.install_playbook_template
     if template is None:
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的安装任务（{task.name}）未配置 Playbook 模板内容'
+        monitor_target.install_message = f'{exporter_name} 绑定的安装 Playbook 已不存在，请重新在监控软件仓库中选择'
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    # 同一监控目标若已有排队/运行中的安装任务，则不重复下发（按上一次记录的 AutomationExecutionJob 判断）。
-    from automation.models import AutomationExecutionJob
-    if monitor_target.last_install_job_id and AutomationExecutionJob.objects.filter(
-        id=monitor_target.last_install_job_id,
-        status__in=[AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING],
-    ).exists():
-        monitor_target.install_status = monitor_target.InstallStatus.PENDING
-        monitor_target.install_message = f'安装任务已存在（automation job #{monitor_target.last_install_job_id}）'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
+    timeout_seconds = _resolve_monitor_timeout_seconds()
+    pending_stale_seconds = _resolve_monitor_pending_stale_seconds(timeout_seconds)
 
-    from automation.executor import build_inventory_snapshot
-    from automation.local_runner import run_job_in_background
+    # 同一监控目标若已有排队/运行中的安装任务，则不重复下发；
+    # 但超时卡住的 pending 会先转 failed，再允许本次重新下发。
+    if monitor_target.install_status == monitor_target.InstallStatus.PENDING:
+        expired = _expire_stale_monitor_pending(
+            monitor_target,
+            action='install',
+            stale_seconds=pending_stale_seconds,
+        )
+        if expired:
+            monitor_target.refresh_from_db()
+        else:
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = '安装任务已存在（pending）'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
 
     checksums = {}
     for pkg in SoftwarePackage.objects.filter(
@@ -755,45 +877,145 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
         'exporter_version': latest_pkg.version,
         'service_name': latest_pkg.service_unit_name,
         'service_file_content': latest_pkg.service_file_content,
+        # 服务常驻运行身份：模型层默认值/必填约束保证 service_run_as_user 一般不为空，
+        # 这里仍做 `or 'dj-agent'` 兜底，覆盖迁移前遗留的历史空值记录。
+        # 与"安装过程本身"固定使用的 root 身份是完全独立的两件事。
+        'service_run_as_user': latest_pkg.service_run_as_user or 'dj-agent',
+        'service_run_as_group': latest_pkg.service_run_as_group or 'dj-agent',
         'package_base_path': 'media/monitor_packages',
         'checksums': checksums,
     }
 
-    job = AutomationExecutionJob.objects.create(
-        task=task,
-        status=AutomationExecutionJob.Status.PENDING,
-        trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
-        inventory_snapshot=build_inventory_snapshot(host_ids=[host.id], group_ids=[]),
-        task_name_snapshot=task.name or '',
-        template_name_snapshot=template.name or '',
-        template_content_snapshot=template.content or '',
-        extra_vars=extra_vars,
-        result_summary={'message': f'{exporter_name} 安装任务已创建，等待后台 runner 下发（manual_retry={bool(manual)}）'},
+    from monitor.models import MonitorTargetInstallHistory
+
+    history = MonitorTargetInstallHistory.objects.create(
+        target=monitor_target,
+        host=host,
+        automation_job=None,
+        automation_job_id_snapshot=None,
+        automation_job_uuid_snapshot='',
+        action=MonitorTargetInstallHistory.Action.INSTALL,
+        trigger_type=(
+            MonitorTargetInstallHistory.TriggerType.MANUAL
+            if manual else MonitorTargetInstallHistory.TriggerType.AUTO
+        ),
+        status=MonitorTargetInstallHistory.Status.PENDING,
+        host_id_snapshot=int(getattr(host, 'id', 0) or 0),
+        host_name_snapshot=str(getattr(host, 'instance_name', '') or ''),
+        host_ip_snapshot=str(getattr(host, 'ip', '') or ''),
+        exporter_type_snapshot=str(exporter_name or ''),
+        summary_message='已下发安装任务',
+        result_summary_snapshot={},
+        requested_user_id_snapshot=None,
+        requested_username_snapshot='',
         start_time=timezone.now(),
-        become_enabled_snapshot=task.become_enabled,
-        become_method_snapshot=task.become_method,
-        become_user_snapshot=task.become_user,
     )
 
-    try:
-        run_job_in_background(int(job.id))  # type: ignore[attr-defined]  # objects.create() 返回的实例已保存，pk 必为非空，Pylance 无法识别
-        monitor_target.install_status = monitor_target.InstallStatus.PENDING
-        monitor_target.install_message = f'已下发安装任务（automation job #{job.id}）'  # type: ignore[attr-defined]
-        monitor_target.last_install_job_id = job.id  # type: ignore[attr-defined]
-    except Exception as exc:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'下发安装任务失败：{exc}'
-        job.status = AutomationExecutionJob.Status.FAILED
-        job.result_summary = {'message': str(exc)}
-        job.save(update_fields=['status', 'result_summary', 'update_time'])
+    # 记录本次下发是否为人工重试触发，用于失败文案区分与历史审计。
+    monitor_target.last_dispatch_manual = bool(manual)
 
-    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'update_time'])
+    monitor_target.install_status = monitor_target.InstallStatus.PENDING
+    monitor_target.install_message = '已下发安装任务'
+    monitor_target.last_install_job_id = None
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'last_dispatch_manual', 'update_time'])
+
+    if sync_execute:
+        _run_monitor_playbook_and_update_history(
+            target=monitor_target,
+            host=host,
+            history=history,
+            template_content=template.content or '',
+            extra_vars=extra_vars,
+            work_directory=latest_pkg.work_directory or '/tmp',
+            timeout_seconds=timeout_seconds,
+        )
+        return
+
+    threading.Thread(
+        target=_run_monitor_playbook_and_update_history,
+        kwargs={
+            'target': monitor_target,
+            'host': host,
+            'history': history,
+            'template_content': template.content or '',
+            'extra_vars': extra_vars,
+            'work_directory': latest_pkg.work_directory or '/tmp',
+            'timeout_seconds': timeout_seconds,
+        },
+        name=f'monitor-install-{int(getattr(monitor_target, "id", 0) or 0)}',
+        daemon=True,
+    ).start()
 
 
-def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
+def _dispatch_exporter_service_action_job(host, monitor_target, action, timeout_seconds=15):
+    """下发针对 exporter systemd 服务的动作类作业（status/start/stop），走
+    assets.AgentJob + RabbitMQ 异步下发通道（非实时任务标准通道）。
+
+    与安装/卸载（走 automation.AutomationExecutionJob + HTTP 同步下发到 dj-agent）不同，
+    这里下发的是轻量级 systemctl 动作，dj-agent 收到后执行内置 action（对应
+    dj_agent/internal/executor/generic_exporter.go 的 runSystemctlAction，实际执行
+    `sudo -n systemctl <action> <service_name>`），结果由 runagentconsumer 消费
+    RabbitMQ 回执后异步写回 AgentJob（stdout/stderr/exit_code/status）。
+    调用方（视图层）负责把返回的 job_id 交给前端轮询 /api/agent/jobs/query 获取结果，
+    本函数只负责创建并发布任务，不等待结果、不修改 MonitorTarget 任何字段。
+    """
+    exporter_name = monitor_target.exporter_type
+    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    if agent_id == '':
+        raise RuntimeError(f'主机未绑定 agent 实例，无法对 {exporter_name} 执行 {action}')
+
+    from monitor.models import SoftwarePackage
+
+    latest_pkg = SoftwarePackage.objects.filter(
+        name=exporter_name, enabled=True,
+    ).order_by('-create_time').first()
+    service_unit_name = str(getattr(latest_pkg, 'service_unit_name', '') or '').strip()
+    if latest_pkg is None or service_unit_name == '':
+        raise RuntimeError(f'本地软件仓库缺少 {exporter_name} 的 systemd 服务名配置（service_unit_name），无法执行 {action}')
+
+    job_id = f'{action}-{uuid.uuid4().hex[:16]}'
+    job = AgentJob.objects.create(
+        job_id=job_id,
+        agent_id=agent_id,
+        host=host,
+        job_type='custom',
+        action=action,
+        params={'service_name': service_unit_name},
+        timeout_seconds=timeout_seconds,
+        status=AgentJob.JobStatus.QUEUED,
+    )
+    _emit_agent_job_event(job, 'new', {
+        'jid': job.job_id,
+        'tgt': job.agent_id,
+        'tgt_type': 'agent_id',
+        'fun': job.action,
+        'arg': job.params,
+        'minions': [job.agent_id],
+    })
+    _publish_agent_job_to_mq(job)
+    return job
+
+
+def dispatch_check_exporter_status_job(host, monitor_target):
+    """下发"查询 exporter 运行状态"作业（sudo systemctl status <name>.service）。"""
+    return _dispatch_exporter_service_action_job(host, monitor_target, 'check_exporter_status')
+
+
+def dispatch_start_exporter_job(host, monitor_target):
+    """下发"启动 exporter 服务"作业（sudo systemctl start <name>.service）。"""
+    return _dispatch_exporter_service_action_job(host, monitor_target, 'start_exporter')
+
+
+def dispatch_stop_exporter_job(host, monitor_target):
+    """下发"停止 exporter 服务"作业（sudo systemctl stop <name>.service）。"""
+    return _dispatch_exporter_service_action_job(host, monitor_target, 'stop_exporter')
+
+
+def dispatch_exporter_uninstall_job(host, monitor_target, manual=False, sync_execute=False):
     """下发监控组件（exporter）卸载任务（停止服务并清理安装文件）；供主机监控设置及自动/人工重试共用。
     同 dispatch_exporter_install_job，改为下发一个范围收窄到单台主机的 AutomationExecutionJob，
-    使用监控软件仓库该 exporter 绑定的 uninstall_task（Playbook）执行。manual 含义同上。"""
+    使用监控软件仓库该 exporter 绑定的 uninstall_playbook_template 执行。manual 含义同上。
+    sync_execute=True 时，不走后台线程，当前请求内同步执行（底层仍是 agent gRPC 通道）。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'instance_name', '') or '').strip()
     if agent_id == '':
@@ -813,78 +1035,100 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    if latest_pkg.uninstall_task_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
+    if latest_pkg.uninstall_playbook_template_id is None:  # type: ignore[attr-defined]  # Django FK 动态生成的 _id 属性，Pylance 无法识别
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 未配置卸载任务（Playbook），请在监控软件仓库中选择'
+        monitor_target.install_message = f'{exporter_name} 未配置卸载 Playbook，请在监控软件仓库中选择'
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    task = latest_pkg.uninstall_task
-    if task is None:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务已不存在，请重新在监控软件仓库中选择'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
-    if not task.enabled:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务（{task.name}）已被禁用'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
-
-    template = task.playbook_template
+    template = latest_pkg.uninstall_playbook_template
     if template is None:
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'{exporter_name} 绑定的卸载任务（{task.name}）未配置 Playbook 模板内容'
+        monitor_target.install_message = f'{exporter_name} 绑定的卸载 Playbook 已不存在，请重新在监控软件仓库中选择'
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
-    from automation.models import AutomationExecutionJob
-    if monitor_target.last_install_job_id and AutomationExecutionJob.objects.filter(
-        id=monitor_target.last_install_job_id,
-        status__in=[AutomationExecutionJob.Status.PENDING, AutomationExecutionJob.Status.RUNNING],
-    ).exists():
-        monitor_target.install_status = monitor_target.InstallStatus.PENDING
-        monitor_target.install_message = f'卸载任务已存在（automation job #{monitor_target.last_install_job_id}）'
-        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
-        return
+    timeout_seconds = _resolve_monitor_timeout_seconds()
+    pending_stale_seconds = _resolve_monitor_pending_stale_seconds(timeout_seconds)
 
-    from automation.executor import build_inventory_snapshot
-    from automation.local_runner import run_job_in_background
+    if monitor_target.install_status == monitor_target.InstallStatus.PENDING:
+        expired = _expire_stale_monitor_pending(
+            monitor_target,
+            action='uninstall',
+            stale_seconds=pending_stale_seconds,
+        )
+        if expired:
+            monitor_target.refresh_from_db()
+        else:
+            monitor_target.install_status = monitor_target.InstallStatus.PENDING
+            monitor_target.install_message = '卸载任务已存在（pending）'
+            monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return
 
     extra_vars = {
         'exporter_name': exporter_name,
         'service_name': latest_pkg.service_unit_name,
     }
 
-    job = AutomationExecutionJob.objects.create(
-        task=task,
-        status=AutomationExecutionJob.Status.PENDING,
-        trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
-        inventory_snapshot=build_inventory_snapshot(host_ids=[host.id], group_ids=[]),
-        task_name_snapshot=task.name or '',
-        template_name_snapshot=template.name or '',
-        template_content_snapshot=template.content or '',
-        extra_vars=extra_vars,
-        result_summary={'message': f'{exporter_name} 卸载任务已创建，等待后台 runner 下发（manual_retry={bool(manual)}）'},
+    from monitor.models import MonitorTargetInstallHistory
+
+    history = MonitorTargetInstallHistory.objects.create(
+        target=monitor_target,
+        host=host,
+        automation_job=None,
+        automation_job_id_snapshot=None,
+        automation_job_uuid_snapshot='',
+        action=MonitorTargetInstallHistory.Action.UNINSTALL,
+        trigger_type=(
+            MonitorTargetInstallHistory.TriggerType.MANUAL
+            if manual else MonitorTargetInstallHistory.TriggerType.AUTO
+        ),
+        status=MonitorTargetInstallHistory.Status.PENDING,
+        host_id_snapshot=int(getattr(host, 'id', 0) or 0),
+        host_name_snapshot=str(getattr(host, 'instance_name', '') or ''),
+        host_ip_snapshot=str(getattr(host, 'ip', '') or ''),
+        exporter_type_snapshot=str(exporter_name or ''),
+        summary_message='已下发卸载任务',
+        result_summary_snapshot={},
+        requested_user_id_snapshot=None,
+        requested_username_snapshot='',
         start_time=timezone.now(),
-        become_enabled_snapshot=task.become_enabled,
-        become_method_snapshot=task.become_method,
-        become_user_snapshot=task.become_user,
     )
 
-    try:
-        run_job_in_background(int(job.id))  # type: ignore[attr-defined]  # objects.create() 返回的实例已保存，pk 必为非空，Pylance 无法识别
-        monitor_target.install_status = monitor_target.InstallStatus.PENDING
-        monitor_target.install_message = f'已下发卸载任务（automation job #{job.id}）'  # type: ignore[attr-defined]
-        monitor_target.last_install_job_id = job.id  # type: ignore[attr-defined]
-    except Exception as exc:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = f'下发卸载任务失败：{exc}'
-        job.status = AutomationExecutionJob.Status.FAILED
-        job.result_summary = {'message': str(exc)}
-        job.save(update_fields=['status', 'result_summary', 'update_time'])
+    # 记录本次下发是否为人工重试触发，用于失败文案区分与历史审计。
+    monitor_target.last_dispatch_manual = bool(manual)
 
-    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'update_time'])
+    monitor_target.install_status = monitor_target.InstallStatus.PENDING
+    monitor_target.install_message = '已下发卸载任务'
+    monitor_target.last_install_job_id = None
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'last_dispatch_manual', 'update_time'])
+
+    if sync_execute:
+        _run_monitor_playbook_and_update_history(
+            target=monitor_target,
+            host=host,
+            history=history,
+            template_content=template.content or '',
+            extra_vars=extra_vars,
+            work_directory=latest_pkg.work_directory or '/tmp',
+            timeout_seconds=timeout_seconds,
+        )
+        return
+
+    threading.Thread(
+        target=_run_monitor_playbook_and_update_history,
+        kwargs={
+            'target': monitor_target,
+            'host': host,
+            'history': history,
+            'template_content': template.content or '',
+            'extra_vars': extra_vars,
+            'work_directory': latest_pkg.work_directory or '/tmp',
+            'timeout_seconds': timeout_seconds,
+        },
+        name=f'monitor-uninstall-{int(getattr(monitor_target, "id", 0) or 0)}',
+        daemon=True,
+    ).start()
 
 
 class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
@@ -909,6 +1153,8 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         'webssh_active_count': 'assets:hosts:view',
         'webssh_active_sessions': 'assets:hosts:view',
         'agent_runtime_status': 'assets:hosts:view',
+        'refresh_info': 'assets:hosts:view',
+        'batch_refresh_info': 'assets:hosts:view',
         'webssh_files': 'assets:hosts:view',
         'webssh_file_download': 'assets:hosts:view',
         'webssh_file_upload_chunk': 'assets:hosts:update',
@@ -942,7 +1188,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         from monitor.models import MonitorTarget
 
         queryset = Host.objects.select_related('group').prefetch_related(
-            Prefetch('hostcredential_set', queryset=HostCredential.objects.select_related('credential').filter(is_default=True)),
             # 一台主机可能纳管多个 exporter（node_exporter/自定义 exporter 等），不再按 node_exporter 过滤
             Prefetch('monitor_targets', queryset=MonitorTarget.objects.order_by('-id')),
             'hardware',
@@ -954,7 +1199,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         instance_name = (self.request.query_params.get('instance_name') or '').strip()  # type: ignore[union-attr]
         collect_status = self.request.query_params.get('collect_status')  # type: ignore[union-attr]
         agent_status = (self.request.query_params.get('agent_status') or '').strip().lower()  # type: ignore[union-attr]
-        has_default_credential = (self.request.query_params.get('has_default_credential') or '').strip().lower()  # type: ignore[union-attr]
         if host_id not in [None, '', '0', 0]:
             try:
                 queryset = queryset.filter(id=int(host_id))
@@ -966,10 +1210,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             queryset = queryset.filter(group_id__in=group_ids)
         if instance_name:
             queryset = queryset.filter(instance_name__icontains=instance_name)
-        if has_default_credential in {'true', '1', 'yes'}:
-            queryset = queryset.filter(hostcredential__is_default=True)
-        elif has_default_credential in {'false', '0', 'no'}:
-            queryset = queryset.exclude(hostcredential__is_default=True)
         if collect_status in {
             Host.CollectStatus.UNKNOWN,
             Host.CollectStatus.SUCCESS,
@@ -1033,24 +1273,76 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             return Response_error_str(str(exc))
         return Response_200(data=data)
 
+    @staticmethod
+    def _refresh_host_worker(host):
+        """批量刷新的线程工作单元：每个线程独立执行 gRPC 拉取+落库，结束后释放本线程 DB 连接。"""
+        try:
+            return refresh_host_info(host)
+        finally:
+            # ThreadPoolExecutor 复用线程会保留 Django 线程级连接，用完主动关闭避免连接泄漏。
+            connections.close_all()
+
+    @action(detail=True, methods=['post'], url_path='refresh-info')
+    def refresh_info(self, request, id=None):
+        """按需刷新单台主机信息（打开详情页时调用），经 gRPC 让 agent 执行 get_host_info。"""
+        host = self.get_object()
+        result = refresh_host_info(host)
+        host.refresh_from_db()
+        data = HostSerializer(host).data
+        return Response_200(data={'result': result, 'host': data})
+
+    @action(detail=False, methods=['post'], url_path='refresh-info')
+    def batch_refresh_info(self, request):
+        """按需批量刷新主机信息（打开列表页/翻页时调用当前页主机）。
+
+        仅对在线 agent 发起拉取，离线主机直接跳过；使用有限并发避免大批量时阻塞。
+        返回被成功更新主机的最新序列化数据，供前端就地合并到表格行。
+        """
+        raw_ids = request.data.get('ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response_error_str('ids 不能为空，且必须是数组')
+
+        ids = []
+        for item in raw_ids:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return Response_error_str('ids 中没有合法的主机 ID')
+
+        hosts = list(Host.objects.filter(id__in=ids))
+        results = []
+        updated_ids = []
+        if hosts:
+            # 并发上限 8：单台拉取以网络等待为主，适度并发即可，过高会挤占 gRPC/DB 资源。
+            with ThreadPoolExecutor(max_workers=min(8, len(hosts))) as executor:
+                future_map = {executor.submit(self._refresh_host_worker, host): host for host in hosts}
+                for future in as_completed(future_map):
+                    res = future.result()
+                    results.append(res)
+                    if res.get('updated'):
+                        updated_ids.append(res['host_id'])
+
+        hosts_data = []
+        if updated_ids:
+            refreshed = Host.objects.filter(id__in=updated_ids).select_related(
+                'group', 'hardware', 'system',
+            ).prefetch_related('disks')
+            hosts_data = HostListSerializer(refreshed, many=True).data
+        return Response_200(data={'results': results, 'hosts': hosts_data})
+
+
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         monitors_payload = self._resolve_monitors_from_request(request)
-        # 主机连接签名：IP + SSH 端口 + 默认凭证。
-        previous_signature = (
-            str(instance.ip or ''),
-            int(instance.port or 22),
-            self._get_default_credential_id_for_host(instance),
-        )
+        # 主机网络地址变化后，已有 WebSSH 会话需重建。
+        previous_signature = (str(instance.ip or ''),)
         serializer = self.get_serializer(instance, data=request.data, partial=False)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         instance.refresh_from_db()
-        current_signature = (
-            str(instance.ip or ''),
-            int(instance.port or 22),
-            self._get_default_credential_id_for_host(instance),
-        )
+        current_signature = (str(instance.ip or ''),)
         if previous_signature != current_signature:
             # 连接参数变化后，已有 SSH 通道不再可信，需强制重建。
             self._force_close_webssh_sessions_for_hosts([instance.id])
@@ -1060,20 +1352,12 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
         monitors_payload = self._resolve_monitors_from_request(request)
-        previous_signature = (
-            str(instance.ip or ''),
-            int(instance.port or 22),
-            self._get_default_credential_id_for_host(instance),
-        )
+        previous_signature = (str(instance.ip or ''),)
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
         instance.refresh_from_db()
-        current_signature = (
-            str(instance.ip or ''),
-            int(instance.port or 22),
-            self._get_default_credential_id_for_host(instance),
-        )
+        current_signature = (str(instance.ip or ''),)
         if previous_signature != current_signature:
             self._force_close_webssh_sessions_for_hosts([instance.id])
         self._sync_monitors_for_host(instance, monitors_payload)
@@ -1093,7 +1377,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         return default_value
 
     def _resolve_monitors_from_request(self, request):
-        """解析请求中的 monitors 数组：[{name, enabled, uninstall_on_disable}, ...]。
+        """解析请求中的 monitors 数组：[{name, enabled}, ...]。
         请求体中不包含 'monitors' 键时返回 None，表示本次请求不涉及监控配置改动（如仅编辑主机基础信息），
         避免每次编辑主机都重新遍历/下发监控任务。"""
         if 'monitors' not in request.data:
@@ -1111,16 +1395,16 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             monitors.append({
                 'name': name,
                 'enabled': self._parse_bool_flag(item.get('enabled'), default_value=True),
-                'uninstall_on_disable': self._parse_bool_flag(item.get('uninstall_on_disable'), default_value=False),
             })
         return monitors
 
     def _sync_monitors_for_host(self, host, monitors_payload):
         """按 monitors 数组同步该主机纳管的监控目标（每个 name 对应一个 MonitorTarget）：
         安装/卸载所需的 Playbook 任务、systemd unit 内容均直接来自监控软件仓库（SoftwarePackage）
-        在下发时实时读取，MonitorTarget 本身不再保留脚本副本；仅在开启状态发生切换（或新建即开启）
-        时自动下发安装任务，关闭且勾选 uninstall_on_disable 时下发卸载任务；未在本次请求中提交的
-        已有监控目标保持原状，不做隐式禁用/删除（多监控项独立维护，编辑其中一个不影响其他）。"""
+        在下发时实时读取，MonitorTarget 本身不再保留脚本副本；managed_enabled 是唯一的期望状态开关——
+        开启（或新建即开启）自动下发安装任务，关闭（从开启切换为关闭）自动下发卸载任务，语义单一、
+        不再区分“是否要连带卸载”，避免一次性指令式的隐藏状态；未在本次请求中提交的已有监控目标保持
+        原状，不做隐式禁用/删除（多监控项独立维护，编辑其中一个不影响其他）。"""
         if monitors_payload is None:
             return
 
@@ -1129,7 +1413,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         for entry in monitors_payload:
             name = entry['name']
             enabled = bool(entry['enabled'])
-            uninstall_on_disable = bool(entry['uninstall_on_disable'])
 
             target, created = MonitorTarget.objects.get_or_create(
                 host=host,
@@ -1150,13 +1433,15 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
                 target.save(update_fields=update_fields + ['update_time'])
 
             if not enabled:
-                target.install_message = f'已关闭监控（未卸载 {name}）'
-                target.save(update_fields=['install_message', 'update_time'])
-                if previous_enabled and uninstall_on_disable:
-                    # 新一轮卸载周期：重置自动重试计数，确保重试上限从 0 开始计算
+                if previous_enabled:
+                    # 开启->关闭这一次切换，自动下发卸载任务；新一轮卸载周期先重置自动重试计数，
+                    # 确保重试上限从 0 开始计算。
                     target.retry_count = 0
                     target.save(update_fields=['retry_count', 'update_time'])
                     dispatch_exporter_uninstall_job(host, target)
+                else:
+                    target.install_message = f'已关闭监控（未卸载 {name}）'
+                    target.save(update_fields=['install_message', 'update_time'])
                 continue
 
             # 仅在首次开启或新建监控目标时自动触发安装，避免每次编辑主机重复下发。
@@ -1655,6 +1940,11 @@ def agent_query_jobs(request):
             'params': item.params,
             'result_data': item.result_data,
             'error_message': item.error_message,
+            # exit_code/stdout/stderr 由 runagentconsumer 收到 RabbitMQ 结果消息后写入，
+            # 之前查询接口没有透出，导致前端拿不到诸如 systemctl status 之类命令的原始输出。
+            'exit_code': int(item.exit_code) if item.exit_code is not None else -1,
+            'stdout': item.stdout,
+            'stderr': item.stderr,
             'create_time': item.create_time,
             'picked_at': item.picked_at,
             'finished_at': item.finished_at,

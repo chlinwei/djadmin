@@ -22,10 +22,17 @@ export function formatNodeLabel(data) {
 }
 
 export function makeNodeFromConfig(config, index = 0) {
+  const START_X = 60
+  const START_NODE_WIDTH = 112
+  const RUNTIME_NODE_WIDTH = 220
+  const LAYER_X_GAP = 280
+  const EDGE_GAP = LAYER_X_GAP - RUNTIME_NODE_WIDTH
+  const FIRST_RUNTIME_X = START_X + START_NODE_WIDTH + EDGE_GAP
+
   const x = Number(config.x)
   const y = Number(config.y)
   const position = {
-    x: Number.isFinite(x) ? x : 340 + (index % 4) * 260,
+    x: Number.isFinite(x) ? x : FIRST_RUNTIME_X + (index % 4) * LAYER_X_GAP,
     y: Number.isFinite(y) ? y : 220 + Math.floor(index / 4) * 140,
   }
   const data = {
@@ -34,7 +41,6 @@ export function makeNodeFromConfig(config, index = 0) {
     node_type: String(config.node_type || 'task').toLowerCase() === 'workflow' ? 'workflow' : 'task',
     task_id: config.task_id,
     workflow_id: config.workflow_id,
-    convergence: String(config.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
   }
   return {
     id: config.key,
@@ -98,7 +104,6 @@ export function ensureStartEdgesForGraph({
       type: startEdgeType,
       source: startNodeId,
       target: nodeKey,
-      label: 'always',
       data: { condition: 'always' },
       markerEnd,
       style: buildWorkflowEdgeStyle('always'),
@@ -114,11 +119,15 @@ export function ensureStartEdgesForGraph({
 
 export function autoLayoutTreeNodes({ flowNodes, flowEdges, startNodeId, startEdgePrefix }) {
   const START_X = 60
+  const START_NODE_WIDTH = 112
+  const RUNTIME_NODE_WIDTH = 220
   const START_Y = 220
   const START_NODE_HEIGHT = 64
   const RUNTIME_NODE_HEIGHT = 72
   const RUNTIME_BASE_Y = START_Y + START_NODE_HEIGHT / 2 - RUNTIME_NODE_HEIGHT / 2
   const LAYER_X_GAP = 280
+  const EDGE_GAP = LAYER_X_GAP - RUNTIME_NODE_WIDTH
+  const FIRST_RUNTIME_X = START_X + START_NODE_WIDTH + EDGE_GAP
   const ROW_Y_GAP = 120
 
   const runtimeNodes = flowNodes.filter((item) => item.id !== startNodeId)
@@ -219,7 +228,7 @@ export function autoLayoutTreeNodes({ flowNodes, flowEdges, startNodeId, startEd
         return
       }
       node.position = {
-        x: START_X + depth * LAYER_X_GAP,
+        x: FIRST_RUNTIME_X + (depth - 1) * LAYER_X_GAP,
         y: count === 1 ? RUNTIME_BASE_Y : yStart + index * ROW_Y_GAP,
       }
       placedY[key] = node.position.y
@@ -227,34 +236,6 @@ export function autoLayoutTreeNodes({ flowNodes, flowEdges, startNodeId, startEd
   })
 
   return [createStartNode(startNodeId), ...runtimeNodes]
-}
-
-export function collectCascadeNodeIds(rootNodeId, flowEdges, startNodeId, startEdgePrefix) {
-  const collected = new Set()
-  const queue = [rootNodeId]
-
-  while (queue.length > 0) {
-    const currentNodeId = String(queue.shift() || '').trim()
-    if (!currentNodeId || currentNodeId === startNodeId || collected.has(currentNodeId)) {
-      continue
-    }
-
-    collected.add(currentNodeId)
-    flowEdges.forEach((edge) => {
-      if (isSystemEdge(edge, startNodeId, startEdgePrefix)) {
-        return
-      }
-      if (String(edge.source || '') !== currentNodeId) {
-        return
-      }
-      const targetNodeId = String(edge.target || '').trim()
-      if (targetNodeId && targetNodeId !== startNodeId && !collected.has(targetNodeId)) {
-        queue.push(targetNodeId)
-      }
-    })
-  }
-
-  return collected
 }
 
 export function resolveTaskNameFromNodeData(nodeData, taskNameMap) {

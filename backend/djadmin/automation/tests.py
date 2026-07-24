@@ -228,6 +228,68 @@ class PlaybookTemplateFileTest(BaseTestCase):
 		self.assertIn("Deploy-App.yml", content_disposition)
 
 
+class TemplateCategoryTest(BaseTestCase):
+	"""校验模板分类（通用 / 软件包安装卸载专用）过滤与防误改保护。"""
+
+	def setUp(self):
+		super().setUp()
+		self.general_template = PlaybookTemplate.objects.create(
+			name='General Playbook',
+			content='---\n- hosts: all\n  tasks: []\n',
+		)
+		self.package_template = PlaybookTemplate.objects.create(
+			name='Node Exporter Install',
+			content='---\n- hosts: all\n  tasks: []\n',
+			category='software_package',
+		)
+
+	def test_new_template_defaults_to_general_category(self):
+		self.assertEqual(self.general_template.category, 'general')
+
+	def test_list_filters_by_category(self):
+		res = self.client.get('/sys/automation/playbooks/', {'category': 'software_package'})
+		body = self.assertResponseOK(res)
+		names = [item['name'] for item in body['data']['results']]
+		self.assertIn('Node Exporter Install', names)
+		self.assertNotIn('General Playbook', names)
+
+	def test_list_without_category_param_returns_all(self):
+		res = self.client.get('/sys/automation/playbooks/')
+		body = self.assertResponseOK(res)
+		names = [item['name'] for item in body['data']['results']]
+		self.assertIn('Node Exporter Install', names)
+		self.assertIn('General Playbook', names)
+
+	def test_cannot_downgrade_category_when_bound_to_software_package(self):
+		from monitor.models import SoftwarePackage
+
+		SoftwarePackage.objects.create(
+			name='node_exporter', version='9.9.9-test', install_playbook_template=self.package_template,
+		)
+
+		res = self.client.patch(
+			f'/sys/automation/playbooks/{self.package_template.id}/',
+			{'category': 'general'},
+			format='json',
+		)
+		body = res.json()
+		self.assertEqual(body['code'], 600)
+		self.assertIn('category', body['data'])
+
+		self.package_template.refresh_from_db()
+		self.assertEqual(self.package_template.category, 'software_package')
+
+	def test_can_change_category_when_not_bound(self):
+		res = self.client.patch(
+			f'/sys/automation/playbooks/{self.package_template.id}/',
+			{'category': 'general'},
+			format='json',
+		)
+		self.assertResponseOK(res)
+		self.package_template.refresh_from_db()
+		self.assertEqual(self.package_template.category, 'general')
+
+
 class AutomationTaskScopeTest(BaseTestCase):
 	def setUp(self):
 		super().setUp()
@@ -303,6 +365,8 @@ class AutomationRunDispatchTest(BaseTestCase):
 			content='---\n- hosts: all\n  tasks: []\n',
 		)
 		self.host = Host.objects.create(instance_name='dispatch_host', ip='10.0.0.10')
+		self.host.agent_online = True
+		self.host.save(update_fields=['agent_online'])
 		self.inventory = AutomationInventory.objects.create(
 			name='dispatch-inventory',
 		)
@@ -318,25 +382,34 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-	def test_run_template_dispatches_to_celery(self):
-		with patch('automation.views_playbook.execute_automation_job') as mock_execute:
+	def test_run_template_dispatches_synchronously_via_agent_grpc(self):
+		with patch('automation.views_playbook.execute_job_via_agent_grpc', return_value=(True, {
+			'created_count': 1,
+			'success_count': 1,
+			'failed_count': 0,
+			'failed_rows': [],
+		}, '')) as mock_execute:
 			res = self.client.post(
 				f'/sys/automation/playbooks/{self.template.id}/run/',  # type: ignore[attr-defined]
-				{'host_ids': [self.host.id], 'group_ids': [], 'extra_vars': {}},
+				{
+					'host_ids': [self.host.id],
+					'group_ids': [],
+					'extra_vars': {},
+					'run_as_user': 'root',
+				},
 				format='json',
 			)
 			body = self.assertResponseOK(res)
-			self.assertEqual(body['data']['status'], 'pending')
+			self.assertEqual(body['data']['status'], 'success')
 			mock_execute.assert_called_once()
 
-	def test_run_now_dispatches_to_celery(self):
-		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
-			'status': 'success',
-			'exit_code': 0,
-			'stdout': 'ok',
-			'stderr': '',
-			'error_message': '',
-		}) as mock_exec:
+	def test_run_now_dispatches_synchronously_via_agent_grpc(self):
+		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
+			'created_count': 1,
+			'success_count': 1,
+			'failed_count': 0,
+			'failed_rows': [],
+		}, '')) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{self.task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
@@ -363,13 +436,12 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
-			'status': 'success',
-			'exit_code': 0,
-			'stdout': 'ok',
-			'stderr': '',
-			'error_message': '',
-		}) as mock_exec:
+		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
+			'created_count': 1,
+			'success_count': 1,
+			'failed_count': 0,
+			'failed_rows': [],
+		}, '')) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{shell_task.id}/run_now/',
 				{'shell_parameters': 'from-request', 'shell_env_vars': {'K': 'V'}},
@@ -401,14 +473,15 @@ class AutomationRunDispatchTest(BaseTestCase):
 			env_vars={},
 			enabled=True,
 		)
+		host_b.agent_online = True
+		host_b.save(update_fields=['agent_online'])
 
-		with patch('automation.views_task._execute_automation_task_via_agent_http', return_value={
-			'status': 'success',
-			'exit_code': 0,
-			'stdout': 'ok',
-			'stderr': '',
-			'error_message': '',
-		}) as mock_exec:
+		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
+			'created_count': 2,
+			'success_count': 2,
+			'failed_count': 0,
+			'failed_rows': [],
+		}, '')) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{task.id}/run_now/',  # type: ignore[attr-defined]
 				{},
@@ -420,7 +493,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			host_ids = {item['host_id'] for item in inventory_hosts}
 			self.assertIn(self.host.id, host_ids)
 			self.assertIn(host_b.id, host_ids)
-			self.assertEqual(mock_exec.call_count, 2)
+			self.assertEqual(mock_exec.call_count, 1)
 
 	def test_run_now_fails_without_inventory(self):
 		task = AutomationTask.objects.create(
@@ -456,6 +529,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 				'selected_group_ids': [],
 				'env_vars': {},
 				'enabled': True,
+				'run_as_user': 'root',
 			},
 			format='json',
 		)
@@ -477,6 +551,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 				'selected_group_ids': [],
 				'env_vars': {},
 				'enabled': True,
+				'run_as_user': 'root',
 			},
 			format='json',
 		)
@@ -594,6 +669,8 @@ class AutomationWorkflowTest(BaseTestCase):
 			content='---\n- hosts: all\n  tasks: []\n',
 		)
 		self.host = Host.objects.create(instance_name='workflow_host', ip='10.0.0.21')
+		self.host.agent_online = True
+		self.host.save(update_fields=['agent_online'])
 		self.inventory = AutomationInventory.objects.create(
 			name='workflow-inventory',
 		)
@@ -608,6 +685,22 @@ class AutomationWorkflowTest(BaseTestCase):
 			env_vars={},
 			enabled=True,
 		)
+
+	def _mark_workflow_job_success(self, job_id):
+		job = AutomationExecutionJob.objects.get(id=int(job_id))
+		now = timezone.now()
+		if not job.start_time:
+			job.start_time = now
+		job.status = AutomationExecutionJob.Status.SUCCESS
+		job.end_time = now
+		job.duration_seconds = (job.end_time - job.start_time).total_seconds() if job.start_time else 0
+		summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+		summary['message'] = 'Mocked sync execution success'
+		summary['created_count'] = 1
+		summary['success_count'] = 1
+		summary['failed_count'] = 0
+		job.result_summary = summary
+		job.save(update_fields=['status', 'start_time', 'end_time', 'duration_seconds', 'result_summary'])
 
 	def _create_workflow(self):
 		res = self.client.post(
@@ -645,7 +738,6 @@ class AutomationWorkflowTest(BaseTestCase):
 				'enabled': True,
 				'nodes': [],
 				'edges': [],
-				'entry_node_key': '',
 				'default_extra_vars': {},
 			},
 			format='json',
@@ -654,7 +746,6 @@ class AutomationWorkflowTest(BaseTestCase):
 		body = self.assertResponseOK(res)
 		self.assertEqual(body['data']['node_count'], 0)
 		self.assertEqual(body['data']['edge_count'], 0)
-		self.assertEqual(body['data']['entry_node_key'], '')
 
 	def test_create_workflow_without_inventory_succeeds(self):
 		"""创建 Workflow 时不指定 default_inventory，应成功创建"""
@@ -806,7 +897,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		self.assertEqual(body['data']['resolved_host_count'], 1)
 		self.assertTrue(body['data']['use_global_scope'])
 
-	def test_precheck_launch_with_multiple_roots_and_global_inventory(self):
+	def test_create_workflow_with_multiple_roots_fails(self):
 		inventory = AutomationInventory.objects.create(
 			name='workflow-precheck-inventory',
 			selected_host_ids=[self.host.id],
@@ -830,33 +921,23 @@ class AutomationWorkflowTest(BaseTestCase):
 			},
 			format='json',
 		)
-		workflow = self.assertResponseOK(res)['data']
-
-		preview_res = self.client.post(
-			f"/sys/automation/workflows/{workflow['id']}/precheck-launch/",
-			{},
-			format='json',
-		)
-		body = self.assertResponseOK(preview_res)
-		self.assertTrue(body['data']['ok'])
-		self.assertEqual(body['data']['status'], 'ok')
-		self.assertTrue(body['data']['use_global_scope'])
-		self.assertEqual(body['data']['inventory_id'], inventory.id)
-		self.assertEqual(body['data']['resolved_host_count'], 1)
-		self.assertEqual(body['data']['matched_hosts_preview_total'], 1)
+		body = res.json()
+		self.assertNotEqual(body.get('code'), 200, msg=f'Expected error, got: {body}')
+		error_text = str(body.get('data', '')).lower()
+		self.assertIn('linear chain', error_text)
 
 	def test_launch_workflow_dispatches_task_jobs(self):
 		workflow = self._create_workflow()
 		self._setup_workflow_with_inventory(workflow)
 
-		with patch('automation.view_helpers.execute_automation_job') as mock_execute:
+		with patch('automation.view_helpers.execute_automation_job', side_effect=self._mark_workflow_job_success) as mock_execute:
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
 				format='json',
 			)
 			body = self.assertResponseOK(res)
-			self.assertIn(body['data']['status'], ['running', 'success'])
+			self.assertEqual(body['data']['status'], 'success')
 			run = AutomationWorkflowRun.objects.get(id=body['data']['id'])
 			self.assertGreaterEqual(len(run.node_results), 1)
 			node_result = run.node_results[0]
@@ -868,6 +949,8 @@ class AutomationWorkflowTest(BaseTestCase):
 
 	def test_launch_workflow_uses_workflow_default_inventory_scope(self):
 		host_b = Host.objects.create(instance_name='workflow_scope_host_b', ip='10.0.0.22')
+		host_b.agent_online = True
+		host_b.save(update_fields=['agent_online'])
 		inventory = AutomationInventory.objects.create(
 			name='workflow-scope-inventory',
 			selected_host_ids=[host_b.id],
@@ -892,7 +975,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		)
 		workflow = self.assertResponseOK(res)['data']
 
-		with patch('automation.view_helpers.execute_automation_job') as mock_execute:
+		with patch('automation.view_helpers.execute_automation_job', side_effect=self._mark_workflow_job_success) as mock_execute:
 			launch_res = self.client.post(
 				f"/sys/automation/workflows/{workflow['id']}/launch/",
 				{},
@@ -956,6 +1039,9 @@ class AutomationWorkflowTest(BaseTestCase):
 					{'key': 'n1', 'name': 'task in A', 'node_type': 'task', 'task_id': self.task.id},
 					{'key': 'n2', 'name': 'ref to B', 'node_type': 'workflow', 'workflow_id': workflow_b['id']}
 				],
+				'edges': [
+					{'source_key': 'n1', 'target_key': 'n2', 'condition': 'success'}
+				],
 			},
 			format='json',
 		)
@@ -969,6 +1055,9 @@ class AutomationWorkflowTest(BaseTestCase):
 				'nodes': [
 					{'key': 'n1', 'name': 'task in B', 'node_type': 'task', 'task_id': self.task.id},
 					{'key': 'n2', 'name': 'ref to A', 'node_type': 'workflow', 'workflow_id': workflow_a['id']}
+				],
+				'edges': [
+					{'source_key': 'n1', 'target_key': 'n2', 'condition': 'success'}
 				],
 			},
 			format='json',
@@ -1006,7 +1095,9 @@ class AutomationWorkflowTest(BaseTestCase):
 					{'key': 'n1', 'name': 'task in A', 'node_type': 'task', 'task_id': self.task.id},
 					{'key': 'n2', 'name': 'ref to B', 'node_type': 'workflow', 'workflow_id': workflow_b['id']}
 				],
-				'edges': [],
+				'edges': [
+					{'source_key': 'n1', 'target_key': 'n2', 'condition': 'success'}
+				],
 				'default_extra_vars': {},
 			},
 			format='json',
@@ -1080,17 +1171,18 @@ class AutomationWorkflowTest(BaseTestCase):
 		self.assertResponseOK(res_patch_b)
 
 		# 启动工作流 A
-		res_launch = self.client.post(
-			f'/sys/automation/workflows/{workflow_a_id}/launch/',
-			{},
-			format='json',
-		)
+		with patch('automation.view_helpers.execute_automation_job', side_effect=self._mark_workflow_job_success):
+			res_launch = self.client.post(
+				f'/sys/automation/workflows/{workflow_a_id}/launch/',
+				{},
+				format='json',
+			)
 		launch_body = self.assertResponseOK(res_launch)
 		run_id = launch_body['data']['id']
 		
-		# 启动应该成功，状态可能是 running 或 failed（如果立即检测到循环）
+		# 同步执行下，launch 返回时已是终态（本用例应被循环检测拦截为 failed）。
 		self.assertEqual(res_launch.status_code, 200)
-		self.assertIn(launch_body['data']['status'], {'running', 'pending', 'failed'})
+		self.assertEqual(launch_body['data']['status'], 'failed')
 
 		# 获取运行状态
 		res_detail = self.client.get(
@@ -1283,7 +1375,7 @@ class AutomationWorkflowTest(BaseTestCase):
 		workflow_id = workflow['id']
 
 		# 创建一个运行记录
-		with patch('automation.view_helpers.execute_automation_job'):
+		with patch('automation.view_helpers.execute_automation_job', side_effect=self._mark_workflow_job_success):
 			res = self.client.post(
 				f"/sys/automation/workflows/{workflow_id}/launch/",
 				{},
@@ -1506,7 +1598,10 @@ class AutomationWorkflowTest(BaseTestCase):
 					{'key': 'n2', 'name': '任务2', 'node_type': 'task', 'task_id': self.task.id},
 					{'key': 'n3', 'name': '任务3', 'node_type': 'task', 'task_id': self.task.id},
 				],
-				'edges': [],
+				'edges': [
+					{'source_key': 'n1', 'target_key': 'n2', 'condition': 'success'},
+					{'source_key': 'n2', 'target_key': 'n3', 'condition': 'success'},
+				],
 				'default_extra_vars': {},
 			},
 			format='json',

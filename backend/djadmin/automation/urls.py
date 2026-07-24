@@ -1,15 +1,12 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
-from .views import (
-    PlaybookTemplateManage,
-    ShellScriptTemplateManage,
-    AutomationTaskManage,
-    AutomationInventoryManage,
-    AutomationExecutionJobManage,
-    AutomationWorkflowTemplateManage,
-    AutomationWorkflowRunManage,
-)
+from .views_playbook import PlaybookTemplateManage
+from .views_shell_script import ShellScriptTemplateManage
+from .views_task import AutomationTaskManage
+from .views_inventory import AutomationInventoryManage
+from .views_job_target import AutomationExecutionJobManage
+from .views_workflow import AutomationWorkflowTemplateManage, AutomationWorkflowRunManage
 
 router = DefaultRouter()
 router.register(r'playbooks', PlaybookTemplateManage, basename='playbooks')

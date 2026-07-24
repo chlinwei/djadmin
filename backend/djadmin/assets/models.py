@@ -98,7 +98,6 @@ class Host(BaseModel):
     )
     status = models.CharField(max_length=32, default="running")
     is_deleted_in_cloud = models.BooleanField(default=False)
-    port = models.PositiveIntegerField(default=22)
 
     # 采集状态（用于在列表中突出无法连接的主机）
     class CollectStatus(models.TextChoices):
@@ -116,6 +115,8 @@ class Host(BaseModel):
     agent_online = models.BooleanField(default=False, verbose_name="Agent在线状态")
     agent_online_time = models.DateTimeField(null=True, blank=True, verbose_name="Agent最后心跳时间")
     host_snapshot = models.JSONField(default=dict, blank=True, verbose_name="主机快照数据")
+    webssh_default_username = models.CharField(max_length=100, default='root', blank=True)
+    webssh_login_users = models.CharField(max_length=512, default='root', blank=True)
 
     def __str__(self):
         display_name = self.instance_name or f"Host-{self.id}"
@@ -277,6 +278,10 @@ class WebSSHSessionLog(models.Model):
     host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='webssh_sessions')
     user_id = models.IntegerField(null=True, blank=True)
     username = models.CharField(max_length=100, blank=True, default='')
+    requested_username = models.CharField(max_length=100, blank=True, default='')
+    effective_username = models.CharField(max_length=100, blank=True, default='')
+    switch_user_status = models.CharField(max_length=16, blank=True, default='none')
+    switch_user_error = models.TextField(blank=True, default='')
     client_ip = models.CharField(max_length=64, blank=True, default='')
     user_agent = models.CharField(max_length=255, blank=True, default='')
 

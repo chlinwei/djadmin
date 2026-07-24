@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,30 +15,25 @@ import (
 
 	"github.com/chlinwei/djadmin/dj_agent/internal/config"
 	"github.com/chlinwei/djadmin/dj_agent/internal/executor"
+	"github.com/chlinwei/djadmin/dj_agent/internal/grpcfile"
 	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
 	"github.com/rabbitmq/amqp091-go"
 )
 
 type App struct {
-	cfg                          config.Config
-	hostReportIntervalUpdateChan chan time.Duration
-	httpServer                   *http.Server
-	rabbitmqChannel              *amqp091.Channel
-	statusMu                     sync.RWMutex
-	startedAt                    time.Time
-	heartbeatInterval            time.Duration
-	currentHostReportInterval    time.Duration
-	lastHeartbeatAt              time.Time
-	lastHeartbeatStatus          string
-	lastHeartbeatError           string
-	lastHostSnapshotAt           time.Time
-	lastHostSnapshotStatus       string
-	lastHostSnapshotError        string
-	isRunning                    bool
+	cfg                    config.Config
+	rabbitmqChannel        *amqp091.Channel
+	statusMu               sync.RWMutex
+	startedAt              time.Time
+	heartbeatInterval      time.Duration
+	lastHeartbeatAt        time.Time
+	lastHeartbeatStatus    string
+	lastHeartbeatError     string
+	lastHostSnapshotAt     time.Time
+	lastHostSnapshotStatus string
+	lastHostSnapshotError  string
+	isRunning              bool
 }
-
-const minHostReportInterval = 30 * time.Second
-const maxHostReportInterval = 12 * time.Hour
 
 // 从RabbitMQ消费的任务命令结构（与Backend发送的相同）
 type rabbitCommand struct {
@@ -110,35 +102,13 @@ func (a *App) Run() error {
 		return fmt.Errorf("declare reports queue failed: %w", err)
 	}
 
-	// 声明终端命令队列 - 每个 agent 有独立队列
-	termQueue := fmt.Sprintf("agent.term.%s", a.cfg.AgentID)
-	if _, err := channel.QueueDeclare(termQueue, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declare term queue failed: %w", err)
-	}
-
-	// 初始化终端管理器（当前通过 RabbitMQ 上报事件）
-	termMgr := newTerminalManager(a.cfg.AgentID)
-	// 设置终端事件上报回调
-	termMgr.reportFunc = func(eventType string, payload map[string]any) {
-		_ = a.reportToBackend("term_event", payload)
-	}
-
 	// 启动背景服务
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	httpErrCh := make(chan error, 1)
-	a.startHTTPServer(exec, httpErrCh)
-
 	// 定时器
 	heartbeatTicker := time.NewTicker(10 * time.Second)
 	defer heartbeatTicker.Stop()
-
-	a.hostReportIntervalUpdateChan = make(chan time.Duration, 1)
-	hostReportInterval := a.resolveHostReportInterval()
-	a.setCurrentHostReportInterval(hostReportInterval)
-	hostReportTicker := time.NewTicker(hostReportInterval)
-	defer hostReportTicker.Stop()
 
 	// 启动后立即上报一次主机快照
 	a.markHostSnapshotTick(time.Now())
@@ -154,9 +124,11 @@ func (a *App) Run() error {
 	taskConsumerErrCh := make(chan error, 1)
 	go a.taskConsumer(ctx, channel, exec, taskConsumerErrCh)
 
-	// 启动 RabbitMQ 终端命令 consumer goroutine
-	termConsumerErrCh := make(chan error, 1)
-	go a.terminalCommandConsumer(ctx, channel, termMgr, termConsumerErrCh)
+	// 启动统一 gRPC 通道客户端（agent 主动拨号连接 backend，断线自动重连）。
+	// 该长连接承载文件传输、WebSSH 终端以及自动化任务同步执行，复用同一 exec 执行器。
+	// 与 RabbitMQ 心跳/任务通道相互独立：即使这里连不上（backend 未起 gRPC 服务、
+	// 或目标网络不通），也不影响心跳/任务/终端等既有功能正常运行。
+	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, exec, a.getRuntimeStatusData)
 
 	// 启动准备完成后立即上报一次上线事件，避免等待首个 ticker 周期。
 	_ = a.reportToBackend("agent_status", map[string]any{
@@ -167,22 +139,14 @@ func (a *App) Run() error {
 
 	for {
 		select {
-		case serverErr := <-httpErrCh:
-			return serverErr
 		case taskErr := <-taskConsumerErrCh:
 			if taskErr != nil && !errors.Is(taskErr, context.Canceled) {
 				slog.Error("task consumer error", "err", taskErr)
-				// 不直接返回，继续运行以保证终端命令仍可用
-			}
-		case termErr := <-termConsumerErrCh:
-			if termErr != nil && !errors.Is(termErr, context.Canceled) {
-				slog.Error("terminal consumer error", "err", termErr)
-				// 不直接返回，继续运行以保证任务仍可用
+				// 不直接返回，继续运行以保证其它功能仍可用
 			}
 		case <-ctx.Done():
 			slog.Info("shutdown signal received", "agent_id", a.cfg.AgentID)
 			a.markStopped()
-			termMgr.CloseAll()
 
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 			defer cancel()
@@ -198,23 +162,6 @@ func (a *App) Run() error {
 			} else {
 				a.markHeartbeatResult("success", "")
 			}
-		case <-hostReportTicker.C:
-			a.markHostSnapshotTick(time.Now())
-			snapshotPayload := a.buildHostSnapshot(exec)
-			snapshotStatus := strings.TrimSpace(fmt.Sprintf("%v", snapshotPayload["status"]))
-			snapshotError := strings.TrimSpace(fmt.Sprintf("%v", snapshotPayload["error"]))
-			a.markHostSnapshotResult(snapshotStatus, snapshotError)
-			if err = a.reportToBackend("host_snapshot", snapshotPayload); err != nil {
-				a.markHostSnapshotResult("failed", err.Error())
-			}
-		case nextInterval := <-a.hostReportIntervalUpdateChan:
-			if nextInterval == hostReportInterval {
-				continue
-			}
-			hostReportInterval = nextInterval
-			a.setCurrentHostReportInterval(hostReportInterval)
-			hostReportTicker.Reset(hostReportInterval)
-			slog.Info("host report interval updated", "interval", hostReportInterval.String())
 		}
 	}
 }
@@ -236,12 +183,6 @@ func (a *App) markStopped() {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
 	a.isRunning = false
-}
-
-func (a *App) setCurrentHostReportInterval(interval time.Duration) {
-	a.statusMu.Lock()
-	defer a.statusMu.Unlock()
-	a.currentHostReportInterval = interval
 }
 
 func (a *App) markHeartbeatTick(ts time.Time) {
@@ -275,7 +216,6 @@ func (a *App) getRuntimeStatusData() map[string]any {
 	startedAt := a.startedAt
 	isRunning := a.isRunning
 	heartbeatInterval := a.heartbeatInterval
-	hostReportInterval := a.currentHostReportInterval
 	lastHeartbeatAt := a.lastHeartbeatAt
 	lastHeartbeatStatus := strings.TrimSpace(a.lastHeartbeatStatus)
 	lastHeartbeatError := strings.TrimSpace(a.lastHeartbeatError)
@@ -285,10 +225,6 @@ func (a *App) getRuntimeStatusData() map[string]any {
 	a.statusMu.RUnlock()
 
 	now := time.Now()
-	if hostReportInterval <= 0 {
-		hostReportInterval = a.cfg.HostReportInterval
-	}
-
 	resolveNextRunAt := func(lastRunAt time.Time, interval time.Duration) string {
 		if interval <= 0 {
 			return ""
@@ -332,15 +268,15 @@ func (a *App) getRuntimeStatusData() map[string]any {
 		},
 		{
 			"name":             "host_snapshot",
-			"task_type":        "periodic",
+			"task_type":        "on_demand",
 			"source":           "builtin",
 			"enabled":          true,
-			"status":           "running",
+			"status":           "idle",
 			"job_id":           "",
 			"command_id":       "",
-			"interval_seconds": int(hostReportInterval.Seconds()),
+			"interval_seconds": 0,
 			"last_run_at":      toRFC3339(lastHostSnapshotAt),
-			"next_run_at":      resolveNextRunAt(lastHostSnapshotAt, hostReportInterval),
+			"next_run_at":      "",
 			"updated_at":       toRFC3339(lastHostSnapshotAt),
 			"error":            lastHostSnapshotError,
 			"last_result":      lastHostSnapshotStatus,
@@ -357,8 +293,11 @@ func (a *App) getRuntimeStatusData() map[string]any {
 			"uptime_seconds": uptimeSeconds,
 		},
 		"http": map[string]any{
-			"listen_addr":  a.cfg.HTTPListenAddr,
-			"auth_enabled": strings.TrimSpace(a.cfg.HTTPAuthToken) != "",
+			"listen_addr":  "-",
+			"auth_enabled": false,
+		},
+		"grpc": map[string]any{
+			"server_addr": a.cfg.GRPCFileAddr,
 		},
 		"config": map[string]any{
 			"backend_base_url":                      a.cfg.BackendBaseURL,
@@ -366,7 +305,7 @@ func (a *App) getRuntimeStatusData() map[string]any {
 			"shutdown_timeout_seconds":              int(a.cfg.ShutdownTimeout.Seconds()),
 			"host_report_interval_fallback_raw":     a.cfg.HostReportIntervalRaw,
 			"host_report_interval_fallback_seconds": int(a.cfg.HostReportInterval.Seconds()),
-			"host_report_interval_current_seconds":  int(hostReportInterval.Seconds()),
+			"host_report_interval_current_seconds":  0,
 		},
 		"schedulers": map[string]any{
 			"heartbeat": map[string]any{
@@ -376,10 +315,10 @@ func (a *App) getRuntimeStatusData() map[string]any {
 				"next_run_at":      resolveNextRunAt(lastHeartbeatAt, heartbeatInterval),
 			},
 			"host_snapshot": map[string]any{
-				"enabled":          true,
-				"interval_seconds": int(hostReportInterval.Seconds()),
+				"enabled":          false,
+				"interval_seconds": 0,
 				"last_run_at":      toRFC3339(lastHostSnapshotAt),
-				"next_run_at":      resolveNextRunAt(lastHostSnapshotAt, hostReportInterval),
+				"next_run_at":      "",
 			},
 		},
 		"runtime": map[string]any{
@@ -428,48 +367,6 @@ func (a *App) taskConsumer(ctx context.Context, channel *amqp091.Channel, exec *
 	}
 }
 
-// terminalCommandConsumer - 从 RabbitMQ 终端队列消费终端命令
-func (a *App) terminalCommandConsumer(ctx context.Context, channel *amqp091.Channel, termMgr *terminalManager, errCh chan error) {
-	termQueue := fmt.Sprintf("agent.term.%s", a.cfg.AgentID)
-	msgs, err := channel.Consume(
-		termQueue, // queue
-		"",        // consumer
-		false,     // auto-ack（手动确认）
-		false,     // exclusive
-		false,     // noLocal
-		false,     // noWait
-		nil,       // args
-	)
-	if err != nil {
-		errCh <- fmt.Errorf("consume term queue failed: %w", err)
-		return
-	}
-
-	slog.Info("terminal consumer ready", "agent_id", a.cfg.AgentID, "queue", termQueue)
-
-	for {
-		select {
-		case <-ctx.Done():
-			errCh <- nil
-			return
-		case delivery := <-msgs:
-			if delivery.Body == nil {
-				continue
-			}
-
-			var cmd termCommand
-			if err := json.Unmarshal(delivery.Body, &cmd); err != nil {
-				slog.Error("decode terminal command failed", "err", err)
-				delivery.Nack(false, false) // 无法解析，不重新入队
-				continue
-			}
-
-			termMgr.Handle(cmd)
-			delivery.Ack(false) // 处理完确认
-		}
-	}
-}
-
 // 处理来自RabbitMQ的任务命令
 func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
 	ctx := context.Background()
@@ -488,47 +385,6 @@ func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
 
 	if job.JobID == "" || job.Type == "" || job.Action == "" {
 		slog.Warn("ignore invalid command", "job_id", job.JobID, "type", job.Type, "action", job.Action)
-		return
-	}
-
-	// 特殊处理：设置主机上报间隔
-	if strings.EqualFold(job.Action, "set_host_report_interval") {
-		_ = a.reportToBackend("job_event", map[string]any{
-			"job_id":   job.JobID,
-			"agent_id": a.cfg.AgentID,
-			"action":   job.Action,
-			"status":   protocol.StatusRunning,
-			"error":    "",
-			"ts":       time.Now().UTC().Format(time.RFC3339),
-		})
-
-		nextInterval, updateErr := a.resolveHostReportIntervalFromCommand(job.Params)
-		if updateErr != nil {
-			result := protocol.JobResult{
-				JobID:  job.JobID,
-				Type:   job.Type,
-				Action: job.Action,
-				Status: protocol.StatusFailed,
-				Error:  updateErr.Error(),
-			}
-			a.reportJobResult(result)
-			slog.Warn("set_host_report_interval failed", "agent_id", a.cfg.AgentID, "job_id", job.JobID, "err", updateErr)
-			return
-		}
-
-		a.pushHostReportIntervalUpdate(nextInterval)
-		result := protocol.JobResult{
-			JobID:    job.JobID,
-			Type:     job.Type,
-			Action:   job.Action,
-			Status:   protocol.StatusSuccess,
-			ExitCode: 0,
-			Data: map[string]any{
-				"interval_seconds": int(nextInterval / time.Second),
-			},
-		}
-		a.reportJobResult(result)
-		slog.Info("set_host_report_interval accepted", "agent_id", a.cfg.AgentID, "job_id", job.JobID, "interval", nextInterval.String())
 		return
 	}
 
@@ -553,147 +409,7 @@ func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
 	slog.Info("job execution finished", "agent_id", a.cfg.AgentID, "job_id", job.JobID, "status", result.Status)
 }
 
-func (a *App) resolveHostReportInterval() time.Duration {
-	defaultInterval := a.cfg.HostReportInterval
-	interval, err := a.fetchHostReportIntervalFromBackend(defaultInterval)
-	if err != nil {
-		slog.Warn(
-			"fetch host report interval from backend failed, fallback to local config",
-			"err", err,
-			"interval", defaultInterval.String(),
-		)
-		return defaultInterval
-	}
-
-	slog.Info("resolved host report interval from backend", "interval", interval.String())
-	return interval
-}
-
-func (a *App) fetchHostReportIntervalFromBackend(defaultInterval time.Duration) (time.Duration, error) {
-	baseURL := strings.TrimSpace(a.cfg.BackendBaseURL)
-	token := strings.TrimSpace(a.cfg.BackendToken)
-	if baseURL == "" {
-		return 0, fmt.Errorf("backend base url is empty")
-	}
-	if token == "" {
-		return 0, fmt.Errorf("backend token is empty")
-	}
-
-	endpoint := fmt.Sprintf("%s/api/agent/configs/by-key/%s", strings.TrimRight(baseURL, "/"), "sys.assets.collect.interval_seconds")
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build request failed: %w", err)
-	}
-	req.Header.Set("Authorization", token)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("request backend failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return 0, fmt.Errorf("read backend response failed: %w", readErr)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("backend response status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var payload struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-		Data struct {
-			Value any `json:"value"`
-		} `json:"data"`
-	}
-	if err = json.Unmarshal(body, &payload); err != nil {
-		return 0, fmt.Errorf("decode backend response failed: %w", err)
-	}
-	if payload.Code != 200 {
-		return 0, fmt.Errorf("backend business error code=%d msg=%s", payload.Code, payload.Msg)
-	}
-
-	seconds, err := parsePositiveInt(payload.Data.Value)
-	if err != nil {
-		return 0, fmt.Errorf("invalid backend interval value: %w", err)
-	}
-	interval := time.Duration(seconds) * time.Second
-	if interval <= 0 {
-		return 0, fmt.Errorf("invalid backend interval <= 0")
-	}
-
-	// 保底保护，避免异常配置把上报打成高频风暴。
-	if interval < minHostReportInterval || interval > maxHostReportInterval {
-		return defaultInterval, nil
-	}
-	return interval, nil
-}
-
-func parsePositiveInt(value any) (int, error) {
-	switch v := value.(type) {
-	case float64:
-		if v <= 0 {
-			return 0, fmt.Errorf("value must be > 0")
-		}
-		return int(v), nil
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil || parsed <= 0 {
-			return 0, fmt.Errorf("value must be positive integer")
-		}
-		return parsed, nil
-	case int:
-		if v <= 0 {
-			return 0, fmt.Errorf("value must be > 0")
-		}
-		return v, nil
-	default:
-		return 0, fmt.Errorf("unsupported value type %T", value)
-	}
-}
-
 // buildCommandSubjects - 已弃用，使用RabbitMQ替代
-
-func (a *App) resolveHostReportIntervalFromCommand(params map[string]any) (time.Duration, error) {
-	rawValue, ok := params["interval_seconds"]
-	if !ok {
-		rawValue = params["value"]
-	}
-	if rawValue == nil {
-		return 0, fmt.Errorf("params.interval_seconds is required")
-	}
-
-	seconds, err := parsePositiveInt(rawValue)
-	if err != nil {
-		return 0, fmt.Errorf("invalid interval_seconds: %w", err)
-	}
-	interval := time.Duration(seconds) * time.Second
-	if interval < minHostReportInterval {
-		return 0, fmt.Errorf("interval_seconds must be >= %d", int(minHostReportInterval/time.Second))
-	}
-	if interval > maxHostReportInterval {
-		return 0, fmt.Errorf("interval_seconds must be <= %d", int(maxHostReportInterval/time.Second))
-	}
-	return interval, nil
-}
-
-func (a *App) pushHostReportIntervalUpdate(next time.Duration) {
-	if a.hostReportIntervalUpdateChan == nil {
-		return
-	}
-	select {
-	case a.hostReportIntervalUpdateChan <- next:
-	default:
-		select {
-		case <-a.hostReportIntervalUpdateChan:
-		default:
-		}
-		a.hostReportIntervalUpdateChan <- next
-	}
-}
 
 // buildHostSnapshot 构建主机快照报告，用于上报给后端
 func (a *App) buildHostSnapshot(exec *executor.Executor) map[string]any {
@@ -787,9 +503,5 @@ func (a *App) gracefulShutdown(ctx context.Context) error {
 		"reason": "shutdown",
 	})
 	slog.Info("offline status event published", "agent_id", a.cfg.AgentID)
-
-	if err := a.stopHTTPServer(ctx); err != nil {
-		return err
-	}
 	return nil
 }

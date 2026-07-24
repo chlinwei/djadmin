@@ -9,13 +9,6 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         task_defs = [
             {
-                'code': 'collect_all_hosts_info',
-                'name': '主机信息采集',
-                'description': '定时采集所有主机信息',
-                'enabled': True,
-                'cron_expression': '*/15 * * * *',
-            },
-            {
                 'code': 'cleanup_webssh_session_logs',
                 'name': 'WebSSH 会话日志清理',
                 'description': '按保留天数清理过期 WebSSH 会话审计日志',

@@ -101,7 +101,12 @@ DATABASES = {
         'USER': 'root',
         'PASSWORD': '1qazXSW@',
         'HOST': '10.25.66.150',
-        'PORT': '3400'
+        'PORT': '3400',
+        # 使用 utf8mb4 连接：SSH 终端输出可能包含 emoji 等 4 字节字符，
+        # 若连接/列为 utf8mb3 会触发 "Incorrect string value" 写入失败。
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+        },
     }
 }
 
@@ -235,6 +240,13 @@ RABBITMQ_URL = os.getenv(
 )
 RABBITMQ_AGENT_TASKS_QUEUE = 'agent.tasks'
 RABBITMQ_AGENT_REPORTS_QUEUE = 'agent.reports'
+
+# dj-agent 文件传输 gRPC 通道：agent 主动拨号连接这里建立长连接（与 RabbitMQ 同向，
+# 不要求目标主机对 backend 网络可达）。后续切到 mTLS 后在连接层做身份校验。
+AGENT_GRPC_LISTEN_HOST = os.getenv('AGENT_GRPC_LISTEN_HOST', '0.0.0.0')
+AGENT_GRPC_LISTEN_PORT = int(os.getenv('AGENT_GRPC_LISTEN_PORT', '9001'))
+AGENT_GRPC_REQUEST_TIMEOUT_SECONDS = int(os.getenv('AGENT_GRPC_REQUEST_TIMEOUT_SECONDS', '20'))
+AGENT_GRPC_MAX_WORKERS = int(os.getenv('AGENT_GRPC_MAX_WORKERS', '64'))
 CELERY_BEAT_SCHEDULE = {
     'dispatch-due-scheduled-tasks': {
         'task': 'scheduler.dispatch_due_tasks',
@@ -243,10 +255,6 @@ CELERY_BEAT_SCHEDULE = {
     'check-and-fail-stale-jobs': {
         'task': 'automation.check_and_fail_stale_jobs',
         'schedule': 60.0,  # 每分钟运行一次，检查超时的pending和running任务
-    },
-    'sync-monitor-target-status-from-automation-jobs': {
-        'task': 'assets.sync_monitor_target_status_from_automation_jobs',
-        'schedule': 60.0,  # 每分钟运行一次，把安装/卸载的 automation job 终态同步回 MonitorTarget
     },
 }
 

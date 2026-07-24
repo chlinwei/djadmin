@@ -1,19 +1,9 @@
-import io
-import importlib
-import logging
-import os
 import posixpath
 import re
-import stat
-import tempfile
-import time
-import warnings
-from hashlib import sha256
 from typing import Any, cast
 from urllib.parse import quote
 
 from asgiref.sync import async_to_sync
-from cryptography.utils import CryptographyDeprecationWarning
 from django.conf import settings
 from django.http import HttpResponse, StreamingHttpResponse
 from rest_framework.decorators import action
@@ -21,209 +11,24 @@ from rest_framework.decorators import action
 from djadmin.utils import Response_200, Response_error_str
 from user.utils import getCurrentUser
 
-from .connection_pool import SSHConnectionPool
-from .credential_crypto import decrypt_secret
+from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from .models import HostCredential, WebSSHSessionLog
 from .serializer import WebSSHSessionLogSerializer
 from .webssh_runtime import WebSSHRuntimeRegistry
 
-warnings.filterwarnings(
-    'ignore',
-    message='.*TripleDES has been moved to cryptography\\.hazmat\\.decrepit\\.ciphers\\.algorithms\\.TripleDES.*',
-    category=CryptographyDeprecationWarning,
-)
-
-try:
-    import paramiko
-except ImportError:  # pragma: no cover
-    paramiko = None
-
-try:
-    asyncssh = importlib.import_module('asyncssh')
-except ImportError:  # pragma: no cover
-    asyncssh = None
-
-
-TRANSFER_STREAM_FIRST_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_FIRST_CHUNK_BYTES', 256 * 1024)), 64 * 1024)
+# dj-agent 是 WebSSH 文件操作（list/download/upload/rename/delete/mkdir/create-file）的
+# 唯一实现路径：不再保留直连 SSH/SFTP 的回退分支。原因：
+#   1. 直连 SSH 分支与 gRPC 分支长期并存导致每个操作都要维护两套几乎重复的逻辑，
+#      显著增加维护成本却没有换来额外能力——两条路径给前端返回的数据结构完全一致。
+#   2. WebSSH 的准入本来就已经要求 host.agent_online（见 consumers.py 的
+#      `_get_host_and_agent`），没有 agent 在线本来就打不开 WebSSH，SSH 直连分支
+#      实际上从未在生产场景下被真正触发过。
+# 因此这里彻底移除 paramiko/SSHConnectionPool 相关代码；文件操作强制要求 agent 已建立
+# gRPC 会话，否则直接返回明确的错误信息（而不是静默退化到另一套实现）。
 TRANSFER_STREAM_CHUNK_BYTES = max(int(getattr(settings, 'TRANSFER_STREAM_CHUNK_BYTES', 8 * 1024 * 1024)), 512 * 1024)
-TRANSFER_SFTP_WINDOW_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_WINDOW_SIZE', 8 * 1024 * 1024)), 1024 * 1024)
-TRANSFER_SFTP_MAX_PACKET_SIZE = max(int(getattr(settings, 'TRANSFER_SFTP_MAX_PACKET_SIZE', 256 * 1024)), 32 * 1024)
-
-ASSETS_SSH_POOL = SSHConnectionPool(
-    max_per_key=int(getattr(settings, 'TRANSFER_SSH_POOL_MAX_PER_KEY', 2)),
-    idle_seconds=int(getattr(settings, 'TRANSFER_SSH_POOL_IDLE_SECONDS', 120)),
-)
-logger = logging.getLogger(__name__)
 
 
 class WebSSHHostMixin:
-    @staticmethod
-    def _get_host_connection_port(host, credential):
-        if host.port:
-            return host.port
-        if credential and credential.port:
-            return credential.port
-        return 22
-
-    def _get_default_credential(self, host):
-        relation = HostCredential.objects.filter(host=host, is_default=True).select_related('credential').first()
-        if not relation or not relation.credential:
-            raise ValueError('主机未配置默认 SSH 凭证')
-
-        credential = relation.credential
-        if not credential.username:
-            raise ValueError('SSH 凭证缺少用户名')
-        if credential.auth_type == credential.AuthType.PASSWORD:
-            credential.password = decrypt_secret(credential.password)
-        if credential.auth_type == credential.AuthType.PASSWORD and not credential.password:
-            raise ValueError('SSH 凭证缺少密码')
-        if credential.auth_type == credential.AuthType.SSH_KEY and not credential.private_key:
-            raise ValueError('SSH 凭证缺少私钥')
-        return credential
-
-    def _build_ssh_connect_kwargs(self, host, credential, paramiko_module):
-        port = self._get_host_connection_port(host, credential)
-        auth_type = credential.auth_type
-        auth_secret = credential.private_key or '' if auth_type == credential.AuthType.SSH_KEY else credential.password or ''
-        connect_kwargs = {
-            'hostname': host.ip,
-            'port': port,
-            'username': credential.username,
-            'timeout': 15,
-            'banner_timeout': 15,
-            'allow_agent': False,
-            'look_for_keys': False,
-        }
-        if auth_type == credential.AuthType.SSH_KEY:
-            connect_kwargs['pkey'] = paramiko_module.RSAKey.from_private_key(io.StringIO(credential.private_key or ''))
-        elif auth_type == credential.AuthType.PASSWORD:
-            connect_kwargs['password'] = credential.password
-        else:
-            raise ValueError('不支持的凭证类型')
-        return port, auth_type, auth_secret, connect_kwargs
-
-    def _connect_sftp_for_stream_download(self, host):
-        if paramiko is None:
-            raise RuntimeError('paramiko 未安装，无法执行文件管理操作')
-        paramiko_module = paramiko
-
-        credential = self._get_default_credential(host)
-        port, auth_type, auth_secret, connect_kwargs = self._build_ssh_connect_kwargs(host, credential, paramiko_module)
-        auth_fingerprint = sha256(str(auth_secret).encode('utf-8')).hexdigest()
-        pool_key = f'{host.id}:{host.ip}:{port}:{credential.username}:{auth_type}:{auth_fingerprint}'
-
-        def _factory():
-            ssh_client = paramiko_module.SSHClient()
-            ssh_client.set_missing_host_key_policy(paramiko_module.AutoAddPolicy())
-            ssh_client.connect(**connect_kwargs)
-            return ssh_client
-
-        acquire_started = time.perf_counter()
-        ssh_client = ASSETS_SSH_POOL.acquire(pool_key, _factory)
-        acquire_ms = int((time.perf_counter() - acquire_started) * 1000)
-        transport = ssh_client.get_transport()
-        if transport is None:
-            ASSETS_SSH_POOL.discard(ssh_client)
-            raise RuntimeError('SSH transport 不可用')
-        try:
-            sftp_client = paramiko_module.SFTPClient.from_transport(
-                transport,
-                window_size=TRANSFER_SFTP_WINDOW_SIZE,
-                max_packet_size=TRANSFER_SFTP_MAX_PACKET_SIZE,
-            )
-            logger.warning(
-                '[assets-direct-download] sftp_acquire host=%s port=%s user=%s elapsed=%sms',
-                host.id,
-                port,
-                credential.username,
-                acquire_ms,
-            )
-            return ssh_client, sftp_client, pool_key
-        except Exception:
-            ASSETS_SSH_POOL.discard(ssh_client)
-            raise
-
-    def _build_asyncssh_connect_kwargs(self, host, credential):
-        port = self._get_host_connection_port(host, credential)
-        connect_kwargs = {
-            'host': host.ip,
-            'port': port,
-            'username': credential.username,
-            # Keep parity with previous behavior which didn't enforce host key pinning.
-            'known_hosts': None,
-        }
-        if credential.auth_type == credential.AuthType.SSH_KEY:
-            connect_kwargs['client_keys'] = [str(credential.private_key or '').encode('utf-8')]
-        elif credential.auth_type == credential.AuthType.PASSWORD:
-            connect_kwargs['password'] = credential.password
-        else:
-            raise ValueError('不支持的凭证类型')
-        return connect_kwargs
-
-    async def _download_remote_file_via_asyncssh(self, connect_kwargs, remote_path, local_path):
-        if asyncssh is None:
-            raise RuntimeError('asyncssh 未安装，无法执行下载操作')
-
-        async with asyncssh.connect(**connect_kwargs) as conn:
-            async with conn.start_sftp_client() as sftp_client:
-                target_path = str(await sftp_client.realpath(remote_path))
-                target_stat = await sftp_client.stat(target_path)
-                permissions = int(getattr(target_stat, 'permissions', 0) or 0)
-                if stat.S_ISDIR(permissions):
-                    raise ValueError('目录下载功能已关闭，请改为逐个下载文件')
-
-                await sftp_client.get(target_path, local_path)
-                file_size = int(getattr(target_stat, 'size', 0) or 0)
-                return target_path, file_size
-
-    async def _upload_local_file_via_asyncssh(self, connect_kwargs, target_path, file_name, local_path):
-        if asyncssh is None:
-            raise RuntimeError('asyncssh 未安装，无法执行上传操作')
-
-        async with asyncssh.connect(**connect_kwargs) as conn:
-            async with conn.start_sftp_client() as sftp_client:
-                normalized_dir = str(await sftp_client.realpath(target_path))
-                remote_target_path = posixpath.join(normalized_dir.rstrip('/'), file_name) if normalized_dir != '/' else f'/{file_name}'
-                temp_name = f'.{file_name}.uploading.part'
-                remote_temp_path = posixpath.join(normalized_dir.rstrip('/'), temp_name) if normalized_dir != '/' else f'/{temp_name}'
-
-                # Use AsyncSSH native transfer path to reduce Python-level per-chunk write overhead.
-                await sftp_client.put(local_path, remote_temp_path)
-
-                try:
-                    existing_stat = await sftp_client.stat(remote_target_path)
-                    permissions = int(getattr(existing_stat, 'permissions', 0) or 0)
-                    if not stat.S_ISDIR(permissions):
-                        await sftp_client.remove(remote_target_path)
-                except Exception:
-                    pass
-
-                await sftp_client.rename(remote_temp_path, remote_target_path)
-                return remote_target_path
-
-    @staticmethod
-    def _remove_local_temp_file(path):
-        if not path:
-            return
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-        except Exception:
-            pass
-
-    @staticmethod
-    def _release_stream_sftp(ssh_client, sftp_client, pool_key=None, broken=False):
-        if sftp_client is not None:
-            try:
-                sftp_client.close()
-            except Exception:
-                pass
-        if ssh_client is not None:
-            if broken or not pool_key:
-                ASSETS_SSH_POOL.discard(ssh_client)
-            else:
-                ASSETS_SSH_POOL.release(pool_key, ssh_client)
 
     @staticmethod
     def _range_not_satisfiable_response(file_size):
@@ -265,16 +70,6 @@ class WebSSHHostMixin:
         end = min(end, file_size - 1)
         return start, end, 206
 
-    def _remove_remote_path(self, sftp_client, remote_path):
-        entry = sftp_client.lstat(remote_path)
-        if stat.S_ISDIR(entry.st_mode):
-            for child in sftp_client.listdir_attr(remote_path):
-                child_path = posixpath.join(remote_path.rstrip('/'), child.filename) if remote_path != '/' else f'/{child.filename}'
-                self._remove_remote_path(sftp_client, child_path)
-            sftp_client.rmdir(remote_path)
-            return
-        sftp_client.remove(remote_path)
-
     def _force_close_webssh_sessions_for_hosts(self, host_ids):
         normalized_host_ids = []
         for host_id in host_ids or []:
@@ -300,6 +95,20 @@ class WebSSHHostMixin:
         if not relation:
             return None
         return relation.get('credential_id')
+
+    @staticmethod
+    def _get_agent_grpc_client(host):
+        # dj-agent 必须存在且已通过 gRPC 建立通道长连接，否则直接抛错——不再有
+        # 任何“退回直连 SSH”的兜底路径。三层校验依次是：心跳在线 -> 绑定了 agent_id ->
+        # 该 agent_id 确实已经在 REGISTRY 里建立了 gRPC Session（AgentChannelClient
+        # 构造函数内部会在查不到 session 时抛 AgentGrpcTransferError）。
+        if not getattr(host, 'agent_online', False):
+            raise AgentGrpcTransferError('主机 Agent 离线，无法执行文件操作，请确认 dj-agent 已安装并在线')
+        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        if not agent_id:
+            raise AgentGrpcTransferError('主机未绑定 Agent 实例，无法执行文件操作')
+        return AgentChannelClient(agent_id)
+
 
     def _guard_webssh_file_access(self, request, host):
         active_session_ids = WebSSHRuntimeRegistry.get_active_session_ids_for_host(host.id)
@@ -394,42 +203,71 @@ class WebSSHHostMixin:
         if guard_response is not None:
             return guard_response
         requested_path = (request.query_params.get('path') or '.').strip()
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            current_path = sftp_client.normalize(requested_path)
-            attrs = sftp_client.listdir_attr(current_path)
-            entries = []
-            for item in attrs:
-                entry_path = (
-                    posixpath.join(current_path.rstrip('/'), item.filename)
-                    if current_path != '/' else f'/{item.filename}'
-                )
-                is_dir = stat.S_ISDIR(int(item.st_mode or 0))
-                entries.append({
-                    'name': item.filename,
-                    'path': entry_path,
-                    'is_dir': is_dir,
-                    'size': None if is_dir else item.st_size,
-                    'mtime': item.st_mtime,
-                })
-            entries.sort(key=lambda item: (not item['is_dir'], item['name'].lower()))
-            normalized = current_path.rstrip('/') or '/'
-            parent_path = None if normalized == '/' else (posixpath.dirname(normalized) or '/')
-            return Response_200(data={
-                'current_path': current_path,
-                'parent_path': parent_path,
-                'entries': entries,
-            })
+            grpc_client = self._get_agent_grpc_client(host)
+            resp = grpc_client.list_dir(requested_path)
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+
+        current_path = resp.current_path
+        entries = []
+        for item in resp.entries:
+            entry_path = (
+                posixpath.join(current_path.rstrip('/'), item.name)
+                if current_path != '/' else f'/{item.name}'
+            )
+            entries.append({
+                'name': item.name,
+                'path': entry_path,
+                'is_dir': item.is_dir,
+                'size': None if item.is_dir else item.size,
+                'mtime': item.mtime,
+            })
+        entries.sort(key=lambda item: (not item['is_dir'], item['name'].lower()))
+        normalized = current_path.rstrip('/') or '/'
+        parent_path = None if normalized == '/' else (posixpath.dirname(normalized) or '/')
+        return Response_200(data={
+            'current_path': current_path,
+            'parent_path': parent_path,
+            'entries': entries,
+        })
+
+    def _webssh_file_download_via_agent(self, grpc_client, remote_path, request):
+        try:
+            stat_resp = grpc_client.stat(remote_path)
+        except Exception as exc:
+            return Response_error_str(str(exc), code=400)
+        if stat_resp.is_dir:
+            return Response_error_str('目录下载功能已关闭，请改为逐个下载文件', code=400)
+
+        normalized_path = stat_resp.normalized_path
+        file_size = int(stat_resp.size or 0)
+        file_name = posixpath.basename(normalized_path.rstrip('/')) or 'download'
+
+        range_header = request.headers.get('Range') or request.META.get('HTTP_RANGE')
+        try:
+            start, end, status_code = self._parse_download_range(range_header, file_size)
+        except ValueError:
+            return self._range_not_satisfiable_response(file_size)
+
+        length = (end - start + 1) if file_size > 0 else 0
+
+        def stream_file():
+            for chunk in grpc_client.read_stream(normalized_path, offset=start, length=length):
+                if chunk.data:
+                    yield chunk.data
+
+        content_length = max(end - start + 1, 0)
+        response = StreamingHttpResponse(stream_file(), status=status_code, content_type='application/octet-stream')
+        response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(file_name)}"
+        response['Accept-Ranges'] = 'bytes'
+        response['Content-Length'] = str(content_length)
+        if status_code == 206:
+            response['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
 
     @action(detail=True, methods=['get'], url_path='files/download')
     def webssh_file_download(self, request, id=None):
@@ -441,60 +279,11 @@ class WebSSHHostMixin:
         if not remote_path:
             return Response_error_str('path 不能为空', code=400)
 
-        target_path = remote_path
-        local_temp_file = None
         try:
-            fd, local_temp_file = tempfile.mkstemp(prefix='webssh-download-', suffix='.tmp')
-            os.close(fd)
-
-            # ORM query must stay in sync context; async function only handles network I/O.
-            credential = self._get_default_credential(host)
-            connect_kwargs = self._build_asyncssh_connect_kwargs(host, credential)
-
-            target_path, file_size = async_to_sync(self._download_remote_file_via_asyncssh)(
-                connect_kwargs,
-                remote_path,
-                local_temp_file,
-            )
-            range_header = request.headers.get('Range') or request.META.get('HTTP_RANGE')
-            try:
-                start, end, status_code = self._parse_download_range(range_header, file_size)
-            except ValueError:
-                self._remove_local_temp_file(local_temp_file)
-                return self._range_not_satisfiable_response(file_size)
-
-            def stream_file():
-                remaining = (end - start + 1) if file_size > 0 else 0
-                first_chunk = True
-                try:
-                    with open(local_temp_file, 'rb', buffering=TRANSFER_STREAM_CHUNK_BYTES) as local_file:
-                        if start > 0:
-                            local_file.seek(start)
-                        while remaining > 0:
-                            chunk_limit = TRANSFER_STREAM_FIRST_CHUNK_BYTES if first_chunk else TRANSFER_STREAM_CHUNK_BYTES
-                            chunk = local_file.read(min(chunk_limit, remaining))
-                            if not chunk:
-                                break
-                            remaining -= len(chunk)
-                            first_chunk = False
-                            yield chunk
-                finally:
-                    self._remove_local_temp_file(local_temp_file)
-
-            file_name = target_path.split('/')[-1] or 'download.bin'
-            content_length = max(end - start + 1, 0)
-            response = StreamingHttpResponse(stream_file(), status=status_code, content_type='application/octet-stream')
-            response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(file_name)}"
-            response['Accept-Ranges'] = 'bytes'
-            response['Content-Length'] = str(content_length)
-            if status_code == 206:
-                response['Content-Range'] = f'bytes {start}-{end}/{file_size}'
-            response['X-Accel-Buffering'] = 'no'
-            response['Cache-Control'] = 'no-cache'
-            return response
-        except Exception as exc:
-            self._remove_local_temp_file(local_temp_file)
+            grpc_client = self._get_agent_grpc_client(host)
+        except AgentGrpcTransferError as exc:
             return Response_error_str(str(exc), code=400)
+        return self._webssh_file_download_via_agent(grpc_client, remote_path, request)
 
     @action(detail=True, methods=['post'], url_path='files/upload/chunk')
     def webssh_file_upload_chunk(self, request, id=None):
@@ -513,34 +302,32 @@ class WebSSHHostMixin:
         if '/' in file_name:
             return Response_error_str('filename 不能包含路径分隔符', code=400)
 
-        local_temp_file = None
         try:
-            # Keep Django upload handling in sync context, then hand over to AsyncSSH for remote transfer.
-            fd, local_temp_file = tempfile.mkstemp(prefix='webssh-upload-', suffix='.part')
-            with os.fdopen(fd, 'wb') as local_file:
-                for chunk in upload_file.chunks(chunk_size=TRANSFER_STREAM_CHUNK_BYTES):
-                    if not chunk:
-                        continue
-                    local_file.write(chunk)
+            grpc_client = self._get_agent_grpc_client(host)
+        except AgentGrpcTransferError as exc:
+            return Response_error_str(str(exc), code=400)
 
-            credential = self._get_default_credential(host)
-            connect_kwargs = self._build_asyncssh_connect_kwargs(host, credential)
-            remote_target_path = async_to_sync(self._upload_local_file_via_asyncssh)(
-                connect_kwargs,
-                target_path,
-                file_name,
-                local_temp_file,
-            )
+        write_session = None
+        try:
+            write_session = grpc_client.open_write(target_path, file_name)
+            for chunk in upload_file.chunks(chunk_size=TRANSFER_STREAM_CHUNK_BYTES):
+                if chunk:
+                    write_session.write_chunk(chunk)
+            close_resp = write_session.close(abort=False)
+            assert close_resp is not None
             return Response_200(data={
                 'done': True,
-                'path': remote_target_path,
+                'path': close_resp.path,
                 'name': file_name,
                 'size': int(upload_file.size or 0),
             })
         except Exception as exc:
+            if write_session is not None:
+                try:
+                    write_session.close(abort=True)
+                except Exception:
+                    pass
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._remove_local_temp_file(local_temp_file)
 
     @action(detail=True, methods=['post'], url_path='files/rename')
     def webssh_file_rename(self, request, id=None):
@@ -556,22 +343,13 @@ class WebSSHHostMixin:
             return Response_error_str('new_name 不能为空', code=400)
         if '/' in new_name:
             return Response_error_str('new_name 不能包含路径分隔符', code=400)
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            normalized_old_path = sftp_client.normalize(remote_path)
-            new_path = posixpath.join(posixpath.dirname(normalized_old_path), new_name)
-            sftp_client.rename(normalized_old_path, new_path)
-            return Response_200(data={'path': new_path, 'name': new_name})
+            grpc_client = self._get_agent_grpc_client(host)
+            resp = grpc_client.rename(remote_path, new_name)
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+        return Response_200(data={'path': resp.path, 'name': resp.name})
 
     @action(detail=True, methods=['delete'], url_path='files/delete')
     def webssh_file_delete(self, request, id=None):
@@ -583,27 +361,13 @@ class WebSSHHostMixin:
         recursive = bool(request.data.get('recursive'))
         if not remote_path:
             return Response_error_str('path 不能为空', code=400)
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            normalized_path = sftp_client.normalize(remote_path)
-            target_stat = sftp_client.lstat(normalized_path)
-            if stat.S_ISDIR(int(target_stat.st_mode or 0)):
-                if not recursive:
-                    return Response_error_str('目录删除需要 recursive=true', code=400)
-                self._remove_remote_path(sftp_client, normalized_path)
-            else:
-                sftp_client.remove(normalized_path)
-            return Response_200(data={'path': normalized_path})
+            grpc_client = self._get_agent_grpc_client(host)
+            resp = grpc_client.delete(remote_path, recursive=recursive)
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+        return Response_200(data={'path': resp.path})
 
     @action(detail=True, methods=['post'], url_path='files/create-dir')
     def webssh_file_create_dir(self, request, id=None):
@@ -617,22 +381,13 @@ class WebSSHHostMixin:
             return Response_error_str('name 不能为空', code=400)
         if '/' in name:
             return Response_error_str('name 不能包含路径分隔符', code=400)
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            normalized_dir = sftp_client.normalize(target_path)
-            new_dir_path = posixpath.join(normalized_dir.rstrip('/'), name) if normalized_dir != '/' else f'/{name}'
-            sftp_client.mkdir(new_dir_path)
-            return Response_200(data={'path': new_dir_path, 'name': name})
+            grpc_client = self._get_agent_grpc_client(host)
+            resp = grpc_client.mkdir(target_path, name)
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+        return Response_200(data={'path': resp.path, 'name': resp.name})
 
     @action(detail=True, methods=['post'], url_path='files/create-file')
     def webssh_file_create_file(self, request, id=None):
@@ -646,20 +401,10 @@ class WebSSHHostMixin:
             return Response_error_str('name 不能为空', code=400)
         if '/' in name:
             return Response_error_str('name 不能包含路径分隔符', code=400)
-        ssh_client = None
-        sftp_client = None
-        pool_key = None
-        broken = False
+
         try:
-            ssh_client, sftp_client, pool_key = self._connect_sftp_for_stream_download(host)
-            assert sftp_client is not None
-            normalized_dir = sftp_client.normalize(target_path)
-            new_file_path = posixpath.join(normalized_dir.rstrip('/'), name) if normalized_dir != '/' else f'/{name}'
-            with sftp_client.file(new_file_path, 'xb') as remote_file:
-                remote_file.write(b'')
-            return Response_200(data={'path': new_file_path, 'name': name})
+            grpc_client = self._get_agent_grpc_client(host)
+            resp = grpc_client.create_file(target_path, name)
         except Exception as exc:
-            broken = True
             return Response_error_str(str(exc), code=400)
-        finally:
-            self._release_stream_sftp(ssh_client, sftp_client, pool_key=pool_key, broken=broken)
+        return Response_200(data={'path': resp.path, 'name': resp.name})

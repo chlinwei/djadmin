@@ -15,6 +15,7 @@ export function createWebsshSessionController(options) {
         fileCurrentPath,
         filePathInput,
         fileEntries,
+        getRequestedTargetUser,
         downloadRunning,
         uploadRunning,
         buildWebSocketUrl,
@@ -260,6 +261,32 @@ export function createWebsshSessionController(options) {
                     if (msg.type === 'output') {
                         state.term?.write(msg.data)
                     } else if (msg.type === 'connected') {
+                        const expectedUser = String(getRequestedTargetUser?.() || '').trim()
+                        const requestedUser = String(msg.requested_user || '').trim()
+                        const effectiveUser = String(msg.effective_user || '').trim()
+                        const switchStatus = String(msg.switch_user_status || '').trim().toLowerCase()
+
+                        if (expectedUser) {
+                            const userSwitchFailed = (
+                                switchStatus !== 'success'
+                                || !effectiveUser
+                                || effectiveUser !== expectedUser
+                            )
+                            if (userSwitchFailed) {
+                                const detail = effectiveUser
+                                    ? `请求用户 ${expectedUser}，实际生效用户 ${effectiveUser}`
+                                    : `请求用户 ${expectedUser}，但服务端未返回生效用户`
+                                statusText.value = '连接失败'
+                                messageText.value = `用户切换校验失败：${detail}`
+                                messageType.value = 'error'
+                                writeSystemLine(`[ERROR] 用户切换校验失败：${detail}`)
+                                if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+                                    state.socket.close()
+                                }
+                                return
+                            }
+                        }
+
                         statusText.value = '已连接'
                         messageText.value = ''
                         currentLogId.value = msg.log_id || null
@@ -273,7 +300,12 @@ export function createWebsshSessionController(options) {
                         if (supportsFileOps.value && !fileEntries.value.length) {
                             loadFiles(fileCurrentPath.value)
                         }
-                        writeSystemLine(`Connected to ${instanceName} (${msg.ip})`)
+                        const displayUser = String(msg.effective_user || expectedUser || requestedUser || '').trim()
+                        if (displayUser) {
+                            writeSystemLine(`Connected to ${instanceName} (${msg.ip}) as ${displayUser}`)
+                        } else {
+                            writeSystemLine(`Connected to ${instanceName} (${msg.ip})`)
+                        }
                     } else if (msg.type === 'error') {
                         statusText.value = '连接失败'
                         messageText.value = msg.message || '连接失败'

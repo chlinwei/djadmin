@@ -40,8 +40,8 @@
                     <a-descriptions-item label="Agent 版本">{{ runtimeData.version || '-' }}</a-descriptions-item>
                     <a-descriptions-item label="进程状态">{{ runtimeData.process?.running ? '运行中' : '已停止' }}</a-descriptions-item>
                     <a-descriptions-item label="运行时长">{{ formatUptimeDuration(runtimeData.process?.uptime_seconds) }}</a-descriptions-item>
-                    <a-descriptions-item label="HTTP 监听">{{ runtimeData.http?.listen_addr || '-' }}</a-descriptions-item>
-                    <a-descriptions-item label="HTTP 鉴权">{{ runtimeData.http?.auth_enabled ? '开启' : '关闭' }}</a-descriptions-item>
+                    <a-descriptions-item label="gRPC 通道">{{ runtimeData.grpc?.server_addr || '-' }}</a-descriptions-item>
+                    <a-descriptions-item label="MQ 连接">{{ runtimeData.runtime?.mq_connected ? '已连接' : '未连接' }}</a-descriptions-item>
                     <a-descriptions-item label="主机上报间隔(当前)">{{ runtimeData.config?.host_report_interval_current_seconds ?? '-' }} 秒</a-descriptions-item>
                     <a-descriptions-item label="主机上报间隔(回退)">{{ runtimeData.config?.host_report_interval_fallback_seconds ?? '-' }} 秒</a-descriptions-item>
                     <a-descriptions-item label="心跳下次运行">{{ formatDateTime(runtimeData.schedulers?.heartbeat?.next_run_at) }}</a-descriptions-item>

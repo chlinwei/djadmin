@@ -7,7 +7,7 @@ from assets.models import Host, HostGroup
 
 from .models import AutomationExecutionJob
 from .executor_shell_script import execute_shell_script_job
-from .agent_http_runner import execute_job_via_agent_http
+from .agent_grpc_runner import execute_job_via_agent_grpc
 
 
 def _build_group_descendants(group_ids: list[int]) -> set[int]:
@@ -180,7 +180,7 @@ def execute_automation_job(job_id: int) -> None:
                 'total': total_targets,
                 'success': 0,
                 'failed': total_targets,
-                'execution_mode': 'agent_http_sync',
+                'execution_mode': 'agent_grpc_sync',
             }
             job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
             close_old_connections()
@@ -193,7 +193,7 @@ def execute_automation_job(job_id: int) -> None:
             success_count = 0
             failed_count = total_targets
         else:
-            run_success, agent_summary, _ = execute_job_via_agent_http(
+            run_success, agent_summary, _ = execute_job_via_agent_grpc(
                 automation_execution_job_id=int(getattr(job, 'pk', 0) or 0),
                 automation_task_id=int(getattr(getattr(job, 'task', None), 'pk', 0) or 0),
                 template_content=template_content,
@@ -202,9 +202,9 @@ def execute_automation_job(job_id: int) -> None:
                 shell_parameters='',
                 shell_env_vars={},
                 extra_vars=job.extra_vars if isinstance(job.extra_vars, dict) else {},
-                become_enabled=bool(job.become_enabled_snapshot),
-                become_method=str(job.become_method_snapshot or 'sudo'),
-                become_user=str(job.become_user_snapshot or 'root'),
+                run_as_user=str(job.run_as_user_snapshot or ''),
+                run_as_group=str(job.run_as_group_snapshot or ''),
+                work_directory=str(job.work_directory_snapshot or '/tmp'),
                 timeout_seconds=int(getattr(getattr(job, 'task', None), 'execution_timeout_seconds', 600) or 600),
             )
             success_count = int(agent_summary.get('success_count', 0) or 0)
@@ -216,7 +216,7 @@ def execute_automation_job(job_id: int) -> None:
                 'success': success_count,
                 'failed': failed_count,
                 'rc': return_code,
-                'execution_mode': 'agent_http_sync',
+                'execution_mode': 'agent_grpc_sync',
                 'created_count': int(agent_summary.get('created_count', 0) or 0),
                 'failed_rows': agent_summary.get('failed_rows', []),
             }

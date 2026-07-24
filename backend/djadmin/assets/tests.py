@@ -2,29 +2,26 @@ from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
+from typing import Any, cast
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog, AgentJob
+from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
-from .management.commands.runagentconsumer import Command as AgentConsumerCommand
 from monitor.models import MonitorTarget, SoftwarePackage
-from automation.models import AutomationExecutionJob, AutomationTask, PlaybookTemplate
+from automation.models import PlaybookTemplate
+from automation.models import TemplateCategory
 from user.models import SysUser
 
 
-def _make_playbook_task(name, become_enabled=True):
-    """安装/卸载 Playbook 任务的测试夹具：创建一个启用的 AutomationTask + PlaybookTemplate，
-    供 SoftwarePackage.install_task/uninstall_task 绑定使用。"""
-    template = PlaybookTemplate.objects.create(
+def _make_playbook_template(name):
+    """安装/卸载 Playbook 模板测试夹具：直接创建一个“软件包安装/卸载专用”分类的 PlaybookTemplate，
+    供 SoftwarePackage.install_playbook_template/uninstall_playbook_template 绑定使用
+    （安装/卸载不再经由 AutomationTask 中转，见 monitor.models.SoftwarePackage 注释）。"""
+    return PlaybookTemplate.objects.create(
         name=f'{name}-template',
         content='- hosts: all\n  tasks:\n    - debug:\n        msg: noop\n',
-    )
-    return AutomationTask.objects.create(
-        name=name,
-        playbook_template=template,
-        enabled=True,
-        become_enabled=become_enabled,
+        category=TemplateCategory.SOFTWARE_PACKAGE,
     )
 
 
@@ -145,7 +142,7 @@ class CredentialTest(BaseTestCase):
             port=22,
             auth_type=Credential.AuthType.PASSWORD,
         )
-        host = Host.objects.create(instance_name='cred_host', ip='192.168.1.120', port=22)
+        host = Host.objects.create(instance_name='cred_host', ip='192.168.1.120')
         HostCredential.objects.create(host=host, credential=credential, is_default=True)
         session = WebSSHSessionLog.objects.create(
             host=host,
@@ -178,7 +175,7 @@ class CredentialTest(BaseTestCase):
             port=22,
             auth_type=Credential.AuthType.PASSWORD,
         )
-        host = Host.objects.create(instance_name='cred_host_keep', ip='192.168.1.121', port=22)
+        host = Host.objects.create(instance_name='cred_host_keep', ip='192.168.1.121')
         HostCredential.objects.create(host=host, credential=credential, is_default=True)
         session = WebSSHSessionLog.objects.create(
             host=host,
@@ -318,7 +315,7 @@ class HostTest(BaseTestCase):
 
     def test_list_hosts(self):
         """主机列表返回分页格式"""
-        Host.objects.create(instance_name='host1', ip='192.168.1.1', port=22)
+        Host.objects.create(instance_name='host1', ip='192.168.1.1')
         res = self.client.get('/assets/hosts/?page=1&page_size=10')
         body = self.assertResponseOK(res)
         self.assertIn('results', body['data'])
@@ -326,8 +323,8 @@ class HostTest(BaseTestCase):
 
     def test_list_hosts_with_host_id_filter(self):
         """按主机 ID 过滤应精确返回单台主机"""
-        target = Host.objects.create(instance_name='test3', ip='192.168.1.10', port=22)
-        Host.objects.create(instance_name='test3-bak', ip='192.168.1.11', port=22)
+        target = Host.objects.create(instance_name='test3', ip='192.168.1.10')
+        Host.objects.create(instance_name='test3-bak', ip='192.168.1.11')
         res = self.client.get(f'/assets/hosts/?host_id={target.id}')
         body = self.assertResponseOK(res)
         self.assertEqual(body['data']['count'], 1)
@@ -339,7 +336,6 @@ class HostTest(BaseTestCase):
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'new_host',
             'ip': '192.168.1.100',
-            'port': 22,
             'group_id': group.id,  # type: ignore[attr-defined]
         }, format='json')
         self.assertResponseOK(res)
@@ -348,15 +344,14 @@ class HostTest(BaseTestCase):
     @patch('automation.local_runner.run_job_in_background', return_value=None)
     def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, _mock_run_job):
         """新增主机时通过 monitors 数组纳管 node_exporter 并开启，应下发安装用 automation job。"""
-        install_task = _make_playbook_task('node_exporter-install')
+        install_template = _make_playbook_template('node_exporter-install')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
-            install_task=install_task,
+            install_playbook_template=install_template,
         )
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-01',
             'ip': '192.168.1.101',
-            'port': 22,
             'monitors': [{'name': 'node_exporter', 'enabled': True}],
         }, format='json')
         self.assertResponseOK(res)
@@ -366,8 +361,69 @@ class HostTest(BaseTestCase):
         self.assertTrue(target.managed_enabled)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发安装任务' in target.install_message)
-        self.assertIsNotNone(target.last_install_job_id)
-        self.assertTrue(AutomationExecutionJob.objects.filter(id=target.last_install_job_id, task=install_task).exists())  # type: ignore[attr-defined]
+        self.assertIsNone(target.last_install_job_id)
+
+    def test_dispatch_exporter_install_job_service_run_as_user_defaults_to_dj_agent(self):
+        """未显式指定 service_run_as_user/group 时，模型层默认值 dj-agent 会直接落库，
+        extra_vars 应原样透传该默认值（与 dj-agent 自身运行账号保持一致）。"""
+        from assets.views import dispatch_exporter_install_job
+
+        install_template = _make_playbook_template('node_exporter-install-default')
+        SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_playbook_template=install_template,
+        )
+        host = Host.objects.create(instance_name='agent-host-default', ip='192.168.1.198')
+        target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
+
+        with patch('automation.local_runner.run_job_in_background', return_value=None):
+            dispatch_exporter_install_job(host, target)
+
+        target.refresh_from_db()
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
+        self.assertEqual(target.last_install_job_id, None)
+
+    def test_dispatch_exporter_install_job_fallback_for_legacy_blank_value(self):
+        """兼容迁移前遗留的空字符串记录（绕过 ORM default，直接 update 出空值模拟历史脏数据）：
+        dispatch 时应 fallback 到 dj-agent，而不是把空字符串透传给安装 Playbook。"""
+        from assets.views import dispatch_exporter_install_job
+
+        install_template = _make_playbook_template('node_exporter-install-legacy-blank')
+        pkg = SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_playbook_template=install_template,
+        )
+        # 绕开模型默认值，模拟迁移前遗留的空字符串脏数据
+        SoftwarePackage.objects.filter(id=pkg.id).update(service_run_as_user='', service_run_as_group='')
+        host = Host.objects.create(instance_name='agent-host-legacy-blank', ip='192.168.1.196')
+        target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
+
+        with patch('automation.local_runner.run_job_in_background', return_value=None):
+            dispatch_exporter_install_job(host, target)
+
+        target.refresh_from_db()
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
+        self.assertEqual(target.last_install_job_id, None)
+
+    def test_dispatch_exporter_install_job_uses_explicit_service_run_as_user(self):
+        """显式配置了 service_run_as_user/service_run_as_group 时，extra_vars 应原样透传，不触发 fallback。"""
+        from assets.views import dispatch_exporter_install_job
+
+        install_template = _make_playbook_template('node_exporter-install-explicit')
+        SoftwarePackage.objects.create(
+            name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            install_playbook_template=install_template,
+            service_run_as_user='monitor_agent', service_run_as_group='monitor_group',
+        )
+        host = Host.objects.create(instance_name='agent-host-explicit', ip='192.168.1.197')
+        target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
+
+        with patch('automation.local_runner.run_job_in_background', return_value=None):
+            dispatch_exporter_install_job(host, target)
+
+        target.refresh_from_db()
+        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
+        self.assertEqual(target.last_install_job_id, None)
 
     def test_dispatch_exporter_install_job_without_local_package_should_reject(self):
         """dispatch_exporter_install_job 在本地软件仓库没有该 exporter 的启用包时应直接拒绝下发，
@@ -375,7 +431,7 @@ class HostTest(BaseTestCase):
         避开迁移预置的默认 node_exporter 软件包，确保命中“本地无包”这一分支。"""
         from assets.views import dispatch_exporter_install_job
 
-        host = Host.objects.create(instance_name='agent-host-no-pkg', ip='192.168.1.199', port=22)
+        host = Host.objects.create(instance_name='agent-host-no-pkg', ip='192.168.1.199')
         target = MonitorTarget.objects.create(
             host=host,
             exporter_type='custom_exporter_without_pkg',
@@ -393,7 +449,6 @@ class HostTest(BaseTestCase):
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-00',
             'ip': '192.168.1.100',
-            'port': 22,
         }, format='json')
         self.assertResponseOK(res)
 
@@ -403,15 +458,14 @@ class HostTest(BaseTestCase):
     @patch('automation.local_runner.run_job_in_background', return_value=None)
     def test_create_host_monitor_disabled_should_not_enqueue_install(self, _mock_run_job):
         """monitors 数组中 enabled=False 时，不下发安装任务。"""
-        install_task = _make_playbook_task('node_exporter-install-2')
+        install_template = _make_playbook_template('node_exporter-install-2')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
-            install_task=install_task,
+            install_playbook_template=install_template,
         )
         res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-02',
             'ip': '192.168.1.102',
-            'port': 22,
             'monitors': [{'name': 'node_exporter', 'enabled': False}],
         }, format='json')
         self.assertResponseOK(res)
@@ -422,34 +476,31 @@ class HostTest(BaseTestCase):
         self.assertFalse('已下发安装任务' in target.install_message)
 
     @patch('automation.local_runner.run_job_in_background', return_value=None)
-    def test_disable_monitor_with_uninstall_option_should_enqueue_uninstall_job(self, _mock_run_job):
-        """监控从开启切到关闭且勾选 uninstall_on_disable 时，应下发卸载任务。"""
-        install_task = _make_playbook_task('node_exporter-install-3')
-        uninstall_task = _make_playbook_task('node_exporter-uninstall-3')
+    def test_disable_monitor_should_always_enqueue_uninstall_job(self, _mock_run_job):
+        """监控从开启切到关闭时，应始终自动下发卸载任务（不再需要额外勾选一次性指令）。"""
+        install_template = _make_playbook_template('node_exporter-install-3')
+        uninstall_template = _make_playbook_template('node_exporter-uninstall-3')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
-            install_task=install_task, uninstall_task=uninstall_task,
+            install_playbook_template=install_template, uninstall_playbook_template=uninstall_template,
         )
         create_res = self.client.post('/assets/hosts/', {
             'instance_name': 'agent-host-03',
             'ip': '192.168.1.103',
-            'port': 22,
             'monitors': [{'name': 'node_exporter', 'enabled': True}],
         }, format='json')
         self.assertResponseOK(create_res)
         host_id = create_res.json()['data']['id']
 
-        # 模拟安装 automation job 已经真实执行完成（生产环境中后台线程很快会把状态从
-        # pending 推进到 success），否则 dispatch_exporter_uninstall_job 的“上一个任务
-        # 仍在进行中”去重检查会误判为安装还没结束而拒绝下发卸载。
+        # 新链路下安装/卸载都不再创建 AutomationExecutionJob，手动把上一次状态置为 success，
+        # 避免 disable 时被 "卸载任务已存在（pending）" 分支短路。
         host = Host.objects.get(id=host_id)
         pre_target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
-        AutomationExecutionJob.objects.filter(id=pre_target.last_install_job_id).update(  # type: ignore[attr-defined]
-            status=AutomationExecutionJob.Status.SUCCESS,
-        )
+        pre_target.install_status = MonitorTarget.InstallStatus.SUCCESS
+        pre_target.save(update_fields=['install_status', 'update_time'])
 
         patch_res = self.client.patch(f'/assets/hosts/{host_id}/', {
-            'monitors': [{'name': 'node_exporter', 'enabled': False, 'uninstall_on_disable': True}],
+            'monitors': [{'name': 'node_exporter', 'enabled': False}],
         }, format='json')
         self.assertResponseOK(patch_res)
 
@@ -458,48 +509,18 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发卸载任务' in target.install_message)
-        self.assertTrue(AutomationExecutionJob.objects.filter(id=target.last_install_job_id, task=uninstall_task).exists())  # type: ignore[attr-defined]
-
-    def test_agent_consumer_should_sync_monitor_target_status_from_job_result(self):
-        """agent 上报安装结果后，应按 job.params 中的 exporter_name 同步对应 monitor_target 状态。"""
-        host = Host.objects.create(instance_name='agent-host-04', ip='192.168.1.104', port=22)
-        target = MonitorTarget.objects.create(
-            host=host,
-            exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER,
-            managed_enabled=True,
-            install_status=MonitorTarget.InstallStatus.PENDING,
-            install_message='已下发安装任务',
-        )
-        job = AgentJob.objects.create(
-            job_id='job-install-exporter-1',
-            agent_id='agent-host-04',
-            host=host,
-            job_type='custom',
-            action='install_exporter',
-            params={'exporter_name': 'node_exporter'},
-            status=AgentJob.JobStatus.RUNNING,
-            stdout='node_exporter installed',
-            stderr='',
-            error_message='',
-            exit_code=0,
-        )
-
-        AgentConsumerCommand()._sync_monitor_target_install_status(job, 'success')
-        target.refresh_from_db()
-        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.SUCCESS)
-        self.assertTrue(target.managed_enabled)
-        self.assertTrue('installed' in target.install_message)
+        self.assertEqual(target.last_install_job_id, None)
 
     def test_get_host_detail(self):
         """获取主机详情"""
-        host = Host.objects.create(instance_name='detail_host', ip='192.168.1.1', port=22)
+        host = Host.objects.create(instance_name='detail_host', ip='192.168.1.1')
         res = self.client.get(f'/assets/hosts/{host.id}/')  # type: ignore[attr-defined]
         body = self.assertResponseOK(res)
         self.assertEqual(body['data']['instance_name'], 'detail_host')
 
     def test_get_host_detail_ignores_sr0_in_disks(self):
-        """主机详情应隐藏 /dev/sr0 磁盘，且使用率仅按有效磁盘计算。"""
-        host = Host.objects.create(instance_name='detail_disk_host', ip='192.168.1.20', port=22)
+        """主机详情应隐藏 /dev/sr0 与 squashfs 磁盘，且使用率仅按有效磁盘计算。"""
+        host = Host.objects.create(instance_name='detail_disk_host', ip='192.168.1.20')
         HostHardware.objects.create(
             host=host,
             cpu_cores=4,
@@ -510,6 +531,7 @@ class HostTest(BaseTestCase):
         )
         HostDisk.objects.create(host=host, device='/dev/sda1', mount_point='/', size_gb=100, used_gb=40, filesystem='ext4')
         HostDisk.objects.create(host=host, device='/dev/sr0', mount_point='/media/cdrom', size_gb=1, used_gb=1, filesystem='iso9660')
+        HostDisk.objects.create(host=host, device='/dev/loop0', mount_point='/snap/core20', size_gb=2, used_gb=2, filesystem='squashfs')
 
         res = self.client.get(f'/assets/hosts/{host.id}/')  # type: ignore[attr-defined]
         body = self.assertResponseOK(res)
@@ -519,7 +541,7 @@ class HostTest(BaseTestCase):
 
     def test_update_host(self):
         """编辑主机后返回完整主机信息"""
-        host = Host.objects.create(instance_name='old_host', ip='192.168.1.1', port=22)
+        host = Host.objects.create(instance_name='old_host', ip='192.168.1.1')
         res = self.client.patch(f'/assets/hosts/{host.id}/', {  # type: ignore[attr-defined]
             'instance_name': 'renamed_host'
         }, format='json')
@@ -531,7 +553,7 @@ class HostTest(BaseTestCase):
 
     def test_delete_host_should_force_close_active_webssh_sessions(self):
         """删除主机时应主动关闭该主机在线 WebSSH 会话。"""
-        host = Host.objects.create(instance_name='ws_host_del', ip='192.168.1.200', port=22)
+        host = Host.objects.create(instance_name='ws_host_del', ip='192.168.1.200')
         session = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -555,9 +577,9 @@ class HostTest(BaseTestCase):
 
     def test_batch_delete_hosts_with_mixed_ids_should_close_only_target_active_sessions(self):
         """批量删除混合合法/非法 id 时，只关闭合法且在线目标主机会话。"""
-        host_a = Host.objects.create(instance_name='ws_batch_a', ip='192.168.2.10', port=22)
-        host_b = Host.objects.create(instance_name='ws_batch_b', ip='192.168.2.11', port=22)
-        host_c = Host.objects.create(instance_name='ws_batch_c', ip='192.168.2.12', port=22)
+        host_a = Host.objects.create(instance_name='ws_batch_a', ip='192.168.2.10')
+        host_b = Host.objects.create(instance_name='ws_batch_b', ip='192.168.2.11')
+        host_c = Host.objects.create(instance_name='ws_batch_c', ip='192.168.2.12')
 
         session_a = WebSSHSessionLog.objects.create(
             host=host_a,
@@ -627,7 +649,7 @@ class HostTest(BaseTestCase):
 
     def test_update_host_ip_should_force_close_active_webssh_sessions(self):
         """修改主机 IP 后，应主动断开该主机在线 WebSSH 会话。"""
-        host = Host.objects.create(instance_name='ws_host_ip', ip='192.168.1.210', port=22)
+        host = Host.objects.create(instance_name='ws_host_ip', ip='192.168.1.210')
         session = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -650,74 +672,9 @@ class HostTest(BaseTestCase):
         finally:
             WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
 
-    def test_update_host_port_should_force_close_active_webssh_sessions(self):
-        """修改主机 SSH 端口后，应主动断开该主机在线 WebSSH 会话。"""
-        host = Host.objects.create(instance_name='ws_host_port', ip='192.168.1.220', port=22)
-        session = WebSSHSessionLog.objects.create(
-            host=host,
-            user_id=self.user.id,
-            username=self.user.username,
-            status=WebSSHSessionLog.Status.CONNECTED,
-        )
-        fake_consumer = MagicMock()
-        fake_consumer._send_event = AsyncMock(return_value=None)
-        fake_consumer.close = AsyncMock(return_value=None)
-        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
-        try:
-            res = self.client.patch(
-                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
-                {'port': 2222},
-                format='json',
-            )
-            self.assertResponseOK(res)
-            fake_consumer.close.assert_awaited_once()
-            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
-        finally:
-            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
-
-    def test_update_host_default_credential_should_force_close_active_webssh_sessions(self):
-        """切换主机默认凭证后，应主动断开该主机在线 WebSSH 会话。"""
-        credential_a = Credential.objects.create(
-            name='cred-a',
-            username='root',
-            password='secret-a',
-            port=22,
-            auth_type=Credential.AuthType.PASSWORD,
-        )
-        credential_b = Credential.objects.create(
-            name='cred-b',
-            username='root',
-            password='secret-b',
-            port=22,
-            auth_type=Credential.AuthType.PASSWORD,
-        )
-        host = Host.objects.create(instance_name='ws_host_cred', ip='192.168.1.230', port=22)
-        HostCredential.objects.create(host=host, credential=credential_a, is_default=True)
-        session = WebSSHSessionLog.objects.create(
-            host=host,
-            user_id=self.user.id,
-            username=self.user.username,
-            status=WebSSHSessionLog.Status.CONNECTED,
-        )
-        fake_consumer = MagicMock()
-        fake_consumer._send_event = AsyncMock(return_value=None)
-        fake_consumer.close = AsyncMock(return_value=None)
-        WebSSHRuntimeRegistry.mark_active(session.id, consumer=fake_consumer, host_id=host.id)  # type: ignore[arg-type]
-        try:
-            res = self.client.patch(
-                f'/assets/hosts/{host.id}/',  # type: ignore[attr-defined]
-                {'credential_id': credential_b.id},  # type: ignore[attr-defined]
-                format='json',
-            )
-            self.assertResponseOK(res)
-            fake_consumer.close.assert_awaited_once()
-            self.assertEqual(WebSSHRuntimeRegistry.get_active_count_for_host(host.id), 0)
-        finally:
-            WebSSHRuntimeRegistry.mark_inactive(session.id)  # type: ignore[arg-type]
-
     def test_update_host_non_connection_fields_should_not_force_close_active_webssh_sessions(self):
         """仅修改主机展示字段（如名称）时，不应误断开在线 WebSSH 会话。"""
-        host = Host.objects.create(instance_name='ws_host_no_close', ip='192.168.1.240', port=22)
+        host = Host.objects.create(instance_name='ws_host_no_close', ip='192.168.1.240')
         session = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -742,7 +699,7 @@ class HostTest(BaseTestCase):
 
     def test_list_webssh_sessions(self):
         """可按主机查询 Web SSH 会话审计记录"""
-        host = Host.objects.create(instance_name='ws_host', ip='192.168.1.2', port=22)
+        host = Host.objects.create(instance_name='ws_host', ip='192.168.1.2')
         WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -759,8 +716,8 @@ class HostTest(BaseTestCase):
 
     def test_get_webssh_active_count(self):
         """可查看某台主机当前在线 WebSSH 连接数"""
-        host_a = Host.objects.create(instance_name='ws_host_a', ip='192.168.1.21', port=22)
-        host_b = Host.objects.create(instance_name='ws_host_b', ip='192.168.1.22', port=22)
+        host_a = Host.objects.create(instance_name='ws_host_a', ip='192.168.1.21')
+        host_b = Host.objects.create(instance_name='ws_host_b', ip='192.168.1.22')
         session_a_1 = WebSSHSessionLog.objects.create(host=host_a, user_id=self.user.id, username=self.user.username)
         session_a_2 = WebSSHSessionLog.objects.create(host=host_a, user_id=self.user.id, username=self.user.username)
         session_b = WebSSHSessionLog.objects.create(host=host_b, user_id=self.user.id, username=self.user.username)
@@ -780,7 +737,7 @@ class HostTest(BaseTestCase):
 
     def test_get_webssh_active_sessions(self):
         """可查看某台主机在线会话的用户名和开始时间"""
-        host = Host.objects.create(instance_name='ws_host_c', ip='192.168.1.23', port=22)
+        host = Host.objects.create(instance_name='ws_host_c', ip='192.168.1.23')
         active_log = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -810,25 +767,27 @@ class HostTest(BaseTestCase):
 
     def test_list_webssh_files(self):
         """可获取主机文件列表（目录优先排序）。"""
-        host = Host.objects.create(instance_name='ws_host_files', ip='192.168.1.24', port=22)
+        host = Host.objects.create(instance_name='ws_host_files', ip='192.168.1.24')
 
-        class _Attr:
-            def __init__(self, filename, st_mode, st_size, st_mtime):
-                self.filename = filename
-                self.st_mode = st_mode
-                self.st_size = st_size
-                self.st_mtime = st_mtime
+        class _Entry:
+            def __init__(self, name, is_dir, size, mtime):
+                self.name = name
+                self.is_dir = is_dir
+                self.size = size
+                self.mtime = mtime
 
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-        fake_sftp.listdir_attr.return_value = [
-            _Attr('b.txt', 0o100644, 20, 1710000000),
-            _Attr('apps', 0o040755, 0, 1710000100),
-        ]
+        class _ListResp:
+            current_path = '/root'
+            entries = [
+                _Entry('b.txt', False, 20, 1710000000),
+                _Entry('apps', True, 0, 1710000100),
+            ]
+
+        fake_grpc_client = MagicMock()
+        fake_grpc_client.list_dir.return_value = _ListResp()
 
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
-                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
+            with patch('assets.views.HostManage._get_agent_grpc_client', return_value=fake_grpc_client):
                 res = self.client.get(f'/assets/hosts/{host.id}/files/list/?path=/root')  # type: ignore[attr-defined]
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['current_path'], '/root')
@@ -838,12 +797,16 @@ class HostTest(BaseTestCase):
 
     def test_rename_webssh_file(self):
         """可重命名主机文件。"""
-        host = Host.objects.create(instance_name='ws_host_rename', ip='192.168.1.25', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root/old.txt'
+        host = Host.objects.create(instance_name='ws_host_rename', ip='192.168.1.25')
+
+        class _RenameResp:
+            path = '/root/new.txt'
+            name = 'new.txt'
+
+        fake_grpc_client = MagicMock()
+        fake_grpc_client.rename.return_value = _RenameResp()
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
-                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
+            with patch('assets.views.HostManage._get_agent_grpc_client', return_value=fake_grpc_client):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/rename/',  # type: ignore[attr-defined]
                     {'path': '/root/old.txt', 'new_name': 'new.txt'},
@@ -851,16 +814,20 @@ class HostTest(BaseTestCase):
                 )
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['name'], 'new.txt')
-                fake_sftp.rename.assert_called_once_with('/root/old.txt', '/root/new.txt')
+                fake_grpc_client.rename.assert_called_once_with('/root/old.txt', 'new.txt')
 
     def test_create_webssh_directory(self):
         """可创建远端目录。"""
-        host = Host.objects.create(instance_name='ws_host_mkdir', ip='192.168.1.26', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
+        host = Host.objects.create(instance_name='ws_host_mkdir', ip='192.168.1.26')
+
+        class _MkdirResp:
+            path = '/root/logs'
+            name = 'logs'
+
+        fake_grpc_client = MagicMock()
+        fake_grpc_client.mkdir.return_value = _MkdirResp()
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
-                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
+            with patch('assets.views.HostManage._get_agent_grpc_client', return_value=fake_grpc_client):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/create-dir/',  # type: ignore[attr-defined]
                     {'path': '/root', 'name': 'logs'},
@@ -868,19 +835,20 @@ class HostTest(BaseTestCase):
                 )
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['path'], '/root/logs')
-                fake_sftp.mkdir.assert_called_once_with('/root/logs')
+                fake_grpc_client.mkdir.assert_called_once_with('/root', 'logs')
 
     def test_create_webssh_empty_file(self):
         """可创建远端空文件。"""
-        host = Host.objects.create(instance_name='ws_host_touch', ip='192.168.1.27', port=22)
-        fake_sftp = MagicMock()
-        fake_sftp.normalize.return_value = '/root'
-        fake_remote_file = MagicMock()
-        fake_sftp.file.return_value.__enter__.return_value = fake_remote_file
-        fake_sftp.file.return_value.__exit__.return_value = False
+        host = Host.objects.create(instance_name='ws_host_touch', ip='192.168.1.27')
+
+        class _CreateFileResp:
+            path = '/root/empty.txt'
+            name = 'empty.txt'
+
+        fake_grpc_client = MagicMock()
+        fake_grpc_client.create_file.return_value = _CreateFileResp()
         with self._active_webssh_session(host):
-            with patch('assets.views.HostManage._connect_sftp_for_stream_download', return_value=(MagicMock(), fake_sftp, 'test-pool-key')), \
-                 patch('assets.views.HostManage._release_stream_sftp', return_value=None):
+            with patch('assets.views.HostManage._get_agent_grpc_client', return_value=fake_grpc_client):
                 res = self.client.post(
                     f'/assets/hosts/{host.id}/files/create-file/',  # type: ignore[attr-defined]
                     {'path': '/root', 'name': 'empty.txt'},
@@ -888,41 +856,22 @@ class HostTest(BaseTestCase):
                 )
                 body = self.assertResponseOK(res)
                 self.assertEqual(body['data']['path'], '/root/empty.txt')
-                fake_sftp.file.assert_called_once_with('/root/empty.txt', 'xb')
-                fake_remote_file.write.assert_called_once_with(b'')
-
-
-# ─────────────────────────────────────────────
-# 主机信息采集
-# ─────────────────────────────────────────────
-class HostCollectTest(BaseTestCase):
-
-    def test_collect_persists_failed_status_on_host(self):
-        """采集失败（无凭证）应把 collect_status 持久化为 failed，并写入原因和时间"""
-        from .tasks import collect_host_info
-        host = Host.objects.create(instance_name='persist_fail_host', ip='10.0.0.1', port=22)
-        with self.assertRaises(Exception):
-            collect_host_info(host)
-        host.refresh_from_db()
-        self.assertEqual(host.collect_status, 'failed')
-        self.assertTrue(host.collect_message, msg='失败原因 collect_message 不应为空')
-        self.assertIsNotNone(host.collect_time, msg='collect_time 应被写入')
-
-    def test_scheduled_batch_collect_updates_status(self):
-        """定时任务批量采集 collect_all_hosts_info 应更新每台主机的 collect_status"""
-        from .tasks import collect_all_hosts_info
-        host = Host.objects.create(instance_name='batch_fail_host', ip='10.0.0.2', port=22)
-        result = collect_all_hosts_info()
-        self.assertTrue(result)
-        host.refresh_from_db()
-        self.assertEqual(host.collect_status, 'unknown')
-        self.assertIn('定时采集已跳过', host.collect_message)
-        self.assertIsNotNone(host.collect_time)
+                fake_grpc_client.create_file.assert_called_once_with('/root', 'empty.txt')
 
 # ─────────────────────────────────────────────
 # WebSSH Consumer
 # ─────────────────────────────────────────────
 class HostWebSSHConsumerTest(TestCase):
+
+    def test_get_target_user_from_query_string_valid(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        consumer.scope = cast(Any, {'query_string': b'token=abc&target_user=ubuntu'})
+        self.assertEqual(consumer._get_target_user_from_query_string(), 'ubuntu')
+
+    def test_get_target_user_from_query_string_invalid(self):
+        consumer = object.__new__(HostWebSSHConsumer)
+        consumer.scope = cast(Any, {'query_string': b'token=abc&target_user=../root'})
+        self.assertEqual(consumer._get_target_user_from_query_string(), '')
 
     def test_extract_token_expire_at_from_payload(self):
         consumer = object.__new__(HostWebSSHConsumer)
@@ -983,53 +932,3 @@ class HostWebSSHConsumerTest(TestCase):
         consumer._send_event.assert_not_awaited()
         consumer.close.assert_not_awaited()
 
-    def test_collect_persists_success_status_on_host(self):
-        """采集成功应把 collect_status 持久化为 success 并清空失败原因"""
-        from unittest.mock import patch
-        from .tasks import collect_host_info
-        from .models import HostCredential
-        cred = Credential.objects.create(
-            name='ok_cred', username='root', password='pw', auth_type=1, port=22
-        )
-        host = Host.objects.create(instance_name='ok_host', ip='10.0.0.3', port=22)
-        HostCredential.objects.create(host=host, credential=cred, is_default=True)
-        fake_data = {
-            'system': {
-                'os_type': 'Linux', 'os_version': 'Ubuntu 22.04',
-                'kernel_version': '5.15.0', 'hostname': 'okh', 'agent_version': '1.0',
-            },
-            'hardware': {
-                'cpu_cores': 4, 'cpu_model': 'Intel', 'memory_gb': 8,
-                'disk_total_gb': 100, 'architecture': 'x86_64',
-            },
-            'disks': [],
-        }
-        with patch('assets.tasks._collect_linux_info', return_value=fake_data):
-            collect_host_info(host)
-        host.refresh_from_db()
-        self.assertEqual(host.collect_status, 'success')
-        self.assertEqual(host.collect_message, '')
-        self.assertIsNotNone(host.collect_time)
-
-    def test_collect_linux_info_excludes_optical_device_sr0(self):
-        """磁盘采集应忽略 /dev/sr0，避免无意义光驱统计进入结果。"""
-        from unittest.mock import patch
-        from .tasks import _collect_linux_info
-
-        command_outputs = [
-            'NAME="Ubuntu"\nVERSION="22.04 LTS"',
-            'host-a',
-            '5.15.0',
-            '4',
-            'Intel(R) Xeon(R)',
-            '8192',
-            'x86_64',
-            '/dev/sda1 / 100G 40G ext4\n/dev/sr0 /media/cdrom 1G 1G iso9660',
-        ]
-
-        with patch('assets.tasks._run_ssh_command', side_effect=command_outputs):
-            data = _collect_linux_info(object(), object())
-
-        self.assertEqual(len(data['disks']), 1)
-        self.assertEqual(data['disks'][0]['device'], '/dev/sda1')
-        self.assertEqual(data['hardware']['disk_total_gb'], 100.0)

@@ -37,7 +37,6 @@ class BaseSchedulerTestCase(TestCase):
     @staticmethod
     def _create_task_menus():
         for index, path in enumerate([
-            '/assets/hosts/index',
             '/audit/webssh',
             '/sys/automation/logs',
             '/sys/automation/workflow',
@@ -67,7 +66,6 @@ class SchedulerManagerTest(BaseSchedulerTestCase):
         ensure_default_tasks()
 
         expected_codes = {
-            'collect_all_hosts_info',
             'cleanup_webssh_session_logs',
             'cleanup_ansible_execution_logs',
             'cleanup_login_audit_logs',

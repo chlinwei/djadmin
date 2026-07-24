@@ -19,7 +19,6 @@
   - nodes: 节点数组
   - edges: 连线数组
   - default_extra_vars
-  - entry_node_key: 兼容字段，当前运行时不再依赖
 
 ### 1.2 AutomationWorkflowRun
 
@@ -35,7 +34,7 @@
 ### 2.1 节点 nodes[]
 
 - 公共字段：
-  - key, name, node_type, convergence, x, y
+  - key, name, node_type, x, y
 - node_type 支持：
   - task: 必须包含 task_id
   - workflow: 必须包含 workflow_id
@@ -43,7 +42,7 @@
 ### 2.2 连线 edges[]
 
 - 字段：source_key, target_key, condition
-- condition 支持：success, failure, always
+- condition 固定为：success
 
 ### 2.3 校验规则
 
@@ -55,7 +54,7 @@ validate_workflow_graph_or_raise 会做以下校验：
 - task_id/workflow_id 指向对象存在
 - edges 指向节点存在
 - condition 取值合法
-- 图为 DAG（禁止环）
+- 图必须是单链（单入口、单出口、全连通）
 
 说明：
 
@@ -104,13 +103,14 @@ AutomationWorkflowTemplateManage.launch 主要步骤：
 
 ### 4.2 节点派发
 
-_refresh_workflow_run_progress 按层推进，识别可运行节点并派发：
+_refresh_workflow_run_progress 按线性顺序推进，识别可运行节点并派发：
 
 - task 节点：调用 _dispatch_workflow_task_job
-  - 创建 AnsibleExecutionJob
-  - 启动本地后台线程执行 run_job_in_background（非 Celery）
+  - 创建 AutomationExecutionJob
+  - 同步执行 execute_automation_job（当前请求内推进）
 - workflow 节点：调用 _dispatch_workflow_child_run
   - 创建子 AutomationWorkflowRun
+  - 子 run 同步推进到终态
   - 将 child_run_id 回写到父节点结果
 
 ## 5. 运行时递归检测
@@ -150,30 +150,27 @@ node_results[].status 主要状态：
 - workflow 节点依据 child_run_id 读取子 run 状态并映射到节点状态
 - 前端运行图中节点名称右侧显示的 `耗时 00:00:00` 是节点耗时，表示从开始执行到当前时刻或结束时刻的累计耗时
 
-### 6.2 convergence 规则
+### 6.2 线性执行规则
 
-convergence 支持 any 与 all：
-
-- all：所有父边条件匹配才可运行
-- any：任一父边条件匹配即可运行
-- 父节点均终态且仍不匹配时，节点标记 skipped
+- Workflow 仅支持线性串行链路
+- 每个节点最多一个前驱、最多一个后继
+- 仅允许 `success` 条件边
+- 当前驱未成功结束时，后继节点标记 `skipped`
 
 ### 6.3 调度节奏
 
-- 按最浅未完成层推进
-- 同层存在 running/queued 时，不再派发新节点
-- 同层 ready 节点按从上到下顺序进入候选
-- 每轮只派发 1 个节点，其余 ready 标记 pending
-- 运行顺序的直观展示遵循树形排布：左到右分层，同层从上到下。
+- 任意时刻只允许一个节点处于 queued/running
+- 当前节点 success 后，才会派发下一个节点
+- 当前节点 failed/cancelled 时，其后续节点直接标记 skipped
 
 ## 7. Run 状态聚合
 
 说明：这里说的 workflow 状态，实际指 AutomationWorkflowRun.runtime_status 的聚合结果，不是简单把所有节点状态直接合并。
 
-规则（AWX 风格）：
+规则：
 
 1. 存在未完成节点（waiting/pending/queued/running）-> running
-2. 若存在未处理失败（failed/cancelled 且无 failure/always 出边兜底）-> failed
+2. 若存在 failed/cancelled 节点 -> failed
 3. 其他已结束场景 -> success
 
 ### 7.1 详细计算流程
@@ -183,23 +180,18 @@ flowchart TD
   A[开始计算 runtime_status] --> B[读取 node_results]
   B --> C{是否存在未完成节点?\nwaiting / pending / queued / running}
   C -- 是 --> D[runtime_status = running]
-  C -- 否 --> E[读取 workflow_edges]
-  E --> F[收集失败兜底边\ncondition = failure 或 always]
-  F --> G{是否存在 failed / cancelled 节点?}
-  G -- 否 --> H[runtime_status = success]
-  G -- 是 --> I{失败节点是否都被兜底边覆盖?}
-  I -- 否 --> J[runtime_status = failed]
-  I -- 是 --> H
-  D --> K[返回 runtime_status]
-  H --> K
-  J --> K
+  C -- 否 --> E{是否存在 failed / cancelled 节点?}
+  E -- 是 --> F[runtime_status = failed]
+  E -- 否 --> G[runtime_status = success]
+  D --> H[返回 runtime_status]
+  F --> H
+  G --> H
 ```
 
 补充说明：
 
 - 节点未结束时，run 一定先显示 running。
 - 只有所有节点都结束后，才进入失败/成功聚合。
-- failed / cancelled 节点如果有 failure 或 always 分支承接，run 最终仍可视为 success。
 - 如果没有 node_results，运行态会回退为 run 自身的 status 字段。
 
 ## 8. 取消语义
@@ -213,6 +205,5 @@ workflow-runs/{id}/cancel/ 行为：
 
 ## 9. 关键约束与兼容说明
 
-- entry_node_key 仅保留兼容，不再作为执行入口。
 - 运行时使用 result_summary 中的 graph snapshot，避免模板后续修改影响历史运行。
 - workflow 节点允许自引用保存，但运行时会被祖先链递归检测拦截。

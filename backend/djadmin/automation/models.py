@@ -12,10 +12,20 @@ def validate_timeout(value):
         raise ValueError('Timeout cannot exceed 4 hours (14400 seconds)')
 
 
+class TemplateCategory(models.TextChoices):
+    """模板分类：区分通用运维模板与监控软件包安装/卸载专用模板，避免二者在“模板”列表页混在一起。"""
+    GENERAL = 'general', '通用'
+    SOFTWARE_PACKAGE = 'software_package', '软件包安装/卸载专用'
+
+
 class PlaybookTemplate(BaseModel):
     name = models.CharField(max_length=128, unique=True)
     description = models.CharField(max_length=255, blank=True, default='')
     content = models.TextField(help_text='Playbook YAML content')
+    category = models.CharField(
+        max_length=32, choices=TemplateCategory.choices, default=TemplateCategory.GENERAL,
+        help_text='模板分类：通用 / 软件包安装卸载专用，用于列表页默认分组展示',
+    )
 
     class Meta:
         db_table = 'automation_playbook_template'
@@ -29,6 +39,10 @@ class ShellScriptTemplate(BaseModel):
     name = models.CharField(max_length=128, unique=True)
     description = models.CharField(max_length=255, blank=True, default='')
     content = models.TextField(help_text='Shell script content')
+    category = models.CharField(
+        max_length=32, choices=TemplateCategory.choices, default=TemplateCategory.GENERAL,
+        help_text='模板分类：通用 / 软件包安装卸载专用，用于列表页默认分组展示',
+    )
 
     class Meta:
         db_table = 'automation_shell_script_template'
@@ -39,10 +53,6 @@ class ShellScriptTemplate(BaseModel):
 
 
 class AutomationTask(BaseModel):
-    class BecomeMethod(models.TextChoices):
-        SUDO = 'sudo', 'sudo'
-        SU = 'su', 'su'
-    
     name = models.CharField(max_length=128, unique=True)
     # 支持 Playbook 或 ShellScript 执行方式
     playbook_template = models.ForeignKey(PlaybookTemplate, on_delete=models.PROTECT, related_name='tasks', null=True, blank=True)
@@ -59,11 +69,15 @@ class AutomationTask(BaseModel):
         help_text='任务执行超时时间（秒），最大4小时(14400秒)',
         validators=[validate_timeout],
     )
-    
-    # 权限提升配置
-    become_enabled = models.BooleanField(default=False, help_text='是否启用权限提升')
-    become_method = models.CharField(max_length=16, choices=BecomeMethod.choices, default=BecomeMethod.SUDO, help_text='权限提升方式')
-    become_user = models.CharField(max_length=100, default='root', help_text='目标用户')
+
+    # 执行身份配置：dj-agent 进程本身以 root 运行，任务实际执行时通过 setuid/setgid 降权到这里指定的
+    # 系统用户/组（见 dj_agent/internal/executor/automation.go resolveRunAsCredential），不再使用
+    # ansible become/sudo 机制。run_as_user 必填（不允许空值静默以 root 执行，避免权限提升场景被遗漏配置）；
+    # run_as_group 留空时使用 run_as_user 的主组。
+    run_as_user = models.CharField(max_length=100, help_text='任务执行时降权切换到的系统用户（必填，不允许留空以 root 身份静默执行）')
+    run_as_group = models.CharField(max_length=100, blank=True, default='', help_text='任务执行时切换到的系统组，留空则使用 run_as_user 的主组')
+    # 任务执行时的工作目录：默认为 /tmp，可按任务覆盖。
+    work_directory = models.CharField(max_length=255, blank=True, default='/tmp', help_text='任务执行时的工作目录，默认为 /tmp')
 
     class Meta:
         db_table = 'automation_task'
@@ -123,11 +137,12 @@ class AutomationExecutionJob(BaseModel):
     extra_vars = models.JSONField(default=dict, blank=True)
     limit = models.CharField(max_length=255, blank=True, default='')
     result_summary = models.JSONField(default=dict, blank=True)
-    
-    # 权限提升配置快照
-    become_enabled_snapshot = models.BooleanField(default=False)
-    become_method_snapshot = models.CharField(max_length=16, default='sudo')
-    become_user_snapshot = models.CharField(max_length=100, default='root')
+
+    # 执行身份/工作目录快照：任务创建 job 时从 AutomationTask.run_as_user/run_as_group/work_directory
+    # 复制而来，保证即使之后任务配置被修改，历史执行记录仍反映当次真实使用的身份与目录。
+    run_as_user_snapshot = models.CharField(max_length=100, blank=True, default='')
+    run_as_group_snapshot = models.CharField(max_length=100, blank=True, default='')
+    work_directory_snapshot = models.CharField(max_length=255, blank=True, default='/tmp')
 
     requested_user_id = models.IntegerField(null=True, blank=True)
     requested_username = models.CharField(max_length=100, blank=True, default='')
@@ -187,7 +202,6 @@ class AutomationWorkflowTemplate(BaseModel):
         related_name='workflows',
     )
     default_limit = models.CharField(max_length=255, blank=True, default='')
-    entry_node_key = models.CharField(max_length=128)
     nodes = models.JSONField(default=list, blank=True)
     edges = models.JSONField(default=list, blank=True)
     default_extra_vars = models.JSONField(default=dict, blank=True)

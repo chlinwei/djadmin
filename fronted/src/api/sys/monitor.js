@@ -43,10 +43,42 @@ export function getManagedTargets(params) {
   return requestUtil.get(prefix + 'targets/', params)
 }
 
+export function getManagedTargetDetail(id) {
+  return requestUtil.get(prefix + `targets/${id}/`)
+}
+
 export function retryManagedTarget(id) {
   return requestUtil.post(prefix + `targets/${id}/retry/`)
 }
 
+export function cancelManagedTarget(id) {
+  return requestUtil.post(prefix + `targets/${id}/cancel/`)
+}
+
+export function checkManagedTargetServiceStatus(id) {
+  return requestUtil.post(prefix + `targets/${id}/check-service-status/`)
+}
+
+export function startManagedTargetService(id) {
+  return requestUtil.post(prefix + `targets/${id}/start-service/`)
+}
+
+export function stopManagedTargetService(id) {
+  return requestUtil.post(prefix + `targets/${id}/stop-service/`)
+}
+
 export function updateMonitorTarget(id, data) {
   return requestUtil.patch(prefix + `targets/${id}/`, data)
+}
+
+export function deleteManagedTarget(id) {
+  return requestUtil.del(prefix + `targets/${id}/`)
+}
+
+export function getMonitorInstallHistoryList(params) {
+  return requestUtil.get(prefix + 'install-histories/', params)
+}
+
+export function getMonitorInstallHistoryDetail(id) {
+  return requestUtil.get(prefix + `install-histories/${id}/`)
 }

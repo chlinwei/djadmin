@@ -77,7 +77,7 @@ export function openDeleteConfirm(options = {}) {
   return new Promise((resolve) => {
     Modal.confirm({
       title,
-      centered: false,
+      centered: true,
       okText,
       cancelText,
       okButtonProps: { danger: true },

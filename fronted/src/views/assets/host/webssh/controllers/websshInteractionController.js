@@ -41,6 +41,10 @@ export function createWebsshInteractionController(options) {
             await enqueueDownloadTask(record, options.DOWNLOAD_MODE_DIRECT)
             return
         }
+        if (actionKey === 'upload') {
+            triggerContextUpload(record)
+            return
+        }
         if (actionKey === 'copy-dir-path') {
             const targetDir = helpers.resolveFileParentDirectory(record.path)
             if (!targetDir) {
@@ -121,6 +125,32 @@ export function createWebsshInteractionController(options) {
         const hasFiles = Array.from(event?.dataTransfer?.types || []).includes('Files')
         if (!hasFiles) return
         event.preventDefault()
+    }
+
+    // 右键上传：通过临时 file input 触发选择，上传到所选文件/文件夹所在的目录（父目录）。
+    const triggerContextUpload = (record) => {
+        const targetDir = helpers.resolveFileParentDirectory(record.path)
+        if (!targetDir) {
+            message.error('目录路径无效，上传失败')
+            return
+        }
+        const input = document.createElement('input')
+        input.type = 'file'
+        input.multiple = true
+        input.style.display = 'none'
+        input.addEventListener('change', async () => {
+            const selectedFiles = Array.from(input.files || [])
+            if (input.parentNode) {
+                input.parentNode.removeChild(input)
+            }
+            if (!selectedFiles.length) return
+            for (const selectedFile of selectedFiles) {
+                await uploadRawFileToPath(selectedFile, targetDir)
+            }
+            message.success(`已将 ${selectedFiles.length} 个文件加入上传任务（目标目录：${targetDir}）`)
+        })
+        document.body.appendChild(input)
+        input.click()
     }
 
     const renameFile = async (record) => {

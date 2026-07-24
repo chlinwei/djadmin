@@ -5,9 +5,12 @@ import subprocess
 import tempfile
 
 from ansible.errors import AnsibleError, AnsibleParserError
+from django.utils import timezone
 
 from .view_helpers import *
-from .local_runner import run_job_in_background
+from .view_helpers import _is_playbook_template_bound_to_software_package
+from .models import TemplateCategory
+from .agent_grpc_runner import execute_job_via_agent_grpc
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
     queryset = PlaybookTemplate.objects.all()
@@ -32,6 +35,27 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         'host_options': 'automation:jobs:create',
         'group_tree': 'automation:jobs:create',
     }
+
+    def get_queryset(self):
+        # 可选 category 过滤：前端“模板”列表页默认只看“通用”分类，
+        # 软件包安装/卸载专用模板需要显式切换筛选才会出现，避免和普通运维 playbook 混在一起。
+        queryset = super().get_queryset()
+        category = (self.request.query_params.get('category') or '').strip()  # type: ignore[union-attr]
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset
+
+    def perform_update(self, serializer):
+        # 分类降级保护：模板正被监控软件仓库的 install_playbook_template/uninstall_playbook_template
+        # 直接引用时，禁止把 category 从 software_package 改回 general，防止误操作后在监控软件仓库里找不到对应模板。
+        instance = serializer.instance
+        new_category = serializer.validated_data.get('category', instance.category)
+        if instance.category == TemplateCategory.SOFTWARE_PACKAGE and new_category != TemplateCategory.SOFTWARE_PACKAGE:
+            if _is_playbook_template_bound_to_software_package(instance.id):
+                raise serializers.ValidationError({
+                    'category': '该模板正被监控软件仓库的安装/卸载引用，无法改为“通用”分类',
+                })
+        serializer.save()
 
     @staticmethod
     def _build_download_filename(template: PlaybookTemplate) -> str:
@@ -200,14 +224,14 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=False)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        self.perform_update(serializer)
         return Response_200(data=serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        self.perform_update(serializer)
         return Response_200(data=serializer.data)
 
     def destroy(self, request, *args, **kwargs):
@@ -264,21 +288,21 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         inventory_snapshot = request.data.get('inventory_snapshot', {})
         extra_vars = request.data.get('extra_vars', {})
 
+        # 直接运行 Playbook 模板不经过 AutomationTask，没有任务上带的 run_as_user/run_as_group 可用，
+        # 必须由调用方显式传入执行身份，禁止静默以 dj-agent 进程自身身份（root）执行。
+        run_as_user = str(request.data.get('run_as_user') or '').strip()
+        if run_as_user == '':
+            return Response_error_str('run_as_user is required to run a playbook template directly', code=400)
+        run_as_group = str(request.data.get('run_as_group') or '').strip()
+        work_directory = str(request.data.get('work_directory') or '').strip() or '/tmp'
+
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
         group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
         group_ids = [int(item) for item in group_ids if str(item).isdigit()]
 
         if len(host_ids) == 0 and len(group_ids) == 0:
-            return Response_200(data={
-                'ok': False,
-                'status': 'inventory_empty',
-                'message': f'Inventory [{inventory.name or "-"}] 未选择主机组，当前无可执行主机',
-                'resolved_host_count': 0,
-                'effective_limit': limit_text,
-                'matched_hosts_preview': [],
-                'matched_hosts_preview_total': 0,
-            })
+            return Response_error_str('No target hosts selected', code=400)
 
         if host_ids or group_ids:
             inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
@@ -316,8 +340,9 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         if not isinstance(extra_vars, dict):
             return Response_error_str('extra_vars must be an object', code=400)
 
+        started_at = timezone.now()
         job = AutomationExecutionJob.objects.create(
-            status=AutomationExecutionJob.Status.PENDING,
+            status=AutomationExecutionJob.Status.RUNNING,
             trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
             inventory_snapshot=inventory_snapshot,
             task_name_snapshot='',
@@ -326,20 +351,44 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             extra_vars=extra_vars,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),
-            result_summary={'message': 'Job created and waiting for runner'},
-            # 权限提升配置快照（直接运行模板使用默认值）
-            become_enabled_snapshot=False,
-            become_method_snapshot='sudo',
-            become_user_snapshot='root',
+            result_summary={'message': 'Job created and executing via agent grpc'},
+            start_time=started_at,
+            # 直接运行 Playbook 模板不经过 AutomationTask，需要请求方显式传入执行身份（已在前面校验 run_as_user 非空）。
+            run_as_user_snapshot=run_as_user,
+            run_as_group_snapshot=run_as_group,
+            work_directory_snapshot=work_directory,
         )
 
         try:
-            # 非 Celery：改为本地后台线程执行，避免阻塞 API 响应。
-            run_job_in_background(int(job.id))
+            hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
+            success, summary, _ = execute_job_via_agent_grpc(
+                automation_execution_job_id=int(job.id),
+                automation_task_id=0,
+                template_content=job.template_content_snapshot or '',
+                template_type='playbook',
+                hosts=hosts,
+                shell_parameters='',
+                shell_env_vars={},
+                extra_vars=extra_vars,
+                run_as_user=run_as_user,
+                run_as_group=run_as_group,
+                work_directory=work_directory,
+                timeout_seconds=600,
+            )
+            finished_at = timezone.now()
+            final_status = AutomationExecutionJob.Status.SUCCESS if success else AutomationExecutionJob.Status.FAILED
+            job.status = final_status
+            job.end_time = finished_at
+            job.duration_seconds = (finished_at - started_at).total_seconds()
+            job.result_summary = summary
+            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
         except Exception as exc:
+            finished_at = timezone.now()
             job.status = AutomationExecutionJob.Status.FAILED
-            job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
-            job.save(update_fields=['status', 'result_summary'])
+            job.end_time = finished_at
+            job.duration_seconds = (finished_at - started_at).total_seconds()
+            job.result_summary = {'message': f'Job execution failed: {str(exc)}'}
+            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
             return Response_error_str(f'Job execution failed: {str(exc)}', code=400)
 
         serializer = AutomationExecutionJobSerializer(job)

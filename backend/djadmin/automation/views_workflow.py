@@ -3,8 +3,10 @@ from .view_helpers import *
 from .view_helpers import (
     _build_workflow_runtime_scope,
     _validate_workflow_task_nodes,
+    _validate_workflow_linear_graph,
     _precheck_workflow_runtime_scope,
     _build_initial_node_results_from_nodes,
+    _run_workflow_run_to_completion,
     _refresh_workflow_run_progress,
 )
 
@@ -171,6 +173,20 @@ class AutomationWorkflowTemplateManage(
             })
 
         workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
+        workflow_edges_snapshot = workflow.edges if isinstance(workflow.edges, list) else []
+
+        graph_ok, graph_error = _validate_workflow_linear_graph(workflow_nodes_snapshot, workflow_edges_snapshot)
+        if not graph_ok:
+            return Response_200(data={
+                'ok': False,
+                'status': 'graph_invalid',
+                'message': graph_error or 'Workflow graph is invalid',
+                'resolved_host_count': 0,
+                'effective_limit': str(runtime_scope.get('limit') or ''),
+                'matched_hosts_preview': [],
+                'matched_hosts_preview_total': 0,
+            })
+
         nodes_ok, nodes_error = _validate_workflow_task_nodes(workflow_nodes_snapshot)
         if not nodes_ok:
             return Response_200(data={
@@ -217,8 +233,13 @@ class AutomationWorkflowTemplateManage(
             return Response_error_str('extra_vars must be an object', code=400)
 
         workflow_nodes_snapshot = workflow.nodes if isinstance(workflow.nodes, list) else []
+        workflow_edges_snapshot = workflow.edges if isinstance(workflow.edges, list) else []
         if len(workflow_nodes_snapshot) == 0:
             return Response_error_str('Workflow plan is empty, please check nodes and edges', code=400)
+
+        graph_ok, graph_error = _validate_workflow_linear_graph(workflow_nodes_snapshot, workflow_edges_snapshot)
+        if not graph_ok:
+            return Response_error_str(graph_error or 'Workflow graph is invalid', code=400)
 
         nodes_ok, nodes_error = _validate_workflow_task_nodes(workflow_nodes_snapshot)
         if not nodes_ok:
@@ -250,7 +271,6 @@ class AutomationWorkflowTemplateManage(
         node_results = _build_initial_node_results_from_nodes(workflow_nodes_snapshot)
 
         run.node_results = node_results
-        workflow_edges_snapshot = workflow.edges if isinstance(workflow.edges, list) else []
         run.result_summary = {
             'message': 'Workflow run created',
             'queued_job_count': 0,
@@ -262,7 +282,8 @@ class AutomationWorkflowTemplateManage(
             'workflow_edges_snapshot': json.loads(json.dumps(workflow_edges_snapshot, ensure_ascii=False)),
         }
         run.save(update_fields=['node_results', 'result_summary'])
-        _refresh_workflow_run_progress(run)
+        _run_workflow_run_to_completion(run)
+        run.refresh_from_db()
 
         return Response_200(data=AutomationWorkflowRunSerializer(run).data)
 

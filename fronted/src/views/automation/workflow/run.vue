@@ -80,12 +80,7 @@
                   <ToolOutlined v-else />
                 </div>
                 <div
-                  v-if="String(nodeProps.data?.convergence || 'any').toLowerCase() === 'all'"
-                  class="workflow-node-convergence-tag"
-                >
-                  ALL
-                </div>
-                <div v-if="String(nodeProps.data?.nodeType || '').toLowerCase() === 'task'" class="workflow-node-quick-actions">
+                  v-if="String(nodeProps.data?.nodeType || '').toLowerCase() === 'task'" class="workflow-node-quick-actions">
                   <span class="node-quick-ref-name" :title="resolveTaskRefLabel(nodeProps.data)">{{ resolveTaskRefLabel(nodeProps.data) }}</span>
                   <button
                     type="button"
@@ -161,7 +156,6 @@ import { cancelJob, cancelWorkflowRun, getWorkflowRunDetail } from '@/api/sys/au
 import {
   buildWorkflowEdgeLabelStyle,
   buildWorkflowEdgeStyle,
-  normalizeEdgeCondition,
   resolveWorkflowEdgePathOptions,
   resolveWorkflowEdgeType,
 } from '../utils/workflowGraph'
@@ -493,8 +487,14 @@ function buildGraph(data) {
     const status = nodeStatusMap[key] || 'pending'
     const x = Number(item?.x)
     const y = Number(item?.y)
+    const START_X = 60
+    const START_NODE_WIDTH = 112
+    const RUNTIME_NODE_WIDTH = 220
+    const LAYER_X_GAP = 280
+    const EDGE_GAP = LAYER_X_GAP - RUNTIME_NODE_WIDTH
+    const FIRST_RUNTIME_X = START_X + START_NODE_WIDTH + EDGE_GAP
     const position = {
-      x: Number.isFinite(x) ? x : 340 + (index % 4) * 260,
+      x: Number.isFinite(x) ? x : FIRST_RUNTIME_X + (index % 4) * LAYER_X_GAP,
       y: Number.isFinite(y) ? y : 220 + Math.floor(index / 4) * 140,
     }
 
@@ -524,7 +524,6 @@ function buildGraph(data) {
         durationSeconds: Object.prototype.hasOwnProperty.call(nodeDurationSecondsMap, key)
           ? nodeDurationSecondsMap[key]
           : null,
-        convergence: String(item?.convergence || 'any').toLowerCase() === 'all' ? 'all' : 'any',
         jobId: nodeJobIdMap[key] || null,
         nodeMessage: nodeMessageMap[key] || null,
       },
@@ -558,7 +557,6 @@ function buildGraph(data) {
     source: 'start',
     target: targetKey,
     type: resolveWorkflowEdgeType('always'),
-    label: 'always',
     data: { condition: 'always' },
     markerEnd: MarkerType.ArrowClosed,
     style: buildWorkflowEdgeStyle('always'),
@@ -568,13 +566,12 @@ function buildGraph(data) {
   flowNodes.value = [startNode, ...runtimeNodes]
 
   const runtimeEdges = workflowEdges.map((item, index) => {
-    const condition = normalizeEdgeCondition(item?.condition)
+    const condition = 'success'
     const pathOptions = resolveWorkflowEdgePathOptions(condition)
     return {
       id: `edge-${index}`,
       source: String(item?.source_key || ''),
       target: String(item?.target_key || ''),
-      label: condition,
       type: resolveWorkflowEdgeType(condition),
       animated: false,
       data: { condition },

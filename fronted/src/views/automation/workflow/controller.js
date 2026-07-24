@@ -149,7 +149,6 @@ async function cloneRecord(record) {
       default_limit: String(detail.default_limit || '').trim(),
       default_extra_vars: cloneDefaultExtraVars(detail.default_extra_vars),
       remark: String(detail.remark || '').trim(),
-      entry_node_key: String(detail.entry_node_key || '').trim(),
       nodes: cloneGraphItems(detail.nodes),
       edges: cloneGraphItems(detail.edges),
     }

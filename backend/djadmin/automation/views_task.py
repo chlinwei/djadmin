@@ -4,8 +4,7 @@ from django.utils import timezone
 
 from .view_helpers import *
 from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
-from .local_runner import run_job_in_background
-from .agent_http_runner import execute_job_via_agent_http
+from .agent_grpc_runner import execute_job_via_agent_grpc
 
 class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
     queryset = AutomationTask.objects.select_related('playbook_template', 'shell_script_template', 'inventory').all()
@@ -27,9 +26,10 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
         'run_now': 'automation:jobs:create',
     }
 
+
     def _run_now_via_agent(self, task, task_template, user_info, started_at, inventory_snapshot, hosts, 
                            is_shell_task, extra_vars, shell_parameters, shell_env_vars, limit_text):
-        """通过 dj-agent HTTP 执行 shell 任务。"""
+        """通过 dj-agent gRPC 同步执行任务（shell/playbook）。"""
         job = AutomationExecutionJob.objects.create(
             task=task,
             status=AutomationExecutionJob.Status.RUNNING,
@@ -44,18 +44,17 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             limit=limit_text,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),
-            result_summary={'message': 'Job created and executing via agent http'},
+            result_summary={'message': 'Job created and executing via agent grpc'},
             start_time=started_at,
-            # 权限提升配置快照
-            become_enabled_snapshot=task.become_enabled,
-            become_method_snapshot=task.become_method,
-            become_user_snapshot=task.become_user,
+            run_as_user_snapshot=task.run_as_user,
+            run_as_group_snapshot=task.run_as_group,
+            work_directory_snapshot=task.work_directory,
         )
 
         job_pk = int(getattr(job, 'pk', 0) or 0)
         task_pk = int(getattr(task, 'pk', 0) or 0)
 
-        success, summary, _ = execute_job_via_agent_http(
+        success, summary, _ = execute_job_via_agent_grpc(
             automation_execution_job_id=job_pk,
             automation_task_id=task_pk,
             template_content=job.template_content_snapshot or '',
@@ -64,9 +63,9 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             shell_parameters=shell_parameters if is_shell_task else '',
             shell_env_vars=shell_env_vars if is_shell_task else {},
             extra_vars=extra_vars if not is_shell_task else {},
-            become_enabled=bool(task.become_enabled),
-            become_method=str(task.become_method or 'sudo'),
-            become_user=str(task.become_user or 'root'),
+            run_as_user=str(task.run_as_user or ''),
+            run_as_group=str(task.run_as_group or ''),
+            work_directory=str(task.work_directory or '/tmp'),
             timeout_seconds=int(task.execution_timeout_seconds or 600),
         )
 
@@ -337,9 +336,9 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         started_at = timezone.now()
         
-        # 区分执行路径：Shell 直接经由 agent；Playbook 由后台 runner 统一转发到 agent 执行
+        # 统一执行路径：Shell / Playbook 均同步经由 agent gRPC 执行。
         if is_shell_task:
-            # Shell 模板：通过 dj-agent HTTP 执行
+            # Shell 模板：通过 dj-agent gRPC 执行
             return self._run_now_via_agent(
                 task=task,
                 task_template=task_template,
@@ -354,39 +353,19 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
                 limit_text=limit_text,
             )
         else:
-            # Playbook 模板：创建作业后由后台 runner 转发到各主机 agent 执行
-            job = AutomationExecutionJob.objects.create(
+            # Playbook 模板：与 Shell 保持一致，当前请求内同步执行并返回最终状态。
+            return self._run_now_via_agent(
                 task=task,
-                status=AutomationExecutionJob.Status.PENDING,
-                trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
+                task_template=task_template,
+                user_info=user_info,
+                started_at=started_at,
                 inventory_snapshot=inventory_snapshot,
-                task_name_snapshot=task.name or '',
-                template_name_snapshot=task_template.name or '',
-                template_content_snapshot=task_template.content or '',
+                hosts=hosts,
+                is_shell_task=False,
                 extra_vars=extra_vars,
                 shell_parameters='',
                 shell_env_vars={},
-                limit=limit_text,
-                requested_user_id=user_info.get('user_id'),
-                requested_username=user_info.get('username', ''),
-                result_summary={'message': 'Job created and waiting for backend runner to dispatch via agent HTTP'},
-                start_time=started_at,
-                # 权限提升配置快照
-                become_enabled_snapshot=task.become_enabled,
-                become_method_snapshot=task.become_method,
-                become_user_snapshot=task.become_user,
+                limit_text=limit_text,
             )
-            
-            try:
-                # 非 Celery：改为本地后台线程执行，避免阻塞 API 响应。
-                run_job_in_background(int(job.id))
-            except Exception as exc:
-                job.status = AutomationExecutionJob.Status.FAILED
-                job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
-                job.save(update_fields=['status', 'result_summary'])
-                return Response_error_str(f'Task execution failed: {str(exc)}', code=500)
-            
-            serializer = AutomationExecutionJobSerializer(job)
-            return Response_200(data=serializer.data)
 
 

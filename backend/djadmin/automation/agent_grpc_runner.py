@@ -1,83 +1,32 @@
 from __future__ import annotations
 
-import json
-import os
 import uuid
 from typing import Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
-from django.conf import settings
-
+from assets.grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from assets.models import AgentJob, Host
 from .models import AutomationExecutionTargetLog, AutomationExecutionJob
 
 
-def _build_agent_execute_url(host: Host) -> str:
-    scheme = str(getattr(settings, 'AGENT_HTTP_SCHEME', os.getenv('AGENT_HTTP_SCHEME', 'http')) or 'http').strip() or 'http'
-    port_text = str(getattr(settings, 'AGENT_HTTP_PORT', os.getenv('AGENT_HTTP_PORT', '19090')) or '19090').strip() or '19090'
-    endpoint = str(
-        getattr(settings, 'AGENT_HTTP_AUTOMATION_EXECUTE_ENDPOINT', os.getenv('AGENT_HTTP_AUTOMATION_EXECUTE_ENDPOINT', '/api/v1/automation/execute'))
-        or '/api/v1/automation/execute'
-    ).strip() or '/api/v1/automation/execute'
-    if not endpoint.startswith('/'):
-        endpoint = '/' + endpoint
-    return f"{scheme}://{host.ip}:{port_text}{endpoint}"
+def _execute_automation_task_via_agent_grpc(agent_id: str, job_id: str, params: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    """通过 agent 长连接 gRPC 通道下发一次自动化任务并同步等待结果。
+
+    取代旧的 backend 直连 host.ip:19090 HTTP 执行路径：改为按 agent_id 在
+    AgentChannel gRPC 注册表里查活跃 Session 下发（agent 主动拨入，天然穿透 NAT）。
+    agent 未在线/未建立通道时，AgentChannelClient 构造即抛 AgentGrpcTransferError，
+    与旧路径一样由上层逐主机 try/except 捕获并记为该主机失败。
+    """
+    client = AgentChannelClient(agent_id)
+    return client.execute_automation(
+        job_id=job_id,
+        params=params,
+        timeout_seconds=int(timeout_seconds),
+        task_type='custom',
+        action='run_automation_task',
+    )
 
 
-def _resolve_agent_http_request_timeout(timeout_seconds: int) -> int:
-    configured_timeout = getattr(settings, 'AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', os.getenv('AGENT_HTTP_REQUEST_TIMEOUT_SECONDS', 15))
-    try:
-        configured_timeout_seconds = int(str(configured_timeout).strip())
-    except (TypeError, ValueError):
-        configured_timeout_seconds = 15
-
-    effective_timeout_seconds = max(3, configured_timeout_seconds)
-    # Avoid over-long blocking requests on API path.
-    return min(effective_timeout_seconds, 30)
-
-
-def _execute_automation_task_via_agent_http(host: Host, job_id: str, params: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
-    url = _build_agent_execute_url(host)
-    payload = {
-        'job_id': job_id,
-        'type': 'custom',
-        'action': 'run_automation_task',
-        'params': params,
-        'timeout_seconds': int(timeout_seconds),
-    }
-    request_body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    req = urllib_request.Request(url=url, data=request_body, method='POST')
-    req.add_header('Content-Type', 'application/json')
-
-    token = str(getattr(settings, 'AGENT_HTTP_TOKEN', os.getenv('DJ_AGENT_HTTP_TOKEN', '')) or '').strip()
-    if token != '':
-        req.add_header('Authorization', f'Bearer {token}')
-
-    request_timeout = _resolve_agent_http_request_timeout(timeout_seconds)
-    try:
-        with urllib_request.urlopen(req, timeout=request_timeout) as resp:
-            raw_text = resp.read().decode('utf-8', errors='replace')
-            if int(resp.status) != 200:
-                raise RuntimeError(f'agent http status={resp.status}: {raw_text}')
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f'agent request failed: {exc}') from exc
-
-    try:
-        resp_payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f'agent response is not valid json: {raw_text}') from exc
-
-    if int(resp_payload.get('code') or 0) != 200:
-        raise RuntimeError(str(resp_payload.get('msg') or 'agent business error'))
-
-    data = resp_payload.get('data')
-    if not isinstance(data, dict):
-        raise RuntimeError('agent response missing data')
-    return data
-
-
-def execute_job_via_agent_http(
+def execute_job_via_agent_grpc(
     *,
     automation_execution_job_id: int,
     automation_task_id: int,
@@ -87,9 +36,9 @@ def execute_job_via_agent_http(
     shell_parameters: str,
     shell_env_vars: dict[str, Any],
     extra_vars: dict[str, Any],
-    become_enabled: bool,
-    become_method: str,
-    become_user: str,
+    run_as_user: str,
+    run_as_group: str,
+    work_directory: str,
     timeout_seconds: int,
 ) -> tuple[bool, dict[str, Any], str]:
     target_host_ids: list[int] = []
@@ -216,9 +165,11 @@ def execute_job_via_agent_http(
             'shell_parameters': shell_parameters if is_shell_task else '',
             'env_vars': shell_env_vars if is_shell_task else {},
             'extra_vars': extra_vars if not is_shell_task else {},
-            'become_enabled': become_enabled,
-            'become_method': become_method,
-            'become_user': become_user,
+            # 执行身份/工作目录：dj-agent 以 root 运行，收到后通过 setuid/setgid 降权到 run_as_user/run_as_group
+            # 执行（见 dj_agent automation.go resolveRunAsCredential），不再使用 ansible become 机制。
+            'run_as_user': run_as_user,
+            'run_as_group': run_as_group,
+            'work_dir': work_directory,
             'automation_execution_job_id': int(automation_execution_job_id),
             'automation_task_id': int(automation_task_id),
             'host_id': int(host_id),
@@ -227,8 +178,8 @@ def execute_job_via_agent_http(
 
         created_count += 1
         try:
-            exec_result = _execute_automation_task_via_agent_http(
-                host=host,
+            exec_result = _execute_automation_task_via_agent_grpc(
+                agent_id=agent_id,
                 job_id=current_job_id,
                 params=current_params,
                 timeout_seconds=int(timeout_seconds),
@@ -299,11 +250,11 @@ def execute_job_via_agent_http(
 
     success = created_count > 0 and failed_count == 0
     summary = {
-        'message': 'Job executed synchronously via agent http' if created_count > 0 else 'Failed to dispatch any agent task',
+        'message': 'Job executed synchronously via agent grpc' if created_count > 0 else 'Failed to dispatch any agent task',
         'created_count': created_count,
         'success_count': success_count,
         'failed_count': failed_count,
         'failed_rows': failed_rows,
-        'execution_mode': 'agent_http_sync',
+        'execution_mode': 'agent_grpc_sync',
     }
     return success, summary, ''.join(output_chunks)

@@ -162,6 +162,11 @@ func (e *Executor) getHostInfo(ctx context.Context, job protocol.Job) protocol.J
 		result.Data["network_error"] = addrErr.Error()
 	}
 
+	// 收集静态资产信息（发行版/内核/CPU 型号/内存容量/磁盘容量），替代原后端 SSH 采集
+	for key, value := range collectStaticInventory() {
+		result.Data[key] = value
+	}
+
 	// 收集操作系统启动时间
 	osUptimeMetrics, osUptimeErr := collectOSUptimeMetrics()
 	if osUptimeErr != nil {

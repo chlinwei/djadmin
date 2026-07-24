@@ -19,20 +19,30 @@
     z-index: 5;
 }
 
-.page-download-progress {
-    position: absolute;
-    right: 0;
-    top: calc(100% - 8px);
-    width: min(560px, calc(100vw - 48px));
-    padding: 8px 10px;
-    border: 1px solid #d9e2ef;
-    border-radius: 8px;
+/* 传输进度条：全宽展示，紧贴 header 下方 */
+.page-transfer-progress {
+    width: 100%;
+    padding: 6px 10px 4px;
+    border-top: 1px solid #e2e8f0;
     background: #ffffff;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    box-sizing: border-box;
 }
 
-.page-download-progress + .page-download-progress {
-    top: calc(100% + 78px);
+/* 强制 a-progress 占满容器宽度（默认 inline-flex 只占内容宽度） */
+.page-transfer-progress .ant-progress {
+    display: flex !important;
+    width: 100% !important;
+}
+
+/* 禁用 a-progress fill 的 CSS transition，避免高速下载时动画滞后 */
+.page-transfer-progress .ant-progress-bg {
+    transition: none !important;
+}
+
+/* 确保 a-progress 轨道占满容器宽度 */
+.page-transfer-progress .ant-progress-outer {
+    width: 100% !important;
+    flex: 1 !important;
 }
 
 .header-left {
@@ -122,26 +132,42 @@
     background: #eff6ff;
 }
 
-.download-progress-text {
+.transfer-progress-meta {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
     gap: 8px;
     font-size: 12px;
     color: #334155;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 
-.download-progress-actions {
-    margin-top: 4px;
+.transfer-progress-name {
+    font-weight: 500;
+    flex-shrink: 0;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transfer-progress-info {
+    flex: 1;
+    color: #64748b;
+}
+
+.transfer-progress-percent {
+    flex-shrink: 0;
+    font-weight: 600;
+    color: #0f172a;
+    min-width: 42px;
     text-align: right;
 }
 
-@media (max-width: 960px) {
-    .page-download-progress {
-        right: 0;
-        left: 0;
-        width: auto;
-    }
+.transfer-progress-action {
+    flex-shrink: 0;
+    padding: 0;
+    height: auto;
+    line-height: 1;
 }
 
 .transfer-dock {

@@ -7,7 +7,11 @@ Type=simple
 User=lw
 Environment=DJ_AGENT_ID=localhost
 # Build before each start without relying on WorkingDirectory.
-ExecStartPre=/bin/bash -lc 'cd /home/lw/workspace/python/djadmin/dj_agent && mkdir -p bin && /data/apps/golang/go/bin/go build -o bin/dj-agent ./cmd/agent'
+# -buildvcs=false: avoids "error obtaining VCS status: exit status 128" when the
+# service runs as a user (e.g. root) that doesn't own the git working copy — Git's
+# "dubious ownership" protection blocks `git status` for other users' repos, and
+# Go's default VCS stamping would otherwise fail the build entirely.
+ExecStartPre=/bin/bash -lc 'cd /home/lw/workspace/python/djadmin/dj_agent && mkdir -p bin && /data/apps/golang/go/bin/go build -buildvcs=false -o bin/dj-agent ./cmd/agent'
 ExecStart=/home/lw/workspace/python/djadmin/dj_agent/bin/dj-agent
 Restart=always
 RestartSec=3

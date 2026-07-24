@@ -194,6 +194,7 @@ const filePanelWidth = ref(380)
 const showFilePanel = ref(true)
 const supportsFileOps = ref(false)
 const isTemporaryCredential = ref(false)  // 临时凭证会话：隐藏重连按钮（凭证已删除，重连必失败）
+const targetUsername = ref('')
 const fileContextMenuVisible = ref(false)
 const fileContextMenuStyle = ref({})
 const fileContextMenuRecord = ref(null)
@@ -217,7 +218,6 @@ let lastDownloadActionAt = 0
 let hostId = null
 let instanceName = ''
 let hostIp = ''
-const selectedCredentialId = ref(null)
 let socket = null
 let term = null
 let fitAddon = null
@@ -395,8 +395,9 @@ const formatFileMtime = (value) => _formatFileMtime(value, store.state.user?.tim
 
 const buildWebSocketUrl = () => {
     const token = getToken() || ''
-    const credentialQuery = selectedCredentialId.value ? `&credential_id=${encodeURIComponent(selectedCredentialId.value)}` : ''
-    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}${credentialQuery}`
+    const targetUser = String(targetUsername.value || route.query.target_user || '').trim()
+    const targetUserQuery = targetUser ? `&target_user=${encodeURIComponent(targetUser)}` : ''
+    return `${getWebSocketBaseUrl()}/ws/assets/hosts/${hostId}/webssh/?token=${encodeURIComponent(token)}${targetUserQuery}`
 }
 
 const loadFiles = async (path = fileCurrentPath.value, options = {}) => {
@@ -490,6 +491,7 @@ const websshSessionController = createWebsshSessionController({
     fileCurrentPath,
     filePathInput,
     fileEntries,
+    getRequestedTargetUser: () => targetUsername.value,
     downloadRunning,
     uploadRunning,
     buildWebSocketUrl,
@@ -572,8 +574,8 @@ const hostState = {
     set instanceName(value) { instanceName = value },
     get hostIp() { return hostIp },
     set hostIp(value) { hostIp = value },
-    get selectedCredentialId() { return selectedCredentialId.value },
-    set selectedCredentialId(value) { selectedCredentialId.value = value },
+    get targetUsername() { return targetUsername.value },
+    set targetUsername(value) { targetUsername.value = value },
     get downloadAbortController() { return downloadAbortController },
     set downloadAbortController(value) { downloadAbortController = value },
     get downloadStopAction() { return downloadStopAction },

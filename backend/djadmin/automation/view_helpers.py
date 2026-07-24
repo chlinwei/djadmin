@@ -27,6 +27,7 @@ from assets.models import Host, HostGroup
 from .models import (
     PlaybookTemplate,
     ShellScriptTemplate,
+    TemplateCategory,
     AutomationTask,
     AutomationInventory,
     AutomationExecutionJob,
@@ -43,14 +44,28 @@ from .serializer import (
     AutomationWorkflowRunSerializer,
     validate_playbook_content_or_raise,
     check_workflow_cycle_at_runtime,
+    validate_workflow_graph_or_raise,
 )
-from .executor import build_inventory_snapshot
-from .local_runner import run_job_in_background
+from .executor import build_inventory_snapshot, execute_automation_job
 from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runtime_status
 
 
 def _resolve_task_template(task: AutomationTask):
     return task.playbook_template or task.shell_script_template
+
+
+def _is_playbook_template_bound_to_software_package(template_id: int) -> bool:
+    """检查指定 Playbook 模板是否正被“监控软件仓库”(monitor.SoftwarePackage) 的
+    install_playbook_template/uninstall_playbook_template 直接引用。用于禁止把已绑定的模板
+    category 误改回“通用”。Shell 脚本模板不可能被软件仓库引用（安装/卸载固定使用 Playbook），
+    因此不再需要处理 shell 场景。延迟到函数内部 import monitor.models，避免 automation/monitor
+    两个 app 之间产生循环 import。
+    """
+    from monitor.models import SoftwarePackage
+
+    return SoftwarePackage.objects.filter(
+        Q(install_playbook_template_id=template_id) | Q(uninstall_playbook_template_id=template_id)
+    ).exists()
 
 
 def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
@@ -104,7 +119,6 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
             'node_key': node_key,
             'node_name': str(node.get('name') or node_key),
             'node_type': node_type,
-            'convergence': str(node.get('convergence') or 'any').strip().lower() or 'any',
             'status': 'waiting',
             'task_id': task_id_value,
             'workflow_id': workflow_id_value,
@@ -466,6 +480,25 @@ def _validate_workflow_task_nodes(workflow_nodes: list[dict]) -> tuple[bool, str
     return True, None
 
 
+def _validate_workflow_linear_graph(workflow_nodes: list[dict], workflow_edges: list[dict]) -> tuple[bool, str | None]:
+    """运行前对 workflow 图做线性结构兜底校验，防止历史脏数据绕过新建/编辑校验。"""
+    try:
+        validate_workflow_graph_or_raise(
+            workflow_nodes,
+            workflow_edges,
+            allow_empty=False,
+            current_workflow_id=None,
+        )
+    except serializers.ValidationError as exc:
+        detail = getattr(exc, 'detail', exc)
+        if isinstance(detail, (list, tuple)) and detail:
+            detail = detail[0]
+        if isinstance(detail, dict):
+            detail = json.dumps(detail, ensure_ascii=False)
+        return False, str(detail)
+    return True, None
+
+
 def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -> tuple[bool, str | None, int | None, dict | None]:
     task_id = node_result.get('task_id')
     if task_id is None or not str(task_id).isdigit():
@@ -523,20 +556,19 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
         requested_user_id=run.requested_user_id,
         requested_username=run.requested_username or '',
         result_summary={'message': f'Workflow node {node_name} dispatched'},
-        # 权限提升配置快照
-        become_enabled_snapshot=task.become_enabled,
-        become_method_snapshot=task.become_method,
-        become_user_snapshot=task.become_user,
+        run_as_user_snapshot=task.run_as_user,
+        run_as_group_snapshot=task.run_as_group,
+        work_directory_snapshot=task.work_directory,
     )
 
     try:
-        # 非 Celery：改为本地后台线程执行，避免阻塞当前 HTTP 请求。
-        run_job_in_background(int(job.id))
+        # workflow 统一同步执行：当前请求内完成节点任务，避免 queued/running 异步状态漂移。
+        execute_automation_job(int(job.id))
     except Exception as exc:
         job.status = AutomationExecutionJob.Status.FAILED
-        job.result_summary = {'message': f'Failed to start local runner: {str(exc)}'}
+        job.result_summary = {'message': f'Failed to execute node job synchronously: {str(exc)}'}
         job.save(update_fields=['status', 'result_summary'])
-        return False, f'Failed to start local runner: {str(exc)}', None, None
+        return False, f'Failed to execute node job synchronously: {str(exc)}', None, None
 
     return True, None, job.id, {
         'task_name_snapshot': task.name or '',
@@ -605,11 +637,31 @@ def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict) 
         'workflow_edges_snapshot': json.loads(json.dumps(child_workflow_edges_snapshot, ensure_ascii=False)),
     }
     child_run.save(update_fields=['node_results', 'result_summary'])
-    _refresh_workflow_run_progress(child_run)
+    _run_workflow_run_to_completion(child_run)
 
     return True, None, child_run.id, {
         'workflow_name_snapshot': child_workflow.name or '',
     }
+
+
+def _run_workflow_run_to_completion(run: AutomationWorkflowRun, max_iterations: int = 512) -> None:
+    """同步推进 workflow run，直到进入终态或达到保护上限。"""
+    for _ in range(max_iterations):
+        _refresh_workflow_run_progress(run)
+        run.refresh_from_db(fields=['status', 'node_results', 'result_summary', 'start_time', 'end_time', 'duration_seconds'])
+        if run.status in WORKFLOW_RUNTIME_FINAL_STATUSES:
+            return
+
+    # 保护分支：避免异常数据导致死循环时一直阻塞请求。
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    summary['message'] = f'Workflow run exceeded sync iteration limit ({max_iterations})'
+    if not run.start_time:
+        run.start_time = timezone.now()
+    run.end_time = timezone.now()
+    run.duration_seconds = (run.end_time - run.start_time).total_seconds() if run.start_time else None
+    run.status = AutomationWorkflowRun.Status.FAILED
+    run.result_summary = summary
+    run.save(update_fields=['status', 'result_summary', 'start_time', 'end_time', 'duration_seconds'])
 
 
 def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
@@ -692,30 +744,22 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
         workflow_edges = workflow.edges if workflow is not None and isinstance(workflow.edges, list) else []
 
     node_result_map = {}
+    predecessor_map = {}
     for item in node_results:
         node_key = str(item.get('node_key') or '').strip()
-        if node_key:
-            node_result_map[node_key] = item
-            if node_key not in node_order_map:
-                node_order_map[node_key] = {'y': 0.0, 'x': 0.0}
+        if not node_key:
+            continue
+        node_result_map[node_key] = item
+        if node_key not in node_order_map:
+            node_order_map[node_key] = {'y': 0.0, 'x': 0.0}
 
-    incoming_edge_map = {}
-    outgoing_edge_map = {key: [] for key in node_order_map.keys()}
-    incoming_count_map = {key: 0 for key in node_order_map.keys()}
     for edge in workflow_edges:
         if not isinstance(edge, dict):
             continue
         source_key = str(edge.get('source_key') or '').strip()
         target_key = str(edge.get('target_key') or '').strip()
-        if not source_key or not target_key:
-            continue
-        incoming_edge_map.setdefault(target_key, []).append({
-            'source_key': source_key,
-            'condition': str(edge.get('condition') or 'success').strip().lower() or 'success',
-        })
-        if source_key in outgoing_edge_map and target_key in incoming_count_map:
-            outgoing_edge_map[source_key].append(target_key)
-            incoming_count_map[target_key] = int(incoming_count_map.get(target_key, 0)) + 1
+        if source_key in node_result_map and target_key in node_result_map and target_key not in predecessor_map:
+            predecessor_map[target_key] = source_key
 
     def _node_sort_tuple(node_key: str, node_name: str = ''):
         info = node_order_map.get(node_key, {})
@@ -726,151 +770,57 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
             str(node_key or ''),
         )
 
-    # 对 snapshot 图做拓扑分层：只推进当前最浅未完成层，避免越层执行。
-    node_depth_map = {key: 1 for key in node_order_map.keys()}
-    depth_queue = sorted(
-        [key for key, count in incoming_count_map.items() if int(count) == 0],
-        key=lambda item: _node_sort_tuple(item),
-    )
-
-    while depth_queue:
-        current_key = depth_queue.pop(0)
-        current_depth = int(node_depth_map.get(current_key, 1))
-        for child_key in outgoing_edge_map.get(current_key, []):
-            node_depth_map[child_key] = max(int(node_depth_map.get(child_key, 1)), current_depth + 1)
-            incoming_count_map[child_key] = int(incoming_count_map.get(child_key, 0)) - 1
-            if int(incoming_count_map.get(child_key, 0)) == 0:
-                depth_queue.append(child_key)
-        depth_queue.sort(key=lambda item: _node_sort_tuple(item))
-
-    terminal_statuses = {'success', 'failed', 'cancelled', 'skipped'}
-
-    def _edge_condition_matched(condition: str, parent_status: str) -> bool:
-        if condition == 'always':
-            return parent_status in terminal_statuses
-        if condition == 'failure':
-            return parent_status in {'failed', 'cancelled'}
-        return parent_status == 'success'
-
-    def _evaluate_node_state(item: dict) -> str:
+    def _evaluate_linear_node_state(item: dict) -> str:
         node_key = str(item.get('node_key') or '').strip()
-        convergence = str(item.get('convergence') or 'any').strip().lower() or 'any'
-        incoming_edges = incoming_edge_map.get(node_key, [])
-        if len(incoming_edges) == 0:
+        parent_key = predecessor_map.get(node_key)
+        if not parent_key:
             return 'ready'
-
-        all_edges_matched = True
-        matched_any_edge = False
-        all_parents_finished = True
-
-        for edge in incoming_edges:
-            source_key = str(edge.get('source_key') or '').strip()
-            parent = node_result_map.get(source_key)
-            if parent is None:
-                all_parents_finished = False
-                all_edges_matched = False
-                continue
-
-            parent_status = str(parent.get('status') or '').lower()
-            if parent_status not in terminal_statuses:
-                all_parents_finished = False
-                all_edges_matched = False
-
-            matched = _edge_condition_matched(str(edge.get('condition') or 'success'), parent_status)
-            if matched:
-                matched_any_edge = True
-            else:
-                all_edges_matched = False
-
-        if convergence == 'all':
-            if all_parents_finished and all_edges_matched:
-                return 'ready'
-            if all_parents_finished and not all_edges_matched:
-                return 'skipped'
+        parent = node_result_map.get(parent_key)
+        if parent is None:
             return 'waiting'
-
-        if matched_any_edge:
+        parent_status = str(parent.get('status') or '').lower()
+        if parent_status == 'success':
             return 'ready'
-        if all_parents_finished:
+        if parent_status in {'failed', 'cancelled', 'skipped'}:
             return 'skipped'
         return 'waiting'
-
-    level_unfinished_nodes = []
-    for item in node_results:
-        node_key = str(item.get('node_key') or '').strip()
-        status = str(item.get('status') or '').lower()
-        if not node_key:
-            continue
-        if status in {'waiting', 'pending', 'queued', 'running'}:
-            level_unfinished_nodes.append(item)
 
     if is_cancelled_by_user:
         for item in node_results:
             status = str(item.get('status') or '').lower()
             if status not in {'waiting', 'pending', 'queued', 'running'}:
                 continue
-
-            if str(item.get('job_id', '')).isdigit():
-                item['status'] = 'cancelled'
-            else:
-                item['status'] = 'skipped'
+            item['status'] = 'cancelled' if (
+                str(item.get('job_id', '')).isdigit() or str(item.get('child_run_id', '')).isdigit()
+            ) else 'skipped'
             item['message'] = 'Workflow run cancelled by user'
 
-        level_unfinished_nodes = []
+    running_nodes = [
+        item for item in node_results if str(item.get('status') or '').lower() in {'queued', 'running'}
+    ]
 
-    if level_unfinished_nodes:
-        active_depth = min(
-            int(node_depth_map.get(str(item.get('node_key') or '').strip(), 1))
-            for item in level_unfinished_nodes
-        )
-        current_level_nodes = [
-            item
-            for item in level_unfinished_nodes
-            if int(node_depth_map.get(str(item.get('node_key') or '').strip(), 1)) == active_depth
-        ]
+    if not is_cancelled_by_user and not running_nodes:
+        ready_nodes = []
+        for item in node_results:
+            current_status = str(item.get('status') or '').lower()
+            if current_status not in {'waiting', 'pending'}:
+                continue
+            eval_state = _evaluate_linear_node_state(item)
+            if eval_state == 'skipped':
+                item['status'] = 'skipped'
+                item['message'] = '前置节点未成功，节点已跳过'
+            elif eval_state == 'ready':
+                item['status'] = 'pending'
+                ready_nodes.append(item)
 
-        current_level_running = [
-            item for item in current_level_nodes if str(item.get('status') or '').lower() in {'queued', 'running'}
-        ]
-        current_level_waiting = [
-            item for item in current_level_nodes if str(item.get('status') or '').lower() in {'waiting', 'pending'}
-        ]
-        node_eval_map = {}
-        level_ready_nodes = []
-        for item in current_level_waiting:
-            node_key = str(item.get('node_key') or '').strip()
-            eval_state = _evaluate_node_state(item)
-            if node_key:
-                node_eval_map[node_key] = eval_state
-            if eval_state == 'ready':
-                level_ready_nodes.append(item)
-
-        level_ready_nodes.sort(
+        ready_nodes.sort(
             key=lambda item: _node_sort_tuple(
                 str(item.get('node_key') or '').strip(),
                 str(item.get('node_name') or ''),
             )
         )
 
-        # 串行调度：同层每轮最多派发 1 个 ready 节点，避免并行运行。
-        dispatch_node = None
-        if not current_level_running and level_ready_nodes:
-            dispatch_node = level_ready_nodes[0]
-
-        dispatch_key = str(dispatch_node.get('node_key') or '').strip() if isinstance(dispatch_node, dict) else ''
-
-        for waiting_node in current_level_waiting:
-            node_key = str(waiting_node.get('node_key') or '').strip()
-            if dispatch_key and node_key == dispatch_key:
-                continue
-            eval_state = node_eval_map.get(node_key, 'waiting')
-            if eval_state == 'skipped':
-                waiting_node['status'] = 'skipped'
-                waiting_node['message'] = '条件不满足，节点已跳过'
-                continue
-            if str(waiting_node.get('status') or '').lower() == 'waiting' and eval_state == 'ready':
-                waiting_node['status'] = 'pending'
-
+        dispatch_node = ready_nodes[0] if ready_nodes else None
         if dispatch_node:
             queued_ids = result_summary.get('queued_job_ids', [])
             queued_ids = queued_ids if isinstance(queued_ids, list) else []

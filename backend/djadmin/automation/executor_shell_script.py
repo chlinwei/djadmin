@@ -1,22 +1,22 @@
-"""Shell script execution engine for automation jobs via dj-agent HTTP."""
+"""Shell script execution engine for automation jobs via dj-agent gRPC."""
 from __future__ import annotations
 
-from .agent_http_runner import execute_job_via_agent_http
+from .agent_grpc_runner import execute_job_via_agent_grpc
 from .models import AutomationExecutionJob
 
 
 def execute_shell_script_job(job: AutomationExecutionJob) -> tuple[bool, int]:
-    """Execute shell scripts on target hosts via agent HTTP and persist summary."""
+    """Execute shell scripts on target hosts via agent gRPC and persist summary."""
     script_content = (job.template_content_snapshot or '').strip()
     if not script_content:
-        job.result_summary = {'message': 'Script content snapshot is empty', 'execution_mode': 'agent_http_sync'}
+        job.result_summary = {'message': 'Script content snapshot is empty', 'execution_mode': 'agent_grpc_sync'}
         job.save(update_fields=['result_summary'])
         return False, 1
 
     snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
     hosts = [item for item in snapshot_hosts if isinstance(item, dict)]
     if not hosts:
-        job.result_summary = {'message': 'No target hosts found', 'execution_mode': 'agent_http_sync'}
+        job.result_summary = {'message': 'No target hosts found', 'execution_mode': 'agent_grpc_sync'}
         job.save(update_fields=['result_summary'])
         return False, 1
 
@@ -27,7 +27,7 @@ def execute_shell_script_job(job: AutomationExecutionJob) -> tuple[bool, int]:
     timeout_seconds = int(task.execution_timeout_seconds or 600) if task is not None else 600
     job_pk = int(getattr(job, 'pk', 0) or 0)
 
-    success, summary, _ = execute_job_via_agent_http(
+    success, summary, _ = execute_job_via_agent_grpc(
         automation_execution_job_id=job_pk,
         automation_task_id=task_id,
         template_content=script_content,
@@ -36,9 +36,9 @@ def execute_shell_script_job(job: AutomationExecutionJob) -> tuple[bool, int]:
         shell_parameters=shell_parameters,
         shell_env_vars=shell_env_vars,
         extra_vars={},
-        become_enabled=bool(job.become_enabled_snapshot),
-        become_method=str(job.become_method_snapshot or 'sudo'),
-        become_user=str(job.become_user_snapshot or 'root'),
+        run_as_user=str(job.run_as_user_snapshot or ''),
+        run_as_group=str(job.run_as_group_snapshot or ''),
+        work_directory=str(job.work_directory_snapshot or '/tmp'),
         timeout_seconds=timeout_seconds,
     )
 

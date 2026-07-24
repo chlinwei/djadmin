@@ -33,10 +33,21 @@ class ShellScriptTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMix
         sanitized = re.sub(r'[^A-Za-z0-9._-]+', '-', raw_name).strip('-')
         return f'{sanitized or "shell-script-template"}.sh'
 
-    def perform_create(self, serializer):
-        serializer.save()
+    def get_queryset(self):
+        # 可选 category 过滤：前端“模板”列表页默认只看“通用”分类，
+        # 软件包安装/卸载专用脚本模板需要显式切换筛选才会出现。
+        queryset = super().get_queryset()
+        category = (self.request.query_params.get('category') or '').strip()  # type: ignore[union-attr]
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset
 
     def perform_update(self, serializer):
+        # 监控软件仓库的安装/卸载固定只能绑 PlaybookTemplate（见 monitor.SoftwarePackage），
+        # Shell 脚本模板不可能被它引用，因此无需降级保护。
+        serializer.save()
+
+    def perform_create(self, serializer):
         serializer.save()
 
     @action(detail=False, methods=['post'], url_path='validate')

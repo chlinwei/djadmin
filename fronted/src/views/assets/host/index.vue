@@ -145,7 +145,7 @@
                 </template>
 
                 <a-table
-                    :scroll="{ x: 1600 }"
+                    :scroll="{ x: 1400 }"
                     :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }"
                     rowKey="id"
                     :columns="columns"
@@ -161,15 +161,6 @@
                             </template>
                         <template v-if="column.key === 'group_name'">
                             <a-tag color="blue">{{ getGroupName(record) }}</a-tag>
-                        </template>
-                        <template v-else-if="column.key === 'credential_name'">
-                            <a v-if="getCredentialName(record) !== '-'" class="credential-link"
-                                @click="goCredential(getCredentialName(record))">
-                                <FontAwesomeIcon :icon="['fas', 'fa-key']" />&nbsp;{{ getCredentialName(record) }}
-                            </a>
-                            <span v-else>
-                                <FontAwesomeIcon :icon="['fas', 'fa-key']" />&nbsp;-
-                            </span>
                         </template>
                         <template v-else-if="column.key === 'agent_status'">
                             <a-tooltip v-if="record.system?.agent_online">
@@ -312,30 +303,32 @@
                         :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
                     />
                 </a-form-item>
-                <a-form-item name="credential_ids" label="SSH 凭证（可选）">
+                <a-form-item name="webssh_default_username" label="WebSSH 默认用户">
                     <a-select
-                        v-model:value="form.credential_ids"
+                        v-model:value="form.webssh_default_username"
+                        :options="formWebSshDefaultUserOptions"
                         :getPopupContainer="getPopupContainer"
-                        placeholder="请选择一个或多个凭证"
-                        :options="credentialOptions"
-                        mode="multiple"
+                        placeholder="请选择默认用户"
                         show-search
-                        optionFilterProp="label"
                     />
                 </a-form-item>
-                <a-form-item name="default_credential_id" label="默认凭证（可选）">
-                    <a-select
-                        v-model:value="form.default_credential_id"
-                        :getPopupContainer="getPopupContainer"
-                        placeholder="请选择默认凭证"
-                        :options="defaultCredentialOptions"
-                        allowClear
-                        show-search
-                        optionFilterProp="label"
-                    />
-                </a-form-item>
-                <a-form-item name="port" label="SSH 端口">
-                    <a-input-number v-model:value="form.port" :min="1" :max="65535" placeholder="默认：22" />
+                <a-form-item name="webssh_login_users" label="WebSSH 可选用户列表">
+                    <div class="webssh-user-tags-wrap">
+                        <a-tag
+                            v-for="user in formWebSshUserTagList"
+                            :key="user"
+                            closable
+                            @close.prevent="removeFormWebSshUserTag(user)"
+                        >{{ user }}</a-tag>
+                    </div>
+                    <a-space style="margin-top: 8px; width: 100%">
+                        <a-input
+                            v-model:value="formWebSshNewUser"
+                            placeholder="输入用户名后点击添加"
+                            @pressEnter="addFormWebSshUserTag"
+                        />
+                        <a-button type="primary" @click="addFormWebSshUserTag">添加</a-button>
+                    </a-space>
                 </a-form-item>
                 <a-form-item label="监控设置">
                     <div class="monitor-row" v-for="(item, index) in form.monitors" :key="index">
@@ -348,15 +341,31 @@
                             optionFilterProp="label"
                             style="width: 160px"
                         />
-                        <a-switch
-                            v-model:checked="item.enabled"
-                            checked-children="开启"
-                            un-checked-children="关闭"
-                        />
-                        <a-checkbox v-if="!item.enabled" v-model:checked="item.uninstall_on_disable">
-                            关闭时卸载
-                        </a-checkbox>
-                        <a-button type="link" danger @click="removeMonitorRow(index)">删除</a-button>
+                        <a-tooltip title="开启：保存后自动下发安装任务；关闭：保存后自动下发卸载任务（不再需要单独勾选）">
+                            <a-switch
+                                v-model:checked="item.enabled"
+                                checked-children="开启"
+                                un-checked-children="关闭"
+                            />
+                        </a-tooltip>
+                        <a-tooltip
+                            v-if="canDeleteMonitorRow(item)"
+                            :title="item._persisted ? '删除该监控项（不可恢复）' : '仅移除本次编辑中还未保存的行'"
+                        >
+                            <a-button
+                                class="delBtn"
+                                type="link"
+                                danger
+                                :loading="item._persisted && monitorRowDeleteLoading[item.id]"
+                                @click="removeMonitorRow(index)"
+                            >删除</a-button>
+                        </a-tooltip>
+                        <a-tooltip
+                            v-else
+                            title="仍处于开启状态或卸载任务尚未结束，请先关闭（会自动卸载）并等待卸载完成后再删除"
+                        >
+                            <a-button type="link" danger disabled>删除</a-button>
+                        </a-tooltip>
                     </div>
                     <a-button type="dashed" block @click="addMonitorRow">
                         + 添加监控项
@@ -370,70 +379,34 @@
     </a-modal>
 
     <a-modal
-        v-model:open="webSshCredentialSelectorVisible"
-        title="选择 WebSSH 凭证"
+        v-model:open="webSshUserSelectorVisible"
+        title="设置 WebSSH 登录用户"
         ok-text="打开终端"
         cancel-text="取消"
-        :confirm-loading="webSshCredentialOpening"
-        @ok="confirmOpenWebSshWithCredential"
-        @cancel="cancelOpenWebSshWithCredential"
+        :confirm-loading="webSshOpening"
+        @ok="confirmOpenWebSshWithUser"
+        @cancel="cancelOpenWebSshWithUser"
     >
         <a-form layout="vertical">
             <a-form-item label="目标主机">
                 <a-input :value="webSshHostTitle" disabled />
             </a-form-item>
-            <a-form-item label="已绑定凭证（可选）">
+            <a-form-item label="登录用户" required>
                 <a-select
-                    v-model:value="webSshSelectedCredentialId"
+                    v-model:value="webSshTargetUsername"
+                    :options="webSshUserSelectOptions"
                     :getPopupContainer="getPopupContainer"
-                    :options="webSshCredentialOptions"
-                    placeholder="留空则手动输入"
-                    allowClear
+                    placeholder="请选择登录用户"
                     show-search
-                    optionFilterProp="label"
-                    @change="onWebSshCredentialSelectionChange"
                 />
             </a-form-item>
             <a-alert
                 type="info"
                 show-icon
-                message="请确认本次登录认证方式"
-                :description="isWebSshManualCredentialMode ? '当前为手动输入模式：将创建并绑定新凭证后再连接。' : '当前为已绑定凭证模式：将直接使用所选凭证连接。'"
-                style="margin-bottom: 12px"
+                message="说明"
+                description="可选用户列表和默认用户请在“编辑主机”中维护。终端会在 agent 侧尝试切换到该系统用户后再启动。"
+                style="margin-bottom: 4px"
             />
-            <a-form-item v-if="isWebSshManualCredentialMode" label="用户名" required>
-                <a-input v-model:value="webSshInlineCredentialForm.username" placeholder="例如：root" />
-            </a-form-item>
-            <a-form-item v-if="isWebSshManualCredentialMode" label="认证方式" required>
-                <a-radio-group v-model:value="webSshInlineCredentialForm.authType">
-                    <a-radio :value="1">密码</a-radio>
-                    <a-radio :value="2">密钥</a-radio>
-                </a-radio-group>
-            </a-form-item>
-            <a-form-item v-if="isWebSshManualCredentialMode && webSshInlineCredentialForm.authType === 1" label="密码" required>
-                <a-input-password
-                    v-model:value="webSshInlineCredentialForm.password"
-                    placeholder="请输入密码"
-                />
-            </a-form-item>
-            <a-form-item v-if="isWebSshManualCredentialMode && webSshInlineCredentialForm.authType === 2" label="私钥" required>
-                <a-textarea
-                    v-model:value="webSshInlineCredentialForm.privateKey"
-                    :rows="6"
-                    placeholder="请输入 OpenSSH 私钥内容"
-                />
-                <a-space style="margin-top: 8px">
-                    <a-button @click="triggerWebSshPrivateKeyFilePicker">上传密钥文件</a-button>
-                    <span v-if="webSshInlineCredentialForm.privateKeyFileName">{{ webSshInlineCredentialForm.privateKeyFileName }}</span>
-                </a-space>
-                <input
-                    ref="webSshPrivateKeyFileInputRef"
-                    type="file"
-                    style="display: none"
-                    accept=".pem,.key,.txt"
-                    @change="handleWebSshPrivateKeyFileChange"
-                />
-            </a-form-item>
         </a-form>
     </a-modal>
 
@@ -482,11 +455,17 @@ defineOptions({
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { batchDeleteHost, deleteHostById, getHostById, getHostList, saveOrCreateHost } from '@/api/assets/host/index.js'
+import {
+    batchDeleteHost,
+    batchRefreshHostInfo,
+    deleteHostById,
+    getHostById,
+    getHostList,
+    saveOrCreateHost,
+} from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
-import { getCredentailList, SaveOrCreateCredential } from '@/api/assets/credential/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
-import { getSoftwarePackages } from '@/api/sys/monitor.js'
+import { deleteManagedTarget, getSoftwarePackages } from '@/api/sys/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
@@ -508,9 +487,7 @@ import {
     formatDateTimeWithTimezone,
     formatPercent,
     formatSize,
-    getCredentialName,
     getGroupName,
-    hasHostCredential,
 } from './hostDisplayUtils'
 
 const searchText = ref('')
@@ -534,21 +511,11 @@ const dialogTitle = ref('新增主机')
 const dialogLoading = ref(false)
 const formRef = ref(null)
 const webSshHostTitle = ref('')
-const webSshCredentialSelectorVisible = ref(false)
-const webSshSelectedCredentialId = ref(undefined)
-const webSshCredentialOpening = ref(false)
+const webSshUserSelectorVisible = ref(false)
+const webSshTargetUsername = ref('root')
+const webSshUserList = ref(['root'])
+const webSshOpening = ref(false)
 const webSshPendingHostRecord = ref(null)
-const webSshDefaultCredentialId = ref(undefined)
-const webSshPrivateKeyFileInputRef = ref(null)
-const webSshInlineCredentialForm = reactive({
-    username: 'root',
-    authType: 1,
-    password: '',
-    privateKey: '',
-    privateKeyFileName: '',
-})
-const WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY = 'webssh-default-credentials-by-host'
-const webSshDefaultCredentialsByHost = ref({})
 const syncingRouteFilters = ref(false)
 
 let hostListAutoRefreshTimer = null
@@ -572,80 +539,89 @@ const groupDeletePreviewTreeData = ref([])
 const groupDeleteExpandedKeys = ref([])
 const pendingDeleteGroupNode = ref(null)
 const expandedGroupKeys = ref([])
-const credentialOptions = ref([])
 const datasources = ref([])
-const defaultCredentialOptions = computed(() => {
-    const selectedIds = Array.isArray(form.credential_ids) ? form.credential_ids : []
-    if (!selectedIds.length) {
-        return []
-    }
-    const selectedSet = new Set(selectedIds)
-    return credentialOptions.value.filter((item) => selectedSet.has(item.value))
-})
+const hostListQueryToken = ref(0)
 
-const webSshCredentialOptions = computed(() => {
-    const record = webSshPendingHostRecord.value
-    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
-    const optionMap = new Map((credentialOptions.value || []).map((item) => [item.value, item]))
+const WEBSSH_USERNAME_REGEXP = /^[a-zA-Z_][a-zA-Z0-9._-]{0,63}$/
 
-    const scopedOptions = hostCredentials.length
-        ? hostCredentials.map((item) => {
-            const fallback = optionMap.get(item.id)
-            const label = (item?.name && item?.username)
-                ? `${item.name} (${item.username}@${item.port || 22})`
-                : (fallback?.label || `Credential-${item.id}`)
-            return {
-                label,
-                value: item.id,
-            }
-        })
-        : []
-
-    return scopedOptions.map((item) => {
-        if (item.value === webSshDefaultCredentialId.value) {
-            return {
-                ...item,
-                label: `${item.label}（默认）`,
-            }
-        }
-        return item
-    })
-})
-
-const isWebSshManualCredentialMode = computed(() => !webSshSelectedCredentialId.value)
-
-const resolveHostDefaultCredentialMeta = (record) => {
-    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
-    const defaultByList = hostCredentials.find((item) => item?.is_default)
-    if (defaultByList) {
-        return defaultByList
-    }
-    if (record?.credential?.id) {
-        return record.credential
-    }
-    return null
+const normalizeWebSshUserList = (rawInput) => {
+    const rawItems = Array.isArray(rawInput)
+        ? rawInput
+        : String(rawInput || '').split(/\s+/)
+    const items = rawItems
+        .flatMap((item) => String(item || '').split(/\s+/))
+        .map((item) => item.trim())
+        .filter((item) => item && WEBSSH_USERNAME_REGEXP.test(item))
+    const uniqueItems = [...new Set(items)]
+    return uniqueItems.length ? uniqueItems : ['root']
 }
 
-const getWebSshCredentialMetaById = (record, credentialId) => {
-    const id = Number(credentialId || 0)
-    if (id <= 0) {
-        return null
+const webSshUserSelectOptions = computed(() => {
+    return (webSshUserList.value || []).map((item) => ({ label: item, value: item }))
+})
+
+const applyWebSshUserList = (users) => {
+    const normalizedUsers = normalizeWebSshUserList(users)
+    webSshUserList.value = normalizedUsers
+    if (!normalizedUsers.includes(webSshTargetUsername.value)) {
+        webSshTargetUsername.value = normalizedUsers[0] || 'root'
     }
-    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
-    return hostCredentials.find((item) => Number(item?.id || 0) === id) || null
+}
+
+const resolveHostPreferredWebSshUser = (record) => {
+    const users = normalizeWebSshUserList(record?.webssh_login_users)
+    const defaultUser = String(record?.webssh_default_username || '').trim()
+    if (defaultUser && users.includes(defaultUser)) {
+        return defaultUser
+    }
+    return users[0] || 'root'
 }
 
 const form = reactive({
     id: -1,
     ip: '',
     group_id: undefined,
-    credential_ids: [],
-    default_credential_id: undefined,
-    port: 22,
     monitors: [],
     remark: '',
     instance_name: '',
+    webssh_default_username: 'root',
+    webssh_login_users: 'root',
 })
+const formWebSshNewUser = ref('')
+const formWebSshUserTagList = computed(() => normalizeWebSshUserList(form.webssh_login_users))
+const formWebSshDefaultUserOptions = computed(() => {
+    return formWebSshUserTagList.value.map((item) => ({ label: item, value: item }))
+})
+
+const addFormWebSshUserTag = () => {
+    const candidate = String(formWebSshNewUser.value || '').trim()
+    if (!candidate) {
+        return
+    }
+    if (!WEBSSH_USERNAME_REGEXP.test(candidate)) {
+        message.warning('用户名格式非法，请输入合法 Linux 用户名')
+        return
+    }
+    const nextUsers = normalizeWebSshUserList([...formWebSshUserTagList.value, candidate])
+    form.webssh_login_users = nextUsers.join(' ')
+    formWebSshNewUser.value = ''
+    normalizeFormWebSshUserSettings()
+}
+
+const removeFormWebSshUserTag = (user) => {
+    const nextUsers = normalizeWebSshUserList(
+        formWebSshUserTagList.value.filter((item) => item !== user),
+    )
+    form.webssh_login_users = nextUsers.join(' ')
+    normalizeFormWebSshUserSettings()
+}
+
+const normalizeFormWebSshUserSettings = () => {
+    const users = normalizeWebSshUserList(form.webssh_login_users)
+    const defaultUser = String(form.webssh_default_username || '').trim()
+    form.webssh_login_users = users.join(' ')
+    form.webssh_default_username = users.includes(defaultUser) ? defaultUser : (users[0] || 'root')
+}
 
 // 监控名称下拉选项：仅来自监控软件仓库中 enabled=true 的包（按名称去重）
 const monitorNameOptions = ref([])
@@ -662,33 +638,48 @@ const loadMonitorNameOptions = async () => {
 }
 
 const addMonitorRow = () => {
-    form.monitors.push({ name: undefined, enabled: true, uninstall_on_disable: false })
+    // _persisted 仅作为前端本地标记，不提交给后端（提交 payload 时只取 name/enabled）：
+    // 新增的行在后端没有对应 MonitorTarget，所以可以真正本地移除（无需删除按钮限制）。
+    form.monitors.push({ name: undefined, enabled: true, _persisted: false })
 }
 
+// 已保存的行是否满足真删除条件：必须已经是关闭状态，且没有卸载任务还在进行中——
+// 与 monitor/views.py MonitorViewSet.destroy() 的后端前置校验保持一致，避免点了按钮却 400。
+const canDeleteMonitorRow = (item) => !item._persisted || (!item.enabled && item.install_status !== 'pending')
+
+const monitorRowDeleteLoading = reactive({})
+
 const removeMonitorRow = (index) => {
-    form.monitors.splice(index, 1)
+    const item = form.monitors[index]
+    if (!item?._persisted) {
+        // 本次编辑中新增、还没保存过的行，后端没有对应记录，本地移除即可。
+        form.monitors.splice(index, 1)
+        return
+    }
+    // 已保存的行走真删除：必须复用统一的删除确认弹窗（openDeleteConfirm），不能用 a-popconfirm 自行拼。
+    openDeleteConfirm({
+        title: '确认删除监控项',
+        summary: '删除后将无法再追踪该监控项的安装/卸载历史记录，如需重新纳管请重新添加。',
+        items: [`${item.name}`],
+        onConfirm: async () => {
+            monitorRowDeleteLoading[item.id] = true
+            try {
+                await deleteManagedTarget(item.id)
+                message.success('删除成功')
+                form.monitors.splice(index, 1)
+            } catch (error) {
+                message.error(error?.response?.data?.msg || error?.message || '删除失败')
+            } finally {
+                monitorRowDeleteLoading[item.id] = false
+            }
+        },
+    })
 }
 
 const rules = {
     instance_name: [{ required: true, message: '请输入实例名' }],
     ip: [{ required: true, message: '请输入 IP 地址' }],
-    port: [{ required: true, message: '请输入 SSH 端口' }],
 }
-
-watch(
-    () => form.credential_ids,
-    (nextValue) => {
-        const selectedIds = Array.isArray(nextValue) ? nextValue : []
-        if (!selectedIds.length) {
-            form.default_credential_id = undefined
-            return
-        }
-        if (!selectedIds.includes(form.default_credential_id)) {
-            form.default_credential_id = selectedIds[0]
-        }
-    },
-    { deep: true },
-)
 
 const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
@@ -697,8 +688,6 @@ const columns = [
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
-    { title: 'SSH 端口', dataIndex: 'port', key: 'port', width: 100 },
-    { title: 'SSH 凭证', dataIndex: 'credential_name', key: 'credential_name', width: 170 },
     { title: '监控', dataIndex: 'monitor_enabled', key: 'monitor_enabled', width: 90 },
     { title: '安装状态', dataIndex: 'monitor_install_status', key: 'monitor_install_status', width: 120 },
     { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
@@ -786,70 +775,18 @@ const loadGroupTree = async () => {
     }
 }
 
-const loadCredentialOptions = async () => {
-    try {
-        const res = await getCredentailList({ page: 1, size: 1000 })
-        if (res.data.code === 200) {
-            const rows = res.data.data.results || []
-            credentialOptions.value = rows.map((item) => ({
-                label: `${item.name} (${item.username}@${item.port})`,
-                value: item.id,
-            }))
-        }
-    } catch (error) {
-        console.log(error)
+const mergeUpdatedHosts = (updatedHosts) => {
+    const rows = Array.isArray(updatedHosts) ? updatedHosts : []
+    if (!rows.length) {
+        return
     }
+    const incoming = new Map(rows.map((item) => [item.id, item]))
+    datasources.value = (datasources.value || []).map((item) => incoming.get(item.id) || item)
 }
 
-const loadWebSshDefaultCredentialMap = () => {
-    try {
-        const raw = localStorage.getItem(WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY)
-        if (!raw) {
-            webSshDefaultCredentialsByHost.value = {}
-            return
-        }
-        const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            webSshDefaultCredentialsByHost.value = parsed
-            return
-        }
-        webSshDefaultCredentialsByHost.value = {}
-    } catch (error) {
-        webSshDefaultCredentialsByHost.value = {}
-    }
-}
-
-const saveWebSshDefaultCredentialMap = () => {
-    try {
-        localStorage.setItem(
-            WEBSSH_DEFAULT_CREDENTIALS_STORAGE_KEY,
-            JSON.stringify(webSshDefaultCredentialsByHost.value || {}),
-        )
-    } catch (error) {
-        // ignore storage failure
-    }
-}
-
-const resolveWebSshDefaultCredentialId = (record) => {
-    const hostId = Number(record?.id || 0)
-    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
-    const scopedIds = hostCredentials.length
-        ? hostCredentials.map((item) => item.id)
-        : (record?.credential?.id ? [record.credential.id] : [])
-    const availableIds = new Set(scopedIds)
-    const fromStorage = webSshDefaultCredentialsByHost.value[String(hostId)]
-    if (fromStorage && availableIds.has(fromStorage)) {
-        return fromStorage
-    }
-    const fromHost = record?.credential?.id
-    if (fromHost && availableIds.has(fromHost)) {
-        return fromHost
-    }
-    const first = scopedIds[0]
-    return first || undefined
-}
-
-const loadHostList = async () => {
+const loadHostList = async ({ refreshRuntime = true } = {}) => {
+    const queryToken = Date.now()
+    hostListQueryToken.value = queryToken
     loading.value = true
     try {
         const params = {
@@ -868,9 +805,36 @@ const loadHostList = async () => {
         }
 
         const res = await getHostList(params)
+        if (hostListQueryToken.value !== queryToken) {
+            return
+        }
         if (res.data.code === 200) {
-            datasources.value = res.data.data.results || []
+            const rows = Array.isArray(res.data.data.results) ? res.data.data.results : []
+            datasources.value = rows
             pagination.total = res.data.data.count || 0
+
+            // 两阶段加载：先渲染缓存列表，再异步刷新当前页在线主机的最新信息。
+            if (refreshRuntime && rows.length) {
+                const onlineIds = rows
+                    .filter((item) => item?.system?.agent_online)
+                    .map((item) => item.id)
+                    .filter((id) => Number.isInteger(id) || /^\d+$/.test(String(id)))
+                    .map((id) => Number(id))
+                if (onlineIds.length) {
+                    batchRefreshHostInfo(onlineIds)
+                        .then((refreshRes) => {
+                            if (hostListQueryToken.value !== queryToken) {
+                                return
+                            }
+                            if (refreshRes?.data?.code === 200) {
+                                mergeUpdatedHosts(refreshRes?.data?.data?.hosts)
+                            }
+                        })
+                        .catch(() => {
+                            // 二阶段刷新失败不打断列表渲染，避免频繁提示干扰操作。
+                        })
+                }
+            }
         } else {
             message.error(res.data.msg || '获取主机列表失败')
             datasources.value = []
@@ -904,7 +868,8 @@ const startHostListAutoRefresh = () => {
         if (loading.value || dialogVisible.value) {
             return
         }
-        loadHostList()
+        // 自动轮询只刷新列表与在线状态，不触发按需主机信息拉取，避免高频采集。
+        loadHostList({ refreshRuntime: false })
     }, hostListRefreshIntervalSeconds.value * 1000)
 }
 
@@ -922,7 +887,7 @@ const loadHostListRefreshIntervalConfig = async () => {
 }
 
 const refreshList = async () => {
-    await Promise.all([loadHostList(), loadCredentialOptions()])
+    await loadHostList()
 }
 
 const refreshGroups = async () => {
@@ -1128,15 +1093,15 @@ const resetForm = () => {
     form.instance_name = ''
     form.ip = ''
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
-    form.credential_ids = []
-    form.default_credential_id = undefined
-    form.port = 22
     form.monitors = []
     form.remark = ''
+    form.webssh_default_username = 'root'
+    form.webssh_login_users = 'root'
+    formWebSshNewUser.value = ''
 }
 
 const handleAdd = async () => {
-    await Promise.all([loadCredentialOptions(), loadMonitorNameOptions()])
+    await loadMonitorNameOptions()
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
@@ -1160,7 +1125,7 @@ const handleApiError = (err) => {
 }
 
 const onSaveOrCreate = async (id) => {
-    await Promise.all([loadCredentialOptions(), loadMonitorNameOptions()])
+    await loadMonitorNameOptions()
     dialogTitle.value = '编辑主机'
     dialogVisible.value = true
     dialogLoading.value = true
@@ -1172,23 +1137,21 @@ const onSaveOrCreate = async (id) => {
                 form.instance_name = data.instance_name || ''
                 form.ip = data.ip || ''
                 form.group_id = data.group ?? data.group_id ?? undefined
-                const credentialRows = Array.isArray(data.credentials) ? data.credentials : []
-                form.credential_ids = credentialRows.map((item) => item.id)
-                form.default_credential_id = (
-                    credentialRows.find((item) => item.is_default)?.id
-                    || data.credential?.id
-                    || form.credential_ids[0]
-                    || undefined
-                )
-                form.port = data.port ?? 22
                 const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
-                // uninstall_on_disable 为一次性操作指令，后端不回传，每次打开编辑默认重置为 false
+                // 标记为已持久化行：携带 id/install_status，用于判断是否满足后端真删除的前置条件
+                // （managed_enabled=false 且 install_status!=='pending'）——不满足时只能先用开关关闭。
                 form.monitors = monitorRows.map((item) => ({
+                    id: item.id,
                     name: item.name,
                     enabled: Boolean(item.enabled),
-                    uninstall_on_disable: false,
+                    install_status: item.install_status,
+                    _persisted: true,
                 }))
                 form.remark = data.remark || ''
+                form.webssh_default_username = String(data.webssh_default_username || 'root').trim() || 'root'
+                form.webssh_login_users = String(data.webssh_login_users || 'root').trim() || 'root'
+                formWebSshNewUser.value = ''
+                normalizeFormWebSshUserSettings()
             } else {
                 message.error(res.data.msg || '获取主机详情失败')
             }
@@ -1208,14 +1171,13 @@ const handleOk = () => {
         }
         dialogLoading.value = true
         const payload = { ...form }
+        normalizeFormWebSshUserSettings()
+        payload.webssh_default_username = form.webssh_default_username
+        payload.webssh_login_users = form.webssh_login_users
         delete payload.name
-        payload.credential_ids = Array.isArray(form.credential_ids) ? form.credential_ids : []
-        payload.default_credential_id = form.default_credential_id
-        payload.credential_id = form.default_credential_id
         payload.monitors = form.monitors.map((item) => ({
             name: item.name,
             enabled: Boolean(item.enabled),
-            uninstall_on_disable: Boolean(item.uninstall_on_disable),
         }))
         saveOrCreateHost(payload)
             .then((res) => {
@@ -1346,22 +1308,13 @@ const openWebSsh = async (record) => {
         return
     }
 
-    const hostCredentials = Array.isArray(record?.credentials) ? record.credentials : []
-    if (!hostCredentials.length && !credentialOptions.value.length) {
-        await loadCredentialOptions()
-    }
-
     webSshPendingHostRecord.value = record
     webSshHostTitle.value = getHostDisplayName(record)
-    webSshDefaultCredentialId.value = resolveWebSshDefaultCredentialId(record)
-    webSshSelectedCredentialId.value = webSshDefaultCredentialId.value
-    const defaultCredentialMeta = getWebSshCredentialMetaById(record, webSshDefaultCredentialId.value) || resolveHostDefaultCredentialMeta(record)
-    webSshInlineCredentialForm.username = String(defaultCredentialMeta?.username || 'root')
-    webSshInlineCredentialForm.authType = Number(defaultCredentialMeta?.auth_type || 1)
-    webSshInlineCredentialForm.password = ''
-    webSshInlineCredentialForm.privateKey = ''
-    webSshInlineCredentialForm.privateKeyFileName = ''
-    webSshCredentialSelectorVisible.value = true
+    const users = normalizeWebSshUserList(record?.webssh_login_users)
+    applyWebSshUserList(users)
+    const preferredUser = resolveHostPreferredWebSshUser(record)
+    webSshTargetUsername.value = preferredUser
+    webSshUserSelectorVisible.value = true
 }
 
 const openAgentRuntimePage = (record) => {
@@ -1379,190 +1332,50 @@ const openAgentRuntimePage = (record) => {
     })
 }
 
-const onWebSshCredentialSelectionChange = (value) => {
-    const credentialId = Number(value || 0)
-    if (credentialId <= 0) {
-        return
-    }
-
-    const record = webSshPendingHostRecord.value
-    const selectedCredential = getWebSshCredentialMetaById(record, credentialId)
-    if (!selectedCredential) {
-        return
-    }
-
-    webSshInlineCredentialForm.username = String(selectedCredential?.username || webSshInlineCredentialForm.username || 'root')
-    webSshInlineCredentialForm.authType = Number(selectedCredential?.auth_type || webSshInlineCredentialForm.authType || 1)
-    webSshInlineCredentialForm.password = ''
-    webSshInlineCredentialForm.privateKey = ''
-    webSshInlineCredentialForm.privateKeyFileName = ''
-}
-
-const triggerWebSshPrivateKeyFilePicker = () => {
-    webSshPrivateKeyFileInputRef.value?.click()
-}
-
-const handleWebSshPrivateKeyFileChange = async (event) => {
-    const target = event?.target
-    const file = target?.files?.[0]
-    if (!file) {
-        return
-    }
-    try {
-        const content = await file.text()
-        webSshInlineCredentialForm.privateKey = String(content || '')
-        webSshInlineCredentialForm.privateKeyFileName = String(file.name || '')
-    } catch (error) {
-        message.error('读取密钥文件失败')
-    } finally {
-        target.value = ''
-    }
-}
-
-const buildCredentialLabel = (credential) => {
-    const name = credential?.name || 'webssh-credential'
-    const username = credential?.username || 'root'
-    const port = credential?.port || 22
-    return `${name} (${username}@${port})`
-}
-
-const createAndBindWebSshCredential = async (record) => {
-    const username = String(webSshInlineCredentialForm.username || '').trim()
-    if (!username) {
-        message.warning('请输入用户名')
-        return null
-    }
-
-    const authType = Number(webSshInlineCredentialForm.authType || 1)
-    if (authType === 1) {
-        const password = String(webSshInlineCredentialForm.password || '')
-        if (!password) {
-            message.warning('请输入密码')
-            return null
-        }
-    } else {
-        const privateKey = String(webSshInlineCredentialForm.privateKey || '').trim()
-        if (!privateKey) {
-            message.warning('请填写或上传私钥')
-            return null
-        }
-    }
-
-    const credentialPayload = {
-        id: -1,
-        name: `webssh-${record.instance_name || record.ip || record.id}-${Date.now()}`,
-        username,
-        auth_type: authType,
-        password: authType === 1 ? String(webSshInlineCredentialForm.password || '') : '',
-        private_key: authType === 2 ? String(webSshInlineCredentialForm.privateKey || '') : '',
-        port: Number(record?.port || 22),
-        is_temporary: true,  // 标记为临时凭证，WebSSH 会话结束后自动删除
-    }
-    const credentialRes = await SaveOrCreateCredential(credentialPayload)
-    if (credentialRes?.data?.code !== 200 || !credentialRes?.data?.data?.id) {
-        message.error(credentialRes?.data?.msg || '创建凭证失败')
-        return null
-    }
-
-    const createdCredential = credentialRes.data.data
-    const existingIds = Array.isArray(record?.credentials)
-        ? record.credentials.map((item) => item.id)
-        : (record?.credential?.id ? [record.credential.id] : [])
-    const mergedIds = Array.from(new Set([...existingIds, createdCredential.id]))
-    // 临时凭证仅用于本次 WebSSH 连接，不能顶掉主机原有默认凭证；保留原默认，无原默认时才用临时凭证兜底
-    const originalDefaultId = (Array.isArray(record?.credentials)
-        ? (record.credentials.find((item) => item.is_default)?.id)
-        : null) || record?.credential?.id || null
-    const hostPayload = {
-        id: record.id,
-        credential_ids: mergedIds,
-        default_credential_id: originalDefaultId || createdCredential.id,
-        credential_id: originalDefaultId || createdCredential.id,
-    }
-    const hostRes = await saveOrCreateHost(hostPayload)
-    if (hostRes?.data?.code !== 200) {
-        message.error(hostRes?.data?.msg || '绑定凭证到主机失败')
-        return null
-    }
-
-    const createdOption = {
-        value: createdCredential.id,
-        label: buildCredentialLabel(createdCredential),
-    }
-    credentialOptions.value = [...credentialOptions.value, createdOption]
-
-    const refreshedHost = hostRes?.data?.data || {}
-    record.credentials = Array.isArray(refreshedHost.credentials) ? refreshedHost.credentials : [
-        {
-            id: createdCredential.id,
-            name: createdCredential.name,
-            username: createdCredential.username,
-            port: createdCredential.port,
-            auth_type: createdCredential.auth_type,
-            is_default: true,
-        },
-    ]
-    record.credential = refreshedHost.credential || {
-        id: createdCredential.id,
-        name: createdCredential.name,
-        username: createdCredential.username,
-        port: createdCredential.port,
-        auth_type: createdCredential.auth_type,
-    }
-
-    return createdCredential.id
-}
-
-const confirmOpenWebSshWithCredential = async () => {
+const confirmOpenWebSshWithUser = async () => {
     const record = webSshPendingHostRecord.value
     if (!record?.id) {
         message.error('主机信息不存在，请刷新后重试')
         return
     }
 
-    webSshCredentialOpening.value = true
-    let credentialId = Number(webSshSelectedCredentialId.value || 0) || null
+    const targetUser = String(webSshTargetUsername.value || '').trim()
+    if (!targetUser) {
+        message.warning('请输入登录用户')
+        return
+    }
+    if (!WEBSSH_USERNAME_REGEXP.test(targetUser)) {
+        message.warning('登录用户格式非法，请输入合法 Linux 用户名')
+        return
+    }
+    if (!webSshUserList.value.includes(targetUser)) {
+        message.warning('请从当前主机配置的可选用户列表中选择登录用户')
+        return
+    }
+
+    webSshOpening.value = true
 
     try {
-        if (!credentialId) {
-            credentialId = await createAndBindWebSshCredential(record)
-            if (!credentialId) {
-                return
-            }
-        }
-
-        const hostId = String(record.id)
-        webSshDefaultCredentialsByHost.value = {
-            ...(webSshDefaultCredentialsByHost.value || {}),
-            [hostId]: credentialId,
-        }
-        webSshDefaultCredentialId.value = credentialId
-        // 临时凭证（id 来自 createAndBindWebSshCredential）不持久化到本地存储
-        const isTemporaryCredential = !webSshSelectedCredentialId.value
-        if (!isTemporaryCredential) {
-            saveWebSshDefaultCredentialMap()
-        }
-
         const routeData = router.resolve({
             path: '/assets/hosts/webssh',
             query: {
                 host_id: record.id,
                 instance_name: record.instance_name || '',
                 ip: record.ip || '',
-                credential_id: credentialId,
+                target_user: targetUser,
             },
         })
         window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
-        webSshCredentialSelectorVisible.value = false
+        webSshUserSelectorVisible.value = false
         webSshPendingHostRecord.value = null
     } finally {
-        webSshCredentialOpening.value = false
+        webSshOpening.value = false
     }
 }
 
-const cancelOpenWebSshWithCredential = () => {
-    webSshCredentialSelectorVisible.value = false
-    webSshCredentialOpening.value = false
+const cancelOpenWebSshWithUser = () => {
+    webSshUserSelectorVisible.value = false
+    webSshOpening.value = false
     webSshPendingHostRecord.value = null
 }
 
@@ -1593,15 +1406,7 @@ const applyRouteFilters = async () => {
     }
 }
 
-const goCredential = (name) => {
-    if (!name || name === '-') return
-    router.push({ path: '/assets/credentials/index', query: { search: name } })
-}
-
 const getRowClassName = (record) => {
-    if (!hasHostCredential(record)) {
-        return 'row-no-credential'
-    }
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
 }
 
@@ -1642,13 +1447,12 @@ const formatDateTime = (value) => {
 }
 
 onMounted(async () => {
-    loadWebSshDefaultCredentialMap()
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
         groupMaxTreeDepth.value = resolveConfigIntValue(res, 5)
     }).catch(() => {})
     await loadHostListRefreshIntervalConfig()
-    await Promise.all([loadGroupTree(), loadCredentialOptions()])
+    await loadGroupTree()
     startHostListAutoRefresh()
     document.addEventListener('click', closeGroupContextMenu)
 })
@@ -1668,15 +1472,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.credential-link {
-    color: #1677ff;
-    cursor: pointer;
-}
-
-.credential-link:hover {
-    text-decoration: underline;
-}
-
 .monitor-row {
     display: flex;
     align-items: center;
@@ -1690,14 +1485,6 @@ onBeforeUnmount(() => {
 
 :deep(.row-collect-failed:hover) > td {
     background-color: #ffe0de !important;
-}
-
-:deep(.row-no-credential) > td {
-    background-color: #fffbe6;
-}
-
-:deep(.row-no-credential:hover) > td {
-    background-color: #fff1b8 !important;
 }
 
 .host-page {

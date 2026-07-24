@@ -8,7 +8,10 @@
       <a-space>
         <a-button @click="goBack">返回列表</a-button>
         <a-button @click="basicInfoVisible = true">基础信息</a-button>
-        <a-button @click="openAddNodeWizard({ presetNodeType: 'task', forceRoot: true })">添加任务节点</a-button>
+        <a-button
+          v-if="canShowAddRootTaskButton"
+          @click="openAddNodeWizard({ presetNodeType: 'task', forceRoot: true })"
+        >添加任务节点</a-button>
         <a-button type="primary" :loading="submitting" @click="saveWorkflow">保存</a-button>
       </a-space>
     </div>
@@ -70,12 +73,6 @@
                   <ToolOutlined v-else />
                 </div>
                 <div
-                  v-if="String(nodeProps.data?.convergence || 'any').toLowerCase() === 'all'"
-                  class="workflow-node-convergence-tag"
-                >
-                  ALL
-                </div>
-                <div
                   v-if="resolveNodeEnableStatus(nodeProps.data).visible"
                   class="workflow-node-enable-tag"
                   :class="{
@@ -115,7 +112,14 @@
                 </div>
 
                 <div class="workflow-node-tools" :class="{ visible: selectedNodeId === nodeProps.id }">
-                  <button type="button" class="tool-btn" title="添加后续节点" @click.stop="openAddNodeWizard({ parentNodeId: nodeProps.id })">+</button>
+                   <button
+                    v-if="canShowAddChildButton(nodeProps.id)"
+                    type="button"
+                    class="tool-btn"
+                    title="添加后续节点"
+                    @click.stop="openAddNodeWizard({ parentNodeId: nodeProps.id })"
+                  >+
+                  </button>
                   <button type="button" class="tool-btn" title="编辑节点配置" @click.stop="openNodeEditDialog(nodeProps.id)">✎</button>
                   <button type="button" class="tool-btn danger" title="删除节点" @click.stop="removeNode(nodeProps.id)">🗑</button>
                 </div>
@@ -131,22 +135,6 @@
           class="edge-quick-editor"
           :style="edgeQuickEditorStyle"
         >
-          <button type="button" class="edge-action-item" @click="setSelectedEdgeCondition('success')">
-            <span class="edge-action-dot dot-success">✓</span>
-            <span class="edge-action-label">Run on success</span>
-            <span v-if="selectedEdgeCondition === 'success'" class="edge-action-check">✓</span>
-          </button>
-          <button type="button" class="edge-action-item" @click="setSelectedEdgeCondition('always')">
-            <span class="edge-action-dot dot-always"></span>
-            <span class="edge-action-label">Run always</span>
-            <span v-if="selectedEdgeCondition === 'always'" class="edge-action-check">✓</span>
-          </button>
-          <button type="button" class="edge-action-item" @click="setSelectedEdgeCondition('failure')">
-            <span class="edge-action-dot dot-failure">!</span>
-            <span class="edge-action-label">Run on fail</span>
-            <span v-if="selectedEdgeCondition === 'failure'" class="edge-action-check">✓</span>
-          </button>
-          <div class="edge-action-divider"></div>
           <button type="button" class="edge-action-item edge-action-delete" @click="removeSelectedEdge">
             <span class="edge-action-dot dot-delete">🗑</span>
             <span class="edge-action-label">Remove link</span>
@@ -167,44 +155,6 @@
     >
       <div class="add-node-wizard-layout">
         <div class="add-node-wizard-content">
-          <div v-if="addNodeWizardHasParentCondition" class="wizard-section">
-            <div class="run-type-title">运行条件</div>
-            <div class="run-type-desc">设置新节点在父节点什么状态下执行。</div>
-            <a-alert
-              v-if="!addNodeWizardForm.parent_node_key"
-              type="info"
-              show-icon
-              class="run-type-alert"
-              message="当前是首个节点，无父节点，执行条件固定为 success。"
-            />
-            <div class="run-type-grid">
-              <div
-                class="run-type-card"
-                :class="{ active: addNodeWizardForm.run_type === 'success', disabled: !addNodeWizardForm.parent_node_key }"
-                @click="selectRunType('success')"
-              >
-                <div class="card-title">On Success</div>
-                <div class="card-desc">当父节点执行成功时，才执行当前节点。</div>
-              </div>
-              <div
-                class="run-type-card"
-                :class="{ active: addNodeWizardForm.run_type === 'failure', disabled: !addNodeWizardForm.parent_node_key }"
-                @click="selectRunType('failure')"
-              >
-                <div class="card-title">On Failure</div>
-                <div class="card-desc">当父节点执行失败时，才执行当前节点。</div>
-              </div>
-              <div
-                class="run-type-card"
-                :class="{ active: addNodeWizardForm.run_type === 'always', disabled: !addNodeWizardForm.parent_node_key }"
-                @click="selectRunType('always')"
-              >
-                <div class="card-title">Always</div>
-                <div class="card-desc">无论父节点最终状态如何，都执行当前节点。</div>
-              </div>
-            </div>
-          </div>
-
           <div class="wizard-section">
             <a-form layout="vertical">
               <a-form-item label="节点类型" required>
@@ -250,10 +200,6 @@
                   optionFilterProp="label"
                   placeholder="请选择Workflow"
                 />
-              </a-form-item>
-
-              <a-form-item label="Convergence">
-                <a-select v-model:value="addNodeWizardForm.convergence" :getPopupContainer="getPopupContainer" :options="convergenceOptions" />
               </a-form-item>
 
             </a-form>
@@ -325,44 +271,6 @@
     >
       <div class="add-node-wizard-layout">
         <div class="add-node-wizard-content">
-          <div v-if="nodeConfigHasParentCondition" class="wizard-section">
-            <div class="run-type-title">运行条件</div>
-            <div class="run-type-desc">设置当前节点在父节点什么状态下执行。</div>
-            <a-alert
-              v-if="!nodeConfigRunTypeEditable"
-              type="info"
-              show-icon
-              class="run-type-alert"
-              :message="nodeConfigRunTypeHint"
-            />
-            <div class="run-type-grid">
-              <div
-                class="run-type-card"
-                :class="{ active: nodeConfigForm.run_type === 'success', disabled: !nodeConfigRunTypeEditable }"
-                @click="selectNodeConfigRunType('success')"
-              >
-                <div class="card-title">On Success</div>
-                <div class="card-desc">当父节点执行成功时，才执行当前节点。</div>
-              </div>
-              <div
-                class="run-type-card"
-                :class="{ active: nodeConfigForm.run_type === 'failure', disabled: !nodeConfigRunTypeEditable }"
-                @click="selectNodeConfigRunType('failure')"
-              >
-                <div class="card-title">On Failure</div>
-                <div class="card-desc">当父节点执行失败时，才执行当前节点。</div>
-              </div>
-              <div
-                class="run-type-card"
-                :class="{ active: nodeConfigForm.run_type === 'always', disabled: !nodeConfigRunTypeEditable }"
-                @click="selectNodeConfigRunType('always')"
-              >
-                <div class="card-title">Always</div>
-                <div class="card-desc">无论父节点最终状态如何，都执行当前节点。</div>
-              </div>
-            </div>
-          </div>
-
           <div class="wizard-section">
             <a-form layout="vertical">
               <a-form-item label="节点类型" required>
@@ -405,10 +313,6 @@
                 />
               </a-form-item>
 
-              <a-form-item label="Convergence">
-                <a-select v-model:value="nodeConfigForm.convergence" :getPopupContainer="getPopupContainer" :options="convergenceOptions" />
-              </a-form-item>
-
             </a-form>
           </div>
         </div>
@@ -436,17 +340,16 @@ const {
   form,
   flowNodes,
   flowEdges,
+  canShowAddRootTaskButton,
   canvasWrapRef,
   selectedNodeId,
   isConnecting,
-  convergenceOptions,
   taskTemplateTypeOptions,
   addNodeTaskOptions,
   nodeConfigTaskOptions,
   workflowOptions,
   inventoryOptions,
   selectedEditableEdge,
-  selectedEdgeCondition,
   edgeQuickEditorStyle,
   addNodeWizardVisible,
   basicInfoVisible,
@@ -457,12 +360,9 @@ const {
   basicLimitMatchedHosts,
   nodeConfigForm,
   basicLimitPrecheckText,
-  nodeConfigHasParentCondition,
-  nodeConfigRunTypeEditable,
-  nodeConfigRunTypeHint,
   addNodeWizardForm,
-  addNodeWizardHasParentCondition,
   handleNodeCardClick,
+  canShowAddChildButton,
   openTaskDetailByNodeId,
   openWorkflowDetailByNodeId,
   resolveTaskNameByNodeData,
@@ -470,17 +370,14 @@ const {
   resolveNodeEnableStatus,
   openNodeEditDialog,
   removeNode,
-  setSelectedEdgeCondition,
   removeSelectedEdge,
   closeAddNodeWizard,
-  selectRunType,
   createNodeFromWizard,
   handleBasicInfoConfirm,
   handleBasicLimitHostClick,
   handleBasicLimitLimitToggle,
   handleBasicLimitRemoveToken,
   saveNodeConfig,
-  selectNodeConfigRunType,
   openAddNodeWizard,
   goToTaskPage,
   goBack,

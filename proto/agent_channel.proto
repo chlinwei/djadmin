@@ -1,0 +1,281 @@
+syntax = "proto3";
+
+package djadmin.agent.v1;
+
+option go_package = "github.com/chlinwei/djadmin/dj_agent/internal/grpcfile/pb";
+
+// dj-agent 统一控制/数据通道：与现有 RabbitMQ 心跳/任务模型保持相同的网络方向——
+// 由 agent 主动拨号连接 backend 并建立一条长连接双向流，backend 在这条流里下发
+// 各类操作命令（文件传输 / WebSSH 终端 / 自动化任务执行），agent 在本地执行后把
+// 结果/数据块回传。所有操作以 request_id 在同一条流上多路复用。
+// 之所以不采用 backend 主动连 agent 的模型，是因为目标主机通常在 NAT/防火墙后面，
+// 不具备被 backend 直接访问的入站连通性；agent-拨出模型可以复用现有网络策略。
+service AgentChannel {
+  rpc Session(stream AgentFrame) returns (stream ServerFrame);
+}
+
+// backend -> agent
+message ServerFrame {
+  oneof payload {
+    HelloAck hello_ack = 1;
+    ListRequest list_request = 2;
+    StatRequest stat_request = 3;
+    ReadRequest read_request = 4;
+    WriteOpenRequest write_open_request = 5;
+    WriteChunkRequest write_chunk_request = 6;
+    WriteCloseRequest write_close_request = 7;
+    RenameRequest rename_request = 8;
+    DeleteRequest delete_request = 9;
+    MkdirRequest mkdir_request = 10;
+    CreateFileRequest create_file_request = 11;
+    // WebSSH 终端（在同一条 agent 长连接上以 request_id 区分不同终端会话，
+    // 不再为每个终端会话单独建一条 gRPC 连接——agent 是拨出方，backend 无法主动发起新连接）。
+    TerminalOpenRequest terminal_open_request = 12;
+    TerminalDataRequest terminal_data_request = 13; // backend -> agent 的 stdin
+    TerminalResizeRequest terminal_resize_request = 14;
+    TerminalCloseRequest terminal_close_request = 15;
+    // 自动化/workflow 实时任务：复用同一条 agent 长连接下发 playbook/shell 执行命令，
+    // agent 本地降权执行后回传一次 automation_execute_response（以 request_id 关联）。
+    // 取代旧的 backend 直连 host.ip:19090 HTTP 执行路径。
+    AutomationExecuteRequest automation_execute_request = 16;
+  }
+}
+
+// agent -> backend
+message AgentFrame {
+  oneof payload {
+    Hello hello = 1;
+    ListResponse list_response = 2;
+    StatResponse stat_response = 3;
+    ReadChunk read_chunk = 4;
+    WriteOpenResponse write_open_response = 5;
+    WriteChunkAck write_chunk_ack = 6;
+    WriteCloseResponse write_close_response = 7;
+    RenameResponse rename_response = 8;
+    DeleteResponse delete_response = 9;
+    MkdirResponse mkdir_response = 10;
+    CreateFileResponse create_file_response = 11;
+    TerminalOpenResponse terminal_open_response = 12;
+    TerminalDataResponse terminal_data_response = 13; // agent -> backend 的 stdout/stderr（PTY 已合并两者）
+    TerminalExitResponse terminal_exit_response = 14; // shell 进程退出
+    AutomationExecuteResponse automation_execute_response = 15; // 自动化/workflow 任务执行结果
+  }
+}
+
+// 会话建立后 agent 发送的第一帧：携带 agent_id 与共享密钥供 backend 校验注册，
+// 校验失败 backend 会直接关闭流，避免未授权 client 冒充 agent 下发文件操作。
+message Hello {
+  string agent_id = 1;
+  string token = 2;
+}
+
+message HelloAck {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message FileEntry {
+  string name = 1;
+  int64 size = 2;
+  uint32 mode = 3;
+  bool is_dir = 4;
+  int64 mtime = 5;
+}
+
+message ListRequest {
+  string request_id = 1;
+  string path = 2;
+}
+
+message ListResponse {
+  string request_id = 1;
+  string current_path = 2;
+  repeated FileEntry entries = 3;
+  string error = 4;
+}
+
+message StatRequest {
+  string request_id = 1;
+  string path = 2;
+}
+
+message StatResponse {
+  string request_id = 1;
+  string normalized_path = 2;
+  int64 size = 3;
+  uint32 mode = 4;
+  bool is_dir = 5;
+  int64 mtime = 6;
+  string error = 7;
+}
+
+// offset/length 用于支持 Range 断点下载；length<=0 表示读到文件末尾。
+message ReadRequest {
+  string request_id = 1;
+  string path = 2;
+  int64 offset = 3;
+  int64 length = 4;
+}
+
+message ReadChunk {
+  string request_id = 1;
+  bytes data = 2;
+  bool eof = 3;
+  int64 file_size = 4;
+  string error = 5;
+}
+
+message WriteOpenRequest {
+  string request_id = 1;
+  string dir_path = 2;
+  string file_name = 3;
+}
+
+message WriteOpenResponse {
+  string request_id = 1;
+  string error = 2;
+}
+
+message WriteChunkRequest {
+  string request_id = 1;
+  bytes data = 2;
+}
+
+message WriteChunkAck {
+  string request_id = 1;
+  int64 bytes_written = 2;
+  string error = 3;
+}
+
+// abort=true 表示上传中途失败/取消，agent 侧需要清理临时文件、不做原子 rename。
+message WriteCloseRequest {
+  string request_id = 1;
+  bool abort = 2;
+}
+
+message WriteCloseResponse {
+  string request_id = 1;
+  string path = 2;
+  int64 total_bytes = 3;
+  string error = 4;
+}
+
+message RenameRequest {
+  string request_id = 1;
+  string path = 2;
+  string new_name = 3;
+}
+
+message RenameResponse {
+  string request_id = 1;
+  string path = 2;
+  string name = 3;
+  string error = 4;
+}
+
+message DeleteRequest {
+  string request_id = 1;
+  string path = 2;
+  bool recursive = 3;
+}
+
+message DeleteResponse {
+  string request_id = 1;
+  string path = 2;
+  string error = 3;
+}
+
+message MkdirRequest {
+  string request_id = 1;
+  string path = 2;
+  string name = 3;
+}
+
+message MkdirResponse {
+  string request_id = 1;
+  string path = 2;
+  string name = 3;
+  string error = 4;
+}
+
+message CreateFileRequest {
+  string request_id = 1;
+  string path = 2;
+  string name = 3;
+}
+
+message CreateFileResponse {
+  string request_id = 1;
+  string path = 2;
+  string name = 3;
+  string error = 4;
+}
+
+// WebSSH 终端：一个 request_id 代表一个终端会话（一个 PTY 进程），open 之后
+// backend 可持续发送 terminal_data_request（stdin）/terminal_resize_request，
+// agent 持续回传 terminal_data_response（stdout，PTY 下 stdout/stderr 已合并），
+// 进程退出时回传一次 terminal_exit_response 结束该 request_id 的生命周期。
+message TerminalOpenRequest {
+  string request_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  // 目标登录用户：为空时使用 agent 进程当前用户；非空时由 agent 尝试切换用户后再打开 shell。
+  string target_user = 4;
+}
+
+message TerminalOpenResponse {
+  string request_id = 1;
+  string error = 2;
+  // 实际生效的系统用户名（用于审计与前端展示）。
+  string effective_user = 3;
+}
+
+message TerminalDataRequest {
+  string request_id = 1;
+  bytes data = 2;
+}
+
+message TerminalDataResponse {
+  string request_id = 1;
+  bytes data = 2;
+}
+
+message TerminalResizeRequest {
+  string request_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+message TerminalCloseRequest {
+  string request_id = 1;
+}
+
+message TerminalExitResponse {
+  string request_id = 1;
+  int32 exit_code = 2;
+  string error = 3;
+}
+
+// 自动化/workflow 实时任务：backend 把一台主机的 playbook/shell 执行请求下发给 agent。
+// params_json 为 JSON 编码的参数对象（含 template_type/template_content/env_vars/extra_vars/
+// run_as_user/run_as_group/work_dir 等嵌套结构），不用 map<string,string> 以免丢失嵌套信息。
+message AutomationExecuteRequest {
+  string request_id = 1;
+  string job_id = 2;
+  string type = 3;            // 任务类型，典型为 "custom"
+  string action = 4;          // 固定为 "run_automation_task"
+  string params_json = 5;     // JSON 编码的 params
+  int32 timeout_seconds = 6;  // 执行超时（秒）
+}
+
+message AutomationExecuteResponse {
+  string request_id = 1;
+  string job_id = 2;
+  string status = 3;          // success/failed/timeout/canceled
+  int32 exit_code = 4;
+  string stdout = 5;
+  string stderr = 6;
+  string result_data_json = 7; // JSON 编码的结构化结果
+  string error_message = 8;
+  int64 cost_ms = 9;
+}

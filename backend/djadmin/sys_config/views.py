@@ -303,24 +303,9 @@ class SysConfigViewSet(viewsets.ModelViewSet):
     def _try_dispatch_agent_collect_interval_update(self, key, previous_value, next_value):
         if key != AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY:
             return None
-        if str(previous_value) == str(next_value):
-            return {
-                'ok': True,
-                'dispatch': None,
-            }
-
-        try:
-            from assets.views import dispatch_host_report_interval_update
-
-            dispatch_data = dispatch_host_report_interval_update(
-                interval_seconds=int(str(next_value)),
-            )
-            return {
-                'ok': True,
-                'dispatch': dispatch_data,
-            }
-        except Exception as exc:
-            return {
-                'ok': False,
-                'error': f'参数已更新，但触发 agent 任务失败：{exc}',
-            }
+        # 已切换为“按需采集”，不再支持/需要 set_host_report_interval 下发。
+        # 保留配置项仅用于兼容旧页面展示，更新时直接返回成功且不触发任何任务。
+        return {
+            'ok': True,
+            'dispatch': None,
+        }

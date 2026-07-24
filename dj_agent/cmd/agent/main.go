@@ -31,7 +31,7 @@ func run() error {
 		"max_workers", cfg.MaxWorkers,
 		"shutdown_timeout", cfg.ShutdownTimeout.String(),
 		"backend_base_url", cfg.BackendBaseURL,
-		"http_listen_addr", cfg.HTTPListenAddr,
+		"grpc_file_addr", cfg.GRPCFileAddr,
 		"host_report_interval_fallback", cfg.HostReportInterval.String(),
 	)
 

@@ -15,6 +15,13 @@
             enter-button
             @search="loadTemplates(true)"
           />
+          <a-select
+            v-model:value="categoryFilter"
+            :options="categoryFilterOptions"
+            style="width: 200px"
+            :getPopupContainer="getPopupContainer"
+            @change="loadTemplates(true)"
+          />
         </a-space>
       </a-col>
       <a-col :span="8" class="right-tools">
@@ -51,14 +58,20 @@
               {{ record.template_type === 'playbook' ? 'Playbook' : 'Shell脚本' }}
             </a-tag>
           </template>
+          <template v-else-if="column.key === 'category'">
+            <a-tooltip v-if="record.category === 'software_package'" title="由监控软件仓库自动管理，如需修改内容请前往对应软件包编辑页">
+              <a-tag color="purple">软件包安装/卸载专用</a-tag>
+            </a-tooltip>
+            <a-tag v-else color="default">通用</a-tag>
+          </template>
           <template v-else-if="column.key === 'update_time'">
             <span>{{ record.update_time ? formatTimeWithTimezone(record.update_time, store.state.user?.timezone || 'Asia/Shanghai') : '-' }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a-tooltip title="编辑">
+              <a-tooltip :title="record.category === 'software_package' ? '由监控软件仓库自动管理，请前往对应软件包编辑页修改' : '编辑'">
                 <a-button
-                  v-if="hasPermission(record.template_type, 'update')"
+                  v-if="hasPermission(record.template_type, 'update') && record.category !== 'software_package'"
                   size="small"
                   type="primary"
                   @click="openTemplateModal(record)"
@@ -78,7 +91,7 @@
               </a-tooltip>
               <a-tooltip title="删除">
                 <a-button
-                  v-if="hasPermission(record.template_type, 'delete')"
+                  v-if="hasPermission(record.template_type, 'delete') && record.category !== 'software_package'"
                   class="delBtn"
                   size="small"
                   type="primary"
@@ -110,6 +123,9 @@
         </a-form-item>
         <a-form-item label="模板名称" required>
           <a-input v-model:value="templateEdit.name" />
+        </a-form-item>
+        <a-form-item label="分类" required>
+          <a-select v-model:value="templateEdit.category" :options="categoryOptions" :getPopupContainer="getPopupContainer" />
         </a-form-item>
         <a-form-item label="描述">
           <a-input v-model:value="templateEdit.description" />
@@ -195,6 +211,11 @@ const typeOptions = [
   { label: 'Playbook', value: 'playbook' },
   { label: 'Shell脚本', value: 'shell_script' },
 ]
+// “软件包安装/卸载专用”模板改由监控软件仓库（软件包编辑弹窗）内联编辑安装/卸载内容自动创建/更新，
+// 不再支持在本页新建/把已有模板分类改成该值，避免同一份数据出现两个可编辑入口导致心智分裂。
+const categoryOptions = [
+  { label: '通用', value: 'general' },
+]
 const typeConfig = {
   playbook: {
     permPrefix: 'automation:playbooks',
@@ -220,6 +241,8 @@ const typeConfig = {
 
 const currentType = ref('playbook')
 const keyword = ref('')
+// 默认只看“通用”模板，避免和监控软件仓库专用的安装/卸载 playbook 混在一起；需要时可切换筛选查看。
+const categoryFilter = ref('general')
 const rows = ref([])
 const loading = ref(false)
 const submitting = ref(false)
@@ -244,6 +267,7 @@ const templateEdit = reactive({
   name: '',
   description: '',
   content: '',
+  category: 'general',
 })
 
 const lineNumberGutterRef = ref(null)
@@ -251,9 +275,15 @@ const lineNumberGutterRef = ref(null)
 const columns = [
   { title: '类型', key: 'type', width: 110 },
   { title: '名称', dataIndex: 'name', key: 'name', sorter: true },
+  { title: '分类', key: 'category', width: 150 },
   { title: '描述', dataIndex: 'description', key: 'description' },
   { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 180, sorter: true },
   { title: '操作', key: 'action', width: 180 },
+]
+const categoryFilterOptions = [
+  { label: '分类：通用', value: 'general' },
+  { label: '分类：软件包安装/卸载专用', value: 'software_package' },
+  { label: '分类：全部', value: '' },
 ]
 const canCreateCurrentType = computed(() => hasPermission(currentType.value, 'create'))
 const templateLineNumbers = computed(() => {
@@ -286,6 +316,7 @@ async function loadTemplates(resetPage = false) {
       search: keyword.value,
       ordering: resolveOrdering(),
     }
+    if (categoryFilter.value) params.category = categoryFilter.value
     const res = await typeConfig[currentType.value].list(params)
 
     const data = res?.data?.data || {}
@@ -303,6 +334,7 @@ function resetTemplateEdit() {
   templateEdit.name = ''
   templateEdit.description = ''
   templateEdit.content = ''
+  templateEdit.category = 'general'
 }
 
 function openTemplateModal(record = null) {
@@ -313,6 +345,7 @@ function openTemplateModal(record = null) {
     templateEdit.name = record.name || ''
     templateEdit.description = record.description || ''
     templateEdit.content = record.content || ''
+    templateEdit.category = record.category || 'general'
   }
   templateModalVisible.value = true
 }
@@ -435,6 +468,7 @@ async function submitTemplate() {
     name: String(templateEdit.name).trim(),
     description: String(templateEdit.description || ''),
     content: templateEdit.content,
+    category: templateEdit.category || 'general',
   }
 
   submitting.value = true

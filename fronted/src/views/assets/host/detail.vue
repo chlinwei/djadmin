@@ -40,7 +40,7 @@
                                         <span>主机基础信息</span>
                                     </a-space>
                                 </template>
-                                <div class="kv-line"><span class="k">示例名称</span><span class="v">{{ detailHost.instance_name || '-' }}</span></div>
+                                <div class="kv-line"><span class="k">实例名称</span><span class="v">{{ detailHost.instance_name || '-' }}</span></div>
                                 <div class="kv-line"><span class="k">主机名称</span><span class="v">{{ detailHost.system?.hostname || '-' }}</span></div>
                                 <div class="kv-line"><span class="k">IP</span><span class="v">{{ detailHost.ip || '-' }}</span></div>
                                 <div class="kv-line"><span class="k">配置</span><span class="v">{{ hostConfigText }}</span></div>
@@ -140,7 +140,7 @@ defineOptions({
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createAgentJob, getHostById } from '@/api/assets/host/index.js'
+import { refreshHostInfo, getHostById } from '@/api/assets/host/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
@@ -379,30 +379,41 @@ const stopCollectDispatchTimer = () => {
     }
 }
 
-const dispatchCollectJob = async ({ showError = false } = {}) => {
+// 同步经 gRPC 让 agent 执行 get_host_info 并落库，一次调用即返回最新主机数据。
+// 用于「打开详情页即刷」「点击刷新」以及在页面停留期间的定时刷新（保持动态指标实时）。
+const refreshHostRuntime = async ({ showError = false } = {}) => {
     if (collectDispatching.value) {
         return
     }
 
-    const host = detailHost.value
-    const agentId = String(host?.instance_name || '').trim()
-    if (!host?.id || !agentId) {
+    const hostId = detailHost.value?.id || getHostIdFromRoute()
+    if (!hostId) {
         return
     }
 
     collectDispatching.value = true
     try {
-        await createAgentJob({
-            target_type: 'single',
-            target_value: agentId,
-            type: 'inventory',
-            action: 'get_host_info',
-            params: {},
-            timeout_seconds: 30,
-        })
+        const res = await refreshHostInfo(hostId)
+        if (res?.data?.code === 200) {
+            const payload = res.data.data || {}
+            if (payload.host) {
+                detailHost.value = payload.host
+            }
+            const result = payload.result || {}
+            // agent 离线/未配置实例名时后端返回 skipped，提示但不视为错误
+            if (showError && result.skipped && result.error) {
+                message.warning(result.error)
+            } else if (showError && !result.updated && result.error) {
+                message.error(result.error)
+            }
+            return
+        }
+        if (showError) {
+            message.error(res?.data?.msg || '刷新主机信息失败')
+        }
     } catch (error) {
         if (showError) {
-            message.error(error?.response?.data?.msg || error?.message || '下发采集任务失败')
+            message.error(error?.response?.data?.msg || error?.message || '刷新主机信息失败')
         }
     } finally {
         collectDispatching.value = false
@@ -415,8 +426,7 @@ const startCollectDispatchTimer = () => {
         if (loading.value || collectDispatching.value) {
             return
         }
-        await dispatchCollectJob({ showError: false })
-        await loadDetail()
+        await refreshHostRuntime({ showError: false })
     }, collectDispatchIntervalSeconds.value * 1000)
 }
 
@@ -446,8 +456,7 @@ const loadDetail = async () => {
 }
 
 const handleRefreshClick = async () => {
-    await dispatchCollectJob({ showError: true })
-    await loadDetail()
+    await refreshHostRuntime({ showError: true })
 }
 
 const goBack = () => {
@@ -469,6 +478,8 @@ watch(
 onMounted(() => {
     loadCollectDispatchIntervalConfig().finally(async () => {
         await loadDetail()
+        // 打开详情页即触发一次同步刷新，确保展示的是最新采集结果
+        await refreshHostRuntime({ showError: false })
         startCollectDispatchTimer()
     })
 })

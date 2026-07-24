@@ -11,7 +11,6 @@ func TestValidate_OK(t *testing.T) {
 		LogLevel:           "info",
 		MaxWorkers:         2,
 		ShutdownTimeout:    5 * time.Second,
-		HTTPListenAddr:     ":19090",
 		HostReportInterval: 40 * time.Second,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -25,7 +24,6 @@ func TestValidate_BadLogLevel(t *testing.T) {
 		LogLevel:           "verbose",
 		MaxWorkers:         2,
 		ShutdownTimeout:    5 * time.Second,
-		HTTPListenAddr:     ":19090",
 		HostReportInterval: 40 * time.Second,
 	}
 	if err := cfg.Validate(); err == nil {

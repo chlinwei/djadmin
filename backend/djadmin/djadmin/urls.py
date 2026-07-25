@@ -19,6 +19,8 @@ from djadmin import settings
 from django.views.static import serve
 from assets import views as assets_views
 from sys_config import views as sys_config_views
+from monitor.views import MonitorViewSet
+from rest_framework.permissions import AllowAny
 
 
 def serve_media(request, path, document_root=None, show_indexes=False):
@@ -38,6 +40,14 @@ def serve_media(request, path, document_root=None, show_indexes=False):
 
 
 urlpatterns = [
+    path(
+        'monitor/prometheus/http-sd/',
+        MonitorViewSet.as_view(
+            {'get': 'prometheus_http_sd'},
+            permission_classes=[AllowAny],
+            authentication_classes=[],
+        ),
+    ),
     path('api/agent/configs/by-key/<path:key>', sys_config_views.agent_config_by_key),
     path('api/agent/jobs/create', assets_views.agent_create_job),
     path('api/agent/jobs/create-batch', assets_views.agent_create_jobs_batch),

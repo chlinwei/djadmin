@@ -86,9 +86,19 @@ export const staticRouterMap = [
                 component: () => import('../views/automation/workflow/run/index.vue'),
             },
             {
-                path: '/sys/monitor',
+                path: '/monitor',
                 name: '智能监控',
                 component: () => import('../views/monitor/index.vue'),
+            },
+            {
+                path: '/monitor/alert-rules',
+                name: '告警规则',
+                component: () => import('../views/monitor/alert-rules/index.vue'),
+            },
+            {
+                path: '/monitor/alert-rule-groups',
+                name: '规则组管理',
+                component: () => import('../views/monitor/alert-rule-groups/index.vue'),
             },
             {
                 path: '/assets/hosts/detail/:id',

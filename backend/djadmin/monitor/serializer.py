@@ -3,8 +3,9 @@ from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 import hashlib
+import re
 
-from .models import MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
+from .models import AlertRule, AlertRuleDeployHistory, AlertRuleGroup, MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
 
 
 class MonitorTargetSerializer(ModelSerializer):
@@ -33,6 +34,12 @@ class MonitorTargetSerializer(ModelSerializer):
         if host is None:
             return False
         return bool(getattr(host, 'agent_online', False))
+
+    def validate_scrape_port(self, value):
+        port = int(value)
+        if port < 1 or port > 65535:
+            raise serializers.ValidationError('scrape_port must be between 1 and 65535')
+        return port
 
 
 class SoftwarePackageSerializer(ModelSerializer):
@@ -89,6 +96,12 @@ class SoftwarePackageSerializer(ModelSerializer):
     def get_uninstall_playbook_template_name(self, obj):
         template = getattr(obj, 'uninstall_playbook_template', None)
         return str(getattr(template, 'name', '') or '') if template is not None else ''
+
+    def validate_default_port(self, value):
+        port = int(value)
+        if port < 1 or port > 65535:
+            raise serializers.ValidationError('default_port must be between 1 and 65535')
+        return port
 
     @staticmethod
     def _get_template_content(template):
@@ -198,3 +211,109 @@ class MonitorTargetInstallHistorySerializer(ModelSerializer):
         if getattr(obj, 'automation_job_id', None):
             return True
         return False
+
+
+PROM_DURATION_RE = re.compile(r'^(\d+(ms|s|m|h|d|w|y))+$')
+ALERT_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+class AlertRuleSerializer(ModelSerializer):
+    group_name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AlertRule
+        fields = '__all__'
+
+    def get_group_name_display(self, obj):
+        group = getattr(obj, 'group', None)
+        if group is not None:
+            return str(getattr(group, 'name', '') or '')
+        return str(getattr(obj, 'group_name', '') or '')
+
+    def validate_name(self, value):
+        rule_name = str(value or '').strip()
+        if rule_name == '':
+            raise serializers.ValidationError('name 不能为空')
+        if not ALERT_NAME_RE.match(rule_name):
+            raise serializers.ValidationError('name 必须符合 Prometheus 命名（字母/下划线开头，仅字母数字下划线）')
+        return rule_name
+
+    def validate_group_name(self, value):
+        group_name = str(value or '').strip()
+        if group_name == '':
+            raise serializers.ValidationError('group_name 不能为空')
+        return group_name
+
+    def validate_group(self, value):
+        if value is None:
+            raise serializers.ValidationError('group 不能为空')
+        return value
+
+    def validate_expr(self, value):
+        expr = str(value or '').strip()
+        if expr == '':
+            raise serializers.ValidationError('expr 不能为空')
+        return expr
+
+    def _validate_duration(self, value, field_name):
+        duration = str(value or '').strip()
+        if duration == '':
+            return ''
+        if not PROM_DURATION_RE.match(duration):
+            raise serializers.ValidationError(f'{field_name} 格式不合法，应类似 2m、1h30m、30s')
+        return duration
+
+    def validate_duration_for(self, value):
+        duration = self._validate_duration(value, 'duration_for')
+        if duration == '':
+            raise serializers.ValidationError('duration_for 不能为空')
+        return duration
+
+    def validate_keep_firing_for(self, value):
+        return self._validate_duration(value, 'keep_firing_for')
+
+    def validate_extra_labels(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('extra_labels 必须是对象')
+        normalized = {}
+        for key, item in value.items():
+            normalized[str(key)] = str(item)
+        return normalized
+
+    def create(self, validated_data):
+        group = validated_data.get('group')
+        if group is not None:
+            validated_data['group_name'] = str(getattr(group, 'name', '') or '').strip() or 'host-baseline'
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        group = validated_data.get('group')
+        if group is not None:
+            validated_data['group_name'] = str(getattr(group, 'name', '') or '').strip() or 'host-baseline'
+        return super().update(instance, validated_data)
+
+
+class AlertRuleGroupSerializer(ModelSerializer):
+    class Meta:
+        model = AlertRuleGroup
+        fields = '__all__'
+
+    def validate_name(self, value):
+        group_name = str(value or '').strip()
+        if group_name == '':
+            raise serializers.ValidationError('name 不能为空')
+        return group_name
+
+    def validate_interval(self, value):
+        duration = str(value or '').strip()
+        if duration == '':
+            raise serializers.ValidationError('interval 不能为空')
+        if not PROM_DURATION_RE.match(duration):
+            raise serializers.ValidationError('interval 格式不合法，应类似 30s、1m、5m')
+        return duration
+
+
+class AlertRuleDeployHistorySerializer(ModelSerializer):
+    class Meta:
+        model = AlertRuleDeployHistory
+        fields = '__all__'

@@ -347,6 +347,7 @@ class HostTest(BaseTestCase):
         install_template = _make_playbook_template('node_exporter-install')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            default_port=19100,
             install_playbook_template=install_template,
         )
         res = self.client.post('/assets/hosts/', {
@@ -359,9 +360,29 @@ class HostTest(BaseTestCase):
         host = Host.objects.get(instance_name='agent-host-01')
         target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
         self.assertTrue(target.managed_enabled)
+        self.assertEqual(target.scrape_port, 19100)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发安装任务' in target.install_message)
         self.assertIsNone(target.last_install_job_id)
+
+    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    def test_create_host_with_monitor_explicit_port_should_persist_scrape_port(self, _mock_run_job):
+        install_template = _make_playbook_template('cadvisor-install')
+        SoftwarePackage.objects.create(
+            name='cadvisor', version='0.1.0', os='linux', arch='amd64', enabled=True,
+            default_port=18080,
+            install_playbook_template=install_template,
+        )
+        res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-cadvisor-01',
+            'ip': '192.168.1.111',
+            'monitors': [{'name': 'cadvisor', 'enabled': True, 'port': 18081}],
+        }, format='json')
+        self.assertResponseOK(res)
+
+        host = Host.objects.get(instance_name='agent-host-cadvisor-01')
+        target = MonitorTarget.objects.get(host=host, exporter_type='cadvisor')
+        self.assertEqual(target.scrape_port, 18081)
 
     def test_dispatch_exporter_install_job_service_run_as_user_defaults_to_dj_agent(self):
         """未显式指定 service_run_as_user/group 时，模型层默认值 dj-agent 会直接落库，

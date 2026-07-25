@@ -340,6 +340,15 @@
                             show-search
                             optionFilterProp="label"
                             style="width: 160px"
+                            @change="() => onMonitorNameChanged(item)"
+                        />
+                        <a-input-number
+                            v-model:value="item.port"
+                            :min="1"
+                            :max="65535"
+                            :precision="0"
+                            placeholder="端口"
+                            style="width: 120px"
                         />
                         <a-tooltip title="开启：保存后自动下发安装任务；关闭：保存后自动下发卸载任务（不再需要单独勾选）">
                             <a-switch
@@ -625,6 +634,27 @@ const normalizeFormWebSshUserSettings = () => {
 
 // 监控名称下拉选项：仅来自监控软件仓库中 enabled=true 的包（按名称去重）
 const monitorNameOptions = ref([])
+const monitorDefaultPortMap = ref({})
+
+const normalizeMonitorPort = (rawValue) => {
+    const value = Number(rawValue)
+    if (!Number.isInteger(value)) return null
+    if (value < 1 || value > 65535) return null
+    return value
+}
+
+const resolveMonitorDefaultPort = (monitorName) => {
+    const name = String(monitorName || '').trim()
+    if (!name) return 9100
+    return normalizeMonitorPort(monitorDefaultPortMap.value[name]) || 9100
+}
+
+const onMonitorNameChanged = (item) => {
+    if (!item) return
+    const currentPort = normalizeMonitorPort(item.port)
+    if (currentPort !== null) return
+    item.port = resolveMonitorDefaultPort(item.name)
+}
 
 const loadMonitorNameOptions = async () => {
     try {
@@ -632,15 +662,23 @@ const loadMonitorNameOptions = async () => {
         const results = Array.isArray(res?.data?.data?.results) ? res.data.data.results : []
         const names = [...new Set(results.map((item) => item.name).filter(Boolean))]
         monitorNameOptions.value = names.map((name) => ({ label: name, value: name }))
+        const nextPortMap = {}
+        results.forEach((item) => {
+            const monitorName = String(item?.name || '').trim()
+            if (!monitorName || nextPortMap[monitorName] !== undefined) return
+            nextPortMap[monitorName] = normalizeMonitorPort(item?.default_port) || 9100
+        })
+        monitorDefaultPortMap.value = nextPortMap
     } catch (error) {
         monitorNameOptions.value = []
+        monitorDefaultPortMap.value = {}
     }
 }
 
 const addMonitorRow = () => {
-    // _persisted 仅作为前端本地标记，不提交给后端（提交 payload 时只取 name/enabled）：
+    // _persisted 仅作为前端本地标记，不提交给后端（提交 payload 时只取 name/enabled/port）：
     // 新增的行在后端没有对应 MonitorTarget，所以可以真正本地移除（无需删除按钮限制）。
-    form.monitors.push({ name: undefined, enabled: true, _persisted: false })
+    form.monitors.push({ name: undefined, port: 9100, enabled: true, _persisted: false })
 }
 
 // 已保存的行是否满足真删除条件：必须已经是关闭状态，且没有卸载任务还在进行中——
@@ -1143,6 +1181,7 @@ const onSaveOrCreate = async (id) => {
                 form.monitors = monitorRows.map((item) => ({
                     id: item.id,
                     name: item.name,
+                    port: normalizeMonitorPort(item.port) || resolveMonitorDefaultPort(item.name),
                     enabled: Boolean(item.enabled),
                     install_status: item.install_status,
                     _persisted: true,
@@ -1169,6 +1208,11 @@ const handleOk = () => {
             message.warning('请为每个监控项选择监控组件名称，或删除该行')
             return
         }
+        const invalidPortRow = form.monitors.find((item) => normalizeMonitorPort(item.port) === null)
+        if (invalidPortRow) {
+            message.warning('请为每个监控项填写有效端口（1-65535）')
+            return
+        }
         dialogLoading.value = true
         const payload = { ...form }
         normalizeFormWebSshUserSettings()
@@ -1178,6 +1222,7 @@ const handleOk = () => {
         payload.monitors = form.monitors.map((item) => ({
             name: item.name,
             enabled: Boolean(item.enabled),
+            port: normalizeMonitorPort(item.port),
         }))
         saveOrCreateHost(payload)
             .then((res) => {

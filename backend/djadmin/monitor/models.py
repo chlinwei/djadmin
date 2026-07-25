@@ -56,6 +56,8 @@ class MonitorTarget(BaseModel):
 	host = models.ForeignKey('assets.Host', on_delete=models.CASCADE, related_name='monitor_targets')
 	# 不再使用 choices 限制：名称来自监控软件仓库（SoftwarePackage.name），支持任意 exporter 类型
 	exporter_type = models.CharField(max_length=64, default=ExporterType.NODE_EXPORTER)
+	# 结构化抓取端口：由主机编辑页 monitors.port 下发并持久化，http_sd 直接使用该字段生成 target。
+	scrape_port = models.PositiveIntegerField(default=9100)
 	managed_enabled = models.BooleanField(default=True)
 	install_status = models.CharField(max_length=16, choices=InstallStatus.choices, default=InstallStatus.UNKNOWN)
 	install_message = models.TextField(blank=True, default='')
@@ -170,6 +172,8 @@ class SoftwarePackage(BaseModel):
 
 	name = models.CharField(max_length=64, default='node_exporter')
 	version = models.CharField(max_length=32)
+	# 软件包级默认抓取端口：主机编辑页新增该监控项时默认带入，可按主机覆盖。
+	default_port = models.PositiveIntegerField(default=9100)
 	os = models.CharField(max_length=16, choices=OSType.choices, default=OSType.LINUX)
 	arch = models.CharField(max_length=16, choices=ArchType.choices, default=ArchType.AMD64)
 	# blank=True：允许先预置“未同步”占位记录（无文件），后续通过上传或自动更新补全
@@ -227,3 +231,76 @@ class SoftwarePackage(BaseModel):
 	def service_unit_name(self):
 		"""固定按软件包 name 拼接 systemd unit 名（如 node_exporter.service），安装/启停均按此约定。"""
 		return f'{self.name}.service'
+
+
+class AlertRule(BaseModel):
+	"""平台内维护的 Prometheus 告警规则（模型化管理）。"""
+
+	class Severity(models.TextChoices):
+		CRITICAL = 'critical', 'Critical'
+		WARNING = 'warning', 'Warning'
+		INFO = 'info', 'Info'
+
+	group = models.ForeignKey(
+		'monitor.AlertRuleGroup', on_delete=models.SET_NULL, null=True, blank=True, related_name='rules',
+	)
+
+	group_name = models.CharField(max_length=64, default='host-baseline')
+	name = models.CharField(max_length=128, unique=True)
+	expr = models.TextField()
+	duration_for = models.CharField(max_length=64, default='2m')
+	keep_firing_for = models.CharField(max_length=64, blank=True, default='')
+	severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
+	enabled = models.BooleanField(default=True)
+	order_num = models.PositiveIntegerField(default=100)
+	extra_labels = models.JSONField(default=dict, blank=True)
+	summary_template = models.CharField(max_length=255, blank=True, default='')
+	description_template = models.TextField(blank=True, default='')
+
+	class Meta:
+		db_table = 'monitor_alert_rule'
+		ordering = ['order_num', '-id']
+
+	def __str__(self):
+		return f'{self.group_name}:{self.name}'
+
+
+class AlertRuleGroup(BaseModel):
+	"""告警规则组：映射 Prometheus rules.groups[]."""
+
+	name = models.CharField(max_length=64, unique=True)
+	interval = models.CharField(max_length=64, default='30s')
+	enabled = models.BooleanField(default=True)
+	order_num = models.PositiveIntegerField(default=100)
+
+	class Meta:
+		db_table = 'monitor_alert_rule_group'
+		ordering = ['order_num', '-id']
+
+	def __str__(self):
+		return self.name
+
+
+class AlertRuleDeployHistory(BaseModel):
+	"""告警规则部署审计：记录每次导出落盘 + reload 的结果。"""
+
+	class Status(models.TextChoices):
+		SUCCESS = 'success', 'Success'
+		FAILED = 'failed', 'Failed'
+
+	status = models.CharField(max_length=16, choices=Status.choices, default=Status.SUCCESS)
+	deployed_file_path = models.CharField(max_length=512, blank=True, default='')
+	backup_file_path = models.CharField(max_length=512, blank=True, default='')
+	reload_url = models.CharField(max_length=512, blank=True, default='')
+	message = models.TextField(blank=True, default='')
+	yaml_snapshot = models.TextField(blank=True, default='')
+	requested_user_id_snapshot = models.IntegerField(null=True, blank=True, default=None)
+	requested_username_snapshot = models.CharField(max_length=100, blank=True, default='')
+
+	class Meta:
+		db_table = 'monitor_alert_rule_deploy_history'
+		ordering = ['-id']
+
+	def __str__(self):
+		history_id = getattr(self, 'id', '')
+		return f'{self.status}:{history_id}'

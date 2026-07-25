@@ -314,6 +314,7 @@ class HostSerializer(ModelSerializer):
             {
                 'id': target.id,
                 'name': target.exporter_type,
+                'port': int(getattr(target, 'scrape_port', 9100) or 9100),
                 'enabled': bool(target.managed_enabled),
                 'install_status': str(target.install_status or 'unknown'),
                 'install_message': target.install_message,

@@ -19,12 +19,18 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
     _AGENT_RUNTIME_PATHS = (
         '/api/agent/configs/',
     )
+    _PROMETHEUS_HTTP_SD_PATHS = {
+        '/monitor/prometheus/http-sd/',
+        '/sys/monitor/targets/prometheus/http-sd/',
+    }
 
     def process_request(self, request):
         request._operation_audit_started_at = timezone.now()
         request._operation_audit_request_data = self._extract_request_data(request)
         white_list = ["/sys/login"]  # 请求白名单
         path = request.path
+        if path in self._PROMETHEUS_HTTP_SD_PATHS:
+            return None
         if self._is_agent_path(path):
             return self._authenticate_agent_or_user_request(request)
 

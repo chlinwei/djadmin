@@ -313,6 +313,17 @@
         <a-form-item label="软件包">
           <span>{{ packageEditTarget ? `${packageEditTarget.name} (${packageEditTarget.os}-${packageEditTarget.arch})` : '-' }}</span>
         </a-form-item>
+        <a-form-item label="默认监控端口" required>
+          <a-input-number
+            v-model:value="packageEditForm.default_port"
+            :min="1"
+            :max="65535"
+            :precision="0"
+            style="width: 100%"
+            placeholder="例如 9100"
+          />
+          <div class="form-item-hint">主机编辑页新增该监控项时默认带入此端口，主机级可覆盖</div>
+        </a-form-item>
         <a-form-item label="安装 Playbook 内容">
           <a-textarea
             v-model:value="packageEditForm.install_playbook_content"
@@ -501,6 +512,7 @@ const packageColumns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
+  { title: '默认端口', dataIndex: 'default_port', key: 'default_port', width: 110 },
   { title: '系统', dataIndex: 'os', key: 'os', width: 100 },
   { title: '架构', dataIndex: 'arch', key: 'arch', width: 100 },
   { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', width: 110 },
@@ -524,6 +536,7 @@ const packageEditModalVisible = ref(false)
 const packageEditModalSubmitting = ref(false)
 const packageEditTarget = ref(null)
 const packageEditForm = reactive({
+  default_port: 9100,
   install_playbook_content: '',
   uninstall_playbook_content: '',
   service_file_content: '',
@@ -592,6 +605,7 @@ function openSyncOfficialModal(record) {
 
 function openPackageEditModal(record) {
   packageEditTarget.value = record
+  packageEditForm.default_port = Number(record.default_port || 9100)
   // 安装/卸载 Playbook 内容直接来自后端 to_representation 补充的 install/uninstall_playbook_content
   // （实际存放在关联 PlaybookTemplate.content 上，这里只是展示成对内联编辑，不再要求先去模板页选择）
   packageEditForm.install_playbook_content = record.install_playbook_content || ''
@@ -612,9 +626,15 @@ async function submitPackageEdit() {
     message.error('服务运行用户为必填项')
     return
   }
+  const defaultPort = Number(packageEditForm.default_port || 0)
+  if (!Number.isInteger(defaultPort) || defaultPort < 1 || defaultPort > 65535) {
+    message.error('默认监控端口必须是 1-65535 的整数')
+    return
+  }
   packageEditModalSubmitting.value = true
   try {
     await updateSoftwarePackage(record.id, {
+      default_port: defaultPort,
       install_playbook_content: packageEditForm.install_playbook_content,
       uninstall_playbook_content: packageEditForm.uninstall_playbook_content,
       service_file_content: packageEditForm.service_file_content,

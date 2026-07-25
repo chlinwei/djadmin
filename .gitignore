@@ -13,3 +13,6 @@ dj_agent/agent
 dj_agent/agent.exe
 dj_agent/bin/
 dj_agent/bin/dj-agent
+
+# 监控安装包缓存
+backend/djadmin/media/monitor_packages/

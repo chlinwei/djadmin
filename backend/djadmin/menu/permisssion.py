@@ -7,15 +7,17 @@ class CustomMenuPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         userInfo = getCurrentUser(request)
         action = view.action
-        if userInfo['username'] == "admin":
-            return True
         perm_code = view.action_perms_map.get(action)
+
+        # action_perms_map 显式配置为 None 的动作表示无需菜单权限（如 Prometheus http_sd）。
+        if perm_code is None:
+            return True
+
+        if userInfo.get('username') == "admin":
+            return True
             
         # 从用户角色关联的菜单中获取权限标识
-        user_perms = userInfo['perms']
-        if perm_code == None:
-            # 说明不需要权限
-            return True
+        user_perms = userInfo.get('perms') or []
         if  perm_code not in user_perms:
             message = "当前操作需要" + perm_code +"权限"
             raise DjadminException(CommonError.NO_PERMISSION,extra_msg=message)

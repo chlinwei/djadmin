@@ -1377,7 +1377,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         return default_value
 
     def _resolve_monitors_from_request(self, request):
-        """解析请求中的 monitors 数组：[{name, enabled}, ...]。
+        """解析请求中的 monitors 数组：[{name, enabled, port}, ...]。
         请求体中不包含 'monitors' 键时返回 None，表示本次请求不涉及监控配置改动（如仅编辑主机基础信息），
         避免每次编辑主机都重新遍历/下发监控任务。"""
         if 'monitors' not in request.data:
@@ -1392,11 +1392,43 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             name = str(item.get('name') or '').strip()
             if not name:
                 continue
+            raw_port = item.get('port')
+            port = None
+            if raw_port is not None and str(raw_port).strip() != '':
+                try:
+                    parsed_port = int(raw_port)
+                    if 1 <= parsed_port <= 65535:
+                        port = parsed_port
+                except (TypeError, ValueError):
+                    port = None
             monitors.append({
                 'name': name,
                 'enabled': self._parse_bool_flag(item.get('enabled'), default_value=True),
+                'port': port,
             })
         return monitors
+
+    @staticmethod
+    def _build_package_default_port_map():
+        from monitor.models import SoftwarePackage
+
+        # 同名软件包可能有多条版本记录，这里按 id 倒序取最新一条的默认端口。
+        package_map = {}
+        queryset = SoftwarePackage.objects.filter(enabled=True).order_by('-id').values('name', 'default_port')
+        for row in queryset:
+            name = str(row.get('name') or '').strip()
+            if name == '' or name in package_map:
+                continue
+            raw_port = row.get('default_port')
+            if raw_port is None:
+                continue
+            try:
+                port = int(raw_port)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                package_map[name] = port
+        return package_map
 
     def _sync_monitors_for_host(self, host, monitors_payload):
         """按 monitors 数组同步该主机纳管的监控目标（每个 name 对应一个 MonitorTarget）：
@@ -1410,15 +1442,20 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
         from monitor.models import MonitorTarget
 
+        package_default_ports = self._build_package_default_port_map()
+
         for entry in monitors_payload:
             name = entry['name']
             enabled = bool(entry['enabled'])
+            requested_port = entry.get('port')
+            resolved_port = requested_port or package_default_ports.get(name) or 9100
 
             target, created = MonitorTarget.objects.get_or_create(
                 host=host,
                 exporter_type=name,
                 defaults={
                     'managed_enabled': enabled,
+                    'scrape_port': resolved_port,
                 },
             )
 
@@ -1428,6 +1465,10 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             if previous_enabled != enabled:
                 target.managed_enabled = enabled
                 update_fields.append('managed_enabled')
+
+            if int(getattr(target, 'scrape_port', 9100) or 9100) != int(resolved_port):
+                target.scrape_port = int(resolved_port)
+                update_fields.append('scrape_port')
 
             if update_fields:
                 target.save(update_fields=update_fields + ['update_time'])

@@ -39,6 +39,50 @@ export function getPrometheusAlerts() {
   return requestUtil.get(prefix + 'targets/prometheus/alerts/')
 }
 
+export function getAlertRules(params) {
+  return requestUtil.get(prefix + 'alert-rules/', params)
+}
+
+export function createAlertRule(data) {
+  return requestUtil.post(prefix + 'alert-rules/', data)
+}
+
+export function updateAlertRule(id, data) {
+  return requestUtil.patch(prefix + `alert-rules/${id}/`, data)
+}
+
+export function deleteAlertRule(id) {
+  return requestUtil.del(prefix + `alert-rules/${id}/`)
+}
+
+export function exportAlertRulesYaml() {
+  return requestUtil.get(prefix + 'alert-rules/export-yaml/')
+}
+
+export function deployAlertRules() {
+  return requestUtil.post(prefix + 'alert-rules/deploy/')
+}
+
+export function getAlertRuleGroups(params) {
+  return requestUtil.get(prefix + 'alert-rule-groups/', params)
+}
+
+export function createAlertRuleGroup(data) {
+  return requestUtil.post(prefix + 'alert-rule-groups/', data)
+}
+
+export function updateAlertRuleGroup(id, data) {
+  return requestUtil.patch(prefix + `alert-rule-groups/${id}/`, data)
+}
+
+export function deleteAlertRuleGroup(id) {
+  return requestUtil.del(prefix + `alert-rule-groups/${id}/`)
+}
+
+export function getAlertRuleDeployHistories(params) {
+  return requestUtil.get(prefix + 'alert-rule-deploy-histories/', params)
+}
+
 export function getManagedTargets(params) {
   return requestUtil.get(prefix + 'targets/', params)
 }

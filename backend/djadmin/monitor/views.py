@@ -7,25 +7,63 @@ from rest_framework.viewsets import GenericViewSet
 
 import hashlib
 import io
+import json
+import os
 import re
 import urllib.error
 import urllib.request
 
 from django.core.files.base import ContentFile
+from django.http import JsonResponse
 from django.utils import timezone
+from rest_framework.permissions import AllowAny
 
 from djadmin.utils import Response_200, Response_error_str
 from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 
-from .models import MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage, build_node_exporter_official_url
-from .prometheus_api import api_get, get_prometheus_base_url
-from .serializer import MonitorTargetInstallHistorySerializer, MonitorTargetSerializer, SoftwarePackageSerializer
+from user.utils import getCurrentUser
+
+from .models import (
+    AlertRule,
+    AlertRuleDeployHistory,
+    AlertRuleGroup,
+    MonitorTarget,
+    MonitorTargetInstallHistory,
+    SoftwarePackage,
+    build_node_exporter_official_url,
+)
+from .prometheus_api import (
+    api_get,
+    deploy_alert_rules_yaml,
+    get_prometheus_base_url,
+    get_prometheus_http_sd_token,
+)
+from .serializer import (
+    AlertRuleDeployHistorySerializer,
+    AlertRuleGroupSerializer,
+    AlertRuleSerializer,
+    MonitorTargetInstallHistorySerializer,
+    MonitorTargetSerializer,
+    SoftwarePackageSerializer,
+)
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')# 官方 tarball 命名规则：node_exporter-<version>.<os>-<arch>.tar.gz，用于行内上传时解析版本/校验架构
 NODE_EXPORTER_FILENAME_RE = re.compile(r'^node_exporter-([^.]+)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$', re.IGNORECASE)# 官方软件包体积上限（字节），避免异常响应把磁盘写满
 MAX_OFFICIAL_PACKAGE_SIZE = 200 * 1024 * 1024
+
+
+def ensure_default_alert_rule_group():
+    return AlertRuleGroup.objects.get_or_create(
+        name='host-baseline',
+        defaults={
+            'interval': '30s',
+            'enabled': True,
+            'order_num': 100,
+            'remark': 'default group',
+        },
+    )[0]
 
 
 class MonitorViewSet(
@@ -61,7 +99,35 @@ class MonitorViewSet(
         'prometheus_targets': 'monitor:view',
         'prometheus_alerts': 'monitor:view',
         'prometheus_overview': 'monitor:view',
+        'prometheus_http_sd': None,
     }
+
+    @staticmethod
+    def _parse_port_value(raw_value):
+        try:
+            port = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        if 1 <= port <= 65535:
+            return port
+        return None
+
+    @classmethod
+    def _resolve_target_scrape_port(cls, target):
+        structured_port = cls._parse_port_value(getattr(target, 'scrape_port', None))
+        if structured_port is not None:
+            return structured_port
+
+        labels = getattr(target, 'labels', None)
+        if isinstance(labels, dict):
+            for key in ('scrape_port', 'exporter_port', 'port'):
+                if key in labels:
+                    port = cls._parse_port_value(labels.get(key))
+                    if port is not None:
+                        return port
+
+        # 未配置端口时不做猜测，避免不同 exporter 端口不一致导致误抓。
+        return None
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -356,6 +422,52 @@ class MonitorViewSet(
             'warnings': response.get('warnings') or [],
         })
 
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path='prometheus/http-sd',
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def prometheus_http_sd(self, request):
+        token = str(request.query_params.get('token') or '').strip()
+        expected_token = get_prometheus_http_sd_token()
+        if expected_token == '' or token != expected_token:
+            return JsonResponse({'error': 'forbidden'}, status=403)
+
+        queryset = (
+            self.get_queryset()
+            .filter(managed_enabled=True, install_status=MonitorTarget.InstallStatus.SUCCESS)
+            .select_related('host')
+        )
+
+        results = []
+        for target in queryset:
+            host = getattr(target, 'host', None)
+            host_ip = str(getattr(host, 'ip', '') or '').strip()
+            if host is None or host_ip == '':
+                continue
+
+            scrape_port = self._resolve_target_scrape_port(target)
+            if scrape_port is None:
+                continue
+            target_address = f'{host_ip}:{scrape_port}'
+            exporter_type = str(getattr(target, 'exporter_type', '') or '').strip()
+            host_id = getattr(host, 'id', '')
+            host_name = str(getattr(host, 'instance_name', '') or '').strip()
+
+            results.append({
+                'targets': [target_address],
+                'labels': {
+                    'job': exporter_type or 'exporter',
+                    '__meta_dj_exporter_type': exporter_type,
+                    '__meta_dj_host_id': str(host_id),
+                    '__meta_dj_instance_name': host_name,
+                },
+            })
+
+        return JsonResponse(results, safe=False)
+
 
 class SoftwarePackageViewSet(
     GenericViewSet,
@@ -546,6 +658,324 @@ class MonitorTargetInstallHistoryViewSet(
                 | Q(summary_message__icontains=query_keyword)
             )
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        serializer = self.get_serializer(self.get_object())
+        return Response_200(data=serializer.data)
+
+
+class AlertRuleViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    RetrieveModelMixin,
+    CreateModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    queryset = AlertRule.objects.all()
+    serializer_class = AlertRuleSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['group', 'group_name', 'severity', 'enabled']
+    search_fields = ['name', 'expr', 'summary_template', 'description_template']
+    ordering_fields = ['id', 'order_num', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'perform_update': 'monitor:view',
+        'destroy': 'monitor:view',
+        'export_yaml': 'monitor:view',
+        'deploy': 'monitor:view',
+    }
+
+    def list(self, request, *args, **kwargs):
+        ensure_default_alert_rule_group()
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        serializer = self.get_serializer(self.get_object())
+        return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        ensure_default_alert_rule_group()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if serializer.validated_data.get('group') is None:
+            return Response_error_str('group 不能为空', code=400)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        deleted_id = instance.id
+        instance.delete()
+        return Response_200(data={'id': deleted_id})
+
+    @action(detail=False, methods=['get'], url_path='export-yaml')
+    def export_yaml(self, request):
+        try:
+            import yaml
+        except Exception:
+            return Response_error_str('后端缺少 YAML 解析依赖，请安装 PyYAML 后重试', code=500)
+
+        rows = list(
+            self.get_queryset()
+            .filter(enabled=True)
+            .select_related('group')
+            .order_by('group__order_num', 'group_name', 'order_num', '-id')
+        )
+
+        grouped_rules = {}
+        for row in rows:
+            group_obj = getattr(row, 'group', None)
+            group_name = str(getattr(group_obj, 'name', '') or '').strip() or str(getattr(row, 'group_name', '') or '').strip() or 'host-baseline'
+            group_interval = str(getattr(group_obj, 'interval', '') or '').strip()
+            if group_name not in grouped_rules:
+                grouped_rules[group_name] = {
+                    'interval': group_interval,
+                    'rules': [],
+                }
+
+            labels = {'severity': row.severity}
+            extra_labels = getattr(row, 'extra_labels', None)
+            if isinstance(extra_labels, dict):
+                for key, value in extra_labels.items():
+                    labels[str(key)] = str(value)
+
+            annotations = {}
+            if str(row.summary_template or '').strip() != '':
+                annotations['summary'] = row.summary_template
+            if str(row.description_template or '').strip() != '':
+                annotations['description'] = row.description_template
+
+            rule_item = {
+                'alert': row.name,
+                'expr': row.expr,
+                'for': row.duration_for,
+                'labels': labels,
+            }
+            if str(row.keep_firing_for or '').strip() != '':
+                rule_item['keep_firing_for'] = row.keep_firing_for
+            if annotations:
+                rule_item['annotations'] = annotations
+
+            grouped_rules[group_name]['rules'].append(rule_item)
+
+        groups = []
+        for name, group_data in grouped_rules.items():
+            group_item = {
+                'name': name,
+                'rules': group_data['rules'],
+            }
+            interval = str(group_data.get('interval') or '').strip()
+            if interval != '':
+                group_item['interval'] = interval
+            groups.append(group_item)
+
+        payload = {'groups': groups}
+        yaml_text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        return Response_200(data={
+            'yaml': yaml_text,
+            'group_count': len(groups),
+            'rule_count': len(rows),
+        })
+
+    @action(detail=False, methods=['post'], url_path='deploy')
+    def deploy(self, request):
+        # 部署入口：导出启用规则 -> 写入规则文件 -> promtool 校验 -> reload，任一步失败自动回滚文件。
+        export_result = self.export_yaml(request)
+        if getattr(export_result, 'status_code', 200) != 200:
+            return export_result
+
+        payload = {}
+        response_data = getattr(export_result, 'data', None)
+        if isinstance(response_data, dict):
+            payload = response_data
+        else:
+            # Response_200/Response_error_str 返回 Django JsonResponse，需要从 content 解析业务包。
+            content = getattr(export_result, 'content', b'')
+            if isinstance(content, (bytes, bytearray)) and len(content) > 0:
+                try:
+                    payload = json.loads(content.decode('utf-8'))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    payload = {}
+
+        if int(payload.get('code') or 500) != 200:
+            return export_result
+
+        export_data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+        yaml_text = str((export_data or {}).get('yaml') or '')
+        if yaml_text.strip() == '':
+            return Response_error_str('当前没有可部署的启用规则', code=400)
+
+        user_info = getCurrentUser(request)
+        username = str(user_info.get('username', '') or '')
+        user_id = user_info.get('user_id')
+
+        try:
+            deploy_result = deploy_alert_rules_yaml(yaml_text)
+        except Exception as exc:
+            # 文件写入/目录权限等运行环境问题，统一按业务失败返回并写入部署历史。
+            history = AlertRuleDeployHistory.objects.create(
+                status=AlertRuleDeployHistory.Status.FAILED,
+                deployed_file_path='',
+                backup_file_path='',
+                reload_url='',
+                message=str(exc) or '部署失败',
+                yaml_snapshot=yaml_text,
+                requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
+                requested_username_snapshot=username,
+            )
+            history_id = getattr(history, 'id', None)
+            return Response_error_str(history.message, code=500, data={
+                'history_id': history_id,
+                'file_path': '',
+                'backup_file_path': '',
+                'reload_url': '',
+            })
+
+        if deploy_result.get('ok'):
+            history = AlertRuleDeployHistory.objects.create(
+                status=AlertRuleDeployHistory.Status.SUCCESS,
+                deployed_file_path=str(deploy_result.get('file_path') or ''),
+                backup_file_path=str(deploy_result.get('backup_file_path') or ''),
+                reload_url=str(deploy_result.get('reload_url') or ''),
+                message='部署并 reload 成功',
+                yaml_snapshot=yaml_text,
+                requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
+                requested_username_snapshot=username,
+            )
+            history_id = getattr(history, 'id', None)
+            return Response_200(data={
+                'deployed': True,
+                'history_id': history_id,
+                'file_path': history.deployed_file_path,
+                'backup_file_path': history.backup_file_path,
+                'reload_url': history.reload_url,
+            })
+
+        history = AlertRuleDeployHistory.objects.create(
+            status=AlertRuleDeployHistory.Status.FAILED,
+            deployed_file_path=str(deploy_result.get('file_path') or ''),
+            backup_file_path=str(deploy_result.get('backup_file_path') or ''),
+            reload_url=str(deploy_result.get('reload_url') or ''),
+            message=str(deploy_result.get('error') or '部署失败'),
+            yaml_snapshot=yaml_text,
+            requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
+            requested_username_snapshot=username,
+        )
+        history_id = getattr(history, 'id', None)
+        return Response_error_str(history.message, code=500, data={
+            'history_id': history_id,
+            'file_path': history.deployed_file_path,
+            'backup_file_path': history.backup_file_path,
+            'reload_url': history.reload_url,
+        })
+
+
+class AlertRuleGroupViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    RetrieveModelMixin,
+    CreateModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    queryset = AlertRuleGroup.objects.all()
+    serializer_class = AlertRuleGroupSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['enabled']
+    search_fields = ['name']
+    ordering_fields = ['id', 'order_num', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'perform_update': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def list(self, request, *args, **kwargs):
+        ensure_default_alert_rule_group()
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        serializer = self.get_serializer(self.get_object())
+        return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if AlertRule.objects.filter(group=instance).exists():
+            return Response_error_str('该规则组下仍有规则，不能删除', code=400)
+        deleted_id = instance.id
+        instance.delete()
+        return Response_200(data={'id': deleted_id})
+
+
+class AlertRuleDeployHistoryViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    RetrieveModelMixin,
+):
+    queryset = AlertRuleDeployHistory.objects.all()
+    serializer_class = AlertRuleDeployHistorySerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['status']
+    search_fields = ['requested_username_snapshot', 'message', 'deployed_file_path']
+    ordering_fields = ['id', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+    }
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())

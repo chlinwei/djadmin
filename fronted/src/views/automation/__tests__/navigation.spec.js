@@ -1,4 +1,4 @@
-import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../navigation'
+import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../utils/navigation'
 
 describe('automation navigation helpers', () => {
   it('builds template route with playbook type and search when template name exists', () => {

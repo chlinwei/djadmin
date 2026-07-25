@@ -2,7 +2,7 @@ import {
   buildHostScopedLogText,
   copyTextWithFallback,
   normalizeUnifiedLogAliases,
-} from '../logHelpers'
+} from '../utils/logHelpers'
 
 describe('automation log helpers', () => {
   it('normalizes host alias in unified log lines', () => {

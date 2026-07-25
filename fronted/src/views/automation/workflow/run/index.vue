@@ -158,7 +158,7 @@ import {
   buildWorkflowEdgeStyle,
   resolveWorkflowEdgePathOptions,
   resolveWorkflowEdgeType,
-} from '../utils/workflowGraph'
+} from '../../utils/workflowGraph'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import './run.css'

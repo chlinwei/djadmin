@@ -14,9 +14,7 @@ import {
   launchWorkflow,
   precheckWorkflowLaunch,
 } from '@/api/sys/automation'
-import { buildAutomationInventoryRoute } from '../navigation'
-import ScopePrecheckPanel from '../components/ScopePrecheckPanel.vue'
-import ExecutionScopePreviewModal from '../components/ExecutionScopePreviewModal.vue'
+import { buildAutomationInventoryRoute } from '../../utils/navigation'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   LIMIT_INPUT_PLACEHOLDER,
@@ -24,7 +22,7 @@ import {
   removeLimitToken,
   resolveMatchedHostLimitToken,
   toggleLimitToken,
-} from '../utils/scopeHelpers'
+} from '../../utils/scopeHelpers'
 import {
   WORKFLOW_ACTION_TOOLTIP_PROPS,
   WORKFLOW_COLUMNS,
@@ -37,7 +35,7 @@ import {
   buildScopePreviewTitle,
   runWorkflowPrecheck,
   buildWorkflowPrecheckMessage,
-} from '../utils/workflowControllerHelpers'
+} from '../../utils/workflowControllerHelpers'
 
 
 export function useAutomationWorkflowController() {

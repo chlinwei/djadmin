@@ -1,4 +1,4 @@
-import { buildScopeSummaryText, flattenGroupPathMap } from '../scopeSummary'
+import { buildScopeSummaryText, flattenGroupPathMap } from '../utils/scopeSummary'
 
 describe('scopeSummary helpers', () => {
   it('builds path map recursively for nested groups', () => {

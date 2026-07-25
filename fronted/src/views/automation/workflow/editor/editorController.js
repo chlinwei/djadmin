@@ -8,14 +8,14 @@ import {
   removeLimitToken,
   resolveMatchedHostLimitToken,
   toggleLimitToken,
-} from '../utils/scopeHelpers'
+} from '../../utils/scopeHelpers'
 import {
   START_EDGE_TYPE,
   buildWorkflowEdgeLabelStyle,
   buildWorkflowEdgeStyle,
   resolveWorkflowEdgePathOptions,
   resolveWorkflowEdgeType,
-} from '../utils/workflowGraph'
+} from '../../utils/workflowGraph'
 import {
   autoLayoutTreeNodes,
   createStartNode,
@@ -26,7 +26,7 @@ import {
   resolveNodeEnableStatusByData,
   resolveTaskNameFromNodeData,
   resolveWorkflowNameFromNodeData,
-} from '../utils/workflowEditorGraphUtils'
+} from '../../utils/workflowEditorGraphUtils'
 import {
   getTaskList,
   getWorkflowList,

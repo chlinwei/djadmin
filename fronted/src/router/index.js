@@ -68,7 +68,7 @@ export const staticRouterMap = [
             {
                 path: '/sys/automation/workflow',
                 name: 'Workflow编排',
-                component: () => import('../views/automation/workflow/index.vue'),
+                component: () => import('../views/automation/workflow/list/index.vue'),
             },
             {
                 path: '/sys/automation/workflow/create',
@@ -78,12 +78,12 @@ export const staticRouterMap = [
             {
                 path: '/sys/automation/workflow/editor',
                 name: 'Workflow编排编辑',
-                component: () => import('../views/automation/workflow/editor.vue'),
+                component: () => import('../views/automation/workflow/editor/index.vue'),
             },
             {
                 path: '/sys/automation/workflow/run',
                 name: 'Workflow运行状态',
-                component: () => import('../views/automation/workflow/run.vue'),
+                component: () => import('../views/automation/workflow/run/index.vue'),
             },
             {
                 path: '/sys/monitor',
@@ -93,12 +93,12 @@ export const staticRouterMap = [
             {
                 path: '/assets/hosts/detail/:id',
                 name: '主机详情页',
-                component: () => import('../views/assets/host/detail.vue'),
+                component: () => import('../views/assets/host/detail/index.vue'),
             },
             {
                 path: '/assets/hosts/agent-runtime/:id',
                 name: '主机 Agent 运行状态页',
-                component: () => import('../views/assets/host/agent-runtime.vue'),
+                component: () => import('../views/assets/host/agent-runtime/index.vue'),
             },
         ]
     },
@@ -116,8 +116,14 @@ function resolveMenuComponent(componentPath) {
 
     const candidateKeys = [
         `../views/${normalized}.vue`,
+        `../views/${normalized}/index.vue`,
         `../views/${normalized}`,
         `../views/${normalized}.vue`
+            .replace('sys/audit/', 'audit/')
+            .replace('/applications/', '/application/')
+            .replace('/credentials/', '/credential/')
+            .replace('/usercenter/', '/userCenter/'),
+        `../views/${normalized}/index.vue`
             .replace('sys/audit/', 'audit/')
             .replace('/applications/', '/application/')
             .replace('/credentials/', '/credential/')

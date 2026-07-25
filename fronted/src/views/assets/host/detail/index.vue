@@ -144,7 +144,7 @@ import { refreshHostInfo, getHostById } from '@/api/assets/host/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
-import { formatDateTimeWithTimezone, formatPercent, formatSize, getDisks } from './hostDisplayUtils'
+import { formatDateTimeWithTimezone, formatPercent, formatSize, getDisks } from '../utils/hostDisplayUtils'
 
 const route = useRoute()
 const router = useRouter()

@@ -195,7 +195,7 @@ import {
   getAutomationHostOptions,
   getAutomationGroupTree,
 } from '@/api/sys/automation'
-import { buildScopeSummaryText, flattenGroupPathMap } from '../scopeSummary'
+import { buildScopeSummaryText, flattenGroupPathMap } from '../utils/scopeSummary'
 
 const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 const route = useRoute()

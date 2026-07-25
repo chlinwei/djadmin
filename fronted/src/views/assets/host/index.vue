@@ -468,7 +468,7 @@ import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { deleteManagedTarget, getSoftwarePackages } from '@/api/sys/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import Dialog from '@/views/assets/hostgroup/components/Dialog.vue'
+import Dialog from './components/HostGroupDialog/index.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 import {
@@ -482,13 +482,13 @@ import {
     getGroupNodeLabel,
     getHostDisplayName,
     getHostGroupId,
-} from './hostGroupTreeUtils'
+} from './utils/hostGroupTreeUtils'
 import {
     formatDateTimeWithTimezone,
     formatPercent,
     formatSize,
     getGroupName,
-} from './hostDisplayUtils'
+} from './utils/hostDisplayUtils'
 
 const searchText = ref('')
 const groupSearchText = ref('')

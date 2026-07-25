@@ -54,7 +54,7 @@ npm run test:report
 
 ## 关键页面说明
 
-### 1) WebSSH 页面（`/views/assets/host/webssh.vue`）
+### 1) WebSSH 页面（`/views/assets/host/webssh/index.vue`）
 
 - 左侧文件区支持目录浏览、过滤、右键菜单、拖拽上传。
 - 文件区返回按钮为 **↑**，语义为“返回上一次访问目录”（类似 `cd -`）。

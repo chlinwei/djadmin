@@ -214,8 +214,8 @@
 </template>
 
 <script setup>
-import ScopePrecheckPanel from '../components/ScopePrecheckPanel.vue'
-import ExecutionScopePreviewModal from '../components/ExecutionScopePreviewModal.vue'
+import ScopePrecheckPanel from '../../components/ScopePrecheckPanel.vue'
+import ExecutionScopePreviewModal from '../../components/ExecutionScopePreviewModal.vue'
 import { useAutomationWorkflowController } from './controller'
 import './style.css'
 

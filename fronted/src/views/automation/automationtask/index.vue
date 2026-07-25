@@ -1,375 +1,80 @@
 <template>
   <div class="automation-page">
-    <a-row class="tools" :gutter="12">
-      <a-col :span="16">
-        <a-input-search
-          v-model:value="taskKeyword"
-          placeholder="搜索任务名称"
-          allow-clear
-          enter-button
-          @search="loadTasks(true)"
-        />
-      </a-col>
-      <a-col :span="8" class="right-actions">
-        <a-space>
-          <a-tooltip title="新增">
-            <a-button size="large" @click="openCreateModal" v-permission="'automation:tasks:create'">
-              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-              <span>&nbsp新增任务</span>
-            </a-button>
-          </a-tooltip>
-          <a-tooltip title="刷新">
-            <a-button type="primary" ghost :loading="taskLoading || playbookLoading" @click="reloadAll">
-              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="taskLoading || playbookLoading" />
-              <span>&nbsp;刷新</span>
-            </a-button>
-          </a-tooltip>
-        </a-space>
-      </a-col>
-    </a-row>
+    <TaskListCard
+      v-model:taskKeyword="taskKeyword"
+      :task-loading="taskLoading"
+      :playbook-loading="playbookLoading"
+      :task-columns="taskColumns"
+      :tasks="tasks"
+      :task-pagination="taskPagination"
+      :can-edit-task="canEditTask"
+      :task-status-updating-id="taskStatusUpdatingId"
+      :running-task-id="runningTaskId"
+      :timezone="userTimezone"
+      :format-env-var-cell="formatEnvVarCell"
+      :format-env-var-cell-full-text="formatEnvVarCellFullText"
+      :format-update-time="formatUpdateTime"
+      @search="loadTasks(true)"
+      @create="openCreateModal"
+      @reload="reloadAll"
+      @table-change="handleTaskTableChange"
+      @edit="openEditModal"
+      @status-change="onChangeTaskStatus"
+      @goto-template="goToPlaybookTemplate"
+      @goto-inventory="goToInventory"
+      @open-scope-preview="openScopePreviewModal"
+      @run-now="openRunNowModal"
+      @logs="viewTaskLogs"
+      @delete="openDeleteTaskConfirm"
+    />
 
-    <a-card title="任务列表" size="small" class="block-card">
-      <a-table
-        :columns="taskColumns"
-        :data-source="tasks"
-        :loading="taskLoading"
-        :pagination="taskPagination"
-        rowKey="id"
-        size="small"
-        :scroll="{ x: 1700 }"
-        @change="handleTaskTableChange"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'name'">
-            <a-button
-              v-if="canEditTask"
-              type="link"
-              size="small"
-              class="task-name-link"
-              @click="openEditModal(record)"
-            >
-              {{ record.name || '-' }}
-            </a-button>
-            <span v-else>{{ record.name || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'enabled'">
-            <a-switch
-              :checked="record.enabled === true"
-              :disabled="!canEditTask || taskLoading || taskStatusUpdatingId === record.id"
-              :loading="taskStatusUpdatingId === record.id"
-              @change="(checked) => onChangeTaskStatus(checked, record)"
-            />
-          </template>
-          <template v-else-if="column.key === 'template_name'">
-            <a-button type="link" size="small" class="task-code-link" @click="goToPlaybookTemplate(record)">
-              {{ record.template_name || '-' }}
-            </a-button>
-          </template>
-          <template v-else-if="column.key === 'inventory_name'">
-            <a-button type="link" size="small" class="task-code-link" @click="goToInventory(record)">
-              {{ record.inventory_name || '-' }}
-            </a-button>
-          </template>
-          <template v-else-if="column.key === 'selected_group_ids'">
-            <div class="scope-compact-cell">
-              <span v-if="!record.inventory" class="scope-limit-empty">未设置 Inventory</span>
-
-              <template v-else>
-              <a-tag v-if="record.limit_preview_limit" color="blue" class="scope-limit-tag">
-                {{ record.limit_preview_limit }}
-              </a-tag>
-              <span v-else class="scope-limit-empty">未设置默认 Limit</span>
-
-              <a-button
-                v-if="Number(record.limit_preview_total || 0) > 0"
-                type="link"
-                size="small"
-                class="scope-host-count-link"
-                @click.stop="openScopePreviewModal(record)"
-              >
-                {{
-                  record.limit_preview_limit
-                    ? `${Number(record.limit_preview_total || 0)} 台主机`
-                    : `Inventory 全量（${Number(record.limit_preview_total || 0)} 台，列表折叠）`
-                }}
-              </a-button>
-
-              <span v-else-if="record.limit_preview_limit" class="scope-match-empty">0 台匹配</span>
-              <span v-else class="scope-match-empty">Inventory 无主机</span>
-              </template>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'env_vars'">
-            <a-tooltip :title="formatEnvVarCellFullText(record.env_vars)">
-              <div class="json-cell">{{ formatEnvVarCell(record.env_vars) }}</div>
-            </a-tooltip>
-          </template>
-          <template v-else-if="column.key === 'update_time'">
-            <span>{{ record.update_time ? formatTimeWithTimezone(record.update_time, store.state.user?.timezone || 'Asia/Shanghai') : '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'action'">
-            <a-space>
-              <a-tooltip title="编辑">
-                <a-button size="small" type="primary" @click="openEditModal(record)" v-permission="'automation:tasks:update'">
-                  <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="运行">
-                <a-button
-                  size="small"
-                  type="primary"
-                  ghost
-                  :loading="runningTaskId === record.id"
-                  :disabled="!record.enabled || runningTaskId === record.id"
-                  @click="openRunNowModal(record)"
-                  v-permission="'automation:jobs:create'"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'play']" />
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="历史记录">
-                <a-button size="small" @click="viewTaskLogs(record)" v-permission="'automation:jobs:view'">
-                  历史记录
-                  <FontAwesomeIcon :icon="['fas', 'list']" />
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="删除">
-                <a-button
-                  class="delBtn"
-                  size="small"
-                  type="primary"
-                  danger
-                  v-permission="'automation:tasks:delete'"
-                  @click="openDeleteTaskConfirm(record)"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                </a-button>
-              </a-tooltip>
-            </a-space>
-          </template>
-        </template>
-      </a-table>
-    </a-card>
-
-    <a-modal
-      :title="isCreateMode ? '新增任务' : '编辑任务'"
+    <TaskFormModal
+      :is-create-mode="isCreateMode"
       :open="taskModalVisible"
-      :width="820"
-      :confirmLoading="modalSubmitting"
-      @ok="submitTask"
+      :confirm-loading="modalSubmitting"
+      :task-form="taskForm"
+      :get-task-modal-popup-container="getTaskModalPopupContainer"
+      :task-template-options="taskTemplateOptions"
+      :task-template-loading="taskTemplateLoading"
+      :task-template-placeholder="taskTemplatePlaceholder"
+      :inventory-options="inventoryOptions"
+      :limit-input-placeholder="LIMIT_INPUT_PLACEHOLDER"
+      :task-limit-precheck-ok="taskLimitPrecheckOk"
+      :task-limit-prechecking="taskLimitPrechecking"
+      :task-limit-precheck-text="taskLimitPrecheckText"
+      :task-limit-all-hosts="taskLimitAllHosts"
+      :task-limit-matched-hosts="taskLimitMatchedHosts"
+      :task-env-vars-label="taskEnvVarsLabel"
+      :task-env-vars-placeholder="taskEnvVarsPlaceholder"
+      :task-shell-args-placeholder="taskShellArgsPlaceholder"
+      @submit="submitTask"
       @cancel="taskModalVisible = false"
-    >
-      <a-form layout="vertical">
-        <a-row :gutter="12">
-          <a-col :span="12">
-            <a-form-item label="任务名称" required>
-              <a-input v-model:value="taskForm.name" placeholder="例如：生产环境健康巡检" />
-            </a-form-item>
-          </a-col>
-        </a-row>
+      @template-type-change="handleTemplateTypeChange"
+      @task-limit-host-click="handleTaskLimitHostClick"
+      @task-limit-toggle="handleTaskLimitToggle"
+      @task-limit-remove-token="handleTaskLimitRemoveToken"
+    />
 
-        <a-row :gutter="12">
-          <a-col :span="8">
-            <a-form-item label="模板类型" required>
-              <a-select
-                v-model:value="taskForm.template_type"
-                :options="[
-                  { label: 'Playbook', value: 'playbook' },
-                  { label: 'Shell脚本', value: 'shell_script' }
-                ]"
-                :getPopupContainer="getTaskModalPopupContainer"
-                @change="handleTemplateTypeChange"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item label="选择模板" required>
-              <a-select
-                v-model:value="taskForm.template"
-                :options="taskTemplateOptions"
-                :loading="taskTemplateLoading"
-                show-search
-                optionFilterProp="label"
-                :getPopupContainer="getTaskModalPopupContainer"
-                :placeholder="taskTemplatePlaceholder"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item label="选择Inventory（可选）">
-              <a-select
-                v-model:value="taskForm.inventory"
-                :options="inventoryOptions"
-                show-search
-                optionFilterProp="label"
-                :getPopupContainer="getTaskModalPopupContainer"
-                placeholder="可选：未选择则按任务节点范围执行"
-                allow-clear
-              />
-            </a-form-item>
-          </a-col>
-        </a-row>
-
-        <a-form-item label="启用状态">
-          <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="禁用" />
-        </a-form-item>
-
-        <a-form-item>
-          <a-alert
-            type="info"
-            show-icon
-            message="任务执行范围由所选 Inventory 决定；主机组请在 Inventory 管理中维护"
-          />
-        </a-form-item>
-
-        <a-form-item label="默认 Limit（可选）">
-          <a-input
-            v-model:value="taskForm.default_limit"
-            :placeholder="LIMIT_INPUT_PLACEHOLDER"
-          />
-          <ScopePrecheckPanel
-            :precheck-ok="taskLimitPrecheckOk"
-            :prechecking="taskLimitPrechecking"
-            :message="taskLimitPrecheckText"
-            :hosts="taskLimitAllHosts"
-            :matched-hosts="taskLimitMatchedHosts"
-            :show-host-link="true"
-            :show-limit-toggle="true"
-            :show-target-filter="true"
-            :limit-text="taskForm.default_limit"
-            @host-click="handleTaskLimitHostClick"
-            @toggle-limit-host="handleTaskLimitToggle"
-            @remove-limit-token="handleTaskLimitRemoveToken"
-          />
-        </a-form-item>
-
-        <a-form-item label="执行超时（秒）" required>
-          <a-input-number
-            v-model:value="taskForm.execution_timeout_seconds"
-            :min="1"
-            :max="14400"
-            :step="60"
-            style="width: 100%"
-            placeholder="默认 600"
-          />
-          <a-alert
-            type="info"
-            show-icon
-            style="margin-top: 8px"
-            message="任务总执行超时（秒）。超过该时间后 dj-agent 会终止执行进程（保底退出）。"
-          />
-        </a-form-item>
-
-        <a-form-item :label="taskEnvVarsLabel">
-          <a-textarea
-            v-model:value="taskForm.env_vars_text"
-            :rows="6"
-            :placeholder="taskEnvVarsPlaceholder"
-          />
-          <a-alert
-            v-if="taskForm.template_type === 'shell_script'"
-            type="info"
-            show-icon
-            style="margin-top: 8px"
-            message="这里填写的是环境变量（key=value），执行时会以 export 注入脚本运行环境。"
-          />
-        </a-form-item>
-
-        <a-form-item
-          v-if="taskForm.template_type === 'shell_script'"
-          label="Shell 参数字符串（可选）"
-        >
-          <a-input
-            v-model:value="taskForm.shell_args_text"
-            :placeholder="taskShellArgsPlaceholder"
-          />
-          <a-alert
-            type="info"
-            show-icon
-            style="margin-top: 8px"
-            message="按空格分割的参数字符串，执行时按顺序映射到 $1、$2...（示例：prod 8080 --force）"
-          />
-        </a-form-item>
-
-        <a-divider orientation="left" style="margin: 16px 0">执行身份配置</a-divider>
-
-        <a-row :gutter="12">
-          <a-col :span="8">
-            <a-form-item label="执行用户" required>
-              <a-input
-                v-model:value="taskForm.run_as_user"
-                placeholder="必填，例如 node_exporter"
-              />
-              <a-alert
-                type="info"
-                show-icon
-                message="dj-agent 以 root 运行，任务实际执行时会 setuid/setgid 降权到该用户，不再使用 sudo/su"
-                style="margin-top: 8px"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item label="执行组（可选）">
-              <a-input
-                v-model:value="taskForm.run_as_group"
-                placeholder="留空则使用执行用户的主组"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item label="工作目录">
-              <a-input
-                v-model:value="taskForm.work_directory"
-                placeholder="默认为 /tmp"
-              />
-            </a-form-item>
-          </a-col>
-        </a-row>
-      </a-form>
-    </a-modal>
-
-    <a-modal
-      title="运行任务"
+    <RunNowModal
       :open="runNowModalVisible"
-      :confirmLoading="runNowSubmitting"
-      ok-text="立即执行"
-      cancel-text="取消"
-      :ok-button-props="{ disabled: !runNowPrecheckOk }"
-      @ok="confirmRunNow"
+      :confirm-loading="runNowSubmitting"
+      :precheck-ok="runNowPrecheckOk"
+      :prechecking="runNowPrechecking"
+      :precheck-text="runNowPrecheckText"
+      :is-shell-task="runNowIsShellTask"
+      :run-now-limit="runNowLimit"
+      :run-now-shell-args="runNowShellArgs"
+      :all-hosts="runNowAllHosts"
+      :matched-hosts="runNowMatchedHosts"
+      :limit-input-placeholder="LIMIT_INPUT_PLACEHOLDER"
+      @update:runNowLimit="(value) => (runNowLimit = value)"
+      @update:runNowShellArgs="(value) => (runNowShellArgs = value)"
+      @confirm="confirmRunNow"
       @cancel="closeRunNowModal"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="本次 Limit（可选）">
-          <a-input
-            v-model:value="runNowLimit"
-            allow-clear
-            :placeholder="LIMIT_INPUT_PLACEHOLDER"
-          />
-        </a-form-item>
-        <a-form-item v-if="runNowIsShellTask" label="本次参数字符串（可选）">
-          <a-input
-            v-model:value="runNowShellArgs"
-            allow-clear
-            placeholder="例如: prod 8080 --force"
-          />
-        </a-form-item>
-      </a-form>
-
-      <ScopePrecheckPanel
-        :precheck-ok="runNowPrecheckOk"
-        :prechecking="runNowPrechecking"
-        :message="runNowPrecheckText"
-        :hosts="runNowAllHosts"
-        :matched-hosts="runNowMatchedHosts"
-        :show-host-link="true"
-        :show-limit-toggle="true"
-        :show-target-filter="true"
-        :limit-text="runNowLimit"
-        @host-click="handleRunNowHostClick"
-        @toggle-limit-host="handleRunNowLimitToggle"
-        @remove-limit-token="handleRunNowRemoveToken"
-      />
-    </a-modal>
+      @host-click="handleRunNowHostClick"
+      @toggle-limit-host="handleRunNowLimitToggle"
+      @remove-limit-token="handleRunNowRemoveToken"
+    />
 
     <ExecutionScopePreviewModal
       :title="scopePreviewTitle"
@@ -404,10 +109,18 @@ import {
   getAutomationGroupTree,
 } from '@/api/sys/automation'
 import { checkPermission } from '@/directives/permission/permission'
-import { buildScopeSummaryText, flattenGroupPathMap } from '../scopeSummary'
-import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../navigation'
-import ScopePrecheckPanel from '../components/ScopePrecheckPanel.vue'
+import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../utils/navigation'
 import ExecutionScopePreviewModal from '../components/ExecutionScopePreviewModal.vue'
+import TaskListCard from './components/TaskListCard/index.vue'
+import RunNowModal from './components/RunNowModal/index.vue'
+import TaskFormModal from './components/TaskFormModal/index.vue'
+import {
+  buildRunNowPayload,
+  formatShellEnvText,
+  parseShellEnvText,
+  resolveTaskSubmitErrorMessage,
+} from './controller'
+import './style.css'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   LIMIT_INPUT_PLACEHOLDER,
@@ -469,7 +182,6 @@ const inventoryOptions = ref([])
 const groupLoading = ref(false)
 const groupTreeData = ref([])
 const groupMap = ref({})
-const groupPathMap = ref({})
 const groupScopeCheckedKeys = ref([])
 
 const taskModalVisible = ref(false)
@@ -533,6 +245,14 @@ const taskForm = reactive({
 })
 
 const taskColumns = TASK_COLUMNS
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
+
+function formatUpdateTime(timeText, timezone) {
+  if (!timeText) {
+    return '-'
+  }
+  return formatTimeWithTimezone(timeText, timezone || 'Asia/Shanghai')
+}
 
 const taskTemplateOptions = computed(() => {
   if (taskForm.template_type === 'shell_script') {
@@ -571,49 +291,6 @@ const taskEnvVarsPlaceholder = computed(() => {
 
 const taskShellArgsPlaceholder = computed(() => '例如: prod 8080 --force')
 
-function parseShellEnvText(text) {
-  const input = String(text || '').trim()
-  if (!input) return {}
-  const result = {}
-  for (const item of input.split(/[;\n]+/).map((s) => s.trim()).filter(Boolean)) {
-    const i = item.indexOf('=')
-    if (i <= 0) throw new Error(`Shell 环境变量格式错误: ${item}`)
-    const key = item.slice(0, i).trim()
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Shell 环境变量名不合法: ${key}`)
-    result[key] = item.slice(i + 1).trim()
-  }
-  return result
-}
-
-function formatShellEnvText(envVars) {
-  if (!envVars || typeof envVars !== 'object' || Array.isArray(envVars)) return ''
-  return Object.entries(envVars).map(([k, v]) => `${k}=${String(v ?? '')}`).join(';')
-}
-
-function resolveTaskSubmitErrorMessage(error) {
-  const response = error?.response?.data
-  const fieldErrors = response?.data
-  if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
-    const labels = { name: '任务名称', inventory: 'Inventory', shell_parameters: 'Shell 参数字符串', env_vars: '环境变量' }
-    const messages = []
-    for (const [field, value] of Object.entries(fieldErrors)) {
-      const text = (Array.isArray(value) ? value.join('；') : String(value || '')).trim()
-      if (!text) continue
-      if (field === 'name' && /already exists/i.test(text)) { messages.push('任务名称已存在'); continue }
-      messages.push(field === 'non_field_errors' ? text : `${labels[field] || field}: ${text}`)
-    }
-    if (messages.length) return messages.join('；')
-  }
-  return response?.msg || error?.message || '任务保存失败'
-}
-
-function buildRunNowPayload(limit, isShellTask, shellArgs) {
-  const runtimeLimit = String(limit || '').trim()
-  return isShellTask
-    ? { limit: runtimeLimit, shell_parameters: String(shellArgs || '').trim() }
-    : { limit: runtimeLimit }
-}
-
 const taskSort = reactive({
   field: null,
   order: null,
@@ -623,15 +300,6 @@ const runNowIsShellTask = computed(() => Number(runNowTask.value?.shell_script_t
 
 function resolveTaskOrdering() {
   return resolveTaskListOrdering(taskSort)
-}
-
-function getTaskScopeSummaryText(record) {
-  return buildScopeSummaryText({
-    selectedGroupIds: record?.selected_group_ids,
-    selectedHostIds: record?.selected_host_ids,
-    groupPathMap: groupPathMap.value,
-    groupNameMap: groupMap.value,
-  })
 }
 
 function formatEnvVarCell(value) {
@@ -841,7 +509,6 @@ async function loadGroupTree() {
     const groupData = groupRes?.data?.data || []
     groupTreeData.value = appendGroupHostCount(buildGroupTreeWithAll(groupData, hostRecords))
     groupMap.value = flattenGroupNameMap(groupData, {})
-    groupPathMap.value = flattenGroupPathMap(groupData, {})
   } finally {
     groupLoading.value = false
   }
@@ -1591,270 +1258,4 @@ onMounted(async () => {
   await openTaskFromRouteQuery()
 })
 </script>
-
-<style scoped>
-.automation-page {
-  padding: 2px;
-}
-
-.tools {
-  margin-bottom: 12px;
-}
-
-.right-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.block-card {
-  margin-bottom: 12px;
-}
-
-.json-cell {
-  max-width: 220px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.group-list-cell {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.scope-compact-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  max-width: 240px;
-}
-
-.scope-limit-tag {
-  margin-inline-end: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.scope-limit-empty {
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.scope-match-empty {
-  color: rgba(0, 0, 0, 0.45);
-  line-height: 1.2;
-}
-
-.scope-host-count-link {
-  padding: 0;
-  height: auto;
-}
-
-.scope-popover-list {
-  max-width: 460px;
-  max-height: 260px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.scope-popover-item {
-  font-size: 12px;
-  line-height: 1.4;
-  word-break: break-all;
-}
-
-.scope-popover-more {
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
-  margin-top: 2px;
-}
-
-.group-list-edit-btn {
-  padding-inline: 4px;
-}
-
-.group-list-view-btn {
-  padding-inline: 4px;
-}
-
-.group-list-tag {
-  margin-inline-end: 0;
-}
-
-.group-list-more {
-  margin-inline-end: 0;
-  cursor: pointer;
-  color: #1677ff;
-  border-color: #91caff;
-  background: #f0f8ff;
-}
-
-.group-list-popover {
-  max-width: 360px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.scope-link-button {
-  padding: 0;
-}
-
-.scope-tree-link {
-  padding: 0;
-  height: auto;
-}
-
-.task-code-link {
-  padding: 0;
-  height: auto;
-}
-
-.group-scope-editor {
-  width: 100%;
-  min-height: 520px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.group-scope-viewer {
-  width: 100%;
-  min-height: 520px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.group-scope-viewer__summary {
-  font-size: 13px;
-  color: rgba(0, 0, 0, 0.75);
-  background: #f7faff;
-  border: 1px solid #d6e4ff;
-  border-radius: 6px;
-  padding: 6px 10px;
-}
-
-.group-scope-viewer__search {
-  max-width: 360px;
-}
-
-.group-scope-editor__header {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.group-scope-editor__title {
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(0, 0, 0, 0.88);
-}
-
-.group-scope-editor__desc {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.group-scope-editor__tree-wrap {
-  width: 100%;
-  min-height: 460px;
-  max-height: 620px;
-  overflow: auto;
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  padding: 12px 16px;
-  background: #fff;
-}
-
-.group-scope-tree {
-  width: 100%;
-}
-
-:deep(.group-scope-tree .ant-tree) {
-  width: 100%;
-}
-
-:deep(.group-scope-tree .ant-tree-node-content-wrapper) {
-  width: 100%;
-}
-
-.group-scope-tree__group {
-  font-weight: 500;
-}
-
-.group-scope-tree__host {
-  color: rgba(0, 0, 0, 0.75);
-}
-
-:deep(.execution-scope-popover .ant-popover-inner) {
-  max-width: 520px;
-}
-
-.execution-scope-popover-content {
-  max-width: 480px;
-  max-height: 360px;
-  overflow: auto;
-}
-
-.run-now-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  color: rgba(0, 0, 0, 0.75);
-}
-
-.run-now-preview-body {
-  max-height: 240px;
-  overflow: auto;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #fafafa;
-}
-
-.run-now-preview-list {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.run-now-preview-list li {
-  line-height: 1.6;
-  word-break: break-all;
-}
-
-.task-limit-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 8px;
-  margin-bottom: 8px;
-  color: rgba(0, 0, 0, 0.75);
-}
-
-.task-limit-preview-body {
-  max-height: 180px;
-  overflow: auto;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #fafafa;
-}
-
-.task-limit-preview-list {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.task-limit-preview-list li {
-  line-height: 1.6;
-  word-break: break-all;
-}
-</style>
+<style scoped src="./style.css"></style>

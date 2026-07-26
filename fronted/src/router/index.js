@@ -96,9 +96,9 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/alert-rules/index.vue'),
             },
             {
-                path: '/monitor/alert-rule-groups',
-                name: '规则组管理',
-                component: () => import('../views/monitor/alert-rule-groups/index.vue'),
+                path: '/monitor/alerts',
+                name: '告警',
+                component: () => import('../views/monitor/alerts/index.vue'),
             },
             {
                 path: '/assets/hosts/detail/:id',

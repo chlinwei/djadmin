@@ -39,48 +39,15 @@ export function getPrometheusAlerts() {
   return requestUtil.get(prefix + 'targets/prometheus/alerts/')
 }
 
-export function getAlertRules(params) {
-  return requestUtil.get(prefix + 'alert-rules/', params)
+// 告警规则改为只读展示 Prometheus 侧当前生效的规则，不再支持本地增删改/导出/部署，
+// 详见 monitor.views.MonitorViewSet.prometheus_rules。
+export function getPrometheusAlertRules() {
+  return requestUtil.get(prefix + 'targets/prometheus/rules/')
 }
 
-export function createAlertRule(data) {
-  return requestUtil.post(prefix + 'alert-rules/', data)
-}
-
-export function updateAlertRule(id, data) {
-  return requestUtil.patch(prefix + `alert-rules/${id}/`, data)
-}
-
-export function deleteAlertRule(id) {
-  return requestUtil.del(prefix + `alert-rules/${id}/`)
-}
-
-export function exportAlertRulesYaml() {
-  return requestUtil.get(prefix + 'alert-rules/export-yaml/')
-}
-
-export function deployAlertRules() {
-  return requestUtil.post(prefix + 'alert-rules/deploy/')
-}
-
-export function getAlertRuleGroups(params) {
-  return requestUtil.get(prefix + 'alert-rule-groups/', params)
-}
-
-export function createAlertRuleGroup(data) {
-  return requestUtil.post(prefix + 'alert-rule-groups/', data)
-}
-
-export function updateAlertRuleGroup(id, data) {
-  return requestUtil.patch(prefix + `alert-rule-groups/${id}/`, data)
-}
-
-export function deleteAlertRuleGroup(id) {
-  return requestUtil.del(prefix + `alert-rule-groups/${id}/`)
-}
-
-export function getAlertRuleDeployHistories(params) {
-  return requestUtil.get(prefix + 'alert-rule-deploy-histories/', params)
+// 历史告警：backend 替代 Alertmanager 接收 Prometheus 推送后落库的历史记录（只读查询）。
+export function getAlertHistories(params) {
+  return requestUtil.get(prefix + 'alert-histories/', params)
 }
 
 export function getManagedTargets(params) {

@@ -160,6 +160,49 @@ class MonitorTargetInstallHistory(BaseModel):
 		return f'target={target_id} {self.action} [{self.status}]'
 
 
+class AlertHistory(BaseModel):
+	"""Prometheus 告警历史：backend 替代 Alertmanager 接收 Prometheus notifier 推送的告警事件。
+
+	由 alert_webhook 接口按 fingerprint 幂等 upsert 写入（起止时间以 Prometheus 计算的
+	startsAt/endsAt 为准，比轮询更精确）；每日对账任务作为兜底，把因推送丢失（backend/Prometheus
+	重启、网络抖动等）导致本地卡在 firing 但 Prometheus 实际已不存在的记录订正为 resolved。
+	"""
+
+	class State(models.TextChoices):
+		FIRING = 'firing', 'Firing'
+		RESOLVED = 'resolved', 'Resolved'
+
+	# 按 labels 排序后计算的稳定哈希：Prometheus notifier 推送的 payload 不带 fingerprint
+	# （那是 Alertmanager 查询接口才有的字段），需要自己算，作为同一条告警跨多次推送的身份标识。
+	fingerprint = models.CharField(max_length=40, db_index=True)
+	alertname = models.CharField(max_length=200, blank=True, default='')
+	severity = models.CharField(max_length=32, blank=True, default='')
+	instance = models.CharField(max_length=200, blank=True, default='')
+	labels = models.JSONField(default=dict, blank=True)
+	annotations = models.JSONField(default=dict, blank=True)
+	generator_url = models.CharField(max_length=500, blank=True, default='')
+	state = models.CharField(max_length=16, choices=State.choices, default=State.FIRING)
+	started_at = models.DateTimeField()
+	resolved_at = models.DateTimeField(null=True, blank=True)
+	# 仍在 firing 时每次收到 Prometheus 心跳推送都会刷新，用于判断“最近是否还在真实上报”
+	last_seen_at = models.DateTimeField()
+	# 标记 resolved_at 是否由每日对账兜底订正（而非真实收到 Prometheus 的 resolved 推送），
+	# 前端可用它给用户提示“这个恢复时间是系统推测的，不是精确值”。
+	resolved_by_reconciliation = models.BooleanField(default=False)
+
+	class Meta:
+		db_table = 'monitor_alert_history'
+		ordering = ['-started_at', '-id']
+		indexes = [
+			models.Index(fields=['state', '-started_at'], name='mon_alert_hist_state_ix'),
+			models.Index(fields=['fingerprint', '-id'], name='mon_alert_hist_fp_ix'),
+			models.Index(fields=['alertname', '-started_at'], name='mon_alert_hist_name_ix'),
+		]
+
+	def __str__(self):
+		return f'{self.alertname}[{self.state}] started_at={self.started_at}'
+
+
 class SoftwarePackage(BaseModel):
 	"""本地软件仓库：托管待下发到 agent 的二进制包（当前用于 node_exporter），文件落 media/monitor_packages/。"""
 
@@ -233,74 +276,6 @@ class SoftwarePackage(BaseModel):
 		return f'{self.name}.service'
 
 
-class AlertRule(BaseModel):
-	"""平台内维护的 Prometheus 告警规则（模型化管理）。"""
-
-	class Severity(models.TextChoices):
-		CRITICAL = 'critical', 'Critical'
-		WARNING = 'warning', 'Warning'
-		INFO = 'info', 'Info'
-
-	group = models.ForeignKey(
-		'monitor.AlertRuleGroup', on_delete=models.SET_NULL, null=True, blank=True, related_name='rules',
-	)
-
-	group_name = models.CharField(max_length=64, default='host-baseline')
-	name = models.CharField(max_length=128, unique=True)
-	expr = models.TextField()
-	duration_for = models.CharField(max_length=64, default='2m')
-	keep_firing_for = models.CharField(max_length=64, blank=True, default='')
-	severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
-	enabled = models.BooleanField(default=True)
-	order_num = models.PositiveIntegerField(default=100)
-	extra_labels = models.JSONField(default=dict, blank=True)
-	summary_template = models.CharField(max_length=255, blank=True, default='')
-	description_template = models.TextField(blank=True, default='')
-
-	class Meta:
-		db_table = 'monitor_alert_rule'
-		ordering = ['order_num', '-id']
-
-	def __str__(self):
-		return f'{self.group_name}:{self.name}'
-
-
-class AlertRuleGroup(BaseModel):
-	"""告警规则组：映射 Prometheus rules.groups[]."""
-
-	name = models.CharField(max_length=64, unique=True)
-	interval = models.CharField(max_length=64, default='30s')
-	enabled = models.BooleanField(default=True)
-	order_num = models.PositiveIntegerField(default=100)
-
-	class Meta:
-		db_table = 'monitor_alert_rule_group'
-		ordering = ['order_num', '-id']
-
-	def __str__(self):
-		return self.name
-
-
-class AlertRuleDeployHistory(BaseModel):
-	"""告警规则部署审计：记录每次导出落盘 + reload 的结果。"""
-
-	class Status(models.TextChoices):
-		SUCCESS = 'success', 'Success'
-		FAILED = 'failed', 'Failed'
-
-	status = models.CharField(max_length=16, choices=Status.choices, default=Status.SUCCESS)
-	deployed_file_path = models.CharField(max_length=512, blank=True, default='')
-	backup_file_path = models.CharField(max_length=512, blank=True, default='')
-	reload_url = models.CharField(max_length=512, blank=True, default='')
-	message = models.TextField(blank=True, default='')
-	yaml_snapshot = models.TextField(blank=True, default='')
-	requested_user_id_snapshot = models.IntegerField(null=True, blank=True, default=None)
-	requested_username_snapshot = models.CharField(max_length=100, blank=True, default='')
-
-	class Meta:
-		db_table = 'monitor_alert_rule_deploy_history'
-		ordering = ['-id']
-
-	def __str__(self):
-		history_id = getattr(self, 'id', '')
-		return f'{self.status}:{history_id}'
+# 告警规则模型（AlertRule/AlertRuleGroup/AlertRuleDeployHistory）已于告警规则管理重构中移除：
+# 告警规则改为只读展示 Prometheus 侧已生效的规则（monitor.views.MonitorViewSet.prometheus_rules），
+# 平台不再本地维护/导出/部署告警规则，避免出现“两份规则源”的不一致风险。

@@ -7,7 +7,7 @@ from django.utils import timezone
 from assets.tasks import cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
 from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
-from monitor.tasks import cleanup_monitor_install_histories
+from monitor.tasks import cleanup_alert_histories, cleanup_monitor_install_histories, reconcile_prometheus_alert_history
 from menu.models import SysMenu
 from scheduler.models import ScheduledTask, ScheduledTaskLog
 from sys_config.models import SysConfig
@@ -199,6 +199,8 @@ def get_task_menu(code):
         'cleanup_ansible_execution_logs': '/sys/automation/logs',
         'cleanup_monitor_install_histories': '/sys/automation/logs',
         'cleanup_workflow_run_logs': '/sys/automation/workflow',
+        'reconcile_prometheus_alert_history': '/monitor/alerts',
+        'cleanup_alert_histories': '/monitor/alerts',
         'cleanup_login_audit_logs': '/audit/login',
         'cleanup_operation_audit_logs': '/audit/operation-log',
     }
@@ -259,6 +261,20 @@ def ensure_default_tasks():
             'description': '清理异常断开遗留的 WebSSH 临时凭证（会话已结束或超过 2 小时未绑定）',
             'enabled': True,
             'cron_expression': '*/10 * * * *',
+        },
+        {
+            'code': 'reconcile_prometheus_alert_history',
+            'name': '历史告警对账',
+            'description': '每日以 Prometheus 当前真实活跃告警为准，订正因推送丢失导致本地卡在 firing 的历史告警记录',
+            'enabled': True,
+            'cron_expression': '45 0 * * *',
+        },
+        {
+            'code': 'cleanup_alert_histories',
+            'name': '历史告警清理',
+            'description': '按保留天数清理已恢复的历史告警记录，仍在 firing 的记录不会被清理',
+            'enabled': True,
+            'cron_expression': '30 0 * * *',
         },
     ]
 
@@ -344,6 +360,10 @@ def resolve_task_callable(task_code):
         return cleanup_workflow_run_logs
     if task_code == 'cleanup_orphan_temp_credentials':
         return cleanup_orphan_temp_credentials
+    if task_code == 'reconcile_prometheus_alert_history':
+        return reconcile_prometheus_alert_history
+    if task_code == 'cleanup_alert_histories':
+        return cleanup_alert_histories
     return None
 
 

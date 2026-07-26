@@ -2,7 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from sys_config.models import SysConfig
+from django.contrib.auth.hashers import make_password
+from sys_config.models import SECRET_MASK_PLACEHOLDER, SysConfig
 from sys_config.serializer import SysConfigSerializer
 from user.utils import getCurrentUser
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
@@ -171,6 +172,14 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         except ValueError as exc:
             return Response_error_str(str(exc), code=400)
 
+        if instance.value_type == 'secret':
+            # 前端展示的是掩码占位符：没传 value 或原样把占位符传回来都视为“未修改”，
+            # 只有传入真正的新明文才重新哈希落库，避免把占位符字符串误当新密文存进去。
+            if 'value' not in request.data or normalized_value == SECRET_MASK_PLACEHOLDER:
+                normalized_value = instance.value
+            else:
+                normalized_value = make_password(normalized_value)
+
         mutable_data = request.data.copy()
         mutable_data['value'] = normalized_value
         if 'default_value' in request.data:
@@ -202,7 +211,12 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         if config.default_value is None:
             return Response_error_str('该参数未配置默认值，无法重置', code=400)
 
-        config.value = str(config.default_value)
+        # secret 类型的 default_value 是明文占位符（如 REPLACE_ME），落回 value 时必须重新哈希，
+        # 不能像其他类型那样直接把明文字符串搬进 value 字段。
+        if config.value_type == 'secret':
+            config.value = make_password(str(config.default_value))
+        else:
+            config.value = str(config.default_value)
         config.save(update_fields=['value', 'update_time'])
         dispatch_result = self._try_dispatch_agent_collect_interval_update(
             key=config.key,
@@ -240,11 +254,17 @@ class SysConfigViewSet(viewsets.ModelViewSet):
 
             try:
                 previous_value = config.value
-                config.value = self._normalize_value_by_type(
+                incoming_value = self._normalize_value_by_type(
                     request.data.get('value', config.value),
                     config.value_type,
                     key=config.key,
                 )
+                if config.value_type == 'secret':
+                    if 'value' not in request.data or incoming_value == SECRET_MASK_PLACEHOLDER:
+                        incoming_value = config.value
+                    else:
+                        incoming_value = make_password(incoming_value)
+                config.value = incoming_value
             except ValueError as exc:
                 return Response_error_str(str(exc), code=400)
 

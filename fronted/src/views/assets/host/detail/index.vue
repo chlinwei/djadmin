@@ -476,6 +476,9 @@ watch(
 )
 
 onMounted(() => {
+    // 挂载后先同步置 loading=true：避免在等待“采集间隔配置”这个与详情无关的请求
+    // 返回之前，出现 !loading && !detailHost 的空窗期而误闪一次“未找到主机详情”。
+    loading.value = true
     loadCollectDispatchIntervalConfig().finally(async () => {
         await loadDetail()
         // 打开详情页即触发一次同步刷新，确保展示的是最新采集结果

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
-import tempfile
-from datetime import datetime
 from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
+
+from django.contrib.auth.hashers import make_password
 
 from sys_config.models import SysConfig
 
@@ -20,13 +17,8 @@ DEFAULT_PROMETHEUS_BASE_URL = 'http://10.25.66.150:9999'
 PROMETHEUS_HTTP_SD_TOKEN_KEY = 'monitor.prometheus.http_sd_token'
 PROMETHEUS_HTTP_SD_TOKEN_LEGACY_KEY = 'sys.monitor.prometheus.http_sd_token'
 DEFAULT_PROMETHEUS_HTTP_SD_TOKEN = 'REPLACE_ME'
-PROMETHEUS_ALERT_RULES_FILE_PATH_KEY = 'monitor.prometheus.alert_rules_file_path'
-PROMETHEUS_ALERT_RULES_FILE_PATH_LEGACY_KEY = 'sys.monitor.prometheus.alert_rules_file_path'
-DEFAULT_PROMETHEUS_ALERT_RULES_FILE_PATH = '/data/apps/prometheus/config/rules/djadmin-alert-rules.yml'
-PROMETHEUS_RELOAD_TIMEOUT_SECONDS_KEY = 'sys.monitor.prometheus.reload_timeout_seconds'
-DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS = '8'
-PROMETHEUS_DEPLOY_SKIP_PROMTOOL_KEY = 'sys.monitor.prometheus.deploy_skip_promtool'
-DEFAULT_PROMETHEUS_DEPLOY_SKIP_PROMTOOL = 'false'
+PROMETHEUS_ALERT_WEBHOOK_TOKEN_KEY = 'monitor.prometheus.alert_webhook_token'
+DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN = 'REPLACE_ME'
 
 
 def _get_or_create_config_with_legacy_migration(
@@ -50,7 +42,13 @@ def _get_or_create_config_with_legacy_migration(
         return cfg
 
     # 用户已明确要求去掉 sys 前缀：新键创建后自动吸收旧键值，避免手工迁移。
-    cfg.value = str(legacy_cfg.value or defaults.get('value') or '')
+    legacy_value = str(legacy_cfg.value or defaults.get('value') or '')
+    # secret 类型的旧键值是明文（还没有哈希机制时写进去的），迁移到新键时必须补一次哈希，
+    # 否则会把明文 token 直接写进本应该只存哈希的字段。
+    if defaults.get('value_type') == 'secret':
+        cfg.value = make_password(legacy_value)
+    else:
+        cfg.value = legacy_value
     if cfg.default_value in (None, ''):
         cfg.default_value = str(legacy_cfg.default_value or defaults.get('default_value') or '')
     cfg.value_type = str(legacy_cfg.value_type or cfg.value_type)
@@ -77,13 +75,18 @@ def get_prometheus_base_url() -> str:
     return str(cfg.value or DEFAULT_PROMETHEUS_BASE_URL).rstrip('/')
 
 
-def get_prometheus_http_sd_token() -> str:
+def verify_prometheus_http_sd_token(candidate: str) -> bool:
+    """校验 Prometheus http_sd 请求带的 token。
+
+    token 以哈希形式存在 SysConfig 里（value_type='secret'），校验走 Django 密码哈希的
+    check_password，内部已是恒定时间比较，无需再在调用方额外做时序安全处理。
+    """
     defaults = {
-        'value': DEFAULT_PROMETHEUS_HTTP_SD_TOKEN,
+        'value': make_password(DEFAULT_PROMETHEUS_HTTP_SD_TOKEN),
         'default_value': DEFAULT_PROMETHEUS_HTTP_SD_TOKEN,
-        'value_type': 'string',
+        'value_type': 'secret',
         'name': 'Prometheus HTTP SD Token',
-        'description': 'Prometheus 访问 HTTP SD 接口使用的 token',
+        'description': 'Prometheus 访问 HTTP SD 接口使用的 token（哈希存储，不回显明文）',
         'is_readonly': False,
     }
     cfg = _get_or_create_config_with_legacy_migration(
@@ -91,157 +94,27 @@ def get_prometheus_http_sd_token() -> str:
         legacy_key=PROMETHEUS_HTTP_SD_TOKEN_LEGACY_KEY,
         defaults=defaults,
     )
-    return str(cfg.value or DEFAULT_PROMETHEUS_HTTP_SD_TOKEN).strip()
+    return cfg.check_secret_value(candidate)
 
 
-def get_prometheus_alert_rules_file_path() -> str:
+def verify_prometheus_alert_webhook_token(candidate: str) -> bool:
+    """backend 充当 Alertmanager 角色接收 Prometheus 推送时校验共享 token，
+    Prometheus 侧通过 alerting.alertmanagers[].authorization.credentials 下发同一个明文值，
+    后端只存哈希并用 check_password 校验，不回显明文。"""
     defaults = {
-        'value': DEFAULT_PROMETHEUS_ALERT_RULES_FILE_PATH,
-        'default_value': DEFAULT_PROMETHEUS_ALERT_RULES_FILE_PATH,
-        'value_type': 'string',
-        'name': 'Prometheus 告警规则文件路径',
-        'description': '一键部署时写入的 Prometheus rule_files 文件绝对路径。',
+        'value': make_password(DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN),
+        'default_value': DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN,
+        'value_type': 'secret',
+        'name': 'Prometheus 告警推送 Token',
+        'description': 'Prometheus 将其视为 Alertmanager 推送告警时使用的 Bearer token（backend 替代 Alertmanager 接收，哈希存储，不回显明文）',
         'is_readonly': False,
     }
     cfg = _get_or_create_config_with_legacy_migration(
-        key=PROMETHEUS_ALERT_RULES_FILE_PATH_KEY,
-        legacy_key=PROMETHEUS_ALERT_RULES_FILE_PATH_LEGACY_KEY,
+        key=PROMETHEUS_ALERT_WEBHOOK_TOKEN_KEY,
+        legacy_key=None,
         defaults=defaults,
     )
-    return str(cfg.value or DEFAULT_PROMETHEUS_ALERT_RULES_FILE_PATH).strip()
-
-
-def get_prometheus_reload_timeout_seconds() -> int:
-    cfg, _ = SysConfig.objects.get_or_create(
-        key=PROMETHEUS_RELOAD_TIMEOUT_SECONDS_KEY,
-        defaults={
-            'value': DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS,
-            'default_value': DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS,
-            'value_type': 'int',
-            'name': 'Prometheus reload 超时（秒）',
-            'description': '一键部署触发 /-/reload 的 HTTP 超时时间。',
-            'is_readonly': False,
-        },
-    )
-    try:
-        value = int(str(cfg.value or DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS).strip())
-    except ValueError:
-        value = int(DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS)
-    if value <= 0:
-        return int(DEFAULT_PROMETHEUS_RELOAD_TIMEOUT_SECONDS)
-    return value
-
-
-def get_prometheus_deploy_skip_promtool() -> bool:
-    cfg, _ = SysConfig.objects.get_or_create(
-        key=PROMETHEUS_DEPLOY_SKIP_PROMTOOL_KEY,
-        defaults={
-            'value': DEFAULT_PROMETHEUS_DEPLOY_SKIP_PROMTOOL,
-            'default_value': DEFAULT_PROMETHEUS_DEPLOY_SKIP_PROMTOOL,
-            'value_type': 'bool',
-            'name': '一键部署跳过 promtool 校验',
-            'description': 'true 时部署不执行 promtool check rules。',
-            'is_readonly': False,
-        },
-    )
-    return str(cfg.value or '').strip().lower() in {'true', '1', 'yes'}
-
-
-def deploy_alert_rules_yaml(content: str) -> dict[str, Any]:
-    file_path = get_prometheus_alert_rules_file_path()
-    if file_path == '':
-        return {'ok': False, 'error': 'Prometheus 规则文件路径为空'}
-
-    target_dir = os.path.dirname(file_path)
-    if target_dir == '':
-        return {'ok': False, 'error': f'无效规则文件路径：{file_path}'}
-
-    os.makedirs(target_dir, exist_ok=True)
-
-    backup_file_path = ''
-    if os.path.exists(file_path):
-        backup_file_path = f"{file_path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        shutil.copy2(file_path, backup_file_path)
-
-    fd, temp_path = tempfile.mkstemp(prefix='djadmin-alert-rules-', suffix='.yml', dir=target_dir)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as temp_file:
-            temp_file.write(content)
-        os.replace(temp_path, file_path)
-    except Exception as exc:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
-        return {
-            'ok': False,
-            'error': f'写入规则文件失败：{exc}',
-            'file_path': file_path,
-            'backup_file_path': backup_file_path,
-        }
-
-    if not get_prometheus_deploy_skip_promtool():
-        try:
-            proc = subprocess.run(
-                ['promtool', 'check', 'rules', file_path],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-        except FileNotFoundError:
-            if backup_file_path != '':
-                shutil.copy2(backup_file_path, file_path)
-            return {
-                'ok': False,
-                'error': '未找到 promtool，请安装后重试或将 sys.monitor.prometheus.deploy_skip_promtool 设为 true',
-                'file_path': file_path,
-                'backup_file_path': backup_file_path,
-            }
-        except Exception as exc:
-            if backup_file_path != '':
-                shutil.copy2(backup_file_path, file_path)
-            return {
-                'ok': False,
-                'error': f'promtool 执行失败：{exc}',
-                'file_path': file_path,
-                'backup_file_path': backup_file_path,
-            }
-
-        if proc.returncode != 0:
-            if backup_file_path != '':
-                shutil.copy2(backup_file_path, file_path)
-            error_text = (proc.stderr or proc.stdout or '').strip()
-            return {
-                'ok': False,
-                'error': f'promtool 校验失败：{error_text}',
-                'file_path': file_path,
-                'backup_file_path': backup_file_path,
-            }
-
-    reload_url = f"{get_prometheus_base_url()}/-/reload"
-    req = urllib_request.Request(url=reload_url, method='POST')
-    timeout_seconds = get_prometheus_reload_timeout_seconds()
-    try:
-        with urllib_request.urlopen(req, timeout=timeout_seconds):
-            pass
-    except urllib_error.URLError as exc:
-        if backup_file_path != '':
-            shutil.copy2(backup_file_path, file_path)
-        return {
-            'ok': False,
-            'error': f'触发 Prometheus reload 失败：{exc}',
-            'file_path': file_path,
-            'backup_file_path': backup_file_path,
-            'reload_url': reload_url,
-        }
-
-    return {
-        'ok': True,
-        'file_path': file_path,
-        'backup_file_path': backup_file_path,
-        'reload_url': reload_url,
-    }
+    return cfg.check_secret_value(candidate)
 
 
 def _build_url(path: str, params: dict[str, Any] | None = None) -> str:

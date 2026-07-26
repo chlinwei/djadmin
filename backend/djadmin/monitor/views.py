@@ -7,7 +7,6 @@ from rest_framework.viewsets import GenericViewSet
 
 import hashlib
 import io
-import json
 import os
 import re
 import urllib.error
@@ -22,12 +21,9 @@ from djadmin.utils import Response_200, Response_error_str
 from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 
-from user.utils import getCurrentUser
-
+from .alert_history import ingest_alert_webhook_alerts
 from .models import (
-    AlertRule,
-    AlertRuleDeployHistory,
-    AlertRuleGroup,
+    AlertHistory,
     MonitorTarget,
     MonitorTargetInstallHistory,
     SoftwarePackage,
@@ -35,14 +31,12 @@ from .models import (
 )
 from .prometheus_api import (
     api_get,
-    deploy_alert_rules_yaml,
     get_prometheus_base_url,
-    get_prometheus_http_sd_token,
+    verify_prometheus_alert_webhook_token,
+    verify_prometheus_http_sd_token,
 )
 from .serializer import (
-    AlertRuleDeployHistorySerializer,
-    AlertRuleGroupSerializer,
-    AlertRuleSerializer,
+    AlertHistorySerializer,
     MonitorTargetInstallHistorySerializer,
     MonitorTargetSerializer,
     SoftwarePackageSerializer,
@@ -52,18 +46,6 @@ from .serializer import (
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')# 官方 tarball 命名规则：node_exporter-<version>.<os>-<arch>.tar.gz，用于行内上传时解析版本/校验架构
 NODE_EXPORTER_FILENAME_RE = re.compile(r'^node_exporter-([^.]+)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$', re.IGNORECASE)# 官方软件包体积上限（字节），避免异常响应把磁盘写满
 MAX_OFFICIAL_PACKAGE_SIZE = 200 * 1024 * 1024
-
-
-def ensure_default_alert_rule_group():
-    return AlertRuleGroup.objects.get_or_create(
-        name='host-baseline',
-        defaults={
-            'interval': '30s',
-            'enabled': True,
-            'order_num': 100,
-            'remark': 'default group',
-        },
-    )[0]
 
 
 class MonitorViewSet(
@@ -98,8 +80,10 @@ class MonitorViewSet(
         'summary': 'monitor:view',
         'prometheus_targets': 'monitor:view',
         'prometheus_alerts': 'monitor:view',
+        'prometheus_rules': 'monitor:view',
         'prometheus_overview': 'monitor:view',
         'prometheus_http_sd': None,
+        'alert_webhook': None,
     }
 
     @staticmethod
@@ -367,8 +351,10 @@ class MonitorViewSet(
         resolved_count = 0
         rows = []
         for item in (alerts or []):
-            status_obj = item.get('status') if isinstance(item.get('status'), dict) else {}
-            state = str(status_obj.get('state') or '').lower()
+            # 注意：/api/v1/alerts 返回的 state 是顶层字段，不是嵌套在 status 对象里
+            # （之前误照搬 Alertmanager v2 查询接口的结构，两者格式不一样，导致 state 永远读
+            # 不到值、前端一直显示 unknown）。
+            state = str(item.get('state') or '').lower()
             if state == 'firing':
                 firing_count += 1
             elif state == 'resolved':
@@ -392,6 +378,65 @@ class MonitorViewSet(
             'firing_count': firing_count,
             'resolved_count': resolved_count,
             'results': rows,
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path='prometheus/rules')
+    def prometheus_rules(self, request):
+        """只读展示 Prometheus 侧当前已生效的告警/记录规则（/api/v1/rules），
+        平台不再本地维护规则模型，避免出现“djadmin 规则”和“Prometheus 实际生效规则”两份数据不一致。
+        """
+        response = api_get('/api/v1/rules')
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'prometheus_base_url': get_prometheus_base_url(),
+                'error': response.get('error') or 'query prometheus rules failed',
+                'group_count': 0,
+                'rule_count': 0,
+                'groups': [],
+            })
+
+        data = response.get('data') or {}
+        raw_groups = data.get('groups') if isinstance(data, dict) else []
+        groups = []
+        rule_count = 0
+        for raw_group in (raw_groups or []):
+            rows = []
+            for raw_rule in (raw_group.get('rules') or []):
+                rule_type = str(raw_rule.get('type') or '')
+                labels = raw_rule.get('labels') if isinstance(raw_rule.get('labels'), dict) else {}
+                annotations = raw_rule.get('annotations') if isinstance(raw_rule.get('annotations'), dict) else {}
+                rows.append({
+                    'type': rule_type,
+                    'name': raw_rule.get('name') or '',
+                    'query': raw_rule.get('query') or '',
+                    'duration': raw_rule.get('duration'),
+                    'keep_firing_for': raw_rule.get('keepFiringFor'),
+                    'labels': labels,
+                    'annotations': annotations,
+                    'health': raw_rule.get('health') or '',
+                    # state 仅 alerting 规则有意义（inactive/pending/firing），recording 规则该字段为空
+                    'state': raw_rule.get('state') or '',
+                    'last_error': raw_rule.get('lastError') or '',
+                    'evaluation_time': raw_rule.get('evaluationTime'),
+                    'last_evaluation': raw_rule.get('lastEvaluation') or '',
+                    'active_alerts_count': len(raw_rule.get('alerts') or []) if rule_type == 'alerting' else None,
+                })
+                rule_count += 1
+            groups.append({
+                'name': raw_group.get('name') or '',
+                'file': raw_group.get('file') or '',
+                'interval': raw_group.get('interval'),
+                'rules': rows,
+            })
+
+        return Response_200(data={
+            'status': 'success',
+            'prometheus_base_url': get_prometheus_base_url(),
+            'group_count': len(groups),
+            'rule_count': rule_count,
+            'groups': groups,
             'warnings': response.get('warnings') or [],
         })
 
@@ -431,8 +476,9 @@ class MonitorViewSet(
     )
     def prometheus_http_sd(self, request):
         token = str(request.query_params.get('token') or '').strip()
-        expected_token = get_prometheus_http_sd_token()
-        if expected_token == '' or token != expected_token:
+        # token 以哈希形式存在 SysConfig 里，校验走 Django 密码哈希的 check_password，
+        # 内部已是恒定时间比较，避免时序攻击猜出 token。
+        if not verify_prometheus_http_sd_token(token):
             return JsonResponse({'error': 'forbidden'}, status=403)
 
         queryset = (
@@ -467,6 +513,32 @@ class MonitorViewSet(
             })
 
         return JsonResponse(results, safe=False)
+
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='alert-webhook/api/v2/alerts',
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def alert_webhook(self, request):
+        """backend 替代 Alertmanager 接收 Prometheus notifier 推送的告警（Alertmanager v2 协议）。
+
+        鉴权用共享 token（对齐 prometheus_http_sd 的免登录 action 模式），Prometheus 侧通过
+        alerting.alertmanagers[].authorization.credentials 下发同一个值，走 Bearer header 而不是
+        query 参数，因为这是 Prometheus alerting 配置原生支持的方式。
+        """
+        auth_header = str(request.headers.get('Authorization') or '').strip()
+        token = auth_header[len('Bearer '):].strip() if auth_header.lower().startswith('bearer ') else auth_header
+        # token 以哈希形式存在 SysConfig 里，校验走 Django 密码哈希的 check_password，
+        # 内部已是恒定时间比较，避免时序攻击猜出 token。
+        if not verify_prometheus_alert_webhook_token(token):
+            return JsonResponse({'error': 'forbidden'}, status=403)
+
+        payload = request.data
+        alerts = payload if isinstance(payload, list) else []
+        result = ingest_alert_webhook_alerts(alerts)
+        return JsonResponse({'status': 'success', **result})
 
 
 class SoftwarePackageViewSet(
@@ -672,310 +744,43 @@ class MonitorTargetInstallHistoryViewSet(
         return Response_200(data=serializer.data)
 
 
-class AlertRuleViewSet(
+class AlertHistoryViewSet(
     GenericViewSet,
     ListModelMixin,
     RetrieveModelMixin,
-    CreateModelMixin,
-    UpdateModelMixin,
-    DestroyModelMixin,
 ):
-    queryset = AlertRule.objects.all()
-    serializer_class = AlertRuleSerializer
+    """历史告警只读查询：数据来源于 alert_webhook 接收 + 每日对账兜底写入的 AlertHistory。"""
+
+    queryset = AlertHistory.objects.all()
+    serializer_class = AlertHistorySerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['group', 'group_name', 'severity', 'enabled']
-    search_fields = ['name', 'expr', 'summary_template', 'description_template']
-    ordering_fields = ['id', 'order_num', 'create_time', 'update_time']
+    filterset_fields = ['state', 'severity']
+    search_fields = ['alertname', 'instance']
+    ordering_fields = ['id', 'started_at', 'resolved_at', 'create_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
         'list': 'monitor:view',
         'retrieve': 'monitor:view',
-        'create': 'monitor:view',
-        'partial_update': 'monitor:view',
-        'perform_update': 'monitor:view',
-        'destroy': 'monitor:view',
-        'export_yaml': 'monitor:view',
-        'deploy': 'monitor:view',
     }
 
-    def list(self, request, *args, **kwargs):
-        ensure_default_alert_rule_group()
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        query_keyword = str(self.request.query_params.get('keyword') or '').strip()  # type: ignore[union-attr]
+        query_start = str(self.request.query_params.get('start_time') or '').strip()  # type: ignore[union-attr]
+        query_end = str(self.request.query_params.get('end_time') or '').strip()  # type: ignore[union-attr]
 
-    def retrieve(self, request, *args, **kwargs):
-        serializer = self.get_serializer(self.get_object())
-        return Response_200(data=serializer.data)
-
-    def create(self, request, *args, **kwargs):
-        ensure_default_alert_rule_group()
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        if serializer.validated_data.get('group') is None:
-            return Response_error_str('group 不能为空', code=400)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def partial_update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        deleted_id = instance.id
-        instance.delete()
-        return Response_200(data={'id': deleted_id})
-
-    @action(detail=False, methods=['get'], url_path='export-yaml')
-    def export_yaml(self, request):
-        try:
-            import yaml
-        except Exception:
-            return Response_error_str('后端缺少 YAML 解析依赖，请安装 PyYAML 后重试', code=500)
-
-        rows = list(
-            self.get_queryset()
-            .filter(enabled=True)
-            .select_related('group')
-            .order_by('group__order_num', 'group_name', 'order_num', '-id')
-        )
-
-        grouped_rules = {}
-        for row in rows:
-            group_obj = getattr(row, 'group', None)
-            group_name = str(getattr(group_obj, 'name', '') or '').strip() or str(getattr(row, 'group_name', '') or '').strip() or 'host-baseline'
-            group_interval = str(getattr(group_obj, 'interval', '') or '').strip()
-            if group_name not in grouped_rules:
-                grouped_rules[group_name] = {
-                    'interval': group_interval,
-                    'rules': [],
-                }
-
-            labels = {'severity': row.severity}
-            extra_labels = getattr(row, 'extra_labels', None)
-            if isinstance(extra_labels, dict):
-                for key, value in extra_labels.items():
-                    labels[str(key)] = str(value)
-
-            annotations = {}
-            if str(row.summary_template or '').strip() != '':
-                annotations['summary'] = row.summary_template
-            if str(row.description_template or '').strip() != '':
-                annotations['description'] = row.description_template
-
-            rule_item = {
-                'alert': row.name,
-                'expr': row.expr,
-                'for': row.duration_for,
-                'labels': labels,
-            }
-            if str(row.keep_firing_for or '').strip() != '':
-                rule_item['keep_firing_for'] = row.keep_firing_for
-            if annotations:
-                rule_item['annotations'] = annotations
-
-            grouped_rules[group_name]['rules'].append(rule_item)
-
-        groups = []
-        for name, group_data in grouped_rules.items():
-            group_item = {
-                'name': name,
-                'rules': group_data['rules'],
-            }
-            interval = str(group_data.get('interval') or '').strip()
-            if interval != '':
-                group_item['interval'] = interval
-            groups.append(group_item)
-
-        payload = {'groups': groups}
-        yaml_text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
-        return Response_200(data={
-            'yaml': yaml_text,
-            'group_count': len(groups),
-            'rule_count': len(rows),
-        })
-
-    @action(detail=False, methods=['post'], url_path='deploy')
-    def deploy(self, request):
-        # 部署入口：导出启用规则 -> 写入规则文件 -> promtool 校验 -> reload，任一步失败自动回滚文件。
-        export_result = self.export_yaml(request)
-        if getattr(export_result, 'status_code', 200) != 200:
-            return export_result
-
-        payload = {}
-        response_data = getattr(export_result, 'data', None)
-        if isinstance(response_data, dict):
-            payload = response_data
-        else:
-            # Response_200/Response_error_str 返回 Django JsonResponse，需要从 content 解析业务包。
-            content = getattr(export_result, 'content', b'')
-            if isinstance(content, (bytes, bytearray)) and len(content) > 0:
-                try:
-                    payload = json.loads(content.decode('utf-8'))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    payload = {}
-
-        if int(payload.get('code') or 500) != 200:
-            return export_result
-
-        export_data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
-        yaml_text = str((export_data or {}).get('yaml') or '')
-        if yaml_text.strip() == '':
-            return Response_error_str('当前没有可部署的启用规则', code=400)
-
-        user_info = getCurrentUser(request)
-        username = str(user_info.get('username', '') or '')
-        user_id = user_info.get('user_id')
-
-        try:
-            deploy_result = deploy_alert_rules_yaml(yaml_text)
-        except Exception as exc:
-            # 文件写入/目录权限等运行环境问题，统一按业务失败返回并写入部署历史。
-            history = AlertRuleDeployHistory.objects.create(
-                status=AlertRuleDeployHistory.Status.FAILED,
-                deployed_file_path='',
-                backup_file_path='',
-                reload_url='',
-                message=str(exc) or '部署失败',
-                yaml_snapshot=yaml_text,
-                requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
-                requested_username_snapshot=username,
+        if query_keyword:
+            queryset = queryset.filter(
+                Q(alertname__icontains=query_keyword)
+                | Q(instance__icontains=query_keyword)
             )
-            history_id = getattr(history, 'id', None)
-            return Response_error_str(history.message, code=500, data={
-                'history_id': history_id,
-                'file_path': '',
-                'backup_file_path': '',
-                'reload_url': '',
-            })
-
-        if deploy_result.get('ok'):
-            history = AlertRuleDeployHistory.objects.create(
-                status=AlertRuleDeployHistory.Status.SUCCESS,
-                deployed_file_path=str(deploy_result.get('file_path') or ''),
-                backup_file_path=str(deploy_result.get('backup_file_path') or ''),
-                reload_url=str(deploy_result.get('reload_url') or ''),
-                message='部署并 reload 成功',
-                yaml_snapshot=yaml_text,
-                requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
-                requested_username_snapshot=username,
-            )
-            history_id = getattr(history, 'id', None)
-            return Response_200(data={
-                'deployed': True,
-                'history_id': history_id,
-                'file_path': history.deployed_file_path,
-                'backup_file_path': history.backup_file_path,
-                'reload_url': history.reload_url,
-            })
-
-        history = AlertRuleDeployHistory.objects.create(
-            status=AlertRuleDeployHistory.Status.FAILED,
-            deployed_file_path=str(deploy_result.get('file_path') or ''),
-            backup_file_path=str(deploy_result.get('backup_file_path') or ''),
-            reload_url=str(deploy_result.get('reload_url') or ''),
-            message=str(deploy_result.get('error') or '部署失败'),
-            yaml_snapshot=yaml_text,
-            requested_user_id_snapshot=int(user_id) if isinstance(user_id, int) else None,
-            requested_username_snapshot=username,
-        )
-        history_id = getattr(history, 'id', None)
-        return Response_error_str(history.message, code=500, data={
-            'history_id': history_id,
-            'file_path': history.deployed_file_path,
-            'backup_file_path': history.backup_file_path,
-            'reload_url': history.reload_url,
-        })
-
-
-class AlertRuleGroupViewSet(
-    GenericViewSet,
-    ListModelMixin,
-    RetrieveModelMixin,
-    CreateModelMixin,
-    UpdateModelMixin,
-    DestroyModelMixin,
-):
-    queryset = AlertRuleGroup.objects.all()
-    serializer_class = AlertRuleGroupSerializer
-    pagination_class = CustomPagination
-    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['enabled']
-    search_fields = ['name']
-    ordering_fields = ['id', 'order_num', 'create_time', 'update_time']
-    lookup_field = 'id'
-    permission_classes = [CustomMenuPermission]
-    action_perms_map = {
-        'list': 'monitor:view',
-        'retrieve': 'monitor:view',
-        'create': 'monitor:view',
-        'partial_update': 'monitor:view',
-        'perform_update': 'monitor:view',
-        'destroy': 'monitor:view',
-    }
-
-    def list(self, request, *args, **kwargs):
-        ensure_default_alert_rule_group()
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
-
-    def retrieve(self, request, *args, **kwargs):
-        serializer = self.get_serializer(self.get_object())
-        return Response_200(data=serializer.data)
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def partial_update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        if AlertRule.objects.filter(group=instance).exists():
-            return Response_error_str('该规则组下仍有规则，不能删除', code=400)
-        deleted_id = instance.id
-        instance.delete()
-        return Response_200(data={'id': deleted_id})
-
-
-class AlertRuleDeployHistoryViewSet(
-    GenericViewSet,
-    ListModelMixin,
-    RetrieveModelMixin,
-):
-    queryset = AlertRuleDeployHistory.objects.all()
-    serializer_class = AlertRuleDeployHistorySerializer
-    pagination_class = CustomPagination
-    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['status']
-    search_fields = ['requested_username_snapshot', 'message', 'deployed_file_path']
-    ordering_fields = ['id', 'create_time', 'update_time']
-    lookup_field = 'id'
-    permission_classes = [CustomMenuPermission]
-    action_perms_map = {
-        'list': 'monitor:view',
-        'retrieve': 'monitor:view',
-    }
+        if query_start:
+            queryset = queryset.filter(started_at__gte=query_start)
+        if query_end:
+            queryset = queryset.filter(started_at__lte=query_end)
+        return queryset
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -988,3 +793,5 @@ class AlertRuleDeployHistoryViewSet(
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
+
+

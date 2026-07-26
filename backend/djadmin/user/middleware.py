@@ -23,13 +23,19 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
         '/monitor/prometheus/http-sd/',
         '/sys/monitor/targets/prometheus/http-sd/',
     }
+    # backend 替代 Alertmanager 接收 Prometheus notifier 主动推送的告警：调用方是 Prometheus
+    # 而非登录用户，天然拿不到 JWT，鉴权改由 alert_webhook action 内部校验共享 Bearer token 完成，
+    # 这里必须豁免 JWT 校验，否则会在到达视图前就被这个中间件拦成 301。
+    _ALERT_WEBHOOK_PATHS = {
+        '/monitor/alert-webhook/api/v2/alerts',
+    }
 
     def process_request(self, request):
         request._operation_audit_started_at = timezone.now()
         request._operation_audit_request_data = self._extract_request_data(request)
         white_list = ["/sys/login"]  # 请求白名单
         path = request.path
-        if path in self._PROMETHEUS_HTTP_SD_PATHS:
+        if path in self._PROMETHEUS_HTTP_SD_PATHS or path in self._ALERT_WEBHOOK_PATHS:
             return None
         if self._is_agent_path(path):
             return self._authenticate_agent_or_user_request(request)

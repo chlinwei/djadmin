@@ -5,7 +5,8 @@ from django.utils import timezone
 
 from sys_config.models import SysConfig
 
-from .models import MonitorTargetInstallHistory
+from .alert_history import reconcile_alert_history as _reconcile_alert_history
+from .models import AlertHistory, MonitorTargetInstallHistory
 
 
 def cleanup_monitor_install_histories():
@@ -46,5 +47,40 @@ def cleanup_monitor_install_histories():
     print(
         '[CLEANUP] monitor install histories cleaned: '
         f'deleted={deleted_rows}, retention_days={retention_days}, keep_latest_per_target=true'
+    )
+    return deleted_rows
+
+
+def reconcile_prometheus_alert_history():
+    """每日对账兜底任务：见 alert_history.reconcile_alert_history 的详细说明。"""
+    return _reconcile_alert_history()
+
+
+def cleanup_alert_histories():
+    """清理过期历史告警：只删已 resolved 且超过保留天数的行，仍在 firing 的记录永不清理。"""
+    retention_cfg, _ = SysConfig.objects.get_or_create(
+        key='sys.monitor.alert_history.retention_days',
+        defaults={
+            'value': '90',
+            'default_value': '90',
+            'value_type': 'int',
+            'name': '历史告警保留天数',
+            'description': '历史告警记录保留天数，只清理已恢复(resolved)的记录，仍在 firing 的记录不会被清理',
+            'is_readonly': False,
+        },
+    )
+
+    try:
+        retention_days = max(1, int(str(retention_cfg.value).strip()))
+    except (TypeError, ValueError):
+        retention_days = 90
+
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    queryset = AlertHistory.objects.filter(state=AlertHistory.State.RESOLVED, resolved_at__lt=cutoff)
+    deleted_rows = queryset.count()
+    queryset.delete()
+    print(
+        '[CLEANUP] alert histories cleaned: '
+        f'deleted={deleted_rows}, retention_days={retention_days}'
     )
     return deleted_rows

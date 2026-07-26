@@ -48,6 +48,14 @@ urlpatterns = [
             authentication_classes=[],
         ),
     ),
+    path(
+        'monitor/alert-webhook/api/v2/alerts',
+        MonitorViewSet.as_view(
+            {'post': 'alert_webhook'},
+            permission_classes=[AllowAny],
+            authentication_classes=[],
+        ),
+    ),
     path('api/agent/configs/by-key/<path:key>', sys_config_views.agent_config_by_key),
     path('api/agent/jobs/create', assets_views.agent_create_job),
     path('api/agent/jobs/create-batch', assets_views.agent_create_jobs_batch),

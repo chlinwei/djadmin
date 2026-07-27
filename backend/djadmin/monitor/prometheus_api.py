@@ -14,11 +14,6 @@ from sys_config.models import SysConfig
 PROMETHEUS_BASE_URL_KEY = 'monitor.prometheus.base_url'
 PROMETHEUS_BASE_URL_LEGACY_KEY = 'sys.monitor.prometheus.base_url'
 DEFAULT_PROMETHEUS_BASE_URL = 'http://10.25.66.150:9999'
-PROMETHEUS_HTTP_SD_TOKEN_KEY = 'monitor.prometheus.http_sd_token'
-PROMETHEUS_HTTP_SD_TOKEN_LEGACY_KEY = 'sys.monitor.prometheus.http_sd_token'
-DEFAULT_PROMETHEUS_HTTP_SD_TOKEN = 'REPLACE_ME'
-PROMETHEUS_ALERT_WEBHOOK_TOKEN_KEY = 'monitor.prometheus.alert_webhook_token'
-DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN = 'REPLACE_ME'
 
 
 def _get_or_create_config_with_legacy_migration(
@@ -73,48 +68,6 @@ def get_prometheus_base_url() -> str:
         defaults=defaults,
     )
     return str(cfg.value or DEFAULT_PROMETHEUS_BASE_URL).rstrip('/')
-
-
-def verify_prometheus_http_sd_token(candidate: str) -> bool:
-    """校验 Prometheus http_sd 请求带的 token。
-
-    token 以哈希形式存在 SysConfig 里（value_type='secret'），校验走 Django 密码哈希的
-    check_password，内部已是恒定时间比较，无需再在调用方额外做时序安全处理。
-    """
-    defaults = {
-        'value': make_password(DEFAULT_PROMETHEUS_HTTP_SD_TOKEN),
-        'default_value': DEFAULT_PROMETHEUS_HTTP_SD_TOKEN,
-        'value_type': 'secret',
-        'name': 'Prometheus HTTP SD Token',
-        'description': 'Prometheus 访问 HTTP SD 接口使用的 token（哈希存储，不回显明文）',
-        'is_readonly': False,
-    }
-    cfg = _get_or_create_config_with_legacy_migration(
-        key=PROMETHEUS_HTTP_SD_TOKEN_KEY,
-        legacy_key=PROMETHEUS_HTTP_SD_TOKEN_LEGACY_KEY,
-        defaults=defaults,
-    )
-    return cfg.check_secret_value(candidate)
-
-
-def verify_prometheus_alert_webhook_token(candidate: str) -> bool:
-    """backend 充当 Alertmanager 角色接收 Prometheus 推送时校验共享 token，
-    Prometheus 侧通过 alerting.alertmanagers[].authorization.credentials 下发同一个明文值，
-    后端只存哈希并用 check_password 校验，不回显明文。"""
-    defaults = {
-        'value': make_password(DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN),
-        'default_value': DEFAULT_PROMETHEUS_ALERT_WEBHOOK_TOKEN,
-        'value_type': 'secret',
-        'name': 'Prometheus 告警推送 Token',
-        'description': 'Prometheus 将其视为 Alertmanager 推送告警时使用的 Bearer token（backend 替代 Alertmanager 接收，哈希存储，不回显明文）',
-        'is_readonly': False,
-    }
-    cfg = _get_or_create_config_with_legacy_migration(
-        key=PROMETHEUS_ALERT_WEBHOOK_TOKEN_KEY,
-        legacy_key=None,
-        defaults=defaults,
-    )
-    return cfg.check_secret_value(candidate)
 
 
 def _build_url(path: str, params: dict[str, Any] | None = None) -> str:

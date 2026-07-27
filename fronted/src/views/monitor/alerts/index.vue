@@ -1,17 +1,22 @@
 <template>
   <div class="alerts-page">
     <a-card title="告警" size="small">
+      <!-- 右上角自动刷新控制（对齐智能监控页）：开关 + 间隔 + 手动刷新 + 上次刷新时间，
+           定时器只刷新当前激活的 tab，避免后台两个 tab 都请求。 -->
+      <template #extra>
+        <a-space>
+          <a-tag v-if="lastRefreshAtText" color="default">刷新于 {{ lastRefreshAtText }}</a-tag>
+          <a-switch v-model:checked="autoRefreshEnabled" checked-children="自动刷新" un-checked-children="手动" />
+          <a-select v-model:value="refreshIntervalSeconds" style="width: 120px" :options="refreshIntervalOptions" :disabled="!autoRefreshEnabled" :getPopupContainer="getPopupContainer" />
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="loading || historyLoading" @click="refreshActiveTab">刷新</a-button>
+          </a-tooltip>
+        </a-space>
+      </template>
       <!-- 用 a-tabs 划分“当前告警/历史告警”层级：当前告警读取 Prometheus 实时数据，
            历史告警后续接入时作为同级 tab-pane 新增，避免与当前告警的展示逻辑耦合。 -->
       <a-tabs v-model:activeKey="activeTabKey">
         <a-tab-pane key="current" tab="当前告警">
-          <a-alert
-            type="info"
-            show-icon
-            message="以下数据只读展示 Prometheus 当前活跃的告警（/api/v1/alerts），平台不做本地存储与处理。"
-            style="margin-bottom: 12px"
-          />
-
           <a-space style="margin-bottom: 12px" wrap>
             <a-tooltip title="刷新">
               <a-button type="primary" ghost :loading="loading" @click="loadAlerts">刷新</a-button>
@@ -69,13 +74,6 @@
         </a-tab-pane>
 
         <a-tab-pane key="history" tab="历史告警" force-render>
-          <a-alert
-            type="info"
-            show-icon
-            message="以下数据为 Prometheus 推送到 backend 落库的历史告警记录（backend 替代 Alertmanager 接收通知），恢复时间标注“对账”表示由每日对账兜底订正，而非 Prometheus 精确推送。"
-            style="margin-bottom: 12px"
-          />
-
           <a-space style="margin-bottom: 12px" wrap>
             <a-tooltip title="刷新">
               <a-button type="primary" ghost :loading="historyLoading" @click="loadAlertHistory">刷新</a-button>
@@ -148,7 +146,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { getAlertHistories, getPrometheusAlerts } from '@/api/sys/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -158,6 +156,24 @@ import store from '@/store'
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const activeTabKey = ref('current')
+
+// 自动刷新（对齐智能监控页）：定时器只刷新当前激活的 tab，避免后台无谓请求。
+const autoRefreshEnabled = ref(true)
+const refreshIntervalSeconds = ref(15)
+const refreshIntervalOptions = [
+  { label: '5秒', value: 5 },
+  { label: '10秒', value: 10 },
+  { label: '15秒', value: 15 },
+  { label: '30秒', value: 30 },
+  { label: '60秒', value: 60 },
+]
+let refreshTimer = null
+const lastRefreshAt = ref(null)
+const lastRefreshAtText = computed(() => {
+  if (!lastRefreshAt.value) return ''
+  // “刷新于”展示本次刷新的时间，按用户时区格式化（与全站时间显示规范一致）
+  return formatTimeWithTimezone(lastRefreshAt.value, store.state.user?.timezone || 'Asia/Shanghai', 'HH:mm:ss')
+})
 const loading = ref(false)
 const loadError = ref('')
 const prometheusBaseUrl = ref('')
@@ -253,6 +269,7 @@ async function loadAlerts() {
     rawRows.value = []
   } finally {
     loading.value = false
+    lastRefreshAt.value = new Date()
     if (stateFilter.value !== 'all' && !stateFilterOptions.value.some((option) => option.value === stateFilter.value)) {
       stateFilter.value = 'all'
     }
@@ -329,6 +346,7 @@ async function loadAlertHistory() {
     historyRows.value = []
   } finally {
     historyLoading.value = false
+    lastRefreshAt.value = new Date()
   }
 }
 
@@ -343,9 +361,44 @@ function handleHistoryTableChange(pager) {
   loadAlertHistory()
 }
 
+// 只刷新当前激活的 tab：当前告警走 Prometheus 实时，历史告警走后端分页接口。
+function refreshActiveTab() {
+  if (activeTabKey.value === 'history') {
+    if (historyLoading.value) return
+    loadAlertHistory()
+  } else {
+    if (loading.value) return
+    loadAlerts()
+  }
+}
+
+function clearRefreshTimer() {
+  if (refreshTimer) {
+    window.clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+function restartRefreshTimer() {
+  clearRefreshTimer()
+  if (!autoRefreshEnabled.value) return
+  const intervalMs = Number(refreshIntervalSeconds.value || 15) * 1000
+  refreshTimer = window.setInterval(refreshActiveTab, intervalMs)
+}
+
+// 开关/间隔/切 tab 变化时重建定时器，保证只定时刷新当前激活的 tab。
+watch(() => autoRefreshEnabled.value, restartRefreshTimer)
+watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
+watch(() => activeTabKey.value, restartRefreshTimer)
+
 onMounted(() => {
   loadAlerts()
   loadAlertHistory()
+  restartRefreshTimer()
+})
+
+onBeforeUnmount(() => {
+  clearRefreshTimer()
 })
 </script>
 

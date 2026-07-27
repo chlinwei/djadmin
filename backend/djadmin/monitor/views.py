@@ -32,8 +32,6 @@ from .models import (
 from .prometheus_api import (
     api_get,
     get_prometheus_base_url,
-    verify_prometheus_alert_webhook_token,
-    verify_prometheus_http_sd_token,
 )
 from .serializer import (
     AlertHistorySerializer,
@@ -84,6 +82,9 @@ class MonitorViewSet(
         'prometheus_overview': 'monitor:view',
         'prometheus_http_sd': None,
         'alert_webhook': None,
+        'prometheus_tsdb_status': 'monitor:view',
+        'prometheus_config': 'monitor:view',
+        'prometheus_flags': 'monitor:view',
     }
 
     @staticmethod
@@ -467,6 +468,69 @@ class MonitorViewSet(
             'warnings': response.get('warnings') or [],
         })
 
+    @action(detail=False, methods=['get'], url_path='prometheus/tsdb-status')
+    def prometheus_tsdb_status(self, request):
+        """查询 Prometheus TSDB 运行状态（/api/v1/status/tsdb）。"""
+        response = api_get('/api/v1/status/tsdb')
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'prometheus_base_url': get_prometheus_base_url(),
+                'error': response.get('error') or 'query prometheus tsdb status failed',
+                'result': {},
+            })
+
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        return Response_200(data={
+            'status': 'success',
+            'prometheus_base_url': get_prometheus_base_url(),
+            'result': data or {},
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path='prometheus/config')
+    def prometheus_config(self, request):
+        """查询 Prometheus 当前生效配置（/api/v1/status/config）。"""
+        response = api_get('/api/v1/status/config')
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'prometheus_base_url': get_prometheus_base_url(),
+                'error': response.get('error') or 'query prometheus config failed',
+                'result': {},
+                'config_yaml': '',
+            })
+
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        yaml_text = str(data.get('yaml') or '') if isinstance(data, dict) else ''
+        return Response_200(data={
+            'status': 'success',
+            'prometheus_base_url': get_prometheus_base_url(),
+            'result': data or {},
+            'config_yaml': yaml_text,
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path='prometheus/flags')
+    def prometheus_flags(self, request):
+        """查询 Prometheus 启动参数（/api/v1/status/flags）。"""
+        response = api_get('/api/v1/status/flags')
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'prometheus_base_url': get_prometheus_base_url(),
+                'error': response.get('error') or 'query prometheus flags failed',
+                'result': {},
+            })
+
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        return Response_200(data={
+            'status': 'success',
+            'prometheus_base_url': get_prometheus_base_url(),
+            'result': data or {},
+            'warnings': response.get('warnings') or [],
+        })
+
     @action(
         detail=False,
         methods=['get'],
@@ -475,12 +539,8 @@ class MonitorViewSet(
         authentication_classes=[],
     )
     def prometheus_http_sd(self, request):
-        token = str(request.query_params.get('token') or '').strip()
-        # token 以哈希形式存在 SysConfig 里，校验走 Django 密码哈希的 check_password，
-        # 内部已是恒定时间比较，避免时序攻击猜出 token。
-        if not verify_prometheus_http_sd_token(token):
-            return JsonResponse({'error': 'forbidden'}, status=403)
-
+        # 内网 Prometheus service discovery 专用：该路径已在 JwtAuthenticationMiddleware 里
+        # 走全局 ApiToken 认证（与 dj-agent 同一套），此处不再做额外 token 校验。
         queryset = (
             self.get_queryset()
             .filter(managed_enabled=True, install_status=MonitorTarget.InstallStatus.SUCCESS)
@@ -524,17 +584,10 @@ class MonitorViewSet(
     def alert_webhook(self, request):
         """backend 替代 Alertmanager 接收 Prometheus notifier 推送的告警（Alertmanager v2 协议）。
 
-        鉴权用共享 token（对齐 prometheus_http_sd 的免登录 action 模式），Prometheus 侧通过
-        alerting.alertmanagers[].authorization.credentials 下发同一个值，走 Bearer header 而不是
-        query 参数，因为这是 Prometheus alerting 配置原生支持的方式。
+        该路径已在 JwtAuthenticationMiddleware 里走全局 ApiToken 认证（与 dj-agent 同一套，
+        Prometheus 侧用 alerting.alertmanagers[].authorization.credentials 下发 Bearer token），
+        此处不再做额外 token 校验。
         """
-        auth_header = str(request.headers.get('Authorization') or '').strip()
-        token = auth_header[len('Bearer '):].strip() if auth_header.lower().startswith('bearer ') else auth_header
-        # token 以哈希形式存在 SysConfig 里，校验走 Django 密码哈希的 check_password，
-        # 内部已是恒定时间比较，避免时序攻击猜出 token。
-        if not verify_prometheus_alert_webhook_token(token):
-            return JsonResponse({'error': 'forbidden'}, status=403)
-
         payload = request.data
         alerts = payload if isinstance(payload, list) else []
         result = ingest_alert_webhook_alerts(alerts)

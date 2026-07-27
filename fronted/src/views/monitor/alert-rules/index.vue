@@ -1,13 +1,6 @@
 <template>
   <div class="alert-rules-page">
     <a-card title="告警规则" size="small">
-      <a-alert
-        type="info"
-        show-icon
-        message="以下数据只读展示 Prometheus 当前生效的告警/记录规则，平台不再本地维护规则；如需新增/修改/删除请直接修改 Prometheus 规则文件。"
-        style="margin-bottom: 12px"
-      />
-
       <a-space style="margin-bottom: 12px" wrap>
         <a-tooltip title="刷新">
           <a-button type="primary" ghost :loading="loading" @click="loadRules">刷新</a-button>

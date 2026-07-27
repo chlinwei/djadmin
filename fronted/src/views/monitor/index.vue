@@ -31,9 +31,6 @@
       <a-card size="small" class="overview-card">
         <a-statistic title="采集异常" :value="overview.down" :value-style="{ color: '#cf1322' }" />
       </a-card>
-      <a-card size="small" class="overview-card">
-        <a-statistic title="触发告警" :value="alertSummary.firing" :value-style="{ color: '#cf1322' }" />
-      </a-card>
     </div>
 
     <a-card title="智能监控" size="small" class="monitor-card">
@@ -56,27 +53,6 @@
             :scroll="{ x: 1200 }"
             :pagination="{ pageSize: 10, showSizeChanger: true }"
           />
-        </a-tab-pane>
-
-        <a-tab-pane key="alerts" tab="Prometheus 告警">
-          <a-table
-            :rowKey="alertRowKey"
-            :columns="alertColumns"
-            :data-source="alerts"
-            :loading="loading"
-            size="small"
-            :scroll="{ x: 1200 }"
-            :pagination="{ pageSize: 10, showSizeChanger: true }"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'state'">
-                <a-tag :color="record.state === 'firing' ? 'red' : 'default'">{{ record.state || 'unknown' }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'severity'">
-                <a-tag :color="severityColor(record.severity)">{{ record.severity || '-' }}</a-tag>
-              </template>
-            </template>
-          </a-table>
         </a-tab-pane>
 
         <a-tab-pane key="managed-targets" tab="纳管目标">
@@ -276,6 +252,123 @@
             </template>
           </a-table>
         </a-tab-pane>
+
+        <a-tab-pane key="tsdb-status" tab="TSDB 状态">
+          <a-alert
+            v-if="tsdbLoadError"
+            type="warning"
+            show-icon
+            :message="tsdbLoadError"
+            style="margin-bottom: 12px"
+          />
+
+          <a-descriptions bordered size="small" :column="2">
+            <a-descriptions-item label="Series 总数">{{ tsdbHeadStats.numSeries ?? '-' }}</a-descriptions-item>
+            <a-descriptions-item label="Chunk 总数">{{ tsdbHeadStats.chunkCount ?? '-' }}</a-descriptions-item>
+            <a-descriptions-item label="Label Pair 总数">{{ tsdbHeadStats.numLabelPairs ?? '-' }}</a-descriptions-item>
+            <a-descriptions-item label="Chunk 最小时间">{{ formatTsdbTime(tsdbHeadStats.minTime) }}</a-descriptions-item>
+            <a-descriptions-item label="Chunk 最大时间">{{ formatTsdbTime(tsdbHeadStats.maxTime) }}</a-descriptions-item>
+            <a-descriptions-item label="指标分组数">{{ tsdbSeriesByMetric.length }}</a-descriptions-item>
+          </a-descriptions>
+
+          <a-row :gutter="12" style="margin-top: 12px">
+            <a-col :xs="24" :lg="12" style="margin-bottom: 12px">
+              <a-card size="small" title="Top 10 标签名（按取值数量）">
+                <a-table
+                  rowKey="_idx"
+                  :columns="tsdbTopColumns"
+                  :data-source="tsdbLabelValueCount.slice(0, 10)"
+                  :pagination="false"
+                  size="small"
+                  :scroll="{ x: 420 }"
+                />
+              </a-card>
+            </a-col>
+            <a-col :xs="24" :lg="12" style="margin-bottom: 12px">
+              <a-card size="small" title="Top 10 指标名（按时序数量）">
+                <a-table
+                  rowKey="_idx"
+                  :columns="tsdbTopColumns"
+                  :data-source="tsdbSeriesByMetric.slice(0, 10)"
+                  :pagination="false"
+                  size="small"
+                  :scroll="{ x: 420 }"
+                />
+              </a-card>
+            </a-col>
+            <a-col :xs="24" :lg="12" style="margin-bottom: 12px">
+              <a-card size="small" title="Top 10 标签名（按内存占用）">
+                <a-table
+                  rowKey="_idx"
+                  :columns="tsdbTopColumns"
+                  :data-source="tsdbMemoryByLabel.slice(0, 10)"
+                  :pagination="false"
+                  size="small"
+                  :scroll="{ x: 420 }"
+                />
+              </a-card>
+            </a-col>
+            <a-col :xs="24" :lg="12" style="margin-bottom: 12px">
+              <a-card size="small" title="Top 10 标签值对（按时序数量）">
+                <a-table
+                  rowKey="_idx"
+                  :columns="tsdbTopColumns"
+                  :data-source="tsdbSeriesByLabelValuePair.slice(0, 10)"
+                  :pagination="false"
+                  size="small"
+                  :scroll="{ x: 420 }"
+                />
+              </a-card>
+            </a-col>
+          </a-row>
+        </a-tab-pane>
+
+        <a-tab-pane key="prom-config" tab="Config">
+          <a-alert
+            v-if="promConfigLoadError"
+            type="warning"
+            show-icon
+            :message="promConfigLoadError"
+            style="margin-bottom: 12px"
+          />
+          <a-space style="margin-bottom: 12px">
+            <a-tooltip title="Copy">
+              <a-button type="primary" ghost :disabled="!promConfigYaml" @click="copyPromConfig">
+                Copy
+              </a-button>
+            </a-tooltip>
+          </a-space>
+          <a-empty v-if="!promConfigLoadError && !promConfigYaml" description="暂无配置数据" />
+          <pre v-else-if="promConfigYaml" class="prom-config-text">{{ promConfigYaml }}</pre>
+        </a-tab-pane>
+
+        <a-tab-pane key="prom-flags" tab="启动参数">
+          <a-alert
+            v-if="promFlagsLoadError"
+            type="warning"
+            show-icon
+            :message="promFlagsLoadError"
+            style="margin-bottom: 12px"
+          />
+          <a-space style="margin-bottom: 12px">
+            <a-input-search
+              v-model:value="promFlagsKeyword"
+              allow-clear
+              placeholder="按参数名或值搜索"
+              style="width: 320px"
+            />
+          </a-space>
+          <a-empty v-if="!promFlagsLoadError && filteredPromFlagsRows.length === 0" description="暂无启动参数数据" />
+          <a-table
+            v-else
+            rowKey="name"
+            :columns="promFlagsColumns"
+            :data-source="filteredPromFlagsRows"
+            size="small"
+            :pagination="{ pageSize: 20, showSizeChanger: true }"
+            :scroll="{ x: 1300 }"
+          />
+        </a-tab-pane>
       </a-tabs>
     </a-card>
 
@@ -403,11 +496,13 @@ import {
   checkManagedTargetServiceStatus,
   deleteManagedTarget,
   deleteSoftwarePackage,
+  getPrometheusFlags,
   getManagedTargets,
   getMonitorInstallHistoryList,
   getMonitorSummary,
-  getPrometheusAlerts,
+  getPrometheusConfig,
   getPrometheusOverview,
+  getPrometheusTsdbStatus,
   getPrometheusTargets,
   getSoftwarePackages,
   retryManagedTarget,
@@ -421,6 +516,8 @@ import {
 import { queryAgentJobs } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 
 const router = useRouter()
 // a-select 弹层挂载容器统一复用公共工具，避免每个页面自行处理导致弹层时有时无法正常弹出。
@@ -438,10 +535,15 @@ const lastRefreshAtText = computed(() => {
 
 const prometheusBaseUrl = ref('')
 const overview = reactive({ total: 0, up: 0, down: 0 })
-const alertSummary = reactive({ firing: 0, resolved: 0 })
+const tsdbStatus = ref({})
+const tsdbLoadError = ref('')
+const promConfigYaml = ref('')
+const promConfigLoadError = ref('')
+const promFlagsRows = ref([])
+const promFlagsLoadError = ref('')
+const promFlagsKeyword = ref('')
 
 const promTargets = ref([])
-const alerts = ref([])
 const managedTargets = ref([])
 const managedRetryLoading = reactive({})
 const managedCancelLoading = reactive({})
@@ -484,15 +586,6 @@ const promTargetColumns = [
   { title: 'Last Scrape', dataIndex: 'last_scrape', key: 'last_scrape', width: 220 },
   { title: 'Scrape URL', dataIndex: 'scrape_url', key: 'scrape_url', width: 260 },
   { title: 'Last Error', dataIndex: 'last_error', key: 'last_error', width: 260 },
-]
-
-const alertColumns = [
-  { title: '告警名称', dataIndex: 'name', key: 'name', width: 220 },
-  { title: '级别', dataIndex: 'severity', key: 'severity', width: 100 },
-  { title: '状态', dataIndex: 'state', key: 'state', width: 100 },
-  { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
-  { title: '摘要', dataIndex: 'summary', key: 'summary', width: 360 },
-  { title: '激活时间', dataIndex: 'active_at', key: 'active_at', width: 220 },
 ]
 
 const managedColumns = [
@@ -551,6 +644,51 @@ const packagePagination = reactive({
   showSizeChanger: true,
   showQuickJumper: true,
   showTotal: (total) => `共有 ${total} 条数据`,
+})
+
+const tsdbTopColumns = [
+  { title: '名称', dataIndex: 'name', key: 'name', width: 280 },
+  { title: '数值', dataIndex: 'value', key: 'value', width: 120 },
+]
+
+const promFlagsColumns = [
+  { title: '参数', dataIndex: 'name', key: 'name', width: 360 },
+  { title: '值', dataIndex: 'value', key: 'value', width: 920 },
+]
+
+const tsdbHeadStats = computed(() => {
+  const headStats = tsdbStatus.value?.headStats
+  return headStats && typeof headStats === 'object' ? headStats : {}
+})
+
+const tsdbSeriesByMetric = computed(() => {
+  const rows = tsdbStatus.value?.seriesCountByMetricName
+  return normalizeTsdbTopRows(rows)
+})
+
+const tsdbLabelValueCount = computed(() => {
+  const rows = tsdbStatus.value?.labelValueCountByLabelName
+  return normalizeTsdbTopRows(rows)
+})
+
+const tsdbMemoryByLabel = computed(() => {
+  const rows = tsdbStatus.value?.memoryInBytesByLabelName
+  return normalizeTsdbTopRows(rows)
+})
+
+const tsdbSeriesByLabelValuePair = computed(() => {
+  const rows = tsdbStatus.value?.seriesCountByLabelValuePair
+  return normalizeTsdbTopRows(rows)
+})
+
+const filteredPromFlagsRows = computed(() => {
+  const keyword = String(promFlagsKeyword.value || '').trim().toLowerCase()
+  if (!keyword) return promFlagsRows.value
+  return promFlagsRows.value.filter((row) => {
+    const name = String(row?.name || '').toLowerCase()
+    const value = String(row?.value || '').toLowerCase()
+    return name.includes(keyword) || value.includes(keyword)
+  })
 })
 
 function formatSize(bytes) {
@@ -780,19 +918,48 @@ function serviceStatusSummary(entry) {
   return firstLine ? `${firstLine}（点击查看完整详情）` : '点击查看完整详情'
 }
 
-function severityColor(severity) {
-  const value = String(severity || '').toLowerCase()
-  if (value === 'critical') return 'red'
-  if (value === 'warning') return 'orange'
-  return 'default'
-}
-
-function alertRowKey(record) {
-  return `${record.name || '-'}:${record.instance || '-'}:${record.active_at || '-'}`
-}
-
 function parseApiData(resp) {
   return resp?.data?.data || {}
+}
+
+function formatTsdbTime(rawValue) {
+  const value = Number(rawValue)
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  const ts = value > 100000000000 ? value : value * 1000
+  return formatTimeWithTimezone(ts, store.state.user?.timezone || 'Asia/Shanghai')
+}
+
+function pickTsdbName(item) {
+  if (item === null || item === undefined) return '-'
+  if (Array.isArray(item)) return String(item[0] ?? '-')
+  if (typeof item !== 'object') return String(item)
+  const candidate = item.name ?? item.labelName ?? item.label ?? item.metric ?? item.pair ?? item.key
+  if (candidate !== undefined && candidate !== null && String(candidate) !== '') {
+    return String(candidate)
+  }
+  const firstStringField = Object.values(item).find((v) => typeof v === 'string' && v)
+  return firstStringField ? String(firstStringField) : '-'
+}
+
+function pickTsdbValue(item) {
+  if (item === null || item === undefined) return '-'
+  if (Array.isArray(item)) return item[1] ?? '-'
+  if (typeof item !== 'object') return '-'
+  const candidate = item.value ?? item.count ?? item.memoryInBytes ?? item.series ?? item.numSeries ?? item.bytes
+  if (candidate !== undefined && candidate !== null && candidate !== '') {
+    return candidate
+  }
+  const firstNumberField = Object.values(item).find((v) => typeof v === 'number')
+  return firstNumberField ?? '-'
+}
+
+function normalizeTsdbTopRows(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows.map((item, index) => ({
+    name: pickTsdbName(item),
+    value: pickTsdbValue(item),
+    _idx: index,
+  }))
 }
 
 async function loadMonitorSummary() {
@@ -830,16 +997,111 @@ async function loadPromTargets() {
   return Array.isArray(data.results) ? data.results : []
 }
 
-async function loadPromAlerts() {
-  const res = await getPrometheusAlerts()
-  const data = parseApiData(res)
-  if (String(data.status || '').toLowerCase() === 'error') {
-    throw new Error(data.error || 'Prometheus alerts 查询失败')
+async function loadPromTsdbStatus() {
+  try {
+    const res = await getPrometheusTsdbStatus()
+    const data = parseApiData(res)
+    if (String(data.status || '').toLowerCase() === 'error') {
+      return {
+        result: {},
+        error: data.error || 'Prometheus TSDB 状态查询失败',
+      }
+    }
+    return {
+      result: data.result && typeof data.result === 'object' ? data.result : {},
+      error: '',
+    }
+  } catch (error) {
+    return {
+      result: {},
+      error: error?.response?.data?.msg || error?.message || 'Prometheus TSDB 状态查询失败',
+    }
   }
-  return {
-    firingCount: Number(data.firing_count || 0),
-    resolvedCount: Number(data.resolved_count || 0),
-    rows: Array.isArray(data.results) ? data.results : [],
+}
+
+async function loadPromConfig() {
+  try {
+    const res = await getPrometheusConfig()
+    const data = parseApiData(res)
+    if (String(data.status || '').toLowerCase() === 'error') {
+      return {
+        yaml: '',
+        error: data.error || 'Prometheus Config 查询失败',
+      }
+    }
+    const yaml = String(data.config_yaml || data.result?.yaml || '')
+    return {
+      yaml,
+      error: '',
+    }
+  } catch (error) {
+    return {
+      yaml: '',
+      error: error?.response?.data?.msg || error?.message || 'Prometheus Config 查询失败',
+    }
+  }
+}
+
+async function loadPromFlags() {
+  try {
+    const res = await getPrometheusFlags()
+    const data = parseApiData(res)
+    if (String(data.status || '').toLowerCase() === 'error') {
+      return {
+        rows: [],
+        error: data.error || 'Prometheus 启动参数查询失败',
+      }
+    }
+
+    const result = data.result && typeof data.result === 'object' ? data.result : {}
+    const rows = Object.entries(result).map(([key, value]) => ({
+      name: String(key || ''),
+      value: value === null || value === undefined ? '' : String(value),
+    }))
+    rows.sort((a, b) => a.name.localeCompare(b.name))
+    return {
+      rows,
+      error: '',
+    }
+  } catch (error) {
+    return {
+      rows: [],
+      error: error?.response?.data?.msg || error?.message || 'Prometheus 启动参数查询失败',
+    }
+  }
+}
+
+async function copyPromConfig() {
+  const text = String(promConfigYaml.value || '')
+  if (!text) {
+    message.warning('暂无可复制的配置内容')
+    return
+  }
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      message.success('配置已复制到剪贴板')
+      return
+    }
+
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    if (ok) {
+      message.success('配置已复制到剪贴板')
+      return
+    }
+    message.error('复制失败，请手动复制')
+  } catch (_error) {
+    message.error('复制失败，请手动复制')
   }
 }
 
@@ -876,11 +1138,13 @@ async function loadAllData() {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [summaryPayload, overviewPayload, targetsPayload, alertsPayload] = await Promise.all([
+    const [summaryPayload, overviewPayload, targetsPayload, tsdbPayload, configPayload, flagsPayload] = await Promise.all([
       loadMonitorSummary(),
       loadPromOverview(),
       loadPromTargets(),
-      loadPromAlerts(),
+      loadPromTsdbStatus(),
+      loadPromConfig(),
+      loadPromFlags(),
     ])
 
     overview.total = overviewPayload.total
@@ -889,9 +1153,12 @@ async function loadAllData() {
     prometheusBaseUrl.value = overviewPayload.baseUrl
 
     promTargets.value = targetsPayload
-    alerts.value = alertsPayload.rows
-    alertSummary.firing = alertsPayload.firingCount
-    alertSummary.resolved = alertsPayload.resolvedCount
+    tsdbStatus.value = tsdbPayload.result
+    tsdbLoadError.value = tsdbPayload.error
+    promConfigYaml.value = configPayload.yaml
+    promConfigLoadError.value = configPayload.error
+    promFlagsRows.value = flagsPayload.rows
+    promFlagsLoadError.value = flagsPayload.error
 
     await loadManagedTargets()
     if (overview.total <= 0 && summaryPayload.total > 0) {
@@ -1261,5 +1528,19 @@ onBeforeUnmount(() => {
 .package-playbook-textarea {
   font-family: 'Courier New', Consolas, Monaco, monospace;
   font-size: 12px;
+}
+
+.prom-config-text {
+  max-height: 620px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  font-family: 'Courier New', Consolas, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
 }
 </style>

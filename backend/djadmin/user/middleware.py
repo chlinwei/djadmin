@@ -24,8 +24,8 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
         '/sys/monitor/targets/prometheus/http-sd/',
     }
     # backend 替代 Alertmanager 接收 Prometheus notifier 主动推送的告警：调用方是 Prometheus
-    # 而非登录用户，天然拿不到 JWT，鉴权改由 alert_webhook action 内部校验共享 Bearer token 完成，
-    # 这里必须豁免 JWT 校验，否则会在到达视图前就被这个中间件拦成 301。
+    # 而非登录用户，天然拿不到 JWT；鉴权与 dj-agent 共用全局 ApiToken（见 _authenticate_prometheus_request），
+    # 这里先豁免 JWT 再转到 ApiToken 校验，否则会在到达视图前就被这个中间件拦成 301。
     _ALERT_WEBHOOK_PATHS = {
         '/monitor/alert-webhook/api/v2/alerts',
     }
@@ -36,7 +36,7 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
         white_list = ["/sys/login"]  # 请求白名单
         path = request.path
         if path in self._PROMETHEUS_HTTP_SD_PATHS or path in self._ALERT_WEBHOOK_PATHS:
-            return None
+            return self._authenticate_prometheus_request(request)
         if self._is_agent_path(path):
             return self._authenticate_agent_or_user_request(request)
 
@@ -96,12 +96,23 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
         if token == '':
             return Response_error_str('Api Token不能为空', code=301, data={})
 
+        record = self._validate_api_token(token)
+        if record is None:
+            return Response_error_str('Api Token验证失败！', code=301, data={})
+        request.agent_id = record.agent_id
+        request.bind_mode = record.bind_mode
+        return None
+
+    def _validate_api_token(self, token):
+        """校验全局 ApiToken（agent 共享 token / api 绑定 token 同一套）。命中则刷新使用时间并返回记录，否则 None。"""
+        if not token:
+            return None
+
         from user.models import ApiToken
 
         now = timezone.now()
         # Token 哈希不可逆，必须遍历候选记录逐个校验哈希。
-        candidates = ApiToken.objects.filter(is_active=True)
-        for record in candidates:
+        for record in ApiToken.objects.filter(is_active=True):
             # 业务规则：agent 共享 token 永不过期，仅 api 绑定 token 受 expires_at 约束。
             if record.bind_mode == 'api' and record.expires_at is not None and record.expires_at <= now:
                 continue
@@ -110,11 +121,28 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
 
             record.last_used_at = now
             record.save(update_fields=['last_used_at'])
-            request.agent_id = record.agent_id
-            request.bind_mode = record.bind_mode
-            return None
+            return record
 
-        return Response_error_str('Api Token验证失败！', code=301, data={})
+        return None
+
+    def _extract_prometheus_token(self, request):
+        # http_sd 走 URL 上的 ?token=，alert-webhook 走 Authorization: Bearer <token>，统一取出明文 token。
+        query_token = str(request.GET.get('token') or '').strip()
+        if query_token:
+            return query_token
+        auth = (request.META.get('HTTP_AUTHORIZATION') or '').strip()
+        if auth.lower().startswith('bearer '):
+            return auth[len('Bearer '):].strip()
+        return auth
+
+    def _authenticate_prometheus_request(self, request):
+        # Prometheus http_sd / alert-webhook 与 dj-agent 共用全局 ApiToken 认证，不再维护
+        # 独立的 monitor.prometheus.*_token 参数。调用方是 Prometheus（非登录用户），校验失败
+        # 返回原生 403，便于 Prometheus 侧按 HTTP 状态识别鉴权失败。
+        token = self._extract_prometheus_token(request)
+        if self._validate_api_token(token) is None:
+            return JsonResponse({'error': 'forbidden'}, status=403)
+        return None
 
     def process_response(self, request, response):
         self._write_operation_audit_log(request, response)

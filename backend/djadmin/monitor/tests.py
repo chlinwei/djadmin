@@ -2,9 +2,10 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 
+from django.contrib.auth.hashers import make_password
+
 from assets.models import Host
-from sys_config.models import SysConfig
-from user.models import SysUser
+from user.models import ApiToken, SysUser
 
 from .models import MonitorTarget
 
@@ -76,16 +77,12 @@ class MonitorTargetDeleteTest(TestCase):
 class PrometheusHttpSDTest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        SysConfig.objects.update_or_create(
-            key='monitor.prometheus.http_sd_token',
-            defaults={
-                'name': 'Prometheus HTTP SD Token',
-                'value': 'test-token',
-                'default_value': 'test-token',
-                'value_type': 'string',
-                'is_readonly': False,
-                'description': 'test',
-            },
+        # http_sd 与 dj-agent 共用全局 ApiToken 认证：用 agent 共享 token 校验（?token=）。
+        ApiToken.objects.create(
+            agent_id='prometheus-http-sd',
+            bind_mode='agent',
+            token_hash=make_password('test-token'),
+            is_active=True,
         )
 
     def test_http_sd_requires_valid_token(self):

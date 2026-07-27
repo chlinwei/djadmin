@@ -35,6 +35,18 @@ export function getPrometheusTargets() {
   return requestUtil.get(prefix + 'targets/prometheus/targets/')
 }
 
+export function getPrometheusTsdbStatus() {
+  return requestUtil.get(prefix + 'targets/prometheus/tsdb-status/')
+}
+
+export function getPrometheusConfig() {
+  return requestUtil.get(prefix + 'targets/prometheus/config/')
+}
+
+export function getPrometheusFlags() {
+  return requestUtil.get(prefix + 'targets/prometheus/flags/')
+}
+
 export function getPrometheusAlerts() {
   return requestUtil.get(prefix + 'targets/prometheus/alerts/')
 }

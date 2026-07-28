@@ -22,7 +22,6 @@ export function getConfigByKey(key) {
 export const CONFIG_KEYS = {
   TASK_POLL_INTERVAL:       'sys.scheduler.task_poll_interval',
   TASK_POLL_MAX_COUNT:      'sys.scheduler.task_poll_max_count',
-  SSH_CONNECT_TIMEOUT:      'sys.scheduler.ssh_connect_timeout',
   SYSTEM_TITLE:             'sys.system_title',
   HOSTGROUP_MAX_TREE_DEPTH: 'sys.assets.hostgroup.max_tree_depth',
   HOST_MANAGE_REFRESH_INTERVAL_SECONDS: 'sys.assets.host.manage.refresh_interval_seconds',

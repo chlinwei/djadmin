@@ -206,10 +206,9 @@ media/      → 静态文件（头像等）
 | POST   | `/sys/scheduler/tasks/start-scheduler`     | 启用调度分发开关（Celery Beat 仍需独立进程运行）                          |
 | POST   | `/sys/scheduler/tasks/stop-scheduler`      | 关闭调度分发开关（Celery Beat 进程可继续运行）                            |
 
-**主机批量采集任务状态语义**
+**定时任务状态语义**
 
-- `collect_all_hosts_info` 对单台主机失败采取“记录并继续”策略，不会因为单台失败中断整个批次。
-- 因此定时任务总体状态通常按“任务函数是否抛异常”判定：单台失败不一定导致任务总体失败。
+- 当前已切换为“agent 上线主动上报 + 页面按需采集”，`collect_all_hosts_info` 已废弃。
 - `dispatch_due_tasks` 在 Worker 不可用时不会继续投递执行任务，并会在任务记录中写入“Worker 不可用，任务未投递”的失败提示，避免静默 pending。
 
 **Celery 任务清单（当前全量）**
@@ -217,7 +216,7 @@ media/      → 静态文件（头像等）
 | Celery 任务名                        | 定义位置                                | 触发方式                                                                              | 说明                                                         |
 | ------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `scheduler.dispatch_due_tasks`     | `backend/djadmin/scheduler/tasks.py`  | Celery Beat 周期触发（`CELERY_BEAT_SCHEDULE`，每 60 秒）                            | 调度扫描器：检查`ScheduledTask` 是否到期，并投递执行任务   |
-| `scheduler.execute_scheduled_task` | `backend/djadmin/scheduler/tasks.py`  | 由`dispatch_due_tasks` 投递；或 `/sys/scheduler/tasks/{id}/run-now` 手动投递      | 执行具体定时任务（例如`collect_all_hosts_info`）           |
+| `scheduler.execute_scheduled_task` | `backend/djadmin/scheduler/tasks.py`  | 由`dispatch_due_tasks` 投递；或 `/sys/scheduler/tasks/{id}/run-now` 手动投递      | 执行具体定时任务（日志清理、告警对账等）           |
 | `automation.execute_ansible_job`   | `backend/djadmin/automation/tasks.py` | 兼容保留（当前默认执行路径不依赖该任务） | 自动化中心 Ansible 作业执行任务（保留 Celery 入口，默认改为本地后台线程执行） |
 
 补充说明：

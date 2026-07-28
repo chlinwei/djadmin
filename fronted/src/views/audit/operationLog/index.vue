@@ -16,10 +16,13 @@
         <a-range-picker
           v-model:value="filters.timeRange"
           class="tool-item"
-          show-time
+          :show-time="timeRangeShowTime"
+          :presets="timeRangePresets"
           size="large"
           format="YYYY-MM-DD HH:mm:ss"
           :placeholder="['开始时间', '结束时间']"
+          :getPopupContainer="getPopupContainer"
+          @openChange="onTimeRangeOpenChange"
           @change="handleTimeRangeChange"
         />
       </a-col>
@@ -110,14 +113,16 @@ defineOptions({
   name: 'operationAudit'
 })
 
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getAuditOperationLogs } from '@/api/sys/audit.js'
-import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 
 const loading = ref(false)
 const logs = ref([])
@@ -129,6 +134,19 @@ const filters = reactive({
   timeRange: [],
   method: undefined,
 })
+
+const timeRangePresets = ref([])
+const timeRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
+
+function refreshTimeRangePresets() {
+  timeRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
+}
+
+function onTimeRangeOpenChange(open) {
+  if (open) {
+    refreshTimeRangePresets()
+  }
+}
 
 const pagination = reactive({
   current: 1,
@@ -212,8 +230,8 @@ function buildQueryParams() {
     pageSize: pagination.pageSize,
     keyword: filters.keyword || undefined,
     method: allowedMethods.has(filters.method) ? filters.method : undefined,
-    created_at_from: toUtcQueryISOString(startTime),
-    created_at_to: toUtcQueryISOString(endTime),
+    created_at_from: toUtcQueryISOStringByUserTimezone(startTime, userTimezone.value),
+    created_at_to: toUtcQueryISOStringByUserTimezone(endTime, userTimezone.value),
   }
 }
 
@@ -250,6 +268,7 @@ function reload() {
 }
 
 onMounted(() => {
+  refreshTimeRangePresets()
   loadLogs()
 })
 </script>

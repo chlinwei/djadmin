@@ -69,6 +69,9 @@
               <template v-else-if="column.key === 'active_at'">
                 {{ formatActiveAt(record.active_at) }}
               </template>
+              <template v-else-if="column.key === 'value'">
+                {{ formatCurrentValue(record.value) }}
+              </template>
             </template>
           </a-table>
         </a-tab-pane>
@@ -101,9 +104,12 @@
             />
             <a-range-picker
               v-model:value="historyTimeRange"
-              show-time
+              :show-time="historyRangeShowTime"
+              :presets="historyTimeRangePresets"
+              :placeholder="['开始时间', '结束时间']"
               :getPopupContainer="getPopupContainer"
-              @change="onHistoryFilterChange"
+              @openChange="onHistoryRangeOpenChange"
+              @change="onHistoryTimeRangeChange"
             />
           </a-space>
 
@@ -137,6 +143,9 @@
                 </a-tooltip>
                 <span v-else>{{ formatActiveAt(record.resolved_at) }}</span>
               </template>
+              <template v-else-if="column.key === 'duration'">
+                {{ formatAlertDuration(record.started_at, record.resolved_at) }}
+              </template>
             </template>
           </a-table>
         </a-tab-pane>
@@ -148,12 +157,20 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import dayjs from 'dayjs'
 import { getAlertHistories, getPrometheusAlerts } from '@/api/sys/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import store from '@/store'
 
+defineOptions({
+  name: 'MonitorAlertsPage',
+})
+
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 
 const activeTabKey = ref('current')
 
@@ -229,6 +246,13 @@ function stateColor(state) {
 function formatActiveAt(value) {
   if (!value) return '-'
   return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
+}
+
+function formatCurrentValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  return Number(numeric.toFixed(2)).toString()
 }
 
 const filteredRows = computed(() => {
@@ -309,6 +333,19 @@ const historySeverityOptions = [
   { label: 'info', value: 'info' },
 ]
 
+const historyTimeRangePresets = ref([])
+
+function refreshHistoryTimeRangePresets() {
+  // 面板打开时重算，确保“过去 N 分钟”基于点击当下，并以用户时区为基准。
+  historyTimeRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
+}
+
+function onHistoryRangeOpenChange(open) {
+  if (open) refreshHistoryTimeRangePresets()
+}
+
+const historyRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
+
 const historyColumns = [
   { title: '名称', dataIndex: 'alertname', key: 'alertname', width: 200 },
   { title: '级别', key: 'severity', width: 100 },
@@ -316,7 +353,33 @@ const historyColumns = [
   { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
   { title: '开始时间', key: 'started_at', width: 180 },
   { title: '恢复时间', key: 'resolved_at', width: 220 },
+  { title: '持续时间', key: 'duration', width: 120 },
 ]
+
+function formatAlertDuration(startedAt, resolvedAt) {
+  if (!startedAt) return '-'
+  const startMs = new Date(startedAt).getTime()
+  const endMs = resolvedAt ? new Date(resolvedAt).getTime() : Date.now()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return '-'
+
+  let seconds = Math.floor((endMs - startMs) / 1000)
+  const days = Math.floor(seconds / 86400)
+  seconds -= days * 86400
+  const hours = Math.floor(seconds / 3600)
+  seconds -= hours * 3600
+  const minutes = Math.floor(seconds / 60)
+  seconds -= minutes * 60
+
+  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分`
+  if (hours > 0) return `${hours}小时 ${minutes}分 ${seconds}秒`
+  if (minutes > 0) return `${minutes}分 ${seconds}秒`
+  return `${seconds}秒`
+}
+
+function normalizeDateTimeParam(value) {
+  if (!value) return undefined
+  return toUtcQueryISOStringByUserTimezone(value, userTimezone.value)
+}
 
 function buildHistoryQueryParams() {
   const [startTime, endTime] = historyTimeRange.value || []
@@ -326,8 +389,9 @@ function buildHistoryQueryParams() {
     keyword: historyKeyword.value || undefined,
     state: historyState.value !== 'all' ? historyState.value : undefined,
     severity: historySeverity.value !== 'all' ? historySeverity.value : undefined,
-    start_time: startTime ? startTime.toISOString() : undefined,
-    end_time: endTime ? endTime.toISOString() : undefined,
+    // 历史告警时间过滤统一按 started_at（开始时间）范围过滤。
+    start_time: normalizeDateTimeParam(startTime),
+    end_time: normalizeDateTimeParam(endTime),
   }
 }
 
@@ -353,6 +417,18 @@ async function loadAlertHistory() {
 function onHistoryFilterChange() {
   historyPagination.current = 1
   loadAlertHistory()
+}
+
+function onHistoryTimeRangeChange(dates) {
+  if (!Array.isArray(dates) || !dates[0] || !dates[1]) {
+    historyTimeRange.value = []
+    onHistoryFilterChange()
+    return
+  }
+
+  // 保留用户或快捷项选择的精确时分秒（分钟/小时级快捷范围依赖该行为）。
+  historyTimeRange.value = [dayjs(dates[0]), dayjs(dates[1])]
+  onHistoryFilterChange()
 }
 
 function handleHistoryTableChange(pager) {
@@ -391,7 +467,10 @@ watch(() => autoRefreshEnabled.value, restartRefreshTimer)
 watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
 watch(() => activeTabKey.value, restartRefreshTimer)
 
+useKeepAliveRefreshLifecycle(restartRefreshTimer, clearRefreshTimer)
+
 onMounted(() => {
+  refreshHistoryTimeRangePresets()
   loadAlerts()
   loadAlertHistory()
   restartRefreshTimer()

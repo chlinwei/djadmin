@@ -476,6 +476,7 @@ import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/in
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { deleteManagedTarget, getSoftwarePackages } from '@/api/sys/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import Dialog from './components/HostGroupDialog/index.vue'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -1490,6 +1491,8 @@ const getWebSshActionTooltip = (record) => {
 const formatDateTime = (value) => {
     return formatDateTimeWithTimezone(value, formatTimeWithTimezone, store.state.user?.timezone || 'Asia/Shanghai')
 }
+
+useKeepAliveRefreshLifecycle(startHostListAutoRefresh, stopHostListAutoRefresh)
 
 onMounted(async () => {
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）

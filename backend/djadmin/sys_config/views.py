@@ -1,6 +1,5 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.contrib.auth.hashers import make_password
 from sys_config.models import SECRET_MASK_PLACEHOLDER, SysConfig
@@ -12,29 +11,11 @@ import json
 from scheduler_manager import ensure_scheduler_log_configs
 
 
-AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY = 'sys.assets.collect.interval_seconds'
-AGENT_CONFIG_EXPOSED_KEYS = {AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY}
-AGENT_HOST_COLLECT_INTERVAL_SECONDS_MIN = 30
-AGENT_HOST_COLLECT_INTERVAL_SECONDS_MAX = 12 * 60 * 60
 HOST_MANAGE_REFRESH_INTERVAL_SECONDS_KEY = 'sys.assets.host.manage.refresh_interval_seconds'
 HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY = 'sys.assets.host.detail.collect_dispatch_interval_seconds'
 AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS_KEY = 'sys.automation.logs.refresh_interval_seconds'
 AUTOMATION_WS_JOB_LOG_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.job_log_poll_interval_seconds'
 AUTOMATION_WS_WORKFLOW_RUN_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.workflow_run_poll_interval_seconds'
-
-
-def ensure_agent_collect_configs():
-    SysConfig.objects.get_or_create(
-        key=AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY,
-        defaults={
-            'value': '40',
-            'default_value': '40',
-            'value_type': 'int',
-            'name': '主机信息采集间隔（秒）',
-            'description': 'Agent 主机信息周期上报间隔（秒）',
-            'is_readonly': False,
-        },
-    )
 
 
 def ensure_host_manage_refresh_interval_config():
@@ -107,25 +88,6 @@ def ensure_automation_ws_workflow_run_poll_interval_config():
     )
 
 
-@api_view(['GET'])
-def agent_config_by_key(request, key=None):
-    # Agent 启动只允许读取白名单参数，避免暴露全量系统配置。
-    ensure_agent_collect_configs()
-    if key not in AGENT_CONFIG_EXPOSED_KEYS:
-        return Response_error_str(f'参数 {key} 不存在', code=404)
-
-    try:
-        config = SysConfig.objects.get(key=key)
-    except SysConfig.DoesNotExist:
-        return Response_error_str(f'参数 {key} 不存在', code=404)
-
-    return Response_200({
-        'key': config.key,
-        'value': config.get_typed_value(),
-        'name': config.name,
-    })
-
-
 class SysConfigViewSet(viewsets.ModelViewSet):
     queryset = SysConfig.objects.all()
     serializer_class = SysConfigSerializer
@@ -136,7 +98,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         # Ensure scheduler-related default config keys are present even if user opens
         # system config page before visiting scheduler task center.
         ensure_scheduler_log_configs()
-        ensure_agent_collect_configs()
         ensure_host_manage_refresh_interval_config()
         ensure_host_detail_collect_dispatch_interval_config()
         ensure_automation_logs_refresh_interval_config()
@@ -188,17 +149,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(instance, data=mutable_data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        dispatch_result = self._try_dispatch_agent_collect_interval_update(
-            key=instance.key,
-            previous_value=instance.value,
-            next_value=normalized_value,
-        )
-        if dispatch_result is not None and dispatch_result.get('ok') is False:
-            return Response_error_str(
-                dispatch_result.get('error') or '参数已更新，但触发 agent 失败',
-                code=500,
-                data=serializer.data,
-            )
         return Response_200(serializer.data)
 
     @action(detail=True, methods=['post'], url_path='reset-default')
@@ -218,17 +168,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         else:
             config.value = str(config.default_value)
         config.save(update_fields=['value', 'update_time'])
-        dispatch_result = self._try_dispatch_agent_collect_interval_update(
-            key=config.key,
-            previous_value='',
-            next_value=config.value,
-        )
-        if dispatch_result is not None and dispatch_result.get('ok') is False:
-            return Response_error_str(
-                dispatch_result.get('error') or '参数已更新，但触发 agent 失败',
-                code=500,
-                data=SysConfigSerializer(config).data,
-            )
         return Response_200(SysConfigSerializer(config).data)
 
     @action(detail=False, methods=['get'], url_path='by-key/(?P<key>[^/]+)')
@@ -253,7 +192,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
                 return Response_error_str('该参数为只读，不可修改', code=400)
 
             try:
-                previous_value = config.value
                 incoming_value = self._normalize_value_by_type(
                     request.data.get('value', config.value),
                     config.value_type,
@@ -269,17 +207,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
                 return Response_error_str(str(exc), code=400)
 
             config.save(update_fields=['value', 'update_time'])
-            dispatch_result = self._try_dispatch_agent_collect_interval_update(
-                key=config.key,
-                previous_value=previous_value,
-                next_value=config.value,
-            )
-            if dispatch_result is not None and dispatch_result.get('ok') is False:
-                return Response_error_str(
-                    dispatch_result.get('error') or '参数已更新，但触发 agent 失败',
-                    code=500,
-                    data=SysConfigSerializer(config).data,
-                )
             return Response_200(SysConfigSerializer(config).data)
         except SysConfig.DoesNotExist:
             return Response_error_str(f'参数 {key} 不存在', code=404)
@@ -294,12 +221,6 @@ class SysConfigViewSet(viewsets.ModelViewSet):
                 normalized = int(str(value).strip())
             except (ValueError, TypeError):
                 raise ValueError('参数值必须是整数')
-
-            if key == AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY:
-                if normalized < AGENT_HOST_COLLECT_INTERVAL_SECONDS_MIN:
-                    raise ValueError(f'主机信息采集间隔最小为 {AGENT_HOST_COLLECT_INTERVAL_SECONDS_MIN} 秒')
-                if normalized > AGENT_HOST_COLLECT_INTERVAL_SECONDS_MAX:
-                    raise ValueError(f'主机信息采集间隔最大为 {AGENT_HOST_COLLECT_INTERVAL_SECONDS_MAX} 秒')
 
             return str(normalized)
 
@@ -319,13 +240,3 @@ class SysConfigViewSet(viewsets.ModelViewSet):
 
         # string or unknown type
         return '' if value is None else str(value)
-
-    def _try_dispatch_agent_collect_interval_update(self, key, previous_value, next_value):
-        if key != AGENT_HOST_COLLECT_INTERVAL_SECONDS_KEY:
-            return None
-        # 已切换为“按需采集”，不再支持/需要 set_host_report_interval 下发。
-        # 保留配置项仅用于兼容旧页面展示，更新时直接返回成功且不触发任何任务。
-        return {
-            'ok': True,
-            'dispatch': None,
-        }

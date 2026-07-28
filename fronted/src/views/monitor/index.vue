@@ -516,8 +516,13 @@ import {
 import { queryAgentJobs } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+
+defineOptions({
+  name: 'MonitorMainPage',
+})
 
 const router = useRouter()
 // a-select 弹层挂载容器统一复用公共工具，避免每个页面自行处理导致弹层时有时无法正常弹出。
@@ -1462,6 +1467,8 @@ function openServiceStatusModal(record) {
 
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)
 watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
+
+useKeepAliveRefreshLifecycle(restartRefreshTimer, clearRefreshTimer)
 
 onMounted(async () => {
   await loadAllData()

@@ -767,6 +767,8 @@ class MonitorTargetInstallHistoryViewSet(
         query_target_id = str(self.request.query_params.get('target_id') or '').strip()  # type: ignore[union-attr]
         query_job_id = str(self.request.query_params.get('automation_job_id') or '').strip()  # type: ignore[union-attr]
         query_keyword = str(self.request.query_params.get('keyword') or '').strip()  # type: ignore[union-attr]
+        query_start = str(self.request.query_params.get('start_time') or '').strip()  # type: ignore[union-attr]
+        query_end = str(self.request.query_params.get('end_time') or '').strip()  # type: ignore[union-attr]
 
         if query_target_id.isdigit():
             queryset = queryset.filter(target_id=int(query_target_id))
@@ -782,6 +784,10 @@ class MonitorTargetInstallHistoryViewSet(
                 | Q(exporter_type_snapshot__icontains=query_keyword)
                 | Q(summary_message__icontains=query_keyword)
             )
+        if query_start:
+            queryset = queryset.filter(create_time__gte=query_start)
+        if query_end:
+            queryset = queryset.filter(create_time__lte=query_end)
         return queryset
 
     def list(self, request, *args, **kwargs):

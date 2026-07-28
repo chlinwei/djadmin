@@ -18,7 +18,6 @@ from django.urls import path,include,re_path
 from djadmin import settings
 from django.views.static import serve
 from assets import views as assets_views
-from sys_config import views as sys_config_views
 from monitor.views import MonitorViewSet
 from rest_framework.permissions import AllowAny
 
@@ -56,7 +55,6 @@ urlpatterns = [
             authentication_classes=[],
         ),
     ),
-    path('api/agent/configs/by-key/<path:key>', sys_config_views.agent_config_by_key),
     path('api/agent/jobs/create', assets_views.agent_create_job),
     path('api/agent/jobs/create-batch', assets_views.agent_create_jobs_batch),
     path('api/agent/jobs/retry', assets_views.agent_retry_job),

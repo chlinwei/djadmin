@@ -307,8 +307,9 @@ def ensure_default_tasks():
         if first_task is None:
             first_task = task
 
-    # Remove deprecated combined audit cleanup task to avoid confusion in task center.
+    # Remove deprecated tasks to avoid confusion in task center.
     ScheduledTask.objects.filter(code='cleanup_audit_logs').delete()
+    ScheduledTask.objects.filter(code='collect_all_hosts_info').delete()
 
     return first_task
 
@@ -376,6 +377,7 @@ def run_scheduled_task(task_code):
 
     func = resolve_task_callable(task_code)
     if func is None:
+        # 未知任务不进入运行态，避免 is_running 被置为 True 后无回滚导致页面长期“运行中”。
         raise ValueError(f'Unknown task code: {task_code}')
 
     start_time = timezone.now()

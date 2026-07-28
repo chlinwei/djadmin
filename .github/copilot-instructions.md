@@ -77,6 +77,12 @@
   - 用户时区：从 pinia store 中读取（先用 `grep_search` 查找实际字段名，不要猜测）
   - 后端时间戳以 UTC 存储返回，前端负责转换为用户当前时区显示
   - **实际用法（已验证）**：`import store from '@/store'`，时区取 `store.state.user?.timezone || 'Asia/Shanghai'`，显示用 `formatTimeWithTimezone(value, tz)`
+- **时间选择组件强制规则（必须执行）**:
+  - 适用范围：所有日期时间范围选择组件（例如 `a-range-picker` + `show-time`）
+  - 统一默认：开始日期默认 `00:00:00`，结束日期默认 `23:59:59`
+  - 统一行为：用户仅选中日期时，提交前必须将范围归一化为“开始日 `startOf('day')`、结束日 `endOf('day')`”
+  - 查询语义：后端按时间范围筛选时，禁止混用“自然日范围”和“当前时刻范围”；默认使用自然日闭区间
+  - 回归检查：至少验证“仅点日期不改时间”时请求参数是否分别为 `T00:00:00` 与 `T23:59:59`
 - For backend changes, include migration impact notes when models are changed.
 - For scheduler-related issues, always verify whether Celery worker and beat processes are running.
 - For bug fixes, provide quick verification steps (commands + expected result).

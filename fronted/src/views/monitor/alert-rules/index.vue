@@ -37,7 +37,6 @@
           allow-clear
           style="width: 260px"
         />
-        <a-typography-text type="secondary">Prometheus 地址：{{ prometheusBaseUrl || '-' }}</a-typography-text>
       </a-space>
 
       <a-alert v-if="loadError" type="error" show-icon :message="loadError" style="margin-bottom: 12px" />
@@ -105,7 +104,6 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 
 const loading = ref(false)
 const loadError = ref('')
-const prometheusBaseUrl = ref('')
 const groups = ref([])
 const keyword = ref('')
 const typeFilter = ref('all')
@@ -236,7 +234,6 @@ async function loadRules() {
   try {
     const res = await getPrometheusAlertRules()
     const data = parseApiData(res)
-    prometheusBaseUrl.value = data.prometheus_base_url || ''
     if (data.status === 'error') {
       loadError.value = data.error || '查询 Prometheus 规则失败'
       groups.value = []

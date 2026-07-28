@@ -100,31 +100,14 @@ python manage.py runagentconsumer
 
 ---
 
-## 4. 主机采集间隔动态更新
+## 4. 主机信息采集模式
 
-修改系统配置 `sys.assets.collect.interval_seconds` 时，**自动触发下发，无需重启 agent**。
+主机信息采集已切换为以下模式：
 
-```
-用户在前端修改 sys.assets.collect.interval_seconds
-    ↓
-SysConfigViewSet.partial_update() （sys_config/views.py）
-    ↓
-_try_dispatch_agent_collect_interval_update()
-    ↓
-dispatch_host_report_interval_update()  ←  广播给全部在线 agent
-    ↓  为每个 agent_id 创建 AgentJob（action=set_host_report_interval）
-RabbitMQ agent.tasks 队列
-    ↓
-dj-agent 消费任务
-    ↓
-hostReportIntervalUpdateChan  ←  通道通知主循环
-    ↓
-hostReportTicker.Reset(newInterval)  ←  动态更新，立即生效
-```
+1. agent 上线时主动上报一次 `host_snapshot`（经 `runagentconsumer` 落库）；
+2. 用户打开主机详情页时，前端按配置间隔触发按需采集（后端调用 `refresh_host_info`，经 gRPC 让 agent 执行 `get_host_info`）。
 
-**约束**：`30s ≤ interval ≤ 12h`（前后端均校验）
-
-**初始化**：agent 启动时通过 HTTP GET `/api/agent/configs/by-key/sys.assets.collect.interval_seconds` 拉取一次初始值；若请求失败，退回到本地配置 `DJ_AGENT_HOST_REPORT_INTERVAL`（默认 40s）。
+系统参数 `sys.assets.collect.interval_seconds` 与接口 `/api/agent/configs/by-key/...` 已废弃，不再用于下发采集间隔。
 
 ---
 

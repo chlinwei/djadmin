@@ -8,15 +8,6 @@ from sys_config.models import SysConfig
 
 DEFAULT_CONFIGS = [
     {
-        'key': 'sys.assets.collect.interval_seconds',
-        'value': '40',
-        'default_value': '40',
-        'value_type': 'int',
-        'name': '主机信息采集间隔（秒）',
-        'description': 'Agent 主机信息周期上报间隔（秒）',
-        'is_readonly': False,
-    },
-    {
         'key': 'sys.assets.hostgroup.max_tree_depth',
         'value': '5',
         'default_value': '5',

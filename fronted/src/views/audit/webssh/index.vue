@@ -27,10 +27,13 @@
         <a-range-picker
           v-model:value="filters.timeRange"
           class="tool-item"
-          show-time
+          :show-time="timeRangeShowTime"
+          :presets="timeRangePresets"
           size="large"
           format="YYYY-MM-DD HH:mm:ss"
           :placeholder="['开始时间', '结束时间']"
+          :getPopupContainer="getPopupContainer"
+          @openChange="onTimeRangeOpenChange"
           @change="handleTimeRangeChange"
         />
       </a-col>
@@ -154,11 +157,13 @@ defineOptions({
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { downloadAuditWebSshSession, downloadAuditWebSshSessions, getAuditWebSshSessionContent, getAuditWebSshSessions } from '@/api/sys/audit.js'
-import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 
 const loading = ref(false)
 const sessions = ref([])
@@ -179,6 +184,19 @@ const filters = reactive({
   timeRange: [],
   status: undefined,
 })
+
+const timeRangePresets = ref([])
+const timeRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
+
+function refreshTimeRangePresets() {
+  timeRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
+}
+
+function onTimeRangeOpenChange(open) {
+  if (open) {
+    refreshTimeRangePresets()
+  }
+}
 
 const pagination = reactive({
   current: 1,
@@ -317,8 +335,8 @@ function buildQueryParams() {
     pageSize: pagination.pageSize,
     keyword: filters.keyword || undefined,
     output_keyword: filters.outputKeyword || undefined,
-    start_time_from: toUtcQueryISOString(startTime),
-    start_time_to: toUtcQueryISOString(endTime),
+    start_time_from: toUtcQueryISOStringByUserTimezone(startTime, userTimezone.value),
+    start_time_to: toUtcQueryISOStringByUserTimezone(endTime, userTimezone.value),
     status: filters.status || undefined,
   }
 }
@@ -329,8 +347,8 @@ function buildDownloadQueryParams() {
   return {
     keyword: filters.keyword || undefined,
     output_keyword: filters.outputKeyword || undefined,
-    start_time_from: toUtcQueryISOString(startTime),
-    start_time_to: toUtcQueryISOString(endTime),
+    start_time_from: toUtcQueryISOStringByUserTimezone(startTime, userTimezone.value),
+    start_time_to: toUtcQueryISOStringByUserTimezone(endTime, userTimezone.value),
     status: filters.status || undefined,
     ids: hasSelected ? selectedLogIds.value.join(',') : undefined,
   }
@@ -494,6 +512,7 @@ async function downloadFilteredSessions() {
 }
 
 onMounted(() => {
+  refreshTimeRangePresets()
   loadSessions()
 })
 </script>

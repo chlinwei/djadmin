@@ -16,10 +16,13 @@
         <a-range-picker
           v-model:value="filters.timeRange"
           class="tool-item"
-          show-time
+          :show-time="timeRangeShowTime"
+          :presets="timeRangePresets"
           size="large"
           format="YYYY-MM-DD HH:mm:ss"
           :placeholder="['开始时间', '结束时间']"
+          :getPopupContainer="getPopupContainer"
+          @openChange="onTimeRangeOpenChange"
           @change="handleTimeRangeChange"
         />
       </a-col>
@@ -72,14 +75,16 @@ defineOptions({
   name: 'loginAudit'
 })
 
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getAuditLoginLogs } from '@/api/sys/audit.js'
-import { formatTimeWithTimezone, toUtcQueryISOString } from '@/util/timezone'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 
 const loading = ref(false)
 const logs = ref([])
@@ -88,6 +93,19 @@ const filters = reactive({
   timeRange: [],
   status: undefined,
 })
+
+const timeRangePresets = ref([])
+const timeRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
+
+function refreshTimeRangePresets() {
+  timeRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
+}
+
+function onTimeRangeOpenChange(open) {
+  if (open) {
+    refreshTimeRangePresets()
+  }
+}
 
 const pagination = reactive({
   current: 1,
@@ -145,8 +163,8 @@ function buildQueryParams() {
     pageNumber: pagination.current,
     pageSize: pagination.pageSize,
     keyword: filters.keyword || undefined,
-    login_time_from: toUtcQueryISOString(startTime),
-    login_time_to: toUtcQueryISOString(endTime),
+    login_time_from: toUtcQueryISOStringByUserTimezone(startTime, userTimezone.value),
+    login_time_to: toUtcQueryISOStringByUserTimezone(endTime, userTimezone.value),
     status: filters.status || undefined,
   }
 }
@@ -184,6 +202,7 @@ function reload() {
 }
 
 onMounted(() => {
+  refreshTimeRangePresets()
   loadLogs()
 })
 </script>

@@ -85,6 +85,9 @@ class MonitorViewSet(
         'prometheus_tsdb_status': 'monitor:view',
         'prometheus_config': 'monitor:view',
         'prometheus_flags': 'monitor:view',
+        'prometheus_query': 'monitor:view',
+        'prometheus_query_range': 'monitor:view',
+        'prometheus_proxy': 'monitor:view',
     }
 
     @staticmethod
@@ -528,6 +531,106 @@ class MonitorViewSet(
             'status': 'success',
             'prometheus_base_url': get_prometheus_base_url(),
             'result': data or {},
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path='prometheus/query')
+    def prometheus_query(self, request):
+        """PromQL 即时查询代理（后端同域转发，避免前端直连 Prometheus 的跨域与鉴权问题）。"""
+        query = str(request.query_params.get('query') or '').strip()
+        if not query:
+            return Response_error_str('query 参数不能为空', code=400)
+
+        query_time = str(request.query_params.get('time') or '').strip()
+        timeout = str(request.query_params.get('timeout') or '').strip()
+        params = {'query': query}
+        if query_time:
+            params['time'] = query_time
+        if timeout:
+            params['timeout'] = timeout
+
+        response = api_get('/api/v1/query', params=params)
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'error': response.get('error') or 'query prometheus failed',
+                'error_type': response.get('errorType') or '',
+                'result_type': '',
+                'result': [],
+            })
+
+        data = response.get('data')
+        data_dict = data if isinstance(data, dict) else {}
+        return Response_200(data={
+            'status': 'success',
+            'result_type': data_dict.get('resultType') or '',
+            'result': data_dict.get('result') if isinstance(data_dict.get('result'), list) else [],
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path='prometheus/query-range')
+    def prometheus_query_range(self, request):
+        """PromQL 区间查询代理，参数与 Prometheus /api/v1/query_range 对齐。"""
+        query = str(request.query_params.get('query') or '').strip()
+        start = str(request.query_params.get('start') or '').strip()
+        end = str(request.query_params.get('end') or '').strip()
+        step = str(request.query_params.get('step') or '').strip()
+        timeout = str(request.query_params.get('timeout') or '').strip()
+
+        if not query:
+            return Response_error_str('query 参数不能为空', code=400)
+        if not start or not end or not step:
+            return Response_error_str('start/end/step 参数不能为空', code=400)
+
+        params = {
+            'query': query,
+            'start': start,
+            'end': end,
+            'step': step,
+        }
+        if timeout:
+            params['timeout'] = timeout
+
+        response = api_get('/api/v1/query_range', params=params)
+        if not response.get('ok'):
+            return Response_200(data={
+                'status': 'error',
+                'error': response.get('error') or 'query prometheus range failed',
+                'error_type': response.get('errorType') or '',
+                'result_type': '',
+                'result': [],
+            })
+
+        data = response.get('data')
+        data_dict = data if isinstance(data, dict) else {}
+        return Response_200(data={
+            'status': 'success',
+            'result_type': data_dict.get('resultType') or '',
+            'result': data_dict.get('result') if isinstance(data_dict.get('result'), list) else [],
+            'warnings': response.get('warnings') or [],
+        })
+
+    @action(detail=False, methods=['get'], url_path=r'prometheus/proxy/(?P<api_path>.+)')
+    def prometheus_proxy(self, request, api_path=None):
+        """Prometheus 只读代理：供 codemirror-promql 远程补全等能力走同域请求。
+
+        安全约束：仅允许转发 /api/v1/*，避免该接口被用于访问 Prometheus 非查询类路径。
+        """
+        normalized_path = f"/{str(api_path or '').lstrip('/')}"
+        if not normalized_path.startswith('/api/v1/'):
+            return JsonResponse(
+                {'status': 'error', 'errorType': 'bad_data', 'error': 'only /api/v1/* is allowed'},
+                status=400,
+            )
+
+        params = {key: value for key, value in request.query_params.items()}
+        response = api_get(normalized_path, params=params)
+        payload_data = response.get('data')
+        return JsonResponse({
+            'status': 'success' if response.get('ok') else 'error',
+            'data': payload_data if payload_data is not None else {},
+            'errorType': response.get('errorType') or '',
+            'error': response.get('error') or '',
             'warnings': response.get('warnings') or [],
         })
 

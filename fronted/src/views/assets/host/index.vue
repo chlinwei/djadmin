@@ -474,7 +474,7 @@ import {
 } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
-import { deleteManagedTarget, getSoftwarePackages } from '@/api/sys/monitor.js'
+import { deleteManagedTarget, getSoftwarePackages } from '@/api/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

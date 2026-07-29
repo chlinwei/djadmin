@@ -158,7 +158,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
-import { getAlertHistories, getPrometheusAlerts } from '@/api/sys/monitor'
+import { getAlertHistories, getPrometheusAlerts } from '@/api/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'

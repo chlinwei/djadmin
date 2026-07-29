@@ -95,7 +95,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { getPrometheusAlertRules } from '@/api/sys/monitor'
+import { getPrometheusAlertRules } from '@/api/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'

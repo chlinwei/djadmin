@@ -1,6 +1,6 @@
 import requestUtil from '@/util/request'
 
-const prefix = 'sys/monitor/'
+const prefix = 'monitor/'
 
 export function getMonitorSummary() {
   return requestUtil.get(prefix + 'summary/')
@@ -45,6 +45,14 @@ export function getPrometheusConfig() {
 
 export function getPrometheusFlags() {
   return requestUtil.get(prefix + 'targets/prometheus/flags/')
+}
+
+export function queryPrometheusInstant(params) {
+  return requestUtil.get(prefix + 'targets/prometheus/query/', params)
+}
+
+export function queryPrometheusRange(params) {
+  return requestUtil.get(prefix + 'targets/prometheus/query-range/', params)
 }
 
 export function getPrometheusAlerts() {

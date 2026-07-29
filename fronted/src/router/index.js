@@ -101,6 +101,11 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/alerts/index.vue'),
             },
             {
+                path: '/monitor/explore',
+                name: 'Explore',
+                component: () => import('../views/monitor/explore/index.vue'),
+            },
+            {
                 path: '/assets/hosts/detail/:id',
                 name: '主机详情页',
                 component: () => import('../views/assets/host/detail/index.vue'),

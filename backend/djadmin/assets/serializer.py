@@ -308,7 +308,7 @@ class HostSerializer(ModelSerializer):
 
     def get_monitors(self, obj):
         # 一台主机可能纳管多个监控项（exporter_type 各不相同），供主机编辑表单展示/编辑监控设置；
-        # 脚本内容等详细字段请通过 /sys/monitor/targets/{id}/ 单独获取，避免主机详情负载过大。
+        # 脚本内容等详细字段请通过 /monitor/targets/{id}/ 单独获取，避免主机详情负载过大。
         targets = obj.monitor_targets.all()
         return [
             {

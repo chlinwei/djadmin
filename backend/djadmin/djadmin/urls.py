@@ -70,7 +70,7 @@ name='media'),
     path('sys/scheduler/', include('scheduler.urls')),
     path('sys/audit/', include('audit.urls')),
     path('sys/', include('sys_config.urls')),
-    path('sys/monitor/', include('monitor.urls')),
+    path('monitor/', include('monitor.urls')),
     path('sys/automation/', include('automation.urls')),
     path('assets/',include('assets.urls')),
 ]

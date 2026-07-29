@@ -512,7 +512,7 @@ import {
   syncSoftwarePackageFromOfficial,
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
-} from '@/api/sys/monitor'
+} from '@/api/monitor'
 import { queryAgentJobs } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

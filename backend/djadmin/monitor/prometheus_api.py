@@ -105,13 +105,15 @@ def api_get(path: str, params: dict[str, Any] | None = None, timeout_seconds: in
         }
 
     is_success = str(payload.get('status') or '').lower() == 'success'
+    payload_data = payload.get('data')
     return {
         'ok': is_success,
         'status': str(payload.get('status') or ''),
         'error': str(payload.get('error') or ''),
         'errorType': str(payload.get('errorType') or ''),
         'warnings': payload.get('warnings') or [],
-        'data': payload.get('data') if isinstance(payload.get('data'), dict) else payload.get('data') or {},
+        # 保留空数组等合法响应，避免把 [] 误替换为 {} 导致调用方类型判断失真。
+        'data': payload_data if payload_data is not None else {},
     }
 
 

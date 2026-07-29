@@ -21,7 +21,7 @@ class JwtAuthenticationMiddleware(MiddlewareMixin):
     )
     _PROMETHEUS_HTTP_SD_PATHS = {
         '/monitor/prometheus/http-sd/',
-        '/sys/monitor/targets/prometheus/http-sd/',
+        '/monitor/targets/prometheus/http-sd/',
     }
     # backend 替代 Alertmanager 接收 Prometheus notifier 主动推送的告警：调用方是 Prometheus
     # 而非登录用户，天然拿不到 JWT；鉴权与 dj-agent 共用全局 ApiToken（见 _authenticate_prometheus_request），

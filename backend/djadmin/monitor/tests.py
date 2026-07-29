@@ -47,7 +47,7 @@ class MonitorTargetDeleteTest(TestCase):
             host=self.host, exporter_type='node_exporter', managed_enabled=True,
             install_status=MonitorTarget.InstallStatus.SUCCESS,
         )
-        res = self.client.delete(f'/sys/monitor/targets/{target.id}/')
+        res = self.client.delete(f'/monitor/targets/{target.id}/')
         body = res.json()
         self.assertEqual(body['code'], 400)
         self.assertTrue(MonitorTarget.objects.filter(id=target.id).exists())
@@ -58,7 +58,7 @@ class MonitorTargetDeleteTest(TestCase):
             host=self.host, exporter_type='node_exporter', managed_enabled=False,
             install_status=MonitorTarget.InstallStatus.PENDING,
         )
-        res = self.client.delete(f'/sys/monitor/targets/{target.id}/')
+        res = self.client.delete(f'/monitor/targets/{target.id}/')
         body = res.json()
         self.assertEqual(body['code'], 400)
         self.assertTrue(MonitorTarget.objects.filter(id=target.id).exists())
@@ -69,7 +69,7 @@ class MonitorTargetDeleteTest(TestCase):
             host=self.host, exporter_type='node_exporter', managed_enabled=False,
             install_status=MonitorTarget.InstallStatus.SUCCESS,
         )
-        res = self.client.delete(f'/sys/monitor/targets/{target.id}/')
+        res = self.client.delete(f'/monitor/targets/{target.id}/')
         self.assertResponseOK(res)
         self.assertFalse(MonitorTarget.objects.filter(id=target.id).exists())
 
@@ -86,7 +86,7 @@ class PrometheusHttpSDTest(TestCase):
         )
 
     def test_http_sd_requires_valid_token(self):
-        res = self.client.get('/sys/monitor/targets/prometheus/http-sd/?token=wrong-token')
+        res = self.client.get('/monitor/targets/prometheus/http-sd/?token=wrong-token')
         self.assertEqual(res.status_code, 403)
 
     def test_http_sd_returns_targets_with_port_resolution(self):
@@ -119,7 +119,7 @@ class PrometheusHttpSDTest(TestCase):
             labels={},
         )
 
-        res = self.client.get('/sys/monitor/targets/prometheus/http-sd/?token=test-token')
+        res = self.client.get('/monitor/targets/prometheus/http-sd/?token=test-token')
         self.assertEqual(res.status_code, 200)
         payload = res.json()
         self.assertIsInstance(payload, list)

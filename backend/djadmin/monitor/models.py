@@ -203,6 +203,89 @@ class AlertHistory(BaseModel):
 		return f'{self.alertname}[{self.state}] started_at={self.started_at}'
 
 
+class AlertMedia(BaseModel):
+	"""告警通知媒介配置；secret 字段只以加密形式存储在 config 中。"""
+
+	class MediaType(models.TextChoices):
+		EMAIL = 'email', 'Email'
+		WEBHOOK = 'webhook', 'Webhook'
+
+	name = models.CharField(max_length=128)
+	media_type = models.CharField(max_length=16, choices=MediaType.choices)
+	config = models.JSONField(default=dict, blank=True)
+	enabled = models.BooleanField(default=True)
+	users = models.ManyToManyField('user.SysUser', related_name='alert_media', blank=True)
+
+	class Meta:
+		db_table = 'monitor_alert_media'
+		ordering = ['-id']
+		constraints = [
+			models.UniqueConstraint(fields=['name'], name='monitor_alert_media_name_uniq'),
+		]
+
+	def __str__(self):
+		return f'{self.name} ({self.media_type})'
+
+
+class AlertRoute(BaseModel):
+	"""按 Prometheus 标签和事件类型选择通知媒介。"""
+
+	name = models.CharField(max_length=128, unique=True)
+	enabled = models.BooleanField(default=True)
+	matchers = models.JSONField(default=dict, blank=True)
+	notify_on_firing = models.BooleanField(default=True)
+	notify_on_resolved = models.BooleanField(default=True)
+	media = models.ManyToManyField(AlertMedia, related_name='alert_routes', blank=True)
+
+	class Meta:
+		db_table = 'monitor_alert_route'
+		ordering = ['id']
+
+	def __str__(self):
+		return self.name
+
+
+class AlertNotificationEvent(BaseModel):
+	"""一次需要发送的告警事件；deduplication_key 防止重复 webhook/心跳重复发信。"""
+
+	class Status(models.TextChoices):
+		PENDING = 'pending', 'Pending'
+		SENDING = 'sending', 'Sending'
+		SUCCESS = 'success', 'Success'
+		FAILED = 'failed', 'Failed'
+
+	alert = models.ForeignKey(AlertHistory, on_delete=models.CASCADE, related_name='notification_events')
+	event_type = models.CharField(max_length=16)
+	deduplication_key = models.CharField(max_length=255, unique=True)
+	status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+	attempt_count = models.PositiveIntegerField(default=0)
+	error_message = models.TextField(blank=True, default='')
+	sent_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'monitor_alert_notification_event'
+		ordering = ['-id']
+
+
+class AlertNotificationDelivery(BaseModel):
+	"""按媒介和用户记录实际投递结果，便于重试和审计。"""
+
+	event = models.ForeignKey(AlertNotificationEvent, on_delete=models.CASCADE, related_name='deliveries')
+	media = models.ForeignKey(AlertMedia, on_delete=models.SET_NULL, null=True, related_name='deliveries')
+	user = models.ForeignKey('user.SysUser', on_delete=models.SET_NULL, null=True, related_name='alert_deliveries')
+	address = models.CharField(max_length=500)
+	status = models.CharField(max_length=16, default='pending')
+	attempt_count = models.PositiveIntegerField(default=0)
+	error_message = models.TextField(blank=True, default='')
+	sent_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'monitor_alert_notification_delivery'
+		constraints = [
+			models.UniqueConstraint(fields=['event', 'media', 'user', 'address'], name='monitor_alert_delivery_uniq'),
+		]
+
+
 class SoftwarePackage(BaseModel):
 	"""本地软件仓库：托管待下发到 agent 的二进制包（当前用于 node_exporter），文件落 media/monitor_packages/。"""
 

@@ -3,6 +3,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AlertHistoryViewSet,
+    AlertMediaViewSet,
+    AlertRouteViewSet,
     MonitorTargetInstallHistoryViewSet,
     MonitorViewSet,
     SoftwarePackageViewSet,
@@ -13,6 +15,8 @@ router.register(r'targets', MonitorViewSet, basename='monitor-targets')
 router.register(r'packages', SoftwarePackageViewSet, basename='monitor-packages')
 router.register(r'install-histories', MonitorTargetInstallHistoryViewSet, basename='monitor-install-histories')
 router.register(r'alert-histories', AlertHistoryViewSet, basename='monitor-alert-histories')
+router.register(r'media', AlertMediaViewSet, basename='monitor-alert-media')
+router.register(r'alert-routes', AlertRouteViewSet, basename='monitor-alert-routes')
 
 urlpatterns = [
     # Prometheus 只读代理：codemirror-promql 会请求 <proxy>/api/v1/*（无结尾斜杠）。

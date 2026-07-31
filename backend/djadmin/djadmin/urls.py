@@ -63,7 +63,7 @@ urlpatterns = [
     path('api/agent/jobs/query-chain', assets_views.agent_query_job_chain),
     path('api/agent/jobs/events', assets_views.agent_query_job_events),
     path('sys/',include('user.urls')),
-    re_path('media/(?P<path>.*)', serve_media, {'document_root': settings.MEDIA_ROOT},
+    re_path(r'^media/(?P<path>.*)$', serve_media, {'document_root': settings.MEDIA_ROOT},
 name='media'),
     path('sys/',include('role.urls')),
     path('sys/',include('menu.urls')),

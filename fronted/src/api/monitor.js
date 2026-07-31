@@ -70,6 +70,38 @@ export function getAlertHistories(params) {
   return requestUtil.get(prefix + 'alert-histories/', params)
 }
 
+export function getAlertMediaList(params) {
+  return requestUtil.get(prefix + 'media/', params)
+}
+
+export function createAlertMedia(data) {
+  return requestUtil.post(prefix + 'media/', data)
+}
+
+export function updateAlertMedia(id, data) {
+  return requestUtil.patch(prefix + `media/${id}/`, data)
+}
+
+export function deleteAlertMedia(id) {
+  return requestUtil.del(prefix + `media/${id}/`)
+}
+
+export function getAlertRouteList(params) {
+  return requestUtil.get(prefix + 'alert-routes/', params)
+}
+
+export function createAlertRoute(data) {
+  return requestUtil.post(prefix + 'alert-routes/', data)
+}
+
+export function updateAlertRoute(id, data) {
+  return requestUtil.patch(prefix + `alert-routes/${id}/`, data)
+}
+
+export function deleteAlertRoute(id) {
+  return requestUtil.del(prefix + `alert-routes/${id}/`)
+}
+
 export function getManagedTargets(params) {
   return requestUtil.get(prefix + 'targets/', params)
 }

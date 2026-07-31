@@ -4,7 +4,10 @@ from rest_framework.serializers import ModelSerializer
 
 import hashlib
 
-from .models import AlertHistory, MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
+from assets.credential_crypto import encrypt_secret
+from user.models import SysUser
+
+from .models import AlertHistory, AlertMedia, AlertRoute, MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
 
 
 class MonitorTargetSerializer(ModelSerializer):
@@ -216,3 +219,114 @@ class AlertHistorySerializer(ModelSerializer):
     class Meta:
         model = AlertHistory
         fields = '__all__'
+
+
+class AlertMediaSerializer(ModelSerializer):
+    users = serializers.PrimaryKeyRelatedField(
+        queryset=SysUser.objects.filter(status=1), many=True, required=False,
+    )
+
+    class Meta:
+        model = AlertMedia
+        fields = ['id', 'name', 'media_type', 'config', 'enabled', 'users', 'create_time', 'update_time', 'remark']
+        read_only_fields = ['id', 'create_time', 'update_time']
+
+    def validate(self, attrs):
+        media_type = attrs.get('media_type', getattr(self.instance, 'media_type', None))
+        if media_type != AlertMedia.MediaType.EMAIL:
+            raise serializers.ValidationError({'media_type': '当前仅支持 Email 媒介'})
+
+        config = dict(attrs.get('config') or getattr(self.instance, 'config', {}) or {})
+        if config.get('provider') == 'gmail':
+            config['smtpServer'] = 'smtp.gmail.com'
+            config['smtpPort'] = 587
+        required_fields = {
+            'smtpServer': 'SMTP服务器不能为空',
+            'smtpPort': 'SMTP服务器端口不能为空',
+            'email': '电子邮件不能为空',
+            'password': '密码不能为空',
+        }
+        errors = {key: message for key, message in required_fields.items() if not config.get(key)}
+        if errors:
+            raise serializers.ValidationError({'config': errors})
+        try:
+            smtp_port = int(config['smtpPort'])
+        except (TypeError, ValueError):
+            raise serializers.ValidationError({'config': {'smtpPort': 'SMTP服务器端口必须是整数'}})
+        if not 1 <= smtp_port <= 65535:
+            raise serializers.ValidationError({'config': {'smtpPort': 'SMTP服务器端口必须在 1-65535 之间'}})
+        config['smtpPort'] = smtp_port
+        attrs['config'] = config
+        return attrs
+
+    @staticmethod
+    def _encrypted_config(config):
+        result = dict(config or {})
+        if result.get('password') and result.get('password') != '********':
+            result['password'] = encrypt_secret(result['password'])
+        return result
+
+    def create(self, validated_data):
+        users = validated_data.pop('users', [])
+        validated_data['config'] = self._encrypted_config(validated_data.get('config'))
+        instance = super().create(validated_data)
+        instance.users.set(users)
+        return instance
+
+    def update(self, instance, validated_data):
+        users = validated_data.pop('users', None)
+        if 'config' in validated_data:
+            incoming = dict(validated_data['config'] or {})
+            if incoming.get('password') == '********':
+                current = instance.config if isinstance(instance.config, dict) else {}
+                incoming['password'] = current.get('password', '')
+            validated_data['config'] = self._encrypted_config(incoming)
+        instance = super().update(instance, validated_data)
+        if users is not None:
+            instance.users.set(users)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        config = dict(data.get('config') or {})
+        if config.get('password'):
+            config['password'] = '********'
+        data['config'] = config
+        return data
+
+
+class AlertRouteSerializer(ModelSerializer):
+    media = serializers.PrimaryKeyRelatedField(
+        queryset=AlertMedia.objects.all(), many=True,
+    )
+
+    class Meta:
+        model = AlertRoute
+        fields = [
+            'id', 'name', 'enabled', 'matchers', 'notify_on_firing',
+            'notify_on_resolved', 'media', 'remark', 'create_time', 'update_time',
+        ]
+        read_only_fields = ['id', 'create_time', 'update_time']
+
+    def validate(self, attrs):
+        firing = attrs.get('notify_on_firing', getattr(self.instance, 'notify_on_firing', True))
+        resolved = attrs.get('notify_on_resolved', getattr(self.instance, 'notify_on_resolved', True))
+        if not firing and not resolved:
+            raise serializers.ValidationError('至少选择一种通知事件类型')
+
+        matchers = attrs.get('matchers', getattr(self.instance, 'matchers', {}))
+        if not isinstance(matchers, dict):
+            raise serializers.ValidationError({'matchers': '标签匹配条件必须是对象'})
+        normalized_matchers = {}
+        for key, value in matchers.items():
+            normalized_key = str(key).strip()
+            normalized_value = str(value).strip()
+            if not normalized_key or not normalized_value:
+                raise serializers.ValidationError({'matchers': '标签名和值不能为空'})
+            normalized_matchers[normalized_key] = normalized_value
+        attrs['matchers'] = normalized_matchers
+
+        media = attrs.get('media')
+        if media is not None and not media:
+            raise serializers.ValidationError({'media': '至少选择一个通知媒介'})
+        return attrs

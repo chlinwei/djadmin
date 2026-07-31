@@ -9,10 +9,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from .models import AlertHistory
+from .models import AlertHistory, AlertNotificationEvent
 from .prometheus_api import api_get
 
 # Prometheus/Go 里 time.Time 零值的 RFC3339 表示。注意：这只是 Alertmanager 自己对外
@@ -23,6 +24,26 @@ from .prometheus_api import api_get
 # 的真实恢复时间。因此不能用“零值=firing/非零=resolved”判断，必须比较 endsAt 与当前时间
 # 的先后关系：未来（或零值）→ 仍在 firing；不晚于当前时刻 → 已恢复。
 GO_ZERO_TIME = '0001-01-01T00:00:00Z'
+
+
+def _enqueue_notification(alert: AlertHistory, event_type: str) -> bool:
+    event, created = AlertNotificationEvent.objects.get_or_create(
+        deduplication_key=f'{alert.id}:{event_type}',
+        defaults={
+            'alert_id': alert.id,
+            'event_type': event_type,
+        },
+    )
+    if not created:
+        return False
+
+    def dispatch():
+        from .tasks import send_alert_notification
+
+        send_alert_notification.delay(event.id)
+
+    transaction.on_commit(dispatch)
+    return True
 
 
 def compute_alert_fingerprint(labels: dict[str, Any] | None) -> str:
@@ -72,6 +93,7 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     created = 0
     resolved = 0
     heartbeats = 0
+    notifications = 0
 
     for item in (alerts or []):
         labels = item.get('labels') if isinstance(item.get('labels'), dict) else {}
@@ -93,6 +115,7 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
                 open_record.annotations = annotations
                 open_record.save(update_fields=['state', 'resolved_at', 'last_seen_at', 'annotations', 'update_time'])
                 resolved += 1
+                notifications += int(_enqueue_notification(open_record, 'resolved'))
             # 本地没有对应 firing 记录（比如 backend 重启后错过了 firing 推送）：
             # 一条孤立的 resolved 消息没有历史意义，不建行。
             continue
@@ -106,7 +129,7 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
             heartbeats += 1
             continue
 
-        AlertHistory.objects.create(
+        new_alert = AlertHistory.objects.create(
             fingerprint=fingerprint,
             alertname=str(labels.get('alertname') or ''),
             severity=str(labels.get('severity') or ''),
@@ -119,8 +142,14 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
             last_seen_at=now,
         )
         created += 1
+        notifications += int(_enqueue_notification(new_alert, 'firing'))
 
-    return {'created': created, 'resolved': resolved, 'heartbeats': heartbeats}
+    return {
+        'created': created,
+        'resolved': resolved,
+        'heartbeats': heartbeats,
+        'notifications': notifications,
+    }
 
 
 def reconcile_alert_history() -> int:

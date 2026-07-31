@@ -24,6 +24,8 @@ from menu.permisssion import CustomMenuPermission
 from .alert_history import ingest_alert_webhook_alerts
 from .models import (
     AlertHistory,
+    AlertMedia,
+    AlertRoute,
     MonitorTarget,
     MonitorTargetInstallHistory,
     SoftwarePackage,
@@ -35,6 +37,8 @@ from .prometheus_api import (
 )
 from .serializer import (
     AlertHistorySerializer,
+    AlertMediaSerializer,
+    AlertRouteSerializer,
     MonitorTargetInstallHistorySerializer,
     MonitorTargetSerializer,
     SoftwarePackageSerializer,
@@ -955,5 +959,132 @@ class AlertHistoryViewSet(
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
+
+
+class AlertMediaViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    queryset = AlertMedia.objects.prefetch_related('users').all()
+    serializer_class = AlertMediaSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['media_type', 'enabled']
+    search_fields = ['name']
+    ordering_fields = ['id', 'name', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'update': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        serializer = self.get_serializer(self.get_object())
+        return Response_200(data=serializer.data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return Response_200(data={'deleted': True})
+
+
+class AlertRouteViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    queryset = AlertRoute.objects.prefetch_related('media').all()
+    serializer_class = AlertRouteSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['enabled', 'notify_on_firing', 'notify_on_resolved']
+    search_fields = ['name']
+    ordering_fields = ['id', 'name', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'update': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request, *args, **kwargs):
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return Response_200(data={'deleted': True})
 
 

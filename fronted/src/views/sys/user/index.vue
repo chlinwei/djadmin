@@ -7,7 +7,7 @@
 
     <a-row class="tools" :gutter="16">
         <a-col :span="7">
-            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/邮箱/手机号/备注" enter-button size="large"
+            <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/手机号/备注" enter-button size="large"
                 @search="onSearch" />
         </a-col>
     <a-col class="AddBtn tool-item" v-permission.remove="'system:users:create'">
@@ -123,7 +123,6 @@ const SearchText = ref('')
 const columns = [
     { title: '用户名', dataIndex: 'username', fixed: true, width: 100, key: 'username', sorter:true, sortDirections: ['ascend', 'descend'] },
     { title: '角色', dataIndex: 'roles', key: 'roles', width: 150 },
-    { title: '邮箱', dataIndex: 'email', key: 'email', width: 100 },
     { title: '手机号', dataIndex: 'phonenumber', key: 'phonenumber', width: 100 },
     { title: '状态', dataIndex: 'status', key: 'status', width: 80 },
     { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 80 ,sorter:true,sortDirections: ['ascend', 'descend']},

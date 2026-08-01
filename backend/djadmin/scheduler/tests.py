@@ -21,7 +21,6 @@ class BaseSchedulerTestCase(TestCase):
             username='admin',
             password='admin123',
             status=1,
-            email='admin@test.com',
             timezone='Asia/Shanghai',
         )
         token = self._get_token(self.user)

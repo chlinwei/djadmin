@@ -79,13 +79,12 @@
             :getPopupContainer="getPopupContainer"
           />
         </a-form-item>
-        <a-form-item label="接收用户">
+        <a-form-item label="静态收件邮箱">
           <a-select
-            v-model:value="createForm.userIds"
-            mode="multiple"
-            :options="userOptions"
+            v-model:value="createForm.recipientEmails"
+            mode="tags"
             :getPopupContainer="getPopupContainer"
-            placeholder="选择告警接收用户"
+            placeholder="输入邮箱后回车，可填写多个"
           />
         </a-form-item>
         <template v-if="createForm.type === 'email'">
@@ -141,13 +140,14 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { getUserList } from '@/api/user'
 import { createAlertMedia, deleteAlertMedia, getAlertMediaList, updateAlertMedia } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const route = useRoute()
 
 const mediaTypeOptions = [
   { label: 'Email', value: 'email' },
@@ -162,13 +162,11 @@ const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
   { title: '媒介类型', key: 'type', width: 180 },
   { title: '配置状态', key: 'status', width: 140 },
-  { title: '接收用户数', dataIndex: 'userCount', key: 'userCount', width: 140 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 300 },
   { title: '操作', key: 'operation', fixed: 'right', width: 180 },
 ]
 
 const mediaList = ref([])
-const userOptions = ref([])
 const listLoading = ref(false)
 const createModalVisible = ref(false)
 const createLoading = ref(false)
@@ -188,7 +186,7 @@ function createDefaultForm() {
     messageFormat: 'html',
     description: '',
     enabled: true,
-    userIds: [],
+    recipientEmails: [],
   }
 }
 
@@ -212,7 +210,7 @@ function openEditModal(record) {
     messageFormat: config.messageFormat || 'html',
     description: record.remark || '',
     enabled: record.enabled,
-    userIds: record.users || [],
+    recipientEmails: record.recipient_emails || [],
   }
   createModalVisible.value = true
 }
@@ -244,7 +242,7 @@ async function saveMedia() {
       name: createForm.value.name,
       media_type: createForm.value.type,
       enabled: createForm.value.enabled,
-      users: createForm.value.userIds,
+      recipient_emails: createForm.value.recipientEmails,
       remark: createForm.value.description,
       config: {
         provider: createForm.value.provider,
@@ -281,7 +279,6 @@ async function loadMedia() {
       ...item,
       type: item.media_type,
       typeLabel: mediaTypeOptions.find((option) => option.value === item.media_type)?.label || item.media_type,
-      userCount: item.users?.length || 0,
       description: item.remark || '-',
     }))
   } finally {
@@ -307,18 +304,12 @@ async function handleDelete(record) {
   })
 }
 
-async function loadUsers() {
-  const response = await getUserList({ page: 1, size: 100 })
-  const data = parseApiData(response)
-  userOptions.value = (data.results || data || []).map((user) => ({
-    label: user.nickname || user.username || user.email,
-    value: user.id,
-  }))
-}
-
 onMounted(async () => {
   try {
-    await Promise.all([loadMedia(), loadUsers()])
+    await loadMedia()
+    if (String(route.query.create || '') === '1') {
+      openCreateModal()
+    }
   } catch (error) {
     message.error(error?.response?.data?.msg || '媒介数据加载失败')
   }

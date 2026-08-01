@@ -37,7 +37,6 @@ class OperationAuditLogTest(TestCase):
             username='admin',
             password='admin123',
             status=1,
-            email='admin@test.com',
             timezone='Asia/Shanghai',
         )
         self.admin_role = SysRole.objects.create(name='超级管理员', code='admin')
@@ -69,7 +68,6 @@ class OperationAuditLogTest(TestCase):
     def test_operation_log_created_by_middleware(self):
         res = self.client.post('/sys/usercenter/updateUserInfo/', {
             'phonenumber': '13800138000',
-            'email': 'center@test.com',
         }, format='json')
         self.assertEqual(res.json()['code'], 200)
 
@@ -80,7 +78,6 @@ class OperationAuditLogTest(TestCase):
         self.assertEqual(log.path, '/sys/usercenter/updateUserInfo/')
         self.assertEqual(log.method, 'POST')
         self.assertIn('phonenumber', log.request_data)
-        self.assertIn('center@test.com', log.request_data)
         self.assertIn('code', log.response_data)
         self.assertIn('200', log.response_data)
 
@@ -127,7 +124,6 @@ class WebSSHAuditDownloadTest(TestCase):
             username='admin',
             password='admin123',
             status=1,
-            email='admin@test.com',
             timezone='Asia/Shanghai',
         )
         add_operation_audit_menu(django_apps, None)

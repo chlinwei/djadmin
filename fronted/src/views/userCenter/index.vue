@@ -25,18 +25,18 @@
 
                         </li>
                         <li class="list-item">
-                            <SvgIcon name="email"></SvgIcon>
-                            <div class="iten-wrapper">
-                                <div class="item-name">邮箱</div>
-                                <div class="item-value">{{ currentUser.user.email }}</div>
-                            </div>
-
-                        </li>
-                        <li class="list-item">
                             <SvgIcon name="peoples"></SvgIcon>
                             <div class="iten-wrapper">
                                 <div class="item-name">角色</div>
                                 <div class="item-value">{{ roleList }}</div>
+                            </div>
+
+                        </li>
+                        <li class="list-item">
+                            <SvgIcon name="email"></SvgIcon>
+                            <div class="iten-wrapper">
+                                <div class="item-name">告警媒介</div>
+                                <div class="item-value">在右侧“关联告警媒介”中选择</div>
                             </div>
                         </li>
                         <li class="list-item">
@@ -62,10 +62,6 @@
                                     :rules="[{ required: true, message: '请输入电话号码!' }]">
                                     <a-input v-model:value="formState.phonenumber" />
                                 </a-form-item>
-                                <a-form-item :name="['email']" label="用户邮箱"
-                                    :rules="[{ type: 'email' }, { required: true }]">
-                                    <a-input v-model:value="formState.email" />
-                                </a-form-item>
                                 <a-form-item label="时区" name="timezone">
                                     <a-select 
                                         v-model:value="formState.timezone"
@@ -73,6 +69,18 @@
                                         :options="timezoneOptions"
                                         @change="handleTimezoneChange"
                                     />
+                                </a-form-item>
+                                <a-form-item label="关联告警媒介">
+                                    <a-select
+                                        v-model:value="alertMediaIds"
+                                        mode="multiple"
+                                        :options="alertMediaOptions"
+                                        :getPopupContainer="getPopupContainer"
+                                        placeholder="请选择可关联的告警媒介"
+                                    />
+                                </a-form-item>
+                                <a-form-item>
+                                    <a-button :loading="alertMediaSaving" @click="saveAlertMediaBindings" style="margin-left: 10px;">保存媒介关联</a-button>
                                 </a-form-item>
                                 <a-form-item>
                                     <a-button type="primary" html-type="submit" style="margin-left: 10px;">保存</a-button>
@@ -110,7 +118,12 @@
 <script setup>
 import { ref } from 'vue';
 import { reactive } from 'vue';
-import { getCurrentUser, saveCurrentUser } from '@/api/user/index.js';
+import {
+    getCurrentUser,
+    getCurrentUserAlertMediaBindings,
+    saveCurrentUser,
+    updateCurrentUserAlertMediaBindings,
+} from '@/api/user/index.js';
 import { getCurrentUserRoleList } from '@/api/role';
 import { updateUserInfo, updateUserPassword } from '@/api/user';
 import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
@@ -131,9 +144,11 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const activeKey = ref('1');
 const formState = reactive({
     phonenumber: currentUser.user.phonenumber,
-    email: currentUser.user.email,
     timezone: currentUser.user.timezone || 'UTC'
 });
+const alertMediaOptions = ref([])
+const alertMediaIds = ref([])
+const alertMediaSaving = ref(false)
 const password_formState = reactive({
     old_password: '',
     new_password: '',
@@ -189,7 +204,6 @@ const refreshCurrentUserCache = async () => {
         if (userData) {
             currentUser.user = userData
             formState.phonenumber = userData.phonenumber || ''
-            formState.email = userData.email || ''
             formState.timezone = userData.timezone || 'UTC'
             saveCurrentUser(userData)
             if (userData.timezone) {
@@ -222,7 +236,27 @@ const onFinishFailed_updateUserInfo = errorInfo => {
     console.log('Failed:', errorInfo);
 };
 
+const loadAlertMediaBindings = async () => {
+    const res = await getCurrentUserAlertMediaBindings()
+    const data = res?.data?.data || {}
+    const options = Array.isArray(data.options) ? data.options : []
+    alertMediaOptions.value = options.map((item) => ({
+        label: `${item.name} (${item.media_type})`,
+        value: item.id,
+    }))
+    alertMediaIds.value = Array.isArray(data.selected_media_ids) ? data.selected_media_ids : []
+}
 
+const saveAlertMediaBindings = async () => {
+    alertMediaSaving.value = true
+    try {
+        await updateCurrentUserAlertMediaBindings(alertMediaIds.value)
+        message.success('告警媒介关联已保存')
+        await loadAlertMediaBindings()
+    } finally {
+        alertMediaSaving.value = false
+    }
+}
 
 const onFinish_updateUserPassword = values => {
     var password_pair = {
@@ -262,7 +296,6 @@ onMounted(() => {
             currentUser.user = userData
             // 更新表单字段
             formState.phonenumber = userData.phonenumber || ''
-            formState.email = userData.email || ''
             formState.timezone = userData.timezone || 'UTC'
             saveCurrentUser(userData)
         }
@@ -272,19 +305,20 @@ onMounted(() => {
         const localUser = getCurrentUser()
         if (localUser) {
             formState.phonenumber = localUser.phonenumber || ''
-            formState.email = localUser.email || ''
             formState.timezone = localUser.timezone || 'UTC'
         }
     })
     
     // 初始化基本资料
     formState.phonenumber = currentUser.user.phonenumber;
-    formState.email = currentUser.user.email;
     formState.timezone = currentUser.user.timezone || 'UTC'
     getCurrentUserRoleList().then(result => {
         result.data.data.roleList.forEach(element => {
             roleList.value = roleList.value + element.name + ' ';
         });
+    })
+    loadAlertMediaBindings().catch(error => {
+        console.error('加载告警媒介关联失败:', error)
     })
 
 })

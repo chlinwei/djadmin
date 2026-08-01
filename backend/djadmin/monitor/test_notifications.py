@@ -23,9 +23,6 @@ class AlertMediaApiTest(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.admin = SysUser.objects.create(username='admin', password='unused', status=1)
-        self.recipient = SysUser.objects.create(
-            username='media-recipient', password='unused', email='recipient@example.com', status=1,
-        )
         self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.admin))
 
     def test_gmail_crud_encrypts_and_preserves_password(self):
@@ -33,7 +30,7 @@ class AlertMediaApiTest(TestCase):
             'name': 'Gmail Operations',
             'media_type': 'email',
             'enabled': True,
-            'users': [self.recipient.pk],
+            'recipient_emails': ['recipient@example.com'],
             'config': {
                 'provider': 'gmail',
                 'email': 'sender@gmail.com',
@@ -117,12 +114,7 @@ class AlertNotificationEventTest(TestCase):
 
 class AlertNotificationTaskTest(TestCase):
     def setUp(self):
-        self.user = SysUser.objects.create(
-            username='alert-recipient',
-            password='unused',
-            email='recipient@example.com',
-            status=1,
-        )
+        self.user = SysUser.objects.create(username='alert-recipient', password='unused', status=1)
         self.alert = AlertHistory.objects.create(
             fingerprint='notification-test',
             alertname='HostDown',
@@ -153,8 +145,8 @@ class AlertNotificationTaskTest(TestCase):
                 'messageFormat': 'text',
             },
             enabled=True,
+            recipient_emails=['recipient@example.com'],
         )
-        media.users.add(self.user)
         route = AlertRoute.objects.create(
             name=f'Route {media.pk}',
             matchers=matchers or {},
@@ -217,3 +209,52 @@ class AlertNotificationTaskTest(TestCase):
         self.assertEqual(delivery.status, 'failed')
         self.assertEqual(delivery.attempt_count, 1)
         self.assertIn('SMTP unavailable', delivery.error_message)
+
+    @patch('monitor.tasks._send_email')
+    def test_static_recipient_email_works_without_user_binding(self, send_email):
+        media = AlertMedia.objects.create(
+            name='Static Email',
+            media_type=AlertMedia.MediaType.EMAIL,
+            config={
+                'provider': 'custom',
+                'smtpServer': 'smtp.example.com',
+                'smtpPort': 587,
+                'email': 'sender@example.com',
+                'password': encrypt_secret('app-password'),
+                'messageFormat': 'text',
+            },
+            enabled=True,
+            recipient_emails=['ops@example.com'],
+        )
+        route = AlertRoute.objects.create(
+            name='Route Static',
+            matchers={},
+            notify_on_firing=True,
+            notify_on_resolved=True,
+        )
+        route.media.add(media)
+
+        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
+
+        self.event.refresh_from_db()
+        delivery = AlertNotificationDelivery.objects.get(event=self.event, media=media, address='ops@example.com')
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(self.event.status, AlertNotificationEvent.Status.SUCCESS)
+        self.assertEqual(delivery.status, 'success')
+        self.assertIsNone(delivery.user)
+        send_email.assert_called_once()
+
+    @patch('monitor.tasks._send_email')
+    def test_deduplicate_same_address_between_user_and_static_recipient(self, send_email):
+        media = self._create_media()
+        media.recipient_emails = ['recipient@example.com', 'recipient@example.com']
+        media.save(update_fields=['recipient_emails', 'update_time'])
+
+        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
+
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(
+            AlertNotificationDelivery.objects.filter(event=self.event, media=media, address='recipient@example.com').count(),
+            1,
+        )
+        send_email.assert_called_once()

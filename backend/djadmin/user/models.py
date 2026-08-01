@@ -14,7 +14,6 @@ class SysUser(models.Model):
     username = models.CharField(max_length=100, unique=True, verbose_name="用户名")
     password = models.CharField(max_length=100, verbose_name="密码")
     avatar = models.CharField(max_length=255, null=True, verbose_name="用户头像")
-    email = models.CharField(max_length=100, null=True, verbose_name="用户邮箱")
     phonenumber = models.CharField(max_length=11, null=True,blank=True, verbose_name="手机号码")
     login_date = models.DateTimeField(null=True, verbose_name="最后登录时间")
     status = models.SmallIntegerField(choices=STATUS_CHOICES, default=1)
@@ -22,6 +21,8 @@ class SysUser(models.Model):
     update_time = models.DateField(null=True,blank=True, verbose_name="更新时间")
     remark = models.CharField(max_length=500, null=True,blank=True,verbose_name="备注")
     timezone = models.CharField(max_length=50, default='UTC', verbose_name="时区")
+    # 告警媒介关联放在用户侧维护：一个用户可关联多个媒介。
+    alert_media = models.ManyToManyField('monitor.AlertMedia', related_name='bound_users', blank=True)
 
     def set_password(self, raw_password):
         self.password = make_password(raw_password)

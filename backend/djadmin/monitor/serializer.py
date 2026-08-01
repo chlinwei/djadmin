@@ -1,11 +1,11 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 import hashlib
 
 from assets.credential_crypto import encrypt_secret
-from user.models import SysUser
 
 from .models import AlertHistory, AlertMedia, AlertRoute, MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
 
@@ -222,14 +222,37 @@ class AlertHistorySerializer(ModelSerializer):
 
 
 class AlertMediaSerializer(ModelSerializer):
-    users = serializers.PrimaryKeyRelatedField(
-        queryset=SysUser.objects.filter(status=1), many=True, required=False,
-    )
-
     class Meta:
         model = AlertMedia
-        fields = ['id', 'name', 'media_type', 'config', 'enabled', 'users', 'create_time', 'update_time', 'remark']
+        fields = [
+            'id', 'name', 'media_type', 'config', 'enabled', 'recipient_emails',
+            'create_time', 'update_time', 'remark',
+        ]
         read_only_fields = ['id', 'create_time', 'update_time']
+
+    @staticmethod
+    def _normalize_recipient_emails(raw_value):
+        if raw_value in (None, ''):
+            return []
+        if not isinstance(raw_value, list):
+            raise serializers.ValidationError({'recipient_emails': '收件邮箱必须是数组'})
+
+        normalized = []
+        seen = set()
+        for item in raw_value:
+            email = str(item or '').strip()
+            if not email:
+                continue
+            try:
+                validate_email(email)
+            except DjangoValidationError:
+                raise serializers.ValidationError({'recipient_emails': f'非法邮箱地址: {email}'})
+            lowered = email.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(email)
+        return normalized
 
     def validate(self, attrs):
         media_type = attrs.get('media_type', getattr(self.instance, 'media_type', None))
@@ -257,6 +280,8 @@ class AlertMediaSerializer(ModelSerializer):
             raise serializers.ValidationError({'config': {'smtpPort': 'SMTP服务器端口必须在 1-65535 之间'}})
         config['smtpPort'] = smtp_port
         attrs['config'] = config
+        raw_recipients = attrs.get('recipient_emails', getattr(self.instance, 'recipient_emails', []))
+        attrs['recipient_emails'] = self._normalize_recipient_emails(raw_recipients)
         return attrs
 
     @staticmethod
@@ -267,24 +292,17 @@ class AlertMediaSerializer(ModelSerializer):
         return result
 
     def create(self, validated_data):
-        users = validated_data.pop('users', [])
         validated_data['config'] = self._encrypted_config(validated_data.get('config'))
-        instance = super().create(validated_data)
-        instance.users.set(users)
-        return instance
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        users = validated_data.pop('users', None)
         if 'config' in validated_data:
             incoming = dict(validated_data['config'] or {})
             if incoming.get('password') == '********':
                 current = instance.config if isinstance(instance.config, dict) else {}
                 incoming['password'] = current.get('password', '')
             validated_data['config'] = self._encrypted_config(incoming)
-        instance = super().update(instance, validated_data)
-        if users is not None:
-            instance.users.set(users)
-        return instance
+        return super().update(instance, validated_data)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

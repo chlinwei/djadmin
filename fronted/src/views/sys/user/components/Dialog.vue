@@ -22,9 +22,6 @@
     >
       <a-input v-model:value="form.phonenumber" />
     </a-form-item>
-    <a-form-item name="email"  label="email">
-      <a-input v-model:value="form.email" />
-    </a-form-item>
     <a-form-item name="status" label="状态">
       <a-radio-group :value="String(form.status)" @change="e => form.status = Number(e.target.value)">
         <a-radio value="1">正常</a-radio>
@@ -103,18 +100,9 @@ catch (error) {
 const userAdd_rules = {
     username: [
         {validator: checkUserName_rule,trigger: 'blur'}
-    ],
-    email: [
-        {required: true,message: "必填字段"},
-        {type: "email",message: "邮箱格式不正常"}
     ]
 }
-const userEdit_rules = {
-    email: [
-        {required: true,message: "必填字段"},
-        {type: "email",message: "邮箱格式不正常"}
-    ]
-}
+const userEdit_rules = {}
 
   const form = ref({
     id: -1,
@@ -122,7 +110,6 @@ const userEdit_rules = {
     password: "123456",
     status: null,
     phonenumber: null,
-    email: null,
     remark: null
     })
 
@@ -167,7 +154,6 @@ const handleOk = e => {
                 password: "123456",
                 status: 0,
                 phonenumber: "",
-                email: "",
                 remark: ""
             }
             
@@ -185,7 +171,6 @@ const handleOk = e => {
                     password: "123456",
                     status: null,
                     phonenumber: "",
-                    email: "",
                     remark: ""
                 }
             }

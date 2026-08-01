@@ -204,17 +204,80 @@ class UserCenterManage(GenericViewSet):
     @action(detail=False,methods=['post'],url_path="updateUserInfo")
     def updateUserInfo(self,request):
         phonenumber = request.data['phonenumber']
-        email = request.data['email']
         user = getCurrentUser(request)
         user_id = user['user_id']
         db_user = SysUser.objects.get(id=user_id)
         db_user.phonenumber = phonenumber
-        db_user.email = email
         db_user.update_time = datetime.now().date()
         db_user.save()
         return Response_200(data={
             'user': SysUserSerializer(db_user).data
         })
+
+    @action(detail=False, methods=['get'], url_path='alertMediaBindings')
+    def alertMediaBindings(self, request):
+        """返回当前用户可关联的告警媒介列表及已关联的媒介 id。"""
+        from monitor.models import AlertMedia
+
+        user = getCurrentUser(request)
+        user_id = user.get('user_id') if isinstance(user, dict) else None
+        if not user_id:
+            return Response_error_str('用户未登录或登录已过期', code=301)
+
+        db_user = SysUser.objects.filter(id=user_id).first()
+        if db_user is None:
+            return Response_error_str('用户不存在', code=400)
+
+        medias = AlertMedia.objects.filter(enabled=True).order_by('id')
+        options = [
+            {
+                'id': media.id,  # type: ignore[attr-defined]
+                'name': media.name,
+                'media_type': media.media_type,
+                'enabled': media.enabled,
+            }
+            for media in medias
+        ]
+        selected_ids = list(db_user.alert_media.values_list('id', flat=True))  # type: ignore[attr-defined]
+        return Response_200(data={'options': options, 'selected_media_ids': selected_ids})
+
+    @action(detail=False, methods=['post'], url_path='updateAlertMediaBindings')
+    def updateAlertMediaBindings(self, request):
+        """保存当前用户与告警媒介的多对多关联。"""
+        from monitor.models import AlertMedia
+
+        user = getCurrentUser(request)
+        user_id = user.get('user_id') if isinstance(user, dict) else None
+        if not user_id:
+            return Response_error_str('用户未登录或登录已过期', code=301)
+
+        db_user = SysUser.objects.filter(id=user_id).first()
+        if db_user is None:
+            return Response_error_str('用户不存在', code=400)
+
+        media_ids = request.data.get('media_ids')
+        if not isinstance(media_ids, list):
+            return Response_error_str('media_ids 必须是数组', code=400)
+
+        normalized_ids = []
+        for item in media_ids:
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                return Response_error_str('media_ids 仅允许整数 id', code=400)
+            if value <= 0:
+                return Response_error_str('media_ids 仅允许正整数 id', code=400)
+            if value not in normalized_ids:
+                normalized_ids.append(value)
+
+        valid_media_ids = set(
+            AlertMedia.objects.filter(id__in=normalized_ids).values_list('id', flat=True)
+        )
+        if len(valid_media_ids) != len(normalized_ids):
+            return Response_error_str('存在无效的告警媒介 id', code=400)
+
+        db_user.alert_media.set(normalized_ids)  # type: ignore[attr-defined]
+        return Response_200(data={'selected_media_ids': normalized_ids})
     
    #修改密码
     @action(detail=False,methods=['post'],url_path="updateUserPassword")
@@ -458,7 +521,7 @@ class UserManage(
     lookup_field = 'id'
     filter_backends = (OrderingFilter,filters.DjangoFilterBackend,SearchFilter)
     # filterset_class = SysUserFilter
-    search_fields = ['username', 'email','phonenumber','remark'] 
+    search_fields = ['username', 'phonenumber', 'remark'] 
     ordering_fields = [ 'username','create_time'] 
     pagination_class = CustomPagination
     default_queryset = SysUser.objects.all()

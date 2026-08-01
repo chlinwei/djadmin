@@ -214,7 +214,8 @@ class AlertMedia(BaseModel):
 	media_type = models.CharField(max_length=16, choices=MediaType.choices)
 	config = models.JSONField(default=dict, blank=True)
 	enabled = models.BooleanField(default=True)
-	users = models.ManyToManyField('user.SysUser', related_name='alert_media', blank=True)
+	# 允许直接配置外部收件邮箱（不依赖平台用户），用于值班组邮箱/跨系统通知等场景。
+	recipient_emails = models.JSONField(default=list, blank=True)
 
 	class Meta:
 		db_table = 'monitor_alert_media'

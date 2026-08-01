@@ -6,6 +6,7 @@ from datetime import timezone as dt_timezone
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import ApiToken, SysUser, SysUserRole
+from monitor.models import AlertMedia
 from role.models import SysRole
 
 
@@ -26,7 +27,6 @@ class BaseTestCase(TestCase):
             username='admin',
             password=make_password('admin123'),
             status=1,
-            email='admin@test.com',
             timezone='Asia/Shanghai',
         )
         token = _get_token(self.user)
@@ -130,7 +130,7 @@ class UserManageTest(BaseTestCase):
         """新增用户"""
         res = self.client.post('/sys/users/', {
             'username': 'newuser',
-            'email': 'new@test.com',
+            'phonenumber': '13800138000',
             'status': 1,
         }, format='json')
         self.assertResponseOK(res)
@@ -150,11 +150,11 @@ class UserManageTest(BaseTestCase):
     def test_update_user(self):
         """编辑用户"""
         res = self.client.patch(f'/sys/users/{self.user.id}/', {
-            'email': 'updated@test.com',
+            'phonenumber': '13900139000',
         }, format='json')
         self.assertResponseOK(res)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.email, 'updated@test.com')
+        self.assertEqual(self.user.phonenumber, '13900139000')
 
     def test_batch_delete_users(self):
         """批量删除用户"""
@@ -241,11 +241,10 @@ class UserCenterTest(BaseTestCase):
         """更新个人信息"""
         res = self.client.post('/sys/usercenter/updateUserInfo/', {
             'phonenumber': '13800138000',
-            'email': 'center@test.com',
         }, format='json')
         self.assertResponseOK(res)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.email, 'center@test.com')
+        self.assertEqual(self.user.phonenumber, '13800138000')
 
     def test_update_password_success(self):
         """修改密码成功"""
@@ -276,6 +275,47 @@ class UserCenterTest(BaseTestCase):
             'new_password': 'newpass456',
         }, format='json')
         self.assertNotEqual(res.json()['code'], 200)
+
+    def test_alert_media_bindings_get_and_update(self):
+        """用户中心可查询并保存当前用户关联的告警媒介（多选）"""
+        media_1 = AlertMedia.objects.create(
+            name='media-1',
+            media_type='email',
+            enabled=True,
+            config={
+                'provider': 'custom',
+                'smtpServer': 'smtp.example.com',
+                'smtpPort': 587,
+                'email': 'sender@example.com',
+                'password': 'encrypted-placeholder',
+            },
+            recipient_emails=['ops1@example.com'],
+        )
+        media_2 = AlertMedia.objects.create(
+            name='media-2',
+            media_type='email',
+            enabled=True,
+            config={
+                'provider': 'custom',
+                'smtpServer': 'smtp.example.com',
+                'smtpPort': 587,
+                'email': 'sender@example.com',
+                'password': 'encrypted-placeholder',
+            },
+            recipient_emails=['ops2@example.com'],
+        )
+
+        update_res = self.client.post('/sys/usercenter/updateAlertMediaBindings/', {
+            'media_ids': [media_1.id, media_2.id],  # type: ignore[attr-defined]
+        }, format='json')
+        update_body = self.assertResponseOK(update_res)
+        self.assertEqual(set(update_body['data']['selected_media_ids']), {media_1.id, media_2.id})  # type: ignore[attr-defined]
+
+        get_res = self.client.get('/sys/usercenter/alertMediaBindings/')
+        get_body = self.assertResponseOK(get_res)
+        self.assertEqual(set(get_body['data']['selected_media_ids']), {media_1.id, media_2.id})  # type: ignore[attr-defined]
+        option_ids = {item['id'] for item in get_body['data']['options']}
+        self.assertTrue({media_1.id, media_2.id}.issubset(option_ids))  # type: ignore[attr-defined]
 
 
 class ApiTokenTest(BaseTestCase):

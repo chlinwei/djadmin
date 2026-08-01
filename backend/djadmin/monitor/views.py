@@ -969,7 +969,7 @@ class AlertMediaViewSet(
     UpdateModelMixin,
     DestroyModelMixin,
 ):
-    queryset = AlertMedia.objects.prefetch_related('users').all()
+    queryset = AlertMedia.objects.all()
     serializer_class = AlertMediaSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)

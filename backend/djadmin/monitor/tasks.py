@@ -88,7 +88,22 @@ def _resolve_event_media(event):
         matchers = route.matchers if isinstance(route.matchers, dict) else {}
         if all(labels.get(str(key)) == str(value) for key, value in matchers.items()):
             media_ids.update(route.media.filter(enabled=True).values_list('id', flat=True))
-    return AlertMedia.objects.filter(id__in=media_ids, enabled=True).prefetch_related('users')
+    return AlertMedia.objects.filter(id__in=media_ids, enabled=True)
+
+
+def _iter_media_recipients(media):
+    """统一收件人来源：仅使用媒介静态邮箱，返回 (user_or_none, email) 元组。"""
+    seen = set()
+    static_emails = media.recipient_emails if isinstance(media.recipient_emails, list) else []
+    for email in static_emails:
+        address = str(email or '').strip()
+        if not address:
+            continue
+        lowered = address.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        yield None, address
 
 
 @shared_task(bind=True, name='monitor.send_alert_notification', max_retries=5)
@@ -106,10 +121,7 @@ def send_alert_notification(self, event_id):
     for media in _resolve_event_media(event):
         if media.media_type != AlertMedia.MediaType.EMAIL:
             continue
-        for user in media.users.filter(status=1):
-            address = str(user.email or '').strip()
-            if not address:
-                continue
+        for user, address in _iter_media_recipients(media):
             delivery, _ = AlertNotificationDelivery.objects.get_or_create(
                 event=event,
                 media=media,
@@ -133,7 +145,7 @@ def send_alert_notification(self, event_id):
 
     if not deliveries:
         event.status = AlertNotificationEvent.Status.FAILED
-        event.error_message = '没有匹配到包含有效 Email 收件人的启用告警路由'
+        event.error_message = '没有匹配到包含有效静态收件邮箱的启用告警路由'
         event.save(update_fields=['status', 'error_message', 'update_time'])
         return {'status': 'failed', 'event_id': event.pk}
 

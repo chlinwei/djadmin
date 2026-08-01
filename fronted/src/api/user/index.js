@@ -72,6 +72,14 @@ export function updateUserInfo(user, callback) {
         callback(result);
     })
 }
+
+export function getCurrentUserAlertMediaBindings() {
+    return requestUtil.get('sys/usercenter/alertMediaBindings/')
+}
+
+export function updateCurrentUserAlertMediaBindings(mediaIds) {
+    return requestUtil.post('sys/usercenter/updateAlertMediaBindings/', { media_ids: mediaIds })
+}
 //获取用户列表
 export function getUserList(params = {page:1,size:3,search}) {
    return requestUtil.get("sys/users/",params)

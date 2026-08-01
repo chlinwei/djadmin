@@ -18,7 +18,6 @@ class AutomationJobLogConsumerTest(TestCase):
             username='admin',
             password='admin123',
             status=1,
-            email='admin@test.com',
             timezone='Asia/Shanghai',
         )
         self.template = PlaybookTemplate.objects.create(

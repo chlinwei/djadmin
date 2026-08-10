@@ -1,6 +1,5 @@
 from unittest.mock import patch
 
-from celery.exceptions import Retry
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -10,7 +9,7 @@ from assets.credential_crypto import decrypt_secret, encrypt_secret, is_encrypte
 from user.models import SysUser
 
 from .alert_history import ingest_alert_webhook_alerts
-from .models import AlertHistory, AlertMedia, AlertNotificationDelivery, AlertNotificationEvent, AlertRoute
+from .models import AlertHistory, AlertMedia, AlertNotificationEvent, AlertRoute
 from .tasks import send_alert_notification
 
 
@@ -30,10 +29,10 @@ class AlertMediaApiTest(TestCase):
             'name': 'Gmail Operations',
             'media_type': 'email',
             'enabled': True,
-            'recipient_emails': ['recipient@example.com'],
             'config': {
                 'provider': 'gmail',
                 'email': 'sender@gmail.com',
+                'username': 'smtp-user@gmail.com',
                 'password': 'app-password',
                 'messageFormat': 'html',
             },
@@ -46,6 +45,8 @@ class AlertMediaApiTest(TestCase):
         media = AlertMedia.objects.get(name='Gmail Operations')
         self.assertEqual(media.config['smtpServer'], 'smtp.gmail.com')
         self.assertEqual(media.config['smtpPort'], 587)
+        self.assertEqual(media.config['authType'], 'password')
+        self.assertNotIn('username', media.config)
         self.assertTrue(is_encrypted_secret(media.config['password']))
         self.assertEqual(decrypt_secret(media.config['password']), 'app-password')
 
@@ -83,6 +84,29 @@ class AlertMediaApiTest(TestCase):
             'msg': 'success',
         })
 
+    def test_custom_smtp_without_auth_does_not_require_username_or_password(self):
+        response = self.client.post('/monitor/media/', {
+            'name': 'Internal SMTP Relay',
+            'media_type': 'email',
+            'enabled': True,
+            'config': {
+                'provider': 'custom',
+                'smtpServer': 'mail.example.com',
+                'smtpPort': 25,
+                'authType': 'none',
+                'email': 'zabbix@example.com',
+                'username': 'unused-user',
+                'password': 'unused-password',
+                'messageFormat': 'text',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        media = AlertMedia.objects.get(name='Internal SMTP Relay')
+        self.assertEqual(media.config['authType'], 'none')
+        self.assertNotIn('username', media.config)
+        self.assertNotIn('password', media.config)
+
 
 class AlertNotificationEventTest(TestCase):
     def _payload(self, ends_at='9999-12-31T23:59:59Z'):
@@ -114,7 +138,6 @@ class AlertNotificationEventTest(TestCase):
 
 class AlertNotificationTaskTest(TestCase):
     def setUp(self):
-        self.user = SysUser.objects.create(username='alert-recipient', password='unused', status=1)
         self.alert = AlertHistory.objects.create(
             fingerprint='notification-test',
             alertname='HostDown',
@@ -145,7 +168,6 @@ class AlertNotificationTaskTest(TestCase):
                 'messageFormat': 'text',
             },
             enabled=True,
-            recipient_emails=['recipient@example.com'],
         )
         route = AlertRoute.objects.create(
             name=f'Route {media.pk}',
@@ -156,105 +178,25 @@ class AlertNotificationTaskTest(TestCase):
         route.media.add(media)
         return media
 
-    @patch('monitor.tasks._send_email')
-    def test_successful_delivery_marks_event_success(self, send_email):
-        media = self._create_media()
-
-        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
-
-        self.event.refresh_from_db()
-        delivery = AlertNotificationDelivery.objects.get(event=self.event, media=media)
-        self.assertEqual(result['status'], 'success')
-        self.assertEqual(self.event.status, AlertNotificationEvent.Status.SUCCESS)
-        self.assertEqual(delivery.status, 'success')
-        self.assertEqual(delivery.attempt_count, 1)
-        send_email.assert_called_once()
-
     def test_no_recipient_marks_event_failed_without_retry(self):
         result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
 
         self.event.refresh_from_db()
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(self.event.status, AlertNotificationEvent.Status.FAILED)
-        self.assertIn('告警路由', self.event.error_message)
+        self.assertEqual(self.event.error_message, '当前告警媒介未配置收件人')
 
-    @patch('monitor.tasks._send_email')
-    def test_non_matching_route_does_not_send(self, send_email):
+    def test_non_matching_route_does_not_send(self):
         self._create_media(matchers={'severity': 'warning'})
 
         result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
 
         self.assertEqual(result['status'], 'failed')
-        send_email.assert_not_called()
 
-    @patch('monitor.tasks._send_email')
-    def test_event_type_switch_excludes_firing(self, send_email):
+    def test_event_type_switch_excludes_firing(self):
         self._create_media(notify_on_firing=False, notify_on_resolved=True)
 
         result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
 
         self.assertEqual(result['status'], 'failed')
-        send_email.assert_not_called()
 
-    @patch('monitor.tasks._send_email', side_effect=OSError('SMTP unavailable'))
-    def test_smtp_failure_records_delivery_and_retries(self, _send_email):
-        media = self._create_media()
-
-        with self.assertRaises(Retry):
-            send_alert_notification.run(self.event.pk)  # type: ignore[operator]
-
-        self.event.refresh_from_db()
-        delivery = AlertNotificationDelivery.objects.get(event=self.event, media=media)
-        self.assertEqual(self.event.status, AlertNotificationEvent.Status.FAILED)
-        self.assertEqual(delivery.status, 'failed')
-        self.assertEqual(delivery.attempt_count, 1)
-        self.assertIn('SMTP unavailable', delivery.error_message)
-
-    @patch('monitor.tasks._send_email')
-    def test_static_recipient_email_works_without_user_binding(self, send_email):
-        media = AlertMedia.objects.create(
-            name='Static Email',
-            media_type=AlertMedia.MediaType.EMAIL,
-            config={
-                'provider': 'custom',
-                'smtpServer': 'smtp.example.com',
-                'smtpPort': 587,
-                'email': 'sender@example.com',
-                'password': encrypt_secret('app-password'),
-                'messageFormat': 'text',
-            },
-            enabled=True,
-            recipient_emails=['ops@example.com'],
-        )
-        route = AlertRoute.objects.create(
-            name='Route Static',
-            matchers={},
-            notify_on_firing=True,
-            notify_on_resolved=True,
-        )
-        route.media.add(media)
-
-        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
-
-        self.event.refresh_from_db()
-        delivery = AlertNotificationDelivery.objects.get(event=self.event, media=media, address='ops@example.com')
-        self.assertEqual(result['status'], 'success')
-        self.assertEqual(self.event.status, AlertNotificationEvent.Status.SUCCESS)
-        self.assertEqual(delivery.status, 'success')
-        self.assertIsNone(delivery.user)
-        send_email.assert_called_once()
-
-    @patch('monitor.tasks._send_email')
-    def test_deduplicate_same_address_between_user_and_static_recipient(self, send_email):
-        media = self._create_media()
-        media.recipient_emails = ['recipient@example.com', 'recipient@example.com']
-        media.save(update_fields=['recipient_emails', 'update_time'])
-
-        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
-
-        self.assertEqual(result['status'], 'success')
-        self.assertEqual(
-            AlertNotificationDelivery.objects.filter(event=self.event, media=media, address='recipient@example.com').count(),
-            1,
-        )
-        send_email.assert_called_once()

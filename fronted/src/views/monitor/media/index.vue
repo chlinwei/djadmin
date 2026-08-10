@@ -79,21 +79,20 @@
             :getPopupContainer="getPopupContainer"
           />
         </a-form-item>
-        <a-form-item label="静态收件邮箱">
-          <a-select
-            v-model:value="createForm.recipientEmails"
-            mode="tags"
-            :getPopupContainer="getPopupContainer"
-            placeholder="输入邮箱后回车，可填写多个"
-          />
-        </a-form-item>
         <template v-if="createForm.type === 'email'">
           <a-form-item label="邮箱提供商">
             <a-select
               v-model:value="createForm.provider"
               :options="emailProviderOptions"
               :getPopupContainer="getPopupContainer"
+              @change="handleProviderChange"
             />
+          </a-form-item>
+          <a-form-item label="电子邮件" required>
+            <a-input v-model:value="createForm.email" />
+          </a-form-item>
+          <a-form-item v-if="createForm.provider === 'custom' && createForm.authType === 'password'" label="用户名" required>
+            <a-input v-model:value="createForm.username" placeholder="SMTP 登录用户名" />
           </a-form-item>
           <template v-if="createForm.provider === 'custom'">
             <a-form-item label="SMTP服务器" required>
@@ -109,10 +108,14 @@
               />
             </a-form-item>
           </template>
-          <a-form-item label="电子邮件" required>
-            <a-input v-model:value="createForm.email" />
+          <a-form-item v-if="createForm.provider === 'custom'" label="认证方式" required>
+            <a-select
+              v-model:value="createForm.authType"
+              :options="smtpAuthTypeOptions"
+              :getPopupContainer="getPopupContainer"
+            />
           </a-form-item>
-          <a-form-item label="密码" required>
+          <a-form-item v-if="createForm.authType === 'password'" label="密码" required>
             <a-input-password v-model:value="createForm.password" />
           </a-form-item>
           <a-form-item label="消息格式">
@@ -158,6 +161,11 @@ const emailProviderOptions = [
   { label: '自定义 SMTP', value: 'custom' },
 ]
 
+const smtpAuthTypeOptions = [
+  { label: '无认证', value: 'none' },
+  { label: '用户密码', value: 'password' },
+]
+
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
   { title: '媒介类型', key: 'type', width: 180 },
@@ -178,16 +186,23 @@ function createDefaultForm() {
   return {
     name: '',
     type: 'email',
-    provider: 'gmail',
+    provider: 'custom',
     smtpServer: '',
     smtpPort: undefined,
+    authType: 'none',
     email: '',
+    username: '',
     password: '',
     messageFormat: 'html',
     description: '',
     enabled: true,
-    recipientEmails: [],
   }
+}
+
+function handleProviderChange(provider) {
+  createForm.value.authType = provider === 'custom' ? 'none' : 'password'
+  createForm.value.username = ''
+  createForm.value.password = ''
 }
 
 function openCreateModal() {
@@ -205,12 +220,13 @@ function openEditModal(record) {
     provider: config.provider || 'custom',
     smtpServer: config.smtpServer || '',
     smtpPort: config.smtpPort || undefined,
+    authType: config.authType || (config.provider === 'custom' ? 'none' : 'password'),
     email: config.email || '',
+    username: config.username || '',
     password: config.password || '',
     messageFormat: config.messageFormat || 'html',
     description: record.remark || '',
     enabled: record.enabled,
-    recipientEmails: record.recipient_emails || [],
   }
   createModalVisible.value = true
 }
@@ -224,8 +240,15 @@ async function saveMedia() {
     message.warning('请填写名称并选择媒介类型')
     return
   }
-  if (createForm.value.type === 'email' && (!createForm.value.email || !createForm.value.password)) {
-    message.warning('请填写电子邮件和密码')
+  if (createForm.value.type === 'email' && !createForm.value.email) {
+    message.warning('请填写电子邮件')
+    return
+  }
+  if (createForm.value.type === 'email'
+    && createForm.value.provider === 'custom'
+    && createForm.value.authType === 'password'
+    && (!createForm.value.username || !createForm.value.password)) {
+    message.warning('请填写用户名和密码')
     return
   }
   if (createForm.value.type === 'email'
@@ -242,13 +265,14 @@ async function saveMedia() {
       name: createForm.value.name,
       media_type: createForm.value.type,
       enabled: createForm.value.enabled,
-      recipient_emails: createForm.value.recipientEmails,
       remark: createForm.value.description,
       config: {
         provider: createForm.value.provider,
         smtpServer: isGmail ? 'smtp.gmail.com' : createForm.value.smtpServer,
         smtpPort: isGmail ? 587 : createForm.value.smtpPort,
+        authType: isGmail ? 'password' : createForm.value.authType,
         email: createForm.value.email,
+        ...(isGmail ? {} : { username: createForm.value.username }),
         password: createForm.value.password,
         messageFormat: createForm.value.messageFormat,
       },

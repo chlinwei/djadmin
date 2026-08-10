@@ -1,13 +1,9 @@
-import smtplib
-from email.message import EmailMessage
-
 from datetime import timedelta
 
 from django.db.models import Max
 from django.utils import timezone
 from celery import shared_task
 
-from assets.credential_crypto import decrypt_secret
 from sys_config.models import SysConfig
 
 from .alert_history import reconcile_alert_history as _reconcile_alert_history
@@ -16,58 +12,8 @@ from .models import (
     AlertMedia,
     AlertRoute,
     AlertNotificationEvent,
-    AlertNotificationDelivery,
     MonitorTargetInstallHistory,
 )
-
-
-def _build_alert_email(event, alert):
-    state_label = '恢复' if event.event_type == 'resolved' else '告警'
-    subject = f'[{state_label}][{alert.severity or "unknown"}] {alert.alertname or "Prometheus Alert"}'
-    lines = [
-        f'告警名称：{alert.alertname or "-"}',
-        f'状态：{event.event_type}',
-        f'级别：{alert.severity or "-"}',
-        f'实例：{alert.instance or "-"}',
-        f'开始时间：{alert.started_at}',
-        f'恢复时间：{alert.resolved_at or "-"}',
-    ]
-    if alert.annotations:
-        lines.append('注释：')
-        lines.extend(f'{key}：{value}' for key, value in alert.annotations.items())
-    return subject, '\n'.join(lines)
-
-
-def _send_email(media, recipient, subject, body):
-    config = media.config if isinstance(media.config, dict) else {}
-    smtp_server = str(config.get('smtpServer') or config.get('smtp_server') or '').strip()
-    smtp_port = int(config.get('smtpPort') or config.get('smtp_port') or 0)
-    username = str(config.get('email') or config.get('username') or '').strip()
-    password = decrypt_secret(config.get('password')) or ''
-    if not smtp_server or not smtp_port or not username or not password:
-        raise ValueError(f'媒介 {media.name} 的 SMTP 配置不完整')
-
-    message = EmailMessage()
-    message['Subject'] = subject
-    message['From'] = username
-    message['To'] = recipient
-    message.set_content(body)
-    if config.get('messageFormat') == 'html':
-        html_body = '<br>'.join(body.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').splitlines())
-        message.add_alternative(html_body, subtype='html')
-
-    if smtp_port == 465:
-        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15) as client:
-            client.login(username, password)
-            client.send_message(message)
-        return
-
-    with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as client:
-        client.ehlo()
-        client.starttls()
-        client.ehlo()
-        client.login(username, password)
-        client.send_message(message)
 
 
 def _resolve_event_media(event):
@@ -91,21 +37,6 @@ def _resolve_event_media(event):
     return AlertMedia.objects.filter(id__in=media_ids, enabled=True)
 
 
-def _iter_media_recipients(media):
-    """统一收件人来源：仅使用媒介静态邮箱，返回 (user_or_none, email) 元组。"""
-    seen = set()
-    static_emails = media.recipient_emails if isinstance(media.recipient_emails, list) else []
-    for email in static_emails:
-        address = str(email or '').strip()
-        if not address:
-            continue
-        lowered = address.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        yield None, address
-
-
 @shared_task(bind=True, name='monitor.send_alert_notification', max_retries=5)
 def send_alert_notification(self, event_id):
     event = AlertNotificationEvent.objects.select_related('alert').get(id=event_id)
@@ -116,36 +47,14 @@ def send_alert_notification(self, event_id):
     event.attempt_count += 1
     event.save(update_fields=['status', 'attempt_count', 'update_time'])
 
-    subject, body = _build_alert_email(event, event.alert)
     deliveries = []
     for media in _resolve_event_media(event):
         if media.media_type != AlertMedia.MediaType.EMAIL:
             continue
-        for user, address in _iter_media_recipients(media):
-            delivery, _ = AlertNotificationDelivery.objects.get_or_create(
-                event=event,
-                media=media,
-                user=user,
-                address=address,
-            )
-            if delivery.status == 'success':
-                deliveries.append(delivery)
-                continue
-            delivery.attempt_count += 1
-            try:
-                _send_email(media, address, subject, body)
-                delivery.status = 'success'
-                delivery.sent_at = timezone.now()
-                delivery.error_message = ''
-            except Exception as exc:
-                delivery.status = 'failed'
-                delivery.error_message = str(exc)
-            delivery.save(update_fields=['status', 'sent_at', 'error_message', 'attempt_count', 'update_time'])
-            deliveries.append(delivery)
 
     if not deliveries:
         event.status = AlertNotificationEvent.Status.FAILED
-        event.error_message = '没有匹配到包含有效静态收件邮箱的启用告警路由'
+        event.error_message = '当前告警媒介未配置收件人'
         event.save(update_fields=['status', 'error_message', 'update_time'])
         return {'status': 'failed', 'event_id': event.pk}
 

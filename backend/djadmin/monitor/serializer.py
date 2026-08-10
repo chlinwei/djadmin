@@ -1,5 +1,3 @@
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import validate_email
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
@@ -225,34 +223,10 @@ class AlertMediaSerializer(ModelSerializer):
     class Meta:
         model = AlertMedia
         fields = [
-            'id', 'name', 'media_type', 'config', 'enabled', 'recipient_emails',
+            'id', 'name', 'media_type', 'config', 'enabled',
             'create_time', 'update_time', 'remark',
         ]
         read_only_fields = ['id', 'create_time', 'update_time']
-
-    @staticmethod
-    def _normalize_recipient_emails(raw_value):
-        if raw_value in (None, ''):
-            return []
-        if not isinstance(raw_value, list):
-            raise serializers.ValidationError({'recipient_emails': '收件邮箱必须是数组'})
-
-        normalized = []
-        seen = set()
-        for item in raw_value:
-            email = str(item or '').strip()
-            if not email:
-                continue
-            try:
-                validate_email(email)
-            except DjangoValidationError:
-                raise serializers.ValidationError({'recipient_emails': f'非法邮箱地址: {email}'})
-            lowered = email.lower()
-            if lowered in seen:
-                continue
-            seen.add(lowered)
-            normalized.append(email)
-        return normalized
 
     def validate(self, attrs):
         media_type = attrs.get('media_type', getattr(self.instance, 'media_type', None))
@@ -263,15 +237,30 @@ class AlertMediaSerializer(ModelSerializer):
         if config.get('provider') == 'gmail':
             config['smtpServer'] = 'smtp.gmail.com'
             config['smtpPort'] = 587
+            config['authType'] = 'password'
+        provider = str(config.get('provider') or '').strip().lower()
+        default_auth_type = 'none' if provider == 'custom' else 'password'
+        auth_type = str(config.get('authType') or default_auth_type).strip().lower()
+        if auth_type not in {'none', 'password'}:
+            raise serializers.ValidationError({'config': {'authType': '认证方式必须是 none 或 password'}})
+        config['authType'] = auth_type
+        if auth_type == 'none':
+            config.pop('password', None)
+        is_custom_smtp = config.get('provider') == 'custom'
         required_fields = {
             'smtpServer': 'SMTP服务器不能为空',
             'smtpPort': 'SMTP服务器端口不能为空',
             'email': '电子邮件不能为空',
-            'password': '密码不能为空',
         }
+        if auth_type == 'password':
+            if is_custom_smtp:
+                required_fields['username'] = '用户名不能为空'
+            required_fields['password'] = '密码不能为空'
         errors = {key: message for key, message in required_fields.items() if not config.get(key)}
         if errors:
             raise serializers.ValidationError({'config': errors})
+        if auth_type == 'none' or not is_custom_smtp:
+            config.pop('username', None)
         try:
             smtp_port = int(config['smtpPort'])
         except (TypeError, ValueError):
@@ -280,8 +269,6 @@ class AlertMediaSerializer(ModelSerializer):
             raise serializers.ValidationError({'config': {'smtpPort': 'SMTP服务器端口必须在 1-65535 之间'}})
         config['smtpPort'] = smtp_port
         attrs['config'] = config
-        raw_recipients = attrs.get('recipient_emails', getattr(self.instance, 'recipient_emails', []))
-        attrs['recipient_emails'] = self._normalize_recipient_emails(raw_recipients)
         return attrs
 
     @staticmethod

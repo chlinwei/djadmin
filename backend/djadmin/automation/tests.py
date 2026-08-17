@@ -382,12 +382,12 @@ class AutomationRunDispatchTest(BaseTestCase):
 			enabled=True,
 		)
 
-	def test_run_template_dispatches_synchronously_via_agent_grpc(self):
-		with patch('automation.views_playbook.execute_job_via_agent_grpc', return_value=(True, {
-			'created_count': 1,
-			'success_count': 1,
-			'failed_count': 0,
-			'failed_rows': [],
+	def test_run_template_dispatches_synchronously_via_backend_ansible(self):
+		with patch('automation.views_playbook.execute_playbook_job', return_value=(True, {
+			'message': 'success',
+			'total': 1,
+			'success': 1,
+			'failed': 0,
 		}, '')) as mock_execute:
 			res = self.client.post(
 				f'/sys/automation/playbooks/{self.template.id}/run/',  # type: ignore[attr-defined]
@@ -403,12 +403,12 @@ class AutomationRunDispatchTest(BaseTestCase):
 			self.assertEqual(body['data']['status'], 'success')
 			mock_execute.assert_called_once()
 
-	def test_run_now_dispatches_synchronously_via_agent_grpc(self):
-		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
-			'created_count': 1,
-			'success_count': 1,
-			'failed_count': 0,
-			'failed_rows': [],
+	def test_run_now_dispatches_synchronously_via_backend_ansible(self):
+		with patch('automation.views_task.execute_playbook_job', return_value=(True, {
+			'message': 'success',
+			'total': 1,
+			'success': 1,
+			'failed': 0,
 		}, '')) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{self.task.id}/run_now/',  # type: ignore[attr-defined]
@@ -476,11 +476,11 @@ class AutomationRunDispatchTest(BaseTestCase):
 		host_b.agent_online = True
 		host_b.save(update_fields=['agent_online'])
 
-		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
-			'created_count': 2,
-			'success_count': 2,
-			'failed_count': 0,
-			'failed_rows': [],
+		with patch('automation.views_task.execute_playbook_job', return_value=(True, {
+			'message': 'success',
+			'total': 2,
+			'success': 2,
+			'failed': 0,
 		}, '')) as mock_exec:
 			res = self.client.post(
 				f'/sys/automation/tasks/{task.id}/run_now/',  # type: ignore[attr-defined]

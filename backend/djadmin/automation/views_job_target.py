@@ -33,7 +33,6 @@ class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModel
         'retrieve': 'automation:jobs:view',
         'cancel': 'automation:jobs:cancel',
         'log': 'automation:jobs:view',
-        'target_logs': 'automation:jobs:view',
         'events': 'automation:jobs:view',
         'status_summary': 'automation:jobs:view',
     }
@@ -137,42 +136,6 @@ class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModel
             'job_id': job.id,
             'status': job.status,
             'job_output': _build_unified_log_text(job),
-        })
-
-    @action(detail=True, methods=['get'])
-    def target_logs(self, request, id=None):
-        job = self.get_object()
-        rows = job.target_logs.select_related('host').all().order_by('id')
-        status_value = str(request.query_params.get('status') or '').strip().lower()
-        host_id_value = str(request.query_params.get('host_id') or '').strip()
-
-        if status_value:
-            rows = rows.filter(status=status_value)
-        if host_id_value.isdigit():
-            rows = rows.filter(host_id_snapshot=int(host_id_value))
-
-        data = []
-        for row in rows:
-            data.append({
-                'id': row.id,
-                'job_id': row.job_id,
-                'host_id': row.host_id_snapshot,
-                'host_name': row.host_name_snapshot,
-                'host_ip': row.host_ip_snapshot,
-                'agent_job_id': row.agent_job_id,
-                'status': row.status,
-                'exit_code': row.exit_code,
-                'stdout': row.stdout or '',
-                'stderr': row.stderr or '',
-                'error_message': row.error_message or '',
-                'result_data': row.result_data if isinstance(row.result_data, dict) else {},
-                'create_time': row.create_time,
-                'update_time': row.update_time,
-            })
-
-        return Response_200(data={
-            'count': len(data),
-            'results': data,
         })
 
     @action(detail=True, methods=['get'])

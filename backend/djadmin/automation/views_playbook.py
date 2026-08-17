@@ -10,7 +10,7 @@ from django.utils import timezone
 from .view_helpers import *
 from .view_helpers import _is_playbook_template_bound_to_software_package
 from .models import TemplateCategory
-from .agent_grpc_runner import execute_job_via_agent_grpc
+from .executor_playbook import execute_playbook_job
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
     queryset = PlaybookTemplate.objects.all()
@@ -360,21 +360,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         )
 
         try:
-            hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
-            success, summary, _ = execute_job_via_agent_grpc(
-                automation_execution_job_id=int(job.id),
-                automation_task_id=0,
-                template_content=job.template_content_snapshot or '',
-                template_type='playbook',
-                hosts=hosts,
-                shell_parameters='',
-                shell_env_vars={},
-                extra_vars=extra_vars,
-                run_as_user=run_as_user,
-                run_as_group=run_as_group,
-                work_directory=work_directory,
-                timeout_seconds=600,
-            )
+            success, summary, _ = execute_playbook_job(job)
             finished_at = timezone.now()
             final_status = AutomationExecutionJob.Status.SUCCESS if success else AutomationExecutionJob.Status.FAILED
             job.status = final_status

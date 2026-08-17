@@ -8,6 +8,7 @@ from assets.models import Host, HostGroup
 from .models import AutomationExecutionJob
 from .executor_shell_script import execute_shell_script_job
 from .agent_grpc_runner import execute_job_via_agent_grpc
+from .executor_playbook import execute_playbook_job
 
 
 def _build_group_descendants(group_ids: list[int]) -> set[int]:
@@ -165,8 +166,7 @@ def execute_automation_job(job_id: int) -> None:
         invalid_target_count = 0
     else:
         # ===== PLAYBOOK EXECUTION PATH =====
-        # Global behavior change: Playbook execution is now delegated to dj-agent,
-        # so HostCredential no longer participates in playbook task execution.
+        # Playbook 由 backend 统一编排；agent 仅负责首次安装平台控制节点公钥。
         snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
         hosts = [item for item in snapshot_hosts if isinstance(item, dict)]
         total_targets = len(hosts)
@@ -180,7 +180,7 @@ def execute_automation_job(job_id: int) -> None:
                 'total': total_targets,
                 'success': 0,
                 'failed': total_targets,
-                'execution_mode': 'agent_grpc_sync',
+                'execution_mode': 'backend_ansible',
             }
             job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
             close_old_connections()
@@ -193,22 +193,9 @@ def execute_automation_job(job_id: int) -> None:
             success_count = 0
             failed_count = total_targets
         else:
-            run_success, agent_summary, _ = execute_job_via_agent_grpc(
-                automation_execution_job_id=int(getattr(job, 'pk', 0) or 0),
-                automation_task_id=int(getattr(getattr(job, 'task', None), 'pk', 0) or 0),
-                template_content=template_content,
-                template_type='playbook',
-                hosts=hosts,
-                shell_parameters='',
-                shell_env_vars={},
-                extra_vars=job.extra_vars if isinstance(job.extra_vars, dict) else {},
-                run_as_user=str(job.run_as_user_snapshot or ''),
-                run_as_group=str(job.run_as_group_snapshot or ''),
-                work_directory=str(job.work_directory_snapshot or '/tmp'),
-                timeout_seconds=int(getattr(getattr(job, 'task', None), 'execution_timeout_seconds', 600) or 600),
-            )
-            success_count = int(agent_summary.get('success_count', 0) or 0)
-            failed_count = int(agent_summary.get('failed_count', total_targets if not run_success else 0) or 0)
+            run_success, agent_summary, _ = execute_playbook_job(job)
+            success_count = int(agent_summary.get('success', 0) or 0)
+            failed_count = int(agent_summary.get('failed', total_targets if not run_success else 0) or 0)
             return_code = 0 if run_success else 1
             merged_summary = {
                 'message': str(agent_summary.get('message') or 'Execution finished'),
@@ -216,8 +203,8 @@ def execute_automation_job(job_id: int) -> None:
                 'success': success_count,
                 'failed': failed_count,
                 'rc': return_code,
-                'execution_mode': 'agent_grpc_sync',
-                'created_count': int(agent_summary.get('created_count', 0) or 0),
+                'execution_mode': 'backend_ansible',
+                'forks': int(agent_summary.get('forks', 0) or 0),
                 'failed_rows': agent_summary.get('failed_rows', []),
             }
             job.result_summary = merged_summary

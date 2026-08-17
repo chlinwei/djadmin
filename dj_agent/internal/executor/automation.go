@@ -14,14 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/apenella/go-ansible/pkg/options"
-	"github.com/apenella/go-ansible/pkg/playbook"
 	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
 )
 
 const fallbackAutomationWorkDir = "/tmp"
 
-// runAutomationTask 执行自动化任务（支持 Shell 脚本和 Ansible Playbook）
+// runAutomationTask 只执行 Shell 脚本；Playbook 由 backend 统一编排并并发执行。
 func (e *Executor) runAutomationTask(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
 	result := protocol.JobResult{
@@ -35,7 +33,6 @@ func (e *Executor) runAutomationTask(ctx context.Context, job protocol.Job) prot
 	templateContent := toString(job.Params["template_content"])
 	shellParameters := strings.TrimSpace(toString(job.Params["shell_parameters"]))
 	envVars := toStringMap(job.Params["env_vars"])
-	extraVars := toAnyMap(job.Params["extra_vars"])
 	// 执行身份：dj-agent 进程本身以 root 运行，run_as_user/run_as_group 通过 setuid/setgid 降权到
 	// 目标系统用户/组执行（见 resolveRunAsCredential），不再使用 ansible become/sudo 机制。
 	runAsUser := strings.TrimSpace(toString(job.Params["run_as_user"]))
@@ -50,7 +47,7 @@ func (e *Executor) runAutomationTask(ctx context.Context, job protocol.Job) prot
 	}
 
 	// 验证模板类型
-	if templateType != "shell_script" && templateType != "playbook" {
+	if templateType != "shell_script" {
 		finished := time.Now()
 		result.Status = protocol.StatusFailed
 		result.ExitCode = 1
@@ -96,20 +93,6 @@ func (e *Executor) runAutomationTask(ctx context.Context, job protocol.Job) prot
 			// buildErr 携带具体失败步骤（mkdir/chown/write/...）及底层系统调用错误，直接回传给
 			// backend 作业结果，避免运维必须登录目标主机查看 dj-agent 日志才能定位原因。
 			result.Error = fmt.Sprintf("failed to build shell script command: %v", buildErr)
-			result.FinishedAt = finished
-			result.CostMS = finished.Sub(started).Milliseconds()
-			return result
-		}
-	} else {
-		cmd, tempResources, buildErr = buildPlaybookCommand(ctx, job.JobID, templateContent, envVars, extraVars, jobWorkDir, runAsUser, homeDir, credential)
-		if cmd == nil {
-			finished := time.Now()
-			result.Status = protocol.StatusFailed
-			result.ExitCode = 1
-			// buildErr 携带具体失败步骤（mkdir/chown/write/生成 ansible-playbook 参数等）及底层
-			// 系统调用错误，直接回传给 backend 作业结果，避免运维必须登录目标主机查看
-			// dj-agent 日志才能定位原因。
-			result.Error = fmt.Sprintf("failed to build playbook command: %v", buildErr)
 			result.FinishedAt = finished
 			result.CostMS = finished.Sub(started).Milliseconds()
 			return result
@@ -294,93 +277,6 @@ func buildShellScriptCommand(ctx context.Context, jobID, templateContent, shellP
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
 
 	return cmd, []string{tempPath}, nil
-}
-
-// buildPlaybookCommand 构建 Ansible Playbook 执行命令
-// 返回 (cmd, tempResourceList, error)；error 非 nil 时 cmd 必为 nil，调用方据此判定失败并将
-// error 原样回传到作业结果（result.Error），便于无法登录目标主机查日志时也能定位具体原因。
-func buildPlaybookCommand(ctx context.Context, jobID, templateContent string, envVars map[string]string, extraVars map[string]any, jobWorkDir, runAsUser, homeDir string, credential *syscall.Credential) (*exec.Cmd, []string, error) {
-	workDir, mkErr := os.MkdirTemp("", "dj-agent-playbook-*")
-	if mkErr != nil {
-		err := fmt.Errorf("mkdir temp dir: %w", mkErr)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", err)
-		return nil, nil, err
-	}
-	// 目录本身由 dj-agent（root）创建，需 chown 给目标降权用户，否则非 root 子进程无法遍历该目录。
-	// 若 dj-agent 自身未以 root 运行，或 systemd unit 剥夺了 CAP_CHOWN 能力（NoNewPrivileges/
-	// CapabilityBoundingSet 等加固参数），此处会因权限不足失败，故把 uid/gid 和底层错误一并
-	// 包进返回的 error，直接回传到作业结果，而不仅仅记录到本地日志。
-	if err := os.Chown(workDir, int(credential.Uid), int(credential.Gid)); err != nil {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("chown work dir to uid=%d gid=%d (dj-agent 是否以 root 运行/systemd 是否限制了 CAP_CHOWN？): %w", credential.Uid, credential.Gid, err)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-
-	playbookPath := workDir + "/playbook.yml"
-	inventoryPath := workDir + "/inventory.ini"
-
-	if writeErr := os.WriteFile(playbookPath, []byte(templateContent+"\n"), 0o600); writeErr != nil {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("write playbook file: %w", writeErr)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-	if err := os.Chown(playbookPath, int(credential.Uid), int(credential.Gid)); err != nil {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("chown playbook file to uid=%d gid=%d: %w", credential.Uid, credential.Gid, err)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-
-	inventoryContent := "[all]\nlocalhost ansible_connection=local ansible_python_interpreter=auto_silent\n"
-	if writeErr := os.WriteFile(inventoryPath, []byte(inventoryContent), 0o600); writeErr != nil {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("write inventory file: %w", writeErr)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-	if err := os.Chown(inventoryPath, int(credential.Uid), int(credential.Gid)); err != nil {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("chown inventory file to uid=%d gid=%d: %w", credential.Uid, credential.Gid, err)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-
-	playbookOptions := &playbook.AnsiblePlaybookOptions{
-		Inventory: inventoryPath,
-		Limit:     "localhost",
-	}
-	if len(extraVars) > 0 {
-		playbookOptions.ExtraVars = extraVars
-	}
-
-	connectionOptions := &options.AnsibleConnectionOptions{
-		Connection: "local",
-	}
-
-	// 不再使用 ansible become/sudo：整个 ansible-playbook 进程通过 SysProcAttr.Credential 以
-	// run_as_user/run_as_group 身份运行，playbook 内的任务（ansible_connection=local）自然以该
-	// 用户身份执行，效果等价于 become 但不依赖目标机器上的 sudoers 配置。
-	playbookCmd := &playbook.AnsiblePlaybookCmd{
-		Playbooks:         []string{playbookPath},
-		Options:           playbookOptions,
-		ConnectionOptions: connectionOptions,
-	}
-	cmdArgs, cmdErr := playbookCmd.Command()
-	if cmdErr != nil || len(cmdArgs) == 0 {
-		_ = os.RemoveAll(workDir)
-		wrapped := fmt.Errorf("generate ansible-playbook args: %w", cmdErr)
-		slog.Error("build playbook command failed", "job_id", jobID, "error", wrapped)
-		return nil, nil, wrapped
-	}
-
-	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-	cmd.Env = runAsEnv(append(os.Environ(), mapToEnv(envVars)...), runAsUser, homeDir)
-	cmd.Dir = resolveAutomationWorkDir(jobWorkDir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
-
-	return cmd, []string{workDir}, nil
 }
 
 // resolveAutomationWorkDir 解析自动化任务工作目录

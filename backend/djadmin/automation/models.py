@@ -87,6 +87,17 @@ class AutomationTask(BaseModel):
         return self.name
 
 
+class AutomationControllerSSHKey(BaseModel):
+    """平台托管的 Ansible 控制节点密钥，不关联业务主机凭据。"""
+
+    public_key = models.CharField(max_length=255, unique=True)
+    private_key = models.TextField()
+
+    class Meta:
+        db_table = 'automation_controller_ssh_key'
+        ordering = ['id']
+
+
 class AutomationInventory(BaseModel):
     class SyncStatus(models.TextChoices):
         NEVER = 'never', 'Never'

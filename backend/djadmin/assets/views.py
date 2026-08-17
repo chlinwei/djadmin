@@ -684,8 +684,9 @@ def _expire_stale_monitor_pending(target, action, stale_seconds):
 
 
 def _run_monitor_playbook_and_update_history(*, target, host, history, template_content, extra_vars, work_directory, timeout_seconds):
-    """执行监控安装/卸载并直接回写 MonitorTarget + MonitorTargetInstallHistory。"""
-    from automation.agent_grpc_runner import execute_job_via_agent_grpc
+    """通过 backend Ansible 执行监控安装/卸载并回写历史。"""
+    from automation.executor_playbook import execute_playbook_job
+    from automation.models import AutomationExecutionJob
     from monitor.models import MonitorTargetInstallHistory
 
     close_old_connections()
@@ -730,22 +731,36 @@ def _run_monitor_playbook_and_update_history(*, target, host, history, template_
         return
 
     try:
-        success, summary, output_text = execute_job_via_agent_grpc(
-            automation_execution_job_id=0,
-            automation_task_id=0,
-            template_content=str(template_content or ''),
-            template_type='playbook',
-            hosts=_build_single_host_snapshot(host),
-            shell_parameters='',
-            shell_env_vars={},
+        automation_job = AutomationExecutionJob.objects.create(
+            status=AutomationExecutionJob.Status.RUNNING,
+            trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
+            inventory_snapshot={'hosts': _build_single_host_snapshot(host)},
+            task_name_snapshot=f'monitor:{history.action}',
+            template_name_snapshot=str(getattr(target, 'exporter_type', '') or ''),
+            template_content_snapshot=str(template_content or ''),
             extra_vars=extra_vars if isinstance(extra_vars, dict) else {},
-            run_as_user='root',
-            run_as_group='root',
-            work_directory=str(work_directory or '/tmp'),
-            timeout_seconds=int(timeout_seconds),
+            result_summary={'message': 'Monitor Playbook is executing via backend Ansible'},
+            start_time=started_at,
+            run_as_user_snapshot='root',
+            run_as_group_snapshot='root',
+            work_directory_snapshot=str(work_directory or '/tmp'),
         )
+        history.automation_job = automation_job
+        history.automation_job_id_snapshot = int(getattr(automation_job, 'pk', 0) or 0)
+        history.automation_job_uuid_snapshot = str(automation_job.job_id or '')
+        _safe_history_save(['automation_job', 'automation_job_id_snapshot', 'automation_job_uuid_snapshot', 'update_time'])
+
+        success, summary, output_text = execute_playbook_job(automation_job)
         finished_at = timezone.now()
         duration_seconds = (finished_at - started_at).total_seconds()
+        automation_job.status = (
+            AutomationExecutionJob.Status.SUCCESS
+            if success else AutomationExecutionJob.Status.FAILED
+        )
+        automation_job.end_time = finished_at
+        automation_job.duration_seconds = duration_seconds
+        automation_job.result_summary = summary if isinstance(summary, dict) else {}
+        automation_job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary', 'update_time'])
         snapshots = _split_monitor_output_snapshots(output_text)
         message_text = str((summary or {}).get('message', '') or '')
 

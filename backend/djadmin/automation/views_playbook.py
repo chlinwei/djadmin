@@ -11,6 +11,7 @@ from .view_helpers import *
 from .view_helpers import _is_playbook_template_bound_to_software_package
 from .models import TemplateCategory
 from .executor_playbook import execute_playbook_job
+from .ansible_runtime import get_ansible_playbook_command
 
 class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
     queryset = PlaybookTemplate.objects.all()
@@ -91,7 +92,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             env = os.environ.copy()
             env.setdefault('ANSIBLE_NOCOLOR', '1')
             result = subprocess.run(
-                ['ansible-playbook', '--syntax-check', '-i', 'localhost,', temp_path],
+                [get_ansible_playbook_command(), '--syntax-check', '-i', 'localhost,', temp_path],
                 text=True,
                 capture_output=True,
                 check=False,

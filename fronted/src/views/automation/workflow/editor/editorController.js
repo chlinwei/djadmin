@@ -75,12 +75,6 @@ const selectedEdgeId = ref('')
 const isConnecting = ref(false)
 const edgeQuickPosition = reactive({ top: 12, left: 12 })
 
-const taskTemplateTypeOptions = [
-  { label: '全部任务', value: 'all' },
-  { label: 'Playbook任务', value: 'playbook' },
-  { label: 'Shell脚本任务', value: 'shell_script' },
-]
-
 const taskOptions = computed(() => taskRecords.value.map((item) => ({ label: `${item.name}`, value: item.id })))
 const taskRecordMap = computed(() => {
   const map = new Map()
@@ -93,18 +87,10 @@ const taskRecordMap = computed(() => {
   return map
 })
 const addNodeTaskOptions = computed(() => {
-  const selectedType = String(addNodeWizardForm.task_template_type || 'all')
-  if (selectedType === 'all') {
-    return taskOptions.value
-  }
-  return taskOptions.value.filter((option) => resolveTaskTemplateTypeByTaskId(option.value) === selectedType)
+  return taskOptions.value
 })
 const nodeConfigTaskOptions = computed(() => {
-  const selectedType = String(nodeConfigForm.task_template_type || 'all')
-  if (selectedType === 'all') {
-    return taskOptions.value
-  }
-  return taskOptions.value.filter((option) => resolveTaskTemplateTypeByTaskId(option.value) === selectedType)
+  return taskOptions.value
 })
 const taskNameMap = computed(() => {
   const map = new Map()
@@ -193,7 +179,6 @@ const nodeConfigForm = reactive({
   id: '',
   name: '',
   node_type: 'task',
-  task_template_type: 'all',
   task_id: undefined,
   workflow_id: undefined,
 })
@@ -289,32 +274,9 @@ const addNodeWizardForm = reactive({
   parent_node_key: '',
   node_type: 'task',
   name: TASK_DEFAULT_NODE_NAME,
-  task_template_type: 'all',
   task_id: undefined,
   workflow_id: undefined,
 })
-
-function resolveTaskTemplateType(taskRecord) {
-  if (!taskRecord || typeof taskRecord !== 'object') {
-    return 'playbook'
-  }
-  const explicitType = String(taskRecord.template_type || '').trim().toLowerCase()
-  if (explicitType === 'shell_script' || explicitType === 'playbook') {
-    return explicitType
-  }
-  if (Number(taskRecord.shell_script_template || 0) > 0) {
-    return 'shell_script'
-  }
-  return 'playbook'
-}
-
-function resolveTaskTemplateTypeByTaskId(taskId) {
-  const normalizedId = Number(taskId)
-  if (!Number.isInteger(normalizedId) || normalizedId <= 0) {
-    return 'playbook'
-  }
-  return resolveTaskTemplateType(taskRecordMap.value.get(normalizedId))
-}
 
 function createEditorStartNode() {
   return createStartNode(START_NODE_ID)
@@ -472,9 +434,6 @@ function openNodeConfigDialog(nodeId) {
   nodeConfigForm.name = String(target.data?.name || nodeId)
   nodeConfigForm.node_type = String(target.data?.node_type || 'task').toLowerCase() === 'workflow' ? 'workflow' : 'task'
   nodeConfigForm.task_id = target.data?.task_id
-  nodeConfigForm.task_template_type = nodeConfigForm.node_type === 'task'
-    ? resolveTaskTemplateTypeByTaskId(nodeConfigForm.task_id)
-    : 'all'
   nodeConfigForm.workflow_id = target.data?.workflow_id
 
   nodeConfigVisible.value = true
@@ -615,7 +574,6 @@ function resetAddNodeWizardForm() {
   addNodeWizardForm.parent_node_key = ''
   addNodeWizardForm.node_type = 'task'
   addNodeWizardForm.name = TASK_DEFAULT_NODE_NAME
-  addNodeWizardForm.task_template_type = 'all'
   addNodeWizardForm.task_id = taskOptions.value[0]?.value
   addNodeWizardForm.workflow_id = workflowOptions.value[0]?.value
 }
@@ -1127,39 +1085,13 @@ watch(() => addNodeWizardForm.node_type, (nextType, prevType) => {
   }
 
   if (nextType === 'workflow') {
-    addNodeWizardForm.task_template_type = 'all'
     addNodeWizardForm.task_id = undefined
   }
 })
 
 watch(() => nodeConfigForm.node_type, (nextType) => {
   if (nextType === 'workflow') {
-    nodeConfigForm.task_template_type = 'all'
     nodeConfigForm.task_id = undefined
-  }
-})
-
-watch(() => addNodeWizardForm.task_template_type, (nextType) => {
-  if (addNodeWizardForm.node_type !== 'task') {
-    return
-  }
-  const options = nextType === 'all'
-    ? taskOptions.value
-    : taskOptions.value.filter((option) => resolveTaskTemplateTypeByTaskId(option.value) === nextType)
-  if (!options.some((option) => Number(option.value) === Number(addNodeWizardForm.task_id))) {
-    addNodeWizardForm.task_id = options[0]?.value
-  }
-})
-
-watch(() => nodeConfigForm.task_template_type, (nextType) => {
-  if (nodeConfigForm.node_type !== 'task') {
-    return
-  }
-  const options = nextType === 'all'
-    ? taskOptions.value
-    : taskOptions.value.filter((option) => resolveTaskTemplateTypeByTaskId(option.value) === nextType)
-  if (!options.some((option) => Number(option.value) === Number(nodeConfigForm.task_id))) {
-    nodeConfigForm.task_id = options[0]?.value
   }
 })
 
@@ -1189,7 +1121,6 @@ onBeforeUnmount(() => {
     canvasWrapRef,
     selectedNodeId,
     isConnecting,
-    taskTemplateTypeOptions,
     taskOptions,
     addNodeTaskOptions,
     nodeConfigTaskOptions,

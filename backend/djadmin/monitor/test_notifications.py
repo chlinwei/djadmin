@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from celery.exceptions import Retry
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -8,8 +9,8 @@ from rest_framework_jwt.settings import api_settings
 from assets.credential_crypto import decrypt_secret, encrypt_secret, is_encrypted_secret
 from user.models import SysUser
 
-from .alert_history import ingest_alert_webhook_alerts
-from .models import AlertHistory, AlertMedia, AlertNotificationEvent, AlertRoute
+from .alert_history import compute_alert_fingerprint, ingest_alert_webhook_alerts
+from .models import AlertHistory, AlertMedia, AlertNotificationDelivery, AlertNotificationEvent, AlertRoute
 from .tasks import send_alert_notification
 
 
@@ -107,6 +108,44 @@ class AlertMediaApiTest(TestCase):
         self.assertNotIn('username', media.config)
         self.assertNotIn('password', media.config)
 
+    @patch('monitor.views.EmailMultiAlternatives')
+    @patch('monitor.views.get_connection')
+    def test_email_media_test_sends_requested_message(self, get_connection, email_class):
+        media = AlertMedia.objects.create(
+            name='Test Email',
+            media_type=AlertMedia.MediaType.EMAIL,
+            config={
+                'provider': 'custom',
+                'smtpServer': 'smtp.example.com',
+                'smtpPort': 25,
+                'authType': 'none',
+                'email': 'sender@example.com',
+                'messageFormat': 'text',
+            },
+        )
+        email_class.return_value.send.return_value = 1
+
+        response = self.client.post(f'/monitor/media/{media.pk}/test/', {
+            'recipients': ['one@example.com', 'two@example.com'],
+            'subject': 'Test subject',
+            'message': 'Test message',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            'code': 200,
+            'msg': 'success',
+            'data': {'sent': True},
+        })
+        get_connection.assert_called_once()
+        email_class.assert_called_once_with(
+            subject='Test subject',
+            body='Test message',
+            from_email='sender@example.com',
+            to=['one@example.com', 'two@example.com'],
+            connection=get_connection.return_value,
+        )
+
 
 class AlertNotificationEventTest(TestCase):
     def _payload(self, ends_at='9999-12-31T23:59:59Z'):
@@ -176,15 +215,32 @@ class AlertNotificationTaskTest(TestCase):
             notify_on_resolved=notify_on_resolved,
         )
         route.media.add(media)
+        
+        # 为当前测试用户创建媒介绑定
+        from user.models import SysUser
+        user = SysUser.objects.first() or SysUser.objects.create(username='testuser', password='unused', status=1)
+        from monitor.models import UserAlertMediaBinding
+        UserAlertMediaBinding.objects.create(
+            user=user,
+            media=media,
+            recipients=['ops@example.com'],
+            enabled=True,
+        )
+        
         return media
 
     def test_no_recipient_marks_event_failed_without_retry(self):
+        media = self._create_media()
+        # 删除用户绑定以测试无收件人情况
+        from monitor.models import UserAlertMediaBinding
+        UserAlertMediaBinding.objects.filter(media=media).delete()
+
         result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
 
         self.event.refresh_from_db()
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(self.event.status, AlertNotificationEvent.Status.FAILED)
-        self.assertEqual(self.event.error_message, '当前告警媒介未配置收件人')
+        self.assertIn('没有任何用户绑定', self.event.error_message)
 
     def test_non_matching_route_does_not_send(self):
         self._create_media(matchers={'severity': 'warning'})
@@ -199,4 +255,214 @@ class AlertNotificationTaskTest(TestCase):
         result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
 
         self.assertEqual(result['status'], 'failed')
+
+    @patch('monitor.tasks.EmailMultiAlternatives')
+    @patch('monitor.tasks.get_connection')
+    def test_send_alert_via_email_marks_success(self, mock_get_connection, mock_email):
+        """验证成功发送电子邮件告警后，事件状态为 SUCCESS。"""
+        self._create_media()
+
+        # 配置模拟
+        mock_email.return_value.send.return_value = 1
+
+        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
+
+        self.event.refresh_from_db()
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(self.event.status, AlertNotificationEvent.Status.SUCCESS)
+        mock_email.assert_called()
+        self.assertEqual(mock_email.return_value.send.call_count, 1)
+        delivery = AlertNotificationDelivery.objects.get(event=self.event)
+        delivery_user = delivery.user
+        self.assertIsNotNone(delivery_user)
+        assert delivery_user is not None
+        self.assertEqual(delivery_user.username, 'testuser')
+        self.assertEqual(delivery.address, 'ops@example.com')
+        self.assertEqual(delivery.status, AlertNotificationEvent.Status.SUCCESS)
+        self.assertEqual(delivery.attempt_count, 1)
+        self.assertIsNotNone(delivery.sent_at)
+
+    @patch('monitor.tasks.EmailMultiAlternatives')
+    @patch('monitor.tasks.get_connection')
+    def test_retry_then_success_keeps_final_delivery_success(self, mock_get_connection, mock_email):
+        self._create_media()
+        mock_email.return_value.send.side_effect = [0, 1]
+
+        with self.assertRaises(Retry):
+            send_alert_notification.run(self.event.pk)  # type: ignore[operator]
+
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.status, AlertNotificationEvent.Status.PENDING)
+
+        result = send_alert_notification.run(self.event.pk)  # type: ignore[operator]
+
+        self.event.refresh_from_db()
+        delivery = AlertNotificationDelivery.objects.get(event=self.event)
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(self.event.status, AlertNotificationEvent.Status.SUCCESS)
+        self.assertEqual(delivery.status, AlertNotificationEvent.Status.SUCCESS)
+        self.assertEqual(delivery.attempt_count, 2)
+        self.assertEqual(delivery.error_message, '')
+
+
+class AlertNotificationStatusApiTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = SysUser.objects.create(username='admin', password='unused', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.admin))
+        self.alert = AlertHistory.objects.create(
+            fingerprint='delivery-api-test',
+            alertname='DiskFull',
+            severity='critical',
+            instance='10.0.0.2',
+            labels={'alertname': 'DiskFull'},
+            annotations={},
+            state=AlertHistory.State.FIRING,
+            started_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        self.event = AlertNotificationEvent.objects.create(
+            alert=self.alert,
+            event_type='firing',
+            deduplication_key=f'{self.alert.pk}:firing',
+            status=AlertNotificationEvent.Status.SUCCESS,
+            attempt_count=1,
+            sent_at=timezone.now(),
+        )
+        self.media = AlertMedia.objects.create(
+            name='Delivery API Email',
+            media_type=AlertMedia.MediaType.EMAIL,
+            config={},
+            enabled=True,
+        )
+        AlertNotificationDelivery.objects.create(
+            event=self.event,
+            media=self.media,
+            user=self.admin,
+            address='admin@example.com',
+            status=AlertNotificationEvent.Status.SUCCESS,
+            attempt_count=1,
+            sent_at=timezone.now(),
+        )
+
+    def test_notification_status_returns_event_and_delivery_details(self):
+        response = self.client.get(f'/monitor/alert-histories/{self.alert.pk}/notification-status/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['code'], 200)
+        events = payload['data']['events']
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['status'], AlertNotificationEvent.Status.SUCCESS)
+        self.assertEqual(events[0]['deliveries'][0]['username'], self.admin.username)
+        self.assertEqual(events[0]['deliveries'][0]['media_name'], self.media.name)
+        self.assertEqual(events[0]['deliveries'][0]['address'], 'admin@example.com')
+
+        list_response = self.client.get('/monitor/alert-histories/?page=1&page_size=10')
+        list_row = list_response.json()['data']['results'][0]
+        self.assertEqual(list_row['notification_status'], 'success')
+        self.assertEqual(list_row['notification_count'], 1)
+        self.assertEqual(list_row['notification_delivery_count'], 1)
+
+    def test_history_list_filters_by_notification_summary_status(self):
+        def create_alert(suffix):
+            return AlertHistory.objects.create(
+                fingerprint=f'delivery-filter-{suffix}',
+                alertname=f'DeliveryFilter{suffix}',
+                severity='warning',
+                instance=f'10.0.1.{suffix}',
+                labels={},
+                annotations={},
+                state=AlertHistory.State.FIRING,
+                started_at=timezone.now(),
+                last_seen_at=timezone.now(),
+            )
+
+        no_notification_alert = create_alert('1')
+        legacy_alert = create_alert('2')
+        AlertNotificationEvent.objects.create(
+            alert=legacy_alert,
+            event_type='firing',
+            deduplication_key=f'{legacy_alert.pk}:firing',
+            status=AlertNotificationEvent.Status.SUCCESS,
+        )
+        failed_alert = create_alert('3')
+        AlertNotificationEvent.objects.create(
+            alert=failed_alert,
+            event_type='firing',
+            deduplication_key=f'{failed_alert.pk}:firing',
+            status=AlertNotificationEvent.Status.FAILED,
+        )
+        active_alert = create_alert('4')
+        AlertNotificationEvent.objects.create(
+            alert=active_alert,
+            event_type='firing',
+            deduplication_key=f'{active_alert.pk}:firing',
+            status=AlertNotificationEvent.Status.PENDING,
+        )
+
+        expected_ids = {
+            'none': {no_notification_alert.pk},
+            'failed': {legacy_alert.pk, failed_alert.pk},
+            'in_progress': {active_alert.pk},
+            'success': {self.alert.pk},
+        }
+        for status, expected_status_ids in expected_ids.items():
+            with self.subTest(status=status):
+                response = self.client.get(
+                    f'/monitor/alert-histories/?notification_status={status}&page=1&page_size=100'
+                )
+                result_ids = {row['id'] for row in response.json()['data']['results']}
+                self.assertEqual(result_ids, expected_status_ids)
+
+
+class PrometheusAlertNotificationMappingTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = SysUser.objects.create(username='admin', password='unused', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.admin))
+
+    @patch('monitor.views.api_get')
+    def test_pending_alert_does_not_reuse_previous_notification_history(self, api_get):
+        labels = {'alertname': 'DiskFull', 'severity': 'critical', 'instance': '10.0.0.3'}
+        old_alert = AlertHistory.objects.create(
+            fingerprint=compute_alert_fingerprint(labels),
+            alertname='DiskFull',
+            severity='critical',
+            instance='10.0.0.3',
+            labels=labels,
+            annotations={},
+            state=AlertHistory.State.RESOLVED,
+            started_at=timezone.now(),
+            resolved_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        AlertNotificationEvent.objects.create(
+            alert=old_alert,
+            event_type='firing',
+            deduplication_key=f'{old_alert.pk}:firing',
+            status=AlertNotificationEvent.Status.SUCCESS,
+        )
+        api_get.return_value = {
+            'ok': True,
+            'data': {
+                'alerts': [{
+                    'state': 'pending',
+                    'labels': labels,
+                    'annotations': {'summary': 'Disk usage is high'},
+                    'activeAt': timezone.now().isoformat(),
+                    'value': '91',
+                }],
+            },
+        }
+
+        response = self.client.get('/monitor/targets/prometheus/alerts/')
+
+        self.assertEqual(response.status_code, 200)
+        row = response.json()['data']['results'][0]
+        self.assertEqual(row['state'], 'pending')
+        self.assertIsNone(row['history_id'])
+        self.assertEqual(row['notification_count'], 0)
+        self.assertEqual(row['notification_delivery_count'], 0)
+        self.assertEqual(row['notification_status'], 'none')
 

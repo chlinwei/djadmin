@@ -17,20 +17,7 @@
       </a-row>
 
       <a-row :gutter="12">
-        <a-col :span="8">
-          <a-form-item label="模板类型" required>
-            <a-select
-              v-model:value="taskForm.template_type"
-              :options="[
-                { label: 'Playbook', value: 'playbook' },
-                { label: 'Shell脚本', value: 'shell_script' }
-              ]"
-              :getPopupContainer="getTaskModalPopupContainer"
-              @change="emitTemplateTypeChange"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="8">
+        <a-col :span="12">
           <a-form-item label="选择模板" required>
             <a-select
               v-model:value="taskForm.template"
@@ -43,7 +30,7 @@
             />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="12">
           <a-form-item label="选择Inventory（可选）">
             <a-select
               v-model:value="taskForm.inventory"
@@ -104,7 +91,7 @@
           type="info"
           show-icon
           style="margin-top: 8px"
-          message="任务总执行超时（秒）。超过该时间后 dj-agent 会终止执行进程（保底退出）。"
+          message="任务总执行超时（秒），超过该时间后任务会被终止。"
         />
       </a-form-item>
 
@@ -115,27 +102,10 @@
           :placeholder="taskEnvVarsPlaceholder"
         />
         <a-alert
-          v-if="taskForm.template_type === 'shell_script'"
           type="info"
           show-icon
           style="margin-top: 8px"
-          message="这里填写的是环境变量（key=value），执行时会以 export 注入脚本运行环境。"
-        />
-      </a-form-item>
-
-      <a-form-item
-        v-if="taskForm.template_type === 'shell_script'"
-        label="Shell 参数字符串（可选）"
-      >
-        <a-input
-          v-model:value="taskForm.shell_args_text"
-          :placeholder="taskShellArgsPlaceholder"
-        />
-        <a-alert
-          type="info"
-          show-icon
-          style="margin-top: 8px"
-          message="按空格分割的参数字符串，执行时按顺序映射到 $1、$2...（示例：prod 8080 --force）"
+          message="填写 Playbook 执行时使用的 JSON 变量。"
         />
       </a-form-item>
 
@@ -198,13 +168,11 @@ defineProps({
   taskLimitMatchedHosts: { type: Array, default: () => [] },
   taskEnvVarsLabel: { type: String, default: '' },
   taskEnvVarsPlaceholder: { type: String, default: '' },
-  taskShellArgsPlaceholder: { type: String, default: '' },
 })
 
 const emit = defineEmits([
   'submit',
   'cancel',
-  'template-type-change',
   'task-limit-host-click',
   'task-limit-toggle',
   'task-limit-remove-token',
@@ -216,10 +184,6 @@ function emitSubmit() {
 
 function emitCancel() {
   emit('cancel')
-}
-
-function emitTemplateTypeChange() {
-  emit('template-type-change')
 }
 
 function onTaskLimitHostClick(item) {

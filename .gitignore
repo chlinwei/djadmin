@@ -16,3 +16,9 @@ dj_agent/bin/dj-agent
 
 # 监控安装包缓存
 backend/djadmin/media/monitor_packages/
+
+# 自动生成的测试报告（由CI/CD生成）
+TEST_REPORT.md
+FRONTEND_TEST_REPORT.md
+fronted/test-results/
+backend/djadmin/coverage/

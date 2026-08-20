@@ -1,18 +1,12 @@
 from django.contrib import admin
 
-from .models import PlaybookTemplate, ShellScriptTemplate, AutomationExecutionJob
+from .models import PlaybookTemplate, AutomationExecutionJob
 
 
 @admin.register(PlaybookTemplate)
 class PlaybookTemplateAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'create_time', 'update_time')
     search_fields = ('name',)
-
-
-@admin.register(ShellScriptTemplate)
-class ShellScriptTemplateAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'create_time', 'update_time')
-    search_fields = ('name', 'description')
 
 
 @admin.register(AutomationExecutionJob)

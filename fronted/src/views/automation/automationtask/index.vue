@@ -46,10 +46,8 @@
       :task-limit-matched-hosts="taskLimitMatchedHosts"
       :task-env-vars-label="taskEnvVarsLabel"
       :task-env-vars-placeholder="taskEnvVarsPlaceholder"
-      :task-shell-args-placeholder="taskShellArgsPlaceholder"
       @submit="submitTask"
       @cancel="taskModalVisible = false"
-      @template-type-change="handleTemplateTypeChange"
       @task-limit-host-click="handleTaskLimitHostClick"
       @task-limit-toggle="handleTaskLimitToggle"
       @task-limit-remove-token="handleTaskLimitRemoveToken"
@@ -61,14 +59,11 @@
       :precheck-ok="runNowPrecheckOk"
       :prechecking="runNowPrechecking"
       :precheck-text="runNowPrecheckText"
-      :is-shell-task="runNowIsShellTask"
       :run-now-limit="runNowLimit"
-      :run-now-shell-args="runNowShellArgs"
       :all-hosts="runNowAllHosts"
       :matched-hosts="runNowMatchedHosts"
       :limit-input-placeholder="LIMIT_INPUT_PLACEHOLDER"
       @update:runNowLimit="(value) => (runNowLimit = value)"
-      @update:runNowShellArgs="(value) => (runNowShellArgs = value)"
       @confirm="confirmRunNow"
       @cancel="closeRunNowModal"
       @host-click="handleRunNowHostClick"
@@ -96,7 +91,6 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 import {
   getPlaybookList,
-  getShellScriptTemplateList,
   getInventoryList,
   getTaskList,
   createTask,
@@ -116,8 +110,6 @@ import RunNowModal from './components/RunNowModal/index.vue'
 import TaskFormModal from './components/TaskFormModal/index.vue'
 import {
   buildRunNowPayload,
-  formatShellEnvText,
-  parseShellEnvText,
   resolveTaskSubmitErrorMessage,
 } from './controller'
 import './style.css'
@@ -173,9 +165,6 @@ const taskPagination = reactive({
 const playbooks = ref([])
 const playbookLoading = ref(false)
 const playbookOptions = ref([])
-const shellScriptTemplates = ref([])
-const shellScriptLoading = ref(false)
-const shellScriptOptions = ref([])
 const inventories = ref([])
 const inventoryOptions = ref([])
 
@@ -208,7 +197,6 @@ const runNowSubmitting = ref(false)
 const runNowPrechecking = ref(false)
 const runNowTask = ref(null)
 const runNowLimit = ref('')
-const runNowShellArgs = ref('')
 const runNowHostCount = ref(0)
 const runNowEffectiveLimit = ref('')
 const runNowAllHosts = ref([])
@@ -227,7 +215,6 @@ let taskLimitPrecheckSeq = 0
 
 const taskForm = reactive({
   name: '',
-  template_type: 'playbook',
   template: null,
   inventory: null,
   default_limit: '',
@@ -235,7 +222,6 @@ const taskForm = reactive({
   selected_host_ids: [],
   selected_group_ids: [],
   env_vars_text: '',
-  shell_args_text: '',
   enabled: true,
   remark: '',
   // 执行身份配置：dj-agent 以 root 运行，任务实际执行时 setuid/setgid 降权到 run_as_user/run_as_group
@@ -255,48 +241,30 @@ function formatUpdateTime(timeText, timezone) {
 }
 
 const taskTemplateOptions = computed(() => {
-  if (taskForm.template_type === 'shell_script') {
-    return shellScriptOptions.value
-  }
   return playbookOptions.value
 })
 
 const taskTemplateLoading = computed(() => {
-  if (taskForm.template_type === 'shell_script') {
-    return shellScriptLoading.value
-  }
   return playbookLoading.value
 })
 
 const taskTemplatePlaceholder = computed(() => {
-  if (taskForm.template_type === 'shell_script') {
-    return '请选择 Shell 脚本模板'
-  }
   return '请选择 Playbook 模板'
 })
 
 const taskEnvVarsLabel = computed(() => {
-  if (taskForm.template_type === 'shell_script') {
-    return 'Shell 环境变量（可选）'
-  }
-  return '环境变量 JSON（可选）'
+  return 'Playbook 变量 JSON（可选）'
 })
 
 const taskEnvVarsPlaceholder = computed(() => {
-  if (taskForm.template_type === 'shell_script') {
-    return '例如: var1=a;var2=b'
-  }
   return '{"env":"prod","batch":20}'
 })
-
-const taskShellArgsPlaceholder = computed(() => '例如: prod 8080 --force')
 
 const taskSort = reactive({
   field: null,
   order: null,
 })
 
-const runNowIsShellTask = computed(() => Number(runNowTask.value?.shell_script_template || 0) > 0)
 
 function resolveTaskOrdering() {
   return resolveTaskListOrdering(taskSort)
@@ -404,19 +372,6 @@ async function loadPlaybooks() {
       .map((item) => ({ value: item.id, label: item.name }))
   } finally {
     playbookLoading.value = false
-  }
-}
-
-async function loadShellScriptTemplates() {
-  shellScriptLoading.value = true
-  try {
-    const res = await getShellScriptTemplateList({ page: 1, page_size: 200, ordering: '-id' })
-    const data = res?.data?.data || {}
-    shellScriptTemplates.value = data.results || []
-    shellScriptOptions.value = shellScriptTemplates.value
-      .map((item) => ({ value: item.id, label: item.name }))
-  } finally {
-    shellScriptLoading.value = false
   }
 }
 
@@ -695,7 +650,6 @@ function onGroupScopeCheck(checkedKeys) {
 
 function resetTaskForm() {
   taskForm.name = ''
-  taskForm.template_type = 'playbook'
   taskForm.template = null
   taskForm.inventory = null
   taskForm.default_limit = ''
@@ -703,7 +657,6 @@ function resetTaskForm() {
   taskForm.selected_host_ids = []
   taskForm.selected_group_ids = []
   taskForm.env_vars_text = ''
-  taskForm.shell_args_text = ''
   taskForm.enabled = true
   taskForm.remark = ''
   // 执行身份配置
@@ -721,11 +674,6 @@ function resetTaskForm() {
   taskLimitPrecheckMessage.value = '请选择 Inventory 后输入 Limit，系统将实时预检'
 }
 
-function handleTemplateTypeChange() {
-  taskForm.template = null
-  taskForm.shell_args_text = ''
-}
-
 function openCreateModal() {
   isCreateMode.value = true
   editingTaskId.value = null
@@ -739,17 +687,8 @@ function openEditModal(record, options = {}) {
   isCreateMode.value = false
   editingTaskId.value = record.id
   taskForm.name = record.name || ''
-  if (Number(record?.shell_script_template) > 0) {
-    taskForm.template_type = 'shell_script'
-    taskForm.template = Number(record.shell_script_template)
-    taskForm.shell_args_text = String(record.shell_parameters || '').trim()
-    taskForm.env_vars_text = formatShellEnvText(record.env_vars || {})
-  } else {
-    taskForm.template_type = 'playbook'
-    taskForm.template = Number(record.playbook_template || 0) || null
-    taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
-    taskForm.shell_args_text = ''
-  }
+  taskForm.template = Number(record.playbook_template || 0) || null
+  taskForm.env_vars_text = JSON.stringify(record.env_vars || {}, null, 2)
   taskForm.inventory = record.inventory || null
   // 检查已保存的 inventory 是否仍存在（可能已被删除或尚未配置）
   if (!taskForm.inventory) {
@@ -810,14 +749,8 @@ async function submitTask() {
   }
 
   let envVars = {}
-  let shellParameters = ''
   try {
-    if (taskForm.template_type === 'shell_script') {
-      envVars = parseShellEnvText(taskForm.env_vars_text)
-      shellParameters = String(taskForm.shell_args_text || '').trim()
-    } else {
-      envVars = parseJsonObjectText(taskForm.env_vars_text, '环境变量 JSON')
-    }
+    envVars = parseJsonObjectText(taskForm.env_vars_text, 'Playbook 变量 JSON')
   } catch (error) {
     message.error(error.message)
     return
@@ -837,15 +770,13 @@ async function submitTask() {
 
   const payload = {
     name: String(taskForm.name).trim(),
-    playbook_template: taskForm.template_type === 'playbook' ? Number(taskForm.template) : null,
-    shell_script_template: taskForm.template_type === 'shell_script' ? Number(taskForm.template) : null,
+    playbook_template: Number(taskForm.template),
     inventory: Number(taskForm.inventory) > 0 ? Number(taskForm.inventory) : null,
     default_limit: String(taskForm.default_limit || '').trim(),
     execution_timeout_seconds: timeoutSeconds,
     selected_host_ids: [],
     selected_group_ids: [],
     env_vars: envVars,
-    shell_parameters: shellParameters,
     enabled: !!taskForm.enabled,
     remark: taskForm.remark || '',
     // 执行身份配置
@@ -1104,9 +1035,6 @@ function handleRunNowRemoveToken(token) {
 function openRunNowModal(record) {
   runNowTask.value = record
   runNowLimit.value = String(record?.default_limit || '').trim()
-  runNowShellArgs.value = Number(record?.shell_script_template || 0) > 0
-    ? String(record?.shell_parameters || '').trim()
-    : ''
   runNowHostCount.value = 0
   runNowEffectiveLimit.value = ''
   runNowAllHosts.value = []
@@ -1121,7 +1049,6 @@ function closeRunNowModal() {
   runNowModalVisible.value = false
   runNowSubmitting.value = false
   runNowTask.value = null
-  runNowShellArgs.value = ''
   runNowAllHosts.value = []
   runNowMatchedHosts.value = []
   clearRunNowPrecheckTimer()
@@ -1147,11 +1074,11 @@ async function confirmRunNow() {
   runningTaskId.value = runNowTask.value.id
   runNowSubmitting.value = true
   try {
-    const payload = buildRunNowPayload(runNowLimit.value, runNowIsShellTask.value, runNowShellArgs.value)
+    const payload = buildRunNowPayload(runNowLimit.value)
 
     const res = await runTaskNow(runNowTask.value.id, payload)
     const createdJobId = Number(res?.data?.data?.id || 0)
-    message.success('任务已提交，正在后台执行')
+    message.success('任务执行完成')
     goToLogs(runNowTask.value, createdJobId)
     closeRunNowModal()
   } finally {
@@ -1210,7 +1137,6 @@ function handleTaskTableChange(page, _filters, sorter) {
 
 function reloadAll() {
   loadPlaybooks()
-  loadShellScriptTemplates()
   loadTasks(false)
 }
 
@@ -1251,7 +1177,6 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   await loadPlaybooks()
-  await loadShellScriptTemplates()
   await loadInventories()
   await loadTasks(true)
   await loadGroupTree()

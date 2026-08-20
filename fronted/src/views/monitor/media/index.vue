@@ -27,6 +27,11 @@
           <template v-else-if="column.key === 'operation'">
             <a-row :gutter="6" class="action-row">
               <a-col>
+                <a-tooltip title="测试" placement="top">
+                  <a-button @click="openTestModal(record)">测试</a-button>
+                </a-tooltip>
+              </a-col>
+              <a-col>
                 <a-tooltip title="编辑" placement="top">
                   <a-button type="primary" @click="openEditModal(record)">编辑</a-button>
                 </a-tooltip>
@@ -138,6 +143,26 @@
         <a-button type="primary" :loading="createLoading" @click="saveMedia">保存</a-button>
       </div>
     </a-modal>
+
+    <a-modal
+      v-model:open="testModalVisible"
+      title="测试邮件媒介"
+      :confirm-loading="testLoading"
+      @ok="sendTestEmail"
+      @cancel="closeTestModal"
+    >
+      <a-form :model="testForm" layout="vertical">
+        <a-form-item label="收件人" required>
+          <a-input v-model:value="testForm.recipients" placeholder="多个收件人请使用逗号分隔" />
+        </a-form-item>
+        <a-form-item label="主题" required>
+          <a-input v-model:value="testForm.subject" />
+        </a-form-item>
+        <a-form-item label="消息" required>
+          <a-textarea v-model:value="testForm.message" :rows="6" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -146,7 +171,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { createAlertMedia, deleteAlertMedia, getAlertMediaList, updateAlertMedia } from '@/api/monitor'
+import { createAlertMedia, deleteAlertMedia, getAlertMediaList, testAlertMedia, updateAlertMedia } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -178,9 +203,17 @@ const mediaList = ref([])
 const listLoading = ref(false)
 const createModalVisible = ref(false)
 const createLoading = ref(false)
+const testModalVisible = ref(false)
+const testLoading = ref(false)
+const testingMediaId = ref(null)
 const editingId = ref(null)
 const rowDeleteLoading = reactive({})
 const createForm = ref(createDefaultForm())
+const testForm = ref({
+  recipients: '',
+  subject: '测试邮件',
+  message: '这是一封测试邮件。',
+})
 
 function createDefaultForm() {
   return {
@@ -233,6 +266,36 @@ function openEditModal(record) {
 
 function closeCreateModal() {
   createModalVisible.value = false
+}
+
+function openTestModal(record) {
+  testingMediaId.value = record.id
+  testForm.value = {
+    recipients: '',
+    subject: '测试主题',
+    message: '这是一封测试邮件。',
+  }
+  testModalVisible.value = true
+}
+
+function closeTestModal() {
+  testModalVisible.value = false
+}
+
+async function sendTestEmail() {
+  const recipients = testForm.value.recipients.split(/[,;，；]/).map((item) => item.trim()).filter(Boolean)
+  if (!recipients.length || !testForm.value.subject.trim() || !testForm.value.message.trim()) {
+    message.warning('请填写收件人、主题和消息')
+    return
+  }
+  testLoading.value = true
+  try {
+    await testAlertMedia(testingMediaId.value, { ...testForm.value, recipients })
+    testModalVisible.value = false
+    message.success('测试邮件已发送')
+  } finally {
+    testLoading.value = false
+  }
 }
 
 async function saveMedia() {

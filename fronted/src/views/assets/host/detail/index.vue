@@ -9,8 +9,8 @@
                     </a-button>
                     <span class="detail-title">主机详情</span>
                     <a-tag v-if="detailHost?.id" color="blue">ID: {{ detailHost.id }}</a-tag>
-                    <a-tag v-if="detailHost?.id" :color="detailHost?.system?.agent_online ? 'success' : 'error'">
-                        Agent {{ detailHost?.system?.agent_online ? '在线' : '离线' }}
+                    <a-tag v-if="detailHost?.id" :color="detailHost?.agent_online ? 'success' : 'error'">
+                        Agent {{ detailHost?.agent_online ? '在线' : '离线' }}
                     </a-tag>
                 </a-space>
             </template>

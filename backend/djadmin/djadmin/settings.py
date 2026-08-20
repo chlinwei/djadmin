@@ -238,7 +238,6 @@ RABBITMQ_URL = os.getenv(
     'RABBITMQ_URL',
     'amqp://admin:admin123@10.25.66.150:5672/',
 )
-RABBITMQ_AGENT_TASKS_QUEUE = 'agent.tasks'
 RABBITMQ_AGENT_REPORTS_QUEUE = 'agent.reports'
 
 # dj-agent 文件传输 gRPC 通道：agent 主动拨号连接这里建立长连接（与 RabbitMQ 同向，

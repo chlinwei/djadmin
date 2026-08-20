@@ -216,8 +216,8 @@ class UserCenterManage(GenericViewSet):
 
     @action(detail=False, methods=['get'], url_path='alertMediaBindings')
     def alertMediaBindings(self, request):
-        """返回当前用户可关联的告警媒介列表及已关联的媒介 id。"""
-        from monitor.models import AlertMedia
+        """返回当前用户可绑定的告警媒介列表及已绑定的媒介（含收件人）。"""
+        from monitor.models import AlertMedia, UserAlertMediaBinding
 
         user = getCurrentUser(request)
         user_id = user.get('user_id') if isinstance(user, dict) else None
@@ -228,23 +228,40 @@ class UserCenterManage(GenericViewSet):
         if db_user is None:
             return Response_error_str('用户不存在', code=400)
 
+        # 获取所有可用的媒介类型
         medias = AlertMedia.objects.filter(enabled=True).order_by('id')
         options = [
             {
-                'id': media.id,  # type: ignore[attr-defined]
+                'id': media.id,
                 'name': media.name,
                 'media_type': media.media_type,
                 'enabled': media.enabled,
             }
             for media in medias
         ]
-        selected_ids = list(db_user.alert_media.values_list('id', flat=True))  # type: ignore[attr-defined]
-        return Response_200(data={'options': options, 'selected_media_ids': selected_ids})
+
+        # 获取当前用户对各媒介的绑定配置
+        bindings = UserAlertMediaBinding.objects.filter(user=db_user).select_related('media')
+        selected_bindings = [
+            {
+                'id': binding.id,
+                'media_id': binding.media_id,
+                'media_name': binding.media.name,
+                'recipients': binding.recipients,
+                'enabled': binding.enabled,
+            }
+            for binding in bindings
+        ]
+
+        return Response_200(data={
+            'options': options,
+            'selected_bindings': selected_bindings,
+        })
 
     @action(detail=False, methods=['post'], url_path='updateAlertMediaBindings')
     def updateAlertMediaBindings(self, request):
-        """保存当前用户与告警媒介的多对多关联。"""
-        from monitor.models import AlertMedia
+        """更新当前用户与告警媒介的绑定及收件人配置。"""
+        from monitor.models import AlertMedia, UserAlertMediaBinding
 
         user = getCurrentUser(request)
         user_id = user.get('user_id') if isinstance(user, dict) else None
@@ -255,29 +272,59 @@ class UserCenterManage(GenericViewSet):
         if db_user is None:
             return Response_error_str('用户不存在', code=400)
 
-        media_ids = request.data.get('media_ids')
-        if not isinstance(media_ids, list):
-            return Response_error_str('media_ids 必须是数组', code=400)
+        bindings_data = request.data.get('bindings')
+        if not isinstance(bindings_data, list):
+            return Response_error_str('bindings 必须是数组', code=400)
 
-        normalized_ids = []
-        for item in media_ids:
-            try:
-                value = int(item)
-            except (TypeError, ValueError):
-                return Response_error_str('media_ids 仅允许整数 id', code=400)
-            if value <= 0:
-                return Response_error_str('media_ids 仅允许正整数 id', code=400)
-            if value not in normalized_ids:
-                normalized_ids.append(value)
+        # 验证和处理绑定数据
+        valid_bindings = []
+        for item in bindings_data:
+            media_id = item.get('media_id')
+            recipients = item.get('recipients', [])
+            enabled = item.get('enabled', True)
 
-        valid_media_ids = set(
-            AlertMedia.objects.filter(id__in=normalized_ids).values_list('id', flat=True)
-        )
-        if len(valid_media_ids) != len(normalized_ids):
-            return Response_error_str('存在无效的告警媒介 id', code=400)
+            if not isinstance(media_id, int) or media_id <= 0:
+                return Response_error_str('media_id 必须是正整数', code=400)
 
-        db_user.alert_media.set(normalized_ids)  # type: ignore[attr-defined]
-        return Response_200(data={'selected_media_ids': normalized_ids})
+            # 检查媒介是否存在
+            media = AlertMedia.objects.filter(id=media_id, enabled=True).first()
+            if not media:
+                return Response_error_str(f'媒介 ID {media_id} 不存在或已禁用', code=400)
+
+            # 验证收件人
+            if not isinstance(recipients, list):
+                return Response_error_str('recipients 必须是数组', code=400)
+
+            normalized_recipients = []
+            for recipient in recipients:
+                email = str(recipient).strip() if recipient else ''
+                if email and '@' in email:
+                    if email not in normalized_recipients:
+                        normalized_recipients.append(email)
+
+            if not normalized_recipients:
+                return Response_error_str(f'媒介 "{media.name}" 至少需要配置一个收件人邮箱', code=400)
+
+            valid_bindings.append({
+                'media_id': media_id,
+                'recipients': normalized_recipients,
+                'enabled': enabled,
+            })
+
+        # 清除旧的绑定
+        UserAlertMediaBinding.objects.filter(user=db_user).delete()
+
+        # 创建新的绑定
+        for binding_data in valid_bindings:
+            UserAlertMediaBinding.objects.create(
+                user=db_user,
+                media_id=binding_data['media_id'],
+                recipients=binding_data['recipients'],
+                enabled=binding_data['enabled'],
+            )
+
+        return Response_200(data={'message': '告警媒介绑定已更新'})
+
     
    #修改密码
     @action(detail=False,methods=['post'],url_path="updateUserPassword")

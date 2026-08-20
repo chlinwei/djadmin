@@ -1,9 +1,11 @@
 from datetime import timedelta
 
+from django.core.mail import EmailMultiAlternatives, get_connection
 from django.db.models import Max
 from django.utils import timezone
 from celery import shared_task
 
+from assets.credential_crypto import decrypt_secret
 from sys_config.models import SysConfig
 
 from .alert_history import reconcile_alert_history as _reconcile_alert_history
@@ -11,7 +13,9 @@ from .models import (
     AlertHistory,
     AlertMedia,
     AlertRoute,
+	AlertNotificationDelivery,
     AlertNotificationEvent,
+    UserAlertMediaBinding,
     MonitorTargetInstallHistory,
 )
 
@@ -37,41 +41,153 @@ def _resolve_event_media(event):
     return AlertMedia.objects.filter(id__in=media_ids, enabled=True)
 
 
+def _send_email_alert(media, alert, recipients):
+	"""发送告警邮件。返回 (success: bool, error_message: str)。"""
+	if not recipients:
+		return False, '未配置收件人邮箱'
+
+	config = media.config or {}
+	try:
+		password = decrypt_secret(config.get('password', '')) if config.get('password') else ''
+		connection = get_connection(
+			backend='django.core.mail.backends.smtp.EmailBackend',
+			fail_silently=False,
+			host=config.get('smtpServer'),
+			port=int(config.get('smtpPort', 587)),
+			username=config.get('username'),
+			password=password,
+			use_tls=bool(config.get('useTLS', False)),
+			use_ssl=bool(config.get('useSSL', False)),
+		)
+		
+		# 构建邮件主题和内容
+		alert_name = alert.alertname or 'Unknown Alert'
+		severity = alert.severity or 'unknown'
+		state_label = 'Firing' if alert.state == AlertHistory.State.FIRING else 'Resolved'
+		subject = f'[{state_label}] {alert_name} - {severity}'
+		
+		message_body = f"""
+Alert: {alert_name}
+Severity: {severity}
+State: {state_label}
+Instance: {alert.instance or 'N/A'}
+
+Started: {alert.started_at}
+Last Seen: {alert.last_seen_at}
+{f'Resolved: {alert.resolved_at}' if alert.resolved_at else ''}
+
+Labels: {alert.labels}
+Annotations: {alert.annotations}
+Generator URL: {alert.generator_url}
+"""
+		
+		email = EmailMultiAlternatives(
+			subject=subject,
+			body=message_body,
+			from_email=config.get('email'),
+			to=recipients,
+			connection=connection,
+		)
+		if config.get('messageFormat', 'text') == 'html':
+			email.attach_alternative(message_body.replace('\n', '<br>'), 'text/html')
+		
+		sent_count = email.send()
+		if sent_count == 1:
+			return True, ''
+		else:
+			return False, f'邮件发送返回异常计数: {sent_count}'
+	except Exception as exc:
+		return False, f'邮件发送失败: {str(exc)}'
+
+
 @shared_task(bind=True, name='monitor.send_alert_notification', max_retries=5)
 def send_alert_notification(self, event_id):
-    event = AlertNotificationEvent.objects.select_related('alert').get(id=event_id)
-    if event.status == AlertNotificationEvent.Status.SUCCESS:
-        return {'status': 'success', 'event_id': event.pk}
+	"""按用户、媒介和地址发送告警通知，并持久化每次实际投递结果。"""
+	event = AlertNotificationEvent.objects.select_related('alert').get(id=event_id)
+	if event.status == AlertNotificationEvent.Status.SUCCESS:
+		return {'status': 'success', 'event_id': event.pk}
 
-    event.status = AlertNotificationEvent.Status.SENDING
-    event.attempt_count += 1
-    event.save(update_fields=['status', 'attempt_count', 'update_time'])
+	event.status = AlertNotificationEvent.Status.SENDING
+	event.attempt_count += 1
+	event.save(update_fields=['status', 'attempt_count', 'update_time'])
 
-    deliveries = []
-    for media in _resolve_event_media(event):
-        if media.media_type != AlertMedia.MediaType.EMAIL:
-            continue
+	alert = event.alert
+	medias = _resolve_event_media(event)
+	
+	if not medias.exists():
+		event.status = AlertNotificationEvent.Status.FAILED
+		event.error_message = '没有匹配的告警媒介'
+		event.save(update_fields=['status', 'error_message', 'update_time'])
+		return {'status': 'failed', 'event_id': event.pk}
 
-    if not deliveries:
-        event.status = AlertNotificationEvent.Status.FAILED
-        event.error_message = '当前告警媒介未配置收件人'
-        event.save(update_fields=['status', 'error_message', 'update_time'])
-        return {'status': 'failed', 'event_id': event.pk}
+	errors = []
+	retryable_errors = []
+	delivery_count = 0
+	for media in medias:
+		if media.media_type != AlertMedia.MediaType.EMAIL:
+			# 当前仅实现 Email，webhook 后续补充
+			continue
+		
+		# 获取所有对该媒介有有效绑定的用户及其收件人
+		bindings = UserAlertMediaBinding.objects.filter(
+			media=media, enabled=True
+		).select_related('user')
+		
+		if not bindings.exists():
+			errors.append(f'媒介 "{media.name}" 没有任何用户绑定')
+			continue
+		
+		# 每个用户地址单独投递，才能准确记录“谁、通过什么媒介、是否发送成功”。
+		for binding in bindings:
+			recipients = binding.recipients if isinstance(binding.recipients, list) else []
+			for recipient in dict.fromkeys(str(item).strip() for item in recipients if str(item).strip()):
+				delivery, _ = AlertNotificationDelivery.objects.get_or_create(
+					event=event,
+					media=media,
+					user=binding.user,
+					address=recipient,
+				)
+				delivery_count += 1
+				if delivery.status == AlertNotificationEvent.Status.SUCCESS:
+					continue
 
-    failed = [item for item in deliveries if item.status != 'success']
-    if failed:
-        event.status = AlertNotificationEvent.Status.FAILED
-        event.error_message = '; '.join(item.error_message for item in failed if item.error_message)
-        event.save(update_fields=['status', 'error_message', 'update_time'])
-        if self.request.retries < self.max_retries:
-            raise self.retry(countdown=min(300, 2 ** self.request.retries * 10))
-        return {'status': 'failed', 'event_id': event.pk}
+				delivery.status = AlertNotificationEvent.Status.SENDING
+				delivery.attempt_count += 1
+				delivery.error_message = ''
+				delivery.save(update_fields=['status', 'attempt_count', 'error_message', 'update_time'])
 
-    event.status = AlertNotificationEvent.Status.SUCCESS
-    event.sent_at = timezone.now()
-    event.error_message = ''
-    event.save(update_fields=['status', 'sent_at', 'error_message', 'update_time'])
-    return {'status': 'success', 'event_id': event.pk}
+				success, error_msg = _send_email_alert(media, alert, [recipient])
+				if success:
+					delivery.status = AlertNotificationEvent.Status.SUCCESS
+					delivery.sent_at = timezone.now()
+					delivery.error_message = ''
+				else:
+					delivery.status = AlertNotificationEvent.Status.FAILED
+					delivery.error_message = error_msg
+					delivery_error = f'{binding.user.username} / {media.name} / {recipient}: {error_msg}'
+					errors.append(delivery_error)
+					retryable_errors.append(delivery_error)
+				delivery.save(update_fields=['status', 'sent_at', 'error_message', 'update_time'])
+
+	if delivery_count == 0 and not errors:
+		errors.append('匹配的告警媒介没有可投递的用户地址')
+
+	if errors:
+		event.error_message = '; '.join(errors)
+		# 重试机制：指数退避
+		if retryable_errors and self.request.retries < self.max_retries:
+			event.status = AlertNotificationEvent.Status.PENDING
+			event.save(update_fields=['status', 'error_message', 'update_time'])
+			raise self.retry(countdown=min(300, 2 ** self.request.retries * 10))
+		event.status = AlertNotificationEvent.Status.FAILED
+		event.save(update_fields=['status', 'error_message', 'update_time'])
+		return {'status': 'failed', 'event_id': event.pk}
+
+	event.status = AlertNotificationEvent.Status.SUCCESS
+	event.sent_at = timezone.now()
+	event.error_message = ''
+	event.save(update_fields=['status', 'sent_at', 'error_message', 'update_time'])
+	return {'status': 'success', 'event_id': event.pk}
 
 
 def cleanup_monitor_install_histories():

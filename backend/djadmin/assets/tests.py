@@ -341,13 +341,14 @@ class HostTest(BaseTestCase):
         self.assertResponseOK(res)
         self.assertTrue(Host.objects.filter(instance_name='new_host').exists())
 
-    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
     def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, _mock_run_job):
         """新增主机时通过 monitors 数组纳管 node_exporter 并开启，应下发安装用 automation job。"""
         install_template = _make_playbook_template('node_exporter-install')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
             default_port=19100,
+            file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             install_playbook_template=install_template,
         )
         res = self.client.post('/assets/hosts/', {
@@ -363,9 +364,8 @@ class HostTest(BaseTestCase):
         self.assertEqual(target.scrape_port, 19100)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发安装任务' in target.install_message)
-        self.assertIsNone(target.last_install_job_id)
 
-    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
     def test_create_host_with_monitor_explicit_port_should_persist_scrape_port(self, _mock_run_job):
         install_template = _make_playbook_template('cadvisor-install')
         SoftwarePackage.objects.create(
@@ -392,17 +392,17 @@ class HostTest(BaseTestCase):
         install_template = _make_playbook_template('node_exporter-install-default')
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             install_playbook_template=install_template,
         )
         host = Host.objects.create(instance_name='agent-host-default', ip='192.168.1.198')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
-        with patch('automation.local_runner.run_job_in_background', return_value=None):
+        with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
             dispatch_exporter_install_job(host, target)
 
         target.refresh_from_db()
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
-        self.assertEqual(target.last_install_job_id, None)
 
     def test_dispatch_exporter_install_job_fallback_for_legacy_blank_value(self):
         """兼容迁移前遗留的空字符串记录（绕过 ORM default，直接 update 出空值模拟历史脏数据）：
@@ -412,6 +412,7 @@ class HostTest(BaseTestCase):
         install_template = _make_playbook_template('node_exporter-install-legacy-blank')
         pkg = SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
+            file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             install_playbook_template=install_template,
         )
         # 绕开模型默认值，模拟迁移前遗留的空字符串脏数据
@@ -419,12 +420,11 @@ class HostTest(BaseTestCase):
         host = Host.objects.create(instance_name='agent-host-legacy-blank', ip='192.168.1.196')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
-        with patch('automation.local_runner.run_job_in_background', return_value=None):
+        with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
             dispatch_exporter_install_job(host, target)
 
         target.refresh_from_db()
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
-        self.assertEqual(target.last_install_job_id, None)
 
     def test_dispatch_exporter_install_job_uses_explicit_service_run_as_user(self):
         """显式配置了 service_run_as_user/service_run_as_group 时，extra_vars 应原样透传，不触发 fallback。"""
@@ -434,17 +434,17 @@ class HostTest(BaseTestCase):
         SoftwarePackage.objects.create(
             name='node_exporter', version='9.9.9', os='linux', arch='amd64', enabled=True,
             install_playbook_template=install_template,
+            file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             service_run_as_user='monitor_agent', service_run_as_group='monitor_group',
         )
         host = Host.objects.create(instance_name='agent-host-explicit', ip='192.168.1.197')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
-        with patch('automation.local_runner.run_job_in_background', return_value=None):
+        with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
             dispatch_exporter_install_job(host, target)
 
         target.refresh_from_db()
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
-        self.assertEqual(target.last_install_job_id, None)
 
     def test_dispatch_exporter_install_job_without_local_package_should_reject(self):
         """dispatch_exporter_install_job 在本地软件仓库没有该 exporter 的启用包时应直接拒绝下发，
@@ -463,7 +463,6 @@ class HostTest(BaseTestCase):
         target.refresh_from_db()
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.FAILED)
         self.assertIn('本地软件仓库缺少', target.install_message)
-        self.assertIsNone(target.last_install_job_id)
 
     def test_create_host_without_monitors_payload_should_not_create_monitor_target(self):
         """未提交 monitors 数组时不应自动创建任何监控目标（不再有默认 node_exporter 隐式行为）。"""
@@ -476,7 +475,7 @@ class HostTest(BaseTestCase):
         host = Host.objects.get(instance_name='agent-host-00')
         self.assertFalse(MonitorTarget.objects.filter(host=host).exists())
 
-    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
     def test_create_host_monitor_disabled_should_not_enqueue_install(self, _mock_run_job):
         """monitors 数组中 enabled=False 时，不下发安装任务。"""
         install_template = _make_playbook_template('node_exporter-install-2')
@@ -496,7 +495,7 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertFalse('已下发安装任务' in target.install_message)
 
-    @patch('automation.local_runner.run_job_in_background', return_value=None)
+    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
     def test_disable_monitor_should_always_enqueue_uninstall_job(self, _mock_run_job):
         """监控从开启切到关闭时，应始终自动下发卸载任务（不再需要额外勾选一次性指令）。"""
         install_template = _make_playbook_template('node_exporter-install-3')
@@ -530,7 +529,9 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
         self.assertTrue('已下发卸载任务' in target.install_message)
-        self.assertEqual(target.last_install_job_id, None)
+        _mock_run_job.assert_called_once()
+        self.assertEqual(_mock_run_job.call_args.kwargs['template_content'], uninstall_template.content)
+        self.assertEqual(_mock_run_job.call_args.kwargs['extra_vars']['exporter_name'], 'node_exporter')
 
     def test_get_host_detail(self):
         """获取主机详情"""

@@ -1,5 +1,5 @@
 amqp==5.3.1
-ansible-core==2.17.14
+ansible-core>=2.16,<2.17
 asgiref==3.11.1
 attrs==26.1.0
 autobahn==24.4.2

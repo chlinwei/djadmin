@@ -58,9 +58,10 @@ func (s *session) send(frame *pb.AgentFrame) error {
 }
 
 // Run 阻塞运行文件传输会话，断线后按指数退避自动重连，直至 ctx 被取消。
-func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any) {
+func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
 	if strings.TrimSpace(addr) == "" {
 		slog.Warn("grpc file-transfer disabled: empty addr")
+		onConnectionState(false)
 		return
 	}
 	backoff := time.Second
@@ -71,7 +72,8 @@ func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, run
 			return
 		default:
 		}
-		if err := runOnce(ctx, addr, agentID, exec, runtimeStatusProvider); err != nil {
+		onConnectionState(false)
+		if err := runOnce(ctx, addr, agentID, exec, runtimeStatusProvider, onConnectionState); err != nil {
 			slog.Warn("grpc file-transfer session ended", "err", err)
 		}
 		select {
@@ -86,7 +88,7 @@ func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, run
 	}
 }
 
-func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any) error {
+func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) error {
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -132,6 +134,7 @@ func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor,
 				return fmt.Errorf("hello rejected: %s", payload.HelloAck.Message)
 			}
 			slog.Info("grpc file-transfer session established", "agent_id", agentID, "addr", addr)
+			onConnectionState(true)
 		case *pb.ServerFrame_ListRequest:
 			sess.handleList(payload.ListRequest)
 		case *pb.ServerFrame_StatRequest:

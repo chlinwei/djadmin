@@ -35,32 +35,13 @@ class PlaybookTemplate(BaseModel):
         return self.name
 
 
-class ShellScriptTemplate(BaseModel):
-    name = models.CharField(max_length=128, unique=True)
-    description = models.CharField(max_length=255, blank=True, default='')
-    content = models.TextField(help_text='Shell script content')
-    category = models.CharField(
-        max_length=32, choices=TemplateCategory.choices, default=TemplateCategory.GENERAL,
-        help_text='模板分类：通用 / 软件包安装卸载专用，用于列表页默认分组展示',
-    )
-
-    class Meta:
-        db_table = 'automation_shell_script_template'
-        ordering = ['-id']
-
-    def __str__(self):
-        return self.name
-
-
 class AutomationTask(BaseModel):
     name = models.CharField(max_length=128, unique=True)
-    # 支持 Playbook 或 ShellScript 执行方式
+    # 自动化任务统一使用 Playbook；Shell 脚本可作为 Playbook 的 task 执行。
     playbook_template = models.ForeignKey(PlaybookTemplate, on_delete=models.PROTECT, related_name='tasks', null=True, blank=True)
-    shell_script_template = models.ForeignKey(ShellScriptTemplate, on_delete=models.PROTECT, related_name='tasks', null=True, blank=True)
     inventory = models.ForeignKey('AutomationInventory', on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks')
     selected_host_ids = models.JSONField(default=list, blank=True)
     selected_group_ids = models.JSONField(default=list, blank=True)
-    shell_parameters = models.TextField(blank=True, default='')
     env_vars = models.JSONField(default=dict, blank=True)
     default_limit = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
@@ -143,8 +124,6 @@ class AutomationExecutionJob(BaseModel):
     task_name_snapshot = models.CharField(max_length=128, blank=True, default='')
     template_name_snapshot = models.CharField(max_length=128, blank=True, default='')
     template_content_snapshot = models.TextField(blank=True, default='')
-    shell_parameters = models.TextField(blank=True, default='')
-    shell_env_vars = models.JSONField(default=dict, blank=True)
     extra_vars = models.JSONField(default=dict, blank=True)
     limit = models.CharField(max_length=255, blank=True, default='')
     result_summary = models.JSONField(default=dict, blank=True)

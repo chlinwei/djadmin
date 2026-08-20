@@ -17,9 +17,6 @@ const defaultTimeout = 30 * time.Second
 // Executor 负责执行单个任务并采集结果。
 type Executor struct {
 	DefaultTimeout time.Duration
-	// BackendBaseURL 指向 backend 基础地址，用于从本地软件仓库（media）下载待安装的二进制包；
-	// 为空时内置安装脚本回退到官方下载源。
-	BackendBaseURL string
 }
 
 // New 创建一个新的 Executor 实例

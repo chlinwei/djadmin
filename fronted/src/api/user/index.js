@@ -77,8 +77,8 @@ export function getCurrentUserAlertMediaBindings() {
     return requestUtil.get('sys/usercenter/alertMediaBindings/')
 }
 
-export function updateCurrentUserAlertMediaBindings(mediaIds) {
-    return requestUtil.post('sys/usercenter/updateAlertMediaBindings/', { media_ids: mediaIds })
+export function updateCurrentUserAlertMediaBindings(bindings) {
+    return requestUtil.post('sys/usercenter/updateAlertMediaBindings/', { bindings })
 }
 //获取用户列表
 export function getUserList(params = {page:1,size:3,search}) {

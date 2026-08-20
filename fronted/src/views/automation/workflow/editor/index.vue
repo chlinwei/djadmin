@@ -170,13 +170,6 @@
 
               <a-form-item v-if="addNodeWizardForm.node_type === 'task'" label="执行任务" required>
                 <a-select
-                  v-model:value="addNodeWizardForm.task_template_type"
-                  :getPopupContainer="getPopupContainer"
-                  :options="taskTemplateTypeOptions"
-                  class="workflow-task-type-select"
-                />
-                <div class="workflow-task-type-hint">先按模板类型筛选，再选择自动化任务。</div>
-                <a-select
                   v-model:value="addNodeWizardForm.task_id"
                   :getPopupContainer="getPopupContainer"
                   :options="addNodeTaskOptions"
@@ -286,13 +279,6 @@
 
               <a-form-item v-if="nodeConfigForm.node_type === 'task'" label="执行任务" required>
                 <a-select
-                  v-model:value="nodeConfigForm.task_template_type"
-                  :getPopupContainer="getPopupContainer"
-                  :options="taskTemplateTypeOptions"
-                  class="workflow-task-type-select"
-                />
-                <div class="workflow-task-type-hint">先按模板类型筛选，再选择自动化任务。</div>
-                <a-select
                   v-model:value="nodeConfigForm.task_id"
                   :getPopupContainer="getPopupContainer"
                   :options="nodeConfigTaskOptions"
@@ -344,7 +330,6 @@ const {
   canvasWrapRef,
   selectedNodeId,
   isConnecting,
-  taskTemplateTypeOptions,
   addNodeTaskOptions,
   nodeConfigTaskOptions,
   workflowOptions,

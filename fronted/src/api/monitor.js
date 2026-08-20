@@ -70,6 +70,10 @@ export function getAlertHistories(params) {
   return requestUtil.get(prefix + 'alert-histories/', params)
 }
 
+export function getAlertNotificationStatus(alertId) {
+  return requestUtil.get(prefix + `alert-histories/${alertId}/notification-status/`)
+}
+
 export function getAlertMediaList(params) {
   return requestUtil.get(prefix + 'media/', params)
 }
@@ -84,6 +88,10 @@ export function updateAlertMedia(id, data) {
 
 export function deleteAlertMedia(id) {
   return requestUtil.del(prefix + `media/${id}/`)
+}
+
+export function testAlertMedia(id, data) {
+  return requestUtil.post(prefix + `media/${id}/test/`, data)
 }
 
 export function getAlertRouteList(params) {
@@ -144,4 +152,8 @@ export function getMonitorInstallHistoryList(params) {
 
 export function getMonitorInstallHistoryDetail(id) {
   return requestUtil.get(prefix + `install-histories/${id}/`)
+}
+
+export function cancelMonitorInstallHistory(id) {
+  return requestUtil.post(prefix + `install-histories/${id}/cancel/`)
 }

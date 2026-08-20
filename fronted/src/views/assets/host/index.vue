@@ -163,7 +163,7 @@
                             <a-tag color="blue">{{ getGroupName(record) }}</a-tag>
                         </template>
                         <template v-else-if="column.key === 'agent_status'">
-                            <a-tooltip v-if="record.system?.agent_online">
+                            <a-tooltip v-if="record.agent_online">
                                 <template #title>
                                     <div>状态由心跳判定</div>
                                     <div v-if="record.system?.agent_last_seen_at" style="margin-top: 4px; opacity: 0.85;">
@@ -820,7 +820,18 @@ const mergeUpdatedHosts = (updatedHosts) => {
         return
     }
     const incoming = new Map(rows.map((item) => [item.id, item]))
-    datasources.value = (datasources.value || []).map((item) => incoming.get(item.id) || item)
+    const mergedRows = (datasources.value || []).map((item) => incoming.get(item.id) || item)
+    datasources.value = filterHostsByAgentStatus(mergedRows)
+}
+
+const filterHostsByAgentStatus = (rows) => {
+    if (agentStatusFilter.value === 'online') {
+        return rows.filter((item) => item?.agent_online === true)
+    }
+    if (agentStatusFilter.value === 'offline') {
+        return rows.filter((item) => item?.agent_online !== true)
+    }
+    return rows
 }
 
 const loadHostList = async ({ refreshRuntime = true } = {}) => {
@@ -849,13 +860,16 @@ const loadHostList = async ({ refreshRuntime = true } = {}) => {
         }
         if (res.data.code === 200) {
             const rows = Array.isArray(res.data.data.results) ? res.data.data.results : []
-            datasources.value = rows
-            pagination.total = res.data.data.count || 0
+            const filteredRows = filterHostsByAgentStatus(rows)
+            datasources.value = filteredRows
+            pagination.total = agentStatusFilter.value === 'all'
+                ? (res.data.data.count || 0)
+                : filteredRows.length
 
             // 两阶段加载：先渲染缓存列表，再异步刷新当前页在线主机的最新信息。
-            if (refreshRuntime && rows.length) {
-                const onlineIds = rows
-                    .filter((item) => item?.system?.agent_online)
+            if (refreshRuntime && filteredRows.length) {
+                const onlineIds = filteredRows
+                    .filter((item) => item?.agent_online === true)
                     .map((item) => item.id)
                     .filter((id) => Number.isInteger(id) || /^\d+$/.test(String(id)))
                     .map((id) => Number(id))

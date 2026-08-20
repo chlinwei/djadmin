@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from django.db import transaction
 
 from assets.credential_crypto import decrypt_secret, encrypt_secret
-from assets.grpc_transfer.client import AgentChannelClient
+from assets.grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 
 from .models import AutomationControllerSSHKey
+
+
+def _is_transient_agent_channel_error(error: AgentGrpcTransferError) -> bool:
+    """Only retry transport-level gaps caused by a backend restart/reconnect."""
+    error_text = str(error).lower()
+    return any(keyword in error_text for keyword in (
+        '未建立 gRPC 通道连接',
+        '等待 agent 响应超时',
+        'agent 连接已断开',
+        'session',
+        'connection',
+        'timeout',
+    ))
 
 
 def get_or_create_controller_ssh_key() -> tuple[str, str]:
@@ -37,15 +51,24 @@ def get_or_create_controller_ssh_key() -> tuple[str, str]:
 
 def sync_controller_public_key(agent_id: str, public_key: str, timeout_seconds: int = 30) -> None:
     """通过已认证的 agent 通道安装平台公钥，禁止 backend 直写远端文件。"""
-    result = AgentChannelClient(agent_id).execute_automation(
-        job_id=f'sync-automation-ssh-key-{agent_id}',
-        params={'public_key': public_key},
-        timeout_seconds=timeout_seconds,
-        task_type='custom',
-        action='sync_automation_ssh_key',
-    )
-    if str(result.get('status') or '').lower() != 'success':
-        raise RuntimeError(str(result.get('error_message') or 'agent rejected controller SSH key'))
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = AgentChannelClient(agent_id).execute_automation(
+                job_id=f'sync-automation-ssh-key-{agent_id}',
+                params={'public_key': public_key},
+                timeout_seconds=timeout_seconds,
+                task_type='custom',
+                action='sync_automation_ssh_key',
+            )
+            if str(result.get('status') or '').lower() != 'success':
+                raise RuntimeError(str(result.get('error_message') or 'agent rejected controller SSH key'))
+            return
+        except AgentGrpcTransferError as error:
+            if attempt == max_attempts or not _is_transient_agent_channel_error(error):
+                raise
+            # API 重启后 gRPC 注册表会暂时为空，等待 agent 主动重连再发送公钥。
+            time.sleep(2)
 
 
 def sync_controller_public_key_to_agents(agent_ids: list[str], public_key: str, concurrency: int) -> dict[str, str]:

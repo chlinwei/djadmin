@@ -35,13 +35,18 @@
               :getPopupContainer="getPopupContainer"
               style="width: 140px"
             />
+            <a-select
+              v-model:value="notificationFilter"
+              :options="notificationFilterOptions"
+              :getPopupContainer="getPopupContainer"
+              style="width: 190px"
+            />
             <a-input-search
               v-model:value="keyword"
               placeholder="按名称/实例/摘要搜索"
               allow-clear
               style="width: 260px"
             />
-            <a-typography-text type="secondary">Prometheus 地址：{{ prometheusBaseUrl || '-' }}</a-typography-text>
           </a-space>
 
           <a-alert v-if="loadError" type="error" show-icon :message="loadError" style="margin-bottom: 12px" />
@@ -52,7 +57,7 @@
             :data-source="filteredRows"
             :loading="loading"
             size="small"
-            :scroll="{ x: 1200 }"
+            :scroll="{ x: 1800 }"
             :pagination="{ showSizeChanger: true, showQuickJumper: true, showTotal: (total) => `共有 ${total} 条数据` }"
           >
             <template #bodyCell="{ column, record }">
@@ -63,8 +68,18 @@
               <template v-else-if="column.key === 'state'">
                 <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
               </template>
+              <template v-else-if="column.key === 'labels'">
+                <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
+                  <a-tag
+                    v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
+                    :key="labelKey"
+                    class="alert-label-tag"
+                  >{{ labelKey }}={{ labelValue }}</a-tag>
+                </a-space>
+                <span v-else>-</span>
+              </template>
               <template v-else-if="column.key === 'summary'">
-                <a-typography-text ellipsis style="max-width: 360px">{{ record.summary || '-' }}</a-typography-text>
+                <a-typography-text :content="record.summary || '-'" ellipsis style="max-width: 360px" />
               </template>
               <template v-else-if="column.key === 'active_at'">
                 {{ formatActiveAt(record.active_at) }}
@@ -72,12 +87,29 @@
               <template v-else-if="column.key === 'value'">
                 {{ formatCurrentValue(record.value) }}
               </template>
+              <template v-else-if="column.key === 'operation'">
+                <a-tooltip v-if="record.history_id && record.notification_count > 0" title="查看日志" placement="top">
+                  <a-button
+                    type="link"
+                    size="small"
+                    :class="['notification-summary-action', `is-${record.notification_status}`]"
+                    @click="openNotificationStatus(record.history_id)"
+                  >
+                    <template #icon><EyeOutlined /></template>
+                    <a-badge :status="notificationBadgeStatus(record.notification_status)" />
+                    {{ notificationSummaryLabel(record.notification_status) }}
+                    <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
+                  </a-button>
+                </a-tooltip>
+                <span v-else>-</span>
+              </template>
             </template>
           </a-table>
         </a-tab-pane>
 
         <a-tab-pane key="history" tab="历史告警" force-render>
           <a-space style="margin-bottom: 12px" wrap>
+            <a-segmented v-model:value="historyViewMode" :options="historyViewOptions" />
             <a-tooltip title="刷新">
               <a-button type="primary" ghost :loading="historyLoading" @click="loadAlertHistory">刷新</a-button>
             </a-tooltip>
@@ -93,6 +125,13 @@
               :options="historySeverityOptions"
               :getPopupContainer="getPopupContainer"
               style="width: 140px"
+              @change="onHistoryFilterChange"
+            />
+            <a-select
+              v-model:value="historyNotificationStatus"
+              :options="notificationFilterOptions"
+              :getPopupContainer="getPopupContainer"
+              style="width: 190px"
               @change="onHistoryFilterChange"
             />
             <a-input-search
@@ -116,12 +155,13 @@
           <a-alert v-if="historyLoadError" type="error" show-icon :message="historyLoadError" style="margin-bottom: 12px" />
 
           <a-table
+            v-if="historyViewMode === 'table'"
             rowKey="id"
             :columns="historyColumns"
             :data-source="historyRows"
             :loading="historyLoading"
             size="small"
-            :scroll="{ x: 1300 }"
+            :scroll="{ x: 1700 }"
             :pagination="historyPagination"
             @change="handleHistoryTableChange"
           >
@@ -132,6 +172,16 @@
               </template>
               <template v-else-if="column.key === 'state'">
                 <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'labels'">
+                <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
+                  <a-tag
+                    v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
+                    :key="labelKey"
+                    class="alert-label-tag"
+                  >{{ labelKey }}={{ labelValue }}</a-tag>
+                </a-space>
+                <span v-else>-</span>
               </template>
               <template v-else-if="column.key === 'started_at'">
                 {{ formatActiveAt(record.started_at) }}
@@ -146,19 +196,147 @@
               <template v-else-if="column.key === 'duration'">
                 {{ formatAlertDuration(record.started_at, record.resolved_at) }}
               </template>
+              <template v-else-if="column.key === 'operation'">
+                <a-tooltip v-if="record.notification_count > 0" title="查看日志" placement="top">
+                  <a-button
+                    type="link"
+                    size="small"
+                    :class="['notification-summary-action', `is-${record.notification_status}`]"
+                    @click="openNotificationStatus(record.id)"
+                  >
+                    <template #icon><EyeOutlined /></template>
+                    <a-badge :status="notificationBadgeStatus(record.notification_status)" />
+                    {{ notificationSummaryLabel(record.notification_status) }}
+                    <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
+                  </a-button>
+                </a-tooltip>
+                <span v-else>-</span>
+              </template>
             </template>
           </a-table>
+
+          <a-spin v-else :spinning="historyLoading">
+            <a-empty v-if="!historyRows.length" description="暂无历史告警" />
+            <div v-else class="history-timeline-wrap">
+              <a-timeline>
+                <a-timeline-item
+                  v-for="record in historyRows"
+                  :key="record.id"
+                  :color="timelineColor(record)"
+                >
+                  <div class="history-timeline-item">
+                    <div class="history-timeline-heading">
+                      <a-space size="middle" wrap>
+                        <a-typography-text class="history-timeline-time">{{ formatActiveAt(record.started_at) }}</a-typography-text>
+                        <a-typography-text strong>{{ record.alertname || '-' }}</a-typography-text>
+                      </a-space>
+                      <a-space size="small" wrap>
+                        <a-tag v-if="record.severity" :color="severityColor(record.severity)">{{ record.severity }}</a-tag>
+                        <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
+                      </a-space>
+                    </div>
+                    <div class="history-timeline-meta">
+                      <span><span class="meta-label">实例</span>{{ record.instance || '-' }}</span>
+                      <span><span class="meta-label">恢复时间</span>{{ record.resolved_at ? formatActiveAt(record.resolved_at) : '仍在告警中' }}</span>
+                      <span><span class="meta-label">持续时间</span>{{ formatAlertDuration(record.started_at, record.resolved_at) }}</span>
+                    </div>
+                    <div class="history-timeline-labels">
+                      <span class="meta-label">标签</span>
+                      <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
+                        <a-tag
+                          v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
+                          :key="labelKey"
+                          class="alert-label-tag"
+                        >{{ labelKey }}={{ labelValue }}</a-tag>
+                      </a-space>
+                      <span v-else>-</span>
+                    </div>
+                    <div class="history-timeline-action">
+                      <a-tooltip v-if="record.notification_count > 0" title="查看日志" placement="top">
+                        <a-button
+                          type="link"
+                          size="small"
+                          :class="['notification-summary-action', `is-${record.notification_status}`]"
+                          @click="openNotificationStatus(record.id)"
+                        >
+                          <template #icon><EyeOutlined /></template>
+                          <a-badge :status="notificationBadgeStatus(record.notification_status)" />
+                          {{ notificationSummaryLabel(record.notification_status) }}
+                          <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
+                        </a-button>
+                      </a-tooltip>
+                      <span v-else>-</span>
+                    </div>
+                  </div>
+                </a-timeline-item>
+              </a-timeline>
+              <a-pagination
+                :current="historyPagination.current"
+                :page-size="historyPagination.pageSize"
+                :total="historyPagination.total"
+                show-size-changer
+                show-quick-jumper
+                :show-total="historyPagination.showTotal"
+                class="history-timeline-pagination"
+                @change="handleHistoryPaginationChange"
+                @showSizeChange="handleHistoryPaginationChange"
+              />
+            </div>
+          </a-spin>
         </a-tab-pane>
       </a-tabs>
     </a-card>
+
+    <a-modal
+      v-model:open="notificationModalVisible"
+      title="通知记录"
+      width="1100px"
+      :footer="null"
+      centered
+    >
+      <a-descriptions :column="2" size="small" bordered style="margin-bottom: 16px">
+        <a-descriptions-item label="告警名称">{{ notificationDetail.alertname || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="实例">{{ notificationDetail.instance || '-' }}</a-descriptions-item>
+      </a-descriptions>
+      <a-table
+        row-key="rowKey"
+        :columns="notificationColumns"
+        :data-source="notificationRows"
+        :loading="notificationLoading"
+        :pagination="false"
+        :scroll="{ x: 1100 }"
+        size="small"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'event_type'">
+            <a-tag :color="record.event_type === 'firing' ? 'red' : 'green'">
+              {{ record.event_type === 'firing' ? '告警' : '恢复' }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-tag :color="notificationStatusColor(record.status)">{{ notificationStatusLabel(record.status) }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'time'">
+            {{ formatActiveAt(record.sent_at || record.create_time) }}
+          </template>
+          <template v-else-if="column.key === 'error_message'">
+            <a-tooltip v-if="record.error_message" :title="record.error_message">
+              <a-typography-text :content="record.error_message" ellipsis style="max-width: 260px" />
+            </a-tooltip>
+            <span v-else>-</span>
+          </template>
+        </template>
+      </a-table>
+    </a-modal>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { EyeOutlined } from '@ant-design/icons-vue'
 import dayjs from 'dayjs'
-import { getAlertHistories, getPrometheusAlerts } from '@/api/monitor'
+import { getAlertHistories, getAlertNotificationStatus, getPrometheusAlerts } from '@/api/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -193,13 +371,21 @@ const lastRefreshAtText = computed(() => {
 })
 const loading = ref(false)
 const loadError = ref('')
-const prometheusBaseUrl = ref('')
 const firingCount = ref(0)
 const resolvedCount = ref(0)
 const rawRows = ref([])
 const keyword = ref('')
 const stateFilter = ref('all')
 const severityFilter = ref('all')
+const notificationFilter = ref('all')
+
+const notificationFilterOptions = [
+  { label: '全部通知状态', value: 'all' },
+  { label: '无通知', value: 'none' },
+  { label: '发送中', value: 'in_progress' },
+  { label: '全部成功', value: 'success' },
+  { label: '存在失败', value: 'failed' },
+]
 
 const stateFilterOptions = computed(() => {
   const values = Array.from(new Set(rawRows.value.map((row) => row.state).filter((v) => v)))
@@ -212,13 +398,21 @@ const severityFilterOptions = computed(() => {
 })
 
 const columns = [
+  {
+    title: '触发时间',
+    key: 'active_at',
+    width: 200,
+    sorter: (left, right) => compareDateTime(left.active_at, right.active_at),
+    defaultSortOrder: 'descend',
+  },
   { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
   { title: '级别', key: 'severity', width: 100 },
   { title: '状态', key: 'state', width: 100 },
   { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
+  { title: '标签', key: 'labels', width: 380 },
   { title: '摘要', key: 'summary', width: 360 },
-  { title: '触发时间', key: 'active_at', width: 200 },
   { title: '当前值', dataIndex: 'value', key: 'value', width: 120 },
+  { title: '操作', key: 'operation', fixed: 'right', width: 180 },
 ]
 
 function parseApiData(res) {
@@ -242,6 +436,12 @@ function stateColor(state) {
   return 'default'
 }
 
+function timelineColor(record) {
+  if (record.state === 'firing') return 'red'
+  if (record.severity === 'warning') return 'orange'
+  return 'green'
+}
+
 // 按用户时区显示 Prometheus 返回的 activeAt（UTC RFC3339），与全站时间显示规范保持一致
 function formatActiveAt(value) {
   if (!value) return '-'
@@ -255,11 +455,25 @@ function formatCurrentValue(value) {
   return Number(numeric.toFixed(2)).toString()
 }
 
+function compareDateTime(left, right) {
+  const leftTime = left ? new Date(left).getTime() : 0
+  const rightTime = right ? new Date(right).getTime() : 0
+  return leftTime - rightTime
+}
+
+function alertLabelEntries(labels) {
+  if (!labels || typeof labels !== 'object' || Array.isArray(labels)) return []
+  return Object.entries(labels)
+    .map(([key, value]) => [String(key), String(value ?? '')])
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+}
+
 const filteredRows = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return rawRows.value.filter((row) => {
     if (stateFilter.value !== 'all' && row.state !== stateFilter.value) return false
     if (severityFilter.value !== 'all' && row.severity !== severityFilter.value) return false
+    if (notificationFilter.value !== 'all' && row.notification_status !== notificationFilter.value) return false
     if (kw === '') return true
     return (
       String(row.name || '').toLowerCase().includes(kw) ||
@@ -275,7 +489,6 @@ async function loadAlerts() {
   try {
     const res = await getPrometheusAlerts()
     const data = parseApiData(res)
-    prometheusBaseUrl.value = data.prometheus_base_url || ''
     if (String(data.status || '').toLowerCase() === 'error') {
       loadError.value = data.error || '查询 Prometheus 告警失败'
       rawRows.value = []
@@ -310,6 +523,13 @@ const historyRows = ref([])
 const historyKeyword = ref('')
 const historyState = ref('all')
 const historySeverity = ref('all')
+const historyNotificationStatus = ref('all')
+const historyOrdering = ref('-started_at')
+const historyViewMode = ref('table')
+const historyViewOptions = [
+  { label: '表格', value: 'table' },
+  { label: '时间线', value: 'timeline' },
+]
 const historyTimeRange = ref([])
 const historyPagination = reactive({
   current: 1,
@@ -346,15 +566,122 @@ function onHistoryRangeOpenChange(open) {
 
 const historyRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
-const historyColumns = [
+const historyColumns = computed(() => [
+  {
+    title: '开始时间',
+    key: 'started_at',
+    width: 180,
+    sorter: true,
+    sortOrder: historyOrdering.value === 'started_at'
+      ? 'ascend'
+      : historyOrdering.value === '-started_at' ? 'descend' : null,
+  },
   { title: '名称', dataIndex: 'alertname', key: 'alertname', width: 200 },
+  { title: '恢复时间', key: 'resolved_at', width: 220 },
   { title: '级别', key: 'severity', width: 100 },
   { title: '状态', key: 'state', width: 100 },
   { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
-  { title: '开始时间', key: 'started_at', width: 180 },
-  { title: '恢复时间', key: 'resolved_at', width: 220 },
+  { title: '标签', key: 'labels', width: 380 },
   { title: '持续时间', key: 'duration', width: 120 },
+  { title: '操作', key: 'operation', fixed: 'right', width: 180 },
+])
+
+const notificationModalVisible = ref(false)
+const notificationLoading = ref(false)
+const notificationRows = ref([])
+const notificationDetail = reactive({
+  alertname: '',
+  instance: '',
+})
+
+const notificationColumns = [
+  { title: '事件', key: 'event_type', width: 80 },
+  { title: '时间', key: 'time', width: 180 },
+  { title: '用户', dataIndex: 'username', key: 'username', width: 130 },
+  { title: '媒介', dataIndex: 'media_name', key: 'media_name', width: 150 },
+  { title: '地址', dataIndex: 'address', key: 'address', width: 220 },
+  { title: '状态', key: 'status', width: 100 },
+  { title: '尝试', dataIndex: 'attempt_count', key: 'attempt_count', width: 70 },
+  { title: '信息', key: 'error_message', width: 280 },
 ]
+
+function notificationStatusColor(status) {
+  if (status === 'success') return 'green'
+  if (status === 'failed') return 'red'
+  if (status === 'sending') return 'blue'
+  return 'orange'
+}
+
+function notificationStatusLabel(status) {
+  return {
+    pending: '等待发送',
+    sending: '发送中',
+    success: '已发送',
+    failed: '发送失败',
+  }[status] || status || '未知'
+}
+
+function notificationBadgeStatus(status) {
+  return {
+    success: 'success',
+    failed: 'error',
+    in_progress: 'processing',
+  }[status] || 'default'
+}
+
+function notificationSummaryLabel(status) {
+  return {
+    success: '全部成功',
+    failed: '存在失败',
+    in_progress: '发送中',
+  }[status] || '通知记录'
+}
+
+watch(notificationModalVisible, (open) => {
+  document.body.classList.toggle('notification-modal-scroll-stable', open)
+}, { flush: 'sync' })
+
+async function openNotificationStatus(alertId) {
+  if (!alertId) {
+    message.info('该实时告警尚未生成本地通知记录')
+    return
+  }
+
+  notificationModalVisible.value = true
+  notificationLoading.value = true
+  notificationRows.value = []
+  try {
+    const res = await getAlertNotificationStatus(alertId)
+    const data = parseApiData(res)
+    notificationDetail.alertname = data.alertname || ''
+    notificationDetail.instance = data.instance || ''
+    notificationRows.value = (data.events || []).flatMap((event) => {
+      if (Array.isArray(event.deliveries) && event.deliveries.length) {
+        return event.deliveries.map((delivery) => ({
+          rowKey: `${event.id}-${delivery.id}`,
+          event_type: event.event_type,
+          ...delivery,
+        }))
+      }
+      return [{
+        rowKey: `${event.id}-event`,
+        event_type: event.event_type,
+        username: '未记录',
+        media_name: '未记录',
+        address: '未记录',
+        status: event.status,
+        attempt_count: event.attempt_count,
+        error_message: event.error_message,
+        sent_at: event.sent_at,
+        create_time: event.create_time,
+      }]
+    })
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '加载通知记录失败')
+  } finally {
+    notificationLoading.value = false
+  }
+}
 
 function formatAlertDuration(startedAt, resolvedAt) {
   if (!startedAt) return '-'
@@ -389,6 +716,8 @@ function buildHistoryQueryParams() {
     keyword: historyKeyword.value || undefined,
     state: historyState.value !== 'all' ? historyState.value : undefined,
     severity: historySeverity.value !== 'all' ? historySeverity.value : undefined,
+    notification_status: historyNotificationStatus.value !== 'all' ? historyNotificationStatus.value : undefined,
+    ordering: historyOrdering.value,
     // 历史告警时间过滤统一按 started_at（开始时间）范围过滤。
     start_time: normalizeDateTimeParam(startTime),
     end_time: normalizeDateTimeParam(endTime),
@@ -431,9 +760,18 @@ function onHistoryTimeRangeChange(dates) {
   onHistoryFilterChange()
 }
 
-function handleHistoryTableChange(pager) {
+function handleHistoryTableChange(pager, _filters, sorter) {
   historyPagination.current = pager.current
   historyPagination.pageSize = pager.pageSize
+  if (sorter?.field === 'started_at' || sorter?.columnKey === 'started_at') {
+    historyOrdering.value = sorter.order === 'ascend' ? 'started_at' : '-started_at'
+  }
+  loadAlertHistory()
+}
+
+function handleHistoryPaginationChange(page, pageSize) {
+  historyPagination.current = page
+  historyPagination.pageSize = pageSize
   loadAlertHistory()
 }
 
@@ -478,6 +816,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearRefreshTimer()
+  document.body.classList.remove('notification-modal-scroll-stable')
 })
 </script>
 
@@ -485,4 +824,89 @@ onBeforeUnmount(() => {
 .alerts-page {
   padding: 12px;
 }
+
+.notification-summary-action.is-success {
+  color: #389e0d;
+}
+
+.notification-summary-action.is-failed {
+  color: #cf1322;
+}
+
+.notification-summary-action.is-in_progress {
+  color: #1677ff;
+}
+
+.history-timeline-wrap {
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  padding: 20px 16px 4px;
+}
+
+.history-timeline-item {
+  min-height: 112px;
+  padding: 0 0 22px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.history-timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.history-timeline-time {
+  color: rgba(0, 0, 0, 0.65);
+  font-variant-numeric: tabular-nums;
+}
+
+.history-timeline-meta {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(220px, 1fr) minmax(140px, 0.7fr);
+  gap: 12px 24px;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.meta-label {
+  margin-right: 8px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.history-timeline-action {
+  margin-top: 8px;
+}
+
+.history-timeline-labels {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.alert-label-tag {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-timeline-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .history-timeline-meta {
+    grid-template-columns: 1fr;
+  }
+}
+
+:global(html body.notification-modal-scroll-stable) {
+  overflow-y: visible !important;
+  width: auto !important;
+}
+
 </style>

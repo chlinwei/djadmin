@@ -1,8 +1,9 @@
 <template>
-    <div>
-        <a-row>
-            <a-col :span="6">
-                <a-card title="个人信息" :bordered="false" style="width: 300px">
+    <div class="user-center-page">
+        <div class="user-center-layout">
+            <aside class="profile-summary">
+                <h2 class="section-title">个人信息</h2>
+                <div class="profile-summary-content">
                     <div class="avatar">
                         <Avatar/>
                     </div>
@@ -49,13 +50,15 @@
 
 
                     </ul>
-                </a-card>
-            </a-col>
-            <a-col :span="18">
-                <a-card title="基本资料" :bordered="false" style="width: 300px">
+                </div>
+            </aside>
+            <main class="settings-panel">
+                <h2 class="section-title">账户设置</h2>
+                <div class="settings-panel-content">
                     <a-tabs v-model:activeKey="activeKey">
                         <a-tab-pane key="1" tab="基本资料">
-                            <a-form :model="formState" name="basic" :label-col="{ span: 8 }" :wrapper-col="{ span: 16 }"
+                            <a-form class="settings-form" :model="formState" name="basic"
+                                :label-col="{ flex: '96px' }" :wrapper-col="{ flex: 1 }"
                                 autocomplete="off" @finish="onFinish_updateUserInfo"
                                 @finishFailed="onFinishFailed_updateUserInfo">
                                 <a-form-item label="手机号码" name="phonenumber"
@@ -70,18 +73,6 @@
                                         @change="handleTimezoneChange"
                                     />
                                 </a-form-item>
-                                <a-form-item label="关联告警媒介">
-                                    <a-select
-                                        v-model:value="alertMediaIds"
-                                        mode="multiple"
-                                        :options="alertMediaOptions"
-                                        :getPopupContainer="getPopupContainer"
-                                        placeholder="请选择可关联的告警媒介"
-                                    />
-                                </a-form-item>
-                                <a-form-item>
-                                    <a-button :loading="alertMediaSaving" @click="saveAlertMediaBindings" style="margin-left: 10px;">保存媒介关联</a-button>
-                                </a-form-item>
                                 <a-form-item>
                                     <a-button type="primary" html-type="submit" style="margin-left: 10px;">保存</a-button>
                                 </a-form-item>
@@ -90,8 +81,9 @@
 
                         </a-tab-pane>
                         <a-tab-pane key="2" tab="修改密码">
-                            <a-form :model="password_formState" name="basic" :label-col="{ span: 8 }"
-                                :wrapper-col="{ span: 16 }" autocomplete="off" @finish="onFinish_updateUserPassword"
+                            <a-form class="settings-form" :model="password_formState" name="password"
+                                :label-col="{ flex: '96px' }" :wrapper-col="{ flex: 1 }"
+                                autocomplete="off" @finish="onFinish_updateUserPassword"
                                 @finishFailed="onFinishFailed_updateUserPassword" :rules="password_rules">
                                 <a-form-item name="old_password" label="旧密码">
                                     <a-input-password v-model:value="password_formState.old_password" />
@@ -108,10 +100,86 @@
                             </a-form>
 
                         </a-tab-pane>
+                        <a-tab-pane key="3" tab="告警媒介">
+                            <div class="alert-media-container">
+                                <a-space direction="vertical" style="width: 100%">
+                                    <a-button type="primary" @click="openBindingModal">
+                                        <template #icon><PlusCircleOutlined /></template>
+                                        添加媒介绑定
+                                    </a-button>
+                                    <a-table
+                                        :columns="bindingColumns"
+                                        :data-source="alertMediaBindings"
+                                        :loading="bindingLoading"
+                                        :pagination="false"
+                                        :scroll="{ x: 760 }"
+                                        row-key="id"
+                                        size="small"
+                                    >
+                                        <template #bodyCell="{ column, record }">
+                                            <template v-if="column.key === 'recipients'">
+                                                {{ record.recipients.join(', ') }}
+                                            </template>
+                                            <template v-else-if="column.key === 'enabled'">
+                                                <a-tag :color="record.enabled ? 'success' : 'default'">
+                                                    {{ record.enabled ? '已启用' : '已禁用' }}
+                                                </a-tag>
+                                            </template>
+                                            <template v-else-if="column.key === 'operation'">
+                                                <a-space>
+                                                    <a-tooltip title="编辑">
+                                                        <a-button type="link" size="small" @click="editBinding(record)">
+                                                            <template #icon><EditOutlined /></template>
+                                                        </a-button>
+                                                    </a-tooltip>
+                                                    <a-tooltip title="删除">
+                                                        <a-button class="delBtn" type="link" size="small" danger @click="deleteBinding(record)">
+                                                            <template #icon><DeleteOutlined /></template>
+                                                        </a-button>
+                                                    </a-tooltip>
+                                                </a-space>
+                                            </template>
+                                        </template>
+                                    </a-table>
+                                </a-space>
+                            </div>
+                        </a-tab-pane>
                     </a-tabs>
-                </a-card>
-            </a-col>
-        </a-row>
+
+                    <a-modal
+                        v-model:open="bindingModalVisible"
+                        :title="editingBindingId ? '编辑媒介绑定' : '添加媒介绑定'"
+                        cancel-text="取消"
+                        :ok-text="editingBindingId ? '保存' : '添加'"
+                        :confirm-loading="bindingSaving"
+                        centered
+                        @ok="saveBinding"
+                    >
+                        <a-form layout="vertical" :model="bindingForm">
+                            <a-form-item label="告警媒介" required>
+                                <a-select
+                                    v-model:value="bindingForm.media_id"
+                                    :options="alertMediaOptions"
+                                    :getPopupContainer="getPopupContainer"
+                                    placeholder="请选择告警媒介"
+                                    :disabled="Boolean(editingBindingId)"
+                                />
+                            </a-form-item>
+                            <a-form-item label="收件人邮箱" required>
+                                <a-textarea
+                                    v-model:value="bindingForm.recipientsText"
+                                    placeholder="请输入收件人邮箱"
+                                    :rows="3"
+                                />
+                            </a-form-item>
+                            <a-form-item label="启用此绑定">
+                                <a-switch v-model:checked="bindingForm.enabled" />
+                            </a-form-item>
+                        </a-form>
+                    </a-modal>
+                </div>
+            </main>
+        </div>
     </div>
 
 </template>
@@ -129,7 +197,9 @@ import { updateUserInfo, updateUserPassword } from '@/api/user';
 import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
+import { PlusCircleOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import Avatar from '@/views/userCenter/components/Avatar.vue';
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { TIMEZONE_LIST, formatTimeWithTimezone } from '@/util/timezone'
 import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
@@ -147,8 +217,16 @@ const formState = reactive({
     timezone: currentUser.user.timezone || 'UTC'
 });
 const alertMediaOptions = ref([])
-const alertMediaIds = ref([])
-const alertMediaSaving = ref(false)
+const alertMediaBindings = ref([])
+const bindingLoading = ref(false)
+const bindingSaving = ref(false)
+const bindingModalVisible = ref(false)
+const editingBindingId = ref(null)
+const bindingForm = reactive({
+    media_id: undefined,
+    recipientsText: '',
+    enabled: true,
+})
 const password_formState = reactive({
     old_password: '',
     new_password: '',
@@ -237,24 +315,25 @@ const onFinishFailed_updateUserInfo = errorInfo => {
 };
 
 const loadAlertMediaBindings = async () => {
-    const res = await getCurrentUserAlertMediaBindings()
-    const data = res?.data?.data || {}
-    const options = Array.isArray(data.options) ? data.options : []
-    alertMediaOptions.value = options.map((item) => ({
-        label: `${item.name} (${item.media_type})`,
-        value: item.id,
-    }))
-    alertMediaIds.value = Array.isArray(data.selected_media_ids) ? data.selected_media_ids : []
-}
-
-const saveAlertMediaBindings = async () => {
-    alertMediaSaving.value = true
+    bindingLoading.value = true
     try {
-        await updateCurrentUserAlertMediaBindings(alertMediaIds.value)
-        message.success('告警媒介关联已保存')
-        await loadAlertMediaBindings()
+        const res = await getCurrentUserAlertMediaBindings()
+        const data = res?.data?.data || {}
+        const options = Array.isArray(data.options) ? data.options : []
+        const mediaTypeById = new Map(options.map((item) => [item.id, item.media_type]))
+        alertMediaOptions.value = options.map((item) => ({
+            label: `${item.name} (${item.media_type})`,
+            value: item.id,
+        }))
+        alertMediaBindings.value = Array.isArray(data.selected_bindings)
+            ? data.selected_bindings.map((item) => ({
+                ...item,
+                media_type: mediaTypeById.get(item.media_id) || '-',
+                recipients: Array.isArray(item.recipients) ? item.recipients : [],
+            }))
+            : []
     } finally {
-        alertMediaSaving.value = false
+        bindingLoading.value = false
     }
 }
 
@@ -272,6 +351,91 @@ const onFinishFailed_updateUserPassword = errorInfo => {
     console.log('Failed:', errorInfo);
 };
 var roleList = ref('');
+
+const openBindingModal = () => {
+    editingBindingId.value = null
+    bindingForm.media_id = undefined
+    bindingForm.recipientsText = ''
+    bindingForm.enabled = true
+    bindingModalVisible.value = true
+}
+
+const editBinding = (binding) => {
+    editingBindingId.value = binding.id
+    bindingForm.media_id = binding.media_id
+    bindingForm.recipientsText = binding.recipients.join('\n')
+    bindingForm.enabled = binding.enabled
+    bindingModalVisible.value = true
+}
+
+const toBindingPayload = (bindings) => bindings.map((binding) => ({
+    media_id: binding.media_id,
+    recipients: binding.recipients,
+    enabled: binding.enabled,
+}))
+
+const saveBinding = async () => {
+    if (!bindingForm.media_id) {
+        message.warning('请选择告警媒介')
+        return
+    }
+
+    const recipients = [...new Set(
+        bindingForm.recipientsText
+            .split(/[,;，；\n]/)
+            .map((item) => item.trim())
+            .filter(Boolean),
+    )]
+    if (!recipients.length || recipients.some((item) => !item.includes('@'))) {
+        message.warning('请输入有效的收件人邮箱')
+        return
+    }
+    if (!editingBindingId.value && alertMediaBindings.value.some((item) => item.media_id === bindingForm.media_id)) {
+        message.warning('该告警媒介已经绑定')
+        return
+    }
+
+    const nextBinding = {
+        media_id: bindingForm.media_id,
+        recipients,
+        enabled: bindingForm.enabled,
+    }
+    const nextBindings = editingBindingId.value
+        ? alertMediaBindings.value.map((item) => item.id === editingBindingId.value ? nextBinding : item)
+        : [...alertMediaBindings.value, nextBinding]
+
+    bindingSaving.value = true
+    try {
+        await updateCurrentUserAlertMediaBindings(toBindingPayload(nextBindings))
+        bindingModalVisible.value = false
+        message.success(editingBindingId.value ? '媒介绑定已更新' : '媒介绑定已添加')
+        await loadAlertMediaBindings()
+    } finally {
+        bindingSaving.value = false
+    }
+}
+
+const deleteBinding = (binding) => {
+    openDeleteConfirm({
+        title: '删除媒介绑定',
+        summary: '删除后，该媒介将不再向当前用户发送告警。',
+        items: [binding.media_name],
+        onConfirm: async () => {
+            const nextBindings = alertMediaBindings.value.filter((item) => item.id !== binding.id)
+            await updateCurrentUserAlertMediaBindings(toBindingPayload(nextBindings))
+            message.success('媒介绑定已删除')
+            await loadAlertMediaBindings()
+        },
+    })
+}
+
+const bindingColumns = [
+    { title: '媒介名称', dataIndex: 'media_name', key: 'media_name', width: 150 },
+    { title: '媒介类型', dataIndex: 'media_type', key: 'media_type', width: 100 },
+    { title: '收件人', dataIndex: 'recipients', key: 'recipients', width: 300 },
+    { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80 },
+    { title: '操作', key: 'operation', fixed: 'right', width: 100 },
+]
 
 // 处理时区变更 - 实时保存
 const handleTimezoneChange = (value) => {
@@ -349,8 +513,58 @@ const password_rules = {
 
 
 <style scoped>
+.user-center-page {
+    width: 100%;
+    min-height: calc(100vh - 140px);
+    padding: 24px;
+    background: #fff;
+}
+
+.user-center-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    min-height: 620px;
+}
+
+.profile-summary {
+    padding-right: 28px;
+    border-right: 1px solid #f0f0f0;
+}
+
+.settings-panel {
+    min-width: 0;
+    padding-left: 32px;
+}
+
+.section-title {
+    margin: 0;
+    padding-bottom: 18px;
+    border-bottom: 1px solid #f0f0f0;
+    color: rgba(0, 0, 0, 0.88);
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.5;
+}
+
+.profile-summary-content {
+    padding-top: 24px;
+}
+
+.settings-panel-content {
+    padding-top: 8px;
+}
+
+.settings-form {
+    width: min(100%, 760px);
+    padding-top: 16px;
+}
+
 .avatar {
     margin-bottom: 30px;
+}
+
+.alert-media-container {
+    padding: 20px 0;
 }
 
 
@@ -401,5 +615,27 @@ const password_rules = {
 
 .text {
     height: 16px;
+}
+
+@media (max-width: 900px) {
+    .user-center-page {
+        padding: 16px;
+    }
+
+    .user-center-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .profile-summary {
+        padding-right: 0;
+        padding-bottom: 24px;
+        border-right: 0;
+        border-bottom: 1px solid #f0f0f0;
+    }
+
+    .settings-panel {
+        padding-top: 24px;
+        padding-left: 0;
+    }
 }
 </style>

@@ -13,7 +13,6 @@ type Config struct {
 	LogLevel              string
 	MaxWorkers            int
 	ShutdownTimeout       time.Duration
-	BackendBaseURL        string
 	BackendToken          string
 	HostReportInterval    time.Duration
 	HostReportIntervalRaw string
@@ -26,7 +25,6 @@ func LoadFromEnv() (Config, error) {
 		LogLevel:        strings.ToLower(getEnv("DJ_AGENT_LOG_LEVEL", "info")),
 		MaxWorkers:      3,
 		ShutdownTimeout: 5 * time.Second,
-		BackendBaseURL:  strings.TrimRight(getEnv("DJ_AGENT_BACKEND_BASE_URL", "http://127.0.0.1:9000"), "/"),
 		BackendToken:    strings.TrimSpace(os.Getenv("DJ_AGENT_BACKEND_TOKEN")),
 		// 文件传输 gRPC 通道：agent 主动拨号连接 backend（与 RabbitMQ 同向）。
 		GRPCFileAddr: strings.TrimSpace(getEnv("DJ_AGENT_GRPC_FILE_ADDR", "127.0.0.1:9001")),

@@ -13,7 +13,7 @@ from assets.models import Host, HostGroup, HostSystem
 from user.models import SysUser
 
 from .executor import execute_automation_job
-from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate, ShellScriptTemplate
+from .models import AutomationInventory, AutomationTask, AutomationWorkflowRun, PlaybookTemplate
 from .models import AutomationExecutionJob
 
 
@@ -417,44 +417,6 @@ class AutomationRunDispatchTest(BaseTestCase):
 			)
 			body = self.assertResponseOK(res)
 			self.assertEqual(body['data']['status'], 'success')
-			mock_exec.assert_called_once()
-
-	def test_run_now_shell_task_persists_shell_snapshots(self):
-		shell_template = ShellScriptTemplate.objects.create(
-			name='dispatch-shell-template',
-			description='dispatch shell',
-			content='#!/bin/bash\necho "$1"\n',
-		)
-		shell_task = AutomationTask.objects.create(
-			name='Dispatch Shell Task',
-			shell_script_template=shell_template,
-			inventory=self.inventory,
-			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
-			env_vars={'TARGET': 'prod'},
-			shell_parameters='from-task',
-			enabled=True,
-		)
-
-		with patch('automation.views_task.execute_job_via_agent_grpc', return_value=(True, {
-			'created_count': 1,
-			'success_count': 1,
-			'failed_count': 0,
-			'failed_rows': [],
-		}, '')) as mock_exec:
-			res = self.client.post(
-				f'/sys/automation/tasks/{shell_task.id}/run_now/',
-				{'shell_parameters': 'from-request', 'shell_env_vars': {'K': 'V'}},
-				format='json',
-			)
-			body = self.assertResponseOK(res)
-			self.assertEqual(body['data']['status'], 'success')
-			job = AutomationExecutionJob.objects.get(id=body['data']['id'])
-			self.assertEqual(job.task_id, shell_task.id)
-			self.assertEqual(job.template_name_snapshot, shell_template.name)
-			self.assertEqual(job.shell_parameters, 'from-request')
-			self.assertEqual(job.shell_env_vars, {'K': 'V'})
-			self.assertEqual(job.extra_vars, {})
 			mock_exec.assert_called_once()
 
 	def test_run_now_with_empty_scope_defaults_to_all_hosts(self):

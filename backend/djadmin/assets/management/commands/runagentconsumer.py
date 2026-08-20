@@ -7,8 +7,7 @@ import pika
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from django.utils import timezone
-from assets.models import Host, AgentJob, AgentJobEvent
-from assets.host_info import persist_host_snapshot
+from assets.models import Host
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +53,6 @@ class Command(BaseCommand):
                         self._handle_heartbeat(payload)
                     elif message_type == 'agent_status':
                         self._handle_agent_status(payload)
-                    elif message_type == 'host_snapshot':
-                        self._handle_host_snapshot(payload)
-                    elif message_type == 'job_result':
-                        self._handle_job_result(payload)
-                    elif message_type == 'job_event':
-                        self._handle_job_event(payload)
                     else:
                         logger.warning(f"Unknown message type: {message_type}")
                     
@@ -97,7 +90,8 @@ class Command(BaseCommand):
         
         # 更新 agent 在线状态（记录最后心跳时间）
         now = timezone.now()
-        host.agent_online = True
+        # 心跳在线必须同时具备 gRPC 执行通道，否则只能接收消息，不能执行自动化任务。
+        host.agent_online = bool(payload.get('grpc_connected', False))
         host.agent_online_time = now
         host.save(update_fields=['agent_online', 'agent_online_time', 'update_time'])
         
@@ -116,7 +110,7 @@ class Command(BaseCommand):
             logger.warning(f'Agent status from unknown agent: {agent_id}')
             return
 
-        if status == 'online':
+        if status == 'online' and bool(payload.get('grpc_connected', False)):
             now = timezone.now()
             host.agent_online = True
             host.agent_online_time = now
@@ -124,7 +118,7 @@ class Command(BaseCommand):
             logger.info(f'Marked agent online by status event: {agent_id}')
             return
 
-        if status == 'offline':
+        if status == 'offline' or (status == 'online' and not bool(payload.get('grpc_connected', False))):
             host.agent_online = False
             host.save(update_fields=['agent_online', 'update_time'])
             logger.info(f'Marked agent offline by status event: {agent_id}')
@@ -132,81 +126,9 @@ class Command(BaseCommand):
 
         logger.warning(f'Unknown agent status value: {status!r}, agent_id={agent_id}')
     
-    def _handle_job_result(self, payload):
-        """处理 agent 任务结果消息。"""
-        job_id = str(payload.get('job_id') or '').strip()
-        agent_id = str(payload.get('agent_id') or '').strip()
-        status = str(payload.get('status') or '').strip().lower()
-        
-        if not job_id:
-            logger.warning('Job result message missing job_id')
-            return
-        
-        # 查找任务
-        job = AgentJob.objects.filter(job_id=job_id).first()
-        if not job:
-            logger.warning(f'Job result for unknown job: {job_id}')
-            return
-        
-        # 更新任务状态
-        try:
-            if status in {'success', 'failed', 'canceled', 'timeout'}:
-                raw_result_data = payload.get('result_data')
-                # RabbitMQ 上报中 result_data 可能为 null，数据库列不允许 NULL。
-                normalized_result_data = raw_result_data if isinstance(raw_result_data, dict) else {}
-                job.status = status
-                job.result_data = normalized_result_data
-                job.error_message = str(payload.get('error_message') or '')
-                job.stdout = str(payload.get('stdout') or '')
-                job.stderr = str(payload.get('stderr') or '')
-                job.exit_code = int(payload.get('exit_code', -1))
-                job.finished_at = timezone.now()
-                job.save(update_fields=[
-                    'status', 'result_data', 'error_message', 
-                    'stdout', 'stderr', 'exit_code', 'finished_at', 'update_time'
-                ])
-                logger.info(f'Updated job {job_id} status to {status}')
-        except Exception as e:
-            logger.error(f'Error updating job {job_id}: {e}', exc_info=True)
-
     def _sync_monitor_target_install_status(self, job, status):
         # 兼容保留：安装/卸载执行与状态回写已在 dispatch 链路内完成，
         # runagentconsumer 不再参与该链路，避免双写/分叉。
         return
 
     
-    def _handle_host_snapshot(self, payload):
-        """处理 agent 主机快照消息（agent 上线时主动上报），复用公共落库逻辑。"""
-        agent_id = str(payload.get('agent_id') or '').strip()
-        if not agent_id:
-            logger.warning('Host snapshot missing agent_id')
-            return
-
-        host = Host.objects.filter(instance_name=agent_id).first()
-        if not host:
-            logger.warning(f'Host snapshot from unknown agent: {agent_id}')
-            return
-
-        status = str(payload.get('status') or '').strip()
-        result_data = payload.get('result_data') or {}
-
-        try:
-            updated = persist_host_snapshot(host, status, result_data, error=str(payload.get('error') or ''))
-            if updated:
-                logger.info(f'Updated host snapshot for agent: {agent_id}, os={result_data.get("os_type") or result_data.get("os")}')
-            else:
-                logger.warning(f'Host snapshot not persisted for {agent_id}: {payload.get("error")}')
-        except Exception as e:
-            logger.error(f'Error processing host snapshot for {agent_id}: {e}', exc_info=True)
-    
-    def _handle_job_event(self, payload):
-        """处理 agent 任务事件消息（如状态变化）。"""
-        job_id = str(payload.get('job_id') or '').strip()
-        event_type = str(payload.get('event_type') or '').strip()
-        
-        if not job_id or not event_type:
-            logger.warning('Job event missing job_id or event_type')
-            return
-        
-        # 可根据需要处理任务事件
-        logger.debug(f'Received job event - job_id: {job_id}, event_type: {event_type}')

@@ -71,6 +71,11 @@ func (s *session) handleAutomationExecute(ctx context.Context, req *pb.Automatio
 		Params:  params,
 		Timeout: time.Duration(timeoutSeconds) * time.Second,
 	}
+	// 通用任务的命令字段通过 params 传输，保持 gRPC 请求协议只维护一套参数对象。
+	job.Command = stringParam(params, "command")
+	job.WorkDir = stringParam(params, "work_dir")
+	job.Args = stringSliceParam(params, "args")
+	job.Env = stringMapParam(params, "env")
 
 	result, runErr := s.exec.Run(ctx, job)
 	resp.JobId = result.JobID
@@ -90,6 +95,40 @@ func (s *session) handleAutomationExecute(ctx context.Context, req *pb.Automatio
 	}
 
 	s.sendAutomationResponse(resp)
+}
+
+func stringParam(params map[string]any, key string) string {
+	value, ok := params[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", value))
+}
+
+func stringSliceParam(params map[string]any, key string) []string {
+	value, ok := params[key]
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		result = append(result, fmt.Sprintf("%v", item))
+	}
+	return result
+}
+
+func stringMapParam(params map[string]any, key string) map[string]string {
+	value, ok := params[key]
+	items, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]string, len(items))
+	for name, item := range items {
+		result[name] = fmt.Sprintf("%v", item)
+	}
+	return result
 }
 
 func (s *session) handleAgentRuntimeStatus(resp *pb.AutomationExecuteResponse) {

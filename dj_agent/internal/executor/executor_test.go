@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -76,25 +75,6 @@ func TestRun_Timeout(t *testing.T) {
 	}
 	if res.Status != protocol.StatusTimeout {
 		t.Fatalf("unexpected status: %s", res.Status)
-	}
-}
-
-func TestResolveAutomationWorkDir_ExplicitWorkDir(t *testing.T) {
-	resolved := resolveAutomationWorkDir("/custom/workdir")
-	if resolved != "/custom/workdir" {
-		t.Fatalf("expected explicit workdir, got: %s", resolved)
-	}
-}
-
-func TestResolveAutomationWorkDir_DefaultToTmp(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	resolved := resolveAutomationWorkDir("")
-	if resolved != fallbackAutomationWorkDir {
-		t.Fatalf("expected /tmp default workdir, got: %s", resolved)
-	}
-	if stat, err := os.Stat(resolved); err != nil || !stat.IsDir() {
-		t.Fatalf("resolved default workdir is not a directory: %s", resolved)
 	}
 }
 

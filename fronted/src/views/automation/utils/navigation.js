@@ -20,11 +20,10 @@ export function buildAutomationInventoryRoute(record) {
 
 export function buildAutomationTemplateRoute(record) {
   const rawTemplateName = String(record?.template_name || '').trim()
-  const keyword = rawTemplateName.replace(/^\[(Playbook|ShellScript)\]\s*/, '')
-  const templateType = Number(record?.shell_script_template) > 0 ? 'shell_script' : 'playbook'
+  const keyword = rawTemplateName.replace(/^\[Playbook\]\s*/, '')
 
   return {
     path: '/sys/automation/templates',
-    query: keyword ? { search: keyword, type: templateType } : { type: templateType },
+    query: keyword ? { search: keyword } : {},
   }
 }

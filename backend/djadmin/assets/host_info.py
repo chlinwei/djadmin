@@ -1,10 +1,9 @@
 """主机信息落库与按需拉取的公共逻辑。
 
-原先主机静态信息由 Celery 周期任务通过 SSH(paramiko) 采集，现改为：
-1. agent 上线时主动上报一次（RabbitMQ host_snapshot） -> runagentconsumer 调用 persist_host_snapshot；
-2. 用户打开主机列表/详情页时按需拉取 -> 视图调用 refresh_host_info，经 gRPC 让 agent 执行 get_host_info。
+原先主机静态信息由 Celery 周期任务通过 SSH(paramiko) 采集，现改为用户打开主机列表/详情页时
+按需拉取：视图调用 refresh_host_info，经 gRPC 让 agent 执行 get_host_info。
 
-两条路径共用同一套落库逻辑（persist_host_snapshot），保证字段口径一致。
+Agent 启动时不再主动采集或通过 RabbitMQ 上报主机快照。
 """
 import logging
 import uuid

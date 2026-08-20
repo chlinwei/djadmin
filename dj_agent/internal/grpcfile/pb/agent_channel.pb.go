@@ -7,11 +7,12 @@
 package pb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -2474,7 +2475,7 @@ type AutomationExecuteRequest struct {
 	RequestId      string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	JobId          string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	Type           string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`                                            // 任务类型，典型为 "custom"
-	Action         string                 `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`                                        // 固定为 "run_automation_task"
+	Action         string                 `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`                                        // 自动化动作名称
 	ParamsJson     string                 `protobuf:"bytes,5,opt,name=params_json,json=paramsJson,proto3" json:"params_json,omitempty"`              // JSON 编码的 params
 	TimeoutSeconds int32                  `protobuf:"varint,6,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"` // 执行超时（秒）
 	unknownFields  protoimpl.UnknownFields

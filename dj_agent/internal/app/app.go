@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,40 +15,20 @@ import (
 	"github.com/chlinwei/djadmin/dj_agent/internal/config"
 	"github.com/chlinwei/djadmin/dj_agent/internal/executor"
 	"github.com/chlinwei/djadmin/dj_agent/internal/grpcfile"
-	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
 	"github.com/rabbitmq/amqp091-go"
 )
 
 type App struct {
-	cfg                    config.Config
-	rabbitmqChannel        *amqp091.Channel
-	statusMu               sync.RWMutex
-	startedAt              time.Time
-	heartbeatInterval      time.Duration
-	lastHeartbeatAt        time.Time
-	lastHeartbeatStatus    string
-	lastHeartbeatError     string
-	lastHostSnapshotAt     time.Time
-	lastHostSnapshotStatus string
-	lastHostSnapshotError  string
-	isRunning              bool
-}
-
-// 从RabbitMQ消费的任务命令结构（与Backend发送的相同）
-type rabbitCommand struct {
-	CommandID       string            `json:"command_id"`
-	ClientRequestID string            `json:"client_request_id"`
-	JobID           string            `json:"job_id"`
-	TargetType      string            `json:"target_type"`
-	TargetValue     string            `json:"target_value"`
-	Type            string            `json:"type"`
-	Action          string            `json:"action"`
-	Command         string            `json:"command"`
-	Args            []string          `json:"args"`
-	WorkDir         string            `json:"work_dir"`
-	Env             map[string]string `json:"env"`
-	Params          map[string]any    `json:"params"`
-	TimeoutSeconds  int               `json:"timeout_seconds"`
+	cfg                 config.Config
+	rabbitmqChannel     *amqp091.Channel
+	statusMu            sync.RWMutex
+	startedAt           time.Time
+	heartbeatInterval   time.Duration
+	lastHeartbeatAt     time.Time
+	lastHeartbeatStatus string
+	lastHeartbeatError  string
+	grpcConnected       bool
+	isRunning           bool
 }
 
 func New(cfg config.Config) *App {
@@ -63,8 +42,6 @@ func (a *App) Run() error {
 	slog.Info("app run begin", "agent_id", a.cfg.AgentID)
 	a.markStarted()
 	exec := executor.New(0)
-	// 注入 backend 地址，供内置安装脚本从本地软件仓库（media）下载二进制包
-	exec.BackendBaseURL = a.cfg.BackendBaseURL
 
 	// 连接 RabbitMQ - 用于任务下发、终端命令、上报
 	rabbitmqURL := strings.TrimSpace(os.Getenv("DJ_AGENT_RABBITMQ_URL"))
@@ -90,12 +67,6 @@ func (a *App) Run() error {
 		}
 	}() // 在程序退出时才关闭
 
-	// 声明队列
-	tasksQueue := "agent.tasks"
-	if _, err := channel.QueueDeclare(tasksQueue, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declare tasks queue failed: %w", err)
-	}
-
 	// 声明上报队列
 	reportsQueue := "agent.reports"
 	if _, err := channel.QueueDeclare(reportsQueue, true, false, false, false, nil); err != nil {
@@ -110,40 +81,21 @@ func (a *App) Run() error {
 	heartbeatTicker := time.NewTicker(10 * time.Second)
 	defer heartbeatTicker.Stop()
 
-	// 启动后立即上报一次主机快照
-	a.markHostSnapshotTick(time.Now())
-	initialSnapshotPayload := a.buildHostSnapshot(exec)
-	initialSnapshotStatus := strings.TrimSpace(fmt.Sprintf("%v", initialSnapshotPayload["status"]))
-	initialSnapshotError := strings.TrimSpace(fmt.Sprintf("%v", initialSnapshotPayload["error"]))
-	a.markHostSnapshotResult(initialSnapshotStatus, initialSnapshotError)
-	if err = a.reportToBackend("host_snapshot", initialSnapshotPayload); err != nil {
-		a.markHostSnapshotResult("failed", err.Error())
-	}
-
-	// 启动 RabbitMQ 任务 consumer goroutine
-	taskConsumerErrCh := make(chan error, 1)
-	go a.taskConsumer(ctx, channel, exec, taskConsumerErrCh)
-
 	// 启动统一 gRPC 通道客户端（agent 主动拨号连接 backend，断线自动重连）。
 	// 该长连接承载文件传输、WebSSH 终端以及自动化任务同步执行，复用同一 exec 执行器。
 	// 与 RabbitMQ 心跳/任务通道相互独立：即使这里连不上（backend 未起 gRPC 服务、
 	// 或目标网络不通），也不影响心跳/任务/终端等既有功能正常运行。
-	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, exec, a.getRuntimeStatusData)
+	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, exec, a.getRuntimeStatusData, a.setGRPCConnected)
 
-	// 启动准备完成后立即上报一次上线事件，避免等待首个 ticker 周期。
+	// RabbitMQ 心跳只有在 gRPC 通道建立后才代表 Agent 可执行，避免 API 重启后的短暂假在线。
 	_ = a.reportToBackend("agent_status", map[string]any{
-		"status": "online",
-		"reason": "startup",
+		"status": a.currentAgentStatus(),
+		"reason": "startup_grpc_pending",
 	})
 	slog.Info("startup status event published", "agent_id", a.cfg.AgentID)
 
 	for {
 		select {
-		case taskErr := <-taskConsumerErrCh:
-			if taskErr != nil && !errors.Is(taskErr, context.Canceled) {
-				slog.Error("task consumer error", "err", taskErr)
-				// 不直接返回，继续运行以保证其它功能仍可用
-			}
 		case <-ctx.Done():
 			slog.Info("shutdown signal received", "agent_id", a.cfg.AgentID)
 			a.markStopped()
@@ -155,8 +107,9 @@ func (a *App) Run() error {
 		case <-heartbeatTicker.C:
 			a.markHeartbeatTick(time.Now())
 			if err = a.reportToBackend("heartbeat", map[string]any{
-				"agent_id": a.cfg.AgentID,
-				"ts":       time.Now().UTC().Format(time.RFC3339),
+				"agent_id":       a.cfg.AgentID,
+				"grpc_connected": a.isGRPCConnected(),
+				"ts":             time.Now().UTC().Format(time.RFC3339),
 			}); err != nil {
 				a.markHeartbeatResult("failed", err.Error())
 			} else {
@@ -164,6 +117,37 @@ func (a *App) Run() error {
 			}
 		}
 	}
+}
+
+func (a *App) setGRPCConnected(connected bool) {
+	a.statusMu.Lock()
+	changed := a.grpcConnected != connected
+	a.grpcConnected = connected
+	a.statusMu.Unlock()
+	if changed {
+		status := "offline"
+		if connected {
+			status = "online"
+		}
+		_ = a.reportToBackend("agent_status", map[string]any{
+			"status":         status,
+			"reason":         "grpc_connection_state_changed",
+			"grpc_connected": connected,
+		})
+	}
+}
+
+func (a *App) isGRPCConnected() bool {
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	return a.grpcConnected
+}
+
+func (a *App) currentAgentStatus() string {
+	if a.isGRPCConnected() {
+		return "online"
+	}
+	return "offline"
 }
 
 func (a *App) markStarted() {
@@ -174,9 +158,7 @@ func (a *App) markStarted() {
 	a.lastHeartbeatAt = time.Time{}
 	a.lastHeartbeatStatus = ""
 	a.lastHeartbeatError = ""
-	a.lastHostSnapshotAt = time.Time{}
-	a.lastHostSnapshotStatus = ""
-	a.lastHostSnapshotError = ""
+	a.grpcConnected = false
 }
 
 func (a *App) markStopped() {
@@ -191,24 +173,11 @@ func (a *App) markHeartbeatTick(ts time.Time) {
 	a.lastHeartbeatAt = ts
 }
 
-func (a *App) markHostSnapshotTick(ts time.Time) {
-	a.statusMu.Lock()
-	defer a.statusMu.Unlock()
-	a.lastHostSnapshotAt = ts
-}
-
 func (a *App) markHeartbeatResult(status string, errText string) {
 	a.statusMu.Lock()
 	defer a.statusMu.Unlock()
 	a.lastHeartbeatStatus = strings.TrimSpace(status)
 	a.lastHeartbeatError = strings.TrimSpace(errText)
-}
-
-func (a *App) markHostSnapshotResult(status string, errText string) {
-	a.statusMu.Lock()
-	defer a.statusMu.Unlock()
-	a.lastHostSnapshotStatus = strings.TrimSpace(status)
-	a.lastHostSnapshotError = strings.TrimSpace(errText)
 }
 
 func (a *App) getRuntimeStatusData() map[string]any {
@@ -219,9 +188,6 @@ func (a *App) getRuntimeStatusData() map[string]any {
 	lastHeartbeatAt := a.lastHeartbeatAt
 	lastHeartbeatStatus := strings.TrimSpace(a.lastHeartbeatStatus)
 	lastHeartbeatError := strings.TrimSpace(a.lastHeartbeatError)
-	lastHostSnapshotAt := a.lastHostSnapshotAt
-	lastHostSnapshotStatus := strings.TrimSpace(a.lastHostSnapshotStatus)
-	lastHostSnapshotError := strings.TrimSpace(a.lastHostSnapshotError)
 	a.statusMu.RUnlock()
 
 	now := time.Now()
@@ -266,21 +232,6 @@ func (a *App) getRuntimeStatusData() map[string]any {
 			"error":            lastHeartbeatError,
 			"last_result":      lastHeartbeatStatus,
 		},
-		{
-			"name":             "host_snapshot",
-			"task_type":        "on_demand",
-			"source":           "builtin",
-			"enabled":          true,
-			"status":           "idle",
-			"job_id":           "",
-			"command_id":       "",
-			"interval_seconds": 0,
-			"last_run_at":      toRFC3339(lastHostSnapshotAt),
-			"next_run_at":      "",
-			"updated_at":       toRFC3339(lastHostSnapshotAt),
-			"error":            lastHostSnapshotError,
-			"last_result":      lastHostSnapshotStatus,
-		},
 	}
 
 	return map[string]any{
@@ -298,9 +249,9 @@ func (a *App) getRuntimeStatusData() map[string]any {
 		},
 		"grpc": map[string]any{
 			"server_addr": a.cfg.GRPCFileAddr,
+			"connected":   a.isGRPCConnected(),
 		},
 		"config": map[string]any{
-			"backend_base_url":                      a.cfg.BackendBaseURL,
 			"max_workers":                           a.cfg.MaxWorkers,
 			"shutdown_timeout_seconds":              int(a.cfg.ShutdownTimeout.Seconds()),
 			"host_report_interval_fallback_raw":     a.cfg.HostReportIntervalRaw,
@@ -314,139 +265,12 @@ func (a *App) getRuntimeStatusData() map[string]any {
 				"last_run_at":      toRFC3339(lastHeartbeatAt),
 				"next_run_at":      resolveNextRunAt(lastHeartbeatAt, heartbeatInterval),
 			},
-			"host_snapshot": map[string]any{
-				"enabled":          false,
-				"interval_seconds": 0,
-				"last_run_at":      toRFC3339(lastHostSnapshotAt),
-				"next_run_at":      "",
-			},
 		},
 		"runtime": map[string]any{
 			"mq_connected": a.rabbitmqChannel != nil,
 		},
 		"registered_tasks": registeredTasks,
 	}
-}
-
-// RabbitMQ consumer - 从agent.tasks队列消费任务
-func (a *App) taskConsumer(ctx context.Context, channel *amqp091.Channel, exec *executor.Executor, errCh chan error) {
-	msgs, err := channel.Consume(
-		"agent.tasks", // queue
-		"",            // consumer
-		false,         // auto-ack（手动确认）
-		false,         // exclusive
-		false,         // noLocal
-		false,         // noWait
-		nil,           // args
-	)
-	if err != nil {
-		errCh <- fmt.Errorf("consume tasks queue failed: %w", err)
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			errCh <- nil
-			return
-		case delivery := <-msgs:
-			if delivery.Body == nil {
-				continue
-			}
-
-			var command rabbitCommand
-			if err := json.Unmarshal(delivery.Body, &command); err != nil {
-				slog.Error("decode rabbitmq command failed", "err", err)
-				delivery.Nack(false, false) // 无法解析，不重新入队
-				continue
-			}
-
-			a.handleCommand(exec, command)
-			delivery.Ack(false) // 处理完确认
-		}
-	}
-}
-
-// 处理来自RabbitMQ的任务命令
-func (a *App) handleCommand(exec *executor.Executor, command rabbitCommand) {
-	ctx := context.Background()
-
-	job := protocol.Job{
-		JobID:   strings.TrimSpace(command.JobID),
-		Type:    protocol.TaskType(strings.TrimSpace(command.Type)),
-		Action:  strings.TrimSpace(command.Action),
-		Command: strings.TrimSpace(command.Command),
-		Args:    command.Args,
-		WorkDir: strings.TrimSpace(command.WorkDir),
-		Env:     command.Env,
-		Params:  command.Params,
-		Timeout: time.Duration(command.TimeoutSeconds) * time.Second,
-	}
-
-	if job.JobID == "" || job.Type == "" || job.Action == "" {
-		slog.Warn("ignore invalid command", "job_id", job.JobID, "type", job.Type, "action", job.Action)
-		return
-	}
-
-	// 上报任务开始事件
-	_ = a.reportToBackend("job_event", map[string]any{
-		"job_id":   job.JobID,
-		"agent_id": a.cfg.AgentID,
-		"action":   job.Action,
-		"status":   protocol.StatusRunning,
-		"error":    "",
-		"ts":       time.Now().UTC().Format(time.RFC3339),
-	})
-
-	// 执行任务
-	result, runErr := exec.Run(ctx, job)
-	a.reportJobResult(result)
-
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		slog.Warn("job execution finished with error", "agent_id", a.cfg.AgentID, "job_id", job.JobID, "err", runErr)
-		return
-	}
-	slog.Info("job execution finished", "agent_id", a.cfg.AgentID, "job_id", job.JobID, "status", result.Status)
-}
-
-// buildCommandSubjects - 已弃用，使用RabbitMQ替代
-
-// buildHostSnapshot 构建主机快照报告，用于上报给后端
-func (a *App) buildHostSnapshot(exec *executor.Executor) map[string]any {
-	job := protocol.Job{
-		JobID:  fmt.Sprintf("periodic-host-info-%d", time.Now().Unix()),
-		Type:   protocol.TaskTypeInventory,
-		Action: "get_host_info",
-	}
-
-	result, runErr := exec.Run(context.Background(), job)
-	payload := map[string]any{
-		"agent_id":    a.cfg.AgentID,
-		"action":      "get_host_info",
-		"status":      result.Status,
-		"result_data": result.Data,
-		"error":       result.Error,
-		"ts":          time.Now().UTC().Format(time.RFC3339),
-	}
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		payload["status"] = protocol.StatusFailed
-		payload["error"] = runErr.Error()
-	}
-	return payload
-}
-
-// reportJobResult 上报任务执行结果给后端
-func (a *App) reportJobResult(result protocol.JobResult) {
-	payload := map[string]any{
-		"job_id":        result.JobID,
-		"status":        result.Status,
-		"exit_code":     result.ExitCode,
-		"stdout":        result.Stdout,
-		"stderr":        result.Stderr,
-		"result_data":   result.Data,
-		"error_message": result.Error,
-	}
-	_ = a.reportToBackend("job_result", payload)
 }
 
 // reportToBackend 通过 RabbitMQ 上报数据给后端

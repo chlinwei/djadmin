@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from assets.models import Host
 
 from .controller_ssh import get_or_create_controller_ssh_key, sync_controller_public_key_to_agents
-from .models import AutomationExecutionJob, AutomationExecutionTargetLog
+from .models import AutomationExecutionTargetLog
+from .ansible_runtime import get_ansible_playbook_command
 
 
-def execute_playbook_job(job: AutomationExecutionJob) -> tuple[bool, dict, str]:
+def execute_playbook_job(job: Any, persist_target_logs: bool = True) -> tuple[bool, dict, str]:
     """Run one multi-host playbook from backend after agents install the controller key."""
     snapshot = job.inventory_snapshot if isinstance(job.inventory_snapshot, dict) else {}
     requested = [item for item in snapshot.get('hosts', []) if isinstance(item, dict)]
@@ -28,7 +31,7 @@ def execute_playbook_job(job: AutomationExecutionJob) -> tuple[bool, dict, str]:
     eligible, failures = [], []
     for item in requested:
         host_id = int(item['host_id']) if str(item.get('host_id') or '').isdigit() else None
-        host = host_map.get(host_id)
+        host = host_map.get(host_id) if host_id is not None else None
         agent_id = str(getattr(host, 'instance_name', '') or '').strip()
         if host is None or not agent_id or not host.ip:
             failures.append((host, host_id, 'host has no usable agent identity or IP'))
@@ -39,13 +42,25 @@ def execute_playbook_job(job: AutomationExecutionJob) -> tuple[bool, dict, str]:
     ready = [(host, agent_id) for host, agent_id in eligible if agent_id not in sync_failures]
     failures.extend((host, host.id, sync_failures[agent_id]) for host, agent_id in eligible if agent_id in sync_failures)
 
-    for host, host_id, error in failures:
-        AutomationExecutionTargetLog.objects.create(
-            job=job, host=host, host_id_snapshot=host_id, host_name_snapshot=str(getattr(host, 'instance_name', '') or ''),
-            host_ip_snapshot=str(getattr(host, 'ip', '') or ''), status='failed', error_message=error,
-        )
+    if persist_target_logs:
+        for host, host_id, error in failures:
+            AutomationExecutionTargetLog.objects.create(
+                job=job, host=host, host_id_snapshot=host_id, host_name_snapshot=str(getattr(host, 'instance_name', '') or ''),
+                host_ip_snapshot=str(getattr(host, 'ip', '') or ''), status='failed', error_message=error,
+            )
     if not ready:
-        return False, {'message': 'No target agent accepted the controller key', 'total': len(requested), 'success': 0, 'failed': len(failures), 'execution_mode': 'backend_ansible'}, ''
+        failure_details = [
+            f'{getattr(host, "instance_name", None) or host_id}: {error}'
+            for host, host_id, error in failures
+        ]
+        return False, {
+            'message': 'No target agent accepted the controller key',
+            'failure_details': failure_details,
+            'total': len(requested),
+            'success': 0,
+            'failed': len(failures),
+            'execution_mode': 'backend_ansible',
+        }, ''
 
     with tempfile.TemporaryDirectory(prefix='djadmin-ansible-') as work_dir:
         work_path = Path(work_dir)
@@ -57,14 +72,21 @@ def execute_playbook_job(job: AutomationExecutionJob) -> tuple[bool, dict, str]:
         os.chmod(key_path, 0o600)
         playbook_path.write_text((job.template_content_snapshot or '').rstrip() + '\n', encoding='utf-8')
         inventory_lines = ['[all]']
+        used_inventory_names = set()
         for host, _ in ready:
-            inventory_lines.append(f'host_{host.id} ansible_host={host.ip} ansible_user=root ansible_port=22')
+            instance_name = str(getattr(host, 'instance_name', '') or '').strip()
+            safe_instance_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', instance_name) or str(host.id)
+            inventory_name = f'host_{safe_instance_name}'
+            if inventory_name in used_inventory_names:
+                inventory_name = f'{inventory_name}_{host.id}'
+            used_inventory_names.add(inventory_name)
+            inventory_lines.append(f'{inventory_name} ansible_host={host.ip} ansible_user=root ansible_port=22')
         inventory_lines.extend([
             '', '[all:vars]', f'ansible_ssh_private_key_file={key_path}',
             f"ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={known_hosts_path}'",
         ])
         inventory_path.write_text('\n'.join(inventory_lines) + '\n', encoding='utf-8')
-        command = ['ansible-playbook', '-i', str(inventory_path), '--forks', str(concurrency), str(playbook_path)]
+        command = [get_ansible_playbook_command(), '-i', str(inventory_path), '--forks', str(concurrency), str(playbook_path)]
         extra_vars = job.extra_vars if isinstance(job.extra_vars, dict) else {}
         if extra_vars:
             command.extend(['--extra-vars', json.dumps(extra_vars, ensure_ascii=False)])
@@ -80,11 +102,12 @@ def execute_playbook_job(job: AutomationExecutionJob) -> tuple[bool, dict, str]:
             stdout, stderr, return_code = timeout_stdout, timeout_stderr + '\nPlaybook execution timed out.', 124
 
     status = 'success' if return_code == 0 else 'failed'
-    for host, _ in ready:
-        AutomationExecutionTargetLog.objects.create(
-            job=job, host=host, host_id_snapshot=host.id, host_name_snapshot=str(host.instance_name or ''),
-            host_ip_snapshot=str(host.ip or ''), status=status, stdout=stdout, stderr=stderr, exit_code=return_code,
-        )
+    if persist_target_logs:
+        for host, _ in ready:
+            AutomationExecutionTargetLog.objects.create(
+                job=job, host=host, host_id_snapshot=host.id, host_name_snapshot=str(host.instance_name or ''),
+                host_ip_snapshot=str(host.ip or ''), status=status, stdout=stdout, stderr=stderr, exit_code=return_code,
+            )
     failed_count = len(failures) + (0 if return_code == 0 else len(ready))
     summary = {'message': 'Playbook executed by backend through platform SSH key', 'total': len(requested),
                'success': len(ready) if return_code == 0 else 0, 'failed': failed_count,

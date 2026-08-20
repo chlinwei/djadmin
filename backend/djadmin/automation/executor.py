@@ -6,8 +6,6 @@ from django.utils import timezone
 from assets.models import Host, HostGroup
 
 from .models import AutomationExecutionJob
-from .executor_shell_script import execute_shell_script_job
-from .agent_grpc_runner import execute_job_via_agent_grpc
 from .executor_playbook import execute_playbook_job
 
 
@@ -151,64 +149,48 @@ def execute_automation_job(job_id: int) -> None:
         close_old_connections()
         return
 
-    # Detect template type: shell script or playbook
-    is_shell_script = job.task and hasattr(job.task, 'shell_script_template_id') and job.task.shell_script_template_id
+    snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
+    hosts = [item for item in snapshot_hosts if isinstance(item, dict)]
+    total_targets = len(hosts)
+    if total_targets == 0:
+        end_time = timezone.now()
+        job.status = AutomationExecutionJob.Status.FAILED
+        job.end_time = end_time
+        job.duration_seconds = (end_time - start_time).total_seconds()
+        job.result_summary = {
+            'message': 'No target hosts found in inventory snapshot.',
+            'total': total_targets,
+            'success': 0,
+            'failed': total_targets,
+            'execution_mode': 'backend_ansible',
+        }
+        job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
+        close_old_connections()
+        return
 
-    if is_shell_script:
-        # ===== SHELL SCRIPT EXECUTION PATH =====
-        run_success, return_code = execute_shell_script_job(job)
-        total_targets = len(job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else [])
-        shell_summary = job.result_summary if isinstance(job.result_summary, dict) else {}
-        # Shell 路径已在 executor_shell_script 中写入 serial/fail-fast 统计。
-        success_count = int(shell_summary.get('success', total_targets if run_success else 0) or 0)
-        failed_count = int(shell_summary.get('failed', 0 if run_success else total_targets) or 0)
-        skipped_count = int(shell_summary.get('skipped', 0) or 0)
-        invalid_target_count = 0
+    latest_job = AutomationExecutionJob.objects.filter(id=job.id).values('status').first()
+    if latest_job and latest_job.get('status') == AutomationExecutionJob.Status.CANCELLED:
+        run_success = False
+        return_code = -1
+        success_count = 0
+        failed_count = total_targets
     else:
-        # ===== PLAYBOOK EXECUTION PATH =====
-        # Playbook 由 backend 统一编排；agent 仅负责首次安装平台控制节点公钥。
-        snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
-        hosts = [item for item in snapshot_hosts if isinstance(item, dict)]
-        total_targets = len(hosts)
-        if total_targets == 0:
-            end_time = timezone.now()
-            job.status = AutomationExecutionJob.Status.FAILED
-            job.end_time = end_time
-            job.duration_seconds = (end_time - start_time).total_seconds()
-            job.result_summary = {
-                'message': 'No target hosts found in inventory snapshot.',
-                'total': total_targets,
-                'success': 0,
-                'failed': total_targets,
-                'execution_mode': 'backend_ansible',
-            }
-            job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
-            close_old_connections()
-            return
-
-        latest_job = AutomationExecutionJob.objects.filter(id=job.id).values('status').first()
-        if latest_job and latest_job.get('status') == AutomationExecutionJob.Status.CANCELLED:
-            run_success = False
-            return_code = -1
-            success_count = 0
-            failed_count = total_targets
-        else:
-            run_success, agent_summary, _ = execute_playbook_job(job)
-            success_count = int(agent_summary.get('success', 0) or 0)
-            failed_count = int(agent_summary.get('failed', total_targets if not run_success else 0) or 0)
-            return_code = 0 if run_success else 1
-            merged_summary = {
-                'message': str(agent_summary.get('message') or 'Execution finished'),
-                'total': total_targets,
-                'success': success_count,
-                'failed': failed_count,
-                'rc': return_code,
-                'execution_mode': 'backend_ansible',
-                'forks': int(agent_summary.get('forks', 0) or 0),
-                'failed_rows': agent_summary.get('failed_rows', []),
-            }
-            job.result_summary = merged_summary
-            job.save(update_fields=['result_summary'])
+        run_success, agent_summary, _ = execute_playbook_job(job)
+        success_count = int(agent_summary.get('success', 0) or 0)
+        failed_count = int(agent_summary.get('failed', total_targets if not run_success else 0) or 0)
+        return_code = 0 if run_success else 1
+        job.result_summary = {
+            'message': str(agent_summary.get('message') or 'Execution finished'),
+            'total': total_targets,
+            'success': success_count,
+            'failed': failed_count,
+            'rc': return_code,
+            'execution_mode': 'backend_ansible',
+            'forks': int(agent_summary.get('forks', 0) or 0),
+            'failed_rows': agent_summary.get('failed_rows', []),
+            'failure_details': agent_summary.get('failure_details', []),
+        }
+        job.save(update_fields=['result_summary'])
 
     final_status = AutomationExecutionJob.Status.SUCCESS if failed_count == 0 else AutomationExecutionJob.Status.FAILED
     latest_status = AutomationExecutionJob.objects.filter(id=job.id).values_list('status', flat=True).first()
@@ -226,16 +208,10 @@ def execute_automation_job(job_id: int) -> None:
         'failed': failed_count,
         'rc': return_code,
     }
-    if is_shell_script:
-        result_summary['skipped'] = int(locals().get('skipped_count', 0) or 0)
-        result_summary['mode'] = 'serial_fail_fast'
-    else:
-        existing_summary = job.result_summary if isinstance(job.result_summary, dict) else {}
-        if existing_summary:
-            # Keep agent-side diagnostics (failed_rows/execution_mode/etc.) while
-            # normalizing top-level counters for UI aggregation.
-            existing_summary.update(result_summary)
-            result_summary = existing_summary
+    existing_summary = job.result_summary if isinstance(job.result_summary, dict) else {}
+    if existing_summary:
+        existing_summary.update(result_summary)
+        result_summary = existing_summary
 
     job.result_summary = result_summary
     job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])

@@ -6,9 +6,9 @@ import asyncio
 import json
 import importlib
 import os
-import pika
 import logging
 import threading
+from types import SimpleNamespace
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from asgiref.sync import async_to_sync
@@ -126,47 +126,68 @@ def _emit_agent_job_event(job, event_type, payload):
         payload=payload if isinstance(payload, dict) else {},
     )
 
-def _publish_agent_job_to_mq(job):
-    """将作业发布到 RabbitMQ，供 agent 实时消费。"""
+def _dispatch_agent_job_via_grpc(job):
+    """通过 agent 主动拨入的 gRPC 通道同步执行通用 AgentJob，并回写最终结果。"""
     if job is None:
         return
 
+    job_id = str(getattr(job, 'job_id', '') or '').strip()
     agent_id = str(getattr(job, 'agent_id', '') or '').strip()
-    if agent_id == '':
+    if not job_id or not agent_id:
         return
 
-    rabbitmq_url = str(getattr(settings, 'RABBITMQ_URL', 'amqp://127.0.0.1:5672//') or '').strip()
-    if rabbitmq_url == '':
-        raise RuntimeError('RABBITMQ_URL未配置，无法发布agent任务')
-
-    # 当前任务模型默认按单机下发
-    message = {
-        'command_id': f'cmd-{uuid.uuid4().hex[:16]}',
-        'client_request_id': str(getattr(job, 'client_request_id', '') or ''),
-        'job_id': str(getattr(job, 'job_id', '') or ''),
-        'target_type': 'single',
-        'target_value': agent_id,
-        'type': str(getattr(job, 'job_type', '') or ''),
-        'action': str(getattr(job, 'action', '') or ''),
-        'params': getattr(job, 'params', {}) or {},
-        'timeout_seconds': int(getattr(job, 'timeout_seconds', 30) or 30),
-        'created_at': timezone.now().isoformat(),
-    }
+    current_job = job
+    current_job.status = AgentJob.JobStatus.RUNNING
+    current_job.picked_at = timezone.now()
+    current_job.save(update_fields=['status', 'picked_at', 'update_time'])
+    _emit_agent_job_event(current_job, 'run', {'job_id': job_id, 'agent_id': agent_id})
 
     try:
-        connection = pika.BlockingConnection(pika.URLParameters(rabbitmq_url))
-        channel = connection.channel()
-        queue_name = getattr(settings, 'RABBITMQ_AGENT_TASKS_QUEUE', 'agent.tasks')
-        channel.queue_declare(queue=queue_name, durable=True, auto_delete=False)
-        channel.basic_publish(
-            exchange='',
-            routing_key=queue_name,
-            body=json.dumps(message, ensure_ascii=False),
-            properties=pika.BasicProperties(delivery_mode=2),  # 消息持久化
+        client = AgentChannelClient(agent_id, timeout=20)
+        result = client.execute_automation(
+            job_id=job_id,
+            params=current_job.params if isinstance(current_job.params, dict) else {},
+            timeout_seconds=int(current_job.timeout_seconds or 30),
+            task_type=str(current_job.job_type or 'custom'),
+            action=str(current_job.action or ''),
         )
-        connection.close()
+        status = str(result.get('status') or AgentJob.JobStatus.FAILED).lower()
+        if status not in {
+            AgentJob.JobStatus.SUCCESS,
+            AgentJob.JobStatus.FAILED,
+            AgentJob.JobStatus.CANCELED,
+            AgentJob.JobStatus.TIMEOUT,
+        }:
+            status = AgentJob.JobStatus.FAILED
+        current_job.status = status
+        current_job.result_data = result.get('result_data') if isinstance(result.get('result_data'), dict) else {}
+        current_job.error_message = str(result.get('error_message') or '')
+        current_job.stdout = str(result.get('stdout') or '')
+        current_job.stderr = str(result.get('stderr') or '')
+        exit_code = result.get('exit_code')
+        current_job.exit_code = int(exit_code) if exit_code is not None else -1
     except Exception as exc:
-        raise RuntimeError(f'发布RabbitMQ消息失败: {exc}') from exc
+        current_job.status = AgentJob.JobStatus.FAILED
+        current_job.error_message = str(exc)
+    current_job.finished_at = timezone.now()
+    current_job.save(update_fields=[
+        'status', 'result_data', 'error_message', 'stdout', 'stderr',
+        'exit_code', 'finished_at', 'update_time',
+    ])
+    _emit_agent_job_event(current_job, 'ret', {
+        'job_id': job_id,
+        'agent_id': agent_id,
+        'status': current_job.status,
+    })
+    return current_job
+
+def _normalize_agent_job_params(payload):
+    raw_params = payload.get('params') if isinstance(payload, dict) else {}
+    params = dict(raw_params) if isinstance(raw_params, dict) else {}
+    for key in ('command', 'args', 'work_dir', 'env'):
+        if key in payload and key not in params:
+            params[key] = payload[key]
+    return params
 
 
 class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin,DestroyModelMixin):
@@ -686,7 +707,6 @@ def _expire_stale_monitor_pending(target, action, stale_seconds):
 def _run_monitor_playbook_and_update_history(*, target, host, history, template_content, extra_vars, work_directory, timeout_seconds):
     """通过 backend Ansible 执行监控安装/卸载并回写历史。"""
     from automation.executor_playbook import execute_playbook_job
-    from automation.models import AutomationExecutionJob
     from monitor.models import MonitorTargetInstallHistory
 
     close_old_connections()
@@ -694,7 +714,7 @@ def _run_monitor_playbook_and_update_history(*, target, host, history, template_
     target_id = int(getattr(target, 'id', 0) or 0)
 
     def _safe_history_save(fields):
-        """异步线程可能晚于测试清库/删除动作执行；记录不存在时静默退出。"""
+        """记录不存在时静默退出，避免执行结果回写影响主流程。"""
         if history_id <= 0:
             return False
         try:
@@ -731,36 +751,21 @@ def _run_monitor_playbook_and_update_history(*, target, host, history, template_
         return
 
     try:
-        automation_job = AutomationExecutionJob.objects.create(
-            status=AutomationExecutionJob.Status.RUNNING,
-            trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
+        playbook_request = SimpleNamespace(
             inventory_snapshot={'hosts': _build_single_host_snapshot(host)},
-            task_name_snapshot=f'monitor:{history.action}',
-            template_name_snapshot=str(getattr(target, 'exporter_type', '') or ''),
             template_content_snapshot=str(template_content or ''),
             extra_vars=extra_vars if isinstance(extra_vars, dict) else {},
-            result_summary={'message': 'Monitor Playbook is executing via backend Ansible'},
-            start_time=started_at,
             run_as_user_snapshot='root',
             run_as_group_snapshot='root',
-            work_directory_snapshot=str(work_directory or '/tmp'),
+            task=SimpleNamespace(
+                execution_concurrency=1,
+                execution_timeout_seconds=int(timeout_seconds),
+            ),
         )
-        history.automation_job = automation_job
-        history.automation_job_id_snapshot = int(getattr(automation_job, 'pk', 0) or 0)
-        history.automation_job_uuid_snapshot = str(automation_job.job_id or '')
-        _safe_history_save(['automation_job', 'automation_job_id_snapshot', 'automation_job_uuid_snapshot', 'update_time'])
 
-        success, summary, output_text = execute_playbook_job(automation_job)
+        success, summary, output_text = execute_playbook_job(playbook_request, persist_target_logs=False)
         finished_at = timezone.now()
         duration_seconds = (finished_at - started_at).total_seconds()
-        automation_job.status = (
-            AutomationExecutionJob.Status.SUCCESS
-            if success else AutomationExecutionJob.Status.FAILED
-        )
-        automation_job.end_time = finished_at
-        automation_job.duration_seconds = duration_seconds
-        automation_job.result_summary = summary if isinstance(summary, dict) else {}
-        automation_job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary', 'update_time'])
         snapshots = _split_monitor_output_snapshots(output_text)
         message_text = str((summary or {}).get('message', '') or '')
 
@@ -817,15 +822,15 @@ def _run_monitor_playbook_and_update_history(*, target, host, history, template_
         close_old_connections()
 
 
-def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execute=False):
+def dispatch_exporter_install_job(host, monitor_target, manual=False):
     """下发监控组件（exporter）安装任务；供主机监控设置及自动/人工重试共用。
     安装/卸载直接复用监控软件仓库（monitor.SoftwarePackage）绑定的 install_playbook_template
-    （automation.PlaybookTemplate），不再经由 AutomationTask 中转，这里只是创建一个范围收窄到单台主机的 AutomationExecutionJob，
-    并复用 automation 模块现成的本地后台 runner 执行，exporter 名称/版本/校验值/systemd unit
+    （automation.PlaybookTemplate），不再经由 AutomationTask 中转；执行结果只写入
+    MonitorTargetInstallHistory，并复用 automation 模块现成的 backend Ansible runner 执行，exporter 名称/版本/校验值/systemd unit
     内容通过 extra_vars 传给 playbook。
     manual=True 表示由用户在前端点击“重试”手动触发：这类任务失败后不进入 runagentconsumer 的
     自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。
-    sync_execute=True 时，不走后台线程，当前请求内同步执行（底层仍是 agent gRPC 通道）。"""
+    安装在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'instance_name', '') or '').strip()
     if agent_id == '':
@@ -843,7 +848,7 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execu
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
         monitor_target.install_message = (
             f'本地软件仓库缺少 {exporter_name} 的启用安装包，无法下发安装任务'
-            '（dj-agent 仅允许通过 backend 下载安装包，请先在监控软件仓库上传/启用对应包）'
+            '（backend 将通过 SSH 传输安装包，请先在监控软件仓库上传/启用对应包）'
         )
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
@@ -858,6 +863,25 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execu
     if template is None:
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
         monitor_target.install_message = f'{exporter_name} 绑定的安装 Playbook 已不存在，请重新在监控软件仓库中选择'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+
+    package_file = getattr(latest_pkg, 'file', None)
+    if not package_file or not getattr(package_file, 'name', ''):
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 的软件仓库记录没有可用安装包文件，请先上传并启用对应包'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+    try:
+        package_local_path = package_file.path
+    except (NotImplementedError, ValueError):
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 的安装包存储不支持本地文件传输，无法执行安装'
+        monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return
+    if not os.path.isfile(package_local_path):
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = f'{exporter_name} 的安装包文件不存在，请重新上传并启用对应包'
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
@@ -897,7 +921,8 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execu
         # 与"安装过程本身"固定使用的 root 身份是完全独立的两件事。
         'service_run_as_user': latest_pkg.service_run_as_user or 'dj-agent',
         'service_run_as_group': latest_pkg.service_run_as_group or 'dj-agent',
-        'package_base_path': 'media/monitor_packages',
+        # backend 通过 Ansible copy 将本地仓库文件直接传到目标主机，目标主机不需要访问 backend HTTP。
+        'package_local_path': package_local_path,
         'checksums': checksums,
     }
 
@@ -906,9 +931,6 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execu
     history = MonitorTargetInstallHistory.objects.create(
         target=monitor_target,
         host=host,
-        automation_job=None,
-        automation_job_id_snapshot=None,
-        automation_job_uuid_snapshot='',
         action=MonitorTargetInstallHistory.Action.INSTALL,
         trigger_type=(
             MonitorTargetInstallHistory.TriggerType.MANUAL
@@ -927,52 +949,25 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False, sync_execu
     )
 
     # 记录本次下发是否为人工重试触发，用于失败文案区分与历史审计。
-    monitor_target.last_dispatch_manual = bool(manual)
-
     monitor_target.install_status = monitor_target.InstallStatus.PENDING
     monitor_target.install_message = '已下发安装任务'
-    monitor_target.last_install_job_id = None
-    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'last_dispatch_manual', 'update_time'])
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_dispatch_manual', 'update_time'])
 
-    if sync_execute:
-        _run_monitor_playbook_and_update_history(
-            target=monitor_target,
-            host=host,
-            history=history,
-            template_content=template.content or '',
-            extra_vars=extra_vars,
-            work_directory=latest_pkg.work_directory or '/tmp',
-            timeout_seconds=timeout_seconds,
-        )
-        return
-
-    threading.Thread(
-        target=_run_monitor_playbook_and_update_history,
-        kwargs={
-            'target': monitor_target,
-            'host': host,
-            'history': history,
-            'template_content': template.content or '',
-            'extra_vars': extra_vars,
-            'work_directory': latest_pkg.work_directory or '/tmp',
-            'timeout_seconds': timeout_seconds,
-        },
-        name=f'monitor-install-{int(getattr(monitor_target, "id", 0) or 0)}',
-        daemon=True,
-    ).start()
+    _run_monitor_playbook_and_update_history(
+        target=monitor_target,
+        host=host,
+        history=history,
+        template_content=template.content or '',
+        extra_vars=extra_vars,
+        work_directory=latest_pkg.work_directory or '/tmp',
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _dispatch_exporter_service_action_job(host, monitor_target, action, timeout_seconds=15):
-    """下发针对 exporter systemd 服务的动作类作业（status/start/stop），走
-    assets.AgentJob + RabbitMQ 异步下发通道（非实时任务标准通道）。
+    """同步执行 exporter systemd 服务动作（status/start/stop）。
 
-    与安装/卸载（走 automation.AutomationExecutionJob + HTTP 同步下发到 dj-agent）不同，
-    这里下发的是轻量级 systemctl 动作，dj-agent 收到后执行内置 action（对应
-    dj_agent/internal/executor/generic_exporter.go 的 runSystemctlAction，实际执行
-    `sudo -n systemctl <action> <service_name>`），结果由 runagentconsumer 消费
-    RabbitMQ 回执后异步写回 AgentJob（stdout/stderr/exit_code/status）。
-    调用方（视图层）负责把返回的 job_id 交给前端轮询 /api/agent/jobs/query 获取结果，
-    本函数只负责创建并发布任务，不等待结果、不修改 MonitorTarget 任何字段。
+    Agent 通过 gRPC 执行内置 systemctl action，backend 等待最终结果并写回 AgentJob。
     """
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'instance_name', '') or '').strip()
@@ -1007,7 +1002,7 @@ def _dispatch_exporter_service_action_job(host, monitor_target, action, timeout_
         'arg': job.params,
         'minions': [job.agent_id],
     })
-    _publish_agent_job_to_mq(job)
+    _dispatch_agent_job_via_grpc(job)
     return job
 
 
@@ -1026,11 +1021,10 @@ def dispatch_stop_exporter_job(host, monitor_target):
     return _dispatch_exporter_service_action_job(host, monitor_target, 'stop_exporter')
 
 
-def dispatch_exporter_uninstall_job(host, monitor_target, manual=False, sync_execute=False):
+def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     """下发监控组件（exporter）卸载任务（停止服务并清理安装文件）；供主机监控设置及自动/人工重试共用。
-    同 dispatch_exporter_install_job，改为下发一个范围收窄到单台主机的 AutomationExecutionJob，
-    使用监控软件仓库该 exporter 绑定的 uninstall_playbook_template 执行。manual 含义同上。
-    sync_execute=True 时，不走后台线程，当前请求内同步执行（底层仍是 agent gRPC 通道）。"""
+    同 dispatch_exporter_install_job，使用监控软件仓库该 exporter 绑定的 uninstall_playbook_template 执行。
+    卸载在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'instance_name', '') or '').strip()
     if agent_id == '':
@@ -1090,9 +1084,6 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False, sync_exe
     history = MonitorTargetInstallHistory.objects.create(
         target=monitor_target,
         host=host,
-        automation_job=None,
-        automation_job_id_snapshot=None,
-        automation_job_uuid_snapshot='',
         action=MonitorTargetInstallHistory.Action.UNINSTALL,
         trigger_type=(
             MonitorTargetInstallHistory.TriggerType.MANUAL
@@ -1115,35 +1106,18 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False, sync_exe
 
     monitor_target.install_status = monitor_target.InstallStatus.PENDING
     monitor_target.install_message = '已下发卸载任务'
-    monitor_target.last_install_job_id = None
-    monitor_target.save(update_fields=['install_status', 'install_message', 'last_install_job_id', 'last_dispatch_manual', 'update_time'])
+    monitor_target.save(update_fields=['install_status', 'install_message', 'last_dispatch_manual', 'update_time'])
 
-    if sync_execute:
-        _run_monitor_playbook_and_update_history(
-            target=monitor_target,
-            host=host,
-            history=history,
-            template_content=template.content or '',
-            extra_vars=extra_vars,
-            work_directory=latest_pkg.work_directory or '/tmp',
-            timeout_seconds=timeout_seconds,
-        )
-        return
+    _run_monitor_playbook_and_update_history(
+        target=monitor_target,
+        host=host,
+        history=history,
+        template_content=template.content or '',
+        extra_vars=extra_vars,
+        work_directory=latest_pkg.work_directory or '/tmp',
+        timeout_seconds=timeout_seconds,
+    )
 
-    threading.Thread(
-        target=_run_monitor_playbook_and_update_history,
-        kwargs={
-            'target': monitor_target,
-            'host': host,
-            'history': history,
-            'template_content': template.content or '',
-            'extra_vars': extra_vars,
-            'work_directory': latest_pkg.work_directory or '/tmp',
-            'timeout_seconds': timeout_seconds,
-        },
-        name=f'monitor-uninstall-{int(getattr(monitor_target, "id", 0) or 0)}',
-        daemon=True,
-    ).start()
 
 
 class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
@@ -1544,8 +1518,7 @@ def agent_create_job(request):
     job_type = str(payload.get('type') or '').strip()
     action = str(payload.get('action') or '').strip()
     client_request_id = str(payload.get('client_request_id') or '').strip()
-    raw_params = payload.get('params')
-    params = raw_params if isinstance(raw_params, dict) else {}
+    params = _normalize_agent_job_params(payload)
     timeout_seconds_raw = payload.get('timeout_seconds', 30)
 
     if job_type == '':
@@ -1626,7 +1599,7 @@ def agent_create_job(request):
             'arg': job.params,
             'minions': [job.agent_id],
         })
-        _publish_agent_job_to_mq(job)
+        _dispatch_agent_job_via_grpc(job)
 
         return Response_200(data={
             'job_id': job.job_id,
@@ -1712,7 +1685,8 @@ def agent_create_job(request):
             'arg': job.params,
             'minions': [job.agent_id],
         })
-        _publish_agent_job_to_mq(job)
+        _dispatch_agent_job_via_grpc(job)
+        result_rows[-1]['status'] = job.status
 
     return Response_200(data={
         'target_type': target_type,
@@ -1732,8 +1706,7 @@ def agent_create_jobs_batch(request):
     job_type = str(payload.get('type') or '').strip()
     action = str(payload.get('action') or '').strip()
     client_request_id = str(payload.get('client_request_id') or '').strip()
-    raw_params = payload.get('params')
-    params = raw_params if isinstance(raw_params, dict) else {}
+    params = _normalize_agent_job_params(payload)
     timeout_seconds_raw = payload.get('timeout_seconds', 30)
 
     if not isinstance(raw_agent_ids, list) or len(raw_agent_ids) == 0:
@@ -1836,7 +1809,8 @@ def agent_create_jobs_batch(request):
             'arg': job.params,
             'minions': [job.agent_id],
         })
-        _publish_agent_job_to_mq(job)
+        _dispatch_agent_job_via_grpc(job)
+        result_rows[-1]['status'] = job.status
 
     return Response_200(data={
         'created_count': created_count,
@@ -1891,7 +1865,7 @@ def agent_retry_job(request):
         'minions': [retried_job.agent_id],
         'retry_from': source_job.job_id,
     })
-    _publish_agent_job_to_mq(retried_job)
+    _dispatch_agent_job_via_grpc(retried_job)
 
     return Response_200(data={
         'source_job_id': source_job.job_id,

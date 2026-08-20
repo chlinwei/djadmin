@@ -26,7 +26,6 @@ from assets.models import Host, HostGroup
 
 from .models import (
     PlaybookTemplate,
-    ShellScriptTemplate,
     TemplateCategory,
     AutomationTask,
     AutomationInventory,
@@ -36,7 +35,6 @@ from .models import (
 )
 from .serializer import (
     PlaybookTemplateSerializer,
-    ShellScriptTemplateSerializer,
     AutomationTaskSerializer,
     AutomationInventorySerializer,
     AutomationExecutionJobSerializer,
@@ -51,14 +49,14 @@ from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runt
 
 
 def _resolve_task_template(task: AutomationTask):
-    return task.playbook_template or task.shell_script_template
+    return task.playbook_template
 
 
 def _is_playbook_template_bound_to_software_package(template_id: int) -> bool:
     """检查指定 Playbook 模板是否正被“监控软件仓库”(monitor.SoftwarePackage) 的
     install_playbook_template/uninstall_playbook_template 直接引用。用于禁止把已绑定的模板
-    category 误改回“通用”。Shell 脚本模板不可能被软件仓库引用（安装/卸载固定使用 Playbook），
-    因此不再需要处理 shell 场景。延迟到函数内部 import monitor.models，避免 automation/monitor
+    category 误改回“通用”。软件包安装/卸载固定使用 Playbook，
+    延迟到函数内部 import monitor.models，避免 automation/monitor
     两个 app 之间产生循环 import。
     """
     from monitor.models import SoftwarePackage
@@ -86,7 +84,7 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
 
     task_snapshot_map = {}
     if task_ids:
-        rows = AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template', 'shell_script_template')
+        rows = AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template')
         for row in rows:
             task_template = _resolve_task_template(row)
             task_id = int(getattr(row, 'pk'))
@@ -451,7 +449,7 @@ def _validate_workflow_task_nodes(workflow_nodes: list[dict]) -> tuple[bool, str
 
     task_map = {
         int(getattr(task, 'pk')): task
-        for task in AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template', 'shell_script_template', 'inventory')
+        for task in AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template', 'inventory')
         if getattr(task, 'pk', None) is not None
     }
 
@@ -504,7 +502,7 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     if task_id is None or not str(task_id).isdigit():
         return False, 'Task node missing valid task_id', None, None
 
-    task = AutomationTask.objects.filter(id=int(task_id)).select_related('playbook_template', 'shell_script_template', 'inventory').first()
+    task = AutomationTask.objects.filter(id=int(task_id)).select_related('playbook_template', 'inventory').first()
     task_template = _resolve_task_template(task) if task is not None else None
     if task is None or task_template is None:
         return False, f'Task {task_id} not found or template missing', None, None
@@ -540,7 +538,6 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
         return False, f'Task {task_id} resolved empty host scope', None, None
 
     node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
-    is_shell_task = task.shell_script_template_id is not None
     job = AutomationExecutionJob.objects.create(
         task=task,
         status=AutomationExecutionJob.Status.PENDING,
@@ -549,9 +546,7 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
         task_name_snapshot=task.name or '',
         template_name_snapshot=task_template.name or '',
         template_content_snapshot=task_template.content or '',
-        extra_vars=run.extra_vars if (not is_shell_task and isinstance(run.extra_vars, dict)) else {},
-        shell_parameters=task.shell_parameters if is_shell_task else '',
-        shell_env_vars=task.env_vars if is_shell_task else {},
+        extra_vars=run.extra_vars if isinstance(run.extra_vars, dict) else {},
         limit=effective_limit,
         requested_user_id=run.requested_user_id,
         requested_username=run.requested_username or '',

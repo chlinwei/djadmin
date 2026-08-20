@@ -17,13 +17,6 @@
           :placeholder="limitInputPlaceholder"
         />
       </a-form-item>
-      <a-form-item v-if="isShellTask" label="本次参数字符串（可选）">
-        <a-input
-          v-model:value="shellArgsModel"
-          allow-clear
-          placeholder="例如: prod 8080 --force"
-        />
-      </a-form-item>
     </a-form>
 
     <ScopePrecheckPanel
@@ -53,9 +46,7 @@ const props = defineProps({
   precheckOk: { type: Boolean, default: false },
   prechecking: { type: Boolean, default: false },
   precheckText: { type: String, default: '' },
-  isShellTask: { type: Boolean, default: false },
   runNowLimit: { type: String, default: '' },
-  runNowShellArgs: { type: String, default: '' },
   allHosts: { type: Array, default: () => [] },
   matchedHosts: { type: Array, default: () => [] },
   limitInputPlaceholder: { type: String, required: true },
@@ -63,7 +54,6 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:runNowLimit',
-  'update:runNowShellArgs',
   'confirm',
   'cancel',
   'host-click',
@@ -74,11 +64,6 @@ const emit = defineEmits([
 const limitModel = computed({
   get: () => props.runNowLimit,
   set: (value) => emit('update:runNowLimit', value),
-})
-
-const shellArgsModel = computed({
-  get: () => props.runNowShellArgs,
-  set: (value) => emit('update:runNowShellArgs', value),
 })
 
 function emitConfirm() {

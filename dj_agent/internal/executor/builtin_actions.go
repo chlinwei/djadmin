@@ -16,7 +16,6 @@ import (
 const (
 	actionGetAgentVersion      = "get_agent_version"
 	actionGetHostInfo          = "get_host_info"
-	actionRunAutomationTask    = "run_automation_task"
 	actionSyncAutomationSSHKey = "sync_automation_ssh_key"
 	actionStartExporter        = "start_exporter"
 	actionStopExporter         = "stop_exporter"
@@ -31,8 +30,6 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.getAgentVersion(ctx, job), true
 	case actionGetHostInfo:
 		return e.getHostInfo(ctx, job), true
-	case actionRunAutomationTask:
-		return e.runAutomationTask(ctx, job), true
 	case actionSyncAutomationSSHKey:
 		return e.syncAutomationSSHKey(ctx, job), true
 	case actionStartExporter:

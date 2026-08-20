@@ -1,18 +1,27 @@
 # djadmin
 
-统一文档入口（建议从这里开始）：
+这是项目文档的统一入口，按职责分成不同目录，避免根目录堆积历史和临时资料。
 
-## 核心文档
+## 文档分类
 
-- 项目全局上下文：[`PROJECT_CONTEXT.md`](./PROJECT_CONTEXT.md)
-- 调度与 Celery 说明：[`SCHEDULER_README.md`](./SCHEDULER_README.md)
-- 前端开发说明：[`fronted/README.md`](./fronted/README.md)
-- API 规范：[`.github/API_RULES.md`](./.github/API_RULES.md)
-- API 合规报告：[`.github/API_COMPLIANCE_REPORT.md`](./.github/API_COMPLIANCE_REPORT.md)
-- API 合规摘要：[`.github/API_COMPLIANCE_SUMMARY.md`](./.github/API_COMPLIANCE_SUMMARY.md)
-- Agent 作业控制面 API：[`backend/djadmin/assets/AGENT_JOB_API.md`](./backend/djadmin/assets/AGENT_JOB_API.md)
+- 项目概览与架构：[docs/overview](docs/overview)
+- 运行维护与运维：[docs/ops](docs/ops)
+- 架构设计与方案：[docs/architecture](docs/architecture)
+- 历史归档：[docs/archive](docs/archive)
+- 功能模块文档：[backend/djadmin](backend/djadmin), [fronted](fronted), [dj_agent](dj_agent)
+- 开发规范与 AI 协作：[.github](.github)
 
-## 快速启动（开发环境）
+## 常用入口
+
+- 项目全局上下文：[docs/overview/PROJECT_CONTEXT.md](docs/overview/PROJECT_CONTEXT.md)
+- 调度说明：[docs/ops/SCHEDULER_README.md](docs/ops/SCHEDULER_README.md)
+- ShellScript 实现说明：[docs/ops/SHELLSCRIPT_IMPLEMENTATION.md](docs/ops/SHELLSCRIPT_IMPLEMENTATION.md)
+- Go Agent 架构：[docs/architecture/DJ_AGENT_ARCHITECTURE.md](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
+- API 规范：[.github/API_RULES.md](.github/API_RULES.md)
+- 前端说明：[fronted/README.md](fronted/README.md)
+- 后端说明：[backend/djadmin/README.md](backend/djadmin/README.md)
+
+## 快速启动
 
 ### 后端
 
@@ -32,67 +41,22 @@ npm install
 npm run dev
 ```
 
-### 调度（Celery Worker + Beat）
+### 调度器
 
 ```bash
 cd backend/djadmin
 python manage.py runscheduler
 ```
 
+## 维护原则
 
-### 传输服务（transfer）
+- 根目录只保留最重要的入口文件。
+- 详细设计文档放入 [docs](docs) 目录下，按主题归类。
+- 模块专属说明放在对应代码目录附近。
+- 生成型报告和临时日志不要长期保留到仓库根目录。
 
-```bash
-cd backend/djadmin
-python manage.py runtransfer --host 0.0.0.0 --port 9101
-```
+## 注意事项
 
-说明：
-- transfer 是 WebSSH 文件上传/下载的数据面服务，建议独立进程运行。
-- 默认端口 `9101`，可按需调整。
-- 后端签发票据后，前端会调用 transfer 服务的下载/上传接口执行实际传输。
-- `runtransfer` 已改为内部直接使用 Daphne 启动，并自动设置 `DJANGO_SETTINGS_MODULE=djadmin.transfer_settings`。
-
-#### 手动使用 Daphne 启动（与 runtransfer 等价）
-
-`runtransfer` 内部本质就是这条命令；手动启动时要确保使用 `transfer_settings`：
-
-```bash
-cd backend/djadmin
-export DJANGO_SETTINGS_MODULE=djadmin.transfer_settings
-daphne -b 0.0.0.0 -p 9101 djadmin.asgi:application
-```
-
-如果不设置 `DJANGO_SETTINGS_MODULE=djadmin.transfer_settings`，会走默认 `djadmin.settings`，不是纯 transfer 路由。
-
-#### 相关环境变量
-
-必需（仅手动 Daphne 方式）：
-
-- `DJANGO_SETTINGS_MODULE=djadmin.transfer_settings`
-
-常用（后端控制面签发 ticket 时使用）：
-
-- `TRANSFER_SERVICE_BASE_URL`（默认 `http://127.0.0.1:9101`）
-- `TRANSFER_TICKET_SECRET`（默认使用 Django `SECRET_KEY`）
-- `TRANSFER_TICKET_EXPIRE_SECONDS`（默认 `7200`）
-
-性能相关（transfer 下载链路）：
-
-- `TRANSFER_SSH_POOL_MAX_PER_KEY`（默认 `4`）
-- `TRANSFER_SSH_POOL_IDLE_SECONDS`（默认 `120`）
-- `TRANSFER_STREAM_FIRST_CHUNK_BYTES`（默认 `262144`）
-- `TRANSFER_STREAM_CHUNK_BYTES`（默认 `8388608`）
-- `TRANSFER_STREAM_PROGRESS_LOG_SECONDS`（默认 `5`）
-- `TRANSFER_SFTP_WINDOW_SIZE`（默认 `8388608`）
-- `TRANSFER_SFTP_MAX_PACKET_SIZE`（默认 `262144`）
-- `TRANSFER_SFTP_PREFETCH_REQUESTS`（默认 `32`）
-
-说明：
-- `TRANSFER_SFTP_PREFETCH_REQUESTS_RANGE` 当前代码未读取，配置该变量不会生效。
-
-## 常见问题入口
-
-- 定时任务 pending / 不执行：先看 [`SCHEDULER_README.md`](./SCHEDULER_README.md) 的“排查命令”章节。
-- WebSSH 与文件传输行为说明：看 [`PROJECT_CONTEXT.md`](./PROJECT_CONTEXT.md) 的 WebSSH 章节。
-- transfer 无法上传/下载：先确认 `runtransfer` 进程是否启动、端口是否可达（默认 9101）。
+- 若需要查看项目架构与接口总览，优先看 [docs/overview/PROJECT_CONTEXT.md](docs/overview/PROJECT_CONTEXT.md)。
+- 若需要排查任务调度、Beat/Worker 问题，优先看 [docs/ops/SCHEDULER_README.md](docs/ops/SCHEDULER_README.md)。
+- 若需要查看 Agent/Golang 侧实现，优先看 [docs/architecture/DJ_AGENT_ARCHITECTURE.md](docs/architecture/DJ_AGENT_ARCHITECTURE.md)。

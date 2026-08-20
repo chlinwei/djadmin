@@ -190,27 +190,22 @@ class HostSerializer(ModelSerializer):
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
-        if not system:
-            return None
-        agent_version = system.agent_version
+        agent_version = getattr(system, 'agent_version', None)
         # 兼容历史脏值：ssh-collector 仅表示采集方式，不应作为 agent 版本展示。
         if str(agent_version or '').strip().lower() == 'ssh-collector':
             agent_version = None
 
-        agent_last_seen_at = None
-        agent_online = None
-        # agent_online_time 有值说明该主机有 dj-agent 接入，不受 collector_source 限制
-        if getattr(obj, 'agent_online_time', None) is not None or getattr(obj, 'agent_online', False):
-            agent_last_seen_at = getattr(obj, 'agent_online_time', None)
-            agent_online = getattr(obj, 'agent_online', False)
+        # Agent 状态属于 Host，不依赖 system 快照；没有快照时也必须保留在线状态。
+        agent_last_seen_at = getattr(obj, 'agent_online_time', None)
+        agent_online = bool(getattr(obj, 'agent_online', False))
 
         return {
-            'os_type': system.os_type,
-            'os_version': system.os_version,
-            'kernel_version': system.kernel_version,
-            'hostname': system.hostname,
+            'os_type': getattr(system, 'os_type', None),
+            'os_version': getattr(system, 'os_version', None),
+            'kernel_version': getattr(system, 'kernel_version', None),
+            'hostname': getattr(system, 'hostname', None),
             'agent_version': agent_version,
-            'collector_source': system.collector_source,
+            'collector_source': getattr(system, 'collector_source', None),
             'agent_last_seen_at': agent_last_seen_at,
             'agent_online': agent_online,
         }
@@ -386,6 +381,7 @@ class HostListSerializer(ModelSerializer):
             'remark',
             'webssh_default_username',
             'webssh_login_users',
+            'agent_online',
             'collect_status',
             'group_name',
             'system',
@@ -402,20 +398,16 @@ class HostListSerializer(ModelSerializer):
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
-        if not system:
-            return None
-        agent_version = system.agent_version
+        agent_version = getattr(system, 'agent_version', None)
         if str(agent_version or '').strip().lower() == 'ssh-collector':
             agent_version = None
 
-        agent_last_seen_at = None
-        agent_online = None
-        if getattr(obj, 'agent_online_time', None) is not None or getattr(obj, 'agent_online', False):
-            agent_last_seen_at = getattr(obj, 'agent_online_time', None)
-            agent_online = getattr(obj, 'agent_online', False)
+        # Agent 状态属于 Host，不能因为没有 system 快照而丢失。
+        agent_last_seen_at = getattr(obj, 'agent_online_time', None)
+        agent_online = bool(getattr(obj, 'agent_online', False))
 
         return {
-            'hostname': system.hostname,
+            'hostname': getattr(system, 'hostname', None),
             'agent_version': agent_version,
             'agent_last_seen_at': agent_last_seen_at,
             'agent_online': agent_online,

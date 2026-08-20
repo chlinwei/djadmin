@@ -66,14 +66,7 @@ class MonitorTarget(BaseModel):
 	last_scrape_status = models.CharField(max_length=16, choices=ScrapeStatus.choices, default=ScrapeStatus.UNKNOWN)
 	last_scrape_at = models.DateTimeField(null=True, blank=True)
 	labels = models.JSONField(default=dict, blank=True)
-	# 安装/卸载完全复用监控软件仓库（SoftwarePackage）上绑定的 install_playbook_template/
-	# uninstall_playbook_template 执行，本机不再保留脚本副本；这里只记录最近一次下发的
-	# AutomationExecutionJob id，供前端渲染“查看日志”跳转链接（日志本身以 automation 模块的
-	# 执行记录为准，不在本模型重复存储）。
-	last_install_job_id = models.PositiveIntegerField(
-		null=True, blank=True,
-		help_text='最近一次安装/卸载对应的 AutomationExecutionJob id，用于跳转查看执行日志',
-	)
+	# 安装/卸载的唯一执行记录是 MonitorTargetInstallHistory，输出快照也直接保存在历史表中。
 	# 标记最近一次下发是否为“人工点击重试”触发：用于失败文案区分与历史审计。
 	last_dispatch_manual = models.BooleanField(
 		default=False,
@@ -118,12 +111,6 @@ class MonitorTargetInstallHistory(BaseModel):
 	target = models.ForeignKey('monitor.MonitorTarget', on_delete=models.CASCADE, related_name='install_histories')
 	host = models.ForeignKey('assets.Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
-	# 下面三项是“外部任务关联快照”，用于从本地历史跳到自动化任务中心；
-	# 本地可读性不依赖这些字段必须可解析。
-	automation_job = models.ForeignKey('automation.AutomationExecutionJob', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
-	automation_job_id_snapshot = models.PositiveIntegerField(null=True, blank=True, default=None)
-	automation_job_uuid_snapshot = models.CharField(max_length=64, blank=True, default='')
-
 	action = models.CharField(max_length=16, choices=Action.choices)
 	trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.AUTO)
 	status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
@@ -152,7 +139,6 @@ class MonitorTargetInstallHistory(BaseModel):
 		indexes = [
 			models.Index(fields=['target', '-id'], name='mon_hist_target_desc_ix'),
 			models.Index(fields=['status', '-id'], name='mon_hist_status_desc_ix'),
-			models.Index(fields=['automation_job_id_snapshot'], name='monitor_hist_auto_job_id_idx'),
 		]
 
 	def __str__(self):
@@ -283,6 +269,24 @@ class AlertNotificationDelivery(BaseModel):
 		constraints = [
 			models.UniqueConstraint(fields=['event', 'media', 'user', 'address'], name='monitor_alert_delivery_uniq'),
 		]
+
+
+class UserAlertMediaBinding(BaseModel):
+	"""用户媒介绑定：用户可绑定多个告警媒介，每个绑定包含该用户在该媒介上的收件人信息。"""
+
+	user = models.ForeignKey('user.SysUser', on_delete=models.CASCADE, related_name='alert_media_bindings')
+	media = models.ForeignKey(AlertMedia, on_delete=models.CASCADE, related_name='user_bindings')
+	# 该用户在该媒介上的收件人邮箱（Email）或其他地址（Webhook、钉钉等）
+	recipients = models.JSONField(default=list, blank=True)
+	enabled = models.BooleanField(default=True)
+
+	class Meta:
+		db_table = 'monitor_user_alert_media_binding'
+		unique_together = [['user', 'media']]
+		ordering = ['-id']
+
+	def __str__(self):
+		return f'{self.user.username} - {self.media.name}'
 
 
 class SoftwarePackage(BaseModel):

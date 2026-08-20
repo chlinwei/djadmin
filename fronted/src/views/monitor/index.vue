@@ -513,7 +513,6 @@ import {
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
 } from '@/api/monitor'
-import { queryAgentJobs } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
@@ -1117,12 +1116,34 @@ async function loadManagedTargets() {
     ordering: '-id',
   })
   const data = parseApiData(res)
-  managedTargets.value = Array.isArray(data.results) ? data.results : []
+  const records = Array.isArray(data.results) ? data.results : []
+  managedTargets.value = records.map((record) => ({
+    ...record,
+    // 纳管目标接口中的 last_scrape_status 是历史字段；页面展示以本次 Prometheus
+    // targets 查询结果为准，避免 exporter 服务已启动但实际未被 Prometheus 抓取时仍显示 unknown。
+    last_scrape_status: resolveManagedScrapeStatus(record),
+  }))
   managedPagination.total = Number(data.count || 0)
   // 纳管目标数据一加载/刷新完成，就主动为已启用且安装成功的目标查询一次 systemd 运行状态，
   // 无需用户手动点击按钮；未启用或安装未成功的目标没有可核实的服务，跳过以避免无意义的
   // AgentJob/RabbitMQ 调度开销。
   refreshManagedServiceStatuses()
+}
+
+function resolveManagedScrapeStatus(record) {
+  const hostIp = String(record?.host_ip || '').trim()
+  const scrapePort = Number(record?.scrape_port || 0)
+  if (!hostIp || !Number.isInteger(scrapePort) || scrapePort <= 0) {
+    return 'unknown'
+  }
+
+  const expectedInstance = `${hostIp}:${scrapePort}`
+  const target = promTargets.value.find((item) => {
+    const instance = String(item?.instance || '').trim()
+    return instance === expectedInstance || instance.startsWith(`${expectedInstance}/`)
+  })
+  const health = String(target?.health || '').trim().toLowerCase()
+  return health === 'up' || health === 'down' ? health : 'unknown'
 }
 
 function refreshManagedServiceStatuses() {
@@ -1334,52 +1355,12 @@ function openManagedTargetDeleteConfirm(record) {
   })
 }
 
-// 轮询间隔/次数：查询走 AgentJob + RabbitMQ 异步通道（非实时），下发后到 dj-agent 消费、
-// 执行 systemctl、再回传结果，通常在几百毫秒到数秒内完成，轮询 1.2s * 10 次(12s)足够覆盖
-// 正常场景；超时仍未完成则提示用户稍后重试，不无限轮询避免页面残留定时器。
-const SERVICE_STATUS_POLL_INTERVAL_MS = 1200
-const SERVICE_STATUS_POLL_MAX_TIMES = 10
-const TERMINAL_JOB_STATUSES = ['success', 'failed', 'canceled', 'timeout']
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-// 轮询 AgentJob 直到进入终态（success/failed/canceled/timeout）或轮询次数耗尽（未达终态时返回 null），
-// check/start/stop 三个动作共用同一套轮询节奏，避免各自重复实现。
-async function pollAgentJobUntilTerminal(jobId) {
-  let job = null
-  for (let attempt = 0; attempt < SERVICE_STATUS_POLL_MAX_TIMES; attempt += 1) {
-    await sleep(SERVICE_STATUS_POLL_INTERVAL_MS)
-    const queryRes = await queryAgentJobs({ job_id: jobId })
-    const results = parseApiData(queryRes)?.results || []
-    job = results[0] || null
-    if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
-      break
-    }
-  }
-  return TERMINAL_JOB_STATUSES.includes(job?.status) ? job : null
-}
-
 async function handleCheckServiceStatus(record) {
   managedServiceStatusLoading[record.id] = true
   try {
     const createRes = await checkManagedTargetServiceStatus(record.id)
-    // requestUtil.post 返回完整 axios response，业务数据在 response.data.data（{code,msg,data} 信封），
-    // 不是 response.data，否则 job_id 永远取不到。
-    const jobId = parseApiData(createRes)?.job_id
-    if (!jobId) {
-      // 该查询现在是进入页面/自动刷新时后台静默触发的（按钮已去掉），
-      // 不再用 message 弹全局提示打扰用户，失败原因只记录在控制台 + 列内标签上。
-      console.warn('[service_status] 下发查询任务失败：未返回 job_id', record.id)
-      return
-    }
-
-    const job = await pollAgentJobUntilTerminal(jobId)
-    if (!job) {
-      console.warn('[service_status] 查询任务未在预期时间内返回结果', record.id)
-      return
-    }
+    const job = parseApiData(createRes)
+    if (!job || !job.status) return
 
     // 写入“服务状态”列缓存（常驻展示），同时保留完整 stdout/stderr 供点击标签时查看详情。
     serviceStatusMap[record.id] = {
@@ -1399,17 +1380,7 @@ async function handleCheckServiceStatus(record) {
 async function handleStartService(record) {
   managedStartLoading[record.id] = true
   try {
-    const createRes = await startManagedTargetService(record.id)
-    const jobId = parseApiData(createRes)?.job_id
-    if (!jobId) {
-      message.error('下发启动任务失败：未返回 job_id')
-      return
-    }
-    const job = await pollAgentJobUntilTerminal(jobId)
-    if (!job) {
-      message.warning('启动任务未在预期时间内返回结果，请稍后查看服务状态列')
-      return
-    }
+    const job = parseApiData(await startManagedTargetService(record.id))
     if (job.status === 'success' && job.exit_code === 0) {
       message.success('启动命令已执行成功')
     } else {
@@ -1428,17 +1399,7 @@ async function handleStartService(record) {
 async function handleStopService(record) {
   managedStopLoading[record.id] = true
   try {
-    const createRes = await stopManagedTargetService(record.id)
-    const jobId = parseApiData(createRes)?.job_id
-    if (!jobId) {
-      message.error('下发停止任务失败：未返回 job_id')
-      return
-    }
-    const job = await pollAgentJobUntilTerminal(jobId)
-    if (!job) {
-      message.warning('停止任务未在预期时间内返回结果，请稍后查看服务状态列')
-      return
-    }
+    const job = parseApiData(await stopManagedTargetService(record.id))
     if (job.status === 'success' && job.exit_code === 0) {
       message.success('停止命令已执行成功')
     } else {

@@ -4,15 +4,14 @@ from django.utils import timezone
 
 from .view_helpers import *
 from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
-from .agent_grpc_runner import execute_job_via_agent_grpc
 from .executor_playbook import execute_playbook_job
 
 class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
-    queryset = AutomationTask.objects.select_related('playbook_template', 'shell_script_template', 'inventory').all()
+    queryset = AutomationTask.objects.select_related('playbook_template', 'inventory').all()
     serializer_class = AutomationTaskSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['name', 'playbook_template__name', 'shell_script_template__name', 'inventory__name', 'remark']
+    search_fields = ['name', 'playbook_template__name', 'inventory__name', 'remark']
     ordering_fields = ['name', 'enabled', 'create_time', 'update_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -28,9 +27,9 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
     }
 
 
-    def _run_now_via_agent(self, task, task_template, user_info, started_at, inventory_snapshot, hosts,
-                           is_shell_task, extra_vars, shell_parameters, shell_env_vars, limit_text):
-        """立即执行任务：Shell 走 agent，Playbook 由 backend 统一编排。"""
+    def _run_now(self, task, task_template, user_info, started_at, inventory_snapshot, hosts,
+                 extra_vars, limit_text):
+        """立即执行 Playbook 任务。"""
         job = AutomationExecutionJob.objects.create(
             task=task,
             status=AutomationExecutionJob.Status.RUNNING,
@@ -39,9 +38,7 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             task_name_snapshot=task.name or '',
             template_name_snapshot=task_template.name or '',
             template_content_snapshot=task_template.content or '',
-            extra_vars=extra_vars if not is_shell_task else {},
-            shell_parameters=shell_parameters if is_shell_task else '',
-            shell_env_vars=shell_env_vars if is_shell_task else {},
+            extra_vars=extra_vars,
             limit=limit_text,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),
@@ -55,32 +52,7 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
         job_pk = int(getattr(job, 'pk', 0) or 0)
         task_pk = int(getattr(task, 'pk', 0) or 0)
 
-        if is_shell_task:
-            success, summary, _ = execute_job_via_agent_grpc(
-                automation_execution_job_id=job_pk,
-                automation_task_id=task_pk,
-                template_content=job.template_content_snapshot or '',
-                template_type='shell_script',
-                hosts=hosts,
-                shell_parameters=shell_parameters,
-                shell_env_vars=shell_env_vars,
-                extra_vars={},
-                run_as_user=str(task.run_as_user or ''),
-                run_as_group=str(task.run_as_group or ''),
-                work_directory=str(task.work_directory or '/tmp'),
-                timeout_seconds=int(task.execution_timeout_seconds or 600),
-            )
-        else:
-            success, summary, _ = execute_playbook_job(job)
-
-        if is_shell_task and int(summary.get('created_count', 0) or 0) == 0:
-            finished_at = timezone.now()
-            job.status = AutomationExecutionJob.Status.FAILED
-            job.end_time = finished_at
-            job.duration_seconds = (finished_at - started_at).total_seconds()
-            job.result_summary = summary
-            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
-            return Response_error_str('Job dispatch failed: no agent task created', code=400)
+        success, summary, _ = execute_playbook_job(job)
 
         finished_at = timezone.now()
         final_status = AutomationExecutionJob.Status.SUCCESS if success else AutomationExecutionJob.Status.FAILED
@@ -306,18 +278,13 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         host_ids_raw = request.data.get('host_ids', default_host_ids)
         group_ids_raw = request.data.get('group_ids', default_group_ids)
-        is_shell_task = task.shell_script_template_id is not None
-        extra_vars_raw = request.data.get('extra_vars', task.env_vars if not is_shell_task else {})
-        shell_parameters_raw = request.data.get('shell_parameters', task.shell_parameters if is_shell_task else '')
-        shell_env_vars_raw = request.data.get('shell_env_vars', task.env_vars if is_shell_task else {})
+        extra_vars_raw = request.data.get('extra_vars', task.env_vars)
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
         group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
         group_ids = [int(item) for item in group_ids if str(item).isdigit()]
         extra_vars = extra_vars_raw if isinstance(extra_vars_raw, dict) else {}
-        shell_parameters = str(shell_parameters_raw or '').strip()
-        shell_env_vars = shell_env_vars_raw if isinstance(shell_env_vars_raw, dict) else {}
 
         if task.inventory_id and task.inventory is not None and len(host_ids) == 0 and len(group_ids) == 0:
             inventory_name = task.inventory.name or '-'
@@ -340,36 +307,15 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         started_at = timezone.now()
         
-        # 统一执行路径：Shell / Playbook 均同步经由 agent gRPC 执行。
-        if is_shell_task:
-            # Shell 模板：通过 dj-agent gRPC 执行
-            return self._run_now_via_agent(
-                task=task,
-                task_template=task_template,
-                user_info=user_info,
-                started_at=started_at,
-                inventory_snapshot=inventory_snapshot,
-                hosts=hosts,
-                is_shell_task=is_shell_task,
-                extra_vars=extra_vars,
-                shell_parameters=shell_parameters,
-                shell_env_vars=shell_env_vars,
-                limit_text=limit_text,
-            )
-        else:
-            # Playbook 模板：与 Shell 保持一致，当前请求内同步执行并返回最终状态。
-            return self._run_now_via_agent(
-                task=task,
-                task_template=task_template,
-                user_info=user_info,
-                started_at=started_at,
-                inventory_snapshot=inventory_snapshot,
-                hosts=hosts,
-                is_shell_task=False,
-                extra_vars=extra_vars,
-                shell_parameters='',
-                shell_env_vars={},
-                limit_text=limit_text,
-            )
+        return self._run_now(
+            task=task,
+            task_template=task_template,
+            user_info=user_info,
+            started_at=started_at,
+            inventory_snapshot=inventory_snapshot,
+            hosts=hosts,
+            extra_vars=extra_vars,
+            limit_text=limit_text,
+        )
 
 

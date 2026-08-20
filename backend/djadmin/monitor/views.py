@@ -1,5 +1,5 @@
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
+from django.db.models import Count, Q
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModelMixin, RetrieveModelMixin, UpdateModelMixin
@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 from django.core.files.base import ContentFile
+from django.core.mail import EmailMultiAlternatives, get_connection
 from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.permissions import AllowAny
@@ -20,11 +21,14 @@ from rest_framework.permissions import AllowAny
 from djadmin.utils import Response_200, Response_error_str
 from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
+from assets.credential_crypto import decrypt_secret
 
-from .alert_history import ingest_alert_webhook_alerts
+from .alert_history import compute_alert_fingerprint, ingest_alert_webhook_alerts
 from .models import (
     AlertHistory,
     AlertMedia,
+    AlertNotificationDelivery,
+    AlertNotificationEvent,
     AlertRoute,
     MonitorTarget,
     MonitorTargetInstallHistory,
@@ -48,6 +52,26 @@ from .serializer import (
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')# 官方 tarball 命名规则：node_exporter-<version>.<os>-<arch>.tar.gz，用于行内上传时解析版本/校验架构
 NODE_EXPORTER_FILENAME_RE = re.compile(r'^node_exporter-([^.]+)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$', re.IGNORECASE)# 官方软件包体积上限（字节），避免异常响应把磁盘写满
 MAX_OFFICIAL_PACKAGE_SIZE = 200 * 1024 * 1024
+
+
+def _annotate_alert_notification_summary(queryset):
+    return queryset.annotate(
+        notification_count=Count('notification_events', distinct=True),
+        notification_delivery_count=Count('notification_events__deliveries', distinct=True),
+        notification_failed_count=Count(
+            'notification_events',
+            filter=Q(notification_events__status=AlertNotificationEvent.Status.FAILED),
+            distinct=True,
+        ),
+        notification_active_count=Count(
+            'notification_events',
+            filter=Q(notification_events__status__in=[
+                AlertNotificationEvent.Status.PENDING,
+                AlertNotificationEvent.Status.SENDING,
+            ]),
+            distinct=True,
+        ),
+    )
 
 
 class MonitorViewSet(
@@ -180,9 +204,9 @@ class MonitorViewSet(
         from assets.views import dispatch_exporter_install_job, dispatch_exporter_uninstall_job
 
         if target.managed_enabled:
-            dispatch_exporter_install_job(host, target, manual=True, sync_execute=True)
+            dispatch_exporter_install_job(host, target, manual=True)
         else:
-            dispatch_exporter_uninstall_job(host, target, manual=True, sync_execute=True)
+            dispatch_exporter_uninstall_job(host, target, manual=True)
 
         target.refresh_from_db()
         serializer = self.get_serializer(target)
@@ -239,9 +263,7 @@ class MonitorViewSet(
     def check_service_status(self, request, id=None):
         """按需查询一次 exporter 的 systemd 运行状态（sudo systemctl status）。
 
-        走 assets.AgentJob + RabbitMQ 异步下发通道（非实时任务标准通道），立即返回 job_id，
-        不等待结果、不写 MonitorTarget 任何字段——前端需自行轮询
-        GET /api/agent/jobs/query?job_id=... 获取 status/exit_code/stdout/stderr。
+        通过 Agent gRPC 同步执行并直接返回最终 status/exit_code/stdout/stderr。
         """
         target = self.get_object()
         host = target.host
@@ -254,11 +276,18 @@ class MonitorViewSet(
         except RuntimeError as exc:
             return Response_error_str(str(exc), code=400)
 
-        return Response_200(data={'job_id': job.job_id})
+        return Response_200(data={
+            'job_id': job.job_id,
+            'status': job.status,
+            'exit_code': job.exit_code,
+            'stdout': job.stdout,
+            'stderr': job.stderr,
+            'error_message': job.error_message,
+        })
 
     @action(detail=True, methods=['post'], url_path='start-service')
     def start_service(self, request, id=None):
-        """下发一次"启动 exporter 服务"作业（sudo systemctl start），走 AgentJob + RabbitMQ 异步通道。"""
+        """通过 Agent gRPC 同步启动 exporter 服务。"""
         target = self.get_object()
         host = target.host
         if host is None:
@@ -270,11 +299,18 @@ class MonitorViewSet(
         except RuntimeError as exc:
             return Response_error_str(str(exc), code=400)
 
-        return Response_200(data={'job_id': job.job_id})
+        return Response_200(data={
+            'job_id': job.job_id,
+            'status': job.status,
+            'exit_code': job.exit_code,
+            'stdout': job.stdout,
+            'stderr': job.stderr,
+            'error_message': job.error_message,
+        })
 
     @action(detail=True, methods=['post'], url_path='stop-service')
     def stop_service(self, request, id=None):
-        """下发一次"停止 exporter 服务"作业（sudo systemctl stop），走 AgentJob + RabbitMQ 异步通道。"""
+        """通过 Agent gRPC 同步停止 exporter 服务。"""
         target = self.get_object()
         host = target.host
         if host is None:
@@ -286,7 +322,14 @@ class MonitorViewSet(
         except RuntimeError as exc:
             return Response_error_str(str(exc), code=400)
 
-        return Response_200(data={'job_id': job.job_id})
+        return Response_200(data={
+            'job_id': job.job_id,
+            'status': job.status,
+            'exit_code': job.exit_code,
+            'stdout': job.stdout,
+            'stderr': job.stderr,
+            'error_message': job.error_message,
+        })
 
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
@@ -358,7 +401,21 @@ class MonitorViewSet(
         firing_count = 0
         resolved_count = 0
         rows = []
-        for item in (alerts or []):
+        alert_items = list(alerts or [])
+        fingerprints = []
+        for item in alert_items:
+            labels = item.get('labels') if isinstance(item.get('labels'), dict) else {}
+            fingerprints.append(compute_alert_fingerprint(labels))
+
+        histories_by_fingerprint_and_state = {}
+        histories = _annotate_alert_notification_summary(
+            AlertHistory.objects.filter(fingerprint__in=fingerprints)
+        ).order_by('-id')
+        for history in histories:
+            key = (history.fingerprint, history.state)
+            histories_by_fingerprint_and_state.setdefault(key, history)
+
+        for item in alert_items:
             # 注意：/api/v1/alerts 返回的 state 是顶层字段，不是嵌套在 status 对象里
             # （之前误照搬 Alertmanager v2 查询接口的结构，两者格式不一样，导致 state 永远读
             # 不到值、前端一直显示 unknown）。
@@ -369,14 +426,27 @@ class MonitorViewSet(
                 resolved_count += 1
             labels = item.get('labels') if isinstance(item.get('labels'), dict) else {}
             annotations = item.get('annotations') if isinstance(item.get('annotations'), dict) else {}
+            fingerprint = compute_alert_fingerprint(labels)
+            # pending 尚未触发 Prometheus notifier，不能继承同 fingerprint 的历史 firing 记录。
+            # firing/resolved 也必须匹配本地相同状态，避免新一轮 pending/firing 显示上一轮投递结果。
+            history = (
+                histories_by_fingerprint_and_state.get((fingerprint, state))
+                if state in {AlertHistory.State.FIRING, AlertHistory.State.RESOLVED}
+                else None
+            )
             rows.append({
                 'name': labels.get('alertname') or '',
                 'severity': labels.get('severity') or '',
                 'state': state or 'unknown',
                 'instance': labels.get('instance') or '',
+                'labels': labels,
                 'summary': annotations.get('summary') or annotations.get('description') or '',
                 'active_at': item.get('activeAt') or '',
                 'value': item.get('value') or '',
+                'history_id': history.id if history is not None else None,
+                'notification_count': getattr(history, 'notification_count', 0) if history is not None else 0,
+                'notification_delivery_count': getattr(history, 'notification_delivery_count', 0) if history is not None else 0,
+                'notification_status': AlertHistorySerializer.get_notification_status(history) if history is not None else 'none',
             })
 
         return Response_200(data={
@@ -855,7 +925,7 @@ class MonitorTargetInstallHistoryViewSet(
     ListModelMixin,
     RetrieveModelMixin,
 ):
-    queryset = MonitorTargetInstallHistory.objects.select_related('target', 'host', 'automation_job').all()
+    queryset = MonitorTargetInstallHistory.objects.select_related('target', 'host').all()
     serializer_class = MonitorTargetInstallHistorySerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
@@ -867,23 +937,18 @@ class MonitorTargetInstallHistoryViewSet(
     action_perms_map = {
         'list': 'monitor:view',
         'retrieve': 'monitor:view',
+        'cancel': 'monitor:view',
     }
 
     def get_queryset(self):
         queryset = super().get_queryset()
         query_target_id = str(self.request.query_params.get('target_id') or '').strip()  # type: ignore[union-attr]
-        query_job_id = str(self.request.query_params.get('automation_job_id') or '').strip()  # type: ignore[union-attr]
         query_keyword = str(self.request.query_params.get('keyword') or '').strip()  # type: ignore[union-attr]
         query_start = str(self.request.query_params.get('start_time') or '').strip()  # type: ignore[union-attr]
         query_end = str(self.request.query_params.get('end_time') or '').strip()  # type: ignore[union-attr]
 
         if query_target_id.isdigit():
             queryset = queryset.filter(target_id=int(query_target_id))
-        if query_job_id.isdigit():
-            value = int(query_job_id)
-            queryset = queryset.filter(
-                Q(automation_job_id_snapshot=value) | Q(automation_job_id=value)
-            )
         if query_keyword:
             queryset = queryset.filter(
                 Q(host_name_snapshot__icontains=query_keyword)
@@ -909,6 +974,39 @@ class MonitorTargetInstallHistoryViewSet(
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
 
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel(self, request, *args, **kwargs):
+        from django.db import transaction
+
+        from .models import MonitorTargetInstallHistory
+
+        with transaction.atomic():
+            history = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
+            if history.status not in {
+                MonitorTargetInstallHistory.Status.PENDING,
+                MonitorTargetInstallHistory.Status.RUNNING,
+            }:
+                return Response_error_str('当前任务已结束，不能取消')
+
+            now = timezone.now()
+            history.status = MonitorTargetInstallHistory.Status.CANCELLED
+            history.summary_message = '任务已取消'
+            history.error_message_snapshot = '任务已由用户取消'
+            history.end_time = now
+            if history.start_time is not None:
+                history.duration_seconds = (now - history.start_time).total_seconds()
+            history.save(update_fields=[
+                'status', 'summary_message', 'error_message_snapshot',
+                'end_time', 'duration_seconds', 'update_time',
+            ])
+
+            target = history.target
+            target.install_status = target.InstallStatus.UNKNOWN
+            target.install_message = '安装/卸载任务已取消'
+            target.save(update_fields=['install_status', 'install_message', 'update_time'])
+
+        return Response_200(data=self.get_serializer(history).data)
+
 
 class AlertHistoryViewSet(
     GenericViewSet,
@@ -929,13 +1027,19 @@ class AlertHistoryViewSet(
     action_perms_map = {
         'list': 'monitor:view',
         'retrieve': 'monitor:view',
+        'notification_status': 'monitor:view',
     }
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _annotate_alert_notification_summary(
+            super().get_queryset()
+        ).order_by('-started_at', '-id')
         query_keyword = str(self.request.query_params.get('keyword') or '').strip()  # type: ignore[union-attr]
         query_start = str(self.request.query_params.get('start_time') or '').strip()  # type: ignore[union-attr]
         query_end = str(self.request.query_params.get('end_time') or '').strip()  # type: ignore[union-attr]
+        query_notification_status = str(
+            self.request.query_params.get('notification_status') or ''  # type: ignore[union-attr]
+        ).strip()
 
         if query_keyword:
             queryset = queryset.filter(
@@ -946,6 +1050,29 @@ class AlertHistoryViewSet(
             queryset = queryset.filter(started_at__gte=query_start)
         if query_end:
             queryset = queryset.filter(started_at__lte=query_end)
+        if query_notification_status == 'none':
+            queryset = queryset.filter(notification_count=0)
+        elif query_notification_status == 'failed':
+            queryset = queryset.filter(
+                Q(notification_failed_count__gt=0)
+                | Q(
+                    notification_count__gt=0,
+                    notification_active_count=0,
+                    notification_delivery_count=0,
+                )
+            )
+        elif query_notification_status == 'in_progress':
+            queryset = queryset.filter(
+                notification_failed_count=0,
+                notification_active_count__gt=0,
+            )
+        elif query_notification_status == 'success':
+            queryset = queryset.filter(
+                notification_count__gt=0,
+                notification_failed_count=0,
+                notification_active_count=0,
+                notification_delivery_count__gt=0,
+            )
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -959,6 +1086,54 @@ class AlertHistoryViewSet(
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='notification-status')
+    def notification_status(self, request, *args, **kwargs):
+        alert = self.get_object()
+        events = (
+            AlertNotificationEvent.objects.filter(alert=alert)
+            .order_by('-create_time', '-id')
+        )
+        event_rows = []
+        for event in events:
+            deliveries = [
+                {
+                    'id': delivery.id,
+                    'user_id': delivery.user_id,
+                    'username': delivery.user.username if delivery.user is not None else '-',
+                    'media_id': delivery.media_id,
+                    'media_name': delivery.media.name if delivery.media is not None else '-',
+                    'media_type': delivery.media.media_type if delivery.media is not None else '-',
+                    'address': delivery.address,
+                    'status': delivery.status,
+                    'attempt_count': delivery.attempt_count,
+                    'error_message': delivery.error_message,
+                    'sent_at': delivery.sent_at,
+                    'create_time': delivery.create_time,
+                }
+                for delivery in AlertNotificationDelivery.objects.filter(event=event).select_related('user', 'media')
+            ]
+            event_status = event.status
+            event_error_message = event.error_message
+            if not deliveries and event_status == AlertNotificationEvent.Status.SUCCESS:
+                event_status = AlertNotificationEvent.Status.FAILED
+                event_error_message = '没有投递明细，无法确认实际接收用户、媒介和地址'
+            event_rows.append({
+                'id': event.id,
+                'event_type': event.event_type,
+                'status': event_status,
+                'attempt_count': event.attempt_count,
+                'error_message': event_error_message,
+                'sent_at': event.sent_at,
+                'create_time': event.create_time,
+                'deliveries': deliveries,
+            })
+        return Response_200(data={
+            'alert_id': alert.id,
+            'alertname': alert.alertname,
+            'instance': alert.instance,
+            'events': event_rows,
+        })
 
 
 class AlertMediaViewSet(
@@ -985,6 +1160,7 @@ class AlertMediaViewSet(
         'partial_update': 'monitor:view',
         'update': 'monitor:view',
         'destroy': 'monitor:view',
+        'test': 'monitor:view',
     }
 
     def list(self, request, *args, **kwargs):
@@ -1018,6 +1194,54 @@ class AlertMediaViewSet(
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response_200(data=serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='test')
+    def test(self, request, *args, **kwargs):
+        media = self.get_object()
+        if media.media_type != AlertMedia.MediaType.EMAIL:
+            return Response_error_str('当前仅支持测试 Email 媒介')
+
+        recipients = request.data.get('recipients')
+        if isinstance(recipients, str):
+            recipients = [item.strip() for item in recipients.replace(';', ',').split(',') if item.strip()]
+        if not isinstance(recipients, list) or not recipients:
+            return Response_error_str('请至少填写一个收件人')
+
+        subject = str(request.data.get('subject') or '').strip()
+        message = str(request.data.get('message') or '')
+        if not subject:
+            return Response_error_str('请填写主题')
+        if not message.strip():
+            return Response_error_str('请填写消息')
+
+        config = media.config or {}
+        try:
+            password = decrypt_secret(config.get('password'))
+            connection = get_connection(
+                backend='django.core.mail.backends.smtp.EmailBackend',
+                fail_silently=False,
+                host=config.get('smtpServer'),
+                port=int(config.get('smtpPort')),
+                username=config.get('username'),
+                password=password,
+                use_tls=bool(config.get('useTLS', config.get('provider') == 'gmail')),
+                use_ssl=bool(config.get('useSSL', False)),
+            )
+            email = EmailMultiAlternatives(
+                subject=subject,
+                body=message,
+                from_email=config.get('email'),
+                to=[str(item).strip() for item in recipients if str(item).strip()],
+                connection=connection,
+            )
+            if config.get('messageFormat', 'html') == 'html':
+                email.attach_alternative(message, 'text/html')
+            sent_count = email.send()
+        except (OSError, TypeError, ValueError) as exc:
+            return Response_error_str(f'测试邮件发送失败：{exc}')
+        if sent_count != 1:
+            return Response_error_str('测试邮件发送失败')
+        return Response_200(data={'sent': True})
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

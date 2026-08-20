@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 
 from django.core.management.base import BaseCommand
 
@@ -9,8 +10,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         env = os.environ.copy()
-        worker_command = ['celery', '-A', 'djadmin', 'worker', '-l', 'info', '--concurrency', '2']
-        beat_command = ['celery', '-A', 'djadmin', 'beat', '-l', 'info']
+        worker_command = [sys.executable, '-m', 'celery', '-A', 'djadmin', 'worker', '-l', 'info', '--concurrency', '2']
+        beat_command = [sys.executable, '-m', 'celery', '-A', 'djadmin', 'beat', '-l', 'info']
 
         worker_proc = subprocess.Popen(worker_command, env=env)
         self.stdout.write(self.style.SUCCESS(f'Celery worker started (pid={worker_proc.pid})'))

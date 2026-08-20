@@ -183,7 +183,6 @@ class MonitorTargetInstallHistorySerializer(ModelSerializer):
     host_name = serializers.SerializerMethodField()
     host_ip = serializers.SerializerMethodField()
     target_exporter_type = serializers.SerializerMethodField()
-    automation_job_exists = serializers.SerializerMethodField()
 
     class Meta:
         model = MonitorTargetInstallHistory
@@ -207,13 +206,26 @@ class MonitorTargetInstallHistorySerializer(ModelSerializer):
             return str(getattr(target, 'exporter_type', '') or '')
         return str(getattr(obj, 'exporter_type_snapshot', '') or '')
 
-    def get_automation_job_exists(self, obj):
-        if getattr(obj, 'automation_job_id', None):
-            return True
-        return False
-
 
 class AlertHistorySerializer(ModelSerializer):
+    notification_count = serializers.IntegerField(read_only=True, default=0)
+    notification_delivery_count = serializers.IntegerField(read_only=True, default=0)
+    notification_status = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_notification_status(obj):
+        notification_count = int(getattr(obj, 'notification_count', 0) or 0)
+        if notification_count == 0:
+            return 'none'
+        failed_count = int(getattr(obj, 'notification_failed_count', 0) or 0)
+        active_count = int(getattr(obj, 'notification_active_count', 0) or 0)
+        delivery_count = int(getattr(obj, 'notification_delivery_count', 0) or 0)
+        if failed_count > 0 or (active_count == 0 and delivery_count == 0):
+            return 'failed'
+        if active_count > 0:
+            return 'in_progress'
+        return 'success'
+
     class Meta:
         model = AlertHistory
         fields = '__all__'
@@ -299,6 +311,34 @@ class AlertMediaSerializer(ModelSerializer):
         data['config'] = config
         return data
 
+    @staticmethod
+    def _encrypted_config(config):
+        result = dict(config or {})
+        if result.get('password') and result.get('password') != '********':
+            result['password'] = encrypt_secret(result['password'])
+        return result
+
+    def create(self, validated_data):
+        validated_data['config'] = self._encrypted_config(validated_data.get('config'))
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if 'config' in validated_data:
+            incoming = dict(validated_data['config'] or {})
+            if incoming.get('password') == '********':
+                current = instance.config if isinstance(instance.config, dict) else {}
+                incoming['password'] = current.get('password', '')
+            validated_data['config'] = self._encrypted_config(incoming)
+        return super().update(instance, validated_data)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        config = dict(data.get('config') or {})
+        if config.get('password'):
+            config['password'] = '********'
+        data['config'] = config
+        return data
+
 
 class AlertRouteSerializer(ModelSerializer):
     media = serializers.PrimaryKeyRelatedField(
@@ -335,3 +375,47 @@ class AlertRouteSerializer(ModelSerializer):
         if media is not None and not media:
             raise serializers.ValidationError({'media': '至少选择一个通知媒介'})
         return attrs
+
+
+class UserAlertMediaBindingSerializer(ModelSerializer):
+    """用户媒介绑定序列化器：处理用户在某个媒介上的收件人配置。"""
+    
+    media_name = serializers.CharField(source='media.name', read_only=True)
+    media_type = serializers.CharField(source='media.media_type', read_only=True)
+
+    class Meta:
+        model = serializers.ModelSerializer
+        fields = [
+            'id', 'media', 'media_name', 'media_type', 'recipients', 'enabled',
+            'create_time', 'update_time', 'remark',
+        ]
+        read_only_fields = ['id', 'create_time', 'update_time']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from .models import UserAlertMediaBinding
+        self.Meta.model = UserAlertMediaBinding
+
+    def validate(self, attrs):
+        """验证并规范化收件人。"""
+        recipients_input = attrs.get('recipients', getattr(self.instance, 'recipients', []) if self.instance else [])
+        recipients = self._normalize_recipients(recipients_input)
+        if not recipients:
+            raise serializers.ValidationError({'recipients': '至少需要指定一个收件人邮箱'})
+        attrs['recipients'] = recipients
+        return attrs
+
+    @staticmethod
+    def _normalize_recipients(recipients_input):
+        """将收件人输入规范化为列表；支持字符串（逗号/分号分隔）和列表两种格式。"""
+        if isinstance(recipients_input, str):
+            recipients_input = recipients_input.replace(';', ',').split(',')
+        if not isinstance(recipients_input, list):
+            return []
+        result = []
+        for item in recipients_input:
+            email = str(item).strip() if item else ''
+            if email and '@' in email:
+                if email not in result:
+                    result.append(email)
+        return result

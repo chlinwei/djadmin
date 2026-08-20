@@ -1,10 +1,5 @@
 <template>
   <div class="template-page">
-    <a-tabs v-model:activeKey="currentType" class="template-type-tabs" @change="handleTypeChange">
-      <a-tab-pane key="playbook" tab="Playbook模板" />
-      <a-tab-pane key="shell_script" tab="Shell脚本模板" />
-    </a-tabs>
-
     <a-row :gutter="12" class="top-tools">
       <a-col :span="16">
         <a-space>
@@ -42,7 +37,7 @@
       </a-col>
     </a-row>
 
-    <a-card :title="currentType === 'playbook' ? 'Playbook模板' : 'Shell脚本模板'" size="small" class="block-card">
+    <a-card title="Playbook模板" size="small" class="block-card">
       <a-table
         :columns="columns"
         :data-source="rows"
@@ -53,12 +48,7 @@
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'type'">
-            <a-tag :color="record.template_type === 'playbook' ? 'blue' : 'gold'">
-              {{ record.template_type === 'playbook' ? 'Playbook' : 'Shell脚本' }}
-            </a-tag>
-          </template>
-          <template v-else-if="column.key === 'category'">
+          <template v-if="column.key === 'category'">
             <a-tooltip v-if="record.category === 'software_package'" title="由监控软件仓库自动管理，如需修改内容请前往对应软件包编辑页">
               <a-tag color="purple">软件包安装/卸载专用</a-tag>
             </a-tooltip>
@@ -71,7 +61,7 @@
             <a-space>
               <a-tooltip :title="record.category === 'software_package' ? '由监控软件仓库自动管理，请前往对应软件包编辑页修改' : '编辑'">
                 <a-button
-                  v-if="hasPermission(record.template_type, 'update') && record.category !== 'software_package'"
+                  v-if="hasPermission('update') && record.category !== 'software_package'"
                   size="small"
                   type="primary"
                   @click="openTemplateModal(record)"
@@ -81,7 +71,7 @@
               </a-tooltip>
               <a-tooltip title="下载">
                 <a-button
-                  v-if="hasPermission(record.template_type, 'view')"
+                  v-if="hasPermission('view')"
                   size="small"
                   :loading="downloadingTemplateId === record.id"
                   @click="downloadTemplate(record)"
@@ -91,7 +81,7 @@
               </a-tooltip>
               <a-tooltip title="删除">
                 <a-button
-                  v-if="hasPermission(record.template_type, 'delete') && record.category !== 'software_package'"
+                  v-if="hasPermission('delete') && record.category !== 'software_package'"
                   class="delBtn"
                   size="small"
                   type="primary"
@@ -118,9 +108,6 @@
       @cancel="templateModalVisible = false"
     >
       <a-form layout="vertical">
-        <a-form-item label="模板类型" required>
-          <a-select v-model:value="templateEdit.template_type" :options="typeOptions" :disabled="!!templateEdit.id" :getPopupContainer="getPopupContainer" />
-        </a-form-item>
         <a-form-item label="模板名称" required>
           <a-input v-model:value="templateEdit.name" />
         </a-form-item>
@@ -130,32 +117,32 @@
         <a-form-item label="描述">
           <a-input v-model:value="templateEdit.description" />
         </a-form-item>
-        <a-form-item v-if="templateEdit.id" :label="templateEdit.template_type === 'playbook' ? '模板文件导入' : '脚本文件导入'">
+        <a-form-item v-if="templateEdit.id" label="模板文件导入">
           <a-space>
             <a-upload
-              :accept="templateEdit.template_type === 'playbook' ? '.yml,.yaml' : '.sh'"
+              accept=".yml,.yaml"
               :show-upload-list="false"
               :custom-request="handleTemplateUpload"
             >
-              <a-button type="primary" ghost :loading="uploadingTemplateId === templateEdit.id" :disabled="!hasPermission(templateEdit.template_type, 'update')">
+              <a-button type="primary" ghost :loading="uploadingTemplateId === templateEdit.id" :disabled="!hasPermission('update')">
                 <UploadOutlined />
                 <span>&nbsp;上传文件覆盖当前内容</span>
               </a-button>
             </a-upload>
-            <span class="upload-tip">{{ templateEdit.template_type === 'playbook' ? '仅支持 .yml/.yaml，上传后将覆盖模板内容。' : '仅支持 .sh，上传后将覆盖脚本内容。' }}</span>
+            <span class="upload-tip">仅支持 .yml/.yaml，上传后将覆盖模板内容。</span>
           </a-space>
         </a-form-item>
-        <a-form-item :label="templateEdit.template_type === 'playbook' ? '模板内容（YAML）' : '脚本内容'" required>
+        <a-form-item label="模板内容（YAML）" required>
           <a-space style="margin-bottom: 8px;">
             <a-button
               type="primary"
               ghost
-              :loading="templateEdit.template_type === 'playbook' ? playbookCheckingSyntax : shellCheckingSyntax"
+              :loading="playbookCheckingSyntax"
               @click="checkTemplateSyntax"
             >
               <span>检查语法</span>
             </a-button>
-            <span class="upload-tip">{{ templateEdit.template_type === 'playbook' ? '保存前可手动校验 YAML/Playbook 结构' : '保存前可手动校验 Shell 语法结构' }}</span>
+            <span class="upload-tip">保存前可手动校验 YAML/Playbook 结构</span>
           </a-space>
           <div class="template-editor-wrap">
             <div ref="lineNumberGutterRef" class="template-editor-gutter" aria-hidden="true">
@@ -179,7 +166,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { checkPermission } from '@/directives/permission/permission'
@@ -187,37 +174,24 @@ import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   createPlaybook,
-  createShellScriptTemplate,
   deletePlaybook,
-  deleteShellScriptTemplate,
   downloadPlaybookFile,
-  downloadShellScriptTemplateFile,
   getPlaybookList,
-  getShellScriptTemplateList,
   uploadPlaybookFile,
-  uploadShellScriptTemplateFile,
   updatePlaybook,
-  updateShellScriptTemplate,
   validatePlaybookContent,
-  validateShellScriptContent,
 } from '@/api/sys/automation'
 
 const route = useRoute()
-const router = useRouter()
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
-const typeOptions = [
-  { label: 'Playbook', value: 'playbook' },
-  { label: 'Shell脚本', value: 'shell_script' },
-]
 // “软件包安装/卸载专用”模板改由监控软件仓库（软件包编辑弹窗）内联编辑安装/卸载内容自动创建/更新，
 // 不再支持在本页新建/把已有模板分类改成该值，避免同一份数据出现两个可编辑入口导致心智分裂。
 const categoryOptions = [
   { label: '通用', value: 'general' },
 ]
-const typeConfig = {
-  playbook: {
+const playbookConfig = {
     permPrefix: 'automation:playbooks',
     list: getPlaybookList,
     create: createPlaybook,
@@ -226,20 +200,8 @@ const typeConfig = {
     upload: uploadPlaybookFile,
     download: downloadPlaybookFile,
     uploadExts: ['.yml', '.yaml'],
-  },
-  shell_script: {
-    permPrefix: 'automation:shell_scripts',
-    list: getShellScriptTemplateList,
-    create: createShellScriptTemplate,
-    update: updateShellScriptTemplate,
-    remove: deleteShellScriptTemplate,
-    upload: uploadShellScriptTemplateFile,
-    download: downloadShellScriptTemplateFile,
-    uploadExts: ['.sh'],
-  },
 }
 
-const currentType = ref('playbook')
 const keyword = ref('')
 // 默认只看“通用”模板，避免和监控软件仓库专用的安装/卸载 playbook 混在一起；需要时可切换筛选查看。
 const categoryFilter = ref('general')
@@ -247,7 +209,6 @@ const rows = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const playbookCheckingSyntax = ref(false)
-const shellCheckingSyntax = ref(false)
 const templateModalVisible = ref(false)
 const uploadingTemplateId = ref(null)
 const downloadingTemplateId = ref(null)
@@ -263,7 +224,6 @@ const pagination = reactive({
 
 const templateEdit = reactive({
   id: null,
-  template_type: 'playbook',
   name: '',
   description: '',
   content: '',
@@ -285,15 +245,14 @@ const categoryFilterOptions = [
   { label: '分类：软件包安装/卸载专用', value: 'software_package' },
   { label: '分类：全部', value: '' },
 ]
-const canCreateCurrentType = computed(() => hasPermission(currentType.value, 'create'))
+const canCreateCurrentType = computed(() => hasPermission('create'))
 const templateLineNumbers = computed(() => {
   const lineCount = String(templateEdit.content || '').split('\n').length
   return Array.from({ length: Math.max(lineCount, 1) }, (_, index) => index + 1)
 })
 
-function hasPermission(type, action) {
-  const prefix = typeConfig[type]?.permPrefix || typeConfig.playbook.permPrefix
-  return checkPermission(`${prefix}:${action}`)
+function hasPermission(action) {
+  return checkPermission(`${playbookConfig.permPrefix}:${action}`)
 }
 
 function resolveOrdering() {
@@ -317,11 +276,11 @@ async function loadTemplates(resetPage = false) {
       ordering: resolveOrdering(),
     }
     if (categoryFilter.value) params.category = categoryFilter.value
-    const res = await typeConfig[currentType.value].list(params)
+    const res = await playbookConfig.list(params)
 
     const data = res?.data?.data || {}
     const records = Array.isArray(data.results) ? data.results : []
-    rows.value = records.map((item) => ({ ...item, template_type: currentType.value }))
+    rows.value = records
     pagination.total = Number(data.count || 0)
   } finally {
     loading.value = false
@@ -330,7 +289,6 @@ async function loadTemplates(resetPage = false) {
 
 function resetTemplateEdit() {
   templateEdit.id = null
-  templateEdit.template_type = currentType.value
   templateEdit.name = ''
   templateEdit.description = ''
   templateEdit.content = ''
@@ -341,7 +299,6 @@ function openTemplateModal(record = null) {
   resetTemplateEdit()
   if (record) {
     templateEdit.id = record.id
-    templateEdit.template_type = record.template_type
     templateEdit.name = record.name || ''
     templateEdit.description = record.description || ''
     templateEdit.content = record.content || ''
@@ -377,29 +334,17 @@ function triggerFileDownload(blob, filename) {
 }
 
 async function checkTemplateSyntax() {
-  const isPlaybook = templateEdit.template_type === 'playbook'
   if (!String(templateEdit.content || '').trim()) {
-    message.error(isPlaybook ? '请先输入模板内容' : '请先输入脚本内容')
+    message.error('请先输入模板内容')
     return
   }
 
-  if (isPlaybook) {
-    playbookCheckingSyntax.value = true
-    try {
-      await validatePlaybookContent({ content: templateEdit.content })
-      message.success('语法检查通过')
-    } finally {
-      playbookCheckingSyntax.value = false
-    }
-    return
-  }
-
-  shellCheckingSyntax.value = true
+  playbookCheckingSyntax.value = true
   try {
-    await validateShellScriptContent({ content: templateEdit.content })
+    await validatePlaybookContent({ content: templateEdit.content })
     message.success('语法检查通过')
   } finally {
-    shellCheckingSyntax.value = false
+    playbookCheckingSyntax.value = false
   }
 }
 
@@ -410,7 +355,7 @@ async function handleTemplateUpload(options) {
     return
   }
 
-  const cfg = typeConfig[templateEdit.template_type]
+  const cfg = playbookConfig
   const filename = String(file.name || '')
   const lower = filename.toLowerCase()
   const allowed = cfg.uploadExts
@@ -441,12 +386,10 @@ async function handleTemplateUpload(options) {
 async function downloadTemplate(record) {
   downloadingTemplateId.value = record.id
   try {
-    const cfg = typeConfig[record.template_type]
-    const res = await cfg.download(record.id)
+    const res = await playbookConfig.download(record.id)
     const headers = res?.headers || {}
     const contentDisposition = headers['content-disposition'] || headers['Content-Disposition']
-    const fallbackExt = record.template_type === 'playbook' ? '.yml' : '.sh'
-    const fallbackName = `${record.name || 'template'}${fallbackExt}`
+    const fallbackName = `${record.name || 'template'}.yml`
     const filename = parseDownloadFilename(contentDisposition, fallbackName)
     triggerFileDownload(res.data, filename)
   } finally {
@@ -474,18 +417,13 @@ async function submitTemplate() {
   submitting.value = true
   try {
     try {
-      if (templateEdit.template_type === 'playbook') {
-        await validatePlaybookContent({ content: templateEdit.content })
-      } else {
-        await validateShellScriptContent({ content: templateEdit.content })
-      }
+      await validatePlaybookContent({ content: templateEdit.content })
     } catch (error) {
       return
     }
 
-    const cfg = typeConfig[templateEdit.template_type]
-    if (templateEdit.id) await cfg.update(templateEdit.id, payload)
-    else await cfg.create(payload)
+    if (templateEdit.id) await playbookConfig.update(templateEdit.id, payload)
+    else await playbookConfig.create(payload)
 
     message.success(templateEdit.id ? '模板更新成功' : '模板创建成功')
     templateModalVisible.value = false
@@ -496,7 +434,7 @@ async function submitTemplate() {
 }
 
 async function onDeleteTemplate(record) {
-  await typeConfig[record.template_type].remove(record.id)
+  await playbookConfig.remove(record.id)
   message.success('模板删除成功')
   await loadTemplates(false)
 }
@@ -528,19 +466,7 @@ function handleTableChange(page, _filters, sorter) {
   loadTemplates(false)
 }
 
-async function handleTypeChange(value) {
-  pagination.current = 1
-  const search = String(keyword.value || '').trim()
-  await router.replace({
-    path: '/sys/automation/templates',
-    query: { ...(search ? { search } : {}), type: value },
-  })
-  await loadTemplates(false)
-}
-
 onMounted(async () => {
-  const queryType = String(route.query.type || '').trim()
-  currentType.value = queryType === 'shell_script' ? 'shell_script' : 'playbook'
   keyword.value = String(route.query.search || route.query.keyword || '').trim()
   pagination.current = 1
   await loadTemplates(false)

@@ -1,5 +1,7 @@
 import fnmatch
 import re
+from types import SimpleNamespace
+from typing import Any, cast
 
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
@@ -11,7 +13,6 @@ from assets.models import Host, HostGroup
 
 from .models import (
     PlaybookTemplate,
-    ShellScriptTemplate,
     AutomationTask,
     AutomationInventory,
     AutomationExecutionJob,
@@ -193,16 +194,6 @@ class PlaybookTemplateSerializer(ModelSerializer):
         return PlaybookTemplate.objects.create(**validated_data)
 
 
-class ShellScriptTemplateSerializer(ModelSerializer):
-    class Meta:
-        model = ShellScriptTemplate
-        fields = '__all__'
-
-    def create(self, validated_data):
-        validated_data['create_time'] = timezone.now()
-        return ShellScriptTemplate.objects.create(**validated_data)
-
-
 class AutomationTaskSerializer(ModelSerializer):
     template_name = serializers.SerializerMethodField()
     inventory_name = serializers.SerializerMethodField()
@@ -220,11 +211,8 @@ class AutomationTaskSerializer(ModelSerializer):
         fields = '__all__'
 
     def get_template_name(self, obj):
-        # 优先返回 playbook_template，如果没有则返回 shell_script_template
         if obj.playbook_template_id:
             return f'[Playbook] {obj.playbook_template.name}'
-        elif obj.shell_script_template_id:
-            return f'[ShellScript] {obj.shell_script_template.name}'
         return ''
 
     def get_inventory_name(self, obj):
@@ -597,11 +585,6 @@ class AutomationTaskSerializer(ModelSerializer):
             raise serializers.ValidationError('env_vars must be an object')
         return value
 
-    def validate_shell_parameters(self, value):
-        if value is None:
-            return ''
-        return str(value).strip()
-
     def validate_default_limit(self, value):
         if value is None:
             return ''
@@ -612,17 +595,13 @@ class AutomationTaskSerializer(ModelSerializer):
 
     def validate(self, attrs):
         playbook_template = attrs.get('playbook_template')
-        shell_script_template = attrs.get('shell_script_template')
 
         if self.instance is not None:
             if 'playbook_template' not in attrs:
                 playbook_template = getattr(self.instance, 'playbook_template', None)
-            if 'shell_script_template' not in attrs:
-                shell_script_template = getattr(self.instance, 'shell_script_template', None)
 
-        selected_count = int(playbook_template is not None) + int(shell_script_template is not None)
-        if selected_count != 1:
-            raise serializers.ValidationError('必须且只能选择一种模板（Playbook 或 Shell 脚本）')
+        if playbook_template is None:
+            raise serializers.ValidationError('自动化任务必须绑定 Playbook 模板')
 
         return attrs
 
@@ -1022,13 +1001,13 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
 
         host_count = 0
         if not is_empty_scope:
-            conditions = Q()
-            if host_ids:
-                conditions |= Q(id__in=host_ids)
-            descendant_ids = self._build_group_descendants(group_ids)
-            if descendant_ids:
-                conditions |= Q(group_id__in=list(descendant_ids))
-            host_count = Host.objects.filter(ip__isnull=False).filter(conditions).distinct().count() if conditions else 0
+            # Workflow 列表的数量必须与 default_limit 一致，复用任务列表的唯一 Limit 匹配逻辑。
+            scope_proxy = SimpleNamespace(
+                inventory=inventory,
+                default_limit=getattr(obj, 'default_limit', ''),
+            )
+            task_scope_serializer = cast(Any, AutomationTaskSerializer())
+            host_count = task_scope_serializer._build_limit_preview(scope_proxy)['total']
 
         if is_empty_scope:
             label = 'Inventory 无主机'
@@ -1246,7 +1225,7 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
         if job_ids:
             rows = list(AutomationExecutionJob.objects.filter(id__in=list(set(job_ids))).values(
                 'id', 'status', 'start_time', 'end_time', 'duration_seconds',
-                'task_id', 'task__playbook_template_id', 'task__shell_script_template_id',
+                'task_id', 'task__playbook_template_id',
                 'task_name_snapshot', 'template_name_snapshot'
             ))
             job_status_map = {int(row['id']): str(row.get('status') or '').lower() for row in rows}
@@ -1315,13 +1294,10 @@ class AutomationWorkflowRunSerializer(ModelSerializer):
                 item['duration_seconds'] = _resolve_duration_seconds(job_time_map.get(int(job_id)), live_status)
                 job_meta = job_meta_map.get(int(job_id), {})
                 item['job_task_id'] = int(job_meta['task_id']) if str(job_meta.get('task_id', '')).isdigit() else None
-                # AutomationExecutionJob 不再直接关联 template，模板 ID 通过 task 的 playbook/shell 字段反查。
+                # AutomationExecutionJob 不再直接关联 template，模板 ID 通过 task 的 Playbook 反查。
                 playbook_template_id = job_meta.get('task__playbook_template_id')
-                shell_template_id = job_meta.get('task__shell_script_template_id')
                 if str(playbook_template_id or '').isdigit():
                     item['job_template_id'] = int(playbook_template_id)
-                elif str(shell_template_id or '').isdigit():
-                    item['job_template_id'] = int(shell_template_id)
                 else:
                     item['job_template_id'] = None
                 item['job_task_name_snapshot'] = str(job_meta.get('task_name_snapshot') or '').strip()

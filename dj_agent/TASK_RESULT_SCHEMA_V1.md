@@ -57,6 +57,8 @@
   "agent_version": "dj_agent:v1",
   "agent_version_raw": "v1",
   "go_version": "go1.26.5",
+  "os_timezone": "Asia/Shanghai",
+  "os_utc_offset": "UTC+08:00",
   "os": "linux",
   "arch": "amd64"
 }
@@ -69,6 +71,8 @@
 | agent_version | string | 是 | 带前缀版本号，格式 `dj_agent:<version>` |
 | agent_version_raw | string | 是 | 纯版本号，如 `v1` |
 | go_version | string | 是 | Go 运行时版本 |
+| os_timezone | string | 是 | 主机操作系统时区名称，优先返回 IANA 名称 |
+| os_utc_offset | string | 是 | 主机当前 UTC 偏移，如 `UTC+08:00` |
 | os | string | 是 | 运行系统 |
 | arch | string | 是 | CPU 架构 |
 

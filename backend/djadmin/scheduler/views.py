@@ -38,7 +38,8 @@ class ScheduledTaskViewSet(
     def get_queryset(self):
         """Override to support search and filter functionality"""
         ensure_default_tasks()
-        queryset = ScheduledTask.objects.all()
+        # 历史告警保留策略由智能监控的“告警设置”管理，内部清理任务不在通用任务中心展示。
+        queryset = ScheduledTask.objects.exclude(code='cleanup_alert_histories')
         params = self.request.query_params  # type: ignore[union-attr]
 
         search = params.get('search')

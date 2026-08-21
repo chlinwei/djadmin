@@ -13,14 +13,10 @@
           </a-tooltip>
         </a-space>
       </template>
-      <!-- 用 a-tabs 划分“当前告警/历史告警”层级：当前告警读取 Prometheus 实时数据，
-           历史告警后续接入时作为同级 tab-pane 新增，避免与当前告警的展示逻辑耦合。 -->
+      <!-- 用 a-tabs 划分当前告警/历史告警，两个主视图统一使用时间线展示。 -->
       <a-tabs v-model:activeKey="activeTabKey">
         <a-tab-pane key="current" tab="当前告警">
           <a-space style="margin-bottom: 12px" wrap>
-            <a-tooltip title="刷新">
-              <a-button type="primary" ghost :loading="loading" @click="loadAlerts">刷新</a-button>
-            </a-tooltip>
             <a-tag color="red">firing：{{ firingCount }}</a-tag>
             <a-tag color="default">resolved：{{ resolvedCount }}</a-tag>
             <a-select
@@ -51,68 +47,75 @@
 
           <a-alert v-if="loadError" type="error" show-icon :message="loadError" style="margin-bottom: 12px" />
 
-          <a-table
-            rowKey="rowKey"
-            :columns="columns"
-            :data-source="filteredRows"
-            :loading="loading"
-            size="small"
-            :scroll="{ x: 1800 }"
-            :pagination="{ showSizeChanger: true, showQuickJumper: true, showTotal: (total) => `共有 ${total} 条数据` }"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'severity'">
-                <a-tag v-if="record.severity" :color="severityColor(record.severity)">{{ record.severity }}</a-tag>
-                <span v-else>-</span>
+          <a-spin :spinning="loading">
+            <a-empty v-if="!filteredRows.length" description="暂无当前告警" />
+            <a-table
+              v-else
+              row-key="key"
+              :columns="currentAlertColumns"
+              :data-source="currentTimelineEntries"
+              :pagination="false"
+              :scroll="{ x: 1250 }"
+              size="small"
+              :row-class-name="timelineRowClassName"
+              :expandable="{ rowExpandable: isAlertEntryExpandable }"
+            >
+              <template #headerCell="{ column }">
+                <a-button v-if="column.key === 'active_at'" type="link" size="small" class="time-sort-button" @click="toggleCurrentTimeOrder">
+                  时间 {{ currentTimeOrder === 'desc' ? '↓' : '↑' }}
+                </a-button>
               </template>
-              <template v-else-if="column.key === 'state'">
-                <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
+              <template #bodyCell="{ column, record }">
+                <template v-if="record.type === 'separator'">
+                  <span v-if="column.key === 'active_at'" class="timeline-date-node">{{ record.label }}</span>
+                </template>
+                <template v-else-if="column.key === 'active_at'">
+                  {{ formatTimelineTime(record.record.active_at) }}
+                </template>
+                <template v-else-if="column.key === 'severity'">
+                  <a-tag v-if="record.record.severity" :color="severityColor(record.record.severity)">{{ record.record.severity }}</a-tag>
+                  <span v-else>-</span>
+                </template>
+                <template v-else-if="column.key === 'state'">
+                  <a-tag :color="stateColor(record.record.state)">{{ record.record.state || 'unknown' }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'rule_group'">{{ record.record.rule_group || '-' }}</template>
+                <template v-else-if="column.key === 'summary'">{{ record.record.summary || '-' }}</template>
+                <template v-else-if="column.key === 'value'">{{ formatCurrentValue(record.record.value) }}</template>
+                <template v-else-if="column.key === 'labels'">
+                  <a-space v-if="alertLabelEntries(record.record.labels).length" size="small" wrap>
+                    <a-tag v-for="[labelKey, labelValue] in alertLabelEntries(record.record.labels)" :key="labelKey" class="alert-label-tag">
+                      {{ labelKey }}={{ labelValue }}
+                    </a-tag>
+                  </a-space>
+                  <span v-else>-</span>
+                </template>
+                <template v-else-if="column.key === 'operation'">
+                  <a-tooltip v-if="record.record.history_id && record.record.notification_count > 0" title="查看日志" placement="top">
+                    <a-button type="link" size="small" :class="['notification-summary-action', `is-${record.record.notification_status}`]" @click="openNotificationStatus(record.record.history_id)">
+                      <template #icon><EyeOutlined /></template>
+                      <a-badge :status="notificationBadgeStatus(record.record.notification_status)" />
+                      {{ notificationSummaryLabel(record.record.notification_status) }}
+                    </a-button>
+                  </a-tooltip>
+                  <span v-else>-</span>
+                </template>
+                <template v-else>{{ record.record[column.dataIndex] || '-' }}</template>
               </template>
-              <template v-else-if="column.key === 'labels'">
-                <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
-                  <a-tag
-                    v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
-                    :key="labelKey"
-                    class="alert-label-tag"
-                  >{{ labelKey }}={{ labelValue }}</a-tag>
-                </a-space>
-                <span v-else>-</span>
+              <template #expandedRowRender="{ record }">
+                <div v-if="record.type !== 'separator'" class="alert-rule-detail">
+                  <p><strong>PromQL：</strong>{{ record.record.rule_details?.query || '-' }}</p>
+                  <p v-if="Object.keys(record.record.rule_details?.labels || {}).length"><strong>标签：</strong>{{ formatKeyValues(record.record.rule_details.labels) }}</p>
+                  <p v-if="record.record.rule_details?.annotations?.summary"><strong>summary：</strong>{{ record.record.rule_details.annotations.summary }}</p>
+                  <p v-if="record.record.rule_details?.annotations?.description"><strong>description：</strong>{{ record.record.rule_details.annotations.description }}</p>
+                </div>
               </template>
-              <template v-else-if="column.key === 'summary'">
-                <a-typography-text :content="record.summary || '-'" ellipsis style="max-width: 360px" />
-              </template>
-              <template v-else-if="column.key === 'active_at'">
-                {{ formatActiveAt(record.active_at) }}
-              </template>
-              <template v-else-if="column.key === 'value'">
-                {{ formatCurrentValue(record.value) }}
-              </template>
-              <template v-else-if="column.key === 'operation'">
-                <a-tooltip v-if="record.history_id && record.notification_count > 0" title="查看日志" placement="top">
-                  <a-button
-                    type="link"
-                    size="small"
-                    :class="['notification-summary-action', `is-${record.notification_status}`]"
-                    @click="openNotificationStatus(record.history_id)"
-                  >
-                    <template #icon><EyeOutlined /></template>
-                    <a-badge :status="notificationBadgeStatus(record.notification_status)" />
-                    {{ notificationSummaryLabel(record.notification_status) }}
-                    <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
-                  </a-button>
-                </a-tooltip>
-                <span v-else>-</span>
-              </template>
-            </template>
-          </a-table>
+            </a-table>
+          </a-spin>
         </a-tab-pane>
 
         <a-tab-pane key="history" tab="历史告警" force-render>
           <a-space style="margin-bottom: 12px" wrap>
-            <a-segmented v-model:value="historyViewMode" :options="historyViewOptions" />
-            <a-tooltip title="刷新">
-              <a-button type="primary" ghost :loading="historyLoading" @click="loadAlertHistory">刷新</a-button>
-            </a-tooltip>
             <a-select
               v-model:value="historyState"
               :options="historyStateOptions"
@@ -154,122 +157,66 @@
 
           <a-alert v-if="historyLoadError" type="error" show-icon :message="historyLoadError" style="margin-bottom: 12px" />
 
-          <a-table
-            v-if="historyViewMode === 'table'"
-            rowKey="id"
-            :columns="historyColumns"
-            :data-source="historyRows"
-            :loading="historyLoading"
-            size="small"
-            :scroll="{ x: 1700 }"
-            :pagination="historyPagination"
-            @change="handleHistoryTableChange"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'severity'">
-                <a-tag v-if="record.severity" :color="severityColor(record.severity)">{{ record.severity }}</a-tag>
-                <span v-else>-</span>
-              </template>
-              <template v-else-if="column.key === 'state'">
-                <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'labels'">
-                <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
-                  <a-tag
-                    v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
-                    :key="labelKey"
-                    class="alert-label-tag"
-                  >{{ labelKey }}={{ labelValue }}</a-tag>
-                </a-space>
-                <span v-else>-</span>
-              </template>
-              <template v-else-if="column.key === 'started_at'">
-                {{ formatActiveAt(record.started_at) }}
-              </template>
-              <template v-else-if="column.key === 'resolved_at'">
-                <span v-if="!record.resolved_at">仍在告警中</span>
-                <a-tooltip v-else-if="record.resolved_by_reconciliation" title="该恢复时间由每日对账兜底订正，非 Prometheus 精确推送">
-                  {{ formatActiveAt(record.resolved_at) }}（对账）
-                </a-tooltip>
-                <span v-else>{{ formatActiveAt(record.resolved_at) }}</span>
-              </template>
-              <template v-else-if="column.key === 'duration'">
-                {{ formatAlertDuration(record.started_at, record.resolved_at) }}
-              </template>
-              <template v-else-if="column.key === 'operation'">
-                <a-tooltip v-if="record.notification_count > 0" title="查看日志" placement="top">
-                  <a-button
-                    type="link"
-                    size="small"
-                    :class="['notification-summary-action', `is-${record.notification_status}`]"
-                    @click="openNotificationStatus(record.id)"
-                  >
-                    <template #icon><EyeOutlined /></template>
-                    <a-badge :status="notificationBadgeStatus(record.notification_status)" />
-                    {{ notificationSummaryLabel(record.notification_status) }}
-                    <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
-                  </a-button>
-                </a-tooltip>
-                <span v-else>-</span>
-              </template>
-            </template>
-          </a-table>
-
-          <a-spin v-else :spinning="historyLoading">
+          <a-spin :spinning="historyLoading">
             <a-empty v-if="!historyRows.length" description="暂无历史告警" />
-            <div v-else class="history-timeline-wrap">
-              <a-timeline>
-                <a-timeline-item
-                  v-for="record in historyRows"
-                  :key="record.id"
-                  :color="timelineColor(record)"
-                >
-                  <div class="history-timeline-item">
-                    <div class="history-timeline-heading">
-                      <a-space size="middle" wrap>
-                        <a-typography-text class="history-timeline-time">{{ formatActiveAt(record.started_at) }}</a-typography-text>
-                        <a-typography-text strong>{{ record.alertname || '-' }}</a-typography-text>
-                      </a-space>
-                      <a-space size="small" wrap>
-                        <a-tag v-if="record.severity" :color="severityColor(record.severity)">{{ record.severity }}</a-tag>
-                        <a-tag :color="stateColor(record.state)">{{ record.state || 'unknown' }}</a-tag>
-                      </a-space>
-                    </div>
-                    <div class="history-timeline-meta">
-                      <span><span class="meta-label">实例</span>{{ record.instance || '-' }}</span>
-                      <span><span class="meta-label">恢复时间</span>{{ record.resolved_at ? formatActiveAt(record.resolved_at) : '仍在告警中' }}</span>
-                      <span><span class="meta-label">持续时间</span>{{ formatAlertDuration(record.started_at, record.resolved_at) }}</span>
-                    </div>
-                    <div class="history-timeline-labels">
-                      <span class="meta-label">标签</span>
-                      <a-space v-if="alertLabelEntries(record.labels).length" size="small" wrap>
-                        <a-tag
-                          v-for="[labelKey, labelValue] in alertLabelEntries(record.labels)"
-                          :key="labelKey"
-                          class="alert-label-tag"
-                        >{{ labelKey }}={{ labelValue }}</a-tag>
-                      </a-space>
-                      <span v-else>-</span>
-                    </div>
-                    <div class="history-timeline-action">
-                      <a-tooltip v-if="record.notification_count > 0" title="查看日志" placement="top">
-                        <a-button
-                          type="link"
-                          size="small"
-                          :class="['notification-summary-action', `is-${record.notification_status}`]"
-                          @click="openNotificationStatus(record.id)"
-                        >
-                          <template #icon><EyeOutlined /></template>
-                          <a-badge :status="notificationBadgeStatus(record.notification_status)" />
-                          {{ notificationSummaryLabel(record.notification_status) }}
-                          <span v-if="record.notification_delivery_count"> ({{ record.notification_delivery_count }})</span>
-                        </a-button>
-                      </a-tooltip>
-                      <span v-else>-</span>
-                    </div>
+            <div v-else class="history-table-wrap">
+              <a-table
+                row-key="key"
+                :columns="historyAlertColumns"
+                :data-source="historyTimelineEntries"
+                :pagination="false"
+                :scroll="{ x: 1250 }"
+                size="small"
+                :row-class-name="timelineRowClassName"
+                :expandable="{ rowExpandable: isAlertEntryExpandable }"
+              >
+                <template #headerCell="{ column }">
+                  <a-button v-if="column.key === 'started_at'" type="link" size="small" class="time-sort-button" @click="toggleHistoryTimeOrder">
+                    时间 {{ historyOrdering === '-started_at' ? '↓' : '↑' }}
+                  </a-button>
+                </template>
+                <template #bodyCell="{ column, record }">
+                  <template v-if="record.type === 'separator'">
+                    <span v-if="column.key === 'started_at'" class="timeline-date-node">{{ record.label }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'started_at'">{{ formatTimelineTime(record.record.started_at) }}</template>
+                  <template v-else-if="column.key === 'severity'">
+                    <a-tag v-if="record.record.severity" :color="severityColor(record.record.severity)">{{ record.record.severity }}</a-tag>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'state'"><a-tag :color="stateColor(record.record.state)">{{ record.record.state || 'unknown' }}</a-tag></template>
+                  <template v-else-if="column.key === 'rule_group'">{{ record.record.rule_group || '-' }}</template>
+                  <template v-else-if="column.key === 'labels'">
+                    <a-space v-if="alertLabelEntries(record.record.labels).length" size="small" wrap>
+                      <a-tag v-for="[labelKey, labelValue] in alertLabelEntries(record.record.labels)" :key="labelKey" class="alert-label-tag">
+                        {{ labelKey }}={{ labelValue }}
+                      </a-tag>
+                    </a-space>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'resolved_at'">{{ record.record.resolved_at ? formatActiveAt(record.record.resolved_at) : '仍在告警中' }}</template>
+                  <template v-else-if="column.key === 'operation'">
+                    <a-tooltip v-if="record.record.notification_count > 0" title="查看日志" placement="top">
+                      <a-button type="link" size="small" :class="['notification-summary-action', `is-${record.record.notification_status}`]" @click="openNotificationStatus(record.record.id)">
+                        <template #icon><EyeOutlined /></template>
+                        <a-badge :status="notificationBadgeStatus(record.record.notification_status)" />
+                        {{ notificationSummaryLabel(record.record.notification_status) }}
+                      </a-button>
+                    </a-tooltip>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'duration'">{{ formatAlertDuration(record.record.started_at, record.record.resolved_at) }}</template>
+                  <template v-else>{{ record.record[column.dataIndex] || '-' }}</template>
+                </template>
+                <template #expandedRowRender="{ record }">
+                  <div v-if="record.type !== 'separator'" class="alert-rule-detail">
+                    <p><strong>PromQL：</strong>{{ record.record.rule_details?.query || '-' }}</p>
+                    <p v-if="Object.keys(record.record.rule_details?.labels || {}).length"><strong>标签：</strong>{{ formatKeyValues(record.record.rule_details.labels) }}</p>
+                    <p v-if="record.record.rule_details?.annotations?.summary"><strong>summary：</strong>{{ record.record.rule_details.annotations.summary }}</p>
+                    <p v-if="record.record.rule_details?.annotations?.description"><strong>description：</strong>{{ record.record.rule_details.annotations.description }}</p>
                   </div>
-                </a-timeline-item>
-              </a-timeline>
+                </template>
+              </a-table>
               <a-pagination
                 :current="historyPagination.current"
                 :page-size="historyPagination.pageSize"
@@ -318,12 +265,6 @@
           </template>
           <template v-else-if="column.key === 'time'">
             {{ formatActiveAt(record.sent_at || record.create_time) }}
-          </template>
-          <template v-else-if="column.key === 'error_message'">
-            <a-tooltip v-if="record.error_message" :title="record.error_message">
-              <a-typography-text :content="record.error_message" ellipsis style="max-width: 260px" />
-            </a-tooltip>
-            <span v-else>-</span>
           </template>
         </template>
       </a-table>
@@ -397,24 +338,6 @@ const severityFilterOptions = computed(() => {
   return [{ label: '全部级别', value: 'all' }, ...values.map((v) => ({ label: v, value: v }))]
 })
 
-const columns = [
-  {
-    title: '触发时间',
-    key: 'active_at',
-    width: 200,
-    sorter: (left, right) => compareDateTime(left.active_at, right.active_at),
-    defaultSortOrder: 'descend',
-  },
-  { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
-  { title: '级别', key: 'severity', width: 100 },
-  { title: '状态', key: 'state', width: 100 },
-  { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
-  { title: '标签', key: 'labels', width: 380 },
-  { title: '摘要', key: 'summary', width: 360 },
-  { title: '当前值', dataIndex: 'value', key: 'value', width: 120 },
-  { title: '操作', key: 'operation', fixed: 'right', width: 180 },
-]
-
 function parseApiData(res) {
   const payload = res?.data || res
   if (payload && typeof payload === 'object' && payload.data !== undefined) {
@@ -442,10 +365,88 @@ function timelineColor(record) {
   return 'green'
 }
 
+const currentAlertColumns = [
+  { title: '时间', dataIndex: 'active_at', key: 'active_at', width: 190 },
+  { title: '严重性', key: 'severity', width: 100 },
+  { title: '规则组', dataIndex: 'rule_group', key: 'rule_group', width: 180 },
+  { title: '状态', key: 'state', width: 100 },
+  { title: '主机/实例', dataIndex: 'instance', key: 'instance', width: 220 },
+  { title: '问题', key: 'summary', width: 360 },
+  { title: '标签', key: 'labels', width: 320 },
+  { title: '当前值', dataIndex: 'value', key: 'value', width: 120 },
+  { title: '操作', key: 'operation', fixed: 'right', width: 150 },
+]
+
+const historyAlertColumns = [
+  { title: '时间', dataIndex: 'started_at', key: 'started_at', width: 190 },
+  { title: '严重性', key: 'severity', width: 100 },
+  { title: '规则组', dataIndex: 'rule_group', key: 'rule_group', width: 180 },
+  { title: '状态', key: 'state', width: 100 },
+  { title: '主机/实例', dataIndex: 'instance', key: 'instance', width: 220 },
+  { title: '标签', key: 'labels', width: 320 },
+  { title: '恢复时间', key: 'resolved_at', width: 190 },
+  { title: '持续时间', key: 'duration', width: 140 },
+  { title: '操作', key: 'operation', fixed: 'right', width: 150 },
+]
+
+function timelineRowClassName(record) {
+  return record.type === 'separator' ? 'timeline-separator-row' : ''
+}
+
 // 按用户时区显示 Prometheus 返回的 activeAt（UTC RFC3339），与全站时间显示规范保持一致
 function formatActiveAt(value) {
   if (!value) return '-'
   return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
+}
+
+function getTimelineBucket(value, now = dayjs().tz(userTimezone.value)) {
+  const date = dayjs(value).tz(userTimezone.value)
+  if (!date.isValid()) return 'unknown'
+  if (date.isSame(now, 'day')) return 'today'
+  if (date.isSame(now.subtract(1, 'day'), 'day')) return 'yesterday'
+  return date.format('YYYY-MM')
+}
+
+function formatTimelineTime(value) {
+  const date = dayjs(value).tz(userTimezone.value)
+  if (!date.isValid()) return '-'
+  const bucket = getTimelineBucket(value)
+  if (bucket === 'today') return date.format('HH:mm:ss')
+  return date.format('YYYY年MM月DD日 HH:mm:ss')
+}
+
+function formatTimelineBucketLabel(bucket) {
+  if (bucket === 'today') return '今天'
+  if (bucket === 'yesterday') return '昨天'
+  if (bucket === 'unknown') return '时间未知'
+  const [year, month] = bucket.split('-')
+  const currentYear = dayjs().tz(userTimezone.value).year()
+  return Number(year) === currentYear ? `${Number(month)}月` : `${year}年${Number(month)}月`
+}
+
+function buildTimelineEntries(rows, timeField, keyPrefix, order = 'desc') {
+  const sortedRows = [...rows].sort((left, right) => {
+    const leftTime = dayjs(left[timeField]).valueOf()
+    const rightTime = dayjs(right[timeField]).valueOf()
+    const leftValue = Number.isFinite(leftTime) ? leftTime : 0
+    const rightValue = Number.isFinite(rightTime) ? rightTime : 0
+    return order === 'asc' ? leftValue - rightValue : rightValue - leftValue
+  })
+  const entries = []
+  sortedRows.forEach((record, index) => {
+    const bucket = getTimelineBucket(record[timeField])
+    entries.push({ type: 'record', record, key: `${keyPrefix}-record-${record.rowKey || record.id || index}` })
+    const nextRecord = sortedRows[index + 1]
+    const nextBucket = nextRecord ? getTimelineBucket(nextRecord[timeField]) : null
+    if (bucket !== nextBucket) {
+      entries.push({
+        type: 'separator',
+        label: formatTimelineBucketLabel(bucket),
+        key: `${keyPrefix}-separator-${bucket}-${index}`,
+      })
+    }
+  })
+  return entries
 }
 
 function formatCurrentValue(value) {
@@ -455,17 +456,19 @@ function formatCurrentValue(value) {
   return Number(numeric.toFixed(2)).toString()
 }
 
-function compareDateTime(left, right) {
-  const leftTime = left ? new Date(left).getTime() : 0
-  const rightTime = right ? new Date(right).getTime() : 0
-  return leftTime - rightTime
-}
-
 function alertLabelEntries(labels) {
   if (!labels || typeof labels !== 'object' || Array.isArray(labels)) return []
   return Object.entries(labels)
     .map(([key, value]) => [String(key), String(value ?? '')])
     .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+}
+
+function formatKeyValues(values) {
+  return Object.entries(values || {}).map(([key, value]) => `${key}=${value}`).join(', ')
+}
+
+function isAlertEntryExpandable(record) {
+  return record.type !== 'separator'
 }
 
 const filteredRows = computed(() => {
@@ -482,6 +485,13 @@ const filteredRows = computed(() => {
     )
   })
 })
+
+const currentTimeOrder = ref('desc')
+const currentTimelineEntries = computed(() => buildTimelineEntries(filteredRows.value, 'active_at', 'current', currentTimeOrder.value))
+
+function toggleCurrentTimeOrder() {
+  currentTimeOrder.value = currentTimeOrder.value === 'desc' ? 'asc' : 'desc'
+}
 
 async function loadAlerts() {
   loading.value = true
@@ -525,11 +535,6 @@ const historyState = ref('all')
 const historySeverity = ref('all')
 const historyNotificationStatus = ref('all')
 const historyOrdering = ref('-started_at')
-const historyViewMode = ref('table')
-const historyViewOptions = [
-  { label: '表格', value: 'table' },
-  { label: '时间线', value: 'timeline' },
-]
 const historyTimeRange = ref([])
 const historyPagination = reactive({
   current: 1,
@@ -539,6 +544,19 @@ const historyPagination = reactive({
   showQuickJumper: true,
   showTotal: (total) => `共有 ${total} 条数据`,
 })
+
+const historyTimelineEntries = computed(() => buildTimelineEntries(
+  historyRows.value,
+  'started_at',
+  'history',
+  historyOrdering.value === 'started_at' ? 'asc' : 'desc',
+))
+
+function toggleHistoryTimeOrder() {
+  historyOrdering.value = historyOrdering.value === '-started_at' ? 'started_at' : '-started_at'
+  historyPagination.current = 1
+  loadAlertHistory()
+}
 
 const historyStateOptions = [
   { label: '全部状态', value: 'all' },
@@ -566,26 +584,6 @@ function onHistoryRangeOpenChange(open) {
 
 const historyRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
-const historyColumns = computed(() => [
-  {
-    title: '开始时间',
-    key: 'started_at',
-    width: 180,
-    sorter: true,
-    sortOrder: historyOrdering.value === 'started_at'
-      ? 'ascend'
-      : historyOrdering.value === '-started_at' ? 'descend' : null,
-  },
-  { title: '名称', dataIndex: 'alertname', key: 'alertname', width: 200 },
-  { title: '恢复时间', key: 'resolved_at', width: 220 },
-  { title: '级别', key: 'severity', width: 100 },
-  { title: '状态', key: 'state', width: 100 },
-  { title: '实例', dataIndex: 'instance', key: 'instance', width: 220 },
-  { title: '标签', key: 'labels', width: 380 },
-  { title: '持续时间', key: 'duration', width: 120 },
-  { title: '操作', key: 'operation', fixed: 'right', width: 180 },
-])
-
 const notificationModalVisible = ref(false)
 const notificationLoading = ref(false)
 const notificationRows = ref([])
@@ -602,7 +600,6 @@ const notificationColumns = [
   { title: '地址', dataIndex: 'address', key: 'address', width: 220 },
   { title: '状态', key: 'status', width: 100 },
   { title: '尝试', dataIndex: 'attempt_count', key: 'attempt_count', width: 70 },
-  { title: '信息', key: 'error_message', width: 280 },
 ]
 
 function notificationStatusColor(status) {
@@ -760,15 +757,6 @@ function onHistoryTimeRangeChange(dates) {
   onHistoryFilterChange()
 }
 
-function handleHistoryTableChange(pager, _filters, sorter) {
-  historyPagination.current = pager.current
-  historyPagination.pageSize = pager.pageSize
-  if (sorter?.field === 'started_at' || sorter?.columnKey === 'started_at') {
-    historyOrdering.value = sorter.order === 'ascend' ? 'started_at' : '-started_at'
-  }
-  loadAlertHistory()
-}
-
 function handleHistoryPaginationChange(page, pageSize) {
   historyPagination.current = page
   historyPagination.pageSize = pageSize
@@ -837,6 +825,93 @@ onBeforeUnmount(() => {
   color: #1677ff;
 }
 
+.alert-timeline-wrap {
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  padding: 20px 16px 4px;
+}
+
+.alert-timeline-item {
+  min-height: 112px;
+  padding: 0 0 22px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.alert-timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.alert-timeline-time {
+  color: rgba(0, 0, 0, 0.65);
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-timeline-summary {
+  margin-bottom: 10px;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.alert-timeline-meta {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(140px, 0.7fr);
+  gap: 12px 24px;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.alert-timeline-action {
+  margin-top: 8px;
+}
+
+.timeline-date-node {
+  display: inline-block;
+  margin: 2px 0 18px;
+  padding: 3px 10px;
+  border: 1px solid #d9d9d9;
+  border-radius: 3px;
+  color: rgba(0, 0, 0, 0.65);
+  background: #fafafa;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:deep(.timeline-separator-row > td) {
+  height: 34px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #d9d9d9;
+  background: #fafafa;
+}
+
+:deep(.timeline-separator-row .ant-table-row-expand-icon) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.history-table-wrap {
+  width: 100%;
+}
+
+.time-sort-button {
+  padding: 0;
+  color: rgba(0, 0, 0, 0.88);
+  font-weight: 600;
+}
+
+.alert-rule-detail {
+  padding: 4px 16px;
+  color: rgba(0, 0, 0, 0.88);
+  background: #fafafa;
+}
+
+.alert-rule-detail p {
+  margin: 4px 0;
+  word-break: break-all;
+}
+
 .history-timeline-wrap {
   width: min(100%, 1120px);
   margin: 0 auto;
@@ -899,7 +974,8 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
-  .history-timeline-meta {
+  .history-timeline-meta,
+  .alert-timeline-meta {
     grid-template-columns: 1fr;
   }
 }

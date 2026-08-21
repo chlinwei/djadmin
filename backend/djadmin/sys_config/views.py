@@ -16,6 +16,21 @@ HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY = 'sys.assets.host.detail.coll
 AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS_KEY = 'sys.automation.logs.refresh_interval_seconds'
 AUTOMATION_WS_JOB_LOG_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.job_log_poll_interval_seconds'
 AUTOMATION_WS_WORKFLOW_RUN_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.workflow_run_poll_interval_seconds'
+ALERT_HISTORY_RETENTION_DAYS_KEY = 'sys.monitor.alert_history.retention_days'
+
+
+def ensure_alert_history_retention_config():
+    SysConfig.objects.get_or_create(
+        key=ALERT_HISTORY_RETENTION_DAYS_KEY,
+        defaults={
+            'value': '90',
+            'default_value': '90',
+            'value_type': 'int',
+            'name': '历史告警保留天数',
+            'description': '只清理超过保留天数的已恢复告警，未恢复告警不按期限清理',
+            'is_readonly': False,
+        },
+    )
 
 
 def ensure_host_manage_refresh_interval_config():
@@ -103,6 +118,7 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         ensure_automation_logs_refresh_interval_config()
         ensure_automation_ws_job_log_poll_interval_config()
         ensure_automation_ws_workflow_run_poll_interval_config()
+        ensure_alert_history_retention_config()
         queryset = SysConfig.objects.all()
         search = self.request.query_params.get('search')  # type: ignore[union-attr]
         if search:
@@ -173,6 +189,8 @@ class SysConfigViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='by-key/(?P<key>[^/]+)')
     def by_key(self, request, key=None):
         """通过 key 获取单个参数值"""
+        if key == ALERT_HISTORY_RETENTION_DAYS_KEY:
+            ensure_alert_history_retention_config()
         try:
             config = SysConfig.objects.get(key=key)
             return Response_200({
@@ -186,6 +204,8 @@ class SysConfigViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['patch'], url_path='update-by-key/(?P<key>[^/]+)')
     def update_by_key(self, request, key=None):
         """通过 key 更新参数值"""
+        if key == ALERT_HISTORY_RETENTION_DAYS_KEY:
+            ensure_alert_history_retention_config()
         try:
             config = SysConfig.objects.get(key=key)
             if config.is_readonly:
@@ -222,6 +242,8 @@ class SysConfigViewSet(viewsets.ModelViewSet):
             except (ValueError, TypeError):
                 raise ValueError('参数值必须是整数')
 
+            if key == ALERT_HISTORY_RETENTION_DAYS_KEY and normalized < 1:
+                raise ValueError('历史告警保留天数不能小于 1 天')
             return str(normalized)
 
         if value_type == 'bool':

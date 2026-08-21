@@ -166,6 +166,9 @@ func (e *Executor) getHostInfo(ctx context.Context, job protocol.Job) protocol.J
 	for key, value := range collectStaticInventory() {
 		result.Data[key] = value
 	}
+	for key, value := range collectTimezoneInfo() {
+		result.Data[key] = value
+	}
 
 	// 收集操作系统启动时间
 	osUptimeMetrics, osUptimeErr := collectOSUptimeMetrics()

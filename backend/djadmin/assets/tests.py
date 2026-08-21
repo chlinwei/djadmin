@@ -5,7 +5,8 @@ from contextlib import contextmanager
 from typing import Any, cast
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, WebSSHSessionLog
+from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog
+from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
 from monitor.models import MonitorTarget, SoftwarePackage
@@ -539,6 +540,51 @@ class HostTest(BaseTestCase):
         res = self.client.get(f'/assets/hosts/{host.id}/')  # type: ignore[attr-defined]
         body = self.assertResponseOK(res)
         self.assertEqual(body['data']['instance_name'], 'detail_host')
+
+    def test_persist_host_info_separates_static_assets_and_runtime_metrics(self):
+        """静态资产和瞬时指标分别进入结构化模型，Host 不再保存通用 JSON 快照。"""
+        host = Host.objects.create(instance_name='structured-host', ip='192.168.1.30')
+        result_data = {
+            'os_type': 'Ubuntu',
+            'os_version': '24.04',
+            'kernel_version': '6.8.0',
+            'hostname': 'structured-host',
+            'agent_version': 'dj_agent:v1',
+            'os_timezone': 'Asia/Shanghai',
+            'os_utc_offset': 'UTC+08:00',
+            'cpu_count': 8,
+            'cpu_model': 'Test CPU',
+            'memory_total_gb': 16,
+            'arch': 'amd64',
+            'disks': [{
+                'device': '/dev/sda1',
+                'mount_point': '/',
+                'filesystem': 'ext4',
+                'size_gb': 100,
+                'used_gb': 40,
+            }],
+            'cpu_usage_percent': 25.5,
+            'cpu_times': {'us': 10.0, 'sy': 5.0, 'id': 75.5},
+            'memory_usage_percent': 50.0,
+            'memory': {'total': '16Gi', 'used': '8Gi'},
+            'disk_io': [{'device': 'sda', 'read_speed': '1MiB/s', 'write_speed': '2MiB/s'}],
+            'os_uptime_seconds': 3600,
+            'os_boot_time': '2026-08-21T00:00:00Z',
+            'metrics_sample_window_ms': 1000,
+        }
+
+        self.assertTrue(persist_host_info(host, 'success', result_data))
+
+        system = HostSystem.objects.get(host=host)
+        self.assertEqual(system.timezone_name, 'Asia/Shanghai')
+        self.assertEqual(system.utc_offset, 'UTC+08:00')
+        self.assertEqual(HostHardware.objects.get(host=host).cpu_cores, 8)
+        self.assertEqual(HostDisk.objects.get(host=host).mount_point, '/')
+        runtime = HostRuntime.objects.get(host=host)
+        self.assertEqual(runtime.cpu_usage_percent, 25.5)
+        self.assertEqual(runtime.memory_usage_percent, 50.0)
+        self.assertEqual(runtime.disk_io[0]['device'], 'sda')
+        self.assertNotIn('host_snapshot', {field.name for field in Host._meta.fields})
 
     def test_get_host_detail_ignores_sr0_in_disks(self):
         """主机详情应隐藏 /dev/sr0 与 squashfs 磁盘，且使用率仅按有效磁盘计算。"""

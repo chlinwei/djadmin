@@ -133,6 +133,7 @@ class HostSerializer(ModelSerializer):
     group_name = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
+    runtime = serializers.SerializerMethodField()
     disks = serializers.SerializerMethodField()
     # 系统信息顶级字段
     os_type = serializers.SerializerMethodField()
@@ -205,6 +206,8 @@ class HostSerializer(ModelSerializer):
             'kernel_version': getattr(system, 'kernel_version', None),
             'hostname': getattr(system, 'hostname', None),
             'agent_version': agent_version,
+            'timezone_name': getattr(system, 'timezone_name', None),
+            'utc_offset': getattr(system, 'utc_offset', None),
             'collector_source': getattr(system, 'collector_source', None),
             'agent_last_seen_at': agent_last_seen_at,
             'agent_online': agent_online,
@@ -221,6 +224,22 @@ class HostSerializer(ModelSerializer):
             'disk_total_gb': hardware.disk_total_gb,
             'disk_used_percent': self._calc_disk_usage_percent(obj),
             'architecture': hardware.architecture,
+        }
+
+    def get_runtime(self, obj):
+        runtime = getattr(obj, 'runtime', None)
+        if runtime is None:
+            return None
+        return {
+            'cpu_usage_percent': runtime.cpu_usage_percent,
+            'cpu_times': runtime.cpu_times,
+            'memory_usage_percent': runtime.memory_usage_percent,
+            'memory': runtime.memory,
+            'disk_io': runtime.disk_io,
+            'os_uptime_seconds': runtime.os_uptime_seconds,
+            'os_boot_time': runtime.os_boot_time,
+            'metrics_sample_window_ms': runtime.metrics_sample_window_ms,
+            'collected_at': runtime.collected_at,
         }
 
     def _calc_disk_usage_percent(self, obj):

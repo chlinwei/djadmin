@@ -2,10 +2,13 @@ package executor
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // collectStaticInventory 采集主机静态资产信息（OS 发行版/内核/CPU 型号/内存容量/磁盘容量）。
@@ -40,6 +43,38 @@ func collectStaticInventory() map[string]any {
 	}
 
 	return data
+}
+
+// collectTimezoneInfo 读取主机操作系统时区名称，并附带当前 UTC 偏移。
+func collectTimezoneInfo() map[string]any {
+	timezoneName := ""
+	if localtimePath, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+		const zoneinfoMarker = "/zoneinfo/"
+		if markerIndex := strings.Index(localtimePath, zoneinfoMarker); markerIndex >= 0 {
+			timezoneName = strings.TrimSpace(localtimePath[markerIndex+len(zoneinfoMarker):])
+		}
+	}
+	if timezoneName == "" {
+		if content, err := os.ReadFile("/etc/timezone"); err == nil {
+			timezoneName = strings.TrimSpace(string(content))
+		}
+	}
+	if timezoneName == "" {
+		timezoneName, _ = time.Now().Zone()
+	}
+
+	_, offsetSeconds := time.Now().Zone()
+	offsetSign := "+"
+	if offsetSeconds < 0 {
+		offsetSign = "-"
+		offsetSeconds = -offsetSeconds
+	}
+	offsetText := fmt.Sprintf("UTC%s%02d:%02d", offsetSign, offsetSeconds/3600, offsetSeconds%3600/60)
+
+	return map[string]any{
+		"os_timezone":   timezoneName,
+		"os_utc_offset": offsetText,
+	}
 }
 
 // readOSRelease 解析 /etc/os-release，返回发行版名称(NAME)与版本(VERSION 优先，回退 VERSION_ID)。

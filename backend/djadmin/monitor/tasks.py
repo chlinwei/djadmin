@@ -233,8 +233,8 @@ def cleanup_monitor_install_histories():
 
 
 def reconcile_prometheus_alert_history():
-    """每日对账兜底任务：见 alert_history.reconcile_alert_history 的详细说明。"""
-    return _reconcile_alert_history()
+	"""每 5 分钟对账：规则仍存在的失联告警标记恢复，已删除规则的未恢复记录直接删除。"""
+	return _reconcile_alert_history()
 
 
 def cleanup_alert_histories():

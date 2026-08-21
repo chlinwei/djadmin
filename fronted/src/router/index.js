@@ -264,6 +264,9 @@ router.beforeEach((to, from, next) => {
     if (to.path === '/login') {
         if (token) {
             next('/index')
+        } else if (String(to.query?.redirect || '').startsWith('/login')) {
+            // 并发鉴权失败可能留下嵌套登录 redirect，登录页不允许再回跳到自身。
+            next({ path: '/login', replace: true })
         } else {
             next()
         }

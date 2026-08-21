@@ -265,9 +265,9 @@ def ensure_default_tasks():
         {
             'code': 'reconcile_prometheus_alert_history',
             'name': '历史告警对账',
-            'description': '每日以 Prometheus 当前真实活跃告警为准，订正因推送丢失导致本地卡在 firing 的历史告警记录',
+            'description': '每 5 分钟以 Prometheus 当前真实活跃告警和规则为准，对账本地未恢复告警记录',
             'enabled': True,
-            'cron_expression': '45 0 * * *',
+            'cron_expression': '*/5 * * * *',
         },
         {
             'code': 'cleanup_alert_histories',

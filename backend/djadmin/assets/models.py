@@ -111,10 +111,9 @@ class Host(BaseModel):
     collect_message = models.TextField(blank=True, default="", verbose_name="采集失败原因")
     collect_time = models.DateTimeField(null=True, blank=True, verbose_name="最后采集时间")
     
-    # dj-agent 在线状态和主机快照
+    # dj-agent 在线状态
     agent_online = models.BooleanField(default=False, verbose_name="Agent在线状态")
     agent_online_time = models.DateTimeField(null=True, blank=True, verbose_name="Agent最后心跳时间")
-    host_snapshot = models.JSONField(default=dict, blank=True, verbose_name="主机快照数据")
     webssh_default_username = models.CharField(max_length=100, default='root', blank=True)
     webssh_login_users = models.CharField(max_length=512, default='root', blank=True)
 
@@ -182,6 +181,8 @@ class HostSystem(BaseModel):
     hostname = models.CharField(max_length=128, blank=True, null=True)
 
     agent_version = models.CharField(max_length=64, blank=True, null=True)
+    timezone_name = models.CharField(max_length=64, blank=True, null=True)
+    utc_offset = models.CharField(max_length=16, blank=True, null=True)
     collector_source = models.CharField(max_length=32, blank=True, null=True)
     collected_at = models.DateTimeField(null=True, blank=True, verbose_name='最后采集时间')
 
@@ -189,6 +190,30 @@ class HostSystem(BaseModel):
     def __str__(self):
         host_label = self.host.instance_name or f"Host-{self.host_id}"
         return f"System of {host_label}"
+
+
+class HostRuntime(BaseModel):
+    """dj-agent 最近一次采集的主机瞬时状态，不保存历史趋势。"""
+
+    host = models.OneToOneField(
+        "Host",
+        on_delete=models.CASCADE,
+        related_name="runtime",
+    )
+    cpu_usage_percent = models.FloatField(null=True, blank=True)
+    cpu_times = models.JSONField(default=dict, blank=True)
+    memory_usage_percent = models.FloatField(null=True, blank=True)
+    memory = models.JSONField(default=dict, blank=True)
+    disk_io = models.JSONField(default=list, blank=True)
+    os_uptime_seconds = models.BigIntegerField(null=True, blank=True)
+    os_boot_time = models.DateTimeField(null=True, blank=True)
+    metrics_sample_window_ms = models.PositiveIntegerField(null=True, blank=True)
+    static_fingerprint = models.CharField(max_length=64, blank=True, default='')
+    collected_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        host_label = self.host.instance_name or f"Host-{self.host_id}"
+        return f"Runtime of {host_label}"
 
 
 class AgentJob(BaseModel):

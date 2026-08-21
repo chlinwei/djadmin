@@ -27,13 +27,14 @@ function clearAuthState() {
 
 function handleAuthExpired(msg) {
     clearAuthState()
-    message.error(msg || '登录过期，请重新登陆')
-    if (redirectingToLogin) {
+    const currentRoute = router.currentRoute?.value
+    if (redirectingToLogin || currentRoute?.path === '/login') {
         return
     }
     redirectingToLogin = true
-    const currentPath = router.currentRoute?.value?.fullPath || '/index'
-    router.push({
+    message.error(msg || '登录过期，请重新登陆')
+    const currentPath = currentRoute?.fullPath || '/index'
+    router.replace({
         path: '/login',
         query: { redirect: currentPath }
     }).finally(() => {

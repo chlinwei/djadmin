@@ -18,6 +18,10 @@ export function getConfigByKey(key) {
   return requestUtil.get(`sys/configs/by-key/${key}/`)
 }
 
+export function updateConfigByKey(key, payload) {
+  return requestUtil.patch(`sys/configs/update-by-key/${key}/`, payload)
+}
+
 // 常用参数 key 常量，避免硬编码
 export const CONFIG_KEYS = {
   TASK_POLL_INTERVAL:       'sys.scheduler.task_poll_interval',
@@ -27,5 +31,6 @@ export const CONFIG_KEYS = {
   HOST_MANAGE_REFRESH_INTERVAL_SECONDS: 'sys.assets.host.manage.refresh_interval_seconds',
   HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS: 'sys.assets.host.detail.collect_dispatch_interval_seconds',
   AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS: 'sys.automation.logs.refresh_interval_seconds',
+  ALERT_HISTORY_RETENTION_DAYS: 'sys.monitor.alert_history.retention_days',
   MENU_MAX_TREE_DEPTH:      'sys.menu.max_tree_depth',
 }

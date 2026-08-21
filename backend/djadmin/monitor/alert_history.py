@@ -58,6 +58,78 @@ def compute_alert_fingerprint(labels: dict[str, Any] | None) -> str:
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()
 
 
+def get_prometheus_alert_rule_groups() -> dict[str, dict[str, Any]]:
+    """Build rule-group indexes from Prometheus rules and their currently active alerts.
+
+    Historical alerts no longer appear in a rule's active-alert list after recovery, so
+    their alert name index is retained as the fallback association.
+    """
+    response = api_get('/api/v1/rules')
+    if not response.get('ok'):
+        return {'by_fingerprint': {}, 'by_alertname': {}}
+
+    data = response.get('data') or {}
+    raw_groups = data.get('groups') if isinstance(data, dict) else []
+    by_fingerprint: dict[str, str] = {}
+    by_alertname: dict[str, dict[str, Any]] = {}
+    for raw_group in raw_groups or []:
+        if not isinstance(raw_group, dict):
+            continue
+        group_name = str(raw_group.get('name') or '').strip()
+        if not group_name:
+            continue
+        for raw_rule in raw_group.get('rules') or []:
+            if not isinstance(raw_rule, dict):
+                continue
+            rule_name = str(raw_rule.get('name') or '').strip()
+            if rule_name:
+                by_alertname.setdefault(rule_name, {
+                    'group_name': group_name,
+                    'name': rule_name,
+                    'query': raw_rule.get('query') or '',
+                    'duration': raw_rule.get('duration'),
+                    'labels': raw_rule.get('labels') if isinstance(raw_rule.get('labels'), dict) else {},
+                    'annotations': raw_rule.get('annotations') if isinstance(raw_rule.get('annotations'), dict) else {},
+                })
+            for active_alert in raw_rule.get('alerts') or []:
+                if not isinstance(active_alert, dict):
+                    continue
+                labels = active_alert.get('labels')
+                if isinstance(labels, dict):
+                    by_fingerprint[compute_alert_fingerprint(labels)] = group_name
+
+    return {'by_fingerprint': by_fingerprint, 'by_alertname': by_alertname}
+
+
+def resolve_alert_rule_group(
+    labels: dict[str, Any] | None,
+    alertname: str | None,
+    rule_group_indexes: dict[str, dict[str, Any]],
+) -> str:
+    """Resolve a rule group using exact active-alert labels, then the rule name."""
+    fingerprint = compute_alert_fingerprint(labels)
+    by_fingerprint = rule_group_indexes.get('by_fingerprint') or {}
+    by_alertname = rule_group_indexes.get('by_alertname') or {}
+    exact_group = by_fingerprint.get(fingerprint)
+    if exact_group:
+        return str(exact_group)
+    rule = by_alertname.get(str(alertname or '').strip()) or {}
+    return str(rule.get('group_name') or '')
+
+
+def resolve_alert_rule_details(
+    labels: dict[str, Any] | None,
+    alertname: str | None,
+    rule_group_indexes: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve the Prometheus rule definition for an alert instance."""
+    by_alertname = rule_group_indexes.get('by_alertname') or {}
+    rule = by_alertname.get(str(alertname or '').strip())
+    if not isinstance(rule, dict):
+        return {}
+    return dict(rule)
+
+
 def _parse_rfc3339(value: str | None):
     text = str(value or '').strip()
     if not text or text == GO_ZERO_TIME:
@@ -94,11 +166,15 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
     resolved = 0
     heartbeats = 0
     notifications = 0
+    rule_group_indexes = get_prometheus_alert_rule_groups()
 
     for item in (alerts or []):
         labels = item.get('labels') if isinstance(item.get('labels'), dict) else {}
         annotations = item.get('annotations') if isinstance(item.get('annotations'), dict) else {}
         fingerprint = compute_alert_fingerprint(labels)
+        alertname = str(labels.get('alertname') or '')
+        rule_group = resolve_alert_rule_group(labels, alertname, rule_group_indexes)
+        rule_details = resolve_alert_rule_details(labels, alertname, rule_group_indexes)
         is_resolved, ends_at = _resolve_ends_at(item.get('endsAt'), now)
 
         open_record = (
@@ -113,7 +189,14 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
                 open_record.resolved_at = ends_at
                 open_record.last_seen_at = now
                 open_record.annotations = annotations
-                open_record.save(update_fields=['state', 'resolved_at', 'last_seen_at', 'annotations', 'update_time'])
+                if not open_record.rule_group and rule_group:
+                    open_record.rule_group = rule_group
+                if not open_record.rule_snapshot and rule_details:
+                    open_record.rule_snapshot = rule_details
+                open_record.save(update_fields=[
+                    'state', 'resolved_at', 'last_seen_at', 'annotations',
+                    'rule_group', 'rule_snapshot', 'update_time',
+                ])
                 resolved += 1
                 notifications += int(_enqueue_notification(open_record, 'resolved'))
             # 本地没有对应 firing 记录（比如 backend 重启后错过了 firing 推送）：
@@ -125,13 +208,21 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
             open_record.last_seen_at = now
             open_record.labels = labels
             open_record.annotations = annotations
-            open_record.save(update_fields=['last_seen_at', 'labels', 'annotations', 'update_time'])
+            if not open_record.rule_group and rule_group:
+                open_record.rule_group = rule_group
+            if not open_record.rule_snapshot and rule_details:
+                open_record.rule_snapshot = rule_details
+            open_record.save(update_fields=[
+                'last_seen_at', 'labels', 'annotations', 'rule_group', 'rule_snapshot', 'update_time',
+            ])
             heartbeats += 1
             continue
 
         new_alert = AlertHistory.objects.create(
             fingerprint=fingerprint,
-            alertname=str(labels.get('alertname') or ''),
+            alertname=alertname,
+            rule_group=rule_group,
+            rule_snapshot=rule_details,
             severity=str(labels.get('severity') or ''),
             instance=str(labels.get('instance') or ''),
             labels=labels,
@@ -153,17 +244,30 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def reconcile_alert_history() -> int:
-    """每日对账兜底：以 Prometheus 当前真实活跃告警为准，订正因推送丢失
-    （backend/Prometheus 重启、网络抖动等）导致本地卡在 firing 的僵尸记录。
+    """每日对账告警状态，并清理已删除规则产生的未恢复记录。
 
-    只处理“本地 firing 但 Prometheus 已经没有”的记录，不影响已经通过 webhook
-    正常恢复的历史行；恢复时间用对账发生的时间点，并标记 resolved_by_reconciliation=True，
-    前端据此提示这是推测值而非精确恢复时间。
+    已恢复记录属于历史事实，不会被删除。对于本地仍为 firing 的记录：规则仍存在但
+    活动告警消失时标记为对账恢复；规则本身已从 Prometheus 删除时直接删除该记录。
     """
     response = api_get('/api/v1/alerts')
     if not response.get('ok'):
         print(f"[RECONCILE] skip: fetch prometheus alerts failed: {response.get('error')}")
         return 0
+
+    rules_response = api_get('/api/v1/rules')
+    if not rules_response.get('ok'):
+        print(f"[RECONCILE] skip rule deletion cleanup: fetch prometheus rules failed: {rules_response.get('error')}")
+        current_rule_names = None
+    else:
+        rules_data = rules_response.get('data') or {}
+        raw_groups = rules_data.get('groups') if isinstance(rules_data, dict) else []
+        current_rule_names = {
+            str(raw_rule.get('name') or '').strip()
+            for raw_group in (raw_groups or [])
+            if isinstance(raw_group, dict)
+            for raw_rule in (raw_group.get('rules') or [])
+            if isinstance(raw_rule, dict) and str(raw_rule.get('name') or '').strip()
+        }
 
     data = response.get('data') or {}
     raw_alerts = data.get('alerts') if isinstance(data, dict) else []
@@ -179,7 +283,17 @@ def reconcile_alert_history() -> int:
 
     now = timezone.now()
     stale_qs = AlertHistory.objects.filter(state=AlertHistory.State.FIRING).exclude(fingerprint__in=active_fingerprints)
-    stale_count = stale_qs.count()
+    deleted_count = 0
+    if current_rule_names is not None:
+        deleted_qs = stale_qs.exclude(alertname__in=current_rule_names)
+        deleted_count = deleted_qs.count()
+        deleted_qs.delete()
+        stale_qs = stale_qs.filter(alertname__in=current_rule_names)
+
+    resolved_count = stale_qs.count()
     stale_qs.update(state=AlertHistory.State.RESOLVED, resolved_at=now, resolved_by_reconciliation=True, update_time=now)
-    print(f'[RECONCILE] alert history reconciled: stale_resolved={stale_count}')
-    return stale_count
+    print(
+        '[RECONCILE] alert history reconciled: '
+        f'stale_resolved={resolved_count}, deleted_rule_alerts={deleted_count}'
+    )
+    return resolved_count + deleted_count

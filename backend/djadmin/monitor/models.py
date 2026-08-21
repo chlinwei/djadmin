@@ -162,6 +162,10 @@ class AlertHistory(BaseModel):
 	# （那是 Alertmanager 查询接口才有的字段），需要自己算，作为同一条告警跨多次推送的身份标识。
 	fingerprint = models.CharField(max_length=40, db_index=True)
 	alertname = models.CharField(max_length=200, blank=True, default='')
+	# 告警首次接收时从 Prometheus 规则组快照写入，避免规则后来删除/改名后历史记录失去归属。
+	rule_group = models.CharField(max_length=200, blank=True, default='')
+	# 告警首次接收时保存完整规则定义，确保历史告警可以还原当时的 PromQL 和 annotations。
+	rule_snapshot = models.JSONField(default=dict, blank=True)
 	severity = models.CharField(max_length=32, blank=True, default='')
 	instance = models.CharField(max_length=200, blank=True, default='')
 	labels = models.JSONField(default=dict, blank=True)

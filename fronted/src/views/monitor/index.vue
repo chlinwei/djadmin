@@ -369,6 +369,27 @@
             :scroll="{ x: 1300 }"
           />
         </a-tab-pane>
+
+        <a-tab-pane key="alert-settings" tab="告警设置">
+          <a-form layout="vertical" class="alert-settings-form">
+            <a-form-item label="历史告警保留天数" required>
+              <a-input-number
+                v-model:value="alertHistoryRetentionDays"
+                :min="1"
+                :precision="0"
+                :disabled="alertSettingsLoading"
+                addon-after="天"
+                style="width: 240px"
+              />
+            </a-form-item>
+            <a-form-item>
+              <a-button type="primary" :loading="alertSettingsSaving" @click="saveAlertSettings">
+                <FontAwesomeIcon :icon="['fas', 'floppy-disk']" />
+                <span>&nbsp;保存</span>
+              </a-button>
+            </a-form-item>
+          </a-form>
+        </a-tab-pane>
       </a-tabs>
     </a-card>
 
@@ -518,6 +539,7 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
+import { CONFIG_KEYS, getConfigByKey, updateConfigByKey } from '@/api/sys/sysconfig'
 
 defineOptions({
   name: 'MonitorMainPage',
@@ -530,6 +552,9 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const loading = ref(false)
 const errorMessage = ref('')
 const activeTabKey = ref('prom-targets')
+const alertHistoryRetentionDays = ref(90)
+const alertSettingsLoading = ref(false)
+const alertSettingsSaving = ref(false)
 
 const lastRefreshAt = ref(null)
 const lastRefreshAtText = computed(() => {
@@ -924,6 +949,35 @@ function serviceStatusSummary(entry) {
 
 function parseApiData(resp) {
   return resp?.data?.data || {}
+}
+
+async function loadAlertSettings() {
+  alertSettingsLoading.value = true
+  try {
+    const data = parseApiData(await getConfigByKey(CONFIG_KEYS.ALERT_HISTORY_RETENTION_DAYS))
+    alertHistoryRetentionDays.value = Number(data.value) || 90
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '加载告警设置失败')
+  } finally {
+    alertSettingsLoading.value = false
+  }
+}
+
+async function saveAlertSettings() {
+  const retentionDays = Number(alertHistoryRetentionDays.value)
+  if (!Number.isInteger(retentionDays) || retentionDays < 1) {
+    message.warning('历史告警保留天数必须是大于等于 1 的整数')
+    return
+  }
+  alertSettingsSaving.value = true
+  try {
+    await updateConfigByKey(CONFIG_KEYS.ALERT_HISTORY_RETENTION_DAYS, { value: retentionDays })
+    message.success('告警设置已保存')
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '保存告警设置失败')
+  } finally {
+    alertSettingsSaving.value = false
+  }
 }
 
 function formatTsdbTime(rawValue) {
@@ -1432,8 +1486,7 @@ watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
 useKeepAliveRefreshLifecycle(restartRefreshTimer, clearRefreshTimer)
 
 onMounted(async () => {
-  await loadAllData()
-  await loadPackages()
+  await Promise.all([loadAllData(), loadPackages(), loadAlertSettings()])
   restartRefreshTimer()
 })
 
@@ -1474,6 +1527,11 @@ onBeforeUnmount(() => {
 
 .monitor-card {
   border-radius: 12px;
+}
+
+.alert-settings-form {
+  max-width: 480px;
+  padding: 12px 0;
 }
 
 .overview-grid {

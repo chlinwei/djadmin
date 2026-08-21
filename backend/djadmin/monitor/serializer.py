@@ -211,6 +211,8 @@ class AlertHistorySerializer(ModelSerializer):
     notification_count = serializers.IntegerField(read_only=True, default=0)
     notification_delivery_count = serializers.IntegerField(read_only=True, default=0)
     notification_status = serializers.SerializerMethodField()
+    rule_group = serializers.SerializerMethodField()
+    rule_details = serializers.SerializerMethodField()
 
     @staticmethod
     def get_notification_status(obj):
@@ -225,6 +227,15 @@ class AlertHistorySerializer(ModelSerializer):
         if active_count > 0:
             return 'in_progress'
         return 'success'
+
+    def get_rule_group(self, obj):
+        return str(getattr(obj, 'rule_group', '') or '').strip()
+
+    def get_rule_details(self, obj):
+        stored_rule_snapshot = getattr(obj, 'rule_snapshot', None)
+        if isinstance(stored_rule_snapshot, dict) and stored_rule_snapshot:
+            return stored_rule_snapshot
+        return {}
 
     class Meta:
         model = AlertHistory

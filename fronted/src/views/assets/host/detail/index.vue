@@ -31,6 +31,8 @@
                 />
 
                 <template v-else-if="detailHost">
+                    <a-tabs v-model:activeKey="activeDetailTab">
+                        <a-tab-pane key="info" tab="主机信息">
                     <a-row :gutter="16">
                         <a-col :xs="24" :xl="8">
                             <a-card size="small" class="top-card">
@@ -124,8 +126,73 @@
                         <a-descriptions-item label="OS 版本">{{ detailHost.system?.os_version || '-' }}</a-descriptions-item>
                         <a-descriptions-item label="内核版本">{{ detailHost.system?.kernel_version || '-' }}</a-descriptions-item>
                         <a-descriptions-item label="Agent 版本">{{ detailHost.system?.agent_version || '-' }}</a-descriptions-item>
+                        <a-descriptions-item label="主机时区">{{ hostTimezoneText }}</a-descriptions-item>
                         <a-descriptions-item label="备注" :span="2">{{ detailHost.remark || '-' }}</a-descriptions-item>
                     </a-descriptions>
+                        </a-tab-pane>
+
+                        <a-tab-pane v-if="nodeExporterEnabled" key="performance" tab="性能监控">
+                            <div class="performance-toolbar">
+                                <a-range-picker
+                                    v-model:value="performanceTimeRange"
+                                    :show-time="performanceRangeShowTime"
+                                    :presets="performanceRangePresets"
+                                    :getPopupContainer="getPopupContainer"
+                                    :placeholder="['开始时间', '结束时间']"
+                                    class="performance-time-range"
+                                    @openChange="onPerformanceRangeOpenChange"
+                                    @change="onPerformanceTimeRangeChange"
+                                />
+                            </div>
+                            <a-alert v-if="performanceError" type="warning" show-icon :message="performanceError" class="performance-error" />
+                            <a-spin :spinning="performanceLoading">
+                                <h3 class="performance-section-title">资源</h3>
+                                <div class="performance-grid">
+                                    <HostMetricChart title="CPU 使用率" :result="performanceData.cpu" :timezone="timezone" />
+                                    <HostMetricChart title="内存使用率" :result="performanceData.memory" :timezone="timezone" />
+                                    <HostMetricChart title="系统负载" :result="performanceData.load" :timezone="timezone" :series-label="metricNameSeriesLabel" unit="" :y-axis-max="0" />
+                                    <HostMetricChart title="Swap 使用率" :result="performanceData.swap" :timezone="timezone" />
+                                </div>
+
+                                <h3 class="performance-section-title">存储</h3>
+                                <div class="performance-grid">
+                                    <HostMetricChart
+                                        title="磁盘使用率"
+                                        :result="performanceData.disk"
+                                        :timezone="timezone"
+                                        :series-label="diskSeriesLabel"
+                                    />
+                                    <HostMetricChart title="inode 使用率" :result="performanceData.inode" :timezone="timezone" :series-label="diskSeriesLabel" />
+                                    <HostMetricChart
+                                        title="磁盘读写速度"
+                                        :result="performanceData.diskThroughput"
+                                        :timezone="timezone"
+                                        :series-label="directionDeviceSeriesLabel"
+                                        unit="MiB/s"
+                                        :y-axis-max="0"
+                                    />
+                                    <HostMetricChart title="磁盘 IOPS" :result="performanceData.diskIops" :timezone="timezone" :series-label="directionDeviceSeriesLabel" unit="ops/s" :y-axis-max="0" />
+                                    <HostMetricChart title="磁盘平均延迟" :result="performanceData.diskLatency" :timezone="timezone" :series-label="directionDeviceSeriesLabel" unit="ms" :y-axis-max="0" />
+                                </div>
+
+                                <h3 class="performance-section-title">网络</h3>
+                                <div class="performance-grid">
+                                    <HostMetricChart title="网络收发速度" :result="performanceData.networkThroughput" :timezone="timezone" :series-label="directionDeviceSeriesLabel" unit="MiB/s" :y-axis-max="0" />
+                                    <HostMetricChart title="网络错误包" :result="performanceData.networkErrors" :timezone="timezone" :series-label="directionDeviceSeriesLabel" unit="个/s" :y-axis-max="0" />
+                                    <HostMetricChart title="TCP 已建立连接" :result="performanceData.tcpConnections" :timezone="timezone" unit="个" :y-axis-max="0" />
+                                </div>
+
+                                <h3 class="performance-section-title">系统</h3>
+                                <div class="performance-grid">
+                                    <HostMetricChart title="文件描述符使用率" :result="performanceData.fileDescriptor" :timezone="timezone" />
+                                    <HostMetricChart title="进程状态" :result="performanceData.processes" :timezone="timezone" :series-label="stateSeriesLabel" unit="个" :y-axis-max="0" />
+                                    <HostMetricChart title="上下文切换" :result="performanceData.contextSwitches" :timezone="timezone" unit="次/s" :y-axis-max="0" />
+                                    <HostMetricChart title="CPU 中断" :result="performanceData.interrupts" :timezone="timezone" unit="次/s" :y-axis-max="0" />
+                                    <HostMetricChart title="时间同步偏差" :result="performanceData.timeOffset" :timezone="timezone" unit="秒" :y-axis-max="0" />
+                                </div>
+                            </a-spin>
+                        </a-tab-pane>
+                    </a-tabs>
                 </template>
             </a-spin>
         </a-card>
@@ -137,23 +204,169 @@ defineOptions({
     name: 'host-detail',
 })
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import dayjs from 'dayjs'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { refreshHostInfo, getHostById } from '@/api/assets/host/index.js'
+import { queryPrometheusRange } from '@/api/monitor'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
 import { formatDateTimeWithTimezone, formatPercent, formatSize, getDisks } from '../utils/hostDisplayUtils'
+import HostMetricChart from './components/HostMetricChart.vue'
 
 const route = useRoute()
 const router = useRouter()
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const loading = ref(false)
 const detailHost = ref(null)
 const collectDispatching = ref(false)
 const timezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
-const hostSnapshot = computed(() => detailHost.value?.host_snapshot || {})
+const hostRuntime = computed(() => detailHost.value?.runtime || {})
+const hostTimezoneText = computed(() => {
+    const timezoneName = String(detailHost.value?.system?.timezone_name || '').trim()
+    const utcOffset = String(detailHost.value?.system?.utc_offset || '').trim()
+    if (!timezoneName) return '-'
+    return utcOffset ? `${timezoneName}（${utcOffset}）` : timezoneName
+})
+const activeDetailTab = ref('info')
+const nodeExporterMonitor = computed(() => (detailHost.value?.monitors || []).find((monitor) => {
+    const monitorName = String(monitor?.name || monitor?.exporter_type || '').trim()
+    const enabled = monitor?.enabled ?? monitor?.managed_enabled
+    return monitorName === 'node_exporter' && enabled === true
+}))
+const nodeExporterEnabled = computed(() => Boolean(nodeExporterMonitor.value))
+const performanceNow = dayjs().tz(timezone.value)
+const performanceTimeRange = ref([performanceNow.subtract(1, 'hour'), performanceNow])
+const performanceRangePresets = ref(buildUserTimezoneRangePresets(timezone.value))
+const performanceRangeShowTime = computed(() => buildUserTimezoneShowTime(timezone.value))
+const performanceLoading = ref(false)
+const performanceError = ref('')
+const performanceMetricKeys = [
+    'cpu', 'memory', 'load', 'swap', 'disk', 'inode', 'diskThroughput', 'diskIops',
+    'diskLatency', 'networkThroughput', 'networkErrors', 'tcpConnections',
+    'fileDescriptor', 'processes', 'contextSwitches', 'interrupts', 'timeOffset',
+]
+const performanceData = reactive(Object.fromEntries(performanceMetricKeys.map((key) => [key, []])))
+
+const escapePrometheusLabelValue = (value) => String(value || '')
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+
+const parsePrometheusResult = (response) => {
+    const data = response?.data?.data || {}
+    if (String(data.status || '').toLowerCase() === 'error') {
+        throw new Error(data.error || 'Prometheus 查询失败')
+    }
+    return Array.isArray(data.result) ? data.result : []
+}
+
+const buildPerformanceQueryParams = (query) => {
+    const [start, end] = performanceTimeRange.value || []
+    const durationSeconds = Math.max(0, (end?.valueOf?.() - start?.valueOf?.()) / 1000)
+    let step = '30s'
+    if (durationSeconds > 7 * 86400) step = '1h'
+    else if (durationSeconds > 2 * 86400) step = '15m'
+    else if (durationSeconds > 12 * 3600) step = '5m'
+    else if (durationSeconds > 2 * 3600) step = '2m'
+    return {
+        query,
+        start: toUtcQueryISOStringByUserTimezone(start, timezone.value),
+        end: toUtcQueryISOStringByUserTimezone(end, timezone.value),
+        step,
+    }
+}
+
+const onPerformanceRangeOpenChange = (open) => {
+    if (open) {
+        performanceRangePresets.value = buildUserTimezoneRangePresets(timezone.value)
+    }
+}
+
+const onPerformanceTimeRangeChange = (dates) => {
+    if (!Array.isArray(dates) || !dates[0] || !dates[1]) {
+        performanceTimeRange.value = []
+        return
+    }
+    performanceTimeRange.value = [dayjs(dates[0]), dayjs(dates[1])]
+    loadPerformanceData()
+}
+
+const diskSeriesLabel = (metric) => metric.mountpoint || metric.device || '磁盘'
+const metricNameSeriesLabel = (metric) => metric.__name__ || '指标'
+const directionDeviceSeriesLabel = (metric) => [metric.direction, metric.device].filter(Boolean).join(' / ') || '指标'
+const stateSeriesLabel = (metric) => metric.state || '进程'
+
+const clearPerformanceData = () => {
+    performanceMetricKeys.forEach((key) => {
+        performanceData[key] = []
+    })
+}
+
+const loadPerformanceData = async () => {
+    if (!nodeExporterEnabled.value || performanceLoading.value) {
+        return
+    }
+    const [startTime, endTime] = performanceTimeRange.value || []
+    if (!startTime || !endTime || endTime.valueOf() <= startTime.valueOf()) {
+        performanceError.value = '请选择有效的性能查询时间范围'
+        return
+    }
+    const port = Number(nodeExporterMonitor.value?.port || 9100)
+    const instance = `${detailHost.value?.ip}:${port}`
+    const selector = `instance="${escapePrometheusLabelValue(instance)}"`
+    const queries = {
+        cpu: `100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{${selector},mode="idle"}[5m])))`,
+        memory: `100 * (1 - node_memory_MemAvailable_bytes{${selector}} / node_memory_MemTotal_bytes{${selector}})`,
+        load: `node_load1{${selector}} or node_load5{${selector}} or node_load15{${selector}}`,
+        swap: `100 * (1 - node_memory_SwapFree_bytes{${selector}} / node_memory_SwapTotal_bytes{${selector}}) and on(instance) (node_memory_SwapTotal_bytes{${selector}} > 0)`,
+        disk: `100 * (1 - node_filesystem_avail_bytes{${selector},fstype!~"tmpfs|overlay|squashfs|nsfs|tracefs",mountpoint!~".*/var/snap.*"} / node_filesystem_size_bytes{${selector},fstype!~"tmpfs|overlay|squashfs|nsfs|tracefs",mountpoint!~".*/var/snap.*"})`,
+        inode: `100 * (1 - node_filesystem_files_free{${selector},fstype!~"tmpfs|overlay|squashfs|nsfs|tracefs",mountpoint!~".*/var/snap.*"} / node_filesystem_files{${selector},fstype!~"tmpfs|overlay|squashfs|nsfs|tracefs",mountpoint!~".*/var/snap.*"})`,
+        diskThroughput: `label_replace(sum by (device) (rate(node_disk_read_bytes_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m])) / 1024 / 1024, "direction", "读取", "", "") or label_replace(sum by (device) (rate(node_disk_written_bytes_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m])) / 1024 / 1024, "direction", "写入", "", "")`,
+        diskIops: `label_replace(sum by (device) (rate(node_disk_reads_completed_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m])), "direction", "读取", "", "") or label_replace(sum by (device) (rate(node_disk_writes_completed_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m])), "direction", "写入", "", "")`,
+        diskLatency: `label_replace(1000 * rate(node_disk_read_time_seconds_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m]) / clamp_min(rate(node_disk_reads_completed_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m]), 0.001), "direction", "读取", "", "") or label_replace(1000 * rate(node_disk_write_time_seconds_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m]) / clamp_min(rate(node_disk_writes_completed_total{${selector},device!~"loop.*|ram.*|fd.*|sr.*"}[5m]), 0.001), "direction", "写入", "", "")`,
+        networkThroughput: `label_replace(sum by (device) (rate(node_network_receive_bytes_total{${selector},device!~"lo|docker.*|veth.*|br-.*"}[5m])) / 1024 / 1024, "direction", "接收", "", "") or label_replace(sum by (device) (rate(node_network_transmit_bytes_total{${selector},device!~"lo|docker.*|veth.*|br-.*"}[5m])) / 1024 / 1024, "direction", "发送", "", "")`,
+        networkErrors: `label_replace(sum by (device) (rate(node_network_receive_errs_total{${selector},device!~"lo|docker.*|veth.*|br-.*"}[5m])), "direction", "接收", "", "") or label_replace(sum by (device) (rate(node_network_transmit_errs_total{${selector},device!~"lo|docker.*|veth.*|br-.*"}[5m])), "direction", "发送", "", "")`,
+        tcpConnections: `node_netstat_Tcp_CurrEstab{${selector}}`,
+        fileDescriptor: `100 * node_filefd_allocated{${selector}} / node_filefd_maximum{${selector}}`,
+        processes: `label_replace(node_procs_running{${selector}}, "state", "运行", "", "") or label_replace(node_procs_blocked{${selector}}, "state", "阻塞", "", "")`,
+        contextSwitches: `rate(node_context_switches_total{${selector}}[5m])`,
+        interrupts: `rate(node_intr_total{${selector}}[5m])`,
+        timeOffset: `abs(node_timex_offset_seconds{${selector}})`,
+    }
+
+    performanceLoading.value = true
+    performanceError.value = ''
+    try {
+        const queryEntries = Object.entries(queries)
+        const settledResults = await Promise.allSettled(queryEntries.map(async ([key, query]) => {
+            const response = await queryPrometheusRange(buildPerformanceQueryParams(query))
+            return [key, parsePrometheusResult(response)]
+        }))
+        let failedCount = 0
+        settledResults.forEach((result, index) => {
+            const key = queryEntries[index][0]
+            if (result.status === 'fulfilled') {
+                performanceData[key] = result.value[1]
+            } else {
+                performanceData[key] = []
+                failedCount += 1
+            }
+        })
+        if (failedCount) {
+            performanceError.value = `有 ${failedCount} 项指标暂时无法查询，其余指标已正常加载`
+        }
+    } catch (error) {
+        clearPerformanceData()
+        performanceError.value = error?.response?.data?.msg || error?.message || '加载主机性能数据失败'
+    } finally {
+        performanceLoading.value = false
+    }
+}
 
 const DEFAULT_COLLECT_DISPATCH_INTERVAL_SECONDS = 8
 const MIN_COLLECT_DISPATCH_INTERVAL_SECONDS = 3
@@ -218,9 +431,9 @@ const hostConfigText = computed(() => {
 
 const runtimeText = computed(() => {
     // 仅使用 OS 字段，禁止回退到其他兼容字段，避免口径混乱。
-    const uptimeSeconds = hostSnapshot.value?.os_uptime_seconds
+    const uptimeSeconds = hostRuntime.value?.os_uptime_seconds
     const startAtRaw = parseTimeLikeValue(
-        hostSnapshot.value?.os_boot_time,
+        hostRuntime.value?.os_boot_time,
     )
 
     // 没有 OS 启动时间时不展示，避免 started_at/start_time 混入产生错误认知。
@@ -237,7 +450,7 @@ const runtimeText = computed(() => {
 })
 
 const cpuUsageText = computed(() => {
-    const usage = hostSnapshot.value?.cpu_usage_percent
+    const usage = hostRuntime.value?.cpu_usage_percent
     if (usage === null || usage === undefined || usage === '') {
         return '-'
     }
@@ -245,7 +458,7 @@ const cpuUsageText = computed(() => {
 })
 
 const cpuDetailText = computed(() => {
-    const cpuTimes = hostSnapshot.value?.cpu_times
+    const cpuTimes = hostRuntime.value?.cpu_times
     if (cpuTimes && typeof cpuTimes === 'object') {
         const getPart = (name) => {
             const value = toNumber(cpuTimes[name])
@@ -253,14 +466,11 @@ const cpuDetailText = computed(() => {
         }
         return `${getPart('us')} us, ${getPart('sy')} sy, ${getPart('ni')} ni, ${getPart('id')} id, ${getPart('wa')} wa, ${getPart('hi')} hi, ${getPart('si')} si, ${getPart('st')} st`
     }
-    if (typeof hostSnapshot.value?.cpu_detail === 'string' && hostSnapshot.value.cpu_detail.trim()) {
-        return hostSnapshot.value.cpu_detail.trim()
-    }
     return '-'
 })
 
 const memoryUsageText = computed(() => {
-    const usage = hostSnapshot.value?.memory_usage_percent
+    const usage = hostRuntime.value?.memory_usage_percent
     if (usage === null || usage === undefined || usage === '') {
         return '-'
     }
@@ -268,7 +478,7 @@ const memoryUsageText = computed(() => {
 })
 
 const memoryDetailText = computed(() => {
-    const memory = hostSnapshot.value?.memory
+    const memory = hostRuntime.value?.memory
     if (memory && typeof memory === 'object') {
         const total = memory.total ?? '-'
         const used = memory.used ?? '-'
@@ -280,7 +490,7 @@ const memoryDetailText = computed(() => {
 })
 
 const diskSpeedMap = computed(() => {
-    const source = hostSnapshot.value?.disk_io
+    const source = hostRuntime.value?.disk_io
     const result = {}
     if (Array.isArray(source)) {
         source.forEach((item) => {
@@ -457,6 +667,9 @@ const loadDetail = async () => {
 
 const handleRefreshClick = async () => {
     await refreshHostRuntime({ showError: true })
+    if (activeDetailTab.value === 'performance') {
+        await loadPerformanceData()
+    }
 }
 
 const goBack = () => {
@@ -471,9 +684,23 @@ const goBack = () => {
 watch(
     () => route.params.id,
     () => {
+        activeDetailTab.value = 'info'
+        clearPerformanceData()
         loadDetail()
     },
 )
+
+watch(activeDetailTab, (tab) => {
+    if (tab === 'performance') {
+        loadPerformanceData()
+    }
+})
+
+watch(nodeExporterEnabled, (enabled) => {
+    if (!enabled && activeDetailTab.value === 'performance') {
+        activeDetailTab.value = 'info'
+    }
+})
 
 onMounted(() => {
     // 挂载后先同步置 loading=true：避免在等待“采集间隔配置”这个与详情无关的请求
@@ -516,6 +743,56 @@ onBeforeUnmount(() => {
 .top-card {
     height: 100%;
     border-radius: 12px;
+}
+
+.performance-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.performance-time-range {
+    width: min(100%, 420px);
+}
+
+.performance-error {
+    margin-bottom: 12px;
+}
+
+.performance-section-title {
+    margin: 18px 0 10px;
+    padding-left: 10px;
+    border-left: 3px solid #1677ff;
+    color: #1f1f1f;
+    font-size: 15px;
+}
+
+.performance-section-title:first-of-type {
+    margin-top: 4px;
+}
+
+.performance-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+@media (max-width: 1000px) {
+    .performance-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .performance-time-range {
+        width: 100%;
+    }
+
+    .performance-grid {
+        grid-template-columns: 1fr;
+    }
+
 }
 
 .kv-line {

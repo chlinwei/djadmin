@@ -23,7 +23,13 @@ from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 from assets.credential_crypto import decrypt_secret
 
-from .alert_history import compute_alert_fingerprint, ingest_alert_webhook_alerts
+from .alert_history import (
+    compute_alert_fingerprint,
+    get_prometheus_alert_rule_groups,
+    ingest_alert_webhook_alerts,
+    resolve_alert_rule_group,
+    resolve_alert_rule_details,
+)
 from .models import (
     AlertHistory,
     AlertMedia,
@@ -398,6 +404,7 @@ class MonitorViewSet(
 
         data = response.get('data') or {}
         alerts = data.get('alerts') if isinstance(data, dict) else []
+        rule_group_indexes = get_prometheus_alert_rule_groups()
         firing_count = 0
         resolved_count = 0
         rows = []
@@ -427,6 +434,7 @@ class MonitorViewSet(
             labels = item.get('labels') if isinstance(item.get('labels'), dict) else {}
             annotations = item.get('annotations') if isinstance(item.get('annotations'), dict) else {}
             fingerprint = compute_alert_fingerprint(labels)
+            alertname = labels.get('alertname') or ''
             # pending 尚未触发 Prometheus notifier，不能继承同 fingerprint 的历史 firing 记录。
             # firing/resolved 也必须匹配本地相同状态，避免新一轮 pending/firing 显示上一轮投递结果。
             history = (
@@ -435,7 +443,9 @@ class MonitorViewSet(
                 else None
             )
             rows.append({
-                'name': labels.get('alertname') or '',
+                'name': alertname,
+                'rule_group': resolve_alert_rule_group(labels, alertname, rule_group_indexes),
+                'rule_details': resolve_alert_rule_details(labels, alertname, rule_group_indexes),
                 'severity': labels.get('severity') or '',
                 'state': state or 'unknown',
                 'instance': labels.get('instance') or '',

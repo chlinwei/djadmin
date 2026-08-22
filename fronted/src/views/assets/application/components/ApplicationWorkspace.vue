@@ -27,6 +27,7 @@
     </a-row>
 
     <a-table
+      :key="activeTab"
       :row-key="getWorkspaceRowKey"
       :columns="currentColumns"
       :data-source="rows"
@@ -50,17 +51,17 @@
         </template>
         <template v-else-if="activeTab === 'applications' && column.key === 'action'">
           <a-space>
-            <a-tooltip title="编辑">
+            <a-tooltip key="application-edit" title="编辑">
               <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openApplication(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="版本管理">
+            <a-tooltip key="application-versions" title="版本管理">
               <a-button size="small" @click="openVersions(record)">
                 <FontAwesomeIcon :icon="['fas', 'code-branch']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="删除">
+            <a-tooltip key="application-delete" title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteApplication(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
@@ -75,12 +76,12 @@
         </template>
         <template v-else-if="activeTab === 'templates' && column.key === 'action'">
           <a-space>
-            <a-tooltip title="编辑">
+            <a-tooltip key="template-edit" title="编辑">
               <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openTemplate(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="删除">
+            <a-tooltip key="template-delete" title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteTemplate(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
@@ -103,7 +104,7 @@
         </template>
         <template v-else-if="activeTab === 'deployments' && column.key === 'action'">
           <a-space>
-            <a-tooltip v-if="record.control_type !== 'external_ha'" title="启动">
+            <a-tooltip v-if="record.control_type !== 'external_ha'" key="deployment-start" title="启动">
               <a-button
                 v-permission="'assets:applications:update'"
                 data-control-action="start"
@@ -117,7 +118,7 @@
                 <FontAwesomeIcon :icon="['fas', 'play']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip v-if="record.control_type !== 'external_ha'" title="停止">
+            <a-tooltip v-if="record.control_type !== 'external_ha'" key="deployment-stop" title="停止">
               <a-button
                 v-permission="'assets:applications:update'"
                 data-control-action="stop"
@@ -130,7 +131,7 @@
                 <FontAwesomeIcon :icon="['fas', 'stop']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="查看状态">
+            <a-tooltip key="deployment-status" title="查看状态">
               <a-button
                 v-permission="'assets:applications:update'"
                 data-control-action="status"
@@ -142,7 +143,7 @@
                 <FontAwesomeIcon :icon="['fas', 'circle-info']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="基线检查">
+            <a-tooltip key="deployment-baseline" title="基线检查">
               <a-button
                 v-permission="'assets:applications:update'"
                 data-control-action="baseline"
@@ -155,17 +156,17 @@
                 <FontAwesomeIcon :icon="['fas', 'clipboard-check']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="历史记录">
+            <a-tooltip key="deployment-history" title="历史记录">
               <a-button v-permission="'assets:applications:view'" size="small" @click="openBaselineHistory(record)">
                 <FontAwesomeIcon :icon="['fas', 'list']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="编辑">
+            <a-tooltip key="deployment-edit" title="编辑">
               <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openDeployment(record)">
                 <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
-            <a-tooltip title="删除">
+            <a-tooltip key="deployment-delete" title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteDeployment(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
@@ -244,7 +245,7 @@
             :columns="resultColumns"
             :data-source="record.results || []"
             :pagination="false"
-            :scroll="{ x: 860 }"
+            :scroll="{ x: 940 }"
           >
             <template #bodyCell="{ column, record: result }">
               <template v-if="column.key === 'status'">
@@ -252,8 +253,13 @@
                   {{ resultStatusMap[result.status]?.label || result.status }}
                 </a-tag>
               </template>
-              <template v-else-if="column.key === 'expected_value'">{{ formatCheckValue(result.expected_value) }}</template>
-              <template v-else-if="column.key === 'actual_value'">{{ formatCheckValue(result.actual_value) }}</template>
+              <template v-else-if="column.key === 'expected_value'"><pre class="check-value">{{ formatCheckValue(result.expected_value) }}</pre></template>
+              <template v-else-if="column.key === 'actual_value'">
+                <div v-if="getMissingCheckValues(result.actual_value).length" class="check-missing">
+                  <div v-for="item in getMissingCheckValues(result.actual_value)" :key="item">缺少 {{ item }}</div>
+                </div>
+                <pre class="check-value">{{ formatCheckValue(result.actual_value) }}</pre>
+              </template>
             </template>
           </a-table>
         </template>
@@ -372,8 +378,8 @@ const resultColumns = [
   { title: '检查项', dataIndex: 'name', key: 'name', width: 180 },
   { title: '类型', dataIndex: 'check_type', key: 'check_type', width: 150 },
   { title: '状态', key: 'status', width: 90 },
-  { title: '期望值', key: 'expected_value', width: 150 },
-  { title: '实际值', key: 'actual_value', width: 150 },
+  { title: '期望值', key: 'expected_value', width: 240 },
+  { title: '实际值', key: 'actual_value', width: 240 },
   { title: '说明', dataIndex: 'message', key: 'message', width: 220 },
 ]
 const currentColumns = computed(() => ({ applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
@@ -457,7 +463,14 @@ function formatPassRate(value) {
 }
 function formatCheckValue(value) {
   if (value === null || value === undefined || value === '') return '-'
-  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
+}
+function getMissingCheckValues(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.elements)) return []
+  return value.elements.flatMap((element) => Object.entries(element || {}).flatMap(([attribute, details]) => {
+    if (!Array.isArray(details?.missing) || details.missing.length === 0) return []
+    return [`${attribute}: ${details.missing.join(', ')}`]
+  }))
 }
 async function runBaselineCheck(record) {
   checkingDeploymentId.value = record.id
@@ -579,4 +592,16 @@ onBeforeUnmount(() => {
 .right-tools { display: flex; justify-content: flex-end; }
 .secondary { color: rgba(0, 0, 0, 0.45); font-size: 12px; }
 .history-error { margin-bottom: 8px; }
+.check-value {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.check-missing {
+  margin-bottom: 6px;
+  color: #cf1322;
+  font-weight: 600;
+  line-height: 1.5;
+}
 </style>

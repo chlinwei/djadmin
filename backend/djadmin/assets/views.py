@@ -8,6 +8,7 @@ import importlib
 import os
 import logging
 import threading
+from copy import deepcopy
 from types import SimpleNamespace
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -341,7 +342,7 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         
 
 class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
-    queryset = Application.objects.prefetch_related('versions').annotate(
+    queryset = Application.objects.prefetch_related('versions', 'baseline_checks').annotate(
         version_count=Count('versions', distinct=True),
         deployment_template_count=Count('deployment_templates', distinct=True),
         deployment_count=Count('versions__deployments', distinct=True),
@@ -600,6 +601,30 @@ def _build_application_baseline_params(deployment):
             'env_file': resolve_template_value(compose_config.env_file),
             'expected_image': compose_config.expected_image,
             'expected_image_tag': compose_config.expected_image_tag,
+        }
+    application = deployment_template.application
+    baseline_checks = application.baseline_checks.filter(enabled=True)
+    compiled_checks = [
+        {
+            'key': f'application:{application.id}:baseline:{check.id}',
+            'type': f'config_{check.document_type}',
+            'name': check.name,
+            'executor': 'schema_validate',
+            'path': resolve_template_value(check.file_path),
+            'document_type': check.document_type,
+            'schema': {
+                'type': check.schema_type,
+                'version': check.schema_version,
+                'content': check.schema_content,
+            },
+        }
+        for check in baseline_checks
+    ]
+    if compiled_checks:
+        params['check_plan'] = {
+            'schema_version': 1,
+            'required_capabilities': ['schema_validate:v1'],
+            'checks': compiled_checks,
         }
     return params
 

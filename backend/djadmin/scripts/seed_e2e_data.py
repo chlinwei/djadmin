@@ -69,24 +69,38 @@ def main() -> int:
 
     SysUserRole.objects.get_or_create(user=user, role=role)
 
-    menu, _ = SysMenu.objects.get_or_create(
-        path='/index',
-        defaults={
+    menus = [
+        {
+            'path': '/index',
             'name': '首页',
             'icon': 'House',
-            'parent_id': 0,
             'order_num': 1,
             'component': 'index/index',
-            'menu_type': 'C',
             'perms': 'system:index:view',
-            'location': 1,
-            'create_time': today,
-            'update_time': today,
-            'remark': 'playwright-e2e seed menu',
         },
-    )
-
-    SysRoleMenu.objects.get_or_create(role=role, menu=menu)
+        {
+            'path': '/assets/applications/index',
+            'name': '应用管理',
+            'icon': 'AppstoreOutlined',
+            'order_num': 2,
+            'component': 'assets/applications/index',
+            'perms': 'assets:application:list',
+        },
+    ]
+    for menu_data in menus:
+        menu, _ = SysMenu.objects.get_or_create(
+            path=menu_data['path'],
+            defaults={
+                **menu_data,
+                'parent_id': 0,
+                'menu_type': 'C',
+                'location': 1,
+                'create_time': today,
+                'update_time': today,
+                'remark': 'playwright-e2e seed menu',
+            },
+        )
+        SysRoleMenu.objects.get_or_create(role=role, menu=menu)
 
     print('[OK] e2e seed ready: user=admin/admin, role=admin, menu=/index')
     return 0

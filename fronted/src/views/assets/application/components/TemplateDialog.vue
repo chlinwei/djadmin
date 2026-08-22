@@ -160,6 +160,7 @@ const formRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const applications = ref([])
+let loadToken = 0
 const commandValues = reactive({ start: '', stop: '', status: '', restart: '', reload: '' })
 
 const controlTypeOptions = [
@@ -215,15 +216,18 @@ async function loadApplications() {
 }
 async function loadTemplate(id) {
   if (!id) return
+  const currentLoadToken = ++loadToken
   loading.value = true
   try {
     const response = await getApplicationDeploymentTemplate(id)
+    if (currentLoadToken !== loadToken) return
     const data = response?.data?.data || {}
-    Object.assign(form, createInitialForm(), data)
+    const initial = createInitialForm()
+    Object.assign(form, initial, data)
     Object.keys(commandValues).forEach((key) => { commandValues[key] = '' })
     for (const item of data.control_actions || []) commandValues[item.action] = item.command || ''
   } finally {
-    loading.value = false
+    if (currentLoadToken === loadToken) loading.value = false
   }
 }
 function validateControlConfig() {
@@ -266,7 +270,10 @@ const addConfigFile = () => form.config_files.push({ name: '', path: '', file_fo
 const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, retention_days: 30 })
 
 watch(() => props.open, (visible) => {
-  if (!visible) return
+  if (!visible) {
+    loadToken += 1
+    return
+  }
   resetForm()
   Promise.all([
     loadApplications(),

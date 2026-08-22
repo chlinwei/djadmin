@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_DIR}"
 
-python - <<'PY'
+uv run python - <<'PY'
 import os
 
 db_name = os.getenv('DJADMIN_E2E_DB_NAME', 'djadmin_e2e')
@@ -53,7 +53,7 @@ with connection:
 print(f"[OK] ensured e2e database exists: {db_name}")
 PY
 
-python manage.py migrate --settings=djadmin.e2e_settings --noinput
-python scripts/seed_e2e_data.py
+uv run python manage.py migrate --settings=djadmin.e2e_settings --noinput
+uv run python scripts/seed_e2e_data.py
 
-exec python manage.py runserver 0.0.0.0:19000 --settings=djadmin.e2e_settings
+exec uv run python manage.py runserver 0.0.0.0:19000 --settings=djadmin.e2e_settings

@@ -1,6 +1,10 @@
 from rest_framework.serializers import ModelSerializer
 from datetime import datetime, timedelta
+import json
 import re
+import xml.etree.ElementTree as ET
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from .models import *
 from .application_variables import APP_HOME_VARIABLE, RUN_USER_VARIABLE, ApplicationVariableError, resolve_application_variables
 from .credential_crypto import encrypt_secret
@@ -48,17 +52,6 @@ class ApplicationVersionSerializer(ModelSerializer):
         return ApplicationVersion.objects.create(**validated_data)
 
 
-class ApplicationSerializer(ModelSerializer):
-    versions = ApplicationVersionSerializer(many=True, read_only=True)
-    version_count = serializers.IntegerField(read_only=True)
-    deployment_template_count = serializers.IntegerField(read_only=True)
-    deployment_count = serializers.IntegerField(read_only=True)
-
-    class Meta:
-        model = Application
-        fields = '__all__'
-
-
 class ApplicationPortSerializer(ModelSerializer):
     class Meta:
         model = ApplicationPort
@@ -99,6 +92,133 @@ class DockerComposeControlConfigSerializer(ModelSerializer):
     class Meta:
         model = DockerComposeControlConfig
         exclude = ['deployment_template']
+
+
+class ApplicationBaselineCheckSerializer(ModelSerializer):
+    document_type = serializers.ChoiceField(choices=ApplicationBaselineCheck.DocumentType.choices, required=True)
+    schema_type = serializers.ChoiceField(choices=ApplicationBaselineCheck.SchemaType.choices, required=True)
+    schema_version = serializers.CharField(required=True)
+    SCHEMA_TYPES_BY_DOCUMENT = {
+        ApplicationBaselineCheck.DocumentType.XML: {
+            ApplicationBaselineCheck.SchemaType.SCHEMATRON,
+        },
+        ApplicationBaselineCheck.DocumentType.JSON: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
+        ApplicationBaselineCheck.DocumentType.YAML: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
+        ApplicationBaselineCheck.DocumentType.INI: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
+        ApplicationBaselineCheck.DocumentType.TOML: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
+        ApplicationBaselineCheck.DocumentType.PROPERTIES: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
+        ApplicationBaselineCheck.DocumentType.TEXT: {ApplicationBaselineCheck.SchemaType.REGEXP},
+    }
+    SCHEMA_VERSIONS = {
+        ApplicationBaselineCheck.SchemaType.SCHEMATRON: 'iso',
+        ApplicationBaselineCheck.SchemaType.JSON_SCHEMA: '2020-12',
+        ApplicationBaselineCheck.SchemaType.REGEXP: 're2',
+    }
+
+    class Meta:
+        model = ApplicationBaselineCheck
+        exclude = ['application']
+
+    def validate_schema_content(self, content):
+        if not str(content or '').strip():
+            raise serializers.ValidationError('Schema 内容不能为空')
+        return content
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        document_type = attrs.get('document_type', getattr(self.instance, 'document_type', None))
+        schema_type = attrs.get('schema_type', getattr(self.instance, 'schema_type', None))
+        schema_version = attrs.get('schema_version', getattr(self.instance, 'schema_version', None))
+        schema_content = attrs.get('schema_content', getattr(self.instance, 'schema_content', ''))
+
+        if schema_type not in self.SCHEMA_TYPES_BY_DOCUMENT.get(document_type, set()):
+            raise serializers.ValidationError({'schema_type': 'Schema 类型与文档类型不匹配'})
+        expected_version = self.SCHEMA_VERSIONS[schema_type]
+        if schema_version != expected_version:
+            raise serializers.ValidationError({'schema_version': f'{schema_type} 仅支持版本 {expected_version}'})
+        if schema_type == ApplicationBaselineCheck.SchemaType.JSON_SCHEMA:
+            self._validate_json_schema(schema_content)
+        elif schema_type == ApplicationBaselineCheck.SchemaType.REGEXP:
+            self._validate_regexp(schema_content)
+        else:
+            self._validate_xml_schema(schema_content, schema_type)
+        return attrs
+
+    @staticmethod
+    def _validate_json_schema(content):
+        try:
+            schema = json.loads(content)
+            Draft202012Validator.check_schema(schema)
+        except (json.JSONDecodeError, SchemaError) as exc:
+            raise serializers.ValidationError(f'JSON Schema 无效: {exc}') from exc
+
+    @staticmethod
+    def _validate_regexp(content):
+        try:
+            rule = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise serializers.ValidationError(f'Regexp 规则必须是有效 JSON: {exc}') from exc
+        if not isinstance(rule, dict) or not isinstance(rule.get('pattern'), str) or not rule['pattern']:
+            raise serializers.ValidationError('Regexp 规则必须包含非空 pattern')
+        if rule.get('expect') not in {'present', 'absent'}:
+            raise serializers.ValidationError('Regexp expect 仅支持 present 或 absent')
+        unknown_fields = set(rule) - {'pattern', 'expect'}
+        if unknown_fields:
+            raise serializers.ValidationError(f'Regexp 规则包含未知字段: {", ".join(sorted(unknown_fields))}')
+
+    @staticmethod
+    def _validate_xml_schema(content, schema_type):
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError as exc:
+            raise serializers.ValidationError(f'{schema_type} 文档无效: {exc}') from exc
+        expected_root = '{http://purl.oclc.org/dsdl/schematron}schema'
+        if root.tag != expected_root:
+            raise serializers.ValidationError(f'{schema_type} 根元素或命名空间无效')
+        assertions = root.findall('.//{http://purl.oclc.org/dsdl/schematron}assert')
+        if not assertions or any(not str(assertion.get('test') or '').strip() for assertion in assertions):
+            raise serializers.ValidationError('Schematron 必须至少包含一个有效 assert')
+
+
+class ApplicationSerializer(ModelSerializer):
+    versions = ApplicationVersionSerializer(many=True, read_only=True)
+    version_count = serializers.IntegerField(read_only=True)
+    deployment_template_count = serializers.IntegerField(read_only=True)
+    deployment_count = serializers.IntegerField(read_only=True)
+    baseline_checks = ApplicationBaselineCheckSerializer(many=True, required=False)
+
+    class Meta:
+        model = Application
+        fields = '__all__'
+
+    def validate_baseline_checks(self, checks):
+        names = [str(check.get('name') or '').strip() for check in checks]
+        if len(names) != len(set(names)):
+            raise serializers.ValidationError('同一应用的基线检查项名称不能重复')
+        return checks
+
+    @staticmethod
+    def _save_baseline_checks(instance, checks):
+        if checks is None:
+            return
+        ApplicationBaselineCheck.objects.filter(application=instance).delete()
+        ApplicationBaselineCheck.objects.bulk_create([
+            ApplicationBaselineCheck(application=instance, **check) for check in checks
+        ])
+
+    @transaction.atomic
+    def create(self, validated_data):
+        baseline_checks = validated_data.pop('baseline_checks', [])
+        instance = Application.objects.create(**validated_data)
+        self._save_baseline_checks(instance, baseline_checks)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        baseline_checks = validated_data.pop('baseline_checks', None)
+        instance = super().update(instance, validated_data)
+        self._save_baseline_checks(instance, baseline_checks)
+        return instance
 
 
 class ApplicationDeploymentTemplateSerializer(ModelSerializer):
@@ -142,7 +262,6 @@ class ApplicationDeploymentTemplateSerializer(ModelSerializer):
             resource_name = attrs.get('ha_resource_name', getattr(self.instance, 'ha_resource_name', ''))
             if not str(resource_name or '').strip():
                 raise serializers.ValidationError({'ha_resource_name': '外部 HA 模板必须填写资源名称'})
-
         variable_values = [app_home, attrs.get('work_directory', '')]
         variable_values.extend(item.get('path', '') for item in (attrs.get('paths') or []))
         variable_values.extend(item.get('path', '') for item in (attrs.get('config_files') or []))
@@ -167,7 +286,10 @@ class ApplicationDeploymentTemplateSerializer(ModelSerializer):
 
     @staticmethod
     def _pop_nested(validated_data):
-        nested_fields = ('ports', 'paths', 'config_files', 'logs', 'control_actions', 'docker_config', 'compose_config')
+        nested_fields = (
+            'ports', 'paths', 'config_files', 'logs', 'control_actions',
+            'docker_config', 'compose_config',
+        )
         return {field: validated_data.pop(field) for field in nested_fields if field in validated_data}
 
     @staticmethod

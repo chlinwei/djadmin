@@ -20,3 +20,6 @@ DATABASES = {
 PASSWORD_HASHERS = [
     'django.contrib.auth.hashers.MD5PasswordHasher',
 ]
+
+# Playwright supports arbitrary PW_PORT values so isolated runs do not collide with a developer's Vite server.
+CORS_ALLOW_ALL_ORIGINS = True

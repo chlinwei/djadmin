@@ -276,6 +276,56 @@ class DockerComposeControlConfig(BaseModel):
         db_table = 'assets_docker_compose_control_config'
 
 
+def default_tomcat_manager_roles():
+    """保留给历史迁移 0048 加载旧字段默认值。"""
+    return [
+        'manager',
+        'manager-gui',
+        'admin',
+        'admin-gui',
+        'manager-script',
+        'manager-jmx',
+        'manager-status',
+    ]
+
+
+class ApplicationBaselineCheck(BaseModel):
+    class DocumentType(models.TextChoices):
+        XML = 'xml', 'XML'
+        JSON = 'json', 'JSON'
+        YAML = 'yaml', 'YAML'
+        INI = 'ini', 'INI'
+        TOML = 'toml', 'TOML'
+        PROPERTIES = 'properties', 'Properties'
+        TEXT = 'text', '普通文本'
+
+    class SchemaType(models.TextChoices):
+        SCHEMATRON = 'schematron', 'Schematron / XPath'
+        JSON_SCHEMA = 'json_schema', 'JSON Schema'
+        REGEXP = 'regexp', 'Regexp'
+
+    application = models.ForeignKey(
+        Application,
+        on_delete=models.CASCADE,
+        related_name='baseline_checks',
+    )
+    name = models.CharField(max_length=128, verbose_name='检查项名称')
+    file_path = models.CharField(max_length=512, verbose_name='文件路径')
+    document_type = models.CharField(max_length=16, choices=DocumentType.choices, default=DocumentType.XML, verbose_name='文档类型')
+    schema_type = models.CharField(max_length=32, choices=SchemaType.choices, default=SchemaType.SCHEMATRON, verbose_name='Schema 类型')
+    schema_version = models.CharField(max_length=32, default='iso', verbose_name='Schema 版本')
+    schema_content = models.TextField(verbose_name='Schema 内容')
+    enabled = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'assets_application_baseline_check'
+        ordering = ['order', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['application', 'name'], name='unique_application_baseline_check_name'),
+        ]
+
+
 class ApplicationBaselineExecution(BaseModel):
     class Status(models.TextChoices):
         QUEUED = 'queued', '等待中'

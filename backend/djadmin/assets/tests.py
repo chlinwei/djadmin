@@ -1,5 +1,6 @@
 from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
 from typing import Any, cast
@@ -7,7 +8,7 @@ from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import (
     Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, HostGroup, Host,
-    ApplicationBaselineExecution, ApplicationBaselineResult, AgentJob,
+    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, AgentJob,
     HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog,
 )
 from .views import _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
@@ -228,6 +229,188 @@ class ApplicationTest(BaseTestCase):
         self.assertResponseOK(res)
         self.assertTrue(Application.objects.filter(name='new_app').exists())
 
+    def test_application_saves_generic_baseline_checks(self):
+        """应用定义可保存标准 Schema 基线，并可通过空列表清空。"""
+        schematron = '''<schema xmlns="http://purl.oclc.org/dsdl/schematron" queryBinding="xslt">
+  <pattern><rule context="/"><assert test="not(//Valve[@allow='^.*$'])">禁止开放全部地址</assert></rule></pattern>
+</schema>'''
+        res = self.client.post('/assets/applications/', {
+            'name': 'tomcat_app',
+            'code': 'tomcat-app-selection',
+            'category': 'web_container',
+            'baseline_checks': [{
+                'name': 'RemoteAddrValve',
+                'file_path': '${APP_HOME}/conf/context.xml',
+                'document_type': 'xml',
+                'schema_type': 'schematron',
+                'schema_version': 'iso',
+                'schema_content': schematron,
+            }],
+        }, format='json')
+        body = self.assertResponseOK(res)
+        application = Application.objects.get(id=body['data']['id'])
+        self.assertEqual(application.baseline_checks.get().schema_type, 'schematron')  # type: ignore[attr-defined]
+
+        update_res = self.client.patch(f'/assets/applications/{application.id}/', {  # type: ignore[attr-defined]
+            'baseline_checks': [],
+        }, format='json')
+        self.assertResponseOK(update_res)
+        self.assertFalse(ApplicationBaselineCheck.objects.filter(application=application).exists())
+
+    def test_application_rejects_baseline_check_without_schema_type(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'missing_schema_type',
+            'code': 'missing-schema-type',
+            'baseline_checks': [{
+                'name': '缺少 Schema 类型',
+                'file_path': '${APP_HOME}/conf/app.xml',
+                'document_type': 'xml',
+                'schema_version': 'iso',
+                'schema_content': '<schema xmlns="http://purl.oclc.org/dsdl/schematron"/>',
+            }],
+        }, format='json')
+
+        self.assertNotEqual(res.json()['code'], 200)
+        self.assertIn('schema_type', str(res.json()['data']))
+
+    def test_application_rejects_xsd_schema_type(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'mismatched_schema',
+            'code': 'mismatched-schema',
+            'baseline_checks': [{
+                'name': '错误类型',
+                'file_path': '${APP_HOME}/conf/app.json',
+                'document_type': 'json',
+                'schema_type': 'xsd',
+                'schema_version': '1.0',
+                'schema_content': '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"/>',
+            }],
+        }, format='json')
+
+        self.assertNotEqual(res.json()['code'], 200)
+        self.assertIn('xsd', str(res.json()['data']))
+
+    def test_application_rejects_invalid_schematron(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'invalid_schematron',
+            'code': 'invalid-schematron',
+            'baseline_checks': [{
+                'name': '无断言',
+                'file_path': '${APP_HOME}/conf/app.xml',
+                'document_type': 'xml',
+                'schema_type': 'schematron',
+                'schema_version': 'iso',
+                'schema_content': '<schema xmlns="http://purl.oclc.org/dsdl/schematron"/>',
+            }],
+        }, format='json')
+
+        self.assertNotEqual(res.json()['code'], 200)
+        self.assertIn('至少包含一个有效 assert', str(res.json()['data']))
+
+    def test_application_accepts_json_schema_2020_12(self):
+        schema = {
+            '$schema': 'https://json-schema.org/draft/2020-12/schema',
+            'type': 'object',
+            'properties': {'maxPostSize': {'type': 'integer', 'minimum': 524288000}},
+            'required': ['maxPostSize'],
+        }
+        res = self.client.post('/assets/applications/', {
+            'name': 'json_schema_app',
+            'code': 'json-schema-app',
+            'baseline_checks': [{
+                'name': '上传限制',
+                'file_path': '${APP_HOME}/conf/app.json',
+                'document_type': 'json',
+                'schema_type': 'json_schema',
+                'schema_version': '2020-12',
+                'schema_content': json.dumps(schema),
+            }],
+        }, format='json')
+
+        self.assertResponseOK(res)
+
+    def test_application_rejects_invalid_json_schema(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'invalid_json_schema',
+            'code': 'invalid-json-schema',
+            'baseline_checks': [{
+                'name': '错误 Schema',
+                'file_path': '${APP_HOME}/conf/app.json',
+                'document_type': 'json',
+                'schema_type': 'json_schema',
+                'schema_version': '2020-12',
+                'schema_content': '{"type": 7}',
+            }],
+        }, format='json')
+
+        self.assertNotEqual(res.json()['code'], 200)
+        self.assertIn('JSON Schema 无效', str(res.json()['data']))
+
+    def test_application_accepts_plain_text_regexp(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'regexp_app',
+            'code': 'regexp-app',
+            'baseline_checks': [{
+                'name': '禁止调试模式',
+                'file_path': '${APP_HOME}/conf/application.properties',
+                'document_type': 'text',
+                'schema_type': 'regexp',
+                'schema_version': 're2',
+                'schema_content': json.dumps({
+                    'pattern': r'(?m)^debug\s*=\s*true\s*$',
+                    'expect': 'absent',
+                }),
+            }],
+        }, format='json')
+
+        body = self.assertResponseOK(res)
+        check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
+        self.assertEqual(check.document_type, 'text')
+        self.assertEqual(check.schema_type, 'regexp')
+
+    def test_application_rejects_invalid_regexp_rule(self):
+        for rule in (
+            {'pattern': 'debug=true', 'expect': 'sometimes'},
+            {'pattern': 'debug=true', 'expect': 'present', 'flags': 'i'},
+        ):
+            with self.subTest(rule=rule):
+                res = self.client.post('/assets/applications/', {
+                    'name': f'invalid_regexp_{len(str(rule))}',
+                    'code': f'invalid-regexp-{len(str(rule))}',
+                    'baseline_checks': [{
+                        'name': '错误 Regexp',
+                        'file_path': '${APP_HOME}/conf/application.properties',
+                        'document_type': 'text',
+                        'schema_type': 'regexp',
+                        'schema_version': 're2',
+                        'schema_content': json.dumps(rule),
+                    }],
+                }, format='json')
+
+                self.assertNotEqual(res.json()['code'], 200)
+                self.assertIn('Regexp', str(res.json()['data']))
+
+    def test_application_accepts_structured_config_document_types(self):
+        schema = json.dumps({'type': 'object'})
+        for document_type in ('ini', 'toml', 'properties'):
+            with self.subTest(document_type=document_type):
+                res = self.client.post('/assets/applications/', {
+                    'name': f'{document_type}_app',
+                    'code': f'{document_type}-app',
+                    'baseline_checks': [{
+                        'name': f'{document_type} 基线',
+                        'file_path': f'${{APP_HOME}}/conf/application.{document_type}',
+                        'document_type': document_type,
+                        'schema_type': 'json_schema',
+                        'schema_version': '2020-12',
+                        'schema_content': schema,
+                    }],
+                }, format='json')
+
+                body = self.assertResponseOK(res)
+                check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
+                self.assertEqual(check.document_type, document_type)
+
     def test_batch_delete_applications(self):
         """批量删除应用"""
         app = Application.objects.create(name='del_app', code='del-app')
@@ -321,6 +504,44 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         self.assertEqual(missing_home_res.json()['code'], 600)
         self.assertIn('引用 ${APP_HOME} 前必须填写 App Home', str(missing_home_res.json()['data']))
+
+    def test_generic_baseline_checks_are_compiled_into_agent_plan(self):
+        application = Application.objects.create(name='Tomcat App', code='tomcat-app')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.95')
+        host = Host.objects.create(instance_name='tomcat-agent-host', ip='10.0.0.88')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='Tomcat 基线模板',
+            control_type='systemd',
+            run_user='tomcat',
+            app_home='/home/${RUN_USER}/tomcat',
+            service_name='tomcat.service',
+        )
+        ApplicationBaselineCheck.objects.create(
+            application=application,
+            name='Manager 用户',
+            file_path='${APP_HOME}/conf/tomcat-users.xml',
+            document_type='xml',
+            schema_type='schematron',
+            schema_version='iso',
+            schema_content='<schema xmlns="http://purl.oclc.org/dsdl/schematron"><pattern><rule context="/"><assert test="//user[@username=\'admin\']">Manager 用户必须存在</assert></rule></pattern></schema>',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='tomcat-main',
+        )
+
+        params = _build_application_baseline_params(deployment)
+
+        plan = params['check_plan']
+        self.assertEqual(plan['schema_version'], 1)
+        self.assertEqual(plan['required_capabilities'], ['schema_validate:v1'])
+        self.assertEqual(len(plan['checks']), 1)
+        self.assertEqual(plan['checks'][0]['executor'], 'schema_validate')
+        self.assertEqual(plan['checks'][0]['path'], '/home/tomcat/tomcat/conf/tomcat-users.xml')
+        self.assertEqual(plan['checks'][0]['schema']['type'], 'schematron')
 
     def test_create_compose_template_and_deployment(self):
         """Compose 配置归属模板，部署实例只引用版本、模板和主机"""

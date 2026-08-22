@@ -2,9 +2,11 @@ from rest_framework.serializers import ModelSerializer
 from datetime import datetime, timedelta
 import re
 from .models import *
+from .application_variables import APP_HOME_VARIABLE, RUN_USER_VARIABLE, ApplicationVariableError, resolve_application_variables
 from .credential_crypto import encrypt_secret
 from rest_framework import serializers
 from django.utils import timezone
+from django.db import transaction
 
 
 
@@ -34,17 +36,227 @@ class CredentialSerializer(ModelSerializer):
         if value and len(value) > 8192:
             raise serializers.ValidationError("私钥长度超过限制")
         return value
-# host type
+class ApplicationVersionSerializer(ModelSerializer):
+    application_name = serializers.CharField(source='application.name', read_only=True)
+
+    class Meta:
+        model = ApplicationVersion
+        fields = '__all__'
+
+    def create(self, validated_data):
+        validated_data["create_time"] = timezone.now()
+        return ApplicationVersion.objects.create(**validated_data)
+
+
 class ApplicationSerializer(ModelSerializer):
+    versions = ApplicationVersionSerializer(many=True, read_only=True)
+    version_count = serializers.IntegerField(read_only=True)
+    deployment_template_count = serializers.IntegerField(read_only=True)
+    deployment_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = Application
         fields = '__all__'
-    
-    # 创建
+
+
+class ApplicationPortSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationPort
+        exclude = ['deployment_template']
+
+
+class ApplicationPathSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationPath
+        exclude = ['deployment_template']
+
+
+class ApplicationConfigFileSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationConfigFile
+        exclude = ['deployment_template']
+
+
+class ApplicationLogDefinitionSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationLogDefinition
+        exclude = ['deployment_template']
+
+
+class ApplicationControlActionSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationControlAction
+        exclude = ['deployment_template']
+
+
+class DockerControlConfigSerializer(ModelSerializer):
+    class Meta:
+        model = DockerControlConfig
+        exclude = ['deployment_template']
+
+
+class DockerComposeControlConfigSerializer(ModelSerializer):
+    class Meta:
+        model = DockerComposeControlConfig
+        exclude = ['deployment_template']
+
+
+class ApplicationDeploymentTemplateSerializer(ModelSerializer):
+    application_name = serializers.CharField(source='application.name', read_only=True)
+    ports = ApplicationPortSerializer(many=True, required=False)
+    paths = ApplicationPathSerializer(many=True, required=False)
+    config_files = ApplicationConfigFileSerializer(many=True, required=False)
+    logs = ApplicationLogDefinitionSerializer(many=True, required=False)
+    control_actions = ApplicationControlActionSerializer(many=True, required=False)
+    docker_config = DockerControlConfigSerializer(required=False, allow_null=True)
+    compose_config = DockerComposeControlConfigSerializer(required=False, allow_null=True)
+
+    class Meta:
+        model = ApplicationDeploymentTemplate
+        fields = '__all__'
+
+    def validate(self, attrs):
+        control_type = attrs.get('control_type', getattr(self.instance, 'control_type', None))
+        service_name = attrs.get('service_name', getattr(self.instance, 'service_name', ''))
+        app_home = attrs.get('app_home', getattr(self.instance, 'app_home', ''))
+        run_user = attrs.get('run_user', getattr(self.instance, 'run_user', ''))
+        actions = attrs.get('control_actions')
+        docker_config = attrs.get('docker_config')
+        compose_config = attrs.get('compose_config')
+
+        if control_type == ApplicationDeploymentTemplate.ControlType.SYSTEMD and not str(service_name or '').strip():
+            raise serializers.ValidationError({'service_name': 'Systemd 模板必须填写服务名'})
+        if control_type == ApplicationDeploymentTemplate.ControlType.COMMAND:
+            submitted_actions = {item.get('action') for item in (actions or [])}
+            if actions is not None and not {'start', 'stop', 'status'}.issubset(submitted_actions):
+                raise serializers.ValidationError({'control_actions': '命令行模板必须配置 start、stop、status'})
+            if self.instance is None and actions is None:
+                raise serializers.ValidationError({'control_actions': '命令行模板必须配置 start、stop、status'})
+        if control_type == ApplicationDeploymentTemplate.ControlType.DOCKER and docker_config is None:
+            if self.instance is None or not hasattr(self.instance, 'docker_config'):
+                raise serializers.ValidationError({'docker_config': 'Docker 模板必须配置容器名称'})
+        if control_type == ApplicationDeploymentTemplate.ControlType.DOCKER_COMPOSE and compose_config is None:
+            if self.instance is None or not hasattr(self.instance, 'compose_config'):
+                raise serializers.ValidationError({'compose_config': 'Docker Compose 模板必须配置项目和服务'})
+        if control_type == ApplicationDeploymentTemplate.ControlType.EXTERNAL_HA:
+            resource_name = attrs.get('ha_resource_name', getattr(self.instance, 'ha_resource_name', ''))
+            if not str(resource_name or '').strip():
+                raise serializers.ValidationError({'ha_resource_name': '外部 HA 模板必须填写资源名称'})
+
+        variable_values = [app_home, attrs.get('work_directory', '')]
+        variable_values.extend(item.get('path', '') for item in (attrs.get('paths') or []))
+        variable_values.extend(item.get('path', '') for item in (attrs.get('config_files') or []))
+        variable_values.extend(item.get('path_pattern', '') for item in (attrs.get('logs') or []))
+        variable_values.extend(item.get('command', '') for item in (actions or []))
+        if compose_config:
+            variable_values.extend([
+                compose_config.get('compose_file_path', ''),
+                compose_config.get('working_directory', ''),
+                compose_config.get('env_file', ''),
+            ])
+        try:
+            if APP_HOME_VARIABLE in str(app_home or ''):
+                raise ApplicationVariableError('App Home 不能引用自身')
+            if APP_HOME_VARIABLE in str(run_user or '') or RUN_USER_VARIABLE in str(run_user or ''):
+                raise ApplicationVariableError('运行用户不能引用模板变量')
+            for value in variable_values:
+                resolve_application_variables(value, app_home=app_home, run_user=run_user)
+        except ApplicationVariableError as exc:
+            raise serializers.ValidationError({'variables': str(exc)}) from exc
+        return attrs
+
+    @staticmethod
+    def _pop_nested(validated_data):
+        nested_fields = ('ports', 'paths', 'config_files', 'logs', 'control_actions', 'docker_config', 'compose_config')
+        return {field: validated_data.pop(field) for field in nested_fields if field in validated_data}
+
+    @staticmethod
+    def _save_nested(instance, nested_data):
+        many_relations = {
+            'ports': ApplicationPort,
+            'paths': ApplicationPath,
+            'config_files': ApplicationConfigFile,
+            'logs': ApplicationLogDefinition,
+            'control_actions': ApplicationControlAction,
+        }
+        for field_name, model in many_relations.items():
+            if field_name not in nested_data:
+                continue
+            model.objects.filter(deployment_template=instance).delete()
+            model.objects.bulk_create([
+                model(deployment_template=instance, **item) for item in nested_data[field_name]
+            ])
+
+        one_relations = {
+            'docker_config': DockerControlConfig,
+            'compose_config': DockerComposeControlConfig,
+        }
+        for field_name, model in one_relations.items():
+            if field_name not in nested_data:
+                continue
+            model.objects.filter(deployment_template=instance).delete()
+            item = nested_data[field_name]
+            if item is not None:
+                model.objects.create(deployment_template=instance, **item)
+
+    @transaction.atomic
     def create(self, validated_data):
-        validated_data["create_time"] = timezone.now()
-        data = Application.objects.create(**validated_data)
-        return data
+        nested_data = self._pop_nested(validated_data)
+        instance = ApplicationDeploymentTemplate.objects.create(**validated_data)
+        self._save_nested(instance, nested_data)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        nested_data = self._pop_nested(validated_data)
+        instance = super().update(instance, validated_data)
+        self._save_nested(instance, nested_data)
+        return instance
+
+
+class ApplicationBaselineResultSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationBaselineResult
+        fields = '__all__'
+
+
+class ApplicationBaselineExecutionSerializer(ModelSerializer):
+    results = ApplicationBaselineResultSerializer(many=True, read_only=True)
+    deployment_name = serializers.CharField(source='deployment.instance_name', read_only=True)
+    application_name = serializers.CharField(source='deployment.application_version.application.name', read_only=True)
+    host_name = serializers.CharField(source='deployment.host.instance_name', read_only=True)
+    host_ip = serializers.IPAddressField(source='deployment.host.ip', read_only=True)
+    job_id = serializers.CharField(source='agent_job.job_id', read_only=True)
+
+    class Meta:
+        model = ApplicationBaselineExecution
+        fields = '__all__'
+
+
+class ApplicationDeploymentSerializer(ModelSerializer):
+    application_id = serializers.IntegerField(source='application_version.application_id', read_only=True)
+    application_name = serializers.CharField(source='application_version.application.name', read_only=True)
+    version = serializers.CharField(source='application_version.version', read_only=True)
+    host_name = serializers.CharField(source='host.instance_name', read_only=True)
+    host_ip = serializers.IPAddressField(source='host.ip', read_only=True)
+    template_name = serializers.CharField(source='deployment_template.name', read_only=True)
+    control_type = serializers.CharField(source='deployment_template.control_type', read_only=True)
+    run_user = serializers.CharField(source='deployment_template.run_user', read_only=True)
+    run_group = serializers.CharField(source='deployment_template.run_group', read_only=True)
+    app_home = serializers.CharField(source='deployment_template.app_home', read_only=True)
+    work_directory = serializers.CharField(source='deployment_template.work_directory', read_only=True)
+    ports = ApplicationPortSerializer(source='deployment_template.ports', many=True, read_only=True)
+
+    class Meta:
+        model = ApplicationDeployment
+        fields = '__all__'
+
+    def validate(self, attrs):
+        application_version = attrs.get('application_version', getattr(self.instance, 'application_version', None))
+        deployment_template = attrs.get('deployment_template', getattr(self.instance, 'deployment_template', None))
+        if application_version and deployment_template and application_version.application_id != deployment_template.application_id:
+            raise serializers.ValidationError({'deployment_template': '部署模板与应用版本必须属于同一个应用'})
+        return attrs
 
 
 class HostGroupSerializer(ModelSerializer):
@@ -396,6 +608,7 @@ class HostListSerializer(ModelSerializer):
         fields = [
             'id',
             'instance_name',
+            'agent_id',
             'ip',
             'remark',
             'webssh_default_username',

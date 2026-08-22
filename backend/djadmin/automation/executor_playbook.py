@@ -32,7 +32,7 @@ def execute_playbook_job(job: Any, persist_target_logs: bool = True) -> tuple[bo
     for item in requested:
         host_id = int(item['host_id']) if str(item.get('host_id') or '').isdigit() else None
         host = host_map.get(host_id) if host_id is not None else None
-        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        agent_id = str(getattr(host, 'agent_id', '') or '').strip()
         if host is None or not agent_id or not host.ip:
             failures.append((host, host_id, 'host has no usable agent identity or IP'))
         else:

@@ -83,17 +83,15 @@ class Command(BaseCommand):
             return
         
         # 查找或创建主机
-        host = Host.objects.filter(instance_name=agent_id).first()
+        host = Host.objects.filter(agent_id=agent_id).first()
         if not host:
             logger.warning(f'Heartbeat from unknown agent: {agent_id}')
             return
         
-        # 更新 agent 在线状态（记录最后心跳时间）
+        # RabbitMQ 心跳只记录存活时间；是否可执行任务由 Web/gRPC 进程内 Session Registry 决定。
         now = timezone.now()
-        # 心跳在线必须同时具备 gRPC 执行通道，否则只能接收消息，不能执行自动化任务。
-        host.agent_online = bool(payload.get('grpc_connected', False))
         host.agent_online_time = now
-        host.save(update_fields=['agent_online', 'agent_online_time', 'update_time'])
+        host.save(update_fields=['agent_online_time', 'update_time'])
         
         logger.debug(f'Updated heartbeat for agent: {agent_id}')
 
@@ -105,22 +103,20 @@ class Command(BaseCommand):
             logger.warning('Agent status message missing agent_id')
             return
 
-        host = Host.objects.filter(instance_name=agent_id).first()
+        host = Host.objects.filter(agent_id=agent_id).first()
         if not host:
             logger.warning(f'Agent status from unknown agent: {agent_id}')
             return
 
-        if status == 'online' and bool(payload.get('grpc_connected', False)):
+        if status == 'online':
             now = timezone.now()
-            host.agent_online = True
             host.agent_online_time = now
-            host.save(update_fields=['agent_online', 'agent_online_time', 'update_time'])
-            logger.info(f'Marked agent online by status event: {agent_id}')
+            host.save(update_fields=['agent_online_time', 'update_time'])
+            logger.info(f'Recorded agent status event: {agent_id}')
             return
 
-        if status == 'offline' or (status == 'online' and not bool(payload.get('grpc_connected', False))):
-            host.agent_online = False
-            host.save(update_fields=['agent_online', 'update_time'])
+        if status == 'offline':
+            logger.info(f'Recorded agent offline event: {agent_id}')
             logger.info(f'Marked agent offline by status event: {agent_id}')
             return
 

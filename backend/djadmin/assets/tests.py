@@ -5,7 +5,12 @@ from contextlib import contextmanager
 from typing import Any, cast
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
-from .models import Credential, Application, HostGroup, Host, HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog
+from .models import (
+    Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, HostGroup, Host,
+    ApplicationBaselineExecution, ApplicationBaselineResult, AgentJob,
+    HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog,
+)
+from .views import _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -208,27 +213,316 @@ class ApplicationTest(BaseTestCase):
 
     def test_list_applications(self):
         """应用列表返回分页格式"""
-        Application.objects.create(name='app1', version='1.0')
+        application = Application.objects.create(name='app1', code='app1')
+        ApplicationVersion.objects.create(application=application, version='1.0')
         res = self.client.get('/assets/applications/?page=1&page_size=10')
         body = self.assertResponseOK(res)
         self.assertIn('results', body['data'])
+        self.assertEqual(body['data']['results'][0]['version_count'], 1)
 
     def test_create_application(self):
         """新增应用"""
         res = self.client.post('/assets/applications/', {
-            'name': 'new_app', 'version': '2.0'
+            'name': 'new_app', 'code': 'new-app', 'category': 'business'
         }, format='json')
         self.assertResponseOK(res)
         self.assertTrue(Application.objects.filter(name='new_app').exists())
 
     def test_batch_delete_applications(self):
         """批量删除应用"""
-        app = Application.objects.create(name='del_app', version='1.0')
+        app = Application.objects.create(name='del_app', code='del-app')
         res = self.client.delete('/assets/applications/batch-delete/', {
             'ids': [app.id]  # type: ignore[attr-defined]
         }, format='json')
         self.assertResponseOK(res)
         self.assertFalse(Application.objects.filter(id=app.id).exists())  # type: ignore[attr-defined]
+
+    def test_command_template_requires_core_actions(self):
+        """命令行部署模板必须配置启动、停止和状态动作"""
+        application = Application.objects.create(name='Tomcat', code='tomcat')
+
+        res = self.client.post('/assets/application-deployment-templates/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'name': 'Tomcat 命令行',
+            'control_type': 'command',
+            'run_user': 'tomcat',
+            'control_actions': [{'action': 'start', 'command': './startup.sh'}],
+        }, format='json')
+
+        self.assertEqual(res.json()['code'], 600)
+        self.assertIn('control_actions', res.json()['data'])
+
+    def test_application_variables_are_resolved_in_runtime_parameters(self):
+        """模板保存变量表达式，生成 Agent 参数时解析 APP_HOME 和 RUN_USER。"""
+        application = Application.objects.create(name='Tomcat', code='tomcat-vars')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        host = Host.objects.create(instance_name='tomcat-host', ip='10.0.0.21')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='Tomcat 命令模板',
+            control_type='command',
+            run_user='esb',
+            app_home='/home/${RUN_USER}/tomcat',
+        )
+        deployment_template.control_actions.create(  # type: ignore[attr-defined]
+            action='start', command='sudo -u ${RUN_USER} ${APP_HOME}/bin/startup.sh', success_exit_codes=[0],
+        )
+        deployment_template.paths.create(  # type: ignore[attr-defined]
+            name='日志目录', path_type='log', path='${APP_HOME}/logs',
+        )
+        deployment_template.logs.create(  # type: ignore[attr-defined]
+            name='catalina.out', path_pattern='${APP_HOME}/log/catalina.out',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='tomcat-main',
+        )
+
+        params = _build_application_baseline_params(deployment)
+
+        self.assertEqual(deployment_template.app_home, '/home/${RUN_USER}/tomcat')
+        self.assertEqual(
+            deployment_template.control_actions.get(action='start').command,  # type: ignore[attr-defined]
+            'sudo -u ${RUN_USER} ${APP_HOME}/bin/startup.sh',
+        )
+        self.assertEqual(params['app_home'], '/home/esb/tomcat')
+        self.assertEqual(params['control_actions']['start']['command'], 'sudo -u esb /home/esb/tomcat/bin/startup.sh')
+        self.assertEqual(params['paths'][0]['path'], '/home/esb/tomcat/logs')
+        self.assertEqual(params['logs'][0]['path_pattern'], '/home/esb/tomcat/log/catalina.out')
+
+    def test_template_rejects_invalid_app_home_variable_reference(self):
+        """App Home 不可自引用，引用 APP_HOME 时也必须先定义 App Home。"""
+        application = Application.objects.create(name='Invalid Vars', code='invalid-vars')
+        actions = [
+            {'action': action, 'command': '${APP_HOME}/bin/control.sh'}
+            for action in ('start', 'stop', 'status')
+        ]
+
+        self_reference_res = self.client.post('/assets/application-deployment-templates/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'name': '自引用模板',
+            'control_type': 'command',
+            'run_user': 'esb',
+            'app_home': '${APP_HOME}/tomcat',
+            'control_actions': actions,
+        }, format='json')
+        self.assertEqual(self_reference_res.json()['code'], 600)
+        self.assertIn('App Home 不能引用自身', str(self_reference_res.json()['data']))
+
+        missing_home_res = self.client.post('/assets/application-deployment-templates/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'name': '缺少 App Home',
+            'control_type': 'command',
+            'run_user': 'esb',
+            'app_home': '',
+            'control_actions': actions,
+        }, format='json')
+        self.assertEqual(missing_home_res.json()['code'], 600)
+        self.assertIn('引用 ${APP_HOME} 前必须填写 App Home', str(missing_home_res.json()['data']))
+
+    def test_create_compose_template_and_deployment(self):
+        """Compose 配置归属模板，部署实例只引用版本、模板和主机"""
+        application = Application.objects.create(name='Order API', code='order-api', category='business')
+        version = ApplicationVersion.objects.create(application=application, version='2026.08')
+        host = Host.objects.create(instance_name='app-host-2', ip='10.0.0.11')
+
+        template_res = self.client.post('/assets/application-deployment-templates/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'name': 'Compose 标准模板',
+            'control_type': 'docker_compose',
+            'run_user': 'app',
+            'ports': [{'name': 'HTTP', 'protocol': 'tcp', 'port': 8080}],
+            'paths': [{'name': 'logs', 'path_type': 'log', 'path': '/srv/order/logs'}],
+            'compose_config': {
+                'project_name': 'order',
+                'service_name': 'api',
+                'compose_file_path': '/srv/order/compose.yml',
+                'working_directory': '/srv/order',
+            },
+        }, format='json')
+        template_body = self.assertResponseOK(template_res)
+
+        res = self.client.post('/assets/application-deployments/', {
+            'application_version': version.id,  # type: ignore[attr-defined]
+            'deployment_template': template_body['data']['id'],
+            'host': host.id,  # type: ignore[attr-defined]
+            'instance_name': 'order-api',
+        }, format='json')
+
+        body = self.assertResponseOK(res)
+        deployment = ApplicationDeployment.objects.get(id=body['data']['id'])
+        self.assertEqual(deployment.deployment_template.ports.count(), 1)
+        self.assertEqual(deployment.deployment_template.paths.count(), 1)
+        self.assertEqual(deployment.deployment_template.compose_config.service_name, 'api')
+
+    @patch('assets.views.threading.Thread')
+    def test_check_baseline_queues_structured_agent_job(self, thread_class):
+        """立即检查生成结构化 AgentJob，并通过后台线程执行。"""
+        application = Application.objects.create(name='Nginx', code='nginx')
+        version = ApplicationVersion.objects.create(application=application, version='1.26.2')
+        host = Host.objects.create(instance_name='kul-tib-tomcat1', agent_id='177', ip='10.0.0.12')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Nginx Systemd', control_type='systemd',
+            run_user='nginx', service_name='nginx.service', systemd_scope='user',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='nginx-main',
+        )
+        deployment_template.ports.create(name='HTTP', protocol='tcp', port=80)
+
+        res = self.client.post(f'/assets/application-deployments/{deployment.id}/check-baseline/')  # type: ignore[attr-defined]
+
+        body = self.assertResponseOK(res)
+        job = AgentJob.objects.get(job_id=body['data']['job_id'])
+        self.assertEqual(job.agent_id, '177')
+        self.assertEqual(job.action, 'check_application_baseline')
+        self.assertEqual(job.params['service_name'], 'nginx.service')
+        self.assertEqual(job.params['systemd_scope'], 'user')
+        self.assertEqual(job.params['run_user'], 'nginx')
+        self.assertEqual(job.params['ports'][0]['port'], 80)
+        deployment.refresh_from_db()
+        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.CHECKING)
+        thread_class.return_value.start.assert_called_once()
+
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_control_deployment_dispatches_structured_agent_job(self, dispatch_job):
+        application = Application.objects.create(name='Tomcat Control', code='tomcat-control')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        host = Host.objects.create(instance_name='tomcat-control-host', agent_id='tomcat-agent', ip='10.0.0.18')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Tomcat Systemd', control_type='systemd',
+            run_user='esb', service_name='tomcat', systemd_scope='user',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='tomcat-main',
+        )
+
+        def complete_job(job):
+            job.status = AgentJob.JobStatus.SUCCESS
+            job.stdout = 'active'
+            job.result_data = {'control_action': 'status'}
+            return job
+
+        dispatch_job.side_effect = complete_job
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/control/',  # type: ignore[attr-defined]
+            {'action': 'status'}, format='json',
+        )
+
+        body = self.assertResponseOK(res)
+        job = AgentJob.objects.get(job_id=body['data']['job_id'])
+        self.assertEqual(job.agent_id, 'tomcat-agent')
+        self.assertEqual(job.action, 'control_application')
+        self.assertEqual(job.params['control_action'], 'status')
+        self.assertEqual(job.params['service_name'], 'tomcat')
+        self.assertEqual(body['data']['output'], 'active')
+
+    def test_control_deployment_rejects_unknown_action(self):
+        application = Application.objects.create(name='Unsafe Control', code='unsafe-control')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        host = Host.objects.create(instance_name='unsafe-host', agent_id='unsafe-agent', ip='10.0.0.19')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Unsafe Systemd', control_type='systemd',
+            run_user='app', service_name='unsafe',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='unsafe-main',
+        )
+
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/control/',  # type: ignore[attr-defined]
+            {'action': 'restart'}, format='json',
+        )
+
+        self.assertEqual(res.json()['code'], 400)
+        self.assertFalse(AgentJob.objects.filter(action='control_application').exists())
+
+    @patch('assets.views.close_old_connections')
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_baseline_result_updates_deployment_health(self, dispatch_job, _close_connections):
+        """Agent 返回的逐项结果会生成检查历史并更新部署健康状态。"""
+        application = Application.objects.create(name='Redis', code='redis')
+        version = ApplicationVersion.objects.create(application=application, version='7.4')
+        host = Host.objects.create(instance_name='agent-app-2', ip='10.0.0.13')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Redis Systemd', control_type='systemd',
+            run_user='redis', service_name='redis.service',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='redis-main',
+        )
+        job = AgentJob.objects.create(
+            job_id='baseline-result-test', agent_id=host.instance_name, host=host,
+            job_type='custom', action='check_application_baseline', params={},
+        )
+        execution = ApplicationBaselineExecution.objects.create(deployment=deployment, agent_job=job)
+        job.status = AgentJob.JobStatus.SUCCESS
+        job.result_data = {
+            'passed': False,
+            'checks': [
+                {'key': 'control', 'type': 'control_status', 'name': '运行状态', 'status': 'pass', 'expected': 'running', 'actual': 'active'},
+                {'key': 'port:tcp:6379', 'type': 'port_listening', 'name': 'Redis', 'status': 'fail', 'expected': True, 'actual': False, 'message': '端口未监听'},
+            ],
+        }
+        dispatch_job.return_value = job
+
+        _run_application_baseline_check(execution.id, job.job_id)  # type: ignore[attr-defined]
+
+        execution.refresh_from_db()
+        deployment.refresh_from_db()
+        self.assertEqual(execution.status, ApplicationBaselineExecution.Status.COMPLETED)
+        self.assertEqual(ApplicationBaselineResult.objects.filter(execution=execution).count(), 2)
+        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.UNHEALTHY)
+        self.assertEqual(deployment.baseline_pass_rate, 50.0)
+
+        history_res = self.client.get(f'/assets/application-deployments/{deployment.id}/baseline-history/')  # type: ignore[attr-defined]
+        history_body = self.assertResponseOK(history_res)
+        self.assertEqual(history_body['data'][0]['id'], execution.id)
+        self.assertEqual(len(history_body['data'][0]['results']), 2)
+
+    @patch('assets.views.close_old_connections')
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_baseline_agent_failure_marks_execution_error(self, dispatch_job, _close_connections):
+        """Agent 调度失败时保留错误信息，并将部署健康状态标记为检查失败。"""
+        application = Application.objects.create(name='MySQL', code='mysql')
+        version = ApplicationVersion.objects.create(application=application, version='8.4')
+        host = Host.objects.create(instance_name='agent-app-3', ip='10.0.0.14')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='MySQL Systemd', control_type='systemd',
+            run_user='mysql', service_name='mysqld.service',
+        )
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='mysql-main',
+        )
+        job = AgentJob.objects.create(
+            job_id='baseline-failure-test', agent_id=host.instance_name, host=host,
+            job_type='custom', action='check_application_baseline', params={},
+        )
+        execution = ApplicationBaselineExecution.objects.create(deployment=deployment, agent_job=job)
+        job.status = AgentJob.JobStatus.FAILED
+        job.error_message = 'agent channel unavailable'
+        dispatch_job.return_value = job
+
+        _run_application_baseline_check(execution.id, job.job_id)  # type: ignore[attr-defined]
+
+        execution.refresh_from_db()
+        deployment.refresh_from_db()
+        self.assertEqual(execution.status, ApplicationBaselineExecution.Status.FAILED)
+        self.assertEqual(execution.error_message, 'agent channel unavailable')
+        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.ERROR)
 
 
 # ─────────────────────────────────────────────
@@ -300,6 +594,16 @@ class HostGroupTest(BaseTestCase):
 # ─────────────────────────────────────────────
 class HostTest(BaseTestCase):
 
+    def test_group_target_resolution_uses_agent_id_not_display_name(self):
+        group = HostGroup.objects.create(name='agent-routing-group')
+        Host.objects.create(
+            instance_name='业务展示名', agent_id='agent-route-01', ip='192.168.1.9', group=group,
+        )
+
+        agent_ids = _resolve_target_agent_ids('group', group.name, '')
+
+        self.assertEqual(agent_ids, ['agent-route-01'])
+
     @contextmanager
     def _active_webssh_session(self, host):
         session = WebSSHSessionLog.objects.create(
@@ -316,11 +620,36 @@ class HostTest(BaseTestCase):
 
     def test_list_hosts(self):
         """主机列表返回分页格式"""
-        Host.objects.create(instance_name='host1', ip='192.168.1.1')
+        Host.objects.create(instance_name='host1', agent_id='agent-host1', ip='192.168.1.1')
         res = self.client.get('/assets/hosts/?page=1&page_size=10')
         body = self.assertResponseOK(res)
         self.assertIn('results', body['data'])
         self.assertIn('count', body['data'])
+        self.assertEqual(body['data']['results'][0]['agent_id'], 'agent-host1')
+
+    @patch('assets.views.REGISTRY.connected_agent_ids', return_value=[])
+    def test_list_hosts_clears_stale_online_status(self, _mock_connected_agent_ids):
+        host = Host.objects.create(
+            instance_name='stale-online', agent_id='agent-stale', ip='192.168.1.2', agent_online=True,
+        )
+
+        body = self.assertResponseOK(self.client.get('/assets/hosts/?page=1&page_size=10'))
+
+        host.refresh_from_db()
+        self.assertFalse(host.agent_online)
+        self.assertFalse(body['data']['results'][0]['agent_online'])
+
+    @patch('assets.views.REGISTRY.connected_agent_ids', return_value=['agent-connected'])
+    def test_list_hosts_marks_connected_registry_agent_online(self, _mock_connected_agent_ids):
+        host = Host.objects.create(
+            instance_name='connected-host', agent_id='agent-connected', ip='192.168.1.3', agent_online=False,
+        )
+
+        body = self.assertResponseOK(self.client.get('/assets/hosts/?page=1&page_size=10'))
+
+        host.refresh_from_db()
+        self.assertTrue(host.agent_online)
+        self.assertTrue(body['data']['results'][0]['agent_online'])
 
     def test_list_hosts_with_host_id_filter(self):
         """按主机 ID 过滤应精确返回单台主机"""
@@ -342,8 +671,8 @@ class HostTest(BaseTestCase):
         self.assertResponseOK(res)
         self.assertTrue(Host.objects.filter(instance_name='new_host').exists())
 
-    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
-    def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, _mock_run_job):
+    @patch('assets.views._start_exporter_job_thread')
+    def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, mock_start_job):
         """新增主机时通过 monitors 数组纳管 node_exporter 并开启，应下发安装用 automation job。"""
         install_template = _make_playbook_template('node_exporter-install')
         SoftwarePackage.objects.create(
@@ -363,11 +692,34 @@ class HostTest(BaseTestCase):
         target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
         self.assertTrue(target.managed_enabled)
         self.assertEqual(target.scrape_port, 19100)
-        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
-        self.assertTrue('已下发安装任务' in target.install_message)
+        mock_start_job.assert_called_once_with('install', host.id, target.id)
 
-    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
-    def test_create_host_with_monitor_explicit_port_should_persist_scrape_port(self, _mock_run_job):
+    @patch('assets.views.dispatch_exporter_install_job')
+    @patch('assets.views.threading.Thread')
+    def test_create_host_with_monitor_should_not_run_install_in_request_thread(
+        self, mock_thread, mock_dispatch_install,
+    ):
+        """保存主机只排队安装，避免 SSH/Ansible 执行时间阻塞 API 响应。"""
+        res = self.client.post('/assets/hosts/', {
+            'instance_name': 'agent-host-async-monitor',
+            'ip': '192.168.1.112',
+            'monitors': [{'name': 'node_exporter', 'enabled': True}],
+        }, format='json')
+        self.assertResponseOK(res)
+
+        host = Host.objects.get(instance_name='agent-host-async-monitor')
+        target = MonitorTarget.objects.get(host=host, exporter_type='node_exporter')
+        mock_dispatch_install.assert_not_called()
+        mock_thread.assert_called_once_with(
+            target=_run_exporter_job_in_background,
+            args=('install', host.id, target.id, False),
+            daemon=True,
+            name=f'monitor-install-{target.id}',
+        )
+        mock_thread.return_value.start.assert_called_once_with()
+
+    @patch('assets.views._start_exporter_job_thread')
+    def test_create_host_with_monitor_explicit_port_should_persist_scrape_port(self, mock_start_job):
         install_template = _make_playbook_template('cadvisor-install')
         SoftwarePackage.objects.create(
             name='cadvisor', version='0.1.0', os='linux', arch='amd64', enabled=True,
@@ -384,6 +736,7 @@ class HostTest(BaseTestCase):
         host = Host.objects.get(instance_name='agent-host-cadvisor-01')
         target = MonitorTarget.objects.get(host=host, exporter_type='cadvisor')
         self.assertEqual(target.scrape_port, 18081)
+        mock_start_job.assert_called_once_with('install', host.id, target.id)
 
     def test_dispatch_exporter_install_job_service_run_as_user_defaults_to_dj_agent(self):
         """未显式指定 service_run_as_user/group 时，模型层默认值 dj-agent 会直接落库，
@@ -396,7 +749,7 @@ class HostTest(BaseTestCase):
             file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             install_playbook_template=install_template,
         )
-        host = Host.objects.create(instance_name='agent-host-default', ip='192.168.1.198')
+        host = Host.objects.create(instance_name='agent-host-default', agent_id='agent-host-default', ip='192.168.1.198')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
@@ -418,7 +771,7 @@ class HostTest(BaseTestCase):
         )
         # 绕开模型默认值，模拟迁移前遗留的空字符串脏数据
         SoftwarePackage.objects.filter(id=pkg.id).update(service_run_as_user='', service_run_as_group='')
-        host = Host.objects.create(instance_name='agent-host-legacy-blank', ip='192.168.1.196')
+        host = Host.objects.create(instance_name='agent-host-legacy-blank', agent_id='agent-host-legacy-blank', ip='192.168.1.196')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
@@ -438,7 +791,7 @@ class HostTest(BaseTestCase):
             file=SimpleUploadedFile('node_exporter-9.9.9.linux-amd64.tar.gz', b'test-package'),
             service_run_as_user='monitor_agent', service_run_as_group='monitor_group',
         )
-        host = Host.objects.create(instance_name='agent-host-explicit', ip='192.168.1.197')
+        host = Host.objects.create(instance_name='agent-host-explicit', agent_id='agent-host-explicit', ip='192.168.1.197')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
@@ -453,7 +806,7 @@ class HostTest(BaseTestCase):
         避开迁移预置的默认 node_exporter 软件包，确保命中“本地无包”这一分支。"""
         from assets.views import dispatch_exporter_install_job
 
-        host = Host.objects.create(instance_name='agent-host-no-pkg', ip='192.168.1.199')
+        host = Host.objects.create(instance_name='agent-host-no-pkg', agent_id='agent-host-no-pkg', ip='192.168.1.199')
         target = MonitorTarget.objects.create(
             host=host,
             exporter_type='custom_exporter_without_pkg',
@@ -496,8 +849,8 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertFalse('已下发安装任务' in target.install_message)
 
-    @patch('assets.views._run_monitor_playbook_and_update_history', return_value=None)
-    def test_disable_monitor_should_always_enqueue_uninstall_job(self, _mock_run_job):
+    @patch('assets.views._start_exporter_job_thread')
+    def test_disable_monitor_should_always_enqueue_uninstall_job(self, mock_start_job):
         """监控从开启切到关闭时，应始终自动下发卸载任务（不再需要额外勾选一次性指令）。"""
         install_template = _make_playbook_template('node_exporter-install-3')
         uninstall_template = _make_playbook_template('node_exporter-uninstall-3')
@@ -528,11 +881,7 @@ class HostTest(BaseTestCase):
         host = Host.objects.get(id=host_id)
         target = MonitorTarget.objects.get(host=host, exporter_type=MonitorTarget.ExporterType.NODE_EXPORTER)
         self.assertFalse(target.managed_enabled)
-        self.assertEqual(target.install_status, MonitorTarget.InstallStatus.PENDING)
-        self.assertTrue('已下发卸载任务' in target.install_message)
-        _mock_run_job.assert_called_once()
-        self.assertEqual(_mock_run_job.call_args.kwargs['template_content'], uninstall_template.content)
-        self.assertEqual(_mock_run_job.call_args.kwargs['extra_vars']['exporter_name'], 'node_exporter')
+        self.assertEqual(mock_start_job.call_args_list[-1].args, ('uninstall', host.id, target.id))
 
     def test_get_host_detail(self):
         """获取主机详情"""

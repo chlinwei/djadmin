@@ -77,7 +77,7 @@
                     <a-input-search
                         class="tool-item"
                         v-model:value="searchText"
-                        placeholder="实例名 / IP / 备注"
+                        placeholder="实例名 / Agent ID / IP / 备注"
                         allow-clear
                         enter-button
                         size="large"
@@ -288,6 +288,9 @@
             >
                 <a-form-item name="instance_name" label="实例名">
                     <a-input v-model:value="form.instance_name" placeholder="例如：app-01" />
+                </a-form-item>
+                <a-form-item name="agent_id" label="Agent ID">
+                    <a-input v-model:value="form.agent_id" placeholder="必须与 dj-agent 的 DJ_AGENT_ID 一致" />
                 </a-form-item>
                 <a-form-item name="ip" label="IP 地址">
                     <a-input v-model:value="form.ip" placeholder="例如：192.168.1.10" />
@@ -594,6 +597,7 @@ const form = reactive({
     monitors: [],
     remark: '',
     instance_name: '',
+    agent_id: '',
     webssh_default_username: 'root',
     webssh_login_users: 'root',
 })
@@ -723,6 +727,7 @@ const rules = {
 const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
+    { title: 'Agent ID', dataIndex: 'agent_id', key: 'agent_id', width: 150 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
@@ -1144,6 +1149,7 @@ const onGroupSelect = async (selectedKeys, info) => {
 const resetForm = () => {
     form.id = -1
     form.instance_name = ''
+    form.agent_id = ''
     form.ip = ''
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
     form.monitors = []
@@ -1188,6 +1194,7 @@ const onSaveOrCreate = async (id) => {
                 const data = res.data.data || {}
                 form.id = data.id ?? id
                 form.instance_name = data.instance_name || ''
+                form.agent_id = data.agent_id || ''
                 form.ip = data.ip || ''
                 form.group_id = data.group ?? data.group_id ?? undefined
                 const monitorRows = Array.isArray(data.monitors) ? data.monitors : []

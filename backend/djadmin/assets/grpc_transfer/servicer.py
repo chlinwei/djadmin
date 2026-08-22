@@ -19,12 +19,28 @@ from typing import Optional
 
 import grpc
 from django.conf import settings
+from django.db import close_old_connections
+from django.utils import timezone
 
 from .pb import agent_channel_pb2 as pb
 from .pb import agent_channel_pb2_grpc as pb_grpc
 from .registry import REGISTRY, AgentSession
 
 logger = logging.getLogger(__name__)
+
+
+def _set_host_grpc_online(agent_id, online):
+    # gRPC Session 才代表任务可执行；RabbitMQ 心跳仅能证明 agent 进程仍在上报。
+    close_old_connections()
+    try:
+        from assets.models import Host
+
+        update_values = {'agent_online': online, 'update_time': timezone.now()}
+        if online:
+            update_values['agent_online_time'] = timezone.now()
+        Host.objects.filter(agent_id=agent_id).update(**update_values)
+    finally:
+        close_old_connections()
 
 
 class AgentChannelServicer(pb_grpc.AgentChannelServicer):
@@ -50,6 +66,7 @@ class AgentChannelServicer(pb_grpc.AgentChannelServicer):
                         session = AgentSession(agent_id)
                         session_holder['session'] = session
                         REGISTRY.register(session)
+                        _set_host_grpc_online(agent_id, True)
                         hello_ok['value'] = True
                         hello_event.set()
                         logger.warning('[agent-grpc] session established agent_id=%s', agent_id)
@@ -66,6 +83,8 @@ class AgentChannelServicer(pb_grpc.AgentChannelServicer):
                 session = session_holder['session']
                 if session is not None:
                     REGISTRY.unregister(session)
+                    if not REGISTRY.is_connected(session.agent_id):
+                        _set_host_grpc_online(session.agent_id, False)
                     session.close()
                 hello_event.set()
 

@@ -210,9 +210,9 @@ class HostWebSSHConsumer(AsyncWebsocketConsumer):
     async def _open_agent_terminal(self, host, host_display_name, host_ip):
         # 终端全程走 agent gRPC 通道：backend 不再直连目标主机 SSH，
         # 由 agent 在目标主机本地开一个登录交互 shell（以 agent 进程用户身份，通常 root）。
-        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        agent_id = str(getattr(host, 'agent_id', '') or '').strip()
         if not agent_id:
-            return False, '主机未绑定 agent 标识（instance_name 为空）'
+            return False, '主机未绑定 Agent ID'
 
         try:
             # AgentChannelClient 构造 + open_shell 都会阻塞（open_shell 等待 agent 的 open ack），

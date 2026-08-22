@@ -20,6 +20,7 @@ from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action, api_view
 from .models import *
 from .serializer import *
+from .application_variables import resolve_application_variables
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters.rest_framework  import DjangoFilterBackend
@@ -28,7 +29,9 @@ from io import TextIOWrapper
 import csv
 from menu.permisssion import CustomMenuPermission
 from django.db.models import Prefetch, Count
+from django.db.models.deletion import ProtectedError
 from django.db import IntegrityError, transaction, connections, close_old_connections, DatabaseError
+from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
 from django.utils import timezone
 from .credential_crypto import decrypt_secret
@@ -36,6 +39,7 @@ from .webssh_runtime import WebSSHRuntimeRegistry
 from .webssh_host_mixin import WebSSHHostMixin
 from .host_info import refresh_host_info
 from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
+from .grpc_transfer.registry import REGISTRY
 
 # 日志记录器
 logger = logging.getLogger(__name__)
@@ -46,7 +50,7 @@ AGENT_AUTO_COLLECT_MIN_INTERVAL_SECONDS = 300
 
 
 def _fetch_agent_runtime_status(host):
-    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if not agent_id:
         raise RuntimeError('主机未绑定 agent 实例，无法获取状态')
 
@@ -91,14 +95,14 @@ def _resolve_target_agent_ids(target_type, target_value, fallback_agent_id):
         if normalized_target_value == '':
             raise RuntimeError('target_type=group 时 target_value不能为空')
         rows = Host.objects.filter(group__name=normalized_target_value).exclude(
-            instance_name__isnull=True,
-        ).exclude(instance_name='').values_list('instance_name', flat=True)
+            agent_id__isnull=True,
+        ).exclude(agent_id='').values_list('agent_id', flat=True)
         return list(dict.fromkeys([str(item).strip() for item in rows if str(item).strip()]))
 
     if normalized_target_type == 'all':
-        rows = Host.objects.exclude(instance_name__isnull=True).exclude(
-            instance_name='',
-        ).values_list('instance_name', flat=True)
+        rows = Host.objects.exclude(agent_id__isnull=True).exclude(
+            agent_id='',
+        ).values_list('agent_id', flat=True)
         return list(dict.fromkeys([str(item).strip() for item in rows if str(item).strip()]))
 
     raise RuntimeError('target_type仅支持single/group/all')
@@ -337,7 +341,11 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         
 
 class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
-    queryset =  Application.objects.all()
+    queryset = Application.objects.prefetch_related('versions').annotate(
+        version_count=Count('versions', distinct=True),
+        deployment_template_count=Count('deployment_templates', distinct=True),
+        deployment_count=Count('versions__deployments', distinct=True),
+    ).order_by('-id')
     serializer_class = ApplicationSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
@@ -407,8 +415,401 @@ class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retriev
         # 获取ID数组参数
         ids = request.data.get('ids', [])
         # 先查用户角色列表
-        Application.objects.filter(id__in=ids).delete()
+        try:
+            Application.objects.filter(id__in=ids).delete()
+        except ProtectedError:
+            return Response_error_str('应用仍有部署实例，请先删除相关部署实例', code=400)
         return Response_200()
+
+
+class ApplicationAssetManageBase(GenericViewSet, CreateModelMixin, DestroyModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin):
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'assets:applications:view',
+        'retrieve': 'assets:applications:view',
+        'create': 'assets:applications:create',
+        'destroy': 'assets:applications:delete',
+        'update': 'assets:applications:update',
+        'partial_update': 'assets:applications:update',
+        'perform_update': 'assets:applications:update',
+    }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,
+            'results': serializer.data,
+            'pageNumber': paginator.page.number,
+            'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request, *args, **kwargs):
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            self.get_object().delete()
+        except ProtectedError:
+            return Response_error_str('记录仍被部署实例引用，无法删除', code=400)
+        return Response_200()
+
+
+class ApplicationVersionManage(ApplicationAssetManageBase):
+    queryset = ApplicationVersion.objects.select_related('application').all()
+    serializer_class = ApplicationVersionSerializer
+    search_fields = ['version', 'application__name', 'remark']
+    ordering_fields = ['version', 'create_time', 'update_time']
+    filterset_fields = ['application', 'enabled']
+
+
+class ApplicationDeploymentTemplateManage(ApplicationAssetManageBase):
+    queryset = ApplicationDeploymentTemplate.objects.select_related('application').prefetch_related(
+        'ports', 'paths', 'config_files', 'logs', 'control_actions',
+    )
+    serializer_class = ApplicationDeploymentTemplateSerializer
+    search_fields = ['name', 'application__name', 'service_name', 'app_home', 'run_user', 'remark']
+    ordering_fields = ['name', 'create_time', 'update_time']
+    filterset_fields = ['application', 'control_type', 'enabled']
+
+
+def _get_optional_related(instance, field_name):
+    try:
+        return getattr(instance, field_name)
+    except ObjectDoesNotExist:
+        return None
+
+
+def _build_application_baseline_params(deployment):
+    deployment_template = deployment.deployment_template
+    run_user = str(deployment_template.run_user or '').strip()
+    app_home = resolve_application_variables(
+        deployment_template.app_home,
+        app_home=deployment_template.app_home,
+        run_user=run_user,
+    )
+
+    def resolve_template_value(value):
+        return resolve_application_variables(value, app_home=app_home, run_user=run_user)
+
+    ports = [
+        {
+            'name': port.name,
+            'protocol': port.protocol,
+            'port': port.port,
+        }
+        for port in deployment_template.ports.filter(check_enabled=True)
+    ]
+    logs = [
+        {
+            'name': log.name,
+            'path_pattern': resolve_template_value(log.path_pattern),
+        }
+        for log in deployment_template.logs.all()
+    ]
+    paths = [
+        {
+            'name': path.name,
+            'path': resolve_template_value(path.path),
+            'expected_owner': resolve_template_value(path.expected_owner),
+            'expected_group': resolve_template_value(path.expected_group),
+            'expected_mode': path.expected_mode,
+        }
+        for path in deployment_template.paths.filter(check_enabled=True)
+    ]
+    if app_home and not any(item['path'] == app_home for item in paths):
+        paths.append({
+            'name': 'App Home',
+            'path': app_home,
+            'expected_owner': run_user,
+            'expected_group': deployment_template.run_group,
+            'expected_mode': '',
+        })
+    for config_file in deployment_template.config_files.filter(baseline_enabled=True):
+        config_path = resolve_template_value(config_file.path)
+        if not any(item['path'] == config_path for item in paths):
+            paths.append({
+                'name': f'配置文件: {config_file.name}',
+                'path': config_path,
+                'expected_owner': '',
+                'expected_group': '',
+                'expected_mode': '',
+            })
+
+    params = {
+        'control_type': deployment_template.control_type,
+        'app_home': app_home,
+        'work_directory': resolve_template_value(deployment_template.work_directory),
+        'service_name': deployment_template.service_name,
+        'systemd_scope': deployment_template.systemd_scope,
+        'run_user': run_user,
+        'ports': ports,
+        'logs': logs,
+        'paths': paths,
+        'control_actions': {
+            action.action: {
+                'command': resolve_template_value(action.command),
+                'timeout_seconds': action.timeout_seconds,
+                'success_exit_codes': action.success_exit_codes,
+            }
+            for action in deployment_template.control_actions.all()
+        },
+    }
+    docker_config = _get_optional_related(deployment_template, 'docker_config')
+    if docker_config is not None:
+        params['docker_config'] = {
+            'container_name': docker_config.container_name,
+            'docker_host': docker_config.docker_host,
+            'expected_image': docker_config.expected_image,
+            'expected_image_tag': docker_config.expected_image_tag,
+        }
+    compose_config = _get_optional_related(deployment_template, 'compose_config')
+    if compose_config is not None:
+        params['compose_config'] = {
+            'project_name': compose_config.project_name,
+            'service_name': compose_config.service_name,
+            'compose_file_path': resolve_template_value(compose_config.compose_file_path),
+            'working_directory': resolve_template_value(compose_config.working_directory),
+            'env_file': resolve_template_value(compose_config.env_file),
+            'expected_image': compose_config.expected_image,
+            'expected_image_tag': compose_config.expected_image_tag,
+        }
+    return params
+
+
+def _run_application_baseline_check(execution_id, job_id):
+    close_old_connections()
+    try:
+        execution = ApplicationBaselineExecution.objects.select_related('deployment').get(id=execution_id)
+        job = AgentJob.objects.get(job_id=job_id)
+        execution.status = ApplicationBaselineExecution.Status.RUNNING
+        execution.start_time = timezone.now()
+        execution.save(update_fields=['status', 'start_time', 'update_time'])
+
+        completed_job = _dispatch_agent_job_via_grpc(job)
+        if completed_job is None:
+            raise RuntimeError('Agent 基线检查未返回任务结果')
+        if completed_job.status != AgentJob.JobStatus.SUCCESS:
+            raise RuntimeError(completed_job.error_message or completed_job.stderr or 'Agent 基线检查执行失败')
+
+        result_data = completed_job.result_data if isinstance(completed_job.result_data, dict) else {}
+        raw_checks = result_data.get('checks')
+        checks = raw_checks if isinstance(raw_checks, list) else []
+        valid_statuses = {item[0] for item in ApplicationBaselineResult.Status.choices}
+        result_rows = []
+        for item in checks:
+            if not isinstance(item, dict):
+                continue
+            status_value = str(item.get('status') or 'error')
+            if status_value not in valid_statuses:
+                status_value = ApplicationBaselineResult.Status.ERROR
+            result_rows.append(ApplicationBaselineResult(
+                execution=execution,
+                check_key=str(item.get('key') or ''),
+                check_type=str(item.get('type') or ''),
+                name=str(item.get('name') or ''),
+                status=status_value,
+                expected_value=item.get('expected'),
+                actual_value=item.get('actual'),
+                message=str(item.get('message') or ''),
+            ))
+
+        evaluated_rows = [row for row in result_rows if row.status != ApplicationBaselineResult.Status.SKIPPED]
+        passed_count = sum(1 for row in evaluated_rows if row.status == ApplicationBaselineResult.Status.PASS)
+        pass_rate = round((passed_count / len(evaluated_rows)) * 100, 2) if evaluated_rows else 100.0
+        passed = bool(result_data.get('passed'))
+        now = timezone.now()
+        with transaction.atomic():
+            ApplicationBaselineResult.objects.bulk_create(result_rows)
+            execution.status = ApplicationBaselineExecution.Status.COMPLETED
+            execution.passed = passed
+            execution.total_count = len(result_rows)
+            execution.passed_count = passed_count
+            execution.summary = result_data
+            execution.end_time = now
+            execution.save(update_fields=[
+                'status', 'passed', 'total_count', 'passed_count', 'summary', 'end_time', 'update_time',
+            ])
+            deployment = execution.deployment
+            deployment.health_status = (
+                ApplicationDeployment.HealthStatus.HEALTHY
+                if passed else ApplicationDeployment.HealthStatus.UNHEALTHY
+            )
+            deployment.baseline_pass_rate = pass_rate
+            deployment.last_check_time = now
+            deployment.save(update_fields=['health_status', 'baseline_pass_rate', 'last_check_time', 'update_time'])
+    except Exception as exc:
+        now = timezone.now()
+        ApplicationBaselineExecution.objects.filter(id=execution_id).update(
+            status=ApplicationBaselineExecution.Status.FAILED,
+            passed=False,
+            error_message=str(exc),
+            end_time=now,
+            update_time=now,
+        )
+        ApplicationDeployment.objects.filter(baseline_executions__id=execution_id).update(
+            health_status=ApplicationDeployment.HealthStatus.ERROR,
+            last_check_time=now,
+            update_time=now,
+        )
+    finally:
+        close_old_connections()
+
+
+class ApplicationDeploymentManage(ApplicationAssetManageBase):
+    queryset = ApplicationDeployment.objects.select_related(
+        'application_version__application', 'deployment_template', 'host',
+    ).prefetch_related('deployment_template__ports')
+    serializer_class = ApplicationDeploymentSerializer
+    search_fields = [
+        'instance_name', 'application_version__application__name',
+        'application_version__version', 'host__instance_name', 'host__ip',
+    ]
+    ordering_fields = ['instance_name', 'create_time', 'update_time']
+    filterset_fields = ['application_version', 'deployment_template', 'host', 'environment', 'enabled']
+    action_perms_map = {
+        **ApplicationAssetManageBase.action_perms_map,
+        'control': 'assets:applications:update',
+        'check_baseline': 'assets:applications:update',
+        'baseline_history': 'assets:applications:view',
+    }
+
+    @action(detail=True, methods=['post'], url_path='control')
+    def control(self, request, *args, **kwargs):
+        deployment = self.get_object()
+        control_action = str(request.data.get('action') or '').strip().lower()
+        if control_action not in {'start', 'stop', 'status'}:
+            return Response_error_str('应用控制动作必须为 start、stop 或 status', code=400)
+        agent_id = str(deployment.host.agent_id or '').strip()
+        if agent_id == '':
+            return Response_error_str('部署主机未绑定 Agent 实例，无法执行应用控制', code=400)
+
+        params = _build_application_baseline_params(deployment)
+        params['control_action'] = control_action
+        action_config = params.get('control_actions', {}).get(control_action, {})
+        timeout_seconds = int(action_config.get('timeout_seconds') or 30) if isinstance(action_config, dict) else 30
+        job = AgentJob.objects.create(
+            job_id=f'app-control-{uuid.uuid4().hex[:16]}',
+            agent_id=agent_id,
+            host=deployment.host,
+            job_type='custom',
+            action='control_application',
+            params=params,
+            timeout_seconds=timeout_seconds,
+            status=AgentJob.JobStatus.QUEUED,
+        )
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        completed_job = _dispatch_agent_job_via_grpc(job)
+        if completed_job is None or completed_job.status != AgentJob.JobStatus.SUCCESS:
+            error_message = (
+                getattr(completed_job, 'error_message', '')
+                or getattr(completed_job, 'stderr', '')
+                or '应用控制执行失败'
+            )
+            return Response_error_str(str(error_message), code=400)
+        return Response_200(data={
+            'job_id': completed_job.job_id,
+            'action': control_action,
+            'status': completed_job.status,
+            'output': completed_job.stdout,
+            'exit_code': completed_job.exit_code,
+            'result_data': completed_job.result_data,
+        })
+
+    @action(detail=True, methods=['post'], url_path='check-baseline')
+    def check_baseline(self, request, *args, **kwargs):
+        deployment = self.get_object()
+        agent_id = str(deployment.host.agent_id or '').strip()
+        if agent_id == '':
+            return Response_error_str('部署主机未绑定 Agent 实例，无法执行检查', code=400)
+        if ApplicationBaselineExecution.objects.filter(
+            deployment=deployment,
+            status__in=[ApplicationBaselineExecution.Status.QUEUED, ApplicationBaselineExecution.Status.RUNNING],
+        ).exists():
+            return Response_error_str('该部署实例已有检查任务正在执行', code=400)
+
+        job_id = f'app-baseline-{uuid.uuid4().hex[:16]}'
+        params = _build_application_baseline_params(deployment)
+        with transaction.atomic():
+            job = AgentJob.objects.create(
+                job_id=job_id,
+                agent_id=agent_id,
+                host=deployment.host,
+                job_type='custom',
+                action='check_application_baseline',
+                params=params,
+                timeout_seconds=30,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+            user = getattr(request, 'user', None)
+            execution = ApplicationBaselineExecution.objects.create(
+                deployment=deployment,
+                agent_job=job,
+                requested_user_id=getattr(user, 'id', None),
+                requested_username=str(getattr(user, 'username', '') or ''),
+            )
+            deployment.health_status = ApplicationDeployment.HealthStatus.CHECKING
+            deployment.save(update_fields=['health_status', 'update_time'])
+            _emit_agent_job_event(job, 'new', {
+                'jid': job.job_id,
+                'tgt': job.agent_id,
+                'tgt_type': 'agent_id',
+                'fun': job.action,
+                'arg': job.params,
+                'minions': [job.agent_id],
+            })
+
+        thread = threading.Thread(
+            target=_run_application_baseline_check,
+            args=(execution.id, job.job_id),
+            daemon=True,
+            name=f'application-baseline-{execution.id}',
+        )
+        thread.start()
+        return Response_200(data={'execution_id': execution.id, 'job_id': job.job_id, 'status': execution.status})
+
+    @action(detail=True, methods=['get'], url_path='baseline-history')
+    def baseline_history(self, request, *args, **kwargs):
+        deployment = self.get_object()
+        executions = deployment.baseline_executions.select_related(
+            'agent_job', 'deployment__application_version__application', 'deployment__host',
+        ).prefetch_related('results')[:20]
+        serializer = ApplicationBaselineExecutionSerializer(executions, many=True)
+        return Response_200(data=serializer.data)
 
 
 class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
@@ -832,7 +1233,7 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
     自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。
     安装在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
-    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if agent_id == '':
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
         monitor_target.install_message = f'主机未绑定 agent 实例，无法下发 {exporter_name} 安装任务'
@@ -970,7 +1371,7 @@ def _dispatch_exporter_service_action_job(host, monitor_target, action, timeout_
     Agent 通过 gRPC 执行内置 systemctl action，backend 等待最终结果并写回 AgentJob。
     """
     exporter_name = monitor_target.exporter_type
-    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if agent_id == '':
         raise RuntimeError(f'主机未绑定 agent 实例，无法对 {exporter_name} 执行 {action}')
 
@@ -1026,7 +1427,7 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     同 dispatch_exporter_install_job，使用监控软件仓库该 exporter 绑定的 uninstall_playbook_template 执行。
     卸载在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
-    agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+    agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if agent_id == '':
         monitor_target.install_status = monitor_target.InstallStatus.FAILED
         monitor_target.install_message = f'主机未绑定 agent 实例，无法下发 {exporter_name} 卸载任务'
@@ -1119,6 +1520,40 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     )
 
 
+def _run_exporter_job_in_background(action, host_id, target_id, manual=False):
+    """在线程内重新加载 ORM 对象，避免把请求线程的数据库连接带入后台任务。"""
+    close_old_connections()
+    try:
+        from monitor.models import MonitorTarget
+
+        host = Host.objects.get(id=host_id)
+        target = MonitorTarget.objects.get(id=target_id, host_id=host_id)
+        if action == 'install':
+            dispatch_exporter_install_job(host, target, manual=manual)
+        elif action == 'uninstall':
+            dispatch_exporter_uninstall_job(host, target, manual=manual)
+        else:
+            raise ValueError(f'不支持的监控后台任务动作: {action}')
+    except Exception:
+        logger.exception(
+            '监控后台任务执行异常: action=%s host_id=%s target_id=%s',
+            action, host_id, target_id,
+        )
+    finally:
+        close_old_connections()
+
+
+def _start_exporter_job_thread(action, host_id, target_id, manual=False):
+    # 安装/卸载可能等待 SSH/Ansible 数分钟，必须脱离 Host API 请求线程执行。
+    thread = threading.Thread(
+        target=_run_exporter_job_in_background,
+        args=(action, host_id, target_id, manual),
+        daemon=True,
+        name=f'monitor-{action}-{target_id}',
+    )
+    thread.start()
+
+
 
 class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
     queryset = Host.objects.all()
@@ -1126,7 +1561,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
     # 通用 search 对应前端主搜索框（实例名/IP/备注）；ID检索走 host_id 参数。
-    search_fields = ['instance_name', 'ip', 'remark']
+    search_fields = ['instance_name', 'agent_id', 'ip', 'remark']
     ordering_fields = ['instance_name', 'create_time']
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -1175,6 +1610,12 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
     def get_queryset(self):
         from monitor.models import MonitorTarget
+
+        # 在线状态必须与本进程可实际下发任务的 gRPC Session 一致，避免 RabbitMQ 心跳造成假在线。
+        connected_agent_ids = REGISTRY.connected_agent_ids()
+        Host.objects.filter(agent_online=True).exclude(agent_id__in=connected_agent_ids).update(agent_online=False)
+        if connected_agent_ids:
+            Host.objects.filter(agent_id__in=connected_agent_ids, agent_online=False).update(agent_online=True)
 
         queryset = Host.objects.select_related('group').prefetch_related(
             # 一台主机可能纳管多个 exporter（node_exporter/自定义 exporter 等），不再按 node_exporter 过滤
@@ -1254,7 +1695,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
     @action(detail=True, methods=['get'], url_path='agent-runtime-status')
     def agent_runtime_status(self, request, id=None):
         host = self.get_object()
-        if not str(getattr(host, 'instance_name', '') or '').strip():
+        if not str(getattr(host, 'agent_id', '') or '').strip():
             return Response_error_str('主机未绑定 agent 实例，无法获取状态')
         try:
             data = _fetch_agent_runtime_status(host)
@@ -1462,13 +1903,15 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             if update_fields:
                 target.save(update_fields=update_fields + ['update_time'])
 
+            host_id = int(getattr(host, 'id'))
+            target_id = int(getattr(target, 'id'))
             if not enabled:
                 if previous_enabled:
                     # 开启->关闭这一次切换，自动下发卸载任务；新一轮卸载周期先重置自动重试计数，
                     # 确保重试上限从 0 开始计算。
                     target.retry_count = 0
                     target.save(update_fields=['retry_count', 'update_time'])
-                    dispatch_exporter_uninstall_job(host, target)
+                    _start_exporter_job_thread('uninstall', host_id, target_id)
                 else:
                     target.install_message = f'已关闭监控（未卸载 {name}）'
                     target.save(update_fields=['install_message', 'update_time'])
@@ -1479,7 +1922,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
                 # 新一轮安装周期：重置自动重试计数
                 target.retry_count = 0
                 target.save(update_fields=['retry_count', 'update_time'])
-                dispatch_exporter_install_job(host, target)
+                _start_exporter_job_thread('install', host_id, target_id)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1543,7 +1986,7 @@ def agent_create_job(request):
 
     if target_type == 'single' and len(agent_ids) == 1:
         final_agent_id = agent_ids[0]
-        host = Host.objects.filter(instance_name=final_agent_id).first()
+        host = Host.objects.filter(agent_id=final_agent_id).first()
         if host is None:
             return Response_error_str('agent_id未绑定主机')
 
@@ -1617,7 +2060,7 @@ def agent_create_job(request):
     created_count = 0
     failed_count = 0
     for current_agent_id in agent_ids:
-        host = Host.objects.filter(instance_name=current_agent_id).first()
+        host = Host.objects.filter(agent_id=current_agent_id).first()
         if host is None:
             failed_count += 1
             result_rows.append({
@@ -1741,7 +2184,7 @@ def agent_create_jobs_batch(request):
     failed_count = 0
 
     for agent_id in agent_ids:
-        host = Host.objects.filter(instance_name=agent_id).first()
+        host = Host.objects.filter(agent_id=agent_id).first()
         if host is None:
             failed_count += 1
             result_rows.append({

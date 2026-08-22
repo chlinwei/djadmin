@@ -207,16 +207,16 @@ def refresh_host_info(host, timeout_seconds=15):
     """按需经 gRPC 让指定主机的 agent 执行 get_host_info，并落库。
 
     返回统一结构：{host_id, updated, skipped, error}
-    - skipped=True：因缺少 instance_name 或 agent 离线而未发起拉取（非错误）；
+    - skipped=True：因缺少 agent_id 或 agent 离线而未发起拉取（非错误）；
     - updated=True：成功拉取并落库静态资产；
     - error：失败原因（skipped/失败时填充）。
     """
     result = {'host_id': host.id, 'updated': False, 'skipped': False, 'error': ''}
 
-    agent_id = str(host.instance_name or '').strip()
+    agent_id = str(host.agent_id or '').strip()
     if not agent_id:
         result['skipped'] = True
-        result['error'] = '主机未配置 instance_name，无法定位 agent'
+        result['error'] = '主机未配置 agent_id，无法定位 agent'
         return result
 
     # 只对在线 agent 发起拉取，离线直接跳过（避免同步等待超时拖慢页面加载）。

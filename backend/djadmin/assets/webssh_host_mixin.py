@@ -104,7 +104,7 @@ class WebSSHHostMixin:
         # 构造函数内部会在查不到 session 时抛 AgentGrpcTransferError）。
         if not getattr(host, 'agent_online', False):
             raise AgentGrpcTransferError('主机 Agent 离线，无法执行文件操作，请确认 dj-agent 已安装并在线')
-        agent_id = str(getattr(host, 'instance_name', '') or '').strip()
+        agent_id = str(getattr(host, 'agent_id', '') or '').strip()
         if not agent_id:
             raise AgentGrpcTransferError('主机未绑定 Agent 实例，无法执行文件操作')
         return AgentChannelClient(agent_id)

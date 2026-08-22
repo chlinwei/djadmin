@@ -14,13 +14,15 @@ import (
 )
 
 const (
-	actionGetAgentVersion      = "get_agent_version"
-	actionGetHostInfo          = "get_host_info"
-	actionSyncAutomationSSHKey = "sync_automation_ssh_key"
-	actionStartExporter        = "start_exporter"
-	actionStopExporter         = "stop_exporter"
-	actionCheckExporterStatus  = "check_exporter_status"
-	defaultAgentVersion        = "v1"
+	actionGetAgentVersion          = "get_agent_version"
+	actionGetHostInfo              = "get_host_info"
+	actionSyncAutomationSSHKey     = "sync_automation_ssh_key"
+	actionStartExporter            = "start_exporter"
+	actionStopExporter             = "stop_exporter"
+	actionCheckExporterStatus      = "check_exporter_status"
+	actionCheckApplicationBaseline = "check_application_baseline"
+	actionControlApplication       = "control_application"
+	defaultAgentVersion            = "v1"
 )
 
 // runBuiltinAction 分发并执行内置操作
@@ -38,6 +40,10 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.stopExporter(ctx, job), true
 	case actionCheckExporterStatus:
 		return e.checkExporterStatus(ctx, job), true
+	case actionCheckApplicationBaseline:
+		return e.checkApplicationBaseline(ctx, job), true
+	case actionControlApplication:
+		return e.controlApplication(ctx, job), true
 	default:
 		return protocol.JobResult{}, false
 	}

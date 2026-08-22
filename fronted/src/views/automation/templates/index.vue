@@ -233,7 +233,6 @@ const templateEdit = reactive({
 const lineNumberGutterRef = ref(null)
 
 const columns = [
-  { title: '类型', key: 'type', width: 110 },
   { title: '名称', dataIndex: 'name', key: 'name', sorter: true },
   { title: '分类', key: 'category', width: 150 },
   { title: '描述', dataIndex: 'description', key: 'description' },

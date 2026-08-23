@@ -79,12 +79,13 @@ def main() -> int:
             'perms': 'system:index:view',
         },
         {
-            'path': '/assets/applications/index',
+            'path': '/assets/application-management',
             'name': '应用管理',
             'icon': 'AppstoreOutlined',
             'order_num': 2,
-            'component': 'assets/applications/index',
-            'perms': 'assets:application:list',
+            'component': '',
+            'perms': '',
+            'menu_type': 'M',
         },
     ]
     for menu_data in menus:
@@ -93,7 +94,7 @@ def main() -> int:
             defaults={
                 **menu_data,
                 'parent_id': 0,
-                'menu_type': 'C',
+                'menu_type': menu_data.get('menu_type', 'C'),
                 'location': 1,
                 'create_time': today,
                 'update_time': today,
@@ -101,6 +102,39 @@ def main() -> int:
             },
         )
         SysRoleMenu.objects.get_or_create(role=role, menu=menu)
+
+    application_directory = SysMenu.objects.get(path='/assets/application-management')
+    application_children = [
+        {
+            'name': '应用配置',
+            'path': '/assets/applications/index',
+            'component': 'assets/application/index',
+            'icon': 'fa-cubes',
+            'order_num': 1,
+        },
+        {
+            'name': '服务树',
+            'path': '/assets/service-tree/index',
+            'component': 'assets/service-tree/index',
+            'icon': 'fa-sitemap',
+            'order_num': 2,
+        },
+    ]
+    for child_data in application_children:
+        child, _ = SysMenu.objects.update_or_create(
+            path=child_data['path'],
+            defaults={
+                **child_data,
+                'parent_id': application_directory.id,
+                'menu_type': 'C',
+                'perms': 'assets:applications:view',
+                'location': 1,
+                'create_time': today,
+                'update_time': today,
+                'remark': 'playwright-e2e seed menu',
+            },
+        )
+        SysRoleMenu.objects.get_or_create(role=role, menu=child)
 
     print('[OK] e2e seed ready: user=admin/admin, role=admin, menu=/index')
     return 0

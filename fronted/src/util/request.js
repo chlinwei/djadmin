@@ -75,7 +75,9 @@ httpService.interceptors.response.use(function (response) {
         message.error("账号或者密码输入错误")
         return Promise.reject(new Error(responseData.msg))
     } else if (isBusinessEnvelope && responseData.code != 200 && responseData.code !== undefined) {
-        message.error(responseData.msg)
+        if (!response.config?.suppressBusinessErrorMessage) {
+            message.error(responseData.msg)
+        }
         console.log(response)
         return Promise.reject(new Error(responseData.msg))
     }
@@ -118,12 +120,14 @@ export function get(url, params = {}) {
  *  params:参数
  *  timeout:自定义超时时间(可选，毫秒)
  * */
-export function post(url, params = {}, timeout = null) {
+export function post(url, params = {}, timeout = null, options = {}) {
     return new Promise((resolve, reject) => {
         const config = {
             url: url,
             method: 'post',
-            data: params
+            data: params,
+            // 后台轮询静默记录状态失败，用户主动操作仍使用全局错误提示。
+            suppressBusinessErrorMessage: Boolean(options.suppressBusinessErrorMessage),
         }
         // 如果指定了自定义超时，则覆盖默认超时
         if (timeout) {

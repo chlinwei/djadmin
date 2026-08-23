@@ -18,6 +18,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/chlinwei/djadmin/dj_agent/internal/executor"
 	"github.com/chlinwei/djadmin/dj_agent/internal/grpcfile/pb"
@@ -92,6 +93,11 @@ func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor,
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(grpcMaxMessageSize),
 			grpc.MaxCallSendMsgSize(grpcMaxMessageSize),

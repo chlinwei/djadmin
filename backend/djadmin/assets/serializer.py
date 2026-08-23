@@ -108,11 +108,13 @@ class ApplicationBaselineCheckSerializer(ModelSerializer):
         ApplicationBaselineCheck.DocumentType.TOML: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
         ApplicationBaselineCheck.DocumentType.PROPERTIES: {ApplicationBaselineCheck.SchemaType.JSON_SCHEMA},
         ApplicationBaselineCheck.DocumentType.TEXT: {ApplicationBaselineCheck.SchemaType.REGEXP},
+        ApplicationBaselineCheck.DocumentType.SHELL: {ApplicationBaselineCheck.SchemaType.SHELL},
     }
     SCHEMA_VERSIONS = {
         ApplicationBaselineCheck.SchemaType.SCHEMATRON: 'iso',
         ApplicationBaselineCheck.SchemaType.JSON_SCHEMA: '2020-12',
         ApplicationBaselineCheck.SchemaType.REGEXP: 're2',
+        ApplicationBaselineCheck.SchemaType.SHELL: 'posix-sh',
     }
 
     class Meta:
@@ -136,11 +138,23 @@ class ApplicationBaselineCheckSerializer(ModelSerializer):
         expected_version = self.SCHEMA_VERSIONS[schema_type]
         if schema_version != expected_version:
             raise serializers.ValidationError({'schema_version': f'{schema_type} 仅支持版本 {expected_version}'})
+        allow_inline_content = bool(self.context.get('allow_inline_content'))
+        if schema_type != ApplicationBaselineCheck.SchemaType.SHELL and not allow_inline_content and not str(attrs.get('file_path', getattr(self.instance, 'file_path', '')) or '').strip():
+            raise serializers.ValidationError({'file_path': '文档检查的文件路径不能为空'})
+        if schema_type == ApplicationBaselineCheck.SchemaType.SHELL:
+            script_executor = str(attrs.get('script_executor', getattr(self.instance, 'script_executor', RUN_USER_VARIABLE)) or '').strip()
+            if not script_executor:
+                raise serializers.ValidationError({'script_executor': 'Shell 检查的脚本执行者不能为空'})
+            if APP_HOME_VARIABLE in script_executor:
+                raise serializers.ValidationError({'script_executor': '脚本执行者不能引用 ${APP_HOME}'})
+            work_directory = str(attrs.get('work_directory', getattr(self.instance, 'work_directory', APP_HOME_VARIABLE)) or '').strip()
+            if not work_directory:
+                raise serializers.ValidationError({'work_directory': 'Shell 检查的运行目录不能为空'})
         if schema_type == ApplicationBaselineCheck.SchemaType.JSON_SCHEMA:
             self._validate_json_schema(schema_content)
         elif schema_type == ApplicationBaselineCheck.SchemaType.REGEXP:
             self._validate_regexp(schema_content)
-        else:
+        elif schema_type == ApplicationBaselineCheck.SchemaType.SCHEMATRON:
             self._validate_xml_schema(schema_content, schema_type)
         return attrs
 
@@ -221,6 +235,160 @@ class ApplicationSerializer(ModelSerializer):
         return instance
 
 
+class BusinessSystemSerializer(ModelSerializer):
+    deployment_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = BusinessSystem
+        fields = '__all__'
+
+
+class ClusterProfileSerializer(ModelSerializer):
+    application_name = serializers.CharField(source='application.name', read_only=True)
+    service_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ClusterProfile
+        fields = '__all__'
+
+    def validate(self, attrs):
+        profile_type = attrs.get('profile_type', getattr(self.instance, 'profile_type', ClusterProfile.ProfileType.CUSTOM))
+        cluster_type = attrs.get('cluster_type', getattr(self.instance, 'cluster_type', ClusterProfile.ClusterType.CUSTOM))
+        if self.instance is not None and self.instance.profile_type == ClusterProfile.ProfileType.BUILTIN:
+            raise serializers.ValidationError('内置集群模型由系统维护，不能修改')
+        if profile_type != ClusterProfile.ProfileType.CUSTOM or cluster_type != ClusterProfile.ClusterType.CUSTOM:
+            raise serializers.ValidationError('只能新增或修改自定义集群模型')
+        if attrs.get('application', getattr(self.instance, 'application', None)) is None:
+            raise serializers.ValidationError({'application': '自定义集群模型必须选择应用'})
+        attrs['profile_type'] = ClusterProfile.ProfileType.CUSTOM
+        attrs['cluster_type'] = ClusterProfile.ClusterType.CUSTOM
+        return attrs
+
+
+class ApplicationServiceSerializer(ModelSerializer):
+    business_system_name = serializers.CharField(source='business_system.name', read_only=True)
+    application_name = serializers.CharField(source='application.name', read_only=True)
+    cluster_profile_name = serializers.CharField(source='cluster_profile.name', read_only=True)
+    cluster_type = serializers.CharField(source='cluster_profile.cluster_type', read_only=True)
+    deployment_count = serializers.IntegerField(read_only=True)
+    member_configs = serializers.ListField(
+        child=serializers.DictField(), write_only=True, required=False,
+    )
+    member_instances = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ApplicationService
+        fields = '__all__'
+        extra_kwargs = {'application': {'required': False}}
+
+    def validate(self, attrs):
+        topology_type = attrs.get('topology_type', getattr(self.instance, 'topology_type', None))
+        application = attrs.get('application', getattr(self.instance, 'application', None))
+        cluster_profile = attrs.get('cluster_profile', getattr(self.instance, 'cluster_profile', None))
+        if topology_type == ApplicationService.TopologyType.CLUSTER and cluster_profile is None:
+            raise serializers.ValidationError({'cluster_profile': '集群服务必须选择集群模型'})
+        if topology_type == ApplicationService.TopologyType.STANDALONE and cluster_profile is not None:
+            raise serializers.ValidationError({'cluster_profile': '单机服务不能选择集群模型'})
+        if (
+            topology_type == ApplicationService.TopologyType.CLUSTER
+            and cluster_profile is not None
+            and cluster_profile.application is not None
+        ):
+            application = cluster_profile.application
+            attrs['application'] = application
+        elif application is None:
+            raise serializers.ValidationError({'application': '请选择应用'})
+        member_configs = attrs.get('member_configs')
+        if topology_type == ApplicationService.TopologyType.CLUSTER and member_configs is None and self.instance is None:
+            raise serializers.ValidationError({'member_configs': '集群必须选择至少一个部署实例'})
+        if topology_type == ApplicationService.TopologyType.CLUSTER and member_configs is not None:
+            if not member_configs:
+                raise serializers.ValidationError({'member_configs': '集群必须选择至少一个部署实例'})
+            deployment_ids = [item.get('deployment') for item in member_configs]
+            if any(not deployment_id for deployment_id in deployment_ids) or len(deployment_ids) != len(set(deployment_ids)):
+                raise serializers.ValidationError({'member_configs': '集群成员实例不能为空或重复'})
+            is_ha_cluster = cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
+            if is_ha_cluster and len(deployment_ids) < 2:
+                raise serializers.ValidationError({'member_configs': 'HA 集群至少需要两个成员实例'})
+            if not is_ha_cluster and any(not item.get('port') for item in member_configs):
+                raise serializers.ValidationError({'member_configs': '每个集群成员都必须配置端口'})
+            if not is_ha_cluster:
+                try:
+                    ports = [int(item['port']) for item in member_configs]
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError({'member_configs': '集群成员端口必须是整数'})
+                if any(port < 1 or port > 65535 for port in ports):
+                    raise serializers.ValidationError({'member_configs': '集群成员端口必须在 1–65535 之间'})
+            deployments = ApplicationDeployment.objects.filter(id__in=deployment_ids)
+            if deployments.count() != len(deployment_ids):
+                raise serializers.ValidationError({'member_configs': '包含不存在的部署实例'})
+            if deployments.exclude(application_version__application=application).exists():
+                raise serializers.ValidationError({'member_configs': '集群成员实例必须属于同一应用'})
+        if cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA:
+            access_type = attrs.get('access_type', getattr(self.instance, 'access_type', None))
+            access_address = attrs.get('access_address', getattr(self.instance, 'access_address', ''))
+            primary_deployment = attrs.get(
+                'primary_deployment', getattr(self.instance, 'primary_deployment', None),
+            )
+            if access_type != ApplicationService.AccessType.VIP:
+                raise serializers.ValidationError({'access_type': 'HA 集群必须使用 VIP 访问方式'})
+            if not str(access_address or '').strip():
+                raise serializers.ValidationError({'access_address': 'HA 集群必须填写 VIP'})
+            if primary_deployment is None:
+                raise serializers.ValidationError({'primary_deployment': 'HA 集群必须选择 VIP 主节点'})
+            member_ids = (
+                {item.get('deployment') for item in member_configs}
+                if member_configs is not None
+                else set(self.instance.deployments.values_list('id', flat=True)) if self.instance else set()
+            )
+            if primary_deployment.id not in member_ids:
+                raise serializers.ValidationError({'primary_deployment': 'VIP 主节点必须属于当前 HA 集群成员'})
+        else:
+            attrs['primary_deployment'] = None
+        return attrs
+
+    def get_member_instances(self, obj):
+        return [
+            {
+                'deployment': deployment.id,
+                'instance_name': deployment.instance_name,
+                'host_name': deployment.host.instance_name,
+                'host_ip': deployment.host.ip,
+                'port': deployment.member_port,
+                'is_primary': deployment.id == obj.primary_deployment_id,
+            }
+            for deployment in obj.deployments.select_related('host').order_by('instance_name', 'id')
+        ]
+
+    @staticmethod
+    def _save_members(instance, member_configs):
+        if member_configs is None:
+            return
+        deployment_ids = [item['deployment'] for item in member_configs]
+        instance.deployments.exclude(id__in=deployment_ids).update(application_service=None, member_port=None)
+        for item in member_configs:
+            ApplicationDeployment.objects.filter(id=item['deployment']).update(
+                application_service=instance,
+                member_port=item.get('port'),
+            )
+
+    @transaction.atomic
+    def create(self, validated_data):
+        member_configs = validated_data.pop('member_configs', None)
+        instance = super().create(validated_data)
+        self._save_members(instance, member_configs)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        member_configs = validated_data.pop('member_configs', None)
+        instance = super().update(instance, validated_data)
+        if instance.topology_type == ApplicationService.TopologyType.STANDALONE:
+            member_configs = []
+        self._save_members(instance, member_configs)
+        return instance
+
+
 class ApplicationDeploymentTemplateSerializer(ModelSerializer):
     application_name = serializers.CharField(source='application.name', read_only=True)
     ports = ApplicationPortSerializer(many=True, required=False)
@@ -262,6 +430,11 @@ class ApplicationDeploymentTemplateSerializer(ModelSerializer):
             resource_name = attrs.get('ha_resource_name', getattr(self.instance, 'ha_resource_name', ''))
             if not str(resource_name or '').strip():
                 raise serializers.ValidationError({'ha_resource_name': '外部 HA 模板必须填写资源名称'})
+            submitted_actions = {item.get('action') for item in (actions or [])}
+            if actions is not None and 'status' not in submitted_actions:
+                raise serializers.ValidationError({'control_actions': '外部 HA 模板必须配置状态检查命令'})
+            if self.instance is None and actions is None:
+                raise serializers.ValidationError({'control_actions': '外部 HA 模板必须配置状态检查命令'})
         variable_values = [app_home, attrs.get('work_directory', '')]
         variable_values.extend(item.get('path', '') for item in (attrs.get('paths') or []))
         variable_values.extend(item.get('path', '') for item in (attrs.get('config_files') or []))
@@ -356,6 +529,11 @@ class ApplicationBaselineExecutionSerializer(ModelSerializer):
 
 
 class ApplicationDeploymentSerializer(ModelSerializer):
+    business_system = serializers.IntegerField(source='application_service.business_system_id', read_only=True)
+    business_system_name = serializers.CharField(source='application_service.business_system.name', read_only=True)
+    service_name = serializers.CharField(source='application_service.name', read_only=True)
+    topology_type = serializers.CharField(source='application_service.topology_type', read_only=True)
+    environment = serializers.CharField(source='application_service.environment', read_only=True)
     application_id = serializers.IntegerField(source='application_version.application_id', read_only=True)
     application_name = serializers.CharField(source='application_version.application.name', read_only=True)
     version = serializers.CharField(source='application_version.version', read_only=True)
@@ -368,6 +546,14 @@ class ApplicationDeploymentSerializer(ModelSerializer):
     app_home = serializers.CharField(source='deployment_template.app_home', read_only=True)
     work_directory = serializers.CharField(source='deployment_template.work_directory', read_only=True)
     ports = ApplicationPortSerializer(source='deployment_template.ports', many=True, read_only=True)
+    is_primary = serializers.SerializerMethodField()
+
+    def get_is_primary(self, obj):
+        application_service = obj.application_service
+        return bool(
+            application_service
+            and application_service.primary_deployment_id == obj.id
+        )
 
     class Meta:
         model = ApplicationDeployment
@@ -376,8 +562,17 @@ class ApplicationDeploymentSerializer(ModelSerializer):
     def validate(self, attrs):
         application_version = attrs.get('application_version', getattr(self.instance, 'application_version', None))
         deployment_template = attrs.get('deployment_template', getattr(self.instance, 'deployment_template', None))
+        application_service = attrs.get('application_service', getattr(self.instance, 'application_service', None))
         if application_version and deployment_template and application_version.application_id != deployment_template.application_id:
             raise serializers.ValidationError({'deployment_template': '部署模板与应用版本必须属于同一个应用'})
+        if application_version and application_service and application_version.application_id != application_service.application_id:
+            raise serializers.ValidationError({'application_service': '逻辑服务与应用版本必须属于同一个应用'})
+        if application_service and application_service.topology_type == ApplicationService.TopologyType.STANDALONE:
+            existing = ApplicationDeployment.objects.filter(application_service=application_service)
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise serializers.ValidationError({'application_service': '单机服务只能登记一个部署实例'})
         return attrs
 
 

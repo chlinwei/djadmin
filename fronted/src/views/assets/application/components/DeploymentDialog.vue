@@ -47,7 +47,6 @@
                 </a-form-item>
               </a-col>
               <a-col :span="12"><a-form-item name="instance_name" label="实例名称"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
-              <a-col :span="12"><a-form-item name="environment" label="环境"><a-select v-model:value="form.environment" :options="environmentOptions" :getPopupContainer="getPopupContainer" /></a-form-item></a-col>
               <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
               <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
@@ -82,17 +81,11 @@ const hostOptions = ref([])
 const versionOptions = ref([])
 const versionRecords = ref([])
 const templateRecords = ref([])
-
-const environmentOptions = [
-  { label: '生产', value: 'production' }, { label: '测试', value: 'testing' },
-  { label: '开发', value: 'development' }, { label: '其他', value: 'other' },
-]
 const createInitialForm = () => ({
   application_version: null,
   deployment_template: null,
   host: null,
   instance_name: '',
-  environment: 'production',
   enabled: true,
   remark: '',
 })
@@ -112,7 +105,6 @@ const availableTemplateOptions = computed(() => {
     .filter((item) => item.application === version.application && (item.enabled || item.id === form.deployment_template))
     .map((item) => ({ label: item.name, value: item.id }))
 })
-
 function resetForm() {
   Object.assign(form, createInitialForm())
 }
@@ -153,7 +145,6 @@ async function initialize() {
       const response = await getApplicationDeployment(props.deploymentId)
       const data = response?.data?.data || {}
       Object.assign(form, createInitialForm(), data)
-      for (const item of data.control_actions || []) commandValues[item.action] = item.command || ''
     }
   } finally {
     loading.value = false
@@ -164,6 +155,8 @@ async function submit() {
   await formRef.value?.validate()
   const payload = { ...form }
   payload.id = props.deploymentId || undefined
+  delete payload.application_service
+  delete payload.member_port
 
   saving.value = true
   try {

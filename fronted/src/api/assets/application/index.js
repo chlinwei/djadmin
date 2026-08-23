@@ -26,8 +26,66 @@ export function batchDeleteApplication(ids) {
 }
 
 const versionPrefix = 'assets/application-versions/'
+const businessSystemPrefix = 'assets/business-systems/'
+const clusterProfilePrefix = 'assets/cluster-profiles/'
+const applicationServicePrefix = 'assets/application-services/'
 const templatePrefix = 'assets/application-deployment-templates/'
 const deploymentPrefix = 'assets/application-deployments/'
+
+export function getBusinessSystemList(params) {
+    return requestUtil.get(businessSystemPrefix, params)
+}
+
+export function getBusinessSystem(id) {
+    return requestUtil.get(`${businessSystemPrefix}${id}/`)
+}
+
+export function saveBusinessSystem(obj) {
+    if (obj.id) return requestUtil.patch(`${businessSystemPrefix}${obj.id}/`, obj)
+    return requestUtil.post(businessSystemPrefix, obj)
+}
+
+export function deleteBusinessSystem(id) {
+    return requestUtil.del(`${businessSystemPrefix}${id}/`)
+}
+
+export function getClusterProfileList(params) {
+    return requestUtil.get(clusterProfilePrefix, params)
+}
+
+export function getClusterProfile(id) {
+    return requestUtil.get(`${clusterProfilePrefix}${id}/`)
+}
+
+export function saveClusterProfile(obj) {
+    if (obj.id) return requestUtil.patch(`${clusterProfilePrefix}${obj.id}/`, obj)
+    return requestUtil.post(clusterProfilePrefix, obj)
+}
+
+export function deleteClusterProfile(id) {
+    return requestUtil.del(`${clusterProfilePrefix}${id}/`)
+}
+
+export function getApplicationServiceList(params) {
+    return requestUtil.get(applicationServicePrefix, params)
+}
+
+export function getApplicationService(id) {
+    return requestUtil.get(`${applicationServicePrefix}${id}/`)
+}
+
+export function saveApplicationService(obj) {
+    if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj)
+    return requestUtil.post(applicationServicePrefix, obj)
+}
+
+export function deleteApplicationService(id) {
+    return requestUtil.del(`${applicationServicePrefix}${id}/`)
+}
+
+export function checkApplicationServiceBaseline(id) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/check-baseline/`, {})
+}
 
 export function getApplicationVersionList(params) {
     return requestUtil.get(versionPrefix, params)
@@ -76,12 +134,16 @@ export function deleteApplicationDeployment(id) {
     return requestUtil.del(`${deploymentPrefix}${id}/`)
 }
 
-export function controlApplicationDeployment(id, action) {
-    return requestUtil.post(`${deploymentPrefix}${id}/control/`, { action })
+export function controlApplicationDeployment(id, action, options = {}) {
+    return requestUtil.post(`${deploymentPrefix}${id}/control/`, { action }, null, options)
 }
 
 export function checkApplicationDeploymentBaseline(id) {
     return requestUtil.post(`${deploymentPrefix}${id}/check-baseline/`, {})
+}
+
+export function debugApplicationDeploymentBaseline(id, payload) {
+    return requestUtil.post(`${deploymentPrefix}${id}/debug-baseline/`, payload)
 }
 
 export function getApplicationDeploymentBaselineHistory(id) {

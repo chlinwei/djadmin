@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,8 @@ import (
 
 var safeResourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
 
+const maxInlineSchemaDocumentBytes = 1024 * 1024
+
 type applicationCheckResult struct {
 	Key      string `json:"key"`
 	Type     string `json:"type"`
@@ -42,11 +45,12 @@ func (e *Executor) checkApplicationBaseline(ctx context.Context, job protocol.Jo
 	started := time.Now()
 	checks := make([]applicationCheckResult, 0)
 
-	checks = append(checks, checkApplicationControl(ctx, job.Params))
+	controlCheck := checkApplicationControl(ctx, job.Params)
+	checks = append(checks, controlCheck)
 	checks = append(checks, checkApplicationPorts(job.Params)...)
 	checks = append(checks, checkApplicationPaths(job.Params)...)
 	checks = append(checks, checkApplicationLogs(job.Params)...)
-	checks = append(checks, checkApplicationPlan(job.Params)...)
+	checks = append(checks, checkApplicationPlanForState(ctx, job.Params, controlCheck.Status == "pass")...)
 
 	passed := true
 	for _, check := range checks {
@@ -66,10 +70,16 @@ func (e *Executor) checkApplicationBaseline(ctx context.Context, job protocol.Jo
 }
 
 var applicationCheckCapabilities = map[string]struct{}{
-	"schema_validate:v1": {},
+	"schema_validate:v1":        {},
+	"schema_validate:inline:v1": {},
+	"shell:v1":                  {},
 }
 
-func checkApplicationPlan(params map[string]any) []applicationCheckResult {
+func checkApplicationPlan(ctx context.Context, params map[string]any) []applicationCheckResult {
+	return checkApplicationPlanForState(ctx, params, true)
+}
+
+func checkApplicationPlanForState(ctx context.Context, params map[string]any, applicationRunning bool) []applicationCheckResult {
 	plan, ok := params["check_plan"].(map[string]any)
 	if !ok {
 		return nil
@@ -92,14 +102,105 @@ func checkApplicationPlan(params map[string]any) []applicationCheckResult {
 			results = append(results, applicationCheckResult{Key: "invalid", Type: "plan", Name: "无效检查项", Status: "error", Message: "检查项必须是对象"})
 			continue
 		}
+		if requiresRunning, _ := check["requires_running"].(bool); requiresRunning && !applicationRunning {
+			results = append(results, newPlanCheckResult(check, "skipped", nil, "应用未运行，已跳过该检查项"))
+			continue
+		}
 		switch valueString(check["executor"]) {
 		case "schema_validate":
 			results = append(results, checkSchema(check))
+		case "shell":
+			results = append(results, checkShell(ctx, check))
 		default:
 			results = append(results, newPlanCheckResult(check, "error", nil, "不支持的检查执行器"))
 		}
 	}
 	return results
+}
+
+func checkShell(ctx context.Context, check map[string]any) applicationCheckResult {
+	commandText := strings.TrimSpace(valueString(check["command"]))
+	if commandText == "" {
+		return newPlanCheckResult(check, "error", nil, "Shell 命令不能为空")
+	}
+
+	// 登录 Shell 会读取目标用户的 profile，使 JAVA_HOME 等用户级运行环境生效。
+	command := exec.CommandContext(ctx, "/bin/bash", "-lc", commandText)
+	_, userErr := configureApplicationRunUser(command, valueString(check["run_user"]))
+	if userErr != nil {
+		return newPlanCheckResult(check, "error", nil, userErr.Error())
+	}
+	workDirectory := strings.TrimSpace(valueString(check["work_directory"]))
+	if workDirectory == "" {
+		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录不能为空")
+	}
+	if !filepath.IsAbs(workDirectory) {
+		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录必须为绝对路径")
+	}
+	command.Dir = workDirectory
+	command.Env = mergeCommandEnvironment(command.Env, check["environment"])
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	runErr := command.Run()
+	if ctx.Err() != nil {
+		return newPlanCheckResult(check, "error", nil, fmt.Sprintf("Shell 命令执行中断: %v", ctx.Err()))
+	}
+	exitCode := 0
+	if runErr != nil {
+		var exitError *exec.ExitError
+		if !errors.As(runErr, &exitError) {
+			return newPlanCheckResult(check, "error", nil, fmt.Sprintf("执行 Shell 命令失败: %v", runErr))
+		}
+		exitCode = exitError.ExitCode()
+	}
+	actual := map[string]any{
+		"exit_code": exitCode,
+		"stdout":    strings.TrimSpace(stdout.String()),
+		"stderr":    strings.TrimSpace(stderr.String()),
+	}
+	expectedOutput := strings.TrimSpace(valueString(check["expected"]))
+	if expectedOutput == "" {
+		check["expected"] = map[string]any{"exit_code": 0}
+	}
+	if exitCode != 0 {
+		return newPlanCheckResult(check, "fail", actual, fmt.Sprintf("Shell 命令退出码为 %d", exitCode))
+	}
+	if expectedOutput != "" && actual["stdout"] != expectedOutput {
+		return newPlanCheckResult(check, "fail", actual, "Shell 命令输出与期望值不一致")
+	}
+	return newPlanCheckResult(check, "pass", actual, "")
+}
+
+func mergeCommandEnvironment(baseEnvironment []string, rawEnvironment any) []string {
+	environment, _ := rawEnvironment.(map[string]any)
+	if len(environment) == 0 {
+		return baseEnvironment
+	}
+	allowedKeys := []string{"APP_HOME", "RUN_USER", "WORK_DIRECTORY", "APPLICATION_NAME", "APPLICATION_CODE", "APPLICATION_VERSION", "INSTANCE_NAME"}
+	overrides := make(map[string]string, len(allowedKeys))
+	for _, key := range allowedKeys {
+		if value, exists := environment[key]; exists {
+			overrides[key] = valueString(value)
+		}
+	}
+	result := make([]string, 0, len(baseEnvironment)+len(overrides))
+	for _, entry := range baseEnvironment {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, overridden := overrides[key]; overridden {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for _, key := range allowedKeys {
+		if value, exists := overrides[key]; exists {
+			result = append(result, key+"="+value)
+		}
+	}
+	return result
 }
 
 func newPlanCheckResult(check map[string]any, status string, actual any, message string) applicationCheckResult {
@@ -110,6 +211,16 @@ func newPlanCheckResult(check map[string]any, status string, actual any, message
 }
 
 func readSchemaDocument(check map[string]any) ([]byte, string, error) {
+	if rawContent, exists := check["content"]; exists {
+		content, valid := rawContent.(string)
+		if !valid {
+			return nil, "inline", fmt.Errorf("待校验文档内容必须为字符串")
+		}
+		if len(content) > maxInlineSchemaDocumentBytes {
+			return nil, "inline", fmt.Errorf("待校验文档内容不能超过 1 MiB")
+		}
+		return []byte(content), "inline", nil
+	}
 	path := valueString(check["path"])
 	if !filepath.IsAbs(path) {
 		return nil, path, fmt.Errorf("待校验文档路径必须为绝对路径")
@@ -450,7 +561,18 @@ func checkApplicationControl(ctx context.Context, params map[string]any) applica
 			result.Status, result.Message = "fail", "Docker Compose 服务未运行"
 		}
 	case "external_ha":
-		result.Status, result.Actual, result.Message = "skipped", "external", "外部 HA 由外部控制器管理"
+		command, commandErr := applicationCustomControlCommand(ctx, params, "status")
+		if commandErr != nil {
+			result.Status, result.Message = "error", commandErr.Error()
+			return result
+		}
+		output, err := command.CombinedOutput()
+		result.Actual = strings.TrimSpace(string(output))
+		if err == nil {
+			result.Status = "pass"
+		} else {
+			result.Status, result.Message = "fail", "HA 应用状态检查命令返回非零退出码"
+		}
 	case "command":
 		result.Status, result.Actual, result.Message = "skipped", "not_checked", "命令行状态检查暂不执行自定义命令"
 	default:

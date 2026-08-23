@@ -45,8 +45,22 @@ class Application(BaseModel):
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
 
     class Meta:
-        ordering = ['-id']
         db_table = 'assets_application'
+        ordering = ['-id']
+
+
+class BusinessSystem(BaseModel):
+    name = models.CharField(max_length=128, unique=True, verbose_name='业务系统名称')
+    code = models.CharField(max_length=64, unique=True, verbose_name='业务系统编码')
+    owner = models.CharField(max_length=128, blank=True, default='', verbose_name='负责人')
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+
+    class Meta:
+        db_table = 'assets_business_system'
+        ordering = ['name', 'id']
+
+    def __str__(self):
+        return self.name
 
 
 class ApplicationVersion(BaseModel):
@@ -106,12 +120,114 @@ class ApplicationDeploymentTemplate(BaseModel):
         ]
 
 
-class ApplicationDeployment(BaseModel):
+class ClusterProfile(BaseModel):
+    class ProfileType(models.TextChoices):
+        BUILTIN = 'builtin', '内置'
+        CUSTOM = 'custom', '自定义'
+
+    class ClusterType(models.TextChoices):
+        MYSQL = 'mysql', 'MySQL 集群'
+        REDIS = 'redis', 'Redis 集群'
+        NACOS = 'nacos', 'Nacos 集群'
+        ELASTICSEARCH = 'elasticsearch', 'Elasticsearch 集群'
+        HA = 'ha', 'HA 集群'
+        CUSTOM = 'custom', '自定义集群'
+
+    name = models.CharField(max_length=128, unique=True, verbose_name='集群模型名称')
+    code = models.CharField(max_length=64, unique=True, verbose_name='集群模型编码')
+    application = models.ForeignKey(
+        Application,
+        on_delete=models.PROTECT,
+        related_name='cluster_profiles',
+        null=True,
+        blank=True,
+        verbose_name='应用',
+    )
+    profile_type = models.CharField(max_length=16, choices=ProfileType.choices, default=ProfileType.CUSTOM)
+    cluster_type = models.CharField(max_length=24, choices=ClusterType.choices, default=ClusterType.CUSTOM)
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+
+    class Meta:
+        db_table = 'assets_cluster_profile'
+        ordering = ['name', 'id']
+
+
+class ApplicationService(BaseModel):
+    class HealthStatus(models.TextChoices):
+        UNKNOWN = 'unknown', '未检查'
+        HEALTHY = 'healthy', '正常'
+        UNHEALTHY = 'unhealthy', '异常'
+
     class Environment(models.TextChoices):
         PRODUCTION = 'production', '生产'
         TESTING = 'testing', '测试'
         DEVELOPMENT = 'development', '开发'
         OTHER = 'other', '其他'
+
+    class TopologyType(models.TextChoices):
+        STANDALONE = 'standalone', '单机'
+        CLUSTER = 'cluster', '集群'
+
+    class AvailabilityMode(models.TextChoices):
+        NONE = 'none', '无高可用'
+        ACTIVE_STANDBY = 'active_standby', '主备'
+        ACTIVE_ACTIVE = 'active_active', '双活'
+
+    class AccessType(models.TextChoices):
+        DIRECT = 'direct', '节点地址'
+        VIP = 'vip', 'VIP'
+        LOAD_BALANCER = 'load_balancer', '负载均衡'
+
+    business_system = models.ForeignKey(
+        BusinessSystem,
+        on_delete=models.PROTECT,
+        related_name='services',
+        null=True,
+        blank=True,
+        verbose_name='所属业务系统',
+    )
+    application = models.ForeignKey(Application, on_delete=models.PROTECT, related_name='services')
+    cluster_profile = models.ForeignKey(
+        ClusterProfile,
+        on_delete=models.PROTECT,
+        related_name='services',
+        null=True,
+        blank=True,
+        verbose_name='集群模型',
+    )
+    name = models.CharField(max_length=128, verbose_name='逻辑服务名称')
+    code = models.CharField(max_length=64, unique=True, verbose_name='逻辑服务编码')
+    environment = models.CharField(max_length=16, choices=Environment.choices, default=Environment.PRODUCTION)
+    topology_type = models.CharField(max_length=16, choices=TopologyType.choices, default=TopologyType.STANDALONE)
+    availability_mode = models.CharField(max_length=24, choices=AvailabilityMode.choices, default=AvailabilityMode.NONE)
+    access_type = models.CharField(max_length=24, choices=AccessType.choices, default=AccessType.DIRECT)
+    access_address = models.CharField(max_length=255, blank=True, default='', verbose_name='服务入口地址')
+    access_port = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(65535)])
+    primary_deployment = models.ForeignKey(
+        'ApplicationDeployment',
+        on_delete=models.SET_NULL,
+        related_name='primary_for_services',
+        null=True,
+        blank=True,
+        verbose_name='VIP 主节点',
+    )
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+    health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
+    baseline_pass_rate = models.FloatField(null=True, blank=True)
+    last_check_time = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'assets_application_service'
+        ordering = ['business_system_id', 'environment', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['business_system', 'environment', 'name'],
+                name='unique_business_environment_service',
+            ),
+        ]
+
+
+class ApplicationDeployment(BaseModel):
 
     class HealthStatus(models.TextChoices):
         UNKNOWN = 'unknown', '未检查'
@@ -120,15 +236,36 @@ class ApplicationDeployment(BaseModel):
         UNHEALTHY = 'unhealthy', '异常'
         ERROR = 'error', '检查失败'
 
+    class RuntimeStatus(models.TextChoices):
+        UNKNOWN = 'unknown', '未知'
+        RUNNING = 'running', '运行中'
+        STOPPED = 'stopped', '已停止'
+        ERROR = 'error', '状态检查失败'
+
     application_version = models.ForeignKey(ApplicationVersion, on_delete=models.PROTECT, related_name='deployments')
     deployment_template = models.ForeignKey(ApplicationDeploymentTemplate, on_delete=models.PROTECT, related_name='deployments')
+    application_service = models.ForeignKey(
+        ApplicationService,
+        on_delete=models.SET_NULL,
+        related_name='deployments',
+        null=True,
+        blank=True,
+    )
     host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='application_deployments')
     instance_name = models.CharField(max_length=128, verbose_name='实例名称')
-    environment = models.CharField(max_length=16, choices=Environment.choices, default=Environment.PRODUCTION)
+    member_port = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(65535)],
+        verbose_name='集群成员端口',
+    )
     enabled = models.BooleanField(default=True)
     health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
     baseline_pass_rate = models.FloatField(null=True, blank=True)
     last_check_time = models.DateTimeField(null=True, blank=True)
+    runtime_status = models.CharField(max_length=16, choices=RuntimeStatus.choices, default=RuntimeStatus.UNKNOWN)
+    runtime_status_output = models.TextField(blank=True, default='')
+    last_status_check_time = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'assets_application_deployment'
@@ -298,11 +435,13 @@ class ApplicationBaselineCheck(BaseModel):
         TOML = 'toml', 'TOML'
         PROPERTIES = 'properties', 'Properties'
         TEXT = 'text', '普通文本'
+        SHELL = 'shell', 'Shell 命令'
 
     class SchemaType(models.TextChoices):
         SCHEMATRON = 'schematron', 'Schematron / XPath'
         JSON_SCHEMA = 'json_schema', 'JSON Schema'
         REGEXP = 'regexp', 'Regexp'
+        SHELL = 'shell', 'Shell'
 
     application = models.ForeignKey(
         Application,
@@ -310,11 +449,15 @@ class ApplicationBaselineCheck(BaseModel):
         related_name='baseline_checks',
     )
     name = models.CharField(max_length=128, verbose_name='检查项名称')
-    file_path = models.CharField(max_length=512, verbose_name='文件路径')
+    file_path = models.CharField(max_length=512, blank=True, default='', verbose_name='文件路径')
     document_type = models.CharField(max_length=16, choices=DocumentType.choices, default=DocumentType.XML, verbose_name='文档类型')
     schema_type = models.CharField(max_length=32, choices=SchemaType.choices, default=SchemaType.SCHEMATRON, verbose_name='Schema 类型')
     schema_version = models.CharField(max_length=32, default='iso', verbose_name='Schema 版本')
     schema_content = models.TextField(verbose_name='Schema 内容')
+    script_executor = models.CharField(max_length=100, default='${RUN_USER}', verbose_name='脚本执行者')
+    work_directory = models.CharField(max_length=512, default='${APP_HOME}', verbose_name='运行目录')
+    expected_output = models.TextField(blank=True, default='', verbose_name='期望输出')
+    requires_running = models.BooleanField(default=False, verbose_name='仅应用运行时检查')
     enabled = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0)
 

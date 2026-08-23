@@ -69,6 +69,12 @@ def start_grpc_server_in_background():
         options=[
             ('grpc.max_send_message_length', max_message_bytes),
             ('grpc.max_receive_message_length', max_message_bytes),
+            # Agent 用保活探测失效长连接；允许该频率才能在后端重启后及时进入重连循环。
+            ('grpc.keepalive_time_ms', 30000),
+            ('grpc.keepalive_timeout_ms', 10000),
+            ('grpc.keepalive_permit_without_calls', 1),
+            ('grpc.http2.min_ping_interval_without_data_ms', 30000),
+            ('grpc.http2.max_pings_without_data', 0),
         ],
     )
     pb_grpc.add_AgentChannelServicer_to_server(AgentChannelServicer(), server)

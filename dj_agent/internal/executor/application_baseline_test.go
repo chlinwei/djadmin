@@ -77,6 +77,132 @@ func TestCheckApplicationBaseline_RejectsUnsafeSystemdName(t *testing.T) {
 	}
 }
 
+func TestCheckApplicationControl_ExternalHAUsesStatusCommand(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+	result := checkApplicationControl(context.Background(), map[string]any{
+		"control_type": "external_ha",
+		"run_user":     currentUser.Username,
+		"control_actions": map[string]any{
+			"status": map[string]any{"command": "printf ha-running"},
+		},
+	})
+
+	if result.Status != "pass" || result.Actual != "ha-running" {
+		t.Fatalf("external HA status command must establish running state: %#v", result)
+	}
+}
+
+func TestCheckApplicationBaseline_ShellUsesExitCode(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+	executor := New(2 * time.Second)
+	workDirectory := t.TempDir()
+	job := protocol.Job{
+		JobID:  "application-baseline-shell",
+		Type:   protocol.TaskTypeCustom,
+		Action: actionCheckApplicationBaseline,
+		Params: map[string]any{
+			"check_plan": map[string]any{
+				"schema_version":        1,
+				"required_capabilities": []any{"shell:v1"},
+				"checks": []any{
+					map[string]any{
+						"key": "success", "type": "shell", "name": "成功命令", "executor": "shell",
+						"command":  "shopt -q login_shell && printf '%s|%s|%s' \"$APP_HOME\" \"$RUN_USER\" \"$APPLICATION_VERSION\"",
+						"run_user": currentUser.Username, "work_directory": workDirectory,
+						"environment": map[string]any{"APP_HOME": workDirectory, "RUN_USER": currentUser.Username, "APPLICATION_VERSION": "9.0.95"},
+					},
+					map[string]any{"key": "failure", "type": "shell", "name": "失败命令", "executor": "shell", "command": "printf denied >&2; exit 7", "run_user": currentUser.Username, "work_directory": workDirectory},
+				},
+			},
+		},
+	}
+
+	result, err := executor.Run(context.Background(), job)
+	if err != nil {
+		t.Fatalf("shell baseline check returned transport error: %v", err)
+	}
+	checks := result.Data["checks"].([]applicationCheckResult)
+	expectedOutput := workDirectory + "|" + currentUser.Username + "|9.0.95"
+	if checks[1].Status != "pass" || checks[1].Actual.(map[string]any)["stdout"] != expectedOutput {
+		t.Fatalf("zero exit code must pass: %#v", checks[1])
+	}
+	failure := checks[2]
+	if failure.Status != "fail" || failure.Actual.(map[string]any)["exit_code"] != 7 || failure.Actual.(map[string]any)["stderr"] != "denied" {
+		t.Fatalf("non-zero exit code must fail with output: %#v", failure)
+	}
+}
+
+func TestCheckShell_FailsWhenOutputDoesNotMatchExpected(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+	result := checkShell(context.Background(), map[string]any{
+		"key":            "version",
+		"type":           "shell",
+		"name":           "Tomcat version check",
+		"command":        "printf 'Apache Tomcat/9.0.35'",
+		"run_user":       currentUser.Username,
+		"work_directory": t.TempDir(),
+		"expected":       "Apache Tomcat/9.0.93",
+	})
+
+	if result.Status != "fail" || result.Expected != "Apache Tomcat/9.0.93" {
+		t.Fatalf("mismatched shell output must fail with the configured expectation: %#v", result)
+	}
+	actual := result.Actual.(map[string]any)
+	if actual["stdout"] != "Apache Tomcat/9.0.35" || actual["exit_code"] != 0 {
+		t.Fatalf("actual shell output must be preserved: %#v", actual)
+	}
+}
+
+func TestCheckApplicationPlan_SkipsRunningOnlyCheckWhenStopped(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "must-not-run")
+	checks := checkApplicationPlanForState(context.Background(), map[string]any{
+		"check_plan": map[string]any{
+			"schema_version": 1,
+			"checks": []any{map[string]any{
+				"key": "running-only", "type": "shell", "name": "仅运行时检查",
+				"executor": "shell", "requires_running": true,
+				"command": "touch " + markerPath,
+			}},
+		},
+	}, false)
+
+	if len(checks) != 1 || checks[0].Status != "skipped" || checks[0].Message != "应用未运行，已跳过该检查项" {
+		t.Fatalf("running-only check must be skipped: %#v", checks)
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("skipped check must not execute its command: %v", err)
+	}
+}
+
+func TestCheckSchema_ValidatesInlineContentWithoutTemplateExpansion(t *testing.T) {
+	result := checkSchema(map[string]any{
+		"key": "inline-json", "type": "config_json", "name": "JSON 调试",
+		"document_type": "json",
+		"content":       `{"path":"C:\\apps\\${APPLICATION_VERSION}"}`,
+		"schema": map[string]any{
+			"type": "json_schema", "version": "2020-12",
+			"content": `{"type":"object","properties":{"path":{"const":"C:\\apps\\${APPLICATION_VERSION}"}},"required":["path"]}`,
+		},
+	})
+
+	if result.Status != "pass" {
+		t.Fatalf("inline content must remain unchanged: %#v", result)
+	}
+	actual, ok := result.Actual.(map[string]any)
+	if !ok || actual["path"] != "inline" {
+		t.Fatalf("inline source must be identified in result: %#v", result.Actual)
+	}
+}
+
 func TestCheckApplicationLogs_ExactGlobAndMissing(t *testing.T) {
 	tempDirectory := t.TempDir()
 	logPath := tempDirectory + "/catalina.out"
@@ -315,14 +441,14 @@ func TestParseConfigScalar(t *testing.T) {
 }
 
 func TestCheckApplicationPlan_RejectsUnsupportedProtocol(t *testing.T) {
-	versionChecks := checkApplicationPlan(map[string]any{
+	versionChecks := checkApplicationPlan(context.Background(), map[string]any{
 		"check_plan": map[string]any{"schema_version": 2},
 	})
 	if len(versionChecks) != 1 || versionChecks[0].Status != "error" {
 		t.Fatalf("unsupported plan version must fail: %#v", versionChecks)
 	}
 
-	capabilityChecks := checkApplicationPlan(map[string]any{
+	capabilityChecks := checkApplicationPlan(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version":        1,
 			"required_capabilities": []any{"shell_script:v1"},
@@ -332,7 +458,7 @@ func TestCheckApplicationPlan_RejectsUnsupportedProtocol(t *testing.T) {
 		t.Fatalf("unsupported capability must fail explicitly: %#v", capabilityChecks)
 	}
 
-	executorChecks := checkApplicationPlan(map[string]any{
+	executorChecks := checkApplicationPlan(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version": 1,
 			"checks": []any{map[string]any{
@@ -380,7 +506,7 @@ func TestCheckTomcatBaseline_MaxPostSizePassesAndManagerUserPasses(t *testing.T)
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlan(map[string]any{
+	checks := checkApplicationPlan(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui", "admin", "admin-gui", "manager-script", "manager-jmx", "manager-status"}),
 	})
 	if len(checks) != 3 {
@@ -427,7 +553,7 @@ func TestCheckTomcatBaseline_MaxPostSizeAndManagerUserFail(t *testing.T) {
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlan(map[string]any{
+	checks := checkApplicationPlan(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui"}),
 	})
 	if len(checks) != 3 {

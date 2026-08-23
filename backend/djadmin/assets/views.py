@@ -17,11 +17,13 @@ from asgiref.sync import async_to_sync
 from cryptography.utils import CryptographyDeprecationWarning
 from djadmin.utils import Response_200, Response_error_str
 from rest_framework.mixins import CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin
+from rest_framework.request import Request
+from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action, api_view
 from .models import *
 from .serializer import *
-from .application_variables import resolve_application_variables
+from .application_variables import ApplicationVariableError, resolve_application_variables
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters.rest_framework  import DjangoFilterBackend
@@ -202,6 +204,7 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
     search_fields = ['name', 'remark'] 
+    filterset_fields = ['id', 'category', 'enabled']
     ordering_fields = [ 'name','create_time'] 
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -309,7 +312,7 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
             self._force_close_webssh_sessions_for_credential(instance.id)
         return Response_200(data=serializer.data)
 
-    def destroy(self, request, *args, **kwargs):
+    def destroy(self, request: Request, *args, **kwargs) -> Response:
         instance = self.get_object()
         deleted_id = instance.id
         self.perform_destroy(instance)
@@ -491,6 +494,128 @@ class ApplicationVersionManage(ApplicationAssetManageBase):
     filterset_fields = ['application', 'enabled']
 
 
+class BusinessSystemManage(ApplicationAssetManageBase):
+    queryset = BusinessSystem.objects.annotate(deployment_count=Count('services__deployments')).all()
+    serializer_class = BusinessSystemSerializer
+    search_fields = ['name', 'code', 'owner', 'remark']
+    ordering_fields = ['name', 'code', 'create_time', 'update_time']
+    filterset_fields = ['enabled']
+
+
+class ClusterProfileManage(ApplicationAssetManageBase):
+    queryset = ClusterProfile.objects.select_related('application').annotate(service_count=Count('services')).all()
+    serializer_class = ClusterProfileSerializer
+    search_fields = ['name', 'code', 'application__name', 'remark']
+    ordering_fields = ['name', 'code', 'create_time', 'update_time']
+    filterset_fields = ['application', 'profile_type', 'cluster_type', 'enabled']
+
+    def destroy(self, request, *args, **kwargs):
+        if self.get_object().profile_type == ClusterProfile.ProfileType.BUILTIN:
+            return Response_error_str('内置集群模型由系统维护，不能删除', code=400)
+        return super().destroy(request, *args, **kwargs)
+
+
+class ApplicationServiceManage(ApplicationAssetManageBase):
+    queryset = ApplicationService.objects.select_related(
+        'business_system', 'application', 'cluster_profile',
+    ).annotate(deployment_count=Count('deployments')).all()
+    serializer_class = ApplicationServiceSerializer
+    search_fields = ['name', 'code', 'business_system__name', 'application__name', 'access_address', 'remark']
+    ordering_fields = ['name', 'code', 'create_time', 'update_time']
+    filterset_fields = [
+        'business_system', 'application', 'environment', 'topology_type',
+        'availability_mode', 'access_type', 'cluster_profile', 'enabled',
+    ]
+    action_perms_map = {
+        **ApplicationAssetManageBase.action_perms_map,
+        'check_baseline': 'assets:applications:update',
+    }
+
+    @action(detail=True, methods=['post'], url_path='check-baseline')
+    def check_baseline(self, request: Request, *args, **kwargs) -> Response:
+        service = self.get_object()
+        if service.topology_type != ApplicationService.TopologyType.CLUSTER:
+            return Response_error_str('只有实际集群可以执行集群基线检查', code=400)
+
+        deployments = list(service.deployments.select_related(
+            'application_version__application', 'deployment_template__application',
+        ))
+        results = []
+
+        def add_result(key: str, name: str, passed: bool, expected, actual) -> None:
+            results.append({
+                'key': key,
+                'name': name,
+                'status': 'pass' if passed else 'fail',
+                'expected': expected,
+                'actual': actual,
+            })
+
+        is_ha = service.cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
+        minimum_member_count = 2 if is_ha else 1
+        add_result(
+            'members', '集群成员', len(deployments) >= minimum_member_count,
+            f'至少 {minimum_member_count} 个成员', len(deployments),
+        )
+        consistent_members = [
+            deployment.id for deployment in deployments
+            if deployment.application_version.application_id == service.application_id
+            and deployment.deployment_template.application_id == service.application_id
+        ]
+        add_result(
+            'application_consistency',
+            '成员应用一致性',
+            len(consistent_members) == len(deployments),
+            service.application.name,
+            f'{len(consistent_members)}/{len(deployments)} 个成员一致',
+        )
+
+        if is_ha:
+            add_result(
+                'vip', 'VIP 配置',
+                service.access_type == ApplicationService.AccessType.VIP and bool(service.access_address.strip()),
+                '访问方式为 VIP 且地址非空', service.access_address or '未配置',
+            )
+            members_without_port = sum(deployment.member_port is None for deployment in deployments)
+            add_result(
+                'member_ports', 'HA 成员端口', members_without_port == len(deployments),
+                '所有成员不配置端口', f'{members_without_port}/{len(deployments)} 个成员未配置端口',
+            )
+            primary_deployment = service.primary_deployment
+            primary_is_member = (
+                primary_deployment is not None
+                and primary_deployment.application_service_id == service.id
+            )
+            add_result(
+                'vip_primary', 'VIP 主节点', primary_is_member,
+                '唯一指定一个集群成员',
+                primary_deployment.instance_name if primary_is_member else '未指定或不属于当前集群',
+            )
+        else:
+            members_with_port = sum(deployment.member_port is not None for deployment in deployments)
+            add_result(
+                'member_ports', '成员端口', members_with_port == len(deployments),
+                '所有成员均配置端口', f'{members_with_port}/{len(deployments)} 个成员已配置端口',
+            )
+
+        passed_count = sum(result['status'] == 'pass' for result in results)
+        pass_rate = round(passed_count * 100 / len(results), 2)
+        service.health_status = (
+            ApplicationService.HealthStatus.HEALTHY
+            if passed_count == len(results)
+            else ApplicationService.HealthStatus.UNHEALTHY
+        )
+        service.baseline_pass_rate = pass_rate
+        service.last_check_time = timezone.now()
+        service.save(update_fields=['health_status', 'baseline_pass_rate', 'last_check_time', 'update_time'])
+        return Response_200(data={
+            'health_status': service.health_status,
+            'baseline_pass_rate': pass_rate,
+            'last_check_time': service.last_check_time,
+            'results': results,
+        })
+
+
 class ApplicationDeploymentTemplateManage(ApplicationAssetManageBase):
     queryset = ApplicationDeploymentTemplate.objects.select_related('application').prefetch_related(
         'ports', 'paths', 'config_files', 'logs', 'control_actions',
@@ -604,28 +729,129 @@ def _build_application_baseline_params(deployment):
         }
     application = deployment_template.application
     baseline_checks = application.baseline_checks.filter(enabled=True)
-    compiled_checks = [
-        {
+    compiled_checks = []
+    required_capabilities = set()
+    for check in baseline_checks:
+        compiled_check = {
             'key': f'application:{application.id}:baseline:{check.id}',
-            'type': f'config_{check.document_type}',
+            'type': check.document_type if check.schema_type == ApplicationBaselineCheck.SchemaType.SHELL else f'config_{check.document_type}',
             'name': check.name,
-            'executor': 'schema_validate',
-            'path': resolve_template_value(check.file_path),
-            'document_type': check.document_type,
-            'schema': {
+            'requires_running': check.requires_running,
+        }
+        if check.schema_type == ApplicationBaselineCheck.SchemaType.SHELL:
+            expected_output = str(check.expected_output or '').replace(
+                '${APPLICATION_VERSION}',
+                deployment.application_version.version,
+            )
+            compiled_check.update({
+                'executor': 'shell',
+                'command': check.schema_content,
+                'run_user': resolve_template_value(check.script_executor),
+                'work_directory': resolve_template_value(check.work_directory),
+                'expected': expected_output,
+                'environment': {
+                    'APP_HOME': app_home,
+                    'RUN_USER': run_user,
+                    'WORK_DIRECTORY': resolve_template_value(check.work_directory),
+                    'APPLICATION_NAME': application.name,
+                    'APPLICATION_CODE': application.code,
+                    'APPLICATION_VERSION': deployment.application_version.version,
+                    'INSTANCE_NAME': deployment.instance_name,
+                },
+            })
+            required_capabilities.add('shell:v1')
+        else:
+            compiled_check.update({
+                'executor': 'schema_validate',
+                'path': resolve_template_value(check.file_path),
+                'document_type': check.document_type,
+                'schema': {
                 'type': check.schema_type,
                 'version': check.schema_version,
                 'content': check.schema_content,
-            },
-        }
-        for check in baseline_checks
-    ]
+                },
+            })
+            required_capabilities.add('schema_validate:v1')
+        compiled_checks.append(compiled_check)
     if compiled_checks:
         params['check_plan'] = {
             'schema_version': 1,
-            'required_capabilities': ['schema_validate:v1'],
+            'required_capabilities': sorted(required_capabilities),
             'checks': compiled_checks,
         }
+    return params
+
+
+def _build_application_baseline_debug_params(deployment, check, inline_content=None):
+    """使用真实部署上下文编译单个临时检查，不写入正式基线配置。"""
+    params = _build_application_baseline_params(deployment)
+    deployment_template = deployment.deployment_template
+    application = deployment.application_version.application
+    run_user = str(deployment_template.run_user or '').strip()
+    app_home = resolve_application_variables(
+        deployment_template.app_home,
+        app_home=deployment_template.app_home,
+        run_user=run_user,
+    )
+
+    def resolve_template_value(value):
+        return resolve_application_variables(value, app_home=app_home, run_user=run_user)
+
+    compiled_check = {
+        'key': f'debug:{uuid.uuid4().hex[:16]}',
+        'type': check['document_type'] if check['schema_type'] == ApplicationBaselineCheck.SchemaType.SHELL else f'config_{check["document_type"]}',
+        'name': check['name'],
+        'requires_running': bool(check.get('requires_running')),
+    }
+    if check['schema_type'] == ApplicationBaselineCheck.SchemaType.SHELL:
+        expected_output = str(check.get('expected_output') or '').replace(
+            '${APPLICATION_VERSION}',
+            deployment.application_version.version,
+        )
+        compiled_check.update({
+            'executor': 'shell',
+            'command': check['schema_content'],
+            'run_user': resolve_template_value(check.get('script_executor')),
+            'work_directory': resolve_template_value(check.get('work_directory')),
+            'expected': expected_output,
+            'environment': {
+                'APP_HOME': app_home,
+                'RUN_USER': run_user,
+                'WORK_DIRECTORY': resolve_template_value(check.get('work_directory')),
+                'APPLICATION_NAME': application.name,
+                'APPLICATION_CODE': application.code,
+                'APPLICATION_VERSION': deployment.application_version.version,
+                'INSTANCE_NAME': deployment.instance_name,
+            },
+        })
+        required_capability = 'shell:v1'
+    else:
+        compiled_check.update({
+            'executor': 'schema_validate',
+            'document_type': check['document_type'],
+            'schema': {
+                'type': check['schema_type'],
+                'version': check['schema_version'],
+                'content': check['schema_content'],
+            },
+        })
+        if inline_content is None:
+            compiled_check['path'] = resolve_template_value(check.get('file_path'))
+        else:
+            compiled_check['content'] = inline_content
+        required_capability = 'schema_validate:inline:v1' if inline_content is not None else 'schema_validate:v1'
+
+    # 调试只执行当前草稿；运行状态仍保留，用于 requires_running 前置条件。
+    params.update({
+        'ports': [],
+        'paths': [],
+        'logs': [],
+        'check_plan': {
+            'schema_version': 1,
+            'required_capabilities': [required_capability],
+            'checks': [compiled_check],
+        },
+    })
     return params
 
 
@@ -710,7 +936,8 @@ def _run_application_baseline_check(execution_id, job_id):
 
 class ApplicationDeploymentManage(ApplicationAssetManageBase):
     queryset = ApplicationDeployment.objects.select_related(
-        'application_version__application', 'deployment_template', 'host',
+        'application_version__application', 'deployment_template',
+        'application_service__business_system', 'application_service__cluster_profile', 'host',
     ).prefetch_related('deployment_template__ports')
     serializer_class = ApplicationDeploymentSerializer
     search_fields = [
@@ -718,11 +945,16 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
         'application_version__version', 'host__instance_name', 'host__ip',
     ]
     ordering_fields = ['instance_name', 'create_time', 'update_time']
-    filterset_fields = ['application_version', 'deployment_template', 'host', 'environment', 'enabled']
+    filterset_fields = [
+        'id', 'application_version', 'application_version__application', 'deployment_template',
+        'application_service', 'application_service__business_system',
+        'application_service__environment', 'host', 'enabled',
+    ]
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
         'control': 'assets:applications:update',
         'check_baseline': 'assets:applications:update',
+        'debug_baseline': 'assets:applications:update',
         'baseline_history': 'assets:applications:view',
     }
 
@@ -765,13 +997,41 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
                 or getattr(completed_job, 'stderr', '')
                 or '应用控制执行失败'
             )
+            if control_action == 'status':
+                deployment.runtime_status = ApplicationDeployment.RuntimeStatus.ERROR
+                deployment.runtime_status_output = str(error_message)[:4000]
+                deployment.last_status_check_time = timezone.now()
+                deployment.save(update_fields=[
+                    'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
+                ])
             return Response_error_str(str(error_message), code=400)
+        if control_action == 'status':
+            deployment.runtime_status = (
+                ApplicationDeployment.RuntimeStatus.RUNNING
+                if completed_job.exit_code == 0
+                else ApplicationDeployment.RuntimeStatus.STOPPED
+            )
+            deployment.runtime_status_output = str(completed_job.stdout or completed_job.stderr or '')[:4000]
+            deployment.last_status_check_time = timezone.now()
+            deployment.save(update_fields=[
+                'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
+            ])
+        else:
+            # 启停命令成功仅代表动作已受理，旧状态必须失效并由后续状态检查重新确认。
+            deployment.runtime_status = ApplicationDeployment.RuntimeStatus.UNKNOWN
+            deployment.runtime_status_output = ''
+            deployment.last_status_check_time = None
+            deployment.save(update_fields=[
+                'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
+            ])
         return Response_200(data={
             'job_id': completed_job.job_id,
             'action': control_action,
             'status': completed_job.status,
             'output': completed_job.stdout,
             'exit_code': completed_job.exit_code,
+            'runtime_status': deployment.runtime_status,
+            'last_status_check_time': deployment.last_status_check_time,
             'result_data': completed_job.result_data,
         })
 
@@ -826,6 +1086,84 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
         )
         thread.start()
         return Response_200(data={'execution_id': execution.id, 'job_id': job.job_id, 'status': execution.status})
+
+    @action(detail=True, methods=['post'], url_path='debug-baseline')
+    def debug_baseline(self, request, *args, **kwargs):
+        deployment = self.get_object()
+        agent_id = str(deployment.host.agent_id or '').strip()
+        if agent_id == '':
+            return Response_error_str('部署主机未绑定 Agent 实例，无法调试检查项', code=400)
+
+        raw_check = request.data.get('check')
+        if not isinstance(raw_check, dict):
+            return Response_error_str('check 必须为检查项对象', code=400)
+        has_inline_content = 'content' in request.data
+        inline_content = request.data.get('content') if has_inline_content else None
+        if has_inline_content and not isinstance(inline_content, str):
+            return Response_error_str('调试内容必须为字符串', code=400)
+        if has_inline_content and len(inline_content.encode('utf-8')) > 1024 * 1024:
+            return Response_error_str('调试内容不能超过 1 MiB', code=400)
+        if raw_check.get('schema_type') == ApplicationBaselineCheck.SchemaType.SHELL and has_inline_content:
+            return Response_error_str('Shell 调试不接受文件内容', code=400)
+
+        serializer = ApplicationBaselineCheckSerializer(
+            data=raw_check,
+            context={'allow_inline_content': has_inline_content},
+        )
+        if not serializer.is_valid():
+            return Response_error_str('检查项配置无效', code=400, data=serializer.errors)
+
+        try:
+            params = _build_application_baseline_debug_params(
+                deployment,
+                serializer.validated_data,
+                inline_content=inline_content,
+            )
+        except ApplicationVariableError as exc:
+            return Response_error_str(str(exc), code=400)
+        job = AgentJob.objects.create(
+            job_id=f'app-baseline-debug-{uuid.uuid4().hex[:16]}',
+            agent_id=agent_id,
+            host=deployment.host,
+            job_type='custom',
+            action='check_application_baseline',
+            params=params,
+            timeout_seconds=30,
+            status=AgentJob.JobStatus.QUEUED,
+        )
+        _emit_agent_job_event(job, 'new', {
+            'jid': job.job_id,
+            'tgt': job.agent_id,
+            'tgt_type': 'agent_id',
+            'fun': job.action,
+            'arg': job.params,
+            'minions': [job.agent_id],
+        })
+        completed_job = _dispatch_agent_job_via_grpc(job)
+        if completed_job is None or completed_job.status != AgentJob.JobStatus.SUCCESS:
+            error_message = (
+                getattr(completed_job, 'error_message', '')
+                or getattr(completed_job, 'stderr', '')
+                or '检查项调试失败'
+            )
+            return Response_error_str(str(error_message), code=400)
+        result_data = completed_job.result_data if isinstance(completed_job.result_data, dict) else {}
+        checks = result_data.get('checks') if isinstance(result_data.get('checks'), list) else []
+        debug_result = next(
+            (item for item in checks if isinstance(item, dict) and str(item.get('key') or '').startswith('debug:')),
+            None,
+        )
+        return Response_200(data={
+            'job_id': completed_job.job_id,
+            'deployment_id': deployment.id,
+            'context': {
+                'APPLICATION_VERSION': deployment.application_version.version,
+                'APP_HOME': params.get('app_home', ''),
+                'RUN_USER': params.get('run_user', ''),
+                'INSTANCE_NAME': deployment.instance_name,
+            },
+            'result': debug_result,
+        })
 
     @action(detail=True, methods=['get'], url_path='baseline-history')
     def baseline_history(self, request, *args, **kwargs):

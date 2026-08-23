@@ -61,16 +61,25 @@ func TestApplicationControlResult_StatusPreservesNonzeroState(t *testing.T) {
 	}
 }
 
-func TestControlApplication_ExternalHAStatusReturnsManagementHint(t *testing.T) {
+func TestControlApplication_ExternalHAStatusRunsConfiguredCommand(t *testing.T) {
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
 	executor := New(2 * time.Second)
 	result, err := executor.Run(context.Background(), protocol.Job{
 		JobID: "external-ha-status", Type: protocol.TaskTypeCustom, Action: actionControlApplication,
-		Params: map[string]any{"control_type": "external_ha", "control_action": "status"},
+		Params: map[string]any{
+			"control_type": "external_ha", "control_action": "status", "run_user": currentUser.Username,
+			"control_actions": map[string]any{
+				"status": map[string]any{"command": "printf running"},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("external HA status returned transport error: %v", err)
 	}
-	if result.Status != protocol.StatusSuccess || result.Stdout == "" {
-		t.Fatalf("external HA status must return a management hint: %#v", result)
+	if result.Status != protocol.StatusSuccess || result.Stdout != "running" || result.ExitCode != 0 {
+		t.Fatalf("external HA status must execute configured command: %#v", result)
 	}
 }

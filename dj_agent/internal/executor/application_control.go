@@ -19,12 +19,6 @@ import (
 func (e *Executor) controlApplication(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
 	action := valueString(job.Params["control_action"])
-	if valueString(job.Params["control_type"]) == "external_ha" && action == "status" {
-		return applicationControlResult(
-			job, action, started,
-			[]byte("由外部 HA 系统管理，请在外部 HA 平台查看实际状态"), nil,
-		)
-	}
 	command, commandErr := applicationControlCommand(ctx, job.Params, action)
 	if commandErr != nil {
 		return applicationControlResult(job, action, started, nil, commandErr)
@@ -70,7 +64,10 @@ func applicationControlCommand(ctx context.Context, params map[string]any, actio
 	case "docker_compose":
 		return applicationComposeControlCommand(ctx, params, action)
 	case "external_ha":
-		return nil, fmt.Errorf("外部 HA 应用不支持从 dj-agent 执行启停")
+		if action != "status" {
+			return nil, fmt.Errorf("外部 HA 应用不支持从 dj-agent 执行启停")
+		}
+		return applicationCustomControlCommand(ctx, params, action)
 	default:
 		return nil, fmt.Errorf("不支持的应用控制方式")
 	}
@@ -93,7 +90,7 @@ func applicationCustomControlCommand(ctx context.Context, params map[string]any,
 		}
 		command.Dir = workDirectory
 	}
-	if err := configureApplicationRunUser(command, valueString(params["run_user"])); err != nil {
+	if _, err := configureApplicationRunUser(command, valueString(params["run_user"])); err != nil {
 		return nil, err
 	}
 	return command, nil
@@ -137,40 +134,40 @@ func applicationComposeControlCommand(ctx context.Context, params map[string]any
 	return command, nil
 }
 
-func configureApplicationRunUser(command *exec.Cmd, runUser string) error {
+func configureApplicationRunUser(command *exec.Cmd, runUser string) (*user.User, error) {
 	if runUser == "" {
-		return fmt.Errorf("命令行控制必须配置运行用户")
+		return nil, fmt.Errorf("命令行控制必须配置运行用户")
 	}
 	targetUser, err := user.Lookup(runUser)
 	if err != nil {
-		return fmt.Errorf("无法查找应用运行用户 %q: %w", runUser, err)
+		return nil, fmt.Errorf("无法查找应用运行用户 %q: %w", runUser, err)
 	}
 	uid, uidErr := strconv.ParseUint(targetUser.Uid, 10, 32)
 	gid, gidErr := strconv.ParseUint(targetUser.Gid, 10, 32)
 	if uidErr != nil || gidErr != nil {
-		return fmt.Errorf("应用运行用户 %q 的 UID/GID 无效", runUser)
+		return nil, fmt.Errorf("应用运行用户 %q 的 UID/GID 无效", runUser)
 	}
 	if os.Geteuid() != 0 && uint64(os.Geteuid()) != uid {
-		return fmt.Errorf("dj-agent 必须以 root 或目标用户 %q 运行", runUser)
+		return nil, fmt.Errorf("dj-agent 必须以 root 或目标用户 %q 运行", runUser)
 	}
 	command.Env = systemdUserEnvironment(os.Environ(), targetUser, uid)
 	if uint64(os.Geteuid()) == uid {
-		return nil
+		return targetUser, nil
 	}
 	groupIDs, groupErr := targetUser.GroupIds()
 	if groupErr != nil {
-		return fmt.Errorf("无法获取应用运行用户 %q 的附加组: %w", runUser, groupErr)
+		return nil, fmt.Errorf("无法获取应用运行用户 %q 的附加组: %w", runUser, groupErr)
 	}
 	groups := make([]uint32, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
 		parsedGroupID, parseErr := strconv.ParseUint(groupID, 10, 32)
 		if parseErr != nil {
-			return fmt.Errorf("应用运行用户 %q 的附加组 ID 无效", runUser)
+			return nil, fmt.Errorf("应用运行用户 %q 的附加组 ID 无效", runUser)
 		}
 		groups = append(groups, uint32(parsedGroupID))
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
 	}
-	return nil
+	return targetUser, nil
 }

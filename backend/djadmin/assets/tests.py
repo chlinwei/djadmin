@@ -1,5 +1,6 @@
 from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.utils import timezone
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
@@ -7,11 +8,11 @@ from typing import Any, cast
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import (
-    Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, HostGroup, Host,
-    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, AgentJob,
+    Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, BusinessSystem, HostGroup, Host,
+    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ClusterProfile, AgentJob,
     HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog,
 )
-from .views import _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
+from .views import _build_application_baseline_debug_params, _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -212,6 +213,20 @@ class CredentialTest(BaseTestCase):
 # ─────────────────────────────────────────────
 class ApplicationTest(BaseTestCase):
 
+    def _create_deployment(self, **kwargs):
+        application_version = kwargs['application_version']
+        instance_name = kwargs['instance_name']
+        business_system_id = kwargs.pop('business_system_id', None)
+        environment = kwargs.pop('environment', ApplicationService.Environment.PRODUCTION)
+        service = ApplicationService.objects.create(
+            business_system_id=business_system_id,
+            application=application_version.application,
+            name=instance_name,
+            code=f'test-service-{ApplicationService.objects.count() + 1}',
+            environment=environment,
+        )
+        return ApplicationDeployment.objects.create(application_service=service, **kwargs)
+
     def test_list_applications(self):
         """应用列表返回分页格式"""
         application = Application.objects.create(name='app1', code='app1')
@@ -228,6 +243,182 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         self.assertResponseOK(res)
         self.assertTrue(Application.objects.filter(name='new_app').exists())
+
+    def test_business_system_filters_deployments(self):
+        """业务系统可维护，并作为部署实例的服务树归属进行过滤。"""
+        system_res = self.client.post('/assets/business-systems/', {
+            'name': '订单系统', 'code': 'order-system', 'owner': 'ops',
+        }, format='json')
+        system_body = self.assertResponseOK(system_res)
+        business_system_id = system_body['data']['id']
+
+        application = Application.objects.create(name='Order Tomcat', code='order-tomcat')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='Order Tomcat Systemd',
+            control_type='systemd',
+            run_user='app',
+            service_name='tomcat',
+        )
+        host = Host.objects.create(instance_name='order-node-1', ip='10.0.0.31')
+        deployment = self._create_deployment(
+            business_system_id=business_system_id,
+            application_version=version,
+            deployment_template=template,
+            host=host,
+            instance_name='order-tomcat-1',
+        )
+
+        res = self.client.get(
+            f'/assets/application-deployments/?application_service__business_system={business_system_id}'
+        )
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['count'], 1)
+        self.assertEqual(body['data']['results'][0]['id'], deployment.id)  # type: ignore[attr-defined]
+        self.assertEqual(body['data']['results'][0]['business_system_name'], '订单系统')
+
+    def test_cluster_service_selects_instances_with_member_ports(self):
+        application = Application.objects.create(name='Redis Test', code='redis-cluster-test')
+        business_system = BusinessSystem.objects.create(name='订单系统', code='cluster-order-system')
+        version = ApplicationVersion.objects.create(application=application, version='7.4')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Redis Systemd', control_type='systemd',
+            run_user='redis', service_name='redis',
+        )
+        profile = ClusterProfile.objects.create(
+            name='Redis Sentinel', code='redis-sentinel', application=application,
+            cluster_type=ClusterProfile.ClusterType.REDIS,
+        )
+        host = Host.objects.create(instance_name='redis-node-1', ip='10.0.0.41')
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version,
+            deployment_template=template,
+            host=host,
+            instance_name='redis-node-1',
+        )
+        service_res = self.client.post('/assets/application-services/', {
+            'business_system': business_system.id,  # type: ignore[attr-defined]
+            'cluster_profile': profile.id,  # type: ignore[attr-defined]
+            'name': '订单缓存集群',
+            'code': 'order-cache-cluster',
+            'topology_type': 'cluster',
+            'environment': 'production',
+            'member_configs': [{'deployment': deployment.id, 'port': 6379}],  # type: ignore[attr-defined]
+        }, format='json')
+        service = self.assertResponseOK(service_res)['data']
+        self.assertEqual(service['application'], application.id)  # type: ignore[attr-defined]
+        deployment.refresh_from_db()
+        self.assertEqual(deployment.application_service_id, service['id'])  # type: ignore[attr-defined]
+        self.assertEqual(deployment.member_port, 6379)
+
+        job_count = AgentJob.objects.count()
+        baseline_res = self.client.post(
+            f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
+        )
+        baseline = self.assertResponseOK(baseline_res)['data']
+        self.assertEqual(baseline['health_status'], 'healthy')
+        self.assertEqual(baseline['baseline_pass_rate'], 100.0)
+        self.assertEqual({item['key'] for item in baseline['results']}, {
+            'members', 'application_consistency', 'member_ports',
+        })
+        self.assertEqual(AgentJob.objects.count(), job_count)
+
+    def test_ha_cluster_selects_instances_without_member_ports(self):
+        application = Application.objects.create(name='HA App', code='ha-cluster')
+        business_system = BusinessSystem.objects.create(name='HA 系统', code='ha-system')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='HA Template', control_type='external_ha',
+            run_user='app', ha_resource_name='ha-resource',
+        )
+        profile = ClusterProfile.objects.create(
+            name='HA 集群测试', code='ha-test', cluster_type=ClusterProfile.ClusterType.HA,
+        )
+        host = Host.objects.create(instance_name='ha-node-1', ip='10.0.0.51')
+        deployment = ApplicationDeployment.objects.create(
+            application_version=version, deployment_template=template,
+            host=host, instance_name='ha-node-1',
+        )
+        second_deployment = ApplicationDeployment.objects.create(
+            application_version=version, deployment_template=template,
+            host=Host.objects.create(instance_name='ha-node-2', ip='10.0.0.52'),
+            instance_name='ha-node-2',
+        )
+
+        payload = {
+            'business_system': business_system.id,  # type: ignore[attr-defined]
+            'application': application.id,  # type: ignore[attr-defined]
+            'cluster_profile': profile.id,  # type: ignore[attr-defined]
+            'name': 'HA 服务', 'code': 'ha-service', 'topology_type': 'cluster',
+            'environment': 'production', 'access_type': 'vip', 'access_address': '10.0.0.100',
+            'primary_deployment': deployment.id,  # type: ignore[attr-defined]
+            'member_configs': [{'deployment': deployment.id, 'port': None}],  # type: ignore[attr-defined]
+        }
+        single_member_response = self.client.post('/assets/application-services/', payload, format='json')
+        self.assertEqual(single_member_response.json()['code'], 600)
+        self.assertIn('HA 集群至少需要两个成员实例', str(single_member_response.json()['data']))
+
+        payload['member_configs'].append({'deployment': second_deployment.id, 'port': None})  # type: ignore[attr-defined]
+        payload.pop('primary_deployment')
+        missing_primary_response = self.client.post('/assets/application-services/', payload, format='json')
+        self.assertEqual(missing_primary_response.json()['code'], 600)
+        self.assertIn('HA 集群必须选择 VIP 主节点', str(missing_primary_response.json()['data']))
+
+        payload['primary_deployment'] = deployment.id  # type: ignore[attr-defined]
+        response = self.client.post('/assets/application-services/', payload, format='json')
+
+        service = self.assertResponseOK(response)['data']
+        self.assertEqual(service['primary_deployment'], deployment.id)  # type: ignore[attr-defined]
+        primary_member = next(item for item in service['member_instances'] if item['is_primary'])
+        self.assertEqual(primary_member['deployment'], deployment.id)  # type: ignore[attr-defined]
+        deployment.refresh_from_db()
+        second_deployment.refresh_from_db()
+        self.assertIsNone(deployment.member_port)
+        self.assertIsNone(second_deployment.member_port)
+
+        baseline_response = self.client.post(
+            f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
+        )
+        baseline = self.assertResponseOK(baseline_response)['data']
+        self.assertEqual(baseline['health_status'], 'healthy')
+        member_result = next(item for item in baseline['results'] if item['key'] == 'members')
+        self.assertEqual(member_result['expected'], '至少 2 个成员')
+        primary_result = next(item for item in baseline['results'] if item['key'] == 'vip_primary')
+        self.assertEqual(primary_result['status'], 'pass')
+        self.assertEqual(primary_result['actual'], 'ha-node-1')
+
+    def test_standalone_service_rejects_a_second_deployment(self):
+        application = Application.objects.create(name='Standalone App', code='standalone-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Standalone Systemd', control_type='systemd',
+            run_user='app', service_name='standalone-app',
+        )
+        service = ApplicationService.objects.create(
+            business_system=BusinessSystem.objects.create(name='单机系统', code='standalone-system'),
+            application=application, name='Standalone Service', code='standalone-service',
+        )
+        first_host = Host.objects.create(instance_name='standalone-1', ip='10.0.0.42')
+        second_host = Host.objects.create(instance_name='standalone-2', ip='10.0.0.43')
+        ApplicationDeployment.objects.create(
+            application_service=service,
+            application_version=version,
+            deployment_template=template,
+            host=first_host,
+            instance_name='standalone-member-1',
+        )
+
+        second_res = self.client.post('/assets/application-deployments/', {
+            'application_service': service.id,  # type: ignore[attr-defined]
+            'application_version': version.id,  # type: ignore[attr-defined]
+            'deployment_template': template.id,  # type: ignore[attr-defined]
+            'host': second_host.id,  # type: ignore[attr-defined]
+            'instance_name': 'standalone-member-2',
+        }, format='json')
+
+        self.assertEqual(second_res.json()['code'], 600)
+        self.assertIn('单机服务只能登记一个部署实例', str(second_res.json()['data']))
 
     def test_application_saves_generic_baseline_checks(self):
         """应用定义可保存标准 Schema 基线，并可通过空列表清空。"""
@@ -368,6 +559,28 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(check.document_type, 'text')
         self.assertEqual(check.schema_type, 'regexp')
 
+    def test_application_accepts_shell_baseline_without_file_path(self):
+        res = self.client.post('/assets/applications/', {
+            'name': 'shell_app',
+            'code': 'shell-app',
+            'baseline_checks': [{
+                'name': '服务进程检查',
+                'document_type': 'shell',
+                'schema_type': 'shell',
+                'schema_version': 'posix-sh',
+                'schema_content': 'pgrep -f nginx >/dev/null',
+                'requires_running': True,
+            }],
+        }, format='json')
+
+        body = self.assertResponseOK(res)
+        check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
+        self.assertEqual(check.file_path, '')
+        self.assertEqual(check.schema_type, 'shell')
+        self.assertEqual(check.script_executor, '${RUN_USER}')
+        self.assertEqual(check.work_directory, '${APP_HOME}')
+        self.assertTrue(check.requires_running)
+
     def test_application_rejects_invalid_regexp_rule(self):
         for rule in (
             {'pattern': 'debug=true', 'expect': 'sometimes'},
@@ -435,6 +648,21 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(res.json()['code'], 600)
         self.assertIn('control_actions', res.json()['data'])
 
+    def test_external_ha_template_requires_status_command(self):
+        application = Application.objects.create(name='HA Tomcat', code='ha-tomcat')
+
+        res = self.client.post('/assets/application-deployment-templates/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'name': 'HA Tomcat 模板',
+            'control_type': 'external_ha',
+            'run_user': 'tomcat',
+            'ha_resource_name': 'tomcat-resource',
+            'control_actions': [],
+        }, format='json')
+
+        self.assertEqual(res.json()['code'], 600)
+        self.assertIn('状态检查命令', str(res.json()['data']))
+
     def test_application_variables_are_resolved_in_runtime_parameters(self):
         """模板保存变量表达式，生成 Agent 参数时解析 APP_HOME 和 RUN_USER。"""
         application = Application.objects.create(name='Tomcat', code='tomcat-vars')
@@ -456,7 +684,7 @@ class ApplicationTest(BaseTestCase):
         deployment_template.logs.create(  # type: ignore[attr-defined]
             name='catalina.out', path_pattern='${APP_HOME}/log/catalina.out',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version,
             deployment_template=deployment_template,
             host=host,
@@ -526,7 +754,7 @@ class ApplicationTest(BaseTestCase):
             schema_version='iso',
             schema_content='<schema xmlns="http://purl.oclc.org/dsdl/schematron"><pattern><rule context="/"><assert test="//user[@username=\'admin\']">Manager 用户必须存在</assert></rule></pattern></schema>',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version,
             deployment_template=deployment_template,
             host=host,
@@ -543,11 +771,63 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(plan['checks'][0]['path'], '/home/tomcat/tomcat/conf/tomcat-users.xml')
         self.assertEqual(plan['checks'][0]['schema']['type'], 'schematron')
 
+    def test_shell_baseline_is_compiled_into_agent_plan(self):
+        application = Application.objects.create(name='Shell App', code='shell-plan')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        host = Host.objects.create(instance_name='shell-agent-host', ip='10.0.0.89')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='Shell 基线模板',
+            control_type='command',
+            run_user='app',
+            app_home='/opt/app',
+        )
+        ApplicationBaselineCheck.objects.create(
+            application=application,
+            name='进程检查',
+            document_type='shell',
+            schema_type='shell',
+            schema_version='posix-sh',
+            schema_content='test -f ${APP_HOME}/run/app.pid',
+            expected_output='Apache Tomcat/${APPLICATION_VERSION}',
+            requires_running=True,
+        )
+        deployment = self._create_deployment(
+            application_version=version,
+            deployment_template=deployment_template,
+            host=host,
+            instance_name='shell-main',
+        )
+
+        plan = _build_application_baseline_params(deployment)['check_plan']
+
+        self.assertEqual(plan['required_capabilities'], ['shell:v1'])
+        self.assertEqual(plan['checks'][0]['executor'], 'shell')
+        self.assertEqual(plan['checks'][0]['command'], 'test -f ${APP_HOME}/run/app.pid')
+        self.assertEqual(plan['checks'][0]['run_user'], 'app')
+        self.assertEqual(plan['checks'][0]['work_directory'], '/opt/app')
+        self.assertEqual(plan['checks'][0]['expected'], 'Apache Tomcat/1.0')
+        self.assertTrue(plan['checks'][0]['requires_running'])
+        self.assertEqual(plan['checks'][0]['environment'], {
+            'APP_HOME': '/opt/app',
+            'RUN_USER': 'app',
+            'WORK_DIRECTORY': '/opt/app',
+            'APPLICATION_NAME': 'Shell App',
+            'APPLICATION_CODE': 'shell-plan',
+            'APPLICATION_VERSION': '1.0',
+            'INSTANCE_NAME': 'shell-main',
+        })
+
     def test_create_compose_template_and_deployment(self):
         """Compose 配置归属模板，部署实例只引用版本、模板和主机"""
         application = Application.objects.create(name='Order API', code='order-api', category='business')
         version = ApplicationVersion.objects.create(application=application, version='2026.08')
         host = Host.objects.create(instance_name='app-host-2', ip='10.0.0.11')
+        service = ApplicationService.objects.create(
+            application=application,
+            name='Order API 生产服务',
+            code='order-api-production',
+        )
 
         template_res = self.client.post('/assets/application-deployment-templates/', {
             'application': application.id,  # type: ignore[attr-defined]
@@ -566,6 +846,7 @@ class ApplicationTest(BaseTestCase):
         template_body = self.assertResponseOK(template_res)
 
         res = self.client.post('/assets/application-deployments/', {
+            'application_service': service.id,  # type: ignore[attr-defined]
             'application_version': version.id,  # type: ignore[attr-defined]
             'deployment_template': template_body['data']['id'],
             'host': host.id,  # type: ignore[attr-defined]
@@ -588,7 +869,7 @@ class ApplicationTest(BaseTestCase):
             application=application, name='Nginx Systemd', control_type='systemd',
             run_user='nginx', service_name='nginx.service', systemd_scope='user',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version,
             deployment_template=deployment_template,
             host=host,
@@ -619,7 +900,7 @@ class ApplicationTest(BaseTestCase):
             application=application, name='Tomcat Systemd', control_type='systemd',
             run_user='esb', service_name='tomcat', systemd_scope='user',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version, deployment_template=deployment_template,
             host=host, instance_name='tomcat-main',
         )
@@ -627,6 +908,7 @@ class ApplicationTest(BaseTestCase):
         def complete_job(job):
             job.status = AgentJob.JobStatus.SUCCESS
             job.stdout = 'active'
+            job.exit_code = 0
             job.result_data = {'control_action': 'status'}
             return job
 
@@ -643,6 +925,11 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(job.params['control_action'], 'status')
         self.assertEqual(job.params['service_name'], 'tomcat')
         self.assertEqual(body['data']['output'], 'active')
+        self.assertEqual(body['data']['runtime_status'], 'running')
+        deployment.refresh_from_db()
+        self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.RUNNING)
+        self.assertEqual(deployment.runtime_status_output, 'active')
+        self.assertIsNotNone(deployment.last_status_check_time)
 
     def test_control_deployment_rejects_unknown_action(self):
         application = Application.objects.create(name='Unsafe Control', code='unsafe-control')
@@ -652,7 +939,7 @@ class ApplicationTest(BaseTestCase):
             application=application, name='Unsafe Systemd', control_type='systemd',
             run_user='app', service_name='unsafe',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version, deployment_template=deployment_template,
             host=host, instance_name='unsafe-main',
         )
@@ -665,18 +952,177 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(res.json()['code'], 400)
         self.assertFalse(AgentJob.objects.filter(action='control_application').exists())
 
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_start_invalidates_previous_runtime_status(self, dispatch_job):
+        application = Application.objects.create(name='Start App', code='start-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        host = Host.objects.create(instance_name='start-host', agent_id='start-agent', ip='10.0.0.24')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Start Systemd', control_type='systemd',
+            run_user='app', service_name='start-app',
+        )
+        deployment = self._create_deployment(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='start-main',
+            runtime_status=ApplicationDeployment.RuntimeStatus.STOPPED,
+            runtime_status_output='inactive', last_status_check_time=timezone.now(),
+        )
+
+        def complete_job(job):
+            job.status = AgentJob.JobStatus.SUCCESS
+            job.exit_code = 0
+            return job
+
+        dispatch_job.side_effect = complete_job
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/control/',  # type: ignore[attr-defined]
+            {'action': 'start'}, format='json',
+        )
+
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['runtime_status'], 'unknown')
+        deployment.refresh_from_db()
+        self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.UNKNOWN)
+        self.assertEqual(deployment.runtime_status_output, '')
+        self.assertIsNone(deployment.last_status_check_time)
+
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_status_nonzero_exit_code_persists_stopped(self, dispatch_job):
+        application = Application.objects.create(name='Stopped App', code='stopped-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        host = Host.objects.create(instance_name='stopped-host', agent_id='stopped-agent', ip='10.0.0.23')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Stopped HA', control_type='external_ha',
+            run_user='app', ha_resource_name='stopped-resource',
+        )
+        deployment_template.control_actions.create(  # type: ignore[attr-defined]
+            action='status', command='pgrep -f app', timeout_seconds=30, success_exit_codes=[0],
+        )
+        deployment = self._create_deployment(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='stopped-main',
+        )
+
+        def complete_job(job):
+            job.status = AgentJob.JobStatus.SUCCESS
+            job.stdout = ''
+            job.exit_code = 1
+            job.result_data = {'control_action': 'status', 'exit_code': 1}
+            return job
+
+        dispatch_job.side_effect = complete_job
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/control/',  # type: ignore[attr-defined]
+            {'action': 'status'}, format='json',
+        )
+
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['runtime_status'], 'stopped')
+        deployment.refresh_from_db()
+        self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.STOPPED)
+
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_debug_baseline_uses_inline_content_and_deployment_context(self, dispatch_job):
+        application = Application.objects.create(name='Debug App', code='debug-app')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        host = Host.objects.create(instance_name='debug-host', agent_id='debug-agent', ip='10.0.0.20')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Debug Systemd', control_type='systemd',
+            run_user='tomcat', app_home='/opt/tomcat', service_name='tomcat',
+        )
+        deployment = self._create_deployment(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='tomcat-debug',
+        )
+        inline_content = '{"path":"C:\\\\apps\\\\${APPLICATION_VERSION}"}'
+
+        def complete_job(job):
+            debug_check = job.params['check_plan']['checks'][0]
+            job.status = AgentJob.JobStatus.SUCCESS
+            job.result_data = {
+                'passed': True,
+                'checks': [{
+                    'key': debug_check['key'], 'type': debug_check['type'],
+                    'name': debug_check['name'], 'status': 'pass',
+                    'actual': {'path': 'inline', 'violations': []},
+                }],
+            }
+            return job
+
+        dispatch_job.side_effect = complete_job
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/debug-baseline/',  # type: ignore[attr-defined]
+            {
+                'check': {
+                    'name': 'JSON 草稿', 'document_type': 'json',
+                    'schema_type': 'json_schema', 'schema_version': '2020-12',
+                    'schema_content': '{"type":"object"}', 'file_path': '',
+                },
+                'content': inline_content,
+            },
+            format='json',
+        )
+
+        body = self.assertResponseOK(res)
+        job = AgentJob.objects.get(job_id=body['data']['job_id'])
+        debug_check = job.params['check_plan']['checks'][0]
+        self.assertEqual(debug_check['content'], inline_content)
+        self.assertNotIn('path', debug_check)
+        self.assertEqual(job.params['check_plan']['required_capabilities'], ['schema_validate:inline:v1'])
+        self.assertEqual(job.params['ports'], [])
+        self.assertEqual(body['data']['context']['APPLICATION_VERSION'], '9.0.35')
+        self.assertEqual(body['data']['context']['APP_HOME'], '/opt/tomcat')
+        self.assertEqual(body['data']['result']['status'], 'pass')
+        self.assertFalse(ApplicationBaselineExecution.objects.filter(deployment=deployment).exists())
+
+    def test_shell_debug_uses_agent_environment_and_rejects_file_content(self):
+        application = Application.objects.create(name='Shell Debug', code='shell-debug')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        host = Host.objects.create(instance_name='shell-debug-host', agent_id='shell-debug-agent', ip='10.0.0.22')
+        deployment_template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='Shell Debug Template', control_type='systemd',
+            run_user='tomcat', app_home='/opt/tomcat', service_name='tomcat',
+        )
+        deployment = self._create_deployment(
+            application_version=version, deployment_template=deployment_template,
+            host=host, instance_name='tomcat-shell-debug',
+        )
+        draft = {
+            'name': 'Tomcat 版本', 'document_type': 'shell', 'schema_type': 'shell',
+            'schema_version': 'posix-sh', 'schema_content': 'printf "%s" "$APPLICATION_VERSION"',
+            'script_executor': '${RUN_USER}', 'work_directory': '${APP_HOME}',
+            'expected_output': 'Apache Tomcat/${APPLICATION_VERSION}', 'requires_running': True,
+        }
+
+        params = _build_application_baseline_debug_params(deployment, draft)
+        debug_check = params['check_plan']['checks'][0]
+        self.assertEqual(debug_check['command'], 'printf "%s" "$APPLICATION_VERSION"')
+        self.assertEqual(debug_check['environment']['APPLICATION_VERSION'], '9.0.35')
+        self.assertEqual(debug_check['run_user'], 'tomcat')
+        self.assertEqual(debug_check['work_directory'], '/opt/tomcat')
+        self.assertEqual(debug_check['expected'], 'Apache Tomcat/9.0.35')
+        self.assertEqual(params['check_plan']['required_capabilities'], ['shell:v1'])
+
+        res = self.client.post(
+            f'/assets/application-deployments/{deployment.id}/debug-baseline/',  # type: ignore[attr-defined]
+            {'check': draft, 'content': 'not allowed'},
+            format='json',
+        )
+        self.assertEqual(res.json()['code'], 400)
+        self.assertFalse(AgentJob.objects.filter(action='check_application_baseline').exists())
+
     @patch('assets.views.close_old_connections')
     @patch('assets.views._dispatch_agent_job_via_grpc')
     def test_baseline_result_updates_deployment_health(self, dispatch_job, _close_connections):
         """Agent 返回的逐项结果会生成检查历史并更新部署健康状态。"""
-        application = Application.objects.create(name='Redis', code='redis')
+        application = Application.objects.create(name='Redis Baseline Test', code='redis-baseline-test')
         version = ApplicationVersion.objects.create(application=application, version='7.4')
         host = Host.objects.create(instance_name='agent-app-2', ip='10.0.0.13')
         deployment_template = ApplicationDeploymentTemplate.objects.create(
             application=application, name='Redis Systemd', control_type='systemd',
             run_user='redis', service_name='redis.service',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version,
             deployment_template=deployment_template,
             host=host,
@@ -715,14 +1161,14 @@ class ApplicationTest(BaseTestCase):
     @patch('assets.views._dispatch_agent_job_via_grpc')
     def test_baseline_agent_failure_marks_execution_error(self, dispatch_job, _close_connections):
         """Agent 调度失败时保留错误信息，并将部署健康状态标记为检查失败。"""
-        application = Application.objects.create(name='MySQL', code='mysql')
+        application = Application.objects.create(name='MySQL Baseline Test', code='mysql-baseline-test')
         version = ApplicationVersion.objects.create(application=application, version='8.4')
         host = Host.objects.create(instance_name='agent-app-3', ip='10.0.0.14')
         deployment_template = ApplicationDeploymentTemplate.objects.create(
             application=application, name='MySQL Systemd', control_type='systemd',
             run_user='mysql', service_name='mysqld.service',
         )
-        deployment = ApplicationDeployment.objects.create(
+        deployment = self._create_deployment(
             application_version=version,
             deployment_template=deployment_template,
             host=host,

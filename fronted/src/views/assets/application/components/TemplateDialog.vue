@@ -60,11 +60,25 @@
                 message="用户服务会切换到运行用户，并设置该用户的 XDG_RUNTIME_DIR 后执行 systemctl --user；跨用户执行要求 dj-agent 以 root 运行。"
               />
             </template>
-            <a-row v-else-if="form.control_type === 'external_ha'" :gutter="16">
-              <a-col :span="8"><a-form-item label="HA 系统"><a-input v-model:value="form.ha_system_name" /></a-form-item></a-col>
-              <a-col :span="8"><a-form-item label="集群名称"><a-input v-model:value="form.ha_cluster_name" /></a-form-item></a-col>
-              <a-col :span="8"><a-form-item label="资源名称"><a-input v-model:value="form.ha_resource_name" /></a-form-item></a-col>
-            </a-row>
+            <template v-else-if="form.control_type === 'external_ha'">
+              <a-row :gutter="16">
+                <a-col :span="8"><a-form-item label="HA 系统"><a-input v-model:value="form.ha_system_name" /></a-form-item></a-col>
+                <a-col :span="8"><a-form-item label="集群名称"><a-input v-model:value="form.ha_cluster_name" /></a-form-item></a-col>
+                <a-col :span="8"><a-form-item label="资源名称"><a-input v-model:value="form.ha_resource_name" /></a-form-item></a-col>
+              </a-row>
+              <a-alert
+                type="info"
+                show-icon
+                message="状态命令由目标主机上的运行用户执行；退出码 0 表示运行中，非 0 表示已停止。"
+              />
+              <a-form-item label="状态检查 Shell（必填）" class="ha-status-command">
+                <a-textarea
+                  v-model:value="commandValues.status"
+                  :rows="4"
+                  placeholder="例如 pgrep -f '[o]rg.apache.catalina.startup.Bootstrap' >/dev/null"
+                />
+              </a-form-item>
+            </template>
             <a-row v-else-if="form.control_type === 'docker'" :gutter="16">
               <a-col :span="12"><a-form-item label="容器名称" required><a-input v-model:value="form.docker_config.container_name" /></a-form-item></a-col>
               <a-col :span="12"><a-form-item label="Docker Host"><a-input v-model:value="form.docker_config.docker_host" /></a-form-item></a-col>
@@ -237,7 +251,10 @@ function validateControlConfig() {
     const config = form.compose_config || {}
     if (![config.project_name, config.service_name, config.compose_file_path, config.working_directory].every((value) => String(value || '').trim())) return '请完整填写 Docker Compose 配置'
   }
-  if (form.control_type === 'external_ha' && !String(form.ha_resource_name || '').trim()) return '请输入 HA 资源名称'
+  if (form.control_type === 'external_ha') {
+    if (!String(form.ha_resource_name || '').trim()) return '请输入 HA 资源名称'
+    if (!String(commandValues.status || '').trim()) return '请填写 HA 状态检查 Shell'
+  }
   if (form.control_type === 'command' && !['start', 'stop', 'status'].every((action) => String(commandValues[action] || '').trim())) return '请填写启动、停止和状态命令'
   return ''
 }
@@ -251,7 +268,9 @@ async function saveTemplate() {
   const payload = { ...form, id: props.templateId || undefined }
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
-    : []
+    : form.control_type === 'external_ha'
+      ? [{ action: 'status', command: commandValues.status, timeout_seconds: 30, success_exit_codes: [0] }]
+      : []
   payload.docker_config = form.control_type === 'docker' ? form.docker_config : null
   payload.compose_config = form.control_type === 'docker_compose' ? form.compose_config : null
   saving.value = true
@@ -283,6 +302,9 @@ watch(() => props.open, (visible) => {
 </script>
 
 <style scoped>
+.ha-status-command {
+  margin-top: 16px;
+}
 .command-grid,
 .repeat-row { margin-top: 16px; }
 .repeat-row { display: grid; gap: 8px; align-items: center; margin-bottom: 8px; }

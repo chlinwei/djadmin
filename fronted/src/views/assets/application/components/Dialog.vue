@@ -100,25 +100,127 @@
                     <a-form-item label="启用检查">
                         <a-switch v-model:checked="activeBaselineCheck.enabled" />
                     </a-form-item>
-                    <a-form-item label="文件路径" required>
+                    <a-form-item label="仅应用运行时检查">
+                        <a-switch v-model:checked="activeBaselineCheck.requires_running" />
+                    </a-form-item>
+                    <a-form-item v-if="activeBaselineCheck.schema_type !== 'shell'" label="文件路径" required>
                         <a-input v-model:value="activeBaselineCheck.file_path" placeholder="例如 ${APP_HOME}/conf/application.xml" />
                     </a-form-item>
-                    <a-form-item label="规则版本" required>
+                    <template v-else>
+                        <a-form-item label="脚本执行者" required>
+                            <a-input v-model:value="activeBaselineCheck.script_executor" placeholder="${RUN_USER}" />
+                        </a-form-item>
+                        <a-form-item label="运行目录" required>
+                            <a-input v-model:value="activeBaselineCheck.work_directory" placeholder="${APP_HOME}" />
+                        </a-form-item>
+                        <a-form-item label="期望输出">
+                            <a-input v-model:value="activeBaselineCheck.expected_output" placeholder="例如 Apache Tomcat/${APPLICATION_VERSION}" />
+                        </a-form-item>
+                    </template>
+                    <a-form-item :label="activeBaselineCheck.schema_type === 'shell' ? '命令解释器' : '规则版本'" required>
                         <a-input v-model:value="activeBaselineCheck.schema_version" disabled />
                     </a-form-item>
-                    <a-form-item label="校验规则" required>
-                        <a-textarea v-model:value="activeBaselineCheck.schema_content" class="schema-editor" :auto-size="{ minRows: 12, maxRows: 18 }" />
+                    <a-form-item :label="activeBaselineCheck.schema_type === 'shell' ? 'Shell 命令' : '校验规则'" required>
+                        <a-textarea
+                            v-model:value="activeBaselineCheck.schema_content"
+                            class="schema-editor"
+                            :placeholder="activeBaselineCheck.schema_type === 'shell' ? '例如 systemctl is-active nginx >/dev/null' : ''"
+                            :auto-size="{ minRows: 12, maxRows: 18 }"
+                        />
+                    </a-form-item>
+                    <a-form-item label="运行调试">
+                        <a-button @click="openBaselineDebug">
+                            <template #icon><BugOutlined /></template>
+                            调试当前检查项
+                        </a-button>
                     </a-form-item>
                     </div>
                 </div>
             </a-form>
             </a-spin>
         </a-modal>
+
+        <a-modal
+            v-model:open="debugOpen"
+            title="调试检查项"
+            width="820px"
+            okText="运行调试"
+            cancelText="取消"
+            :confirmLoading="debugLoading"
+            @ok="runBaselineDebug"
+            @cancel="resetBaselineDebug"
+        >
+            <a-alert
+                v-if="debugCheck?.schema_type === 'shell'"
+                message="Shell 命令将在所选部署实例上以配置的运行用户执行"
+                type="warning"
+                show-icon
+                class="debug-alert"
+            />
+            <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 18 }">
+                <a-form-item label="部署实例" required>
+                    <a-select
+                        v-model:value="debugDeploymentId"
+                        show-search
+                        placeholder="选择用于提供版本和运行环境的部署实例"
+                        :options="debugDeploymentOptions"
+                        :loading="debugDeploymentsLoading"
+                        :filter-option="filterDebugDeployment"
+                        :getPopupContainer="getPopupContainer"
+                    />
+                </a-form-item>
+                <a-form-item v-if="debugCheck?.schema_type !== 'shell'" label="文档来源">
+                    <a-segmented v-model:value="debugSource" :options="debugSourceOptions" />
+                </a-form-item>
+                <template v-if="debugCheck?.schema_type !== 'shell' && debugSource === 'inline'">
+                    <a-form-item label="上传文件">
+                        <a-upload :showUploadList="false" :beforeUpload="loadDebugFile" :accept="debugFileAccept">
+                            <a-button>
+                                <template #icon><UploadOutlined /></template>
+                                选择文件
+                            </a-button>
+                        </a-upload>
+                        <span v-if="debugFileName" class="debug-file-name">{{ debugFileName }}</span>
+                    </a-form-item>
+                    <a-form-item label="文件内容" required>
+                        <a-textarea
+                            v-model:value="debugContent"
+                            class="debug-content-editor"
+                            placeholder="粘贴内容或上传文件"
+                            :auto-size="{ minRows: 10, maxRows: 16 }"
+                        />
+                    </a-form-item>
+                </template>
+                <a-form-item v-else-if="debugCheck?.schema_type !== 'shell'" label="实例文件">
+                    <a-input :value="debugCheck?.file_path" disabled />
+                </a-form-item>
+                <a-form-item v-else label="Shell 命令">
+                    <a-textarea :value="debugCheck?.schema_content" :auto-size="{ minRows: 6, maxRows: 12 }" readonly />
+                </a-form-item>
+            </a-form>
+
+            <div v-if="debugResponse" class="debug-result">
+                <a-divider>调试结果</a-divider>
+                <a-descriptions bordered size="small" :column="2">
+                    <a-descriptions-item label="状态">
+                        <a-tag :color="debugStatusColor">{{ debugStatusText }}</a-tag>
+                    </a-descriptions-item>
+                    <a-descriptions-item label="部署实例">{{ debugResponse.context?.INSTANCE_NAME }}</a-descriptions-item>
+                    <a-descriptions-item label="应用版本">{{ debugResponse.context?.APPLICATION_VERSION }}</a-descriptions-item>
+                    <a-descriptions-item label="运行用户">{{ debugResponse.context?.RUN_USER }}</a-descriptions-item>
+                    <a-descriptions-item label="应用目录" :span="2">{{ debugResponse.context?.APP_HOME }}</a-descriptions-item>
+                    <a-descriptions-item v-if="debugResponse.result?.message" label="说明" :span="2">
+                        {{ debugResponse.result.message }}
+                    </a-descriptions-item>
+                </a-descriptions>
+                <pre v-if="debugResponse.result?.actual !== undefined" class="debug-output">{{ formatDebugValue(debugResponse.result.actual) }}</pre>
+            </div>
+        </a-modal>
     </div>
 </template>
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { DeleteOutlined, PlusCircleOutlined } from '@ant-design/icons-vue'
+import { BugOutlined, DeleteOutlined, PlusCircleOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 
@@ -138,6 +240,7 @@ const fileTypeOptions = [
     { label: 'TOML', value: 'toml' },
     { label: 'Properties', value: 'properties' },
     { label: '普通文本', value: 'text' },
+    { label: 'Shell 命令', value: 'shell' },
 ]
 const fileTypeLabels = Object.fromEntries(fileTypeOptions.map(({ value, label }) => [value, label]))
 const schemaDefinitions = {
@@ -178,6 +281,12 @@ const schemaDefinitions = {
             expect: 'present',
         }, null, 2),
     },
+    shell: {
+        label: 'Shell',
+        version: 'posix-sh',
+        description: '以脚本执行者的登录 Bash 运行命令并加载用户环境；退出码为 0 时通过，非 0 时失败。',
+        content: 'systemctl is-active nginx >/dev/null',
+    },
 }
 const schemaTypesByDocument = {
     xml: ['schematron'],
@@ -187,6 +296,7 @@ const schemaTypesByDocument = {
     toml: ['json_schema'],
     properties: ['json_schema'],
     text: ['regexp'],
+    shell: ['shell'],
 }
 const schemaTypeLabels = Object.fromEntries(Object.entries(schemaDefinitions).map(([key, value]) => [key, value.label]))
 let nextBaselineCheckId = 1
@@ -198,6 +308,10 @@ const createBaselineCheck = (source = {}) => ({
     schema_type: 'schematron',
     schema_version: 'iso',
     schema_content: '',
+    script_executor: '${RUN_USER}',
+    work_directory: '${APP_HOME}',
+    expected_output: '',
+    requires_running: false,
     enabled: true,
     ...source,
     schema_description: schemaDefinitions[source.schema_type || 'schematron']?.description || '',
@@ -279,6 +393,29 @@ const activeSchemaTypeOptions = computed(() => (
         label: schemaDefinitions[value].label,
     }))
 ))
+const debugOpen = ref(false)
+const debugLoading = ref(false)
+const debugDeploymentsLoading = ref(false)
+const debugDeploymentId = ref(null)
+const debugDeploymentOptions = ref([])
+const debugSource = ref('inline')
+const debugContent = ref('')
+const debugFileName = ref('')
+const debugResponse = ref(null)
+const debugCheck = ref(null)
+const debugSourceOptions = [
+    { label: '粘贴 / 上传', value: 'inline' },
+    { label: '实例文件', value: 'remote' },
+]
+const debugFileAccept = computed(() => {
+    const extensions = {
+        xml: '.xml', json: '.json', yaml: '.yaml,.yml', ini: '.ini',
+        toml: '.toml', properties: '.properties', text: '.txt,.conf,.log',
+    }
+    return extensions[debugCheck.value?.document_type] || ''
+})
+const debugStatusColor = computed(() => ({ pass: 'green', fail: 'red', error: 'orange', skipped: 'default' }[debugResponse.value?.result?.status] || 'default'))
+const debugStatusText = computed(() => ({ pass: '通过', fail: '失败', error: '错误', skipped: '跳过' }[debugResponse.value?.result?.status] || '未知'))
 let detailLoadToken = 0
 
 const addBaselineCheck = () => {
@@ -286,6 +423,11 @@ const addBaselineCheck = () => {
     const schemaType = schemaTypesByDocument[documentType][0]
     const definition = schemaDefinitions[schemaType]
     const check = createBaselineCheck({
+        file_path: documentType === 'shell' ? '' : '${APP_HOME}/conf/',
+        script_executor: '${RUN_USER}',
+        work_directory: '${APP_HOME}',
+        expected_output: '',
+        requires_running: false,
         document_type: documentType,
         schema_type: schemaType,
         schema_version: definition.version,
@@ -332,9 +474,128 @@ const removeBaselineCheck = (localId) => {
     })
 }
 
+const filterDebugDeployment = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
+
+const resetBaselineDebug = () => {
+    debugOpen.value = false
+    debugLoading.value = false
+    debugDeploymentId.value = null
+    debugDeploymentOptions.value = []
+    debugSource.value = 'inline'
+    debugContent.value = ''
+    debugFileName.value = ''
+    debugResponse.value = null
+    debugCheck.value = null
+}
+
+const openBaselineDebug = async () => {
+    if (!activeBaselineCheck.value) return
+    if (form.value.id === -1) {
+        message.warning('请先保存应用，再选择部署实例进行调试')
+        return
+    }
+    debugCheck.value = { ...activeBaselineCheck.value }
+    debugSource.value = debugCheck.value.schema_type === 'shell' ? 'remote' : 'inline'
+    debugContent.value = ''
+    debugFileName.value = ''
+    debugResponse.value = null
+    debugDeploymentId.value = null
+    debugOpen.value = true
+    debugDeploymentsLoading.value = true
+    try {
+        const deployments = []
+        let page = 1
+        let totalPages = 1
+        do {
+            const response = await getApplicationDeploymentList({
+                application_version__application: form.value.id,
+                page_size: 30,
+                page,
+            })
+            const responseData = response.data?.data || {}
+            deployments.push(...(responseData.results || []))
+            totalPages = Number(responseData.totalPages || 1)
+            page += 1
+        } while (page <= totalPages)
+        debugDeploymentOptions.value = deployments.map((deployment) => ({
+            value: deployment.id,
+            label: `${deployment.instance_name} · ${deployment.version} · ${deployment.host_name || deployment.host_ip}`,
+        }))
+        if (debugDeploymentOptions.value.length === 1) {
+            debugDeploymentId.value = debugDeploymentOptions.value[0].value
+        }
+    } finally {
+        debugDeploymentsLoading.value = false
+    }
+}
+
+const loadDebugFile = async (file) => {
+    if (file.size > 1024 * 1024) {
+        message.error('调试文件不能超过 1 MiB')
+        return false
+    }
+    try {
+        const bytes = await file.arrayBuffer()
+        debugContent.value = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+        debugFileName.value = file.name
+    } catch (error) {
+        message.error(`读取文件失败，请确认文件为 UTF-8 编码：${error.message}`)
+    }
+    return false
+}
+
+const buildDebugCheck = () => {
+    const check = debugCheck.value || {}
+    return {
+        name: String(check.name || '').trim(),
+        file_path: String(check.file_path || '').trim(),
+        document_type: check.document_type,
+        schema_type: check.schema_type,
+        schema_version: check.schema_version,
+        schema_content: check.schema_content,
+        script_executor: check.script_executor,
+        work_directory: check.work_directory,
+        expected_output: check.expected_output,
+        requires_running: check.requires_running,
+        enabled: true,
+    }
+}
+
+const runBaselineDebug = async () => {
+    if (!debugDeploymentId.value) {
+        message.error('请选择部署实例')
+        return
+    }
+    const isInline = debugCheck.value?.schema_type !== 'shell' && debugSource.value === 'inline'
+    if (isInline && !debugContent.value) {
+        message.error('请粘贴内容或上传文件')
+        return
+    }
+    debugLoading.value = true
+    debugResponse.value = null
+    try {
+        const payload = { check: buildDebugCheck() }
+        if (isInline) payload.content = debugContent.value
+        const response = await debugApplicationDeploymentBaseline(debugDeploymentId.value, payload)
+        debugResponse.value = response.data?.data || null
+        if (!debugResponse.value?.result) {
+            message.error('Agent 未返回检查项调试结果')
+        }
+    } finally {
+        debugLoading.value = false
+    }
+}
+
+const formatDebugValue = (value) => typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+
 
 const emits = defineEmits(['update:open', 'initList'])
-import { SaveOrCreateApplication,getApplicationById } from '@/api/assets/application/index.js';
+import {
+    SaveOrCreateApplication,
+    debugApplicationDeploymentBaseline,
+    getApplicationById,
+    getApplicationDeploymentList,
+} from '@/api/assets/application/index.js';
 const getItemById  = (id) =>{
     return getApplicationById(id)
 }
@@ -349,11 +610,17 @@ const handleOk = (e) => {
                 if (!check.document_type || !check.schema_type) {
                     throw new Error(`请选择检查项 ${index + 1} 的文档类型和校验类型`)
                 }
-                if (!String(check.name || '').trim() || !String(check.file_path || '').trim()) {
-                    throw new Error(`请完整填写检查项 ${index + 1} 的名称和文件路径`)
+                if (!String(check.name || '').trim()) {
+                    throw new Error(`请填写检查项 ${index + 1} 的名称`)
+                }
+                if (check.schema_type !== 'shell' && !String(check.file_path || '').trim()) {
+                    throw new Error(`请填写检查项 ${index + 1} 的文件路径`)
+                }
+                if (check.schema_type === 'shell' && (!String(check.script_executor || '').trim() || !String(check.work_directory || '').trim())) {
+                    throw new Error(`请填写检查项 ${index + 1} 的脚本执行者和运行目录`)
                 }
                 if (!String(check.schema_content || '').trim()) {
-                    throw new Error(`检查项 ${index + 1} 的校验规则不能为空`)
+                    throw new Error(`检查项 ${index + 1} 的${check.schema_type === 'shell' ? 'Shell 命令' : '校验规则'}不能为空`)
                 }
                 return {
                     name: String(check.name).trim(),
@@ -362,6 +629,10 @@ const handleOk = (e) => {
                     schema_type: check.schema_type,
                     schema_version: check.schema_version,
                     schema_content: check.schema_content,
+                    script_executor: check.script_executor,
+                    work_directory: check.work_directory,
+                    expected_output: check.expected_output,
+                    requires_running: check.requires_running,
                     enabled: check.enabled,
                     order: (index + 1) * 10,
                 }
@@ -433,6 +704,7 @@ const handleCancel = () => {
 }
 
 const handleAfterClose = () => {
+    resetBaselineDebug()
     form.value = createInitialForm()
     selectedBaselineType.value = 'xml'
     activeBaselineCheckId.value = null
@@ -446,6 +718,37 @@ const handleAfterClose = () => {
     justify-content: flex-end;
     gap: 12px;
     margin-bottom: 16px;
+}
+
+.debug-alert {
+    margin-bottom: 20px;
+}
+
+.debug-file-name {
+    margin-left: 12px;
+    color: #595959;
+}
+
+.debug-content-editor,
+.debug-output {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+}
+
+.debug-result {
+    margin-top: 12px;
+}
+
+.debug-output {
+    max-height: 260px;
+    margin: 16px 0 0;
+    padding: 12px;
+    overflow: auto;
+    color: #262626;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: #f5f5f5;
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
 }
 
 .baseline-count {

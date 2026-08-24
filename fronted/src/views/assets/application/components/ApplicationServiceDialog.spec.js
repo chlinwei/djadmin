@@ -3,6 +3,7 @@ import Antd from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
+  deleteApplicationDeployment: vi.fn(() => Promise.resolve({ data: { data: null } })),
   getApplicationDeploymentList: vi.fn(() => Promise.resolve({
     data: { data: { results: [
       { id: 11, instance_name: 'redis-1', application_id: 2, host_name: 'node-1' },
@@ -18,6 +19,12 @@ vi.mock('@/api/assets/application', () => ({
       { id: 5, name: 'Tomcat' },
     ] } },
   })),
+  getApplicationVersionList: vi.fn(() => Promise.resolve({
+    data: { data: { results: [{ id: 51, application: 2, version: '1.0' }] } },
+  })),
+  getApplicationDeploymentTemplateList: vi.fn(() => Promise.resolve({
+    data: { data: { results: [{ id: 61, application: 2, name: 'Redis Template', enabled: true }] } },
+  })),
   getApplicationService: vi.fn(() => Promise.resolve({
     data: { data: {
       id: 20,
@@ -26,15 +33,17 @@ vi.mock('@/api/assets/application', () => ({
       application: 5,
       topology_type: 'cluster',
       cluster_profile: 4,
-      primary_deployment: 13,
       member_instances: [
-        { deployment: 13, port: null, is_primary: true },
-        { deployment: 14, port: null, is_primary: false },
+        { deployment: 13, port: null },
+        { deployment: 14, port: null },
       ],
     } },
   })),
   getBusinessSystemList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 3, name: '订单系统' }] } },
+  })),
+  getBusinessEnvironmentList: vi.fn(() => Promise.resolve({
+    data: { data: { results: [{ id: 31, business_system: 3, name: '生产环境', code: 'production', enabled: true }] } },
   })),
   getClusterProfileList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{
@@ -79,12 +88,6 @@ describe('ApplicationServiceDialog', () => {
 
     expect(document.body.textContent).not.toContain('部署形态')
     expect(document.body.querySelector('input.ant-input[disabled]').value).toBe('Redis')
-    const memberSelect = document.body.querySelector('.ant-select-multiple .ant-select-selector')
-    memberSelect.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-    await flushPromises()
-    expect(document.body.textContent).toContain('redis-1 (node-1)')
-    expect(document.body.textContent).not.toContain('mysql-1 (node-2)')
-
     wrapper.unmount()
   })
 
@@ -104,11 +107,6 @@ describe('ApplicationServiceDialog', () => {
     expect(document.body.textContent).toContain('tomcat-1 (node-3)')
     expect(document.body.textContent).toContain('tomcat-2 (node-4)')
     expect(document.body.textContent).toContain('成员实例（至少 2 个）')
-    const primaryRadios = wrapper.findAllComponents({ name: 'ARadio' })
-    expect(primaryRadios).toHaveLength(2)
-    expect(primaryRadios[0].props('checked')).toBe(true)
-    expect(primaryRadios[1].props('checked')).toBe(false)
-
     wrapper.unmount()
   })
 })

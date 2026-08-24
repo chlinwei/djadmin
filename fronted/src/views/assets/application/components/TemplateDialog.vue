@@ -1,12 +1,13 @@
 <template>
   <a-modal
     :open="open"
-    :title="templateId ? '编辑部署模板' : '新增部署模板'"
+    :title="templateId ? `编辑部署模板：${form.name || '加载中'}` : copyFromId ? `复制部署模板：${form.name || '加载中'}` : '新增部署模板'"
     :width="1180"
     :confirm-loading="saving"
     ok-text="保存模板"
     cancel-text="关闭"
     wrap-class-name="application-template-modal"
+    centered
     destroy-on-close
     @ok="saveTemplate"
     @cancel="emit('update:open', false)"
@@ -167,6 +168,8 @@ import {
 const props = defineProps({
   open: { type: Boolean, required: true },
   templateId: { type: Number, default: null },
+  copyFromId: { type: Number, default: null },
+  initialApplicationId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -227,6 +230,9 @@ function resetForm() {
 async function loadApplications() {
   const response = await getApplicationList({ page_size: 100 })
   applications.value = response?.data?.data?.results || []
+  if (!props.templateId && !props.copyFromId && props.initialApplicationId) {
+    form.application = props.initialApplicationId
+  }
 }
 async function loadTemplate(id) {
   if (!id) return
@@ -238,6 +244,9 @@ async function loadTemplate(id) {
     const data = response?.data?.data || {}
     const initial = createInitialForm()
     Object.assign(form, initial, data)
+    if (props.copyFromId) form.name = `${form.name || '部署模板'}-副本`
+    if (!form.docker_config) form.docker_config = initial.docker_config
+    if (!form.compose_config) form.compose_config = initial.compose_config
     Object.keys(commandValues).forEach((key) => { commandValues[key] = '' })
     for (const item of data.control_actions || []) commandValues[item.action] = item.command || ''
   } finally {
@@ -265,7 +274,7 @@ async function saveTemplate() {
     message.error(validationMessage)
     return
   }
-  const payload = { ...form, id: props.templateId || undefined }
+  const payload = { ...form, id: props.copyFromId ? undefined : props.templateId || undefined }
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
     : form.control_type === 'external_ha'
@@ -276,7 +285,7 @@ async function saveTemplate() {
   saving.value = true
   try {
     const response = await saveApplicationDeploymentTemplate(payload)
-    message.success(props.templateId ? '部署模板保存成功' : '部署模板新增成功')
+    message.success(props.templateId ? '部署模板保存成功' : props.copyFromId ? '部署模板复制成功' : '部署模板新增成功')
     emit('saved', response?.data?.data)
     emit('update:open', false)
   } finally {
@@ -296,7 +305,9 @@ watch(() => props.open, (visible) => {
   resetForm()
   Promise.all([
     loadApplications(),
-    props.templateId ? loadTemplate(props.templateId) : Promise.resolve(),
+    props.templateId || props.copyFromId
+      ? loadTemplate(props.templateId || props.copyFromId)
+      : Promise.resolve(),
   ])
 })
 </script>

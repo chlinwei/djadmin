@@ -27,6 +27,7 @@ export function batchDeleteApplication(ids) {
 
 const versionPrefix = 'assets/application-versions/'
 const businessSystemPrefix = 'assets/business-systems/'
+const businessEnvironmentPrefix = 'assets/business-environments/'
 const clusterProfilePrefix = 'assets/cluster-profiles/'
 const applicationServicePrefix = 'assets/application-services/'
 const templatePrefix = 'assets/application-deployment-templates/'
@@ -47,6 +48,23 @@ export function saveBusinessSystem(obj) {
 
 export function deleteBusinessSystem(id) {
     return requestUtil.del(`${businessSystemPrefix}${id}/`)
+}
+
+export function getBusinessEnvironmentList(params) {
+    return requestUtil.get(businessEnvironmentPrefix, params)
+}
+
+export function getBusinessEnvironment(id) {
+    return requestUtil.get(`${businessEnvironmentPrefix}${id}/`)
+}
+
+export function saveBusinessEnvironment(obj) {
+    if (obj.id) return requestUtil.patch(`${businessEnvironmentPrefix}${obj.id}/`, obj)
+    return requestUtil.post(businessEnvironmentPrefix, obj)
+}
+
+export function deleteBusinessEnvironment(id) {
+    return requestUtil.del(`${businessEnvironmentPrefix}${id}/`)
 }
 
 export function getClusterProfileList(params) {
@@ -85,6 +103,10 @@ export function deleteApplicationService(id) {
 
 export function checkApplicationServiceBaseline(id) {
     return requestUtil.post(`${applicationServicePrefix}${id}/check-baseline/`, {})
+}
+
+export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/refresh-runtime-status/`, {}, timeout)
 }
 
 export function getApplicationVersionList(params) {

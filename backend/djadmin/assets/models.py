@@ -63,6 +63,34 @@ class BusinessSystem(BaseModel):
         return self.name
 
 
+class BusinessEnvironment(BaseModel):
+    """业务系统下的环境实体，取代原先挂在逻辑服务上的环境枚举字段。"""
+
+    business_system = models.ForeignKey(
+        BusinessSystem,
+        on_delete=models.CASCADE,
+        related_name='environments',
+        verbose_name='所属业务系统',
+    )
+    name = models.CharField(max_length=64, verbose_name='环境名称')
+    code = models.CharField(max_length=32, verbose_name='环境编码')
+    # 用于服务树中固定“生产在前、开发在后”这类展示顺序，避免按名称排序导致次序不稳定。
+    order = models.PositiveIntegerField(default=0, verbose_name='展示顺序')
+    owner = models.CharField(max_length=128, blank=True, default='', verbose_name='负责人')
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+
+    class Meta:
+        db_table = 'assets_business_environment'
+        ordering = ['business_system_id', 'order', 'name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['business_system', 'code'], name='unique_business_environment_code'),
+            models.UniqueConstraint(fields=['business_system', 'name'], name='unique_business_environment_name'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class ApplicationVersion(BaseModel):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='versions')
     version = models.CharField(max_length=128, verbose_name='版本号')
@@ -158,35 +186,40 @@ class ApplicationService(BaseModel):
         HEALTHY = 'healthy', '正常'
         UNHEALTHY = 'unhealthy', '异常'
 
-    class Environment(models.TextChoices):
-        PRODUCTION = 'production', '生产'
-        TESTING = 'testing', '测试'
-        DEVELOPMENT = 'development', '开发'
-        OTHER = 'other', '其他'
-
     class TopologyType(models.TextChoices):
         STANDALONE = 'standalone', '单机'
         CLUSTER = 'cluster', '集群'
-
-    class AvailabilityMode(models.TextChoices):
-        NONE = 'none', '无高可用'
-        ACTIVE_STANDBY = 'active_standby', '主备'
-        ACTIVE_ACTIVE = 'active_active', '双活'
-
-    class AccessType(models.TextChoices):
-        DIRECT = 'direct', '节点地址'
-        VIP = 'vip', 'VIP'
         LOAD_BALANCER = 'load_balancer', '负载均衡'
 
-    business_system = models.ForeignKey(
-        BusinessSystem,
+    # 所属业务系统由 environment 派生，不再冗余存储，避免两处数据漂移。
+    environment = models.ForeignKey(
+        BusinessEnvironment,
         on_delete=models.PROTECT,
         related_name='services',
         null=True,
         blank=True,
-        verbose_name='所属业务系统',
+        verbose_name='所属环境',
     )
     application = models.ForeignKey(Application, on_delete=models.PROTECT, related_name='services')
+    deployments = models.ManyToManyField(
+        'ApplicationDeployment',
+        through='ApplicationServiceDeployment',
+        related_name='application_services',
+        blank=True,
+        verbose_name='部署实例',
+    )
+    application_version = models.ForeignKey(
+        ApplicationVersion,
+        on_delete=models.PROTECT,
+        related_name='services',
+        verbose_name='应用版本',
+    )
+    deployment_template = models.ForeignKey(
+        ApplicationDeploymentTemplate,
+        on_delete=models.PROTECT,
+        related_name='services',
+        verbose_name='部署模板',
+    )
     cluster_profile = models.ForeignKey(
         ClusterProfile,
         on_delete=models.PROTECT,
@@ -197,20 +230,8 @@ class ApplicationService(BaseModel):
     )
     name = models.CharField(max_length=128, verbose_name='逻辑服务名称')
     code = models.CharField(max_length=64, unique=True, verbose_name='逻辑服务编码')
-    environment = models.CharField(max_length=16, choices=Environment.choices, default=Environment.PRODUCTION)
     topology_type = models.CharField(max_length=16, choices=TopologyType.choices, default=TopologyType.STANDALONE)
-    availability_mode = models.CharField(max_length=24, choices=AvailabilityMode.choices, default=AvailabilityMode.NONE)
-    access_type = models.CharField(max_length=24, choices=AccessType.choices, default=AccessType.DIRECT)
     access_address = models.CharField(max_length=255, blank=True, default='', verbose_name='服务入口地址')
-    access_port = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    primary_deployment = models.ForeignKey(
-        'ApplicationDeployment',
-        on_delete=models.SET_NULL,
-        related_name='primary_for_services',
-        null=True,
-        blank=True,
-        verbose_name='VIP 主节点',
-    )
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
     health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
     baseline_pass_rate = models.FloatField(null=True, blank=True)
@@ -218,10 +239,10 @@ class ApplicationService(BaseModel):
 
     class Meta:
         db_table = 'assets_application_service'
-        ordering = ['business_system_id', 'environment', 'name']
+        ordering = ['environment_id', 'name']
         constraints = [
             models.UniqueConstraint(
-                fields=['business_system', 'environment', 'name'],
+                fields=['environment', 'name'],
                 name='unique_business_environment_service',
             ),
         ]
@@ -242,23 +263,13 @@ class ApplicationDeployment(BaseModel):
         STOPPED = 'stopped', '已停止'
         ERROR = 'error', '状态检查失败'
 
-    application_version = models.ForeignKey(ApplicationVersion, on_delete=models.PROTECT, related_name='deployments')
-    deployment_template = models.ForeignKey(ApplicationDeploymentTemplate, on_delete=models.PROTECT, related_name='deployments')
-    application_service = models.ForeignKey(
-        ApplicationService,
-        on_delete=models.SET_NULL,
-        related_name='deployments',
-        null=True,
-        blank=True,
-    )
+    class HaRole(models.TextChoices):
+        UNKNOWN = 'unknown', '未知'
+        PRIMARY = 'primary', '主'
+        STANDBY = 'standby', '备'
+
     host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='application_deployments')
     instance_name = models.CharField(max_length=128, verbose_name='实例名称')
-    member_port = models.PositiveIntegerField(
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(1), MaxValueValidator(65535)],
-        verbose_name='集群成员端口',
-    )
     enabled = models.BooleanField(default=True)
     health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
     baseline_pass_rate = models.FloatField(null=True, blank=True)
@@ -266,12 +277,40 @@ class ApplicationDeployment(BaseModel):
     runtime_status = models.CharField(max_length=16, choices=RuntimeStatus.choices, default=RuntimeStatus.UNKNOWN)
     runtime_status_output = models.TextField(blank=True, default='')
     last_status_check_time = models.DateTimeField(null=True, blank=True)
+    ha_role = models.CharField(max_length=16, choices=HaRole.choices, default=HaRole.UNKNOWN)
+
+    # 版本与模板由所属逻辑服务统一定义，实例侧不再冗余存储，避免两处配置漂移。
+    @property
+    def service(self):
+        return self.application_services.first()  # type: ignore[attr-defined]
+
+    @property
+    def application_version(self):
+        service = self.service
+        return service.application_version if service else None
+
+    @property
+    def deployment_template(self):
+        service = self.service
+        return service.deployment_template if service else None
 
     class Meta:
         db_table = 'assets_application_deployment'
         ordering = ['-id']
         constraints = [
             models.UniqueConstraint(fields=['host', 'instance_name'], name='unique_host_application_instance'),
+        ]
+
+
+class ApplicationServiceDeployment(BaseModel):
+    service = models.ForeignKey(ApplicationService, on_delete=models.CASCADE, related_name='deployment_links')
+    deployment = models.ForeignKey(ApplicationDeployment, on_delete=models.CASCADE, related_name='service_links')
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+
+    class Meta:
+        db_table = 'assets_application_service_deployment'
+        constraints = [
+            models.UniqueConstraint(fields=['service', 'deployment'], name='unique_application_service_deployment'),
         ]
 
 
@@ -723,7 +762,7 @@ class AgentJob(BaseModel):
     result_data = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True, default='')
     
-    # 任务执行结果字段 - 用于 RabbitMQ/HTTP 上报
+    # Agent 任务通过 gRPC 返回的执行结果
     exit_code = models.IntegerField(default=-1, verbose_name="退出码")
     stdout = models.TextField(blank=True, default='', verbose_name="标准输出")
     stderr = models.TextField(blank=True, default='', verbose_name="标准错误")

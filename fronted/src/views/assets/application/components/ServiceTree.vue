@@ -44,6 +44,7 @@ import { Empty, message } from 'ant-design-vue'
 import {
   getApplicationDeploymentList,
   getApplicationServiceList,
+  getBusinessEnvironmentList,
   getBusinessSystemList,
 } from '@/api/assets/application'
 
@@ -52,12 +53,6 @@ const props = defineProps({
 })
 const emit = defineEmits(['select'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
-const environmentLabels = {
-  production: '生产环境',
-  testing: '测试环境',
-  development: '开发环境',
-  other: '其他环境',
-}
 const topologyLabels = { standalone: '单机', cluster: '集群' }
 
 const loading = ref(false)
@@ -82,97 +77,111 @@ async function fetchAll(loader, params = {}) {
   return records
 }
 
-function buildTree(systems, services, deployments) {
+function buildTree(systems, environments, services, deployments) {
   scopeByKey.clear()
   scopeByKey.set('all', { nodeType: 'all', nodeTitle: '全部业务' })
-  const servicesBySystem = new Map()
+  const environmentsBySystem = new Map()
+  for (const environment of environments) {
+    if (!environmentsBySystem.has(environment.business_system)) environmentsBySystem.set(environment.business_system, [])
+    environmentsBySystem.get(environment.business_system).push(environment)
+  }
+  const servicesByEnvironment = new Map()
+  const orphanServices = []
   for (const service of services) {
-    const systemKey = service.business_system || 'unassigned'
-    if (!servicesBySystem.has(systemKey)) servicesBySystem.set(systemKey, [])
-    servicesBySystem.get(systemKey).push(service)
+    if (!service.environment) {
+      orphanServices.push(service)
+      continue
+    }
+    if (!servicesByEnvironment.has(service.environment)) servicesByEnvironment.set(service.environment, [])
+    servicesByEnvironment.get(service.environment).push(service)
   }
   const deploymentsByService = new Map()
   for (const deployment of deployments) {
-    if (!deploymentsByService.has(deployment.application_service)) {
-      deploymentsByService.set(deployment.application_service, [])
+    for (const serviceId of deployment.application_service_ids || []) {
+      if (!deploymentsByService.has(serviceId)) deploymentsByService.set(serviceId, [])
+      deploymentsByService.get(serviceId).push(deployment)
     }
-    deploymentsByService.get(deployment.application_service).push(deployment)
+  }
+
+  function buildServiceNodes(environmentServices, system, environment) {
+    return [...environmentServices]
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+      .map((service) => {
+        const serviceKey = `service:${service.id}`
+        scopeByKey.set(serviceKey, {
+          nodeType: 'service', applicationServiceId: service.id, nodeTitle: service.name,
+          businessSystemId: system.id, businessSystemName: system.name,
+          environment: environment?.id || null, environmentName: environment?.name || '',
+        })
+        const serviceDeployments = (deploymentsByService.get(service.id) || [])
+          .sort((left, right) => left.instance_name.localeCompare(right.instance_name, 'zh-CN'))
+        const deploymentNodes = serviceDeployments.map((deployment) => {
+          const deploymentKey = `deployment:${deployment.id}`
+          scopeByKey.set(deploymentKey, {
+            nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
+            businessSystemId: system.id, businessSystemName: system.name,
+            environment: environment?.id || null, environmentName: environment?.name || '',
+            applicationServiceId: service.id, serviceName: service.name,
+          })
+          return {
+            key: deploymentKey,
+            title: deployment.instance_name,
+            isLeaf: true,
+          }
+        })
+        return {
+          key: serviceKey,
+          title: service.name,
+          count: deploymentNodes.length,
+          children: deploymentNodes,
+        }
+      })
   }
 
   const allSystems = [...systems]
-  if (servicesBySystem.has('unassigned')) {
+  if (orphanServices.length) {
     allSystems.push({ id: 'unassigned', name: '未归属业务系统', enabled: false })
   }
   const systemNodes = allSystems.map((system) => {
-    const systemServices = servicesBySystem.get(system.id) || []
     const systemKey = `system:${system.id}`
     if (system.id !== 'unassigned') {
       scopeByKey.set(systemKey, {
         nodeType: 'businessSystem', businessSystemId: system.id, nodeTitle: system.name,
       })
     }
-    const servicesByEnvironment = new Map()
-    for (const service of systemServices) {
-      const environment = service.environment || 'other'
-      if (!servicesByEnvironment.has(environment)) servicesByEnvironment.set(environment, [])
-      servicesByEnvironment.get(environment).push(service)
+    if (system.id === 'unassigned') {
+      const serviceNodes = buildServiceNodes(orphanServices, system, null)
+      return {
+        key: systemKey,
+        title: system.name,
+        count: serviceNodes.length,
+        children: serviceNodes,
+        selectable: false,
+      }
     }
-    const children = [...servicesByEnvironment.entries()]
-      .sort(([left], [right]) => (environmentLabels[left] || left).localeCompare(environmentLabels[right] || right, 'zh-CN'))
-      .map(([environment, environmentServices]) => {
-        const environmentKey = `environment:${system.id}:${environment}`
-        if (system.id !== 'unassigned') {
-          scopeByKey.set(environmentKey, {
-            nodeType: 'environment', businessSystemId: system.id, businessSystemName: system.name,
-            environment, nodeTitle: environmentLabels[environment] || environment,
-          })
-        }
-        const serviceNodes = environmentServices
-          .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-          .map((service) => {
-            const serviceKey = `service:${service.id}`
-            scopeByKey.set(serviceKey, {
-              nodeType: 'service', applicationServiceId: service.id, nodeTitle: service.name,
-              businessSystemId: system.id, businessSystemName: system.name,
-              environment, environmentName: environmentLabels[environment] || environment,
-            })
-            const serviceDeployments = (deploymentsByService.get(service.id) || [])
-              .sort((left, right) => left.instance_name.localeCompare(right.instance_name, 'zh-CN'))
-            const deploymentNodes = serviceDeployments.map((deployment) => {
-              const deploymentKey = `deployment:${deployment.id}`
-              scopeByKey.set(deploymentKey, {
-                nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
-                businessSystemId: system.id, businessSystemName: system.name,
-                environment, environmentName: environmentLabels[environment] || environment,
-                applicationServiceId: service.id, serviceName: service.name,
-              })
-              return {
-                key: deploymentKey,
-                title: deployment.is_primary ? `${deployment.instance_name} · VIP 主节点` : deployment.instance_name,
-                isLeaf: true,
-              }
-            })
-            return {
-              key: serviceKey,
-              title: service.name,
-              count: deploymentNodes.length,
-              children: deploymentNodes,
-            }
-          })
-        return {
-          key: environmentKey,
-          title: environmentLabels[environment] || environment,
-          count: serviceNodes.length,
-          children: serviceNodes,
-          selectable: system.id !== 'unassigned',
-        }
+    const systemEnvironments = environmentsBySystem.get(system.id) || []
+    let systemServiceCount = 0
+    const children = systemEnvironments.map((environment) => {
+      const environmentKey = `environment:${system.id}:${environment.id}`
+      scopeByKey.set(environmentKey, {
+        nodeType: 'environment', businessSystemId: system.id, businessSystemName: system.name,
+        environment: environment.id, environmentName: environment.name, nodeTitle: environment.name,
       })
+      const serviceNodes = buildServiceNodes(servicesByEnvironment.get(environment.id) || [], system, environment)
+      systemServiceCount += serviceNodes.length
+      return {
+        key: environmentKey,
+        title: environment.name,
+        count: serviceNodes.length,
+        children: serviceNodes,
+      }
+    })
     return {
       key: systemKey,
       title: system.name,
-      count: systemServices.length,
+      count: systemServiceCount,
       children,
-      selectable: system.id !== 'unassigned',
+      selectable: true,
     }
   })
 
@@ -221,12 +230,13 @@ watch(
 async function refresh() {
   loading.value = true
   try {
-    const [systems, services, deployments] = await Promise.all([
+    const [systems, environments, services, deployments] = await Promise.all([
       fetchAll(getBusinessSystemList),
+      fetchAll(getBusinessEnvironmentList),
       fetchAll(getApplicationServiceList),
       fetchAll(getApplicationDeploymentList),
     ])
-    buildTree(systems, services, deployments)
+    buildTree(systems, environments, services, deployments)
     if (selectedKeys.value[0] === 'all') emit('select', scopeByKey.get('all'))
   } catch (error) {
     message.error(error?.message || '服务树加载失败')

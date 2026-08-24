@@ -59,6 +59,13 @@ dj_agent/
 
 ## 🚀 快速开始
 
+### Ansible 安装
+
+平台批量纳管主机时使用 `../backend/djadmin/assets/agent_install.yml`。Playbook
+当前支持 Linux amd64，会上传 `bin/dj-agent` 和 `deploy/install.sh`，生成 systemd
+配置并执行 `systemctl enable --now dj-agent`。开发阶段 gRPC 握手只使用 `DJ_AGENT_ID`，
+不需要 Token；后续切换 mTLS 时再替换认证配置。
+
 ### 编译
 
 ```bash
@@ -92,7 +99,7 @@ logging:
 
 ```bash
 # 复制服务文件
-sudo cp deploy/dj-agent.service.example /etc/systemd/system/dj-agent.service
+sudo cp deploy/dj-agent.service.example /usr/lib/systemd/system/dj-agent.service
 
 # 编辑配置
 sudo systemctl edit dj-agent

@@ -237,9 +237,20 @@ class ApplicationSerializer(ModelSerializer):
 
 class BusinessSystemSerializer(ModelSerializer):
     deployment_count = serializers.IntegerField(read_only=True)
+    environment_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = BusinessSystem
+        fields = '__all__'
+
+
+class BusinessEnvironmentSerializer(ModelSerializer):
+    business_system_name = serializers.CharField(source='business_system.name', read_only=True)
+    service_count = serializers.IntegerField(read_only=True)
+    deployment_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = BusinessEnvironment
         fields = '__all__'
 
 
@@ -266,11 +277,17 @@ class ClusterProfileSerializer(ModelSerializer):
 
 
 class ApplicationServiceSerializer(ModelSerializer):
-    business_system_name = serializers.CharField(source='business_system.name', read_only=True)
+    business_system = serializers.IntegerField(source='environment.business_system_id', read_only=True)
+    business_system_name = serializers.CharField(source='environment.business_system.name', read_only=True)
+    environment_name = serializers.CharField(source='environment.name', read_only=True)
+    environment_code = serializers.CharField(source='environment.code', read_only=True)
     application_name = serializers.CharField(source='application.name', read_only=True)
+    application_version_name = serializers.CharField(source='application_version.version', read_only=True)
+    deployment_template_name = serializers.CharField(source='deployment_template.name', read_only=True)
     cluster_profile_name = serializers.CharField(source='cluster_profile.name', read_only=True)
     cluster_type = serializers.CharField(source='cluster_profile.cluster_type', read_only=True)
     deployment_count = serializers.IntegerField(read_only=True)
+    ports = ApplicationPortSerializer(source='deployment_template.ports', many=True, read_only=True)
     member_configs = serializers.ListField(
         child=serializers.DictField(), write_only=True, required=False,
     )
@@ -282,13 +299,24 @@ class ApplicationServiceSerializer(ModelSerializer):
         extra_kwargs = {'application': {'required': False}}
 
     def validate(self, attrs):
+        environment = attrs.get('environment', getattr(self.instance, 'environment', None))
+        if environment is None:
+            raise serializers.ValidationError({'environment': '请选择所属环境'})
         topology_type = attrs.get('topology_type', getattr(self.instance, 'topology_type', None))
         application = attrs.get('application', getattr(self.instance, 'application', None))
         cluster_profile = attrs.get('cluster_profile', getattr(self.instance, 'cluster_profile', None))
+        application_version = attrs.get('application_version', getattr(self.instance, 'application_version', None))
+        deployment_template = attrs.get('deployment_template', getattr(self.instance, 'deployment_template', None))
+        access_address = attrs.get('access_address', getattr(self.instance, 'access_address', ''))
+        if topology_type == ApplicationService.TopologyType.STANDALONE:
+            attrs['access_address'] = ''
+            access_address = ''
         if topology_type == ApplicationService.TopologyType.CLUSTER and cluster_profile is None:
             raise serializers.ValidationError({'cluster_profile': '集群服务必须选择集群模型'})
-        if topology_type == ApplicationService.TopologyType.STANDALONE and cluster_profile is not None:
-            raise serializers.ValidationError({'cluster_profile': '单机服务不能选择集群模型'})
+        if topology_type != ApplicationService.TopologyType.CLUSTER and cluster_profile is not None:
+            raise serializers.ValidationError({'cluster_profile': '非集群服务不能选择集群模型'})
+        if topology_type == ApplicationService.TopologyType.LOAD_BALANCER and not str(access_address or '').strip():
+            raise serializers.ValidationError({'access_address': '负载均衡形态必须填写入口地址'})
         if (
             topology_type == ApplicationService.TopologyType.CLUSTER
             and cluster_profile is not None
@@ -298,66 +326,75 @@ class ApplicationServiceSerializer(ModelSerializer):
             attrs['application'] = application
         elif application is None:
             raise serializers.ValidationError({'application': '请选择应用'})
+        if application_version and application_version.application_id != application.id:
+            raise serializers.ValidationError({'application_version': '应用版本必须属于当前应用'})
+        if deployment_template and deployment_template.application_id != application.id:
+            raise serializers.ValidationError({'deployment_template': '部署模板必须属于当前应用'})
+        if (
+            cluster_profile
+            and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
+            and deployment_template
+            and deployment_template.control_type != ApplicationDeploymentTemplate.ControlType.EXTERNAL_HA
+        ):
+            raise serializers.ValidationError({'deployment_template': 'HA 集群必须使用外部 HA 部署模板'})
+        if (
+            deployment_template
+            and deployment_template.control_type == ApplicationDeploymentTemplate.ControlType.EXTERNAL_HA
+            and not (cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA)
+        ):
+            raise serializers.ValidationError({'deployment_template': '只有 HA 集群可以使用外部 HA 部署模板'})
+        if application_version and deployment_template and application_version.application_id != deployment_template.application_id:
+            raise serializers.ValidationError({'deployment_template': '部署模板与应用版本必须属于同一个应用'})
         member_configs = attrs.get('member_configs')
-        if topology_type == ApplicationService.TopologyType.CLUSTER and member_configs is None and self.instance is None:
-            raise serializers.ValidationError({'member_configs': '集群必须选择至少一个部署实例'})
-        if topology_type == ApplicationService.TopologyType.CLUSTER and member_configs is not None:
+        uses_members = topology_type in (
+            ApplicationService.TopologyType.STANDALONE,
+            ApplicationService.TopologyType.CLUSTER,
+            ApplicationService.TopologyType.LOAD_BALANCER,
+        )
+        allow_empty_draft = bool(self.context.get('request') and self.context['request'].data.get('draft'))
+        if uses_members and member_configs is None and self.instance is None and not allow_empty_draft:
+            raise serializers.ValidationError({'member_configs': '集群或负载均衡服务必须选择至少一个部署实例'})
+        if uses_members and member_configs is not None and (member_configs or not allow_empty_draft):
             if not member_configs:
-                raise serializers.ValidationError({'member_configs': '集群必须选择至少一个部署实例'})
+                raise serializers.ValidationError({'member_configs': '集群或负载均衡服务必须选择至少一个部署实例'})
             deployment_ids = [item.get('deployment') for item in member_configs]
             if any(not deployment_id for deployment_id in deployment_ids) or len(deployment_ids) != len(set(deployment_ids)):
                 raise serializers.ValidationError({'member_configs': '集群成员实例不能为空或重复'})
             is_ha_cluster = cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
             if is_ha_cluster and len(deployment_ids) < 2:
                 raise serializers.ValidationError({'member_configs': 'HA 集群至少需要两个成员实例'})
-            if not is_ha_cluster and any(not item.get('port') for item in member_configs):
-                raise serializers.ValidationError({'member_configs': '每个集群成员都必须配置端口'})
-            if not is_ha_cluster:
-                try:
-                    ports = [int(item['port']) for item in member_configs]
-                except (TypeError, ValueError):
-                    raise serializers.ValidationError({'member_configs': '集群成员端口必须是整数'})
-                if any(port < 1 or port > 65535 for port in ports):
-                    raise serializers.ValidationError({'member_configs': '集群成员端口必须在 1–65535 之间'})
             deployments = ApplicationDeployment.objects.filter(id__in=deployment_ids)
             if deployments.count() != len(deployment_ids):
                 raise serializers.ValidationError({'member_configs': '包含不存在的部署实例'})
-            if deployments.exclude(application_version__application=application).exists():
+            # 实例所属应用现在由其逻辑服务决定，跨应用复用实例会造成配置冲突。
+            if deployments.exclude(application_services__isnull=True).exclude(
+                application_services__application=application,
+            ).exists():
                 raise serializers.ValidationError({'member_configs': '集群成员实例必须属于同一应用'})
         if cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA:
-            access_type = attrs.get('access_type', getattr(self.instance, 'access_type', None))
-            access_address = attrs.get('access_address', getattr(self.instance, 'access_address', ''))
-            primary_deployment = attrs.get(
-                'primary_deployment', getattr(self.instance, 'primary_deployment', None),
-            )
-            if access_type != ApplicationService.AccessType.VIP:
-                raise serializers.ValidationError({'access_type': 'HA 集群必须使用 VIP 访问方式'})
             if not str(access_address or '').strip():
                 raise serializers.ValidationError({'access_address': 'HA 集群必须填写 VIP'})
-            if primary_deployment is None:
-                raise serializers.ValidationError({'primary_deployment': 'HA 集群必须选择 VIP 主节点'})
-            member_ids = (
-                {item.get('deployment') for item in member_configs}
-                if member_configs is not None
-                else set(self.instance.deployments.values_list('id', flat=True)) if self.instance else set()
-            )
-            if primary_deployment.id not in member_ids:
-                raise serializers.ValidationError({'primary_deployment': 'VIP 主节点必须属于当前 HA 集群成员'})
-        else:
-            attrs['primary_deployment'] = None
         return attrs
 
     def get_member_instances(self, obj):
+        is_ha = obj.cluster_profile and obj.cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
+        vip = str(obj.access_address or '').strip()
         return [
             {
-                'deployment': deployment.id,
-                'instance_name': deployment.instance_name,
-                'host_name': deployment.host.instance_name,
-                'host_ip': deployment.host.ip,
-                'port': deployment.member_port,
-                'is_primary': deployment.id == obj.primary_deployment_id,
+                'deployment': link.deployment_id,
+                'instance_name': link.deployment.instance_name,
+                'host_name': link.deployment.host.instance_name,
+                'host_ip': link.deployment.host.ip,
+                'enabled': link.enabled,
+                'ha_role': (
+                    ApplicationDeployment.HaRole.PRIMARY
+                    if is_ha and vip and str(link.deployment.host.ip or '').strip() == vip
+                    else ApplicationDeployment.HaRole.STANDBY
+                    if is_ha and vip
+                    else ApplicationDeployment.HaRole.UNKNOWN
+                ),
             }
-            for deployment in obj.deployments.select_related('host').order_by('instance_name', 'id')
+            for link in obj.deployment_links.select_related('deployment__host').order_by('deployment__instance_name', 'deployment_id')
         ]
 
     @staticmethod
@@ -365,11 +402,14 @@ class ApplicationServiceSerializer(ModelSerializer):
         if member_configs is None:
             return
         deployment_ids = [item['deployment'] for item in member_configs]
-        instance.deployments.exclude(id__in=deployment_ids).update(application_service=None, member_port=None)
+        ApplicationServiceDeployment.objects.filter(service=instance).exclude(deployment_id__in=deployment_ids).delete()
         for item in member_configs:
-            ApplicationDeployment.objects.filter(id=item['deployment']).update(
-                application_service=instance,
-                member_port=item.get('port'),
+            ApplicationServiceDeployment.objects.update_or_create(
+                service=instance,
+                deployment_id=item['deployment'],
+                defaults={
+                    'enabled': item.get('enabled', True),
+                },
             )
 
     @transaction.atomic
@@ -383,8 +423,6 @@ class ApplicationServiceSerializer(ModelSerializer):
     def update(self, instance, validated_data):
         member_configs = validated_data.pop('member_configs', None)
         instance = super().update(instance, validated_data)
-        if instance.topology_type == ApplicationService.TopologyType.STANDALONE:
-            member_configs = []
         self._save_members(instance, member_configs)
         return instance
 
@@ -529,11 +567,18 @@ class ApplicationBaselineExecutionSerializer(ModelSerializer):
 
 
 class ApplicationDeploymentSerializer(ModelSerializer):
-    business_system = serializers.IntegerField(source='application_service.business_system_id', read_only=True)
-    business_system_name = serializers.CharField(source='application_service.business_system.name', read_only=True)
-    service_name = serializers.CharField(source='application_service.name', read_only=True)
-    topology_type = serializers.CharField(source='application_service.topology_type', read_only=True)
-    environment = serializers.CharField(source='application_service.environment', read_only=True)
+    application_service = serializers.PrimaryKeyRelatedField(
+        queryset=ApplicationService.objects.all(), write_only=True, required=False, allow_null=True,
+    )
+    application_services = serializers.SerializerMethodField()
+    application_service_ids = serializers.SerializerMethodField()
+    business_system = serializers.SerializerMethodField()
+    business_system_name = serializers.SerializerMethodField()
+    service_name = serializers.SerializerMethodField()
+    topology_type = serializers.SerializerMethodField()
+    cluster_type = serializers.SerializerMethodField()
+    environment = serializers.SerializerMethodField()
+    environment_name = serializers.SerializerMethodField()
     application_id = serializers.IntegerField(source='application_version.application_id', read_only=True)
     application_name = serializers.CharField(source='application_version.application.name', read_only=True)
     version = serializers.CharField(source='application_version.version', read_only=True)
@@ -546,34 +591,79 @@ class ApplicationDeploymentSerializer(ModelSerializer):
     app_home = serializers.CharField(source='deployment_template.app_home', read_only=True)
     work_directory = serializers.CharField(source='deployment_template.work_directory', read_only=True)
     ports = ApplicationPortSerializer(source='deployment_template.ports', many=True, read_only=True)
-    is_primary = serializers.SerializerMethodField()
+    ha_role = serializers.SerializerMethodField()
 
-    def get_is_primary(self, obj):
-        application_service = obj.application_service
-        return bool(
-            application_service
-            and application_service.primary_deployment_id == obj.id
+    def get_ha_role(self, obj):
+        service = obj.application_services.select_related('cluster_profile').first()
+        profile = getattr(service, 'cluster_profile', None) if service else None
+        vip = str(getattr(service, 'access_address', '') or '').strip() if service else ''
+        if not profile or profile.cluster_type != ClusterProfile.ClusterType.HA or not vip:
+            return ApplicationDeployment.HaRole.UNKNOWN
+        return (
+            ApplicationDeployment.HaRole.PRIMARY
+            if str(obj.host.ip or '').strip() == vip
+            else ApplicationDeployment.HaRole.STANDBY
         )
+
+    def _first_service(self, obj):
+        return obj.application_services.select_related('environment__business_system', 'cluster_profile').first()
+
+    def get_application_services(self, obj):
+        return [{'id': service.id, 'name': service.name} for service in obj.application_services.all()]
+
+    def get_application_service_ids(self, obj):
+        return list(obj.application_services.values_list('id', flat=True))
+
+    def get_business_system(self, obj):
+        service = self._first_service(obj)
+        return service.environment.business_system_id if service and service.environment else None
+
+    def get_business_system_name(self, obj):
+        service = self._first_service(obj)
+        return service.environment.business_system.name if service and service.environment else None
+
+    def get_service_name(self, obj):
+        return self._first_service(obj).name if self._first_service(obj) else None
+
+    def get_topology_type(self, obj):
+        service = self._first_service(obj)
+        return service.topology_type if service else None
+
+    def get_cluster_type(self, obj):
+        service = self._first_service(obj)
+        return service.cluster_profile.cluster_type if service and service.cluster_profile else None
+
+    def get_environment(self, obj):
+        service = self._first_service(obj)
+        return service.environment_id if service else None
+
+    def get_environment_name(self, obj):
+        service = self._first_service(obj)
+        return service.environment.name if service and service.environment else None
 
     class Meta:
         model = ApplicationDeployment
         fields = '__all__'
 
     def validate(self, attrs):
-        application_version = attrs.get('application_version', getattr(self.instance, 'application_version', None))
-        deployment_template = attrs.get('deployment_template', getattr(self.instance, 'deployment_template', None))
-        application_service = attrs.get('application_service', getattr(self.instance, 'application_service', None))
-        if application_version and deployment_template and application_version.application_id != deployment_template.application_id:
-            raise serializers.ValidationError({'deployment_template': '部署模板与应用版本必须属于同一个应用'})
-        if application_version and application_service and application_version.application_id != application_service.application_id:
-            raise serializers.ValidationError({'application_service': '逻辑服务与应用版本必须属于同一个应用'})
-        if application_service and application_service.topology_type == ApplicationService.TopologyType.STANDALONE:
-            existing = ApplicationDeployment.objects.filter(application_service=application_service)
-            if self.instance is not None:
-                existing = existing.exclude(pk=self.instance.pk)
-            if existing.exists():
-                raise serializers.ValidationError({'application_service': '单机服务只能登记一个部署实例'})
+        # 版本与模板只存在于逻辑服务上，实例必须有归属，否则无法得到运行配置。
+        if self.instance is None and not attrs.get('application_service'):
+            raise serializers.ValidationError({'application_service': '请选择部署实例所属的逻辑服务'})
         return attrs
+
+    def create(self, validated_data):
+        service = validated_data.pop('application_service', None)
+        instance = super().create(validated_data)
+        if service:
+            ApplicationServiceDeployment.objects.create(service=service, deployment=instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        service = validated_data.pop('application_service', None)
+        instance = super().update(instance, validated_data)
+        if service:
+            ApplicationServiceDeployment.objects.get_or_create(service=service, deployment=instance)
+        return instance
 
 
 class HostGroupSerializer(ModelSerializer):
@@ -660,6 +750,7 @@ class HostGroupSerializer(ModelSerializer):
 class HostSerializer(ModelSerializer):
     group_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     group_name = serializers.SerializerMethodField()
+    agent_credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     runtime = serializers.SerializerMethodField()
@@ -717,6 +808,24 @@ class HostSerializer(ModelSerializer):
 
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
+
+    def get_agent_credentials(self, obj):
+        """Expose SSH credential choices without returning any secret material."""
+        relations = getattr(obj, 'host_credentials', None)
+        if relations is None:
+            relations = obj.hostcredential_set.select_related('credential').all()
+        return [
+            {
+                'id': relation.credential_id,
+                'name': relation.credential.name or f'凭证-{relation.credential_id}',
+                'username': relation.credential.username,
+                'port': relation.credential.port,
+                'auth_type': relation.credential.auth_type,
+                'is_default': relation.is_default,
+            }
+            for relation in relations
+            if relation.credential_id and relation.credential
+        ]
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)
@@ -912,6 +1021,7 @@ class HostSerializer(ModelSerializer):
 
 class HostListSerializer(ModelSerializer):
     group_name = serializers.SerializerMethodField()
+    agent_credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
     os_type = serializers.SerializerMethodField()
@@ -933,6 +1043,7 @@ class HostListSerializer(ModelSerializer):
             'agent_online',
             'collect_status',
             'group_name',
+            'agent_credentials',
             'system',
             'hardware',
             'os_type',
@@ -944,6 +1055,21 @@ class HostListSerializer(ModelSerializer):
 
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
+
+    def get_agent_credentials(self, obj):
+        relations = getattr(obj, 'host_credentials', [])
+        return [
+            {
+                'id': relation.credential_id,
+                'name': relation.credential.name or f'凭证-{relation.credential_id}',
+                'username': relation.credential.username,
+                'port': relation.credential.port,
+                'auth_type': relation.credential.auth_type,
+                'is_default': relation.is_default,
+            }
+            for relation in relations
+            if relation.credential_id and relation.credential
+        ]
 
     def get_system(self, obj):
         system = getattr(obj, 'system', None)

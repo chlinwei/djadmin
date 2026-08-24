@@ -1,15 +1,16 @@
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Any, cast
 from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import (
-    Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, BusinessSystem, HostGroup, Host,
-    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ClusterProfile, AgentJob,
+    Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, BusinessEnvironment, BusinessSystem, HostGroup, Host,
+    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
     HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog,
 )
 from .views import _build_application_baseline_debug_params, _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
@@ -213,19 +214,34 @@ class CredentialTest(BaseTestCase):
 # ─────────────────────────────────────────────
 class ApplicationTest(BaseTestCase):
 
+    def _environment_for(self, business_system_id, code='production'):
+        return BusinessEnvironment.objects.get_or_create(
+            business_system_id=business_system_id,
+            code=code,
+            defaults={'name': f'{code}-env'},
+        )[0]
+
     def _create_deployment(self, **kwargs):
-        application_version = kwargs['application_version']
+        application_version = kwargs.pop('application_version')
+        deployment_template = kwargs.pop('deployment_template')
         instance_name = kwargs['instance_name']
         business_system_id = kwargs.pop('business_system_id', None)
-        environment = kwargs.pop('environment', ApplicationService.Environment.PRODUCTION)
+        environment_code = kwargs.pop('environment', 'production')
+        environment = self._environment_for(business_system_id, environment_code) if business_system_id else None
         service = ApplicationService.objects.create(
-            business_system_id=business_system_id,
+            environment=environment,
             application=application_version.application,
+            application_version=application_version,
+            deployment_template=deployment_template,
             name=instance_name,
             code=f'test-service-{ApplicationService.objects.count() + 1}',
-            environment=environment,
         )
-        return ApplicationDeployment.objects.create(application_service=service, **kwargs)
+        deployment = ApplicationDeployment.objects.create(**kwargs)
+        ApplicationServiceDeployment.objects.create(
+            service=service,
+            deployment=deployment,
+        )
+        return deployment
 
     def test_list_applications(self):
         """应用列表返回分页格式"""
@@ -251,6 +267,7 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         system_body = self.assertResponseOK(system_res)
         business_system_id = system_body['data']['id']
+        self.assertFalse(BusinessEnvironment.objects.filter(business_system_id=business_system_id).exists())
 
         application = Application.objects.create(name='Order Tomcat', code='order-tomcat')
         version = ApplicationVersion.objects.create(application=application, version='9.0.35')
@@ -292,26 +309,21 @@ class ApplicationTest(BaseTestCase):
         )
         host = Host.objects.create(instance_name='redis-node-1', ip='10.0.0.41')
         deployment = ApplicationDeployment.objects.create(
-            application_version=version,
-            deployment_template=template,
             host=host,
             instance_name='redis-node-1',
         )
         service_res = self.client.post('/assets/application-services/', {
-            'business_system': business_system.id,  # type: ignore[attr-defined]
             'cluster_profile': profile.id,  # type: ignore[attr-defined]
+            'application_version': version.id,  # type: ignore[attr-defined]
+            'deployment_template': template.id,  # type: ignore[attr-defined]
             'name': '订单缓存集群',
             'code': 'order-cache-cluster',
             'topology_type': 'cluster',
-            'environment': 'production',
-            'member_configs': [{'deployment': deployment.id, 'port': 6379}],  # type: ignore[attr-defined]
+            'environment': self._environment_for(business_system.id).id,  # type: ignore[attr-defined]
+            'member_configs': [{'deployment': deployment.id}],  # type: ignore[attr-defined]
         }, format='json')
         service = self.assertResponseOK(service_res)['data']
         self.assertEqual(service['application'], application.id)  # type: ignore[attr-defined]
-        deployment.refresh_from_db()
-        self.assertEqual(deployment.application_service_id, service['id'])  # type: ignore[attr-defined]
-        self.assertEqual(deployment.member_port, 6379)
-
         job_count = AgentJob.objects.count()
         baseline_res = self.client.post(
             f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
@@ -320,7 +332,7 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(baseline['health_status'], 'healthy')
         self.assertEqual(baseline['baseline_pass_rate'], 100.0)
         self.assertEqual({item['key'] for item in baseline['results']}, {
-            'members', 'application_consistency', 'member_ports',
+            'members', 'application_consistency',
         })
         self.assertEqual(AgentJob.objects.count(), job_count)
 
@@ -337,22 +349,21 @@ class ApplicationTest(BaseTestCase):
         )
         host = Host.objects.create(instance_name='ha-node-1', ip='10.0.0.51')
         deployment = ApplicationDeployment.objects.create(
-            application_version=version, deployment_template=template,
             host=host, instance_name='ha-node-1',
         )
         second_deployment = ApplicationDeployment.objects.create(
-            application_version=version, deployment_template=template,
             host=Host.objects.create(instance_name='ha-node-2', ip='10.0.0.52'),
             instance_name='ha-node-2',
         )
 
         payload = {
-            'business_system': business_system.id,  # type: ignore[attr-defined]
             'application': application.id,  # type: ignore[attr-defined]
             'cluster_profile': profile.id,  # type: ignore[attr-defined]
+            'application_version': version.id,  # type: ignore[attr-defined]
+            'deployment_template': template.id,  # type: ignore[attr-defined]
             'name': 'HA 服务', 'code': 'ha-service', 'topology_type': 'cluster',
-            'environment': 'production', 'access_type': 'vip', 'access_address': '10.0.0.100',
-            'primary_deployment': deployment.id,  # type: ignore[attr-defined]
+            'environment': self._environment_for(business_system.id).id,  # type: ignore[attr-defined]
+            'access_address': '10.0.0.100',
             'member_configs': [{'deployment': deployment.id, 'port': None}],  # type: ignore[attr-defined]
         }
         single_member_response = self.client.post('/assets/application-services/', payload, format='json')
@@ -360,22 +371,11 @@ class ApplicationTest(BaseTestCase):
         self.assertIn('HA 集群至少需要两个成员实例', str(single_member_response.json()['data']))
 
         payload['member_configs'].append({'deployment': second_deployment.id, 'port': None})  # type: ignore[attr-defined]
-        payload.pop('primary_deployment')
-        missing_primary_response = self.client.post('/assets/application-services/', payload, format='json')
-        self.assertEqual(missing_primary_response.json()['code'], 600)
-        self.assertIn('HA 集群必须选择 VIP 主节点', str(missing_primary_response.json()['data']))
-
-        payload['primary_deployment'] = deployment.id  # type: ignore[attr-defined]
         response = self.client.post('/assets/application-services/', payload, format='json')
 
         service = self.assertResponseOK(response)['data']
-        self.assertEqual(service['primary_deployment'], deployment.id)  # type: ignore[attr-defined]
-        primary_member = next(item for item in service['member_instances'] if item['is_primary'])
-        self.assertEqual(primary_member['deployment'], deployment.id)  # type: ignore[attr-defined]
         deployment.refresh_from_db()
         second_deployment.refresh_from_db()
-        self.assertIsNone(deployment.member_port)
-        self.assertIsNone(second_deployment.member_port)
 
         baseline_response = self.client.post(
             f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
@@ -384,11 +384,8 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(baseline['health_status'], 'healthy')
         member_result = next(item for item in baseline['results'] if item['key'] == 'members')
         self.assertEqual(member_result['expected'], '至少 2 个成员')
-        primary_result = next(item for item in baseline['results'] if item['key'] == 'vip_primary')
-        self.assertEqual(primary_result['status'], 'pass')
-        self.assertEqual(primary_result['actual'], 'ha-node-1')
 
-    def test_standalone_service_rejects_a_second_deployment(self):
+    def test_standalone_service_allows_multiple_deployments(self):
         application = Application.objects.create(name='Standalone App', code='standalone-app')
         version = ApplicationVersion.objects.create(application=application, version='1.0')
         template = ApplicationDeploymentTemplate.objects.create(
@@ -396,29 +393,54 @@ class ApplicationTest(BaseTestCase):
             run_user='app', service_name='standalone-app',
         )
         service = ApplicationService.objects.create(
-            business_system=BusinessSystem.objects.create(name='单机系统', code='standalone-system'),
-            application=application, name='Standalone Service', code='standalone-service',
+            environment=self._environment_for(
+                BusinessSystem.objects.create(name='单机系统', code='standalone-system').id,  # type: ignore[attr-defined]
+            ),
+            application=application,
+            application_version=version,
+            deployment_template=template,
+            name='Standalone Service', code='standalone-service',
         )
         first_host = Host.objects.create(instance_name='standalone-1', ip='10.0.0.42')
         second_host = Host.objects.create(instance_name='standalone-2', ip='10.0.0.43')
-        ApplicationDeployment.objects.create(
-            application_service=service,
-            application_version=version,
-            deployment_template=template,
+        first_deployment = ApplicationDeployment.objects.create(
             host=first_host,
             instance_name='standalone-member-1',
         )
+        ApplicationServiceDeployment.objects.create(service=service, deployment=first_deployment)
 
         second_res = self.client.post('/assets/application-deployments/', {
             'application_service': service.id,  # type: ignore[attr-defined]
-            'application_version': version.id,  # type: ignore[attr-defined]
-            'deployment_template': template.id,  # type: ignore[attr-defined]
             'host': second_host.id,  # type: ignore[attr-defined]
             'instance_name': 'standalone-member-2',
         }, format='json')
 
-        self.assertEqual(second_res.json()['code'], 600)
-        self.assertIn('单机服务只能登记一个部署实例', str(second_res.json()['data']))
+        self.assertResponseOK(second_res)
+        self.assertEqual(service.deployments.count(), 2)
+
+    def test_load_balancer_service_requires_access_address(self):
+        application = Application.objects.create(name='Load Balancer App', code='load-balancer-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='LB Systemd', control_type='systemd',
+            run_user='app', service_name='lb-app',
+        )
+        environment = self._environment_for(
+            BusinessSystem.objects.create(name='负载均衡系统', code='load-balancer-system').id,  # type: ignore[attr-defined]
+        )
+
+        response = self.client.post('/assets/application-services/', {
+            'application': application.id,  # type: ignore[attr-defined]
+            'application_version': version.id,  # type: ignore[attr-defined]
+            'deployment_template': template.id,  # type: ignore[attr-defined]
+            'name': '负载均衡服务',
+            'code': 'load-balancer-service',
+            'topology_type': 'load_balancer',
+            'environment': environment.id,  # type: ignore[attr-defined]
+        }, format='json')
+
+        self.assertEqual(response.json()['code'], 600)
+        self.assertIn('负载均衡形态必须填写入口地址', str(response.json()['data']))
 
     def test_application_saves_generic_baseline_checks(self):
         """应用定义可保存标准 Schema 基线，并可通过空列表清空。"""
@@ -823,11 +845,6 @@ class ApplicationTest(BaseTestCase):
         application = Application.objects.create(name='Order API', code='order-api', category='business')
         version = ApplicationVersion.objects.create(application=application, version='2026.08')
         host = Host.objects.create(instance_name='app-host-2', ip='10.0.0.11')
-        service = ApplicationService.objects.create(
-            application=application,
-            name='Order API 生产服务',
-            code='order-api-production',
-        )
 
         template_res = self.client.post('/assets/application-deployment-templates/', {
             'application': application.id,  # type: ignore[attr-defined]
@@ -845,10 +862,16 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         template_body = self.assertResponseOK(template_res)
 
+        service = ApplicationService.objects.create(
+            application=application,
+            application_version=version,
+            deployment_template_id=template_body['data']['id'],
+            name='Order API 生产服务',
+            code='order-api-production',
+        )
+
         res = self.client.post('/assets/application-deployments/', {
             'application_service': service.id,  # type: ignore[attr-defined]
-            'application_version': version.id,  # type: ignore[attr-defined]
-            'deployment_template': template_body['data']['id'],
             'host': host.id,  # type: ignore[attr-defined]
             'instance_name': 'order-api',
         }, format='json')
@@ -1192,6 +1215,62 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.ERROR)
 
 
+# 服务级状态查询走线程池，工作线程需读到已提交数据，因此使用真实事务的测试基类。
+class ApplicationServiceRuntimeStatusTest(TransactionTestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+
+    @patch('assets.views._dispatch_agent_job_via_grpc')
+    def test_service_refresh_runtime_status_covers_all_members(self, dispatch_job):
+        """逻辑服务可一次刷新全部启用实例的运行状态。"""
+        application = Application.objects.create(name='MySQL Cluster', code='mysql-cluster-status')
+        version = ApplicationVersion.objects.create(application=application, version='8.0.25')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='mysql-template', control_type='systemd',
+            run_user='mysql', service_name='mysqld',
+        )
+        service = ApplicationService.objects.create(
+            application=application,
+            application_version=version,
+            deployment_template=template,
+            name='mysql-cluster-status',
+            code='mysql-cluster-status',
+        )
+        deployments = []
+        for index in (1, 2):
+            host = Host.objects.create(
+                instance_name=f'mysql-status-{index}', agent_id=f'mysql-status-{index}',
+                ip=f'10.0.0.6{index}',
+            )
+            deployment = ApplicationDeployment.objects.create(host=host, instance_name=f'mysql-status-{index}')
+            ApplicationServiceDeployment.objects.create(service=service, deployment=deployment)
+            deployments.append(deployment)
+
+        def complete_job(job):
+            job.status = AgentJob.JobStatus.SUCCESS
+            job.stdout = 'active'
+            job.exit_code = 0
+            return job
+
+        dispatch_job.side_effect = complete_job
+
+        res = self.client.post(
+            f'/assets/application-services/{service.id}/refresh-runtime-status/',  # type: ignore[attr-defined]
+            {}, format='json',
+        )
+
+        body = res.json()
+        self.assertEqual(body['code'], 200, msg=f'unexpected response: {body}')
+        self.assertEqual(body['data']['summary'], {'total': 2, 'running': 2, 'stopped': 0, 'error': 0})
+        for deployment in deployments:
+            deployment.refresh_from_db()
+            self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.RUNNING)
+            self.assertIsNotNone(deployment.last_status_check_time)
+
+
 # ─────────────────────────────────────────────
 # 主机分组
 # ─────────────────────────────────────────────
@@ -1309,7 +1388,11 @@ class HostTest(BaseTestCase):
     @patch('assets.views.REGISTRY.connected_agent_ids', return_value=['agent-connected'])
     def test_list_hosts_marks_connected_registry_agent_online(self, _mock_connected_agent_ids):
         host = Host.objects.create(
-            instance_name='connected-host', agent_id='agent-connected', ip='192.168.1.3', agent_online=False,
+            instance_name='connected-host',
+            agent_id='agent-connected',
+            ip='192.168.1.3',
+            agent_online=False,
+            agent_online_time=timezone.now() - timedelta(minutes=5),
         )
 
         body = self.assertResponseOK(self.client.get('/assets/hosts/?page=1&page_size=10'))

@@ -42,6 +42,27 @@ function handleAuthExpired(msg) {
     })
 }
 
+// DRF 错误体形态不固定：字符串、数组、{detail: ...} 或 {字段: [文案]}，统一拍平成一行可读文案。
+function extractErrorDetail(data, depth = 0) {
+    if (data === null || data === undefined || depth > 3) return ''
+    if (typeof data === 'string') return data.trim()
+    if (Array.isArray(data)) {
+        return data.map((item) => extractErrorDetail(item, depth + 1)).filter(Boolean).join('；')
+    }
+    if (typeof data === 'object') {
+        if (data.detail) return extractErrorDetail(data.detail, depth + 1)
+        return Object.entries(data)
+            .map(([field, value]) => {
+                const text = extractErrorDetail(value, depth + 1)
+                if (!text) return ''
+                return field === 'non_field_errors' ? text : `${field}: ${text}`
+            })
+            .filter(Boolean)
+            .join('；')
+    }
+    return ''
+}
+
 //添加请求和响应拦截器
 // 添加请求拦截器
 httpService.interceptors.request.use(function (config) {
@@ -88,6 +109,16 @@ httpService.interceptors.response.use(function (response) {
     // 对接某些网关/代理场景，HTTP 401/403 也按登录过期处理。
     if (error?.response && [401, 403].includes(Number(error.response.status))) {
         handleAuthExpired('登录状态失效，请重新登陆')
+    }
+    // DRF 校验失败时 msg 只有 "Bad Request"，真实原因在 data 的字段错误里；
+    // 这里统一改写 msg，使所有读取 response.data.msg 的页面都能提示具体原因。
+    const payload = error?.response?.data
+    if (payload && typeof payload === 'object') {
+        const detail = extractErrorDetail(payload.data)
+        if (detail) {
+            payload.msg = detail
+            error.message = detail
+        }
     }
     // 其余错误不在拦截器中显示消息，让各个页面自己处理
     return Promise.reject(error);

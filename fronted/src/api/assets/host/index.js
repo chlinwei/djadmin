@@ -112,12 +112,20 @@ export function getHostGroupList(params) {
     return requestUtil.get('assets/host-groups/', params)
 }
 
+export function getHostGroupTree(params = {}) {
+    return requestUtil.get('assets/host-groups/tree/', params)
+}
+
 export function getCredentialOptionList(params) {
     return requestUtil.get('assets/credentials/', params)
 }
 
 export function createAgentJob(payload) {
     return requestUtil.post('api/agent/jobs/create', payload)
+}
+
+export function installAgents(payload) {
+    return requestUtil.post('api/agent/install', payload)
 }
 
 export function queryAgentJobs(params) {

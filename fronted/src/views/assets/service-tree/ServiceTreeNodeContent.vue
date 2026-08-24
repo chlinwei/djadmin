@@ -28,33 +28,37 @@
 
       <a-descriptions v-else-if="scope.nodeType === 'environment'" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="业务系统">{{ scope.businessSystemName || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="环境">{{ environmentLabels[scope.environment] || scope.environment || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="环境">{{ scope.environmentName || scope.nodeTitle || '-' }}</a-descriptions-item>
       </a-descriptions>
 
       <a-descriptions v-else-if="scope.nodeType === 'service' && entity" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="业务系统">{{ entity.business_system_name || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="环境">{{ environmentLabels[entity.environment] || entity.environment || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="环境">{{ entity.environment_name || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="部署形态">{{ entity.topology_type === 'cluster' ? '集群' : entity.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-descriptions-item>
+        <a-descriptions-item v-if="entity.topology_type === 'cluster'" label="集群模型">{{ entity.cluster_profile_name || '-' }}</a-descriptions-item>
         <a-descriptions-item label="应用">{{ entity.application_name || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="部署形态">{{ entity.topology_type === 'cluster' ? '集群' : '单机' }}</a-descriptions-item>
-        <a-descriptions-item label="集群模型">{{ entity.cluster_profile_name || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="可用性">{{ availabilityLabels[entity.availability_mode] || entity.availability_mode || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="访问入口">{{ formatAccessEndpoint(entity) }}</a-descriptions-item>
+        <a-descriptions-item label="应用版本">{{ entity.application_version_name || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="部署模板">{{ entity.deployment_template_name || '-' }}</a-descriptions-item>
+        <a-descriptions-item v-if="entity.topology_type !== 'standalone'" :label="entity.cluster_type === 'ha' ? 'HA VIP' : entity.topology_type === 'load_balancer' ? '负载均衡地址' : '入口地址'">{{ entity.access_address || '-' }}</a-descriptions-item>
         <a-descriptions-item label="备注">{{ entity.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
 
       <a-descriptions v-else-if="scope.nodeType === 'deployment' && detail" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="实例名称">{{ detail.instance_name }}</a-descriptions-item>
-        <a-descriptions-item label="逻辑服务">{{ detail.service_name || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="业务系统">{{ detail.business_system_name || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="环境">{{ environmentLabels[detail.environment] || detail.environment || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="应用">{{ detail.application_name }} {{ detail.version }}</a-descriptions-item>
-        <a-descriptions-item label="成员端口">{{ detail.member_port || '-' }}</a-descriptions-item>
         <a-descriptions-item label="主机">{{ detail.host_name || '-' }}（{{ detail.host_ip || '-' }}）</a-descriptions-item>
-        <a-descriptions-item label="部署模板">{{ detail.template_name || '-' }}</a-descriptions-item>
         <a-descriptions-item label="运行状态"><a-badge :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" /></a-descriptions-item>
+        <a-descriptions-item v-if="detail.cluster_type === 'ha'" label="主备状态">{{ haRoleLabels[detail.ha_role] || '未知' }}</a-descriptions-item>
         <a-descriptions-item label="健康状态">{{ healthStatus[detail.health_status] || '未检查' }}</a-descriptions-item>
         <a-descriptions-item label="备注">{{ detail.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
+
+      <section v-if="scope.nodeType === 'service' && entity" class="service-ports-section">
+        <div class="child-section-title"><span>监听端口</span><span>{{ entity.ports?.length || 0 }} 项</span></div>
+        <a-space v-if="entity.ports?.length" wrap>
+          <a-tag v-for="port in entity.ports" :key="`${port.protocol}:${port.port}`">{{ port.name || '端口' }} · {{ String(port.protocol || '').toUpperCase() }} {{ port.port }}</a-tag>
+        </a-space>
+        <a-empty v-else :image="simpleImage" description="未配置端口" />
+      </section>
 
       <template v-if="scope.nodeType !== 'deployment'">
         <div class="child-section-title"><span>{{ childSectionTitle }}</span><span>{{ rows.length }} 项</span></div>
@@ -66,21 +70,15 @@
                 <RightOutlined />
               </a>
             </template>
-            <template v-else-if="column.key === 'topology_type'"><a-tag :color="record.topology_type === 'cluster' ? 'blue' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : '单机' }}</a-tag></template>
+            <template v-else-if="column.key === 'topology_type'"><a-tag :color="record.topology_type === 'cluster' ? 'blue' : record.topology_type === 'load_balancer' ? 'green' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : record.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-tag></template>
             <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
             <template v-else-if="column.key === 'runtime_status'"><a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" /></template>
+            <template v-else-if="column.key === 'ha_role'"><a-tag :color="haRoleColors[record.ha_role] || 'default'">{{ haRoleLabels[record.ha_role] || '未知' }}</a-tag></template>
           </template>
         </a-table>
       </template>
 
       <div v-else-if="detail" class="deployment-sections">
-        <section>
-          <div class="child-section-title"><span>监听端口</span><span>{{ detail.ports?.length || 0 }} 项</span></div>
-          <a-space v-if="detail.ports?.length" wrap>
-            <a-tag v-for="port in detail.ports" :key="`${port.protocol}:${port.port}`">{{ port.name || '端口' }} · {{ String(port.protocol || '').toUpperCase() }} {{ port.port }}</a-tag>
-          </a-space>
-          <a-empty v-else :image="simpleImage" description="未配置端口" />
-        </section>
         <section>
           <div class="child-section-title"><span>最近基线检查</span><span>{{ baselineHistory.length }} 条</span></div>
           <a-table row-key="id" :columns="historyColumns" :data-source="baselineHistory" :pagination="false" :scroll="{ x: 790 }" size="small">
@@ -113,8 +111,10 @@ import {
   getApplicationDeploymentBaselineHistory,
   getApplicationDeploymentList,
   getApplicationServiceList,
+  getBusinessEnvironmentList,
   getBusinessSystem,
   getBusinessSystemList,
+  refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
 
 const props = defineProps({
@@ -122,12 +122,12 @@ const props = defineProps({
 })
 const emit = defineEmits(['navigate'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
-const environmentLabels = { production: '生产环境', testing: '测试环境', development: '开发环境', other: '其他环境' }
-const availabilityLabels = { none: '无高可用', active_standby: '主备', active_active: '双活' }
 const runtimeStatus = {
   unknown: { label: '未知', status: 'default' }, running: { label: '运行中', status: 'success' },
   stopped: { label: '已停止', status: 'error' }, error: { label: '检查失败', status: 'warning' },
 }
+const haRoleLabels = { unknown: '未知', primary: '主', standby: '备' }
+const haRoleColors = { primary: 'green', standby: 'blue', unknown: 'default' }
 const healthStatus = { unknown: '未检查', checking: '检查中', healthy: '正常', unhealthy: '异常', error: '检查失败' }
 const historyStatusLabels = { queued: '等待中', running: '检查中', completed: '已完成', failed: '执行失败' }
 const loading = ref(false)
@@ -147,7 +147,8 @@ const systemColumns = [
   { title: '状态', key: 'enabled', width: 100 },
 ]
 const environmentColumns = [
-  { title: '环境', dataIndex: 'environment', key: 'child_link', width: 180 },
+  { title: '环境', dataIndex: 'name', key: 'child_link', width: 180 },
+  { title: '编码', dataIndex: 'code', key: 'code', width: 140 },
   { title: '逻辑服务', dataIndex: 'service_count', key: 'service_count', width: 120 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 120 },
 ]
@@ -161,7 +162,7 @@ const serviceColumns = [
 ]
 const deploymentColumns = [
   { title: '部署实例', dataIndex: 'instance_name', key: 'child_link', width: 220 },
-  { title: '成员端口', dataIndex: 'member_port', key: 'member_port', width: 120 },
+  { title: '主备状态', key: 'ha_role', width: 110 },
   { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
   { title: '地址', dataIndex: 'host_ip', key: 'host_ip', width: 150 },
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
@@ -175,12 +176,18 @@ const historyColumns = [
   { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 120 },
   { title: '开始时间', key: 'start_time', width: 170 },
 ]
-const columns = computed(() => ({
-  all: systemColumns,
-  businessSystem: environmentColumns,
-  environment: serviceColumns,
-  service: deploymentColumns,
-}[props.scope.nodeType] || []))
+const columns = computed(() => {
+  const baseColumns = ({
+    all: systemColumns,
+    businessSystem: environmentColumns,
+    environment: serviceColumns,
+    service: deploymentColumns,
+  }[props.scope.nodeType] || [])
+  if (props.scope.nodeType === 'service' && entity.value?.cluster_type !== 'ha') {
+    return baseColumns.filter((column) => column.key !== 'ha_role')
+  }
+  return baseColumns
+})
 const childSectionTitle = computed(() => ({
   all: '业务系统', businessSystem: '环境', environment: '逻辑服务', service: '部署实例',
 }[props.scope.nodeType] || '请选择节点'))
@@ -188,7 +195,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', businessSystem: '业务系统', environment: props.scope.businessSystemName || '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 800, businessSystem: 520, environment: 1000, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 800, businessSystem: 620, environment: 1000, service: 950 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => [
   '全部业务',
   props.scope.businessSystemName || (props.scope.nodeType === 'businessSystem' ? props.scope.nodeTitle : null),
@@ -246,19 +253,11 @@ const summaryStatus = computed(() => {
   return { label: '暂无实例', color: 'default' }
 })
 
-function formatAccessEndpoint(service) {
-  if (!service.access_address) return service.access_type === 'direct' ? '实例节点地址' : '-'
-  return service.access_port ? `${service.access_address}:${service.access_port}` : service.access_address
-}
-
 function formatDateTime(value) {
   return value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
 }
 
 function childLabel(record) {
-  if (props.scope.nodeType === 'businessSystem') {
-    return environmentLabels[record.environment] || record.environment
-  }
   if (props.scope.nodeType === 'service') return record.instance_name
   return record.name
 }
@@ -274,9 +273,9 @@ function buildChildScope(record) {
     return {
       nodeType: 'environment', businessSystemId: props.scope.businessSystemId,
       businessSystemName: props.scope.businessSystemName || props.scope.nodeTitle,
-      environment: record.environment,
-      environmentName: environmentLabels[record.environment] || record.environment,
-      nodeTitle: environmentLabels[record.environment] || record.environment,
+      environment: record.id,
+      environmentName: record.name,
+      nodeTitle: record.name,
     }
   }
   if (props.scope.nodeType === 'environment') {
@@ -336,17 +335,19 @@ async function fetchAll(loader, params = {}) {
   return records
 }
 
-function summarizeEnvironments(services) {
-  const summaries = new Map()
-  for (const service of services) {
-    const current = summaries.get(service.environment) || {
-      key: service.environment, environment: service.environment, service_count: 0, deployment_count: 0,
+// 手动刷新到服务节点时顺带实时查询一次 Agent；切换节点的自动加载不触发，避免浏览即发起远程调用。
+async function refresh() {
+  const serviceId = props.scope.nodeType === 'service' ? props.scope.applicationServiceId : null
+  if (serviceId) {
+    try {
+      const response = await refreshApplicationServiceRuntimeStatus(serviceId)
+      const summary = response?.data?.data?.summary || {}
+      message.success(`运行状态已刷新：运行中 ${summary.running || 0} / 已停止 ${summary.stopped || 0} / 检查失败 ${summary.error || 0}`)
+    } catch (error) {
+      message.error(error?.response?.data?.msg || error?.message || '查询运行状态失败')
     }
-    current.service_count += 1
-    current.deployment_count += Number(service.deployment_count || 0)
-    summaries.set(service.environment, current)
   }
-  return [...summaries.values()].sort((left, right) => String(left.environment).localeCompare(String(right.environment)))
+  await loadNode()
 }
 
 async function loadNode() {
@@ -375,15 +376,17 @@ async function loadNode() {
       nextServices = servicesResult
       nextDescendants = deploymentsResult
     } else if (props.scope.nodeType === 'businessSystem') {
-      const [entityResponse, servicesResult, deploymentsResult] = await Promise.all([
+      const [entityResponse, environmentsResult, servicesResult, deploymentsResult] = await Promise.all([
         getBusinessSystem(props.scope.businessSystemId),
+        fetchAll(getBusinessEnvironmentList, { business_system: props.scope.businessSystemId }),
         fetchAll(getApplicationServiceList, { business_system: props.scope.businessSystemId }),
         fetchAll(getApplicationDeploymentList, { application_service__business_system: props.scope.businessSystemId }),
       ])
       nextEntity = entityResponse?.data?.data || null
       nextServices = servicesResult
       nextDescendants = deploymentsResult
-      nextRows = summarizeEnvironments(servicesResult)
+      // 环境行直接用后端实体，保证没有服务的空环境也能展示。
+      nextRows = environmentsResult.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'environment') {
       const [servicesResult, deploymentsResult] = await Promise.all([
         fetchAll(getApplicationServiceList, {
@@ -404,7 +407,13 @@ async function loadNode() {
         fetchAll(getApplicationDeploymentList, { application_service: props.scope.applicationServiceId }),
       ])
       nextEntity = entityResponse?.data?.data || null
-      nextDescendants = deploymentsResult
+      const rolesByDeployment = new Map(
+        (nextEntity?.member_instances || []).map((item) => [item.deployment, item.ha_role]),
+      )
+      nextDescendants = deploymentsResult.map((item) => ({
+        ...item,
+        ha_role: rolesByDeployment.get(item.id) || item.ha_role,
+      }))
       nextRows = deploymentsResult.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'deployment') {
       const [detailResponse, historyResponse] = await Promise.all([
@@ -429,6 +438,8 @@ async function loadNode() {
 }
 
 watch(() => props.scope, loadNode, { deep: true, immediate: true })
+
+defineExpose({ refresh })
 </script>
 
 <style scoped>

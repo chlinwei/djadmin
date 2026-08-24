@@ -4,12 +4,12 @@ package djadmin.agent.v1;
 
 option go_package = "github.com/chlinwei/djadmin/dj_agent/internal/grpcfile/pb";
 
-// dj-agent 统一控制/数据通道：与现有 RabbitMQ 心跳/任务模型保持相同的网络方向——
+// dj-agent 统一控制/数据通道：
 // 由 agent 主动拨号连接 backend 并建立一条长连接双向流，backend 在这条流里下发
 // 各类操作命令（文件传输 / WebSSH 终端 / 自动化任务执行），agent 在本地执行后把
 // 结果/数据块回传。所有操作以 request_id 在同一条流上多路复用。
 // 之所以不采用 backend 主动连 agent 的模型，是因为目标主机通常在 NAT/防火墙后面，
-// 不具备被 backend 直接访问的入站连通性；agent-拨出模型可以复用现有网络策略。
+// 不具备被 backend 直接访问的入站连通性；agent 拨出模型可以绕过入站限制。
 service AgentChannel {
   rpc Session(stream AgentFrame) returns (stream ServerFrame);
 }

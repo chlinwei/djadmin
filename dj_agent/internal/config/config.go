@@ -26,7 +26,7 @@ func LoadFromEnv() (Config, error) {
 		MaxWorkers:      3,
 		ShutdownTimeout: 5 * time.Second,
 		BackendToken:    strings.TrimSpace(os.Getenv("DJ_AGENT_BACKEND_TOKEN")),
-		// 文件传输 gRPC 通道：agent 主动拨号连接 backend（与 RabbitMQ 同向）。
+		// Agent 主动拨号连接 backend，不要求 backend 主动访问目标主机。
 		GRPCFileAddr: strings.TrimSpace(getEnv("DJ_AGENT_GRPC_FILE_ADDR", "127.0.0.1:9001")),
 	}
 

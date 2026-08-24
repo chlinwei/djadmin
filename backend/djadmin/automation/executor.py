@@ -99,7 +99,7 @@ def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[
             'group_id': host.group_id,
             'group_name': host.group.name if getattr(host, 'group', None) else '',
             'group_path': group_path_map.get(int(host.group_id), '') if host.group_id is not None else '',
-            # agent 在线状态（来自 DB 字段，由 runagentconsumer 维护）
+            # agent 在线状态由 gRPC Session 建立与断开同步到 DB。
             'agent_online': bool(getattr(host, 'agent_online', False)),
         })
 

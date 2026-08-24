@@ -20,6 +20,21 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
       } }),
     })
   })
+  await page.route('**/assets/business-environments/**', async (route) => {
+    const environment = {
+      id: 72, business_system: 7, business_system_name: '订单系统',
+      name: '测试环境', code: 'testing', order: 1,
+      service_count: 1, deployment_count: 1, enabled: true,
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 200, msg: 'success', data: {
+        results: [environment],
+        count: 1, pageNumber: 1, pageSize: 30, totalPages: 1, next: null, previous: null,
+      } }),
+    })
+  })
   await page.route('**/assets/application-deployments/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname
     const isDetail = pathname.endsWith('/assets/application-deployments/11/')
@@ -34,7 +49,8 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
       version: '1.0',
       instance_name: 'order-test-1',
       member_role: 'standalone',
-      environment: 'testing',
+      environment: 72,
+      environment_name: '测试环境',
       host_name: 'order-node-1',
       host_ip: '10.0.0.31',
       runtime_status: 'running',
@@ -61,7 +77,8 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
       business_system: 7,
       business_system_name: '订单系统',
       name: '订单服务',
-      environment: 'testing',
+      environment: 72,
+      environment_name: '测试环境',
       topology_type: 'standalone',
       application_name: 'Order API',
       deployment_count: 1,
@@ -98,7 +115,7 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
   const serviceResponse = page.waitForResponse((response) => {
     const url = new URL(response.url())
     return url.pathname.endsWith('/assets/application-services/')
-      && url.searchParams.get('environment') === 'testing'
+      && url.searchParams.get('environment') === '72'
       && url.searchParams.get('business_system') === '7'
   })
   await testingEnvironment.click()

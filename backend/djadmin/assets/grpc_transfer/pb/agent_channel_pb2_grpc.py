@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class AgentChannelStub:
-    """dj-agent 统一控制/数据通道：与现有 RabbitMQ 心跳/任务模型保持相同的网络方向——
+    """dj-agent 统一控制/数据通道：
     由 agent 主动拨号连接 backend 并建立一条长连接双向流，backend 在这条流里下发
     各类操作命令（文件传输 / WebSSH 终端 / 自动化任务执行），agent 在本地执行后把
     结果/数据块回传。所有操作以 request_id 在同一条流上多路复用。
@@ -48,7 +48,7 @@ class AgentChannelStub:
 
 
 class AgentChannelServicer:
-    """dj-agent 统一控制/数据通道：与现有 RabbitMQ 心跳/任务模型保持相同的网络方向——
+    """dj-agent 统一控制/数据通道：
     由 agent 主动拨号连接 backend 并建立一条长连接双向流，backend 在这条流里下发
     各类操作命令（文件传输 / WebSSH 终端 / 自动化任务执行），agent 在本地执行后把
     结果/数据块回传。所有操作以 request_id 在同一条流上多路复用。
@@ -79,7 +79,7 @@ def add_AgentChannelServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class AgentChannel:
-    """dj-agent 统一控制/数据通道：与现有 RabbitMQ 心跳/任务模型保持相同的网络方向——
+    """dj-agent 统一控制/数据通道：
     由 agent 主动拨号连接 backend 并建立一条长连接双向流，backend 在这条流里下发
     各类操作命令（文件传输 / WebSSH 终端 / 自动化任务执行），agent 在本地执行后把
     结果/数据块回传。所有操作以 request_id 在同一条流上多路复用。

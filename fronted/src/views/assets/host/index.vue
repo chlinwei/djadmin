@@ -113,6 +113,12 @@
                         <span>&nbsp;新增主机</span>
                     </a-button>
                 </a-col>
+                <a-col class="tool-item" v-permission="'assets:hosts:update'">
+                    <a-button size="large" type="primary" @click="openAgentManage">
+                        <FontAwesomeIcon :icon="['fas', 'download']" />
+                        <span>&nbsp;管理 Agent</span>
+                    </a-button>
+                </a-col>
                 <a-col class="tool-item" v-permission="'assets:hosts:view'">
                     <a-button size="large" type="primary" ghost class="refresh-btn" @click="refreshList" :disabled="loading">
                         <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
@@ -253,6 +259,43 @@
             </a-card>
         </a-col>
     </a-row>
+
+            <a-modal
+                v-model:open="agentManageVisible"
+                title="批量管理 Agent"
+                ok-text="提交任务"
+                cancel-text="取消"
+                :confirm-loading="agentManageLoading"
+                @ok="submitAgentManage"
+                @cancel="closeAgentManage"
+            >
+                <a-alert
+                    type="warning"
+                    show-icon
+                    :message="`已选择 ${state.selectedRowKeys.length} 台主机`"
+                    description="当前版本要求 SSH 凭证使用 root 用户。普通用户和需要交互输入 sudo 密码的凭证暂不支持。"
+                    style="margin-bottom: 16px"
+                />
+                <a-form layout="vertical">
+                    <a-form-item label="操作">
+                        <a-radio-group v-model:value="agentManageOperation">
+                            <a-radio value="install">安装 / 重装</a-radio>
+                            <a-radio value="update">更新</a-radio>
+                        </a-radio-group>
+                    </a-form-item>
+                    <a-form-item label="SSH 凭证" required>
+                        <a-select
+                            v-model:value="agentManageCredentialId"
+                            :options="agentCredentialOptions"
+                            :getPopupContainer="getPopupContainer"
+                            placeholder="请选择 SSH 凭证"
+                            :disabled="!agentCredentialOptions.length"
+                            show-search
+                            option-filter-prop="label"
+                        />
+                    </a-form-item>
+                </a-form>
+            </a-modal>
 
     <Dialog
         :open="groupDialogVisible"
@@ -473,6 +516,8 @@ import {
     deleteHostById,
     getHostById,
     getHostList,
+    getCredentialOptionList,
+    installAgents,
     saveOrCreateHost,
 } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
@@ -530,6 +575,11 @@ const webSshUserList = ref(['root'])
 const webSshOpening = ref(false)
 const webSshPendingHostRecord = ref(null)
 const syncingRouteFilters = ref(false)
+const agentManageVisible = ref(false)
+const agentManageLoading = ref(false)
+const agentManageOperation = ref('install')
+const agentManageCredentialId = ref(undefined)
+const agentCredentials = ref([])
 
 let hostListAutoRefreshTimer = null
 
@@ -837,6 +887,83 @@ const filterHostsByAgentStatus = (rows) => {
         return rows.filter((item) => item?.agent_online !== true)
     }
     return rows
+}
+
+const agentCredentialOptions = computed(() => {
+    return agentCredentials.value
+        .map((credential) => ({
+            label: `${credential.name || `凭证-${credential.id}`} (${credential.username}@${credential.port})`,
+            value: credential.id,
+        }))
+})
+
+const loadAgentCredentials = async () => {
+    try {
+        const res = await getCredentialOptionList({ page: 1, size: 200, ordering: 'name' })
+        const payload = res?.data?.data || {}
+        agentCredentials.value = Array.isArray(payload.results) ? payload.results : []
+    } catch (error) {
+        agentCredentials.value = []
+        message.error('获取 SSH 凭证列表失败')
+    }
+}
+
+const closeAgentManage = () => {
+    agentManageVisible.value = false
+}
+
+const openAgentManage = () => {
+    if (!state.selectedRowKeys.length) {
+        message.warning('请先在主机列表中选择目标主机')
+        return
+    }
+    const selectedHosts = datasources.value.filter((host) => state.selectedRowKeys.includes(host.id))
+    agentManageOperation.value = selectedHosts.some((host) => !String(host.agent_id || '').trim()) ? 'install' : 'update'
+    if (!agentCredentials.value.length) {
+        loadAgentCredentials()
+    }
+    agentManageCredentialId.value = undefined
+    agentManageVisible.value = true
+}
+
+const submitAgentManage = async () => {
+    if (!agentManageCredentialId.value) {
+        message.warning('请选择 SSH 凭证')
+        return
+    }
+    const selectedHosts = datasources.value.filter((host) => state.selectedRowKeys.includes(host.id))
+    if (agentManageOperation.value === 'update' && selectedHosts.some((host) => !String(host.agent_id || '').trim())) {
+        message.warning('更新操作仅支持已安装 Agent 的主机')
+        return
+    }
+    agentManageLoading.value = true
+    try {
+        const res = await installAgents({
+            host_ids: state.selectedRowKeys,
+            operation: agentManageOperation.value,
+            credential_id: agentManageCredentialId.value,
+        })
+        if (res?.data?.code !== 200) {
+            message.error(res?.data?.msg || 'Agent 任务提交失败')
+            return
+        }
+        const executionId = Number(res.data.data?.automation_job_id || 0)
+        if (!Number.isInteger(executionId) || executionId <= 0) {
+            message.error('Agent 任务已提交，但未返回运行记录 ID')
+            return
+        }
+        message.success(`已提交 ${res.data.data?.jobs?.length || 0} 个 Agent 任务`)
+        closeAgentManage()
+        state.selectedRowKeys = []
+        await router.push({
+            path: '/sys/automation/logs',
+            query: { job_id: String(executionId) },
+        })
+    } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || 'Agent 任务提交失败')
+    } finally {
+        agentManageLoading.value = false
+    }
 }
 
 const loadHostList = async ({ refreshRuntime = true } = {}) => {

@@ -12,6 +12,7 @@ from scheduler_manager import ensure_scheduler_log_configs
 
 
 HOST_MANAGE_REFRESH_INTERVAL_SECONDS_KEY = 'sys.assets.host.manage.refresh_interval_seconds'
+AGENT_GRPC_ADVERTISE_ADDR_KEY = 'sys.assets.agent.grpc_advertise_addr'
 HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS_KEY = 'sys.assets.host.detail.collect_dispatch_interval_seconds'
 AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS_KEY = 'sys.automation.logs.refresh_interval_seconds'
 AUTOMATION_WS_JOB_LOG_POLL_INTERVAL_SECONDS_KEY = 'sys.automation.websocket.job_log_poll_interval_seconds'
@@ -42,6 +43,20 @@ def ensure_host_manage_refresh_interval_config():
             'value_type': 'int',
             'name': '主机管理页刷新间隔（秒）',
             'description': '主机管理列表自动刷新间隔（秒）',
+            'is_readonly': False,
+        },
+    )
+
+
+def ensure_agent_grpc_advertise_addr_config():
+    SysConfig.objects.get_or_create(
+        key=AGENT_GRPC_ADVERTISE_ADDR_KEY,
+        defaults={
+            'value': '',
+            'default_value': '',
+            'value_type': 'string',
+            'name': 'Agent gRPC 对外地址',
+            'description': 'Agent 连接 djadmin 后端的地址，例如 10.25.66.150:9001，不能填写 127.0.0.1 或 0.0.0.0',
             'is_readonly': False,
         },
     )
@@ -114,6 +129,7 @@ class SysConfigViewSet(viewsets.ModelViewSet):
         # system config page before visiting scheduler task center.
         ensure_scheduler_log_configs()
         ensure_host_manage_refresh_interval_config()
+        ensure_agent_grpc_advertise_addr_config()
         ensure_host_detail_collect_dispatch_interval_config()
         ensure_automation_logs_refresh_interval_config()
         ensure_automation_ws_job_log_poll_interval_config()

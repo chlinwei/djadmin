@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="profileId ? '编辑自定义集群模型' : '新增自定义集群模型'"
+    :title="profileId ? `编辑集群模型：${form.name || '加载中'}` : '新增自定义集群模型'"
     :width="680"
     :confirm-loading="saving"
     ok-text="保存"
@@ -37,6 +37,7 @@ import {
 const props = defineProps({
   open: { type: Boolean, required: true },
   profileId: { type: Number, default: null },
+  initialApplicationId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -69,6 +70,8 @@ async function initialize() {
       const response = await getClusterProfile(props.profileId)
       const data = response?.data?.data || {}
       Object.assign(form, initialForm(), data)
+    } else if (props.initialApplicationId) {
+      form.application = props.initialApplicationId
     }
   } finally {
     loading.value = false
@@ -79,10 +82,10 @@ async function submit() {
   await formRef.value.validate()
   saving.value = true
   try {
-    await saveClusterProfile({ ...form })
+    const response = await saveClusterProfile({ ...form })
     message.success('保存成功')
     emit('update:open', false)
-    emit('saved')
+    emit('saved', response?.data?.data)
   } finally {
     saving.value = false
   }

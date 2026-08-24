@@ -1,0 +1,137 @@
+---
+- name: Install or update dj-agent
+  hosts: target
+  become: true
+  gather_facts: false
+  vars:
+    dj_agent_binary_source: ""
+    dj_agent_id: ""
+    dj_agent_grpc_addr: ""
+    dj_agent_is_local: false
+
+  pre_tasks:
+    - name: Require Linux amd64 hosts
+      ansible.builtin.command:
+        argv: [/bin/uname, -s, -m]
+      register: dj_agent_platform
+      changed_when: false
+
+    - name: Confirm Linux amd64 host
+      ansible.builtin.assert:
+        that:
+          - dj_agent_platform.stdout is search('Linux')
+          - dj_agent_platform.stdout is search('x86_64|amd64')
+        fail_msg: "dj-agent installer currently supports Linux amd64 only"
+
+    - name: Require installer variables
+      ansible.builtin.assert:
+        that:
+          - dj_agent_binary_source | length > 0
+          - dj_agent_id | length > 0
+          - dj_agent_grpc_addr | length > 0
+          - (dj_agent_is_local | bool) or not (dj_agent_grpc_addr is match('^(127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0):'))
+          - not (dj_agent_is_local | bool) or (dj_agent_grpc_addr is match('^127\\.0\\.0\\.1:'))
+        fail_msg: "dj-agent binary, agent_id and grpc_addr are required"
+
+  tasks:
+    - name: Remove legacy dj-agent systemd unit override
+      ansible.builtin.file:
+        path: /etc/systemd/system/dj-agent.service
+        state: absent
+
+    - name: Install dj-agent binary
+      ansible.builtin.copy:
+        src: "{{ dj_agent_binary_source }}"
+        dest: /usr/local/bin/dj-agent
+        mode: "0755"
+
+    - name: Create dj-agent configuration directory
+      ansible.builtin.file:
+        path: /etc/dj-agent
+        state: directory
+        mode: "0755"
+
+    - name: Write dj-agent configuration
+      ansible.builtin.copy:
+        content: |
+          DJ_AGENT_ID={{ dj_agent_id }}
+          DJ_AGENT_GRPC_FILE_ADDR={{ dj_agent_grpc_addr }}
+          DJ_AGENT_LOG_LEVEL=info
+        dest: /etc/dj-agent/config.env
+        mode: "0600"
+
+    - name: Write dj-agent systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=dj-agent service
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=root
+          EnvironmentFile=/etc/dj-agent/config.env
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=dj-agent
+          ExecStart=/usr/local/bin/dj-agent
+          Restart=on-failure
+          RestartSec=5
+          SuccessExitStatus=0 143 130
+          TimeoutStopSec=15
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /usr/lib/systemd/system/dj-agent.service
+        mode: "0644"
+
+    - name: Restart and verify dj-agent service
+      block:
+        - name: Reload and restart dj-agent service
+          ansible.builtin.systemd_service:
+            name: dj-agent.service
+            daemon_reload: true
+            enabled: true
+            state: restarted
+
+        - name: Wait for dj-agent service to become active
+          ansible.builtin.command:
+            argv: [systemctl, is-active, dj-agent.service]
+          register: dj_agent_service_status
+          changed_when: false
+          failed_when: false
+          until:
+            - dj_agent_service_status.rc == 0
+            - dj_agent_service_status.stdout | trim == 'active'
+          retries: 10
+          delay: 1
+
+        - name: Confirm dj-agent service activation
+          ansible.builtin.assert:
+            that:
+              - dj_agent_service_status.stdout | trim == 'active'
+            fail_msg: "dj-agent.service did not become active: {{ dj_agent_service_status.stdout | trim }}"
+      rescue:
+        - name: Read dj-agent service status
+          ansible.builtin.command:
+            argv: [systemctl, status, dj-agent.service, --no-pager, --full]
+          register: dj_agent_failed_status
+          changed_when: false
+          failed_when: false
+
+        - name: Read recent dj-agent journal
+          ansible.builtin.command:
+            argv: [journalctl, -u, dj-agent.service, -n, "50", --no-pager]
+          register: dj_agent_failed_journal
+          changed_when: false
+          failed_when: false
+
+        - name: Report dj-agent startup failure
+          ansible.builtin.fail:
+            msg: |-
+              dj-agent.service failed to start.
+              systemctl status:
+              {{ dj_agent_failed_status.stdout }}
+              journalctl:
+              {{ dj_agent_failed_journal.stdout }}

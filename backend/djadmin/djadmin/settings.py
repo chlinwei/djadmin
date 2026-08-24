@@ -33,6 +33,7 @@ ALLOWED_HOSTS = ['*']
 # Application definition
 
 INSTALLED_APPS = [
+    'inspection.apps.InspectionConfig',
     'automation.apps.AutomationConfig',
     'monitor.apps.MonitorConfig',
     'daphne',
@@ -233,15 +234,7 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
 
-# RabbitMQ (for dj-agent communication)
-RABBITMQ_URL = os.getenv(
-    'RABBITMQ_URL',
-    'amqp://admin:admin123@10.25.66.150:5672/',
-)
-RABBITMQ_AGENT_REPORTS_QUEUE = 'agent.reports'
-
-# dj-agent 文件传输 gRPC 通道：agent 主动拨号连接这里建立长连接（与 RabbitMQ 同向，
-# 不要求目标主机对 backend 网络可达）。后续切到 mTLS 后在连接层做身份校验。
+# dj-agent 主动拨号连接这里建立统一 gRPC 长连接，不要求 backend 主动访问目标主机。
 AGENT_GRPC_LISTEN_HOST = os.getenv('AGENT_GRPC_LISTEN_HOST', '0.0.0.0')
 AGENT_GRPC_LISTEN_PORT = int(os.getenv('AGENT_GRPC_LISTEN_PORT', '9001'))
 AGENT_GRPC_REQUEST_TIMEOUT_SECONDS = int(os.getenv('AGENT_GRPC_REQUEST_TIMEOUT_SECONDS', '20'))

@@ -51,6 +51,11 @@ export const staticRouterMap = [
                 component: () => import('../views/automation/automationtask/index.vue'),
             },
             {
+                path: '/sys/inspection',
+                name: '巡检中心',
+                component: () => import('../views/inspection/index.vue'),
+            },
+            {
                 path: '/sys/automation/logs',
                 name: '运行记录中心',
                 component: () => import('../views/automation/logs/index.vue'),

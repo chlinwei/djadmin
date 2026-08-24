@@ -29,6 +29,7 @@ export const CONFIG_KEYS = {
   SYSTEM_TITLE:             'sys.system_title',
   HOSTGROUP_MAX_TREE_DEPTH: 'sys.assets.hostgroup.max_tree_depth',
   HOST_MANAGE_REFRESH_INTERVAL_SECONDS: 'sys.assets.host.manage.refresh_interval_seconds',
+  AGENT_GRPC_ADVERTISE_ADDR: 'sys.assets.agent.grpc_advertise_addr',
   HOST_DETAIL_COLLECT_DISPATCH_INTERVAL_SECONDS: 'sys.assets.host.detail.collect_dispatch_interval_seconds',
   AUTOMATION_LOGS_REFRESH_INTERVAL_SECONDS: 'sys.automation.logs.refresh_interval_seconds',
   ALERT_HISTORY_RETENTION_DAYS: 'sys.monitor.alert_history.retention_days',

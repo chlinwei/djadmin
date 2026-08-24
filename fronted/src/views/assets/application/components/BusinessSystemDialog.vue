@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="systemId ? '编辑业务系统' : '新增业务系统'"
+    :title="systemId ? `编辑业务系统：${form.name || '加载中'}` : '新增业务系统'"
     :confirm-loading="saving"
     ok-text="保存"
     cancel-text="取消"
@@ -81,10 +81,10 @@ async function submit() {
   await formRef.value.validate()
   saving.value = true
   try {
-    await saveBusinessSystem({ ...form })
+    const response = await saveBusinessSystem({ ...form })
     message.success('保存成功')
     emit('update:open', false)
-    emit('saved')
+    emit('saved', response?.data?.data)
   } finally {
     saving.value = false
   }

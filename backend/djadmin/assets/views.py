@@ -1,5 +1,4 @@
 import warnings
-import re
 import time
 import uuid
 import asyncio
@@ -8,6 +7,8 @@ import importlib
 import os
 import logging
 import threading
+from pathlib import Path
+from typing import Any, cast
 from copy import deepcopy
 from types import SimpleNamespace
 from datetime import timedelta
@@ -26,6 +27,7 @@ from .serializer import *
 from .application_variables import ApplicationVariableError, resolve_application_variables
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
+from django_filters import rest_framework as drf_filters
 from django_filters.rest_framework  import DjangoFilterBackend
 from djadmin.errordict import DjadminException,AssetsError
 from io import TextIOWrapper
@@ -36,6 +38,7 @@ from django.db.models.deletion import ProtectedError
 from django.db import IntegrityError, transaction, connections, close_old_connections, DatabaseError
 from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
+from django.http import JsonResponse
 from django.utils import timezone
 from .credential_crypto import decrypt_secret
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -43,6 +46,7 @@ from .webssh_host_mixin import WebSSHHostMixin
 from .host_info import refresh_host_info
 from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from .grpc_transfer.registry import REGISTRY
+from .agent_install_service import _refresh_automation_job, run_agent_install_job
 
 # 日志记录器
 logger = logging.getLogger(__name__)
@@ -204,7 +208,7 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
     search_fields = ['name', 'remark'] 
-    filterset_fields = ['id', 'category', 'enabled']
+    filterset_fields = ['id', 'auth_type']
     ordering_fields = [ 'name','create_time'] 
     lookup_field = 'id'
     permission_classes = [CustomMenuPermission]
@@ -348,7 +352,7 @@ class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retriev
     queryset = Application.objects.prefetch_related('versions', 'baseline_checks').annotate(
         version_count=Count('versions', distinct=True),
         deployment_template_count=Count('deployment_templates', distinct=True),
-        deployment_count=Count('versions__deployments', distinct=True),
+        deployment_count=Count('services__deployments', distinct=True),
     ).order_by('-id')
     serializer_class = ApplicationSerializer
     pagination_class = CustomPagination
@@ -495,11 +499,25 @@ class ApplicationVersionManage(ApplicationAssetManageBase):
 
 
 class BusinessSystemManage(ApplicationAssetManageBase):
-    queryset = BusinessSystem.objects.annotate(deployment_count=Count('services__deployments')).all()
+    queryset = BusinessSystem.objects.annotate(
+        deployment_count=Count('environments__services__deployments', distinct=True),
+        environment_count=Count('environments', distinct=True),
+    ).all()
     serializer_class = BusinessSystemSerializer
     search_fields = ['name', 'code', 'owner', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
     filterset_fields = ['enabled']
+
+
+class BusinessEnvironmentManage(ApplicationAssetManageBase):
+    queryset = BusinessEnvironment.objects.select_related('business_system').annotate(
+        service_count=Count('services', distinct=True),
+        deployment_count=Count('services__deployments', distinct=True),
+    ).all()
+    serializer_class = BusinessEnvironmentSerializer
+    search_fields = ['name', 'code', 'owner', 'business_system__name', 'remark']
+    ordering_fields = ['name', 'code', 'order', 'create_time', 'update_time']
+    filterset_fields = ['business_system', 'enabled']
 
 
 class ClusterProfileManage(ApplicationAssetManageBase):
@@ -515,21 +533,104 @@ class ClusterProfileManage(ApplicationAssetManageBase):
         return super().destroy(request, *args, **kwargs)
 
 
+class ApplicationServiceFilter(drf_filters.FilterSet):
+    # 逻辑服务不再直接持有业务系统，这里保留 business_system 查询参数并转发到环境所属系统。
+    business_system = drf_filters.NumberFilter(field_name='environment__business_system')
+
+    class Meta:
+        model = ApplicationService
+        fields = [
+            'business_system', 'application', 'environment', 'topology_type',
+            'cluster_profile', 'enabled',
+        ]
+
+
 class ApplicationServiceManage(ApplicationAssetManageBase):
     queryset = ApplicationService.objects.select_related(
-        'business_system', 'application', 'cluster_profile',
-    ).annotate(deployment_count=Count('deployments')).all()
+        'environment__business_system', 'application', 'cluster_profile',
+    ).annotate(deployment_count=Count('deployments', distinct=True)).all()
     serializer_class = ApplicationServiceSerializer
-    search_fields = ['name', 'code', 'business_system__name', 'application__name', 'access_address', 'remark']
+    search_fields = ['name', 'code', 'environment__business_system__name', 'application__name', 'access_address', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
-    filterset_fields = [
-        'business_system', 'application', 'environment', 'topology_type',
-        'availability_mode', 'access_type', 'cluster_profile', 'enabled',
-    ]
+    filterset_class = ApplicationServiceFilter
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
         'check_baseline': 'assets:applications:update',
+        'refresh_runtime_status': 'assets:applications:update',
     }
+
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        request_data = cast(dict[str, Any], request.data)
+        data = {key: value for key, value in request_data.items() if key != 'draft'}
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def retrieve(self, request: Request, *args, **kwargs) -> Response:
+        service = self.get_object()
+        profile = service.cluster_profile
+        if profile and profile.cluster_type == ClusterProfile.ClusterType.HA and service.access_address.strip():
+            deployments = list(service.deployments.select_related('host').all())
+            roles = {
+                deployment.id: (
+                    ApplicationDeployment.HaRole.PRIMARY
+                    if str(deployment.host.ip or '').strip() == service.access_address.strip()
+                    else ApplicationDeployment.HaRole.STANDBY
+                )
+                for deployment in deployments
+            }
+            for deployment in deployments:
+                role = roles[deployment.id]
+                if deployment.ha_role != role:
+                    deployment.ha_role = role
+                    deployment.save(update_fields=['ha_role', 'update_time'])
+        return Response_200(data=self.get_serializer(service).data)
+
+    @action(detail=True, methods=['post'], url_path='refresh-runtime-status')
+    def refresh_runtime_status(self, request: Request, *args, **kwargs) -> Response:
+        """逐个查询该服务全部启用实例的运行状态；控制命令来自服务绑定的部署模板。"""
+        service = self.get_object()
+        deployments = list(ApplicationDeployment.objects.filter(
+            service_links__service=service,
+            service_links__enabled=True,
+            enabled=True,
+        ).select_related('host').distinct())
+        if not deployments:
+            return Response_error_str('该逻辑服务没有启用的部署实例', code=400)
+
+        def check(deployment):
+            error_message = ''
+            try:
+                _, error_message = _run_deployment_control(deployment, 'status')
+            except Exception as error:  # 单个实例失败不能中断整体查询
+                error_message = str(error)
+            finally:
+                # 线程池复用线程会保留 Django 线程级连接，用完主动关闭避免连接泄漏。
+                close_old_connections()
+            return {
+                'deployment': deployment.pk,
+                'instance_name': deployment.instance_name,
+                'host_name': deployment.host.instance_name,
+                'runtime_status': deployment.runtime_status,
+                'last_status_check_time': deployment.last_status_check_time,
+                'error': error_message,
+            }
+
+        with ThreadPoolExecutor(max_workers=min(8, len(deployments))) as executor:
+            results = list(executor.map(check, deployments))
+
+        statuses = [item['runtime_status'] for item in results]
+        return Response_200(data={
+            'service': service.pk,
+            'results': results,
+            'summary': {
+                'total': len(results),
+                'running': statuses.count(ApplicationDeployment.RuntimeStatus.RUNNING),
+                'stopped': statuses.count(ApplicationDeployment.RuntimeStatus.STOPPED),
+                'error': statuses.count(ApplicationDeployment.RuntimeStatus.ERROR),
+            },
+        })
 
     @action(detail=True, methods=['post'], url_path='check-baseline')
     def check_baseline(self, request: Request, *args, **kwargs) -> Response:
@@ -537,9 +638,13 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
         if service.topology_type != ApplicationService.TopologyType.CLUSTER:
             return Response_error_str('只有实际集群可以执行集群基线检查', code=400)
 
-        deployments = list(service.deployments.select_related(
-            'application_version__application', 'deployment_template__application',
-        ))
+        deployments = list(ApplicationDeployment.objects.filter(
+            service_links__service=service,
+        ).select_related('host'))
+        links_by_deployment = {
+            link.deployment_id: link
+            for link in ApplicationServiceDeployment.objects.filter(service=service)
+        }
         results = []
 
         def add_result(key: str, name: str, passed: bool, expected, actual) -> None:
@@ -573,31 +678,9 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
         if is_ha:
             add_result(
                 'vip', 'VIP 配置',
-                service.access_type == ApplicationService.AccessType.VIP and bool(service.access_address.strip()),
-                '访问方式为 VIP 且地址非空', service.access_address or '未配置',
+                bool(service.access_address.strip()),
+                'VIP 地址非空', service.access_address or '未配置',
             )
-            members_without_port = sum(deployment.member_port is None for deployment in deployments)
-            add_result(
-                'member_ports', 'HA 成员端口', members_without_port == len(deployments),
-                '所有成员不配置端口', f'{members_without_port}/{len(deployments)} 个成员未配置端口',
-            )
-            primary_deployment = service.primary_deployment
-            primary_is_member = (
-                primary_deployment is not None
-                and primary_deployment.application_service_id == service.id
-            )
-            add_result(
-                'vip_primary', 'VIP 主节点', primary_is_member,
-                '唯一指定一个集群成员',
-                primary_deployment.instance_name if primary_is_member else '未指定或不属于当前集群',
-            )
-        else:
-            members_with_port = sum(deployment.member_port is not None for deployment in deployments)
-            add_result(
-                'member_ports', '成员端口', members_with_port == len(deployments),
-                '所有成员均配置端口', f'{members_with_port}/{len(deployments)} 个成员已配置端口',
-            )
-
         passed_count = sum(result['status'] == 'pass' for result in results)
         pass_rate = round(passed_count * 100 / len(results), 2)
         service.health_status = (
@@ -631,6 +714,74 @@ def _get_optional_related(instance, field_name):
         return getattr(instance, field_name)
     except ObjectDoesNotExist:
         return None
+
+
+def _run_deployment_control(deployment, control_action):
+    """执行部署实例控制动作并落库运行状态，返回 (completed_job, error_message)。"""
+    agent_id = str(deployment.host.agent_id or '').strip()
+    if agent_id == '':
+        return None, '部署主机未绑定 Agent 实例，无法执行应用控制'
+
+    params = _build_application_baseline_params(deployment)
+    params['control_action'] = control_action
+    action_config = params.get('control_actions', {}).get(control_action, {})
+    timeout_seconds = int(action_config.get('timeout_seconds') or 30) if isinstance(action_config, dict) else 30
+    job = AgentJob.objects.create(
+        job_id=f'app-control-{uuid.uuid4().hex[:16]}',
+        agent_id=agent_id,
+        host=deployment.host,
+        job_type='custom',
+        action='control_application',
+        params=params,
+        timeout_seconds=timeout_seconds,
+        status=AgentJob.JobStatus.QUEUED,
+    )
+    _emit_agent_job_event(job, 'new', {
+        'jid': job.job_id,
+        'tgt': job.agent_id,
+        'tgt_type': 'agent_id',
+        'fun': job.action,
+        'arg': job.params,
+        'minions': [job.agent_id],
+    })
+    completed_job = _dispatch_agent_job_via_grpc(job)
+    if completed_job is None or completed_job.status != AgentJob.JobStatus.SUCCESS:
+        error_message = (
+            getattr(completed_job, 'error_message', '')
+            or getattr(completed_job, 'stderr', '')
+            or '应用控制执行失败'
+        )
+        if control_action == 'status':
+            deployment.runtime_status = ApplicationDeployment.RuntimeStatus.ERROR
+            deployment.runtime_status_output = str(error_message)[:4000]
+            deployment.last_status_check_time = timezone.now()
+            if deployment.deployment_template.control_type == ApplicationDeploymentTemplate.ControlType.EXTERNAL_HA:
+                deployment.ha_role = ApplicationDeployment.HaRole.UNKNOWN
+            deployment.save(update_fields=[
+                'runtime_status', 'runtime_status_output', 'last_status_check_time', 'ha_role', 'update_time',
+            ])
+        return completed_job, str(error_message)
+
+    if control_action == 'status':
+        deployment.runtime_status = (
+            ApplicationDeployment.RuntimeStatus.RUNNING
+            if completed_job.exit_code == 0
+            else ApplicationDeployment.RuntimeStatus.STOPPED
+        )
+        deployment.runtime_status_output = str(completed_job.stdout or completed_job.stderr or '')[:4000]
+        deployment.last_status_check_time = timezone.now()
+        deployment.save(update_fields=[
+            'runtime_status', 'runtime_status_output', 'last_status_check_time', 'ha_role', 'update_time',
+        ])
+    else:
+        # 启停命令成功仅代表动作已受理，旧状态必须失效并由后续状态检查重新确认。
+        deployment.runtime_status = ApplicationDeployment.RuntimeStatus.UNKNOWN
+        deployment.runtime_status_output = ''
+        deployment.last_status_check_time = None
+        deployment.save(update_fields=[
+            'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
+        ])
+    return completed_job, ''
 
 
 def _build_application_baseline_params(deployment):
@@ -934,22 +1085,43 @@ def _run_application_baseline_check(execution_id, job_id):
         close_old_connections()
 
 
+class ApplicationDeploymentFilter(drf_filters.FilterSet):
+    # 保持既有查询参数名不变，实际过滤路径改为经由环境实体到业务系统。
+    application_service__business_system = drf_filters.NumberFilter(
+        field_name='application_services__environment__business_system',
+    )
+    application_service = drf_filters.NumberFilter(field_name='application_services')
+    application_service__environment = drf_filters.NumberFilter(field_name='application_services__environment')
+    # 版本与模板已收收到逻辑服务，过滤同样经由服务关联。
+    application_version = drf_filters.NumberFilter(field_name='application_services__application_version')
+    application_version__application = drf_filters.NumberFilter(field_name='application_services__application')
+    deployment_template = drf_filters.NumberFilter(field_name='application_services__deployment_template')
+
+    class Meta:
+        model = ApplicationDeployment
+        fields = [
+            'id', 'application_version', 'application_version__application', 'deployment_template',
+            'application_service', 'application_service__business_system',
+            'application_service__environment', 'host', 'enabled',
+        ]
+
+
 class ApplicationDeploymentManage(ApplicationAssetManageBase):
     queryset = ApplicationDeployment.objects.select_related(
-        'application_version__application', 'deployment_template',
-        'application_service__business_system', 'application_service__cluster_profile', 'host',
-    ).prefetch_related('deployment_template__ports')
+        'host',
+    ).prefetch_related(
+        'application_services__application_version__application',
+        'application_services__deployment_template__ports',
+        'application_services__environment__business_system',
+        'application_services__cluster_profile',
+    )
     serializer_class = ApplicationDeploymentSerializer
     search_fields = [
-        'instance_name', 'application_version__application__name',
-        'application_version__version', 'host__instance_name', 'host__ip',
+        'instance_name', 'application_services__application__name',
+        'application_services__application_version__version', 'host__instance_name', 'host__ip',
     ]
     ordering_fields = ['instance_name', 'create_time', 'update_time']
-    filterset_fields = [
-        'id', 'application_version', 'application_version__application', 'deployment_template',
-        'application_service', 'application_service__business_system',
-        'application_service__environment', 'host', 'enabled',
-    ]
+    filterset_class = ApplicationDeploymentFilter
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
         'control': 'assets:applications:update',
@@ -964,66 +1136,10 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
         control_action = str(request.data.get('action') or '').strip().lower()
         if control_action not in {'start', 'stop', 'status'}:
             return Response_error_str('应用控制动作必须为 start、stop 或 status', code=400)
-        agent_id = str(deployment.host.agent_id or '').strip()
-        if agent_id == '':
-            return Response_error_str('部署主机未绑定 Agent 实例，无法执行应用控制', code=400)
 
-        params = _build_application_baseline_params(deployment)
-        params['control_action'] = control_action
-        action_config = params.get('control_actions', {}).get(control_action, {})
-        timeout_seconds = int(action_config.get('timeout_seconds') or 30) if isinstance(action_config, dict) else 30
-        job = AgentJob.objects.create(
-            job_id=f'app-control-{uuid.uuid4().hex[:16]}',
-            agent_id=agent_id,
-            host=deployment.host,
-            job_type='custom',
-            action='control_application',
-            params=params,
-            timeout_seconds=timeout_seconds,
-            status=AgentJob.JobStatus.QUEUED,
-        )
-        _emit_agent_job_event(job, 'new', {
-            'jid': job.job_id,
-            'tgt': job.agent_id,
-            'tgt_type': 'agent_id',
-            'fun': job.action,
-            'arg': job.params,
-            'minions': [job.agent_id],
-        })
-        completed_job = _dispatch_agent_job_via_grpc(job)
-        if completed_job is None or completed_job.status != AgentJob.JobStatus.SUCCESS:
-            error_message = (
-                getattr(completed_job, 'error_message', '')
-                or getattr(completed_job, 'stderr', '')
-                or '应用控制执行失败'
-            )
-            if control_action == 'status':
-                deployment.runtime_status = ApplicationDeployment.RuntimeStatus.ERROR
-                deployment.runtime_status_output = str(error_message)[:4000]
-                deployment.last_status_check_time = timezone.now()
-                deployment.save(update_fields=[
-                    'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
-                ])
-            return Response_error_str(str(error_message), code=400)
-        if control_action == 'status':
-            deployment.runtime_status = (
-                ApplicationDeployment.RuntimeStatus.RUNNING
-                if completed_job.exit_code == 0
-                else ApplicationDeployment.RuntimeStatus.STOPPED
-            )
-            deployment.runtime_status_output = str(completed_job.stdout or completed_job.stderr or '')[:4000]
-            deployment.last_status_check_time = timezone.now()
-            deployment.save(update_fields=[
-                'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
-            ])
-        else:
-            # 启停命令成功仅代表动作已受理，旧状态必须失效并由后续状态检查重新确认。
-            deployment.runtime_status = ApplicationDeployment.RuntimeStatus.UNKNOWN
-            deployment.runtime_status_output = ''
-            deployment.last_status_check_time = None
-            deployment.save(update_fields=[
-                'runtime_status', 'runtime_status_output', 'last_status_check_time', 'update_time',
-            ])
+        completed_job, error_message = _run_deployment_control(deployment, control_action)
+        if error_message:
+            return Response_error_str(error_message, code=400)
         return Response_200(data={
             'job_id': completed_job.job_id,
             'action': control_action,
@@ -1169,7 +1285,7 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
     def baseline_history(self, request, *args, **kwargs):
         deployment = self.get_object()
         executions = deployment.baseline_executions.select_related(
-            'agent_job', 'deployment__application_version__application', 'deployment__host',
+            'agent_job', 'deployment__host',
         ).prefetch_related('results')[:20]
         serializer = ApplicationBaselineExecutionSerializer(executions, many=True)
         return Response_200(data=serializer.data)
@@ -1592,8 +1708,8 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
     （automation.PlaybookTemplate），不再经由 AutomationTask 中转；执行结果只写入
     MonitorTargetInstallHistory，并复用 automation 模块现成的 backend Ansible runner 执行，exporter 名称/版本/校验值/systemd unit
     内容通过 extra_vars 传给 playbook。
-    manual=True 表示由用户在前端点击“重试”手动触发：这类任务失败后不进入 runagentconsumer 的
-    自动重试链（避免用户点一次“重试”却在后台被自动重试 3 次），只尝试 1 次，失败则直接终止，需再次人工点击。
+    manual=True 表示由用户在前端点击“重试”手动触发：这类任务只尝试 1 次，
+    失败后直接终止，需再次人工点击。
     安装在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'agent_id', '') or '').strip()
@@ -1974,7 +2090,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
     def get_queryset(self):
         from monitor.models import MonitorTarget
 
-        # 在线状态必须与本进程可实际下发任务的 gRPC Session 一致，避免 RabbitMQ 心跳造成假在线。
+        # gRPC Session 是 Agent 在线状态的唯一来源，连接时间不能作为超时依据。
         connected_agent_ids = REGISTRY.connected_agent_ids()
         Host.objects.filter(agent_online=True).exclude(agent_id__in=connected_agent_ids).update(agent_online=False)
         if connected_agent_ids:
@@ -1986,6 +2102,11 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             'hardware',
             'system',
             'disks',
+            Prefetch(
+                'hostcredential_set',
+                queryset=HostCredential.objects.select_related('credential').order_by('-is_default', 'id'),
+                to_attr='host_credentials',
+            ),
         ).order_by('-id')
         group_id = self.request.query_params.get('group_id')  # type: ignore[union-attr]
         host_id = self.request.query_params.get('host_id')  # type: ignore[union-attr]
@@ -2010,23 +2131,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         }:
             queryset = queryset.filter(collect_status=collect_status)
         if agent_status in {'online', 'offline'}:
-            # dj-agent 每 10 秒发一次心跳，取 3 倍间隔（30 秒）作为超时阈值
-            # 可容忍 2 次连续丢包，避免网络抖动导致误报离线
-            heartbeat_timeout = timezone.now() - timedelta(seconds=30)
-            # 每次列表查询都同步超时状态到 DB，保证序列化器直接读 DB 字段准确
-            Host.objects.filter(
-                agent_online=True,
-                agent_online_time__lt=heartbeat_timeout,
-            ).update(agent_online=False)
-            # 基于 agent_online 标志判断在线状态
             queryset = queryset.filter(agent_online=(agent_status == 'online'))
-        else:
-            # 即使不按 agent_status 过滤，也需同步超时状态，确保详情/WebSSH 判断准确
-            heartbeat_timeout = timezone.now() - timedelta(seconds=30)
-            Host.objects.filter(
-                agent_online=True,
-                agent_online_time__lt=heartbeat_timeout,
-            ).update(agent_online=False)
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):
@@ -2504,6 +2609,141 @@ def agent_create_job(request):
 
 
 @api_view(['POST'])
+def agent_install(request: Request) -> Response | JsonResponse:
+    """Queue Ansible-based Agent installation or update for selected hosts."""
+    payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
+    raw_host_ids = payload.get('host_ids')
+    operation = str(payload.get('operation') or 'install').strip().lower()
+    try:
+        credential_id = int(str(payload.get('credential_id') or '').strip())
+    except (TypeError, ValueError):
+        return Response_error_str('credential_id必须是整数', code=400)
+    if operation not in {'install', 'update'}:
+        return Response_error_str('operation仅支持install或update', code=400)
+    if not isinstance(raw_host_ids, list) or not raw_host_ids:
+        return Response_error_str('host_ids不能为空数组', code=400)
+
+    host_ids = list(dict.fromkeys(
+        int(item) for item in raw_host_ids
+        if str(item).strip().isdigit() and int(item) > 0
+    ))
+    hosts = list(Host.objects.filter(id__in=host_ids).order_by('id'))
+    if len(hosts) != len(host_ids):
+        return Response_error_str('部分主机不存在，请刷新后重试', code=400)
+    if operation == 'update' and any(not str(host.agent_id or '').strip() for host in hosts):
+        return Response_error_str('更新操作仅支持已绑定 Agent 的主机', code=400)
+    credential = Credential.objects.filter(id=credential_id).first()
+    if credential is None:
+        return Response_error_str('SSH 凭证不存在', code=400)
+    if str(credential.username or '').strip().lower() != 'root':
+        return Response_error_str('当前版本要求 SSH 凭证使用 root 用户', code=400)
+
+    from automation.models import AutomationExecutionJob, AutomationExecutionTargetLog
+    operation_label = {'install': '安装', 'update': '更新'}[operation]
+    playbook_content = (Path(settings.BASE_DIR) / 'assets' / 'agent_install.yml').read_text(encoding='utf-8')
+    with transaction.atomic():
+        hosts = list(Host.objects.select_for_update().filter(id__in=host_ids).order_by('id'))
+        stale_before = timezone.now() - timedelta(seconds=30)
+        stale_jobs = list(AgentJob.objects.filter(
+            host_id__in=host_ids,
+            action='install_agent',
+            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
+            update_time__lt=stale_before,
+        ))
+        stale_job_ids = [job.job_id for job in stale_jobs]
+        stale_execution_ids = set(AutomationExecutionTargetLog.objects.filter(
+            agent_job_id__in=stale_job_ids,
+        ).values_list('job_id', flat=True))
+        if stale_jobs:
+            now = timezone.now()
+            AgentJob.objects.filter(pk__in=[job.pk for job in stale_jobs]).update(
+                status=AgentJob.JobStatus.FAILED,
+                error_message='Agent 安装执行进程已失联，请重新提交',
+                exit_code=1,
+                finished_at=now,
+                update_time=now,
+            )
+            AutomationExecutionTargetLog.objects.filter(agent_job_id__in=stale_job_ids).update(
+                status=AutomationExecutionTargetLog.Status.FAILED,
+                error_message='Agent 安装执行进程已失联，请重新提交',
+                exit_code=1,
+            )
+            for execution_id in stale_execution_ids:
+                _refresh_automation_job(execution_id)
+
+        active_job = AgentJob.objects.filter(
+            host_id__in=host_ids,
+            action='install_agent',
+            status__in=[AgentJob.JobStatus.QUEUED, AgentJob.JobStatus.RUNNING],
+        ).order_by('host_id').first()
+        if active_job is not None:
+            active_host_id = getattr(active_job, 'host_id', None)
+            active_execution_id = AutomationExecutionTargetLog.objects.filter(
+                agent_job_id=active_job.job_id,
+            ).values_list('job_id', flat=True).first()
+            return Response_error_str(
+                f'主机 {active_host_id} 已有 Agent 任务执行中'
+                f'（作业 #{active_execution_id or "-"}）',
+                code=400,
+            )
+
+        execution = AutomationExecutionJob.objects.create(
+            task=None,
+            status=AutomationExecutionJob.Status.RUNNING,
+            task_name_snapshot=f'Agent {operation_label}',
+            template_name_snapshot='dj-agent Ansible Playbook',
+            template_content_snapshot=playbook_content,
+            inventory_snapshot={
+                'hosts': [
+                    {'host_id': host.pk, 'name': host.instance_name or '', 'ip': str(host.ip or '')}
+                    for host in hosts
+                ],
+            },
+            extra_vars={'operation': operation, 'credential_id': credential_id},
+            requested_user_id=getattr(getattr(request, 'user', None), 'id', None),
+            requested_username=str(getattr(getattr(request, 'user', None), 'username', '') or ''),
+            start_time=timezone.now(),
+        )
+        jobs = []
+        for host in hosts:
+            job = AgentJob.objects.create(
+                job_id=f'install-agent-{uuid.uuid4().hex[:16]}',
+                agent_id=str(host.agent_id or f'host-{host.pk}'),
+                host=host,
+                job_type='ansible',
+                action='install_agent',
+                params={'credential_id': credential_id, 'operation': operation},
+                timeout_seconds=300,
+                status=AgentJob.JobStatus.QUEUED,
+            )
+            jobs.append(job)
+            AutomationExecutionTargetLog.objects.create(
+                job=execution,
+                host=host,
+                host_id_snapshot=host.pk,
+                host_name_snapshot=str(host.instance_name or ''),
+                host_ip_snapshot=str(host.ip or ''),
+                agent_job_id=job.job_id,
+                status=AutomationExecutionTargetLog.Status.PENDING,
+            )
+            transaction.on_commit(lambda job=job, host=host: threading.Thread(
+                target=run_agent_install_job,
+                args=(job.pk, host.pk, credential_id, execution.pk),
+                daemon=True,
+                name=f'agent-install-{host.pk}',
+            ).start())
+
+    return Response_200(data={
+        'operation': operation,
+        'automation_job_id': execution.pk,
+        'jobs': [
+            {'job_id': job.job_id, 'host_id': getattr(job, 'host_id', None), 'status': job.status}
+            for job in jobs
+        ],
+    })
+
+
+@api_view(['POST'])
 def agent_create_jobs_batch(request):
     """批量创建 agent 任务（逐 agent 写入 queued）。"""
     payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
@@ -2776,8 +3016,7 @@ def agent_query_jobs(request):
             'params': item.params,
             'result_data': item.result_data,
             'error_message': item.error_message,
-            # exit_code/stdout/stderr 由 runagentconsumer 收到 RabbitMQ 结果消息后写入，
-            # 之前查询接口没有透出，导致前端拿不到诸如 systemctl status 之类命令的原始输出。
+            # gRPC 任务完成后写入 exit_code/stdout/stderr，查询接口需透出原始输出。
             'exit_code': int(item.exit_code) if item.exit_code is not None else -1,
             'stdout': item.stdout,
             'stderr': item.stderr,

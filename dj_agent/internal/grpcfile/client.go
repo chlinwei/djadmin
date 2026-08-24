@@ -1,7 +1,6 @@
 // Package grpcfile 实现 dj-agent 侧的文件传输 gRPC 客户端：主动拨号连接 backend，
 // 建立一条长连接双向流，在同一条连接上并发处理 backend 下发的 list/stat/read/write/
-// rename/delete 命令。网络方向与现有 RabbitMQ 心跳/任务模型一致（agent 拨出），
-// 不要求目标主机对 backend 网络可达。
+// rename/delete 命令，不要求 backend 主动访问目标主机。
 package grpcfile
 
 import (
@@ -39,8 +38,7 @@ type session struct {
 	stream pb.AgentChannel_SessionClient
 	sendMu sync.Mutex
 
-	// exec 复用 agent 内统一的任务执行器，让 gRPC 通道下发的自动化任务与
-	// RabbitMQ 路径共享同一套执行/降权/超时语义。
+	// exec 复用 agent 内统一的任务执行器，保持一致的执行、降权和超时语义。
 	exec *executor.Executor
 	// 运行状态提供器：用于通过 gRPC 返回 agent runtime 状态，替代旧 HTTP 状态接口。
 	runtimeStatusProvider func() map[string]any

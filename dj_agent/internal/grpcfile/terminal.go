@@ -45,7 +45,7 @@ func (s *session) handleTerminalOpen(req *pb.TerminalOpenRequest) {
 	execCmd := exec.Command(shell, "-il")
 	// 构造与 SSH 登录一致的干净环境：设置 HOME/USER/LOGNAME/SHELL/TERM，并复刻
 	// PAM(pam_env) 加载 /etc/environment 的行为；同时不继承 agent 进程自身环境，
-	// 避免把 DJ_AGENT_RABBITMQ_URL 等敏感配置泄漏进用户终端。
+	// 避免把 Agent 进程的敏感配置泄漏进用户终端。
 	execCmd.Env = buildTerminalEnv(shell, homeDir, openCtx.effectiveUser)
 	execCmd.Dir = homeDir
 	if openCtx.credential != nil {

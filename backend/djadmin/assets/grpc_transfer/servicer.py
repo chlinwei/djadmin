@@ -1,8 +1,8 @@
 """
 AgentChannel gRPC 服务实现。
 
-网络方向：dj-agent 主动拨号连接这里、建立一条长连接双向流（与现有 RabbitMQ
-心跳/任务模型同向，不要求目标主机对 backend 网络可达）。Session() 是一个
+网络方向：dj-agent 主动拨号连接这里、建立一条长连接双向流，不要求 backend
+主动访问目标主机。Session() 是一个
 "生成器 + 后台读取线程"的组合：
   - 后台线程持续消费 request_iterator（agent -> backend 的应答/数据帧），
     第一帧必须是 Hello（校验共享密钥后注册到 AgentSessionRegistry），
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _set_host_grpc_online(agent_id, online):
-    # gRPC Session 才代表任务可执行；RabbitMQ 心跳仅能证明 agent 进程仍在上报。
+    # gRPC Session 是 Agent 在线及任务可执行的唯一依据。
     close_old_connections()
     try:
         from assets.models import Host
@@ -57,8 +57,6 @@ class AgentChannelServicer(pb_grpc.AgentChannelServicer):
                         continue
                     if kind == 'hello':
                         agent_id = str(frame.hello.agent_id or '').strip()
-                        # 当前阶段先移除共享 token 校验，仅要求 agent_id 非空。
-                        # 后续切到 mTLS 后再把连接身份校验收敛到证书体系。
                         if not agent_id:
                             logger.warning('[agent-grpc] hello rejected agent_id=%s', agent_id or '(empty)')
                             hello_event.set()

@@ -38,7 +38,6 @@ msgpack==1.2.1
 mysqlclient==2.2.6
 packaging==26.2
 pexpect==4.9.0
-pika==1.4.1
 prompt-toolkit==3.0.52
 protobuf==7.35.1
 ptyprocess==0.7.0

@@ -3,7 +3,7 @@
 原先主机静态信息由 Celery 周期任务通过 SSH(paramiko) 采集，现改为用户打开主机列表/详情页时
 按需拉取：视图调用 refresh_host_info，经 gRPC 让 agent 执行 get_host_info。
 
-Agent 启动时不再主动采集或通过 RabbitMQ 上报主机快照。
+Agent 启动时不主动采集主机快照。
 """
 import logging
 import uuid

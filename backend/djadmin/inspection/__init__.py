@@ -1,0 +1,1 @@
+"""Independent inspection domain."""

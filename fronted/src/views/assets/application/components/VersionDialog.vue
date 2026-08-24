@@ -55,7 +55,7 @@ const props = defineProps({
   open: { type: Boolean, required: true },
   application: { type: Object, default: null },
 })
-const emit = defineEmits(['update:open', 'changed'])
+const emit = defineEmits(['update:open', 'changed', 'created'])
 
 const columns = [
   { title: '版本号', dataIndex: 'version', key: 'version' },
@@ -88,7 +88,7 @@ async function saveVersion() {
   }
   saving.value = true
   try {
-    await saveApplicationVersion({
+    const response = await saveApplicationVersion({
       application: props.application.id,
       version,
       end_of_support: versionForm.end_of_support,
@@ -99,6 +99,7 @@ async function saveVersion() {
     message.success('版本新增成功')
     await loadVersions()
     emit('changed')
+    emit('created', response?.data?.data)
   } finally {
     saving.value = false
   }

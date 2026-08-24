@@ -589,7 +589,7 @@ const runBaselineDebug = async () => {
 const formatDebugValue = (value) => typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 
 
-const emits = defineEmits(['update:open', 'initList'])
+const emits = defineEmits(['update:open', 'initList', 'saved'])
 import {
     SaveOrCreateApplication,
     debugApplicationDeploymentBaseline,
@@ -645,6 +645,7 @@ const handleOk = (e) => {
         if (obj.id == -1) {
             SaveOrCreateApplication(obj).then(result => {
                 message.success("新增"+ props.appname+"成功");
+                emits('saved', result?.data?.data)
                 emits('initList')
                 emits('update:open', false)
             })

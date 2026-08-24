@@ -8,7 +8,6 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/magiconair/properties v1.8.10
 	github.com/pelletier/go-toml/v2 v2.2.4
-	github.com/rabbitmq/amqp091-go v1.12.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11

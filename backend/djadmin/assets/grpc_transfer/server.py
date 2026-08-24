@@ -4,8 +4,8 @@
 关键约束：webssh_host_mixin.py 的文件操作视图与本 gRPC Server 必须运行在
 【同一个 Python 进程】里——AgentSessionRegistry 是纯内存结构（agent_id ->
 存活的 Session 对象，内含 queue.Queue），没有走数据库/Redis 等跨进程共享
-存储。如果 gRPC Server 跑在独立进程（类似 runagentconsumer 那样的常驻命令），
-Web 请求进程完全看不到这些 Session，agent-mode 分流会一直查不到连接。
+存储。如果 gRPC Server 跑在独立常驻进程，Web 请求进程完全看不到这些 Session，
+agent-mode 分流会一直查不到连接。
 本项目 `manage.py runserver` 走 Daphne 单进程模型（见
 automation/management/commands/runserver.py），因此选择在该进程启动时
 一并拉起 gRPC Server 后台线程，而不是拆成独立管理命令。

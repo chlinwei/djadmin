@@ -8,6 +8,15 @@ from sys_config.models import SysConfig
 
 DEFAULT_CONFIGS = [
     {
+        'key': 'sys.assets.agent.grpc_advertise_addr',
+        'value': '',
+        'default_value': '',
+        'value_type': 'string',
+        'name': 'Agent gRPC 对外地址',
+        'description': 'Agent 连接 djadmin 后端的地址，例如 10.25.66.150:9001，不能填写 127.0.0.1 或 0.0.0.0',
+        'is_readonly': False,
+    },
+    {
         'key': 'sys.assets.hostgroup.max_tree_depth',
         'value': '5',
         'default_value': '5',

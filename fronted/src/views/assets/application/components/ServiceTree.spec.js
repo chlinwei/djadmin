@@ -7,6 +7,11 @@ vi.mock('@/api/assets/application', () => ({
   getBusinessEnvironmentList: vi.fn(),
   getApplicationServiceList: vi.fn(),
   getApplicationDeploymentList: vi.fn(),
+  getProjectList: vi.fn(),
+}))
+
+vi.mock('@/api/assets/host', () => ({
+  getHostList: vi.fn(() => Promise.resolve({ data: { data: { results: [], count: 0, totalPages: 1 } } })),
 }))
 
 import * as applicationApi from '@/api/assets/application'
@@ -23,13 +28,15 @@ describe('ServiceTree', () => {
       { id: 7, name: '订单系统', code: 'order-system', enabled: true },
     ]))
     applicationApi.getBusinessEnvironmentList.mockResolvedValue(listResponse([
-      { id: 71, business_system: 7, name: '生产环境', code: 'production', order: 0, enabled: true },
-      { id: 72, business_system: 7, name: '测试环境', code: 'testing', order: 1, enabled: true },
-      { id: 73, business_system: 7, name: '开发环境', code: 'development', order: 2, enabled: true },
+      { id: 71, name: '生产环境', code: 'production', enabled: true },
+      { id: 72, name: '测试环境', code: 'testing', enabled: true },
+    ]))
+    applicationApi.getProjectList.mockResolvedValue(listResponse([
+      { id: 301, name: '订单项目', code: 'order-project', business_systems: [7], enabled: true },
     ]))
     applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
-      { id: 21, environment: 71, name: '订单 API', topology_type: 'cluster', cluster_profile_name: 'Redis 集群' },
-      { id: 22, environment: 72, name: '订单任务', topology_type: 'standalone' },
+      { id: 21, business_system: 7, environment: 71, environment_name: '生产环境', name: '订单 API', topology_type: 'cluster', cluster_profile_name: 'Redis 集群' },
+      { id: 22, business_system: 7, environment: 72, environment_name: '测试环境', name: '订单任务', topology_type: 'standalone' },
     ]))
     applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse([
       { id: 11, application_service_ids: [21], instance_name: 'order-prod-1' },
@@ -37,32 +44,39 @@ describe('ServiceTree', () => {
     ]))
   })
 
-  it('builds application environments and emits the selected service scope', async () => {
+  it('builds services directly under business systems and emits the selected service scope', async () => {
     const wrapper = mount(ServiceTree, { global: { plugins: [Antd] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('全部业务')
     expect(wrapper.text()).toContain('订单系统')
-    expect(wrapper.text()).toContain('生产环境')
-    expect(wrapper.text()).toContain('测试环境')
-    // 没有逻辑服务的空环境也必须在服务树上可见
-    expect(wrapper.text()).toContain('开发环境')
     expect(wrapper.text()).toContain('订单 API')
-    expect(wrapper.text()).not.toContain('订单 API · Redis 集群')
-    expect(wrapper.text()).toContain('order-prod-1')
-    expect(wrapper.text()).toContain('order-test-1')
+    expect(wrapper.text()).toContain('订单 API [生产环境]')
+    expect(wrapper.text()).toContain('订单任务 [测试环境]')
+    // 部署实例是懒加载子节点，展开服务节点后才挂载，初始渲染不包含实例名。
 
-    const testingNode = wrapper.findAll('.ant-tree-node-content-wrapper')
-      .find((node) => node.text().includes('测试环境'))
-    await testingNode.trigger('click')
+    const allBusinessNode = wrapper.findAll('.ant-tree-node-content-wrapper')
+      .find((node) => node.text().includes('订单系统'))
+    expect(allBusinessNode.exists()).toBe(true)
+
+    const projectFilter = wrapper.findAllComponents({ name: 'ASelect' })
+      .find((component) => component.classes().includes('service-tree-project-filter'))
+    await projectFilter.vm.$emit('change', [301])
+    await flushPromises()
+    expect(wrapper.text()).toContain('订单 API [生产环境]')
+
+    const serviceNode = wrapper.findAll('.ant-tree-node-content-wrapper')
+      .find((node) => node.text().includes('订单任务'))
+    await serviceNode.trigger('click')
 
     expect(wrapper.emitted('select').at(-1)).toEqual([{
-      nodeType: 'environment',
+      nodeType: 'service',
+      applicationServiceId: 22,
       businessSystemId: 7,
       businessSystemName: '订单系统',
       environment: 72,
       environmentName: '测试环境',
-      nodeTitle: '测试环境',
+      nodeTitle: '订单任务',
     }])
 
     await wrapper.setProps({
@@ -73,5 +87,12 @@ describe('ServiceTree', () => {
     })
     await flushPromises()
     expect(wrapper.find('.ant-tree-node-selected').text()).toContain('订单 API')
+
+    const environmentFilter = wrapper.findAllComponents({ name: 'ASelect' })
+      .find((component) => component.classes().includes('service-tree-environment-filter'))
+    await environmentFilter.vm.$emit('change', [72])
+    await flushPromises()
+    expect(wrapper.text()).toContain('订单任务 [测试环境]')
+    expect(wrapper.text()).not.toContain('订单 API [生产环境]')
   })
 })

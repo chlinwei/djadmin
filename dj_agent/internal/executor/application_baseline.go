@@ -45,12 +45,30 @@ func (e *Executor) checkApplicationBaseline(ctx context.Context, job protocol.Jo
 	started := time.Now()
 	checks := make([]applicationCheckResult, 0)
 
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 	controlCheck := checkApplicationControl(ctx, job.Params)
 	checks = append(checks, controlCheck)
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 	checks = append(checks, checkApplicationPorts(job.Params)...)
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 	checks = append(checks, checkApplicationPaths(job.Params)...)
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 	checks = append(checks, checkApplicationLogs(job.Params)...)
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 	checks = append(checks, checkApplicationPlanForState(ctx, job.Params, controlCheck.Status == "pass")...)
+	if ctx.Err() != nil {
+		return canceledApplicationBaselineResult(job, started, ctx.Err())
+	}
 
 	passed := true
 	for _, check := range checks {
@@ -69,14 +87,14 @@ func (e *Executor) checkApplicationBaseline(ctx context.Context, job protocol.Jo
 	}
 }
 
+func canceledApplicationBaselineResult(job protocol.Job, started time.Time, err error) protocol.JobResult {
+	return canceledJobResult(job, started, err, -1)
+}
+
 var applicationCheckCapabilities = map[string]struct{}{
 	"schema_validate:v1":        {},
 	"schema_validate:inline:v1": {},
 	"shell:v1":                  {},
-}
-
-func checkApplicationPlan(ctx context.Context, params map[string]any) []applicationCheckResult {
-	return checkApplicationPlanForState(ctx, params, true)
 }
 
 func checkApplicationPlanForState(ctx context.Context, params map[string]any, applicationRunning bool) []applicationCheckResult {
@@ -125,8 +143,7 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 	}
 
 	// 登录 Shell 会读取目标用户的 profile，使 JAVA_HOME 等用户级运行环境生效。
-	command := exec.CommandContext(ctx, "/bin/bash", "-lc", commandText)
-	_, userErr := configureApplicationRunUser(command, valueString(check["run_user"]))
+	command, userErr := applicationRunUserCommand(ctx, commandText, valueString(check["run_user"]))
 	if userErr != nil {
 		return newPlanCheckResult(check, "error", nil, userErr.Error())
 	}
@@ -138,7 +155,10 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录必须为绝对路径")
 	}
 	command.Dir = workDirectory
-	command.Env = mergeCommandEnvironment(command.Env, check["environment"])
+	applyCommandEnvironment(command, check["environment"])
+	// 记录展开后的命令与注入变量，便于在巡检详情里定位变量未生效、路径拼接错误等问题。
+	executedCommand := strings.Join(command.Args, " ")
+	injectedEnvironment := allowedCommandEnvironment(check["environment"])
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -151,14 +171,22 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 	if runErr != nil {
 		var exitError *exec.ExitError
 		if !errors.As(runErr, &exitError) {
-			return newPlanCheckResult(check, "error", nil, fmt.Sprintf("执行 Shell 命令失败: %v", runErr))
+			return newPlanCheckResult(check, "error", map[string]any{
+				"command":        executedCommand,
+				"work_directory": workDirectory,
+				"environment":    injectedEnvironment,
+			}, fmt.Sprintf("执行 Shell 命令失败: %v", runErr))
 		}
 		exitCode = exitError.ExitCode()
 	}
 	actual := map[string]any{
-		"exit_code": exitCode,
-		"stdout":    strings.TrimSpace(stdout.String()),
-		"stderr":    strings.TrimSpace(stderr.String()),
+		"exit_code":      exitCode,
+		"stdout":         strings.TrimSpace(stdout.String()),
+		"stderr":         strings.TrimSpace(stderr.String()),
+		"command":        executedCommand,
+		"work_directory": workDirectory,
+		"run_user":       valueString(check["run_user"]),
+		"environment":    injectedEnvironment,
 	}
 	expectedOutput := strings.TrimSpace(valueString(check["expected"]))
 	if expectedOutput == "" {
@@ -173,17 +201,49 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 	return newPlanCheckResult(check, "pass", actual, "")
 }
 
-func mergeCommandEnvironment(baseEnvironment []string, rawEnvironment any) []string {
+// applyCommandEnvironment 注入巡检变量。root 场景命令形如 `sudo -u user -H env /bin/bash -lc ...`，
+// sudo 会清空环境，变量必须作为 env 的实参传入才能对目标进程生效。
+func applyCommandEnvironment(command *exec.Cmd, rawEnvironment any) {
+	overrides := allowedCommandEnvironment(rawEnvironment)
+	if len(overrides) == 0 {
+		return
+	}
+	for index, arg := range command.Args {
+		if arg != "env" {
+			continue
+		}
+		assignments := make([]string, 0, len(overrides))
+		for _, key := range allowedEnvironmentKeys {
+			if value, exists := overrides[key]; exists {
+				assignments = append(assignments, key+"="+value)
+			}
+		}
+		command.Args = append(command.Args[:index+1], append(assignments, command.Args[index+1:]...)...)
+		return
+	}
+	command.Env = mergeCommandEnvironment(command.Env, rawEnvironment)
+}
+
+var allowedEnvironmentKeys = []string{"APP_HOME", "RUN_USER", "WORK_DIRECTORY", "APPLICATION_NAME", "APPLICATION_CODE", "APPLICATION_VERSION", "INSTANCE_NAME"}
+
+func allowedCommandEnvironment(rawEnvironment any) map[string]string {
 	environment, _ := rawEnvironment.(map[string]any)
 	if len(environment) == 0 {
-		return baseEnvironment
+		return nil
 	}
-	allowedKeys := []string{"APP_HOME", "RUN_USER", "WORK_DIRECTORY", "APPLICATION_NAME", "APPLICATION_CODE", "APPLICATION_VERSION", "INSTANCE_NAME"}
-	overrides := make(map[string]string, len(allowedKeys))
-	for _, key := range allowedKeys {
+	overrides := make(map[string]string, len(allowedEnvironmentKeys))
+	for _, key := range allowedEnvironmentKeys {
 		if value, exists := environment[key]; exists {
 			overrides[key] = valueString(value)
 		}
+	}
+	return overrides
+}
+
+func mergeCommandEnvironment(baseEnvironment []string, rawEnvironment any) []string {
+	overrides := allowedCommandEnvironment(rawEnvironment)
+	if len(overrides) == 0 {
+		return baseEnvironment
 	}
 	result := make([]string, 0, len(baseEnvironment)+len(overrides))
 	for _, entry := range baseEnvironment {
@@ -195,7 +255,7 @@ func mergeCommandEnvironment(baseEnvironment []string, rawEnvironment any) []str
 		}
 		result = append(result, entry)
 	}
-	for _, key := range allowedKeys {
+	for _, key := range allowedEnvironmentKeys {
 		if value, exists := overrides[key]; exists {
 			result = append(result, key+"="+value)
 		}
@@ -604,39 +664,7 @@ func applicationSystemdActionCommand(ctx context.Context, params map[string]any,
 		if runUser == "" {
 			return nil, fmt.Errorf("用户级 Systemd 必须配置运行用户")
 		}
-		targetUser, err := user.Lookup(runUser)
-		if err != nil {
-			return nil, fmt.Errorf("无法查找 Systemd 运行用户 %q: %w", runUser, err)
-		}
-		uid, uidErr := strconv.ParseUint(targetUser.Uid, 10, 32)
-		gid, gidErr := strconv.ParseUint(targetUser.Gid, 10, 32)
-		if uidErr != nil || gidErr != nil {
-			return nil, fmt.Errorf("Systemd 运行用户 %q 的 UID/GID 无效", runUser)
-		}
-		if os.Geteuid() != 0 && uint64(os.Geteuid()) != uid {
-			return nil, fmt.Errorf("dj-agent 必须以 root 或目标用户 %q 运行，才能执行用户级 Systemd", runUser)
-		}
-
-		command := exec.CommandContext(ctx, "systemctl", "--user", systemdAction, serviceName)
-		command.Env = systemdUserEnvironment(os.Environ(), targetUser, uid)
-		if uint64(os.Geteuid()) != uid {
-			groupIDs, groupErr := targetUser.GroupIds()
-			if groupErr != nil {
-				return nil, fmt.Errorf("无法获取 Systemd 运行用户 %q 的附加组: %w", runUser, groupErr)
-			}
-			groups := make([]uint32, 0, len(groupIDs))
-			for _, groupID := range groupIDs {
-				parsedGroupID, parseErr := strconv.ParseUint(groupID, 10, 32)
-				if parseErr != nil {
-					return nil, fmt.Errorf("Systemd 运行用户 %q 的附加组 ID 无效", runUser)
-				}
-				groups = append(groups, uint32(parsedGroupID))
-			}
-			command.SysProcAttr = &syscall.SysProcAttr{
-				Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups},
-			}
-		}
-		return command, nil
+		return applicationRunUserCommand(ctx, fmt.Sprintf("systemctl --user %s %s", systemdAction, serviceName), runUser)
 	default:
 		return nil, fmt.Errorf("Systemd 作用域无效")
 	}
@@ -837,22 +865,6 @@ func valueString(value any) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
-}
-
-func valueBool(value any, defaultValue bool) bool {
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		normalized := strings.ToLower(strings.TrimSpace(typed))
-		if normalized == "true" || normalized == "1" || normalized == "yes" {
-			return true
-		}
-		if normalized == "false" || normalized == "0" || normalized == "no" {
-			return false
-		}
-	}
-	return defaultValue
 }
 
 func stringSliceFromAny(value any) []string {

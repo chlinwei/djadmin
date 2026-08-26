@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"os/user"
 	"testing"
@@ -21,7 +22,11 @@ func TestApplicationSystemdActionCommand_UserScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build systemd start command: %v", err)
 	}
-	if len(command.Args) != 4 || command.Args[1] != "--user" || command.Args[2] != "start" || command.Args[3] != "tomcat" {
+	if os.Geteuid() == 0 {
+		if len(command.Args) != 7 || command.Args[1] != "-u" || command.Args[2] != currentUser.Username || command.Args[3] != "-H" || command.Args[4] != "/bin/bash" || command.Args[5] != "-lc" || command.Args[6] != "systemctl --user start tomcat" {
+			t.Fatalf("unexpected root systemd command: %#v", command.Args)
+		}
+	} else if len(command.Args) != 3 || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user start tomcat" {
 		t.Fatalf("unexpected systemd command: %#v", command.Args)
 	}
 }
@@ -44,6 +49,12 @@ func TestApplicationDockerControlCommand_Status(t *testing.T) {
 	command, err := applicationDockerControlCommand(context.Background(), map[string]any{
 		"docker_config": map[string]any{"container_name": "order-api"},
 	}, "status")
+	if os.Geteuid() != 0 {
+		if err == nil || command != nil {
+			t.Fatalf("non-root Docker control must be rejected: command=%#v error=%v", command, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("build docker status command: %v", err)
 	}

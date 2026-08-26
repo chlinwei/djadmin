@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 import socket
 import urllib.error
 import urllib.request
@@ -103,24 +103,37 @@ def _persist_results(target, checks):
 def _run_agent_target(execution_id, target_id):
     close_old_connections()
     target = InspectionTargetExecution.objects.select_related(
-        'deployment__host', 'deployment__deployment_template', 'deployment__application_version', 'host',
+        'deployment__host', 'host',
     ).get(pk=target_id)
     deployment = target.deployment
     host = target.host
+    execution = InspectionExecution.objects.get(pk=execution_id)
+    if execution.status == InspectionExecution.Status.CANCELED:
+        target.status = InspectionTargetExecution.Status.CANCELED
+        target.end_time = timezone.now()
+        target.save(update_fields=['status', 'end_time', 'update_time'])
+        close_old_connections()
+        return
     target.status = InspectionTargetExecution.Status.RUNNING
     target.start_time = timezone.now()
     target.save(update_fields=['status', 'start_time', 'update_time'])
     try:
         if deployment is None and host is None:
             raise RuntimeError('Agent 巡检目标不存在')
-        execution = InspectionExecution.objects.get(pk=execution_id)
         result = AgentChannelClient(target.agent_id_snapshot, timeout=execution.task_snapshot['timeout_seconds']).execute_automation(
-            job_id=f'inspection-{execution_id}-{target_id}-{uuid.uuid4().hex[:8]}',
+            job_id=f'inspection-{execution_id}-{target_id}',
             params=_agent_params(execution, deployment=deployment, host=host),
             timeout_seconds=int(execution.task_snapshot['timeout_seconds']),
             task_type='custom',
             action='check_application_baseline',
         )
+        execution.refresh_from_db(fields=['status'])
+        if execution.status == InspectionExecution.Status.CANCELED:
+            target.status = InspectionTargetExecution.Status.CANCELED
+            target.end_time = timezone.now()
+            target.save(update_fields=['status', 'end_time', 'update_time'])
+            close_old_connections()
+            return
         raw_data = result.get('result_data')
         data = raw_data if isinstance(raw_data, dict) else {}
         passed = bool(data.get('passed'))
@@ -130,7 +143,12 @@ def _run_agent_target(execution_id, target_id):
         target.error_message = str(result.get('error_message') or '')
         _persist_results(target, data.get('checks'))
     except Exception as exc:
-        target.status = InspectionTargetExecution.Status.FAILED
+        execution.refresh_from_db(fields=['status'])
+        target.status = (
+            InspectionTargetExecution.Status.CANCELED
+            if execution.status == InspectionExecution.Status.CANCELED
+            else InspectionTargetExecution.Status.FAILED
+        )
         target.passed = False
         target.error_message = str(exc)
     target.end_time = timezone.now()
@@ -188,23 +206,67 @@ def _run_controller_target(execution, target):
 def run_inspection_execution(execution_id):
     close_old_connections()
     execution = InspectionExecution.objects.select_related('task').get(pk=execution_id)
+    if execution.status == InspectionExecution.Status.CANCELED:
+        close_old_connections()
+        return
     execution.status = InspectionExecution.Status.RUNNING
     execution.start_time = timezone.now()
     execution.save(update_fields=['status', 'start_time', 'update_time'])
-    targets = list(InspectionTargetExecution.objects.filter(execution=execution))
-    if execution.group_snapshot.get('scope') == InspectionGroup.Scope.PER_DEPLOYMENT:
-        concurrency = max(1, min(int(execution.task_snapshot.get('concurrency') or 20), 100))
-        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='inspection') as pool:
+    try:
+        targets = list(InspectionTargetExecution.objects.filter(execution=execution))
+        if execution.group_snapshot.get('scope') == InspectionGroup.Scope.PER_DEPLOYMENT:
+            concurrency = max(1, min(int(execution.task_snapshot.get('concurrency') or 20), 100))
+            pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='inspection')
             futures = [pool.submit(_run_agent_target, execution.pk, target.pk) for target in targets]
-            for future in as_completed(futures):
-                future.result()
-    elif targets:
-        _run_controller_target(execution, targets[0])
-    statuses = list(InspectionTargetExecution.objects.filter(execution=execution).values_list('status', flat=True))
-    success_count = statuses.count(InspectionTargetExecution.Status.SUCCESS)
-    failed_count = statuses.count(InspectionTargetExecution.Status.FAILED)
-    execution.status = InspectionExecution.Status.SUCCESS if statuses and failed_count == 0 else InspectionExecution.Status.FAILED
-    execution.summary = {'total': len(statuses), 'success': success_count, 'failed': failed_count}
-    execution.end_time = timezone.now()
-    execution.save(update_fields=['status', 'summary', 'end_time', 'update_time'])
-    close_old_connections()
+            try:
+                done, pending = wait(futures, timeout=int(execution.task_snapshot.get('timeout_seconds') or 60) + 45)
+                for future in done:
+                    future.result()
+                if pending:
+                    execution.refresh_from_db(fields=['status'])
+                    if execution.status != InspectionExecution.Status.CANCELED:
+                        execution.status = InspectionExecution.Status.FAILED
+                        execution.summary = {
+                            'total': len(targets),
+                            'success': 0,
+                            'failed': len(pending),
+                            'error': '巡检目标超过后端等待时限',
+                        }
+                        execution.end_time = timezone.now()
+                        execution.save(update_fields=['status', 'summary', 'end_time', 'update_time'])
+                    InspectionTargetExecution.objects.filter(
+                        execution=execution,
+                        status__in=[InspectionTargetExecution.Status.PENDING, InspectionTargetExecution.Status.RUNNING],
+                    ).update(status=InspectionTargetExecution.Status.FAILED, passed=False, end_time=timezone.now())
+                    return
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+        elif targets:
+            _run_controller_target(execution, targets[0])
+        statuses = list(InspectionTargetExecution.objects.filter(execution=execution).values_list('status', flat=True))
+        success_count = statuses.count(InspectionTargetExecution.Status.SUCCESS)
+        failed_count = statuses.count(InspectionTargetExecution.Status.FAILED)
+        execution.refresh_from_db(fields=['status'])
+        if execution.status != InspectionExecution.Status.CANCELED:
+            execution.status = InspectionExecution.Status.SUCCESS if statuses and failed_count == 0 else InspectionExecution.Status.FAILED
+        execution.summary = {'total': len(statuses), 'success': success_count, 'failed': failed_count}
+    except Exception as exc:
+        statuses = list(InspectionTargetExecution.objects.filter(execution=execution).values_list('status', flat=True))
+        execution.refresh_from_db(fields=['status'])
+        if execution.status != InspectionExecution.Status.CANCELED:
+            execution.status = InspectionExecution.Status.FAILED
+        execution.summary = {
+            'total': len(statuses),
+            'success': statuses.count(InspectionTargetExecution.Status.SUCCESS),
+            'failed': statuses.count(InspectionTargetExecution.Status.FAILED),
+            'error': str(exc),
+        }
+    finally:
+        current_status = InspectionExecution.objects.values_list('status', flat=True).get(pk=execution.pk)
+        if current_status == InspectionExecution.Status.CANCELED:
+            execution.status = InspectionExecution.Status.CANCELED
+            execution.save(update_fields=['summary', 'update_time'])
+        else:
+            execution.end_time = timezone.now()
+            execution.save(update_fields=['status', 'summary', 'end_time', 'update_time'])
+        close_old_connections()

@@ -48,12 +48,43 @@ type session struct {
 
 	terminalsMu sync.Mutex
 	terminals   map[string]*terminalSession
+
+	automationMu sync.Mutex
+	automation   map[string]context.CancelFunc
 }
 
 func (s *session) send(frame *pb.AgentFrame) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	return s.stream.Send(frame)
+}
+
+func (s *session) registerAutomation(jobID string, cancel context.CancelFunc) {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	if s.automation == nil {
+		s.automation = make(map[string]context.CancelFunc)
+	}
+	s.automation[jobID] = cancel
+}
+
+func (s *session) cancelAutomation(jobID string) bool {
+	s.automationMu.Lock()
+	cancel, ok := s.automation[jobID]
+	if ok {
+		delete(s.automation, jobID)
+	}
+	s.automationMu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
+func (s *session) unregisterAutomation(jobID string) {
+	s.automationMu.Lock()
+	delete(s.automation, jobID)
+	s.automationMu.Unlock()
 }
 
 // Run 阻塞运行文件传输会话，断线后按指数退避自动重连，直至 ctx 被取消。

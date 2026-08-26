@@ -2,7 +2,6 @@
   <div class="application-workspace">
     <a-tabs v-model:activeKey="activeTab">
       <a-tab-pane key="systems" tab="业务系统" />
-      <a-tab-pane key="environments" tab="环境" />
       <a-tab-pane key="services" tab="逻辑服务" />
       <a-tab-pane key="profiles" tab="集群模型" />
       <a-tab-pane key="applications" tab="应用定义" />
@@ -64,7 +63,19 @@
       @change="handleTableChange"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="activeTab === 'systems' && column.key === 'enabled'">
+        <template v-if="activeTab === 'projects' && column.key === 'business_system_names'">
+          <a-space wrap><a-tag v-for="name in record.business_system_names || []" :key="name">{{ name }}</a-tag><span v-if="!record.business_system_names?.length">-</span></a-space>
+        </template>
+        <template v-else-if="activeTab === 'projects' && column.key === 'enabled'">
+          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
+        </template>
+        <template v-else-if="activeTab === 'projects' && column.key === 'action'">
+          <a-space>
+            <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openProject(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
+            <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteProject(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
+          </a-space>
+        </template>
+        <template v-else-if="activeTab === 'systems' && column.key === 'enabled'">
           <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
         </template>
         <template v-else-if="activeTab === 'systems' && column.key === 'action'">
@@ -76,23 +87,6 @@
             </a-tooltip>
             <a-tooltip title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteBusinessSystem(record)">
-                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-              </a-button>
-            </a-tooltip>
-          </a-space>
-        </template>
-        <template v-else-if="activeTab === 'environments' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-        </template>
-        <template v-else-if="activeTab === 'environments' && column.key === 'action'">
-          <a-space>
-            <a-tooltip title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openBusinessEnvironment(record)">
-                <FontAwesomeIcon :icon="['fa', 'edit']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="删除">
-              <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteBusinessEnvironment(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>
@@ -294,18 +288,17 @@
       </template>
     </a-table>
 
+    <ProjectDialog
+      :open="projectDialogOpen"
+      :project-id="selectedProjectId"
+      @update:open="projectDialogOpen = $event"
+      @saved="handleSaved"
+    />
     <BusinessSystemDialog
       :open="businessSystemDialogOpen"
       :system-id="selectedBusinessSystemId"
       @update:open="businessSystemDialogOpen = $event"
-      @saved="handleBusinessSystemSaved"
-    />
-    <BusinessEnvironmentDialog
-      :open="businessEnvironmentDialogOpen"
-      :environment-id="selectedBusinessEnvironmentId"
-      :business-system-id="serviceScope.businessSystemId || null"
-      @update:open="businessEnvironmentDialogOpen = $event"
-      @saved="handleBusinessSystemSaved"
+      @saved="handleSaved"
     />
     <ApplicationServiceDialog
       :open="serviceDialogOpen"
@@ -318,7 +311,7 @@
       :open="clusterProfileDialogOpen"
       :profile-id="selectedClusterProfileId"
       @update:open="clusterProfileDialogOpen = $event"
-      @saved="handleTopologySaved"
+      @saved="handleSaved"
     />
     <Dialog
       :open="applicationDialogOpen"
@@ -345,7 +338,7 @@
       :open="deploymentDialogOpen"
       :deployment-id="selectedDeployment?.id || null"
       @update:open="deploymentDialogOpen = $event"
-      @saved="handleDeploymentSaved"
+      @saved="handleSaved"
     />
     <a-modal
       v-model:open="historyDialogOpen"
@@ -429,12 +422,13 @@ import {
   checkApplicationDeploymentBaseline,
   controlApplicationDeployment,
   deleteBusinessSystem,
-  deleteBusinessEnvironment,
+  deleteProject,
   deleteApplicationService,
   deleteClusterProfile,
   deleteApplicationDeployment,
   deleteApplicationDeploymentTemplate,
   getBusinessSystemList,
+  getProjectList,
   getBusinessEnvironmentList,
   getApplicationServiceList,
   getClusterProfileList,
@@ -448,9 +442,9 @@ import VersionDialog from './VersionDialog.vue'
 import TemplateDialog from './TemplateDialog.vue'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessSystemDialog from './BusinessSystemDialog.vue'
-import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 import ClusterProfileDialog from './ClusterProfileDialog.vue'
+import ProjectDialog from './ProjectDialog.vue'
 
 const props = defineProps({
   serviceScope: { type: Object, default: () => ({}) },
@@ -463,9 +457,9 @@ const serviceFilterRecords = reactive({ businessSystems: [], applications: [], e
 const rows = ref([])
 const loading = ref(false)
 const businessSystemDialogOpen = ref(false)
+const projectDialogOpen = ref(false)
+const selectedProjectId = ref(null)
 const selectedBusinessSystemId = ref(null)
-const businessEnvironmentDialogOpen = ref(false)
-const selectedBusinessEnvironmentId = ref(null)
 const serviceDialogOpen = ref(false)
 const selectedServiceId = ref(null)
 const selectedServiceClusterProfileId = ref(null)
@@ -528,16 +522,13 @@ const businessSystemColumns = [
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 240 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
-const businessEnvironmentColumns = [
-  { title: '环境名称', dataIndex: 'name', key: 'name', sorter: true, width: 180 },
-  { title: '编码', dataIndex: 'code', key: 'code', width: 160 },
-  { title: '业务系统', dataIndex: 'business_system_name', key: 'business_system_name', width: 180 },
-  { title: '顺序', dataIndex: 'order', key: 'order', width: 90 },
-  { title: '负责人', dataIndex: 'owner', key: 'owner', width: 140 },
-  { title: '逻辑服务', dataIndex: 'service_count', key: 'service_count', width: 110 },
-  { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
+const projectColumns = [
+  { title: '项目名称', dataIndex: 'name', key: 'name', sorter: true, width: 220 },
+  { title: '编码', dataIndex: 'code', key: 'code', width: 180 },
+  { title: '关联业务系统', dataIndex: 'business_system_names', key: 'business_system_names', width: 320 },
+  { title: '负责人', dataIndex: 'owner', key: 'owner', width: 160 },
   { title: '状态', key: 'enabled', width: 100 },
-  { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
+  { title: '备注', dataIndex: 'remark', key: 'remark', width: 240 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
 const serviceColumns = [
@@ -617,14 +608,13 @@ const resultColumns = [
   { title: '实际值', key: 'actual_value', width: 240 },
   { title: '说明', dataIndex: 'message', key: 'message', width: 220 },
 ]
-const currentColumns = computed(() => ({ systems: businessSystemColumns, environments: businessEnvironmentColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
-const currentTableScroll = computed(() => ({ x: ({ systems: 1050, environments: 1410, services: 1800, profiles: 1220, applications: 1100, templates: 1570, deployments: 1740 }[activeTab.value]) }))
-const createButtonLabel = computed(() => ({ systems: '新增业务系统', environments: '新增环境', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
-const searchPlaceholder = computed(() => ({ systems: '搜索业务系统、编码或负责人', environments: '搜索环境、编码或业务系统', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
+const currentColumns = computed(() => ({ projects: projectColumns, systems: businessSystemColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
+const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1050, services: 1800, profiles: 1220, applications: 1100, templates: 1570, deployments: 1740 }[activeTab.value]) }))
+const createButtonLabel = computed(() => ({ projects: '新增项目', systems: '新增业务系统', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
+const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', systems: '搜索业务系统、编码或负责人', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
 const serviceBusinessSystemOptions = computed(() => serviceFilterRecords.businessSystems.map((item) => ({ label: item.name, value: item.id })))
 const serviceApplicationOptions = computed(() => serviceFilterRecords.applications.map((item) => ({ label: item.name, value: item.id })))
 const serviceEnvironmentOptions = computed(() => serviceFilterRecords.environments
-  .filter((item) => !serviceFilters.business_system || item.business_system === serviceFilters.business_system)
   .map((item) => ({ label: item.name, value: item.id })))
 const serviceClusterProfileOptions = computed(() => serviceFilterRecords.profiles.map((item) => ({ label: item.name, value: item.id })))
 const topologyFilterOptions = [{ label: '单机', value: 'standalone' }, { label: '集群', value: 'cluster' }, { label: '负载均衡', value: 'load_balancer' }]
@@ -659,9 +649,6 @@ async function reload(resetPage = false) {
     if (requestedTab === 'systems' && props.serviceScope.nodeType === 'businessSystem') {
       params.id = props.serviceScope.businessSystemId
     }
-    if (requestedTab === 'environments' && props.serviceScope.businessSystemId) {
-      params.business_system = props.serviceScope.businessSystemId
-    }
     if (requestedTab === 'deployments') {
       if (props.serviceScope.deploymentId) params.id = props.serviceScope.deploymentId
       else if (props.serviceScope.applicationServiceId) params.application_service = props.serviceScope.applicationServiceId
@@ -673,8 +660,8 @@ async function reload(resetPage = false) {
       }
     }
     const listRequests = {
+      projects: getProjectList,
       systems: getBusinessSystemList,
-      environments: getBusinessEnvironmentList,
       services: getApplicationServiceList,
       profiles: getClusterProfileList,
       applications: getApplicationList,
@@ -779,9 +766,9 @@ function openBusinessSystem(record = null) {
   selectedBusinessSystemId.value = record?.id || null
   businessSystemDialogOpen.value = true
 }
-function openBusinessEnvironment(record = null) {
-  selectedBusinessEnvironmentId.value = record?.id || null
-  businessEnvironmentDialogOpen.value = true
+function openProject(record = null) {
+  selectedProjectId.value = record?.id || null
+  projectDialogOpen.value = true
 }
 function openService(record = null) {
   selectedServiceId.value = record?.id || null
@@ -801,9 +788,22 @@ function openClusterProfile(record = null) {
   selectedClusterProfileId.value = record?.id || null
   clusterProfileDialogOpen.value = true
 }
-async function handleTopologySaved() {
+async function handleSaved() {
   await reload(false)
   emit('data-changed')
+}
+// 删除流程只差在文案与删除接口，收尾刷新统一走 handleSaved。
+function confirmDelete({ title, summary, items, remove, successMessage = '删除成功' }) {
+  openDeleteConfirm({
+    title,
+    summary,
+    items,
+    onConfirm: async () => {
+      await remove()
+      message.success(successMessage)
+      await handleSaved()
+    },
+  })
 }
 async function handleServiceSaved() {
   emit('data-changed')
@@ -825,14 +825,6 @@ async function runClusterBaselineCheck(record) {
     checkingServiceId.value = null
   }
 }
-async function handleBusinessSystemSaved() {
-  await reload(false)
-  emit('data-changed')
-}
-async function handleDeploymentSaved() {
-  await reload(false)
-  emit('data-changed')
-}
 function openVersions(record) {
   selectedApplication.value = record
   versionDialogOpen.value = true
@@ -852,8 +844,8 @@ function openDeployment(record = null) {
   deploymentDialogOpen.value = true
 }
 function openCurrentTabCreateDialog() {
-  if (activeTab.value === 'systems') openBusinessSystem()
-  else if (activeTab.value === 'environments') openBusinessEnvironment()
+  if (activeTab.value === 'projects') openProject()
+  else if (activeTab.value === 'systems') openBusinessSystem()
   else if (activeTab.value === 'services') openService()
   else if (activeTab.value === 'profiles') openClusterProfile()
   else if (activeTab.value === 'applications') openApplication()
@@ -861,54 +853,36 @@ function openCurrentTabCreateDialog() {
   // 部署实例必须归属逻辑服务才能拿到版本与模板，因此只能从逻辑服务内新增。
   else openService()
 }
+function confirmDeleteProject(record) {
+  confirmDelete({
+    title: '删除项目',
+    summary: '删除项目只会解除项目关联，不会删除业务系统和服务。',
+    items: [record.name || record.code || record.id],
+    remove: () => deleteProject(record.id),
+  })
+}
 function confirmDeleteService(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '删除逻辑服务',
     summary: '仍包含部署实例的逻辑服务不能删除。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => {
-      await deleteApplicationService(record.id)
-      message.success('删除成功')
-      await handleTopologySaved()
-    },
+    remove: () => deleteApplicationService(record.id),
   })
 }
 function confirmDeleteClusterProfile(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '删除集群模型',
     summary: '仍被逻辑服务引用的集群模型不能删除。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => {
-      await deleteClusterProfile(record.id)
-      message.success('删除成功')
-      await handleTopologySaved()
-    },
+    remove: () => deleteClusterProfile(record.id),
   })
 }
 function confirmDeleteBusinessSystem(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '删除业务系统',
-    summary: '系统下的环境会一并删除，仍包含逻辑服务的系统不能删除。',
+    summary: '仍包含逻辑服务的业务系统不能删除。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => {
-      await deleteBusinessSystem(record.id)
-      message.success('删除成功')
-      await reload(false)
-      emit('data-changed')
-    },
-  })
-}
-function confirmDeleteBusinessEnvironment(record) {
-  openDeleteConfirm({
-    title: '删除环境',
-    summary: '仍包含逻辑服务的环境不能删除。',
-    items: [`${record.business_system_name || '-'} / ${record.name || record.code || record.id}`],
-    onConfirm: async () => {
-      await deleteBusinessEnvironment(record.id)
-      message.success('删除成功')
-      await reload(false)
-      emit('data-changed')
-    },
+    remove: () => deleteBusinessSystem(record.id),
   })
 }
 function formatDateTime(value) {
@@ -1010,40 +984,30 @@ async function openBaselineHistory(record) {
   }
 }
 function confirmDeleteApplication(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '确认删除应用',
     summary: '应用版本和未被保护的关联资产将一并删除。',
     items: [`应用: ${record.name}`],
-    onConfirm: async () => {
-      await batchDeleteApplication([record.id])
-      message.success('应用删除成功')
-      reload(false)
-    },
+    remove: () => batchDeleteApplication([record.id]),
+    successMessage: '应用删除成功',
   })
 }
 function confirmDeleteDeployment(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '确认删除部署实例',
     summary: '仅删除该主机上的实例登记，不会删除应用版本或部署模板。',
     items: [`${record.application_name} / ${record.instance_name} / ${record.host_ip}`],
-    onConfirm: async () => {
-      await deleteApplicationDeployment(record.id)
-      message.success('部署实例删除成功')
-      await reload(false)
-      emit('data-changed')
-    },
+    remove: () => deleteApplicationDeployment(record.id),
+    successMessage: '部署实例删除成功',
   })
 }
 function confirmDeleteTemplate(record) {
-  openDeleteConfirm({
+  confirmDelete({
     title: '确认删除部署模板',
     summary: '已被部署实例引用的模板不能删除。',
     items: [`${record.application_name} / ${record.name}`],
-    onConfirm: async () => {
-      await deleteApplicationDeploymentTemplate(record.id)
-      message.success('部署模板删除成功')
-      reload(false)
-    },
+    remove: () => deleteApplicationDeploymentTemplate(record.id),
+    successMessage: '部署模板删除成功',
   })
 }
 
@@ -1057,12 +1021,6 @@ useKeepAliveRefreshLifecycle(
 watch(activeTab, (nextTab) => {
   stopRuntimePolling()
   void loadActiveTab(nextTab)
-})
-
-watch(() => serviceFilters.business_system, (businessSystemId) => {
-  if (businessSystemId && !serviceFilterRecords.environments.some((item) => item.id === serviceFilters.environment && item.business_system === businessSystemId)) {
-    serviceFilters.environment = undefined
-  }
 })
 
 watch(() => props.serviceScope, () => {

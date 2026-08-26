@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/api/assets/application', () => ({
   getBusinessSystem: vi.fn(),
   getBusinessSystemList: vi.fn(),
+  getProjectList: vi.fn(),
   getBusinessEnvironmentList: vi.fn(),
   getApplicationService: vi.fn(),
   getApplicationServiceList: vi.fn(),
@@ -32,17 +33,15 @@ describe('ServiceTreeNodeContent', () => {
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
       { id: 7, name: '订单系统', code: 'order-system', deployment_count: 2, enabled: true },
     ]))
+    applicationApi.getProjectList.mockResolvedValue(listResponse([]))
     applicationApi.getBusinessSystem.mockResolvedValue({ data: { data: {
       id: 7, name: '订单系统', code: 'order-system', owner: '订单团队', enabled: true,
     } } })
-    applicationApi.getBusinessEnvironmentList.mockResolvedValue(listResponse([
-      { id: 72, business_system: 7, name: '测试环境', code: 'testing', service_count: 1, deployment_count: 2 },
-    ]))
     applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
-      { id: 21, name: '订单 API', environment: 72, environment_name: '测试环境', deployment_count: 2, topology_type: 'cluster', application_name: 'Order API' },
+      { id: 21, name: '订单 API', business_system: 7, environment: 72, environment_name: '测试环境', deployment_count: 2, topology_type: 'cluster', application_name: 'Order API' },
     ]))
     applicationApi.getApplicationService.mockResolvedValue({ data: { data: {
-      id: 21, name: '订单 API', business_system_name: '订单系统', environment: 72, environment_name: '测试环境',
+      id: 21, name: '订单 API', business_system: 7, business_system_name: '订单系统', environment: 72, environment_name: '测试环境',
       application_name: 'Order API', application_version_name: '1.0', deployment_template_name: 'Order Template', topology_type: 'cluster', cluster_profile_name: 'Redis Sentinel',
       cluster_type: 'ha',
       access_address: '10.0.0.10',
@@ -78,26 +77,20 @@ describe('ServiceTreeNodeContent', () => {
     await wrapper.setProps({ scope: { nodeType: 'businessSystem', businessSystemId: 7, businessSystemName: '订单系统', nodeTitle: '订单系统' } })
     await flushPromises()
     expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
-    expect(applicationApi.getBusinessEnvironmentList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
     expect(applicationApi.getBusinessSystem).toHaveBeenCalledWith(7)
     expect(wrapper.text()).toContain('订单团队')
-    expect(wrapper.text()).toContain('测试环境')
-    expect(wrapper.find('.child-navigation-link').text()).toContain('测试环境')
+    expect(wrapper.text()).toContain('订单 API')
+    expect(wrapper.find('.child-navigation-link').text()).toContain('订单 API')
     await wrapper.find('.child-navigation-link').trigger('click')
     expect(wrapper.emitted('navigate').at(-1)).toEqual([{
-      nodeType: 'environment',
+      nodeType: 'service',
+      applicationServiceId: 21,
       businessSystemId: 7,
       businessSystemName: '订单系统',
       environment: 72,
       environmentName: '测试环境',
-      nodeTitle: '测试环境',
+      nodeTitle: '订单 API',
     }])
-
-    await wrapper.setProps({ scope: { nodeType: 'environment', businessSystemId: 7, environment: 72, environmentName: '测试环境', nodeTitle: '测试环境' } })
-    await flushPromises()
-    expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ environment: 72 }))
-    expect(wrapper.text()).toContain('部署实例1')
-    expect(wrapper.text()).toContain('订单 API')
 
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 21, businessSystemName: '订单系统', environmentName: '测试环境', nodeTitle: '订单 API' } })
     await flushPromises()

@@ -82,6 +82,7 @@ class InspectionExecution(BaseModel):
         RUNNING = 'running', '执行中'
         SUCCESS = 'success', '成功'
         FAILED = 'failed', '失败'
+        CANCELED = 'canceled', '已取消'
 
     task = models.ForeignKey(InspectionTask, on_delete=models.SET_NULL, null=True, related_name='executions')
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
@@ -106,6 +107,7 @@ class InspectionTargetExecution(BaseModel):
         RUNNING = 'running', '执行中'
         SUCCESS = 'success', '成功'
         FAILED = 'failed', '失败'
+        CANCELED = 'canceled', '已取消'
 
     execution = models.ForeignKey(InspectionExecution, on_delete=models.CASCADE, related_name='targets')
     deployment = models.ForeignKey(

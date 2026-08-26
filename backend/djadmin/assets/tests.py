@@ -216,7 +216,6 @@ class ApplicationTest(BaseTestCase):
 
     def _environment_for(self, business_system_id, code='production'):
         return BusinessEnvironment.objects.get_or_create(
-            business_system_id=business_system_id,
             code=code,
             defaults={'name': f'{code}-env'},
         )[0]
@@ -226,9 +225,14 @@ class ApplicationTest(BaseTestCase):
         deployment_template = kwargs.pop('deployment_template')
         instance_name = kwargs['instance_name']
         business_system_id = kwargs.pop('business_system_id', None)
+        if business_system_id is None:
+            business_system_id = BusinessSystem.objects.get_or_create(
+                name='测试业务系统', code='test-business-system',
+            )[0].id
         environment_code = kwargs.pop('environment', 'production')
-        environment = self._environment_for(business_system_id, environment_code) if business_system_id else None
+        environment = self._environment_for(business_system_id, environment_code)
         service = ApplicationService.objects.create(
+            business_system_id=business_system_id,
             environment=environment,
             application=application_version.application,
             application_version=application_version,
@@ -267,7 +271,7 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         system_body = self.assertResponseOK(system_res)
         business_system_id = system_body['data']['id']
-        self.assertFalse(BusinessEnvironment.objects.filter(business_system_id=business_system_id).exists())
+        self.assertFalse(BusinessEnvironment.objects.filter(code='production').exists())
 
         application = Application.objects.create(name='Order Tomcat', code='order-tomcat')
         version = ApplicationVersion.objects.create(application=application, version='9.0.35')
@@ -319,6 +323,7 @@ class ApplicationTest(BaseTestCase):
             'name': '订单缓存集群',
             'code': 'order-cache-cluster',
             'topology_type': 'cluster',
+            'business_system': business_system.id,  # type: ignore[attr-defined]
             'environment': self._environment_for(business_system.id).id,  # type: ignore[attr-defined]
             'member_configs': [{'deployment': deployment.id}],  # type: ignore[attr-defined]
         }, format='json')
@@ -335,6 +340,52 @@ class ApplicationTest(BaseTestCase):
             'members', 'application_consistency',
         })
         self.assertEqual(AgentJob.objects.count(), job_count)
+
+    def test_service_can_switch_application_keeping_existing_members(self):
+        """切换服务所属应用时，服务自身已关联的实例不应被判为跨应用冲突。"""
+        old_application = Application.objects.create(name='OpenResty Test', code='switch-openresty')
+        new_application = Application.objects.create(name='Elasticsearch Test', code='switch-elasticsearch')
+        business_system = BusinessSystem.objects.create(name='切换业务', code='switch-business')
+        environment = self._environment_for(business_system.id)  # type: ignore[attr-defined]
+        old_version = ApplicationVersion.objects.create(application=old_application, version='1.19.9')
+        new_version = ApplicationVersion.objects.create(application=new_application, version='8.5.2')
+        old_template = ApplicationDeploymentTemplate.objects.create(
+            application=old_application, name='openresty-template', control_type='systemd',
+            run_user='nginx', service_name='openresty',
+        )
+        new_template = ApplicationDeploymentTemplate.objects.create(
+            application=new_application, name='elasticsearch-template', control_type='systemd',
+            run_user='es', service_name='elasticsearch',
+        )
+        host = Host.objects.create(instance_name='tib-es-redis-209', ip='10.0.0.209', environment=environment)
+        deployment = ApplicationDeployment.objects.create(host=host, instance_name='tib-es-redis-209')
+
+        created = self.assertResponseOK(self.client.post('/assets/application-services/', {
+            'name': 'elasticsearch', 'code': 'elasticsearch',
+            'business_system': business_system.id,  # type: ignore[attr-defined]
+            'environment': environment.id,  # type: ignore[attr-defined]
+            'topology_type': 'standalone',
+            'application': old_application.id,  # type: ignore[attr-defined]
+            'application_version': old_version.id,  # type: ignore[attr-defined]
+            'deployment_template': old_template.id,  # type: ignore[attr-defined]
+            'member_configs': [{'deployment': deployment.id}],  # type: ignore[attr-defined]
+        }, format='json'))['data']
+
+        switched = self.assertResponseOK(self.client.patch(
+            f'/assets/application-services/{created["id"]}/',
+            {
+                'application': new_application.id,  # type: ignore[attr-defined]
+                'application_version': new_version.id,  # type: ignore[attr-defined]
+                'deployment_template': new_template.id,  # type: ignore[attr-defined]
+                'member_configs': [{'deployment': deployment.id}],  # type: ignore[attr-defined]
+            },
+            format='json',
+        ))['data']
+        self.assertEqual(switched['application'], new_application.id)  # type: ignore[attr-defined]
+        self.assertEqual(
+            [item['deployment'] for item in switched['member_instances']],
+            [deployment.id],  # type: ignore[attr-defined]
+        )
 
     def test_ha_cluster_selects_instances_without_member_ports(self):
         application = Application.objects.create(name='HA App', code='ha-cluster')
@@ -358,6 +409,7 @@ class ApplicationTest(BaseTestCase):
 
         payload = {
             'application': application.id,  # type: ignore[attr-defined]
+            'business_system': business_system.id,  # type: ignore[attr-defined]
             'cluster_profile': profile.id,  # type: ignore[attr-defined]
             'application_version': version.id,  # type: ignore[attr-defined]
             'deployment_template': template.id,  # type: ignore[attr-defined]
@@ -393,16 +445,17 @@ class ApplicationTest(BaseTestCase):
             run_user='app', service_name='standalone-app',
         )
         service = ApplicationService.objects.create(
+            business_system=BusinessSystem.objects.create(name='单机系统', code='standalone-system'),
             environment=self._environment_for(
-                BusinessSystem.objects.create(name='单机系统', code='standalone-system').id,  # type: ignore[attr-defined]
+                0,
             ),
             application=application,
             application_version=version,
             deployment_template=template,
             name='Standalone Service', code='standalone-service',
         )
-        first_host = Host.objects.create(instance_name='standalone-1', ip='10.0.0.42')
-        second_host = Host.objects.create(instance_name='standalone-2', ip='10.0.0.43')
+        first_host = Host.objects.create(instance_name='standalone-1', ip='10.0.0.42', environment=service.environment)
+        second_host = Host.objects.create(instance_name='standalone-2', ip='10.0.0.43', environment=service.environment)
         first_deployment = ApplicationDeployment.objects.create(
             host=first_host,
             instance_name='standalone-member-1',
@@ -428,6 +481,7 @@ class ApplicationTest(BaseTestCase):
         environment = self._environment_for(
             BusinessSystem.objects.create(name='负载均衡系统', code='load-balancer-system').id,  # type: ignore[attr-defined]
         )
+        business_system = BusinessSystem.objects.get(code='load-balancer-system')
 
         response = self.client.post('/assets/application-services/', {
             'application': application.id,  # type: ignore[attr-defined]
@@ -436,6 +490,7 @@ class ApplicationTest(BaseTestCase):
             'name': '负载均衡服务',
             'code': 'load-balancer-service',
             'topology_type': 'load_balancer',
+            'business_system': business_system.id,  # type: ignore[attr-defined]
             'environment': environment.id,  # type: ignore[attr-defined]
         }, format='json')
 
@@ -863,12 +918,17 @@ class ApplicationTest(BaseTestCase):
         template_body = self.assertResponseOK(template_res)
 
         service = ApplicationService.objects.create(
+            business_system=BusinessSystem.objects.create(name='Compose 系统', code='compose-system'),
+            environment=self._environment_for(0),
             application=application,
             application_version=version,
             deployment_template_id=template_body['data']['id'],
             name='Order API 生产服务',
             code='order-api-production',
         )
+
+        host.environment = service.environment
+        host.save(update_fields=['environment'])
 
         res = self.client.post('/assets/application-deployments/', {
             'application_service': service.id,  # type: ignore[attr-defined]
@@ -1222,6 +1282,8 @@ class ApplicationServiceRuntimeStatusTest(TransactionTestCase):
         self.client = APIClient()
         self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
         self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+        self.business_system = BusinessSystem.objects.create(name='状态系统', code='status-system')
+        self.environment = BusinessEnvironment.objects.create(name='生产环境', code='production')
 
     @patch('assets.views._dispatch_agent_job_via_grpc')
     def test_service_refresh_runtime_status_covers_all_members(self, dispatch_job):
@@ -1233,6 +1295,8 @@ class ApplicationServiceRuntimeStatusTest(TransactionTestCase):
             run_user='mysql', service_name='mysqld',
         )
         service = ApplicationService.objects.create(
+            business_system=self.business_system,
+            environment=self.environment,
             application=application,
             application_version=version,
             deployment_template=template,

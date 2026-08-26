@@ -63,15 +63,31 @@ class BusinessSystem(BaseModel):
         return self.name
 
 
-class BusinessEnvironment(BaseModel):
-    """业务系统下的环境实体，取代原先挂在逻辑服务上的环境枚举字段。"""
+class Project(BaseModel):
+    """长期业务集合，可复用多个业务系统，不参与服务树层级。"""
 
-    business_system = models.ForeignKey(
+    name = models.CharField(max_length=128, unique=True, verbose_name='项目名称')
+    code = models.CharField(max_length=64, unique=True, verbose_name='项目编码')
+    owner = models.CharField(max_length=128, blank=True, default='', verbose_name='负责人')
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+    business_systems = models.ManyToManyField(
         BusinessSystem,
-        on_delete=models.CASCADE,
-        related_name='environments',
-        verbose_name='所属业务系统',
+        related_name='projects',
+        blank=True,
+        verbose_name='关联业务系统',
     )
+
+    class Meta:
+        db_table = 'assets_project'
+        ordering = ['name', 'id']
+
+    def __str__(self):
+        return self.name
+
+
+class BusinessEnvironment(BaseModel):
+    """全局环境字典，供不同业务系统和逻辑服务复用。"""
+
     name = models.CharField(max_length=64, verbose_name='环境名称')
     code = models.CharField(max_length=32, verbose_name='环境编码')
     # 用于服务树中固定“生产在前、开发在后”这类展示顺序，避免按名称排序导致次序不稳定。
@@ -81,10 +97,10 @@ class BusinessEnvironment(BaseModel):
 
     class Meta:
         db_table = 'assets_business_environment'
-        ordering = ['business_system_id', 'order', 'name', 'id']
+        ordering = ['order', 'name', 'id']
         constraints = [
-            models.UniqueConstraint(fields=['business_system', 'code'], name='unique_business_environment_code'),
-            models.UniqueConstraint(fields=['business_system', 'name'], name='unique_business_environment_name'),
+            models.UniqueConstraint(fields=['code'], name='unique_business_environment_code'),
+            models.UniqueConstraint(fields=['name'], name='unique_business_environment_name'),
         ]
 
     def __str__(self):
@@ -139,6 +155,7 @@ class ApplicationDeploymentTemplate(BaseModel):
     ha_cluster_name = models.CharField(max_length=128, blank=True, default='', verbose_name='集群名称')
     ha_resource_name = models.CharField(max_length=128, blank=True, default='', verbose_name='资源名称')
     enabled = models.BooleanField(default=True, verbose_name='允许新部署')
+    macro_definitions = models.JSONField(default=list, blank=True, verbose_name='宏定义')
 
     class Meta:
         db_table = 'assets_application_deployment_template'
@@ -191,7 +208,12 @@ class ApplicationService(BaseModel):
         CLUSTER = 'cluster', '集群'
         LOAD_BALANCER = 'load_balancer', '负载均衡'
 
-    # 所属业务系统由 environment 派生，不再冗余存储，避免两处数据漂移。
+    business_system = models.ForeignKey(
+        BusinessSystem,
+        on_delete=models.PROTECT,
+        related_name='services',
+        verbose_name='所属业务系统',
+    )
     environment = models.ForeignKey(
         BusinessEnvironment,
         on_delete=models.PROTECT,
@@ -220,6 +242,7 @@ class ApplicationService(BaseModel):
         related_name='services',
         verbose_name='部署模板',
     )
+    macro_values = models.JSONField(default=dict, blank=True, verbose_name='宏值')
     cluster_profile = models.ForeignKey(
         ClusterProfile,
         on_delete=models.PROTECT,
@@ -239,10 +262,10 @@ class ApplicationService(BaseModel):
 
     class Meta:
         db_table = 'assets_application_service'
-        ordering = ['environment_id', 'name']
+        ordering = ['business_system_id', 'environment_id', 'name']
         constraints = [
             models.UniqueConstraint(
-                fields=['environment', 'name'],
+                fields=['business_system', 'environment', 'name'],
                 name='unique_business_environment_service',
             ),
         ]
@@ -605,6 +628,14 @@ class Host(BaseModel):
     agent_id = models.CharField(max_length=128, blank=True, null=True, unique=True, verbose_name='Agent ID')
     ip = models.GenericIPAddressField(null=True)
     instance_id = models.CharField(max_length=128, blank=True, null=True)
+    environment = models.ForeignKey(
+        BusinessEnvironment,
+        on_delete=models.PROTECT,
+        related_name='hosts',
+        null=True,
+        blank=True,
+        verbose_name='所属环境',
+    )
 
     cloud_account = models.ForeignKey(
         "CloudAccount",

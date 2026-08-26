@@ -369,3 +369,37 @@ class SoftwarePackage(BaseModel):
 # 告警规则模型（AlertRule/AlertRuleGroup/AlertRuleDeployHistory）已于告警规则管理重构中移除：
 # 告警规则改为只读展示 Prometheus 侧已生效的规则（monitor.views.MonitorViewSet.prometheus_rules），
 # 平台不再本地维护/导出/部署告警规则，避免出现“两份规则源”的不一致风险。
+
+
+class OpenSearchCluster(BaseModel):
+    """日志存储集群连接配置。密码用 Fernet 可逆加密，因为连接时需要明文做 basic auth。"""
+
+    name = models.CharField(max_length=128, unique=True, verbose_name='集群名称')
+    hosts = models.CharField(
+        max_length=512, verbose_name='连接地址',
+        help_text='形如 https://10.0.0.1:9200，多个用逗号分隔',
+    )
+    username = models.CharField(max_length=128, blank=True, default='', verbose_name='用户名')
+    password = models.CharField(max_length=512, blank=True, default='', verbose_name='密码')
+    verify_tls = models.BooleanField(default=False, verbose_name='校验 TLS 证书')
+    ca_cert = models.TextField(blank=True, default='', verbose_name='CA 证书')
+    index_prefix = models.CharField(max_length=64, default='logs', verbose_name='索引前缀')
+    request_timeout = models.PositiveIntegerField(default=10, verbose_name='请求超时（秒）')
+    enabled = models.BooleanField(default=True, verbose_name='是否启用')
+    is_default = models.BooleanField(default=False, verbose_name='默认集群')
+    last_check_time = models.DateTimeField(null=True, blank=True, verbose_name='最近连接测试时间')
+    last_check_success = models.BooleanField(null=True, blank=True, verbose_name='最近连接测试结果')
+    last_check_message = models.TextField(blank=True, default='', verbose_name='最近连接测试信息')
+    remark = models.TextField(blank=True, default='', verbose_name='备注')
+
+    class Meta:
+        db_table = 'monitor_opensearch_cluster'
+        ordering = ['-is_default', 'id']
+        verbose_name = '日志存储集群'
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def host_list(self):
+        return [item.strip() for item in str(self.hosts or '').split(',') if item.strip()]

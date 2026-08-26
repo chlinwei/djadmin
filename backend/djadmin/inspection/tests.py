@@ -11,6 +11,8 @@ from assets.models import (
     ApplicationService,
     ApplicationServiceDeployment,
     ApplicationVersion,
+    BusinessEnvironment,
+    BusinessSystem,
     Host,
     HostGroup,
 )
@@ -24,6 +26,8 @@ from .views import InspectionTaskViewSet
 
 class InspectionTestCase(TransactionTestCase):
     def setUp(self):
+        self.business_system = BusinessSystem.objects.create(name='巡检系统', code='inspection-system')
+        self.environment = BusinessEnvironment.objects.create(name='测试环境', code='testing')
         self.application = Application.objects.create(name='Demo App', code='demo-app')
         self.version = ApplicationVersion.objects.create(application=self.application, version='1.2.3')
         self.template = ApplicationDeploymentTemplate.objects.create(
@@ -31,6 +35,8 @@ class InspectionTestCase(TransactionTestCase):
             app_home='/opt/demo', service_name='demo.service',
         )
         self.service = ApplicationService.objects.create(
+            business_system=self.business_system,
+            environment=self.environment,
             application=self.application,
             application_version=self.version,
             deployment_template=self.template,

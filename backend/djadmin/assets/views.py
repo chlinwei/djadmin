@@ -8,7 +8,7 @@ import os
 import logging
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TYPE_CHECKING, cast
 from copy import deepcopy
 from types import SimpleNamespace
 from datetime import timedelta
@@ -24,7 +24,7 @@ from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action, api_view
 from .models import *
 from .serializer import *
-from .application_variables import ApplicationVariableError, resolve_application_variables
+from .application_variables import ApplicationVariableError, resolve_application_variables, resolve_macro_variables
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters import rest_framework as drf_filters
@@ -348,102 +348,15 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         raise DjadminException(AssetsError.BATCH_UPLOAD_ERROR,serializer.errors)
         
 
-class ApplicationManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
-    queryset = Application.objects.prefetch_related('versions', 'baseline_checks').annotate(
-        version_count=Count('versions', distinct=True),
-        deployment_template_count=Count('deployment_templates', distinct=True),
-        deployment_count=Count('services__deployments', distinct=True),
-    ).order_by('-id')
-    serializer_class = ApplicationSerializer
-    pagination_class = CustomPagination
-    filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
-    search_fields = ['name', 'remark'] 
-    ordering_fields = [ 'name','create_time'] 
-    lookup_field = 'id'
-    permission_classes = [CustomMenuPermission]
-    action_perms_map = {
-        # view
-        'list': 'assets:applications:view',
-        'retrieve': 'assets:applications:view',
-        # delete
-        'batch-delete': 'assets:applications:delete',
-        # update
-        'partial_update': 'assets:applications:update',
-        'perform_update': 'assets:applications:update',
-        # create
-        'create': 'assets:applications:create',
-    }
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
-    def retrieve(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
-        return Response_200(data=serializer.data)
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=False)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    def partial_update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
-
-    # 批量删除Application
-    @action(detail=False,methods=['delete'],url_path='batch-delete')
-    def batchDelete(self,request):
-        # 获取ID数组参数
-        ids = request.data.get('ids', [])
-        # 先查用户角色列表
-        try:
-            Application.objects.filter(id__in=ids).delete()
-        except ProtectedError:
-            return Response_error_str('应用仍有部署实例，请先删除相关部署实例', code=400)
-        return Response_200()
+# Mixin 仅提供响应封装，运行时不入 MRO实体基类；仅在类型检查时挂到 GenericViewSet 以获得 self.* 提示。
+if TYPE_CHECKING:
+    _ApplicationResponseBase = GenericViewSet
+else:
+    _ApplicationResponseBase = object
 
 
-class ApplicationAssetManageBase(GenericViewSet, CreateModelMixin, DestroyModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin):
-    pagination_class = CustomPagination
-    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    lookup_field = 'id'
-    permission_classes = [CustomMenuPermission]
-    action_perms_map = {
-        'list': 'assets:applications:view',
-        'retrieve': 'assets:applications:view',
-        'create': 'assets:applications:create',
-        'destroy': 'assets:applications:delete',
-        'update': 'assets:applications:update',
-        'partial_update': 'assets:applications:update',
-        'perform_update': 'assets:applications:update',
-    }
+class ApplicationResponseMixin(_ApplicationResponseBase):
+    """统一应用类 ViewSet 的 {code,msg,data} 响应与分页结构，避免每个类重复实现。"""
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -482,6 +395,61 @@ class ApplicationAssetManageBase(GenericViewSet, CreateModelMixin, DestroyModelM
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
 
+
+class ApplicationManage(ApplicationResponseMixin, GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
+    queryset = Application.objects.prefetch_related('versions', 'baseline_checks').annotate(
+        version_count=Count('versions', distinct=True),
+        deployment_template_count=Count('deployment_templates', distinct=True),
+        deployment_count=Count('services__deployments', distinct=True),
+    ).order_by('-id')
+    serializer_class = ApplicationSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter,DjangoFilterBackend,SearchFilter)
+    search_fields = ['name', 'remark'] 
+    ordering_fields = [ 'name','create_time'] 
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        # view
+        'list': 'assets:applications:view',
+        'retrieve': 'assets:applications:view',
+        # delete
+        'batch-delete': 'assets:applications:delete',
+        # update
+        'partial_update': 'assets:applications:update',
+        'perform_update': 'assets:applications:update',
+        # create
+        'create': 'assets:applications:create',
+    }
+
+    # 批量删除Application
+    @action(detail=False,methods=['delete'],url_path='batch-delete')
+    def batchDelete(self,request):
+        # 获取ID数组参数
+        ids = request.data.get('ids', [])
+        # 先查用户角色列表
+        try:
+            Application.objects.filter(id__in=ids).delete()
+        except ProtectedError:
+            return Response_error_str('应用仍有部署实例，请先删除相关部署实例', code=400)
+        return Response_200()
+
+
+class ApplicationAssetManageBase(ApplicationResponseMixin, GenericViewSet, CreateModelMixin, DestroyModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin):
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'assets:applications:view',
+        'retrieve': 'assets:applications:view',
+        'create': 'assets:applications:create',
+        'destroy': 'assets:applications:delete',
+        'update': 'assets:applications:update',
+        'partial_update': 'assets:applications:update',
+        'perform_update': 'assets:applications:update',
+    }
+
     def destroy(self, request, *args, **kwargs):
         try:
             self.get_object().delete()
@@ -500,8 +468,8 @@ class ApplicationVersionManage(ApplicationAssetManageBase):
 
 class BusinessSystemManage(ApplicationAssetManageBase):
     queryset = BusinessSystem.objects.annotate(
-        deployment_count=Count('environments__services__deployments', distinct=True),
-        environment_count=Count('environments', distinct=True),
+        deployment_count=Count('services__deployments', distinct=True),
+        environment_count=Count('services__environment', distinct=True),
     ).all()
     serializer_class = BusinessSystemSerializer
     search_fields = ['name', 'code', 'owner', 'remark']
@@ -509,15 +477,23 @@ class BusinessSystemManage(ApplicationAssetManageBase):
     filterset_fields = ['enabled']
 
 
+class ProjectManage(ApplicationAssetManageBase):
+    queryset = Project.objects.prefetch_related('business_systems').all()
+    serializer_class = ProjectSerializer
+    search_fields = ['name', 'code', 'owner', 'business_systems__name', 'remark']
+    ordering_fields = ['name', 'code', 'create_time', 'update_time']
+    filterset_fields = ['enabled', 'business_systems']
+
+
 class BusinessEnvironmentManage(ApplicationAssetManageBase):
-    queryset = BusinessEnvironment.objects.select_related('business_system').annotate(
+    queryset = BusinessEnvironment.objects.annotate(
         service_count=Count('services', distinct=True),
         deployment_count=Count('services__deployments', distinct=True),
     ).all()
     serializer_class = BusinessEnvironmentSerializer
-    search_fields = ['name', 'code', 'owner', 'business_system__name', 'remark']
+    search_fields = ['name', 'code', 'owner', 'remark']
     ordering_fields = ['name', 'code', 'order', 'create_time', 'update_time']
-    filterset_fields = ['business_system', 'enabled']
+    filterset_fields = ['enabled']
 
 
 class ClusterProfileManage(ApplicationAssetManageBase):
@@ -534,8 +510,7 @@ class ClusterProfileManage(ApplicationAssetManageBase):
 
 
 class ApplicationServiceFilter(drf_filters.FilterSet):
-    # 逻辑服务不再直接持有业务系统，这里保留 business_system 查询参数并转发到环境所属系统。
-    business_system = drf_filters.NumberFilter(field_name='environment__business_system')
+    business_system = drf_filters.NumberFilter(field_name='business_system')
 
     class Meta:
         model = ApplicationService
@@ -547,10 +522,10 @@ class ApplicationServiceFilter(drf_filters.FilterSet):
 
 class ApplicationServiceManage(ApplicationAssetManageBase):
     queryset = ApplicationService.objects.select_related(
-        'environment__business_system', 'application', 'cluster_profile',
+        'business_system', 'environment', 'application', 'cluster_profile',
     ).annotate(deployment_count=Count('deployments', distinct=True)).all()
     serializer_class = ApplicationServiceSerializer
-    search_fields = ['name', 'code', 'environment__business_system__name', 'application__name', 'access_address', 'remark']
+    search_fields = ['name', 'code', 'business_system__name', 'environment__name', 'application__name', 'access_address', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
     filterset_class = ApplicationServiceFilter
     action_perms_map = {
@@ -794,7 +769,17 @@ def _build_application_baseline_params(deployment):
     )
 
     def resolve_template_value(value):
-        return resolve_application_variables(value, app_home=app_home, run_user=run_user)
+        macro_values = {
+            item['name']: item.get('value', '')
+            for item in (deployment_template.macro_definitions or [])
+            if isinstance(item, dict) and item.get('name')
+        }
+        macro_values.update(deployment.service.macro_values if deployment.service else {})
+        return resolve_macro_variables(
+            resolve_application_variables(value, app_home=app_home, run_user=run_user),
+            definitions=deployment_template.macro_definitions or [],
+            values=macro_values,
+        )
 
     ports = [
         {
@@ -1088,7 +1073,7 @@ def _run_application_baseline_check(execution_id, job_id):
 class ApplicationDeploymentFilter(drf_filters.FilterSet):
     # 保持既有查询参数名不变，实际过滤路径改为经由环境实体到业务系统。
     application_service__business_system = drf_filters.NumberFilter(
-        field_name='application_services__environment__business_system',
+        field_name='application_services__business_system',
     )
     application_service = drf_filters.NumberFilter(field_name='application_services')
     application_service__environment = drf_filters.NumberFilter(field_name='application_services__environment')
@@ -1112,7 +1097,7 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
     ).prefetch_related(
         'application_services__application_version__application',
         'application_services__deployment_template__ports',
-        'application_services__environment__business_system',
+        'application_services__business_system',
         'application_services__cluster_profile',
     )
     serializer_class = ApplicationDeploymentSerializer
@@ -2113,6 +2098,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         instance_name = (self.request.query_params.get('instance_name') or '').strip()  # type: ignore[union-attr]
         collect_status = self.request.query_params.get('collect_status')  # type: ignore[union-attr]
         agent_status = (self.request.query_params.get('agent_status') or '').strip().lower()  # type: ignore[union-attr]
+        environment_id = self.request.query_params.get('environment')  # type: ignore[union-attr]
         if host_id not in [None, '', '0', 0]:
             try:
                 queryset = queryset.filter(id=int(host_id))
@@ -2132,6 +2118,11 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
             queryset = queryset.filter(collect_status=collect_status)
         if agent_status in {'online', 'offline'}:
             queryset = queryset.filter(agent_online=(agent_status == 'online'))
+        if environment_id not in [None, '', '0', 0]:
+            try:
+                queryset = queryset.filter(environment_id=int(environment_id))
+            except (TypeError, ValueError):
+                queryset = queryset.none()
         return queryset.distinct()
 
     def create(self, request, *args, **kwargs):

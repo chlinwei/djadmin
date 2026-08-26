@@ -43,3 +43,7 @@ export function getInspectionExecutions(params) {
 export function getInspectionExecution(id) {
   return requestUtil.get(`${executionPrefix}${id}/`)
 }
+
+export function cancelInspectionExecution(id) {
+  return requestUtil.post(`${executionPrefix}${id}/cancel/`, {})
+}

@@ -244,8 +244,18 @@ class BusinessSystemSerializer(ModelSerializer):
         fields = '__all__'
 
 
+class ProjectSerializer(ModelSerializer):
+    business_system_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = '__all__'
+
+    def get_business_system_names(self, obj):
+        return list(obj.business_systems.values_list('name', flat=True))
+
+
 class BusinessEnvironmentSerializer(ModelSerializer):
-    business_system_name = serializers.CharField(source='business_system.name', read_only=True)
     service_count = serializers.IntegerField(read_only=True)
     deployment_count = serializers.IntegerField(read_only=True)
 
@@ -277,8 +287,7 @@ class ClusterProfileSerializer(ModelSerializer):
 
 
 class ApplicationServiceSerializer(ModelSerializer):
-    business_system = serializers.IntegerField(source='environment.business_system_id', read_only=True)
-    business_system_name = serializers.CharField(source='environment.business_system.name', read_only=True)
+    business_system_name = serializers.CharField(source='business_system.name', read_only=True)
     environment_name = serializers.CharField(source='environment.name', read_only=True)
     environment_code = serializers.CharField(source='environment.code', read_only=True)
     application_name = serializers.CharField(source='application.name', read_only=True)
@@ -307,6 +316,21 @@ class ApplicationServiceSerializer(ModelSerializer):
         cluster_profile = attrs.get('cluster_profile', getattr(self.instance, 'cluster_profile', None))
         application_version = attrs.get('application_version', getattr(self.instance, 'application_version', None))
         deployment_template = attrs.get('deployment_template', getattr(self.instance, 'deployment_template', None))
+        macro_values = attrs.get(
+            'macro_values',
+            {} if 'deployment_template' in attrs else getattr(self.instance, 'macro_values', {}),
+        )
+        if not isinstance(macro_values, dict):
+            raise serializers.ValidationError({'macro_values': '宏值必须是 JSON 对象'})
+        macro_names = {
+            item['name'] for item in (deployment_template.macro_definitions or [])
+            if isinstance(item, dict) and item.get('name')
+        } if deployment_template else set()
+        unknown_macros = set(macro_values) - macro_names
+        if unknown_macros:
+            raise serializers.ValidationError({'macro_values': f'包含未定义宏: {", ".join(sorted(unknown_macros))}'})
+        if any('\n' in str(value) or '\r' in str(value) for value in macro_values.values()):
+            raise serializers.ValidationError({'macro_values': '宏值不能包含换行符'})
         access_address = attrs.get('access_address', getattr(self.instance, 'access_address', ''))
         if topology_type == ApplicationService.TopologyType.STANDALONE:
             attrs['access_address'] = ''
@@ -367,9 +391,13 @@ class ApplicationServiceSerializer(ModelSerializer):
             if deployments.count() != len(deployment_ids):
                 raise serializers.ValidationError({'member_configs': '包含不存在的部署实例'})
             # 实例所属应用现在由其逻辑服务决定，跨应用复用实例会造成配置冲突。
-            if deployments.exclude(application_services__isnull=True).exclude(
-                application_services__application=application,
-            ).exists():
+            # 当前服务的应用本次就要改成 application，不能用它的旧值判定冲突。
+            conflicting_services = ApplicationService.objects.filter(
+                deployment_links__deployment_id__in=deployment_ids,
+            ).exclude(application=application)
+            if self.instance is not None:
+                conflicting_services = conflicting_services.exclude(pk=self.instance.pk)
+            if conflicting_services.exists():
                 raise serializers.ValidationError({'member_configs': '集群成员实例必须属于同一应用'})
         if cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA:
             if not str(access_address or '').strip():
@@ -442,6 +470,19 @@ class ApplicationDeploymentTemplateSerializer(ModelSerializer):
         fields = '__all__'
 
     def validate(self, attrs):
+        macro_definitions = attrs.get('macro_definitions', getattr(self.instance, 'macro_definitions', []))
+        if not isinstance(macro_definitions, list) or any(
+            not isinstance(item, dict)
+            or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(item.get('name') or ''))
+            or any(key not in {'name', 'value', 'description'} for key in item)
+            or '\n' in str(item.get('value') or '')
+            or '\r' in str(item.get('value') or '')
+            for item in macro_definitions
+        ):
+            raise serializers.ValidationError({'macro_definitions': '宏定义必须包含合法的 Key、Value、说明'})
+        macro_names = [item['name'] for item in macro_definitions]
+        if len(macro_names) != len(set(macro_names)):
+            raise serializers.ValidationError({'macro_definitions': '宏名称不能重复'})
         control_type = attrs.get('control_type', getattr(self.instance, 'control_type', None))
         service_name = attrs.get('service_name', getattr(self.instance, 'service_name', ''))
         app_home = attrs.get('app_home', getattr(self.instance, 'app_home', ''))
@@ -606,7 +647,7 @@ class ApplicationDeploymentSerializer(ModelSerializer):
         )
 
     def _first_service(self, obj):
-        return obj.application_services.select_related('environment__business_system', 'cluster_profile').first()
+        return obj.application_services.select_related('business_system', 'environment', 'cluster_profile').first()
 
     def get_application_services(self, obj):
         return [{'id': service.id, 'name': service.name} for service in obj.application_services.all()]
@@ -616,11 +657,11 @@ class ApplicationDeploymentSerializer(ModelSerializer):
 
     def get_business_system(self, obj):
         service = self._first_service(obj)
-        return service.environment.business_system_id if service and service.environment else None
+        return service.business_system_id if service else None
 
     def get_business_system_name(self, obj):
         service = self._first_service(obj)
-        return service.environment.business_system.name if service and service.environment else None
+        return service.business_system.name if service else None
 
     def get_service_name(self, obj):
         return self._first_service(obj).name if self._first_service(obj) else None
@@ -645,10 +686,32 @@ class ApplicationDeploymentSerializer(ModelSerializer):
         model = ApplicationDeployment
         fields = '__all__'
 
+    def _host_bound_business_ids(self, host, *, exclude_deployment=None):
+        if host is None:
+            return set()
+        queryset = ApplicationServiceDeployment.objects.filter(
+            deployment__host=host,
+        ).exclude(service__business_system_id__isnull=True)
+        if exclude_deployment is not None:
+            queryset = queryset.exclude(deployment=exclude_deployment)
+        return set(queryset.values_list('service__business_system_id', flat=True))
+
     def validate(self, attrs):
         # 版本与模板只存在于逻辑服务上，实例必须有归属，否则无法得到运行配置。
-        if self.instance is None and not attrs.get('application_service'):
+        service = attrs.get('application_service')
+        if self.instance is None and not service:
             raise serializers.ValidationError({'application_service': '请选择部署实例所属的逻辑服务'})
+        if service:
+            host = attrs.get('host', getattr(self.instance, 'host', None))
+            if host is not None:
+                if host.environment_id is None:
+                    raise serializers.ValidationError({'host': '主机尚未配置所属环境，不能添加部署实例'})
+                if service.environment_id != host.environment_id:
+                    raise serializers.ValidationError({'host': '主机所属环境必须与逻辑服务环境一致'})
+                host_business_ids = self._host_bound_business_ids(host, exclude_deployment=self.instance)
+                service_business_id = getattr(service, 'business_system_id', None)
+                if host_business_ids and service_business_id not in host_business_ids:
+                    raise serializers.ValidationError({'host': '同一主机只能归属一个业务，当前主机已绑定其他业务的部署实例'})
         return attrs
 
     def create(self, validated_data):
@@ -770,10 +833,37 @@ class HostSerializer(ModelSerializer):
     monitors = serializers.SerializerMethodField()
     create_time = serializers.SerializerMethodField()
     update_time = serializers.SerializerMethodField()
+    environment_name = serializers.CharField(source='environment.name', read_only=True)
 
     class Meta:
         model = Host
         fields = '__all__'
+
+    def _host_bound_business_ids(self, host):
+        if host is None:
+            return set()
+        queryset = ApplicationServiceDeployment.objects.filter(
+            deployment__host=host,
+        ).exclude(service__business_system_id__isnull=True)
+        return set(queryset.values_list('service__business_system_id', flat=True))
+
+    def validate(self, attrs):
+        instance = getattr(self, 'instance', None)
+        target_environment = attrs.get('environment', getattr(instance, 'environment', None))
+
+        if instance is not None:
+            host_business_ids = self._host_bound_business_ids(instance)
+            if len(host_business_ids) > 1:
+                raise serializers.ValidationError({'environment': '当前主机关联了多个业务的历史部署，请先清理后再修改'})
+
+            if host_business_ids:
+                if target_environment is None:
+                    raise serializers.ValidationError({'environment': '主机已绑定业务部署实例，不能清空所属环境'})
+                target_business_id = getattr(target_environment, 'business_system_id', None)
+                if target_business_id not in host_business_ids:
+                    raise serializers.ValidationError({'environment': '同一主机只能归属一个业务，所属环境与已绑定业务不一致'})
+
+        return attrs
 
     @staticmethod
     def _normalize_webssh_user_list(raw_value):
@@ -1021,6 +1111,7 @@ class HostSerializer(ModelSerializer):
 
 class HostListSerializer(ModelSerializer):
     group_name = serializers.SerializerMethodField()
+    environment_name = serializers.CharField(source='environment.name', read_only=True)
     agent_credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
@@ -1037,6 +1128,8 @@ class HostListSerializer(ModelSerializer):
             'instance_name',
             'agent_id',
             'ip',
+            'environment',
+            'environment_name',
             'remark',
             'webssh_default_username',
             'webssh_login_users',

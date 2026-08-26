@@ -10,6 +10,17 @@
     @cancel="emit('update:open', false)"
   >
     <a-spin :spinning="loading">
+      <a-alert
+        v-if="loadError"
+        type="warning"
+        show-icon
+        :message="loadError"
+        class="dialog-load-error"
+      >
+        <template #action>
+          <a-button size="small" type="link" @click="initialize">重试</a-button>
+        </template>
+      </a-alert>
       <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
         <a-row :gutter="16">
           <a-col :span="12"><a-form-item name="name" label="服务名称"><a-input v-model:value="form.name" /></a-form-item></a-col>
@@ -25,7 +36,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="environment" label="环境">
-              <a-select v-model:value="form.environment" :options="environmentOptions" :disabled="!form.business_system" :placeholder="form.business_system ? '请选择环境' : '请先选择业务系统'" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.environment" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>当前业务系统还没有环境</span><a-button type="link" @click.stop="environmentDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建环境</a-button></div>
                 </template>
@@ -80,6 +91,43 @@
               </a-select>
             </a-form-item>
           </a-col>
+          <a-col v-if="templateMacros.length" :span="24">
+            <a-form-item label="模板宏">
+              <a-table
+                :columns="macroTableColumns"
+                :data-source="templateMacros"
+                :pagination="false"
+                row-key="name"
+                size="small"
+                class="service-macro-table"
+              >
+                <template #bodyCell="{ column, record }">
+                  <template v-if="column.key === 'name'"><code>{{ macroKeyLabel(record.name) }}</code></template>
+                  <template v-else-if="column.key === 'value'">
+                    <a-input
+                      :value="macroValue(record)"
+                      :placeholder="record.value || '未设置'"
+                      @update:value="setMacroValue(record.name, $event)"
+                    />
+                  </template>
+                  <template v-else-if="column.key === 'description'">
+                    <span>{{ record.description || '-' }}</span>
+                    <a-tag v-if="hasMacroOverride(record.name)" color="blue">已覆盖</a-tag>
+                    <a-tag v-else color="default">继承</a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'action'">
+                    <a-button
+                      type="link"
+                      size="small"
+                      @click="resetMacroValue(record.name)"
+                    >
+                      重置为默认
+                    </a-button>
+                  </template>
+                </template>
+              </a-table>
+            </a-form-item>
+          </a-col>
           <a-col v-if="form.topology_type !== 'standalone'" :span="12"><a-form-item name="access_address" :label="isHaCluster ? 'VIP' : form.topology_type === 'load_balancer' ? '负载均衡地址' : '入口地址'"><a-input v-model:value="form.access_address" :placeholder="isHaCluster ? '请输入 HA 集群 VIP' : form.topology_type === 'load_balancer' ? '请输入负载均衡地址' : 'IP 或入口地址'" /></a-form-item></a-col>
           <a-col :span="24">
             <a-form-item :label="isHaCluster ? '成员实例（至少 2 个）' : form.topology_type === 'load_balancer' ? '后端成员实例' : '部署实例'" required>
@@ -115,7 +163,6 @@
     />
     <BusinessEnvironmentDialog
       :open="environmentDialogOpen"
-      :business-system-id="form.business_system"
       @update:open="environmentDialogOpen = $event"
       @saved="handleEnvironmentCreated"
     />
@@ -153,6 +200,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { fetchAllPages } from '@/util/fetchAllPages'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
 import BusinessSystemDialog from './BusinessSystemDialog.vue'
@@ -181,6 +229,7 @@ const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formRef = ref(null)
 const loading = ref(false)
+const loadError = ref('')
 const saving = ref(false)
 const deploymentDialogOpen = ref(false)
 const businessSystemDialogOpen = ref(false)
@@ -203,13 +252,13 @@ const topologyOptions = [{ label: '单机', value: 'standalone' }, { label: '集
 const initialForm = () => ({
   id: null, business_system: null, application: null, application_version: null, deployment_template: null, cluster_profile: null,
   name: '', code: '', environment: null, topology_type: 'standalone',
+  macro_values: {},
   access_address: '',
   enabled: true, remark: '',
 })
 const form = reactive(initialForm())
-// business_system 仅用于缩小环境选项范围，实际提交的归属字段只有 environment。
 const environmentOptions = computed(() => environmentRecords.value
-  .filter((item) => item.enabled && item.business_system === form.business_system)
+  .filter((item) => item.enabled)
   .map((item) => ({ label: item.name, value: item.id })))
 const selectedApplication = computed(() => {
   const option = applicationOptions.value.find((item) => item.value === form.application)
@@ -245,13 +294,36 @@ const templateOptions = computed(() => templateRecords.value
   .filter((item) => item.application === form.application && item.enabled)
   .filter((item) => isHaCluster.value ? item.control_type === 'external_ha' : item.control_type !== 'external_ha')
   .map((item) => ({ label: item.name, value: item.id })))
+const templateMacros = computed(() => templateRecords.value.find((item) => item.id === form.deployment_template)?.macro_definitions || [])
+const macroTableColumns = [
+  { title: '宏 Key', key: 'name', width: 220 },
+  { title: '值', key: 'value', width: 280 },
+  { title: '说明', key: 'description' },
+  { title: '操作', key: 'action', width: 110 },
+]
+const macroKeyLabel = (name) => `\${${name}}`
+const macroValue = (macro) => Object.prototype.hasOwnProperty.call(form.macro_values || {}, macro.name) ? form.macro_values[macro.name] : (macro.value || '')
+const hasMacroOverride = (name) => Object.prototype.hasOwnProperty.call(form.macro_values || {}, name)
+function setMacroValue(name, value) {
+  if (value === '' || value === undefined || value === null) {
+    delete form.macro_values[name]
+    return
+  }
+  form.macro_values[name] = value
+}
+function resetMacroValue(name) {
+  delete form.macro_values[name]
+}
+const deploymentOptionLabel = (item) => `${item.instance_name} (${item.host_name || item.host_ip || '-'})`
 const availableDeploymentOptions = computed(() => deploymentRecords.value
   .filter((item) => item.application_id === form.application)
-  .map((item) => ({ label: `${item.instance_name} (${item.host_name || item.host_ip || '-'})`, value: item.id })))
+  .map((item) => ({ label: deploymentOptionLabel(item), value: item.id })))
 const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
 
+// 已关联实例要按全量记录取名，按当前应用过滤会让跨应用实例回退成「实例 ID」。
 function deploymentLabel(deploymentId) {
-  return availableDeploymentOptions.value.find((item) => item.value === deploymentId)?.label || `实例 ${deploymentId}`
+  const deployment = deploymentRecords.value.find((item) => item.id === deploymentId)
+  return deployment ? deploymentOptionLabel(deployment) : `实例 ${deploymentId}`
 }
 
 function openVersionCreator() {
@@ -328,7 +400,6 @@ async function openDeploymentDialog(deploymentId = null) {
       'topology_type', 'application_version', 'deployment_template',
     ])
     const payload = { ...form, draft: true }
-    delete payload.business_system
     payload.cluster_profile = payload.topology_type === 'cluster' ? payload.cluster_profile : null
     const response = await saveApplicationService(payload)
     Object.assign(form, response?.data?.data || {})
@@ -346,6 +417,8 @@ function handleDeploymentSaved(deployment) {
     deploymentRecords.value = deploymentRecords.value.map((item) => item.id === deployment.id ? { ...item, ...deployment } : item)
   } else {
     deploymentRecords.value = [...deploymentRecords.value, deployment]
+  }
+  if (!selectedDeploymentIds.value.includes(deployment.id)) {
     selectedDeploymentIds.value = [...selectedDeploymentIds.value, deployment.id]
   }
   memberEnabled[deployment.id] = deployment.enabled !== false
@@ -366,24 +439,37 @@ function confirmDeleteDeployment(deploymentId) {
   })
 }
 
-async function fetchAll(loader, params = {}) {
-  const response = await loader({ ...params, page: 1, page_size: 1000 })
-  return response?.data?.data?.results || []
-}
-
 async function initialize() {
   Object.assign(form, initialForm())
+  loadError.value = ''
   loading.value = true
   try {
-    const [systems, environments, applications, versions, templates, profiles, deployments] = await Promise.all([
-      fetchAll(getBusinessSystemList, { enabled: true }),
-      fetchAll(getBusinessEnvironmentList, { enabled: true }),
-      fetchAll(getApplicationList, { enabled: true }),
-      fetchAll(getApplicationVersionList, { enabled: true }),
-      fetchAll(getApplicationDeploymentTemplateList, { enabled: true }),
-      fetchAll(getClusterProfileList, { enabled: true }),
-      fetchAll(getApplicationDeploymentList),
-    ])
+    const loaders = [
+      ['业务系统', () => fetchAllPages(getBusinessSystemList, { enabled: true })],
+      ['环境', () => fetchAllPages(getBusinessEnvironmentList, { enabled: true })],
+      ['应用', () => fetchAllPages(getApplicationList, { enabled: true })],
+      ['应用版本', () => fetchAllPages(getApplicationVersionList, { enabled: true })],
+      ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
+      ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
+      ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
+    ]
+    const results = await Promise.all(loaders.map(async ([label, loader]) => {
+      try {
+        return { label, records: await loader() }
+      } catch (error) {
+        return { label, error }
+      }
+    }))
+    const failedLabels = results.filter((result) => result.error).map((result) => result.label)
+    if (failedLabels.length) loadError.value = `${failedLabels.join('、')}加载失败，请点击重试`
+    const records = Object.fromEntries(results.map((result) => [result.label, result.records || []]))
+    const systems = records['业务系统']
+    const environments = records['环境']
+    const applications = records['应用']
+    const versions = records['应用版本']
+    const templates = records['部署模板']
+    const profiles = records['集群模型']
+    const deployments = records['部署实例']
     businessSystemOptions.value = systems.map((item) => ({ label: item.name, value: item.id }))
     environmentRecords.value = environments
     applicationOptions.value = applications.map((item) => ({ label: item.name, value: item.id }))
@@ -395,6 +481,7 @@ async function initialize() {
       const response = await getApplicationService(props.serviceId)
       const data = response?.data?.data || {}
       Object.assign(form, initialForm(), data)
+      form.macro_values = { ...(data.macro_values || {}) }
       selectedDeploymentIds.value = (data.member_instances || []).map((item) => item.deployment)
       for (const item of data.member_instances || []) {
         memberEnabled[item.deployment] = item.enabled !== false
@@ -421,7 +508,6 @@ async function submit() {
   saving.value = true
   try {
     const payload = { ...form }
-    delete payload.business_system
     if (payload.topology_type === 'standalone') {
       payload.cluster_profile = null
     }
@@ -451,12 +537,6 @@ watch(() => props.open, (visible) => {
     initialize()
   }
 })
-watch(() => form.business_system, () => {
-  // 切换业务系统后原环境已不在可选范围内，必须清空避免提交到别的系统下的环境。
-  if (form.environment && !environmentOptions.value.some((item) => item.value === form.environment)) {
-    form.environment = null
-  }
-})
 watch(() => form.application, () => {
   if (form.application_version && !versionOptions.value.some((item) => item.value === form.application_version)) {
     form.application_version = null
@@ -465,6 +545,14 @@ watch(() => form.application, () => {
     form.deployment_template = null
   }
   selectedDeploymentIds.value = selectedDeploymentIds.value.filter((id) => availableDeploymentOptions.value.some((item) => item.value === id))
+})
+watch(() => form.deployment_template, (templateId) => {
+  const definitions = templateRecords.value.find((item) => item.id === templateId)?.macro_definitions || []
+  const values = {}
+  for (const definition of definitions) {
+    if (Object.prototype.hasOwnProperty.call(form.macro_values || {}, definition.name)) values[definition.name] = form.macro_values[definition.name]
+  }
+  form.macro_values = values
 })
 watch(() => form.topology_type, (topology) => {
   if (topology === 'standalone') {

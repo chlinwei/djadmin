@@ -349,6 +349,9 @@
                         :dropdown-style="{ maxHeight: '300px', overflow: 'auto' }"
                     />
                 </a-form-item>
+                <a-form-item name="environment" label="所属环境">
+                    <a-select v-model:value="form.environment" :options="environmentOptions" :getPopupContainer="getPopupContainer" allow-clear placeholder="请选择环境" />
+                </a-form-item>
                 <a-form-item name="webssh_default_username" label="WebSSH 默认用户">
                     <a-select
                         v-model:value="form.webssh_default_username"
@@ -522,6 +525,7 @@ import {
 } from '@/api/assets/host/index.js'
 import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
+import { getBusinessEnvironmentList } from '@/api/assets/application'
 import { deleteManagedTarget, getSoftwarePackages } from '@/api/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
@@ -643,6 +647,7 @@ const resolveHostPreferredWebSshUser = (record) => {
 const form = reactive({
     id: -1,
     ip: '',
+    environment: null,
     group_id: undefined,
     monitors: [],
     remark: '',
@@ -651,6 +656,7 @@ const form = reactive({
     webssh_default_username: 'root',
     webssh_login_users: 'root',
 })
+const environmentOptions = ref([])
 const formWebSshNewUser = ref('')
 const formWebSshUserTagList = computed(() => normalizeWebSshUserList(form.webssh_login_users))
 const formWebSshDefaultUserOptions = computed(() => {
@@ -786,7 +792,6 @@ const columns = [
     { title: '安装状态', dataIndex: 'monitor_install_status', key: 'monitor_install_status', width: 120 },
     { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
     { title: 'OS 版本', dataIndex: 'os_version', key: 'os_version', width: 160 },
-    { title: '内核版本', dataIndex: 'kernel_version', key: 'kernel_version', width: 160 },
     { title: 'Agent 版本', dataIndex: 'agent_version', key: 'agent_version', width: 160 },
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
@@ -1278,6 +1283,7 @@ const resetForm = () => {
     form.instance_name = ''
     form.agent_id = ''
     form.ip = ''
+    form.environment = null
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
     form.monitors = []
     form.remark = ''
@@ -1323,6 +1329,7 @@ const onSaveOrCreate = async (id) => {
                 form.instance_name = data.instance_name || ''
                 form.agent_id = data.agent_id || ''
                 form.ip = data.ip || ''
+                form.environment = data.environment ?? null
                 form.group_id = data.group ?? data.group_id ?? undefined
                 const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
                 // 标记为已持久化行：携带 id/install_status，用于判断是否满足后端真删除的前置条件
@@ -1643,6 +1650,8 @@ const formatDateTime = (value) => {
 useKeepAliveRefreshLifecycle(startHostListAutoRefresh, stopHostListAutoRefresh)
 
 onMounted(async () => {
+    const environmentResponse = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
+    environmentOptions.value = (environmentResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）
     await getConfigByKey(CONFIG_KEYS.HOSTGROUP_MAX_TREE_DEPTH).then(res => {
         groupMaxTreeDepth.value = resolveConfigIntValue(res, 5)

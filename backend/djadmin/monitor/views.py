@@ -38,6 +38,7 @@ from .models import (
     AlertRoute,
     MonitorTarget,
     MonitorTargetInstallHistory,
+    OpenSearchCluster,
     SoftwarePackage,
     build_node_exporter_official_url,
 )
@@ -51,8 +52,10 @@ from .serializer import (
     AlertRouteSerializer,
     MonitorTargetInstallHistorySerializer,
     MonitorTargetSerializer,
+    OpenSearchClusterSerializer,
     SoftwarePackageSerializer,
 )
+from .opensearch_client import OpenSearchClient, OpenSearchError
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')# 官方 tarball 命名规则：node_exporter-<version>.<os>-<arch>.tar.gz，用于行内上传时解析版本/校验架构
@@ -1322,3 +1325,95 @@ class AlertRouteViewSet(
         return Response_200(data={'deleted': True})
 
 
+
+
+class OpenSearchClusterViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    """日志存储集群连接配置，供日志采集与查询复用。"""
+
+    queryset = OpenSearchCluster.objects.all()
+    serializer_class = OpenSearchClusterSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['enabled', 'is_default']
+    search_fields = ['name', 'hosts', 'remark']
+    ordering_fields = ['id', 'name', 'create_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'update': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'perform_update': 'monitor:view',
+        'destroy': 'monitor:view',
+        'test_connection': 'monitor:view',
+    }
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,
+            'results': serializer.data,
+            'pageNumber': paginator.page.number,
+            'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request, *args, **kwargs):
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        self.get_object().delete()
+        return Response_200(data={'deleted': True})
+
+    @action(detail=True, methods=['post'], url_path='test-connection')
+    def test_connection(self, request, id=None):
+        cluster = self.get_object()
+        try:
+            info = OpenSearchClient(cluster).ping()
+        except OpenSearchError as exc:
+            cluster.last_check_time = timezone.now()
+            cluster.last_check_success = False
+            cluster.last_check_message = str(exc)[:1000]
+            cluster.save(update_fields=['last_check_time', 'last_check_success', 'last_check_message', 'update_time'])
+            return Response_error_str(f'连接失败: {exc}', code=400)
+        cluster.last_check_time = timezone.now()
+        cluster.last_check_success = True
+        cluster.last_check_message = (
+            f"{info.get('distribution') or 'opensearch'} {info.get('version')} / "
+            f"{info.get('cluster_name')} / {info.get('status')}"
+        )
+        cluster.save(update_fields=['last_check_time', 'last_check_success', 'last_check_message', 'update_time'])
+        return Response_200(data=info)

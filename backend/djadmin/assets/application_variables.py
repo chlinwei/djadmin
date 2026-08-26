@@ -1,5 +1,8 @@
+import re
+
 APP_HOME_VARIABLE = '${APP_HOME}'
 RUN_USER_VARIABLE = '${RUN_USER}'
+MACRO_PATTERN = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
 
 
 class ApplicationVariableError(ValueError):
@@ -24,3 +27,20 @@ def resolve_application_variables(value, *, app_home, run_user):
         raise ApplicationVariableError('引用 ${APP_HOME} 前必须填写 App Home')
 
     return text.replace(APP_HOME_VARIABLE, resolved_app_home).replace(RUN_USER_VARIABLE, normalized_run_user)
+
+
+def resolve_macro_variables(value, *, definitions, values):
+    """替换模板声明且由逻辑服务提供的宏。"""
+    text = str(value or '')
+    names = {item['name'] for item in definitions if isinstance(item, dict) and item.get('name')}
+
+    def replace(match):
+        name = match.group(1)
+        if name not in names:
+            return match.group(0)
+        resolved = str(values.get(name, '')).strip()
+        if not resolved:
+            raise ApplicationVariableError(f'宏 {name} 未填写')
+        return resolved
+
+    return MACRO_PATTERN.sub(replace, text)

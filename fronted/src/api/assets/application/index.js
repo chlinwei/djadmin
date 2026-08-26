@@ -27,6 +27,7 @@ export function batchDeleteApplication(ids) {
 
 const versionPrefix = 'assets/application-versions/'
 const businessSystemPrefix = 'assets/business-systems/'
+const projectPrefix = 'assets/projects/'
 const businessEnvironmentPrefix = 'assets/business-environments/'
 const clusterProfilePrefix = 'assets/cluster-profiles/'
 const applicationServicePrefix = 'assets/application-services/'
@@ -48,6 +49,23 @@ export function saveBusinessSystem(obj) {
 
 export function deleteBusinessSystem(id) {
     return requestUtil.del(`${businessSystemPrefix}${id}/`)
+}
+
+export function getProjectList(params) {
+    return requestUtil.get(projectPrefix, params)
+}
+
+export function getProject(id) {
+    return requestUtil.get(`${projectPrefix}${id}/`)
+}
+
+export function saveProject(obj) {
+    if (obj.id) return requestUtil.patch(`${projectPrefix}${obj.id}/`, obj)
+    return requestUtil.post(projectPrefix, obj)
+}
+
+export function deleteProject(id) {
+    return requestUtil.del(`${projectPrefix}${id}/`)
 }
 
 export function getBusinessEnvironmentList(params) {

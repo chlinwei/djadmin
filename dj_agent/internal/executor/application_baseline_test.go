@@ -264,19 +264,12 @@ func TestApplicationSystemdCommand_UserScopeSetsRuntimeEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatalf("user scope returned error: %v", err)
 	}
-	if len(command.Args) != 4 || command.Args[1] != "--user" || command.Args[2] != "is-active" || command.Args[3] != "tomcat" {
-		t.Fatalf("unexpected systemctl command: %#v", command.Args)
-	}
-	expectedRuntimeDir := "XDG_RUNTIME_DIR=/run/user/" + currentUser.Uid
-	foundRuntimeDir := false
-	for _, entry := range command.Env {
-		if entry == expectedRuntimeDir {
-			foundRuntimeDir = true
-			break
+	if os.Geteuid() == 0 {
+		if len(command.Args) != 7 || command.Args[1] != "-u" || command.Args[2] != currentUser.Username || command.Args[3] != "-H" || command.Args[4] != "/bin/bash" || command.Args[5] != "-lc" || command.Args[6] != "systemctl --user is-active tomcat" {
+			t.Fatalf("unexpected root systemd command: %#v", command.Args)
 		}
-	}
-	if !foundRuntimeDir {
-		t.Fatalf("missing target user runtime directory in command environment: %s", expectedRuntimeDir)
+	} else if len(command.Args) != 3 || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user is-active tomcat" {
+		t.Fatalf("unexpected systemctl command: %#v", command.Args)
 	}
 
 	currentUID, parseErr := strconv.ParseUint(currentUser.Uid, 10, 32)
@@ -441,31 +434,31 @@ func TestParseConfigScalar(t *testing.T) {
 }
 
 func TestCheckApplicationPlan_RejectsUnsupportedProtocol(t *testing.T) {
-	versionChecks := checkApplicationPlan(context.Background(), map[string]any{
+	versionChecks := checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{"schema_version": 2},
-	})
+	}, true)
 	if len(versionChecks) != 1 || versionChecks[0].Status != "error" {
 		t.Fatalf("unsupported plan version must fail: %#v", versionChecks)
 	}
 
-	capabilityChecks := checkApplicationPlan(context.Background(), map[string]any{
+	capabilityChecks := checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version":        1,
 			"required_capabilities": []any{"shell_script:v1"},
 		},
-	})
+	}, true)
 	if len(capabilityChecks) != 1 || capabilityChecks[0].Status != "error" || capabilityChecks[0].Actual != "shell_script:v1" {
 		t.Fatalf("unsupported capability must fail explicitly: %#v", capabilityChecks)
 	}
 
-	executorChecks := checkApplicationPlan(context.Background(), map[string]any{
+	executorChecks := checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version": 1,
 			"checks": []any{map[string]any{
 				"key": "unsupported", "executor": "shell_script",
 			}},
 		},
-	})
+	}, true)
 	if len(executorChecks) != 1 || executorChecks[0].Status != "error" {
 		t.Fatalf("unknown executor must fail explicitly: %#v", executorChecks)
 	}
@@ -506,9 +499,9 @@ func TestCheckTomcatBaseline_MaxPostSizePassesAndManagerUserPasses(t *testing.T)
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlan(context.Background(), map[string]any{
+	checks := checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui", "admin", "admin-gui", "manager-script", "manager-jmx", "manager-status"}),
-	})
+	}, true)
 	if len(checks) != 3 {
 		t.Fatalf("expected 3 tomcat checks, got: %#v", checks)
 	}
@@ -553,9 +546,9 @@ func TestCheckTomcatBaseline_MaxPostSizeAndManagerUserFail(t *testing.T) {
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlan(context.Background(), map[string]any{
+	checks := checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui"}),
-	})
+	}, true)
 	if len(checks) != 3 {
 		t.Fatalf("expected 3 tomcat checks, got: %#v", checks)
 	}

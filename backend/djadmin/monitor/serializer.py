@@ -5,7 +5,15 @@ import hashlib
 
 from assets.credential_crypto import encrypt_secret
 
-from .models import AlertHistory, AlertMedia, AlertRoute, MonitorTarget, MonitorTargetInstallHistory, SoftwarePackage
+from .models import (
+    AlertHistory,
+    AlertMedia,
+    AlertRoute,
+    MonitorTarget,
+    MonitorTargetInstallHistory,
+    OpenSearchCluster,
+    SoftwarePackage,
+)
 
 
 class MonitorTargetSerializer(ModelSerializer):
@@ -430,3 +438,65 @@ class UserAlertMediaBindingSerializer(ModelSerializer):
                 if email not in result:
                     result.append(email)
         return result
+
+
+# 提交该占位符表示不修改已保存的密码，避免编辑时未改动就把密文覆盖成占位符本身。
+PASSWORD_MASK = '******'
+
+
+class OpenSearchClusterSerializer(ModelSerializer):
+    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    password_configured = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OpenSearchCluster
+        fields = '__all__'
+        read_only_fields = ['last_check_time', 'last_check_success', 'last_check_message']
+
+    def get_password_configured(self, obj):
+        return bool(obj.password)
+
+    def validate_hosts(self, value):
+        hosts = [item.strip() for item in str(value or '').split(',') if item.strip()]
+        if not hosts:
+            raise serializers.ValidationError('至少配置一个连接地址')
+        for host in hosts:
+            if not host.startswith(('http://', 'https://')):
+                raise serializers.ValidationError(f'地址必须以 http:// 或 https:// 开头: {host}')
+        return ','.join(hosts)
+
+    def validate_index_prefix(self, value):
+        prefix = str(value or '').strip()
+        if not prefix:
+            raise serializers.ValidationError('索引前缀不能为空')
+        if prefix != prefix.lower() or ' ' in prefix:
+            raise serializers.ValidationError('索引前缀必须为小写且不含空格')
+        return prefix
+
+    @staticmethod
+    def _handle_password(validated_data):
+        if 'password' not in validated_data:
+            return
+        raw = validated_data.get('password')
+        if raw == PASSWORD_MASK:
+            validated_data.pop('password')
+            return
+        validated_data['password'] = encrypt_secret(raw)
+
+    def create(self, validated_data):
+        self._handle_password(validated_data)
+        instance = super().create(validated_data)
+        self._sync_default_flag(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        self._handle_password(validated_data)
+        instance = super().update(instance, validated_data)
+        self._sync_default_flag(instance)
+        return instance
+
+    @staticmethod
+    def _sync_default_flag(instance):
+        """默认集群全局唯一，设为默认时清掉其他记录的标记。"""
+        if instance.is_default:
+            OpenSearchCluster.objects.exclude(pk=instance.pk).filter(is_default=True).update(is_default=False)

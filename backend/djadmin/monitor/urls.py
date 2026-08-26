@@ -7,6 +7,7 @@ from .views import (
     AlertRouteViewSet,
     MonitorTargetInstallHistoryViewSet,
     MonitorViewSet,
+    OpenSearchClusterViewSet,
     SoftwarePackageViewSet,
 )
 
@@ -17,6 +18,7 @@ router.register(r'install-histories', MonitorTargetInstallHistoryViewSet, basena
 router.register(r'alert-histories', AlertHistoryViewSet, basename='monitor-alert-histories')
 router.register(r'media', AlertMediaViewSet, basename='monitor-alert-media')
 router.register(r'alert-routes', AlertRouteViewSet, basename='monitor-alert-routes')
+router.register(r'opensearch-clusters', OpenSearchClusterViewSet, basename='monitor-opensearch-clusters')
 
 urlpatterns = [
     # Prometheus 只读代理：codemirror-promql 会请求 <proxy>/api/v1/*（无结尾斜杠）。

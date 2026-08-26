@@ -1,6 +1,7 @@
 import threading
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModelMixin, RetrieveModelMixin, UpdateModelMixin
 from rest_framework.request import Request
@@ -8,6 +9,7 @@ from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
 from assets.models import Host, HostGroup
+from assets.grpc_transfer.client import AgentChannelClient
 
 from .executor import run_inspection_execution
 from .models import InspectionExecution, InspectionGroup, InspectionTargetExecution, InspectionTask
@@ -194,3 +196,35 @@ class InspectionExecutionViewSet(ReadOnlyModelViewSet):
 
     def retrieve(self, request: Request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel(self, request: Request, *args, **kwargs):
+        execution = self.get_object()
+        if execution.status not in (
+            InspectionExecution.Status.PENDING,
+            InspectionExecution.Status.RUNNING,
+        ):
+            return Response_error_str('只有等待中或执行中的巡检可以取消', code=400)
+        execution.status = InspectionExecution.Status.CANCELED
+        execution.end_time = timezone.now()
+        execution.summary = {
+            **(execution.summary or {}),
+            'canceled': True,
+        }
+        execution.save(update_fields=['status', 'end_time', 'summary', 'update_time'])
+        for target in InspectionTargetExecution.objects.filter(execution=execution).only('agent_id_snapshot', 'id'):
+            if target.agent_id_snapshot:
+                try:
+                    AgentChannelClient(target.agent_id_snapshot).cancel_automation(
+                        f'inspection-{execution.pk}-{target.pk}',
+                    )
+                except Exception:
+                    pass
+        InspectionTargetExecution.objects.filter(
+            execution=execution,
+            status__in=[
+                InspectionTargetExecution.Status.PENDING,
+                InspectionTargetExecution.Status.RUNNING,
+            ],
+        ).update(status=InspectionTargetExecution.Status.CANCELED, end_time=timezone.now())
+        return Response_200(data={'id': execution.pk, 'status': execution.status})

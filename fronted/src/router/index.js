@@ -121,6 +121,47 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/alert-routes/index.vue'),
             },
             {
+                path: '/monitor/log-storage',
+                name: '日志存储',
+                component: () => import('../views/monitor/log-storage/index.vue'),
+            },
+            {
+                path: '/assets/hosts',
+                name: '主机管理',
+                component: () => import('../views/assets/host/index.vue'),
+                alias: ['/assets/host', '/assets/hosts/index', '/assets/host/index', '/assets'],
+            },
+            {
+                path: '/assets/projects',
+                name: '项目管理',
+                component: () => import('../views/assets/projects/index.vue'),
+                alias: ['/assets/projects/index'],
+            },
+            {
+                path: '/assets/applications',
+                name: '应用管理',
+                component: () => import('../views/assets/application/index.vue'),
+                alias: ['/assets/application', '/assets/applications/index', '/assets/application/index'],
+            },
+            {
+                path: '/assets/environments',
+                name: '环境管理',
+                component: () => import('../views/assets/environments/index.vue'),
+                alias: ['/assets/environments/index'],
+            },
+            {
+                path: '/assets/credentials',
+                name: '凭据管理',
+                component: () => import('../views/assets/credential/index.vue'),
+                alias: ['/assets/credential', '/assets/credentials/index', '/assets/credential/index'],
+            },
+            {
+                path: '/assets/service-tree',
+                name: '服务树管理',
+                component: () => import('../views/assets/service-tree/index.vue'),
+                alias: ['/assets/service-tree/index'],
+            },
+            {
                 path: '/assets/hosts/detail/:id',
                 name: '主机详情页',
                 component: () => import('../views/assets/host/detail/index.vue'),

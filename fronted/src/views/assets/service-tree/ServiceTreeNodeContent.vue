@@ -26,11 +26,6 @@
         <a-descriptions-item label="备注">{{ entity.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
 
-      <a-descriptions v-else-if="scope.nodeType === 'environment'" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
-        <a-descriptions-item label="业务系统">{{ scope.businessSystemName || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="环境">{{ scope.environmentName || scope.nodeTitle || '-' }}</a-descriptions-item>
-      </a-descriptions>
-
       <a-descriptions v-else-if="scope.nodeType === 'service' && entity" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="业务系统">{{ entity.business_system_name || '-' }}</a-descriptions-item>
         <a-descriptions-item label="环境">{{ entity.environment_name || '-' }}</a-descriptions-item>
@@ -100,7 +95,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import store from '@/store'
@@ -114,6 +109,7 @@ import {
   getBusinessEnvironmentList,
   getBusinessSystem,
   getBusinessSystemList,
+  getProjectList,
   refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
 
@@ -138,6 +134,9 @@ const descendants = ref([])
 const services = ref([])
 const baselineHistory = ref([])
 let loadSequence = 0
+let runtimeRefreshTimer = null
+let runtimeRefreshInFlight = false
+const runtimeRefreshInterval = 15000
 
 const systemColumns = [
   { title: '业务系统', dataIndex: 'name', key: 'child_link', width: 220 },
@@ -146,14 +145,9 @@ const systemColumns = [
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
   { title: '状态', key: 'enabled', width: 100 },
 ]
-const environmentColumns = [
-  { title: '环境', dataIndex: 'name', key: 'child_link', width: 180 },
-  { title: '编码', dataIndex: 'code', key: 'code', width: 140 },
-  { title: '逻辑服务', dataIndex: 'service_count', key: 'service_count', width: 120 },
-  { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 120 },
-]
 const serviceColumns = [
   { title: '逻辑服务', dataIndex: 'name', key: 'child_link', width: 220 },
+  { title: '环境', dataIndex: 'environment_name', key: 'environment_name', width: 140 },
   { title: '应用', dataIndex: 'application_name', key: 'application_name', width: 180 },
   { title: '部署形态', key: 'topology_type', width: 110 },
   { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 180 },
@@ -179,8 +173,7 @@ const historyColumns = [
 const columns = computed(() => {
   const baseColumns = ({
     all: systemColumns,
-    businessSystem: environmentColumns,
-    environment: serviceColumns,
+    businessSystem: serviceColumns,
     service: deploymentColumns,
   }[props.scope.nodeType] || [])
   if (props.scope.nodeType === 'service' && entity.value?.cluster_type !== 'ha') {
@@ -189,13 +182,13 @@ const columns = computed(() => {
   return baseColumns
 })
 const childSectionTitle = computed(() => ({
-  all: '业务系统', businessSystem: '环境', environment: '逻辑服务', service: '部署实例',
+  all: '业务系统', businessSystem: '逻辑服务', service: '部署实例',
 }[props.scope.nodeType] || '请选择节点'))
 const levelLabel = computed(() => ({
-  all: '服务树根节点', businessSystem: '业务系统', environment: props.scope.businessSystemName || '环境',
+  all: '服务树根节点', businessSystem: '业务系统',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 800, businessSystem: 620, environment: 1000, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 800, businessSystem: 1100, service: 950 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => [
   '全部业务',
   props.scope.businessSystemName || (props.scope.nodeType === 'businessSystem' ? props.scope.nodeTitle : null),
@@ -215,15 +208,8 @@ const metrics = computed(() => {
     { label: '异常实例', value: abnormalCount.value, danger: abnormalCount.value > 0 },
   ]
   if (props.scope.nodeType === 'businessSystem') return [
-    { label: '环境', value: rows.value.length },
     { label: '逻辑服务', value: services.value.length },
     { label: '部署实例', value: descendants.value.length },
-    { label: '异常实例', value: abnormalCount.value, danger: abnormalCount.value > 0 },
-  ]
-  if (props.scope.nodeType === 'environment') return [
-    { label: '逻辑服务', value: rows.value.length },
-    { label: '部署实例', value: descendants.value.length },
-    { label: '运行中', value: runningCount.value },
     { label: '异常实例', value: abnormalCount.value, danger: abnormalCount.value > 0 },
   ]
   if (props.scope.nodeType === 'service') return [
@@ -271,20 +257,11 @@ function buildChildScope(record) {
   }
   if (props.scope.nodeType === 'businessSystem') {
     return {
-      nodeType: 'environment', businessSystemId: props.scope.businessSystemId,
-      businessSystemName: props.scope.businessSystemName || props.scope.nodeTitle,
-      environment: record.id,
-      environmentName: record.name,
-      nodeTitle: record.name,
-    }
-  }
-  if (props.scope.nodeType === 'environment') {
-    return {
       nodeType: 'service', applicationServiceId: record.id, nodeTitle: record.name,
       businessSystemId: props.scope.businessSystemId,
-      businessSystemName: props.scope.businessSystemName,
-      environment: props.scope.environment,
-      environmentName: props.scope.environmentName || props.scope.nodeTitle,
+      businessSystemName: props.scope.businessSystemName || props.scope.nodeTitle,
+      environment: record.environment,
+      environmentName: record.environment_name,
     }
   }
   if (props.scope.nodeType === 'service') {
@@ -336,18 +313,39 @@ async function fetchAll(loader, params = {}) {
 }
 
 // 手动刷新到服务节点时顺带实时查询一次 Agent；切换节点的自动加载不触发，避免浏览即发起远程调用。
-async function refresh() {
+async function refreshRuntimeStatus(silent = false) {
   const serviceId = props.scope.nodeType === 'service' ? props.scope.applicationServiceId : null
-  if (serviceId) {
-    try {
-      const response = await refreshApplicationServiceRuntimeStatus(serviceId)
+  if (!serviceId || runtimeRefreshInFlight) return
+  runtimeRefreshInFlight = true
+  try {
+    const response = await refreshApplicationServiceRuntimeStatus(serviceId)
+    if (!silent) {
       const summary = response?.data?.data?.summary || {}
       message.success(`运行状态已刷新：运行中 ${summary.running || 0} / 已停止 ${summary.stopped || 0} / 检查失败 ${summary.error || 0}`)
-    } catch (error) {
+    }
+  } catch (error) {
+    if (!silent) {
       message.error(error?.response?.data?.msg || error?.message || '查询运行状态失败')
     }
+  } finally {
+    runtimeRefreshInFlight = false
   }
+}
+
+async function refresh() {
+  await refreshRuntimeStatus()
   await loadNode()
+}
+
+async function refreshAutomatically() {
+  if (props.scope.nodeType !== 'service') return
+  await refreshRuntimeStatus(true)
+  await loadNode()
+}
+
+function startRuntimeRefresh() {
+  if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
+  runtimeRefreshTimer = setInterval(() => { void refreshAutomatically() }, runtimeRefreshInterval)
 }
 
 async function loadNode() {
@@ -367,37 +365,39 @@ async function loadNode() {
     let nextServices = []
     let nextHistory = []
     if (props.scope.nodeType === 'all') {
-      const [systemsResult, servicesResult, deploymentsResult] = await Promise.all([
+      const [systemsResult, projectsResult, servicesResult, deploymentsResult] = await Promise.all([
         fetchAll(getBusinessSystemList),
+        fetchAll(getProjectList),
         fetchAll(getApplicationServiceList),
         fetchAll(getApplicationDeploymentList),
       ])
-      nextRows = systemsResult.map((item) => ({ ...item, key: item.id }))
-      nextServices = servicesResult
-      nextDescendants = deploymentsResult
+      const projectIds = new Set((props.scope.projectIds || []).map((id) => String(id)))
+      const projectSystemIds = projectIds.size
+        ? new Set(projectsResult
+          .filter((project) => projectIds.has(String(project.id)))
+          .flatMap((project) => project.business_systems || [])
+          .map((id) => String(id)))
+        : null
+      const environmentIds = new Set(props.scope.environmentIds || [])
+      nextServices = servicesResult.filter((service) => (
+        (!projectSystemIds || projectSystemIds.has(String(service.business_system)))
+        && (!environmentIds.size || environmentIds.has(service.environment))
+      ))
+      const serviceIds = new Set(nextServices.map((service) => service.id))
+      nextDescendants = deploymentsResult.filter((deployment) => (
+        (deployment.application_service_ids || []).some((serviceId) => serviceIds.has(serviceId))
+      ))
+      const visibleSystemIds = new Set(nextServices.map((service) => service.business_system))
+      nextRows = systemsResult
+        .filter((system) => !projectSystemIds && !environmentIds.size ? true : visibleSystemIds.has(system.id))
+        .map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'businessSystem') {
-      const [entityResponse, environmentsResult, servicesResult, deploymentsResult] = await Promise.all([
+      const [entityResponse, servicesResult, deploymentsResult] = await Promise.all([
         getBusinessSystem(props.scope.businessSystemId),
-        fetchAll(getBusinessEnvironmentList, { business_system: props.scope.businessSystemId }),
         fetchAll(getApplicationServiceList, { business_system: props.scope.businessSystemId }),
         fetchAll(getApplicationDeploymentList, { application_service__business_system: props.scope.businessSystemId }),
       ])
       nextEntity = entityResponse?.data?.data || null
-      nextServices = servicesResult
-      nextDescendants = deploymentsResult
-      // 环境行直接用后端实体，保证没有服务的空环境也能展示。
-      nextRows = environmentsResult.map((item) => ({ ...item, key: item.id }))
-    } else if (props.scope.nodeType === 'environment') {
-      const [servicesResult, deploymentsResult] = await Promise.all([
-        fetchAll(getApplicationServiceList, {
-          business_system: props.scope.businessSystemId,
-          environment: props.scope.environment,
-        }),
-        fetchAll(getApplicationDeploymentList, {
-          application_service__business_system: props.scope.businessSystemId,
-          application_service__environment: props.scope.environment,
-        }),
-      ])
       nextServices = servicesResult
       nextDescendants = deploymentsResult
       nextRows = servicesResult.map((item) => ({ ...item, key: item.id }))
@@ -437,7 +437,15 @@ async function loadNode() {
   }
 }
 
-watch(() => props.scope, loadNode, { deep: true, immediate: true })
+watch(() => props.scope, (scope) => {
+  void (scope.nodeType === 'service' ? refreshAutomatically() : loadNode())
+}, { deep: true, immediate: true })
+
+onMounted(startRuntimeRefresh)
+onBeforeUnmount(() => {
+  if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
+  runtimeRefreshTimer = null
+})
 
 defineExpose({ refresh })
 </script>

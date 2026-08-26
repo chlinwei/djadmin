@@ -49,22 +49,28 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 	}
 }
 
+// canceledJobResult 构造因 ctx 取消而终止的任务结果。
+func canceledJobResult(job protocol.Job, started time.Time, cause error, exitCode int) protocol.JobResult {
+	finished := time.Now()
+	return protocol.JobResult{
+		JobID:      job.JobID,
+		Type:       job.Type,
+		Action:     job.Action,
+		Status:     protocol.StatusCanceled,
+		ExitCode:   exitCode,
+		StartedAt:  started,
+		FinishedAt: finished,
+		CostMS:     finished.Sub(started).Milliseconds(),
+		Error:      cause.Error(),
+	}
+}
+
 // getAgentVersion 返回当前 agent 的版本与运行时信息
 func (e *Executor) getAgentVersion(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
 	select {
 	case <-ctx.Done():
-		finished := time.Now()
-		return protocol.JobResult{
-			JobID:      job.JobID,
-			Type:       job.Type,
-			Action:     job.Action,
-			Status:     protocol.StatusCanceled,
-			StartedAt:  started,
-			FinishedAt: finished,
-			CostMS:     finished.Sub(started).Milliseconds(),
-			Error:      ctx.Err().Error(),
-		}
+		return canceledJobResult(job, started, ctx.Err(), 0)
 	default:
 	}
 
@@ -99,17 +105,7 @@ func (e *Executor) getHostInfo(ctx context.Context, job protocol.Job) protocol.J
 	started := time.Now()
 	select {
 	case <-ctx.Done():
-		finished := time.Now()
-		return protocol.JobResult{
-			JobID:      job.JobID,
-			Type:       job.Type,
-			Action:     job.Action,
-			Status:     protocol.StatusCanceled,
-			StartedAt:  started,
-			FinishedAt: finished,
-			CostMS:     finished.Sub(started).Milliseconds(),
-			Error:      ctx.Err().Error(),
-		}
+		return canceledJobResult(job, started, ctx.Err(), 0)
 	default:
 	}
 

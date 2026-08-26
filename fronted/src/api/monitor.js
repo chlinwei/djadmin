@@ -157,3 +157,21 @@ export function getMonitorInstallHistoryDetail(id) {
 export function cancelMonitorInstallHistory(id) {
   return requestUtil.post(prefix + `install-histories/${id}/cancel/`)
 }
+
+export function getOpenSearchClusterList(params) {
+  return requestUtil.get(prefix + 'opensearch-clusters/', params)
+}
+
+export function saveOpenSearchCluster(data) {
+  return data.id
+    ? requestUtil.patch(prefix + `opensearch-clusters/${data.id}/`, data)
+    : requestUtil.post(prefix + 'opensearch-clusters/', data)
+}
+
+export function deleteOpenSearchCluster(id) {
+  return requestUtil.del(prefix + `opensearch-clusters/${id}/`)
+}
+
+export function testOpenSearchCluster(id) {
+  return requestUtil.post(prefix + `opensearch-clusters/${id}/test-connection/`, {})
+}

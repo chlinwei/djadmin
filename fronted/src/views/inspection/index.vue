@@ -142,9 +142,20 @@
             </template>
             <template v-else-if="column.key === 'create_time'">{{ formatTime(record.create_time) }}</template>
             <template v-else-if="column.key === 'action'">
-              <a-tooltip title="详细日志" placement="top">
-                <a-button @click="openExecution(record)"><FontAwesomeIcon :icon="['fas', 'list-check']" /></a-button>
-              </a-tooltip>
+              <a-space :size="6">
+                <a-tooltip title="详细日志" placement="top">
+                  <a-button size="small" @click="openExecution(record)"><FontAwesomeIcon :icon="['fas', 'list-check']" /></a-button>
+                </a-tooltip>
+                <a-tooltip v-if="['pending', 'running'].includes(record.status)" title="取消" placement="top">
+                  <a-button
+                    danger
+                    ghost
+                    size="small"
+                    :loading="cancelingExecutionId === record.id"
+                    @click="cancelExecution(record)"
+                  >取消</a-button>
+                </a-tooltip>
+              </a-space>
             </template>
           </template>
         </a-table>
@@ -234,6 +245,7 @@
             :getPopupContainer="getPopupContainer"
             :loading="serviceTreeLoading"
             tree-default-expand-all
+            tree-line
             tree-node-filter-prop="title"
             show-search
             allow-clear
@@ -291,7 +303,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   getApplicationServiceList,
   getBusinessEnvironmentList,
@@ -306,6 +318,7 @@ import {
   getInspectionGroups,
   getInspectionTasks,
   runInspectionTask,
+  cancelInspectionExecution,
   saveInspectionGroup,
   saveInspectionTask,
 } from '@/api/inspection'
@@ -334,6 +347,7 @@ const savingGroup = ref(false)
 const savingTask = ref(false)
 const selectedExecution = ref(null)
 const runningTaskIds = reactive(new Set())
+const cancelingExecutionId = ref(null)
 let executionPollTimer = null
 let localKey = 0
 
@@ -397,21 +411,6 @@ const targetTypeOptions = computed(() => [
   },
 ])
 const serviceTreeData = computed(() => {
-  const environmentsBySystem = new Map()
-  for (const environment of businessEnvironments.value) {
-    if (!environmentsBySystem.has(environment.business_system)) environmentsBySystem.set(environment.business_system, [])
-    environmentsBySystem.get(environment.business_system).push(environment)
-  }
-  const servicesByEnvironment = new Map()
-  const orphanServices = []
-  for (const service of services.value) {
-    if (!service.environment) {
-      orphanServices.push(service)
-      continue
-    }
-    if (!servicesByEnvironment.has(service.environment)) servicesByEnvironment.set(service.environment, [])
-    servicesByEnvironment.get(service.environment).push(service)
-  }
   const serviceNodes = (records) => [...records]
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     .map((service) => ({
@@ -420,6 +419,31 @@ const serviceTreeData = computed(() => {
       key: `service:${service.id}`,
       isLeaf: true,
     }))
+  const environmentsById = new Map(
+    businessEnvironments.value.map((environment) => [String(environment.id), environment]),
+  )
+  const environmentNodes = (records) => {
+    const servicesByEnvironment = new Map()
+    for (const service of records) {
+      const environmentKey = String(service.environment ?? 'unassigned')
+      if (!servicesByEnvironment.has(environmentKey)) servicesByEnvironment.set(environmentKey, [])
+      servicesByEnvironment.get(environmentKey).push(service)
+    }
+    return [...servicesByEnvironment.entries()]
+      .sort(([leftKey], [rightKey]) => {
+        const left = environmentsById.get(leftKey)
+        const right = environmentsById.get(rightKey)
+        return ((left?.order || 0) - (right?.order || 0))
+          || String(left?.name || '未指定环境').localeCompare(String(right?.name || '未指定环境'), 'zh-CN')
+      })
+      .map(([environmentKey, environmentServices]) => ({
+        title: environmentsById.get(environmentKey)?.name || '未指定环境',
+        value: `environment:${environmentKey}`,
+        key: `environment:${environmentKey}`,
+        disabled: true,
+        children: serviceNodes(environmentServices),
+      }))
+  }
   const systemNodes = [...businessSystems.value]
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     .map((system) => ({
@@ -427,25 +451,10 @@ const serviceTreeData = computed(() => {
       value: `system:${system.id}`,
       key: `system:${system.id}`,
       disabled: true,
-      children: [...(environmentsBySystem.get(system.id) || [])]
-        .sort((left, right) => (left.order - right.order) || left.name.localeCompare(right.name, 'zh-CN'))
-        .map((environment) => ({
-          title: environment.name,
-          value: `environment:${environment.id}`,
-          key: `environment:${environment.id}`,
-          disabled: true,
-          children: serviceNodes(servicesByEnvironment.get(environment.id) || []),
-        })),
+      children: environmentNodes(services.value.filter(
+        (service) => String(service.business_system) === String(system.id),
+      )),
     }))
-  if (orphanServices.length) {
-    systemNodes.push({
-      title: '未归属业务系统',
-      value: 'system:unassigned',
-      key: 'system:unassigned',
-      disabled: true,
-      children: serviceNodes(orphanServices),
-    })
-  }
   return systemNodes
 })
 const hostGroupTreeData = computed(() => {
@@ -463,8 +472,8 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
 const scopeLabel = (scope) => scope === 'per_deployment' ? '每个部署实例' : '控制端单次'
 const executorLabel = (executor) => ({ shell: 'Agent Shell', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
-const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red' }[status] || 'default')
+const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
+const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
 const formatValue = (value) => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '-')
 
 async function fetchAll(loader, params = {}) {
@@ -592,6 +601,24 @@ async function runTask(record) {
 async function openExecution(record) {
   selectedExecution.value = responseData(await getInspectionExecution(record.id))
   executionDrawerOpen.value = true
+}
+function cancelExecution(record) {
+  Modal.confirm({
+    title: '取消巡检',
+    content: `确定取消执行记录 ${record.id} 吗？`,
+    okText: '取消执行',
+    cancelText: '返回',
+    onOk: async () => {
+      cancelingExecutionId.value = record.id
+      try {
+        await cancelInspectionExecution(record.id)
+        message.success('巡检执行已取消')
+        await loadExecutions()
+      } finally {
+        cancelingExecutionId.value = null
+      }
+    },
+  })
 }
 function confirmDeleteGroup(record) {
   openDeleteConfirm({ title: '删除巡检组', summary: '删除后无法恢复。', items: [record.name], onConfirm: async () => { await deleteInspectionGroup(record.id); await loadGroups() } })

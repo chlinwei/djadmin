@@ -36,9 +36,12 @@
 import { nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { fetchAllPages } from '@/util/fetchAllPages'
 import { getHostList } from '@/api/assets/host'
 import {
   getApplicationDeployment,
+  getApplicationDeploymentList,
+  getApplicationService,
   saveApplicationDeployment,
 } from '@/api/assets/application'
 
@@ -53,6 +56,7 @@ const formRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const hostOptions = ref([])
+const serviceEnvironmentId = ref(null)
 const createInitialForm = () => ({
   host: null,
   application_service: null,
@@ -77,20 +81,7 @@ function resetForm() {
 }
 
 async function loadOptions() {
-  const fetchAllPages = async (loader, params = {}) => {
-    const firstResponse = await loader({ ...params, page: 1, page_size: 30 })
-    const firstData = firstResponse?.data?.data || {}
-    const records = [...(firstData.results || [])]
-    const totalPages = Number(firstData.totalPages || 1)
-    if (totalPages > 1) {
-      const responses = await Promise.all(
-        Array.from({ length: totalPages - 1 }, (_, index) => loader({ ...params, page: index + 2, page_size: 30 })),
-      )
-      for (const response of responses) records.push(...(response?.data?.data?.results || []))
-    }
-    return records
-  }
-  const hosts = await fetchAllPages(getHostList)
+  const hosts = await fetchAllPages(getHostList, serviceEnvironmentId.value ? { environment: serviceEnvironmentId.value } : {}, 30)
   hostOptions.value = hosts.map((item) => ({
     label: `${item.instance_name || '-'} (${item.ip || '-'})`,
     value: item.id,
@@ -100,10 +91,18 @@ async function loadOptions() {
 
 async function initialize() {
   resetForm()
+  serviceEnvironmentId.value = null
   form.application_service = props.applicationServiceId
   loading.value = true
   applyingRecord.value = true
   try {
+    if (props.applicationServiceId) {
+      const serviceResponse = await getApplicationService(props.applicationServiceId)
+      serviceEnvironmentId.value = serviceResponse?.data?.data?.environment || null
+    } else if (props.deploymentId) {
+      const deploymentResponse = await getApplicationDeployment(props.deploymentId)
+      serviceEnvironmentId.value = deploymentResponse?.data?.data?.environment || null
+    }
     await loadOptions()
     if (props.deploymentId) {
       const response = await getApplicationDeployment(props.deploymentId)
@@ -127,8 +126,15 @@ async function submit() {
 
   saving.value = true
   try {
+    if (!payload.id && payload.host && payload.instance_name) {
+      const response = await getApplicationDeploymentList({ host: payload.host, page: 1, page_size: 1000 })
+      const existingDeployment = (response?.data?.data?.results || []).find(
+        (item) => String(item.instance_name || '').trim() === String(payload.instance_name).trim(),
+      )
+      if (existingDeployment?.id) payload.id = existingDeployment.id
+    }
     const response = await saveApplicationDeployment(payload)
-    message.success(props.deploymentId ? '部署实例更新成功' : '部署实例新增成功')
+    message.success(payload.id ? '部署实例更新成功' : '部署实例新增成功')
     emit('saved', response?.data?.data)
     emit('update:open', false)
   } catch (error) {

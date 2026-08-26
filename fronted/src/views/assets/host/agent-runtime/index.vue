@@ -25,7 +25,7 @@
         </a-page-header>
 
         <a-alert
-            v-if="!canDispatchCollect"
+            v-if="shouldShowUnboundAgentAlert"
             type="warning"
             show-icon
             message="该主机未绑定 agent 实例，无法下发采集任务"
@@ -41,7 +41,7 @@
                     <a-descriptions-item label="进程状态">{{ runtimeData.process?.running ? '运行中' : '已停止' }}</a-descriptions-item>
                     <a-descriptions-item label="运行时长">{{ formatUptimeDuration(runtimeData.process?.uptime_seconds) }}</a-descriptions-item>
                     <a-descriptions-item label="gRPC 通道">{{ runtimeData.grpc?.server_addr || '-' }}</a-descriptions-item>
-                    <a-descriptions-item label="MQ 连接">{{ runtimeData.runtime?.mq_connected ? '已连接' : '未连接' }}</a-descriptions-item>
+                    <a-descriptions-item label="消息通道">gRPC 直连（不使用 MQ）</a-descriptions-item>
                     <a-descriptions-item label="主机上报间隔(当前)">{{ runtimeData.config?.host_report_interval_current_seconds ?? '-' }} 秒</a-descriptions-item>
                     <a-descriptions-item label="主机上报间隔(回退)">{{ runtimeData.config?.host_report_interval_fallback_seconds ?? '-' }} 秒</a-descriptions-item>
                     <a-descriptions-item label="心跳下次运行">{{ formatDateTime(runtimeData.schedulers?.heartbeat?.next_run_at) }}</a-descriptions-item>
@@ -175,6 +175,8 @@ const router = useRouter()
 
 const loading = ref(false)
 const dispatching = ref(false)
+const hostLoading = ref(false)
+const hostLoaded = ref(false)
 const runtimeData = ref(null)
 const hostRecord = ref(null)
 const hostDisplayTitle = ref('-')
@@ -216,6 +218,11 @@ const hostId = computed(() => Number(route.params.id || 0))
 const canDispatchCollect = computed(() => {
     const agentId = String(hostRecord.value?.instance_name || '').trim()
     return Boolean(hostId.value > 0 && agentId)
+})
+
+const shouldShowUnboundAgentAlert = computed(() => {
+    // 仅在主机数据已加载后再判定是否“未绑定”，避免进入页面时闪烁误报。
+    return Boolean(hostId.value > 0 && hostLoaded.value && !hostLoading.value && !canDispatchCollect.value)
 })
 
 const runtimeTasks = computed(() => {
@@ -380,9 +387,13 @@ const formatUptimeDuration = (seconds) => {
 }
 
 const loadHost = async () => {
+    hostLoading.value = true
+    hostLoaded.value = false
     if (hostId.value <= 0) {
         hostRecord.value = null
         hostDisplayTitle.value = '-'
+        hostLoaded.value = true
+        hostLoading.value = false
         return
     }
 
@@ -398,6 +409,9 @@ const loadHost = async () => {
     } catch (error) {
         hostRecord.value = null
         hostDisplayTitle.value = `ID:${hostId.value}`
+    } finally {
+        hostLoaded.value = true
+        hostLoading.value = false
     }
 }
 

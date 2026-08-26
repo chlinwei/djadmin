@@ -19,6 +19,7 @@ vi.mock('@/api/assets/application', () => ({
     data: { data: { results: [], totalPages: 1 } },
   })),
   saveApplicationDeployment: vi.fn(),
+  getApplicationService: vi.fn(() => Promise.resolve({ data: { data: { environment: 1 } } })),
 }))
 
 import DeploymentDialog from './DeploymentDialog.vue'

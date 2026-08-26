@@ -271,6 +271,26 @@ class AgentChannelClient:
             'cost_ms': resp.cost_ms,
         }
 
+    def cancel_automation(self, job_id):
+        """请求 agent 取消指定的自动化任务。"""
+        request_id = self._new_request_id()
+        response_queue = self.session.new_request(request_id)
+        try:
+            self.session.send(pb.ServerFrame(automation_execute_request=pb.AutomationExecuteRequest(
+                request_id=request_id,
+                job_id=str(job_id or ''),
+                action='cancel_automation_task',
+            )))
+            frame = response_queue.get(timeout=self.timeout)
+            if frame is None:
+                raise AgentGrpcTransferError('agent 连接已断开')
+            response = frame.automation_execute_response
+            return response.status == 'canceled'
+        except queue.Empty as exc:
+            raise AgentGrpcTransferError('等待 agent 取消响应超时') from exc
+        finally:
+            self.session.drop_request(request_id)
+
     def open_shell(self, cols=120, rows=32, target_user=''):
         """建立一个 WebSSH 终端会话：发送 terminal_open 并阻塞等待 agent 的 open ack，
         成功后返回 AgentTerminalSession（后续 stdin/resize/输出都通过它进行）。

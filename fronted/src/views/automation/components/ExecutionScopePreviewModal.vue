@@ -127,25 +127,54 @@ function isHostTreeNode(node) {
 
 function emitHostClick(node) {
   const currentNode = getTreeNode(node)
+  const normalizedHostId = normalizeHostId(currentNode)
   emit('host-click', {
-    host_id: currentNode.host_id,
+    host_id: normalizedHostId,
     host_name: String(currentNode.title || ''),
   })
 }
 
+function normalizeHostId(host) {
+  const rawId = host?.host_id ?? host?.id
+  const hostId = Number(rawId)
+  return Number.isInteger(hostId) && hostId > 0 ? hostId : null
+}
+
+function normalizeDisplayText(value) {
+  const text = String(value || '').trim()
+  if (!text || text === '-') {
+    return ''
+  }
+  return text
+}
+
+function resolveHostName(host) {
+  return normalizeDisplayText(host?.instance_name) || normalizeDisplayText(host?.host_name)
+}
+
+function resolveHostIp(host) {
+  return normalizeDisplayText(host?.host_ip) || normalizeDisplayText(host?.ip)
+}
+
+function resolveGroupPath(host) {
+  return String(host?.group_path || host?.group_name || host?.path || '').trim()
+}
+
 function formatMatchedHostTitle(host) {
-  const displayName = String(host?.host_name || '').trim()
-  const ip = String(host?.host_ip || '').trim()
-  if (displayName && ip && displayName !== ip) {
+  const displayName = resolveHostName(host)
+  const ip = resolveHostIp(host)
+  const hostId = normalizeHostId(host)
+  if (displayName && ip) {
     return `${displayName}(${ip})`
   }
-  return displayName || ip || '-'
+  return displayName || ip || (hostId ? `主机#${hostId}` : '-')
 }
 
 function buildScopePreviewTreeData(hosts) {
   const rootNodes = []
   const groupNodeMap = {}
   const rootHosts = []
+  let anonymousHostIndex = 0
 
   const ensureGroupNode = (pathParts) => {
     if (!Array.isArray(pathParts) || pathParts.length === 0) {
@@ -182,15 +211,13 @@ function buildScopePreviewTreeData(hosts) {
     if (!item || typeof item !== 'object') {
       return
     }
-    const hostId = Number(item.host_id)
-    if (!Number.isInteger(hostId) || hostId <= 0) {
-      return
-    }
-    const groupPathText = String(item.group_path || item.group_name || '').trim()
+    const hostId = normalizeHostId(item)
+    const groupPathText = resolveGroupPath(item)
     const hostTitle = formatMatchedHostTitle(item)
+    const anonymousKey = `scope-preview-host-anon-${anonymousHostIndex++}`
     const hostNode = {
-      key: `scope-preview-host-${hostId}`,
-      value: `scope-preview-host-${hostId}`,
+      key: hostId ? `scope-preview-host-${hostId}` : anonymousKey,
+      value: hostId ? `scope-preview-host-${hostId}` : anonymousKey,
       title: hostTitle,
       node_type: 'host',
       host_id: hostId,
@@ -258,10 +285,10 @@ function appendGroupHostCount(nodes) {
     }
     const hostCount = collectTreeScopeStats(children).hostCount
     const baseTitle = String(node.title || '')
-    const normalizedTitle = baseTitle.replace(/\s*\(\d+\)$/, '')
+    const normalizedTitle = baseTitle.replace(/\s*\(\d+(台)?\)$/, '')
     return {
       ...node,
-      title: `${normalizedTitle} (${hostCount})`,
+      title: `${normalizedTitle} (${hostCount}台)`,
       children,
     }
   })

@@ -22,6 +22,9 @@ vi.mock('@/api/assets/application', () => ({
   getBusinessSystemList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 1, name: '订单系统', code: 'order-system', deployment_count: 2 }], count: 1 } },
   })),
+  getProjectList: vi.fn(() => Promise.resolve({
+    data: { data: { results: [], count: 0 } },
+  })),
   getBusinessEnvironmentList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 71, name: '生产环境', code: 'production', business_system: 1, business_system_name: '订单系统', service_count: 0, deployment_count: 0, enabled: true }], count: 1 } },
   })),

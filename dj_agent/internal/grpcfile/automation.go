@@ -28,6 +28,17 @@ func (s *session) handleAutomationExecute(ctx context.Context, req *pb.Automatio
 		s.sendAutomationResponse(resp)
 		return
 	}
+	if action := strings.TrimSpace(req.Action); action == "cancel_automation_task" {
+		if s.cancelAutomation(strings.TrimSpace(req.JobId)) {
+			resp.Status = string(protocol.StatusCanceled)
+			resp.ErrorMessage = "automation task canceled"
+		} else {
+			resp.Status = string(protocol.StatusFailed)
+			resp.ErrorMessage = "automation task not found"
+		}
+		s.sendAutomationResponse(resp)
+		return
+	}
 
 	action := strings.TrimSpace(req.Action)
 	if action == "get_agent_runtime_status" {
@@ -77,7 +88,11 @@ func (s *session) handleAutomationExecute(ctx context.Context, req *pb.Automatio
 	job.Args = stringSliceParam(params, "args")
 	job.Env = stringMapParam(params, "env")
 
-	result, runErr := s.exec.Run(ctx, job)
+	runCtx, cancel := context.WithCancel(ctx)
+	s.registerAutomation(jobID, cancel)
+	result, runErr := s.exec.Run(runCtx, job)
+	s.unregisterAutomation(jobID)
+	cancel()
 	resp.JobId = result.JobID
 	resp.Status = string(result.Status)
 	resp.ExitCode = int32(result.ExitCode)
@@ -106,8 +121,7 @@ func stringParam(params map[string]any, key string) string {
 }
 
 func stringSliceParam(params map[string]any, key string) []string {
-	value, ok := params[key]
-	items, ok := value.([]any)
+	items, ok := params[key].([]any)
 	if !ok {
 		return nil
 	}
@@ -119,8 +133,7 @@ func stringSliceParam(params map[string]any, key string) []string {
 }
 
 func stringMapParam(params map[string]any, key string) map[string]string {
-	value, ok := params[key]
-	items, ok := value.(map[string]any)
+	items, ok := params[key].(map[string]any)
 	if !ok {
 		return nil
 	}

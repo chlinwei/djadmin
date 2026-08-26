@@ -35,6 +35,19 @@
               <a-col :span="12"><a-form-item label="App Home"><a-input v-model:value="form.app_home" placeholder="例如 /home/${RUN_USER}/tomcat" /></a-form-item></a-col>
               <a-col :span="12"><a-form-item label="工作目录"><a-input v-model:value="form.work_directory" placeholder="例如 ${APP_HOME}/bin" /></a-form-item></a-col>
               <a-col :span="24">
+                <a-form-item label="宏" extra="模板提供默认值，逻辑服务可直接继承或覆盖">
+                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="name" size="small">
+                    <template #bodyCell="{ column, record, index }">
+                      <template v-if="column.key === 'name'"><a-input v-model:value="record.name" placeholder="例如 ORACLE_SID" /></template>
+                      <template v-else-if="column.key === 'value'"><a-input v-model:value="record.value" placeholder="默认值，可为空" /></template>
+                      <template v-else-if="column.key === 'description'"><a-input v-model:value="record.description" placeholder="说明" /></template>
+                      <template v-else-if="column.key === 'action'"><a-tooltip title="删除"><a-button class="delBtn" danger size="small" @click="macroDefinitions.splice(index, 1)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></template>
+                    </template>
+                  </a-table>
+                  <a-button class="macro-add-button" @click="addMacro"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增宏</span></a-button>
+                </a-form-item>
+              </a-col>
+              <a-col :span="24">
                 <a-form-item name="control_type" label="控制方式">
                   <a-segmented v-model:value="form.control_type" :options="controlTypeOptions" block />
                 </a-form-item>
@@ -215,6 +228,13 @@ const createInitialForm = () => ({
   compose_config: { project_name: '', service_name: '', compose_file_path: '', working_directory: '', env_file: '', expected_image: '', expected_image_tag: '' },
 })
 const form = reactive(createInitialForm())
+const macroDefinitions = ref([])
+const macroColumns = [
+  { title: '宏 Key', key: 'name', width: 260 },
+  { title: '值', key: 'value', width: 240 },
+  { title: '说明', key: 'description' },
+  { title: '操作', key: 'action', width: 70 },
+]
 const rules = {
   application: [{ required: true, message: '请选择所属应用' }],
   name: [{ required: true, message: '请输入模板名称' }],
@@ -225,6 +245,7 @@ const applicationOptions = computed(() => applications.value.map((item) => ({ la
 
 function resetForm() {
   Object.assign(form, createInitialForm())
+  macroDefinitions.value = []
   Object.keys(commandValues).forEach((key) => { commandValues[key] = '' })
 }
 async function loadApplications() {
@@ -244,6 +265,9 @@ async function loadTemplate(id) {
     const data = response?.data?.data || {}
     const initial = createInitialForm()
     Object.assign(form, initial, data)
+    macroDefinitions.value = (data.macro_definitions || []).map((item) => ({
+      name: item.name || '', value: item.value || item.default || '', description: item.description || '',
+    }))
     if (props.copyFromId) form.name = `${form.name || '部署模板'}-副本`
     if (!form.docker_config) form.docker_config = initial.docker_config
     if (!form.compose_config) form.compose_config = initial.compose_config
@@ -274,7 +298,7 @@ async function saveTemplate() {
     message.error(validationMessage)
     return
   }
-  const payload = { ...form, id: props.copyFromId ? undefined : props.templateId || undefined }
+  const payload = { ...form, id: props.copyFromId ? undefined : props.templateId || undefined, macro_definitions: macroDefinitions.value }
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
     : form.control_type === 'external_ha'
@@ -293,6 +317,7 @@ async function saveTemplate() {
   }
 }
 const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })
+const addMacro = () => macroDefinitions.value.push({ name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true, baseline_enabled: true })
 const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, retention_days: 30 })

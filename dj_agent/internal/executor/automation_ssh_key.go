@@ -16,7 +16,7 @@ import (
 // the agent channel from becoming an arbitrary file-write capability.
 func (e *Executor) syncAutomationSSHKey(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
-	publicKey := strings.TrimSpace(toString(job.Params["public_key"]))
+	publicKey := valueString(job.Params["public_key"])
 	fields := strings.Fields(publicKey)
 	if len(fields) < 2 || strings.ContainsAny(publicKey, "\r\n") ||
 		(fields[0] != "ssh-ed25519" && fields[0] != "ssh-rsa" && !strings.HasPrefix(fields[0], "ecdsa-sha2-")) {

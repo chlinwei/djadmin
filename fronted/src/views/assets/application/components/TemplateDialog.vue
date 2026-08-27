@@ -156,7 +156,21 @@
             <div v-for="(item, index) in form.logs" :key="`log-${index}`" class="repeat-row log-row">
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-input v-model:value="item.path_pattern" placeholder="例如 ${APP_HOME}/logs/*.log" />
-              <a-input-number v-model:value="item.retention_days" :min="1" addon-after="天" />
+              <a-select
+                v-model:value="item.encoding"
+                :options="encodingOptions"
+                :getPopupContainer="getPopupContainer"
+                placeholder="字符编码"
+              />
+              <a-select
+                v-model:value="item.processing_rule"
+                :options="processingRuleOptions"
+                :getPopupContainer="getPopupContainer"
+                allow-clear
+                show-search
+                option-filter-prop="label"
+                placeholder="日志处理规则"
+              />
               <a-checkbox v-model:checked="item.collection_enabled">启用采集</a-checkbox>
               <a-button danger @click="form.logs.splice(index, 1)">移除</a-button>
             </div>
@@ -177,6 +191,7 @@ import {
   getApplicationDeploymentTemplate,
   saveApplicationDeploymentTemplate,
 } from '@/api/assets/application'
+import { getLogProcessingRules } from '@/api/monitor'
 
 const props = defineProps({
   open: { type: Boolean, required: true },
@@ -190,6 +205,7 @@ const formRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const applications = ref([])
+const processingRules = ref([])
 let loadToken = 0
 const commandValues = reactive({ start: '', stop: '', status: '', restart: '', reload: '' })
 
@@ -210,6 +226,7 @@ const pathTypeOptions = [
   { label: '可执行文件', value: 'executable' }, { label: '其他', value: 'other' },
 ]
 const fileFormatOptions = ['xml', 'yaml', 'json', 'ini', 'properties', 'text'].map((value) => ({ label: value.toUpperCase(), value }))
+const encodingOptions = ['utf-8', 'utf-16le', 'utf-16be', 'latin1'].map((value) => ({ label: value.toUpperCase(), value }))
 const commandActions = [
   { label: '启动命令', value: 'start', required: true },
   { label: '停止命令', value: 'stop', required: true },
@@ -242,6 +259,10 @@ const rules = {
   run_user: [{ required: true, message: '请输入运行用户' }],
 }
 const applicationOptions = computed(() => applications.value.map((item) => ({ label: item.name, value: item.id })))
+const processingRuleOptions = computed(() => processingRules.value.map((item) => ({
+  label: item.name,
+  value: item.id,
+})))
 
 function resetForm() {
   Object.assign(form, createInitialForm())
@@ -254,6 +275,10 @@ async function loadApplications() {
   if (!props.templateId && !props.copyFromId && props.initialApplicationId) {
     form.application = props.initialApplicationId
   }
+}
+async function loadProcessingRules() {
+  const response = await getLogProcessingRules({ page_size: 100 })
+  processingRules.value = response?.data?.data?.results || []
 }
 async function loadTemplate(id) {
   if (!id) return
@@ -320,7 +345,7 @@ const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, b
 const addMacro = () => macroDefinitions.value.push({ name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true, baseline_enabled: true })
-const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, retention_days: 30 })
+const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, processing_rule: null, extra_fields: {} })
 
 watch(() => props.open, (visible) => {
   if (!visible) {
@@ -330,6 +355,7 @@ watch(() => props.open, (visible) => {
   resetForm()
   Promise.all([
     loadApplications(),
+    loadProcessingRules(),
     props.templateId || props.copyFromId
       ? loadTemplate(props.templateId || props.copyFromId)
       : Promise.resolve(),

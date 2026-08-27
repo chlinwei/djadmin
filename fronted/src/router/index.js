@@ -126,6 +126,11 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/log-storage/index.vue'),
             },
             {
+                path: '/monitor/log-parsers',
+                name: '日志处理规则',
+                component: () => import('../views/monitor/log-parsers/index.vue'),
+            },
+            {
                 path: '/assets/hosts',
                 name: '主机管理',
                 component: () => import('../views/assets/host/index.vue'),

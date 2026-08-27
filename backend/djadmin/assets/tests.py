@@ -2,6 +2,8 @@ from django.test import TestCase, TransactionTestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import contextmanager
 from datetime import timedelta
@@ -21,6 +23,33 @@ from monitor.models import MonitorTarget, SoftwarePackage
 from automation.models import PlaybookTemplate
 from automation.models import TemplateCategory
 from user.models import SysUser
+
+
+class AgentInstallBinaryValidationTest(TestCase):
+    def _binary(self, content: bytes) -> Path:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        binary = Path(temp_dir.name) / 'dj-agent'
+        binary.write_bytes(content)
+        return binary
+
+    def test_current_grpc_binary_is_accepted(self):
+        from .agent_install_service import _validate_agent_binary
+
+        _validate_agent_binary(self._binary(b'ELF\x00DJ_AGENT_GRPC_FILE_ADDR\x00'))
+
+    def test_legacy_rabbitmq_binary_is_rejected(self):
+        from .agent_install_service import _validate_agent_binary
+
+        binary = self._binary(b'ELF\x00DJ_AGENT_GRPC_FILE_ADDR\x00connect rabbitmq failed')
+        with self.assertRaisesRegex(RuntimeError, '旧 RabbitMQ 版本'):
+            _validate_agent_binary(binary)
+
+    def test_unknown_binary_without_grpc_marker_is_rejected(self):
+        from .agent_install_service import _validate_agent_binary
+
+        with self.assertRaisesRegex(RuntimeError, '缺少当前 gRPC 配置标记'):
+            _validate_agent_binary(self._binary(b'ELF\x00unknown-agent'))
 
 
 def _make_playbook_template(name):
@@ -1564,6 +1593,7 @@ class HostTest(BaseTestCase):
             install_playbook_template=install_template,
         )
         host = Host.objects.create(instance_name='agent-host-default', agent_id='agent-host-default', ip='192.168.1.198')
+        HostHardware.objects.create(host=host, architecture='x86_64')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
@@ -1586,6 +1616,7 @@ class HostTest(BaseTestCase):
         # 绕开模型默认值，模拟迁移前遗留的空字符串脏数据
         SoftwarePackage.objects.filter(id=pkg.id).update(service_run_as_user='', service_run_as_group='')
         host = Host.objects.create(instance_name='agent-host-legacy-blank', agent_id='agent-host-legacy-blank', ip='192.168.1.196')
+        HostHardware.objects.create(host=host, architecture='x86_64')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):
@@ -1606,6 +1637,7 @@ class HostTest(BaseTestCase):
             service_run_as_user='monitor_agent', service_run_as_group='monitor_group',
         )
         host = Host.objects.create(instance_name='agent-host-explicit', agent_id='agent-host-explicit', ip='192.168.1.197')
+        HostHardware.objects.create(host=host, architecture='x86_64')
         target = MonitorTarget.objects.create(host=host, exporter_type='node_exporter', managed_enabled=True)
 
         with patch('assets.views._run_monitor_playbook_and_update_history', return_value=None):

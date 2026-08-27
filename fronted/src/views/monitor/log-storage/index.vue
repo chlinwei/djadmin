@@ -6,8 +6,9 @@
     </div>
 
     <div class="toolbar">
-      <a-tooltip title="新增集群">
-        <a-button type="primary" size="large" @click="openDialog()">
+      <!-- 日志存储为全局单例配置：已存在集群时禁用新增，仅允许编辑/删除现有记录 -->
+      <a-tooltip :title="clusters.length ? '仅支持配置一个集群，请直接编辑现有记录' : '新增集群'">
+        <a-button size="large" :disabled="clusters.length > 0" @click="openDialog()">
           <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
           <span>&nbsp;新增集群</span>
         </a-button>
@@ -51,17 +52,17 @@
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
             <a-tooltip title="连接测试">
-              <a-button size="small" :loading="testingId === record.id" @click="testConnection(record)">
+              <a-button :loading="testingId === record.id" @click="testConnection(record)">
                 <FontAwesomeIcon :icon="['fas', 'plug']" />
               </a-button>
             </a-tooltip>
             <a-tooltip title="编辑">
-              <a-button size="small" @click="openDialog(record)">
-                <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+              <a-button type="primary" @click="openDialog(record)">
+                <FontAwesomeIcon :icon="['fa', 'edit']" />
               </a-button>
             </a-tooltip>
             <a-tooltip title="删除">
-              <a-button class="delBtn" danger size="small" @click="confirmDelete(record)">
+              <a-button class="delBtn" danger type="primary" @click="confirmDelete(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>

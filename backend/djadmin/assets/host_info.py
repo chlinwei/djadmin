@@ -71,6 +71,9 @@ def _build_static_fingerprint(result_data):
     static_payload = {
         'os_type': str(source.get('os_type') or source.get('os') or '').strip() or None,
         'os_version': str(source.get('os_version') or '').strip() or None,
+        'os_id': str(source.get('os_id') or '').strip().lower() or None,
+        'os_id_like': str(source.get('os_id_like') or '').strip().lower() or None,
+        'os_version_id': str(source.get('os_version_id') or '').strip() or None,
         'kernel_version': str(source.get('kernel_version') or '').strip() or None,
         'hostname': str(source.get('hostname') or '').strip() or None,
         'agent_version': str(source.get('agent_version') or '').strip() or None,
@@ -150,6 +153,9 @@ def persist_host_info(host, status, result_data, error='', now=None):
         defaults={
             'os_type': os_type,
             'os_version': str(result_data.get('os_version') or '').strip() or None,
+            'os_id': str(result_data.get('os_id') or '').strip().lower() or None,
+            'os_id_like': str(result_data.get('os_id_like') or '').strip().lower() or None,
+            'os_version_id': str(result_data.get('os_version_id') or '').strip() or None,
             'kernel_version': str(result_data.get('kernel_version') or '').strip() or None,
             'hostname': str(result_data.get('hostname') or '').strip() or None,
             'agent_version': str(result_data.get('agent_version') or '').strip() or None,

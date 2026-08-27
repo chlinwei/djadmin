@@ -43,7 +43,7 @@ class OpenSearchClient:
         token = base64.b64encode(f'{username}:{password}'.encode('utf-8')).decode('ascii')
         return f'Basic {token}'
 
-    def _request(self, method, path, payload=None, params=None):
+    def _request(self, method, path, payload=None, params=None, empty_object_on_404=False):
         body = json.dumps(payload).encode('utf-8') if payload is not None else None
         query = f'?{urllib_parse.urlencode(params)}' if params else ''
         auth = self._auth_header()
@@ -62,6 +62,9 @@ class OpenSearchClient:
                     raw = response.read()
             except urllib_error.HTTPError as exc:
                 detail = exc.read().decode('utf-8', errors='replace')[:500]
+                # OpenSearch 2.19 在尚无任何 ingest pipeline 时，用 404 + {} 表示空集合。
+                if exc.code == 404 and empty_object_on_404 and detail.strip() == '{}':
+                    return {}
                 raise OpenSearchError(f'{exc.code}: {detail}') from exc
             except (urllib_error.URLError, ssl.SSLError, OSError) as exc:
                 last_error = str(exc)
@@ -87,6 +90,9 @@ class OpenSearchClient:
             'number_of_nodes': health.get('number_of_nodes', 0),
         }
 
+    def list_pipelines(self):
+        return self._request('GET', '/_ingest/pipeline', empty_object_on_404=True)
+
     def get_pipeline(self, name):
         return self._request('GET', f'/_ingest/pipeline/{name}')
 
@@ -104,6 +110,24 @@ class OpenSearchClient:
         """用未保存的 pipeline 定义直接试跑，供解析规则调试使用。"""
         payload = {'pipeline': body, 'docs': [{'_source': item} for item in docs]}
         return self._request('POST', '/_ingest/pipeline/_simulate', payload=payload)
+
+    def get_index_template(self, name):
+        return self._request('GET', f'/_index_template/{name}')
+
+    def put_index_template(self, name, body):
+        return self._request('PUT', f'/_index_template/{name}', payload=body)
+
+    def delete_index_template(self, name):
+        return self._request('DELETE', f'/_index_template/{name}')
+
+    def get_ism_policy(self, name):
+        return self._request('GET', f'/_plugins/_ism/policies/{name}')
+
+    def put_ism_policy(self, name, body):
+        return self._request('PUT', f'/_plugins/_ism/policies/{name}', payload=body)
+
+    def delete_ism_policy(self, name):
+        return self._request('DELETE', f'/_plugins/_ism/policies/{name}')
 
     def search(self, index, body):
         return self._request('POST', f'/{index}/_search', payload=body)

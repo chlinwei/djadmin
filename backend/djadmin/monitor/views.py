@@ -1,4 +1,5 @@
 from django_filters.rest_framework import DjangoFilterBackend
+from django.db import IntegrityError
 from django.db.models import Count, Q
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -11,17 +12,22 @@ import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import PurePath
 
 from django.core.files.base import ContentFile
 from django.core.mail import EmailMultiAlternatives, get_connection
 from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.permissions import AllowAny
+from rest_framework.request import Request
+from rest_framework.response import Response
 
 from djadmin.utils import Response_200, Response_error_str
 from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 from assets.credential_crypto import decrypt_secret
+from assets.grpc_transfer.registry import REGISTRY
+from assets.models import Host
 
 from .alert_history import (
     compute_alert_fingerprint,
@@ -36,6 +42,8 @@ from .models import (
     AlertNotificationDelivery,
     AlertNotificationEvent,
     AlertRoute,
+    LogCollectionTarget,
+    LogProcessingRule,
     MonitorTarget,
     MonitorTargetInstallHistory,
     OpenSearchCluster,
@@ -50,16 +58,29 @@ from .serializer import (
     AlertHistorySerializer,
     AlertMediaSerializer,
     AlertRouteSerializer,
+    LogCollectionTargetSerializer,
+    LogProcessingRuleSerializer,
     MonitorTargetInstallHistorySerializer,
     MonitorTargetSerializer,
     OpenSearchClusterSerializer,
     SoftwarePackageSerializer,
 )
 from .opensearch_client import OpenSearchClient, OpenSearchError
+from .fluent_bit import build_host_fragments
+from .log_collection_service import (
+    LogCollectionApplyError,
+    apply_host_log_config,
+    control_fluent_bit_service,
+    dispatch_fluent_bit_install,
+    dispatch_fluent_bit_uninstall,
+    read_instance_log_tail,
+    refresh_target_status,
+)
+from .log_management import bootstrap_log_storage, build_default_pipeline_body
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
-NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')# 官方 tarball 命名规则：node_exporter-<version>.<os>-<arch>.tar.gz，用于行内上传时解析版本/校验架构
-NODE_EXPORTER_FILENAME_RE = re.compile(r'^node_exporter-([^.]+)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$', re.IGNORECASE)# 官方软件包体积上限（字节），避免异常响应把磁盘写满
+NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')
+# 官方软件包体积上限（字节），避免异常响应把磁盘写满
 MAX_OFFICIAL_PACKAGE_SIZE = 200 * 1024 * 1024
 
 
@@ -798,7 +819,7 @@ class SoftwarePackageViewSet(
     serializer_class = SoftwarePackageSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['name', 'version', 'os', 'arch', 'enabled']
+    filterset_fields = ['package_type', 'name', 'version', 'os', 'arch', 'enabled']
     search_fields = ['name', 'version']
     ordering_fields = ['id', 'create_time', 'update_time', 'version']
     lookup_field = 'id'
@@ -824,7 +845,8 @@ class SoftwarePackageViewSet(
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response_error_str('软件包配置无效', code=400, data=serializer.errors)
         serializer.save()
         return Response_200(data=serializer.data)
 
@@ -833,7 +855,8 @@ class SoftwarePackageViewSet(
         # 文件本身（sha256/size_bytes）仍走行内“上传”接口，避免和该接口职责重叠。
         instance = self.get_object()
         serializer = self.get_serializer(instance, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response_error_str('软件包配置无效', code=400, data=serializer.errors)
         serializer.save()
         return Response_200(data=serializer.data)
 
@@ -849,41 +872,33 @@ class SoftwarePackageViewSet(
 
     @action(detail=True, methods=['post'], url_path='upload')
     def upload_file(self, request, *args, **kwargs):
-        """行内“上传”：为当前记录（固定 os/arch）替换软件包文件，version 按文件名自动识别并更新，
-        避免通过顶部全局上传按钮重复创建新记录（现已改为默认预置固定行，只支持在行内更新）。"""
+        """为当前软件包记录上传文件；平台、架构和版本以记录字段为准。"""
         instance = self.get_object()
         upload = request.FILES.get('file')
         if not upload:
             return Response_error_str('请提供上传文件', code=400)
 
-        filename = str(getattr(upload, 'name', '') or '')
-        match = NODE_EXPORTER_FILENAME_RE.match(filename)
-        if not match:
-            return Response_error_str('文件名需符合 node_exporter-<version>.<os>-<arch>.tar.gz 命名规范', code=400)
-        version, os_name, arch = match.group(1), match.group(2).lower(), match.group(3).lower()
-        # 行内上传固定对应当前记录的 os/arch，防止误传到错误架构导致 agent 下发时与实际机器不匹配
-        if os_name != instance.os or arch != instance.arch:
+        filename = PurePath(str(getattr(upload, 'name', '') or '')).name
+        format_suffixes = {
+            SoftwarePackage.PackageFormat.TAR_GZ: ('.tar.gz',),
+            SoftwarePackage.PackageFormat.RPM: ('.rpm',),
+            SoftwarePackage.PackageFormat.DEB: ('.deb',),
+        }
+        expected_suffixes = format_suffixes.get(instance.package_format, ())
+        if not filename or not filename.lower().endswith(expected_suffixes):
             return Response_error_str(
-                f'文件架构（{os_name}-{arch}）与当前记录（{instance.os}-{instance.arch}）不一致', code=400,
+                f'上传文件格式与当前记录（{instance.package_format}）不一致', code=400,
             )
-
-        conflict = SoftwarePackage.objects.filter(
-            name=instance.name, version=version, os=instance.os, arch=instance.arch,
-        ).exclude(pk=instance.pk).exists()
-        if conflict:
-            return Response_error_str(f'版本 {version} 已存在同架构记录，请先删除或更换版本', code=400)
 
         hasher = hashlib.sha256()
         for chunk in upload.chunks():
             hasher.update(chunk)
         upload.seek(0)
 
-        tarball_name = f'node_exporter-{version}.{instance.os}-{instance.arch}.tar.gz'
-        instance.version = version
-        instance.file.save(tarball_name, upload, save=False)
+        instance.file.save(filename, upload, save=False)
         instance.sha256 = hasher.hexdigest()
         instance.size_bytes = int(getattr(upload, 'size', 0) or 0)
-        instance.save(update_fields=['version', 'file', 'sha256', 'size_bytes', 'update_time'])
+        instance.save(update_fields=['file', 'sha256', 'size_bytes', 'update_time'])
         return Response_200(data=self.get_serializer(instance).data)
 
     @action(detail=True, methods=['post'], url_path='sync-official')
@@ -900,9 +915,10 @@ class SoftwarePackageViewSet(
         # 目标版本若已被同名 os/arch 的其他记录占用，提前拦截，避免落库时触发唯一约束报错
         conflict = SoftwarePackage.objects.filter(
             name=instance.name, version=target_version, os=instance.os, arch=instance.arch,
+            platform_family=instance.platform_family, platform_major=instance.platform_major,
         ).exclude(pk=instance.pk).exists()
         if conflict:
-            return Response_error_str(f'版本 {target_version} 已存在同架构记录，请先删除或更换版本', code=400)
+            return Response_error_str(f'版本 {target_version} 已存在相同平台记录，请先删除或更换版本', code=400)
 
         url = build_node_exporter_official_url(target_version, instance.os, instance.arch)
         try:
@@ -938,11 +954,11 @@ class MonitorTargetInstallHistoryViewSet(
     ListModelMixin,
     RetrieveModelMixin,
 ):
-    queryset = MonitorTargetInstallHistory.objects.select_related('target', 'host').all()
+    queryset = MonitorTargetInstallHistory.objects.select_related('target', 'log_collection_target', 'host').all()
     serializer_class = MonitorTargetInstallHistorySerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['target_id', 'action', 'trigger_type', 'status']
+    filterset_fields = ['target_id', 'log_collection_target_id', 'action', 'trigger_type', 'status']
     search_fields = ['host_name_snapshot', 'host_ip_snapshot', 'exporter_type_snapshot', 'summary_message']
     ordering_fields = ['id', 'create_time', 'update_time', 'start_time', 'end_time']
     lookup_field = 'id'
@@ -956,12 +972,17 @@ class MonitorTargetInstallHistoryViewSet(
     def get_queryset(self):
         queryset = super().get_queryset()
         query_target_id = str(self.request.query_params.get('target_id') or '').strip()  # type: ignore[union-attr]
+        query_log_target_id = str(  # type: ignore[union-attr]
+            self.request.query_params.get('log_collection_target_id') or ''
+        ).strip()
         query_keyword = str(self.request.query_params.get('keyword') or '').strip()  # type: ignore[union-attr]
         query_start = str(self.request.query_params.get('start_time') or '').strip()  # type: ignore[union-attr]
         query_end = str(self.request.query_params.get('end_time') or '').strip()  # type: ignore[union-attr]
 
         if query_target_id.isdigit():
             queryset = queryset.filter(target_id=int(query_target_id))
+        if query_log_target_id.isdigit():
+            queryset = queryset.filter(log_collection_target_id=int(query_log_target_id))
         if query_keyword:
             queryset = queryset.filter(
                 Q(host_name_snapshot__icontains=query_keyword)
@@ -1013,7 +1034,9 @@ class MonitorTargetInstallHistoryViewSet(
                 'end_time', 'duration_seconds', 'update_time',
             ])
 
-            target = history.target
+            target = history.target or history.log_collection_target
+            if target is None:
+                return Response_error_str('任务未关联纳管目标，无法取消', code=400)
             target.install_status = target.InstallStatus.UNKNOWN
             target.install_message = '安装/卸载任务已取消'
             target.save(update_fields=['install_status', 'install_message', 'update_time'])
@@ -1355,6 +1378,13 @@ class OpenSearchClusterViewSet(
         'perform_update': 'monitor:view',
         'destroy': 'monitor:view',
         'test_connection': 'monitor:view',
+        'bootstrap': 'monitor:view',
+        'simulate_pipeline': 'monitor:view',
+        'pipeline_default': 'monitor:view',
+        'error_patterns': 'monitor:view',
+        'new_errors': 'monitor:view',
+        'error_spikes': 'monitor:view',
+        'error_by_instance': 'monitor:view',
     }
 
     def list(self, request, *args, **kwargs):
@@ -1378,6 +1408,9 @@ class OpenSearchClusterViewSet(
         return Response_200(data=self.get_serializer(self.get_object()).data)
 
     def create(self, request, *args, **kwargs):
+        # 日志存储为全局单例配置，只允许保留一个集群，防止前端绕过禁用按钮重复创建
+        if OpenSearchCluster.objects.exists():
+            return Response_error_str('仅支持配置一个日志存储集群，请编辑现有记录', code=400)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -1417,3 +1450,464 @@ class OpenSearchClusterViewSet(
         )
         cluster.save(update_fields=['last_check_time', 'last_check_success', 'last_check_message', 'update_time'])
         return Response_200(data=info)
+
+    def _call_client(self, func, *args, **kwargs):
+        """统一把 OpenSearchError 转为错误响应，避免每个 action 重复 try/except。"""
+        try:
+            return func(*args, **kwargs), None
+        except OpenSearchError as exc:
+            return None, Response_error_str(str(exc), code=400)
+
+
+    @action(detail=True, methods=['post'], url_path='bootstrap')
+    def bootstrap(self, request, id=None):
+        """确保 index template 与 hot/std/cold 三条 ISM policy 存在（架构文档 §11 阶段 1）。"""
+        result, error = self._call_client(bootstrap_log_storage, self.get_object())
+        if error is not None:
+            return error
+        return Response_200(data=result)
+
+    @action(detail=True, methods=['post'], url_path='pipeline-simulate')
+    def simulate_pipeline(self, request, id=None):
+        """解析规则调试（架构文档 §5.4，最高优先级）：
+
+        支持两种模式：
+        - 传 pipeline 体：用未保存的定义直接试跑（编辑页实时预览）
+        - 传 name：对服务端已存在的 pipeline 试跑
+        """
+        docs = request.data.get('docs') or []
+        if not isinstance(docs, list) or not docs:
+            return Response_error_str('docs 必须是非空数组', code=400)
+        client = OpenSearchClient(self.get_object())
+        body = request.data.get('pipeline')
+        if body is not None:
+            if not isinstance(body, dict):
+                return Response_error_str('pipeline 必须是对象', code=400)
+            data, error = self._call_client(client.simulate_pipeline_body, body, docs)
+        else:
+            name = str(request.data.get('name') or '').strip()
+            if not name:
+                return Response_error_str('pipeline 与 name 至少提供一个', code=400)
+            data, error = self._call_client(client.simulate_pipeline, name, docs)
+        if error is not None:
+            return error
+        return Response_200(data=data)
+
+    @action(detail=True, methods=['get'], url_path='pipeline-default')
+    def pipeline_default(self, request, id=None):
+        """返回默认 pipeline 定义（错误归一化 + 指纹 + on_failure），供编辑页作为起点。"""
+        return Response_200(data=build_default_pipeline_body())
+
+    @staticmethod
+    def _insight_params(request):
+        index = str(request.query_params.get('index') or '').strip()
+        if not index:
+            return None, None, Response_error_str('缺少 index 参数', code=400)
+        try:
+            hours = min(max(int(request.query_params.get('hours', 1)), 1), 24 * 30)
+        except (TypeError, ValueError):
+            return None, None, Response_error_str('hours 必须是整数', code=400)
+        return index, hours, None
+
+    def _search(self, cluster, index, body):
+        data, error = self._call_client(OpenSearchClient(cluster).search, index, body)
+        if error is not None:
+            return error
+        return Response_200(data=data)
+
+    @action(detail=True, methods=['get'], url_path='insight/error-patterns')
+    def error_patterns(self, request, id=None):
+        """自动错误清单：按 error_fingerprint 聚合，含样例与服务分布（§9.1）。"""
+        index, hours, error = self._insight_params(request)
+        if error is not None:
+            return error
+        body = {
+            'size': 0,
+            'query': {'bool': {'filter': [
+                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
+                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
+            ]}},
+            'aggs': {
+                'patterns': {
+                    'terms': {'field': 'error_fingerprint', 'size': 50},
+                    'aggs': {
+                        'sample': {'top_hits': {
+                            'size': 1,
+                            '_source': ['error_type', 'error_template', 'service', 'instance'],
+                        }},
+                        'services': {'terms': {'field': 'service'}},
+                    },
+                },
+            },
+        }
+        return self._search(self.get_object(), index, body)
+
+    @action(detail=True, methods=['get'], url_path='insight/new-errors')
+    def new_errors(self, request, id=None):
+        """新增错误识别：significant_terms 对比 7 天背景频率，无需阈值（§9.2）。"""
+        index, hours, error = self._insight_params(request)
+        if error is not None:
+            return error
+        body = {
+            'size': 0,
+            'query': {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
+            'aggs': {
+                'unusual_errors': {
+                    'significant_terms': {
+                        'field': 'error_fingerprint',
+                        'size': 20,
+                        'background_filter': {
+                            'range': {'@timestamp': {'gte': 'now-7d', 'lt': f'now-{hours}h'}},
+                        },
+                    },
+                },
+            },
+        }
+        return self._search(self.get_object(), index, body)
+
+    @action(detail=True, methods=['get'], url_path='insight/error-spikes')
+    def error_spikes(self, request, id=None):
+        """突增检测：terms 嵌套 date_histogram 取时序，由调用方比对最近桶与历史均值（§9.3）。"""
+        index, hours, error = self._insight_params(request)
+        if error is not None:
+            return error
+        assert hours is not None  # error 为空时 _insight_params 保证 hours 已解析为 int
+        body = {
+            'size': 0,
+            'query': {'bool': {'filter': [
+                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
+                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
+            ]}},
+            'aggs': {
+                'by_error': {
+                    'terms': {'field': 'error_fingerprint', 'size': 50},
+                    'aggs': {
+                        'trend': {'date_histogram': {
+                            'field': '@timestamp',
+                            'fixed_interval': f'{max(hours * 60 // 30, 1)}m',
+                        }},
+                    },
+                },
+            },
+        }
+        return self._search(self.get_object(), index, body)
+
+    @action(detail=True, methods=['get'], url_path='insight/error-by-instance')
+    def error_by_instance(self, request, id=None):
+        """实例分布下钻：区分「代码缺陷」（均匀分布）与「单机环境问题」（§9.4）。"""
+        index, hours, error = self._insight_params(request)
+        if error is not None:
+            return error
+        body = {
+            'size': 0,
+            'query': {'bool': {'filter': [
+                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
+                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
+            ]}},
+            'aggs': {
+                'by_error': {
+                    'terms': {'field': 'error_type', 'size': 10},
+                    'aggs': {'by_instance': {'terms': {'field': 'instance'}}},
+                },
+            },
+        }
+        return self._search(self.get_object(), index, body)
+
+
+class LogProcessingRuleViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    """统一管理 Fluent Bit 前处理配置和 OpenSearch Pipeline。"""
+
+    queryset = LogProcessingRule.objects.select_related('cluster').all()
+    serializer_class = LogProcessingRuleSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['cluster', 'input_format', 'multiline_enabled']
+    search_fields = ['name', 'description']
+    ordering_fields = ['id', 'name', 'create_time', 'update_time']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'update': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def list(self, request: Request, *args, **kwargs) -> Response:
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,
+            'results': serializer.data,
+            'pageNumber': paginator.page.number,
+            'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request: Request, *args, **kwargs) -> Response:
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            OpenSearchClient(data['cluster']).put_pipeline(data['name'], data['pipeline_body'])
+        except OpenSearchError as exc:
+            return Response_error_str(f'发布 Pipeline 失败: {exc}', code=400)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request: Request, *args, **kwargs) -> Response:
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        cluster = serializer.validated_data.get('cluster', instance.cluster)
+        pipeline_body = serializer.validated_data.get('pipeline_body', instance.pipeline_body)
+        try:
+            OpenSearchClient(cluster).put_pipeline(instance.name, pipeline_body)
+        except OpenSearchError as exc:
+            return Response_error_str(f'发布 Pipeline 失败: {exc}', code=400)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request: Request, *args, **kwargs) -> Response:
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request: Request, *args, **kwargs) -> Response:
+        instance = self.get_object()
+        if instance.log_definitions.exists():
+            return Response_error_str('规则仍被日志定义引用，不能删除', code=400)
+        try:
+            OpenSearchClient(instance.cluster).delete_pipeline(instance.name)
+        except OpenSearchError as exc:
+            return Response_error_str(f'删除 Pipeline 失败: {exc}', code=400)
+        instance.delete()
+        return Response_200(data={'deleted': True})
+
+
+class LogCollectionTargetViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    DestroyModelMixin,
+):
+    """主机级日志采集状态（架构文档 §7）。
+
+    render-config 只读预览；apply 经 dj-agent 实际写入 Fluent Bit 片段并热重载（阶段 5）。
+    """
+
+    queryset = LogCollectionTarget.objects.select_related('host').all()
+    serializer_class = LogCollectionTargetSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['agent_installed', 'runtime_status']
+    search_fields = ['host__instance_name', 'host__ip']
+    ordering_fields = ['id', 'last_applied_time', 'update_time']
+    lookup_field = 'id'
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'create': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'render_config': 'monitor:view',
+        'apply': 'monitor:view',
+        'check_status': 'monitor:view',
+        'log_tail': 'monitor:view',
+        'retry': 'monitor:view',
+        'start_service': 'monitor:view',
+        'stop_service': 'monitor:view',
+        'cancel_pending': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def get_queryset(self):
+        # gRPC Registry 是 Agent 在线状态的唯一实时来源；同步后再序列化，避免陈旧 DB 状态误开放安装按钮。
+        connected_agent_ids = REGISTRY.connected_agent_ids()
+        Host.objects.filter(agent_online=True).exclude(agent_id__in=connected_agent_ids).update(agent_online=False)
+        if connected_agent_ids:
+            Host.objects.filter(agent_id__in=connected_agent_ids, agent_online=False).update(agent_online=True)
+        return super().get_queryset()
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,
+            'results': serializer.data,
+            'pageNumber': paginator.page.number,
+            'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request, *args, **kwargs):
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response_error_str('Fluent Bit 纳管目标配置无效', code=400, data=serializer.errors)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='retry')
+    def retry(self, request: Request, id=None) -> Response:
+        """使用当前 Host 精确匹配的本地 RPM/DEB 重新安装 Fluent Bit。"""
+        target = self.get_object()
+        target.retry_count = 0
+        target.install_message = '人工触发重新安装'
+        target.save(update_fields=['retry_count', 'install_message', 'update_time'])
+        try:
+            dispatch_fluent_bit_install(target, manual=True)
+        except LogCollectionApplyError as exc:
+            target.install_status = LogCollectionTarget.InstallStatus.FAILED
+            target.install_message = str(exc)
+            target.save(update_fields=['install_status', 'install_message', 'update_time'])
+            return Response_error_str(str(exc), code=400)
+        target.refresh_from_db()
+        return Response_200(data=self.get_serializer(target).data)
+
+    @action(detail=True, methods=['post'], url_path='start-service')
+    def start_service(self, request: Request, id=None) -> Response:
+        target = self.get_object()
+        if not target.agent_installed:
+            return Response_error_str('Fluent Bit 尚未安装，无法启动服务', code=400)
+        try:
+            result = control_fluent_bit_service(target, 'start')
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data=result)
+
+    @action(detail=True, methods=['post'], url_path='stop-service')
+    def stop_service(self, request: Request, id=None) -> Response:
+        target = self.get_object()
+        if not target.agent_installed:
+            return Response_error_str('Fluent Bit 尚未安装，无法停止服务', code=400)
+        try:
+            result = control_fluent_bit_service(target, 'stop')
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data=result)
+
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel_pending(self, request: Request, id=None) -> Response:
+        """取消最新的 Fluent Bit 安装/卸载任务，执行器完成后不会覆盖取消状态。"""
+        target = self.get_object()
+        history = MonitorTargetInstallHistory.objects.filter(
+            log_collection_target_id=target.id,
+        ).order_by('-id').first()
+        history_status = str(getattr(history, 'status', '') or '').lower()
+        if history_status not in {
+            MonitorTargetInstallHistory.Status.PENDING,
+            MonitorTargetInstallHistory.Status.RUNNING,
+        }:
+            return Response_error_str('当前任务已结束，无需取消', code=400)
+
+        now = timezone.now()
+        history.status = MonitorTargetInstallHistory.Status.CANCELLED
+        history.summary_message = '任务已取消'
+        history.error_message_snapshot = '任务已由用户取消'
+        history.end_time = now
+        if history.start_time is not None:
+            history.duration_seconds = (now - history.start_time).total_seconds()
+        history.save(update_fields=[
+            'status', 'summary_message', 'error_message_snapshot',
+            'end_time', 'duration_seconds', 'update_time',
+        ])
+        target.install_status = LogCollectionTarget.InstallStatus.FAILED
+        target.install_message = '安装/卸载任务已取消'
+        target.save(update_fields=['install_status', 'install_message', 'update_time'])
+        return Response_200(data=self.get_serializer(target).data)
+
+    def destroy(self, request: Request, *args, **kwargs) -> Response:
+        """已安装目标先卸载，只有卸载成功后才删除纳管记录。"""
+        target = self.get_object()
+        if target.install_status == LogCollectionTarget.InstallStatus.PENDING:
+            return Response_error_str('安装/卸载任务尚未结束，请先等待或取消任务', code=400)
+        if target.agent_installed:
+            try:
+                history = dispatch_fluent_bit_uninstall(target, manual=True)
+            except LogCollectionApplyError as exc:
+                return Response_error_str(str(exc), code=400)
+            if history.status != MonitorTargetInstallHistory.Status.SUCCESS:
+                target.refresh_from_db()
+                return Response_error_str(target.install_message or 'Fluent Bit 卸载失败，目标未删除', code=400)
+        deleted_id = target.id
+        target.delete()
+        return Response_200(data={'id': deleted_id})
+
+    @action(detail=True, methods=['get'], url_path='render-config')
+    def render_config(self, request, id=None):
+        """预览将为该主机生成的 Fluent Bit 片段与配置指纹，不写入主机。"""
+        target = self.get_object()
+        cluster = OpenSearchCluster.objects.filter(enabled=True).order_by('-is_default', 'id').first()
+        if cluster is None:
+            return Response_error_str('尚未配置日志存储集群', code=400)
+        try:
+            fragments = build_host_fragments(target.host, cluster)
+        except ValueError as exc:
+            return Response_error_str(str(exc), code=400)
+        # 指纹一致表示配置无变化，下发时可直接跳过（§8.4）。
+        fragments['up_to_date'] = fragments['fingerprint'] == target.config_fingerprint
+        return Response_200(data=fragments)
+
+    @action(detail=True, methods=['post'], url_path='apply')
+    def apply(self, request, id=None):
+        """实际下发配置到主机并触发热重载（§8.4）。指纹一致时跳过，返回 skipped=true。"""
+        target = self.get_object()
+        try:
+            result = apply_host_log_config(target)
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data=result)
+
+    @action(detail=True, methods=['post'], url_path='check-status')
+    def check_status(self, request, id=None):
+        """查询主机上 fluent-bit 的 systemd 状态并回写 agent_installed/runtime_status。"""
+        target = self.get_object()
+        try:
+            result = refresh_target_status(target)
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data=result)
+
+    @action(detail=True, methods=['get'], url_path='log-tail')
+    def log_tail(self, request, id=None):
+        """读取该主机上指定实例日志的最近 N 行，供解析调试拿真实样例（§5.4 闭环）。"""
+        target = self.get_object()
+        instance_name = str(request.query_params.get('instance_name') or '').strip()
+        log_name = str(request.query_params.get('log_name') or '').strip()
+        if not instance_name or not log_name:
+            return Response_error_str('instance_name 与 log_name 均必填', code=400)
+        try:
+            lines = int(request.query_params.get('lines', 100))
+        except (TypeError, ValueError):
+            return Response_error_str('lines 必须是整数', code=400)
+        try:
+            result = read_instance_log_tail(target, instance_name, log_name, lines=lines)
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data=result)

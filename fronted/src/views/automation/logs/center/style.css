@@ -1,0 +1,131 @@
+.automation-logs-page {
+  padding: 2px;
+}
+
+.block-card {
+  margin-bottom: 12px;
+}
+
+.jobs-card {
+  margin-top: 12px;
+}
+
+.log-cell {
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 12px;
+  color: #444;
+}
+
+.log-toolbar {
+  display: flex;
+  width: 100%;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.log-stream-meta {
+  color: #666;
+  font-size: 12px;
+}
+
+.job-host-list-preview {
+  color: #1677ff;
+  cursor: pointer;
+}
+
+.job-host-list-popover {
+  max-width: 420px;
+  max-height: 260px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.job-host-viewer-search {
+  margin-bottom: 10px;
+}
+
+.job-host-viewer-list {
+  max-width: 100%;
+  max-height: 52vh;
+  padding-right: 4px;
+}
+
+.job-host-viewer-item {
+  padding: 4px 0;
+  border-bottom: 1px solid #f5f5f5;
+  word-break: break-all;
+}
+
+.scope-editor__desc {
+  margin-bottom: 8px;
+  color: #8c8c8c;
+  font-size: 13px;
+}
+
+.scope-viewer__summary {
+  margin-bottom: 8px;
+  color: #262626;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.scope-editor__tree-wrap {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.runtime-template-link {
+  padding-left: 0;
+}
+
+.runtime-template-toolbar {
+  margin-bottom: 16px;
+  display: block;
+}
+
+.runtime-template-content {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f5f5f5;
+  color: #000;
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+.log-viewer-shell {
+  margin-top: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #f5f5f5;
+  height: calc(100vh - 220px);
+  overflow: auto;
+}
+
+.log-viewer-content {
+  margin: 0;
+  padding: 14px;
+  color: #000;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+.log-viewer-content.is-nowrap {
+  white-space: pre;
+  word-break: normal;
+}
+

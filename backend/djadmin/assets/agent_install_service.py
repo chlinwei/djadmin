@@ -107,6 +107,30 @@ def _agent_package_path(name: str) -> Path:
     return package_root / 'bin' / name
 
 
+def _binary_contains_marker(binary: Path, marker: bytes) -> bool:
+    overlap = b''
+    with binary.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            data = overlap + chunk
+            if marker in data:
+                return True
+            overlap = data[-max(len(marker) - 1, 0):]
+    return False
+
+
+def _validate_agent_binary(binary: Path) -> None:
+    """只允许部署当前纯 gRPC Agent，避免旧 RabbitMQ 构建产物覆盖在线服务。"""
+    if not binary.is_file():
+        raise RuntimeError(f'Agent 二进制不存在: {binary}')
+    if _binary_contains_marker(binary, b'connect rabbitmq failed'):
+        raise RuntimeError(
+            'Agent 二进制仍是旧 RabbitMQ 版本，请使用当前源码执行 '
+            '`CGO_ENABLED=0 go build -trimpath -o bin/dj-agent ./cmd/agent` 后重试'
+        )
+    if not _binary_contains_marker(binary, b'DJ_AGENT_GRPC_FILE_ADDR'):
+        raise RuntimeError('Agent 二进制缺少当前 gRPC 配置标记，拒绝部署未知版本')
+
+
 def _agent_grpc_addr_for_host(host: Host, advertised_addr: str) -> tuple[str, bool]:
     endpoint = urlsplit(f'//{advertised_addr}')
     advertised_host = endpoint.hostname
@@ -153,8 +177,7 @@ def run_agent_install_job(job_id: int, host_id: int, credential_id: int, automat
 
         playbook = Path(settings.BASE_DIR) / 'assets' / 'agent_install.yml'
         binary = _agent_package_path('dj-agent')
-        if not binary.is_file():
-            raise RuntimeError(f'Agent 二进制不存在: {binary}')
+        _validate_agent_binary(binary)
         if not playbook.is_file():
             raise RuntimeError(f'Ansible Playbook 不存在: {playbook}')
         if credential.auth_type == Credential.AuthType.PASSWORD and not credential.password:

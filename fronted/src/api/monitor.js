@@ -10,6 +10,10 @@ export function getSoftwarePackages(params) {
   return requestUtil.get(prefix + 'packages/', params)
 }
 
+export function createSoftwarePackage(data) {
+  return requestUtil.post(prefix + 'packages/', data)
+}
+
 export function uploadSoftwarePackageFile(id, formData) {
   return requestUtil.fileUpload(prefix + `packages/${id}/upload/`, formData)
 }
@@ -174,4 +178,96 @@ export function deleteOpenSearchCluster(id) {
 
 export function testOpenSearchCluster(id) {
   return requestUtil.post(prefix + `opensearch-clusters/${id}/test-connection/`, {})
+}
+
+// 日志存储管理面：一键初始化 index template + ISM policy（架构文档 §11 阶段 1）
+export function bootstrapOpenSearchCluster(id) {
+  return requestUtil.post(prefix + `opensearch-clusters/${id}/bootstrap/`, {})
+}
+
+// 解析规则调试：支持未保存定义直接试跑（架构文档 §5.4）
+export function simulateOpenSearchPipeline(id, payload) {
+  return requestUtil.post(prefix + `opensearch-clusters/${id}/pipeline-simulate/`, payload)
+}
+
+export function getOpenSearchPipelineDefault(id) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/pipeline-default/`)
+}
+
+export function getLogProcessingRules(params) {
+  return requestUtil.get(prefix + 'log-processing-rules/', params)
+}
+
+export function saveLogProcessingRule(data) {
+  return data.id
+    ? requestUtil.patch(prefix + `log-processing-rules/${data.id}/`, data)
+    : requestUtil.post(prefix + 'log-processing-rules/', data)
+}
+
+export function deleteLogProcessingRule(id) {
+  return requestUtil.del(prefix + `log-processing-rules/${id}/`)
+}
+
+// 日志洞察（架构文档 §9）：index 必填，hours 默认 1
+export function getLogErrorPatterns(id, index, hours = 1) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-patterns/`, { index, hours })
+}
+
+export function getLogNewErrors(id, index, hours = 1) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/new-errors/`, { index, hours })
+}
+
+export function getLogErrorSpikes(id, index, hours = 1) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-spikes/`, { index, hours })
+}
+
+export function getLogErrorByInstance(id, index, hours = 1) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-by-instance/`, { index, hours })
+}
+
+// 主机级日志采集目标（架构文档 §7/§8）
+export function getLogCollectionTargetList(params) {
+  return requestUtil.get(prefix + 'log-targets/', params)
+}
+
+export function createLogCollectionTarget(data) {
+  return requestUtil.post(prefix + 'log-targets/', data)
+}
+
+export function renderLogCollectionConfig(id) {
+  return requestUtil.get(prefix + `log-targets/${id}/render-config/`)
+}
+
+export function applyLogCollectionConfig(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/apply/`, {})
+}
+
+export function checkLogCollectionStatus(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/check-status/`, {})
+}
+
+export function retryLogCollectionTarget(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/retry/`, {})
+}
+
+export function startLogCollectionService(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/start-service/`, {})
+}
+
+export function stopLogCollectionService(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/stop-service/`, {})
+}
+
+export function cancelLogCollectionTarget(id) {
+  return requestUtil.post(prefix + `log-targets/${id}/cancel/`, {})
+}
+
+export function deleteLogCollectionTarget(id) {
+  return requestUtil.del(prefix + `log-targets/${id}/`)
+}
+
+export function getLogInstanceTail(id, instanceName, logName, lines = 100) {
+  return requestUtil.get(prefix + `log-targets/${id}/log-tail/`, {
+    instance_name: instanceName, log_name: logName, lines,
+  })
 }

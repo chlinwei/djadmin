@@ -2,6 +2,7 @@ from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 import hashlib
+import re
 
 from assets.credential_crypto import encrypt_secret
 
@@ -9,6 +10,8 @@ from .models import (
     AlertHistory,
     AlertMedia,
     AlertRoute,
+    LogCollectionTarget,
+    LogProcessingRule,
     MonitorTarget,
     MonitorTargetInstallHistory,
     OpenSearchCluster,
@@ -16,7 +19,50 @@ from .models import (
 )
 
 
+class LogProcessingRuleSerializer(ModelSerializer):
+    referenced_log_count = serializers.IntegerField(source='log_definitions.count', read_only=True)
+
+    class Meta:
+        model = LogProcessingRule
+        fields = '__all__'
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name):
+            raise serializers.ValidationError('仅支持小写字母、数字、点、下划线和连字符')
+        if self.instance is not None and name != self.instance.name:
+            raise serializers.ValidationError('规则名称发布后不可修改')
+        return name
+
+    def validate_pipeline_body(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('Pipeline 必须是 JSON 对象')
+        if not isinstance(value.get('processors'), list):
+            raise serializers.ValidationError('Pipeline processors 必须是数组')
+        return value
+
+    def validate(self, attrs):
+        multiline_enabled = attrs.get(
+            'multiline_enabled', getattr(self.instance, 'multiline_enabled', False),
+        )
+        start_pattern = str(attrs.get('start_pattern', getattr(self.instance, 'start_pattern', '')) or '').strip()
+        continuation_pattern = str(
+            attrs.get('continuation_pattern', getattr(self.instance, 'continuation_pattern', '')) or ''
+        ).strip()
+        flush_timeout = attrs.get('flush_timeout', getattr(self.instance, 'flush_timeout', 1000))
+        if multiline_enabled and (not start_pattern or not continuation_pattern):
+            raise serializers.ValidationError({'multiline': '启用多行合并时必须填写首行和续行正则'})
+        if any('\n' in value or '\r' in value for value in (start_pattern, continuation_pattern)):
+            raise serializers.ValidationError({'multiline': '多行正则不能包含换行符'})
+        if not 100 <= flush_timeout <= 60000:
+            raise serializers.ValidationError({'flush_timeout': '合并超时必须在 100 到 60000 毫秒之间'})
+        attrs['start_pattern'] = start_pattern if multiline_enabled else ''
+        attrs['continuation_pattern'] = continuation_pattern if multiline_enabled else ''
+        return attrs
+
+
 class MonitorTargetSerializer(ModelSerializer):
+    target_type = serializers.SerializerMethodField()
     host_name = serializers.SerializerMethodField()
     host_ip = serializers.SerializerMethodField()
     host_agent_online = serializers.SerializerMethodField()
@@ -24,6 +70,9 @@ class MonitorTargetSerializer(ModelSerializer):
     class Meta:
         model = MonitorTarget
         fields = '__all__'
+
+    def get_target_type(self, obj):
+        return SoftwarePackage.PackageType.EXPORTER
 
     def get_host_name(self, obj):
         host = getattr(obj, 'host', None)
@@ -60,6 +109,7 @@ class SoftwarePackageSerializer(ModelSerializer):
     class Meta:
         model = SoftwarePackage
         fields = '__all__'
+        validators = []
         # sha256/size 由上传文件自动计算，不接受客户端传入
         # install/uninstall_playbook_template 自 2026-07 起不再由前端直接选择已存在模板 id 写入，
         # 改为通过 install_playbook_content/uninstall_playbook_content（非模型字段，见 to_representation/
@@ -69,13 +119,12 @@ class SoftwarePackageSerializer(ModelSerializer):
             'sha256', 'size_bytes', 'create_time', 'update_time',
             'install_playbook_template', 'uninstall_playbook_template',
         )
-        # 模型层 file 允许为空是为了支持“未同步”占位记录（由 ensure_defaults 直接创建）；
-        # 手动上传/更新接口仍要求必须携带文件，避免通过普通接口创建出空包记录。
+        # 模型层 file 允许为空（blank=True）：支持先创建“未同步”占位记录（与 ensure_defaults
+        # 预置行同一语义），后续经行内上传补全文件，因此这里不再强制 required=True。
         # service_run_as_user 模型层设了 default='dj-agent'，DRF 默认会因此把它推断为非必填
         # （ModelSerializer 对有 default 的字段自动 required=False），这里显式覆盖为必填，
         # 确保前端/接口层都强制要求填写运行用户。
         extra_kwargs = {
-            'file': {'required': True},
             'service_run_as_user': {'required': True, 'allow_blank': False},
         }
 
@@ -110,6 +159,51 @@ class SoftwarePackageSerializer(ModelSerializer):
         if port < 1 or port > 65535:
             raise serializers.ValidationError('default_port must be between 1 and 65535')
         return port
+
+    def validate(self, attrs):
+        package_type = attrs.get('package_type', getattr(self.instance, 'package_type', 'exporter'))
+        name = str(attrs.get('name', getattr(self.instance, 'name', '')) or '').strip().lower()
+        if package_type == SoftwarePackage.PackageType.FLUENT_BIT and name != 'fluent-bit':
+            raise serializers.ValidationError({'name': 'Fluent Bit 类型的软件包名称必须为 fluent-bit'})
+        package_format = attrs.get('package_format', getattr(self.instance, 'package_format', 'tar.gz'))
+        platform_family = attrs.get('platform_family', getattr(self.instance, 'platform_family', 'any'))
+        platform_major = str(
+            attrs.get('platform_major', getattr(self.instance, 'platform_major', '')) or ''
+        ).strip()
+        if package_format == SoftwarePackage.PackageFormat.TAR_GZ:
+            if platform_family != SoftwarePackage.PlatformFamily.ANY or platform_major:
+                raise serializers.ValidationError({
+                    'platform_family': '通用 tar.gz 必须选择“通用 Linux”且主版本留空',
+                })
+        elif package_format == SoftwarePackage.PackageFormat.RPM:
+            if platform_family != SoftwarePackage.PlatformFamily.RHEL or not platform_major:
+                raise serializers.ValidationError({
+                    'platform_family': 'RPM 必须选择 RHEL 平台族并填写主版本（7/8/9）',
+                })
+        elif package_format == SoftwarePackage.PackageFormat.DEB:
+            if platform_family not in {
+                SoftwarePackage.PlatformFamily.UBUNTU,
+                SoftwarePackage.PlatformFamily.DEBIAN,
+            } or not platform_major:
+                raise serializers.ValidationError({
+                    'platform_family': 'DEB 必须选择 Ubuntu/Debian 并填写主版本',
+                })
+        attrs['platform_major'] = platform_major
+        unique_values = {
+            field: attrs.get(field, getattr(self.instance, field, None))
+            for field in ('name', 'version', 'os', 'arch')
+        }
+        duplicate_query = SoftwarePackage.objects.filter(
+            **unique_values,
+            package_type=package_type,
+            platform_family=platform_family,
+            platform_major=platform_major,
+        )
+        if self.instance is not None:
+            duplicate_query = duplicate_query.exclude(pk=self.instance.pk)
+        if duplicate_query.exists():
+            raise serializers.ValidationError('相同版本、系统、架构和平台的安装包已存在')
+        return attrs
 
     @staticmethod
     def _get_template_content(template):
@@ -191,6 +285,8 @@ class MonitorTargetInstallHistorySerializer(ModelSerializer):
     host_name = serializers.SerializerMethodField()
     host_ip = serializers.SerializerMethodField()
     target_exporter_type = serializers.SerializerMethodField()
+    managed_target_id = serializers.SerializerMethodField()
+    target_type = serializers.SerializerMethodField()
 
     class Meta:
         model = MonitorTargetInstallHistory
@@ -213,6 +309,12 @@ class MonitorTargetInstallHistorySerializer(ModelSerializer):
         if target is not None:
             return str(getattr(target, 'exporter_type', '') or '')
         return str(getattr(obj, 'exporter_type_snapshot', '') or '')
+
+    def get_managed_target_id(self, obj):
+        return getattr(obj, 'target_id', None) or getattr(obj, 'log_collection_target_id', None)
+
+    def get_target_type(self, obj):
+        return 'fluent_bit' if getattr(obj, 'log_collection_target_id', None) else 'exporter'
 
 
 class AlertHistorySerializer(ModelSerializer):
@@ -500,3 +602,17 @@ class OpenSearchClusterSerializer(ModelSerializer):
         """默认集群全局唯一，设为默认时清掉其他记录的标记。"""
         if instance.is_default:
             OpenSearchCluster.objects.exclude(pk=instance.pk).filter(is_default=True).update(is_default=False)
+
+
+class LogCollectionTargetSerializer(ModelSerializer):
+    target_type = serializers.SerializerMethodField()
+    host_name = serializers.CharField(source='host.instance_name', read_only=True, default='')
+    host_ip = serializers.CharField(source='host.ip', read_only=True, default='')
+    host_agent_online = serializers.BooleanField(source='host.agent_online', read_only=True, default=False)
+
+    class Meta:
+        model = LogCollectionTarget
+        fields = '__all__'
+
+    def get_target_type(self, obj):
+        return SoftwarePackage.PackageType.FLUENT_BIT

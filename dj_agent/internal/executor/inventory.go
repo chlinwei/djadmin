@@ -17,13 +17,18 @@ import (
 func collectStaticInventory() map[string]any {
 	data := map[string]any{}
 
-	if osType, osVersion := readOSRelease(); osType != "" || osVersion != "" {
-		if osType != "" {
-			data["os_type"] = osType
+	if osRelease := readOSRelease(); len(osRelease) > 0 {
+		if value := osRelease["NAME"]; value != "" {
+			data["os_type"] = value
 		}
-		if osVersion != "" {
-			data["os_version"] = osVersion
+		if value := osRelease["VERSION"]; value != "" {
+			data["os_version"] = value
+		} else if value := osRelease["VERSION_ID"]; value != "" {
+			data["os_version"] = value
 		}
+		data["os_id"] = osRelease["ID"]
+		data["os_id_like"] = osRelease["ID_LIKE"]
+		data["os_version_id"] = osRelease["VERSION_ID"]
 	}
 
 	if kernel := readKernelVersion(); kernel != "" {
@@ -77,11 +82,11 @@ func collectTimezoneInfo() map[string]any {
 	}
 }
 
-// readOSRelease 解析 /etc/os-release，返回发行版名称(NAME)与版本(VERSION 优先，回退 VERSION_ID)。
-func readOSRelease() (osType string, osVersion string) {
+// readOSRelease 解析 /etc/os-release。ID/ID_LIKE/VERSION_ID 用于后端严格匹配离线安装包。
+func readOSRelease() map[string]string {
 	content, err := os.ReadFile("/etc/os-release")
 	if err != nil {
-		return "", ""
+		return nil
 	}
 	values := map[string]string{}
 	for _, line := range strings.Split(string(content), "\n") {
@@ -95,12 +100,7 @@ func readOSRelease() (osType string, osVersion string) {
 		}
 		values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"'`)
 	}
-	osType = values["NAME"]
-	osVersion = values["VERSION"]
-	if osVersion == "" {
-		osVersion = values["VERSION_ID"]
-	}
-	return osType, osVersion
+	return values
 }
 
 // readKernelVersion 读取内核版本（等价于 uname -r）。

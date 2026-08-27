@@ -208,6 +208,13 @@ class ApplicationService(BaseModel):
         CLUSTER = 'cluster', '集群'
         LOAD_BALANCER = 'load_balancer', '负载均衡'
 
+    class LogRetentionTier(models.TextChoices):
+        # 保留档位决定日志写入 logs-<env>-<system>-<tier> 哪个索引，ISM 按索引名后缀自动挂载保留策略，
+        # 档位固定 3 个不随业务扩张，见日志采集架构文档 §4.2。
+        HOT = 'hot', '热（7 天）'
+        STD = 'std', '标准（30 天）'
+        COLD = 'cold', '冷（90 天）'
+
     business_system = models.ForeignKey(
         BusinessSystem,
         on_delete=models.PROTECT,
@@ -259,6 +266,13 @@ class ApplicationService(BaseModel):
     health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
     baseline_pass_rate = models.FloatField(null=True, blank=True)
     last_check_time = models.DateTimeField(null=True, blank=True)
+    # 服务级日志采集开关：与日志定义的 collection_enabled 共同为 ON 时，服务下所有部署实例均采集，
+    # 实例层不设开关（新增实例自动继承），见架构文档 §6。
+    log_collection_enabled = models.BooleanField(default=False, verbose_name='开启日志采集')
+    log_retention_tier = models.CharField(
+        max_length=8, choices=LogRetentionTier.choices, default=LogRetentionTier.STD,
+        verbose_name='日志保留档位',
+    )
 
     class Meta:
         db_table = 'assets_application_service'
@@ -418,7 +432,13 @@ class ApplicationLogDefinition(BaseModel):
     path_pattern = models.CharField(max_length=512)
     encoding = models.CharField(max_length=32, default='utf-8')
     collection_enabled = models.BooleanField(default=False)
-    retention_days = models.PositiveIntegerField(default=30)
+    # 保留期改由逻辑服务的 log_retention_tier 在索引级经 ISM 执行，日志定义级不再配置 retention_days
+    # （定义级配置了也无法执行，保留会造成误导），见架构文档 §7。
+    processing_rule = models.ForeignKey(
+        'monitor.LogProcessingRule', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='log_definitions', verbose_name='日志处理规则',
+    )
+    extra_fields = models.JSONField(default=dict, blank=True, verbose_name='附加标签')
 
     class Meta:
         db_table = 'assets_application_log_definition'
@@ -729,6 +749,10 @@ class HostSystem(BaseModel):
 
     os_type = models.CharField(max_length=64, blank=True, null=True)
     os_version = models.CharField(max_length=128, blank=True, null=True)
+    # 安装包选择必须使用 /etc/os-release 的稳定机器字段，不能从展示名称猜发行版。
+    os_id = models.CharField(max_length=64, blank=True, null=True)
+    os_id_like = models.CharField(max_length=128, blank=True, null=True)
+    os_version_id = models.CharField(max_length=64, blank=True, null=True)
 
     kernel_version = models.CharField(max_length=128, blank=True, null=True)
 

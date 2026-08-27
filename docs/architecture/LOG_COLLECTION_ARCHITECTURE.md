@@ -12,7 +12,8 @@ OpenSearch + Fluent Bit 日志采集与分析能力的设计文档。
 核心能力：
 
 - 在逻辑服务上一键开启/关闭日志收集
-- 解析规则按应用类型维护，一次配置全局生效
+- 一条日志处理规则统一维护 Fluent Bit 发送前处理与 OpenSearch Ingest 字段解析
+- 日志定义只关联一条处理规则，规则可由同格式的应用日志复用
 - 不输入关键词即可看到「出现了哪些错误、各多少次、集中在哪台机器」
 - 自动识别新增错误与突增错误
 
@@ -24,7 +25,7 @@ OpenSearch + Fluent Bit 日志采集与分析能力的设计文档。
 业务主机（每台）                   日志服务器                    djadmin
 ┌──────────────────┐          ┌──────────────────┐        ┌──────────────┐
 │ 应用日志文件      │          │ OpenSearch       │        │ 配置下发      │
-│      ↓           │          │  ├ ingest pipeline│◀──────│ pipeline 管理 │
+│      ↓           │          │  ├ ingest pipeline│◀──────│ 处理规则管理   │
 │ Fluent Bit       │─────────▶│  ├ index template │  REST  │ 聚合查询      │
 │  ├ tail          │  HTTPS   │  └ ISM policy     │        │ 日志洞察页面   │
 │  ├ multiline     │   9200   │                  │        └──────┬───────┘
@@ -62,7 +63,9 @@ Elasticsearch 会直接拒绝连接，返回 `400 Bad Request`。OpenSearch 由 
 | Logstash OSS | 官方插件 | 500 MB+ | 仅适合中转层 |
 | Filebeat 7.12.1 | 版本校验前的最后一版 | 60-100 MB | 不采用 |
 
-Fluent Bit 内置 `Multiline.parser java`，Java 堆栈合并不需要自己写正则。
+多行边界由日志处理规则中的首行正则、续行正则和合并超时定义。平台不提供 Java、Python、
+Go 等语言专用分支；Java 堆栈、普通缩进续行和其他多行格式都使用同一套通用 regex multiline
+机制。
 
 ---
 
@@ -182,18 +185,19 @@ cold 0.1GB/天 × 90 天 =   9 GB
 
 ```
 固定字段（所有日志一致，可聚合）
-  @timestamp, message, log_level, logger, thread
-  error_type, error_template, error_fingerprint, error_stack_trace
-  business_system, project, environment
+  @timestamp, message, log_level, logger_name, thread_name, process_id
+  error_message, error_template, error_fingerprint, stack_trace
+  exception_type, exception_message, root_cause_type, root_cause_message
+  business_system, environment
   service, instance, host_ip
   application, version, log_name
 
 业务特有字段
-  labels.*        flat_object 类型
+  labels_<key>    由日志定义的 extra_fields 注入
 ```
 
-`flat_object` 整体只占 1 个 mapping 字段，不论内部有多少 key。代价是内部字段不能做范围
-查询和聚合，因此**需要聚合或告警的字段必须提升为固定字段**。
+业务附加字段统一增加 `labels_` 前缀，避免与平台固定字段冲突。需要聚合或告警的字段应提升
+为固定字段，并在索引模板中预先定义 mapping，不能让任意业务字段无边界增长。
 
 字段名统一使用下划线，不使用点号，避免 Fluent Bit `record_modifier` 注入时的歧义。
 
@@ -208,19 +212,31 @@ cold 0.1GB/天 × 90 天 =   9 GB
 | multiline 多行合并 | Fluent Bit | 必须在采集时合并，堆栈跨行到后端已无法还原 |
 | 字段提取 | OpenSearch ingest pipeline | 改规则不需要下发配置到主机，也不消耗主机 CPU |
 
-调整解析规则时不需要触碰任何一台业务主机。
+两阶段在技术上分别执行，但在 djadmin 中只管理一条 `LogProcessingRule`：
 
-### 5.2 pipeline 命名
+- **发送前处理（Fluent Bit）**：`input_format`、`multiline_enabled`、`start_pattern`、
+  `continuation_pattern`、`flush_timeout`
+- **字段解析（OpenSearch Ingest）**：`pipeline_body`
+
+修改 Pipeline JSON 后会立即发布同名 OpenSearch Pipeline，不需要下发主机配置。修改日志格式或
+多行参数后，必须重新应用引用该规则的日志采集目标，使 Fluent Bit 片段更新。
+
+### 5.2 统一规则与 Pipeline 生命周期
+
+`LogProcessingRule.name` 同时是 djadmin 规则名称和 OpenSearch Pipeline 名称，仅允许小写字母、
+数字、点、下划线和连字符，发布后不可改名。例如：
 
 ```
-app-<application.code>-<log_name>
-
-app-tomcat-catalina
-app-nginx-access
+springboot-tomcat-exception
+nginx-access
 ```
 
-解析规则跟随**应用类型**，所有 tomcat 实例共用同一个 pipeline，pipeline 数量等于
-应用类型数量，不随实例增长。
+规则创建或更新时，djadmin 先调用 OpenSearch `PUT _ingest/pipeline/<rule.name>`，成功后保存
+规则。删除规则时同步删除同名 Pipeline；仍被日志定义引用的规则禁止删除。平台不再提供独立的
+Pipeline 写入、删除入口，避免数据库规则与 OpenSearch Pipeline 形成两个配置源。
+
+`ApplicationLogDefinition.processing_rule` 是日志定义唯一的规则关联。同格式日志可复用规则，
+Pipeline 数量不会随部署实例增长。
 
 ### 5.3 错误指纹
 
@@ -264,14 +280,17 @@ processor 优先使用 `dissect`，比 `grok` 快 3-5 倍。仅在格式不规�
 
 ### 5.4 解析规则调试
 
-pipeline 支持 `_simulate`，可在保存前验证：
+页面通过 OpenSearch inline Pipeline `_simulate` 在保存前验证当前 JSON，不需要先创建临时
+Pipeline。在线调试支持两种样例格式：
 
-```
-POST /_ingest/pipeline/<name>/_simulate
-```
+- **原始日志**：直接粘贴包含真实换行的完整日志，页面自动包装为 `{ "log": "..." }`，与
+  Fluent Bit `tail` 插件实际产生的字段一致。
+- **文档 JSON**：输入合法 JSON 对象，用于携带额外元数据；JSON 字符串内部的换行必须写为
+  `\n`，不能直接回车。
 
-djadmin 应在日志定义编辑页提供「测试解析」：用户粘贴或从主机读取真实日志样例，
-实时显示解析出的字段。
+Pipeline 若需要兼容页面调试中的 `message` 和真实采集的 `log`，应先使用 `rename` processor
+把 `log` 统一为 `message`，并配置 `ignore_missing`。调试结果直接展示 OpenSearch 返回的完整
+文档，包括解析字段和 `_ingest` 信息。
 
 dj-agent 具备文件读取能力，可实现「读取该实例最近 N 行日志」直接作为样例输入，
 形成闭环。
@@ -310,24 +329,33 @@ ApplicationService
   + log_retention_tier        CharField(choices=[hot/std/cold], default='std')
 
 ApplicationLogDefinition      已存在 path_pattern / encoding / collection_enabled
-  + multiline_parser          CharField    Fluent Bit 内置 parser 名，如 java
-  + ingest_pipeline           CharField    对应 OpenSearch pipeline 名
+  + processing_rule           ForeignKey(LogProcessingRule, PROTECT, nullable)
   + extra_fields              JSONField    附加标签
-  - retention_days            废弃，保留期改由服务的 log_retention_tier 决定
+
+LogProcessingRule
+  cluster                     ForeignKey(OpenSearchCluster)
+  name                        CharField(unique=True)；同时作为 Pipeline 名称
+  description                 CharField
+  input_format                CharField(text/json)
+  multiline_enabled           BooleanField
+  start_pattern               TextField
+  continuation_pattern        TextField
+  flush_timeout               PositiveIntegerField(100-60000 ms)
+  pipeline_body               JSONField；必须包含 processors 数组
 
 LogCollectionTarget           新增，主机级
   host                        OneToOne(Host)
-  agent_installed             BooleanField
-  agent_version               CharField
+  managed_enabled             BooleanField
+  install_status              CharField
   runtime_status              CharField
   config_fingerprint          CharField    已下发配置的 hash
   last_applied_time           DateTimeField
 ```
 
-`ApplicationLogDefinition.retention_days` 应删除或改为只读展示。保留期由索引档位决定，
-日志定义级别配置了也无法执行，保留会造成误导。
+旧的 `ApplicationLogDefinition.multiline_parser`、`ingest_pipeline` 和 `retention_days` 已删除，
+不保留兼容分支。保留期由索引档位决定。
 
-OpenSearch 连接信息（地址、认证、索引前缀）存入 `sys_config`，不硬编码。
+OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日志处理规则明确关联目标集群。
 
 ---
 
@@ -337,8 +365,8 @@ OpenSearch 连接信息（地址、认证、索引前缀）存入 `sys_config`�
 
 ```
 /etc/fluent-bit/fluent-bit.conf       主配置，安装时一次写入
-/etc/fluent-bit/inputs.d/             djadmin 按实例下发
-/etc/fluent-bit/outputs.d/            djadmin 按应用类型下发
+/etc/fluent-bit/inputs.d/             djadmin 按实例的每条日志下发
+/etc/fluent-bit/outputs.d/            djadmin 按应用、逻辑服务和日志名下发
 /var/lib/fluent-bit/                  offset 数据库，必须持久化
 ```
 
@@ -358,23 +386,33 @@ OpenSearch 连接信息（地址、认证、索引前缀）存入 `sys_config`�
 @INCLUDE outputs.d/*.conf
 ```
 
-### 8.2 实例片段
+### 8.2 日志输入片段
 
-文件名 `<application_code>__<instance_name>.conf`：
+每个实例的每条日志独立生成片段，文件名为
+`<application>__<service>__<instance>__<log_name>.conf`。多行规则直接渲染为通用
+`MULTILINE_PARSER`：
 
 ```ini
+[MULTILINE_PARSER]
+    Name          multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina
+    Type          regex
+    Flush_Timeout 2000
+    Rule          "start_state" "/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+/" "continuation"
+    Rule          "continuation" "/^(?!\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+)/" "continuation"
+
 [INPUT]
     Name              tail
     Path              /home/esb/tomcat/apache-tomcat-9.0.35/logs/catalina.out
-    Tag               tomcat.kul-tib-tomcat1
-    DB                /var/lib/fluent-bit/tomcat__kul-tib-tomcat1.db
-    Multiline.parser  java
+    Tag               tomcat.tomcat-svc.kul-tib-tomcat1.catalina
+    DB                /var/lib/fluent-bit/tomcat__tomcat-svc__kul-tib-tomcat1__catalina.db
+    Multiline.parser  multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina
+    Encoding          utf-8
     Refresh_Interval  10
     Skip_Long_Lines   On
 
 [FILTER]
     Name    record_modifier
-    Match   tomcat.kul-tib-tomcat1
+    Match   tomcat.tomcat-svc.kul-tib-tomcat1.catalina
     Record  business_system tib
     Record  environment     test
     Record  service         tomcat
@@ -387,27 +425,32 @@ OpenSearch 连接信息（地址、认证、索引前缀）存入 `sys_config`�
 
 日志路径由 `${APP_HOME}` 等变量展开得到，与部署模板保持一致。
 
+规则的 `input_format=json` 时额外生成 `Parser json`；文本格式不指定 Parser。未启用多行时不生成
+`MULTILINE_PARSER` 和 `Multiline.parser`。
+
 ### 8.3 输出片段
 
-Fluent Bit 的 `Pipeline` 参数不支持按记录动态取值，因此**按应用类型分组生成 OUTPUT**，
-用 tag 前缀匹配。tag 命名规则 `<application_code>.<instance_name>` 即为此设计。
+Fluent Bit 的 `Pipeline` 参数不支持按记录动态取值，因此按**应用 + 逻辑服务 + 日志名**生成
+OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固定为
+`<application>.<service>.<instance>.<log_name>`，避免不同服务、实例或日志交叉路由。
 
 ```ini
 [OUTPUT]
     Name                opensearch
-    Match               tomcat.*
+    Match               tomcat.tomcat-svc.*.catalina
     Host                ${OS_HOST}
     Port                ${OS_PORT}
     HTTP_User           ${OS_USER}
     HTTP_Passwd         ${OS_PASSWORD}
     tls                 On
     Index               logs-test-tib
-    Pipeline            app-tomcat-catalina
+    Pipeline            springboot-tomcat-exception
     Suppress_Type_Name  On
     Retry_Limit         5
 ```
 
-一台主机上的应用类型数量有限，OUTPUT 数量可控。
+输出片段文件名为 `<application>__<service>__<log_name>.conf`。日志定义未关联处理规则时不生成
+`Pipeline` 指令，日志仍可按原文写入 OpenSearch。
 
 凭据通过 systemd `Environment=` 注入，不写入配置文件。
 
@@ -417,6 +460,7 @@ Fluent Bit 的 `Pipeline` 参数不支持按记录动态取值，因此**按应�
 开启逻辑服务的日志采集
   → 检查目标主机 Fluent Bit 安装状态，未安装则走软件包安装流程
   → 汇总该主机上所有启用的实例，生成各自的 inputs.d 片段
+  → 从日志定义关联的 processing_rule 渲染格式、多行参数和 Pipeline 名称
   → 校验同主机内日志路径不重复
   → 计算配置指纹，与 LogCollectionTarget.config_fingerprint 比对，一致则跳过
   → 经 dj-agent 写入配置文件
@@ -538,19 +582,20 @@ fingerprint 归一化质量。
 
 ---
 
-## 11. 实施顺序
+## 11. 实施状态
 
-| 阶段 | 内容 | 说明 |
-|---|---|---|
-| 1 | OpenSearch 部署、index template、ISM policy | 基础设施 |
-| 2 | OpenSearch 客户端封装、pipeline 管理、`_simulate` 测试接口与页面 | **优先级最高**，后续能力均依赖 |
-| 3 | 数据模型改动与迁移 | 见第 7 节 |
-| 4 | Fluent Bit 纳入软件包仓库，安装状态检查 | 复用 monitor |
-| 5 | 单实例配置下发链路打通 | 含指纹比对与热重载 |
-| 6 | 服务级开关、批量下发、清理逻辑 | |
-| 7 | 日志洞察页面与告警接入 | |
+| 阶段 | 内容 | 状态 | 说明 |
+|---|---|---|---|
+| 1 | OpenSearch 连接、index template、ISM policy | 已完成 | 支持集群连接测试和幂等 bootstrap |
+| 2 | 统一日志处理规则、Pipeline 发布、`_simulate` 调试 | 已完成 | 页面明确区分发送前处理与 Ingest，仍只保存一条规则 |
+| 3 | 数据模型与迁移 | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键 |
+| 4 | Fluent Bit 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
+| 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离 |
+| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行 |
+| 7 | 日志洞察页面与告警接入 | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善 |
 
-阶段 2 先于其余功能，因为解析规则的调试能力决定整套方案的可用性。
+解析规则调试仍是后续扩展的回归基线：新增日志格式必须先用真实样例通过 `_simulate`，再关联
+日志定义并应用 Fluent Bit 配置。
 
 ---
 
@@ -560,7 +605,7 @@ fingerprint 归一化质量。
 |---|---|
 | 日志读取权限 | 应用日志属于 `esb` 等业务用户，Fluent Bit 需以 root 运行或配置 ACL。安装检查时应一并验证可读性，避免配置下发成功但无数据 |
 | 同主机路径冲突 | 同一主机上多个实例日志文件名可能相同，下发前必须校验展开后的绝对路径唯一，否则 Fluent Bit 会产生 harvester 冲突 |
-| mapping 字段膨胀 | 业务特有字段必须进 `labels` flat_object，并设置 `total_fields.limit` |
+| mapping 字段膨胀 | 业务附加字段统一使用 `labels_` 前缀；需聚合的字段提升为固定字段，并设置 `total_fields.limit` |
 | 时间戳 | 必须在 pipeline 中用 `date` processor 覆盖 `@timestamp`，否则记录的是采集时间而非日志产生时间 |
 | 容器化采集器 | 若 Fluent Bit 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内 |
 | 磁盘水位 | OpenSearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ISM 自动清理 |

@@ -1,3 +1,5 @@
+from pathlib import PurePath
+
 from django.core.files.storage import FileSystemStorage
 from django.db import models
 
@@ -15,10 +17,18 @@ class OverwriteStorage(FileSystemStorage):
 
 
 def software_package_upload_to(instance, filename):
-	# 使用 node_exporter 官方 tarball 命名规则，确保 agent 端拼出的下载 URL 能命中 media 文件
-	safe_name = str(instance.name or 'package').strip()
-	safe_version = str(instance.version or '0').strip().lstrip('v')
-	return f'monitor_packages/{safe_name}-{safe_version}.{instance.os}-{instance.arch}.tar.gz'
+	# 包记录已经明确平台与架构；文件名只作为文件名保存，不再承担元数据解析职责。
+	package_dir = (
+		'fluentBit'
+		if instance.package_type == 'fluent_bit'
+		else PurePath(str(instance.name or 'package')).name
+	)
+	platform_dir = (
+		f'{instance.platform_family}{instance.platform_major}'
+		if instance.platform_family != 'any'
+		else str(instance.os or 'linux')
+	)
+	return f'monitor_packages/{package_dir}/{instance.arch}/{platform_dir}/{PurePath(filename).name}'
 
 
 # node_exporter 默认预置版本：与 dj_agent 内置安装脚本的 defaultNodeExporterVersion 保持一致，
@@ -108,7 +118,14 @@ class MonitorTargetInstallHistory(BaseModel):
 		FAILED = 'failed', 'Failed'
 		CANCELLED = 'cancelled', 'Cancelled'
 
-	target = models.ForeignKey('monitor.MonitorTarget', on_delete=models.CASCADE, related_name='install_histories')
+	target = models.ForeignKey(
+		'monitor.MonitorTarget', on_delete=models.CASCADE, related_name='install_histories',
+		null=True, blank=True,
+	)
+	log_collection_target = models.ForeignKey(
+		'monitor.LogCollectionTarget', on_delete=models.CASCADE,
+		related_name='install_histories', null=True, blank=True,
+	)
 	host = models.ForeignKey('assets.Host', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
 	action = models.CharField(max_length=16, choices=Action.choices)
@@ -294,7 +311,11 @@ class UserAlertMediaBinding(BaseModel):
 
 
 class SoftwarePackage(BaseModel):
-	"""本地软件仓库：托管待下发到 agent 的二进制包（当前用于 node_exporter），文件落 media/monitor_packages/。"""
+	"""本地软件仓库：托管待下发到离线主机的安装包，文件落 media/monitor_packages/。"""
+
+	class PackageType(models.TextChoices):
+		EXPORTER = 'exporter', 'Exporter'
+		FLUENT_BIT = 'fluent_bit', 'Fluent Bit'
 
 	class OSType(models.TextChoices):
 		LINUX = 'linux', 'Linux'
@@ -303,12 +324,39 @@ class SoftwarePackage(BaseModel):
 		AMD64 = 'amd64', 'x86_64/amd64'
 		ARM64 = 'arm64', 'aarch64/arm64'
 
+	class PlatformFamily(models.TextChoices):
+		ANY = 'any', '通用 Linux'
+		RHEL = 'rhel', 'RHEL/CentOS/Rocky/AlmaLinux'
+		UBUNTU = 'ubuntu', 'Ubuntu'
+		DEBIAN = 'debian', 'Debian'
+
+	class PackageFormat(models.TextChoices):
+		TAR_GZ = 'tar.gz', 'tar.gz'
+		RPM = 'rpm', 'RPM'
+		DEB = 'deb', 'DEB'
+
+	package_type = models.CharField(
+		max_length=16, choices=PackageType.choices, default=PackageType.EXPORTER,
+		verbose_name='软件包类型',
+	)
 	name = models.CharField(max_length=64, default='node_exporter')
 	version = models.CharField(max_length=32)
 	# 软件包级默认抓取端口：主机编辑页新增该监控项时默认带入，可按主机覆盖。
 	default_port = models.PositiveIntegerField(default=9100)
 	os = models.CharField(max_length=16, choices=OSType.choices, default=OSType.LINUX)
 	arch = models.CharField(max_length=16, choices=ArchType.choices, default=ArchType.AMD64)
+	platform_family = models.CharField(
+		max_length=16, choices=PlatformFamily.choices, default=PlatformFamily.ANY,
+		verbose_name='适用平台族',
+	)
+	platform_major = models.CharField(
+		max_length=16, blank=True, default='', verbose_name='适用平台主版本',
+		help_text='rpm/deb 必填，例如 RHEL 7/8/9 或 Ubuntu 20/22/24；通用 tar.gz 留空',
+	)
+	package_format = models.CharField(
+		max_length=16, choices=PackageFormat.choices, default=PackageFormat.TAR_GZ,
+		verbose_name='包格式',
+	)
 	# blank=True：允许先预置“未同步”占位记录（无文件），后续通过上传或自动更新补全
 	file = models.FileField(upload_to=software_package_upload_to, storage=OverwriteStorage(), max_length=255, blank=True, default='')
 	sha256 = models.CharField(max_length=64, blank=True, default='')
@@ -355,7 +403,9 @@ class SoftwarePackage(BaseModel):
 	class Meta:
 		db_table = 'monitor_software_package'
 		ordering = ['-id']
-		unique_together = ('name', 'version', 'os', 'arch')
+		unique_together = (
+			'package_type', 'name', 'version', 'os', 'arch', 'platform_family', 'platform_major',
+		)
 
 	def __str__(self):
 		return f'{self.name}-{self.version}.{self.os}-{self.arch}'
@@ -403,3 +453,75 @@ class OpenSearchCluster(BaseModel):
     @property
     def host_list(self):
         return [item.strip() for item in str(self.hosts or '').split(',') if item.strip()]
+
+
+class LogProcessingRule(BaseModel):
+	"""一条用户规则同时描述 Fluent Bit 前处理与 OpenSearch 字段解析。"""
+
+	class InputFormat(models.TextChoices):
+		TEXT = 'text', '文本'
+		JSON = 'json', 'JSON'
+
+	cluster = models.ForeignKey(
+		OpenSearchCluster, on_delete=models.CASCADE, related_name='log_processing_rules',
+		verbose_name='OpenSearch 集群',
+	)
+	name = models.CharField(max_length=128, unique=True, verbose_name='规则名称')
+	description = models.CharField(max_length=500, blank=True, default='', verbose_name='说明')
+	input_format = models.CharField(
+		max_length=16, choices=InputFormat.choices, default=InputFormat.TEXT, verbose_name='日志格式',
+	)
+	multiline_enabled = models.BooleanField(default=False, verbose_name='启用多行合并')
+	start_pattern = models.TextField(blank=True, default='', verbose_name='首行正则')
+	continuation_pattern = models.TextField(blank=True, default='', verbose_name='续行正则')
+	flush_timeout = models.PositiveIntegerField(default=1000, verbose_name='合并超时（毫秒）')
+	pipeline_body = models.JSONField(default=dict, verbose_name='OpenSearch Pipeline')
+
+	class Meta:
+		db_table = 'monitor_log_processing_rule'
+		ordering = ['name']
+		verbose_name = '日志处理规则'
+
+	def __str__(self):
+		return self.name
+
+
+class LogCollectionTarget(BaseModel):
+	"""主机级日志采集状态：记录 Fluent Bit 安装、运行与配置下发状态。"""
+
+	class RuntimeStatus(models.TextChoices):
+		UNKNOWN = 'unknown', '未知'
+		RUNNING = 'running', '运行中'
+		STOPPED = 'stopped', '已停止'
+		ERROR = 'error', '异常'
+
+	class InstallStatus(models.TextChoices):
+		UNKNOWN = 'unknown', '未知'
+		PENDING = 'pending', '执行中'
+		SUCCESS = 'success', '成功'
+		FAILED = 'failed', '失败'
+
+	host = models.OneToOneField('assets.Host', on_delete=models.CASCADE, related_name='log_collection_target')
+	managed_enabled = models.BooleanField(default=True, verbose_name='纳管启用')
+	install_status = models.CharField(
+		max_length=16, choices=InstallStatus.choices, default=InstallStatus.UNKNOWN, verbose_name='安装状态',
+	)
+	install_message = models.TextField(blank=True, default='', verbose_name='安装信息')
+	retry_count = models.PositiveIntegerField(default=0)
+	last_dispatch_manual = models.BooleanField(default=False)
+	agent_installed = models.BooleanField(default=False, verbose_name='Fluent Bit 已安装')
+	agent_version = models.CharField(max_length=64, blank=True, default='', verbose_name='Fluent Bit 版本')
+	runtime_status = models.CharField(
+		max_length=16, choices=RuntimeStatus.choices, default=RuntimeStatus.UNKNOWN, verbose_name='运行状态',
+	)
+	config_fingerprint = models.CharField(max_length=64, blank=True, default='', verbose_name='已下发配置指纹')
+	last_applied_time = models.DateTimeField(null=True, blank=True, verbose_name='最近下发时间')
+	last_error = models.TextField(blank=True, default='', verbose_name='最近错误')
+
+	class Meta:
+		db_table = 'monitor_log_collection_target'
+		ordering = ['-id']
+		verbose_name = '日志采集目标'
+
+	def __str__(self):
+		return f'log-collection:{getattr(self, "host_id", None)}'

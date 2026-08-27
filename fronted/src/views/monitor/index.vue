@@ -50,13 +50,23 @@
             :data-source="promTargets"
             :loading="loading"
             size="small"
-            :scroll="{ x: 1200 }"
+            :scroll="{ x: 1700 }"
             :pagination="{ pageSize: 10, showSizeChanger: true }"
           />
         </a-tab-pane>
 
         <a-tab-pane key="managed-targets" tab="纳管目标">
+          <div class="managed-target-toolbar">
+            <a-segmented v-model:value="managedTargetType" :options="managedTargetTypeOptions" />
+            <a-tooltip v-if="managedTargetType === 'fluent_bit'" title="新增">
+              <a-button size="large" @click="openFluentBitTargetModal">
+                <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                <span>&nbsp;新增 Fluent Bit 目标</span>
+              </a-button>
+            </a-tooltip>
+          </div>
           <a-table
+            v-if="managedTargetType === 'exporter'"
             rowKey="id"
             :columns="managedColumns"
             :data-source="managedTargets"
@@ -190,21 +200,180 @@
               </template>
             </template>
           </a-table>
+          <a-table
+            v-else
+            rowKey="id"
+            :columns="fluentBitTargetColumns"
+            :data-source="fluentBitTargets"
+            :loading="fluentBitTargetsLoading"
+            size="small"
+            :scroll="{ x: 1900 }"
+            :pagination="fluentBitPagination"
+            @change="handleFluentBitTableChange"
+          >
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'agent_installed'">
+                <a-tag :color="record.agent_installed ? 'green' : 'default'">
+                  {{ record.agent_installed ? '已安装' : '未安装' }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'runtime_status'">
+                <a-tag :color="fluentBitRuntimeColor(record.runtime_status)">
+                  {{ fluentBitRuntimeText(record.runtime_status) }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'config_fingerprint'">
+                <a-typography-text
+                  :copyable="Boolean(record.config_fingerprint)"
+                  :content="record.config_fingerprint || '-'"
+                  ellipsis
+                />
+              </template>
+              <template v-else-if="column.key === 'last_applied_time'">
+                {{ formatManagedTargetTime(record.last_applied_time) }}
+              </template>
+              <template v-else-if="column.key === 'last_error'">
+                <a-tooltip v-if="record.last_error" :title="record.last_error" placement="top">
+                  <a-typography-text type="danger" :content="record.last_error" ellipsis />
+                </a-tooltip>
+                <span v-else>-</span>
+              </template>
+              <template v-else-if="column.key === 'action'">
+                <a-space>
+                  <a-tooltip :title="record.host_agent_online ? '重新安装' : 'dj-agent 离线，操作不可用'" placement="top">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="!record.host_agent_online"
+                      :loading="fluentBitRetryLoading[record.id]"
+                      @click="openFluentBitRetryConfirm(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                      重新安装
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="查看日志" placement="top">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="fluentBitRetryLoading[record.id]"
+                      @click="openFluentBitJobLog(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="record.agent_installed ? '运行' : 'Fluent Bit 尚未安装，无法启动'" placement="top">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="!record.host_agent_online || !record.agent_installed"
+                      :loading="fluentBitStartLoading[record.id]"
+                      @click="handleStartFluentBitService(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'play']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="record.agent_installed ? '停止服务' : 'Fluent Bit 尚未安装，无法停止'" placement="top">
+                    <a-button
+                      danger
+                      ghost
+                      size="small"
+                      :disabled="!record.host_agent_online || !record.agent_installed"
+                      :loading="fluentBitStopLoading[record.id]"
+                      @click="handleStopFluentBitService(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'stop']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="canCancelFluentBitTarget(record) ? '取消' : '当前任务已结束，无需取消'" placement="top">
+                    <a-button
+                      danger
+                      ghost
+                      size="small"
+                      :disabled="!canCancelFluentBitTarget(record)"
+                      :loading="fluentBitCancelLoading[record.id]"
+                      @click="handleCancelFluentBitTarget(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'ban']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="record.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="top">
+                    <a-button
+                      class="delBtn"
+                      danger
+                      type="primary"
+                      size="small"
+                      :disabled="record.install_status === 'pending' || (!record.host_agent_online && record.agent_installed)"
+                      :loading="fluentBitDeleteLoading[record.id]"
+                      @click="openFluentBitDeleteConfirm(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="record.host_agent_online ? '查看状态图' : 'dj-agent 离线，操作不可用'" placement="top">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="!record.host_agent_online"
+                      :loading="fluentBitStatusLoading[record.id]"
+                      @click="handleCheckFluentBitStatus(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="fluentBitApplyTooltip(record)" placement="top">
+                    <a-button
+                      type="primary"
+                      ghost
+                      size="small"
+                      :disabled="!canApplyFluentBitConfig(record)"
+                      :loading="fluentBitApplyLoading[record.id]"
+                      @click="handleApplyFluentBitConfig(record)"
+                    >
+                      <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
+                    </a-button>
+                  </a-tooltip>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
         </a-tab-pane>
 
         <a-tab-pane key="packages" tab="软件仓库">
+          <div class="package-toolbar">
+            <a-segmented
+              v-model:value="packageTypeFilter"
+              :options="packageTypeOptions"
+              @change="handlePackageTypeFilterChange"
+            />
+            <a-tooltip :title="packageCreateButtonText">
+              <a-button size="large" @click="openPackageCreateModal">
+                <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                <span>&nbsp;{{ packageCreateButtonText }}</span>
+              </a-button>
+            </a-tooltip>
+          </div>
           <a-table
             rowKey="id"
             :columns="packageColumns"
             :data-source="packages"
             :loading="packagesLoading"
             size="small"
-            :scroll="{ x: 1200 }"
+            :scroll="{ x: 1800 }"
             :pagination="packagePagination"
             @change="handlePackageTableChange"
           >
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'enabled'">
+              <template v-if="column.key === 'package_type'">
+                <a-tag :color="record.package_type === 'fluent_bit' ? 'cyan' : 'blue'">
+                  {{ record.package_type === 'fluent_bit' ? 'Fluent Bit' : 'Exporter' }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'enabled'">
                 <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '禁用' }}</a-tag>
               </template>
               <template v-else-if="column.key === 'size_bytes'">
@@ -222,7 +391,7 @@
                   </a-tooltip>
                   <a-tooltip title="上传">
                     <a-upload
-                      accept=".tar.gz,.tgz"
+                      accept=".tar.gz,.rpm,.deb"
                       :show-upload-list="false"
                       :before-upload="(file) => beforePackageUpload(file, record)"
                       :custom-request="(options) => handlePackageUpload(options, record)"
@@ -232,7 +401,7 @@
                       </a-button>
                     </a-upload>
                   </a-tooltip>
-                  <a-tooltip title="自动更新">
+                  <a-tooltip v-if="record.name === 'node_exporter'" title="自动更新">
                     <a-button type="primary" ghost :loading="packageSyncLoading[record.id]" @click="openSyncOfficialModal(record)">
                       <FontAwesomeIcon :icon="['fas', 'rotate']" />
                     </a-button>
@@ -414,6 +583,82 @@
     </a-modal>
 
     <a-modal
+      :title="packageCreateButtonText"
+      :open="packageCreateModalVisible"
+      :confirm-loading="packageCreateModalSubmitting"
+      ok-text="创建"
+      cancel-text="取消"
+      width="680px"
+      @ok="submitPackageCreate"
+      @cancel="packageCreateModalVisible = false"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="软件包类型" required>
+          <a-segmented
+            v-model:value="packageCreateForm.package_type"
+            :options="packageTypeOptions"
+            @change="handlePackageTypeChange"
+          />
+        </a-form-item>
+        <a-form-item label="软件包名称" required>
+          <a-input
+            v-model:value="packageCreateForm.name"
+            :disabled="packageCreateForm.package_type === 'fluent_bit'"
+            placeholder="如 node_exporter（小写字母/数字/-/_）"
+          />
+          <div class="form-item-hint">{{ packageNameHint }}</div>
+        </a-form-item>
+        <a-form-item label="系统 / 架构" required>
+          <a-space>
+            <a-select v-model:value="packageCreateForm.os" :options="[{ value: 'linux', label: 'Linux' }]" style="width: 160px" :getPopupContainer="getPopupContainer" />
+            <a-select
+              v-model:value="packageCreateForm.arch"
+              :options="[{ value: 'amd64', label: 'x86_64/amd64' }, { value: 'arm64', label: 'aarch64/arm64' }]"
+              style="width: 200px"
+              :getPopupContainer="getPopupContainer"
+            />
+          </a-space>
+        </a-form-item>
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="7">
+            <a-form-item label="包格式" required>
+              <a-select
+                v-model:value="packageCreateForm.package_format"
+                :options="packageFormatOptions"
+                style="width: 100%"
+                :getPopupContainer="getPopupContainer"
+                @change="handlePackageFormatChange"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="10">
+            <a-form-item label="适用平台" required>
+              <a-select
+                v-model:value="packageCreateForm.platform_family"
+                :options="platformFamilyOptions"
+                style="width: 100%"
+                :getPopupContainer="getPopupContainer"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col v-if="packageCreateForm.package_format !== 'tar.gz'" :xs="24" :sm="7">
+            <a-form-item label="主版本" required>
+              <a-input
+                v-model:value="packageCreateForm.platform_major"
+                placeholder="如 7 / 8 / 9 / 22"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <div class="form-item-hint package-platform-hint">RPM 按 RHEL/CentOS 主版本隔离；DEB 按 Ubuntu/Debian 主版本隔离；Host 无需联网</div>
+        <a-form-item label="默认端口">
+          <a-input-number v-model:value="packageCreateForm.default_port" :min="1" :max="65535" :precision="0" style="width: 100%" />
+        </a-form-item>
+        <a-alert type="info" show-icon message="创建后为“未同步”占位记录，请在列表行内点击“上传”补全软件包文件" />
+      </a-form>
+    </a-modal>
+
+    <a-modal
       title="编辑软件包"
       :open="packageEditModalVisible"
       :confirm-loading="packageEditModalSubmitting"
@@ -489,6 +734,38 @@
     </a-modal>
 
     <a-modal
+      title="新增 Fluent Bit 纳管目标"
+      :open="fluentBitTargetModalVisible"
+      :confirm-loading="fluentBitTargetSubmitting"
+      ok-text="创建"
+      cancel-text="取消"
+      width="520px"
+      @ok="submitFluentBitTarget"
+      @cancel="fluentBitTargetModalVisible = false"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="Host" required>
+          <a-select
+            v-model:value="fluentBitTargetHostId"
+            show-search
+            :filter-option="false"
+            :options="fluentBitHostOptions"
+            :loading="fluentBitHostOptionsLoading"
+            placeholder="输入主机名或 IP 搜索"
+            style="width: 100%"
+            :getPopupContainer="getPopupContainer"
+            @search="loadFluentBitHostOptions"
+          />
+        </a-form-item>
+        <a-alert
+          type="info"
+          show-icon
+          message="一台 Host 只能创建一个 Fluent Bit 纳管目标；创建目标不会调用 Exporter Playbook"
+        />
+      </a-form>
+    </a-modal>
+
+    <a-modal
       v-model:open="serviceStatusModalVisible"
       title="服务运行状态"
       :footer="null"
@@ -514,11 +791,18 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
+  applyLogCollectionConfig,
+  cancelLogCollectionTarget,
+  checkLogCollectionStatus,
   checkManagedTargetServiceStatus,
+  createLogCollectionTarget,
+  createSoftwarePackage,
   deleteManagedTarget,
+  deleteLogCollectionTarget,
   deleteSoftwarePackage,
   getPrometheusFlags,
   getManagedTargets,
+  getLogCollectionTargetList,
   getMonitorInstallHistoryList,
   getMonitorSummary,
   getPrometheusConfig,
@@ -527,13 +811,17 @@ import {
   getPrometheusTargets,
   getSoftwarePackages,
   retryManagedTarget,
+  retryLogCollectionTarget,
   cancelManagedTarget,
   startManagedTargetService,
+  startLogCollectionService,
+  stopLogCollectionService,
   stopManagedTargetService,
   syncSoftwarePackageFromOfficial,
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
 } from '@/api/monitor'
+import { getHostList } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
@@ -573,7 +861,26 @@ const promFlagsLoadError = ref('')
 const promFlagsKeyword = ref('')
 
 const promTargets = ref([])
+const managedTargetType = ref('exporter')
+const managedTargetTypeOptions = [
+  { label: 'Exporter', value: 'exporter' },
+  { label: 'Fluent Bit', value: 'fluent_bit' },
+]
 const managedTargets = ref([])
+const fluentBitTargets = ref([])
+const fluentBitTargetsLoading = ref(false)
+const fluentBitStatusLoading = reactive({})
+const fluentBitApplyLoading = reactive({})
+const fluentBitRetryLoading = reactive({})
+const fluentBitStartLoading = reactive({})
+const fluentBitStopLoading = reactive({})
+const fluentBitCancelLoading = reactive({})
+const fluentBitDeleteLoading = reactive({})
+const fluentBitTargetModalVisible = ref(false)
+const fluentBitTargetSubmitting = ref(false)
+const fluentBitTargetHostId = ref(undefined)
+const fluentBitHostOptions = ref([])
+const fluentBitHostOptionsLoading = ref(false)
 const managedRetryLoading = reactive({})
 const managedCancelLoading = reactive({})
 const managedServiceStatusLoading = reactive({})
@@ -588,6 +895,14 @@ const serviceStatusModalRecord = ref(null)
 const serviceStatusModalResult = ref(null)
 
 const managedPagination = reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showSizeChanger: true,
+  showQuickJumper: true,
+  showTotal: (total) => `共有 ${total} 条数据`,
+})
+const fluentBitPagination = reactive({
   current: 1,
   pageSize: 10,
   total: 0,
@@ -630,13 +945,30 @@ const managedColumns = [
   { title: '操作', key: 'action', width: 400, fixed: 'right' },
 ]
 
+const fluentBitTargetColumns = [
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
+  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
+  { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 150 },
+  { title: '安装状态', dataIndex: 'agent_installed', key: 'agent_installed', width: 110 },
+  { title: '版本', dataIndex: 'agent_version', key: 'agent_version', width: 120 },
+  { title: '运行状态', dataIndex: 'runtime_status', key: 'runtime_status', width: 120 },
+  { title: '配置指纹', dataIndex: 'config_fingerprint', key: 'config_fingerprint', width: 240 },
+  { title: '最近下发', dataIndex: 'last_applied_time', key: 'last_applied_time', width: 180 },
+  { title: '最近错误', dataIndex: 'last_error', key: 'last_error', width: 240 },
+  { title: '操作', key: 'action', width: 500, fixed: 'right' },
+]
+
 const packageColumns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
+  { title: '类型', dataIndex: 'package_type', key: 'package_type', width: 110 },
   { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
   { title: '默认端口', dataIndex: 'default_port', key: 'default_port', width: 110 },
   { title: '系统', dataIndex: 'os', key: 'os', width: 100 },
   { title: '架构', dataIndex: 'arch', key: 'arch', width: 100 },
+  { title: '包格式', dataIndex: 'package_format', key: 'package_format', width: 100 },
+  { title: '平台族', dataIndex: 'platform_family', key: 'platform_family', width: 150 },
+  { title: '主版本', dataIndex: 'platform_major', key: 'platform_major', width: 90 },
   { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', width: 110 },
   { title: 'sha256', dataIndex: 'sha256', key: 'sha256', width: 260, ellipsis: true },
   { title: '同步状态', dataIndex: 'synced', key: 'synced', width: 100 },
@@ -647,6 +979,7 @@ const packageColumns = [
 
 const packages = ref([])
 const packagesLoading = ref(false)
+const packageTypeFilter = ref('exporter')
 const packageUploadLoading = reactive({})
 const packageRowLoading = reactive({})
 const packageSyncLoading = reactive({})
@@ -674,6 +1007,130 @@ const packagePagination = reactive({
   showQuickJumper: true,
   showTotal: (total) => `共有 ${total} 条数据`,
 })
+
+// 新增软件包：先建“未同步”占位记录（与后端 ensure_defaults 预置行同一语义），再行内上传补全文件。
+const packageCreateModalVisible = ref(false)
+const packageCreateModalSubmitting = ref(false)
+const packageCreateForm = reactive({
+  package_type: 'exporter',
+  name: '',
+  version: '',
+  os: 'linux',
+  arch: 'amd64',
+  package_format: 'tar.gz',
+  platform_family: 'any',
+  platform_major: '',
+  default_port: 9100,
+})
+
+const packageTypeOptions = [
+  { value: 'exporter', label: 'Exporter' },
+  { value: 'fluent_bit', label: 'Fluent Bit' },
+]
+const packageCreateButtonText = computed(() => (
+  packageTypeFilter.value === 'fluent_bit' ? '新增 Fluent Bit 包' : '新增 Exporter 包'
+))
+const packageNameHint = computed(() => (
+  packageCreateForm.package_type === 'fluent_bit'
+    ? 'Fluent Bit 使用固定包名；请根据目标系统上传对应的 RPM 或 DEB'
+    : '上传文件名需以 Exporter 名称为前缀，如 node_exporter-1.8.2.linux-amd64.tar.gz'
+))
+
+const packageFormatOptions = [
+  { value: 'tar.gz', label: '通用 tar.gz' },
+  { value: 'rpm', label: 'RPM' },
+  { value: 'deb', label: 'DEB' },
+]
+const platformFamilyOptions = computed(() => {
+  if (packageCreateForm.package_format === 'rpm') {
+    return [{ value: 'rhel', label: 'RHEL / CentOS / Rocky / AlmaLinux' }]
+  }
+  if (packageCreateForm.package_format === 'deb') {
+    return [
+      { value: 'ubuntu', label: 'Ubuntu' },
+      { value: 'debian', label: 'Debian' },
+    ]
+  }
+  return [{ value: 'any', label: '通用 Linux' }]
+})
+
+function handlePackageTypeChange(packageType) {
+  if (packageType === 'fluent_bit') {
+    packageCreateForm.name = 'fluent-bit'
+    packageCreateForm.default_port = 2020
+    packageCreateForm.package_format = 'rpm'
+    handlePackageFormatChange('rpm')
+    return
+  }
+  packageCreateForm.name = ''
+  packageCreateForm.default_port = 9100
+  packageCreateForm.package_format = 'tar.gz'
+  handlePackageFormatChange('tar.gz')
+}
+
+function handlePackageTypeFilterChange() {
+  packagePagination.current = 1
+  loadPackages()
+}
+
+function handlePackageFormatChange(packageFormat) {
+  if (packageFormat === 'tar.gz') {
+    packageCreateForm.platform_family = 'any'
+    packageCreateForm.platform_major = ''
+  } else if (packageFormat === 'rpm') {
+    packageCreateForm.platform_family = 'rhel'
+    packageCreateForm.platform_major = '9'
+  } else {
+    packageCreateForm.platform_family = 'ubuntu'
+    packageCreateForm.platform_major = '22'
+  }
+}
+
+function openPackageCreateModal() {
+  packageCreateForm.package_type = packageTypeFilter.value
+  packageCreateForm.version = ''
+  packageCreateForm.os = 'linux'
+  packageCreateForm.arch = 'amd64'
+  handlePackageTypeChange(packageTypeFilter.value)
+  packageCreateModalVisible.value = true
+}
+
+async function submitPackageCreate() {
+  const name = String(packageCreateForm.name || '').trim()
+  if (!name) {
+    message.error('请填写软件包名称（如 fluent-bit）')
+    return
+  }
+  if (packageCreateForm.package_format !== 'tar.gz' && !String(packageCreateForm.platform_major || '').trim()) {
+    message.error('RPM/DEB 必须填写适用平台主版本')
+    return
+  }
+  packageCreateModalSubmitting.value = true
+  try {
+    await createSoftwarePackage({
+      package_type: packageCreateForm.package_type,
+      name,
+      // 占位记录的 version 仅用于满足唯一约束，行内上传时会按文件名自动识别并覆盖
+      version: String(packageCreateForm.version || '').trim() || '0.0.0',
+      os: packageCreateForm.os,
+      arch: packageCreateForm.arch,
+      package_format: packageCreateForm.package_format,
+      platform_family: packageCreateForm.platform_family,
+      platform_major: packageCreateForm.package_format === 'tar.gz'
+        ? ''
+        : String(packageCreateForm.platform_major || '').trim(),
+      default_port: Number(packageCreateForm.default_port || 9100),
+      service_run_as_user: 'dj-agent',
+    })
+    message.success('已创建占位记录，请在行内上传软件包文件')
+    packageCreateModalVisible.value = false
+    await loadPackages()
+  } catch (error) {
+    message.error(resolvePackageErrorMessage(error, '创建失败'))
+  } finally {
+    packageCreateModalSubmitting.value = false
+  }
+}
 
 const tsdbTopColumns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 280 },
@@ -736,17 +1193,42 @@ function resolvePackageErrorMessage(error, fallback) {
   return error?.response?.data?.msg || error?.message || fallback
 }
 
-// 解析 node_exporter 官方 tarball 命名：node_exporter-<version>.<os>-<arch>.tar.gz
-function parsePackageFilename(filename) {
-  const match = /^node_exporter-([^.]+)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$/i.exec(filename || '')
-  if (!match) return null
-  return { version: match[1], os: match[2].toLowerCase(), arch: match[3].toLowerCase() }
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 按当前仓库记录解析官方包名，避免 RPM 的 name/version/release 连字符产生歧义。
+function parsePackageFilename(filename, record) {
+  const value = String(filename || '')
+  const expectedName = String(record?.name || '').toLowerCase()
+  if (record?.package_format === 'deb') {
+    const match = new RegExp(`^${escapeRegex(expectedName)}_([^_]+)_(amd64|arm64)\\.deb$`, 'i').exec(value)
+    return match ? { name: expectedName, version: match[1], os: 'linux', arch: match[2].toLowerCase() } : null
+  }
+  if (record?.package_format === 'rpm') {
+    const match = new RegExp(`^${escapeRegex(expectedName)}-([0-9][A-Za-z0-9.+~_-]*?)-[A-Za-z0-9.+~_-]+\\.(x86_64|aarch64)\\.rpm$`, 'i').exec(value)
+    if (!match) return null
+    return {
+      name: expectedName,
+      version: match[1],
+      os: 'linux',
+      arch: match[2].toLowerCase() === 'x86_64' ? 'amd64' : 'arm64',
+    }
+  }
+  const match = /^([a-z0-9][a-z0-9_-]*)-([A-Za-z0-9][A-Za-z0-9.+-]*)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$/i.exec(value)
+  return match ? {
+    name: match[1].toLowerCase(),
+    version: match[2],
+    os: match[3].toLowerCase(),
+    arch: match[4].toLowerCase(),
+  } : null
 }
 
 async function loadPackages() {
   packagesLoading.value = true
   try {
     const res = await getSoftwarePackages({
+      package_type: packageTypeFilter.value,
       page: packagePagination.current,
       page_size: packagePagination.pageSize,
       ordering: '-id',
@@ -850,16 +1332,20 @@ function handlePackageTableChange(pagination) {
 
 function beforePackageUpload(file, record) {
   const filename = String(file?.name || '')
-  if (!filename.toLowerCase().endsWith('.tar.gz') && !filename.toLowerCase().endsWith('.tgz')) {
-    message.error('仅支持上传 .tar.gz / .tgz 软件包')
+  if (!['.tar.gz', '.rpm', '.deb'].some((suffix) => filename.toLowerCase().endsWith(suffix))) {
+    message.error('仅支持上传 .tar.gz / .rpm / .deb 软件包')
     return false
   }
-  const parsed = parsePackageFilename(filename)
+  const parsed = parsePackageFilename(filename, record)
   if (!parsed) {
-    message.error('文件名需符合 node_exporter-<version>.<os>-<arch>.tar.gz 命名规范')
+    message.error(`文件名与 ${record.package_format} 官方命名或当前记录名称不匹配`)
     return false
   }
-  // 前端提前校验架构匹配，避免无谓上传后被后端拒绝
+  // 前端提前校验名称与架构匹配，避免无谓上传后被后端拒绝
+  if (parsed.name !== String(record.name || '').toLowerCase()) {
+    message.error(`文件名称前缀（${parsed.name}）与当前记录（${record.name}）不一致`)
+    return false
+  }
   if (parsed.os !== record.os || parsed.arch !== record.arch) {
     message.error(`文件架构（${parsed.os}-${parsed.arch}）与当前记录（${record.os}-${record.arch}）不一致`)
     return false
@@ -869,7 +1355,7 @@ function beforePackageUpload(file, record) {
 
 async function handlePackageUpload(options, record) {
   const file = options?.file
-  const parsed = parsePackageFilename(file?.name)
+  const parsed = parsePackageFilename(file?.name, record)
   if (!parsed) {
     options?.onError?.(new Error('invalid filename'))
     return
@@ -1184,6 +1670,243 @@ async function loadManagedTargets() {
   refreshManagedServiceStatuses()
 }
 
+async function loadFluentBitTargets() {
+  fluentBitTargetsLoading.value = true
+  try {
+    const res = await getLogCollectionTargetList({
+      page: fluentBitPagination.current,
+      page_size: fluentBitPagination.pageSize,
+      ordering: '-id',
+    })
+    const data = parseApiData(res)
+    fluentBitTargets.value = Array.isArray(data.results) ? data.results : []
+    fluentBitPagination.total = Number(data.count || 0)
+  } finally {
+    fluentBitTargetsLoading.value = false
+  }
+}
+
+async function loadFluentBitHostOptions(keyword = '') {
+  fluentBitHostOptionsLoading.value = true
+  try {
+    const res = await getHostList({ page: 1, size: 50, search: String(keyword || '').trim() })
+    const data = parseApiData(res)
+    const rows = Array.isArray(data.results) ? data.results : []
+    fluentBitHostOptions.value = rows.map((host) => ({
+      value: host.id,
+      label: `${host.instance_name || `Host-${host.id}`} (${host.ip || '无 IP'})${host.agent_online ? '' : ' - Agent 离线'}`,
+    }))
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Host 列表加载失败')
+  } finally {
+    fluentBitHostOptionsLoading.value = false
+  }
+}
+
+function openFluentBitTargetModal() {
+  fluentBitTargetHostId.value = undefined
+  fluentBitTargetModalVisible.value = true
+  loadFluentBitHostOptions()
+}
+
+async function submitFluentBitTarget() {
+  if (!fluentBitTargetHostId.value) {
+    message.error('请选择 Host')
+    return
+  }
+  fluentBitTargetSubmitting.value = true
+  try {
+    await createLogCollectionTarget({ host: fluentBitTargetHostId.value })
+    message.success('Fluent Bit 纳管目标已创建')
+    fluentBitTargetModalVisible.value = false
+    fluentBitPagination.current = 1
+    await loadFluentBitTargets()
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 纳管目标创建失败')
+  } finally {
+    fluentBitTargetSubmitting.value = false
+  }
+}
+
+function fluentBitRuntimeColor(status) {
+  return ({ running: 'green', stopped: 'default', error: 'red' })[status] || 'default'
+}
+
+function fluentBitRuntimeText(status) {
+  return ({ running: '运行中', stopped: '已停止', error: '异常', unknown: '未知' })[status] || '未知'
+}
+
+function canApplyFluentBitConfig(record) {
+  return Boolean(record?.host_agent_online)
+    && Boolean(record?.agent_installed)
+    && record?.runtime_status === 'running'
+}
+
+function fluentBitApplyTooltip(record) {
+  if (!record?.host_agent_online) return 'dj-agent 离线，操作不可用'
+  if (!record?.agent_installed) return 'Fluent Bit 未安装，请先完成离线安装'
+  if (record?.runtime_status !== 'running') return 'Fluent Bit 未运行，请先启动服务'
+  return '运行'
+}
+
+function formatManagedTargetTime(value) {
+  if (!value) return '-'
+  return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
+}
+
+async function handleCheckFluentBitStatus(record) {
+  fluentBitStatusLoading[record.id] = true
+  try {
+    await checkLogCollectionStatus(record.id)
+    message.success('Fluent Bit 状态已更新')
+    await loadFluentBitTargets()
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 状态检查失败')
+  } finally {
+    fluentBitStatusLoading[record.id] = false
+  }
+}
+
+async function handleApplyFluentBitConfig(record) {
+  fluentBitApplyLoading[record.id] = true
+  try {
+    const result = parseApiData(await applyLogCollectionConfig(record.id))
+    message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Fluent Bit 配置已下发')
+    await loadFluentBitTargets()
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 配置下发失败')
+  } finally {
+    fluentBitApplyLoading[record.id] = false
+  }
+}
+
+async function handleFluentBitRedispatch(record) {
+  fluentBitRetryLoading[record.id] = true
+  try {
+    await retryLogCollectionTarget(record.id)
+    message.success('Fluent Bit 重新安装已完成')
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 重新安装失败')
+  } finally {
+    fluentBitRetryLoading[record.id] = false
+    await loadFluentBitTargets()
+  }
+}
+
+async function openFluentBitRetryConfirm(record) {
+  if (!record?.host_agent_online) return
+  const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
+  await openDeleteConfirm({
+    title: '确认重新安装',
+    okText: '确认',
+    summary: '将从 djadmin 本地仓库选择与目标系统精确匹配的 RPM/DEB 包并重新安装。',
+    items: [`${hostLabel} - Fluent Bit`],
+    onConfirm: () => {
+      void handleFluentBitRedispatch(record)
+    },
+  })
+}
+
+async function openFluentBitJobLog(record) {
+  let latestHistoryId = null
+  try {
+    const historyRes = await getMonitorInstallHistoryList({
+      page: 1,
+      page_size: 1,
+      ordering: '-id',
+      log_collection_target_id: String(record.id),
+    })
+    const historyData = parseApiData(historyRes)
+    const rows = Array.isArray(historyData?.results) ? historyData.results : []
+    const latestId = Number(rows[0]?.id)
+    if (Number.isInteger(latestId) && latestId > 0) latestHistoryId = latestId
+  } catch (_error) {
+    // 历史页仍可按 Fluent Bit 目标 ID 打开，详情查询失败不阻断入口。
+  }
+  const query = {
+    tab: 'monitor_history',
+    log_collection_target_id: String(record.id),
+    keyword: String(record.host_ip || record.host_name || ''),
+  }
+  if (latestHistoryId) query.history_id = String(latestHistoryId)
+  router.push({ path: '/sys/automation/logs', query })
+}
+
+async function handleStartFluentBitService(record) {
+  fluentBitStartLoading[record.id] = true
+  try {
+    const result = parseApiData(await startLogCollectionService(record.id))
+    if (result?.status === 'success' && result?.exit_code === 0) {
+      message.success('Fluent Bit 启动成功')
+    } else {
+      message.error(`Fluent Bit 启动失败：${result?.stderr || result?.error_message || result?.status}`)
+    }
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 启动失败')
+  } finally {
+    fluentBitStartLoading[record.id] = false
+    await loadFluentBitTargets()
+  }
+}
+
+async function handleStopFluentBitService(record) {
+  fluentBitStopLoading[record.id] = true
+  try {
+    const result = parseApiData(await stopLogCollectionService(record.id))
+    if (result?.status === 'success' && result?.exit_code === 0) {
+      message.success('Fluent Bit 停止成功')
+    } else {
+      message.error(`Fluent Bit 停止失败：${result?.stderr || result?.error_message || result?.status}`)
+    }
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 停止失败')
+  } finally {
+    fluentBitStopLoading[record.id] = false
+    await loadFluentBitTargets()
+  }
+}
+
+function canCancelFluentBitTarget(record) {
+  return ['pending', 'running'].includes(String(record?.install_status || '').toLowerCase())
+}
+
+async function handleCancelFluentBitTarget(record) {
+  if (!canCancelFluentBitTarget(record)) return
+  fluentBitCancelLoading[record.id] = true
+  try {
+    await cancelLogCollectionTarget(record.id)
+    message.success('任务已取消')
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
+  } finally {
+    fluentBitCancelLoading[record.id] = false
+    await loadFluentBitTargets()
+  }
+}
+
+function openFluentBitDeleteConfirm(record) {
+  const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
+  openDeleteConfirm({
+    title: '确认删除 Fluent Bit 目标',
+    summary: record.agent_installed
+      ? '删除前会先卸载 Fluent Bit；卸载失败时将保留目标和安装日志。'
+      : '目标删除后，如需继续采集日志必须重新创建并安装。',
+    items: [`${hostLabel} - Fluent Bit`],
+    onConfirm: async () => {
+      fluentBitDeleteLoading[record.id] = true
+      try {
+        await deleteLogCollectionTarget(record.id)
+        message.success('Fluent Bit 目标已删除')
+      } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 目标删除失败')
+      } finally {
+        fluentBitDeleteLoading[record.id] = false
+        await loadFluentBitTargets()
+      }
+    },
+  })
+}
+
 function resolveManagedScrapeStatus(record) {
   const hostIp = String(record?.host_ip || '').trim()
   const scrapePort = Number(record?.scrape_port || 0)
@@ -1240,7 +1963,7 @@ async function loadAllData() {
     promFlagsRows.value = flagsPayload.rows
     promFlagsLoadError.value = flagsPayload.error
 
-    await loadManagedTargets()
+    await Promise.all([loadManagedTargets(), loadFluentBitTargets()])
     if (overview.total <= 0 && summaryPayload.total > 0) {
       overview.total = summaryPayload.total
       overview.up = summaryPayload.scrapeUp
@@ -1279,6 +2002,12 @@ function handleManagedTableChange(pagination) {
   managedPagination.current = Number(pagination?.current || 1)
   managedPagination.pageSize = Number(pagination?.pageSize || 10)
   loadManagedTargets()
+}
+
+function handleFluentBitTableChange(pagination) {
+  fluentBitPagination.current = Number(pagination?.current || 1)
+  fluentBitPagination.pageSize = Number(pagination?.pageSize || 10)
+  loadFluentBitTargets()
 }
 
 // 重新下发：统一入口，无论当前 install_status 是什么（success/failed/pending）都可以点。
@@ -1502,6 +2231,29 @@ onBeforeUnmount(() => {
 
 .tools {
   margin-bottom: 12px;
+}
+
+.managed-target-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.package-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 576px) {
+  .package-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 .right-actions {

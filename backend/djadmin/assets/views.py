@@ -1705,16 +1705,15 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
         return
 
     from monitor.models import SoftwarePackage
+    from monitor.package_selector import PackageSelectionError, select_software_package
 
-    latest_pkg = SoftwarePackage.objects.filter(
-        name=exporter_name, enabled=True,
-    ).order_by('-create_time').first()
-    if latest_pkg is None:
-        monitor_target.install_status = monitor_target.InstallStatus.FAILED
-        monitor_target.install_message = (
-            f'本地软件仓库缺少 {exporter_name} 的启用安装包，无法下发安装任务'
-            '（backend 将通过 SSH 传输安装包，请先在监控软件仓库上传/启用对应包）'
+    try:
+        latest_pkg = select_software_package(
+            host, exporter_name, SoftwarePackage.PackageType.EXPORTER,
         )
+    except PackageSelectionError as exc:
+        monitor_target.install_status = monitor_target.InstallStatus.FAILED
+        monitor_target.install_message = str(exc)
         monitor_target.save(update_fields=['install_status', 'install_message', 'update_time'])
         return
 
@@ -1771,6 +1770,7 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
 
     checksums = {}
     for pkg in SoftwarePackage.objects.filter(
+        package_type=SoftwarePackage.PackageType.EXPORTER,
         name=exporter_name, version=latest_pkg.version, enabled=True,
     ):
         if pkg.sha256:
@@ -1788,6 +1788,11 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
         'service_run_as_group': latest_pkg.service_run_as_group or 'dj-agent',
         # backend 通过 Ansible copy 将本地仓库文件直接传到目标主机，目标主机不需要访问 backend HTTP。
         'package_local_path': package_local_path,
+        'package_file_name': os.path.basename(package_local_path),
+        'package_format': latest_pkg.package_format,
+        'package_platform_family': latest_pkg.platform_family,
+        'package_platform_major': latest_pkg.platform_major,
+        'package_sha256': latest_pkg.sha256,
         'checksums': checksums,
     }
 
@@ -1842,6 +1847,7 @@ def _dispatch_exporter_service_action_job(host, monitor_target, action, timeout_
     from monitor.models import SoftwarePackage
 
     latest_pkg = SoftwarePackage.objects.filter(
+        package_type=SoftwarePackage.PackageType.EXPORTER,
         name=exporter_name, enabled=True,
     ).order_by('-create_time').first()
     service_unit_name = str(getattr(latest_pkg, 'service_unit_name', '') or '').strip()
@@ -1901,6 +1907,7 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     from monitor.models import SoftwarePackage
 
     latest_pkg = SoftwarePackage.objects.filter(
+        package_type=SoftwarePackage.PackageType.EXPORTER,
         name=exporter_name, enabled=True,
     ).order_by('-create_time').first()
     if latest_pkg is None:
@@ -2303,7 +2310,10 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
         # 同名软件包可能有多条版本记录，这里按 id 倒序取最新一条的默认端口。
         package_map = {}
-        queryset = SoftwarePackage.objects.filter(enabled=True).order_by('-id').values('name', 'default_port')
+        queryset = SoftwarePackage.objects.filter(
+            package_type=SoftwarePackage.PackageType.EXPORTER,
+            enabled=True,
+        ).order_by('-id').values('name', 'default_port')
         for row in queryset:
             name = str(row.get('name') or '').strip()
             if name == '' or name in package_map:

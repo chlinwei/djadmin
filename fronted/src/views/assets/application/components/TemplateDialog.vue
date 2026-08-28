@@ -320,7 +320,12 @@ function validateControlConfig() {
   return ''
 }
 async function saveTemplate() {
-  await formRef.value?.validate()
+  try {
+    await formRef.value?.validate()
+  } catch {
+    // 表单校验失败时 antd 已在字段上标红，不再弹全局提示
+    return
+  }
   const validationMessage = validateControlConfig()
   if (validationMessage) {
     message.error(validationMessage)
@@ -340,6 +345,8 @@ async function saveTemplate() {
     message.success(props.templateId ? '部署模板保存成功' : props.copyFromId ? '部署模板复制成功' : '部署模板新增成功')
     emit('saved', response?.data?.data)
     emit('update:open', false)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '保存部署模板失败')
   } finally {
     saving.value = false
   }

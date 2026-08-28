@@ -178,6 +178,7 @@ from assets.models import (
     ApplicationVersion,
     BusinessEnvironment,
     BusinessSystem,
+    Project,
 )
 
 from .fluent_bit import (
@@ -232,13 +233,17 @@ class LogManagementBuilderTest(TestCase):
     """log_management 纯构建器：索引命名、template、ISM、pipeline 命名（架构文档 §4/§5）。"""
 
     def test_build_index_name(self):
-        self.assertEqual(build_index_name('logs', 'prod', 'tib', 'hot'), 'logs-prod-tib-hot')
+        self.assertEqual(build_index_name('logs', 'kul', 'prod', 'tib', 'hot'), 'logs-kul-prod-tib-hot')
         # 非法字符统一归一为小写安全段，避免生成非法索引名
-        self.assertEqual(build_index_name('Logs', 'Test Env', 'ESB', 'std'), 'logs-test-env-esb-std')
+        self.assertEqual(build_index_name('Logs', 'KUL', 'Test Env', 'ESB', 'std'), 'logs-kul-test-env-esb-std')
 
     def test_build_index_name_rejects_empty_tier(self):
         with self.assertRaises(ValueError):
-            build_index_name('logs', 'prod', 'tib', '')
+            build_index_name('logs', 'kul', 'prod', 'tib', '')
+
+    def test_build_index_name_rejects_empty_project(self):
+        with self.assertRaises(ValueError):
+            build_index_name('logs', '', 'prod', 'tib', 'hot')
 
     def test_build_index_template_body(self):
         body = build_index_template_body('logs')
@@ -345,7 +350,8 @@ class LogCollectionApiTest(TestCase):
 
     def _build_service_graph(self, host):
         application = Application.objects.create(name='Tomcat', code='tomcat')
-        system = BusinessSystem.objects.create(name='TIB', code='tib')
+        project = Project.objects.create(name='KUL', code='kul')
+        system = BusinessSystem.objects.create(name='TIB', code='tib', project=project)
         environment = BusinessEnvironment.objects.create(name='测试', code='test')
         version = ApplicationVersion.objects.create(application=application, version='9.0.35')
         template = ApplicationDeploymentTemplate.objects.create(
@@ -465,8 +471,8 @@ class LogCollectionApiTest(TestCase):
         self.assertIn('Path              /home/esb/tomcat/logs/catalina.out', fragment)
         self.assertIn('Tag               tomcat.tomcat-svc.kul-tib-tomcat1.catalina', fragment)
         self.assertIn('Multiline.parser  multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina', fragment)
-        # 索引名带保留档位后缀，ISM 据此挂载保留策略
-        self.assertIn('logs-test-tib-std', body['data']['outputs']['tomcat__tomcat-svc__catalina.conf'])
+        # 索引名带项目与保留档位后缀，ISM 据此挂载保留策略
+        self.assertIn('logs-kul-test-tib-std', body['data']['outputs']['tomcat__tomcat-svc__catalina.conf'])
         # 指纹未下发过，不应判定为已同步
         self.assertFalse(body['data']['up_to_date'])
 
@@ -924,7 +930,8 @@ class LogCollectionApplyTest(TestCase):
 
     def _build_service_graph(self):
         application = Application.objects.create(name='Tomcat', code='tomcat')
-        system = BusinessSystem.objects.create(name='TIB', code='tib')
+        project = Project.objects.create(name='KUL', code='kul')
+        system = BusinessSystem.objects.create(name='TIB', code='tib', project=project)
         environment = BusinessEnvironment.objects.create(name='测试', code='test')
         version = ApplicationVersion.objects.create(application=application, version='9.0.35')
         template = ApplicationDeploymentTemplate.objects.create(

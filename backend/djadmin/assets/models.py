@@ -52,6 +52,15 @@ class Application(BaseModel):
 class BusinessSystem(BaseModel):
     name = models.CharField(max_length=128, unique=True, verbose_name='业务系统名称')
     code = models.CharField(max_length=64, unique=True, verbose_name='业务系统编码')
+    # 反向名沿用 business_systems，使 Project 侧的查询/序列化写法在 M2M 改 FK 后保持不变。
+    project = models.ForeignKey(
+        'Project',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='business_systems',
+        verbose_name='所属项目',
+    )
     owner = models.CharField(max_length=128, blank=True, default='', verbose_name='负责人')
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
 
@@ -64,18 +73,15 @@ class BusinessSystem(BaseModel):
 
 
 class Project(BaseModel):
-    """长期业务集合，可复用多个业务系统，不参与服务树层级。"""
+    """长期业务集合：一个项目包含多个业务系统，业务系统只属于一个项目（反向关系 business_systems）。
+
+    项目编码会拼进日志 data stream 名，因此必须能由服务唯一推导。
+    """
 
     name = models.CharField(max_length=128, unique=True, verbose_name='项目名称')
     code = models.CharField(max_length=64, unique=True, verbose_name='项目编码')
     owner = models.CharField(max_length=128, blank=True, default='', verbose_name='负责人')
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
-    business_systems = models.ManyToManyField(
-        BusinessSystem,
-        related_name='projects',
-        blank=True,
-        verbose_name='关联业务系统',
-    )
 
     class Meta:
         db_table = 'assets_project'
@@ -499,49 +505,6 @@ def default_tomcat_manager_roles():
         'manager-jmx',
         'manager-status',
     ]
-
-
-class ApplicationBaselineCheck(BaseModel):
-    class DocumentType(models.TextChoices):
-        XML = 'xml', 'XML'
-        JSON = 'json', 'JSON'
-        YAML = 'yaml', 'YAML'
-        INI = 'ini', 'INI'
-        TOML = 'toml', 'TOML'
-        PROPERTIES = 'properties', 'Properties'
-        TEXT = 'text', '普通文本'
-        SHELL = 'shell', 'Shell 命令'
-
-    class SchemaType(models.TextChoices):
-        SCHEMATRON = 'schematron', 'Schematron / XPath'
-        JSON_SCHEMA = 'json_schema', 'JSON Schema'
-        REGEXP = 'regexp', 'Regexp'
-        SHELL = 'shell', 'Shell'
-
-    application = models.ForeignKey(
-        Application,
-        on_delete=models.CASCADE,
-        related_name='baseline_checks',
-    )
-    name = models.CharField(max_length=128, verbose_name='检查项名称')
-    file_path = models.CharField(max_length=512, blank=True, default='', verbose_name='文件路径')
-    document_type = models.CharField(max_length=16, choices=DocumentType.choices, default=DocumentType.XML, verbose_name='文档类型')
-    schema_type = models.CharField(max_length=32, choices=SchemaType.choices, default=SchemaType.SCHEMATRON, verbose_name='Schema 类型')
-    schema_version = models.CharField(max_length=32, default='iso', verbose_name='Schema 版本')
-    schema_content = models.TextField(verbose_name='Schema 内容')
-    script_executor = models.CharField(max_length=100, default='${RUN_USER}', verbose_name='脚本执行者')
-    work_directory = models.CharField(max_length=512, default='${APP_HOME}', verbose_name='运行目录')
-    expected_output = models.TextField(blank=True, default='', verbose_name='期望输出')
-    requires_running = models.BooleanField(default=False, verbose_name='仅应用运行时检查')
-    enabled = models.BooleanField(default=True)
-    order = models.PositiveIntegerField(default=0)
-
-    class Meta:
-        db_table = 'assets_application_baseline_check'
-        ordering = ['order', 'id']
-        constraints = [
-            models.UniqueConstraint(fields=['application', 'name'], name='unique_application_baseline_check_name'),
-        ]
 
 
 class ApplicationBaselineExecution(BaseModel):

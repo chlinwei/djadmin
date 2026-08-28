@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.core.mail import EmailMultiAlternatives, get_connection
-from django.db.models import Max
+from django.db.models import Max, Prefetch
 from django.utils import timezone
 from celery import shared_task
 
@@ -29,7 +29,10 @@ def _resolve_event_media(event):
         'instance': str(alert.instance or ''),
     })
     media_ids = set()
-    routes = AlertRoute.objects.filter(enabled=True).prefetch_related('media')
+    # 在 Prefetch 里就筛掉停用媒介；若改用 route.media.filter() 会绕过预取缓存，每条命中路由多一次查询。
+    routes = AlertRoute.objects.filter(enabled=True).prefetch_related(
+        Prefetch('media', queryset=AlertMedia.objects.filter(enabled=True)),
+    )
     for route in routes:
         if event.event_type == 'firing' and not route.notify_on_firing:
             continue
@@ -37,8 +40,8 @@ def _resolve_event_media(event):
             continue
         matchers = route.matchers if isinstance(route.matchers, dict) else {}
         if all(labels.get(str(key)) == str(value) for key, value in matchers.items()):
-            media_ids.update(route.media.filter(enabled=True).values_list('id', flat=True))
-    return AlertMedia.objects.filter(id__in=media_ids, enabled=True)
+            media_ids.update(media.id for media in route.media.all())
+    return AlertMedia.objects.filter(id__in=media_ids)
 
 
 def _send_email_alert(media, alert, recipients):

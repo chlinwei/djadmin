@@ -102,9 +102,6 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
             ).order_by('instance_name', 'id'))
             if not hosts:
                 return Response_error_str('主机组及其子组中没有主机', code=400)
-            offline = [str(item.instance_name or item.ip or item.pk) for item in hosts if not item.agent_id or not item.agent_online]
-            if offline:
-                return Response_error_str(f'以下主机 Agent 离线: {", ".join(offline)}', code=400)
         else:
             if service is None:
                 return Response_error_str('巡检任务未绑定逻辑服务', code=400)
@@ -113,13 +110,24 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
                 service_links__service=service,
                 service_links__enabled=True,
             ).select_related('host').distinct())
-            if task.group.scope == InspectionGroup.Scope.PER_DEPLOYMENT and not deployments:
+            if not deployments:
                 return Response_error_str('逻辑服务没有启用的部署实例', code=400)
-            offline = [item.instance_name for item in deployments if not item.host.agent_id or not item.host.agent_online]
-            if task.group.scope == InspectionGroup.Scope.PER_DEPLOYMENT and offline:
-                return Response_error_str(f'以下部署实例 Agent 离线: {", ".join(offline)}', code=400)
 
         user = getattr(request, 'user', None)
+        run_time = timezone.now()
+
+        def offline_fields(host):
+            """Agent 离线的目标不下发作业，直接落一条失败记录，避免一台离线拖垮整批巡检。"""
+            if host is not None and host.agent_id and host.agent_online:
+                return {}
+            return {
+                'status': InspectionTargetExecution.Status.FAILED,
+                'passed': False,
+                'error_message': 'Agent 离线，未执行检查',
+                'start_time': run_time,
+                'end_time': run_time,
+            }
+
         deployment_snapshot = [
             {
                 'deployment_id': item.pk,
@@ -127,10 +135,9 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
                 'host_id': item.host_id,
                 'host_ip': str(item.host.ip or ''),
                 'agent_id': str(item.host.agent_id or ''),
+                'agent_online': item.host.agent_online,
             }
             for item in deployments
-        ] if task.group.scope == InspectionGroup.Scope.PER_DEPLOYMENT else [
-            {'target_name': service.name, 'access_address': service.access_address},
         ]
         host_snapshot = [{
             'host_id': item.pk,
@@ -142,7 +149,15 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
         target_context = (
             {'target_type': task.target_type, 'id': host_group.pk, 'name': host_group.name}
             if host_group else
-            {'target_type': task.target_type, 'id': service.pk, 'name': service.name, 'code': service.code, 'access_address': service.access_address}
+            {
+                'target_type': task.target_type,
+                'id': service.pk,
+                'name': service.name,
+                'code': service.code,
+                'topology_type': service.topology_type,
+                'cluster_type': service.cluster_profile.cluster_type if service.cluster_profile else '',
+                'access_address': service.access_address,
+            }
         )
         with transaction.atomic():
             execution = InspectionExecution.objects.create(
@@ -163,6 +178,7 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
                         host_id_snapshot=item.pk,
                         host_ip_snapshot=str(item.ip or ''),
                         agent_id_snapshot=str(item.agent_id or ''),
+                        **offline_fields(item),
                     )
                     for item in hosts
                 ])
@@ -175,6 +191,7 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
                         host_id_snapshot=item.host_id,
                         host_ip_snapshot=str(item.host.ip or ''),
                         agent_id_snapshot=str(item.host.agent_id or ''),
+                        **offline_fields(item.host),
                     )
                     for item in deployments
                 ])

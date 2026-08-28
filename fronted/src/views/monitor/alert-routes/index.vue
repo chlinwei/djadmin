@@ -156,9 +156,16 @@ const rowDeleteLoading = reactive({})
 let matcherSequence = 0
 const routeForm = ref(createDefaultForm())
 
-const mediaOptions = computed(() => mediaList.value
-  .filter((item) => item.enabled && item.media_type === 'email')
-  .map((item) => ({ label: item.name, value: item.id })))
+// 已停用媒介不进候选，但被当前路由引用时必须保留选项，否则 a-select 找不到 option 会把标签渲染成原始 ID
+const mediaOptions = computed(() => {
+  const selectedIds = new Set(routeForm.value.mediaIds || [])
+  return mediaList.value
+    .filter((item) => item.media_type === 'email' && (item.enabled || selectedIds.has(item.id)))
+    .map((item) => ({
+      label: item.enabled ? item.name : `${item.name}（已停用）`,
+      value: item.id,
+    }))
+})
 const mediaNameMap = computed(() => Object.fromEntries(mediaList.value.map((item) => [item.id, item.name])))
 
 function createDefaultForm() {

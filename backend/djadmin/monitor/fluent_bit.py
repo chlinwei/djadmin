@@ -188,7 +188,7 @@ def build_host_fragments(host, cluster):
         .prefetch_related('application_services__deployment_template__logs',
                           'application_services__application',
                           'application_services__application_version',
-                          'application_services__business_system',
+                          'application_services__business_system__project',
                           'application_services__environment')
         .order_by('id')
     )
@@ -201,6 +201,7 @@ def build_host_fragments(host, cluster):
         application_code = service.application.code
         index = build_index_name(
             cluster.index_prefix,
+            service.business_system.project.code if service.business_system.project else '',
             service.environment.code if service.environment else 'unknown',
             service.business_system.code,
             service.log_retention_tier.code if service.log_retention_tier else 'std',

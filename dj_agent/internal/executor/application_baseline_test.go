@@ -3,6 +3,9 @@ package executor
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -135,6 +138,41 @@ func TestCheckApplicationBaseline_ShellUsesExitCode(t *testing.T) {
 	failure := checks[2]
 	if failure.Status != "fail" || failure.Actual.(map[string]any)["exit_code"] != 7 || failure.Actual.(map[string]any)["stderr"] != "denied" {
 		t.Fatalf("non-zero exit code must fail with output: %#v", failure)
+	}
+}
+
+func TestCheckHTTP_BypassesProxyAndValidatesStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
+	result := checkHTTP(context.Background(), map[string]any{
+		"key": "http", "type": "http", "name": "HTTP", "url": server.URL,
+		"expected_status": float64(http.StatusNoContent),
+	})
+
+	if result.Status != "pass" || result.Actual != http.StatusNoContent {
+		t.Fatalf("direct HTTP check must pass: %#v", result)
+	}
+}
+
+func TestCheckTCP_ConnectsToTarget(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create TCP listener: %v", err)
+	}
+	defer listener.Close()
+	address := listener.Addr().(*net.TCPAddr)
+
+	result := checkTCP(context.Background(), map[string]any{
+		"key": "tcp", "type": "tcp", "name": "TCP", "host": "127.0.0.1", "port": float64(address.Port),
+	})
+
+	if result.Status != "pass" || result.Actual != "connected" {
+		t.Fatalf("TCP check must pass: %#v", result)
 	}
 }
 

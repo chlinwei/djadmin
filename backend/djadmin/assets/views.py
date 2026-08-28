@@ -397,7 +397,7 @@ class ApplicationResponseMixin(_ApplicationResponseBase):
 
 
 class ApplicationManage(ApplicationResponseMixin, GenericViewSet,CreateModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):
-    queryset = Application.objects.prefetch_related('versions', 'baseline_checks').annotate(
+    queryset = Application.objects.prefetch_related('versions').annotate(
         version_count=Count('versions', distinct=True),
         deployment_template_count=Count('deployment_templates', distinct=True),
         deployment_count=Count('services__deployments', distinct=True),
@@ -467,14 +467,14 @@ class ApplicationVersionManage(ApplicationAssetManageBase):
 
 
 class BusinessSystemManage(ApplicationAssetManageBase):
-    queryset = BusinessSystem.objects.annotate(
+    queryset = BusinessSystem.objects.select_related('project').annotate(
         deployment_count=Count('services__deployments', distinct=True),
         environment_count=Count('services__environment', distinct=True),
     ).all()
     serializer_class = BusinessSystemSerializer
-    search_fields = ['name', 'code', 'owner', 'remark']
+    search_fields = ['name', 'code', 'owner', 'project__name', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
-    filterset_fields = ['enabled']
+    filterset_fields = ['enabled', 'project']
 
 
 class ProjectManage(ApplicationAssetManageBase):
@@ -863,131 +863,6 @@ def _build_application_baseline_params(deployment):
             'expected_image': compose_config.expected_image,
             'expected_image_tag': compose_config.expected_image_tag,
         }
-    application = deployment_template.application
-    baseline_checks = application.baseline_checks.filter(enabled=True)
-    compiled_checks = []
-    required_capabilities = set()
-    for check in baseline_checks:
-        compiled_check = {
-            'key': f'application:{application.id}:baseline:{check.id}',
-            'type': check.document_type if check.schema_type == ApplicationBaselineCheck.SchemaType.SHELL else f'config_{check.document_type}',
-            'name': check.name,
-            'requires_running': check.requires_running,
-        }
-        if check.schema_type == ApplicationBaselineCheck.SchemaType.SHELL:
-            expected_output = str(check.expected_output or '').replace(
-                '${APPLICATION_VERSION}',
-                deployment.application_version.version,
-            )
-            compiled_check.update({
-                'executor': 'shell',
-                'command': check.schema_content,
-                'run_user': resolve_template_value(check.script_executor),
-                'work_directory': resolve_template_value(check.work_directory),
-                'expected': expected_output,
-                'environment': {
-                    'APP_HOME': app_home,
-                    'RUN_USER': run_user,
-                    'WORK_DIRECTORY': resolve_template_value(check.work_directory),
-                    'APPLICATION_NAME': application.name,
-                    'APPLICATION_CODE': application.code,
-                    'APPLICATION_VERSION': deployment.application_version.version,
-                    'INSTANCE_NAME': deployment.instance_name,
-                },
-            })
-            required_capabilities.add('shell:v1')
-        else:
-            compiled_check.update({
-                'executor': 'schema_validate',
-                'path': resolve_template_value(check.file_path),
-                'document_type': check.document_type,
-                'schema': {
-                'type': check.schema_type,
-                'version': check.schema_version,
-                'content': check.schema_content,
-                },
-            })
-            required_capabilities.add('schema_validate:v1')
-        compiled_checks.append(compiled_check)
-    if compiled_checks:
-        params['check_plan'] = {
-            'schema_version': 1,
-            'required_capabilities': sorted(required_capabilities),
-            'checks': compiled_checks,
-        }
-    return params
-
-
-def _build_application_baseline_debug_params(deployment, check, inline_content=None):
-    """使用真实部署上下文编译单个临时检查，不写入正式基线配置。"""
-    params = _build_application_baseline_params(deployment)
-    deployment_template = deployment.deployment_template
-    application = deployment.application_version.application
-    run_user = str(deployment_template.run_user or '').strip()
-    app_home = resolve_application_variables(
-        deployment_template.app_home,
-        app_home=deployment_template.app_home,
-        run_user=run_user,
-    )
-
-    def resolve_template_value(value):
-        return resolve_application_variables(value, app_home=app_home, run_user=run_user)
-
-    compiled_check = {
-        'key': f'debug:{uuid.uuid4().hex[:16]}',
-        'type': check['document_type'] if check['schema_type'] == ApplicationBaselineCheck.SchemaType.SHELL else f'config_{check["document_type"]}',
-        'name': check['name'],
-        'requires_running': bool(check.get('requires_running')),
-    }
-    if check['schema_type'] == ApplicationBaselineCheck.SchemaType.SHELL:
-        expected_output = str(check.get('expected_output') or '').replace(
-            '${APPLICATION_VERSION}',
-            deployment.application_version.version,
-        )
-        compiled_check.update({
-            'executor': 'shell',
-            'command': check['schema_content'],
-            'run_user': resolve_template_value(check.get('script_executor')),
-            'work_directory': resolve_template_value(check.get('work_directory')),
-            'expected': expected_output,
-            'environment': {
-                'APP_HOME': app_home,
-                'RUN_USER': run_user,
-                'WORK_DIRECTORY': resolve_template_value(check.get('work_directory')),
-                'APPLICATION_NAME': application.name,
-                'APPLICATION_CODE': application.code,
-                'APPLICATION_VERSION': deployment.application_version.version,
-                'INSTANCE_NAME': deployment.instance_name,
-            },
-        })
-        required_capability = 'shell:v1'
-    else:
-        compiled_check.update({
-            'executor': 'schema_validate',
-            'document_type': check['document_type'],
-            'schema': {
-                'type': check['schema_type'],
-                'version': check['schema_version'],
-                'content': check['schema_content'],
-            },
-        })
-        if inline_content is None:
-            compiled_check['path'] = resolve_template_value(check.get('file_path'))
-        else:
-            compiled_check['content'] = inline_content
-        required_capability = 'schema_validate:inline:v1' if inline_content is not None else 'schema_validate:v1'
-
-    # 调试只执行当前草稿；运行状态仍保留，用于 requires_running 前置条件。
-    params.update({
-        'ports': [],
-        'paths': [],
-        'logs': [],
-        'check_plan': {
-            'schema_version': 1,
-            'required_capabilities': [required_capability],
-            'checks': [compiled_check],
-        },
-    })
     return params
 
 
@@ -1111,7 +986,6 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
         **ApplicationAssetManageBase.action_perms_map,
         'control': 'assets:applications:update',
         'check_baseline': 'assets:applications:update',
-        'debug_baseline': 'assets:applications:update',
         'baseline_history': 'assets:applications:view',
     }
 
@@ -1187,84 +1061,6 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
         )
         thread.start()
         return Response_200(data={'execution_id': execution.id, 'job_id': job.job_id, 'status': execution.status})
-
-    @action(detail=True, methods=['post'], url_path='debug-baseline')
-    def debug_baseline(self, request, *args, **kwargs):
-        deployment = self.get_object()
-        agent_id = str(deployment.host.agent_id or '').strip()
-        if agent_id == '':
-            return Response_error_str('部署主机未绑定 Agent 实例，无法调试检查项', code=400)
-
-        raw_check = request.data.get('check')
-        if not isinstance(raw_check, dict):
-            return Response_error_str('check 必须为检查项对象', code=400)
-        has_inline_content = 'content' in request.data
-        inline_content = request.data.get('content') if has_inline_content else None
-        if has_inline_content and not isinstance(inline_content, str):
-            return Response_error_str('调试内容必须为字符串', code=400)
-        if has_inline_content and len(inline_content.encode('utf-8')) > 1024 * 1024:
-            return Response_error_str('调试内容不能超过 1 MiB', code=400)
-        if raw_check.get('schema_type') == ApplicationBaselineCheck.SchemaType.SHELL and has_inline_content:
-            return Response_error_str('Shell 调试不接受文件内容', code=400)
-
-        serializer = ApplicationBaselineCheckSerializer(
-            data=raw_check,
-            context={'allow_inline_content': has_inline_content},
-        )
-        if not serializer.is_valid():
-            return Response_error_str('检查项配置无效', code=400, data=serializer.errors)
-
-        try:
-            params = _build_application_baseline_debug_params(
-                deployment,
-                serializer.validated_data,
-                inline_content=inline_content,
-            )
-        except ApplicationVariableError as exc:
-            return Response_error_str(str(exc), code=400)
-        job = AgentJob.objects.create(
-            job_id=f'app-baseline-debug-{uuid.uuid4().hex[:16]}',
-            agent_id=agent_id,
-            host=deployment.host,
-            job_type='custom',
-            action='check_application_baseline',
-            params=params,
-            timeout_seconds=30,
-            status=AgentJob.JobStatus.QUEUED,
-        )
-        _emit_agent_job_event(job, 'new', {
-            'jid': job.job_id,
-            'tgt': job.agent_id,
-            'tgt_type': 'agent_id',
-            'fun': job.action,
-            'arg': job.params,
-            'minions': [job.agent_id],
-        })
-        completed_job = _dispatch_agent_job_via_grpc(job)
-        if completed_job is None or completed_job.status != AgentJob.JobStatus.SUCCESS:
-            error_message = (
-                getattr(completed_job, 'error_message', '')
-                or getattr(completed_job, 'stderr', '')
-                or '检查项调试失败'
-            )
-            return Response_error_str(str(error_message), code=400)
-        result_data = completed_job.result_data if isinstance(completed_job.result_data, dict) else {}
-        checks = result_data.get('checks') if isinstance(result_data.get('checks'), list) else []
-        debug_result = next(
-            (item for item in checks if isinstance(item, dict) and str(item.get('key') or '').startswith('debug:')),
-            None,
-        )
-        return Response_200(data={
-            'job_id': completed_job.job_id,
-            'deployment_id': deployment.id,
-            'context': {
-                'APPLICATION_VERSION': deployment.application_version.version,
-                'APP_HOME': params.get('app_home', ''),
-                'RUN_USER': params.get('run_user', ''),
-                'INSTANCE_NAME': deployment.instance_name,
-            },
-            'result': debug_result,
-        })
 
     @action(detail=True, methods=['get'], url_path='baseline-history')
     def baseline_history(self, request, *args, **kwargs):

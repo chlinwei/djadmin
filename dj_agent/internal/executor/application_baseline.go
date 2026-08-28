@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -92,9 +94,11 @@ func canceledApplicationBaselineResult(job protocol.Job, started time.Time, err 
 }
 
 var applicationCheckCapabilities = map[string]struct{}{
+	"http:v1":                   {},
 	"schema_validate:v1":        {},
 	"schema_validate:inline:v1": {},
 	"shell:v1":                  {},
+	"tcp:v1":                    {},
 }
 
 func checkApplicationPlanForState(ctx context.Context, params map[string]any, applicationRunning bool) []applicationCheckResult {
@@ -125,15 +129,60 @@ func checkApplicationPlanForState(ctx context.Context, params map[string]any, ap
 			continue
 		}
 		switch valueString(check["executor"]) {
+		case "http":
+			results = append(results, checkHTTP(ctx, check))
 		case "schema_validate":
 			results = append(results, checkSchema(check))
 		case "shell":
 			results = append(results, checkShell(ctx, check))
+		case "tcp":
+			results = append(results, checkTCP(ctx, check))
 		default:
 			results = append(results, newPlanCheckResult(check, "error", nil, "不支持的检查执行器"))
 		}
 	}
 	return results
+}
+
+func checkHTTP(ctx context.Context, check map[string]any) applicationCheckResult {
+	url := strings.TrimSpace(valueString(check["url"]))
+	if url == "" {
+		return newPlanCheckResult(check, "error", nil, "HTTP URL 不能为空")
+	}
+	expectedStatus, err := numberToInt(check["expected_status"])
+	if err != nil || expectedStatus < 100 || expectedStatus > 599 {
+		return newPlanCheckResult(check, "error", nil, "HTTP 期望状态码无效")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return newPlanCheckResult(check, "error", nil, fmt.Sprintf("创建 HTTP 请求失败: %v", err))
+	}
+	// 内部巡检必须反映 Agent 所在主机的真实网络路径，不能继承代理环境变量。
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	response, err := client.Do(request)
+	if err != nil {
+		return newPlanCheckResult(check, "fail", nil, fmt.Sprintf("HTTP 请求失败: %v", err))
+	}
+	defer response.Body.Close()
+	if response.StatusCode != expectedStatus {
+		return newPlanCheckResult(check, "fail", response.StatusCode, fmt.Sprintf("HTTP 状态码为 %d", response.StatusCode))
+	}
+	return newPlanCheckResult(check, "pass", response.StatusCode, "")
+}
+
+func checkTCP(ctx context.Context, check map[string]any) applicationCheckResult {
+	host := strings.TrimSpace(valueString(check["host"]))
+	port, err := numberToInt(check["port"])
+	if host == "" || err != nil || port < 1 || port > 65535 {
+		return newPlanCheckResult(check, "error", nil, "TCP 主机或端口无效")
+	}
+	address := net.JoinHostPort(host, strconv.Itoa(port))
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return newPlanCheckResult(check, "fail", "failed", fmt.Sprintf("TCP 连接失败: %v", err))
+	}
+	defer connection.Close()
+	return newPlanCheckResult(check, "pass", "connected", "")
 }
 
 func checkShell(ctx context.Context, check map[string]any) applicationCheckResult {

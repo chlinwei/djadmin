@@ -16,6 +16,7 @@ import (
 const (
 	actionGetAgentVersion          = "get_agent_version"
 	actionGetHostInfo              = "get_host_info"
+	actionGetLocalAddresses        = "get_local_addresses"
 	actionSyncAutomationSSHKey     = "sync_automation_ssh_key"
 	actionStartExporter            = "start_exporter"
 	actionStopExporter             = "stop_exporter"
@@ -32,6 +33,8 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.getAgentVersion(ctx, job), true
 	case actionGetHostInfo:
 		return e.getHostInfo(ctx, job), true
+	case actionGetLocalAddresses:
+		return e.getLocalAddresses(ctx, job), true
 	case actionSyncAutomationSSHKey:
 		return e.syncAutomationSSHKey(ctx, job), true
 	case actionStartExporter:
@@ -46,6 +49,45 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.controlApplication(ctx, job), true
 	default:
 		return protocol.JobResult{}, false
+	}
+}
+
+func localIPv4Addresses() ([]string, error) {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0)
+	for _, address := range addresses {
+		ipNet, ok := address.(*net.IPNet)
+		if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() {
+			continue
+		}
+		if ipv4 := ipNet.IP.To4(); ipv4 != nil {
+			result = append(result, ipv4.String())
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func (e *Executor) getLocalAddresses(ctx context.Context, job protocol.Job) protocol.JobResult {
+	started := time.Now()
+	if ctx.Err() != nil {
+		return canceledJobResult(job, started, ctx.Err(), 0)
+	}
+	addresses, err := localIPv4Addresses()
+	if err != nil {
+		return protocol.JobResult{
+			JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusFailed,
+			ExitCode: 1, StartedAt: started, FinishedAt: time.Now(), Error: err.Error(),
+		}
+	}
+	finished := time.Now()
+	return protocol.JobResult{
+		JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess,
+		ExitCode: 0, StartedAt: started, FinishedAt: finished, CostMS: finished.Sub(started).Milliseconds(),
+		Data: map[string]any{"local_ipv4": addresses},
 	}
 }
 
@@ -115,24 +157,7 @@ func (e *Executor) getHostInfo(ctx context.Context, job protocol.Job) protocol.J
 		hostname = ""
 	}
 
-	ips := make([]string, 0)
-	addrs, addrErr := net.InterfaceAddrs()
-	if addrErr == nil {
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip := ipNet.IP
-			if ip == nil || ip.IsLoopback() {
-				continue
-			}
-			if ip4 := ip.To4(); ip4 != nil {
-				ips = append(ips, ip4.String())
-			}
-		}
-		sort.Strings(ips)
-	}
+	ips, addrErr := localIPv4Addresses()
 
 	version := strings.TrimSpace(os.Getenv("DJ_AGENT_VERSION"))
 	if version == "" {

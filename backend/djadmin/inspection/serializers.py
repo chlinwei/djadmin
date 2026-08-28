@@ -20,18 +20,33 @@ class InspectionCheckSerializer(serializers.ModelSerializer):
         config = attrs.get('config') or {}
         if executor == InspectionCheck.Executor.SHELL and not str(config.get('command') or '').strip():
             raise serializers.ValidationError({'config': 'Shell 命令不能为空'})
+        if executor == InspectionCheck.Executor.SCHEMA_VALIDATE:
+            schema_type = str(config.get('schema_type') or '')
+            document_type = str(config.get('document_type') or '')
+            allowed_document_types = {
+                'json_schema': {'json', 'yaml', 'toml', 'ini', 'properties'},
+                'schematron': {'xml'},
+                'regexp': {'text'},
+            }
+            if not str(config.get('path') or '').strip():
+                raise serializers.ValidationError({'config': '待校验文件路径不能为空'})
+            if schema_type not in allowed_document_types:
+                raise serializers.ValidationError({'config': 'Schema 类型无效'})
+            if document_type not in allowed_document_types[schema_type]:
+                raise serializers.ValidationError({'config': '文档类型与 Schema 类型不匹配'})
+            if not str(config.get('schema_content') or '').strip():
+                raise serializers.ValidationError({'config': 'Schema 内容不能为空'})
         if executor == InspectionCheck.Executor.HTTP:
             url = str(config.get('url') or '').strip()
             if not url.startswith(('http://', 'https://')):
                 raise serializers.ValidationError({'config': 'HTTP URL 必须以 http:// 或 https:// 开头'})
         if executor == InspectionCheck.Executor.TCP:
-            host = str(config.get('host') or '').strip()
             try:
                 port = int(config.get('port') or 0)
             except (TypeError, ValueError):
                 port = 0
-            if not host or port < 1 or port > 65535:
-                raise serializers.ValidationError({'config': 'TCP 主机和端口无效'})
+            if port < 1 or port > 65535:
+                raise serializers.ValidationError({'config': 'TCP 端口无效'})
         return attrs
 
 
@@ -43,16 +58,12 @@ class InspectionGroupSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'scope', 'description', 'enabled', 'checks', 'create_time', 'update_time']
 
     def validate(self, attrs):
-        scope = attrs.get('scope', getattr(self.instance, 'scope', None))
         checks = attrs.get('checks')
         if checks is None and self.instance is not None:
             checks = list(self.instance.checks.values('name', 'executor', 'config', 'enabled', 'order'))
         checks = checks or []
-        allowed = {
-            InspectionGroup.Scope.PER_DEPLOYMENT: {InspectionCheck.Executor.SHELL},
-            InspectionGroup.Scope.CONTROLLER_ONCE: {InspectionCheck.Executor.HTTP, InspectionCheck.Executor.TCP},
-        }
-        invalid = [check.get('name') for check in checks if check.get('executor') not in allowed.get(scope, set())]
+        allowed = set(InspectionCheck.Executor.values)
+        invalid = [check.get('name') for check in checks if check.get('executor') not in allowed]
         if invalid:
             raise serializers.ValidationError({'checks': f'检查项执行器与执行范围不匹配: {", ".join(invalid)}'})
         return attrs

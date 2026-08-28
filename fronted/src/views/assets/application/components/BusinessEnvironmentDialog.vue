@@ -87,13 +87,20 @@ async function initialize() {
 }
 
 async function submit() {
-  await formRef.value.validate()
+  try {
+    await formRef.value.validate()
+  } catch {
+    // 表单校验失败时 antd 已在字段上标红，不再弹全局提示
+    return
+  }
   saving.value = true
   try {
     const response = await saveBusinessEnvironment({ ...form })
     message.success('保存成功')
     emit('update:open', false)
     emit('saved', response?.data?.data)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '保存环境失败')
   } finally {
     saving.value = false
   }

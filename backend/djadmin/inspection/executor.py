@@ -1,8 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor, wait
-import socket
-import urllib.error
-import urllib.request
-import uuid
 
 from django.db import close_old_connections
 from django.utils import timezone
@@ -41,6 +37,7 @@ def _resolve_host(value, host):
 def _agent_params(execution, deployment=None, host=None):
     checks = execution.group_snapshot.get('checks', [])
     compiled = []
+    required_capabilities = set()
     for index, check in enumerate(checks):
         config = check.get('config') if isinstance(check.get('config'), dict) else {}
         if deployment is not None:
@@ -61,21 +58,63 @@ def _agent_params(execution, deployment=None, host=None):
             environment = {'HOST_IP': str(host.ip or ''), 'HOST_NAME': str(host.instance_name or f'Host-{host.pk}')}
         else:
             raise ValueError('Agent 巡检目标缺少部署实例或主机')
-        compiled.append({
+        executor = str(check.get('executor') or '')
+        compiled_check = {
             'key': f'inspection:{execution.pk}:{index}',
-            'type': 'shell',
+            'type': executor,
             'name': check.get('name') or f'检查项 {index + 1}',
-            'executor': 'shell',
-            'command': resolve(config.get('command', '')),
-            'run_user': resolve(config.get('run_user') or default_run_user),
-            'work_directory': resolve(config.get('work_directory') or default_work_directory),
-            'expected': resolve(config.get('expected_output', '')),
+            'executor': executor,
             'requires_running': False,
-            'environment': environment,
-        })
+        }
+        if executor == 'schema_validate':
+            required_capabilities.add('schema_validate:v1')
+            schema_type = str(config.get('schema_type') or '')
+            schema_versions = {'json_schema': '2020-12', 'schematron': 'iso', 'regexp': 're2'}
+            compiled_check.update({
+                'path': resolve(config.get('path', '')),
+                'document_type': str(config.get('document_type') or ''),
+                'schema': {
+                    'type': schema_type,
+                    'version': schema_versions.get(schema_type, ''),
+                    # Schema 文本是规则本身，不能展开其中可能出现的 ${...} 字面量。
+                    'content': str(config.get('schema_content') or ''),
+                },
+            })
+        elif executor == 'shell':
+            required_capabilities.add('shell:v1')
+            compiled_check.update({
+                'command': resolve(config.get('command', '')),
+                'run_user': resolve(config.get('run_user') or default_run_user),
+                'work_directory': resolve(config.get('work_directory') or default_work_directory),
+                'expected': resolve(config.get('expected_output', '')),
+                'environment': environment,
+            })
+        elif executor == 'http':
+            required_capabilities.add('http:v1')
+            expected_status = int(config.get('expected_status') or 200)
+            compiled_check.update({
+                'url': resolve(config.get('url', '')),
+                'expected_status': expected_status,
+                'expected': expected_status,
+            })
+        elif executor == 'tcp':
+            required_capabilities.add('tcp:v1')
+            compiled_check.update({
+                # 未指定主机时检查执行 Agent 自身，避免调用方猜测管理 IP 或 VIP。
+                'host': resolve(config.get('host') or '127.0.0.1'),
+                'port': int(config.get('port') or 0),
+                'expected': 'connected',
+            })
+        else:
+            raise ValueError(f'不支持的巡检执行器: {executor}')
+        compiled.append(compiled_check)
     return {
         'control_type': 'command',
-        'check_plan': {'schema_version': 1, 'required_capabilities': ['shell:v1'], 'checks': compiled},
+        'check_plan': {
+            'schema_version': 1,
+            'required_capabilities': sorted(required_capabilities),
+            'checks': compiled,
+        },
     }
 
 
@@ -85,7 +124,8 @@ def _persist_results(target, checks):
         if not isinstance(check, dict):
             continue
         check_key = str(check.get('key') or '')
-        if not check_key.startswith('inspection:'):
+        # Agent 能力不匹配等计划级错误没有 inspection: 前缀，但它正是目标失败的根因。
+        if not check_key.startswith('inspection:') and check_key != 'check_plan':
             continue
         rows.append(InspectionResult(
             target=target,
@@ -140,7 +180,12 @@ def _run_agent_target(execution_id, target_id):
         target.status = InspectionTargetExecution.Status.SUCCESS if passed else InspectionTargetExecution.Status.FAILED
         target.passed = passed
         target.raw_result = data
-        target.error_message = str(result.get('error_message') or '')
+        plan_error = next((
+            str(check.get('message') or '')
+            for check in data.get('checks', [])
+            if isinstance(check, dict) and check.get('key') == 'check_plan' and check.get('status') == 'error'
+        ), '')
+        target.error_message = str(result.get('error_message') or plan_error)
         _persist_results(target, data.get('checks'))
     except Exception as exc:
         execution.refresh_from_db(fields=['status'])
@@ -156,51 +201,63 @@ def _run_agent_target(execution_id, target_id):
     close_old_connections()
 
 
-def _controller_check(check, timeout):
-    config = check.get('config') if isinstance(check.get('config'), dict) else {}
-    executor = check.get('executor')
-    if executor == 'http':
-        url = str(config.get('url') or '').strip()
-        expected_status = int(config.get('expected_status') or 200)
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                actual = response.status
-            passed = actual == expected_status
-            return passed, expected_status, actual, '' if passed else f'HTTP 状态码为 {actual}'
-        except (urllib.error.URLError, ValueError) as exc:
-            return False, expected_status, None, str(exc)
-    host = str(config.get('host') or '').strip()
-    port = int(config.get('port') or 0)
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            pass
-        return True, 'connected', 'connected', ''
-    except (OSError, ValueError) as exc:
-        return False, 'connected', 'failed', str(exc)
+def _select_service_agent(execution, target):
+    from assets.models import ApplicationDeployment
 
+    candidate_ids = [item.get('deployment_id') for item in execution.target_snapshot if item.get('deployment_id')]
+    candidates = list(ApplicationDeployment.objects.filter(pk__in=candidate_ids).select_related('host').order_by('pk'))
+    if not candidates:
+        raise RuntimeError('逻辑服务没有可用的部署实例')
 
-def _run_controller_target(execution, target):
-    target.status = InspectionTargetExecution.Status.RUNNING
-    target.start_time = timezone.now()
-    target.save(update_fields=['status', 'start_time', 'update_time'])
-    all_passed = True
-    for index, check in enumerate(execution.group_snapshot.get('checks', [])):
-        passed, expected, actual, message = _controller_check(check, execution.task_snapshot['timeout_seconds'])
-        all_passed = all_passed and passed
-        InspectionResult.objects.create(
-            target=target,
-            check_key=f'inspection:{execution.pk}:{index}',
-            check_type=str(check.get('executor') or ''),
-            name=str(check.get('name') or f'检查项 {index + 1}'),
-            status='pass' if passed else 'fail',
-            expected_value=expected,
-            actual_value=actual,
-            message=message,
+    cluster_type = str(execution.service_snapshot.get('cluster_type') or '')
+    if cluster_type == 'ha':
+        vip = str(execution.service_snapshot.get('access_address') or '').strip()
+        if not vip:
+            raise RuntimeError('HA 逻辑服务未配置 VIP')
+        owners = []
+        discovery_errors = []
+        for deployment in candidates:
+            agent_id = str(deployment.host.agent_id or '')
+            if not agent_id:
+                discovery_errors.append(f'{deployment.instance_name}: 未配置 Agent')
+                continue
+            try:
+                result = AgentChannelClient(agent_id, timeout=5).execute_automation(
+                    job_id=f'inspection-discovery-{execution.pk}-{deployment.pk}',
+                    params={'inspection_discovery': 'local_addresses'},
+                    timeout_seconds=5,
+                    task_type='custom',
+                    action='get_local_addresses',
+                )
+                raw_data = result.get('result_data')
+                data = raw_data if isinstance(raw_data, dict) else {}
+                if vip in {str(address) for address in data.get('local_ipv4', [])}:
+                    owners.append(deployment)
+            except Exception as exc:
+                discovery_errors.append(f'{deployment.instance_name}: {exc}')
+        if len(owners) > 1:
+            owner_names = '、'.join(item.instance_name for item in owners)
+            raise RuntimeError(f'VIP {vip} 同时存在于多个成员节点: {owner_names}')
+        if not owners:
+            detail = f'；发现失败: {"；".join(discovery_errors)}' if discovery_errors else ''
+            raise RuntimeError(f'未找到持有 VIP {vip} 的在线 Agent{detail}')
+        selected = owners[0]
+    else:
+        selected = next(
+            (item for item in candidates if item.host.agent_id and item.host.agent_online),
+            None,
         )
-    target.status = InspectionTargetExecution.Status.SUCCESS if all_passed else InspectionTargetExecution.Status.FAILED
-    target.passed = all_passed
-    target.end_time = timezone.now()
-    target.save(update_fields=['status', 'passed', 'end_time', 'update_time'])
+        if selected is None:
+            raise RuntimeError('逻辑服务没有在线 Agent 可执行巡检')
+
+    target.deployment = selected
+    target.target_name = f'{execution.service_snapshot.get("name") or target.target_name} ({selected.instance_name})'
+    target.host_id_snapshot = selected.host.pk
+    target.host_ip_snapshot = str(selected.host.ip or '')
+    target.agent_id_snapshot = str(selected.host.agent_id or '')
+    target.save(update_fields=[
+        'deployment', 'target_name', 'host_id_snapshot', 'host_ip_snapshot', 'agent_id_snapshot', 'update_time',
+    ])
 
 
 def run_inspection_execution(execution_id):
@@ -215,9 +272,11 @@ def run_inspection_execution(execution_id):
     try:
         targets = list(InspectionTargetExecution.objects.filter(execution=execution))
         if execution.group_snapshot.get('scope') == InspectionGroup.Scope.PER_DEPLOYMENT:
+            # 入口已把 Agent 离线的目标直接置为 FAILED，这里只调度仍待执行的，避免把离线原因覆盖掉。
+            dispatchable = [item for item in targets if item.status == InspectionTargetExecution.Status.PENDING]
             concurrency = max(1, min(int(execution.task_snapshot.get('concurrency') or 20), 100))
             pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='inspection')
-            futures = [pool.submit(_run_agent_target, execution.pk, target.pk) for target in targets]
+            futures = [pool.submit(_run_agent_target, execution.pk, target.pk) for target in dispatchable]
             try:
                 done, pending = wait(futures, timeout=int(execution.task_snapshot.get('timeout_seconds') or 60) + 45)
                 for future in done:
@@ -241,8 +300,18 @@ def run_inspection_execution(execution_id):
                     return
             finally:
                 pool.shutdown(wait=False, cancel_futures=True)
-        elif targets:
-            _run_controller_target(execution, targets[0])
+        elif execution.group_snapshot.get('scope') == InspectionGroup.Scope.SERVICE_ONCE and targets:
+            target = targets[0]
+            try:
+                _select_service_agent(execution, target)
+                _run_agent_target(execution.pk, target.pk)
+            except Exception as exc:
+                target.status = InspectionTargetExecution.Status.FAILED
+                target.passed = False
+                target.error_message = str(exc)
+                target.start_time = target.start_time or timezone.now()
+                target.end_time = timezone.now()
+                target.save(update_fields=['status', 'passed', 'error_message', 'start_time', 'end_time', 'update_time'])
         statuses = list(InspectionTargetExecution.objects.filter(execution=execution).values_list('status', flat=True))
         success_count = statuses.count(InspectionTargetExecution.Status.SUCCESS)
         failed_count = statuses.count(InspectionTargetExecution.Status.FAILED)

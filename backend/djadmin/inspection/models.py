@@ -7,7 +7,7 @@ from djadmin.basemodel import BaseModel
 class InspectionGroup(BaseModel):
     class Scope(models.TextChoices):
         PER_DEPLOYMENT = 'per_deployment', '每个部署实例'
-        CONTROLLER_ONCE = 'controller_once', '控制端单次'
+        SERVICE_ONCE = 'service_once', '服务单次'
 
     name = models.CharField(max_length=128, unique=True, verbose_name='巡检组名称')
     scope = models.CharField(max_length=24, choices=Scope.choices, verbose_name='执行范围')
@@ -22,8 +22,9 @@ class InspectionGroup(BaseModel):
 class InspectionCheck(BaseModel):
     class Executor(models.TextChoices):
         SHELL = 'shell', 'Agent Shell'
-        HTTP = 'http', '控制端 HTTP'
-        TCP = 'tcp', '控制端 TCP'
+        SCHEMA_VALIDATE = 'schema_validate', 'Agent Schema'
+        HTTP = 'http', 'Agent HTTP'
+        TCP = 'tcp', 'Agent TCP'
 
     group = models.ForeignKey(InspectionGroup, on_delete=models.CASCADE, related_name='checks')
     name = models.CharField(max_length=128, verbose_name='检查项名称')

@@ -75,6 +75,12 @@
             <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteProject(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
         </template>
+        <template v-else-if="activeTab === 'systems' && column.key === 'project_name'">
+          <a-tag v-if="record.project_name" color="blue">{{ record.project_name }}</a-tag>
+          <a-tooltip v-else title="未归属项目时无法生成日志索引名">
+            <a-tag color="orange">未分配</a-tag>
+          </a-tooltip>
+        </template>
         <template v-else-if="activeTab === 'systems' && column.key === 'enabled'">
           <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
         </template>
@@ -516,6 +522,7 @@ const resultStatusMap = {
 const businessSystemColumns = [
   { title: '业务系统名称', dataIndex: 'name', key: 'name', sorter: true, width: 200 },
   { title: '编码', dataIndex: 'code', key: 'code', width: 180 },
+  { title: '所属项目', key: 'project_name', width: 180 },
   { title: '负责人', dataIndex: 'owner', key: 'owner', width: 150 },
   { title: '部署数', dataIndex: 'deployment_count', key: 'deployment_count', width: 100 },
   { title: '状态', key: 'enabled', width: 100 },
@@ -609,7 +616,7 @@ const resultColumns = [
   { title: '说明', dataIndex: 'message', key: 'message', width: 220 },
 ]
 const currentColumns = computed(() => ({ projects: projectColumns, systems: businessSystemColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
-const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1050, services: 1800, profiles: 1220, applications: 1100, templates: 1570, deployments: 1740 }[activeTab.value]) }))
+const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1800, profiles: 1220, applications: 1100, templates: 1570, deployments: 1740 }[activeTab.value]) }))
 const createButtonLabel = computed(() => ({ projects: '新增项目', systems: '新增业务系统', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
 const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', systems: '搜索业务系统、编码或负责人', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
 const serviceBusinessSystemOptions = computed(() => serviceFilterRecords.businessSystems.map((item) => ({ label: item.name, value: item.id })))

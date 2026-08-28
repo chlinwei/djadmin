@@ -12,10 +12,10 @@ from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import (
     Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, BusinessEnvironment, BusinessSystem, HostGroup, Host,
-    ApplicationBaselineCheck, ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
-    HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, WebSSHSessionLog,
+    ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
+    HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, Project, WebSSHSessionLog,
 )
-from .views import _build_application_baseline_debug_params, _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
+from .views import _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -295,8 +295,10 @@ class ApplicationTest(BaseTestCase):
 
     def test_business_system_filters_deployments(self):
         """业务系统可维护，并作为部署实例的服务树归属进行过滤。"""
+        project = Project.objects.create(name='订单项目', code='order-project')
         system_res = self.client.post('/assets/business-systems/', {
             'name': '订单系统', 'code': 'order-system', 'owner': 'ops',
+            'project': project.id,  # type: ignore[attr-defined]
         }, format='json')
         system_body = self.assertResponseOK(system_res)
         business_system_id = system_body['data']['id']
@@ -526,210 +528,6 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(response.json()['code'], 600)
         self.assertIn('负载均衡形态必须填写入口地址', str(response.json()['data']))
 
-    def test_application_saves_generic_baseline_checks(self):
-        """应用定义可保存标准 Schema 基线，并可通过空列表清空。"""
-        schematron = '''<schema xmlns="http://purl.oclc.org/dsdl/schematron" queryBinding="xslt">
-  <pattern><rule context="/"><assert test="not(//Valve[@allow='^.*$'])">禁止开放全部地址</assert></rule></pattern>
-</schema>'''
-        res = self.client.post('/assets/applications/', {
-            'name': 'tomcat_app',
-            'code': 'tomcat-app-selection',
-            'category': 'web_container',
-            'baseline_checks': [{
-                'name': 'RemoteAddrValve',
-                'file_path': '${APP_HOME}/conf/context.xml',
-                'document_type': 'xml',
-                'schema_type': 'schematron',
-                'schema_version': 'iso',
-                'schema_content': schematron,
-            }],
-        }, format='json')
-        body = self.assertResponseOK(res)
-        application = Application.objects.get(id=body['data']['id'])
-        self.assertEqual(application.baseline_checks.get().schema_type, 'schematron')  # type: ignore[attr-defined]
-
-        update_res = self.client.patch(f'/assets/applications/{application.id}/', {  # type: ignore[attr-defined]
-            'baseline_checks': [],
-        }, format='json')
-        self.assertResponseOK(update_res)
-        self.assertFalse(ApplicationBaselineCheck.objects.filter(application=application).exists())
-
-    def test_application_rejects_baseline_check_without_schema_type(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'missing_schema_type',
-            'code': 'missing-schema-type',
-            'baseline_checks': [{
-                'name': '缺少 Schema 类型',
-                'file_path': '${APP_HOME}/conf/app.xml',
-                'document_type': 'xml',
-                'schema_version': 'iso',
-                'schema_content': '<schema xmlns="http://purl.oclc.org/dsdl/schematron"/>',
-            }],
-        }, format='json')
-
-        self.assertNotEqual(res.json()['code'], 200)
-        self.assertIn('schema_type', str(res.json()['data']))
-
-    def test_application_rejects_xsd_schema_type(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'mismatched_schema',
-            'code': 'mismatched-schema',
-            'baseline_checks': [{
-                'name': '错误类型',
-                'file_path': '${APP_HOME}/conf/app.json',
-                'document_type': 'json',
-                'schema_type': 'xsd',
-                'schema_version': '1.0',
-                'schema_content': '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"/>',
-            }],
-        }, format='json')
-
-        self.assertNotEqual(res.json()['code'], 200)
-        self.assertIn('xsd', str(res.json()['data']))
-
-    def test_application_rejects_invalid_schematron(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'invalid_schematron',
-            'code': 'invalid-schematron',
-            'baseline_checks': [{
-                'name': '无断言',
-                'file_path': '${APP_HOME}/conf/app.xml',
-                'document_type': 'xml',
-                'schema_type': 'schematron',
-                'schema_version': 'iso',
-                'schema_content': '<schema xmlns="http://purl.oclc.org/dsdl/schematron"/>',
-            }],
-        }, format='json')
-
-        self.assertNotEqual(res.json()['code'], 200)
-        self.assertIn('至少包含一个有效 assert', str(res.json()['data']))
-
-    def test_application_accepts_json_schema_2020_12(self):
-        schema = {
-            '$schema': 'https://json-schema.org/draft/2020-12/schema',
-            'type': 'object',
-            'properties': {'maxPostSize': {'type': 'integer', 'minimum': 524288000}},
-            'required': ['maxPostSize'],
-        }
-        res = self.client.post('/assets/applications/', {
-            'name': 'json_schema_app',
-            'code': 'json-schema-app',
-            'baseline_checks': [{
-                'name': '上传限制',
-                'file_path': '${APP_HOME}/conf/app.json',
-                'document_type': 'json',
-                'schema_type': 'json_schema',
-                'schema_version': '2020-12',
-                'schema_content': json.dumps(schema),
-            }],
-        }, format='json')
-
-        self.assertResponseOK(res)
-
-    def test_application_rejects_invalid_json_schema(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'invalid_json_schema',
-            'code': 'invalid-json-schema',
-            'baseline_checks': [{
-                'name': '错误 Schema',
-                'file_path': '${APP_HOME}/conf/app.json',
-                'document_type': 'json',
-                'schema_type': 'json_schema',
-                'schema_version': '2020-12',
-                'schema_content': '{"type": 7}',
-            }],
-        }, format='json')
-
-        self.assertNotEqual(res.json()['code'], 200)
-        self.assertIn('JSON Schema 无效', str(res.json()['data']))
-
-    def test_application_accepts_plain_text_regexp(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'regexp_app',
-            'code': 'regexp-app',
-            'baseline_checks': [{
-                'name': '禁止调试模式',
-                'file_path': '${APP_HOME}/conf/application.properties',
-                'document_type': 'text',
-                'schema_type': 'regexp',
-                'schema_version': 're2',
-                'schema_content': json.dumps({
-                    'pattern': r'(?m)^debug\s*=\s*true\s*$',
-                    'expect': 'absent',
-                }),
-            }],
-        }, format='json')
-
-        body = self.assertResponseOK(res)
-        check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
-        self.assertEqual(check.document_type, 'text')
-        self.assertEqual(check.schema_type, 'regexp')
-
-    def test_application_accepts_shell_baseline_without_file_path(self):
-        res = self.client.post('/assets/applications/', {
-            'name': 'shell_app',
-            'code': 'shell-app',
-            'baseline_checks': [{
-                'name': '服务进程检查',
-                'document_type': 'shell',
-                'schema_type': 'shell',
-                'schema_version': 'posix-sh',
-                'schema_content': 'pgrep -f nginx >/dev/null',
-                'requires_running': True,
-            }],
-        }, format='json')
-
-        body = self.assertResponseOK(res)
-        check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
-        self.assertEqual(check.file_path, '')
-        self.assertEqual(check.schema_type, 'shell')
-        self.assertEqual(check.script_executor, '${RUN_USER}')
-        self.assertEqual(check.work_directory, '${APP_HOME}')
-        self.assertTrue(check.requires_running)
-
-    def test_application_rejects_invalid_regexp_rule(self):
-        for rule in (
-            {'pattern': 'debug=true', 'expect': 'sometimes'},
-            {'pattern': 'debug=true', 'expect': 'present', 'flags': 'i'},
-        ):
-            with self.subTest(rule=rule):
-                res = self.client.post('/assets/applications/', {
-                    'name': f'invalid_regexp_{len(str(rule))}',
-                    'code': f'invalid-regexp-{len(str(rule))}',
-                    'baseline_checks': [{
-                        'name': '错误 Regexp',
-                        'file_path': '${APP_HOME}/conf/application.properties',
-                        'document_type': 'text',
-                        'schema_type': 'regexp',
-                        'schema_version': 're2',
-                        'schema_content': json.dumps(rule),
-                    }],
-                }, format='json')
-
-                self.assertNotEqual(res.json()['code'], 200)
-                self.assertIn('Regexp', str(res.json()['data']))
-
-    def test_application_accepts_structured_config_document_types(self):
-        schema = json.dumps({'type': 'object'})
-        for document_type in ('ini', 'toml', 'properties'):
-            with self.subTest(document_type=document_type):
-                res = self.client.post('/assets/applications/', {
-                    'name': f'{document_type}_app',
-                    'code': f'{document_type}-app',
-                    'baseline_checks': [{
-                        'name': f'{document_type} 基线',
-                        'file_path': f'${{APP_HOME}}/conf/application.{document_type}',
-                        'document_type': document_type,
-                        'schema_type': 'json_schema',
-                        'schema_version': '2020-12',
-                        'schema_content': schema,
-                    }],
-                }, format='json')
-
-                body = self.assertResponseOK(res)
-                check = ApplicationBaselineCheck.objects.get(application_id=body['data']['id'])
-                self.assertEqual(check.document_type, document_type)
-
     def test_batch_delete_applications(self):
         """批量删除应用"""
         app = Application.objects.create(name='del_app', code='del-app')
@@ -838,91 +636,6 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         self.assertEqual(missing_home_res.json()['code'], 600)
         self.assertIn('引用 ${APP_HOME} 前必须填写 App Home', str(missing_home_res.json()['data']))
-
-    def test_generic_baseline_checks_are_compiled_into_agent_plan(self):
-        application = Application.objects.create(name='Tomcat App', code='tomcat-app')
-        version = ApplicationVersion.objects.create(application=application, version='9.0.95')
-        host = Host.objects.create(instance_name='tomcat-agent-host', ip='10.0.0.88')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application,
-            name='Tomcat 基线模板',
-            control_type='systemd',
-            run_user='tomcat',
-            app_home='/home/${RUN_USER}/tomcat',
-            service_name='tomcat.service',
-        )
-        ApplicationBaselineCheck.objects.create(
-            application=application,
-            name='Manager 用户',
-            file_path='${APP_HOME}/conf/tomcat-users.xml',
-            document_type='xml',
-            schema_type='schematron',
-            schema_version='iso',
-            schema_content='<schema xmlns="http://purl.oclc.org/dsdl/schematron"><pattern><rule context="/"><assert test="//user[@username=\'admin\']">Manager 用户必须存在</assert></rule></pattern></schema>',
-        )
-        deployment = self._create_deployment(
-            application_version=version,
-            deployment_template=deployment_template,
-            host=host,
-            instance_name='tomcat-main',
-        )
-
-        params = _build_application_baseline_params(deployment)
-
-        plan = params['check_plan']
-        self.assertEqual(plan['schema_version'], 1)
-        self.assertEqual(plan['required_capabilities'], ['schema_validate:v1'])
-        self.assertEqual(len(plan['checks']), 1)
-        self.assertEqual(plan['checks'][0]['executor'], 'schema_validate')
-        self.assertEqual(plan['checks'][0]['path'], '/home/tomcat/tomcat/conf/tomcat-users.xml')
-        self.assertEqual(plan['checks'][0]['schema']['type'], 'schematron')
-
-    def test_shell_baseline_is_compiled_into_agent_plan(self):
-        application = Application.objects.create(name='Shell App', code='shell-plan')
-        version = ApplicationVersion.objects.create(application=application, version='1.0')
-        host = Host.objects.create(instance_name='shell-agent-host', ip='10.0.0.89')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application,
-            name='Shell 基线模板',
-            control_type='command',
-            run_user='app',
-            app_home='/opt/app',
-        )
-        ApplicationBaselineCheck.objects.create(
-            application=application,
-            name='进程检查',
-            document_type='shell',
-            schema_type='shell',
-            schema_version='posix-sh',
-            schema_content='test -f ${APP_HOME}/run/app.pid',
-            expected_output='Apache Tomcat/${APPLICATION_VERSION}',
-            requires_running=True,
-        )
-        deployment = self._create_deployment(
-            application_version=version,
-            deployment_template=deployment_template,
-            host=host,
-            instance_name='shell-main',
-        )
-
-        plan = _build_application_baseline_params(deployment)['check_plan']
-
-        self.assertEqual(plan['required_capabilities'], ['shell:v1'])
-        self.assertEqual(plan['checks'][0]['executor'], 'shell')
-        self.assertEqual(plan['checks'][0]['command'], 'test -f ${APP_HOME}/run/app.pid')
-        self.assertEqual(plan['checks'][0]['run_user'], 'app')
-        self.assertEqual(plan['checks'][0]['work_directory'], '/opt/app')
-        self.assertEqual(plan['checks'][0]['expected'], 'Apache Tomcat/1.0')
-        self.assertTrue(plan['checks'][0]['requires_running'])
-        self.assertEqual(plan['checks'][0]['environment'], {
-            'APP_HOME': '/opt/app',
-            'RUN_USER': 'app',
-            'WORK_DIRECTORY': '/opt/app',
-            'APPLICATION_NAME': 'Shell App',
-            'APPLICATION_CODE': 'shell-plan',
-            'APPLICATION_VERSION': '1.0',
-            'INSTANCE_NAME': 'shell-main',
-        })
 
     def test_create_compose_template_and_deployment(self):
         """Compose 配置归属模板，部署实例只引用版本、模板和主机"""
@@ -1132,96 +845,6 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(body['data']['runtime_status'], 'stopped')
         deployment.refresh_from_db()
         self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.STOPPED)
-
-    @patch('assets.views._dispatch_agent_job_via_grpc')
-    def test_debug_baseline_uses_inline_content_and_deployment_context(self, dispatch_job):
-        application = Application.objects.create(name='Debug App', code='debug-app')
-        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
-        host = Host.objects.create(instance_name='debug-host', agent_id='debug-agent', ip='10.0.0.20')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application, name='Debug Systemd', control_type='systemd',
-            run_user='tomcat', app_home='/opt/tomcat', service_name='tomcat',
-        )
-        deployment = self._create_deployment(
-            application_version=version, deployment_template=deployment_template,
-            host=host, instance_name='tomcat-debug',
-        )
-        inline_content = '{"path":"C:\\\\apps\\\\${APPLICATION_VERSION}"}'
-
-        def complete_job(job):
-            debug_check = job.params['check_plan']['checks'][0]
-            job.status = AgentJob.JobStatus.SUCCESS
-            job.result_data = {
-                'passed': True,
-                'checks': [{
-                    'key': debug_check['key'], 'type': debug_check['type'],
-                    'name': debug_check['name'], 'status': 'pass',
-                    'actual': {'path': 'inline', 'violations': []},
-                }],
-            }
-            return job
-
-        dispatch_job.side_effect = complete_job
-        res = self.client.post(
-            f'/assets/application-deployments/{deployment.id}/debug-baseline/',  # type: ignore[attr-defined]
-            {
-                'check': {
-                    'name': 'JSON 草稿', 'document_type': 'json',
-                    'schema_type': 'json_schema', 'schema_version': '2020-12',
-                    'schema_content': '{"type":"object"}', 'file_path': '',
-                },
-                'content': inline_content,
-            },
-            format='json',
-        )
-
-        body = self.assertResponseOK(res)
-        job = AgentJob.objects.get(job_id=body['data']['job_id'])
-        debug_check = job.params['check_plan']['checks'][0]
-        self.assertEqual(debug_check['content'], inline_content)
-        self.assertNotIn('path', debug_check)
-        self.assertEqual(job.params['check_plan']['required_capabilities'], ['schema_validate:inline:v1'])
-        self.assertEqual(job.params['ports'], [])
-        self.assertEqual(body['data']['context']['APPLICATION_VERSION'], '9.0.35')
-        self.assertEqual(body['data']['context']['APP_HOME'], '/opt/tomcat')
-        self.assertEqual(body['data']['result']['status'], 'pass')
-        self.assertFalse(ApplicationBaselineExecution.objects.filter(deployment=deployment).exists())
-
-    def test_shell_debug_uses_agent_environment_and_rejects_file_content(self):
-        application = Application.objects.create(name='Shell Debug', code='shell-debug')
-        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
-        host = Host.objects.create(instance_name='shell-debug-host', agent_id='shell-debug-agent', ip='10.0.0.22')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application, name='Shell Debug Template', control_type='systemd',
-            run_user='tomcat', app_home='/opt/tomcat', service_name='tomcat',
-        )
-        deployment = self._create_deployment(
-            application_version=version, deployment_template=deployment_template,
-            host=host, instance_name='tomcat-shell-debug',
-        )
-        draft = {
-            'name': 'Tomcat 版本', 'document_type': 'shell', 'schema_type': 'shell',
-            'schema_version': 'posix-sh', 'schema_content': 'printf "%s" "$APPLICATION_VERSION"',
-            'script_executor': '${RUN_USER}', 'work_directory': '${APP_HOME}',
-            'expected_output': 'Apache Tomcat/${APPLICATION_VERSION}', 'requires_running': True,
-        }
-
-        params = _build_application_baseline_debug_params(deployment, draft)
-        debug_check = params['check_plan']['checks'][0]
-        self.assertEqual(debug_check['command'], 'printf "%s" "$APPLICATION_VERSION"')
-        self.assertEqual(debug_check['environment']['APPLICATION_VERSION'], '9.0.35')
-        self.assertEqual(debug_check['run_user'], 'tomcat')
-        self.assertEqual(debug_check['work_directory'], '/opt/tomcat')
-        self.assertEqual(debug_check['expected'], 'Apache Tomcat/9.0.35')
-        self.assertEqual(params['check_plan']['required_capabilities'], ['shell:v1'])
-
-        res = self.client.post(
-            f'/assets/application-deployments/{deployment.id}/debug-baseline/',  # type: ignore[attr-defined]
-            {'check': draft, 'content': 'not allowed'},
-            format='json',
-        )
-        self.assertEqual(res.json()['code'], 400)
-        self.assertFalse(AgentJob.objects.filter(action='check_application_baseline').exists())
 
     @patch('assets.views.close_old_connections')
     @patch('assets.views._dispatch_agent_job_via_grpc')

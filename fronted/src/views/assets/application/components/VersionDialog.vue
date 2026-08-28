@@ -100,6 +100,8 @@ async function saveVersion() {
     await loadVersions()
     emit('changed')
     emit('created', response?.data?.data)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '新增版本失败')
   } finally {
     saving.value = false
   }

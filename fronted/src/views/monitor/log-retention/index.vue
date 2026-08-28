@@ -21,7 +21,7 @@
       class="page-hint"
       type="info"
       show-icon
-      message="档位即 data stream 名称后缀：logs-<环境>-<业务系统>-<档位编码>；保存后 ISM 策略会自动下发到启用的集群。"
+      message="档位即 data stream 名称后缀：logs-&lt;项目&gt;-&lt;环境&gt;-&lt;业务系统&gt;-&lt;档位编码&gt;；保存后 ISM 策略会自动下发到启用的集群。"
     />
 
     <a-table

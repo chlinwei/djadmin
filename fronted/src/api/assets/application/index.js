@@ -182,10 +182,6 @@ export function checkApplicationDeploymentBaseline(id) {
     return requestUtil.post(`${deploymentPrefix}${id}/check-baseline/`, {})
 }
 
-export function debugApplicationDeploymentBaseline(id, payload) {
-    return requestUtil.post(`${deploymentPrefix}${id}/debug-baseline/`, payload)
-}
-
 export function getApplicationDeploymentBaselineHistory(id) {
     return requestUtil.get(`${deploymentPrefix}${id}/baseline-history/`)
 }

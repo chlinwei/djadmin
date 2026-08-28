@@ -51,18 +51,18 @@
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
+                <a-tooltip title="编辑" placement="top">
+                  <a-button size="small" type="primary" @click="openTaskModal(record)">
+                    <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                  </a-button>
+                </a-tooltip>
                 <a-tooltip title="运行" placement="top">
-                  <a-button type="primary" :loading="runningTaskIds.has(record.id)" @click="runTask(record)">
+                  <a-button size="small" type="primary" ghost :loading="runningTaskIds.has(record.id)" @click="runTask(record)">
                     <FontAwesomeIcon :icon="['fas', 'play']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="编辑" placement="top">
-                  <a-button @click="openTaskModal(record)">
-                    <FontAwesomeIcon :icon="['fas', 'edit']" />
-                  </a-button>
-                </a-tooltip>
                 <a-tooltip title="删除" placement="top">
-                  <a-button class="delBtn" danger @click="confirmDeleteTask(record)">
+                  <a-button class="delBtn" size="small" type="primary" danger @click="confirmDeleteTask(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -105,10 +105,12 @@
             <template v-else-if="column.key === 'action'">
               <a-space>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button @click="openGroupModal(record)"><FontAwesomeIcon :icon="['fas', 'edit']" /></a-button>
+                  <a-button size="small" type="primary" @click="openGroupModal(record)">
+                    <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                  </a-button>
                 </a-tooltip>
                 <a-tooltip title="删除" placement="top">
-                  <a-button class="delBtn" danger @click="confirmDeleteGroup(record)">
+                  <a-button class="delBtn" size="small" type="primary" danger @click="confirmDeleteGroup(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -174,26 +176,30 @@
         <div class="form-grid">
           <a-form-item label="巡检组名称" required><a-input v-model:value="groupForm.name" /></a-form-item>
           <a-form-item label="执行范围" required>
-            <a-select v-model:value="groupForm.scope" :getPopupContainer="getPopupContainer" @change="resetChecksForScope">
+            <a-select v-model:value="groupForm.scope" :getPopupContainer="getPopupContainer">
               <a-select-option value="per_deployment">每个部署实例</a-select-option>
-              <a-select-option value="controller_once">控制端单次</a-select-option>
+              <a-select-option value="service_once">服务单次</a-select-option>
             </a-select>
           </a-form-item>
         </div>
         <a-form-item label="描述"><a-textarea v-model:value="groupForm.description" :rows="2" /></a-form-item>
         <div class="check-heading">
           <span>检查项</span>
-          <a-button @click="addCheck"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加检查项</a-button>
+          <a-button size="large" @click="addCheck"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加检查项</a-button>
         </div>
         <div v-for="(check, index) in groupForm.checks" :key="check.localKey" class="check-editor">
           <div class="check-editor-head">
             <strong>检查项 {{ index + 1 }}</strong>
-            <a-button type="text" danger @click="removeCheck(index)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button>
+            <a-tooltip title="删除" placement="top">
+              <a-button class="delBtn" size="small" type="primary" danger @click="confirmRemoveCheck(check, index)">
+                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+              </a-button>
+            </a-tooltip>
           </div>
           <div class="form-grid">
             <a-form-item label="名称" required><a-input v-model:value="check.name" /></a-form-item>
             <a-form-item label="执行器" required>
-              <a-select v-model:value="check.executor" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="check.executor" :getPopupContainer="getPopupContainer" @change="handleExecutorChange(check)">
                 <a-select-option v-for="item in executorOptions" :key="item.value" :value="item.value">{{ item.label }}</a-select-option>
               </a-select>
             </a-form-item>
@@ -211,11 +217,25 @@
               <a-form-item label="期望状态码"><a-input-number v-model:value="check.config.expected_status" :min="100" :max="599" /></a-form-item>
             </div>
           </template>
-          <template v-else>
+          <template v-else-if="check.executor === 'tcp'">
             <div class="form-grid">
-              <a-form-item label="主机" required><a-input v-model:value="check.config.host" /></a-form-item>
+              <a-form-item label="主机"><a-input v-model:value="check.config.host" placeholder="留空则检查 dj-agent 本机" /></a-form-item>
               <a-form-item label="端口" required><a-input-number v-model:value="check.config.port" :min="1" :max="65535" /></a-form-item>
             </div>
+          </template>
+          <template v-else-if="check.executor === 'schema_validate'">
+            <a-form-item label="待校验文件" required><a-input v-model:value="check.config.path" placeholder="${APP_HOME}/conf/server.xml" /></a-form-item>
+            <div class="form-grid">
+              <a-form-item label="Schema 类型" required>
+                <a-select v-model:value="check.config.schema_type" :options="schemaTypeOptions" :getPopupContainer="getPopupContainer" @change="handleSchemaTypeChange(check)" />
+              </a-form-item>
+              <a-form-item label="文档类型" required>
+                <a-select v-model:value="check.config.document_type" :options="schemaDocumentTypeOptions(check.config.schema_type)" :getPopupContainer="getPopupContainer" />
+              </a-form-item>
+            </div>
+            <a-form-item label="Schema 内容" required>
+              <a-textarea v-model:value="check.config.schema_content" :rows="8" />
+            </a-form-item>
           </template>
         </div>
       </a-form>
@@ -286,8 +306,8 @@
           <template #header>
             <a-space><a-badge :status="target.passed ? 'success' : 'error'" />{{ target.target_name }}</a-space>
           </template>
-          <a-alert v-if="target.error_message" type="error" :message="target.error_message" show-icon />
-          <a-table row-key="id" size="small" :pagination="false" :columns="resultColumns" :data-source="target.results">
+          <a-alert v-if="targetErrorMessage(target)" type="error" :message="targetErrorMessage(target)" show-icon />
+          <a-table row-key="check_key" size="small" :pagination="false" :columns="resultColumns" :data-source="targetDisplayResults(target)">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <a-tag :color="record.status === 'pass' ? 'green' : record.status === 'skipped' ? 'default' : 'red'">{{ record.status }}</a-tag>
@@ -398,16 +418,35 @@ const resultColumns = [
 ]
 
 const runningCount = computed(() => executions.value.filter((item) => ['pending', 'running'].includes(item.status)).length)
-const executorOptions = computed(() => groupForm.scope === 'per_deployment'
-  ? [{ label: 'Agent Shell', value: 'shell' }]
-  : [{ label: '控制端 HTTP', value: 'http' }, { label: '控制端 TCP', value: 'tcp' }])
+const executorOptions = [
+  { label: 'Agent Shell', value: 'shell' },
+  { label: 'Agent Schema', value: 'schema_validate' },
+  { label: 'Agent HTTP', value: 'http' },
+  { label: 'Agent TCP', value: 'tcp' },
+]
+const schemaTypeOptions = [
+  { label: 'JSON Schema', value: 'json_schema' },
+  { label: 'Schematron', value: 'schematron' },
+  { label: '正则表达式', value: 'regexp' },
+]
+const schemaDocumentTypes = {
+  json_schema: [
+    { label: 'JSON', value: 'json' },
+    { label: 'YAML', value: 'yaml' },
+    { label: 'TOML', value: 'toml' },
+    { label: 'INI', value: 'ini' },
+    { label: 'Properties', value: 'properties' },
+  ],
+  schematron: [{ label: 'XML', value: 'xml' }],
+  regexp: [{ label: 'Text', value: 'text' }],
+}
 const selectedTaskGroup = computed(() => groups.value.find((group) => group.id === taskForm.group))
 const targetTypeOptions = computed(() => [
   { label: '逻辑服务', value: 'logical_service' },
   {
     label: '主机组',
     value: 'host_group',
-    disabled: selectedTaskGroup.value?.scope === 'controller_once',
+    disabled: selectedTaskGroup.value?.scope === 'service_once',
   },
 ])
 const serviceTreeData = computed(() => {
@@ -422,7 +461,7 @@ const serviceTreeData = computed(() => {
   const environmentsById = new Map(
     businessEnvironments.value.map((environment) => [String(environment.id), environment]),
   )
-  const environmentNodes = (records) => {
+  const environmentNodes = (records, systemId) => {
     const servicesByEnvironment = new Map()
     for (const service of records) {
       const environmentKey = String(service.environment ?? 'unassigned')
@@ -438,8 +477,8 @@ const serviceTreeData = computed(() => {
       })
       .map(([environmentKey, environmentServices]) => ({
         title: environmentsById.get(environmentKey)?.name || '未指定环境',
-        value: `environment:${environmentKey}`,
-        key: `environment:${environmentKey}`,
+        value: `system:${systemId}:environment:${environmentKey}`,
+        key: `system:${systemId}:environment:${environmentKey}`,
         disabled: true,
         children: serviceNodes(environmentServices),
       }))
@@ -453,7 +492,7 @@ const serviceTreeData = computed(() => {
       disabled: true,
       children: environmentNodes(services.value.filter(
         (service) => String(service.business_system) === String(system.id),
-      )),
+      ), system.id),
     }))
   return systemNodes
 })
@@ -470,11 +509,24 @@ const hostGroupTreeData = computed(() => {
 const responseData = (response) => response?.data?.data || {}
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
-const scopeLabel = (scope) => scope === 'per_deployment' ? '每个部署实例' : '控制端单次'
-const executorLabel = (executor) => ({ shell: 'Agent Shell', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
+const scopeLabel = (scope) => scope === 'per_deployment' ? '每个部署实例' : '服务单次'
+const executorLabel = (executor) => ({ shell: 'Agent Shell', schema_validate: 'Agent Schema', http: 'Agent HTTP', tcp: 'Agent TCP' }[executor] || executor)
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
 const formatValue = (value) => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '-')
+const rawTargetResults = (target) => (Array.isArray(target.raw_result?.checks) ? target.raw_result.checks : [])
+  .filter((check) => check?.key !== 'control')
+  .map((check) => ({
+    check_key: check.key,
+    check_type: check.type,
+    name: check.name,
+    status: check.status,
+    expected_value: check.expected,
+    actual_value: check.actual,
+    message: check.message,
+  }))
+const targetDisplayResults = (target) => target.results?.length ? target.results : rawTargetResults(target)
+const targetErrorMessage = (target) => target.error_message || rawTargetResults(target).find((check) => check.status === 'error')?.message || ''
 
 async function fetchAll(loader, params = {}) {
   const firstData = responseData(await loader({ ...params, page: 1, page_size: 30 }))
@@ -525,15 +577,32 @@ async function loadExecutions() {
   try { executions.value = responseData(await getInspectionExecutions({ page_size: 30 })).results || [] } finally { executionLoading.value = false }
 }
 
+function defaultExecutorConfig(executor) {
+  if (executor === 'shell') return { command: '', work_directory: '${APP_HOME}', expected_output: '' }
+  if (executor === 'schema_validate') {
+    return { path: '${APP_HOME}/conf/server.xml', schema_type: 'schematron', document_type: 'xml', schema_content: '' }
+  }
+  if (executor === 'http') return { url: '', expected_status: 200 }
+  return { host: '', port: undefined }
+}
+function schemaDocumentTypeOptions(schemaType) { return schemaDocumentTypes[schemaType] || [] }
+function handleExecutorChange(check) { check.config = defaultExecutorConfig(check.executor) }
+function handleSchemaTypeChange(check) {
+  check.config.document_type = schemaDocumentTypeOptions(check.config.schema_type)[0]?.value
+}
 function addCheck() {
   const executor = groupForm.scope === 'per_deployment' ? 'shell' : 'http'
-  const config = executor === 'shell'
-    ? { command: '', work_directory: '${APP_HOME}', expected_output: '' }
-    : { url: '', expected_status: 200 }
+  const config = defaultExecutorConfig(executor)
   groupForm.checks.push({ localKey: ++localKey, name: '', executor, config, enabled: true, order: groupForm.checks.length })
 }
-function removeCheck(index) { groupForm.checks.splice(index, 1) }
-function resetChecksForScope() { groupForm.checks = []; addCheck() }
+function confirmRemoveCheck(check, index) {
+  openDeleteConfirm({
+    title: '删除检查项',
+    summary: '该检查项将从当前巡检组中移除。',
+    items: [check.name?.trim() || `检查项 ${index + 1}`],
+    onConfirm: async () => { groupForm.checks.splice(index, 1) },
+  })
+}
 function openGroupModal(record) {
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
   groupForm.checks = (groupForm.checks || []).map((check) => ({ ...check, localKey: ++localKey, config: { ...(check.config || {}) } }))
@@ -546,7 +615,7 @@ function openTaskModal(record) {
   taskModalOpen.value = true
 }
 function handleTaskGroupChange() {
-  if (selectedTaskGroup.value?.scope === 'controller_once' && taskForm.target_type === 'host_group') {
+  if (selectedTaskGroup.value?.scope === 'service_once' && taskForm.target_type === 'host_group') {
     taskForm.target_type = 'logical_service'
     taskForm.host_group = undefined
   }

@@ -17,15 +17,19 @@ def _safe_segment(value):
     return segment or 'unknown'
 
 
-def build_index_name(index_prefix, environment_code, business_system_code, tier_code):
-    """logs-<environment.code>-<business_system.code>-<tier.code>（§4.1）。
+def build_index_name(index_prefix, project_code, environment_code, business_system_code, tier_code):
+    """logs-<project.code>-<environment.code>-<business_system.code>-<tier.code>（§4.1）。
 
     服务/实例/主机/日志类型不进索引名，作为字段存储。
+    project 和 tier 都直接决定索引归属，缺失时必须报错，不能静默写成 unknown 而造出难以清理的 data stream。
     """
+    if not str(project_code or '').strip():
+        raise ValueError('缺少所属项目')
     if not str(tier_code or '').strip():
         raise ValueError('缺少保留档位')
     return '-'.join([
         _safe_segment(index_prefix or 'logs'),
+        _safe_segment(project_code),
         _safe_segment(environment_code),
         _safe_segment(business_system_code),
         _safe_segment(tier_code),

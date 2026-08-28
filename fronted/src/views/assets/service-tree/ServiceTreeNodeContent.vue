@@ -43,7 +43,6 @@
         <a-descriptions-item label="主机">{{ detail.host_name || '-' }}（{{ detail.host_ip || '-' }}）</a-descriptions-item>
         <a-descriptions-item label="运行状态"><a-badge :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" /></a-descriptions-item>
         <a-descriptions-item v-if="detail.cluster_type === 'ha'" label="主备状态">{{ haRoleLabels[detail.ha_role] || '未知' }}</a-descriptions-item>
-        <a-descriptions-item label="健康状态">{{ healthStatus[detail.health_status] || '未检查' }}</a-descriptions-item>
         <a-descriptions-item label="备注">{{ detail.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
 
@@ -73,22 +72,6 @@
         </a-table>
       </template>
 
-      <div v-else-if="detail" class="deployment-sections">
-        <section>
-          <div class="child-section-title"><span>最近基线检查</span><span>{{ baselineHistory.length }} 条</span></div>
-          <a-table row-key="id" :columns="historyColumns" :data-source="baselineHistory" :pagination="false" :scroll="{ x: 790 }" size="small">
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'status'">{{ historyStatusLabels[record.status] || record.status }}</template>
-              <template v-else-if="column.key === 'passed'">
-                <a-tag v-if="record.passed === true" color="success">通过</a-tag>
-                <a-tag v-else-if="record.passed === false" color="error">未通过</a-tag>
-                <span v-else>-</span>
-              </template>
-              <template v-else-if="column.key === 'start_time'">{{ formatDateTime(record.start_time) }}</template>
-            </template>
-          </a-table>
-        </section>
-      </div>
       <a-empty v-if="!loading && scope.nodeType === 'deployment' && !detail" :image="simpleImage" description="实例不存在或已删除" />
     </a-spin>
   </section>
@@ -103,7 +86,6 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import {
   getApplicationService,
   getApplicationDeployment,
-  getApplicationDeploymentBaselineHistory,
   getApplicationDeploymentList,
   getApplicationServiceList,
   getBusinessEnvironmentList,
@@ -124,15 +106,12 @@ const runtimeStatus = {
 }
 const haRoleLabels = { unknown: '未知', primary: '主', standby: '备' }
 const haRoleColors = { primary: 'green', standby: 'blue', unknown: 'default' }
-const healthStatus = { unknown: '未检查', checking: '检查中', healthy: '正常', unhealthy: '异常', error: '检查失败' }
-const historyStatusLabels = { queued: '等待中', running: '检查中', completed: '已完成', failed: '执行失败' }
 const loading = ref(false)
 const rows = ref([])
 const entity = ref(null)
 const detail = ref(null)
 const descendants = ref([])
 const services = ref([])
-const baselineHistory = ref([])
 let loadSequence = 0
 let runtimeRefreshTimer = null
 let runtimeRefreshInFlight = false
@@ -162,14 +141,6 @@ const deploymentColumns = [
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
   { title: '运行状态', key: 'runtime_status', width: 120 },
 ]
-const historyColumns = [
-  { title: '状态', key: 'status', width: 110 },
-  { title: '结论', key: 'passed', width: 90 },
-  { title: '通过项', dataIndex: 'passed_count', key: 'passed_count', width: 90 },
-  { title: '检查项', dataIndex: 'total_count', key: 'total_count', width: 90 },
-  { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 120 },
-  { title: '开始时间', key: 'start_time', width: 170 },
-]
 const columns = computed(() => {
   const baseColumns = ({
     all: systemColumns,
@@ -197,7 +168,7 @@ const breadcrumbs = computed(() => [
   props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : null,
 ].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
-  ['stopped', 'error'].includes(item.runtime_status) || ['unhealthy', 'error'].includes(item.health_status)
+  ['stopped', 'error'].includes(item.runtime_status)
 )).length)
 const runningCount = computed(() => descendants.value.filter((item) => item.runtime_status === 'running').length)
 const metrics = computed(() => {
@@ -220,15 +191,14 @@ const metrics = computed(() => {
   ]
   if (props.scope.nodeType === 'deployment' && detail.value) return [
     { label: '运行状态', value: runtimeStatus[detail.value.runtime_status]?.label || '未知' },
-    { label: '健康状态', value: healthStatus[detail.value.health_status] || '未检查' },
+    { label: '主备状态', value: haRoleLabels[detail.value.ha_role] || '未知' },
     { label: '监听端口', value: detail.value.ports?.length || 0 },
-    { label: '基线通过率', value: detail.value.baseline_pass_rate == null ? '-' : `${detail.value.baseline_pass_rate}%` },
   ]
   return []
 })
 const summaryStatus = computed(() => {
   if (props.scope.nodeType === 'deployment' && detail.value) {
-    if (['error', 'unhealthy'].includes(detail.value.health_status) || ['error', 'stopped'].includes(detail.value.runtime_status)) {
+    if (detail.value.runtime_status === 'error' || detail.value.runtime_status === 'stopped') {
       return { label: '需要关注', color: 'error' }
     }
     if (detail.value.runtime_status === 'running') return { label: '运行正常', color: 'success' }
@@ -356,14 +326,12 @@ async function loadNode() {
   detail.value = null
   descendants.value = []
   services.value = []
-  baselineHistory.value = []
   try {
     let nextRows = []
     let nextEntity = null
     let nextDetail = null
     let nextDescendants = []
     let nextServices = []
-    let nextHistory = []
     if (props.scope.nodeType === 'all') {
       const [systemsResult, projectsResult, servicesResult, deploymentsResult] = await Promise.all([
         fetchAll(getBusinessSystemList),
@@ -416,12 +384,8 @@ async function loadNode() {
       }))
       nextRows = deploymentsResult.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'deployment') {
-      const [detailResponse, historyResponse] = await Promise.all([
-        getApplicationDeployment(props.scope.deploymentId),
-        getApplicationDeploymentBaselineHistory(props.scope.deploymentId),
-      ])
+      const detailResponse = await getApplicationDeployment(props.scope.deploymentId)
       nextDetail = detailResponse?.data?.data || null
-      nextHistory = (historyResponse?.data?.data || []).slice(0, 5)
     }
     if (sequence !== loadSequence) return
     rows.value = nextRows
@@ -429,7 +393,6 @@ async function loadNode() {
     detail.value = nextDetail
     descendants.value = nextDescendants
     services.value = nextServices
-    baselineHistory.value = nextHistory
   } catch (error) {
     if (sequence === loadSequence) message.error(error?.message || '节点信息加载失败')
   } finally {

@@ -26,7 +26,14 @@ from .prometheus_api import api_get
 GO_ZERO_TIME = '0001-01-01T00:00:00Z'
 
 
-def _enqueue_notification(alert: AlertHistory, event_type: str) -> bool:
+def enqueue_notification(alert: AlertHistory, event_type: str) -> bool:
+    from .tasks import resolve_alert_media
+
+    # 没有可投递的媒介就不建通知事件：否则界面上会堆一批注定“发送失败”的记录，
+    # 掩盖真正的投递故障。告警本身仍然记录在告警历史里，不会丢。
+    if not resolve_alert_media(alert, event_type).exists():
+        return False
+
     event, created = AlertNotificationEvent.objects.get_or_create(
         deduplication_key=f'{alert.id}:{event_type}',
         defaults={
@@ -198,7 +205,7 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
                     'rule_group', 'rule_snapshot', 'update_time',
                 ])
                 resolved += 1
-                notifications += int(_enqueue_notification(open_record, 'resolved'))
+                notifications += int(enqueue_notification(open_record, 'resolved'))
             # 本地没有对应 firing 记录（比如 backend 重启后错过了 firing 推送）：
             # 一条孤立的 resolved 消息没有历史意义，不建行。
             continue
@@ -233,7 +240,7 @@ def ingest_alert_webhook_alerts(alerts: list[dict[str, Any]]) -> dict[str, int]:
             last_seen_at=now,
         )
         created += 1
-        notifications += int(_enqueue_notification(new_alert, 'firing'))
+        notifications += int(enqueue_notification(new_alert, 'firing'))
 
     return {
         'created': created,
@@ -282,7 +289,11 @@ def reconcile_alert_history() -> int:
         active_fingerprints.add(compute_alert_fingerprint(labels))
 
     now = timezone.now()
-    stale_qs = AlertHistory.objects.filter(state=AlertHistory.State.FIRING).exclude(fingerprint__in=active_fingerprints)
+    # 只对账 Prometheus 来源；巡检等自建来源不在 Prometheus 里存在，纳入对账会被直接删除。
+    stale_qs = AlertHistory.objects.filter(
+        state=AlertHistory.State.FIRING,
+        source=AlertHistory.Source.PROMETHEUS,
+    ).exclude(fingerprint__in=active_fingerprints)
     deleted_count = 0
     if current_rule_names is not None:
         deleted_qs = stale_qs.exclude(alertname__in=current_rule_names)

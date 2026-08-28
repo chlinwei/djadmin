@@ -19,6 +19,11 @@ class InspectionGroup(BaseModel):
         ordering = ['name', 'id']
 
 
+class InspectionSeverity(models.TextChoices):
+    CRITICAL = 'critical', '严重'
+    WARNING = 'warning', '警告'
+
+
 class InspectionCheck(BaseModel):
     class Executor(models.TextChoices):
         SHELL = 'shell', 'Agent Shell'
@@ -30,6 +35,13 @@ class InspectionCheck(BaseModel):
     name = models.CharField(max_length=128, verbose_name='检查项名称')
     executor = models.CharField(max_length=16, choices=Executor.choices, verbose_name='执行器')
     config = models.JSONField(default=dict, blank=True, verbose_name='检查配置')
+    # warning 级检查项失败不会把目标判为失败，只在汇总里计数，用于区分“进程已死”和“磁盘偏高”。
+    severity = models.CharField(
+        max_length=16,
+        choices=InspectionSeverity.choices,
+        default=InspectionSeverity.CRITICAL,
+        verbose_name='严重级别',
+    )
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
     order = models.PositiveIntegerField(default=0, verbose_name='顺序')
 
@@ -70,6 +82,10 @@ class InspectionTask(BaseModel):
         validators=[MinValueValidator(5), MaxValueValidator(3600)],
         verbose_name='单目标超时',
     )
+    # 空表示只允许手动触发；分发器按 next_run_time 到期扫描，不依赖 beat 为每个任务单独建条目。
+    cron_expression = models.CharField(max_length=120, blank=True, default='', verbose_name='cron 表达式')
+    next_run_time = models.DateTimeField(null=True, blank=True, verbose_name='下次运行时间')
+    last_run_time = models.DateTimeField(null=True, blank=True, verbose_name='最近运行时间')
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
 
     class Meta:
@@ -85,8 +101,13 @@ class InspectionExecution(BaseModel):
         FAILED = 'failed', '失败'
         CANCELED = 'canceled', '已取消'
 
+    class TriggerType(models.TextChoices):
+        MANUAL = 'manual', '手动'
+        SCHEDULED = 'scheduled', '定时'
+
     task = models.ForeignKey(InspectionTask, on_delete=models.SET_NULL, null=True, related_name='executions')
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.MANUAL)
     task_snapshot = models.JSONField(default=dict, blank=True)
     group_snapshot = models.JSONField(default=dict, blank=True)
     service_snapshot = models.JSONField(default=dict, blank=True)
@@ -141,6 +162,11 @@ class InspectionResult(BaseModel):
     check_type = models.CharField(max_length=64)
     name = models.CharField(max_length=255)
     status = models.CharField(max_length=16)
+    severity = models.CharField(
+        max_length=16,
+        choices=InspectionSeverity.choices,
+        default=InspectionSeverity.CRITICAL,
+    )
     expected_value = models.JSONField(null=True, blank=True)
     actual_value = models.JSONField(null=True, blank=True)
     message = models.TextField(blank=True, default='')

@@ -204,11 +204,6 @@ class ClusterProfile(BaseModel):
 
 
 class ApplicationService(BaseModel):
-    class HealthStatus(models.TextChoices):
-        UNKNOWN = 'unknown', '未检查'
-        HEALTHY = 'healthy', '正常'
-        UNHEALTHY = 'unhealthy', '异常'
-
     class TopologyType(models.TextChoices):
         STANDALONE = 'standalone', '单机'
         CLUSTER = 'cluster', '集群'
@@ -262,9 +257,6 @@ class ApplicationService(BaseModel):
     topology_type = models.CharField(max_length=16, choices=TopologyType.choices, default=TopologyType.STANDALONE)
     access_address = models.CharField(max_length=255, blank=True, default='', verbose_name='服务入口地址')
     enabled = models.BooleanField(default=True, verbose_name='是否启用')
-    health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
-    baseline_pass_rate = models.FloatField(null=True, blank=True)
-    last_check_time = models.DateTimeField(null=True, blank=True)
     # 服务级日志采集开关：与日志定义的 collection_enabled 共同为 ON 时，服务下所有部署实例均采集，
     # 实例层不设开关（新增实例自动继承），见架构文档 §6。
     log_collection_enabled = models.BooleanField(default=False, verbose_name='开启日志采集')
@@ -286,13 +278,6 @@ class ApplicationService(BaseModel):
 
 class ApplicationDeployment(BaseModel):
 
-    class HealthStatus(models.TextChoices):
-        UNKNOWN = 'unknown', '未检查'
-        CHECKING = 'checking', '检查中'
-        HEALTHY = 'healthy', '正常'
-        UNHEALTHY = 'unhealthy', '异常'
-        ERROR = 'error', '检查失败'
-
     class RuntimeStatus(models.TextChoices):
         UNKNOWN = 'unknown', '未知'
         RUNNING = 'running', '运行中'
@@ -307,9 +292,6 @@ class ApplicationDeployment(BaseModel):
     host = models.ForeignKey('Host', on_delete=models.CASCADE, related_name='application_deployments')
     instance_name = models.CharField(max_length=128, verbose_name='实例名称')
     enabled = models.BooleanField(default=True)
-    health_status = models.CharField(max_length=16, choices=HealthStatus.choices, default=HealthStatus.UNKNOWN)
-    baseline_pass_rate = models.FloatField(null=True, blank=True)
-    last_check_time = models.DateTimeField(null=True, blank=True)
     runtime_status = models.CharField(max_length=16, choices=RuntimeStatus.choices, default=RuntimeStatus.UNKNOWN)
     runtime_status_output = models.TextField(blank=True, default='')
     last_status_check_time = models.DateTimeField(null=True, blank=True)
@@ -415,7 +397,6 @@ class ApplicationConfigFile(BaseModel):
     path = models.CharField(max_length=512)
     file_format = models.CharField(max_length=16, choices=FileFormat.choices, default=FileFormat.TEXT)
     required = models.BooleanField(default=True)
-    baseline_enabled = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'assets_application_config_file'
@@ -505,57 +486,6 @@ def default_tomcat_manager_roles():
         'manager-jmx',
         'manager-status',
     ]
-
-
-class ApplicationBaselineExecution(BaseModel):
-    class Status(models.TextChoices):
-        QUEUED = 'queued', '等待中'
-        RUNNING = 'running', '检查中'
-        COMPLETED = 'completed', '已完成'
-        FAILED = 'failed', '执行失败'
-
-    deployment = models.ForeignKey(ApplicationDeployment, on_delete=models.CASCADE, related_name='baseline_executions')
-    agent_job = models.OneToOneField('AgentJob', on_delete=models.SET_NULL, null=True, blank=True, related_name='application_baseline_execution')
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
-    passed = models.BooleanField(null=True, blank=True)
-    total_count = models.PositiveIntegerField(default=0)
-    passed_count = models.PositiveIntegerField(default=0)
-    summary = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True, default='')
-    requested_user_id = models.IntegerField(null=True, blank=True)
-    requested_username = models.CharField(max_length=100, blank=True, default='')
-    start_time = models.DateTimeField(null=True, blank=True)
-    end_time = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = 'assets_application_baseline_execution'
-        ordering = ['-id']
-
-
-class ApplicationBaselineResult(BaseModel):
-    class Status(models.TextChoices):
-        PASS = 'pass', '通过'
-        FAIL = 'fail', '失败'
-        ERROR = 'error', '错误'
-        SKIPPED = 'skipped', '跳过'
-
-    execution = models.ForeignKey(ApplicationBaselineExecution, on_delete=models.CASCADE, related_name='results')
-    check_key = models.CharField(max_length=255)
-    check_type = models.CharField(max_length=64)
-    name = models.CharField(max_length=255)
-    status = models.CharField(max_length=16, choices=Status.choices)
-    expected_value = models.JSONField(null=True, blank=True)
-    actual_value = models.JSONField(null=True, blank=True)
-    message = models.TextField(blank=True, default='')
-
-    class Meta:
-        db_table = 'assets_application_baseline_result'
-        ordering = ['id']
-        indexes = [
-            models.Index(fields=['execution', 'status']),
-            models.Index(fields=['check_type', 'status']),
-        ]
-
 
 
 class HostGroup(BaseModel):

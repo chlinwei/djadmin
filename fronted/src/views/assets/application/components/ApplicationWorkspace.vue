@@ -104,26 +104,8 @@
         <template v-else-if="activeTab === 'services' && column.key === 'enabled'">
           <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
         </template>
-        <template v-else-if="activeTab === 'services' && column.key === 'health_status'">
-          <div><a-badge :status="healthStatusMap[record.health_status]?.badge || 'default'" :text="healthStatusMap[record.health_status]?.label || '未检查'" /></div>
-          <span class="secondary">{{ formatPassRate(record.baseline_pass_rate) }}</span>
-        </template>
-        <template v-else-if="activeTab === 'services' && column.key === 'last_check_time'">
-          <span>{{ formatDateTime(record.last_check_time) }}</span>
-        </template>
         <template v-else-if="activeTab === 'services' && column.key === 'action'">
           <a-space>
-            <a-tooltip v-if="record.topology_type === 'cluster'" title="运行">
-              <a-button
-                v-permission="'assets:applications:update'"
-                data-service-baseline
-                size="small"
-                :loading="checkingServiceId === record.id"
-                @click="runClusterBaselineCheck(record)"
-              >
-                <FontAwesomeIcon :icon="['fas', 'clipboard-check']" />
-              </a-button>
-            </a-tooltip>
             <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openService(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
             <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteService(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
@@ -225,13 +207,6 @@
           </div>
           <span class="secondary">{{ formatDateTime(record.last_status_check_time) }}</span>
         </template>
-        <template v-else-if="activeTab === 'deployments' && column.key === 'health_status'">
-          <div><a-badge :status="healthStatusMap[record.health_status]?.badge || 'default'" :text="healthStatusMap[record.health_status]?.label || '未检查'" /></div>
-          <span class="secondary">{{ formatPassRate(record.baseline_pass_rate) }}</span>
-        </template>
-        <template v-else-if="activeTab === 'deployments' && column.key === 'last_check_time'">
-          <span>{{ formatDateTime(record.last_check_time) }}</span>
-        </template>
         <template v-else-if="activeTab === 'deployments' && column.key === 'action'">
           <a-space>
             <a-tooltip v-if="record.control_type !== 'external_ha'" key="deployment-start" title="启动">
@@ -259,24 +234,6 @@
                 @click="confirmApplicationControl(record, 'stop')"
               >
                 <FontAwesomeIcon :icon="['fas', 'stop']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip key="deployment-baseline" title="基线检查">
-              <a-button
-                v-permission="'assets:applications:update'"
-                data-control-action="baseline"
-                size="small"
-                type="primary"
-                :loading="checkingDeploymentId === record.id"
-                :disabled="record.health_status === 'checking' || isDeploymentBusy(record.id)"
-                @click="runBaselineCheck(record)"
-              >
-                <FontAwesomeIcon :icon="['fas', 'clipboard-check']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip key="deployment-history" title="历史记录">
-              <a-button v-permission="'assets:applications:view'" size="small" @click="openBaselineHistory(record)">
-                <FontAwesomeIcon :icon="['fas', 'list']" />
               </a-button>
             </a-tooltip>
             <a-tooltip key="deployment-edit" title="编辑">
@@ -346,69 +303,6 @@
       @update:open="deploymentDialogOpen = $event"
       @saved="handleSaved"
     />
-    <a-modal
-      v-model:open="historyDialogOpen"
-      :title="`${historyDeployment?.instance_name || ''} - 基线检查历史`"
-      width="1080px"
-      :footer="null"
-      destroy-on-close
-    >
-      <a-table
-        row-key="id"
-        :columns="historyColumns"
-        :data-source="baselineHistory"
-        :loading="historyLoading"
-        :pagination="false"
-        :scroll="{ x: 920 }"
-        :expand-row-by-click="true"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
-            <a-tag :color="executionStatusMap[record.status]?.color || 'default'">
-              {{ executionStatusMap[record.status]?.label || record.status }}
-            </a-tag>
-          </template>
-          <template v-else-if="column.key === 'passed'">
-            <a-tag v-if="record.passed === true" color="success">通过</a-tag>
-            <a-tag v-else-if="record.passed === false" color="error">未通过</a-tag>
-            <span v-else>-</span>
-          </template>
-          <template v-else-if="column.key === 'count'">
-            {{ record.passed_count }}/{{ record.total_count }}
-          </template>
-          <template v-else-if="column.key === 'create_time'">
-            {{ formatDateTime(record.create_time) }}
-          </template>
-        </template>
-        <template #expandedRowRender="{ record }">
-          <a-alert v-if="record.error_message" type="error" :message="record.error_message" show-icon class="history-error" />
-          <a-table
-            v-else
-            row-key="id"
-            size="small"
-            :columns="resultColumns"
-            :data-source="record.results || []"
-            :pagination="false"
-            :scroll="{ x: 940 }"
-          >
-            <template #bodyCell="{ column, record: result }">
-              <template v-if="column.key === 'status'">
-                <a-tag :color="resultStatusMap[result.status]?.color || 'default'">
-                  {{ resultStatusMap[result.status]?.label || result.status }}
-                </a-tag>
-              </template>
-              <template v-else-if="column.key === 'expected_value'"><pre class="check-value">{{ formatCheckValue(result.expected_value) }}</pre></template>
-              <template v-else-if="column.key === 'actual_value'">
-                <div v-if="getMissingCheckValues(result.actual_value).length" class="check-missing">
-                  <div v-for="item in getMissingCheckValues(result.actual_value)" :key="item">缺少 {{ item }}</div>
-                </div>
-                <pre class="check-value">{{ formatActualCheckValue(result) }}</pre>
-              </template>
-            </template>
-          </a-table>
-        </template>
-      </a-table>
-    </a-modal>
   </div>
 </template>
 
@@ -421,11 +315,8 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { formatActualCheckValue, formatCheckValue } from './baselineValue'
 import {
   batchDeleteApplication,
-  checkApplicationServiceBaseline,
-  checkApplicationDeploymentBaseline,
   controlApplicationDeployment,
   deleteBusinessSystem,
   deleteProject,
@@ -438,7 +329,6 @@ import {
   getBusinessEnvironmentList,
   getApplicationServiceList,
   getClusterProfileList,
-  getApplicationDeploymentBaselineHistory,
   getApplicationDeploymentList,
   getApplicationDeploymentTemplateList,
   getApplicationList,
@@ -475,12 +365,6 @@ const applicationDialogOpen = ref(false)
 const versionDialogOpen = ref(false)
 const templateDialogOpen = ref(false)
 const deploymentDialogOpen = ref(false)
-const historyDialogOpen = ref(false)
-const historyLoading = ref(false)
-const baselineHistory = ref([])
-const historyDeployment = ref(null)
-const checkingDeploymentId = ref(null)
-const checkingServiceId = ref(null)
 const selectedApplication = ref(null)
 const selectedDeployment = ref(null)
 const selectedTemplateId = ref(null)
@@ -494,30 +378,11 @@ const categoryLabels = { web_container: 'Web 容器', database: '数据库', mid
 const controlTypeLabels = { systemd: 'Systemd', command: '命令行', external_ha: '外部 HA', docker: 'Docker', docker_compose: 'Docker Compose' }
 const clusterTypeLabels = { mysql: 'MySQL 集群', redis: 'Redis 集群', nacos: 'Nacos 集群', elasticsearch: 'Elasticsearch 集群', ha: 'HA 集群', custom: '自定义集群' }
 const controlTypeColors = { systemd: 'blue', command: 'orange', external_ha: 'gold', docker: 'cyan', docker_compose: 'geekblue' }
-const healthStatusMap = {
-  unknown: { label: '未检查', badge: 'default' },
-  checking: { label: '检查中', badge: 'processing' },
-  healthy: { label: '正常', badge: 'success' },
-  unhealthy: { label: '异常', badge: 'error' },
-  error: { label: '检查失败', badge: 'warning' },
-}
 const runtimeStatusMap = {
   unknown: { label: '未知', badge: 'default' },
   running: { label: '运行中', badge: 'success' },
   stopped: { label: '已停止', badge: 'error' },
   error: { label: '检查失败', badge: 'warning' },
-}
-const executionStatusMap = {
-  queued: { label: '等待中', color: 'default' },
-  running: { label: '检查中', color: 'processing' },
-  completed: { label: '已完成', color: 'blue' },
-  failed: { label: '执行失败', color: 'error' },
-}
-const resultStatusMap = {
-  pass: { label: '通过', color: 'success' },
-  fail: { label: '失败', color: 'error' },
-  error: { label: '错误', color: 'warning' },
-  skipped: { label: '跳过', color: 'default' },
 }
 const businessSystemColumns = [
   { title: '业务系统名称', dataIndex: 'name', key: 'name', sorter: true, width: 200 },
@@ -547,8 +412,6 @@ const serviceColumns = [
   { title: '形态', key: 'topology_type', width: 90 },
   { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 160 },
   { title: '实例数', dataIndex: 'deployment_count', key: 'deployment_count', width: 90 },
-  { title: '集群健康', key: 'health_status', width: 130 },
-  { title: '最后检查', key: 'last_check_time', width: 170 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ]
@@ -584,8 +447,6 @@ const deploymentColumns = [
   { title: '部署模板', dataIndex: 'template_name', key: 'template_name', width: 180 },
   { title: '控制方式', key: 'control_type', width: 150 },
   { title: '运行状态', key: 'runtime_status', width: 160 },
-  { title: '健康状态', key: 'health_status', width: 130 },
-  { title: '最后检查', key: 'last_check_time', width: 170 },
   { title: '操作', key: 'action', width: 190, fixed: 'right' },
 ]
 const templateColumns = [
@@ -599,24 +460,8 @@ const templateColumns = [
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
-const historyColumns = [
-  { title: '状态', key: 'status', width: 110 },
-  { title: '结论', key: 'passed', width: 90 },
-  { title: '通过项', key: 'count', width: 100 },
-  { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 120 },
-  { title: '任务 ID', dataIndex: 'job_id', key: 'job_id', width: 230 },
-  { title: '检查时间', key: 'create_time', width: 170 },
-]
-const resultColumns = [
-  { title: '检查项', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '类型', dataIndex: 'check_type', key: 'check_type', width: 150 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '期望值', key: 'expected_value', width: 240 },
-  { title: '实际值', key: 'actual_value', width: 240 },
-  { title: '说明', dataIndex: 'message', key: 'message', width: 220 },
-]
 const currentColumns = computed(() => ({ projects: projectColumns, systems: businessSystemColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
-const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1800, profiles: 1220, applications: 1100, templates: 1570, deployments: 1740 }[activeTab.value]) }))
+const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1500, profiles: 1220, applications: 1100, templates: 1570, deployments: 1440 }[activeTab.value]) }))
 const createButtonLabel = computed(() => ({ projects: '新增项目', systems: '新增业务系统', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
 const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', systems: '搜索业务系统、编码或负责人', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
 const serviceBusinessSystemOptions = computed(() => serviceFilterRecords.businessSystems.map((item) => ({ label: item.name, value: item.id })))
@@ -627,7 +472,6 @@ const serviceClusterProfileOptions = computed(() => serviceFilterRecords.profile
 const topologyFilterOptions = [{ label: '单机', value: 'standalone' }, { label: '集群', value: 'cluster' }, { label: '负载均衡', value: 'load_balancer' }]
 const enabledFilterOptions = [{ label: '启用', value: true }, { label: '停用', value: false }]
 const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
-let baselinePollTimer = null
 let runtimePollTimer = null
 let runtimePollInFlight = false
 let reloadSequence = 0
@@ -821,17 +665,6 @@ async function handleServiceSaved() {
   }
   await reload(false)
 }
-async function runClusterBaselineCheck(record) {
-  checkingServiceId.value = record.id
-  try {
-    const response = await checkApplicationServiceBaseline(record.id)
-    const passRate = response?.data?.data?.baseline_pass_rate
-    message.success(`集群基线检查完成，通过率 ${Number(passRate || 0).toFixed(1)}%`)
-    await reload(false)
-  } finally {
-    checkingServiceId.value = null
-  }
-}
 function openVersions(record) {
   selectedApplication.value = record
   versionDialogOpen.value = true
@@ -895,27 +728,6 @@ function confirmDeleteBusinessSystem(record) {
 function formatDateTime(value) {
   return value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
 }
-function formatPassRate(value) {
-  return value === null || value === undefined ? '通过率 -' : `通过率 ${Number(value).toFixed(1)}%`
-}
-function getMissingCheckValues(value) {
-  if (!value || typeof value !== 'object' || !Array.isArray(value.elements)) return []
-  return value.elements.flatMap((element) => Object.entries(element || {}).flatMap(([attribute, details]) => {
-    if (!Array.isArray(details?.missing) || details.missing.length === 0) return []
-    return [`${attribute}: ${details.missing.join(', ')}`]
-  }))
-}
-async function runBaselineCheck(record) {
-  checkingDeploymentId.value = record.id
-  try {
-    await checkApplicationDeploymentBaseline(record.id)
-    message.success('基线检查任务已提交')
-    await reload(false)
-    scheduleBaselinePoll(record.id, 0)
-  } finally {
-    checkingDeploymentId.value = null
-  }
-}
 function controlLoadingKey(deploymentId, action) {
   return `${deploymentId}:${action}`
 }
@@ -969,26 +781,6 @@ function confirmApplicationControl(record, action) {
     okButtonProps: action === 'stop' ? { danger: true } : {},
     onOk: () => runApplicationControl(record, action),
   })
-}
-function scheduleBaselinePoll(deploymentId, attempt) {
-  if (baselinePollTimer) clearTimeout(baselinePollTimer)
-  if (attempt >= 30) return
-  baselinePollTimer = setTimeout(async () => {
-    await reload(false)
-    const deployment = rows.value.find((item) => item.id === deploymentId)
-    if (deployment?.health_status === 'checking') scheduleBaselinePoll(deploymentId, attempt + 1)
-  }, 2000)
-}
-async function openBaselineHistory(record) {
-  historyDeployment.value = record
-  historyDialogOpen.value = true
-  historyLoading.value = true
-  try {
-    const response = await getApplicationDeploymentBaselineHistory(record.id)
-    baselineHistory.value = response?.data?.data || []
-  } finally {
-    historyLoading.value = false
-  }
 }
 function confirmDeleteApplication(record) {
   confirmDelete({
@@ -1047,7 +839,6 @@ onMounted(async () => {
   if (activeTab.value === 'deployments') startRuntimePolling()
 })
 onBeforeUnmount(() => {
-  if (baselinePollTimer) clearTimeout(baselinePollTimer)
   stopRuntimePolling()
 })
 </script>
@@ -1062,17 +853,4 @@ onBeforeUnmount(() => {
 .secondary { color: rgba(0, 0, 0, 0.45); font-size: 12px; }
 .runtime-status-line { display: inline-flex; align-items: center; gap: 6px; }
 .runtime-error-detail { color: #d48806; cursor: help; }
-.history-error { margin-bottom: 8px; }
-.check-value {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: inherit;
-}
-.check-missing {
-  margin-bottom: 6px;
-  color: #cf1322;
-  font-weight: 600;
-  line-height: 1.5;
-}
 </style>

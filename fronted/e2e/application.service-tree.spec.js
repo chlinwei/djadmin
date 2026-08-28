@@ -38,7 +38,6 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
   await page.route('**/assets/application-deployments/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname
     const isDetail = pathname.endsWith('/assets/application-deployments/11/')
-    const isHistory = pathname.endsWith('/assets/application-deployments/11/baseline-history/')
     const deployment = {
       id: 11,
       application_service: 21,
@@ -54,17 +53,13 @@ test('service tree shows node summaries, aggregate metrics, and direct children'
       host_name: 'order-node-1',
       host_ip: '10.0.0.31',
       runtime_status: 'running',
-      health_status: 'healthy',
-      baseline_pass_rate: 100,
       ports: [{ name: 'HTTP', protocol: 'tcp', port: 8080 }],
       enabled: true,
     }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ code: 200, msg: 'success', data: isHistory ? [{
-        id: 41, status: 'completed', passed: true, passed_count: 3, total_count: 3, requested_username: 'admin',
-      }] : isDetail ? deployment : {
+      body: JSON.stringify({ code: 200, msg: 'success', data: isDetail ? deployment : {
         results: [deployment],
         count: 1, pageNumber: 1, pageSize: 30, totalPages: 1, next: null, previous: null,
       } }),

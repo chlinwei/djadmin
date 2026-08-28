@@ -6,8 +6,8 @@
         <p>按逻辑服务组织检查，实例巡检由 Agent 并发执行。</p>
       </div>
       <div class="summary-strip">
-        <div><strong>{{ groups.length }}</strong><span>巡检组</span></div>
-        <div><strong>{{ tasks.length }}</strong><span>巡检任务</span></div>
+        <div><strong>{{ groupPagination.total }}</strong><span>巡检组</span></div>
+        <div><strong>{{ taskPagination.total }}</strong><span>巡检任务</span></div>
         <div><strong>{{ runningCount }}</strong><span>执行中</span></div>
       </div>
     </header>
@@ -15,7 +15,7 @@
     <a-tabs v-model:activeKey="activeTab" class="workspace-tabs" @change="handleTabChange">
       <a-tab-pane key="tasks" tab="巡检任务">
         <div class="toolbar">
-          <a-button size="large" @click="openTaskModal()">
+          <a-button v-permission="'inspection:tasks:create'" size="large" @click="openTaskModal()">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
             <span>&nbsp;新增任务</span>
           </a-button>
@@ -29,8 +29,9 @@
           :columns="taskColumns"
           :data-source="tasks"
           :loading="taskLoading"
-          :pagination="false"
-          :scroll="{ x: 1050 }"
+          :pagination="taskPagination"
+          :scroll="{ x: 1330 }"
+          @change="handleTaskTableChange"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'scope'">
@@ -49,20 +50,27 @@
             <template v-else-if="column.key === 'enabled'">
               <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
             </template>
+            <template v-else-if="column.key === 'schedule'">
+              <a-space v-if="record.cron_expression" direction="vertical" :size="0">
+                <code>{{ record.cron_expression }}</code>
+                <span class="schedule-next">下次 {{ formatTime(record.next_run_time) }}</span>
+              </a-space>
+              <span v-else class="schedule-next">仅手动触发</span>
+            </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button size="small" type="primary" @click="openTaskModal(record)">
+                  <a-button v-permission="'inspection:tasks:update'" size="small" type="primary" @click="openTaskModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="运行" placement="top">
-                  <a-button size="small" type="primary" ghost :loading="runningTaskIds.has(record.id)" @click="runTask(record)">
+                  <a-button v-permission="'inspection:tasks:run'" size="small" type="primary" ghost :loading="runningTaskIds.has(record.id)" @click="runTask(record)">
                     <FontAwesomeIcon :icon="['fas', 'play']" />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="删除" placement="top">
-                  <a-button class="delBtn" size="small" type="primary" danger @click="confirmDeleteTask(record)">
+                  <a-button v-permission="'inspection:tasks:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteTask(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -74,7 +82,7 @@
 
       <a-tab-pane key="groups" tab="巡检组">
         <div class="toolbar">
-          <a-button size="large" @click="openGroupModal()">
+          <a-button v-permission="'inspection:groups:create'" size="large" @click="openGroupModal()">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
             <span>&nbsp;新增巡检组</span>
           </a-button>
@@ -88,8 +96,9 @@
           :columns="groupColumns"
           :data-source="groups"
           :loading="groupLoading"
-          :pagination="false"
+          :pagination="groupPagination"
           :scroll="{ x: 900 }"
+          @change="handleGroupTableChange"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'scope'">
@@ -97,20 +106,24 @@
             </template>
             <template v-else-if="column.key === 'checks'">
               <a-space wrap>
-                <a-tag v-for="check in record.checks" :key="check.id || check.name">
-                  {{ check.name }} · {{ executorLabel(check.executor) }}
+                <a-tag
+                  v-for="check in record.checks"
+                  :key="check.id || check.name"
+                  :color="check.severity === 'warning' ? 'orange' : 'red'"
+                >
+                  {{ check.name }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
                 </a-tag>
               </a-space>
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
                 <a-tooltip title="编辑" placement="top">
-                  <a-button size="small" type="primary" @click="openGroupModal(record)">
+                  <a-button v-permission="'inspection:groups:update'" size="small" type="primary" @click="openGroupModal(record)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
                 <a-tooltip title="删除" placement="top">
-                  <a-button class="delBtn" size="small" type="primary" danger @click="confirmDeleteGroup(record)">
+                  <a-button v-permission="'inspection:groups:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteGroup(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -122,6 +135,42 @@
 
       <a-tab-pane key="executions" tab="执行记录">
         <div class="toolbar">
+          <a-select
+            v-model:value="executionFilters.task"
+            class="filter-select"
+            allow-clear
+            show-search
+            option-filter-prop="label"
+            placeholder="全部任务"
+            :getPopupContainer="getPopupContainer"
+            @change="handleExecutionFilterChange"
+          >
+            <a-select-option v-for="task in taskOptions" :key="task.id" :value="task.id" :label="task.name">{{ task.name }}</a-select-option>
+          </a-select>
+          <a-select
+            v-model:value="executionFilters.status"
+            class="filter-select"
+            allow-clear
+            placeholder="全部状态"
+            :options="statusFilterOptions"
+            :getPopupContainer="getPopupContainer"
+            @change="handleExecutionFilterChange"
+          />
+          <a-select
+            v-model:value="executionFilters.trigger_type"
+            class="filter-select"
+            allow-clear
+            placeholder="全部触发方式"
+            :options="triggerFilterOptions"
+            :getPopupContainer="getPopupContainer"
+            @change="handleExecutionFilterChange"
+          />
+          <a-range-picker
+            v-model:value="executionFilters.range"
+            show-time
+            :placeholder="['开始时间', '结束时间']"
+            @change="handleExecutionFilterChange"
+          />
           <a-button size="large" @click="loadExecutions">
             <FontAwesomeIcon :icon="['fas', 'rotate']" />
             <span>&nbsp;刷新</span>
@@ -132,15 +181,22 @@
           :columns="executionColumns"
           :data-source="executions"
           :loading="executionLoading"
-          :pagination="false"
-          :scroll="{ x: 1000 }"
+          :pagination="executionPagination"
+          :scroll="{ x: 1200 }"
+          @change="handleExecutionTableChange"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
               <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
             </template>
+            <template v-else-if="column.key === 'trigger_type'">
+              <a-tag :color="record.trigger_type === 'scheduled' ? 'purple' : 'default'">
+                {{ record.trigger_type === 'scheduled' ? '定时' : '手动' }}
+              </a-tag>
+            </template>
             <template v-else-if="column.key === 'summary'">
               {{ record.summary?.success || 0 }} 成功 / {{ record.summary?.failed || 0 }} 失败
+              <a-tag v-if="record.summary?.warning" color="orange">{{ record.summary.warning }} 警告</a-tag>
             </template>
             <template v-else-if="column.key === 'create_time'">{{ formatTime(record.create_time) }}</template>
             <template v-else-if="column.key === 'action'">
@@ -150,6 +206,7 @@
                 </a-tooltip>
                 <a-tooltip v-if="['pending', 'running'].includes(record.status)" title="取消" placement="top">
                   <a-button
+                    v-permission="'inspection:executions:cancel'"
                     danger
                     ghost
                     size="small"
@@ -204,6 +261,10 @@
               </a-select>
             </a-form-item>
           </div>
+          <a-form-item label="严重级别" required>
+            <a-segmented v-model:value="check.severity" :options="severityOptions" block />
+            <div class="field-hint">警告级失败只计入汇总，不会把巡检目标判为失败。</div>
+          </a-form-item>
           <template v-if="check.executor === 'shell'">
             <a-form-item label="Shell 命令" required><a-textarea v-model:value="check.config.command" :rows="2" /></a-form-item>
             <div class="form-grid">
@@ -252,7 +313,7 @@
         <a-form-item label="任务名称" required><a-input v-model:value="taskForm.name" /></a-form-item>
         <a-form-item label="巡检组" required>
           <a-select v-model:value="taskForm.group" :getPopupContainer="getPopupContainer" show-search option-filter-prop="label" @change="handleTaskGroupChange">
-            <a-select-option v-for="group in groups" :key="group.id" :value="group.id" :label="group.name">{{ group.name }}</a-select-option>
+            <a-select-option v-for="group in groupOptions" :key="group.id" :value="group.id" :label="group.name">{{ group.name }}</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item label="目标类型" required>
@@ -291,6 +352,10 @@
           <a-form-item label="并发数"><a-input-number v-model:value="taskForm.concurrency" :min="1" :max="100" /></a-form-item>
           <a-form-item label="单目标超时（秒）"><a-input-number v-model:value="taskForm.timeout_seconds" :min="5" :max="3600" /></a-form-item>
         </div>
+        <a-form-item label="定时计划">
+          <a-input v-model:value="taskForm.cron_expression" placeholder="例如 0 2 * * * （留空表示仅手动触发）" />
+          <div class="field-hint">5 段 cron：分 时 日 月 周；保存后由调度器按分钟粒度扫描到期任务。</div>
+        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -298,8 +363,10 @@
       <a-descriptions v-if="selectedExecution" bordered size="small" :column="2">
         <a-descriptions-item label="任务">{{ selectedExecution.task_name }}</a-descriptions-item>
         <a-descriptions-item label="状态">{{ statusLabel(selectedExecution.status) }}</a-descriptions-item>
-        <a-descriptions-item label="巡检目标">{{ selectedExecution.service_snapshot?.name }}</a-descriptions-item>
+        <a-descriptions-item :label="executionTargetLabel">{{ selectedExecution.service_snapshot?.name }}</a-descriptions-item>
+        <a-descriptions-item label="触发方式">{{ selectedExecution.trigger_type === 'scheduled' ? '定时' : '手动' }}</a-descriptions-item>
         <a-descriptions-item label="开始时间">{{ formatTime(selectedExecution.start_time) }}</a-descriptions-item>
+        <a-descriptions-item label="结束时间">{{ formatTime(selectedExecution.end_time) }}</a-descriptions-item>
       </a-descriptions>
       <a-collapse v-if="selectedExecution" class="target-results">
         <a-collapse-panel v-for="target in selectedExecution.targets" :key="target.id">
@@ -307,10 +374,19 @@
             <a-space><a-badge :status="target.passed ? 'success' : 'error'" />{{ target.target_name }}</a-space>
           </template>
           <a-alert v-if="targetErrorMessage(target)" type="error" :message="targetErrorMessage(target)" show-icon />
-          <a-table row-key="check_key" size="small" :pagination="false" :columns="resultColumns" :data-source="targetDisplayResults(target)">
+          <a-table
+            row-key="check_key"
+            size="small"
+            :pagination="false"
+            :columns="resultColumns"
+            :data-source="targetDisplayResults(target)"
+          >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <a-tag :color="record.status === 'pass' ? 'green' : record.status === 'skipped' ? 'default' : 'red'">{{ record.status }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'severity'">
+                <a-tag :color="record.severity === 'warning' ? 'orange' : 'red'">{{ severityLabel(record.severity) }}</a-tag>
               </template>
               <template v-else-if="column.key === 'actual_value'"><pre>{{ formatValue(record.actual_value) }}</pre></template>
             </template>
@@ -323,6 +399,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import dayjs from 'dayjs'
 import { message, Modal } from 'ant-design-vue'
 import {
   getApplicationServiceList,
@@ -350,6 +427,9 @@ import store from '@/store'
 const activeTab = ref('tasks')
 const groups = ref([])
 const tasks = ref([])
+// 列表已分页，下拉候选必须另外取全量，否则只能选到第一页的巡检组/任务。
+const groupOptions = ref([])
+const taskOptions = ref([])
 const businessSystems = ref([])
 const businessEnvironments = ref([])
 const services = ref([])
@@ -371,6 +451,18 @@ const cancelingExecutionId = ref(null)
 let executionPollTimer = null
 let localKey = 0
 
+const createPagination = () => reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total) => `共 ${total} 条`,
+})
+const groupPagination = createPagination()
+const taskPagination = createPagination()
+const executionPagination = createPagination()
+const executionFilters = reactive({ task: undefined, status: undefined, trigger_type: undefined, range: undefined })
+
 const emptyGroupForm = () => ({ id: null, name: '', scope: 'per_deployment', description: '', enabled: true, checks: [] })
 const emptyTaskForm = () => ({
   id: null,
@@ -381,6 +473,7 @@ const emptyTaskForm = () => ({
   host_group: undefined,
   concurrency: 20,
   timeout_seconds: 60,
+  cron_expression: '',
   enabled: true,
 })
 const groupForm = reactive(emptyGroupForm())
@@ -391,6 +484,7 @@ const taskColumns = [
   { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 160 },
   { title: '目标', dataIndex: 'target_name', key: 'target', width: 200 },
   { title: '范围', key: 'scope', width: 140 },
+  { title: '定时计划', key: 'schedule', width: 200 },
   { title: '并发 / 超时', key: 'limits', customRender: ({ record }) => `${record.concurrency} / ${record.timeout_seconds}s`, width: 130 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '操作', key: 'action', fixed: 'right', width: 170 },
@@ -403,9 +497,11 @@ const groupColumns = [
 ]
 const executionColumns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-  { title: '任务', dataIndex: 'task_name', key: 'task_name', width: 200 },
+  { title: '任务', dataIndex: 'task_name', key: 'task_name', width: 180 },
+  { title: '目标', dataIndex: 'target_name', key: 'target_name', width: 180 },
   { title: '状态', key: 'status', width: 100 },
-  { title: '结果', key: 'summary', width: 180 },
+  { title: '触发', key: 'trigger_type', width: 90 },
+  { title: '结果', key: 'summary', width: 200 },
   { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 120 },
   { title: '创建时间', key: 'create_time', width: 180 },
   { title: '操作', key: 'action', fixed: 'right', width: 90 },
@@ -413,6 +509,7 @@ const executionColumns = [
 const resultColumns = [
   { title: '检查项', dataIndex: 'name', key: 'name', width: 170 },
   { title: '状态', key: 'status', width: 90 },
+  { title: '级别', key: 'severity', width: 80 },
   { title: '实际值', key: 'actual_value', width: 220 },
   { title: '消息', dataIndex: 'message', key: 'message' },
 ]
@@ -424,6 +521,24 @@ const executorOptions = [
   { label: 'Agent HTTP', value: 'http' },
   { label: 'Agent TCP', value: 'tcp' },
 ]
+const severityOptions = [
+  { label: '严重', value: 'critical' },
+  { label: '警告', value: 'warning' },
+]
+const statusFilterOptions = [
+  { label: '等待中', value: 'pending' },
+  { label: '执行中', value: 'running' },
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+  { label: '已取消', value: 'canceled' },
+]
+const triggerFilterOptions = [
+  { label: '手动', value: 'manual' },
+  { label: '定时', value: 'scheduled' },
+]
+const executionTargetLabel = computed(
+  () => selectedExecution.value?.service_snapshot?.target_type === 'host_group' ? '主机组' : '逻辑服务',
+)
 const schemaTypeOptions = [
   { label: 'JSON Schema', value: 'json_schema' },
   { label: 'Schematron', value: 'schematron' },
@@ -440,7 +555,7 @@ const schemaDocumentTypes = {
   schematron: [{ label: 'XML', value: 'xml' }],
   regexp: [{ label: 'Text', value: 'text' }],
 }
-const selectedTaskGroup = computed(() => groups.value.find((group) => group.id === taskForm.group))
+const selectedTaskGroup = computed(() => groupOptions.value.find((group) => group.id === taskForm.group))
 const targetTypeOptions = computed(() => [
   { label: '逻辑服务', value: 'logical_service' },
   {
@@ -455,7 +570,8 @@ const serviceTreeData = computed(() => {
     .map((service) => ({
       title: service.name,
       value: service.id,
-      key: `service:${service.id}`,
+      // a-tree-select 要求 key 与 value 一致，否则会告警并影响选中态匹配
+      key: service.id,
       isLeaf: true,
     }))
   const environmentsById = new Map(
@@ -500,7 +616,8 @@ const hostGroupTreeData = computed(() => {
   const mapNodes = (nodes) => (Array.isArray(nodes) ? nodes : []).map((group) => ({
     title: `${group.name} (${group.host_count || 0})`,
     value: group.id,
-    key: `host-group:${group.id}`,
+    // 同上：key 必须与 value 一致
+    key: group.id,
     children: mapNodes(group.children),
   }))
   return mapNodes(hostGroups.value)
@@ -511,16 +628,19 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
 const scopeLabel = (scope) => scope === 'per_deployment' ? '每个部署实例' : '服务单次'
 const executorLabel = (executor) => ({ shell: 'Agent Shell', schema_validate: 'Agent Schema', http: 'Agent HTTP', tcp: 'Agent TCP' }[executor] || executor)
+const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
 const formatValue = (value) => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '-')
 const rawTargetResults = (target) => (Array.isArray(target.raw_result?.checks) ? target.raw_result.checks : [])
   .filter((check) => check?.key !== 'control')
-  .map((check) => ({
-    check_key: check.key,
+  .map((check, index) => ({
+    // Agent 回传的 key 在计划级错误下可能重复，补上下标保证表格 row-key 唯一。
+    check_key: `${check.key || 'check'}#${index}`,
     check_type: check.type,
     name: check.name,
     status: check.status,
+    severity: check.severity || 'critical',
     expected_value: check.expected,
     actual_value: check.actual,
     message: check.message,
@@ -541,13 +661,27 @@ async function fetchAll(loader, params = {}) {
   return records
 }
 
+function applyPagination(pagination, data) {
+  pagination.total = Number(data.count || 0)
+  pagination.current = Number(data.pageNumber || pagination.current)
+  pagination.pageSize = Number(data.pageSize || pagination.pageSize)
+}
+
 async function loadGroups() {
   groupLoading.value = true
-  try { groups.value = responseData(await getInspectionGroups({ page_size: 30 })).results || [] } finally { groupLoading.value = false }
+  try {
+    const data = responseData(await getInspectionGroups({ page: groupPagination.current, page_size: groupPagination.pageSize }))
+    groups.value = data.results || []
+    applyPagination(groupPagination, data)
+  } finally { groupLoading.value = false }
 }
 async function loadTasks() {
   taskLoading.value = true
-  try { tasks.value = responseData(await getInspectionTasks({ page_size: 30 })).results || [] } finally { taskLoading.value = false }
+  try {
+    const data = responseData(await getInspectionTasks({ page: taskPagination.current, page_size: taskPagination.pageSize }))
+    tasks.value = data.results || []
+    applyPagination(taskPagination, data)
+  } finally { taskLoading.value = false }
 }
 async function loadServiceTree() {
   serviceTreeLoading.value = true
@@ -572,9 +706,56 @@ async function loadHostGroupTree() {
     hostGroupTreeLoading.value = false
   }
 }
+async function loadSelectOptions() {
+  const [groupRecords, taskRecords] = await Promise.all([
+    fetchAll(getInspectionGroups),
+    fetchAll(getInspectionTasks),
+  ])
+  groupOptions.value = groupRecords
+  taskOptions.value = taskRecords
+}
+function buildExecutionParams() {
+  const params = {
+    page: executionPagination.current,
+    page_size: executionPagination.pageSize,
+    task: executionFilters.task,
+    status: executionFilters.status,
+    trigger_type: executionFilters.trigger_type,
+  }
+  const [start, end] = executionFilters.range || []
+  if (start && end) {
+    // 统一自然日闭区间：只选日期时默认补齐 00:00:00 与 23:59:59，避免漏查当日记录。
+    params.start_time = dayjs(start).startOf('day').format('YYYY-MM-DDTHH:mm:ss')
+    params.end_time = dayjs(end).endOf('day').format('YYYY-MM-DDTHH:mm:ss')
+  }
+  return params
+}
 async function loadExecutions() {
   executionLoading.value = true
-  try { executions.value = responseData(await getInspectionExecutions({ page_size: 30 })).results || [] } finally { executionLoading.value = false }
+  try {
+    const data = responseData(await getInspectionExecutions(buildExecutionParams()))
+    executions.value = data.results || []
+    applyPagination(executionPagination, data)
+  } finally { executionLoading.value = false }
+}
+function handleGroupTableChange(pagination) {
+  groupPagination.current = pagination.current
+  groupPagination.pageSize = pagination.pageSize
+  loadGroups()
+}
+function handleTaskTableChange(pagination) {
+  taskPagination.current = pagination.current
+  taskPagination.pageSize = pagination.pageSize
+  loadTasks()
+}
+function handleExecutionTableChange(pagination) {
+  executionPagination.current = pagination.current
+  executionPagination.pageSize = pagination.pageSize
+  loadExecutions()
+}
+function handleExecutionFilterChange() {
+  executionPagination.current = 1
+  loadExecutions()
 }
 
 function defaultExecutorConfig(executor) {
@@ -593,7 +774,15 @@ function handleSchemaTypeChange(check) {
 function addCheck() {
   const executor = groupForm.scope === 'per_deployment' ? 'shell' : 'http'
   const config = defaultExecutorConfig(executor)
-  groupForm.checks.push({ localKey: ++localKey, name: '', executor, config, enabled: true, order: groupForm.checks.length })
+  groupForm.checks.push({
+    localKey: ++localKey,
+    name: '',
+    executor,
+    config,
+    severity: 'critical',
+    enabled: true,
+    order: groupForm.checks.length,
+  })
 }
 function confirmRemoveCheck(check, index) {
   openDeleteConfirm({
@@ -605,7 +794,12 @@ function confirmRemoveCheck(check, index) {
 }
 function openGroupModal(record) {
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
-  groupForm.checks = (groupForm.checks || []).map((check) => ({ ...check, localKey: ++localKey, config: { ...(check.config || {}) } }))
+  groupForm.checks = (groupForm.checks || []).map((check) => ({
+    ...check,
+    localKey: ++localKey,
+    severity: check.severity || 'critical',
+    config: { ...(check.config || {}) },
+  }))
   if (!groupForm.checks.length) addCheck()
   groupModalOpen.value = true
 }
@@ -637,7 +831,7 @@ async function submitGroup() {
     await saveInspectionGroup(payload)
     groupModalOpen.value = false
     message.success('巡检组已保存')
-    await loadGroups()
+    await Promise.all([loadGroups(), loadSelectOptions()])
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
@@ -654,7 +848,7 @@ async function submitTask() {
     await saveInspectionTask(payload)
     taskModalOpen.value = false
     message.success('巡检任务已保存')
-    await loadTasks()
+    await Promise.all([loadTasks(), loadSelectOptions()])
   } finally { savingTask.value = false }
 }
 async function runTask(record) {
@@ -663,6 +857,7 @@ async function runTask(record) {
     await runInspectionTask(record.id)
     message.success('巡检任务已提交')
     activeTab.value = 'executions'
+    executionPagination.current = 1
     await loadExecutions()
     startExecutionPolling()
   } finally { runningTaskIds.delete(record.id) }
@@ -690,10 +885,10 @@ function cancelExecution(record) {
   })
 }
 function confirmDeleteGroup(record) {
-  openDeleteConfirm({ title: '删除巡检组', summary: '删除后无法恢复。', items: [record.name], onConfirm: async () => { await deleteInspectionGroup(record.id); await loadGroups() } })
+  openDeleteConfirm({ title: '删除巡检组', summary: '删除后无法恢复。', items: [record.name], onConfirm: async () => { await deleteInspectionGroup(record.id); await Promise.all([loadGroups(), loadSelectOptions()]) } })
 }
 function confirmDeleteTask(record) {
-  openDeleteConfirm({ title: '删除巡检任务', summary: '历史执行记录会保留。', items: [record.name], onConfirm: async () => { await deleteInspectionTask(record.id); await loadTasks() } })
+  openDeleteConfirm({ title: '删除巡检任务', summary: '历史执行记录会保留。', items: [record.name], onConfirm: async () => { await deleteInspectionTask(record.id); await Promise.all([loadTasks(), loadSelectOptions()]) } })
 }
 function handleTabChange(key) {
   if (key === 'executions') loadExecutions()
@@ -711,7 +906,16 @@ function stopExecutionPolling() {
   executionPollTimer = null
 }
 
-onMounted(async () => { await Promise.all([loadGroups(), loadTasks(), loadServiceTree(), loadHostGroupTree(), loadExecutions()]) })
+onMounted(async () => {
+  await Promise.all([
+    loadGroups(),
+    loadTasks(),
+    loadSelectOptions(),
+    loadServiceTree(),
+    loadHostGroupTree(),
+    loadExecutions(),
+  ])
+})
 onBeforeUnmount(stopExecutionPolling)
 </script>
 
@@ -726,7 +930,10 @@ onBeforeUnmount(stopExecutionPolling)
 .summary-strip strong { color: #126e82; font-size: 20px; }
 .summary-strip span { color: #66727d; font-size: 12px; }
 .workspace-tabs { margin-top: 18px; padding: 0 20px 20px; background: #fff; border: 1px solid #e1e6ea; }
-.toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
+.filter-select { width: 170px; }
+.field-hint { margin-top: 4px; color: #66727d; font-size: 12px; }
+.schedule-next { color: #66727d; font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .check-heading, .check-editor-head { display: flex; align-items: center; justify-content: space-between; }
 .check-heading { margin: 4px 0 12px; font-weight: 600; }

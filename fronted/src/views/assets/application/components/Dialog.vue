@@ -129,9 +129,6 @@ const getItemById  = (id) =>{
 const handleOk = (e) => {
     const res = formRef.value?.validate().then((r1) => {
         const obj = { ...form.value };
-        // 应用基线已不在本界面维护：详情接口会带回 baseline_checks，提交前必须剔除，
-        // 否则会把读回来的列表原样写回；后端收到 None 时跳过覆盖，检查项保持不变。
-        delete obj.baseline_checks
         if (obj.id == -1) {
             SaveOrCreateApplication(obj).then(result => {
                 message.success("新增"+ props.appname+"成功");

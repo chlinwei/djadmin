@@ -12,10 +12,10 @@ from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 from .models import (
     Credential, Application, ApplicationVersion, ApplicationDeployment, ApplicationDeploymentTemplate, BusinessEnvironment, BusinessSystem, HostGroup, Host,
-    ApplicationBaselineExecution, ApplicationBaselineResult, ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
+    ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
     HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, Project, WebSSHSessionLog,
 )
-from .views import _build_application_baseline_params, _resolve_target_agent_ids, _run_application_baseline_check, _run_exporter_job_in_background
+from .views import _build_application_params, _resolve_target_agent_ids, _run_exporter_job_in_background
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -360,17 +360,7 @@ class ApplicationTest(BaseTestCase):
         }, format='json')
         service = self.assertResponseOK(service_res)['data']
         self.assertEqual(service['application'], application.id)  # type: ignore[attr-defined]
-        job_count = AgentJob.objects.count()
-        baseline_res = self.client.post(
-            f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
-        )
-        baseline = self.assertResponseOK(baseline_res)['data']
-        self.assertEqual(baseline['health_status'], 'healthy')
-        self.assertEqual(baseline['baseline_pass_rate'], 100.0)
-        self.assertEqual({item['key'] for item in baseline['results']}, {
-            'members', 'application_consistency',
-        })
-        self.assertEqual(AgentJob.objects.count(), job_count)
+        self.assertEqual(AgentJob.objects.count(), 0)
 
     def test_service_can_switch_application_keeping_existing_members(self):
         """切换服务所属应用时，服务自身已关联的实例不应被判为跨应用冲突。"""
@@ -460,13 +450,9 @@ class ApplicationTest(BaseTestCase):
         deployment.refresh_from_db()
         second_deployment.refresh_from_db()
 
-        baseline_response = self.client.post(
-            f'/assets/application-services/{service["id"]}/check-baseline/', {}, format='json',
+        self.assertEqual(
+            ApplicationServiceDeployment.objects.filter(service_id=service['id']).count(), 2,
         )
-        baseline = self.assertResponseOK(baseline_response)['data']
-        self.assertEqual(baseline['health_status'], 'healthy')
-        member_result = next(item for item in baseline['results'] if item['key'] == 'members')
-        self.assertEqual(member_result['expected'], '至少 2 个成员')
 
     def test_standalone_service_allows_multiple_deployments(self):
         application = Application.objects.create(name='Standalone App', code='standalone-app')
@@ -595,7 +581,7 @@ class ApplicationTest(BaseTestCase):
             instance_name='tomcat-main',
         )
 
-        params = _build_application_baseline_params(deployment)
+        params = _build_application_params(deployment)
 
         self.assertEqual(deployment_template.app_home, '/home/${RUN_USER}/tomcat')
         self.assertEqual(
@@ -683,38 +669,6 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(deployment.deployment_template.ports.count(), 1)
         self.assertEqual(deployment.deployment_template.paths.count(), 1)
         self.assertEqual(deployment.deployment_template.compose_config.service_name, 'api')
-
-    @patch('assets.views.threading.Thread')
-    def test_check_baseline_queues_structured_agent_job(self, thread_class):
-        """立即检查生成结构化 AgentJob，并通过后台线程执行。"""
-        application = Application.objects.create(name='Nginx', code='nginx')
-        version = ApplicationVersion.objects.create(application=application, version='1.26.2')
-        host = Host.objects.create(instance_name='kul-tib-tomcat1', agent_id='177', ip='10.0.0.12')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application, name='Nginx Systemd', control_type='systemd',
-            run_user='nginx', service_name='nginx.service', systemd_scope='user',
-        )
-        deployment = self._create_deployment(
-            application_version=version,
-            deployment_template=deployment_template,
-            host=host,
-            instance_name='nginx-main',
-        )
-        deployment_template.ports.create(name='HTTP', protocol='tcp', port=80)
-
-        res = self.client.post(f'/assets/application-deployments/{deployment.id}/check-baseline/')  # type: ignore[attr-defined]
-
-        body = self.assertResponseOK(res)
-        job = AgentJob.objects.get(job_id=body['data']['job_id'])
-        self.assertEqual(job.agent_id, '177')
-        self.assertEqual(job.action, 'check_application_baseline')
-        self.assertEqual(job.params['service_name'], 'nginx.service')
-        self.assertEqual(job.params['systemd_scope'], 'user')
-        self.assertEqual(job.params['run_user'], 'nginx')
-        self.assertEqual(job.params['ports'][0]['port'], 80)
-        deployment.refresh_from_db()
-        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.CHECKING)
-        thread_class.return_value.start.assert_called_once()
 
     @patch('assets.views._dispatch_agent_job_via_grpc')
     def test_control_deployment_dispatches_structured_agent_job(self, dispatch_job):
@@ -845,86 +799,6 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(body['data']['runtime_status'], 'stopped')
         deployment.refresh_from_db()
         self.assertEqual(deployment.runtime_status, ApplicationDeployment.RuntimeStatus.STOPPED)
-
-    @patch('assets.views.close_old_connections')
-    @patch('assets.views._dispatch_agent_job_via_grpc')
-    def test_baseline_result_updates_deployment_health(self, dispatch_job, _close_connections):
-        """Agent 返回的逐项结果会生成检查历史并更新部署健康状态。"""
-        application = Application.objects.create(name='Redis Baseline Test', code='redis-baseline-test')
-        version = ApplicationVersion.objects.create(application=application, version='7.4')
-        host = Host.objects.create(instance_name='agent-app-2', ip='10.0.0.13')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application, name='Redis Systemd', control_type='systemd',
-            run_user='redis', service_name='redis.service',
-        )
-        deployment = self._create_deployment(
-            application_version=version,
-            deployment_template=deployment_template,
-            host=host,
-            instance_name='redis-main',
-        )
-        job = AgentJob.objects.create(
-            job_id='baseline-result-test', agent_id=host.instance_name, host=host,
-            job_type='custom', action='check_application_baseline', params={},
-        )
-        execution = ApplicationBaselineExecution.objects.create(deployment=deployment, agent_job=job)
-        job.status = AgentJob.JobStatus.SUCCESS
-        job.result_data = {
-            'passed': False,
-            'checks': [
-                {'key': 'control', 'type': 'control_status', 'name': '运行状态', 'status': 'pass', 'expected': 'running', 'actual': 'active'},
-                {'key': 'port:tcp:6379', 'type': 'port_listening', 'name': 'Redis', 'status': 'fail', 'expected': True, 'actual': False, 'message': '端口未监听'},
-            ],
-        }
-        dispatch_job.return_value = job
-
-        _run_application_baseline_check(execution.id, job.job_id)  # type: ignore[attr-defined]
-
-        execution.refresh_from_db()
-        deployment.refresh_from_db()
-        self.assertEqual(execution.status, ApplicationBaselineExecution.Status.COMPLETED)
-        self.assertEqual(ApplicationBaselineResult.objects.filter(execution=execution).count(), 2)
-        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.UNHEALTHY)
-        self.assertEqual(deployment.baseline_pass_rate, 50.0)
-
-        history_res = self.client.get(f'/assets/application-deployments/{deployment.id}/baseline-history/')  # type: ignore[attr-defined]
-        history_body = self.assertResponseOK(history_res)
-        self.assertEqual(history_body['data'][0]['id'], execution.id)
-        self.assertEqual(len(history_body['data'][0]['results']), 2)
-
-    @patch('assets.views.close_old_connections')
-    @patch('assets.views._dispatch_agent_job_via_grpc')
-    def test_baseline_agent_failure_marks_execution_error(self, dispatch_job, _close_connections):
-        """Agent 调度失败时保留错误信息，并将部署健康状态标记为检查失败。"""
-        application = Application.objects.create(name='MySQL Baseline Test', code='mysql-baseline-test')
-        version = ApplicationVersion.objects.create(application=application, version='8.4')
-        host = Host.objects.create(instance_name='agent-app-3', ip='10.0.0.14')
-        deployment_template = ApplicationDeploymentTemplate.objects.create(
-            application=application, name='MySQL Systemd', control_type='systemd',
-            run_user='mysql', service_name='mysqld.service',
-        )
-        deployment = self._create_deployment(
-            application_version=version,
-            deployment_template=deployment_template,
-            host=host,
-            instance_name='mysql-main',
-        )
-        job = AgentJob.objects.create(
-            job_id='baseline-failure-test', agent_id=host.instance_name, host=host,
-            job_type='custom', action='check_application_baseline', params={},
-        )
-        execution = ApplicationBaselineExecution.objects.create(deployment=deployment, agent_job=job)
-        job.status = AgentJob.JobStatus.FAILED
-        job.error_message = 'agent channel unavailable'
-        dispatch_job.return_value = job
-
-        _run_application_baseline_check(execution.id, job.job_id)  # type: ignore[attr-defined]
-
-        execution.refresh_from_db()
-        deployment.refresh_from_db()
-        self.assertEqual(execution.status, ApplicationBaselineExecution.Status.FAILED)
-        self.assertEqual(execution.error_message, 'agent channel unavailable')
-        self.assertEqual(deployment.health_status, ApplicationDeployment.HealthStatus.ERROR)
 
 
 # 服务级状态查询走线程池，工作线程需读到已提交数据，因此使用真实事务的测试基类。

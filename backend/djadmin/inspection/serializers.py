@@ -13,7 +13,7 @@ from .models import (
 class InspectionCheckSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionCheck
-        fields = ['id', 'name', 'executor', 'config', 'enabled', 'order']
+        fields = ['id', 'name', 'executor', 'config', 'severity', 'enabled', 'order']
 
     def validate(self, attrs):
         executor = attrs.get('executor')
@@ -65,7 +65,7 @@ class InspectionGroupSerializer(serializers.ModelSerializer):
         allowed = set(InspectionCheck.Executor.values)
         invalid = [check.get('name') for check in checks if check.get('executor') not in allowed]
         if invalid:
-            raise serializers.ValidationError({'checks': f'检查项执行器与执行范围不匹配: {", ".join(invalid)}'})
+            raise serializers.ValidationError({'checks': f'检查项执行器无效: {", ".join(invalid)}'})
         return attrs
 
     def _replace_checks(self, group, checks):
@@ -98,8 +98,22 @@ class InspectionTaskSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'group', 'group_name', 'scope', 'target_type', 'target_name',
             'logical_service', 'logical_service_name', 'host_group', 'host_group_name',
-            'concurrency', 'timeout_seconds', 'enabled', 'create_time', 'update_time',
+            'concurrency', 'timeout_seconds', 'cron_expression', 'next_run_time', 'last_run_time',
+            'enabled', 'create_time', 'update_time',
         ]
+        read_only_fields = ['next_run_time', 'last_run_time']
+
+    def validate_cron_expression(self, value):
+        cron_text = str(value or '').strip()
+        if not cron_text:
+            return ''
+        # 定时巡检与任务中心共用同一套 cron 解析，避免两处语义不一致。
+        from scheduler_manager import validate_cron_expression
+
+        valid, error = validate_cron_expression(cron_text)
+        if not valid:
+            raise serializers.ValidationError(error)
+        return cron_text
 
     def get_target_name(self, obj):
         if obj.target_type == InspectionTask.TargetType.HOST_GROUP:
@@ -147,7 +161,7 @@ class InspectionTaskSerializer(serializers.ModelSerializer):
 class InspectionResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionResult
-        fields = ['id', 'check_key', 'check_type', 'name', 'status', 'expected_value', 'actual_value', 'message']
+        fields = ['id', 'check_key', 'check_type', 'name', 'status', 'severity', 'expected_value', 'actual_value', 'message']
 
 
 class InspectionTargetExecutionSerializer(serializers.ModelSerializer):
@@ -169,7 +183,22 @@ class InspectionExecutionSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionExecution
         fields = [
-            'id', 'task', 'task_name', 'status', 'task_snapshot', 'group_snapshot',
+            'id', 'task', 'task_name', 'status', 'trigger_type', 'task_snapshot', 'group_snapshot',
             'service_snapshot', 'target_snapshot', 'summary', 'requested_username',
             'start_time', 'end_time', 'targets', 'create_time',
         ]
+
+
+class InspectionExecutionListSerializer(serializers.ModelSerializer):
+    task_name = serializers.CharField(source='task.name', read_only=True)
+    target_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InspectionExecution
+        fields = [
+            'id', 'task', 'task_name', 'target_name', 'status', 'trigger_type', 'summary',
+            'requested_username', 'start_time', 'end_time', 'create_time',
+        ]
+
+    def get_target_name(self, obj):
+        return str((obj.service_snapshot or {}).get('name') or '')

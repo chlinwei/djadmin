@@ -148,6 +148,13 @@ class AlertMediaApiTest(TestCase):
 
 
 class AlertNotificationEventTest(TestCase):
+    def setUp(self):
+        self.media = AlertMedia.objects.create(
+            name='ops-smtp', media_type=AlertMedia.MediaType.EMAIL, config={}, enabled=True,
+        )
+        route = AlertRoute.objects.create(name='all-alerts', enabled=True, matchers={})
+        route.media.add(self.media)
+
     def _payload(self, ends_at='9999-12-31T23:59:59Z'):
         return [{
             'labels': {'alertname': 'HostDown', 'severity': 'critical', 'instance': '10.0.0.1'},
@@ -155,6 +162,20 @@ class AlertNotificationEventTest(TestCase):
             'startsAt': '2026-07-31T08:00:00Z',
             'endsAt': ends_at,
         }]
+
+    @patch('monitor.tasks.send_alert_notification.delay')
+    def test_no_enabled_media_produces_no_notification_event(self, delay):
+        self.media.enabled = False
+        self.media.save(update_fields=['enabled'])
+
+        with self.captureOnCommitCallbacks(execute=True):  # type: ignore[attr-defined]
+            result = ingest_alert_webhook_alerts(self._payload())
+
+        # 没有可投递媒介时不该留下注定失败的通知记录，但告警本身仍要入库。
+        self.assertEqual(result['notifications'], 0)
+        self.assertEqual(AlertNotificationEvent.objects.count(), 0)
+        self.assertEqual(AlertHistory.objects.count(), 1)
+        delay.assert_not_called()
 
     @patch('monitor.tasks.send_alert_notification.delay')
     def test_firing_heartbeat_and_resolved_create_two_events(self, delay):

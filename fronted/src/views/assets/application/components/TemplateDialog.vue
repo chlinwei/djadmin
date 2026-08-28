@@ -354,7 +354,7 @@ async function saveTemplate() {
 const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })
 const addMacro = () => macroDefinitions.value.push({ name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
-const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true, baseline_enabled: true })
+const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
 const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, processing_rule: null, extra_fields: {} })
 
 watch(() => props.open, (visible) => {

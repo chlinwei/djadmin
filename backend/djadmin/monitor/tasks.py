@@ -20,8 +20,8 @@ from .models import (
 )
 
 
-def _resolve_event_media(event):
-    alert = event.alert
+def resolve_alert_media(alert, event_type):
+    """返回这条告警在此事件类型下实际可投递的媒介；入队前与发送时共用同一套匹配规则。"""
     labels = {str(key): str(value) for key, value in (alert.labels or {}).items()}
     labels.update({
         'alertname': str(alert.alertname or ''),
@@ -34,9 +34,9 @@ def _resolve_event_media(event):
         Prefetch('media', queryset=AlertMedia.objects.filter(enabled=True)),
     )
     for route in routes:
-        if event.event_type == 'firing' and not route.notify_on_firing:
+        if event_type == 'firing' and not route.notify_on_firing:
             continue
-        if event.event_type == 'resolved' and not route.notify_on_resolved:
+        if event_type == 'resolved' and not route.notify_on_resolved:
             continue
         matchers = route.matchers if isinstance(route.matchers, dict) else {}
         if all(labels.get(str(key)) == str(value) for key, value in matchers.items()):
@@ -115,11 +115,12 @@ def send_alert_notification(self, event_id):
 	event.save(update_fields=['status', 'attempt_count', 'update_time'])
 
 	alert = event.alert
-	medias = _resolve_event_media(event)
+	medias = resolve_alert_media(alert, event.event_type)
 	
 	if not medias.exists():
 		event.status = AlertNotificationEvent.Status.FAILED
-		event.error_message = '没有匹配的告警媒介'
+		# 入队时已筛过一次，走到这里说明媒介在入队后被停用或路由被改。
+		event.error_message = '媒介在入队后被停用或路由已变更'
 		event.save(update_fields=['status', 'error_message', 'update_time'])
 		return {'status': 'failed', 'event_id': event.pk}
 

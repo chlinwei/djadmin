@@ -11,7 +11,6 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationServiceList: vi.fn(),
   getApplicationDeploymentList: vi.fn(),
   getApplicationDeployment: vi.fn(),
-  getApplicationDeploymentBaselineHistory: vi.fn(),
 }))
 vi.mock('@/store', () => ({
   default: { state: { user: { timezone: 'Asia/Shanghai' } } },
@@ -48,20 +47,14 @@ describe('ServiceTreeNodeContent', () => {
       ports: [{ name: 'main_port', protocol: 'tcp', port: 8080 }],
     } } })
     applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse([
-      { id: 31, instance_name: 'order-api-1', runtime_status: 'running', health_status: 'healthy' },
+      { id: 31, instance_name: 'order-api-1', runtime_status: 'running' },
     ]))
     applicationApi.getApplicationDeployment.mockResolvedValue({ data: { data: {
       id: 31, instance_name: 'order-api-1', service_name: '订单 API', business_system_name: '订单系统',
       environment: 72, environment_name: '测试环境', application_name: 'Order API', version: '1.0',
-      host_name: 'node-1', host_ip: '10.0.0.1', runtime_status: 'running', health_status: 'healthy',
-      baseline_pass_rate: 100, ports: [{ name: 'HTTP', protocol: 'tcp', port: 8080 }],
+      host_name: 'node-1', host_ip: '10.0.0.1', runtime_status: 'running',
+      ports: [{ name: 'HTTP', protocol: 'tcp', port: 8080 }],
     } } })
-    applicationApi.getApplicationDeploymentBaselineHistory.mockResolvedValue({ data: { data: [
-      {
-        id: 41, status: 'completed', passed: true, passed_count: 3, total_count: 3,
-        requested_username: 'admin', start_time: '2026-08-23T04:30:00Z',
-      },
-    ] } })
   })
 
   it('shows the current summary, aggregate metrics, and direct children for every node level', async () => {
@@ -109,9 +102,6 @@ describe('ServiceTreeNodeContent', () => {
     expect(wrapper.text()).not.toContain('业务系统')
     expect(wrapper.text()).not.toContain('部署模板')
     expect(wrapper.text()).toContain('10.0.0.1')
-    expect(wrapper.text()).toContain('最近基线检查')
-    expect(wrapper.text()).toContain('通过')
-    expect(wrapper.text()).toContain('开始时间')
-    expect(wrapper.text()).toContain('2026-08-23T04:30:00Z @ Asia/Shanghai')
+    expect(wrapper.text()).toContain('运行中')
   })
 })

@@ -4,8 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
   batchDeleteApplication: vi.fn(() => Promise.resolve({ data: { data: null } })),
-  checkApplicationServiceBaseline: vi.fn(() => Promise.resolve({ data: { data: { baseline_pass_rate: 100 } } })),
-  checkApplicationDeploymentBaseline: vi.fn(() => Promise.resolve({ data: { data: {} } })),
   controlApplicationDeployment: vi.fn((_id, action) => Promise.resolve({
     data: { data: {
       output: action === 'status' ? 'active' : '',
@@ -18,7 +16,6 @@ vi.mock('@/api/assets/application', () => ({
   deleteClusterProfile: vi.fn(() => Promise.resolve({ data: { data: null } })),
   deleteApplicationDeployment: vi.fn(() => Promise.resolve({ data: { data: null } })),
   deleteApplicationDeploymentTemplate: vi.fn(() => Promise.resolve({ data: { data: null } })),
-  getApplicationDeploymentBaselineHistory: vi.fn(() => Promise.resolve({ data: { data: [] } })),
   getBusinessSystemList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 1, name: '订单系统', code: 'order-system', deployment_count: 2 }], count: 1 } },
   })),

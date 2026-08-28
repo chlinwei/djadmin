@@ -462,25 +462,6 @@ class ApplicationDeploymentTemplateSerializer(ModelSerializer):
         return instance
 
 
-class ApplicationBaselineResultSerializer(ModelSerializer):
-    class Meta:
-        model = ApplicationBaselineResult
-        fields = '__all__'
-
-
-class ApplicationBaselineExecutionSerializer(ModelSerializer):
-    results = ApplicationBaselineResultSerializer(many=True, read_only=True)
-    deployment_name = serializers.CharField(source='deployment.instance_name', read_only=True)
-    application_name = serializers.CharField(source='deployment.application_version.application.name', read_only=True)
-    host_name = serializers.CharField(source='deployment.host.instance_name', read_only=True)
-    host_ip = serializers.IPAddressField(source='deployment.host.ip', read_only=True)
-    job_id = serializers.CharField(source='agent_job.job_id', read_only=True)
-
-    class Meta:
-        model = ApplicationBaselineExecution
-        fields = '__all__'
-
-
 class ApplicationDeploymentSerializer(ModelSerializer):
     application_service = serializers.PrimaryKeyRelatedField(
         queryset=ApplicationService.objects.all(), write_only=True, required=False, allow_null=True,

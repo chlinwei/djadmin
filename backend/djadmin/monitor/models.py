@@ -175,6 +175,18 @@ class AlertHistory(BaseModel):
 		FIRING = 'firing', 'Firing'
 		RESOLVED = 'resolved', 'Resolved'
 
+	class Source(models.TextChoices):
+		PROMETHEUS = 'prometheus', 'Prometheus'
+		INSPECTION = 'inspection', '巡检'
+
+	# 对账任务会删除“本地 firing 但 Prometheus 已无对应规则”的记录，非 Prometheus 来源的告警
+	# 必须靠这个字段被排除在对账范围之外，否则会被误删。
+	source = models.CharField(
+		max_length=16,
+		choices=Source.choices,
+		default=Source.PROMETHEUS,
+		db_index=True,
+	)
 	# 按 labels 排序后计算的稳定哈希：Prometheus notifier 推送的 payload 不带 fingerprint
 	# （那是 Alertmanager 查询接口才有的字段），需要自己算，作为同一条告警跨多次推送的身份标识。
 	fingerprint = models.CharField(max_length=40, db_index=True)

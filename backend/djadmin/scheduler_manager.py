@@ -7,6 +7,7 @@ from django.utils import timezone
 from assets.tasks import cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
 from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
+from inspection.scheduling import cleanup_inspection_executions
 from monitor.tasks import cleanup_alert_histories, cleanup_monitor_install_histories, reconcile_prometheus_alert_history
 from menu.models import SysMenu
 from scheduler.models import ScheduledTask, ScheduledTaskLog
@@ -21,6 +22,7 @@ AUTOMATION_LOG_RETENTION_DAYS_KEY = 'sys.automation.logs.retention_days'
 AUDIT_LOGIN_LOG_RETENTION_DAYS_KEY = 'sys.audit.login_logs.retention_days'
 AUDIT_OPERATION_LOG_RETENTION_DAYS_KEY = 'sys.audit.operation_logs.retention_days'
 MONITOR_INSTALL_HISTORY_RETENTION_DAYS_KEY = 'sys.monitor.install_history.retention_days'
+INSPECTION_EXECUTION_RETENTION_DAYS_KEY = 'sys.inspection.executions.retention_days'
 
 
 def validate_cron_expression(expression):
@@ -122,6 +124,15 @@ def ensure_scheduler_log_configs():
             'description': '监控安装/卸载历史记录保留天数，清理时每个纳管目标至少保留最新一条',
             'is_readonly': False,
         },
+        {
+            'key': INSPECTION_EXECUTION_RETENTION_DAYS_KEY,
+            'value': '90',
+            'default_value': '90',
+            'value_type': 'int',
+            'name': '巡检执行记录保留天数',
+            'description': '巡检执行记录及其检查结果在数据库中的保留天数',
+            'is_readonly': False,
+        },
     ]
 
     for item in defaults:
@@ -203,6 +214,7 @@ def get_task_menu(code):
         'cleanup_alert_histories': '/monitor/alerts',
         'cleanup_login_audit_logs': '/audit/login',
         'cleanup_operation_audit_logs': '/audit/operation-log',
+        'cleanup_inspection_executions': '/sys/inspection',
     }
     menu_path = mapping.get(code)
     if not menu_path:
@@ -275,6 +287,13 @@ def ensure_default_tasks():
             'description': '按保留天数清理已恢复的历史告警记录，仍在 firing 的记录不会被清理',
             'enabled': True,
             'cron_expression': '30 0 * * *',
+        },
+        {
+            'code': 'cleanup_inspection_executions',
+            'name': '巡检执行记录清理',
+            'description': '按保留天数清理巡检执行记录及其目标明细、检查结果',
+            'enabled': True,
+            'cron_expression': '45 0 * * *',
         },
     ]
 
@@ -365,6 +384,8 @@ def resolve_task_callable(task_code):
         return reconcile_prometheus_alert_history
     if task_code == 'cleanup_alert_histories':
         return cleanup_alert_histories
+    if task_code == 'cleanup_inspection_executions':
+        return cleanup_inspection_executions
     return None
 
 

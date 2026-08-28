@@ -119,10 +119,6 @@ export function deleteApplicationService(id) {
     return requestUtil.del(`${applicationServicePrefix}${id}/`)
 }
 
-export function checkApplicationServiceBaseline(id) {
-    return requestUtil.post(`${applicationServicePrefix}${id}/check-baseline/`, {})
-}
-
 export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000) {
     return requestUtil.post(`${applicationServicePrefix}${id}/refresh-runtime-status/`, {}, timeout)
 }
@@ -176,13 +172,5 @@ export function deleteApplicationDeployment(id) {
 
 export function controlApplicationDeployment(id, action, options = {}) {
     return requestUtil.post(`${deploymentPrefix}${id}/control/`, { action }, null, options)
-}
-
-export function checkApplicationDeploymentBaseline(id) {
-    return requestUtil.post(`${deploymentPrefix}${id}/check-baseline/`, {})
-}
-
-export function getApplicationDeploymentBaselineHistory(id) {
-    return requestUtil.get(`${deploymentPrefix}${id}/baseline-history/`)
 }
 

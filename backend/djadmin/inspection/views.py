@@ -1,38 +1,50 @@
-import threading
-
-from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
+from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModelMixin, RetrieveModelMixin, UpdateModelMixin
 from rest_framework.request import Request
 from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
-from assets.models import Host, HostGroup
 from assets.grpc_transfer.client import AgentChannelClient
+from menu.permisssion import CustomMenuPermission
 
-from .executor import run_inspection_execution
 from .models import InspectionExecution, InspectionGroup, InspectionTargetExecution, InspectionTask
-from .serializers import InspectionExecutionSerializer, InspectionGroupSerializer, InspectionTaskSerializer
+from .serializers import (
+    InspectionExecutionListSerializer,
+    InspectionExecutionSerializer,
+    InspectionGroupSerializer,
+    InspectionTaskSerializer,
+)
+from .service import InspectionRequestError, create_execution
+from .scheduling import calculate_next_run_time
 
 
-def _descendant_group_ids(root_id):
-    child_map = {}
-    for group_id, parent_id in HostGroup.objects.values_list('id', 'parent_id'):
-        child_map.setdefault(parent_id, []).append(group_id)
-    result = []
-    pending = [root_id]
-    while pending:
-        group_id = pending.pop()
-        result.append(group_id)
-        pending.extend(child_map.get(group_id, []))
-    return result
+def _parse_range_boundary(value):
+    parsed = parse_datetime(str(value or ''))
+    if parsed is None:
+        return None
+    return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
 
 
 class InspectionGroupViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin, GenericViewSet):
     queryset = InspectionGroup.objects.prefetch_related('checks').all()
     serializer_class = InspectionGroupSerializer
     pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    search_fields = ['name', 'description']
+    ordering_fields = ['name', 'scope', 'enabled', 'create_time', 'update_time']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'inspection:view',
+        'retrieve': 'inspection:view',
+        'create': 'inspection:groups:create',
+        'update': 'inspection:groups:update',
+        'partial_update': 'inspection:groups:update',
+        'destroy': 'inspection:groups:delete',
+    }
 
     def create(self, request: Request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -61,18 +73,34 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
     queryset = InspectionTask.objects.select_related('group', 'logical_service', 'host_group').all()
     serializer_class = InspectionTaskSerializer
     pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    search_fields = ['name', 'group__name', 'logical_service__name', 'host_group__name']
+    ordering_fields = ['name', 'enabled', 'next_run_time', 'last_run_time', 'create_time', 'update_time']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'inspection:view',
+        'retrieve': 'inspection:view',
+        'create': 'inspection:tasks:create',
+        'update': 'inspection:tasks:update',
+        'partial_update': 'inspection:tasks:update',
+        'destroy': 'inspection:tasks:delete',
+        'run': 'inspection:tasks:run',
+    }
 
     def create(self, request: Request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
+        task = serializer.save()
+        calculate_next_run_time(task)
+        return Response_200(data=self.get_serializer(task).data)
 
     def update(self, request: Request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object(), data=request.data, partial=kwargs.pop('partial', False))
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response_200(data=serializer.data)
+        task = serializer.save()
+        # cron 或启用状态变更后必须立刻重算，否则分发器仍按旧计划触发。
+        calculate_next_run_time(task)
+        return Response_200(data=self.get_serializer(task).data)
 
     def retrieve(self, request: Request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)
@@ -83,133 +111,62 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
 
     @action(detail=True, methods=['post'], url_path='run')
     def run(self, request: Request, pk=None):
-        task = self.get_object()
-        if not task.enabled or not task.group.enabled:
-            return Response_error_str('巡检任务或巡检组已禁用', code=400)
-        checks = list(task.group.checks.filter(enabled=True).values('name', 'executor', 'config', 'order'))
-        if not checks:
-            return Response_error_str('巡检组没有启用的检查项', code=400)
-        service = task.logical_service
-        host_group = task.host_group
-        deployments = []
-        hosts = []
-        if task.target_type == InspectionTask.TargetType.HOST_GROUP:
-            if host_group is None:
-                return Response_error_str('巡检任务未绑定主机组', code=400)
-            hosts = list(Host.objects.filter(
-                group_id__in=_descendant_group_ids(host_group.pk),
-                is_deleted_in_cloud=False,
-            ).order_by('instance_name', 'id'))
-            if not hosts:
-                return Response_error_str('主机组及其子组中没有主机', code=400)
-        else:
-            if service is None:
-                return Response_error_str('巡检任务未绑定逻辑服务', code=400)
-            deployments = list(service.deployments.filter(
-                enabled=True,
-                service_links__service=service,
-                service_links__enabled=True,
-            ).select_related('host').distinct())
-            if not deployments:
-                return Response_error_str('逻辑服务没有启用的部署实例', code=400)
-
         user = getattr(request, 'user', None)
-        run_time = timezone.now()
-
-        def offline_fields(host):
-            """Agent 离线的目标不下发作业，直接落一条失败记录，避免一台离线拖垮整批巡检。"""
-            if host is not None and host.agent_id and host.agent_online:
-                return {}
-            return {
-                'status': InspectionTargetExecution.Status.FAILED,
-                'passed': False,
-                'error_message': 'Agent 离线，未执行检查',
-                'start_time': run_time,
-                'end_time': run_time,
-            }
-
-        deployment_snapshot = [
-            {
-                'deployment_id': item.pk,
-                'instance_name': item.instance_name,
-                'host_id': item.host_id,
-                'host_ip': str(item.host.ip or ''),
-                'agent_id': str(item.host.agent_id or ''),
-                'agent_online': item.host.agent_online,
-            }
-            for item in deployments
-        ]
-        host_snapshot = [{
-            'host_id': item.pk,
-            'host_name': str(item.instance_name or f'Host-{item.pk}'),
-            'host_ip': str(item.ip or ''),
-            'agent_id': str(item.agent_id or ''),
-        } for item in hosts]
-        target_snapshot = host_snapshot if task.target_type == InspectionTask.TargetType.HOST_GROUP else deployment_snapshot
-        target_context = (
-            {'target_type': task.target_type, 'id': host_group.pk, 'name': host_group.name}
-            if host_group else
-            {
-                'target_type': task.target_type,
-                'id': service.pk,
-                'name': service.name,
-                'code': service.code,
-                'topology_type': service.topology_type,
-                'cluster_type': service.cluster_profile.cluster_type if service.cluster_profile else '',
-                'access_address': service.access_address,
-            }
-        )
-        with transaction.atomic():
-            execution = InspectionExecution.objects.create(
-                task=task,
-                task_snapshot={'id': task.pk, 'name': task.name, 'target_type': task.target_type, 'concurrency': task.concurrency, 'timeout_seconds': task.timeout_seconds},
-                group_snapshot={'id': task.group_id, 'name': task.group.name, 'scope': task.group.scope, 'checks': checks},
-                service_snapshot=target_context,
-                target_snapshot=target_snapshot,
+        try:
+            execution = create_execution(
+                self.get_object(),
                 requested_user_id=getattr(user, 'id', None),
                 requested_username=str(getattr(user, 'username', '') or ''),
             )
-            if task.target_type == InspectionTask.TargetType.HOST_GROUP:
-                InspectionTargetExecution.objects.bulk_create([
-                    InspectionTargetExecution(
-                        execution=execution,
-                        host=item,
-                        target_name=str(item.instance_name or item.ip or f'Host-{item.pk}'),
-                        host_id_snapshot=item.pk,
-                        host_ip_snapshot=str(item.ip or ''),
-                        agent_id_snapshot=str(item.agent_id or ''),
-                        **offline_fields(item),
-                    )
-                    for item in hosts
-                ])
-            elif task.group.scope == InspectionGroup.Scope.PER_DEPLOYMENT:
-                InspectionTargetExecution.objects.bulk_create([
-                    InspectionTargetExecution(
-                        execution=execution,
-                        deployment=item,
-                        target_name=item.instance_name,
-                        host_id_snapshot=item.host_id,
-                        host_ip_snapshot=str(item.host.ip or ''),
-                        agent_id_snapshot=str(item.host.agent_id or ''),
-                        **offline_fields(item.host),
-                    )
-                    for item in deployments
-                ])
-            else:
-                InspectionTargetExecution.objects.create(execution=execution, target_name=service.name)
-            transaction.on_commit(lambda: threading.Thread(
-                target=run_inspection_execution,
-                args=(execution.pk,),
-                daemon=True,
-                name=f'inspection-{execution.pk}',
-            ).start())
+        except InspectionRequestError as exc:
+            return Response_error_str(str(exc), code=400)
         return Response_200(data={'execution_id': execution.pk, 'status': execution.status})
 
 
 class InspectionExecutionViewSet(ReadOnlyModelViewSet):
-    queryset = InspectionExecution.objects.select_related('task').prefetch_related('targets__results').all()
+    queryset = InspectionExecution.objects.select_related('task').all()
     serializer_class = InspectionExecutionSerializer
     pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    search_fields = ['task__name', 'requested_username']
+    ordering_fields = ['create_time', 'start_time', 'end_time', 'status']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'inspection:view',
+        'retrieve': 'inspection:view',
+        'cancel': 'inspection:executions:cancel',
+    }
+
+    def get_serializer_class(self):
+        # 列表页不展开 targets/results，否则一页 30 条执行记录会带出上万行检查明细。
+        if self.action == 'list':
+            return InspectionExecutionListSerializer
+        return InspectionExecutionSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action != 'list':
+            return queryset.prefetch_related('targets__results')
+
+        params = self.request.query_params  # type: ignore[union-attr]
+        task_id = params.get('task')
+        status = params.get('status')
+        trigger_type = params.get('trigger_type')
+        # 前端已把日期范围归一化为自然日闭区间（00:00:00 ~ 23:59:59），这里按原值过滤即可。
+        start_time = _parse_range_boundary(params.get('start_time'))
+        end_time = _parse_range_boundary(params.get('end_time'))
+
+        if task_id:
+            queryset = queryset.filter(task_id=task_id)
+        if status:
+            queryset = queryset.filter(status=status)
+        if trigger_type:
+            queryset = queryset.filter(trigger_type=trigger_type)
+        if start_time:
+            queryset = queryset.filter(create_time__gte=start_time)
+        if end_time:
+            queryset = queryset.filter(create_time__lte=end_time)
+        return queryset
 
     def retrieve(self, request: Request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)

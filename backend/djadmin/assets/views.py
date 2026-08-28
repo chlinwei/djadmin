@@ -530,7 +530,6 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
     filterset_class = ApplicationServiceFilter
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
-        'check_baseline': 'assets:applications:update',
         'refresh_runtime_status': 'assets:applications:update',
     }
 
@@ -607,73 +606,6 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
             },
         })
 
-    @action(detail=True, methods=['post'], url_path='check-baseline')
-    def check_baseline(self, request: Request, *args, **kwargs) -> Response:
-        service = self.get_object()
-        if service.topology_type != ApplicationService.TopologyType.CLUSTER:
-            return Response_error_str('只有实际集群可以执行集群基线检查', code=400)
-
-        deployments = list(ApplicationDeployment.objects.filter(
-            service_links__service=service,
-        ).select_related('host'))
-        links_by_deployment = {
-            link.deployment_id: link
-            for link in ApplicationServiceDeployment.objects.filter(service=service)
-        }
-        results = []
-
-        def add_result(key: str, name: str, passed: bool, expected, actual) -> None:
-            results.append({
-                'key': key,
-                'name': name,
-                'status': 'pass' if passed else 'fail',
-                'expected': expected,
-                'actual': actual,
-            })
-
-        is_ha = service.cluster_profile.cluster_type == ClusterProfile.ClusterType.HA
-        minimum_member_count = 2 if is_ha else 1
-        add_result(
-            'members', '集群成员', len(deployments) >= minimum_member_count,
-            f'至少 {minimum_member_count} 个成员', len(deployments),
-        )
-        consistent_members = [
-            deployment.id for deployment in deployments
-            if deployment.application_version.application_id == service.application_id
-            and deployment.deployment_template.application_id == service.application_id
-        ]
-        add_result(
-            'application_consistency',
-            '成员应用一致性',
-            len(consistent_members) == len(deployments),
-            service.application.name,
-            f'{len(consistent_members)}/{len(deployments)} 个成员一致',
-        )
-
-        if is_ha:
-            add_result(
-                'vip', 'VIP 配置',
-                bool(service.access_address.strip()),
-                'VIP 地址非空', service.access_address or '未配置',
-            )
-        passed_count = sum(result['status'] == 'pass' for result in results)
-        pass_rate = round(passed_count * 100 / len(results), 2)
-        service.health_status = (
-            ApplicationService.HealthStatus.HEALTHY
-            if passed_count == len(results)
-            else ApplicationService.HealthStatus.UNHEALTHY
-        )
-        service.baseline_pass_rate = pass_rate
-        service.last_check_time = timezone.now()
-        service.save(update_fields=['health_status', 'baseline_pass_rate', 'last_check_time', 'update_time'])
-        return Response_200(data={
-            'health_status': service.health_status,
-            'baseline_pass_rate': pass_rate,
-            'last_check_time': service.last_check_time,
-            'results': results,
-        })
-
-
 class ApplicationDeploymentTemplateManage(ApplicationAssetManageBase):
     queryset = ApplicationDeploymentTemplate.objects.select_related('application').prefetch_related(
         'ports', 'paths', 'config_files', 'logs', 'control_actions',
@@ -697,7 +629,7 @@ def _run_deployment_control(deployment, control_action):
     if agent_id == '':
         return None, '部署主机未绑定 Agent 实例，无法执行应用控制'
 
-    params = _build_application_baseline_params(deployment)
+    params = _build_application_params(deployment)
     params['control_action'] = control_action
     action_config = params.get('control_actions', {}).get(control_action, {})
     timeout_seconds = int(action_config.get('timeout_seconds') or 30) if isinstance(action_config, dict) else 30
@@ -759,7 +691,8 @@ def _run_deployment_control(deployment, control_action):
     return completed_job, ''
 
 
-def _build_application_baseline_params(deployment):
+def _build_application_params(deployment):
+    """构造下发给 Agent 的应用上下文参数（启停与状态控制均使用）。"""
     deployment_template = deployment.deployment_template
     run_user = str(deployment_template.run_user or '').strip()
     app_home = resolve_application_variables(
@@ -814,16 +747,6 @@ def _build_application_baseline_params(deployment):
             'expected_group': deployment_template.run_group,
             'expected_mode': '',
         })
-    for config_file in deployment_template.config_files.filter(baseline_enabled=True):
-        config_path = resolve_template_value(config_file.path)
-        if not any(item['path'] == config_path for item in paths):
-            paths.append({
-                'name': f'配置文件: {config_file.name}',
-                'path': config_path,
-                'expected_owner': '',
-                'expected_group': '',
-                'expected_mode': '',
-            })
 
     params = {
         'control_type': deployment_template.control_type,
@@ -866,85 +789,6 @@ def _build_application_baseline_params(deployment):
     return params
 
 
-def _run_application_baseline_check(execution_id, job_id):
-    close_old_connections()
-    try:
-        execution = ApplicationBaselineExecution.objects.select_related('deployment').get(id=execution_id)
-        job = AgentJob.objects.get(job_id=job_id)
-        execution.status = ApplicationBaselineExecution.Status.RUNNING
-        execution.start_time = timezone.now()
-        execution.save(update_fields=['status', 'start_time', 'update_time'])
-
-        completed_job = _dispatch_agent_job_via_grpc(job)
-        if completed_job is None:
-            raise RuntimeError('Agent 基线检查未返回任务结果')
-        if completed_job.status != AgentJob.JobStatus.SUCCESS:
-            raise RuntimeError(completed_job.error_message or completed_job.stderr or 'Agent 基线检查执行失败')
-
-        result_data = completed_job.result_data if isinstance(completed_job.result_data, dict) else {}
-        raw_checks = result_data.get('checks')
-        checks = raw_checks if isinstance(raw_checks, list) else []
-        valid_statuses = {item[0] for item in ApplicationBaselineResult.Status.choices}
-        result_rows = []
-        for item in checks:
-            if not isinstance(item, dict):
-                continue
-            status_value = str(item.get('status') or 'error')
-            if status_value not in valid_statuses:
-                status_value = ApplicationBaselineResult.Status.ERROR
-            result_rows.append(ApplicationBaselineResult(
-                execution=execution,
-                check_key=str(item.get('key') or ''),
-                check_type=str(item.get('type') or ''),
-                name=str(item.get('name') or ''),
-                status=status_value,
-                expected_value=item.get('expected'),
-                actual_value=item.get('actual'),
-                message=str(item.get('message') or ''),
-            ))
-
-        evaluated_rows = [row for row in result_rows if row.status != ApplicationBaselineResult.Status.SKIPPED]
-        passed_count = sum(1 for row in evaluated_rows if row.status == ApplicationBaselineResult.Status.PASS)
-        pass_rate = round((passed_count / len(evaluated_rows)) * 100, 2) if evaluated_rows else 100.0
-        passed = bool(result_data.get('passed'))
-        now = timezone.now()
-        with transaction.atomic():
-            ApplicationBaselineResult.objects.bulk_create(result_rows)
-            execution.status = ApplicationBaselineExecution.Status.COMPLETED
-            execution.passed = passed
-            execution.total_count = len(result_rows)
-            execution.passed_count = passed_count
-            execution.summary = result_data
-            execution.end_time = now
-            execution.save(update_fields=[
-                'status', 'passed', 'total_count', 'passed_count', 'summary', 'end_time', 'update_time',
-            ])
-            deployment = execution.deployment
-            deployment.health_status = (
-                ApplicationDeployment.HealthStatus.HEALTHY
-                if passed else ApplicationDeployment.HealthStatus.UNHEALTHY
-            )
-            deployment.baseline_pass_rate = pass_rate
-            deployment.last_check_time = now
-            deployment.save(update_fields=['health_status', 'baseline_pass_rate', 'last_check_time', 'update_time'])
-    except Exception as exc:
-        now = timezone.now()
-        ApplicationBaselineExecution.objects.filter(id=execution_id).update(
-            status=ApplicationBaselineExecution.Status.FAILED,
-            passed=False,
-            error_message=str(exc),
-            end_time=now,
-            update_time=now,
-        )
-        ApplicationDeployment.objects.filter(baseline_executions__id=execution_id).update(
-            health_status=ApplicationDeployment.HealthStatus.ERROR,
-            last_check_time=now,
-            update_time=now,
-        )
-    finally:
-        close_old_connections()
-
-
 class ApplicationDeploymentFilter(drf_filters.FilterSet):
     # 保持既有查询参数名不变，实际过滤路径改为经由环境实体到业务系统。
     application_service__business_system = drf_filters.NumberFilter(
@@ -985,8 +829,6 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
         'control': 'assets:applications:update',
-        'check_baseline': 'assets:applications:update',
-        'baseline_history': 'assets:applications:view',
     }
 
     @action(detail=True, methods=['post'], url_path='control')
@@ -1009,67 +851,6 @@ class ApplicationDeploymentManage(ApplicationAssetManageBase):
             'last_status_check_time': deployment.last_status_check_time,
             'result_data': completed_job.result_data,
         })
-
-    @action(detail=True, methods=['post'], url_path='check-baseline')
-    def check_baseline(self, request, *args, **kwargs):
-        deployment = self.get_object()
-        agent_id = str(deployment.host.agent_id or '').strip()
-        if agent_id == '':
-            return Response_error_str('部署主机未绑定 Agent 实例，无法执行检查', code=400)
-        if ApplicationBaselineExecution.objects.filter(
-            deployment=deployment,
-            status__in=[ApplicationBaselineExecution.Status.QUEUED, ApplicationBaselineExecution.Status.RUNNING],
-        ).exists():
-            return Response_error_str('该部署实例已有检查任务正在执行', code=400)
-
-        job_id = f'app-baseline-{uuid.uuid4().hex[:16]}'
-        params = _build_application_baseline_params(deployment)
-        with transaction.atomic():
-            job = AgentJob.objects.create(
-                job_id=job_id,
-                agent_id=agent_id,
-                host=deployment.host,
-                job_type='custom',
-                action='check_application_baseline',
-                params=params,
-                timeout_seconds=30,
-                status=AgentJob.JobStatus.QUEUED,
-            )
-            user = getattr(request, 'user', None)
-            execution = ApplicationBaselineExecution.objects.create(
-                deployment=deployment,
-                agent_job=job,
-                requested_user_id=getattr(user, 'id', None),
-                requested_username=str(getattr(user, 'username', '') or ''),
-            )
-            deployment.health_status = ApplicationDeployment.HealthStatus.CHECKING
-            deployment.save(update_fields=['health_status', 'update_time'])
-            _emit_agent_job_event(job, 'new', {
-                'jid': job.job_id,
-                'tgt': job.agent_id,
-                'tgt_type': 'agent_id',
-                'fun': job.action,
-                'arg': job.params,
-                'minions': [job.agent_id],
-            })
-
-        thread = threading.Thread(
-            target=_run_application_baseline_check,
-            args=(execution.id, job.job_id),
-            daemon=True,
-            name=f'application-baseline-{execution.id}',
-        )
-        thread.start()
-        return Response_200(data={'execution_id': execution.id, 'job_id': job.job_id, 'status': execution.status})
-
-    @action(detail=True, methods=['get'], url_path='baseline-history')
-    def baseline_history(self, request, *args, **kwargs):
-        deployment = self.get_object()
-        executions = deployment.baseline_executions.select_related(
-            'agent_job', 'deployment__host',
-        ).prefetch_related('results')[:20]
-        serializer = ApplicationBaselineExecutionSerializer(executions, many=True)
-        return Response_200(data=serializer.data)
 
 
 class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin):

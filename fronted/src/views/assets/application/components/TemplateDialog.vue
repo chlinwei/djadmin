@@ -259,10 +259,13 @@ const rules = {
   run_user: [{ required: true, message: '请输入运行用户' }],
 }
 const applicationOptions = computed(() => applications.value.map((item) => ({ label: item.name, value: item.id })))
-const processingRuleOptions = computed(() => processingRules.value.map((item) => ({
-  label: item.name,
-  value: item.id,
-})))
+// 只列出属于当前应用的规则和不限应用的通用规则，避免把别的应用的解析规则挂到这个模板上。
+const processingRuleOptions = computed(() => processingRules.value
+  .filter((item) => !item.application || item.application === form.application)
+  .map((item) => ({
+    label: item.application ? item.name : `${item.name}（通用）`,
+    value: item.id,
+  })))
 
 function resetForm() {
   Object.assign(form, createInitialForm())

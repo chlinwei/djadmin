@@ -44,6 +44,7 @@ from .models import (
     AlertRoute,
     LogCollectionTarget,
     LogProcessingRule,
+    LogRetentionTier,
     MonitorTarget,
     MonitorTargetInstallHistory,
     OpenSearchCluster,
@@ -60,6 +61,7 @@ from .serializer import (
     AlertRouteSerializer,
     LogCollectionTargetSerializer,
     LogProcessingRuleSerializer,
+    LogRetentionTierSerializer,
     MonitorTargetInstallHistorySerializer,
     MonitorTargetSerializer,
     OpenSearchClusterSerializer,
@@ -76,7 +78,7 @@ from .log_collection_service import (
     read_instance_log_tail,
     refresh_target_status,
 )
-from .log_management import bootstrap_log_storage, build_default_pipeline_body
+from .log_management import bootstrap_log_storage
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')
@@ -1380,7 +1382,6 @@ class OpenSearchClusterViewSet(
         'test_connection': 'monitor:view',
         'bootstrap': 'monitor:view',
         'simulate_pipeline': 'monitor:view',
-        'pipeline_default': 'monitor:view',
         'error_patterns': 'monitor:view',
         'new_errors': 'monitor:view',
         'error_spikes': 'monitor:view',
@@ -1493,11 +1494,6 @@ class OpenSearchClusterViewSet(
             return error
         return Response_200(data=data)
 
-    @action(detail=True, methods=['get'], url_path='pipeline-default')
-    def pipeline_default(self, request, id=None):
-        """返回默认 pipeline 定义（错误归一化 + 指纹 + on_failure），供编辑页作为起点。"""
-        return Response_200(data=build_default_pipeline_body())
-
     @staticmethod
     def _insight_params(request):
         index = str(request.query_params.get('index') or '').strip()
@@ -1533,7 +1529,8 @@ class OpenSearchClusterViewSet(
                     'aggs': {
                         'sample': {'top_hits': {
                             'size': 1,
-                            '_source': ['error_type', 'error_template', 'service', 'instance'],
+                            # 归一化模板只是指纹的中间量、不落库，样例直接取该组里的一条真实错误。
+                            '_source': ['error_type', 'error_message', 'root_cause_type', 'service', 'instance'],
                         }},
                         'services': {'terms': {'field': 'service'}},
                     },
@@ -1614,6 +1611,98 @@ class OpenSearchClusterViewSet(
         return self._search(self.get_object(), index, body)
 
 
+class LogRetentionTierViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    """日志保留档位：决定 data stream 后缀与 ISM 滚动/删除策略。"""
+
+    queryset = LogRetentionTier.objects.all()
+    serializer_class = LogRetentionTierSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['enabled', 'is_default']
+    search_fields = ['code', 'name', 'remark']
+    ordering_fields = ['id', 'code', 'retention_days', 'daily_size_gb']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view',
+        'retrieve': 'monitor:view',
+        'create': 'monitor:view',
+        'update': 'monitor:view',
+        'partial_update': 'monitor:view',
+        'destroy': 'monitor:view',
+    }
+
+    def list(self, request: Request, *args, **kwargs) -> Response:
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,
+            'results': serializer.data,
+            'pageNumber': paginator.page.number,
+            'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(),
+            'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request: Request, *args, **kwargs) -> Response:
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        self._sync_default(instance)
+        self._apply_policies()
+        return Response_200(data=self.get_serializer(instance).data)
+
+    def update(self, request: Request, *args, **kwargs) -> Response:
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+        self._sync_default(instance)
+        self._apply_policies()
+        return Response_200(data=self.get_serializer(instance).data)
+
+    def partial_update(self, request: Request, *args, **kwargs) -> Response:
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request: Request, *args, **kwargs) -> Response:
+        instance = self.get_object()
+        if instance.services.exists():
+            return Response_error_str('该档位仍被逻辑服务引用，不能删除', code=400)
+        instance.delete()
+        return Response_200(data={'deleted': True})
+
+    @staticmethod
+    def _sync_default(instance):
+        """默认档位全局唯一：新的默认生效时取消其他档位的默认标记。"""
+        if instance.is_default:
+            LogRetentionTier.objects.exclude(pk=instance.pk).filter(is_default=True).update(is_default=False)
+
+    @staticmethod
+    def _apply_policies():
+        """档位改动后立刻把 ISM policy 推到各启用集群，避免"页面改了但集群没生效"。"""
+        for cluster in OpenSearchCluster.objects.filter(enabled=True):
+            try:
+                bootstrap_log_storage(cluster)
+            except OpenSearchError:
+                # 集群暂时不可达不应阻塞档位保存，下次 bootstrap 会补齐。
+                continue
+
+
 class LogProcessingRuleViewSet(
     GenericViewSet,
     ListModelMixin,
@@ -1624,11 +1713,11 @@ class LogProcessingRuleViewSet(
 ):
     """统一管理 Fluent Bit 前处理配置和 OpenSearch Pipeline。"""
 
-    queryset = LogProcessingRule.objects.select_related('cluster').all()
+    queryset = LogProcessingRule.objects.select_related('cluster', 'application').all()
     serializer_class = LogProcessingRuleSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    filterset_fields = ['cluster', 'input_format', 'multiline_enabled']
+    filterset_fields = ['cluster', 'application', 'input_format', 'multiline_enabled']
     search_fields = ['name', 'description']
     ordering_fields = ['id', 'name', 'create_time', 'update_time']
     permission_classes = [CustomMenuPermission]

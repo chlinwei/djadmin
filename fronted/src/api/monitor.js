@@ -190,10 +190,6 @@ export function simulateOpenSearchPipeline(id, payload) {
   return requestUtil.post(prefix + `opensearch-clusters/${id}/pipeline-simulate/`, payload)
 }
 
-export function getOpenSearchPipelineDefault(id) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/pipeline-default/`)
-}
-
 export function getLogProcessingRules(params) {
   return requestUtil.get(prefix + 'log-processing-rules/', params)
 }
@@ -206,6 +202,21 @@ export function saveLogProcessingRule(data) {
 
 export function deleteLogProcessingRule(id) {
   return requestUtil.del(prefix + `log-processing-rules/${id}/`)
+}
+
+// 日志保留档位：档位即 data stream 后缀，保存后后端会把 ISM policy 重新下发到集群
+export function getLogRetentionTiers(params) {
+  return requestUtil.get(prefix + 'log-retention-tiers/', params)
+}
+
+export function saveLogRetentionTier(data) {
+  return data.id
+    ? requestUtil.patch(prefix + `log-retention-tiers/${data.id}/`, data)
+    : requestUtil.post(prefix + 'log-retention-tiers/', data)
+}
+
+export function deleteLogRetentionTier(id) {
+  return requestUtil.del(prefix + `log-retention-tiers/${id}/`)
 }
 
 // 日志洞察（架构文档 §9）：index 必填，hours 默认 1

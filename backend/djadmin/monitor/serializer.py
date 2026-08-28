@@ -12,6 +12,7 @@ from .models import (
     AlertRoute,
     LogCollectionTarget,
     LogProcessingRule,
+    LogRetentionTier,
     MonitorTarget,
     MonitorTargetInstallHistory,
     OpenSearchCluster,
@@ -19,8 +20,44 @@ from .models import (
 )
 
 
+class LogRetentionTierSerializer(ModelSerializer):
+    estimated_total_gb = serializers.FloatField(read_only=True)
+    rollover_min_primary_shard_size = serializers.CharField(read_only=True)
+    service_count = serializers.IntegerField(source='services.count', read_only=True)
+
+    class Meta:
+        model = LogRetentionTier
+        fields = '__all__'
+
+    def validate_code(self, value):
+        code = str(value or '').strip().lower()
+        # code 会直接拼进 data stream 名和 ISM policy 名，所以比表单校验更严。
+        if not re.fullmatch(r'[a-z][a-z0-9-]*', code):
+            raise serializers.ValidationError('只能以小写字母开头，使用小写字母、数字和连字符')
+        if self.instance is not None and code != self.instance.code:
+            raise serializers.ValidationError('档位编码已用于索引命名，创建后不可修改')
+        return code
+
+    def validate_rollover_min_index_age(self, value):
+        age = str(value or '').strip().lower()
+        if not re.fullmatch(r'\d+[mhd]', age):
+            raise serializers.ValidationError('格式如 30m / 12h / 1d')
+        return age
+
+    def validate(self, attrs):
+        daily_size_gb = attrs.get('daily_size_gb', getattr(self.instance, 'daily_size_gb', 0))
+        retention_days = attrs.get('retention_days', getattr(self.instance, 'retention_days', 0))
+        if float(daily_size_gb) <= 0:
+            raise serializers.ValidationError({'daily_size_gb': '每天写入量必须大于 0'})
+        if not 1 <= int(retention_days) <= 3650:
+            raise serializers.ValidationError({'retention_days': '保留天数必须在 1 到 3650 之间'})
+        return attrs
+
+
 class LogProcessingRuleSerializer(ModelSerializer):
     referenced_log_count = serializers.IntegerField(source='log_definitions.count', read_only=True)
+    application_name = serializers.CharField(source='application.name', read_only=True, default='')
+    application_code = serializers.CharField(source='application.code', read_only=True, default='')
 
     class Meta:
         model = LogProcessingRule

@@ -455,6 +455,43 @@ class OpenSearchCluster(BaseModel):
         return [item.strip() for item in str(self.hosts or '').split(',') if item.strip()]
 
 
+class LogRetentionTier(BaseModel):
+	"""日志保留档位：决定日志写入 logs-<env>-<system>-<code> 哪个 data stream，
+	以及该 data stream 上挂载的 ISM 滚动/删除策略。
+
+	档位由用户自定义（原先硬编码的 hot/std/cold 已改为数据），逻辑服务通过外键选择档位。
+	"""
+
+	code = models.SlugField(max_length=32, unique=True, verbose_name='档位编码')
+	name = models.CharField(max_length=64, verbose_name='档位名称')
+	daily_size_gb = models.FloatField(default=5, verbose_name='每天写入量（GB）')
+	retention_days = models.PositiveIntegerField(default=30, verbose_name='保留天数')
+	# 后备索引按“写满一天的量”滚动：min_index_age 保证至少每天滚动一次，
+	# min_primary_shard_size 由日写入量推导，避免突发流量把单个分片撑得过大。
+	rollover_min_index_age = models.CharField(max_length=16, default='1d', verbose_name='滚动最小时长')
+	enabled = models.BooleanField(default=True, verbose_name='是否启用')
+	is_default = models.BooleanField(default=False, verbose_name='默认档位')
+	remark = models.TextField(blank=True, default='', verbose_name='备注')
+
+	class Meta:
+		db_table = 'monitor_log_retention_tier'
+		ordering = ['retention_days', 'id']
+		verbose_name = '日志保留档位'
+
+	def __str__(self):
+		return f'{self.name}({self.code})'
+
+	@property
+	def estimated_total_gb(self):
+		"""该档位满负荷时的总占用，用于容量规划展示。"""
+		return round(float(self.daily_size_gb or 0) * int(self.retention_days or 0), 2)
+
+	@property
+	def rollover_min_primary_shard_size(self):
+		"""单分片滚动阈值：不小于 1gb，避免日写入量很小的档位产生大量碎索引。"""
+		return f'{max(1, round(float(self.daily_size_gb or 0)))}gb'
+
+
 class LogProcessingRule(BaseModel):
 	"""一条用户规则同时描述 Fluent Bit 前处理与 OpenSearch 字段解析。"""
 
@@ -465,6 +502,12 @@ class LogProcessingRule(BaseModel):
 	cluster = models.ForeignKey(
 		OpenSearchCluster, on_delete=models.CASCADE, related_name='log_processing_rules',
 		verbose_name='OpenSearch 集群',
+	)
+	# 规则按应用类型归口：一个应用可以有多条规则（catalina.out、gc.log、access.log 各一条）；
+	# 留空表示不限应用的通用规则，任何部署模板都可以选用。
+	application = models.ForeignKey(
+		'assets.Application', on_delete=models.PROTECT, null=True, blank=True,
+		related_name='log_processing_rules', verbose_name='所属应用',
 	)
 	name = models.CharField(max_length=128, unique=True, verbose_name='规则名称')
 	description = models.CharField(max_length=500, blank=True, default='', verbose_name='说明')

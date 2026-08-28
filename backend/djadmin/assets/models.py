@@ -208,13 +208,6 @@ class ApplicationService(BaseModel):
         CLUSTER = 'cluster', '集群'
         LOAD_BALANCER = 'load_balancer', '负载均衡'
 
-    class LogRetentionTier(models.TextChoices):
-        # 保留档位决定日志写入 logs-<env>-<system>-<tier> 哪个索引，ISM 按索引名后缀自动挂载保留策略，
-        # 档位固定 3 个不随业务扩张，见日志采集架构文档 §4.2。
-        HOT = 'hot', '热（7 天）'
-        STD = 'std', '标准（30 天）'
-        COLD = 'cold', '冷（90 天）'
-
     business_system = models.ForeignKey(
         BusinessSystem,
         on_delete=models.PROTECT,
@@ -269,9 +262,9 @@ class ApplicationService(BaseModel):
     # 服务级日志采集开关：与日志定义的 collection_enabled 共同为 ON 时，服务下所有部署实例均采集，
     # 实例层不设开关（新增实例自动继承），见架构文档 §6。
     log_collection_enabled = models.BooleanField(default=False, verbose_name='开启日志采集')
-    log_retention_tier = models.CharField(
-        max_length=8, choices=LogRetentionTier.choices, default=LogRetentionTier.STD,
-        verbose_name='日志保留档位',
+    log_retention_tier = models.ForeignKey(
+        'monitor.LogRetentionTier', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='services', verbose_name='日志保留档位',
     )
 
     class Meta:

@@ -187,14 +187,12 @@ from .fluent_bit import (
     render_output_fragment,
 )
 from .log_management import (
-    RETENTION_TIERS,
-    build_default_pipeline_body,
     build_index_name,
     build_index_template_body,
     build_ism_policy_body,
     build_pipeline_name,
 )
-from .models import LogCollectionTarget, LogProcessingRule, OpenSearchCluster
+from .models import LogCollectionTarget, LogProcessingRule, LogRetentionTier, OpenSearchCluster
 from .opensearch_client import OpenSearchClient, OpenSearchError
 
 
@@ -231,16 +229,16 @@ class OpenSearchClientTest(TestCase):
 
 
 class LogManagementBuilderTest(TestCase):
-    """log_management 纯构建器：索引命名、template、ISM、默认 pipeline（架构文档 §4/§5）。"""
+    """log_management 纯构建器：索引命名、template、ISM、pipeline 命名（架构文档 §4/§5）。"""
 
     def test_build_index_name(self):
         self.assertEqual(build_index_name('logs', 'prod', 'tib', 'hot'), 'logs-prod-tib-hot')
         # 非法字符统一归一为小写安全段，避免生成非法索引名
         self.assertEqual(build_index_name('Logs', 'Test Env', 'ESB', 'std'), 'logs-test-env-esb-std')
 
-    def test_build_index_name_rejects_unknown_tier(self):
+    def test_build_index_name_rejects_empty_tier(self):
         with self.assertRaises(ValueError):
-            build_index_name('logs', 'prod', 'tib', 'warm')
+            build_index_name('logs', 'prod', 'tib', '')
 
     def test_build_index_template_body(self):
         body = build_index_template_body('logs')
@@ -248,30 +246,19 @@ class LogManagementBuilderTest(TestCase):
         self.assertEqual(body['template']['settings']['index.mapping.total_fields.limit'], 2000)
         self.assertIn('data_stream', body)
 
-    def test_build_ism_policy_body_all_tiers(self):
-        for tier, config in RETENTION_TIERS.items():
-            body = build_ism_policy_body('logs', tier)
-            policy = body['policy']
-            # ism_template 按索引名后缀自动挂载，新建业务无需手工配置
-            self.assertEqual(policy['ism_template'][0]['index_patterns'], [f'logs-*-{tier}'])
-            hot_state = policy['states'][0]
-            self.assertEqual(
-                hot_state['actions'][0]['rollover']['min_index_age'],
-                config['rollover_min_index_age'],
-            )
-            self.assertEqual(
-                hot_state['transitions'][0]['conditions']['min_index_age'],
-                f"{config['retention_days']}d",
-            )
-
-    def test_build_default_pipeline_body(self):
-        body = build_default_pipeline_body()
-        processor_types = [next(iter(item)) for item in body['processors']]
-        # 必须包含 date（覆盖 @timestamp）与 fingerprint（错误聚合基础）
-        self.assertIn('date', processor_types)
-        self.assertIn('fingerprint', processor_types)
-        # 必须配置 on_failure，否则单条格式不符会丢整条日志
-        self.assertTrue(body.get('on_failure'))
+    def test_build_ism_policy_body_from_tier(self):
+        tier = LogRetentionTier.objects.create(
+            code='hot', name='热', daily_size_gb=20, retention_days=7, rollover_min_index_age='1d',
+        )
+        policy = build_ism_policy_body('logs', tier)['policy']
+        # ism_template 按索引名后缀自动挂载，新建业务无需手工配置
+        self.assertEqual(policy['ism_template'][0]['index_patterns'], ['logs-*-hot'])
+        hot_state = policy['states'][0]
+        self.assertEqual(hot_state['actions'][0]['rollover']['min_index_age'], '1d')
+        # 分片滚动阈值由日写入量推导
+        self.assertEqual(hot_state['actions'][0]['rollover']['min_primary_shard_size'], '20gb')
+        self.assertEqual(hot_state['transitions'][0]['conditions']['min_index_age'], '7d')
+        self.assertEqual(tier.estimated_total_gb, 140)
 
     def test_build_pipeline_name(self):
         self.assertEqual(build_pipeline_name('tomcat', 'catalina'), 'app-tomcat-catalina')

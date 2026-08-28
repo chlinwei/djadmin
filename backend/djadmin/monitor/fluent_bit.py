@@ -203,7 +203,7 @@ def build_host_fragments(host, cluster):
             cluster.index_prefix,
             service.environment.code if service.environment else 'unknown',
             service.business_system.code,
-            service.log_retention_tier,
+            service.log_retention_tier.code if service.log_retention_tier else 'std',
         )
 
         for log_def in template.logs.all():

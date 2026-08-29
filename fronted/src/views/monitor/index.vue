@@ -57,290 +57,515 @@
 
         <a-tab-pane key="managed-targets" tab="纳管目标">
           <div class="managed-target-toolbar">
-            <a-segmented v-model:value="managedTargetType" :options="managedTargetTypeOptions" />
-            <a-tooltip v-if="managedTargetType === 'fluent_bit'" title="新增">
-              <a-button size="large" @click="openFluentBitTargetModal">
-                <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                <span>&nbsp;新增 Fluent Bit 目标</span>
+            <span class="managed-target-toolbar__title">主机纳管总览</span>
+            <a-tooltip title="刷新">
+              <a-button size="large" :loading="overviewLoading" @click="reloadOverviewHosts">
+                <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                <span>&nbsp;刷新</span>
               </a-button>
             </a-tooltip>
           </div>
-          <a-table
-            v-if="managedTargetType === 'exporter'"
-            rowKey="id"
-            :columns="managedColumns"
-            :data-source="managedTargets"
-            :loading="loading"
-            size="small"
-            :scroll="{ x: 1680 }"
-            :pagination="managedPagination"
-            @change="handleManagedTableChange"
-          >            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'managed_enabled'">
-                <a-tag :color="record.managed_enabled ? 'green' : 'default'">{{ record.managed_enabled ? '启用' : '禁用' }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'install_status'">
-                <a-tooltip v-if="record.install_message" :title="record.install_message" placement="top">
-                  <a-tag :color="statusColor(record.install_status)">{{ record.install_status || 'unknown' }}</a-tag>
-                </a-tooltip>
-                <a-tag v-else :color="statusColor(record.install_status)">{{ record.install_status || 'unknown' }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'last_scrape_status'">
-                <a-tag :color="scrapeColor(record.last_scrape_status)">{{ record.last_scrape_status || 'unknown' }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'service_status'">
-                <a-tag v-if="managedServiceStatusLoading[record.id]" color="processing">查询中...</a-tag>
-                <a-tooltip v-else-if="serviceStatusMap[record.id]" :title="serviceStatusSummary(serviceStatusMap[record.id])">
-                  <a-tag
-                    :color="serviceStatusColor(serviceStatusMap[record.id])"
-                    style="cursor: pointer"
-                    @click="openServiceStatusModal(record)"
-                  >
-                    {{ serviceStatusText(serviceStatusMap[record.id]) }}
-                  </a-tag>
-                </a-tooltip>
-                <a-tag v-else color="default">未查询</a-tag>
-              </template>
-              <template v-else-if="column.key === 'action'">
-                <a-space>
-                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
-                    ? 'dj-agent 离线，操作不可用'
-                    : (record.managed_enabled ? '重新安装' : '重新卸载')">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="isManagedTargetActionDisabledByAgent(record)"
-                      :loading="managedRetryLoading[record.id]"
-                      @click="openManagedTargetRetryConfirm(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                      {{ record.managed_enabled ? '重新安装' : '重新卸载' }}
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
-                    ? 'dj-agent 离线，操作不可用'
-                    : (managedRetryLoading[record.id]
-                      ? '任务重新下发中，请稍候查看最新日志'
-                      : '查看监控安装历史日志')">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="isManagedTargetActionDisabledByAgent(record) || managedRetryLoading[record.id]"
-                      @click="openManagedTargetJobLog(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'file-lines']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
-                    ? 'dj-agent 离线，操作不可用'
-                    : (record.install_status !== 'success' ? '尚未安装成功，无法启动' : '启动服务')">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
-                      :loading="managedStartLoading[record.id]"
-                      @click="handleStartService(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'play']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
-                    ? 'dj-agent 离线，操作不可用'
-                    : (record.install_status !== 'success' ? '尚未安装成功，无法停止' : '停止服务')">
-                    <a-button
-                      danger
-                      ghost
-                      size="small"
-                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
-                      :loading="managedStopLoading[record.id]"
-                      @click="handleStopService(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'stop']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip
-                    :title="!canCancelManagedTarget(record)
-                      ? '当前任务已结束，无需取消'
-                      : '取消'"
-                  >
-                    <a-button
-                      danger
-                      ghost
-                      size="small"
-                      :disabled="!canCancelManagedTarget(record)"
-                      :loading="managedCancelLoading[record.id]"
-                      @click="onCancelManagedTarget(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'ban']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip
-                    :title="isManagedTargetActionDisabledByAgent(record)
-                      ? 'dj-agent 离线，操作不可用'
-                      : (record.managed_enabled
-                      ? '请先关闭纳管（会自动下发卸载）后再删除'
-                      : (record.install_status === 'pending' ? '卸载任务尚未结束，暂不可删除' : '删除'))"
-                  >
-                    <a-button
-                      class="delBtn"
-                      danger
-                      type="primary"
-                      size="small"
-                      :disabled="isManagedTargetActionDisabledByAgent(record) || record.managed_enabled || record.install_status === 'pending'"
-                      :loading="managedDeleteLoading[record.id]"
-                      @click="openManagedTargetDeleteConfirm(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                    </a-button>
-                  </a-tooltip>
-                </a-space>
-              </template>
-            </template>
-          </a-table>
-          <a-table
-            v-else
-            rowKey="id"
-            :columns="fluentBitTargetColumns"
-            :data-source="fluentBitTargets"
-            :loading="fluentBitTargetsLoading"
-            size="small"
-            :scroll="{ x: 1900 }"
-            :pagination="fluentBitPagination"
-            @change="handleFluentBitTableChange"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'agent_installed'">
-                <a-tag :color="record.agent_installed ? 'green' : 'default'">
-                  {{ record.agent_installed ? '已安装' : '未安装' }}
-                </a-tag>
-              </template>
-              <template v-else-if="column.key === 'runtime_status'">
-                <a-tag :color="fluentBitRuntimeColor(record.runtime_status)">
-                  {{ fluentBitRuntimeText(record.runtime_status) }}
-                </a-tag>
-              </template>
-              <template v-else-if="column.key === 'config_fingerprint'">
-                <a-typography-text
-                  :copyable="Boolean(record.config_fingerprint)"
-                  :content="record.config_fingerprint || '-'"
-                  ellipsis
+
+          <div class="fluent-bit-batch-bar">
+            <span class="fluent-bit-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
+            <a-space :size="8" wrap>
+              <a-tooltip title="为选中主机批量纳管并安装 Exporter" placement="top">
+                <a-button
+                  type="primary"
+                  size="small"
+                  :disabled="!overviewSelectedHostIds.length"
+                  @click="openExporterCreateModal"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                  &nbsp;装 Exporter（{{ overviewSelectedHostIds.length }}）
+                </a-button>
+              </a-tooltip>
+              <a-divider type="vertical" />
+              <a-tooltip title="为选中的未纳管主机批量安装 Fluent Bit" placement="top">
+                <a-button
+                  type="primary"
+                  size="small"
+                  :disabled="!fluentBitSelectedUnmanaged.length"
+                  :loading="fluentBitBatchLoading === 'create'"
+                  @click="handleFluentBitBatchCreate"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                  &nbsp;装 Fluent Bit（{{ fluentBitSelectedUnmanaged.length }}）
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="批量重新安装 Fluent Bit" placement="top">
+                <a-button
+                  type="primary"
+                  ghost
+                  size="small"
+                  :disabled="!fluentBitSelectedManagedIds.length"
+                  :loading="fluentBitBatchLoading === 'retry'"
+                  @click="handleFluentBitBatch('retry')"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                  &nbsp;重新安装（{{ fluentBitSelectedManagedIds.length }}）
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="批量启动 Fluent Bit" placement="top">
+                <a-button
+                  type="primary"
+                  ghost
+                  size="small"
+                  :disabled="!fluentBitSelectedManagedIds.length"
+                  :loading="fluentBitBatchLoading === 'start'"
+                  @click="handleFluentBitBatch('start')"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'play']" />
+                  &nbsp;启动
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="批量停止 Fluent Bit" placement="top">
+                <a-button
+                  danger
+                  ghost
+                  size="small"
+                  :disabled="!fluentBitSelectedManagedIds.length"
+                  :loading="fluentBitBatchLoading === 'stop'"
+                  @click="handleFluentBitBatch('stop')"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'stop']" />
+                  &nbsp;停止
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="批量下发 Fluent Bit 配置" placement="top">
+                <a-button
+                  type="primary"
+                  ghost
+                  size="small"
+                  :disabled="!fluentBitSelectedManagedIds.length"
+                  :loading="fluentBitBatchLoading === 'apply'"
+                  @click="handleFluentBitBatch('apply')"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
+                  &nbsp;下发配置
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="批量删除 Fluent Bit 目标" placement="top">
+                <a-button
+                  class="delBtn"
+                  danger
+                  type="primary"
+                  size="small"
+                  :disabled="!fluentBitSelectedManagedIds.length"
+                  :loading="fluentBitBatchLoading === 'delete'"
+                  @click="openFluentBitBatchDeleteConfirm"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  &nbsp;删除
+                </a-button>
+              </a-tooltip>
+            </a-space>
+          </div>
+
+          <div class="fluent-bit-layout">
+            <div class="fluent-bit-tree">
+              <a-input
+                v-model:value="overviewGroupKeyword"
+                allow-clear
+                size="small"
+                placeholder="搜索分组"
+                class="fluent-bit-tree__search"
+              />
+              <div class="fluent-bit-tree__body">
+                <a-tree
+                  block-node
+                  :tree-data="overviewGroupTreeData"
+                  :selected-keys="overviewSelectedGroupKeys"
+                  :expanded-keys="overviewGroupExpandedKeys"
+                  :auto-expand-parent="true"
+                  @select="handleOverviewGroupSelect"
+                  @expand="(keys) => (overviewGroupExpandedKeys = keys)"
                 />
-              </template>
-              <template v-else-if="column.key === 'last_applied_time'">
-                {{ formatManagedTargetTime(record.last_applied_time) }}
-              </template>
-              <template v-else-if="column.key === 'last_error'">
-                <a-tooltip v-if="record.last_error" :title="record.last_error" placement="top">
-                  <a-typography-text type="danger" :content="record.last_error" ellipsis />
-                </a-tooltip>
-                <span v-else>-</span>
-              </template>
-              <template v-else-if="column.key === 'action'">
-                <a-space>
-                  <a-tooltip :title="record.host_agent_online ? '重新安装' : 'dj-agent 离线，操作不可用'" placement="top">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="!record.host_agent_online"
-                      :loading="fluentBitRetryLoading[record.id]"
-                      @click="openFluentBitRetryConfirm(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                      重新安装
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip title="查看日志" placement="top">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="fluentBitRetryLoading[record.id]"
-                      @click="openFluentBitJobLog(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'file-lines']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="record.agent_installed ? '运行' : 'Fluent Bit 尚未安装，无法启动'" placement="top">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="!record.host_agent_online || !record.agent_installed"
-                      :loading="fluentBitStartLoading[record.id]"
-                      @click="handleStartFluentBitService(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'play']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="record.agent_installed ? '停止服务' : 'Fluent Bit 尚未安装，无法停止'" placement="top">
-                    <a-button
-                      danger
-                      ghost
-                      size="small"
-                      :disabled="!record.host_agent_online || !record.agent_installed"
-                      :loading="fluentBitStopLoading[record.id]"
-                      @click="handleStopFluentBitService(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'stop']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="canCancelFluentBitTarget(record) ? '取消' : '当前任务已结束，无需取消'" placement="top">
-                    <a-button
-                      danger
-                      ghost
-                      size="small"
-                      :disabled="!canCancelFluentBitTarget(record)"
-                      :loading="fluentBitCancelLoading[record.id]"
-                      @click="handleCancelFluentBitTarget(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'ban']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="record.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="top">
-                    <a-button
-                      class="delBtn"
-                      danger
-                      type="primary"
-                      size="small"
-                      :disabled="record.install_status === 'pending' || (!record.host_agent_online && record.agent_installed)"
-                      :loading="fluentBitDeleteLoading[record.id]"
-                      @click="openFluentBitDeleteConfirm(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="record.host_agent_online ? '查看状态图' : 'dj-agent 离线，操作不可用'" placement="top">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="!record.host_agent_online"
-                      :loading="fluentBitStatusLoading[record.id]"
-                      @click="handleCheckFluentBitStatus(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                    </a-button>
-                  </a-tooltip>
-                  <a-tooltip :title="fluentBitApplyTooltip(record)" placement="top">
-                    <a-button
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="!canApplyFluentBitConfig(record)"
-                      :loading="fluentBitApplyLoading[record.id]"
-                      @click="handleApplyFluentBitConfig(record)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-                    </a-button>
-                  </a-tooltip>
-                </a-space>
-              </template>
-            </template>
-          </a-table>
+              </div>
+            </div>
+            <div class="fluent-bit-table">
+              <div class="fluent-bit-table__filters">
+                <a-input-search
+                  v-model:value="overviewKeyword"
+                  allow-clear
+                  size="small"
+                  placeholder="搜索主机名 / IP"
+                  style="width: 200px"
+                  @search="reloadOverviewHosts"
+                />
+                <a-select
+                  v-model:value="exporterFilterType"
+                  size="small"
+                  style="width: 170px"
+                  placeholder="全部 Exporter"
+                  allow-clear
+                  :options="exporterFilterOptions"
+                  :getPopupContainer="getPopupContainer"
+                  @change="reloadOverviewHosts"
+                />
+                <a-radio-group v-model:value="overviewManagedFilter" size="small" @change="reloadOverviewHosts">
+                  <a-radio-button value="">全部 Exporter</a-radio-button>
+                  <a-radio-button value="true">已纳管</a-radio-button>
+                  <a-radio-button value="false">未纳管</a-radio-button>
+                </a-radio-group>
+                <a-radio-group v-model:value="fluentBitManagedFilter" size="small" @change="reloadOverviewHosts">
+                  <a-radio-button value="">全部 Fluent Bit</a-radio-button>
+                  <a-radio-button value="true">已安装</a-radio-button>
+                  <a-radio-button value="false">未安装</a-radio-button>
+                </a-radio-group>
+              </div>
+              <a-table
+                rowKey="host_id"
+                :columns="overviewColumns"
+                :data-source="overviewHosts"
+                :loading="overviewLoading"
+                :row-selection="overviewRowSelection"
+                size="small"
+                :scroll="{ x: overviewScrollX }"
+                :pagination="overviewPagination"
+                @change="handleOverviewTableChange"
+              >
+                <template #bodyCell="{ column, record }">
+                  <template v-if="column.key === 'exporters'">
+                    <a-space v-if="record.exporters.length" :size="4" wrap>
+                      <a-tag
+                        v-for="item in record.exporters"
+                        :key="item.id"
+                        :color="exporterTagColor(item)"
+                      >
+                        {{ item.exporter_type }}:{{ item.scrape_port }}
+                      </a-tag>
+                    </a-space>
+                    <a-tag v-else color="default">未纳管</a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'managed_enabled'">
+                    <a-tag v-if="record.managed" :color="record.managed_enabled ? 'green' : 'default'">
+                      {{ record.managed_enabled ? '启用' : '禁用' }}
+                    </a-tag>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'install_status'">
+                    <a-tooltip v-if="record.managed && record.install_message" :title="record.install_message" placement="top">
+                      <a-tag :color="statusColor(record.install_status)">{{ record.install_status || 'unknown' }}</a-tag>
+                    </a-tooltip>
+                    <a-tag v-else-if="record.managed" :color="statusColor(record.install_status)">
+                      {{ record.install_status || 'unknown' }}
+                    </a-tag>
+                    <a-tag v-else color="default">未纳管</a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'last_scrape_status'">
+                    <a-tag v-if="record.managed" :color="scrapeColor(record.last_scrape_status)">
+                      {{ record.last_scrape_status || 'unknown' }}
+                    </a-tag>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'fluent_bit_status'">
+                    <a-tooltip v-if="fluentBitStatusTooltip(record.fluent_bit)" :title="fluentBitStatusTooltip(record.fluent_bit)" placement="top">
+                      <a-tag :color="fluentBitStatusColor(record.fluent_bit)">
+                        {{ fluentBitStatusText(record.fluent_bit) }}
+                      </a-tag>
+                    </a-tooltip>
+                    <a-tag v-else :color="fluentBitStatusColor(record.fluent_bit)">
+                      {{ fluentBitStatusText(record.fluent_bit) }}
+                    </a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'last_applied_time'">
+                    {{ record.fluent_bit.managed ? formatManagedTargetTime(record.fluent_bit.last_applied_time) : '-' }}
+                  </template>
+                  <template v-else-if="column.key === 'last_error'">
+                    <a-tooltip v-if="record.fluent_bit.last_error" :title="record.fluent_bit.last_error" placement="top">
+                      <a-typography-text type="danger" :content="record.fluent_bit.last_error" ellipsis />
+                    </a-tooltip>
+                    <span v-else>-</span>
+                  </template>
+                  <template v-else-if="column.key === 'action'">
+                    <a-space :size="6">
+                      <a-tooltip
+                        v-if="!exporterFilterType || !record.managed"
+                        :title="exporterActionTooltip(record)"
+                        placement="top"
+                      >
+                        <a-button
+                          type="primary"
+                          ghost
+                          size="small"
+                          :disabled="!record.host_agent_online"
+                          @click="openExporterCreateModal(record)"
+                        >
+                          <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                          &nbsp;Exporter
+                        </a-button>
+                      </a-tooltip>
+                      <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
+                        <a-tooltip :title="`${exporterFilterType} 操作`" placement="top">
+                          <a-button type="primary" ghost size="small">
+                            Exporter&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
+                          </a-button>
+                        </a-tooltip>
+                        <template #overlay>
+                          <div class="row-action-menu">
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : (record.managed_enabled ? '重新安装' : '重新卸载')" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record)"
+                                :loading="managedRetryLoading[record.id]"
+                                @click="openManagedTargetRetryConfirm(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                                &nbsp;{{ record.managed_enabled ? '重新安装' : '重新卸载' }}
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : '查看监控安装历史日志'" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record) || managedRetryLoading[record.id]"
+                                @click="openManagedTargetJobLog(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                                &nbsp;详细日志
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : (record.install_status !== 'success' ? '尚未安装成功，无法启动' : '启动服务')" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
+                                :loading="managedStartLoading[record.id]"
+                                @click="handleStartService(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'play']" />
+                                &nbsp;运行
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : (record.install_status !== 'success' ? '尚未安装成功，无法停止' : '停止服务')" placement="left">
+                              <a-button
+                                block
+                                danger
+                                ghost
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record) || record.install_status !== 'success'"
+                                :loading="managedStopLoading[record.id]"
+                                @click="handleStopService(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'stop']" />
+                                &nbsp;停止
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : '查看状态图'" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record)"
+                                :loading="managedServiceStatusLoading[record.id]"
+                                @click="openManagedServiceStatus(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                                &nbsp;查看状态图
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="!canCancelManagedTarget(record) ? '当前任务已结束，无需取消' : '取消'" placement="left">
+                              <a-button
+                                block
+                                danger
+                                ghost
+                                size="small"
+                                :disabled="!canCancelManagedTarget(record)"
+                                :loading="managedCancelLoading[record.id]"
+                                @click="onCancelManagedTarget(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'ban']" />
+                                &nbsp;取消
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
+                              ? 'dj-agent 离线，操作不可用'
+                              : (record.managed_enabled
+                                ? '请先关闭纳管（会自动下发卸载）后再删除'
+                                : (record.install_status === 'pending' ? '卸载任务尚未结束，暂不可删除' : '删除'))" placement="left">
+                              <a-button
+                                block
+                                class="delBtn"
+                                danger
+                                type="primary"
+                                size="small"
+                                :disabled="isManagedTargetActionDisabledByAgent(record) || record.managed_enabled || record.install_status === 'pending'"
+                                :loading="managedDeleteLoading[record.id]"
+                                @click="openManagedTargetDeleteConfirm(record)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                &nbsp;删除
+                              </a-button>
+                            </a-tooltip>
+                          </div>
+                        </template>
+                      </a-dropdown>
+
+                      <a-tooltip
+                        v-if="!record.fluent_bit.managed"
+                        :title="record.host_agent_online ? '纳管并安装 Fluent Bit' : 'dj-agent 离线，操作不可用'"
+                        placement="top"
+                      >
+                        <a-button
+                          type="primary"
+                          ghost
+                          size="small"
+                          :disabled="!record.host_agent_online"
+                          :loading="fluentBitCreateLoading[record.host_id]"
+                          @click="handleFluentBitCreateOne(record.fluent_bit)"
+                        >
+                          <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                          &nbsp;Fluent Bit
+                        </a-button>
+                      </a-tooltip>
+                      <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
+                        <a-tooltip title="Fluent Bit 操作" placement="top">
+                          <a-button type="primary" ghost size="small">
+                            Fluent Bit&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
+                          </a-button>
+                        </a-tooltip>
+                        <template #overlay>
+                          <div class="row-action-menu">
+                            <a-tooltip :title="record.host_agent_online ? '重新安装' : 'dj-agent 离线，操作不可用'" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="!record.host_agent_online"
+                                :loading="fluentBitRetryLoading[record.fluent_bit.id]"
+                                @click="openFluentBitRetryConfirm(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                                &nbsp;重新安装
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip title="查看日志" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="fluentBitRetryLoading[record.fluent_bit.id]"
+                                @click="openFluentBitJobLog(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+                                &nbsp;查看日志
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="record.fluent_bit.agent_installed ? '运行' : 'Fluent Bit 尚未安装，无法启动'" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="!record.host_agent_online || !record.fluent_bit.agent_installed"
+                                :loading="fluentBitStartLoading[record.fluent_bit.id]"
+                                @click="handleStartFluentBitService(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'play']" />
+                                &nbsp;运行
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="record.fluent_bit.agent_installed ? '停止服务' : 'Fluent Bit 尚未安装，无法停止'" placement="left">
+                              <a-button
+                                block
+                                danger
+                                ghost
+                                size="small"
+                                :disabled="!record.host_agent_online || !record.fluent_bit.agent_installed"
+                                :loading="fluentBitStopLoading[record.fluent_bit.id]"
+                                @click="handleStopFluentBitService(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'stop']" />
+                                &nbsp;停止
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="fluentBitApplyTooltip(record.fluent_bit)" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="!canApplyFluentBitConfig(record.fluent_bit)"
+                                :loading="fluentBitApplyLoading[record.fluent_bit.id]"
+                                @click="handleApplyFluentBitConfig(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
+                                &nbsp;下发配置
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="record.host_agent_online ? '查看状态图' : 'dj-agent 离线，操作不可用'" placement="left">
+                              <a-button
+                                block
+                                type="primary"
+                                ghost
+                                size="small"
+                                :disabled="!record.host_agent_online"
+                                :loading="fluentBitStatusLoading[record.fluent_bit.id]"
+                                @click="handleCheckFluentBitStatus(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                                &nbsp;查看状态图
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="canCancelFluentBitTarget(record.fluent_bit) ? '取消' : '当前任务已结束，无需取消'" placement="left">
+                              <a-button
+                                block
+                                danger
+                                ghost
+                                size="small"
+                                :disabled="!canCancelFluentBitTarget(record.fluent_bit)"
+                                :loading="fluentBitCancelLoading[record.fluent_bit.id]"
+                                @click="handleCancelFluentBitTarget(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'ban']" />
+                                &nbsp;取消
+                              </a-button>
+                            </a-tooltip>
+                            <a-tooltip :title="record.fluent_bit.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="left">
+                              <a-button
+                                block
+                                class="delBtn"
+                                danger
+                                type="primary"
+                                size="small"
+                                :disabled="record.fluent_bit.install_status === 'pending' || (!record.host_agent_online && record.fluent_bit.agent_installed)"
+                                :loading="fluentBitDeleteLoading[record.fluent_bit.id]"
+                                @click="openFluentBitDeleteConfirm(record.fluent_bit)"
+                              >
+                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                                &nbsp;删除
+                              </a-button>
+                            </a-tooltip>
+                          </div>
+                        </template>
+                      </a-dropdown>
+                    </a-space>
+                  </template>
+                </template>
+              </a-table>
+            </div>
+          </div>
         </a-tab-pane>
 
         <a-tab-pane key="packages" tab="软件仓库">
@@ -734,33 +959,37 @@
     </a-modal>
 
     <a-modal
-      title="新增 Fluent Bit 纳管目标"
-      :open="fluentBitTargetModalVisible"
-      :confirm-loading="fluentBitTargetSubmitting"
-      ok-text="创建"
+      title="纳管并安装 Exporter"
+      :open="exporterCreateModalVisible"
+      :confirm-loading="exporterCreateSubmitting"
+      ok-text="纳管并安装"
       cancel-text="取消"
       width="520px"
-      @ok="submitFluentBitTarget"
-      @cancel="fluentBitTargetModalVisible = false"
+      @ok="submitExporterCreate"
+      @cancel="exporterCreateModalVisible = false"
     >
       <a-form layout="vertical">
-        <a-form-item label="Host" required>
+        <a-form-item label="目标主机">
+          <a-input :value="`已选 ${exporterCreateHostIds.length} 台`" readonly />
+        </a-form-item>
+        <a-form-item label="Exporter" required>
           <a-select
-            v-model:value="fluentBitTargetHostId"
-            show-search
-            :filter-option="false"
-            :options="fluentBitHostOptions"
-            :loading="fluentBitHostOptionsLoading"
-            placeholder="输入主机名或 IP 搜索"
+            v-model:value="exporterCreateForm.exporter_type"
+            :options="exporterOptionList"
+            :field-names="{ label: 'name', value: 'name' }"
+            placeholder="请选择 Exporter"
             style="width: 100%"
             :getPopupContainer="getPopupContainer"
-            @search="loadFluentBitHostOptions"
+            @change="handleExporterTypeChange"
           />
+        </a-form-item>
+        <a-form-item label="抓取端口" required>
+          <a-input-number v-model:value="exporterCreateForm.scrape_port" :min="1" :max="65535" style="width: 100%" />
         </a-form-item>
         <a-alert
           type="info"
           show-icon
-          message="一台 Host 只能创建一个 Fluent Bit 纳管目标；创建目标不会调用 Exporter Playbook"
+          message="同一主机的同一 Exporter 只能纳管一次，已存在的会自动跳过"
         />
       </a-form>
     </a-modal>
@@ -792,19 +1021,26 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
   applyLogCollectionConfig,
+  batchApplyLogCollectionTargets,
+  batchCreateLogCollectionTargets,
+  batchCreateMonitorTargets,
+  batchDeleteLogCollectionTargets,
+  batchRetryLogCollectionTargets,
+  batchStartLogCollectionTargets,
+  batchStopLogCollectionTargets,
   cancelLogCollectionTarget,
   checkLogCollectionStatus,
   checkManagedTargetServiceStatus,
-  createLogCollectionTarget,
   createSoftwarePackage,
   deleteManagedTarget,
   deleteLogCollectionTarget,
   deleteSoftwarePackage,
   getPrometheusFlags,
-  getManagedTargets,
-  getLogCollectionTargetList,
   getMonitorInstallHistoryList,
   getMonitorSummary,
+  getMonitorExporterOptions,
+  getMonitorHostGroupTree,
+  getMonitorHostOverview,
   getPrometheusConfig,
   getPrometheusOverview,
   getPrometheusTsdbStatus,
@@ -821,7 +1057,6 @@ import {
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
 } from '@/api/monitor'
-import { getHostList } from '@/api/assets/host'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
@@ -861,14 +1096,6 @@ const promFlagsLoadError = ref('')
 const promFlagsKeyword = ref('')
 
 const promTargets = ref([])
-const managedTargetType = ref('exporter')
-const managedTargetTypeOptions = [
-  { label: 'Exporter', value: 'exporter' },
-  { label: 'Fluent Bit', value: 'fluent_bit' },
-]
-const managedTargets = ref([])
-const fluentBitTargets = ref([])
-const fluentBitTargetsLoading = ref(false)
 const fluentBitStatusLoading = reactive({})
 const fluentBitApplyLoading = reactive({})
 const fluentBitRetryLoading = reactive({})
@@ -876,11 +1103,32 @@ const fluentBitStartLoading = reactive({})
 const fluentBitStopLoading = reactive({})
 const fluentBitCancelLoading = reactive({})
 const fluentBitDeleteLoading = reactive({})
-const fluentBitTargetModalVisible = ref(false)
-const fluentBitTargetSubmitting = ref(false)
-const fluentBitTargetHostId = ref(undefined)
-const fluentBitHostOptions = ref([])
-const fluentBitHostOptionsLoading = ref(false)
+const fluentBitBatchLoading = ref('')
+const fluentBitCreateLoading = reactive({})
+const overviewHosts = ref([])
+const overviewLoading = ref(false)
+const overviewSelectedHostIds = ref([])
+const overviewGroupTree = ref([])
+const overviewGroupTotals = reactive({ total: 0, managed: 0 })
+const overviewGroupKeyword = ref('')
+const overviewGroupExpandedKeys = ref([])
+const overviewSelectedGroupKeys = ref(['all'])
+const overviewKeyword = ref('')
+const overviewManagedFilter = ref('')
+const fluentBitManagedFilter = ref('')
+const exporterFilterType = ref(undefined)
+const exporterOptionList = ref([])
+const exporterCreateModalVisible = ref(false)
+const exporterCreateSubmitting = ref(false)
+const exporterCreateHostIds = ref([])
+const exporterCreateForm = reactive({ exporter_type: undefined, scrape_port: 9100 })
+const overviewPagination = reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showSizeChanger: true,
+  showTotal: (total) => `共有 ${total} 台主机`,
+})
 const managedRetryLoading = reactive({})
 const managedCancelLoading = reactive({})
 const managedServiceStatusLoading = reactive({})
@@ -893,23 +1141,6 @@ const serviceStatusMap = reactive({})
 const serviceStatusModalVisible = ref(false)
 const serviceStatusModalRecord = ref(null)
 const serviceStatusModalResult = ref(null)
-
-const managedPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
-const fluentBitPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
 
 const autoRefreshEnabled = ref(true)
 const refreshIntervalSeconds = ref(15)
@@ -932,31 +1163,44 @@ const promTargetColumns = [
   { title: 'Last Error', dataIndex: 'last_error', key: 'last_error', width: 260 },
 ]
 
-const managedColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
-  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
-  { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 160 },
-  { title: 'Exporter', dataIndex: 'exporter_type', key: 'exporter_type', width: 150 },
-  { title: '纳管', dataIndex: 'managed_enabled', key: 'managed_enabled', width: 90 },
-  { title: '安装状态', dataIndex: 'install_status', key: 'install_status', width: 120 },
-  { title: '采集状态', dataIndex: 'last_scrape_status', key: 'last_scrape_status', width: 120 },
-  { title: '服务状态', key: 'service_status', width: 130 },
-  { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 180 },
-  { title: '操作', key: 'action', width: 400, fixed: 'right' },
+const OVERVIEW_BASE_COLUMNS = [
+  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 170, fixed: 'left' },
+  { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 140 },
+  { title: '分组', dataIndex: 'group_name', key: 'group_name', width: 120 },
 ]
 
-const fluentBitTargetColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
-  { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 150 },
-  { title: '安装状态', dataIndex: 'agent_installed', key: 'agent_installed', width: 110 },
-  { title: '版本', dataIndex: 'agent_version', key: 'agent_version', width: 120 },
-  { title: '运行状态', dataIndex: 'runtime_status', key: 'runtime_status', width: 120 },
-  { title: '配置指纹', dataIndex: 'config_fingerprint', key: 'config_fingerprint', width: 240 },
-  { title: '最近下发', dataIndex: 'last_applied_time', key: 'last_applied_time', width: 180 },
-  { title: '最近错误', dataIndex: 'last_error', key: 'last_error', width: 240 },
-  { title: '操作', key: 'action', width: 500, fixed: 'right' },
+const OVERVIEW_EXPORTER_SUMMARY_COLUMN = { title: 'Exporter', key: 'exporters', width: 240 }
+
+// 选定具体 exporter 后，后端会把该 exporter 的字段摊平到行上，行内直接可操作。
+const OVERVIEW_EXPORTER_DETAIL_COLUMNS = [
+  { title: '端口', dataIndex: 'scrape_port', key: 'scrape_port', width: 80 },
+  { title: 'Exporter 纳管', key: 'managed_enabled', width: 120 },
+  { title: 'Exporter 安装', key: 'install_status', width: 120 },
+  { title: '采集状态', key: 'last_scrape_status', width: 100 },
 ]
+
+const OVERVIEW_FLUENT_BIT_COLUMNS = [
+  { title: 'Fluent Bit 状态', key: 'fluent_bit_status', width: 150 },
+  { title: 'Fluent Bit 下发', key: 'last_applied_time', width: 170 },
+  { title: 'Fluent Bit 错误', key: 'last_error', width: 200 },
+]
+
+const OVERVIEW_ACTION_COLUMN = { title: '操作', key: 'action', width: 250, fixed: 'right' }
+
+const overviewColumns = computed(() => [
+  ...OVERVIEW_BASE_COLUMNS,
+  ...(exporterFilterType.value ? OVERVIEW_EXPORTER_DETAIL_COLUMNS : [OVERVIEW_EXPORTER_SUMMARY_COLUMN]),
+  ...OVERVIEW_FLUENT_BIT_COLUMNS,
+  OVERVIEW_ACTION_COLUMN,
+])
+// 列随筛选模式变化，横向滚动宽度跟着算，避免固定值与列对不上导致列挤压。
+const overviewScrollX = computed(
+  () => overviewColumns.value.reduce((sum, column) => sum + Number(column.width || 160), 0),
+)
+const exporterFilterOptions = computed(
+  () => exporterOptionList.value.map((item) => ({ label: item.name, value: item.name })),
+)
+
 
 const packageColumns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
@@ -1413,26 +1657,6 @@ function scrapeColor(status) {
   return 'default'
 }
 
-// 服务状态列的展示：以 exit_code === 0 视为 active（systemctl status 对运行中服务返回 0），
-// 任务本身成功但 exit_code 非 0 视为 inactive/failed，任务未成功完成（超时/失败）则展示任务自身状态。
-function serviceStatusColor(entry) {
-  if (!entry) return 'default'
-  if (entry.status !== 'success') return 'default'
-  return entry.exitCode === 0 ? 'green' : 'red'
-}
-
-function serviceStatusText(entry) {
-  if (!entry) return '未查询'
-  if (entry.status !== 'success') return entry.status
-  return entry.exitCode === 0 ? 'active' : 'inactive'
-}
-
-function serviceStatusSummary(entry) {
-  if (!entry) return ''
-  const firstLine = String(entry.stdout || entry.stderr || '').split('\n').find((line) => line.trim())
-  return firstLine ? `${firstLine}（点击查看完整详情）` : '点击查看完整详情'
-}
-
 function parseApiData(resp) {
   return resp?.data?.data || {}
 }
@@ -1649,91 +1873,304 @@ async function copyPromConfig() {
   }
 }
 
-async function loadManagedTargets() {
-  const res = await getManagedTargets({
-    page: managedPagination.current,
-    page_size: managedPagination.pageSize,
-    ordering: '-id',
-  })
-  const data = parseApiData(res)
-  const records = Array.isArray(data.results) ? data.results : []
-  managedTargets.value = records.map((record) => ({
-    ...record,
-    // 纳管目标接口中的 last_scrape_status 是历史字段；页面展示以本次 Prometheus
-    // targets 查询结果为准，避免 exporter 服务已启动但实际未被 Prometheus 抓取时仍显示 unknown。
-    last_scrape_status: resolveManagedScrapeStatus(record),
-  }))
-  managedPagination.total = Number(data.count || 0)
-  // 纳管目标数据一加载/刷新完成，就主动为已启用且安装成功的目标查询一次 systemd 运行状态，
-  // 无需用户手动点击按钮；未启用或安装未成功的目标没有可核实的服务，跳过以避免无意义的
-  // AgentJob/RabbitMQ 调度开销。
-  refreshManagedServiceStatuses()
-}
 
-async function loadFluentBitTargets() {
-  fluentBitTargetsLoading.value = true
-  try {
-    const res = await getLogCollectionTargetList({
-      page: fluentBitPagination.current,
-      page_size: fluentBitPagination.pageSize,
-      ordering: '-id',
+function collectGroupKeys(nodes) {
+  const keys = []
+  const walk = (items) => {
+    ;(Array.isArray(items) ? items : []).forEach((node) => {
+      keys.push(node.key)
+      walk(node.children)
     })
-    const data = parseApiData(res)
-    fluentBitTargets.value = Array.isArray(data.results) ? data.results : []
-    fluentBitPagination.total = Number(data.count || 0)
-  } finally {
-    fluentBitTargetsLoading.value = false
   }
+  walk(nodes)
+  return keys
 }
 
-async function loadFluentBitHostOptions(keyword = '') {
-  fluentBitHostOptionsLoading.value = true
+function buildMonitorGroupTreeData(groups, keyword, totals) {
+  const kw = String(keyword || '').trim().toLowerCase()
+  const build = (nodes) => (Array.isArray(nodes) ? nodes : []).reduce((rows, node) => {
+    const children = build(node.children)
+    const matched = !kw || String(node.name || '').toLowerCase().includes(kw)
+    if (matched || children.length) {
+      rows.push({
+        key: `group-${node.id}`,
+        title: `${node.name}（${node.managed_count}/${node.host_count}）`,
+        children,
+      })
+    }
+    return rows
+  }, [])
+  return [{
+    key: 'all',
+    title: `全部主机（${totals.managed}/${totals.total}）`,
+    children: build(groups),
+  }]
+}
+
+const overviewGroupTreeData = computed(
+  () => buildMonitorGroupTreeData(overviewGroupTree.value, overviewGroupKeyword.value, overviewGroupTotals),
+)
+
+function handleOverviewGroupSelect(keys) {
+  // 点已选中的节点时 antd 会回传空数组，这里保持原选中，避免过滤条件被意外清空。
+  overviewSelectedGroupKeys.value = keys.length ? keys : overviewSelectedGroupKeys.value
+  reloadOverviewHosts()
+}
+
+function fluentBitStatusColor(record) {
+  if (!record || !record.managed) return 'default'
+  if (record.install_status === 'pending') return 'processing'
+  if (record.install_status === 'failed') return 'error'
+  if (record.agent_installed) {
+    if (record.runtime_status === 'running') return 'success'
+    if (record.runtime_status === 'stopped') return 'warning'
+    if (record.runtime_status === 'error') return 'error'
+    return 'success'
+  }
+  return 'default'
+}
+
+function fluentBitStatusText(record) {
+  if (!record || !record.managed) return '未安装'
+  if (record.install_status === 'pending') return '安装中'
+  if (record.install_status === 'failed') return '安装失败'
+  if (record.agent_installed) {
+    if (record.runtime_status === 'running') return '运行中 (2020)'
+    if (record.runtime_status === 'stopped') return '已停止'
+    if (record.runtime_status === 'error') return '异常'
+    return '已安装'
+  }
+  return '未安装'
+}
+
+function fluentBitStatusTooltip(record) {
+  if (!record || !record.managed) return '未纳管 Fluent Bit 日志采集'
+  if (record.install_status === 'pending') return '任务执行中，请稍候'
+  if (record.install_status === 'failed') return record.last_error || '安装失败，请点击重试'
+  if (record.agent_installed) {
+    if (record.runtime_status === 'running') return 'Fluent Bit 正常运行 (HTTP API: 2020)'
+    if (record.runtime_status === 'stopped') return 'Fluent Bit 服务已停止'
+    if (record.runtime_status === 'error') return record.last_error || 'Fluent Bit 运行异常'
+  }
+  return ''
+}
+
+function exporterActionTooltip(record) {
+  if (!record.host_agent_online) return 'dj-agent 离线，操作不可用'
+  if (!exporterFilterType.value) return '纳管并安装 Exporter（先在上方选定具体 Exporter 才能重装/启停）'
+  return `纳管并安装 ${exporterFilterType.value}`
+}
+
+async function loadOverviewHosts() {
+  overviewLoading.value = true
   try {
-    const res = await getHostList({ page: 1, size: 50, search: String(keyword || '').trim() })
-    const data = parseApiData(res)
-    const rows = Array.isArray(data.results) ? data.results : []
-    fluentBitHostOptions.value = rows.map((host) => ({
-      value: host.id,
-      label: `${host.instance_name || `Host-${host.id}`} (${host.ip || '无 IP'})${host.agent_online ? '' : ' - Agent 离线'}`,
+    const groupKey = overviewSelectedGroupKeys.value[0]
+    const data = parseApiData(await getMonitorHostOverview({
+      page: overviewPagination.current,
+      page_size: overviewPagination.pageSize,
+      group_id: String(groupKey || '').startsWith('group-') ? String(groupKey).slice('group-'.length) : undefined,
+      search: overviewKeyword.value.trim() || undefined,
+      exporter_type: exporterFilterType.value || undefined,
+      exporter_managed: overviewManagedFilter.value || undefined,
+      fluent_bit_managed: fluentBitManagedFilter.value || undefined,
     }))
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Host 列表加载失败')
+    overviewHosts.value = Array.isArray(data.results) ? data.results : []
+    overviewPagination.total = Number(data.count || 0)
   } finally {
-    fluentBitHostOptionsLoading.value = false
+    overviewLoading.value = false
   }
 }
 
-function openFluentBitTargetModal() {
-  fluentBitTargetHostId.value = undefined
-  fluentBitTargetModalVisible.value = true
-  loadFluentBitHostOptions()
+async function loadOverviewGroupTree() {
+  try {
+    const data = parseApiData(await getMonitorHostGroupTree())
+    overviewGroupTree.value = Array.isArray(data.groups) ? data.groups : []
+    overviewGroupTotals.total = Number(data.total_host_count || 0)
+    overviewGroupTotals.managed = Number(data.total_managed_count || 0)
+    overviewGroupExpandedKeys.value = collectGroupKeys(overviewGroupTreeData.value)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '主机分组树加载失败')
+  }
 }
 
-async function submitFluentBitTarget() {
-  if (!fluentBitTargetHostId.value) {
-    message.error('请选择 Host')
+async function loadExporterOptions() {
+  try {
+    const data = parseApiData(await getMonitorExporterOptions())
+    exporterOptionList.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || 'Exporter 列表加载失败')
+  }
+}
+
+function reloadOverviewHosts() {
+  overviewPagination.current = 1
+  overviewSelectedHostIds.value = []
+  loadOverviewHosts()
+}
+
+function handleOverviewTableChange(pagination) {
+  overviewPagination.current = Number(pagination?.current || 1)
+  overviewPagination.pageSize = Number(pagination?.pageSize || 10)
+  // 勾选态只对当前页有效，翻页后不清会把上一页的 id 带进批量请求。
+  overviewSelectedHostIds.value = []
+  loadOverviewHosts()
+}
+
+const overviewRowSelection = computed(() => ({
+  selectedRowKeys: overviewSelectedHostIds.value,
+  onChange: (keys) => {
+    overviewSelectedHostIds.value = keys
+  },
+}))
+
+function exporterTagColor(item) {
+  if (!item.managed_enabled) return 'default'
+  return ({ success: 'green', failed: 'red', pending: 'blue' })[item.install_status] || 'orange'
+}
+
+function openExporterCreateModal(record) {
+  // 行内按钮传 record，工具栏按钮不传参（事件对象不是行数据，用 host_id 判断）。
+  const hostIds = record?.host_id ? [record.host_id] : [...overviewSelectedHostIds.value]
+  if (!hostIds.length) {
     return
   }
-  fluentBitTargetSubmitting.value = true
-  try {
-    await createLogCollectionTarget({ host: fluentBitTargetHostId.value })
-    message.success('Fluent Bit 纳管目标已创建')
-    fluentBitTargetModalVisible.value = false
-    fluentBitPagination.current = 1
-    await loadFluentBitTargets()
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 纳管目标创建失败')
-  } finally {
-    fluentBitTargetSubmitting.value = false
+  exporterCreateHostIds.value = hostIds
+  // 已在上方筛选具体 exporter 时直接预选它，避免用户再选一次。
+  const preferred = exporterOptionList.value.find((item) => item.name === exporterFilterType.value)
+  const target = preferred || exporterOptionList.value[0]
+  exporterCreateForm.exporter_type = target?.name
+  exporterCreateForm.scrape_port = Number(target?.default_port || 9100)
+  exporterCreateModalVisible.value = true
+}
+
+function handleExporterTypeChange(value) {
+  const matched = exporterOptionList.value.find((item) => item.name === value)
+  if (matched) {
+    exporterCreateForm.scrape_port = Number(matched.default_port || 9100)
   }
 }
 
-function fluentBitRuntimeColor(status) {
-  return ({ running: 'green', stopped: 'default', error: 'red' })[status] || 'default'
+async function submitExporterCreate() {
+  if (!exporterCreateForm.exporter_type) {
+    message.error('请选择 Exporter')
+    return
+  }
+  const port = Number(exporterCreateForm.scrape_port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    message.error('抓取端口必须是 1-65535 之间的整数')
+    return
+  }
+  exporterCreateSubmitting.value = true
+  try {
+    const data = parseApiData(await batchCreateMonitorTargets({
+      host_ids: exporterCreateHostIds.value,
+      exporter_type: exporterCreateForm.exporter_type,
+      scrape_port: port,
+      install_now: true,
+    }))
+    reportFluentBitBatchResult('纳管并下发安装', data)
+    exporterCreateModalVisible.value = false
+    overviewSelectedHostIds.value = []
+    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '纳管失败')
+  } finally {
+    exporterCreateSubmitting.value = false
+  }
 }
 
-function fluentBitRuntimeText(status) {
-  return ({ running: '运行中', stopped: '已停止', error: '异常', unknown: '未知' })[status] || '未知'
+// 选中项按 host_id 存；Fluent Bit 批量动作要按「已纳管/未纳管」拆成两条链路，前者用 target id。
+const overviewSelectedRows = computed(
+  () => overviewHosts.value.filter((item) => overviewSelectedHostIds.value.includes(item.host_id)),
+)
+const fluentBitSelectedManagedIds = computed(
+  () => overviewSelectedRows.value.filter((item) => item.fluent_bit.managed).map((item) => item.fluent_bit.id),
+)
+const fluentBitSelectedUnmanaged = computed(
+  () => overviewSelectedRows.value.filter((item) => !item.fluent_bit.managed),
+)
+
+const FLUENT_BIT_BATCH_ACTIONS = {
+  retry: { label: '批量下发安装', request: batchRetryLogCollectionTargets },
+  start: { label: '批量启动', request: batchStartLogCollectionTargets },
+  stop: { label: '批量停止', request: batchStopLogCollectionTargets },
+  apply: { label: '批量下发配置', request: batchApplyLogCollectionTargets },
+  delete: { label: '批量删除', request: batchDeleteLogCollectionTargets },
+}
+
+async function handleFluentBitBatch(action) {
+  const config = FLUENT_BIT_BATCH_ACTIONS[action]
+  const ids = [...fluentBitSelectedManagedIds.value]
+  if (!config || !ids.length) {
+    return
+  }
+  fluentBitBatchLoading.value = action
+  try {
+    const data = parseApiData(await config.request(ids))
+    reportFluentBitBatchResult(config.label, data)
+    overviewSelectedHostIds.value = []
+    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || `${config.label}失败`)
+  } finally {
+    fluentBitBatchLoading.value = ''
+  }
+}
+
+function reportFluentBitBatchResult(label, data) {
+  const failed = Array.isArray(data.results) ? data.results.filter((item) => !item.ok) : []
+  if (failed.length === 0) {
+    message.success(`${label}成功：${data.success} 台`)
+    return
+  }
+  // 逐台执行，部分失败是常态；把失败主机和原因摊开，避免只报一个笼统错误。
+  const detail = failed.slice(0, 3).map((item) => `${item.host}：${item.message}`).join('；')
+  const suffix = failed.length > 3 ? ` 等 ${failed.length} 台` : ''
+  message.warning(`${label}完成：成功 ${data.success} 台，失败 ${data.failed} 台。${detail}${suffix}`)
+}
+
+async function handleFluentBitBatchCreate() {
+  const hostIds = fluentBitSelectedUnmanaged.value.map((item) => item.host_id)
+  if (!hostIds.length) {
+    return
+  }
+  fluentBitBatchLoading.value = 'create'
+  try {
+    const data = parseApiData(await batchCreateLogCollectionTargets(hostIds, true))
+    reportFluentBitBatchResult('纳管并下发安装', data)
+    overviewSelectedHostIds.value = []
+    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '纳管失败')
+  } finally {
+    fluentBitBatchLoading.value = ''
+  }
+}
+
+async function handleFluentBitCreateOne(record) {
+  fluentBitCreateLoading[record.host_id] = true
+  try {
+    const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
+    reportFluentBitBatchResult('纳管并下发安装', data)
+    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '纳管失败')
+  } finally {
+    fluentBitCreateLoading[record.host_id] = false
+  }
+}
+
+function openFluentBitBatchDeleteConfirm() {
+  const selected = overviewSelectedRows.value.filter((item) => item.fluent_bit.managed)
+  if (!selected.length) {
+    return
+  }
+  openDeleteConfirm({
+    title: '确认批量删除 Fluent Bit 目标',
+    summary: '已安装的主机会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。',
+    items: selected.map((item) => `${item.host_name || item.host_ip || `Host-${item.host_id}`} - Fluent Bit`),
+    onConfirm: () => handleFluentBitBatch('delete'),
+  })
 }
 
 function canApplyFluentBitConfig(record) {
@@ -1759,7 +2196,7 @@ async function handleCheckFluentBitStatus(record) {
   try {
     await checkLogCollectionStatus(record.id)
     message.success('Fluent Bit 状态已更新')
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 状态检查失败')
   } finally {
@@ -1772,7 +2209,7 @@ async function handleApplyFluentBitConfig(record) {
   try {
     const result = parseApiData(await applyLogCollectionConfig(record.id))
     message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Fluent Bit 配置已下发')
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 配置下发失败')
   } finally {
@@ -1784,12 +2221,12 @@ async function handleFluentBitRedispatch(record) {
   fluentBitRetryLoading[record.id] = true
   try {
     await retryLogCollectionTarget(record.id)
-    message.success('Fluent Bit 重新安装已完成')
+    message.success('已下发 Fluent Bit 重新安装任务，请稍后刷新查看结果')
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 重新安装失败')
   } finally {
     fluentBitRetryLoading[record.id] = false
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -1845,7 +2282,7 @@ async function handleStartFluentBitService(record) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 启动失败')
   } finally {
     fluentBitStartLoading[record.id] = false
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -1862,7 +2299,7 @@ async function handleStopFluentBitService(record) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 停止失败')
   } finally {
     fluentBitStopLoading[record.id] = false
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -1880,7 +2317,7 @@ async function handleCancelFluentBitTarget(record) {
     message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
   } finally {
     fluentBitCancelLoading[record.id] = false
-    await loadFluentBitTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -1889,49 +2326,27 @@ function openFluentBitDeleteConfirm(record) {
   openDeleteConfirm({
     title: '确认删除 Fluent Bit 目标',
     summary: record.agent_installed
-      ? '删除前会先卸载 Fluent Bit；卸载失败时将保留目标和安装日志。'
+      ? '会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。'
       : '目标删除后，如需继续采集日志必须重新创建并安装。',
     items: [`${hostLabel} - Fluent Bit`],
     onConfirm: async () => {
       fluentBitDeleteLoading[record.id] = true
       try {
-        await deleteLogCollectionTarget(record.id)
-        message.success('Fluent Bit 目标已删除')
+        const data = parseApiData(await deleteLogCollectionTarget(record.id))
+        message.success(data?.pending_uninstall
+          ? '已下发卸载任务，卸载成功后自动删除'
+          : 'Fluent Bit 目标已删除')
       } catch (error) {
         message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 目标删除失败')
       } finally {
         fluentBitDeleteLoading[record.id] = false
-        await loadFluentBitTargets()
+        await loadOverviewHosts()
       }
     },
   })
 }
 
-function resolveManagedScrapeStatus(record) {
-  const hostIp = String(record?.host_ip || '').trim()
-  const scrapePort = Number(record?.scrape_port || 0)
-  if (!hostIp || !Number.isInteger(scrapePort) || scrapePort <= 0) {
-    return 'unknown'
-  }
 
-  const expectedInstance = `${hostIp}:${scrapePort}`
-  const target = promTargets.value.find((item) => {
-    const instance = String(item?.instance || '').trim()
-    return instance === expectedInstance || instance.startsWith(`${expectedInstance}/`)
-  })
-  const health = String(target?.health || '').trim().toLowerCase()
-  return health === 'up' || health === 'down' ? health : 'unknown'
-}
-
-function refreshManagedServiceStatuses() {
-  for (const record of managedTargets.value) {
-    if (isManagedTargetActionDisabledByAgent(record)) continue
-    if (!record.managed_enabled) continue
-    if (record.install_status !== 'success') continue
-    if (managedServiceStatusLoading[record.id]) continue // 上一轮查询还没结束，跳过避免重复轮询同一行
-    handleCheckServiceStatus(record)
-  }
-}
 
 function isManagedTargetActionDisabledByAgent(record) {
   return !Boolean(record?.host_agent_online)
@@ -1963,7 +2378,11 @@ async function loadAllData() {
     promFlagsRows.value = flagsPayload.rows
     promFlagsLoadError.value = flagsPayload.error
 
-    await Promise.all([loadManagedTargets(), loadFluentBitTargets()])
+    await Promise.all([
+      loadOverviewHosts(),
+      loadOverviewGroupTree(),
+      loadExporterOptions(),
+    ])
     if (overview.total <= 0 && summaryPayload.total > 0) {
       overview.total = summaryPayload.total
       overview.up = summaryPayload.scrapeUp
@@ -1998,17 +2417,7 @@ function restartRefreshTimer() {
   }, intervalMs)
 }
 
-function handleManagedTableChange(pagination) {
-  managedPagination.current = Number(pagination?.current || 1)
-  managedPagination.pageSize = Number(pagination?.pageSize || 10)
-  loadManagedTargets()
-}
 
-function handleFluentBitTableChange(pagination) {
-  fluentBitPagination.current = Number(pagination?.current || 1)
-  fluentBitPagination.pageSize = Number(pagination?.pageSize || 10)
-  loadFluentBitTargets()
-}
 
 // 重新下发：统一入口，无论当前 install_status 是什么（success/failed/pending）都可以点。
 // 后端 retry 接口本身只看 managed_enabled 决定装还是卸（不校验 install_status），
@@ -2029,7 +2438,7 @@ async function handleManagedRedispatch(record) {
     message.error(error?.response?.data?.msg || error?.message || '重新下发失败')
   } finally {
     managedRetryLoading[record.id] = false
-    await loadManagedTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -2066,7 +2475,7 @@ async function onCancelManagedTarget(record) {
     message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
   } finally {
     managedCancelLoading[record.id] = false
-    await loadManagedTargets()
+    await loadOverviewHosts()
   }
 }
 
@@ -2132,7 +2541,7 @@ function openManagedTargetDeleteConfirm(record) {
         message.error(error?.response?.data?.msg || error?.message || '删除失败')
       } finally {
         managedDeleteLoading[record.id] = false
-        await loadManagedTargets()
+        await loadOverviewHosts()
       }
     },
   })
@@ -2209,6 +2618,12 @@ function openServiceStatusModal(record) {
   serviceStatusModalVisible.value = true
 }
 
+// 点「查看状态图」时先实时拉一次 systemctl status，避免弹窗展示陈旧缓存。
+async function openManagedServiceStatus(record) {
+  await handleCheckServiceStatus(record)
+  openServiceStatusModal(record)
+}
+
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)
 watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
 
@@ -2239,6 +2654,80 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.managed-target-toolbar__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.fluent-bit-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+}
+
+.fluent-bit-batch-bar__count {
+  color: #666;
+  font-size: 13px;
+}
+
+.fluent-bit-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.fluent-bit-tree {
+  flex: 0 0 200px;
+  width: 200px;
+  padding: 8px;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+}
+
+.fluent-bit-tree__search {
+  margin-bottom: 8px;
+}
+
+.fluent-bit-tree__body {
+  max-height: 520px;
+  overflow: auto;
+}
+
+/* 表格区必须能收缩，否则 flex 子项默认 min-width:auto 会被 1900px 的表格撑破布局。 */
+.fluent-bit-table {
+  flex: 1;
+  min-width: 0;
+}
+
+.fluent-bit-table__filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+/* 行内动作收进下拉面板，避免合并后操作列被 14 个按钮撑到不可用。 */
+.row-action-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 150px;
+  padding: 8px;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 3px 6px -4px rgb(0 0 0 / 12%), 0 6px 16px 0 rgb(0 0 0 / 8%);
+}
+
+.row-action-menu :deep(.ant-btn) {
+  text-align: left;
 }
 
 .package-toolbar {

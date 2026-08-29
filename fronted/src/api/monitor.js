@@ -118,9 +118,6 @@ export function getManagedTargets(params) {
   return requestUtil.get(prefix + 'targets/', params)
 }
 
-export function getManagedTargetDetail(id) {
-  return requestUtil.get(prefix + `targets/${id}/`)
-}
 
 export function retryManagedTarget(id) {
   return requestUtil.post(prefix + `targets/${id}/retry/`)
@@ -142,9 +139,6 @@ export function stopManagedTargetService(id) {
   return requestUtil.post(prefix + `targets/${id}/stop-service/`)
 }
 
-export function updateMonitorTarget(id, data) {
-  return requestUtil.patch(prefix + `targets/${id}/`, data)
-}
 
 export function deleteManagedTarget(id) {
   return requestUtil.del(prefix + `targets/${id}/`)
@@ -181,11 +175,7 @@ export function testOpenSearchCluster(id) {
 }
 
 // 日志存储管理面：一键初始化 index template + ISM policy（架构文档 §11 阶段 1）
-export function bootstrapOpenSearchCluster(id) {
-  return requestUtil.post(prefix + `opensearch-clusters/${id}/bootstrap/`, {})
-}
 
-// 解析规则调试：支持未保存定义直接试跑（架构文档 §5.4）
 export function simulateOpenSearchPipeline(id, payload) {
   return requestUtil.post(prefix + `opensearch-clusters/${id}/pipeline-simulate/`, payload)
 }
@@ -220,23 +210,10 @@ export function deleteLogRetentionTier(id) {
 }
 
 // 日志洞察（架构文档 §9）：index 必填，hours 默认 1
-export function getLogErrorPatterns(id, index, hours = 1) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-patterns/`, { index, hours })
-}
 
-export function getLogNewErrors(id, index, hours = 1) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/new-errors/`, { index, hours })
-}
 
-export function getLogErrorSpikes(id, index, hours = 1) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-spikes/`, { index, hours })
-}
 
-export function getLogErrorByInstance(id, index, hours = 1) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/insight/error-by-instance/`, { index, hours })
-}
 
-// 主机级日志采集目标（架构文档 §7/§8）
 export function getLogCollectionTargetList(params) {
   return requestUtil.get(prefix + 'log-targets/', params)
 }
@@ -245,9 +222,6 @@ export function createLogCollectionTarget(data) {
   return requestUtil.post(prefix + 'log-targets/', data)
 }
 
-export function renderLogCollectionConfig(id) {
-  return requestUtil.get(prefix + `log-targets/${id}/render-config/`)
-}
 
 export function applyLogCollectionConfig(id) {
   return requestUtil.post(prefix + `log-targets/${id}/apply/`, {})
@@ -277,8 +251,43 @@ export function deleteLogCollectionTarget(id) {
   return requestUtil.del(prefix + `log-targets/${id}/`)
 }
 
-export function getLogInstanceTail(id, instanceName, logName, lines = 100) {
-  return requestUtil.get(prefix + `log-targets/${id}/log-tail/`, {
-    instance_name: instanceName, log_name: logName, lines,
-  })
+export function batchRetryLogCollectionTargets(ids) {
+  return requestUtil.post(prefix + 'log-targets/batch-retry/', { ids })
 }
+
+export function batchStartLogCollectionTargets(ids) {
+  return requestUtil.post(prefix + 'log-targets/batch-start-service/', { ids })
+}
+
+export function batchStopLogCollectionTargets(ids) {
+  return requestUtil.post(prefix + 'log-targets/batch-stop-service/', { ids })
+}
+
+export function batchApplyLogCollectionTargets(ids) {
+  return requestUtil.post(prefix + 'log-targets/batch-apply/', { ids })
+}
+
+export function batchDeleteLogCollectionTargets(ids) {
+  return requestUtil.post(prefix + 'log-targets/batch-delete/', { ids })
+}
+
+export function batchCreateLogCollectionTargets(hostIds, installNow = false) {
+  return requestUtil.post(prefix + 'log-targets/batch-create/', { host_ids: hostIds, install_now: installNow })
+}
+
+export function getMonitorHostGroupTree() {
+  return requestUtil.get(prefix + 'targets/host-group-tree/')
+}
+
+export function getMonitorHostOverview(params) {
+  return requestUtil.get(prefix + 'targets/host-overview/', params)
+}
+
+export function getMonitorExporterOptions() {
+  return requestUtil.get(prefix + 'targets/exporter-options/')
+}
+
+export function batchCreateMonitorTargets(payload) {
+  return requestUtil.post(prefix + 'targets/batch-create/', payload)
+}
+

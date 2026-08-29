@@ -83,7 +83,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -99,8 +99,6 @@ import {
   precheckTaskRun,
   runTaskNow,
   precheckInventoryLimit,
-  getAutomationHostOptions,
-  getAutomationGroupTree,
 } from '@/api/sys/automation'
 import { checkPermission } from '@/directives/permission/permission'
 import { buildAutomationInventoryRoute, buildAutomationTemplateRoute } from '../utils/navigation'
@@ -121,29 +119,11 @@ import {
   toggleLimitToken,
 } from '../utils/scopeHelpers'
 import {
-  appendGroupHostCount,
-  buildGroupTreeWithAll,
-  cloneTreeNodes,
-  collectCheckedHostCountByNode,
-  collectCheckedScope,
-  collectExpandedGroupKeys,
-  collectTreeScopeStats,
-  filterTreeByKeyword,
-  pruneTreeToCheckedNodes,
-  stripGroupCountSuffix,
-  toNumericSet,
-} from '../utils/taskScopeTree'
-import {
   ASSET_HOST_ROUTE_CANDIDATES,
-  ALL_GROUP_TITLE,
-  ALL_GROUP_VALUE,
-  GROUP_TAG_PREVIEW_COUNT,
   TASK_COLUMNS,
   resolveTaskListOrdering,
   parseJsonObjectText,
-  flattenGroupNameMap,
   formatEnvVarCellText,
-  getScopeTreeNode,
 } from '../utils/automationTaskHelpers'
 
 const route = useRoute()
@@ -168,24 +148,10 @@ const playbookOptions = ref([])
 const inventories = ref([])
 const inventoryOptions = ref([])
 
-const groupLoading = ref(false)
-const groupTreeData = ref([])
-const groupMap = ref({})
-const groupScopeCheckedKeys = ref([])
-
 const taskModalVisible = ref(false)
-const groupScopeEditorVisible = ref(false)
-const groupScopeEditorTreeWrapRef = ref(null)
-const groupScopeViewVisible = ref(false)
-const groupScopeViewTitle = ref('查看主机组范围')
-const groupScopeViewTreeData = ref([])
-const groupScopeViewSummary = ref('')
-const groupScopeViewKeyword = ref('')
 const scopePreviewModalVisible = ref(false)
 const scopePreviewTitle = ref('执行范围主机预览')
-const scopePreviewKeyword = ref('')
 const scopePreviewHosts = ref([])
-const scopePreviewTreeData = ref([])
 const scopePreviewTotal = ref(0)
 const modalSubmitting = ref(false)
 const isCreateMode = ref(true)
@@ -219,8 +185,6 @@ const taskForm = reactive({
   inventory: null,
   default_limit: '',
   execution_timeout_seconds: 600,
-  selected_host_ids: [],
-  selected_group_ids: [],
   env_vars_text: '',
   enabled: true,
   remark: '',
@@ -294,15 +258,6 @@ function formatEnvVarCellFullText(value) {
     : JSON.stringify(value)
 }
 
-const filteredScopePreviewTreeData = computed(() => {
-  return filterTreeByKeyword(scopePreviewTreeData.value, scopePreviewKeyword.value)
-})
-
-const scopePreviewVisibleHostCount = computed(() => {
-  const stats = collectTreeScopeStats(filteredScopePreviewTreeData.value)
-  return stats.hostCount
-})
-
 function openScopePreviewModal(record) {
   scopePreviewHosts.value = Array.isArray(record?.limit_preview_hosts) ? [...record.limit_preview_hosts] : []
   scopePreviewTotal.value = Number(record?.limit_preview_total || 0)
@@ -316,50 +271,6 @@ function closeScopePreviewModal() {
 
 function handleScopePreviewHostClick(item) {
   goToAssetHost(item?.host_id, item?.host_name)
-}
-
-function getGroupLabels(groupIds) {
-  if (!Array.isArray(groupIds) || groupIds.length === 0) {
-    return []
-  }
-  if (groupIds.includes(ALL_GROUP_VALUE)) {
-    return [ALL_GROUP_TITLE]
-  }
-  return groupIds.map((id) => groupMap.value[id] || `分组#${id}`)
-}
-
-function getRecordGroupIds(record) {
-  const selectedGroupIds = Array.isArray(record?.selected_group_ids) ? record.selected_group_ids : []
-  const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
-  if (selectedGroupIds.length === 0 && selectedHostIds.length === 0) {
-    return [ALL_GROUP_VALUE]
-  }
-  return selectedGroupIds
-}
-
-function getRecordGroupLabels(record) {
-  return getGroupLabels(getRecordGroupIds(record))
-}
-
-function getVisibleGroupLabels(groupIds) {
-  return getGroupLabels(groupIds).slice(0, GROUP_TAG_PREVIEW_COUNT)
-}
-
-function getHiddenGroupLabels(groupIds) {
-  return getGroupLabels(groupIds).slice(GROUP_TAG_PREVIEW_COUNT)
-}
-
-function getGroupScopePreviewText() {
-  const selectedGroupIds = Array.isArray(taskForm.selected_group_ids) ? taskForm.selected_group_ids : []
-  if (selectedGroupIds.includes(ALL_GROUP_VALUE)) {
-    return ALL_GROUP_TITLE
-  }
-  if (selectedGroupIds.length === 0) {
-    return '全部主机（未指定主机组）'
-  }
-  const labels = selectedGroupIds.map((id) => groupMap.value[id] || `分组#${id}`)
-  const preview = labels.slice(0, 2).join('，')
-  return labels.length > 2 ? `${preview} 等${labels.length}组` : preview
 }
 
 async function loadPlaybooks() {
@@ -454,65 +365,6 @@ async function openTaskFromRouteQuery() {
   await router.replace({ path: route.path, query: nextQuery })
 }
 
-async function loadGroupTree() {
-  groupLoading.value = true
-  try {
-    const [groupRes, hostRecords] = await Promise.all([
-      getAutomationGroupTree(),
-      loadAllHostOptions(),
-    ])
-    const groupData = groupRes?.data?.data || []
-    groupTreeData.value = appendGroupHostCount(buildGroupTreeWithAll(groupData, hostRecords))
-    groupMap.value = flattenGroupNameMap(groupData, {})
-  } finally {
-    groupLoading.value = false
-  }
-}
-
-async function loadAllHostOptions() {
-  const pageSize = 500
-  let page = 1
-  let total = null
-  let next = null
-  const records = []
-
-  while (true) {
-    const res = await getAutomationHostOptions({ page, page_size: pageSize })
-    const data = res?.data?.data || {}
-    const pageRecords = Array.isArray(data.results) ? data.results : []
-    if (typeof data.count === 'number') {
-      total = data.count
-    }
-    next = data.next || null
-
-    records.push(...pageRecords)
-
-    if (!next) {
-      break
-    }
-    if (typeof total === 'number' && records.length >= total) {
-      break
-    }
-
-    page += 1
-    if (page > 100) {
-      break
-    }
-  }
-
-  return records
-}
-
-function getGroupTreeNodeClass(node) {
-  const target = getScopeTreeNode(node)
-  return target?.node_type === 'host' ? 'group-scope-tree__host' : 'group-scope-tree__group'
-}
-
-function isHostTreeNode(node) {
-  const target = getScopeTreeNode(node)
-  return target?.node_type === 'host' && Number(target?.host_id || 0) > 0
-}
-
 function resolveAssetHostListPath() {
   for (const path of ASSET_HOST_ROUTE_CANDIDATES) {
     const resolved = router.resolve({ path })
@@ -545,117 +397,12 @@ function goToAssetHost(hostId, hostName = '') {
   })
 }
 
-function goToAssetHostByNode(node) {
-  const target = getScopeTreeNode(node)
-  goToAssetHost(target?.host_id, target?.title)
-}
-
-const checkedHostCountByNodeKey = computed(() => {
-  const checkedKeySet = new Set((Array.isArray(groupScopeCheckedKeys.value) ? groupScopeCheckedKeys.value : []).map((item) => String(item)))
-  const collector = {}
-  collectCheckedHostCountByNode(groupTreeData.value, checkedKeySet, collector, false)
-  return collector
-})
-
-const filteredGroupScopeViewTreeData = computed(() => {
-  return filterTreeByKeyword(groupScopeViewTreeData.value, groupScopeViewKeyword.value)
-})
-
-const groupScopeViewExpandedKeys = computed(() => collectExpandedGroupKeys(filteredGroupScopeViewTreeData.value))
-
-const scopePreviewExpandedKeys = computed(() => collectExpandedGroupKeys(filteredScopePreviewTreeData.value))
-
-function getEditTreeNodeTitle(node) {
-  const target = getScopeTreeNode(node)
-  const rawTitle = stripGroupCountSuffix(target?.title || '-')
-  const nodeType = target?.node_type || ''
-  if (nodeType === 'group' || nodeType === 'virtual') {
-    const key = String(target?.key || '')
-    const count = Number(checkedHostCountByNodeKey.value[key] || 0)
-    return count > 0 ? `${rawTitle}（${count}台）` : rawTitle
-  }
-  return rawTitle
-}
-
-function openGroupScopeViewer(record) {
-  groupScopeViewKeyword.value = ''
-  const executionTree = Array.isArray(record?.execution_scope_tree) ? record.execution_scope_tree : []
-  if (executionTree.length > 0) {
-    groupScopeViewTitle.value = `查看执行范围 / ${record?.name || '-'}`
-    groupScopeViewTreeData.value = appendGroupHostCount(cloneTreeNodes(executionTree))
-    const summaryHostCount = Number(record?.execution_scope_summary?.host_count || 0)
-    groupScopeViewSummary.value = `当前范围：${summaryHostCount}台主机`
-    groupScopeViewVisible.value = true
-    return
-  }
-
-  const selectedGroupIds = Array.isArray(record?.selected_group_ids) ? record.selected_group_ids : []
-  const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
-  const isAllHostsScope = selectedGroupIds.length === 0 && selectedHostIds.length === 0
-
-  groupScopeViewTitle.value = `查看主机组范围 / ${record?.name || '-'}`
-
-  if (isAllHostsScope) {
-    // 全主机场景：展示全树，但会自动去掉没有任何主机节点的空分组。
-    const allTree = cloneTreeNodes(groupTreeData.value || [])
-    const selectedAllGroups = new Set()
-    const selectedAllHosts = new Set()
-    const prunedTree = pruneTreeToCheckedNodes(allTree, selectedAllGroups, selectedAllHosts, true)
-    groupScopeViewTreeData.value = appendGroupHostCount(prunedTree)
-  } else {
-    // 非全主机场景：仅展示勾选落点（勾选主机 + 勾选分组下的主机），并移除空分组。
-    const fullTree = cloneTreeNodes(groupTreeData.value || [])
-    const selectedGroupSet = toNumericSet(selectedGroupIds)
-    const selectedHostSet = toNumericSet(selectedHostIds)
-    const prunedTree = pruneTreeToCheckedNodes(fullTree, selectedGroupSet, selectedHostSet, false)
-    groupScopeViewTreeData.value = appendGroupHostCount(prunedTree)
-  }
-
-  const scopeStats = collectTreeScopeStats(groupScopeViewTreeData.value)
-  groupScopeViewSummary.value = `当前范围：${scopeStats.hostCount}台主机`
-
-  groupScopeViewVisible.value = true
-}
-
-function syncGroupScopeCheckedKeys() {
-  const selectedGroupIds = Array.isArray(taskForm.selected_group_ids) ? taskForm.selected_group_ids : []
-  const selectedHostIds = Array.isArray(taskForm.selected_host_ids) ? taskForm.selected_host_ids : []
-  // 后端约定：group/host 都为空时表示“全部主机”。
-  if (selectedGroupIds.includes(ALL_GROUP_VALUE) || (selectedGroupIds.length === 0 && selectedHostIds.length === 0)) {
-    taskForm.selected_group_ids = [ALL_GROUP_VALUE]
-    taskForm.selected_host_ids = []
-    groupScopeCheckedKeys.value = [ALL_GROUP_VALUE]
-    return
-  }
-  groupScopeCheckedKeys.value = [
-    ...selectedGroupIds.map((id) => `group-${id}`),
-    ...selectedHostIds.map((id) => `host-${id}`),
-  ]
-}
-
-function onGroupScopeCheck(checkedKeys) {
-  const nextKeys = Array.isArray(checkedKeys) ? checkedKeys : checkedKeys?.checked || []
-  if (nextKeys.includes(ALL_GROUP_VALUE)) {
-    taskForm.selected_group_ids = [ALL_GROUP_VALUE]
-    taskForm.selected_host_ids = []
-    groupScopeCheckedKeys.value = [ALL_GROUP_VALUE]
-    return
-  }
-
-  const { checkedGroupIds, checkedHostIds } = collectCheckedScope(nextKeys, ALL_GROUP_VALUE)
-  taskForm.selected_group_ids = checkedGroupIds
-  taskForm.selected_host_ids = checkedHostIds
-  groupScopeCheckedKeys.value = nextKeys
-}
-
 function resetTaskForm() {
   taskForm.name = ''
   taskForm.template = null
   taskForm.inventory = null
   taskForm.default_limit = ''
   taskForm.execution_timeout_seconds = 600
-  taskForm.selected_host_ids = []
-  taskForm.selected_group_ids = []
   taskForm.env_vars_text = ''
   taskForm.enabled = true
   taskForm.remark = ''
@@ -663,8 +410,6 @@ function resetTaskForm() {
   taskForm.run_as_user = ''
   taskForm.run_as_group = ''
   taskForm.work_directory = '/tmp'
-  groupScopeEditorVisible.value = false
-  groupScopeCheckedKeys.value = []
   clearTaskLimitPrecheckTimer()
   taskLimitPrecheckSeq += 1
   taskLimitPrechecking.value = false
@@ -706,9 +451,6 @@ function openEditModal(record, options = {}) {
   taskForm.execution_timeout_seconds = Number(record.execution_timeout_seconds) > 0
     ? Number(record.execution_timeout_seconds)
     : 600
-  const selectedGroupIds = Array.isArray(record.selected_group_ids) ? [...record.selected_group_ids] : []
-  taskForm.selected_host_ids = Array.isArray(record.selected_host_ids) ? [...record.selected_host_ids] : []
-  taskForm.selected_group_ids = selectedGroupIds
   taskForm.enabled = !!record.enabled
   taskForm.remark = record.remark || ''
   // 执行身份配置
@@ -716,26 +458,9 @@ function openEditModal(record, options = {}) {
   taskForm.run_as_group = record.run_as_group || ''
   taskForm.work_directory = record.work_directory || '/tmp'
   taskModalVisible.value = showTaskModal
-  groupScopeEditorVisible.value = false
-  syncGroupScopeCheckedKeys()
   if (showTaskModal) {
     scheduleTaskLimitPrecheck(0)
   }
-}
-
-async function openGroupScopeEditor(record) {
-  openEditModal(record, { showTaskModal: false })
-  await nextTick()
-  groupScopeEditorVisible.value = true
-}
-
-async function onGroupScopeEditorConfirm() {
-  if (taskModalVisible.value) {
-    groupScopeEditorVisible.value = false
-    return
-  }
-  await submitTask()
-  groupScopeEditorVisible.value = false
 }
 
 async function submitTask() {
@@ -774,8 +499,6 @@ async function submitTask() {
     inventory: Number(taskForm.inventory) > 0 ? Number(taskForm.inventory) : null,
     default_limit: String(taskForm.default_limit || '').trim(),
     execution_timeout_seconds: timeoutSeconds,
-    selected_host_ids: [],
-    selected_group_ids: [],
     env_vars: envVars,
     enabled: !!taskForm.enabled,
     remark: taskForm.remark || '',
@@ -1140,17 +863,6 @@ function reloadAll() {
   loadTasks(false)
 }
 
-watch(groupScopeEditorVisible, (visible) => {
-  if (!visible) {
-    return
-  }
-  nextTick(() => {
-    if (groupScopeEditorTreeWrapRef.value) {
-      groupScopeEditorTreeWrapRef.value.scrollTop = 0
-    }
-  })
-})
-
 watch(runNowLimit, () => {
   if (!runNowModalVisible.value) {
     return
@@ -1179,7 +891,6 @@ onMounted(async () => {
   await loadPlaybooks()
   await loadInventories()
   await loadTasks(true)
-  await loadGroupTree()
   await openTaskFromRouteQuery()
 })
 </script>

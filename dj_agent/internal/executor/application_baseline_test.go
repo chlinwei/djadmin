@@ -302,11 +302,7 @@ func TestApplicationSystemdCommand_UserScopeSetsRuntimeEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatalf("user scope returned error: %v", err)
 	}
-	if os.Geteuid() == 0 {
-		if len(command.Args) != 7 || command.Args[1] != "-u" || command.Args[2] != currentUser.Username || command.Args[3] != "-H" || command.Args[4] != "/bin/bash" || command.Args[5] != "-lc" || command.Args[6] != "systemctl --user is-active tomcat" {
-			t.Fatalf("unexpected root systemd command: %#v", command.Args)
-		}
-	} else if len(command.Args) != 3 || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user is-active tomcat" {
+	if len(command.Args) != 3 || command.Args[0] != "/bin/bash" || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user is-active tomcat" {
 		t.Fatalf("unexpected systemctl command: %#v", command.Args)
 	}
 

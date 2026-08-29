@@ -2,9 +2,9 @@
 
 ## Project Context & Rules
 
-- **Primary Context**: Use [PROJECT_CONTEXT.md](../PROJECT_CONTEXT.md) as the primary context source for this repository.
+- **Primary Context**: Use [PROJECT_CONTEXT.md](../docs/overview/PROJECT_CONTEXT.md) as the primary context source for this repository.
 - **API Standards**: Follow [API_RULES.md](API_RULES.md) for all API response formats, status codes, and implementation requirements.
-- **Compliance Status**: See [API_COMPLIANCE_REPORT.md](API_COMPLIANCE_REPORT.md) for current API return format compliance check (55% compliant).
+- **Compliance Status**: See [API_COMPLIANCE_REPORT.md](docs/API_COMPLIANCE_REPORT.md) for current API return format compliance check (55% compliant).
 - **User Request First**: If the user request conflicts with these files, follow the user request first.
 
 ## Tech Stack
@@ -112,6 +112,17 @@ python manage.py runserver 0.0.0.0:8000
 - npm install
 - npm run dev
 - npm run build
+
+### dj-agent (Go)
+
+- **强制 CGO_ENABLED=0，无例外**: dj-agent 必须编译为纯静态二进制，禁止裸跑 `go build` / `go test` / `go vet`。
+- 唯一认可的入口是 `dj_agent/Makefile`（已 `export CGO_ENABLED := 0`）：
+  - 构建：`cd dj_agent && make build`
+  - 测试：`cd dj_agent && make test`
+  - 检查：`cd dj_agent && make vet`
+  - 全量：`cd dj_agent && make all`
+- `dj_agent/cmd/agent/cgo_guard.go` 是 `//go:build cgo` 构建守卫：一旦 CGO_ENABLED=1 会直接编译失败，禁止删除或绕过。
+- 交叉编译只调 `GOOS`/`GOARCH` 变量，例如 `make build GOARCH=arm64`；禁止在命令里重新打开 cgo。
 
 ### Scheduler
 

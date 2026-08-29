@@ -35,8 +35,8 @@
 
 - 语言：Go
 - 模块管理：Go Modules
-- 构建：`go build ./...`
-- 代码质量：`go test ./...`、`go vet ./...`
+- 构建：`make build`（强制 `CGO_ENABLED=0`，禁止裸跑 `go build`）
+- 代码质量：`make test`、`make vet`
 - 格式化：`gofmt -w`（可后续引入 `golangci-lint`）
 
 ### 3.2 配置管理
@@ -118,7 +118,7 @@
 
 - 启动时打印结构化启动信息
 - 关闭信号可在 5 秒内优雅退出
-- `go test ./...` 可通过（至少含 smoke test）
+- `make test` 可通过（至少含 smoke test）
 
 ## Phase P1：NATS 下发/上报闭环（3-5 天）
 

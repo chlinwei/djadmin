@@ -6,8 +6,9 @@ from djadmin.basemodel import BaseModel
 
 class InspectionGroup(BaseModel):
     class Scope(models.TextChoices):
-        PER_DEPLOYMENT = 'per_deployment', '每个部署实例'
-        SERVICE_ONCE = 'service_once', '服务单次'
+        PER_DEPLOYMENT = 'per_deployment', '逻辑服务·每个部署实例'
+        SERVICE_ONCE = 'service_once', '逻辑服务·服务单次'
+        PER_HOST = 'per_host', '主机组·每台主机'
 
     name = models.CharField(max_length=128, unique=True, verbose_name='巡检组名称')
     scope = models.CharField(max_length=24, choices=Scope.choices, verbose_name='执行范围')
@@ -59,19 +60,13 @@ class InspectionTask(BaseModel):
         HOST_GROUP = 'host_group', '主机组'
 
     name = models.CharField(max_length=128, unique=True, verbose_name='任务名称')
+    inspection_name = models.CharField(max_length=128, blank=True, default='', verbose_name='巡检名称')
     group = models.ForeignKey(InspectionGroup, on_delete=models.PROTECT, related_name='tasks')
-    target_type = models.CharField(
-        max_length=24,
-        choices=TargetType.choices,
-        default=TargetType.LOGICAL_SERVICE,
-        verbose_name='目标类型',
-    )
     logical_service = models.ForeignKey(
         'assets.ApplicationService', on_delete=models.PROTECT, related_name='inspection_tasks', null=True, blank=True,
     )
-    host_group = models.ForeignKey(
-        'assets.HostGroup', on_delete=models.PROTECT, related_name='inspection_tasks', null=True, blank=True,
-    )
+    # 巡检范围只绑定固定主机 ID：分组只是前端勾选入口，事后往组里加主机不会自动进入已有任务。
+    selected_host_ids = models.JSONField(default=list, blank=True, verbose_name='勾选主机')
     concurrency = models.PositiveIntegerField(
         default=20,
         validators=[MinValueValidator(1), MaxValueValidator(100)],
@@ -91,6 +86,15 @@ class InspectionTask(BaseModel):
     class Meta:
         db_table = 'inspection_task'
         ordering = ['-id']
+
+    @property
+    def target_type(self):
+        """目标类型由巡检组范围派生，避免两处存储后出现不一致。"""
+        return (
+            self.TargetType.HOST_GROUP
+            if self.group.scope == InspectionGroup.Scope.PER_HOST
+            else self.TargetType.LOGICAL_SERVICE
+        )
 
 
 class InspectionExecution(BaseModel):

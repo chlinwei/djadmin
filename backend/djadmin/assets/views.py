@@ -1,21 +1,14 @@
-import warnings
-import time
 import uuid
-import asyncio
-import json
-import importlib
 import os
 import logging
 import threading
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, cast
-from copy import deepcopy
 from types import SimpleNamespace
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from asgiref.sync import async_to_sync
 
-from cryptography.utils import CryptographyDeprecationWarning
 from djadmin.utils import Response_200, Response_error_str
 from rest_framework.mixins import CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin
 from rest_framework.request import Request
@@ -24,7 +17,7 @@ from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action, api_view
 from .models import *
 from .serializer import *
-from .application_variables import ApplicationVariableError, resolve_application_variables, resolve_macro_variables
+from .application_variables import resolve_application_variables, resolve_macro_variables
 from djadmin.utils import CustomPagination
 from rest_framework.filters import OrderingFilter,SearchFilter
 from django_filters import rest_framework as drf_filters
@@ -956,14 +949,16 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         from automation.models import AutomationInventory
+        from inspection.models import InspectionTask
 
         target_group_ids = self._get_group_and_subgroups(instance.id)
-        target_group_id_set = set(target_group_ids)
+        # Inventory / 巡检任务的范围都是 JSON 主机 ID 列表，没有外键 PROTECT，必须在这里手动拦截否则范围会静默变空。
+        scope_host_ids = set(Host.objects.filter(group_id__in=target_group_ids).values_list('id', flat=True))
 
         referenced = []
-        for inventory in AutomationInventory.objects.only('id', 'name', 'selected_group_ids'):
-            group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
-            if target_group_id_set.intersection(set(group_ids)):
+        for inventory in AutomationInventory.objects.only('id', 'name', 'selected_host_ids'):
+            host_ids = [int(item) for item in (inventory.selected_host_ids or []) if str(item).isdigit()]
+            if scope_host_ids.intersection(set(host_ids)):
                 referenced.append(inventory)
 
         if referenced:
@@ -971,6 +966,20 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
             suffix = '' if len(referenced) <= 5 else f' 等{len(referenced)}个'
             return Response_error_str(
                 f'该主机组已被 Inventory 引用，不能删除。受影响 Inventory: {names}{suffix}',
+                code=400,
+            )
+
+        referenced_tasks = [
+            task for task in InspectionTask.objects.only('id', 'name', 'selected_host_ids')
+            if scope_host_ids.intersection(
+                {int(item) for item in (task.selected_host_ids or []) if str(item).isdigit()}
+            )
+        ]
+        if referenced_tasks:
+            names = '、'.join(item.name for item in referenced_tasks[:5])
+            suffix = '' if len(referenced_tasks) <= 5 else f' 等{len(referenced_tasks)}个'
+            return Response_error_str(
+                f'该主机组已被巡检任务引用，不能删除。受影响任务: {names}{suffix}',
                 code=400,
             )
 
@@ -987,24 +996,41 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
             return Response_200(data=[])
 
         from automation.models import AutomationInventory
+        from inspection.models import InspectionTask
 
         normalized_ids = [int(item) for item in ids if str(item).isdigit()]
         delete_group_ids = set()
         for group_id in normalized_ids:
             delete_group_ids.update(self._get_group_and_subgroups(group_id))
 
+        scope_host_ids = set(Host.objects.filter(group_id__in=list(delete_group_ids)).values_list('id', flat=True))
+
         referenced_pairs = []
-        for inventory in AutomationInventory.objects.only('id', 'name', 'selected_group_ids'):
-            group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
-            hit_ids = sorted(set(group_ids).intersection(delete_group_ids))
+        for inventory in AutomationInventory.objects.only('id', 'name', 'selected_host_ids'):
+            host_ids = [int(item) for item in (inventory.selected_host_ids or []) if str(item).isdigit()]
+            hit_ids = sorted(set(host_ids).intersection(scope_host_ids))
             if hit_ids:
                 referenced_pairs.append((inventory.name, hit_ids))
 
         if referenced_pairs:
-            sample = '；'.join(f"{name} -> {','.join(str(i) for i in group_ids)}" for name, group_ids in referenced_pairs[:3])
+            sample = '；'.join(f"{name} -> 主机{','.join(str(i) for i in host_ids)}" for name, host_ids in referenced_pairs[:3])
             suffix = '' if len(referenced_pairs) <= 3 else f' 等{len(referenced_pairs)}个 Inventory'
             return Response_error_str(
                 f'批量删除中包含被 Inventory 引用的主机组，操作已阻止：{sample}{suffix}',
+                code=400,
+            )
+
+        referenced_tasks = [
+            task.name for task in InspectionTask.objects.only('id', 'name', 'selected_host_ids')
+            if scope_host_ids.intersection(
+                {int(item) for item in (task.selected_host_ids or []) if str(item).isdigit()}
+            )
+        ]
+        if referenced_tasks:
+            names = '、'.join(referenced_tasks[:5])
+            suffix = '' if len(referenced_tasks) <= 5 else f' 等{len(referenced_tasks)}个'
+            return Response_error_str(
+                f'批量删除中包含被巡检任务引用的主机组，操作已阻止：{names}{suffix}',
                 code=400,
             )
 
@@ -1081,187 +1107,12 @@ def _split_monitor_output_snapshots(output_text):
     }
 
 
-def _resolve_monitor_timeout_seconds():
-    """监控安装/卸载执行超时秒数（默认 600 秒，可在 settings 覆盖）。"""
-    raw_value = getattr(settings, 'MONITOR_EXECUTION_TIMEOUT_SECONDS', 600)
-    try:
-        timeout_seconds = int(raw_value)
-    except (TypeError, ValueError):
-        timeout_seconds = 600
-    return max(timeout_seconds, 30)
-
-
-def _resolve_monitor_pending_stale_seconds(timeout_seconds):
-    """pending 判定为“卡死”的阈值：执行超时 + 90 秒缓冲。"""
-    raw_value = getattr(settings, 'MONITOR_PENDING_STALE_SECONDS', None)
-    if raw_value is None:
-        return int(timeout_seconds) + 90
-    try:
-        stale_seconds = int(raw_value)
-    except (TypeError, ValueError):
-        stale_seconds = int(timeout_seconds) + 90
-    return max(stale_seconds, int(timeout_seconds))
-
-
-def _expire_stale_monitor_pending(target, action, stale_seconds):
-    """若最新 pending/running 历史已超时，自动转 failed 并允许本次重新下发。"""
-    from monitor.models import MonitorTargetInstallHistory
-
-    latest_history = MonitorTargetInstallHistory.objects.filter(
-        target_id=target.id,
-        action=action,
-        status__in=[
-            MonitorTargetInstallHistory.Status.PENDING,
-            MonitorTargetInstallHistory.Status.RUNNING,
-        ],
-    ).order_by('-id').first()
-
-    if latest_history is None:
-        return False
-
-    reference_time = latest_history.start_time or latest_history.create_time
-    if reference_time is None:
-        return False
-
-    elapsed_seconds = (timezone.now() - reference_time).total_seconds()
-    if elapsed_seconds < float(stale_seconds):
-        return False
-
-    timeout_message = f'执行超时（超过 {int(stale_seconds)} 秒），已标记失败，请重新下发'
-    latest_history.status = MonitorTargetInstallHistory.Status.FAILED
-    latest_history.summary_message = timeout_message
-    latest_history.error_message_snapshot = timeout_message
-    latest_history.end_time = timezone.now()
-    start_ts = latest_history.start_time
-    end_ts = latest_history.end_time
-    if start_ts is not None and end_ts is not None:
-        latest_history.duration_seconds = (end_ts - start_ts).total_seconds()
-    latest_history.save(update_fields=[
-        'status', 'summary_message', 'error_message_snapshot', 'end_time', 'duration_seconds', 'update_time',
-    ])
-
-    target.install_status = target.InstallStatus.FAILED
-    target.install_message = timeout_message
-    target.save(update_fields=['install_status', 'install_message', 'update_time'])
-    return True
-
-
-def _run_monitor_playbook_and_update_history(*, target, host, history, template_content, extra_vars, work_directory, timeout_seconds):
-    """通过 backend Ansible 执行监控安装/卸载并回写历史。"""
-    from automation.executor_playbook import execute_playbook_job
-    from monitor.models import MonitorTargetInstallHistory
-
-    close_old_connections()
-    history_id = int(getattr(history, 'id', 0) or 0)
-    target_id = int(getattr(target, 'id', 0) or 0)
-
-    def _safe_history_save(fields):
-        """记录不存在时静默退出，避免执行结果回写影响主流程。"""
-        if history_id <= 0:
-            return False
-        try:
-            history.save(update_fields=fields)
-            return True
-        except DatabaseError:
-            logger.debug('Skip monitor history save: history row disappeared (id=%s)', history_id)
-            return False
-
-    def _safe_target_save(fields):
-        if target_id <= 0:
-            return False
-        try:
-            target.save(update_fields=fields)
-            return True
-        except DatabaseError:
-            logger.debug('Skip monitor target save: target row disappeared (id=%s)', target_id)
-            return False
-
-    def _is_history_cancelled():
-        if history_id <= 0:
-            return False
-        current_status = MonitorTargetInstallHistory.objects.filter(id=history_id).values_list('status', flat=True).first()
-        return current_status == MonitorTargetInstallHistory.Status.CANCELLED
-
-    started_at = timezone.now()
-    if _is_history_cancelled():
-        logger.info('Monitor history already cancelled before execution start, skip run (history_id=%s)', history_id)
-        return
-
-    history.status = MonitorTargetInstallHistory.Status.RUNNING
-    history.start_time = started_at
-    if not _safe_history_save(['status', 'start_time', 'update_time']):
-        return
-
-    try:
-        playbook_request = SimpleNamespace(
-            inventory_snapshot={'hosts': _build_single_host_snapshot(host)},
-            template_content_snapshot=str(template_content or ''),
-            extra_vars=extra_vars if isinstance(extra_vars, dict) else {},
-            run_as_user_snapshot='root',
-            run_as_group_snapshot='root',
-            task=SimpleNamespace(
-                execution_concurrency=1,
-                execution_timeout_seconds=int(timeout_seconds),
-            ),
-        )
-
-        success, summary, output_text = execute_playbook_job(playbook_request, persist_target_logs=False)
-        finished_at = timezone.now()
-        duration_seconds = (finished_at - started_at).total_seconds()
-        snapshots = _split_monitor_output_snapshots(output_text)
-        message_text = str((summary or {}).get('message', '') or '')
-
-        if _is_history_cancelled():
-            logger.info('Monitor history cancelled during execution, skip final write-back (history_id=%s)', history_id)
-            return
-
-        if success:
-            target.install_status = target.InstallStatus.SUCCESS
-            target.install_message = '执行成功'
-            target.retry_count = 0
-            _safe_target_save(['install_status', 'install_message', 'retry_count', 'update_time'])
-            history.status = MonitorTargetInstallHistory.Status.SUCCESS
-            history.summary_message = target.install_message
-        else:
-            target.install_status = target.InstallStatus.FAILED
-            if target.last_dispatch_manual:
-                target.install_message = (
-                    f'执行失败：{message_text}，人工重试失败，如需再次尝试请再次点击“重试”'
-                )
-            else:
-                target.install_message = f'执行失败：{message_text}，需人工重试'
-            _safe_target_save(['install_status', 'install_message', 'update_time'])
-            history.status = MonitorTargetInstallHistory.Status.FAILED
-            history.summary_message = target.install_message
-
-        history.stdout_snapshot = snapshots['stdout']
-        history.stderr_snapshot = snapshots['stderr']
-        history.error_message_snapshot = snapshots['error']
-        history.result_summary_snapshot = summary if isinstance(summary, dict) else {}
-        history.end_time = finished_at
-        history.duration_seconds = duration_seconds
-        _safe_history_save([
-            'status', 'summary_message', 'stdout_snapshot', 'stderr_snapshot', 'error_message_snapshot',
-            'result_summary_snapshot', 'end_time', 'duration_seconds', 'update_time',
-        ])
-    except Exception as exc:
-        finished_at = timezone.now()
-        duration_seconds = (finished_at - started_at).total_seconds()
-        target.install_status = target.InstallStatus.FAILED
-        target.install_message = f'执行失败：{exc}'
-        _safe_target_save(['install_status', 'install_message', 'update_time'])
-        history.status = MonitorTargetInstallHistory.Status.FAILED
-        history.summary_message = target.install_message
-        history.error_message_snapshot = str(exc)
-        history.result_summary_snapshot = {'message': str(exc)}
-        history.end_time = finished_at
-        history.duration_seconds = duration_seconds
-        _safe_history_save([
-            'status', 'summary_message', 'error_message_snapshot', 'result_summary_snapshot',
-            'end_time', 'duration_seconds', 'update_time',
-        ])
-    finally:
-        close_old_connections()
+from monitor.playbook_runner import (
+    _resolve_monitor_timeout_seconds,
+    _resolve_monitor_pending_stale_seconds,
+    _expire_stale_monitor_pending,
+    run_monitor_playbook_and_update_history as _run_monitor_playbook_and_update_history,
+)
 
 
 def dispatch_exporter_install_job(host, monitor_target, manual=False):
@@ -1272,7 +1123,8 @@ def dispatch_exporter_install_job(host, monitor_target, manual=False):
     内容通过 extra_vars 传给 playbook。
     manual=True 表示由用户在前端点击“重试”手动触发：这类任务只尝试 1 次，
     失败后直接终止，需再次人工点击。
-    安装在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
+    安装由 monitor/job_runner.py 的进程内线程池执行（不能放 Celery：要用请求进程内存里的 agent gRPC 注册表），
+    底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if agent_id == '':
@@ -1472,7 +1324,7 @@ def dispatch_stop_exporter_job(host, monitor_target):
 def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     """下发监控组件（exporter）卸载任务（停止服务并清理安装文件）；供主机监控设置及自动/人工重试共用。
     同 dispatch_exporter_install_job，使用监控软件仓库该 exporter 绑定的 uninstall_playbook_template 执行。
-    卸载在当前请求内同步执行，底层通过 platform SSH 到目标主机。"""
+    卸载由 monitor/job_runner.py 的进程内线程池执行，底层通过 platform SSH 到目标主机。"""
     exporter_name = monitor_target.exporter_type
     agent_id = str(getattr(host, 'agent_id', '') or '').strip()
     if agent_id == '':
@@ -1568,38 +1420,25 @@ def dispatch_exporter_uninstall_job(host, monitor_target, manual=False):
     )
 
 
-def _run_exporter_job_in_background(action, host_id, target_id, manual=False):
-    """在线程内重新加载 ORM 对象，避免把请求线程的数据库连接带入后台任务。"""
-    close_old_connections()
-    try:
-        from monitor.models import MonitorTarget
+def _run_exporter_job(action, host_id, target_id, manual=False):
+    """线程池入口：重新加载 ORM 对象，dispatch_* 内部已把失败写回 MonitorTarget。"""
+    from monitor.models import MonitorTarget
 
-        host = Host.objects.get(id=host_id)
-        target = MonitorTarget.objects.get(id=target_id, host_id=host_id)
-        if action == 'install':
-            dispatch_exporter_install_job(host, target, manual=manual)
-        elif action == 'uninstall':
-            dispatch_exporter_uninstall_job(host, target, manual=manual)
-        else:
-            raise ValueError(f'不支持的监控后台任务动作: {action}')
-    except Exception:
-        logger.exception(
-            '监控后台任务执行异常: action=%s host_id=%s target_id=%s',
-            action, host_id, target_id,
-        )
-    finally:
-        close_old_connections()
+    host = Host.objects.get(id=host_id)
+    target = MonitorTarget.objects.get(id=target_id, host_id=host_id)
+    if action == 'install':
+        dispatch_exporter_install_job(host, target, manual=manual)
+    elif action == 'uninstall':
+        dispatch_exporter_uninstall_job(host, target, manual=manual)
+    else:
+        raise ValueError(f'不支持的监控后台任务动作: {action}')
 
 
-def _start_exporter_job_thread(action, host_id, target_id, manual=False):
-    # 安装/卸载可能等待 SSH/Ansible 数分钟，必须脱离 Host API 请求线程执行。
-    thread = threading.Thread(
-        target=_run_exporter_job_in_background,
-        args=(action, host_id, target_id, manual),
-        daemon=True,
-        name=f'monitor-{action}-{target_id}',
-    )
-    thread.start()
+def _enqueue_exporter_job(action, host_id, target_id, manual=False):
+    # 安装/卸载要等 SSH/Ansible 数分钟，必须脱离 HTTP 请求线程，交给监控执行池限流跑。
+    from monitor.job_runner import submit_monitor_job
+
+    submit_monitor_job(_run_exporter_job, action, int(host_id), int(target_id), manual=bool(manual))
 
 
 
@@ -1658,12 +1497,10 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
 
     def get_queryset(self):
         from monitor.models import MonitorTarget
+        from assets.host_online import sync_host_online_status_to_db
 
         # gRPC Session 是 Agent 在线状态的唯一来源，连接时间不能作为超时依据。
-        connected_agent_ids = REGISTRY.connected_agent_ids()
-        Host.objects.filter(agent_online=True).exclude(agent_id__in=connected_agent_ids).update(agent_online=False)
-        if connected_agent_ids:
-            Host.objects.filter(agent_id__in=connected_agent_ids, agent_online=False).update(agent_online=True)
+        sync_host_online_status_to_db()
 
         queryset = Host.objects.select_related('group').prefetch_related(
             # 一台主机可能纳管多个 exporter（node_exporter/自定义 exporter 等），不再按 node_exporter 过滤
@@ -1957,7 +1794,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
                     # 确保重试上限从 0 开始计算。
                     target.retry_count = 0
                     target.save(update_fields=['retry_count', 'update_time'])
-                    _start_exporter_job_thread('uninstall', host_id, target_id)
+                    _enqueue_exporter_job('uninstall', host_id, target_id)
                 else:
                     target.install_message = f'已关闭监控（未卸载 {name}）'
                     target.save(update_fields=['install_message', 'update_time'])
@@ -1968,7 +1805,7 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
                 # 新一轮安装周期：重置自动重试计数
                 target.retry_count = 0
                 target.save(update_fields=['retry_count', 'update_time'])
-                _start_exporter_job_thread('install', host_id, target_id)
+                _enqueue_exporter_job('install', host_id, target_id)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -2213,8 +2050,6 @@ def agent_install(request: Request) -> Response | JsonResponse:
     credential = Credential.objects.filter(id=credential_id).first()
     if credential is None:
         return Response_error_str('SSH 凭证不存在', code=400)
-    if str(credential.username or '').strip().lower() != 'root':
-        return Response_error_str('当前版本要求 SSH 凭证使用 root 用户', code=400)
 
     from automation.models import AutomationExecutionJob, AutomationExecutionTargetLog
     operation_label = {'install': '安装', 'update': '更新'}[operation]

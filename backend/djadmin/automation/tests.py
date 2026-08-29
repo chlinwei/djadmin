@@ -1,5 +1,5 @@
 from urllib.parse import unquote
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 from datetime import timedelta
 import subprocess
 
@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 from rest_framework_jwt.settings import api_settings
 
 from assets.models import Host, HostGroup, HostSystem
+from assets.grpc_transfer.registry import REGISTRY, AgentSession
 from user.models import SysUser
 
 from .executor import execute_automation_job
@@ -305,15 +306,12 @@ class AutomationTaskScopeTest(BaseTestCase):
 		HostSystem.objects.create(host=self.host_a, hostname='fidsdb')
 		HostSystem.objects.create(host=self.host_b, hostname='pvg-esb4-208')
 		self.inventory = AutomationInventory.objects.create(name='scope-inventory')
-		self.inventory.selected_host_ids = [self.host_a.id]
-		self.inventory.selected_group_ids = [self.root_group.id]
+		self.inventory.selected_host_ids = [self.host_a.id, self.host_b.id]
 		self.inventory.save()
 		AutomationTask.objects.create(
 			name='Scope Task',
 			playbook_template=self.template,
 			inventory=self.inventory,
-			selected_host_ids=[],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
@@ -340,8 +338,6 @@ class AutomationTaskScopeTest(BaseTestCase):
 		AutomationTask.objects.create(
 			name='All Hosts Task',
 			playbook_template=self.template,
-			selected_host_ids=[],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
@@ -364,9 +360,8 @@ class AutomationRunDispatchTest(BaseTestCase):
 			description='dispatch',
 			content='---\n- hosts: all\n  tasks: []\n',
 		)
-		self.host = Host.objects.create(instance_name='dispatch_host', ip='10.0.0.10')
-		self.host.agent_online = True
-		self.host.save(update_fields=['agent_online'])
+		self.host = Host.objects.create(instance_name='dispatch_host', agent_id='agent-dispatch', ip='10.0.0.10', agent_online=True)
+		REGISTRY.register(AgentSession('agent-dispatch'))
 		self.inventory = AutomationInventory.objects.create(
 			name='dispatch-inventory',
 		)
@@ -376,14 +371,12 @@ class AutomationRunDispatchTest(BaseTestCase):
 			name='Dispatch Task',
 			playbook_template=self.template,
 			inventory=self.inventory,
-			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
 
 	def test_run_template_dispatches_synchronously_via_backend_ansible(self):
-		with patch('automation.views_playbook.execute_playbook_job', return_value=(True, {
+		with patch('automation.executor.execute_playbook_job', return_value=(True, {
 			'message': 'success',
 			'total': 1,
 			'success': 1,
@@ -404,7 +397,7 @@ class AutomationRunDispatchTest(BaseTestCase):
 			mock_execute.assert_called_once()
 
 	def test_run_now_dispatches_synchronously_via_backend_ansible(self):
-		with patch('automation.views_task.execute_playbook_job', return_value=(True, {
+		with patch('automation.executor.execute_playbook_job', return_value=(True, {
 			'message': 'success',
 			'total': 1,
 			'success': 1,
@@ -420,7 +413,8 @@ class AutomationRunDispatchTest(BaseTestCase):
 			mock_exec.assert_called_once()
 
 	def test_run_now_with_empty_scope_defaults_to_all_hosts(self):
-		host_b = Host.objects.create(instance_name='dispatch_host_b', ip='10.0.0.11')
+		host_b = Host.objects.create(instance_name='dispatch_host_b', agent_id='agent-dispatch-b', ip='10.0.0.11', agent_online=True)
+		REGISTRY.register(AgentSession('agent-dispatch-b'))
 		inventory = AutomationInventory.objects.create(
 			name='all-hosts-inventory',
 		)
@@ -430,15 +424,11 @@ class AutomationRunDispatchTest(BaseTestCase):
 			name='Dispatch All Task',
 			playbook_template=self.template,
 			inventory=inventory,
-			selected_host_ids=[],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
-		host_b.agent_online = True
-		host_b.save(update_fields=['agent_online'])
 
-		with patch('automation.views_task.execute_playbook_job', return_value=(True, {
+		with patch('automation.executor.execute_playbook_job', return_value=(True, {
 			'message': 'success',
 			'total': 2,
 			'success': 2,
@@ -462,8 +452,6 @@ class AutomationRunDispatchTest(BaseTestCase):
 			name='No Inventory Task',
 			playbook_template=self.template,
 			inventory=None,
-			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
@@ -487,8 +475,6 @@ class AutomationRunDispatchTest(BaseTestCase):
 				'name': 'Task Without Inventory',
 				'playbook_template': self.template.id,
 				'inventory': None,
-				'selected_host_ids': [],
-				'selected_group_ids': [],
 				'env_vars': {},
 				'enabled': True,
 				'run_as_user': 'root',
@@ -509,8 +495,6 @@ class AutomationRunDispatchTest(BaseTestCase):
 				'name': 'Task To Remove Inventory',
 				'playbook_template': self.template.id,
 				'inventory': self.inventory.id,
-				'selected_host_ids': [self.host.id],
-				'selected_group_ids': [],
 				'env_vars': {},
 				'enabled': True,
 				'run_as_user': 'root',
@@ -630,9 +614,8 @@ class AutomationWorkflowTest(BaseTestCase):
 			description='for workflow tests',
 			content='---\n- hosts: all\n  tasks: []\n',
 		)
-		self.host = Host.objects.create(instance_name='workflow_host', ip='10.0.0.21')
-		self.host.agent_online = True
-		self.host.save(update_fields=['agent_online'])
+		self.host = Host.objects.create(instance_name='workflow_host', agent_id='agent-workflow', ip='10.0.0.21', agent_online=True)
+		REGISTRY.register(AgentSession('agent-workflow'))
 		self.inventory = AutomationInventory.objects.create(
 			name='workflow-inventory',
 		)
@@ -642,8 +625,6 @@ class AutomationWorkflowTest(BaseTestCase):
 			name='Workflow Task',
 			playbook_template=self.template,
 			inventory=self.inventory,
-			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)
@@ -863,7 +844,6 @@ class AutomationWorkflowTest(BaseTestCase):
 		inventory = AutomationInventory.objects.create(
 			name='workflow-precheck-inventory',
 			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			enabled=True,
 		)
 
@@ -910,13 +890,11 @@ class AutomationWorkflowTest(BaseTestCase):
 			mock_execute.assert_called_once()
 
 	def test_launch_workflow_uses_workflow_default_inventory_scope(self):
-		host_b = Host.objects.create(instance_name='workflow_scope_host_b', ip='10.0.0.22')
-		host_b.agent_online = True
-		host_b.save(update_fields=['agent_online'])
+		host_b = Host.objects.create(instance_name='workflow_scope_host_b', agent_id='agent-workflow-b', ip='10.0.0.22', agent_online=True)
+		REGISTRY.register(AgentSession('agent-workflow-b'))
 		inventory = AutomationInventory.objects.create(
 			name='workflow-scope-inventory',
 			selected_host_ids=[host_b.id],
-			selected_group_ids=[],
 			enabled=True,
 		)
 
@@ -1222,7 +1200,6 @@ class AutomationWorkflowTest(BaseTestCase):
 		inventory = AutomationInventory.objects.create(
 			name='task-bound-inventory',
 			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			enabled=True,
 		)
 		self.task.inventory = inventory
@@ -1279,8 +1256,6 @@ class AutomationWorkflowTest(BaseTestCase):
 			name='Other Task Not Disabled',
 			playbook_template=self.template,
 			inventory=self.inventory,
-			selected_host_ids=[self.host.id],
-			selected_group_ids=[],
 			env_vars={},
 			enabled=True,
 		)

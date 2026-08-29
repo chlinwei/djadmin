@@ -61,7 +61,7 @@ def dispatch_scheduled_inspections():
         InspectionTask.objects
         .filter(enabled=True)
         .exclude(cron_expression='')
-        .select_related('group', 'logical_service', 'host_group')
+        .select_related('group', 'logical_service')
     )
     dispatched = 0
     for task in tasks:

@@ -20,7 +20,16 @@ from sys_config.models import SysConfig
 from user.models import SysUser
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
 
+add_webssh_audit_menu = importlib.import_module('menu.migrations.0012_add_webssh_audit_menu').add_webssh_audit_menu
+move_audit_menu_to_root = importlib.import_module('menu.migrations.0013_move_audit_menu_to_root').move_audit_menu_to_root
 add_operation_audit_menu = importlib.import_module('menu.migrations.0014_add_operation_audit_menu').add_operation_audit_menu
+
+
+def _seed_audit_menus():
+    """在用例内自行播种审计菜单：--keepdb 复用的测试库不保证早期数据迁移的菜单行还在。"""
+    add_webssh_audit_menu(django_apps, None)
+    move_audit_menu_to_root(django_apps, None)
+    add_operation_audit_menu(django_apps, None)
 
 
 def _get_token(user: SysUser) -> str:
@@ -40,7 +49,7 @@ class OperationAuditLogTest(TestCase):
             timezone='Asia/Shanghai',
         )
         self.admin_role = SysRole.objects.create(name='超级管理员', code='admin')
-        add_operation_audit_menu(django_apps, None)
+        _seed_audit_menus()
         token = _get_token(self.user)
         self.client.credentials(HTTP_AUTHORIZATION=token)
 
@@ -126,12 +135,12 @@ class WebSSHAuditDownloadTest(TestCase):
             status=1,
             timezone='Asia/Shanghai',
         )
-        add_operation_audit_menu(django_apps, None)
+        _seed_audit_menus()
         token = _get_token(self.user)
         self.client.credentials(HTTP_AUTHORIZATION=token)
 
     def test_download_webssh_session_log(self):
-        host = Host.objects.create(instance_name='ws_host', ip='192.168.1.10', port=22)
+        host = Host.objects.create(instance_name='ws_host', ip='192.168.1.10')
         session_log = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -162,7 +171,7 @@ class WebSSHAuditDownloadTest(TestCase):
         self.assertNotIn('ls -la', body)
 
     def test_download_webssh_session_log_uses_sanitized_output(self):
-        host = Host.objects.create(instance_name='ws_host_sanitized', ip='192.168.1.11', port=22)
+        host = Host.objects.create(instance_name='ws_host_sanitized', ip='192.168.1.11')
         session_log = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -185,7 +194,7 @@ class WebSSHAuditDownloadTest(TestCase):
         self.assertNotIn('\x1b[31m', body)
 
     def test_download_filtered_webssh_session_logs(self):
-        host = Host.objects.create(instance_name='ws_host2', ip='192.168.1.20', port=22)
+        host = Host.objects.create(instance_name='ws_host2', ip='192.168.1.20')
         WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -226,7 +235,7 @@ class WebSSHAuditDownloadTest(TestCase):
         self.assertNotIn('=== Input ===', body)
 
     def test_download_selected_webssh_session_logs_by_ids(self):
-        host = Host.objects.create(instance_name='ws_host3', ip='192.168.1.30', port=22)
+        host = Host.objects.create(instance_name='ws_host3', ip='192.168.1.30')
         selected_log = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,
@@ -261,7 +270,7 @@ class WebSSHAuditDownloadTest(TestCase):
         self.assertNotIn('unselected-output', body)
 
     def test_download_webssh_session_logs_as_zip_when_more_than_two(self):
-        host = Host.objects.create(instance_name='zip_host', ip='192.168.1.40', port=22)
+        host = Host.objects.create(instance_name='zip_host', ip='192.168.1.40')
         for index in range(3):
             WebSSHSessionLog.objects.create(
                 host=host,
@@ -290,7 +299,7 @@ class WebSSHAuditDownloadTest(TestCase):
             self.assertIn('=== Output ===', first_content)
 
     def test_list_webssh_sessions_filter_by_output_keyword(self):
-        host = Host.objects.create(instance_name='filter_host', ip='192.168.1.50', port=22)
+        host = Host.objects.create(instance_name='filter_host', ip='192.168.1.50')
         matched = WebSSHSessionLog.objects.create(
             host=host,
             user_id=self.user.id,

@@ -5,7 +5,6 @@ from typing import Any, cast
 
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
-from django.db.models import Q
 from django.utils import timezone
 import yaml
 
@@ -103,23 +102,6 @@ def _dfs_detect_cycle(start_wf_id, workflow_refs):
         return (bool(cycle_path), cycle_path)
     
     return (False, None)
-
-
-def _detect_workflow_cycle(start_workflow_id, referenced_workflow_ids, new_nodes=None):
-    """
-    检测跨工作流的循环引用（例如：workflow A → B → A）。
-    用于序列化器验证阶段，抛出异常。
-    """
-    if not start_workflow_id or not referenced_workflow_ids:
-        return
-
-    workflow_refs = _build_workflow_refs_graph(start_workflow_id, referenced_workflow_ids, new_nodes)
-    is_cycle, cycle_path = _dfs_detect_cycle(start_workflow_id, workflow_refs)
-    
-    if is_cycle:
-        raise serializers.ValidationError(
-            f'cross-workflow cycle detected: {cycle_path}'
-        )
 
 
 def check_workflow_cycle_at_runtime(workflow_id, nodes_snapshot):
@@ -226,21 +208,6 @@ class AutomationTaskSerializer(ModelSerializer):
             return f'{instance_name}({ip})'
         return str(ip)
 
-    def _build_group_descendants(self, group_ids):
-        if not group_ids:
-            return set()
-
-        id_set = set(group_ids)
-        queue = list(group_ids)
-        while queue:
-            current = queue.pop(0)
-            children = HostGroup.objects.filter(parent_id=current).values_list('id', flat=True)
-            for child_id in children:
-                if child_id not in id_set:
-                    id_set.add(child_id)
-                    queue.append(child_id)
-        return id_set
-
     def _serialize_hosts(self, hosts):
         result = []
         for host in hosts:
@@ -319,7 +286,6 @@ class AutomationTaskSerializer(ModelSerializer):
         host_id_text = str(host_item.get('id') or '')
         host_name = str(host_item.get('name') or '').lower()
         host_ip = str(host_item.get('ip') or '').lower()
-        group_name = str(host_item.get('group_name') or '').lower()
         group_path = str(host_item.get('group_path') or '').lower()
 
         if scope in ('host', 'hostname', 'name'):
@@ -400,29 +366,15 @@ class AutomationTaskSerializer(ModelSerializer):
 
     def _get_scope_payload(self, obj):
         source_inventory = getattr(obj, 'inventory', None)
-        if source_inventory is not None:
-            host_ids = [int(item) for item in (source_inventory.selected_host_ids or []) if str(item).isdigit()]
-            group_ids = [int(item) for item in (source_inventory.selected_group_ids or []) if str(item).isdigit()]
-            is_all_hosts = False
-        else:
-            # Inventory is now the single source of execution scope.
-            host_ids = []
-            group_ids = []
-            is_all_hosts = False
-        group_id_set = self._build_group_descendants(group_ids)
-
-        filters = Q()
-        if host_ids:
-            filters |= Q(id__in=host_ids)
-        if group_id_set:
-            filters |= Q(group_id__in=list(group_id_set))
+        # Inventory is now the single source of execution scope, and it stores fixed host ids only.
+        host_ids = (
+            [int(item) for item in (source_inventory.selected_host_ids or []) if str(item).isdigit()]
+            if source_inventory is not None else []
+        )
 
         resolved_hosts = []
-        if filters:
-            hosts = Host.objects.filter(ip__isnull=False).filter(filters).select_related('system').order_by('id').distinct()
-            resolved_hosts = self._serialize_hosts(hosts)
-        elif is_all_hosts:
-            hosts = Host.objects.filter(ip__isnull=False).select_related('system').order_by('id')
+        if host_ids:
+            hosts = Host.objects.filter(id__in=host_ids, ip__isnull=False).select_related('system').order_by('id')
             resolved_hosts = self._serialize_hosts(hosts)
 
         selected_hosts = []
@@ -431,14 +383,44 @@ class AutomationTaskSerializer(ModelSerializer):
             direct_hosts = Host.objects.filter(id__in=host_ids).select_related('system').order_by('id')
             selected_hosts = self._serialize_hosts(direct_hosts)
 
+        # 分组信息只用于展示，从已选主机反推所属分组及其祖先链。
+        group_id_set, group_ids = self._resolve_scope_group_tree(resolved_hosts)
+
         return {
             'host_ids': host_ids,
             'group_ids': group_ids,
-            'is_all_hosts': is_all_hosts,
+            'is_all_hosts': False,
             'group_id_set': group_id_set,
             'selected_hosts': selected_hosts,
             'resolved_hosts': resolved_hosts,
         }
+
+    @staticmethod
+    def _resolve_scope_group_tree(resolved_hosts):
+        """返回 (范围内涉及的全部分组集合, 树根分组列表)：根 = 其父分组不在集合内的分组。"""
+        leaf_group_ids = {
+            int(host['group_id']) for host in resolved_hosts
+            if isinstance(host, dict) and host.get('group_id') is not None
+        }
+        if not leaf_group_ids:
+            return set(), []
+
+        parent_map = {
+            int(item['id']): item['parent_id']
+            for item in HostGroup.objects.all().values('id', 'parent_id')
+        }
+        group_id_set = set()
+        for group_id in leaf_group_ids:
+            current = group_id
+            while current is not None and current not in group_id_set:
+                group_id_set.add(current)
+                current = parent_map.get(current)
+
+        roots = sorted(
+            group_id for group_id in group_id_set
+            if parent_map.get(group_id) not in group_id_set
+        )
+        return group_id_set, roots
 
     def _build_execution_scope_tree(self, scope_payload):
         group_ids = scope_payload['group_ids']
@@ -570,16 +552,6 @@ class AutomationTaskSerializer(ModelSerializer):
     def get_limit_preview_limit(self, obj):
         return self._build_limit_preview(obj)['limit']
 
-    def validate_selected_host_ids(self, value):
-        if not isinstance(value, list):
-            raise serializers.ValidationError('selected_host_ids must be a list')
-        return [int(item) for item in value if str(item).isdigit()]
-
-    def validate_selected_group_ids(self, value):
-        if not isinstance(value, list):
-            raise serializers.ValidationError('selected_group_ids must be a list')
-        return [int(item) for item in value if str(item).isdigit()]
-
     def validate_env_vars(self, value):
         if not isinstance(value, dict):
             raise serializers.ValidationError('env_vars must be an object')
@@ -647,9 +619,7 @@ class AutomationInventorySerializer(ModelSerializer):
         fields = '__all__'
 
     def _parse_scope(self, obj):
-        group_ids = [int(item) for item in (obj.selected_group_ids or []) if str(item).isdigit()]
-        host_ids = [int(item) for item in (obj.selected_host_ids or []) if str(item).isdigit()]
-        return group_ids, host_ids
+        return [int(item) for item in (obj.selected_host_ids or []) if str(item).isdigit()]
 
     def _evaluate_scope(self, obj):
         cache_attr = '_scope_eval_cache'
@@ -657,47 +627,25 @@ class AutomationInventorySerializer(ModelSerializer):
         if obj.id in cache:
             return cache[obj.id]
 
-        group_ids, host_ids = self._parse_scope(obj)
-        is_empty_scope = len(group_ids) == 0 and len(host_ids) == 0
-        existing_group_ids = set(HostGroup.objects.filter(id__in=group_ids).values_list('id', flat=True))
-        missing_group_ids = sorted(set(group_ids) - existing_group_ids)
-
-        if is_empty_scope:
-            resolved_host_count = 0
-        else:
-            conditions = Q()
-            if host_ids:
-                conditions |= Q(id__in=host_ids)
-            descendant_ids = self._build_group_descendants(group_ids)
-            if descendant_ids:
-                conditions |= Q(group_id__in=list(descendant_ids))
-            resolved_host_count = Host.objects.filter(ip__isnull=False).filter(conditions).distinct().count() if conditions else 0
+        host_ids = self._parse_scope(obj)
+        existing_host_ids = set(Host.objects.filter(id__in=host_ids).values_list('id', flat=True))
+        missing_host_ids = sorted(set(host_ids) - existing_host_ids)
+        group_ids = sorted({
+            int(group_id)
+            for group_id in Host.objects.filter(id__in=host_ids, group_id__isnull=False).values_list('group_id', flat=True)
+        })
+        resolved_host_count = Host.objects.filter(id__in=host_ids, ip__isnull=False).count()
 
         result = {
             'group_ids': group_ids,
             'host_ids': host_ids,
-            'is_empty_scope': is_empty_scope,
-            'missing_group_ids': missing_group_ids,
+            'is_empty_scope': len(host_ids) == 0,
+            'missing_host_ids': missing_host_ids,
             'resolved_host_count': resolved_host_count,
         }
         cache[obj.id] = result
         setattr(self, cache_attr, cache)
         return result
-
-    def _build_group_descendants(self, group_ids):
-        if not group_ids:
-            return set()
-
-        id_set = set(group_ids)
-        queue = list(group_ids)
-        while queue:
-            current = queue.pop(0)
-            children = HostGroup.objects.filter(parent_id=current).values_list('id', flat=True)
-            for child_id in children:
-                if child_id not in id_set:
-                    id_set.add(child_id)
-                    queue.append(child_id)
-        return id_set
 
     def _resolved_host_count(self, obj):
         return self._evaluate_scope(obj)['resolved_host_count']
@@ -715,14 +663,14 @@ class AutomationInventorySerializer(ModelSerializer):
 
     def get_health_status(self, obj):
         scope = self._evaluate_scope(obj)
-        missing_group_ids = scope['missing_group_ids']
+        missing_host_ids = scope['missing_host_ids']
         resolved_host_count = scope['resolved_host_count']
 
-        if missing_group_ids:
+        if missing_host_ids:
             return {
                 'status': 'invalid',
                 'label': '范围失效',
-                'message': f'存在已删除主机组: {", ".join(str(item) for item in missing_group_ids)}',
+                'message': f'存在已删除主机: {", ".join(str(item) for item in missing_host_ids)}',
             }
 
         if resolved_host_count == 0:
@@ -746,25 +694,13 @@ class AutomationInventorySerializer(ModelSerializer):
             raise serializers.ValidationError('selected_host_ids must be a list')
         return [int(item) for item in value if str(item).isdigit()]
 
-    def validate_selected_group_ids(self, value):
-        if not isinstance(value, list):
-            raise serializers.ValidationError('selected_group_ids must be a list')
-        return [int(item) for item in value if str(item).isdigit()]
-
     def validate(self, attrs):
         host_ids = attrs.get('selected_host_ids')
-        group_ids = attrs.get('selected_group_ids')
-
         if host_ids is None and self.instance is not None:
             host_ids = self.instance.selected_host_ids
-        if group_ids is None and self.instance is not None:
-            group_ids = self.instance.selected_group_ids
 
-        host_ids = host_ids if isinstance(host_ids, list) else []
-        group_ids = group_ids if isinstance(group_ids, list) else []
-
-        if len(host_ids) == 0 and len(group_ids) == 0:
-            raise serializers.ValidationError('请至少选择一个主机组后再保存 Inventory')
+        if not isinstance(host_ids, list) or len(host_ids) == 0:
+            raise serializers.ValidationError('请至少选择一台主机后再保存 Inventory')
 
         return attrs
 
@@ -968,21 +904,6 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
             return obj.default_inventory.name or ''
         return ''
 
-    def _build_group_descendants(self, group_ids):
-        if not group_ids:
-            return set()
-
-        id_set = set(group_ids)
-        queue = list(group_ids)
-        while queue:
-            current = queue.pop(0)
-            children = HostGroup.objects.filter(parent_id=current).values_list('id', flat=True)
-            for child_id in children:
-                if child_id not in id_set:
-                    id_set.add(child_id)
-                    queue.append(child_id)
-        return id_set
-
     def get_execution_scope_summary(self, obj):
         inventory = getattr(obj, 'default_inventory', None)
         if inventory is None:
@@ -995,9 +916,12 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
                 'limit': str(getattr(obj, 'default_limit', '') or '').strip(),
             }
 
-        group_ids = [int(item) for item in (inventory.selected_group_ids or []) if str(item).isdigit()]
         host_ids = [int(item) for item in (inventory.selected_host_ids or []) if str(item).isdigit()]
-        is_empty_scope = len(group_ids) == 0 and len(host_ids) == 0
+        is_empty_scope = len(host_ids) == 0
+        # 分组数只用于展示，从已选主机反推所属分组。
+        group_count = Host.objects.filter(
+            id__in=host_ids, group_id__isnull=False,
+        ).values('group_id').distinct().count()
 
         host_count = 0
         if not is_empty_scope:
@@ -1012,11 +936,11 @@ class AutomationWorkflowTemplateSerializer(ModelSerializer):
         if is_empty_scope:
             label = 'Inventory 无主机'
         else:
-            label = f'{len(group_ids)}组 / {host_count}台主机'
+            label = f'{group_count}组 / {host_count}台主机'
 
         return {
             'label': label,
-            'group_count': len(group_ids),
+            'group_count': group_count,
             'host_count': host_count,
             'has_inventory': True,
             'is_empty_scope': is_empty_scope,

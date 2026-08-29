@@ -2,13 +2,14 @@
 
 ## 项目概述
 
-面向 IT 运维团队的管理平台，提供主机资产管理、凭证管理、定时任务调度、用户权限管理等功能。
+面向 IT 运维团队的管理平台，提供主机资产管理、凭证管理、自动化编排、巡检、监控告警、日志采集、定时任务调度与用户权限管理等功能。
 
 - **后端**: Django 5.1 + Django REST Framework + MySQL
 - **前端**: Vue 3 + Vite + Ant Design Vue
 - **调度**: Celery + RabbitMQ（Worker / Beat 独立进程）
 - **认证**: JWT（rest_framework_jwt，1天有效期）
 - **远程连接（已实现）**: Web SSH（基于 Channels + Paramiko + xterm，含在线会话与文件管理）
+- **执行代理**: dj-agent（Go，gRPC 双向长连接），承载自动化任务、巡检、主机采集、WebSSH 与文件传输
 
 ---
 
@@ -17,10 +18,15 @@
 ### 主路由前缀
 
 ```
-sys/        → user, role, menu, sys_config
-sys/scheduler/ → scheduler
-assets/     → assets (credentials, applications, hosts, host-groups)
-media/      → 静态文件（头像等）
+sys/             → user, role, menu, sys_config
+sys/scheduler/   → scheduler
+sys/automation/  → automation（Playbook / 任务 / Inventory / Workflow / 作业）
+sys/inspection/  → inspection（巡检组 / 巡检任务 / 执行记录）
+sys/audit/       → audit（操作日志 / 登录日志 / WebSSH 会话）
+monitor/         → monitor（监控目标 / 告警 / 日志采集）
+assets/          → assets (credentials, applications, hosts, host-groups)
+api/agent/       → dj-agent 作业接口
+media/           → 静态文件（头像等）
 ```
 
 ---
@@ -242,6 +248,136 @@ media/      → 静态文件（头像等）
 | POST  | `/sys/config/{id}/reset-default` | 重置为默认值                 |
 | GET   | `/sys/config/by-key`             | 按 key 查询参数值            |
 | POST  | `/sys/config/update-by-key`      | 按 key 更新参数值            |
+
+---
+
+### 7. 自动化模块（automation）
+
+**数据模型**
+
+- `PlaybookTemplate`：Playbook 模板（name[唯一], content, category[general/software_package]）
+- `AutomationTask`：自动化任务（name[唯一], playbook_template[FK PROTECT], inventory[FK SET_NULL], env_vars, default_limit, execution_timeout_seconds, run_as_user[必填], run_as_group, work_directory）
+- `AutomationInventory`：执行范围（name[唯一], selected_host_ids[JSON], enabled）
+- `AutomationExecutionJob`：作业记录（job_id[唯一], task[FK SET_NULL], status, inventory_snapshot, 各类 snapshot 字段）
+- `AutomationWorkflowTemplate` / `AutomationWorkflowRun`：Workflow 编排模板与运行记录（线性串行 start → ... → end）
+
+| 方法        | 路径                                                | 功能                          |
+| ----------- | --------------------------------------------------- | ----------------------------- |
+| GET/POST    | `/sys/automation/playbooks/`                        | Playbook 模板 CRUD            |
+| POST        | `/sys/automation/playbooks/{id}/run/`               | 直接运行模板（需传 `host_ids` 与 `run_as_user`） |
+| POST        | `/sys/automation/playbooks/{id}/validate/`          | 语法校验                      |
+| GET         | `/sys/automation/playbooks/host-options/`           | 主机候选（分页）              |
+| GET         | `/sys/automation/playbooks/group-tree/`             | 主机分组树                    |
+| GET/POST    | `/sys/automation/tasks/`                            | 自动化任务 CRUD               |
+| POST        | `/sys/automation/tasks/{id}/precheck/`              | 执行前预检（范围/Limit/离线） |
+| POST        | `/sys/automation/tasks/{id}/run_now/`               | 立即执行                      |
+| GET/POST    | `/sys/automation/inventories/`                      | Inventory CRUD                |
+| POST        | `/sys/automation/inventories/{id}/precheck-limit/`  | Limit 匹配预检                |
+| GET/POST    | `/sys/automation/workflows/`                        | Workflow 模板 CRUD            |
+| POST        | `/sys/automation/workflows/{id}/precheck-launch/`   | 启动前预检                    |
+| POST        | `/sys/automation/workflows/{id}/launch/`            | 启动 Workflow                 |
+| GET         | `/sys/automation/workflow-runs/`                    | Workflow 运行记录             |
+| GET         | `/sys/automation/jobs/`                             | 作业列表/详情/日志            |
+
+**执行范围语义（重要）**
+
+- **Inventory 是执行范围的唯一来源**：任务与 Workflow 未绑定 Inventory 时直接拒绝执行。
+- `selected_host_ids` 只存**固定主机 ID 列表**。前端勾选分组只是批量勾选入口，保存时展开成具体主机；之后往该分组新增主机不会自动进入已有 Inventory。
+- 范围是 JSON 字段而非外键，因此主机组删除时由 `assets` 侧显式检查引用并拦截。
+
+详见 [MODEL_RELATIONSHIP.md](../../backend/djadmin/automation/MODEL_RELATIONSHIP.md) 与 [WORKFLOW_RUNTIME_LOGIC.md](../../backend/djadmin/automation/WORKFLOW_RUNTIME_LOGIC.md)。
+
+---
+
+### 8. 巡检模块（inspection）
+
+**数据模型**
+
+- `InspectionGroup`：巡检组（name[唯一], scope[per_deployment/service_once/per_host], enabled）
+- `InspectionCheck`：检查项（group[FK], executor[shell/schema_validate/http/tcp], config[JSON], severity[critical/warning], order）
+- `InspectionTask`：巡检任务（name[唯一], group[FK PROTECT], logical_service[FK], selected_host_ids[JSON], concurrency, timeout_seconds, cron_expression, next_run_time）
+- `InspectionExecution` / `InspectionTargetExecution` / `InspectionResult`：执行、目标、检查项结果三级记录
+
+| 方法     | 路径                                          | 功能                              |
+| -------- | --------------------------------------------- | --------------------------------- |
+| GET/POST | `/sys/inspection/groups/`                     | 巡检组 CRUD（含检查项）           |
+| GET/POST | `/sys/inspection/tasks/`                      | 巡检任务 CRUD                     |
+| GET      | `/sys/inspection/tasks/host-scope-tree/`      | 主机范围勾选树（全量分组 + 主机） |
+| POST     | `/sys/inspection/tasks/{id}/run/`             | 手动触发巡检                      |
+| GET      | `/sys/inspection/executions/`                 | 执行记录（按任务/状态/时间筛选）  |
+| POST     | `/sys/inspection/executions/{id}/cancel/`     | 取消执行                          |
+
+**执行语义**
+
+- 目标类型由巡检组 `scope` 派生：`per_host` → 主机组巡检，其余 → 逻辑服务巡检。
+- 主机组巡检的范围同样是**固定主机 ID 列表**（`selected_host_ids`），语义与 Inventory 一致：分组只是勾选入口，事后加入分组的主机不会自动纳入。
+- 多目标由后端线程池按任务 `concurrency` 并发下发；执行必须在 Django 主进程内完成，因为 Agent 的 gRPC 会话注册表是进程内内存。
+- 未安装 Agent 的主机计入 `skipped_no_agent`（不算失败）；已装但离线的主机直接落一条「Agent 离线，未执行检查」的失败目标。
+- `severity=warning` 的检查项失败只计数，不会把目标判为失败。
+
+---
+
+### 9. 监控模块（monitor）
+
+覆盖 Prometheus 监控、告警通知与日志采集三条链路。
+
+| 方法     | 路径                                     | 功能                                     |
+| -------- | ---------------------------------------- | ---------------------------------------- |
+| GET/POST | `/monitor/targets/`                      | 监控目标（Exporter）管理                 |
+| GET      | `/monitor/summary/`                      | 监控概览                                 |
+| GET/POST | `/monitor/targets/prometheus/proxy/*`    | Prometheus 只读代理（有/无结尾斜杠均可） |
+| GET/POST | `/monitor/packages/`                     | 监控软件包管理                           |
+| GET      | `/monitor/install-histories/`            | Exporter 安装历史                        |
+| GET      | `/monitor/alert-histories/`              | 告警历史                                 |
+| GET/POST | `/monitor/media/`                        | 告警媒介（邮件等）                       |
+| GET/POST | `/monitor/alert-routes/`                 | 告警路由                                 |
+| GET/POST | `/monitor/opensearch-clusters/`          | OpenSearch 集群与解析规则调试            |
+| GET/POST | `/monitor/log-targets/`                  | 主机级日志采集目标（下发/校验/启停）     |
+| GET/POST | `/monitor/log-processing-rules/`         | 日志解析规则                             |
+| GET/POST | `/monitor/log-retention-tiers/`          | 日志保留档位                             |
+
+**免认证端点**（供 Prometheus / Alertmanager 回调，注册在项目根路由）
+
+- `GET /monitor/prometheus/http-sd/`：Prometheus HTTP 服务发现
+- `POST /monitor/alert-webhook/api/v2/alerts`：Alertmanager 告警回调
+
+**告警收件人模型**：收件人按「用户 × 媒介」配置在 `UserAlertMediaBinding` 上（Zabbix 风格），
+不在媒介本身。用户中心通过 `/sys/usercenter/alertMediaBindings/`（GET）与
+`/sys/usercenter/updateAlertMediaBindings/`（POST，请求体为 `bindings` 数组）维护。
+
+**Exporter / Fluent Bit 安装卸载的执行模型**：视图只做校验、建 `MonitorTargetInstallHistory`
+并把目标置为 `pending`，Playbook 交给 `monitor/job_runner.py` 的进程内固定线程池执行
+（`MONITOR_JOB_MAX_WORKERS`，默认 8）。
+
+- 不能改成 Celery：安装第一步要通过 agent gRPC 下发控制机公钥，而 gRPC 会话注册表是
+  `runserver` 进程内的纯内存结构（见 `assets/grpc_transfer/server.py`），worker 进程里查不到
+  任何 agent 连接。同样的约束见 `inspection/scheduling.py`。
+- 也不能留在请求线程：单台安装动辄数分钟，批量场景会把 ASGI 连接拖到超时被 Daphne 杀掉。
+- 进度看安装状态列与安装历史；卡死的 `pending` 由 `_expire_stale_monitor_pending` 在下次下发时转 `failed`。
+
+详见 [LOG_COLLECTION_ARCHITECTURE.md](../architecture/LOG_COLLECTION_ARCHITECTURE.md)。
+
+---
+
+### 10. 审计模块（audit）
+
+**数据模型**
+
+- `OperationAuditLog`：操作审计（username, user_id, method, path, route_name, client_ip, user_agent, status_code, duration_ms, request_data, response_data）
+- `LoginAuditLog`：登录审计
+- `WebSSHSessionLog`（定义在 assets）：Web SSH 会话录像与输入输出
+
+| 方法   | 路径                                                 | 功能                        |
+| ------ | ---------------------------------------------------- | --------------------------- |
+| GET    | `/sys/audit/operation-logs/`                         | 操作日志列表                |
+| GET    | `/sys/audit/login-logs/`                             | 登录日志列表                |
+| GET    | `/sys/audit/webssh-sessions/`                        | Web SSH 会话列表（可按输出关键字过滤） |
+| GET    | `/sys/audit/webssh-sessions/{id}/content/`           | 会话内容                    |
+| GET    | `/sys/audit/webssh-sessions/{id}/download/`          | 下载单个会话日志            |
+| GET    | `/sys/audit/webssh-sessions/download-all/`           | 批量下载（超过 2 个打包 zip） |
+
+**记录规则**：操作日志由中间件写入，只记录写操作（GET 请求不记录）。三类日志的保留天数
+由系统参数控制，通过 `scheduler` 的清理任务定期回收。
 
 ---
 

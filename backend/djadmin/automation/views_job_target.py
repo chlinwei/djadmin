@@ -140,7 +140,6 @@ class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModel
 
     @action(detail=True, methods=['get'])
     def events(self, request, id=None):
-        job = self.get_object()
         self.get_object()
         return Response_200(data=[])
 

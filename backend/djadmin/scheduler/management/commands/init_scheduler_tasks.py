@@ -1,6 +1,5 @@
 from django.core.management.base import BaseCommand
 from scheduler.models import ScheduledTask
-from django.utils import timezone
 
 
 class Command(BaseCommand):

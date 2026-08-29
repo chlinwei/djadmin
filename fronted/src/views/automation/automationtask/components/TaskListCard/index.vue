@@ -70,7 +70,7 @@
               {{ record.inventory_name || '-' }}
             </a-button>
           </template>
-          <template v-else-if="column.key === 'selected_group_ids'">
+          <template v-else-if="column.key === 'execution_scope'">
             <div class="scope-compact-cell">
               <span v-if="!record.inventory" class="scope-limit-empty">未设置 Inventory</span>
 

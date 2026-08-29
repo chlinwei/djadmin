@@ -98,10 +98,7 @@ def reconcile_partial_schema(apps, schema_editor):
     if cursor.fetchone()[0]:
         raise RuntimeError('存在无法确定所属业务系统的逻辑服务，迁移已停止')
 
-    environment_indexes = indexes(environment_table)
-    for index_name in ('unique_business_environment_code', 'unique_business_environment_name'):
-        if index_name in environment_indexes:
-            cursor.execute(f'ALTER TABLE `{environment_table}` DROP INDEX `{index_name}`')
+    # 必须先摘掉 business_system_id 外键：旧唯一索引以该列结尾，MySQL 会以「索引被外键依赖」拒绝 DROP INDEX。
     if 'business_system_id' in environment_columns:
         cursor.execute(
             f'SHOW CREATE TABLE `{environment_table}`'
@@ -114,6 +111,11 @@ def reconcile_partial_schema(apps, schema_editor):
                     f'ALTER TABLE `{environment_table}` DROP FOREIGN KEY `{constraint_name}`'
                 )
         cursor.execute(f'ALTER TABLE `{environment_table}` DROP COLUMN `business_system_id`')
+
+    environment_indexes = indexes(environment_table)
+    for index_name in ('unique_business_environment_code', 'unique_business_environment_name'):
+        if index_name in environment_indexes:
+            cursor.execute(f'ALTER TABLE `{environment_table}` DROP INDEX `{index_name}`')
     if 'unique_business_environment_code' not in indexes(environment_table):
         cursor.execute(
             f'ALTER TABLE `{environment_table}` ADD UNIQUE KEY '

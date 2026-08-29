@@ -165,9 +165,6 @@
                             <template v-if="column.key === 'hostname'">
                                 <span class="hostname-value">{{ record.system?.hostname || '-' }}</span>
                             </template>
-                        <template v-if="column.key === 'group_name'">
-                            <a-tag color="blue">{{ getGroupName(record) }}</a-tag>
-                        </template>
                         <template v-else-if="column.key === 'agent_status'">
                             <a-tooltip v-if="record.agent_online">
                                 <template #title>
@@ -189,13 +186,8 @@
                                 <a-tag color="error">离线</a-tag>
                             </a-tooltip>
                         </template>
-                        <template v-else-if="column.key === 'monitor_enabled'">
-                            <a-tag :color="record.monitor_enabled ? 'green' : 'default'">{{ record.monitor_enabled ? '开启' : '关闭' }}</a-tag>
-                        </template>
-                        <template v-else-if="column.key === 'monitor_install_status'">
-                            <a-tag :color="monitorInstallStatusColor(record.monitor_install_status)">
-                                {{ monitorInstallStatusText(record.monitor_install_status) }}
-                            </a-tag>
+                        <template v-else-if="column.key === 'os_info'">
+                            <span>{{ formatOsInfo(record) }}</span>
                         </template>
                         <template v-else-if="column.key === 'cpu_cores'">
                             <span>{{ record.hardware?.cpu_cores ?? '-' }} 核</span>
@@ -270,10 +262,10 @@
                 @cancel="closeAgentManage"
             >
                 <a-alert
-                    type="warning"
+                    type="info"
                     show-icon
                     :message="`已选择 ${state.selectedRowKeys.length} 台主机`"
-                    description="当前版本要求 SSH 凭证使用 root 用户。普通用户和需要交互输入 sudo 密码的凭证暂不支持。"
+                    description="支持 root 用户及具备 sudo 免密或密码提权权限的普通用户 SSH 凭证。"
                     style="margin-bottom: 16px"
                 />
                 <a-form layout="vertical">
@@ -547,9 +539,9 @@ import {
 } from './utils/hostGroupTreeUtils'
 import {
     formatDateTimeWithTimezone,
+    formatOsInfo,
     formatPercent,
     formatSize,
-    getGroupName,
 } from './utils/hostDisplayUtils'
 
 const searchText = ref('')
@@ -786,12 +778,8 @@ const columns = [
     { title: 'Agent ID', dataIndex: 'agent_id', key: 'agent_id', width: 150 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
-    { title: '主机分组', dataIndex: 'group_name', key: 'group_name', width: 130 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
-    { title: '监控', dataIndex: 'monitor_enabled', key: 'monitor_enabled', width: 90 },
-    { title: '安装状态', dataIndex: 'monitor_install_status', key: 'monitor_install_status', width: 120 },
-    { title: 'OS 类型', dataIndex: 'os_type', key: 'os_type', width: 120 },
-    { title: 'OS 版本', dataIndex: 'os_version', key: 'os_version', width: 160 },
+    { title: 'OS', dataIndex: 'os_version', key: 'os_info', width: 220 },
     { title: 'Agent 版本', dataIndex: 'agent_version', key: 'agent_version', width: 160 },
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
@@ -1609,22 +1597,6 @@ const applyRouteFilters = async () => {
 
 const getRowClassName = (record) => {
     return record.collect_status === 'failed' ? 'row-collect-failed' : ''
-}
-
-const monitorInstallStatusColor = (status) => {
-    const normalized = String(status || '').toLowerCase()
-    if (normalized === 'success') return 'green'
-    if (normalized === 'failed') return 'red'
-    if (normalized === 'pending') return 'orange'
-    return 'default'
-}
-
-const monitorInstallStatusText = (status) => {
-    const normalized = String(status || '').toLowerCase()
-    if (normalized === 'success') return '成功'
-    if (normalized === 'failed') return '失败'
-    if (normalized === 'pending') return '处理中'
-    return '未知'
 }
 
 const canOpenWebSsh = (record) => {

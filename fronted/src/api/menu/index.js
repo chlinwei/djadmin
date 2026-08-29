@@ -84,15 +84,3 @@ export function getMenuList() {
     return JSON.parse(menuList);
 }
 //删除权限菜单
-export function removeMenuList() {
-    localStorage.removeItem("menuList")
-    removePerms()
-}
-
-
-
-
-
-
-
-

@@ -82,6 +82,13 @@ def start_grpc_server_in_background():
     server.add_insecure_port(bind_address)
     server.start()
     _server = server  # 防止 GC 回收
+
+    try:
+        from assets.models import Host
+        Host.objects.filter(agent_online=True).update(agent_online=False)
+    except Exception:
+        pass
+
     # 进程退出（含 autoreload 重启子进程退出）时主动停掉 gRPC server，尽快释放监听端口
     # 与内部线程，避免旧子进程半关闭状态下继续持有端口/线程，导致新子进程 bind 失败，
     # 或残留请求在解释器 finalize 阶段触发 "cannot schedule new futures after interpreter shutdown"。
@@ -96,6 +103,11 @@ def stop_grpc_server():
     if server is None:
         return
     _server = None
+    try:
+        from assets.models import Host
+        Host.objects.filter(agent_online=True).update(agent_online=False)
+    except Exception:
+        pass
     try:
         # grace=0：立即取消在途 RPC 并关闭端口；此处仅用于快速释放资源，不等待优雅收尾。
         server.stop(grace=0)

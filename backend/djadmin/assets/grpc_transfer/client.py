@@ -21,10 +21,6 @@ class AgentGrpcTransferError(Exception):
     pass
 
 
-def is_agent_grpc_connected(agent_id):
-    return REGISTRY.is_connected(agent_id)
-
-
 class AgentWriteSession:
     """一次上传的有状态句柄：write_open() 建立后复用同一个 request_id 持续
     write_chunk()，最后 close() 触发 agent 侧原子 rename（或 abort 清理临时文件）。

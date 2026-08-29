@@ -25,17 +25,8 @@ export function batchDeleteHost(ids) {
     return requestUtil.del(prefix + 'batch-delete/', { ids })
 }
 
-export function checkHostConnection(id) {
-    return requestUtil.post(prefix + 'check-connection/', { id })
-}
 
-export function batchCheckHostConnection(ids) {
-    return requestUtil.post(prefix + 'batch-check-connection/', { ids })
-}
 
-export function getHostWebSshSessions(id, params) {
-    return requestUtil.get(prefix + `${id}/webssh-sessions/`, params)
-}
 
 export function getHostWebSshActiveCount(id) {
     return requestUtil.get(prefix + `${id}/webssh-active-count/`)
@@ -104,9 +95,6 @@ export function createHostWebSshDir(id, payload) {
     return requestUtil.post(prefix + `${id}/files/create-dir/`, payload)
 }
 
-export function createHostWebSshFile(id, payload) {
-    return requestUtil.post(prefix + `${id}/files/create-file/`, payload)
-}
 
 export function getHostGroupList(params) {
     return requestUtil.get('assets/host-groups/', params)
@@ -128,9 +116,6 @@ export function installAgents(payload) {
     return requestUtil.post('api/agent/install', payload)
 }
 
-export function queryAgentJobs(params) {
-    return requestUtil.get('api/agent/jobs/query', params)
-}
 
 export function queryHostDynamicTasks(hostId, options = {}) {
     const params = {
@@ -147,10 +132,4 @@ export function queryHostDynamicTasks(hostId, options = {}) {
     return requestUtil.get('api/agent/jobs/query', params)
 }
 
-export function cancelAgentJob(payload) {
-    return requestUtil.post('api/agent/jobs/cancel', payload)
-}
 
-export function retryAgentJob(payload) {
-    return requestUtil.post('api/agent/jobs/retry', payload)
-}

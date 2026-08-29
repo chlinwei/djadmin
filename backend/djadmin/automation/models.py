@@ -1,7 +1,6 @@
 import uuid
 
 from django.db import models
-from django.core.validators import MaxValueValidator
 
 from djadmin.basemodel import BaseModel
 
@@ -40,8 +39,6 @@ class AutomationTask(BaseModel):
     # 自动化任务统一使用 Playbook；Shell 脚本可作为 Playbook 的 task 执行。
     playbook_template = models.ForeignKey(PlaybookTemplate, on_delete=models.PROTECT, related_name='tasks', null=True, blank=True)
     inventory = models.ForeignKey('AutomationInventory', on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks')
-    selected_host_ids = models.JSONField(default=list, blank=True)
-    selected_group_ids = models.JSONField(default=list, blank=True)
     env_vars = models.JSONField(default=dict, blank=True)
     default_limit = models.CharField(max_length=255, blank=True, default='')
     enabled = models.BooleanField(default=True)
@@ -86,8 +83,8 @@ class AutomationInventory(BaseModel):
         FAILED = 'failed', 'Failed'
 
     name = models.CharField(max_length=128, unique=True)
+    # 范围只存固定主机 ID：分组是前端批量勾选入口，事后往组里加主机不会自动进入已有 Inventory。
     selected_host_ids = models.JSONField(default=list, blank=True)
-    selected_group_ids = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
     update_on_launch = models.BooleanField(default=False)
     update_cache_timeout = models.PositiveIntegerField(default=300)

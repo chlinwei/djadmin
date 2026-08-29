@@ -16,17 +16,19 @@ function runSortConfigConsistencyCheck() {
 
   const checks = [
     {
+      // 列定义与排序解析在重构后被抽到 helpers，需要与页面合并后再校验。
       file: 'src/views/automation/automationtask/index.vue',
+      extraFiles: ['src/views/automation/utils/automationTaskHelpers.js'],
       requiredSorters: ['name', 'enabled', 'update_time'],
       requiredHandlerFieldLists: ['name', 'enabled', 'update_time'],
     },
     {
-      file: 'src/views/automation/workflow/index.vue',
+      file: 'src/views/automation/workflow/list/index.vue',
       requiredSorters: ['name', 'enabled', 'update_time'],
       requiredHandlerFieldLists: ['name', 'enabled', 'update_time'],
     },
     {
-      file: 'src/views/automation/playbooks/index.vue',
+      file: 'src/views/automation/templates/index.vue',
       requiredSorters: ['name', 'update_time'],
       requiredHandlerFieldLists: ['name', 'update_time'],
     },
@@ -36,7 +38,7 @@ function runSortConfigConsistencyCheck() {
       requiredHandlerFieldLists: ['last_run_time', 'next_run_time'],
     },
     {
-      file: 'src/views/automation/logs/index.vue',
+      file: 'src/views/automation/logs/center/index.vue',
       requiredSorters: ['job_id', 'id', 'status', 'start_time', 'duration_seconds'],
       requiredHandlerFieldLists: ['status', 'start_time', 'duration_seconds'],
       requiredHandlerListCount: 2,
@@ -59,7 +61,16 @@ function runSortConfigConsistencyCheck() {
       continue
     }
 
-    const content = fs.readFileSync(absPath, 'utf8')
+    const extraFiles = item.extraFiles || []
+    const missingExtra = extraFiles.filter((relPath) => !fs.existsSync(path.join(projectRoot, relPath)))
+    if (missingExtra.length > 0) {
+      errors.push(`[missing-file] ${missingExtra.join(', ')}`)
+      continue
+    }
+
+    const content = [absPath, ...extraFiles.map((relPath) => path.join(projectRoot, relPath))]
+      .map((filePath) => fs.readFileSync(filePath, 'utf8'))
+      .join('\n')
 
     for (const field of item.requiredSorters) {
       // Match one column block that declares `dataIndex: <field>` and includes `sorter: true`

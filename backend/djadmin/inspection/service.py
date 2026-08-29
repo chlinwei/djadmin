@@ -10,27 +10,34 @@ import threading
 from django.db import transaction
 from django.utils import timezone
 
-from assets.models import Host, HostGroup
+from assets.models import Host
 
 from .executor import run_inspection_execution
-from .models import InspectionExecution, InspectionGroup, InspectionTargetExecution, InspectionTask
+from .models import InspectionExecution, InspectionGroup, InspectionTargetExecution
 
 
 class InspectionRequestError(Exception):
     """巡检无法启动的业务原因（组被禁用、目标为空等）；HTTP 层转 400，定时层写调度日志。"""
 
 
-def descendant_group_ids(root_id):
-    child_map = {}
-    for group_id, parent_id in HostGroup.objects.values_list('id', 'parent_id'):
-        child_map.setdefault(parent_id, []).append(group_id)
-    result = []
-    pending = [root_id]
-    while pending:
-        group_id = pending.pop()
-        result.append(group_id)
-        pending.extend(child_map.get(group_id, []))
-    return result
+def normalize_host_ids(selected_host_ids):
+    return [int(item) for item in (selected_host_ids or []) if str(item).lstrip('-').isdigit()]
+
+
+def resolve_scope_hosts(selected_host_ids):
+    """只按已落库的主机 ID 解析，不再展开分组，保证任务范围不会因分组成员变化而静默漂移。"""
+    host_ids = normalize_host_ids(selected_host_ids)
+    if not host_ids:
+        return []
+    return list(
+        Host.objects.filter(pk__in=host_ids, is_deleted_in_cloud=False).order_by('instance_name', 'id')
+    )
+
+
+def host_scope_name(selected_host_ids):
+    """主机范围的展示名，供任务列表「目标」列与执行快照共用，避免两处文案不一致。"""
+    host_ids = normalize_host_ids(selected_host_ids)
+    return f'{len(host_ids)} 台主机' if host_ids else '未选择范围'
 
 
 def _offline_fields(host, run_time):
@@ -60,18 +67,19 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
         raise InspectionRequestError('巡检组没有启用的检查项')
 
     service = task.logical_service
-    host_group = task.host_group
+    scope = task.group.scope
     deployments = []
     hosts = []
-    if task.target_type == InspectionTask.TargetType.HOST_GROUP:
-        if host_group is None:
-            raise InspectionRequestError('巡检任务未绑定主机组')
-        hosts = list(Host.objects.filter(
-            group_id__in=descendant_group_ids(host_group.pk),
-            is_deleted_in_cloud=False,
-        ).order_by('instance_name', 'id'))
+    skipped_no_agent = 0
+    if scope == InspectionGroup.Scope.PER_HOST:
+        group_hosts = resolve_scope_hosts(task.selected_host_ids)
+        if not group_hosts:
+            raise InspectionRequestError('巡检任务的主机范围为空')
+        # 从未安装 Agent 的主机永远无法巡检，归为跳过；当成失败会虚高 failed 并触发误告警。
+        hosts = [item for item in group_hosts if str(item.agent_id or '').strip()]
+        skipped_no_agent = len(group_hosts) - len(hosts)
         if not hosts:
-            raise InspectionRequestError('主机组及其子组中没有主机')
+            raise InspectionRequestError('主机范围内没有已安装 Agent 的主机')
     else:
         if service is None:
             raise InspectionRequestError('巡检任务未绑定逻辑服务')
@@ -101,10 +109,16 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
         'host_ip': str(item.ip or ''),
         'agent_id': str(item.agent_id or ''),
     } for item in hosts]
-    target_snapshot = host_snapshot if task.target_type == InspectionTask.TargetType.HOST_GROUP else deployment_snapshot
+    target_snapshot = host_snapshot if scope == InspectionGroup.Scope.PER_HOST else deployment_snapshot
     target_context = (
-        {'target_type': task.target_type, 'id': host_group.pk, 'name': host_group.name}
-        if host_group else
+        {
+            'target_type': task.target_type,
+            'name': host_scope_name(task.selected_host_ids),
+            'selected_host_ids': normalize_host_ids(task.selected_host_ids),
+            'host_count': len(hosts),
+            'skipped_no_agent': skipped_no_agent,
+        }
+        if scope == InspectionGroup.Scope.PER_HOST else
         {
             'target_type': task.target_type,
             'id': service.pk,
@@ -133,7 +147,7 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
             requested_user_id=requested_user_id,
             requested_username=requested_username,
         )
-        if task.target_type == InspectionTask.TargetType.HOST_GROUP:
+        if scope == InspectionGroup.Scope.PER_HOST:
             InspectionTargetExecution.objects.bulk_create([
                 InspectionTargetExecution(
                     execution=execution,
@@ -146,7 +160,7 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
                 )
                 for item in hosts
             ])
-        elif task.group.scope == InspectionGroup.Scope.PER_DEPLOYMENT:
+        elif scope == InspectionGroup.Scope.PER_DEPLOYMENT:
             InspectionTargetExecution.objects.bulk_create([
                 InspectionTargetExecution(
                     execution=execution,

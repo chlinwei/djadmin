@@ -9,6 +9,7 @@ from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
 from assets.grpc_transfer.client import AgentChannelClient
+from assets.models import Host, HostGroup
 from menu.permisssion import CustomMenuPermission
 
 from .models import InspectionExecution, InspectionGroup, InspectionTargetExecution, InspectionTask
@@ -27,6 +28,15 @@ def _parse_range_boundary(value):
     if parsed is None:
         return None
     return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+
+
+def _build_group_tree(groups):
+    nodes = {item['id']: {**item, 'children': []} for item in groups}
+    roots = []
+    for node in nodes.values():
+        parent = nodes.get(node['parent_id'])
+        (parent['children'] if parent else roots).append(node)
+    return roots
 
 
 class InspectionGroupViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin, GenericViewSet):
@@ -70,16 +80,17 @@ class InspectionGroupViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMi
 
 
 class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin, GenericViewSet):
-    queryset = InspectionTask.objects.select_related('group', 'logical_service', 'host_group').all()
+    queryset = InspectionTask.objects.select_related('group', 'logical_service').all()
     serializer_class = InspectionTaskSerializer
     pagination_class = CustomPagination
     filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
-    search_fields = ['name', 'group__name', 'logical_service__name', 'host_group__name']
+    search_fields = ['name', 'group__name', 'logical_service__name']
     ordering_fields = ['name', 'enabled', 'next_run_time', 'last_run_time', 'create_time', 'update_time']
     permission_classes = [CustomMenuPermission]
     action_perms_map = {
         'list': 'inspection:view',
         'retrieve': 'inspection:view',
+        'host_scope_tree': 'inspection:view',
         'create': 'inspection:tasks:create',
         'update': 'inspection:tasks:update',
         'partial_update': 'inspection:tasks:update',
@@ -108,6 +119,24 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
     def destroy(self, request: Request, *args, **kwargs):
         self.get_object().delete()
         return Response_200()
+
+    @action(detail=False, methods=['get'], url_path='host-scope-tree')
+    def host_scope_tree(self, request: Request):
+        """主机范围勾选树：一次返回全量分组与主机，避免前端分页拼接出不完整的树。"""
+        groups = list(HostGroup.objects.order_by('name', 'id').values('id', 'name', 'parent_id'))
+        hosts = [
+            {
+                'id': item['id'],
+                'instance_name': str(item['instance_name'] or ''),
+                'ip': str(item['ip'] or ''),
+                'group_id': item['group_id'],
+                'agent_id': str(item['agent_id'] or ''),
+            }
+            for item in Host.objects.filter(is_deleted_in_cloud=False)
+            .order_by('instance_name', 'id')
+            .values('id', 'instance_name', 'ip', 'group_id', 'agent_id')
+        ]
+        return Response_200(data={'groups': _build_group_tree(groups), 'hosts': hosts})
 
     @action(detail=True, methods=['post'], url_path='run')
     def run(self, request: Request, pk=None):

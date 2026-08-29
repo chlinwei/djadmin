@@ -77,7 +77,14 @@
             {{ formatDateTime(record.create_time) }}
           </template>
           <template v-else-if="column.key === 'summary_message'">
-            <span>{{ record.summary_message || '-' }}</span>
+            <a-tooltip v-if="record.summary_message" :title="record.summary_message" placement="topLeft">
+              <a-typography-text
+                :content="record.summary_message"
+                :ellipsis="{ tooltip: false }"
+                style="max-width: 330px"
+              />
+            </a-tooltip>
+            <span v-else>-</span>
           </template>
           <template v-else-if="column.key === 'action_col'">
             <a-space>

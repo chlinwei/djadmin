@@ -280,15 +280,11 @@ function addTree(indexRoute, treeList) {
 
 }
 
-
-export function getDynamicalRoutes2(menuList) {
-    let indexRoute = staticRouterMap.filter(v => v.path === '/')[0];
-    return addTree(indexRoute, menuList)
-}
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
     routes: staticRouterMap
 })
+
 export default router
 
 

@@ -11,9 +11,7 @@ class ErrorMixin:
 
 class CommonError(ErrorMixin,Enum):
     NO_PERMISSION = (4001,"没有权限")
-class MenuError(ErrorMixin,Enum):
-    menu_saveOrcreate_error = (3001,"菜单创建失败")
-    
+
 class RoleError(ErrorMixin,Enum):
     role_ids_empty = (2001,"roleid数组为空错误")
 
@@ -29,13 +27,6 @@ class UserError(ErrorMixin, Enum):
 class AssetsError(ErrorMixin,Enum):
     FILE_NOT_ENDSWITH_CSV = (5001,"文件后缀必须是CSV")
     BATCH_UPLOAD_ERROR = (5002,"批量导入失败")
-
-
-
-
-class ServerError(ErrorMixin, Enum):    
-    """服务器相关错误"""
-    INTERNAL_ERROR = (2001, "服务器内部错误")
 
 
 class DjadminException(Exception):

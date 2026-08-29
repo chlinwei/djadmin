@@ -4,9 +4,6 @@ from django.db.models import Q
  
  
 
-from django_filters import rest_framework as filters
-from django.db.models import Q
-from .models import SysUser
 
 class SysUserFilter(filters.FilterSet):
     keyword = filters.CharFilter(method='multi_field_search')

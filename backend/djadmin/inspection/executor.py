@@ -65,7 +65,8 @@ def _agent_params(execution, deployment=None, host=None):
             }
         elif host is not None:
             resolve = lambda value: _resolve_host(value, host)
-            default_run_user = ''
+            # 主机组巡检没有部署模板可推导运行用户，留空会被 Agent 直接拒绝。
+            default_run_user = 'root'
             default_work_directory = '/'
             environment = {'HOST_IP': str(host.ip or ''), 'HOST_NAME': str(host.instance_name or f'Host-{host.pk}')}
         else:
@@ -333,7 +334,10 @@ def run_inspection_execution(execution_id):
     execution.save(update_fields=['status', 'start_time', 'update_time'])
     try:
         targets = list(InspectionTargetExecution.objects.filter(execution=execution))
-        if execution.group_snapshot.get('scope') == InspectionGroup.Scope.PER_DEPLOYMENT:
+        if execution.group_snapshot.get('scope') in (
+            InspectionGroup.Scope.PER_DEPLOYMENT,
+            InspectionGroup.Scope.PER_HOST,
+        ):
             # 入口已把 Agent 离线的目标直接置为 FAILED，这里只调度仍待执行的，避免把离线原因覆盖掉。
             dispatchable = [item for item in targets if item.status == InspectionTargetExecution.Status.PENDING]
             concurrency = max(1, min(int(execution.task_snapshot.get('concurrency') or 20), 100))

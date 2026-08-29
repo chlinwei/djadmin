@@ -8,6 +8,31 @@ from .models import (
     InspectionTargetExecution,
     InspectionTask,
 )
+from .service import host_scope_name
+
+# 主机组巡检只能解析 ${HOST_IP}/${HOST_NAME}，以下应用上下文变量会原样进入 shell 并被展开为空。
+APPLICATION_VARIABLES = ('${APP_HOME}', '${RUN_USER}', '${INSTANCE_NAME}', '${APPLICATION_VERSION}', '${SERVICE_NAME}')
+APPLICATION_VARIABLE_ERROR = '主机组巡检不能使用应用上下文变量，请使用 ${HOST_IP} 或 ${HOST_NAME}'
+
+
+def _normalize_id_list(value, field_name):
+    if not isinstance(value, list):
+        raise serializers.ValidationError(f'{field_name} 必须是数组')
+    normalized = []
+    for item in value:
+        if not str(item).lstrip('-').isdigit() or int(item) <= 0:
+            raise serializers.ValidationError(f'{field_name} 只能包含正整数 ID')
+        if int(item) not in normalized:
+            normalized.append(int(item))
+    return normalized
+
+
+def contains_application_variable(value):
+    if isinstance(value, dict):
+        return any(contains_application_variable(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_application_variable(item) for item in value)
+    return isinstance(value, str) and any(variable in value for variable in APPLICATION_VARIABLES)
 
 
 class InspectionCheckSerializer(serializers.ModelSerializer):
@@ -66,6 +91,27 @@ class InspectionGroupSerializer(serializers.ModelSerializer):
         invalid = [check.get('name') for check in checks if check.get('executor') not in allowed]
         if invalid:
             raise serializers.ValidationError({'checks': f'检查项执行器无效: {", ".join(invalid)}'})
+
+        scope = attrs.get('scope', getattr(self.instance, 'scope', None))
+        # 跨目标族切换会让已绑定任务的目标字段整体失效（如只填了逻辑服务却改成主机组）。
+        if self.instance is not None and self.instance.tasks.exists():
+            was_host = self.instance.scope == InspectionGroup.Scope.PER_HOST
+            now_host = scope == InspectionGroup.Scope.PER_HOST
+            if was_host != now_host:
+                raise serializers.ValidationError({
+                    'scope': '巡检组已被任务引用，不能在“逻辑服务”与“主机组”之间切换范围，请新建巡检组',
+                })
+
+        if scope == InspectionGroup.Scope.PER_HOST:
+            offending = [
+                check.get('name')
+                for check in checks
+                if check.get('enabled', True) and contains_application_variable(check.get('config'))
+            ]
+            if offending:
+                raise serializers.ValidationError({
+                    'checks': f'{APPLICATION_VARIABLE_ERROR}；请修改检查项: {", ".join(filter(None, offending))}',
+                })
         return attrs
 
     def _replace_checks(self, group, checks):
@@ -90,14 +136,14 @@ class InspectionTaskSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source='group.name', read_only=True)
     scope = serializers.CharField(source='group.scope', read_only=True)
     logical_service_name = serializers.CharField(source='logical_service.name', read_only=True)
-    host_group_name = serializers.CharField(source='host_group.name', read_only=True)
+    target_type = serializers.CharField(read_only=True)
     target_name = serializers.SerializerMethodField()
 
     class Meta:
         model = InspectionTask
         fields = [
-            'id', 'name', 'group', 'group_name', 'scope', 'target_type', 'target_name',
-            'logical_service', 'logical_service_name', 'host_group', 'host_group_name',
+            'id', 'name', 'inspection_name', 'group', 'group_name', 'scope', 'target_type', 'target_name',
+            'logical_service', 'logical_service_name', 'selected_host_ids',
             'concurrency', 'timeout_seconds', 'cron_expression', 'next_run_time', 'last_run_time',
             'enabled', 'create_time', 'update_time',
         ]
@@ -115,39 +161,32 @@ class InspectionTaskSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(error)
         return cron_text
 
+    def validate_selected_host_ids(self, value):
+        return _normalize_id_list(value, 'selected_host_ids')
+
     def get_target_name(self, obj):
         if obj.target_type == InspectionTask.TargetType.HOST_GROUP:
-            return obj.host_group.name if obj.host_group else ''
+            return host_scope_name(obj.selected_host_ids)
         return obj.logical_service.name if obj.logical_service else ''
-
-    @staticmethod
-    def _contains_application_variable(value):
-        application_variables = ('${APP_HOME}', '${RUN_USER}', '${INSTANCE_NAME}', '${APPLICATION_VERSION}', '${SERVICE_NAME}')
-        if isinstance(value, dict):
-            return any(InspectionTaskSerializer._contains_application_variable(item) for item in value.values())
-        if isinstance(value, list):
-            return any(InspectionTaskSerializer._contains_application_variable(item) for item in value)
-        return isinstance(value, str) and any(variable in value for variable in application_variables)
 
     def validate(self, attrs):
         instance = self.instance
+        cron_expression = str(attrs.get('cron_expression', getattr(instance, 'cron_expression', '')) or '').strip()
+        inspection_name = str(attrs.get('inspection_name', getattr(instance, 'inspection_name', '')) or '').strip()
+        if cron_expression and not inspection_name:
+            raise serializers.ValidationError({'inspection_name': '配置定时计划时必须填写巡检名称'})
         group = attrs.get('group', getattr(instance, 'group', None))
-        target_type = attrs.get('target_type', getattr(instance, 'target_type', InspectionTask.TargetType.LOGICAL_SERVICE))
         logical_service = attrs.get('logical_service', getattr(instance, 'logical_service', None))
-        host_group = attrs.get('host_group', getattr(instance, 'host_group', None))
+        host_ids = attrs.get('selected_host_ids', getattr(instance, 'selected_host_ids', None) or [])
 
-        if target_type == InspectionTask.TargetType.HOST_GROUP:
-            if group and group.scope != InspectionGroup.Scope.PER_DEPLOYMENT:
-                raise serializers.ValidationError({'target_type': '主机组仅支持 Agent Shell 巡检组'})
-            if host_group is None:
-                raise serializers.ValidationError({'host_group': '请选择主机组'})
-            if group and any(self._contains_application_variable(check.config) for check in group.checks.filter(enabled=True)):
-                raise serializers.ValidationError({'host_group': '主机组巡检不能使用应用上下文变量，请使用 ${HOST_IP} 或 ${HOST_NAME}'})
+        if group is not None and group.scope == InspectionGroup.Scope.PER_HOST:
+            if not host_ids:
+                raise serializers.ValidationError({'selected_host_ids': '请勾选主机'})
             attrs['logical_service'] = None
         else:
             if logical_service is None:
                 raise serializers.ValidationError({'logical_service': '请选择逻辑服务'})
-            attrs['host_group'] = None
+            attrs['selected_host_ids'] = []
         return attrs
 
     def validate_group(self, group):

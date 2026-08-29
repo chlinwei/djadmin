@@ -3,14 +3,12 @@ import json
 import os
 import re
 import fnmatch
-from typing import Any
 from urllib.parse import quote
 
 from django.http import HttpResponse
 from django.utils.dateparse import parse_datetime
 from django.utils import timezone
-from django.db import transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Q
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -22,7 +20,7 @@ from rest_framework.response import Response
 from djadmin.utils import CustomPagination, Response_200, Response_error_str
 from menu.permisssion import CustomMenuPermission
 from user.utils import getCurrentUser
-from assets.models import Host, HostGroup
+from assets.models import Host
 
 from .models import (
     PlaybookTemplate,
@@ -40,7 +38,6 @@ from .serializer import (
     AutomationExecutionJobSerializer,
     AutomationWorkflowTemplateSerializer,
     AutomationWorkflowRunSerializer,
-    validate_playbook_content_or_raise,
     check_workflow_cycle_at_runtime,
     validate_workflow_graph_or_raise,
 )
@@ -87,11 +84,11 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
         rows = AutomationTask.objects.filter(id__in=list(task_ids)).select_related('playbook_template')
         for row in rows:
             task_template = _resolve_task_template(row)
-            task_id = int(getattr(row, 'pk'))
+            task_id = int(getattr(row, 'pk', 0))
             task_snapshot_map[task_id] = {
                 'task_name_snapshot': str(getattr(row, 'name', '') or '').strip(),
-                'job_template_id': int(task_template.id) if task_template is not None else None,
-                'template_name_snapshot': str(task_template.name or '').strip() if task_template is not None else '',
+                'job_template_id': int(getattr(task_template, 'id', 0)) if task_template is not None else None,
+                'template_name_snapshot': str(getattr(task_template, 'name', '') or '').strip() if task_template is not None else '',
             }
 
     workflow_snapshot_map = {}
@@ -164,7 +161,6 @@ def _match_limit_token(host_item: dict, token: str) -> bool:
     host_id_text = str(host_item.get('host_id') or '')
     host_name = str(host_item.get('host_name') or '').lower()
     host_ip = str(host_item.get('host_ip') or '').lower()
-    group_name = str(host_item.get('group_name') or '').lower()
     group_path = str(host_item.get('group_path') or '').lower()
 
     if scope in ('host', 'hostname', 'name'):
@@ -270,8 +266,9 @@ def _read_workflow_ancestor_template_ids(run: AutomationWorkflowRun) -> list[int
             if workflow_id > 0 and workflow_id not in ancestor_ids:
                 ancestor_ids.append(workflow_id)
 
-    if run.workflow_id and int(run.workflow_id) > 0 and int(run.workflow_id) not in ancestor_ids:
-        ancestor_ids.append(int(run.workflow_id))
+    run_wf_id = getattr(run, 'workflow_id', None)
+    if run_wf_id and int(run_wf_id) > 0 and int(run_wf_id) not in ancestor_ids:
+        ancestor_ids.append(int(run_wf_id))
 
     return ancestor_ids
 
@@ -302,14 +299,12 @@ def _extract_workflow_runtime_scope(run: AutomationWorkflowRun) -> dict:
         runtime_scope = {}
 
     host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
-    group_ids = [int(item) for item in (runtime_scope.get('group_ids') or []) if str(item).isdigit()]
 
     return {
         'use_global_scope': bool(runtime_scope.get('use_global_scope')),
         'inventory_id': int(runtime_scope['inventory_id']) if str(runtime_scope.get('inventory_id', '')).isdigit() else None,
         'inventory_name': str(runtime_scope.get('inventory_name') or ''),
         'host_ids': host_ids,
-        'group_ids': group_ids,
         'limit': str(runtime_scope.get('limit') or '').strip(),
         'limit_locked': bool(runtime_scope.get('limit_locked')),
     }
@@ -320,13 +315,13 @@ def _build_workflow_runtime_scope(workflow: AutomationWorkflowTemplate, request_
     selected_inventory = None
 
     if str(inventory_from_request or '').isdigit():
-        selected_inventory = AutomationInventory.objects.filter(id=int(inventory_from_request)).first()
+        selected_inventory = AutomationInventory.objects.filter(id=int(str(inventory_from_request))).first()
         if selected_inventory is None:
             return False, f'Inventory {inventory_from_request} not found', None
     elif getattr(workflow, 'default_inventory_id', None):
         selected_inventory = getattr(workflow, 'default_inventory', None)
         if selected_inventory is None:
-            selected_inventory = AutomationInventory.objects.filter(id=workflow.default_inventory_id).first()
+            selected_inventory = AutomationInventory.objects.filter(id=getattr(workflow, 'default_inventory_id', 0)).first()
         if selected_inventory is None:
             return False, 'Workflow default inventory not found', None
 
@@ -335,19 +330,18 @@ def _build_workflow_runtime_scope(workflow: AutomationWorkflowTemplate, request_
         return False, 'Workflow 未配置 Inventory，无法启动', None
 
     if selected_inventory is not None and not selected_inventory.enabled:
-        return False, f'Inventory [{selected_inventory.name or selected_inventory.id}] is disabled', None
+        inv_id_val = getattr(selected_inventory, 'id', '')
+        return False, f'Inventory [{selected_inventory.name or inv_id_val}] is disabled', None
 
     host_ids = []
-    group_ids = []
     inventory_id = None
     inventory_name = ''
     use_global_scope = False
     if selected_inventory is not None:
         use_global_scope = True
-        inventory_id = selected_inventory.id
+        inventory_id = getattr(selected_inventory, 'id', None)
         inventory_name = selected_inventory.name or ''
         host_ids = [int(item) for item in (selected_inventory.selected_host_ids or []) if str(item).isdigit()]
-        group_ids = [int(item) for item in (selected_inventory.selected_group_ids or []) if str(item).isdigit()]
 
     limit_locked = 'limit' in request_data or bool(str(getattr(workflow, 'default_limit', '') or '').strip())
     if 'limit' in request_data:
@@ -360,7 +354,6 @@ def _build_workflow_runtime_scope(workflow: AutomationWorkflowTemplate, request_
         'inventory_id': inventory_id,
         'inventory_name': inventory_name,
         'host_ids': host_ids,
-        'group_ids': group_ids,
         'limit': limit_text,
         'limit_locked': limit_locked,
     }
@@ -380,21 +373,11 @@ def _precheck_workflow_runtime_scope(runtime_scope: dict) -> tuple[bool, str, di
         }
 
     host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
-    group_ids = [int(item) for item in (runtime_scope.get('group_ids') or []) if str(item).isdigit()]
 
-    existing_group_ids = set(HostGroup.objects.filter(id__in=group_ids).values_list('id', flat=True))
-    missing_group_ids = sorted(set(group_ids) - existing_group_ids)
-    if missing_group_ids:
-        return False, 'inventory_invalid', {
-            'resolved_host_count': 0,
-            'matched_hosts_preview': [],
-            'matched_hosts_preview_total': 0,
-            'effective_limit': limit_text,
-            'missing_group_ids': missing_group_ids,
-            'message': f'执行范围包含已删除主机组: {", ".join(str(item) for item in missing_group_ids)}',
-        }
+    from assets.host_online import sync_host_online_status_to_db
+    sync_host_online_status_to_db()
 
-    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
     inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, limit_text)
     hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
     resolved_host_count = len(hosts) if isinstance(hosts, list) else 0
@@ -511,33 +494,21 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
     # 运行中节点派发不再受任务/Inventory 后续启用状态变更影响。
 
     runtime_scope = _extract_workflow_runtime_scope(run)
-    if runtime_scope.get('use_global_scope'):
-        default_host_ids = runtime_scope.get('host_ids') or []
-        default_group_ids = runtime_scope.get('group_ids') or []
-    else:
-        default_host_ids = task.selected_host_ids
-        default_group_ids = task.selected_group_ids
-        if task.inventory_id and task.inventory is not None:
-            default_host_ids = task.inventory.selected_host_ids
-            default_group_ids = task.inventory.selected_group_ids
-
-    host_ids = [int(item) for item in (default_host_ids or []) if str(item).isdigit()]
-    group_ids = [int(item) for item in (default_group_ids or []) if str(item).isdigit()]
+    host_ids = [int(item) for item in (runtime_scope.get('host_ids') or []) if str(item).isdigit()]
     if runtime_scope.get('limit_locked'):
         effective_limit = str(runtime_scope.get('limit') or '').strip()
     else:
         effective_limit = task.default_limit or ''
 
-    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+    inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
     inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, effective_limit)
     hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
     if not isinstance(hosts, list) or len(hosts) == 0:
-        if runtime_scope.get('use_global_scope'):
-            scope_name = str(runtime_scope.get('inventory_name') or '-')
-            return False, f'Workflow scope inventory [{scope_name}] resolved empty host scope', None, None
-        return False, f'Task {task_id} resolved empty host scope', None, None
+        scope_name = str(runtime_scope.get('inventory_name') or '-')
+        return False, f'Workflow scope inventory [{scope_name}] resolved empty host scope', None, None
 
-    node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task.id}')
+    task_pk = getattr(task, 'id', None) or getattr(task, 'pk', None)
+    node_name = str(node_result.get('node_name') or node_result.get('node_key') or f'Task-{task_pk}')
     job = AutomationExecutionJob.objects.create(
         task=task,
         status=AutomationExecutionJob.Status.PENDING,
@@ -558,16 +529,16 @@ def _dispatch_workflow_task_job(run: AutomationWorkflowRun, node_result: dict) -
 
     try:
         # workflow 统一同步执行：当前请求内完成节点任务，避免 queued/running 异步状态漂移。
-        execute_automation_job(int(job.id))
+        execute_automation_job(int(getattr(job, 'id', 0)))
     except Exception as exc:
         job.status = AutomationExecutionJob.Status.FAILED
         job.result_summary = {'message': f'Failed to execute node job synchronously: {str(exc)}'}
         job.save(update_fields=['status', 'result_summary'])
         return False, f'Failed to execute node job synchronously: {str(exc)}', None, None
 
-    return True, None, job.id, {
+    return True, None, getattr(job, 'id', None), {
         'task_name_snapshot': task.name or '',
-        'job_template_id': int(task_template.id),
+        'job_template_id': int(getattr(task_template, 'id', 0)),
         'template_name_snapshot': task_template.name or '',
     }
 
@@ -624,7 +595,7 @@ def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict) 
         'message': 'Workflow run created from workflow node',
         'queued_job_count': 0,
         'queued_job_ids': [],
-        'parent_run_id': run.id,
+        'parent_run_id': getattr(run, 'id', None),
         'runtime_scope': _extract_workflow_runtime_scope(run),
         # 子 run 继承并扩展祖先模板链，供后续嵌套节点继续做递归检测。
         'workflow_ancestor_template_ids': child_ancestor_template_ids,
@@ -634,7 +605,7 @@ def _dispatch_workflow_child_run(run: AutomationWorkflowRun, node_result: dict) 
     child_run.save(update_fields=['node_results', 'result_summary'])
     _run_workflow_run_to_completion(child_run)
 
-    return True, None, child_run.id, {
+    return True, None, getattr(child_run, 'id', None), {
         'workflow_name_snapshot': child_workflow.name or '',
     }
 
@@ -653,7 +624,9 @@ def _run_workflow_run_to_completion(run: AutomationWorkflowRun, max_iterations: 
     if not run.start_time:
         run.start_time = timezone.now()
     run.end_time = timezone.now()
-    run.duration_seconds = (run.end_time - run.start_time).total_seconds() if run.start_time else None
+    st = run.start_time
+    et = run.end_time
+    run.duration_seconds = (et - st).total_seconds() if (st is not None and et is not None) else None
     run.status = AutomationWorkflowRun.Status.FAILED
     run.result_summary = summary
     run.save(update_fields=['status', 'result_summary', 'start_time', 'end_time', 'duration_seconds'])
@@ -684,7 +657,7 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
         job_id = item.get('job_id')
         if not str(job_id).isdigit():
             continue
-        job_status = job_status_map.get(int(job_id), '')
+        job_status = job_status_map.get(int(str(job_id)), '')
         if not job_status:
             continue
         if job_status == 'pending':
@@ -702,7 +675,7 @@ def _refresh_workflow_run_progress(run: AutomationWorkflowRun):
         child_run_id = item.get('child_run_id')
         if not str(child_run_id).isdigit():
             continue
-        child_status = child_run_status_map.get(int(child_run_id), '')
+        child_status = child_run_status_map.get(int(str(child_run_id)), '')
         if not child_status:
             continue
         if child_status in {'pending', 'running'}:

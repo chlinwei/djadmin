@@ -68,12 +68,25 @@ dj_agent/
 
 ### 编译
 
+**唯一认可的构建入口是 `Makefile`**，已内置 `export CGO_ENABLED := 0`，禁止裸跑 `go build` / `go test` / `go vet`：
+
 ```bash
 cd dj_agent
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o bin/dj-agent ./cmd/agent
+make build          # 构建到 bin/dj-agent（默认 GOOS=linux GOARCH=amd64）
+make test           # go test ./...
+make vet            # go vet ./...
+make all            # vet + test + build
 ```
 
-使用 `CGO_ENABLED=0` 生成纯 Go 静态二进制，避免运行时依赖构建机的 glibc 版本；部署到较老 Linux 系统时请按目标机架构调整 `GOARCH`。
+交叉编译只调 `GOOS` / `GOARCH` 变量，不要在命令里重新打开 cgo：
+
+```bash
+make build GOARCH=arm64
+```
+
+**为什么强制 `CGO_ENABLED=0`**：生成纯 Go 静态二进制，避免运行时依赖构建机的 glibc 版本，否则分发到较旧发行版会直接起不来。
+
+`cmd/agent/cgo_guard.go` 是 `//go:build cgo` 构建守卫：一旦在 `CGO_ENABLED=1` 下编译会直接报错失败，禁止删除或绕过。
 
 ### 配置
 
@@ -206,14 +219,26 @@ grpcurl -plaintext localhost:50051 agent.Agent.ExecuteTask
 
 1. **SSH密钥**: 支持基于key的认证（推荐生产环境）
 2. **gRPC TLS**: 支持TLS加密通信
-3. **权限隔离**: Agent进程应以最低权限运行
+3. **权限隔离**: Agent 进程以 root 运行，执行任务时直接 `setuid`/`setgid` 降权到目标用户（见下）
 4. **日志敏感信息**: 自动脱敏密码、API密钥等
+
+### 任务执行身份（降权机制）
+
+涉及 `run_user` 的场景（巡检 shell 检查项、应用控制命令、用户级 systemd）统一走
+`applicationRunUserCommand`（`internal/executor/application_control.go`）：
+
+- 命令始终以 `/bin/bash -lc` 启动，login shell 会加载目标用户 profile，`JAVA_HOME` 等用户级环境变量照常生效。
+- Agent 以 root 运行时，通过 `SysProcAttr.Credential`（uid/gid + 附加组）直接降权，**不走 `sudo`**。
+- 不用 `sudo` 的原因：大量发行版的 sudoers 带 `Defaults requiretty`，Agent 无 tty，会被直接拒绝
+  （`sudo: sorry, you must have a tty to run sudo`）。
+- Agent 以非 root 运行时，只允许 `run_user` 等于自身，否则直接报错，禁止静默以错误身份执行。
+- 自动化任务的 `run_as_user` / `run_as_group` 同样是 setuid/setgid 降权，不使用 ansible become。
 
 ---
 
 ## 📖 相关文档
 
-- [DJ_AGENT_ARCHITECTURE.md](../DJ_AGENT_ARCHITECTURE.md) - 架构设计详解
+- [DJ_AGENT_ARCHITECTURE.md](../docs/architecture/DJ_AGENT_ARCHITECTURE.md) - 架构设计详解
 - [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md) - 开发计划和roadmap
 - [TASK_RESULT_SCHEMA_V1.md](./TASK_RESULT_SCHEMA_V1.md) - 任务结果数据结构
 - [AGENT_JOB_API.md](../backend/djadmin/assets/AGENT_JOB_API.md) - 与后端的集成接口

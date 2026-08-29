@@ -1,5 +1,5 @@
 import { h } from 'vue'
-import { Modal } from 'ant-design-vue'
+import { Modal, message } from 'ant-design-vue'
 
 function normalizeDeleteItems(items) {
   if (!Array.isArray(items)) {
@@ -87,8 +87,17 @@ export function openDeleteConfirm(options = {}) {
           resolve(true)
           return
         }
-        await onConfirm()
-        resolve(true)
+        try {
+          await onConfirm()
+          resolve(true)
+        } catch (error) {
+          // antd 会将 onOk 的拒绝原样抛出而不接管，不兜底就会变成全局未捕获拒绝。
+          // 业务码错误已由请求拦截器提示，这里只补 HTTP 错误，避免重复弹窗。
+          if (error?.isAxiosError) {
+            message.error(error?.message || '删除失败')
+          }
+          resolve(false)
+        }
       },
       onCancel() {
         resolve(false)

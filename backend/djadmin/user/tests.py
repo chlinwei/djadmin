@@ -289,7 +289,6 @@ class UserCenterTest(BaseTestCase):
                 'email': 'sender@example.com',
                 'password': 'encrypted-placeholder',
             },
-            recipient_emails=['ops1@example.com'],
         )
         media_2 = AlertMedia.objects.create(
             name='media-2',
@@ -302,18 +301,20 @@ class UserCenterTest(BaseTestCase):
                 'email': 'sender@example.com',
                 'password': 'encrypted-placeholder',
             },
-            recipient_emails=['ops2@example.com'],
         )
 
         update_res = self.client.post('/sys/usercenter/updateAlertMediaBindings/', {
-            'media_ids': [media_1.id, media_2.id],  # type: ignore[attr-defined]
+            'bindings': [
+                {'media_id': media_1.id, 'recipients': ['ops1@example.com'], 'enabled': True},  # type: ignore[attr-defined]
+                {'media_id': media_2.id, 'recipients': ['ops2@example.com'], 'enabled': True},  # type: ignore[attr-defined]
+            ],
         }, format='json')
-        update_body = self.assertResponseOK(update_res)
-        self.assertEqual(set(update_body['data']['selected_media_ids']), {media_1.id, media_2.id})  # type: ignore[attr-defined]
+        self.assertResponseOK(update_res)
 
         get_res = self.client.get('/sys/usercenter/alertMediaBindings/')
         get_body = self.assertResponseOK(get_res)
-        self.assertEqual(set(get_body['data']['selected_media_ids']), {media_1.id, media_2.id})  # type: ignore[attr-defined]
+        bound_media_ids = {item['media_id'] for item in get_body['data']['selected_bindings']}
+        self.assertEqual(bound_media_ids, {media_1.id, media_2.id})  # type: ignore[attr-defined]
         option_ids = {item['id'] for item in get_body['data']['options']}
         self.assertTrue({media_1.id, media_2.id}.issubset(option_ids))  # type: ignore[attr-defined]
 

@@ -7,9 +7,11 @@ import tempfile
 from ansible.errors import AnsibleError, AnsibleParserError
 from django.utils import timezone
 
+from assets.models import Host, HostGroup
 from .view_helpers import *
 from .view_helpers import _is_playbook_template_bound_to_software_package
 from .models import TemplateCategory
+from .executor import execute_automation_job
 from .executor_playbook import execute_playbook_job
 from .ansible_runtime import get_ansible_playbook_command
 
@@ -60,7 +62,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
 
     @staticmethod
     def _build_download_filename(template: PlaybookTemplate) -> str:
-        raw_name = template.name or f'playbook-{template.id}'
+        raw_name = template.name or f'playbook-{getattr(template, "id", "")}'
         sanitized = re.sub(r'[^A-Za-z0-9._-]+', '-', raw_name).strip('-')
         return f'{sanitized or "playbook-template"}.yml'
 
@@ -164,16 +166,16 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         records = page if page is not None else queryset[:30]
         data = [
             {
-                'id': item.id,
+                'id': item.id,  # type: ignore[attr-defined]
                 'instance_name': item.instance_name,
-                'hostname': item.system.hostname if getattr(item, 'system', None) else None,
+                'hostname': item.system.hostname if getattr(item, 'system', None) else None,  # type: ignore[attr-defined]
                 'ip': item.ip,
-                'group_id': item.group_id,
+                'group_id': item.group_id,  # type: ignore[attr-defined]
             }
             for item in records
         ]
 
-        if page is not None:
+        if page is not None and self.paginator is not None:
             paginator = self.paginator
             return Response_200(data={
                 'count': paginator.page.paginator.count,
@@ -285,8 +287,6 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
 
         user_info = getCurrentUser(request)
         host_ids_raw = request.data.get('host_ids', [])
-        group_ids_raw = request.data.get('group_ids', [])
-        inventory_snapshot = request.data.get('inventory_snapshot', {})
         extra_vars = request.data.get('extra_vars', {})
 
         # 直接运行 Playbook 模板不经过 AutomationTask，没有任务上带的 run_as_user/run_as_group 可用，
@@ -298,21 +298,12 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         work_directory = str(request.data.get('work_directory') or '').strip() or '/tmp'
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
-        group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
-        group_ids = [int(item) for item in group_ids if str(item).isdigit()]
 
-        if len(host_ids) == 0 and len(group_ids) == 0:
+        if len(host_ids) == 0:
             return Response_error_str('No target hosts selected', code=400)
 
-        if host_ids or group_ids:
-            inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
-        elif isinstance(inventory_snapshot, dict) and inventory_snapshot.get('hosts'):
-            pass
-        elif isinstance(inventory_snapshot, dict):
-            inventory_snapshot = build_inventory_snapshot(host_ids=[], group_ids=[])
-        else:
-            return Response_error_str('inventory_snapshot must be an object', code=400)
+        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
 
         if isinstance(inventory_snapshot, dict):
             hosts = inventory_snapshot.get('hosts', [])
@@ -341,9 +332,8 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
         if not isinstance(extra_vars, dict):
             return Response_error_str('extra_vars must be an object', code=400)
 
-        started_at = timezone.now()
         job = AutomationExecutionJob.objects.create(
-            status=AutomationExecutionJob.Status.RUNNING,
+            status=AutomationExecutionJob.Status.PENDING,
             trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
             inventory_snapshot=inventory_snapshot,
             task_name_snapshot='',
@@ -352,31 +342,15 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             extra_vars=extra_vars,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),
-            result_summary={'message': 'Job created and executing via agent grpc'},
-            start_time=started_at,
+            result_summary={'message': 'Job created and queued for execution'},
             # 直接运行 Playbook 模板不经过 AutomationTask，需要请求方显式传入执行身份（已在前面校验 run_as_user 非空）。
             run_as_user_snapshot=run_as_user,
             run_as_group_snapshot=run_as_group,
             work_directory_snapshot=work_directory,
         )
 
-        try:
-            success, summary, _ = execute_playbook_job(job)
-            finished_at = timezone.now()
-            final_status = AutomationExecutionJob.Status.SUCCESS if success else AutomationExecutionJob.Status.FAILED
-            job.status = final_status
-            job.end_time = finished_at
-            job.duration_seconds = (finished_at - started_at).total_seconds()
-            job.result_summary = summary
-            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
-        except Exception as exc:
-            finished_at = timezone.now()
-            job.status = AutomationExecutionJob.Status.FAILED
-            job.end_time = finished_at
-            job.duration_seconds = (finished_at - started_at).total_seconds()
-            job.result_summary = {'message': f'Job execution failed: {str(exc)}'}
-            job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
-            return Response_error_str(f'Job execution failed: {str(exc)}', code=400)
+        execute_automation_job(int(job.id))
+        job.refresh_from_db()
 
         serializer = AutomationExecutionJobSerializer(job)
         return Response_200(data=serializer.data)

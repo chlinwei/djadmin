@@ -36,7 +36,7 @@
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'scope'">
               <a-tag :color="record.scope === 'per_deployment' ? 'blue' : 'cyan'">
-                {{ record.target_type === 'host_group' ? '每台主机' : scopeLabel(record.scope) }}
+                {{ scopeLabel(record.scope) }}
               </a-tag>
             </template>
             <template v-else-if="column.key === 'target'">
@@ -44,18 +44,21 @@
                 <a-tag :color="record.target_type === 'host_group' ? 'gold' : 'geekblue'">
                   {{ record.target_type === 'host_group' ? '主机组' : '逻辑服务' }}
                 </a-tag>
-                <span>{{ record.target_name }}</span>
+                <a-tooltip v-if="record.target_type === 'host_group'" title="查看巡检范围" placement="top">
+                  <a-button type="link" size="small" @click="openScopeViewer(record)">{{ record.target_name }}</a-button>
+                </a-tooltip>
+                <span v-else>{{ record.target_name }}</span>
               </a-space>
             </template>
             <template v-else-if="column.key === 'enabled'">
-              <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-            </template>
-            <template v-else-if="column.key === 'schedule'">
-              <a-space v-if="record.cron_expression" direction="vertical" :size="0">
-                <code>{{ record.cron_expression }}</code>
-                <span class="schedule-next">下次 {{ formatTime(record.next_run_time) }}</span>
-              </a-space>
-              <span v-else class="schedule-next">仅手动触发</span>
+              <a-switch
+                :checked="record.enabled === true"
+                :disabled="!canUpdateTask || togglingTaskId === record.id"
+                :loading="togglingTaskId === record.id"
+                checked-children="启用"
+                un-checked-children="停用"
+                @change="(checked) => toggleTaskEnabled(record, checked)"
+              />
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
@@ -71,6 +74,72 @@
                 </a-tooltip>
                 <a-tooltip title="删除" placement="top">
                   <a-button v-permission="'inspection:tasks:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteTask(record)">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane key="schedules" tab="定时任务">
+        <div class="toolbar">
+          <a-button v-permission="'inspection:tasks:update'" size="large" @click="openCreateScheduleModal">
+            <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+            <span>&nbsp;新增定时任务</span>
+          </a-button>
+          <a-button size="large" @click="loadSelectOptions">
+            <FontAwesomeIcon :icon="['fas', 'rotate']" />
+            <span>&nbsp;刷新</span>
+          </a-button>
+        </div>
+        <a-table
+          row-key="id"
+          :columns="scheduleColumns"
+          :data-source="scheduledTasks"
+          :loading="taskOptionsLoading"
+          :pagination="false"
+          :scroll="{ x: 1280 }"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'target'">
+              <a-space>
+                <a-tag :color="record.target_type === 'host_group' ? 'gold' : 'geekblue'">
+                  {{ record.target_type === 'host_group' ? '主机组' : '逻辑服务' }}
+                </a-tag>
+                <a-tooltip v-if="record.target_type === 'host_group'" title="查看巡检范围" placement="top">
+                  <a-button type="link" size="small" @click="openScopeViewer(record)">{{ record.target_name }}</a-button>
+                </a-tooltip>
+                <span v-else>{{ record.target_name }}</span>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'schedule'">
+              <a-space v-if="record.cron_expression" direction="vertical" :size="0">
+                <code>{{ record.cron_expression }}</code>
+                <span class="schedule-next">下次 {{ formatTime(record.next_run_time) }}</span>
+              </a-space>
+              <span v-else class="schedule-next">未配置</span>
+            </template>
+            <template v-else-if="column.key === 'enabled'">
+              <a-switch
+                :checked="record.enabled === true"
+                :disabled="!canUpdateTask || togglingTaskId === record.id"
+                :loading="togglingTaskId === record.id"
+                checked-children="启用"
+                un-checked-children="停用"
+                @change="(checked) => toggleTaskEnabled(record, checked)"
+              />
+            </template>
+            <template v-else-if="column.key === 'action'">
+              <a-space>
+                <a-tooltip title="编辑" placement="top">
+                  <a-button v-permission="'inspection:tasks:update'" size="small" type="primary" @click="openScheduleModal(record)">
+                    <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip v-if="record.cron_expression" title="删除" placement="top">
+                  <a-button v-permission="'inspection:tasks:update'" class="delBtn" size="small" type="primary" danger @click="confirmClearSchedule(record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
@@ -102,7 +171,7 @@
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'scope'">
-              <a-tag :color="record.scope === 'per_deployment' ? 'blue' : 'cyan'">{{ scopeLabel(record.scope) }}</a-tag>
+              <a-tag :color="record.scope === 'per_host' ? 'gold' : record.scope === 'service_once' ? 'cyan' : 'blue'">{{ scopeLabel(record.scope) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'checks'">
               <a-space wrap>
@@ -139,6 +208,7 @@
             v-model:value="executionFilters.task"
             class="filter-select"
             allow-clear
+            size="large"
             show-search
             option-filter-prop="label"
             placeholder="全部任务"
@@ -151,6 +221,7 @@
             v-model:value="executionFilters.status"
             class="filter-select"
             allow-clear
+            size="large"
             placeholder="全部状态"
             :options="statusFilterOptions"
             :getPopupContainer="getPopupContainer"
@@ -160,6 +231,7 @@
             v-model:value="executionFilters.trigger_type"
             class="filter-select"
             allow-clear
+            size="large"
             placeholder="全部触发方式"
             :options="triggerFilterOptions"
             :getPopupContainer="getPopupContainer"
@@ -167,8 +239,13 @@
           />
           <a-range-picker
             v-model:value="executionFilters.range"
-            show-time
+            :show-time="executionRangeShowTime"
+            :presets="executionRangePresets"
+            size="large"
+            format="YYYY-MM-DD HH:mm:ss"
             :placeholder="['开始时间', '结束时间']"
+            :getPopupContainer="getPopupContainer"
+            @openChange="handleExecutionRangeOpenChange"
             @change="handleExecutionFilterChange"
           />
           <a-button size="large" @click="loadExecutions">
@@ -233,13 +310,29 @@
         <div class="form-grid">
           <a-form-item label="巡检组名称" required><a-input v-model:value="groupForm.name" /></a-form-item>
           <a-form-item label="执行范围" required>
-            <a-select v-model:value="groupForm.scope" :getPopupContainer="getPopupContainer">
-              <a-select-option value="per_deployment">每个部署实例</a-select-option>
-              <a-select-option value="service_once">服务单次</a-select-option>
-            </a-select>
+            <a-select v-model:value="groupForm.scope" :options="scopeOptions" :getPopupContainer="getPopupContainer" />
+            <div class="field-hint">范围决定任务选逻辑服务还是主机组，也决定可用变量。</div>
           </a-form-item>
         </div>
         <a-form-item label="描述"><a-textarea v-model:value="groupForm.description" :rows="2" /></a-form-item>
+        <a-alert type="info" show-icon class="variable-hint">
+          <template #message>
+            可用变量（{{ groupTargetsHostGroup ? '主机组巡检' : '逻辑服务巡检' }}）
+          </template>
+          <template #description>
+            <div class="variable-list">
+              <div v-for="item in availableVariables" :key="item.name" class="variable-item">
+                <code>{{ item.name }}</code><span>{{ item.desc }}</span>
+              </div>
+            </div>
+            <div class="variable-note">
+              {{ groupTargetsHostGroup
+                ? '主机组巡检不解析应用上下文变量（如 ${APP_HOME}），填写后会保存失败。'
+                : '仅逻辑服务范围可用应用上下文变量；主机组范围只能用 ${HOST_IP}、${HOST_NAME}。' }}
+              变量对 Shell 命令/运行目录/期望输出、HTTP URL、TCP 主机、待校验文件路径生效；Schema 内容不做展开。
+            </div>
+          </template>
+        </a-alert>
         <div class="check-heading">
           <span>检查项</span>
           <a-button size="large" @click="addCheck"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加检查项</a-button>
@@ -268,7 +361,13 @@
           <template v-if="check.executor === 'shell'">
             <a-form-item label="Shell 命令" required><a-textarea v-model:value="check.config.command" :rows="2" /></a-form-item>
             <div class="form-grid">
-              <a-form-item label="运行目录"><a-input v-model:value="check.config.work_directory" placeholder="${APP_HOME}" /></a-form-item>
+              <a-form-item v-if="groupTargetsHostGroup" label="运行用户">
+                <a-input v-model:value="check.config.run_user" placeholder="root" />
+                <div class="field-hint">留空默认 root；Agent 需以 root 或该用户运行。</div>
+              </a-form-item>
+              <a-form-item label="运行目录">
+                <a-input v-model:value="check.config.work_directory" :placeholder="groupTargetsHostGroup ? '/' : '${APP_HOME}'" />
+              </a-form-item>
               <a-form-item label="期望输出"><a-input v-model:value="check.config.expected_output" placeholder="留空表示仅校验退出码" /></a-form-item>
             </div>
           </template>
@@ -315,11 +414,22 @@
           <a-select v-model:value="taskForm.group" :getPopupContainer="getPopupContainer" show-search option-filter-prop="label" @change="handleTaskGroupChange">
             <a-select-option v-for="group in groupOptions" :key="group.id" :value="group.id" :label="group.name">{{ group.name }}</a-select-option>
           </a-select>
+          <div class="field-hint">目标类型由巡检组范围决定：{{ selectedTaskGroup ? scopeLabel(selectedTaskGroup.scope) : '请先选择巡检组' }}。</div>
         </a-form-item>
-        <a-form-item label="目标类型" required>
-          <a-segmented v-model:value="taskForm.target_type" :options="targetTypeOptions" block @change="handleTargetTypeChange" />
+        <a-form-item v-if="taskTargetsHostGroup === false" label="项目">
+          <a-select
+            v-model:value="taskProjectFilter"
+            allow-clear
+            show-search
+            option-filter-prop="label"
+            placeholder="全部项目"
+            :options="projectFilterOptions"
+            :getPopupContainer="getPopupContainer"
+            @change="handleTaskProjectChange"
+          />
+          <div class="field-hint">仅用于收窄下方候选，不会保存到任务。</div>
         </a-form-item>
-        <a-form-item v-if="taskForm.target_type === 'logical_service'" label="逻辑服务" required>
+        <a-form-item v-if="taskTargetsHostGroup === false" label="逻辑服务" required>
           <a-tree-select
             v-model:value="taskForm.logical_service"
             :tree-data="serviceTreeData"
@@ -334,26 +444,102 @@
             :dropdown-style="{ maxHeight: '360px', overflow: 'auto' }"
           />
         </a-form-item>
-        <a-form-item v-else label="主机组" required>
-          <a-tree-select
-            v-model:value="taskForm.host_group"
-            :tree-data="hostGroupTreeData"
-            :getPopupContainer="getPopupContainer"
-            :loading="hostGroupTreeLoading"
-            tree-default-expand-all
-            tree-node-filter-prop="title"
-            show-search
-            allow-clear
-            placeholder="请选择主机组（自动包含所有子组）"
-            :dropdown-style="{ maxHeight: '360px', overflow: 'auto' }"
-          />
+        <a-form-item v-else-if="taskTargetsHostGroup === true" label="主机范围" required>
+          <a-input :value="taskScopePreviewText" readonly placeholder="尚未勾选主机组或主机" />
+          <div class="scope-actions">
+            <a-button size="small" type="primary" ghost :loading="hostScopeLoading" @click="openScopeEditor">
+              编辑主机范围
+            </a-button>
+          </div>
+          <div class="field-hint">任务绑定的是勾选时的主机列表；之后新加入分组的主机不会自动纳入，需重新勾选。</div>
         </a-form-item>
         <div class="form-grid">
           <a-form-item label="并发数"><a-input-number v-model:value="taskForm.concurrency" :min="1" :max="100" /></a-form-item>
           <a-form-item label="单目标超时（秒）"><a-input-number v-model:value="taskForm.timeout_seconds" :min="5" :max="3600" /></a-form-item>
         </div>
-        <a-form-item label="定时计划">
-          <a-input v-model:value="taskForm.cron_expression" placeholder="例如 0 2 * * * （留空表示仅手动触发）" />
+        <a-form-item label="状态">
+          <a-switch v-model:checked="taskForm.enabled" checked-children="启用" un-checked-children="停用" />
+          <div class="field-hint">停用后任务不会被定时调度，也不能手动运行。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="scopeEditorOpen"
+      title="编辑巡检主机范围"
+      centered
+      :width="1080"
+      @ok="scopeEditorOpen = false"
+      @cancel="scopeEditorOpen = false"
+    >
+      <div class="scope-desc">勾选分组只是批量勾选入口，最终保存的是具体主机列表；分组后续新增的主机不会自动进入本任务。</div>
+      <a-input v-model:value="scopeEditKeyword" allow-clear placeholder="搜索分组/主机/IP" class="scope-search" />
+      <div class="scope-tree-wrap">
+        <a-tree
+          v-if="filteredScopeEditTree.length > 0"
+          checkable
+          block-node
+          :checked-keys="scopeCheckedKeys"
+          :expanded-keys="scopeEditExpandedKeys"
+          :auto-expand-parent="true"
+          :tree-data="filteredScopeEditTree"
+          :selectable="false"
+          :show-line="{ showLeafIcon: false }"
+          @check="onScopeCheck"
+        />
+        <a-empty v-else description="未匹配到分组" />
+      </div>
+    </a-modal>
+
+    <a-modal
+      v-model:open="scopeViewerOpen"
+      :title="scopeViewerTitle"
+      centered
+      :width="980"
+      :footer="null"
+    >
+      <div class="scope-desc">仅展示该任务的巡检范围（主机组与主机），未命中节点已隐藏</div>
+      <div class="scope-summary">当前范围：{{ countScopeHosts(scopeViewerTree) }}台主机</div>
+      <a-input v-model:value="scopeViewKeyword" allow-clear placeholder="搜索分组/主机/IP" class="scope-search" />
+      <div class="scope-tree-wrap">
+        <a-tree
+          v-if="filteredScopeViewTree.length > 0"
+          block-node
+          :expanded-keys="scopeViewExpandedKeys"
+          :auto-expand-parent="true"
+          :tree-data="filteredScopeViewTree"
+          :selectable="false"
+          :show-line="{ showLeafIcon: false }"
+        />
+        <a-empty v-else description="暂无已勾选范围" />
+      </div>
+    </a-modal>
+
+    <a-modal
+      v-model:open="scheduleModalOpen"
+      :title="scheduleForm.id ? '编辑定时计划' : '新增定时任务'"
+      centered
+      :confirm-loading="savingSchedule"
+      @ok="submitSchedule"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="巡检名称" required><a-input v-model:value="scheduleForm.inspection_name" /></a-form-item>
+        <a-form-item v-if="scheduleForm.id" label="关联巡检任务"><a-input :value="scheduleForm.name" disabled /></a-form-item>
+        <a-form-item v-else label="关联巡检任务" required>
+          <a-select
+            v-model:value="scheduleForm.task"
+            show-search
+            option-filter-prop="label"
+            placeholder="请选择尚未配置计划的巡检任务"
+            :getPopupContainer="getPopupContainer"
+          >
+            <a-select-option v-for="task in unscheduledTaskOptions" :key="task.id" :value="task.id" :label="task.name">
+              {{ task.name }}
+            </a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="定时计划" required>
+          <a-input v-model:value="scheduleForm.cron_expression" placeholder="例如 0 2 * * *" />
           <div class="field-hint">5 段 cron：分 时 日 月 周；保存后由调度器按分钟粒度扫描到期任务。</div>
         </a-form-item>
       </a-form>
@@ -367,6 +553,9 @@
         <a-descriptions-item label="触发方式">{{ selectedExecution.trigger_type === 'scheduled' ? '定时' : '手动' }}</a-descriptions-item>
         <a-descriptions-item label="开始时间">{{ formatTime(selectedExecution.start_time) }}</a-descriptions-item>
         <a-descriptions-item label="结束时间">{{ formatTime(selectedExecution.end_time) }}</a-descriptions-item>
+        <a-descriptions-item v-if="selectedExecution.service_snapshot?.skipped_no_agent" label="已跳过" :span="2">
+          {{ selectedExecution.service_snapshot.skipped_no_agent }} 台主机未安装 Agent，未纳入本次巡检
+        </a-descriptions-item>
       </a-descriptions>
       <a-collapse v-if="selectedExecution" class="target-results">
         <a-collapse-panel v-for="target in selectedExecution.targets" :key="target.id">
@@ -399,29 +588,42 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import dayjs from 'dayjs'
 import { message, Modal } from 'ant-design-vue'
 import {
   getApplicationServiceList,
   getBusinessEnvironmentList,
   getBusinessSystemList,
+  getProjectList,
 } from '@/api/assets/application'
-import { getHostGroupTree } from '@/api/assets/host'
 import {
   deleteInspectionGroup,
   deleteInspectionTask,
   getInspectionExecution,
   getInspectionExecutions,
   getInspectionGroups,
+  getInspectionHostScopeTree,
   getInspectionTasks,
   runInspectionTask,
   cancelInspectionExecution,
   saveInspectionGroup,
   saveInspectionTask,
 } from '@/api/inspection'
+import {
+  appendHostCount,
+  buildHostScopeTree,
+  collectGroupKeys,
+  collectHostIds,
+  countScopeHosts,
+  filterHostScopeTree,
+  pickHostIds,
+  pruneHostScopeTree,
+  toHostKeys,
+} from '@/util/hostScopeTree'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { checkPermission } from '@/directives/permission/permission'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import store from '@/store'
 
 const activeTab = ref('tasks')
@@ -432,21 +634,36 @@ const groupOptions = ref([])
 const taskOptions = ref([])
 const businessSystems = ref([])
 const businessEnvironments = ref([])
+const projects = ref([])
+const taskProjectFilter = ref(undefined)
 const services = ref([])
-const hostGroups = ref([])
+const hostScopeGroups = ref([])
+const hostScopeHosts = ref([])
 const executions = ref([])
 const groupLoading = ref(false)
 const taskLoading = ref(false)
 const executionLoading = ref(false)
+const taskOptionsLoading = ref(false)
 const serviceTreeLoading = ref(false)
-const hostGroupTreeLoading = ref(false)
+const hostScopeLoading = ref(false)
 const groupModalOpen = ref(false)
 const taskModalOpen = ref(false)
+const scheduleModalOpen = ref(false)
+const scopeEditorOpen = ref(false)
+const scopeViewerOpen = ref(false)
+const scopeEditKeyword = ref('')
+const scopeViewKeyword = ref('')
+const scopeViewerTitle = ref('查看巡检范围')
+const scopeViewerTree = ref([])
+const scopeCheckedKeys = ref([])
 const executionDrawerOpen = ref(false)
 const savingGroup = ref(false)
 const savingTask = ref(false)
+const savingSchedule = ref(false)
 const selectedExecution = ref(null)
 const runningTaskIds = reactive(new Set())
+const togglingTaskId = ref(null)
+const canUpdateTask = checkPermission('inspection:tasks:update')
 const cancelingExecutionId = ref(null)
 let executionPollTimer = null
 let localKey = 0
@@ -462,32 +679,43 @@ const groupPagination = createPagination()
 const taskPagination = createPagination()
 const executionPagination = createPagination()
 const executionFilters = reactive({ task: undefined, status: undefined, trigger_type: undefined, range: undefined })
+const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
+const executionRangePresets = ref([])
+const executionRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
 const emptyGroupForm = () => ({ id: null, name: '', scope: 'per_deployment', description: '', enabled: true, checks: [] })
 const emptyTaskForm = () => ({
   id: null,
   name: '',
   group: undefined,
-  target_type: 'logical_service',
   logical_service: undefined,
-  host_group: undefined,
+  selected_host_ids: [],
   concurrency: 20,
   timeout_seconds: 60,
-  cron_expression: '',
   enabled: true,
 })
+const emptyScheduleForm = () => ({ id: null, task: undefined, name: '', inspection_name: '', cron_expression: '' })
 const groupForm = reactive(emptyGroupForm())
 const taskForm = reactive(emptyTaskForm())
+const scheduleForm = reactive(emptyScheduleForm())
 
 const taskColumns = [
   { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 160 },
   { title: '目标', dataIndex: 'target_name', key: 'target', width: 200 },
   { title: '范围', key: 'scope', width: 140 },
-  { title: '定时计划', key: 'schedule', width: 200 },
   { title: '并发 / 超时', key: 'limits', customRender: ({ record }) => `${record.concurrency} / ${record.timeout_seconds}s`, width: 130 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '操作', key: 'action', fixed: 'right', width: 170 },
+]
+const scheduleColumns = [
+  { title: '巡检名称', dataIndex: 'inspection_name', key: 'inspection_name', width: 180 },
+  { title: '关联巡检任务', dataIndex: 'name', key: 'name', width: 200 },
+  { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 180 },
+  { title: '目标', key: 'target', width: 260 },
+  { title: '定时计划', key: 'schedule', width: 250 },
+  { title: '任务状态', key: 'enabled', width: 110 },
+  { title: '操作', key: 'action', fixed: 'right', width: 120 },
 ]
 const groupColumns = [
   { title: '巡检组', dataIndex: 'name', key: 'name', width: 180 },
@@ -515,6 +743,8 @@ const resultColumns = [
 ]
 
 const runningCount = computed(() => executions.value.filter((item) => ['pending', 'running'].includes(item.status)).length)
+const scheduledTasks = computed(() => taskOptions.value.filter((task) => task.cron_expression))
+const unscheduledTaskOptions = computed(() => taskOptions.value.filter((task) => !task.cron_expression))
 const executorOptions = [
   { label: 'Agent Shell', value: 'shell' },
   { label: 'Agent Schema', value: 'schema_validate' },
@@ -524,6 +754,24 @@ const executorOptions = [
 const severityOptions = [
   { label: '严重', value: 'critical' },
   { label: '警告', value: 'warning' },
+]
+// 变量表与 executor.py 的 _resolve / _resolve_host 一一对应，修改后端解析时需同步。
+const DEPLOYMENT_VARIABLES = [
+  { name: '${APP_HOME}', desc: '部署模板的 App Home 目录' },
+  { name: '${RUN_USER}', desc: '部署模板的运行用户' },
+  { name: '${INSTANCE_NAME}', desc: '部署实例名称' },
+  { name: '${APPLICATION_VERSION}', desc: '应用版本号' },
+  { name: '${SERVICE_NAME}', desc: '模板服务名' },
+  { name: '${HOST_IP}', desc: '实例所在主机 IP' },
+]
+const HOST_VARIABLES = [
+  { name: '${HOST_IP}', desc: '主机 IP' },
+  { name: '${HOST_NAME}', desc: '主机名称' },
+]
+const scopeOptions = [
+  { label: '逻辑服务·每个部署实例', value: 'per_deployment' },
+  { label: '逻辑服务·服务单次', value: 'service_once' },
+  { label: '主机组·每台主机', value: 'per_host' },
 ]
 const statusFilterOptions = [
   { label: '等待中', value: 'pending' },
@@ -556,14 +804,22 @@ const schemaDocumentTypes = {
   regexp: [{ label: 'Text', value: 'text' }],
 }
 const selectedTaskGroup = computed(() => groupOptions.value.find((group) => group.id === taskForm.group))
-const targetTypeOptions = computed(() => [
-  { label: '逻辑服务', value: 'logical_service' },
-  {
-    label: '主机组',
-    value: 'host_group',
-    disabled: selectedTaskGroup.value?.scope === 'service_once',
-  },
-])
+// undefined 表示尚未选巡检组，此时两类目标输入都不展示。
+const taskTargetsHostGroup = computed(() => (
+  selectedTaskGroup.value ? selectedTaskGroup.value.scope === 'per_host' : undefined
+))
+const groupTargetsHostGroup = computed(() => groupForm.scope === 'per_host')
+const availableVariables = computed(() => (groupTargetsHostGroup.value ? HOST_VARIABLES : DEPLOYMENT_VARIABLES))
+const projectFilterOptions = computed(() => [...projects.value]
+  .sort((left, right) => String(left.name).localeCompare(String(right.name), 'zh-CN'))
+  .map((project) => ({ label: project.name, value: project.id })))
+// 服务 -> 所属项目：编辑时靠它回填过滤器，避免选中服务落在过滤后的树外而显示为空。
+function resolveServiceProjectId(serviceId) {
+  const service = services.value.find((item) => String(item.id) === String(serviceId))
+  if (!service) return undefined
+  const system = businessSystems.value.find((item) => String(item.id) === String(service.business_system))
+  return system?.project ?? undefined
+}
 const serviceTreeData = computed(() => {
   const serviceNodes = (records) => [...records]
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
@@ -600,6 +856,7 @@ const serviceTreeData = computed(() => {
       }))
   }
   const systemNodes = [...businessSystems.value]
+    .filter((system) => !taskProjectFilter.value || String(system.project) === String(taskProjectFilter.value))
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     .map((system) => ({
       title: system.name,
@@ -612,21 +869,24 @@ const serviceTreeData = computed(() => {
     }))
   return systemNodes
 })
-const hostGroupTreeData = computed(() => {
-  const mapNodes = (nodes) => (Array.isArray(nodes) ? nodes : []).map((group) => ({
-    title: `${group.name} (${group.host_count || 0})`,
-    value: group.id,
-    // 同上：key 必须与 value 一致
-    key: group.id,
-    children: mapNodes(group.children),
-  }))
-  return mapNodes(hostGroups.value)
+const hostScopeTreeData = computed(() => buildHostScopeTree(hostScopeGroups.value, hostScopeHosts.value))
+const filteredScopeEditTree = computed(() => filterHostScopeTree(hostScopeTreeData.value, scopeEditKeyword.value))
+const scopeEditExpandedKeys = computed(() => collectGroupKeys(filteredScopeEditTree.value))
+const filteredScopeViewTree = computed(() => filterHostScopeTree(scopeViewerTree.value, scopeViewKeyword.value))
+const scopeViewExpandedKeys = computed(() => collectGroupKeys(filteredScopeViewTree.value))
+const taskScopePreviewText = computed(() => {
+  const hostCount = taskForm.selected_host_ids?.length || 0
+  return hostCount ? `已选 ${hostCount} 台主机` : ''
 })
 
 const responseData = (response) => response?.data?.data || {}
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
-const scopeLabel = (scope) => scope === 'per_deployment' ? '每个部署实例' : '服务单次'
+const scopeLabel = (scope) => ({
+  per_deployment: '逻辑服务·每个部署实例',
+  service_once: '逻辑服务·服务单次',
+  per_host: '主机组·每台主机',
+}[scope] || scope)
 const executorLabel = (executor) => ({ shell: 'Agent Shell', schema_validate: 'Agent Schema', http: 'Agent HTTP', tcp: 'Agent TCP' }[executor] || executor)
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
@@ -686,33 +946,42 @@ async function loadTasks() {
 async function loadServiceTree() {
   serviceTreeLoading.value = true
   try {
-    const [systems, environments, serviceRecords] = await Promise.all([
+    const [systems, environments, serviceRecords, projectRecords] = await Promise.all([
       fetchAll(getBusinessSystemList),
       fetchAll(getBusinessEnvironmentList),
       fetchAll(getApplicationServiceList),
+      fetchAll(getProjectList),
     ])
     businessSystems.value = systems
     businessEnvironments.value = environments
     services.value = serviceRecords
+    projects.value = projectRecords
   } finally {
     serviceTreeLoading.value = false
   }
 }
-async function loadHostGroupTree() {
-  hostGroupTreeLoading.value = true
+async function loadHostScopeTree() {
+  hostScopeLoading.value = true
   try {
-    hostGroups.value = responseData(await getHostGroupTree()) || []
+    const data = responseData(await getInspectionHostScopeTree())
+    hostScopeGroups.value = data.groups || []
+    hostScopeHosts.value = data.hosts || []
   } finally {
-    hostGroupTreeLoading.value = false
+    hostScopeLoading.value = false
   }
 }
 async function loadSelectOptions() {
-  const [groupRecords, taskRecords] = await Promise.all([
-    fetchAll(getInspectionGroups),
-    fetchAll(getInspectionTasks),
-  ])
-  groupOptions.value = groupRecords
-  taskOptions.value = taskRecords
+  taskOptionsLoading.value = true
+  try {
+    const [groupRecords, taskRecords] = await Promise.all([
+      fetchAll(getInspectionGroups),
+      fetchAll(getInspectionTasks),
+    ])
+    groupOptions.value = groupRecords
+    taskOptions.value = taskRecords
+  } finally {
+    taskOptionsLoading.value = false
+  }
 }
 function buildExecutionParams() {
   const params = {
@@ -724,9 +993,8 @@ function buildExecutionParams() {
   }
   const [start, end] = executionFilters.range || []
   if (start && end) {
-    // 统一自然日闭区间：只选日期时默认补齐 00:00:00 与 23:59:59，避免漏查当日记录。
-    params.start_time = dayjs(start).startOf('day').format('YYYY-MM-DDTHH:mm:ss')
-    params.end_time = dayjs(end).endOf('day').format('YYYY-MM-DDTHH:mm:ss')
+    params.start_time = toUtcQueryISOStringByUserTimezone(start, userTimezone.value)
+    params.end_time = toUtcQueryISOStringByUserTimezone(end, userTimezone.value)
   }
   return params
 }
@@ -757,11 +1025,24 @@ function handleExecutionFilterChange() {
   executionPagination.current = 1
   loadExecutions()
 }
+function handleExecutionRangeOpenChange(open) {
+  if (open) executionRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
+}
 
-function defaultExecutorConfig(executor) {
-  if (executor === 'shell') return { command: '', work_directory: '${APP_HOME}', expected_output: '' }
+function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value) {
+  if (executor === 'shell') {
+    // 主机组范围用不了应用宏变量，默认值必须避开 ${APP_HOME}，否则新建检查项直接保存失败。
+    return targetsHostGroup
+      ? { command: '', run_user: 'root', work_directory: '/', expected_output: '' }
+      : { command: '', work_directory: '${APP_HOME}', expected_output: '' }
+  }
   if (executor === 'schema_validate') {
-    return { path: '${APP_HOME}/conf/server.xml', schema_type: 'schematron', document_type: 'xml', schema_content: '' }
+    return {
+      path: targetsHostGroup ? '' : '${APP_HOME}/conf/server.xml',
+      schema_type: 'schematron',
+      document_type: 'xml',
+      schema_content: '',
+    }
   }
   if (executor === 'http') return { url: '', expected_status: 200 }
   return { host: '', port: undefined }
@@ -772,7 +1053,7 @@ function handleSchemaTypeChange(check) {
   check.config.document_type = schemaDocumentTypeOptions(check.config.schema_type)[0]?.value
 }
 function addCheck() {
-  const executor = groupForm.scope === 'per_deployment' ? 'shell' : 'http'
+  const executor = groupForm.scope === 'service_once' ? 'http' : 'shell'
   const config = defaultExecutorConfig(executor)
   groupForm.checks.push({
     localKey: ++localKey,
@@ -805,18 +1086,58 @@ function openGroupModal(record) {
 }
 function openTaskModal(record) {
   Object.assign(taskForm, emptyTaskForm(), record ? JSON.parse(JSON.stringify(record)) : {})
-  if (!taskForm.target_type) taskForm.target_type = 'logical_service'
+  taskProjectFilter.value = taskForm.logical_service ? resolveServiceProjectId(taskForm.logical_service) : undefined
+  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
   taskModalOpen.value = true
 }
-function handleTaskGroupChange() {
-  if (selectedTaskGroup.value?.scope === 'service_once' && taskForm.target_type === 'host_group') {
-    taskForm.target_type = 'logical_service'
-    taskForm.host_group = undefined
+function openScopeEditor() {
+  scopeEditKeyword.value = ''
+  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
+  scopeEditorOpen.value = true
+}
+function onScopeCheck(nextChecked) {
+  // 只保存主机 ID；分组勾选只是批量入口，不能让之后新入组的主机自动进入任务。
+  const checkedInView = pickHostIds(nextChecked)
+  // 搜索后树被裁剪，只能改当前可见节点的勾选态，否则会误删被隐藏的已选主机。
+  const visibleInView = new Set(collectHostIds(filteredScopeEditTree.value))
+  const kept = (taskForm.selected_host_ids || []).filter((id) => !visibleInView.has(Number(id)))
+  taskForm.selected_host_ids = [...new Set([...kept, ...checkedInView])]
+  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
+}
+function openScopeViewer(record) {
+  scopeViewKeyword.value = ''
+  scopeViewerTitle.value = `查看巡检范围 - ${record?.name || ''}`
+  scopeViewerTree.value = appendHostCount(pruneHostScopeTree(hostScopeTreeData.value, record?.selected_host_ids))
+  scopeViewerOpen.value = true
+}
+function handleTaskProjectChange() {
+  // 清空过滤器时树恢复全量，已选服务仍可见，不能连带清掉。
+  if (!taskProjectFilter.value || !taskForm.logical_service) return
+  if (String(resolveServiceProjectId(taskForm.logical_service)) !== String(taskProjectFilter.value)) {
+    taskForm.logical_service = undefined
   }
 }
-function handleTargetTypeChange(targetType) {
-  if (targetType === 'host_group') taskForm.logical_service = undefined
-  else taskForm.host_group = undefined
+function openScheduleModal(record) {
+  Object.assign(scheduleForm, emptyScheduleForm(), {
+    id: record.id,
+    name: record.name,
+    inspection_name: record.inspection_name,
+    cron_expression: record.cron_expression || '',
+  })
+  scheduleModalOpen.value = true
+}
+function openCreateScheduleModal() {
+  Object.assign(scheduleForm, emptyScheduleForm())
+  scheduleModalOpen.value = true
+}
+function handleTaskGroupChange() {
+  // 切换巡检组可能改变目标类型，清掉不适用的旧选择。
+  if (taskTargetsHostGroup.value === true) {
+    taskForm.logical_service = undefined
+    return
+  }
+  taskForm.selected_host_ids = []
+  scopeCheckedKeys.value = []
 }
 
 async function submitGroup() {
@@ -832,10 +1153,14 @@ async function submitGroup() {
     groupModalOpen.value = false
     message.success('巡检组已保存')
     await Promise.all([loadGroups(), loadSelectOptions()])
+  } catch (error) {
+    // 保留弹窗，让用户能直接改掉被后端拒绝的内容。
+    message.error(error?.message || '巡检组保存失败')
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
-  const hasTarget = taskForm.target_type === 'host_group' ? taskForm.host_group : taskForm.logical_service
+  const hasScope = (taskForm.selected_host_ids?.length || 0) > 0
+  const hasTarget = taskTargetsHostGroup.value ? hasScope : taskForm.logical_service
   if (!taskForm.name.trim() || !taskForm.group || !hasTarget) {
     message.warning('请完整填写任务信息')
     return
@@ -843,13 +1168,54 @@ async function submitTask() {
   savingTask.value = true
   try {
     const payload = { ...taskForm }
-    if (payload.target_type === 'host_group') payload.logical_service = null
-    else payload.host_group = null
+    if (taskTargetsHostGroup.value) payload.logical_service = null
+    else payload.selected_host_ids = []
     await saveInspectionTask(payload)
     taskModalOpen.value = false
     message.success('巡检任务已保存')
     await Promise.all([loadTasks(), loadSelectOptions()])
+  } catch (error) {
+    message.error(error?.message || '巡检任务保存失败')
   } finally { savingTask.value = false }
+}
+async function submitSchedule() {
+  if (!scheduleForm.id && !scheduleForm.task) {
+    message.warning('请选择巡检任务')
+    return
+  }
+  if (!scheduleForm.inspection_name.trim()) {
+    message.warning('请输入巡检名称')
+    return
+  }
+  if (!scheduleForm.cron_expression.trim()) {
+    message.warning('请输入定时计划')
+    return
+  }
+  savingSchedule.value = true
+  try {
+    await saveInspectionTask({
+      id: scheduleForm.id || scheduleForm.task,
+      inspection_name: scheduleForm.inspection_name.trim(),
+      cron_expression: scheduleForm.cron_expression.trim(),
+    })
+    scheduleModalOpen.value = false
+    message.success('定时计划已保存')
+    await Promise.all([loadTasks(), loadSelectOptions()])
+  } catch (error) {
+    message.error(error?.message || '定时计划保存失败')
+  } finally { savingSchedule.value = false }
+}
+async function toggleTaskEnabled(record, checked) {
+  togglingTaskId.value = record.id
+  try {
+    await saveInspectionTask({ id: record.id, enabled: checked })
+    message.success(checked ? '巡检任务已启用' : '巡检任务已停用')
+    await Promise.all([loadTasks(), loadSelectOptions()])
+  } catch (error) {
+    message.error(error?.message || '状态切换失败')
+    // 失败后重拉，避免开关停在与后端不一致的位置。
+    await loadSelectOptions()
+  } finally { togglingTaskId.value = null }
 }
 async function runTask(record) {
   runningTaskIds.add(record.id)
@@ -860,11 +1226,17 @@ async function runTask(record) {
     executionPagination.current = 1
     await loadExecutions()
     startExecutionPolling()
+  } catch (error) {
+    message.error(error?.message || '巡检任务提交失败')
   } finally { runningTaskIds.delete(record.id) }
 }
 async function openExecution(record) {
-  selectedExecution.value = responseData(await getInspectionExecution(record.id))
-  executionDrawerOpen.value = true
+  try {
+    selectedExecution.value = responseData(await getInspectionExecution(record.id))
+    executionDrawerOpen.value = true
+  } catch (error) {
+    message.error(error?.message || '获取执行详情失败')
+  }
 }
 function cancelExecution(record) {
   Modal.confirm({
@@ -878,6 +1250,8 @@ function cancelExecution(record) {
         await cancelInspectionExecution(record.id)
         message.success('巡检执行已取消')
         await loadExecutions()
+      } catch (error) {
+        message.error(error?.message || '取消执行失败')
       } finally {
         cancelingExecutionId.value = null
       }
@@ -885,13 +1259,54 @@ function cancelExecution(record) {
   })
 }
 function confirmDeleteGroup(record) {
-  openDeleteConfirm({ title: '删除巡检组', summary: '删除后无法恢复。', items: [record.name], onConfirm: async () => { await deleteInspectionGroup(record.id); await Promise.all([loadGroups(), loadSelectOptions()]) } })
+  openDeleteConfirm({
+    title: '删除巡检组',
+    summary: '删除后无法恢复。',
+    items: [record.name],
+    onConfirm: async () => {
+      try {
+        await deleteInspectionGroup(record.id)
+        await Promise.all([loadGroups(), loadSelectOptions()])
+      } catch (error) {
+        message.error(error?.message || '巡检组删除失败')
+      }
+    },
+  })
 }
 function confirmDeleteTask(record) {
-  openDeleteConfirm({ title: '删除巡检任务', summary: '历史执行记录会保留。', items: [record.name], onConfirm: async () => { await deleteInspectionTask(record.id); await Promise.all([loadTasks(), loadSelectOptions()]) } })
+  openDeleteConfirm({
+    title: '删除巡检任务',
+    summary: '历史执行记录会保留。',
+    items: [record.name],
+    onConfirm: async () => {
+      try {
+        await deleteInspectionTask(record.id)
+        await Promise.all([loadTasks(), loadSelectOptions()])
+      } catch (error) {
+        message.error(error?.message || '巡检任务删除失败')
+      }
+    },
+  })
+}
+function confirmClearSchedule(record) {
+  openDeleteConfirm({
+    title: '取消定时计划',
+    summary: '任务将保留，之后仅可手动触发。',
+    items: [record.name],
+    onConfirm: async () => {
+      try {
+        await saveInspectionTask({ id: record.id, inspection_name: '', cron_expression: '' })
+        message.success('定时计划已取消')
+        await Promise.all([loadTasks(), loadSelectOptions()])
+      } catch (error) {
+        message.error(error?.message || '定时计划取消失败')
+      }
+    },
+  })
 }
 function handleTabChange(key) {
   if (key === 'executions') loadExecutions()
+  if (key === 'schedules') loadSelectOptions()
 }
 function startExecutionPolling() {
   if (executionPollTimer) return
@@ -907,12 +1322,13 @@ function stopExecutionPolling() {
 }
 
 onMounted(async () => {
+  executionRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
   await Promise.all([
     loadGroups(),
     loadTasks(),
     loadSelectOptions(),
     loadServiceTree(),
-    loadHostGroupTree(),
+    loadHostScopeTree(),
     loadExecutions(),
   ])
 })
@@ -933,6 +1349,17 @@ onBeforeUnmount(stopExecutionPolling)
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
 .filter-select { width: 170px; }
 .field-hint { margin-top: 4px; color: #66727d; font-size: 12px; }
+.scope-actions { margin-top: 8px; }
+.scope-desc { margin-bottom: 12px; color: #66727d; font-size: 12px; }
+.scope-summary { margin-bottom: 8px; font-weight: 600; }
+.scope-search { margin-bottom: 12px; }
+.scope-tree-wrap { max-height: 460px; padding: 8px; overflow: auto; border: 1px solid #e6ebf1; border-radius: 6px; }
+.variable-hint { margin-bottom: 12px; }
+.variable-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 16px; }
+.variable-item { display: flex; gap: 8px; font-size: 12px; }
+.variable-item code { color: #126e82; }
+.variable-item span { color: #66727d; }
+.variable-note { margin-top: 8px; color: #66727d; font-size: 12px; }
 .schedule-next { color: #66727d; font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .check-heading, .check-editor-head { display: flex; align-items: center; justify-content: space-between; }

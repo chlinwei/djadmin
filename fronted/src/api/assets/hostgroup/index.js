@@ -25,6 +25,3 @@ export function deleteHostGroupById(id) {
     return requestUtil.del(prefix + id + '/', { id })
 }
 
-export function batchDeleteHostGroup(ids) {
-    return requestUtil.del(prefix + 'batch-delete/', { ids })
-}

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -146,15 +147,26 @@ def _agent_grpc_addr_for_host(host: Host, advertised_addr: str) -> tuple[str, bo
 
 
 def _inventory_for_host(host: Host, credential: Credential, key_path: Path | None) -> dict:
-    variables = {
+    username = str(credential.username or 'root').strip()
+    is_non_root = bool(username and username.lower() != 'root')
+    variables: dict[str, Any] = {
         'ansible_host': str(host.ip),
-        'ansible_user': str(credential.username or 'root'),
+        'ansible_user': username or 'root',
         'ansible_port': int(credential.port or 22),
     }
     if key_path is not None:
         variables['ansible_ssh_private_key_file'] = str(key_path)
     else:
-        variables['ansible_password'] = str(decrypt_secret(credential.password) or '')
+        password = str(decrypt_secret(credential.password) or '')
+        variables['ansible_password'] = password
+        if is_non_root:
+            variables['ansible_become_password'] = password
+
+    if is_non_root:
+        variables['ansible_become'] = True
+        variables['ansible_become_method'] = 'sudo'
+        variables['ansible_become_user'] = 'root'
+
     return {
         'all': {'hosts': {'target': variables}},
     }

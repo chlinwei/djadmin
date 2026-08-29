@@ -4,11 +4,9 @@
 写入 inputs.d/outputs.d → HTTP POST 热重载（不用 systemctl restart，重载后
 从 offset 断点续采）→ 更新 LogCollectionTarget 指纹与状态。
 
-下发与重载全部同步执行（与 monitor exporter 链路对齐：视图内同步阻塞，
-底层走 agent gRPC），不做异步队列。
+配置下发与热重载同步执行（秒级，走 agent gRPC）；安装/卸载 Playbook 只同步做校验与
+建历史，实际执行交给 monitor.job_runner 的进程内线程池。
 """
-import json
-import logging
 import os
 import uuid
 
@@ -26,14 +24,31 @@ from .fluent_bit import (
 )
 from .models import LogCollectionTarget, OpenSearchCluster
 
-logger = logging.getLogger(__name__)
-
 # 下发与重载的超时：文件操作走默认超时即可；热重载给 15s（Fluent Bit 全局重初始化所有 pipeline）。
 RELOAD_TIMEOUT_SECONDS = 15
 
 
 class LogCollectionApplyError(Exception):
     """下发失败时携带可展示给用户的错误信息。"""
+
+
+def _run_fluent_bit_job(action, target_id, history_id, delete_after_success=False):
+    """线程池入口：重新加载 ORM 对象，异常统一写回目标状态，避免停在 pending。"""
+    from .models import MonitorTargetInstallHistory
+
+    target = LogCollectionTarget.objects.select_related('host').get(id=target_id)
+    history = MonitorTargetInstallHistory.objects.get(id=history_id)
+    try:
+        if action == 'install':
+            execute_fluent_bit_install(target, history)
+        else:
+            execute_fluent_bit_uninstall(target, history, delete_after_success=delete_after_success)
+    except Exception as exc:
+        LogCollectionTarget.objects.filter(id=target_id).update(
+            install_status=LogCollectionTarget.InstallStatus.FAILED,
+            install_message=f'Fluent Bit 任务执行异常：{exc}',
+        )
+        raise
 
 
 def _select_fluent_bit_package(target):
@@ -69,8 +84,12 @@ def _select_fluent_bit_package(target):
 
 
 def dispatch_fluent_bit_install(target, manual=True):
-    """从本地仓库精确选择离线 RPM/DEB，并通过现有 Ansible SSH 链路安装。"""
-    from assets.views import _resolve_monitor_timeout_seconds, _run_monitor_playbook_and_update_history
+    """校验安装前置条件、建历史并入队；Playbook 执行在后台线程池里跑。
+
+    校验同步做（错误立刻回给调用方，批量场景能逐台报原因），执行必须异步：
+    单台安装可能数分钟，留在请求线程会被 ASGI 超时杀掉。
+    """
+    from .job_runner import submit_monitor_job
     from .models import MonitorTargetInstallHistory
 
     active_history = MonitorTargetInstallHistory.objects.filter(
@@ -84,8 +103,7 @@ def dispatch_fluent_bit_install(target, manual=True):
         raise LogCollectionApplyError('Fluent Bit 安装/卸载任务正在执行，请等待完成或先取消任务')
 
     package = _select_fluent_bit_package(target)
-    template = package.install_playbook_template
-    if template is None:
+    if package.install_playbook_template is None:
         raise LogCollectionApplyError('匹配的 Fluent Bit 软件包未配置安装 Playbook')
     file_field = getattr(package, 'file', None)
     if not file_field or not getattr(file_field, 'name', ''):
@@ -118,7 +136,22 @@ def dispatch_fluent_bit_install(target, manual=True):
     target.last_dispatch_manual = bool(manual)
     target.save(update_fields=['install_status', 'install_message', 'last_dispatch_manual', 'update_time'])
 
-    _run_monitor_playbook_and_update_history(
+    submit_monitor_job(_run_fluent_bit_job, 'install', int(target.pk), int(history.pk))
+    return history
+
+
+def execute_fluent_bit_install(target, history):
+    """后台线程内执行安装 Playbook 并回写目标状态。"""
+    from .models import MonitorTargetInstallHistory
+    from .playbook_runner import _resolve_monitor_timeout_seconds, run_monitor_playbook_and_update_history
+
+    package = _select_fluent_bit_package(target)
+    template = package.install_playbook_template
+    if template is None:
+        raise LogCollectionApplyError('匹配的 Fluent Bit 软件包未配置安装 Playbook')
+    package_local_path = package.file.path
+
+    run_monitor_playbook_and_update_history(
         target=target,
         host=target.host,
         history=history,
@@ -139,25 +172,29 @@ def dispatch_fluent_bit_install(target, manual=True):
     )
     target.refresh_from_db()
     history.refresh_from_db()
-    if history.status == MonitorTargetInstallHistory.Status.SUCCESS:
-        target.agent_installed = True
-        target.agent_version = package.version
-        target.runtime_status = LogCollectionTarget.RuntimeStatus.RUNNING
-        target.last_error = ''
-        target.save(update_fields=[
-            'agent_installed', 'agent_version', 'runtime_status', 'last_error', 'update_time',
-        ])
+    if history.status != MonitorTargetInstallHistory.Status.SUCCESS:
+        return history
+    target.agent_installed = True
+    target.agent_version = package.version
+    target.runtime_status = LogCollectionTarget.RuntimeStatus.RUNNING
+    target.last_error = ''
+    target.save(update_fields=[
+        'agent_installed', 'agent_version', 'runtime_status', 'last_error', 'update_time',
+    ])
     return history
 
 
-def dispatch_fluent_bit_uninstall(target, manual=True):
-    """使用匹配平台软件包绑定的卸载 Playbook 移除 Fluent Bit。"""
-    from assets.views import _resolve_monitor_timeout_seconds, _run_monitor_playbook_and_update_history
+def dispatch_fluent_bit_uninstall(target, manual=True, delete_after_success=False):
+    """校验卸载前置条件、建历史并入队；Playbook 执行在后台线程池里跑。
+
+    delete_after_success=True 用于删除场景：卸载成功后才删掉纳管记录，
+    卸载失败则保留记录和日志，避免主机上残留进程失联。
+    """
+    from .job_runner import submit_monitor_job
     from .models import MonitorTargetInstallHistory
 
     package = _select_fluent_bit_package(target)
-    template = package.uninstall_playbook_template
-    if template is None:
+    if package.uninstall_playbook_template is None:
         raise LogCollectionApplyError('匹配的 Fluent Bit 软件包未配置卸载 Playbook')
     history = MonitorTargetInstallHistory.objects.create(
         log_collection_target=target,
@@ -179,7 +216,24 @@ def dispatch_fluent_bit_uninstall(target, manual=True):
     target.install_message = '已下发 Fluent Bit 卸载任务'
     target.last_dispatch_manual = bool(manual)
     target.save(update_fields=['install_status', 'install_message', 'last_dispatch_manual', 'update_time'])
-    _run_monitor_playbook_and_update_history(
+
+    submit_monitor_job(
+        _run_fluent_bit_job, 'uninstall', int(target.pk), int(history.pk),
+        delete_after_success=bool(delete_after_success),
+    )
+    return history
+
+
+def execute_fluent_bit_uninstall(target, history, delete_after_success=False):
+    """后台线程内执行卸载 Playbook；卸载成功且要求删除时一并删掉纳管记录。"""
+    from .models import MonitorTargetInstallHistory
+    from .playbook_runner import _resolve_monitor_timeout_seconds, run_monitor_playbook_and_update_history
+
+    package = _select_fluent_bit_package(target)
+    template = package.uninstall_playbook_template
+    if template is None:
+        raise LogCollectionApplyError('匹配的 Fluent Bit 软件包未配置卸载 Playbook')
+    run_monitor_playbook_and_update_history(
         target=target,
         host=target.host,
         history=history,
@@ -193,14 +247,18 @@ def dispatch_fluent_bit_uninstall(target, manual=True):
     )
     target.refresh_from_db()
     history.refresh_from_db()
-    if history.status == MonitorTargetInstallHistory.Status.SUCCESS:
-        target.agent_installed = False
-        target.agent_version = ''
-        target.runtime_status = LogCollectionTarget.RuntimeStatus.UNKNOWN
-        target.config_fingerprint = ''
-        target.save(update_fields=[
-            'agent_installed', 'agent_version', 'runtime_status', 'config_fingerprint', 'update_time',
-        ])
+    if history.status != MonitorTargetInstallHistory.Status.SUCCESS:
+        return history
+    if delete_after_success:
+        target.delete()
+        return history
+    target.agent_installed = False
+    target.agent_version = ''
+    target.runtime_status = LogCollectionTarget.RuntimeStatus.UNKNOWN
+    target.config_fingerprint = ''
+    target.save(update_fields=[
+        'agent_installed', 'agent_version', 'runtime_status', 'config_fingerprint', 'update_time',
+    ])
     return history
 
 

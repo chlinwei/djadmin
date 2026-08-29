@@ -212,8 +212,6 @@ class AutomationWorkflowTemplateManage(
             'inventory_id': runtime_scope.get('inventory_id'),
             'inventory_name': runtime_scope.get('inventory_name') or '',
         }
-        if 'missing_group_ids' in check_data:
-            response_data['missing_group_ids'] = check_data.get('missing_group_ids') or []
 
         return Response_200(data=response_data)
 

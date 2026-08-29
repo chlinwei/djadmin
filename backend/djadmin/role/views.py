@@ -1,7 +1,5 @@
 from role.models import SysRole
 from user.utils import getCurrentUser
-from django.http import JsonResponse
-from .models import SysRole
 from .serializer import SysRoleSerializer
 # Create your views here.
 from user.models import SysUserRole
@@ -14,7 +12,6 @@ from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveMode
 from rest_framework.mixins import ListModelMixin
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
-from .filters import SysRoleFilter
 from rest_framework.filters import OrderingFilter,SearchFilter
 from menu.permisssion import CustomMenuPermission
 #detail,update,crate,list

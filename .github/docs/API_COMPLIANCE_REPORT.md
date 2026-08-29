@@ -71,7 +71,7 @@
 
 ### 前端响应处理现状
 
-**文件**: [fronted/src/api/](fronted/src/api/)
+**文件**: [fronted/src/api/](../../fronted/src/api/)
 
 **检查内容**: 前端是否正确处理 `response.data.code` 和 `response.data.data`
 
@@ -164,8 +164,8 @@ httpService.interceptors.response.use(function (response) {
 
 ## 📚 参考文档
 
-- 规则定义: [API_RULES.md](API_RULES.md)
-- Response 函数: [backend/djadmin/utils.py](../backend/djadmin/djadmin/utils.py)
-- 响应渲染器: [backend/djadmin/djResponseRender.py](../backend/djadmin/djadmin/djResponseRender.py)
-- 异常处理: [backend/djadmin/djException.py](../backend/djadmin/djadmin/djException.py)
+- 规则定义: [API_RULES.md](../API_RULES.md)
+- Response 函数: [backend/djadmin/utils.py](../../backend/djadmin/djadmin/utils.py)
+- 响应渲染器: [backend/djadmin/djResponseRender.py](../../backend/djadmin/djadmin/djResponseRender.py)
+- 异常处理: [backend/djadmin/djException.py](../../backend/djadmin/djadmin/djException.py)
 

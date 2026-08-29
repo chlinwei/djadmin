@@ -91,7 +91,7 @@ class InspectionTestCase(TransactionTestCase):
     def create_host_group_check(self):
         serializer = InspectionGroupSerializer(data={
             'name': 'host-check',
-            'scope': InspectionGroup.Scope.PER_DEPLOYMENT,
+            'scope': InspectionGroup.Scope.PER_HOST,
             'checks': [{
                 'name': 'hostname',
                 'executor': 'shell',
@@ -299,17 +299,31 @@ class InspectionTestCase(TransactionTestCase):
         self.assertEqual(target.results.count(), 1)
 
     def test_host_group_task_rejects_application_variables(self):
-        group = self.create_group(InspectionGroup.Scope.PER_DEPLOYMENT)
         host_group = HostGroup.objects.create(name='linux')
-        serializer = InspectionTaskSerializer(data={
-            'name': 'invalid-host-task',
-            'group': group.pk,
-            'target_type': InspectionTask.TargetType.HOST_GROUP,
-            'host_group': host_group.pk,
+        serializer = InspectionGroupSerializer(data={
+            'name': 'host-check-invalid',
+            'scope': InspectionGroup.Scope.PER_HOST,
+            'checks': [{
+                'name': 'app-home',
+                'executor': 'shell',
+                'config': {'command': 'ls ${APP_HOME}'},
+                'enabled': True,
+                'order': 0,
+            }],
         })
 
         self.assertFalse(serializer.is_valid())
-        self.assertIn('host_group', serializer.errors)
+        self.assertIn('checks', serializer.errors)
+
+        task_serializer = InspectionTaskSerializer(data={
+            'name': 'invalid-host-task',
+            'group': self.create_group(InspectionGroup.Scope.PER_DEPLOYMENT).pk,
+            'selected_host_ids': [host_group.pk],
+        })
+
+        # 巡检组是逻辑服务范围，任务必须改选逻辑服务。
+        self.assertFalse(task_serializer.is_valid())
+        self.assertIn('logical_service', task_serializer.errors)
 
     def test_agent_plan_resolves_host_variables(self):
         group = self.create_host_group_check()
@@ -324,9 +338,24 @@ class InspectionTestCase(TransactionTestCase):
         self.assertEqual(check['command'], 'echo node-a')
         self.assertEqual(check['work_directory'], '/')
         self.assertEqual(check['expected'], 'node-a')
+        # 运行用户留空会被 Agent 拒绝（“命令行控制必须配置运行用户”），主机组场景兜底为 root。
+        self.assertEqual(check['run_user'], 'root')
+
+    def test_agent_plan_uses_configured_host_run_user(self):
+        host = Host.objects.create(instance_name='node-b', ip='10.0.0.30', agent_id='agent-run-user', agent_online=True)
+        execution = InspectionExecution.objects.create(
+            task_snapshot={'timeout_seconds': 10},
+            group_snapshot={'scope': InspectionGroup.Scope.PER_HOST, 'checks': [
+                {'name': 'df', 'executor': 'shell', 'config': {'command': 'df -h', 'run_user': 'tomcat'}},
+            ]},
+        )
+
+        check = _agent_params(execution, host=host)['check_plan']['checks'][0]
+
+        self.assertEqual(check['run_user'], 'tomcat')
 
     @patch('inspection.service.threading.Thread')
-    def test_run_api_expands_hosts_in_child_groups(self, thread_class):
+    def test_run_api_uses_only_selected_host_ids(self, thread_class):
         group = self.create_host_group_check()
         parent = HostGroup.objects.create(name='production')
         child = HostGroup.objects.create(name='database', parent=parent)
@@ -335,9 +364,10 @@ class InspectionTestCase(TransactionTestCase):
         task = InspectionTask.objects.create(
             name='host-group-task',
             group=group,
-            target_type=InspectionTask.TargetType.HOST_GROUP,
-            host_group=parent,
+            selected_host_ids=[parent_host.pk, child_host.pk],
         )
+        # 任务保存后才加入分组的主机不在 ID 列表里，不得自动进入已有任务。
+        Host.objects.create(instance_name='node-new', ip='10.0.0.13', group=child, agent_id='agent-new', agent_online=True)
         user = SysUser.objects.create(username='admin')
 
         response = InspectionTaskViewSet.as_view({'post': 'run'})(_run_request(task.pk, user), pk=task.pk)
@@ -346,6 +376,47 @@ class InspectionTestCase(TransactionTestCase):
         execution_id = json.loads(response.content)['data']['execution_id']
         target_host_ids = set(InspectionExecution.objects.get(pk=execution_id).targets.values_list('host_id', flat=True))
         self.assertEqual(target_host_ids, {parent_host.pk, child_host.pk})
+        thread_class.return_value.start.assert_called_once()
+
+    @patch('inspection.service.threading.Thread')
+    def test_run_api_skips_hosts_without_agent(self, thread_class):
+        group = self.create_host_group_check()
+        host_group = HostGroup.objects.create(name='mixed')
+        with_agent = Host.objects.create(instance_name='node-agent', ip='10.0.0.21', group=host_group, agent_id='agent-ok', agent_online=True)
+        bare = Host.objects.create(instance_name='node-bare', ip='10.0.0.22', group=host_group)
+        task = InspectionTask.objects.create(
+            name='mixed-host-task', group=group, selected_host_ids=[with_agent.pk, bare.pk],
+        )
+        user = SysUser.objects.create(username='admin')
+
+        response = InspectionTaskViewSet.as_view({'post': 'run'})(_run_request(task.pk, user), pk=task.pk)
+
+        self.assertEqual(response.status_code, 200)
+        execution = InspectionExecution.objects.get(pk=json.loads(response.content)['data']['execution_id'])
+        # 未安装 Agent 的主机不建目标，否则会被计成失败并触发误告警。
+        self.assertEqual(set(execution.targets.values_list('host_id', flat=True)), {with_agent.pk})
+        self.assertEqual(execution.service_snapshot['skipped_no_agent'], 1)
+
+    @patch('inspection.service.threading.Thread')
+    def test_run_api_ignores_hosts_outside_selection(self, thread_class):
+        group = self.create_host_group_check()
+        host_group = HostGroup.objects.create(name='scope-group')
+        grouped = Host.objects.create(instance_name='node-in-group', ip='10.0.0.31', group=host_group, agent_id='agent-g', agent_online=True)
+        standalone = Host.objects.create(instance_name='node-standalone', ip='10.0.0.32', agent_id='agent-s', agent_online=True)
+        Host.objects.create(instance_name='node-outside', ip='10.0.0.33', group=host_group, agent_id='agent-o', agent_online=True)
+        task = InspectionTask.objects.create(
+            name='merged-scope-task',
+            group=group,
+            selected_host_ids=[grouped.pk, standalone.pk],
+        )
+        user = SysUser.objects.create(username='admin')
+
+        response = InspectionTaskViewSet.as_view({'post': 'run'})(_run_request(task.pk, user), pk=task.pk)
+
+        self.assertEqual(response.status_code, 200)
+        execution = InspectionExecution.objects.get(pk=json.loads(response.content)['data']['execution_id'])
+        # 同组内未勾选的主机不能进入巡检范围。
+        self.assertEqual(set(execution.targets.values_list('host_id', flat=True)), {grouped.pk, standalone.pk})
         thread_class.return_value.start.assert_called_once()
 
     @patch('inspection.service.threading.Thread')

@@ -14,7 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from .models import Host, HostSystem, HostHardware, HostDisk, HostRuntime
+from .models import HostSystem, HostHardware, HostDisk, HostRuntime
 from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 
 logger = logging.getLogger(__name__)

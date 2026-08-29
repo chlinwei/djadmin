@@ -22,11 +22,7 @@ func TestApplicationSystemdActionCommand_UserScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build systemd start command: %v", err)
 	}
-	if os.Geteuid() == 0 {
-		if len(command.Args) != 7 || command.Args[1] != "-u" || command.Args[2] != currentUser.Username || command.Args[3] != "-H" || command.Args[4] != "/bin/bash" || command.Args[5] != "-lc" || command.Args[6] != "systemctl --user start tomcat" {
-			t.Fatalf("unexpected root systemd command: %#v", command.Args)
-		}
-	} else if len(command.Args) != 3 || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user start tomcat" {
+	if len(command.Args) != 3 || command.Args[0] != "/bin/bash" || command.Args[1] != "-lc" || command.Args[2] != "systemctl --user start tomcat" {
 		t.Fatalf("unexpected systemd command: %#v", command.Args)
 	}
 }

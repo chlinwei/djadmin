@@ -1,5 +1,10 @@
 # 📚 djadmin 文档组织结构
 
+> ⚠️ **历史归档，勿作为当前结构参考。**
+> 本文描述的是文档整理前的旧扁平布局（`PROJECT_CONTEXT.md`、`SCHEDULER_README.md`、
+> `DJ_AGENT_ARCHITECTURE.md` 等直接放在仓库根目录）。这些文件现已迁入 `docs/` 下按主题分层。
+> 当前的文档入口与分类以根目录 [README.md](../../README.md) 为准。
+
 ## 目录概览
 
 ```

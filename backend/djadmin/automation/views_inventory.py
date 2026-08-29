@@ -88,28 +88,11 @@ class AutomationInventoryManage(GenericViewSet, CreateModelMixin, UpdateModelMix
 
         limit_text = str(request.data.get('limit', '')).strip()
         host_ids_raw = request.data.get('host_ids', inventory.selected_host_ids)
-        group_ids_raw = request.data.get('group_ids', inventory.selected_group_ids)
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
-        group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
-        group_ids = [int(item) for item in group_ids if str(item).isdigit()]
 
-        existing_group_ids = set(HostGroup.objects.filter(id__in=group_ids).values_list('id', flat=True))
-        missing_group_ids = sorted(set(group_ids) - existing_group_ids)
-        if missing_group_ids:
-            return Response_200(data={
-                'ok': False,
-                'status': 'inventory_invalid',
-                'message': f'执行范围包含已删除主机组: {", ".join(str(item) for item in missing_group_ids)}',
-                'resolved_host_count': 0,
-                'effective_limit': limit_text,
-                'matched_hosts_preview': [],
-                'matched_hosts_preview_total': 0,
-                'missing_group_ids': missing_group_ids,
-            })
-
-        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
         inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, limit_text)
         hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
         resolved_host_count = len(hosts) if isinstance(hosts, list) else 0

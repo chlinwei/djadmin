@@ -1,5 +1,4 @@
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db import IntegrityError
 from django.db.models import Count, Q
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -8,7 +7,6 @@ from rest_framework.viewsets import GenericViewSet
 
 import hashlib
 import io
-import os
 import re
 import urllib.error
 import urllib.request
@@ -27,7 +25,7 @@ from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 from assets.credential_crypto import decrypt_secret
 from assets.grpc_transfer.registry import REGISTRY
-from assets.models import Host
+from assets.models import Host, HostGroup
 
 from .alert_history import (
     compute_alert_fingerprint,
@@ -106,6 +104,95 @@ def _annotate_alert_notification_summary(queryset):
     )
 
 
+def _descendant_group_ids(root_id):
+    """主机组按整棵子树展开，选父组时子组主机一并纳入视图。"""
+    child_map = {}
+    for group_id, parent_id in HostGroup.objects.values_list('id', 'parent_id'):
+        child_map.setdefault(parent_id, []).append(group_id)
+    result = []
+    pending = [root_id]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        result.append(current)
+        pending.extend(child_map.get(current, []))
+    return result
+
+
+def _build_host_group_tree(managed_host_ids):
+    """左树数据：每个分组带「已纳管主机数 / 主机总数」，Exporter 与 Fluent Bit 共用。"""
+    groups = list(HostGroup.objects.order_by('name', 'id').values('id', 'name', 'parent_id'))
+
+    stats = {}
+    for host_id, group_id in Host.objects.filter(is_deleted_in_cloud=False).values_list('id', 'group_id'):
+        entry = stats.setdefault(group_id, {'host_count': 0, 'managed_count': 0})
+        entry['host_count'] += 1
+        if host_id in managed_host_ids:
+            entry['managed_count'] += 1
+
+    nodes = {
+        item['id']: {
+            **item,
+            'host_count': stats.get(item['id'], {}).get('host_count', 0),
+            'managed_count': stats.get(item['id'], {}).get('managed_count', 0),
+            'children': [],
+        }
+        for item in groups
+    }
+    roots = []
+    for node in nodes.values():
+        parent = nodes.get(node['parent_id'])
+        (parent['children'] if parent else roots).append(node)
+
+    ungrouped = stats.get(None, {'host_count': 0, 'managed_count': 0})
+    return {
+        'groups': roots,
+        'total_host_count': sum(item['host_count'] for item in stats.values()),
+        'total_managed_count': len(managed_host_ids),
+        'ungrouped_host_count': ungrouped['host_count'],
+    }
+
+
+def _filter_overview_hosts(request):
+    """主机总览的公共筛选：分组子树 / 关键字，并返回 gRPC Registry 的在线 agent_id 集合。"""
+    queryset = Host.objects.filter(is_deleted_in_cloud=False).select_related('group')
+
+    group_id = str(request.query_params.get('group_id') or '').strip()
+    if group_id.isdigit():
+        queryset = queryset.filter(group_id__in=_descendant_group_ids(int(group_id)))
+
+    keyword = str(request.query_params.get('search') or '').strip()
+    if keyword:
+        queryset = queryset.filter(Q(instance_name__icontains=keyword) | Q(ip__icontains=keyword))
+
+    from assets.host_online import get_connected_agent_ids
+    # Agent 在线状态以 gRPC Registry 为准，避免用陈旧 DB 值误开放安装按钮。
+    return queryset.order_by('instance_name', 'id'), get_connected_agent_ids()
+
+
+def _build_fluent_bit_row(host, agent_online):
+    """Fluent Bit 侧数据做成自包含子记录，前端行内动作可直接拿它当操作对象。"""
+    target = getattr(host, 'log_collection_target', None)
+    return {
+        'id': target.id if target else None,
+        'host_id': host.pk,
+        'host_name': str(host.instance_name or ''),
+        'host_ip': str(host.ip or ''),
+        'host_agent_online': agent_online,
+        'managed': target is not None,
+        'agent_installed': bool(target.agent_installed) if target else False,
+        'agent_version': str(target.agent_version or '') if target else '',
+        'runtime_status': str(target.runtime_status or '') if target else '',
+        'install_status': str(target.install_status or '') if target else '',
+        'config_fingerprint': str(target.config_fingerprint or '') if target else '',
+        'last_applied_time': target.last_applied_time if target else None,
+        'last_error': str(target.last_error or '') if target else '',
+    }
+
+
 class MonitorViewSet(
     GenericViewSet,
     ListModelMixin,
@@ -148,7 +235,181 @@ class MonitorViewSet(
         'prometheus_query': 'monitor:view',
         'prometheus_query_range': 'monitor:view',
         'prometheus_proxy': 'monitor:view',
+        'host_group_tree': 'monitor:view',
+        'host_overview': 'monitor:view',
+        'exporter_options': 'monitor:view',
+        'batch_create': 'monitor:view',
     }
+
+    @action(detail=False, methods=['get'], url_path='host-group-tree')
+    def host_group_tree(self, request):
+        """纳管目标页左树：Exporter 与 Fluent Bit 已合并为同一张主机表，纳管数按两者并集统计。"""
+        managed_host_ids = set(MonitorTarget.objects.values_list('host_id', flat=True))
+        managed_host_ids |= set(LogCollectionTarget.objects.values_list('host_id', flat=True))
+        return Response_200(data=_build_host_group_tree(managed_host_ids))
+
+    @action(detail=False, methods=['get'], url_path='exporter-options')
+    def exporter_options(self, request):
+        """可选 exporter 及其默认端口，来源是监控软件仓库中启用的 exporter 包。"""
+        rows = (
+            SoftwarePackage.objects
+            .filter(package_type=SoftwarePackage.PackageType.EXPORTER, enabled=True)
+            .values('name', 'default_port')
+            .order_by('name')
+        )
+        seen = {}
+        for row in rows:
+            seen.setdefault(row['name'], row['default_port'])
+        return Response_200(data=[{'name': name, 'default_port': port} for name, port in seen.items()])
+
+    @action(detail=False, methods=['get'], url_path='host-overview')
+    def host_overview(self, request):
+        """纳管目标总表：一行一台主机，同时给出 Exporter 与 Fluent Bit 的纳管状态。
+
+        指定 exporter_type 时把该 exporter 的字段摊平到行上，让行内直接具备可操作对象；
+        Fluent Bit 侧字段统一收在 fluent_bit 子对象里，避免 id/install_status 与 exporter 撞名。
+        """
+        queryset, connected_agent_ids = _filter_overview_hosts(request)
+        queryset = queryset.prefetch_related('monitor_targets').select_related('log_collection_target')
+
+        exporter_type = str(request.query_params.get('exporter_type') or '').strip()
+        exporter_managed = str(request.query_params.get('exporter_managed') or '').strip()
+        fluent_bit_managed = str(request.query_params.get('fluent_bit_managed') or '').strip()
+        legacy_managed = str(request.query_params.get('managed') or '').strip()
+
+        # 精确的 Exporter 维度筛选
+        if exporter_managed in ('true', 'false'):
+            if exporter_type:
+                condition = Q(monitor_targets__exporter_type=exporter_type)
+            else:
+                condition = Q(monitor_targets__isnull=False)
+            queryset = queryset.filter(condition) if exporter_managed == 'true' else queryset.exclude(condition)
+            queryset = queryset.distinct()
+        elif legacy_managed in ('true', 'false'):
+            if exporter_type:
+                condition = Q(monitor_targets__exporter_type=exporter_type)
+            else:
+                condition = Q(monitor_targets__isnull=False) | Q(log_collection_target__isnull=False)
+            queryset = queryset.filter(condition) if legacy_managed == 'true' else queryset.exclude(condition)
+            queryset = queryset.distinct()
+
+        # 精确的 Fluent Bit 维度独立筛选：未安装 = 既未纳管，或者纳管记录存在但 agent_installed 为 False
+        if fluent_bit_managed in ('true', 'false'):
+            if fluent_bit_managed == 'true':
+                condition = Q(log_collection_target__isnull=False, log_collection_target__agent_installed=True)
+            else:
+                condition = Q(log_collection_target__isnull=True) | Q(log_collection_target__agent_installed=False)
+            queryset = queryset.filter(condition)
+            queryset = queryset.distinct()
+
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset)
+
+        data = []
+        for host in rows:
+            targets = list(host.monitor_targets.all())  # type: ignore[attr-defined]
+            if exporter_type:
+                targets = [item for item in targets if item.exporter_type == exporter_type]
+            agent_online = bool(host.agent_id and host.agent_id in connected_agent_ids)
+            row = {
+                'host_id': host.pk,
+                'host_name': str(host.instance_name or ''),
+                'host_ip': str(host.ip or ''),
+                'group_id': host.group.pk if host.group else None,
+                'group_name': host.group.name if host.group else '',
+                'host_agent_online': agent_online,
+                'managed': bool(targets),
+                'exporters': [
+                    {
+                        'id': item.id,
+                        'exporter_type': item.exporter_type,
+                        'scrape_port': item.scrape_port,
+                        'managed_enabled': item.managed_enabled,
+                        'install_status': item.install_status,
+                        'install_message': item.install_message,
+                        'last_scrape_status': item.last_scrape_status,
+                    }
+                    for item in sorted(targets, key=lambda x: x.exporter_type)
+                ],
+                'fluent_bit': _build_fluent_bit_row(host, agent_online),
+            }
+            if exporter_type and targets:
+                target = targets[0]
+                row.update({
+                    'id': target.id,
+                    'exporter_type': target.exporter_type,
+                    'scrape_port': target.scrape_port,
+                    'managed_enabled': target.managed_enabled,
+                    'install_status': target.install_status,
+                    'install_message': target.install_message,
+                    'last_scrape_status': target.last_scrape_status,
+                })
+            data.append(row)
+
+        if page is None:
+            return Response_200(data={'count': len(data), 'results': data})
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count,  # type: ignore[union-attr]
+            'results': data,
+            'pageNumber': paginator.page.number,  # type: ignore[union-attr]
+            'pageSize': paginator.page_size,  # type: ignore[union-attr]
+            'totalPages': paginator.page.paginator.num_pages,  # type: ignore[union-attr]
+            'next': paginator.get_next_link(),  # type: ignore[union-attr]
+            'previous': paginator.get_previous_link(),  # type: ignore[union-attr]
+        })
+
+    @action(detail=False, methods=['post'], url_path='batch-create')
+    def batch_create(self, request):
+        """批量纳管 exporter：同一主机的同一 exporter 已存在则跳过；install_now 时立刻下发安装。"""
+        from assets.views import _enqueue_exporter_job
+
+        raw_ids = request.data.get('host_ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response_error_str('host_ids 必须是非空数组', code=400)
+        host_ids = [int(item) for item in raw_ids if str(item).isdigit()]
+        if not host_ids:
+            return Response_error_str('host_ids 只能包含正整数 ID', code=400)
+
+        exporter_type = str(request.data.get('exporter_type') or '').strip()
+        if not exporter_type:
+            return Response_error_str('exporter_type 不能为空', code=400)
+        package = SoftwarePackage.objects.filter(
+            name=exporter_type, package_type=SoftwarePackage.PackageType.EXPORTER, enabled=True,
+        ).first()
+        if package is None:
+            return Response_error_str(f'监控软件仓库中没有启用的 exporter：{exporter_type}', code=400)
+
+        scrape_port = self._parse_port_value(request.data.get('scrape_port')) or package.default_port
+        install_now = bool(request.data.get('install_now'))
+
+        results = []
+        for host in Host.objects.filter(id__in=host_ids, is_deleted_in_cloud=False):
+            host_label = str(host.instance_name or host.ip or f'Host-{host.pk}')
+            target, created = MonitorTarget.objects.get_or_create(
+                host=host,
+                exporter_type=exporter_type,
+                defaults={'managed_enabled': True, 'scrape_port': scrape_port},
+            )
+            if not created:
+                results.append({
+                    'host_id': host.pk, 'host': host_label, 'ok': False,
+                    'message': f'该主机已纳管 {exporter_type}，已跳过',
+                })
+                continue
+            results.append({'host_id': host.pk, 'host': host_label, 'ok': True, 'message': ''})
+            if install_now:
+                target.retry_count = 0
+                target.save(update_fields=['retry_count', 'update_time'])
+                _enqueue_exporter_job('install', int(host.pk), int(target.pk), manual=True)
+
+        success = sum(1 for item in results if item['ok'])
+        return Response_200(data={
+            'total': len(results),
+            'success': success,
+            'failed': len(results) - success,
+            'results': results,
+        })
 
     @staticmethod
     def _parse_port_value(raw_value):
@@ -233,12 +494,10 @@ class MonitorViewSet(
         target.install_message = '人工触发重试'
         target.save(update_fields=['retry_count', 'install_message', 'update_time'])
 
-        from assets.views import dispatch_exporter_install_job, dispatch_exporter_uninstall_job
+        from assets.views import _enqueue_exporter_job
 
-        if target.managed_enabled:
-            dispatch_exporter_install_job(host, target, manual=True)
-        else:
-            dispatch_exporter_uninstall_job(host, target, manual=True)
+        action = 'install' if target.managed_enabled else 'uninstall'
+        _enqueue_exporter_job(action, int(host.pk), int(target.pk), manual=True)
 
         target.refresh_from_db()
         serializer = self.get_serializer(target)
@@ -1825,14 +2084,93 @@ class LogCollectionTargetViewSet(
         'stop_service': 'monitor:view',
         'cancel_pending': 'monitor:view',
         'destroy': 'monitor:view',
+        'batch_retry': 'monitor:view',
+        'batch_start_service': 'monitor:view',
+        'batch_stop_service': 'monitor:view',
+        'batch_apply': 'monitor:view',
+        'batch_delete': 'monitor:view',
+        'batch_create': 'monitor:view',
     }
 
+    @action(detail=False, methods=['post'], url_path='batch-create')
+    def batch_create(self, request):
+        """批量纳管：已纳管主机自动跳过；install_now=true 时创建后立即下发安装。"""
+        raw_ids = request.data.get('host_ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response_error_str('host_ids 必须是非空数组', code=400)
+        host_ids = [int(item) for item in raw_ids if str(item).isdigit()]
+        if not host_ids:
+            return Response_error_str('host_ids 只能包含正整数 ID', code=400)
+
+        install_now = bool(request.data.get('install_now'))
+        hosts = list(Host.objects.filter(id__in=host_ids, is_deleted_in_cloud=False))
+        managed_host_ids = set(
+            LogCollectionTarget.objects.filter(host_id__in=host_ids).values_list('host_id', flat=True)
+        )
+
+        results = []
+        for host in hosts:
+            host_label = str(host.instance_name or host.ip or f'Host-{host.pk}')
+            if host.pk in managed_host_ids:
+                results.append({'host_id': host.pk, 'host': host_label, 'ok': False, 'message': '该主机已纳管，已跳过'})
+                continue
+            target = LogCollectionTarget.objects.create(host=host)
+            if not install_now:
+                results.append({'host_id': host.pk, 'host': host_label, 'ok': True, 'message': ''})
+                continue
+            try:
+                dispatch_fluent_bit_install(target, manual=True)
+            except LogCollectionApplyError as exc:
+                target.install_status = LogCollectionTarget.InstallStatus.FAILED
+                target.install_message = str(exc)
+                target.save(update_fields=['install_status', 'install_message', 'update_time'])
+                results.append({'host_id': host.pk, 'host': host_label, 'ok': False, 'message': str(exc)})
+            else:
+                results.append({'host_id': host.pk, 'host': host_label, 'ok': True, 'message': ''})
+
+        success = sum(1 for item in results if item['ok'])
+        return Response_200(data={
+            'total': len(results),
+            'success': success,
+            'failed': len(results) - success,
+            'results': results,
+        })
+
+    def _run_batch(self, request, handler):
+        """逐台执行并汇总结果：单台失败不影响其余主机，前端据此展示部分失败。"""
+        raw_ids = request.data.get('ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response_error_str('ids 必须是非空数组', code=400)
+        ids = [int(item) for item in raw_ids if str(item).isdigit()]
+        if not ids:
+            return Response_error_str('ids 只能包含正整数 ID', code=400)
+        targets = list(self.get_queryset().filter(id__in=ids))
+        if not targets:
+            return Response_error_str('未找到可操作的纳管目标', code=400)
+
+        results = []
+        for target in targets:
+            host_label = str(getattr(target.host, 'instance_name', '') or getattr(target.host, 'ip', '') or f'Host-{target.host_id}')
+            try:
+                handler(target)
+            except (LogCollectionApplyError, ValueError) as exc:
+                results.append({'id': target.id, 'host': host_label, 'ok': False, 'message': str(exc)})
+            else:
+                results.append({'id': target.id, 'host': host_label, 'ok': True, 'message': ''})
+
+        success = sum(1 for item in results if item['ok'])
+        return Response_200(data={
+            'total': len(results),
+            'success': success,
+            'failed': len(results) - success,
+            'results': results,
+        })
+
     def get_queryset(self):
+        from assets.host_online import sync_host_online_status_to_db
+
         # gRPC Registry 是 Agent 在线状态的唯一实时来源；同步后再序列化，避免陈旧 DB 状态误开放安装按钮。
-        connected_agent_ids = REGISTRY.connected_agent_ids()
-        Host.objects.filter(agent_online=True).exclude(agent_id__in=connected_agent_ids).update(agent_online=False)
-        if connected_agent_ids:
-            Host.objects.filter(agent_id__in=connected_agent_ids, agent_online=False).update(agent_online=True)
+        sync_host_online_status_to_db()
         return super().get_queryset()
 
     def list(self, request, *args, **kwargs):
@@ -1932,21 +2270,19 @@ class LogCollectionTargetViewSet(
         return Response_200(data=self.get_serializer(target).data)
 
     def destroy(self, request: Request, *args, **kwargs) -> Response:
-        """已安装目标先卸载，只有卸载成功后才删除纳管记录。"""
+        """已安装目标先下发卸载，由 worker 在卸载成功后删除纳管记录；卸载失败则保留记录和日志。"""
         target = self.get_object()
         if target.install_status == LogCollectionTarget.InstallStatus.PENDING:
             return Response_error_str('安装/卸载任务尚未结束，请先等待或取消任务', code=400)
-        if target.agent_installed:
-            try:
-                history = dispatch_fluent_bit_uninstall(target, manual=True)
-            except LogCollectionApplyError as exc:
-                return Response_error_str(str(exc), code=400)
-            if history.status != MonitorTargetInstallHistory.Status.SUCCESS:
-                target.refresh_from_db()
-                return Response_error_str(target.install_message or 'Fluent Bit 卸载失败，目标未删除', code=400)
-        deleted_id = target.id
-        target.delete()
-        return Response_200(data={'id': deleted_id})
+        target_id = target.id
+        if not target.agent_installed:
+            target.delete()
+            return Response_200(data={'id': target_id, 'pending_uninstall': False})
+        try:
+            dispatch_fluent_bit_uninstall(target, manual=True, delete_after_success=True)
+        except LogCollectionApplyError as exc:
+            return Response_error_str(str(exc), code=400)
+        return Response_200(data={'id': target_id, 'pending_uninstall': True})
 
     @action(detail=True, methods=['get'], url_path='render-config')
     def render_config(self, request, id=None):
@@ -2000,3 +2336,57 @@ class LogCollectionTargetViewSet(
         except LogCollectionApplyError as exc:
             return Response_error_str(str(exc), code=400)
         return Response_200(data=result)
+
+    @action(detail=False, methods=['post'], url_path='batch-retry')
+    def batch_retry(self, request: Request):
+        """批量安装/重新安装 Fluent Bit。"""
+        def handler(target):
+            target.retry_count = 0
+            target.install_message = '人工触发批量安装'
+            target.save(update_fields=['retry_count', 'install_message', 'update_time'])
+            try:
+                dispatch_fluent_bit_install(target, manual=True)
+            except LogCollectionApplyError:
+                target.install_status = LogCollectionTarget.InstallStatus.FAILED
+                target.save(update_fields=['install_status', 'update_time'])
+                raise
+
+        return self._run_batch(request, handler)
+
+    @action(detail=False, methods=['post'], url_path='batch-start-service')
+    def batch_start_service(self, request: Request):
+        def handler(target):
+            if not target.agent_installed:
+                raise LogCollectionApplyError('Fluent Bit 尚未安装，无法启动服务')
+            control_fluent_bit_service(target, 'start')
+
+        return self._run_batch(request, handler)
+
+    @action(detail=False, methods=['post'], url_path='batch-stop-service')
+    def batch_stop_service(self, request: Request):
+        def handler(target):
+            if not target.agent_installed:
+                raise LogCollectionApplyError('Fluent Bit 尚未安装，无法停止服务')
+            control_fluent_bit_service(target, 'stop')
+
+        return self._run_batch(request, handler)
+
+    @action(detail=False, methods=['post'], url_path='batch-apply')
+    def batch_apply(self, request: Request):
+        def handler(target):
+            apply_host_log_config(target)
+
+        return self._run_batch(request, handler)
+
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request: Request):
+        """批量删除：已安装的先下发卸载，卸载成功后由 worker 删除记录，避免主机上残留进程失联。"""
+        def handler(target):
+            if target.install_status == LogCollectionTarget.InstallStatus.PENDING:
+                raise LogCollectionApplyError('安装/卸载任务尚未结束，请先等待或取消任务')
+            if target.agent_installed:
+                dispatch_fluent_bit_uninstall(target, manual=True, delete_after_success=True)
+                return
+            target.delete()
+
+        return self._run_batch(request, handler)

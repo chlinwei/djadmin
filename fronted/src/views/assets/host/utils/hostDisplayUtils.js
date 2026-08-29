@@ -1,23 +1,14 @@
-export const getGroupName = (record) => {
-  return record.group_name || record.group?.name || '-'
+// OS 类型与版本合并为 "类型:版本" 单列展示，缺一侧时只展示存在的一侧
+export const formatOsInfo = (record) => {
+  const type = String(record?.os_type || record?.system?.os_type || '').trim()
+  const version = String(record?.os_version || record?.system?.os_version || '').trim()
+  if (type && version) {
+    return `${type}:${version}`
+  }
+  return type || version || '-'
 }
 
-export const getCredentialName = (record) => {
-  return record.credential_name || record.credential?.name || '-'
-}
 
-export const hasHostCredential = (record) => {
-  const directName = String(record?.credential_name || '').trim()
-  if (directName) {
-    return true
-  }
-  const nestedName = String(record?.credential?.name || '').trim()
-  if (nestedName) {
-    return true
-  }
-  const nestedId = Number(record?.credential?.id || 0)
-  return Number.isFinite(nestedId) && nestedId > 0
-}
 
 export const getDisks = (record) => {
   return record.disks || []

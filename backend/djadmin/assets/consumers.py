@@ -12,7 +12,6 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from cryptography.utils import CryptographyDeprecationWarning
-from django.conf import settings
 from django.utils import timezone
 from rest_framework_jwt.settings import api_settings
 

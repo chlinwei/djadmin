@@ -4,6 +4,7 @@ from django.utils import timezone
 
 from .view_helpers import *
 from .view_helpers import _apply_limit_to_inventory_snapshot, _build_limit_matched_hosts_preview, _resolve_task_template
+from .executor import execute_automation_job
 from .executor_playbook import execute_playbook_job
 
 class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin):
@@ -32,7 +33,7 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
         """立即执行 Playbook 任务。"""
         job = AutomationExecutionJob.objects.create(
             task=task,
-            status=AutomationExecutionJob.Status.RUNNING,
+            status=AutomationExecutionJob.Status.PENDING,
             trigger_type=AutomationExecutionJob.TriggerType.MANUAL,
             inventory_snapshot=inventory_snapshot,
             task_name_snapshot=task.name or '',
@@ -42,25 +43,14 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             limit=limit_text,
             requested_user_id=user_info.get('user_id'),
             requested_username=user_info.get('username', ''),
-            result_summary={'message': 'Job created and executing via agent grpc'},
-            start_time=started_at,
+            result_summary={'message': 'Job created and queued for execution'},
             run_as_user_snapshot=task.run_as_user,
             run_as_group_snapshot=task.run_as_group,
             work_directory_snapshot=task.work_directory,
         )
 
-        job_pk = int(getattr(job, 'pk', 0) or 0)
-        task_pk = int(getattr(task, 'pk', 0) or 0)
-
-        success, summary, _ = execute_playbook_job(job)
-
-        finished_at = timezone.now()
-        final_status = AutomationExecutionJob.Status.SUCCESS if success else AutomationExecutionJob.Status.FAILED
-        job.status = final_status
-        job.end_time = finished_at
-        job.duration_seconds = (finished_at - started_at).total_seconds()
-        job.result_summary = summary
-        job.save(update_fields=['status', 'result_summary', 'end_time', 'duration_seconds'])
+        execute_automation_job(int(getattr(job, 'id', 0)))
+        job.refresh_from_db()
 
         serializer = AutomationExecutionJobSerializer(job)
         return Response_200(data=serializer.data)
@@ -174,50 +164,37 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
             })
 
         default_host_ids = []
-        default_group_ids = []
         inventory_name = ''
         if task.inventory_id and task.inventory is not None:
             default_host_ids = task.inventory.selected_host_ids
-            default_group_ids = task.inventory.selected_group_ids
             inventory_name = task.inventory.name or ''
 
         limit_text = str(request.data.get('limit', task.default_limit or '')).strip()
 
         host_ids_raw = request.data.get('host_ids', default_host_ids)
-        group_ids_raw = request.data.get('group_ids', default_group_ids)
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
-        group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
-        group_ids = [int(item) for item in group_ids if str(item).isdigit()]
 
-        if task.inventory_id and task.inventory is not None and len(host_ids) == 0 and len(group_ids) == 0:
+        if task.inventory_id and task.inventory is not None and len(host_ids) == 0:
             inventory_name = task.inventory.name or '-'
             return Response_200(data={
                 'ok': False,
                 'status': 'inventory_empty',
-                'message': f'Inventory [{inventory_name}] 未选择主机组，当前无可执行主机',
+                'message': f'Inventory [{inventory_name}] 未选择主机，当前无可执行主机',
                 'resolved_host_count': 0,
             })
 
-        existing_group_ids = set(HostGroup.objects.filter(id__in=group_ids).values_list('id', flat=True))
-        missing_group_ids = sorted(set(group_ids) - existing_group_ids)
-        if missing_group_ids:
-            return Response_200(data={
-                'ok': False,
-                'status': 'inventory_invalid',
-                'message': f'执行范围包含已删除主机组: {", ".join(str(item) for item in missing_group_ids)}',
-                'resolved_host_count': 0,
-                'missing_group_ids': missing_group_ids,
-            })
+        from assets.host_online import sync_host_online_status_to_db
+        sync_host_online_status_to_db()
 
-        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
         inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, limit_text)
         hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
         resolved_host_count = len(hosts) if isinstance(hosts, list) else 0
         if resolved_host_count == 0:
             if inventory_name:
-                message = f'Inventory [{inventory_name}] 当前无可用主机，请检查主机组是否被删除或范围配置是否正确'
+                message = f'Inventory [{inventory_name}] 当前无可用主机，请检查主机是否被删除或范围配置是否正确'
             else:
                 message = '当前任务无可用主机，请检查执行范围配置'
             return Response_200(data={
@@ -269,38 +246,33 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         user_info = getCurrentUser(request)
         default_host_ids = []
-        default_group_ids = []
         if task.inventory_id and task.inventory is not None:
             default_host_ids = task.inventory.selected_host_ids
-            default_group_ids = task.inventory.selected_group_ids
 
         limit_text = str(request.data.get('limit', task.default_limit or '')).strip()
 
         host_ids_raw = request.data.get('host_ids', default_host_ids)
-        group_ids_raw = request.data.get('group_ids', default_group_ids)
         extra_vars_raw = request.data.get('extra_vars', task.env_vars)
 
         host_ids = host_ids_raw if isinstance(host_ids_raw, list) else []
-        group_ids = group_ids_raw if isinstance(group_ids_raw, list) else []
         host_ids = [int(item) for item in host_ids if str(item).isdigit()]
-        group_ids = [int(item) for item in group_ids if str(item).isdigit()]
         extra_vars = extra_vars_raw if isinstance(extra_vars_raw, dict) else {}
 
-        if task.inventory_id and task.inventory is not None and len(host_ids) == 0 and len(group_ids) == 0:
+        if task.inventory_id and task.inventory is not None and len(host_ids) == 0:
             inventory_name = task.inventory.name or '-'
             return Response_error_str(
-                f'Inventory [{inventory_name}] 未选择主机组，当前无可执行主机',
+                f'Inventory [{inventory_name}] 未选择主机，当前无可执行主机',
                 code=400,
             )
 
-        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids, group_ids=group_ids)
+        inventory_snapshot = build_inventory_snapshot(host_ids=host_ids)
         inventory_snapshot = _apply_limit_to_inventory_snapshot(inventory_snapshot, limit_text)
         hosts = inventory_snapshot.get('hosts', []) if isinstance(inventory_snapshot, dict) else []
         if not isinstance(hosts, list) or len(hosts) == 0:
             inventory_name = task.inventory.name if task.inventory_id and task.inventory else ''
             if inventory_name:
                 return Response_error_str(
-                    f'Inventory [{inventory_name}] 当前无可用主机，请检查主机组是否被删除或范围配置是否正确',
+                    f'Inventory [{inventory_name}] 当前无可用主机，请检查主机是否被删除或范围配置是否正确',
                     code=400,
                 )
             return Response_error_str('当前任务无可用主机，请检查执行范围配置', code=400)

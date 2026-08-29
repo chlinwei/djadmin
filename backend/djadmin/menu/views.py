@@ -1,6 +1,4 @@
 from .models import SysMenu,SysRoleMenu
-from .models import SysMenu
-from .models import SysRoleMenu
 from .serializer import SysMenuDynamicListSerializer,SysMenuSerializer2
 from djadmin.utils import Response_200
 from rest_framework.mixins import CreateModelMixin,UpdateModelMixin,RetrieveModelMixin

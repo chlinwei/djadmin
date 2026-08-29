@@ -97,7 +97,7 @@
         </a-form-item>
 
         <a-form-item>
-          <a-button @click="openScopeModal">编辑主机组范围</a-button>
+          <a-button @click="openScopeModal">编辑主机范围</a-button>
         </a-form-item>
 
         <a-form-item label="备注">
@@ -113,7 +113,7 @@
       @ok="scopeModalVisible = false"
       @cancel="scopeModalVisible = false"
     >
-      <div class="scope-editor__desc">支持多层主机组。勾选分组会自动覆盖子分组，未勾选表示空范围（0台主机）。</div>
+      <div class="scope-editor__desc">勾选分组只是批量勾选入口，最终保存的是具体主机列表；分组后续新增的主机不会自动进入本 Inventory。</div>
       <a-input
         v-model:value="scopeEditKeyword"
         allow-clear
@@ -195,7 +195,7 @@ import {
   getAutomationHostOptions,
   getAutomationGroupTree,
 } from '@/api/sys/automation'
-import { buildScopeSummaryText, flattenGroupPathMap } from '../utils/scopeSummary'
+import { flattenGroupPathMap } from '../utils/scopeSummary'
 
 const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 const route = useRoute()
@@ -236,7 +236,6 @@ const pagination = reactive({
 const form = reactive({
   name: '',
   enabled: true,
-  selected_group_ids: [],
   selected_host_ids: [],
   remark: '',
 })
@@ -265,13 +264,8 @@ function getHealthTagColor(record) {
 }
 
 const scopePreviewText = computed(() => {
-  return buildScopeSummaryText({
-    selectedGroupIds: form.selected_group_ids,
-    selectedHostIds: form.selected_host_ids,
-    groupPathMap: groupPathMap.value,
-    groupNameMap: groupNameMap.value,
-    emptyAsAllHosts: false,
-  })
+  const hostCount = form.selected_host_ids?.length || 0
+  return hostCount > 0 ? `已选 ${hostCount} 台主机` : '未选择范围（0台主机）'
 })
 
 const scopeEditTreeData = computed(() => {
@@ -585,18 +579,13 @@ function formatInventoryHostDisplayName(host) {
 
 function openScopeViewer(record) {
   scopeViewKeyword.value = ''
-  const selectedGroupIds = Array.isArray(record?.selected_group_ids) ? record.selected_group_ids : []
   const selectedHostIds = Array.isArray(record?.selected_host_ids) ? record.selected_host_ids : []
-  const hasScopeSelection = selectedGroupIds.length > 0 || selectedHostIds.length > 0
 
   scopeViewTitle.value = `查看 Inventory 范围 - ${record?.name || ''}`
 
-  const treeWithHosts = buildViewerTreeWithHosts(groupTreeData.value, hostOptions.value)
-
-  if (hasScopeSelection) {
-    const selectedGroupSet = toNumericSet(selectedGroupIds)
-    const selectedHostSet = toNumericSet(selectedHostIds)
-    const prunedTree = pruneTreeToCheckedNodes(treeWithHosts, selectedGroupSet, selectedHostSet, false)
+  if (selectedHostIds.length > 0) {
+    const treeWithHosts = buildViewerTreeWithHosts(groupTreeData.value, hostOptions.value)
+    const prunedTree = pruneTreeToCheckedNodes(treeWithHosts, new Set(), toNumericSet(selectedHostIds), false)
     scopeViewTreeData.value = appendGroupHostCount(prunedTree)
   } else {
     scopeViewTreeData.value = []
@@ -616,32 +605,44 @@ function openScopeModal() {
 function resetForm() {
   form.name = ''
   form.enabled = true
-  form.selected_group_ids = []
   form.selected_host_ids = []
   form.remark = ''
   checkedKeys.value = []
 }
 
 function syncCheckedKeysFromForm() {
-  const selectedGroupIds = Array.isArray(form.selected_group_ids) ? form.selected_group_ids : []
   const selectedHostIds = Array.isArray(form.selected_host_ids) ? form.selected_host_ids : []
-  checkedKeys.value = [
-    ...selectedGroupIds.map((id) => `group-${id}`),
-    ...selectedHostIds.map((id) => `host-${id}`),
-  ]
+  checkedKeys.value = selectedHostIds.map((id) => `host-${id}`)
+}
+
+function collectVisibleHostIds(nodes) {
+  const ids = []
+  const walk = (items) => {
+    ;(Array.isArray(items) ? items : []).forEach((node) => {
+      const keyText = String(node?.key || '')
+      if (keyText.startsWith('host-')) {
+        const hostId = Number(keyText.slice('host-'.length))
+        if (Number.isInteger(hostId) && hostId > 0) ids.push(hostId)
+      }
+      walk(node?.children || [])
+    })
+  }
+  walk(nodes)
+  return ids
 }
 
 function onScopeCheck(nextChecked) {
   const keys = Array.isArray(nextChecked) ? nextChecked : nextChecked?.checked || []
-  checkedKeys.value = keys
-  form.selected_group_ids = keys
-    .filter((item) => typeof item === 'string' && item.startsWith('group-'))
-    .map((item) => Number(item.replace('group-', '')))
-    .filter((item) => Number.isInteger(item) && item > 0)
-  form.selected_host_ids = keys
+  // 只保存主机 ID：分组勾选只是批量入口，不能让之后新入组的主机自动进入 Inventory。
+  const checkedInView = keys
     .filter((item) => typeof item === 'string' && item.startsWith('host-'))
     .map((item) => Number(item.replace('host-', '')))
     .filter((item) => Number.isInteger(item) && item > 0)
+  // 搜索后树被裁剪，只能改当前可见节点的勾选态，否则会误删被隐藏的已选主机。
+  const visibleInView = new Set(collectVisibleHostIds(filteredScopeEditTreeData.value))
+  const kept = (form.selected_host_ids || []).filter((id) => !visibleInView.has(Number(id)))
+  form.selected_host_ids = [...new Set([...kept, ...checkedInView])]
+  syncCheckedKeysFromForm()
 }
 
 function buildGroupTree(nodes) {
@@ -749,7 +750,6 @@ function openEditModal(record) {
   editingId.value = record.id
   form.name = record.name || ''
   form.enabled = !!record.enabled
-  form.selected_group_ids = Array.isArray(record.selected_group_ids) ? [...record.selected_group_ids] : []
   form.selected_host_ids = Array.isArray(record.selected_host_ids) ? [...record.selected_host_ids] : []
   form.remark = record.remark || ''
   syncCheckedKeysFromForm()
@@ -762,17 +762,15 @@ async function submitForm() {
     return
   }
 
-  const selectedGroupIds = Array.isArray(form.selected_group_ids) ? form.selected_group_ids : []
   const selectedHostIds = Array.isArray(form.selected_host_ids) ? form.selected_host_ids : []
-  if (selectedGroupIds.length === 0 && selectedHostIds.length === 0) {
-    message.error('请至少选择一个主机组后再保存')
+  if (selectedHostIds.length === 0) {
+    message.error('请至少选择一台主机后再保存')
     return
   }
 
   const payload = {
     name: String(form.name).trim(),
     enabled: !!form.enabled,
-    selected_group_ids: selectedGroupIds,
     selected_host_ids: selectedHostIds,
     remark: form.remark || '',
   }

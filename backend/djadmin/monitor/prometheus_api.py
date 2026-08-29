@@ -115,7 +115,3 @@ def api_get(path: str, params: dict[str, Any] | None = None, timeout_seconds: in
         # 保留空数组等合法响应，避免把 [] 误替换为 {} 导致调用方类型判断失真。
         'data': payload_data if payload_data is not None else {},
     }
-
-
-def query_instant(promql: str, timeout_seconds: int = 8) -> dict[str, Any]:
-    return api_get('/api/v1/query', params={'query': promql}, timeout_seconds=timeout_seconds)

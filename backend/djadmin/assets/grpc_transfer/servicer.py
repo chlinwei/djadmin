@@ -15,10 +15,8 @@ AgentChannel gRPC 服务实现。
 """
 import logging
 import threading
-from typing import Optional
 
 import grpc
-from django.conf import settings
 from django.db import close_old_connections
 from django.utils import timezone
 

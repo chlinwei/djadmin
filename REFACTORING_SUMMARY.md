@@ -1,5 +1,11 @@
 # Alert Notification System Refactoring Summary
 
+> ⚠️ **历史变更记录，非当前实现说明。**
+> 文中提到的 `UserAlertMediaBindingSerializer` 已因长期无调用方被删除；`UserAlertMediaBinding`
+> **模型本身仍在使用**，收件人绑定由 `user/views.py` 的 `alertMediaBindings` /
+> `updateAlertMediaBindings` 直接读写（请求体为 `bindings` 数组）。
+> 告警链路的当前状态以 [docs/overview/PROJECT_CONTEXT.md](docs/overview/PROJECT_CONTEXT.md) 的监控模块章节为准。
+
 ## Overview
 Completed comprehensive refactoring of the alert notification system from Plan A (incorrect media-level recipients) to Plan B (correct Zabbix-style user-level recipients via bindings).
 

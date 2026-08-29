@@ -1,6 +1,4 @@
-from django.shortcuts import render
 
-from rest_framework.generics import ListAPIView
 
 from django.db import connection
 from django.db.models import Prefetch
@@ -8,15 +6,11 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.contrib.auth.hashers import make_password
 
-from django.views import View
-from django.http import JsonResponse
 # Create your views here.
 from django_filters import rest_framework as filters
 from rest_framework.views import APIView
-from rest_framework.response import Response 
 from .models import SysUser, SysUserRole
 from .serializer import SysUserSerializer
-from .filters import SysUserFilter
 
 from rest_framework.filters import SearchFilter,OrderingFilter
 
@@ -157,7 +151,7 @@ class LoginView(APIView):
                 user = None
             jwt_payload_handler = api_settings.JWT_PAYLOAD_HANDLER
             jwt_encode_handler = api_settings.JWT_ENCODE_HANDLER
-        except ObjectDoesNotExist as e:
+        except ObjectDoesNotExist:
             user = None
         if user == None:
             self._write_login_audit_log(

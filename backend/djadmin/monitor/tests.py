@@ -104,6 +104,96 @@ class MonitorTargetDeleteTest(TestCase):
         self.assertResponseOK(res)
         self.assertFalse(MonitorTarget.objects.filter(id=target.id).exists())
 
+    def test_retry_enqueues_background_job_instead_of_running_playbook(self):
+        """重试只入队：Playbook 留在请求线程会把 ASGI 连接拖到超时被杀。"""
+        target = MonitorTarget.objects.create(
+            host=self.host, exporter_type='node_exporter', managed_enabled=True,
+            install_status=MonitorTarget.InstallStatus.FAILED,
+        )
+        with mock.patch('assets.views.dispatch_exporter_install_job') as dispatch, \
+                mock.patch('monitor.job_runner.submit_monitor_job') as submit:
+            self.assertResponseOK(self.client.post(f'/monitor/targets/{target.id}/retry/'))
+        dispatch.assert_not_called()
+        submit.assert_called_once()
+        self.assertEqual(submit.call_args.args[1:], ('install', self.host.id, target.id))
+
+
+class ExporterHostOverviewApiTest(TestCase):
+    """Exporter 纳管页：主机总览、分组树与批量纳管。"""
+
+    def setUp(self):
+        from .models import SoftwarePackage
+
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+        self.managed_host = Host.objects.create(instance_name='exp-managed', ip='10.9.0.1', agent_id='agent-exp-1')
+        self.plain_host = Host.objects.create(instance_name='exp-plain', ip='10.9.0.2', agent_id='agent-exp-2')
+        MonitorTarget.objects.create(host=self.managed_host, exporter_type='node_exporter', scrape_port=9100)
+        SoftwarePackage.objects.create(
+            package_type=SoftwarePackage.PackageType.EXPORTER,
+            name='node_exporter', version='1.8.2', default_port=9100, enabled=True,
+        )
+
+    def assertResponseOK(self, response):
+        body = response.json()
+        self.assertEqual(body['code'], 200, msg=f'Expected code=200, got: {body}')
+        return body
+
+    def test_host_overview_lists_hosts_with_their_exporters(self):
+        body = self.assertResponseOK(self.client.get('/monitor/targets/host-overview/'))
+        rows = {item['host_id']: item for item in body['data']['results']}
+        self.assertTrue(rows[self.managed_host.id]['managed'])
+        self.assertEqual(rows[self.managed_host.id]['exporters'][0]['exporter_type'], 'node_exporter')
+        self.assertEqual(rows[self.managed_host.id]['exporters'][0]['scrape_port'], 9100)
+        # 未纳管主机同样返回，否则看不出哪些主机还没装 exporter。
+        self.assertFalse(rows[self.plain_host.id]['managed'])
+        self.assertEqual(rows[self.plain_host.id]['exporters'], [])
+        # 合并后同一行要带出 Fluent Bit 侧状态。
+        self.assertFalse(rows[self.plain_host.id]['fluent_bit']['managed'])
+
+    def test_exporter_options_come_from_enabled_packages(self):
+        body = self.assertResponseOK(self.client.get('/monitor/targets/exporter-options/'))
+        self.assertIn({'name': 'node_exporter', 'default_port': 9100}, body['data'])
+
+    def test_batch_create_installs_new_target_and_skips_existing(self):
+        with mock.patch('assets.views._enqueue_exporter_job') as start_job:
+            response = self.client.post(
+                '/monitor/targets/batch-create/',
+                {
+                    'host_ids': [self.managed_host.id, self.plain_host.id],
+                    'exporter_type': 'node_exporter',
+                    'scrape_port': 9200,
+                    'install_now': True,
+                },
+                format='json',
+            )
+        body = self.assertResponseOK(response)
+        self.assertEqual(body['data']['success'], 1)
+        self.assertEqual(body['data']['failed'], 1)
+        start_job.assert_called_once()
+        created = MonitorTarget.objects.get(host=self.plain_host, exporter_type='node_exporter')
+        self.assertEqual(created.scrape_port, 9200)
+
+    def test_batch_create_rejects_unknown_exporter(self):
+        response = self.client.post(
+            '/monitor/targets/batch-create/',
+            {'host_ids': [self.plain_host.id], 'exporter_type': 'not_exists'},
+            format='json',
+        )
+        self.assertEqual(response.json()['code'], 400)
+
+    def test_host_group_tree_counts_hosts_with_exporter(self):
+        from assets.models import HostGroup
+
+        group = HostGroup.objects.create(name='exp-group')
+        self.managed_host.group = group
+        self.managed_host.save(update_fields=['group'])
+        body = self.assertResponseOK(self.client.get('/monitor/targets/host-group-tree/'))
+        node = next(item for item in body['data']['groups'] if item['id'] == group.id)
+        self.assertEqual(node['host_count'], 1)
+        self.assertEqual(node['managed_count'], 1)
+
 
 class PrometheusHttpSDTest(TestCase):
     def setUp(self):
@@ -578,7 +668,6 @@ class SoftwarePackageGenericTest(TestCase):
         )
 
     def test_create_rejects_duplicate_name_version_arch(self):
-        from .models import SoftwarePackage
         res1 = self.client.post('/monitor/packages/', {
             'package_type': 'fluent_bit',
             'name': 'fluent-bit', 'version': '3.1.9', 'os': 'linux', 'arch': 'amd64',
@@ -1112,10 +1201,123 @@ class LogCollectionLifecycleApiTest(TestCase):
         self.assertEqual(response.json()['code'], 400)
         self.assertIn('正在执行', response.json()['msg'])
 
+    def test_batch_retry_dispatches_each_selected_target(self):
+        other_host = Host.objects.create(
+            instance_name='fluent-lifecycle-host-2', ip='10.0.3.12', agent_id='agent-fluent-lifecycle-2',
+        )
+        other_target = LogCollectionTarget.objects.create(host=other_host)
+
+        with mock.patch('monitor.views.dispatch_fluent_bit_install') as dispatch:
+            response = self.client.post(
+                '/monitor/log-targets/batch-retry/',
+                {'ids': [self.target.id, other_target.id]},
+                format='json',
+            )
+
+        body = self.assertResponseOK(response)
+        self.assertEqual(body['data']['total'], 2)
+        self.assertEqual(body['data']['success'], 2)
+        self.assertEqual(body['data']['failed'], 0)
+        self.assertEqual(dispatch.call_count, 2)
+
+    def test_batch_retry_reports_per_target_failure(self):
+        from .log_collection_service import LogCollectionApplyError
+
+        other_host = Host.objects.create(
+            instance_name='fluent-lifecycle-host-3', ip='10.0.3.13', agent_id='agent-fluent-lifecycle-3',
+        )
+        other_target = LogCollectionTarget.objects.create(host=other_host)
+
+        # 单台失败不能中断整批：第一台抛错，第二台仍须下发。
+        with mock.patch(
+            'monitor.views.dispatch_fluent_bit_install',
+            side_effect=[LogCollectionApplyError('没有匹配的安装包'), None],
+        ) as dispatch:
+            response = self.client.post(
+                '/monitor/log-targets/batch-retry/',
+                {'ids': [self.target.id, other_target.id]},
+                format='json',
+            )
+
+        body = self.assertResponseOK(response)
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual(body['data']['success'], 1)
+        self.assertEqual(body['data']['failed'], 1)
+        failed = [item for item in body['data']['results'] if not item['ok']]
+        self.assertEqual(len(failed), 1)
+        self.assertIn('没有匹配的安装包', failed[0]['message'])
+
+    def test_batch_start_service_skips_uninstalled_target(self):
+        response = self.client.post(
+            '/monitor/log-targets/batch-start-service/',
+            {'ids': [self.target.id]},
+            format='json',
+        )
+        body = self.assertResponseOK(response)
+        self.assertEqual(body['data']['failed'], 1)
+        self.assertIn('尚未安装', body['data']['results'][0]['message'])
+
+    def test_batch_action_rejects_empty_ids(self):
+        response = self.client.post('/monitor/log-targets/batch-retry/', {'ids': []}, format='json')
+        self.assertEqual(response.json()['code'], 400)
+
+    def test_host_overview_lists_managed_and_unmanaged_hosts(self):
+        unmanaged = Host.objects.create(
+            instance_name='fluent-unmanaged', ip='10.0.3.20', agent_id='agent-fluent-unmanaged',
+        )
+        response = self.client.get('/monitor/targets/host-overview/')
+        body = self.assertResponseOK(response)
+        rows = {item['host_id']: item for item in body['data']['results']}
+        self.assertTrue(rows[self.host.id]['fluent_bit']['managed'])
+        self.assertEqual(rows[self.host.id]['fluent_bit']['id'], self.target.id)
+        # 未纳管主机同样出现在列表里，用户才能一眼看出哪些还没装。
+        self.assertIn(unmanaged.id, rows)
+        self.assertFalse(rows[unmanaged.id]['fluent_bit']['managed'])
+        self.assertIsNone(rows[unmanaged.id]['fluent_bit']['id'])
+
+    def test_host_overview_filters_by_managed_flag(self):
+        Host.objects.create(instance_name='fluent-unmanaged-2', ip='10.0.3.21')
+        response = self.client.get('/monitor/targets/host-overview/', {'managed': 'false'})
+        body = self.assertResponseOK(response)
+        # 未选定 exporter 时，「未纳管」指既没 exporter 也没 Fluent Bit。
+        for item in body['data']['results']:
+            self.assertFalse(item['managed'])
+            self.assertFalse(item['fluent_bit']['managed'])
+
+    def test_host_group_tree_reports_managed_counts(self):
+        from assets.models import HostGroup
+
+        group = HostGroup.objects.create(name='fluent-group')
+        self.host.group = group
+        self.host.save(update_fields=['group'])
+        response = self.client.get('/monitor/targets/host-group-tree/')
+        body = self.assertResponseOK(response)
+        node = next(item for item in body['data']['groups'] if item['id'] == group.id)
+        self.assertEqual(node['host_count'], 1)
+        self.assertEqual(node['managed_count'], 1)
+
+    def test_batch_create_skips_managed_and_installs_new_host(self):
+        new_host = Host.objects.create(
+            instance_name='fluent-new', ip='10.0.3.22', agent_id='agent-fluent-new',
+        )
+        with mock.patch('monitor.views.dispatch_fluent_bit_install') as dispatch:
+            response = self.client.post(
+                '/monitor/log-targets/batch-create/',
+                {'host_ids': [self.host.id, new_host.id], 'install_now': True},
+                format='json',
+            )
+        body = self.assertResponseOK(response)
+        self.assertEqual(body['data']['success'], 1)
+        self.assertEqual(body['data']['failed'], 1)
+        dispatch.assert_called_once()
+        self.assertTrue(LogCollectionTarget.objects.filter(host=new_host).exists())
+        skipped = next(item for item in body['data']['results'] if not item['ok'])
+        self.assertIn('已纳管', skipped['message'])
+
     def test_list_uses_grpc_registry_as_agent_online_source(self):
         self.host.agent_online = True
         self.host.save(update_fields=['agent_online'])
-        with mock.patch('monitor.views.REGISTRY.connected_agent_ids', return_value=[]):
+        with mock.patch('assets.host_online.REGISTRY.connected_agent_ids', return_value=[]):
             response = self.client.get('/monitor/log-targets/')
         body = self.assertResponseOK(response)
         self.host.refresh_from_db()
@@ -1180,16 +1382,15 @@ class LogCollectionLifecycleApiTest(TestCase):
         self.assertResponseOK(response)
         self.assertFalse(LogCollectionTarget.objects.filter(id=self.target.id).exists())
 
-    def test_delete_keeps_target_when_uninstall_fails(self):
-        from .models import MonitorTargetInstallHistory
-
+    def test_delete_installed_target_dispatches_uninstall_first(self):
         self.target.agent_installed = True
         self.target.save(update_fields=['agent_installed'])
-        failed_history = MonitorTargetInstallHistory(
-            status=MonitorTargetInstallHistory.Status.FAILED,
-        )
-        with mock.patch('monitor.views.dispatch_fluent_bit_uninstall', return_value=failed_history):
+        with mock.patch('monitor.views.dispatch_fluent_bit_uninstall') as dispatch:
             response = self.client.delete(f'/monitor/log-targets/{self.target.id}/')
-        self.assertEqual(response.json()['code'], 400)
+        body = self.assertResponseOK(response)
+        self.assertTrue(body['data']['pending_uninstall'])
+        # 已安装的目标不能立刻删掉：先下发卸载，卸载成功后由 worker 删记录。
+        dispatch.assert_called_once()
+        self.assertTrue(dispatch.call_args.kwargs['delete_after_success'])
         self.assertTrue(LogCollectionTarget.objects.filter(id=self.target.id).exists())
 

@@ -36,6 +36,10 @@ export function runInspectionTask(id) {
   return requestUtil.post(`${taskPrefix}${id}/run/`, {})
 }
 
+export function getInspectionHostScopeTree(params) {
+  return requestUtil.get(`${taskPrefix}host-scope-tree/`, params)
+}
+
 export function getInspectionExecutions(params) {
   return requestUtil.get(executionPrefix, params)
 }

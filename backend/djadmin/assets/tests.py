@@ -1,7 +1,6 @@
 from django.test import TestCase, TransactionTestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,7 +14,7 @@ from .models import (
     ApplicationService, ApplicationServiceDeployment, ClusterProfile, AgentJob,
     HostCredential, HostDisk, HostHardware, HostRuntime, HostSystem, Project, WebSSHSessionLog,
 )
-from .views import _build_application_params, _resolve_target_agent_ids, _run_exporter_job_in_background
+from .views import _build_application_params, _resolve_target_agent_ids, _run_exporter_job
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
@@ -963,7 +962,7 @@ class HostTest(BaseTestCase):
         self.assertIn('count', body['data'])
         self.assertEqual(body['data']['results'][0]['agent_id'], 'agent-host1')
 
-    @patch('assets.views.REGISTRY.connected_agent_ids', return_value=[])
+    @patch('assets.host_online.REGISTRY.connected_agent_ids', return_value=[])
     def test_list_hosts_clears_stale_online_status(self, _mock_connected_agent_ids):
         host = Host.objects.create(
             instance_name='stale-online', agent_id='agent-stale', ip='192.168.1.2', agent_online=True,
@@ -975,7 +974,7 @@ class HostTest(BaseTestCase):
         self.assertFalse(host.agent_online)
         self.assertFalse(body['data']['results'][0]['agent_online'])
 
-    @patch('assets.views.REGISTRY.connected_agent_ids', return_value=['agent-connected'])
+    @patch('assets.host_online.REGISTRY.connected_agent_ids', return_value=['agent-connected'])
     def test_list_hosts_marks_connected_registry_agent_online(self, _mock_connected_agent_ids):
         host = Host.objects.create(
             instance_name='connected-host',
@@ -1011,7 +1010,7 @@ class HostTest(BaseTestCase):
         self.assertResponseOK(res)
         self.assertTrue(Host.objects.filter(instance_name='new_host').exists())
 
-    @patch('assets.views._start_exporter_job_thread')
+    @patch('assets.views._enqueue_exporter_job')
     def test_create_host_with_monitors_payload_should_enqueue_exporter_install(self, mock_start_job):
         """新增主机时通过 monitors 数组纳管 node_exporter 并开启，应下发安装用 automation job。"""
         install_template = _make_playbook_template('node_exporter-install')
@@ -1035,9 +1034,9 @@ class HostTest(BaseTestCase):
         mock_start_job.assert_called_once_with('install', host.id, target.id)
 
     @patch('assets.views.dispatch_exporter_install_job')
-    @patch('assets.views.threading.Thread')
+    @patch('monitor.job_runner.submit_monitor_job')
     def test_create_host_with_monitor_should_not_run_install_in_request_thread(
-        self, mock_thread, mock_dispatch_install,
+        self, mock_submit, mock_dispatch_install,
     ):
         """保存主机只排队安装，避免 SSH/Ansible 执行时间阻塞 API 响应。"""
         res = self.client.post('/assets/hosts/', {
@@ -1050,15 +1049,11 @@ class HostTest(BaseTestCase):
         host = Host.objects.get(instance_name='agent-host-async-monitor')
         target = MonitorTarget.objects.get(host=host, exporter_type='node_exporter')
         mock_dispatch_install.assert_not_called()
-        mock_thread.assert_called_once_with(
-            target=_run_exporter_job_in_background,
-            args=('install', host.id, target.id, False),
-            daemon=True,
-            name=f'monitor-install-{target.id}',
+        mock_submit.assert_called_once_with(
+            _run_exporter_job, 'install', host.id, target.id, manual=False,
         )
-        mock_thread.return_value.start.assert_called_once_with()
 
-    @patch('assets.views._start_exporter_job_thread')
+    @patch('assets.views._enqueue_exporter_job')
     def test_create_host_with_monitor_explicit_port_should_persist_scrape_port(self, mock_start_job):
         install_template = _make_playbook_template('cadvisor-install')
         SoftwarePackage.objects.create(
@@ -1192,7 +1187,7 @@ class HostTest(BaseTestCase):
         self.assertFalse(target.managed_enabled)
         self.assertFalse('已下发安装任务' in target.install_message)
 
-    @patch('assets.views._start_exporter_job_thread')
+    @patch('assets.views._enqueue_exporter_job')
     def test_disable_monitor_should_always_enqueue_uninstall_job(self, mock_start_job):
         """监控从开启切到关闭时，应始终自动下发卸载任务（不再需要额外勾选一次性指令）。"""
         install_template = _make_playbook_template('node_exporter-install-3')

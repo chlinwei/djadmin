@@ -965,7 +965,6 @@ class HostSerializer(ModelSerializer):
 
 
 class HostListSerializer(ModelSerializer):
-    group_name = serializers.SerializerMethodField()
     environment_name = serializers.CharField(source='environment.name', read_only=True)
     agent_credentials = serializers.SerializerMethodField()
     system = serializers.SerializerMethodField()
@@ -973,8 +972,6 @@ class HostListSerializer(ModelSerializer):
     os_type = serializers.SerializerMethodField()
     os_version = serializers.SerializerMethodField()
     kernel_version = serializers.SerializerMethodField()
-    monitor_enabled = serializers.SerializerMethodField()
-    monitor_install_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Host
@@ -990,19 +987,13 @@ class HostListSerializer(ModelSerializer):
             'webssh_login_users',
             'agent_online',
             'collect_status',
-            'group_name',
             'agent_credentials',
             'system',
             'hardware',
             'os_type',
             'os_version',
             'kernel_version',
-            'monitor_enabled',
-            'monitor_install_status',
         ]
-
-    def get_group_name(self, obj):
-        return obj.group.name if obj.group else ''
 
     def get_agent_credentials(self, obj):
         relations = getattr(obj, 'host_credentials', [])
@@ -1078,24 +1069,6 @@ class HostListSerializer(ModelSerializer):
     def get_kernel_version(self, obj):
         system = getattr(obj, 'system', None)
         return system.kernel_version if system else None
-
-    def _get_monitor_target(self, obj):
-        cached_targets = getattr(obj, 'monitor_targets', None)
-        if cached_targets is not None:
-            for item in cached_targets.all():
-                if str(getattr(item, 'exporter_type', '') or '') == 'node_exporter':
-                    return item
-        return obj.monitor_targets.filter(exporter_type='node_exporter').order_by('-id').first()
-
-    def get_monitor_enabled(self, obj):
-        target = self._get_monitor_target(obj)
-        return bool(target and target.managed_enabled)
-
-    def get_monitor_install_status(self, obj):
-        target = self._get_monitor_target(obj)
-        if not target:
-            return 'unknown'
-        return str(target.install_status or 'unknown')
 
 
 class WebSSHSessionLogSerializer(ModelSerializer):

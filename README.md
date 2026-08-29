@@ -15,11 +15,12 @@
 
 - 项目全局上下文：[docs/overview/PROJECT_CONTEXT.md](docs/overview/PROJECT_CONTEXT.md)
 - 调度说明：[docs/ops/SCHEDULER_README.md](docs/ops/SCHEDULER_README.md)
-- ShellScript 实现说明：[docs/ops/SHELLSCRIPT_IMPLEMENTATION.md](docs/ops/SHELLSCRIPT_IMPLEMENTATION.md)
 - Go Agent 架构：[docs/architecture/DJ_AGENT_ARCHITECTURE.md](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
+- 日志采集架构：[docs/architecture/LOG_COLLECTION_ARCHITECTURE.md](docs/architecture/LOG_COLLECTION_ARCHITECTURE.md)
 - API 规范：[.github/API_RULES.md](.github/API_RULES.md)
 - 前端说明：[fronted/README.md](fronted/README.md)
-- 后端说明：[backend/djadmin/README.md](backend/djadmin/README.md)
+- Agent 说明：[dj_agent/README.md](dj_agent/README.md)
+- 自动化模型关系：[backend/djadmin/automation/MODEL_RELATIONSHIP.md](backend/djadmin/automation/MODEL_RELATIONSHIP.md)
 
 ## 快速启动
 
@@ -46,6 +47,15 @@ npm run dev
 ```bash
 cd backend/djadmin
 python manage.py runscheduler
+```
+
+### dj-agent
+
+必须通过 Makefile 构建（强制 `CGO_ENABLED=0`，禁止裸跑 `go build`）：
+
+```bash
+cd dj_agent
+make build
 ```
 
 ## 维护原则

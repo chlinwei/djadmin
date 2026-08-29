@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
@@ -103,20 +104,46 @@ func applicationRunUserCommand(ctx context.Context, commandText, runUser string)
 	if err != nil {
 		return nil, fmt.Errorf("无法查找应用运行用户 %q: %w", runUser, err)
 	}
+	targetUID, parseErr := strconv.ParseUint(targetUser.Uid, 10, 32)
+	if parseErr != nil {
+		return nil, fmt.Errorf("应用运行用户 %q 的 UID 无效", runUser)
+	}
+	// login shell 加载目标用户 profile，使 JAVA_HOME 等用户级环境生效。
 	command := exec.CommandContext(ctx, "/bin/bash", "-lc", commandText)
-	if os.Geteuid() == 0 {
-		// root 通过 sudo 启动目标用户的 login shell，动态加载该用户的 profile。
-		sudoArgs := []string{"-u", targetUser.Username, "-H", "env"}
-		sudoArgs = append(sudoArgs, "/bin/bash", "-lc", commandText)
-		command = exec.CommandContext(ctx, "sudo", sudoArgs...)
+	command.Env = systemdUserEnvironment(os.Environ(), targetUser, targetUID)
+	if uint64(os.Geteuid()) == targetUID {
 		return command, nil
 	}
-	targetUID, parseErr := strconv.ParseUint(targetUser.Uid, 10, 32)
-	if parseErr != nil || uint64(os.Geteuid()) != targetUID {
+	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("dj-agent 必须以 root 或目标用户 %q 运行", runUser)
 	}
-	command.Env = systemdUserEnvironment(os.Environ(), targetUser, targetUID)
+	targetGID, gidErr := strconv.ParseUint(targetUser.Gid, 10, 32)
+	if gidErr != nil {
+		return nil, fmt.Errorf("应用运行用户 %q 的 GID 无效", runUser)
+	}
+	// 直接 setuid/setgid 降权，不走 sudo：sudoers 常带 requiretty，Agent 无 tty 会被拒绝执行。
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid:    uint32(targetUID),
+		Gid:    uint32(targetGID),
+		Groups: supplementaryGroupIDs(targetUser),
+	}}
 	return command, nil
+}
+
+func supplementaryGroupIDs(targetUser *user.User) []uint32 {
+	groupIDs, err := targetUser.GroupIds()
+	if err != nil {
+		return nil
+	}
+	groups := make([]uint32, 0, len(groupIDs))
+	for _, rawGID := range groupIDs {
+		gid, parseErr := strconv.ParseUint(rawGID, 10, 32)
+		if parseErr != nil {
+			continue
+		}
+		groups = append(groups, uint32(gid))
+	}
+	return groups
 }
 
 func applicationDockerControlCommand(ctx context.Context, params map[string]any, action string) (*exec.Cmd, error) {

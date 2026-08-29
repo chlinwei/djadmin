@@ -1,6 +1,6 @@
 from typing import Any
 
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.utils import timezone
 
 from assets.models import Host, HostGroup
@@ -9,48 +9,17 @@ from .models import AutomationExecutionJob
 from .executor_playbook import execute_playbook_job
 
 
-def _build_group_descendants(group_ids: list[int]) -> set[int]:
-    if not group_ids:
-        return set()
-
-    id_set = set(group_ids)
-    queue = list(group_ids)
-
-    while queue:
-        current = queue.pop(0)
-        children = HostGroup.objects.filter(parent_id=current).values_list('id', flat=True)
-        for child_id in children:
-            if child_id not in id_set:
-                id_set.add(child_id)
-                queue.append(child_id)
-
-    return id_set
+def _safe_close_old_connections() -> None:
+    if not connection.in_atomic_block:
+        close_old_connections()
 
 
-def _collect_hosts(host_ids: list[int], group_ids: list[int]) -> list[Host]:
-    queryset = Host.objects.filter(ip__isnull=False).select_related('group').order_by('id')
-
-    conditions = []
-    if host_ids:
-        conditions.append({'id__in': host_ids})
-
-    group_id_set = _build_group_descendants(group_ids)
-    if group_id_set:
-        conditions.append({'group_id__in': list(group_id_set)})
-
-    if not conditions:
-        # Empty scope means "all hosts with IP" for automation task execution.
-        return list(queryset)
-
-    combined_ids = set()
-    for condition in conditions:
-        ids = queryset.filter(**condition).values_list('id', flat=True)
-        combined_ids.update(ids)
-
-    if not combined_ids:
+def _collect_hosts(host_ids: list[int]) -> list[Host]:
+    if not host_ids:
         return []
-
-    return list(queryset.filter(id__in=list(combined_ids)).order_by('id'))
+    return list(
+        Host.objects.filter(id__in=host_ids, ip__isnull=False).select_related('group').order_by('id')
+    )
 
 
 def _build_group_path_map(group_ids: list[int]) -> dict[int, str]:
@@ -85,34 +54,34 @@ def _build_group_path_map(group_ids: list[int]) -> dict[int, str]:
     return cache
 
 
-def build_inventory_snapshot(host_ids: list[int], group_ids: list[int]) -> dict[str, Any]:
-    hosts = _collect_hosts(host_ids, group_ids)
+def build_inventory_snapshot(host_ids: list[int]) -> dict[str, Any]:
+    hosts = _collect_hosts(host_ids)
     snapshot_hosts: list[dict[str, Any]] = []
-    snapshot_group_ids = [int(host.group_id) for host in hosts if host.group_id is not None]
+    snapshot_group_ids = [int(host.group_id) for host in hosts if getattr(host, 'group_id', None) is not None]  # type: ignore[attr-defined]
     group_path_map = _build_group_path_map(snapshot_group_ids)
 
     for host in hosts:
+        group_id_val = getattr(host, 'group_id', None)
         snapshot_hosts.append({
-            'host_id': host.id,
+            'host_id': getattr(host, 'id', None),
             'host_name': str(host.instance_name).strip(),
             'host_ip': host.ip,
-            'group_id': host.group_id,
-            'group_name': host.group.name if getattr(host, 'group', None) else '',
-            'group_path': group_path_map.get(int(host.group_id), '') if host.group_id is not None else '',
+            'group_id': group_id_val,
+            'group_name': host.group.name if getattr(host, 'group', None) else '',  # type: ignore[attr-defined]
+            'group_path': group_path_map.get(int(group_id_val), '') if group_id_val is not None else '',
             # agent 在线状态由 gRPC Session 建立与断开同步到 DB。
             'agent_online': bool(getattr(host, 'agent_online', False)),
         })
 
     return {
         'selected_host_ids': host_ids,
-        'selected_group_ids': group_ids,
         'hosts': snapshot_hosts,
     }
 
 
 def execute_automation_job(job_id: int) -> None:
     # Ensure thread uses a valid DB connection lifecycle.
-    close_old_connections()
+    _safe_close_old_connections()
 
     # Claim the job via an atomic state transition so duplicate deliveries cannot execute twice.
     start_time = timezone.now()
@@ -125,12 +94,12 @@ def execute_automation_job(job_id: int) -> None:
         result_summary={'message': 'Job is running'},
     )
     if claimed == 0:
-        close_old_connections()
+        _safe_close_old_connections()
         return
 
     job = AutomationExecutionJob.objects.filter(id=job_id).first()
     if not job:
-        close_old_connections()
+        _safe_close_old_connections()
         return
 
     template_content = (job.template_content_snapshot or '').strip()
@@ -146,7 +115,7 @@ def execute_automation_job(job_id: int) -> None:
             'failed': 0,
         }
         job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
-        close_old_connections()
+        _safe_close_old_connections()
         return
 
     snapshot_hosts = job.inventory_snapshot.get('hosts', []) if isinstance(job.inventory_snapshot, dict) else []
@@ -165,35 +134,36 @@ def execute_automation_job(job_id: int) -> None:
             'execution_mode': 'backend_ansible',
         }
         job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
-        close_old_connections()
+        _safe_close_old_connections()
         return
 
-    latest_job = AutomationExecutionJob.objects.filter(id=job.id).values('status').first()
+    job_pk = getattr(job, 'id', None) or getattr(job, 'pk', None)
+    latest_job = AutomationExecutionJob.objects.filter(id=job_pk).values('status').first()
     if latest_job and latest_job.get('status') == AutomationExecutionJob.Status.CANCELLED:
         run_success = False
         return_code = -1
         success_count = 0
         failed_count = total_targets
     else:
-        run_success, agent_summary, _ = execute_playbook_job(job)
-        success_count = int(agent_summary.get('success', 0) or 0)
-        failed_count = int(agent_summary.get('failed', total_targets if not run_success else 0) or 0)
+        run_success, playbook_summary, _ = execute_playbook_job(job)
+        success_count = int(playbook_summary.get('success', 0) or 0)
+        failed_count = int(playbook_summary.get('failed', total_targets if not run_success else 0) or 0)
         return_code = 0 if run_success else 1
         job.result_summary = {
-            'message': str(agent_summary.get('message') or 'Execution finished'),
+            'message': str(playbook_summary.get('message') or 'Execution finished'),
             'total': total_targets,
             'success': success_count,
             'failed': failed_count,
             'rc': return_code,
             'execution_mode': 'backend_ansible',
-            'forks': int(agent_summary.get('forks', 0) or 0),
-            'failed_rows': agent_summary.get('failed_rows', []),
-            'failure_details': agent_summary.get('failure_details', []),
+            'forks': int(playbook_summary.get('forks', 0) or 0),
+            'failed_rows': playbook_summary.get('failed_rows', []),
+            'failure_details': playbook_summary.get('failure_details', []),
         }
         job.save(update_fields=['result_summary'])
 
     final_status = AutomationExecutionJob.Status.SUCCESS if failed_count == 0 else AutomationExecutionJob.Status.FAILED
-    latest_status = AutomationExecutionJob.objects.filter(id=job.id).values_list('status', flat=True).first()
+    latest_status = AutomationExecutionJob.objects.filter(id=job_pk).values_list('status', flat=True).first()
     if latest_status == AutomationExecutionJob.Status.CANCELLED:
         final_status = AutomationExecutionJob.Status.CANCELLED
 
@@ -216,4 +186,4 @@ def execute_automation_job(job_id: int) -> None:
     job.result_summary = result_summary
     job.save(update_fields=['status', 'end_time', 'duration_seconds', 'result_summary'])
 
-    close_old_connections()
+    _safe_close_old_connections()

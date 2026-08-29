@@ -254,7 +254,7 @@ function hasPermission(action) {
   return checkPermission(`${playbookConfig.permPrefix}:${action}`)
 }
 
-function resolveOrdering() {
+function resolveTemplateOrdering() {
   if (!sortState.field || !sortState.order) return '-id'
   return `${sortState.order === 'descend' ? '-' : ''}${sortState.field}`
 }
@@ -272,7 +272,7 @@ async function loadTemplates(resetPage = false) {
       page: pagination.current,
       page_size: pagination.pageSize,
       search: keyword.value,
-      ordering: resolveOrdering(),
+      ordering: resolveTemplateOrdering(),
     }
     if (categoryFilter.value) params.category = categoryFilter.value
     const res = await playbookConfig.list(params)
@@ -453,8 +453,8 @@ function handleTableChange(page, _filters, sorter) {
   pagination.pageSize = page.pageSize
 
   const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
-  const allowed = ['name', 'update_time']
-  if (nextSorter?.field && allowed.includes(nextSorter.field) && nextSorter.order) {
+  const allowedFields = ['name', 'update_time']
+  if (nextSorter?.field && allowedFields.includes(nextSorter.field) && nextSorter.order) {
     sortState.field = nextSorter.field
     sortState.order = nextSorter.order
   } else {

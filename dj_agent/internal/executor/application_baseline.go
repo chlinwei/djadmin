@@ -204,7 +204,7 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录必须为绝对路径")
 	}
 	command.Dir = workDirectory
-	applyCommandEnvironment(command, check["environment"])
+	command.Env = mergeCommandEnvironment(command.Env, check["environment"])
 	// 记录展开后的命令与注入变量，便于在巡检详情里定位变量未生效、路径拼接错误等问题。
 	executedCommand := strings.Join(command.Args, " ")
 	injectedEnvironment := allowedCommandEnvironment(check["environment"])
@@ -248,29 +248,6 @@ func checkShell(ctx context.Context, check map[string]any) applicationCheckResul
 		return newPlanCheckResult(check, "fail", actual, "Shell 命令输出与期望值不一致")
 	}
 	return newPlanCheckResult(check, "pass", actual, "")
-}
-
-// applyCommandEnvironment 注入巡检变量。root 场景命令形如 `sudo -u user -H env /bin/bash -lc ...`，
-// sudo 会清空环境，变量必须作为 env 的实参传入才能对目标进程生效。
-func applyCommandEnvironment(command *exec.Cmd, rawEnvironment any) {
-	overrides := allowedCommandEnvironment(rawEnvironment)
-	if len(overrides) == 0 {
-		return
-	}
-	for index, arg := range command.Args {
-		if arg != "env" {
-			continue
-		}
-		assignments := make([]string, 0, len(overrides))
-		for _, key := range allowedEnvironmentKeys {
-			if value, exists := overrides[key]; exists {
-				assignments = append(assignments, key+"="+value)
-			}
-		}
-		command.Args = append(command.Args[:index+1], append(assignments, command.Args[index+1:]...)...)
-		return
-	}
-	command.Env = mergeCommandEnvironment(command.Env, rawEnvironment)
 }
 
 var allowedEnvironmentKeys = []string{"APP_HOME", "RUN_USER", "WORK_DIRECTORY", "APPLICATION_NAME", "APPLICATION_CODE", "APPLICATION_VERSION", "INSTANCE_NAME"}

@@ -1,6 +1,5 @@
 from rest_framework import serializers
-from .models import SysMenu,SysRoleMenu
-from rest_framework.renderers import JSONRenderer
+from .models import SysMenu
 from datetime import datetime
 
 # 菜单树最大层级 — 从 sys_config 动态读取，首次调用自动写入默认值
@@ -38,19 +37,6 @@ def _get_menu_depth(menu_id):
         current_id = row['parent_id']
         depth += 1
     return depth
-
-class SysMenuSerializer(serializers.ModelSerializer):
-    children = serializers.SerializerMethodField()
-    def get_children(self, obj):
-        if hasattr(obj, "children"):
-            serializerMenuList: list[SysMenuSerializer2] = list()
-            for sysMenu in obj.children:
-                serializerMenuList.append(SysMenuSerializer2(sysMenu).data)  # type: ignore[arg-type]
-            return serializerMenuList
-    class Meta:
-        model = SysMenu
-        fields = '__all__'
-
 
 class SysMenuDynamicListSerializer(serializers.BaseSerializer):
     @staticmethod
@@ -117,12 +103,3 @@ class SysMenuSerializer2(serializers.ModelSerializer):
         validated_data["create_time"] = datetime.now().date()
         menu = SysMenu.objects.create(**validated_data)
         return menu
-
-
-
-
-
-class SysRoleMenuSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SysRoleMenu
-        fields = '__all__'

@@ -185,6 +185,44 @@ export const staticRouterMap = [
     },
 ]
 
+// KeepAlive 的 include 按“组件名”匹配，而本项目几乎所有页面都是 index.vue 且未声明 name，
+// Vue 会把它们的名字统统推断成 index。同名会让“关闭一个标签”连带剪掉其他同名页面的缓存，
+// 甚至卸载掉正在挂载的实例，表现为 unmount 阶段读 null 的 type/subTree/parentNode。
+// 按路由记录路径盖一个唯一名字，使缓存项与 include 一一对应。
+export function keepAliveNameOf(path) {
+    const normalized = String(path || '').replace(/^\/+/, '').replace(/[^A-Za-z0-9]+/g, '_')
+    return `view_${normalized || 'root'}`
+}
+
+function withKeepAliveName(loader, path) {
+    if (typeof loader !== 'function') {
+        return loader
+    }
+    const name = keepAliveNameOf(path)
+    return async () => {
+        const loaded = await loader()
+        const component = loaded?.default ?? loaded
+        if (component && typeof component === 'object') {
+            component.name = name
+        }
+        return component
+    }
+}
+
+function stampKeepAliveNames(routes) {
+    routes.forEach((route) => {
+        if (route.component) {
+            route.component = withKeepAliveName(route.component, route.path)
+        }
+        if (Array.isArray(route.children)) {
+            stampKeepAliveNames(route.children)
+        }
+    })
+    return routes
+}
+
+stampKeepAliveNames(staticRouterMap)
+
 function resolveMenuComponent(componentPath) {
     if (!componentPath) {
         return null
@@ -233,7 +271,7 @@ function collectLeafRoutes(menuList, collector = []) {
             collector.push({
                 path: item.path,
                 name: item.name,
-                component,
+                component: withKeepAliveName(component, item.path),
             })
         }
 

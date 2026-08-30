@@ -62,7 +62,7 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
     if not task.enabled or not task.group.enabled:
         raise InspectionRequestError('巡检任务或巡检组已禁用')
 
-    checks = list(task.group.checks.filter(enabled=True).values('name', 'executor', 'config', 'severity', 'order'))
+    checks = list(task.group.checks.filter(enabled=True).values('name', 'executor', 'execution_location', 'config', 'severity', 'order'))
     if not checks:
         raise InspectionRequestError('巡检组没有启用的检查项')
 
@@ -71,12 +71,14 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
     deployments = []
     hosts = []
     skipped_no_agent = 0
+    requires_agent = any(check['execution_location'] == 'agent' for check in checks)
+    has_controller_checks = any(check['execution_location'] == 'controller' for check in checks)
     if scope == InspectionGroup.Scope.PER_HOST:
         group_hosts = resolve_scope_hosts(task.selected_host_ids)
         if not group_hosts:
             raise InspectionRequestError('巡检任务的主机范围为空')
         # 从未安装 Agent 的主机永远无法巡检，归为跳过；当成失败会虚高 failed 并触发误告警。
-        hosts = [item for item in group_hosts if str(item.agent_id or '').strip()]
+        hosts = group_hosts if has_controller_checks else [item for item in group_hosts if str(item.agent_id or '').strip()]
         skipped_no_agent = len(group_hosts) - len(hosts)
         if not hosts:
             raise InspectionRequestError('主机范围内没有已安装 Agent 的主机')
@@ -156,7 +158,7 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
                     host_id_snapshot=item.pk,
                     host_ip_snapshot=str(item.ip or ''),
                     agent_id_snapshot=str(item.agent_id or ''),
-                    **_offline_fields(item, run_time),
+                    **(_offline_fields(item, run_time) if requires_agent and not has_controller_checks else {}),
                 )
                 for item in hosts
             ])
@@ -169,7 +171,7 @@ def create_execution(task, *, requested_user_id=None, requested_username='', tri
                     host_id_snapshot=item.host_id,
                     host_ip_snapshot=str(item.host.ip or ''),
                     agent_id_snapshot=str(item.host.agent_id or ''),
-                    **_offline_fields(item.host, run_time),
+                    **(_offline_fields(item.host, run_time) if requires_agent and not has_controller_checks else {}),
                 )
                 for item in deployments
             ])

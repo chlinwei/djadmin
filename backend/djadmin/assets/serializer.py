@@ -160,6 +160,12 @@ class ClusterProfileSerializer(ModelSerializer):
         return attrs
 
 
+class ApplicationServiceLogSettingSerializer(ModelSerializer):
+    class Meta:
+        model = ApplicationServiceLogSetting
+        fields = ['log_definition', 'retention_tier', 'collection_enabled']
+
+
 class ApplicationServiceSerializer(ModelSerializer):
     business_system_name = serializers.CharField(source='business_system.name', read_only=True)
     environment_name = serializers.CharField(source='environment.name', read_only=True)
@@ -175,6 +181,7 @@ class ApplicationServiceSerializer(ModelSerializer):
         child=serializers.DictField(), write_only=True, required=False,
     )
     member_instances = serializers.SerializerMethodField()
+    log_settings = ApplicationServiceLogSettingSerializer(many=True, required=False)
 
     class Meta:
         model = ApplicationService
@@ -276,6 +283,11 @@ class ApplicationServiceSerializer(ModelSerializer):
         if cluster_profile and cluster_profile.cluster_type == ClusterProfile.ClusterType.HA:
             if not str(access_address or '').strip():
                 raise serializers.ValidationError({'access_address': 'HA 集群必须填写 VIP'})
+        log_settings = attrs.get('log_settings')
+        if log_settings and deployment_template is not None:
+            template_log_ids = set(deployment_template.logs.values_list('id', flat=True))
+            if any(item['log_definition'].pk not in template_log_ids for item in log_settings):
+                raise serializers.ValidationError({'log_settings': '日志覆盖配置必须属于当前部署模板'})
         return attrs
 
     def get_member_instances(self, obj):
@@ -300,6 +312,29 @@ class ApplicationServiceSerializer(ModelSerializer):
         ]
 
     @staticmethod
+    def _save_log_settings(instance, log_settings):
+        if log_settings is None:
+            return
+        # 两项都为空的行等于“完全继承”，不落库，避免覆盖表堆积无意义记录。
+        effective = [
+            item for item in log_settings
+            if item.get('retention_tier') is not None or item.get('collection_enabled') is not None
+        ]
+        keep_ids = [item['log_definition'].pk for item in effective]
+        ApplicationServiceLogSetting.objects.filter(service=instance).exclude(
+            log_definition_id__in=keep_ids,
+        ).delete()
+        for item in effective:
+            ApplicationServiceLogSetting.objects.update_or_create(
+                service=instance,
+                log_definition=item['log_definition'],
+                defaults={
+                    'retention_tier': item.get('retention_tier'),
+                    'collection_enabled': item.get('collection_enabled'),
+                },
+            )
+
+    @staticmethod
     def _save_members(instance, member_configs):
         if member_configs is None:
             return
@@ -317,20 +352,26 @@ class ApplicationServiceSerializer(ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         member_configs = validated_data.pop('member_configs', None)
+        log_settings = validated_data.pop('log_settings', None)
         instance = super().create(validated_data)
         self._save_members(instance, member_configs)
+        self._save_log_settings(instance, log_settings)
         return instance
 
     @transaction.atomic
     def update(self, instance, validated_data):
         member_configs = validated_data.pop('member_configs', None)
+        log_settings = validated_data.pop('log_settings', None)
         instance = super().update(instance, validated_data)
         self._save_members(instance, member_configs)
+        self._save_log_settings(instance, log_settings)
         return instance
 
 
 class ApplicationDeploymentTemplateSerializer(ModelSerializer):
     application_name = serializers.CharField(source='application.name', read_only=True)
+    # 逻辑服务对模板是 PROTECT 外键，数量不为 0 时模板删不掉，列表需要直接可见。
+    service_count = serializers.IntegerField(read_only=True)
     ports = ApplicationPortSerializer(many=True, required=False)
     paths = ApplicationPathSerializer(many=True, required=False)
     config_files = ApplicationConfigFileSerializer(many=True, required=False)

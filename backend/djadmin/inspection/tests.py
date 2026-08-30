@@ -22,7 +22,7 @@ from assets.models import (
 from user.models import SysUser
 
 from .alerting import sync_inspection_alert
-from .executor import _agent_params, _select_service_agent, run_inspection_execution
+from .executor import _agent_params, _controller_checks, _select_service_agent, run_inspection_execution
 from .models import (
     InspectionExecution,
     InspectionGroup,
@@ -116,6 +116,21 @@ class InspectionTestCase(TransactionTestCase):
             'checks': [{'name': 'local-port', 'executor': 'tcp', 'config': {'host': '', 'port': 8080}}],
         })
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_group_rejects_controller_schema_check(self):
+        serializer = InspectionGroupSerializer(data={
+            'name': 'controller-schema', 'scope': InspectionGroup.Scope.PER_HOST,
+            'checks': [{
+                'name': 'config', 'executor': 'schema_validate', 'execution_location': 'controller',
+                'config': {
+                    'path': '/etc/demo.json', 'document_type': 'json',
+                    'schema_type': 'json_schema', 'schema_content': '{}',
+                },
+            }],
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('checks', serializer.errors)
 
     def test_group_validates_schema_configuration(self):
         serializer = InspectionGroupSerializer(data={
@@ -270,6 +285,40 @@ class InspectionTestCase(TransactionTestCase):
 
         self.assertEqual(check['host'], '127.0.0.1')
         self.assertEqual(check['port'], 8080)
+
+    @patch('inspection.executor.build_opener')
+    def test_controller_http_check_runs_without_agent(self, build_opener):
+        host = Host.objects.create(instance_name='controller-target', ip='10.0.0.20')
+        deployment = ApplicationDeployment.objects.create(host=host, instance_name='controller-target')
+        ApplicationServiceDeployment.objects.create(service=self.service, deployment=deployment, enabled=True)
+        execution = InspectionExecution.objects.create(
+            task_snapshot={'timeout_seconds': 10},
+            group_snapshot={'checks': [{
+                'name': 'health', 'executor': 'http', 'execution_location': 'controller',
+                'config': {'url': 'http://${HOST_IP}/health', 'expected_status': 200},
+            }]},
+        )
+        build_opener.return_value.open.return_value.status = 200
+
+        checks = _controller_checks(execution, deployment=deployment)
+
+        self.assertEqual(checks[0]['status'], 'pass')
+        build_opener.return_value.open.assert_called_once_with('http://10.0.0.20/health', timeout=10)
+
+    def test_controller_shell_check_runs_on_backend_host(self):
+        host = Host.objects.create(instance_name='controller-shell', ip='10.0.0.21')
+        execution = InspectionExecution.objects.create(
+            task_snapshot={'timeout_seconds': 10},
+            group_snapshot={'checks': [{
+                'name': 'reachable', 'executor': 'shell', 'execution_location': 'controller',
+                'config': {'command': 'echo ${HOST_IP}', 'work_directory': '/', 'expected_output': '${HOST_IP}'},
+            }]},
+        )
+
+        checks = _controller_checks(execution, host=host)
+
+        self.assertEqual(checks[0]['status'], 'pass')
+        self.assertEqual(checks[0]['actual']['stdout'], '10.0.0.21')
 
     def test_persist_results_keeps_plan_error_and_excludes_control_check(self):
         execution = InspectionExecution.objects.create()

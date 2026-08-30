@@ -145,6 +145,69 @@
             </div>
           </a-col>
           <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
+          <a-col :span="24">
+            <a-divider orientation="left">日志</a-divider>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="开启日志采集">
+              <a-switch v-model:checked="form.log_collection_enabled" />
+              <div class="field-hint">关闭时该服务下所有实例均不采集。</div>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="默认保留档位">
+              <a-select
+                v-model:value="form.log_retention_tier"
+                allow-clear
+                placeholder="请选择保留档位"
+                :options="retentionTierOptions"
+                :getPopupContainer="getPopupContainer"
+              />
+              <div class="field-hint">档位决定写入哪个 data stream 及其过期策略。</div>
+            </a-form-item>
+          </a-col>
+          <a-col v-if="form.id" :span="24">
+            <a-form-item label="模板日志">
+              <a-table
+                :columns="logTableColumns"
+                :data-source="templateLogRows"
+                :pagination="false"
+                row-key="log_definition"
+                size="small"
+                :scroll="{ x: 1150 }"
+              >
+                <template #bodyCell="{ column, record }">
+                  <template v-if="column.key === 'resolved_path'"><code>{{ record.resolved_path }}</code></template>
+                  <template v-else-if="column.key === 'processing_rule_name'">
+                    <span v-if="record.processing_rule_name">{{ record.processing_rule_name }}</span>
+                    <a-tag v-else color="orange">未配置</a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'collection_enabled'">
+                    <a-select
+                      :value="logOverrides[record.log_definition]?.collection_enabled ?? null"
+                      :options="[
+                        { label: `继承（${record.template_collection_enabled ? '开' : '关'}）`, value: null },
+                        { label: '强制开启', value: true },
+                        { label: '强制关闭', value: false },
+                      ]"
+                      :getPopupContainer="getPopupContainer"
+                      @update:value="setLogOverride(record.log_definition, 'collection_enabled', $event)"
+                    />
+                  </template>
+                  <template v-else-if="column.key === 'retention_tier'">
+                    <a-select
+                      :value="logOverrides[record.log_definition]?.retention_tier ?? null"
+                      :options="[{ label: '继承服务默认', value: null }, ...retentionTierOptions]"
+                      :getPopupContainer="getPopupContainer"
+                      @update:value="setLogOverride(record.log_definition, 'retention_tier', $event)"
+                    />
+                  </template>
+                  <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
+                </template>
+              </a-table>
+              <div class="field-hint">日志定义与处理规则在部署模板维护；此处只做服务级覆盖。保存后重新打开可刷新 data stream 预览。</div>
+            </a-form-item>
+          </a-col>
           <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
       </a-form>
@@ -213,12 +276,14 @@ import {
   getApplicationDeploymentTemplateList,
   getApplicationList,
   getApplicationService,
+  getApplicationServiceLogConfig,
   getApplicationVersionList,
   getBusinessEnvironmentList,
   getBusinessSystemList,
   getClusterProfileList,
   saveApplicationService,
 } from '@/api/assets/application'
+import { getLogRetentionTiers } from '@/api/monitor'
 
 const props = defineProps({
   open: { type: Boolean, required: true },
@@ -248,12 +313,28 @@ const templateRecords = ref([])
 const selectedDeploymentIds = ref([])
 const memberEnabled = reactive({})
 const environmentRecords = ref([])
+const retentionTierRecords = ref([])
+const templateLogRows = ref([])
+// 服务级覆盖：键为日志定义 ID，值为 null 表示继承。
+const logOverrides = reactive({})
+const retentionTierOptions = computed(() => retentionTierRecords.value
+  .filter((item) => item.enabled)
+  .map((item) => ({ label: `${item.name}（${item.retention_days} 天）`, value: item.id })))
+const logTableColumns = [
+  { title: '日志名称', key: 'name', width: 150 },
+  { title: '路径', key: 'resolved_path', width: 260 },
+  { title: '处理规则', key: 'processing_rule_name', width: 160 },
+  { title: '采集', key: 'collection_enabled', width: 130 },
+  { title: '保留档位', key: 'retention_tier', width: 190 },
+  { title: 'Data Stream', key: 'data_stream', width: 260 },
+]
 const topologyOptions = [{ label: '单机', value: 'standalone' }, { label: '集群', value: 'cluster' }, { label: '负载均衡', value: 'load_balancer' }]
 const initialForm = () => ({
   id: null, business_system: null, application: null, application_version: null, deployment_template: null, cluster_profile: null,
   name: '', code: '', environment: null, topology_type: 'standalone',
   macro_values: {},
   access_address: '',
+  log_collection_enabled: false, log_retention_tier: null,
   enabled: true, remark: '',
 })
 const form = reactive(initialForm())
@@ -452,6 +533,7 @@ async function initialize() {
       ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
       ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
       ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
+      ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
     ]
     const results = await Promise.all(loaders.map(async ([label, loader]) => {
       try {
@@ -477,6 +559,7 @@ async function initialize() {
     templateRecords.value = templates
     profileRecords.value = profiles
     deploymentRecords.value = deployments
+    retentionTierRecords.value = records['保留档位']
     if (props.serviceId) {
       const response = await getApplicationService(props.serviceId)
       const data = response?.data?.data || {}
@@ -486,6 +569,7 @@ async function initialize() {
       for (const item of data.member_instances || []) {
         memberEnabled[item.deployment] = item.enabled !== false
       }
+      await loadLogConfig(props.serviceId)
     } else if (props.clusterProfileId) {
       form.topology_type = 'cluster'
       form.cluster_profile = props.clusterProfileId
@@ -496,6 +580,29 @@ async function initialize() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadLogConfig(serviceId) {
+  try {
+    const response = await getApplicationServiceLogConfig(serviceId)
+    const data = response?.data?.data || {}
+    templateLogRows.value = data.logs || []
+    for (const key of Object.keys(logOverrides)) delete logOverrides[key]
+    for (const row of templateLogRows.value) {
+      // 后端只在存在覆盖行时返回非 null，这里统一初始化成三态控件可用的结构。
+      logOverrides[row.log_definition] = {
+        retention_tier: row.retention_tier ?? null,
+        collection_enabled: row.collection_enabled === row.template_collection_enabled ? null : row.collection_enabled,
+      }
+    }
+  } catch {
+    templateLogRows.value = []
+  }
+}
+
+function setLogOverride(logDefinition, field, value) {
+  const current = logOverrides[logDefinition] || { retention_tier: null, collection_enabled: null }
+  logOverrides[logDefinition] = { ...current, [field]: value ?? null }
 }
 
 async function submit() {
@@ -518,6 +625,13 @@ async function submit() {
       deployment,
       enabled: memberEnabled[deployment] !== false,
     }))
+    payload.log_settings = Object.entries(logOverrides)
+      .filter(([, value]) => value.retention_tier !== null || value.collection_enabled !== null)
+      .map(([logDefinition, value]) => ({
+        log_definition: Number(logDefinition),
+        retention_tier: value.retention_tier,
+        collection_enabled: value.collection_enabled,
+      }))
     await saveApplicationService(payload)
     message.success('保存成功')
     emit('update:open', false)
@@ -533,6 +647,8 @@ watch(() => props.open, (visible) => {
   if (visible) {
     deploymentDialogOpen.value = false
     selectedDeploymentIds.value = []
+    templateLogRows.value = []
+    for (const key of Object.keys(logOverrides)) delete logOverrides[key]
     for (const key of Object.keys(memberEnabled)) delete memberEnabled[key]
     initialize()
   }
@@ -576,6 +692,11 @@ watch(() => form.cluster_profile, () => {
 </script>
 
 <style scoped>
+.field-hint {
+  margin-top: 4px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
 .inline-create-empty {
   display: flex;
   min-height: 72px;

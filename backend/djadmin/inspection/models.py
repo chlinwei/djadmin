@@ -32,9 +32,19 @@ class InspectionCheck(BaseModel):
         HTTP = 'http', 'Agent HTTP'
         TCP = 'tcp', 'Agent TCP'
 
+    class ExecutionLocation(models.TextChoices):
+        AGENT = 'agent', 'Agent'
+        CONTROLLER = 'controller', 'djadmin'
+
     group = models.ForeignKey(InspectionGroup, on_delete=models.CASCADE, related_name='checks')
     name = models.CharField(max_length=128, verbose_name='检查项名称')
     executor = models.CharField(max_length=16, choices=Executor.choices, verbose_name='执行器')
+    execution_location = models.CharField(
+        max_length=16,
+        choices=ExecutionLocation.choices,
+        default=ExecutionLocation.AGENT,
+        verbose_name='执行位置',
+    )
     config = models.JSONField(default=dict, blank=True, verbose_name='检查配置')
     # warning 级检查项失败不会把目标判为失败，只在汇总里计数，用于区分“进程已死”和“磁盘偏高”。
     severity = models.CharField(

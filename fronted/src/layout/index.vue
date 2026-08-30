@@ -37,27 +37,36 @@ import Footer from "@/layout/footer/index.vue"
 import Tabs from "@/layout/tabs/index.vue"
 import {ref} from 'vue'
 import store from '@/store/index.js';
-import router from '@/router/index.js';
+import router, {keepAliveNameOf} from '@/router/index.js';
 import {computed} from 'vue';
 
 
+// tab.key 存的是 fullPath（可能带 query），路由表里只有 path，必须先解析成匹配到的路由记录再取缓存名。
+function resolveTabCacheName(tabKey) {
+    const path = String(tabKey || '').split(/[?#]/)[0]
+    if (!path) return ''
+    try {
+        const matched = router.resolve(path).matched
+        const record = matched.length ? matched[matched.length - 1] : null
+        return record ? keepAliveNameOf(record.path) : ''
+    } catch {
+        return ''
+    }
+}
 
+let cachedIncludes = []
 const tab_includes = computed(()=>{
-    var tmp_tab_includes = []
-    store.state.tabs.forEach(element => {
-        console.log(element.key)
-        router.getRoutes().forEach(e2 => {
-            if(e2.path == element.key) {
-                if(e2.components) {
-                    if(e2.components.default.name) {
-                        tmp_tab_includes.push(e2.components.default.name)
-                    }
-                }
-            }
-        })
-
-    });
-    return tmp_tab_includes;
+    const names = []
+    store.state.tabs.forEach((tab) => {
+        const name = resolveTabCacheName(tab.key)
+        if (name && !names.includes(name)) names.push(name)
+    })
+    // include 的引用一变就会触发 KeepAlive 的 pruneCache 并卸载缓存实例；
+    // 内容没变时必须复用同一个数组引用，否则每次路由跳转都会重跑一遍卸载流程。
+    const unchanged = names.length === cachedIncludes.length
+        && names.every((name, index) => name === cachedIncludes[index])
+    if (!unchanged) cachedIncludes = names
+    return cachedIncludes
 })
 
 

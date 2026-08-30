@@ -47,9 +47,14 @@
                   <a-button class="macro-add-button" @click="addMacro"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" /><span>&nbsp;新增宏</span></a-button>
                 </a-form-item>
               </a-col>
-              <a-col :span="24">
+              <a-col :span="12">
                 <a-form-item name="control_type" label="控制方式">
-                  <a-segmented v-model:value="form.control_type" :options="controlTypeOptions" block />
+                  <a-select
+                    v-model:value="form.control_type"
+                    :options="controlTypeOptions"
+                    :getPopupContainer="getPopupContainer"
+                    placeholder="请选择控制方式"
+                  />
                 </a-form-item>
               </a-col>
             </a-row>

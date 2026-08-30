@@ -180,7 +180,7 @@
                   :key="check.id || check.name"
                   :color="check.severity === 'warning' ? 'orange' : 'red'"
                 >
-                  {{ check.name }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
+                  {{ check.name }} · {{ executionLocationLabel(check.execution_location) }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
                 </a-tag>
               </a-space>
             </template>
@@ -348,9 +348,12 @@
           </div>
           <div class="form-grid">
             <a-form-item label="名称" required><a-input v-model:value="check.name" /></a-form-item>
+            <a-form-item label="执行位置" required>
+              <a-select v-model:value="check.execution_location" :options="executionLocationOptions" :getPopupContainer="getPopupContainer" @change="handleExecutionLocationChange(check)" />
+            </a-form-item>
             <a-form-item label="执行器" required>
               <a-select v-model:value="check.executor" :getPopupContainer="getPopupContainer" @change="handleExecutorChange(check)">
-                <a-select-option v-for="item in executorOptions" :key="item.value" :value="item.value">{{ item.label }}</a-select-option>
+                <a-select-option v-for="item in executorOptions(check.execution_location)" :key="item.value" :value="item.value">{{ item.label }}</a-select-option>
               </a-select>
             </a-form-item>
           </div>
@@ -361,12 +364,13 @@
           <template v-if="check.executor === 'shell'">
             <a-form-item label="Shell 命令" required><a-textarea v-model:value="check.config.command" :rows="2" /></a-form-item>
             <div class="form-grid">
-              <a-form-item v-if="groupTargetsHostGroup" label="运行用户">
+              <a-form-item v-if="groupTargetsHostGroup && check.execution_location !== 'controller'" label="运行用户">
                 <a-input v-model:value="check.config.run_user" placeholder="root" />
                 <div class="field-hint">留空默认 root；Agent 需以 root 或该用户运行。</div>
               </a-form-item>
               <a-form-item label="运行目录">
-                <a-input v-model:value="check.config.work_directory" :placeholder="groupTargetsHostGroup ? '/' : '${APP_HOME}'" />
+                <a-input v-model:value="check.config.work_directory" :placeholder="check.execution_location === 'controller' || groupTargetsHostGroup ? '/' : '${APP_HOME}'" />
+                <div v-if="check.execution_location === 'controller'" class="field-hint">命令在 djadmin 后端服务器执行，路径需存在于该服务器。</div>
               </a-form-item>
               <a-form-item label="期望输出"><a-input v-model:value="check.config.expected_output" placeholder="留空表示仅校验退出码" /></a-form-item>
             </div>
@@ -379,7 +383,7 @@
           </template>
           <template v-else-if="check.executor === 'tcp'">
             <div class="form-grid">
-              <a-form-item label="主机"><a-input v-model:value="check.config.host" placeholder="留空则检查 dj-agent 本机" /></a-form-item>
+              <a-form-item label="主机"><a-input v-model:value="check.config.host" :placeholder="check.execution_location === 'controller' ? '留空则检查 djadmin 本机' : '留空则检查 dj-agent 本机'" /></a-form-item>
               <a-form-item label="端口" required><a-input-number v-model:value="check.config.port" :min="1" :max="65535" /></a-form-item>
             </div>
           </template>
@@ -577,6 +581,7 @@
               <template v-else-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'warning' ? 'orange' : 'red'">{{ severityLabel(record.severity) }}</a-tag>
               </template>
+              <template v-else-if="column.key === 'expected_value'"><pre>{{ formatValue(record.expected_value) }}</pre></template>
               <template v-else-if="column.key === 'actual_value'"><pre>{{ formatValue(record.actual_value) }}</pre></template>
             </template>
           </a-table>
@@ -738,6 +743,7 @@ const resultColumns = [
   { title: '检查项', dataIndex: 'name', key: 'name', width: 170 },
   { title: '状态', key: 'status', width: 90 },
   { title: '级别', key: 'severity', width: 80 },
+  { title: '期望值', key: 'expected_value', width: 200 },
   { title: '实际值', key: 'actual_value', width: 220 },
   { title: '消息', dataIndex: 'message', key: 'message' },
 ]
@@ -745,12 +751,19 @@ const resultColumns = [
 const runningCount = computed(() => executions.value.filter((item) => ['pending', 'running'].includes(item.status)).length)
 const scheduledTasks = computed(() => taskOptions.value.filter((task) => task.cron_expression))
 const unscheduledTaskOptions = computed(() => taskOptions.value.filter((task) => !task.cron_expression))
-const executorOptions = [
-  { label: 'Agent Shell', value: 'shell' },
-  { label: 'Agent Schema', value: 'schema_validate' },
-  { label: 'Agent HTTP', value: 'http' },
-  { label: 'Agent TCP', value: 'tcp' },
+const executionLocationOptions = [
+  { label: 'Agent', value: 'agent' },
+  { label: 'djadmin', value: 'controller' },
 ]
+const executorOptions = (executionLocation = 'agent') => {
+  const options = [
+    { label: 'Shell', value: 'shell' },
+    { label: 'HTTP', value: 'http' },
+    { label: 'TCP', value: 'tcp' },
+  ]
+  // Schema 校验读的是目标主机上的文件，只在 Agent 端成立。
+  return executionLocation === 'agent' ? [...options, { label: 'Schema', value: 'schema_validate' }] : options
+}
 const severityOptions = [
   { label: '严重', value: 'critical' },
   { label: '警告', value: 'warning' },
@@ -887,7 +900,8 @@ const scopeLabel = (scope) => ({
   service_once: '逻辑服务·服务单次',
   per_host: '主机组·每台主机',
 }[scope] || scope)
-const executorLabel = (executor) => ({ shell: 'Agent Shell', schema_validate: 'Agent Schema', http: 'Agent HTTP', tcp: 'Agent TCP' }[executor] || executor)
+const executorLabel = (executor) => ({ shell: 'Shell', schema_validate: 'Schema', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
+const executionLocationLabel = (executionLocation) => executionLocation === 'controller' ? 'djadmin' : 'Agent'
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
@@ -1029,8 +1043,10 @@ function handleExecutionRangeOpenChange(open) {
   if (open) executionRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
 }
 
-function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value) {
+function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value, executionLocation = 'agent') {
   if (executor === 'shell') {
+    // djadmin 端在后端服务器本机执行，既没有目标主机的 APP_HOME，也不切换运行用户。
+    if (executionLocation === 'controller') return { command: '', work_directory: '/', expected_output: '' }
     // 主机组范围用不了应用宏变量，默认值必须避开 ${APP_HOME}，否则新建检查项直接保存失败。
     return targetsHostGroup
       ? { command: '', run_user: 'root', work_directory: '/', expected_output: '' }
@@ -1048,7 +1064,14 @@ function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGrou
   return { host: '', port: undefined }
 }
 function schemaDocumentTypeOptions(schemaType) { return schemaDocumentTypes[schemaType] || [] }
-function handleExecutorChange(check) { check.config = defaultExecutorConfig(check.executor) }
+function handleExecutorChange(check) {
+  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value, check.execution_location)
+}
+function handleExecutionLocationChange(check) {
+  // djadmin 端没有 Schema 执行器，切换后回落到 Shell。
+  if (check.execution_location === 'controller' && check.executor === 'schema_validate') check.executor = 'shell'
+  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value, check.execution_location)
+}
 function handleSchemaTypeChange(check) {
   check.config.document_type = schemaDocumentTypeOptions(check.config.schema_type)[0]?.value
 }
@@ -1059,6 +1082,7 @@ function addCheck() {
     localKey: ++localKey,
     name: '',
     executor,
+    execution_location: 'agent',
     config,
     severity: 'critical',
     enabled: true,
@@ -1078,6 +1102,7 @@ function openGroupModal(record) {
   groupForm.checks = (groupForm.checks || []).map((check) => ({
     ...check,
     localKey: ++localKey,
+    execution_location: check.execution_location || 'agent',
     severity: check.severity || 'critical',
     config: { ...(check.config || {}) },
   }))

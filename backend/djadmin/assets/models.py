@@ -428,6 +428,34 @@ class ApplicationLogDefinition(BaseModel):
         ]
 
 
+class ApplicationServiceLogSetting(BaseModel):
+    """逻辑服务对模板日志定义的覆盖。
+
+    档位是索引名的一段，不同档位即不同 data stream，ISM 才能分别过期；
+    而“同一模板被不同业务复用、但某条日志要单独长留”是业务差异，只能落在服务级。
+    """
+
+    service = models.ForeignKey(
+        'assets.ApplicationService', on_delete=models.CASCADE, related_name='log_settings',
+    )
+    log_definition = models.ForeignKey(
+        ApplicationLogDefinition, on_delete=models.CASCADE, related_name='service_overrides',
+    )
+    # 两个字段留空都表示继承：档位继承逻辑服务，采集开关继承模板日志定义。
+    retention_tier = models.ForeignKey(
+        'monitor.LogRetentionTier', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='service_log_settings', verbose_name='日志保留档位',
+    )
+    collection_enabled = models.BooleanField(null=True, blank=True, verbose_name='采集开关')
+
+    class Meta:
+        db_table = 'assets_application_service_log_setting'
+        ordering = ['service_id', 'log_definition_id']
+        constraints = [
+            models.UniqueConstraint(fields=['service', 'log_definition'], name='unique_service_log_setting'),
+        ]
+
+
 class ApplicationControlAction(BaseModel):
     class Action(models.TextChoices):
         START = 'start', '启动'

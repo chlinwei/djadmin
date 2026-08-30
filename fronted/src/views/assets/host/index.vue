@@ -195,12 +195,6 @@
                         <template v-else-if="column.key === 'memory_gb'">
                             <span>{{ formatSize(record.hardware?.memory_gb) }}</span>
                         </template>
-                        <template v-else-if="column.key === 'disk_total_gb'">
-                            <span>{{ formatSize(record.hardware?.disk_total_gb) }}</span>
-                        </template>
-                        <template v-else-if="column.key === 'disk_used_percent'">
-                            <span>{{ formatPercent(record.hardware?.disk_used_percent ?? record.disk_used_percent) }}</span>
-                        </template>
                         <template v-else-if="column.key === 'agent_version'">
                             <span>{{ record.system?.agent_version || '-' }}</span>
                         </template>
@@ -783,8 +777,6 @@ const columns = [
     { title: 'Agent 版本', dataIndex: 'agent_version', key: 'agent_version', width: 160 },
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
-    { title: '磁盘总量', dataIndex: 'disk_total_gb', key: 'disk_total_gb', width: 110 },
-    { title: '磁盘使用率', dataIndex: 'disk_used_percent', key: 'disk_used_percent', width: 120 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
     { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]

@@ -524,6 +524,7 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
         'refresh_runtime_status': 'assets:applications:update',
+        'log_config': 'assets:applications:view',
     }
 
     def create(self, request: Request, *args, **kwargs) -> Response:
@@ -554,6 +555,61 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
                     deployment.save(update_fields=['ha_role', 'update_time'])
         return Response_200(data=self.get_serializer(service).data)
 
+    @action(detail=True, methods=['get'], url_path='log-config')
+    def log_config(self, request: Request, *args, **kwargs) -> Response:
+        """逻辑服务视角的日志清单：模板定义 + 服务级覆盖后的生效档位与 data stream。"""
+        from monitor.fluent_bit import resolve_log_path
+        from monitor.log_management import build_index_name
+        from monitor.models import OpenSearchCluster
+
+        service = self.get_object()
+        template = service.deployment_template
+        cluster = OpenSearchCluster.objects.filter(enabled=True).order_by('-is_default', 'id').first()
+        prefix = cluster.index_prefix if cluster else 'logs'
+        project_code = service.business_system.project.code if service.business_system.project else ''
+        environment_code = service.environment.code if service.environment else 'unknown'
+        # 路径里的宏依赖具体部署实例，取任一启用实例做展示；没有实例时退回原始模式。
+        sample_deployment = service.deployments.filter(enabled=True).select_related('host').first()
+        overrides = {item.log_definition_id: item for item in service.log_settings.select_related('retention_tier')}
+
+        rows = []
+        for log_def in (template.logs.all() if template else []):
+            override = overrides.get(log_def.id)
+            tier = override.retention_tier if override is not None and override.retention_tier_id else service.log_retention_tier
+            collection_enabled = (
+                log_def.collection_enabled
+                if override is None or override.collection_enabled is None
+                else override.collection_enabled
+            )
+            try:
+                data_stream = build_index_name(
+                    prefix, project_code, environment_code, service.business_system.code,
+                    tier.code if tier else '',
+                )
+            except ValueError as error:
+                data_stream = f'不可用：{error}'
+            rows.append({
+                'log_definition': log_def.pk,
+                'name': log_def.name,
+                'path_pattern': log_def.path_pattern,
+                'resolved_path': (
+                    resolve_log_path(log_def, service, sample_deployment)
+                    if sample_deployment is not None else log_def.path_pattern
+                ),
+                'encoding': log_def.encoding,
+                'processing_rule_name': log_def.processing_rule.name if log_def.processing_rule_id else '',
+                'template_collection_enabled': log_def.collection_enabled,
+                'collection_enabled': collection_enabled,
+                'retention_tier': override.retention_tier_id if override is not None else None,
+                'effective_tier_name': str(tier) if tier else '',
+                'data_stream': data_stream,
+            })
+        return Response_200(data={
+            'template_name': template.name if template else '',
+            'log_collection_enabled': service.log_collection_enabled,
+            'log_retention_tier': service.log_retention_tier_id,
+            'logs': rows,
+        })
     @action(detail=True, methods=['post'], url_path='refresh-runtime-status')
     def refresh_runtime_status(self, request: Request, *args, **kwargs) -> Response:
         """逐个查询该服务全部启用实例的运行状态；控制命令来自服务绑定的部署模板。"""
@@ -602,7 +658,7 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
 class ApplicationDeploymentTemplateManage(ApplicationAssetManageBase):
     queryset = ApplicationDeploymentTemplate.objects.select_related('application').prefetch_related(
         'ports', 'paths', 'config_files', 'logs', 'control_actions',
-    )
+    ).annotate(service_count=Count('services', distinct=True))
     serializer_class = ApplicationDeploymentTemplateSerializer
     search_fields = ['name', 'application__name', 'service_name', 'app_home', 'run_user', 'remark']
     ordering_fields = ['name', 'create_time', 'update_time']

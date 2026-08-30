@@ -110,6 +110,10 @@ export function getApplicationService(id) {
     return requestUtil.get(`${applicationServicePrefix}${id}/`)
 }
 
+export function getApplicationServiceLogConfig(id) {
+    return requestUtil.get(`${applicationServicePrefix}${id}/log-config/`)
+}
+
 export function saveApplicationService(obj) {
     if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj)
     return requestUtil.post(applicationServicePrefix, obj)

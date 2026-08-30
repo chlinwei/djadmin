@@ -38,11 +38,18 @@ def contains_application_variable(value):
 class InspectionCheckSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionCheck
-        fields = ['id', 'name', 'executor', 'config', 'severity', 'enabled', 'order']
+        fields = ['id', 'name', 'executor', 'execution_location', 'config', 'severity', 'enabled', 'order']
 
     def validate(self, attrs):
-        executor = attrs.get('executor')
+        executor = attrs.get('executor', getattr(self.instance, 'executor', None))
+        execution_location = attrs.get(
+            'execution_location',
+            getattr(self.instance, 'execution_location', InspectionCheck.ExecutionLocation.AGENT),
+        )
         config = attrs.get('config') or {}
+        # Schema 校验读的是目标主机上的文件，放到 djadmin 端只会校验后端服务器本机文件，语义不成立。
+        if execution_location == InspectionCheck.ExecutionLocation.CONTROLLER and executor == InspectionCheck.Executor.SCHEMA_VALIDATE:
+            raise serializers.ValidationError({'execution_location': 'djadmin 端不支持 Schema 校验，请改用 Agent 执行'})
         if executor == InspectionCheck.Executor.SHELL and not str(config.get('command') or '').strip():
             raise serializers.ValidationError({'config': 'Shell 命令不能为空'})
         if executor == InspectionCheck.Executor.SCHEMA_VALIDATE:

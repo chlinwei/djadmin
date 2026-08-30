@@ -30,9 +30,6 @@
 
     <a-row v-show="activeTab === 'services'" :gutter="12" class="service-filters">
       <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.business_system" allow-clear show-search placeholder="业务系统" :options="serviceBusinessSystemOptions" :filter-option="filterOption" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6">
         <a-select v-model:value="serviceFilters.application" allow-clear show-search placeholder="应用" :options="serviceApplicationOptions" :filter-option="filterOption" :getPopupContainer="getPopupContainer" />
       </a-col>
       <a-col :xs="24" :sm="12" :md="6">
@@ -53,6 +50,24 @@
       </a-col>
     </a-row>
 
+    <div class="workspace-body">
+      <div v-if="siderConfig" class="workspace-sider">
+        <div class="workspace-sider-title">{{ siderConfig.title }}</div>
+        <a-menu
+          mode="inline"
+          :selected-keys="[siderConfig.selectedKey]"
+          class="workspace-sider-menu"
+          @select="handleSiderSelect"
+        >
+          <a-menu-item key="all">
+            <span>{{ siderConfig.allLabel }}</span>
+          </a-menu-item>
+          <a-menu-item v-for="item in siderConfig.items" :key="String(item.id)">
+            <span>{{ item.name }}</span>
+          </a-menu-item>
+        </a-menu>
+      </div>
+      <div class="workspace-main">
     <a-table
       :row-key="getWorkspaceRowKey"
       :columns="currentColumns"
@@ -169,6 +184,11 @@
         <template v-else-if="activeTab === 'templates' && column.key === 'control_type'">
           <a-tag :color="controlTypeColors[record.control_type]">{{ controlTypeLabels[record.control_type] || record.control_type }}</a-tag>
         </template>
+        <template v-else-if="activeTab === 'templates' && column.key === 'service_count'">
+          <a-tooltip :title="record.service_count ? '已被逻辑服务引用，需先解除引用才能删除' : '无逻辑服务引用，可直接删除'">
+            <a-tag :color="record.service_count ? 'blue' : 'default'">{{ record.service_count ?? 0 }}</a-tag>
+          </a-tooltip>
+        </template>
         <template v-else-if="activeTab === 'templates' && column.key === 'enabled'">
           <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
         </template>
@@ -250,6 +270,8 @@
         </template>
       </template>
     </a-table>
+      </div>
+    </div>
 
     <ProjectDialog
       :open="projectDialogOpen"
@@ -349,7 +371,45 @@ const emit = defineEmits(['data-changed'])
 const activeTab = ref('applications')
 const keyword = ref('')
 const serviceFilters = reactive({ business_system: undefined, application: undefined, environment: undefined, topology_type: undefined, cluster_profile: undefined, enabled: undefined })
-const serviceFilterRecords = reactive({ businessSystems: [], applications: [], environments: [], profiles: [] })
+const serviceFilterRecords = reactive({ businessSystems: [], applications: [], environments: [], profiles: [], projects: [] })
+const templateApplicationId = ref(null)
+const systemProjectId = ref(null)
+// 左侧分组面板：业务系统按所属项目，部署模板按所属应用，逻辑服务按所属业务系统。
+const siderConfig = computed(() => {
+  if (activeTab.value === 'systems') {
+    return {
+      title: '所属项目',
+      allLabel: '全部项目',
+      items: serviceFilterRecords.projects,
+      selectedKey: systemProjectId.value === null ? 'all' : String(systemProjectId.value),
+    }
+  }
+  if (activeTab.value === 'templates') {
+    return {
+      title: '所属应用',
+      allLabel: '全部应用',
+      items: serviceFilterRecords.applications,
+      selectedKey: templateApplicationId.value === null ? 'all' : String(templateApplicationId.value),
+    }
+  }
+  if (activeTab.value === 'services') {
+    const selected = serviceFilters.business_system
+    return {
+      title: '所属业务系统',
+      allLabel: '全部业务系统',
+      items: serviceFilterRecords.businessSystems,
+      selectedKey: selected === undefined || selected === null ? 'all' : String(selected),
+    }
+  }
+  return null
+})
+function handleSiderSelect({ key }) {
+  const value = key === 'all' ? undefined : Number(key)
+  if (activeTab.value === 'systems') systemProjectId.value = value ?? null
+  else if (activeTab.value === 'templates') templateApplicationId.value = value ?? null
+  else if (activeTab.value === 'services') serviceFilters.business_system = value
+  void reload(true)
+}
 const rows = ref([])
 const loading = ref(false)
 const businessSystemDialogOpen = ref(false)
@@ -453,6 +513,7 @@ const templateColumns = [
   { title: '模板名称', dataIndex: 'name', key: 'name', sorter: true, width: 220 },
   { title: '所属应用', dataIndex: 'application_name', key: 'application_name', width: 180 },
   { title: '控制方式', key: 'control_type', width: 150 },
+  { title: '关联逻辑服务', key: 'service_count', width: 130 },
   { title: '运行用户', dataIndex: 'run_user', key: 'run_user', width: 130 },
   { title: 'App Home', dataIndex: 'app_home', key: 'app_home', width: 280 },
   { title: '服务名称', dataIndex: 'service_name', key: 'service_name', width: 180 },
@@ -461,10 +522,9 @@ const templateColumns = [
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
 const currentColumns = computed(() => ({ projects: projectColumns, systems: businessSystemColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
-const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1500, profiles: 1220, applications: 1100, templates: 1570, deployments: 1440 }[activeTab.value]) }))
+const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1500, profiles: 1220, applications: 1100, templates: 1700, deployments: 1440 }[activeTab.value]) }))
 const createButtonLabel = computed(() => ({ projects: '新增项目', systems: '新增业务系统', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
 const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', systems: '搜索业务系统、编码或负责人', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
-const serviceBusinessSystemOptions = computed(() => serviceFilterRecords.businessSystems.map((item) => ({ label: item.name, value: item.id })))
 const serviceApplicationOptions = computed(() => serviceFilterRecords.applications.map((item) => ({ label: item.name, value: item.id })))
 const serviceEnvironmentOptions = computed(() => serviceFilterRecords.environments
   .map((item) => ({ label: item.name, value: item.id })))
@@ -500,6 +560,9 @@ async function reload(resetPage = false) {
     if (requestedTab === 'systems' && props.serviceScope.nodeType === 'businessSystem') {
       params.id = props.serviceScope.businessSystemId
     }
+    if (requestedTab === 'systems' && systemProjectId.value !== null) {
+      params.project = systemProjectId.value
+    }
     if (requestedTab === 'deployments') {
       if (props.serviceScope.deploymentId) params.id = props.serviceScope.deploymentId
       else if (props.serviceScope.applicationServiceId) params.application_service = props.serviceScope.applicationServiceId
@@ -509,6 +572,9 @@ async function reload(resetPage = false) {
       if (props.serviceScope.environment) {
         params.application_service__environment = props.serviceScope.environment
       }
+    }
+    if (requestedTab === 'templates' && templateApplicationId.value !== null) {
+      params.application = templateApplicationId.value
     }
     const listRequests = {
       projects: getProjectList,
@@ -579,6 +645,18 @@ async function handleManualRefresh() {
 async function loadActiveTab(nextTab) {
   keyword.value = ''
   if (nextTab === 'services') await loadServiceFilterOptions()
+  // 左侧分组面板需要对应的分组源全量列表。
+  if (nextTab === 'systems') {
+    systemProjectId.value = null
+    if (!serviceFilterRecords.projects.length) {
+      const projects = await getProjectList({ page: 1, page_size: 1000, enabled: true })
+      serviceFilterRecords.projects = projects?.data?.data?.results || []
+    }
+  }
+  if (nextTab === 'templates') {
+    templateApplicationId.value = null
+    if (!serviceFilterRecords.applications.length) await loadServiceFilterOptions()
+  }
   rows.value = []
   paginationState.total = 0
   await reload(true)
@@ -845,6 +923,11 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .application-workspace { padding: 0 2px; }
+.workspace-body { display: flex; align-items: flex-start; gap: 12px; }
+.workspace-main { flex: 1; min-width: 0; }
+.workspace-sider { width: 220px; flex: 0 0 220px; border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; }
+.workspace-sider-title { padding: 10px 16px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #f0f0f0; }
+.workspace-sider-menu { border-inline-end: none; max-height: 560px; overflow-y: auto; }
 .tools { margin-bottom: 16px; }
 .service-filters { margin-bottom: 16px; }
 .service-filters .ant-select { width: 100%; }

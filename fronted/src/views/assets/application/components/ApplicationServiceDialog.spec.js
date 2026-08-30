@@ -62,7 +62,12 @@ vi.mock('@/api/assets/application', () => ({
       enabled: true,
     }] } },
   })),
+  getApplicationServiceLogConfig: vi.fn(() => Promise.resolve({ data: { data: { logs: [] } } })),
   saveApplicationService: vi.fn(),
+}))
+
+vi.mock('@/api/monitor', () => ({
+  getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
 }))
 
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'

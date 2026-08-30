@@ -186,6 +186,7 @@ def build_host_fragments(host, cluster):
         .filter(host=host, enabled=True)
         .select_related('host')
         .prefetch_related('application_services__deployment_template__logs',
+                          'application_services__log_settings__retention_tier',
                           'application_services__application',
                           'application_services__application_version',
                           'application_services__business_system__project',
@@ -199,17 +200,32 @@ def build_host_fragments(host, cluster):
             continue
         template = service.deployment_template
         application_code = service.application.code
-        index = build_index_name(
-            cluster.index_prefix,
-            service.business_system.project.code if service.business_system.project else '',
-            service.environment.code if service.environment else 'unknown',
-            service.business_system.code,
-            service.log_retention_tier.code if service.log_retention_tier else 'std',
-        )
+        project_code = service.business_system.project.code if service.business_system.project else ''
+        environment_code = service.environment.code if service.environment else 'unknown'
+        # 服务级覆盖：档位决定写入哪个 data stream，采集开关可按日志单独关闭。
+        overrides = {item.log_definition_id: item for item in service.log_settings.all()}
 
         for log_def in template.logs.all():
-            if not log_def.collection_enabled:
+            override = overrides.get(log_def.id)
+            collection_enabled = (
+                log_def.collection_enabled
+                if override is None or override.collection_enabled is None
+                else override.collection_enabled
+            )
+            if not collection_enabled:
                 continue
+            tier = (
+                override.retention_tier
+                if override is not None and override.retention_tier_id
+                else service.log_retention_tier
+            )
+            index = build_index_name(
+                cluster.index_prefix,
+                project_code,
+                environment_code,
+                service.business_system.code,
+                tier.code if tier else 'std',
+            )
             log_path = resolve_log_path(log_def, service, deployment)
             # 同主机路径冲突校验（§12）：不同实例展开出相同路径必须拦截。
             previous = seen_paths.get(log_path)

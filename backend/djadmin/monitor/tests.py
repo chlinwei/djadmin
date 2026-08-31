@@ -275,6 +275,7 @@ from .fluent_bit import (
     build_host_fragments,
     config_fingerprint,
     render_input_fragment,
+    render_multiline_parser_fragment,
     render_output_fragment,
 )
 from .log_management import (
@@ -283,8 +284,13 @@ from .log_management import (
     build_ism_policy_body,
     build_pipeline_name,
 )
+from .log_schema import find_non_standard_pipeline_fields
+from .log_health import collect_log_pipeline_health
+from .apps import sync_log_storage_after_migrate
+from .log_management import enqueue_log_storage_sync, sync_log_storage_quietly
 from .models import LogCollectionTarget, LogProcessingRule, LogRetentionTier, OpenSearchCluster
 from .opensearch_client import OpenSearchClient, OpenSearchError
+from .tasks import sync_log_storage
 
 
 class OpenSearchClientTest(TestCase):
@@ -341,6 +347,37 @@ class LogManagementBuilderTest(TestCase):
         self.assertEqual(body['template']['settings']['index.mapping.total_fields.limit'], 2000)
         self.assertIn('data_stream', body)
 
+    def test_index_template_fixes_standard_fields_and_app_fields_object(self):
+        """标准字段全 data stream 一致；应用差异字段只能进 app_fields，不再自动建 mapping。"""
+        mappings = build_index_template_body('logs')['template']['mappings']
+        self.assertFalse(mappings['dynamic'])
+        properties = mappings['properties']
+
+        for field, field_type in {
+            '@timestamp': 'date',
+            'message': 'text',
+            'project': 'keyword',
+            'business_system': 'keyword',
+            'environment': 'keyword',
+            'service': 'keyword',
+            'application': 'keyword',
+            'instance': 'keyword',
+            'host_ip': 'keyword',
+            'log_name': 'keyword',
+            'log_path': 'keyword',
+            'log_level': 'keyword',
+            'log_time': 'keyword',
+            'log_message': 'text',
+            # flat_object 子字段聚合会返回空桶，insight/error-* 依赖它，必须留在顶层。
+            'error_fingerprint': 'keyword',
+        }.items():
+            self.assertEqual(properties[field]['type'], field_type)
+
+        self.assertEqual(properties['app_fields']['type'], 'flat_object')
+        # 只有报错日志才有的字段和应用私有字段不得进标准字段。
+        for field in ('error_type', 'error_message', 'stack_trace', 'root_cause_type', 'logger', 'thread', 'pid'):
+            self.assertNotIn(field, properties)
+
     def test_build_ism_policy_body_from_tier(self):
         tier = LogRetentionTier.objects.create(
             code='hot', name='热', daily_size_gb=20, retention_days=7, rollover_min_index_age='1d',
@@ -357,6 +394,42 @@ class LogManagementBuilderTest(TestCase):
 
     def test_build_pipeline_name(self):
         self.assertEqual(build_pipeline_name('tomcat', 'catalina'), 'app-tomcat-catalina')
+
+    def test_find_non_standard_pipeline_fields(self):
+        """dynamic=false 下越界字段会被静默丢弃，必须能静态识别出来。"""
+        violations = find_non_standard_pipeline_fields({
+            'processors': [
+                {'rename': {'field': 'log', 'target_field': 'message'}},
+                {'grok': {'field': 'message', 'patterns': ['%{LOGLEVEL:log_level} %{NUMBER:pid} (?<logger>\\S+)']}},
+                {'set': {'field': 'app_fields.module', 'value': 'order'}},
+                {'date': {'field': 'log_time', 'formats': ['ISO8601']}},
+            ],
+            'on_failure': [{'set': {'field': 'parse_error', 'value': 'x'}}],
+        })
+        # message/log_level/@timestamp 是标准字段，app_fields.* 允许；其余必须报出来。
+        self.assertEqual(violations, ['logger', 'parse_error', 'pid'])
+
+    def test_find_non_standard_pipeline_fields_ignores_removed_temp_fields(self):
+        violations = find_non_standard_pipeline_fields({
+            'processors': [
+                {'set': {'field': 'signature_source', 'value': 'x'}},
+                {'gsub': {'field': 'signature_source', 'target_field': 'error_template',
+                          'pattern': 'a', 'replacement': 'b'}},
+                {'remove': {'field': ['signature_source', 'error_template']}},
+            ],
+        })
+        self.assertEqual(violations, [])
+
+    def test_find_non_standard_pipeline_fields_accepts_rename_into_app_fields(self):
+        """grok 命名捕获不支持点号，只能先落顶层再 rename 进 app_fields。"""
+        violations = find_non_standard_pipeline_fields({
+            'processors': [
+                {'grok': {'field': 'message', 'patterns': ['(?<logger>\\S+) %{NUMBER:pid}']}},
+                {'rename': {'field': 'logger', 'target_field': 'app_fields.logger'}},
+                {'rename': {'field': 'pid', 'target_field': 'app_fields.pid'}},
+            ],
+        })
+        self.assertEqual(violations, [])
 
 
 class FluentBitRenderTest(TestCase):
@@ -378,16 +451,19 @@ class FluentBitRenderTest(TestCase):
                 continuation_pattern=r'^(?!\d{4}-\d{2}-\d{2})',
                 flush_timeout=1000,
             ),
-            encoding='utf-8',
             records=self.RECORDS,
         )
-        self.assertIn('[MULTILINE_PARSER]', content)
-        self.assertIn('Name          multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina', content)
-        self.assertIn('Rule          "start_state" "/^\\d{4}-\\d{2}-\\d{2}/" "continuation"', content)
+        self.assertNotIn('[MULTILINE_PARSER]', content)
         self.assertIn('Multiline.parser  multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina', content)
         self.assertIn('DB                /var/lib/fluent-bit/tomcat__tomcat-svc__kul-tib-tomcat1__catalina.db', content)
         self.assertIn('Record  business_system tib', content)
         self.assertIn('Match   tomcat.tomcat-svc.kul-tib-tomcat1.catalina', content)
+        parser = render_multiline_parser_fragment('tomcat.tomcat-svc.kul-tib-tomcat1.catalina', SimpleNamespace(
+            start_pattern=r'^\d{4}-\d{2}-\d{2}', continuation_pattern=r'^(?!\d{4}-\d{2}-\d{2})', flush_timeout=1000,
+        ))
+        self.assertIn('[MULTILINE_PARSER]', parser)
+        self.assertIn('Name          multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina', parser)
+        self.assertIn('Rule          "start_state" "/^\\d{4}-\\d{2}-\\d{2}/" "continuation"', parser)
 
     def test_render_input_fragment_without_multiline(self):
         content = render_input_fragment(
@@ -400,6 +476,50 @@ class FluentBitRenderTest(TestCase):
             records=self.RECORDS,
         )
         self.assertNotIn('Multiline.parser', content)
+        self.assertNotIn('Encoding', content)
+
+    def test_render_input_fragment_filters_error_only_logs_before_enrichment(self):
+        content = render_input_fragment(
+            application_code='nginx',
+            service_code='nginx-svc',
+            instance_name='nginx1',
+            log_name='error',
+            log_path='/var/log/nginx/error.log',
+            tag='nginx.nginx-svc.nginx1.error',
+            records=self.RECORDS,
+            filter_pattern='(?i)(error|failed|critical|fatal)',
+        )
+        self.assertIn('Regex   log (?i)(error|failed|critical|fatal)', content)
+        self.assertLess(content.index('Skip_Long_Lines'), content.index('Name    grep'))
+        self.assertLess(content.index('Name    grep'), content.index('Name    record_modifier'))
+
+    def test_render_input_fragment_nests_application_specific_fields(self):
+        content = render_input_fragment(
+            application_code='tomcat',
+            service_code='tomcat-svc',
+            instance_name='kul-tib-tomcat1',
+            log_name='catalina',
+            log_path='/home/esb/tomcat/logs/catalina.out',
+            tag='tomcat.tomcat-svc.kul-tib-tomcat1.catalina',
+            records={**self.RECORDS, 'app_fields_module': 'order', 'app_fields_owner': 'ops'},
+        )
+        self.assertIn('Record  app_fields_module order', content)
+        self.assertIn('Name          nest', content)
+        self.assertIn('Wildcard      app_fields_*', content)
+        self.assertIn('Nest_under    app_fields', content)
+        self.assertIn('Remove_prefix app_fields_', content)
+
+    def test_render_input_fragment_without_application_specific_fields(self):
+        content = render_input_fragment(
+            application_code='tomcat',
+            service_code='tomcat-svc',
+            instance_name='kul-tib-tomcat1',
+            log_name='catalina',
+            log_path='/home/esb/tomcat/logs/catalina.out',
+            tag='tomcat.tomcat-svc.kul-tib-tomcat1.catalina',
+            records=self.RECORDS,
+        )
+        self.assertNotIn('Name          nest', content)
 
     def test_render_output_fragment(self):
         content = render_output_fragment(
@@ -495,6 +615,33 @@ class LogCollectionApiTest(TestCase):
         body = self.assertResponseOK(res)
         self.assertIn('docs', body['data'])
 
+    def test_simulate_reports_non_standard_output_fields(self):
+        """调试阶段就要暴露越界字段，否则写入 OpenSearch 后被静默丢弃难以排查。"""
+        simulated = {'docs': [{'doc': {'_source': {
+            'message': 'x', 'log_level': 'ERROR',
+            'app_fields': {'logger': 'com.example'},
+            'pid': '123', 'thread': 'main',
+        }}}]}
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.simulate_pipeline_body.return_value = simulated
+            res = self.client.post(
+                f'/monitor/opensearch-clusters/{self.cluster.id}/pipeline-simulate/',
+                {'pipeline': {'processors': []}, 'docs': [{'message': 'x'}]}, format='json',
+            )
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['schema_violations'], ['pid', 'thread'])
+
+    def test_create_processing_rule_rejects_non_standard_fields(self):
+        res = self.client.post('/monitor/log-processing-rules/', {
+            'cluster': self.cluster.id,
+            'name': 'bad-schema-rule',
+            'input_format': 'text',
+            'pipeline_body': {'processors': [{'set': {'field': 'pid', 'value': '1'}}]},
+        }, format='json')
+
+        self.assertNotEqual(res.json()['code'], 200)
+        self.assertFalse(LogProcessingRule.objects.filter(name='bad-schema-rule').exists())
+
     def test_create_processing_rule_publishes_same_pipeline(self):
         payload = {
             'cluster': self.cluster.id,
@@ -528,6 +675,18 @@ class LogCollectionApiTest(TestCase):
 
         self.assertNotEqual(res.json()['code'], 200)
         self.assertFalse(LogProcessingRule.objects.filter(name='invalid-multiline').exists())
+
+    def test_create_collection_filter_rule(self):
+        res = self.client.post('/monitor/log-collection-filter-rules/', {
+            'name': 'error-critical-only',
+            'description': '仅采集错误级别日志',
+            'pattern': r'(?i)(error|failed|critical|fatal)',
+            'enabled': True,
+        }, format='json')
+
+        body = self.assertResponseOK(res)
+        self.assertEqual(body['data']['name'], 'error-critical-only')
+        self.assertEqual(body['data']['pattern'], r'(?i)(error|failed|critical|fatal)')
 
     def test_processing_rule_cannot_be_deleted_while_referenced(self):
         host = Host.objects.create(instance_name='rule-host', ip='10.0.1.20')
@@ -565,6 +724,29 @@ class LogCollectionApiTest(TestCase):
         self.assertIn('logs-kul-test-tib-std', body['data']['outputs']['tomcat__tomcat-svc__catalina.conf'])
         # 指纹未下发过，不应判定为已同步
         self.assertFalse(body['data']['up_to_date'])
+
+    def test_render_config_injects_standard_document_fields(self):
+        """采集侧必须注入全部标准归属字段，其余标准字段由 Ingest Pipeline 解析产生。"""
+        host = Host.objects.create(instance_name='log-host-3', ip='10.0.1.13')
+        self._build_service_graph(host)
+        target = LogCollectionTarget.objects.create(host=host)
+
+        res = self.client.get(f'/monitor/log-targets/{target.id}/render-config/')
+        body = self.assertResponseOK(res)
+        fragment = body['data']['inputs']['tomcat__tomcat-svc__kul-tib-tomcat1__catalina.conf']
+
+        for field, value in {
+            'project': 'kul',
+            'business_system': 'tib',
+            'environment': 'test',
+            'service': 'tomcat-svc',
+            'application': 'tomcat',
+            'instance': 'kul-tib-tomcat1',
+            'host_ip': '10.0.1.13',
+            'log_name': 'catalina',
+            'log_path': '/home/esb/tomcat/logs/catalina.out',
+        }.items():
+            self.assertIn(f'Record  {field} {value}', fragment)
 
     def test_render_config_keeps_multiple_logs_for_same_instance(self):
         host = Host.objects.create(instance_name='log-host-multiple', ip='10.0.1.15')
@@ -1065,6 +1247,36 @@ class LogCollectionApplyTest(TestCase):
         # 指纹一致直接跳过，不再写文件/重载（§8.4）
         self.assertTrue(body['data']['skipped'])
 
+    def test_apply_falls_back_to_start_when_hot_reload_connection_refused(self):
+        """runtime_status=RUNNING 是过时记录、进程其实已经退出时，热重载失败要能自愈成启动。"""
+        class _ReloadRefusedClient(_FakeGrpcClient):
+            def execute_automation(self, job_id, params, timeout_seconds, task_type='custom', action='run_automation_task'):
+                if action == 'reload_fluent_bit':
+                    return {'status': 'failed', 'exit_code': 1, 'stderr': 'connect: connection refused'}
+                return super().execute_automation(job_id, params, timeout_seconds, task_type=task_type, action=action)
+
+        with mock.patch('monitor.log_collection_service.AgentChannelClient', _ReloadRefusedClient):
+            res = self.client.post(f'/monitor/log-targets/{self.target.id}/apply/')
+        body = self.assertResponseOK(res)
+        self.assertFalse(body['data']['skipped'])
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.runtime_status, LogCollectionTarget.RuntimeStatus.RUNNING)
+
+    def test_apply_reports_error_when_reload_and_start_both_fail(self):
+        class _AlwaysRefusedClient(_FakeGrpcClient):
+            def execute_automation(self, job_id, params, timeout_seconds, task_type='custom', action='run_automation_task'):
+                if action in ('reload_fluent_bit', 'start_exporter'):
+                    return {'status': 'failed', 'exit_code': 1, 'stderr': 'connect: connection refused'}
+                return super().execute_automation(job_id, params, timeout_seconds, task_type=task_type, action=action)
+
+        with mock.patch('monitor.log_collection_service.AgentChannelClient', _AlwaysRefusedClient):
+            res = self.client.post(f'/monitor/log-targets/{self.target.id}/apply/')
+        body = res.json()
+        self.assertEqual(body['code'], 400)
+        self.assertIn('启动服务也失败', body['msg'])
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.runtime_status, LogCollectionTarget.RuntimeStatus.ERROR)
+
     def test_apply_cleans_stale_fragments(self):
         fake_client = None
 
@@ -1186,6 +1398,47 @@ class LogCollectionLifecycleApiTest(TestCase):
         dispatch.assert_called_once()
         self.assertEqual(dispatch.call_args.args[0].id, self.target.id)
         self.assertTrue(dispatch.call_args.kwargs['manual'])
+
+    def test_install_success_does_not_blindly_mark_running_when_status_check_fails(self):
+        """Playbook 退出码为 0 不代表 Fluent Bit 真的常驻；状态核实本身失败时必须退化成 UNKNOWN。"""
+        from assets.grpc_transfer.client import AgentGrpcTransferError
+        from .log_collection_service import execute_fluent_bit_install
+        from .models import MonitorTargetInstallHistory
+
+        history = MonitorTargetInstallHistory.objects.create(
+            log_collection_target=self.target, host=self.host,
+            action=MonitorTargetInstallHistory.Action.INSTALL,
+            status=MonitorTargetInstallHistory.Status.PENDING,
+            exporter_type_snapshot='fluent-bit',
+        )
+        fake_package = mock.Mock()
+        fake_package.install_playbook_template = mock.Mock(content='---')
+        fake_package.file.path = '/tmp/fluent-bit.tar.gz'
+        fake_package.package_format = 'tar.gz'
+        fake_package.platform_family = 'rhel'
+        fake_package.platform_major = '8'
+        fake_package.sha256 = 'deadbeef'
+        fake_package.service_unit_name = 'fluent-bit.service'
+        fake_package.version = '2.2.0'
+        fake_package.work_directory = '/tmp'
+
+        def _fake_run(**kwargs):
+            history.status = MonitorTargetInstallHistory.Status.SUCCESS
+            history.save(update_fields=['status'])
+
+        with mock.patch('monitor.log_collection_service._select_fluent_bit_package', return_value=fake_package), \
+             mock.patch('monitor.playbook_runner.run_monitor_playbook_and_update_history', side_effect=_fake_run), \
+             mock.patch(
+                 'monitor.log_collection_service.AgentChannelClient',
+                 side_effect=AgentGrpcTransferError('agent 未连接'),
+             ):
+            execute_fluent_bit_install(self.target, history)
+
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.agent_installed)
+        self.assertEqual(self.target.agent_version, '2.2.0')
+        # 状态核实（systemctl status）本身失败，不能乐观标 RUNNING，必须退化成 UNKNOWN。
+        self.assertEqual(self.target.runtime_status, LogCollectionTarget.RuntimeStatus.UNKNOWN)
 
     def test_retry_rejects_duplicate_active_task(self):
         from .models import MonitorTargetInstallHistory
@@ -1393,4 +1646,448 @@ class LogCollectionLifecycleApiTest(TestCase):
         dispatch.assert_called_once()
         self.assertTrue(dispatch.call_args.kwargs['delete_after_success'])
         self.assertTrue(LogCollectionTarget.objects.filter(id=self.target.id).exists())
+
+
+
+class LogStorageAutoSyncTest(TestCase):
+    """索引模板必须自动跟随代码与配置，不依赖任何人记得点按钮。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+
+    def assertResponseOK(self, res):
+        body = res.json()
+        self.assertEqual(body['code'], 200, msg=f'Expected code=200, got: {body}')
+        return body
+
+    def test_creating_cluster_publishes_template(self):
+        with mock.patch('monitor.views.enqueue_log_storage_sync') as queued:
+            res = self.client.post('/monitor/opensearch-clusters/', {
+                'name': '日志集群', 'hosts': 'https://opensearch.example:9200', 'index_prefix': 'logs',
+            }, format='json')
+        body = self.assertResponseOK(res)
+        queued.assert_called_once_with(body['data']['id'])
+        self.assertTrue(body['data']['storage_sync_queued'])
+
+    def test_updating_cluster_republishes_template(self):
+        cluster = OpenSearchCluster.objects.create(
+            name='日志集群', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+        with mock.patch('monitor.views.enqueue_log_storage_sync') as queued:
+            res = self.client.patch(
+                f'/monitor/opensearch-clusters/{cluster.id}/', {'index_prefix': 'applogs'}, format='json',
+            )
+        self.assertResponseOK(res)
+        queued.assert_called_once_with(cluster.id)
+
+    def test_creating_cluster_queues_sync_without_calling_opensearch(self):
+        with mock.patch('monitor.views.enqueue_log_storage_sync') as queued:
+            res = self.client.post('/monitor/opensearch-clusters/', {
+                'name': '日志集群', 'hosts': 'https://down.example:9200', 'index_prefix': 'logs',
+            }, format='json')
+        body = self.assertResponseOK(res)
+        queued.assert_called_once_with(body['data']['id'])
+        self.assertTrue(body['data']['storage_sync_queued'])
+        self.assertTrue(OpenSearchCluster.objects.filter(name='日志集群').exists())
+
+    def test_sync_helper_swallows_cluster_errors(self):
+        cluster = OpenSearchCluster.objects.create(
+            name='日志集群', hosts='https://down.example:9200', index_prefix='logs',
+        )
+        with mock.patch('monitor.log_management.bootstrap_log_storage', side_effect=OpenSearchError('boom')):
+            self.assertEqual(sync_log_storage_quietly(cluster), 'boom')
+
+    def test_sync_helper_skips_disabled_cluster(self):
+        cluster = OpenSearchCluster.objects.create(
+            name='停用集群', hosts='https://opensearch.example:9200', index_prefix='logs', enabled=False,
+        )
+        with mock.patch('monitor.log_management.bootstrap_log_storage') as boot:
+            self.assertEqual(sync_log_storage_quietly(cluster), '')
+        boot.assert_not_called()
+
+    def test_migrate_signal_syncs_enabled_clusters_only(self):
+        OpenSearchCluster.objects.create(
+            name='启用', hosts='https://a.example:9200', index_prefix='logs', enabled=True,
+        )
+        OpenSearchCluster.objects.create(
+            name='停用', hosts='https://b.example:9200', index_prefix='logs2', enabled=False,
+        )
+        with mock.patch('monitor.log_management.enqueue_log_storage_sync') as queued:
+            sync_log_storage_after_migrate(sender=None)
+        queued.assert_called_once()
+        self.assertEqual(queued.call_args.args[0], OpenSearchCluster.objects.get(name='启用').id)
+
+    def test_sync_is_enqueued_only_after_transaction_commit(self):
+        cluster = OpenSearchCluster.objects.create(
+            name='延后入队', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+        with mock.patch('monitor.tasks.sync_log_storage.delay') as queued:
+            with self.captureOnCommitCallbacks(execute=True):
+                enqueue_log_storage_sync(cluster.id)
+        queued.assert_called_once_with(cluster.id)
+        cluster.refresh_from_db()
+        self.assertEqual(cluster.storage_sync_status, OpenSearchCluster.StorageSyncStatus.PENDING)
+
+    def test_worker_task_executes_storage_bootstrap(self):
+        cluster = OpenSearchCluster.objects.create(
+            name='后台同步', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+        expected = {'index_template': 'logs-template', 'ism_policies': ['logs-std-retention']}
+        with mock.patch('monitor.log_management.bootstrap_log_storage', return_value=expected) as bootstrap:
+            result = sync_log_storage.run(cluster.id)
+        bootstrap.assert_called_once_with(cluster)
+        cluster.refresh_from_db()
+        self.assertEqual(cluster.storage_sync_status, OpenSearchCluster.StorageSyncStatus.SUCCESS)
+        self.assertEqual(cluster.storage_sync_error, '')
+        self.assertIsNotNone(cluster.storage_sync_time)
+        self.assertEqual(result, {'status': 'success', 'cluster_id': cluster.id, **expected})
+
+
+class _FakeOpenSearchForHealth:
+    """按名字返回预置响应的假集群，未预置的对象一律抛 404，模拟「尚未下发」。"""
+
+    def __init__(self, templates=None, policies=None, pipelines=None, hits=0, buckets=None):
+        self.templates = templates or {}
+        self.policies = policies or {}
+        self.pipelines = pipelines or {}
+        self.hits = hits
+        self.buckets = buckets or []
+
+    def _lookup(self, store, name):
+        if name not in store:
+            raise OpenSearchError('404: {"error":"not found"}')
+        return store[name]
+
+    def get_index_template(self, name):
+        return {'index_templates': [{'index_template': {'template': {'mappings': self._lookup(self.templates, name)}}}]}
+
+    def get_ism_policy(self, name):
+        return {'policy': self._lookup(self.policies, name)}
+
+    def get_pipeline(self, name):
+        return {name: self._lookup(self.pipelines, name)}
+
+    def search(self, index, body):
+        return {
+            'hits': {'total': {'value': self.hits}},
+            'aggregations': {'by_service': {'buckets': self.buckets}},
+        }
+
+
+class LogPipelineHealthTest(TestCase):
+    """链路对账：确保今天踩过的静默失败都能被这一层直接暴露出来。"""
+
+    def setUp(self):
+        self.cluster = OpenSearchCluster.objects.create(
+            name='health', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+
+    def _layer(self, result, key):
+        return next(layer for layer in result['layers'] if layer['key'] == key)
+
+    def _run(self, fake):
+        with mock.patch('monitor.log_health.OpenSearchClient', return_value=fake):
+            return collect_log_pipeline_health(self.cluster)
+
+    def _desired_template(self):
+        return build_index_template_body('logs')['template']['mappings']
+
+    def test_matching_template_reports_ok(self):
+        fake = _FakeOpenSearchForHealth(templates={'logs-template': self._desired_template()})
+        layer = self._layer(self._run(fake), 'index_template')
+        self.assertEqual(layer['status'], 'ok')
+
+    def test_dynamic_mapping_regression_is_detected(self):
+        # 复现真实故障：模板缺 mappings 时索引走动态映射，error_fingerprint 被建成 text。
+        degraded = {'properties': {'error_fingerprint': {'type': 'text'}}}
+        fake = _FakeOpenSearchForHealth(templates={'logs-template': degraded})
+        layer = self._layer(self._run(fake), 'index_template')
+        self.assertEqual(layer['status'], 'drift')
+        detail = next(item['detail'] for item in layer['items'] if item['name'] == 'error_fingerprint')
+        self.assertIn('keyword', detail)
+        self.assertIn('text', detail)
+        self.assertEqual(
+            next(item['status'] for item in layer['items'] if item['name'] == 'dynamic'), 'drift',
+        )
+
+    def test_missing_template_is_drift_not_error(self):
+        layer = self._layer(self._run(_FakeOpenSearchForHealth()), 'index_template')
+        self.assertEqual(layer['status'], 'drift')
+
+    def test_unpublished_pipeline_is_detected(self):
+        LogProcessingRule.objects.create(
+            cluster=self.cluster, name='app-tomcat-catalina', pipeline_body={'processors': [{'set': {'field': 'a'}}]},
+        )
+        layer = self._layer(self._run(_FakeOpenSearchForHealth()), 'pipelines')
+        self.assertEqual(layer['status'], 'drift')
+        self.assertIn('不会被解析', layer['items'][0]['detail'])
+
+    def test_pipeline_content_drift_is_detected(self):
+        LogProcessingRule.objects.create(
+            cluster=self.cluster, name='app-tomcat-catalina', pipeline_body={'processors': [{'set': {'field': 'a'}}]},
+        )
+        fake = _FakeOpenSearchForHealth(pipelines={'app-tomcat-catalina': {'processors': [{'set': {'field': 'b'}}]}})
+        layer = self._layer(self._run(fake), 'pipelines')
+        self.assertEqual(layer['status'], 'drift')
+        self.assertIn('重新发布', layer['items'][0]['detail'])
+
+    def test_ism_retention_change_is_detected(self):
+        tier = LogRetentionTier.objects.create(
+            code='std', name='标准', retention_days=30, daily_size_gb=1, enabled=True,
+        )
+        stale = build_ism_policy_body('logs', tier)['policy']
+        tier.retention_days = 90
+        tier.save(update_fields=['retention_days'])
+        fake = _FakeOpenSearchForHealth(policies={'logs-std-retention': stale})
+        layer = self._layer(self._run(fake), 'ism_policies')
+        self.assertEqual(layer['status'], 'drift')
+        self.assertIn('delete_after', layer['items'][0]['detail'])
+
+    def test_host_without_collection_items_is_not_reported_as_drift(self):
+        host = Host.objects.create(instance_name='health-idle-host', ip='10.0.0.9')
+        LogCollectionTarget.objects.create(host=host, managed_enabled=True, agent_installed=True)
+        layer = self._layer(self._run(_FakeOpenSearchForHealth()), 'host_configs')
+        self.assertEqual(layer['status'], 'ok')
+        self.assertEqual(layer['items'][0]['detail'], '无采集项')
+
+    def test_data_flow_without_recent_documents_warns(self):
+        layer = self._layer(self._run(_FakeOpenSearchForHealth(hits=0)), 'data_flow')
+        self.assertEqual(layer['status'], 'warn')
+
+    def test_overall_status_takes_the_worst_layer(self):
+        fake = _FakeOpenSearchForHealth(templates={'logs-template': self._desired_template()}, hits=10)
+        self.assertEqual(self._run(fake)['status'], 'warn')
+
+
+class LogSearchApiTest(TestCase):
+    """按逻辑服务查询原始日志：校验参数白名单与查询体拼接，不允许前端传任意 DSL。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+        self.cluster = OpenSearchCluster.objects.create(
+            name='log-search-test', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+        application = Application.objects.create(name='Tomcat', code='tomcat')
+        project = Project.objects.create(name='KUL', code='kul')
+        system = BusinessSystem.objects.create(name='TIB', code='tib', project=project)
+        environment = BusinessEnvironment.objects.create(name='测试', code='test')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='默认模板', control_type='command',
+            run_user='esb', app_home='/home/esb/tomcat',
+        )
+        self.service = ApplicationService.objects.create(
+            business_system=system, environment=environment, application=application,
+            application_version=version, deployment_template=template,
+            name='tomcat服务', code='tomcat-svc',
+        )
+
+    def _url(self):
+        return f'/monitor/opensearch-clusters/{self.cluster.id}/log-search/'
+
+    def test_missing_application_service_id_is_rejected(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_unknown_application_service_id_is_rejected(self):
+        res = self.client.get(self._url(), {'application_service_id': 999999})
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_start_after_end_is_rejected(self):
+        res = self.client.get(self._url(), {
+            'application_service_id': self.service.id,
+            'start': '2026-01-02T00:00:00Z', 'end': '2026-01-01T00:00:00Z',
+        })
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_time_window_over_thirty_days_is_rejected(self):
+        res = self.client.get(self._url(), {
+            'application_service_id': self.service.id,
+            'start': '2026-01-01T00:00:00Z', 'end': '2026-03-01T00:00:00Z',
+        })
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_offset_plus_size_over_result_window_is_rejected(self):
+        res = self.client.get(self._url(), {
+            'application_service_id': self.service.id, 'offset': 1950, 'size': 100,
+        })
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_search_builds_query_with_service_and_filters_then_maps_results(self):
+        fake_response = {
+            'hits': {
+                'total': {'value': 1},
+                'hits': [{
+                    '_id': 'doc-1',
+                    '_source': {
+                        '@timestamp': '2026-08-30T10:00:00Z', 'log_level': 'ERROR',
+                        'service': 'tomcat-svc', 'instance': 'kul-tib-tomcat1',
+                        'host_ip': '10.0.0.1', 'log_name': 'catalina',
+                        'log_message': 'NullPointerException', 'error_fingerprint': 'abc123',
+                        'app_fields': {'logger': 'org.apache'},
+                    },
+                }],
+            },
+        }
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = fake_response
+            res = self.client.get(self._url(), {
+                'application_service_id': self.service.id,
+                'keyword': 'NullPointer', 'log_level': 'ERROR,WARN', 'instance': 'kul-tib-tomcat1',
+            })
+        body = res.json()
+        self.assertEqual(body['code'], 200)
+        self.assertEqual(body['data']['count'], 1)
+        self.assertEqual(body['data']['results'][0]['log_message'], 'NullPointerException')
+        self.assertEqual(body['data']['results'][0]['id'], 'doc-1')
+
+        search_call = client_cls.return_value.search.call_args
+        index_arg, query_body = search_call.args
+        self.assertEqual(index_arg, 'logs-*')
+        filters = query_body['query']['bool']['filter']
+        self.assertIn({'term': {'service': 'tomcat-svc'}}, filters)
+        self.assertIn({'term': {'instance': 'kul-tib-tomcat1'}}, filters)
+        self.assertIn({'terms': {'log_level': ['ERROR', 'WARN']}}, filters)
+        self.assertEqual(query_body['query']['bool']['must'], [{'match': {'log_message': 'NullPointer'}}])
+
+    def test_search_without_keyword_uses_match_all(self):
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = {'hits': {'total': {'value': 0}, 'hits': []}}
+            res = self.client.get(self._url(), {'application_service_id': self.service.id})
+        self.assertEqual(res.json()['code'], 200)
+        query_body = client_cls.return_value.search.call_args.args[1]
+        self.assertEqual(query_body['query']['bool']['must'], [{'match_all': {}}])
+
+    def test_opensearch_error_is_surfaced_as_400(self):
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.side_effect = OpenSearchError('集群不可达')
+            res = self.client.get(self._url(), {'application_service_id': self.service.id})
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_search_supports_drill_down_filters(self):
+        """host_ip/log_name/error_fingerprint 必须都能作为过滤条件，否则统计面板点击下钻会失效。"""
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = {'hits': {'total': {'value': 0}, 'hits': []}}
+            res = self.client.get(self._url(), {
+                'application_service_id': self.service.id,
+                'host_ip': '10.0.0.1', 'log_name': 'catalina', 'error_fingerprint': 'abc123',
+            })
+        self.assertEqual(res.json()['code'], 200)
+        filters = client_cls.return_value.search.call_args.args[1]['query']['bool']['filter']
+        self.assertIn({'term': {'host_ip': '10.0.0.1'}}, filters)
+        self.assertIn({'term': {'log_name': 'catalina'}}, filters)
+        self.assertIn({'term': {'error_fingerprint': 'abc123'}}, filters)
+
+
+class LogFacetStatsApiTest(TestCase):
+    """通用分面统计：校验字段白名单、过滤条件透传与聚合结果映射。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+        self.cluster = OpenSearchCluster.objects.create(
+            name='log-facet-test', hosts='https://opensearch.example:9200', index_prefix='logs',
+        )
+        application = Application.objects.create(name='Tomcat', code='tomcat')
+        project = Project.objects.create(name='KUL', code='kul')
+        system = BusinessSystem.objects.create(name='TIB', code='tib', project=project)
+        environment = BusinessEnvironment.objects.create(name='测试', code='test')
+        version = ApplicationVersion.objects.create(application=application, version='9.0.35')
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application, name='默认模板', control_type='command',
+            run_user='esb', app_home='/home/esb/tomcat',
+        )
+        self.service = ApplicationService.objects.create(
+            business_system=system, environment=environment, application=application,
+            application_version=version, deployment_template=template,
+            name='tomcat服务', code='tomcat-svc',
+        )
+
+    def _url(self):
+        return f'/monitor/opensearch-clusters/{self.cluster.id}/log-facet-stats/'
+
+    def test_missing_field_is_rejected(self):
+        res = self.client.get(self._url(), {'application_service_id': self.service.id})
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_field_outside_whitelist_is_rejected(self):
+        res = self.client.get(self._url(), {'application_service_id': self.service.id, 'field': 'log_message'})
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_facet_by_error_fingerprint_builds_query_and_maps_buckets(self):
+        fake_response = {
+            'aggregations': {
+                'by_field': {
+                    'buckets': [{
+                        'key': 'fp-1', 'doc_count': 3,
+                        'sample': {'hits': {'hits': [{
+                            '_id': 'doc-9',
+                            '_source': {'log_message': 'boom', 'instance': 'kul-tib-tomcat1', 'log_path': '/logs/a.log'},
+                        }]}},
+                        'trend': {'buckets': [{'key_as_string': '2026-08-30T10:00:00.000Z', 'doc_count': 3}]},
+                    }],
+                },
+            },
+        }
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = fake_response
+            res = self.client.get(self._url(), {
+                'application_service_id': self.service.id, 'field': 'error_fingerprint',
+            })
+        body = res.json()
+        self.assertEqual(body['code'], 200)
+        self.assertEqual(body['data']['field'], 'error_fingerprint')
+        bucket = body['data']['buckets'][0]
+        self.assertEqual(bucket['value'], 'fp-1')
+        self.assertEqual(bucket['count'], 3)
+        self.assertEqual(bucket['sample']['id'], 'doc-9')
+        self.assertEqual(bucket['sample']['log_path'], '/logs/a.log')
+        self.assertEqual(bucket['trend'][0]['count'], 3)
+
+        query_body = client_cls.return_value.search.call_args.args[1]
+        self.assertEqual(query_body['aggs']['by_field']['terms']['field'], 'error_fingerprint')
+        self.assertIn('log_path', query_body['aggs']['by_field']['aggs']['sample']['top_hits']['_source'])
+
+    def test_facet_drill_down_filters_are_applied(self):
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = {'aggregations': {'by_field': {'buckets': []}}}
+            res = self.client.get(self._url(), {
+                'application_service_id': self.service.id, 'field': 'instance',
+                'host_ip': '10.0.0.1', 'error_fingerprint': 'fp-1',
+            })
+        self.assertEqual(res.json()['code'], 200)
+        filters = client_cls.return_value.search.call_args.args[1]['query']['bool']['filter']
+        self.assertIn({'term': {'host_ip': '10.0.0.1'}}, filters)
+        self.assertIn({'term': {'error_fingerprint': 'fp-1'}}, filters)
+
+    def test_custom_interval_minutes_is_applied(self):
+        with mock.patch('monitor.views.OpenSearchClient') as client_cls:
+            client_cls.return_value.search.return_value = {'aggregations': {'by_field': {'buckets': []}}}
+            res = self.client.get(self._url(), {
+                'application_service_id': self.service.id, 'field': 'instance',
+                'start': '2026-08-30T00:00:00Z', 'end': '2026-08-30T01:00:00Z', 'interval_minutes': 5,
+            })
+        body = res.json()
+        self.assertEqual(body['code'], 200)
+        self.assertEqual(body['data']['interval_minutes'], 5)
+        query_body = client_cls.return_value.search.call_args.args[1]
+        self.assertEqual(query_body['aggs']['by_field']['aggs']['trend']['date_histogram']['fixed_interval'], '5m')
+
+    def test_interval_minutes_over_bucket_cap_is_rejected(self):
+        res = self.client.get(self._url(), {
+            'application_service_id': self.service.id, 'field': 'instance',
+            'start': '2026-08-01T00:00:00Z', 'end': '2026-08-30T00:00:00Z', 'interval_minutes': 1,
+        })
+        self.assertEqual(res.json()['code'], 400)
+
+    def test_invalid_interval_minutes_is_rejected(self):
+        res = self.client.get(self._url(), {
+            'application_service_id': self.service.id, 'field': 'instance', 'interval_minutes': 'abc',
+        })
+        self.assertEqual(res.json()['code'], 400)
 

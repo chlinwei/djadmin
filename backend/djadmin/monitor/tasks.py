@@ -1,4 +1,5 @@
 from datetime import timedelta
+import logging
 
 from django.core.mail import EmailMultiAlternatives, get_connection
 from django.db.models import Max, Prefetch
@@ -18,6 +19,44 @@ from .models import (
     UserAlertMediaBinding,
     MonitorTargetInstallHistory,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True, name='monitor.sync_log_storage', max_retries=3)
+def sync_log_storage(self, cluster_id):
+	"""后台下发日志存储配置，避免 OpenSearch 超时占用 Web 请求线程。"""
+	from .log_management import bootstrap_log_storage
+	from .models import OpenSearchCluster
+	from .opensearch_client import OpenSearchError
+
+	cluster = OpenSearchCluster.objects.filter(pk=cluster_id, enabled=True).first()
+	if cluster is None:
+		return {'status': 'skipped', 'cluster_id': cluster_id}
+
+	try:
+		result = bootstrap_log_storage(cluster)
+	except OpenSearchError as exc:
+		error_message = str(exc)[:500]
+		if self.request.retries < self.max_retries:
+			cluster.storage_sync_status = OpenSearchCluster.StorageSyncStatus.PENDING
+			cluster.storage_sync_error = error_message
+			cluster.save(update_fields=['storage_sync_status', 'storage_sync_error', 'update_time'])
+			logger.warning('日志存储同步失败，准备重试：cluster_id=%s, error=%s', cluster_id, exc)
+			raise self.retry(exc=exc, countdown=min(300, 10 * (2 ** self.request.retries)))
+		cluster.storage_sync_status = OpenSearchCluster.StorageSyncStatus.FAILED
+		cluster.storage_sync_error = error_message
+		cluster.storage_sync_time = timezone.now()
+		cluster.save(update_fields=['storage_sync_status', 'storage_sync_error', 'storage_sync_time', 'update_time'])
+		logger.error('日志存储同步最终失败：cluster_id=%s, error=%s', cluster_id, exc)
+		return {'status': 'failed', 'cluster_id': cluster_id, 'error': error_message}
+
+	cluster.storage_sync_status = OpenSearchCluster.StorageSyncStatus.SUCCESS
+	cluster.storage_sync_error = ''
+	cluster.storage_sync_time = timezone.now()
+	cluster.save(update_fields=['storage_sync_status', 'storage_sync_error', 'storage_sync_time', 'update_time'])
+	return {'status': 'success', 'cluster_id': cluster_id, **result}
 
 
 def resolve_alert_media(alert, event_type):

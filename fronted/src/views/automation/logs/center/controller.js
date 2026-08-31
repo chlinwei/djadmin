@@ -1479,12 +1479,21 @@ onMounted(async () => {
   startPolling()
 })
 
-useKeepAliveRefreshLifecycle(startPolling, () => {
+useKeepAliveRefreshLifecycle(() => {
+  startPolling()
+  // 日志弹窗还开着且任务没结束时，恢复实时日志的 WebSocket 推送；close 时同理必须断开，
+  // 否则切走 tab 后连接仍在后台收消息、占着服务端资源。
+  const resumeJobId = getFallbackStreamJobId()
+  if (resumeJobId) {
+    connectJobLogSocket(resumeJobId)
+  }
+}, () => {
   stopPolling()
   if (streamClockTimer) {
     window.clearInterval(streamClockTimer)
     streamClockTimer = null
   }
+  closeJobLogSocket()
 })
 
 onBeforeUnmount(() => {

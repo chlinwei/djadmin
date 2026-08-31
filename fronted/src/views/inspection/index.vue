@@ -594,6 +594,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
   getApplicationServiceList,
   getBusinessEnvironmentList,
@@ -1358,6 +1359,13 @@ onMounted(async () => {
   ])
 })
 onBeforeUnmount(stopExecutionPolling)
+// 本页被 keep-alive 缓存，切 tab 只会触发 onDeactivated；必须主动停轮询，否则会在后台一直请求。
+// 切回时若还有未完成的执行记录，重新恢复轮询。
+useKeepAliveRefreshLifecycle(() => {
+  if (executions.value.some((item) => ['pending', 'running'].includes(item.status))) {
+    startExecutionPolling()
+  }
+}, stopExecutionPolling)
 </script>
 
 <style scoped>

@@ -63,6 +63,7 @@ import { getBusinessSystem, getProjectList, saveBusinessSystem } from '@/api/ass
 const props = defineProps({
   open: { type: Boolean, required: true },
   systemId: { type: Number, default: null },
+  initialProjectId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -91,6 +92,9 @@ async function initialize() {
     if (props.systemId) {
       const response = await getBusinessSystem(props.systemId)
       Object.assign(form, initialForm(), response?.data?.data || {})
+    } else if (props.initialProjectId && projectOptions.value.some((item) => item.value === props.initialProjectId)) {
+      // 服务树选中某个项目节点时直接带过来预填，不用用户再选一遍。
+      form.project = props.initialProjectId
     }
   } finally {
     loading.value = false

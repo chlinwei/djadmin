@@ -69,7 +69,7 @@ function mountWorkspace(props = {}) {
       stubs: {
         Dialog: true,
         VersionDialog: true,
-        TemplateDialog: true,
+        TemplateManagerDialog: true,
         DeploymentDialog: true,
         ApplicationServiceDialog: true,
         ClusterProfileDialog: true,
@@ -111,20 +111,24 @@ describe('ApplicationWorkspace tab switching', () => {
     expect(wrapper.text()).toContain('新增应用')
     expect(applicationApi.getApplicationList).toHaveBeenCalledTimes(1)
 
-    await clickTab(wrapper, '逻辑服务')
-    expect(wrapper.text()).toContain('新增逻辑服务')
-    expect(applicationApi.getApplicationServiceList).toHaveBeenCalledTimes(1)
-
     await clickTab(wrapper, '集群模型')
     expect(wrapper.text()).toContain('新增自定义集群')
-    expect(applicationApi.getClusterProfileList).toHaveBeenCalledTimes(2)
-
-    await clickTab(wrapper, '部署模板')
-    expect(wrapper.text()).toContain('新增模板')
-    expect(wrapper.text()).toContain('tomcat-systemd')
-    expect(applicationApi.getApplicationDeploymentTemplateList).toHaveBeenCalledTimes(1)
+    expect(applicationApi.getClusterProfileList).toHaveBeenCalledTimes(1)
 
     await clickTab(wrapper, '应用定义')
+
+    wrapper.unmount()
+  })
+
+  it('opens the template manager dialog for an application', async () => {
+    const wrapper = mountWorkspace()
+    await flushPromises()
+
+    await wrapper.find('[data-manage-application-templates]').trigger('click')
+
+    const dialog = wrapper.findComponent({ name: 'TemplateManagerDialog' })
+    expect(dialog.props('open')).toBe(true)
+    expect(dialog.props('application')).toEqual(expect.objectContaining({ id: 1, name: 'Tomcat' }))
 
     wrapper.unmount()
   })

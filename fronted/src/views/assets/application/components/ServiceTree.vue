@@ -86,7 +86,14 @@
       >
         <template #title="node">
           <div class="service-tree-node">
-            <span class="service-tree-node-label">{{ node.title }}</span>
+            <FontAwesomeIcon
+              :icon="nodeIcon(node.key)"
+              :class="['service-tree-icon', `service-tree-icon--${nodeIconType(node.key)}`, { 'service-tree-icon--log-disabled': node.logDisabled }]"
+            />
+            <span class="service-tree-node-label" :class="{ 'service-tree-node-label--log-disabled': node.logDisabled }">{{ node.title }}</span>
+            <a-tooltip v-if="node.logDisabled" title="该服务未开启日志采集，查询不到日志">
+              <FontAwesomeIcon :icon="['fas', 'ban']" class="service-tree-log-disabled-badge" />
+            </a-tooltip>
           </div>
         </template>
       </a-tree>
@@ -114,6 +121,9 @@ const props = defineProps({
   selectedScope: { type: Object, default: () => ({ nodeType: 'all' }) },
   showStats: { type: Boolean, default: true },
   statsDimension: { type: String, default: 'business' },
+  // 参考“逻辑服务” tab 的左侧树：需要看项目层级的页面（如日志查询）传 true，
+  // 默认 false 不动服务树页自己的现有层级，避免影响已有页面/测试。
+  groupByProject: { type: Boolean, default: false },
 })
 const emit = defineEmits(['select', 'stats-change', 'update:statsDimension'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
@@ -373,44 +383,81 @@ function buildTree(systems, services, deployments) {
   }
 
   function buildServiceNodes(systemServices, system) {
-    return [...systemServices]
-      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-      .map((service) => {
-        const serviceKey = `service:${service.id}`
-        scopeByKey.set(serviceKey, {
-          nodeType: 'service', applicationServiceId: service.id, nodeTitle: service.name,
+    function serviceNodeFor(service) {
+      const serviceKey = `service:${service.id}`
+      scopeByKey.set(serviceKey, {
+        nodeType: 'service', applicationServiceId: service.id, nodeTitle: service.name,
+        businessSystemId: system.id, businessSystemName: system.name,
+        environment: service.environment || null, environmentName: service.environment_name || '',
+      })
+      const serviceDeployments = (deploymentsByService.get(service.id) || [])
+        .sort((left, right) => left.instance_name.localeCompare(right.instance_name, 'zh-CN'))
+      const deploymentNodes = serviceDeployments.map((deployment) => {
+        const deploymentKey = `deployment:${deployment.id}`
+        const hostLabel = deployment.host_name || deployment.host_ip || `主机-${deployment.host_id ?? deployment.host ?? deployment.id}`
+        scopeByKey.set(deploymentKey, {
+          nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
           businessSystemId: system.id, businessSystemName: system.name,
           environment: service.environment || null, environmentName: service.environment_name || '',
+          applicationServiceId: service.id, serviceName: service.name,
         })
-        const serviceDeployments = (deploymentsByService.get(service.id) || [])
-          .sort((left, right) => left.instance_name.localeCompare(right.instance_name, 'zh-CN'))
-        const deploymentNodes = serviceDeployments.map((deployment) => {
-          const deploymentKey = `deployment:${deployment.id}`
-          const hostLabel = deployment.host_name || deployment.host_ip || `主机-${deployment.host_id ?? deployment.host ?? deployment.id}`
-          scopeByKey.set(deploymentKey, {
-            nodeType: 'deployment', deploymentId: deployment.id, nodeTitle: deployment.instance_name,
-            businessSystemId: system.id, businessSystemName: system.name,
-            environment: service.environment || null, environmentName: service.environment_name || '',
-            applicationServiceId: service.id, serviceName: service.name,
-          })
-          return {
-            key: deploymentKey,
-            title: `${deployment.instance_name} [主机: ${hostLabel}]`,
-            searchText: `${deployment.instance_name} ${service.name} ${hostLabel}`.toLowerCase(),
-            isLeaf: true,
-          }
-        })
-        lazyDeploymentChildrenByServiceKey.set(serviceKey, deploymentNodes)
         return {
-          key: serviceKey,
-          title: `${service.name} [${service.environment_name || '未指定环境'}]`,
-          searchText: `${service.name} ${service.environment_name || '未指定环境'}`.toLowerCase(),
-          count: serviceDeployments.length,
-          children: [],
-          hasLazyChildren: deploymentNodes.length > 0,
+          key: deploymentKey,
+          title: `${deployment.instance_name} [主机: ${hostLabel}]`,
+          searchText: `${deployment.instance_name} ${service.name} ${hostLabel}`.toLowerCase(),
+          isLeaf: true,
         }
       })
+      lazyDeploymentChildrenByServiceKey.set(serviceKey, deploymentNodes)
+      // 分了环境层级后服务名不用再重复带 [环境] 后缀，环境层的标题已经表达了这层信息。
+      const title = props.groupByProject ? service.name : `${service.name} [${service.environment_name || '未指定环境'}]`
+      return {
+        key: serviceKey,
+        title,
+        searchText: `${service.name} ${service.environment_name || '未指定环境'}`.toLowerCase(),
+        count: serviceDeployments.length,
+        children: [],
+        hasLazyChildren: deploymentNodes.length > 0,
+        // 未开启日志采集时树上直接标出来，省得用户点进去才发现查不到日志。
+        logDisabled: !service.log_collection_enabled,
+      }
+    }
+
+    const sortedServices = [...systemServices].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+    if (!props.groupByProject) {
+      return sortedServices.map(serviceNodeFor)
+    }
+
+    // 参考“逻辑服务” tab 的树形状：业务系统下再按环境分一层，同一环境下可能挂多个服务。
+    const environments = new Map()
+    const order = []
+    for (const service of sortedServices) {
+      const envId = service.environment ?? 'unassigned'
+      const envName = service.environment_name || '未配置环境'
+      if (!environments.has(envId)) {
+        environments.set(envId, { name: envName, services: [] })
+        order.push(envId)
+      }
+      environments.get(envId).services.push(service)
+    }
+    return order.map((envId) => {
+      const group = environments.get(envId)
+      const environmentKey = `environment:${system.id}:${envId}`
+      scopeByKey.set(environmentKey, {
+        nodeType: 'environment', businessSystemId: system.id, businessSystemName: system.name,
+        environment: envId === 'unassigned' ? null : envId, environmentName: group.name, nodeTitle: group.name,
+      })
+      return {
+        key: environmentKey,
+        title: `${group.name} (${group.services.length})`,
+        searchText: group.name.toLowerCase(),
+        count: group.services.length,
+        selectable: true,
+        children: group.services.map(serviceNodeFor),
+      }
+    })
   }
+
 
   const allSystems = [...systems]
   if (orphanServices.length) {
@@ -433,6 +480,8 @@ function buildTree(systems, services, deployments) {
         count: serviceNodes.length,
         children: serviceNodes,
         selectable: false,
+        _projectId: null,
+        _projectName: '',
       }
     }
     const children = buildServiceNodes(servicesBySystem.get(system.id) || [], system)
@@ -443,13 +492,57 @@ function buildTree(systems, services, deployments) {
       count: children.length,
       children,
       selectable: true,
+      _projectId: system.project ?? null,
+      _projectName: system.project_name || '',
     }
   }).filter((node) => !hasResourceFilter || node.children.length)
 
-  treeData.value = [{ key: 'all', title: '全部业务', searchText: '全部业务', count: systemNodes.length, children: systemNodes }]
+  const rootChildren = props.groupByProject ? groupSystemNodesByProject(systemNodes) : systemNodes
+  const rootTitle = props.groupByProject ? '全部逻辑服务' : '全部业务'
+  treeData.value = [{ key: 'all', title: rootTitle, searchText: rootTitle, count: systemNodes.length, children: rootChildren }]
 
-  const baseExpandedKeys = ['all', ...systemNodes.map((node) => node.key)]
+  const baseExpandedKeys = ['all', ...rootChildren.map((node) => node.key), ...systemNodes.map((node) => node.key)]
   expandedKeys.value = baseExpandedKeys
+}
+
+// 参考“逻辑服务” tab 的左侧树：把业务系统按所属项目收成上一层，无项目的系统归入“未分配项目”。
+function groupSystemNodesByProject(systemNodes) {
+  const groups = new Map()
+  const order = []
+  for (const node of systemNodes) {
+    const projectId = node._projectId ?? 'unassigned'
+    const projectName = node._projectName || '未分配项目'
+    if (!groups.has(projectId)) {
+      const projectKey = `project:${projectId}`
+      groups.set(projectId, { key: projectKey, title: projectName, searchText: projectName.toLowerCase(), children: [] })
+      order.push(projectId)
+      if (projectId !== 'unassigned') {
+        scopeByKey.set(projectKey, { nodeType: 'project', projectId, nodeTitle: projectName })
+      }
+    }
+    groups.get(projectId).children.push(node)
+  }
+  return order.map((id) => {
+    const group = groups.get(id)
+    group.count = group.children.length
+    group.selectable = id !== 'unassigned'
+    return group
+  })
+}
+
+// 与“逻辑服务” tab 的 serviceTreeIcon 同一套规则：按 key 前缀判定节点层级，service/deployment 是本组件特有层级。
+function nodeIconType(key) {
+  const type = String(key || '').split(':')[0]
+  return ['project', 'system', 'environment', 'service', 'deployment'].includes(type) ? type : 'all'
+}
+function nodeIcon(key) {
+  const type = nodeIconType(key)
+  if (type === 'project') return ['fas', 'folder-tree']
+  if (type === 'system') return ['fas', 'sitemap']
+  if (type === 'environment') return ['fas', 'server']
+  if (type === 'service') return ['fas', 'cubes']
+  if (type === 'deployment') return ['fas', 'desktop']
+  return ['fas', 'layer-group']
 }
 
 function handleEnvironmentChange(values) {
@@ -709,13 +802,32 @@ onBeforeUnmount(() => {
   width: 100%;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
+.service-tree-icon {
+  width: 15px;
+  flex: none;
+}
+.service-tree-icon--all { color: #5b6472; }
+.service-tree-icon--project { color: #36709b; }
+.service-tree-icon--system { color: #25856d; }
+.service-tree-icon--environment { color: #b56d2d; }
+.service-tree-icon--service { color: #ad6800; }
+.service-tree-icon--deployment { color: #8c8c8c; }
+.service-tree-icon--log-disabled { color: #c2c7cf; }
 .service-tree-node-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.service-tree-node-label--log-disabled {
+  color: #b0b7c0;
+}
+.service-tree-log-disabled-badge {
+  flex: none;
+  color: #d46b08;
+  width: 12px;
 }
 .service-tree-node-count {
   min-width: 20px;

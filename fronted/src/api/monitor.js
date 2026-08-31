@@ -174,10 +174,23 @@ export function testOpenSearchCluster(id) {
   return requestUtil.post(prefix + `opensearch-clusters/${id}/test-connection/`, {})
 }
 
-// 日志存储管理面：一键初始化 index template + ISM policy（架构文档 §11 阶段 1）
+// 日志采集链路逐层对账（只读）：索引模板 / 保留策略 / 解析规则 / 主机配置 / 采集进程 / 数据写入
+export function getLogPipelineHealth(id) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-health/`)
+}
 
 export function simulateOpenSearchPipeline(id, payload) {
   return requestUtil.post(prefix + `opensearch-clusters/${id}/pipeline-simulate/`, payload)
+}
+
+// 按逻辑服务查询原始日志：params 仅支持后端白名单字段（application_service_id/start/end/keyword/log_level/instance/host_ip/log_name/error_fingerprint/size/offset）
+export function searchOpenSearchLogs(id, params) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-search/`, params)
+}
+
+// 通用分面统计：params.field 必须是后端白名单字段之一，返回按该字段聚合的计数/样例/时间趋势
+export function searchOpenSearchLogFacetStats(id, params) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-facet-stats/`, params)
 }
 
 export function getLogProcessingRules(params) {
@@ -192,6 +205,20 @@ export function saveLogProcessingRule(data) {
 
 export function deleteLogProcessingRule(id) {
   return requestUtil.del(prefix + `log-processing-rules/${id}/`)
+}
+
+export function getLogCollectionFilterRules(params) {
+  return requestUtil.get(prefix + 'log-collection-filter-rules/', params)
+}
+
+export function saveLogCollectionFilterRule(data) {
+  return data.id
+    ? requestUtil.patch(prefix + `log-collection-filter-rules/${data.id}/`, data)
+    : requestUtil.post(prefix + 'log-collection-filter-rules/', data)
+}
+
+export function deleteLogCollectionFilterRule(id) {
+  return requestUtil.del(prefix + `log-collection-filter-rules/${id}/`)
 }
 
 // 日志保留档位：档位即 data stream 后缀，保存后后端会把 ISM policy 重新下发到集群

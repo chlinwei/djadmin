@@ -10,12 +10,14 @@ import io
 import re
 import urllib.error
 import urllib.request
+from datetime import timedelta
 from pathlib import PurePath
 
 from django.core.files.base import ContentFile
 from django.core.mail import EmailMultiAlternatives, get_connection
 from django.http import JsonResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -25,7 +27,7 @@ from djadmin.utils import CustomPagination
 from menu.permisssion import CustomMenuPermission
 from assets.credential_crypto import decrypt_secret
 from assets.grpc_transfer.registry import REGISTRY
-from assets.models import Host, HostGroup
+from assets.models import ApplicationService, Host, HostGroup
 
 from .alert_history import (
     compute_alert_fingerprint,
@@ -40,6 +42,7 @@ from .models import (
     AlertNotificationDelivery,
     AlertNotificationEvent,
     AlertRoute,
+    LogCollectionFilterRule,
     LogCollectionTarget,
     LogProcessingRule,
     LogRetentionTier,
@@ -57,6 +60,7 @@ from .serializer import (
     AlertHistorySerializer,
     AlertMediaSerializer,
     AlertRouteSerializer,
+    LogCollectionFilterRuleSerializer,
     LogCollectionTargetSerializer,
     LogProcessingRuleSerializer,
     LogRetentionTierSerializer,
@@ -76,7 +80,9 @@ from .log_collection_service import (
     read_instance_log_tail,
     refresh_target_status,
 )
-from .log_management import bootstrap_log_storage
+from .log_management import bootstrap_log_storage, enqueue_log_storage_sync
+from .log_health import collect_log_pipeline_health
+from .log_schema import find_non_standard_document_fields
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')
@@ -1640,12 +1646,32 @@ class OpenSearchClusterViewSet(
         'destroy': 'monitor:view',
         'test_connection': 'monitor:view',
         'bootstrap': 'monitor:view',
+        'log_health': 'monitor:view',
         'simulate_pipeline': 'monitor:view',
         'error_patterns': 'monitor:view',
         'new_errors': 'monitor:view',
         'error_spikes': 'monitor:view',
         'error_by_instance': 'monitor:view',
+        'log_search': 'monitor:view',
+        'log_facet_stats': 'monitor:view',
     }
+
+    # 日志查询防护上限：与「链路体检」踩过的坑一致——必须在参数层面拦住无界查询，
+    # 不能指望调用方自觉，否则一次大窗口检索就能把集群拖慢。
+    LOG_SEARCH_MAX_SIZE = 200
+    LOG_SEARCH_MAX_WINDOW = timedelta(days=30)
+    LOG_SEARCH_MAX_RESULT_WINDOW = 2000
+    # 统计面板可切换的分组字段：必须是白名单枚举，不能让前端传任意字段做 terms 聚合
+    # （非 keyword/数值字段会直接报错，且开放任意字段等于间接开放了探测索引结构的入口）。
+    LOG_FACET_ALLOWED_FIELDS = {'log_level', 'instance', 'host_ip', 'log_name', 'error_fingerprint'}
+    LOG_FACET_MAX_SIZE = 50
+    # 手动选择粒度时仍需封顶：小间隔 + 大跨度会拉出数千个桶，聚合成本随桶数线性增长。
+    LOG_FACET_MAX_TREND_BUCKETS = 500
+    # 日志详情/统计样例统一取这组字段，新增字段（如 log_path）只需改这一处。
+    LOG_DOC_SOURCE_FIELDS = [
+        '@timestamp', 'log_level', 'service', 'instance', 'host_ip',
+        'log_name', 'log_path', 'log_message', 'error_fingerprint', 'app_fields',
+    ]
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -1674,14 +1700,20 @@ class OpenSearchClusterViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response_200(data=serializer.data)
+        return Response_200(data=self._with_storage_sync(serializer))
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response_200(data=serializer.data)
+        return Response_200(data=self._with_storage_sync(serializer))
+
+    @staticmethod
+    def _with_storage_sync(serializer):
+        """保存后提交同步任务，不让 OpenSearch 超时阻塞配置接口。"""
+        enqueue_log_storage_sync(serializer.instance.id)
+        return {**serializer.data, 'storage_sync_queued': True}
 
     def partial_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
@@ -1727,6 +1759,11 @@ class OpenSearchClusterViewSet(
             return error
         return Response_200(data=result)
 
+    @action(detail=True, methods=['get'], url_path='log-health')
+    def log_health(self, request, id=None):
+        """日志采集链路逐层对账，只读不修复；每层内部已消化异常，整体不会因单层失败而中断。"""
+        return Response_200(data=collect_log_pipeline_health(self.get_object()))
+
     @action(detail=True, methods=['post'], url_path='pipeline-simulate')
     def simulate_pipeline(self, request, id=None):
         """解析规则调试（架构文档 §5.4，最高优先级）：
@@ -1751,6 +1788,8 @@ class OpenSearchClusterViewSet(
             data, error = self._call_client(client.simulate_pipeline, name, docs)
         if error is not None:
             return error
+        # 索引模板是 dynamic=false，越界字段写入不报错但无法检索，调试阶段就得告警。
+        data = {**data, 'schema_violations': find_non_standard_document_fields(data)}
         return Response_200(data=data)
 
     @staticmethod
@@ -1789,7 +1828,7 @@ class OpenSearchClusterViewSet(
                         'sample': {'top_hits': {
                             'size': 1,
                             # 归一化模板只是指纹的中间量、不落库，样例直接取该组里的一条真实错误。
-                            '_source': ['error_type', 'error_message', 'root_cause_type', 'service', 'instance'],
+                            '_source': ['log_message', 'app_fields', 'service', 'instance'],
                         }},
                         'services': {'terms': {'field': 'service'}},
                     },
@@ -1862,12 +1901,234 @@ class OpenSearchClusterViewSet(
             ]}},
             'aggs': {
                 'by_error': {
-                    'terms': {'field': 'error_type', 'size': 10},
+                    # 按指纹而非异常类型下钻：同一异常类型可能对应多个根因，指纹粒度更准，
+                    # 且 error_type 已归入 app_fields（flat_object 子字段不支持聚合）。
+                    'terms': {'field': 'error_fingerprint', 'size': 10},
                     'aggs': {'by_instance': {'terms': {'field': 'instance'}}},
                 },
             },
         }
         return self._search(self.get_object(), index, body)
+
+    def _log_search_time_range(self, request):
+        """解析 start/end，默认最近 1 小时；跨度上限 30 天，避免全量扫描拖垮集群。"""
+        end_raw = str(request.query_params.get('end') or '').strip()
+        if end_raw:
+            end = parse_datetime(end_raw)
+            if end is None:
+                return None, None, Response_error_str('end 不是合法的 ISO8601 时间', code=400)
+        else:
+            end = timezone.now()
+
+        start_raw = str(request.query_params.get('start') or '').strip()
+        if start_raw:
+            start = parse_datetime(start_raw)
+            if start is None:
+                return None, None, Response_error_str('start 不是合法的 ISO8601 时间', code=400)
+        else:
+            start = end - timedelta(hours=1)
+
+        if timezone.is_naive(start):
+            start = timezone.make_aware(start)
+        if timezone.is_naive(end):
+            end = timezone.make_aware(end)
+        if start >= end:
+            return None, None, Response_error_str('start 必须早于 end', code=400)
+        if end - start > self.LOG_SEARCH_MAX_WINDOW:
+            return None, None, Response_error_str(f'时间范围不能超过 {self.LOG_SEARCH_MAX_WINDOW.days} 天', code=400)
+        return start, end, None
+
+    @action(detail=True, methods=['get'], url_path='log-search')
+    def log_search(self, request, id=None):
+        """按逻辑服务查询原始日志：只接受受限参数，由后端拼接查询体，前端不能传入任意 DSL。"""
+        try:
+            service_id = int(request.query_params.get('application_service_id') or 0)
+        except (TypeError, ValueError):
+            return Response_error_str('application_service_id 必须是整数', code=400)
+        if service_id <= 0:
+            return Response_error_str('缺少 application_service_id 参数', code=400)
+        service = ApplicationService.objects.filter(pk=service_id).only('code').first()
+        if service is None:
+            return Response_error_str('逻辑服务不存在', code=400)
+
+        start, end, error = self._log_search_time_range(request)
+        if error is not None:
+            return error
+        assert start is not None and end is not None  # error 为空时 _log_search_time_range 保证两者已解析
+
+        try:
+            size = min(max(int(request.query_params.get('size', 100)), 1), self.LOG_SEARCH_MAX_SIZE)
+        except (TypeError, ValueError):
+            return Response_error_str('size 必须是整数', code=400)
+        try:
+            offset = max(int(request.query_params.get('offset', 0)), 0)
+        except (TypeError, ValueError):
+            return Response_error_str('offset 必须是整数', code=400)
+        if offset + size > self.LOG_SEARCH_MAX_RESULT_WINDOW:
+            return Response_error_str(
+                f'offset+size 不能超过 {self.LOG_SEARCH_MAX_RESULT_WINDOW}，请缩小时间范围或增加过滤条件', code=400,
+            )
+
+        keyword = str(request.query_params.get('keyword') or '').strip()[:500]
+        instance = str(request.query_params.get('instance') or '').strip()[:128]
+        host_ip = str(request.query_params.get('host_ip') or '').strip()[:64]
+        log_name = str(request.query_params.get('log_name') or '').strip()[:128]
+        error_fingerprint = str(request.query_params.get('error_fingerprint') or '').strip()[:128]
+        log_levels = [
+            item.strip()[:32]
+            for item in str(request.query_params.get('log_level') or '').split(',')
+            if item.strip()
+        ][:20]
+
+        filters = [
+            {'term': {'service': service.code}},
+            {'range': {'@timestamp': {'gte': start.isoformat(), 'lte': end.isoformat()}}},
+        ]
+        if instance:
+            filters.append({'term': {'instance': instance}})
+        if host_ip:
+            filters.append({'term': {'host_ip': host_ip}})
+        if log_name:
+            filters.append({'term': {'log_name': log_name}})
+        if error_fingerprint:
+            filters.append({'term': {'error_fingerprint': error_fingerprint}})
+        if log_levels:
+            filters.append({'terms': {'log_level': log_levels}})
+        # match 而非 wildcard：避免前导通配触发全量扫描，且天然对 text 字段分词友好。
+        must = [{'match': {'log_message': keyword}}] if keyword else [{'match_all': {}}]
+
+        cluster = self.get_object()
+        prefix = cluster.index_prefix or 'logs'
+        body = {
+            'from': offset,
+            'size': size,
+            # 只统计到上限即可，日志检索不需要精确总数，避免 track_total_hits 拖慢深度统计。
+            'track_total_hits': self.LOG_SEARCH_MAX_RESULT_WINDOW,
+            'sort': [{'@timestamp': 'desc'}],
+            '_source': self.LOG_DOC_SOURCE_FIELDS,
+            'query': {'bool': {'filter': filters, 'must': must}},
+        }
+        data, error = self._call_client(OpenSearchClient(cluster).search, f'{prefix}-*', body)
+        if error is not None:
+            return error
+        hits = (data.get('hits') or {}).get('hits') or []
+        total = ((data.get('hits') or {}).get('total') or {}).get('value') or 0
+        results = [{'id': hit.get('_id'), **(hit.get('_source') or {})} for hit in hits]
+        return Response_200(data={'results': results, 'count': total, 'size': size, 'offset': offset})
+
+    @action(detail=True, methods=['get'], url_path='log-facet-stats')
+    def log_facet_stats(self, request, id=None):
+        """通用分面统计：按白名单字段聚合计数 + 最新样例 + 时间趋势。
+
+        与 log_search 共用同一套时间窗校验和过滤条件构造，前端可切换 field 实现
+        "按级别/实例/主机/日志文件/错误指纹"任意维度统计，点击某个分面值时把它作为
+        对应过滤条件回填给 log_search，实现下钻查看原始日志。
+        """
+        try:
+            service_id = int(request.query_params.get('application_service_id') or 0)
+        except (TypeError, ValueError):
+            return Response_error_str('application_service_id 必须是整数', code=400)
+        if service_id <= 0:
+            return Response_error_str('缺少 application_service_id 参数', code=400)
+        service = ApplicationService.objects.filter(pk=service_id).only('code').first()
+        if service is None:
+            return Response_error_str('逻辑服务不存在', code=400)
+
+        field = str(request.query_params.get('field') or '').strip()
+        if field not in self.LOG_FACET_ALLOWED_FIELDS:
+            return Response_error_str(f'field 必须是以下之一: {", ".join(sorted(self.LOG_FACET_ALLOWED_FIELDS))}', code=400)
+
+        start, end, error = self._log_search_time_range(request)
+        if error is not None:
+            return error
+        assert start is not None and end is not None  # error 为空时 _log_search_time_range 保证两者已解析
+
+        try:
+            size = min(max(int(request.query_params.get('size', 20)), 1), self.LOG_FACET_MAX_SIZE)
+        except (TypeError, ValueError):
+            return Response_error_str('size 必须是整数', code=400)
+
+        keyword = str(request.query_params.get('keyword') or '').strip()[:500]
+        instance = str(request.query_params.get('instance') or '').strip()[:128]
+        host_ip = str(request.query_params.get('host_ip') or '').strip()[:64]
+        log_name = str(request.query_params.get('log_name') or '').strip()[:128]
+        error_fingerprint = str(request.query_params.get('error_fingerprint') or '').strip()[:128]
+        log_levels = [
+            item.strip()[:32]
+            for item in str(request.query_params.get('log_level') or '').split(',')
+            if item.strip()
+        ][:20]
+
+        filters = [
+            {'term': {'service': service.code}},
+            {'range': {'@timestamp': {'gte': start.isoformat(), 'lte': end.isoformat()}}},
+        ]
+        if instance:
+            filters.append({'term': {'instance': instance}})
+        if host_ip:
+            filters.append({'term': {'host_ip': host_ip}})
+        if log_name:
+            filters.append({'term': {'log_name': log_name}})
+        if error_fingerprint:
+            filters.append({'term': {'error_fingerprint': error_fingerprint}})
+        if log_levels:
+            filters.append({'terms': {'log_level': log_levels}})
+        must = [{'match': {'log_message': keyword}}] if keyword else [{'match_all': {}}]
+
+        # 趋势桶数默认固定在 ~30 个左右；前端也可传 interval_minutes 手动指定粒度，
+        # 但总桶数仍须封顶，避免用户选一个很细的间隔配大跨度时拉出巨量桶。
+        span_seconds = max((end - start).total_seconds(), 60)
+        span_minutes = max(int(span_seconds // 60), 1)
+        interval_raw = request.query_params.get('interval_minutes')
+        if interval_raw:
+            try:
+                interval_minutes = max(int(interval_raw), 1)
+            except (TypeError, ValueError):
+                return Response_error_str('interval_minutes 必须是整数', code=400)
+            if span_minutes // interval_minutes > self.LOG_FACET_MAX_TREND_BUCKETS:
+                return Response_error_str(
+                    f'该粒度下趋势桶数超过 {self.LOG_FACET_MAX_TREND_BUCKETS} 个上限，请选择更粗的粒度或缩小时间范围',
+                    code=400,
+                )
+        else:
+            interval_minutes = max(span_minutes // 30, 1)
+
+        cluster = self.get_object()
+        prefix = cluster.index_prefix or 'logs'
+        body = {
+            'size': 0,
+            'query': {'bool': {'filter': filters, 'must': must}},
+            'aggs': {
+                'by_field': {
+                    'terms': {'field': field, 'size': size, 'order': {'_count': 'desc'}},
+                    'aggs': {
+                        'sample': {'top_hits': {
+                            'size': 1, 'sort': [{'@timestamp': 'desc'}], '_source': self.LOG_DOC_SOURCE_FIELDS,
+                        }},
+                        'trend': {'date_histogram': {
+                            'field': '@timestamp', 'fixed_interval': f'{interval_minutes}m',
+                        }},
+                    },
+                },
+            },
+        }
+        data, error = self._call_client(OpenSearchClient(cluster).search, f'{prefix}-*', body)
+        if error is not None:
+            return error
+
+        buckets = ((data.get('aggregations') or {}).get('by_field') or {}).get('buckets') or []
+        results = []
+        for bucket in buckets:
+            sample_hits = ((bucket.get('sample') or {}).get('hits') or {}).get('hits') or []
+            sample = None
+            if sample_hits:
+                sample = {'id': sample_hits[0].get('_id'), **(sample_hits[0].get('_source') or {})}
+            trend = [
+                {'timestamp': item.get('key_as_string'), 'count': item.get('doc_count')}
+                for item in (bucket.get('trend') or {}).get('buckets') or []
+            ]
+            results.append({'value': bucket.get('key'), 'count': bucket.get('doc_count'), 'sample': sample, 'trend': trend})
+        return Response_200(data={'field': field, 'interval_minutes': interval_minutes, 'buckets': results})
 
 
 class LogRetentionTierViewSet(
@@ -1953,13 +2214,9 @@ class LogRetentionTierViewSet(
 
     @staticmethod
     def _apply_policies():
-        """档位改动后立刻把 ISM policy 推到各启用集群，避免"页面改了但集群没生效"。"""
-        for cluster in OpenSearchCluster.objects.filter(enabled=True):
-            try:
-                bootstrap_log_storage(cluster)
-            except OpenSearchError:
-                # 集群暂时不可达不应阻塞档位保存，下次 bootstrap 会补齐。
-                continue
+        """档位改动后入队同步，避免 OpenSearch 超时阻塞档位保存。"""
+        for cluster_id in OpenSearchCluster.objects.filter(enabled=True).values_list('pk', flat=True):
+            enqueue_log_storage_sync(cluster_id)
 
 
 class LogProcessingRuleViewSet(
@@ -2047,6 +2304,67 @@ class LogProcessingRuleViewSet(
         except OpenSearchError as exc:
             return Response_error_str(f'删除 Pipeline 失败: {exc}', code=400)
         instance.delete()
+        return Response_200(data={'deleted': True})
+
+
+class LogCollectionFilterRuleViewSet(
+    GenericViewSet,
+    ListModelMixin,
+    CreateModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
+):
+    """集中维护 Fluent Bit 采集侧的可复用日志过滤规则。"""
+
+    queryset = LogCollectionFilterRule.objects.select_related('application').all()
+    serializer_class = LogCollectionFilterRuleSerializer
+    pagination_class = CustomPagination
+    filter_backends = (OrderingFilter, DjangoFilterBackend, SearchFilter)
+    filterset_fields = ['application', 'enabled']
+    search_fields = ['name', 'description', 'pattern']
+    ordering_fields = ['id', 'name', 'create_time', 'update_time']
+    permission_classes = [CustomMenuPermission]
+    action_perms_map = {
+        'list': 'monitor:view', 'retrieve': 'monitor:view', 'create': 'monitor:view',
+        'update': 'monitor:view', 'partial_update': 'monitor:view', 'destroy': 'monitor:view',
+    }
+
+    def list(self, request: Request, *args, **kwargs) -> Response:
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response_200(data=serializer.data)
+        paginator = self.paginator
+        return Response_200(data={
+            'count': paginator.page.paginator.count, 'results': serializer.data,
+            'pageNumber': paginator.page.number, 'pageSize': paginator.page_size,
+            'totalPages': paginator.page.paginator.num_pages,
+            'next': paginator.get_next_link(), 'previous': paginator.get_previous_link(),
+        })
+
+    def retrieve(self, request: Request, *args, **kwargs) -> Response:
+        return Response_200(data=self.get_serializer(self.get_object()).data)
+
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def update(self, request: Request, *args, **kwargs) -> Response:
+        serializer = self.get_serializer(self.get_object(), data=request.data, partial=kwargs.pop('partial', False))
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response_200(data=serializer.data)
+
+    def partial_update(self, request: Request, *args, **kwargs) -> Response:
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request: Request, *args, **kwargs) -> Response:
+        self.get_object().delete()
         return Response_200(data={'deleted': True})
 
 

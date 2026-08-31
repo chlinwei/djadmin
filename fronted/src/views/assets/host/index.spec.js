@@ -208,4 +208,77 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
     expect(payload.credential_id).toBe(2)
     expect(payload.operation).toBe('install')
   })
+
+  it('blocks update submission when the selected host agent is offline', async () => {
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: {
+          'a-modal': { template: '<div><slot /></div>' },
+          'a-form': { template: '<form><slot /></form>' },
+          'a-form-item': { template: '<div><slot /></div>' },
+          'a-select': true,
+          Dialog: true,
+          FontAwesomeIcon: true,
+        },
+        directives: {
+          permission: () => {},
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const setupState = wrapper.vm.$.setupState
+    setupState.state.selectedRowKeys = [101]
+    setupState.datasources = [{ id: 101, agent_id: 'agent-101', agent_online: false }]
+
+    setupState.openAgentManage()
+    await flushPromises()
+
+    expect(setupState.agentManageOperation).toBe('update')
+    setupState.agentManageCredentialId = 2
+
+    await setupState.submitAgentManage()
+    await flushPromises()
+
+    expect(hostApi.installAgents).not.toHaveBeenCalled()
+  })
+
+  it('updates an online host without requiring an SSH credential', async () => {
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: {
+          'a-modal': { template: '<div><slot /></div>' },
+          'a-form': { template: '<form><slot /></form>' },
+          'a-form-item': { template: '<div><slot /></div>' },
+          'a-select': true,
+          Dialog: true,
+          FontAwesomeIcon: true,
+        },
+        directives: {
+          permission: () => {},
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const setupState = wrapper.vm.$.setupState
+    setupState.state.selectedRowKeys = [101]
+    setupState.datasources = [{ id: 101, agent_id: 'agent-101', agent_online: true }]
+
+    setupState.openAgentManage()
+    await flushPromises()
+
+    expect(setupState.agentManageOperation).toBe('update')
+    // 更新不需要选 SSH 凭证：不设置 agentManageCredentialId 也应该能提交成功。
+
+    await setupState.submitAgentManage()
+    await flushPromises()
+
+    expect(hostApi.installAgents).toHaveBeenCalledTimes(1)
+    const payload = hostApi.installAgents.mock.calls[0][0]
+    expect(payload.operation).toBe('update')
+    expect(payload.credential_id).toBeUndefined()
+  })
 })

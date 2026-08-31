@@ -6,10 +6,12 @@ import re
 
 from assets.credential_crypto import encrypt_secret
 
+from .log_schema import APP_FIELDS_KEY, find_non_standard_pipeline_fields
 from .models import (
     AlertHistory,
     AlertMedia,
     AlertRoute,
+    LogCollectionFilterRule,
     LogCollectionTarget,
     LogProcessingRule,
     LogRetentionTier,
@@ -76,6 +78,11 @@ class LogProcessingRuleSerializer(ModelSerializer):
             raise serializers.ValidationError('Pipeline 必须是 JSON 对象')
         if not isinstance(value.get('processors'), list):
             raise serializers.ValidationError('Pipeline processors 必须是数组')
+        violations = find_non_standard_pipeline_fields(value)
+        if violations:
+            raise serializers.ValidationError(
+                f"以下字段不属于标准字段，请改写到 {APP_FIELDS_KEY}.<字段名> 下：{'、'.join(violations)}"
+            )
         return value
 
     def validate(self, attrs):
@@ -96,6 +103,32 @@ class LogProcessingRuleSerializer(ModelSerializer):
         attrs['start_pattern'] = start_pattern if multiline_enabled else ''
         attrs['continuation_pattern'] = continuation_pattern if multiline_enabled else ''
         return attrs
+
+
+class LogCollectionFilterRuleSerializer(ModelSerializer):
+    application_name = serializers.CharField(source='application.name', read_only=True, default='')
+
+    class Meta:
+        model = LogCollectionFilterRule
+        fields = '__all__'
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', name):
+            raise serializers.ValidationError('仅支持小写字母、数字、点、下划线和连字符')
+        return name
+
+    def validate_pattern(self, value):
+        pattern = str(value or '').strip()
+        if not pattern:
+            raise serializers.ValidationError('请输入匹配正则')
+        if '\n' in pattern or '\r' in pattern:
+            raise serializers.ValidationError('正则不能包含换行符')
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise serializers.ValidationError(f'正则不合法: {error}')
+        return pattern
 
 
 class MonitorTargetSerializer(ModelSerializer):
@@ -518,7 +551,10 @@ class OpenSearchClusterSerializer(ModelSerializer):
     class Meta:
         model = OpenSearchCluster
         fields = '__all__'
-        read_only_fields = ['last_check_time', 'last_check_success', 'last_check_message']
+        read_only_fields = [
+            'last_check_time', 'last_check_success', 'last_check_message',
+            'storage_sync_status', 'storage_sync_error', 'storage_sync_time',
+        ]
 
     def get_password_configured(self, obj):
         return bool(obj.password)

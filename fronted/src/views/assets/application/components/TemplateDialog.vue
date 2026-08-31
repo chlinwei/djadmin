@@ -36,7 +36,11 @@
               <a-col :span="12"><a-form-item label="工作目录"><a-input v-model:value="form.work_directory" placeholder="例如 ${APP_HOME}/bin" /></a-form-item></a-col>
               <a-col :span="24">
                 <a-form-item label="宏" extra="模板提供默认值，逻辑服务可直接继承或覆盖">
-                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="name" size="small">
+                  <!-- row-key 不能用 name：用户正在编辑的宏 Key 一变，行 key 跟着变，
+                       antd 会把整行当成新行卸载重建，正打字的 input 节点被卸载后触发原生事件时就会报错。
+                       也不能用 (record, index) => index：antd 明确标记 rowKey 函数的 index 参数为 deprecated，
+                       改为每行创建时写死一个不变的 _uid 字段。 -->
+                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="_uid" size="small">
                     <template #bodyCell="{ column, record, index }">
                       <template v-if="column.key === 'name'"><a-input v-model:value="record.name" placeholder="例如 ORACLE_SID" /></template>
                       <template v-else-if="column.key === 'value'"><a-input v-model:value="record.value" placeholder="默认值，可为空" /></template>
@@ -162,12 +166,6 @@
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-input v-model:value="item.path_pattern" placeholder="例如 ${APP_HOME}/logs/*.log" />
               <a-select
-                v-model:value="item.encoding"
-                :options="encodingOptions"
-                :getPopupContainer="getPopupContainer"
-                placeholder="字符编码"
-              />
-              <a-select
                 v-model:value="item.processing_rule"
                 :options="processingRuleOptions"
                 :getPopupContainer="getPopupContainer"
@@ -231,7 +229,6 @@ const pathTypeOptions = [
   { label: '可执行文件', value: 'executable' }, { label: '其他', value: 'other' },
 ]
 const fileFormatOptions = ['xml', 'yaml', 'json', 'ini', 'properties', 'text'].map((value) => ({ label: value.toUpperCase(), value }))
-const encodingOptions = ['utf-8', 'utf-16le', 'utf-16be', 'latin1'].map((value) => ({ label: value.toUpperCase(), value }))
 const commandActions = [
   { label: '启动命令', value: 'start', required: true },
   { label: '停止命令', value: 'stop', required: true },
@@ -251,6 +248,8 @@ const createInitialForm = () => ({
 })
 const form = reactive(createInitialForm())
 const macroDefinitions = ref([])
+// 行的唯一标识，与后端无关，提交前剔除；只在创建时赋值一次，不随编辑/删除重新计算。
+let macroKeySeq = 0
 const macroColumns = [
   { title: '宏 Key', key: 'name', width: 260 },
   { title: '值', key: 'value', width: 240 },
@@ -299,6 +298,7 @@ async function loadTemplate(id) {
     const initial = createInitialForm()
     Object.assign(form, initial, data)
     macroDefinitions.value = (data.macro_definitions || []).map((item) => ({
+      _uid: ++macroKeySeq,
       name: item.name || '', value: item.value || item.default || '', description: item.description || '',
     }))
     if (props.copyFromId) form.name = `${form.name || '部署模板'}-副本`
@@ -336,7 +336,11 @@ async function saveTemplate() {
     message.error(validationMessage)
     return
   }
-  const payload = { ...form, id: props.copyFromId ? undefined : props.templateId || undefined, macro_definitions: macroDefinitions.value }
+  const payload = {
+    ...form, id: props.copyFromId ? undefined : props.templateId || undefined,
+    // _uid 只供 a-table 定位行用，不是后端字段，提交前剔除。
+    macro_definitions: macroDefinitions.value.map(({ _uid, ...rest }) => rest),
+  }
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
     : form.control_type === 'external_ha'
@@ -357,10 +361,10 @@ async function saveTemplate() {
   }
 }
 const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })
-const addMacro = () => macroDefinitions.value.push({ name: '', value: '', description: '' })
+const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
-const addLog = () => form.logs.push({ name: '', path_pattern: '', encoding: 'utf-8', collection_enabled: false, processing_rule: null, extra_fields: {} })
+const addLog = () => form.logs.push({ name: '', path_pattern: '', collection_enabled: false, processing_rule: null, extra_fields: {} })
 
 watch(() => props.open, (visible) => {
   if (!visible) {
@@ -388,7 +392,7 @@ watch(() => props.open, (visible) => {
 .port-row { grid-template-columns: 1.1fr 110px 130px 1.2fr 110px 72px; }
 .path-row { grid-template-columns: 1fr 150px 2fr 72px; }
 .config-row { grid-template-columns: 1fr 2fr 130px 72px; }
-.log-row { grid-template-columns: 1fr 2fr 150px 110px 72px; }
+.log-row { grid-template-columns: 1fr 2fr 110px 72px; }
 :global(.application-template-modal .ant-modal) {
   width: min(1180px, calc(100vw - 240px)) !important;
   max-width: none;

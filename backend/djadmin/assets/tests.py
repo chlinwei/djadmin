@@ -18,7 +18,7 @@ from .views import _build_application_params, _resolve_target_agent_ids, _run_ex
 from .host_info import persist_host_info
 from .consumers import HostWebSSHConsumer
 from .webssh_runtime import WebSSHRuntimeRegistry
-from monitor.models import MonitorTarget, SoftwarePackage
+from monitor.models import MonitorTarget, SoftwarePackage, LogProcessingRule, OpenSearchCluster
 from automation.models import PlaybookTemplate
 from automation.models import TemplateCategory
 from user.models import SysUser
@@ -49,6 +49,62 @@ class AgentInstallBinaryValidationTest(TestCase):
 
         with self.assertRaisesRegex(RuntimeError, '缺少当前 gRPC 配置标记'):
             _validate_agent_binary(self._binary(b'ELF\x00unknown-agent'))
+
+
+class AgentInstallOnlineValidationTest(TestCase):
+    """更新走 SSH 替换二进制并重启服务：agent 已离线时提交没有意义，必须在这里挡住。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = SysUser.objects.create(username='admin', password='admin123', status=1)
+        self.client.credentials(HTTP_AUTHORIZATION=_get_token(self.user))
+        self.credential = Credential.objects.create(name='agent-install-cred', username='root', port=22)
+
+    def test_update_rejects_offline_host(self):
+        host = Host.objects.create(
+            instance_name='offline-host', ip='10.0.9.1', agent_id='agent-offline', agent_online=False,
+        )
+        res = self.client.post('/api/agent/install', {
+            'host_ids': [host.id], 'operation': 'update', 'credential_id': self.credential.id,
+        }, format='json')
+        body = res.json()
+        self.assertEqual(body['code'], 400)
+        self.assertIn('在线', body['msg'])
+
+    def test_update_does_not_require_credential(self):
+        """更新走已建立的 gRPC 通道自更新，不需要 SSH 凭证——不传 credential_id 也不能被挡住。"""
+        host = Host.objects.create(
+            instance_name='online-host', ip='10.0.9.2', agent_id='agent-online', agent_online=True,
+        )
+        with patch('assets.views.run_agent_update_via_grpc'):
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self.client.post('/api/agent/install', {
+                    'host_ids': [host.id], 'operation': 'update',
+                }, format='json')
+        self.assertEqual(res.json()['code'], 200)
+
+    def test_update_dispatches_grpc_path_not_ssh_playbook(self):
+        host = Host.objects.create(
+            instance_name='online-dispatch-host', ip='10.0.9.3', agent_id='agent-dispatch', agent_online=True,
+        )
+        with patch('assets.views.run_agent_update_via_grpc') as grpc_target, \
+                patch('assets.views.run_agent_install_job') as ssh_target:
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self.client.post('/api/agent/install', {
+                    'host_ids': [host.id], 'operation': 'update',
+                }, format='json')
+        self.assertEqual(res.json()['code'], 200)
+        grpc_target.assert_called_once()
+        ssh_target.assert_not_called()
+
+    def test_install_still_requires_credential(self):
+        host = Host.objects.create(instance_name='fresh-host', ip='10.0.9.4')
+        res = self.client.post('/api/agent/install', {
+            'host_ids': [host.id], 'operation': 'install',
+        }, format='json')
+        body = res.json()
+        self.assertEqual(body['code'], 400)
+        self.assertIn('credential_id', body['msg'])
 
 
 def _make_playbook_template(name):
@@ -591,6 +647,125 @@ class ApplicationTest(BaseTestCase):
         self.assertEqual(params['control_actions']['start']['command'], 'sudo -u esb /home/esb/tomcat/bin/startup.sh')
         self.assertEqual(params['paths'][0]['path'], '/home/esb/tomcat/logs')
         self.assertEqual(params['logs'][0]['path_pattern'], '/home/esb/tomcat/log/catalina.out')
+
+    def test_service_log_settings_can_override_processing_rule(self):
+        """逻辑服务可为模板日志单独指定处理规则；覆盖值要落库并出现在 log-config。"""
+        application = Application.objects.create(name='Rule App', code='rule-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0.0')
+        business_system = BusinessSystem.objects.create(name='规则系统', code='rule-system')
+        environment = self._environment_for(0)
+        cluster = OpenSearchCluster.objects.create(
+            name='默认集群',
+            hosts='https://127.0.0.1:9200',
+            username='admin',
+            password='admin',
+            enabled=True,
+        )
+        rule_default = LogProcessingRule.objects.create(
+            cluster=cluster, application=application, name='默认日志规则', input_format='text',
+        )
+        rule_alt = LogProcessingRule.objects.create(
+            cluster=cluster, application=application, name='替换日志规则', input_format='json',
+        )
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='日志规则模板',
+            control_type='command',
+            run_user='app',
+            service_name='rule-app',
+            app_home='/srv/rule-app',
+        )
+        log_def = template.logs.create(name='access.log', path_pattern='/srv/rule-app/logs/*.log', collection_enabled=True, processing_rule=rule_default)
+        host = Host.objects.create(instance_name='rule-host', ip='10.0.0.44', environment=environment)
+        deployment = self._create_deployment(
+            application_version=version,
+            deployment_template=template,
+            host=host,
+            instance_name='rule-main',
+        )
+
+        service = self.client.post('/assets/application-services/', {
+            'business_system': business_system.id,
+            'environment': environment.id,
+            'application': application.id,
+            'application_version': version.id,
+            'deployment_template': template.id,
+            'name': '规则服务',
+            'code': 'rule-service',
+            'topology_type': 'standalone',
+            'member_configs': [{'deployment': deployment.id, 'enabled': True}],
+            'log_settings': [{'log_definition': log_def.id, 'processing_rule': rule_alt.id}],
+        }, format='json')
+        body = self.assertResponseOK(service)
+        self.assertEqual(body['data']['log_settings'][0]['processing_rule'], rule_alt.id)
+
+        config = self.client.get(f"/assets/application-services/{body['data']['id']}/log-config/")
+        config_body = self.assertResponseOK(config)
+        self.assertEqual(config_body['data']['logs'][0]['processing_rule_id'], rule_alt.id)
+        self.assertEqual(config_body['data']['logs'][0]['processing_rule_name'], rule_alt.name)
+
+    def test_service_log_settings_can_choose_error_only_collection_mode(self):
+        """日志可按服务级覆盖制定采集策略：全量或仅错误。"""
+        application = Application.objects.create(name='Error App', code='error-app')
+        version = ApplicationVersion.objects.create(application=application, version='1.0.0')
+        business_system = BusinessSystem.objects.create(name='错误系统', code='error-system')
+        environment = self._environment_for(0)
+        cluster = OpenSearchCluster.objects.create(
+            name='错误日志集群',
+            hosts='https://127.0.0.1:9200',
+            username='admin',
+            password='admin',
+            enabled=True,
+        )
+        rule_default = LogProcessingRule.objects.create(
+            cluster=cluster, application=application, name='默认错误规则', input_format='text',
+        )
+        template = ApplicationDeploymentTemplate.objects.create(
+            application=application,
+            name='错误日志模板',
+            control_type='command',
+            run_user='app',
+            service_name='error-app',
+            app_home='/srv/error-app',
+        )
+        log_def = template.logs.create(
+            name='service.log',
+            path_pattern='/srv/error-app/logs/*.log',
+            collection_enabled=True,
+            processing_rule=rule_default,
+        )
+        host = Host.objects.create(instance_name='error-host', ip='10.0.0.45', environment=environment)
+        deployment = self._create_deployment(
+            application_version=version,
+            deployment_template=template,
+            host=host,
+            instance_name='error-main',
+        )
+
+        service = self.client.post('/assets/application-services/', {
+            'business_system': business_system.id,
+            'environment': environment.id,
+            'application': application.id,
+            'application_version': version.id,
+            'deployment_template': template.id,
+            'name': '错误日志服务',
+            'code': 'error-log-service',
+            'topology_type': 'standalone',
+            'member_configs': [{'deployment': deployment.id, 'enabled': True}],
+            'log_settings': [{
+                'log_definition': log_def.id,
+                'collection_mode': 'error_only',
+                'filter_pattern': '(?i)(error|failed|critical|fatal)',
+            }],
+        }, format='json')
+        body = self.assertResponseOK(service)
+        self.assertEqual(body['data']['log_settings'][0]['collection_mode'], 'error_only')
+        self.assertEqual(body['data']['log_settings'][0]['filter_pattern'], '(?i)(error|failed|critical|fatal)')
+
+        config = self.client.get(f"/assets/application-services/{body['data']['id']}/log-config/")
+        config_body = self.assertResponseOK(config)
+        self.assertEqual(config_body['data']['logs'][0]['collection_mode'], 'error_only')
+        self.assertEqual(config_body['data']['logs'][0]['filter_pattern'], '(?i)(error|failed|critical|fatal)')
 
     def test_template_rejects_invalid_app_home_variable_reference(self):
         """App Home 不可自引用，引用 APP_HOME 时也必须先定义 App Home。"""

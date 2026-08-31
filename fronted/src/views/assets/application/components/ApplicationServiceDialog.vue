@@ -166,7 +166,7 @@
               <div class="field-hint">档位决定写入哪个 data stream 及其过期策略。</div>
             </a-form-item>
           </a-col>
-          <a-col v-if="form.id" :span="24">
+          <a-col v-if="form.deployment_template" :span="24">
             <a-form-item label="模板日志">
               <a-table
                 :columns="logTableColumns"
@@ -174,13 +174,30 @@
                 :pagination="false"
                 row-key="log_definition"
                 size="small"
-                :scroll="{ x: 1150 }"
+                :scroll="{ x: 1450 }"
               >
                 <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'resolved_path'"><code>{{ record.resolved_path }}</code></template>
-                  <template v-else-if="column.key === 'processing_rule_name'">
-                    <span v-if="record.processing_rule_name">{{ record.processing_rule_name }}</span>
-                    <a-tag v-else color="orange">未配置</a-tag>
+                  <template v-if="column.key === 'name'">{{ record.name }}</template>
+                  <template v-else-if="column.key === 'resolved_path'"><code>{{ record.resolved_path }}</code></template>
+                  <template v-else-if="column.key === 'processing_rule'">
+                    <a-select
+                      :value="logOverrides[record.log_definition]?.processing_rule ?? null"
+                      :options="[{ label: `继承（${record.effective_processing_rule_name || '未配置'}）`, value: null }, ...processingRuleOptions]"
+                      placeholder="请选择处理规则"
+                      :getPopupContainer="getPopupContainer"
+                      allow-clear
+                      @update:value="setLogOverride(record.log_definition, 'processing_rule', $event)"
+                    />
+                  </template>
+                  <template v-else-if="column.key === 'filter_pattern'">
+                    <a-select
+                      :value="logOverrides[record.log_definition]?.collection_filter_rule ?? null"
+                      :options="[{ label: '不筛选（全量采集）', value: null }, ...collectionFilterRuleOptions]"
+                      placeholder="不筛选（全量采集）"
+                      :getPopupContainer="getPopupContainer"
+                      allow-clear
+                      @update:value="setLogOverride(record.log_definition, 'collection_filter_rule', $event)"
+                    />
                   </template>
                   <template v-else-if="column.key === 'collection_enabled'">
                     <a-select
@@ -205,7 +222,7 @@
                   <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
                 </template>
               </a-table>
-              <div class="field-hint">日志定义与处理规则在部署模板维护；此处只做服务级覆盖。保存后重新打开可刷新 data stream 预览。</div>
+              <div class="field-hint">日志定义在部署模板维护；此处可直接配置服务级采集策略、过滤规则、处理规则和保留档位。</div>
             </a-form-item>
           </a-col>
           <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
@@ -283,12 +300,14 @@ import {
   getClusterProfileList,
   saveApplicationService,
 } from '@/api/assets/application'
-import { getLogRetentionTiers } from '@/api/monitor'
+import { getLogCollectionFilterRules, getLogProcessingRules, getLogRetentionTiers } from '@/api/monitor'
 
 const props = defineProps({
   open: { type: Boolean, required: true },
   serviceId: { type: Number, default: null },
   clusterProfileId: { type: Number, default: null },
+  initialBusinessSystemId: { type: Number, default: null },
+  initialEnvironmentId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -314,16 +333,26 @@ const selectedDeploymentIds = ref([])
 const memberEnabled = reactive({})
 const environmentRecords = ref([])
 const retentionTierRecords = ref([])
+const processingRuleRecords = ref([])
+const collectionFilterRuleRecords = ref([])
 const templateLogRows = ref([])
 // 服务级覆盖：键为日志定义 ID，值为 null 表示继承。
 const logOverrides = reactive({})
 const retentionTierOptions = computed(() => retentionTierRecords.value
   .filter((item) => item.enabled)
   .map((item) => ({ label: `${item.name}（${item.retention_days} 天）`, value: item.id })))
+// 解析规则包含日志格式和 Ingest Pipeline，只能选当前应用规则或不限应用的通用规则。
+const processingRuleOptions = computed(() => processingRuleRecords.value
+  .filter((item) => !item.application || item.application === form.application)
+  .map((item) => ({ label: item.application ? item.name : `${item.name}（通用）`, value: item.id })))
+const collectionFilterRuleOptions = computed(() => collectionFilterRuleRecords.value
+  .filter((item) => item.enabled && (!item.application || item.application === form.application))
+  .map((item) => ({ label: item.application ? item.name : `${item.name}（通用）`, value: item.id })))
 const logTableColumns = [
   { title: '日志名称', key: 'name', width: 150 },
   { title: '路径', key: 'resolved_path', width: 260 },
-  { title: '处理规则', key: 'processing_rule_name', width: 160 },
+  { title: '处理规则', key: 'processing_rule', width: 210 },
+  { title: '过滤规则', key: 'filter_pattern', width: 250 },
   { title: '采集', key: 'collection_enabled', width: 130 },
   { title: '保留档位', key: 'retention_tier', width: 190 },
   { title: 'Data Stream', key: 'data_stream', width: 260 },
@@ -417,7 +446,10 @@ function openVersionCreator() {
 
 function handleBusinessSystemCreated(system) {
   if (!system?.id) return
-  businessSystemOptions.value = [...businessSystemOptions.value.filter((item) => item.value !== system.id), { label: system.name, value: system.id }]
+  businessSystemOptions.value = [
+    ...businessSystemOptions.value.filter((item) => item.value !== system.id),
+    { label: system.project_name ? `${system.project_name} / ${system.name}` : system.name, value: system.id },
+  ]
   form.business_system = system.id
   businessSystemDialogOpen.value = false
   nextTick(() => formRef.value?.clearValidate('business_system'))
@@ -533,6 +565,8 @@ async function initialize() {
       ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
       ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
       ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
+      ['日志处理规则', () => fetchAllPages(getLogProcessingRules)],
+      ['采集过滤规则', () => fetchAllPages(getLogCollectionFilterRules)],
       ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
     ]
     const results = await Promise.all(loaders.map(async ([label, loader]) => {
@@ -552,6 +586,8 @@ async function initialize() {
     const templates = records['部署模板']
     const profiles = records['集群模型']
     const deployments = records['部署实例']
+    processingRuleRecords.value = records['日志处理规则'] || []
+    collectionFilterRuleRecords.value = records['采集过滤规则'] || []
     businessSystemOptions.value = systems.map((item) => ({ label: item.name, value: item.id }))
     environmentRecords.value = environments
     applicationOptions.value = applications.map((item) => ({ label: item.name, value: item.id }))
@@ -574,6 +610,14 @@ async function initialize() {
       form.topology_type = 'cluster'
       form.cluster_profile = props.clusterProfileId
       form.application = selectedProfile.value?.application || null
+    } else {
+      // 纯新增且调用方已经带了左侧树选中的业务系统/环境时直接预填，避免重复选一遍。
+      if (props.initialBusinessSystemId && businessSystemOptions.value.some((item) => item.value === props.initialBusinessSystemId)) {
+        form.business_system = props.initialBusinessSystemId
+      }
+      if (props.initialEnvironmentId && environmentOptions.value.some((item) => item.value === props.initialEnvironmentId)) {
+        form.environment = props.initialEnvironmentId
+      }
     }
     await nextTick()
     formRef.value?.clearValidate()
@@ -593,6 +637,8 @@ async function loadLogConfig(serviceId) {
       logOverrides[row.log_definition] = {
         retention_tier: row.retention_tier ?? null,
         collection_enabled: row.collection_enabled === row.template_collection_enabled ? null : row.collection_enabled,
+        collection_filter_rule: row.collection_filter_rule_id ?? null,
+        processing_rule: row.processing_rule_id ?? null,
       }
     }
   } catch {
@@ -600,8 +646,41 @@ async function loadLogConfig(serviceId) {
   }
 }
 
+function initializeTemplateLogs(templateId) {
+  const template = templateRecords.value.find((item) => item.id === templateId)
+  templateLogRows.value = (template?.logs || []).map((log) => ({
+    log_definition: log.id,
+    name: log.name,
+    path_pattern: log.path_pattern,
+    resolved_path: log.path_pattern,
+    template_collection_enabled: log.collection_enabled,
+    collection_enabled: log.collection_enabled,
+    collection_filter_rule: null,
+    processing_rule_id: log.processing_rule ?? null,
+    effective_processing_rule_name: '',
+    retention_tier: null,
+    data_stream: '保存后生成',
+  }))
+  for (const key of Object.keys(logOverrides)) delete logOverrides[key]
+  for (const row of templateLogRows.value) {
+    logOverrides[row.log_definition] = {
+      retention_tier: null,
+      collection_enabled: null,
+      collection_mode: 'all',
+      filter_pattern: '',
+      processing_rule: null,
+    }
+  }
+}
+
 function setLogOverride(logDefinition, field, value) {
-  const current = logOverrides[logDefinition] || { retention_tier: null, collection_enabled: null }
+  const current = logOverrides[logDefinition] || {
+    retention_tier: null,
+    collection_enabled: null,
+    collection_mode: 'all',
+    filter_pattern: '',
+    processing_rule: null,
+  }
   logOverrides[logDefinition] = { ...current, [field]: value ?? null }
 }
 
@@ -626,11 +705,18 @@ async function submit() {
       enabled: memberEnabled[deployment] !== false,
     }))
     payload.log_settings = Object.entries(logOverrides)
-      .filter(([, value]) => value.retention_tier !== null || value.collection_enabled !== null)
+      .filter(([, value]) => (
+        value.retention_tier !== null
+        || value.collection_enabled !== null
+        || value.processing_rule !== null
+        || value.collection_filter_rule !== null
+      ))
       .map(([logDefinition, value]) => ({
         log_definition: Number(logDefinition),
         retention_tier: value.retention_tier,
         collection_enabled: value.collection_enabled,
+        collection_filter_rule: value.collection_filter_rule,
+        processing_rule: value.processing_rule,
       }))
     await saveApplicationService(payload)
     message.success('保存成功')
@@ -669,6 +755,7 @@ watch(() => form.deployment_template, (templateId) => {
     if (Object.prototype.hasOwnProperty.call(form.macro_values || {}, definition.name)) values[definition.name] = form.macro_values[definition.name]
   }
   form.macro_values = values
+  if (!props.serviceId && templateId) initializeTemplateLogs(templateId)
 })
 watch(() => form.topology_type, (topology) => {
   if (topology === 'standalone') {

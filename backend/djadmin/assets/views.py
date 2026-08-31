@@ -39,7 +39,7 @@ from .webssh_host_mixin import WebSSHHostMixin
 from .host_info import refresh_host_info
 from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from .grpc_transfer.registry import REGISTRY
-from .agent_install_service import _refresh_automation_job, run_agent_install_job
+from .agent_install_service import _refresh_automation_job, run_agent_install_job, run_agent_update_via_grpc
 
 # 日志记录器
 logger = logging.getLogger(__name__)
@@ -468,6 +468,16 @@ class BusinessSystemManage(ApplicationAssetManageBase):
     search_fields = ['name', 'code', 'owner', 'project__name', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
     filterset_fields = ['enabled', 'project']
+    # 业务系统的增删改查现在统一收口在"服务树"，权限码不再挂靠应用配置。
+    action_perms_map = {
+        **ApplicationAssetManageBase.action_perms_map,
+        'list': 'assets:service-tree:view',
+        'retrieve': 'assets:service-tree:view',
+        'create': 'assets:service-tree:manage',
+        'destroy': 'assets:service-tree:manage',
+        'update': 'assets:service-tree:manage',
+        'partial_update': 'assets:service-tree:manage',
+    }
 
 
 class ProjectManage(ApplicationAssetManageBase):
@@ -521,11 +531,41 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
     search_fields = ['name', 'code', 'business_system__name', 'environment__name', 'application__name', 'access_address', 'remark']
     ordering_fields = ['name', 'code', 'create_time', 'update_time']
     filterset_class = ApplicationServiceFilter
+    # 逻辑服务的增删改查现在统一收口在"服务树"，权限码不再挂靠应用配置
+    # （应用配置-集群模型的"创建集群"复用同一批接口，也一并改用新权限码）。
     action_perms_map = {
         **ApplicationAssetManageBase.action_perms_map,
-        'refresh_runtime_status': 'assets:applications:update',
-        'log_config': 'assets:applications:view',
+        'list': 'assets:service-tree:view',
+        'retrieve': 'assets:service-tree:view',
+        'create': 'assets:service-tree:manage',
+        'destroy': 'assets:service-tree:manage',
+        'update': 'assets:service-tree:manage',
+        'partial_update': 'assets:service-tree:manage',
+        'refresh_runtime_status': 'assets:service-tree:manage',
+        'log_config': 'assets:service-tree:view',
     }
+
+    @staticmethod
+    def _queue_log_config_apply(service: ApplicationService) -> None:
+        """保存服务配置后异步刷新关联主机的 Fluent Bit 片段。"""
+        from monitor.job_runner import submit_monitor_job
+        from monitor.log_collection_service import apply_host_log_config
+        from monitor.models import LogCollectionTarget
+
+        host_ids = ApplicationServiceDeployment.objects.filter(
+            service=service,
+            enabled=True,
+            deployment__enabled=True,
+        ).values_list('deployment__host_id', flat=True).distinct()
+        target_ids = list(LogCollectionTarget.objects.filter(host_id__in=host_ids).values_list('id', flat=True))
+
+        def apply_target(target_id: int) -> None:
+            target = LogCollectionTarget.objects.select_related('host').get(id=target_id)
+            apply_host_log_config(target)
+
+        for target_id in target_ids:
+            # 配置已提交后再异步下发，单台 Agent 暂时不可用不能阻断逻辑服务保存。
+            transaction.on_commit(lambda target_id=target_id: submit_monitor_job(apply_target, target_id))
 
     def create(self, request: Request, *args, **kwargs) -> Response:
         request_data = cast(dict[str, Any], request.data)
@@ -533,6 +573,15 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        self._queue_log_config_apply(serializer.instance)
+        return Response_200(data=serializer.data)
+
+    def update(self, request: Request, *args, **kwargs) -> Response:
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        self._queue_log_config_apply(serializer.instance)
         return Response_200(data=serializer.data)
 
     def retrieve(self, request: Request, *args, **kwargs) -> Response:
@@ -570,16 +619,22 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
         environment_code = service.environment.code if service.environment else 'unknown'
         # 路径里的宏依赖具体部署实例，取任一启用实例做展示；没有实例时退回原始模式。
         sample_deployment = service.deployments.filter(enabled=True).select_related('host').first()
-        overrides = {item.log_definition_id: item for item in service.log_settings.select_related('retention_tier')}
+        overrides = {
+            item.log_definition_id: item
+            for item in service.log_settings.select_related('retention_tier', 'processing_rule', 'collection_filter_rule')
+        }
 
         rows = []
-        for log_def in (template.logs.all() if template else []):
+        for log_def in (template.logs.select_related('processing_rule').all() if template else []):
             override = overrides.get(log_def.id)
             tier = override.retention_tier if override is not None and override.retention_tier_id else service.log_retention_tier
             collection_enabled = (
                 log_def.collection_enabled
                 if override is None or override.collection_enabled is None
                 else override.collection_enabled
+            )
+            effective_processing_rule = (
+                override.processing_rule if override is not None and override.processing_rule_id else log_def.processing_rule
             )
             try:
                 data_stream = build_index_name(
@@ -596,10 +651,13 @@ class ApplicationServiceManage(ApplicationAssetManageBase):
                     resolve_log_path(log_def, service, sample_deployment)
                     if sample_deployment is not None else log_def.path_pattern
                 ),
-                'encoding': log_def.encoding,
-                'processing_rule_name': log_def.processing_rule.name if log_def.processing_rule_id else '',
+                'processing_rule_id': effective_processing_rule.id if effective_processing_rule is not None else None,
+                'processing_rule_name': effective_processing_rule.name if effective_processing_rule is not None else '',
+                'effective_processing_rule_name': effective_processing_rule.name if effective_processing_rule is not None else '',
                 'template_collection_enabled': log_def.collection_enabled,
                 'collection_enabled': collection_enabled,
+                'collection_filter_rule_id': override.collection_filter_rule_id if override is not None else None,
+                'collection_filter_rule_name': override.collection_filter_rule.name if override is not None and override.collection_filter_rule_id else '',
                 'retention_tier': override.retention_tier_id if override is not None else None,
                 'effective_tier_name': str(tier) if tier else '',
                 'data_stream': data_stream,
@@ -2081,14 +2139,10 @@ def agent_create_job(request):
 
 @api_view(['POST'])
 def agent_install(request: Request) -> Response | JsonResponse:
-    """Queue Ansible-based Agent installation or update for selected hosts."""
+    """Queue Agent installation (SSH + Ansible) or update (existing gRPC channel) for selected hosts."""
     payload = request.data if isinstance(request.data, dict) else {}  # type: ignore[attr-defined]
     raw_host_ids = payload.get('host_ids')
     operation = str(payload.get('operation') or 'install').strip().lower()
-    try:
-        credential_id = int(str(payload.get('credential_id') or '').strip())
-    except (TypeError, ValueError):
-        return Response_error_str('credential_id必须是整数', code=400)
     if operation not in {'install', 'update'}:
         return Response_error_str('operation仅支持install或update', code=400)
     if not isinstance(raw_host_ids, list) or not raw_host_ids:
@@ -2103,13 +2157,26 @@ def agent_install(request: Request) -> Response | JsonResponse:
         return Response_error_str('部分主机不存在，请刷新后重试', code=400)
     if operation == 'update' and any(not str(host.agent_id or '').strip() for host in hosts):
         return Response_error_str('更新操作仅支持已绑定 Agent 的主机', code=400)
-    credential = Credential.objects.filter(id=credential_id).first()
-    if credential is None:
-        return Response_error_str('SSH 凭证不存在', code=400)
+    if operation == 'update' and any(not host.agent_online for host in hosts):
+        # 更新走已建立的 gRPC 通道让 agent 自己替换二进制并重启，离线主机没有通道可下发。
+        return Response_error_str('更新操作仅支持当前在线的主机', code=400)
+
+    # 安装是全新主机的引导过程，agent 还没起来，只能走 SSH；更新复用已连通的 gRPC 通道，不需要 SSH 凭证。
+    credential_id = None
+    if operation == 'install':
+        try:
+            credential_id = int(str(payload.get('credential_id') or '').strip())
+        except (TypeError, ValueError):
+            return Response_error_str('credential_id必须是整数', code=400)
+        if not Credential.objects.filter(id=credential_id).exists():
+            return Response_error_str('SSH 凭证不存在', code=400)
 
     from automation.models import AutomationExecutionJob, AutomationExecutionTargetLog
     operation_label = {'install': '安装', 'update': '更新'}[operation]
-    playbook_content = (Path(settings.BASE_DIR) / 'assets' / 'agent_install.yml').read_text(encoding='utf-8')
+    playbook_content = (
+        (Path(settings.BASE_DIR) / 'assets' / 'agent_install.yml').read_text(encoding='utf-8')
+        if operation == 'install' else ''
+    )
     with transaction.atomic():
         hosts = list(Host.objects.select_for_update().filter(id__in=host_ids).order_by('id'))
         stale_before = timezone.now() - timedelta(seconds=30)
@@ -2160,7 +2227,7 @@ def agent_install(request: Request) -> Response | JsonResponse:
             task=None,
             status=AutomationExecutionJob.Status.RUNNING,
             task_name_snapshot=f'Agent {operation_label}',
-            template_name_snapshot='dj-agent Ansible Playbook',
+            template_name_snapshot='dj-agent Ansible Playbook' if operation == 'install' else 'dj-agent 在线自更新',
             template_content_snapshot=playbook_content,
             inventory_snapshot={
                 'hosts': [
@@ -2179,7 +2246,7 @@ def agent_install(request: Request) -> Response | JsonResponse:
                 job_id=f'install-agent-{uuid.uuid4().hex[:16]}',
                 agent_id=str(host.agent_id or f'host-{host.pk}'),
                 host=host,
-                job_type='ansible',
+                job_type='ansible' if operation == 'install' else 'grpc',
                 action='install_agent',
                 params={'credential_id': credential_id, 'operation': operation},
                 timeout_seconds=300,
@@ -2195,12 +2262,20 @@ def agent_install(request: Request) -> Response | JsonResponse:
                 agent_job_id=job.job_id,
                 status=AutomationExecutionTargetLog.Status.PENDING,
             )
-            transaction.on_commit(lambda job=job, host=host: threading.Thread(
-                target=run_agent_install_job,
-                args=(job.pk, host.pk, credential_id, execution.pk),
-                daemon=True,
-                name=f'agent-install-{host.pk}',
-            ).start())
+            if operation == 'install':
+                transaction.on_commit(lambda job=job, host=host: threading.Thread(
+                    target=run_agent_install_job,
+                    args=(job.pk, host.pk, credential_id, execution.pk),
+                    daemon=True,
+                    name=f'agent-install-{host.pk}',
+                ).start())
+            else:
+                transaction.on_commit(lambda job=job, host=host: threading.Thread(
+                    target=run_agent_update_via_grpc,
+                    args=(job.pk, host.pk, execution.pk),
+                    daemon=True,
+                    name=f'agent-update-{host.pk}',
+                ).start())
 
     return Response_200(data={
         'operation': operation,

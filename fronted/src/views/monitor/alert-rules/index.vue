@@ -61,7 +61,7 @@
             <span v-else>-</span>
           </template>
           <template v-else-if="column.key === 'query'">
-            <a-typography-text ellipsis style="max-width: 420px">{{ record.query }}</a-typography-text>
+            <a-typography-text :content="record.query" ellipsis style="max-width: 420px" />
           </template>
           <template v-else-if="column.key === 'duration'">
             {{ formatDuration(record.duration) }}

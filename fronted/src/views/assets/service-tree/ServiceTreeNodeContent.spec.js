@@ -72,6 +72,27 @@ describe('ServiceTreeNodeContent', () => {
     expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
     expect(applicationApi.getBusinessSystem).toHaveBeenCalledWith(7)
     expect(wrapper.text()).toContain('订单团队')
+    // 业务系统层级先按环境分组展示，跟左侧树的层级顺序保持一致
+    expect(wrapper.text()).toContain('测试环境')
+    expect(wrapper.find('.child-navigation-link').text()).toContain('测试环境')
+    await wrapper.find('.child-navigation-link').trigger('click')
+    expect(wrapper.emitted('navigate').at(-1)).toEqual([{
+      nodeType: 'environment',
+      businessSystemId: 7,
+      businessSystemName: '订单系统',
+      environment: 72,
+      environmentName: '测试环境',
+      nodeTitle: '测试环境',
+    }])
+
+    await wrapper.setProps({
+      scope: {
+        nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+        environment: 72, environmentName: '测试环境', nodeTitle: '测试环境',
+      },
+    })
+    await flushPromises()
+    expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
     expect(wrapper.text()).toContain('订单 API')
     expect(wrapper.find('.child-navigation-link').text()).toContain('订单 API')
     await wrapper.find('.child-navigation-link').trigger('click')
@@ -103,5 +124,117 @@ describe('ServiceTreeNodeContent', () => {
     expect(wrapper.text()).not.toContain('部署模板')
     expect(wrapper.text()).toContain('10.0.0.1')
     expect(wrapper.text()).toContain('运行中')
+  })
+
+  it('renders project and environment node types used when the tree groups by project', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'project', projectId: 5, nodeTitle: '示例项目' } },
+      global: { plugins: [Antd] },
+    })
+    await flushPromises()
+    expect(applicationApi.getBusinessSystemList).toHaveBeenLastCalledWith(expect.objectContaining({ project: 5 }))
+    expect(wrapper.text()).toContain('订单系统')
+    expect(wrapper.find('.child-navigation-link').text()).toContain('订单系统')
+    await wrapper.find('.child-navigation-link').trigger('click')
+    expect(wrapper.emitted('navigate').at(-1)).toEqual([{
+      nodeType: 'businessSystem',
+      businessSystemId: 7,
+      businessSystemName: '订单系统',
+      nodeTitle: '订单系统',
+      projectId: 5,
+      projectName: '示例项目',
+    }])
+
+    await wrapper.setProps({
+      scope: {
+        nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+        environment: 72, environmentName: '测试环境', nodeTitle: '测试环境',
+      },
+    })
+    await flushPromises()
+    expect(applicationApi.getApplicationServiceList).toHaveBeenLastCalledWith(expect.objectContaining({ business_system: 7 }))
+    expect(wrapper.text()).toContain('订单 API')
+    await wrapper.find('.child-navigation-link').trigger('click')
+    expect(wrapper.emitted('navigate').at(-1)).toEqual([{
+      nodeType: 'service',
+      applicationServiceId: 21,
+      businessSystemId: 7,
+      businessSystemName: '订单系统',
+      environment: 72,
+      environmentName: '测试环境',
+      nodeTitle: '订单 API',
+    }])
+  })
+
+  it('业务系统的编辑/删除操作只对外抛事件，不会触发导航', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'all', nodeTitle: '全部业务' } },
+      global: { plugins: [Antd] },
+    })
+    await flushPromises()
+
+    // 子表格里的编辑/删除按钮嵌在可点击跳转的整行里，点击必须 stop 冒泡，不能连带触发 navigate。
+    const rowButtons = wrapper.findAll('.ant-btn')
+    await rowButtons[0].trigger('click')
+    expect(wrapper.emitted('edit-business-system')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 7, name: '订单系统' }),
+    ])
+    await wrapper.find('.delBtn').trigger('click')
+    expect(wrapper.emitted('delete-business-system')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 7, name: '订单系统' }),
+    ])
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+
+    await wrapper.setProps({ scope: { nodeType: 'businessSystem', businessSystemId: 7, businessSystemName: '订单系统', nodeTitle: '订单系统' } })
+    await flushPromises()
+
+    const headerButtons = wrapper.findAll('.ant-btn')
+    await headerButtons[0].trigger('click')
+    expect(wrapper.emitted('edit-business-system')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 7 }),
+    ])
+    await wrapper.find('.delBtn').trigger('click')
+    expect(wrapper.emitted('delete-business-system')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 7 }),
+    ])
+  })
+
+  it('逻辑服务的编辑/删除操作只对外抛事件，不会触发导航', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: {
+        scope: {
+          nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+          environment: 72, environmentName: '测试环境', nodeTitle: '测试环境',
+        },
+      },
+      global: { plugins: [Antd] },
+    })
+    await flushPromises()
+
+    // 环境层级没有自己的头部编辑/删除按钮，子表格的服务操作按钮就是第一组；
+    // 子表格里的编辑/删除按钮嵌在可点击跳转的整行里，点击必须 stop 冒泡，不能连带触发 navigate。
+    const rowButtons = wrapper.findAll('.ant-btn')
+    await rowButtons[0].trigger('click')
+    expect(wrapper.emitted('edit-service')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 21, name: '订单 API' }),
+    ])
+    await wrapper.find('.delBtn').trigger('click')
+    expect(wrapper.emitted('delete-service')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 21, name: '订单 API' }),
+    ])
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 21, businessSystemName: '订单系统', environmentName: '测试环境', nodeTitle: '订单 API' } })
+    await flushPromises()
+
+    const headerButtons = wrapper.findAll('.ant-btn')
+    await headerButtons[0].trigger('click')
+    expect(wrapper.emitted('edit-service')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 21 }),
+    ])
+    await wrapper.find('.delBtn').trigger('click')
+    expect(wrapper.emitted('delete-service')?.at(-1)).toEqual([
+      expect.objectContaining({ id: 21 }),
+    ])
   })
 })

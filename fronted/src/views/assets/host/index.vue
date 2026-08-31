@@ -259,7 +259,9 @@
                     type="info"
                     show-icon
                     :message="`已选择 ${state.selectedRowKeys.length} 台主机`"
-                    description="支持 root 用户及具备 sudo 免密或密码提权权限的普通用户 SSH 凭证。"
+                    :description="agentManageOperation === 'install'
+                        ? '支持 root 用户及具备 sudo 免密或密码提权权限的普通用户 SSH 凭证。'
+                        : '更新走已建立的 Agent 通道自动完成，无需 SSH 凭证；仅对当前在线的主机生效。'"
                     style="margin-bottom: 16px"
                 />
                 <a-form layout="vertical">
@@ -269,7 +271,7 @@
                             <a-radio value="update">更新</a-radio>
                         </a-radio-group>
                     </a-form-item>
-                    <a-form-item label="SSH 凭证" required>
+                    <a-form-item v-if="agentManageOperation === 'install'" label="SSH 凭证" required>
                         <a-select
                             v-model:value="agentManageCredentialId"
                             :options="agentCredentialOptions"
@@ -912,7 +914,7 @@ const openAgentManage = () => {
 }
 
 const submitAgentManage = async () => {
-    if (!agentManageCredentialId.value) {
+    if (agentManageOperation.value === 'install' && !agentManageCredentialId.value) {
         message.warning('请选择 SSH 凭证')
         return
     }
@@ -921,12 +923,18 @@ const submitAgentManage = async () => {
         message.warning('更新操作仅支持已安装 Agent 的主机')
         return
     }
+    if (agentManageOperation.value === 'update' && selectedHosts.some((host) => host.agent_online !== true)) {
+        // 更新走已建立的 gRPC 通道让 agent 自己替换并重启，离线主机没有通道可下发。
+        message.warning('更新操作仅支持当前在线的主机，请去掉离线主机后重试')
+        return
+    }
     agentManageLoading.value = true
     try {
         const res = await installAgents({
             host_ids: state.selectedRowKeys,
             operation: agentManageOperation.value,
-            credential_id: agentManageCredentialId.value,
+            // 更新不需要 SSH 凭证，只在安装/重装时传。
+            credential_id: agentManageOperation.value === 'install' ? agentManageCredentialId.value : undefined,
         })
         if (res?.data?.code !== 200) {
             message.error(res?.data?.msg || 'Agent 任务提交失败')

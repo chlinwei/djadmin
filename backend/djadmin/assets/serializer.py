@@ -163,7 +163,16 @@ class ClusterProfileSerializer(ModelSerializer):
 class ApplicationServiceLogSettingSerializer(ModelSerializer):
     class Meta:
         model = ApplicationServiceLogSetting
-        fields = ['log_definition', 'retention_tier', 'collection_enabled']
+        fields = [
+            'log_definition',
+            'retention_tier',
+            'collection_enabled',
+            'collection_filter_rule',
+            'processing_rule',
+        ]
+
+    def validate(self, attrs):
+        return attrs
 
 
 class ApplicationServiceSerializer(ModelSerializer):
@@ -288,6 +297,17 @@ class ApplicationServiceSerializer(ModelSerializer):
             template_log_ids = set(deployment_template.logs.values_list('id', flat=True))
             if any(item['log_definition'].pk not in template_log_ids for item in log_settings):
                 raise serializers.ValidationError({'log_settings': '日志覆盖配置必须属于当前部署模板'})
+            invalid_processing_rule = next((
+                item['processing_rule']
+                for item in log_settings
+                if item.get('processing_rule') is not None
+                and item['processing_rule'].application_id is not None
+                and item['processing_rule'].application_id != application.id
+            ), None)
+            if invalid_processing_rule is not None:
+                raise serializers.ValidationError({
+                    'log_settings': f'处理规则“{invalid_processing_rule.name}”不属于当前应用',
+                })
         return attrs
 
     def get_member_instances(self, obj):
@@ -318,7 +338,12 @@ class ApplicationServiceSerializer(ModelSerializer):
         # 两项都为空的行等于“完全继承”，不落库，避免覆盖表堆积无意义记录。
         effective = [
             item for item in log_settings
-            if item.get('retention_tier') is not None or item.get('collection_enabled') is not None
+            if (
+                item.get('retention_tier') is not None
+                or item.get('collection_enabled') is not None
+                or item.get('processing_rule') is not None
+                or item.get('collection_filter_rule') is not None
+            )
         ]
         keep_ids = [item['log_definition'].pk for item in effective]
         ApplicationServiceLogSetting.objects.filter(service=instance).exclude(
@@ -331,6 +356,8 @@ class ApplicationServiceSerializer(ModelSerializer):
                 defaults={
                     'retention_tier': item.get('retention_tier'),
                     'collection_enabled': item.get('collection_enabled'),
+                    'collection_filter_rule': item.get('collection_filter_rule'),
+                    'processing_rule': item.get('processing_rule'),
                 },
             )
 

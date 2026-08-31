@@ -27,7 +27,9 @@
       </div>
 
       <div class="rule-pane">
-        <div class="toolbar">
+        <a-tabs v-model:active-key="catalogTab">
+          <a-tab-pane key="processing" tab="解析规则">
+            <div class="toolbar">
           <a-button size="large" :disabled="!selectedClusterId" @click="openCreate">
             <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
             <span>&nbsp;新增规则</span>
@@ -90,6 +92,23 @@
             </template>
           </template>
         </a-table>
+          </a-tab-pane>
+          <a-tab-pane key="filter" tab="采集过滤规则">
+            <div class="toolbar">
+              <a-button size="large" @click="openFilterCreate"><FontAwesomeIcon :icon="['fas', 'plus-circle']" /><span>&nbsp;新增过滤规则</span></a-button>
+              <a-tooltip title="刷新"><a-button size="large" @click="loadFilterRules"><FontAwesomeIcon :icon="['fas', 'rotate']" /><span>&nbsp;刷新</span></a-button></a-tooltip>
+            </div>
+            <a-table row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'name'"><span class="pipeline-name">{{ record.name }}</span></template>
+                <template v-else-if="column.key === 'description'"><span>{{ record.description || '-' }}</span></template>
+                <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
+                <template v-else-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
+                <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>
+              </template>
+            </a-table>
+          </a-tab-pane>
+        </a-tabs>
       </div>
     </div>
 
@@ -188,6 +207,20 @@
               <FontAwesomeIcon :icon="['fas', 'play']" />
               <span>&nbsp;运行</span>
             </a-button>
+            <a-alert
+              v-if="schemaViolations.length"
+              class="schema-violation-alert"
+              type="error"
+              show-icon
+              message="存在不符合标准字段的输出"
+            >
+              <template #description>
+                <div>以下字段不在标准字段列表内，写入 OpenSearch 时会被丢弃（不报错但无法检索和聚合），请改写到 <code>app_fields.&lt;字段名&gt;</code> 下：</div>
+                <a-space wrap class="schema-violation-tags">
+                  <a-tag v-for="field in schemaViolations" :key="field" color="red">{{ field }}</a-tag>
+                </a-space>
+              </template>
+            </a-alert>
             <div v-if="simulationText" class="result-field">
               <div class="result-header">
                 <span class="result-title">运行结果</span>
@@ -216,6 +249,16 @@
           </a-form>
         </a-tab-pane>
       </a-tabs>
+    </a-modal>
+
+    <a-modal v-model:open="filterEditorOpen" :title="filterForm.id ? `编辑过滤规则：${filterForm.name}` : '新增采集过滤规则'" :confirm-loading="filterSaving" ok-text="保存" cancel-text="取消" @ok="saveFilterRule">
+      <a-form ref="filterFormRef" :model="filterForm" :rules="filterFormRules" layout="vertical">
+        <a-form-item name="name" label="规则名称"><a-input v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
+        <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" /></a-form-item>
+        <a-form-item label="说明"><a-input v-model:value="filterForm.description" placeholder="例如 仅采集错误、失败和严重级别日志" /></a-form-item>
+        <a-form-item name="pattern" label="匹配正则"><a-textarea v-model:value="filterForm.pattern" :rows="3" placeholder="例如 (?i)(error|failed|critical|fatal)" spellcheck="false" /></a-form-item>
+        <a-form-item label="启用"><a-switch v-model:checked="filterForm.enabled" /></a-form-item>
+      </a-form>
     </a-modal>
 
     <a-modal
@@ -252,9 +295,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
+  deleteLogCollectionFilterRule,
   deleteLogProcessingRule,
+  getLogCollectionFilterRules,
   getOpenSearchClusterList,
   getLogProcessingRules,
+  saveLogCollectionFilterRule,
   saveLogProcessingRule,
   simulateOpenSearchPipeline,
 } from '@/api/monitor'
@@ -268,16 +314,23 @@ const selectedClusterId = ref(null)
 const applications = ref([])
 const selectedApplicationKey = ref('all')
 const processingRules = ref([])
+const collectionFilterRules = ref([])
 const loading = ref(false)
+const filterLoading = ref(false)
 const saving = ref(false)
+const filterSaving = ref(false)
 const simulating = ref(false)
 const editorOpen = ref(false)
 const editingOriginalName = ref('')
 const activeTab = ref('preprocess')
+const catalogTab = ref('processing')
 const formRef = ref(null)
+const filterFormRef = ref(null)
+const filterEditorOpen = ref(false)
 const sampleMode = ref('raw')
 const sampleText = ref('2026-08-27 13:00:00 INFO service started')
 const simulationText = ref('')
+const schemaViolations = ref([])
 const resultFullscreen = ref(false)
 const expandNewline = ref(true)
 
@@ -307,6 +360,7 @@ const form = reactive({
   flush_timeout: 1000,
   bodyText: '',
 })
+const filterForm = reactive({ id: null, name: '', application: null, description: '', pattern: '', enabled: true })
 const applicationOptions = computed(() =>
   applications.value.map((item) => ({ label: item.name, value: item.id })),
 )
@@ -341,6 +395,11 @@ const visibleRules = computed(() => {
   }
   return processingRules.value.filter((rule) => String(rule.application) === selectedApplicationKey.value)
 })
+const visibleFilterRules = computed(() => {
+  if (selectedApplicationKey.value === 'all') return collectionFilterRules.value
+  if (selectedApplicationKey.value === 'generic') return collectionFilterRules.value.filter((rule) => !rule.application)
+  return collectionFilterRules.value.filter((rule) => String(rule.application) === selectedApplicationKey.value)
+})
 const inputFormatOptions = [
   { label: '文本', value: 'text' },
   { label: 'JSON', value: 'json' },
@@ -357,6 +416,13 @@ const columns = [
   { title: '发送前行处理', key: 'multiline', width: 130, align: 'center' },
   { title: 'Ingest 处理器', key: 'processors', width: 130, align: 'center' },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
+]
+const filterColumns = [
+  { title: '规则名称', key: 'name', width: 240, fixed: 'left' },
+  { title: '说明', key: 'description', width: 300 },
+  { title: '匹配正则', key: 'pattern', width: 300 },
+  { title: '状态', key: 'enabled', width: 100, align: 'center' },
+  { title: '操作', key: 'action', width: 140, fixed: 'right' },
 ]
 
 const formRules = {
@@ -418,6 +484,19 @@ async function loadRules() {
   }
 }
 
+async function loadFilterRules() {
+  filterLoading.value = true
+  try {
+    const response = await getLogCollectionFilterRules({ page_size: 100 })
+    collectionFilterRules.value = response?.data?.data?.results || []
+  } catch (error) {
+    collectionFilterRules.value = []
+    message.error(error?.response?.data?.msg || error?.message || '获取采集过滤规则失败')
+  } finally {
+    filterLoading.value = false
+  }
+}
+
 function resetEditor() {
   Object.assign(form, {
     id: null,
@@ -434,6 +513,7 @@ function resetEditor() {
   editingOriginalName.value = ''
   activeTab.value = 'preprocess'
   simulationText.value = ''
+  schemaViolations.value = []
 }
 
 function openCreate() {
@@ -458,6 +538,38 @@ function openEdit(record) {
 function openTest(record) {
   openEdit(record)
   activeTab.value = 'test'
+}
+
+function openFilterCreate() {
+  Object.assign(filterForm, { id: null, name: '', application: null, description: '', pattern: '', enabled: true })
+  const selectedApplicationId = Number(selectedApplicationKey.value)
+  filterForm.application = Number.isNaN(selectedApplicationId) ? null : selectedApplicationId
+  filterEditorOpen.value = true
+}
+
+function openFilterEdit(record) {
+  Object.assign(filterForm, record)
+  filterEditorOpen.value = true
+}
+
+const filterFormRules = {
+  name: [{ required: true, message: '请输入规则名称' }],
+  pattern: [{ required: true, message: '请输入匹配正则' }],
+}
+
+async function saveFilterRule() {
+  await filterFormRef.value?.validate()
+  filterSaving.value = true
+  try {
+    await saveLogCollectionFilterRule({ ...filterForm })
+    message.success('过滤规则保存成功')
+    filterEditorOpen.value = false
+    await loadFilterRules()
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '过滤规则保存失败')
+  } finally {
+    filterSaving.value = false
+  }
 }
 
 async function publishPipeline() {
@@ -558,10 +670,17 @@ async function simulate() {
       pipeline: body,
       docs,
     })
-    simulationText.value = JSON.stringify(response?.data?.data || {}, null, 2)
-    message.success(`运行成功，共 ${docs.length} 条事件`)
+    const result = response?.data?.data || {}
+    schemaViolations.value = result.schema_violations || []
+    simulationText.value = JSON.stringify(result, null, 2)
+    if (schemaViolations.value.length) {
+      message.warning(`运行成功，但有 ${schemaViolations.value.length} 个字段不符合标准字段规范`)
+    } else {
+      message.success(`运行成功，共 ${docs.length} 条事件`)
+    }
   } catch (error) {
     simulationText.value = ''
+    schemaViolations.value = []
     message.error(error?.response?.data?.msg || error?.message || '运行失败')
   } finally {
     simulating.value = false
@@ -581,9 +700,23 @@ function confirmDelete(record) {
   })
 }
 
+function confirmDeleteFilter(record) {
+  openDeleteConfirm({
+    title: '删除过滤规则',
+    summary: '删除后，逻辑服务将不能再选择该规则。',
+    items: [`过滤规则: ${record.name}`],
+    onConfirm: async () => {
+      await deleteLogCollectionFilterRule(record.id)
+      message.success('删除成功')
+      await loadFilterRules()
+    },
+  })
+}
+
 onMounted(() => {
   loadApplications()
   loadClusters()
+  loadFilterRules()
 })
 </script>
 
@@ -661,6 +794,12 @@ onMounted(() => {
 }
 .result-field {
   margin-top: 16px;
+}
+.schema-violation-alert {
+  margin-top: 16px;
+}
+.schema-violation-tags {
+  margin-top: 8px;
 }
 .result-header {
   display: flex;

@@ -436,6 +436,12 @@ class SoftwarePackage(BaseModel):
 class OpenSearchCluster(BaseModel):
     """日志存储集群连接配置。密码用 Fernet 可逆加密，因为连接时需要明文做 basic auth。"""
 
+    class StorageSyncStatus(models.TextChoices):
+        UNKNOWN = 'unknown', '未同步'
+        PENDING = 'pending', '同步中'
+        SUCCESS = 'success', '已同步'
+        FAILED = 'failed', '同步失败'
+
     name = models.CharField(max_length=128, unique=True, verbose_name='集群名称')
     hosts = models.CharField(
         max_length=512, verbose_name='连接地址',
@@ -452,6 +458,12 @@ class OpenSearchCluster(BaseModel):
     last_check_time = models.DateTimeField(null=True, blank=True, verbose_name='最近连接测试时间')
     last_check_success = models.BooleanField(null=True, blank=True, verbose_name='最近连接测试结果')
     last_check_message = models.TextField(blank=True, default='', verbose_name='最近连接测试信息')
+    storage_sync_status = models.CharField(
+        max_length=16, choices=StorageSyncStatus.choices,
+        default=StorageSyncStatus.UNKNOWN, verbose_name='存储配置同步状态',
+    )
+    storage_sync_error = models.TextField(blank=True, default='', verbose_name='存储配置同步错误')
+    storage_sync_time = models.DateTimeField(null=True, blank=True, verbose_name='最近存储配置同步时间')
     remark = models.TextField(blank=True, default='', verbose_name='备注')
 
     class Meta:
@@ -536,6 +548,27 @@ class LogProcessingRule(BaseModel):
 		db_table = 'monitor_log_processing_rule'
 		ordering = ['name']
 		verbose_name = '日志处理规则'
+
+	def __str__(self):
+		return self.name
+
+
+class LogCollectionFilterRule(BaseModel):
+	"""Fluent Bit 采集过滤规则，与 OpenSearch 解析 Pipeline 分开管理。"""
+
+	application = models.ForeignKey(
+		'assets.Application', on_delete=models.PROTECT, null=True, blank=True,
+		related_name='log_collection_filter_rules', verbose_name='所属应用',
+	)
+	name = models.CharField(max_length=128, unique=True, verbose_name='规则名称')
+	description = models.CharField(max_length=500, blank=True, default='', verbose_name='说明')
+	pattern = models.TextField(verbose_name='匹配正则')
+	enabled = models.BooleanField(default=True, verbose_name='启用')
+
+	class Meta:
+		db_table = 'monitor_log_collection_filter_rule'
+		ordering = ['name']
+		verbose_name = '日志采集过滤规则'
 
 	def __str__(self):
 		return self.name

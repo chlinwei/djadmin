@@ -123,8 +123,8 @@ class OpenSearchClient:
     def get_ism_policy(self, name):
         return self._request('GET', f'/_plugins/_ism/policies/{name}')
 
-    def put_ism_policy(self, name, body):
-        return self._request('PUT', f'/_plugins/_ism/policies/{name}', payload=body)
+    def put_ism_policy(self, name, body, params=None):
+        return self._request('PUT', f'/_plugins/_ism/policies/{name}', payload=body, params=params)
 
     def delete_ism_policy(self, name):
         return self._request('DELETE', f'/_plugins/_ism/policies/{name}')

@@ -52,6 +52,12 @@ func (e *Executor) Run(ctx context.Context, job protocol.Job) (protocol.JobResul
 		return result, nil
 	}
 
+	// 内置动作没命中且没有普通命令：多半是 backend 下发了本 agent 版本尚不认识的内置动作名，
+	// 直接报出动作名，避免退化成语义不清的 "exec: no command"。
+	if job.Command == "" {
+		return protocol.JobResult{}, fmt.Errorf("unsupported action %q for type=%s：agent 版本可能落后于下发方，未内置该动作", job.Action, job.Type)
+	}
+
 	// 作为普通命令执行
 	cmd := exec.CommandContext(runCtx, job.Command, job.Args...)
 	if job.WorkDir != "" {
@@ -114,6 +120,7 @@ func validateJobByType(job protocol.Job) error {
 		// exporter_name/脚本内容等 params，不再像旧版 node_exporter 动作那样允许空参数）
 		if job.Action != actionGetAgentVersion &&
 			job.Action != actionGetHostInfo &&
+			job.Action != actionReloadFluentBit &&
 			len(job.Params) == 0 {
 			return fmt.Errorf("params is required for type=%s", job.Type)
 		}

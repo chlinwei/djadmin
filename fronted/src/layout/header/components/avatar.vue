@@ -26,16 +26,12 @@
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
 import { getCurrentUser } from '@/api/user'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
 import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { formatTimeWithTimezone, getTimezoneLabel } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
-
-console.log('avatar:')
-console.log(useRouter().currentRoute.value.fullPath)
 
 const currentUser = ref(getCurrentUser() || {})
 const currentTime = ref('')

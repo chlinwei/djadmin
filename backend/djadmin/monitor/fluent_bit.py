@@ -10,11 +10,14 @@ from assets.application_variables import resolve_application_variables, resolve_
 from assets.models import ApplicationDeployment
 
 from .log_management import build_index_name
+from .log_schema import APP_FIELDS_KEY
 
 # 主机侧目录结构（§8.1），offset 数据库必须持久化在 /var/lib 下。
 FLUENT_BIT_HOME = '/etc/fluent-bit'
 FLUENT_BIT_INPUTS_DIR = f'{FLUENT_BIT_HOME}/inputs.d'
 FLUENT_BIT_OUTPUTS_DIR = f'{FLUENT_BIT_HOME}/outputs.d'
+FLUENT_BIT_PARSERS_DIR = f'{FLUENT_BIT_HOME}/parsers.d'
+FLUENT_BIT_MULTILINE_PARSERS_FILE = 'djadmin-multiline.conf'
 FLUENT_BIT_STATE_DIR = '/var/lib/fluent-bit'
 FLUENT_BIT_BOOTSTRAP_FRAGMENT = '_djadmin_bootstrap.conf'
 FLUENT_BIT_RELOAD_URL = 'http://127.0.0.1:2020/api/v2/reload'
@@ -36,6 +39,7 @@ def render_main_config():
         '    HTTP_Server            On\n'
         '    HTTP_Listen            127.0.0.1\n'
         '    HTTP_Port              2020\n'
+        f'    Parsers_File           {FLUENT_BIT_PARSERS_DIR}/{FLUENT_BIT_MULTILINE_PARSERS_FILE}\n'
         f'    storage.path           {FLUENT_BIT_STATE_DIR}/storage/\n'
         '\n'
         '@INCLUDE inputs.d/*.conf\n'
@@ -48,6 +52,19 @@ def _fluent_regex(value):
     return str(value).replace('"', r'\"').replace('/', r'\/')
 
 
+def render_multiline_parser_fragment(tag, multiline_rule):
+    parser_name = f'multiline_{_safe_tag_part(tag)}'
+    return '\n'.join([
+        '[MULTILINE_PARSER]',
+        f'    Name          {parser_name}',
+        '    Type          regex',
+        f'    Flush_Timeout {multiline_rule.flush_timeout}',
+        f'    Rule          "start_state" "/{_fluent_regex(multiline_rule.start_pattern)}/" "continuation"',
+        f'    Rule          "continuation" "/{_fluent_regex(multiline_rule.continuation_pattern)}/" "continuation"',
+        '',
+    ])
+
+
 def render_input_fragment(
     *,
     application_code,
@@ -58,8 +75,8 @@ def render_input_fragment(
     tag,
     multiline_rule=None,
     input_format='text',
-    encoding='utf-8',
     records,
+    filter_pattern='',
 ):
     """单个实例单条日志的 inputs.d 片段（§8.2）。
 
@@ -69,15 +86,6 @@ def render_input_fragment(
     lines = []
     if multiline_rule:
         parser_name = f'multiline_{_safe_tag_part(tag)}'
-        lines += [
-            '[MULTILINE_PARSER]',
-            f'    Name          {parser_name}',
-            '    Type          regex',
-            f'    Flush_Timeout {multiline_rule.flush_timeout}',
-            f'    Rule          "start_state" "/{_fluent_regex(multiline_rule.start_pattern)}/" "continuation"',
-            f'    Rule          "continuation" "/{_fluent_regex(multiline_rule.continuation_pattern)}/" "continuation"',
-            '',
-        ]
     lines += [
         '[INPUT]',
         '    Name              tail',
@@ -92,21 +100,46 @@ def render_input_fragment(
         lines.append(f'    Multiline.parser  {parser_name}')
     if input_format == 'json':
         lines.append('    Parser            json')
+
     lines += [
-        f'    Encoding          {encoding or "utf-8"}',
         '    Refresh_Interval  10',
         '    Skip_Long_Lines   On',
         '',
+    ]
+
+    filter_regex = str(filter_pattern or '').strip()
+    if filter_regex:
+        # grep 在 tail 读取完成后丢弃无关记录，避免网络、OpenSearch 和存储资源被噪声日志占用。
+        lines += [
+            '[FILTER]',
+            '    Name    grep',
+            f'    Match   {tag}',
+            f'    Regex   log {filter_regex}',
+            '',
+        ]
+    lines += [
         '[FILTER]',
         '    Name    record_modifier',
         f'    Match   {tag}',
     ]
     for key, value in records.items():
         lines.append(f'    Record  {key} {value}')
+    if any(key.startswith(f'{APP_FIELDS_KEY}_') for key in records):
+        # 应用自有字段收拢成单个对象，索引模板据此按 flat_object 存储，避免 mapping 膨胀。
+        lines += [
+            '',
+            '[FILTER]',
+            '    Name          nest',
+            f'    Match         {tag}',
+            '    Operation     nest',
+            f'    Wildcard      {APP_FIELDS_KEY}_*',
+            f'    Nest_under    {APP_FIELDS_KEY}',
+            f'    Remove_prefix {APP_FIELDS_KEY}_',
+        ]
     return '\n'.join(lines) + '\n'
 
 
-def render_output_fragment(*, application_code, service_code, log_name, index, pipeline):
+def render_output_fragment(*, application_code, service_code, log_name, index, pipeline, verify_tls=False):
     """按应用类型分组的 outputs.d 片段（§8.3）。
 
     凭据经 systemd Environment= 注入（OS_HOST/OS_PORT/OS_USER/OS_PASSWORD），不写入配置文件。
@@ -120,6 +153,7 @@ def render_output_fragment(*, application_code, service_code, log_name, index, p
         '    HTTP_User           ${OS_USER}',
         '    HTTP_Passwd         ${OS_PASSWORD}',
         '    tls                 On',
+        f'    tls.verify          {"On" if verify_tls else "Off"}',
         f'    Index               {index}',
     ]
     if pipeline:
@@ -179,6 +213,7 @@ def build_host_fragments(host, cluster):
     """
     inputs = {}
     outputs = {}
+    multiline_parsers = []
     seen_paths = {}
 
     deployments = (
@@ -187,6 +222,7 @@ def build_host_fragments(host, cluster):
         .select_related('host')
         .prefetch_related('application_services__deployment_template__logs',
                           'application_services__log_settings__retention_tier',
+                          'application_services__log_settings__collection_filter_rule',
                           'application_services__application',
                           'application_services__application_version',
                           'application_services__business_system__project',
@@ -212,6 +248,11 @@ def build_host_fragments(host, cluster):
                 if override is None or override.collection_enabled is None
                 else override.collection_enabled
             )
+            filter_pattern = (
+                override.collection_filter_rule.pattern
+                if override is not None and override.collection_filter_rule_id
+                else ''
+            )
             if not collection_enabled:
                 continue
             tier = (
@@ -236,24 +277,30 @@ def build_host_fragments(host, cluster):
                 )
             seen_paths[log_path] = f'{deployment.instance_name}/{log_def.name}'
 
-            rule = log_def.processing_rule if log_def.processing_rule_id else None
+            rule = (
+                override.processing_rule
+                if override is not None and override.processing_rule_id
+                else log_def.processing_rule
+            )
             tag = (
                 f'{_safe_tag_part(application_code)}.{_safe_tag_part(service.code)}.'
                 f'{_safe_tag_part(deployment.instance_name)}.'
                 f'{_safe_tag_part(log_def.name)}'
             )
             pipeline = rule.name if rule else ''
+            if rule is not None and rule.multiline_enabled:
+                multiline_parsers.append(render_multiline_parser_fragment(tag, rule))
             records = {
+                'project': project_code,
                 'business_system': service.business_system.code,
                 'environment': service.environment.code if service.environment else 'unknown',
                 'service': service.code,
                 'instance': deployment.instance_name,
                 'application': application_code,
-                'version': service.application_version.version,
                 'host_ip': host.ip or '',
                 'log_name': log_def.name,
-                # 附加标签进固定前缀，落到 OpenSearch 的 labels flat_object（§4.7）。
-                **{f'labels_{key}': value for key, value in (log_def.extra_fields or {}).items()},
+                'log_path': log_path,
+                **{f'{APP_FIELDS_KEY}_{key}': value for key, value in (log_def.extra_fields or {}).items()},
             }
             filename = input_fragment_filename(
                 application_code, service.code, deployment.instance_name, log_def.name,
@@ -267,8 +314,8 @@ def build_host_fragments(host, cluster):
                 tag=tag,
                 multiline_rule=rule if rule and rule.multiline_enabled else None,
                 input_format=rule.input_format if rule else 'text',
-                encoding=log_def.encoding,
                 records=records,
+                filter_pattern=filter_pattern,
             )
             # 同一逻辑服务的同名日志多实例共用 output，不同日志与服务严格隔离。
             out_name = output_fragment_filename(application_code, service.code, log_def.name)
@@ -279,7 +326,9 @@ def build_host_fragments(host, cluster):
                     log_name=log_def.name,
                     index=index,
                     pipeline=pipeline,
+                    verify_tls=cluster.verify_tls,
                 )
 
-    fingerprint = config_fingerprint([*inputs.values(), *outputs.values()])
-    return {'inputs': inputs, 'outputs': outputs, 'fingerprint': fingerprint}
+    parsers = {FLUENT_BIT_MULTILINE_PARSERS_FILE: '\n'.join(multiline_parsers)}
+    fingerprint = config_fingerprint([*inputs.values(), *outputs.values(), *parsers.values(), render_main_config()])
+    return {'inputs': inputs, 'outputs': outputs, 'parsers': parsers, 'fingerprint': fingerprint}

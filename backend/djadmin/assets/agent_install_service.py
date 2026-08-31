@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .credential_crypto import decrypt_secret
+from .grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
 from .grpc_transfer.registry import REGISTRY
 from .models import AgentJob, Credential, Host
 from automation.models import AutomationExecutionJob, AutomationExecutionTargetLog
@@ -325,6 +326,138 @@ def run_agent_install_job(job_id: int, host_id: int, credential_id: int, automat
             AutomationExecutionTargetLog.objects.filter(
                 job_id=automation_job_id,
                 agent_job_id=job.job_id,
+            ).update(status=AutomationExecutionTargetLog.Status.FAILED, error_message=str(exc), exit_code=1)
+            _refresh_automation_job(automation_job_id)
+    finally:
+        close_old_connections()
+
+
+def run_agent_update_via_grpc(job_id: int, host_id: int, automation_job_id: int | None = None) -> None:
+    """在线主机走已建立的 gRPC 通道自更新：推送新二进制/配置，agent 自己替换并重启。
+
+    不需要 SSH 凭证——这条路径只对已经连通的 agent 生效（离线主机在下发前已被拒绝）。
+    失败即报错，不自动回退到 SSH+Ansible 安装流程，避免两条链路交叉导致状态更难排查。
+    """
+    close_old_connections()
+    try:
+        job = AgentJob.objects.get(id=job_id)
+        host = Host.objects.get(id=host_id)
+        job.status = AgentJob.JobStatus.RUNNING
+        job.picked_at = timezone.now()
+        job.save(update_fields=['status', 'picked_at', 'update_time'])
+        if automation_job_id:
+            AutomationExecutionTargetLog.objects.filter(
+                job_id=automation_job_id,
+                agent_job_id=job.job_id,
+            ).update(status=AutomationExecutionTargetLog.Status.RUNNING)
+
+        agent_id = str(host.agent_id or '').strip()
+        if not agent_id:
+            raise RuntimeError('主机未绑定 Agent，无法走在线更新')
+        binary = _agent_package_path('dj-agent')
+        _validate_agent_binary(binary)
+        advertised_grpc_addr = str(SysConfig.objects.filter(
+            key='sys.assets.agent.grpc_advertise_addr',
+        ).values_list('value', flat=True).first() or '').strip()
+        if not advertised_grpc_addr:
+            raise RuntimeError('未配置“Agent gRPC 对外地址”，请先在系统参数中填写')
+        grpc_addr, _ = _agent_grpc_addr_for_host(host, advertised_grpc_addr)
+        # 内容与 agent_install.yml 里写的一致，保证走 SSH 还是走 gRPC 更新出来的文件长得一样。
+        env_content = (
+            f'DJ_AGENT_ID={agent_id}\n'
+            f'DJ_AGENT_GRPC_FILE_ADDR={grpc_addr}\n'
+            'DJ_AGENT_LOG_LEVEL=info\n'
+        )
+        unit_content = (
+            '[Unit]\n'
+            'Description=dj-agent service\n'
+            'After=network-online.target\n'
+            'Wants=network-online.target\n'
+            '\n'
+            '[Service]\n'
+            'Type=simple\n'
+            'User=root\n'
+            'EnvironmentFile=/etc/dj-agent/config.env\n'
+            'StandardOutput=journal\n'
+            'StandardError=journal\n'
+            'SyslogIdentifier=dj-agent\n'
+            'ExecStart=/usr/local/bin/dj-agent\n'
+            'Restart=on-failure\n'
+            'RestartSec=5\n'
+            'SuccessExitStatus=0 143 130\n'
+            'TimeoutStopSec=15\n'
+            '\n'
+            '[Install]\n'
+            'WantedBy=multi-user.target\n'
+        )
+
+        client = AgentChannelClient(agent_id)
+        client.mkdir('/var/lib/dj-agent', 'update')
+        session = client.open_write('/var/lib/dj-agent/update', 'dj-agent.new')
+        try:
+            session.write_chunk(binary.read_bytes())
+        except Exception:
+            session.close(abort=True)
+            raise
+        session.close()
+
+        result = client.execute_automation(
+            job_id=f'agent-update-{job.job_id}',
+            params={'env_content': env_content, 'unit_content': unit_content},
+            timeout_seconds=30,
+            task_type='custom',
+            action='apply_agent_update',
+        )
+        if result.get('status') != 'success' or result.get('exit_code') not in (0, None):
+            raise RuntimeError(result.get('error_message') or result.get('stderr') or '自更新失败')
+
+        # agent 重启期间会短暂断线重连；等一个略长于 agent 侧延迟重启窗口的时间，
+        # 用同一套“检测重新连接”逻辑确认新进程确实起来了，而不是仅凭 gRPC 调用本身成功就下结论。
+        reconnected = _wait_for_agent_connection(agent_id, timeout_seconds=15)
+
+        job.status = AgentJob.JobStatus.SUCCESS if reconnected else AgentJob.JobStatus.FAILED
+        job.exit_code = 0 if reconnected else 1
+        job.error_message = '' if reconnected else '自更新已下发，但重启后 Agent 未重新连接，请人工检查该主机'
+        job.result_data = {'host_id': host.pk, 'agent_id': agent_id, 'operation': 'update', 'agent_connected': reconnected}
+        job.finished_at = timezone.now()
+        job.save(update_fields=['status', 'exit_code', 'error_message', 'result_data', 'finished_at', 'update_time'])
+        if automation_job_id:
+            AutomationExecutionTargetLog.objects.filter(
+                job_id=automation_job_id,
+                agent_job_id=job.job_id,
+            ).update(
+                status=(AutomationExecutionTargetLog.Status.SUCCESS if reconnected else AutomationExecutionTargetLog.Status.FAILED),
+                exit_code=job.exit_code,
+                error_message=job.error_message,
+                result_data=job.result_data,
+            )
+            _refresh_automation_job(automation_job_id)
+    except AgentGrpcTransferError as exc:
+        AgentJob.objects.filter(id=job_id).update(
+            status=AgentJob.JobStatus.FAILED,
+            error_message=str(exc),
+            exit_code=1,
+            finished_at=timezone.now(),
+            update_time=timezone.now(),
+        )
+        if automation_job_id:
+            AutomationExecutionTargetLog.objects.filter(
+                job_id=automation_job_id,
+                agent_job_id=AgentJob.objects.filter(id=job_id).values_list('job_id', flat=True).first(),
+            ).update(status=AutomationExecutionTargetLog.Status.FAILED, error_message=str(exc), exit_code=1)
+            _refresh_automation_job(automation_job_id)
+    except Exception as exc:
+        AgentJob.objects.filter(id=job_id).update(
+            status=AgentJob.JobStatus.FAILED,
+            error_message=str(exc),
+            exit_code=1,
+            finished_at=timezone.now(),
+            update_time=timezone.now(),
+        )
+        if automation_job_id:
+            AutomationExecutionTargetLog.objects.filter(
+                job_id=automation_job_id,
+                agent_job_id=AgentJob.objects.filter(id=job_id).values_list('job_id', flat=True).first(),
             ).update(status=AutomationExecutionTargetLog.Status.FAILED, error_message=str(exc), exit_code=1)
             _refresh_automation_job(automation_job_id)
     finally:

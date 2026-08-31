@@ -137,6 +137,23 @@ Do not introduce Element Plus components in new or modified views. djadmin uses 
 - ❌ `<el-button>`, `<el-select>`, `<el-table>`, etc.
 - ✅ `<a-button>`, `<a-select>`, `<a-table>`, etc.
 
+## Keep-Alive Polling Lifecycle
+This app caches view components via `<keep-alive>` (see `fronted/src/layout/index.vue`), so `onMounted`/`onBeforeUnmount` only fire once (first creation / final cache eviction) — they do NOT fire on tab switch. Any page that polls on an interval while visible (`setInterval`, repeated dispatch calls, etc.) must start/stop that polling using the shared composable, not `onMounted`/`onBeforeUnmount`:
+
+```vue
+<script setup>
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
+
+const startPolling = () => { /* setInterval(...) */ }
+const stopPolling = () => { /* clearInterval(...) */ }
+
+useKeepAliveRefreshLifecycle(startPolling, stopPolling)
+</script>
+```
+
+- Do not write ad-hoc `onActivated`/`onDeactivated` polling start/stop pairs — reuse `useKeepAliveRefreshLifecycle` for consistency.
+- Do NOT use this composable (or any `onActivated`/`onDeactivated`-derived flag) to guard a `watch(() => route.params.xxx, ...)` callback against firing for unrelated tab/route changes — `watch` (default `flush: 'pre'`) runs before `onDeactivated`, so such a flag is not yet updated when the watch fires and will not prevent the bug. If a route-param watcher is genuinely needed, check `route.name`/`route.path` synchronously inside the callback instead. Often such a watcher isn't needed at all: check whether the page's `<component :key>` already ties one instance to one param value (a new value gets a brand-new instance via `onMounted`/`onActivated`, no watcher required).
+
 ## Review Checklist
 When editing a view component, verify:
 - [ ] All operation buttons have `<a-tooltip>` with standardized action word
@@ -148,3 +165,4 @@ When editing a view component, verify:
 - [ ] Time display uses `formatTimeWithTimezone`, not `toLocaleString()`
 - [ ] For `a-range-picker show-time`, defaults and normalization are correct
 - [ ] No Element Plus components used
+- [ ] Interval-based polling uses `useKeepAliveRefreshLifecycle`, not `onMounted`/`onBeforeUnmount`

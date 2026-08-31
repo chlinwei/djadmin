@@ -19,6 +19,12 @@
           <span>&nbsp;刷新</span>
         </a-button>
       </a-tooltip>
+      <a-tooltip title="逐层比对期望配置与集群、主机实际状态">
+        <a-button size="large" :disabled="!clusters.length" :loading="healthLoading" @click="loadHealth">
+          <FontAwesomeIcon :icon="['fas', 'stethoscope']" />
+          <span>&nbsp;链路体检</span>
+        </a-button>
+      </a-tooltip>
     </div>
 
     <a-table
@@ -27,7 +33,7 @@
       :data-source="clusters"
       :loading="loading"
       :pagination="false"
-      :scroll="{ x: 1400 }"
+      :scroll="{ x: 1650 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -48,6 +54,17 @@
             </a-tag>
           </a-tooltip>
           <span v-if="record.last_check_time" class="check-time">{{ formatTime(record.last_check_time) }}</span>
+        </template>
+        <template v-else-if="column.key === 'storage_sync'">
+          <a-tooltip v-if="record.storage_sync_error" :title="record.storage_sync_error">
+            <a-tag :color="STORAGE_SYNC_COLOR[record.storage_sync_status] || 'default'">
+              {{ STORAGE_SYNC_TEXT[record.storage_sync_status] || '未同步' }}
+            </a-tag>
+          </a-tooltip>
+          <a-tag v-else :color="STORAGE_SYNC_COLOR[record.storage_sync_status] || 'default'">
+            {{ STORAGE_SYNC_TEXT[record.storage_sync_status] || '未同步' }}
+          </a-tag>
+          <span v-if="record.storage_sync_time" class="check-time">{{ formatTime(record.storage_sync_time) }}</span>
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space :size="6">
@@ -70,6 +87,30 @@
         </template>
       </template>
     </a-table>
+
+    <div v-if="health" class="health-panel">
+      <a-alert :type="OVERALL_ALERT[health.status] || 'info'" show-icon :message="overallMessage">
+        <template #description>
+          <span class="health-time">检查时间 {{ formatTime(health.checked_at) }}</span>
+        </template>
+      </a-alert>
+
+      <a-collapse v-model:activeKey="openLayers" class="health-layers">
+        <a-collapse-panel v-for="layer in health.layers" :key="layer.key">
+          <template #header>
+            <a-tag :color="STATUS_COLOR[layer.status]">{{ STATUS_TEXT[layer.status] }}</a-tag>
+            <span class="layer-name">{{ layer.name }}</span>
+            <span class="layer-summary">{{ layer.summary }}</span>
+          </template>
+          <a-empty v-if="!layer.items.length" :image="simpleEmptyImage" description="无明细" />
+          <div v-for="item in layer.items" :key="item.name" class="health-item">
+            <a-tag :color="STATUS_COLOR[item.status]">{{ STATUS_TEXT[item.status] }}</a-tag>
+            <span class="item-name">{{ item.name }}</span>
+            <span class="item-detail">{{ item.detail }}</span>
+          </div>
+        </a-collapse-panel>
+      </a-collapse>
+    </div>
 
     <a-modal
       v-model:open="dialogOpen"
@@ -149,10 +190,15 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
-import { message } from 'ant-design-vue'
+defineOptions({
+  name: 'monitorLogStorage'
+})
+
+import { onMounted, reactive, ref, computed } from 'vue'
+import { message, Empty } from 'ant-design-vue'
 import {
   deleteOpenSearchCluster,
+  getLogPipelineHealth,
   getOpenSearchClusterList,
   saveOpenSearchCluster,
   testOpenSearchCluster,
@@ -205,12 +251,51 @@ const columns = [
   { title: 'TLS', key: 'verify_tls', width: 100 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '连接测试', key: 'check', width: 220 },
+  { title: '配置同步', key: 'storage_sync', width: 180 },
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 200 },
   { title: '操作', key: 'action', fixed: 'right', width: 150 },
 ]
 
 const timezone = store.state.user?.timezone || 'Asia/Shanghai'
 const formatTime = (value) => (value ? formatTimeWithTimezone(value, timezone) : '-')
+
+// drift 与 error 的区别：前者是「期望与实际不一致，重新下发即可修复」，后者是「检查本身失败」。
+const STATUS_COLOR = { ok: 'green', warn: 'orange', drift: 'volcano', error: 'red' }
+const STATUS_TEXT = { ok: '一致', warn: '注意', drift: '待下发', error: '异常' }
+const STORAGE_SYNC_COLOR = { pending: 'processing', success: 'green', failed: 'red', unknown: 'default' }
+const STORAGE_SYNC_TEXT = { pending: '同步中', success: '已同步', failed: '同步失败', unknown: '未同步' }
+const OVERALL_ALERT = { ok: 'success', warn: 'warning', drift: 'warning', error: 'error' }
+const OVERALL_TEXT = {
+  ok: '链路各层一致，日志采集正常',
+  warn: '链路基本一致，有需要关注的项',
+  drift: '存在未下发的配置，展开查看需要处理的项',
+  error: '链路存在异常，展开查看失败原因',
+}
+
+const health = ref(null)
+const healthLoading = ref(false)
+const openLayers = ref([])
+const simpleEmptyImage = Empty.PRESENTED_IMAGE_SIMPLE
+
+const overallMessage = computed(() => OVERALL_TEXT[health.value?.status] || '检查完成')
+
+async function loadHealth() {
+  const cluster = clusters.value[0]
+  if (!cluster) return
+  healthLoading.value = true
+  try {
+    const response = await getLogPipelineHealth(cluster.id)
+    health.value = response?.data?.data || null
+    // 默认只展开有问题的层，全绿时保持收起，避免刷屏。
+    openLayers.value = (health.value?.layers || [])
+      .filter((layer) => layer.status !== 'ok')
+      .map((layer) => layer.key)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '体检失败')
+  } finally {
+    healthLoading.value = false
+  }
+}
 
 async function loadClusters() {
   loading.value = true
@@ -240,7 +325,7 @@ async function submit() {
     delete payload.password_configured
     if (!payload.password) delete payload.password
     await saveOpenSearchCluster(payload)
-    message.success('保存成功')
+    message.success('保存成功，索引模板与保留策略正在后台同步')
     dialogOpen.value = false
     await loadClusters()
   } catch (error) {
@@ -306,5 +391,37 @@ onMounted(loadClusters)
   margin-left: 6px;
   color: #7a8697;
   font-size: 12px;
+}
+.health-panel {
+  margin-top: 16px;
+}
+.health-time {
+  color: #7a8697;
+  font-size: 12px;
+}
+.health-layers {
+  margin-top: 12px;
+}
+.layer-name {
+  font-weight: 600;
+  margin-right: 12px;
+}
+.layer-summary {
+  color: #7a8697;
+  font-size: 13px;
+}
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.item-name {
+  min-width: 220px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+.item-detail {
+  color: #7a8697;
 }
 </style>

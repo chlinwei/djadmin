@@ -204,7 +204,7 @@ defineOptions({
     name: 'host-detail',
 })
 
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -214,6 +214,7 @@ import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import store from '@/store'
 import { formatDateTimeWithTimezone, formatPercent, formatSize, getDisks } from '../utils/hostDisplayUtils'
 import HostMetricChart from './components/HostMetricChart.vue'
@@ -681,15 +682,6 @@ const goBack = () => {
     router.push('/assets/host/index')
 }
 
-watch(
-    () => route.params.id,
-    () => {
-        activeDetailTab.value = 'info'
-        clearPerformanceData()
-        loadDetail()
-    },
-)
-
 watch(activeDetailTab, (tab) => {
     if (tab === 'performance') {
         loadPerformanceData()
@@ -702,9 +694,9 @@ watch(nodeExporterEnabled, (enabled) => {
     }
 })
 
-onMounted(() => {
-    // 挂载后先同步置 loading=true：避免在等待“采集间隔配置”这个与详情无关的请求
-    // 返回之前，出现 !loading && !detailHost 的空窗期而误闪一次“未找到主机详情”。
+const handleDetailPageActivated = () => {
+    // 本页被 keep-alive 缓存，onMounted 只在首次创建时触发一次；
+    // 用 onActivated 才能保证「每次切回这个 tab」都重新拉一次最新数据和轮询。
     loading.value = true
     loadCollectDispatchIntervalConfig().finally(async () => {
         await loadDetail()
@@ -712,7 +704,9 @@ onMounted(() => {
         await refreshHostRuntime({ showError: false })
         startCollectDispatchTimer()
     })
-})
+}
+
+useKeepAliveRefreshLifecycle(handleDetailPageActivated, stopCollectDispatchTimer)
 
 onBeforeUnmount(() => {
     stopCollectDispatchTimer()

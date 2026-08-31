@@ -1,11 +1,8 @@
 <template>
   <div class="application-workspace">
     <a-tabs v-model:activeKey="activeTab">
-      <a-tab-pane key="systems" tab="业务系统" />
-      <a-tab-pane key="services" tab="逻辑服务" />
       <a-tab-pane key="profiles" tab="集群模型" />
       <a-tab-pane key="applications" tab="应用定义" />
-      <a-tab-pane key="templates" tab="部署模板" />
     </a-tabs>
 
     <a-row :gutter="12" class="tools">
@@ -28,45 +25,7 @@
       </a-col>
     </a-row>
 
-    <a-row v-show="activeTab === 'services'" :gutter="12" class="service-filters">
-      <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.application" allow-clear show-search placeholder="应用" :options="serviceApplicationOptions" :filter-option="filterOption" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.environment" allow-clear show-search placeholder="环境" :options="serviceEnvironmentOptions" :filter-option="filterOption" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.topology_type" allow-clear placeholder="部署形态" :options="topologyFilterOptions" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.cluster_profile" allow-clear show-search placeholder="集群模型" :options="serviceClusterProfileOptions" :filter-option="filterOption" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6">
-        <a-select v-model:value="serviceFilters.enabled" allow-clear placeholder="状态" :options="enabledFilterOptions" :getPopupContainer="getPopupContainer" />
-      </a-col>
-      <a-col :xs="24" :sm="12" :md="6" class="service-filter-actions">
-        <a-button type="primary" @click="reload(true)">查询</a-button>
-        <a-button @click="resetServiceFilters">重置</a-button>
-      </a-col>
-    </a-row>
-
     <div class="workspace-body">
-      <div v-if="siderConfig" class="workspace-sider">
-        <div class="workspace-sider-title">{{ siderConfig.title }}</div>
-        <a-menu
-          mode="inline"
-          :selected-keys="[siderConfig.selectedKey]"
-          class="workspace-sider-menu"
-          @select="handleSiderSelect"
-        >
-          <a-menu-item key="all">
-            <span>{{ siderConfig.allLabel }}</span>
-          </a-menu-item>
-          <a-menu-item v-for="item in siderConfig.items" :key="String(item.id)">
-            <span>{{ item.name }}</span>
-          </a-menu-item>
-        </a-menu>
-      </div>
       <div class="workspace-main">
     <a-table
       :row-key="getWorkspaceRowKey"
@@ -90,41 +49,6 @@
             <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteProject(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
           </a-space>
         </template>
-        <template v-else-if="activeTab === 'systems' && column.key === 'project_name'">
-          <a-tag v-if="record.project_name" color="blue">{{ record.project_name }}</a-tag>
-          <a-tooltip v-else title="未归属项目时无法生成日志索引名">
-            <a-tag color="orange">未分配</a-tag>
-          </a-tooltip>
-        </template>
-        <template v-else-if="activeTab === 'systems' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-        </template>
-        <template v-else-if="activeTab === 'systems' && column.key === 'action'">
-          <a-space>
-            <a-tooltip title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openBusinessSystem(record)">
-                <FontAwesomeIcon :icon="['fa', 'edit']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="删除">
-              <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteBusinessSystem(record)">
-                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-              </a-button>
-            </a-tooltip>
-          </a-space>
-        </template>
-        <template v-else-if="activeTab === 'services' && column.key === 'topology_type'">
-          <a-tag :color="record.topology_type === 'cluster' ? 'blue' : record.topology_type === 'load_balancer' ? 'green' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : record.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-tag>
-        </template>
-        <template v-else-if="activeTab === 'services' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-        </template>
-        <template v-else-if="activeTab === 'services' && column.key === 'action'">
-          <a-space>
-            <a-tooltip title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openService(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
-            <a-tooltip title="删除"><a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteService(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip>
-          </a-space>
-        </template>
         <template v-else-if="activeTab === 'profiles' && column.key === 'profile_type'">
           <a-tag :color="record.profile_type === 'builtin' ? 'blue' : 'orange'">{{ record.profile_type === 'builtin' ? '内置' : '自定义' }}</a-tag>
         </template>
@@ -137,13 +61,8 @@
         <template v-else-if="activeTab === 'profiles' && column.key === 'action'">
           <a-space>
             <a-tooltip title="创建集群">
-              <a-button v-permission="'assets:applications:create'" data-create-cluster-profile size="small" @click="createClusterFromProfile(record)">
+              <a-button v-permission="'assets:service-tree:manage'" data-create-cluster-profile size="small" @click="createClusterFromProfile(record)">
                 <FontAwesomeIcon :icon="['fas', 'diagram-project']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip title="查看集群">
-              <a-button size="small" @click="viewClustersForProfile(record)">
-                <FontAwesomeIcon :icon="['fas', 'list']" />
               </a-button>
             </a-tooltip>
             <a-tooltip v-if="record.profile_type === 'custom'" title="编辑"><a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openClusterProfile(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip>
@@ -174,38 +93,13 @@
                 <FontAwesomeIcon :icon="['fas', 'code-branch']" />
               </a-button>
             </a-tooltip>
+            <a-tooltip key="application-templates" title="部署模板管理">
+              <a-button data-manage-application-templates size="small" @click="openTemplateManager(record)">
+                <FontAwesomeIcon :icon="['fas', 'file-lines']" />
+              </a-button>
+            </a-tooltip>
             <a-tooltip key="application-delete" title="删除">
               <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteApplication(record)">
-                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-              </a-button>
-            </a-tooltip>
-          </a-space>
-        </template>
-        <template v-else-if="activeTab === 'templates' && column.key === 'control_type'">
-          <a-tag :color="controlTypeColors[record.control_type]">{{ controlTypeLabels[record.control_type] || record.control_type }}</a-tag>
-        </template>
-        <template v-else-if="activeTab === 'templates' && column.key === 'service_count'">
-          <a-tooltip :title="record.service_count ? '已被逻辑服务引用，需先解除引用才能删除' : '无逻辑服务引用，可直接删除'">
-            <a-tag :color="record.service_count ? 'blue' : 'default'">{{ record.service_count ?? 0 }}</a-tag>
-          </a-tooltip>
-        </template>
-        <template v-else-if="activeTab === 'templates' && column.key === 'enabled'">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-        </template>
-        <template v-else-if="activeTab === 'templates' && column.key === 'action'">
-          <a-space>
-            <a-tooltip key="template-edit" title="编辑">
-              <a-button v-permission="'assets:applications:update'" size="small" type="primary" @click="openTemplate(record)">
-                <FontAwesomeIcon :icon="['fa', 'edit']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip key="template-copy" title="复制">
-              <a-button v-permission="'assets:applications:create'" size="small" @click="copyTemplate(record)">
-                <FontAwesomeIcon :icon="['fas', 'copy']" />
-              </a-button>
-            </a-tooltip>
-            <a-tooltip key="template-delete" title="删除">
-              <a-button v-permission="'assets:applications:delete'" class="delBtn" size="small" type="primary" danger @click="confirmDeleteTemplate(record)">
                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
               </a-button>
             </a-tooltip>
@@ -279,12 +173,6 @@
       @update:open="projectDialogOpen = $event"
       @saved="handleSaved"
     />
-    <BusinessSystemDialog
-      :open="businessSystemDialogOpen"
-      :system-id="selectedBusinessSystemId"
-      @update:open="businessSystemDialogOpen = $event"
-      @saved="handleSaved"
-    />
     <ApplicationServiceDialog
       :open="serviceDialogOpen"
       :service-id="selectedServiceId"
@@ -312,12 +200,11 @@
       @update:open="versionDialogOpen = $event"
       @changed="reload(false)"
     />
-    <TemplateDialog
-      :open="templateDialogOpen"
-      :template-id="selectedTemplateId"
-      :copy-from-id="selectedTemplateCopyId"
-      @update:open="templateDialogOpen = $event"
-      @saved="reload(false)"
+    <TemplateManagerDialog
+      :open="templateManagerOpen"
+      :application="templateManagerApplication"
+      @update:open="templateManagerOpen = $event"
+      @changed="reload(false)"
     />
     <DeploymentDialog
       :open="deploymentDialogOpen"
@@ -337,29 +224,22 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { asArray } from '@/util/normalize'
 import {
   batchDeleteApplication,
   controlApplicationDeployment,
-  deleteBusinessSystem,
   deleteProject,
-  deleteApplicationService,
   deleteClusterProfile,
   deleteApplicationDeployment,
-  deleteApplicationDeploymentTemplate,
-  getBusinessSystemList,
   getProjectList,
-  getBusinessEnvironmentList,
-  getApplicationServiceList,
   getClusterProfileList,
   getApplicationDeploymentList,
-  getApplicationDeploymentTemplateList,
   getApplicationList,
 } from '@/api/assets/application'
 import Dialog from './Dialog.vue'
 import VersionDialog from './VersionDialog.vue'
-import TemplateDialog from './TemplateDialog.vue'
+import TemplateManagerDialog from './TemplateManagerDialog.vue'
 import DeploymentDialog from './DeploymentDialog.vue'
-import BusinessSystemDialog from './BusinessSystemDialog.vue'
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 import ClusterProfileDialog from './ClusterProfileDialog.vue'
 import ProjectDialog from './ProjectDialog.vue'
@@ -370,52 +250,10 @@ const props = defineProps({
 const emit = defineEmits(['data-changed'])
 const activeTab = ref('applications')
 const keyword = ref('')
-const serviceFilters = reactive({ business_system: undefined, application: undefined, environment: undefined, topology_type: undefined, cluster_profile: undefined, enabled: undefined })
-const serviceFilterRecords = reactive({ businessSystems: [], applications: [], environments: [], profiles: [], projects: [] })
-const templateApplicationId = ref(null)
-const systemProjectId = ref(null)
-// 左侧分组面板：业务系统按所属项目，部署模板按所属应用，逻辑服务按所属业务系统。
-const siderConfig = computed(() => {
-  if (activeTab.value === 'systems') {
-    return {
-      title: '所属项目',
-      allLabel: '全部项目',
-      items: serviceFilterRecords.projects,
-      selectedKey: systemProjectId.value === null ? 'all' : String(systemProjectId.value),
-    }
-  }
-  if (activeTab.value === 'templates') {
-    return {
-      title: '所属应用',
-      allLabel: '全部应用',
-      items: serviceFilterRecords.applications,
-      selectedKey: templateApplicationId.value === null ? 'all' : String(templateApplicationId.value),
-    }
-  }
-  if (activeTab.value === 'services') {
-    const selected = serviceFilters.business_system
-    return {
-      title: '所属业务系统',
-      allLabel: '全部业务系统',
-      items: serviceFilterRecords.businessSystems,
-      selectedKey: selected === undefined || selected === null ? 'all' : String(selected),
-    }
-  }
-  return null
-})
-function handleSiderSelect({ key }) {
-  const value = key === 'all' ? undefined : Number(key)
-  if (activeTab.value === 'systems') systemProjectId.value = value ?? null
-  else if (activeTab.value === 'templates') templateApplicationId.value = value ?? null
-  else if (activeTab.value === 'services') serviceFilters.business_system = value
-  void reload(true)
-}
 const rows = ref([])
 const loading = ref(false)
-const businessSystemDialogOpen = ref(false)
 const projectDialogOpen = ref(false)
 const selectedProjectId = ref(null)
-const selectedBusinessSystemId = ref(null)
 const serviceDialogOpen = ref(false)
 const selectedServiceId = ref(null)
 const selectedServiceClusterProfileId = ref(null)
@@ -423,12 +261,11 @@ const clusterProfileDialogOpen = ref(false)
 const selectedClusterProfileId = ref(null)
 const applicationDialogOpen = ref(false)
 const versionDialogOpen = ref(false)
-const templateDialogOpen = ref(false)
+const templateManagerOpen = ref(false)
+const templateManagerApplication = ref(null)
 const deploymentDialogOpen = ref(false)
 const selectedApplication = ref(null)
 const selectedDeployment = ref(null)
-const selectedTemplateId = ref(null)
-const selectedTemplateCopyId = ref(null)
 const runtimeRefreshing = ref(false)
 const deploymentControlLoading = reactive({})
 const paginationState = reactive({ current: 1, pageSize: 10, total: 0 })
@@ -444,16 +281,6 @@ const runtimeStatusMap = {
   stopped: { label: '已停止', badge: 'error' },
   error: { label: '检查失败', badge: 'warning' },
 }
-const businessSystemColumns = [
-  { title: '业务系统名称', dataIndex: 'name', key: 'name', sorter: true, width: 200 },
-  { title: '编码', dataIndex: 'code', key: 'code', width: 180 },
-  { title: '所属项目', key: 'project_name', width: 180 },
-  { title: '负责人', dataIndex: 'owner', key: 'owner', width: 150 },
-  { title: '部署数', dataIndex: 'deployment_count', key: 'deployment_count', width: 100 },
-  { title: '状态', key: 'enabled', width: 100 },
-  { title: '备注', dataIndex: 'remark', key: 'remark', width: 240 },
-  { title: '操作', key: 'action', width: 120, fixed: 'right' },
-]
 const projectColumns = [
   { title: '项目名称', dataIndex: 'name', key: 'name', sorter: true, width: 220 },
   { title: '编码', dataIndex: 'code', key: 'code', width: 180 },
@@ -463,18 +290,7 @@ const projectColumns = [
   { title: '备注', dataIndex: 'remark', key: 'remark', width: 240 },
   { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
-const serviceColumns = [
-  { title: '服务名称', dataIndex: 'name', key: 'name', sorter: true, width: 190 },
-  { title: '编码', dataIndex: 'code', key: 'code', width: 170 },
-  { title: '业务系统', dataIndex: 'business_system_name', key: 'business_system_name', width: 160 },
-  { title: '应用', dataIndex: 'application_name', key: 'application_name', width: 160 },
-  { title: '环境', dataIndex: 'environment_name', key: 'environment_name', width: 120 },
-  { title: '形态', key: 'topology_type', width: 90 },
-  { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 160 },
-  { title: '实例数', dataIndex: 'deployment_count', key: 'deployment_count', width: 90 },
-  { title: '状态', key: 'enabled', width: 90 },
-  { title: '操作', key: 'action', width: 160, fixed: 'right' },
-]
+
 const clusterProfileColumns = [
   { title: '模型名称', dataIndex: 'name', key: 'name', sorter: true, width: 190 },
   { title: '编码', dataIndex: 'code', key: 'code', width: 170 },
@@ -495,7 +311,7 @@ const applicationColumns = [
   { title: '模板数', dataIndex: 'deployment_template_count', key: 'deployment_template_count', width: 90 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '备注', dataIndex: 'remark', key: 'remark' },
-  { title: '操作', key: 'action', width: 300, fixed: 'right' },
+  { title: '操作', key: 'action', width: 340, fixed: 'right' },
 ]
 const deploymentColumns = [
   { title: '实例名称', dataIndex: 'instance_name', key: 'instance_name', sorter: true, width: 180 },
@@ -509,28 +325,10 @@ const deploymentColumns = [
   { title: '运行状态', key: 'runtime_status', width: 160 },
   { title: '操作', key: 'action', width: 190, fixed: 'right' },
 ]
-const templateColumns = [
-  { title: '模板名称', dataIndex: 'name', key: 'name', sorter: true, width: 220 },
-  { title: '所属应用', dataIndex: 'application_name', key: 'application_name', width: 180 },
-  { title: '控制方式', key: 'control_type', width: 150 },
-  { title: '关联逻辑服务', key: 'service_count', width: 130 },
-  { title: '运行用户', dataIndex: 'run_user', key: 'run_user', width: 130 },
-  { title: 'App Home', dataIndex: 'app_home', key: 'app_home', width: 280 },
-  { title: '服务名称', dataIndex: 'service_name', key: 'service_name', width: 180 },
-  { title: '状态', key: 'enabled', width: 90 },
-  { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
-  { title: '操作', key: 'action', width: 120, fixed: 'right' },
-]
-const currentColumns = computed(() => ({ projects: projectColumns, systems: businessSystemColumns, services: serviceColumns, profiles: clusterProfileColumns, applications: applicationColumns, templates: templateColumns, deployments: deploymentColumns }[activeTab.value]))
-const currentTableScroll = computed(() => ({ x: ({ projects: 1240, systems: 1230, services: 1500, profiles: 1220, applications: 1100, templates: 1700, deployments: 1440 }[activeTab.value]) }))
-const createButtonLabel = computed(() => ({ projects: '新增项目', systems: '新增业务系统', services: '新增逻辑服务', profiles: '新增自定义集群', applications: '新增应用', templates: '新增模板', deployments: '登记实例' }[activeTab.value]))
-const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', systems: '搜索业务系统、编码或负责人', services: '搜索服务、系统或应用', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', templates: '搜索模板、应用或服务名', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
-const serviceApplicationOptions = computed(() => serviceFilterRecords.applications.map((item) => ({ label: item.name, value: item.id })))
-const serviceEnvironmentOptions = computed(() => serviceFilterRecords.environments
-  .map((item) => ({ label: item.name, value: item.id })))
-const serviceClusterProfileOptions = computed(() => serviceFilterRecords.profiles.map((item) => ({ label: item.name, value: item.id })))
-const topologyFilterOptions = [{ label: '单机', value: 'standalone' }, { label: '集群', value: 'cluster' }, { label: '负载均衡', value: 'load_balancer' }]
-const enabledFilterOptions = [{ label: '启用', value: true }, { label: '停用', value: false }]
+const currentColumns = computed(() => ({ projects: projectColumns, profiles: clusterProfileColumns, applications: applicationColumns, deployments: deploymentColumns }[activeTab.value]))
+const currentTableScroll = computed(() => ({ x: ({ projects: 1240, profiles: 1220, applications: 1140, deployments: 1440 }[activeTab.value]) }))
+const createButtonLabel = computed(() => ({ projects: '新增项目', profiles: '新增自定义集群', applications: '新增应用', deployments: '登记实例' }[activeTab.value]))
+const searchPlaceholder = computed(() => ({ projects: '搜索项目、编码或业务系统', profiles: '搜索集群模型、编码或应用', applications: '搜索应用、编码或厂商', deployments: '搜索应用、版本、主机或实例' }[activeTab.value]))
 const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
 let runtimePollTimer = null
 let runtimePollInFlight = false
@@ -552,17 +350,6 @@ async function reload(resetPage = false) {
   loading.value = true
   try {
     const params = { page: paginationState.current, page_size: paginationState.pageSize, search: keyword.value }
-    if (requestedTab === 'services') {
-      Object.entries(serviceFilters).forEach(([key, value]) => {
-        if (value !== undefined && value !== null && value !== '') params[key] = value
-      })
-    }
-    if (requestedTab === 'systems' && props.serviceScope.nodeType === 'businessSystem') {
-      params.id = props.serviceScope.businessSystemId
-    }
-    if (requestedTab === 'systems' && systemProjectId.value !== null) {
-      params.project = systemProjectId.value
-    }
     if (requestedTab === 'deployments') {
       if (props.serviceScope.deploymentId) params.id = props.serviceScope.deploymentId
       else if (props.serviceScope.applicationServiceId) params.application_service = props.serviceScope.applicationServiceId
@@ -573,22 +360,17 @@ async function reload(resetPage = false) {
         params.application_service__environment = props.serviceScope.environment
       }
     }
-    if (requestedTab === 'templates' && templateApplicationId.value !== null) {
-      params.application = templateApplicationId.value
-    }
     const listRequests = {
       projects: getProjectList,
-      systems: getBusinessSystemList,
-      services: getApplicationServiceList,
       profiles: getClusterProfileList,
       applications: getApplicationList,
-      templates: getApplicationDeploymentTemplateList,
       deployments: getApplicationDeploymentList,
     }
     const response = await listRequests[requestedTab](params)
     if (currentSequence !== reloadSequence || activeTab.value !== requestedTab) return
     const data = response?.data?.data || {}
-    rows.value = data.results || []
+    // API 结果在 UI 层必须先归一化为数组，避免后端返回 null/undefined 时直接塞进 v-for / a-menu。
+    rows.value = asArray(data.results)
     paginationState.total = Number(data.count || 0)
   } finally {
     if (currentSequence === reloadSequence) loading.value = false
@@ -644,39 +426,10 @@ async function handleManualRefresh() {
 }
 async function loadActiveTab(nextTab) {
   keyword.value = ''
-  if (nextTab === 'services') await loadServiceFilterOptions()
-  // 左侧分组面板需要对应的分组源全量列表。
-  if (nextTab === 'systems') {
-    systemProjectId.value = null
-    if (!serviceFilterRecords.projects.length) {
-      const projects = await getProjectList({ page: 1, page_size: 1000, enabled: true })
-      serviceFilterRecords.projects = projects?.data?.data?.results || []
-    }
-  }
-  if (nextTab === 'templates') {
-    templateApplicationId.value = null
-    if (!serviceFilterRecords.applications.length) await loadServiceFilterOptions()
-  }
   rows.value = []
   paginationState.total = 0
   await reload(true)
   if (nextTab === 'deployments') startRuntimePolling()
-}
-async function loadServiceFilterOptions() {
-  const [systems, applications, environments, profiles] = await Promise.all([
-    getBusinessSystemList({ page: 1, page_size: 1000, enabled: true }),
-    getApplicationList({ page: 1, page_size: 1000, enabled: true }),
-    getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true }),
-    getClusterProfileList({ page: 1, page_size: 1000, enabled: true }),
-  ])
-  serviceFilterRecords.businessSystems = systems?.data?.data?.results || []
-  serviceFilterRecords.applications = applications?.data?.data?.results || []
-  serviceFilterRecords.environments = environments?.data?.data?.results || []
-  serviceFilterRecords.profiles = profiles?.data?.data?.results || []
-}
-function resetServiceFilters() {
-  Object.keys(serviceFilters).forEach((key) => { serviceFilters[key] = undefined })
-  reload(true)
 }
 function getWorkspaceRowKey(record) {
   return `${activeTab.value}-${record.id}`
@@ -691,27 +444,14 @@ function openApplication(record = null) {
   selectedApplication.value = record
   applicationDialogOpen.value = true
 }
-function openBusinessSystem(record = null) {
-  selectedBusinessSystemId.value = record?.id || null
-  businessSystemDialogOpen.value = true
-}
 function openProject(record = null) {
   selectedProjectId.value = record?.id || null
   projectDialogOpen.value = true
-}
-function openService(record = null) {
-  selectedServiceId.value = record?.id || null
-  selectedServiceClusterProfileId.value = null
-  serviceDialogOpen.value = true
 }
 function createClusterFromProfile(record) {
   selectedServiceId.value = null
   selectedServiceClusterProfileId.value = record.id
   serviceDialogOpen.value = true
-}
-function viewClustersForProfile(record) {
-  serviceFilters.cluster_profile = record.id
-  activeTab.value = 'services'
 }
 function openClusterProfile(record = null) {
   selectedClusterProfileId.value = record?.id || null
@@ -736,26 +476,16 @@ function confirmDelete({ title, summary, items, remove, successMessage = '删除
 }
 async function handleServiceSaved() {
   emit('data-changed')
-  if (selectedServiceClusterProfileId.value) {
-    selectedServiceClusterProfileId.value = null
-    activeTab.value = 'services'
-    return
-  }
+  selectedServiceClusterProfileId.value = null
   await reload(false)
 }
 function openVersions(record) {
   selectedApplication.value = record
   versionDialogOpen.value = true
 }
-function openTemplate(record = null) {
-  selectedTemplateId.value = record?.id || null
-  selectedTemplateCopyId.value = null
-  templateDialogOpen.value = true
-}
-function copyTemplate(record) {
-  selectedTemplateId.value = null
-  selectedTemplateCopyId.value = record?.id || null
-  templateDialogOpen.value = true
+function openTemplateManager(record) {
+  templateManagerApplication.value = record
+  templateManagerOpen.value = true
 }
 function openDeployment(record = null) {
   selectedDeployment.value = record
@@ -763,13 +493,9 @@ function openDeployment(record = null) {
 }
 function openCurrentTabCreateDialog() {
   if (activeTab.value === 'projects') openProject()
-  else if (activeTab.value === 'systems') openBusinessSystem()
-  else if (activeTab.value === 'services') openService()
   else if (activeTab.value === 'profiles') openClusterProfile()
   else if (activeTab.value === 'applications') openApplication()
-  else if (activeTab.value === 'templates') openTemplate()
-  // 部署实例必须归属逻辑服务才能拿到版本与模板，因此只能从逻辑服务内新增。
-  else openService()
+  // 部署实例('deployments')无法从这里新增，需要先通过服务树定位到具体逻辑服务。
 }
 function confirmDeleteProject(record) {
   confirmDelete({
@@ -779,28 +505,12 @@ function confirmDeleteProject(record) {
     remove: () => deleteProject(record.id),
   })
 }
-function confirmDeleteService(record) {
-  confirmDelete({
-    title: '删除逻辑服务',
-    summary: '仍包含部署实例的逻辑服务不能删除。',
-    items: [record.name || record.code || record.id],
-    remove: () => deleteApplicationService(record.id),
-  })
-}
 function confirmDeleteClusterProfile(record) {
   confirmDelete({
     title: '删除集群模型',
     summary: '仍被逻辑服务引用的集群模型不能删除。',
     items: [record.name || record.code || record.id],
     remove: () => deleteClusterProfile(record.id),
-  })
-}
-function confirmDeleteBusinessSystem(record) {
-  confirmDelete({
-    title: '删除业务系统',
-    summary: '仍包含逻辑服务的业务系统不能删除。',
-    items: [record.name || record.code || record.id],
-    remove: () => deleteBusinessSystem(record.id),
   })
 }
 function formatDateTime(value) {
@@ -878,15 +588,6 @@ function confirmDeleteDeployment(record) {
     successMessage: '部署实例删除成功',
   })
 }
-function confirmDeleteTemplate(record) {
-  confirmDelete({
-    title: '确认删除部署模板',
-    summary: '已被部署实例引用的模板不能删除。',
-    items: [`${record.application_name} / ${record.name}`],
-    remove: () => deleteApplicationDeploymentTemplate(record.id),
-    successMessage: '部署模板删除成功',
-  })
-}
 
 useKeepAliveRefreshLifecycle(
   () => {
@@ -902,7 +603,8 @@ watch(activeTab, (nextTab) => {
 
 watch(() => props.serviceScope, () => {
   stopRuntimePolling()
-  const targetTab = ['all', 'businessSystem'].includes(props.serviceScope.nodeType) ? 'systems' : 'deployments'
+  // 业务系统详情/增删改已改由服务树页面接管，这里只剩下部署实例这一个下钻目标。
+  const targetTab = 'deployments'
   if (activeTab.value !== targetTab) {
     activeTab.value = targetTab
     return
@@ -925,13 +627,7 @@ onBeforeUnmount(() => {
 .application-workspace { padding: 0 2px; }
 .workspace-body { display: flex; align-items: flex-start; gap: 12px; }
 .workspace-main { flex: 1; min-width: 0; }
-.workspace-sider { width: 220px; flex: 0 0 220px; border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; }
-.workspace-sider-title { padding: 10px 16px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #f0f0f0; }
-.workspace-sider-menu { border-inline-end: none; max-height: 560px; overflow-y: auto; }
 .tools { margin-bottom: 16px; }
-.service-filters { margin-bottom: 16px; }
-.service-filters .ant-select { width: 100%; }
-.service-filter-actions { display: flex; gap: 8px; align-items: center; }
 .right-tools { display: flex; justify-content: flex-end; }
 .secondary { color: rgba(0, 0, 0, 0.45); font-size: 12px; }
 .runtime-status-line { display: inline-flex; align-items: center; gap: 6px; }

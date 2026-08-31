@@ -56,7 +56,7 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'metric'">
-                <a-typography-text ellipsis style="max-width: 620px">{{ record.metric }}</a-typography-text>
+                <a-typography-text :content="record.metric" ellipsis style="max-width: 620px" />
               </template>
               <template v-else-if="column.key === 'value'">
                 {{ record.value || '-' }}

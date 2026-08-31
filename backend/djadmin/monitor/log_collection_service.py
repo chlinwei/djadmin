@@ -9,15 +9,20 @@
 """
 import os
 import uuid
+from urllib.parse import urlsplit
 
 from django.utils import timezone
 
 from assets.grpc_transfer.client import AgentChannelClient, AgentGrpcTransferError
+from assets.credential_crypto import decrypt_secret
 
 from .fluent_bit import (
     FLUENT_BIT_BOOTSTRAP_FRAGMENT,
+    FLUENT_BIT_HOME,
     FLUENT_BIT_INPUTS_DIR,
+    FLUENT_BIT_MULTILINE_PARSERS_FILE,
     FLUENT_BIT_OUTPUTS_DIR,
+    FLUENT_BIT_PARSERS_DIR,
     FLUENT_BIT_RELOAD_URL,
     build_host_fragments,
     render_main_config,
@@ -30,6 +35,29 @@ RELOAD_TIMEOUT_SECONDS = 15
 
 class LogCollectionApplyError(Exception):
     """下发失败时携带可展示给用户的错误信息。"""
+
+
+def _configure_opensearch_output(client, cluster):
+    endpoint = urlsplit(cluster.host_list[0])
+    if not endpoint.hostname:
+        raise LogCollectionApplyError('OpenSearch 连接地址无效')
+    port = endpoint.port or (443 if endpoint.scheme == 'https' else 80)
+    result = client.execute_automation(
+        job_id='fluent-bit-opensearch-config',
+        params={
+            'host': endpoint.hostname,
+            'port': str(port),
+            'username': cluster.username,
+            'password': decrypt_secret(cluster.password),
+        },
+        timeout_seconds=30,
+        task_type='custom',
+        action='configure_fluent_bit_opensearch',
+    )
+    if result.get('status') != 'success' or result.get('exit_code') not in (0, None):
+        raise LogCollectionApplyError(
+            f"OpenSearch 输出配置失败: {result.get('error_message') or result.get('stderr') or result.get('status')}"
+        )
 
 
 def _run_fluent_bit_job(action, target_id, history_id, delete_after_success=False):
@@ -176,11 +204,14 @@ def execute_fluent_bit_install(target, history):
         return history
     target.agent_installed = True
     target.agent_version = package.version
-    target.runtime_status = LogCollectionTarget.RuntimeStatus.RUNNING
-    target.last_error = ''
-    target.save(update_fields=[
-        'agent_installed', 'agent_version', 'runtime_status', 'last_error', 'update_time',
-    ])
+    target.save(update_fields=['agent_installed', 'agent_version', 'update_time'])
+    try:
+        # Playbook 退出码为 0 不代表 Fluent Bit 真的常驻运行；必须实测 systemd 状态，
+        # 否则误标 RUNNING 会让后续下发误判“不需要 start”，直接热重载到一个没在监听的进程上。
+        refresh_target_status(target)
+    except LogCollectionApplyError:
+        target.runtime_status = LogCollectionTarget.RuntimeStatus.UNKNOWN
+        target.save(update_fields=['runtime_status', 'update_time'])
     return history
 
 
@@ -320,10 +351,11 @@ def _trigger_hot_reload(client):
     """经 agent 在主机本地 curl Fluent Bit 热重载接口（§8.5，不用 systemctl restart）。"""
     result = client.execute_automation(
         job_id='fluent-bit-reload',
-        params={'command': f'curl -fsS -X POST {FLUENT_BIT_RELOAD_URL}'},
+        params={},
         timeout_seconds=RELOAD_TIMEOUT_SECONDS,
         task_type='custom',
-        action='run_shell',
+        # 使用 Agent 内建 HTTP 客户端访问本机接口，主机无需安装 curl/wget/Python。
+        action='reload_fluent_bit',
     )
     if result.get('status') != 'success' or result.get('exit_code') not in (0, None):
         raise LogCollectionApplyError(
@@ -350,10 +382,12 @@ def apply_host_log_config(target):
     幂等：指纹与 LogCollectionTarget.config_fingerprint 一致时跳过写文件与重载。
     清理：服务关闭采集/实例移除后，目标片段集合缩小，多余的存量 .conf 会被删除（§8.6）。
     """
+    if target.runtime_status == LogCollectionTarget.RuntimeStatus.ERROR:
+        # Agent 重连或 Fluent Bit 恢复后，不能让旧 last_error 永久阻断下发；先获取实时状态。
+        refresh_target_status(target)
     if not target.agent_installed:
         raise LogCollectionApplyError('Fluent Bit 尚未安装，请先完成离线安装并检查运行状态')
-    if target.runtime_status != LogCollectionTarget.RuntimeStatus.RUNNING:
-        raise LogCollectionApplyError('Fluent Bit 尚未运行，请先启动服务并检查运行状态')
+    needs_start = target.runtime_status != LogCollectionTarget.RuntimeStatus.RUNNING
 
     host = target.host
     agent_id = str(getattr(host, 'agent_id', '') or '').strip()
@@ -366,13 +400,18 @@ def apply_host_log_config(target):
     except ValueError as exc:
         raise LogCollectionApplyError(str(exc)) from exc
 
-    if fragments['fingerprint'] == target.config_fingerprint:
-        return {'skipped': True, 'fingerprint': fragments['fingerprint']}
-
-    client = AgentChannelClient(agent_id)
     try:
+        # 客户端初始化也会校验 agent gRPC 通道，必须纳入同一失败回写链路，避免前端收到 500。
+        client = AgentChannelClient(agent_id)
+        # 凭据只写入 root 可读的环境文件；每次下发先确保存在，连接参数未变时 Agent 不重启 Fluent Bit。
+        _configure_opensearch_output(client, cluster)
+        if not needs_start and fragments['fingerprint'] == target.config_fingerprint:
+            return {'skipped': True, 'fingerprint': fragments['fingerprint']}
+        client.mkdir(FLUENT_BIT_HOME, 'parsers.d')
         client.mkdir(FLUENT_BIT_INPUTS_DIR, '.')
         client.mkdir(FLUENT_BIT_OUTPUTS_DIR, '.')
+        _write_fragment(client, FLUENT_BIT_PARSERS_DIR, FLUENT_BIT_MULTILINE_PARSERS_FILE, fragments['parsers'][FLUENT_BIT_MULTILINE_PARSERS_FILE])
+        _write_fragment(client, FLUENT_BIT_HOME, 'fluent-bit.conf', render_main_config())
 
         for filename, content in fragments['inputs'].items():
             _write_fragment(client, FLUENT_BIT_INPUTS_DIR, filename, content)
@@ -397,7 +436,20 @@ def apply_host_log_config(target):
         ):
             client.delete(os.path.join(FLUENT_BIT_OUTPUTS_DIR, name))
 
-        _trigger_hot_reload(client)
+        if needs_start:
+            # 旧配置导致服务退出时，先写入修复配置再启动；HTTP 热重载无法作用于已停止的进程。
+            control_fluent_bit_service(target, 'start')
+        else:
+            try:
+                _trigger_hot_reload(client)
+            except LogCollectionApplyError:
+                # runtime_status=RUNNING 是上次记录的状态，可能已经和主机实际状态脱节
+                # （例如安装刚完成时进程还没真正常驻）；热重载连不上就退化成启一次服务，而不是直接报错卡死。
+                result = control_fluent_bit_service(target, 'start')
+                if result.get('status') != 'success' or result.get('exit_code') not in (0, None):
+                    raise LogCollectionApplyError(
+                        f"热重载失败且启动服务也失败: {result.get('error_message') or result.get('stderr') or result.get('status')}"
+                    )
     except (AgentGrpcTransferError, LogCollectionApplyError) as exc:
         target.runtime_status = LogCollectionTarget.RuntimeStatus.ERROR
         target.last_error = str(exc)[:1000]

@@ -5,6 +5,7 @@ from .views import (
     AlertHistoryViewSet,
     AlertMediaViewSet,
     AlertRouteViewSet,
+    LogCollectionFilterRuleViewSet,
     LogCollectionTargetViewSet,
     LogProcessingRuleViewSet,
     LogRetentionTierViewSet,
@@ -23,6 +24,7 @@ router.register(r'media', AlertMediaViewSet, basename='monitor-alert-media')
 router.register(r'alert-routes', AlertRouteViewSet, basename='monitor-alert-routes')
 router.register(r'opensearch-clusters', OpenSearchClusterViewSet, basename='monitor-opensearch-clusters')
 router.register(r'log-targets', LogCollectionTargetViewSet, basename='monitor-log-targets')
+router.register(r'log-collection-filter-rules', LogCollectionFilterRuleViewSet, basename='monitor-log-collection-filter-rules')
 router.register(r'log-processing-rules', LogProcessingRuleViewSet, basename='monitor-log-processing-rules')
 router.register(r'log-retention-tiers', LogRetentionTierViewSet, basename='monitor-log-retention-tiers')
 

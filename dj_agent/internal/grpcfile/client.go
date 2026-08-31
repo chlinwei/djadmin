@@ -504,7 +504,8 @@ func (s *session) handleMkdir(req *pb.MkdirRequest) {
 		return
 	}
 	newDirPath := filepath.Join(absDir, req.Name)
-	if err := os.Mkdir(newDirPath, 0o755); err != nil {
+	// 后端会在每次配置下发时确保片段目录存在；已存在必须视为成功，保证下发可重试。
+	if err := os.MkdirAll(newDirPath, 0o755); err != nil {
 		resp.Error = err.Error()
 	} else {
 		resp.Path = newDirPath

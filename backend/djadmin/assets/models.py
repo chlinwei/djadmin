@@ -50,8 +50,8 @@ class Application(BaseModel):
 
 
 class BusinessSystem(BaseModel):
-    name = models.CharField(max_length=128, unique=True, verbose_name='业务系统名称')
-    code = models.CharField(max_length=64, unique=True, verbose_name='业务系统编码')
+    name = models.CharField(max_length=128, verbose_name='业务系统名称')
+    code = models.CharField(max_length=64, verbose_name='业务系统编码')
     # 反向名沿用 business_systems，使 Project 侧的查询/序列化写法在 M2M 改 FK 后保持不变。
     project = models.ForeignKey(
         'Project',
@@ -67,6 +67,10 @@ class BusinessSystem(BaseModel):
     class Meta:
         db_table = 'assets_business_system'
         ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['project', 'name'], name='unique_project_business_system_name'),
+            models.UniqueConstraint(fields=['project', 'code'], name='unique_project_business_system_code'),
+        ]
 
     def __str__(self):
         return self.name
@@ -410,7 +414,6 @@ class ApplicationLogDefinition(BaseModel):
     deployment_template = models.ForeignKey(ApplicationDeploymentTemplate, on_delete=models.CASCADE, related_name='logs')
     name = models.CharField(max_length=128)
     path_pattern = models.CharField(max_length=512)
-    encoding = models.CharField(max_length=32, default='utf-8')
     collection_enabled = models.BooleanField(default=False)
     # 保留期改由逻辑服务的 log_retention_tier 在索引级经 ISM 执行，日志定义级不再配置 retention_days
     # （定义级配置了也无法执行，保留会造成误导），见架构文档 §7。
@@ -447,6 +450,14 @@ class ApplicationServiceLogSetting(BaseModel):
         related_name='service_log_settings', verbose_name='日志保留档位',
     )
     collection_enabled = models.BooleanField(null=True, blank=True, verbose_name='采集开关')
+    collection_filter_rule = models.ForeignKey(
+        'monitor.LogCollectionFilterRule', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='service_log_settings', verbose_name='采集过滤规则',
+    )
+    processing_rule = models.ForeignKey(
+        'monitor.LogProcessingRule', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='service_log_settings', verbose_name='日志处理规则',
+    )
 
     class Meta:
         db_table = 'assets_application_service_log_setting'

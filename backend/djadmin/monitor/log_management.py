@@ -6,7 +6,10 @@ bootstrap_log_storage 是唯一执行写入的编排入口。
 """
 import re
 
-from .opensearch_client import OpenSearchClient
+from django.db import transaction
+
+from .log_schema import STANDARD_LOG_FIELDS
+from .opensearch_client import OpenSearchClient, OpenSearchError
 
 _INDEX_SEGMENT_RE = re.compile(r'[^a-z0-9_-]+')
 
@@ -52,6 +55,11 @@ def build_index_template_body(index_prefix):
                 'number_of_replicas': 0,
                 'index.refresh_interval': '10s',
                 'index.mapping.total_fields.limit': 2000,
+            },
+            'mappings': {
+                # 标准字段之外一律不再自动建 mapping，应用差异字段必须写进 app_fields。
+                'dynamic': False,
+                'properties': STANDARD_LOG_FIELDS,
             },
         },
     }
@@ -100,6 +108,18 @@ def build_ism_policy_body(index_prefix, tier):
     }
 
 
+def _upsert_ism_policy(client, name, body):
+    """覆盖已存在的 ISM policy 必须带乐观锁参数，否则 OpenSearch 直接返回 409。"""
+    try:
+        existing = client.get_ism_policy(name)
+    except OpenSearchError:
+        existing = None
+    params = None
+    if existing and existing.get('_seq_no') is not None:
+        params = {'if_seq_no': existing['_seq_no'], 'if_primary_term': existing['_primary_term']}
+    client.put_ism_policy(name, body, params=params)
+
+
 def build_pipeline_name(application_code, log_name):
     """app-<application.code>-<log_name>：解析规则跟随应用类型，不随实例增长（§5.2）。"""
     return f'app-{_safe_segment(application_code)}-{_safe_segment(log_name)}'
@@ -122,7 +142,39 @@ def bootstrap_log_storage(cluster):
     policies = []
     for tier in LogRetentionTier.objects.filter(enabled=True):
         policy_name = build_ism_policy_name(prefix, tier.code)
-        client.put_ism_policy(policy_name, build_ism_policy_body(prefix, tier))
+        _upsert_ism_policy(client, policy_name, build_ism_policy_body(prefix, tier))
         policies.append(policy_name)
 
     return {'index_template': template_name, 'ism_policies': policies}
+
+
+def sync_log_storage_quietly(cluster):
+    """下发模板与保留策略，失败只返回原因、不抛异常。
+
+    索引模板是代码派生物而非用户配置，必须自动跟随代码版本；但集群暂时不可达
+    不应阻塞集群保存或数据库迁移，因此这里吞掉异常，由调用方决定如何提示。
+    """
+    if not cluster or not cluster.enabled:
+        return ''
+    try:
+        bootstrap_log_storage(cluster)
+    except OpenSearchError as exc:
+        return str(exc)[:500]
+    return ''
+
+
+def enqueue_log_storage_sync(cluster_id):
+    """在事务提交后入队，避免 worker 读取到尚未提交的集群配置。"""
+    from .models import OpenSearchCluster
+    from .tasks import sync_log_storage
+
+    cluster = OpenSearchCluster.objects.filter(pk=cluster_id, enabled=True).first()
+    if cluster is None:
+        return
+    cluster.storage_sync_status = OpenSearchCluster.StorageSyncStatus.PENDING
+    cluster.storage_sync_error = ''
+    cluster.storage_sync_time = None
+    cluster.save(update_fields=['storage_sync_status', 'storage_sync_error', 'storage_sync_time', 'update_time'])
+
+    # Celery Task.delay 的运行时 API 正确，Pylance 对 shared_task 返回对象的存根误判为列表。
+    transaction.on_commit(lambda: sync_log_storage.delay(cluster_id))  # type: ignore[operator]

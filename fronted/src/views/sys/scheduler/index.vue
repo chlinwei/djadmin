@@ -295,9 +295,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { getTaskList, getTaskLogList, enableTask, disableTask, updateTask, runTaskNow, getTaskStatus } from '@/api/sys/scheduler'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig'
@@ -887,6 +888,11 @@ const startPollingTaskStatus = (taskId, hideLoading) => {
   pollIntervals.value[taskId] = setInterval(pollFn, pollInterval.value)
 }
 
+function stopAllTaskPolling() {
+  Object.values(pollIntervals.value).forEach((timerId) => clearInterval(timerId))
+  pollIntervals.value = {}
+}
+
 const runNow = (record) => {
   if (!record.enabled) {
     message.error('任务已禁用，请先启用')
@@ -924,6 +930,10 @@ onMounted(() => {
   loadMenuOptions()
   loadTasks()
 })
+onBeforeUnmount(stopAllTaskPolling)
+// 本页被 keep-alive 缓存，切 tab 只会触发 onDeactivated，之前一直没有任何清理，
+// 会导致离开页面后还在后台一直轮询任务状态。
+useKeepAliveRefreshLifecycle(null, stopAllTaskPolling)
 </script>
 
 <style scoped>

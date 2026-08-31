@@ -8,7 +8,33 @@
         <div class="node-content-kicker">{{ levelLabel }}</div>
         <h2>{{ scope.nodeTitle || '全部业务' }}</h2>
       </div>
-      <a-tag :color="summaryStatus.color">{{ summaryStatus.label }}</a-tag>
+      <a-space>
+        <template v-if="scope.nodeType === 'businessSystem' && entity">
+          <a-tooltip title="编辑">
+            <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-business-system', entity)">
+              <FontAwesomeIcon :icon="['fa', 'edit']" />
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="删除">
+            <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click="emit('delete-business-system', entity)">
+              <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+            </a-button>
+          </a-tooltip>
+        </template>
+        <template v-else-if="scope.nodeType === 'service' && entity">
+          <a-tooltip title="编辑">
+            <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-service', entity)">
+              <FontAwesomeIcon :icon="['fa', 'edit']" />
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="删除">
+            <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click="emit('delete-service', entity)">
+              <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+            </a-button>
+          </a-tooltip>
+        </template>
+        <a-tag :color="summaryStatus.color">{{ summaryStatus.label }}</a-tag>
+      </a-space>
     </header>
 
     <a-spin :spinning="loading">
@@ -68,6 +94,34 @@
             <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
             <template v-else-if="column.key === 'runtime_status'"><a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" /></template>
             <template v-else-if="column.key === 'ha_role'"><a-tag :color="haRoleColors[record.ha_role] || 'default'">{{ haRoleLabels[record.ha_role] || '未知' }}</a-tag></template>
+            <template v-else-if="column.key === 'business_system_action'">
+              <a-space :size="6">
+                <a-tooltip title="编辑">
+                  <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click.stop="emit('edit-business-system', record)">
+                    <FontAwesomeIcon :icon="['fa', 'edit']" />
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="删除">
+                  <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click.stop="emit('delete-business-system', record)">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'service_action'">
+              <a-space :size="6">
+                <a-tooltip title="编辑">
+                  <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click.stop="emit('edit-service', record)">
+                    <FontAwesomeIcon :icon="['fa', 'edit']" />
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="删除">
+                  <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click.stop="emit('delete-service', record)">
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                  </a-button>
+                </a-tooltip>
+              </a-space>
+            </template>
           </template>
         </a-table>
       </template>
@@ -78,11 +132,12 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import store from '@/store'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
   getApplicationService,
   getApplicationDeployment,
@@ -98,7 +153,7 @@ import {
 const props = defineProps({
   scope: { type: Object, required: true },
 })
-const emit = defineEmits(['navigate'])
+const emit = defineEmits(['navigate', 'edit-business-system', 'delete-business-system', 'edit-service', 'delete-service'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const runtimeStatus = {
   unknown: { label: '未知', status: 'default' }, running: { label: '运行中', status: 'success' },
@@ -123,6 +178,7 @@ const systemColumns = [
   { title: '负责人', dataIndex: 'owner', key: 'owner', width: 160 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
   { title: '状态', key: 'enabled', width: 100 },
+  { title: '操作', key: 'business_system_action', width: 110, fixed: 'right' },
 ]
 const serviceColumns = [
   { title: '逻辑服务', dataIndex: 'name', key: 'child_link', width: 220 },
@@ -132,6 +188,13 @@ const serviceColumns = [
   { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 180 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
   { title: '状态', key: 'enabled', width: 100 },
+  { title: '操作', key: 'service_action', width: 110, fixed: 'right' },
+]
+// 业务系统下先按环境分一层，跟左侧树的层级（项目/业务系统/环境/服务）保持一致，选中环境后才展开具体逻辑服务。
+const environmentSummaryColumns = [
+  { title: '环境', dataIndex: 'name', key: 'child_link', width: 220 },
+  { title: '逻辑服务', dataIndex: 'service_count', key: 'service_count', width: 120 },
+  { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 120 },
 ]
 const deploymentColumns = [
   { title: '部署实例', dataIndex: 'instance_name', key: 'child_link', width: 220 },
@@ -144,7 +207,9 @@ const deploymentColumns = [
 const columns = computed(() => {
   const baseColumns = ({
     all: systemColumns,
-    businessSystem: serviceColumns,
+    project: systemColumns,
+    businessSystem: environmentSummaryColumns,
+    environment: serviceColumns,
     service: deploymentColumns,
   }[props.scope.nodeType] || [])
   if (props.scope.nodeType === 'service' && entity.value?.cluster_type !== 'ha') {
@@ -153,17 +218,18 @@ const columns = computed(() => {
   return baseColumns
 })
 const childSectionTitle = computed(() => ({
-  all: '业务系统', businessSystem: '逻辑服务', service: '部署实例',
+  all: '业务系统', project: '业务系统', businessSystem: '环境', environment: '逻辑服务', service: '部署实例',
 }[props.scope.nodeType] || '请选择节点'))
 const levelLabel = computed(() => ({
-  all: '服务树根节点', businessSystem: '业务系统',
+  all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 800, businessSystem: 1100, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 920, project: 920, businessSystem: 460, environment: 1210, service: 950 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => [
   '全部业务',
+  props.scope.projectName || (props.scope.nodeType === 'project' ? props.scope.nodeTitle : null),
   props.scope.businessSystemName || (props.scope.nodeType === 'businessSystem' ? props.scope.nodeTitle : null),
-  props.scope.environmentName,
+  props.scope.environmentName || (props.scope.nodeType === 'environment' ? props.scope.nodeTitle : null),
   props.scope.serviceName || (props.scope.nodeType === 'service' ? props.scope.nodeTitle : null),
   props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : null,
 ].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index))
@@ -172,13 +238,13 @@ const abnormalCount = computed(() => descendants.value.filter((item) => (
 )).length)
 const runningCount = computed(() => descendants.value.filter((item) => item.runtime_status === 'running').length)
 const metrics = computed(() => {
-  if (props.scope.nodeType === 'all') return [
+  if (props.scope.nodeType === 'all' || props.scope.nodeType === 'project') return [
     { label: '业务系统', value: rows.value.length },
     { label: '逻辑服务', value: services.value.length },
     { label: '部署实例', value: descendants.value.length },
     { label: '异常实例', value: abnormalCount.value, danger: abnormalCount.value > 0 },
   ]
-  if (props.scope.nodeType === 'businessSystem') return [
+  if (props.scope.nodeType === 'businessSystem' || props.scope.nodeType === 'environment') return [
     { label: '逻辑服务', value: services.value.length },
     { label: '部署实例', value: descendants.value.length },
     { label: '异常实例', value: abnormalCount.value, danger: abnormalCount.value > 0 },
@@ -225,11 +291,29 @@ function buildChildScope(record) {
       businessSystemName: record.name, nodeTitle: record.name,
     }
   }
+  if (props.scope.nodeType === 'project') {
+    return {
+      nodeType: 'businessSystem', businessSystemId: record.id,
+      businessSystemName: record.name, nodeTitle: record.name,
+      projectId: props.scope.projectId, projectName: props.scope.nodeTitle,
+    }
+  }
   if (props.scope.nodeType === 'businessSystem') {
+    // 业务系统下先跳转到环境层级，跟左侧树的层级顺序保持一致，具体逻辑服务留到选中环境后再展开。
+    return {
+      nodeType: 'environment',
+      businessSystemId: props.scope.businessSystemId,
+      businessSystemName: props.scope.businessSystemName || props.scope.nodeTitle,
+      environment: record.environment,
+      environmentName: record.name,
+      nodeTitle: record.name,
+    }
+  }
+  if (props.scope.nodeType === 'environment') {
     return {
       nodeType: 'service', applicationServiceId: record.id, nodeTitle: record.name,
       businessSystemId: props.scope.businessSystemId,
-      businessSystemName: props.scope.businessSystemName || props.scope.nodeTitle,
+      businessSystemName: props.scope.businessSystemName,
       environment: record.environment,
       environmentName: record.environment_name,
     }
@@ -318,6 +402,11 @@ function startRuntimeRefresh() {
   runtimeRefreshTimer = setInterval(() => { void refreshAutomatically() }, runtimeRefreshInterval)
 }
 
+function stopRuntimeRefresh() {
+  if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
+  runtimeRefreshTimer = null
+}
+
 async function loadNode() {
   const sequence = ++loadSequence
   loading.value = true
@@ -359,6 +448,21 @@ async function loadNode() {
       nextRows = systemsResult
         .filter((system) => !projectSystemIds && !environmentIds.size ? true : visibleSystemIds.has(system.id))
         .map((item) => ({ ...item, key: item.id }))
+    } else if (props.scope.nodeType === 'project') {
+      // 服务树勾了 groupByProject 才会出现这一层：项目下没有直接过滤参数，只能先查该项目的业务系统，
+      // 再用全量服务/实例数据按业务系统 ID 收敛，跟“全部业务”根节点算总量的方式保持一致。
+      const [systemsResult, servicesResult, deploymentsResult] = await Promise.all([
+        fetchAll(getBusinessSystemList, { project: props.scope.projectId }),
+        fetchAll(getApplicationServiceList),
+        fetchAll(getApplicationDeploymentList),
+      ])
+      const systemIds = new Set(systemsResult.map((system) => system.id))
+      nextServices = servicesResult.filter((service) => systemIds.has(service.business_system))
+      const serviceIds = new Set(nextServices.map((service) => service.id))
+      nextDescendants = deploymentsResult.filter((deployment) => (
+        (deployment.application_service_ids || []).some((serviceId) => serviceIds.has(serviceId))
+      ))
+      nextRows = systemsResult.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'businessSystem') {
       const [entityResponse, servicesResult, deploymentsResult] = await Promise.all([
         getBusinessSystem(props.scope.businessSystemId),
@@ -368,7 +472,45 @@ async function loadNode() {
       nextEntity = entityResponse?.data?.data || null
       nextServices = servicesResult
       nextDescendants = deploymentsResult
-      nextRows = servicesResult.map((item) => ({ ...item, key: item.id }))
+      // 业务系统下先按环境分组展示，跟左侧树的层级保持一致；具体服务留到选中某个环境后再展开。
+      const environmentGroups = new Map()
+      const environmentOrder = []
+      servicesResult.forEach((service) => {
+        const envKey = service.environment ?? 'unassigned'
+        if (!environmentGroups.has(envKey)) {
+          environmentGroups.set(envKey, {
+            key: `environment:${envKey}`,
+            environment: service.environment ?? null,
+            name: service.environment_name || '未配置环境',
+            serviceIds: new Set(),
+          })
+          environmentOrder.push(envKey)
+        }
+        environmentGroups.get(envKey).serviceIds.add(service.id)
+      })
+      nextRows = environmentOrder.map((envKey) => {
+        const group = environmentGroups.get(envKey)
+        const deploymentCount = deploymentsResult.filter((deployment) => (
+          (deployment.application_service_ids || []).some((serviceId) => group.serviceIds.has(serviceId))
+        )).length
+        return {
+          key: group.key,
+          environment: group.environment,
+          name: group.name,
+          service_count: group.serviceIds.size,
+          deployment_count: deploymentCount,
+        }
+      })
+    } else if (props.scope.nodeType === 'environment') {
+      // 未配置环境的分组 scope.environment 是 null，后端过滤参数不方便传 null，改成整业务系统拉回来再按值比对。
+      const [servicesResult, deploymentsResult] = await Promise.all([
+        fetchAll(getApplicationServiceList, { business_system: props.scope.businessSystemId }),
+        fetchAll(getApplicationDeploymentList, { application_service__business_system: props.scope.businessSystemId }),
+      ])
+      const matchesEnvironment = (value) => (value ?? null) === (props.scope.environment ?? null)
+      nextServices = servicesResult.filter((service) => matchesEnvironment(service.environment))
+      nextDescendants = deploymentsResult.filter((deployment) => matchesEnvironment(deployment.environment))
+      nextRows = nextServices.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'service') {
       const [entityResponse, deploymentsResult] = await Promise.all([
         getApplicationService(props.scope.applicationServiceId),
@@ -404,11 +546,10 @@ watch(() => props.scope, (scope) => {
   void (scope.nodeType === 'service' ? refreshAutomatically() : loadNode())
 }, { deep: true, immediate: true })
 
-onMounted(startRuntimeRefresh)
-onBeforeUnmount(() => {
-  if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
-  runtimeRefreshTimer = null
-})
+onBeforeUnmount(stopRuntimeRefresh)
+// 这个组件嵌在被 keep-alive 缓存的页面里，切 tab 只会触发 onDeactivated，不会真正 unmount，
+// 必须用共享的 keep-alive 生命周期处理失活时停轮询；onActivated 首次挂载也会触发一次，不用再单独 onMounted。
+useKeepAliveRefreshLifecycle(startRuntimeRefresh, stopRuntimeRefresh)
 
 defineExpose({ refresh })
 </script>

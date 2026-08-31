@@ -23,7 +23,20 @@ vi.mock('@/api/assets/application', () => ({
     data: { data: { results: [{ id: 51, application: 2, version: '1.0' }] } },
   })),
   getApplicationDeploymentTemplateList: vi.fn(() => Promise.resolve({
-    data: { data: { results: [{ id: 61, application: 2, name: 'Redis Template', enabled: true }] } },
+    data: { data: { results: [{
+      id: 61,
+      application: 2,
+      name: 'Redis Template',
+      enabled: true,
+      logs: [{ id: 81, name: 'redis.log', path_pattern: '/var/log/redis/*.log', collection_enabled: true, processing_rule: null }],
+    }, {
+      id: 62,
+      application: 5,
+      name: 'Tomcat Template',
+      control_type: 'external_ha',
+      enabled: true,
+      logs: [{ id: 82, name: 'application.log', path_pattern: '/srv/tomcat/logs/application.log', collection_enabled: true, processing_rule: null }],
+    }] } },
   })),
   getApplicationService: vi.fn(() => Promise.resolve({
     data: { data: {
@@ -31,6 +44,7 @@ vi.mock('@/api/assets/application', () => ({
       name: 'tomcat-group',
       code: 'tomcat-group',
       application: 5,
+      deployment_template: 62,
       topology_type: 'cluster',
       cluster_profile: 4,
       member_instances: [
@@ -62,12 +76,25 @@ vi.mock('@/api/assets/application', () => ({
       enabled: true,
     }] } },
   })),
-  getApplicationServiceLogConfig: vi.fn(() => Promise.resolve({ data: { data: { logs: [] } } })),
+  getApplicationServiceLogConfig: vi.fn(() => Promise.resolve({ data: { data: { logs: [{
+    log_definition: 81,
+    name: 'application.log',
+    resolved_path: '/srv/tomcat/logs/application.log',
+    template_collection_enabled: true,
+    collection_enabled: true,
+    collection_mode: 'error_only',
+    filter_pattern: '(?i)(error|failed|critical|fatal)',
+    processing_rule_id: null,
+    effective_processing_rule_name: '',
+    retention_tier: null,
+    data_stream: 'logs-production-order-std',
+  }] } } })),
   saveApplicationService: vi.fn(),
 }))
 
 vi.mock('@/api/monitor', () => ({
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
+  getLogProcessingRules: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
 }))
 
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
@@ -96,6 +123,25 @@ describe('ApplicationServiceDialog', () => {
     wrapper.unmount()
   })
 
+  it('pre-fills business system and environment from the tree scope when creating fresh', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, initialBusinessSystemId: 3, initialEnvironmentId: 31 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: {
+          AModal: { template: '<div><slot /></div>' },
+        },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(wrapper.vm.form.business_system).toBe(3)
+    expect(wrapper.vm.form.environment).toBe(31)
+    wrapper.unmount()
+  })
+
   it('keeps an HA cluster application and its member instances when editing', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, serviceId: 20 },
@@ -112,6 +158,45 @@ describe('ApplicationServiceDialog', () => {
     expect(document.body.textContent).toContain('tomcat-1 (node-3)')
     expect(document.body.textContent).toContain('tomcat-2 (node-4)')
     expect(document.body.textContent).toContain('成员实例（至少 2 个）')
+    wrapper.unmount()
+  })
+
+  it('shows the effective error-only collection policy for each template log', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('采集策略')
+    expect(document.body.textContent).toContain('过滤规则')
+    expect(document.body.textContent).toContain('error | failed | critical | fatal')
+    wrapper.unmount()
+  })
+
+  it('allows a new service to configure template log policies before its first save', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    wrapper.vm.form.application = 2
+    wrapper.vm.form.deployment_template = 61
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('redis.log')
+    expect(document.body.textContent).toContain('采集策略')
     wrapper.unmount()
   })
 })

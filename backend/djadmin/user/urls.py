@@ -1,10 +1,9 @@
 from django.urls import path,include
 from rest_framework.routers import DefaultRouter
-from .views import UserCenterManage,UserManage
+from .views import *
 router = DefaultRouter()
 router.register(r'usercenter',UserCenterManage,basename="usercenter")
 router.register(r'users',UserManage,basename="users")
-from .views import *
 urlpatterns = [
     path('login',LoginView.as_view(),name='login'),
     path('', include(router.urls)),

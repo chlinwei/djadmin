@@ -37,24 +37,6 @@ class AutomationWorkflowTemplateManage(
         'precheck_launch': 'automation:workflow:view',
     }
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
@@ -327,28 +309,9 @@ class AutomationWorkflowRunManage(GenericViewSet, RetrieveModelMixin, ListModelM
 
         return queryset
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        # 注：dj-agent 已负责异步更新 workflow run 状态，无需在列表查询时逐个调用 _refresh_workflow_run_progress
-        # 该操作会导致大量 N+1 数据库查询，造成主 API 卡死。仅在 retrieve (详情) 时刷新最新状态。
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
+        # 只在详情接口刷新进度：列表逐行刷新会导致大量 N+1 查询，dj-agent 异步更新已足够保证列表旰旧。
         _refresh_workflow_run_progress(instance)
         serializer = self.get_serializer(instance)
         return Response_200(data=serializer.data)

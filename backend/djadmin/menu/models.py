@@ -26,7 +26,6 @@ class SysMenu(models.Model):
     class Meta:
         db_table = "sys_menu"
 
-    # children = list()
     def __lt__(self, other):
         return self.order_num < other.order_num
 

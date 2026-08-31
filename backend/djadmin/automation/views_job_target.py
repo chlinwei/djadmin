@@ -86,6 +86,7 @@ class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModel
         return queryset
 
     def list(self, request, *args, **kwargs):
+        # 分页信封交给 CustomPagination（与其余 ViewSet 一致），这里只保留 status_summary 这段真正自定义的后处理。
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page if page is not None else queryset, many=True)
@@ -112,16 +113,7 @@ class AutomationExecutionJobManage(GenericViewSet, RetrieveModelMixin, ListModel
                     'unreachable': 0,
                 }
         if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
+            return self.get_paginated_response(data)
         return Response_200(data=data)
 
     def retrieve(self, request, *args, **kwargs):

@@ -60,9 +60,6 @@ function setPerms(perms) {
     // 将权限存储在localstorage中
     localStorage.setItem("perms", perms);
 }
-function removePerms() {
-     localStorage.removeItem("perms")
-}
 export function getPerms() {
     let perms = localStorage.getItem("perms");
     return JSON.parse(perms);

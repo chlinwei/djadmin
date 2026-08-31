@@ -60,9 +60,6 @@ class MonitorTarget(BaseModel):
 		UP = 'up', 'Up'
 		DOWN = 'down', 'Down'
 
-	# 兼容历史字段：当前已不启用“自动重试”逻辑，失败后由用户手动重试。
-	MAX_AUTO_RETRY = 3
-
 	host = models.ForeignKey('assets.Host', on_delete=models.CASCADE, related_name='monitor_targets')
 	# 不再使用 choices 限制：名称来自监控软件仓库（SoftwarePackage.name），支持任意 exporter 类型
 	exporter_type = models.CharField(max_length=64, default=ExporterType.NODE_EXPORTER)

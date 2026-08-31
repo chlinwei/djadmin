@@ -147,24 +147,6 @@ class WebSSHSessionLogAuditManage(GenericViewSet, ListModelMixin):
         ]
         return '\n'.join(lines)
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
     @action(detail=True, methods=['get'], url_path='content')
     def content(self, request, pk=None):
         instance = self.get_object()
@@ -295,24 +277,6 @@ class LoginAuditLogManage(GenericViewSet, ListModelMixin):
             parsed = timezone.make_aware(parsed, datetime_timezone.utc)
         return parsed
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
 
 class OperationAuditLogManage(GenericViewSet, ListModelMixin):
     queryset = OperationAuditLog.objects.exclude(method='GET').order_by('-created_at')
@@ -368,21 +332,3 @@ class OperationAuditLogManage(GenericViewSet, ListModelMixin):
         if timezone.is_naive(parsed):
             parsed = timezone.make_aware(parsed, datetime_timezone.utc)
         return parsed
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)

@@ -27,6 +27,14 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
         'run_now': 'automation:jobs:create',
     }
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # 支持按 task_id 精确过滤，避免仅靠模糊 search 无法命中 ID。
+        raw_task_id = str(self.request.query_params.get('task_id', '')).strip()  # type: ignore[union-attr]
+        if raw_task_id.isdigit():
+            queryset = queryset.filter(id=int(raw_task_id))
+        return queryset
+
 
     def _run_now(self, task, task_template, user_info, started_at, inventory_snapshot, hosts,
                  extra_vars, limit_text):
@@ -54,28 +62,6 @@ class AutomationTaskManage(GenericViewSet, CreateModelMixin, UpdateModelMixin, R
 
         serializer = AutomationExecutionJobSerializer(job)
         return Response_200(data=serializer.data)
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        # 支持按 task_id 精确过滤，避免仅靠模糊 search 无法命中 ID。
-        raw_task_id = str(request.query_params.get('task_id', '')).strip()
-        if raw_task_id.isdigit():
-            queryset = queryset.filter(id=int(raw_task_id))
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

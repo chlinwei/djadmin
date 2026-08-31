@@ -108,8 +108,8 @@ class AlertMediaApiTest(TestCase):
         self.assertNotIn('username', media.config)
         self.assertNotIn('password', media.config)
 
-    @patch('monitor.views.EmailMultiAlternatives')
-    @patch('monitor.views.get_connection')
+    @patch('monitor.tasks.EmailMultiAlternatives')
+    @patch('monitor.tasks.get_connection')
     def test_email_media_test_sends_requested_message(self, get_connection, email_class):
         media = AlertMedia.objects.create(
             name='Test Email',

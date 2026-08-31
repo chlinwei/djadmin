@@ -3,10 +3,11 @@ from typing import Any
 from django.db import close_old_connections, connection
 from django.utils import timezone
 
-from assets.models import Host, HostGroup
+from assets.models import Host
 
 from .models import AutomationExecutionJob
 from .executor_playbook import execute_playbook_job
+from .limit_utils import build_group_path_map
 
 
 def _safe_close_old_connections() -> None:
@@ -22,43 +23,11 @@ def _collect_hosts(host_ids: list[int]) -> list[Host]:
     )
 
 
-def _build_group_path_map(group_ids: list[int]) -> dict[int, str]:
-    normalized_ids = [int(item) for item in group_ids if isinstance(item, int)]
-    if not normalized_ids:
-        return {}
-
-    group_rows = list(HostGroup.objects.all().values('id', 'name', 'parent_id'))
-    group_lookup = {int(item['id']): item for item in group_rows if item.get('id') is not None}
-    cache: dict[int, str] = {}
-
-    def resolve_path(group_id: int) -> str:
-        if group_id in cache:
-            return cache[group_id]
-        row = group_lookup.get(group_id)
-        if not row:
-            cache[group_id] = ''
-            return ''
-
-        name = str(row.get('name') or '').strip()
-        parent_id_raw = row.get('parent_id')
-        parent_id = int(parent_id_raw) if isinstance(parent_id_raw, int) else None
-        if parent_id and parent_id != group_id:
-            parent_path = resolve_path(parent_id)
-            cache[group_id] = f'{parent_path}/{name}' if parent_path else name
-        else:
-            cache[group_id] = name
-        return cache[group_id]
-
-    for gid in normalized_ids:
-        resolve_path(gid)
-    return cache
-
-
 def build_inventory_snapshot(host_ids: list[int]) -> dict[str, Any]:
     hosts = _collect_hosts(host_ids)
     snapshot_hosts: list[dict[str, Any]] = []
     snapshot_group_ids = [int(host.group_id) for host in hosts if getattr(host, 'group_id', None) is not None]  # type: ignore[attr-defined]
-    group_path_map = _build_group_path_map(snapshot_group_ids)
+    group_path_map = build_group_path_map(snapshot_group_ids)
 
     for host in hosts:
         group_id_val = getattr(host, 'group_id', None)

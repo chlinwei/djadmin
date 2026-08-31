@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 
@@ -8,6 +9,7 @@ from ansible.errors import AnsibleError, AnsibleParserError
 from django.utils import timezone
 
 from assets.models import Host, HostGroup
+from djadmin.utils import build_id_tree
 from .view_helpers import *
 from .view_helpers import _is_playbook_template_bound_to_software_package
 from .models import TemplateCategory
@@ -117,28 +119,6 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    def _build_group_tree(self, groups_data):
-        nodes = {}
-        roots = []
-
-        for item in groups_data:
-            node = {
-                'id': item['id'],
-                'name': item['name'],
-                'parent': item['parent_id'],
-                'children': [],
-            }
-            nodes[item['id']] = node
-
-        for node in nodes.values():
-            parent_id = node.get('parent')
-            if parent_id and parent_id in nodes:
-                nodes[parent_id]['children'].append(node)
-            else:
-                roots.append(node)
-
-        return roots
-
     @action(detail=False, methods=['post'], url_path='validate')
     def validate_content(self, request):
         content = request.data.get('content', '')
@@ -192,25 +172,7 @@ class PlaybookTemplateManage(GenericViewSet, CreateModelMixin, UpdateModelMixin,
     @action(detail=False, methods=['get'], url_path='group-tree')
     def group_tree(self, request):
         groups = list(HostGroup.objects.all().order_by('id').values('id', 'name', 'parent_id'))
-        return Response_200(data=self._build_group_tree(groups))
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
+        return Response_200(data=build_id_tree(groups))
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

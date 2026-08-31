@@ -61,22 +61,6 @@
     }
   )
  
-// 自定义校验 async await 版本
-// const checkUserName_rule=async  (rule, value) => {
-//     if (!value) {
-//     return callback(new Error('用户名不能为空'));
-//   }
-//   try {
-//     const response = await checkUserName(value);
-//     console.log(response)
-//     return response.data.data.exists 
-//       ? Promise.reject('用户名已存在') 
-//       : Promise.resolve();
-//   } catch (error) {
-//     return Promise.reject('校验服务异常');
-//   }
-    
-// }
 // 传统版本
 const checkUserName_rule = (rule, value) => {
   if (!value) {

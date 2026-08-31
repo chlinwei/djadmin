@@ -1,5 +1,3 @@
-import fnmatch
-import re
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -10,6 +8,7 @@ import yaml
 
 from assets.models import Host, HostGroup
 
+from .limit_utils import build_group_path_map, match_limit_token, parse_limit_tokens
 from .models import (
     PlaybookTemplate,
     AutomationTask,
@@ -225,82 +224,8 @@ class AutomationTaskSerializer(ModelSerializer):
             })
         return result
 
-    def _parse_limit_tokens(self, limit_text):
-        tokens = [token.strip() for token in re.split(r'[\s,]+', str(limit_text or '').strip()) if token.strip()]
-        include_tokens = []
-        exclude_tokens = []
-        for token in tokens:
-            if token.startswith('!') and len(token) > 1:
-                exclude_tokens.append(token[1:])
-            else:
-                include_tokens.append(token)
-        return include_tokens, exclude_tokens
-
-    def _build_group_path_map(self, group_ids):
-        normalized_ids = [int(item) for item in group_ids if str(item).isdigit()]
-        if not normalized_ids:
-            return {}
-
-        group_rows = list(HostGroup.objects.all().values('id', 'name', 'parent_id'))
-        group_lookup = {int(item['id']): item for item in group_rows if item.get('id') is not None}
-        cache = {}
-
-        def resolve_path(group_id):
-            if group_id in cache:
-                return cache[group_id]
-            row = group_lookup.get(group_id)
-            if not row:
-                cache[group_id] = ''
-                return ''
-
-            name = str(row.get('name') or '').strip()
-            parent_id_raw = row.get('parent_id')
-            parent_id = int(parent_id_raw) if isinstance(parent_id_raw, int) else None
-            if parent_id and parent_id != group_id:
-                parent_path = resolve_path(parent_id)
-                cache[group_id] = f'{parent_path}/{name}' if parent_path else name
-            else:
-                cache[group_id] = name
-            return cache[group_id]
-
-        for group_id in normalized_ids:
-            resolve_path(group_id)
-        return cache
-
     def _match_limit_token(self, host_item, token):
-        raw_token = str(token or '').strip().lower()
-        if not raw_token:
-            return False
-
-        scope = ''
-        has_scope = False
-        pattern = raw_token
-        if ':' in raw_token:
-            has_scope = True
-            scope, pattern = raw_token.split(':', 1)
-            scope = scope.strip()
-            pattern = pattern.strip()
-            if not pattern:
-                return False
-
-        host_id_text = str(host_item.get('id') or '')
-        host_name = str(host_item.get('name') or '').lower()
-        host_ip = str(host_item.get('ip') or '').lower()
-        group_path = str(host_item.get('group_path') or '').lower()
-
-        if scope in ('host', 'hostname', 'name'):
-            return fnmatch.fnmatch(host_name, pattern)
-        if scope in ('id', 'host_id'):
-            return fnmatch.fnmatch(host_id_text, pattern)
-        if scope in ('path', 'group_path'):
-            return fnmatch.fnmatch(group_path, pattern)
-        if has_scope:
-            return False
-
-        return (
-            fnmatch.fnmatch(host_id_text, pattern)
-            or fnmatch.fnmatch(host_ip, pattern)
-        )
+        return match_limit_token(host_item, token, id_field='id', name_field='name', ip_field='ip')
 
     def _build_limit_preview(self, obj, preview_size=None):
         scope_payload = self._get_scope_payload(obj)
@@ -309,7 +234,7 @@ class AutomationTaskSerializer(ModelSerializer):
             return {'hosts': [], 'total': 0, 'truncated': False, 'limit': str(obj.default_limit or '').strip()}
 
         group_ids = [item.get('group_id') for item in resolved_hosts if item.get('group_id') is not None]
-        group_path_map = self._build_group_path_map(group_ids)
+        group_path_map = build_group_path_map(group_ids)
 
         hosts_with_group_path = []
         for item in resolved_hosts:
@@ -324,7 +249,7 @@ class AutomationTaskSerializer(ModelSerializer):
         normalized_limit = str(obj.default_limit or '').strip()
         matched_hosts = hosts_with_group_path
         if normalized_limit:
-            include_tokens, exclude_tokens = self._parse_limit_tokens(normalized_limit)
+            include_tokens, exclude_tokens = parse_limit_tokens(normalized_limit)
             filtered = []
             for host_item in hosts_with_group_path:
                 include_ok = True

@@ -7,7 +7,7 @@ from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModel
 from rest_framework.request import Request
 from rest_framework.viewsets import GenericViewSet, ReadOnlyModelViewSet
 
-from djadmin.utils import CustomPagination, Response_200, Response_error_str
+from djadmin.utils import CustomPagination, Response_200, Response_error_str, build_id_tree
 from assets.grpc_transfer.client import AgentChannelClient
 from assets.models import Host, HostGroup
 from menu.permisssion import CustomMenuPermission
@@ -28,15 +28,6 @@ def _parse_range_boundary(value):
     if parsed is None:
         return None
     return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
-
-
-def _build_group_tree(groups):
-    nodes = {item['id']: {**item, 'children': []} for item in groups}
-    roots = []
-    for node in nodes.values():
-        parent = nodes.get(node['parent_id'])
-        (parent['children'] if parent else roots).append(node)
-    return roots
 
 
 class InspectionGroupViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMixin, ListModelMixin, DestroyModelMixin, GenericViewSet):
@@ -136,7 +127,7 @@ class InspectionTaskViewSet(CreateModelMixin, UpdateModelMixin, RetrieveModelMix
             .order_by('instance_name', 'id')
             .values('id', 'instance_name', 'ip', 'group_id', 'agent_id')
         ]
-        return Response_200(data={'groups': _build_group_tree(groups), 'hosts': hosts})
+        return Response_200(data={'groups': build_id_tree(groups), 'hosts': hosts})
 
     @action(detail=True, methods=['post'], url_path='run')
     def run(self, request: Request, pk=None):

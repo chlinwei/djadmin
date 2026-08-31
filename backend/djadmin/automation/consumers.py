@@ -13,7 +13,49 @@ from .models import AutomationExecutionJob, AutomationExecutionTargetLog, Automa
 from .serializer import AutomationWorkflowRunSerializer
 
 
-class AutomationJobLogConsumer(AsyncWebsocketConsumer):
+class AutomationStreamConsumerBase(AsyncWebsocketConsumer):
+    """自动化 WebSocket 流式推送的公共部分：token 鉴权、事件发送、轮询间隔读取。
+
+    job 日志与 workflow run 状态两个 consumer 除了业务循环外完全一样，抽到这里避免各写一份。
+    """
+
+    def _get_token_from_query_string(self):
+        raw_query = self.scope.get('query_string', b'').decode('utf-8')
+        query = parse_qs(raw_query)
+        token = query.get('token', [''])[0]
+        return token.strip()
+
+    def _decode_token(self, token):
+        try:
+            decode_handler = cast(Callable[[str], dict[str, Any]], api_settings.JWT_DECODE_HANDLER)
+            return decode_handler(token)
+        except Exception:
+            return None
+
+    async def _send_event(self, event_type, data):
+        await self.send(text_data=json.dumps({'type': event_type, 'data': data}))
+
+    @database_sync_to_async
+    def _get_poll_interval_seconds(self, key, default_value, min_value, max_value, name, description):
+        cfg, _ = SysConfig.objects.get_or_create(
+            key=key,
+            defaults={
+                'value': str(default_value),
+                'default_value': str(default_value),
+                'value_type': 'string',
+                'name': name,
+                'description': description,
+                'is_readonly': False,
+            },
+        )
+        try:
+            parsed = float(str(cfg.value).strip())
+        except (TypeError, ValueError):
+            parsed = float(default_value)
+        return max(float(min_value), min(float(max_value), parsed))
+
+
+class AutomationJobLogConsumer(AutomationStreamConsumerBase):
     """Stream automation job unified logs to client over websocket."""
 
     FINAL_STATUSES = {
@@ -66,6 +108,8 @@ class AutomationJobLogConsumer(AsyncWebsocketConsumer):
             default_value=self.DEFAULT_POLL_INTERVAL_SECONDS,
             min_value=0.2,
             max_value=10.0,
+            name='自动化作业日志 WS 轮询间隔（秒）',
+            description='自动化作业日志 WebSocket 轮询后端状态的间隔（秒）',
         )
 
         output, status = await self._get_job_output_and_status(self.job_id)
@@ -123,25 +167,9 @@ class AutomationJobLogConsumer(AsyncWebsocketConsumer):
 
             await asyncio.sleep(self.poll_interval_seconds)
 
-    def _get_token_from_query_string(self):
-        raw_query = self.scope.get('query_string', b'').decode('utf-8')
-        query = parse_qs(raw_query)
-        token = query.get('token', [''])[0]
-        return token.strip()
-
-    def _decode_token(self, token):
-        try:
-            decode_handler = cast(Callable[[str], dict[str, Any]], api_settings.JWT_DECODE_HANDLER)
-            return decode_handler(token)
-        except Exception:
-            return None
-
     def _has_job_view_permission(self, payload):
         perms = payload.get('perms') or []
         return 'automation:jobs:view' in perms
-
-    async def _send_event(self, event_type, data):
-        await self.send(text_data=json.dumps({'type': event_type, 'data': data}))
 
     @database_sync_to_async
     def _job_exists(self, job_id):
@@ -276,27 +304,8 @@ class AutomationJobLogConsumer(AsyncWebsocketConsumer):
 
         return ''.join(chunks)
 
-    @database_sync_to_async
-    def _get_poll_interval_seconds(self, key, default_value, min_value, max_value):
-        cfg, _ = SysConfig.objects.get_or_create(
-            key=key,
-            defaults={
-                'value': str(default_value),
-                'default_value': str(default_value),
-                'value_type': 'string',
-                'name': '自动化作业日志 WS 轮询间隔（秒）',
-                'description': '自动化作业日志 WebSocket 轮询后端状态的间隔（秒）',
-                'is_readonly': False,
-            },
-        )
-        try:
-            parsed = float(str(cfg.value).strip())
-        except (TypeError, ValueError):
-            parsed = float(default_value)
-        return max(float(min_value), min(float(max_value), parsed))
 
-
-class AutomationWorkflowRunConsumer(AsyncWebsocketConsumer):
+class AutomationWorkflowRunConsumer(AutomationStreamConsumerBase):
     """Stream workflow run status and node states to client over websocket."""
 
     FINAL_STATUSES = {
@@ -346,6 +355,8 @@ class AutomationWorkflowRunConsumer(AsyncWebsocketConsumer):
             default_value=self.DEFAULT_POLL_INTERVAL_SECONDS,
             min_value=0.2,
             max_value=10.0,
+            name='工作流运行状态 WS 轮询间隔（秒）',
+            description='工作流运行状态 WebSocket 轮询后端状态的间隔（秒）',
         )
 
         run_data = await self._get_run_payload(self.run_id)
@@ -401,25 +412,9 @@ class AutomationWorkflowRunConsumer(AsyncWebsocketConsumer):
 
             await asyncio.sleep(self.poll_interval_seconds)
 
-    def _get_token_from_query_string(self):
-        raw_query = self.scope.get('query_string', b'').decode('utf-8')
-        query = parse_qs(raw_query)
-        token = query.get('token', [''])[0]
-        return token.strip()
-
-    def _decode_token(self, token):
-        try:
-            decode_handler = cast(Callable[[str], dict[str, Any]], api_settings.JWT_DECODE_HANDLER)
-            return decode_handler(token)
-        except Exception:
-            return None
-
     def _has_workflow_view_permission(self, payload):
         perms = payload.get('perms') or []
         return 'automation:workflow:view' in perms
-
-    async def _send_event(self, event_type, data):
-        await self.send(text_data=json.dumps({'type': event_type, 'data': data}))
 
     @database_sync_to_async
     def _run_exists(self, run_id):
@@ -444,21 +439,3 @@ class AutomationWorkflowRunConsumer(AsyncWebsocketConsumer):
             'update_time': run.update_time,
         }
 
-    @database_sync_to_async
-    def _get_poll_interval_seconds(self, key, default_value, min_value, max_value):
-        cfg, _ = SysConfig.objects.get_or_create(
-            key=key,
-            defaults={
-                'value': str(default_value),
-                'default_value': str(default_value),
-                'value_type': 'string',
-                'name': '工作流运行状态 WS 轮询间隔（秒）',
-                'description': '工作流运行状态 WebSocket 轮询后端状态的间隔（秒）',
-                'is_readonly': False,
-            },
-        )
-        try:
-            parsed = float(str(cfg.value).strip())
-        except (TypeError, ValueError):
-            parsed = float(default_value)
-        return max(float(min_value), min(float(max_value), parsed))

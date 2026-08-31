@@ -10,16 +10,6 @@ export const staticRouterMap = [
         component: () => import('../views/Login.vue')
     },
     {
-        path: '/login2',
-        name: 'login2',
-        component: () => import('../views/Login2.vue')
-    },
-    {
-        path: '/test',
-        name: 'test',
-        component: () => import('../layout/test.vue')
-    },
-    {
         path: '/assets/hosts/webssh',
         name: 'webssh-page',
         component: () => import('../views/assets/host/webssh/index.vue')

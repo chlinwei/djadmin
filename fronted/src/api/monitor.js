@@ -114,11 +114,6 @@ export function deleteAlertRoute(id) {
   return requestUtil.del(prefix + `alert-routes/${id}/`)
 }
 
-export function getManagedTargets(params) {
-  return requestUtil.get(prefix + 'targets/', params)
-}
-
-
 export function retryManagedTarget(id) {
   return requestUtil.post(prefix + `targets/${id}/retry/`)
 }
@@ -235,20 +230,6 @@ export function saveLogRetentionTier(data) {
 export function deleteLogRetentionTier(id) {
   return requestUtil.del(prefix + `log-retention-tiers/${id}/`)
 }
-
-// 日志洞察（架构文档 §9）：index 必填，hours 默认 1
-
-
-
-
-export function getLogCollectionTargetList(params) {
-  return requestUtil.get(prefix + 'log-targets/', params)
-}
-
-export function createLogCollectionTarget(data) {
-  return requestUtil.post(prefix + 'log-targets/', data)
-}
-
 
 export function applyLogCollectionConfig(id) {
   return requestUtil.post(prefix + `log-targets/${id}/apply/`, {})

@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from asgiref.sync import async_to_sync
 
 from djadmin.utils import Response_200, Response_error_str
+from djadmin.utils import build_id_tree
 from rest_framework.mixins import CreateModelMixin,DestroyModelMixin,UpdateModelMixin,RetrieveModelMixin,ListModelMixin
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -220,24 +221,6 @@ class CredentialManage(GenericViewSet,CreateModelMixin,UpdateModelMixin,Retrieve
         'batch-create': 'assets:credentials:create',
     }
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-                'pageNumber': paginator.page.number,
-                'pageSize': paginator.page_size,
-                'totalPages': paginator.page.paginator.num_pages,
-                'next': paginator.get_next_link(),
-                'previous': paginator.get_previous_link(),
-            })
-        return Response_200(data=data)
-
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         serializer = self.get_serializer(instance)
@@ -349,24 +332,11 @@ else:
 
 
 class ApplicationResponseMixin(_ApplicationResponseBase):
-    """统一应用类 ViewSet 的 {code,msg,data} 响应与分页结构，避免每个类重复实现。"""
+    """统一应用类 ViewSet 的 {code,msg,data} 响应与分页结构，避免每个类重复实现。
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count,
-            'results': serializer.data,
-            'pageNumber': paginator.page.number,
-            'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(),
-            'previous': paginator.get_previous_link(),
-        })
+    不覆写 list()：子类都已设置 pagination_class = CustomPagination，继承的 ListModelMixin.list()
+    通过 CustomPagination.get_paginated_response() 得到的就是同一套 {code,msg,data} 包装，无需重复。
+    """
 
     def retrieve(self, request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)
@@ -985,27 +955,6 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
             return HostGroup.objects.select_related('parent').order_by('id')
         return HostGroup.objects.all()
 
-    def _build_tree(self, group_data):
-        nodes = {}
-        roots = []
-
-        for item in group_data:
-            item['children'] = []
-            nodes[item['id']] = item
-
-        for item in group_data:
-            parent_id = item.get('parent')
-            if parent_id:
-                parent = nodes.get(parent_id)
-                if parent:
-                    parent['children'].append(item)
-                else:
-                    roots.append(item)
-            else:
-                roots.append(item)
-
-        return roots
-
     def _get_group_and_subgroups(self, group_id):
         """递归获取分组及其所有子分组 ID。"""
         group_ids = [int(group_id)]
@@ -1013,19 +962,6 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         for child_id in children:
             group_ids.extend(self._get_group_and_subgroups(int(child_id)))
         return group_ids
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-            })
-        return Response_200(data=data)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -1057,7 +993,7 @@ class HostGroupManage(GenericViewSet,CreateModelMixin,DestroyModelMixin,UpdateMo
         queryset = self.filter_queryset(self.get_queryset())
         serializer = self.get_serializer(queryset, many=True)
         data = serializer.data
-        tree_data = self._build_tree(data)
+        tree_data = build_id_tree(data, parent_field='parent')
         return Response_200(data=tree_data)
 
     def destroy(self, request, *args, **kwargs):
@@ -1667,19 +1603,6 @@ class HostManage(WebSSHHostMixin, GenericViewSet,CreateModelMixin,DestroyModelMi
         host = serializer.save()
         self._sync_monitors_for_host(host, monitors_payload)
         return Response_200(data=serializer.data)
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        data = serializer.data
-        if page is not None:
-            paginator = self.paginator
-            return Response_200(data={
-                'count': paginator.page.paginator.count,
-                'results': data,
-            })
-        return Response_200(data=data)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

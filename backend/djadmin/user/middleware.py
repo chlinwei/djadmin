@@ -14,7 +14,7 @@ from user.utils import getCurrentUser
 class JwtAuthenticationMiddleware(MiddlewareMixin):
 
     _AUDIT_SKIP_PREFIXES = ('/sys/audit/', '/media', '/static')
-    _AUDIT_SKIP_PATHS = {'/sys/login', '/sys/login2'}
+    _AUDIT_SKIP_PATHS = {'/sys/login'}
     _AGENT_PATH_PREFIXES = ('/api/agent/', '/sys/agent/')
     _AGENT_RUNTIME_PATHS = (
         '/api/agent/configs/',

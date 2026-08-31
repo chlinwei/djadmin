@@ -85,3 +85,20 @@ class CustomPagination(PageNumberPagination):
         })
 
 
+def build_id_tree(items, parent_field='parent_id'):
+    """把带 id/parent_id 的扁平字典列表原地还原成树。
+
+    为每个 item 补上 'children'（就地修改，不复制），parent 缺失或指向未知 id 的节点归为根。
+    需要额外字段（如统计数）的调用方应在传入前把字段合并进各 item。
+    """
+    nodes = {item['id']: item for item in items}
+    for item in items:
+        item.setdefault('children', [])
+    roots = []
+    for item in items:
+        parent = nodes.get(item.get(parent_field))
+        (parent['children'] if parent is not None else roots).append(item)
+    return roots
+
+
+

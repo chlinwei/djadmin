@@ -10,20 +10,6 @@ def djadmin_handler(err,context):
         if isinstance(err,DjadminException):
             # 自定义异常
             return Response_djerror(err)
-        # res = {}
-        # # res.update(response.data)
-        # msg = response.reason_phrase
-        # if "detail" in response.data:
-        #     data = response.data["detail"]
-        # else:
-        #     data = []
-        #     for k,v in response.data.items():
-        #         if isinstance(v,list):
-        #             data.append(k+v[0])
-        # res['msg'] = msg
-        # res['code'] = 600
-        # res['data'] = data
-        # return Response(res,status=response.status_code,exception=True)
     else:
         msg = response.reason_phrase
         data = response.data  # 直接保存原始的验证错误对象或其他错误数据

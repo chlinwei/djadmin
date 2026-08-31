@@ -1,8 +1,6 @@
 from __future__ import annotations
 import json
 import os
-import re
-import fnmatch
 from urllib.parse import quote
 
 from django.http import HttpResponse
@@ -42,6 +40,7 @@ from .serializer import (
     validate_workflow_graph_or_raise,
 )
 from .executor import build_inventory_snapshot, execute_automation_job
+from .limit_utils import parse_limit_tokens, match_limit_token
 from .workflow_runtime import WORKFLOW_RUNTIME_FINAL_STATUSES, get_workflow_runtime_status
 
 
@@ -130,55 +129,6 @@ def _build_initial_node_results_from_nodes(nodes: list[dict]) -> list[dict]:
     return initial_results
 
 
-def _parse_limit_tokens(limit_text: str) -> tuple[list[str], list[str]]:
-    tokens = [token.strip() for token in re.split(r'[\s,]+', str(limit_text or '').strip()) if token.strip()]
-    include_tokens = []
-    exclude_tokens = []
-    for token in tokens:
-        if token.startswith('!') and len(token) > 1:
-            exclude_tokens.append(token[1:])
-        else:
-            include_tokens.append(token)
-    return include_tokens, exclude_tokens
-
-
-def _match_limit_token(host_item: dict, token: str) -> bool:
-    raw_token = str(token or '').strip().lower()
-    if not raw_token:
-        return False
-
-    scope = ''
-    has_scope = False
-    pattern = raw_token
-    if ':' in raw_token:
-        has_scope = True
-        scope, pattern = raw_token.split(':', 1)
-        scope = scope.strip()
-        pattern = pattern.strip()
-        if not pattern:
-            return False
-
-    host_id_text = str(host_item.get('host_id') or '')
-    host_name = str(host_item.get('host_name') or '').lower()
-    host_ip = str(host_item.get('host_ip') or '').lower()
-    group_path = str(host_item.get('group_path') or '').lower()
-
-    if scope in ('host', 'hostname', 'name'):
-        return fnmatch.fnmatch(host_name, pattern)
-    if scope in ('id', 'host_id'):
-        return fnmatch.fnmatch(host_id_text, pattern)
-    if scope in ('path', 'group_path'):
-        return fnmatch.fnmatch(group_path, pattern)
-    if has_scope:
-        return False
-
-    if fnmatch.fnmatch(host_id_text, pattern):
-        return True
-    if fnmatch.fnmatch(host_ip, pattern):
-        return True
-    return False
-
-
 def _sort_inventory_hosts(hosts: list[dict]) -> list[dict]:
     normalized_hosts = [item for item in hosts if isinstance(item, dict)]
     return sorted(
@@ -232,7 +182,7 @@ def _apply_limit_to_inventory_snapshot(inventory_snapshot: dict, limit_text: str
         next_snapshot['hosts'] = _sort_inventory_hosts(hosts)
         return next_snapshot
 
-    include_tokens, exclude_tokens = _parse_limit_tokens(normalized_limit)
+    include_tokens, exclude_tokens = parse_limit_tokens(normalized_limit)
 
     filtered_hosts = []
     for host_item in hosts:
@@ -241,9 +191,9 @@ def _apply_limit_to_inventory_snapshot(inventory_snapshot: dict, limit_text: str
 
         include_ok = True
         if include_tokens:
-            include_ok = any(_match_limit_token(host_item, token) for token in include_tokens)
+            include_ok = any(match_limit_token(host_item, token) for token in include_tokens)
 
-        exclude_hit = any(_match_limit_token(host_item, token) for token in exclude_tokens)
+        exclude_hit = any(match_limit_token(host_item, token) for token in exclude_tokens)
         if include_ok and not exclude_hit:
             filtered_hosts.append(host_item)
 

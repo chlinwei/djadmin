@@ -83,12 +83,12 @@ def resolve_alert_media(alert, event_type):
     return AlertMedia.objects.filter(id__in=media_ids)
 
 
-def _send_email_alert(media, alert, recipients):
-	"""发送告警邮件。返回 (success: bool, error_message: str)。"""
-	if not recipients:
-		return False, '未配置收件人邮箱'
+def send_smtp_email(config, subject, body, recipients, default_format='text', html_body=None):
+	"""按 AlertMedia.config 里的 SMTP 配置发信，AlertMediaViewSet.test() 与真实告警通知共用同一套逻辑。
 
-	config = media.config or {}
+	返回 (success: bool, error_message: str)。html_body 缺省时退化用 body 本身（不做换行转义）。
+	"""
+	config = config or {}
 	try:
 		password = decrypt_secret(config.get('password', '')) if config.get('password') else ''
 		connection = get_connection(
@@ -98,17 +98,38 @@ def _send_email_alert(media, alert, recipients):
 			port=int(config.get('smtpPort', 587)),
 			username=config.get('username'),
 			password=password,
-			use_tls=bool(config.get('useTLS', False)),
+			# gmail 强制走 TLS；其余按用户显式配置，缺省不开，避免对不支持 TLS 的内网 SMTP 直接连接失败。
+			use_tls=bool(config.get('useTLS', config.get('provider') == 'gmail')),
 			use_ssl=bool(config.get('useSSL', False)),
 		)
-		
-		# 构建邮件主题和内容
-		alert_name = alert.alertname or 'Unknown Alert'
-		severity = alert.severity or 'unknown'
-		state_label = 'Firing' if alert.state == AlertHistory.State.FIRING else 'Resolved'
-		subject = f'[{state_label}] {alert_name} - {severity}'
-		
-		message_body = f"""
+		email = EmailMultiAlternatives(
+			subject=subject,
+			body=body,
+			from_email=config.get('email'),
+			to=[str(item).strip() for item in recipients if str(item).strip()],
+			connection=connection,
+		)
+		if config.get('messageFormat', default_format) == 'html':
+			email.attach_alternative(html_body if html_body is not None else body, 'text/html')
+		sent_count = email.send()
+	except Exception as exc:
+		return False, f'邮件发送失败: {exc}'
+	if sent_count != 1:
+		return False, f'邮件发送返回异常计数: {sent_count}'
+	return True, ''
+
+
+def _send_email_alert(media, alert, recipients):
+	"""发送告警邮件。返回 (success: bool, error_message: str)。"""
+	if not recipients:
+		return False, '未配置收件人邮箱'
+
+	alert_name = alert.alertname or 'Unknown Alert'
+	severity = alert.severity or 'unknown'
+	state_label = 'Firing' if alert.state == AlertHistory.State.FIRING else 'Resolved'
+	subject = f'[{state_label}] {alert_name} - {severity}'
+
+	message_body = f"""
 Alert: {alert_name}
 Severity: {severity}
 State: {state_label}
@@ -122,24 +143,10 @@ Labels: {alert.labels}
 Annotations: {alert.annotations}
 Generator URL: {alert.generator_url}
 """
-		
-		email = EmailMultiAlternatives(
-			subject=subject,
-			body=message_body,
-			from_email=config.get('email'),
-			to=recipients,
-			connection=connection,
-		)
-		if config.get('messageFormat', 'text') == 'html':
-			email.attach_alternative(message_body.replace('\n', '<br>'), 'text/html')
-		
-		sent_count = email.send()
-		if sent_count == 1:
-			return True, ''
-		else:
-			return False, f'邮件发送返回异常计数: {sent_count}'
-	except Exception as exc:
-		return False, f'邮件发送失败: {str(exc)}'
+	return send_smtp_email(
+		media.config, subject, message_body, recipients,
+		default_format='text', html_body=message_body.replace('\n', '<br>'),
+	)
 
 
 @shared_task(bind=True, name='monitor.send_alert_notification', max_retries=5)

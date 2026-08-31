@@ -14,7 +14,6 @@ from datetime import timedelta
 from pathlib import PurePath
 
 from django.core.files.base import ContentFile
-from django.core.mail import EmailMultiAlternatives, get_connection
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -23,9 +22,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from djadmin.utils import Response_200, Response_error_str
-from djadmin.utils import CustomPagination
+from djadmin.utils import CustomPagination, build_id_tree
 from menu.permisssion import CustomMenuPermission
-from assets.credential_crypto import decrypt_secret
 from assets.grpc_transfer.registry import REGISTRY
 from assets.models import ApplicationService, Host, HostGroup
 
@@ -83,6 +81,7 @@ from .log_collection_service import (
 from .log_management import bootstrap_log_storage, enqueue_log_storage_sync
 from .log_health import collect_log_pipeline_health
 from .log_schema import find_non_standard_document_fields
+from .tasks import send_smtp_email
 
 # 校验用户传入的目标版本号，防止拼接进下载 URL 时被注入路径穿越等非法字符
 NODE_EXPORTER_VERSION_RE = re.compile(r'^\d+(\.\d+){1,3}$')
@@ -139,19 +138,10 @@ def _build_host_group_tree(managed_host_ids):
         if host_id in managed_host_ids:
             entry['managed_count'] += 1
 
-    nodes = {
-        item['id']: {
-            **item,
-            'host_count': stats.get(item['id'], {}).get('host_count', 0),
-            'managed_count': stats.get(item['id'], {}).get('managed_count', 0),
-            'children': [],
-        }
-        for item in groups
-    }
-    roots = []
-    for node in nodes.values():
-        parent = nodes.get(node['parent_id'])
-        (parent['children'] if parent else roots).append(node)
+    for item in groups:
+        item['host_count'] = stats.get(item['id'], {}).get('host_count', 0)
+        item['managed_count'] = stats.get(item['id'], {}).get('managed_count', 0)
+    roots = build_id_tree(groups)
 
     ungrouped = stats.get(None, {'host_count': 0, 'managed_count': 0})
     return {
@@ -443,14 +433,6 @@ class MonitorViewSet(
 
         # 未配置端口时不做猜测，避免不同 exporter 端口不一致导致误抓。
         return None
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
 
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
@@ -1102,14 +1084,6 @@ class SoftwarePackageViewSet(
         'sync_from_official': 'monitor:view',
     }
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
-
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
@@ -1263,14 +1237,6 @@ class MonitorTargetInstallHistoryViewSet(
             queryset = queryset.filter(create_time__lte=query_end)
         return queryset
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
-
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
@@ -1378,14 +1344,6 @@ class AlertHistoryViewSet(
             )
         return queryset
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
-
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
@@ -1466,14 +1424,6 @@ class AlertMediaViewSet(
         'test': 'monitor:view',
     }
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
-
     def retrieve(self, request, *args, **kwargs):
         serializer = self.get_serializer(self.get_object())
         return Response_200(data=serializer.data)
@@ -1517,33 +1467,11 @@ class AlertMediaViewSet(
         if not message.strip():
             return Response_error_str('请填写消息')
 
-        config = media.config or {}
-        try:
-            password = decrypt_secret(config.get('password'))
-            connection = get_connection(
-                backend='django.core.mail.backends.smtp.EmailBackend',
-                fail_silently=False,
-                host=config.get('smtpServer'),
-                port=int(config.get('smtpPort')),
-                username=config.get('username'),
-                password=password,
-                use_tls=bool(config.get('useTLS', config.get('provider') == 'gmail')),
-                use_ssl=bool(config.get('useSSL', False)),
-            )
-            email = EmailMultiAlternatives(
-                subject=subject,
-                body=message,
-                from_email=config.get('email'),
-                to=[str(item).strip() for item in recipients if str(item).strip()],
-                connection=connection,
-            )
-            if config.get('messageFormat', 'html') == 'html':
-                email.attach_alternative(message, 'text/html')
-            sent_count = email.send()
-        except (OSError, TypeError, ValueError) as exc:
-            return Response_error_str(f'测试邮件发送失败：{exc}')
-        if sent_count != 1:
-            return Response_error_str('测试邮件发送失败')
+        recipients = [str(item).strip() for item in recipients if str(item).strip()]
+        # 与真实告警通知共用同一套 SMTP 发信逻辑（monitor.tasks.send_smtp_email），避免配置字段的默认值各写一遍再走漂。
+        success, error_message = send_smtp_email(media.config, subject, message, recipients, default_format='html')
+        if not success:
+            return Response_error_str(f'测试邮件发送失败：{error_message}')
         return Response_200(data={'sent': True})
 
     def destroy(self, request, *args, **kwargs):
@@ -1577,14 +1505,6 @@ class AlertRouteViewSet(
         'update': 'monitor:view',
         'destroy': 'monitor:view',
     }
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response_200(data=serializer.data)
 
     def retrieve(self, request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)
@@ -1648,10 +1568,6 @@ class OpenSearchClusterViewSet(
         'bootstrap': 'monitor:view',
         'log_health': 'monitor:view',
         'simulate_pipeline': 'monitor:view',
-        'error_patterns': 'monitor:view',
-        'new_errors': 'monitor:view',
-        'error_spikes': 'monitor:view',
-        'error_by_instance': 'monitor:view',
         'log_search': 'monitor:view',
         'log_facet_stats': 'monitor:view',
     }
@@ -1672,23 +1588,6 @@ class OpenSearchClusterViewSet(
         '@timestamp', 'log_level', 'service', 'instance', 'host_ip',
         'log_name', 'log_path', 'log_message', 'error_fingerprint', 'app_fields',
     ]
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count,
-            'results': serializer.data,
-            'pageNumber': paginator.page.number,
-            'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(),
-            'previous': paginator.get_previous_link(),
-        })
 
     def retrieve(self, request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)
@@ -1791,124 +1690,6 @@ class OpenSearchClusterViewSet(
         # 索引模板是 dynamic=false，越界字段写入不报错但无法检索，调试阶段就得告警。
         data = {**data, 'schema_violations': find_non_standard_document_fields(data)}
         return Response_200(data=data)
-
-    @staticmethod
-    def _insight_params(request):
-        index = str(request.query_params.get('index') or '').strip()
-        if not index:
-            return None, None, Response_error_str('缺少 index 参数', code=400)
-        try:
-            hours = min(max(int(request.query_params.get('hours', 1)), 1), 24 * 30)
-        except (TypeError, ValueError):
-            return None, None, Response_error_str('hours 必须是整数', code=400)
-        return index, hours, None
-
-    def _search(self, cluster, index, body):
-        data, error = self._call_client(OpenSearchClient(cluster).search, index, body)
-        if error is not None:
-            return error
-        return Response_200(data=data)
-
-    @action(detail=True, methods=['get'], url_path='insight/error-patterns')
-    def error_patterns(self, request, id=None):
-        """自动错误清单：按 error_fingerprint 聚合，含样例与服务分布（§9.1）。"""
-        index, hours, error = self._insight_params(request)
-        if error is not None:
-            return error
-        body = {
-            'size': 0,
-            'query': {'bool': {'filter': [
-                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
-                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
-            ]}},
-            'aggs': {
-                'patterns': {
-                    'terms': {'field': 'error_fingerprint', 'size': 50},
-                    'aggs': {
-                        'sample': {'top_hits': {
-                            'size': 1,
-                            # 归一化模板只是指纹的中间量、不落库，样例直接取该组里的一条真实错误。
-                            '_source': ['log_message', 'app_fields', 'service', 'instance'],
-                        }},
-                        'services': {'terms': {'field': 'service'}},
-                    },
-                },
-            },
-        }
-        return self._search(self.get_object(), index, body)
-
-    @action(detail=True, methods=['get'], url_path='insight/new-errors')
-    def new_errors(self, request, id=None):
-        """新增错误识别：significant_terms 对比 7 天背景频率，无需阈值（§9.2）。"""
-        index, hours, error = self._insight_params(request)
-        if error is not None:
-            return error
-        body = {
-            'size': 0,
-            'query': {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
-            'aggs': {
-                'unusual_errors': {
-                    'significant_terms': {
-                        'field': 'error_fingerprint',
-                        'size': 20,
-                        'background_filter': {
-                            'range': {'@timestamp': {'gte': 'now-7d', 'lt': f'now-{hours}h'}},
-                        },
-                    },
-                },
-            },
-        }
-        return self._search(self.get_object(), index, body)
-
-    @action(detail=True, methods=['get'], url_path='insight/error-spikes')
-    def error_spikes(self, request, id=None):
-        """突增检测：terms 嵌套 date_histogram 取时序，由调用方比对最近桶与历史均值（§9.3）。"""
-        index, hours, error = self._insight_params(request)
-        if error is not None:
-            return error
-        assert hours is not None  # error 为空时 _insight_params 保证 hours 已解析为 int
-        body = {
-            'size': 0,
-            'query': {'bool': {'filter': [
-                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
-                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
-            ]}},
-            'aggs': {
-                'by_error': {
-                    'terms': {'field': 'error_fingerprint', 'size': 50},
-                    'aggs': {
-                        'trend': {'date_histogram': {
-                            'field': '@timestamp',
-                            'fixed_interval': f'{max(hours * 60 // 30, 1)}m',
-                        }},
-                    },
-                },
-            },
-        }
-        return self._search(self.get_object(), index, body)
-
-    @action(detail=True, methods=['get'], url_path='insight/error-by-instance')
-    def error_by_instance(self, request, id=None):
-        """实例分布下钻：区分「代码缺陷」（均匀分布）与「单机环境问题」（§9.4）。"""
-        index, hours, error = self._insight_params(request)
-        if error is not None:
-            return error
-        body = {
-            'size': 0,
-            'query': {'bool': {'filter': [
-                {'terms': {'log_level': ['ERROR', 'SEVERE', 'FATAL']}},
-                {'range': {'@timestamp': {'gte': f'now-{hours}h'}}},
-            ]}},
-            'aggs': {
-                'by_error': {
-                    # 按指纹而非异常类型下钻：同一异常类型可能对应多个根因，指纹粒度更准，
-                    # 且 error_type 已归入 app_fields（flat_object 子字段不支持聚合）。
-                    'terms': {'field': 'error_fingerprint', 'size': 10},
-                    'aggs': {'by_instance': {'terms': {'field': 'instance'}}},
-                },
-            },
-        }
-        return self._search(self.get_object(), index, body)
 
     def _log_search_time_range(self, request):
         """解析 start/end，默认最近 1 小时；跨度上限 30 天，避免全量扫描拖垮集群。"""
@@ -2158,23 +1939,6 @@ class LogRetentionTierViewSet(
         'destroy': 'monitor:view',
     }
 
-    def list(self, request: Request, *args, **kwargs) -> Response:
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count,
-            'results': serializer.data,
-            'pageNumber': paginator.page.number,
-            'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(),
-            'previous': paginator.get_previous_link(),
-        })
-
     def retrieve(self, request: Request, *args, **kwargs) -> Response:
         return Response_200(data=self.get_serializer(self.get_object()).data)
 
@@ -2246,23 +2010,6 @@ class LogProcessingRuleViewSet(
         'destroy': 'monitor:view',
     }
 
-    def list(self, request: Request, *args, **kwargs) -> Response:
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count,
-            'results': serializer.data,
-            'pageNumber': paginator.page.number,
-            'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(),
-            'previous': paginator.get_previous_link(),
-        })
-
     def retrieve(self, request: Request, *args, **kwargs) -> Response:
         return Response_200(data=self.get_serializer(self.get_object()).data)
 
@@ -2329,20 +2076,6 @@ class LogCollectionFilterRuleViewSet(
         'list': 'monitor:view', 'retrieve': 'monitor:view', 'create': 'monitor:view',
         'update': 'monitor:view', 'partial_update': 'monitor:view', 'destroy': 'monitor:view',
     }
-
-    def list(self, request: Request, *args, **kwargs) -> Response:
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count, 'results': serializer.data,
-            'pageNumber': paginator.page.number, 'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(), 'previous': paginator.get_previous_link(),
-        })
 
     def retrieve(self, request: Request, *args, **kwargs) -> Response:
         return Response_200(data=self.get_serializer(self.get_object()).data)
@@ -2490,23 +2223,6 @@ class LogCollectionTargetViewSet(
         # gRPC Registry 是 Agent 在线状态的唯一实时来源；同步后再序列化，避免陈旧 DB 状态误开放安装按钮。
         sync_host_online_status_to_db()
         return super().get_queryset()
-
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(page if page is not None else queryset, many=True)
-        if page is None:
-            return Response_200(data=serializer.data)
-        paginator = self.paginator
-        return Response_200(data={
-            'count': paginator.page.paginator.count,
-            'results': serializer.data,
-            'pageNumber': paginator.page.number,
-            'pageSize': paginator.page_size,
-            'totalPages': paginator.page.paginator.num_pages,
-            'next': paginator.get_next_link(),
-            'previous': paginator.get_previous_link(),
-        })
 
     def retrieve(self, request, *args, **kwargs):
         return Response_200(data=self.get_serializer(self.get_object()).data)

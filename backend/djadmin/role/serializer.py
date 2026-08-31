@@ -10,10 +10,3 @@ class SysRoleSerializer(serializers.ModelSerializer):
         validated_data['create_time'] = datetime.now().date()
         role = SysRole.objects.create(**validated_data)
         return role
-
-
-
-# class SysUserRoleSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = SysUserRole
-#         fields = '__amll__'

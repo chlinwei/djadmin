@@ -7,9 +7,6 @@
       <a-tab-pane key="monitor_history" tab="监控安装历史">
         <MonitorInstallHistoryTab />
       </a-tab-pane>
-      <a-tab-pane key="workflow" tab="Workflow运行记录">
-        <WorkflowRunRecordsTab />
-      </a-tab-pane>
     </a-tabs>
 
     <a-drawer
@@ -119,7 +116,6 @@ import ExecutionScopePreviewModal from '../../components/ExecutionScopePreviewMo
 import LogViewerPanel from '../LogViewerPanel/index.vue'
 import JobRunRecordsTab from '../tabs/JobRunRecordsTab/index.vue'
 import MonitorInstallHistoryTab from '../tabs/MonitorInstallHistoryTab/index.vue'
-import WorkflowRunRecordsTab from '../tabs/WorkflowRunRecordsTab/index.vue'
 import { useAutomationLogsController } from './controller'
 import './style.css'
 
@@ -162,26 +158,6 @@ const {
   downloadingJobLogId,
   downloadJobLog,
   onCancelJob,
-  workflowRunKeyword,
-  loadWorkflowRuns,
-  workflowRunStatus,
-  workflowRunStatusOptions,
-  workflowRunTimeRange,
-  hasWorkflowRunFilters,
-  resetWorkflowRunFilters,
-  workflowRunLoading,
-  workflowRunColumns,
-  workflowRuns,
-  workflowRunPagination,
-  handleWorkflowRunTableChange,
-  getWorkflowRunStatusColor,
-  formatWorkflowDuration,
-  getWorkflowRunHostList,
-  openWorkflowRunHostViewer,
-  openWorkflowRunStatus,
-  canCancelWorkflowRunRecord,
-  cancelWorkflowRunRecord,
-  workflowRunCancelingId,
   monitorInstallHistoryRows,
   monitorInstallHistoryLoading,
   monitorInstallHistoryKeyword,

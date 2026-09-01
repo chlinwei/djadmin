@@ -111,6 +111,18 @@
                 </div>
               </template>
             </a-table>
+            <a-pagination
+              v-if="filteredRows.length"
+              :current="currentPagination.current"
+              :page-size="currentPagination.pageSize"
+              :total="filteredRows.length"
+              show-size-changer
+              show-quick-jumper
+              :show-total="currentPagination.showTotal"
+              class="alert-table-pagination"
+              @change="handleCurrentPaginationChange"
+              @showSizeChange="handleCurrentPaginationChange"
+            />
           </a-spin>
         </a-tab-pane>
 
@@ -424,14 +436,18 @@ function formatTimelineBucketLabel(bucket) {
   return Number(year) === currentYear ? `${Number(month)}月` : `${year}年${Number(month)}月`
 }
 
-function buildTimelineEntries(rows, timeField, keyPrefix, order = 'desc') {
-  const sortedRows = [...rows].sort((left, right) => {
+function sortTimelineRows(rows, timeField, order = 'desc') {
+  return [...rows].sort((left, right) => {
     const leftTime = dayjs(left[timeField]).valueOf()
     const rightTime = dayjs(right[timeField]).valueOf()
     const leftValue = Number.isFinite(leftTime) ? leftTime : 0
     const rightValue = Number.isFinite(rightTime) ? rightTime : 0
     return order === 'asc' ? leftValue - rightValue : rightValue - leftValue
   })
+}
+
+function buildTimelineEntries(rows, timeField, keyPrefix, order = 'desc') {
+  const sortedRows = sortTimelineRows(rows, timeField, order)
   const entries = []
   sortedRows.forEach((record, index) => {
     const bucket = getTimelineBucket(record[timeField])
@@ -487,10 +503,25 @@ const filteredRows = computed(() => {
 })
 
 const currentTimeOrder = ref('desc')
-const currentTimelineEntries = computed(() => buildTimelineEntries(filteredRows.value, 'active_at', 'current', currentTimeOrder.value))
+const currentPagination = reactive({
+  current: 1,
+  pageSize: 10,
+  showTotal: (total) => `共有 ${total} 条数据`,
+})
+const currentSortedRows = computed(() => sortTimelineRows(filteredRows.value, 'active_at', currentTimeOrder.value))
+const currentPageRows = computed(() => {
+  const start = (currentPagination.current - 1) * currentPagination.pageSize
+  return currentSortedRows.value.slice(start, start + currentPagination.pageSize)
+})
+const currentTimelineEntries = computed(() => buildTimelineEntries(currentPageRows.value, 'active_at', 'current', currentTimeOrder.value))
 
 function toggleCurrentTimeOrder() {
   currentTimeOrder.value = currentTimeOrder.value === 'desc' ? 'asc' : 'desc'
+}
+
+function handleCurrentPaginationChange(page, pageSize) {
+  currentPagination.current = page
+  currentPagination.pageSize = pageSize
 }
 
 async function loadAlerts() {
@@ -792,6 +823,14 @@ function restartRefreshTimer() {
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)
 watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
 watch(() => activeTabKey.value, restartRefreshTimer)
+watch([keyword, stateFilter, severityFilter, notificationFilter], () => {
+  currentPagination.current = 1
+})
+watch(() => filteredRows.value.length, (total) => {
+  // 实时刷新可能减少告警数量，页码需收敛到仍然存在的最后一页。
+  const lastPage = Math.max(1, Math.ceil(total / currentPagination.pageSize))
+  if (currentPagination.current > lastPage) currentPagination.current = lastPage
+})
 
 useKeepAliveRefreshLifecycle(restartRefreshTimer, clearRefreshTimer)
 
@@ -967,6 +1006,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.alert-table-pagination,
 .history-timeline-pagination {
   display: flex;
   justify-content: flex-end;

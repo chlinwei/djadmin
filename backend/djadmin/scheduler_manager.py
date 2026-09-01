@@ -5,7 +5,7 @@ from celery.schedules import crontab
 from django.utils import timezone
 
 from assets.tasks import cleanup_webssh_session_logs, cleanup_orphan_temp_credentials
-from automation.tasks import cleanup_ansible_execution_logs, cleanup_workflow_run_logs
+from automation.tasks import cleanup_ansible_execution_logs
 from audit.tasks import cleanup_login_audit_logs, cleanup_operation_audit_logs
 from inspection.scheduling import cleanup_inspection_executions
 from monitor.tasks import cleanup_alert_histories, cleanup_monitor_install_histories, reconcile_prometheus_alert_history
@@ -209,7 +209,6 @@ def get_task_menu(code):
         'cleanup_webssh_session_logs': '/audit/webssh',
         'cleanup_ansible_execution_logs': '/sys/automation/logs',
         'cleanup_monitor_install_histories': '/sys/automation/logs',
-        'cleanup_workflow_run_logs': '/sys/automation/workflow',
         'reconcile_prometheus_alert_history': '/monitor/alerts',
         'cleanup_alert_histories': '/monitor/alerts',
         'cleanup_login_audit_logs': '/audit/login',
@@ -257,13 +256,6 @@ def ensure_default_tasks():
             'code': 'cleanup_operation_audit_logs',
             'name': '操作日志清理',
             'description': '按保留天数清理操作审计日志',
-            'enabled': True,
-            'cron_expression': '0 0 * * *',
-        },
-        {
-            'code': 'cleanup_workflow_run_logs',
-            'name': 'Workflow 运行记录清理',
-            'description': '按保留天数清理过期 Workflow 运行记录',
             'enabled': True,
             'cron_expression': '0 0 * * *',
         },
@@ -376,8 +368,6 @@ def resolve_task_callable(task_code):
         return cleanup_login_audit_logs
     if task_code == 'cleanup_operation_audit_logs':
         return cleanup_operation_audit_logs
-    if task_code == 'cleanup_workflow_run_logs':
-        return cleanup_workflow_run_logs
     if task_code == 'cleanup_orphan_temp_credentials':
         return cleanup_orphan_temp_credentials
     if task_code == 'reconcile_prometheus_alert_history':

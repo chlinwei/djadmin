@@ -49,44 +49,6 @@ def cleanup_ansible_execution_logs():
     return deleted_jobs
 
 
-def cleanup_workflow_run_logs():
-    """按系统参数清理过期 Workflow 运行记录。"""
-    from .models import AutomationWorkflowRun
-
-    retention_cfg, _ = SysConfig.objects.get_or_create(
-        key='sys.workflow.logs.retention_days',
-        defaults={
-            'value': '30',
-            'default_value': '30',
-            'value_type': 'int',
-            'name': 'Workflow 运行记录保留天数',
-            'description': 'Workflow 运行记录在数据库中的保留天数',
-            'is_readonly': False,
-        },
-    )
-
-    try:
-        retention_days = max(1, int(str(retention_cfg.value).strip()))
-    except (ValueError, TypeError):
-        retention_days = 30
-
-    cutoff = timezone.now() - timedelta(days=retention_days)
-    finished_statuses = ['success', 'failed', 'cancelled']
-
-    queryset = AutomationWorkflowRun.objects.filter(
-        status__in=finished_statuses,
-        start_time__lt=cutoff,
-    )
-
-    deleted_count = queryset.count()
-    queryset.delete()
-    print(
-        f'[CLEANUP] workflow run logs cleaned: deleted={deleted_count}, '
-        f'retention_days={retention_days}'
-    )
-    return deleted_count
-
-
 @shared_task(name='automation.check_and_fail_stale_jobs')
 def check_and_fail_stale_jobs():
     """定期检查超时的pending和running任务，自动标记为失败"""

@@ -9,12 +9,19 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 )
 
 const encryptedPrefix = "enc:v1:"
 
-type secretEncryptor struct{ key []byte }
+type SecretEncryptor struct{ key []byte }
+
+type secretEncryptor = SecretEncryptor
+
+func NewSecretEncryptor(configuredKey, djangoSecret string) (*SecretEncryptor, error) {
+	return newSecretEncryptor(configuredKey, djangoSecret)
+}
 
 func newSecretEncryptor(configuredKey, djangoSecret string) (*secretEncryptor, error) {
 	var key []byte
@@ -57,4 +64,40 @@ func (encryptor *secretEncryptor) Encrypt(value string) (string, error) {
 	_, _ = signature.Write(token)
 	token = append(token, signature.Sum(nil)...)
 	return encryptedPrefix + base64.URLEncoding.EncodeToString(token), nil
+}
+
+func (encryptor *SecretEncryptor) Decrypt(value string) (string, error) {
+	if value == "" || !strings.HasPrefix(value, encryptedPrefix) {
+		return value, nil
+	}
+	token, err := base64.URLEncoding.DecodeString(strings.TrimPrefix(value, encryptedPrefix))
+	if err != nil || len(token) < 1+8+aes.BlockSize+aes.BlockSize+sha256.Size || token[0] != 0x80 {
+		return "", fmt.Errorf("invalid encrypted credential")
+	}
+	message, suppliedMAC := token[:len(token)-sha256.Size], token[len(token)-sha256.Size:]
+	signature := hmac.New(sha256.New, encryptor.key[:16])
+	_, _ = signature.Write(message)
+	if !hmac.Equal(signature.Sum(nil), suppliedMAC) {
+		return "", fmt.Errorf("encrypted credential authentication failed")
+	}
+	ciphertext := message[25:]
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("invalid encrypted credential payload")
+	}
+	block, err := aes.NewCipher(encryptor.key[16:])
+	if err != nil {
+		return "", err
+	}
+	plaintext := make([]byte, len(ciphertext))
+	cipher.NewCBCDecrypter(block, message[9:25]).CryptBlocks(plaintext, ciphertext)
+	padding := int(plaintext[len(plaintext)-1])
+	if padding < 1 || padding > aes.BlockSize || padding > len(plaintext) {
+		return "", fmt.Errorf("invalid encrypted credential padding")
+	}
+	for _, value := range plaintext[len(plaintext)-padding:] {
+		if int(value) != padding {
+			return "", fmt.Errorf("invalid encrypted credential padding")
+		}
+	}
+	return string(plaintext[:len(plaintext)-padding]), nil
 }

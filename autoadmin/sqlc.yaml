@@ -11,6 +11,15 @@ sql:
         emit_interface: true
         emit_empty_slices: true
         emit_pointers_for_null_types: true
+        overrides:
+          - column: "assets_application_service_log_setting.collection_enabled"
+            go_type:
+              type: "bool"
+              pointer: true
+          - column: "inspection_target_execution.passed"
+            go_type:
+              type: "bool"
+              pointer: true
         output_db_file_name: "db.go"
         output_models_file_name: "models.go"
         output_querier_file_name: "querier.go"

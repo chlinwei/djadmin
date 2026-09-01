@@ -16,7 +16,7 @@ var Catalog = []Module{
 	{Name: "audit", RoutePrefix: "/sys/audit", Tables: []string{"audit_login_log", "audit_operation_log"}},
 	{Name: "automation", RoutePrefix: "/sys/automation", Tables: []string{
 		"automation_playbook_template", "automation_task", "automation_controller_ssh_key", "automation_inventory",
-		"automation_execution_job", "automation_execution_host_log", "automation_workflow_template", "automation_workflow_run",
+		"automation_execution_job", "automation_execution_host_log",
 	}},
 	{Name: "inspection", RoutePrefix: "/sys/inspection", Tables: []string{
 		"inspection_group", "inspection_check", "inspection_task", "inspection_execution", "inspection_target_execution", "inspection_result",

@@ -1,0 +1,25 @@
+[Unit]
+Description=autoadmin API service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autoadmin
+Group=autoadmin
+WorkingDirectory=/var/lib/autoadmin
+StateDirectory=autoadmin
+EnvironmentFile=/etc/autoadmin/config.env
+ExecStart=/usr/local/bin/autoadmin api
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+SuccessExitStatus=0 130 143
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autoadmin
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

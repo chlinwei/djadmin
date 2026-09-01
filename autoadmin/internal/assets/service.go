@@ -536,6 +536,22 @@ func (s *Service) validateHostInput(ctx context.Context, input HostInput) error 
 	}
 	return nil
 }
+func (s *Service) validateHostPatch(ctx context.Context, patch HostPatchInput) error {
+	if patch.IP.Present && patch.IP.Value != nil && *patch.IP.Value != "" && net.ParseIP(*patch.IP.Value) == nil {
+		return ErrInvalid
+	}
+	if patch.GroupID.Present && patch.GroupID.Value != nil {
+		if _, err := s.repository.GetHostGroup(ctx, *patch.GroupID.Value); err != nil {
+			return ErrInvalidRelation
+		}
+	}
+	if patch.Environment.Present && patch.Environment.Value != nil {
+		if _, err := s.repository.GetEnvironment(ctx, *patch.Environment.Value); err != nil {
+			return ErrInvalidRelation
+		}
+	}
+	return nil
+}
 func normalizeWebSSH(input *HostInput) {
 	users := strings.Fields(input.WebSSHLoginUsers)
 	if len(users) == 0 {
@@ -553,6 +569,56 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+func mergePatchValue[T any](field PatchField[T], current *T) *T {
+	if field.Present {
+		return field.Value
+	}
+	return current
+}
+func mergeHostPatch(current db.GetHostRow, patch HostPatchInput) (HostInput, error) {
+	status := current.Status
+	if patch.Status.Present {
+		if patch.Status.Value == nil {
+			return HostInput{}, ErrInvalid
+		}
+		status = *patch.Status.Value
+	}
+	isDeletedInCloud := current.IsDeletedInCloud
+	if patch.IsDeletedInCloud.Present {
+		if patch.IsDeletedInCloud.Value == nil {
+			return HostInput{}, ErrInvalid
+		}
+		isDeletedInCloud = *patch.IsDeletedInCloud.Value
+	}
+	webSSHDefaultUsername := current.WebsshDefaultUsername
+	if patch.WebSSHDefaultUsername.Present {
+		if patch.WebSSHDefaultUsername.Value == nil {
+			return HostInput{}, ErrInvalid
+		}
+		webSSHDefaultUsername = *patch.WebSSHDefaultUsername.Value
+	}
+	webSSHLoginUsers := current.WebsshLoginUsers
+	if patch.WebSSHLoginUsers.Present {
+		if patch.WebSSHLoginUsers.Value == nil {
+			return HostInput{}, ErrInvalid
+		}
+		webSSHLoginUsers = *patch.WebSSHLoginUsers.Value
+	}
+	return HostInput{
+		InstanceName:          mergePatchValue(patch.InstanceName, stringValue(current.InstanceName)),
+		AgentID:               mergePatchValue(patch.AgentID, stringValue(current.AgentID)),
+		IP:                    mergePatchValue(patch.IP, stringValue(current.Ip)),
+		InstanceID:            mergePatchValue(patch.InstanceID, stringValue(current.InstanceID)),
+		Environment:           mergePatchValue(patch.Environment, intValue(current.EnvironmentID)),
+		CloudAccount:          mergePatchValue(patch.CloudAccount, intValue(current.CloudAccountID)),
+		GroupID:               mergePatchValue(patch.GroupID, intValue(current.GroupID)),
+		Status:                status,
+		IsDeletedInCloud:      isDeletedInCloud,
+		WebSSHDefaultUsername: webSSHDefaultUsername,
+		WebSSHLoginUsers:      webSSHLoginUsers,
+		Remark:                mergePatchValue(patch.Remark, stringValue(current.Remark)),
+	}, nil
 }
 func (s *Service) CreateHost(ctx context.Context, input HostInput) (Host, error) {
 	if err := s.validateHostInput(ctx, input); err != nil {
@@ -577,11 +643,28 @@ func (s *Service) UpdateHost(ctx context.Context, id int64, input HostInput) (Ho
 	if err = s.validateHostInput(ctx, input); err != nil {
 		return Host{}, err
 	}
+	return s.updateHost(ctx, id, current, input)
+}
+func (s *Service) PatchHost(ctx context.Context, id int64, patch HostPatchInput) (Host, error) {
+	current, err := s.repository.GetHost(ctx, id)
+	if err != nil {
+		return Host{}, translate(err)
+	}
+	if err = s.validateHostPatch(ctx, patch); err != nil {
+		return Host{}, err
+	}
+	input, err := mergeHostPatch(current, patch)
+	if err != nil {
+		return Host{}, err
+	}
+	return s.updateHost(ctx, id, current, input)
+}
+func (s *Service) updateHost(ctx context.Context, id int64, current db.GetHostRow, input HostInput) (Host, error) {
 	normalizeWebSSH(&input)
 	if input.Status == "" {
 		input.Status = current.Status
 	}
-	err = s.repository.UpdateHost(ctx, db.UpdateHostParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: nullString(input.InstanceName), CollectStatus: current.CollectStatus, CollectMessage: current.CollectMessage, CollectTime: current.CollectTime, AgentOnline: current.AgentOnline, AgentOnlineTime: current.AgentOnlineTime, WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, AgentID: nullString(input.AgentID), EnvironmentID: nullInt(input.Environment), ID: id})
+	err := s.repository.UpdateHost(ctx, db.UpdateHostParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: nullString(input.InstanceName), CollectStatus: current.CollectStatus, CollectMessage: current.CollectMessage, CollectTime: current.CollectTime, AgentOnline: current.AgentOnline, AgentOnlineTime: current.AgentOnlineTime, WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, AgentID: nullString(input.AgentID), EnvironmentID: nullInt(input.Environment), ID: id})
 	if err != nil {
 		return Host{}, translate(err)
 	}

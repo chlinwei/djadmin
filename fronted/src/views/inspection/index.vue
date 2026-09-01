@@ -623,6 +623,7 @@ import {
   filterHostScopeTree,
   pickHostIds,
   pruneHostScopeTree,
+  retainAvailableHostIds,
   toHostKeys,
 } from '@/util/hostScopeTree'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -652,6 +653,7 @@ const executionLoading = ref(false)
 const taskOptionsLoading = ref(false)
 const serviceTreeLoading = ref(false)
 const hostScopeLoading = ref(false)
+const hostScopeLoaded = ref(false)
 const groupModalOpen = ref(false)
 const taskModalOpen = ref(false)
 const scheduleModalOpen = ref(false)
@@ -981,6 +983,7 @@ async function loadHostScopeTree() {
     const data = responseData(await getInspectionHostScopeTree())
     hostScopeGroups.value = data.groups || []
     hostScopeHosts.value = data.hosts || []
+    hostScopeLoaded.value = true
   } finally {
     hostScopeLoading.value = false
   }
@@ -1112,6 +1115,10 @@ function openGroupModal(record) {
 }
 function openTaskModal(record) {
   Object.assign(taskForm, emptyTaskForm(), record ? JSON.parse(JSON.stringify(record)) : {})
+  // 旧任务可能仍保存已删除主机，编辑时按当前完整主机树清理，避免隐藏 ID 阻断保存。
+  if (hostScopeLoaded.value) {
+    taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
+  }
   taskProjectFilter.value = taskForm.logical_service ? resolveServiceProjectId(taskForm.logical_service) : undefined
   scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
   taskModalOpen.value = true
@@ -1185,6 +1192,8 @@ async function submitGroup() {
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
+  if (!hostScopeLoaded.value) await loadHostScopeTree()
+  taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
   const hasScope = (taskForm.selected_host_ids?.length || 0) > 0
   const hasTarget = taskTargetsHostGroup.value ? hasScope : taskForm.logical_service
   if (!taskForm.name.trim() || !taskForm.group || !hasTarget) {

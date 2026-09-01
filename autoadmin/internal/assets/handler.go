@@ -3,6 +3,7 @@ package assets
 import (
 	"database/sql"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -417,6 +418,9 @@ func (h *Handler) GetHost(c *gin.Context) {
 	item, err := h.service.GetHost(c.Request.Context(), id)
 	if err == nil {
 		h.applyAgentPresence(&item)
+		detail, detailErr := h.getHostDetail(c.Request.Context(), item)
+		respond(c, detail, detailErr)
+		return
 	}
 	respond(c, item, err)
 }
@@ -431,6 +435,15 @@ func (h *Handler) CreateHost(c *gin.Context) {
 func (h *Handler) UpdateHost(c *gin.Context) {
 	id, ok := resourceID(c)
 	if !ok {
+		return
+	}
+	if c.Request.Method == http.MethodPatch {
+		input, bound := bind[HostPatchInput](c)
+		if !bound {
+			return
+		}
+		item, err := h.service.PatchHost(c.Request.Context(), id, input)
+		respond(c, item, err)
 		return
 	}
 	input, ok := bind[HostInput](c)

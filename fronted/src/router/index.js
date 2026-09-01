@@ -61,26 +61,6 @@ export const staticRouterMap = [
                 component: () => import('../views/automation/inventory/index.vue'),
             },
             {
-                path: '/sys/automation/workflow',
-                name: 'Workflow编排',
-                component: () => import('../views/automation/workflow/list/index.vue'),
-            },
-            {
-                path: '/sys/automation/workflow/create',
-                name: 'Workflow创建',
-                component: () => import('../views/automation/workflow/create.vue'),
-            },
-            {
-                path: '/sys/automation/workflow/editor',
-                name: 'Workflow编排编辑',
-                component: () => import('../views/automation/workflow/editor/index.vue'),
-            },
-            {
-                path: '/sys/automation/workflow/run',
-                name: 'Workflow运行状态',
-                component: () => import('../views/automation/workflow/run/index.vue'),
-            },
-            {
                 path: '/monitor',
                 name: '智能监控',
                 component: () => import('../views/monitor/index.vue'),
@@ -317,48 +297,12 @@ export default router
 
 
 export function addDynamicRoutes() {
-    //检查用户是否登录
-    //获取用户权限列表
-    //获取动态路由
-    //添加动态路由
-    if (getToken()) {
-        //已经登录
-        let menuList = getMenuList();
-        if (Array.isArray(menuList) && menuList.length >= 1) {
-            const dynamicChildren = getDynamicalRoutes(menuList)
-            dynamicChildren.forEach((routeItem) => {
-                const exists = router.getRoutes().some((r) => r.path === routeItem.path)
-                if (!exists) {
-                    router.addRoute('dashbaord', routeItem)
-                }
-            })
+    if (!getToken()) {
+        return
+    }
+    for (const route of getDynamicalRoutes(getMenuList())) {
+        if (!router.hasRoute(route.name)) {
+            router.addRoute('dashbaord', route)
         }
     }
 }
-
-
-//路由守卫
-router.beforeEach((to, from, next) => {
-    const token = getToken()
-
-    if (to.path === '/login') {
-        if (token) {
-            next('/index')
-        } else if (String(to.query?.redirect || '').startsWith('/login')) {
-            // 并发鉴权失败可能留下嵌套登录 redirect，登录页不允许再回跳到自身。
-            next({ path: '/login', replace: true })
-        } else {
-            next()
-        }
-        return
-    }
-
-    if (token) {
-        next()
-    } else {
-        next({
-            path: '/login',
-            query: { redirect: to.fullPath }
-        })
-    }
-}) 

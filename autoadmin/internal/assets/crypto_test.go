@@ -44,6 +44,28 @@ func TestEncryptProducesFernetCompatibleToken(t *testing.T) {
 	}
 }
 
+func TestSecretEncryptorDecryptRoundTripAndRejectsTampering(t *testing.T) {
+	encryptor, err := NewSecretEncryptor("", "django-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := encryptor.Encrypt("password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := encryptor.Decrypt(encrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decrypted != "password-123" {
+		t.Fatalf("unexpected plaintext: %q", decrypted)
+	}
+	tampered := encrypted[:len(encrypted)-2] + "AA"
+	if _, err = encryptor.Decrypt(tampered); err == nil {
+		t.Fatal("expected tampered token rejection")
+	}
+}
+
 func TestCredentialMasksSecrets(t *testing.T) {
 	row := dbCredential("enc:v1:ciphertext", "private-key")
 	result := credential(row)

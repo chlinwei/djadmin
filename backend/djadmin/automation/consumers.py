@@ -9,14 +9,13 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from rest_framework_jwt.settings import api_settings
 from sys_config.models import SysConfig
 
-from .models import AutomationExecutionJob, AutomationExecutionTargetLog, AutomationWorkflowRun
-from .serializer import AutomationWorkflowRunSerializer
+from .models import AutomationExecutionJob, AutomationExecutionTargetLog
 
 
 class AutomationStreamConsumerBase(AsyncWebsocketConsumer):
     """自动化 WebSocket 流式推送的公共部分：token 鉴权、事件发送、轮询间隔读取。
 
-    job 日志与 workflow run 状态两个 consumer 除了业务循环外完全一样，抽到这里避免各写一份。
+    自动化 Job 日志 consumer 的公共部分：token 鉴权、事件发送与轮询间隔读取。
     """
 
     def _get_token_from_query_string(self):
@@ -304,138 +303,4 @@ class AutomationJobLogConsumer(AutomationStreamConsumerBase):
 
         return ''.join(chunks)
 
-
-class AutomationWorkflowRunConsumer(AutomationStreamConsumerBase):
-    """Stream workflow run status and node states to client over websocket."""
-
-    FINAL_STATUSES = {
-        AutomationWorkflowRun.Status.SUCCESS,
-        AutomationWorkflowRun.Status.FAILED,
-    }
-    DEFAULT_POLL_INTERVAL_SECONDS = 0.5
-
-    async def connect(self):
-        route = self.scope.get('url_route')
-        kwargs = route.get('kwargs') if isinstance(route, dict) else None
-        run_id_value = kwargs.get('run_id') if isinstance(kwargs, dict) else None
-        if run_id_value is None:
-            await self.close(code=4400)
-            return
-
-        self.run_id = int(run_id_value)
-        self.stream_task = None
-        self.connected = False
-        self.last_payload_text = ''
-        self.last_run_summary = None
-        self.poll_interval_seconds = self.DEFAULT_POLL_INTERVAL_SECONDS
-
-        token = self._get_token_from_query_string()
-        if not token:
-            await self.close(code=4401)
-            return
-
-        payload = self._decode_token(token)
-        if not payload:
-            await self.close(code=4401)
-            return
-
-        if not self._has_workflow_view_permission(payload):
-            await self.close(code=4403)
-            return
-
-        exists = await self._run_exists(self.run_id)
-        if not exists:
-            await self.close(code=4404)
-            return
-
-        await self.accept()
-        self.connected = True
-        self.poll_interval_seconds = await self._get_poll_interval_seconds(
-            key='sys.automation.websocket.workflow_run_poll_interval_seconds',
-            default_value=self.DEFAULT_POLL_INTERVAL_SECONDS,
-            min_value=0.2,
-            max_value=10.0,
-            name='工作流运行状态 WS 轮询间隔（秒）',
-            description='工作流运行状态 WebSocket 轮询后端状态的间隔（秒）',
-        )
-
-        run_data = await self._get_run_payload(self.run_id)
-        if run_data is None:
-            await self.close(code=4404)
-            return
-
-        self.last_run_summary = await self._get_run_summary(self.run_id)
-
-        self.last_payload_text = json.dumps(run_data, ensure_ascii=False, sort_keys=True)
-        await self._send_event('snapshot', run_data)
-        self.stream_task = asyncio.create_task(self._stream_loop())
-
-    async def disconnect(self, close_code):
-        self.connected = False
-        if self.stream_task is not None:
-            self.stream_task.cancel()
-            try:
-                await self.stream_task
-            except asyncio.CancelledError:
-                pass
-            self.stream_task = None
-
-    async def _stream_loop(self):
-        while self.connected:
-            current_summary = await self._get_run_summary(self.run_id)
-            if current_summary is None:
-                await self.close(code=4404)
-                return
-
-            status = str(current_summary.get('status') or '').lower()
-            has_changed = current_summary != self.last_run_summary
-            if has_changed:
-                run_data = await self._get_run_payload(self.run_id)
-                if run_data is None:
-                    await self.close(code=4404)
-                    return
-
-                payload_text = json.dumps(run_data, ensure_ascii=False, sort_keys=True)
-                if payload_text != self.last_payload_text:
-                    self.last_payload_text = payload_text
-                    await self._send_event('update', run_data)
-                self.last_run_summary = current_summary
-
-            if status in self.FINAL_STATUSES:
-                run_data = await self._get_run_payload(self.run_id)
-                if run_data is None:
-                    await self.close(code=4404)
-                    return
-                await self._send_event('completed', run_data)
-                await self.close(code=1000)
-                return
-
-            await asyncio.sleep(self.poll_interval_seconds)
-
-    def _has_workflow_view_permission(self, payload):
-        perms = payload.get('perms') or []
-        return 'automation:workflow:view' in perms
-
-    @database_sync_to_async
-    def _run_exists(self, run_id):
-        return AutomationWorkflowRun.objects.filter(id=run_id).exists()
-
-    @database_sync_to_async
-    def _get_run_payload(self, run_id):
-        run = AutomationWorkflowRun.objects.select_related('workflow').filter(id=run_id).first()
-        if not run:
-            return None
-        serializer = AutomationWorkflowRunSerializer(run)
-        data = serializer.data
-        return data if isinstance(data, dict) else None
-
-    @database_sync_to_async
-    def _get_run_summary(self, run_id):
-        run = AutomationWorkflowRun.objects.filter(id=run_id).only('status', 'update_time').first()
-        if not run:
-            return None
-        return {
-            'status': str(run.status or '').lower(),
-            'update_time': run.update_time,
-        }
 

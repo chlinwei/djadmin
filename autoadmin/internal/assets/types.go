@@ -2,6 +2,7 @@ package assets
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -146,6 +147,40 @@ type HostInput struct {
 	WebSSHDefaultUsername string  `json:"webssh_default_username"`
 	WebSSHLoginUsers      string  `json:"webssh_login_users"`
 	Remark                *string `json:"remark"`
+}
+
+type PatchField[T any] struct {
+	Present bool
+	Value   *T
+}
+
+func (field *PatchField[T]) UnmarshalJSON(data []byte) error {
+	field.Present = true
+	if string(data) == "null" {
+		field.Value = nil
+		return nil
+	}
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	field.Value = &value
+	return nil
+}
+
+type HostPatchInput struct {
+	InstanceName          PatchField[string] `json:"instance_name"`
+	AgentID               PatchField[string] `json:"agent_id"`
+	IP                    PatchField[string] `json:"ip"`
+	InstanceID            PatchField[string] `json:"instance_id"`
+	Environment           PatchField[int64]  `json:"environment"`
+	CloudAccount          PatchField[int64]  `json:"cloud_account"`
+	GroupID               PatchField[int64]  `json:"group_id"`
+	Status                PatchField[string] `json:"status"`
+	IsDeletedInCloud      PatchField[bool]   `json:"is_deleted_in_cloud"`
+	WebSSHDefaultUsername PatchField[string] `json:"webssh_default_username"`
+	WebSSHLoginUsers      PatchField[string] `json:"webssh_login_users"`
+	Remark                PatchField[string] `json:"remark"`
 }
 
 func timestamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05.999999Z") }

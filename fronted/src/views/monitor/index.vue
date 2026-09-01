@@ -1694,6 +1694,8 @@ function formatTsdbTime(rawValue) {
   const value = Number(rawValue)
   if (!Number.isFinite(value) || value <= 0) return '-'
   const ts = value > 100000000000 ? value : value * 1000
+	// Prometheus empty-head sentinels use int64 extrema, which are outside JavaScript Date's range.
+	if (!Number.isFinite(ts) || Math.abs(ts) > 8.64e15) return '-'
   return formatTimeWithTimezone(ts, store.state.user?.timezone || 'Asia/Shanghai')
 }
 

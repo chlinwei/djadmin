@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +31,14 @@ func (writer *captureWriter) Write(data []byte) (int, error) {
 	return writer.ResponseWriter.Write(data)
 }
 
+func (writer *captureWriter) WriteString(value string) (int, error) {
+	remaining := auditTextLimit - writer.body.Len()
+	if remaining > 0 {
+		writer.body.WriteString(value[:min(len(value), remaining)])
+	}
+	return writer.ResponseWriter.WriteString(value)
+}
+
 // Capture records completed authenticated mutations; audit persistence is best-effort so it can never replace the business response.
 func Capture(recorder Recorder) gin.HandlerFunc {
 	return func(ginContext *gin.Context) {
@@ -51,14 +60,16 @@ func Capture(recorder Recorder) gin.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = recorder.Record(ctx, Entry{
+		if err := recorder.Record(ctx, Entry{
 			Username: claims.Username, UserID: claims.UserID,
 			Method: ginContext.Request.Method, Path: truncate(ginContext.Request.URL.Path, 255),
 			RouteName: truncate(ginContext.FullPath(), 255), ClientIP: clientIP(ginContext),
 			UserAgent:  truncate(ginContext.GetHeader("User-Agent"), 255),
 			StatusCode: int32(ginContext.Writer.Status()), DurationMS: int32(duration),
 			Message: truncate(message, 255), RequestData: requestData, ResponseData: responseData,
-		})
+		}); err != nil {
+			slog.Error("write operation audit", "error", err, "route", ginContext.FullPath())
+		}
 	}
 }
 

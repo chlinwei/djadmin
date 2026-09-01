@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"autoadmin/internal/agent/pb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"

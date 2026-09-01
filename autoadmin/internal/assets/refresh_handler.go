@@ -1,23 +1,47 @@
 package assets
 
 import (
+	"context"
+	"sync"
+
 	"autoadmin/internal/api/response"
 
 	"github.com/gin-gonic/gin"
 )
 
+// RefreshHostInfo dispatches a synchronous get_host_info job to the host's agent, persists the
+// result, then returns {result, host} — mirroring Django's HostViewSet.refresh_info.
 func (handler *Handler) RefreshHostInfo(context *gin.Context) {
 	id, ok := resourceID(context)
 	if !ok {
 		return
 	}
-	item, err := handler.service.GetHost(context.Request.Context(), id)
-	if err == nil {
-		handler.applyAgentPresence(&item)
+	ctx := context.Request.Context()
+	item, err := handler.service.GetHost(ctx, id)
+	if err != nil {
+		respond(context, item, err)
+		return
 	}
-	respond(context, item, err)
+	handler.applyAgentPresence(&item)
+	result := handler.refreshHostAgentInfo(ctx, item)
+
+	item, err = handler.service.GetHost(ctx, id)
+	if err != nil {
+		respond(context, item, err)
+		return
+	}
+	handler.applyAgentPresence(&item)
+	detail, detailErr := handler.getHostDetail(ctx, item)
+	if detailErr != nil {
+		respond(context, detail, detailErr)
+		return
+	}
+	response.Success(context, gin.H{"result": result, "host": detail})
 }
 
+// BatchRefreshHostInfo dispatches get_host_info to each requested host's agent with bounded
+// concurrency (mirroring Django's ThreadPoolExecutor(max_workers=8)) and returns the freshest
+// detail only for hosts that were actually updated, so the frontend can merge them in place.
 func (handler *Handler) BatchRefreshHostInfo(context *gin.Context) {
 	var input struct {
 		IDs []int64 `json:"ids"`
@@ -26,17 +50,49 @@ func (handler *Handler) BatchRefreshHostInfo(context *gin.Context) {
 		response.Error(context, ErrInvalid)
 		return
 	}
-	items := make([]Host, 0, len(input.IDs))
-	for _, id := range input.IDs {
-		item, err := handler.service.GetHost(context.Request.Context(), id)
+	ctx := context.Request.Context()
+
+	results := make([]hostInfoOutcome, len(input.IDs))
+	const maxConcurrency = 8
+	semaphore := make(chan struct{}, maxConcurrency)
+	var waitGroup sync.WaitGroup
+	for index, id := range input.IDs {
+		waitGroup.Add(1)
+		semaphore <- struct{}{}
+		go func(index int, id int64) {
+			defer waitGroup.Done()
+			defer func() { <-semaphore }()
+			results[index] = handler.refreshOneHostForBatch(ctx, id)
+		}(index, id)
+	}
+	waitGroup.Wait()
+
+	hosts := make([]HostDetail, 0)
+	for _, result := range results {
+		if !result.Updated {
+			continue
+		}
+		item, err := handler.service.GetHost(ctx, result.HostID)
 		if err != nil {
-			respond(context, nil, err)
-			return
+			continue
 		}
 		handler.applyAgentPresence(&item)
-		items = append(items, item)
+		detail, detailErr := handler.getHostDetail(ctx, item)
+		if detailErr != nil {
+			continue
+		}
+		hosts = append(hosts, detail)
 	}
-	respond(context, gin.H{"hosts": items}, nil)
+	response.Success(context, gin.H{"results": results, "hosts": hosts})
+}
+
+func (handler *Handler) refreshOneHostForBatch(ctx context.Context, id int64) hostInfoOutcome {
+	item, err := handler.service.GetHost(ctx, id)
+	if err != nil {
+		return hostInfoOutcome{HostID: id, Error: err.Error()}
+	}
+	handler.applyAgentPresence(&item)
+	return handler.refreshHostAgentInfo(ctx, item)
 }
 
 func (handler *Handler) RefreshApplicationServiceRuntimeStatus(context *gin.Context) {

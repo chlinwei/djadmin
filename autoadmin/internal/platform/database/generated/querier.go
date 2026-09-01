@@ -16,6 +16,7 @@ type Querier interface {
 	ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error)
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
 	CountAPITokensByAgentID(ctx context.Context, agentID string) (int64, error)
+	CountAlertRoutes(ctx context.Context) (int64, error)
 	CountApplicationVersions(ctx context.Context, arg CountApplicationVersionsParams) (int64, error)
 	CountApplications(ctx context.Context, arg CountApplicationsParams) (int64, error)
 	CountBusinessEnvironments(ctx context.Context, arg CountBusinessEnvironmentsParams) (int64, error)
@@ -80,6 +81,7 @@ type Querier interface {
 	DeleteUserRoles(ctx context.Context, userID int32) error
 	DisableAPIToken(ctx context.Context, arg DisableAPITokenParams) error
 	GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken, error)
+	GetAlertRoute(ctx context.Context, id int64) (MonitorAlertRoute, error)
 	GetApplication(ctx context.Context, id int64) (GetApplicationRow, error)
 	GetApplicationVersion(ctx context.Context, id int64) (GetApplicationVersionRow, error)
 	GetBusinessEnvironment(ctx context.Context, id int64) (AssetsBusinessEnvironment, error)
@@ -100,6 +102,7 @@ type Querier interface {
 	GetUserByUsername(ctx context.Context, username string) (SysUser, error)
 	GetWebSSHSessionContent(ctx context.Context, id int64) (GetWebSSHSessionContentRow, error)
 	ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
+	ListAlertRoutes(ctx context.Context, arg ListAlertRoutesParams) ([]MonitorAlertRoute, error)
 	ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow, error)
 	ListApplicationVersions(ctx context.Context, arg ListApplicationVersionsParams) ([]ListApplicationVersionsRow, error)
 	ListApplications(ctx context.Context, arg ListApplicationsParams) ([]ListApplicationsRow, error)
@@ -111,6 +114,7 @@ type Querier interface {
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
 	ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error)
+	ListInspectionTargetExecutions(ctx context.Context, executionID int64) ([]ListInspectionTargetExecutionsRow, error)
 	ListLoginAudits(ctx context.Context, arg ListLoginAuditsParams) ([]AuditLoginLog, error)
 	ListMenuIDsByRoleID(ctx context.Context, roleID int32) ([]int32, error)
 	ListMenus(ctx context.Context) ([]SysMenu, error)

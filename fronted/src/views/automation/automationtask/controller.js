@@ -2,7 +2,13 @@ export function resolveTaskSubmitErrorMessage(error) {
   const response = error?.response?.data
   const fieldErrors = response?.data
   if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
-    const labels = { name: '任务名称', inventory: 'Inventory', env_vars: 'Playbook 变量' }
+    const labels = {
+      name: '任务名称',
+      playbook_template: 'Playbook 模板',
+      inventory: 'Inventory',
+      env_vars: 'Playbook 变量',
+      run_as_user: '执行用户',
+    }
     const messages = []
     for (const [field, value] of Object.entries(fieldErrors)) {
       const text = (Array.isArray(value) ? value.join('；') : String(value || '')).trim()

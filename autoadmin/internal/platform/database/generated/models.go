@@ -163,7 +163,7 @@ type AssetsApplicationServiceLogSetting struct {
 	CreateTime             time.Time      `json:"create_time"`
 	UpdateTime             time.Time      `json:"update_time"`
 	Remark                 sql.NullString `json:"remark"`
-	CollectionEnabled      sql.NullBool   `json:"collection_enabled"`
+	CollectionEnabled      *bool          `json:"collection_enabled"`
 	LogDefinitionID        int64          `json:"log_definition_id"`
 	RetentionTierID        sql.NullInt64  `json:"retention_tier_id"`
 	ServiceID              int64          `json:"service_id"`
@@ -366,6 +366,26 @@ type AuditOperationLog struct {
 	ResponseData string        `json:"response_data"`
 }
 
+type InspectionTargetExecution struct {
+	ID              int64           `json:"id"`
+	CreateTime      time.Time       `json:"create_time"`
+	UpdateTime      time.Time       `json:"update_time"`
+	Remark          sql.NullString  `json:"remark"`
+	ExecutionID     int64           `json:"execution_id"`
+	DeploymentID    sql.NullInt64   `json:"deployment_id"`
+	HostID          sql.NullInt64   `json:"host_id"`
+	TargetName      string          `json:"target_name"`
+	HostIDSnapshot  sql.NullInt32   `json:"host_id_snapshot"`
+	HostIpSnapshot  string          `json:"host_ip_snapshot"`
+	AgentIDSnapshot string          `json:"agent_id_snapshot"`
+	Status          string          `json:"status"`
+	Passed          *bool           `json:"passed"`
+	ErrorMessage    string          `json:"error_message"`
+	RawResult       json.RawMessage `json:"raw_result"`
+	StartTime       sql.NullTime    `json:"start_time"`
+	EndTime         sql.NullTime    `json:"end_time"`
+}
+
 type MonitorAlertMedium struct {
 	ID         int64           `json:"id"`
 	CreateTime time.Time       `json:"create_time"`
@@ -376,6 +396,18 @@ type MonitorAlertMedium struct {
 	Config     json.RawMessage `json:"config"`
 	Enabled    bool            `json:"enabled"`
 	Recipients json.RawMessage `json:"recipients"`
+}
+
+type MonitorAlertRoute struct {
+	ID               int64           `json:"id"`
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Name             string          `json:"name"`
+	Enabled          bool            `json:"enabled"`
+	Matchers         json.RawMessage `json:"matchers"`
+	NotifyOnFiring   bool            `json:"notify_on_firing"`
+	NotifyOnResolved bool            `json:"notify_on_resolved"`
 }
 
 type SchedulerScheduledtask struct {

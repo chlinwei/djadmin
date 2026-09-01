@@ -11,7 +11,7 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import store from '@/store'
 import { getWebSocketBaseUrl } from '@/util/request'
-import { getJobList, getJobDetail, cancelJob, getTaskList, getJobLog, getWorkflowRunList, cancelWorkflowRun } from '@/api/sys/automation'
+import { getJobList, getJobDetail, cancelJob, getTaskList, getJobLog } from '@/api/sys/automation'
 import { cancelMonitorInstallHistory, getMonitorInstallHistoryDetail, getMonitorInstallHistoryList } from '@/api/monitor'
 import {
   buildHostScopedLogText,
@@ -1380,6 +1380,21 @@ watch(jobLogViewerVisible, async (visible) => {
   }
   await nextTick()
   scrollJobLogToBottom(true)
+})
+
+watch(() => route.query.job_id, (jobID, previousJobID) => {
+  if (route.path !== '/sys/automation/logs' || !jobID || jobID === previousJobID) {
+    return
+  }
+  // This view is cached by keep-alive, so a Task run can navigate here without
+  // re-running onMounted. Apply the exact Job filter and load it immediately.
+  jobRecordId.value = String(Array.isArray(jobID) ? jobID[0] : jobID).trim()
+  jobKeyword.value = ''
+  selectedJobStatus.value = null
+  jobOutputKeyword.value = ''
+  selectedTaskId.value = null
+  selectedTaskName.value = ''
+  loadJobs(true)
 })
 
 onMounted(async () => {

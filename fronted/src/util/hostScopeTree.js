@@ -154,6 +154,11 @@ export function pickHostIds(keys) {
     .filter((item) => Number.isInteger(item) && item > 0)
 }
 
+export function retainAvailableHostIds(selectedHostIds, hosts) {
+  const availableHostIds = toPositiveIntSet((Array.isArray(hosts) ? hosts : []).map((host) => host?.id))
+  return [...toPositiveIntSet(selectedHostIds)].filter((hostId) => availableHostIds.has(hostId))
+}
+
 export function toHostKeys(selectedHostIds) {
   return (Array.isArray(selectedHostIds) ? selectedHostIds : []).map((id) => `${HOST_PREFIX}${id}`)
 }

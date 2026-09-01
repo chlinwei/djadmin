@@ -24,6 +24,8 @@ export function createWebsshUploadController(options) {
         refs.currentUploadContext.value = null
     }
 
+    const maxUploadBytes = 500 * 1024 * 1024
+
     const startUpload = async (task, callbacks = {}) => {
         const { onSuccess, onError, onProgress } = callbacks
         if (!task?.file) {
@@ -38,6 +40,11 @@ export function createWebsshUploadController(options) {
         const rawFile = task.file
         const fileName = task.fileName || rawFile.name || 'upload.bin'
         const totalSize = Number(task.totalSize || rawFile.size || 0)
+        if (totalSize > maxUploadBytes) {
+            message.error('上传文件不能超过 500 MiB')
+            if (onError) onError(new Error('上传文件不能超过 500 MiB'))
+            return
+        }
         const targetPath = task.targetPath || refs.fileCurrentPath.value || '.'
         let uploadedBytes = 0
         let lastProgressUiAt = 0

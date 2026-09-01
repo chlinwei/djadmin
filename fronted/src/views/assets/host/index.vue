@@ -1601,7 +1601,7 @@ const getRowClassName = (record) => {
 
 const canOpenWebSsh = (record) => {
     const hasAgentInstance = Boolean(String(record?.instance_name || '').trim())
-    const isAgentOnline = Boolean(record?.system?.agent_online)
+    const isAgentOnline = record?.agent_online === true
     return hasAgentInstance && isAgentOnline
 }
 
@@ -1609,7 +1609,7 @@ const getWebSshActionTooltip = (record) => {
     if (!String(record?.instance_name || '').trim()) {
         return '未绑定 agent 实例，无法打开 WebSSH'
     }
-    if (!record?.system?.agent_online) {
+    if (record?.agent_online !== true) {
         return 'Agent 离线，禁止打开 WebSSH'
     }
     return '打开WebSSH 终端'

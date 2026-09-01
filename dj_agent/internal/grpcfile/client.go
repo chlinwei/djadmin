@@ -88,7 +88,7 @@ func (s *session) unregisterAutomation(jobID string) {
 }
 
 // Run 阻塞运行文件传输会话，断线后按指数退避自动重连，直至 ctx 被取消。
-func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
+func Run(ctx context.Context, addr, agentID, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
 	if strings.TrimSpace(addr) == "" {
 		slog.Warn("grpc file-transfer disabled: empty addr")
 		onConnectionState(false)
@@ -103,8 +103,12 @@ func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, run
 		default:
 		}
 		onConnectionState(false)
-		if err := runOnce(ctx, addr, agentID, exec, runtimeStatusProvider, onConnectionState); err != nil {
+		established, err := runOnce(ctx, addr, agentID, backendToken, exec, runtimeStatusProvider, onConnectionState)
+		if err != nil {
 			slog.Warn("grpc file-transfer session ended", "err", err)
+		}
+		if established {
+			backoff = time.Second
 		}
 		select {
 		case <-ctx.Done():
@@ -118,7 +122,8 @@ func Run(ctx context.Context, addr, agentID string, exec *executor.Executor, run
 	}
 }
 
-func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) error {
+func runOnce(ctx context.Context, addr, agentID, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) (bool, error) {
+	established := false
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -133,14 +138,14 @@ func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor,
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("dial backend grpc failed: %w", err)
+		return established, fmt.Errorf("dial backend grpc failed: %w", err)
 	}
 	defer conn.Close()
 
 	client := pb.NewAgentChannelClient(conn)
 	stream, err := client.Session(ctx)
 	if err != nil {
-		return fmt.Errorf("open session failed: %w", err)
+		return established, fmt.Errorf("open session failed: %w", err)
 	}
 
 	sess := &session{
@@ -151,23 +156,24 @@ func runOnce(ctx context.Context, addr, agentID string, exec *executor.Executor,
 		terminals:             make(map[string]*terminalSession),
 	}
 	defer sess.closeAllTerminals()
-	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: agentID}}}); err != nil {
-		return fmt.Errorf("send hello failed: %w", err)
+	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: agentID, Token: backendToken}}}); err != nil {
+		return established, fmt.Errorf("send hello failed: %w", err)
 	}
 
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				return established, nil
 			}
-			return fmt.Errorf("recv failed: %w", err)
+			return established, fmt.Errorf("recv failed: %w", err)
 		}
 		switch payload := frame.Payload.(type) {
 		case *pb.ServerFrame_HelloAck:
 			if !payload.HelloAck.Accepted {
-				return fmt.Errorf("hello rejected: %s", payload.HelloAck.Message)
+				return established, fmt.Errorf("hello rejected: %s", payload.HelloAck.Message)
 			}
+			established = true
 			slog.Info("grpc file-transfer session established", "agent_id", agentID, "addr", addr)
 			onConnectionState(true)
 		case *pb.ServerFrame_ListRequest:

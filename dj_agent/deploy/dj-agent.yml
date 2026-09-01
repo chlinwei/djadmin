@@ -1,0 +1,110 @@
+---
+- name: Install or upgrade dj-agent
+  hosts: dj_agents
+  become: true
+  gather_facts: true
+
+  vars:
+    dj_agent_install_path: /usr/local/bin/dj-agent
+    dj_agent_config_dir: /etc/dj-agent
+    dj_agent_config_path: /etc/dj-agent/config.env
+    dj_agent_service_path: /usr/lib/systemd/system/dj-agent.service
+    dj_agent_run_user: root
+    dj_agent_log_level: info
+    dj_agent_host_report_interval: 40s
+    dj_agent_binary_source: "{{ playbook_dir }}/../bin/dj-agent"
+    dj_agent_backend_grpc_addr: "127.0.0.1:19090"
+    dj_agent_id: "{{ inventory_hostname }}"
+    dj_agent_backend_token: ""
+
+  pre_tasks:
+    - name: Require the backend token
+      ansible.builtin.assert:
+        that:
+          - dj_agent_backend_token | length > 0
+        fail_msg: >-
+          dj_agent_backend_token is required. Pass it through Ansible Vault,
+          an external vars file, or an environment lookup.
+
+    - name: Require a Linux target
+      ansible.builtin.assert:
+        that:
+          - ansible_system == 'Linux'
+        fail_msg: dj-agent deployment currently supports Linux targets only.
+
+    - name: Validate Agent ID
+      ansible.builtin.assert:
+        that:
+          - dj_agent_id is match('^[A-Za-z0-9._:-]+$')
+        fail_msg: dj_agent_id contains unsupported characters.
+
+  tasks:
+    - name: Ensure the Agent configuration directory exists
+      ansible.builtin.file:
+        path: "{{ dj_agent_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Upload the Agent binary
+      ansible.builtin.copy:
+        src: "{{ dj_agent_binary_source }}"
+        dest: "{{ dj_agent_install_path }}.new"
+        owner: root
+        group: root
+        mode: '0755'
+      notify: Restart dj-agent
+
+    - name: Atomically install the Agent binary
+      ansible.builtin.command:
+        cmd: "mv -f {{ dj_agent_install_path }}.new {{ dj_agent_install_path }}"
+      args:
+        removes: "{{ dj_agent_install_path }}.new"
+      changed_when: true
+      notify: Restart dj-agent
+
+    - name: Write the Agent environment file
+      ansible.builtin.template:
+        src: dj-agent.env.j2
+        dest: "{{ dj_agent_config_path }}"
+        owner: root
+        group: root
+        mode: '0600'
+      notify: Restart dj-agent
+
+    - name: Install the systemd unit
+      ansible.builtin.template:
+        src: dj-agent.service.j2
+        dest: "{{ dj_agent_service_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart dj-agent
+
+    - name: Enable dj-agent
+      ansible.builtin.systemd:
+        name: dj-agent.service
+        enabled: true
+
+    - name: Flush installation handlers before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify dj-agent is active
+      ansible.builtin.command: systemctl is-active dj-agent.service
+      register: dj_agent_active
+      changed_when: false
+      failed_when: dj_agent_active.stdout | trim != 'active'
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart dj-agent
+      ansible.builtin.systemd:
+        name: dj-agent.service
+        state: restarted
+        enabled: true

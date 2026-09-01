@@ -42,7 +42,7 @@ export function createWebsshPresenceController(options) {
                 return
             }
             const host = res?.data?.data || {}
-            const isOnline = Boolean(host?.system?.agent_online)
+            const isOnline = host?.agent_online === true
             if (isOnline) {
                 hostOfflineNotified = false
                 return

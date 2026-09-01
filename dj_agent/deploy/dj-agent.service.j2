@@ -1,0 +1,20 @@
+[Unit]
+Description=dj-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ dj_agent_run_user }}
+EnvironmentFile={{ dj_agent_config_path }}
+ExecStart={{ dj_agent_install_path }}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+SuccessExitStatus=0 130 143
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dj-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -9,11 +9,12 @@ LEGACY_SERVICE_PATH=/etc/systemd/system/dj-agent.service
 BINARY_SOURCE=
 AGENT_ID=
 GRPC_ADDR=
+BACKEND_TOKEN=
 RUN_USER=root
 
 usage() {
   cat <<'EOF'
-Usage: install.sh --binary PATH --agent-id ID --grpc-addr HOST:PORT [--run-user USER]
+Usage: install.sh --binary PATH --agent-id ID --grpc-addr HOST:PORT --backend-token TOKEN [--run-user USER]
 EOF
 }
 
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --binary) BINARY_SOURCE=${2:-}; shift 2 ;;
     --agent-id) AGENT_ID=${2:-}; shift 2 ;;
     --grpc-addr) GRPC_ADDR=${2:-}; shift 2 ;;
+    --backend-token) BACKEND_TOKEN=${2:-}; shift 2 ;;
     --run-user) RUN_USER=${2:-}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -32,8 +34,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "install.sh must run as root" >&2
   exit 1
 fi
-if [[ -z "$BINARY_SOURCE" || -z "$AGENT_ID" || -z "$GRPC_ADDR" ]]; then
-  echo "binary, agent-id and grpc-addr are required" >&2
+if [[ -z "$BINARY_SOURCE" || -z "$AGENT_ID" || -z "$GRPC_ADDR" || -z "$BACKEND_TOKEN" ]]; then
+  echo "binary, agent-id, grpc-addr and backend-token are required" >&2
   usage >&2
   exit 2
 fi
@@ -60,6 +62,7 @@ install -m 0755 "$BINARY_SOURCE" "$INSTALL_PATH.new"
 cat > "$CONFIG_PATH.new" <<EOF
 DJ_AGENT_ID=$AGENT_ID
 DJ_AGENT_GRPC_FILE_ADDR=$GRPC_ADDR
+DJ_AGENT_BACKEND_TOKEN=$BACKEND_TOKEN
 DJ_AGENT_LOG_LEVEL=info
 EOF
 chmod 0600 "$CONFIG_PATH.new"

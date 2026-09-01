@@ -38,7 +38,7 @@ func (a *App) Run() error {
 	// 启动统一 gRPC 通道客户端（agent 主动拨号连接 backend，断线自动重连）。
 	// 该长连接承载文件传输、WebSSH 终端以及自动化任务同步执行，复用同一 exec 执行器。
 	// backend 未启动或网络中断时，客户端会持续重连，不结束 Agent 进程。
-	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, exec, a.getRuntimeStatusData, a.setGRPCConnected)
+	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, a.cfg.BackendToken, exec, a.getRuntimeStatusData, a.setGRPCConnected)
 
 	for {
 		select {

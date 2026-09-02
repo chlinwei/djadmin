@@ -299,3 +299,15 @@ export function batchCreateMonitorTargets(payload) {
   return requestUtil.post(prefix + 'targets/batch-create/', payload)
 }
 
+export function batchDeleteMonitorTargets(ids) {
+  return requestUtil.post(prefix + 'targets/batch-delete/', { ids })
+}
+
+export function batchStartMonitorTargets(ids) {
+  return requestUtil.post(prefix + 'targets/batch-start-service/', { ids })
+}
+
+export function batchStopMonitorTargets(ids) {
+  return requestUtil.post(prefix + 'targets/batch-stop-service/', { ids })
+}
+

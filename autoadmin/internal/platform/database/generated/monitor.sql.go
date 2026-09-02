@@ -7,7 +7,77 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"time"
 )
+
+const countAlertHistories = `-- name: CountAlertHistories :one
+SELECT COUNT(*) FROM monitor_alert_history ah
+WHERE (? IS NULL OR ah.id = ?)
+  AND (? IS NULL OR ah.state = ?)
+  AND (? IS NULL OR ah.severity = ?)
+  AND (? IS NULL OR ah.alertname LIKE ? OR ah.instance LIKE ?)
+  AND (? IS NULL OR ah.started_at >= ?)
+  AND (? IS NULL OR ah.started_at <= ?)
+`
+
+type CountAlertHistoriesParams struct {
+	ID        sql.NullInt64  `json:"id"`
+	State     sql.NullString `json:"state"`
+	Severity  sql.NullString `json:"severity"`
+	Keyword   sql.NullString `json:"keyword"`
+	StartTime sql.NullTime   `json:"start_time"`
+	EndTime   sql.NullTime   `json:"end_time"`
+}
+
+func (q *Queries) CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAlertHistories,
+		arg.ID,
+		arg.ID,
+		arg.State,
+		arg.State,
+		arg.Severity,
+		arg.Severity,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAlertMedia = `-- name: CountAlertMedia :one
+SELECT COUNT(*) FROM monitor_alert_media
+WHERE (? IS NULL OR media_type = ?)
+  AND (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR name LIKE ?)
+`
+
+type CountAlertMediaParams struct {
+	MediaType sql.NullString `json:"media_type"`
+	Enabled   sql.NullBool   `json:"enabled"`
+	Pattern   sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountAlertMedia(ctx context.Context, arg CountAlertMediaParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAlertMedia,
+		arg.MediaType,
+		arg.MediaType,
+		arg.Enabled,
+		arg.Enabled,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const countAlertRoutes = `-- name: CountAlertRoutes :one
 SELECT COUNT(*) FROM monitor_alert_route
@@ -18,6 +88,268 @@ func (q *Queries) CountAlertRoutes(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countInstallHistories = `-- name: CountInstallHistories :one
+SELECT COUNT(*) FROM monitor_target_install_history ih
+LEFT JOIN assets_host h ON h.id = ih.host_id
+LEFT JOIN monitor_target mt ON mt.id = ih.target_id
+WHERE (? IS NULL OR ih.id = ?)
+  AND (? IS NULL OR ih.target_id = ?)
+  AND (? IS NULL OR ih.log_collection_target_id = ?)
+  AND (? IS NULL OR ih.action = ?)
+  AND (? IS NULL OR ih.trigger_type = ?)
+  AND (? IS NULL OR ih.status = ?)
+  AND (? IS NULL OR ih.host_name_snapshot LIKE ? OR ih.host_ip_snapshot LIKE ? OR ih.exporter_type_snapshot LIKE ? OR ih.summary_message LIKE ?)
+  AND (? IS NULL OR ih.create_time >= ?)
+  AND (? IS NULL OR ih.create_time <= ?)
+`
+
+type CountInstallHistoriesParams struct {
+	ID                    sql.NullInt64  `json:"id"`
+	TargetID              sql.NullInt64  `json:"target_id"`
+	LogCollectionTargetID sql.NullInt64  `json:"log_collection_target_id"`
+	Action                sql.NullString `json:"action"`
+	TriggerType           sql.NullString `json:"trigger_type"`
+	Status                sql.NullString `json:"status"`
+	Keyword               sql.NullString `json:"keyword"`
+	StartTime             sql.NullTime   `json:"start_time"`
+	EndTime               sql.NullTime   `json:"end_time"`
+}
+
+func (q *Queries) CountInstallHistories(ctx context.Context, arg CountInstallHistoriesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInstallHistories,
+		arg.ID,
+		arg.ID,
+		arg.TargetID,
+		arg.TargetID,
+		arg.LogCollectionTargetID,
+		arg.LogCollectionTargetID,
+		arg.Action,
+		arg.Action,
+		arg.TriggerType,
+		arg.TriggerType,
+		arg.Status,
+		arg.Status,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countLogCollectionFilterRules = `-- name: CountLogCollectionFilterRules :one
+SELECT COUNT(*) FROM monitor_log_collection_filter_rule
+WHERE (? IS NULL OR application_id = ?)
+  AND (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR name LIKE ? OR description LIKE ? OR pattern LIKE ?)
+`
+
+type CountLogCollectionFilterRulesParams struct {
+	ApplicationID sql.NullInt64  `json:"application_id"`
+	Enabled       sql.NullBool   `json:"enabled"`
+	SearchPattern sql.NullString `json:"search_pattern"`
+}
+
+func (q *Queries) CountLogCollectionFilterRules(ctx context.Context, arg CountLogCollectionFilterRulesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLogCollectionFilterRules,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.Enabled,
+		arg.Enabled,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countLogProcessingRules = `-- name: CountLogProcessingRules :one
+SELECT COUNT(*) FROM monitor_log_processing_rule
+WHERE (? IS NULL OR cluster_id = ?)
+  AND (? IS NULL OR application_id = ?)
+  AND (? IS NULL OR input_format = ?)
+  AND (? IS NULL OR multiline_enabled = ?)
+  AND (? IS NULL OR name LIKE ? OR description LIKE ?)
+`
+
+type CountLogProcessingRulesParams struct {
+	ClusterID        sql.NullInt64  `json:"cluster_id"`
+	ApplicationID    sql.NullInt64  `json:"application_id"`
+	InputFormat      sql.NullString `json:"input_format"`
+	MultilineEnabled sql.NullBool   `json:"multiline_enabled"`
+	Pattern          sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountLogProcessingRules(ctx context.Context, arg CountLogProcessingRulesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLogProcessingRules,
+		arg.ClusterID,
+		arg.ClusterID,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.InputFormat,
+		arg.InputFormat,
+		arg.MultilineEnabled,
+		arg.MultilineEnabled,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countLogRetentionTiers = `-- name: CountLogRetentionTiers :one
+SELECT COUNT(*) FROM monitor_log_retention_tier
+WHERE (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR is_default = ?)
+  AND (? IS NULL OR code LIKE ? OR name LIKE ? OR remark LIKE ?)
+`
+
+type CountLogRetentionTiersParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountLogRetentionTiers(ctx context.Context, arg CountLogRetentionTiersParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLogRetentionTiers,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOpenSearchClusters = `-- name: CountOpenSearchClusters :one
+SELECT COUNT(*) FROM monitor_opensearch_cluster
+WHERE (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR is_default = ?)
+  AND (? IS NULL OR name LIKE ? OR hosts LIKE ? OR remark LIKE ?)
+`
+
+type CountOpenSearchClustersParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountOpenSearchClusters(ctx context.Context, arg CountOpenSearchClustersParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOpenSearchClusters,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSoftwarePackages = `-- name: CountSoftwarePackages :one
+SELECT COUNT(*) FROM monitor_software_package p
+WHERE (? IS NULL OR p.package_type = ?)
+  AND (? IS NULL OR p.name = ?)
+  AND (? IS NULL OR p.version = ?)
+  AND (? IS NULL OR p.os = ?)
+  AND (? IS NULL OR p.arch = ?)
+  AND (? IS NULL OR p.enabled = ?)
+  AND (? IS NULL OR p.name LIKE ? OR p.version LIKE ?)
+`
+
+type CountSoftwarePackagesParams struct {
+	PackageType sql.NullString `json:"package_type"`
+	Name        sql.NullString `json:"name"`
+	Version     sql.NullString `json:"version"`
+	Os          sql.NullString `json:"os"`
+	Arch        sql.NullString `json:"arch"`
+	Enabled     sql.NullBool   `json:"enabled"`
+	Pattern     sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountSoftwarePackages(ctx context.Context, arg CountSoftwarePackagesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSoftwarePackages,
+		arg.PackageType,
+		arg.PackageType,
+		arg.Name,
+		arg.Name,
+		arg.Version,
+		arg.Version,
+		arg.Os,
+		arg.Os,
+		arg.Arch,
+		arg.Arch,
+		arg.Enabled,
+		arg.Enabled,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const getAlertHistoryAlertnameInstance = `-- name: GetAlertHistoryAlertnameInstance :one
+SELECT alertname, instance FROM monitor_alert_history WHERE id = ?
+`
+
+type GetAlertHistoryAlertnameInstanceRow struct {
+	Alertname string `json:"alertname"`
+	Instance  string `json:"instance"`
+}
+
+func (q *Queries) GetAlertHistoryAlertnameInstance(ctx context.Context, id int64) (GetAlertHistoryAlertnameInstanceRow, error) {
+	row := q.db.QueryRowContext(ctx, getAlertHistoryAlertnameInstance, id)
+	var i GetAlertHistoryAlertnameInstanceRow
+	err := row.Scan(&i.Alertname, &i.Instance)
+	return i, err
+}
+
+const getAlertMediaTyped = `-- name: GetAlertMediaTyped :one
+SELECT id, create_time, update_time, remark, name, media_type, config, enabled, recipients
+FROM monitor_alert_media
+WHERE id = ?
+`
+
+func (q *Queries) GetAlertMediaTyped(ctx context.Context, id int64) (MonitorAlertMedium, error) {
+	row := q.db.QueryRowContext(ctx, getAlertMediaTyped, id)
+	var i MonitorAlertMedium
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.MediaType,
+		&i.Config,
+		&i.Enabled,
+		&i.Recipients,
+	)
+	return i, err
 }
 
 const getAlertRoute = `-- name: GetAlertRoute :one
@@ -42,6 +374,481 @@ func (q *Queries) GetAlertRoute(ctx context.Context, id int64) (MonitorAlertRout
 		&i.NotifyOnResolved,
 	)
 	return i, err
+}
+
+const getLogCollectionFilterRule = `-- name: GetLogCollectionFilterRule :one
+SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+FROM monitor_log_collection_filter_rule
+WHERE id = ?
+`
+
+func (q *Queries) GetLogCollectionFilterRule(ctx context.Context, id int64) (MonitorLogCollectionFilterRule, error) {
+	row := q.db.QueryRowContext(ctx, getLogCollectionFilterRule, id)
+	var i MonitorLogCollectionFilterRule
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Description,
+		&i.Pattern,
+		&i.Enabled,
+		&i.ApplicationID,
+	)
+	return i, err
+}
+
+const getLogProcessingRule = `-- name: GetLogProcessingRule :one
+SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
+       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+FROM monitor_log_processing_rule
+WHERE id = ?
+`
+
+func (q *Queries) GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error) {
+	row := q.db.QueryRowContext(ctx, getLogProcessingRule, id)
+	var i MonitorLogProcessingRule
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Description,
+		&i.InputFormat,
+		&i.MultilineEnabled,
+		&i.StartPattern,
+		&i.ContinuationPattern,
+		&i.FlushTimeout,
+		&i.PipelineBody,
+		&i.ClusterID,
+		&i.ApplicationID,
+	)
+	return i, err
+}
+
+const getLogRetentionTier = `-- name: GetLogRetentionTier :one
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+FROM monitor_log_retention_tier
+WHERE id = ?
+`
+
+func (q *Queries) GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error) {
+	row := q.db.QueryRowContext(ctx, getLogRetentionTier, id)
+	var i MonitorLogRetentionTier
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Code,
+		&i.Name,
+		&i.DailySizeGb,
+		&i.RetentionDays,
+		&i.RolloverMinIndexAge,
+		&i.Enabled,
+		&i.IsDefault,
+		&i.Remark,
+	)
+	return i, err
+}
+
+const getOpenSearchClusterTyped = `-- name: GetOpenSearchClusterTyped :one
+SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
+       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
+       remark, storage_sync_error, storage_sync_status, storage_sync_time
+FROM monitor_opensearch_cluster
+WHERE id = ?
+`
+
+func (q *Queries) GetOpenSearchClusterTyped(ctx context.Context, id int64) (MonitorOpensearchCluster, error) {
+	row := q.db.QueryRowContext(ctx, getOpenSearchClusterTyped, id)
+	var i MonitorOpensearchCluster
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Name,
+		&i.Hosts,
+		&i.Username,
+		&i.Password,
+		&i.VerifyTls,
+		&i.CaCert,
+		&i.IndexPrefix,
+		&i.RequestTimeout,
+		&i.Enabled,
+		&i.IsDefault,
+		&i.LastCheckTime,
+		&i.LastCheckSuccess,
+		&i.LastCheckMessage,
+		&i.Remark,
+		&i.StorageSyncError,
+		&i.StorageSyncStatus,
+		&i.StorageSyncTime,
+	)
+	return i, err
+}
+
+const getSoftwarePackageTyped = `-- name: GetSoftwarePackageTyped :one
+SELECT p.id, p.create_time, p.update_time, p.remark, p.name, p.version, p.os, p.arch, p.file, p.sha256,
+       p.size_bytes, p.enabled, p.service_file_content, p.service_run_as_group, p.service_run_as_user,
+       p.install_playbook_template_id, p.uninstall_playbook_template_id, p.work_directory, p.default_port,
+       p.package_format, p.platform_family, p.platform_major, p.package_type,
+       COALESCE(i.name,'') AS install_playbook_template_name, COALESCE(i.content,'') AS install_playbook_content,
+       COALESCE(u.name,'') AS uninstall_playbook_template_name, COALESCE(u.content,'') AS uninstall_playbook_content
+FROM monitor_software_package p
+LEFT JOIN automation_playbook_template i ON i.id = p.install_playbook_template_id
+LEFT JOIN automation_playbook_template u ON u.id = p.uninstall_playbook_template_id
+WHERE p.id = ?
+`
+
+type GetSoftwarePackageTypedRow struct {
+	ID                            int64          `json:"id"`
+	CreateTime                    time.Time      `json:"create_time"`
+	UpdateTime                    time.Time      `json:"update_time"`
+	Remark                        sql.NullString `json:"remark"`
+	Name                          string         `json:"name"`
+	Version                       string         `json:"version"`
+	Os                            string         `json:"os"`
+	Arch                          string         `json:"arch"`
+	File                          string         `json:"file"`
+	Sha256                        string         `json:"sha256"`
+	SizeBytes                     int64          `json:"size_bytes"`
+	Enabled                       bool           `json:"enabled"`
+	ServiceFileContent            string         `json:"service_file_content"`
+	ServiceRunAsGroup             string         `json:"service_run_as_group"`
+	ServiceRunAsUser              string         `json:"service_run_as_user"`
+	InstallPlaybookTemplateID     sql.NullInt64  `json:"install_playbook_template_id"`
+	UninstallPlaybookTemplateID   sql.NullInt64  `json:"uninstall_playbook_template_id"`
+	WorkDirectory                 string         `json:"work_directory"`
+	DefaultPort                   uint32         `json:"default_port"`
+	PackageFormat                 string         `json:"package_format"`
+	PlatformFamily                string         `json:"platform_family"`
+	PlatformMajor                 string         `json:"platform_major"`
+	PackageType                   string         `json:"package_type"`
+	InstallPlaybookTemplateName   string         `json:"install_playbook_template_name"`
+	InstallPlaybookContent        string         `json:"install_playbook_content"`
+	UninstallPlaybookTemplateName string         `json:"uninstall_playbook_template_name"`
+	UninstallPlaybookContent      string         `json:"uninstall_playbook_content"`
+}
+
+func (q *Queries) GetSoftwarePackageTyped(ctx context.Context, id int64) (GetSoftwarePackageTypedRow, error) {
+	row := q.db.QueryRowContext(ctx, getSoftwarePackageTyped, id)
+	var i GetSoftwarePackageTypedRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Version,
+		&i.Os,
+		&i.Arch,
+		&i.File,
+		&i.Sha256,
+		&i.SizeBytes,
+		&i.Enabled,
+		&i.ServiceFileContent,
+		&i.ServiceRunAsGroup,
+		&i.ServiceRunAsUser,
+		&i.InstallPlaybookTemplateID,
+		&i.UninstallPlaybookTemplateID,
+		&i.WorkDirectory,
+		&i.DefaultPort,
+		&i.PackageFormat,
+		&i.PlatformFamily,
+		&i.PlatformMajor,
+		&i.PackageType,
+		&i.InstallPlaybookTemplateName,
+		&i.InstallPlaybookContent,
+		&i.UninstallPlaybookTemplateName,
+		&i.UninstallPlaybookContent,
+	)
+	return i, err
+}
+
+const listAlertHistories = `-- name: ListAlertHistories :many
+SELECT ah.id, ah.create_time, ah.update_time, ah.remark, ah.fingerprint, ah.alertname, ah.severity, ah.instance,
+       ah.labels, ah.annotations, ah.generator_url, ah.state, ah.started_at, ah.resolved_at, ah.last_seen_at,
+       ah.resolved_by_reconciliation, ah.rule_group, ah.rule_snapshot, ah.source,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id) AS notification_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id = nd.event_id WHERE ne.alert_id = ah.id) AS notification_delivery_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status = 'failed') AS notification_failed_count,
+       (SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id = ah.id AND ne.status IN ('pending','sending')) AS notification_active_count
+FROM monitor_alert_history ah
+WHERE (? IS NULL OR ah.id = ?)
+  AND (? IS NULL OR ah.state = ?)
+  AND (? IS NULL OR ah.severity = ?)
+  AND (? IS NULL OR ah.alertname LIKE ? OR ah.instance LIKE ?)
+  AND (? IS NULL OR ah.started_at >= ?)
+  AND (? IS NULL OR ah.started_at <= ?)
+ORDER BY ah.started_at DESC, ah.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListAlertHistoriesParams struct {
+	ID        sql.NullInt64  `json:"id"`
+	State     sql.NullString `json:"state"`
+	Severity  sql.NullString `json:"severity"`
+	Keyword   sql.NullString `json:"keyword"`
+	StartTime sql.NullTime   `json:"start_time"`
+	EndTime   sql.NullTime   `json:"end_time"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
+}
+
+type ListAlertHistoriesRow struct {
+	ID                        int64           `json:"id"`
+	CreateTime                time.Time       `json:"create_time"`
+	UpdateTime                time.Time       `json:"update_time"`
+	Remark                    sql.NullString  `json:"remark"`
+	Fingerprint               string          `json:"fingerprint"`
+	Alertname                 string          `json:"alertname"`
+	Severity                  string          `json:"severity"`
+	Instance                  string          `json:"instance"`
+	Labels                    json.RawMessage `json:"labels"`
+	Annotations               json.RawMessage `json:"annotations"`
+	GeneratorUrl              string          `json:"generator_url"`
+	State                     string          `json:"state"`
+	StartedAt                 time.Time       `json:"started_at"`
+	ResolvedAt                sql.NullTime    `json:"resolved_at"`
+	LastSeenAt                time.Time       `json:"last_seen_at"`
+	ResolvedByReconciliation  bool            `json:"resolved_by_reconciliation"`
+	RuleGroup                 string          `json:"rule_group"`
+	RuleSnapshot              json.RawMessage `json:"rule_snapshot"`
+	Source                    string          `json:"source"`
+	NotificationCount         int64           `json:"notification_count"`
+	NotificationDeliveryCount int64           `json:"notification_delivery_count"`
+	NotificationFailedCount   int64           `json:"notification_failed_count"`
+	NotificationActiveCount   int64           `json:"notification_active_count"`
+}
+
+func (q *Queries) ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAlertHistories,
+		arg.ID,
+		arg.ID,
+		arg.State,
+		arg.State,
+		arg.Severity,
+		arg.Severity,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAlertHistoriesRow{}
+	for rows.Next() {
+		var i ListAlertHistoriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Fingerprint,
+			&i.Alertname,
+			&i.Severity,
+			&i.Instance,
+			&i.Labels,
+			&i.Annotations,
+			&i.GeneratorUrl,
+			&i.State,
+			&i.StartedAt,
+			&i.ResolvedAt,
+			&i.LastSeenAt,
+			&i.ResolvedByReconciliation,
+			&i.RuleGroup,
+			&i.RuleSnapshot,
+			&i.Source,
+			&i.NotificationCount,
+			&i.NotificationDeliveryCount,
+			&i.NotificationFailedCount,
+			&i.NotificationActiveCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAlertMedia = `-- name: ListAlertMedia :many
+SELECT id, create_time, update_time, remark, name, media_type, config, enabled, recipients
+FROM monitor_alert_media
+WHERE (? IS NULL OR media_type = ?)
+  AND (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR name LIKE ?)
+ORDER BY id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListAlertMediaParams struct {
+	MediaType sql.NullString `json:"media_type"`
+	Enabled   sql.NullBool   `json:"enabled"`
+	Pattern   sql.NullString `json:"pattern"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
+}
+
+func (q *Queries) ListAlertMedia(ctx context.Context, arg ListAlertMediaParams) ([]MonitorAlertMedium, error) {
+	rows, err := q.db.QueryContext(ctx, listAlertMedia,
+		arg.MediaType,
+		arg.MediaType,
+		arg.Enabled,
+		arg.Enabled,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorAlertMedium{}
+	for rows.Next() {
+		var i MonitorAlertMedium
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.MediaType,
+			&i.Config,
+			&i.Enabled,
+			&i.Recipients,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAlertNotificationDeliveries = `-- name: ListAlertNotificationDeliveries :many
+SELECT d.id, d.user_id, COALESCE(u.username,'-') AS username, d.media_id, COALESCE(m.name,'-') AS media_name,
+       COALESCE(m.media_type,'-') AS media_type, d.address, d.status, d.attempt_count, d.error_message,
+       d.sent_at, d.create_time
+FROM monitor_alert_notification_delivery d
+LEFT JOIN sys_user u ON u.id = d.user_id
+LEFT JOIN monitor_alert_media m ON m.id = d.media_id
+WHERE d.event_id = ?
+ORDER BY d.id
+`
+
+type ListAlertNotificationDeliveriesRow struct {
+	ID           int64         `json:"id"`
+	UserID       sql.NullInt32 `json:"user_id"`
+	Username     string        `json:"username"`
+	MediaID      sql.NullInt64 `json:"media_id"`
+	MediaName    string        `json:"media_name"`
+	MediaType    string        `json:"media_type"`
+	Address      string        `json:"address"`
+	Status       string        `json:"status"`
+	AttemptCount uint32        `json:"attempt_count"`
+	ErrorMessage string        `json:"error_message"`
+	SentAt       sql.NullTime  `json:"sent_at"`
+	CreateTime   time.Time     `json:"create_time"`
+}
+
+func (q *Queries) ListAlertNotificationDeliveries(ctx context.Context, eventID int64) ([]ListAlertNotificationDeliveriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAlertNotificationDeliveries, eventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAlertNotificationDeliveriesRow{}
+	for rows.Next() {
+		var i ListAlertNotificationDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Username,
+			&i.MediaID,
+			&i.MediaName,
+			&i.MediaType,
+			&i.Address,
+			&i.Status,
+			&i.AttemptCount,
+			&i.ErrorMessage,
+			&i.SentAt,
+			&i.CreateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAlertNotificationEvents = `-- name: ListAlertNotificationEvents :many
+SELECT id, create_time, update_time, remark, event_type, deduplication_key, status, attempt_count,
+       error_message, sent_at, alert_id
+FROM monitor_alert_notification_event
+WHERE alert_id = ?
+ORDER BY create_time DESC, id DESC
+`
+
+func (q *Queries) ListAlertNotificationEvents(ctx context.Context, alertID int64) ([]MonitorAlertNotificationEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listAlertNotificationEvents, alertID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorAlertNotificationEvent{}
+	for rows.Next() {
+		var i MonitorAlertNotificationEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.EventType,
+			&i.DeduplicationKey,
+			&i.Status,
+			&i.AttemptCount,
+			&i.ErrorMessage,
+			&i.SentAt,
+			&i.AlertID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAlertRoutes = `-- name: ListAlertRoutes :many
@@ -75,6 +882,620 @@ func (q *Queries) ListAlertRoutes(ctx context.Context, arg ListAlertRoutesParams
 			&i.Matchers,
 			&i.NotifyOnFiring,
 			&i.NotifyOnResolved,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInstallHistories = `-- name: ListInstallHistories :many
+SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_type, ih.status,
+       ih.host_id_snapshot, ih.host_name_snapshot, ih.host_ip_snapshot, ih.exporter_type_snapshot,
+       ih.summary_message, ih.stdout_snapshot, ih.stderr_snapshot, ih.error_message_snapshot,
+       ih.result_summary_snapshot, ih.requested_user_id_snapshot, ih.requested_username_snapshot,
+       ih.start_time, ih.end_time, ih.duration_seconds, ih.host_id, ih.target_id, ih.log_collection_target_id,
+       COALESCE(h.instance_name, ih.host_name_snapshot) AS host_name,
+       COALESCE(h.ip, ih.host_ip_snapshot) AS host_ip,
+       COALESCE(mt.exporter_type, ih.exporter_type_snapshot) AS target_exporter_type,
+       COALESCE(ih.target_id, ih.log_collection_target_id) AS managed_target_id,
+       CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'fluent_bit' END AS target_type
+FROM monitor_target_install_history ih
+LEFT JOIN assets_host h ON h.id = ih.host_id
+LEFT JOIN monitor_target mt ON mt.id = ih.target_id
+WHERE (? IS NULL OR ih.id = ?)
+  AND (? IS NULL OR ih.target_id = ?)
+  AND (? IS NULL OR ih.log_collection_target_id = ?)
+  AND (? IS NULL OR ih.action = ?)
+  AND (? IS NULL OR ih.trigger_type = ?)
+  AND (? IS NULL OR ih.status = ?)
+  AND (? IS NULL OR ih.host_name_snapshot LIKE ? OR ih.host_ip_snapshot LIKE ? OR ih.exporter_type_snapshot LIKE ? OR ih.summary_message LIKE ?)
+  AND (? IS NULL OR ih.create_time >= ?)
+  AND (? IS NULL OR ih.create_time <= ?)
+ORDER BY ih.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListInstallHistoriesParams struct {
+	ID                    sql.NullInt64  `json:"id"`
+	TargetID              sql.NullInt64  `json:"target_id"`
+	LogCollectionTargetID sql.NullInt64  `json:"log_collection_target_id"`
+	Action                sql.NullString `json:"action"`
+	TriggerType           sql.NullString `json:"trigger_type"`
+	Status                sql.NullString `json:"status"`
+	Keyword               sql.NullString `json:"keyword"`
+	StartTime             sql.NullTime   `json:"start_time"`
+	EndTime               sql.NullTime   `json:"end_time"`
+	Limit                 int32          `json:"limit"`
+	Offset                int32          `json:"offset"`
+}
+
+type ListInstallHistoriesRow struct {
+	ID                        int64           `json:"id"`
+	CreateTime                time.Time       `json:"create_time"`
+	UpdateTime                time.Time       `json:"update_time"`
+	Remark                    sql.NullString  `json:"remark"`
+	Action                    string          `json:"action"`
+	TriggerType               string          `json:"trigger_type"`
+	Status                    string          `json:"status"`
+	HostIDSnapshot            sql.NullInt32   `json:"host_id_snapshot"`
+	HostNameSnapshot          string          `json:"host_name_snapshot"`
+	HostIpSnapshot            string          `json:"host_ip_snapshot"`
+	ExporterTypeSnapshot      string          `json:"exporter_type_snapshot"`
+	SummaryMessage            string          `json:"summary_message"`
+	StdoutSnapshot            string          `json:"stdout_snapshot"`
+	StderrSnapshot            string          `json:"stderr_snapshot"`
+	ErrorMessageSnapshot      string          `json:"error_message_snapshot"`
+	ResultSummarySnapshot     json.RawMessage `json:"result_summary_snapshot"`
+	RequestedUserIDSnapshot   sql.NullInt32   `json:"requested_user_id_snapshot"`
+	RequestedUsernameSnapshot string          `json:"requested_username_snapshot"`
+	StartTime                 sql.NullTime    `json:"start_time"`
+	EndTime                   sql.NullTime    `json:"end_time"`
+	DurationSeconds           sql.NullFloat64 `json:"duration_seconds"`
+	HostID                    sql.NullInt64   `json:"host_id"`
+	TargetID                  sql.NullInt64   `json:"target_id"`
+	LogCollectionTargetID     sql.NullInt64   `json:"log_collection_target_id"`
+	HostName                  string          `json:"host_name"`
+	HostIp                    string          `json:"host_ip"`
+	TargetExporterType        string          `json:"target_exporter_type"`
+	ManagedTargetID           sql.NullInt64   `json:"managed_target_id"`
+	TargetType                string          `json:"target_type"`
+}
+
+func (q *Queries) ListInstallHistories(ctx context.Context, arg ListInstallHistoriesParams) ([]ListInstallHistoriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInstallHistories,
+		arg.ID,
+		arg.ID,
+		arg.TargetID,
+		arg.TargetID,
+		arg.LogCollectionTargetID,
+		arg.LogCollectionTargetID,
+		arg.Action,
+		arg.Action,
+		arg.TriggerType,
+		arg.TriggerType,
+		arg.Status,
+		arg.Status,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.Keyword,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInstallHistoriesRow{}
+	for rows.Next() {
+		var i ListInstallHistoriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Action,
+			&i.TriggerType,
+			&i.Status,
+			&i.HostIDSnapshot,
+			&i.HostNameSnapshot,
+			&i.HostIpSnapshot,
+			&i.ExporterTypeSnapshot,
+			&i.SummaryMessage,
+			&i.StdoutSnapshot,
+			&i.StderrSnapshot,
+			&i.ErrorMessageSnapshot,
+			&i.ResultSummarySnapshot,
+			&i.RequestedUserIDSnapshot,
+			&i.RequestedUsernameSnapshot,
+			&i.StartTime,
+			&i.EndTime,
+			&i.DurationSeconds,
+			&i.HostID,
+			&i.TargetID,
+			&i.LogCollectionTargetID,
+			&i.HostName,
+			&i.HostIp,
+			&i.TargetExporterType,
+			&i.ManagedTargetID,
+			&i.TargetType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLogCollectionFilterRules = `-- name: ListLogCollectionFilterRules :many
+SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+FROM monitor_log_collection_filter_rule
+WHERE (? IS NULL OR application_id = ?)
+  AND (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR name LIKE ? OR description LIKE ? OR pattern LIKE ?)
+ORDER BY name, id
+LIMIT ? OFFSET ?
+`
+
+type ListLogCollectionFilterRulesParams struct {
+	ApplicationID sql.NullInt64  `json:"application_id"`
+	Enabled       sql.NullBool   `json:"enabled"`
+	SearchPattern sql.NullString `json:"search_pattern"`
+	Limit         int32          `json:"limit"`
+	Offset        int32          `json:"offset"`
+}
+
+func (q *Queries) ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error) {
+	rows, err := q.db.QueryContext(ctx, listLogCollectionFilterRules,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.Enabled,
+		arg.Enabled,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorLogCollectionFilterRule{}
+	for rows.Next() {
+		var i MonitorLogCollectionFilterRule
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Description,
+			&i.Pattern,
+			&i.Enabled,
+			&i.ApplicationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLogProcessingRules = `-- name: ListLogProcessingRules :many
+SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
+       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+FROM monitor_log_processing_rule
+WHERE (? IS NULL OR cluster_id = ?)
+  AND (? IS NULL OR application_id = ?)
+  AND (? IS NULL OR input_format = ?)
+  AND (? IS NULL OR multiline_enabled = ?)
+  AND (? IS NULL OR name LIKE ? OR description LIKE ?)
+ORDER BY name, id
+LIMIT ? OFFSET ?
+`
+
+type ListLogProcessingRulesParams struct {
+	ClusterID        sql.NullInt64  `json:"cluster_id"`
+	ApplicationID    sql.NullInt64  `json:"application_id"`
+	InputFormat      sql.NullString `json:"input_format"`
+	MultilineEnabled sql.NullBool   `json:"multiline_enabled"`
+	Pattern          sql.NullString `json:"pattern"`
+	Limit            int32          `json:"limit"`
+	Offset           int32          `json:"offset"`
+}
+
+func (q *Queries) ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error) {
+	rows, err := q.db.QueryContext(ctx, listLogProcessingRules,
+		arg.ClusterID,
+		arg.ClusterID,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.InputFormat,
+		arg.InputFormat,
+		arg.MultilineEnabled,
+		arg.MultilineEnabled,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorLogProcessingRule{}
+	for rows.Next() {
+		var i MonitorLogProcessingRule
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Description,
+			&i.InputFormat,
+			&i.MultilineEnabled,
+			&i.StartPattern,
+			&i.ContinuationPattern,
+			&i.FlushTimeout,
+			&i.PipelineBody,
+			&i.ClusterID,
+			&i.ApplicationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLogRetentionTiers = `-- name: ListLogRetentionTiers :many
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+FROM monitor_log_retention_tier
+WHERE (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR is_default = ?)
+  AND (? IS NULL OR code LIKE ? OR name LIKE ? OR remark LIKE ?)
+ORDER BY retention_days, id
+LIMIT ? OFFSET ?
+`
+
+type ListLogRetentionTiersParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
+}
+
+func (q *Queries) ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error) {
+	rows, err := q.db.QueryContext(ctx, listLogRetentionTiers,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorLogRetentionTier{}
+	for rows.Next() {
+		var i MonitorLogRetentionTier
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Code,
+			&i.Name,
+			&i.DailySizeGb,
+			&i.RetentionDays,
+			&i.RolloverMinIndexAge,
+			&i.Enabled,
+			&i.IsDefault,
+			&i.Remark,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMonitorTargetsByHost = `-- name: ListMonitorTargetsByHost :many
+SELECT id, exporter_type, scrape_port, managed_enabled, install_status, install_message, last_scrape_status
+FROM monitor_target
+WHERE host_id = ?
+  AND (? IS NULL OR exporter_type = ?)
+ORDER BY exporter_type
+`
+
+type ListMonitorTargetsByHostParams struct {
+	HostID       int64          `json:"host_id"`
+	ExporterType sql.NullString `json:"exporter_type"`
+}
+
+type ListMonitorTargetsByHostRow struct {
+	ID               int64  `json:"id"`
+	ExporterType     string `json:"exporter_type"`
+	ScrapePort       uint32 `json:"scrape_port"`
+	ManagedEnabled   bool   `json:"managed_enabled"`
+	InstallStatus    string `json:"install_status"`
+	InstallMessage   string `json:"install_message"`
+	LastScrapeStatus string `json:"last_scrape_status"`
+}
+
+// managed_enabled 是 monitor_target 表里 TINYINT(1) 列，schema 里已按约定标成 BOOLEAN，
+// 这里生成的 struct 字段就是真正的 Go bool，取代 monitor 包里手写的 map[string]any 扫描。
+func (q *Queries) ListMonitorTargetsByHost(ctx context.Context, arg ListMonitorTargetsByHostParams) ([]ListMonitorTargetsByHostRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMonitorTargetsByHost, arg.HostID, arg.ExporterType, arg.ExporterType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMonitorTargetsByHostRow{}
+	for rows.Next() {
+		var i ListMonitorTargetsByHostRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ExporterType,
+			&i.ScrapePort,
+			&i.ManagedEnabled,
+			&i.InstallStatus,
+			&i.InstallMessage,
+			&i.LastScrapeStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenSearchClustersTyped = `-- name: ListOpenSearchClustersTyped :many
+SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
+       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
+       remark, storage_sync_error, storage_sync_status, storage_sync_time
+FROM monitor_opensearch_cluster
+WHERE (? IS NULL OR enabled = ?)
+  AND (? IS NULL OR is_default = ?)
+  AND (? IS NULL OR name LIKE ? OR hosts LIKE ? OR remark LIKE ?)
+ORDER BY is_default DESC, id ASC
+LIMIT ? OFFSET ?
+`
+
+type ListOpenSearchClustersTypedParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
+}
+
+func (q *Queries) ListOpenSearchClustersTyped(ctx context.Context, arg ListOpenSearchClustersTypedParams) ([]MonitorOpensearchCluster, error) {
+	rows, err := q.db.QueryContext(ctx, listOpenSearchClustersTyped,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorOpensearchCluster{}
+	for rows.Next() {
+		var i MonitorOpensearchCluster
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Name,
+			&i.Hosts,
+			&i.Username,
+			&i.Password,
+			&i.VerifyTls,
+			&i.CaCert,
+			&i.IndexPrefix,
+			&i.RequestTimeout,
+			&i.Enabled,
+			&i.IsDefault,
+			&i.LastCheckTime,
+			&i.LastCheckSuccess,
+			&i.LastCheckMessage,
+			&i.Remark,
+			&i.StorageSyncError,
+			&i.StorageSyncStatus,
+			&i.StorageSyncTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSoftwarePackages = `-- name: ListSoftwarePackages :many
+SELECT p.id, p.create_time, p.update_time, p.remark, p.name, p.version, p.os, p.arch, p.file, p.sha256,
+       p.size_bytes, p.enabled, p.service_file_content, p.service_run_as_group, p.service_run_as_user,
+       p.install_playbook_template_id, p.uninstall_playbook_template_id, p.work_directory, p.default_port,
+       p.package_format, p.platform_family, p.platform_major, p.package_type,
+       COALESCE(i.name,'') AS install_playbook_template_name, COALESCE(i.content,'') AS install_playbook_content,
+       COALESCE(u.name,'') AS uninstall_playbook_template_name, COALESCE(u.content,'') AS uninstall_playbook_content
+FROM monitor_software_package p
+LEFT JOIN automation_playbook_template i ON i.id = p.install_playbook_template_id
+LEFT JOIN automation_playbook_template u ON u.id = p.uninstall_playbook_template_id
+WHERE (? IS NULL OR p.package_type = ?)
+  AND (? IS NULL OR p.name = ?)
+  AND (? IS NULL OR p.version = ?)
+  AND (? IS NULL OR p.os = ?)
+  AND (? IS NULL OR p.arch = ?)
+  AND (? IS NULL OR p.enabled = ?)
+  AND (? IS NULL OR p.name LIKE ? OR p.version LIKE ?)
+ORDER BY p.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListSoftwarePackagesParams struct {
+	PackageType sql.NullString `json:"package_type"`
+	Name        sql.NullString `json:"name"`
+	Version     sql.NullString `json:"version"`
+	Os          sql.NullString `json:"os"`
+	Arch        sql.NullString `json:"arch"`
+	Enabled     sql.NullBool   `json:"enabled"`
+	Pattern     sql.NullString `json:"pattern"`
+	Limit       int32          `json:"limit"`
+	Offset      int32          `json:"offset"`
+}
+
+type ListSoftwarePackagesRow struct {
+	ID                            int64          `json:"id"`
+	CreateTime                    time.Time      `json:"create_time"`
+	UpdateTime                    time.Time      `json:"update_time"`
+	Remark                        sql.NullString `json:"remark"`
+	Name                          string         `json:"name"`
+	Version                       string         `json:"version"`
+	Os                            string         `json:"os"`
+	Arch                          string         `json:"arch"`
+	File                          string         `json:"file"`
+	Sha256                        string         `json:"sha256"`
+	SizeBytes                     int64          `json:"size_bytes"`
+	Enabled                       bool           `json:"enabled"`
+	ServiceFileContent            string         `json:"service_file_content"`
+	ServiceRunAsGroup             string         `json:"service_run_as_group"`
+	ServiceRunAsUser              string         `json:"service_run_as_user"`
+	InstallPlaybookTemplateID     sql.NullInt64  `json:"install_playbook_template_id"`
+	UninstallPlaybookTemplateID   sql.NullInt64  `json:"uninstall_playbook_template_id"`
+	WorkDirectory                 string         `json:"work_directory"`
+	DefaultPort                   uint32         `json:"default_port"`
+	PackageFormat                 string         `json:"package_format"`
+	PlatformFamily                string         `json:"platform_family"`
+	PlatformMajor                 string         `json:"platform_major"`
+	PackageType                   string         `json:"package_type"`
+	InstallPlaybookTemplateName   string         `json:"install_playbook_template_name"`
+	InstallPlaybookContent        string         `json:"install_playbook_content"`
+	UninstallPlaybookTemplateName string         `json:"uninstall_playbook_template_name"`
+	UninstallPlaybookContent      string         `json:"uninstall_playbook_content"`
+}
+
+func (q *Queries) ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSoftwarePackages,
+		arg.PackageType,
+		arg.PackageType,
+		arg.Name,
+		arg.Name,
+		arg.Version,
+		arg.Version,
+		arg.Os,
+		arg.Os,
+		arg.Arch,
+		arg.Arch,
+		arg.Enabled,
+		arg.Enabled,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSoftwarePackagesRow{}
+	for rows.Next() {
+		var i ListSoftwarePackagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Version,
+			&i.Os,
+			&i.Arch,
+			&i.File,
+			&i.Sha256,
+			&i.SizeBytes,
+			&i.Enabled,
+			&i.ServiceFileContent,
+			&i.ServiceRunAsGroup,
+			&i.ServiceRunAsUser,
+			&i.InstallPlaybookTemplateID,
+			&i.UninstallPlaybookTemplateID,
+			&i.WorkDirectory,
+			&i.DefaultPort,
+			&i.PackageFormat,
+			&i.PlatformFamily,
+			&i.PlatformMajor,
+			&i.PackageType,
+			&i.InstallPlaybookTemplateName,
+			&i.InstallPlaybookContent,
+			&i.UninstallPlaybookTemplateName,
+			&i.UninstallPlaybookContent,
 		); err != nil {
 			return nil, err
 		}

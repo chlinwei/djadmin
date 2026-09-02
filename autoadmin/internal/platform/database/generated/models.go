@@ -366,6 +366,137 @@ type AuditOperationLog struct {
 	ResponseData string        `json:"response_data"`
 }
 
+type AutomationExecutionJob struct {
+	ID                      int64           `json:"id"`
+	CreateTime              time.Time       `json:"create_time"`
+	UpdateTime              time.Time       `json:"update_time"`
+	Remark                  sql.NullString  `json:"remark"`
+	JobID                   string          `json:"job_id"`
+	Status                  string          `json:"status"`
+	TriggerType             string          `json:"trigger_type"`
+	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
+	ExtraVars               json.RawMessage `json:"extra_vars"`
+	ResultSummary           json.RawMessage `json:"result_summary"`
+	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername       string          `json:"requested_username"`
+	StartTime               sql.NullTime    `json:"start_time"`
+	EndTime                 sql.NullTime    `json:"end_time"`
+	DurationSeconds         sql.NullFloat64 `json:"duration_seconds"`
+	TaskID                  sql.NullInt64   `json:"task_id"`
+	TemplateContentSnapshot string          `json:"template_content_snapshot"`
+	TaskNameSnapshot        string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
+	Limit                   string          `json:"limit"`
+	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
+}
+
+type AutomationInventory struct {
+	ID                 int64           `json:"id"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	Name               string          `json:"name"`
+	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
+	Enabled            bool            `json:"enabled"`
+	LastSyncHostCount  uint32          `json:"last_sync_host_count"`
+	LastSyncMessage    string          `json:"last_sync_message"`
+	LastSyncStatus     string          `json:"last_sync_status"`
+	LastSyncTime       sql.NullTime    `json:"last_sync_time"`
+	UpdateCacheTimeout uint32          `json:"update_cache_timeout"`
+	UpdateOnLaunch     bool            `json:"update_on_launch"`
+}
+
+type AutomationPlaybookTemplate struct {
+	ID          int64          `json:"id"`
+	CreateTime  time.Time      `json:"create_time"`
+	UpdateTime  time.Time      `json:"update_time"`
+	Remark      sql.NullString `json:"remark"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Content     string         `json:"content"`
+	Category    string         `json:"category"`
+}
+
+type AutomationTask struct {
+	ID                      int64           `json:"id"`
+	CreateTime              time.Time       `json:"create_time"`
+	UpdateTime              time.Time       `json:"update_time"`
+	Remark                  sql.NullString  `json:"remark"`
+	Name                    string          `json:"name"`
+	EnvVars                 json.RawMessage `json:"env_vars"`
+	Enabled                 bool            `json:"enabled"`
+	InventoryID             sql.NullInt64   `json:"inventory_id"`
+	DefaultLimit            string          `json:"default_limit"`
+	ExecutionTimeoutSeconds uint32          `json:"execution_timeout_seconds"`
+	PlaybookTemplateID      sql.NullInt64   `json:"playbook_template_id"`
+	RunAsUser               string          `json:"run_as_user"`
+	RunAsGroup              string          `json:"run_as_group"`
+	WorkDirectory           string          `json:"work_directory"`
+}
+
+type InspectionCheck struct {
+	ID                int64           `json:"id"`
+	CreateTime        time.Time       `json:"create_time"`
+	UpdateTime        time.Time       `json:"update_time"`
+	Remark            sql.NullString  `json:"remark"`
+	Name              string          `json:"name"`
+	Executor          string          `json:"executor"`
+	Config            json.RawMessage `json:"config"`
+	Enabled           bool            `json:"enabled"`
+	Order             uint32          `json:"order"`
+	GroupID           int64           `json:"group_id"`
+	Severity          string          `json:"severity"`
+	ExecutionLocation string          `json:"execution_location"`
+}
+
+type InspectionExecution struct {
+	ID                int64           `json:"id"`
+	CreateTime        time.Time       `json:"create_time"`
+	UpdateTime        time.Time       `json:"update_time"`
+	Remark            sql.NullString  `json:"remark"`
+	Status            string          `json:"status"`
+	TaskSnapshot      json.RawMessage `json:"task_snapshot"`
+	GroupSnapshot     json.RawMessage `json:"group_snapshot"`
+	ServiceSnapshot   json.RawMessage `json:"service_snapshot"`
+	TargetSnapshot    json.RawMessage `json:"target_snapshot"`
+	Summary           json.RawMessage `json:"summary"`
+	RequestedUserID   sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername string          `json:"requested_username"`
+	StartTime         sql.NullTime    `json:"start_time"`
+	EndTime           sql.NullTime    `json:"end_time"`
+	TaskID            sql.NullInt64   `json:"task_id"`
+	TriggerType       string          `json:"trigger_type"`
+}
+
+type InspectionGroup struct {
+	ID          int64          `json:"id"`
+	CreateTime  time.Time      `json:"create_time"`
+	UpdateTime  time.Time      `json:"update_time"`
+	Remark      sql.NullString `json:"remark"`
+	Name        string         `json:"name"`
+	Scope       string         `json:"scope"`
+	Description string         `json:"description"`
+	Enabled     bool           `json:"enabled"`
+}
+
+type InspectionResult struct {
+	ID            int64           `json:"id"`
+	CreateTime    time.Time       `json:"create_time"`
+	UpdateTime    time.Time       `json:"update_time"`
+	Remark        sql.NullString  `json:"remark"`
+	CheckKey      string          `json:"check_key"`
+	CheckType     string          `json:"check_type"`
+	Name          string          `json:"name"`
+	Status        string          `json:"status"`
+	ExpectedValue json.RawMessage `json:"expected_value"`
+	ActualValue   json.RawMessage `json:"actual_value"`
+	Message       string          `json:"message"`
+	TargetID      int64           `json:"target_id"`
+	Severity      string          `json:"severity"`
+}
+
 type InspectionTargetExecution struct {
 	ID              int64           `json:"id"`
 	CreateTime      time.Time       `json:"create_time"`
@@ -386,6 +517,46 @@ type InspectionTargetExecution struct {
 	EndTime         sql.NullTime    `json:"end_time"`
 }
 
+type InspectionTask struct {
+	ID               int64           `json:"id"`
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Name             string          `json:"name"`
+	Concurrency      uint32          `json:"concurrency"`
+	TimeoutSeconds   uint32          `json:"timeout_seconds"`
+	Enabled          bool            `json:"enabled"`
+	GroupID          int64           `json:"group_id"`
+	LogicalServiceID sql.NullInt64   `json:"logical_service_id"`
+	CronExpression   string          `json:"cron_expression"`
+	LastRunTime      sql.NullTime    `json:"last_run_time"`
+	NextRunTime      sql.NullTime    `json:"next_run_time"`
+	InspectionName   string          `json:"inspection_name"`
+	SelectedHostIds  json.RawMessage `json:"selected_host_ids"`
+}
+
+type MonitorAlertHistory struct {
+	ID                       int64           `json:"id"`
+	CreateTime               time.Time       `json:"create_time"`
+	UpdateTime               time.Time       `json:"update_time"`
+	Remark                   sql.NullString  `json:"remark"`
+	Fingerprint              string          `json:"fingerprint"`
+	Alertname                string          `json:"alertname"`
+	Severity                 string          `json:"severity"`
+	Instance                 string          `json:"instance"`
+	Labels                   json.RawMessage `json:"labels"`
+	Annotations              json.RawMessage `json:"annotations"`
+	GeneratorUrl             string          `json:"generator_url"`
+	State                    string          `json:"state"`
+	StartedAt                time.Time       `json:"started_at"`
+	ResolvedAt               sql.NullTime    `json:"resolved_at"`
+	LastSeenAt               time.Time       `json:"last_seen_at"`
+	ResolvedByReconciliation bool            `json:"resolved_by_reconciliation"`
+	RuleGroup                string          `json:"rule_group"`
+	RuleSnapshot             json.RawMessage `json:"rule_snapshot"`
+	Source                   string          `json:"source"`
+}
+
 type MonitorAlertMedium struct {
 	ID         int64           `json:"id"`
 	CreateTime time.Time       `json:"create_time"`
@@ -398,6 +569,35 @@ type MonitorAlertMedium struct {
 	Recipients json.RawMessage `json:"recipients"`
 }
 
+type MonitorAlertNotificationDelivery struct {
+	ID           int64          `json:"id"`
+	CreateTime   time.Time      `json:"create_time"`
+	UpdateTime   time.Time      `json:"update_time"`
+	Remark       sql.NullString `json:"remark"`
+	Address      string         `json:"address"`
+	Status       string         `json:"status"`
+	AttemptCount uint32         `json:"attempt_count"`
+	ErrorMessage string         `json:"error_message"`
+	SentAt       sql.NullTime   `json:"sent_at"`
+	EventID      int64          `json:"event_id"`
+	MediaID      sql.NullInt64  `json:"media_id"`
+	UserID       sql.NullInt32  `json:"user_id"`
+}
+
+type MonitorAlertNotificationEvent struct {
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	EventType        string         `json:"event_type"`
+	DeduplicationKey string         `json:"deduplication_key"`
+	Status           string         `json:"status"`
+	AttemptCount     uint32         `json:"attempt_count"`
+	ErrorMessage     string         `json:"error_message"`
+	SentAt           sql.NullTime   `json:"sent_at"`
+	AlertID          int64          `json:"alert_id"`
+}
+
 type MonitorAlertRoute struct {
 	ID               int64           `json:"id"`
 	CreateTime       time.Time       `json:"create_time"`
@@ -408,6 +608,143 @@ type MonitorAlertRoute struct {
 	Matchers         json.RawMessage `json:"matchers"`
 	NotifyOnFiring   bool            `json:"notify_on_firing"`
 	NotifyOnResolved bool            `json:"notify_on_resolved"`
+}
+
+type MonitorLogCollectionFilterRule struct {
+	ID            int64          `json:"id"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Pattern       string         `json:"pattern"`
+	Enabled       bool           `json:"enabled"`
+	ApplicationID sql.NullInt64  `json:"application_id"`
+}
+
+type MonitorLogProcessingRule struct {
+	ID                  int64           `json:"id"`
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	Name                string          `json:"name"`
+	Description         string          `json:"description"`
+	InputFormat         string          `json:"input_format"`
+	MultilineEnabled    bool            `json:"multiline_enabled"`
+	StartPattern        string          `json:"start_pattern"`
+	ContinuationPattern string          `json:"continuation_pattern"`
+	FlushTimeout        uint32          `json:"flush_timeout"`
+	PipelineBody        json.RawMessage `json:"pipeline_body"`
+	ClusterID           int64           `json:"cluster_id"`
+	ApplicationID       sql.NullInt64   `json:"application_id"`
+}
+
+type MonitorLogRetentionTier struct {
+	ID                  int64     `json:"id"`
+	CreateTime          time.Time `json:"create_time"`
+	UpdateTime          time.Time `json:"update_time"`
+	Code                string    `json:"code"`
+	Name                string    `json:"name"`
+	DailySizeGb         float64   `json:"daily_size_gb"`
+	RetentionDays       uint32    `json:"retention_days"`
+	RolloverMinIndexAge string    `json:"rollover_min_index_age"`
+	Enabled             bool      `json:"enabled"`
+	IsDefault           bool      `json:"is_default"`
+	Remark              string    `json:"remark"`
+}
+
+type MonitorOpensearchCluster struct {
+	ID                int64        `json:"id"`
+	CreateTime        time.Time    `json:"create_time"`
+	UpdateTime        time.Time    `json:"update_time"`
+	Name              string       `json:"name"`
+	Hosts             string       `json:"hosts"`
+	Username          string       `json:"username"`
+	Password          string       `json:"password"`
+	VerifyTls         bool         `json:"verify_tls"`
+	CaCert            string       `json:"ca_cert"`
+	IndexPrefix       string       `json:"index_prefix"`
+	RequestTimeout    uint32       `json:"request_timeout"`
+	Enabled           bool         `json:"enabled"`
+	IsDefault         bool         `json:"is_default"`
+	LastCheckTime     sql.NullTime `json:"last_check_time"`
+	LastCheckSuccess  sql.NullBool `json:"last_check_success"`
+	LastCheckMessage  string       `json:"last_check_message"`
+	Remark            string       `json:"remark"`
+	StorageSyncError  string       `json:"storage_sync_error"`
+	StorageSyncStatus string       `json:"storage_sync_status"`
+	StorageSyncTime   sql.NullTime `json:"storage_sync_time"`
+}
+
+type MonitorSoftwarePackage struct {
+	ID                          int64          `json:"id"`
+	CreateTime                  time.Time      `json:"create_time"`
+	UpdateTime                  time.Time      `json:"update_time"`
+	Remark                      sql.NullString `json:"remark"`
+	Name                        string         `json:"name"`
+	Version                     string         `json:"version"`
+	Os                          string         `json:"os"`
+	Arch                        string         `json:"arch"`
+	File                        string         `json:"file"`
+	Sha256                      string         `json:"sha256"`
+	SizeBytes                   int64          `json:"size_bytes"`
+	Enabled                     bool           `json:"enabled"`
+	ServiceFileContent          string         `json:"service_file_content"`
+	ServiceRunAsGroup           string         `json:"service_run_as_group"`
+	ServiceRunAsUser            string         `json:"service_run_as_user"`
+	InstallPlaybookTemplateID   sql.NullInt64  `json:"install_playbook_template_id"`
+	UninstallPlaybookTemplateID sql.NullInt64  `json:"uninstall_playbook_template_id"`
+	WorkDirectory               string         `json:"work_directory"`
+	DefaultPort                 uint32         `json:"default_port"`
+	PackageFormat               string         `json:"package_format"`
+	PlatformFamily              string         `json:"platform_family"`
+	PlatformMajor               string         `json:"platform_major"`
+	PackageType                 string         `json:"package_type"`
+}
+
+type MonitorTarget struct {
+	ID                 int64           `json:"id"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	ExporterType       string          `json:"exporter_type"`
+	ManagedEnabled     bool            `json:"managed_enabled"`
+	InstallStatus      string          `json:"install_status"`
+	InstallMessage     string          `json:"install_message"`
+	LastScrapeStatus   string          `json:"last_scrape_status"`
+	LastScrapeAt       sql.NullTime    `json:"last_scrape_at"`
+	Labels             json.RawMessage `json:"labels"`
+	HostID             int64           `json:"host_id"`
+	RetryCount         uint32          `json:"retry_count"`
+	LastDispatchManual bool            `json:"last_dispatch_manual"`
+	ScrapePort         uint32          `json:"scrape_port"`
+}
+
+type MonitorTargetInstallHistory struct {
+	ID                        int64           `json:"id"`
+	CreateTime                time.Time       `json:"create_time"`
+	UpdateTime                time.Time       `json:"update_time"`
+	Remark                    sql.NullString  `json:"remark"`
+	Action                    string          `json:"action"`
+	TriggerType               string          `json:"trigger_type"`
+	Status                    string          `json:"status"`
+	HostIDSnapshot            sql.NullInt32   `json:"host_id_snapshot"`
+	HostNameSnapshot          string          `json:"host_name_snapshot"`
+	HostIpSnapshot            string          `json:"host_ip_snapshot"`
+	ExporterTypeSnapshot      string          `json:"exporter_type_snapshot"`
+	SummaryMessage            string          `json:"summary_message"`
+	StdoutSnapshot            string          `json:"stdout_snapshot"`
+	StderrSnapshot            string          `json:"stderr_snapshot"`
+	ErrorMessageSnapshot      string          `json:"error_message_snapshot"`
+	ResultSummarySnapshot     json.RawMessage `json:"result_summary_snapshot"`
+	RequestedUserIDSnapshot   sql.NullInt32   `json:"requested_user_id_snapshot"`
+	RequestedUsernameSnapshot string          `json:"requested_username_snapshot"`
+	StartTime                 sql.NullTime    `json:"start_time"`
+	EndTime                   sql.NullTime    `json:"end_time"`
+	DurationSeconds           sql.NullFloat64 `json:"duration_seconds"`
+	HostID                    sql.NullInt64   `json:"host_id"`
+	TargetID                  sql.NullInt64   `json:"target_id"`
+	LogCollectionTargetID     sql.NullInt64   `json:"log_collection_target_id"`
 }
 
 type SchedulerScheduledtask struct {

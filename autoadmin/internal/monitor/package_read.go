@@ -2,9 +2,6 @@ package monitor
 
 import (
 	"database/sql"
-	"strings"
-
-	"autoadmin/internal/api/response"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,39 +29,4 @@ func (handler *Handler) loadSoftwarePackage(context *gin.Context, id int64) (sof
 		&item.ServiceRunAsUser, &item.ServiceRunAsGroup,
 	)
 	return item, err
-}
-
-func (handler *Handler) GetSoftwarePackage(context *gin.Context) {
-	handler.respondSoftwarePackage(context, parseID(context.Param("id")))
-}
-
-func (handler *Handler) respondSoftwarePackage(context *gin.Context, id int64) {
-	rows, err := handler.db.QueryContext(context, `SELECT p.*,COALESCE(i.name,'') AS install_playbook_template_name,COALESCE(i.content,'') AS install_playbook_content,COALESCE(u.name,'') AS uninstall_playbook_template_name,COALESCE(u.content,'') AS uninstall_playbook_content FROM monitor_software_package p LEFT JOIN automation_playbook_template i ON i.id=p.install_playbook_template_id LEFT JOIN automation_playbook_template u ON u.id=p.uninstall_playbook_template_id WHERE p.id=?`, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if len(items) == 0 {
-		response.BusinessError(context, 404, "software package not found", nil)
-		return
-	}
-	decorateSoftwarePackage(items[0])
-	response.Success(context, items[0])
-}
-
-func decorateSoftwarePackage(item gin.H) {
-	fileName := stringValue(item["file"])
-	item["download_url"] = ""
-	item["file_name"] = ""
-	if fileName != "" {
-		item["download_url"] = "/media/" + strings.TrimLeft(fileName, "/")
-		parts := strings.Split(fileName, "/")
-		item["file_name"] = parts[len(parts)-1]
-	}
-	item["synced"] = fileName != "" && stringValue(item["sha256"]) != ""
 }

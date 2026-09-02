@@ -22,6 +22,7 @@ import (
 
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -958,19 +959,13 @@ func (handler *Handler) persistTargetResults(ctx context.Context, jobID int64, h
 	}
 }
 func (handler *Handler) inventoryByID(ctx context.Context, id int64) (gin.H, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT * FROM automation_inventory WHERE id=?`, id)
+	row, err := db.New(handler.db).GetInventoryTyped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	items, err := scanAutomationRows(rows)
-	if err != nil || len(items) == 0 {
-		if err == nil {
-			err = sql.ErrNoRows
-		}
-		return nil, err
-	}
-	handler.decorateInventoryContext(ctx, items[0])
-	return items[0], nil
+	item := inventoryRowToMap(row)
+	handler.decorateInventoryContext(ctx, item)
+	return item, nil
 }
 func (handler *Handler) decorateInventoryContext(ctx context.Context, item gin.H) {
 	hostIDs := intSlice(item["selected_host_ids"])
@@ -997,38 +992,21 @@ func (handler *Handler) decorateInventoryContext(ctx context.Context, item gin.H
 	}
 }
 func (handler *Handler) taskByID(ctx context.Context, id int64) (gin.H, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT t.*,p.name AS template_name,p.content AS template_content,COALESCE(i.name,'') AS inventory_name FROM automation_task t JOIN automation_playbook_template p ON p.id=t.playbook_template_id LEFT JOIN automation_inventory i ON i.id=t.inventory_id WHERE t.id=?`, id)
+	row, err := db.New(handler.db).GetTaskTyped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	items, err := scanAutomationRows(rows)
-	if err != nil || len(items) == 0 {
-		if err == nil {
-			err = sql.ErrNoRows
-		}
-		return nil, err
-	}
-	item := items[0]
-	item["playbook_template"] = item["playbook_template_id"]
-	item["inventory"] = item["inventory_id"]
-	return item, nil
+	return taskRowToMapFromGet(row), nil
 }
 func (handler *Handler) jobByID(context *gin.Context, id int64) (gin.H, error) {
 	return handler.jobByIDContext(context, id)
 }
 func (handler *Handler) jobByIDContext(ctx context.Context, id int64) (gin.H, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT j.*,COALESCE(t.execution_timeout_seconds,600) AS execution_timeout_seconds FROM automation_execution_job j LEFT JOIN automation_task t ON t.id=j.task_id WHERE j.id=?`, id)
+	row, err := db.New(handler.db).GetJobTyped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	items, err := scanAutomationRows(rows)
-	if err != nil || len(items) == 0 {
-		if err == nil {
-			err = sql.ErrNoRows
-		}
-		return nil, err
-	}
-	item := items[0]
+	item := jobRowToMapTyped(row)
 	item["job_id"], item["template_name"], item["task_name"] = item["id"], item["template_name_snapshot"], item["task_name_snapshot"]
 	return item, nil
 }

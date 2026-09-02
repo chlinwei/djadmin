@@ -150,6 +150,11 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			exists = "NOT " + exists
 		}
 		clauses = append(clauses, exists)
+	} else if exporterType != "" {
+		// 单独选中某个 Exporter、不搭配"已纳管/未纳管"时，也要把主机列表收窄到"纳管过这个 exporter"，
+		// 否则下拉只是摆设——选了也不过滤，用户看到的还是全部主机。
+		clauses = append(clauses, "EXISTS(SELECT 1 FROM monitor_target mt WHERE mt.host_id=h.id AND mt.exporter_type=?)")
+		arguments = append(arguments, exporterType)
 	}
 	if fluentManaged := strings.TrimSpace(context.Query("fluent_bit_managed")); fluentManaged == "true" {
 		clauses = append(clauses, "EXISTS(SELECT 1 FROM monitor_log_collection_target lc WHERE lc.host_id=h.id AND lc.agent_installed=TRUE)")
@@ -263,68 +268,6 @@ func (handler *Handler) descendantGroupIDs(context *gin.Context, root string) ([
 	return result, nil
 }
 
-func (handler *Handler) ListInstallHistories(context *gin.Context) {
-	handler.installHistories(context, 0)
-}
-func (handler *Handler) GetInstallHistory(context *gin.Context) {
-	handler.installHistories(context, parseID(context.Param("id")))
-}
-
-func (handler *Handler) installHistories(context *gin.Context, id int64) {
-	page, size := pagination(context)
-	clauses, arguments := []string{"1=1"}, make([]any, 0)
-	if id > 0 {
-		clauses = append(clauses, "ih.id=?")
-		arguments = append(arguments, id)
-	}
-	for queryName, column := range map[string]string{"target_id": "ih.target_id", "log_collection_target_id": "ih.log_collection_target_id", "action": "ih.action", "trigger_type": "ih.trigger_type", "status": "ih.status"} {
-		if value := strings.TrimSpace(context.Query(queryName)); value != "" {
-			clauses = append(clauses, column+"=?")
-			arguments = append(arguments, value)
-		}
-	}
-	if keyword := strings.TrimSpace(context.Query("keyword")); keyword != "" {
-		pattern := "%" + keyword + "%"
-		clauses = append(clauses, "(ih.host_name_snapshot LIKE ? OR ih.host_ip_snapshot LIKE ? OR ih.exporter_type_snapshot LIKE ? OR ih.summary_message LIKE ?)")
-		arguments = append(arguments, pattern, pattern, pattern, pattern)
-	}
-	if value := strings.TrimSpace(context.Query("start_time")); value != "" {
-		clauses = append(clauses, "ih.create_time>=?")
-		arguments = append(arguments, value)
-	}
-	if value := strings.TrimSpace(context.Query("end_time")); value != "" {
-		clauses = append(clauses, "ih.create_time<=?")
-		arguments = append(arguments, value)
-	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	base := ` FROM monitor_target_install_history ih LEFT JOIN assets_host h ON h.id=ih.host_id LEFT JOIN monitor_target mt ON mt.id=ih.target_id`
-	count, err := queryCount(context, handler.db, "SELECT COUNT(*)"+base+where, arguments)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, `SELECT ih.*,COALESCE(h.instance_name,ih.host_name_snapshot) AS host_name,COALESCE(h.ip,ih.host_ip_snapshot) AS host_ip,COALESCE(mt.exporter_type,ih.exporter_type_snapshot) AS target_exporter_type,COALESCE(ih.target_id,ih.log_collection_target_id) AS managed_target_id,CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'fluent_bit' END AS target_type`+base+where+` ORDER BY ih.id DESC LIMIT ? OFFSET ?`, queryArguments...)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if id > 0 {
-		if len(items) == 0 {
-			response.BusinessError(context, 404, "install history not found", nil)
-			return
-		}
-		response.Success(context, items[0])
-		return
-	}
-	paginated(context, items, count, page, size)
-}
-
 func (handler *Handler) CancelInstallHistory(context *gin.Context) {
 	id := parseID(context.Param("id"))
 	if id == 0 {
@@ -374,123 +317,6 @@ func (handler *Handler) CancelInstallHistory(context *gin.Context) {
 		return
 	}
 	handler.installHistories(context, id)
-}
-
-func (handler *Handler) ListAlertHistories(context *gin.Context) { handler.alertHistories(context, 0) }
-func (handler *Handler) GetAlertHistory(context *gin.Context) {
-	handler.alertHistories(context, parseID(context.Param("id")))
-}
-
-func (handler *Handler) alertHistories(context *gin.Context, id int64) {
-	page, size := pagination(context)
-	clauses, arguments := []string{"1=1"}, make([]any, 0)
-	if id > 0 {
-		clauses = append(clauses, "ah.id=?")
-		arguments = append(arguments, id)
-	}
-	for queryName, column := range map[string]string{"state": "ah.state", "severity": "ah.severity"} {
-		if value := strings.TrimSpace(context.Query(queryName)); value != "" {
-			clauses = append(clauses, column+"=?")
-			arguments = append(arguments, value)
-		}
-	}
-	if keyword := strings.TrimSpace(context.Query("keyword")); keyword != "" {
-		pattern := "%" + keyword + "%"
-		clauses = append(clauses, "(ah.alertname LIKE ? OR ah.instance LIKE ?)")
-		arguments = append(arguments, pattern, pattern)
-	}
-	if value := strings.TrimSpace(context.Query("start_time")); value != "" {
-		clauses = append(clauses, "ah.started_at>=?")
-		arguments = append(arguments, value)
-	}
-	if value := strings.TrimSpace(context.Query("end_time")); value != "" {
-		clauses = append(clauses, "ah.started_at<=?")
-		arguments = append(arguments, value)
-	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	count, err := queryCount(context, handler.db, `SELECT COUNT(*) FROM monitor_alert_history ah`+where, arguments)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, `SELECT ah.*,(SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id=ah.id) AS notification_count,(SELECT COUNT(*) FROM monitor_alert_notification_delivery nd JOIN monitor_alert_notification_event ne ON ne.id=nd.event_id WHERE ne.alert_id=ah.id) AS notification_delivery_count,(SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id=ah.id AND ne.status='failed') AS notification_failed_count,(SELECT COUNT(*) FROM monitor_alert_notification_event ne WHERE ne.alert_id=ah.id AND ne.status IN ('pending','sending')) AS notification_active_count FROM monitor_alert_history ah`+where+` ORDER BY ah.started_at DESC,ah.id DESC LIMIT ? OFFSET ?`, queryArguments...)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	for _, item := range items {
-		item["rule_details"] = item["rule_snapshot"]
-		item["notification_status"] = notificationStatus(item)
-		delete(item, "notification_failed_count")
-		delete(item, "notification_active_count")
-	}
-	if id > 0 {
-		if len(items) == 0 {
-			response.BusinessError(context, 404, "alert history not found", nil)
-			return
-		}
-		response.Success(context, items[0])
-		return
-	}
-	paginated(context, items, count, page, size)
-}
-
-func notificationStatus(item gin.H) string {
-	count := intValue(item["notification_count"])
-	if count == 0 {
-		return "none"
-	}
-	failed, active, delivery := intValue(item["notification_failed_count"]), intValue(item["notification_active_count"]), intValue(item["notification_delivery_count"])
-	if failed > 0 || (active == 0 && delivery == 0) {
-		return "failed"
-	}
-	if active > 0 {
-		return "in_progress"
-	}
-	return "success"
-}
-
-func (handler *Handler) AlertNotificationStatus(context *gin.Context) {
-	id := parseID(context.Param("id"))
-	var alertname, instance string
-	if err := handler.db.QueryRowContext(context, `SELECT alertname,instance FROM monitor_alert_history WHERE id=?`, id).Scan(&alertname, &instance); err != nil {
-		response.Error(context, err)
-		return
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT * FROM monitor_alert_notification_event WHERE alert_id=? ORDER BY create_time DESC,id DESC`, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	events, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	for _, event := range events {
-		deliveryRows, queryErr := handler.db.QueryContext(context, `SELECT d.id,d.user_id,COALESCE(u.username,'-') AS username,d.media_id,COALESCE(m.name,'-') AS media_name,COALESCE(m.media_type,'-') AS media_type,d.address,d.status,d.attempt_count,d.error_message,d.sent_at,d.create_time FROM monitor_alert_notification_delivery d LEFT JOIN sys_user u ON u.id=d.user_id LEFT JOIN monitor_alert_media m ON m.id=d.media_id WHERE d.event_id=? ORDER BY d.id`, event["id"])
-		if queryErr != nil {
-			response.Error(context, queryErr)
-			return
-		}
-		deliveries, queryErr := scanRows(deliveryRows)
-		if queryErr != nil {
-			response.Error(context, queryErr)
-			return
-		}
-		event["deliveries"] = deliveries
-		if len(deliveries) == 0 && stringValue(event["status"]) == "success" {
-			event["status"] = "failed"
-			event["error_message"] = "没有投递明细，无法确认实际接收用户、媒介和地址"
-		}
-	}
-	response.Success(context, gin.H{"alert_id": id, "alertname": alertname, "instance": instance, "events": events})
 }
 
 func parseID(value string) int64 {

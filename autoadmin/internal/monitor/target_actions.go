@@ -203,25 +203,118 @@ func (handler *Handler) StopTargetService(context *gin.Context) {
 
 func (handler *Handler) controlTargetService(context *gin.Context, action string) {
 	id := parseID(context.Param("id"))
+	result, err := handler.dispatchTargetServiceControl(context, id, action)
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
+	response.Success(context, result)
+}
+
+// dispatchTargetServiceControl 是 controlTargetService 与批量接口共用的下发核心，
+// 避免批量版本和单台版本的 systemctl 命令拼接逻辑各写一份、后续改一处漏一处。
+func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
 	var agentID, exporterType string
 	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.agent_id,''),t.exporter_type FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`, id).Scan(&agentID, &exporterType); err != nil {
-		response.Error(context, err)
-		return
+		return nil, fmt.Errorf("monitor target not found")
 	}
 	if handler.gateway == nil || !handler.gateway.IsOnline(agentID) {
-		response.BusinessError(context, 400, "host agent is offline", nil)
-		return
+		return nil, fmt.Errorf("host agent is offline")
 	}
 	if !serviceNamePattern.MatchString(exporterType) {
-		response.BusinessError(context, 400, "invalid exporter service name", nil)
-		return
+		return nil, fmt.Errorf("invalid exporter service name")
 	}
 	command := fmt.Sprintf("sudo systemctl %s %s.service", action, exporterType)
 	params, _ := json.Marshal(gin.H{"command": command})
 	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: "run_shell", ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
+		return nil, err
+	}
+	return gin.H{"job_id": result.JobId, "status": result.Status, "exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr, "error_message": result.ErrorMessage}, nil
+}
+
+// targetHostLabel 取一个 monitor_target 对应的主机展示名，批量接口的结果列表要按主机报告成功/失败。
+func targetHostLabel(context *gin.Context, db *sql.DB, id int64) string {
+	var name, ip sql.NullString
+	if err := db.QueryRowContext(context, `SELECT h.instance_name,h.ip FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`, id).Scan(&name, &ip); err != nil {
+		return fmt.Sprintf("target-%d", id)
+	}
+	if name.Valid && name.String != "" {
+		return name.String
+	}
+	if ip.Valid && ip.String != "" {
+		return ip.String
+	}
+	return fmt.Sprintf("target-%d", id)
+}
+
+func batchTargetIDs(context *gin.Context) ([]int64, bool) {
+	var input struct {
+		IDs []int64 `json:"ids"`
+	}
+	if context.ShouldBindJSON(&input) != nil || len(input.IDs) == 0 {
+		response.BusinessError(context, 400, "ids must be a non-empty array", nil)
+		return nil, false
+	}
+	return input.IDs, true
+}
+
+func (handler *Handler) BatchDeleteTargets(context *gin.Context) {
+	ids, ok := batchTargetIDs(context)
+	if !ok {
 		return
 	}
-	response.Success(context, gin.H{"job_id": result.JobId, "status": result.Status, "exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr, "error_message": result.ErrorMessage})
+	results := make([]gin.H, 0, len(ids))
+	success := 0
+	for _, id := range ids {
+		label := targetHostLabel(context, handler.db, id)
+		var enabled bool
+		var status string
+		if err := handler.db.QueryRowContext(context, `SELECT managed_enabled,install_status FROM monitor_target WHERE id=?`, id).Scan(&enabled, &status); err != nil {
+			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "monitor target not found"})
+			continue
+		}
+		if enabled {
+			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "disable the monitor target before deleting it"})
+			continue
+		}
+		if status == "pending" {
+			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": "wait for the uninstall task to finish before deleting"})
+			continue
+		}
+		if _, err := handler.db.ExecContext(context, `DELETE FROM monitor_target WHERE id=?`, id); err != nil {
+			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": err.Error()})
+			continue
+		}
+		success++
+		results = append(results, gin.H{"id": id, "host": label, "ok": true, "message": ""})
+	}
+	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+}
+
+func (handler *Handler) BatchStartTargetService(context *gin.Context) {
+	handler.batchControlTargetService(context, "start")
+}
+func (handler *Handler) BatchStopTargetService(context *gin.Context) {
+	handler.batchControlTargetService(context, "stop")
+}
+
+func (handler *Handler) batchControlTargetService(context *gin.Context, action string) {
+	ids, ok := batchTargetIDs(context)
+	if !ok {
+		return
+	}
+	results := make([]gin.H, 0, len(ids))
+	success := 0
+	for _, id := range ids {
+		label := targetHostLabel(context, handler.db, id)
+		detail, err := handler.dispatchTargetServiceControl(context, id, action)
+		if err != nil {
+			results = append(results, gin.H{"id": id, "host": label, "ok": false, "message": err.Error()})
+			continue
+		}
+		success++
+		results = append(results, gin.H{"id": id, "host": label, "ok": true, "message": "", "detail": detail})
+	}
+	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
 }

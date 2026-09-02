@@ -39,7 +39,7 @@
           <a-input-search
             v-model:value="filters.keyword"
             class="filter-item"
-            placeholder="搜索日志内容"
+            placeholder="Lucene表达式"
             allow-clear
             size="large"
             @search="handleFilterChange"

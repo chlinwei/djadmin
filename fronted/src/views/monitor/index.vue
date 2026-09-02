@@ -67,99 +67,158 @@
           </div>
 
           <div class="fluent-bit-batch-bar">
-            <span class="fluent-bit-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
-            <a-space :size="8" wrap>
-              <a-tooltip title="为选中主机批量纳管并安装 Exporter" placement="top">
-                <a-button
-                  type="primary"
-                  size="small"
-                  :disabled="!overviewSelectedHostIds.length"
-                  @click="openExporterCreateModal"
+            <div class="fluent-bit-batch-bar__head">
+              <span class="fluent-bit-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
+              <a-segmented v-model:value="batchTargetKind" size="small" :options="batchTargetKindOptions" />
+            </div>
+
+            <div v-if="batchTargetKind === 'exporter'" class="batch-action-group">
+              <a-space :size="8" wrap>
+                <a-tooltip title="为选中主机批量纳管并安装 Exporter" placement="top">
+                  <a-button
+                    type="primary"
+                    size="small"
+                    :disabled="!overviewSelectedHostIds.length"
+                    @click="openExporterCreateModal"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                    &nbsp;装（{{ overviewSelectedHostIds.length }}）
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip
+                  :title="exporterFilterType ? '批量启动所选主机的 ' + exporterFilterType : '请先在上方选定具体 Exporter 类型'"
+                  placement="top"
                 >
-                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                  &nbsp;装 Exporter（{{ overviewSelectedHostIds.length }}）
-                </a-button>
-              </a-tooltip>
-              <a-divider type="vertical" />
-              <a-tooltip title="为选中的未纳管主机批量安装 Fluent Bit" placement="top">
-                <a-button
-                  type="primary"
-                  size="small"
-                  :disabled="!fluentBitSelectedUnmanaged.length"
-                  :loading="fluentBitBatchLoading === 'create'"
-                  @click="handleFluentBitBatchCreate"
+                  <a-button
+                    type="primary"
+                    ghost
+                    size="small"
+                    :disabled="!exporterSelectedManagedIds.length"
+                    :loading="exporterBatchLoading === 'start'"
+                    @click="handleExporterBatch('start')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'play']" />
+                    &nbsp;启动
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip
+                  :title="exporterFilterType ? '批量停止所选主机的 ' + exporterFilterType : '请先在上方选定具体 Exporter 类型'"
+                  placement="top"
                 >
-                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                  &nbsp;装 Fluent Bit（{{ fluentBitSelectedUnmanaged.length }}）
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="批量重新安装 Fluent Bit" placement="top">
-                <a-button
-                  type="primary"
-                  ghost
-                  size="small"
-                  :disabled="!fluentBitSelectedManagedIds.length"
-                  :loading="fluentBitBatchLoading === 'retry'"
-                  @click="handleFluentBitBatch('retry')"
+                  <a-button
+                    danger
+                    ghost
+                    size="small"
+                    :disabled="!exporterSelectedManagedIds.length"
+                    :loading="exporterBatchLoading === 'stop'"
+                    @click="handleExporterBatch('stop')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'stop']" />
+                    &nbsp;停止
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip
+                  :title="exporterFilterType ? '批量删除所选主机的 ' + exporterFilterType : '请先在上方选定具体 Exporter 类型'"
+                  placement="top"
                 >
-                  <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                  &nbsp;重新安装（{{ fluentBitSelectedManagedIds.length }}）
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="批量启动 Fluent Bit" placement="top">
-                <a-button
-                  type="primary"
-                  ghost
-                  size="small"
-                  :disabled="!fluentBitSelectedManagedIds.length"
-                  :loading="fluentBitBatchLoading === 'start'"
-                  @click="handleFluentBitBatch('start')"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'play']" />
-                  &nbsp;启动
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="批量停止 Fluent Bit" placement="top">
-                <a-button
-                  danger
-                  ghost
-                  size="small"
-                  :disabled="!fluentBitSelectedManagedIds.length"
-                  :loading="fluentBitBatchLoading === 'stop'"
-                  @click="handleFluentBitBatch('stop')"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'stop']" />
-                  &nbsp;停止
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="批量下发 Fluent Bit 配置" placement="top">
-                <a-button
-                  type="primary"
-                  ghost
-                  size="small"
-                  :disabled="!fluentBitSelectedManagedIds.length"
-                  :loading="fluentBitBatchLoading === 'apply'"
-                  @click="handleFluentBitBatch('apply')"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-                  &nbsp;下发配置
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="批量删除 Fluent Bit 目标" placement="top">
-                <a-button
-                  class="delBtn"
-                  danger
-                  type="primary"
-                  size="small"
-                  :disabled="!fluentBitSelectedManagedIds.length"
-                  :loading="fluentBitBatchLoading === 'delete'"
-                  @click="openFluentBitBatchDeleteConfirm"
-                >
-                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                  &nbsp;删除
-                </a-button>
-              </a-tooltip>
-            </a-space>
+                  <a-button
+                    class="delBtn"
+                    danger
+                    type="primary"
+                    size="small"
+                    :disabled="!exporterSelectedManagedIds.length"
+                    :loading="exporterBatchLoading === 'delete'"
+                    @click="openExporterBatchDeleteConfirm"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                    &nbsp;删除
+                  </a-button>
+                </a-tooltip>
+              </a-space>
+            </div>
+
+            <div v-else class="batch-action-group">
+              <a-space :size="8" wrap>
+                <a-tooltip title="为选中的未纳管主机批量安装 Fluent Bit" placement="top">
+                  <a-button
+                    type="primary"
+                    size="small"
+                    :disabled="!fluentBitSelectedUnmanaged.length"
+                    :loading="fluentBitBatchLoading === 'create'"
+                    @click="handleFluentBitBatchCreate"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                    &nbsp;装（{{ fluentBitSelectedUnmanaged.length }}）
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="批量重新安装 Fluent Bit" placement="top">
+                  <a-button
+                    type="primary"
+                    ghost
+                    size="small"
+                    :disabled="!fluentBitSelectedManagedIds.length"
+                    :loading="fluentBitBatchLoading === 'retry'"
+                    @click="handleFluentBitBatch('retry')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'rotate']" />
+                    &nbsp;重新安装（{{ fluentBitSelectedManagedIds.length }}）
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="批量启动 Fluent Bit" placement="top">
+                  <a-button
+                    type="primary"
+                    ghost
+                    size="small"
+                    :disabled="!fluentBitSelectedManagedIds.length"
+                    :loading="fluentBitBatchLoading === 'start'"
+                    @click="handleFluentBitBatch('start')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'play']" />
+                    &nbsp;启动
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="批量停止 Fluent Bit" placement="top">
+                  <a-button
+                    danger
+                    ghost
+                    size="small"
+                    :disabled="!fluentBitSelectedManagedIds.length"
+                    :loading="fluentBitBatchLoading === 'stop'"
+                    @click="handleFluentBitBatch('stop')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'stop']" />
+                    &nbsp;停止
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="批量下发 Fluent Bit 配置" placement="top">
+                  <a-button
+                    type="primary"
+                    ghost
+                    size="small"
+                    :disabled="!fluentBitSelectedManagedIds.length"
+                    :loading="fluentBitBatchLoading === 'apply'"
+                    @click="handleFluentBitBatch('apply')"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
+                    &nbsp;下发配置
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="批量删除 Fluent Bit 目标" placement="top">
+                  <a-button
+                    class="delBtn"
+                    danger
+                    type="primary"
+                    size="small"
+                    :disabled="!fluentBitSelectedManagedIds.length"
+                    :loading="fluentBitBatchLoading === 'delete'"
+                    @click="openFluentBitBatchDeleteConfirm"
+                  >
+                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                    &nbsp;删除
+                  </a-button>
+                </a-tooltip>
+              </a-space>
+            </div>
           </div>
 
           <div class="fluent-bit-layout">
@@ -194,6 +253,7 @@
                   @search="reloadOverviewHosts"
                 />
                 <a-select
+                  v-if="batchTargetKind === 'exporter'"
                   v-model:value="exporterFilterType"
                   size="small"
                   style="width: 170px"
@@ -203,12 +263,22 @@
                   :getPopupContainer="getPopupContainer"
                   @change="reloadOverviewHosts"
                 />
-                <a-radio-group v-model:value="overviewManagedFilter" size="small" @change="reloadOverviewHosts">
+                <a-radio-group
+                  v-if="batchTargetKind === 'exporter'"
+                  v-model:value="overviewManagedFilter"
+                  size="small"
+                  @change="reloadOverviewHosts"
+                >
                   <a-radio-button value="">全部 Exporter</a-radio-button>
                   <a-radio-button value="true">已纳管</a-radio-button>
                   <a-radio-button value="false">未纳管</a-radio-button>
                 </a-radio-group>
-                <a-radio-group v-model:value="fluentBitManagedFilter" size="small" @change="reloadOverviewHosts">
+                <a-radio-group
+                  v-else
+                  v-model:value="fluentBitManagedFilter"
+                  size="small"
+                  @change="reloadOverviewHosts"
+                >
                   <a-radio-button value="">全部 Fluent Bit</a-radio-button>
                   <a-radio-button value="true">已安装</a-radio-button>
                   <a-radio-button value="false">未安装</a-radio-button>
@@ -228,28 +298,25 @@
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'exporters'">
                     <a-space v-if="record.exporters.length" :size="4" wrap>
-                      <a-tag
+                      <a-tooltip
                         v-for="item in record.exporters"
                         :key="item.id"
-                        :color="exporterTagColor(item)"
+                        :title="item.install_message || ''"
+                        placement="top"
                       >
-                        {{ item.exporter_type }}:{{ item.scrape_port }}
-                      </a-tag>
+                        <a-tag :color="exporterStatusInfo(item).color">
+                          {{ item.exporter_type }}:{{ item.scrape_port }}（{{ exporterStatusInfo(item).text }}）
+                        </a-tag>
+                      </a-tooltip>
                     </a-space>
                     <a-tag v-else color="default">未纳管</a-tag>
                   </template>
-                  <template v-else-if="column.key === 'managed_enabled'">
-                    <a-tag v-if="record.managed" :color="record.managed_enabled ? 'green' : 'default'">
-                      {{ record.managed_enabled ? '启用' : '禁用' }}
-                    </a-tag>
-                    <span v-else>-</span>
-                  </template>
-                  <template v-else-if="column.key === 'install_status'">
+                  <template v-else-if="column.key === 'exporter_status'">
                     <a-tooltip v-if="record.managed && record.install_message" :title="record.install_message" placement="top">
-                      <a-tag :color="statusColor(record.install_status)">{{ record.install_status || 'unknown' }}</a-tag>
+                      <a-tag :color="exporterStatusInfo(record).color">{{ exporterStatusInfo(record).text }}</a-tag>
                     </a-tooltip>
-                    <a-tag v-else-if="record.managed" :color="statusColor(record.install_status)">
-                      {{ record.install_status || 'unknown' }}
+                    <a-tag v-else-if="record.managed" :color="exporterStatusInfo(record).color">
+                      {{ exporterStatusInfo(record).text }}
                     </a-tag>
                     <a-tag v-else color="default">未纳管</a-tag>
                   </template>
@@ -1025,9 +1092,12 @@ import {
   batchCreateLogCollectionTargets,
   batchCreateMonitorTargets,
   batchDeleteLogCollectionTargets,
+  batchDeleteMonitorTargets,
   batchRetryLogCollectionTargets,
   batchStartLogCollectionTargets,
+  batchStartMonitorTargets,
   batchStopLogCollectionTargets,
+  batchStopMonitorTargets,
   cancelLogCollectionTarget,
   checkLogCollectionStatus,
   checkManagedTargetServiceStatus,
@@ -1104,6 +1174,13 @@ const fluentBitStopLoading = reactive({})
 const fluentBitCancelLoading = reactive({})
 const fluentBitDeleteLoading = reactive({})
 const fluentBitBatchLoading = ref('')
+const exporterBatchLoading = ref('')
+// 批量操作区一次只展示一组按钮，用户先选"针对谁"，避免 Exporter/Fluent Bit 十几个按钮同屏堆叠。
+const batchTargetKind = ref('exporter')
+const batchTargetKindOptions = [
+  { label: 'Exporter', value: 'exporter' },
+  { label: 'Fluent Bit', value: 'fluent_bit' },
+]
 const fluentBitCreateLoading = reactive({})
 const overviewHosts = ref([])
 const overviewLoading = ref(false)
@@ -1174,8 +1251,7 @@ const OVERVIEW_EXPORTER_SUMMARY_COLUMN = { title: 'Exporter', key: 'exporters', 
 // 选定具体 exporter 后，后端会把该 exporter 的字段摊平到行上，行内直接可操作。
 const OVERVIEW_EXPORTER_DETAIL_COLUMNS = [
   { title: '端口', dataIndex: 'scrape_port', key: 'scrape_port', width: 80 },
-  { title: 'Exporter 纳管', key: 'managed_enabled', width: 120 },
-  { title: 'Exporter 安装', key: 'install_status', width: 120 },
+  { title: 'Exporter 状态', key: 'exporter_status', width: 120 },
   { title: '采集状态', key: 'last_scrape_status', width: 100 },
 ]
 
@@ -1642,14 +1718,6 @@ function openPackageDeleteConfirm(record) {
   })
 }
 
-function statusColor(status) {
-  const value = String(status || '').toLowerCase()
-  if (value === 'success') return 'green'
-  if (value === 'failed') return 'red'
-  if (value === 'pending') return 'orange'
-  return 'default'
-}
-
 function scrapeColor(status) {
   const value = String(status || '').toLowerCase()
   if (value === 'up') return 'green'
@@ -2025,9 +2093,21 @@ const overviewRowSelection = computed(() => ({
   },
 }))
 
-function exporterTagColor(item) {
-  if (!item.managed_enabled) return 'default'
-  return ({ success: 'green', failed: 'red', pending: 'blue' })[item.install_status] || 'orange'
+// 合并"纳管(managed_enabled)+安装(install_status)"成一个人话状态，
+// 供 exporters 摘要标签和"Exporter 状态"列共用，避免两个字段各自展示让人费解。
+function exporterStatusInfo(item) {
+  const installStatus = String(item?.install_status || '').toLowerCase()
+  const enabled = Boolean(item?.managed_enabled)
+  if (installStatus === 'pending') {
+    return { text: enabled ? '安装中' : '卸载中', color: 'processing' }
+  }
+  if (installStatus === 'failed') {
+    return { text: enabled ? '安装失败' : '卸载失败', color: 'error' }
+  }
+  if (installStatus === 'success') {
+    return enabled ? { text: '运行中', color: 'success' } : { text: '已停止', color: 'default' }
+  }
+  return { text: '未知', color: 'default' }
 }
 
 function openExporterCreateModal(record) {
@@ -2091,6 +2171,54 @@ const fluentBitSelectedManagedIds = computed(
 const fluentBitSelectedUnmanaged = computed(
   () => overviewSelectedRows.value.filter((item) => !item.fluent_bit.managed),
 )
+
+// 未选定具体 Exporter 类型时 record.exporters 可能混装多种 exporter，批量操作语义不明确，
+// 所以批量按钮只在 exporterFilterType 选中后才可用（与单行下拉菜单的可用条件保持一致）。
+const exporterSelectedManagedIds = computed(() => {
+  if (!exporterFilterType.value) return []
+  return overviewSelectedRows.value.flatMap((item) => item.exporters.map((exporter) => exporter.id))
+})
+
+const EXPORTER_BATCH_ACTIONS = {
+  start: { label: '批量启动 Exporter', request: batchStartMonitorTargets },
+  stop: { label: '批量停止 Exporter', request: batchStopMonitorTargets },
+  delete: { label: '批量删除 Exporter', request: batchDeleteMonitorTargets },
+}
+
+async function handleExporterBatch(action) {
+  const config = EXPORTER_BATCH_ACTIONS[action]
+  const ids = [...exporterSelectedManagedIds.value]
+  if (!config || !ids.length) {
+    return
+  }
+  exporterBatchLoading.value = action
+  try {
+    const data = parseApiData(await config.request(ids))
+    reportFluentBitBatchResult(config.label, data)
+    overviewSelectedHostIds.value = []
+    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || `${config.label}失败`)
+  } finally {
+    exporterBatchLoading.value = ''
+  }
+}
+
+function openExporterBatchDeleteConfirm() {
+  if (!exporterFilterType.value) {
+    return
+  }
+  const selected = overviewSelectedRows.value.filter((item) => item.exporters.length)
+  if (!selected.length) {
+    return
+  }
+  openDeleteConfirm({
+    title: `确认批量删除 ${exporterFilterType.value}`,
+    summary: '仅能删除已停用（禁用纳管）且没有安装任务在执行中的 Exporter，其余会在结果里报告失败原因。',
+    items: selected.map((item) => `${item.host_name || item.host_ip || `Host-${item.host_id}`} - ${exporterFilterType.value}`),
+    onConfirm: () => handleExporterBatch('delete'),
+  })
+}
 
 const FLUENT_BIT_BATCH_ACTIONS = {
   retry: { label: '批量下发安装', request: batchRetryLogCollectionTargets },
@@ -2665,9 +2793,8 @@ onBeforeUnmount(() => {
 
 .fluent-bit-batch-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 8px 12px;
   margin-bottom: 12px;
   background: #fafafa;
@@ -2675,9 +2802,24 @@ onBeforeUnmount(() => {
   border-radius: 6px;
 }
 
+.fluent-bit-batch-bar__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.batch-action-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .fluent-bit-batch-bar__count {
   color: #666;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .fluent-bit-layout {

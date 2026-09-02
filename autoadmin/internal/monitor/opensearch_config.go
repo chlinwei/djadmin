@@ -25,30 +25,6 @@ type openSearchClusterInput struct {
 	Remark         *string `json:"remark"`
 }
 
-func (handler *Handler) GetOpenSearchCluster(context *gin.Context) {
-	handler.respondOpenSearchCluster(context, parseID(context.Param("id")))
-}
-
-func (handler *Handler) respondOpenSearchCluster(context *gin.Context, id int64) {
-	rows, err := handler.db.QueryContext(context, `SELECT * FROM monitor_opensearch_cluster WHERE id=?`, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if len(items) == 0 {
-		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
-		return
-	}
-	items[0]["password_configured"] = stringValue(items[0]["password"]) != ""
-	delete(items[0], "password")
-	response.Success(context, items[0])
-}
-
 func (handler *Handler) CreateOpenSearchCluster(context *gin.Context) {
 	handler.saveOpenSearchCluster(context, 0)
 }

@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -53,116 +52,37 @@ func fieldSet(names ...string) map[string]bool {
 	return result
 }
 
-func (handler *Handler) ListRetentionTiers(context *gin.Context) {
-	handler.listResource(context, retentionSpec)
-}
-func (handler *Handler) GetRetentionTier(context *gin.Context) {
-	handler.getResource(context, retentionSpec)
-}
 func (handler *Handler) CreateRetentionTier(context *gin.Context) {
-	handler.saveResource(context, retentionSpec, 0)
+	handler.saveResource(context, retentionSpec, 0, handler.respondRetentionTier)
 }
 func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
-	handler.saveResource(context, retentionSpec, parseID(context.Param("id")))
+	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTier)
 }
 func (handler *Handler) DeleteRetentionTier(context *gin.Context) {
 	handler.deleteResource(context, retentionSpec)
 }
 
-func (handler *Handler) ListProcessingRules(context *gin.Context) {
-	handler.listResource(context, processingSpec)
-}
-func (handler *Handler) GetProcessingRule(context *gin.Context) {
-	handler.getResource(context, processingSpec)
-}
 func (handler *Handler) CreateProcessingRule(context *gin.Context) {
-	handler.saveResource(context, processingSpec, 0)
+	handler.saveResource(context, processingSpec, 0, handler.respondProcessingRule)
 }
 func (handler *Handler) UpdateProcessingRule(context *gin.Context) {
-	handler.saveResource(context, processingSpec, parseID(context.Param("id")))
+	handler.saveResource(context, processingSpec, parseID(context.Param("id")), handler.respondProcessingRule)
 }
 func (handler *Handler) DeleteProcessingRule(context *gin.Context) {
 	handler.deleteResource(context, processingSpec)
 }
 
-func (handler *Handler) ListFilterRules(context *gin.Context) {
-	handler.listResource(context, filterRuleSpec)
-}
-func (handler *Handler) GetFilterRule(context *gin.Context) {
-	handler.getResource(context, filterRuleSpec)
-}
 func (handler *Handler) CreateFilterRule(context *gin.Context) {
-	handler.saveResource(context, filterRuleSpec, 0)
+	handler.saveResource(context, filterRuleSpec, 0, handler.respondFilterRule)
 }
 func (handler *Handler) UpdateFilterRule(context *gin.Context) {
-	handler.saveResource(context, filterRuleSpec, parseID(context.Param("id")))
+	handler.saveResource(context, filterRuleSpec, parseID(context.Param("id")), handler.respondFilterRule)
 }
 func (handler *Handler) DeleteFilterRule(context *gin.Context) {
 	handler.deleteResource(context, filterRuleSpec)
 }
 
-func (handler *Handler) listResource(context *gin.Context, spec resourceSpec) {
-	page, size := pagination(context)
-	clauses, arguments := []string{"1=1"}, make([]any, 0)
-	for queryName, column := range spec.filterFields {
-		if value := strings.TrimSpace(context.Query(queryName)); value != "" {
-			clauses = append(clauses, column+"=?")
-			arguments = append(arguments, value)
-		}
-	}
-	if search := strings.TrimSpace(context.Query("search")); search != "" && len(spec.searchFields) > 0 {
-		parts := make([]string, len(spec.searchFields))
-		pattern := "%" + search + "%"
-		for index, column := range spec.searchFields {
-			parts[index] = column + " LIKE ?"
-			arguments = append(arguments, pattern)
-		}
-		clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
-	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	count, err := queryCount(context, handler.db, "SELECT COUNT(*) FROM "+spec.table+where, arguments)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, "SELECT * FROM "+spec.table+where+" ORDER BY "+spec.order+" LIMIT ? OFFSET ?", queryArguments...)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	for _, item := range items {
-		handler.decorateResource(context, spec, item)
-	}
-	paginated(context, items, count, page, size)
-}
-
-func (handler *Handler) getResource(context *gin.Context, spec resourceSpec) {
-	id := parseID(context.Param("id"))
-	rows, err := handler.db.QueryContext(context, "SELECT * FROM "+spec.table+" WHERE id=?", id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if len(items) == 0 {
-		response.BusinessError(context, 404, "resource not found", nil)
-		return
-	}
-	handler.decorateResource(context, spec, items[0])
-	response.Success(context, items[0])
-}
-
-func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64) {
+func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64, respond func(*gin.Context, int64)) {
 	var input map[string]any
 	if err := context.ShouldBindJSON(&input); err != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
@@ -234,8 +154,7 @@ func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id
 	if input["is_default"] == true {
 		_, _ = handler.db.ExecContext(context, "UPDATE "+spec.table+" SET is_default=FALSE WHERE id<>?", id)
 	}
-	context.Params = append(context.Params, gin.Param{Key: "id", Value: fmt.Sprint(id)})
-	handler.getResource(context, spec)
+	respond(context, id)
 }
 
 func validateResource(spec resourceSpec, input map[string]any, id int64) string {
@@ -300,36 +219,6 @@ func (handler *Handler) deleteResource(context *gin.Context, spec resourceSpec) 
 		return
 	}
 	response.Success(context, gin.H{"deleted": true})
-}
-
-func (handler *Handler) decorateResource(context *gin.Context, spec resourceSpec, item gin.H) {
-	if spec.table == retentionSpec.table {
-		daily := floatValue(item["daily_size_gb"])
-		days := intValue(item["retention_days"])
-		item["estimated_total_gb"] = daily * float64(days)
-		threshold := int64(daily + 0.5)
-		if threshold < 1 {
-			threshold = 1
-		}
-		item["rollover_min_primary_shard_size"] = fmt.Sprintf("%dgb", threshold)
-		var count int64
-		_ = handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id=?`, item["id"]).Scan(&count)
-		item["service_count"] = count
-	}
-	if spec.table == processingSpec.table {
-		item["cluster"] = item["cluster_id"]
-		item["application"] = item["application_id"]
-		var name, code sql.NullString
-		_ = handler.db.QueryRowContext(context, `SELECT name,code FROM assets_application WHERE id=?`, item["application_id"]).Scan(&name, &code)
-		item["application_name"] = name.String
-		item["application_code"] = code.String
-	}
-	if spec.table == filterRuleSpec.table {
-		item["application"] = item["application_id"]
-		var name sql.NullString
-		_ = handler.db.QueryRowContext(context, `SELECT name FROM assets_application WHERE id=?`, item["application_id"]).Scan(&name)
-		item["application_name"] = name.String
-	}
 }
 
 func floatValue(value any) float64 {

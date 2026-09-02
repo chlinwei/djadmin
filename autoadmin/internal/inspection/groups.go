@@ -170,26 +170,6 @@ func (handler *Handler) DeleteGroup(context *gin.Context) {
 	response.Success(context, nil)
 }
 
-func (handler *Handler) loadGroup(context *gin.Context, id int64) (gin.H, error) {
-	rows, err := handler.db.QueryContext(context, `SELECT id,name,scope,description,enabled,create_time,update_time FROM inspection_group WHERE id=?`, id)
-	if err != nil {
-		return nil, err
-	}
-	items, err := scanRows(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, sql.ErrNoRows
-	}
-	checkRows, err := handler.db.QueryContext(context, `SELECT id,name,executor,execution_location,config,severity,enabled,`+"`order`"+` FROM inspection_check WHERE group_id=? ORDER BY `+"`order`"+`,id`, id)
-	if err != nil {
-		return nil, err
-	}
-	items[0]["checks"], err = scanRows(checkRows)
-	return items[0], err
-}
-
 func validateGroupInput(input groupInput) string {
 	if input.Scope != nil && !map[string]bool{"per_deployment": true, "service_once": true, "per_host": true}[*input.Scope] {
 		return "执行范围无效"

@@ -89,7 +89,55 @@ func (handler *Handler) getHostDetail(ctx context.Context, host Host) (HostDetai
 			hardware["disk_used_percent"] = detail.DiskUsedPercent
 		}
 	}
-	return detail, rows.Err()
+	if err = rows.Err(); err != nil {
+		return detail, err
+	}
+
+	monitors, err := handler.getHostMonitors(ctx, host.ID)
+	if err != nil {
+		return detail, err
+	}
+	detail.Monitors = monitors
+	return detail, nil
+}
+
+// getHostMonitors 与 Django assets.serializer.HostDetailSerializer.get_monitors 保持字段一致，
+// 前端"性能监控" tab 依赖 monitors[].name=="node_exporter" && enabled==true 判断是否展示。
+func (handler *Handler) getHostMonitors(ctx context.Context, hostID int64) ([]any, error) {
+	rows, err := handler.service.repository.pool.QueryContext(ctx, `SELECT id,exporter_type,scrape_port,managed_enabled,install_status,install_message,retry_count,update_time FROM monitor_target WHERE host_id=? ORDER BY id DESC`, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	monitors := []any{}
+	for rows.Next() {
+		var id int64
+		var exporterType string
+		var scrapePort int64
+		var managedEnabled bool
+		var installStatus, installMessage sql.NullString
+		var retryCount int64
+		var updateTime sql.NullTime
+		if err = rows.Scan(&id, &exporterType, &scrapePort, &managedEnabled, &installStatus, &installMessage, &retryCount, &updateTime); err != nil {
+			return nil, err
+		}
+		status := installStatus.String
+		if status == "" {
+			status = "unknown"
+		}
+		monitors = append(monitors, map[string]any{
+			"id":              id,
+			"name":            exporterType,
+			"port":            scrapePort,
+			"enabled":         managedEnabled,
+			"install_status":  status,
+			"install_message": nullStringValue(installMessage),
+			"retry_count":     retryCount,
+			"update_time":     nullTimeValue(updateTime),
+		})
+	}
+	return monitors, rows.Err()
 }
 
 func nullStringValue(value sql.NullString) any {

@@ -184,9 +184,21 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (openSearchCluster, 
 		if len(keyword) > 500 {
 			keyword = keyword[:500]
 		}
-		must = []any{gin.H{"match": gin.H{"log_message": keyword}}}
+		must = []any{gin.H{"query_string": gin.H{
+			"query":                  escapeLuceneFieldColon(keyword),
+			"default_field":          "log_message",
+			"default_operator":       "AND",
+			"allow_leading_wildcard": false,
+			"lenient":                true,
+		}}}
 	}
 	return cluster, serviceCode, []any{filters, must}, nil
+}
+
+// escapeLuceneFieldColon 转义用户输入里的冒号，防止 Lucene query_string 语法通过 "field:value"
+// 越权查询 log_message 以外的字段（query_string 的 default_field 只影响无冒号 term，不限制显式字段前缀）。
+func escapeLuceneFieldColon(keyword string) string {
+	return strings.ReplaceAll(keyword, ":", "\\:")
 }
 
 func (handler *Handler) OpenSearchLogSearch(context *gin.Context) {
@@ -266,7 +278,39 @@ func (handler *Handler) OpenSearchLogFacetStats(context *gin.Context) {
 	}
 	aggregations, _ := data["aggregations"].(map[string]any)
 	byField, _ := aggregations["by_field"].(map[string]any)
-	buckets, _ := byField["buckets"].([]any)
+	rawBuckets, _ := byField["buckets"].([]any)
+	// 与 Django MonitorViewSet.log_facet_stats 保持同一响应结构：
+	// 原始 OpenSearch bucket 需要拍平成 {value,count,sample,trend:[{timestamp,count}]}，
+	// 否则前端 LogQueryPanel 按 bucket.trend 数组渲染趋势图会因为拿到聚合桶对象而报错。
+	buckets := make([]gin.H, 0, len(rawBuckets))
+	for _, raw := range rawBuckets {
+		bucket, _ := raw.(map[string]any)
+		var sample gin.H
+		if sampleAgg, ok := bucket["sample"].(map[string]any); ok {
+			if hits, ok := sampleAgg["hits"].(map[string]any); ok {
+				if hitList, ok := hits["hits"].([]any); ok && len(hitList) > 0 {
+					if hit, ok := hitList[0].(map[string]any); ok {
+						sample = gin.H{"id": hit["_id"]}
+						if source, ok := hit["_source"].(map[string]any); ok {
+							for key, value := range source {
+								sample[key] = value
+							}
+						}
+					}
+				}
+			}
+		}
+		trend := []gin.H{}
+		if trendAgg, ok := bucket["trend"].(map[string]any); ok {
+			if trendBuckets, ok := trendAgg["buckets"].([]any); ok {
+				for _, rawPoint := range trendBuckets {
+					point, _ := rawPoint.(map[string]any)
+					trend = append(trend, gin.H{"timestamp": point["key_as_string"], "count": point["doc_count"]})
+				}
+			}
+		}
+		buckets = append(buckets, gin.H{"value": bucket["key"], "count": bucket["doc_count"], "sample": sample, "trend": trend})
+	}
 	response.Success(context, gin.H{"field": field, "interval_minutes": interval, "buckets": buckets})
 }
 

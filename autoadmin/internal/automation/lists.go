@@ -2,70 +2,17 @@ package automation
 
 import (
 	"database/sql"
-	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
 
-type listSpec struct {
-	from      string
-	search    []string
-	idFilter  string
-	selectSQL string
-	orderBy   string
-}
-
-func (handler *Handler) ListInventories(context *gin.Context) {
-	items, count, page, size, ok := handler.listRows(context, listSpec{from: "automation_inventory a", search: []string{"a.name", "a.remark"}, selectSQL: "a.*", orderBy: "a.id DESC"})
-	if !ok {
-		return
-	}
-	for _, item := range items {
-		handler.decorateInventory(context, item)
-	}
-	automationPaginated(context, items, count, page, size)
-}
-
-func (handler *Handler) ListTasks(context *gin.Context) {
-	spec := listSpec{from: "automation_task a LEFT JOIN automation_playbook_template p ON p.id=a.playbook_template_id LEFT JOIN automation_inventory i ON i.id=a.inventory_id", search: []string{"a.name", "p.name", "i.name", "a.remark"}, idFilter: "task_id", selectSQL: "a.*,COALESCE(p.name,'') AS raw_template_name,COALESCE(i.name,'') AS inventory_name", orderBy: "a.id DESC"}
-	items, count, page, size, ok := handler.listRows(context, spec)
-	if !ok {
-		return
-	}
-	for _, item := range items {
-		item["playbook_template"] = item["playbook_template_id"]
-		item["inventory"] = item["inventory_id"]
-		templateName, _ := item["raw_template_name"].(string)
-		if templateName != "" {
-			item["template_name"] = "[Playbook] " + templateName
-		} else {
-			item["template_name"] = ""
-		}
-		delete(item, "raw_template_name")
-	}
-	automationPaginated(context, items, count, page, size)
-}
-
-func (handler *Handler) ListJobs(context *gin.Context) {
-	spec := listSpec{from: "automation_execution_job a", search: []string{"a.requested_username", "a.template_name_snapshot", "a.task_name_snapshot", "a.remark"}, idFilter: "job_id", selectSQL: "a.*", orderBy: "a.id DESC"}
-	items, count, page, size, ok := handler.listRows(context, spec)
-	if !ok {
-		return
-	}
-	for _, item := range items {
-		item["job_id"] = item["id"]
-		item["template_name"] = item["template_name_snapshot"]
-		item["task_name"] = item["task_name_snapshot"]
-	}
-	automationPaginated(context, items, count, page, size)
-}
-
-func (handler *Handler) listRows(context *gin.Context, spec listSpec) ([]gin.H, int64, int, int, bool) {
+func automationPagination(context *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(context.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(context.DefaultQuery("page_size", "10"))
 	if page < 1 {
@@ -77,53 +24,115 @@ func (handler *Handler) listRows(context *gin.Context, spec listSpec) ([]gin.H, 
 	if size > 30 {
 		size = 30
 	}
-	clauses := []string{"1=1"}
-	arguments := make([]any, 0)
-	if exactID := strings.TrimSpace(context.Query(spec.idFilter)); spec.idFilter != "" && exactID != "" {
-		if _, err := strconv.ParseInt(exactID, 10, 64); err == nil {
-			clauses = append(clauses, "a.id=?")
-			arguments = append(arguments, exactID)
-		}
-	}
+	return page, size
+}
+
+func automationSearchPattern(context *gin.Context) sql.NullString {
 	search := strings.TrimSpace(context.Query("search"))
 	if search == "" {
 		search = strings.TrimSpace(context.Query("keyword"))
 	}
-	if search != "" && len(spec.search) > 0 {
-		parts := make([]string, len(spec.search))
-		pattern := "%" + search + "%"
-		for index, column := range spec.search {
-			parts[index] = column + " LIKE ?"
-			arguments = append(arguments, pattern)
+	if search == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: "%" + search + "%", Valid: true}
+}
+
+func automationOptionalInt64(context *gin.Context, name string) sql.NullInt64 {
+	value := strings.TrimSpace(context.Query(name))
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if value == "" || err != nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: parsed, Valid: true}
+}
+
+func automationOptionalString(context *gin.Context, name string) sql.NullString {
+	value := strings.TrimSpace(context.Query(name))
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
+}
+
+func (handler *Handler) ListInventories(context *gin.Context) {
+	page, size := automationPagination(context)
+	queries := db.New(handler.db)
+	pattern := automationSearchPattern(context)
+	count, err := queries.CountInventories(context, db.CountInventoriesParams{Pattern: pattern})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	rows, err := queries.ListInventoriesTyped(context, db.ListInventoriesTypedParams{Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size)})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		item := inventoryRowToMap(row)
+		handler.decorateInventory(context, item)
+		items = append(items, item)
+	}
+	automationPaginated(context, items, count, page, size)
+}
+
+func (handler *Handler) ListTasks(context *gin.Context) {
+	page, size := automationPagination(context)
+	queries := db.New(handler.db)
+	idFilter, pattern := automationOptionalInt64(context, "task_id"), automationSearchPattern(context)
+	count, err := queries.CountTasks(context, db.CountTasksParams{ID: idFilter, Pattern: pattern})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	rows, err := queries.ListTasksTyped(context, db.ListTasksTypedParams{ID: idFilter, Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size)})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		item := taskRowToMapFromList(row)
+		item["playbook_template"] = item["playbook_template_id"]
+		item["inventory"] = item["inventory_id"]
+		templateName, _ := item["raw_template_name"].(string)
+		if templateName != "" {
+			item["template_name"] = "[Playbook] " + templateName
+		} else {
+			item["template_name"] = ""
 		}
-		clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
+		delete(item, "raw_template_name")
+		items = append(items, item)
 	}
-	if status := strings.TrimSpace(context.Query("status")); status != "" && strings.Contains(spec.from, "execution_job") {
-		clauses = append(clauses, "a.status=?")
-		arguments = append(arguments, status)
-	}
-	if taskID := strings.TrimSpace(context.Query("task_id")); taskID != "" && strings.Contains(spec.from, "execution_job") {
-		clauses = append(clauses, "a.task_id=?")
-		arguments = append(arguments, taskID)
-	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	var count int64
-	if err := handler.db.QueryRowContext(context, "SELECT COUNT(DISTINCT a.id) FROM "+spec.from+where, arguments...).Scan(&count); err != nil {
-		response.Error(context, err)
-		return nil, 0, page, size, false
-	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, "SELECT "+spec.selectSQL+" FROM "+spec.from+where+" ORDER BY "+spec.orderBy+" LIMIT ? OFFSET ?", queryArguments...)
+	automationPaginated(context, items, count, page, size)
+}
+
+func (handler *Handler) ListJobs(context *gin.Context) {
+	page, size := automationPagination(context)
+	queries := db.New(handler.db)
+	idFilter, pattern := automationOptionalInt64(context, "job_id"), automationSearchPattern(context)
+	status, taskID := automationOptionalString(context, "status"), automationOptionalInt64(context, "task_id")
+	count, err := queries.CountJobs(context, db.CountJobsParams{ID: idFilter, Status: status, TaskID: taskID, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
-		return nil, 0, page, size, false
+		return
 	}
-	items, err := scanAutomationRows(rows)
+	rows, err := queries.ListJobsTyped(context, db.ListJobsTypedParams{ID: idFilter, Status: status, TaskID: taskID, Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size)})
 	if err != nil {
 		response.Error(context, err)
-		return nil, 0, page, size, false
+		return
 	}
-	return items, count, page, size, true
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		item := jobRowToMap(row)
+		item["job_id"] = item["id"]
+		item["template_name"] = item["template_name_snapshot"]
+		item["task_name"] = item["task_name_snapshot"]
+		items = append(items, item)
+	}
+	automationPaginated(context, items, count, page, size)
 }
 
 func (handler *Handler) decorateInventory(context *gin.Context, item gin.H) {
@@ -152,46 +161,6 @@ func (handler *Handler) decorateInventory(context *gin.Context, item gin.H) {
 	}
 }
 
-func scanAutomationRows(rows *sql.Rows) ([]gin.H, error) {
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]gin.H, 0)
-	for rows.Next() {
-		values := make([]any, len(columns))
-		destinations := make([]any, len(columns))
-		for index := range values {
-			destinations[index] = &values[index]
-		}
-		if err = rows.Scan(destinations...); err != nil {
-			return nil, err
-		}
-		item := gin.H{}
-		for index, column := range columns {
-			item[column] = normalizeAutomationValue(column, values[index])
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-func normalizeAutomationValue(column string, value any) any {
-	if column == "enabled" || column == "update_on_launch" {
-		return boolValue(value)
-	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return value
-	}
-	if column == "selected_host_ids" || column == "env_vars" || column == "nodes" || column == "edges" || column == "default_extra_vars" || column == "inventory_snapshot" || column == "extra_vars" || column == "result_summary" {
-		var decoded any
-		if json.Unmarshal(bytes, &decoded) == nil {
-			return decoded
-		}
-	}
-	return string(bytes)
-}
 func intSlice(value any) []int64 {
 	raw, ok := value.([]any)
 	if !ok {

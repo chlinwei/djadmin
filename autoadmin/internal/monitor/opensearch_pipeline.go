@@ -31,7 +31,13 @@ func (handler *Handler) SimulateOpenSearchPipeline(context *gin.Context) {
 		return
 	}
 	path := "/_ingest/pipeline/_simulate"
-	body := gin.H{"docs": input.Docs}
+	// OpenSearch _simulate 要求每个 doc 是 {"_source": {...}} 形态，与 Django
+	// OpenSearchClient.simulate_pipeline(_body) 保持一致，否则报 "[_source] required property is missing"。
+	wrappedDocs := make([]any, 0, len(input.Docs))
+	for _, doc := range input.Docs {
+		wrappedDocs = append(wrappedDocs, gin.H{"_source": doc})
+	}
+	body := gin.H{"docs": wrappedDocs}
 	if input.Pipeline != nil {
 		body["pipeline"] = input.Pipeline
 	} else if name := strings.TrimSpace(input.Name); name != "" {

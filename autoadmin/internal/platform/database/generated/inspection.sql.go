@@ -9,7 +9,406 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 )
+
+const countInspectionExecutions = `-- name: CountInspectionExecutions :one
+SELECT COUNT(*) FROM inspection_execution e
+WHERE (? IS NULL OR e.task_id = ?)
+  AND (? IS NULL OR e.status = ?)
+  AND (? IS NULL OR e.trigger_type = ?)
+  AND (? IS NULL OR e.create_time >= ?)
+  AND (? IS NULL OR e.create_time <= ?)
+`
+
+type CountInspectionExecutionsParams struct {
+	TaskID      sql.NullInt64  `json:"task_id"`
+	Status      sql.NullString `json:"status"`
+	TriggerType sql.NullString `json:"trigger_type"`
+	StartTime   sql.NullTime   `json:"start_time"`
+	EndTime     sql.NullTime   `json:"end_time"`
+}
+
+func (q *Queries) CountInspectionExecutions(ctx context.Context, arg CountInspectionExecutionsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionExecutions,
+		arg.TaskID,
+		arg.TaskID,
+		arg.Status,
+		arg.Status,
+		arg.TriggerType,
+		arg.TriggerType,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countInspectionGroups = `-- name: CountInspectionGroups :one
+SELECT COUNT(*) FROM inspection_group
+WHERE (? IS NULL OR name LIKE ? OR description LIKE ?)
+`
+
+type CountInspectionGroupsParams struct {
+	Pattern sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountInspectionGroups(ctx context.Context, arg CountInspectionGroupsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionGroups, arg.Pattern, arg.Pattern, arg.Pattern)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countInspectionTasks = `-- name: CountInspectionTasks :one
+SELECT COUNT(*) FROM inspection_task t
+JOIN inspection_group g ON g.id = t.group_id
+LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
+WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ? OR s.name LIKE ?)
+`
+
+type CountInspectionTasksParams struct {
+	Pattern sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountInspectionTasks(ctx context.Context, arg CountInspectionTasksParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionTasks,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const getInspectionExecutionTyped = `-- name: GetInspectionExecutionTyped :one
+SELECT e.id, e.task_id AS task, COALESCE(t.name,'') AS task_name, e.status, e.trigger_type,
+       e.task_snapshot, e.group_snapshot, e.service_snapshot, e.target_snapshot, e.summary,
+       e.requested_username, e.start_time, e.end_time, e.create_time
+FROM inspection_execution e
+LEFT JOIN inspection_task t ON t.id = e.task_id
+WHERE e.id = ?
+`
+
+type GetInspectionExecutionTypedRow struct {
+	ID                int64           `json:"id"`
+	Task              sql.NullInt64   `json:"task"`
+	TaskName          string          `json:"task_name"`
+	Status            string          `json:"status"`
+	TriggerType       string          `json:"trigger_type"`
+	TaskSnapshot      json.RawMessage `json:"task_snapshot"`
+	GroupSnapshot     json.RawMessage `json:"group_snapshot"`
+	ServiceSnapshot   json.RawMessage `json:"service_snapshot"`
+	TargetSnapshot    json.RawMessage `json:"target_snapshot"`
+	Summary           json.RawMessage `json:"summary"`
+	RequestedUsername string          `json:"requested_username"`
+	StartTime         sql.NullTime    `json:"start_time"`
+	EndTime           sql.NullTime    `json:"end_time"`
+	CreateTime        time.Time       `json:"create_time"`
+}
+
+func (q *Queries) GetInspectionExecutionTyped(ctx context.Context, id int64) (GetInspectionExecutionTypedRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionExecutionTyped, id)
+	var i GetInspectionExecutionTypedRow
+	err := row.Scan(
+		&i.ID,
+		&i.Task,
+		&i.TaskName,
+		&i.Status,
+		&i.TriggerType,
+		&i.TaskSnapshot,
+		&i.GroupSnapshot,
+		&i.ServiceSnapshot,
+		&i.TargetSnapshot,
+		&i.Summary,
+		&i.RequestedUsername,
+		&i.StartTime,
+		&i.EndTime,
+		&i.CreateTime,
+	)
+	return i, err
+}
+
+const getInspectionGroup = `-- name: GetInspectionGroup :one
+SELECT id, name, scope, description, enabled, create_time, update_time
+FROM inspection_group WHERE id = ?
+`
+
+type GetInspectionGroupRow struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Scope       string    `json:"scope"`
+	Description string    `json:"description"`
+	Enabled     bool      `json:"enabled"`
+	CreateTime  time.Time `json:"create_time"`
+	UpdateTime  time.Time `json:"update_time"`
+}
+
+func (q *Queries) GetInspectionGroup(ctx context.Context, id int64) (GetInspectionGroupRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionGroup, id)
+	var i GetInspectionGroupRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Scope,
+		&i.Description,
+		&i.Enabled,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
+}
+
+const listInspectionChecksByGroup = `-- name: ListInspectionChecksByGroup :many
+SELECT id, name, executor, execution_location, config, severity, enabled, ` + "`" + `order` + "`" + `
+FROM inspection_check WHERE group_id = ? ORDER BY ` + "`" + `order` + "`" + `, id
+`
+
+type ListInspectionChecksByGroupRow struct {
+	ID                int64           `json:"id"`
+	Name              string          `json:"name"`
+	Executor          string          `json:"executor"`
+	ExecutionLocation string          `json:"execution_location"`
+	Config            json.RawMessage `json:"config"`
+	Severity          string          `json:"severity"`
+	Enabled           bool            `json:"enabled"`
+	Order             uint32          `json:"order"`
+}
+
+func (q *Queries) ListInspectionChecksByGroup(ctx context.Context, groupID int64) ([]ListInspectionChecksByGroupRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionChecksByGroup, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionChecksByGroupRow{}
+	for rows.Next() {
+		var i ListInspectionChecksByGroupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Executor,
+			&i.ExecutionLocation,
+			&i.Config,
+			&i.Severity,
+			&i.Enabled,
+			&i.Order,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInspectionExecutions = `-- name: ListInspectionExecutions :many
+SELECT e.id, e.task_id AS task, COALESCE(t.name,'') AS task_name,
+       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(e.service_snapshot,'$.name')),'') AS target_name,
+       e.status, e.trigger_type, e.summary, e.requested_username, e.start_time, e.end_time, e.create_time
+FROM inspection_execution e
+LEFT JOIN inspection_task t ON t.id = e.task_id
+WHERE (? IS NULL OR e.task_id = ?)
+  AND (? IS NULL OR e.status = ?)
+  AND (? IS NULL OR e.trigger_type = ?)
+  AND (? IS NULL OR e.create_time >= ?)
+  AND (? IS NULL OR e.create_time <= ?)
+ORDER BY e.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListInspectionExecutionsParams struct {
+	TaskID      sql.NullInt64  `json:"task_id"`
+	Status      sql.NullString `json:"status"`
+	TriggerType sql.NullString `json:"trigger_type"`
+	StartTime   sql.NullTime   `json:"start_time"`
+	EndTime     sql.NullTime   `json:"end_time"`
+	Limit       int32          `json:"limit"`
+	Offset      int32          `json:"offset"`
+}
+
+type ListInspectionExecutionsRow struct {
+	ID                int64           `json:"id"`
+	Task              sql.NullInt64   `json:"task"`
+	TaskName          string          `json:"task_name"`
+	TargetName        interface{}     `json:"target_name"`
+	Status            string          `json:"status"`
+	TriggerType       string          `json:"trigger_type"`
+	Summary           json.RawMessage `json:"summary"`
+	RequestedUsername string          `json:"requested_username"`
+	StartTime         sql.NullTime    `json:"start_time"`
+	EndTime           sql.NullTime    `json:"end_time"`
+	CreateTime        time.Time       `json:"create_time"`
+}
+
+func (q *Queries) ListInspectionExecutions(ctx context.Context, arg ListInspectionExecutionsParams) ([]ListInspectionExecutionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionExecutions,
+		arg.TaskID,
+		arg.TaskID,
+		arg.Status,
+		arg.Status,
+		arg.TriggerType,
+		arg.TriggerType,
+		arg.StartTime,
+		arg.StartTime,
+		arg.EndTime,
+		arg.EndTime,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionExecutionsRow{}
+	for rows.Next() {
+		var i ListInspectionExecutionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Task,
+			&i.TaskName,
+			&i.TargetName,
+			&i.Status,
+			&i.TriggerType,
+			&i.Summary,
+			&i.RequestedUsername,
+			&i.StartTime,
+			&i.EndTime,
+			&i.CreateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInspectionGroups = `-- name: ListInspectionGroups :many
+SELECT id, name, scope, description, enabled, create_time, update_time
+FROM inspection_group
+WHERE (? IS NULL OR name LIKE ? OR description LIKE ?)
+ORDER BY name, id
+LIMIT ? OFFSET ?
+`
+
+type ListInspectionGroupsParams struct {
+	Pattern sql.NullString `json:"pattern"`
+	Limit   int32          `json:"limit"`
+	Offset  int32          `json:"offset"`
+}
+
+type ListInspectionGroupsRow struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Scope       string    `json:"scope"`
+	Description string    `json:"description"`
+	Enabled     bool      `json:"enabled"`
+	CreateTime  time.Time `json:"create_time"`
+	UpdateTime  time.Time `json:"update_time"`
+}
+
+func (q *Queries) ListInspectionGroups(ctx context.Context, arg ListInspectionGroupsParams) ([]ListInspectionGroupsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionGroups,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionGroupsRow{}
+	for rows.Next() {
+		var i ListInspectionGroupsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Scope,
+			&i.Description,
+			&i.Enabled,
+			&i.CreateTime,
+			&i.UpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInspectionResultsByTarget = `-- name: ListInspectionResultsByTarget :many
+SELECT id, check_key, check_type, name, status, severity, expected_value, actual_value, message
+FROM inspection_result WHERE target_id = ? ORDER BY id
+`
+
+type ListInspectionResultsByTargetRow struct {
+	ID            int64           `json:"id"`
+	CheckKey      string          `json:"check_key"`
+	CheckType     string          `json:"check_type"`
+	Name          string          `json:"name"`
+	Status        string          `json:"status"`
+	Severity      string          `json:"severity"`
+	ExpectedValue json.RawMessage `json:"expected_value"`
+	ActualValue   json.RawMessage `json:"actual_value"`
+	Message       string          `json:"message"`
+}
+
+func (q *Queries) ListInspectionResultsByTarget(ctx context.Context, targetID int64) ([]ListInspectionResultsByTargetRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionResultsByTarget, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionResultsByTargetRow{}
+	for rows.Next() {
+		var i ListInspectionResultsByTargetRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CheckKey,
+			&i.CheckType,
+			&i.Name,
+			&i.Status,
+			&i.Severity,
+			&i.ExpectedValue,
+			&i.ActualValue,
+			&i.Message,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const listInspectionTargetExecutions = `-- name: ListInspectionTargetExecutions :many
 SELECT id, deployment_id AS deployment, host_id AS host, target_name, host_id_snapshot,
@@ -59,6 +458,93 @@ func (q *Queries) ListInspectionTargetExecutions(ctx context.Context, executionI
 			&i.RawResult,
 			&i.StartTime,
 			&i.EndTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInspectionTasksTyped = `-- name: ListInspectionTasksTyped :many
+SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name, g.scope AS scope,
+       t.logical_service_id AS logical_service, COALESCE(s.name,'') AS logical_service_name,
+       t.selected_host_ids, t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
+       t.last_run_time, t.enabled, t.create_time, t.update_time
+FROM inspection_task t
+JOIN inspection_group g ON g.id = t.group_id
+LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
+WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ? OR s.name LIKE ?)
+ORDER BY t.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListInspectionTasksTypedParams struct {
+	Pattern sql.NullString `json:"pattern"`
+	Limit   int32          `json:"limit"`
+	Offset  int32          `json:"offset"`
+}
+
+type ListInspectionTasksTypedRow struct {
+	ID                 int64           `json:"id"`
+	Name               string          `json:"name"`
+	InspectionName     string          `json:"inspection_name"`
+	Group              int64           `json:"group"`
+	GroupName          string          `json:"group_name"`
+	Scope              string          `json:"scope"`
+	LogicalService     sql.NullInt64   `json:"logical_service"`
+	LogicalServiceName string          `json:"logical_service_name"`
+	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
+	Concurrency        uint32          `json:"concurrency"`
+	TimeoutSeconds     uint32          `json:"timeout_seconds"`
+	CronExpression     string          `json:"cron_expression"`
+	NextRunTime        sql.NullTime    `json:"next_run_time"`
+	LastRunTime        sql.NullTime    `json:"last_run_time"`
+	Enabled            bool            `json:"enabled"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+}
+
+func (q *Queries) ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionTasksTyped,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionTasksTypedRow{}
+	for rows.Next() {
+		var i ListInspectionTasksTypedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.InspectionName,
+			&i.Group,
+			&i.GroupName,
+			&i.Scope,
+			&i.LogicalService,
+			&i.LogicalServiceName,
+			&i.SelectedHostIds,
+			&i.Concurrency,
+			&i.TimeoutSeconds,
+			&i.CronExpression,
+			&i.NextRunTime,
+			&i.LastRunTime,
+			&i.Enabled,
+			&i.CreateTime,
+			&i.UpdateTime,
 		); err != nil {
 			return nil, err
 		}

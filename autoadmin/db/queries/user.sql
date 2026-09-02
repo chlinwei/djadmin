@@ -109,3 +109,5 @@ UPDATE sys_agent_token SET is_active = FALSE, update_time = ? WHERE id = ?;
 
 -- name: DeleteAPIToken :exec
 DELETE FROM sys_agent_token WHERE id = ?;
+-- name: UpdateUserPhonenumber :exec
+UPDATE sys_user SET phonenumber = ?, update_time = ? WHERE id = ?;

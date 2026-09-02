@@ -95,7 +95,13 @@ func runAPI(configuration config.Config) error {
 	defer rabbitClient.Close()
 
 	tokens := identity.NewTokenManager(configuration.JWTSecret, configuration.JWTExpiration)
-	agentGateway := agent.NewGateway(newAgentTokenValidator(databaseConnection))
+	// 过渡期默认放行 agent 连接（AGENT_GRPC_AUTH_MODE=open），后续切换 mTLS 时这个口整体移除；
+	// token 模式保留 sys_agent_token 校验能力，便于灰度回切。
+	var agentValidator func(string, string) bool
+	if configuration.AgentGRPCAuthMode == "token" {
+		agentValidator = newAgentTokenValidator(databaseConnection)
+	}
+	agentGateway := agent.NewGateway(agentValidator)
 	server, err := api.NewServerWithGateway(configuration.HTTPAddress, databaseConnection, tokens, configuration.CORSOrigins, rabbitClient, configuration.AssetsCredentialEncryptionKey, configuration.JWTSecret, agentGateway)
 	if err != nil {
 		return err

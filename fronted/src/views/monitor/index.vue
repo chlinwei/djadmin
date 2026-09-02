@@ -320,12 +320,6 @@
                     </a-tag>
                     <a-tag v-else color="default">未纳管</a-tag>
                   </template>
-                  <template v-else-if="column.key === 'last_scrape_status'">
-                    <a-tag v-if="record.managed" :color="scrapeColor(record.last_scrape_status)">
-                      {{ record.last_scrape_status || 'unknown' }}
-                    </a-tag>
-                    <span v-else>-</span>
-                  </template>
                   <template v-else-if="column.key === 'fluent_bit_status'">
                     <a-tooltip v-if="fluentBitStatusTooltip(record.fluent_bit)" :title="fluentBitStatusTooltip(record.fluent_bit)" placement="top">
                       <a-tag :color="fluentBitStatusColor(record.fluent_bit)">
@@ -364,11 +358,9 @@
                         </a-button>
                       </a-tooltip>
                       <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
-                        <a-tooltip :title="`${exporterFilterType} 操作`" placement="top">
-                          <a-button type="primary" ghost size="small">
-                            Exporter&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
-                          </a-button>
-                        </a-tooltip>
+                        <a-button type="primary" ghost size="small" :title="`${exporterFilterType} 操作`">
+                          Exporter&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
+                        </a-button>
                         <template #overlay>
                           <div class="row-action-menu">
                             <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
@@ -505,11 +497,9 @@
                         </a-button>
                       </a-tooltip>
                       <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
-                        <a-tooltip title="Fluent Bit 操作" placement="top">
-                          <a-button type="primary" ghost size="small">
-                            Fluent Bit&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
-                          </a-button>
-                        </a-tooltip>
+                        <a-button type="primary" ghost size="small" title="Fluent Bit 操作">
+                          Fluent Bit&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
+                        </a-button>
                         <template #overlay>
                           <div class="row-action-menu">
                             <a-tooltip :title="record.host_agent_online ? '重新安装' : 'dj-agent 离线，操作不可用'" placement="left">
@@ -964,6 +954,39 @@
         <a-form-item label="软件包">
           <span>{{ packageEditTarget ? `${packageEditTarget.name} (${packageEditTarget.os}-${packageEditTarget.arch})` : '-' }}</span>
         </a-form-item>
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="8">
+            <a-form-item label="包格式" required>
+              <a-select
+                v-model:value="packageEditForm.package_format"
+                :options="packageFormatOptions"
+                style="width: 100%"
+                :getPopupContainer="getPopupContainer"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item label="适用平台" required>
+              <a-select
+                v-model:value="packageEditForm.platform_family"
+                :options="platformFamilyOptions"
+                style="width: 100%"
+                :getPopupContainer="getPopupContainer"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col v-if="packageEditForm.package_format !== 'tar.gz'" :xs="24" :sm="8">
+            <a-form-item label="主版本" required>
+              <a-input
+                v-model:value="packageEditForm.platform_major"
+                placeholder="如 7 / 8 / 9 / 22"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <div class="form-item-hint package-platform-hint">
+          修改平台后，已上传的软件包文件会自动迁移到新目录；系统/架构不允许修改（决定存储路径）
+        </div>
         <a-form-item label="默认监控端口" required>
           <a-input-number
             v-model:value="packageEditForm.default_port"
@@ -1243,16 +1266,15 @@ const promTargetColumns = [
 const OVERVIEW_BASE_COLUMNS = [
   { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 170, fixed: 'left' },
   { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 140 },
-  { title: '分组', dataIndex: 'group_name', key: 'group_name', width: 120 },
 ]
 
 const OVERVIEW_EXPORTER_SUMMARY_COLUMN = { title: 'Exporter', key: 'exporters', width: 240 }
 
 // 选定具体 exporter 后，后端会把该 exporter 的字段摊平到行上，行内直接可操作。
+// 采集状态（last_scrape_status）长期是 unknown（Prometheus 侧未回填），没有展示价值，已去掉。
 const OVERVIEW_EXPORTER_DETAIL_COLUMNS = [
   { title: '端口', dataIndex: 'scrape_port', key: 'scrape_port', width: 80 },
   { title: 'Exporter 状态', key: 'exporter_status', width: 120 },
-  { title: '采集状态', key: 'last_scrape_status', width: 100 },
 ]
 
 const OVERVIEW_FLUENT_BIT_COLUMNS = [
@@ -1312,6 +1334,9 @@ const packageEditModalSubmitting = ref(false)
 const packageEditTarget = ref(null)
 const packageEditForm = reactive({
   default_port: 9100,
+  package_format: 'tar.gz',
+  platform_family: 'any',
+  platform_major: '',
   install_playbook_content: '',
   uninstall_playbook_content: '',
   service_file_content: '',
@@ -1575,6 +1600,11 @@ function openSyncOfficialModal(record) {
 function openPackageEditModal(record) {
   packageEditTarget.value = record
   packageEditForm.default_port = Number(record.default_port || 9100)
+  // 平台元数据与新增表单对齐：RPM/DEB 按平台隔离建多条记录，建错平台这里可以直接修正，
+  // 后端会同步迁移已上传的软件包文件；os/arch 不允许改（决定存储目录）。
+  packageEditForm.package_format = record.package_format || 'tar.gz'
+  packageEditForm.platform_family = record.platform_family || 'any'
+  packageEditForm.platform_major = record.platform_major || ''
   // 安装/卸载 Playbook 内容直接来自后端 to_representation 补充的 install/uninstall_playbook_content
   // （实际存放在关联 PlaybookTemplate.content 上，这里只是展示成对内联编辑，不再要求先去模板页选择）
   packageEditForm.install_playbook_content = record.install_playbook_content || ''
@@ -1600,10 +1630,24 @@ async function submitPackageEdit() {
     message.error('默认监控端口必须是 1-65535 的整数')
     return
   }
+  const packageFormat = packageEditForm.package_format
+  const platformFamily = packageEditForm.platform_family
+  const platformMajor = String(packageEditForm.platform_major || '').trim()
+  if (packageFormat === 'tar.gz' && platformFamily !== 'any') {
+    message.error('tar.gz 包适用平台必须是 any')
+    return
+  }
+  if (packageFormat !== 'tar.gz' && (platformFamily === 'any' || !platformMajor)) {
+    message.error('RPM/DEB 包必须选择适用平台并填写主版本（如 7 / 8 / 9 / 22）')
+    return
+  }
   packageEditModalSubmitting.value = true
   try {
     await updateSoftwarePackage(record.id, {
       default_port: defaultPort,
+      package_format: packageFormat,
+      platform_family: platformFamily,
+      platform_major: platformMajor,
       install_playbook_content: packageEditForm.install_playbook_content,
       uninstall_playbook_content: packageEditForm.uninstall_playbook_content,
       service_file_content: packageEditForm.service_file_content,
@@ -2046,9 +2090,25 @@ async function loadOverviewHosts() {
     }))
     overviewHosts.value = Array.isArray(data.results) ? data.results : []
     overviewPagination.total = Number(data.count || 0)
+    await refreshVisibleExporterServiceStatuses()
   } finally {
     overviewLoading.value = false
   }
+}
+
+// "Exporter 状态"列和 exporters 摘要 chip 都要展示真实 systemctl 运行状态。
+// 列表加载后立即为当前页已纳管的 exporter 目标逐台查询一次（不区分摘要/详情模式，
+// 两种模式的状态展示都来自 serviceStatusMap 缓存，不查就会一直显示 install_status 的"运行中"）。
+// 只查 host_agent_online=true 的主机：agent 离线时查询必失败（后端报 host agent is offline），
+// 全量查会每次刷新弹一屏错误 toast；离线主机继续显示纳管状态，等上线后自动恢复真实状态。
+// 查询结果写入 serviceStatusMap，后续由自动刷新定时器接力更新。
+async function refreshVisibleExporterServiceStatuses() {
+  if (!overviewHosts.value.length) return
+  const targetIds = overviewHosts.value
+    .filter((item) => item.host_agent_online)
+    .flatMap((item) => (Array.isArray(item.exporters) ? item.exporters.map((exporter) => exporter.id) : []))
+    .filter(Boolean)
+  await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
 }
 
 async function loadOverviewGroupTree() {
@@ -2093,9 +2153,25 @@ const overviewRowSelection = computed(() => ({
   },
 }))
 
+// systemctl status 退出码语义：0=运行中，3=inactive/已停止，4=unit 不存在；其余视为异常。
+// 这是点「查状态」/单台启停后真实调用 systemctl 得到的权威结果，缓存于 serviceStatusMap。
+function realServiceStatusInfo(targetId) {
+  const cached = serviceStatusMap[targetId]
+  if (!cached || !cached.checkedAt) return null
+  const exitCode = Number(cached.exitCode)
+  if (exitCode === 0) return { text: '运行中', color: 'success' }
+  if (exitCode === 3) return { text: '已停止', color: 'warning' }
+  if (exitCode === 4) return { text: '服务不存在', color: 'error' }
+  return { text: '异常', color: 'error' }
+}
+
 // 合并"纳管(managed_enabled)+安装(install_status)"成一个人话状态，
 // 供 exporters 摘要标签和"Exporter 状态"列共用，避免两个字段各自展示让人费解。
+// 优先用最近一次真实 systemctl status 的结果（serviceStatusMap 缓存），
+// 否则回退到纳管/安装状态——那只是"预期状态"，服务停了它也不会变。
 function exporterStatusInfo(item) {
+  const real = realServiceStatusInfo(item?.id)
+  if (real) return real
   const installStatus = String(item?.install_status || '').toLowerCase()
   const enabled = Boolean(item?.managed_enabled)
   if (installStatus === 'pending') {
@@ -2197,6 +2273,11 @@ async function handleExporterBatch(action) {
     reportFluentBitBatchResult(config.label, data)
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
+    // 批量启停后逐台刷新真实服务状态（systemctl status），否则"Exporter 状态"列
+    // 只会按 install_status/managed_enabled 显示"运行中"，和实际对不上。
+    if (action === 'start' || action === 'stop') {
+      await Promise.all(ids.map((id) => refreshServiceStatus(id)))
+    }
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || `${config.label}失败`)
   } finally {
@@ -2543,6 +2624,7 @@ function restartRefreshTimer() {
   const intervalMs = Number(refreshIntervalSeconds.value || 15) * 1000
   refreshTimer = window.setInterval(() => {
     if (loading.value) return
+    // loadOverviewHosts 内部会为当前页 exporter 重查服务状态，这里无需重复刷。
     loadAllData()
   }, intervalMs)
 }
@@ -2697,6 +2779,18 @@ async function handleCheckServiceStatus(record) {
   } finally {
     managedServiceStatusLoading[record.id] = false
   }
+}
+
+// 只传 target id 的轻量包装，批量启停/自动刷新后复用单台的查询逻辑。
+function refreshServiceStatus(targetId) {
+  return handleCheckServiceStatus({ id: targetId })
+}
+
+// 自动刷新时只重查已经查过的目标，避免每 15 秒对整页主机发 N 次 agent 调用。
+function refreshCachedServiceStatuses() {
+  const ids = Object.keys(serviceStatusMap).map(Number)
+  if (!ids.length) return
+  ids.forEach((id) => refreshServiceStatus(id))
 }
 
 async function handleStartService(record) {

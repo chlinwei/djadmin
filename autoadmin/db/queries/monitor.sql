@@ -22,6 +22,49 @@ WHERE host_id = sqlc.arg(host_id)
   AND (sqlc.narg(exporter_type) IS NULL OR exporter_type = sqlc.narg(exporter_type))
 ORDER BY exporter_type;
 
+-- name: CountMonitorTargets :one
+SELECT COUNT(*)
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE (sqlc.narg(exporter_type) IS NULL OR t.exporter_type = sqlc.narg(exporter_type))
+  AND (sqlc.narg(managed_enabled) IS NULL OR t.managed_enabled = sqlc.narg(managed_enabled))
+  AND (sqlc.narg(install_status) IS NULL OR t.install_status = sqlc.narg(install_status))
+  AND (sqlc.narg(last_scrape_status) IS NULL OR t.last_scrape_status = sqlc.narg(last_scrape_status))
+  AND (sqlc.narg(search_pattern) IS NULL OR h.instance_name LIKE sqlc.narg(search_pattern) OR h.ip LIKE sqlc.narg(search_pattern) OR t.exporter_type LIKE sqlc.narg(search_pattern));
+
+-- name: ListMonitorTargets :many
+SELECT t.id, t.create_time, t.update_time, t.remark, t.exporter_type, t.managed_enabled,
+       t.install_status, t.install_message, t.last_scrape_status, t.last_scrape_at, t.labels,
+       t.host_id, t.retry_count, t.last_dispatch_manual, t.scrape_port,
+       'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip,
+       h.agent_online AS host_agent_online
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE (sqlc.narg(exporter_type) IS NULL OR t.exporter_type = sqlc.narg(exporter_type))
+  AND (sqlc.narg(managed_enabled) IS NULL OR t.managed_enabled = sqlc.narg(managed_enabled))
+  AND (sqlc.narg(install_status) IS NULL OR t.install_status = sqlc.narg(install_status))
+  AND (sqlc.narg(last_scrape_status) IS NULL OR t.last_scrape_status = sqlc.narg(last_scrape_status))
+  AND (sqlc.narg(search_pattern) IS NULL OR h.instance_name LIKE sqlc.narg(search_pattern) OR h.ip LIKE sqlc.narg(search_pattern) OR t.exporter_type LIKE sqlc.narg(search_pattern))
+ORDER BY t.id DESC
+LIMIT ? OFFSET ?;
+
+-- name: GetMonitorTarget :one
+SELECT t.id, t.create_time, t.update_time, t.remark, t.exporter_type, t.managed_enabled,
+       t.install_status, t.install_message, t.last_scrape_status, t.last_scrape_at, t.labels,
+       t.host_id, t.retry_count, t.last_dispatch_manual, t.scrape_port,
+       'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip,
+       h.agent_online AS host_agent_online, h.agent_id AS agent_id
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE t.id = sqlc.arg(id)
+LIMIT 1;
+
+-- name: ListExporterPackagePorts :many
+SELECT name, default_port
+FROM monitor_software_package
+WHERE package_type = 'exporter' AND enabled = TRUE
+ORDER BY name, default_port;
+
 -- name: CountLogRetentionTiers :one
 SELECT COUNT(*) FROM monitor_log_retention_tier
 WHERE (sqlc.narg(enabled) IS NULL OR enabled = sqlc.narg(enabled))

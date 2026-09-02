@@ -1623,10 +1623,16 @@ func (q *Queries) ListHostGroups(ctx context.Context, arg ListHostGroupsParams) 
 }
 
 const listHosts = `-- name: ListHosts :many
-SELECT h.id, h.create_time, h.update_time, h.remark, h.status, h.instance_id, h.ip, h.is_deleted_in_cloud, h.cloud_account_id, h.group_id, h.instance_name, h.collect_status, h.collect_message, h.collect_time, h.agent_online, h.agent_online_time, h.webssh_default_username, h.webssh_login_users, h.agent_id, h.environment_id, COALESCE(g.name, '') AS group_name, COALESCE(e.name, '') AS environment_name
+SELECT h.id, h.create_time, h.update_time, h.remark, h.status, h.instance_id, h.ip, h.is_deleted_in_cloud, h.cloud_account_id, h.group_id, h.instance_name, h.collect_status, h.collect_message, h.collect_time, h.agent_online, h.agent_online_time, h.webssh_default_username, h.webssh_login_users, h.agent_id, h.environment_id, COALESCE(g.name, '') AS group_name, COALESCE(e.name, '') AS environment_name,
+       s.hostname AS system_hostname, s.agent_version AS system_agent_version,
+       s.os_type AS system_os_type, s.os_version AS system_os_version,
+       s.kernel_version AS system_kernel_version,
+       hw.cpu_cores, hw.cpu_model, hw.memory_gb, hw.disk_total_gb, hw.architecture
 FROM assets_host h
 LEFT JOIN assets_hostgroup g ON g.id = h.group_id
 LEFT JOIN assets_business_environment e ON e.id = h.environment_id
+LEFT JOIN assets_hostsystem s ON s.host_id = h.id
+LEFT JOIN assets_hosthardware hw ON hw.host_id = h.id
 WHERE (? = 0 OR h.group_id = ?)
   AND (? = 0 OR h.environment_id = ?)
   AND (COALESCE(h.instance_name, '') LIKE CAST(? AS CHAR) OR COALESCE(h.agent_id, '') LIKE CAST(? AS CHAR) OR COALESCE(h.ip, '') LIKE CAST(? AS CHAR) OR COALESCE(h.remark, '') LIKE CAST(? AS CHAR))
@@ -1642,30 +1648,42 @@ type ListHostsParams struct {
 }
 
 type ListHostsRow struct {
-	ID                    int64          `json:"id"`
-	CreateTime            time.Time      `json:"create_time"`
-	UpdateTime            time.Time      `json:"update_time"`
-	Remark                sql.NullString `json:"remark"`
-	Status                string         `json:"status"`
-	InstanceID            sql.NullString `json:"instance_id"`
-	Ip                    sql.NullString `json:"ip"`
-	IsDeletedInCloud      bool           `json:"is_deleted_in_cloud"`
-	CloudAccountID        sql.NullInt64  `json:"cloud_account_id"`
-	GroupID               sql.NullInt64  `json:"group_id"`
-	InstanceName          sql.NullString `json:"instance_name"`
-	CollectStatus         string         `json:"collect_status"`
-	CollectMessage        string         `json:"collect_message"`
-	CollectTime           sql.NullTime   `json:"collect_time"`
-	AgentOnline           bool           `json:"agent_online"`
-	AgentOnlineTime       sql.NullTime   `json:"agent_online_time"`
-	WebsshDefaultUsername string         `json:"webssh_default_username"`
-	WebsshLoginUsers      string         `json:"webssh_login_users"`
-	AgentID               sql.NullString `json:"agent_id"`
-	EnvironmentID         sql.NullInt64  `json:"environment_id"`
-	GroupName             string         `json:"group_name"`
-	EnvironmentName       string         `json:"environment_name"`
+	ID                    int64           `json:"id"`
+	CreateTime            time.Time       `json:"create_time"`
+	UpdateTime            time.Time       `json:"update_time"`
+	Remark                sql.NullString  `json:"remark"`
+	Status                string          `json:"status"`
+	InstanceID            sql.NullString  `json:"instance_id"`
+	Ip                    sql.NullString  `json:"ip"`
+	IsDeletedInCloud      bool            `json:"is_deleted_in_cloud"`
+	CloudAccountID        sql.NullInt64   `json:"cloud_account_id"`
+	GroupID               sql.NullInt64   `json:"group_id"`
+	InstanceName          sql.NullString  `json:"instance_name"`
+	CollectStatus         string          `json:"collect_status"`
+	CollectMessage        string          `json:"collect_message"`
+	CollectTime           sql.NullTime    `json:"collect_time"`
+	AgentOnline           bool            `json:"agent_online"`
+	AgentOnlineTime       sql.NullTime    `json:"agent_online_time"`
+	WebsshDefaultUsername string          `json:"webssh_default_username"`
+	WebsshLoginUsers      string          `json:"webssh_login_users"`
+	AgentID               sql.NullString  `json:"agent_id"`
+	EnvironmentID         sql.NullInt64   `json:"environment_id"`
+	GroupName             string          `json:"group_name"`
+	EnvironmentName       string          `json:"environment_name"`
+	SystemHostname        sql.NullString  `json:"system_hostname"`
+	SystemAgentVersion    sql.NullString  `json:"system_agent_version"`
+	SystemOsType          sql.NullString  `json:"system_os_type"`
+	SystemOsVersion       sql.NullString  `json:"system_os_version"`
+	SystemKernelVersion   sql.NullString  `json:"system_kernel_version"`
+	CpuCores              sql.NullInt32   `json:"cpu_cores"`
+	CpuModel              sql.NullString  `json:"cpu_model"`
+	MemoryGb              sql.NullFloat64 `json:"memory_gb"`
+	DiskTotalGb           sql.NullFloat64 `json:"disk_total_gb"`
+	Architecture          sql.NullString  `json:"architecture"`
 }
 
+// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
+// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
 func (q *Queries) ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listHosts,
 		arg.GroupID,
@@ -1709,6 +1727,16 @@ func (q *Queries) ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHos
 			&i.EnvironmentID,
 			&i.GroupName,
 			&i.EnvironmentName,
+			&i.SystemHostname,
+			&i.SystemAgentVersion,
+			&i.SystemOsType,
+			&i.SystemOsVersion,
+			&i.SystemKernelVersion,
+			&i.CpuCores,
+			&i.CpuModel,
+			&i.MemoryGb,
+			&i.DiskTotalGb,
+			&i.Architecture,
 		); err != nil {
 			return nil, err
 		}

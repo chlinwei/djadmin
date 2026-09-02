@@ -590,6 +590,21 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 	return err
 }
 
+const updateUserPhonenumber = `-- name: UpdateUserPhonenumber :exec
+UPDATE sys_user SET phonenumber = ?, update_time = ? WHERE id = ?
+`
+
+type UpdateUserPhonenumberParams struct {
+	Phonenumber sql.NullString `json:"phonenumber"`
+	UpdateTime  sql.NullTime   `json:"update_time"`
+	ID          int32          `json:"id"`
+}
+
+func (q *Queries) UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhonenumberParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserPhonenumber, arg.Phonenumber, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const updateUserProfile = `-- name: UpdateUserProfile :exec
 UPDATE sys_user
 SET avatar = ?, phonenumber = ?, status = ?, remark = ?, timezone = ?, update_time = ?

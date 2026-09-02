@@ -1,50 +1,120 @@
 package monitor
 
 import (
-	"database/sql"
 	"encoding/json"
-	"math"
 	"strconv"
-	"strings"
+	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (handler *Handler) ListTargets(context *gin.Context) {
 	page, size := pagination(context)
-	clauses := []string{"1=1"}
-	arguments := make([]any, 0)
-	for queryName, column := range map[string]string{"exporter_type": "t.exporter_type", "managed_enabled": "t.managed_enabled", "install_status": "t.install_status", "last_scrape_status": "t.last_scrape_status"} {
-		if value := strings.TrimSpace(context.Query(queryName)); value != "" {
-			clauses = append(clauses, column+"=?")
-			arguments = append(arguments, value)
-		}
-	}
-	if search := strings.TrimSpace(context.Query("search")); search != "" {
-		pattern := "%" + search + "%"
-		clauses = append(clauses, "(h.instance_name LIKE ? OR h.ip LIKE ? OR t.exporter_type LIKE ?)")
-		arguments = append(arguments, pattern, pattern, pattern)
-	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	count, err := queryCount(context, handler.db, `SELECT COUNT(*) FROM monitor_target t JOIN assets_host h ON h.id=t.host_id`+where, arguments)
+	queries := db.New(handler.db)
+	count, err := queries.CountMonitorTargets(context, monitorTargetFilter(context))
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, `SELECT t.*, 'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip, h.agent_online AS host_agent_online FROM monitor_target t JOIN assets_host h ON h.id=t.host_id`+where+` ORDER BY t.id DESC LIMIT ? OFFSET ?`, queryArguments...)
+	rows, err := queries.ListMonitorTargets(context, db.ListMonitorTargetsParams{
+		ExporterType:     optionalStringParam(context, "exporter_type"),
+		ManagedEnabled:   optionalBoolParam(context, "managed_enabled"),
+		InstallStatus:    optionalStringParam(context, "install_status"),
+		LastScrapeStatus: optionalStringParam(context, "last_scrape_status"),
+		SearchPattern:    searchPatternParam(context),
+		Limit:            int32(size),
+		Offset:           int32((page - 1) * size),
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
+	items := make([]monitorTargetResponse, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, monitorTargetResponseFrom(db.ListMonitorTargetsRow(row)))
 	}
-	paginated(context, items, count, page, size)
+	response.Paginated(context, items, count, int32(page), int32(size))
+}
+
+func monitorTargetFilter(context *gin.Context) db.CountMonitorTargetsParams {
+	return db.CountMonitorTargetsParams{
+		ExporterType:     optionalStringParam(context, "exporter_type"),
+		ManagedEnabled:   optionalBoolParam(context, "managed_enabled"),
+		InstallStatus:    optionalStringParam(context, "install_status"),
+		LastScrapeStatus: optionalStringParam(context, "last_scrape_status"),
+		SearchPattern:    searchPatternParam(context),
+	}
+}
+
+type monitorTargetResponse struct {
+	ID                 int64           `json:"id"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             *string         `json:"remark"`
+	ExporterType       string          `json:"exporter_type"`
+	ManagedEnabled     bool            `json:"managed_enabled"`
+	InstallStatus      string          `json:"install_status"`
+	InstallMessage     string          `json:"install_message"`
+	LastScrapeStatus   string          `json:"last_scrape_status"`
+	LastScrapeAt       *time.Time      `json:"last_scrape_at"`
+	Labels             json.RawMessage `json:"labels"`
+	HostID             int64           `json:"host_id"`
+	RetryCount         uint32          `json:"retry_count"`
+	LastDispatchManual bool            `json:"last_dispatch_manual"`
+	ScrapePort         uint32          `json:"scrape_port"`
+	TargetType         string          `json:"target_type"`
+	HostName           *string         `json:"host_name"`
+	HostIP             *string         `json:"host_ip"`
+	HostAgentOnline    bool            `json:"host_agent_online"`
+}
+
+func monitorTargetResponseFrom(row db.ListMonitorTargetsRow) monitorTargetResponse {
+	var remark *string
+	if row.Remark.Valid {
+		remark = &row.Remark.String
+	}
+	var lastScrapeAt *time.Time
+	if row.LastScrapeAt.Valid {
+		lastScrapeAt = &row.LastScrapeAt.Time
+	}
+	var hostName, hostIP *string
+	if row.HostName.Valid {
+		hostName = &row.HostName.String
+	}
+	if row.HostIp.Valid {
+		hostIP = &row.HostIp.String
+	}
+	return monitorTargetResponse{
+		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: remark,
+		ExporterType: row.ExporterType, ManagedEnabled: row.ManagedEnabled,
+		InstallStatus: row.InstallStatus, InstallMessage: row.InstallMessage,
+		LastScrapeStatus: row.LastScrapeStatus, LastScrapeAt: lastScrapeAt,
+		Labels: row.Labels, HostID: row.HostID, RetryCount: row.RetryCount,
+		LastDispatchManual: row.LastDispatchManual, ScrapePort: row.ScrapePort,
+		TargetType: row.TargetType, HostName: hostName, HostIP: hostIP,
+		HostAgentOnline: row.HostAgentOnline,
+	}
+}
+
+type exporterTargetResponse struct {
+	ID               int64  `json:"id"`
+	ExporterType     string `json:"exporter_type"`
+	ScrapePort       uint32 `json:"scrape_port"`
+	ManagedEnabled   bool   `json:"managed_enabled"`
+	InstallStatus    string `json:"install_status"`
+	InstallMessage   string `json:"install_message"`
+	LastScrapeStatus string `json:"last_scrape_status"`
+}
+
+func exporterTargetResponseFrom(row db.ListMonitorTargetsByHostRow) exporterTargetResponse {
+	return exporterTargetResponse{
+		ID: row.ID, ExporterType: row.ExporterType, ScrapePort: row.ScrapePort,
+		ManagedEnabled: row.ManagedEnabled, InstallStatus: row.InstallStatus,
+		InstallMessage: row.InstallMessage, LastScrapeStatus: row.LastScrapeStatus,
+	}
 }
 
 func pagination(context *gin.Context) (int, int) {
@@ -60,54 +130,4 @@ func pagination(context *gin.Context) (int, int) {
 		size = 30
 	}
 	return page, size
-}
-
-func queryCount(context *gin.Context, database *sql.DB, query string, arguments []any) (int64, error) {
-	var count int64
-	err := database.QueryRowContext(context, query, arguments...).Scan(&count)
-	return count, err
-}
-
-func paginated(context *gin.Context, items []gin.H, count int64, page, size int) {
-	response.Success(context, gin.H{"results": items, "count": count, "pageNumber": page, "pageSize": size, "totalPages": int64(math.Ceil(float64(count) / float64(size))), "next": nil, "previous": nil})
-}
-
-func scanRows(rows *sql.Rows) ([]gin.H, error) {
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]gin.H, 0)
-	for rows.Next() {
-		values := make([]any, len(columns))
-		destinations := make([]any, len(columns))
-		for index := range values {
-			destinations[index] = &values[index]
-		}
-		if err = rows.Scan(destinations...); err != nil {
-			return nil, err
-		}
-		item := gin.H{}
-		for index, column := range columns {
-			item[column] = normalizeDatabaseValue(column, values[index])
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func normalizeDatabaseValue(column string, value any) any {
-	bytes, ok := value.([]byte)
-	if !ok {
-		return value
-	}
-	text := string(bytes)
-	if column == "labels" || strings.HasSuffix(column, "_summary") {
-		var decoded any
-		if json.Unmarshal(bytes, &decoded) == nil {
-			return decoded
-		}
-	}
-	return text
 }

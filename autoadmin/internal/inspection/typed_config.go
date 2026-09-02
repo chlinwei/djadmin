@@ -13,8 +13,8 @@ import (
 
 // 这个文件是 groups.go/read_config.go/executions.go 里 scanRows 通用扫描的类型化替代——
 // inspection_group/inspection_check/inspection_task 的 enabled 都是 TINYINT(1)，之前
-// Scan 进 interface{} 时和 monitor_target 是同一类隐患，只是这里已经有 normalizeValue
-// 按列名兜底，没有实际炸过；现在换成 sqlc 类型化查询，从根上不用再靠列名猜。
+// Scan 进 interface{} 时和 monitor_target 是同一类隐患；现在全部换成 sqlc 类型化查询，
+// 从根上不用再靠列名猜。
 
 type inspectionGroupResponse struct {
 	ID          int64                     `json:"id"`

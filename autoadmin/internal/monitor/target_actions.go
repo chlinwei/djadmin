@@ -224,13 +224,40 @@ func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id in
 	if !serviceNamePattern.MatchString(exporterType) {
 		return nil, fmt.Errorf("invalid exporter service name")
 	}
-	command := fmt.Sprintf("sudo systemctl %s %s.service", action, exporterType)
-	params, _ := json.Marshal(gin.H{"command": command})
-	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: "run_shell", ParamsJson: string(params), TimeoutSeconds: 30})
+	// agent 内置了 exporter 生命周期动作（直接 systemctl，agent 以 root 运行无需 sudo），
+	// 之前误下发 agent 不认识的 "run_shell" 动作，agent 报 unsupported action 却被当成功上报。
+	builtinActions := map[string]string{"start": "start_exporter", "stop": "stop_exporter", "status": "check_exporter_status"}
+	builtinAction, ok := builtinActions[action]
+	if !ok {
+		return nil, fmt.Errorf("unsupported service action %q", action)
+	}
+	params, _ := json.Marshal(gin.H{"service_name": exporterType + ".service"})
+	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: builtinAction, ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
 		return nil, err
 	}
+	return serviceControlResult(result, action, exporterType)
+}
+
+// serviceControlResult 判定 agent 的执行结果：Agent 在线且动作已下发时 Execute 的 err 为 nil，
+// 但 systemctl 本身可能失败（服务不存在、权限不足等），必须检查状态/退出码，否则会把失败当成功上报。
+// 注意 Status 为空也是失败：executor 层直接报错（典型是 agent 版本过旧、不认识动作名）时
+// 返回的是零值 JobResult，Status=""、ExitCode=0，只判 "failed" 会被漏过。
+func serviceControlResult(result *pb.AutomationExecuteResponse, action, exporterType string) (gin.H, error) {
+	if action != "status" && (result.Status != "success" || result.ExitCode != 0) {
+		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
+		return nil, fmt.Errorf("systemctl %s %s.service failed: %s", action, exporterType, reason)
+	}
 	return gin.H{"job_id": result.JobId, "status": result.Status, "exit_code": result.ExitCode, "stdout": result.Stdout, "stderr": result.Stderr, "error_message": result.ErrorMessage}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // targetHostLabel 取一个 monitor_target 对应的主机展示名，批量接口的结果列表要按主机报告成功/失败。

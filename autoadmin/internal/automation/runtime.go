@@ -1092,3 +1092,9 @@ func minimum(first, second int) int {
 	}
 	return second
 }
+
+// RunJobByID 执行一个已创建（pending）的自动化任务，供其它模块（如 Fluent Bit 安装派发）
+// 复用离线 playbook 执行链路；调用方负责先按 createAutomationJob 的表结构写入任务行。
+func (handler *Handler) RunJobByID(ctx context.Context, jobID int64) error {
+	return handler.runAutomationJob(ctx, jobID)
+}

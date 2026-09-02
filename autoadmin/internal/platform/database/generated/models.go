@@ -302,6 +302,40 @@ type AssetsHostgroup struct {
 	ParentID   sql.NullInt64  `json:"parent_id"`
 }
 
+type AssetsHosthardware struct {
+	ID           int64           `json:"id"`
+	CreateTime   time.Time       `json:"create_time"`
+	UpdateTime   time.Time       `json:"update_time"`
+	Remark       sql.NullString  `json:"remark"`
+	CpuCores     sql.NullInt32   `json:"cpu_cores"`
+	CpuModel     sql.NullString  `json:"cpu_model"`
+	MemoryGb     sql.NullFloat64 `json:"memory_gb"`
+	DiskTotalGb  sql.NullFloat64 `json:"disk_total_gb"`
+	Architecture sql.NullString  `json:"architecture"`
+	HostID       int64           `json:"host_id"`
+	CollectedAt  sql.NullTime    `json:"collected_at"`
+}
+
+type AssetsHostsystem struct {
+	ID              int64          `json:"id"`
+	CreateTime      time.Time      `json:"create_time"`
+	UpdateTime      time.Time      `json:"update_time"`
+	Remark          sql.NullString `json:"remark"`
+	OsType          sql.NullString `json:"os_type"`
+	OsVersion       sql.NullString `json:"os_version"`
+	KernelVersion   sql.NullString `json:"kernel_version"`
+	Hostname        sql.NullString `json:"hostname"`
+	AgentVersion    sql.NullString `json:"agent_version"`
+	HostID          int64          `json:"host_id"`
+	CollectedAt     sql.NullTime   `json:"collected_at"`
+	CollectorSource sql.NullString `json:"collector_source"`
+	TimezoneName    sql.NullString `json:"timezone_name"`
+	UtcOffset       sql.NullString `json:"utc_offset"`
+	OsID            sql.NullString `json:"os_id"`
+	OsIDLike        sql.NullString `json:"os_id_like"`
+	OsVersionID     sql.NullString `json:"os_version_id"`
+}
+
 type AssetsProject struct {
 	ID         int64          `json:"id"`
 	CreateTime time.Time      `json:"create_time"`

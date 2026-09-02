@@ -240,6 +240,45 @@ func (q *Queries) CountLogRetentionTiers(ctx context.Context, arg CountLogRetent
 	return count, err
 }
 
+const countMonitorTargets = `-- name: CountMonitorTargets :one
+SELECT COUNT(*)
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE (? IS NULL OR t.exporter_type = ?)
+  AND (? IS NULL OR t.managed_enabled = ?)
+  AND (? IS NULL OR t.install_status = ?)
+  AND (? IS NULL OR t.last_scrape_status = ?)
+  AND (? IS NULL OR h.instance_name LIKE ? OR h.ip LIKE ? OR t.exporter_type LIKE ?)
+`
+
+type CountMonitorTargetsParams struct {
+	ExporterType     sql.NullString `json:"exporter_type"`
+	ManagedEnabled   sql.NullBool   `json:"managed_enabled"`
+	InstallStatus    sql.NullString `json:"install_status"`
+	LastScrapeStatus sql.NullString `json:"last_scrape_status"`
+	SearchPattern    sql.NullString `json:"search_pattern"`
+}
+
+func (q *Queries) CountMonitorTargets(ctx context.Context, arg CountMonitorTargetsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countMonitorTargets,
+		arg.ExporterType,
+		arg.ExporterType,
+		arg.ManagedEnabled,
+		arg.ManagedEnabled,
+		arg.InstallStatus,
+		arg.InstallStatus,
+		arg.LastScrapeStatus,
+		arg.LastScrapeStatus,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countOpenSearchClusters = `-- name: CountOpenSearchClusters :one
 SELECT COUNT(*) FROM monitor_opensearch_cluster
 WHERE (? IS NULL OR enabled = ?)
@@ -449,6 +488,69 @@ func (q *Queries) GetLogRetentionTier(ctx context.Context, id int64) (MonitorLog
 		&i.Enabled,
 		&i.IsDefault,
 		&i.Remark,
+	)
+	return i, err
+}
+
+const getMonitorTarget = `-- name: GetMonitorTarget :one
+SELECT t.id, t.create_time, t.update_time, t.remark, t.exporter_type, t.managed_enabled,
+       t.install_status, t.install_message, t.last_scrape_status, t.last_scrape_at, t.labels,
+       t.host_id, t.retry_count, t.last_dispatch_manual, t.scrape_port,
+       'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip,
+       h.agent_online AS host_agent_online, h.agent_id AS agent_id
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE t.id = ?
+LIMIT 1
+`
+
+type GetMonitorTargetRow struct {
+	ID                 int64           `json:"id"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	ExporterType       string          `json:"exporter_type"`
+	ManagedEnabled     bool            `json:"managed_enabled"`
+	InstallStatus      string          `json:"install_status"`
+	InstallMessage     string          `json:"install_message"`
+	LastScrapeStatus   string          `json:"last_scrape_status"`
+	LastScrapeAt       sql.NullTime    `json:"last_scrape_at"`
+	Labels             json.RawMessage `json:"labels"`
+	HostID             int64           `json:"host_id"`
+	RetryCount         uint32          `json:"retry_count"`
+	LastDispatchManual bool            `json:"last_dispatch_manual"`
+	ScrapePort         uint32          `json:"scrape_port"`
+	TargetType         string          `json:"target_type"`
+	HostName           sql.NullString  `json:"host_name"`
+	HostIp             sql.NullString  `json:"host_ip"`
+	HostAgentOnline    bool            `json:"host_agent_online"`
+	AgentID            sql.NullString  `json:"agent_id"`
+}
+
+func (q *Queries) GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTargetRow, error) {
+	row := q.db.QueryRowContext(ctx, getMonitorTarget, id)
+	var i GetMonitorTargetRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.ExporterType,
+		&i.ManagedEnabled,
+		&i.InstallStatus,
+		&i.InstallMessage,
+		&i.LastScrapeStatus,
+		&i.LastScrapeAt,
+		&i.Labels,
+		&i.HostID,
+		&i.RetryCount,
+		&i.LastDispatchManual,
+		&i.ScrapePort,
+		&i.TargetType,
+		&i.HostName,
+		&i.HostIp,
+		&i.HostAgentOnline,
+		&i.AgentID,
 	)
 	return i, err
 }
@@ -896,6 +998,41 @@ func (q *Queries) ListAlertRoutes(ctx context.Context, arg ListAlertRoutesParams
 	return items, nil
 }
 
+const listExporterPackagePorts = `-- name: ListExporterPackagePorts :many
+SELECT name, default_port
+FROM monitor_software_package
+WHERE package_type = 'exporter' AND enabled = TRUE
+ORDER BY name, default_port
+`
+
+type ListExporterPackagePortsRow struct {
+	Name        string `json:"name"`
+	DefaultPort uint32 `json:"default_port"`
+}
+
+func (q *Queries) ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listExporterPackagePorts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExporterPackagePortsRow{}
+	for rows.Next() {
+		var i ListExporterPackagePortsRow
+		if err := rows.Scan(&i.Name, &i.DefaultPort); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInstallHistories = `-- name: ListInstallHistories :many
 SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_type, ih.status,
        ih.host_id_snapshot, ih.host_name_snapshot, ih.host_ip_snapshot, ih.exporter_type_snapshot,
@@ -1233,6 +1370,113 @@ func (q *Queries) ListLogRetentionTiers(ctx context.Context, arg ListLogRetentio
 			&i.Enabled,
 			&i.IsDefault,
 			&i.Remark,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMonitorTargets = `-- name: ListMonitorTargets :many
+SELECT t.id, t.create_time, t.update_time, t.remark, t.exporter_type, t.managed_enabled,
+       t.install_status, t.install_message, t.last_scrape_status, t.last_scrape_at, t.labels,
+       t.host_id, t.retry_count, t.last_dispatch_manual, t.scrape_port,
+       'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip,
+       h.agent_online AS host_agent_online
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+WHERE (? IS NULL OR t.exporter_type = ?)
+  AND (? IS NULL OR t.managed_enabled = ?)
+  AND (? IS NULL OR t.install_status = ?)
+  AND (? IS NULL OR t.last_scrape_status = ?)
+  AND (? IS NULL OR h.instance_name LIKE ? OR h.ip LIKE ? OR t.exporter_type LIKE ?)
+ORDER BY t.id DESC
+LIMIT ? OFFSET ?
+`
+
+type ListMonitorTargetsParams struct {
+	ExporterType     sql.NullString `json:"exporter_type"`
+	ManagedEnabled   sql.NullBool   `json:"managed_enabled"`
+	InstallStatus    sql.NullString `json:"install_status"`
+	LastScrapeStatus sql.NullString `json:"last_scrape_status"`
+	SearchPattern    sql.NullString `json:"search_pattern"`
+	Limit            int32          `json:"limit"`
+	Offset           int32          `json:"offset"`
+}
+
+type ListMonitorTargetsRow struct {
+	ID                 int64           `json:"id"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	ExporterType       string          `json:"exporter_type"`
+	ManagedEnabled     bool            `json:"managed_enabled"`
+	InstallStatus      string          `json:"install_status"`
+	InstallMessage     string          `json:"install_message"`
+	LastScrapeStatus   string          `json:"last_scrape_status"`
+	LastScrapeAt       sql.NullTime    `json:"last_scrape_at"`
+	Labels             json.RawMessage `json:"labels"`
+	HostID             int64           `json:"host_id"`
+	RetryCount         uint32          `json:"retry_count"`
+	LastDispatchManual bool            `json:"last_dispatch_manual"`
+	ScrapePort         uint32          `json:"scrape_port"`
+	TargetType         string          `json:"target_type"`
+	HostName           sql.NullString  `json:"host_name"`
+	HostIp             sql.NullString  `json:"host_ip"`
+	HostAgentOnline    bool            `json:"host_agent_online"`
+}
+
+func (q *Queries) ListMonitorTargets(ctx context.Context, arg ListMonitorTargetsParams) ([]ListMonitorTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMonitorTargets,
+		arg.ExporterType,
+		arg.ExporterType,
+		arg.ManagedEnabled,
+		arg.ManagedEnabled,
+		arg.InstallStatus,
+		arg.InstallStatus,
+		arg.LastScrapeStatus,
+		arg.LastScrapeStatus,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.SearchPattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMonitorTargetsRow{}
+	for rows.Next() {
+		var i ListMonitorTargetsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.ExporterType,
+			&i.ManagedEnabled,
+			&i.InstallStatus,
+			&i.InstallMessage,
+			&i.LastScrapeStatus,
+			&i.LastScrapeAt,
+			&i.Labels,
+			&i.HostID,
+			&i.RetryCount,
+			&i.LastDispatchManual,
+			&i.ScrapePort,
+			&i.TargetType,
+			&i.HostName,
+			&i.HostIp,
+			&i.HostAgentOnline,
 		); err != nil {
 			return nil, err
 		}

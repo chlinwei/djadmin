@@ -147,3 +147,11 @@ func uniqueIDs(ids []int32) []int32 {
 	}
 	return result
 }
+
+func (repository *Repository) Pool() *sql.DB {
+	return repository.pool
+}
+
+func (repository *Repository) UpdatePhonenumber(ctx context.Context, params db.UpdateUserPhonenumberParams) error {
+	return repository.queries.UpdateUserPhonenumber(ctx, params)
+}

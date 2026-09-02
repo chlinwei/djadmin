@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"autoadmin/internal/agent/pb"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
@@ -84,5 +86,46 @@ func TestBatchDeleteTargetsRejectsEmptyIDs(t *testing.T) {
 
 	if !strings.Contains(recorder.Body.String(), "ids must be a non-empty array") {
 		t.Fatalf("body = %s, want a validation error for empty ids", recorder.Body.String())
+	}
+}
+
+// 回归用例：之前误下发 agent 不认识的 run_shell 动作，agent 返回 failed 却被当成功上报，
+// 导致"批量停止提示成功但服务实际没停"。现在必须用 agent 内置的 exporter 动作，
+// 并且 agent 报失败（status=failed / exit_code!=0 / 空状态）时要转成错误。
+// 空状态是 agent executor 直接报错（版本过旧不认识动作）时的零值结果，最容易漏。
+func TestServiceControlResultTreatsAgentFailureAsError(t *testing.T) {
+	failed := &pb.AutomationExecuteResponse{Status: "failed", ExitCode: 1, ErrorMessage: "unsupported action"}
+	if _, err := serviceControlResult(failed, "stop", "node_exporter"); err == nil {
+		t.Fatalf("want error for failed agent result")
+	}
+
+	nonZeroExit := &pb.AutomationExecuteResponse{Status: "success", ExitCode: 5, Stderr: "Failed to stop node_exporter.service"}
+	if _, err := serviceControlResult(nonZeroExit, "stop", "node_exporter"); err == nil || !strings.Contains(err.Error(), "node_exporter.service") {
+		t.Fatalf("want error with service context, got %v", err)
+	}
+
+	emptyStatus := &pb.AutomationExecuteResponse{Status: "", ExitCode: 0, ErrorMessage: `unsupported action "stop_exporter"`}
+	if _, err := serviceControlResult(emptyStatus, "stop", "node_exporter"); err == nil || !strings.Contains(err.Error(), "unsupported action") {
+		t.Fatalf("want error for empty-status result, got %v", err)
+	}
+
+	success := &pb.AutomationExecuteResponse{Status: "success", ExitCode: 0, Stdout: ""}
+	detail, err := serviceControlResult(success, "stop", "node_exporter")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail["exit_code"] != int32(0) {
+		t.Fatalf("detail = %v, want exit_code 0", detail)
+	}
+
+	// status 查询是只读探测：systemctl status 在服务 inactive/failed 时返回非零退出码，
+	// 这是有效状态信息不是错误，必须原样透传给前端判断。
+	inactiveStatus := &pb.AutomationExecuteResponse{Status: "failed", ExitCode: 3, Stdout: "inactive (dead)"}
+	detail, err = serviceControlResult(inactiveStatus, "status", "node_exporter")
+	if err != nil {
+		t.Fatalf("status passthrough should not error, got %v", err)
+	}
+	if detail["exit_code"] != int32(3) {
+		t.Fatalf("status detail = %v, want exit_code 3", detail)
 	}
 }

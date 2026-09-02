@@ -15,6 +15,7 @@ import (
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/assets"
+	"autoadmin/internal/automation"
 	"autoadmin/internal/identity"
 
 	"github.com/gin-gonic/gin"
@@ -28,9 +29,10 @@ type Handler struct {
 	gateway     *agent.Gateway
 	secrets     *assets.SecretEncryptor
 	packageRoot string
+	jobs        *automation.Handler
 }
 
-func NewHandler(db *sql.DB, gateway *agent.Gateway, encryptionKey, djangoSecret string) (*Handler, error) {
+func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, encryptionKey, djangoSecret string) (*Handler, error) {
 	secrets, err := assets.NewSecretEncryptor(encryptionKey, djangoSecret)
 	if err != nil {
 		return nil, err
@@ -40,7 +42,7 @@ func NewHandler(db *sql.DB, gateway *agent.Gateway, encryptionKey, djangoSecret 
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot}, nil
+	return &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}, nil
 }
 
 func (handler *Handler) Summary(context *gin.Context) {

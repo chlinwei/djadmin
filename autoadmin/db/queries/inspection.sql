@@ -43,6 +43,33 @@ WHERE (sqlc.narg(pattern) IS NULL OR t.name LIKE sqlc.narg(pattern) OR g.name LI
 ORDER BY t.id DESC
 LIMIT ? OFFSET ?;
 
+-- name: GetInspectionTask :one
+SELECT t.id, t.name, t.inspection_name, t.group_id AS `group`, g.name AS group_name, g.scope AS scope,
+       t.logical_service_id AS logical_service, COALESCE(s.name,'') AS logical_service_name,
+       t.selected_host_ids, t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
+       t.last_run_time, t.enabled, t.create_time, t.update_time
+FROM inspection_task t
+JOIN inspection_group g ON g.id = t.group_id
+LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
+WHERE t.id = sqlc.arg(id);
+
+-- name: ListEnabledInspectionChecksForRun :many
+SELECT name, executor, execution_location, config, severity, `order`
+FROM inspection_check
+WHERE group_id = sqlc.arg(group_id) AND enabled = TRUE
+ORDER BY `order`, id;
+
+-- name: ListHostGroupTreeNodes :many
+SELECT id, name, parent_id
+FROM assets_hostgroup
+ORDER BY name, id;
+
+-- name: ListHostScopeTreeHosts :many
+SELECT id, instance_name, ip, group_id, agent_id
+FROM assets_host
+WHERE is_deleted_in_cloud = FALSE
+ORDER BY instance_name, id;
+
 -- name: CountInspectionExecutions :one
 SELECT COUNT(*) FROM inspection_execution e
 WHERE (sqlc.narg(task_id) IS NULL OR e.task_id = sqlc.narg(task_id))

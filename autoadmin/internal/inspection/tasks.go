@@ -4,11 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 	"github.com/robfig/cron/v3"
@@ -47,7 +47,6 @@ func (handler *Handler) GetTask(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
-
 func (handler *Handler) SaveTask(context *gin.Context) {
 	var input taskInput
 	if context.ShouldBindJSON(&input) != nil {
@@ -132,20 +131,12 @@ func (handler *Handler) DeleteTask(context *gin.Context) {
 	response.Success(context, nil)
 }
 
-func (handler *Handler) loadTask(context *gin.Context, id int64) (gin.H, error) {
-	rows, err := handler.db.QueryContext(context, `SELECT t.id,t.name,t.inspection_name,t.group_id AS `+"`group`"+`,g.name AS group_name,g.scope AS scope,t.logical_service_id AS logical_service,COALESCE(s.name,'') AS logical_service_name,t.selected_host_ids,t.concurrency,t.timeout_seconds,t.cron_expression,t.next_run_time,t.last_run_time,t.enabled,t.create_time,t.update_time FROM inspection_task t JOIN inspection_group g ON g.id=t.group_id LEFT JOIN assets_application_service s ON s.id=t.logical_service_id WHERE t.id=?`, id)
+func (handler *Handler) loadTask(context *gin.Context, id int64) (inspectionTaskResponse, error) {
+	row, err := db.New(handler.db).GetInspectionTask(context, id)
 	if err != nil {
-		return nil, err
+		return inspectionTaskResponse{}, err
 	}
-	items, err := scanRows(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, sql.ErrNoRows
-	}
-	decorateTask(items[0])
-	return items[0], nil
+	return inspectionTaskResponseFrom(db.ListInspectionTasksTypedRow(row)), nil
 }
 
 func mergeTaskInput(state *taskState, input taskInput) {
@@ -270,19 +261,4 @@ func nextRunTime(expression string, enabled bool) any {
 		return nil
 	}
 	return schedule.Next(time.Now().UTC())
-}
-
-func decorateTask(item gin.H) {
-	if item["scope"] == "per_host" {
-		ids, _ := item["selected_host_ids"].([]any)
-		item["target_type"] = "host_group"
-		if len(ids) == 0 {
-			item["target_name"] = "未选择范围"
-		} else {
-			item["target_name"] = fmt.Sprintf("%d 台主机", len(ids))
-		}
-	} else {
-		item["target_type"] = "logical_service"
-		item["target_name"] = item["logical_service_name"]
-	}
 }

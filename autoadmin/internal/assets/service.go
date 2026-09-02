@@ -502,8 +502,38 @@ func (s *Service) DeleteHostGroup(ctx context.Context, id int64) error {
 	return translate(s.repository.DeleteHostGroup(ctx, id))
 }
 
+// hostSystemInfo 组装列表/详情共用的 system 摘要（Django HostListSerializer.get_system 契约）：
+// Agent 状态属于 Host 本身，不能因为没有 system 快照而丢失，agent_last_seen_at 取 host 心跳时间。
+func hostSystemInfo(row db.ListHostsRow) *HostSystemInfo {
+	return &HostSystemInfo{
+		Hostname:        nullStringPtr(row.SystemHostname),
+		AgentVersion:    nullStringPtr(row.SystemAgentVersion),
+		AgentLastSeenAt: timeValue(row.AgentOnlineTime),
+		AgentOnline:     row.AgentOnline,
+	}
+}
+
+func hostHardwareInfo(row db.ListHostsRow) *HostHardwareInfo {
+	if !row.CpuCores.Valid && !row.MemoryGb.Valid && !row.CpuModel.Valid {
+		return nil
+	}
+	return &HostHardwareInfo{
+		CpuCores:     nullInt32Ptr(row.CpuCores),
+		CpuModel:     nullStringPtr(row.CpuModel),
+		MemoryGB:     nullFloat64Ptr(row.MemoryGb),
+		DiskTotalGB:  nullFloat64Ptr(row.DiskTotalGb),
+		Architecture: nullStringPtr(row.Architecture),
+	}
+}
+
 func host(row db.ListHostsRow) Host {
-	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, AgentID: stringValue(row.AgentID), Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName}
+	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, AgentID: stringValue(row.AgentID), Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName,
+		System:        hostSystemInfo(row),
+		Hardware:      hostHardwareInfo(row),
+		OsType:        nullStringPtr(row.SystemOsType),
+		OsVersion:     nullStringPtr(row.SystemOsVersion),
+		KernelVersion: nullStringPtr(row.SystemKernelVersion),
+	}
 }
 func hostDetail(row db.GetHostRow) Host {
 	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, AgentID: stringValue(row.AgentID), Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName}
@@ -678,4 +708,25 @@ func (s *Service) DeleteHosts(ctx context.Context, ids []int64) error {
 		return ErrInvalid
 	}
 	return translate(s.repository.DeleteHosts(ctx, ids))
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func nullInt32Ptr(value sql.NullInt32) *int32 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int32
+}
+
+func nullFloat64Ptr(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Float64
 }

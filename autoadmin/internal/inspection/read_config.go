@@ -1,11 +1,11 @@
 package inspection
 
 import (
-	"fmt"
+	"database/sql"
 	"strings"
 
 	"autoadmin/internal/api/response"
-	"database/sql"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,38 +19,80 @@ func optionalSearchPattern(context *gin.Context) sql.NullString {
 }
 
 func (handler *Handler) HostScopeTree(context *gin.Context) {
-	groupRows, err := handler.db.QueryContext(context, `SELECT id,name,parent_id FROM assets_hostgroup ORDER BY name,id`)
+	queries := db.New(handler.db)
+	groupRows, err := queries.ListHostGroupTreeNodes(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	groups, err := scanRows(groupRows)
+	hostRows, err := queries.ListHostScopeTreeHosts(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	hostRows, err := handler.db.QueryContext(context, `SELECT id,instance_name,ip,group_id,agent_id FROM assets_host WHERE is_deleted_in_cloud=FALSE ORDER BY instance_name,id`)
-	if err != nil {
-		response.Error(context, err)
-		return
+	hosts := make([]hostScopeNode, 0, len(hostRows))
+	for _, row := range hostRows {
+		hosts = append(hosts, hostScopeNodeFrom(row))
 	}
-	hosts, err := scanRows(hostRows)
-	if err != nil {
-		response.Error(context, err)
-		return
+	groups := make([]hostGroupNode, 0, len(groupRows))
+	for _, row := range groupRows {
+		groups = append(groups, hostGroupNodeFrom(row))
 	}
-	response.Success(context, gin.H{"groups": buildGroupTree(groups, nil), "hosts": hosts})
+	response.Success(context, gin.H{"groups": buildGroupTree(groups, 0), "hosts": hosts})
 }
 
-func buildGroupTree(groups []gin.H, parent any) []gin.H {
-	result := make([]gin.H, 0)
+type hostScopeNode struct {
+	ID           int64   `json:"id"`
+	InstanceName *string `json:"instance_name"`
+	IP           *string `json:"ip"`
+	GroupID      *int64  `json:"group_id"`
+	AgentID      *string `json:"agent_id"`
+}
+
+func hostScopeNodeFrom(row db.ListHostScopeTreeHostsRow) hostScopeNode {
+	node := hostScopeNode{ID: row.ID}
+	if row.InstanceName.Valid {
+		node.InstanceName = &row.InstanceName.String
+	}
+	if row.Ip.Valid {
+		node.IP = &row.Ip.String
+	}
+	if row.GroupID.Valid {
+		node.GroupID = &row.GroupID.Int64
+	}
+	if row.AgentID.Valid {
+		node.AgentID = &row.AgentID.String
+	}
+	return node
+}
+
+type hostGroupNode struct {
+	ID       int64           `json:"id"`
+	Name     string          `json:"name"`
+	ParentID *int64          `json:"parent_id"`
+	Children []hostGroupNode `json:"children"`
+}
+
+func hostGroupNodeFrom(row db.ListHostGroupTreeNodesRow) hostGroupNode {
+	node := hostGroupNode{ID: row.ID, Name: row.Name, Children: []hostGroupNode{}}
+	if row.ParentID.Valid {
+		node.ParentID = &row.ParentID.Int64
+	}
+	return node
+}
+
+func buildGroupTree(groups []hostGroupNode, parentID int64) []hostGroupNode {
+	result := make([]hostGroupNode, 0)
 	for _, group := range groups {
-		if fmt.Sprint(group["parent_id"]) != fmt.Sprint(parent) {
+		current := int64(0)
+		if group.ParentID != nil {
+			current = *group.ParentID
+		}
+		if current != parentID {
 			continue
 		}
-		copy := gin.H{"id": group["id"], "name": group["name"], "parent_id": group["parent_id"]}
-		copy["children"] = buildGroupTree(groups, group["id"])
-		result = append(result, copy)
+		group.Children = buildGroupTree(groups, group.ID)
+		result = append(result, group)
 	}
 	return result
 }

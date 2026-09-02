@@ -58,6 +58,10 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 		identityHandler.ListUsers,
 	)
 	apiTokens := engine.Group("/sys/usercenter", middleware.Authenticate(tokens))
+	apiTokens.POST("/updateUserInfo/", middleware.RequirePermission("system:usercenter:updateUserInfo"), identityHandler.UpdateUserInfo)
+	apiTokens.POST("/updateUserPassword/", identityHandler.UpdateUserPassword)
+	apiTokens.GET("/alertMediaBindings/", identityHandler.AlertMediaBindings)
+	apiTokens.POST("/updateAlertMediaBindings/", identityHandler.UpdateAlertMediaBindings)
 	apiTokens.GET("/apiTokens/", middleware.RequirePermission("system:api_token:view"), apiTokenHandler.List)
 	apiTokens.POST("/createApiToken/", middleware.RequirePermission("system:api_token:create"), apiTokenHandler.Create)
 	apiTokens.POST("/rotateApiToken/", middleware.RequirePermission("system:api_token:rotate"), apiTokenHandler.Rotate)
@@ -174,6 +178,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	assetsHandler := assets.NewHandler(assetsService, gateway)
 	assets.SetDeploymentGateway(gateway)
 	engine.GET("/api/agent/jobs/query", middleware.Authenticate(tokens), assetsHandler.QueryAgentJobs)
+	engine.POST("/api/agent/install", middleware.Authenticate(tokens), middleware.RequirePermission("assets:hosts:update"), assetsHandler.AgentInstall)
 	projects := engine.Group("/assets/projects", middleware.Authenticate(tokens))
 	projects.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListProjects)
 	projects.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetProject)
@@ -305,7 +310,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionExecutions.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetExecution)
 	inspectionExecutions.POST("/:id/cancel/", middleware.RequirePermission("inspection:executions:cancel"), inspectionHandler.CancelExecution)
 
-	monitorHandler, err := monitor.NewHandler(database, gateway, credentialEncryptionKey, djangoSecret)
+	monitorHandler, err := monitor.NewHandler(database, gateway, playbookHandler, credentialEncryptionKey, djangoSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -337,6 +342,20 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/install-histories/", monitorHandler.ListInstallHistories)
 	monitorRoutes.GET("/install-histories/:id/", monitorHandler.GetInstallHistory)
 	monitorRoutes.POST("/install-histories/:id/cancel/", monitorHandler.CancelInstallHistory)
+	logTargets := monitorRoutes.Group("/log-targets")
+	logTargets.POST("/batch-create/", monitorHandler.BatchCreateLogTargets)
+	logTargets.POST("/batch-retry/", monitorHandler.BatchRetryLogTargets)
+	logTargets.POST("/batch-start-service/", monitorHandler.BatchStartLogTargets)
+	logTargets.POST("/batch-stop-service/", monitorHandler.BatchStopLogTargets)
+	logTargets.POST("/batch-apply/", monitorHandler.BatchApplyLogTargets)
+	logTargets.POST("/batch-delete/", monitorHandler.BatchDeleteLogTargets)
+	logTargets.POST("/:id/retry/", monitorHandler.RetryLogTarget)
+	logTargets.POST("/:id/cancel/", monitorHandler.CancelLogTarget)
+	logTargets.DELETE("/:id/", monitorHandler.DeleteLogTarget)
+	logTargets.POST("/:id/check-status/", monitorHandler.CheckLogTargetService)
+	logTargets.POST("/:id/start-service/", monitorHandler.StartLogTargetService)
+	logTargets.POST("/:id/stop-service/", monitorHandler.StopLogTargetService)
+	logTargets.POST("/:id/apply/", monitorHandler.ApplyLogTargetConfig)
 	monitorRoutes.GET("/alert-histories/", monitorHandler.ListAlertHistories)
 	monitorRoutes.GET("/alert-histories/:id/", monitorHandler.GetAlertHistory)
 	monitorRoutes.GET("/alert-histories/:id/notification-status/", monitorHandler.AlertNotificationStatus)

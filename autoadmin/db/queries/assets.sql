@@ -137,10 +137,18 @@ WHERE (sqlc.arg(group_id) = 0 OR h.group_id = sqlc.arg(group_id))
   AND (COALESCE(h.instance_name, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.agent_id, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.ip, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.remark, '') LIKE CAST(sqlc.arg(pattern) AS CHAR));
 
 -- name: ListHosts :many
-SELECT h.*, COALESCE(g.name, '') AS group_name, COALESCE(e.name, '') AS environment_name
+-- 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
+-- 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
+SELECT h.*, COALESCE(g.name, '') AS group_name, COALESCE(e.name, '') AS environment_name,
+       s.hostname AS system_hostname, s.agent_version AS system_agent_version,
+       s.os_type AS system_os_type, s.os_version AS system_os_version,
+       s.kernel_version AS system_kernel_version,
+       hw.cpu_cores, hw.cpu_model, hw.memory_gb, hw.disk_total_gb, hw.architecture
 FROM assets_host h
 LEFT JOIN assets_hostgroup g ON g.id = h.group_id
 LEFT JOIN assets_business_environment e ON e.id = h.environment_id
+LEFT JOIN assets_hostsystem s ON s.host_id = h.id
+LEFT JOIN assets_hosthardware hw ON hw.host_id = h.id
 WHERE (sqlc.arg(group_id) = 0 OR h.group_id = sqlc.arg(group_id))
   AND (sqlc.arg(environment_id) = 0 OR h.environment_id = sqlc.arg(environment_id))
   AND (COALESCE(h.instance_name, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.agent_id, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.ip, '') LIKE CAST(sqlc.arg(pattern) AS CHAR) OR COALESCE(h.remark, '') LIKE CAST(sqlc.arg(pattern) AS CHAR))

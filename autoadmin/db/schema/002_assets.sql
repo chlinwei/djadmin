@@ -264,3 +264,45 @@ CREATE TABLE `assets_application_service_log_setting` (
   CONSTRAINT `assets_application_service_log_setting_log_fk` FOREIGN KEY (`log_definition_id`) REFERENCES `assets_application_log_definition` (`id`),
   CONSTRAINT `assets_application_service_log_setting_service_fk` FOREIGN KEY (`service_id`) REFERENCES `assets_application_service` (`id`)
 );
+-- Snapshot source: `SHOW CREATE TABLE` against the live migration database for the host
+-- system/hardware snapshot tables used by the typed host list queries.
+
+CREATE TABLE `assets_hostsystem` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `create_time` datetime(6) NOT NULL,
+  `update_time` datetime(6) NOT NULL,
+  `remark` longtext,
+  `os_type` varchar(64) DEFAULT NULL,
+  `os_version` varchar(128) DEFAULT NULL,
+  `kernel_version` varchar(128) DEFAULT NULL,
+  `hostname` varchar(128) DEFAULT NULL,
+  `agent_version` varchar(64) DEFAULT NULL,
+  `host_id` bigint NOT NULL,
+  `collected_at` datetime(6) DEFAULT NULL,
+  `collector_source` varchar(32) DEFAULT NULL,
+  `timezone_name` varchar(64) DEFAULT NULL,
+  `utc_offset` varchar(16) DEFAULT NULL,
+  `os_id` varchar(64) DEFAULT NULL,
+  `os_id_like` varchar(128) DEFAULT NULL,
+  `os_version_id` varchar(64) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `host_id` (`host_id`),
+  CONSTRAINT `assets_hostsystem_host_id_94282b79_fk_assets_host_id` FOREIGN KEY (`host_id`) REFERENCES `assets_host` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=261 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `assets_hosthardware` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `create_time` datetime(6) NOT NULL,
+  `update_time` datetime(6) NOT NULL,
+  `remark` longtext,
+  `cpu_cores` int DEFAULT NULL,
+  `cpu_model` varchar(255) DEFAULT NULL,
+  `memory_gb` double DEFAULT NULL,
+  `disk_total_gb` double DEFAULT NULL,
+  `architecture` varchar(64) DEFAULT NULL,
+  `host_id` bigint NOT NULL,
+  `collected_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `host_id` (`host_id`),
+  CONSTRAINT `assets_hosthardware_host_id_b48623b8_fk_assets_host_id` FOREIGN KEY (`host_id`) REFERENCES `assets_host` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=261 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

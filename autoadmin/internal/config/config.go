@@ -11,6 +11,8 @@ type Config struct {
 	Environment                   string        `env:"APP_ENV" envDefault:"development"`
 	HTTPAddress                   string        `env:"HTTP_ADDRESS" envDefault:":9000"`
 	AgentGRPCAddress              string        `env:"AGENT_GRPC_ADDRESS" envDefault:":9001"`
+	// AgentGRPCAuthMode: open=放行所有 agent 连接（过渡期，后续切 mTLS）；token=校验 sys_agent_token。
+	AgentGRPCAuthMode             string        `env:"AGENT_GRPC_AUTH_MODE" envDefault:"open"`
 	CORSOrigins                   []string      `env:"CORS_ALLOWED_ORIGINS" envDefault:"*" envSeparator:","`
 	ShutdownTimeout               time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 	MySQLDSN                      string        `env:"MYSQL_DSN"`

@@ -164,7 +164,7 @@ defineOptions({
 import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createAgentJob, getHostAgentRuntimeStatus, getHostById, queryHostDynamicTasks } from '@/api/assets/host/index.js'
+import { refreshHostInfo, getHostAgentRuntimeStatus, getHostById, queryHostDynamicTasks } from '@/api/assets/host/index.js'
 import { formatDateTimeWithTimezone } from '../utils/hostDisplayUtils'
 import { getHostDisplayName } from '../utils/hostGroupTreeUtils'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -627,17 +627,16 @@ const triggerAgentRuntimeCollect = async () => {
 
     dispatching.value = true
     try {
-        const res = await createAgentJob({
-            target_type: 'single',
-            target_value: agentId,
-            type: 'inventory',
-            action: 'get_host_info',
-            params: {},
-            timeout_seconds: 30,
-        })
+        // 走后端已实现的 refresh-info（同步下发 get_host_info 并持久化），
+        // 替代 Django 时代缺失的 /api/agent/jobs/create 通用任务通道。
+        const res = await refreshHostInfo(hostId.value)
 
         if (res?.data?.code !== 200) {
             message.error(res?.data?.msg || '下发采集任务失败')
+            return
+        }
+        if (res?.data?.data?.result?.skipped) {
+            message.warning(res.data.data.result.error || 'agent 离线，任务未下发')
             return
         }
 

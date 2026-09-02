@@ -876,6 +876,23 @@ const filterHostsByAgentStatus = (rows) => {
     return rows
 }
 
+// 列表接口返回的行不含 system/hardware 运行时详情，它们由二阶段
+// batchRefreshHostInfo 合并进来。自动刷新（refreshRuntime=false）不触发采集，
+// 但整表替换会把已合并的字段冲掉，导致 CPU/内存/OS 列刷新后变 '-'；
+// 这里按 id 保留旧行的运行时字段。
+const preserveRuntimeFields = (freshRows) => {
+    const previous = new Map((datasources.value || []).map((item) => [item.id, item]))
+    return (freshRows || []).map((row) => {
+        const old = previous.get(row.id)
+        if (!old) return row
+        return {
+            ...row,
+            system: row.system ?? old.system,
+            hardware: row.hardware ?? old.hardware,
+        }
+    })
+}
+
 const agentCredentialOptions = computed(() => {
     return agentCredentials.value
         .map((credential) => ({
@@ -985,7 +1002,8 @@ const loadHostList = async ({ refreshRuntime = true } = {}) => {
         }
         if (res.data.code === 200) {
             const rows = Array.isArray(res.data.data.results) ? res.data.data.results : []
-            const filteredRows = filterHostsByAgentStatus(rows)
+            const mergedRows = refreshRuntime ? rows : preserveRuntimeFields(rows)
+            const filteredRows = filterHostsByAgentStatus(mergedRows)
             datasources.value = filteredRows
             pagination.total = agentStatusFilter.value === 'all'
                 ? (res.data.data.count || 0)

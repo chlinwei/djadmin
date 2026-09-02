@@ -45,6 +45,7 @@ type Querier interface {
 	CountLogProcessingRules(ctx context.Context, arg CountLogProcessingRulesParams) (int64, error)
 	CountLogRetentionTiers(ctx context.Context, arg CountLogRetentionTiersParams) (int64, error)
 	CountLoginAudits(ctx context.Context, arg CountLoginAuditsParams) (int64, error)
+	CountMonitorTargets(ctx context.Context, arg CountMonitorTargetsParams) (int64, error)
 	CountOpenSearchClusters(ctx context.Context, arg CountOpenSearchClustersParams) (int64, error)
 	CountOperationAudits(ctx context.Context, arg CountOperationAuditsParams) (int64, error)
 	CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error)
@@ -111,12 +112,14 @@ type Querier interface {
 	GetHostGroup(ctx context.Context, id int64) (GetHostGroupRow, error)
 	GetInspectionExecutionTyped(ctx context.Context, id int64) (GetInspectionExecutionTypedRow, error)
 	GetInspectionGroup(ctx context.Context, id int64) (GetInspectionGroupRow, error)
+	GetInspectionTask(ctx context.Context, id int64) (GetInspectionTaskRow, error)
 	GetInventoryTyped(ctx context.Context, id int64) (AutomationInventory, error)
 	GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, error)
 	GetLogCollectionFilterRule(ctx context.Context, id int64) (MonitorLogCollectionFilterRule, error)
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
 	GetMenuByID(ctx context.Context, id int32) (SysMenu, error)
+	GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTargetRow, error)
 	GetOpenSearchClusterTyped(ctx context.Context, id int64) (MonitorOpensearchCluster, error)
 	GetProject(ctx context.Context, id int64) (AssetsProject, error)
 	GetRoleByID(ctx context.Context, id int32) (SysRole, error)
@@ -142,7 +145,13 @@ type Querier interface {
 	ListConfigs(ctx context.Context, arg ListConfigsParams) ([]SysConfig, error)
 	ListCredentials(ctx context.Context, arg ListCredentialsParams) ([]AssetsCredential, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
+	ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error)
+	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
+	ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
+	ListHostScopeTreeHosts(ctx context.Context) ([]ListHostScopeTreeHostsRow, error)
+	// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
+	// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
 	ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error)
 	ListInspectionChecksByGroup(ctx context.Context, groupID int64) ([]ListInspectionChecksByGroupRow, error)
 	ListInspectionExecutions(ctx context.Context, arg ListInspectionExecutionsParams) ([]ListInspectionExecutionsRow, error)
@@ -160,6 +169,7 @@ type Querier interface {
 	ListMenuIDsByRoleID(ctx context.Context, roleID int32) ([]int32, error)
 	ListMenus(ctx context.Context) ([]SysMenu, error)
 	ListMenusByUserID(ctx context.Context, userID int32) ([]SysMenu, error)
+	ListMonitorTargets(ctx context.Context, arg ListMonitorTargetsParams) ([]ListMonitorTargetsRow, error)
 	// managed_enabled 是 monitor_target 表里 TINYINT(1) 列，schema 里已按约定标成 BOOLEAN，
 	// 这里生成的 struct 字段就是真正的 Go bool，取代 monitor 包里手写的 map[string]any 扫描。
 	ListMonitorTargetsByHost(ctx context.Context, arg ListMonitorTargetsByHostParams) ([]ListMonitorTargetsByHostRow, error)
@@ -197,6 +207,7 @@ type Querier interface {
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
 	UpdateUserLoginDate(ctx context.Context, arg UpdateUserLoginDateParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
+	UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhonenumberParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 }
 

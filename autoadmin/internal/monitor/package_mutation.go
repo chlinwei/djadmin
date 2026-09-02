@@ -3,6 +3,8 @@ package monitor
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +25,9 @@ type packageMutationInput struct {
 	WorkDirectory                                *string `json:"work_directory"`
 	InstallPlaybookContent                       *string `json:"install_playbook_content"`
 	UninstallPlaybookContent                     *string `json:"uninstall_playbook_content"`
+	PlatformFormatUpdate                         *string `json:"package_format"`
+	PlatformFamilyUpdate                         *string `json:"platform_family"`
+	PlatformMajorUpdate                          *string `json:"platform_major"`
 }
 
 func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
@@ -101,6 +106,28 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 	if input.ServiceRunAsUserUpdate != nil {
 		item.ServiceRunAsUser = strings.TrimSpace(*input.ServiceRunAsUserUpdate)
 	}
+	// 平台元数据（包格式/适用平台/主版本）允许在编辑时修正：RPM 按 rhel7/rhel9、DEB 按
+	// ubuntu/debian 主版本隔离，建错平台只能改或删，之前编辑接口不支持改，只能删了重建。
+	// os/arch 不允许改——它们决定了已上传文件的存储目录，改了会让文件失联。
+	metadataChanged := false
+	if input.PlatformFormatUpdate != nil {
+		item.PackageFormat = strings.TrimSpace(*input.PlatformFormatUpdate)
+		metadataChanged = true
+	}
+	if input.PlatformFamilyUpdate != nil {
+		item.PlatformFamily = strings.TrimSpace(*input.PlatformFamilyUpdate)
+		metadataChanged = true
+	}
+	if input.PlatformMajorUpdate != nil {
+		item.PlatformMajor = strings.TrimSpace(*input.PlatformMajorUpdate)
+		metadataChanged = true
+	}
+	if metadataChanged {
+		if err := validatePackageMetadata(item); err != nil {
+			response.BusinessError(context, 400, "invalid software package configuration", gin.H{"detail": err.Error()})
+			return
+		}
+	}
 	if item.DefaultPort < 1 || item.DefaultPort > 65535 || item.ServiceRunAsUser == "" {
 		response.BusinessError(context, 400, "default_port and service_run_as_user are invalid", nil)
 		return
@@ -111,7 +138,13 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 		return
 	}
 	defer transaction.Rollback()
-	_, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET default_port=?,service_file_content=COALESCE(?,service_file_content),service_run_as_user=?,service_run_as_group=COALESCE(?,service_run_as_group),work_directory=COALESCE(?,work_directory),update_time=? WHERE id=?`, item.DefaultPort, input.ServiceFileContent, item.ServiceRunAsUser, input.ServiceRunAsGroup, input.WorkDirectory, time.Now().UTC(), id)
+	if metadataChanged {
+		if err = handler.migrateSoftwarePackageFile(context, transaction, item); err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+	}
+	_, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET default_port=?,service_file_content=COALESCE(?,service_file_content),service_run_as_user=?,service_run_as_group=COALESCE(?,service_run_as_group),work_directory=COALESCE(?,work_directory),package_format=?,platform_family=?,platform_major=?,update_time=? WHERE id=?`, item.DefaultPort, input.ServiceFileContent, item.ServiceRunAsUser, input.ServiceRunAsGroup, input.WorkDirectory, item.PackageFormat, item.PlatformFamily, item.PlatformMajor, time.Now().UTC(), id)
 	if err == nil {
 		err = syncExistingPackagePlaybook(context, transaction, item, "install", item.InstallTemplateID, input.InstallPlaybookContent)
 	}
@@ -127,6 +160,56 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 		return
 	}
 	handler.respondSoftwarePackage(context, id)
+}
+
+// migrateSoftwarePackageFile 平台元数据变化时把已上传的软件包文件搬到新目录
+// （monitor_packages/<fluentBit|name>/<arch>/<platformDirectory>/<file>），保持 file/sha256/size 一致。
+func (handler *Handler) migrateSoftwarePackageFile(context *gin.Context, transaction *sql.Tx, item softwarePackage) error {
+	if item.File == "" {
+		return nil
+	}
+	newRelative, err := softwarePackageRelativePath(item, filepath.Base(item.File))
+	if err != nil {
+		return err
+	}
+	if newRelative == item.File {
+		return nil
+	}
+	// 唯一性预检：目标平台下若已存在同 (type,name,version,os,arch) 记录直接报错，
+	// 避免物理移动文件之后才撞数据库唯一约束（事务回滚救不回已移动的文件）。
+	duplicate, err := handler.packageFileConflict(context, item)
+	if err != nil {
+		return err
+	}
+	if duplicate {
+		return fmt.Errorf("目标平台已存在相同版本的软件包记录，无法迁移")
+	}
+	oldPath := filepath.Join(handler.packageRoot, filepath.FromSlash(item.File))
+	newPath := filepath.Join(handler.packageRoot, filepath.FromSlash(newRelative))
+	if err = os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return err
+	}
+	oldRelative := item.File
+	item.File = newRelative
+	if _, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET file=? WHERE id=?`, newRelative, item.ID); err != nil {
+		return err
+	}
+	// DB 更新成功后再物理移动文件；移动失败自动回滚 DB 的 file 列，两侧保持一致。
+	if err = os.Rename(oldPath, newPath); err != nil {
+		item.File = oldRelative
+		_, _ = transaction.ExecContext(context, `UPDATE monitor_software_package SET file=? WHERE id=?`, oldRelative, item.ID)
+		return fmt.Errorf("failed to move package file to the new platform directory: %w", err)
+	}
+	return nil
+}
+
+// packageFileConflict 判断目标平台目录是否已有同版本记录（不含自身）。
+func (handler *Handler) packageFileConflict(context *gin.Context, item softwarePackage) (bool, error) {
+	var count int
+	err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM monitor_software_package
+		WHERE package_type=? AND name=? AND version=? AND os=? AND arch=? AND platform_family=? AND platform_major=? AND id<>?`,
+		item.PackageType, item.Name, item.Version, item.OS, item.Arch, item.PlatformFamily, item.PlatformMajor, item.ID).Scan(&count)
+	return count > 0, err
 }
 
 func syncExistingPackagePlaybook(context *gin.Context, transaction *sql.Tx, item softwarePackage, role string, templateID sql.NullInt64, content *string) error {

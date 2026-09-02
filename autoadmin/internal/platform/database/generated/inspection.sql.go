@@ -164,6 +164,187 @@ func (q *Queries) GetInspectionGroup(ctx context.Context, id int64) (GetInspecti
 	return i, err
 }
 
+const getInspectionTask = `-- name: GetInspectionTask :one
+SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name, g.scope AS scope,
+       t.logical_service_id AS logical_service, COALESCE(s.name,'') AS logical_service_name,
+       t.selected_host_ids, t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
+       t.last_run_time, t.enabled, t.create_time, t.update_time
+FROM inspection_task t
+JOIN inspection_group g ON g.id = t.group_id
+LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
+WHERE t.id = ?
+`
+
+type GetInspectionTaskRow struct {
+	ID                 int64           `json:"id"`
+	Name               string          `json:"name"`
+	InspectionName     string          `json:"inspection_name"`
+	Group              int64           `json:"group"`
+	GroupName          string          `json:"group_name"`
+	Scope              string          `json:"scope"`
+	LogicalService     sql.NullInt64   `json:"logical_service"`
+	LogicalServiceName string          `json:"logical_service_name"`
+	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
+	Concurrency        uint32          `json:"concurrency"`
+	TimeoutSeconds     uint32          `json:"timeout_seconds"`
+	CronExpression     string          `json:"cron_expression"`
+	NextRunTime        sql.NullTime    `json:"next_run_time"`
+	LastRunTime        sql.NullTime    `json:"last_run_time"`
+	Enabled            bool            `json:"enabled"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+}
+
+func (q *Queries) GetInspectionTask(ctx context.Context, id int64) (GetInspectionTaskRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionTask, id)
+	var i GetInspectionTaskRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.InspectionName,
+		&i.Group,
+		&i.GroupName,
+		&i.Scope,
+		&i.LogicalService,
+		&i.LogicalServiceName,
+		&i.SelectedHostIds,
+		&i.Concurrency,
+		&i.TimeoutSeconds,
+		&i.CronExpression,
+		&i.NextRunTime,
+		&i.LastRunTime,
+		&i.Enabled,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
+}
+
+const listEnabledInspectionChecksForRun = `-- name: ListEnabledInspectionChecksForRun :many
+SELECT name, executor, execution_location, config, severity, ` + "`" + `order` + "`" + `
+FROM inspection_check
+WHERE group_id = ? AND enabled = TRUE
+ORDER BY ` + "`" + `order` + "`" + `, id
+`
+
+type ListEnabledInspectionChecksForRunRow struct {
+	Name              string          `json:"name"`
+	Executor          string          `json:"executor"`
+	ExecutionLocation string          `json:"execution_location"`
+	Config            json.RawMessage `json:"config"`
+	Severity          string          `json:"severity"`
+	Order             uint32          `json:"order"`
+}
+
+func (q *Queries) ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEnabledInspectionChecksForRun, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEnabledInspectionChecksForRunRow{}
+	for rows.Next() {
+		var i ListEnabledInspectionChecksForRunRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.Executor,
+			&i.ExecutionLocation,
+			&i.Config,
+			&i.Severity,
+			&i.Order,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostGroupTreeNodes = `-- name: ListHostGroupTreeNodes :many
+SELECT id, name, parent_id
+FROM assets_hostgroup
+ORDER BY name, id
+`
+
+type ListHostGroupTreeNodesRow struct {
+	ID       int64         `json:"id"`
+	Name     string        `json:"name"`
+	ParentID sql.NullInt64 `json:"parent_id"`
+}
+
+func (q *Queries) ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostGroupTreeNodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostGroupTreeNodesRow{}
+	for rows.Next() {
+		var i ListHostGroupTreeNodesRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.ParentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostScopeTreeHosts = `-- name: ListHostScopeTreeHosts :many
+SELECT id, instance_name, ip, group_id, agent_id
+FROM assets_host
+WHERE is_deleted_in_cloud = FALSE
+ORDER BY instance_name, id
+`
+
+type ListHostScopeTreeHostsRow struct {
+	ID           int64          `json:"id"`
+	InstanceName sql.NullString `json:"instance_name"`
+	Ip           sql.NullString `json:"ip"`
+	GroupID      sql.NullInt64  `json:"group_id"`
+	AgentID      sql.NullString `json:"agent_id"`
+}
+
+func (q *Queries) ListHostScopeTreeHosts(ctx context.Context) ([]ListHostScopeTreeHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostScopeTreeHosts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostScopeTreeHostsRow{}
+	for rows.Next() {
+		var i ListHostScopeTreeHostsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Ip,
+			&i.GroupID,
+			&i.AgentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInspectionChecksByGroup = `-- name: ListInspectionChecksByGroup :many
 SELECT id, name, executor, execution_location, config, severity, enabled, ` + "`" + `order` + "`" + `
 FROM inspection_check WHERE group_id = ? ORDER BY ` + "`" + `order` + "`" + `, id

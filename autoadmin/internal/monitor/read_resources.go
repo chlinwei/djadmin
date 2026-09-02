@@ -8,42 +8,68 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
 
+func queryCount(context *gin.Context, database *sql.DB, query string, arguments []any) (int64, error) {
+	var count int64
+	err := database.QueryRowContext(context, query, arguments...).Scan(&count)
+	return count, err
+}
+
+func paginated(context *gin.Context, items []gin.H, count int64, page, size int) {
+	response.Paginated(context, items, count, int32(page), int32(size))
+}
+
 func (handler *Handler) GetTarget(context *gin.Context) {
-	rows, err := handler.db.QueryContext(context, `SELECT t.*, 'exporter' AS target_type, h.instance_name AS host_name, h.ip AS host_ip, h.agent_id FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`, context.Param("id"))
+	row, err := db.New(handler.db).GetMonitorTarget(context, parseID(context.Param("id")))
 	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	items, err := scanRows(rows)
-	if err != nil || len(items) == 0 {
-		if err != nil {
-			response.Error(context, err)
-		} else {
+		if err == sql.ErrNoRows {
 			response.BusinessError(context, 404, "monitor target not found", nil)
+		} else {
+			response.Error(context, err)
 		}
 		return
 	}
-	items[0]["host_agent_online"] = handler.gateway != nil && handler.gateway.IsOnline(stringValue(items[0]["agent_id"]))
-	delete(items[0], "agent_id")
-	response.Success(context, items[0])
+	item := monitorTargetResponseFrom(db.ListMonitorTargetsRow{
+		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
+		ExporterType: row.ExporterType, ManagedEnabled: row.ManagedEnabled,
+		InstallStatus: row.InstallStatus, InstallMessage: row.InstallMessage,
+		LastScrapeStatus: row.LastScrapeStatus, LastScrapeAt: row.LastScrapeAt,
+		Labels: row.Labels, HostID: row.HostID, RetryCount: row.RetryCount,
+		LastDispatchManual: row.LastDispatchManual, ScrapePort: row.ScrapePort,
+		TargetType: row.TargetType, HostName: row.HostName, HostIp: row.HostIp,
+		HostAgentOnline: row.HostAgentOnline,
+	})
+	item.HostAgentOnline = handler.gateway != nil && handler.gateway.IsOnline(row.AgentID.String)
+	response.Success(context, item)
 }
 
 func (handler *Handler) ExporterOptions(context *gin.Context) {
-	rows, err := handler.db.QueryContext(context, `SELECT name,MIN(default_port) AS default_port FROM monitor_software_package WHERE package_type='exporter' AND enabled=TRUE GROUP BY name ORDER BY name`)
+	rows, err := db.New(handler.db).ListExporterPackagePorts(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	items, err := scanRows(rows)
-	if err != nil {
-		response.Error(context, err)
-		return
+	type exporterOption struct {
+		Name        string `json:"name"`
+		DefaultPort uint32 `json:"default_port"`
 	}
-	response.Success(context, items)
+	options := make([]exporterOption, 0)
+	positions := make(map[string]int)
+	for _, row := range rows {
+		if position, ok := positions[row.Name]; ok {
+			if row.DefaultPort < options[position].DefaultPort {
+				options[position].DefaultPort = row.DefaultPort
+			}
+			continue
+		}
+		positions[row.Name] = len(options)
+		options = append(options, exporterOption{Name: row.Name, DefaultPort: row.DefaultPort})
+	}
+	response.Success(context, options)
 }
 
 type monitorGroup struct {
@@ -186,22 +212,17 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			response.Error(context, err)
 			return
 		}
-		targetQuery := `SELECT id,exporter_type,scrape_port,managed_enabled,install_status,install_message,last_scrape_status FROM monitor_target WHERE host_id=?`
-		targetArguments := []any{hostID}
-		if exporterType != "" {
-			targetQuery += " AND exporter_type=?"
-			targetArguments = append(targetArguments, exporterType)
-		}
-		targetQuery += " ORDER BY exporter_type"
-		targetRows, queryErr := handler.db.QueryContext(context, targetQuery, targetArguments...)
+		exporters, queryErr := db.New(handler.db).ListMonitorTargetsByHost(context, db.ListMonitorTargetsByHostParams{
+			HostID:       hostID,
+			ExporterType: optionalStringParam(context, "exporter_type"),
+		})
 		if queryErr != nil {
 			response.Error(context, queryErr)
 			return
 		}
-		exporters, queryErr := scanRows(targetRows)
-		if queryErr != nil {
-			response.Error(context, queryErr)
-			return
+		typedExporters := make([]exporterTargetResponse, 0, len(exporters))
+		for _, target := range exporters {
+			typedExporters = append(typedExporters, exporterTargetResponseFrom(target))
 		}
 		online := handler.gateway != nil && handler.gateway.IsOnline(agentID.String)
 		var groupValue, logIDValue, appliedValue any
@@ -215,11 +236,16 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			appliedValue = lastApplied.Time
 		}
 		fluentBit := gin.H{"id": logIDValue, "host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "host_agent_online": online, "managed": logTargetID.Valid, "agent_installed": agentInstalled.Valid && agentInstalled.Bool, "agent_version": agentVersion.String, "runtime_status": runtimeStatus.String, "install_status": installStatus.String, "config_fingerprint": fingerprint.String, "last_applied_time": appliedValue, "last_error": lastError.String}
-		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName.String, "host_agent_online": online, "managed": len(exporters) > 0, "exporters": exporters, "fluent_bit": fluentBit}
-		if exporterType != "" && len(exporters) > 0 {
-			for key, value := range exporters[0] {
-				item[key] = value
-			}
+		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName.String, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "fluent_bit": fluentBit}
+		if exporterType != "" && len(typedExporters) > 0 {
+			first := typedExporters[0]
+			item["id"] = first.ID
+			item["exporter_type"] = first.ExporterType
+			item["scrape_port"] = first.ScrapePort
+			item["managed_enabled"] = first.ManagedEnabled
+			item["install_status"] = first.InstallStatus
+			item["install_message"] = first.InstallMessage
+			item["last_scrape_status"] = first.LastScrapeStatus
 		}
 		results = append(results, item)
 	}

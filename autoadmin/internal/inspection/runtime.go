@@ -15,6 +15,7 @@ import (
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,9 +24,18 @@ type runTask struct {
 	ID, GroupID, ServiceID              int64
 	Name, GroupName, Scope, ServiceName string
 	Concurrency, Timeout                int
-	Checks                              []gin.H
+	Checks                              []runCheck
 	SelectedHostIDs                     []int64
 	Enabled, GroupEnabled               bool
+}
+
+type runCheck struct {
+	Name              string         `json:"name"`
+	Executor          string         `json:"executor"`
+	ExecutionLocation string         `json:"execution_location"`
+	Config            map[string]any `json:"config"`
+	Severity          string         `json:"severity"`
+	Order             uint32         `json:"order"`
 }
 
 type runTarget struct {
@@ -90,13 +100,23 @@ func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, 
 	if err = json.Unmarshal(selected, &task.SelectedHostIDs); err != nil {
 		return task, "巡检任务的主机范围数据无效", nil
 	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT name,executor,execution_location,config,severity,`+"`order`"+` FROM inspection_check WHERE group_id=? AND enabled=TRUE ORDER BY `+"`order`"+`,id`, task.GroupID)
+	checkRows, err := db.New(handler.db).ListEnabledInspectionChecksForRun(ctx, task.GroupID)
 	if err != nil {
 		return task, "", err
 	}
-	task.Checks, err = scanRows(rows)
-	if err != nil {
-		return task, "", err
+	task.Checks = make([]runCheck, 0, len(checkRows))
+	for _, row := range checkRows {
+		var config map[string]any
+		if err = json.Unmarshal(row.Config, &config); err != nil {
+			return task, "巡检检查项配置数据无效", nil
+		}
+		if config == nil {
+			config = map[string]any{}
+		}
+		task.Checks = append(task.Checks, runCheck{
+			Name: row.Name, Executor: row.Executor, ExecutionLocation: row.ExecutionLocation,
+			Config: config, Severity: row.Severity, Order: row.Order,
+		})
 	}
 	if len(task.Checks) == 0 {
 		return task, "巡检组没有启用的检查项", nil
@@ -288,7 +308,7 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	results := make([]checkResult, 0, len(task.Checks))
 	agentChecks := make([]gin.H, 0)
 	for index, check := range task.Checks {
-		if fmt.Sprint(check["execution_location"]) == "controller" {
+		if check.ExecutionLocation == "controller" {
 			results = append(results, runControllerCheck(task, target, check, index, executionID))
 		} else {
 			agentChecks = append(agentChecks, compileAgentCheck(task, target, check, index, executionID))
@@ -333,10 +353,10 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	handler.db.Exec(`UPDATE inspection_target_execution SET status=?,passed=?,error_message=?,raw_result=?,end_time=NOW(),update_time=NOW() WHERE id=?`, status, !failed, errorMessage, jsonBytes(gin.H{"passed": !failed, "checks": results}), target.ID)
 }
 
-func compileAgentCheck(task runTask, target runTarget, check gin.H, index int, executionID int64) gin.H {
-	config, _ := check["config"].(map[string]any)
-	executor := fmt.Sprint(check["executor"])
-	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "type": executor, "executor": executor, "name": check["name"], "requires_running": false}
+func compileAgentCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) gin.H {
+	config := check.Config
+	executor := check.Executor
+	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "type": executor, "executor": executor, "name": check.Name, "requires_running": false}
 	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), target) }
 	switch executor {
 	case "shell":
@@ -368,9 +388,9 @@ func resolveVariables(value string, target runTarget) string {
 	return value
 }
 
-func runControllerCheck(task runTask, target runTarget, check gin.H, index int, executionID int64) checkResult {
-	config, _ := check["config"].(map[string]any)
-	result := checkResult{Key: fmt.Sprintf("inspection:%d:%d", executionID, index), Type: fmt.Sprint(check["executor"]), Name: fmt.Sprint(check["name"]), Status: "fail", Severity: first(fmt.Sprint(check["severity"]), "critical")}
+func runControllerCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) checkResult {
+	config := check.Config
+	result := checkResult{Key: fmt.Sprintf("inspection:%d:%d", executionID, index), Type: check.Executor, Name: check.Name, Status: "fail", Severity: first(check.Severity, "critical")}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(task.Timeout)*time.Second)
 	defer cancel()
 	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), target) }
@@ -429,7 +449,7 @@ func runControllerCheck(task runTask, target runTarget, check gin.H, index int, 
 	return result
 }
 
-func decodeAgentResults(raw string, checks []gin.H) []checkResult {
+func decodeAgentResults(raw string, checks []runCheck) []checkResult {
 	var data struct {
 		Checks []struct {
 			Key, Type, Name, Status, Message string
@@ -446,7 +466,7 @@ func decodeAgentResults(raw string, checks []gin.H) []checkResult {
 		if len(parts) == 3 {
 			var index int
 			if _, err := fmt.Sscanf(parts[2], "%d", &index); err == nil && index < len(checks) {
-				severity = first(fmt.Sprint(checks[index]["severity"]), "critical")
+				severity = first(checks[index].Severity, "critical")
 			}
 		}
 		results = append(results, checkResult{Key: item.Key, Type: item.Type, Name: item.Name, Status: item.Status, Severity: severity, Expected: item.Expected, Actual: item.Actual, Message: item.Message})

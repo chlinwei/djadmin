@@ -24,11 +24,12 @@ type openSearchCluster struct {
 	Hosts, Username, Password, CACert, IndexPrefix string
 	VerifyTLS                                      bool
 	Timeout                                        int
+	Enabled                                        bool
 }
 
 func (handler *Handler) loadOpenSearchCluster(context *gin.Context) (openSearchCluster, error) {
 	var cluster openSearchCluster
-	err := handler.db.QueryRowContext(context, `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout FROM monitor_opensearch_cluster WHERE id=?`, parseID(context.Param("id"))).Scan(&cluster.ID, &cluster.Hosts, &cluster.Username, &cluster.Password, &cluster.VerifyTLS, &cluster.CACert, &cluster.IndexPrefix, &cluster.Timeout)
+	err := handler.db.QueryRowContext(context, `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster WHERE id=?`, parseID(context.Param("id"))).Scan(&cluster.ID, &cluster.Hosts, &cluster.Username, &cluster.Password, &cluster.VerifyTLS, &cluster.CACert, &cluster.IndexPrefix, &cluster.Timeout, &cluster.Enabled)
 	if err != nil {
 		return cluster, err
 	}

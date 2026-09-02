@@ -14,7 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const openSearchClusterQuery = `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout FROM monitor_opensearch_cluster WHERE id=?`
+const openSearchClusterQuery = `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster WHERE id=?`
 
 // 回归用例：OpenSearch 的 _simulate API 要求每个 doc 是 {"_source": {...}}，
 // 之前 SimulateOpenSearchPipeline 直接透传前端的 docs 数组，触发
@@ -36,8 +36,8 @@ func TestSimulateOpenSearchPipelineWrapsDocsWithSource(t *testing.T) {
 	}
 	defer database.Close()
 	mock.ExpectQuery(regexp.QuoteMeta(openSearchClusterQuery)).WillReturnRows(sqlmock.NewRows(
-		[]string{"id", "hosts", "username", "password", "verify_tls", "ca_cert", "index_prefix", "request_timeout"},
-	).AddRow(int64(1), openSearchServer.URL, "", "", false, "", "logs", 5))
+		[]string{"id", "hosts", "username", "password", "verify_tls", "ca_cert", "index_prefix", "request_timeout", "enabled"},
+	).AddRow(int64(1), openSearchServer.URL, "", "", false, "", "logs", 5, true))
 
 	secrets, err := assets.NewSecretEncryptor("", "test-secret")
 	if err != nil {

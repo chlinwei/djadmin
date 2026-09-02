@@ -57,6 +57,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 		middleware.RequirePermission("system:users:view"),
 		identityHandler.ListUsers,
 	)
+	engine.POST("/user/changeAvatar", middleware.Authenticate(tokens), identityHandler.ChangeAvatar)
 	apiTokens := engine.Group("/sys/usercenter", middleware.Authenticate(tokens))
 	apiTokens.POST("/updateUserInfo/", middleware.RequirePermission("system:usercenter:updateUserInfo"), identityHandler.UpdateUserInfo)
 	apiTokens.POST("/updateUserPassword/", identityHandler.UpdateUserPassword)
@@ -77,6 +78,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	playbooks.POST("/", middleware.RequirePermission("automation:playbooks:create"), playbookHandler.Create)
 	playbooks.PATCH("/:id/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.Update)
 	playbooks.PUT("/:id/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.Update)
+	playbooks.POST("/:id/upload/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.UploadFile)
+	playbooks.GET("/:id/download/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.DownloadFile)
 	playbooks.DELETE("/:id/", middleware.RequirePermission("automation:playbooks:delete"), playbookHandler.Delete)
 	automationInventories := engine.Group("/sys/automation/inventories", middleware.Authenticate(tokens))
 	automationInventories.GET("/", middleware.RequirePermission("automation:inventory:view"), playbookHandler.ListInventories)
@@ -205,6 +208,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 
 	credentials := engine.Group("/assets/credentials", middleware.Authenticate(tokens))
 	credentials.GET("/", middleware.RequirePermission("assets:credentials:view"), assetsHandler.ListCredentials)
+	credentials.POST("/batch-create/", middleware.RequirePermission("assets:credentials:create"), assetsHandler.BatchCreateCredentials)
 	credentials.DELETE("/batch-delete/", middleware.RequirePermission("assets:credentials:delete"), assetsHandler.DeleteCredentials)
 	credentials.GET("/:id/", middleware.RequirePermission("assets:credentials:view"), assetsHandler.GetCredential)
 	credentials.POST("/", middleware.RequirePermission("assets:credentials:create"), assetsHandler.CreateCredential)
@@ -243,6 +247,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	hosts.DELETE("/:id/", middleware.RequirePermission("assets:hosts:delete"), assetsHandler.DeleteHost)
 
 	engine.GET("/ws/assets/hosts/:id/webssh/", middleware.Authenticate(tokens), middleware.RequirePermission("assets:hosts:view"), assetsHandler.WebSSH)
+	engine.GET("/ws/automation/jobs/:id/logs/", middleware.Authenticate(tokens), middleware.RequirePermission("automation:jobs:view"), playbookHandler.JobLogStream)
 
 	applications := engine.Group("/assets/applications", middleware.Authenticate(tokens))
 	applications.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListApplications)
@@ -322,6 +327,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.PATCH("/packages/:id/", monitorHandler.UpdateSoftwarePackage)
 	monitorRoutes.PUT("/packages/:id/", monitorHandler.UpdateSoftwarePackage)
 	monitorRoutes.POST("/packages/:id/upload/", monitorHandler.UploadSoftwarePackage)
+	monitorRoutes.POST("/packages/:id/sync-official/", monitorHandler.SyncSoftwarePackageFromOfficial)
 	monitorRoutes.DELETE("/packages/:id/", monitorHandler.DeleteSoftwarePackage)
 	monitorRoutes.GET("/targets/", monitorHandler.ListTargets)
 	monitorRoutes.GET("/targets/host-group-tree/", monitorHandler.HostGroupTree)
@@ -335,6 +341,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.PATCH("/targets/:id/", monitorHandler.UpdateTarget)
 	monitorRoutes.PUT("/targets/:id/", monitorHandler.UpdateTarget)
 	monitorRoutes.DELETE("/targets/:id/", monitorHandler.DeleteTarget)
+	monitorRoutes.POST("/targets/:id/retry/", monitorHandler.RetryTarget)
 	monitorRoutes.POST("/targets/:id/cancel/", monitorHandler.CancelTarget)
 	monitorRoutes.POST("/targets/:id/check-service-status/", monitorHandler.CheckTargetService)
 	monitorRoutes.POST("/targets/:id/start-service/", monitorHandler.StartTargetService)
@@ -364,6 +371,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/media/:id/", monitorHandler.GetAlertMedia)
 	monitorRoutes.PATCH("/media/:id/", monitorHandler.UpdateAlertMedia)
 	monitorRoutes.PUT("/media/:id/", monitorHandler.UpdateAlertMedia)
+	monitorRoutes.POST("/media/:id/test/", monitorHandler.TestAlertMedia)
 	monitorRoutes.DELETE("/media/:id/", monitorHandler.DeleteAlertMedia)
 	monitorRoutes.GET("/alert-routes/", monitorHandler.ListAlertRoutes)
 	monitorRoutes.POST("/alert-routes/", monitorHandler.CreateAlertRoute)
@@ -396,6 +404,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.PUT("/opensearch-clusters/:id/", monitorHandler.UpdateOpenSearchCluster)
 	monitorRoutes.DELETE("/opensearch-clusters/:id/", monitorHandler.DeleteOpenSearchCluster)
 	monitorRoutes.POST("/opensearch-clusters/:id/test-connection/", monitorHandler.TestOpenSearchConnection)
+	monitorRoutes.GET("/opensearch-clusters/:id/log-health/", monitorHandler.OpenSearchLogHealth)
 	monitorRoutes.POST("/opensearch-clusters/:id/pipeline-simulate/", monitorHandler.SimulateOpenSearchPipeline)
 	monitorRoutes.GET("/opensearch-clusters/:id/log-search/", monitorHandler.OpenSearchLogSearch)
 	monitorRoutes.GET("/opensearch-clusters/:id/log-facet-stats/", monitorHandler.OpenSearchLogFacetStats)

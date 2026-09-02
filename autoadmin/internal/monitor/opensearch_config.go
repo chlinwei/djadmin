@@ -90,6 +90,9 @@ func (handler *Handler) saveOpenSearchCluster(context *gin.Context, id int64) {
 		response.Error(context, err)
 		return
 	}
+	// 集群新增/修改后异步 bootstrap（模板 + ISM 策略），对应 Django sync_log_storage_quietly；
+	// 失败只落 storage_sync_* 状态，不阻塞保存。
+	go handler.syncClusterLogStorage(id)
 	handler.respondOpenSearchCluster(context, id)
 }
 

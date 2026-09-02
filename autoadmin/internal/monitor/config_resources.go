@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -53,23 +54,101 @@ func fieldSet(names ...string) map[string]bool {
 }
 
 func (handler *Handler) CreateRetentionTier(context *gin.Context) {
-	handler.saveResource(context, retentionSpec, 0, handler.respondRetentionTier)
+	handler.saveResource(context, retentionSpec, 0, handler.respondRetentionTierThenSync)
 }
 func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
-	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTier)
+	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTierThenSync)
 }
 func (handler *Handler) DeleteRetentionTier(context *gin.Context) {
+	id := parseID(context.Param("id"))
+	var serviceCount, settingCount int
+	if err := handler.db.QueryRowContext(context, `SELECT (SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id=?), (SELECT COUNT(*) FROM assets_application_service_log_setting WHERE retention_tier_id=?)`, id, id).Scan(&serviceCount, &settingCount); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if serviceCount+settingCount > 0 {
+		response.BusinessError(context, 400, "该档位仍被逻辑服务引用，不能删除", nil)
+		return
+	}
 	handler.deleteResource(context, retentionSpec)
+	// 档位删除后已启用集群的 ISM 策略需要重新对账。
+	go handler.syncAllClusterLogStorage()
+}
+
+// respondRetentionTierThenSync 档位保存成功后异步刷新所有启用集群的模板与 ISM 策略。
+// Django 走 celery 异步任务（_apply_policies），Go 用 goroutine 等价实现，不阻塞保存响应。
+func (handler *Handler) respondRetentionTierThenSync(context *gin.Context, id int64) {
+	handler.respondRetentionTier(context, id)
+	go handler.syncAllClusterLogStorage()
 }
 
 func (handler *Handler) CreateProcessingRule(context *gin.Context) {
-	handler.saveResource(context, processingSpec, 0, handler.respondProcessingRule)
+	handler.saveResource(context, processingSpec, 0, handler.respondProcessingRule, handler.publishProcessingRuleBeforeSave)
 }
 func (handler *Handler) UpdateProcessingRule(context *gin.Context) {
-	handler.saveResource(context, processingSpec, parseID(context.Param("id")), handler.respondProcessingRule)
+	handler.saveResource(context, processingSpec, parseID(context.Param("id")), handler.respondProcessingRule, handler.publishProcessingRuleBeforeSave)
 }
 func (handler *Handler) DeleteProcessingRule(context *gin.Context) {
+	id := parseID(context.Param("id"))
+	var name string
+	var clusterID int64
+	err := handler.db.QueryRowContext(context, `SELECT name,cluster_id FROM monitor_log_processing_rule WHERE id=?`, id).Scan(&name, &clusterID)
+	if err == sql.ErrNoRows {
+		response.BusinessError(context, 404, "resource not found", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	var referenceCount int
+	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id=?`, id).Scan(&referenceCount); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if referenceCount > 0 {
+		response.BusinessError(context, 400, "规则仍被日志定义引用，不能删除", nil)
+		return
+	}
+	// 先删集群上的 pipeline 再删记录；集群侧失败则中止（与 Django destroy 行为一致）。
+	if err := handler.deleteProcessingPipeline(context, clusterID, name); err != nil {
+		response.BusinessError(context, 400, fmt.Sprintf("删除 Pipeline 失败: %v", err), nil)
+		return
+	}
 	handler.deleteResource(context, processingSpec)
+}
+
+// publishProcessingRuleBeforeSave 对齐 Django LogProcessingRuleViewSet：先发布 pipeline
+// 到 OpenSearch，发布失败则整条请求以 400 中止、不落库；更新时未提供的字段沿用旧值。
+func (handler *Handler) publishProcessingRuleBeforeSave(context *gin.Context, input map[string]any, id int64) string {
+	name := stringValue(input["name"])
+	clusterValue, _ := input["cluster"].(float64)
+	clusterID := int64(clusterValue)
+	pipelineBody := input["pipeline_body"]
+	if id != 0 {
+		var existingName string
+		var existingCluster int64
+		var existingBody json.RawMessage
+		err := handler.db.QueryRowContext(context, `SELECT name,cluster_id,pipeline_body FROM monitor_log_processing_rule WHERE id=?`, id).Scan(&existingName, &existingCluster, &existingBody)
+		if err == nil {
+			if name == "" {
+				name = existingName
+			}
+			if clusterID == 0 {
+				clusterID = existingCluster
+			}
+			if pipelineBody == nil {
+				pipelineBody = existingBody
+			}
+		}
+	}
+	if name == "" || clusterID == 0 || pipelineBody == nil {
+		return "name、cluster 与 pipeline_body 均为必填"
+	}
+	if err := handler.publishProcessingPipeline(context, clusterID, name, pipelineBody); err != nil {
+		return fmt.Sprintf("发布 Pipeline 失败: %v", err)
+	}
+	return ""
 }
 
 func (handler *Handler) CreateFilterRule(context *gin.Context) {
@@ -82,7 +161,9 @@ func (handler *Handler) DeleteFilterRule(context *gin.Context) {
 	handler.deleteResource(context, filterRuleSpec)
 }
 
-func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64, respond func(*gin.Context, int64)) {
+// beforeSave 在校验通过后、落库前执行（返回非空文案则以 400 中止），
+// 供解析规则等需要“先发布到 OpenSearch 再写库”的资源挂接外部副作用。
+func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64, respond func(*gin.Context, int64), beforeSave ...func(*gin.Context, map[string]any, int64) string) {
 	var input map[string]any
 	if err := context.ShouldBindJSON(&input); err != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
@@ -91,6 +172,12 @@ func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id
 	if message := validateResource(spec, input, id); message != "" {
 		response.BusinessError(context, 400, message, nil)
 		return
+	}
+	for _, hook := range beforeSave {
+		if message := hook(context, input, id); message != "" {
+			response.BusinessError(context, 400, message, nil)
+			return
+		}
 	}
 	keys := make([]string, 0)
 	for key := range input {

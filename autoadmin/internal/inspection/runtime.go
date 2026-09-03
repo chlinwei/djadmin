@@ -5,9 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +27,11 @@ type runTask struct {
 }
 
 type runCheck struct {
-	Name              string         `json:"name"`
-	Executor          string         `json:"executor"`
-	ExecutionLocation string         `json:"execution_location"`
-	Config            map[string]any `json:"config"`
-	Severity          string         `json:"severity"`
-	Order             uint32         `json:"order"`
+	Name     string         `json:"name"`
+	Executor string         `json:"executor"`
+	Config   map[string]any `json:"config"`
+	Severity string         `json:"severity"`
+	Order    uint32         `json:"order"`
 }
 
 type runTarget struct {
@@ -114,7 +110,7 @@ func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, 
 			config = map[string]any{}
 		}
 		task.Checks = append(task.Checks, runCheck{
-			Name: row.Name, Executor: row.Executor, ExecutionLocation: row.ExecutionLocation,
+			Name: row.Name, Executor: row.Executor,
 			Config: config, Severity: row.Severity, Order: row.Order,
 		})
 	}
@@ -308,11 +304,7 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	results := make([]checkResult, 0, len(task.Checks))
 	agentChecks := make([]gin.H, 0)
 	for index, check := range task.Checks {
-		if check.ExecutionLocation == "controller" {
-			results = append(results, runControllerCheck(task, target, check, index, executionID))
-		} else {
-			agentChecks = append(agentChecks, compileAgentCheck(task, target, check, index, executionID))
-		}
+		agentChecks = append(agentChecks, compileAgentCheck(task, target, check, index, executionID))
 	}
 	errorMessage := ""
 	if len(agentChecks) > 0 {
@@ -320,7 +312,8 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 			results = append(results, checkResult{Key: "check_plan", Type: "plan", Name: "Agent 检查计划", Status: "error", Severity: "critical", Message: "Agent 离线，未执行 Agent 检查"})
 			errorMessage = "Agent 离线，未执行 Agent 检查"
 		} else {
-			params := jsonBytes(gin.H{"control_type": "command", "check_plan": gin.H{"schema_version": 1, "checks": agentChecks}})
+			// 巡检中心模式：只下发检查计划，基线类的应用控制状态/端口/路径/日志内置检查已移除。
+			params := jsonBytes(gin.H{"check_plan": gin.H{"schema_version": 1, "checks": agentChecks}})
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(task.Timeout+45)*time.Second)
 			agentResponse, err := handler.gateway.Execute(ctx, target.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
 			cancel()
@@ -353,30 +346,24 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	handler.db.Exec(`UPDATE inspection_target_execution SET status=?,passed=?,error_message=?,raw_result=?,end_time=NOW(),update_time=NOW() WHERE id=?`, status, !failed, errorMessage, jsonBytes(gin.H{"passed": !failed, "checks": results}), target.ID)
 }
 
-func compileAgentCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) gin.H {
-	config := check.Config
+func compileAgentCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) gin.H {	config := check.Config
 	executor := check.Executor
 	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "type": executor, "executor": executor, "name": check.Name, "requires_running": false}
 	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), target) }
 	switch executor {
-	case "shell":
-		compiled["command"] = resolve(config["command"])
-		compiled["run_user"] = first(resolve(config["run_user"]), target.RunUser, "root")
-		compiled["work_directory"] = first(resolve(config["work_directory"]), target.WorkDirectory, "/")
-		compiled["expected"] = resolve(config["expected_output"])
-		compiled["environment"] = gin.H{"APP_HOME": target.AppHome, "RUN_USER": target.RunUser, "INSTANCE_NAME": target.InstanceName, "APPLICATION_VERSION": target.Version, "HOST_IP": target.HostIP, "HOST_NAME": target.HostName}
-	case "http":
-		compiled["url"] = resolve(config["url"])
-		compiled["expected_status"] = intValue(config["expected_status"], 200)
-		compiled["expected"] = intValue(config["expected_status"], 200)
-	case "tcp":
-		compiled["host"] = first(resolve(config["host"]), "127.0.0.1")
-		compiled["port"] = intValue(config["port"], 0)
-		compiled["expected"] = "connected"
 	case "schema_validate":
 		compiled["path"] = resolve(config["path"])
 		compiled["document_type"] = config["document_type"]
 		compiled["schema"] = gin.H{"type": config["schema_type"], "content": config["schema_content"]}
+	case "goss":
+		compiled["spec"] = resolve(config["spec"])
+		compiled["run_user"] = first(resolve(config["run_user"]), target.RunUser, "root")
+		if vars, ok := config["vars"]; ok {
+			compiled["vars"] = vars
+		}
+		if environment, ok := config["environment"]; ok {
+			compiled["environment"] = environment
+		}
 	}
 	return compiled
 }
@@ -386,67 +373,6 @@ func resolveVariables(value string, target runTarget) string {
 		value = strings.ReplaceAll(value, key, replacement)
 	}
 	return value
-}
-
-func runControllerCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) checkResult {
-	config := check.Config
-	result := checkResult{Key: fmt.Sprintf("inspection:%d:%d", executionID, index), Type: check.Executor, Name: check.Name, Status: "fail", Severity: first(check.Severity, "critical")}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(task.Timeout)*time.Second)
-	defer cancel()
-	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), target) }
-	switch result.Type {
-	case "shell":
-		command := resolve(config["command"])
-		workDir := first(resolve(config["work_directory"]), "/")
-		process := exec.CommandContext(ctx, "/bin/bash", "-lc", command)
-		process.Dir = workDir
-		output, err := process.CombinedOutput()
-		actual := strings.TrimSpace(string(output))
-		expected := strings.TrimSpace(resolve(config["expected_output"]))
-		result.Expected = gin.H{"exit_code": 0}
-		if expected != "" {
-			result.Expected = expected
-		}
-		result.Actual = actual
-		if err == nil && (expected == "" || actual == expected) {
-			result.Status = "pass"
-		} else if err == nil {
-			result.Message = "Shell 命令输出与期望值不一致"
-		} else {
-			result.Message = err.Error()
-		}
-	case "http":
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resolve(config["url"]), nil)
-		if err != nil {
-			result.Message = err.Error()
-			break
-		}
-		httpResponse, err := http.DefaultClient.Do(request)
-		if err != nil {
-			result.Message = err.Error()
-			break
-		}
-		defer httpResponse.Body.Close()
-		expected := intValue(config["expected_status"], 200)
-		result.Expected, result.Actual = expected, httpResponse.StatusCode
-		if expected == httpResponse.StatusCode {
-			result.Status = "pass"
-		}
-	case "tcp":
-		address := net.JoinHostPort(first(resolve(config["host"]), "127.0.0.1"), fmt.Sprint(intValue(config["port"], 0)))
-		connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
-		result.Expected = "connected"
-		if err == nil {
-			connection.Close()
-			result.Actual = "connected"
-			result.Status = "pass"
-		} else {
-			result.Message = err.Error()
-		}
-	default:
-		result.Message = "djadmin 端不支持该执行器"
-	}
-	return result
 }
 
 func decodeAgentResults(raw string, checks []runCheck) []checkResult {
@@ -487,11 +413,4 @@ func first(values ...string) string {
 		}
 	}
 	return ""
-}
-func intValue(value any, fallback int) int {
-	var parsed int
-	if _, err := fmt.Sscanf(fmt.Sprint(value), "%d", &parsed); err == nil {
-		return parsed
-	}
-	return fallback
 }

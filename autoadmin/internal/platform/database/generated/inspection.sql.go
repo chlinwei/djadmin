@@ -542,7 +542,9 @@ func (q *Queries) ListInspectionGroups(ctx context.Context, arg ListInspectionGr
 }
 
 const listInspectionResultsByTarget = `-- name: ListInspectionResultsByTarget :many
-SELECT id, check_key, check_type, name, status, severity, expected_value, actual_value, message
+SELECT id, check_key, check_type, name, status, severity,
+       COALESCE(expected_value, 'null') AS expected_value,
+       COALESCE(actual_value, 'null') AS actual_value, message
 FROM inspection_result WHERE target_id = ? ORDER BY id
 `
 
@@ -558,6 +560,7 @@ type ListInspectionResultsByTargetRow struct {
 	Message       string          `json:"message"`
 }
 
+// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 func (q *Queries) ListInspectionResultsByTarget(ctx context.Context, targetID int64) ([]ListInspectionResultsByTargetRow, error) {
 	rows, err := q.db.QueryContext(ctx, listInspectionResultsByTarget, targetID)
 	if err != nil {

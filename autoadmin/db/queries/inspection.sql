@@ -101,5 +101,8 @@ LEFT JOIN inspection_task t ON t.id = e.task_id
 WHERE e.id = sqlc.arg(id);
 
 -- name: ListInspectionResultsByTarget :many
-SELECT id, check_key, check_type, name, status, severity, expected_value, actual_value, message
+-- expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
+SELECT id, check_key, check_type, name, status, severity,
+       COALESCE(expected_value, 'null') AS expected_value,
+       COALESCE(actual_value, 'null') AS actual_value, message
 FROM inspection_result WHERE target_id = sqlc.arg(target_id) ORDER BY id;

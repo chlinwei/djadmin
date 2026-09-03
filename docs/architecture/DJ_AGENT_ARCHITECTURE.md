@@ -41,7 +41,7 @@ Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent �
 
 Agent 进程以 root 运行，执行任务时才降权到目标用户。
 
-涉及 `run_user` 的场景（巡检 shell 检查项、应用控制命令、用户级 systemd）统一走
+涉及 `run_user` 的场景（应用控制命令、用户级 systemd）统一走
 `applicationRunUserCommand`（`internal/executor/application_control.go`）：
 
 - 命令固定以 `/bin/bash -lc` 启动，login shell 会加载目标用户 profile，`JAVA_HOME`

@@ -1,14 +1,10 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -16,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/antchfx/xmlquery"
@@ -45,29 +40,14 @@ type applicationCheckResult struct {
 
 func (e *Executor) checkApplicationBaseline(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
+	// 巡检中心模式：只执行 check_plan 下发的检查项（schema_validate / goss），
+	// 早期的应用控制状态、端口、路径、日志内置检查已随 baseline 方案移除。
 	checks := make([]applicationCheckResult, 0)
 
 	if ctx.Err() != nil {
 		return canceledApplicationBaselineResult(job, started, ctx.Err())
 	}
-	controlCheck := checkApplicationControl(ctx, job.Params)
-	checks = append(checks, controlCheck)
-	if ctx.Err() != nil {
-		return canceledApplicationBaselineResult(job, started, ctx.Err())
-	}
-	checks = append(checks, checkApplicationPorts(job.Params)...)
-	if ctx.Err() != nil {
-		return canceledApplicationBaselineResult(job, started, ctx.Err())
-	}
-	checks = append(checks, checkApplicationPaths(job.Params)...)
-	if ctx.Err() != nil {
-		return canceledApplicationBaselineResult(job, started, ctx.Err())
-	}
-	checks = append(checks, checkApplicationLogs(job.Params)...)
-	if ctx.Err() != nil {
-		return canceledApplicationBaselineResult(job, started, ctx.Err())
-	}
-	checks = append(checks, checkApplicationPlanForState(ctx, job.Params, controlCheck.Status == "pass")...)
+	checks = append(checks, e.checkApplicationPlanForState(ctx, job.Params, true)...)
 	if ctx.Err() != nil {
 		return canceledApplicationBaselineResult(job, started, ctx.Err())
 	}
@@ -94,14 +74,12 @@ func canceledApplicationBaselineResult(job protocol.Job, started time.Time, err 
 }
 
 var applicationCheckCapabilities = map[string]struct{}{
-	"http:v1":                   {},
+	"goss:v1":                    {},
 	"schema_validate:v1":        {},
 	"schema_validate:inline:v1": {},
-	"shell:v1":                  {},
-	"tcp:v1":                    {},
 }
 
-func checkApplicationPlanForState(ctx context.Context, params map[string]any, applicationRunning bool) []applicationCheckResult {
+func (e *Executor) checkApplicationPlanForState(ctx context.Context, params map[string]any, applicationRunning bool) []applicationCheckResult {
 	plan, ok := params["check_plan"].(map[string]any)
 	if !ok {
 		return nil
@@ -129,164 +107,15 @@ func checkApplicationPlanForState(ctx context.Context, params map[string]any, ap
 			continue
 		}
 		switch valueString(check["executor"]) {
-		case "http":
-			results = append(results, checkHTTP(ctx, check))
+		case "goss":
+			results = append(results, e.checkGoss(ctx, check))
 		case "schema_validate":
 			results = append(results, checkSchema(check))
-		case "shell":
-			results = append(results, checkShell(ctx, check))
-		case "tcp":
-			results = append(results, checkTCP(ctx, check))
 		default:
 			results = append(results, newPlanCheckResult(check, "error", nil, "不支持的检查执行器"))
 		}
 	}
 	return results
-}
-
-func checkHTTP(ctx context.Context, check map[string]any) applicationCheckResult {
-	url := strings.TrimSpace(valueString(check["url"]))
-	if url == "" {
-		return newPlanCheckResult(check, "error", nil, "HTTP URL 不能为空")
-	}
-	expectedStatus, err := numberToInt(check["expected_status"])
-	if err != nil || expectedStatus < 100 || expectedStatus > 599 {
-		return newPlanCheckResult(check, "error", nil, "HTTP 期望状态码无效")
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return newPlanCheckResult(check, "error", nil, fmt.Sprintf("创建 HTTP 请求失败: %v", err))
-	}
-	// 内部巡检必须反映 Agent 所在主机的真实网络路径，不能继承代理环境变量。
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
-	response, err := client.Do(request)
-	if err != nil {
-		return newPlanCheckResult(check, "fail", nil, fmt.Sprintf("HTTP 请求失败: %v", err))
-	}
-	defer response.Body.Close()
-	if response.StatusCode != expectedStatus {
-		return newPlanCheckResult(check, "fail", response.StatusCode, fmt.Sprintf("HTTP 状态码为 %d", response.StatusCode))
-	}
-	return newPlanCheckResult(check, "pass", response.StatusCode, "")
-}
-
-func checkTCP(ctx context.Context, check map[string]any) applicationCheckResult {
-	host := strings.TrimSpace(valueString(check["host"]))
-	port, err := numberToInt(check["port"])
-	if host == "" || err != nil || port < 1 || port > 65535 {
-		return newPlanCheckResult(check, "error", nil, "TCP 主机或端口无效")
-	}
-	address := net.JoinHostPort(host, strconv.Itoa(port))
-	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return newPlanCheckResult(check, "fail", "failed", fmt.Sprintf("TCP 连接失败: %v", err))
-	}
-	defer connection.Close()
-	return newPlanCheckResult(check, "pass", "connected", "")
-}
-
-func checkShell(ctx context.Context, check map[string]any) applicationCheckResult {
-	commandText := strings.TrimSpace(valueString(check["command"]))
-	if commandText == "" {
-		return newPlanCheckResult(check, "error", nil, "Shell 命令不能为空")
-	}
-
-	// 登录 Shell 会读取目标用户的 profile，使 JAVA_HOME 等用户级运行环境生效。
-	command, userErr := applicationRunUserCommand(ctx, commandText, valueString(check["run_user"]))
-	if userErr != nil {
-		return newPlanCheckResult(check, "error", nil, userErr.Error())
-	}
-	workDirectory := strings.TrimSpace(valueString(check["work_directory"]))
-	if workDirectory == "" {
-		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录不能为空")
-	}
-	if !filepath.IsAbs(workDirectory) {
-		return newPlanCheckResult(check, "error", nil, "Shell 命令运行目录必须为绝对路径")
-	}
-	command.Dir = workDirectory
-	command.Env = mergeCommandEnvironment(command.Env, check["environment"])
-	// 记录展开后的命令与注入变量，便于在巡检详情里定位变量未生效、路径拼接错误等问题。
-	executedCommand := strings.Join(command.Args, " ")
-	injectedEnvironment := allowedCommandEnvironment(check["environment"])
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	runErr := command.Run()
-	if ctx.Err() != nil {
-		return newPlanCheckResult(check, "error", nil, fmt.Sprintf("Shell 命令执行中断: %v", ctx.Err()))
-	}
-	exitCode := 0
-	if runErr != nil {
-		var exitError *exec.ExitError
-		if !errors.As(runErr, &exitError) {
-			return newPlanCheckResult(check, "error", map[string]any{
-				"command":        executedCommand,
-				"work_directory": workDirectory,
-				"environment":    injectedEnvironment,
-			}, fmt.Sprintf("执行 Shell 命令失败: %v", runErr))
-		}
-		exitCode = exitError.ExitCode()
-	}
-	actual := map[string]any{
-		"exit_code":      exitCode,
-		"stdout":         strings.TrimSpace(stdout.String()),
-		"stderr":         strings.TrimSpace(stderr.String()),
-		"command":        executedCommand,
-		"work_directory": workDirectory,
-		"run_user":       valueString(check["run_user"]),
-		"environment":    injectedEnvironment,
-	}
-	expectedOutput := strings.TrimSpace(valueString(check["expected"]))
-	if expectedOutput == "" {
-		check["expected"] = map[string]any{"exit_code": 0}
-	}
-	if exitCode != 0 {
-		return newPlanCheckResult(check, "fail", actual, fmt.Sprintf("Shell 命令退出码为 %d", exitCode))
-	}
-	if expectedOutput != "" && actual["stdout"] != expectedOutput {
-		return newPlanCheckResult(check, "fail", actual, "Shell 命令输出与期望值不一致")
-	}
-	return newPlanCheckResult(check, "pass", actual, "")
-}
-
-var allowedEnvironmentKeys = []string{"APP_HOME", "RUN_USER", "WORK_DIRECTORY", "APPLICATION_NAME", "APPLICATION_CODE", "APPLICATION_VERSION", "INSTANCE_NAME"}
-
-func allowedCommandEnvironment(rawEnvironment any) map[string]string {
-	environment, _ := rawEnvironment.(map[string]any)
-	if len(environment) == 0 {
-		return nil
-	}
-	overrides := make(map[string]string, len(allowedEnvironmentKeys))
-	for _, key := range allowedEnvironmentKeys {
-		if value, exists := environment[key]; exists {
-			overrides[key] = valueString(value)
-		}
-	}
-	return overrides
-}
-
-func mergeCommandEnvironment(baseEnvironment []string, rawEnvironment any) []string {
-	overrides := allowedCommandEnvironment(rawEnvironment)
-	if len(overrides) == 0 {
-		return baseEnvironment
-	}
-	result := make([]string, 0, len(baseEnvironment)+len(overrides))
-	for _, entry := range baseEnvironment {
-		key, _, found := strings.Cut(entry, "=")
-		if found {
-			if _, overridden := overrides[key]; overridden {
-				continue
-			}
-		}
-		result = append(result, entry)
-	}
-	for _, key := range allowedEnvironmentKeys {
-		if value, exists := overrides[key]; exists {
-			result = append(result, key+"="+value)
-		}
-	}
-	return result
 }
 
 func newPlanCheckResult(check map[string]any, status string, actual any, message string) applicationCheckResult {
@@ -585,92 +414,6 @@ func schemaViolations(actual any) []map[string]any {
 	return violations
 }
 
-func checkApplicationControl(ctx context.Context, params map[string]any) applicationCheckResult {
-	controlType := valueString(params["control_type"])
-	result := applicationCheckResult{Key: "control", Type: "control_status", Name: "运行状态", Expected: "running"}
-
-	switch controlType {
-	case "systemd":
-		command, commandErr := applicationSystemdCommand(ctx, params)
-		if commandErr != nil {
-			result.Status, result.Message = "error", commandErr.Error()
-			return result
-		}
-		output, err := command.CombinedOutput()
-		actual := strings.TrimSpace(string(output))
-		result.Actual = actual
-		if err == nil && actual == "active" {
-			result.Status = "pass"
-		} else {
-			result.Status, result.Message = "fail", "systemd 服务未处于 active 状态"
-		}
-	case "docker":
-		config, ok := params["docker_config"].(map[string]any)
-		containerName := ""
-		if ok {
-			containerName = valueString(config["container_name"])
-		}
-		if !safeResourceNamePattern.MatchString(containerName) {
-			result.Status, result.Message = "error", "Docker 容器名称格式无效"
-			return result
-		}
-		output, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Status}}", containerName).CombinedOutput()
-		actual := strings.TrimSpace(string(output))
-		result.Actual = actual
-		if err == nil && actual == "running" {
-			result.Status = "pass"
-		} else {
-			result.Status, result.Message = "fail", "Docker 容器未运行"
-		}
-	case "docker_compose":
-		config, ok := params["compose_config"].(map[string]any)
-		if !ok {
-			result.Status, result.Message = "error", "缺少 Docker Compose 配置"
-			return result
-		}
-		projectName := valueString(config["project_name"])
-		serviceName := valueString(config["service_name"])
-		composeFile := valueString(config["compose_file_path"])
-		workingDirectory := valueString(config["working_directory"])
-		if !safeResourceNamePattern.MatchString(projectName) || !safeResourceNamePattern.MatchString(serviceName) || !filepath.IsAbs(composeFile) || !filepath.IsAbs(workingDirectory) {
-			result.Status, result.Message = "error", "Docker Compose 项目、服务或路径格式无效"
-			return result
-		}
-		command := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "--project-name", projectName, "ps", "--status", "running", "--services", serviceName)
-		command.Dir = workingDirectory
-		output, err := command.CombinedOutput()
-		actual := strings.TrimSpace(string(output))
-		result.Actual = actual
-		if err == nil && actual == serviceName {
-			result.Status = "pass"
-		} else {
-			result.Status, result.Message = "fail", "Docker Compose 服务未运行"
-		}
-	case "external_ha":
-		command, commandErr := applicationCustomControlCommand(ctx, params, "status")
-		if commandErr != nil {
-			result.Status, result.Message = "error", commandErr.Error()
-			return result
-		}
-		output, err := command.CombinedOutput()
-		result.Actual = strings.TrimSpace(string(output))
-		if err == nil {
-			result.Status = "pass"
-		} else {
-			result.Status, result.Message = "fail", "HA 应用状态检查命令返回非零退出码"
-		}
-	case "command":
-		result.Status, result.Actual, result.Message = "skipped", "not_checked", "命令行状态检查暂不执行自定义命令"
-	default:
-		result.Status, result.Message = "error", "不支持的控制方式"
-	}
-	return result
-}
-
-func applicationSystemdCommand(ctx context.Context, params map[string]any) (*exec.Cmd, error) {
-	return applicationSystemdActionCommand(ctx, params, "status")
-}
-
 func applicationSystemdActionCommand(ctx context.Context, params map[string]any, action string) (*exec.Cmd, error) {
 	serviceName := valueString(params["service_name"])
 	if !safeResourceNamePattern.MatchString(serviceName) {
@@ -717,160 +460,6 @@ func systemdUserEnvironment(environment []string, targetUser *user.User, uid uin
 		result = append(result, key+"="+overrides[key])
 	}
 	return result
-}
-
-func checkApplicationPorts(params map[string]any) []applicationCheckResult {
-	rawPorts, _ := params["ports"].([]any)
-	results := make([]applicationCheckResult, 0, len(rawPorts))
-	for _, raw := range rawPorts {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := valueString(item["name"])
-		protocolName := strings.ToLower(valueString(item["protocol"]))
-		port, err := numberToInt(item["port"])
-		result := applicationCheckResult{Key: fmt.Sprintf("port:%s:%d", protocolName, port), Type: "port_listening", Name: name, Expected: true}
-		if err != nil || port < 1 || port > 65535 || (protocolName != "tcp" && protocolName != "udp") {
-			result.Status, result.Message = "error", "端口配置无效"
-			results = append(results, result)
-			continue
-		}
-		listening, checkErr := isLocalPortListening(protocolName, port)
-		result.Actual = listening
-		if checkErr != nil {
-			result.Status, result.Message = "error", checkErr.Error()
-		} else if listening {
-			result.Status = "pass"
-		} else {
-			result.Status, result.Message = "fail", "端口未监听"
-		}
-		results = append(results, result)
-	}
-	return results
-}
-
-func checkApplicationPaths(params map[string]any) []applicationCheckResult {
-	rawPaths, _ := params["paths"].([]any)
-	results := make([]applicationCheckResult, 0, len(rawPaths))
-	for _, raw := range rawPaths {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := valueString(item["name"])
-		path := valueString(item["path"])
-		result := applicationCheckResult{Key: "path:" + name, Type: "path", Name: name, Expected: true}
-		if !filepath.IsAbs(path) {
-			result.Status, result.Message = "error", "路径必须为绝对路径"
-			results = append(results, result)
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			result.Actual = false
-			result.Status, result.Message = "fail", err.Error()
-			results = append(results, result)
-			continue
-		}
-		result.Actual = true
-		result.Status = "pass"
-		expectedMode := valueString(item["expected_mode"])
-		if expectedMode != "" && fmt.Sprintf("%04o", info.Mode().Perm()) != expectedMode {
-			result.Status, result.Message = "fail", "文件权限不符合预期"
-			result.Expected = expectedMode
-			result.Actual = fmt.Sprintf("%04o", info.Mode().Perm())
-		}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			expectedOwner := valueString(item["expected_owner"])
-			if expectedOwner != "" {
-				owner, lookupErr := user.LookupId(strconv.FormatUint(uint64(stat.Uid), 10))
-				actualOwner := strconv.FormatUint(uint64(stat.Uid), 10)
-				if lookupErr == nil {
-					actualOwner = owner.Username
-				}
-				if actualOwner != expectedOwner {
-					result.Status, result.Message, result.Expected, result.Actual = "fail", "文件属主不符合预期", expectedOwner, actualOwner
-				}
-			}
-		}
-		results = append(results, result)
-	}
-	return results
-}
-
-func checkApplicationLogs(params map[string]any) []applicationCheckResult {
-	rawLogs, _ := params["logs"].([]any)
-	results := make([]applicationCheckResult, 0, len(rawLogs))
-	for _, raw := range rawLogs {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := valueString(item["name"])
-		pathPattern := valueString(item["path_pattern"])
-		result := applicationCheckResult{Key: "log:" + name, Type: "log", Name: name, Expected: true}
-		if !filepath.IsAbs(pathPattern) {
-			result.Status, result.Message = "error", "日志路径模式必须为绝对路径"
-			results = append(results, result)
-			continue
-		}
-		matches, err := filepath.Glob(pathPattern)
-		if err != nil {
-			result.Status, result.Message = "error", "日志路径模式无效: "+err.Error()
-			results = append(results, result)
-			continue
-		}
-		matchedFileCount := 0
-		for _, match := range matches {
-			if info, statErr := os.Stat(match); statErr == nil && !info.IsDir() {
-				matchedFileCount++
-			}
-		}
-		result.Actual = matchedFileCount > 0
-		if matchedFileCount == 0 {
-			result.Status, result.Message = "fail", "未找到匹配的日志文件"
-		} else {
-			result.Status = "pass"
-		}
-		results = append(results, result)
-	}
-	return results
-}
-
-func isLocalPortListening(protocolName string, port int) (bool, error) {
-	files := []string{"/proc/net/" + protocolName, "/proc/net/" + protocolName + "6"}
-	target := strings.ToUpper(fmt.Sprintf("%04X", port))
-	for _, path := range files {
-		file, err := os.Open(path)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) < 4 {
-				continue
-			}
-			parts := strings.Split(fields[1], ":")
-			if len(parts) == 2 && strings.ToUpper(parts[1]) == target {
-				state := strings.ToUpper(fields[3])
-				if (protocolName == "tcp" && state == "0A") || protocolName == "udp" {
-					file.Close()
-					return true, nil
-				}
-			}
-		}
-		scanErr := scanner.Err()
-		file.Close()
-		if scanErr != nil {
-			return false, scanErr
-		}
-	}
-	return false, nil
 }
 
 func numberToInt(value any) (int, error) {

@@ -20,13 +20,12 @@ type groupInput struct {
 }
 
 type checkInput struct {
-	Name              string         `json:"name"`
-	Executor          string         `json:"executor"`
-	ExecutionLocation string         `json:"execution_location"`
-	Config            map[string]any `json:"config"`
-	Severity          string         `json:"severity"`
-	Enabled           *bool          `json:"enabled"`
-	Order             int            `json:"order"`
+	Name     string         `json:"name"`
+	Executor string         `json:"executor"`
+	Config   map[string]any `json:"config"`
+	Severity string         `json:"severity"`
+	Enabled  *bool          `json:"enabled"`
+	Order    int            `json:"order"`
 }
 
 func (handler *Handler) GetGroup(context *gin.Context) {
@@ -102,19 +101,21 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 		}
 		for _, check := range *input.Checks {
 			config, _ := json.Marshal(check.Config)
-			location, severity, enabled := check.ExecutionLocation, check.Severity, true
-			if location == "" {
-				location = "agent"
-			}
+			severity, enabled := check.Severity, true
 			if severity == "" {
 				severity = "critical"
 			}
 			if check.Enabled != nil {
 				enabled = *check.Enabled
 			}
-			_, err = transaction.ExecContext(context, `INSERT INTO inspection_check(group_id,name,executor,execution_location,config,severity,enabled,`+"`order`"+`,create_time,update_time) VALUES(?,?,?,?,?,?,?,?,NOW(),NOW())`, id, check.Name, check.Executor, location, config, severity, enabled, check.Order)
+			// 检查项固定在 Agent 端执行；execution_location 列为 Django 双实现保留，恒写 agent。
+			// 列顺序: group_id,name,executor,execution_location,config,severity,enabled,order —— 10 列
+			// 对应 7 个占位符 + 'agent'(execution_location) + 两个 NOW()。
+			_, err = transaction.ExecContext(context, `INSERT INTO inspection_check(group_id,name,executor,execution_location,config,severity,enabled,`+"`order`"+`,create_time,update_time) VALUES(?,?,?,'agent',?,?,?,?,NOW(),NOW())`, id, check.Name, check.Executor, config, severity, enabled, check.Order)
 			if err != nil {
-				response.BusinessError(context, 400, "同一巡检组内检查项名称不能重复", nil)
+				// 名称重复在上面的 validateGroupInput 已拦截并带名字；能走到这里的失败是别的原因，
+				// 必须透传真实错误，不能笼统归为名称重复。
+				response.Error(context, err)
 				return
 			}
 		}
@@ -180,7 +181,7 @@ func validateGroupInput(input groupInput) string {
 	seen := make(map[string]bool)
 	for _, check := range *input.Checks {
 		if seen[check.Name] {
-			return "同一巡检组内检查项名称不能重复"
+			return fmt.Sprintf("同一巡检组内检查项名称不能重复: %q", check.Name)
 		}
 		seen[check.Name] = true
 		if message := validateCheck(check); message != "" {
@@ -193,27 +194,22 @@ func validateGroupInput(input groupInput) string {
 	return ""
 }
 
+// 巡检支持 Schema 校验与 Goss（YAML 声明式套件）两种执行器，均固定在 Agent 端执行。
 func validateCheck(check checkInput) string {
-	if !map[string]bool{"shell": true, "schema_validate": true, "http": true, "tcp": true}[check.Executor] {
-		return "执行器无效"
-	}
-	location := check.ExecutionLocation
-	if location == "" {
-		location = "agent"
-	}
-	if location == "controller" && check.Executor == "schema_validate" {
-		return "djadmin 端不支持 Schema 校验，请改用 Agent 执行"
-	}
-	if check.Executor == "shell" && strings.TrimSpace(fmt.Sprint(check.Config["command"])) == "" {
-		return "Shell 命令不能为空"
-	}
-	if check.Executor == "http" {
-		url := fmt.Sprint(check.Config["url"])
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			return "HTTP URL 必须以 http:// 或 https:// 开头"
+	switch check.Executor {
+	case "schema_validate":
+		return ""
+	case "goss":
+		if spec, ok := check.Config["spec"].(string); ok {
+			if err := validateGossSpec(spec); err != nil {
+				return err.Error()
+			}
+			return ""
 		}
+		return "goss spec 必须是字符串"
+	default:
+		return "执行器无效，仅支持 Schema 校验或 Goss"
 	}
-	return ""
 }
 
 func containsApplicationVariable(value any) bool {

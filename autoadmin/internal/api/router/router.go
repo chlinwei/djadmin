@@ -314,6 +314,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionExecutions.GET("/", middleware.RequirePermission("inspection:view"), inspectionHandler.ListExecutions)
 	inspectionExecutions.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetExecution)
 	inspectionExecutions.POST("/:id/cancel/", middleware.RequirePermission("inspection:executions:cancel"), inspectionHandler.CancelExecution)
+	engine.POST("/sys/inspection/goss/validate/", middleware.Authenticate(tokens), middleware.RequirePermission("inspection:view"), inspectionHandler.ValidateGossSpec)
 
 	monitorHandler, err := monitor.NewHandler(database, gateway, playbookHandler, credentialEncryptionKey, djangoSecret)
 	if err != nil {

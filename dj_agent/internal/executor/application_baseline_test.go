@@ -3,212 +3,25 @@ package executor
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
 )
 
-func TestCheckApplicationBaseline_PathAndCommandControl(t *testing.T) {
-	tempDirectory := t.TempDir()
-	if err := os.Chmod(tempDirectory, 0o700); err != nil {
-		t.Fatalf("failed to set test directory mode: %v", err)
-	}
-	executor := New(2 * time.Second)
-	job := protocol.Job{
-		JobID:  "application-baseline-path",
-		Type:   protocol.TaskTypeCustom,
-		Action: actionCheckApplicationBaseline,
-		Params: map[string]any{
-			"control_type": "command",
-			"paths": []any{
-				map[string]any{"name": "home", "path": tempDirectory, "expected_mode": "0700"},
-			},
-		},
-	}
-
-	result, err := executor.Run(context.Background(), job)
-	if err != nil {
-		t.Fatalf("baseline check returned transport error: %v", err)
-	}
-	if result.Status != protocol.StatusSuccess {
-		t.Fatalf("unexpected status: %s", result.Status)
-	}
-	checks, ok := result.Data["checks"].([]applicationCheckResult)
-	if !ok || len(checks) != 2 {
-		t.Fatalf("unexpected checks: %#v", result.Data["checks"])
-	}
-	if checks[0].Status != "skipped" {
-		t.Fatalf("command control must be skipped, got: %#v", checks[0])
-	}
-	if checks[1].Status != "pass" {
-		mode := ""
-		if info, statErr := os.Stat(tempDirectory); statErr == nil {
-			mode = info.Mode().Perm().String()
-		}
-		t.Fatalf("expected path check to pass (mode=%s), got: %#v", mode, checks[1])
-	}
-}
-
-func TestCheckApplicationBaseline_RejectsUnsafeSystemdName(t *testing.T) {
-	executor := New(2 * time.Second)
-	job := protocol.Job{
-		JobID:  "application-baseline-systemd",
-		Type:   protocol.TaskTypeCustom,
-		Action: actionCheckApplicationBaseline,
-		Params: map[string]any{
-			"control_type": "systemd",
-			"service_name": "demo.service;touch /tmp/unsafe",
-		},
-	}
-
-	result, err := executor.Run(context.Background(), job)
-	if err != nil {
-		t.Fatalf("baseline check returned transport error: %v", err)
-	}
-	checks := result.Data["checks"].([]applicationCheckResult)
-	if checks[0].Status != "error" {
-		t.Fatalf("unsafe service name must be rejected, got: %#v", checks[0])
-	}
-}
-
-func TestCheckApplicationControl_ExternalHAUsesStatusCommand(t *testing.T) {
-	currentUser, err := user.Current()
-	if err != nil {
-		t.Fatalf("failed to get current user: %v", err)
-	}
-	result := checkApplicationControl(context.Background(), map[string]any{
-		"control_type": "external_ha",
-		"run_user":     currentUser.Username,
-		"control_actions": map[string]any{
-			"status": map[string]any{"command": "printf ha-running"},
-		},
-	})
-
-	if result.Status != "pass" || result.Actual != "ha-running" {
-		t.Fatalf("external HA status command must establish running state: %#v", result)
-	}
-}
-
-func TestCheckApplicationBaseline_ShellUsesExitCode(t *testing.T) {
-	currentUser, err := user.Current()
-	if err != nil {
-		t.Fatalf("failed to get current user: %v", err)
-	}
-	executor := New(2 * time.Second)
-	workDirectory := t.TempDir()
-	job := protocol.Job{
-		JobID:  "application-baseline-shell",
-		Type:   protocol.TaskTypeCustom,
-		Action: actionCheckApplicationBaseline,
-		Params: map[string]any{
-			"check_plan": map[string]any{
-				"schema_version":        1,
-				"required_capabilities": []any{"shell:v1"},
-				"checks": []any{
-					map[string]any{
-						"key": "success", "type": "shell", "name": "成功命令", "executor": "shell",
-						"command":  "shopt -q login_shell && printf '%s|%s|%s' \"$APP_HOME\" \"$RUN_USER\" \"$APPLICATION_VERSION\"",
-						"run_user": currentUser.Username, "work_directory": workDirectory,
-						"environment": map[string]any{"APP_HOME": workDirectory, "RUN_USER": currentUser.Username, "APPLICATION_VERSION": "9.0.95"},
-					},
-					map[string]any{"key": "failure", "type": "shell", "name": "失败命令", "executor": "shell", "command": "printf denied >&2; exit 7", "run_user": currentUser.Username, "work_directory": workDirectory},
-				},
-			},
-		},
-	}
-
-	result, err := executor.Run(context.Background(), job)
-	if err != nil {
-		t.Fatalf("shell baseline check returned transport error: %v", err)
-	}
-	checks := result.Data["checks"].([]applicationCheckResult)
-	expectedOutput := workDirectory + "|" + currentUser.Username + "|9.0.95"
-	if checks[1].Status != "pass" || checks[1].Actual.(map[string]any)["stdout"] != expectedOutput {
-		t.Fatalf("zero exit code must pass: %#v", checks[1])
-	}
-	failure := checks[2]
-	if failure.Status != "fail" || failure.Actual.(map[string]any)["exit_code"] != 7 || failure.Actual.(map[string]any)["stderr"] != "denied" {
-		t.Fatalf("non-zero exit code must fail with output: %#v", failure)
-	}
-}
-
-func TestCheckHTTP_BypassesProxyAndValidatesStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		response.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
-	t.Setenv("NO_PROXY", "")
-
-	result := checkHTTP(context.Background(), map[string]any{
-		"key": "http", "type": "http", "name": "HTTP", "url": server.URL,
-		"expected_status": float64(http.StatusNoContent),
-	})
-
-	if result.Status != "pass" || result.Actual != http.StatusNoContent {
-		t.Fatalf("direct HTTP check must pass: %#v", result)
-	}
-}
-
-func TestCheckTCP_ConnectsToTarget(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to create TCP listener: %v", err)
-	}
-	defer listener.Close()
-	address := listener.Addr().(*net.TCPAddr)
-
-	result := checkTCP(context.Background(), map[string]any{
-		"key": "tcp", "type": "tcp", "name": "TCP", "host": "127.0.0.1", "port": float64(address.Port),
-	})
-
-	if result.Status != "pass" || result.Actual != "connected" {
-		t.Fatalf("TCP check must pass: %#v", result)
-	}
-}
-
-func TestCheckShell_FailsWhenOutputDoesNotMatchExpected(t *testing.T) {
-	currentUser, err := user.Current()
-	if err != nil {
-		t.Fatalf("failed to get current user: %v", err)
-	}
-	result := checkShell(context.Background(), map[string]any{
-		"key":            "version",
-		"type":           "shell",
-		"name":           "Tomcat version check",
-		"command":        "printf 'Apache Tomcat/9.0.35'",
-		"run_user":       currentUser.Username,
-		"work_directory": t.TempDir(),
-		"expected":       "Apache Tomcat/9.0.93",
-	})
-
-	if result.Status != "fail" || result.Expected != "Apache Tomcat/9.0.93" {
-		t.Fatalf("mismatched shell output must fail with the configured expectation: %#v", result)
-	}
-	actual := result.Actual.(map[string]any)
-	if actual["stdout"] != "Apache Tomcat/9.0.35" || actual["exit_code"] != 0 {
-		t.Fatalf("actual shell output must be preserved: %#v", actual)
-	}
-}
-
 func TestCheckApplicationPlan_SkipsRunningOnlyCheckWhenStopped(t *testing.T) {
-	markerPath := filepath.Join(t.TempDir(), "must-not-run")
-	checks := checkApplicationPlanForState(context.Background(), map[string]any{
+	markerPath := filepath.Join(t.TempDir(), "must-not-read")
+	checks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version": 1,
 			"checks": []any{map[string]any{
-				"key": "running-only", "type": "shell", "name": "仅运行时检查",
-				"executor": "shell", "requires_running": true,
-				"command": "touch " + markerPath,
+				"key": "running-only", "type": "config_json", "name": "仅运行时检查",
+				"executor": "schema_validate", "requires_running": true,
+				"path": markerPath, "document_type": "json",
+				"schema": map[string]any{"type": "json_schema", "content": "{}"},
 			}},
 		},
 	}, false)
@@ -217,7 +30,7 @@ func TestCheckApplicationPlan_SkipsRunningOnlyCheckWhenStopped(t *testing.T) {
 		t.Fatalf("running-only check must be skipped: %#v", checks)
 	}
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
-		t.Fatalf("skipped check must not execute its command: %v", err)
+		t.Fatalf("skipped check must not read its document: %v", err)
 	}
 }
 
@@ -241,46 +54,11 @@ func TestCheckSchema_ValidatesInlineContentWithoutTemplateExpansion(t *testing.T
 	}
 }
 
-func TestCheckApplicationLogs_ExactGlobAndMissing(t *testing.T) {
-	tempDirectory := t.TempDir()
-	logPath := tempDirectory + "/catalina.out"
-	if err := os.WriteFile(logPath, []byte("started\n"), 0o600); err != nil {
-		t.Fatalf("failed to create test log: %v", err)
-	}
-	directoryWithLogSuffix := tempDirectory + "/archive.log"
-	if err := os.Mkdir(directoryWithLogSuffix, 0o700); err != nil {
-		t.Fatalf("failed to create test directory: %v", err)
-	}
-
-	checks := checkApplicationLogs(map[string]any{
-		"logs": []any{
-			map[string]any{"name": "exact", "path_pattern": logPath},
-			map[string]any{"name": "glob", "path_pattern": tempDirectory + "/*.out"},
-			map[string]any{"name": "missing", "path_pattern": tempDirectory + "/missing.log"},
-			map[string]any{"name": "relative", "path_pattern": "logs/*.log"},
-			map[string]any{"name": "directory", "path_pattern": directoryWithLogSuffix},
-		},
-	})
-
-	if len(checks) != 5 {
-		t.Fatalf("unexpected log checks: %#v", checks)
-	}
-	if checks[0].Status != "pass" || checks[1].Status != "pass" {
-		t.Fatalf("existing exact and glob logs must pass: %#v", checks)
-	}
-	if checks[2].Status != "fail" || checks[3].Status != "error" {
-		t.Fatalf("missing log must fail and relative pattern must error: %#v", checks)
-	}
-	if checks[4].Status != "fail" {
-		t.Fatalf("directory must not satisfy a log file check: %#v", checks[4])
-	}
-}
-
 func TestApplicationSystemdCommand_SystemScope(t *testing.T) {
-	command, err := applicationSystemdCommand(context.Background(), map[string]any{
+	command, err := applicationSystemdActionCommand(context.Background(), map[string]any{
 		"service_name":  "tomcat.service",
 		"systemd_scope": "system",
-	})
+	}, "status")
 	if err != nil {
 		t.Fatalf("system scope returned error: %v", err)
 	}
@@ -294,11 +72,11 @@ func TestApplicationSystemdCommand_UserScopeSetsRuntimeEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatalf("failed to get current user: %v", err)
 	}
-	command, err := applicationSystemdCommand(context.Background(), map[string]any{
+	command, err := applicationSystemdActionCommand(context.Background(), map[string]any{
 		"service_name":  "tomcat",
 		"systemd_scope": "user",
 		"run_user":      currentUser.Username,
-	})
+	}, "status")
 	if err != nil {
 		t.Fatalf("user scope returned error: %v", err)
 	}
@@ -468,14 +246,14 @@ func TestParseConfigScalar(t *testing.T) {
 }
 
 func TestCheckApplicationPlan_RejectsUnsupportedProtocol(t *testing.T) {
-	versionChecks := checkApplicationPlanForState(context.Background(), map[string]any{
+	versionChecks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{"schema_version": 2},
 	}, true)
 	if len(versionChecks) != 1 || versionChecks[0].Status != "error" {
 		t.Fatalf("unsupported plan version must fail: %#v", versionChecks)
 	}
 
-	capabilityChecks := checkApplicationPlanForState(context.Background(), map[string]any{
+	capabilityChecks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version":        1,
 			"required_capabilities": []any{"shell_script:v1"},
@@ -485,7 +263,7 @@ func TestCheckApplicationPlan_RejectsUnsupportedProtocol(t *testing.T) {
 		t.Fatalf("unsupported capability must fail explicitly: %#v", capabilityChecks)
 	}
 
-	executorChecks := checkApplicationPlanForState(context.Background(), map[string]any{
+	executorChecks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": map[string]any{
 			"schema_version": 1,
 			"checks": []any{map[string]any{
@@ -533,7 +311,7 @@ func TestCheckTomcatBaseline_MaxPostSizePassesAndManagerUserPasses(t *testing.T)
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlanForState(context.Background(), map[string]any{
+	checks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui", "admin", "admin-gui", "manager-script", "manager-jmx", "manager-status"}),
 	}, true)
 	if len(checks) != 3 {
@@ -580,7 +358,7 @@ func TestCheckTomcatBaseline_MaxPostSizeAndManagerUserFail(t *testing.T) {
 		t.Fatalf("failed to write context.xml: %v", err)
 	}
 
-	checks := checkApplicationPlanForState(context.Background(), map[string]any{
+	checks := (&Executor{}).checkApplicationPlanForState(context.Background(), map[string]any{
 		"check_plan": schemaCheckPlan(serverXMLPath, usersXMLPath, contextXMLPath, "tsystems.com", []any{"manager", "manager-gui"}),
 	}, true)
 	if len(checks) != 3 {

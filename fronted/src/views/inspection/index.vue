@@ -180,7 +180,7 @@
                   :key="check.id || check.name"
                   :color="check.severity === 'warning' ? 'orange' : 'red'"
                 >
-                  {{ check.name }} · {{ executionLocationLabel(check.execution_location) }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
+                  {{ check.name }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
                 </a-tag>
               </a-space>
             </template>
@@ -329,7 +329,7 @@
               {{ groupTargetsHostGroup
                 ? '主机组巡检不解析应用上下文变量（如 ${APP_HOME}），填写后会保存失败。'
                 : '仅逻辑服务范围可用应用上下文变量；主机组范围只能用 ${HOST_IP}、${HOST_NAME}。' }}
-              变量对 Shell 命令/运行目录/期望输出、HTTP URL、TCP 主机、待校验文件路径生效；Schema 内容不做展开。
+              变量对待校验文件路径生效；Schema 内容不做展开。
             </div>
           </template>
         </a-alert>
@@ -348,43 +348,33 @@
           </div>
           <div class="form-grid">
             <a-form-item label="名称" required><a-input v-model:value="check.name" /></a-form-item>
-            <a-form-item label="执行位置" required>
-              <a-select v-model:value="check.execution_location" :options="executionLocationOptions" :getPopupContainer="getPopupContainer" @change="handleExecutionLocationChange(check)" />
-            </a-form-item>
             <a-form-item label="执行器" required>
-              <a-select v-model:value="check.executor" :getPopupContainer="getPopupContainer" @change="handleExecutorChange(check)">
-                <a-select-option v-for="item in executorOptions(check.execution_location)" :key="item.value" :value="item.value">{{ item.label }}</a-select-option>
-              </a-select>
+              <a-select v-model:value="check.executor" :options="executorOptions" :getPopupContainer="getPopupContainer" @change="handleExecutorChange(check)" />
             </a-form-item>
           </div>
           <a-form-item label="严重级别" required>
             <a-segmented v-model:value="check.severity" :options="severityOptions" block />
             <div class="field-hint">警告级失败只计入汇总，不会把巡检目标判为失败。</div>
           </a-form-item>
-          <template v-if="check.executor === 'shell'">
-            <a-form-item label="Shell 命令" required><a-textarea v-model:value="check.config.command" :rows="2" /></a-form-item>
+          <template v-if="check.executor === 'goss'">
+            <a-form-item label="Goss 套件 (YAML)" required>
+              <div class="goss-spec-actions">
+                <a-button size="small" :loading="gossValidatingKeys.has(check.localKey)" @click="handleGossValidate(check)">
+                  <FontAwesomeIcon :icon="['fas', 'circle-check']" />&nbsp;校验 YAML
+                </a-button>
+              </div>
+              <a-textarea v-model:value="check.config.spec" :rows="10" placeholder="file:&#10;  /etc/hosts:&#10;    exists: true&#10;    mode: '0644'" />
+              <div class="field-hint">按 goss 官方 schema 校验后保存；支持 ${APP_HOME} 等变量（在待校验路径中生效）。</div>
+            </a-form-item>
             <div class="form-grid">
-              <a-form-item v-if="groupTargetsHostGroup && check.execution_location !== 'controller'" label="运行用户">
+              <a-form-item label="运行用户">
                 <a-input v-model:value="check.config.run_user" placeholder="root" />
-                <div class="field-hint">留空默认 root；Agent 需以 root 或该用户运行。</div>
+                <div class="field-hint">留空默认 root（主机组）；逻辑服务默认部署模板运行用户。goss 以该用户视角采集进程/文件/端口。</div>
               </a-form-item>
-              <a-form-item label="运行目录">
-                <a-input v-model:value="check.config.work_directory" :placeholder="check.execution_location === 'controller' || groupTargetsHostGroup ? '/' : '${APP_HOME}'" />
-                <div v-if="check.execution_location === 'controller'" class="field-hint">命令在 djadmin 后端服务器执行，路径需存在于该服务器。</div>
+              <a-form-item label="变量 (JSON)">
+                <a-textarea v-model:value="check.config.vars_json" :rows="3" placeholder='{"VAR": "value"}' />
+                <div class="field-hint">透传给 goss --vars-inline，YAML 中通过 Go template 语法引用变量。</div>
               </a-form-item>
-              <a-form-item label="期望输出"><a-input v-model:value="check.config.expected_output" placeholder="留空表示仅校验退出码" /></a-form-item>
-            </div>
-          </template>
-          <template v-else-if="check.executor === 'http'">
-            <div class="form-grid">
-              <a-form-item label="URL" required><a-input v-model:value="check.config.url" placeholder="https://service/health" /></a-form-item>
-              <a-form-item label="期望状态码"><a-input-number v-model:value="check.config.expected_status" :min="100" :max="599" /></a-form-item>
-            </div>
-          </template>
-          <template v-else-if="check.executor === 'tcp'">
-            <div class="form-grid">
-              <a-form-item label="主机"><a-input v-model:value="check.config.host" :placeholder="check.execution_location === 'controller' ? '留空则检查 djadmin 本机' : '留空则检查 dj-agent 本机'" /></a-form-item>
-              <a-form-item label="端口" required><a-input-number v-model:value="check.config.port" :min="1" :max="65535" /></a-form-item>
             </div>
           </template>
           <template v-else-if="check.executor === 'schema_validate'">
@@ -613,6 +603,7 @@ import {
   cancelInspectionExecution,
   saveInspectionGroup,
   saveInspectionTask,
+  validateGossSpec,
 } from '@/api/inspection'
 import {
   appendHostCount,
@@ -754,19 +745,11 @@ const resultColumns = [
 const runningCount = computed(() => executions.value.filter((item) => ['pending', 'running'].includes(item.status)).length)
 const scheduledTasks = computed(() => taskOptions.value.filter((task) => task.cron_expression))
 const unscheduledTaskOptions = computed(() => taskOptions.value.filter((task) => !task.cron_expression))
-const executionLocationOptions = [
-  { label: 'Agent', value: 'agent' },
-  { label: 'djadmin', value: 'controller' },
+// Schema 校验读目标主机文件；Goss 是 YAML 声明式套件（端口/进程/服务/文件/命令等），两者都在 Agent 端执行。
+const executorOptions = [
+  { label: 'Schema', value: 'schema_validate' },
+  { label: 'Goss', value: 'goss' },
 ]
-const executorOptions = (executionLocation = 'agent') => {
-  const options = [
-    { label: 'Shell', value: 'shell' },
-    { label: 'HTTP', value: 'http' },
-    { label: 'TCP', value: 'tcp' },
-  ]
-  // Schema 校验读的是目标主机上的文件，只在 Agent 端成立。
-  return executionLocation === 'agent' ? [...options, { label: 'Schema', value: 'schema_validate' }] : options
-}
 const severityOptions = [
   { label: '严重', value: 'critical' },
   { label: '警告', value: 'warning' },
@@ -903,8 +886,7 @@ const scopeLabel = (scope) => ({
   service_once: '逻辑服务·服务单次',
   per_host: '主机组·每台主机',
 }[scope] || scope)
-const executorLabel = (executor) => ({ shell: 'Shell', schema_validate: 'Schema', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
-const executionLocationLabel = (executionLocation) => executionLocation === 'controller' ? 'djadmin' : 'Agent'
+const executorLabel = (executor) => ({ shell: 'Shell', schema_validate: 'Schema', goss: 'Goss', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
@@ -1047,15 +1029,7 @@ function handleExecutionRangeOpenChange(open) {
   if (open) executionRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
 }
 
-function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value, executionLocation = 'agent') {
-  if (executor === 'shell') {
-    // djadmin 端在后端服务器本机执行，既没有目标主机的 APP_HOME，也不切换运行用户。
-    if (executionLocation === 'controller') return { command: '', work_directory: '/', expected_output: '' }
-    // 主机组范围用不了应用宏变量，默认值必须避开 ${APP_HOME}，否则新建检查项直接保存失败。
-    return targetsHostGroup
-      ? { command: '', run_user: 'root', work_directory: '/', expected_output: '' }
-      : { command: '', work_directory: '${APP_HOME}', expected_output: '' }
-  }
+function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value) {
   if (executor === 'schema_validate') {
     return {
       path: targetsHostGroup ? '' : '${APP_HOME}/conf/server.xml',
@@ -1064,29 +1038,47 @@ function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGrou
       schema_content: '',
     }
   }
-  if (executor === 'http') return { url: '', expected_status: 200 }
-  return { host: '', port: undefined }
+  if (executor === 'goss') {
+    return {
+      spec: '',
+      run_user: '',
+      vars: {},
+      environment: {},
+    }
+  }
+  return {}
 }
 function schemaDocumentTypeOptions(schemaType) { return schemaDocumentTypes[schemaType] || [] }
 function handleExecutorChange(check) {
-  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value, check.execution_location)
-}
-function handleExecutionLocationChange(check) {
-  // djadmin 端没有 Schema 执行器，切换后回落到 Shell。
-  if (check.execution_location === 'controller' && check.executor === 'schema_validate') check.executor = 'shell'
-  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value, check.execution_location)
+  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value)
 }
 function handleSchemaTypeChange(check) {
   check.config.document_type = schemaDocumentTypeOptions(check.config.schema_type)[0]?.value
 }
+// goss YAML 在线校验：与保存时的官方 schema 校验同源，按钮即时反馈。
+const gossValidatingKeys = reactive(new Set())
+async function handleGossValidate(check) {
+  const spec = (check.config.spec || '').trim()
+  if (!spec) {
+    message.warning('请先填写 Goss YAML')
+    return
+  }
+  gossValidatingKeys.add(check.localKey)
+  try {
+    await validateGossSpec(spec)
+    message.success('YAML 符合 goss 官方 schema')
+  } catch (error) {
+    message.error(error?.message || 'YAML 校验失败')
+  } finally {
+    gossValidatingKeys.delete(check.localKey)
+  }
+}
 function addCheck() {
-  const executor = groupForm.scope === 'service_once' ? 'http' : 'shell'
-  const config = defaultExecutorConfig(executor)
+  const config = defaultExecutorConfig('schema_validate')
   groupForm.checks.push({
     localKey: ++localKey,
     name: '',
-    executor,
-    execution_location: 'agent',
+    executor: 'schema_validate',
     config,
     severity: 'critical',
     enabled: true,
@@ -1106,9 +1098,12 @@ function openGroupModal(record) {
   groupForm.checks = (groupForm.checks || []).map((check) => ({
     ...check,
     localKey: ++localKey,
-    execution_location: check.execution_location || 'agent',
     severity: check.severity || 'critical',
-    config: { ...(check.config || {}) },
+    config: {
+      ...(check.config || {}),
+      // goss 变量对象转回 JSON 文本供编辑框使用。
+      vars_json: check.config?.vars && typeof check.config.vars === 'object' ? JSON.stringify(check.config.vars, null, 2) : '',
+    },
   }))
   if (!groupForm.checks.length) addCheck()
   groupModalOpen.value = true
@@ -1178,10 +1173,30 @@ async function submitGroup() {
     message.warning('请完整填写巡检组和检查项')
     return
   }
+  // 名称重复在本地先拦截，直接指出重复项，避免后端 400 再改一轮。
+  const nameCounts = {}
+  groupForm.checks.forEach((check) => {
+    const name = check.name.trim()
+    nameCounts[name] = (nameCounts[name] || 0) + 1
+  })
+  const duplicated = Object.keys(nameCounts).filter((name) => nameCounts[name] > 1)
+  if (duplicated.length) {
+    message.warning(`同一巡检组内检查项名称不能重复: ${duplicated.join('、')}`)
+    return
+  }
   savingGroup.value = true
   try {
     const payload = JSON.parse(JSON.stringify(groupForm))
-    payload.checks.forEach((check, index) => { delete check.localKey; delete check.id; check.order = index })
+    payload.checks.forEach((check, index) => {
+      delete check.localKey; delete check.id; check.order = index
+      // goss 变量在编辑框里是 JSON 文本（vars_json），提交时转成对象。
+      if (check.executor === 'goss') {
+        const rawVars = (check.config.vars_json || '').trim()
+        if (rawVars) {
+          try { check.config.vars = JSON.parse(rawVars) } catch { check.config.vars = {} }
+        } else check.config.vars = {}
+      }
+    })
     await saveInspectionGroup(payload)
     groupModalOpen.value = false
     message.success('巡检组已保存')
@@ -1391,6 +1406,7 @@ useKeepAliveRefreshLifecycle(() => {
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 16px; }
 .filter-select { width: 170px; }
 .field-hint { margin-top: 4px; color: #66727d; font-size: 12px; }
+.goss-spec-actions { margin-bottom: 6px; }
 .scope-actions { margin-top: 8px; }
 .scope-desc { margin-bottom: 12px; color: #66727d; font-size: 12px; }
 .scope-summary { margin-bottom: 8px; font-weight: 600; }

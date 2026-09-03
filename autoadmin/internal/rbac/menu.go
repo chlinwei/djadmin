@@ -129,8 +129,12 @@ func (service *Service) validateParent(ctx context.Context, id int32, parent *in
 func menuTree(rows []db.SysMenu) []Menu {
 	children := map[int32][]db.SysMenu{}
 	for _, row := range rows {
-		if row.ParentID.Valid {
+		// 根菜单约定 parent_id=0（Django 遗留），但历史数据存在 NULL：两者都必须按根处理，
+		// 否则 NULL 根会被整条丢弃。
+		if row.ParentID.Valid && row.ParentID.Int32 != 0 {
 			children[row.ParentID.Int32] = append(children[row.ParentID.Int32], row)
+		} else {
+			children[0] = append(children[0], row)
 		}
 	}
 	for id := range children {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"autoadmin/internal/shared/pagination"
@@ -37,19 +38,20 @@ type ApplicationService struct {
 	MemberInstances        []int64         `json:"member_instances"`
 }
 type ApplicationDeployment struct {
-	ID                  int64           `json:"id"`
-	CreateTime          string          `json:"create_time"`
-	UpdateTime          string          `json:"update_time"`
-	Remark              *string         `json:"remark"`
-	InstanceName        string          `json:"instance_name"`
-	Enabled             bool            `json:"enabled"`
-	Host                int64           `json:"host"`
-	HostIP              string          `json:"host_ip"`
-	RuntimeStatus       string          `json:"runtime_status"`
-	RuntimeStatusOutput string          `json:"runtime_status_output"`
-	LastStatusCheckTime *string         `json:"last_status_check_time"`
-	HaRole              string          `json:"ha_role"`
-	RuntimeVariables    json.RawMessage `json:"runtime_variables"`
+	ID                    int64           `json:"id"`
+	CreateTime            string          `json:"create_time"`
+	UpdateTime            string          `json:"update_time"`
+	Remark                *string         `json:"remark"`
+	InstanceName          string          `json:"instance_name"`
+	Enabled               bool            `json:"enabled"`
+	Host                  int64           `json:"host"`
+	HostIP                string          `json:"host_ip"`
+	RuntimeStatus         string          `json:"runtime_status"`
+	RuntimeStatusOutput   string          `json:"runtime_status_output"`
+	LastStatusCheckTime   *string         `json:"last_status_check_time"`
+	HaRole                string          `json:"ha_role"`
+	RuntimeVariables      json.RawMessage `json:"runtime_variables"`
+	ApplicationServiceIDs []int64         `json:"application_service_ids"`
 }
 
 func nullableID(value sql.NullInt64) *int64 {
@@ -152,7 +154,53 @@ func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagina
 		item.Remark = stringValue(remark)
 		item.LastStatusCheckTime = nullableTime(checked)
 		item.RuntimeVariables = json.RawMessage(raw)
+		item.ApplicationServiceIDs = []int64{}
 		items = append(items, item)
 	}
-	return items, count, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err = r.attachApplicationServiceIDs(ctx, items); err != nil {
+		return nil, 0, err
+	}
+	return items, count, nil
+}
+
+// attachApplicationServiceIDs 批量补齐部署与逻辑服务的 M2M 关联（assets_application_service_deployment），
+// 服务树的"资源占比"按部署→服务→业务系统/项目归集资源，缺了这层关联饼图恒为空。
+func (r *Repository) attachApplicationServiceIDs(ctx context.Context, items []ApplicationDeployment) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(items))
+	for index := range items {
+		ids = append(ids, items[index].ID)
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	arguments := make([]any, 0, len(ids))
+	for _, id := range ids {
+		arguments = append(arguments, id)
+	}
+	rows, err := r.pool.QueryContext(ctx, `SELECT deployment_id,service_id FROM assets_application_service_deployment WHERE deployment_id IN (`+placeholders[:len(placeholders)-1]+`) ORDER BY deployment_id,service_id`, arguments...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	linksByDeployment := make(map[int64][]int64)
+	for rows.Next() {
+		var deploymentID, serviceID int64
+		if err = rows.Scan(&deploymentID, &serviceID); err != nil {
+			return err
+		}
+		linksByDeployment[deploymentID] = append(linksByDeployment[deploymentID], serviceID)
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for index := range items {
+		if links, ok := linksByDeployment[items[index].ID]; ok {
+			items[index].ApplicationServiceIDs = links
+		}
+	}
+	return nil
 }

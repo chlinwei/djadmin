@@ -66,10 +66,12 @@
                                     <a-input v-model:value="formState.phonenumber" />
                                 </a-form-item>
                                 <a-form-item label="时区" name="timezone">
-                                    <a-select 
+                                    <!-- virtual=false：选项数量少，禁用虚拟滚动规避 rc-virtual-list 卸载竞态（KeepAlive 切页时 removeEventListener of null，ant-design-vue 4.2.6 上游 bug）。 -->
+                                    <a-select
                                         v-model:value="formState.timezone"
                                         :getPopupContainer="getPopupContainer"
                                         :options="timezoneOptions"
+                                        :virtual="false"
                                         @change="handleTimezoneChange"
                                     />
                                 </a-form-item>
@@ -103,9 +105,9 @@
                         <a-tab-pane key="3" tab="告警媒介">
                             <div class="alert-media-container">
                                 <a-space direction="vertical" style="width: 100%">
-                                    <a-button type="primary" @click="openBindingModal">
-                                        <template #icon><PlusCircleOutlined /></template>
-                                        添加媒介绑定
+                                    <a-button @click="openBindingModal">
+                                        <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+                                        <span>&nbsp;添加媒介绑定</span>
                                     </a-button>
                                     <a-table
                                         :columns="bindingColumns"
@@ -128,13 +130,13 @@
                                             <template v-else-if="column.key === 'operation'">
                                                 <a-space>
                                                     <a-tooltip title="编辑">
-                                                        <a-button type="link" size="small" @click="editBinding(record)">
-                                                            <template #icon><EditOutlined /></template>
+                                                        <a-button size="small" type="primary" @click="editBinding(record)">
+                                                            <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                                                         </a-button>
                                                     </a-tooltip>
                                                     <a-tooltip title="删除">
-                                                        <a-button class="delBtn" type="link" size="small" danger @click="deleteBinding(record)">
-                                                            <template #icon><DeleteOutlined /></template>
+                                                        <a-button class="delBtn" size="small" type="primary" danger @click="deleteBinding(record)">
+                                                            <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                                                         </a-button>
                                                     </a-tooltip>
                                                 </a-space>
@@ -197,7 +199,6 @@ import { updateUserInfo, updateUserPassword } from '@/api/user';
 import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
-import { PlusCircleOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import Avatar from '@/views/userCenter/components/Avatar.vue';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'

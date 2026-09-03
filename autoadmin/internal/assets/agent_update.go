@@ -14,6 +14,7 @@ import (
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -21,8 +22,10 @@ import (
 
 // Agent 在线自更新：经 gRPC 文件通道推送新二进制到主机，agent 调内置 apply_agent_update
 // 自替换并重启；重启后回查重连状态作为最终结论。语义与 Django assets/agent_install_service.py
-// 的 run_agent_update_via_grpc 一致。SSH+Ansible 引导安装（operation=install）依赖 AgentJob
-// 执行进程与 SSH 凭证链路，第二批实现，这里显式报错而不是静默假成功。
+// 的 run_agent_update_via_grpc 一致。全新主机走 operation=install：SSH 凭证 + 本机
+// ansible-playbook 执行 agent_install.yml 引导安装，语义与 run_agent_install_job 一致，
+// 见 agent_install.go。env/unit 配置统一以磁盘上的 agent_install.yml 为唯一来源（agent_playbook.go），
+// 找不到或被改坏时入口直接报错，无内嵌兜底。
 
 const (
 	agentUpdateRemoteDir  = "/var/lib/dj-agent/update"
@@ -55,9 +58,24 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	if operation == "" {
 		operation = "install"
 	}
-	if operation != "update" {
-		response.BusinessError(context, 400, "当前仅支持在线更新（operation=update）；全新主机的 SSH 引导安装将在后续版本提供", nil)
+	if operation != "update" && operation != "install" {
+		response.BusinessError(context, 400, "operation仅支持install或update", nil)
 		return
+	}
+	var credential db.AssetsCredential
+	credentialID := input.CredentialID
+	if operation == "install" {
+		// 安装是全新主机的引导过程，agent 还没起来，只能走 SSH；更新复用已连通的 gRPC 通道，不需要 SSH 凭证。
+		if credentialID <= 0 {
+			response.BusinessError(context, 400, "credential_id必须是整数", nil)
+			return
+		}
+		row, err := handler.service.repository.GetCredential(context, credentialID)
+		if err != nil {
+			response.BusinessError(context, 400, "SSH 凭证不存在", nil)
+			return
+		}
+		credential = row
 	}
 
 	hosts := make([]agentUpdateHost, 0, len(input.HostIDs))
@@ -95,13 +113,15 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		return
 	}
 	for _, host := range hosts {
-		if strings.TrimSpace(host.AgentID) == "" {
-			response.BusinessError(context, 400, fmt.Sprintf("主机 %s 未绑定 Agent，更新操作仅支持已绑定 Agent 的主机", host.HostName), nil)
-			return
-		}
-		if !handler.gateway.IsOnline(host.AgentID) {
-			response.BusinessError(context, 400, fmt.Sprintf("主机 %s 的 Agent 离线，更新操作仅支持当前在线的主机", host.HostName), nil)
-			return
+		if operation == "update" {
+			if strings.TrimSpace(host.AgentID) == "" {
+				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 未绑定 Agent，更新操作仅支持已绑定 Agent 的主机", host.HostName), nil)
+				return
+			}
+			if !handler.gateway.IsOnline(host.AgentID) {
+				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 的 Agent 离线，更新操作仅支持当前在线的主机", host.HostName), nil)
+				return
+			}
 		}
 	}
 	if err = handler.rejectActiveAgentJobs(context, hosts); err != nil {
@@ -110,6 +130,21 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	}
 
 	binary, err := handler.loadAgentBinary()
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
+	playbook, err := handler.loadAgentInstallPlaybook()
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
+	contents, err := playbookCopyContents(playbook)
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
+	envTemplate, unitTemplate, err := playbookAgentTemplates(contents)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -128,6 +163,11 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	// 与 Django 一致：创建 RUNNING 状态的自动化执行记录，主机明细挂在 target log 上，
 	// 前端提交成功后跳转 /sys/automation/logs?job_id=<automation_job_id> 查看进度。
 	now := time.Now().UTC()
+	extraVars, taskName, templateName, templateContent := `{"operation":"update"}`, "Agent 更新", "dj-agent 在线自更新", ""
+	if operation == "install" {
+		extraVars = fmt.Sprintf(`{"operation":"install","credential_id":%d}`, credentialID)
+		taskName, templateName, templateContent = "Agent 安装", "dj-agent Ansible Playbook", playbook
+	}
 	inventory := gin.H{"hosts": func() []gin.H {
 		items := make([]gin.H, 0, len(hosts))
 		for _, host := range hosts {
@@ -141,8 +181,8 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		 task_name_snapshot,template_name_snapshot,template_content_snapshot,`+"`limit`"+`,run_as_user_snapshot,run_as_group_snapshot,work_directory_snapshot,
 		 requested_user_id,requested_username,start_time)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		now, now, nil, uuid.NewString(), "running", "manual", inventoryJSON, `{"operation":"update"}`,
-		`{"message":"Agent update running"}`, "Agent 更新", "dj-agent 在线自更新", "", "", "", "", "", nullableUserID(userID), username, now)
+		now, now, nil, uuid.NewString(), "running", "manual", inventoryJSON, extraVars,
+		`{"message":"Agent update running"}`, taskName, templateName, templateContent, "", "", "", "", nullableUserID(userID), username, now)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -152,11 +192,21 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	for index := range hosts {
 		host := &hosts[index]
 		host.AgentJobID = fmt.Sprintf("install-agent-%s", uuid.NewString()[:16])
+		jobType, jobParams := "grpc", `{"operation":"update"}`
+		jobAgentID := host.AgentID
+		if operation == "install" {
+			jobType = "ansible"
+			jobParams = fmt.Sprintf(`{"credential_id":%d,"operation":"install"}`, credentialID)
+			// 与 Django 一致：全新主机没有 agent_id，作业行回填 host-<id> 占位。
+			if strings.TrimSpace(jobAgentID) == "" {
+				jobAgentID = fmt.Sprintf("host-%d", host.ID)
+			}
+		}
 		jobResult, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO assets_agent_job
 			(create_time,update_time,remark,job_id,agent_id,job_type,action,params,timeout_seconds,status,result_data,error_message,host_id,exit_code,stderr,stdout)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, nil, host.AgentJobID, host.AgentID, "grpc", "install_agent",
-			`{"operation":"update"}`, 300, "queued", `{}`, "", sql.NullInt64{Int64: host.ID, Valid: true}, 0, "", "")
+			now, now, nil, host.AgentJobID, jobAgentID, jobType, "install_agent",
+			jobParams, 300, "queued", `{}`, "", sql.NullInt64{Int64: host.ID, Valid: true}, 0, "", "")
 		if err != nil {
 			response.Error(context, err)
 			return
@@ -174,7 +224,13 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		host.LogID, _ = logResult.LastInsertId()
 	}
 
-	go handler.runAgentUpdates(binary, advertised, hosts, executionID, userID, username)
+	go func() {
+		if operation == "install" {
+			handler.runAgentInstalls(binary, advertised, playbook, hosts, credential, executionID, userID, username)
+			return
+		}
+		handler.runAgentUpdates(binary, advertised, envTemplate, unitTemplate, hosts, executionID, userID, username)
+	}()
 
 	jobs := make([]gin.H, 0, len(hosts))
 	for _, host := range hosts {
@@ -259,14 +315,14 @@ func agentGRPCAddrForHost(hostIP, advertisedAddr string) (string, error) {
 	return advertisedAddr, nil
 }
 
-func (handler *Handler) runAgentUpdates(binary []byte, advertisedAddr string, hosts []agentUpdateHost, executionID int64, userID int32, username string) {
+func (handler *Handler) runAgentUpdates(binary []byte, advertisedAddr, envTemplate, unitTemplate string, hosts []agentUpdateHost, executionID int64, userID int32, username string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	background := context.Background()
 
 	successCount := 0
 	for _, host := range hosts {
-		ok := handler.runAgentUpdateOnce(ctx, background, host, binary, advertisedAddr, executionID)
+		ok := handler.runAgentUpdateOnce(ctx, background, host, binary, advertisedAddr, envTemplate, unitTemplate, executionID)
 		if ok {
 			successCount++
 		}
@@ -289,7 +345,7 @@ func (handler *Handler) runAgentUpdates(binary []byte, advertisedAddr string, ho
 	_ = username
 }
 
-func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background context.Context, host agentUpdateHost, binary []byte, advertisedAddr string, executionID int64) bool {
+func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background context.Context, host agentUpdateHost, binary []byte, advertisedAddr, envTemplate, unitTemplate string, executionID int64) bool {
 	now := time.Now().UTC()
 	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job SET status='running',picked_at=?,update_time=? WHERE job_id=?`, now, now, host.AgentJobID)
 	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log SET status='running',update_time=? WHERE id=?`, now, host.LogID)
@@ -312,8 +368,9 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 	if handler.gateway == nil || !handler.gateway.IsOnline(host.AgentID) {
 		return fail("agent 已离线，无法走在线更新", 1, "", "")
 	}
-	envContent := fmt.Sprintf("DJ_AGENT_ID=%s\nDJ_AGENT_GRPC_FILE_ADDR=%s\nDJ_AGENT_LOG_LEVEL=info\n", host.AgentID, grpcAddr)
-	unitContent := agentUnitContent()
+	// env/unit 内容以 agent_install.yml 中的 copy 模板为唯一来源（入口处已校验）。
+	envContent := renderAgentEnvTemplate(envTemplate, host.AgentID, grpcAddr)
+	unitContent := unitTemplate + "\n"
 
 	if _, err = handler.gateway.MakeDirectory(ctx, host.AgentID, "/var/lib/dj-agent", "update"); err != nil {
 		return fail("创建远端 update 目录失败: "+err.Error(), 1, "", "")
@@ -360,31 +417,6 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 		SET status=?,exit_code=?,error_message=?,update_time=? WHERE id=?`,
 		finalStatus, exitCode, message, now, host.LogID)
 	return reconnected
-}
-
-func agentUnitContent() string {
-	// 与 agent_install.yml 产出的 unit 文件保持一致，保证两条链路更新出来的文件相同。
-	return `[Unit]
-Description=dj-agent service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-EnvironmentFile=/etc/dj-agent/config.env
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=dj-agent
-ExecStart=/usr/local/bin/dj-agent
-Restart=on-failure
-RestartSec=5
-SuccessExitStatus=0 143 130
-TimeoutStopSec=15
-
-[Install]
-WantedBy=multi-user.target
-`
 }
 
 func nullableUserID(value int32) any {

@@ -124,9 +124,9 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 	results := make([]gin.H, 0, len(input.HostIDs))
 	success := 0
 	for _, hostID := range input.HostIDs {
-		var name, ip string
+		var name, ip, agentID string
 		var deleted bool
-		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &deleted); err != nil || deleted {
+		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),COALESCE(agent_id,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &agentID, &deleted); err != nil || deleted {
 			results = append(results, gin.H{"host_id": hostID, "host": name, "ok": false, "message": "host not found"})
 			continue
 		}
@@ -140,15 +140,25 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
 			continue
 		}
+		targetID, _ := result.LastInsertId()
 		affected, _ := result.RowsAffected()
 		if affected == 0 {
 			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": "target already managed"})
 			continue
 		}
+		// 与 Django 一致：install_now=true 时创建后立即下发安装（agent 离线/缺包等守卫
+		// 在 dispatchExporterJob 内部判定，原因写入 target.install_message）。
+		if input.InstallNow {
+			row := targetInstallRow{ID: targetID, HostID: hostID, ManagedEnabled: true, ExporterType: input.ExporterType, HostName: name, HostIP: ip, AgentID: agentID}
+			if err := handler.dispatchExporterJob(context, row); err != nil {
+				results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
+				continue
+			}
+		}
 		success++
 		message := ""
 		if input.InstallNow {
-			message = "target created; use retry to dispatch installation"
+			message = "install job dispatched"
 		}
 		results = append(results, gin.H{"host_id": hostID, "host": label, "ok": true, "message": message})
 	}

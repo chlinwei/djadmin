@@ -10,14 +10,16 @@ import (
 const secretMask = "******"
 
 type Project struct {
-	ID         int64   `json:"id"`
-	CreateTime string  `json:"create_time"`
-	UpdateTime string  `json:"update_time"`
-	Remark     *string `json:"remark"`
-	Name       string  `json:"name"`
-	Code       string  `json:"code"`
-	Owner      string  `json:"owner"`
-	Enabled    bool    `json:"enabled"`
+	ID                  int64    `json:"id"`
+	CreateTime          string   `json:"create_time"`
+	UpdateTime          string   `json:"update_time"`
+	Remark              *string  `json:"remark"`
+	Name                string   `json:"name"`
+	Code                string   `json:"code"`
+	Owner               string   `json:"owner"`
+	Enabled             bool     `json:"enabled"`
+	BusinessSystemNames []string `json:"business_system_names"`
+	BusinessSystems     []int64  `json:"business_systems"`
 }
 
 type BusinessSystem struct {
@@ -80,42 +82,42 @@ type HostSystemInfo struct {
 }
 
 type HostHardwareInfo struct {
-	CpuCores      *int32   `json:"cpu_cores"`
-	CpuModel      *string  `json:"cpu_model"`
-	MemoryGB      *float64 `json:"memory_gb"`
-	DiskTotalGB   *float64 `json:"disk_total_gb"`
-	Architecture  *string  `json:"architecture"`
-	DiskUsedPct   *float64 `json:"disk_used_percent"`
+	CpuCores     *int32   `json:"cpu_cores"`
+	CpuModel     *string  `json:"cpu_model"`
+	MemoryGB     *float64 `json:"memory_gb"`
+	DiskTotalGB  *float64 `json:"disk_total_gb"`
+	Architecture *string  `json:"architecture"`
+	DiskUsedPct  *float64 `json:"disk_used_percent"`
 }
 
 type Host struct {
-	ID                    int64            `json:"id"`
-	CreateTime            string           `json:"create_time"`
-	UpdateTime            string           `json:"update_time"`
-	Remark                *string          `json:"remark"`
-	Status                string           `json:"status"`
-	InstanceID            *string          `json:"instance_id"`
-	IP                    *string          `json:"ip"`
-	IsDeletedInCloud      bool             `json:"is_deleted_in_cloud"`
-	CloudAccount          *int64           `json:"cloud_account"`
-	Group                 *int64           `json:"group"`
-	GroupName             string           `json:"group_name"`
-	InstanceName          *string          `json:"instance_name"`
-	CollectStatus         string           `json:"collect_status"`
-	CollectMessage        string           `json:"collect_message"`
-	CollectTime           *string          `json:"collect_time"`
-	AgentOnline           bool             `json:"agent_online"`
-	AgentOnlineTime       *string          `json:"agent_online_time"`
-	WebSSHDefaultUsername string           `json:"webssh_default_username"`
-	WebSSHLoginUsers      string           `json:"webssh_login_users"`
-	AgentID               *string          `json:"agent_id"`
-	Environment           *int64           `json:"environment"`
-	EnvironmentName       string           `json:"environment_name"`
-	System                *HostSystemInfo  `json:"system"`
+	ID                    int64             `json:"id"`
+	CreateTime            string            `json:"create_time"`
+	UpdateTime            string            `json:"update_time"`
+	Remark                *string           `json:"remark"`
+	Status                string            `json:"status"`
+	InstanceID            *string           `json:"instance_id"`
+	IP                    *string           `json:"ip"`
+	IsDeletedInCloud      bool              `json:"is_deleted_in_cloud"`
+	CloudAccount          *int64            `json:"cloud_account"`
+	Group                 *int64            `json:"group"`
+	GroupName             string            `json:"group_name"`
+	InstanceName          *string           `json:"instance_name"`
+	CollectStatus         string            `json:"collect_status"`
+	CollectMessage        string            `json:"collect_message"`
+	CollectTime           *string           `json:"collect_time"`
+	AgentOnline           bool              `json:"agent_online"`
+	AgentOnlineTime       *string           `json:"agent_online_time"`
+	WebSSHDefaultUsername string            `json:"webssh_default_username"`
+	WebSSHLoginUsers      string            `json:"webssh_login_users"`
+	AgentID               *string           `json:"agent_id"`
+	Environment           *int64            `json:"environment"`
+	EnvironmentName       string            `json:"environment_name"`
+	System                *HostSystemInfo   `json:"system"`
 	Hardware              *HostHardwareInfo `json:"hardware"`
-	OsType                *string          `json:"os_type"`
-	OsVersion             *string          `json:"os_version"`
-	KernelVersion         *string          `json:"kernel_version"`
+	OsType                *string           `json:"os_type"`
+	OsVersion             *string           `json:"os_version"`
+	KernelVersion         *string           `json:"kernel_version"`
 }
 
 type ProjectInput struct {

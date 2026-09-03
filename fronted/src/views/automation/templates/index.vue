@@ -52,6 +52,9 @@
             <a-tooltip v-if="record.category === 'software_package'" title="由监控软件仓库自动管理，如需修改内容请前往对应软件包编辑页">
               <a-tag color="purple">软件包安装/卸载专用</a-tag>
             </a-tooltip>
+            <a-tooltip v-else-if="record.category === 'agent'" title="Agent 安装/更新专用模板（autoadmin 按分类读取，禁止删除，可编辑内容）">
+              <a-tag color="geekblue">Agent 安装专用</a-tag>
+            </a-tooltip>
             <a-tag v-else color="default">通用</a-tag>
           </template>
           <template v-else-if="column.key === 'update_time'">
@@ -81,7 +84,7 @@
               </a-tooltip>
               <a-tooltip title="删除">
                 <a-button
-                  v-if="hasPermission('delete') && record.category !== 'software_package'"
+                  v-if="hasPermission('delete') && !['software_package', 'agent'].includes(record.category)"
                   class="delBtn"
                   size="small"
                   type="primary"
@@ -112,7 +115,7 @@
           <a-input v-model:value="templateEdit.name" />
         </a-form-item>
         <a-form-item label="分类" required>
-          <a-select v-model:value="templateEdit.category" :options="categoryOptions" :getPopupContainer="getPopupContainer" />
+          <a-select v-model:value="templateEdit.category" :options="categoryOptions" :disabled="isAgentTemplate" :getPopupContainer="getPopupContainer" />
         </a-form-item>
         <a-form-item label="描述">
           <a-input v-model:value="templateEdit.description" />
@@ -242,9 +245,12 @@ const columns = [
 const categoryFilterOptions = [
   { label: '分类：通用', value: 'general' },
   { label: '分类：软件包安装/卸载专用', value: 'software_package' },
+  { label: '分类：Agent 安装专用', value: 'agent' },
   { label: '分类：全部', value: '' },
 ]
 const canCreateCurrentType = computed(() => hasPermission('create'))
+// Agent 安装专用模板的分类锁定：它是 autoadmin 安装/更新 dj-agent 的唯一配置源（按分类定位），只允许改内容。
+const isAgentTemplate = computed(() => templateEdit.category === 'agent')
 const templateLineNumbers = computed(() => {
   const lineCount = String(templateEdit.content || '').split('\n').length
   return Array.from({ length: Math.max(lineCount, 1) }, (_, index) => index + 1)

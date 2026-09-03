@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,20 +52,84 @@ func validNamed(name, code string) bool {
 	return strings.TrimSpace(name) != "" && strings.TrimSpace(code) != ""
 }
 
+// splitBusinessSystemNames 拆分 GROUP_CONCAT(... SEPARATOR '||') 聚合出的关联业务系统名。
+func splitBusinessSystemNames(raw sql.NullString) []string {
+	if !raw.Valid || raw.String == "" {
+		return []string{}
+	}
+	items := strings.Split(raw.String, "||")
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != "" {
+			names = append(names, item)
+		}
+	}
+	return names
+}
+
+// splitBusinessSystemIDs 拆分聚合出的关联业务系统 ID；解析失败的段跳过。
+func splitBusinessSystemIDs(raw sql.NullString) []int64 {
+	if !raw.Valid || raw.String == "" {
+		return []int64{}
+	}
+	items := strings.Split(raw.String, "||")
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if value, err := strconv.ParseInt(strings.TrimSpace(item), 10, 64); err == nil && value > 0 {
+			ids = append(ids, value)
+		}
+	}
+	return ids
+}
+
+// businessSystemIDsFromAny 处理 sqlc 对 COALESCE 子查询聚合列推导出的 interface{} 值。
+func businessSystemIDsFromAny(value any) []int64 {
+	switch raw := value.(type) {
+	case string:
+		return splitBusinessSystemIDs(sql.NullString{String: raw, Valid: true})
+	case []byte:
+		return splitBusinessSystemIDs(sql.NullString{String: string(raw), Valid: true})
+	default:
+		return []int64{}
+	}
+}
+
 func project(row db.AssetsProject) Project {
 	return Project{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Code: row.Code, Owner: row.Owner, Enabled: row.Enabled}
+}
+
+func projectWithSystems(row db.ListProjectsRow) Project {
+	return Project{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Code: row.Code, Owner: row.Owner, Enabled: row.Enabled, BusinessSystemNames: splitBusinessSystemNames(row.BusinessSystemNames), BusinessSystems: splitBusinessSystemIDs(row.BusinessSystemIds)}
 }
 func (s *Service) ListProjects(ctx context.Context, search string, page pagination.Page) ([]Project, int64, error) {
 	rows, count, err := s.repository.ListProjects(ctx, search, page)
 	result := make([]Project, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, project(row))
+		result = append(result, projectWithSystems(row))
 	}
 	return result, count, translate(err)
 }
 func (s *Service) GetProject(ctx context.Context, id int64) (Project, error) {
 	row, err := s.repository.GetProject(ctx, id)
-	return project(row), translate(err)
+	if err != nil {
+		return Project{}, translate(err)
+	}
+	item := project(db.AssetsProject{ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark, Name: row.Name, Code: row.Code, Owner: row.Owner, Enabled: row.Enabled})
+	item.BusinessSystemNames = splitBusinessSystemNames(nameRaw(row.BusinessSystemNames))
+	item.BusinessSystems = businessSystemIDsFromAny(row.BusinessSystemIds)
+	return item, nil
+}
+
+// nameRaw 将 GetProject 的聚合列（interface{}）归一为 sql.NullString。
+func nameRaw(value any) sql.NullString {
+	switch raw := value.(type) {
+	case string:
+		return sql.NullString{String: raw, Valid: true}
+	case []byte:
+		return sql.NullString{String: string(raw), Valid: true}
+	default:
+		return sql.NullString{}
+	}
 }
 func (s *Service) CreateProject(ctx context.Context, input ProjectInput) (Project, error) {
 	if !validNamed(input.Name, input.Code) {
@@ -503,7 +568,7 @@ func (s *Service) DeleteHostGroup(ctx context.Context, id int64) error {
 }
 
 // hostSystemInfo 组装列表/详情共用的 system 摘要（Django HostListSerializer.get_system 契约）：
-// Agent 状态属于 Host 本身，不能因为没有 system 快照而丢失，agent_last_seen_at 取 host 心跳时间。
+// Agent 状态属于 Host 本身，不能因为没有 system 快照而丢失，agent_last_seen_at 取 host 最近一次 agent 在线（gRPC 会话建立/回连）的时间。
 func hostSystemInfo(row db.ListHostsRow) *HostSystemInfo {
 	return &HostSystemInfo{
 		Hostname:        nullStringPtr(row.SystemHostname),

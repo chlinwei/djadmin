@@ -110,6 +110,11 @@ func validatePlaybook(content string) error {
 	return nil
 }
 
+// playbookCategoryAgent 是 Agent 安装专用模板分类：它是 Agent 安装/更新功能的唯一配置源
+// （assets 包按 category 定位读取），只允许通过种子 SQL 落库并修改内容，
+// 禁止在模板管理中新建、删除或改回其他分类。
+const playbookCategoryAgent = "agent"
+
 func bindPlaybook(context *gin.Context) (playbookInput, bool) {
 	var input playbookInput
 	if context.ShouldBindJSON(&input) != nil || strings.TrimSpace(input.Name) == "" || validatePlaybook(input.Content) != nil {
@@ -119,16 +124,30 @@ func bindPlaybook(context *gin.Context) (playbookInput, bool) {
 	if input.Category == "" {
 		input.Category = "general"
 	}
-	if input.Category != "general" && input.Category != "software_package" {
+	if input.Category != "general" && input.Category != "software_package" && input.Category != playbookCategoryAgent {
 		context.JSON(200, gin.H{"code": 400, "msg": "category 无效", "data": nil})
 		return input, false
 	}
 	return input, true
 }
 
+func (handler *Handler) playbookCategoryByID(context *gin.Context, id int64) (string, bool) {
+	var category string
+	err := handler.db.QueryRowContext(context, `SELECT category FROM automation_playbook_template WHERE id=?`, id).Scan(&category)
+	if err != nil {
+		response.Error(context, err)
+		return "", false
+	}
+	return category, true
+}
+
 func (handler *Handler) Create(context *gin.Context) {
 	input, ok := bindPlaybook(context)
 	if !ok {
+		return
+	}
+	if input.Category == playbookCategoryAgent {
+		context.JSON(200, gin.H{"code": 400, "msg": "Agent 安装专用模板由系统种子数据维护，禁止手动新建", "data": nil})
 		return
 	}
 	now := time.Now().UTC()
@@ -149,6 +168,12 @@ func (handler *Handler) Update(context *gin.Context) {
 	}
 	input, ok := bindPlaybook(context)
 	if !ok {
+		return
+	}
+	if category, exists := handler.playbookCategoryByID(context, id); !exists {
+		return
+	} else if category == playbookCategoryAgent && input.Category != playbookCategoryAgent {
+		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，无法改为其他分类", "data": nil})
 		return
 	}
 	_, err = handler.db.ExecContext(context, `UPDATE automation_playbook_template SET update_time=?,remark=?,name=?,description=?,content=?,category=? WHERE id=?`, time.Now().UTC(), nullString(input.Remark), strings.TrimSpace(input.Name), input.Description, input.Content, input.Category, id)
@@ -178,10 +203,19 @@ func (handler *Handler) GetByID(context *gin.Context, id int64) {
 }
 func (handler *Handler) Delete(context *gin.Context) {
 	id, err := strconv.ParseInt(context.Param("id"), 10, 64)
-	if err == nil {
-		_, err = handler.db.ExecContext(context, `DELETE FROM automation_playbook_template WHERE id=?`, id)
-	}
 	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	category, exists := handler.playbookCategoryByID(context, id)
+	if !exists {
+		return
+	}
+	if category == playbookCategoryAgent {
+		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，禁止删除", "data": nil})
+		return
+	}
+	if _, err = handler.db.ExecContext(context, `DELETE FROM automation_playbook_template WHERE id=?`, id); err != nil {
 		response.Error(context, err)
 		return
 	}

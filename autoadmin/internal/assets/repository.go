@@ -17,7 +17,7 @@ type Repository struct {
 
 func NewRepository(pool *sql.DB) *Repository { return &Repository{pool: pool, queries: db.New(pool)} }
 
-func (r *Repository) ListProjects(ctx context.Context, search string, page pagination.Page) ([]db.AssetsProject, int64, error) {
+func (r *Repository) ListProjects(ctx context.Context, search string, page pagination.Page) ([]db.ListProjectsRow, int64, error) {
 	p := pattern(search)
 	count, err := r.queries.CountProjects(ctx, db.CountProjectsParams{Pattern: p})
 	if err != nil {
@@ -26,7 +26,7 @@ func (r *Repository) ListProjects(ctx context.Context, search string, page pagin
 	rows, err := r.queries.ListProjects(ctx, db.ListProjectsParams{Pattern: p, Limit: page.Size, Offset: page.Offset})
 	return rows, count, err
 }
-func (r *Repository) GetProject(ctx context.Context, id int64) (db.AssetsProject, error) {
+func (r *Repository) GetProject(ctx context.Context, id int64) (db.GetProjectRow, error) {
 	return r.queries.GetProject(ctx, id)
 }
 func (r *Repository) CreateProject(ctx context.Context, p db.CreateProjectParams) (int64, error) {

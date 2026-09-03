@@ -47,6 +47,11 @@ if [[ ! -f "$CONFIG_SOURCE" ]]; then
   exit 1
 fi
 
+if [[ -n "$PLAYBOOK_SOURCE" && ! -f "$PLAYBOOK_SOURCE" ]]; then
+  echo "playbook file not found: $PLAYBOOK_SOURCE" >&2
+  exit 1
+fi
+
 for required_key in MYSQL_DSN JWT_SECRET RABBITMQ_URL; do
   if ! grep -q "^${required_key}=." "$CONFIG_SOURCE"; then
     echo "configuration must define a non-empty ${required_key}" >&2

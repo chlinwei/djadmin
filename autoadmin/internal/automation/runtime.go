@@ -32,12 +32,12 @@ import (
 const controllerKeyPrefix = "go:v1:"
 
 type inventoryInput struct {
-	Name               string  `json:"name"`
-	SelectedHostIDs    []int64 `json:"selected_host_ids"`
-	Enabled            *bool   `json:"enabled"`
-	UpdateOnLaunch     *bool   `json:"update_on_launch"`
-	UpdateCacheTimeout *int    `json:"update_cache_timeout"`
-	Remark             string  `json:"remark"`
+	Name               string   `json:"name"`
+	SelectedHostIDs    []int64  `json:"selected_host_ids"`
+	Enabled            *bool    `json:"enabled"`
+	UpdateOnLaunch     *bool    `json:"update_on_launch"`
+	UpdateCacheTimeout *int     `json:"update_cache_timeout"`
+	Remark             *string  `json:"remark"`
 }
 
 type taskInput struct {
@@ -84,8 +84,7 @@ func (handler *Handler) GetInventory(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
-func (handler *Handler) DeleteInventory(context *gin.Context) {
-	id, ok := automationID(context)
+func (handler *Handler) DeleteInventory(context *gin.Context) {	id, ok := automationID(context)
 	if !ok {
 		return
 	}
@@ -102,9 +101,73 @@ func (handler *Handler) DeleteInventory(context *gin.Context) {
 	response.Success(context, gin.H{"id": id})
 }
 
+// inventoryExisting 是 inventory 部分更新时从库中读出的现值快照。
+type inventoryExisting struct {
+	Name               string
+	Remark             sql.NullString
+	SelectedHostIDs    sql.NullString
+	Enabled            bool
+	UpdateOnLaunch     bool
+	UpdateCacheTimeout sql.NullInt64
+}
+
+// resolveInventoryUpdate 实现 PATCH 部分更新合并：未提供的字段保留原值。
+// 合并后 name 仍为空（只可能显式传空名）时返回错误。
+func resolveInventoryUpdate(existing inventoryExisting, input inventoryInput) (inventoryInput, error) {
+	if strings.TrimSpace(input.Name) == "" {
+		input.Name = existing.Name
+	}
+	if input.Remark == nil {
+		value := existing.Remark.String
+		input.Remark = &value
+	}
+	if input.SelectedHostIDs == nil {
+		input.SelectedHostIDs = decodeJSONInt64Array(existing.SelectedHostIDs.String)
+	}
+	if input.Enabled == nil {
+		input.Enabled = &existing.Enabled
+	}
+	if input.UpdateOnLaunch == nil {
+		input.UpdateOnLaunch = &existing.UpdateOnLaunch
+	}
+	if input.UpdateCacheTimeout == nil {
+		if !existing.UpdateCacheTimeout.Valid {
+			input.UpdateCacheTimeout = new(int)
+			*input.UpdateCacheTimeout = 300
+		} else {
+			value := int(existing.UpdateCacheTimeout.Int64)
+			input.UpdateCacheTimeout = &value
+		}
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		return input, errors.New("name is required")
+	}
+	return input, nil
+}
+
 func (handler *Handler) saveInventory(context *gin.Context, id int64) {
 	var input inventoryInput
-	if context.ShouldBindJSON(&input) != nil || strings.TrimSpace(input.Name) == "" {
+	if context.ShouldBindJSON(&input) != nil {
+		automationBadRequest(context, "invalid request body")
+		return
+	}
+	if id != 0 {
+		// 部分更新（PATCH）语义：前端状态开关等场景只传部分字段，未提供的字段保留原值。
+		var existing inventoryExisting
+		scanErr := handler.db.QueryRowContext(context, `SELECT name,remark,selected_host_ids,enabled,update_on_launch,update_cache_timeout FROM automation_inventory WHERE id=?`, id).
+			Scan(&existing.Name, &existing.Remark, &existing.SelectedHostIDs, &existing.Enabled, &existing.UpdateOnLaunch, &existing.UpdateCacheTimeout)
+		if scanErr != nil {
+			automationResourceError(context, scanErr)
+			return
+		}
+		merged, mergeErr := resolveInventoryUpdate(existing, input)
+		if mergeErr != nil {
+			automationBadRequest(context, mergeErr.Error())
+			return
+		}
+		input = merged
+	}
+	if strings.TrimSpace(input.Name) == "" {
 		automationBadRequest(context, "name is required")
 		return
 	}
@@ -128,13 +191,13 @@ func (handler *Handler) saveInventory(context *gin.Context, id int64) {
 	now := time.Now().UTC()
 	var err error
 	if id == 0 {
-		result, createErr := handler.db.ExecContext(context, `INSERT INTO automation_inventory(create_time,update_time,remark,name,selected_host_ids,enabled,update_on_launch,update_cache_timeout,last_sync_status,last_sync_message,last_sync_host_count) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullString(input.Remark), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, "never", "", 0)
+		result, createErr := handler.db.ExecContext(context, `INSERT INTO automation_inventory(create_time,update_time,remark,name,selected_host_ids,enabled,update_on_launch,update_cache_timeout,last_sync_status,last_sync_message,last_sync_host_count) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullString(derefString(input.Remark)), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, "never", "", 0)
 		err = createErr
 		if err == nil {
 			id, _ = result.LastInsertId()
 		}
 	} else {
-		_, err = handler.db.ExecContext(context, `UPDATE automation_inventory SET update_time=?,remark=?,name=?,selected_host_ids=?,enabled=?,update_on_launch=?,update_cache_timeout=? WHERE id=?`, now, nullString(input.Remark), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, id)
+		_, err = handler.db.ExecContext(context, `UPDATE automation_inventory SET update_time=?,remark=?,name=?,selected_host_ids=?,enabled=?,update_on_launch=?,update_cache_timeout=? WHERE id=?`, now, nullString(derefString(input.Remark)), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, id)
 	}
 	if err != nil {
 		response.Error(context, err)

@@ -15,6 +15,25 @@ func marshalJSON(value any) []byte {
 	return encoded
 }
 
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// decodeJSONInt64Array 解析 JSON 数字数组列（如 selected_host_ids），非法内容按空数组处理。
+func decodeJSONInt64Array(raw string) []int64 {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var items []int64
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil
+	}
+	return items
+}
+
 func jsonObject(value any) map[string]any {
 	if object, ok := value.(map[string]any); ok {
 		return object

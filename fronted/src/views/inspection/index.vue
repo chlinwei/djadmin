@@ -34,7 +34,12 @@
           @change="handleTaskTableChange"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'scope'">
+            <template v-if="column.key === 'group_name'">
+              <a-space wrap>
+                <a-tag v-for="group in (record.groups || [])" :key="group.id" :color="group.category === 'application' ? 'purple' : 'green'">{{ group.name }}</a-tag>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'scope'">
               <a-tag :color="record.scope === 'per_deployment' ? 'blue' : 'cyan'">
                 {{ scopeLabel(record.scope) }}
               </a-tag>
@@ -170,7 +175,10 @@
           @change="handleGroupTableChange"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'scope'">
+            <template v-if="column.key === 'category'">
+              <a-tag :color="record.category === 'application' ? 'purple' : 'green'">{{ record.category === 'application' ? (record.application_name ? `应用 · ${record.application_name}` : '应用类型') : '通用' }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'scope'">
               <a-tag :color="record.scope === 'per_host' ? 'gold' : record.scope === 'service_once' ? 'cyan' : 'blue'">{{ scopeLabel(record.scope) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'checks'">
@@ -314,6 +322,24 @@
             <div class="field-hint">范围决定任务选逻辑服务还是主机组，也决定可用变量。</div>
           </a-form-item>
         </div>
+        <div class="form-grid">
+          <a-form-item label="分类">
+            <a-select v-model:value="groupForm.category" :options="groupCategoryOptions" :getPopupContainer="getPopupContainer" />
+            <div class="field-hint">仅用于组织和建议过滤，不做强制约束：通用 = 所有主机适用的基线；应用类型 = 某类应用专属。</div>
+          </a-form-item>
+          <a-form-item v-if="groupForm.category === 'application'" label="适用应用">
+            <a-select
+              v-model:value="groupForm.application"
+              :options="applicationOptions"
+              :getPopupContainer="getPopupContainer"
+              show-search
+              option-filter-prop="label"
+              allow-clear
+              placeholder="建议选择（可选）"
+            />
+            <div class="field-hint">关联应用（跨环境），建任务时用于建议过滤。</div>
+          </a-form-item>
+        </div>
         <a-form-item label="描述"><a-textarea v-model:value="groupForm.description" :rows="2" /></a-form-item>
         <a-alert type="info" show-icon class="variable-hint">
           <template #message>
@@ -405,10 +431,17 @@
       <a-form layout="vertical">
         <a-form-item label="任务名称" required><a-input v-model:value="taskForm.name" /></a-form-item>
         <a-form-item label="巡检组" required>
-          <a-select v-model:value="taskForm.group" :getPopupContainer="getPopupContainer" show-search option-filter-prop="label" @change="handleTaskGroupChange">
-            <a-select-option v-for="group in groupOptions" :key="group.id" :value="group.id" :label="group.name">{{ group.name }}</a-select-option>
-          </a-select>
-          <div class="field-hint">目标类型由巡检组范围决定：{{ selectedTaskGroup ? scopeLabel(selectedTaskGroup.scope) : '请先选择巡检组' }}。</div>
+          <a-select
+            v-model:value="taskForm.groups"
+            mode="multiple"
+            :options="taskGroupSelectOptions"
+            :getPopupContainer="getPopupContainer"
+            show-search
+            option-filter-prop="label"
+            placeholder="通用基线 + 应用专属检查，一次巡完"
+            @change="handleTaskGroupsChange"
+          />
+          <div class="field-hint">可组合多个巡检组（典型：1 个通用 + 1 个应用类型），一次执行全部检查。要求所有组执行范围一致：{{ selectedTaskGroups.length ? `已选 ${scopeLabel(selectedTaskGroups[0].scope)}` : '请先选择巡检组' }}。</div>
         </a-form-item>
         <a-form-item v-if="taskTargetsHostGroup === false" label="项目">
           <a-select
@@ -554,7 +587,7 @@
       <a-collapse v-if="selectedExecution" class="target-results">
         <a-collapse-panel v-for="target in selectedExecution.targets" :key="target.id">
           <template #header>
-            <a-space><a-badge :status="target.passed ? 'success' : 'error'" />{{ target.target_name }}</a-space>
+            <a-space><a-badge :status="target.status === 'skipped' ? 'default' : target.passed ? 'success' : 'error'" />{{ target.target_name }}</a-space>
           </template>
           <a-alert v-if="targetErrorMessage(target)" type="error" :message="targetErrorMessage(target)" show-icon />
           <a-table
@@ -586,6 +619,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
+  getApplicationList,
   getApplicationServiceList,
   getBusinessEnvironmentList,
   getBusinessSystemList,
@@ -629,6 +663,14 @@ const groups = ref([])
 const tasks = ref([])
 // 列表已分页，下拉候选必须另外取全量，否则只能选到第一页的巡检组/任务。
 const groupOptions = ref([])
+const applicationOptions = ref([])
+async function ensureApplicationOptions() {
+  if (applicationOptions.value.length) return
+  try {
+    const records = await fetchAll(getApplicationList)
+    applicationOptions.value = records.map((item) => ({ label: item.name, value: item.id }))
+  } catch { applicationOptions.value = [] }
+}
 const taskOptions = ref([])
 const businessSystems = ref([])
 const businessEnvironments = ref([])
@@ -682,8 +724,9 @@ const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai
 const executionRangePresets = ref([])
 const executionRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
-const emptyGroupForm = () => ({ id: null, name: '', scope: 'per_deployment', description: '', enabled: true, checks: [] })
+const emptyGroupForm = () => ({ id: null, name: '', scope: 'per_deployment', description: '', enabled: true, category: 'general', application: undefined, checks: [] })
 const emptyTaskForm = () => ({
+  groups: [],
   id: null,
   name: '',
   group: undefined,
@@ -718,6 +761,7 @@ const scheduleColumns = [
 ]
 const groupColumns = [
   { title: '巡检组', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '分类', key: 'category', width: 120 },
   { title: '范围', key: 'scope', width: 140 },
   { title: '检查项', key: 'checks', width: 420 },
   { title: '操作', key: 'action', fixed: 'right', width: 120 },
@@ -735,6 +779,7 @@ const executionColumns = [
 ]
 const resultColumns = [
   { title: '检查项', dataIndex: 'name', key: 'name', width: 170 },
+  { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 130 },
   { title: '状态', key: 'status', width: 90 },
   { title: '级别', key: 'severity', width: 80 },
   { title: '期望值', key: 'expected_value', width: 200 },
@@ -802,10 +847,10 @@ const schemaDocumentTypes = {
   schematron: [{ label: 'XML', value: 'xml' }],
   regexp: [{ label: 'Text', value: 'text' }],
 }
-const selectedTaskGroup = computed(() => groupOptions.value.find((group) => group.id === taskForm.group))
+const selectedTaskGroups = computed(() => (taskForm.groups || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean))
 // undefined 表示尚未选巡检组，此时两类目标输入都不展示。
 const taskTargetsHostGroup = computed(() => (
-  selectedTaskGroup.value ? selectedTaskGroup.value.scope === 'per_host' : undefined
+  selectedTaskGroups.value.length ? selectedTaskGroups.value[0].scope === 'per_host' : undefined
 ))
 const groupTargetsHostGroup = computed(() => groupForm.scope === 'per_host')
 const availableVariables = computed(() => (groupTargetsHostGroup.value ? HOST_VARIABLES : DEPLOYMENT_VARIABLES))
@@ -881,6 +926,34 @@ const taskScopePreviewText = computed(() => {
 const responseData = (response) => response?.data?.data || {}
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
+const groupCategoryOptions = [
+  { label: '通用', value: 'general' },
+  { label: '应用类型', value: 'application' },
+]
+const categoryLabel = (category) => (category === 'application' ? '应用类型' : '通用')
+const taskGroupSelectOptions = computed(() => {
+  const pick = (category) => groupOptions.value
+    .filter((group) => (group.category || 'general') === category)
+    .map((group) => ({ label: group.name, value: group.id }))
+  const options = []
+  if (pick('general').length) options.push({ label: '通用巡检组', options: pick('general') })
+  if (pick('application').length) options.push({ label: '应用类型巡检组', options: pick('application') })
+  return options.length ? options : groupOptions.value.map((group) => ({ label: group.name, value: group.id }))
+})
+function handleTaskGroupsChange(nextIDs) {
+  // 所有组必须同 scope 才能组合（后端同样校验）；不一致时提示并回退本次选择。
+  const selected = (nextIDs || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean)
+  if (selected.length > 1 && new Set(selected.map((group) => group.scope)).size > 1) {
+    message.warning('组合的巡检组必须具有相同的执行范围，已撤销本次选择')
+    taskForm.groups = selected.slice(0, -1).map((group) => group.id)
+  }
+  if (taskTargetsHostGroup.value === true) {
+    taskForm.logical_service = undefined
+    return
+  }
+  taskForm.selected_host_ids = []
+  scopeCheckedKeys.value = []
+}
 const scopeLabel = (scope) => ({
   per_deployment: '逻辑服务·每个部署实例',
   service_once: '逻辑服务·服务单次',
@@ -888,8 +961,8 @@ const scopeLabel = (scope) => ({
 }[scope] || scope)
 const executorLabel = (executor) => ({ shell: 'Shell', schema_validate: 'Schema', goss: 'Goss', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
-const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default' }[status] || 'default')
+const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消', skipped: '已跳过' }[status] || status)
+const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default', skipped: 'default' }[status] || 'default')
 const formatValue = (value) => typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '-')
 const rawTargetResults = (target) => (Array.isArray(target.raw_result?.checks) ? target.raw_result.checks : [])
   .filter((check) => check?.key !== 'control')
@@ -1094,6 +1167,7 @@ function confirmRemoveCheck(check, index) {
   })
 }
 function openGroupModal(record) {
+  ensureApplicationOptions()
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
   groupForm.checks = (groupForm.checks || []).map((check) => ({
     ...check,
@@ -1110,6 +1184,8 @@ function openGroupModal(record) {
 }
 function openTaskModal(record) {
   Object.assign(taskForm, emptyTaskForm(), record ? JSON.parse(JSON.stringify(record)) : {})
+  // 编辑时把组对象列表转成 ID 列表；兼容仅返回单组 group 的旧数据。
+  taskForm.groups = (record?.groups?.length ? record.groups.map((group) => group.id) : (record?.group ? [record.group] : []))
   // 旧任务可能仍保存已删除主机，编辑时按当前完整主机树清理，避免隐藏 ID 阻断保存。
   if (hostScopeLoaded.value) {
     taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
@@ -1158,16 +1234,6 @@ function openCreateScheduleModal() {
   Object.assign(scheduleForm, emptyScheduleForm())
   scheduleModalOpen.value = true
 }
-function handleTaskGroupChange() {
-  // 切换巡检组可能改变目标类型，清掉不适用的旧选择。
-  if (taskTargetsHostGroup.value === true) {
-    taskForm.logical_service = undefined
-    return
-  }
-  taskForm.selected_host_ids = []
-  scopeCheckedKeys.value = []
-}
-
 async function submitGroup() {
   if (!groupForm.name.trim() || !groupForm.checks.length || groupForm.checks.some((check) => !check.name.trim())) {
     message.warning('请完整填写巡检组和检查项')
@@ -1211,13 +1277,13 @@ async function submitTask() {
   taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
   const hasScope = (taskForm.selected_host_ids?.length || 0) > 0
   const hasTarget = taskTargetsHostGroup.value ? hasScope : taskForm.logical_service
-  if (!taskForm.name.trim() || !taskForm.group || !hasTarget) {
+  if (!taskForm.name.trim() || !taskForm.groups?.length || !hasTarget) {
     message.warning('请完整填写任务信息')
     return
   }
   savingTask.value = true
   try {
-    const payload = { ...taskForm }
+    const payload = { ...taskForm, group: taskForm.groups[0] }
     if (taskTargetsHostGroup.value) payload.logical_service = null
     else payload.selected_host_ids = []
     await saveInspectionTask(payload)

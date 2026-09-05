@@ -505,14 +505,16 @@ type InspectionExecution struct {
 }
 
 type InspectionGroup struct {
-	ID          int64          `json:"id"`
-	CreateTime  time.Time      `json:"create_time"`
-	UpdateTime  time.Time      `json:"update_time"`
-	Remark      sql.NullString `json:"remark"`
-	Name        string         `json:"name"`
-	Scope       string         `json:"scope"`
-	Description string         `json:"description"`
-	Enabled     bool           `json:"enabled"`
+	ID            int64          `json:"id"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Scope         string         `json:"scope"`
+	Description   string         `json:"description"`
+	Enabled       bool           `json:"enabled"`
+	Category      string         `json:"category"`
+	ApplicationID sql.NullInt64  `json:"application_id"`
 }
 
 type InspectionResult struct {
@@ -529,6 +531,8 @@ type InspectionResult struct {
 	Message       string          `json:"message"`
 	TargetID      int64           `json:"target_id"`
 	Severity      string          `json:"severity"`
+	GroupID       sql.NullInt64   `json:"group_id"`
+	GroupName     string          `json:"group_name"`
 }
 
 type InspectionTargetExecution struct {
@@ -567,6 +571,12 @@ type InspectionTask struct {
 	NextRunTime      sql.NullTime    `json:"next_run_time"`
 	InspectionName   string          `json:"inspection_name"`
 	SelectedHostIds  json.RawMessage `json:"selected_host_ids"`
+}
+
+type InspectionTaskGroup struct {
+	ID      int64 `json:"id"`
+	TaskID  int64 `json:"task_id"`
+	GroupID int64 `json:"group_id"`
 }
 
 type MonitorAlertHistory struct {

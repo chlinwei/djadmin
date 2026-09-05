@@ -61,7 +61,7 @@ func TestValidateTaskPropagatesHostCountError(t *testing.T) {
 }
 
 func validPerHostTaskState(hostIDs []int64) taskState {
-	return taskState{Name: "task", InspectionName: "inspection", GroupID: 1, SelectedHostIDs: hostIDs, Concurrency: 10, TimeoutSeconds: 60}
+	return taskState{Name: "task", InspectionName: "inspection", GroupIDs: []int64{1}, SelectedHostIDs: hostIDs, Concurrency: 10, TimeoutSeconds: 60}
 }
 
 func testGinContext() *gin.Context {

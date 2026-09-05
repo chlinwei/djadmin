@@ -1,6 +1,7 @@
 package inspection
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -17,14 +18,17 @@ import (
 // 从根上不用再靠列名猜。
 
 type inspectionGroupResponse struct {
-	ID          int64                     `json:"id"`
-	Name        string                    `json:"name"`
-	Scope       string                    `json:"scope"`
-	Description string                    `json:"description"`
-	Enabled     bool                      `json:"enabled"`
-	CreateTime  time.Time                 `json:"create_time"`
-	UpdateTime  time.Time                 `json:"update_time"`
-	Checks      []inspectionCheckResponse `json:"checks"`
+	ID              int64                     `json:"id"`
+	Name            string                    `json:"name"`
+	Scope           string                    `json:"scope"`
+	Description     string                    `json:"description"`
+	Enabled         bool                      `json:"enabled"`
+	Category        string                    `json:"category"`
+	Application     *int64                    `json:"application"`
+	ApplicationName string                    `json:"application_name"`
+	CreateTime      time.Time                 `json:"create_time"`
+	UpdateTime      time.Time                 `json:"update_time"`
+	Checks          []inspectionCheckResponse `json:"checks"`
 }
 
 type inspectionCheckResponse struct {
@@ -65,7 +69,9 @@ func (handler *Handler) loadGroup(context *gin.Context, id int64) (inspectionGro
 	}
 	return inspectionGroupResponse{
 		ID: group.ID, Name: group.Name, Scope: group.Scope, Description: group.Description,
-		Enabled: group.Enabled, CreateTime: group.CreateTime, UpdateTime: group.UpdateTime, Checks: checks,
+		Enabled: group.Enabled, Category: group.Category, Application: nullableInt64(group.Application),
+		ApplicationName: group.ApplicationName,
+		CreateTime:      group.CreateTime, UpdateTime: group.UpdateTime, Checks: checks,
 	}, nil
 }
 
@@ -96,7 +102,9 @@ func (handler *Handler) ListGroups(context *gin.Context) {
 		}
 		items = append(items, inspectionGroupResponse{
 			ID: row.ID, Name: row.Name, Scope: row.Scope, Description: row.Description,
-			Enabled: row.Enabled, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Checks: checks,
+			Enabled: row.Enabled, Category: row.Category, Application: nullableInt64(row.Application),
+			ApplicationName: row.ApplicationName,
+			CreateTime:      row.CreateTime, UpdateTime: row.UpdateTime, Checks: checks,
 		})
 	}
 	response.Paginated(context, items, count, int32(page), int32(size))
@@ -105,31 +113,63 @@ func (handler *Handler) ListGroups(context *gin.Context) {
 // ---- inspection_task ----
 
 type inspectionTaskResponse struct {
-	ID                 int64      `json:"id"`
-	Name               string     `json:"name"`
-	InspectionName     string     `json:"inspection_name"`
-	Group              int64      `json:"group"`
-	GroupName          string     `json:"group_name"`
-	Scope              string     `json:"scope"`
-	LogicalService     *int64     `json:"logical_service"`
-	LogicalServiceName string     `json:"logical_service_name"`
-	SelectedHostIDs    []int64    `json:"selected_host_ids"`
-	Concurrency        int64      `json:"concurrency"`
-	TimeoutSeconds     int64      `json:"timeout_seconds"`
-	CronExpression     string     `json:"cron_expression"`
-	NextRunTime        *time.Time `json:"next_run_time"`
-	LastRunTime        *time.Time `json:"last_run_time"`
-	Enabled            bool       `json:"enabled"`
-	CreateTime         time.Time  `json:"create_time"`
-	UpdateTime         time.Time  `json:"update_time"`
-	TargetType         string     `json:"target_type"`
-	TargetName         string     `json:"target_name"`
+	ID                 int64           `json:"id"`
+	Name               string          `json:"name"`
+	InspectionName     string          `json:"inspection_name"`
+	Group              int64           `json:"group"`
+	GroupName          string          `json:"group_name"`
+	Groups             []taskGroupItem `json:"groups"`
+	Scope              string          `json:"scope"`
+	LogicalService     *int64          `json:"logical_service"`
+	LogicalServiceName string          `json:"logical_service_name"`
+	SelectedHostIDs    []int64         `json:"selected_host_ids"`
+	Concurrency        int64           `json:"concurrency"`
+	TimeoutSeconds     int64           `json:"timeout_seconds"`
+	CronExpression     string          `json:"cron_expression"`
+	NextRunTime        *time.Time      `json:"next_run_time"`
+	LastRunTime        *time.Time      `json:"last_run_time"`
+	Enabled            bool            `json:"enabled"`
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	TargetType         string          `json:"target_type"`
+	TargetName         string          `json:"target_name"`
 }
 
 func decodeInt64Array(raw json.RawMessage) []int64 {
 	var decoded []int64
 	if json.Unmarshal(raw, &decoded) != nil {
 		return nil
+	}
+	return decoded
+}
+
+func nullableInt64(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
+}
+
+type taskGroupItem struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Scope    string `json:"scope"`
+	Category string `json:"category"`
+}
+
+func decodeTaskGroups(raw any) []taskGroupItem {
+	var decoded []taskGroupItem
+	switch value := raw.(type) {
+	case []byte:
+		if json.Unmarshal(value, &decoded) != nil {
+			return []taskGroupItem{}
+		}
+	case string:
+		if json.Unmarshal([]byte(value), &decoded) != nil {
+			return []taskGroupItem{}
+		}
+	default:
+		return []taskGroupItem{}
 	}
 	return decoded
 }
@@ -158,7 +198,8 @@ func inspectionTaskResponseFrom(row db.ListInspectionTasksTypedRow) inspectionTa
 	}
 	return inspectionTaskResponse{
 		ID: row.ID, Name: row.Name, InspectionName: row.InspectionName, Group: row.Group, GroupName: row.GroupName,
-		Scope: row.Scope, LogicalService: logicalService, LogicalServiceName: row.LogicalServiceName,
+		Groups: decodeTaskGroups(row.Groups),
+		Scope:  row.Scope, LogicalService: logicalService, LogicalServiceName: row.LogicalServiceName,
 		SelectedHostIDs: hostIDs, Concurrency: int64(row.Concurrency), TimeoutSeconds: int64(row.TimeoutSeconds),
 		CronExpression: row.CronExpression, NextRunTime: nextRunTime, LastRunTime: lastRunTime, Enabled: row.Enabled,
 		CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, TargetType: targetType, TargetName: targetName,

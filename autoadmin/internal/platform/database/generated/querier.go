@@ -112,6 +112,7 @@ type Querier interface {
 	GetHostGroup(ctx context.Context, id int64) (GetHostGroupRow, error)
 	GetInspectionExecutionTyped(ctx context.Context, id int64) (GetInspectionExecutionTypedRow, error)
 	GetInspectionGroup(ctx context.Context, id int64) (GetInspectionGroupRow, error)
+	GetInspectionServiceBusinessChain(ctx context.Context, serviceID int64) (GetInspectionServiceBusinessChainRow, error)
 	GetInspectionTask(ctx context.Context, id int64) (GetInspectionTaskRow, error)
 	GetInventoryTyped(ctx context.Context, id int64) (AutomationInventory, error)
 	GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, error)
@@ -147,6 +148,7 @@ type Querier interface {
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
 	ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
+	ListHostBusinessChains(ctx context.Context, hostIds []int64) ([]ListHostBusinessChainsRow, error)
 	ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
 	ListHostScopeTreeHosts(ctx context.Context) ([]ListHostScopeTreeHostsRow, error)
@@ -159,6 +161,7 @@ type Querier interface {
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 	ListInspectionResultsByTarget(ctx context.Context, targetID int64) ([]ListInspectionResultsByTargetRow, error)
 	ListInspectionTargetExecutions(ctx context.Context, executionID int64) ([]ListInspectionTargetExecutionsRow, error)
+	ListInspectionTaskGroupIDs(ctx context.Context, taskID int64) ([]int64, error)
 	ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error)
 	ListInstallHistories(ctx context.Context, arg ListInstallHistoriesParams) ([]ListInstallHistoriesRow, error)
 	ListInventoriesTyped(ctx context.Context, arg ListInventoriesTypedParams) ([]AutomationInventory, error)

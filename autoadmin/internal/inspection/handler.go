@@ -3,19 +3,38 @@ package inspection
 import (
 	"database/sql"
 	"strconv"
+	"sync"
 
 	"autoadmin/internal/agent"
 
 	"github.com/gin-gonic/gin"
 )
 
+// maxGlobalConcurrentTargets caps in-flight Agent executions across ALL running
+// inspection executions, so two large tasks cannot double the fan-out.
+const maxGlobalConcurrentTargets = 200
+
 type Handler struct {
 	db      *sql.DB
 	gateway *agent.Gateway
+	// canceled holds execution IDs cancelled after dispatch; Agent responses
+	// arriving afterwards are dropped without hitting the database.
+	canceled sync.Map
+	// globalSlots caps concurrent targets across all executions (see maxGlobalConcurrentTargets).
+	globalSlots chan struct{}
 }
 
 func NewHandler(db *sql.DB, gateway *agent.Gateway) *Handler {
-	return &Handler{db: db, gateway: gateway}
+	return &Handler{db: db, gateway: gateway, globalSlots: make(chan struct{}, maxGlobalConcurrentTargets)}
+}
+
+func (handler *Handler) markCanceled(executionID int64) {
+	handler.canceled.Store(executionID, struct{}{})
+}
+
+func (handler *Handler) isCanceled(executionID int64) bool {
+	_, canceled := handler.canceled.Load(executionID)
+	return canceled
 }
 
 func parseID(value string) int64 {

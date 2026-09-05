@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -183,6 +184,33 @@ func releaseGossBinary(releaseDir string, data []byte) (string, error) {	target 
 //   - run_user: 执行用户，留空默认 root，走与巡检 shell 一致的降权语义
 //   - environment: 注入的环境变量（KEY=VALUE 列表或对象），goss 进程及其 command 资源均可见
 
+// goss 路径进程级缓存：ensureGossBinary 每次要读内嵌二进制 + 两次 SHA256，
+// 一个目标几十个检查项时是纯开销。首次校验成功后缓存候选路径，执行被拒
+// （文件被删/权限变化）时整体失效，下次重新校验。
+var (
+	gossCacheMutex  sync.Mutex
+	gossCachedPaths []string
+)
+
+func cachedGossBinary() ([]string, error) {
+	gossCacheMutex.Lock()
+	defer gossCacheMutex.Unlock()
+	if len(gossCachedPaths) > 0 {
+		return gossCachedPaths, nil
+	}
+	paths, err := ensureGossBinary()
+	if err == nil {
+		gossCachedPaths = paths
+	}
+	return paths, err
+}
+
+func invalidateGossBinaryCache() {
+	gossCacheMutex.Lock()
+	gossCachedPaths = nil
+	gossCacheMutex.Unlock()
+}
+
 func (e *Executor) checkGoss(ctx context.Context, check map[string]any) applicationCheckResult {
 	spec := valueString(check["spec"])
 	if strings.TrimSpace(spec) == "" {
@@ -210,7 +238,7 @@ func (e *Executor) checkGoss(ctx context.Context, check map[string]any) applicat
 	// goss 必须以目标用户身份运行：进程/文件/用户组类资源按该用户的视角采集。
 	// 一个候选路径执行被拒（权限位/noexec/SELinux）时自动换下一个目录重试，
 	// 全部失败时把每个候选的诊断信息（权限位、noexec、SELinux）带进错误消息。
-	candidatePaths, err := ensureGossBinary()
+	candidatePaths, err := cachedGossBinary()
 	if err != nil {
 		return newPlanCheckResult(check, "error", nil, err.Error())
 	}
@@ -240,6 +268,9 @@ func (e *Executor) checkGoss(ctx context.Context, check map[string]any) applicat
 	}
 
 	// goss 退出码：0=全部通过，1=有失败，3=超时，其他=运行错误；JSON 起 parse 判真实原因。
+	if !executed {
+		invalidateGossBinaryCache()
+	}
 	var gossOutput gossJSONOutput
 	parseErr := json.Unmarshal([]byte(stdout.String()), &gossOutput)
 	if parseErr != nil {

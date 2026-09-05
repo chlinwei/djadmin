@@ -11,6 +11,8 @@ CREATE TABLE `inspection_group` (
   `scope` varchar(24) NOT NULL,
   `description` longtext NOT NULL,
   `enabled` BOOLEAN NOT NULL,
+  `category` varchar(16) NOT NULL DEFAULT 'general',
+  `application_id` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 );
@@ -54,6 +56,14 @@ CREATE TABLE `inspection_task` (
   CONSTRAINT `inspection_task_group_fk` FOREIGN KEY (`group_id`) REFERENCES `inspection_group` (`id`)
 );
 
+CREATE TABLE `inspection_task_group` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_id` bigint NOT NULL,
+  `group_id` bigint NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_inspection_task_group` (`task_id`,`group_id`)
+);
+
 CREATE TABLE `inspection_execution` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `create_time` datetime(6) NOT NULL,
@@ -89,6 +99,8 @@ CREATE TABLE `inspection_result` (
   `message` longtext NOT NULL,
   `target_id` bigint NOT NULL,
   `severity` varchar(16) NOT NULL,
+  `group_id` bigint DEFAULT NULL,
+  `group_name` varchar(128) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
   CONSTRAINT `inspection_result_target_fk` FOREIGN KEY (`target_id`) REFERENCES `inspection_target_execution` (`id`)
 );

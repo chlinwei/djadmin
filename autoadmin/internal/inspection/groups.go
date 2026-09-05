@@ -16,6 +16,8 @@ type groupInput struct {
 	Scope       *string       `json:"scope"`
 	Description *string       `json:"description"`
 	Enabled     *bool         `json:"enabled"`
+	Category    *string       `json:"category"`
+	Application *int64        `json:"application"`
 	Checks      *[]checkInput `json:"checks"`
 }
 
@@ -63,14 +65,18 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 			response.BusinessError(context, 400, "名称和执行范围不能为空", nil)
 			return
 		}
-		description, enabled := "", true
+		description, enabled, category := "", true, groupCategory(input.Category, "general")
 		if input.Description != nil {
 			description = *input.Description
 		}
 		if input.Enabled != nil {
 			enabled = *input.Enabled
 		}
-		result, execErr := transaction.ExecContext(context, `INSERT INTO inspection_group(name,scope,description,enabled,create_time,update_time) VALUES(?,?,?,?,NOW(),NOW())`, strings.TrimSpace(*input.Name), *input.Scope, description, enabled)
+		if message, valid := handler.validateGroupApplication(context, input.Application, category); !valid {
+			response.BusinessError(context, 400, message, nil)
+			return
+		}
+		result, execErr := transaction.ExecContext(context, `INSERT INTO inspection_group(name,scope,description,enabled,category,application_id,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, strings.TrimSpace(*input.Name), *input.Scope, description, enabled, category, nullableIDPtr(input.Application))
 		if execErr != nil {
 			response.BusinessError(context, 400, "巡检组名称已存在", nil)
 			return
@@ -88,7 +94,13 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 			response.BusinessError(context, 400, "巡检组已被任务引用，不能在“逻辑服务”与“主机组”之间切换范围，请新建巡检组", nil)
 			return
 		}
-		_, err = transaction.ExecContext(context, `UPDATE inspection_group SET name=COALESCE(?,name),scope=COALESCE(?,scope),description=COALESCE(?,description),enabled=COALESCE(?,enabled),update_time=NOW() WHERE id=?`, input.Name, input.Scope, input.Description, input.Enabled, id)
+		if input.Category != nil {
+			if message, valid := handler.validateGroupApplication(context, input.Application, *input.Category); !valid {
+				response.BusinessError(context, 400, message, nil)
+				return
+			}
+		}
+		_, err = transaction.ExecContext(context, `UPDATE inspection_group SET name=COALESCE(?,name),scope=COALESCE(?,scope),description=COALESCE(?,description),enabled=COALESCE(?,enabled),category=COALESCE(?,category),application_id=COALESCE(?,application_id),update_time=NOW() WHERE id=?`, input.Name, input.Scope, input.Description, input.Enabled, input.Category, nullableIDPtr(input.Application), id)
 	}
 	if err != nil {
 		response.Error(context, err)
@@ -175,6 +187,9 @@ func validateGroupInput(input groupInput) string {
 	if input.Scope != nil && !map[string]bool{"per_deployment": true, "service_once": true, "per_host": true}[*input.Scope] {
 		return "执行范围无效"
 	}
+	if input.Category != nil && !map[string]bool{"general": true, "application": true}[*input.Category] {
+		return "巡检组分类无效，仅支持通用（general）或应用类型（application）"
+	}
 	if input.Checks == nil {
 		return ""
 	}
@@ -220,4 +235,34 @@ func containsApplicationVariable(value any) bool {
 		}
 	}
 	return false
+}
+
+func groupCategory(input *string, fallback string) string {
+	if input == nil || *input == "" {
+		return fallback
+	}
+	return *input
+}
+
+// validateGroupApplication 校验应用类型组的应用标签（可选，不强制拦截）：
+// 填了就必须指向真实存在的应用。
+func (handler *Handler) validateGroupApplication(context *gin.Context, application *int64, category string) (string, bool) {
+	if category != "application" || application == nil || *application <= 0 {
+		return "", true
+	}
+	var count int
+	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application WHERE id=?`, *application).Scan(&count); err != nil {
+		return "校验应用标签失败", false
+	}
+	if count == 0 {
+		return "应用标签指向的应用不存在", false
+	}
+	return "", true
+}
+
+func nullableIDPtr(value *int64) any {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	return *value
 }

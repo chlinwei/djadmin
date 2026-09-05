@@ -296,6 +296,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	deployments.DELETE("/:id/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.DeleteApplicationDeployment)
 
 	inspectionHandler := inspection.NewHandler(database, gateway)
+	// Cron-configured inspection tasks are dispatched from the API process because
+	// executions go through the in-process Agent gateway.
+	inspectionHandler.StartScheduler()
 	inspectionGroups := engine.Group("/sys/inspection/groups", middleware.Authenticate(tokens))
 	inspectionGroups.GET("/", middleware.RequirePermission("inspection:view"), inspectionHandler.ListGroups)
 	inspectionGroups.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetGroup)

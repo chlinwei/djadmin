@@ -1,6 +1,7 @@
 package inspection
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -146,25 +147,18 @@ func (handler *Handler) GetExecution(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	resultsByTarget, err := handler.listExecutionResults(context, id)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 	targets := make([]inspectionTargetExecutionResponse, 0, len(targetRows))
 	for _, row := range targetRows {
-		targets = append(targets, inspectionTargetExecutionDTO(row))
-	}
-	for index := range targets {
-		resultRows, resultErr := queries.ListInspectionResultsByTarget(context, targets[index].ID)
-		if resultErr != nil {
-			response.Error(context, resultErr)
-			return
+		target := inspectionTargetExecutionDTO(row)
+		if results, ok := resultsByTarget[target.ID]; ok {
+			target.Results = results
 		}
-		results := make([]inspectionResultResponse, 0, len(resultRows))
-		for _, resultRow := range resultRows {
-			results = append(results, inspectionResultResponse{
-				ID: resultRow.ID, CheckKey: resultRow.CheckKey, CheckType: resultRow.CheckType, Name: resultRow.Name,
-				Status: resultRow.Status, Severity: resultRow.Severity, ExpectedValue: resultRow.ExpectedValue,
-				ActualValue: resultRow.ActualValue, Message: resultRow.Message,
-			})
-		}
-		targets[index].Results = results
+		targets = append(targets, target)
 	}
 	var task *int64
 	if execution.Task.Valid {
@@ -192,6 +186,8 @@ type inspectionResultResponse struct {
 	Name          string          `json:"name"`
 	Status        string          `json:"status"`
 	Severity      string          `json:"severity"`
+	GroupID       *int64          `json:"group_id"`
+	GroupName     string          `json:"group_name"`
 	ExpectedValue json.RawMessage `json:"expected_value"`
 	ActualValue   json.RawMessage `json:"actual_value"`
 	Message       string          `json:"message"`
@@ -238,6 +234,31 @@ func inspectionTargetExecutionDTO(row db.ListInspectionTargetExecutionsRow) insp
 	return result
 }
 
+// listExecutionResults loads all check results of one execution in a single
+// query (grouped by target) instead of one query per target, which made large
+// executions pay hundreds of round-trips per detail request.
+func (handler *Handler) listExecutionResults(ctx context.Context, executionID int64) (map[int64][]inspectionResultResponse, error) {
+	rows, err := handler.db.QueryContext(ctx, `SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,r.expected_value,r.actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id`, executionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make(map[int64][]inspectionResultResponse)
+	for rows.Next() {
+		var targetID int64
+		var item inspectionResultResponse
+		var groupID sql.NullInt64
+		if err = rows.Scan(&item.ID, &targetID, &item.CheckKey, &item.CheckType, &item.Name, &item.Status, &item.Severity, &groupID, &item.GroupName, &item.ExpectedValue, &item.ActualValue, &item.Message); err != nil {
+			return nil, err
+		}
+		if groupID.Valid {
+			item.GroupID = &groupID.Int64
+		}
+		results[targetID] = append(results[targetID], item)
+	}
+	return results, rows.Err()
+}
+
 func (handler *Handler) CancelExecution(context *gin.Context) {
 	id := parseID(context.Param("id"))
 	transaction, err := handler.db.BeginTx(context, nil)
@@ -272,6 +293,9 @@ func (handler *Handler) CancelExecution(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	// The Agent protocol has no cancel frame: cancellation is persisted above and
+	// mirrored in memory so in-flight Agent responses are dropped without DB checks.
+	handler.markCanceled(id)
 	response.Success(context, gin.H{"id": id, "status": "canceled"})
 }
 

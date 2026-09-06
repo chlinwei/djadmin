@@ -151,7 +151,6 @@ type Querier interface {
 	ListHostBusinessChains(ctx context.Context, hostIds []int64) ([]ListHostBusinessChainsRow, error)
 	ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
-	ListHostScopeTreeHosts(ctx context.Context) ([]ListHostScopeTreeHostsRow, error)
 	// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
 	// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
 	ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error)
@@ -161,6 +160,7 @@ type Querier interface {
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 	ListInspectionResultsByTarget(ctx context.Context, targetID int64) ([]ListInspectionResultsByTargetRow, error)
 	ListInspectionTargetExecutions(ctx context.Context, executionID int64) ([]ListInspectionTargetExecutionsRow, error)
+	ListInspectionTaskBindings(ctx context.Context, taskID int64) ([]ListInspectionTaskBindingsRow, error)
 	ListInspectionTaskGroupIDs(ctx context.Context, taskID int64) ([]int64, error)
 	ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error)
 	ListInstallHistories(ctx context.Context, arg ListInstallHistoriesParams) ([]ListInstallHistoriesRow, error)
@@ -177,6 +177,14 @@ type Querier interface {
 	// managed_enabled 是 monitor_target 表里 TINYINT(1) 列，schema 里已按约定标成 BOOLEAN，
 	// 这里生成的 struct 字段就是真正的 Go bool，取代 monitor 包里手写的 map[string]any 扫描。
 	ListMonitorTargetsByHost(ctx context.Context, arg ListMonitorTargetsByHostParams) ([]ListMonitorTargetsByHostRow, error)
+	// 挂载点解析：应用组@业务(×环境) → 部署实例（每个逻辑服务独立目标，变量各自展开）。
+	ListMountBusinessInstances(ctx context.Context, arg ListMountBusinessInstancesParams) ([]ListMountBusinessInstancesRow, error)
+	// 挂载点解析：通用组@环境 → 项目×环境下的实例主机（去重）。
+	ListMountProjectEnvironmentHosts(ctx context.Context, arg ListMountProjectEnvironmentHostsParams) ([]ListMountProjectEnvironmentHostsRow, error)
+	// 挂载点解析：通用组@项目 → 项目下全部实例主机（去重）。
+	ListMountProjectHosts(ctx context.Context, projectID sql.NullInt64) ([]ListMountProjectHostsRow, error)
+	// 挂载点解析：应用组@逻辑服务 → 该服务的部署实例（精确绑定）。
+	ListMountServiceInstances(ctx context.Context, serviceID int64) ([]ListMountServiceInstancesRow, error)
 	ListOpenSearchClustersTyped(ctx context.Context, arg ListOpenSearchClustersTypedParams) ([]MonitorOpensearchCluster, error)
 	ListOperationAudits(ctx context.Context, arg ListOperationAuditsParams) ([]AuditOperationLog, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)

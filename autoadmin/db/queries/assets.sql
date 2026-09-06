@@ -277,7 +277,8 @@ DELETE FROM assets_cluster_profile WHERE id=?;
 -- name: CountDeploymentTemplates :one
 SELECT COUNT(*) FROM assets_application_deployment_template t
 JOIN assets_application a ON a.id=t.application_id
-WHERE (? = '' OR t.name LIKE ? OR a.name LIKE ?);
+WHERE (sqlc.narg(application_id) IS NULL OR t.application_id = sqlc.narg(application_id))
+  AND (? = '' OR t.name LIKE ? OR a.name LIKE ?);
 
 -- name: ListDeploymentTemplates :many
 SELECT t.*, a.name AS application_name,
@@ -285,9 +286,11 @@ SELECT t.*, a.name AS application_name,
   (SELECT COUNT(*) FROM assets_application_path p WHERE p.deployment_template_id=t.id) AS path_count,
   (SELECT COUNT(*) FROM assets_application_config_file f WHERE f.deployment_template_id=t.id) AS config_file_count,
   (SELECT COUNT(*) FROM assets_application_log_definition l WHERE l.deployment_template_id=t.id) AS log_count,
-  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count
+  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count,
+  (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id=t.id) AS service_count
 FROM assets_application_deployment_template t JOIN assets_application a ON a.id=t.application_id
-WHERE (? = '' OR t.name LIKE ? OR a.name LIKE ?)
+WHERE (sqlc.narg(application_id) IS NULL OR t.application_id = sqlc.narg(application_id))
+  AND (? = '' OR t.name LIKE ? OR a.name LIKE ?)
 ORDER BY t.application_id, t.id DESC LIMIT ? OFFSET ?;
 
 -- name: GetDeploymentTemplate :one
@@ -296,6 +299,7 @@ SELECT t.*, a.name AS application_name,
   (SELECT COUNT(*) FROM assets_application_path p WHERE p.deployment_template_id=t.id) AS path_count,
   (SELECT COUNT(*) FROM assets_application_config_file f WHERE f.deployment_template_id=t.id) AS config_file_count,
   (SELECT COUNT(*) FROM assets_application_log_definition l WHERE l.deployment_template_id=t.id) AS log_count,
-  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count
+  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count,
+  (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id=t.id) AS service_count
 FROM assets_application_deployment_template t JOIN assets_application a ON a.id=t.application_id
 WHERE t.id=? LIMIT 1;

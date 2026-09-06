@@ -24,17 +24,28 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 	defer database.Close()
 
 	task := runTask{
-		ID: 5, Name: "task", Scope: "service_once", ServiceID: 9, ServiceName: "svc",
+		ID: 5, Name: "task",
 		Concurrency: 10, Timeout: 60,
-		Groups: []runGroup{{
-			ID: 1, Name: "group-a", Scope: "service_once", Category: "general",
-			Checks: []runCheck{{Name: "check-1", Executor: "goss", Severity: "critical"}},
+		Bindings: []mountBinding{{
+			runGroup: runGroup{
+				ID: 1, Name: "group-a", Category: "application",
+				Checks: []runCheck{{Name: "check-1", Executor: "goss", Severity: "critical"}},
+			},
+			MountType: mountService, ServiceID: sql.NullInt64{Int64: 9, Valid: true},
 		}},
 	}
 	targets := []runTarget{{Name: "target-1", AgentID: "agent-1"}}
 
 	mock.ExpectBegin()
 	// status 恒为字面量 'pending'，trigger_type 才是参数——占位符错位的回归锚点。
+	// mountTargetName：服务名 + 业务链路（Begin 后、快照构建时查库）
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id=?`)).
+		WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("artemis"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT s.id AS service_id, b.id AS business_system_id`)).
+		WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "business_system_name", "business_system_owner", "project_id", "project_name", "project_owner", "environment_id", "environment_name"}).
+			AddRow(9, 7, "cdm", "", 1, "kul", "", 1, "test"))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO inspection_execution(task_id,status,trigger_type,")).
 		WithArgs(int64(5), "manual", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int32(7), "ops").
 		WillReturnResult(sqlmock.NewResult(201, 1))
@@ -79,7 +90,7 @@ func TestListExecutionResultsMapsGroupColumns(t *testing.T) {
 	}
 	defer database.Close()
 
-	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,r.expected_value,r.actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
+	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
 	mock.ExpectQuery(query).WithArgs(int64(201)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
 			AddRow(1, 301, "inspection:201:0", "goss", "check-1", "fail", "critical", 1, "group-a", []byte("null"), []byte("null"), "failed").
@@ -145,5 +156,31 @@ func TestBusinessChainSnapshotOmitsEmptyLevels(t *testing.T) {
 	}
 	if businessChainSnapshot(sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{}, "", "", "", "", "") != nil {
 		t.Fatal("fully empty chain should be nil")
+	}
+}
+
+// 手写 SQL 的可空 JSON 列必须 COALESCE 回退 'null' 字面量（jsontext.Value 不接受
+// driver NULL，曾导致执行详情接口 500）。形状断言防再次漏写。
+func TestListExecutionResultsSQLCoalescesNullableJSON(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
+	mock.ExpectQuery(query).WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
+			AddRow(1, 2, "k", "goss", "n", "error", "critical", nil, "", []byte("null"), []byte("null"), "plan error"))
+
+	results, err := (&Handler{db: database}).listExecutionResults(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("listExecutionResults: %v", err)
+	}
+	if len(results[2]) != 1 {
+		t.Fatalf("results = %d, want 1", len(results[2]))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,26 +15,36 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+// groupBindingInput 是「巡检组 → 挂载点」绑定输入。
+type groupBindingInput struct {
+	Group            *int64          `json:"group_id"`
+	MountType        string          `json:"mount_type"`
+	ProjectID        *int64          `json:"project_id"`
+	EnvironmentID    *int64          `json:"environment_id"`
+	BusinessSystemID *int64          `json:"business_system_id"`
+	ServiceID        *int64          `json:"service_id"`
+	InstanceMode     string          `json:"instance_mode"`
+	ParamValues      json.RawMessage `json:"param_values"`
+}
+
 type taskInput struct {
-	Name            *string  `json:"name"`
-	InspectionName  *string  `json:"inspection_name"`
-	Group           *int64   `json:"group"`
-	Groups          *[]int64 `json:"groups"`
-	LogicalService  *int64   `json:"logical_service"`
-	SelectedHostIDs *[]int64 `json:"selected_host_ids"`
-	Concurrency     *int     `json:"concurrency"`
-	TimeoutSeconds  *int     `json:"timeout_seconds"`
-	CronExpression  *string  `json:"cron_expression"`
-	Enabled         *bool    `json:"enabled"`
+	Name           *string              `json:"name"`
+	InspectionName *string              `json:"inspection_name"`
+	Group          *int64               `json:"group"`
+	Groups         *json.RawMessage     `json:"groups"`
+	Bindings       *[]groupBindingInput `json:"bindings"`
+	Concurrency    *int                 `json:"concurrency"`
+	TimeoutSeconds *int                 `json:"timeout_seconds"`
+	CronExpression *string              `json:"cron_expression"`
+	Enabled        *bool                `json:"enabled"`
 }
 
 type taskState struct {
 	Name, InspectionName, CronExpression string
-	// GroupIDs 是任务绑定的全部巡检组（SOP 语义：1 个通用组 + N 个应用组）；
-	// inspection_task.group_id 冗余保存第一个组以兼容旧查询。
+	// Bindings 是任务绑定的「巡检组 → 挂载点」（单组模型至多一项）；
+	// GroupIDs 冗余保存组 ID，inspection_task.group_id 保存该组 ID。
 	GroupIDs                    []int64
-	LogicalServiceID            *int64
-	SelectedHostIDs             []int64
+	Bindings                    []groupBindingInput
 	Concurrency, TimeoutSeconds int
 	Enabled                     bool
 }
@@ -57,23 +68,28 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 		return
 	}
 	id := parseID(context.Param("id"))
-	state := taskState{Concurrency: 20, TimeoutSeconds: 60, Enabled: true, SelectedHostIDs: []int64{}, GroupIDs: []int64{}}
+	state := taskState{Concurrency: 20, TimeoutSeconds: 60, Enabled: true, GroupIDs: []int64{}}
 	if id > 0 {
-		var selectedHostIDs []byte
 		var primaryGroup int64
-		if err := handler.db.QueryRowContext(context, `SELECT name,inspection_name,group_id,logical_service_id,selected_host_ids,concurrency,timeout_seconds,cron_expression,enabled FROM inspection_task WHERE id=?`, id).Scan(&state.Name, &state.InspectionName, &primaryGroup, &state.LogicalServiceID, &selectedHostIDs, &state.Concurrency, &state.TimeoutSeconds, &state.CronExpression, &state.Enabled); err != nil {
+		if err := handler.db.QueryRowContext(context, `SELECT name,inspection_name,group_id,concurrency,timeout_seconds,cron_expression,enabled FROM inspection_task WHERE id=?`, id).Scan(&state.Name, &state.InspectionName, &primaryGroup, &state.Concurrency, &state.TimeoutSeconds, &state.CronExpression, &state.Enabled); err != nil {
 			response.BusinessError(context, 404, "巡检任务不存在", nil)
 			return
 		}
-		if json.Unmarshal(selectedHostIDs, &state.SelectedHostIDs) != nil {
-			response.BusinessError(context, 400, "巡检任务的主机范围数据无效", nil)
-			return
-		}
-		// 现有多组关系优先；存量单组任务回落到 group_id 列。
-		if groupIDs, groupErr := handler.loadTaskGroupIDs(context, id); groupErr == nil && len(groupIDs) > 0 {
-			state.GroupIDs = groupIDs
-		} else if primaryGroup > 0 {
-			state.GroupIDs = []int64{primaryGroup}
+		// 现有绑定优先（带挂载点）；无绑定行的存量任务要求重新选择巡检组。
+		if bindings, bindErr := db.New(handler.db).ListInspectionTaskBindings(context, id); bindErr == nil && len(bindings) > 0 {
+			state.Bindings = make([]groupBindingInput, 0, len(bindings))
+			for _, row := range bindings {
+				state.Bindings = append(state.Bindings, groupBindingInput{
+					Group:            &row.GroupID,
+					MountType:        row.MountType,
+					ProjectID:        nullableInt64Ptr(row.ProjectID),
+					EnvironmentID:    nullableInt64Ptr(row.EnvironmentID),
+					BusinessSystemID: nullableInt64Ptr(row.BusinessSystemID),
+					ServiceID:        nullableInt64Ptr(row.ServiceID),
+					InstanceMode:     row.InstanceMode.String,
+					ParamValues:      row.ParamValues,
+				})
+			}
 		}
 	}
 	mergeTaskInput(&state, input)
@@ -86,24 +102,23 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 		response.BusinessError(context, 400, message, nil)
 		return
 	}
-	hostIDs, _ := json.Marshal(state.SelectedHostIDs)
 	nextRun := nextRunTime(state.CronExpression, state.Enabled)
 	var err error
 	if id == 0 {
-		result, execErr := handler.db.ExecContext(context, `INSERT INTO inspection_task(name,inspection_name,group_id,logical_service_id,selected_host_ids,concurrency,timeout_seconds,cron_expression,next_run_time,last_run_time,enabled,create_time,update_time) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,NOW(),NOW())`, state.Name, state.InspectionName, state.GroupIDs[0], state.LogicalServiceID, hostIDs, state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled)
+		result, execErr := handler.db.ExecContext(context, `INSERT INTO inspection_task(name,inspection_name,group_id,concurrency,timeout_seconds,cron_expression,next_run_time,last_run_time,enabled,create_time,update_time) VALUES(?,?,?,?,?,?,?,NULL,?,NOW(),NOW())`, state.Name, state.InspectionName, state.GroupIDs[0], state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled)
 		if execErr != nil {
 			response.BusinessError(context, 400, "巡检任务名称已存在", nil)
 			return
 		}
 		id, err = result.LastInsertId()
 	} else {
-		_, err = handler.db.ExecContext(context, `UPDATE inspection_task SET name=?,inspection_name=?,group_id=?,logical_service_id=?,selected_host_ids=?,concurrency=?,timeout_seconds=?,cron_expression=?,next_run_time=?,enabled=?,update_time=NOW() WHERE id=?`, state.Name, state.InspectionName, state.GroupIDs[0], state.LogicalServiceID, hostIDs, state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled, id)
+		_, err = handler.db.ExecContext(context, `UPDATE inspection_task SET name=?,inspection_name=?,group_id=?,concurrency=?,timeout_seconds=?,cron_expression=?,next_run_time=?,enabled=?,update_time=NOW() WHERE id=?`, state.Name, state.InspectionName, state.GroupIDs[0], state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled, id)
 	}
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if err = handler.saveTaskGroups(context, id, state.GroupIDs); err != nil {
+	if err = handler.saveTaskGroups(context, id, state.Bindings); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -115,13 +130,8 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 	response.Success(context, item)
 }
 
-// loadTaskGroupIDs 读取任务已绑定的巡检组 ID（按保存顺序）。
-func (handler *Handler) loadTaskGroupIDs(context *gin.Context, taskID int64) ([]int64, error) {
-	return db.New(handler.db).ListInspectionTaskGroupIDs(context, taskID)
-}
-
-// saveTaskGroups 全量重建任务↔巡检组关联。
-func (handler *Handler) saveTaskGroups(context *gin.Context, taskID int64, groupIDs []int64) error {
+// saveTaskGroups 全量重建任务↔巡检组绑定（含挂载点）。
+func (handler *Handler) saveTaskGroups(context *gin.Context, taskID int64, bindings []groupBindingInput) error {
 	transaction, err := handler.db.BeginTx(context, nil)
 	if err != nil {
 		return err
@@ -130,12 +140,34 @@ func (handler *Handler) saveTaskGroups(context *gin.Context, taskID int64, group
 	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_task_group WHERE task_id=?`, taskID); err != nil {
 		return err
 	}
-	for _, groupID := range groupIDs {
-		if _, err = transaction.ExecContext(context, `INSERT INTO inspection_task_group(task_id,group_id) VALUES(?,?)`, taskID, groupID); err != nil {
+	for _, binding := range bindings {
+		if binding.Group == nil {
+			continue
+		}
+		paramValues := binding.ParamValues
+		if len(paramValues) == 0 {
+			paramValues = json.RawMessage("{}")
+		}
+		if _, err = transaction.ExecContext(context, `INSERT INTO inspection_task_group(task_id,group_id,mount_type,project_id,environment_id,business_system_id,service_id,instance_mode,param_values) VALUES(?,?,?,?,?,?,?,?,?)`,
+			taskID, *binding.Group, binding.MountType, nullableIDPtr(binding.ProjectID), nullableIDPtr(binding.EnvironmentID), nullableIDPtr(binding.BusinessSystemID), nullableIDPtr(binding.ServiceID), instanceModeValue(binding.InstanceMode), paramValues); err != nil {
 			return err
 		}
 	}
 	return transaction.Commit()
+}
+
+func instanceModeValue(mode string) any {
+	if mode == "" {
+		return nil
+	}
+	return mode
+}
+
+func nullableInt64Ptr(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
 }
 
 func (handler *Handler) DeleteTask(context *gin.Context) {
@@ -187,17 +219,22 @@ func mergeTaskInput(state *taskState, input taskInput) {
 	if input.InspectionName != nil {
 		state.InspectionName = strings.TrimSpace(*input.InspectionName)
 	}
-	// groups 优先；group 为兼容字段（单组），两者都没提交时保留原值。
-	if input.Groups != nil {
-		state.GroupIDs = uniquePositiveInt64s(*input.Groups)
-	} else if input.Group != nil && *input.Group > 0 {
-		state.GroupIDs = uniquePositiveInt64s([]int64{*input.Group})
-	}
-	if input.LogicalService != nil {
-		state.LogicalServiceID = input.LogicalService
-	}
-	if input.SelectedHostIDs != nil {
-		state.SelectedHostIDs = *input.SelectedHostIDs
+	// bindings（组+挂载点对象）优先；groups 兼容对象数组/ID 数组（须带显式挂载）；
+	// 都没提交时保留原值。
+	switch {
+	case input.Bindings != nil:
+		state.Bindings = make([]groupBindingInput, 0, len(*input.Bindings))
+		for _, binding := range *input.Bindings {
+			if binding.Group != nil && *binding.Group > 0 {
+				state.Bindings = append(state.Bindings, binding)
+			}
+		}
+		state.GroupIDs = bindingGroupIDs(state.Bindings)
+	case input.Groups != nil:
+		state.Bindings = parseGroupBindings([]byte(*input.Groups))
+		state.GroupIDs = bindingGroupIDs(state.Bindings)
+	case input.Group != nil && *input.Group > 0:
+		state.Bindings = []groupBindingInput{{Group: input.Group, MountType: mountProject}}
 	}
 	if input.Concurrency != nil {
 		state.Concurrency = *input.Concurrency
@@ -214,6 +251,10 @@ func mergeTaskInput(state *taskState, input taskInput) {
 }
 
 func (handler *Handler) validateTask(context *gin.Context, state *taskState, validateGroupAvailability bool) (string, error) {
+	// GroupIDs 从 Bindings 派生（直接构造 taskState 的调用方只填 Bindings 也应通过）。
+	if len(state.GroupIDs) == 0 {
+		state.GroupIDs = bindingGroupIDs(state.Bindings)
+	}
 	if state.Name == "" || len(state.GroupIDs) == 0 {
 		return "名称和巡检组不能为空", nil
 	}
@@ -231,77 +272,61 @@ func (handler *Handler) validateTask(context *gin.Context, state *taskState, val
 			return "cron 表达式无效，必须为 5 段：分 时 日 月 周", nil
 		}
 	}
-	// 多组绑定要求所有组 scope 一致：目标解析按 scope 类别走（per_host / 逻辑服务），
-	// 混合 scope 的组无法在一次执行里确定目标。
-	scopes := make([]string, 0, len(state.GroupIDs))
-	enabledGroups := make([]struct {
-		id         int64
-		scope      string
+	// 单组模型：一个任务只绑一个巡检组（在逐绑定查询前拦截）。
+	if len(state.Bindings) > 1 {
+		return "一个巡检任务只绑定一个巡检组；通用基线和应用巡检请分别创建任务", nil
+	}
+	if len(state.GroupIDs) == 0 {
+		state.GroupIDs = bindingGroupIDs(state.Bindings)
+	}
+	if state.Name == "" || len(state.GroupIDs) == 0 {
+		return "名称和巡检组不能为空", nil
+	}
+	// 逐绑定校验：组存在（启用/检查项在显式提交时校验）+ 挂载点规则。
+	type groupMeta struct {
 		enabled    bool
 		checkCount int
-	}, 0, len(state.GroupIDs))
-	for _, groupID := range state.GroupIDs {
-		var scope string
-		var enabled bool
-		var checkCount int
-		err := handler.db.QueryRowContext(context, `SELECT g.scope,g.enabled,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`, groupID).Scan(&scope, &enabled, &checkCount)
+	}
+	metas := make(map[int64]groupMeta, len(state.Bindings))
+	for index := range state.Bindings {
+		binding := &state.Bindings[index]
+		if binding.Group == nil || *binding.Group <= 0 {
+			return "巡检组无效", nil
+		}
+		var meta groupMeta
+		var category string
+		err := handler.db.QueryRowContext(context, `SELECT g.enabled,g.category,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`, *binding.Group).Scan(&meta.enabled, &category, &meta.checkCount)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "巡检组不存在", nil
 		}
 		if err != nil {
 			return "", err
 		}
-		scopes = append(scopes, scope)
-		enabledGroups = append(enabledGroups, struct {
-			id         int64
-			scope      string
-			enabled    bool
-			checkCount int
-		}{groupID, scope, enabled, checkCount})
+		metas[*binding.Group] = meta
+		if binding.MountType == "" {
+			return "挂载范围无效：请通过页面选择巡检对象", nil
+		}
+		if _, message, validateErr := handler.validateMountBinding(context, binding, category); validateErr != nil {
+			return "", validateErr
+		} else if message != "" {
+			return message, nil
+		}
+		if message := validateParamValues(binding.ParamValues, category); message != "" {
+			return message, nil
+		}
+		if missing := handler.missingRequiredParams(context, *binding.Group, binding.ParamValues); missing != "" {
+			return missing, nil
+		}
 	}
-	if len(uniqueStrings(scopes)) > 1 {
-		return "一次巡检组合的巡检组必须具有相同的执行范围", nil
-	}
-	scope := scopes[0]
 	// DRF only runs field-level group validation when PATCH explicitly submits the group.
 	if validateGroupAvailability {
-		for _, group := range enabledGroups {
-			if !group.enabled {
-				return "存在已禁用的巡检组", nil
+		for groupID, meta := range metas {
+			if !meta.enabled {
+				return fmt.Sprintf("巡检组已禁用（组 %d）", groupID), nil
 			}
-			if group.checkCount == 0 {
-				return "巡检组没有启用的检查项", nil
+			if meta.checkCount == 0 {
+				return fmt.Sprintf("巡检组没有启用的检查项（组 %d）", groupID), nil
 			}
-		}
-	}
-	if scope == "per_host" {
-		state.LogicalServiceID = nil
-		state.SelectedHostIDs = uniqueInt64s(state.SelectedHostIDs)
-		if len(state.SelectedHostIDs) == 0 {
-			return "请勾选主机", nil
-		}
-		var count int
-		placeholders, arguments := make([]string, len(state.SelectedHostIDs)), make([]any, len(state.SelectedHostIDs))
-		for index, hostID := range state.SelectedHostIDs {
-			placeholders[index], arguments[index] = "?", hostID
-		}
-		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_host WHERE is_deleted_in_cloud=FALSE AND id IN (`+strings.Join(placeholders, ",")+`)`, arguments...).Scan(&count); err != nil {
-			return "", err
-		}
-		if count != len(state.SelectedHostIDs) {
-			return "勾选主机包含不存在或已删除的主机", nil
-		}
-	} else {
-		state.SelectedHostIDs = []int64{}
-		if state.LogicalServiceID == nil {
-			return "请选择逻辑服务", nil
-		}
-		var count int
-		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_service WHERE id=?`, *state.LogicalServiceID).Scan(&count); err != nil {
-			return "", err
-		}
-		if count == 0 {
-			return "逻辑服务不存在", nil
 		}
 	}
 	return "", nil
@@ -341,6 +366,32 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+// parseGroupBindings 解析 groups 输入（对象数组，须带 mount_type）。
+func parseGroupBindings(raw []byte) []groupBindingInput {
+	bindings := make([]groupBindingInput, 0)
+	var objects []json.RawMessage
+	if json.Unmarshal(raw, &objects) != nil {
+		return bindings
+	}
+	for _, item := range objects {
+		var binding groupBindingInput
+		if json.Unmarshal(item, &binding) == nil && binding.Group != nil && *binding.Group > 0 && binding.MountType != "" {
+			bindings = append(bindings, binding)
+		}
+	}
+	return bindings
+}
+
+func bindingGroupIDs(bindings []groupBindingInput) []int64 {
+	ids := make([]int64, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.Group != nil && *binding.Group > 0 {
+			ids = append(ids, *binding.Group)
+		}
+	}
+	return uniqueInt64s(ids)
 }
 
 func nextRunTime(expression string, enabled bool) any {

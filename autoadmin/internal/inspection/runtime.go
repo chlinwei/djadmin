@@ -18,18 +18,18 @@ import (
 )
 
 type runTask struct {
-	ID, ServiceID            int64
-	Name, Scope, ServiceName string
-	Concurrency, Timeout     int
-	Groups                   []runGroup
-	SelectedHostIDs          []int64
-	Enabled                  bool
+	ID             int64
+	Name           string
+	Concurrency    int
+	Timeout        int
+	Bindings       []mountBinding
+	Enabled        bool
+	MountSummaries []gin.H
 }
 
 type runGroup struct {
 	ID       int64
 	Name     string
-	Scope    string
 	Category string
 	Checks   []runCheck
 }
@@ -50,6 +50,13 @@ type runTarget struct {
 	AgentOnline                        bool
 	AppHome, RunUser, WorkDirectory    string
 	InstanceName, Version, ServiceName string
+	// Macros 是逻辑服务实例化宏（assets_application_service.macro_values，
+	// 如 ORACLE_SID），随部署实例注入检查计划变量展开。
+	Macros map[string]string
+	// CheckSets 是本目标的检查计划分片：[通用组(主机级), 应用组×各逻辑服务实例]。
+	CheckSets []checkSet
+	// ServicesSnapshot 记录本主机涉及的逻辑服务实例（快照用）。
+	ServicesSnapshot []gin.H
 }
 
 type checkResult struct {
@@ -97,9 +104,16 @@ func (handler *Handler) startRun(ctx context.Context, taskID int64, triggerType 
 	if err != nil || message != "" {
 		return 0, message, err
 	}
-	targets, message, err := handler.resolveTargets(ctx, task)
-	if err != nil || message != "" {
-		return 0, message, err
+	targets, err := handler.resolveMounts(ctx, task.Bindings)
+	if err != nil {
+		return 0, "", err
+	}
+	if len(targets) == 0 {
+		return 0, "巡检挂载点没有解析到任何目标", nil
+	}
+	task.MountSummaries = make([]gin.H, 0, len(task.Bindings))
+	for _, binding := range task.Bindings {
+		task.MountSummaries = append(task.MountSummaries, binding.mountSummary())
 	}
 	executionID, err := handler.createExecution(ctx, task, targets, triggerType, userID, username)
 	if err != nil {
@@ -111,8 +125,7 @@ func (handler *Handler) startRun(ctx context.Context, taskID int64, triggerType 
 
 func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, string, error) {
 	var task runTask
-	var selected []byte
-	err := handler.db.QueryRowContext(ctx, `SELECT t.id,t.name,COALESCE(t.logical_service_id,0),t.selected_host_ids,t.concurrency,t.timeout_seconds,t.enabled,COALESCE(s.name,'') FROM inspection_task t LEFT JOIN assets_application_service s ON s.id=t.logical_service_id WHERE t.id=?`, id).Scan(&task.ID, &task.Name, &task.ServiceID, &selected, &task.Concurrency, &task.Timeout, &task.Enabled, &task.ServiceName)
+	err := handler.db.QueryRowContext(ctx, `SELECT t.id,t.name,t.concurrency,t.timeout_seconds,t.enabled FROM inspection_task t WHERE t.id=?`, id).Scan(&task.ID, &task.Name, &task.Concurrency, &task.Timeout, &task.Enabled)
 	if err == sql.ErrNoRows {
 		return task, "巡检任务不存在", nil
 	}
@@ -122,124 +135,52 @@ func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, 
 	if !task.Enabled {
 		return task, "巡检任务已禁用", nil
 	}
-	if err = json.Unmarshal(selected, &task.SelectedHostIDs); err != nil {
-		return task, "巡检任务的主机范围数据无效", nil
-	}
-	groupIDs, err := db.New(handler.db).ListInspectionTaskGroupIDs(ctx, task.ID)
+	bindingRows, err := db.New(handler.db).ListInspectionTaskBindings(ctx, task.ID)
 	if err != nil {
 		return task, "", err
 	}
-	if len(groupIDs) == 0 {
+	if len(bindingRows) == 0 {
 		return task, "巡检任务没有绑定巡检组", nil
 	}
 	queries := db.New(handler.db)
-	task.Groups = make([]runGroup, 0, len(groupIDs))
+	task.Bindings = make([]mountBinding, 0, len(bindingRows))
 	totalChecks := 0
-	for _, groupID := range groupIDs {
-		groupRow, groupErr := queries.GetInspectionGroup(ctx, groupID)
-		if groupErr != nil {
-			return task, "", groupErr
+	for _, row := range bindingRows {
+		binding := mountBindingFromRow(row)
+		if !binding.Enabled {
+			return task, "巡检组已禁用: " + binding.Name, nil
 		}
-		if !groupRow.Enabled {
-			return task, "巡检组已禁用: " + groupRow.Name, nil
-		}
-		checkRows, checkErr := queries.ListEnabledInspectionChecksForRun(ctx, groupID)
+		checkRows, checkErr := queries.ListEnabledInspectionChecksForRun(ctx, binding.ID)
 		if checkErr != nil {
 			return task, "", checkErr
 		}
-		group := runGroup{ID: groupRow.ID, Name: groupRow.Name, Scope: groupRow.Scope, Category: groupRow.Category, Checks: make([]runCheck, 0, len(checkRows))}
-		for _, row := range checkRows {
+		binding.Checks = make([]runCheck, 0, len(checkRows))
+		for _, checkRow := range checkRows {
 			var config map[string]any
-			if err = json.Unmarshal(row.Config, &config); err != nil {
+			if err = json.Unmarshal(checkRow.Config, &config); err != nil {
 				return task, "巡检检查项配置数据无效", nil
 			}
 			if config == nil {
 				config = map[string]any{}
 			}
-			group.Checks = append(group.Checks, runCheck{Name: row.Name, Executor: row.Executor, Config: config, Severity: row.Severity, Order: row.Order})
+			binding.Checks = append(binding.Checks, runCheck{Name: checkRow.Name, Executor: checkRow.Executor, Config: config, Severity: checkRow.Severity, Order: checkRow.Order})
 		}
-		totalChecks += len(group.Checks)
-		task.Groups = append(task.Groups, group)
+		totalChecks += len(binding.Checks)
+		task.Bindings = append(task.Bindings, binding)
 	}
-	if len(task.Groups) == 0 {
-		return task, "巡检任务没有可用的巡检组", nil
-	}
-	// 保存任务时已校验所有组 scope 一致，这里取第一个作为目标解析依据。
-	task.Scope = task.Groups[0].Scope
 	if totalChecks == 0 {
 		return task, "巡检组没有启用的检查项", nil
 	}
 	return task, "", nil
 }
 
-func (handler *Handler) resolveTargets(ctx context.Context, task runTask) ([]runTarget, string, error) {
-	targets := make([]runTarget, 0)
-	if task.Scope == "per_host" {
-		if len(task.SelectedHostIDs) == 0 {
-			return nil, "巡检任务的主机范围为空", nil
-		}
-		placeholders, arguments := make([]string, len(task.SelectedHostIDs)), make([]any, len(task.SelectedHostIDs))
-		for index, id := range task.SelectedHostIDs {
-			placeholders[index], arguments[index] = "?", id
-		}
-		rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(instance_name,''),COALESCE(ip,''),COALESCE(agent_id,''),agent_online FROM assets_host WHERE is_deleted_in_cloud=FALSE AND id IN (`+strings.Join(placeholders, ",")+`) ORDER BY instance_name,id`, arguments...)
-		if err != nil {
-			return nil, "", err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var target runTarget
-			if err = rows.Scan(&target.HostID, &target.HostName, &target.HostIP, &target.AgentID, &target.AgentOnline); err != nil {
-				return nil, "", err
-			}
-			target.Name, target.RunUser, target.WorkDirectory = target.HostName, "root", "/"
-			if target.Name == "" {
-				target.Name = target.HostIP
-			}
-			targets = append(targets, target)
-		}
-		if err = rows.Err(); err != nil {
-			return nil, "", err
-		}
-	} else {
-		if task.ServiceID == 0 {
-			return nil, "巡检任务未绑定逻辑服务", nil
-		}
-		rows, err := handler.db.QueryContext(ctx, `SELECT d.id,d.instance_name,h.id,COALESCE(h.instance_name,''),COALESCE(h.ip,''),COALESCE(h.agent_id,''),h.agent_online,t.app_home,t.run_user,t.work_directory,v.version,t.service_name FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id JOIN assets_application_service_deployment l ON l.deployment_id=d.id AND l.enabled=TRUE JOIN assets_application_service s ON s.id=l.service_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id JOIN assets_application_version v ON v.id=s.application_version_id WHERE s.id=? AND d.enabled=TRUE ORDER BY d.id`, task.ServiceID)
-		if err != nil {
-			return nil, "", err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var target runTarget
-			if err = rows.Scan(&target.DeploymentID, &target.InstanceName, &target.HostID, &target.HostName, &target.HostIP, &target.AgentID, &target.AgentOnline, &target.AppHome, &target.RunUser, &target.WorkDirectory, &target.Version, &target.ServiceName); err != nil {
-				return nil, "", err
-			}
-			target.Name = target.InstanceName
-			targets = append(targets, target)
-		}
-		if err = rows.Err(); err != nil {
-			return nil, "", err
-		}
+// groupsFromBindings 提取绑定里的组（快照用）。
+func groupsFromBindings(bindings []mountBinding) []runGroup {
+	groups := make([]runGroup, 0, len(bindings))
+	for _, binding := range bindings {
+		groups = append(groups, binding.runGroup)
 	}
-	if len(targets) == 0 {
-		return nil, "逻辑服务没有启用的部署实例", nil
-	}
-	if task.Scope == "service_once" {
-		selected := -1
-		for index := range targets {
-			if targets[index].AgentOnline && targets[index].AgentID != "" {
-				selected = index
-				break
-			}
-		}
-		if selected < 0 {
-			selected = 0
-		}
-		targets = []runTarget{targets[selected]}
-		targets[0].Name = fmt.Sprintf("%s (%s)", task.ServiceName, targets[0].InstanceName)
-	}
-	return targets, "", nil
+	return groups
 }
 
 func (handler *Handler) createExecution(ctx context.Context, task runTask, targets []runTarget, triggerType string, userID int32, username string) (int64, error) {
@@ -249,47 +190,38 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		return 0, err
 	}
 	defer tx.Rollback()
-	taskSnapshot := jsonBytes(gin.H{"id": task.ID, "name": task.Name, "target_type": targetType(task.Scope), "concurrency": task.Concurrency, "timeout_seconds": task.Timeout, "groups": task.Groups})
-	groupSnapshots := make([]gin.H, 0, len(task.Groups))
-	for _, group := range task.Groups {
-		groupSnapshots = append(groupSnapshots, gin.H{"id": group.ID, "name": group.Name, "scope": group.Scope, "category": group.Category, "checks": group.Checks})
+	targetName := handler.mountTargetName(ctx, task.Bindings)
+	taskSnapshot := jsonBytes(gin.H{"id": task.ID, "name": task.Name, "concurrency": task.Concurrency, "timeout_seconds": task.Timeout, "groups": groupsFromBindings(task.Bindings)})
+	groupSnapshots := make([]gin.H, 0, len(task.Bindings))
+	for _, binding := range task.Bindings {
+		entry := gin.H{"id": binding.ID, "name": binding.Name, "category": binding.Category, "checks": binding.Checks, "mount": binding.mountSummary()}
+		groupSnapshots = append(groupSnapshots, entry)
 	}
 	groupSnapshot := jsonBytes(groupSnapshots)
-	serviceSnapshot := gin.H{"target_type": targetType(task.Scope), "name": task.ServiceName}
-	// 业务链路快照：汇总报表按项目/业务系统/环境聚合的地基（纯冗余，失败不阻断执行）。
-	var businessChain gin.H
-	if task.Scope != "per_host" && task.ServiceID > 0 {
-		if row, err := db.New(handler.db).GetInspectionServiceBusinessChain(ctx, task.ServiceID); err == nil {
-			businessChain = businessChainSnapshot(row.ProjectID, row.BusinessSystemID, row.EnvironmentID, row.ProjectName, row.ProjectOwner, row.BusinessSystemName, row.BusinessSystemOwner, row.EnvironmentName)
-		}
-	} else if task.Scope == "per_host" && len(targets) > 0 {
+	// 业务链路快照：按目标主机的部署归属解析（纯冗余，失败不阻断执行）。
+	serviceSnapshot := gin.H{"name": targetName}
+	if len(targets) > 0 {
 		hostIDs := make([]int64, 0, len(targets))
 		for _, target := range targets {
 			hostIDs = append(hostIDs, target.HostID)
 		}
 		if rows, err := db.New(handler.db).ListHostBusinessChains(ctx, hostIDs); err == nil {
-			businessByHost := make(map[int64]gin.H, len(rows))
 			for _, row := range rows {
-				businessByHost[row.HostID] = businessChainSnapshot(row.ProjectID, row.BusinessSystemID, row.EnvironmentID, row.ProjectName, "", row.BusinessSystemName, row.BusinessSystemOwner, row.EnvironmentName)
+				businessByHostForTargets[row.HostID] = businessChainSnapshot(row.ProjectID, row.BusinessSystemID, row.EnvironmentID, row.ProjectName, "", row.BusinessSystemName, row.BusinessSystemOwner, row.EnvironmentName)
 			}
-			businessByHostForTargets = businessByHost
 		}
 	}
-	if businessChain != nil {
-		serviceSnapshot["project"], serviceSnapshot["business_system"], serviceSnapshot["environment"] = businessChain["project"], businessChain["business_system"], businessChain["environment"]
-	}
-	if task.Scope == "per_host" {
-		serviceSnapshot["name"] = fmt.Sprintf("%d 台主机", len(targets))
-		serviceSnapshot["selected_host_ids"] = task.SelectedHostIDs
-		serviceSnapshot["host_count"] = len(targets)
+	if len(task.MountSummaries) > 0 {
+		serviceSnapshot["mounts"] = task.MountSummaries
 	}
 	targetSnapshot := make([]gin.H, 0, len(targets))
 	for _, target := range targets {
 		item := gin.H{"deployment_id": target.DeploymentID, "host_id": target.HostID, "host_name": target.HostName, "instance_name": target.InstanceName, "host_ip": target.HostIP, "agent_id": target.AgentID, "agent_online": target.AgentOnline}
-		if businessChain != nil {
-			item["business"] = businessChain
-		} else if business, ok := businessByHostForTargets[target.HostID]; ok {
+		if business, ok := businessByHostForTargets[target.HostID]; ok {
 			item["business"] = business
+		}
+		if len(target.ServicesSnapshot) > 0 {
+			item["services"] = target.ServicesSnapshot
 		}
 		targetSnapshot = append(targetSnapshot, item)
 	}
@@ -302,11 +234,7 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		return 0, err
 	}
 	for index := range targets {
-		var hostID any
-		if task.Scope == "per_host" {
-			hostID = targets[index].HostID
-		}
-		result, insertErr := tx.ExecContext(ctx, `INSERT INTO inspection_target_execution(execution_id,deployment_id,host_id,target_name,host_id_snapshot,host_ip_snapshot,agent_id_snapshot,status,passed,error_message,raw_result,start_time,end_time,create_time,update_time) VALUES(?,?,?,?,?,?,?,'pending',NULL,'',JSON_OBJECT(),NULL,NULL,NOW(),NOW())`, executionID, nullablePositive(targets[index].DeploymentID), hostID, targets[index].Name, targets[index].HostID, targets[index].HostIP, targets[index].AgentID)
+		result, insertErr := tx.ExecContext(ctx, `INSERT INTO inspection_target_execution(execution_id,deployment_id,host_id,target_name,host_id_snapshot,host_ip_snapshot,agent_id_snapshot,status,passed,error_message,raw_result,start_time,end_time,create_time,update_time) VALUES(?,?,?,?,?,?,?,'pending',NULL,'',JSON_OBJECT(),NULL,NULL,NOW(),NOW())`, executionID, nullablePositive(targets[index].DeploymentID), targets[index].HostID, targets[index].Name, targets[index].HostID, targets[index].HostIP, targets[index].AgentID)
 		if insertErr != nil {
 			return 0, insertErr
 		}
@@ -374,6 +302,91 @@ func targetType(scope string) string {
 	return "logical_service"
 }
 
+// mountTargetName 把首个挂载点绑定转成人类可读的目标名，如
+// "逻辑服务 artemis"、"业务 cdm @ test"、"项目 kul @ test"；查不到名称时回退 ID。
+// mountTargetName 把首个挂载点绑定转成带完整业务链路的目标名，如
+// "项目 kul · 业务 cdm @ test · 逻辑服务 artemis"；查不到名称时回退 ID。
+func (handler *Handler) mountTargetName(ctx context.Context, bindings []mountBinding) string {
+	if len(bindings) == 0 {
+		return ""
+	}
+	binding := bindings[0]
+	switch binding.MountType {
+	case mountService:
+		if !binding.ServiceID.Valid {
+			return ""
+		}
+		var serviceName string
+		if err := handler.db.QueryRowContext(ctx, `SELECT name FROM assets_application_service WHERE id=?`, binding.ServiceID.Int64).Scan(&serviceName); err != nil || serviceName == "" {
+			return fmt.Sprintf("逻辑服务 #%d", binding.ServiceID.Int64)
+		}
+		chain, err := db.New(handler.db).GetInspectionServiceBusinessChain(ctx, binding.ServiceID.Int64)
+		if err != nil {
+			return "逻辑服务 " + serviceName
+		}
+		name := "逻辑服务 " + serviceName
+		if prefix := chainPrefix(chain.ProjectName, chain.BusinessSystemName, chain.EnvironmentName); prefix != "" {
+			name = prefix + " · " + name
+		}
+		return name
+	case mountBusiness:
+		if !binding.BusinessSystemID.Valid {
+			return ""
+		}
+		var businessName, projectName string
+		err := handler.db.QueryRowContext(ctx, `SELECT b.name, COALESCE(p.name,'') FROM assets_business_system b LEFT JOIN assets_project p ON p.id=b.project_id WHERE b.id=?`, binding.BusinessSystemID.Int64).Scan(&businessName, &projectName)
+		if err != nil || businessName == "" {
+			return fmt.Sprintf("业务 #%d", binding.BusinessSystemID.Int64)
+		}
+		text := "业务 " + businessName
+		if binding.EnvironmentID.Valid {
+			var environmentName string
+			_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_business_environment WHERE id=?`, binding.EnvironmentID.Int64).Scan(&environmentName)
+			if environmentName != "" {
+				text += " @ " + environmentName
+			}
+		}
+		if projectName != "" {
+			text = "项目 " + projectName + " · " + text
+		}
+		return text
+	case mountProject, mountEnv:
+		if !binding.ProjectID.Valid {
+			return ""
+		}
+		projectName := ""
+		_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_project WHERE id=?`, binding.ProjectID.Int64).Scan(&projectName)
+		if projectName == "" {
+			return fmt.Sprintf("项目 #%d", binding.ProjectID.Int64)
+		}
+		if binding.MountType == mountEnv && binding.EnvironmentID.Valid {
+			var environmentName string
+			_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_business_environment WHERE id=?`, binding.EnvironmentID.Int64).Scan(&environmentName)
+			if environmentName != "" {
+				return fmt.Sprintf("项目 %s @ %s", projectName, environmentName)
+			}
+		}
+		return "项目 " + projectName
+	}
+	return ""
+}
+
+// chainPrefix 组合 "项目 X · 业务 Y @ 环境 Z" 前缀，空层级跳过。
+func chainPrefix(projectName, businessName, environmentName string) string {
+	parts := make([]string, 0, 3)
+	if projectName != "" {
+		parts = append(parts, "项目 "+projectName)
+	}
+	if businessName != "" {
+		text := "业务 " + businessName
+		if environmentName != "" {
+			text += " @ " + environmentName
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, " · ")
+}
+
 // businessChainSnapshot 把 项目/业务系统/环境 链路整理进快照；ID 为空的层级省略。
 func businessChainSnapshot(projectID, businessSystemID, environmentID sql.NullInt64, projectName, projectOwner, businessSystemName, businessSystemOwner, environmentName string) gin.H {
 	chain := gin.H{}
@@ -411,13 +424,15 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		return
 	}
 	handler.db.Exec(`UPDATE inspection_target_execution SET status='running',start_time=NOW(),update_time=NOW() WHERE id=?`, target.ID)
-	checks := flattenChecks(task.Groups)
-	results := make([]checkResult, 0, len(checks))
-	agentChecks := make([]gin.H, 0)
-	for index, check := range checks {
-		agentChecks = append(agentChecks, compileAgentCheck(task, target, check, index, executionID))
-	}
+	results := make([]checkResult, 0)
+	agentChecks, checks, missingParams := buildCheckPlan(task, target, executionID)
 	errorMessage := ""
+	if len(missingParams) > 0 {
+		// 缺参属于配置错误：目标失败并写明缺什么，而不是拿错误路径静默执行。
+		message := "巡检参数缺失: " + strings.Join(missingParams, "、")
+		results = append(results, checkResult{Key: "check_plan", Type: "plan", Name: "检查参数", Status: "error", Severity: "critical", Message: message})
+		errorMessage = message
+	}
 	if len(agentChecks) > 0 {
 		if target.AgentID == "" || !handler.gateway.IsOnline(target.AgentID) {
 			// 离线是"未执行"而非"检查失败"：目标置 skipped、不产生检查结果，
@@ -485,11 +500,11 @@ func (handler *Handler) insertResults(ctx context.Context, targetID int64, resul
 	return nil
 }
 
-func compileAgentCheck(task runTask, target runTarget, check runCheck, index int, executionID int64) gin.H {
+func compileAgentCheck(context runTarget, check runCheck, index int, executionID int64, params map[string]string) gin.H {
 	config := check.Config
 	executor := check.Executor
 	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "type": executor, "executor": executor, "name": check.Name, "requires_running": false}
-	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), target) }
+	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), context, params) }
 	switch executor {
 	case "schema_validate":
 		compiled["path"] = resolve(config["path"])
@@ -497,7 +512,7 @@ func compileAgentCheck(task runTask, target runTarget, check runCheck, index int
 		compiled["schema"] = gin.H{"type": config["schema_type"], "content": config["schema_content"]}
 	case "goss":
 		compiled["spec"] = resolve(config["spec"])
-		compiled["run_user"] = first(resolve(config["run_user"]), target.RunUser, "root")
+		compiled["run_user"] = first(resolve(config["run_user"]), context.RunUser, "root")
 		if vars, ok := config["vars"]; ok {
 			compiled["vars"] = vars
 		}
@@ -508,9 +523,27 @@ func compileAgentCheck(task runTask, target runTarget, check runCheck, index int
 	return compiled
 }
 
-func resolveVariables(value string, target runTarget) string {
-	for key, replacement := range map[string]string{"${APP_HOME}": target.AppHome, "${RUN_USER}": target.RunUser, "${INSTANCE_NAME}": target.InstanceName, "${APPLICATION_VERSION}": target.Version, "${HOST_IP}": target.HostIP, "${HOST_NAME}": target.HostName, "${SERVICE_NAME}": target.ServiceName} {
-		value = strings.ReplaceAll(value, key, replacement)
+// standardVars 是部署实例内置的变量表（来自部署模板/资产，每个实例各异）。
+func standardVars(target runTarget) map[string]string {
+	return map[string]string{
+		"APP_HOME":            target.AppHome,
+		"RUN_USER":            target.RunUser,
+		"INSTANCE_NAME":       target.InstanceName,
+		"APPLICATION_VERSION": target.Version,
+		"HOST_IP":             target.HostIP,
+		"HOST_NAME":           target.HostName,
+		"SERVICE_NAME":        target.ServiceName,
+	}
+}
+
+// resolveVariables 展开 ${变量}：检查参数（任务绑定时赋值的实参）优先，
+// 其次内置变量（部署模板/资产上下文）。两者都没有的变量保持字面量。
+func resolveVariables(value string, target runTarget, params map[string]string) string {
+	for key, replacement := range params {
+		value = strings.ReplaceAll(value, "${"+key+"}", replacement)
+	}
+	for key, replacement := range standardVars(target) {
+		value = strings.ReplaceAll(value, "${"+key+"}", replacement)
 	}
 	return value
 }

@@ -1,7 +1,6 @@
 package inspection
 
 import (
-	"errors"
 	"regexp"
 	"testing"
 
@@ -9,59 +8,65 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const groupValidationQuery = `SELECT g.scope,g.enabled,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`
+const groupValidationQuery = `SELECT g.enabled,g.category,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`
 
-func TestValidateTaskDeduplicatesSelectedHostIDs(t *testing.T) {
+// 挂载点绑定（bindings 输入）必须走挂载校验路径，而不是回落到静态范围校验。
+func TestValidateTaskAcceptsServiceMountBinding(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(groupValidationQuery)).WithArgs(int64(1)).
-		WillReturnRows(sqlmock.NewRows([]string{"scope", "enabled", "check_count"}).AddRow("per_host", true, 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM assets_host WHERE is_deleted_in_cloud=FALSE AND id IN (?,?)`)).
-		WithArgs(int64(10), int64(20)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	group := int64(2)
+	serviceID := int64(9)
+	state := taskState{
+		Name: "task", InspectionName: "inspection", Concurrency: 10, TimeoutSeconds: 60,
+		Bindings: []groupBindingInput{{
+			Group: &group, MountType: mountService, ServiceID: &serviceID, InstanceMode: instanceAll,
+		}},
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(groupValidationQuery)).WithArgs(group).
+		WillReturnRows(sqlmock.NewRows([]string{"enabled", "category", "check_count"}).AddRow(true, "application", 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM assets_application_service WHERE id=?`)).
+		WithArgs(serviceID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	state := validPerHostTaskState([]int64{10, 10, 20})
 	message, validationErr := (&Handler{db: database}).validateTask(testGinContext(), &state, true)
 	if validationErr != nil || message != "" {
 		t.Fatalf("validation result = %q, %v", message, validationErr)
 	}
-	if len(state.SelectedHostIDs) != 2 || state.SelectedHostIDs[0] != 10 || state.SelectedHostIDs[1] != 20 {
-		t.Fatalf("selected_host_ids = %v, want [10 20]", state.SelectedHostIDs)
+	if len(state.GroupIDs) != 1 || state.GroupIDs[0] != group {
+		t.Fatalf("GroupIDs = %v, want [%d]", state.GroupIDs, group)
+	}
+	// 单组模型：两个绑定直接拒绝（在 DB 查询前拦截）。
+	state.Bindings = append(state.Bindings, groupBindingInput{Group: &group, MountType: mountService, ServiceID: &serviceID, InstanceMode: instanceAll})
+	if message, _ = (&Handler{db: database}).validateTask(testGinContext(), &state, false); message == "" {
+		t.Fatal("two bindings should be rejected")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
 	}
 }
 
-func TestValidateTaskPropagatesHostCountError(t *testing.T) {
+func TestValidateTaskRejectsMissingMountType(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(groupValidationQuery)).WithArgs(int64(1)).
-		WillReturnRows(sqlmock.NewRows([]string{"scope", "enabled", "check_count"}).AddRow("per_host", true, 1))
-	databaseErr := errors.New("database unavailable")
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM assets_host WHERE is_deleted_in_cloud=FALSE AND id IN (?)`)).
-		WithArgs(int64(10)).WillReturnError(databaseErr)
-
-	state := validPerHostTaskState([]int64{10})
-	message, validationErr := (&Handler{db: database}).validateTask(testGinContext(), &state, true)
-	if message != "" || !errors.Is(validationErr, databaseErr) {
-		t.Fatalf("validation result = %q, %v; want database error", message, validationErr)
+	group := int64(2)
+	state := taskState{
+		Name: "task", InspectionName: "inspection", Concurrency: 10, TimeoutSeconds: 60,
+		Bindings: []groupBindingInput{{Group: &group}},
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("database expectations: %v", err)
+	// 空 mount_type 在组查询之后拦截。
+	mock.ExpectQuery(regexp.QuoteMeta(groupValidationQuery)).WithArgs(group).
+		WillReturnRows(sqlmock.NewRows([]string{"enabled", "category", "check_count"}).AddRow(true, "application", 1))
+	if message, _ := (&Handler{db: database}).validateTask(testGinContext(), &state, false); message == "" {
+		t.Fatal("missing mount_type should be rejected")
 	}
-}
-
-func validPerHostTaskState(hostIDs []int64) taskState {
-	return taskState{Name: "task", InspectionName: "inspection", GroupIDs: []int64{1}, SelectedHostIDs: hostIDs, Concurrency: 10, TimeoutSeconds: 60}
 }
 
 func testGinContext() *gin.Context {

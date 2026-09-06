@@ -1,6 +1,10 @@
 package assets
 
 import (
+	"database/sql"
+	"strconv"
+	"strings"
+
 	"autoadmin/internal/api/response"
 
 	"github.com/gin-gonic/gin"
@@ -12,7 +16,17 @@ func (handler *Handler) ListDeploymentTemplates(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	items, count, err := handler.service.ListDeploymentTemplates(context.Request.Context(), context.Query("search"), pageValue)
+	// 可选按应用过滤（应用定义页的"部署模板管理"弹窗传入）
+	var applicationID sql.NullInt64
+	if raw := strings.TrimSpace(context.Query("application")); raw != "" {
+		parsed, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || parsed <= 0 {
+			response.BusinessError(context, 400, "application 参数无效", nil)
+			return
+		}
+		applicationID = sql.NullInt64{Int64: parsed, Valid: true}
+	}
+	items, count, err := handler.service.ListDeploymentTemplates(context.Request.Context(), applicationID, context.Query("search"), pageValue)
 	if err != nil {
 		respond(context, nil, err)
 		return

@@ -16,3 +16,22 @@ func TestValidateGossSpec(t *testing.T) {
 		t.Fatal("broken yaml must be rejected")
 	}
 }
+
+// 裸数字端口键是用户常见写法，goss 引擎接受（键按字符串归一）；校验器必须同语义。
+func TestValidateGossSpecAcceptsNumericPortKeys(t *testing.T) {
+	spec := `port:
+  61616:
+    listening: true
+    ip: ["0.0.0.0"]
+`
+	if err := validateGossSpec(spec); err != nil {
+		t.Fatalf("numeric port key should pass schema validation: %v", err)
+	}
+	quoted := `port:
+  "tcp:61616":
+    listening: true
+`
+	if err := validateGossSpec(quoted); err != nil {
+		t.Fatalf("quoted protocol:port key should pass: %v", err)
+	}
+}

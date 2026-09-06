@@ -1,28 +1,8 @@
 package inspection
 
 import (
-	"encoding/json"
 	"testing"
-
-	db "autoadmin/internal/platform/database/generated"
 )
-
-func TestHostScopeNodeFromPreservesNulls(t *testing.T) {
-	node := hostScopeNodeFrom(db.ListHostScopeTreeHostsRow{ID: 7})
-	encoded, err := json.Marshal(node)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err = json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"instance_name", "ip", "group_id", "agent_id"} {
-		if value, ok := decoded[key]; !ok || value != nil {
-			t.Fatalf("hostScopeNodeFrom null %s = %v, want null", key, value)
-		}
-	}
-}
 
 func TestBuildGroupTreeAttachesRootsAndChildren(t *testing.T) {
 	parent := int64(0)

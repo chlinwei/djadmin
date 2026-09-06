@@ -238,7 +238,9 @@ func inspectionTargetExecutionDTO(row db.ListInspectionTargetExecutionsRow) insp
 // query (grouped by target) instead of one query per target, which made large
 // executions pay hundreds of round-trips per detail request.
 func (handler *Handler) listExecutionResults(ctx context.Context, executionID int64) (map[int64][]inspectionResultResponse, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,r.expected_value,r.actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id`, executionID)
+	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage（jsontext.Value），
+	// 统一回填 JSON null 字面量——与 ListInspectionResultsByTarget 同源语义。
+	rows, err := handler.db.QueryContext(ctx, `SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id`, executionID)
 	if err != nil {
 		return nil, err
 	}

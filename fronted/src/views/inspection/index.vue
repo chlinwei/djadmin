@@ -14,6 +14,24 @@
 
     <a-tabs v-model:activeKey="activeTab" class="workspace-tabs" @change="handleTabChange">
       <a-tab-pane key="tasks" tab="巡检任务">
+        <a-row :gutter="16">
+        <a-col :span="5">
+          <a-tree
+            :tree-data="taskNavTreeData"
+            v-model:selected-keys="taskNavSelected"
+            :block-node="true"
+            default-expand-all
+            @select="handleTaskNodeSelect"
+          >
+            <template #title="{ key, title }">
+              <div class="service-tree-node">
+                <FontAwesomeIcon :icon="taskNavIcon(key)" :class="['service-tree-icon', `service-tree-icon--${taskNavIconType(key)}`]" />
+                <span class="service-tree-node-label">{{ title }}</span>
+              </div>
+            </template>
+          </a-tree>
+        </a-col>
+        <a-col :span="19">
         <div class="toolbar">
           <a-button v-permission="'inspection:tasks:create'" size="large" @click="openTaskModal()">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
@@ -27,7 +45,7 @@
         <a-table
           row-key="id"
           :columns="taskColumns"
-          :data-source="tasks"
+          :data-source="visibleTasks"
           :loading="taskLoading"
           :pagination="taskPagination"
           :scroll="{ x: 1330 }"
@@ -36,13 +54,12 @@
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'group_name'">
               <a-space wrap>
-                <a-tag v-for="group in (record.groups || [])" :key="group.id" :color="group.category === 'application' ? 'purple' : 'green'">{{ group.name }}</a-tag>
+                <a-tooltip v-for="group in (record.groups || [])" :key="group.id" :title="mountText(group) || '静态范围（存量）'">
+                  <a-tag :color="group.category === 'application' ? 'purple' : 'green'">
+                    {{ group.name }}<template v-if="mountText(group)"> · {{ mountText(group) }}</template>
+                  </a-tag>
+                </a-tooltip>
               </a-space>
-            </template>
-            <template v-else-if="column.key === 'scope'">
-              <a-tag :color="record.scope === 'per_deployment' ? 'blue' : 'cyan'">
-                {{ scopeLabel(record.scope) }}
-              </a-tag>
             </template>
             <template v-else-if="column.key === 'target'">
               <a-space>
@@ -50,7 +67,7 @@
                   {{ record.target_type === 'host_group' ? '主机组' : '逻辑服务' }}
                 </a-tag>
                 <a-tooltip v-if="record.target_type === 'host_group'" title="查看巡检范围" placement="top">
-                  <a-button type="link" size="small" @click="openScopeViewer(record)">{{ record.target_name }}</a-button>
+                  <span>{{ record.target_name }}</span>
                 </a-tooltip>
                 <span v-else>{{ record.target_name }}</span>
               </a-space>
@@ -86,6 +103,8 @@
             </template>
           </template>
         </a-table>
+        </a-col>
+        </a-row>
       </a-tab-pane>
 
       <a-tab-pane key="schedules" tab="定时任务">
@@ -114,7 +133,7 @@
                   {{ record.target_type === 'host_group' ? '主机组' : '逻辑服务' }}
                 </a-tag>
                 <a-tooltip v-if="record.target_type === 'host_group'" title="查看巡检范围" placement="top">
-                  <a-button type="link" size="small" @click="openScopeViewer(record)">{{ record.target_name }}</a-button>
+                  <span>{{ record.target_name }}</span>
                 </a-tooltip>
                 <span v-else>{{ record.target_name }}</span>
               </a-space>
@@ -155,6 +174,24 @@
       </a-tab-pane>
 
       <a-tab-pane key="groups" tab="巡检组">
+        <a-row :gutter="16">
+        <a-col :span="5">
+          <a-tree
+            :tree-data="groupNavTreeData"
+            v-model:selected-keys="groupNavSelected"
+            :block-node="true"
+            default-expand-all
+            @select="handleGroupNodeSelect"
+          >
+            <template #title="{ key, title }">
+              <div class="service-tree-node">
+                <FontAwesomeIcon :icon="groupNavIcon(key)" :class="['service-tree-icon', `service-tree-icon--${groupNavIconType(key)}`]" />
+                <span class="service-tree-node-label">{{ title }}</span>
+              </div>
+            </template>
+          </a-tree>
+        </a-col>
+        <a-col :span="19">
         <div class="toolbar">
           <a-button v-permission="'inspection:groups:create'" size="large" @click="openGroupModal()">
             <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
@@ -168,7 +205,7 @@
         <a-table
           row-key="id"
           :columns="groupColumns"
-          :data-source="groups"
+          :data-source="visibleGroups"
           :loading="groupLoading"
           :pagination="groupPagination"
           :scroll="{ x: 900 }"
@@ -177,9 +214,6 @@
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'category'">
               <a-tag :color="record.category === 'application' ? 'purple' : 'green'">{{ record.category === 'application' ? (record.application_name ? `应用 · ${record.application_name}` : '应用类型') : '通用' }}</a-tag>
-            </template>
-            <template v-else-if="column.key === 'scope'">
-              <a-tag :color="record.scope === 'per_host' ? 'gold' : record.scope === 'service_once' ? 'cyan' : 'blue'">{{ scopeLabel(record.scope) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'checks'">
               <a-space wrap>
@@ -208,6 +242,9 @@
             </template>
           </template>
         </a-table>
+        </a-col>
+        </a-row>
+
       </a-tab-pane>
 
       <a-tab-pane key="executions" tab="执行记录">
@@ -317,17 +354,13 @@
       <a-form layout="vertical">
         <div class="form-grid">
           <a-form-item label="巡检组名称" required><a-input v-model:value="groupForm.name" /></a-form-item>
-          <a-form-item label="执行范围" required>
-            <a-select v-model:value="groupForm.scope" :options="scopeOptions" :getPopupContainer="getPopupContainer" />
-            <div class="field-hint">范围决定任务选逻辑服务还是主机组，也决定可用变量。</div>
-          </a-form-item>
         </div>
         <div class="form-grid">
           <a-form-item label="分类">
             <a-select v-model:value="groupForm.category" :options="groupCategoryOptions" :getPopupContainer="getPopupContainer" />
             <div class="field-hint">仅用于组织和建议过滤，不做强制约束：通用 = 所有主机适用的基线；应用类型 = 某类应用专属。</div>
           </a-form-item>
-          <a-form-item v-if="groupForm.category === 'application'" label="适用应用">
+          <a-form-item v-if="groupForm.category === 'application'" label="适用应用" required>
             <a-select
               v-model:value="groupForm.application"
               :options="applicationOptions"
@@ -341,6 +374,29 @@
           </a-form-item>
         </div>
         <a-form-item label="描述"><a-textarea v-model:value="groupForm.description" :rows="2" /></a-form-item>
+        <div class="check-heading">
+          <span>检查参数</span>
+          <a-button size="large" @click="addParam"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加参数</a-button>
+        </div>
+        <div class="field-hint" style="margin-bottom:8px;">参数供检查项以 <code>${'{'}参数名${'}'}</code> 引用；任务绑定时赋值（固定值 / 引用内置变量 / 引用服务宏）。</div>
+        <a-form-item v-for="(param, index) in groupForm.params" :key="index">
+          <div class="form-grid">
+            <a-form-item label="参数名" required class="mount-item">
+              <a-input v-model:value="param.name" placeholder="如 ORACLE_SID" />
+            </a-form-item>
+            <a-form-item label="说明" class="mount-item"><a-input v-model:value="param.description" /></a-form-item>
+            <a-form-item label="必填" class="mount-item">
+              <a-switch v-model:checked="param.required" checked-children="必填" un-checked-children="选填" />
+            </a-form-item>
+            <a-form-item class="mount-item">
+              <a-tooltip title="删除" placement="top">
+                <a-button class="delBtn" size="small" type="primary" danger @click="groupForm.params.splice(index, 1)">
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                </a-button>
+              </a-tooltip>
+            </a-form-item>
+          </div>
+        </a-form-item>
         <a-alert type="info" show-icon class="variable-hint">
           <template #message>
             可用变量（{{ groupTargetsHostGroup ? '主机组巡检' : '逻辑服务巡检' }}）
@@ -433,52 +489,44 @@
         <a-form-item label="巡检组" required>
           <a-select
             v-model:value="taskForm.groups"
-            mode="multiple"
             :options="taskGroupSelectOptions"
             :getPopupContainer="getPopupContainer"
             show-search
             option-filter-prop="label"
-            placeholder="通用基线 + 应用专属检查，一次巡完"
+            placeholder="选择巡检组"
             @change="handleTaskGroupsChange"
           />
-          <div class="field-hint">可组合多个巡检组（典型：1 个通用 + 1 个应用类型），一次执行全部检查。要求所有组执行范围一致：{{ selectedTaskGroups.length ? `已选 ${scopeLabel(selectedTaskGroups[0].scope)}` : '请先选择巡检组' }}。</div>
+          <div class="field-hint">一个任务绑定一个巡检组；通用基线和应用巡检请分别创建任务，各自挂载、各自调度。</div>
         </a-form-item>
-        <a-form-item v-if="taskTargetsHostGroup === false" label="项目">
-          <a-select
-            v-model:value="taskProjectFilter"
-            allow-clear
-            show-search
-            option-filter-prop="label"
-            placeholder="全部项目"
-            :options="projectFilterOptions"
-            :getPopupContainer="getPopupContainer"
-            @change="handleTaskProjectChange"
-          />
-          <div class="field-hint">仅用于收窄下方候选，不会保存到任务。</div>
+        <a-form-item label="巡检对象" required>
+          <template v-if="taskTargetSummary === 'STATIC'">
+            <a-input value="静态范围（存量任务）" readonly />
+            <div class="field-hint">存量任务沿用静态主机列表/逻辑服务；如需调整请重建任务。</div>
+          </template>
+          <template v-else-if="taskTargetSummary">
+            <a-input :value="taskTargetSummary" readonly>
+              <template #addonAfter>
+                <span class="field-hint">在左侧树点击节点可调整</span>
+              </template>
+            </a-input>
+          </template>
+          <template v-else-if="taskIsLegacy">
+            <a-input value="静态范围（存量任务）" readonly />
+            <div class="field-hint">存量任务沿用静态主机列表/逻辑服务；如需切换请重建任务。</div>
+          </template>
+          <template v-else>
+            <a-input value="未选择 —— 请先在左侧树点击项目 / 业务 / 环境 / 服务节点" readonly class="target-missing" />
+          </template>
         </a-form-item>
-        <a-form-item v-if="taskTargetsHostGroup === false" label="逻辑服务" required>
-          <a-tree-select
-            v-model:value="taskForm.logical_service"
-            :tree-data="serviceTreeData"
-            :getPopupContainer="getPopupContainer"
-            :loading="serviceTreeLoading"
-            tree-default-expand-all
-            tree-line
-            tree-node-filter-prop="title"
-            show-search
-            allow-clear
-            placeholder="请选择业务系统 / 环境 / 逻辑服务"
-            :dropdown-style="{ maxHeight: '360px', overflow: 'auto' }"
-          />
-        </a-form-item>
-        <a-form-item v-else-if="taskTargetsHostGroup === true" label="主机范围" required>
-          <a-input :value="taskScopePreviewText" readonly placeholder="尚未勾选主机组或主机" />
-          <div class="scope-actions">
-            <a-button size="small" type="primary" ghost :loading="hostScopeLoading" @click="openScopeEditor">
-              编辑主机范围
-            </a-button>
+        <a-form-item v-if="Object.keys(taskParamAssignments).length" label="巡检参数" required>
+          <div v-for="(meta, paramName) in taskParamAssignments" :key="paramName" class="param-assign-row">
+            <span class="param-assign-name">{{ paramName }}</span>
+            <a-select v-model:value="taskParamAssignments[paramName].mode" style="width: 140px" :options="paramAssignModes" :getPopupContainer="getPopupContainer" />
+            <a-input-number v-if="taskParamAssignments[paramName].mode === 'value'" v-model:value="taskParamAssignments[paramName].literal" placeholder="固定值" style="flex:1" />
+            <a-input v-else v-model:value="taskParamAssignments[paramName].refName" placeholder="变量名，如 ORACLE_SID / RUN_USER" style="flex:1" />
+            <span class="field-hint">{{ meta.description }}</span>
           </div>
-          <div class="field-hint">任务绑定的是勾选时的主机列表；之后新加入分组的主机不会自动纳入，需重新勾选。</div>
+          <div class="field-hint">固定值 = 所有目标相同；引用 = 按每个部署实例的内置变量 / 服务宏展开。</div>
         </a-form-item>
         <div class="form-grid">
           <a-form-item label="并发数"><a-input-number v-model:value="taskForm.concurrency" :min="1" :max="100" /></a-form-item>
@@ -491,56 +539,7 @@
       </a-form>
     </a-modal>
 
-    <a-modal
-      v-model:open="scopeEditorOpen"
-      title="编辑巡检主机范围"
-      centered
-      :width="1080"
-      @ok="scopeEditorOpen = false"
-      @cancel="scopeEditorOpen = false"
-    >
-      <div class="scope-desc">勾选分组只是批量勾选入口，最终保存的是具体主机列表；分组后续新增的主机不会自动进入本任务。</div>
-      <a-input v-model:value="scopeEditKeyword" allow-clear placeholder="搜索分组/主机/IP" class="scope-search" />
-      <div class="scope-tree-wrap">
-        <a-tree
-          v-if="filteredScopeEditTree.length > 0"
-          checkable
-          block-node
-          :checked-keys="scopeCheckedKeys"
-          :expanded-keys="scopeEditExpandedKeys"
-          :auto-expand-parent="true"
-          :tree-data="filteredScopeEditTree"
-          :selectable="false"
-          :show-line="{ showLeafIcon: false }"
-          @check="onScopeCheck"
-        />
-        <a-empty v-else description="未匹配到分组" />
-      </div>
-    </a-modal>
 
-    <a-modal
-      v-model:open="scopeViewerOpen"
-      :title="scopeViewerTitle"
-      centered
-      :width="980"
-      :footer="null"
-    >
-      <div class="scope-desc">仅展示该任务的巡检范围（主机组与主机），未命中节点已隐藏</div>
-      <div class="scope-summary">当前范围：{{ countScopeHosts(scopeViewerTree) }}台主机</div>
-      <a-input v-model:value="scopeViewKeyword" allow-clear placeholder="搜索分组/主机/IP" class="scope-search" />
-      <div class="scope-tree-wrap">
-        <a-tree
-          v-if="filteredScopeViewTree.length > 0"
-          block-node
-          :expanded-keys="scopeViewExpandedKeys"
-          :auto-expand-parent="true"
-          :tree-data="filteredScopeViewTree"
-          :selectable="false"
-          :show-line="{ showLeafIcon: false }"
-        />
-        <a-empty v-else description="暂无已勾选范围" />
-      </div>
-    </a-modal>
 
     <a-modal
       v-model:open="scheduleModalOpen"
@@ -615,7 +614,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
@@ -631,7 +630,6 @@ import {
   getInspectionExecution,
   getInspectionExecutions,
   getInspectionGroups,
-  getInspectionHostScopeTree,
   getInspectionTasks,
   runInspectionTask,
   cancelInspectionExecution,
@@ -639,18 +637,6 @@ import {
   saveInspectionTask,
   validateGossSpec,
 } from '@/api/inspection'
-import {
-  appendHostCount,
-  buildHostScopeTree,
-  collectGroupKeys,
-  collectHostIds,
-  countScopeHosts,
-  filterHostScopeTree,
-  pickHostIds,
-  pruneHostScopeTree,
-  retainAvailableHostIds,
-  toHostKeys,
-} from '@/util/hostScopeTree'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -675,28 +661,16 @@ const taskOptions = ref([])
 const businessSystems = ref([])
 const businessEnvironments = ref([])
 const projects = ref([])
-const taskProjectFilter = ref(undefined)
 const services = ref([])
-const hostScopeGroups = ref([])
-const hostScopeHosts = ref([])
 const executions = ref([])
 const groupLoading = ref(false)
 const taskLoading = ref(false)
 const executionLoading = ref(false)
 const taskOptionsLoading = ref(false)
 const serviceTreeLoading = ref(false)
-const hostScopeLoading = ref(false)
-const hostScopeLoaded = ref(false)
 const groupModalOpen = ref(false)
 const taskModalOpen = ref(false)
 const scheduleModalOpen = ref(false)
-const scopeEditorOpen = ref(false)
-const scopeViewerOpen = ref(false)
-const scopeEditKeyword = ref('')
-const scopeViewKeyword = ref('')
-const scopeViewerTitle = ref('查看巡检范围')
-const scopeViewerTree = ref([])
-const scopeCheckedKeys = ref([])
 const executionDrawerOpen = ref(false)
 const savingGroup = ref(false)
 const savingTask = ref(false)
@@ -724,14 +698,15 @@ const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai
 const executionRangePresets = ref([])
 const executionRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
-const emptyGroupForm = () => ({ id: null, name: '', scope: 'per_deployment', description: '', enabled: true, category: 'general', application: undefined, checks: [] })
+const emptyGroupForm = () => ({ id: null, name: '', description: '', enabled: true, category: 'general', application: undefined, params: [], checks: [] })
 const emptyTaskForm = () => ({
   groups: [],
+  bindings: [],
+  param_values: {},
   id: null,
   name: '',
   group: undefined,
   logical_service: undefined,
-  selected_host_ids: [],
   concurrency: 20,
   timeout_seconds: 60,
   enabled: true,
@@ -745,7 +720,6 @@ const taskColumns = [
   { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 160 },
   { title: '目标', dataIndex: 'target_name', key: 'target', width: 200 },
-  { title: '范围', key: 'scope', width: 140 },
   { title: '并发 / 超时', key: 'limits', customRender: ({ record }) => `${record.concurrency} / ${record.timeout_seconds}s`, width: 130 },
   { title: '状态', key: 'enabled', width: 90 },
   { title: '操作', key: 'action', fixed: 'right', width: 170 },
@@ -759,10 +733,55 @@ const scheduleColumns = [
   { title: '任务状态', key: 'enabled', width: 110 },
   { title: '操作', key: 'action', fixed: 'right', width: 120 },
 ]
+// 组导航：通用 + 各应用（应用类型组按适用应用归组）。
+const groupNavSelected = ref(['all-groups'])
+const groupNavNode = computed(() => groupNavSelected.value?.[0] || 'all-groups')
+const groupNavTreeData = computed(() => {
+  const applicationNodes = applicationOptions.value
+    .filter((application) => groupOptions.value.some((group) => String(group.application) === String(application.value)))
+    .map((application) => {
+      const count = groupOptions.value.filter((group) => String(group.application) === String(application.value)).length
+      return { key: `app-${application.value}`, title: `${application.label}（${count}）` }
+    })
+  const unassignedCount = groupOptions.value.filter((group) => (group.category || 'general') === 'application' && !group.application).length
+  if (unassignedCount > 0) {
+    applicationNodes.push({ key: 'app-unassigned', title: `未指定应用（${unassignedCount}）` })
+  }
+  const generalCount = groupOptions.value.filter((group) => (group.category || 'general') === 'general').length
+  return [
+    { key: 'all-groups', title: '全部组' },
+    { key: 'general', title: `通用（${generalCount}）` },
+    ...applicationNodes,
+  ]
+})
+function groupNavIconType(key) {
+  if (key === 'all-groups') return 'all'
+  if (key === 'general') return 'system'
+  if (key === 'app-unassigned') return 'deployment'
+  return 'service'
+}
+function groupNavIcon(key) {
+  const type = groupNavIconType(key)
+  if (type === 'all') return ['fas', 'layer-group']
+  if (type === 'system') return ['fas', 'folder-tree']
+  if (type === 'service') return ['fas', 'cubes']
+  return ['fas', 'desktop']
+}
+function handleGroupNodeSelect(keys) {
+  groupNavSelected.value = keys.length ? keys : ['all-groups']
+}
+const visibleGroups = computed(() => {
+  if (groupNavNode.value === 'all-groups') return groups.value
+  if (groupNavNode.value === 'general') return groups.value.filter((group) => (group.category || 'general') === 'general')
+  if (groupNavNode.value === 'app-unassigned') {
+    return groups.value.filter((group) => (group.category || 'general') === 'application' && !group.application)
+  }
+  const applicationID = String(groupNavNode.value).slice(4)
+  return groups.value.filter((group) => String(group.application) === applicationID)
+})
 const groupColumns = [
   { title: '巡检组', dataIndex: 'name', key: 'name', width: 180 },
   { title: '分类', key: 'category', width: 120 },
-  { title: '范围', key: 'scope', width: 140 },
   { title: '检查项', key: 'checks', width: 420 },
   { title: '操作', key: 'action', fixed: 'right', width: 120 },
 ]
@@ -812,7 +831,7 @@ const HOST_VARIABLES = [
   { name: '${HOST_IP}', desc: '主机 IP' },
   { name: '${HOST_NAME}', desc: '主机名称' },
 ]
-const scopeOptions = [
+const scopeOptionsRemoved = [
   { label: '逻辑服务·每个部署实例', value: 'per_deployment' },
   { label: '逻辑服务·服务单次', value: 'service_once' },
   { label: '主机组·每台主机', value: 'per_host' },
@@ -849,21 +868,8 @@ const schemaDocumentTypes = {
 }
 const selectedTaskGroups = computed(() => (taskForm.groups || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean))
 // undefined 表示尚未选巡检组，此时两类目标输入都不展示。
-const taskTargetsHostGroup = computed(() => (
-  selectedTaskGroups.value.length ? selectedTaskGroups.value[0].scope === 'per_host' : undefined
-))
-const groupTargetsHostGroup = computed(() => groupForm.scope === 'per_host')
+const groupTargetsHostGroup = computed(() => (groupForm.category || 'general') !== 'application')
 const availableVariables = computed(() => (groupTargetsHostGroup.value ? HOST_VARIABLES : DEPLOYMENT_VARIABLES))
-const projectFilterOptions = computed(() => [...projects.value]
-  .sort((left, right) => String(left.name).localeCompare(String(right.name), 'zh-CN'))
-  .map((project) => ({ label: project.name, value: project.id })))
-// 服务 -> 所属项目：编辑时靠它回填过滤器，避免选中服务落在过滤后的树外而显示为空。
-function resolveServiceProjectId(serviceId) {
-  const service = services.value.find((item) => String(item.id) === String(serviceId))
-  if (!service) return undefined
-  const system = businessSystems.value.find((item) => String(item.id) === String(service.business_system))
-  return system?.project ?? undefined
-}
 const serviceTreeData = computed(() => {
   const serviceNodes = (records) => [...records]
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
@@ -900,7 +906,6 @@ const serviceTreeData = computed(() => {
       }))
   }
   const systemNodes = [...businessSystems.value]
-    .filter((system) => !taskProjectFilter.value || String(system.project) === String(taskProjectFilter.value))
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
     .map((system) => ({
       title: system.name,
@@ -913,15 +918,7 @@ const serviceTreeData = computed(() => {
     }))
   return systemNodes
 })
-const hostScopeTreeData = computed(() => buildHostScopeTree(hostScopeGroups.value, hostScopeHosts.value))
-const filteredScopeEditTree = computed(() => filterHostScopeTree(hostScopeTreeData.value, scopeEditKeyword.value))
-const scopeEditExpandedKeys = computed(() => collectGroupKeys(filteredScopeEditTree.value))
-const filteredScopeViewTree = computed(() => filterHostScopeTree(scopeViewerTree.value, scopeViewKeyword.value))
-const scopeViewExpandedKeys = computed(() => collectGroupKeys(filteredScopeViewTree.value))
-const taskScopePreviewText = computed(() => {
-  const hostCount = taskForm.selected_host_ids?.length || 0
-  return hostCount ? `已选 ${hostCount} 台主机` : ''
-})
+
 
 const responseData = (response) => response?.data?.data || {}
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -931,6 +928,274 @@ const groupCategoryOptions = [
   { label: '应用类型', value: 'application' },
 ]
 const categoryLabel = (category) => (category === 'application' ? '应用类型' : '通用')
+const groupById = (id) => groupOptions.value.find((group) => group.id === id)
+const taskIsLegacy = computed(() => (taskForm.bindings || []).some((binding) => isLegacyBinding(binding)))
+// 巡检参数赋值：根据所选组的 params 声明生成编辑行（静态范围任务无参数）。
+const taskParamAssignments = reactive({})
+const paramAssignModes = [
+  { label: '引用', value: 'ref' },
+  { label: '固定值', value: 'value' },
+]
+function syncTaskParamAssignments(savedValues) {
+  savedValues = savedValues || {}
+  const binding = (taskForm.bindings || [])[0]
+  const declarations = binding ? (groupById(binding.group_id)?.params || []) : []
+  // 以组声明为准：重建全部编辑行（已保存赋值优先，缺的给默认）
+  for (const key of Object.keys(taskParamAssignments)) {
+    delete taskParamAssignments[key]
+  }
+  for (const param of declarations) {
+    const saved = savedValues[param.name]
+    taskParamAssignments[param.name] = {
+      mode: saved?.ref ? 'ref' : 'value',
+      refName: saved?.ref || param.name,
+      literal: saved?.value ?? param.default ?? '',
+      description: param.description || '',
+    }
+  }
+}
+// 把编辑行转成后端 param_values 形态；返回 null 表示校验失败。
+function buildParamValuesPayload() {
+  const result = {}
+  for (const [name, row] of Object.entries(taskParamAssignments)) {
+    if (row.mode === 'ref') {
+      if (!row.refName?.trim()) return null
+      result[name] = { ref: row.refName.trim() }
+    } else {
+      if (row.literal === '' || row.literal === null || row.literal === undefined) return null
+      result[name] = { value: String(row.literal) }
+    }
+  }
+  return result
+}
+function declaredParamsByKey(name) {
+  const binding = (taskForm.bindings || [])[0]
+  if (!binding) return false
+  const declarations = groupById(binding.group_id)?.params || []
+  return declarations.some((param) => param.name === name)
+}
+// 巡检对象摘要：完全由左侧树选中节点推导（新建），或由已有绑定还原（编辑）。
+const taskTargetSummary = computed(() => {
+  const nameOf = (list, id) => list.value.find((item) => String(item.id) === String(id))?.name || `#${id}`
+  if (!taskIsLegacy.value && taskForm.bindings.length) {
+    // 编辑存量静态任务：bindings 是 legacy 且没有可解析挂载 → 显示静态范围提示。
+    const binding = taskForm.bindings[0]
+    if (isLegacyBinding(binding)) return 'STATIC'
+    const group = groupById(binding.group_id)
+    if (!group) return ''
+    const isApp = (group.category || 'general') === 'application'
+    const envName = (id) => (id ? nameOf(businessEnvironments, id) : '全部环境')
+    const modeText = binding.instance_mode === 'once' ? ' · 主实例（HA）' : ''
+    if (binding.mount_type === 'service') {
+      const service = services.value.find((item) => String(item.id) === String(binding.service_id))
+      if (!service) return ''
+      const system = businessSystems.value.find((item) => String(item.id) === String(service.business_system))
+      const base = `逻辑服务 ${service.name}（${system?.name || '?'} / ${nameOf(businessEnvironments, service.environment)}）`
+      return isApp ? `${base} 的部署实例${modeText}` : `${base} 包含的主机`
+    }
+    if (binding.mount_type === 'business' && binding.business_system_id) {
+      return `业务 ${nameOf(businessSystems, binding.business_system_id)} @ ${envName(binding.environment_id)} 的${isApp ? `部署实例${modeText}` : '主机'}`
+    }
+    if (binding.project_id) {
+      return `项目 ${nameOf(projects, binding.project_id)} 的全部实例主机`
+    }
+    return ''
+  }
+  return ''
+})
+// 任务导航树：项目 → 业务系统 → 环境 → 逻辑服务，结构与排序规则对齐服务树
+// （serviceTreeData）：业务按名称排序，环境按 order 排序且只显示真实存在服务的环境，
+// 逻辑服务为叶子节点。任务按挂载点归属到对应节点（可同时归属多个）。
+const taskNavSelected = ref(['all'])
+const taskNavNode = computed(() => taskNavSelected.value?.[0] || 'all')
+// 新建任务弹窗打开期间回到树上换节点 → 巡检对象实时跟随（编辑态/静态范围不动）。
+watch(taskNavNode, () => {
+  if (!taskModalOpen.value || taskForm.id || taskIsLegacy.value || !taskForm.groups?.length) return
+  const group = groupById(taskForm.groups[0])
+  if (!group || isLegacyBinding({ mount_type: (taskForm.bindings[0] || {}).mount_type })) return
+  taskForm.bindings = [defaultBinding(group)]
+  syncTaskParamAssignments()
+})
+// 图标与配色对齐 ServiceTree.vue（项目/业务/环境/服务 同映射同色），保证两棵树观感一致。
+// 树上选中的节点转成挂载上下文，新增任务时预填挂载点。
+const taskNavContext = computed(() => {
+  const key = String(taskNavNode.value)
+  if (key.startsWith('svc-')) {
+    const service = services.value.find((item) => `svc-${item.id}` === key)
+    if (!service) return {}
+    const system = businessSystems.value.find((item) => String(item.id) === String(service.business_system))
+    return { project_id: system?.project, business_system_id: service.business_system ? Number(service.business_system) : undefined, environment_id: service.environment ? Number(service.environment) : undefined, service_id: service.id }
+  }
+  if (key.startsWith('biz-')) {
+    const system = businessSystems.value.find((item) => `biz-${item.id}` === key)
+    return system ? { project_id: system.project, business_system_id: system.id } : {}
+  }
+  if (key.startsWith('env-')) {
+    const [, businessId, environmentId] = key.split('-')
+    const system = businessSystems.value.find((item) => String(item.id) === businessId)
+    return { project_id: system?.project, business_system_id: Number(businessId), environment_id: Number(environmentId) }
+  }
+  if (key.startsWith('proj-')) {
+    return { project_id: Number(key.slice(5)) }
+  }
+  return {}
+})
+const taskNavIconType = (key) => {
+  if (key === 'all') return 'all'
+  if (key === 'legacy') return 'deployment'
+  if (String(key).startsWith('proj-')) return 'project'
+  if (String(key).startsWith('biz-')) return 'system'
+  if (String(key).startsWith('env-')) return 'environment'
+  if (String(key).startsWith('svc-')) return 'service'
+  return 'all'
+}
+const taskNavIcon = (key) => {
+  const type = taskNavIconType(key)
+  if (type === 'project') return ['fas', 'folder-tree']
+  if (type === 'system') return ['fas', 'sitemap']
+  if (type === 'environment') return ['fas', 'server']
+  if (type === 'service') return ['fas', 'cubes']
+  if (type === 'deployment') return ['fas', 'box-archive']
+  return ['fas', 'layer-group']
+}
+const taskNavTreeData = computed(() => {
+  const environmentsById = new Map(businessEnvironments.value.map((item) => [String(item.id), item]))
+  const sortByName = (list) => [...list].sort((left, right) => String(left.name).localeCompare(String(right.name), 'zh-CN'))
+  const environmentNodes = (businessId) => {
+    const servicesByEnvironment = new Map()
+    for (const service of services.value.filter((item) => String(item.business_system) === String(businessId))) {
+      const key = String(service.environment ?? 'unassigned')
+      if (!servicesByEnvironment.has(key)) servicesByEnvironment.set(key, [])
+      servicesByEnvironment.get(key).push(service)
+    }
+    return [...servicesByEnvironment.entries()]
+      .sort(([leftKey], [rightKey]) => (environmentsById.get(leftKey)?.order || 0) - (environmentsById.get(rightKey)?.order || 0))
+      .map(([key, environmentServices]) => ({
+        key: `env-${businessId}-${key}`,
+        title: environmentsById.get(key)?.name || '未指定环境',
+        children: sortByName(environmentServices).map((service) => ({
+          key: `svc-${service.id}`,
+          title: service.name,
+          isLeaf: true,
+        })),
+      }))
+  }
+  const businessNode = (system) => ({
+    key: `biz-${system.id}`,
+    title: system.name,
+    children: environmentNodes(system.id),
+  })
+  const children = sortByName(projects.value).map((project) => ({
+    key: `proj-${project.id}`,
+    title: project.name,
+    children: sortByName(businessSystems.value.filter((system) => String(system.project) === String(project.id))).map(businessNode),
+  }))
+  return [
+    { key: 'all', title: `全部任务`, children },
+    { key: 'legacy', title: '静态范围（存量任务）' },
+  ]
+})
+// 每个绑定挂载点对应的树节点路径（从深到浅），任务出现在其任一路径节点下。
+function taskNavPaths(record) {
+  const paths = []
+  for (const group of record.groups || []) {
+    const mountType = group.mount_type || 'legacy_static'
+    if (mountType === 'project') {
+      paths.push([`proj-${group.project_id}`, 'all'])
+    } else if (mountType === 'environment') {
+      // 环境挂载没有业务维度，显示在项目节点下。
+      paths.push([`proj-${group.project_id}`, 'all'])
+    } else if (mountType === 'business') {
+      const business = businessSystems.value.find((item) => String(item.id) === String(group.business_system_id))
+      if (!business) { paths.push(['all']); continue }
+      const projectKey = `proj-${business.project ?? business.project_id}`
+      // 应用组覆盖该业务（×环境）下的具体逻辑服务：任务出现在每个被覆盖服务的节点上。
+      const covered = services.value.filter((service) =>
+        String(service.business_system) === String(group.business_system_id)
+        && (!group.environment_id || String(service.environment) === String(group.environment_id)))
+      for (const service of covered) {
+        paths.push([projectKey, `biz-${business.id}`, `env-${business.id}-${String(service.environment ?? 'unassigned')}`, `svc-${service.id}`, 'all'])
+      }
+      if (!covered.length) {
+        paths.push([projectKey, `biz-${business.id}`, 'all'])
+      }
+    } else if (mountType === 'service') {
+      const service = services.value.find((item) => String(item.id) === String(group.service_id))
+      const system = service && businessSystems.value.find((item) => String(item.id) === String(service.business_system))
+      if (!service || !system) { paths.push(['all']); continue }
+      paths.push([
+        `proj-${system.project ?? system.project_id}`,
+        `biz-${system.id}`,
+        `env-${system.id}-${String(service.environment ?? 'unassigned')}`,
+        `svc-${service.id}`,
+        'all',
+      ])
+    } else {
+      paths.push(['legacy', 'all'])
+    }
+  }
+  if (!paths.length) paths.push(['legacy', 'all'])
+  return paths
+}
+const visibleTasks = computed(() => {
+  if (taskNavNode.value === 'all') return tasks.value
+  return tasks.value.filter((record) => taskNavPaths(record).some((path) => path.includes(taskNavNode.value)))
+})
+function handleTaskNodeSelect(keys) {
+  taskNavSelected.value = keys.length ? keys : ['all']
+}
+const mountText = (group) => {
+  if (!group || isLegacyBinding(group)) return ''
+  const nameOf = (list, id) => list.value.find((item) => String(item.id) === String(id))?.name || `#${id}`
+  if (group.mount_type === 'project') return `项目: ${nameOf(projects, group.project_id)}`
+  if (group.mount_type === 'environment') return `环境: ${nameOf(projects, group.project_id)} / ${nameOf(businessEnvironments, group.environment_id)}`
+  if (group.mount_type === 'business') {
+    const env = group.environment_id ? `@${nameOf(businessEnvironments, group.environment_id)}` : ''
+    return `业务: ${nameOf(businessSystems, group.business_system_id)}${env} · ${group.instance_mode === 'once' ? '主实例' : '全部实例'}`
+  }
+  if (group.mount_type === 'service') {
+    const service = services.value.find((item) => String(item.id) === String(group.service_id))
+    if (!service) return `逻辑服务（${group.service_id ?? '标识缺失，请重新保存任务'}）· ${group.instance_mode === 'once' ? '主实例' : '全部实例'}`
+    return `逻辑服务: ${service.name} · ${group.instance_mode === 'once' ? '主实例' : '全部实例'}`
+  }
+  return ''
+}
+const isLegacyBinding = (binding) => (binding.mount_type || 'legacy_static') === 'legacy_static'
+const projectOptions = computed(() => projects.value.map((item) => ({ label: item.name, value: item.id })))
+const businessOptions = computed(() => businessSystems.value.map((item) => ({ label: item.name, value: item.id })))
+const environmentOptions = computed(() => businessEnvironments.value.map((item) => ({ label: item.name, value: item.id })))
+const appMountOptions = [
+  { label: '业务系统（×环境，全部同类服务）', value: 'business' },
+  { label: '逻辑服务（精确到单个服务）', value: 'service' },
+]
+function handleAppMountChange(binding) {
+  binding.business_system_id = undefined
+  binding.environment_id = undefined
+  binding.service_id = undefined
+}
+const generalMountOptions = [
+  { label: '项目（全部实例主机）', value: 'project' },
+  { label: '环境（项目×环境实例主机）', value: 'environment' },
+]
+const instanceModeOptions = [
+  { label: '全部实例', value: 'all' },
+  { label: '主实例（HA 场景，选一台在线实例）', value: 'once' },
+]
+function defaultBinding(group) {
+  // 挂载点由树节点决定，与组类型无关：
+  //   服务节点 → 该服务；业务/环境节点 → 业务×环境；项目节点 → 项目。
+  // 组类型只影响解析粒度（应用组按部署实例展开变量），instance_mode 仅应用组有。
+  const context = taskNavContext.value
+  const isApp = (group.category || 'general') === 'application'
+  const mode = isApp ? 'all' : undefined
+  if (context.service_id) {
+    return { group_id: group.id, mount_type: 'service', service_id: context.service_id, instance_mode: mode }
+  }
+  if (context.business_system_id) {
+    return { group_id: group.id, mount_type: 'business', business_system_id: context.business_system_id, environment_id: context.environment_id, instance_mode: mode }
+  }
+  return { group_id: group.id, mount_type: 'project', project_id: context.project_id ?? projects.value[0]?.id, environment_id: undefined }
+}
 const taskGroupSelectOptions = computed(() => {
   const pick = (category) => groupOptions.value
     .filter((group) => (group.category || 'general') === category)
@@ -940,19 +1205,19 @@ const taskGroupSelectOptions = computed(() => {
   if (pick('application').length) options.push({ label: '应用类型巡检组', options: pick('application') })
   return options.length ? options : groupOptions.value.map((group) => ({ label: group.name, value: group.id }))
 })
-function handleTaskGroupsChange(nextIDs) {
-  // 所有组必须同 scope 才能组合（后端同样校验）；不一致时提示并回退本次选择。
-  const selected = (nextIDs || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean)
-  if (selected.length > 1 && new Set(selected.map((group) => group.scope)).size > 1) {
-    message.warning('组合的巡检组必须具有相同的执行范围，已撤销本次选择')
-    taskForm.groups = selected.slice(0, -1).map((group) => group.id)
-  }
-  if (taskTargetsHostGroup.value === true) {
-    taskForm.logical_service = undefined
+function handleTaskGroupsChange(value) {
+  // 单组模型：选择即替换，绑定数组至多一项。
+  // a-select 单选 change 的参数是标量（多选才是数组），v-model 已把标量写入
+  // taskForm.groups，这里统一规范回数组，后续 length/下标访问才成立。
+  const id = Array.isArray(value) ? value[0] : value
+  taskForm.groups = id ? [id] : []
+  if (!id) {
+    taskForm.bindings = []
     return
   }
-  taskForm.selected_host_ids = []
-  scopeCheckedKeys.value = []
+  const existing = (taskForm.bindings || []).find((binding) => binding.group_id === id && !isLegacyBinding(binding))
+  taskForm.bindings = [existing || defaultBinding(groupById(id) || { id, category: 'general' })]
+  syncTaskParamAssignments()
 }
 const scopeLabel = (scope) => ({
   per_deployment: '逻辑服务·每个部署实例',
@@ -1030,17 +1295,6 @@ async function loadServiceTree() {
     projects.value = projectRecords
   } finally {
     serviceTreeLoading.value = false
-  }
-}
-async function loadHostScopeTree() {
-  hostScopeLoading.value = true
-  try {
-    const data = responseData(await getInspectionHostScopeTree())
-    hostScopeGroups.value = data.groups || []
-    hostScopeHosts.value = data.hosts || []
-    hostScopeLoaded.value = true
-  } finally {
-    hostScopeLoading.value = false
   }
 }
 async function loadSelectOptions() {
@@ -1166,6 +1420,9 @@ function confirmRemoveCheck(check, index) {
     onConfirm: async () => { groupForm.checks.splice(index, 1) },
   })
 }
+function addParam() {
+  groupForm.params.push({ name: '', description: '', required: false, default: '' })
+}
 function openGroupModal(record) {
   ensureApplicationOptions()
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
@@ -1184,42 +1441,31 @@ function openGroupModal(record) {
 }
 function openTaskModal(record) {
   Object.assign(taskForm, emptyTaskForm(), record ? JSON.parse(JSON.stringify(record)) : {})
-  // 编辑时把组对象列表转成 ID 列表；兼容仅返回单组 group 的旧数据。
+  // 编辑时把组对象（含挂载点）转成本地绑定配置；兼容仅返回单组 group 的旧数据。
   taskForm.groups = (record?.groups?.length ? record.groups.map((group) => group.id) : (record?.group ? [record.group] : []))
-  // 旧任务可能仍保存已删除主机，编辑时按当前完整主机树清理，避免隐藏 ID 阻断保存。
-  if (hostScopeLoaded.value) {
-    taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
+  taskForm.bindings = (record?.groups?.length
+    ? record.groups.map((group) => ({
+        group_id: group.id,
+        mount_type: group.mount_type || 'legacy_static',
+        project_id: group.project_id ?? undefined,
+        environment_id: group.environment_id ?? undefined,
+        business_system_id: group.business_system_id ?? undefined,
+        service_id: group.service_id ?? undefined,
+        instance_mode: group.instance_mode || ((group.mount_type === 'business' || group.mount_type === 'service') ? 'all' : undefined),
+        param_values: group.param_values ?? undefined,
+      }))
+    : (record?.group ? [{ group_id: record.group, mount_type: 'legacy_static' }] : []))
+  // 编辑：还原已保存的参数赋值（组声明为骨架，已保存值优先）
+  const savedGroup = (record?.groups || [])[0]
+  let savedValues = {}
+  if (savedGroup?.param_values) {
+    try {
+      savedValues = typeof savedGroup.param_values === 'string' ? JSON.parse(savedGroup.param_values) : savedGroup.param_values
+    } catch { savedValues = {} }
   }
-  taskProjectFilter.value = taskForm.logical_service ? resolveServiceProjectId(taskForm.logical_service) : undefined
-  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
+  syncTaskParamAssignments(savedValues)
+  // 新建时若树上有选中节点，选组后即按树上下文生成挂载（handleTaskGroupsChange 处理）。
   taskModalOpen.value = true
-}
-function openScopeEditor() {
-  scopeEditKeyword.value = ''
-  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
-  scopeEditorOpen.value = true
-}
-function onScopeCheck(nextChecked) {
-  // 只保存主机 ID；分组勾选只是批量入口，不能让之后新入组的主机自动进入任务。
-  const checkedInView = pickHostIds(nextChecked)
-  // 搜索后树被裁剪，只能改当前可见节点的勾选态，否则会误删被隐藏的已选主机。
-  const visibleInView = new Set(collectHostIds(filteredScopeEditTree.value))
-  const kept = (taskForm.selected_host_ids || []).filter((id) => !visibleInView.has(Number(id)))
-  taskForm.selected_host_ids = [...new Set([...kept, ...checkedInView])]
-  scopeCheckedKeys.value = toHostKeys(taskForm.selected_host_ids)
-}
-function openScopeViewer(record) {
-  scopeViewKeyword.value = ''
-  scopeViewerTitle.value = `查看巡检范围 - ${record?.name || ''}`
-  scopeViewerTree.value = appendHostCount(pruneHostScopeTree(hostScopeTreeData.value, record?.selected_host_ids))
-  scopeViewerOpen.value = true
-}
-function handleTaskProjectChange() {
-  // 清空过滤器时树恢复全量，已选服务仍可见，不能连带清掉。
-  if (!taskProjectFilter.value || !taskForm.logical_service) return
-  if (String(resolveServiceProjectId(taskForm.logical_service)) !== String(taskProjectFilter.value)) {
-    taskForm.logical_service = undefined
-  }
 }
 function openScheduleModal(record) {
   Object.assign(scheduleForm, emptyScheduleForm(), {
@@ -1239,6 +1485,10 @@ async function submitGroup() {
     message.warning('请完整填写巡检组和检查项')
     return
   }
+  if (groupForm.category === 'application' && !groupForm.application) {
+    message.warning('应用类型巡检组必须选择适用应用')
+    return
+  }
   // 名称重复在本地先拦截，直接指出重复项，避免后端 400 再改一轮。
   const nameCounts = {}
   groupForm.checks.forEach((check) => {
@@ -1248,6 +1498,12 @@ async function submitGroup() {
   const duplicated = Object.keys(nameCounts).filter((name) => nameCounts[name] > 1)
   if (duplicated.length) {
     message.warning(`同一巡检组内检查项名称不能重复: ${duplicated.join('、')}`)
+    return
+  }
+  const builtins = ['APP_HOME', 'RUN_USER', 'INSTANCE_NAME', 'APPLICATION_VERSION', 'SERVICE_NAME']
+  const conflict = groupForm.params.find((param) => builtins.includes((param.name || '').trim()))
+  if (conflict) {
+    message.warning(`检查参数 ${conflict.name} 与内置变量重名，请换个名字`)
     return
   }
   savingGroup.value = true
@@ -1273,19 +1529,19 @@ async function submitGroup() {
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
-  if (!hostScopeLoaded.value) await loadHostScopeTree()
-  taskForm.selected_host_ids = retainAvailableHostIds(taskForm.selected_host_ids, hostScopeHosts.value)
-  const hasScope = (taskForm.selected_host_ids?.length || 0) > 0
-  const hasTarget = taskTargetsHostGroup.value ? hasScope : taskForm.logical_service
+  const hasTarget = !!taskTargetSummary.value && taskTargetSummary.value !== 'STATIC'
   if (!taskForm.name.trim() || !taskForm.groups?.length || !hasTarget) {
-    message.warning('请完整填写任务信息')
+    message.warning('请完整填写任务信息，并在左侧树选择巡检对象')
+    return
+  }
+  const paramValues = buildParamValuesPayload()
+  if (paramValues === null && !taskIsLegacy.value) {
+    message.warning('巡检参数赋值不完整：引用需填变量名，固定值不能为空')
     return
   }
   savingTask.value = true
   try {
-    const payload = { ...taskForm, group: taskForm.groups[0] }
-    if (taskTargetsHostGroup.value) payload.logical_service = null
-    else payload.selected_host_ids = []
+    const payload = { ...taskForm, group: taskForm.groups[0], bindings: (taskForm.bindings || []).map((binding) => ({ ...binding, param_values: paramValues || {} })) }
     await saveInspectionTask(payload)
     taskModalOpen.value = false
     message.success('巡检任务已保存')
@@ -1422,7 +1678,9 @@ function confirmClearSchedule(record) {
 }
 function handleTabChange(key) {
   if (key === 'executions') loadExecutions()
-  if (key === 'schedules') loadSelectOptions()
+  if (key === 'tasks' || key === 'schedules') loadSelectOptions()
+  // 组导航树按适用应用分组，需要应用列表
+  if (key === 'groups') ensureApplicationOptions()
 }
 function startExecutionPolling() {
   if (executionPollTimer) return
@@ -1444,8 +1702,8 @@ onMounted(async () => {
     loadTasks(),
     loadSelectOptions(),
     loadServiceTree(),
-    loadHostScopeTree(),
     loadExecutions(),
+    ensureApplicationOptions(),
   ])
 })
 onBeforeUnmount(stopExecutionPolling)
@@ -1459,6 +1717,9 @@ useKeepAliveRefreshLifecycle(() => {
 </script>
 
 <style scoped>
+.target-missing :deep(input) { color: #b0b7c0; }
+.param-assign-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.param-assign-name { min-width: 120px; font-weight: 600; }
 .inspection-page { min-height: 100%; padding: 24px; background: #f4f6f8; color: #17212b; }
 .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 8px 4px 22px; border-bottom: 1px solid #d9e0e6; }
 .page-header h1 { margin: 0 0 6px; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif; font-size: 28px; font-weight: 700; letter-spacing: 0; }
@@ -1497,5 +1758,27 @@ pre { max-width: 240px; margin: 0; white-space: pre-wrap; word-break: break-word
   .summary-strip { width: 100%; }
   .summary-strip div { flex: 1; min-width: 0; padding: 8px; }
   .form-grid { grid-template-columns: 1fr; gap: 0; }
+}
+.service-tree-node {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+.service-tree-icon {
+  flex: none;
+}
+.service-tree-icon--all { color: #5b6472; }
+.service-tree-icon--project { color: #36709b; }
+.service-tree-icon--system { color: #25856d; }
+.service-tree-icon--environment { color: #b56d2d; }
+.service-tree-icon--service { color: #ad6800; }
+.service-tree-icon--deployment { color: #8c8c8c; }
+.service-tree-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

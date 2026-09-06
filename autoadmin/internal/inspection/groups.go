@@ -11,13 +11,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// paramInput 是巡检组的检查参数声明（形参）：检查项里用 ${name} 引用，
+// 任务绑定时赋值（固定值 / 引用内置变量 / 引用服务宏）。
+type paramInput struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Default     string `json:"default"`
+}
+
 type groupInput struct {
 	Name        *string       `json:"name"`
-	Scope       *string       `json:"scope"`
 	Description *string       `json:"description"`
 	Enabled     *bool         `json:"enabled"`
 	Category    *string       `json:"category"`
 	Application *int64        `json:"application"`
+	Params      *[]paramInput `json:"params"`
 	Checks      *[]checkInput `json:"checks"`
 }
 
@@ -61,8 +70,8 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 	}
 	defer transaction.Rollback()
 	if id == 0 {
-		if input.Name == nil || strings.TrimSpace(*input.Name) == "" || input.Scope == nil {
-			response.BusinessError(context, 400, "名称和执行范围不能为空", nil)
+		if input.Name == nil || strings.TrimSpace(*input.Name) == "" {
+			response.BusinessError(context, 400, "巡检组名称不能为空", nil)
 			return
 		}
 		description, enabled, category := "", true, groupCategory(input.Category, "general")
@@ -76,31 +85,31 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 			response.BusinessError(context, 400, message, nil)
 			return
 		}
-		result, execErr := transaction.ExecContext(context, `INSERT INTO inspection_group(name,scope,description,enabled,category,application_id,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, strings.TrimSpace(*input.Name), *input.Scope, description, enabled, category, nullableIDPtr(input.Application))
+		result, execErr := transaction.ExecContext(context, `INSERT INTO inspection_group(name,description,enabled,category,application_id,params,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, strings.TrimSpace(*input.Name), description, enabled, category, nullableIDPtr(input.Application), jsonBytes(input.Params))
 		if execErr != nil {
 			response.BusinessError(context, 400, "巡检组名称已存在", nil)
 			return
 		}
 		id, err = result.LastInsertId()
 	} else {
-		var oldScope string
-		var taskCount int
-		err = transaction.QueryRowContext(context, `SELECT g.scope,(SELECT COUNT(*) FROM inspection_task t WHERE t.group_id=g.id) FROM inspection_group g WHERE g.id=? FOR UPDATE`, id).Scan(&oldScope, &taskCount)
-		if err != nil {
+		var currentCategory string
+		if err = transaction.QueryRowContext(context, `SELECT category FROM inspection_group WHERE id=? FOR UPDATE`, id).Scan(&currentCategory); err != nil {
 			response.BusinessError(context, 404, "巡检组不存在", nil)
 			return
 		}
-		if input.Scope != nil && taskCount > 0 && (*input.Scope == "per_host") != (oldScope == "per_host") {
-			response.BusinessError(context, 400, "巡检组已被任务引用，不能在“逻辑服务”与“主机组”之间切换范围，请新建巡检组", nil)
-			return
-		}
-		if input.Category != nil {
-			if message, valid := handler.validateGroupApplication(context, input.Application, *input.Category); !valid {
+		// 编辑：提交了分类或应用标签就按"编辑后的分类"校验必选（分类未提交则查原值）。
+		if input.Category != nil || input.Application != nil {
+			effectiveCategory := groupCategory(input.Category, currentCategory)
+			if message, valid := handler.validateGroupApplication(context, input.Application, effectiveCategory); !valid {
 				response.BusinessError(context, 400, message, nil)
 				return
 			}
 		}
-		_, err = transaction.ExecContext(context, `UPDATE inspection_group SET name=COALESCE(?,name),scope=COALESCE(?,scope),description=COALESCE(?,description),enabled=COALESCE(?,enabled),category=COALESCE(?,category),application_id=COALESCE(?,application_id),update_time=NOW() WHERE id=?`, input.Name, input.Scope, input.Description, input.Enabled, input.Category, nullableIDPtr(input.Application), id)
+		var paramsJSON any
+		if input.Params != nil {
+			paramsJSON = jsonBytes(*input.Params)
+		}
+		_, err = transaction.ExecContext(context, `UPDATE inspection_group SET name=COALESCE(?,name),description=COALESCE(?,description),enabled=COALESCE(?,enabled),category=COALESCE(?,category),application_id=COALESCE(?,application_id),params=COALESCE(?,params),update_time=NOW() WHERE id=?`, input.Name, input.Description, input.Enabled, input.Category, nullableIDPtr(input.Application), paramsJSON, id)
 	}
 	if err != nil {
 		response.Error(context, err)
@@ -184,15 +193,19 @@ func (handler *Handler) DeleteGroup(context *gin.Context) {
 }
 
 func validateGroupInput(input groupInput) string {
-	if input.Scope != nil && !map[string]bool{"per_deployment": true, "service_once": true, "per_host": true}[*input.Scope] {
-		return "执行范围无效"
-	}
 	if input.Category != nil && !map[string]bool{"general": true, "application": true}[*input.Category] {
 		return "巡检组分类无效，仅支持通用（general）或应用类型（application）"
+	}
+	if message := validateParamDeclarations(input.Category, input.Params); message != "" {
+		return message
 	}
 	if input.Checks == nil {
 		return ""
 	}
+	// 应用上下文变量（${APP_HOME} 等）只有实例上下文能展开；实例上下文由
+	// 应用类型组的挂载点（business/service）提供，通用组挂任何地方都是主机
+	// 上下文——所以按分类校验，而不是已废弃的 scope。
+	category := groupCategory(input.Category, "general")
 	seen := make(map[string]bool)
 	for _, check := range *input.Checks {
 		if seen[check.Name] {
@@ -202,9 +215,37 @@ func validateGroupInput(input groupInput) string {
 		if message := validateCheck(check); message != "" {
 			return fmt.Sprintf("检查项 %s: %s", check.Name, message)
 		}
-		if input.Scope != nil && *input.Scope == "per_host" && containsApplicationVariable(check.Config) {
-			return "主机组巡检不能使用应用上下文变量，请使用 ${HOST_IP} 或 ${HOST_NAME}"
+		if category == "general" && containsApplicationVariable(check.Config) {
+			return fmt.Sprintf("通用巡检组不能使用应用上下文变量（%s），请使用 ${HOST_IP} 或 ${HOST_NAME}；如需检查应用实例请使用应用类型巡检组", strings.Join(applicationVariables, "、"))
 		}
+	}
+	return ""
+}
+
+var applicationVariables = []string{"${APP_HOME}", "${RUN_USER}", "${INSTANCE_NAME}", "${APPLICATION_VERSION}", "${SERVICE_NAME}"}
+
+// validateParamDeclarations 校验检查参数声明：名称唯一、不得与内置变量重名。
+func validateParamDeclarations(category *string, params *[]paramInput) string {
+	if params == nil {
+		return ""
+	}
+	standard := map[string]bool{}
+	for _, variable := range applicationVariables {
+		standard[strings.Trim(variable, "${}")] = true
+	}
+	seen := make(map[string]bool)
+	for _, param := range *params {
+		name := strings.TrimSpace(param.Name)
+		if name == "" {
+			return "检查参数名称不能为空"
+		}
+		if standard[name] {
+			return fmt.Sprintf("检查参数 %q 与内置变量重名，请换个名字", name)
+		}
+		if seen[name] {
+			return fmt.Sprintf("检查参数名称不能重复: %q", name)
+		}
+		seen[name] = true
 	}
 	return ""
 }
@@ -229,7 +270,7 @@ func validateCheck(check checkInput) string {
 
 func containsApplicationVariable(value any) bool {
 	raw, _ := json.Marshal(value)
-	for _, variable := range []string{"${APP_HOME}", "${RUN_USER}", "${INSTANCE_NAME}", "${APPLICATION_VERSION}", "${SERVICE_NAME}"} {
+	for _, variable := range applicationVariables {
 		if strings.Contains(string(raw), variable) {
 			return true
 		}
@@ -244,11 +285,14 @@ func groupCategory(input *string, fallback string) string {
 	return *input
 }
 
-// validateGroupApplication 校验应用类型组的应用标签（可选，不强制拦截）：
-// 填了就必须指向真实存在的应用。
+// validateGroupApplication 校验应用类型组的应用标签：应用类型组必选一个真实存在的应用；
+// 通用组不适用（忽略）。
 func (handler *Handler) validateGroupApplication(context *gin.Context, application *int64, category string) (string, bool) {
-	if category != "application" || application == nil || *application <= 0 {
+	if category != "application" {
 		return "", true
+	}
+	if application == nil || *application <= 0 {
+		return "应用类型巡检组必须选择适用应用", false
 	}
 	var count int
 	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application WHERE id=?`, *application).Scan(&count); err != nil {

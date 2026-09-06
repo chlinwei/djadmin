@@ -35,24 +35,35 @@ func TestInspectionCheckResponseFromDecodesConfigAndBoolean(t *testing.T) {
 	}
 }
 
-func TestInspectionTaskResponseFromComputesTargetTypeAndName(t *testing.T) {
-	perHost := db.ListInspectionTasksTypedRow{
-		ID: 1, Scope: "per_host", Enabled: true, SelectedHostIds: json.RawMessage(`[1,2]`),
+// 目标名现在由执行时的挂载点生成（mountTargetName），列表 DTO 不再计算
+// TargetType；Groups 必须完整透出（含 mount_type/service_id）。
+func TestInspectionTaskResponseFromKeepsGroups(t *testing.T) {
+	row := db.ListInspectionTasksTypedRow{
+		ID: 1, Name: "task", Enabled: true,
+		Groups: json.RawMessage(`[{"id":34,"name":"artemis check","category":"application","mount_type":"service","service_id":10,"instance_mode":"all"}]`),
 	}
-	result := inspectionTaskResponseFrom(perHost)
-	if result.TargetType != "host_group" || result.TargetName != "2 台主机" {
-		t.Fatalf("per_host target = %q/%q, want host_group/2 台主机", result.TargetType, result.TargetName)
-	}
+	result := inspectionTaskResponseFrom(row)
 
-	logical := db.ListInspectionTasksTypedRow{
-		ID: 2, Scope: "service_once", Enabled: false, SelectedHostIds: json.RawMessage(`[]`),
-		LogicalServiceName: "checkout-service",
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	result = inspectionTaskResponseFrom(logical)
-	if result.TargetType != "logical_service" || result.TargetName != "checkout-service" {
-		t.Fatalf("logical target = %q/%q, want logical_service/checkout-service", result.TargetType, result.TargetName)
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if result.Enabled {
-		t.Fatalf("enabled = true, want false")
+	groups, ok := decoded["groups"].([]any)
+	if !ok || len(groups) != 1 {
+		t.Fatalf("groups = %#v, want one entry", decoded["groups"])
+	}
+	group := groups[0].(map[string]any)
+	if group["mount_type"] != "service" || group["service_id"] != float64(10) {
+		t.Fatalf("group = %#v, want service mount with service_id=10", group)
+	}
+	if _, exists := decoded["scope"]; exists {
+		t.Fatal("scope field should be removed from task response")
+	}
+	if _, exists := decoded["logical_service"]; exists {
+		t.Fatal("logical_service field should be removed from task response")
 	}
 }

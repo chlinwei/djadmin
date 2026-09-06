@@ -505,16 +505,16 @@ type InspectionExecution struct {
 }
 
 type InspectionGroup struct {
-	ID            int64          `json:"id"`
-	CreateTime    time.Time      `json:"create_time"`
-	UpdateTime    time.Time      `json:"update_time"`
-	Remark        sql.NullString `json:"remark"`
-	Name          string         `json:"name"`
-	Scope         string         `json:"scope"`
-	Description   string         `json:"description"`
-	Enabled       bool           `json:"enabled"`
-	Category      string         `json:"category"`
-	ApplicationID sql.NullInt64  `json:"application_id"`
+	ID            int64           `json:"id"`
+	CreateTime    time.Time       `json:"create_time"`
+	UpdateTime    time.Time       `json:"update_time"`
+	Remark        sql.NullString  `json:"remark"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Enabled       bool            `json:"enabled"`
+	Category      string          `json:"category"`
+	ApplicationID sql.NullInt64   `json:"application_id"`
+	Params        json.RawMessage `json:"params"`
 }
 
 type InspectionResult struct {
@@ -556,27 +556,32 @@ type InspectionTargetExecution struct {
 }
 
 type InspectionTask struct {
-	ID               int64           `json:"id"`
-	CreateTime       time.Time       `json:"create_time"`
-	UpdateTime       time.Time       `json:"update_time"`
-	Remark           sql.NullString  `json:"remark"`
-	Name             string          `json:"name"`
-	Concurrency      uint32          `json:"concurrency"`
-	TimeoutSeconds   uint32          `json:"timeout_seconds"`
-	Enabled          bool            `json:"enabled"`
-	GroupID          int64           `json:"group_id"`
-	LogicalServiceID sql.NullInt64   `json:"logical_service_id"`
-	CronExpression   string          `json:"cron_expression"`
-	LastRunTime      sql.NullTime    `json:"last_run_time"`
-	NextRunTime      sql.NullTime    `json:"next_run_time"`
-	InspectionName   string          `json:"inspection_name"`
-	SelectedHostIds  json.RawMessage `json:"selected_host_ids"`
+	ID             int64          `json:"id"`
+	CreateTime     time.Time      `json:"create_time"`
+	UpdateTime     time.Time      `json:"update_time"`
+	Remark         sql.NullString `json:"remark"`
+	Name           string         `json:"name"`
+	Concurrency    uint32         `json:"concurrency"`
+	TimeoutSeconds uint32         `json:"timeout_seconds"`
+	Enabled        bool           `json:"enabled"`
+	GroupID        int64          `json:"group_id"`
+	CronExpression string         `json:"cron_expression"`
+	LastRunTime    sql.NullTime   `json:"last_run_time"`
+	NextRunTime    sql.NullTime   `json:"next_run_time"`
+	InspectionName string         `json:"inspection_name"`
 }
 
 type InspectionTaskGroup struct {
-	ID      int64 `json:"id"`
-	TaskID  int64 `json:"task_id"`
-	GroupID int64 `json:"group_id"`
+	ID               int64           `json:"id"`
+	TaskID           int64           `json:"task_id"`
+	GroupID          int64           `json:"group_id"`
+	MountType        string          `json:"mount_type"`
+	ProjectID        sql.NullInt64   `json:"project_id"`
+	EnvironmentID    sql.NullInt64   `json:"environment_id"`
+	BusinessSystemID sql.NullInt64   `json:"business_system_id"`
+	InstanceMode     sql.NullString  `json:"instance_mode"`
+	ServiceID        sql.NullInt64   `json:"service_id"`
+	ParamValues      json.RawMessage `json:"param_values"`
 }
 
 type MonitorAlertHistory struct {

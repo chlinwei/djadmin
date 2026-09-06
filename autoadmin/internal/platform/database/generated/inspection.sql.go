@@ -67,8 +67,7 @@ func (q *Queries) CountInspectionGroups(ctx context.Context, arg CountInspection
 const countInspectionTasks = `-- name: CountInspectionTasks :one
 SELECT COUNT(*) FROM inspection_task t
 JOIN inspection_group g ON g.id = t.group_id
-LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
-WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ? OR s.name LIKE ?)
+WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ?)
 `
 
 type CountInspectionTasksParams struct {
@@ -76,12 +75,7 @@ type CountInspectionTasksParams struct {
 }
 
 func (q *Queries) CountInspectionTasks(ctx context.Context, arg CountInspectionTasksParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countInspectionTasks,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
-	)
+	row := q.db.QueryRowContext(ctx, countInspectionTasks, arg.Pattern, arg.Pattern, arg.Pattern)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -136,7 +130,7 @@ func (q *Queries) GetInspectionExecutionTyped(ctx context.Context, id int64) (Ge
 }
 
 const getInspectionGroup = `-- name: GetInspectionGroup :one
-SELECT g.id, g.name, g.scope, g.description, g.enabled, g.category,
+SELECT g.id, g.name, g.description, g.enabled, g.category, COALESCE(g.params,'[]') AS params,
        g.application_id AS ` + "`" + `application` + "`" + `, COALESCE(a.name,'') AS application_name,
        g.create_time, g.update_time
 FROM inspection_group g
@@ -145,16 +139,16 @@ WHERE g.id = ?
 `
 
 type GetInspectionGroupRow struct {
-	ID              int64         `json:"id"`
-	Name            string        `json:"name"`
-	Scope           string        `json:"scope"`
-	Description     string        `json:"description"`
-	Enabled         bool          `json:"enabled"`
-	Category        string        `json:"category"`
-	Application     sql.NullInt64 `json:"application"`
-	ApplicationName string        `json:"application_name"`
-	CreateTime      time.Time     `json:"create_time"`
-	UpdateTime      time.Time     `json:"update_time"`
+	ID              int64           `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Enabled         bool            `json:"enabled"`
+	Category        string          `json:"category"`
+	Params          json.RawMessage `json:"params"`
+	Application     sql.NullInt64   `json:"application"`
+	ApplicationName string          `json:"application_name"`
+	CreateTime      time.Time       `json:"create_time"`
+	UpdateTime      time.Time       `json:"update_time"`
 }
 
 func (q *Queries) GetInspectionGroup(ctx context.Context, id int64) (GetInspectionGroupRow, error) {
@@ -163,10 +157,10 @@ func (q *Queries) GetInspectionGroup(ctx context.Context, id int64) (GetInspecti
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
-		&i.Scope,
 		&i.Description,
 		&i.Enabled,
 		&i.Category,
+		&i.Params,
 		&i.Application,
 		&i.ApplicationName,
 		&i.CreateTime,
@@ -216,38 +210,35 @@ func (q *Queries) GetInspectionServiceBusinessChain(ctx context.Context, service
 }
 
 const getInspectionTask = `-- name: GetInspectionTask :one
-SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name, g.scope AS scope,
-       t.logical_service_id AS logical_service, COALESCE(s.name,'') AS logical_service_name,
-       (SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('id', tg2.group_id, 'name', g2.name, 'scope', g2.scope, 'category', g2.category)), JSON_ARRAY())
+SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name,
+       (SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('id', tg2.group_id, 'name', g2.name, 'category', g2.category,
+              'mount_type', tg2.mount_type, 'project_id', tg2.project_id, 'environment_id', tg2.environment_id,
+              'business_system_id', tg2.business_system_id, 'instance_mode', tg2.instance_mode,
+              'service_id', tg2.service_id, 'params', COALESCE(g2.params,'[]'), 'param_values', COALESCE(tg2.param_values,'{}'))), JSON_ARRAY())
         FROM inspection_task_group tg2 JOIN inspection_group g2 ON g2.id = tg2.group_id
         WHERE tg2.task_id = t.id) AS ` + "`" + `groups` + "`" + `,
-       t.selected_host_ids, t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
+       t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
        t.last_run_time, t.enabled, t.create_time, t.update_time
 FROM inspection_task t
 JOIN inspection_group g ON g.id = t.group_id
-LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
 WHERE t.id = ?
 `
 
 type GetInspectionTaskRow struct {
-	ID                 int64           `json:"id"`
-	Name               string          `json:"name"`
-	InspectionName     string          `json:"inspection_name"`
-	Group              int64           `json:"group"`
-	GroupName          string          `json:"group_name"`
-	Scope              string          `json:"scope"`
-	LogicalService     sql.NullInt64   `json:"logical_service"`
-	LogicalServiceName string          `json:"logical_service_name"`
-	Groups             interface{}     `json:"groups"`
-	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
-	Concurrency        uint32          `json:"concurrency"`
-	TimeoutSeconds     uint32          `json:"timeout_seconds"`
-	CronExpression     string          `json:"cron_expression"`
-	NextRunTime        sql.NullTime    `json:"next_run_time"`
-	LastRunTime        sql.NullTime    `json:"last_run_time"`
-	Enabled            bool            `json:"enabled"`
-	CreateTime         time.Time       `json:"create_time"`
-	UpdateTime         time.Time       `json:"update_time"`
+	ID             int64        `json:"id"`
+	Name           string       `json:"name"`
+	InspectionName string       `json:"inspection_name"`
+	Group          int64        `json:"group"`
+	GroupName      string       `json:"group_name"`
+	Groups         interface{}  `json:"groups"`
+	Concurrency    uint32       `json:"concurrency"`
+	TimeoutSeconds uint32       `json:"timeout_seconds"`
+	CronExpression string       `json:"cron_expression"`
+	NextRunTime    sql.NullTime `json:"next_run_time"`
+	LastRunTime    sql.NullTime `json:"last_run_time"`
+	Enabled        bool         `json:"enabled"`
+	CreateTime     time.Time    `json:"create_time"`
+	UpdateTime     time.Time    `json:"update_time"`
 }
 
 func (q *Queries) GetInspectionTask(ctx context.Context, id int64) (GetInspectionTaskRow, error) {
@@ -259,11 +250,7 @@ func (q *Queries) GetInspectionTask(ctx context.Context, id int64) (GetInspectio
 		&i.InspectionName,
 		&i.Group,
 		&i.GroupName,
-		&i.Scope,
-		&i.LogicalService,
-		&i.LogicalServiceName,
 		&i.Groups,
-		&i.SelectedHostIds,
 		&i.Concurrency,
 		&i.TimeoutSeconds,
 		&i.CronExpression,
@@ -425,50 +412,6 @@ func (q *Queries) ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTr
 	return items, nil
 }
 
-const listHostScopeTreeHosts = `-- name: ListHostScopeTreeHosts :many
-SELECT id, instance_name, ip, group_id, agent_id
-FROM assets_host
-WHERE is_deleted_in_cloud = FALSE
-ORDER BY instance_name, id
-`
-
-type ListHostScopeTreeHostsRow struct {
-	ID           int64          `json:"id"`
-	InstanceName sql.NullString `json:"instance_name"`
-	Ip           sql.NullString `json:"ip"`
-	GroupID      sql.NullInt64  `json:"group_id"`
-	AgentID      sql.NullString `json:"agent_id"`
-}
-
-func (q *Queries) ListHostScopeTreeHosts(ctx context.Context) ([]ListHostScopeTreeHostsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listHostScopeTreeHosts)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListHostScopeTreeHostsRow{}
-	for rows.Next() {
-		var i ListHostScopeTreeHostsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.InstanceName,
-			&i.Ip,
-			&i.GroupID,
-			&i.AgentID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listInspectionChecksByGroup = `-- name: ListInspectionChecksByGroup :many
 SELECT id, name, executor, execution_location, config, severity, enabled, ` + "`" + `order` + "`" + `
 FROM inspection_check WHERE group_id = ? ORDER BY ` + "`" + `order` + "`" + `, id
@@ -605,7 +548,7 @@ func (q *Queries) ListInspectionExecutions(ctx context.Context, arg ListInspecti
 }
 
 const listInspectionGroups = `-- name: ListInspectionGroups :many
-SELECT g.id, g.name, g.scope, g.description, g.enabled, g.category,
+SELECT g.id, g.name, g.description, g.enabled, g.category, COALESCE(g.params,'[]') AS params,
        g.application_id AS ` + "`" + `application` + "`" + `, COALESCE(a.name,'') AS application_name,
        g.create_time, g.update_time
 FROM inspection_group g
@@ -622,16 +565,16 @@ type ListInspectionGroupsParams struct {
 }
 
 type ListInspectionGroupsRow struct {
-	ID              int64         `json:"id"`
-	Name            string        `json:"name"`
-	Scope           string        `json:"scope"`
-	Description     string        `json:"description"`
-	Enabled         bool          `json:"enabled"`
-	Category        string        `json:"category"`
-	Application     sql.NullInt64 `json:"application"`
-	ApplicationName string        `json:"application_name"`
-	CreateTime      time.Time     `json:"create_time"`
-	UpdateTime      time.Time     `json:"update_time"`
+	ID              int64           `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Enabled         bool            `json:"enabled"`
+	Category        string          `json:"category"`
+	Params          json.RawMessage `json:"params"`
+	Application     sql.NullInt64   `json:"application"`
+	ApplicationName string          `json:"application_name"`
+	CreateTime      time.Time       `json:"create_time"`
+	UpdateTime      time.Time       `json:"update_time"`
 }
 
 func (q *Queries) ListInspectionGroups(ctx context.Context, arg ListInspectionGroupsParams) ([]ListInspectionGroupsRow, error) {
@@ -652,10 +595,10 @@ func (q *Queries) ListInspectionGroups(ctx context.Context, arg ListInspectionGr
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
-			&i.Scope,
 			&i.Description,
 			&i.Enabled,
 			&i.Category,
+			&i.Params,
 			&i.Application,
 			&i.ApplicationName,
 			&i.CreateTime,
@@ -793,6 +736,66 @@ func (q *Queries) ListInspectionTargetExecutions(ctx context.Context, executionI
 	return items, nil
 }
 
+const listInspectionTaskBindings = `-- name: ListInspectionTaskBindings :many
+SELECT tg.group_id, g.name AS group_name, g.category, g.enabled, COALESCE(g.params,'[]') AS params,
+       tg.mount_type, tg.project_id, tg.environment_id, tg.business_system_id, tg.instance_mode, tg.service_id, tg.param_values
+FROM inspection_task_group tg
+JOIN inspection_group g ON g.id = tg.group_id
+WHERE tg.task_id = ?
+ORDER BY tg.id
+`
+
+type ListInspectionTaskBindingsRow struct {
+	GroupID          int64           `json:"group_id"`
+	GroupName        string          `json:"group_name"`
+	Category         string          `json:"category"`
+	Enabled          bool            `json:"enabled"`
+	Params           json.RawMessage `json:"params"`
+	MountType        string          `json:"mount_type"`
+	ProjectID        sql.NullInt64   `json:"project_id"`
+	EnvironmentID    sql.NullInt64   `json:"environment_id"`
+	BusinessSystemID sql.NullInt64   `json:"business_system_id"`
+	InstanceMode     sql.NullString  `json:"instance_mode"`
+	ServiceID        sql.NullInt64   `json:"service_id"`
+	ParamValues      json.RawMessage `json:"param_values"`
+}
+
+func (q *Queries) ListInspectionTaskBindings(ctx context.Context, taskID int64) ([]ListInspectionTaskBindingsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionTaskBindings, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionTaskBindingsRow{}
+	for rows.Next() {
+		var i ListInspectionTaskBindingsRow
+		if err := rows.Scan(
+			&i.GroupID,
+			&i.GroupName,
+			&i.Category,
+			&i.Enabled,
+			&i.Params,
+			&i.MountType,
+			&i.ProjectID,
+			&i.EnvironmentID,
+			&i.BusinessSystemID,
+			&i.InstanceMode,
+			&i.ServiceID,
+			&i.ParamValues,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInspectionTaskGroupIDs = `-- name: ListInspectionTaskGroupIDs :many
 SELECT group_id FROM inspection_task_group WHERE task_id = ? ORDER BY id
 `
@@ -821,17 +824,18 @@ func (q *Queries) ListInspectionTaskGroupIDs(ctx context.Context, taskID int64) 
 }
 
 const listInspectionTasksTyped = `-- name: ListInspectionTasksTyped :many
-SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name, g.scope AS scope,
-       t.logical_service_id AS logical_service, COALESCE(s.name,'') AS logical_service_name,
-       (SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('id', tg2.group_id, 'name', g2.name, 'scope', g2.scope, 'category', g2.category)), JSON_ARRAY())
+SELECT t.id, t.name, t.inspection_name, t.group_id AS ` + "`" + `group` + "`" + `, g.name AS group_name,
+       (SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('id', tg2.group_id, 'name', g2.name, 'category', g2.category,
+              'mount_type', tg2.mount_type, 'project_id', tg2.project_id, 'environment_id', tg2.environment_id,
+              'business_system_id', tg2.business_system_id, 'instance_mode', tg2.instance_mode,
+              'service_id', tg2.service_id, 'params', COALESCE(g2.params,'[]'), 'param_values', COALESCE(tg2.param_values,'{}'))), JSON_ARRAY())
         FROM inspection_task_group tg2 JOIN inspection_group g2 ON g2.id = tg2.group_id
         WHERE tg2.task_id = t.id) AS ` + "`" + `groups` + "`" + `,
-       t.selected_host_ids, t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
+       t.concurrency, t.timeout_seconds, t.cron_expression, t.next_run_time,
        t.last_run_time, t.enabled, t.create_time, t.update_time
 FROM inspection_task t
 JOIN inspection_group g ON g.id = t.group_id
-LEFT JOIN assets_application_service s ON s.id = t.logical_service_id
-WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ? OR s.name LIKE ?)
+WHERE (? IS NULL OR t.name LIKE ? OR g.name LIKE ?)
 ORDER BY t.id DESC
 LIMIT ? OFFSET ?
 `
@@ -843,29 +847,24 @@ type ListInspectionTasksTypedParams struct {
 }
 
 type ListInspectionTasksTypedRow struct {
-	ID                 int64           `json:"id"`
-	Name               string          `json:"name"`
-	InspectionName     string          `json:"inspection_name"`
-	Group              int64           `json:"group"`
-	GroupName          string          `json:"group_name"`
-	Scope              string          `json:"scope"`
-	LogicalService     sql.NullInt64   `json:"logical_service"`
-	LogicalServiceName string          `json:"logical_service_name"`
-	Groups             interface{}     `json:"groups"`
-	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
-	Concurrency        uint32          `json:"concurrency"`
-	TimeoutSeconds     uint32          `json:"timeout_seconds"`
-	CronExpression     string          `json:"cron_expression"`
-	NextRunTime        sql.NullTime    `json:"next_run_time"`
-	LastRunTime        sql.NullTime    `json:"last_run_time"`
-	Enabled            bool            `json:"enabled"`
-	CreateTime         time.Time       `json:"create_time"`
-	UpdateTime         time.Time       `json:"update_time"`
+	ID             int64        `json:"id"`
+	Name           string       `json:"name"`
+	InspectionName string       `json:"inspection_name"`
+	Group          int64        `json:"group"`
+	GroupName      string       `json:"group_name"`
+	Groups         interface{}  `json:"groups"`
+	Concurrency    uint32       `json:"concurrency"`
+	TimeoutSeconds uint32       `json:"timeout_seconds"`
+	CronExpression string       `json:"cron_expression"`
+	NextRunTime    sql.NullTime `json:"next_run_time"`
+	LastRunTime    sql.NullTime `json:"last_run_time"`
+	Enabled        bool         `json:"enabled"`
+	CreateTime     time.Time    `json:"create_time"`
+	UpdateTime     time.Time    `json:"update_time"`
 }
 
 func (q *Queries) ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error) {
 	rows, err := q.db.QueryContext(ctx, listInspectionTasksTyped,
-		arg.Pattern,
 		arg.Pattern,
 		arg.Pattern,
 		arg.Pattern,
@@ -885,11 +884,7 @@ func (q *Queries) ListInspectionTasksTyped(ctx context.Context, arg ListInspecti
 			&i.InspectionName,
 			&i.Group,
 			&i.GroupName,
-			&i.Scope,
-			&i.LogicalService,
-			&i.LogicalServiceName,
 			&i.Groups,
-			&i.SelectedHostIds,
 			&i.Concurrency,
 			&i.TimeoutSeconds,
 			&i.CronExpression,
@@ -898,6 +893,264 @@ func (q *Queries) ListInspectionTasksTyped(ctx context.Context, arg ListInspecti
 			&i.Enabled,
 			&i.CreateTime,
 			&i.UpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMountBusinessInstances = `-- name: ListMountBusinessInstances :many
+SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
+       COALESCE(h.ip,'') AS ip, COALESCE(h.agent_id,'') AS agent_id, h.agent_online,
+       s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+FROM assets_application_service s
+JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE
+JOIN assets_host h ON h.id = d.host_id AND h.is_deleted_in_cloud = FALSE
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_application_version v ON v.id = s.application_version_id
+WHERE s.business_system_id = ?
+  AND (? IS NULL OR s.environment_id = ?)
+ORDER BY s.id, d.id
+`
+
+type ListMountBusinessInstancesParams struct {
+	BusinessSystemID int64         `json:"business_system_id"`
+	EnvironmentID    sql.NullInt64 `json:"environment_id"`
+}
+
+type ListMountBusinessInstancesRow struct {
+	DeploymentID  int64           `json:"deployment_id"`
+	HostID        int64           `json:"host_id"`
+	HostId2       int64           `json:"host_id2"`
+	HostName      string          `json:"host_name"`
+	Ip            string          `json:"ip"`
+	AgentID       string          `json:"agent_id"`
+	AgentOnline   bool            `json:"agent_online"`
+	ServiceID     int64           `json:"service_id"`
+	ServiceName   string          `json:"service_name"`
+	InstanceName  string          `json:"instance_name"`
+	AppHome       string          `json:"app_home"`
+	RunUser       string          `json:"run_user"`
+	WorkDirectory string          `json:"work_directory"`
+	Version       string          `json:"version"`
+	MacroValues   json.RawMessage `json:"macro_values"`
+}
+
+// 挂载点解析：应用组@业务(×环境) → 部署实例（每个逻辑服务独立目标，变量各自展开）。
+func (q *Queries) ListMountBusinessInstances(ctx context.Context, arg ListMountBusinessInstancesParams) ([]ListMountBusinessInstancesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMountBusinessInstances, arg.BusinessSystemID, arg.EnvironmentID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMountBusinessInstancesRow{}
+	for rows.Next() {
+		var i ListMountBusinessInstancesRow
+		if err := rows.Scan(
+			&i.DeploymentID,
+			&i.HostID,
+			&i.HostId2,
+			&i.HostName,
+			&i.Ip,
+			&i.AgentID,
+			&i.AgentOnline,
+			&i.ServiceID,
+			&i.ServiceName,
+			&i.InstanceName,
+			&i.AppHome,
+			&i.RunUser,
+			&i.WorkDirectory,
+			&i.Version,
+			&i.MacroValues,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMountProjectEnvironmentHosts = `-- name: ListMountProjectEnvironmentHosts :many
+SELECT DISTINCT h.id, COALESCE(h.instance_name,'') AS instance_name, COALESCE(h.ip,'') AS ip,
+       COALESCE(h.agent_id,'') AS agent_id, h.agent_online
+FROM assets_host h
+JOIN assets_application_deployment d ON d.host_id = h.id
+JOIN assets_application_service_deployment l ON l.deployment_id = d.id AND l.enabled = TRUE
+JOIN assets_application_service s ON s.id = l.service_id AND s.enabled = TRUE
+JOIN assets_business_system b ON b.id = s.business_system_id
+WHERE b.project_id = ? AND s.environment_id = ?
+  AND h.is_deleted_in_cloud = FALSE
+ORDER BY h.id
+`
+
+type ListMountProjectEnvironmentHostsParams struct {
+	ProjectID     sql.NullInt64 `json:"project_id"`
+	EnvironmentID sql.NullInt64 `json:"environment_id"`
+}
+
+type ListMountProjectEnvironmentHostsRow struct {
+	ID           int64  `json:"id"`
+	InstanceName string `json:"instance_name"`
+	Ip           string `json:"ip"`
+	AgentID      string `json:"agent_id"`
+	AgentOnline  bool   `json:"agent_online"`
+}
+
+// 挂载点解析：通用组@环境 → 项目×环境下的实例主机（去重）。
+func (q *Queries) ListMountProjectEnvironmentHosts(ctx context.Context, arg ListMountProjectEnvironmentHostsParams) ([]ListMountProjectEnvironmentHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMountProjectEnvironmentHosts, arg.ProjectID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMountProjectEnvironmentHostsRow{}
+	for rows.Next() {
+		var i ListMountProjectEnvironmentHostsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Ip,
+			&i.AgentID,
+			&i.AgentOnline,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMountProjectHosts = `-- name: ListMountProjectHosts :many
+SELECT DISTINCT h.id, COALESCE(h.instance_name,'') AS instance_name, COALESCE(h.ip,'') AS ip,
+       COALESCE(h.agent_id,'') AS agent_id, h.agent_online
+FROM assets_host h
+JOIN assets_application_deployment d ON d.host_id = h.id
+JOIN assets_application_service_deployment l ON l.deployment_id = d.id AND l.enabled = TRUE
+JOIN assets_application_service s ON s.id = l.service_id AND s.enabled = TRUE
+JOIN assets_business_system b ON b.id = s.business_system_id
+WHERE b.project_id = ? AND h.is_deleted_in_cloud = FALSE
+ORDER BY h.id
+`
+
+type ListMountProjectHostsRow struct {
+	ID           int64  `json:"id"`
+	InstanceName string `json:"instance_name"`
+	Ip           string `json:"ip"`
+	AgentID      string `json:"agent_id"`
+	AgentOnline  bool   `json:"agent_online"`
+}
+
+// 挂载点解析：通用组@项目 → 项目下全部实例主机（去重）。
+func (q *Queries) ListMountProjectHosts(ctx context.Context, projectID sql.NullInt64) ([]ListMountProjectHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMountProjectHosts, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMountProjectHostsRow{}
+	for rows.Next() {
+		var i ListMountProjectHostsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Ip,
+			&i.AgentID,
+			&i.AgentOnline,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMountServiceInstances = `-- name: ListMountServiceInstances :many
+SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
+       COALESCE(h.ip,'') AS ip, COALESCE(h.agent_id,'') AS agent_id, h.agent_online,
+       s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+FROM assets_application_service s
+JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE
+JOIN assets_host h ON h.id = d.host_id AND h.is_deleted_in_cloud = FALSE
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_application_version v ON v.id = s.application_version_id
+WHERE s.id = ?
+ORDER BY d.id
+`
+
+type ListMountServiceInstancesRow struct {
+	DeploymentID  int64           `json:"deployment_id"`
+	HostID        int64           `json:"host_id"`
+	HostId2       int64           `json:"host_id2"`
+	HostName      string          `json:"host_name"`
+	Ip            string          `json:"ip"`
+	AgentID       string          `json:"agent_id"`
+	AgentOnline   bool            `json:"agent_online"`
+	ServiceID     int64           `json:"service_id"`
+	ServiceName   string          `json:"service_name"`
+	InstanceName  string          `json:"instance_name"`
+	AppHome       string          `json:"app_home"`
+	RunUser       string          `json:"run_user"`
+	WorkDirectory string          `json:"work_directory"`
+	Version       string          `json:"version"`
+	MacroValues   json.RawMessage `json:"macro_values"`
+}
+
+// 挂载点解析：应用组@逻辑服务 → 该服务的部署实例（精确绑定）。
+func (q *Queries) ListMountServiceInstances(ctx context.Context, serviceID int64) ([]ListMountServiceInstancesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMountServiceInstances, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMountServiceInstancesRow{}
+	for rows.Next() {
+		var i ListMountServiceInstancesRow
+		if err := rows.Scan(
+			&i.DeploymentID,
+			&i.HostID,
+			&i.HostId2,
+			&i.HostName,
+			&i.Ip,
+			&i.AgentID,
+			&i.AgentOnline,
+			&i.ServiceID,
+			&i.ServiceName,
+			&i.InstanceName,
+			&i.AppHome,
+			&i.RunUser,
+			&i.WorkDirectory,
+			&i.Version,
+			&i.MacroValues,
 		); err != nil {
 			return nil, err
 		}

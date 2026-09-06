@@ -10,6 +10,7 @@ import (
 
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/pagination"
+	"database/sql"
 )
 
 type DeploymentTemplate struct {
@@ -37,6 +38,7 @@ type DeploymentTemplate struct {
 	ConfigFileCount    int64                   `json:"config_file_count"`
 	LogCount           int64                   `json:"log_count"`
 	ControlActionCount int64                   `json:"control_action_count"`
+	ServiceCount       int64                   `json:"service_count"`
 	Ports              []TemplatePort          `json:"ports,omitempty"`
 	Paths              []TemplatePath          `json:"paths,omitempty"`
 	ConfigFiles        []TemplateConfigFile    `json:"config_files,omitempty"`
@@ -386,7 +388,7 @@ func (s *Service) DeleteDeploymentTemplate(ctx context.Context, id int64) error 
 }
 
 func templateFromList(row db.ListDeploymentTemplatesRow) DeploymentTemplate {
-	return DeploymentTemplate{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, ControlType: row.ControlType, RunUser: row.RunUser, RunGroup: row.RunGroup, AppHome: row.AppHome, WorkDirectory: row.WorkDirectory, ServiceName: row.ServiceName, SystemdScope: row.SystemdScope, HaSystemName: row.HaSystemName, HaClusterName: row.HaClusterName, HaResourceName: row.HaResourceName, Enabled: row.Enabled, Application: row.ApplicationID, ApplicationName: row.ApplicationName, MacroDefinitions: row.MacroDefinitions, PortCount: row.PortCount, PathCount: row.PathCount, ConfigFileCount: row.ConfigFileCount, LogCount: row.LogCount, ControlActionCount: row.ControlActionCount}
+	return DeploymentTemplate{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, ControlType: row.ControlType, RunUser: row.RunUser, RunGroup: row.RunGroup, AppHome: row.AppHome, WorkDirectory: row.WorkDirectory, ServiceName: row.ServiceName, SystemdScope: row.SystemdScope, HaSystemName: row.HaSystemName, HaClusterName: row.HaClusterName, HaResourceName: row.HaResourceName, Enabled: row.Enabled, Application: row.ApplicationID, ApplicationName: row.ApplicationName, MacroDefinitions: row.MacroDefinitions, PortCount: row.PortCount, PathCount: row.PathCount, ConfigFileCount: row.ConfigFileCount, LogCount: row.LogCount, ControlActionCount: row.ControlActionCount, ServiceCount: row.ServiceCount}
 }
 
 func validateDeploymentTemplate(input DeploymentTemplateInput, creating bool) error {
@@ -445,17 +447,17 @@ func validateDeploymentTemplate(input DeploymentTemplateInput, creating bool) er
 	return nil
 }
 func templateFromDetail(row db.GetDeploymentTemplateRow) DeploymentTemplate {
-	return DeploymentTemplate{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, ControlType: row.ControlType, RunUser: row.RunUser, RunGroup: row.RunGroup, AppHome: row.AppHome, WorkDirectory: row.WorkDirectory, ServiceName: row.ServiceName, SystemdScope: row.SystemdScope, HaSystemName: row.HaSystemName, HaClusterName: row.HaClusterName, HaResourceName: row.HaResourceName, Enabled: row.Enabled, Application: row.ApplicationID, ApplicationName: row.ApplicationName, MacroDefinitions: row.MacroDefinitions, PortCount: row.PortCount, PathCount: row.PathCount, ConfigFileCount: row.ConfigFileCount, LogCount: row.LogCount, ControlActionCount: row.ControlActionCount}
+	return DeploymentTemplate{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, ControlType: row.ControlType, RunUser: row.RunUser, RunGroup: row.RunGroup, AppHome: row.AppHome, WorkDirectory: row.WorkDirectory, ServiceName: row.ServiceName, SystemdScope: row.SystemdScope, HaSystemName: row.HaSystemName, HaClusterName: row.HaClusterName, HaResourceName: row.HaResourceName, Enabled: row.Enabled, Application: row.ApplicationID, ApplicationName: row.ApplicationName, MacroDefinitions: row.MacroDefinitions, PortCount: row.PortCount, PathCount: row.PathCount, ConfigFileCount: row.ConfigFileCount, LogCount: row.LogCount, ControlActionCount: row.ControlActionCount, ServiceCount: row.ServiceCount}
 }
 
-func (r *Repository) ListDeploymentTemplates(ctx context.Context, search string, page pagination.Page) ([]db.ListDeploymentTemplatesRow, int64, error) {
+func (r *Repository) ListDeploymentTemplates(ctx context.Context, applicationID sql.NullInt64, search string, page pagination.Page) ([]db.ListDeploymentTemplatesRow, int64, error) {
 	patternValue := pattern(search)
-	args := db.CountDeploymentTemplatesParams{Column1: search, Name: patternValue, Name_2: patternValue}
+	args := db.CountDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue, Name_2: patternValue}
 	count, err := r.queries.CountDeploymentTemplates(ctx, args)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.queries.ListDeploymentTemplates(ctx, db.ListDeploymentTemplatesParams{Column1: search, Name: patternValue, Name_2: patternValue, Limit: page.Size, Offset: page.Offset})
+	rows, err := r.queries.ListDeploymentTemplates(ctx, db.ListDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue, Name_2: patternValue, Limit: page.Size, Offset: page.Offset})
 	return rows, count, err
 }
 
@@ -463,8 +465,8 @@ func (r *Repository) GetDeploymentTemplate(ctx context.Context, id int64) (db.Ge
 	return r.queries.GetDeploymentTemplate(ctx, id)
 }
 
-func (s *Service) ListDeploymentTemplates(ctx context.Context, search string, page pagination.Page) ([]DeploymentTemplate, int64, error) {
-	rows, count, err := s.repository.ListDeploymentTemplates(ctx, search, page)
+func (s *Service) ListDeploymentTemplates(ctx context.Context, applicationID sql.NullInt64, search string, page pagination.Page) ([]DeploymentTemplate, int64, error) {
+	rows, count, err := s.repository.ListDeploymentTemplates(ctx, applicationID, search, page)
 	result := make([]DeploymentTemplate, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, templateFromList(row))

@@ -20,6 +20,10 @@ func validateGossSpec(spec string) error {
 	if err := yaml.Unmarshal([]byte(spec), &document); err != nil {
 		return fmt.Errorf("goss YAML 解析失败: %v", err)
 	}
+	// 裸数字键（port: 61616:）会被 yaml 解析成非 string 键的 map，JSON schema 要求
+	// 对象键必须是字符串；goss 引擎本身接受这种写法（键按 fmt.Sprint 归一），
+	// 校验器保持同一行为，归一化后再校验。
+	document = normalizeYAMLKeys(document)
 	schemaBytes, err := gossSchemaFS.ReadFile("gossschema/goss-schema.yaml")
 	if err != nil {
 		return fmt.Errorf("读取 goss schema 失败: %v", err)
@@ -42,4 +46,29 @@ func validateGossSpec(spec string) error {
 		return fmt.Errorf("goss YAML 不符合官方 schema: %v", err)
 	}
 	return nil
+}
+
+// normalizeYAMLKeys 递归把 YAML 文档里非 string 的 map 键转成字符串
+// （goss 引擎运行时的同款行为），使 JSON schema 校验与引擎语义一致。
+func normalizeYAMLKeys(value any) any {
+	switch typed := value.(type) {
+	case map[any]any:
+		normalized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			normalized[fmt.Sprint(key)] = normalizeYAMLKeys(item)
+		}
+		return normalized
+	case map[string]any:
+		for key, item := range typed {
+			typed[key] = normalizeYAMLKeys(item)
+		}
+		return typed
+	case []any:
+		for index, item := range typed {
+			typed[index] = normalizeYAMLKeys(item)
+		}
+		return typed
+	default:
+		return value
+	}
 }

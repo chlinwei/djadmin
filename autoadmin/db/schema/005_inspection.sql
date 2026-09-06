@@ -8,11 +8,11 @@ CREATE TABLE `inspection_group` (
   `update_time` datetime(6) NOT NULL,
   `remark` longtext,
   `name` varchar(128) NOT NULL,
-  `scope` varchar(24) NOT NULL,
   `description` longtext NOT NULL,
   `enabled` BOOLEAN NOT NULL,
   `category` varchar(16) NOT NULL DEFAULT 'general',
   `application_id` bigint DEFAULT NULL,
+  `params` json NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 );
@@ -45,12 +45,10 @@ CREATE TABLE `inspection_task` (
   `timeout_seconds` int unsigned NOT NULL,
   `enabled` BOOLEAN NOT NULL,
   `group_id` bigint NOT NULL,
-  `logical_service_id` bigint DEFAULT NULL,
   `cron_expression` varchar(120) NOT NULL,
   `last_run_time` datetime(6) DEFAULT NULL,
   `next_run_time` datetime(6) DEFAULT NULL,
   `inspection_name` varchar(128) NOT NULL,
-  `selected_host_ids` json NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   CONSTRAINT `inspection_task_group_fk` FOREIGN KEY (`group_id`) REFERENCES `inspection_group` (`id`)
@@ -60,6 +58,13 @@ CREATE TABLE `inspection_task_group` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `task_id` bigint NOT NULL,
   `group_id` bigint NOT NULL,
+  `mount_type` varchar(16) NOT NULL DEFAULT 'legacy_static',
+  `project_id` bigint DEFAULT NULL,
+  `environment_id` bigint DEFAULT NULL,
+  `business_system_id` bigint DEFAULT NULL,
+  `instance_mode` varchar(8) DEFAULT NULL,
+  `service_id` bigint DEFAULT NULL,
+  `param_values` json NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_inspection_task_group` (`task_id`,`group_id`)
 );

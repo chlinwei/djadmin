@@ -166,17 +166,25 @@ func (q *Queries) CountCredentials(ctx context.Context, arg CountCredentialsPara
 const countDeploymentTemplates = `-- name: CountDeploymentTemplates :one
 SELECT COUNT(*) FROM assets_application_deployment_template t
 JOIN assets_application a ON a.id=t.application_id
-WHERE (? = '' OR t.name LIKE ? OR a.name LIKE ?)
+WHERE (? IS NULL OR t.application_id = ?)
+  AND (? = '' OR t.name LIKE ? OR a.name LIKE ?)
 `
 
 type CountDeploymentTemplatesParams struct {
-	Column1 interface{} `json:"column_1"`
-	Name    string      `json:"name"`
-	Name_2  string      `json:"name_2"`
+	ApplicationID sql.NullInt64 `json:"application_id"`
+	Column3       interface{}   `json:"column_3"`
+	Name          string        `json:"name"`
+	Name_2        string        `json:"name_2"`
 }
 
 func (q *Queries) CountDeploymentTemplates(ctx context.Context, arg CountDeploymentTemplatesParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countDeploymentTemplates, arg.Column1, arg.Name, arg.Name_2)
+	row := q.db.QueryRowContext(ctx, countDeploymentTemplates,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.Column3,
+		arg.Name,
+		arg.Name_2,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -857,7 +865,8 @@ SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.control_type, t.r
   (SELECT COUNT(*) FROM assets_application_path p WHERE p.deployment_template_id=t.id) AS path_count,
   (SELECT COUNT(*) FROM assets_application_config_file f WHERE f.deployment_template_id=t.id) AS config_file_count,
   (SELECT COUNT(*) FROM assets_application_log_definition l WHERE l.deployment_template_id=t.id) AS log_count,
-  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count
+  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count,
+  (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id=t.id) AS service_count
 FROM assets_application_deployment_template t JOIN assets_application a ON a.id=t.application_id
 WHERE t.id=? LIMIT 1
 `
@@ -887,6 +896,7 @@ type GetDeploymentTemplateRow struct {
 	ConfigFileCount    int64           `json:"config_file_count"`
 	LogCount           int64           `json:"log_count"`
 	ControlActionCount int64           `json:"control_action_count"`
+	ServiceCount       int64           `json:"service_count"`
 }
 
 func (q *Queries) GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error) {
@@ -917,6 +927,7 @@ func (q *Queries) GetDeploymentTemplate(ctx context.Context, id int64) (GetDeplo
 		&i.ConfigFileCount,
 		&i.LogCount,
 		&i.ControlActionCount,
+		&i.ServiceCount,
 	)
 	return i, err
 }
@@ -1514,18 +1525,21 @@ SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.control_type, t.r
   (SELECT COUNT(*) FROM assets_application_path p WHERE p.deployment_template_id=t.id) AS path_count,
   (SELECT COUNT(*) FROM assets_application_config_file f WHERE f.deployment_template_id=t.id) AS config_file_count,
   (SELECT COUNT(*) FROM assets_application_log_definition l WHERE l.deployment_template_id=t.id) AS log_count,
-  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count
+  (SELECT COUNT(*) FROM assets_application_control_action c WHERE c.deployment_template_id=t.id) AS control_action_count,
+  (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id=t.id) AS service_count
 FROM assets_application_deployment_template t JOIN assets_application a ON a.id=t.application_id
-WHERE (? = '' OR t.name LIKE ? OR a.name LIKE ?)
+WHERE (? IS NULL OR t.application_id = ?)
+  AND (? = '' OR t.name LIKE ? OR a.name LIKE ?)
 ORDER BY t.application_id, t.id DESC LIMIT ? OFFSET ?
 `
 
 type ListDeploymentTemplatesParams struct {
-	Column1 interface{} `json:"column_1"`
-	Name    string      `json:"name"`
-	Name_2  string      `json:"name_2"`
-	Limit   int32       `json:"limit"`
-	Offset  int32       `json:"offset"`
+	ApplicationID sql.NullInt64 `json:"application_id"`
+	Column3       interface{}   `json:"column_3"`
+	Name          string        `json:"name"`
+	Name_2        string        `json:"name_2"`
+	Limit         int32         `json:"limit"`
+	Offset        int32         `json:"offset"`
 }
 
 type ListDeploymentTemplatesRow struct {
@@ -1553,11 +1567,14 @@ type ListDeploymentTemplatesRow struct {
 	ConfigFileCount    int64           `json:"config_file_count"`
 	LogCount           int64           `json:"log_count"`
 	ControlActionCount int64           `json:"control_action_count"`
+	ServiceCount       int64           `json:"service_count"`
 }
 
 func (q *Queries) ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listDeploymentTemplates,
-		arg.Column1,
+		arg.ApplicationID,
+		arg.ApplicationID,
+		arg.Column3,
 		arg.Name,
 		arg.Name_2,
 		arg.Limit,
@@ -1595,6 +1612,7 @@ func (q *Queries) ListDeploymentTemplates(ctx context.Context, arg ListDeploymen
 			&i.ConfigFileCount,
 			&i.LogCount,
 			&i.ControlActionCount,
+			&i.ServiceCount,
 		); err != nil {
 			return nil, err
 		}

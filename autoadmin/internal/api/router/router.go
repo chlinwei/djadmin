@@ -307,7 +307,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionGroups.DELETE("/:id/", middleware.RequirePermission("inspection:groups:delete"), inspectionHandler.DeleteGroup)
 	inspectionTasks := engine.Group("/sys/inspection/tasks", middleware.Authenticate(tokens))
 	inspectionTasks.GET("/", middleware.RequirePermission("inspection:view"), inspectionHandler.ListTasks)
-	inspectionTasks.GET("/host-scope-tree/", middleware.RequirePermission("inspection:view"), inspectionHandler.HostScopeTree)
 	inspectionTasks.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetTask)
 	inspectionTasks.POST("/", middleware.RequirePermission("inspection:tasks:create"), inspectionHandler.SaveTask)
 	inspectionTasks.PATCH("/:id/", middleware.RequirePermission("inspection:tasks:update"), inspectionHandler.SaveTask)

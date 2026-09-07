@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
@@ -301,12 +300,29 @@ func (e *Executor) checkGoss(ctx context.Context, check map[string]any) applicat
 			messages = append(messages, item.SummaryLine)
 		}
 	}
+	// 明细：goss 的每条子测试（含通过的）都带资源/属性/断言结果回传，
+	// 前端结果抽屉可展开逐条查看 pass/fail，不必只在 failures 里看失败摘要。
+	details := make([]map[string]any, 0, len(gossOutput.Results))
+	for _, item := range gossOutput.Results {
+		details = append(details, map[string]any{
+			"resource":   strings.TrimSpace(item.ResourceType + ": " + item.ResourceID),
+			"property":   item.Property,
+			"successful": item.Successful,
+			"message":    item.SummaryLine,
+			"expected":   item.MatcherResult.Expected,
+			// 资源 title（spec 里的可读说明）与断言实际值（found），
+			// 供前端明细展开页展示"检查项/期望/实际"结构化内容。
+			"title":  item.Title,
+			"actual": item.MatcherResult.Found,
+		})
+	}
 	actual := map[string]any{
-		"test_count":  gossOutput.Summary.TestCount,
-		"failed_count": gossOutput.Summary.FailedCount,
+		"test_count":    gossOutput.Summary.TestCount,
+		"failed_count":  gossOutput.Summary.FailedCount,
 		"skipped_count": gossOutput.Summary.SkippedCount,
-		"failures":    messages,
-		"run_user":    runUser,
+		"failures":      messages,
+		"details":       details,
+		"run_user":      runUser,
 	}
 	// 期望值直接取自 goss 逐条测试的 matcher-result.expected，
 	// 即 YAML 套件里声明的断言（exists/mode/contents/listening 等）。
@@ -329,7 +345,9 @@ func (e *Executor) checkGoss(ctx context.Context, check map[string]any) applicat
 	return result
 }
 
-// gossRunUserCommand 以指定用户构造 goss validate 进程；降权语义与 applicationRunUserCommand 一致。
+// gossRunUserCommand 以指定用户构造 goss validate 进程。
+// run_user 与 agent 相同则直接执行；否则通过 su -l 登录 shell 切换，
+// 加载该用户完整登录环境（goss 及其 command 资源均继承）。
 func gossRunUserCommand(ctx context.Context, gossPath, specPath string, rawVars any, runUser string) (*exec.Cmd, error) {
 	arguments := []string{"-g", specPath, "validate", "--format", "json", "--no-color"}
 	varsText := ""
@@ -362,16 +380,29 @@ func gossRunUserCommand(ctx context.Context, gossPath, specPath string, rawVars 
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("dj-agent 必须以 root 或运行用户 %q 运行", runUser)
 	}
-	targetGID, gidErr := strconv.ParseUint(targetUser.Gid, 10, 32)
-	if gidErr != nil {
-		return nil, fmt.Errorf("goss 运行用户 %q 的 GID 无效", runUser)
-	}
-	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-		Uid:    uint32(targetUID),
-		Gid:    uint32(targetGID),
-		Groups: supplementaryGroupIDs(targetUser),
-	}}
+	// 以登录 shell 切换用户执行：su -l 会加载目标用户的完整登录环境
+	// （HOME/SHELL/PATH 及 ~/.bash_profile 里的应用变量），
+	// goss 及其 command 资源继承该环境，与用户手工登录后执行的效果一致。
+	// 仅用 setuid 降权不初始化环境，应用命令（不在默认 PATH）会找不到。
+	loginCommand := suLoginCommand(gossPath, arguments)
+	command = exec.CommandContext(ctx, "su", "-l", runUser, "-c", loginCommand)
+	command.Env = []string{"TERM=dumb"}
 	return command, nil
+}
+
+// suLoginCommand 把 goss 命令行拼成可安全嵌入 sh -c 的字符串，所有参数均做单引号转义。
+func suLoginCommand(gossPath string, arguments []string) string {
+	parts := make([]string, 0, len(arguments)+1)
+	parts = append(parts, shellQuote(gossPath))
+	for _, argument := range arguments {
+		parts = append(parts, shellQuote(argument))
+	}
+	return strings.Join(parts, " ")
+}
+
+// shellQuote 单引号包裹并转义，保证任意参数在 POSIX shell 中按字面值传递。
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // mergeGossEnvironment 把检查项配置的环境变量并入 goss 进程环境。
@@ -417,10 +448,13 @@ type gossJSONResult struct {
 	Skipped      bool   `json:"skipped"`
 	ResourceID   string `json:"resource-id"`
 	ResourceType string `json:"resource-type"`
+	Title        string `json:"title"`
 	Property     string `json:"property"`
 	SummaryLine  string `json:"summary-line"`
 	MatcherResult struct {
 		Expected any `json:"expected"`
+		// goss JSON 的实际值字段名是 actual（stdout 不可序列化时为空对象 {}）
+		Found any `json:"actual"`
 	} `json:"matcher-result"`
 }
 

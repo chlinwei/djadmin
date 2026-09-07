@@ -41,9 +41,16 @@
             <FontAwesomeIcon :icon="['fas', 'rotate']" />
             <span>&nbsp;刷新</span>
           </a-button>
+          <a-tooltip v-if="canRunTask" :title="taskSelectedRowKeys.length ? `运行选中的 ${taskSelectedRowKeys.length} 个任务` : '先勾选要运行的任务'">
+            <a-button size="large" type="primary" ghost :disabled="!taskSelectedRowKeys.length" :loading="batchRunningTasks" @click="confirmRunSelectedTasks">
+              <FontAwesomeIcon :icon="['fas', 'fa-forward']" />
+              <span>&nbsp;批量运行</span>
+            </a-button>
+          </a-tooltip>
         </div>
         <a-table
           row-key="id"
+          :row-selection="{ selectedRowKeys: taskSelectedRowKeys, onChange: (keys) => (taskSelectedRowKeys = keys) }"
           :columns="taskColumns"
           :data-source="visibleTasks"
           :loading="taskLoading"
@@ -54,8 +61,13 @@
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'group_name'">
               <a-space wrap>
-                <a-tooltip v-for="group in (record.groups || [])" :key="group.id" :title="mountText(group) || '静态范围（存量）'">
-                  <a-tag :color="group.category === 'application' ? 'purple' : 'green'">
+                <a-tooltip v-for="group in (record.groups || [])" :key="group.id" :title="(mountText(group) || '静态范围（存量）') + (canUpdateGroup ? '，点击编辑巡检组' : '')">
+                  <a-tag
+                    :color="group.category === 'application' ? 'purple' : 'green'"
+                    :class="{ 'task-group-tag--clickable': canUpdateGroup }"
+                    @click="openGroupFromTask(group)"
+                  >
+                    <a-spin v-if="openingGroupFromTask === group.id" :spinning="true" size="small" />
                     {{ group.name }}<template v-if="mountText(group)"> · {{ mountText(group) }}</template>
                   </a-tag>
                 </a-tooltip>
@@ -571,7 +583,7 @@
       </a-form>
     </a-modal>
 
-    <a-drawer v-model:open="executionDrawerOpen" title="巡检执行详情" width="760">
+    <a-modal v-model:open="executionDrawerOpen" title="巡检执行详情" centered width="80vw" style="max-width: 1400px" :footer="null" class="execution-detail-modal">
       <a-descriptions v-if="selectedExecution" bordered size="small" :column="2">
         <a-descriptions-item label="任务">{{ selectedExecution.task_name }}</a-descriptions-item>
         <a-descriptions-item label="状态">{{ statusLabel(selectedExecution.status) }}</a-descriptions-item>
@@ -595,21 +607,83 @@
             :pagination="false"
             :columns="resultColumns"
             :data-source="targetDisplayResults(target)"
+            :expand-row-by-click="true"
+            v-model:expandedRowKeys="expandedResultKeys"
+            :row-expandable="(record) => resultRowExpandable(record)"
           >
+            <template #expandedRowRender="{ record }">
+              <a-row v-if="record.expected_value != null || record.actual_value != null" :gutter="12" class="result-value-row">
+                <a-col v-if="record.expected_value != null" :span="12">
+                  <div class="result-value-card">
+                    <div class="result-value-title">期望值</div>
+                    <pre>{{ formatValue(record.expected_value) }}</pre>
+                  </div>
+                </a-col>
+                <a-col v-if="record.actual_value != null" :span="12">
+                  <div class="result-value-card">
+                    <div class="result-value-title">实际值</div>
+                    <pre>{{ formatValue(record.actual_value) }}</pre>
+                  </div>
+                </a-col>
+              </a-row>
+              <a-table
+                v-if="(record.goss_details || []).length"
+                row-key="detail_key"
+                size="small"
+                :pagination="false"
+                :data-source="record.goss_details"
+                :columns="[
+                  { title: '检查项', key: 'detail_title' },
+                  { title: '类型', key: 'detail_type', width: 80 },
+                  { title: '检查点', key: 'detail_property', width: 110 },
+                  { title: '结果', key: 'detail_status', width: 80 },
+                  { title: '期望', key: 'detail_expected', width: 220 },
+                  { title: '实际', key: 'detail_actual', width: 220 },
+                ]"
+              >
+                <template #bodyCell="{ column, record: detail }">
+                  <template v-if="column.key === 'detail_title'">
+                    <span>{{ detail.title || detail.resource }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'detail_type'">
+                    {{ gossResourceTypeLabel(detail.resource) }}
+                  </template>
+                  <template v-else-if="column.key === 'detail_property'">
+                    {{ gossPropertyLabel(detail.property) }}
+                  </template>
+                  <template v-else-if="column.key === 'detail_status'">
+                    <a-tooltip :title="detail.message">
+                      <a-tag :color="detail.successful ? 'green' : 'red'">{{ detail.successful ? 'pass' : 'failed' }}</a-tag>
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="column.key === 'detail_expected'">
+                    {{ formatGossExpectation(detail) }}
+                  </template>
+                  <template v-else-if="column.key === 'detail_actual'">
+                    {{ formatGossActual(detail.actual) }}
+                  </template>
+                </template>
+              </a-table>
+            </template>
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'status'">
+              <template v-if="column.key === 'name'">
+                <span>{{ record.name }}</span>
+                <a-tag v-if="(record.goss_details || []).length" color="blue" class="goss-detail-badge" @click.stop="toggleExpand(record)">
+                  明细 {{ record.goss_details.length }} 条
+                </a-tag>
+                <a-tag v-else-if="resultRowExpandable(record)" class="goss-detail-badge" @click.stop="toggleExpand(record)">详情</a-tag>
+              </template>
+              <template v-else-if="column.key === 'status'">
                 <a-tag :color="record.status === 'pass' ? 'green' : record.status === 'skipped' ? 'default' : 'red'">{{ record.status }}</a-tag>
               </template>
               <template v-else-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'warning' ? 'orange' : 'red'">{{ severityLabel(record.severity) }}</a-tag>
               </template>
-              <template v-else-if="column.key === 'expected_value'"><pre>{{ formatValue(record.expected_value) }}</pre></template>
-              <template v-else-if="column.key === 'actual_value'"><pre>{{ formatValue(record.actual_value) }}</pre></template>
             </template>
           </a-table>
         </a-collapse-panel>
       </a-collapse>
-    </a-drawer>
+    </a-modal>
   </div>
 </template>
 
@@ -629,6 +703,7 @@ import {
   deleteInspectionTask,
   getInspectionExecution,
   getInspectionExecutions,
+  getInspectionGroup,
   getInspectionGroups,
   getInspectionTasks,
   runInspectionTask,
@@ -679,6 +754,22 @@ const selectedExecution = ref(null)
 const runningTaskIds = reactive(new Set())
 const togglingTaskId = ref(null)
 const canUpdateTask = checkPermission('inspection:tasks:update')
+// 任务列表里的巡检组 tag 点击后直接打开该组的编辑弹窗（方案 A：免切 tab）
+const canUpdateGroup = checkPermission('inspection:groups:update')
+const openingGroupFromTask = ref(-1)
+async function openGroupFromTask(group) {
+  if (!canUpdateGroup || !group?.id || openingGroupFromTask.value === group.id) return
+  openingGroupFromTask.value = group.id
+  try {
+    // 任务行内嵌的 group 只有 id/name/category，编辑前必须拉完整详情（checks/params）
+    const data = responseData(await getInspectionGroup(group.id))
+    await openGroupModal(data)
+  } catch (error) {
+    message.error(error?.message || '巡检组详情加载失败')
+  } finally {
+    openingGroupFromTask.value = -1
+  }
+}
 const cancelingExecutionId = ref(null)
 let executionPollTimer = null
 let localKey = 0
@@ -767,8 +858,12 @@ function groupNavIcon(key) {
   if (type === 'service') return ['fas', 'cubes']
   return ['fas', 'desktop']
 }
-function handleGroupNodeSelect(keys) {
-  groupNavSelected.value = keys.length ? keys : ['all-groups']
+function handleGroupNodeSelect(keys, info) {
+  if (!keys.length) {
+    groupNavSelected.value = [info?.node?.key ?? 'all-groups']
+    return
+  }
+  groupNavSelected.value = keys
 }
 const visibleGroups = computed(() => {
   if (groupNavNode.value === 'all-groups') return groups.value
@@ -797,12 +892,10 @@ const executionColumns = [
   { title: '操作', key: 'action', fixed: 'right', width: 90 },
 ]
 const resultColumns = [
-  { title: '检查项', dataIndex: 'name', key: 'name', width: 170 },
+  { title: '检查项', dataIndex: 'name', key: 'name', width: 220 },
   { title: '巡检组', dataIndex: 'group_name', key: 'group_name', width: 130 },
   { title: '状态', key: 'status', width: 90 },
   { title: '级别', key: 'severity', width: 80 },
-  { title: '期望值', key: 'expected_value', width: 200 },
-  { title: '实际值', key: 'actual_value', width: 220 },
   { title: '消息', dataIndex: 'message', key: 'message' },
 ]
 
@@ -1141,8 +1234,13 @@ const visibleTasks = computed(() => {
   if (taskNavNode.value === 'all') return tasks.value
   return tasks.value.filter((record) => taskNavPaths(record).some((path) => path.includes(taskNavNode.value)))
 })
-function handleTaskNodeSelect(keys) {
-  taskNavSelected.value = keys.length ? keys : ['all']
+function handleTaskNodeSelect(keys, info) {
+  // 再点已选中节点时 antd 会取消选中（v-model 已清空），这里回填点击节点的 key 保持选中
+  if (!keys.length) {
+    taskNavSelected.value = [info?.node?.key ?? 'all']
+    return
+  }
+  taskNavSelected.value = keys
 }
 const mountText = (group) => {
   if (!group || isLegacyBinding(group)) return ''
@@ -1197,16 +1295,33 @@ function defaultBinding(group) {
   return { group_id: group.id, mount_type: 'project', project_id: context.project_id ?? projects.value[0]?.id, environment_id: undefined }
 }
 const taskGroupSelectOptions = computed(() => {
+  const context = taskNavContext.value
+  // 目标为逻辑服务时，应用类型巡检组只保留与该服务所属应用一致的：
+  // 组的"适用应用"(group.application) 必须等于服务的所属应用(service.application)。
+  const targetService = context.service_id
+    ? services.value.find((item) => String(item.id) === String(context.service_id))
+    : null
   const pick = (category) => groupOptions.value
     .filter((group) => (group.category || 'general') === category)
+    .filter((group) => (
+      category !== 'application' || !targetService
+      || String(group.application ?? '') === String(targetService.application ?? '')
+    ))
     .map((group) => ({ label: group.name, value: group.id }))
   const options = []
   if (pick('general').length) options.push({ label: '通用巡检组', options: pick('general') })
   if (pick('application').length) options.push({ label: '应用类型巡检组', options: pick('application') })
   return options.length ? options : groupOptions.value.map((group) => ({ label: group.name, value: group.id }))
 })
-function handleTaskGroupsChange(value) {
-  // 单组模型：选择即替换，绑定数组至多一项。
+// 切换巡检对象后，已选巡检组可能不再出现在候选里（如应用组与应用不匹配），自动清掉防止提交脏数据
+watch(taskGroupSelectOptions, (options) => {
+  const current = taskForm.groups?.[0]
+  if (current && !options.some((option) => option.value === current || option.options?.some((child) => child.value === current))) {
+    taskForm.groups = []
+    taskForm.bindings = []
+  }
+})
+function handleTaskGroupsChange(value) {  // 单组模型：选择即替换，绑定数组至多一项。
   // a-select 单选 change 的参数是标量（多选才是数组），v-model 已把标量写入
   // taskForm.groups，这里统一规范回数组，后续 length/下标访问才成立。
   const id = Array.isArray(value) ? value[0] : value
@@ -1240,10 +1355,92 @@ const rawTargetResults = (target) => (Array.isArray(target.raw_result?.checks) ?
     severity: check.severity || 'critical',
     expected_value: check.expected,
     actual_value: check.actual,
+    // goss 检查项的子测试明细（含通过的），展开行逐条展示 pass/fail
+    goss_details: (Array.isArray(check.actual?.details) ? check.actual.details : []).map((detail, detailIndex) => ({
+      ...detail,
+      detail_key: `${check.key || 'check'}-${index}-${detailIndex}`,
+    })),
     message: check.message,
   }))
-const targetDisplayResults = (target) => target.results?.length ? target.results : rawTargetResults(target)
+const targetDisplayResults = (target) => {
+  const rows = target.results?.length ? target.results : rawTargetResults(target)
+  return rows.map((row, index) => {
+    // 后端 results[].actual_value 是 JSON 字符串（goss 的 details 在其中），统一解析后取明细
+    let actual = row.actual_value
+    if (typeof actual === 'string') {
+      try { actual = JSON.parse(actual) } catch { /* 非法 JSON 保持原样展示 */ }
+    }
+    const details = Array.isArray(actual?.details) ? actual.details : (row.goss_details || [])
+    return {
+      ...row,
+      actual_value: actual ?? row.actual_value,
+      goss_details: details.map((detail, detailIndex) => ({ ...detail, detail_key: `${row.check_key || 'check'}-${index}-${detailIndex}` })),
+    }
+  })
+}
 const targetErrorMessage = (target) => target.error_message || rawTargetResults(target).find((check) => check.status === 'error')?.message || ''
+// 检查项行展开状态（受控）：点击"明细 N 条"标签也能展开/收起
+const expandedResultKeys = ref([])
+function toggleExpand(record) {
+  const key = record.check_key
+  expandedResultKeys.value = expandedResultKeys.value.includes(key)
+    ? expandedResultKeys.value.filter((item) => item !== key)
+    : [...expandedResultKeys.value, key]
+}
+// 有 goss 明细或有期望/实际值的行才可展开
+function resultRowExpandable(record) {
+  return (record.goss_details || []).length > 0
+    || (record.expected_value != null && record.expected_value !== 'null')
+    || (record.actual_value != null && record.actual_value !== 'null')
+}
+// ---- goss 明细的语义化展示（词表未覆盖时回退原文，纯显示层转换） ----
+const gossResourceTypeLabels = {
+  Port: '端口', Command: '命令', Process: '进程', File: '文件',
+  User: '用户', Group: '用户组', Package: '软件包', Addr: '地址',
+  Service: '服务', DNS: 'DNS', HTTP: 'HTTP', Interface: '网卡', KernelParam: '内核参数',
+}
+const gossPropertyLabels = {
+  listening: '端口监听', 'exit-status': '退出码', stdout: '标准输出', stderr: '标准错误',
+  running: '运行状态', installed: '已安装', exists: '存在', enabled: '已启用',
+  reachable: '可达', mode: '权限', owner: '属主', group: '属组', contents: '内容',
+  size: '大小', type: '类型', uid: 'UID', gid: 'GID', home: '主目录', shell: 'Shell',
+}
+function gossResourceTypeLabel(resource) {
+  const type = String(resource || '').split(':')[0]
+  return gossResourceTypeLabels[type] || type
+}
+function gossPropertyLabel(property) {
+  return gossPropertyLabels[property] || property
+}
+function formatGossExpectation(detail) {
+  const value = detail.expected
+  switch (detail.property) {
+    case 'listening':
+      return value === true ? '端口处于监听状态' : '端口未监听'
+    case 'exit-status':
+      return typeof value === 'number' ? `退出码等于 ${value}` : `退出码：${formatValue(value)}`
+    case 'stdout':
+    case 'stderr': {
+      const patterns = Array.isArray(value) ? value : [value]
+      const joined = patterns.map((item) => `"${item}"`).join('、')
+      return patterns.length > 1 ? `输出同时包含 ${joined}` : `输出包含 ${joined}`
+    }
+    case 'running':
+      return value === true ? '进程运行中' : '进程未运行'
+    case 'installed':
+      return value === true ? '已安装' : '未安装'
+    case 'exists':
+      return value === true ? '存在' : '不存在'
+    default:
+      return formatValue(value)
+  }
+}
+function formatGossActual(value) {
+  // goss 对命令输出类实际值序列化不出来（{}），字符串里带 bytes.Reader 的也无法读，统一降级为 -
+  if (value == null || (typeof value === 'object' && Object.keys(value).length === 0)) return '-'
+  if (typeof value === 'string') return value.includes('bytes.Reader') ? '-' : value
+  return formatValue(value)
+}
 
 async function fetchAll(loader, params = {}) {
   const firstData = responseData(await loader({ ...params, page: 1, page_size: 30 }))
@@ -1602,6 +1799,43 @@ async function runTask(record) {
     message.error(error?.message || '巡检任务提交失败')
   } finally { runningTaskIds.delete(record.id) }
 }
+// 批量运行：逐个提交选中任务，部分失败不影响其余任务
+const canRunTask = checkPermission('inspection:tasks:run')
+const taskSelectedRowKeys = ref([])
+const batchRunningTasks = ref(false)
+function confirmRunSelectedTasks() {
+  const ids = [...taskSelectedRowKeys.value]
+  if (!ids.length) return
+  Modal.confirm({
+    title: '批量运行巡检任务',
+    content: `确定运行选中的 ${ids.length} 个巡检任务吗？`,
+    onOk: async () => {
+      batchRunningTasks.value = true
+      const failed = []
+      try {
+        for (const id of ids) {
+          try {
+            await runInspectionTask(id)
+          } catch (error) {
+            failed.push(`#${id}: ${error?.message || '提交失败'}`)
+          }
+        }
+        if (failed.length) {
+          message.warning(`已提交 ${ids.length - failed.length}/${ids.length} 个任务，失败：${failed.join('；')}`)
+        } else {
+          message.success(`已提交 ${ids.length} 个巡检任务`)
+        }
+        taskSelectedRowKeys.value = []
+        activeTab.value = 'executions'
+        executionPagination.current = 1
+        await loadExecutions()
+        startExecutionPolling()
+      } finally {
+        batchRunningTasks.value = false
+      }
+    },
+  })
+}
 async function openExecution(record) {
   try {
     selectedExecution.value = responseData(await getInspectionExecution(record.id))
@@ -1780,5 +2014,41 @@ pre { max-width: 240px; margin: 0; white-space: pre-wrap; word-break: break-word
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.task-group-tag--clickable {
+  cursor: pointer;
+}
+.task-group-tag--clickable:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.goss-detail-badge {
+  margin-left: 6px;
+  cursor: pointer;
+}
+.result-value-row {
+  margin-bottom: 8px;
+}
+.result-value-card {
+  height: 100%;
+  padding: 8px 10px;
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+  background: #fafbfc;
+}
+.result-value-title {
+  margin-bottom: 4px;
+  color: #687386;
+  font-size: 12px;
+  font-weight: 600;
+}
+.result-value-card pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

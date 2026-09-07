@@ -50,7 +50,7 @@
 | 字段 | 语义 |
 |---|---|
 | `spec` | goss YAML 文本，后端已展开 `${APP_HOME}` 等变量 |
-| `run_user` | 执行用户，留空默认 root；goss 以该用户身份运行（进程/文件/端口按该用户视角采集），降权语义与巡检 shell 时代一致（setuid/setgid，不走 sudo） |
+| `run_user` | 执行用户，留空默认 root；goss 以该用户身份运行（进程/文件/端口按该用户视角采集）。切换方式为 `su -l <run_user> -c '<goss 命令>'` 登录 shell：加载目标用户完整登录环境（HOME/SHELL/PATH 及 `~/.bash_profile` 中的应用变量），goss 及其 spec 内 command 资源均继承该环境，与用户手工登录后执行一致；所有参数经单引号转义后拼入。`run_user` 等于 agent 自身用户时直接执行，不走 su |
 | `vars` | 透传 `--vars-inline`，YAML 内可用 Go template 引用 |
 | `environment` | 白名单环境变量注入（APP_HOME/RUN_USER/INSTANCE_NAME/HOST_IP/HOST_NAME 等），goss 进程及其 command 资源均可见 |
 
@@ -59,7 +59,17 @@
 goss `validate --format json` 的 summary 映射为单条检查结果：
 
 - `expected` = 检查项配置的期望（套件本身），`actual` =
-  `{test_count, failed_count, skipped_count, failures[], run_user}`；
+  `{test_count, failed_count, skipped_count, failures[], details[], run_user}`；
+  其中 `details` 为 goss 每条子测试的全量明细（含通过项），前端执行结果弹窗在检查项行上
+  展开即可逐条查看 pass/fail：
+  - `resource`/`property`：资源标识（`类型: ID`）与断言属性（listening/exit-status/stdout…）；
+  - `title`：spec 里资源声明的 `title`（人类可读说明），前端明细"检查项"列优先展示，
+    未设置时回退 resource；
+  - `successful`/`message`：断言结果与 goss 原始 summary-line（前端作为结果标签的 tooltip）；
+  - `expected`/`actual`：期望值与实际值（goss JSON `matcher-result.expected/actual`）；
+    命令输出类实际值 goss 无法序列化（`{}`），前端显示 `-`；
+  - 前端对 类型/检查点/期望 做词表与语义化格式（如 exit-status → "退出码等于 0"、
+    stdout → "输出包含 x"），未覆盖项回退原文，纯显示层转换；
 - 有失败 → `fail`，消息含失败条数与逐条 summary-line；YAML 空/二进制释放失败/JSON
   解析失败 → `error`；全部通过 → `pass`；
 - 退出码语义：0=通过，1=有失败，3=超时；无 JSON 输出按 error 处理。

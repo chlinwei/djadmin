@@ -1273,7 +1273,13 @@ const onGroupSelect = async (selectedKeys, info) => {
     if (!isUserTriggered) {
         return
     }
-    const key = selectedKeys && selectedKeys.length ? selectedKeys[0] : 0
+    // 再点已选中节点时 antd 会取消选中（v-model 已清空），这里回填点击节点的 key 保持选中
+    if (!selectedKeys || !selectedKeys.length) {
+        const keepKey = info?.node?.key
+        selectedGroupId.value = keepKey || 0
+        return
+    }
+    const key = selectedKeys[0]
     selectedGroupId.value = key || 0
     selectedGroupName.value = key === 0 ? '全部分组' : (info?.node?.dataRef?.name || '当前分组')
     searchText.value = ''

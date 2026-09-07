@@ -181,7 +181,7 @@ func (s *Service) SaveApplicationDeployment(ctx context.Context, id int64, input
 	if err != nil {
 		return ApplicationDeployment{}, translate(err)
 	}
-	items, _, err := s.repository.ListApplicationDeployments(ctx, pagination.Page{Number: 1, Size: 1, Offset: 0})
+	items, _, err := s.repository.ListApplicationDeployments(ctx, pagination.Page{Number: 1, Size: 1, Offset: 0}, ApplicationDeploymentFilter{})
 	if err != nil {
 		return ApplicationDeployment{}, translate(err)
 	}

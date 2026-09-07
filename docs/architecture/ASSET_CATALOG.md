@@ -36,6 +36,21 @@
 
 缺失任一关联字段，饼图在该维度恒为空（前端 `linkedServices` 过滤后无归集桶）。
 
+## 逻辑服务 / 部署实例列表的 scope 过滤（服务树右侧面板）
+
+服务树选中节点后，右侧 `ServiceTreeNodeContent.vue` 按节点层级向后端传过滤参数；Go 版
+与 Django 版 DRF filter 字段名保持一致，语义为"缺省 = 不筛选"：
+
+- `GET /assets/application-services/`：
+  - `search`（名称/编码模糊）；
+  - `business_system` → 仅返回该业务系统下的逻辑服务。服务树的"业务系统"节点（展示其下逻辑服务）与"环境"节点（展示当前业务×该环境的逻辑服务）都依赖此参数，缺失会退化为返回全部逻辑服务。
+- `GET /assets/application-deployments/`：
+  - `application_service` → 仅返回与该逻辑服务存在 M2M 关联（`assets_application_service_deployment`）的部署实例；"逻辑服务"节点右侧的部署实例列表依赖此参数。
+  - `application_service__business_system` → 经 M2M 关联到逻辑服务、再按业务系统过滤；"业务系统/环境"节点的部署实例列表依赖。
+  - `application_service__environment` → 经 M2M 关联到逻辑服务、再按环境过滤。
+- 非法整数参数 → 400（`applicationDeploymentFilterFromQuery` / `optionalIDQuery`）；
+- 过滤在 SQL WHERE 层完成（EXISTS 子查询），COUNT 与列表共用同一条件，分页计数正确。
+
 ## 失败语义
 
 - 分页/参数非法 → 400；数据库错误 → 500（`response.Error`）。

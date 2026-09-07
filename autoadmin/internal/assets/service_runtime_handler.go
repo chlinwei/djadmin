@@ -1,10 +1,13 @@
 package assets
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/pagination"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,7 +18,12 @@ func (handler *Handler) ListApplicationServices(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	items, count, err := handler.service.repository.ListApplicationServices(context.Request.Context(), context.Query("search"), pageValue)
+	businessSystemID, err := optionalIDQuery(context, "business_system")
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items, count, err := handler.service.repository.ListApplicationServices(context.Request.Context(), context.Query("search"), pageValue, businessSystemID)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
@@ -38,13 +46,65 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	items, err := handler.service.repository.ListServiceLogSettings(context.Request.Context(), id)
 	respond(context, items, translate(err))
 }
+// optionalIDQuery 读取可选的整数型 query 参数；未传返回 0，传了但不是合法整数返回 400。
+func optionalIDQuery(context *gin.Context, key string) (int64, error) {
+	raw := strings.TrimSpace(context.Query(key))
+	if raw == "" {
+		return 0, nil
+	}
+	value, parseErr := strconv.ParseInt(raw, 10, 64)
+	if parseErr != nil {
+		return 0, apperror.NewWithHTTP(apperror.CodeInvalidArgument, fmt.Sprintf("%s 参数无效: %s", key, raw), 0)
+	}
+	return value, nil
+}
+
+// applicationDeploymentFilterFromQuery 解析部署实例列表的过滤参数，
+// 与 Django 版 DRF filter 字段名保持一致（application_service / application_service__business_system / application_service__environment）。
+func applicationDeploymentFilterFromQuery(context *gin.Context) (ApplicationDeploymentFilter, error) {
+	var filter ApplicationDeploymentFilter
+	if raw := strings.TrimSpace(context.Query("application_service")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil {
+			return filter, apperror.NewWithHTTP(apperror.CodeInvalidArgument, fmt.Sprintf("application_service 参数无效: %s", raw), 0)
+		}
+		filter.ApplicationServiceID = value
+	}
+	if raw := strings.TrimSpace(context.Query("application_service__business_system")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil {
+			return filter, apperror.NewWithHTTP(apperror.CodeInvalidArgument, fmt.Sprintf("application_service__business_system 参数无效: %s", raw), 0)
+		}
+		filter.BusinessSystemID = value
+	}
+	if raw, ok := context.GetQuery("application_service__environment"); ok {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			// 显式传空表示“未配置环境”（Django 侧 null 语义），环境过滤交由前端按值比对
+			filter.EnvironmentID = nil
+		} else {
+			value, parseErr := strconv.ParseInt(raw, 10, 64)
+			if parseErr != nil {
+				return filter, apperror.NewWithHTTP(apperror.CodeInvalidArgument, fmt.Sprintf("application_service__environment 参数无效: %s", raw), 0)
+			}
+			filter.EnvironmentID = &value
+		}
+	}
+	return filter, nil
+}
+
 func (handler *Handler) ListApplicationDeployments(context *gin.Context) {
 	pageValue, err := page(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	items, count, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pageValue)
+	filter, err := applicationDeploymentFilterFromQuery(context)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items, count, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pageValue, filter)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
@@ -57,7 +117,7 @@ func (handler *Handler) GetApplicationDeployment(context *gin.Context) {
 	if !ok {
 		return
 	}
-	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000})
+	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000}, ApplicationDeploymentFilter{})
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
@@ -147,7 +207,7 @@ func (handler *Handler) ControlApplicationDeployment(context *gin.Context) {
 		respond(context, result, executeErr)
 		return
 	}
-	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000})
+	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000}, ApplicationDeploymentFilter{})
 	if err != nil {
 		respond(context, nil, translate(err))
 		return

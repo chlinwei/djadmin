@@ -608,7 +608,9 @@ function handleExpand(keys, info) {
 }
 
 function handleSelect(keys) {
-  const key = keys[0] || 'all'
+  // 再点已选中节点时 antd 会取消选中，这里保持原选中与过滤范围不变
+  if (!keys.length) return
+  const key = keys[0]
   selectedKeys.value = [key]
   emit('select', scopeByKey.get(key) || {})
 }

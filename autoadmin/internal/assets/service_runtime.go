@@ -68,13 +68,22 @@ func nullableTime(value sql.NullTime) *string {
 	return &formatted
 }
 
-func (r *Repository) ListApplicationServices(ctx context.Context, search string, page pagination.Page) ([]ApplicationService, int64, error) {
+func (r *Repository) ListApplicationServices(ctx context.Context, search string, page pagination.Page, businessSystemID int64) ([]ApplicationService, int64, error) {
 	pattern := "%" + search + "%"
+	conditions := []string{"(?='' OR s.name LIKE ? OR s.code LIKE ?)"}
+	arguments := []any{search, pattern, pattern}
+	if businessSystemID > 0 {
+		// 与 Django 版 DRF filter 的 business_system 字段对齐：
+		// 服务树的业务系统/环境节点靠它收敛到当前业务下的逻辑服务。
+		conditions = append(conditions, "s.business_system_id=?")
+		arguments = append(arguments, businessSystemID)
+	}
+	whereClause := strings.Join(conditions, " AND ")
 	var count int64
-	if err := r.pool.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets_application_service s WHERE (?='' OR s.name LIKE ? OR s.code LIKE ?)`, search, pattern, pattern).Scan(&count); err != nil {
+	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_service s WHERE "+whereClause, arguments...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.pool.QueryContext(ctx, `SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),s.macro_values,s.log_collection_enabled,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE (?='' OR s.name LIKE ? OR s.code LIKE ?) ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?`, search, pattern, pattern, page.Size, page.Offset)
+	rows, err := r.pool.QueryContext(ctx, "SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),s.macro_values,s.log_collection_enabled,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE "+whereClause+" ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?", append(arguments, page.Size, page.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -129,12 +138,37 @@ func (r *Repository) GetApplicationService(ctx context.Context, id int64) (Appli
 	}
 	return item, rows.Err()
 }
-func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagination.Page) ([]ApplicationDeployment, int64, error) {
+// ApplicationDeploymentFilter 部署实例列表的过滤条件，对应 Django 版 DRF filter 字段：
+// application_service（经 M2M 关联表）、application_service__business_system、application_service__environment。
+// 服务树选中逻辑服务/业务系统/环境节点时依赖这些参数收敛右侧列表，缺失会导致返回全量实例。
+type ApplicationDeploymentFilter struct {
+	ApplicationServiceID int64
+	BusinessSystemID     int64
+	EnvironmentID        *int64
+}
+
+func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagination.Page, filter ApplicationDeploymentFilter) ([]ApplicationDeployment, int64, error) {
+	conditions := []string{"1=1"}
+	arguments := []any{}
+	if filter.ApplicationServiceID > 0 {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l WHERE l.deployment_id=d.id AND l.service_id=?)")
+		arguments = append(arguments, filter.ApplicationServiceID)
+	}
+	if filter.BusinessSystemID > 0 {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id AND s.business_system_id=?)")
+		arguments = append(arguments, filter.BusinessSystemID)
+	}
+	if filter.EnvironmentID != nil {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id AND s.environment_id=?)")
+		arguments = append(arguments, *filter.EnvironmentID)
+	}
+	whereClause := strings.Join(conditions, " AND ")
 	var count int64
-	if err := r.pool.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets_application_deployment`).Scan(&count); err != nil {
+	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_deployment d WHERE "+whereClause, arguments...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.pool.QueryContext(ctx, `SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,COALESCE(h.ip,''),d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,d.runtime_variables FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id ORDER BY d.id DESC LIMIT ? OFFSET ?`, page.Size, page.Offset)
+	query := "SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,COALESCE(h.ip,''),d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,d.runtime_variables FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id WHERE " + whereClause + " ORDER BY d.id DESC LIMIT ? OFFSET ?"
+	rows, err := r.pool.QueryContext(ctx, query, append(arguments, page.Size, page.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

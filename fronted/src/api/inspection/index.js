@@ -8,6 +8,10 @@ export function getInspectionGroups(params) {
   return requestUtil.get(groupPrefix, params)
 }
 
+export function getInspectionGroup(id) {
+  return requestUtil.get(`${groupPrefix}${id}/`)
+}
+
 export function saveInspectionGroup(data) {
   return data.id
     ? requestUtil.patch(`${groupPrefix}${data.id}/`, data)

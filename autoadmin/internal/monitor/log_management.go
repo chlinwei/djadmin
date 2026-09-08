@@ -76,10 +76,10 @@ func buildISMPolicyName(indexPrefix, tierCode string) string {
 }
 
 type retentionTierRow struct {
-	Code                 string
-	RetentionDays        int64
-	DailySizeGB          float64
-	RolloverMinIndexAge  string
+	Code                string
+	RetentionDays       int64
+	DailySizeGB         float64
+	RolloverMinIndexAge string
 }
 
 // buildISMPolicyBody 按档位生成 ISM policy，经 ism_template 按索引名后缀自动挂载。
@@ -277,4 +277,3 @@ func (handler *Handler) deleteProcessingPipeline(context *gin.Context, clusterID
 	}
 	return nil
 }
-

@@ -349,9 +349,9 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster openSear
 // 主机被人手工改过的情况由 agent 侧上报与数据流层兜底。
 func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
 	type targetRow struct {
-		ID               int64
-		HostIP           string
-		AgentInstalled   bool
+		ID                int64
+		HostIP            string
+		AgentInstalled    bool
 		ConfigFingerprint string
 	}
 	rows, err := handler.db.QueryContext(context, `SELECT l.id,COALESCE(h.ip,''),l.agent_installed,COALESCE(l.config_fingerprint,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.managed_enabled=TRUE ORDER BY l.id`)
@@ -391,10 +391,10 @@ func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
 // checkLogRuntime 运行状态取自数据库缓存，反映最近一次探测结果，不是实时探活。
 func (handler *Handler) checkLogRuntime(context *gin.Context) gin.H {
 	type targetRow struct {
-		ID         int64
-		HostIP     string
-		Runtime    string
-		LastError  string
+		ID        int64
+		HostIP    string
+		Runtime   string
+		LastError string
 	}
 	rows, err := handler.db.QueryContext(context, `SELECT l.id,COALESCE(h.ip,''),COALESCE(l.runtime_status,''),COALESCE(l.last_error,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.managed_enabled=TRUE AND l.agent_installed=TRUE ORDER BY l.id`)
 	if err != nil {

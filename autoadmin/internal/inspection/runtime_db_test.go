@@ -29,7 +29,7 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 		Bindings: []mountBinding{{
 			runGroup: runGroup{
 				ID: 1, Name: "group-a", Category: "application",
-				Checks: []runCheck{{Name: "check-1", Executor: "goss", Severity: "critical"}},
+				Checks: []runCheck{{Name: "check-1", Severity: "critical"}},
 			},
 			MountType: mountService, ServiceID: sql.NullInt64{Int64: 9, Valid: true},
 		}},
@@ -93,8 +93,8 @@ func TestListExecutionResultsMapsGroupColumns(t *testing.T) {
 	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
 	mock.ExpectQuery(query).WithArgs(int64(201)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
-			AddRow(1, 301, "inspection:201:0", "goss", "check-1", "fail", "critical", 1, "group-a", []byte("null"), []byte("null"), "failed").
-			AddRow(2, 301, "inspection:201:1", "goss", "check-2", "pass", "warning", nil, "", []byte("null"), []byte("null"), ""))
+			AddRow(1, 301, "inspection:201:0", "opa", "check-1", "fail", "critical", 1, "group-a", []byte("null"), []byte("null"), "failed").
+			AddRow(2, 301, "inspection:201:1", "opa", "check-2", "pass", "warning", nil, "", []byte("null"), []byte("null"), ""))
 
 	results, err := (&Handler{db: database}).listExecutionResults(context.Background(), 201)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestListExecutionResultsSQLCoalescesNullableJSON(t *testing.T) {
 	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
 	mock.ExpectQuery(query).WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
-			AddRow(1, 2, "k", "goss", "n", "error", "critical", nil, "", []byte("null"), []byte("null"), "plan error"))
+			AddRow(1, 2, "k", "opa", "n", "error", "critical", nil, "", []byte("null"), []byte("null"), "plan error"))
 
 	results, err := (&Handler{db: database}).listExecutionResults(context.Background(), 1)
 	if err != nil {

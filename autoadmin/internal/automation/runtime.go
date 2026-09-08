@@ -32,12 +32,12 @@ import (
 const controllerKeyPrefix = "go:v1:"
 
 type inventoryInput struct {
-	Name               string   `json:"name"`
-	SelectedHostIDs    []int64  `json:"selected_host_ids"`
-	Enabled            *bool    `json:"enabled"`
-	UpdateOnLaunch     *bool    `json:"update_on_launch"`
-	UpdateCacheTimeout *int     `json:"update_cache_timeout"`
-	Remark             *string  `json:"remark"`
+	Name               string  `json:"name"`
+	SelectedHostIDs    []int64 `json:"selected_host_ids"`
+	Enabled            *bool   `json:"enabled"`
+	UpdateOnLaunch     *bool   `json:"update_on_launch"`
+	UpdateCacheTimeout *int    `json:"update_cache_timeout"`
+	Remark             *string `json:"remark"`
 }
 
 type taskInput struct {
@@ -84,7 +84,8 @@ func (handler *Handler) GetInventory(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
-func (handler *Handler) DeleteInventory(context *gin.Context) {	id, ok := automationID(context)
+func (handler *Handler) DeleteInventory(context *gin.Context) {
+	id, ok := automationID(context)
 	if !ok {
 		return
 	}

@@ -93,7 +93,7 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 		}
 	}
 	mergeTaskInput(&state, input)
-	message, validationErr := handler.validateTask(context, &state, id == 0 || input.Group != nil || input.Groups != nil)
+	message, validationErr := handler.validateTask(context, &state, id == 0 || input.Group != nil || input.Groups != nil, id)
 	if validationErr != nil {
 		response.Error(context, validationErr)
 		return
@@ -107,7 +107,7 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 	if id == 0 {
 		result, execErr := handler.db.ExecContext(context, `INSERT INTO inspection_task(name,inspection_name,group_id,concurrency,timeout_seconds,cron_expression,next_run_time,last_run_time,enabled,create_time,update_time) VALUES(?,?,?,?,?,?,?,NULL,?,NOW(),NOW())`, state.Name, state.InspectionName, state.GroupIDs[0], state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled)
 		if execErr != nil {
-			response.BusinessError(context, 400, "巡检任务名称已存在", nil)
+			response.Error(context, execErr)
 			return
 		}
 		id, err = result.LastInsertId()
@@ -250,7 +250,7 @@ func mergeTaskInput(state *taskState, input taskInput) {
 	}
 }
 
-func (handler *Handler) validateTask(context *gin.Context, state *taskState, validateGroupAvailability bool) (string, error) {
+func (handler *Handler) validateTask(context *gin.Context, state *taskState, validateGroupAvailability bool, excludeID int64) (string, error) {
 	// GroupIDs 从 Bindings 派生（直接构造 taskState 的调用方只填 Bindings 也应通过）。
 	if len(state.GroupIDs) == 0 {
 		state.GroupIDs = bindingGroupIDs(state.Bindings)
@@ -275,6 +275,17 @@ func (handler *Handler) validateTask(context *gin.Context, state *taskState, val
 	// 单组模型：一个任务只绑一个巡检组（在逐绑定查询前拦截）。
 	if len(state.Bindings) > 1 {
 		return "一个巡检任务只绑定一个巡检组；通用基线和应用巡检请分别创建任务", nil
+	}
+	// 任务名称唯一性收窄为"同巡检组内唯一"（迁移 000010 删除全局唯一键）：
+	// 列表/执行记录都展示所属组，歧义只发生在同组内；不同组允许复用通用名。
+	if len(state.GroupIDs) == 1 {
+		var count int
+		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM inspection_task WHERE name=? AND group_id=? AND id<>?`, state.Name, state.GroupIDs[0], excludeID).Scan(&count); err != nil {
+			return "", err
+		}
+		if count > 0 {
+			return "同一巡检组下任务名称已存在", nil
+		}
 	}
 	if len(state.GroupIDs) == 0 {
 		state.GroupIDs = bindingGroupIDs(state.Bindings)

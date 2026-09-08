@@ -234,7 +234,7 @@
                   :key="check.id || check.name"
                   :color="check.severity === 'warning' ? 'orange' : 'red'"
                 >
-                  {{ check.name }} · {{ executorLabel(check.executor) }} · {{ severityLabel(check.severity) }}
+                   {{ check.name }} · {{ severityLabel(check.severity) }}
                 </a-tag>
               </a-space>
             </template>
@@ -358,7 +358,8 @@
     <a-modal
       v-model:open="groupModalOpen"
       :title="groupForm.id ? '编辑巡检组' : '新增巡检组'"
-      width="760px"
+      width="80vw"
+      style="max-width: 1200px"
       centered
       :confirm-loading="savingGroup"
       @ok="submitGroup"
@@ -442,49 +443,58 @@
           </div>
           <div class="form-grid">
             <a-form-item label="名称" required><a-input v-model:value="check.name" /></a-form-item>
-            <a-form-item label="执行器" required>
-              <a-select v-model:value="check.executor" :options="executorOptions" :getPopupContainer="getPopupContainer" @change="handleExecutorChange(check)" />
+            <a-form-item label="严重级别" required>
+              <a-segmented v-model:value="check.severity" :options="severityOptions" block />
+              <div class="field-hint">警告级失败只计入汇总，不会把巡检目标判为失败。</div>
             </a-form-item>
           </div>
-          <a-form-item label="严重级别" required>
-            <a-segmented v-model:value="check.severity" :options="severityOptions" block />
-            <div class="field-hint">警告级失败只计入汇总，不会把巡检目标判为失败。</div>
-          </a-form-item>
-          <template v-if="check.executor === 'goss'">
-            <a-form-item label="Goss 套件 (YAML)" required>
-              <div class="goss-spec-actions">
-                <a-button size="small" :loading="gossValidatingKeys.has(check.localKey)" @click="handleGossValidate(check)">
-                  <FontAwesomeIcon :icon="['fas', 'circle-check']" />&nbsp;校验 YAML
+          <div class="check-heading">
+              <span>采集命令（{{ (check.config?.input_commands || []).length }}）</span>
+              <a-button size="small" @click="(check.config.input_commands ??= []).push({ key: '', exec: '', parse: 'raw' })">
+                <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加采集命令
+              </a-button>
+            </div>
+            <div class="field-hint" style="margin-bottom:8px;">
+              每条命令的输出成为 input 的一个顶层字段，策略里用 <code>input.{{ '{' }}key{{ '}' }}</code> 引用；命令失败时整个检查项直接报错（附错误原因）。
+            </div>
+            <div v-for="(input, inputIndex) in (check.config?.input_commands || [])" :key="inputIndex" class="input-grid">
+              <a-input v-model:value="input.key" placeholder="key，如 es_limits" />
+              <a-input v-model:value="input.exec" placeholder="命令，如 cat /proc/1/limits" />
+              <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
+              <a-tooltip title="删除" placement="top">
+                <a-button class="delBtn" size="small" type="primary" danger @click="check.config.input_commands.splice(inputIndex, 1)">
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                 </a-button>
+              </a-tooltip>
+            </div>
+            <div class="check-heading">
+              <span>文件采集（{{ (check.config?.input_files || []).length }}）</span>
+              <a-button size="small" @click="(check.config.input_files ??= []).push({ key: '', path: '', parse: 'lines' })">
+                <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加文件采集
+              </a-button>
+            </div>
+            <div v-for="(input, inputIndex) in (check.config?.input_files || [])" :key="'f' + inputIndex" class="input-grid">
+              <a-input v-model:value="input.key" placeholder="key，如 sshd_config" />
+              <a-input v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
+              <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
+              <a-tooltip title="删除" placement="top">
+                <a-button class="delBtn" size="small" type="primary" danger @click="check.config.input_files.splice(inputIndex, 1)">
+                  <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                </a-button>
+              </a-tooltip>
+            </div>
+            <a-form-item label="Rego 策略" required>
+              <a-textarea v-model:value="check.config.policy" :rows="10" spellcheck="false" class="opa-policy-editor" />
+              <div class="field-hint">
+                必须以 <code>package baseline</code> 开头，产出 <code>assertions contains &lt;元素&gt; if {{ '{' }} ... {{ '}' }}</code> 全量断言清单（OPA v1 语法；pass/fail 都展示，空集即通过）。
+                元素形如 {'{'}name, pass, expected, actual{'}'}，expected/actual 进报告对应列。
+                策略里引用的 <code>input.key</code> 必须与上方采集 key 一致，引用了未采集的字段保存时会直接报错。
               </div>
-              <a-textarea v-model:value="check.config.spec" :rows="10" placeholder="file:&#10;  /etc/hosts:&#10;    exists: true&#10;    mode: '0644'" />
-              <div class="field-hint">按 goss 官方 schema 校验后保存；支持 ${APP_HOME} 等变量（在待校验路径中生效）。</div>
             </a-form-item>
-            <div class="form-grid">
-              <a-form-item label="运行用户">
-                <a-input v-model:value="check.config.run_user" placeholder="root" />
-                <div class="field-hint">留空默认 root（主机组）；逻辑服务默认部署模板运行用户。goss 以该用户视角采集进程/文件/端口。</div>
-              </a-form-item>
-              <a-form-item label="变量 (JSON)">
-                <a-textarea v-model:value="check.config.vars_json" :rows="3" placeholder='{"VAR": "value"}' />
-                <div class="field-hint">透传给 goss --vars-inline，YAML 中通过 Go template 语法引用变量。</div>
-              </a-form-item>
-            </div>
-          </template>
-          <template v-else-if="check.executor === 'schema_validate'">
-            <a-form-item label="待校验文件" required><a-input v-model:value="check.config.path" placeholder="${APP_HOME}/conf/server.xml" /></a-form-item>
-            <div class="form-grid">
-              <a-form-item label="Schema 类型" required>
-                <a-select v-model:value="check.config.schema_type" :options="schemaTypeOptions" :getPopupContainer="getPopupContainer" @change="handleSchemaTypeChange(check)" />
-              </a-form-item>
-              <a-form-item label="文档类型" required>
-                <a-select v-model:value="check.config.document_type" :options="schemaDocumentTypeOptions(check.config.schema_type)" :getPopupContainer="getPopupContainer" />
-              </a-form-item>
-            </div>
-            <a-form-item label="Schema 内容" required>
-              <a-textarea v-model:value="check.config.schema_content" :rows="8" />
+            <a-form-item label="运行用户">
+              <a-input v-model:value="check.config.run_user" placeholder="root" />
+              <div class="field-hint">采集命令以此用户执行（su -l 登录环境）；OPA 求值本身不降权。支持 ${'{'}HOST_IP{'}'} 等变量（在命令/路径中生效）。</div>
             </a-form-item>
-          </template>
         </div>
       </a-form>
     </a-modal>
@@ -511,20 +521,12 @@
           <div class="field-hint">一个任务绑定一个巡检组；通用基线和应用巡检请分别创建任务，各自挂载、各自调度。</div>
         </a-form-item>
         <a-form-item label="巡检对象" required>
-          <template v-if="taskTargetSummary === 'STATIC'">
-            <a-input value="静态范围（存量任务）" readonly />
-            <div class="field-hint">存量任务沿用静态主机列表/逻辑服务；如需调整请重建任务。</div>
-          </template>
-          <template v-else-if="taskTargetSummary">
+          <template v-if="taskTargetSummary">
             <a-input :value="taskTargetSummary" readonly>
               <template #addonAfter>
                 <span class="field-hint">在左侧树点击节点可调整</span>
               </template>
             </a-input>
-          </template>
-          <template v-else-if="taskIsLegacy">
-            <a-input value="静态范围（存量任务）" readonly />
-            <div class="field-hint">存量任务沿用静态主机列表/逻辑服务；如需切换请重建任务。</div>
           </template>
           <template v-else>
             <a-input value="未选择 —— 请先在左侧树点击项目 / 业务 / 环境 / 服务节点" readonly class="target-missing" />
@@ -660,7 +662,7 @@
                     {{ formatGossExpectation(detail) }}
                   </template>
                   <template v-else-if="column.key === 'detail_actual'">
-                    {{ formatGossActual(detail.actual) }}
+                    {{ formatGossActual(detail.actual, detail.property) }}
                   </template>
                 </template>
               </a-table>
@@ -710,7 +712,6 @@ import {
   cancelInspectionExecution,
   saveInspectionGroup,
   saveInspectionTask,
-  validateGossSpec,
 } from '@/api/inspection'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission'
@@ -902,16 +903,17 @@ const resultColumns = [
 const runningCount = computed(() => executions.value.filter((item) => ['pending', 'running'].includes(item.status)).length)
 const scheduledTasks = computed(() => taskOptions.value.filter((task) => task.cron_expression))
 const unscheduledTaskOptions = computed(() => taskOptions.value.filter((task) => !task.cron_expression))
-// Schema 校验读目标主机文件；Goss 是 YAML 声明式套件（端口/进程/服务/文件/命令等），两者都在 Agent 端执行。
-const executorOptions = [
-  { label: 'Schema', value: 'schema_validate' },
-  { label: 'Goss', value: 'goss' },
-]
+// 巡检唯一执行器：OPA（Rego 策略执行器，采集 + 策略求值），固定在 Agent 端执行。
 const severityOptions = [
   { label: '严重', value: 'critical' },
   { label: '警告', value: 'warning' },
 ]
-// 变量表与 executor.py 的 _resolve / _resolve_host 一一对应，修改后端解析时需同步。
+const opaParseOptions = [
+  { label: 'raw 原文', value: 'raw' },
+  { label: 'lines 按行', value: 'lines' },
+  { label: 'json 对象', value: 'json' },
+]
+// 变量表与后端的变量解析一一对应，修改后端解析时需同步。
 const DEPLOYMENT_VARIABLES = [
   { name: '${APP_HOME}', desc: '部署模板的 App Home 目录' },
   { name: '${RUN_USER}', desc: '部署模板的运行用户' },
@@ -943,22 +945,6 @@ const triggerFilterOptions = [
 const executionTargetLabel = computed(
   () => selectedExecution.value?.service_snapshot?.target_type === 'host_group' ? '主机组' : '逻辑服务',
 )
-const schemaTypeOptions = [
-  { label: 'JSON Schema', value: 'json_schema' },
-  { label: 'Schematron', value: 'schematron' },
-  { label: '正则表达式', value: 'regexp' },
-]
-const schemaDocumentTypes = {
-  json_schema: [
-    { label: 'JSON', value: 'json' },
-    { label: 'YAML', value: 'yaml' },
-    { label: 'TOML', value: 'toml' },
-    { label: 'INI', value: 'ini' },
-    { label: 'Properties', value: 'properties' },
-  ],
-  schematron: [{ label: 'XML', value: 'xml' }],
-  regexp: [{ label: 'Text', value: 'text' }],
-}
 const selectedTaskGroups = computed(() => (taskForm.groups || []).map((id) => groupOptions.value.find((group) => group.id === id)).filter(Boolean))
 // undefined 表示尚未选巡检组，此时两类目标输入都不展示。
 const groupTargetsHostGroup = computed(() => (groupForm.category || 'general') !== 'application')
@@ -1022,7 +1008,6 @@ const groupCategoryOptions = [
 ]
 const categoryLabel = (category) => (category === 'application' ? '应用类型' : '通用')
 const groupById = (id) => groupOptions.value.find((group) => group.id === id)
-const taskIsLegacy = computed(() => (taskForm.bindings || []).some((binding) => isLegacyBinding(binding)))
 // 巡检参数赋值：根据所选组的 params 声明生成编辑行（静态范围任务无参数）。
 const taskParamAssignments = reactive({})
 const paramAssignModes = [
@@ -1070,10 +1055,8 @@ function declaredParamsByKey(name) {
 // 巡检对象摘要：完全由左侧树选中节点推导（新建），或由已有绑定还原（编辑）。
 const taskTargetSummary = computed(() => {
   const nameOf = (list, id) => list.value.find((item) => String(item.id) === String(id))?.name || `#${id}`
-  if (!taskIsLegacy.value && taskForm.bindings.length) {
-    // 编辑存量静态任务：bindings 是 legacy 且没有可解析挂载 → 显示静态范围提示。
+  if (taskForm.bindings.length) {
     const binding = taskForm.bindings[0]
-    if (isLegacyBinding(binding)) return 'STATIC'
     const group = groupById(binding.group_id)
     if (!group) return ''
     const isApp = (group.category || 'general') === 'application'
@@ -1103,9 +1086,8 @@ const taskNavSelected = ref(['all'])
 const taskNavNode = computed(() => taskNavSelected.value?.[0] || 'all')
 // 新建任务弹窗打开期间回到树上换节点 → 巡检对象实时跟随（编辑态/静态范围不动）。
 watch(taskNavNode, () => {
-  if (!taskModalOpen.value || taskForm.id || taskIsLegacy.value || !taskForm.groups?.length) return
+  if (!taskModalOpen.value || taskForm.id || !taskForm.groups?.length) return
   const group = groupById(taskForm.groups[0])
-  if (!group || isLegacyBinding({ mount_type: (taskForm.bindings[0] || {}).mount_type })) return
   taskForm.bindings = [defaultBinding(group)]
   syncTaskParamAssignments()
 })
@@ -1135,7 +1117,6 @@ const taskNavContext = computed(() => {
 })
 const taskNavIconType = (key) => {
   if (key === 'all') return 'all'
-  if (key === 'legacy') return 'deployment'
   if (String(key).startsWith('proj-')) return 'project'
   if (String(key).startsWith('biz-')) return 'system'
   if (String(key).startsWith('env-')) return 'environment'
@@ -1185,14 +1166,13 @@ const taskNavTreeData = computed(() => {
   }))
   return [
     { key: 'all', title: `全部任务`, children },
-    { key: 'legacy', title: '静态范围（存量任务）' },
   ]
 })
 // 每个绑定挂载点对应的树节点路径（从深到浅），任务出现在其任一路径节点下。
 function taskNavPaths(record) {
   const paths = []
   for (const group of record.groups || []) {
-    const mountType = group.mount_type || 'legacy_static'
+    const mountType = group.mount_type
     if (mountType === 'project') {
       paths.push([`proj-${group.project_id}`, 'all'])
     } else if (mountType === 'environment') {
@@ -1224,10 +1204,10 @@ function taskNavPaths(record) {
         'all',
       ])
     } else {
-      paths.push(['legacy', 'all'])
+      paths.push(['all'])
     }
   }
-  if (!paths.length) paths.push(['legacy', 'all'])
+  if (!paths.length) paths.push(['all'])
   return paths
 }
 const visibleTasks = computed(() => {
@@ -1243,7 +1223,7 @@ function handleTaskNodeSelect(keys, info) {
   taskNavSelected.value = keys
 }
 const mountText = (group) => {
-  if (!group || isLegacyBinding(group)) return ''
+  if (!group) return ''
   const nameOf = (list, id) => list.value.find((item) => String(item.id) === String(id))?.name || `#${id}`
   if (group.mount_type === 'project') return `项目: ${nameOf(projects, group.project_id)}`
   if (group.mount_type === 'environment') return `环境: ${nameOf(projects, group.project_id)} / ${nameOf(businessEnvironments, group.environment_id)}`
@@ -1258,7 +1238,6 @@ const mountText = (group) => {
   }
   return ''
 }
-const isLegacyBinding = (binding) => (binding.mount_type || 'legacy_static') === 'legacy_static'
 const projectOptions = computed(() => projects.value.map((item) => ({ label: item.name, value: item.id })))
 const businessOptions = computed(() => businessSystems.value.map((item) => ({ label: item.name, value: item.id })))
 const environmentOptions = computed(() => businessEnvironments.value.map((item) => ({ label: item.name, value: item.id })))
@@ -1330,7 +1309,7 @@ function handleTaskGroupsChange(value) {  // 单组模型：选择即替换，�
     taskForm.bindings = []
     return
   }
-  const existing = (taskForm.bindings || []).find((binding) => binding.group_id === id && !isLegacyBinding(binding))
+  const existing = (taskForm.bindings || []).find((binding) => binding.group_id === id)
   taskForm.bindings = [existing || defaultBinding(groupById(id) || { id, category: 'general' })]
   syncTaskParamAssignments()
 }
@@ -1339,7 +1318,6 @@ const scopeLabel = (scope) => ({
   service_once: '逻辑服务·服务单次',
   per_host: '主机组·每台主机',
 }[scope] || scope)
-const executorLabel = (executor) => ({ shell: 'Shell', schema_validate: 'Schema', goss: 'Goss', http: 'HTTP', tcp: 'TCP' }[executor] || executor)
 const severityLabel = (severity) => severity === 'warning' ? '警告' : '严重'
 const statusLabel = (status) => ({ pending: '等待中', running: '执行中', success: '成功', failed: '失败', canceled: '已取消', skipped: '已跳过' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', canceled: 'default', skipped: 'default' }[status] || 'default')
@@ -1356,7 +1334,7 @@ const rawTargetResults = (target) => (Array.isArray(target.raw_result?.checks) ?
     expected_value: check.expected,
     actual_value: check.actual,
     // goss 检查项的子测试明细（含通过的），展开行逐条展示 pass/fail
-    goss_details: (Array.isArray(check.actual?.details) ? check.actual.details : []).map((detail, detailIndex) => ({
+    goss_details: filterGossDetails((Array.isArray(check.actual?.details) ? check.actual.details : [])).map((detail, detailIndex) => ({
       ...detail,
       detail_key: `${check.key || 'check'}-${index}-${detailIndex}`,
     })),
@@ -1370,11 +1348,13 @@ const targetDisplayResults = (target) => {
     if (typeof actual === 'string') {
       try { actual = JSON.parse(actual) } catch { /* 非法 JSON 保持原样展示 */ }
     }
-    const details = Array.isArray(actual?.details) ? actual.details : (row.goss_details || [])
+    const details = Array.isArray(actual?.details) ? filterGossDetails(actual.details) : (row.goss_details || [])
+    // 明细可能来自后端存档（actual.details）或本地原始回传（goss_details），两路都做 exit-status 折叠
+    const normalizedDetails = details.map((detail, detailIndex) => ({ ...detail, detail_key: `${row.check_key || 'check'}-${index}-${detailIndex}` }))
     return {
       ...row,
       actual_value: actual ?? row.actual_value,
-      goss_details: details.map((detail, detailIndex) => ({ ...detail, detail_key: `${row.check_key || 'check'}-${index}-${detailIndex}` })),
+      goss_details: normalizedDetails,
     }
   })
 }
@@ -1400,6 +1380,7 @@ const gossResourceTypeLabels = {
   Service: '服务', DNS: 'DNS', HTTP: 'HTTP', Interface: '网卡', KernelParam: '内核参数',
 }
 const gossPropertyLabels = {
+  assertion: '断言',
   listening: '端口监听', 'exit-status': '退出码', stdout: '标准输出', stderr: '标准错误',
   running: '运行状态', installed: '已安装', exists: '存在', enabled: '已启用',
   reachable: '可达', mode: '权限', owner: '属主', group: '属组', contents: '内容',
@@ -1412,9 +1393,28 @@ function gossResourceTypeLabel(resource) {
 function gossPropertyLabel(property) {
   return gossPropertyLabels[property] || property
 }
+
+// command 资源带 exit-status + stdout 等多个断言时，exit-status 只表示"命令能执行"，
+// 与 stdout 断言重复展示没有信息量；只有它失败（命令本身异常）或没有其他断言可看时才展示。
+function filterGossDetails(details) {
+  const byResource = new Map()
+  for (const detail of details) {
+    const key = String(detail.resource || '')
+    if (!byResource.has(key)) byResource.set(key, [])
+    byResource.get(key).push(detail)
+  }
+  return details.filter((detail) => {
+    if (detail.property !== 'exit-status') return true
+    const siblings = byResource.get(String(detail.resource || '')) || []
+    const hasOtherAssertions = siblings.some((item) => item !== detail && item.property !== 'exit-status')
+    return !hasOtherAssertions || !detail.successful
+  })
+}
 function formatGossExpectation(detail) {
   const value = detail.expected
   switch (detail.property) {
+    case 'assertion':
+      return value != null && value !== '' ? value : '—' 
     case 'listening':
       return value === true ? '端口处于监听状态' : '端口未监听'
     case 'exit-status':
@@ -1435,10 +1435,15 @@ function formatGossExpectation(detail) {
       return formatValue(value)
   }
 }
-function formatGossActual(value) {
-  // goss 对命令输出类实际值序列化不出来（{}），字符串里带 bytes.Reader 的也无法读，统一降级为 -
-  if (value == null || (typeof value === 'object' && Object.keys(value).length === 0)) return '-'
-  if (typeof value === 'string') return value.includes('bytes.Reader') ? '-' : value
+function formatGossActual(value, property) {
+  // OPA 违规行：actual 是 violation.item 对象，直接展示策略回传的真实实际值
+  if (property === 'violation' && value && typeof value === 'object') {
+    return value.actual != null ? formatValue(value.actual) : '-'
+  }
+  // goss 对命令输出类实际值序列化不出来（{}）或降级为 Go 类型名（bytes.Reader），
+  // 这是 goss 的已知限制——stdout 的实际值不回传，只能从失败 message 看差异。
+  if (value == null || (typeof value === 'object' && Object.keys(value).length === 0)) return 'goss 不回传输出实际值'
+  if (typeof value === 'string') return value.includes('bytes.Reader') ? 'goss 不回传输出实际值' : value
   return formatValue(value)
 }
 
@@ -1553,57 +1558,19 @@ function handleExecutionRangeOpenChange(open) {
   if (open) executionRangePresets.value = buildUserTimezoneRangePresets(userTimezone.value)
 }
 
-function defaultExecutorConfig(executor, targetsHostGroup = groupTargetsHostGroup.value) {
-  if (executor === 'schema_validate') {
-    return {
-      path: targetsHostGroup ? '' : '${APP_HOME}/conf/server.xml',
-      schema_type: 'schematron',
-      document_type: 'xml',
-      schema_content: '',
-    }
-  }
-  if (executor === 'goss') {
-    return {
-      spec: '',
-      run_user: '',
-      vars: {},
-      environment: {},
-    }
-  }
-  return {}
-}
-function schemaDocumentTypeOptions(schemaType) { return schemaDocumentTypes[schemaType] || [] }
-function handleExecutorChange(check) {
-  check.config = defaultExecutorConfig(check.executor, groupTargetsHostGroup.value)
-}
-function handleSchemaTypeChange(check) {
-  check.config.document_type = schemaDocumentTypeOptions(check.config.schema_type)[0]?.value
-}
-// goss YAML 在线校验：与保存时的官方 schema 校验同源，按钮即时反馈。
-const gossValidatingKeys = reactive(new Set())
-async function handleGossValidate(check) {
-  const spec = (check.config.spec || '').trim()
-  if (!spec) {
-    message.warning('请先填写 Goss YAML')
-    return
-  }
-  gossValidatingKeys.add(check.localKey)
-  try {
-    await validateGossSpec(spec)
-    message.success('YAML 符合 goss 官方 schema')
-  } catch (error) {
-    message.error(error?.message || 'YAML 校验失败')
-  } finally {
-    gossValidatingKeys.delete(check.localKey)
+function defaultOpaConfig() {
+  return {
+    input_commands: [],
+    input_files: [],
+    run_user: '',
+    policy: 'package baseline\n\n# 全量断言清单：每条断言 pass/fail 都进报告，空集即通过。\n# OPA v1 语法：assertions contains <元素> if { ... }。\nassertions contains assertion if {\n\tassertion := {"name": "示例断言", "pass": input.<采集key>.raw == "期望值",\n\t\t"expected": "期望值", "actual": input.<采集key>.raw}\n}',
   }
 }
 function addCheck() {
-  const config = defaultExecutorConfig('schema_validate')
   groupForm.checks.push({
     localKey: ++localKey,
     name: '',
-    executor: 'schema_validate',
-    config,
+    config: defaultOpaConfig(),
     severity: 'critical',
     enabled: true,
     order: groupForm.checks.length,
@@ -1623,14 +1590,20 @@ function addParam() {
 function openGroupModal(record) {
   ensureApplicationOptions()
   Object.assign(groupForm, emptyGroupForm(), record ? JSON.parse(JSON.stringify(record)) : {})
+  // 存量数据 params/checks 可能为 null（建组时未填），归一化成数组避免后续遍历崩掉。
+  groupForm.params = Array.isArray(groupForm.params) ? groupForm.params : []
+  groupForm.checks = Array.isArray(groupForm.checks) ? groupForm.checks : []
   groupForm.checks = (groupForm.checks || []).map((check) => ({
     ...check,
     localKey: ++localKey,
     severity: check.severity || 'critical',
     config: {
+      ...defaultOpaConfig(),
       ...(check.config || {}),
-      // goss 变量对象转回 JSON 文本供编辑框使用。
-      vars_json: check.config?.vars && typeof check.config.vars === 'object' ? JSON.stringify(check.config.vars, null, 2) : '',
+      input_commands: (check.config && Array.isArray(check.config.input_commands)) ? check.config.input_commands : [],
+      input_files: (check.config && Array.isArray(check.config.input_files)) ? check.config.input_files : [],
+      policy: check.config?.policy || '',
+      run_user: check.config?.run_user || '',
     },
   }))
   if (!groupForm.checks.length) addCheck()
@@ -1643,7 +1616,7 @@ function openTaskModal(record) {
   taskForm.bindings = (record?.groups?.length
     ? record.groups.map((group) => ({
         group_id: group.id,
-        mount_type: group.mount_type || 'legacy_static',
+        mount_type: group.mount_type,
         project_id: group.project_id ?? undefined,
         environment_id: group.environment_id ?? undefined,
         business_system_id: group.business_system_id ?? undefined,
@@ -1651,7 +1624,7 @@ function openTaskModal(record) {
         instance_mode: group.instance_mode || ((group.mount_type === 'business' || group.mount_type === 'service') ? 'all' : undefined),
         param_values: group.param_values ?? undefined,
       }))
-    : (record?.group ? [{ group_id: record.group, mount_type: 'legacy_static' }] : []))
+    : [])
   // 编辑：还原已保存的参数赋值（组声明为骨架，已保存值优先）
   const savedGroup = (record?.groups || [])[0]
   let savedValues = {}
@@ -1708,13 +1681,6 @@ async function submitGroup() {
     const payload = JSON.parse(JSON.stringify(groupForm))
     payload.checks.forEach((check, index) => {
       delete check.localKey; delete check.id; check.order = index
-      // goss 变量在编辑框里是 JSON 文本（vars_json），提交时转成对象。
-      if (check.executor === 'goss') {
-        const rawVars = (check.config.vars_json || '').trim()
-        if (rawVars) {
-          try { check.config.vars = JSON.parse(rawVars) } catch { check.config.vars = {} }
-        } else check.config.vars = {}
-      }
     })
     await saveInspectionGroup(payload)
     groupModalOpen.value = false
@@ -1726,13 +1692,13 @@ async function submitGroup() {
   } finally { savingGroup.value = false }
 }
 async function submitTask() {
-  const hasTarget = !!taskTargetSummary.value && taskTargetSummary.value !== 'STATIC'
+  const hasTarget = !!taskTargetSummary.value
   if (!taskForm.name.trim() || !taskForm.groups?.length || !hasTarget) {
     message.warning('请完整填写任务信息，并在左侧树选择巡检对象')
     return
   }
   const paramValues = buildParamValuesPayload()
-  if (paramValues === null && !taskIsLegacy.value) {
+  if (paramValues === null) {
     message.warning('巡检参数赋值不完整：引用需填变量名，固定值不能为空')
     return
   }
@@ -1981,6 +1947,7 @@ useKeepAliveRefreshLifecycle(() => {
 .variable-note { margin-top: 8px; color: #66727d; font-size: 12px; }
 .schedule-next { color: #66727d; font-size: 12px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.input-grid { display: grid; grid-template-columns: minmax(150px, 200px) 1fr minmax(110px, 150px) auto; gap: 8px; align-items: center; margin-bottom: 8px; }
 .check-heading, .check-editor-head { display: flex; align-items: center; justify-content: space-between; }
 .check-heading { margin: 4px 0 12px; font-weight: 600; }
 .check-editor { margin-bottom: 12px; padding: 14px 16px 2px; border-left: 3px solid #126e82; background: #f6f8fa; }

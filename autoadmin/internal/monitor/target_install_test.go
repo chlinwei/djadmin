@@ -18,10 +18,10 @@ import (
 // 选错平台键会导致离线安装包匹配失败或跨发行版误装。
 func TestNormalizeExporterPlatform(t *testing.T) {
 	cases := []struct {
-		row            targetInstallRow
-		family         string
-		major          string
-		arch           string
+		row    targetInstallRow
+		family string
+		major  string
+		arch   string
 	}{
 		{targetInstallRow{OSID: "centos", OSVersionID: "9.4", Architecture: "x86_64"}, "rhel", "9", "amd64"},
 		{targetInstallRow{OSID: "kylin", OSIDLike: "rhel fedora", OSVersionID: "V10", Architecture: "x86_64"}, "rhel", "V10", "amd64"},
@@ -148,7 +148,6 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 	if !strings.Contains(message, "本地软件仓库缺少 node_exporter") {
 		t.Fatalf("no package message: %s", message)
 	}
-
 
 	// 平台不匹配（仅 ubuntu deb 包，主机是 rhel9）
 	_, message = runGuard(t, func(mock sqlmock.Sqlmock) {

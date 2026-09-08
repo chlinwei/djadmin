@@ -138,6 +138,7 @@ func (r *Repository) GetApplicationService(ctx context.Context, id int64) (Appli
 	}
 	return item, rows.Err()
 }
+
 // ApplicationDeploymentFilter 部署实例列表的过滤条件，对应 Django 版 DRF filter 字段：
 // application_service（经 M2M 关联表）、application_service__business_system、application_service__environment。
 // 服务树选中逻辑服务/业务系统/环境节点时依赖这些参数收敛右侧列表，缺失会导致返回全量实例。

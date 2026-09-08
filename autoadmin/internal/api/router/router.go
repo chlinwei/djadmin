@@ -12,6 +12,7 @@ import (
 	"autoadmin/internal/assets"
 	"autoadmin/internal/audit"
 	"autoadmin/internal/automation"
+	"autoadmin/internal/baseline"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/inspection"
 	"autoadmin/internal/monitor"
@@ -271,6 +272,26 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	profiles.PATCH("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateProfile)
 	profiles.DELETE("/:id/", middleware.RequirePermission("assets:applications:delete"), assetsHandler.DeleteProfile)
 
+	baselineHandler := baseline.NewHandler(database, gateway)
+	baselineGroup := engine.Group("/sys/security/baseline", middleware.Authenticate(tokens))
+	baselineGroup.GET("/", middleware.RequirePermission("baseline:manage"), baselineHandler.ListBaselines)
+	baselineGroup.GET("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.GetBaseline)
+	baselineGroup.POST("/", middleware.RequirePermission("baseline:manage"), baselineHandler.SaveBaseline)
+	baselineGroup.PATCH("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.SaveBaseline)
+	baselineGroup.DELETE("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.DeleteBaseline)
+	baselineGroup.POST("/:id/scan/", middleware.RequirePermission("baseline:scan"), baselineHandler.StartScan)
+	baselineGroup.POST("/:id/categories/", middleware.RequirePermission("baseline:manage"), baselineHandler.CreateBaselineCategory)
+	// 类目子资源挂在基线下（避免与 /:id/ 通配符同级冲突）。
+	baselineGroup.PATCH("/:id/categories/:categoryId/", middleware.RequirePermission("baseline:manage"), baselineHandler.UpdateBaselineCategory)
+	baselineGroup.DELETE("/:id/categories/:categoryId/", middleware.RequirePermission("baseline:manage"), baselineHandler.DeleteBaselineCategory)
+	// 策略单条 CRUD：弹窗确认即落库。
+	baselineGroup.POST("/:id/items/", middleware.RequirePermission("baseline:manage"), baselineHandler.AddBaselineItem)
+	baselineGroup.PATCH("/:id/items/:itemId/", middleware.RequirePermission("baseline:manage"), baselineHandler.UpdateBaselineItem)
+	baselineGroup.DELETE("/:id/items/:itemId/", middleware.RequirePermission("baseline:manage"), baselineHandler.DeleteBaselineItem)
+	securityScans := engine.Group("/sys/security/scans", middleware.Authenticate(tokens))
+	securityScans.GET("/", middleware.RequirePermission("baseline:manage"), baselineHandler.ListScans)
+	securityScans.GET("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.GetScan)
+
 	templates := engine.Group("/assets/application-deployment-templates", middleware.Authenticate(tokens))
 	templates.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListDeploymentTemplates)
 	templates.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetDeploymentTemplate)
@@ -316,7 +337,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionExecutions.GET("/", middleware.RequirePermission("inspection:view"), inspectionHandler.ListExecutions)
 	inspectionExecutions.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetExecution)
 	inspectionExecutions.POST("/:id/cancel/", middleware.RequirePermission("inspection:executions:cancel"), inspectionHandler.CancelExecution)
-	engine.POST("/sys/inspection/goss/validate/", middleware.Authenticate(tokens), middleware.RequirePermission("inspection:view"), inspectionHandler.ValidateGossSpec)
 
 	monitorHandler, err := monitor.NewHandler(database, gateway, playbookHandler, credentialEncryptionKey, djangoSecret)
 	if err != nil {

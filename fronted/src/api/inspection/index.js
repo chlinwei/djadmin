@@ -55,7 +55,3 @@ export function getInspectionExecution(id) {
 export function cancelInspectionExecution(id) {
   return requestUtil.post(`${executionPrefix}${id}/cancel/`, {})
 }
-
-export function validateGossSpec(spec) {
-  return requestUtil.post('sys/inspection/goss/validate/', { spec })
-}

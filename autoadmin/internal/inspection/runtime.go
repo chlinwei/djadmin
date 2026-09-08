@@ -36,7 +36,6 @@ type runGroup struct {
 
 type runCheck struct {
 	Name     string         `json:"name"`
-	Executor string         `json:"executor"`
 	Config   map[string]any `json:"config"`
 	Severity string         `json:"severity"`
 	Order    uint32         `json:"order"`
@@ -163,7 +162,7 @@ func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, 
 			if config == nil {
 				config = map[string]any{}
 			}
-			binding.Checks = append(binding.Checks, runCheck{Name: checkRow.Name, Executor: checkRow.Executor, Config: config, Severity: checkRow.Severity, Order: checkRow.Order})
+			binding.Checks = append(binding.Checks, runCheck{Name: checkRow.Name, Config: config, Severity: checkRow.Severity, Order: checkRow.Order})
 		}
 		totalChecks += len(binding.Checks)
 		task.Bindings = append(task.Bindings, binding)
@@ -502,25 +501,48 @@ func (handler *Handler) insertResults(ctx context.Context, targetID int64, resul
 
 func compileAgentCheck(context runTarget, check runCheck, index int, executionID int64, params map[string]string) gin.H {
 	config := check.Config
-	executor := check.Executor
-	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "type": executor, "executor": executor, "name": check.Name, "requires_running": false}
+	// 唯一执行器 OPA：check_plan 不再携带 executor 字段（Agent 侧恒按 opa 处理）。
+	compiled := gin.H{"key": fmt.Sprintf("inspection:%d:%d", executionID, index), "name": check.Name, "requires_running": false}
 	resolve := func(value any) string { return resolveVariables(fmt.Sprint(value), context, params) }
-	switch executor {
-	case "schema_validate":
-		compiled["path"] = resolve(config["path"])
-		compiled["document_type"] = config["document_type"]
-		compiled["schema"] = gin.H{"type": config["schema_type"], "content": config["schema_content"]}
-	case "goss":
-		compiled["spec"] = resolve(config["spec"])
-		compiled["run_user"] = first(resolve(config["run_user"]), context.RunUser, "root")
-		if vars, ok := config["vars"]; ok {
-			compiled["vars"] = vars
-		}
-		if environment, ok := config["environment"]; ok {
-			compiled["environment"] = environment
-		}
+	compiled["config"] = gin.H{
+		"input_commands": resolveOpaInputs(config["input_commands"], resolve),
+		"input_files":    resolveOpaInputs(config["input_files"], resolve),
+		"policy":         config["policy"], // Rego 是代码不是路径，不做变量展开
+	}
+	compiled["run_user"] = first(resolve(config["run_user"]), context.RunUser, "root")
+	// 主机上下文走独立字段（input 信封的 host），不混入 policy。
+	compiled["host_ip"] = context.HostIP
+	compiled["host_name"] = context.HostName
+	if vars, ok := config["vars"]; ok {
+		compiled["vars"] = vars
 	}
 	return compiled
+}
+
+// resolveOpaInputs 展开采集条目 exec/path 里的 ${变量}（HOST_IP、APP_HOME 等），
+// 其余字段原样透传。
+func resolveOpaInputs(raw any, resolve func(any) string) []any {
+	items, ok := raw.([]any)
+	if !ok {
+		return []any{}
+	}
+	resolved := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, valid := item.(map[string]any)
+		if !valid {
+			continue
+		}
+		clone := gin.H{}
+		for key, value := range entry {
+			if key == "exec" || key == "path" {
+				clone[key] = resolve(value)
+			} else {
+				clone[key] = value
+			}
+		}
+		resolved = append(resolved, clone)
+	}
+	return resolved
 }
 
 // standardVars 是部署实例内置的变量表（来自部署模板/资产，每个实例各异）。

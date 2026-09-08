@@ -11,12 +11,12 @@ import (
 // 索引名段清洗回归：非法字符转连字符、前后连字符去除、空值兜底 unknown。
 func TestSafeIndexSegment(t *testing.T) {
 	cases := map[string]string{
-		"logs":       "logs",
-		"Log Std":    "log-std",
-		"  --hot--":  "hot",
-		"大小写ABC": "abc",
-		"":           "unknown",
-		"///":        "unknown",
+		"logs":      "logs",
+		"Log Std":   "log-std",
+		"  --hot--": "hot",
+		"大小写ABC":    "abc",
+		"":          "unknown",
+		"///":       "unknown",
 	}
 	for input, want := range cases {
 		if got := safeIndexSegment(input); got != want {
@@ -110,7 +110,7 @@ func TestISMPolicySignature(t *testing.T) {
 		"policy_id":         "logs-std-retention",
 		"last_updated_time": 1725264000000,
 		"policy": map[string]any{
-			"description": "server-side description",
+			"description":   "server-side description",
 			"default_state": "hot",
 			"states": []any{
 				map[string]any{

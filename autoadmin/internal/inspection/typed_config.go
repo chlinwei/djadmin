@@ -33,7 +33,6 @@ type inspectionGroupResponse struct {
 type inspectionCheckResponse struct {
 	ID       int64          `json:"id"`
 	Name     string         `json:"name"`
-	Executor string         `json:"executor"`
 	Config   map[string]any `json:"config"`
 	Severity string         `json:"severity"`
 	Enabled  bool           `json:"enabled"`
@@ -47,7 +46,7 @@ func inspectionCheckResponseFrom(row db.ListInspectionChecksByGroupRow) inspecti
 		config = map[string]any{}
 	}
 	return inspectionCheckResponse{
-		ID: row.ID, Name: row.Name, Executor: row.Executor,
+		ID: row.ID, Name: row.Name,
 		Config: config, Severity: row.Severity, Enabled: row.Enabled, Order: int64(row.Order),
 	}
 }
@@ -174,11 +173,6 @@ func decodeTaskGroups(raw any) []taskGroupItem {
 		}
 	default:
 		return []taskGroupItem{}
-	}
-	for index := range decoded {
-		if decoded[index].MountType == "" {
-			decoded[index].MountType = "legacy_static"
-		}
 	}
 	return decoded
 }

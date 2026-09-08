@@ -46,6 +46,7 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	items, err := handler.service.repository.ListServiceLogSettings(context.Request.Context(), id)
 	respond(context, items, translate(err))
 }
+
 // optionalIDQuery 读取可选的整数型 query 参数；未传返回 0，传了但不是合法整数返回 400。
 func optionalIDQuery(context *gin.Context, key string) (int64, error) {
 	raw := strings.TrimSpace(context.Query(key))

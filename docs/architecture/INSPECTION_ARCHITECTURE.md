@@ -2,86 +2,91 @@
 
 ## 执行器
 
-巡检检查项支持两种执行器，均**固定在 Agent 端执行**（`execution_location` 概念已删除，列保留但恒写 `agent`）：
+巡检检查项**唯一执行器为 `opa`（Rego 策略）**，固定在 Agent 端执行。
+`executor` / `execution_location` 概念与数据列均已删除（Go 侧迁移 000009）：
+`check_plan` 不携带 `executor` 字段，接口/前端均无该字段，检查项仅由 `config`
+（采集 + Rego 策略）描述。
 
-1. **`schema_validate`（Schema 校验）**：读目标主机上的文件，按 JSON Schema /
-   Schematron / Regexp 规则校验内容。
-2. **`goss`（声明式套件）**：一个检查项对应一份 [goss](https://github.com/goss-org/goss)
-   YAML 套件，覆盖 file/port/process/service/package/user/command/dns 等十余类资源。
-3. **在线校验**：`POST /sys/inspection/goss/validate/`（`inspection:view` 权限）供前端
-   编辑器"校验 YAML"按钮即时校验，与保存时的 schema 校验同源（`validateGossSpec`）。
+早期版本曾支持 `schema_validate` / `goss` / `shell` / `http` / `tcp` 执行器及
+`controller`（djadmin 后端本机）执行位置，已全部删除：
 
-早期版本曾支持 `shell` / `http` / `tcp` 执行器及 `controller`（djadmin 后端本机）
-执行位置，已全部删除：
+- `autoadmin/internal/inspection/groups.go` 的 `validateCheck` 只放行 OPA
+  （`opapolicy.Validate`）；（应用上下文变量按 `category` 校验：仅应用类型组可用）。
+- `runtime.go` 的 `compileAgentCheck` 只编译 OPA（`resolveOpaInputs` 展开采集 exec/path
+  里的 `${变量}`）；controller 执行路径已删除。
+- dj-agent 的 `application_baseline.go` 只认 `opa:v1` 能力；`checkGoss` / `checkSchema`
+  及对应的内嵌二进制（goss）、依赖（jsonschema/toml/ini/properties/xmlquery/xpath）已删除。
+- 前端巡检中心/基线中心编辑表单为 OPA 采集 + Rego 策略，无执行器选择。
 
-- `autoadmin/internal/inspection/groups.go` 的 `validateCheck` 只放行
-  `schema_validate` / `goss`（`scope` 列已删除；应用上下文变量按 `category` 校验：
-  仅应用类型组可用）；goss 的 YAML 在保存时用 **goss 官方 JSON Schema**
-  （`internal/inspection/gossschema/goss-schema.yaml`，上游 docs/schema.yaml）预校验。
-- `runtime.go` 的 `compileAgentCheck` 编译两种执行器；controller 执行路径已删除。
-- dj-agent 的 `application_baseline.go` 只认 `goss:v1` / `schema_validate:v1` /
-  `schema_validate:inline:v1` 能力；`checkShell` / `checkHTTP` / `checkTCP` 已删除。
-- 前端 `fronted/src/views/inspection/index.vue` 提供两种执行器的编辑表单。
+历史执行记录中旧类型（`schema_validate` / `goss` / `shell` / `http` / `tcp`）仅作展示，
+不再可新建。
 
-历史执行记录中旧类型（`shell` / `http` / `tcp`）仅作展示，不再可新建。
+## OPA 执行器（最终逻辑）
 
-## Goss 执行器（最终逻辑）
+定位：巡检唯一执行器。覆盖配置审计、状态断言（端口/进程/文件/命令输出）、多条件组合、
+违规清单与真实实际值回传等全部场景。
 
-### 二进制打包与释放
+### 检查项配置（存在 `inspection_check.config` / `baseline_item.config`）
 
-- dj-agent 通过 `go:embed`（`internal/executor/embedded/goss/`）内嵌 goss 官方发布
-  二进制，当前版本 **v0.4.10**（`dj_agent/resources/goss/VERSION`，带 SHA256SUMS）。
-- **进程级路径缓存**：`ensureGossBinary` 每次要读内嵌二进制 + 两次 SHA256 + 读盘比对，
-  是逐检查项调用的纯开销；首次校验成功后候选路径缓存在进程内
-  （`cachedGossBinary`），执行被拒（文件被删/权限变化）时整体失效并重新校验。
-- `dj_agent/Makefile` 构建前按 `GOARCH` 从 `resources/goss/` 复制对应架构二进制到
-  embed 目录（只嵌当前架构，Agent 体积 22MB→37MB）；`goss-verify` 目标做哈希校验。
-- Agent 首次执行 goss 检查时把二进制释放到 **Agent 可执行文件同目录**
-  （如 `/usr/local/bin/goss/<version>/goss`，Agent 能运行即证明该目录可写可执行），
-  失败时回退 `os.TempDir()`。不使用 `/var/lib`（目标机常见 noexec 挂载或受限权限）。
-  释放流程：内容 SHA256 比对 → 临时文件写入 → chmod 0755 → 原子 rename；目录整条
-  链路按 0755 创建并对旧的 0700 目录逐层放开（goss 以巡检 run_user 降权运行，需要
-  穿越并执行）；已存在且哈希一致则补权限后复用。升级 goss = 升级 Agent（版本编译期
-  钉死）。执行仍被拒时自动换候选目录重试，错误消息带文件/目录权限位、noexec、
-  SELinux 诊断。
+```json
+{
+  "input_commands": [{ "key": "es_pid", "exec": "pgrep -o -f '...'", "parse": "raw" }],
+  "input_files":    [{ "key": "sshd_config", "path": "/etc/ssh/sshd_config", "parse": "lines" }],
+  "policy": "package baseline\n\nassertions contains assertion if { ... }"
+}
+```
 
-### 检查计划字段（check_plan 中 executor=goss）
+- `parse` ∈ `raw`（原文含换行）/ `lines`（按行数组，去空行）/ `json`（输出即 JSON 对象，
+  解析失败保留 `raw` + `json_error`，不整体报错）；key 不得与保留字段 `host`/`vars` 冲突。
+- `exec`/`path` 里 `${HOST_IP}` 等变量在**后端编译检查计划时展开**（inspection 走
+  `compileAgentCheck`/`resolveOpaInputs`，baseline 走 `scan.go`/`expandOpaInputs`）；
+  policy 是代码，不做变量展开。
 
-| 字段 | 语义 |
-|---|---|
-| `spec` | goss YAML 文本，后端已展开 `${APP_HOME}` 等变量 |
-| `run_user` | 执行用户，留空默认 root；goss 以该用户身份运行（进程/文件/端口按该用户视角采集）。切换方式为 `su -l <run_user> -c '<goss 命令>'` 登录 shell：加载目标用户完整登录环境（HOME/SHELL/PATH 及 `~/.bash_profile` 中的应用变量），goss 及其 spec 内 command 资源均继承该环境，与用户手工登录后执行一致；所有参数经单引号转义后拼入。`run_user` 等于 agent 自身用户时直接执行，不走 su |
-| `vars` | 透传 `--vars-inline`，YAML 内可用 Go template 引用 |
-| `environment` | 白名单环境变量注入（APP_HOME/RUN_USER/INSTANCE_NAME/HOST_IP/HOST_NAME 等），goss 进程及其 command 资源均可见 |
+### 执行链（dj_agent `internal/executor/opa.go` `checkOpa`）
 
-### 结果映射
+1. **采集**：`input_commands` 以 run_user（`su -l` 登录 shell）执行；
+   `input_files` 直接 `os.ReadFile`。任一采集失败（非零退出/读不到）→
+   检查项直接 error（带 exit_code 与 stderr），**不进入求值**——输入不完整时策略结论不可信。
+   采集没有"可选"语义：所有采集都是必采，失败即报错并给出错误原因。
+2. **求值**：input 信封 = 保留字段 `host`(ip/name)/`vars` + 每条采集结果一个顶层字段
+   （附 `source`/`exit_code`/`exists` 元信息）；OPA 以 Go 库（`rego.New(Query, Module,
+   Input).Eval`）进程内求值，不释放二进制、不受 noexec 限制、无进程开销，版本随
+   go.mod 管理（`github.com/open-policy-agent/opa/v1`）。
+3. **判定（唯一契约）**：策略必须产出 `data.baseline.assertions` 全量断言清单，元素
+   `{name, pass, expected, actual}`——pass/fail 都进报告（完整巡检报告语义），失败项
+   即违规。空集（含 undefined）= pass；求值失败（含策略编译错误）恒为 error——
+   编译错误绝不能被吞成 pass。
+4. **结果映射**：`actual = {violation_count, violations[], inputs, details[], run_user}`；
+   `details` 走巡检明细通道：每条断言一行（property=assertion，successful=pass），
+   expected/actual 进报告对应列；失败断言同时生成 violations 条目
+   `{msg, item: {expected, actual}}`。
 
-goss `validate --format json` 的 summary 映射为单条检查结果：
+### 策略编写规则（OPA v1 语法）
 
-- `expected` = 检查项配置的期望（套件本身），`actual` =
-  `{test_count, failed_count, skipped_count, failures[], details[], run_user}`；
-  其中 `details` 为 goss 每条子测试的全量明细（含通过项），前端执行结果弹窗在检查项行上
-  展开即可逐条查看 pass/fail：
-  - `resource`/`property`：资源标识（`类型: ID`）与断言属性（listening/exit-status/stdout…）；
-  - `title`：spec 里资源声明的 `title`（人类可读说明），前端明细"检查项"列优先展示，
-    未设置时回退 resource；
-  - `successful`/`message`：断言结果与 goss 原始 summary-line（前端作为结果标签的 tooltip）；
-  - `expected`/`actual`：期望值与实际值（goss JSON `matcher-result.expected/actual`）；
-    命令输出类实际值 goss 无法序列化（`{}`），前端显示 `-`；
-  - 前端对 类型/检查点/期望 做词表与语义化格式（如 exit-status → "退出码等于 0"、
-    stdout → "输出包含 x"），未覆盖项回退原文，纯显示层转换；
-- 有失败 → `fail`，消息含失败条数与逐条 summary-line；YAML 空/二进制释放失败/JSON
-  解析失败 → `error`；全部通过 → `pass`；
-- 退出码语义：0=通过，1=有失败，3=超时；无 JSON 输出按 error 处理。
+- 必须以 `package baseline` 开头，断言集合必须用
+  `assertions contains <元素> if { ... }`（v1 强制 `if`/`contains` 关键字）。
+- 函数同样需要 `f(x) := v if { ... }` 形式。
+- 命令原始输出保留换行符，比较前用 `trim_space`。
+- `/proc/<pid>/limits` 这类多空格对齐文本，split 后要过滤空字段：
+  `fields := [f | some f in split(line, " "); f != ""]`，值取倒数第二列（最后一列是单位）。
+
+### 保存校验（autoadmin `internal/shared/opapolicy.Validate`）
+
+policy 含 `package baseline` 与 `assertions contains`；至少一条采集；key 非空且不撞保留字；
+parse 枚举合法；**策略引用的 `input.<key>` 必须存在于采集列表**（剥离注释后静态扫描，
+保留字段 `host`/`vars` 放行；引用未采集字段会在求值时 undefined、断言静默消失，
+故保存时直接拒绝并列出缺失 key）。巡检组（`groups.go validateCheck`）与基线条目
+（`baseline.go`）共用。dj_agent 侧 `checkOpa` 求值前做同样扫描兜底：绕过保存校验的
+存量脏数据不会静默丢失断言，而是产生带缺失 key 清单的计划级 error。
 
 ## 巡检中心模式（最终语义）
 
-巡检检查**只执行巡检中心下发的检查计划**（`check_plan`，即 `schema_validate` / `goss`
+巡检检查**只执行巡检中心下发的检查计划**（`check_plan`，即 OPA 策略
 检查项）。早期 baseline 方案的内置检查——应用控制状态（systemd/docker/命令行）、
 端口、路径、日志——已整体移除：
 
 - dj-agent 的 `check_application_baseline` action 只解析 `check_plan` 并执行其中的
-  检查项，不再执行任何内置基线检查（运行状态、端口监听等如需检查，用 goss 的
+  检查项，不再执行任何内置基线检查（运行状态、端口监听等如需检查，写成 OPA 断言
   `service` / `port` / `process` / `command` 资源在巡检组里显式声明）。
 - autoadmin 下发的参数只有 `check_plan`，不再携带 `control_type` / 控制配置。
 - 应用控制（启停/状态查询，`control_application` action）是独立功能，不受影响。
@@ -122,7 +127,13 @@ goss `validate --format json` 的 summary 映射为单条检查结果：
 - **引用类实参仅 application 组可用**（实例上下文只有应用组挂载提供）；general 组
   参数只能固定值；
 - 隐式宏展开已撤销：服务宏**只能**通过"参数声明 + 引用赋值"进入检查计划——依赖
-  显式化，缺配在保存/执行两端都有明确报错。
+  显式化，缺配在保存/执行两端都有明确报错；
+- **服务宏 Key 归一**：`macro_values` 的键兼容两种存法——裸名（`ORACLE_SID`）与
+  模板渲染形式（`${ORACLE_SID}`），`macrosFromRaw` 读取时统一剥掉 `${}` 包裹；
+- **可空 JSON 列纪律**：手写 SQL 凡涉及 `expected_value`/`actual_value` 等可空
+  JSON 列，必须 `COALESCE(列,'null')`（jsontext.Value 不接受 driver NULL，
+  漏写会导致详情接口 500，回归测试
+  `TestListExecutionResultsSQLCoalescesNullableJSON` 钉住）。
 
 ## 组挂载点模型（最终逻辑）
 
@@ -209,6 +220,9 @@ goss `validate --format json` 的 summary 映射为单条检查结果：
 
 - **一个任务只绑一个巡检组**（保存强制，后端在查询前拦截多绑定）——通用基线和
   应用巡检分别建任务，各自挂载、各自调度。
+- **任务名称唯一性范围：同巡检组内唯一**（迁移 000010 删除全局唯一键，
+  `validateTask` 保存时校验并排除自身）——列表/执行记录均展示所属组，歧义只存在于
+  同组内；不同组允许复用通用名（如"日巡检"）。
 - `inspection_task.group_id` 保存该组 ID（单组模型的自然列，非兼容字段）。
 - 执行时该组检查项编译进一份检查计划下发；**检查项逐项独立执行、独立结果、独立
   severity**（产品决策：不做合并）。
@@ -310,15 +324,15 @@ POST /sys/inspection/executions/{id}/cancel/   事务置 canceled 并 markCancel
 ### 失败语义
 
 - Agent 返回计划级 error（版本不支持 / 能力不支持 / 结果格式无效）会让该目标失败；
-  goss 释放失败同语义；结果批量落库失败同样置目标 failed（error_message 带原因）。
+  同语义；结果批量落库失败同样置目标 failed（error_message 带原因）。
 
 ## 与 Django 双实现的差异（重要）
 
 Django 后端（`backend/djadmin/inspection/`，已冻结不再修改）仍保留 `shell` / `http` /
 `tcp` 执行器与 `controller` 执行位置，**两者语义不再对齐**：
 
-- Go 后端：`schema_validate` + `goss`，仅 Agent 执行；Agent 端能力同步调整。
-- Django 后端：四种旧执行器 + 双执行位置；其下发的 `shell` / `http` / `tcp` 检查计划
-  会被新版 dj-agent 以"不支持的能力/执行器"拒绝。
-- 数据库 `inspection_check.executor` / `execution_location` 列两侧共用，历史脏数据
-  （旧执行器）在 Go 侧保存时被校验拒绝，执行时表现为计划级 error。
+- Go 后端：`opa`，仅 Agent 执行；Agent 端能力 `opa:v1`；`executor` /
+  `execution_location` 列已物理删除（迁移 000009）。
+- Django 后端：四种旧执行器 + 双执行位置，表结构仍保留历史列（恒写默认值）；其下发的
+  `shell` / `http` / `tcp` 检查计划会被新版 dj-agent 以"不支持的能力/执行器"拒绝。
+- 历史脏数据（旧执行器）在 Go 侧保存时被校验拒绝，执行时表现为计划级 error。

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -185,4 +186,55 @@ func applicationComposeControlCommand(ctx context.Context, params map[string]any
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Dir = workingDirectory
 	return command, nil
+}
+
+// safeResourceNamePattern 校验 systemd 服务名/容器/资源名白名单（防注入）。
+var safeResourceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]*$`)
+
+func applicationSystemdActionCommand(ctx context.Context, params map[string]any, action string) (*exec.Cmd, error) {
+	serviceName := valueString(params["service_name"])
+	if !safeResourceNamePattern.MatchString(serviceName) {
+		return nil, fmt.Errorf("systemd 服务名格式无效")
+	}
+	systemdAction := map[string]string{"start": "start", "stop": "stop", "status": "is-active"}[action]
+	if systemdAction == "" {
+		return nil, fmt.Errorf("不支持的应用控制动作")
+	}
+
+	scope := valueString(params["systemd_scope"])
+	switch scope {
+	case "system":
+		return exec.CommandContext(ctx, "systemctl", systemdAction, serviceName), nil
+	case "user":
+		runUser := valueString(params["run_user"])
+		if runUser == "" {
+			return nil, fmt.Errorf("用户级 Systemd 必须配置运行用户")
+		}
+		return applicationRunUserCommand(ctx, fmt.Sprintf("systemctl --user %s %s", systemdAction, serviceName), runUser)
+	default:
+		return nil, fmt.Errorf("Systemd 作用域无效")
+	}
+}
+
+func systemdUserEnvironment(environment []string, targetUser *user.User, uid uint64) []string {
+	overrides := map[string]string{
+		"HOME":            targetUser.HomeDir,
+		"USER":            targetUser.Username,
+		"LOGNAME":         targetUser.Username,
+		"XDG_RUNTIME_DIR": fmt.Sprintf("/run/user/%d", uid),
+	}
+	result := make([]string, 0, len(environment)+len(overrides))
+	for _, entry := range environment {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, overridden := overrides[key]; overridden {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR"} {
+		result = append(result, key+"="+overrides[key])
+	}
+	return result
 }

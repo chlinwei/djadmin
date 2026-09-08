@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/opapolicy"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,7 +33,6 @@ type groupInput struct {
 
 type checkInput struct {
 	Name     string         `json:"name"`
-	Executor string         `json:"executor"`
 	Config   map[string]any `json:"config"`
 	Severity string         `json:"severity"`
 	Enabled  *bool          `json:"enabled"`
@@ -129,10 +129,8 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 			if check.Enabled != nil {
 				enabled = *check.Enabled
 			}
-			// 检查项固定在 Agent 端执行；execution_location 列为 Django 双实现保留，恒写 agent。
-			// 列顺序: group_id,name,executor,execution_location,config,severity,enabled,order —— 10 列
-			// 对应 7 个占位符 + 'agent'(execution_location) + 两个 NOW()。
-			_, err = transaction.ExecContext(context, `INSERT INTO inspection_check(group_id,name,executor,execution_location,config,severity,enabled,`+"`order`"+`,create_time,update_time) VALUES(?,?,?,'agent',?,?,?,?,NOW(),NOW())`, id, check.Name, check.Executor, config, severity, enabled, check.Order)
+			// 唯一执行器 OPA、唯一执行位置 Agent 端：executor/execution_location 列已删除（迁移 000009）。
+			_, err = transaction.ExecContext(context, `INSERT INTO inspection_check(group_id,name,config,severity,enabled,`+"`order`"+`,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, id, check.Name, config, severity, enabled, check.Order)
 			if err != nil {
 				// 名称重复在上面的 validateGroupInput 已拦截并带名字；能走到这里的失败是别的原因，
 				// 必须透传真实错误，不能笼统归为名称重复。
@@ -250,22 +248,9 @@ func validateParamDeclarations(category *string, params *[]paramInput) string {
 	return ""
 }
 
-// 巡检支持 Schema 校验与 Goss（YAML 声明式套件）两种执行器，均固定在 Agent 端执行。
+// 巡检唯一执行器：OPA（Rego 策略），固定在 Agent 端执行。
 func validateCheck(check checkInput) string {
-	switch check.Executor {
-	case "schema_validate":
-		return ""
-	case "goss":
-		if spec, ok := check.Config["spec"].(string); ok {
-			if err := validateGossSpec(spec); err != nil {
-				return err.Error()
-			}
-			return ""
-		}
-		return "goss spec 必须是字符串"
-	default:
-		return "执行器无效，仅支持 Schema 校验或 Goss"
-	}
+	return opapolicy.Validate(check.Config)
 }
 
 func containsApplicationVariable(value any) bool {

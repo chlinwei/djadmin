@@ -23,13 +23,11 @@ CREATE TABLE `inspection_check` (
   `update_time` datetime(6) NOT NULL,
   `remark` longtext,
   `name` varchar(128) NOT NULL,
-  `executor` varchar(16) NOT NULL,
   `config` json NOT NULL,
   `enabled` BOOLEAN NOT NULL,
   `order` int unsigned NOT NULL,
   `group_id` bigint NOT NULL,
   `severity` varchar(16) NOT NULL,
-  `execution_location` varchar(16) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_inspection_group_check_name` (`group_id`,`name`),
   CONSTRAINT `inspection_check_group_fk` FOREIGN KEY (`group_id`) REFERENCES `inspection_group` (`id`)
@@ -50,7 +48,6 @@ CREATE TABLE `inspection_task` (
   `next_run_time` datetime(6) DEFAULT NULL,
   `inspection_name` varchar(128) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `name` (`name`),
   CONSTRAINT `inspection_task_group_fk` FOREIGN KEY (`group_id`) REFERENCES `inspection_group` (`id`)
 );
 

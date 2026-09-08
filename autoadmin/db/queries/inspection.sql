@@ -15,7 +15,7 @@ LEFT JOIN assets_application a ON a.id = g.application_id
 WHERE g.id = sqlc.arg(id);
 
 -- name: ListInspectionChecksByGroup :many
-SELECT id, name, executor, execution_location, config, severity, enabled, `order`
+SELECT id, name, config, severity, enabled, `order`
 FROM inspection_check WHERE group_id = sqlc.arg(group_id) ORDER BY `order`, id;
 
 -- name: CountInspectionGroups :one
@@ -159,7 +159,7 @@ GROUP BY d.host_id, p.id, p.name, b.id, b.name, b.owner, e.id, e.name
 ORDER BY d.host_id;
 
 -- name: ListEnabledInspectionChecksForRun :many
-SELECT name, executor, execution_location, config, severity, `order`
+SELECT name, config, severity, `order`
 FROM inspection_check
 WHERE group_id = sqlc.arg(group_id) AND enabled = TRUE
 ORDER BY `order`, id;

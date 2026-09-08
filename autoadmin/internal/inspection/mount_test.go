@@ -40,10 +40,11 @@ func TestDecodeTaskGroupsKeepsServiceMountFields(t *testing.T) {
 	}
 }
 
-func TestDecodeTaskGroupsDefaultsLegacyMount(t *testing.T) {
+func TestDecodeTaskGroupsKeepsMissingMountType(t *testing.T) {
+	// mount_type 缺失不再默认 legacy（legacy 已删除）；原值透出由校验拦截。
 	groups := decodeTaskGroups([]byte(`[{"id":33,"name":"tomcat check","category":"general"}]`))
-	if len(groups) != 1 || groups[0].MountType != "legacy_static" {
-		t.Fatalf("missing mount_type should default to legacy_static, got %+v", groups)
+	if len(groups) != 1 || groups[0].MountType != "" {
+		t.Fatalf("missing mount_type should stay empty, got %+v", groups)
 	}
 }
 

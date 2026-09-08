@@ -127,4 +127,3 @@ func TestDecodeJSONInt64Array(t *testing.T) {
 		}
 	}
 }
-

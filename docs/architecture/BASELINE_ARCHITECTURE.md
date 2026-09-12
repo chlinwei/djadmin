@@ -23,7 +23,7 @@
 | `baseline_item` | 策略：`category_id` FK→baseline_category、`config`（OPA 策略，与 inspection_check 同构）、`severity`（high/medium/low）、sort；`chapter`/`executor` 列已删除（迁移 000009/000011） |
 | `security_scan` | 统一扫描任务：`scan_type`（`baseline`，预留 `cve` 等）+ 挂载点（mount_type=project/environment + project_id/environment_id）+ status + summary |
 | `security_scan_target` | 每主机执行状态：passed/failed/compliance_rate/error_message |
-| `baseline_scan_result` | 策略结果明细：scan × host × item，`chapter` 为**快照字段**（扫描时以类目名填充，类目后续改名不影响历史结果）+ expected/actual/message |
+| `baseline_scan_result` | 策略结果明细：scan × host × item，`chapter` 为**快照字段**（扫描时以类目名填充，类目后续改名不影响历史结果）+ expected/actual/message/remediation。expected=agent OPA 检查返回的 `{query, policy}`；actual=`{violation_count, violations, inputs, details, run_user}`；remediation=修复建议快照（文案本体存 `baseline_item.config.remediation`，策略编辑弹窗录入，迁移 000012 加列）。历史上 expected 曾未采集恒为 null，修复后新扫描正常写入 |
 
 注意：`security_scan_target.error_message` NOT NULL 无默认——INSERT 必须显式给 `''`。
 
@@ -46,7 +46,7 @@ PATCH  /sys/security/baseline/{id}/items/{itemId}/   更新策略（弹窗确认
 DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效）
 POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id, environment_id}
 GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline）
-GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 不符合清单）
+GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 条目明细：全部 pass/fail 条目，含主机、级别、expected（Rego 策略）/actual（违规明细）、消息，fail 排前）
 ```
 
 前端：`fronted/src/views/security/baseline/index.vue`，「基线标准」tab 为**二层主从布局**
@@ -56,12 +56,19 @@ GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合�
 400 拒绝；**策略为单条即时保存**——弹窗「确定」即调用策略单条 POST/PATCH 落库、
 删除 popconfirm 即 DELETE（无「保存策略」批量按钮；整体覆盖 PATCH items 接口保留但
 前端不再使用）；单条策略的采集/Rego 在二级弹窗编辑（弹窗内类目只读展示为左侧当前
-选中类目）。
+选中类目）。**「扫描记录」tab 点「详情」不弹窗**，而是 `router.push` 到独立路由页
+`/sys/security/baseline/scans/:id`（`views/security/baseline/scanDetail.vue`，路由名
+「扫描详情页」，顶部页签打开新 tab）：页面按路由参数拉取详情，展示概要 + 主机符合率 +
+条目明细（全部 pass/fail 条目，可按「全部/不符合/通过」过滤；expected/actual
+优先按 **assertion 级结构化展示**——每条断言一行「名称 + 应为 X / 实际 Y（✓/✗）」，
+数据来自 agent OPA 检查的 `actual.details`，历史数据或无 details 时回退展示策略源码/JSON）。
 
 条目编辑弹窗与巡检组检查项编辑器保持同一套布局语义（80vw 弹窗、`input-grid`
 采集行紧凑布局、行末 delBtn 删除）：条目名称/章节/严重级别（high/medium/low，
 合规等级语义，与巡检检查项的 critical/warning 不同）+ 说明 + 运行用户
-（`config.run_user`，留空默认 root，su -l 降权执行）+ 可用变量提示
+（`config.run_user`，留空默认 root，su -l 降权执行）+ 修复建议
+（`config.remediation`，不符合时展示在扫描详情「修复建议」列，随扫描快照落库）+
+可用变量提示
 （`${HOST_IP}`/`${HOST_NAME}`，仅命令/路径展开）+ 采集命令/文件采集区块 +
 Rego 策略（提示与巡检一致：`input.key` 必须与采集 key 一致，保存校验
 `opapolicy.Validate` 强制）。

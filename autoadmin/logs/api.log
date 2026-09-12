@@ -1,0 +1,747 @@
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /health/live              --> autoadmin/internal/api/router.NewWithGateway.func1 (5 handlers)
+[GIN-debug] GET    /health/ready             --> autoadmin/internal/api/router.readiness.func1 (5 handlers)
+[GIN-debug] POST   /sys/login                --> autoadmin/internal/identity.(*Handler).Login-fm (5 handlers)
+[GIN-debug] GET    /sys/users/current/       --> autoadmin/internal/identity.(*Handler).Current-fm (6 handlers)
+[GIN-debug] GET    /sys/users/               --> autoadmin/internal/identity.(*Handler).ListUsers-fm (7 handlers)
+[GIN-debug] POST   /user/changeAvatar        --> autoadmin/internal/identity.(*Handler).ChangeAvatar-fm (6 handlers)
+[GIN-debug] POST   /sys/usercenter/updateUserInfo/ --> autoadmin/internal/identity.(*Handler).UpdateUserInfo-fm (7 handlers)
+[GIN-debug] POST   /sys/usercenter/updateUserPassword/ --> autoadmin/internal/identity.(*Handler).UpdateUserPassword-fm (6 handlers)
+[GIN-debug] GET    /sys/usercenter/alertMediaBindings/ --> autoadmin/internal/identity.(*Handler).AlertMediaBindings-fm (6 handlers)
+[GIN-debug] POST   /sys/usercenter/updateAlertMediaBindings/ --> autoadmin/internal/identity.(*Handler).UpdateAlertMediaBindings-fm (6 handlers)
+[GIN-debug] GET    /sys/usercenter/apiTokens/ --> autoadmin/internal/identity.(*APITokenHandler).List-fm (7 handlers)
+[GIN-debug] POST   /sys/usercenter/createApiToken/ --> autoadmin/internal/identity.(*APITokenHandler).Create-fm (7 handlers)
+[GIN-debug] POST   /sys/usercenter/rotateApiToken/ --> autoadmin/internal/identity.(*APITokenHandler).Rotate-fm (7 handlers)
+[GIN-debug] POST   /sys/usercenter/disableApiToken/ --> autoadmin/internal/identity.(*APITokenHandler).Disable-fm (7 handlers)
+[GIN-debug] POST   /sys/usercenter/deleteApiToken/ --> autoadmin/internal/identity.(*APITokenHandler).Delete-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/playbooks/ --> autoadmin/internal/automation.(*Handler).List-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/playbooks/validate/ --> autoadmin/internal/automation.(*Handler).Validate-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/playbooks/host-options/ --> autoadmin/internal/automation.(*Handler).HostOptions-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/playbooks/group-tree/ --> autoadmin/internal/automation.(*Handler).GroupTree-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/playbooks/:id/ --> autoadmin/internal/automation.(*Handler).Get-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/playbooks/ --> autoadmin/internal/automation.(*Handler).Create-fm (7 handlers)
+[GIN-debug] PATCH  /sys/automation/playbooks/:id/ --> autoadmin/internal/automation.(*Handler).Update-fm (7 handlers)
+[GIN-debug] PUT    /sys/automation/playbooks/:id/ --> autoadmin/internal/automation.(*Handler).Update-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/playbooks/:id/upload/ --> autoadmin/internal/automation.(*Handler).UploadFile-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/playbooks/:id/download/ --> autoadmin/internal/automation.(*Handler).DownloadFile-fm (7 handlers)
+[GIN-debug] DELETE /sys/automation/playbooks/:id/ --> autoadmin/internal/automation.(*Handler).Delete-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/inventories/ --> autoadmin/internal/automation.(*Handler).ListInventories-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/inventories/ --> autoadmin/internal/automation.(*Handler).CreateInventory-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/inventories/:id/ --> autoadmin/internal/automation.(*Handler).GetInventory-fm (7 handlers)
+[GIN-debug] PATCH  /sys/automation/inventories/:id/ --> autoadmin/internal/automation.(*Handler).UpdateInventory-fm (7 handlers)
+[GIN-debug] PUT    /sys/automation/inventories/:id/ --> autoadmin/internal/automation.(*Handler).UpdateInventory-fm (7 handlers)
+[GIN-debug] DELETE /sys/automation/inventories/:id/ --> autoadmin/internal/automation.(*Handler).DeleteInventory-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/inventories/:id/precheck-limit/ --> autoadmin/internal/automation.(*Handler).PrecheckInventoryLimit-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/tasks/    --> autoadmin/internal/automation.(*Handler).ListTasks-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/tasks/    --> autoadmin/internal/automation.(*Handler).CreateTask-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/tasks/:id/ --> autoadmin/internal/automation.(*Handler).GetTask-fm (7 handlers)
+[GIN-debug] PATCH  /sys/automation/tasks/:id/ --> autoadmin/internal/automation.(*Handler).UpdateTask-fm (7 handlers)
+[GIN-debug] PUT    /sys/automation/tasks/:id/ --> autoadmin/internal/automation.(*Handler).UpdateTask-fm (7 handlers)
+[GIN-debug] DELETE /sys/automation/tasks/:id/ --> autoadmin/internal/automation.(*Handler).DeleteTask-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/tasks/:id/precheck/ --> autoadmin/internal/automation.(*Handler).PrecheckTask-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/tasks/:id/run_now/ --> autoadmin/internal/automation.(*Handler).RunTaskNow-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/jobs/     --> autoadmin/internal/automation.(*Handler).ListJobs-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/jobs/:id/ --> autoadmin/internal/automation.(*Handler).GetJob-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/jobs/:id/log/ --> autoadmin/internal/automation.(*Handler).JobLog-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/jobs/:id/events/ --> autoadmin/internal/automation.(*Handler).JobEvents-fm (7 handlers)
+[GIN-debug] GET    /sys/automation/jobs/:id/status-summary/ --> autoadmin/internal/automation.(*Handler).JobStatusSummary-fm (7 handlers)
+[GIN-debug] POST   /sys/automation/jobs/:id/cancel/ --> autoadmin/internal/automation.(*Handler).CancelJob-fm (7 handlers)
+[GIN-debug] GET    /sys/scheduler/tasks/     --> autoadmin/internal/scheduler.(*Handler).List-fm (7 handlers)
+[GIN-debug] GET    /sys/scheduler/tasks/:id/ --> autoadmin/internal/scheduler.(*Handler).Get-fm (7 handlers)
+[GIN-debug] PATCH  /sys/scheduler/tasks/:id/ --> autoadmin/internal/scheduler.(*Handler).Update-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/:id/toggle_enabled/ --> autoadmin/internal/scheduler.(*Handler).Toggle-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/:id/enable/ --> autoadmin/internal/scheduler.(*Handler).Enable-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/:id/disable/ --> autoadmin/internal/scheduler.(*Handler).Disable-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/:id/run_now/ --> autoadmin/internal/scheduler.(*Handler).RunNow-fm (7 handlers)
+[GIN-debug] GET    /sys/scheduler/tasks/:id/status/ --> autoadmin/internal/scheduler.(*Handler).Status-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/start_scheduler/ --> autoadmin/internal/scheduler.(*Handler).StartScheduler-fm (7 handlers)
+[GIN-debug] POST   /sys/scheduler/tasks/stop_scheduler/ --> autoadmin/internal/scheduler.(*Handler).StopScheduler-fm (7 handlers)
+[GIN-debug] GET    /sys/scheduler/task-logs/ --> autoadmin/internal/scheduler.(*Handler).ListLogs-fm (7 handlers)
+[GIN-debug] GET    /sys/scheduler/task-logs/:id/ --> autoadmin/internal/scheduler.(*Handler).GetLog-fm (7 handlers)
+[GIN-debug] GET    /sys/users/:id/           --> autoadmin/internal/identity.(*Handler).UserDetail-fm (7 handlers)
+[GIN-debug] POST   /sys/users/               --> autoadmin/internal/identity.(*Handler).CreateUser-fm (7 handlers)
+[GIN-debug] PATCH  /sys/users/:id/           --> autoadmin/internal/identity.(*Handler).UpdateUser-fm (7 handlers)
+[GIN-debug] GET    /sys/users/checkUserName/ --> autoadmin/internal/identity.(*Handler).CheckUsername-fm (7 handlers)
+[GIN-debug] DELETE /sys/users/userBatchDelete/ --> autoadmin/internal/identity.(*Handler).BatchDeleteUsers-fm (7 handlers)
+[GIN-debug] POST   /sys/users/resetUserPwd/  --> autoadmin/internal/identity.(*Handler).ResetPassword-fm (7 handlers)
+[GIN-debug] POST   /sys/users/assginUserRoles/ --> autoadmin/internal/identity.(*Handler).AssignRoles-fm (7 handlers)
+[GIN-debug] POST   /sys/users/changeUserStatus/ --> autoadmin/internal/identity.(*Handler).ChangeUserStatus-fm (7 handlers)
+[GIN-debug] GET    /sys/users/getUserRolesById/ --> autoadmin/internal/identity.(*Handler).GetUserRoles-fm (7 handlers)
+[GIN-debug] GET    /sys/roles/               --> autoadmin/internal/rbac.(*Handler).List-fm (7 handlers)
+[GIN-debug] GET    /sys/roles/:id/           --> autoadmin/internal/rbac.(*Handler).Get-fm (7 handlers)
+[GIN-debug] POST   /sys/roles/               --> autoadmin/internal/rbac.(*Handler).Create-fm (7 handlers)
+[GIN-debug] PATCH  /sys/roles/:id/           --> autoadmin/internal/rbac.(*Handler).Update-fm (7 handlers)
+[GIN-debug] DELETE /sys/roles/batch-delete/  --> autoadmin/internal/rbac.(*Handler).DeleteMany-fm (7 handlers)
+[GIN-debug] GET    /sys/roles/getCurrentUserRoleList/ --> autoadmin/internal/rbac.(*Handler).Current-fm (6 handlers)
+[GIN-debug] GET    /sys/menus/getMenuTree/   --> autoadmin/internal/rbac.(*Handler).MenuTree-fm (7 handlers)
+[GIN-debug] GET    /sys/menus/:id/           --> autoadmin/internal/rbac.(*Handler).GetMenu-fm (7 handlers)
+[GIN-debug] POST   /sys/menus/               --> autoadmin/internal/rbac.(*Handler).CreateMenu-fm (7 handlers)
+[GIN-debug] PATCH  /sys/menus/:id/           --> autoadmin/internal/rbac.(*Handler).UpdateMenu-fm (7 handlers)
+[GIN-debug] GET    /sys/menus/getMenuListByRoleId/ --> autoadmin/internal/rbac.(*Handler).MenuIDsByRole-fm (7 handlers)
+[GIN-debug] POST   /sys/menus/grantMenu/     --> autoadmin/internal/rbac.(*Handler).GrantMenus-fm (7 handlers)
+[GIN-debug] DELETE /sys/menus/deleteMenuById/ --> autoadmin/internal/rbac.(*Handler).DeleteMenu-fm (7 handlers)
+[GIN-debug] GET    /sys/configs/             --> autoadmin/internal/sysconfig.(*Handler).List-fm (6 handlers)
+[GIN-debug] GET    /sys/configs/:id/         --> autoadmin/internal/sysconfig.(*Handler).Get-fm (6 handlers)
+[GIN-debug] PATCH  /sys/configs/:id/         --> autoadmin/internal/sysconfig.(*Handler).Update-fm (6 handlers)
+[GIN-debug] POST   /sys/configs/:id/reset-default/ --> autoadmin/internal/sysconfig.(*Handler).Reset-fm (6 handlers)
+[GIN-debug] GET    /sys/configs/by-key/:key/ --> autoadmin/internal/sysconfig.(*Handler).GetByKey-fm (6 handlers)
+[GIN-debug] PATCH  /sys/configs/update-by-key/:key/ --> autoadmin/internal/sysconfig.(*Handler).UpdateByKey-fm (6 handlers)
+[GIN-debug] GET    /sys/audit/operation-logs/ --> autoadmin/internal/audit.(*Handler).List-fm (7 handlers)
+[GIN-debug] GET    /sys/audit/login-logs/    --> autoadmin/internal/audit.(*Handler).ListLoginLogs-fm (7 handlers)
+[GIN-debug] GET    /sys/audit/webssh-sessions/ --> autoadmin/internal/audit.(*Handler).ListWebSSHSessions-fm (7 handlers)
+[GIN-debug] GET    /sys/audit/webssh-sessions/:id/content/ --> autoadmin/internal/audit.(*Handler).WebSSHContent-fm (7 handlers)
+[GIN-debug] GET    /sys/audit/webssh-sessions/:id/download/ --> autoadmin/internal/audit.(*Handler).DownloadWebSSH-fm (7 handlers)
+[GIN-debug] GET    /sys/audit/webssh-sessions/download-all/ --> autoadmin/internal/audit.(*Handler).DownloadWebSSHMany-fm (7 handlers)
+[GIN-debug] GET    /api/agent/jobs/query     --> autoadmin/internal/assets.(*Handler).QueryAgentJobs-fm (6 handlers)
+[GIN-debug] POST   /api/agent/install        --> autoadmin/internal/assets.(*Handler).AgentInstall-fm (7 handlers)
+[GIN-debug] GET    /assets/projects/         --> autoadmin/internal/assets.(*Handler).ListProjects-fm (7 handlers)
+[GIN-debug] GET    /assets/projects/:id/     --> autoadmin/internal/assets.(*Handler).GetProject-fm (7 handlers)
+[GIN-debug] POST   /assets/projects/         --> autoadmin/internal/assets.(*Handler).CreateProject-fm (7 handlers)
+[GIN-debug] PUT    /assets/projects/:id/     --> autoadmin/internal/assets.(*Handler).UpdateProject-fm (7 handlers)
+[GIN-debug] PATCH  /assets/projects/:id/     --> autoadmin/internal/assets.(*Handler).UpdateProject-fm (7 handlers)
+[GIN-debug] DELETE /assets/projects/:id/     --> autoadmin/internal/assets.(*Handler).DeleteProject-fm (7 handlers)
+[GIN-debug] GET    /assets/business-systems/ --> autoadmin/internal/assets.(*Handler).ListBusinessSystems-fm (7 handlers)
+[GIN-debug] GET    /assets/business-systems/:id/ --> autoadmin/internal/assets.(*Handler).GetBusinessSystem-fm (7 handlers)
+[GIN-debug] POST   /assets/business-systems/ --> autoadmin/internal/assets.(*Handler).CreateBusinessSystem-fm (7 handlers)
+[GIN-debug] PUT    /assets/business-systems/:id/ --> autoadmin/internal/assets.(*Handler).UpdateBusinessSystem-fm (7 handlers)
+[GIN-debug] PATCH  /assets/business-systems/:id/ --> autoadmin/internal/assets.(*Handler).UpdateBusinessSystem-fm (7 handlers)
+[GIN-debug] DELETE /assets/business-systems/:id/ --> autoadmin/internal/assets.(*Handler).DeleteBusinessSystem-fm (7 handlers)
+[GIN-debug] GET    /assets/business-environments/ --> autoadmin/internal/assets.(*Handler).ListEnvironments-fm (7 handlers)
+[GIN-debug] GET    /assets/business-environments/:id/ --> autoadmin/internal/assets.(*Handler).GetEnvironment-fm (7 handlers)
+[GIN-debug] POST   /assets/business-environments/ --> autoadmin/internal/assets.(*Handler).CreateEnvironment-fm (7 handlers)
+[GIN-debug] PUT    /assets/business-environments/:id/ --> autoadmin/internal/assets.(*Handler).UpdateEnvironment-fm (7 handlers)
+[GIN-debug] PATCH  /assets/business-environments/:id/ --> autoadmin/internal/assets.(*Handler).UpdateEnvironment-fm (7 handlers)
+[GIN-debug] DELETE /assets/business-environments/:id/ --> autoadmin/internal/assets.(*Handler).DeleteEnvironment-fm (7 handlers)
+[GIN-debug] GET    /assets/credentials/      --> autoadmin/internal/assets.(*Handler).ListCredentials-fm (7 handlers)
+[GIN-debug] POST   /assets/credentials/batch-create/ --> autoadmin/internal/assets.(*Handler).BatchCreateCredentials-fm (7 handlers)
+[GIN-debug] DELETE /assets/credentials/batch-delete/ --> autoadmin/internal/assets.(*Handler).DeleteCredentials-fm (7 handlers)
+[GIN-debug] GET    /assets/credentials/:id/  --> autoadmin/internal/assets.(*Handler).GetCredential-fm (7 handlers)
+[GIN-debug] POST   /assets/credentials/      --> autoadmin/internal/assets.(*Handler).CreateCredential-fm (7 handlers)
+[GIN-debug] PUT    /assets/credentials/:id/  --> autoadmin/internal/assets.(*Handler).UpdateCredential-fm (7 handlers)
+[GIN-debug] PATCH  /assets/credentials/:id/  --> autoadmin/internal/assets.(*Handler).UpdateCredential-fm (7 handlers)
+[GIN-debug] DELETE /assets/credentials/:id/  --> autoadmin/internal/assets.(*Handler).DeleteCredential-fm (7 handlers)
+[GIN-debug] GET    /assets/host-groups/      --> autoadmin/internal/assets.(*Handler).ListHostGroups-fm (7 handlers)
+[GIN-debug] GET    /assets/host-groups/tree/ --> autoadmin/internal/assets.(*Handler).HostGroupTree-fm (7 handlers)
+[GIN-debug] GET    /assets/host-groups/:id/  --> autoadmin/internal/assets.(*Handler).GetHostGroup-fm (7 handlers)
+[GIN-debug] POST   /assets/host-groups/      --> autoadmin/internal/assets.(*Handler).CreateHostGroup-fm (7 handlers)
+[GIN-debug] PUT    /assets/host-groups/:id/  --> autoadmin/internal/assets.(*Handler).UpdateHostGroup-fm (7 handlers)
+[GIN-debug] PATCH  /assets/host-groups/:id/  --> autoadmin/internal/assets.(*Handler).UpdateHostGroup-fm (7 handlers)
+[GIN-debug] DELETE /assets/host-groups/:id/  --> autoadmin/internal/assets.(*Handler).DeleteHostGroup-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/webssh/ --> autoadmin/internal/assets.(*Handler).WebSSH-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/agent-runtime-status/ --> autoadmin/internal/assets.(*Handler).GetHostAgentRuntimeStatus-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/webssh-active-count/ --> autoadmin/internal/assets.(*Handler).GetHostWebSSHActiveCount-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/webssh-active-sessions/ --> autoadmin/internal/assets.(*Handler).GetHostWebSSHActiveSessions-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/files/list/ --> autoadmin/internal/assets.(*Handler).ListWebSSHFiles-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/files/download/ --> autoadmin/internal/assets.(*Handler).DownloadWebSSHFile-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/:id/files/upload/chunk/ --> autoadmin/internal/assets.(*Handler).UploadWebSSHFile-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/:id/files/rename/ --> autoadmin/internal/assets.(*Handler).RenameWebSSHFile-fm (7 handlers)
+[GIN-debug] DELETE /assets/hosts/:id/files/delete/ --> autoadmin/internal/assets.(*Handler).DeleteWebSSHFile-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/:id/files/create-dir/ --> autoadmin/internal/assets.(*Handler).CreateWebSSHDirectory-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/:id/refresh-info/ --> autoadmin/internal/assets.(*Handler).RefreshHostInfo-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/            --> autoadmin/internal/assets.(*Handler).ListHosts-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/refresh-info/ --> autoadmin/internal/assets.(*Handler).BatchRefreshHostInfo-fm (7 handlers)
+[GIN-debug] DELETE /assets/hosts/batch-delete/ --> autoadmin/internal/assets.(*Handler).DeleteHosts-fm (7 handlers)
+[GIN-debug] GET    /assets/hosts/:id/        --> autoadmin/internal/assets.(*Handler).GetHost-fm (7 handlers)
+[GIN-debug] POST   /assets/hosts/            --> autoadmin/internal/assets.(*Handler).CreateHost-fm (7 handlers)
+[GIN-debug] PUT    /assets/hosts/:id/        --> autoadmin/internal/assets.(*Handler).UpdateHost-fm (7 handlers)
+[GIN-debug] PATCH  /assets/hosts/:id/        --> autoadmin/internal/assets.(*Handler).UpdateHost-fm (7 handlers)
+[GIN-debug] DELETE /assets/hosts/:id/        --> autoadmin/internal/assets.(*Handler).DeleteHost-fm (7 handlers)
+[GIN-debug] GET    /ws/assets/hosts/:id/webssh/ --> autoadmin/internal/assets.(*Handler).WebSSH-fm (7 handlers)
+[GIN-debug] GET    /ws/automation/jobs/:id/logs/ --> autoadmin/internal/automation.(*Handler).JobLogStream-fm (7 handlers)
+[GIN-debug] GET    /assets/applications/     --> autoadmin/internal/assets.(*Handler).ListApplications-fm (7 handlers)
+[GIN-debug] GET    /assets/applications/:id/ --> autoadmin/internal/assets.(*Handler).GetApplication-fm (7 handlers)
+[GIN-debug] POST   /assets/applications/     --> autoadmin/internal/assets.(*Handler).CreateApplication-fm (7 handlers)
+[GIN-debug] PUT    /assets/applications/:id/ --> autoadmin/internal/assets.(*Handler).UpdateApplication-fm (7 handlers)
+[GIN-debug] PATCH  /assets/applications/:id/ --> autoadmin/internal/assets.(*Handler).UpdateApplication-fm (7 handlers)
+[GIN-debug] DELETE /assets/applications/batch-delete/ --> autoadmin/internal/assets.(*Handler).DeleteApplications-fm (7 handlers)
+[GIN-debug] GET    /assets/application-versions/ --> autoadmin/internal/assets.(*Handler).ListVersions-fm (7 handlers)
+[GIN-debug] GET    /assets/application-versions/:id/ --> autoadmin/internal/assets.(*Handler).GetVersion-fm (7 handlers)
+[GIN-debug] POST   /assets/application-versions/ --> autoadmin/internal/assets.(*Handler).CreateVersion-fm (7 handlers)
+[GIN-debug] PUT    /assets/application-versions/:id/ --> autoadmin/internal/assets.(*Handler).UpdateVersion-fm (7 handlers)
+[GIN-debug] PATCH  /assets/application-versions/:id/ --> autoadmin/internal/assets.(*Handler).UpdateVersion-fm (7 handlers)
+[GIN-debug] DELETE /assets/application-versions/:id/ --> autoadmin/internal/assets.(*Handler).DeleteVersion-fm (7 handlers)
+[GIN-debug] GET    /assets/cluster-profiles/ --> autoadmin/internal/assets.(*Handler).ListProfiles-fm (7 handlers)
+[GIN-debug] GET    /assets/cluster-profiles/:id/ --> autoadmin/internal/assets.(*Handler).GetProfile-fm (7 handlers)
+[GIN-debug] POST   /assets/cluster-profiles/ --> autoadmin/internal/assets.(*Handler).CreateProfile-fm (7 handlers)
+[GIN-debug] PUT    /assets/cluster-profiles/:id/ --> autoadmin/internal/assets.(*Handler).UpdateProfile-fm (7 handlers)
+[GIN-debug] PATCH  /assets/cluster-profiles/:id/ --> autoadmin/internal/assets.(*Handler).UpdateProfile-fm (7 handlers)
+[GIN-debug] DELETE /assets/cluster-profiles/:id/ --> autoadmin/internal/assets.(*Handler).DeleteProfile-fm (7 handlers)
+[GIN-debug] GET    /sys/security/baseline/   --> autoadmin/internal/baseline.(*Handler).ListBaselines-fm (7 handlers)
+[GIN-debug] GET    /sys/security/baseline/:id/ --> autoadmin/internal/baseline.(*Handler).GetBaseline-fm (7 handlers)
+[GIN-debug] POST   /sys/security/baseline/   --> autoadmin/internal/baseline.(*Handler).SaveBaseline-fm (7 handlers)
+[GIN-debug] PATCH  /sys/security/baseline/:id/ --> autoadmin/internal/baseline.(*Handler).SaveBaseline-fm (7 handlers)
+[GIN-debug] DELETE /sys/security/baseline/:id/ --> autoadmin/internal/baseline.(*Handler).DeleteBaseline-fm (7 handlers)
+[GIN-debug] POST   /sys/security/baseline/:id/scan/ --> autoadmin/internal/baseline.(*Handler).StartScan-fm (7 handlers)
+[GIN-debug] POST   /sys/security/baseline/:id/categories/ --> autoadmin/internal/baseline.(*Handler).CreateBaselineCategory-fm (7 handlers)
+[GIN-debug] PATCH  /sys/security/baseline/:id/categories/:categoryId/ --> autoadmin/internal/baseline.(*Handler).UpdateBaselineCategory-fm (7 handlers)
+[GIN-debug] DELETE /sys/security/baseline/:id/categories/:categoryId/ --> autoadmin/internal/baseline.(*Handler).DeleteBaselineCategory-fm (7 handlers)
+[GIN-debug] POST   /sys/security/baseline/:id/items/ --> autoadmin/internal/baseline.(*Handler).AddBaselineItem-fm (7 handlers)
+[GIN-debug] PATCH  /sys/security/baseline/:id/items/:itemId/ --> autoadmin/internal/baseline.(*Handler).UpdateBaselineItem-fm (7 handlers)
+[GIN-debug] DELETE /sys/security/baseline/:id/items/:itemId/ --> autoadmin/internal/baseline.(*Handler).DeleteBaselineItem-fm (7 handlers)
+[GIN-debug] GET    /sys/security/scans/      --> autoadmin/internal/baseline.(*Handler).ListScans-fm (7 handlers)
+[GIN-debug] GET    /sys/security/scans/:id/  --> autoadmin/internal/baseline.(*Handler).GetScan-fm (7 handlers)
+[GIN-debug] GET    /assets/application-deployment-templates/ --> autoadmin/internal/assets.(*Handler).ListDeploymentTemplates-fm (7 handlers)
+[GIN-debug] GET    /assets/application-deployment-templates/:id/ --> autoadmin/internal/assets.(*Handler).GetDeploymentTemplate-fm (7 handlers)
+[GIN-debug] POST   /assets/application-deployment-templates/ --> autoadmin/internal/assets.(*Handler).CreateDeploymentTemplate-fm (7 handlers)
+[GIN-debug] PUT    /assets/application-deployment-templates/:id/ --> autoadmin/internal/assets.(*Handler).UpdateDeploymentTemplate-fm (7 handlers)
+[GIN-debug] PATCH  /assets/application-deployment-templates/:id/ --> autoadmin/internal/assets.(*Handler).UpdateDeploymentTemplate-fm (7 handlers)
+[GIN-debug] DELETE /assets/application-deployment-templates/:id/ --> autoadmin/internal/assets.(*Handler).DeleteDeploymentTemplate-fm (7 handlers)
+[GIN-debug] GET    /assets/application-services/ --> autoadmin/internal/assets.(*Handler).ListApplicationServices-fm (7 handlers)
+[GIN-debug] GET    /assets/application-services/:id/log-config/ --> autoadmin/internal/assets.(*Handler).GetApplicationServiceLogConfig-fm (7 handlers)
+[GIN-debug] POST   /assets/application-services/:id/refresh-runtime-status/ --> autoadmin/internal/assets.(*Handler).RefreshApplicationServiceRuntimeStatus-fm (7 handlers)
+[GIN-debug] GET    /assets/application-services/:id/ --> autoadmin/internal/assets.(*Handler).GetApplicationService-fm (7 handlers)
+[GIN-debug] POST   /assets/application-services/ --> autoadmin/internal/assets.(*Handler).CreateApplicationService-fm (7 handlers)
+[GIN-debug] PATCH  /assets/application-services/:id/ --> autoadmin/internal/assets.(*Handler).UpdateApplicationService-fm (7 handlers)
+[GIN-debug] DELETE /assets/application-services/:id/ --> autoadmin/internal/assets.(*Handler).DeleteApplicationService-fm (7 handlers)
+[GIN-debug] GET    /assets/application-deployments/ --> autoadmin/internal/assets.(*Handler).ListApplicationDeployments-fm (7 handlers)
+[GIN-debug] GET    /assets/application-deployments/:id/ --> autoadmin/internal/assets.(*Handler).GetApplicationDeployment-fm (7 handlers)
+[GIN-debug] POST   /assets/application-deployments/:id/control/ --> autoadmin/internal/assets.(*Handler).ControlApplicationDeployment-fm (7 handlers)
+[GIN-debug] POST   /assets/application-deployments/ --> autoadmin/internal/assets.(*Handler).CreateApplicationDeployment-fm (7 handlers)
+[GIN-debug] PATCH  /assets/application-deployments/:id/ --> autoadmin/internal/assets.(*Handler).UpdateApplicationDeployment-fm (7 handlers)
+[GIN-debug] DELETE /assets/application-deployments/:id/ --> autoadmin/internal/assets.(*Handler).DeleteApplicationDeployment-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/groups/   --> autoadmin/internal/inspection.(*Handler).ListGroups-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/groups/:id/ --> autoadmin/internal/inspection.(*Handler).GetGroup-fm (7 handlers)
+[GIN-debug] POST   /sys/inspection/groups/   --> autoadmin/internal/inspection.(*Handler).SaveGroup-fm (7 handlers)
+[GIN-debug] PATCH  /sys/inspection/groups/:id/ --> autoadmin/internal/inspection.(*Handler).SaveGroup-fm (7 handlers)
+[GIN-debug] DELETE /sys/inspection/groups/:id/ --> autoadmin/internal/inspection.(*Handler).DeleteGroup-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/tasks/    --> autoadmin/internal/inspection.(*Handler).ListTasks-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/tasks/:id/ --> autoadmin/internal/inspection.(*Handler).GetTask-fm (7 handlers)
+[GIN-debug] POST   /sys/inspection/tasks/    --> autoadmin/internal/inspection.(*Handler).SaveTask-fm (7 handlers)
+[GIN-debug] PATCH  /sys/inspection/tasks/:id/ --> autoadmin/internal/inspection.(*Handler).SaveTask-fm (7 handlers)
+[GIN-debug] DELETE /sys/inspection/tasks/:id/ --> autoadmin/internal/inspection.(*Handler).DeleteTask-fm (7 handlers)
+[GIN-debug] POST   /sys/inspection/tasks/:id/run/ --> autoadmin/internal/inspection.(*Handler).RunTask-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/executions/ --> autoadmin/internal/inspection.(*Handler).ListExecutions-fm (7 handlers)
+[GIN-debug] GET    /sys/inspection/executions/:id/ --> autoadmin/internal/inspection.(*Handler).GetExecution-fm (7 handlers)
+[GIN-debug] POST   /sys/inspection/executions/:id/cancel/ --> autoadmin/internal/inspection.(*Handler).CancelExecution-fm (7 handlers)
+[GIN-debug] GET    /monitor/summary/         --> autoadmin/internal/monitor.(*Handler).Summary-fm (7 handlers)
+[GIN-debug] GET    /monitor/packages/        --> autoadmin/internal/monitor.(*Handler).ListPackages-fm (7 handlers)
+[GIN-debug] POST   /monitor/packages/        --> autoadmin/internal/monitor.(*Handler).CreateSoftwarePackage-fm (7 handlers)
+[GIN-debug] GET    /monitor/packages/:id/    --> autoadmin/internal/monitor.(*Handler).GetSoftwarePackage-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/packages/:id/    --> autoadmin/internal/monitor.(*Handler).UpdateSoftwarePackage-fm (7 handlers)
+[GIN-debug] PUT    /monitor/packages/:id/    --> autoadmin/internal/monitor.(*Handler).UpdateSoftwarePackage-fm (7 handlers)
+[GIN-debug] POST   /monitor/packages/:id/upload/ --> autoadmin/internal/monitor.(*Handler).UploadSoftwarePackage-fm (7 handlers)
+[GIN-debug] POST   /monitor/packages/:id/sync-official/ --> autoadmin/internal/monitor.(*Handler).SyncSoftwarePackageFromOfficial-fm (7 handlers)
+[GIN-debug] DELETE /monitor/packages/:id/    --> autoadmin/internal/monitor.(*Handler).DeleteSoftwarePackage-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/         --> autoadmin/internal/monitor.(*Handler).ListTargets-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/host-group-tree/ --> autoadmin/internal/monitor.(*Handler).HostGroupTree-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/exporter-options/ --> autoadmin/internal/monitor.(*Handler).ExporterOptions-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/host-overview/ --> autoadmin/internal/monitor.(*Handler).HostOverview-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/batch-create/ --> autoadmin/internal/monitor.(*Handler).BatchCreateTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/batch-delete/ --> autoadmin/internal/monitor.(*Handler).BatchDeleteTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/batch-start-service/ --> autoadmin/internal/monitor.(*Handler).BatchStartTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/batch-stop-service/ --> autoadmin/internal/monitor.(*Handler).BatchStopTargetService-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/:id/     --> autoadmin/internal/monitor.(*Handler).GetTarget-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/targets/:id/     --> autoadmin/internal/monitor.(*Handler).UpdateTarget-fm (7 handlers)
+[GIN-debug] PUT    /monitor/targets/:id/     --> autoadmin/internal/monitor.(*Handler).UpdateTarget-fm (7 handlers)
+[GIN-debug] DELETE /monitor/targets/:id/     --> autoadmin/internal/monitor.(*Handler).DeleteTarget-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/:id/retry/ --> autoadmin/internal/monitor.(*Handler).RetryTarget-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/:id/cancel/ --> autoadmin/internal/monitor.(*Handler).CancelTarget-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/:id/check-service-status/ --> autoadmin/internal/monitor.(*Handler).CheckTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/:id/start-service/ --> autoadmin/internal/monitor.(*Handler).StartTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/targets/:id/stop-service/ --> autoadmin/internal/monitor.(*Handler).StopTargetService-fm (7 handlers)
+[GIN-debug] GET    /monitor/install-histories/ --> autoadmin/internal/monitor.(*Handler).ListInstallHistories-fm (7 handlers)
+[GIN-debug] GET    /monitor/install-histories/:id/ --> autoadmin/internal/monitor.(*Handler).GetInstallHistory-fm (7 handlers)
+[GIN-debug] POST   /monitor/install-histories/:id/cancel/ --> autoadmin/internal/monitor.(*Handler).CancelInstallHistory-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-create/ --> autoadmin/internal/monitor.(*Handler).BatchCreateLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-retry/ --> autoadmin/internal/monitor.(*Handler).BatchRetryLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-start-service/ --> autoadmin/internal/monitor.(*Handler).BatchStartLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-stop-service/ --> autoadmin/internal/monitor.(*Handler).BatchStopLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-apply/ --> autoadmin/internal/monitor.(*Handler).BatchApplyLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/batch-delete/ --> autoadmin/internal/monitor.(*Handler).BatchDeleteLogTargets-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/retry/ --> autoadmin/internal/monitor.(*Handler).RetryLogTarget-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/cancel/ --> autoadmin/internal/monitor.(*Handler).CancelLogTarget-fm (7 handlers)
+[GIN-debug] DELETE /monitor/log-targets/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteLogTarget-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/check-status/ --> autoadmin/internal/monitor.(*Handler).CheckLogTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/start-service/ --> autoadmin/internal/monitor.(*Handler).StartLogTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/stop-service/ --> autoadmin/internal/monitor.(*Handler).StopLogTargetService-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-targets/:id/apply/ --> autoadmin/internal/monitor.(*Handler).ApplyLogTargetConfig-fm (7 handlers)
+[GIN-debug] GET    /monitor/alert-histories/ --> autoadmin/internal/monitor.(*Handler).ListAlertHistories-fm (7 handlers)
+[GIN-debug] GET    /monitor/alert-histories/:id/ --> autoadmin/internal/monitor.(*Handler).GetAlertHistory-fm (7 handlers)
+[GIN-debug] GET    /monitor/alert-histories/:id/notification-status/ --> autoadmin/internal/monitor.(*Handler).AlertNotificationStatus-fm (7 handlers)
+[GIN-debug] GET    /monitor/media/           --> autoadmin/internal/monitor.(*Handler).ListAlertMedia-fm (7 handlers)
+[GIN-debug] POST   /monitor/media/           --> autoadmin/internal/monitor.(*Handler).CreateAlertMedia-fm (7 handlers)
+[GIN-debug] GET    /monitor/media/:id/       --> autoadmin/internal/monitor.(*Handler).GetAlertMedia-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/media/:id/       --> autoadmin/internal/monitor.(*Handler).UpdateAlertMedia-fm (7 handlers)
+[GIN-debug] PUT    /monitor/media/:id/       --> autoadmin/internal/monitor.(*Handler).UpdateAlertMedia-fm (7 handlers)
+[GIN-debug] POST   /monitor/media/:id/test/  --> autoadmin/internal/monitor.(*Handler).TestAlertMedia-fm (7 handlers)
+[GIN-debug] DELETE /monitor/media/:id/       --> autoadmin/internal/monitor.(*Handler).DeleteAlertMedia-fm (7 handlers)
+[GIN-debug] GET    /monitor/alert-routes/    --> autoadmin/internal/monitor.(*Handler).ListAlertRoutes-fm (7 handlers)
+[GIN-debug] POST   /monitor/alert-routes/    --> autoadmin/internal/monitor.(*Handler).CreateAlertRoute-fm (7 handlers)
+[GIN-debug] GET    /monitor/alert-routes/:id/ --> autoadmin/internal/monitor.(*Handler).GetAlertRoute-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/alert-routes/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateAlertRoute-fm (7 handlers)
+[GIN-debug] PUT    /monitor/alert-routes/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateAlertRoute-fm (7 handlers)
+[GIN-debug] DELETE /monitor/alert-routes/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteAlertRoute-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-retention-tiers/ --> autoadmin/internal/monitor.(*Handler).ListRetentionTiers-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-retention-tiers/ --> autoadmin/internal/monitor.(*Handler).CreateRetentionTier-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-retention-tiers/:id/ --> autoadmin/internal/monitor.(*Handler).GetRetentionTier-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/log-retention-tiers/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateRetentionTier-fm (7 handlers)
+[GIN-debug] PUT    /monitor/log-retention-tiers/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateRetentionTier-fm (7 handlers)
+[GIN-debug] DELETE /monitor/log-retention-tiers/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteRetentionTier-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-processing-rules/ --> autoadmin/internal/monitor.(*Handler).ListProcessingRules-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-processing-rules/ --> autoadmin/internal/monitor.(*Handler).CreateProcessingRule-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-processing-rules/:id/ --> autoadmin/internal/monitor.(*Handler).GetProcessingRule-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/log-processing-rules/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateProcessingRule-fm (7 handlers)
+[GIN-debug] PUT    /monitor/log-processing-rules/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateProcessingRule-fm (7 handlers)
+[GIN-debug] DELETE /monitor/log-processing-rules/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteProcessingRule-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-collection-filter-rules/ --> autoadmin/internal/monitor.(*Handler).ListFilterRules-fm (7 handlers)
+[GIN-debug] POST   /monitor/log-collection-filter-rules/ --> autoadmin/internal/monitor.(*Handler).CreateFilterRule-fm (7 handlers)
+[GIN-debug] GET    /monitor/log-collection-filter-rules/:id/ --> autoadmin/internal/monitor.(*Handler).GetFilterRule-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/log-collection-filter-rules/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateFilterRule-fm (7 handlers)
+[GIN-debug] PUT    /monitor/log-collection-filter-rules/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateFilterRule-fm (7 handlers)
+[GIN-debug] DELETE /monitor/log-collection-filter-rules/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteFilterRule-fm (7 handlers)
+[GIN-debug] GET    /monitor/opensearch-clusters/ --> autoadmin/internal/monitor.(*Handler).ListOpenSearchClusters-fm (7 handlers)
+[GIN-debug] POST   /monitor/opensearch-clusters/ --> autoadmin/internal/monitor.(*Handler).CreateOpenSearchCluster-fm (7 handlers)
+[GIN-debug] GET    /monitor/opensearch-clusters/:id/ --> autoadmin/internal/monitor.(*Handler).GetOpenSearchCluster-fm (7 handlers)
+[GIN-debug] PATCH  /monitor/opensearch-clusters/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateOpenSearchCluster-fm (7 handlers)
+[GIN-debug] PUT    /monitor/opensearch-clusters/:id/ --> autoadmin/internal/monitor.(*Handler).UpdateOpenSearchCluster-fm (7 handlers)
+[GIN-debug] DELETE /monitor/opensearch-clusters/:id/ --> autoadmin/internal/monitor.(*Handler).DeleteOpenSearchCluster-fm (7 handlers)
+[GIN-debug] POST   /monitor/opensearch-clusters/:id/test-connection/ --> autoadmin/internal/monitor.(*Handler).TestOpenSearchConnection-fm (7 handlers)
+[GIN-debug] GET    /monitor/opensearch-clusters/:id/log-health/ --> autoadmin/internal/monitor.(*Handler).OpenSearchLogHealth-fm (7 handlers)
+[GIN-debug] POST   /monitor/opensearch-clusters/:id/pipeline-simulate/ --> autoadmin/internal/monitor.(*Handler).SimulateOpenSearchPipeline-fm (7 handlers)
+[GIN-debug] GET    /monitor/opensearch-clusters/:id/log-search/ --> autoadmin/internal/monitor.(*Handler).OpenSearchLogSearch-fm (7 handlers)
+[GIN-debug] GET    /monitor/opensearch-clusters/:id/log-facet-stats/ --> autoadmin/internal/monitor.(*Handler).OpenSearchLogFacetStats-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/summary/ --> autoadmin/internal/monitor.(*Handler).Summary-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/overview/ --> autoadmin/internal/monitor.(*Handler).PrometheusOverview-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/targets/ --> autoadmin/internal/monitor.(*Handler).PrometheusTargets-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/alerts/ --> autoadmin/internal/monitor.(*Handler).PrometheusAlerts-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/rules/ --> autoadmin/internal/monitor.(*Handler).PrometheusRules-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/tsdb-status/ --> autoadmin/internal/monitor.(*Handler).PrometheusTSDBStatus-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/config/ --> autoadmin/internal/monitor.(*Handler).PrometheusConfig-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/flags/ --> autoadmin/internal/monitor.(*Handler).PrometheusFlags-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/query/ --> autoadmin/internal/monitor.(*Handler).PrometheusQuery-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/query-range/ --> autoadmin/internal/monitor.(*Handler).PrometheusQueryRange-fm (7 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/proxy/*apiPath --> autoadmin/internal/monitor.(*Handler).PrometheusProxy-fm (7 handlers)
+[GIN-debug] GET    /monitor/prometheus/http-sd/ --> autoadmin/internal/monitor.(*Handler).PrometheusHTTPServiceDiscovery-fm (6 handlers)
+[GIN-debug] GET    /monitor/targets/prometheus/http-sd/ --> autoadmin/internal/monitor.(*Handler).PrometheusHTTPServiceDiscovery-fm (6 handlers)
+[GIN-debug] POST   /monitor/alert-webhook/api/v2/alerts --> autoadmin/internal/monitor.(*Handler).AlertWebhook-fm (6 handlers)
+2026/09/12 19:54:08 INFO agent session established agent_id=localhost session_count=1
+2026/09/12 19:54:08 INFO agent session established agent_id=cdm-oracle-159 session_count=2
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg-esb4-206 session_count=4
+2026/09/12 19:54:08 INFO agent session established agent_id=cgk-oracle-10 session_count=3
+2026/09/12 19:54:08 INFO agent session established agent_id=177 session_count=5
+2026/09/12 19:54:08 INFO agent session established agent_id=mysql135 session_count=7
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg-esb4-207 session_count=6
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg4-esb-208 session_count=8
+2026/09/12 19:54:08 INFO agent session established agent_id=tib-oracle session_count=9
+2026/09/12 19:54:08 INFO agent session established agent_id=mysql136 session_count=10
+2026/09/12 19:54:08 INFO agent session established agent_id=cdm-179 session_count=11
+2026/09/12 19:54:08 INFO agent session established agent_id=mysql134 session_count=12
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg-esb4-201 session_count=13
+2026/09/12 19:54:08 INFO agent session established agent_id=kul-tib-tomcat2 session_count=14
+2026/09/12 19:54:08 INFO agent session established agent_id=kul-tib-tomcat1 session_count=15
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg-esb4-202 session_count=16
+2026/09/12 19:54:08 INFO agent session established agent_id=tib_nginx-208 session_count=17
+2026/09/12 19:54:08 INFO agent session established agent_id=tib-es-redis-209 session_count=18
+2026/09/12 19:54:08 INFO agent session established agent_id=pvg-esb4-204 session_count=19
+[GIN] 2026/09/12 - 19:54:19 | 200 | 376.96ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:54:20 | 200 | 365.77ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:54:25 | 200 |  397.5ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:54:31 | 200 |   2.24ms |    10.25.66.254 | GET      "/sys/security/scans/"
+[GIN] 2026/09/12 - 19:54:38 | 200 | 950.001µs |    10.25.66.254 | GET      "/sys/configs/by-key/sys.system_title/"
+[GIN] 2026/09/12 - 19:54:38 | 200 | 911.056µs |    10.25.66.254 | GET      "/sys/users/current/"
+[GIN] 2026/09/12 - 19:54:38 | 200 |  23.61ms |    10.25.66.254 | GET      "/sys/security/scans/7/"
+[GIN] 2026/09/12 - 19:54:50 | 200 | 996.949µs |    10.25.66.254 | GET      "/sys/security/baseline/"
+[GIN] 2026/09/12 - 19:54:50 | 200 |   2.24ms |    10.25.66.254 | GET      "/assets/business-environments/"
+[GIN] 2026/09/12 - 19:54:50 | 200 |    2.6ms |    10.25.66.254 | GET      "/assets/projects/"
+[GIN] 2026/09/12 - 19:54:51 | 200 |   2.23ms |    10.25.66.254 | GET      "/sys/security/baseline/2/"
+[GIN] 2026/09/12 - 19:54:54 | 200 | 364.28ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:55:05 | 200 |  21.19ms |    10.25.66.254 | POST     "/sys/security/baseline/2/scan/"
+[GIN] 2026/09/12 - 19:55:05 | 200 |   1.01ms |    10.25.66.254 | GET      "/sys/security/scans/"
+[GIN] 2026/09/12 - 19:55:07 | 200 |  19.12ms |    10.25.66.254 | GET      "/sys/security/scans/8/"
+[GIN] 2026/09/12 - 19:55:25 | 200 | 405.82ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 19:55:39 INFO agent session ended agent_id=cgk-oracle-10 session_count=18
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg-esb4-202 session_count=17
+2026/09/12 19:55:39 INFO agent session ended agent_id=localhost session_count=16
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg4-esb-208 session_count=15
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg-esb4-204 session_count=14
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg-esb4-201 session_count=13
+2026/09/12 19:55:39 INFO agent session ended agent_id=mysql136 session_count=12
+2026/09/12 19:55:39 INFO agent session ended agent_id=177 session_count=11
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg-esb4-206 session_count=10
+2026/09/12 19:55:39 INFO agent session ended agent_id=pvg-esb4-207 session_count=9
+2026/09/12 19:55:39 INFO agent session ended agent_id=mysql134 session_count=8
+2026/09/12 19:55:39 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 19:55:40 INFO agent session established agent_id=cgk-oracle-10 session_count=8
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg-esb4-202 session_count=9
+2026/09/12 19:55:40 INFO agent session established agent_id=localhost session_count=10
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg4-esb-208 session_count=11
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg-esb4-204 session_count=12
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg-esb4-201 session_count=13
+2026/09/12 19:55:40 INFO agent session established agent_id=mysql136 session_count=14
+2026/09/12 19:55:40 INFO agent session established agent_id=177 session_count=15
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg-esb4-206 session_count=16
+2026/09/12 19:55:40 INFO agent session established agent_id=pvg-esb4-207 session_count=17
+2026/09/12 19:55:40 INFO agent session established agent_id=mysql134 session_count=18
+2026/09/12 19:55:40 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 19:55:49 | 200 | 374.17ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:55:50 | 200 | 424.38ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:55:54 | 200 | 355.19ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:56:24 | 200 | 347.57ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 19:56:36 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 19:56:36 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 19:56:36 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=16
+2026/09/12 19:56:36 INFO agent session ended agent_id=tib-es-redis-209 session_count=15
+2026/09/12 19:56:36 INFO agent session ended agent_id=tib-oracle session_count=14
+2026/09/12 19:56:36 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 19:56:36 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=12
+2026/09/12 19:56:37 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 19:56:37 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 19:56:37 INFO agent session established agent_id=kul-tib-tomcat2 session_count=15
+2026/09/12 19:56:37 INFO agent session established agent_id=tib-es-redis-209 session_count=16
+2026/09/12 19:56:37 INFO agent session established agent_id=tib-oracle session_count=17
+2026/09/12 19:56:37 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 19:56:37 INFO agent session established agent_id=kul-tib-tomcat1 session_count=19
+[GIN] 2026/09/12 - 19:56:54 | 200 | 342.02ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:57:04 | 200 | 934.072µs |    10.25.66.254 | GET      "/sys/users/current/"
+[GIN] 2026/09/12 - 19:57:04 | 200 |   1.73ms |    10.25.66.254 | GET      "/sys/configs/by-key/sys.system_title/"
+[GIN] 2026/09/12 - 19:57:04 | 200 |  42.37ms |    10.25.66.254 | GET      "/sys/security/scans/8/"
+[GIN] 2026/09/12 - 19:57:09 | 200 |  895.7µs |    10.25.66.254 | GET      "/sys/users/current/"
+[GIN] 2026/09/12 - 19:57:09 | 200 |   1.02ms |    10.25.66.254 | GET      "/sys/configs/by-key/sys.system_title/"
+[GIN] 2026/09/12 - 19:57:09 | 200 |  34.26ms |    10.25.66.254 | GET      "/sys/security/scans/8/"
+2026/09/12 19:57:11 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 19:57:11 INFO agent session ended agent_id=pvg-esb4-201 session_count=17
+2026/09/12 19:57:11 INFO agent session ended agent_id=177 session_count=16
+2026/09/12 19:57:11 INFO agent session ended agent_id=pvg-esb4-204 session_count=15
+2026/09/12 19:57:11 INFO agent session ended agent_id=mysql136 session_count=14
+2026/09/12 19:57:11 INFO agent session ended agent_id=cgk-oracle-10 session_count=13
+2026/09/12 19:57:12 INFO agent session ended agent_id=pvg4-esb-208 session_count=12
+2026/09/12 19:57:12 INFO agent session ended agent_id=localhost session_count=11
+2026/09/12 19:57:12 INFO agent session ended agent_id=pvg-esb4-206 session_count=10
+2026/09/12 19:57:12 INFO agent session ended agent_id=pvg-esb4-207 session_count=9
+2026/09/12 19:57:12 INFO agent session ended agent_id=mysql134 session_count=8
+2026/09/12 19:57:12 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 19:57:12 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 19:57:12 INFO agent session established agent_id=pvg-esb4-201 session_count=9
+2026/09/12 19:57:12 INFO agent session established agent_id=177 session_count=10
+2026/09/12 19:57:12 INFO agent session established agent_id=mysql136 session_count=11
+2026/09/12 19:57:12 INFO agent session established agent_id=pvg-esb4-204 session_count=12
+2026/09/12 19:57:12 INFO agent session established agent_id=cgk-oracle-10 session_count=13
+2026/09/12 19:57:13 INFO agent session established agent_id=pvg4-esb-208 session_count=14
+2026/09/12 19:57:13 INFO agent session established agent_id=localhost session_count=15
+2026/09/12 19:57:13 INFO agent session established agent_id=pvg-esb4-206 session_count=16
+2026/09/12 19:57:13 INFO agent session established agent_id=pvg-esb4-207 session_count=17
+2026/09/12 19:57:13 INFO agent session established agent_id=mysql134 session_count=18
+2026/09/12 19:57:13 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 19:57:13 | 200 |   1.16ms |    10.25.66.254 | GET      "/sys/security/baseline/"
+[GIN] 2026/09/12 - 19:57:13 | 200 |   1.31ms |    10.25.66.254 | GET      "/assets/business-environments/"
+[GIN] 2026/09/12 - 19:57:13 | 200 |   2.06ms |    10.25.66.254 | GET      "/assets/projects/"
+[GIN] 2026/09/12 - 19:57:14 | 200 |      4ms |    10.25.66.254 | GET      "/sys/security/baseline/2/"
+[GIN] 2026/09/12 - 19:57:17 | 200 |   2.08ms |    10.25.66.254 | GET      "/sys/security/baseline/2/"
+[GIN] 2026/09/12 - 19:57:18 | 200 |   1.78ms |    10.25.66.254 | GET      "/sys/security/baseline/2/"
+[GIN] 2026/09/12 - 19:57:19 | 200 | 374.49ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:57:20 | 200 | 376.37ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:57:24 | 200 | 358.07ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:57:54 | 200 | 367.14ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 19:58:08 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 19:58:08 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 19:58:08 INFO agent session ended agent_id=tib-es-redis-209 session_count=16
+2026/09/12 19:58:08 INFO agent session ended agent_id=tib-oracle session_count=15
+2026/09/12 19:58:08 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=14
+2026/09/12 19:58:08 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 19:58:08 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=12
+2026/09/12 19:58:09 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 19:58:09 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 19:58:09 INFO agent session established agent_id=tib-es-redis-209 session_count=15
+2026/09/12 19:58:09 INFO agent session established agent_id=tib-oracle session_count=16
+2026/09/12 19:58:09 INFO agent session established agent_id=kul-tib-tomcat2 session_count=17
+2026/09/12 19:58:09 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 19:58:09 INFO agent session established agent_id=kul-tib-tomcat1 session_count=19
+[GIN] 2026/09/12 - 19:58:24 | 200 | 356.53ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 19:58:43 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 19:58:43 INFO agent session ended agent_id=pvg-esb4-201 session_count=17
+2026/09/12 19:58:44 INFO agent session ended agent_id=177 session_count=16
+2026/09/12 19:58:44 INFO agent session ended agent_id=mysql136 session_count=15
+2026/09/12 19:58:44 INFO agent session ended agent_id=pvg-esb4-204 session_count=14
+2026/09/12 19:58:44 INFO agent session ended agent_id=pvg-esb4-206 session_count=13
+2026/09/12 19:58:44 INFO agent session ended agent_id=pvg4-esb-208 session_count=12
+2026/09/12 19:58:44 INFO agent session ended agent_id=cgk-oracle-10 session_count=11
+2026/09/12 19:58:44 INFO agent session ended agent_id=localhost session_count=10
+2026/09/12 19:58:44 INFO agent session ended agent_id=mysql134 session_count=9
+2026/09/12 19:58:44 INFO agent session ended agent_id=pvg-esb4-207 session_count=8
+2026/09/12 19:58:44 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 19:58:44 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 19:58:44 INFO agent session established agent_id=pvg-esb4-201 session_count=9
+2026/09/12 19:58:45 INFO agent session established agent_id=177 session_count=10
+2026/09/12 19:58:45 INFO agent session established agent_id=mysql136 session_count=11
+2026/09/12 19:58:45 INFO agent session established agent_id=pvg-esb4-204 session_count=12
+2026/09/12 19:58:45 INFO agent session established agent_id=pvg-esb4-206 session_count=13
+2026/09/12 19:58:45 INFO agent session established agent_id=pvg4-esb-208 session_count=14
+2026/09/12 19:58:45 INFO agent session established agent_id=localhost session_count=15
+2026/09/12 19:58:45 INFO agent session established agent_id=cgk-oracle-10 session_count=16
+2026/09/12 19:58:45 INFO agent session established agent_id=mysql134 session_count=17
+2026/09/12 19:58:45 INFO agent session established agent_id=pvg-esb4-207 session_count=18
+2026/09/12 19:58:45 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 19:58:49 | 200 | 385.89ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:58:50 | 200 | 377.65ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 19:58:54 | 200 | 348.53ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 19:59:24 | 200 | 348.46ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 19:59:40 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 19:59:40 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 19:59:40 INFO agent session ended agent_id=tib-es-redis-209 session_count=16
+2026/09/12 19:59:40 INFO agent session ended agent_id=tib-oracle session_count=15
+2026/09/12 19:59:40 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=14
+2026/09/12 19:59:40 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 19:59:40 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=12
+2026/09/12 19:59:41 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 19:59:41 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 19:59:41 INFO agent session established agent_id=tib-es-redis-209 session_count=15
+2026/09/12 19:59:41 INFO agent session established agent_id=tib-oracle session_count=16
+2026/09/12 19:59:41 INFO agent session established agent_id=kul-tib-tomcat2 session_count=17
+2026/09/12 19:59:41 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 19:59:41 INFO agent session established agent_id=kul-tib-tomcat1 session_count=19
+[GIN] 2026/09/12 - 19:59:54 | 200 | 350.22ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:00:15 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:00:16 INFO agent session ended agent_id=pvg-esb4-201 session_count=17
+2026/09/12 20:00:16 INFO agent session ended agent_id=177 session_count=16
+2026/09/12 20:00:16 INFO agent session ended agent_id=mysql136 session_count=15
+2026/09/12 20:00:16 INFO agent session ended agent_id=pvg-esb4-206 session_count=14
+2026/09/12 20:00:16 INFO agent session ended agent_id=pvg-esb4-204 session_count=13
+2026/09/12 20:00:16 INFO agent session ended agent_id=pvg-esb4-207 session_count=12
+2026/09/12 20:00:16 INFO agent session ended agent_id=pvg4-esb-208 session_count=11
+2026/09/12 20:00:16 INFO agent session ended agent_id=cgk-oracle-10 session_count=10
+2026/09/12 20:00:16 INFO agent session ended agent_id=localhost session_count=9
+2026/09/12 20:00:16 INFO agent session ended agent_id=mysql134 session_count=8
+2026/09/12 20:00:16 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 20:00:16 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:00:17 INFO agent session established agent_id=pvg-esb4-201 session_count=9
+2026/09/12 20:00:17 INFO agent session established agent_id=177 session_count=10
+2026/09/12 20:00:17 INFO agent session established agent_id=mysql136 session_count=11
+2026/09/12 20:00:17 INFO agent session established agent_id=pvg-esb4-206 session_count=12
+2026/09/12 20:00:17 INFO agent session established agent_id=pvg-esb4-204 session_count=13
+2026/09/12 20:00:17 INFO agent session established agent_id=pvg-esb4-207 session_count=14
+2026/09/12 20:00:17 INFO agent session established agent_id=pvg4-esb-208 session_count=15
+2026/09/12 20:00:17 INFO agent session established agent_id=cgk-oracle-10 session_count=16
+2026/09/12 20:00:17 INFO agent session established agent_id=localhost session_count=17
+2026/09/12 20:00:17 INFO agent session established agent_id=mysql135 session_count=18
+2026/09/12 20:00:17 INFO agent session established agent_id=mysql134 session_count=19
+[GIN] 2026/09/12 - 20:00:19 | 200 | 380.37ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:00:20 | 200 | 380.55ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:00:24 | 200 | 363.23ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:00:54 | 200 | 357.96ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:01:12 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 20:01:12 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 20:01:12 INFO agent session ended agent_id=tib-oracle session_count=16
+2026/09/12 20:01:12 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=15
+2026/09/12 20:01:12 INFO agent session ended agent_id=tib-es-redis-209 session_count=14
+2026/09/12 20:01:12 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 20:01:12 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=12
+2026/09/12 20:01:13 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 20:01:13 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 20:01:13 INFO agent session established agent_id=tib-oracle session_count=15
+2026/09/12 20:01:13 INFO agent session established agent_id=kul-tib-tomcat2 session_count=16
+2026/09/12 20:01:13 INFO agent session established agent_id=tib-es-redis-209 session_count=17
+2026/09/12 20:01:13 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 20:01:13 INFO agent session established agent_id=kul-tib-tomcat1 session_count=19
+[GIN] 2026/09/12 - 20:01:24 | 200 | 349.57ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:01:48 INFO agent session ended agent_id=177 session_count=17
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg-esb4-201 session_count=16
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg-esb4-206 session_count=15
+2026/09/12 20:01:48 INFO agent session ended agent_id=mysql136 session_count=14
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg4-esb-208 session_count=13
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg-esb4-204 session_count=12
+2026/09/12 20:01:48 INFO agent session ended agent_id=cgk-oracle-10 session_count=11
+2026/09/12 20:01:48 INFO agent session ended agent_id=pvg-esb4-207 session_count=10
+2026/09/12 20:01:48 INFO agent session ended agent_id=mysql134 session_count=9
+2026/09/12 20:01:48 INFO agent session ended agent_id=localhost session_count=8
+2026/09/12 20:01:48 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:01:49 INFO agent session established agent_id=177 session_count=9
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg-esb4-201 session_count=10
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg-esb4-206 session_count=11
+2026/09/12 20:01:49 INFO agent session established agent_id=mysql136 session_count=12
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg4-esb-208 session_count=13
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg-esb4-204 session_count=14
+2026/09/12 20:01:49 INFO agent session established agent_id=cgk-oracle-10 session_count=15
+2026/09/12 20:01:49 INFO agent session established agent_id=pvg-esb4-207 session_count=16
+2026/09/12 20:01:49 INFO agent session established agent_id=mysql134 session_count=17
+2026/09/12 20:01:49 INFO agent session established agent_id=localhost session_count=18
+2026/09/12 20:01:49 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 20:01:49 | 200 | 367.99ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:01:50 | 200 | 405.28ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:01:54 | 200 | 339.23ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:02:24 | 200 | 360.43ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:02:44 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 20:02:44 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 20:02:44 INFO agent session ended agent_id=tib-oracle session_count=16
+2026/09/12 20:02:44 INFO agent session ended agent_id=tib-es-redis-209 session_count=15
+2026/09/12 20:02:44 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=14
+2026/09/12 20:02:44 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 20:02:44 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=12
+2026/09/12 20:02:45 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 20:02:45 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 20:02:45 INFO agent session established agent_id=tib-oracle session_count=15
+2026/09/12 20:02:45 INFO agent session established agent_id=tib-es-redis-209 session_count=16
+2026/09/12 20:02:45 INFO agent session established agent_id=kul-tib-tomcat2 session_count=17
+2026/09/12 20:02:45 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 20:02:45 INFO agent session established agent_id=kul-tib-tomcat1 session_count=19
+[GIN] 2026/09/12 - 20:02:54 | 200 | 342.79ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:03:19 | 200 | 353.02ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:03:20 | 200 | 363.52ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:03:20 INFO agent session ended agent_id=177 session_count=17
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg-esb4-201 session_count=16
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg-esb4-206 session_count=15
+2026/09/12 20:03:20 INFO agent session ended agent_id=mysql136 session_count=14
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg4-esb-208 session_count=13
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg-esb4-204 session_count=12
+2026/09/12 20:03:20 INFO agent session ended agent_id=mysql134 session_count=11
+2026/09/12 20:03:20 INFO agent session ended agent_id=pvg-esb4-207 session_count=10
+2026/09/12 20:03:20 INFO agent session ended agent_id=cgk-oracle-10 session_count=9
+2026/09/12 20:03:20 INFO agent session ended agent_id=localhost session_count=8
+2026/09/12 20:03:20 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:03:21 INFO agent session established agent_id=177 session_count=9
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg-esb4-201 session_count=10
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg-esb4-206 session_count=11
+2026/09/12 20:03:21 INFO agent session established agent_id=mysql136 session_count=12
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg4-esb-208 session_count=13
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg-esb4-204 session_count=14
+2026/09/12 20:03:21 INFO agent session established agent_id=mysql134 session_count=15
+2026/09/12 20:03:21 INFO agent session established agent_id=pvg-esb4-207 session_count=16
+2026/09/12 20:03:21 INFO agent session established agent_id=cgk-oracle-10 session_count=17
+2026/09/12 20:03:21 INFO agent session established agent_id=localhost session_count=18
+2026/09/12 20:03:21 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 20:03:24 | 200 | 349.48ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:03:55 | 200 | 423.98ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:04:16 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 20:04:16 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 20:04:16 INFO agent session ended agent_id=tib-oracle session_count=16
+2026/09/12 20:04:16 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=15
+2026/09/12 20:04:16 INFO agent session ended agent_id=tib-es-redis-209 session_count=14
+2026/09/12 20:04:16 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=13
+2026/09/12 20:04:16 INFO agent session ended agent_id=tib_nginx-208 session_count=12
+2026/09/12 20:04:17 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 20:04:17 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 20:04:17 INFO agent session established agent_id=tib-oracle session_count=15
+2026/09/12 20:04:17 INFO agent session established agent_id=kul-tib-tomcat2 session_count=16
+2026/09/12 20:04:17 INFO agent session established agent_id=tib-es-redis-209 session_count=17
+2026/09/12 20:04:17 INFO agent session established agent_id=kul-tib-tomcat1 session_count=18
+2026/09/12 20:04:17 INFO agent session established agent_id=tib_nginx-208 session_count=19
+[GIN] 2026/09/12 - 20:04:24 | 200 | 364.18ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:04:49 | 200 | 361.19ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:04:50 | 200 | 376.02ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:04:52 INFO agent session ended agent_id=177 session_count=17
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg-esb4-206 session_count=16
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg-esb4-201 session_count=15
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg4-esb-208 session_count=14
+2026/09/12 20:04:52 INFO agent session ended agent_id=mysql136 session_count=13
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg-esb4-207 session_count=12
+2026/09/12 20:04:52 INFO agent session ended agent_id=pvg-esb4-204 session_count=11
+2026/09/12 20:04:52 INFO agent session ended agent_id=cgk-oracle-10 session_count=10
+2026/09/12 20:04:52 INFO agent session ended agent_id=mysql134 session_count=9
+2026/09/12 20:04:52 INFO agent session ended agent_id=localhost session_count=8
+2026/09/12 20:04:52 INFO agent session ended agent_id=mysql135 session_count=7
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:04:53 INFO agent session established agent_id=177 session_count=9
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg-esb4-206 session_count=10
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg-esb4-201 session_count=11
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg4-esb-208 session_count=12
+2026/09/12 20:04:53 INFO agent session established agent_id=mysql136 session_count=13
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg-esb4-207 session_count=14
+2026/09/12 20:04:53 INFO agent session established agent_id=pvg-esb4-204 session_count=15
+2026/09/12 20:04:53 INFO agent session established agent_id=cgk-oracle-10 session_count=16
+2026/09/12 20:04:53 INFO agent session established agent_id=mysql134 session_count=17
+2026/09/12 20:04:53 INFO agent session established agent_id=localhost session_count=18
+2026/09/12 20:04:53 INFO agent session established agent_id=mysql135 session_count=19
+[GIN] 2026/09/12 - 20:04:54 | 200 | 367.52ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:05:17 | 200 |   9.49ms |    10.25.66.254 | PATCH    "/sys/security/baseline/2/items/7/"
+[GIN] 2026/09/12 - 20:05:17 | 200 |   2.26ms |    10.25.66.254 | GET      "/sys/security/baseline/2/"
+[GIN] 2026/09/12 - 20:05:24 | 200 | 349.77ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:05:29 | 200 |  11.99ms |    10.25.66.254 | POST     "/sys/security/baseline/2/scan/"
+[GIN] 2026/09/12 - 20:05:29 | 200 |   1.13ms |    10.25.66.254 | GET      "/sys/security/scans/"
+[GIN] 2026/09/12 - 20:05:33 | 200 |  57.16ms |    10.25.66.254 | GET      "/sys/security/scans/9/"
+[GIN] 2026/09/12 - 20:05:54 | 200 |  361.5ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:06:19 | 200 | 362.12ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:06:20 | 200 | 349.36ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:06:24 INFO agent session ended agent_id=177 session_count=17
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg-esb4-206 session_count=16
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg-esb4-201 session_count=15
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg4-esb-208 session_count=14
+2026/09/12 20:06:24 INFO agent session ended agent_id=mysql136 session_count=13
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg-esb4-207 session_count=12
+2026/09/12 20:06:24 INFO agent session ended agent_id=pvg-esb4-204 session_count=11
+2026/09/12 20:06:24 INFO agent session ended agent_id=mysql134 session_count=10
+2026/09/12 20:06:24 INFO agent session ended agent_id=cgk-oracle-10 session_count=9
+2026/09/12 20:06:24 INFO agent session ended agent_id=mysql135 session_count=8
+2026/09/12 20:06:24 INFO agent session ended agent_id=localhost session_count=7
+[GIN] 2026/09/12 - 20:06:24 | 200 | 356.71ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:06:25 INFO agent session established agent_id=177 session_count=9
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg-esb4-206 session_count=10
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg-esb4-201 session_count=11
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg4-esb-208 session_count=12
+2026/09/12 20:06:25 INFO agent session established agent_id=mysql136 session_count=13
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg-esb4-207 session_count=14
+2026/09/12 20:06:25 INFO agent session established agent_id=pvg-esb4-204 session_count=15
+2026/09/12 20:06:25 INFO agent session established agent_id=mysql134 session_count=16
+2026/09/12 20:06:25 INFO agent session established agent_id=cgk-oracle-10 session_count=17
+2026/09/12 20:06:25 INFO agent session established agent_id=mysql135 session_count=18
+2026/09/12 20:06:25 INFO agent session established agent_id=localhost session_count=19
+[GIN] 2026/09/12 - 20:06:54 | 200 | 358.02ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:07:00 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 20:07:00 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 20:07:01 INFO agent session ended agent_id=tib-oracle session_count=16
+2026/09/12 20:07:01 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=15
+2026/09/12 20:07:01 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=14
+2026/09/12 20:07:01 INFO agent session ended agent_id=tib_nginx-208 session_count=13
+2026/09/12 20:07:01 INFO agent session ended agent_id=tib-es-redis-209 session_count=12
+2026/09/12 20:07:01 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 20:07:01 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 20:07:02 INFO agent session established agent_id=tib-oracle session_count=15
+2026/09/12 20:07:02 INFO agent session established agent_id=kul-tib-tomcat1 session_count=16
+2026/09/12 20:07:02 INFO agent session established agent_id=kul-tib-tomcat2 session_count=17
+2026/09/12 20:07:02 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 20:07:02 INFO agent session established agent_id=tib-es-redis-209 session_count=19
+[GIN] 2026/09/12 - 20:07:24 | 200 | 353.45ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:07:49 | 200 | 386.33ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:07:50 | 200 | 354.56ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:07:54 | 200 | 345.11ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg-esb4-202 session_count=18
+2026/09/12 20:07:56 INFO agent session ended agent_id=177 session_count=17
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg4-esb-208 session_count=16
+2026/09/12 20:07:56 INFO agent session ended agent_id=mysql136 session_count=15
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg-esb4-206 session_count=14
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg-esb4-201 session_count=13
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg-esb4-207 session_count=12
+2026/09/12 20:07:56 INFO agent session ended agent_id=cgk-oracle-10 session_count=11
+2026/09/12 20:07:56 INFO agent session ended agent_id=pvg-esb4-204 session_count=10
+2026/09/12 20:07:56 INFO agent session ended agent_id=mysql135 session_count=9
+2026/09/12 20:07:56 INFO agent session ended agent_id=localhost session_count=8
+2026/09/12 20:07:56 INFO agent session ended agent_id=mysql134 session_count=7
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg-esb4-202 session_count=8
+2026/09/12 20:07:57 INFO agent session established agent_id=177 session_count=9
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg4-esb-208 session_count=10
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg-esb4-206 session_count=11
+2026/09/12 20:07:57 INFO agent session established agent_id=mysql136 session_count=12
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg-esb4-201 session_count=13
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg-esb4-207 session_count=14
+2026/09/12 20:07:57 INFO agent session established agent_id=cgk-oracle-10 session_count=15
+2026/09/12 20:07:57 INFO agent session established agent_id=pvg-esb4-204 session_count=16
+2026/09/12 20:07:57 INFO agent session established agent_id=localhost session_count=17
+2026/09/12 20:07:57 INFO agent session established agent_id=mysql135 session_count=18
+2026/09/12 20:07:57 INFO agent session established agent_id=mysql134 session_count=19
+[GIN] 2026/09/12 - 20:08:24 | 200 | 370.41ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+2026/09/12 20:08:32 INFO agent session ended agent_id=cdm-179 session_count=18
+2026/09/12 20:08:33 INFO agent session ended agent_id=cdm-oracle-159 session_count=17
+2026/09/12 20:08:33 INFO agent session ended agent_id=tib-oracle session_count=16
+2026/09/12 20:08:33 INFO agent session ended agent_id=kul-tib-tomcat1 session_count=15
+2026/09/12 20:08:33 INFO agent session ended agent_id=tib_nginx-208 session_count=14
+2026/09/12 20:08:33 INFO agent session ended agent_id=kul-tib-tomcat2 session_count=13
+2026/09/12 20:08:33 INFO agent session ended agent_id=tib-es-redis-209 session_count=12
+2026/09/12 20:08:33 INFO agent session established agent_id=cdm-179 session_count=13
+2026/09/12 20:08:34 INFO agent session established agent_id=cdm-oracle-159 session_count=14
+2026/09/12 20:08:34 INFO agent session established agent_id=tib-oracle session_count=15
+2026/09/12 20:08:34 INFO agent session established agent_id=kul-tib-tomcat1 session_count=16
+2026/09/12 20:08:34 INFO agent session established agent_id=kul-tib-tomcat2 session_count=17
+2026/09/12 20:08:34 INFO agent session established agent_id=tib_nginx-208 session_count=18
+2026/09/12 20:08:34 INFO agent session established agent_id=tib-es-redis-209 session_count=19
+[GIN] 2026/09/12 - 20:08:54 | 200 | 354.42ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/12 - 20:09:19 | 200 | 448.35ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:09:20 | 200 | 368.23ms |   192.168.240.7 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/12 - 20:09:24 | 200 | 376.76ms |   192.168.240.7 | GET      "/monitor/prometheus/http-sd/"

@@ -143,8 +143,7 @@
               <span v-else>-</span>
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-button size="small" @click="openScanDetail(record)">详情</a-button>
-            </template>
+              <a-button size="small" @click="openScanDetail(record)">详情</a-button>            </template>
           </template>
         </a-table>
       </a-tab-pane>
@@ -179,6 +178,9 @@
           </a-form-item>
         </div>
         <a-form-item label="说明" class="mount-item"><a-input v-model:value="itemEditForm.description" /></a-form-item>
+        <a-form-item label="修复建议" class="mount-item">
+          <a-textarea v-model:value="itemEditForm.remediation" :rows="2" placeholder="不符合时建议的处理方式，如：编辑 /etc/ssh/sshd_config 设置 PermitEmptyPasswords no 并重启 sshd" />
+        </a-form-item>
         <a-alert type="info" show-icon class="variable-hint">
           <template #message>可用变量（主机级）</template>
           <template #description>
@@ -254,39 +256,17 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="scanDetailOpen" title="扫描详情" width="1000px" centered :footer="null">
-      <a-descriptions v-if="scanDetail.scan" bordered :column="2" size="small">
-        <a-descriptions-item label="基线">{{ scanDetail.scan.baseline }}</a-descriptions-item>
-        <a-descriptions-item label="状态"><a-tag :color="statusColor(scanDetail.scan.status)">{{ statusLabel(scanDetail.scan.status) }}</a-tag></a-descriptions-item>
-      </a-descriptions>
-      <h4>主机符合率</h4>
-      <a-table row-key="host_ip" :columns="targetColumns" :data-source="scanDetail.targets || []" :pagination="false" size="small">
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
-            <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'compliance_rate'">
-            <a-progress :percent="Number(record.compliance_rate)" size="small" :status="Number(record.compliance_rate) === 100 ? 'success' : 'exception'" />
-          </template>
-        </template>
-      </a-table>
-      <h4>不符合条目（{{ (scanDetail.failures || []).length }}）</h4>
-      <a-table row-key="idx" :columns="failureColumns" :data-source="scanDetail.failures || []" :pagination="false" size="small">
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'severity'">
-            <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
-          </template>
-        </template>
-      </a-table>
-    </a-modal>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
+
+const router = useRouter()
 
 const baselinePrefix = 'sys/security/baseline/'
 const getBaselines = (params) => requestUtil.get(baselinePrefix, params)
@@ -299,7 +279,6 @@ const updateBaselineCategory = (baselineId, categoryId, data) => requestUtil.pat
 const deleteBaselineCategory = (baselineId, categoryId) => requestUtil.del(`${baselinePrefix}${baselineId}/categories/${categoryId}/`)
 const startBaselineScan = (id, data) => requestUtil.post(`${baselinePrefix}${id}/scan/`, data)
 const getSecurityScans = (params) => requestUtil.get('sys/security/scans/', params)
-const getSecurityScan = (id) => requestUtil.get(`sys/security/scans/${id}/`)
 const getProjectListSimple = (params) => requestUtil.get('assets/projects/', params)
 const getEnvironmentListSimple = (params) => requestUtil.get('assets/business-environments/', params)
 
@@ -322,26 +301,9 @@ const itemColumns = [
   { title: '说明', dataIndex: 'description', key: 'description', ellipsis: true, width: 180 },
   { title: '操作', key: 'action', width: 130 },
 ]
-const targetColumns = [
-  { title: '主机', dataIndex: 'host_name', key: 'host_name' },
-  { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 140 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '通过 / 不符合', key: 'items', width: 120, customRender: ({ record }) => `${record.passed_items} / ${record.failed_items}` },
-  { title: '符合率', key: 'compliance_rate', width: 180 },
-  { title: '备注', dataIndex: 'error_message', key: 'error_message' },
-]
-const failureColumns = [
-  { title: '主机ID', dataIndex: 'host_id', key: 'host_id', width: 90 },
-  { title: '章节', dataIndex: 'chapter', key: 'chapter', width: 130 },
-  { title: '条目', dataIndex: 'item_name', key: 'item_name' },
-  { title: '级别', key: 'severity', width: 80 },
-  { title: '消息', dataIndex: 'message', key: 'message' },
-]
 
 const scans = ref([])
 const scanLoading = ref(false)
-const scanDetailOpen = ref(false)
-const scanDetail = reactive({ scan: null, targets: [], failures: [] })
 const baselineModalOpen = ref(false)
 const selectedBaseline = ref(null)
 const selectedCategoryId = ref(null)
@@ -367,7 +329,7 @@ const opaParseOptions = [
   { label: 'lines 按行', value: 'lines' },
   { label: 'json 对象', value: 'json' },
 ]
-const emptyOpaConfig = () => ({ input_commands: [], input_files: [], policy: '', run_user: '' })
+const emptyOpaConfig = () => ({ input_commands: [], input_files: [], policy: '', run_user: '', remediation: '' })
 const responseData = (response) => response?.data?.data || {}
 
 async function loadBaselines() {
@@ -473,6 +435,7 @@ function selectBaseline(record) {
         input_files: item.config?.input_files || [],
         policy: item.config?.policy || '',
         run_user: item.config?.run_user || '',
+        remediation: item.config?.remediation || '',
       }))
     })
     .finally(() => { itemsLoading.value = false })
@@ -485,7 +448,7 @@ const categoryRows = computed(() => itemForm.value
 const itemEditModalOpen = ref(false)
 const itemEditIndex = ref(null)
 const itemsSaving = ref(false)
-const itemEditForm = reactive({ name: '', description: '', severity: 'high', input_commands: [], input_files: [], policy: '', run_user: '' })
+const itemEditForm = reactive({ name: '', description: '', severity: 'high', input_commands: [], input_files: [], policy: '', run_user: '', remediation: '' })
 
 // ---- 策略单条操作：弹窗确认 / 删除确认即调后端，立即生效（无批量保存）。 ----
 const addBaselineItem = (baselineId, data) => requestUtil.post(`${baselinePrefix}${baselineId}/items/`, data)
@@ -495,7 +458,7 @@ const deleteBaselineItem = (baselineId, itemId) => requestUtil.del(`${baselinePr
 function openItemEditModal(index = null) {
   itemEditIndex.value = index
   Object.assign(itemEditForm, {
-    name: '', description: '', severity: 'high', run_user: '',
+    name: '', description: '', severity: 'high', run_user: '', remediation: '',
     ...emptyOpaConfig(),
   })
   if (index !== null) Object.assign(itemEditForm, itemForm.value[index])
@@ -531,6 +494,7 @@ async function confirmItemEdit() {
       input_files: itemEditForm.input_files,
       policy: itemEditForm.policy,
       run_user: (itemEditForm.run_user || '').trim(),
+      remediation: itemEditForm.remediation || '',
     },
   }
   itemsSaving.value = true
@@ -645,13 +609,7 @@ function openScanModal(record) {
   scanModalOpen.value = true
 }
 function openScanDetail(record) {
-  getSecurityScan(record.id).then((response) => {
-    const data = responseData(response)
-    scanDetail.scan = data.scan || null
-    scanDetail.targets = data.targets || []
-    scanDetail.failures = data.failures || []
-    scanDetailOpen.value = true
-  })
+  router.push(`/sys/security/baseline/scans/${record.id}`)
 }
 onMounted(() => {
   loadBaselines()

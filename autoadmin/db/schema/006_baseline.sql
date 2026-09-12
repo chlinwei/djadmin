@@ -92,6 +92,7 @@ CREATE TABLE `baseline_scan_result` (
   `expected_value` json DEFAULT NULL,
   `actual_value` json DEFAULT NULL,
   `message` longtext NOT NULL,
+  `remediation` longtext,
   PRIMARY KEY (`id`),
   KEY `baseline_scan_result_scan_fk` (`scan_id`),
   CONSTRAINT `baseline_scan_result_scan_fk` FOREIGN KEY (`scan_id`) REFERENCES `security_scan` (`id`)

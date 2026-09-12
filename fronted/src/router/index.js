@@ -51,6 +51,11 @@ export const staticRouterMap = [
                 component: () => import('../views/security/baseline/index.vue'),
             },
             {
+                path: '/sys/security/baseline/scans/:id',
+                name: '扫描详情页',
+                component: () => import('../views/security/baseline/scanDetail.vue'),
+            },
+            {
                 path: '/sys/automation/logs',
                 name: '运行记录中心',
                 component: () => import('../views/automation/logs/index.vue'),

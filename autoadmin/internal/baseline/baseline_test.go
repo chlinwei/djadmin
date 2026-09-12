@@ -271,11 +271,11 @@ func TestFlushResultsInsertShape(t *testing.T) {
 		})
 	}
 
-	// 10 列/行 × 3 行 = 30 占位符；expected_value 落 JSON（nil → null）。
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message) VALUES (?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?)")).
-		WithArgs(int64(5), int64(9), 1, "item-1", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok",
-			int64(5), int64(9), 2, "item-2", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok",
-			int64(5), int64(9), 3, "item-3", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok").
+	// 11 列/行 × 3 行 = 33 占位符；expected_value 落 JSON（nil → null）。
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES (?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?)")).
+		WithArgs(int64(5), int64(9), 1, "item-1", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil,
+			int64(5), int64(9), 2, "item-2", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil,
+			int64(5), int64(9), 3, "item-3", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
 	flushResults(context.Background(), database, 5, 9, results)

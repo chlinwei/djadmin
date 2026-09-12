@@ -220,16 +220,18 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 	var decoded struct {
 		Checks []struct {
 			Key, Status, Message string
-			Actual               any
+			Expected, Actual     any
 		} `json:"checks"`
 	}
 	_ = json.Unmarshal([]byte(responseData.ResultDataJson), &decoded)
 	statusByKey := make(map[string]string, len(decoded.Checks))
 	messageByKey := make(map[string]string, len(decoded.Checks))
+	expectedByKey := make(map[string]any, len(decoded.Checks))
 	actualByKey := make(map[string]any, len(decoded.Checks))
 	for _, check := range decoded.Checks {
 		statusByKey[check.Key] = check.Status
 		messageByKey[check.Key] = check.Message
+		expectedByKey[check.Key] = check.Expected
 		actualByKey[check.Key] = check.Actual
 	}
 	passed, failed := 0, 0
@@ -246,8 +248,12 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		} else {
 			failed++
 		}
+		var config map[string]any
+		_ = json.Unmarshal(item.Config, &config)
 		results = append(results, gin.H{"item_id": item.ID, "item_name": item.Name, "chapter": item.Category,
-			"severity": item.Severity, "status": resultStatus, "message": messageByKey[key], "actual": actualByKey[key]})
+			"severity": item.Severity, "status": resultStatus, "message": messageByKey[key],
+			"expected": expectedByKey[key], "actual": actualByKey[key],
+			"remediation": stringFrom(config["remediation"])})
 	}
 	compliance := 0.0
 	if passed+failed > 0 {
@@ -284,15 +290,15 @@ func flushResults(ctx context.Context, dbWriter dbExecutor, scanID, hostID int64
 	for start := 0; start < len(results); start += batchSize {
 		end := min(start+batchSize, len(results))
 		var builder strings.Builder
-		builder.WriteString(`INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message) VALUES `)
-		arguments := make([]any, 0, (end-start)*7)
-		for index := start; index < end; index++ {
-			if index > start {
-				builder.WriteString(",")
-			}
-			builder.WriteString("(?,?,?,?,?,?,?,?,?,?)")
-			item := results[index]
-			arguments = append(arguments, scanID, hostID, item["item_id"], item["item_name"], item["chapter"], item["severity"], item["status"], jsonBytes(item["expected"]), jsonBytes(item["actual"]), item["message"])
+	builder.WriteString(`INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES `)
+	arguments := make([]any, 0, (end-start)*8)
+	for index := start; index < end; index++ {
+		if index > start {
+			builder.WriteString(",")
+		}
+		builder.WriteString("(?,?,?,?,?,?,?,?,?,?,?)")
+		item := results[index]
+		arguments = append(arguments, scanID, hostID, item["item_id"], item["item_name"], item["chapter"], item["severity"], item["status"], jsonBytes(item["expected"]), jsonBytes(item["actual"]), item["message"], item["remediation"])
 		}
 		if _, err := dbWriter.ExecContext(ctx, builder.String(), arguments...); err != nil {
 			return
@@ -402,16 +408,20 @@ WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT 100`, scanType)
 func (handler *Handler) GetScan(context *gin.Context) {
 	var scanID int64
 	fmt.Sscanf(strings.TrimSpace(context.Param("id")), "%d", &scanID)
-	var scan gin.H
-	var summary []byte
+	var scanJSON, summary []byte
 	err := handler.db.QueryRowContext(context, `SELECT JSON_OBJECT('id',s.id,'scan_type',s.scan_type,'baseline',b.name,'baseline_id',s.baseline_id,'mount_type',s.mount_type,'status',s.status,'requested_username',s.requested_username,'start_time',s.start_time,'end_time',s.end_time), s.summary
-FROM security_scan s JOIN baseline b ON b.id=s.baseline_id WHERE s.id=?`, scanID).Scan(&scan, &summary)
+FROM security_scan s JOIN baseline b ON b.id=s.baseline_id WHERE s.id=?`, scanID).Scan(&scanJSON, &summary)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			response.BusinessError(context, 404, "扫描记录不存在", nil)
 		} else {
 			response.Error(context, err)
 		}
+		return
+	}
+	var scan gin.H
+	if err := json.Unmarshal(scanJSON, &scan); err != nil {
+		response.Error(context, err)
 		return
 	}
 	var summaryDecoded any
@@ -437,23 +447,30 @@ FROM security_scan s JOIN baseline b ON b.id=s.baseline_id WHERE s.id=?`, scanID
 			"passed_items": passed, "failed_items": failed, "compliance_rate": compliance, "error_message": errorMessage})
 	}
 
-	failures := make([]gin.H, 0)
-	failureRows, err := handler.db.QueryContext(context, `SELECT host_id,item_name,chapter,severity,status,message FROM baseline_scan_result WHERE scan_id=? AND status='fail' ORDER BY host_id,severity,id`, scanID)
+	items := make([]gin.H, 0)
+	itemRows, err := handler.db.QueryContext(context, `SELECT r.host_id, t.host_name, t.host_ip, r.item_name, r.chapter, r.severity, r.status, r.expected_value, r.actual_value, r.message, r.remediation
+FROM baseline_scan_result r JOIN security_scan_target t ON t.scan_id=r.scan_id AND t.host_id=r.host_id
+WHERE r.scan_id=? ORDER BY t.id, FIELD(r.status,'fail','pass'), r.severity, r.id`, scanID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer failureRows.Close()
-	for failureRows.Next() {
+	defer itemRows.Close()
+	for itemRows.Next() {
 		var hostID int64
-		var itemName, chapter, severity, status, message string
-		if err := failureRows.Scan(&hostID, &itemName, &chapter, &severity, &status, &message); err != nil {
+		var hostName, hostIP, itemName, chapter, severity, status, message string
+		var expectedValue, actualValue []byte
+		var remediation sql.NullString
+		if err := itemRows.Scan(&hostID, &hostName, &hostIP, &itemName, &chapter, &severity, &status, &expectedValue, &actualValue, &message, &remediation); err != nil {
 			response.Error(context, err)
 			return
 		}
-		failures = append(failures, gin.H{"host_id": hostID, "item_name": itemName, "chapter": chapter, "severity": severity, "status": status, "message": message})
+		items = append(items, gin.H{"host_id": hostID, "host_name": hostName, "host_ip": hostIP, "item_name": itemName,
+			"chapter": chapter, "severity": severity, "status": status,
+			"expected": json.RawMessage(expectedValue), "actual": json.RawMessage(actualValue), "message": message,
+			"remediation": remediation.String})
 	}
-	response.Success(context, gin.H{"scan": scan, "targets": targets, "failures": failures})
+	response.Success(context, gin.H{"scan": scan, "targets": targets, "items": items})
 }
 
 func nullTimeString(value sql.NullTime) any {

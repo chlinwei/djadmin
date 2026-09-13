@@ -287,6 +287,19 @@ func (handler *Handler) DeleteBaseline(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
+	// 扫描历史随基线一并删除（外键未设级联，须先删子表：明细 → 目标 → 扫描记录）。
+	if _, err = tx.ExecContext(context, `DELETE FROM baseline_scan_result WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)`, id); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if _, err = tx.ExecContext(context, `DELETE FROM security_scan_target WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)`, id); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if _, err = tx.ExecContext(context, `DELETE FROM security_scan WHERE baseline_id=?`, id); err != nil {
+		response.Error(context, err)
+		return
+	}
 	if _, err = tx.ExecContext(context, `DELETE FROM baseline_item WHERE baseline_id=?`, id); err != nil {
 		response.Error(context, err)
 		return

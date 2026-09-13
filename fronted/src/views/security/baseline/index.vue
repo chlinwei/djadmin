@@ -49,7 +49,7 @@
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="发起扫描">
+                <a-tooltip :title="selectedBaseline ? '发起扫描' : '先选择基线'">
                   <a-button v-permission="'baseline:scan'" size="small" type="primary" ghost :disabled="!selectedBaseline" @click="openScanModal(selectedBaseline)">
                     <FontAwesomeIcon :icon="['fas', 'satellite-dish']" />
                   </a-button>
@@ -74,13 +74,11 @@
                 <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="moveCategory('down')">
                   <FontAwesomeIcon :icon="['fas', 'arrow-down']" />&nbsp;下移
                 </a-button>
-                <a-popconfirm title="删除该类目？（类目下有策略时会被拒绝）" @confirm="confirmDeleteCategory">
-                  <a-button v-permission="'baseline:manage'" class="delBtn" size="large" type="primary" danger :disabled="!selectedCategory">
-                    <FontAwesomeIcon :icon="['fas', 'folder-minus']" />&nbsp;删除类目
-                  </a-button>
-                </a-popconfirm>
-                <a-button v-permission="'baseline:manage'" size="large" type="primary" :disabled="!selectedCategory" @click="openItemEditModal()">
-                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />&nbsp;添加策略
+                <a-button v-permission="'baseline:manage'" class="delBtn" size="large" type="primary" danger :disabled="!selectedCategory" @click="confirmDeleteCategory(selectedCategory)">
+                  <FontAwesomeIcon :icon="['fas', 'folder-minus']" />&nbsp;删除类目
+                </a-button>
+                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="openItemEditModal()">
+                  <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加策略
                 </a-button>
                 <a-tooltip title="刷新">
                   <a-button size="large" :disabled="!selectedBaseline" @click="selectBaseline(selectedBaseline)">
@@ -94,7 +92,7 @@
               :columns="itemColumns"
               :data-source="categoryRows"
               :loading="itemsLoading"
-              :pagination="false"
+              :pagination="{ showSizeChanger: true, showQuickJumper: true }"
               size="small"
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
             >
@@ -104,13 +102,15 @@
                 </template>
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
-                    <a-tooltip title="编辑">
-                      <a-button v-permission="'baseline:manage'" size="small" type="primary" ghost @click="openItemEditModal(record.sourceIndex)">编辑</a-button>
+                    <a-tooltip title="编辑" placement="top">
+                      <a-button v-permission="'baseline:manage'" size="small" type="primary" @click="openItemEditModal(record.sourceIndex)">
+                        <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
+                      </a-button>
                     </a-tooltip>
-                    <a-tooltip title="删除">
-                      <a-popconfirm title="确认删除该策略？" @confirm="removeItemRow(record.sourceIndex)">
-                        <a-button v-permission="'baseline:manage'" size="small" type="primary" danger>删除</a-button>
-                      </a-popconfirm>
+                    <a-tooltip title="删除" placement="top">
+                      <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger @click="removeItemRow(record.sourceIndex)">
+                        <FontAwesomeIcon :icon="['fas', 'trash-can']" />
+                      </a-button>
                     </a-tooltip>
                   </a-space>
                 </template>
@@ -132,7 +132,9 @@
           :columns="scanColumns"
           :data-source="scans"
           :loading="scanLoading"
-          :pagination="false"
+          :scroll="{ x: 1000 }"
+          :pagination="scanPagination"
+          @change="handleScanTableChange"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
@@ -263,6 +265,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 
@@ -299,11 +302,12 @@ const itemColumns = [
   { title: '策略名称', dataIndex: 'name' },
   { title: '级别', key: 'severity', width: 70 },
   { title: '说明', dataIndex: 'description', key: 'description', ellipsis: true, width: 180 },
-  { title: '操作', key: 'action', width: 130 },
+  { title: '操作', key: 'action', width: 90 },
 ]
 
 const scans = ref([])
 const scanLoading = ref(false)
+const scanPagination = reactive({ current: 1, pageSize: 10, total: 0, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` })
 const baselineModalOpen = ref(false)
 const selectedBaseline = ref(null)
 const selectedCategoryId = ref(null)
@@ -349,9 +353,15 @@ async function loadBaselines() {
 async function loadScans() {
   scanLoading.value = true
   try {
-    const data = responseData(await getSecurityScans({ type: 'baseline' }))
+    const data = responseData(await getSecurityScans({ type: 'baseline', page: scanPagination.current, page_size: scanPagination.pageSize }))
     scans.value = data.results || []
+    scanPagination.total = Number(data.count || 0)
   } finally { scanLoading.value = false }
+}
+function handleScanTableChange(pagination) {
+  scanPagination.current = pagination.current
+  scanPagination.pageSize = pagination.pageSize
+  loadScans()
 }
 function handleTabChange(key) {
   if (key === 'scans') loadScans()
@@ -384,19 +394,22 @@ async function submitBaseline() {
 }
 async function confirmDeleteBaseline(record) {
   if (!record) return
-  try {
-    await deleteBaseline(record.id)
-    if (selectedBaseline.value?.id === record.id) {
-      selectedBaseline.value = null
-      categories.value = []
-      selectedCategoryId.value = null
-      itemForm.value = []
-    }
-    message.success('基线已删除')
-    await loadBaselines()
-  } catch (error) {
-    message.error(error?.message || '删除失败')
-  }
+  await openDeleteConfirm({
+    title: '确认删除基线',
+    summary: '删除后该基线及其类目、策略和历史扫描配置将不可用。',
+    items: [record.name],
+    onConfirm: async () => {
+      await deleteBaseline(record.id)
+      if (selectedBaseline.value?.id === record.id) {
+        selectedBaseline.value = null
+        categories.value = []
+        selectedCategoryId.value = null
+        itemForm.value = []
+      }
+      message.success('基线已删除')
+      await loadBaselines()
+    },
+  })
 }
 // ---- 左侧二层菜单（基线 → 类目）→ 右侧策略表格；增删改先改本地 itemForm，「保存策略」一次性提交。
 
@@ -512,13 +525,15 @@ async function confirmItemEdit() {
 async function removeItemRow(index) {
   const item = itemForm.value[index]
   if (!item?.id) return
-  try {
-    await deleteBaselineItem(selectedBaseline.value.id, item.id)
-    message.success('策略已删除')
-    await selectBaseline(selectedBaseline.value)
-  } catch (error) {
-    message.error(error?.message || '策略删除失败')
-  }
+  await openDeleteConfirm({
+    title: '确认删除策略',
+    items: [item.name],
+    onConfirm: async () => {
+      await deleteBaselineItem(selectedBaseline.value.id, item.id)
+      message.success('策略已删除')
+      await selectBaseline(selectedBaseline.value)
+    },
+  })
 }
 
 // ---- 类目管理：新增 / 重命名 / 上下移 / 删除（非空由后端拒绝）。
@@ -570,15 +585,18 @@ async function moveCategory(direction) {
   }
 }
 
-async function confirmDeleteCategory() {
-  if (!selectedCategory.value) return
-  try {
-    await deleteBaselineCategory(selectedBaseline.value.id, selectedCategory.value.id)
-    message.success('类目已删除')
-    await selectBaseline(selectedBaseline.value)
-  } catch (error) {
-    message.error(error?.message || '类目删除失败')
-  }
+async function confirmDeleteCategory(record) {
+  if (!record) return
+  await openDeleteConfirm({
+    title: '确认删除类目',
+    summary: '类目下有策略时会被拒绝删除。',
+    items: [record.name],
+    onConfirm: async () => {
+      await deleteBaselineCategory(selectedBaseline.value.id, record.id)
+      message.success('类目已删除')
+      await selectBaseline(selectedBaseline.value)
+    },
+  })
 }
 
 // 发起扫描：按项目（×环境）解析主机集合，逐主机执行基线套件。
@@ -597,6 +615,7 @@ async function submitScan() {
     scanModalOpen.value = false
     message.success(`扫描已发起（${data.targets} 台主机）`)
     activeTab.value = 'scans'
+    scanPagination.current = 1
     await loadScans()
   } catch (error) {
     message.error(error?.message || '扫描发起失败')

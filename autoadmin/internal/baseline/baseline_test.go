@@ -504,3 +504,41 @@ func TestDeleteBaselineItem(t *testing.T) {
 		t.Fatalf("database expectations: %v", err)
 	}
 }
+
+func TestDeleteBaselineCascadesScanHistory(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_scan_result WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)")).
+		WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan_target WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)")).
+		WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan WHERE baseline_id=?")).
+		WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE baseline_id=?")).
+		WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 5))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline WHERE id=?")).
+		WithArgs(int64(7)).
+		WillReturnResult(sqlmock.NewResult(7, 1))
+	mock.ExpectCommit()
+
+	handler := &Handler{db: database}
+	context, recorder := itemTestContext("DELETE", "/sys/security/baseline/7/", nil)
+	context.Params = gin.Params{{Key: "id", Value: "7"}}
+	handler.DeleteBaseline(context)
+
+	if code := decodeResponse(t, recorder)["code"]; code != float64(200) {
+		t.Fatalf("code = %v body %s, want success", code, recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}

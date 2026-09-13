@@ -371,15 +371,32 @@ func nullInt64FromPtr(value *int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
-// ListScans 扫描记录（按类型过滤，默认基线）。
+// ListScans 扫描记录（按类型过滤，默认基线；page/page_size 分页，page_size 默认 10 上限 100）。
 func (handler *Handler) ListScans(context *gin.Context) {
 	scanType := strings.TrimSpace(context.Query("type"))
 	if scanType == "" {
 		scanType = "baseline"
 	}
+	page, pageSize := 1, 10
+	fmt.Sscanf(strings.TrimSpace(context.Query("page")), "%d", &page)
+	fmt.Sscanf(strings.TrimSpace(context.Query("page_size")), "%d", &pageSize)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	var total int64
+	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM security_scan WHERE scan_type=?`, scanType).Scan(&total); err != nil {
+		response.Error(context, err)
+		return
+	}
 	rows, err := handler.db.QueryContext(context, `SELECT s.id, s.scan_type, b.name, s.mount_type, s.status, s.summary, s.requested_username, s.start_time, s.end_time, s.create_time
 FROM security_scan s JOIN baseline b ON b.id = s.baseline_id
-WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT 100`, scanType)
+WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT ? OFFSET ?`, scanType, pageSize, (page-1)*pageSize)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -401,7 +418,7 @@ WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT 100`, scanType)
 			"status": status, "summary": summaryDecoded, "requested_username": requestedUsername,
 			"start_time": nullTimeString(startTime), "end_time": nullTimeString(endTime), "create_time": createTime})
 	}
-	response.Success(context, gin.H{"results": items})
+	response.Success(context, gin.H{"count": total, "results": items})
 }
 
 // GetScan 扫描详情：概要 + 每主机符合率 + 不符合条目清单。

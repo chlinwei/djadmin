@@ -37,7 +37,7 @@ PATCH  /sys/security/baseline/{id}/     更新（items 提交时整体重建；i
                                         策略 config 走 opapolicy.Validate 共享校验
                                         （含策略 input.<key> 引用与采集 key 的一致性检查，
                                         引用未采集字段保存即 400，详见巡检中心架构文档）
-DELETE /sys/security/baseline/{id}/     删除（级联删策略与类目）
+DELETE /sys/security/baseline/{id}/     删除（事务内显式级联：扫描历史明细/目标/记录 → 策略 → 类目 → 基线；外键未设级联，顺序删除子表）
 POST   /sys/security/baseline/{id}/categories/   新增类目 {name}（追加到末尾）
 PATCH  /sys/security/baseline/{id}/categories/{categoryId}/   {name} 重命名 | {direction: up/down} 上移下移
 DELETE /sys/security/baseline/{id}/categories/{categoryId}/   删除类目（非空 400：提示先移走或删光策略）
@@ -45,7 +45,7 @@ POST   /sys/security/baseline/{id}/items/     新增策略（弹窗确认即落�
 PATCH  /sys/security/baseline/{id}/items/{itemId}/   更新策略（弹窗确认即落库）
 DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效）
 POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id, environment_id}
-GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline）
+GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline；page/page_size 分页，page_size 默认 10 上限 100，返回 count+results）
 GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 条目明细：全部 pass/fail 条目，含主机、级别、expected（Rego 策略）/actual（违规明细）、消息，fail 排前）
 ```
 
@@ -54,8 +54,16 @@ GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合�
 选中基线后展开加载）；右侧展示**选中类目**的策略表格（表格按 category_id 过滤并保留
 原始下标）。类目管理（新增/重命名/上移下移/删除）在右侧工具栏，删除非空类目由后端
 400 拒绝；**策略为单条即时保存**——弹窗「确定」即调用策略单条 POST/PATCH 落库、
-删除 popconfirm 即 DELETE（无「保存策略」批量按钮；整体覆盖 PATCH items 接口保留但
-前端不再使用）；单条策略的采集/Rego 在二级弹窗编辑（弹窗内类目只读展示为左侧当前
+删除均走统一删除确认弹窗 `openDeleteConfirm`（`util/deleteConfirm.js`，居中 Modal、
+红色确认按钮）后即 DELETE，基线/类目/策略三处一致，不再用 `a-popconfirm`
+（无「保存策略」批量按钮；整体覆盖 PATCH items 接口保留但前端不再使用）。
+按钮风格与巡检中心对齐：工具栏新增按钮用默认（非 primary）类型；策略表格行内
+操作为 small 图标按钮（编辑=primary 实心 pen，删除=`delBtn` danger trash，均带
+tooltip）；左侧基线面板为 small 图标按钮组（新增 primary / 编辑 / 删除 delBtn /
+发起扫描 ghost）。表格风格与巡检中心对齐：「扫描记录」表用标准服务端分页
+（`scanPagination`：current/pageSize/total + showSizeChanger + 共 N 条，`@change`
+回读，scroll.x=1000）；「策略」表与扫描详情页两表用客户端分页
+（showSizeChanger + showQuickJumper）。单条策略的采集/Rego 在二级弹窗编辑（弹窗内类目只读展示为左侧当前
 选中类目）。**「扫描记录」tab 点「详情」不弹窗**，而是 `router.push` 到独立路由页
 `/sys/security/baseline/scans/:id`（`views/security/baseline/scanDetail.vue`，路由名
 「扫描详情页」，顶部页签打开新 tab）：页面按路由参数拉取详情，展示概要 + 主机符合率 +

@@ -33,7 +33,7 @@
           </a-descriptions>
 
           <h4 class="section-title">主机符合率</h4>
-          <a-table row-key="host_ip" :columns="targetColumns" :data-source="targets" :pagination="false" size="small">
+          <a-table row-key="host_ip" :columns="targetColumns" :data-source="targets" :pagination="{ showSizeChanger: true, showQuickJumper: true }" size="small">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
@@ -85,7 +85,7 @@
               </a-radio-group>
             </a-space>
           </div>
-          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" size="small">
+          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="{ showSizeChanger: true, showQuickJumper: true }" size="small">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>

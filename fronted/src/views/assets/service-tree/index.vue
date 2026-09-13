@@ -102,7 +102,7 @@ import * as echarts from 'echarts'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { deleteBusinessSystem, deleteApplicationService } from '@/api/assets/application'
+import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import ServiceTree from '../application/components/ServiceTree.vue'
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 import LogQueryPanel from './LogQueryPanel.vue'
@@ -233,7 +233,7 @@ function confirmDeleteBusinessSystem(record) {
     summary: '仍包含逻辑服务的业务系统不能删除。',
     items: [record.name || record.code || record.id],
     onConfirm: async () => {
-      await deleteBusinessSystem(record.id)
+      await batchDeleteBusinessSystems([record.id])
       message.success('删除成功')
       // 删的正是当前选中的节点时，节点已经不存在了，退回全部业务，避免详情停留在一个已删除的节点上。
       if (serviceScope.value.nodeType === 'businessSystem' && serviceScope.value.businessSystemId === record.id) {
@@ -262,7 +262,7 @@ function confirmDeleteService(record) {
     summary: '仍包含部署实例的逻辑服务不能删除。',
     items: [record.name || record.code || record.id],
     onConfirm: async () => {
-      await deleteApplicationService(record.id)
+      await batchDeleteApplicationServices([record.id])
       message.success('删除成功')
       if (serviceScope.value.nodeType === 'service' && serviceScope.value.applicationServiceId === record.id) {
         serviceScope.value = { nodeType: 'all', nodeTitle: '全部业务' }

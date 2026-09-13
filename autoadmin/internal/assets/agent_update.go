@@ -3,8 +3,10 @@ package assets
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,7 +131,7 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		return
 	}
 
-	binary, err := handler.loadAgentBinary()
+	binary, agentPackageInfo, err := handler.loadAgentBinary()
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -236,7 +238,7 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	for _, host := range hosts {
 		jobs = append(jobs, gin.H{"job_id": host.AgentJobID, "host_id": host.ID})
 	}
-	response.Success(context, gin.H{"automation_job_id": executionID, "jobs": jobs})
+	response.Success(context, gin.H{"automation_job_id": executionID, "jobs": jobs, "agent_package": agentPackageInfo})
 }
 
 func (handler *Handler) rejectActiveAgentJobs(context *gin.Context, hosts []agentUpdateHost) error {
@@ -270,23 +272,55 @@ func (handler *Handler) rejectActiveAgentJobs(context *gin.Context, hosts []agen
 	return nil
 }
 
-func (handler *Handler) loadAgentBinary() ([]byte, error) {
+// agentBinarySource 描述本次安装/更新使用的二进制来源，随响应返回给前端展示。
+type agentBinarySource struct {
+	Source  string `json:"source"`  // uploaded：已上传激活包；build：本机构建产物
+	Version string `json:"version"` // uploaded 包版本；build 固定 "dev"
+	SHA256  string `json:"sha256"`  // 二进制摘要
+}
+
+// loadAgentBinary 优先使用 agent_package 中 is_active=1 的激活包（校验 sha256）；
+// 未激活包时回退本机构建产物 ../dj_agent/bin/dj-agent。激活包存在但读取/校验失败时
+// 直接报错，不静默回退——操作者显式激活的包坏了应暴露问题而不是悄悄换源。
+func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
+	var item agentPackage
+	err := handler.service.repository.pool.QueryRowContext(context.Background(),
+		`SELECT id,version,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
+		Scan(&item.ID, &item.Version, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+	switch {
+	case err == nil:
+		path := filepath.Join(handler.mediaRoot, filepath.FromSlash(item.File))
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, agentBinarySource{}, fmt.Errorf("激活的 Agent 安装包文件缺失: %s，请重新上传或取消激活", path)
+		}
+		sum := fmt.Sprintf("%x", sha256.Sum256(data))
+		if item.SHA256 != "" && sum != item.SHA256 {
+			return nil, agentBinarySource{}, fmt.Errorf("激活的 Agent 安装包 sha256 不匹配（记录 %s，实际 %s），请重新上传", item.SHA256, sum)
+		}
+		if err = validateAgentBinary(data); err != nil {
+			return nil, agentBinarySource{}, err
+		}
+		return data, agentBinarySource{Source: "uploaded", Version: item.Version, SHA256: sum}, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// 无激活包：回退构建产物，语义与历史行为一致。
+	default:
+		return nil, agentBinarySource{}, err
+	}
+
 	binaryPath, err := filepath.Abs(filepath.Join("..", "dj_agent", "bin", "dj-agent"))
 	if err != nil {
-		return nil, err
+		return nil, agentBinarySource{}, err
 	}
 	data, err := os.ReadFile(binaryPath)
 	if err != nil {
-		return nil, fmt.Errorf("Agent 二进制不存在: %s", binaryPath)
+		return nil, agentBinarySource{}, fmt.Errorf("Agent 二进制不存在: %s", binaryPath)
 	}
-	// Django 同款双标记校验：拒绝旧 RabbitMQ 构建产物，也拒绝缺少当前 gRPC 配置标记的未知版本。
-	if bytes.Contains(data, []byte("connect rabbitmq failed")) {
-		return nil, fmt.Errorf("Agent 二进制仍是旧 RabbitMQ 版本，请先执行 CGO_ENABLED=0 go build -trimpath -o bin/dj-agent ./cmd/agent 后重试")
+	if err = validateAgentBinary(data); err != nil {
+		return nil, agentBinarySource{}, err
 	}
-	if !bytes.Contains(data, []byte("DJ_AGENT_GRPC_FILE_ADDR")) {
-		return nil, fmt.Errorf("Agent 二进制缺少当前 gRPC 配置标记，拒绝部署未知版本")
-	}
-	return data, nil
+	sum := fmt.Sprintf("%x", sha256.Sum256(data))
+	return data, agentBinarySource{Source: "build", Version: "dev", SHA256: sum}, nil
 }
 
 func (handler *Handler) agentAdvertiseAddr() (string, error) {

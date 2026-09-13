@@ -97,6 +97,7 @@
                 :pagination="false"
                 row-key="id"
                 size="small"
+                :locale="tableLocale"
             >
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'start_time'">
@@ -165,6 +166,7 @@ import WebsshHeaderSection from './components/WebsshHeaderSection/index.vue'
 import WebsshFilePanel from './components/WebsshFilePanel/index.vue'
 import WebsshTerminalPanel from './components/WebsshTerminalPanel/index.vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import store from '@/store'
 
 const route = useRoute()

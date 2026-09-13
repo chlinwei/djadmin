@@ -151,13 +151,6 @@ func (handler *Handler) UpdateApplicationService(context *gin.Context) {
 	item, err := handler.service.SaveApplicationService(context, id, input)
 	respond(context, item, err)
 }
-func (handler *Handler) DeleteApplicationService(context *gin.Context) {
-	id, ok := resourceID(context)
-	if !ok {
-		return
-	}
-	respond(context, nil, handler.service.DeleteApplicationService(context.Request.Context(), id))
-}
 func (handler *Handler) CreateApplicationDeployment(context *gin.Context) {
 	input, ok := bind[ApplicationDeploymentInput](context)
 	if !ok {
@@ -178,14 +171,6 @@ func (handler *Handler) UpdateApplicationDeployment(context *gin.Context) {
 	item, err := handler.service.SaveApplicationDeployment(context, id, input)
 	respond(context, item, err)
 }
-func (handler *Handler) DeleteApplicationDeployment(context *gin.Context) {
-	id, ok := resourceID(context)
-	if !ok {
-		return
-	}
-	respond(context, nil, handler.service.DeleteApplicationDeployment(context.Request.Context(), id))
-}
-
 func (handler *Handler) ControlApplicationDeployment(context *gin.Context) {
 	id, ok := resourceID(context)
 	if !ok {

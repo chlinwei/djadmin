@@ -90,19 +90,8 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 	handler.getAlertMedia(context, id)
 }
 
-func (handler *Handler) DeleteAlertMedia(context *gin.Context) {
-	id := parseID(context.Param("id"))
-	result, err := handler.db.ExecContext(context, `DELETE FROM monitor_alert_media WHERE id=?`, id)
-	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		response.BusinessError(context, 404, "alert media not found", nil)
-		return
-	}
-	response.Success(context, gin.H{"deleted": true})
+func (handler *Handler) BatchDeleteAlertMedia(context *gin.Context) {
+	batchDeleteMonitorRows(context, handler, "monitor_alert_media")
 }
 
 func (handler *Handler) ListAlertRoutes(context *gin.Context) {
@@ -275,19 +264,8 @@ func (handler *Handler) saveAlertRoute(context *gin.Context, id int64) {
 	context.Params = append(context.Params, gin.Param{Key: "id", Value: fmt.Sprint(id)})
 	handler.GetAlertRoute(context)
 }
-func (handler *Handler) DeleteAlertRoute(context *gin.Context) {
-	id := parseID(context.Param("id"))
-	result, err := handler.db.ExecContext(context, `DELETE FROM monitor_alert_route WHERE id=?`, id)
-	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		response.BusinessError(context, 404, "alert route not found", nil)
-		return
-	}
-	response.Success(context, gin.H{"deleted": true})
+func (handler *Handler) BatchDeleteAlertRoutes(context *gin.Context) {
+	batchDeleteMonitorRows(context, handler, "monitor_alert_route")
 }
 
 var _ = sql.ErrNoRows

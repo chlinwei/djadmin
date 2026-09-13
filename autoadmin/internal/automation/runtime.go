@@ -84,24 +84,6 @@ func (handler *Handler) GetInventory(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
-func (handler *Handler) DeleteInventory(context *gin.Context) {
-	id, ok := automationID(context)
-	if !ok {
-		return
-	}
-	result, err := handler.db.ExecContext(context, `DELETE FROM automation_inventory WHERE id=?`, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	changed, _ := result.RowsAffected()
-	if changed == 0 {
-		automationResourceError(context, sql.ErrNoRows)
-		return
-	}
-	response.Success(context, gin.H{"id": id})
-}
-
 // inventoryExisting 是 inventory 部分更新时从库中读出的现值快照。
 type inventoryExisting struct {
 	Name               string
@@ -269,24 +251,6 @@ func (handler *Handler) GetTask(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
-func (handler *Handler) DeleteTask(context *gin.Context) {
-	id, ok := automationID(context)
-	if !ok {
-		return
-	}
-	result, err := handler.db.ExecContext(context, `DELETE FROM automation_task WHERE id=?`, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	changed, _ := result.RowsAffected()
-	if changed == 0 {
-		automationResourceError(context, sql.ErrNoRows)
-		return
-	}
-	response.Success(context, gin.H{"id": id})
-}
-
 func (handler *Handler) saveTask(context *gin.Context, id int64) {
 	var input taskInput
 	if context.ShouldBindJSON(&input) != nil {

@@ -98,6 +98,8 @@
             :loading="loading"
             :pagination="pagination"
             :scroll="{ x: 1200 }"
+            size="small"
+            :locale="tableLocale"
             @change="handleTableChange"
           >
             <template #bodyCell="{ column, record }">
@@ -148,6 +150,8 @@
             :loading="statsLoading"
             :pagination="false"
             :scroll="{ x: 900 }"
+            size="small"
+            :locale="tableLocale"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'value'">{{ record.value ?? '-' }}</template>
@@ -192,6 +196,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { getOpenSearchClusterList, searchOpenSearchLogFacetStats, searchOpenSearchLogs } from '@/api/monitor'
@@ -294,14 +299,7 @@ function onTimeRangeOpenChange(open) {
   if (open) refreshTimeRangePresets()
 }
 
-const pagination = reactive({
-  current: 1,
-  pageSize: 100,
-  total: 0,
-  showSizeChanger: true,
-  pageSizeOptions: ['50', '100', '200'],
-  showTotal: (total) => `共有${total}条数据`,
-})
+const pagination = reactive(createPagination(0, 100, { pageSizeOptions: ['50', '100', '200'] }))
 
 const columns = [
   { title: '时间', key: 'timestamp', width: 190, fixed: 'left' },

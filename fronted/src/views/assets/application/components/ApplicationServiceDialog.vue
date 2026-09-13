@@ -99,6 +99,7 @@
                 :pagination="false"
                 row-key="name"
                 size="small"
+                :locale="tableLocale"
                 class="service-macro-table"
               >
                 <template #bodyCell="{ column, record }">
@@ -174,6 +175,7 @@
                 :pagination="false"
                 row-key="log_definition"
                 size="small"
+                :locale="tableLocale"
                 :scroll="{ x: 1450 }"
               >
                 <template #bodyCell="{ column, record }">
@@ -278,6 +280,7 @@
 <script setup>
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { fetchAllPages } from '@/util/fetchAllPages'

@@ -1,0 +1,305 @@
+package monitor
+
+import (
+	"database/sql"
+	"strings"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
+
+// ---- 纯匹配逻辑（对齐 Django tasks.resolve_alert_media）----
+
+func TestMergeAlertLabelsConvenienceKeys(t *testing.T) {
+	merged := mergeAlertLabels(map[string]any{"alertname": "HighCPU", "job": "node"}, "HighCPU", "warning", "host-1")
+	if merged["alertname"] != "HighCPU" || merged["severity"] != "warning" || merged["instance"] != "host-1" || merged["job"] != "node" {
+		t.Fatalf("unexpected merged labels: %v", merged)
+	}
+	// 便捷键缺失时补空串，与 Django labels.update 行为一致。
+	empty := mergeAlertLabels(map[string]any{}, "", "", "")
+	if empty["severity"] != "" || empty["alertname"] != "" || empty["instance"] != "" {
+		t.Fatalf("unexpected empty merged labels: %v", empty)
+	}
+}
+
+func TestMatchersMatch(t *testing.T) {
+	labels := map[string]string{"alertname": "HighDiskUsage", "severity": "warning", "env": "prod"}
+	if !matchersMatch(map[string]any{"severity": "warning", "env": "prod"}, labels) {
+		t.Fatal("full equality match expected")
+	}
+	if matchersMatch(map[string]any{"severity": "critical"}, labels) {
+		t.Fatal("severity mismatch must not match")
+	}
+	if matchersMatch(map[string]any{"missing": "x"}, labels) {
+		t.Fatal("missing label key must not match")
+	}
+	if !matchersMatch(map[string]any{}, labels) {
+		t.Fatal("empty matchers must match everything")
+	}
+}
+
+// ---- enqueue 预判：无媒介不建事件 ----
+
+func notificationTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, *sql.DB) {
+	t.Helper()
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return &Handler{db: database}, mock, database
+}
+
+func mediaRows(name, mediaType string) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}).
+		AddRow(`{"severity":"warning"}`, int64(2), name, mediaType, `{"smtpServer":"smtp.x.com"}`)
+}
+
+func TestEnqueueAlertNotificationSkipsWithoutMedia(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	// 预判查询无命中：不得出现任何 INSERT。
+	mock.ExpectQuery("FROM monitor_alert_route").
+		WillReturnRows(sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}))
+	created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if created {
+		t.Fatal("must not create event without deliverable media")
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestEnqueueAlertNotificationCreatesDedupedEvent(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
+		WillReturnResult(sqlmock.NewResult(9, 1))
+	created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if !created {
+		t.Fatal("expected event created")
+	}
+	// 第二次同 key 入队：预判仍命中但 INSERT IGNORE 去重，不计入也不派发。
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
+		WillReturnResult(sqlmock.NewResult(9, 0))
+	created, err = handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	if err != nil {
+		t.Fatalf("duplicate enqueue: %v", err)
+	}
+	if created {
+		t.Fatal("duplicate key must not create a second event")
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	// 第一个目标命中并创建事件；第二个目标预判无媒介不建事件。
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
+		WillReturnResult(sqlmock.NewResult(9, 1))
+	mock.ExpectQuery("SELECT id FROM monitor_alert_notification_event WHERE deduplication_key").
+		WithArgs("7:firing").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
+	mock.ExpectQuery("FROM monitor_alert_route").
+		WillReturnRows(sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}))
+	count, ids := handler.enqueueWebhookNotifications([]alertNotificationTarget{
+		{id: 7, alertname: "HighDiskUsage", severity: "warning", state: "firing", labels: map[string]any{"severity": "warning"}},
+		{id: 8, alertname: "Other", severity: "info", state: "firing", labels: map[string]any{"severity": "info"}},
+	})
+	if count != 1 || len(ids) != 1 || ids[0] != 9 {
+		t.Fatalf("unexpected enqueue results: count=%d ids=%v", count, ids)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ---- 发送：绑定筛选 ----
+
+func eventRow() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"event_type", "attempt_count", "id", "alertname", "severity", "instance", "state", "labels"}).
+		AddRow("firing", 0, int64(7), "HighDiskUsage", "warning", "host-1", "firing", `{"severity":"warning"}`)
+}
+
+func TestSendAlertNotificationEventNoBindings(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	handler.smtpSend = func(config map[string]any, subject, body string, recipients []string) (bool, string) {
+		t.Fatal("smtp must not be called without bindings")
+		return true, ""
+	}
+	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	// 该媒介没有任何 enabled 绑定。
+	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
+		WithArgs(int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}))
+	mock.ExpectExec("SET status='failed'").
+		WithArgs("媒介 \"公司邮箱\" 没有任何用户绑定", sqlmock.AnyArg(), int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	retryable, err := handler.sendAlertNotificationEvent(1)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if retryable {
+		t.Fatal("no-binding failure must not be retryable")
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestSendAlertNotificationEventNonEmailMediaOnly(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	handler.smtpSend = func(config map[string]any, subject, body string, recipients []string) (bool, string) {
+		t.Fatal("smtp must not be called for non-email media")
+		return true, ""
+	}
+	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	// 预判能命中媒介（非 email），但发送阶段全部被跳过。
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("钉钉群", "webhook"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='failed'").
+		WithArgs("匹配的告警媒介没有可投递的用户地址", sqlmock.AnyArg(), int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	retryable, err := handler.sendAlertNotificationEvent(1)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if retryable {
+		t.Fatal("no-address failure must not be retryable")
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ---- 发送：delivery 状态流转（成功）----
+
+func TestSendAlertNotificationEventDeliverySuccess(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	called := 0
+	handler.smtpSend = func(config map[string]any, subject, body string, recipients []string) (bool, string) {
+		called++
+		if len(recipients) != 1 || recipients[0] != "a@b.com" {
+			t.Fatalf("unexpected recipients: %v", recipients)
+		}
+		if config["smtpServer"] != "smtp.x.com" {
+			t.Fatalf("unexpected config: %v", config)
+		}
+		return true, ""
+	}
+	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
+		WithArgs(int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}).AddRow(int64(5), "zhang", `["a@b.com", "a@b.com", " "]`, nil))
+	// get-or-create delivery：去重后的 a@b.com 一条。
+	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
+		WillReturnResult(sqlmock.NewResult(11, 1))
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
+		WithArgs(int64(11)).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='success',sent_at").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='success',sent_at=\\?,error_message='',update_time=\\? WHERE id=\\?").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	retryable, err := handler.sendAlertNotificationEvent(1)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if retryable {
+		t.Fatal("success must not be retryable")
+	}
+	if called != 1 {
+		t.Fatalf("smtp called %d times, want 1", called)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestSendAlertNotificationEventDeliveryFailureIsRetryable(t *testing.T) {
+	handler, mock, _ := notificationTestHandler(t)
+	handler.smtpSend = func(config map[string]any, subject, body string, recipients []string) (bool, string) {
+		return false, "邮件发送失败: connection refused"
+	}
+	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
+		WithArgs(int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}).AddRow(int64(5), "zhang", `["a@b.com"]`, nil))
+	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
+		WillReturnResult(sqlmock.NewResult(11, 1))
+	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
+		WithArgs(int64(11)).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
+	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='failed',error_message").WillReturnResult(sqlmock.NewResult(0, 1))
+	// attempt_count 尚未用尽：事件回 pending 等待退避重试。
+	mock.ExpectExec("SET status='pending'").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	retryable, err := handler.sendAlertNotificationEvent(1)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !retryable {
+		t.Fatal("delivery failure must be retryable")
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ---- 邮件模板 ----
+
+func TestBuildAlertEmailSubjectAndBody(t *testing.T) {
+	target := alertNotificationTarget{alertname: "HighDiskUsage", severity: "warning", instance: "host-1", state: "firing"}
+	if subject := buildAlertEmailSubject(target); subject != "[Firing] HighDiskUsage - warning" {
+		t.Fatalf("unexpected subject: %q", subject)
+	}
+	if bodyText := buildAlertEmailBody(target); !containsAll(bodyText, []string{"Alert: HighDiskUsage", "State: Firing", "Instance: host-1"}) {
+		t.Fatalf("unexpected body: %q", bodyText)
+	}
+	target.state = "resolved"
+	if subject := buildAlertEmailSubject(target); subject != "[Resolved] HighDiskUsage - warning" {
+		t.Fatalf("unexpected resolved subject: %q", subject)
+	}
+}
+
+func containsAll(haystack string, needles []string) bool {
+	for _, needle := range needles {
+		if !strings.Contains(haystack, needle) {
+			return false
+		}
+	}
+	return true
+}

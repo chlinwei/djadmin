@@ -3,7 +3,6 @@ import Antd from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
-  deleteApplicationDeployment: vi.fn(() => Promise.resolve({ data: { data: null } })),
   getApplicationDeploymentList: vi.fn(() => Promise.resolve({
     data: { data: { results: [
       { id: 11, instance_name: 'redis-1', application_id: 2, host_name: 'node-1' },

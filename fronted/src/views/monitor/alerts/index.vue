@@ -57,6 +57,7 @@
               :pagination="false"
               :scroll="{ x: 1250 }"
               size="small"
+              :locale="tableLocale"
               :row-class-name="timelineRowClassName"
               :expandable="{ rowExpandable: isAlertEntryExpandable }"
             >
@@ -179,6 +180,7 @@
                 :pagination="false"
                 :scroll="{ x: 1250 }"
                 size="small"
+                :locale="tableLocale"
                 :row-class-name="timelineRowClassName"
                 :expandable="{ rowExpandable: isAlertEntryExpandable }"
               >
@@ -248,48 +250,136 @@
 
     <a-modal
       v-model:open="notificationModalVisible"
-      title="通知记录"
+      title="通知链路"
       width="1100px"
       :footer="null"
       centered
     >
-      <a-descriptions :column="2" size="small" bordered style="margin-bottom: 16px">
-        <a-descriptions-item label="告警名称">{{ notificationDetail.alertname || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="实例">{{ notificationDetail.instance || '-' }}</a-descriptions-item>
+      <!-- 顶部告警摘要 -->
+      <a-descriptions :column="3" size="small" bordered style="margin-bottom: 12px">
+        <a-descriptions-item label="告警名称">{{ chainDetail.alert.alertname || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="实例">{{ chainDetail.alert.instance || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="状态">
+          <a-tag :color="stateColor(chainDetail.alert.state)">{{ chainDetail.alert.state || 'unknown' }}</a-tag>
+        </a-descriptions-item>
       </a-descriptions>
-      <a-table
-        row-key="rowKey"
-        :columns="notificationColumns"
-        :data-source="notificationRows"
-        :loading="notificationLoading"
-        :pagination="false"
-        :scroll="{ x: 1100 }"
-        size="small"
+
+      <!-- 全局诊断问题 -->
+      <a-alert
+        v-if="chainDetail.summary_issues.length"
+        type="warning"
+        show-icon
+        message="链路诊断提示"
+        style="margin-bottom: 12px"
       >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'event_type'">
-            <a-tag :color="record.event_type === 'firing' ? 'red' : 'green'">
-              {{ record.event_type === 'firing' ? '告警' : '恢复' }}
-            </a-tag>
-          </template>
-          <template v-else-if="column.key === 'status'">
-            <a-tag :color="notificationStatusColor(record.status)">{{ notificationStatusLabel(record.status) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'time'">
-            {{ formatActiveAt(record.sent_at || record.create_time) }}
-          </template>
+        <template #description>
+          <ul class="chain-issue-list">
+            <li v-for="(issue, index) in chainDetail.summary_issues" :key="index">{{ issue }}</li>
+          </ul>
         </template>
-      </a-table>
+      </a-alert>
+
+      <a-spin :spinning="notificationLoading">
+        <a-empty v-if="!notificationLoading && !chainDetail.routes.length" description="该告警未经过任何通知路由" />
+        <div v-else class="chain-route-list">
+          <a-card
+            v-for="route in chainDetail.routes"
+            :key="route.route_id"
+            size="small"
+            class="chain-route-card"
+          >
+            <template #title>
+              <a-space wrap>
+                <span>{{ route.name }}</span>
+                <a-tag v-if="route.matched" color="green">✅ 命中</a-tag>
+                <a-tooltip v-else :title="route.miss_reason || '未命中'">
+                  <a-tag color="red">❌ 未命中</a-tag>
+                </a-tooltip>
+                <a-tag :color="route.enabled ? 'success' : 'default'">{{ route.enabled ? '启用' : '禁用' }}</a-tag>
+                <a-tag :color="route.notify_on_firing ? 'red' : 'default'">firing {{ route.notify_on_firing ? '开' : '关' }}</a-tag>
+                <a-tag :color="route.notify_on_resolved ? 'green' : 'default'">resolved {{ route.notify_on_resolved ? '开' : '关' }}</a-tag>
+              </a-space>
+            </template>
+            <div v-if="!route.matched && route.miss_reason" class="chain-miss-reason">未命中原因：{{ route.miss_reason }}</div>
+
+            <div v-if="(route.media || []).length" class="chain-media-list">
+              <div v-for="media in route.media" :key="media.id" class="chain-media-item">
+                <div class="chain-media-head">
+                  <a-space wrap>
+                    <span class="chain-media-name">媒介：{{ media.name }}</span>
+                    <a-tag :color="media.enabled ? 'success' : 'default'">{{ media.enabled ? '启用' : '禁用' }}</a-tag>
+                    <a-tag v-for="binding in media.bindings || []" :key="`${binding.user_id}`" :color="binding.enabled ? 'blue' : 'default'">
+                      {{ binding.username }}（{{ (binding.recipients || []).join(', ') }}）
+                    </a-tag>
+                    <!-- 订阅范围：该绑定命中的用户若限定了服务树范围，展示范围 tags；未命中归属时后端会给 issue，这里补红色标注 -->
+                    <span
+                      v-for="binding in media.bindings || []"
+                      v-show="!isGlobalScope(binding.scope) || binding.scoped_in === false"
+                      :key="`scope-${binding.user_id}`"
+                      class="chain-binding-scope"
+                    >
+                      订阅范围：
+                      <template v-if="isGlobalScope(binding.scope)">
+                        <a-tag color="default">全局</a-tag>
+                      </template>
+                      <template v-else>
+                        <a-tag v-for="(item, index) in binding.scope" :key="index" :color="item.missing ? 'red' : 'blue'">{{ formatScopeItem(item) }}</a-tag>
+                      </template>
+                      <a-tag v-if="binding.scoped_in === false" color="red">不含该告警归属</a-tag>
+                    </span>
+                  </a-space>
+                </div>
+
+                <div v-if="media.event" class="chain-event">
+                  <a-space wrap>
+                    <span class="chain-section-label">事件：</span>
+                    <a-tag :color="media.event.event_type === 'firing' ? 'red' : 'green'">
+                      {{ media.event.event_type === 'firing' ? '告警' : '恢复' }}
+                    </a-tag>
+                    <a-tag :color="notificationStatusColor(media.event.status)">{{ notificationStatusLabel(media.event.status) }}</a-tag>
+                    <a-tag>尝试 {{ media.event.attempt_count }} 次</a-tag>
+                    <span v-if="media.event.error" class="chain-event-error">错误：{{ media.event.error }}</span>
+                  </a-space>
+                </div>
+
+                <a-table
+                  v-if="(media.deliveries || []).length"
+                  row-key="rowKey"
+                  :columns="chainDeliveryColumns"
+                  :data-source="buildChainDeliveryRows(media.deliveries, media.id)"
+                  :pagination="false"
+                  size="small"
+                  :locale="tableLocale"
+                >
+                  <template #bodyCell="{ column, record }">
+                    <template v-if="column.key === 'status'">
+                      <a-tag :color="notificationStatusColor(record.status)">{{ notificationStatusLabel(record.status) }}</a-tag>
+                    </template>
+                    <template v-else-if="column.key === 'error'">
+                      <span v-if="record.error" class="chain-event-error">{{ record.error }}</span>
+                      <span v-else>-</span>
+                    </template>
+                  </template>
+                </a-table>
+                <div v-else class="chain-no-delivery">暂无投递明细</div>
+              </div>
+            </div>
+            <a-empty v-else :image="simpleImage" description="该路由未配置或未命中任何媒介" />
+          </a-card>
+        </div>
+      </a-spin>
     </a-modal>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { EyeOutlined } from '@ant-design/icons-vue'
 import dayjs from 'dayjs'
-import { getAlertHistories, getAlertNotificationStatus, getPrometheusAlerts } from '@/api/monitor'
+import { getAlertHistories, getAlertNotificationChain, getPrometheusAlerts } from '@/api/monitor'
+import { Empty } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -503,11 +593,7 @@ const filteredRows = computed(() => {
 })
 
 const currentTimeOrder = ref('desc')
-const currentPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const currentPagination = reactive(createPagination())
 const currentSortedRows = computed(() => sortTimelineRows(filteredRows.value, 'active_at', currentTimeOrder.value))
 const currentPageRows = computed(() => {
   const start = (currentPagination.current - 1) * currentPagination.pageSize
@@ -567,14 +653,7 @@ const historySeverity = ref('all')
 const historyNotificationStatus = ref('all')
 const historyOrdering = ref('-started_at')
 const historyTimeRange = ref([])
-const historyPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const historyPagination = reactive(createPagination())
 
 const historyTimelineEntries = computed(() => buildTimelineEntries(
   historyRows.value,
@@ -617,21 +696,31 @@ const historyRangeShowTime = buildUserTimezoneShowTime(userTimezone.value)
 
 const notificationModalVisible = ref(false)
 const notificationLoading = ref(false)
-const notificationRows = ref([])
-const notificationDetail = reactive({
-  alertname: '',
-  instance: '',
+
+// 单条历史告警的完整通知链路（P2）：路由匹配 → 媒介 → 用户绑定 → 事件/投递明细
+const chainDetail = reactive({
+  alert: {
+    alertname: '',
+    instance: '',
+    state: '',
+  },
+  summary_issues: [],
+  routes: [],
 })
 
-const notificationColumns = [
-  { title: '事件', key: 'event_type', width: 80 },
-  { title: '时间', key: 'time', width: 180 },
+const chainDeliveryColumns = [
   { title: '用户', dataIndex: 'username', key: 'username', width: 130 },
-  { title: '媒介', dataIndex: 'media_name', key: 'media_name', width: 150 },
-  { title: '地址', dataIndex: 'address', key: 'address', width: 220 },
+  { title: '地址', dataIndex: 'address', key: 'address', width: 240 },
   { title: '状态', key: 'status', width: 100 },
-  { title: '尝试', dataIndex: 'attempt_count', key: 'attempt_count', width: 70 },
+  { title: '错误', key: 'error', width: 260 },
 ]
+
+function buildChainDeliveryRows(deliveries, mediaId) {
+  return (deliveries || []).map((delivery, index) => ({
+    rowKey: `${mediaId}-${index}`,
+    ...delivery,
+  }))
+}
 
 function notificationStatusColor(status) {
   if (status === 'success') return 'green'
@@ -657,6 +746,8 @@ function notificationBadgeStatus(status) {
   }[status] || 'default'
 }
 
+const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
+
 function notificationSummaryLabel(status) {
   return {
     success: '全部成功',
@@ -677,35 +768,22 @@ async function openNotificationStatus(alertId) {
 
   notificationModalVisible.value = true
   notificationLoading.value = true
-  notificationRows.value = []
+  chainDetail.alert = { alertname: '', instance: '', state: '' }
+  chainDetail.summary_issues = []
+  chainDetail.routes = []
   try {
-    const res = await getAlertNotificationStatus(alertId)
+    // P2 通知链路视图：改用 chain 接口，按路由 → 媒介 → 绑定 → 事件/投递层级展示。
+    const res = await getAlertNotificationChain(alertId)
     const data = parseApiData(res)
-    notificationDetail.alertname = data.alertname || ''
-    notificationDetail.instance = data.instance || ''
-    notificationRows.value = (data.events || []).flatMap((event) => {
-      if (Array.isArray(event.deliveries) && event.deliveries.length) {
-        return event.deliveries.map((delivery) => ({
-          rowKey: `${event.id}-${delivery.id}`,
-          event_type: event.event_type,
-          ...delivery,
-        }))
-      }
-      return [{
-        rowKey: `${event.id}-event`,
-        event_type: event.event_type,
-        username: '未记录',
-        media_name: '未记录',
-        address: '未记录',
-        status: event.status,
-        attempt_count: event.attempt_count,
-        error_message: event.error_message,
-        sent_at: event.sent_at,
-        create_time: event.create_time,
-      }]
-    })
+    chainDetail.alert = {
+      alertname: data.alert?.alertname || '',
+      instance: data.alert?.labels?.instance || '',
+      state: data.alert?.state || '',
+    }
+    chainDetail.summary_issues = Array.isArray(data.summary_issues) ? data.summary_issues : []
+    chainDetail.routes = Array.isArray(data.routes) ? data.routes : []
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '加载通知记录失败')
+    message.error(error?.response?.data?.msg || error?.message || '加载通知链路失败')
   } finally {
     notificationLoading.value = false
   }
@@ -850,6 +928,58 @@ onBeforeUnmount(() => {
 <style scoped>
 .alerts-page {
   padding: 12px;
+}
+
+.chain-issue-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.chain-route-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chain-miss-reason {
+  margin-bottom: 8px;
+  color: #cf1322;
+}
+
+.chain-media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chain-media-item {
+  padding: 8px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.chain-media-name {
+  color: rgba(0, 0, 0, 0.88);
+  font-weight: 600;
+}
+
+.chain-event {
+  margin: 8px 0;
+}
+
+.chain-section-label {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.chain-event-error {
+  color: #cf1322;
+  word-break: break-all;
+}
+
+.chain-no-delivery {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
 }
 
 .notification-summary-action.is-success {

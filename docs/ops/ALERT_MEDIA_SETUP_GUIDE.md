@@ -183,6 +183,6 @@
 
 ## 🔗 相关文档
 
-- [告警系统架构](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
+- [Agent 架构](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
 - [告警媒介与监控模块接口](docs/overview/PROJECT_CONTEXT.md)
-- [告警路由配置](docs/ops/SCHEDULER_README.md)
+- [项目上下文](docs/overview/PROJECT_CONTEXT.md)

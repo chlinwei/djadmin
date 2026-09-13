@@ -33,6 +33,8 @@
         :loading="loading"
         rowKey="id"
         :pagination="tablePagination"
+        size="small"
+        :locale="tableLocale"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -108,6 +110,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { getConfigList, updateConfig, resetConfigDefault } from '@/api/sys/sysconfig'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -144,15 +147,7 @@ const pagination = reactive({
   pageSize: 10,
 })
 
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: filteredConfigs.value.length,
-  showSizeChanger: true,
-  pageSizeOptions: ['10', '20', '30', '50'],
-  showQuickJumper: true,
-  showTotal: (total) => `共有${total}条数据`,
-}))
+const tablePagination = computed(() => createPagination(filteredConfigs.value.length, pagination.pageSize, { current: pagination.current }))
 
 const pagedConfigs = computed(() => {
   const start = (pagination.current - 1) * pagination.pageSize

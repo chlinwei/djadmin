@@ -52,6 +52,8 @@
         :pagination="pagination"
         :scroll="{ x: 1850 }"
         rowKey="id"
+        size="small"
+        :locale="tableLocale"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -231,6 +233,7 @@
         :pagination="logsPagination"
         rowKey="id"
         size="small"
+        :locale="tableLocale"
         :loading="logsLoading"
         :scroll="{ x: 1200 }"
         @change="handleLogTableChange"
@@ -296,6 +299,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
@@ -354,30 +358,14 @@ const editForm = reactive({
   description: '',
 })
 
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共有${total}条数据`,
-  showQuickJumper: true,
-})
+const pagination = reactive(createPagination())
 
 const taskSort = reactive({
   field: null,
   order: null,
 })
 
-const logsPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共有${total}条数据`,
-  showQuickJumper: true,
-})
+const logsPagination = reactive(createPagination())
 
 const hasLogFilters = computed(() => {
   return !!(

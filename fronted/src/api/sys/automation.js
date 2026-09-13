@@ -14,8 +14,8 @@ export function updatePlaybook(id, params) {
   return requestUtil.patch(prefix + `playbooks/${id}/`, params)
 }
 
-export function deletePlaybook(id) {
-  return requestUtil.del(prefix + `playbooks/${id}/`)
+export function batchDeletePlaybooks(ids) {
+  return requestUtil.post(prefix + 'playbooks/batch-delete/', { ids })
 }
 
 export function uploadPlaybookFile(id, formData) {
@@ -42,8 +42,8 @@ export function updateTask(id, params) {
   return requestUtil.patch(prefix + `tasks/${id}/`, params)
 }
 
-export function deleteTask(id) {
-  return requestUtil.del(prefix + `tasks/${id}/`)
+export function batchDeleteTasks(ids) {
+  return requestUtil.post(prefix + 'tasks/batch-delete/', { ids })
 }
 
 export function runTaskNow(id, params = {}) {
@@ -66,8 +66,8 @@ export function updateInventory(id, params) {
   return requestUtil.patch(prefix + `inventories/${id}/`, params)
 }
 
-export function deleteInventory(id) {
-  return requestUtil.del(prefix + `inventories/${id}/`)
+export function batchDeleteInventories(ids) {
+  return requestUtil.post(prefix + 'inventories/batch-delete/', { ids })
 }
 
 export function precheckInventoryLimit(id, params = {}) {

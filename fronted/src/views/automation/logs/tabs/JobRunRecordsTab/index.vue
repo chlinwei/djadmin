@@ -67,6 +67,7 @@
         :data-source="jobs"
         :loading="jobLoading"
         :pagination="jobPagination"
+        :locale="tableLocale"
         :scroll="{ x: 1500 }"
         rowKey="id"
         size="small"
@@ -132,6 +133,7 @@
 
 <script setup>
 import { inject } from 'vue'
+import { tableLocale } from '@/util/tableStyle'
 
 const ctx = inject('automationLogsCtx')
 if (!ctx) {

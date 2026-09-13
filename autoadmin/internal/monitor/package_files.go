@@ -122,23 +122,39 @@ func (handler *Handler) deleteSoftwarePackageFile(relativePath string) error {
 	return nil
 }
 
-func (handler *Handler) DeleteSoftwarePackage(context *gin.Context) {
-	item, err := handler.loadSoftwarePackage(context, parseID(context.Param("id")))
-	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "software package not found", nil)
-		return
-	}
+// deleteSoftwarePackageByID 复用原单删逻辑：先删离线包文件再删记录；不存在返回 sql.ErrNoRows。
+func (handler *Handler) deleteSoftwarePackageByID(context *gin.Context, id int64) error {
+	item, err := handler.loadSoftwarePackage(context, id)
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	if err = handler.deleteSoftwarePackageFile(item.File); err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
+		return err
 	}
 	if _, err = handler.db.ExecContext(context, `DELETE FROM monitor_software_package WHERE id=?`, item.ID); err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
+		return err
+	}
+	return nil
+}
+
+func (handler *Handler) BatchDeleteSoftwarePackages(context *gin.Context) {
+	ids, ok := logTargetIDs(context)
+	if !ok {
 		return
 	}
-	response.Success(context, gin.H{"deleted": true})
+	results := make([]gin.H, 0, len(ids))
+	okCount := 0
+	for _, id := range ids {
+		if err := handler.deleteSoftwarePackageByID(context, id); err != nil {
+			message := err.Error()
+			if err == sql.ErrNoRows {
+				message = "resource not found"
+			}
+			results = append(results, gin.H{"id": id, "ok": false, "message": message})
+			continue
+		}
+		okCount++
+		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+	}
+	response.Success(context, gin.H{"count": okCount, "results": results})
 }

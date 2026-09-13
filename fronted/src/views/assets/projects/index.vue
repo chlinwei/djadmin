@@ -9,7 +9,7 @@
         </a-space>
       </a-col>
     </a-row>
-    <a-table row-key="id" :columns="columns" :data-source="projects" :loading="loading" :pagination="false" :scroll="{ x: 1100 }">
+    <a-table row-key="id" :columns="columns" :data-source="projects" :loading="loading" :pagination="false" size="small" :locale="tableLocale" :scroll="{ x: 1100 }">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'business_system_names'">
           <a-space wrap><a-tag v-for="name in record.business_system_names || []" :key="name">{{ name }}</a-tag><span v-if="!record.business_system_names?.length">-</span></a-space>
@@ -28,8 +28,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { deleteProject, getProjectList } from '@/api/assets/application'
+import { batchDeleteProjects, getProjectList } from '@/api/assets/application'
 import ProjectDialog from '../application/components/ProjectDialog.vue'
 
 const projects = ref([])
@@ -65,7 +66,7 @@ function confirmDelete(record) {
     title: '删除项目',
     summary: '删除项目只会解除项目关联，不会删除业务系统和服务。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => { await deleteProject(record.id); message.success('删除成功'); await loadProjects() },
+    onConfirm: async () => { await batchDeleteProjects([record.id]); message.success('删除成功'); await loadProjects() },
   })
 }
 onMounted(loadProjects)

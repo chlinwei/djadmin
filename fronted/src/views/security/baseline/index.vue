@@ -92,7 +92,7 @@
               :columns="itemColumns"
               :data-source="categoryRows"
               :loading="itemsLoading"
-              :pagination="{ showSizeChanger: true, showQuickJumper: true }"
+              :pagination="itemPagination"
               size="small"
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
             >
@@ -134,6 +134,8 @@
           :loading="scanLoading"
           :scroll="{ x: 1000 }"
           :pagination="scanPagination"
+          size="small"
+          :locale="tableLocale"
           @change="handleScanTableChange"
         >
           <template #bodyCell="{ column, record }">
@@ -266,6 +268,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 
@@ -307,7 +310,8 @@ const itemColumns = [
 
 const scans = ref([])
 const scanLoading = ref(false)
-const scanPagination = reactive({ current: 1, pageSize: 10, total: 0, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` })
+const scanPagination = reactive(createPagination())
+const itemPagination = createPagination()
 const baselineModalOpen = ref(false)
 const selectedBaseline = ref(null)
 const selectedCategoryId = ref(null)

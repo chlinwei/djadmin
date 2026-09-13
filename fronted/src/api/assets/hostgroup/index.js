@@ -21,7 +21,7 @@ export function saveOrCreateHostGroup(group) {
     return requestUtil.post(prefix, group)
 }
 
-export function deleteHostGroupById(id) {
-    return requestUtil.del(prefix + id + '/', { id })
+export function batchDeleteHostGroups(ids) {
+    return requestUtil.post(prefix + 'batch-delete/', { ids })
 }
 

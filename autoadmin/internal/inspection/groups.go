@@ -3,6 +3,7 @@ package inspection
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -151,43 +152,37 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 	response.Success(context, item)
 }
 
-func (handler *Handler) DeleteGroup(context *gin.Context) {
-	id := parseID(context.Param("id"))
+// deleteGroupByID 复用原单删逻辑：被任务引用的组拒绝删除；组内 checks 由应用层级联删除
+// （Django 在 ORM 层 CASCADE，物理外键为 NO ACTION）。不存在时返回 sql.ErrNoRows。
+func (handler *Handler) deleteGroupByID(context *gin.Context, id int64) error {
 	var count int
 	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM inspection_task WHERE group_id=?`, id).Scan(&count); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	if count > 0 {
-		response.BusinessError(context, 400, "巡检组已被任务使用，不能删除", nil)
-		return
+		return errors.New("巡检组已被任务使用，不能删除")
 	}
 	transaction, err := handler.db.BeginTx(context, nil)
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	defer transaction.Rollback()
-	// Django performs CASCADE in the ORM; the physical MySQL foreign key is NO ACTION.
 	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_check WHERE group_id=?`, id); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	result, err := transaction.ExecContext(context, `DELETE FROM inspection_group WHERE id=?`, id)
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		response.BusinessError(context, 404, "巡检组不存在", nil)
-		return
+		return sql.ErrNoRows
 	}
-	if err = transaction.Commit(); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, nil)
+	return transaction.Commit()
+}
+
+func (handler *Handler) BatchDeleteGroups(context *gin.Context) {
+	batchDeleteInspection(context, handler, handler.deleteGroupByID)
 }
 
 func validateGroupInput(input groupInput) string {

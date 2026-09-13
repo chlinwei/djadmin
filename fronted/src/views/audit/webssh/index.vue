@@ -69,6 +69,8 @@
         :data-source="sessions"
         :loading="loading"
         :pagination="pagination"
+        size="small"
+        :locale="tableLocale"
         :row-selection="rowSelection"
         rowKey="id"
         :scroll="{ x: 1300 }"
@@ -161,6 +163,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
@@ -198,14 +201,7 @@ function onTimeRangeOpenChange(open) {
   }
 }
 
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有${total}条数据`,
-})
+const pagination = reactive(createPagination())
 
 const statusOptions = [
   { label: '连接中', value: 'connected' },

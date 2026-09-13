@@ -82,7 +82,7 @@
 
       <template v-if="scope.nodeType !== 'deployment'">
         <div class="child-section-title"><span>{{ childSectionTitle }}</span><span>{{ rows.length }} 项</span></div>
-        <a-table row-key="key" :columns="columns" :data-source="rows" :pagination="false" :scroll="{ x: tableWidth }" :custom-row="getChildRowProps" size="middle">
+        <a-table row-key="key" :columns="columns" :data-source="rows" :pagination="false" :scroll="{ x: tableWidth }" :custom-row="getChildRowProps" size="small" :locale="tableLocale">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'child_link'">
               <a class="child-navigation-link" href="#" @click.prevent.stop="navigateToChild(record)">
@@ -135,6 +135,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
+import { tableLocale } from '@/util/tableStyle'
 import store from '@/store'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'

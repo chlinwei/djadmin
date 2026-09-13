@@ -9,7 +9,7 @@
         </a-space>
       </a-col>
     </a-row>
-    <a-table row-key="id" :columns="columns" :data-source="environments" :loading="loading" :pagination="false" :scroll="{ x: 1200 }">
+    <a-table row-key="id" :columns="columns" :data-source="environments" :loading="loading" :pagination="false" size="small" :locale="tableLocale" :scroll="{ x: 1200 }">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
         <template v-else-if="column.key === 'action'"><a-space>
@@ -25,8 +25,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { deleteBusinessEnvironment, getBusinessEnvironmentList } from '@/api/assets/application'
+import { batchDeleteBusinessEnvironments, getBusinessEnvironmentList } from '@/api/assets/application'
 import BusinessEnvironmentDialog from '../application/components/BusinessEnvironmentDialog.vue'
 
 const environments = ref([])
@@ -63,7 +64,7 @@ function confirmDelete(record) {
     title: '删除环境',
     summary: '仍被逻辑服务或部署实例引用的环境不能删除。',
     items: [record.name || record.code || record.id],
-    onConfirm: async () => { await deleteBusinessEnvironment(record.id); message.success('删除成功'); await loadEnvironments() },
+    onConfirm: async () => { await batchDeleteBusinessEnvironments([record.id]); message.success('删除成功'); await loadEnvironments() },
   })
 }
 onMounted(loadEnvironments)

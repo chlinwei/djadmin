@@ -84,6 +84,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createPagination } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -94,8 +95,8 @@ import {
   getInventoryList,
   getTaskList,
   createTask,
+  batchDeleteTasks,
   updateTask,
-  deleteTask,
   precheckTaskRun,
   runTaskNow,
   precheckInventoryLimit,
@@ -133,14 +134,7 @@ const canEditTask = computed(() => checkPermission('automation:tasks:update'))
 const tasks = ref([])
 const taskLoading = ref(false)
 const taskKeyword = ref('')
-const taskPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const taskPagination = reactive(createPagination())
 
 const playbooks = ref([])
 const playbookLoading = ref(false)
@@ -527,7 +521,7 @@ async function submitTask() {
 }
 
 async function removeTask(record) {
-  await deleteTask(record.id)
+  await batchDeleteTasks([record.id])
   message.success('任务已删除')
   await loadTasks(false)
 }

@@ -88,11 +88,12 @@ func (handler *Handler) UpdateUserPassword(context *gin.Context) {
 // ---- 告警媒介绑定 ----
 
 type alertMediaBindingItem struct {
-	ID         int64    `json:"id"`
-	MediaID    int64    `json:"media_id"`
-	MediaName  string   `json:"media_name"`
-	Recipients []string `json:"recipients"`
-	Enabled    bool     `json:"enabled"`
+	ID         int64           `json:"id"`
+	MediaID    int64           `json:"media_id"`
+	MediaName  string          `json:"media_name"`
+	Recipients []string        `json:"recipients"`
+	Enabled    bool            `json:"enabled"`
+	Scope      json.RawMessage `json:"scope"`
 }
 
 func (handler *Handler) AlertMediaBindings(context *gin.Context) {
@@ -111,9 +112,10 @@ func (handler *Handler) AlertMediaBindings(context *gin.Context) {
 
 type updateAlertMediaBindingsRequest struct {
 	Bindings []struct {
-		MediaID    int64    `json:"media_id"`
-		Recipients []string `json:"recipients"`
-		Enabled    *bool    `json:"enabled"`
+		MediaID    int64           `json:"media_id"`
+		Recipients []string        `json:"recipients"`
+		Enabled    *bool           `json:"enabled"`
+		Scope      json.RawMessage `json:"scope"`
 	} `json:"bindings"`
 }
 
@@ -158,7 +160,12 @@ func (handler *Handler) UpdateAlertMediaBindings(context *gin.Context) {
 		if item.Enabled != nil {
 			enabled = *item.Enabled
 		}
-		valid = append(valid, validatedBinding{MediaID: item.MediaID, Recipients: recipients, Enabled: enabled})
+		scopeJSON, scopeErr := normalizeBindingScope(item.Scope)
+		if scopeErr != "" {
+			response.BusinessError(context, 400, scopeErr, nil)
+			return
+		}
+		valid = append(valid, validatedBinding{MediaID: item.MediaID, Recipients: recipients, Enabled: enabled, Scope: scopeJSON})
 	}
 	if err := handler.service.ReplaceAlertMediaBindings(context.Request.Context(), claims.UserID, valid); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -177,6 +184,44 @@ type validatedBinding struct {
 	MediaID    int64
 	Recipients []string
 	Enabled    bool
+	Scope      json.RawMessage
+}
+
+// bindingScopeEntry 订阅范围条目：type ∈ service|environment|business|project。
+type bindingScopeEntry struct {
+	Type string `json:"type"`
+	ID   int64  `json:"id"`
+}
+
+// normalizeBindingScope 归一化订阅范围：nil/空数组 → nil（全局订阅，落库 NULL）；
+// 否则校验 type 与 id 后原样返回 JSON。返回值第二个为用户可读错误文案（空串=通过）。
+func normalizeBindingScope(raw json.RawMessage) (json.RawMessage, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
+	}
+	var entries []bindingScopeEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, "scope 必须是 [{type,id}] 数组"
+	}
+	if len(entries) > 50 {
+		return nil, "scope 条目不能超过 50 个"
+	}
+	validTypes := map[string]bool{"service": true, "environment": true, "business": true, "project": true}
+	normalized := make([]bindingScopeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !validTypes[entry.Type] {
+			return nil, "scope.type 仅支持 service/environment/business/project"
+		}
+		if entry.ID <= 0 {
+			return nil, "scope.id 必须是正整数"
+		}
+		normalized = append(normalized, entry)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, "scope 序列化失败"
+	}
+	return encoded, ""
 }
 
 type alertMediaOption struct {
@@ -233,7 +278,7 @@ func (service *Service) ListAlertMediaBindings(ctx context.Context, userID int32
 	}
 
 	selected := make([]alertMediaBindingItem, 0)
-	rows, err = service.repository.Pool().QueryContext(ctx, `SELECT b.id,b.media_id,m.name,b.recipients,b.enabled
+	rows, err = service.repository.Pool().QueryContext(ctx, `SELECT b.id,b.media_id,m.name,b.recipients,b.enabled,b.scope
 		FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id=b.media_id
 		WHERE b.user_id=? ORDER BY b.id`, userID)
 	if err != nil {
@@ -243,9 +288,11 @@ func (service *Service) ListAlertMediaBindings(ctx context.Context, userID int32
 	for rows.Next() {
 		var item alertMediaBindingItem
 		var recipientsRaw []byte
-		if err = rows.Scan(&item.ID, &item.MediaID, &item.MediaName, &recipientsRaw, &item.Enabled); err != nil {
+		var scopeRaw []byte
+		if err = rows.Scan(&item.ID, &item.MediaID, &item.MediaName, &recipientsRaw, &item.Enabled, &scopeRaw); err != nil {
 			return nil, nil, err
 		}
+		item.Scope = json.RawMessage(scopeRaw)
 		_ = json.Unmarshal(recipientsRaw, &item.Recipients)
 		if item.Recipients == nil {
 			item.Recipients = []string{}
@@ -281,8 +328,12 @@ func (service *Service) ReplaceAlertMediaBindings(ctx context.Context, userID in
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO monitor_user_alert_media_binding(create_time,update_time,remark,recipients,enabled,media_id,user_id) VALUES(?,?,?,?,?,?,?)`,
-			now, now, nil, string(recipientsJSON), binding.Enabled, binding.MediaID, userID); err != nil {
+		var scopeValue any
+		if len(binding.Scope) > 0 {
+			scopeValue = string(binding.Scope)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO monitor_user_alert_media_binding(create_time,update_time,remark,recipients,enabled,media_id,user_id,scope) VALUES(?,?,?,?,?,?,?,?)`,
+			now, now, nil, string(recipientsJSON), binding.Enabled, binding.MediaID, userID, scopeValue); err != nil {
 			return err
 		}
 	}

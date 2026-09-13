@@ -43,6 +43,7 @@
                 :pagination="false"
                 row-key="path"
                 size="small"
+                :locale="tableLocale"
                 :scroll="{ y: fileTableScrollY }"
                 :custom-row="onBindFileRowEvents"
             >
@@ -89,6 +90,7 @@
 </template>
 
 <script setup>
+import { tableLocale } from '@/util/tableStyle'
 const emit = defineEmits([
     'update:file-filter-keyword',
     'update:file-path-input',

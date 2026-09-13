@@ -45,6 +45,7 @@
         :pagination="pagination"
         rowKey="id"
         size="small"
+        :locale="tableLocale"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -167,6 +168,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { useRoute } from 'vue-router'
@@ -176,8 +178,8 @@ import { checkPermission } from '@/directives/permission/permission'
 import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
+  batchDeletePlaybooks,
   createPlaybook,
-  deletePlaybook,
   downloadPlaybookFile,
   getPlaybookList,
   uploadPlaybookFile,
@@ -199,7 +201,7 @@ const playbookConfig = {
     list: getPlaybookList,
     create: createPlaybook,
     update: updatePlaybook,
-    remove: deletePlaybook,
+    remove: (id) => batchDeletePlaybooks([id]),
     upload: uploadPlaybookFile,
     download: downloadPlaybookFile,
     uploadExts: ['.yml', '.yaml'],
@@ -216,14 +218,7 @@ const templateModalVisible = ref(false)
 const uploadingTemplateId = ref(null)
 const downloadingTemplateId = ref(null)
 const sortState = reactive({ field: null, order: null })
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const pagination = reactive(createPagination())
 
 const templateEdit = reactive({
   id: null,

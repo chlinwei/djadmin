@@ -43,6 +43,7 @@
         </div>
 
         <a-table
+          size="small"
           row-key="name"
           :columns="columns"
           :data-source="visibleRules"
@@ -98,7 +99,7 @@
               <a-button size="large" @click="openFilterCreate"><FontAwesomeIcon :icon="['fas', 'plus-circle']" /><span>&nbsp;新增过滤规则</span></a-button>
               <a-tooltip title="刷新"><a-button size="large" @click="loadFilterRules"><FontAwesomeIcon :icon="['fas', 'rotate']" /><span>&nbsp;刷新</span></a-button></a-tooltip>
             </div>
-            <a-table row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
+            <a-table size="small" row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'name'"><span class="pipeline-name">{{ record.name }}</span></template>
                 <template v-else-if="column.key === 'description'"><span>{{ record.description || '-' }}</span></template>
@@ -295,8 +296,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  deleteLogCollectionFilterRule,
-  deleteLogProcessingRule,
+  batchDeleteLogCollectionFilterRules,
+  batchDeleteLogProcessingRules,
   getLogCollectionFilterRules,
   getOpenSearchClusterList,
   getLogProcessingRules,
@@ -693,7 +694,7 @@ function confirmDelete(record) {
     summary: '删除后，引用该 Pipeline 的日志将无法完成解析。',
     items: [`解析规则: ${record.name}`],
     onConfirm: async () => {
-      await deleteLogProcessingRule(record.id)
+      await batchDeleteLogProcessingRules([record.id])
       message.success('删除成功')
       await loadRules()
     },
@@ -706,7 +707,7 @@ function confirmDeleteFilter(record) {
     summary: '删除后，逻辑服务将不能再选择该规则。',
     items: [`过滤规则: ${record.name}`],
     onConfirm: async () => {
-      await deleteLogCollectionFilterRule(record.id)
+      await batchDeleteLogCollectionFilterRules([record.id])
       message.success('删除成功')
       await loadFilterRules()
     },

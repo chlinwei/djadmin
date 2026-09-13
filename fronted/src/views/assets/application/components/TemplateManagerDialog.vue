@@ -21,6 +21,7 @@
       :loading="loading"
       :pagination="false"
       :scroll="{ x: 1160 }"
+      :locale="tableLocale"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'control_type'">
@@ -70,9 +71,10 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
-  deleteApplicationDeploymentTemplate,
+  batchDeleteApplicationDeploymentTemplates,
   getApplicationDeploymentTemplateList,
 } from '@/api/assets/application'
 import TemplateDialog from './TemplateDialog.vue'
@@ -139,7 +141,7 @@ function confirmDelete(record) {
     summary: '已被部署实例引用的模板不能删除。',
     items: [`${props.application?.name || '应用'} / ${record.name}`],
     onConfirm: async () => {
-      await deleteApplicationDeploymentTemplate(record.id)
+      await batchDeleteApplicationDeploymentTemplates([record.id])
       message.success('部署模板删除成功')
       await loadTemplates()
       emit('changed')

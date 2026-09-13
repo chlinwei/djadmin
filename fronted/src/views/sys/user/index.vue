@@ -5,6 +5,10 @@
     <RoleAssign :open2="open2" @update:open2="(value) => { open2 = value }" :user_id2="user_id2" :title="roleassign_title"
         @initUserList="HandleInitUserList" />
 
+    <a-modal v-model:open="chainOpen" :title="'通知链路-' + chainUsername" width="760px" :footer="null" centered>
+        <UserNotificationChain v-if="chainOpen" :user-id="chainUserId" />
+    </a-modal>
+
     <a-row class="tools" :gutter="16">
         <a-col :span="7">
             <a-input-search class="tool-item" v-model:value="SearchText" placeholder="用户名/手机号/备注" enter-button size="large"
@@ -33,7 +37,7 @@
         <!-- 注意需要rowKey -->
         <a-table :scroll="{ x: 2000 }" :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }"
             rowKey="id" :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"
-            @change="handleTableChange">
+            size="small" :locale="tableLocale" @change="handleTableChange">
             <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'roles'">
                     <span>
@@ -71,6 +75,11 @@
                                     </a-tooltip>
                                 </a-popconfirm>
                             </a-col>
+                            <a-col v-permission.remove="'system:users:update'">
+                                <a-tooltip title="通知链路">
+                                    <a-button @click="openNotificationChain(record.id, record.username)">通知链路</a-button>
+                                </a-tooltip>
+                            </a-col>
                             <a-col v-if="record.username != 'admin'" v-permission.remove="'system:users:update'">
                                 <a-tooltip title="编辑">
                                     <a-button type="primary" @click="onSaveorChanageUser(record.id)">
@@ -106,11 +115,13 @@ import { ref } from 'vue'
 import { getUserList } from '@/api/user/index.js';
 import { usePagination } from 'vue-request';
 import { computed, reactive } from 'vue';
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { changeUserStatus } from '@/api/user/index.js';
 import { message } from 'ant-design-vue';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import Dialog from '@/views/sys/user/components/Dialog.vue';
 import RoleAssign from '@/views/sys/user/components/RoleAssign.vue';
+import UserNotificationChain from '@/views/monitor/alerts/UserNotificationChain.vue';
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 
@@ -130,7 +141,7 @@ const columns = [
     // { title: '操作', key: 'action', fixed: 'right', width: 330,disabled:checkPermission(['1']) }
 ]
 if(checkPermission(['system:users:update','system:users:delete'])) {
-    columns.push({ title: '操作', key: 'action', fixed: 'right', width: 330})
+    columns.push({ title: '操作', key: 'action', fixed: 'right', width: 400})
 }
 
 const normalizeUtcTime = (value) => {
@@ -234,15 +245,7 @@ const {
 
 
 
-const pagination = computed(() => ({
-    total: total.value,
-    current: current.value,
-    pageSize: pageSize.value,
-    showSizeChanger: true,
-    showTotal: (total) => `共有${total}条数据`,
-    pageSizeOptions: ['10', '20', '30'],
-    showQuickJumper: true,
-}))
+const pagination = computed(() => createPagination(total.value, pageSize.value, { current: current.value }))
 const handleTableChange = (page, filters, sorter) => {
 
     var sorter_str = ""
@@ -371,6 +374,16 @@ const handleRoleAssign = (id, username) => {
     user_id2.value = id
     roleassign_title.value = "角色分配-" + username
 
+}
+
+// 通知链路诊断弹窗
+const chainOpen = ref(false)
+const chainUserId = ref(null)
+const chainUsername = ref('')
+const openNotificationChain = (id, username) => {
+    chainUserId.value = id
+    chainUsername.value = username || `#${id}`
+    chainOpen.value = true
 }
 
 

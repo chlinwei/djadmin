@@ -34,6 +34,7 @@
         :data-source="tasks"
         :loading="taskLoading"
         :pagination="taskPagination"
+        :locale="tableLocale"
         rowKey="id"
         size="small"
         :scroll="{ x: 1700 }"
@@ -155,6 +156,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { tableLocale } from '@/util/tableStyle'
 
 const props = defineProps({
   taskKeyword: { type: String, default: '' },

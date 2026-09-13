@@ -15,7 +15,8 @@
         :loading="listLoading"
         size="small"
         :scroll="{ x: 1100 }"
-        :pagination="{ showSizeChanger: true, showQuickJumper: true }"
+        :pagination="pagination"
+        :locale="tableLocale"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'type'">
@@ -168,10 +169,11 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
-import { createAlertMedia, deleteAlertMedia, getAlertMediaList, testAlertMedia, updateAlertMedia } from '@/api/monitor'
+import { batchDeleteAlertMedias, createAlertMedia, getAlertMediaList, testAlertMedia, updateAlertMedia } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -190,6 +192,8 @@ const smtpAuthTypeOptions = [
   { label: '无认证', value: 'none' },
   { label: '用户密码', value: 'password' },
 ]
+
+const pagination = reactive(createPagination())
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
@@ -381,7 +385,7 @@ async function handleDelete(record) {
     onConfirm: async () => {
       rowDeleteLoading[record.id] = true
       try {
-        await deleteAlertMedia(record.id)
+        await batchDeleteAlertMedias([record.id])
         message.success('媒介已删除')
         await loadMedia()
       } finally {

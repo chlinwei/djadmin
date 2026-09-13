@@ -30,6 +30,7 @@
       :data-source="tiers"
       :loading="loading"
       :pagination="false"
+      size="small"
       :scroll="{ x: 1180 }"
       :locale="{ emptyText: '暂无保留档位' }"
     >
@@ -146,7 +147,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  deleteLogRetentionTier,
+  batchDeleteLogRetentionTiers,
   getLogRetentionTiers,
   saveLogRetentionTier,
 } from '@/api/monitor'
@@ -269,7 +270,7 @@ function confirmDelete(record) {
     summary: '删除后该档位对应的 data stream 将不再有新日志写入，已存在的索引不受影响。',
     items: [`档位: ${record.name}（${record.code}）`],
     onConfirm: async () => {
-      await deleteLogRetentionTier(record.id)
+      await batchDeleteLogRetentionTiers([record.id])
       message.success('删除成功')
       await loadTiers()
     },

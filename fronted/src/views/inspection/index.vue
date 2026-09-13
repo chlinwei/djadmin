@@ -55,6 +55,8 @@
           :data-source="visibleTasks"
           :loading="taskLoading"
           :pagination="taskPagination"
+          size="small"
+          :locale="tableLocale"
           :scroll="{ x: 1330 }"
           @change="handleTaskTableChange"
         >
@@ -136,6 +138,8 @@
           :data-source="scheduledTasks"
           :loading="taskOptionsLoading"
           :pagination="false"
+          size="small"
+          :locale="tableLocale"
           :scroll="{ x: 1280 }"
         >
           <template #bodyCell="{ column, record }">
@@ -220,6 +224,8 @@
           :data-source="visibleGroups"
           :loading="groupLoading"
           :pagination="groupPagination"
+          size="small"
+          :locale="tableLocale"
           :scroll="{ x: 900 }"
           @change="handleGroupTableChange"
         >
@@ -316,6 +322,8 @@
           :data-source="executions"
           :loading="executionLoading"
           :pagination="executionPagination"
+          size="small"
+          :locale="tableLocale"
           :scroll="{ x: 1200 }"
           @change="handleExecutionTableChange"
         >
@@ -521,16 +529,19 @@
           <div class="field-hint">一个任务绑定一个巡检组；通用基线和应用巡检请分别创建任务，各自挂载、各自调度。</div>
         </a-form-item>
         <a-form-item label="巡检对象" required>
-          <template v-if="taskTargetSummary">
-            <a-input :value="taskTargetSummary" readonly>
-              <template #addonAfter>
-                <span class="field-hint">在左侧树点击节点可调整</span>
-              </template>
-            </a-input>
-          </template>
-          <template v-else>
-            <a-input value="未选择 —— 请先在左侧树点击项目 / 业务 / 环境 / 服务节点" readonly class="target-missing" />
-          </template>
+          <a-tree-select
+            v-model:value="taskTargetSelectKey"
+            :tree-data="taskTargetTreeData"
+            tree-node-label-prop="pathTitle"
+            show-search
+            tree-node-filter-prop="title"
+            tree-default-expand-all
+            :tree-line="true"
+            placeholder="选择项目 / 业务 / 环境 / 逻辑服务作为巡检对象"
+            style="width: 100%"
+            @change="handleTaskTargetSelect"
+          />
+          <div class="field-hint">{{ taskTargetHint }}</div>
         </a-form-item>
         <a-form-item v-if="Object.keys(taskParamAssignments).length" label="巡检参数" required>
           <div v-for="(meta, paramName) in taskParamAssignments" :key="paramName" class="param-assign-row">
@@ -691,6 +702,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message, Modal } from 'ant-design-vue'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
@@ -701,8 +713,8 @@ import {
   getProjectList,
 } from '@/api/assets/application'
 import {
-  deleteInspectionGroup,
-  deleteInspectionTask,
+  batchDeleteInspectionGroups,
+  batchDeleteInspectionTasks,
   getInspectionExecution,
   getInspectionExecutions,
   getInspectionGroup,
@@ -775,16 +787,9 @@ const cancelingExecutionId = ref(null)
 let executionPollTimer = null
 let localKey = 0
 
-const createPagination = () => reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showTotal: (total) => `共 ${total} 条`,
-})
-const groupPagination = createPagination()
-const taskPagination = createPagination()
-const executionPagination = createPagination()
+const groupPagination = reactive(createPagination())
+const taskPagination = reactive(createPagination())
+const executionPagination = reactive(createPagination())
 const executionFilters = reactive({ task: undefined, status: undefined, trigger_type: undefined, range: undefined })
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 const executionRangePresets = ref([])
@@ -1084,17 +1089,101 @@ const taskTargetSummary = computed(() => {
 // 逻辑服务为叶子节点。任务按挂载点归属到对应节点（可同时归属多个）。
 const taskNavSelected = ref(['all'])
 const taskNavNode = computed(() => taskNavSelected.value?.[0] || 'all')
-// 新建任务弹窗打开期间回到树上换节点 → 巡检对象实时跟随（编辑态/静态范围不动）。
+// 任务弹窗打开期间换巡检对象（下拉树选择或左侧树点击）→ 重新推导挂载绑定；
+// 巡检组未变时保留原 instance_mode，组变了则用默认值。
 watch(taskNavNode, () => {
-  if (!taskModalOpen.value || taskForm.id || !taskForm.groups?.length) return
-  const group = groupById(taskForm.groups[0])
-  taskForm.bindings = [defaultBinding(group)]
-  syncTaskParamAssignments()
+  if (!taskModalOpen.value) return
+  setTaskTargetSelectDisplay(taskNavNode.value === 'all' ? undefined : String(taskNavNode.value))
+  applyTaskTargetContext(contextFromKey(taskNavNode.value))
 })
+function applyTaskTargetContext(context, groupIdOverride) {
+  const id = groupIdOverride ?? taskForm.groups?.[0]
+  if (!id) return
+  const group = groupById(id)
+  // 应用组遇到项目/环境对象时自动适应：优先同项目同环境的第一个逻辑服务，其次同项目任意逻辑服务
+  if ((group?.category || 'general') === 'application' && !context.business_system_id && !context.service_id) {
+    const service = firstServiceInScope(context)
+    if (service) {
+      context = contextFromKey(`svc-${service.id}`)
+      taskTargetSelectKey.value = `svc-${service.id}`
+    } else {
+      taskForm.bindings = []
+      taskTargetSelectKey.value = undefined
+      message.warning('应用巡检组只能挂载业务系统或逻辑服务，且当前项目/环境下没有逻辑服务，请重新选择巡检对象')
+      return
+    }
+  }
+  const binding = defaultBinding(group, context)
+  const previous = taskForm.bindings[0]
+  if (previous && String(previous.group_id) === String(binding.group_id) && previous.instance_mode) {
+    binding.instance_mode = previous.instance_mode
+  }
+  taskForm.bindings = [binding]
+  setTaskTargetSelectDisplay(bindingTargetKey(binding))
+  syncTaskParamAssignments()
+}
+// 项目（优先指定环境）范围内第一个逻辑服务，供应用组自动适应巡检对象
+function firstServiceInScope(context) {
+  if (!context.project_id) return null
+  const systemIds = new Set(
+    businessSystems.value
+      .filter((system) => String(system.project) === String(context.project_id))
+      .map((system) => String(system.id)),
+  )
+  const inProject = services.value.filter((service) => systemIds.has(String(service.business_system)))
+  const sameEnv = context.environment_id
+    ? inProject.filter((service) => String(service.environment) === String(context.environment_id))
+    : []
+  return sameEnv[0] || inProject[0] || null
+}
+// 下拉树选项 = 左侧任务导航树去掉"全部任务"根节点（项目→业务→环境→逻辑服务）；
+// 每个节点额外带 pathTitle（项目->业务->环境->服务 完整路径），供输入框回显。
+const taskTargetTreeData = computed(() => {
+  // 与后端 validateMountBinding 对齐：应用巡检组只能挂业务/逻辑服务，
+  // 项目/环境节点禁用置灰；通用组全部可选。
+  const appGroup = selectedTaskGroupCategory.value === 'application'
+  const withPath = (nodes, parentPath) => (nodes || []).map((node) => {
+    const path = parentPath ? `${parentPath}->${node.title}` : String(node.title)
+    const generalOnly = appGroup && /^(proj|env)-/.test(String(node.key))
+    // TreeSelect 节点必须带 value（仅 key 会被判定为无效节点，选中回显为空）
+    return {
+      ...node,
+      value: node.key,
+      pathTitle: path,
+      disabled: generalOnly,
+      selectable: !generalOnly,
+      children: withPath(node.children, path),
+    }
+  })
+  return withPath(taskNavTreeData.value[0]?.children, '')
+})
+const selectedTaskGroupCategory = computed(() => (groupById(taskForm.groups?.[0])?.category || 'general'))
+const taskTargetHint = computed(() => selectedTaskGroupCategory.value === 'application'
+  ? '应用巡检组仅支持挂载业务系统或逻辑服务（按部署实例解析）；通用组支持项目/环境/业务/逻辑服务。'
+  : '通用巡检组支持项目/环境/业务/逻辑服务（挂业务/服务按主机去重解析）。')
+const taskTargetSelectKey = ref()
+function setTaskTargetSelectDisplay(key) {
+  taskTargetSelectKey.value = key || undefined
+}
+// 绑定挂载点还原为树节点 key（服务→svc、业务/环境→env/biz、项目→proj）。
+function bindingTargetKey(binding) {
+  if (!binding) return undefined
+  if (binding.service_id) return `svc-${binding.service_id}`
+  if (binding.business_system_id) {
+    if (binding.environment_id) return `env-${binding.business_system_id}-${binding.environment_id}`
+    return `biz-${binding.business_system_id}`
+  }
+  if (binding.project_id) return `proj-${binding.project_id}`
+  return undefined
+}
+function handleTaskTargetSelect(value) {
+  setTaskTargetSelectDisplay(value)
+  applyTaskTargetContext(contextFromKey(value))
+}
 // 图标与配色对齐 ServiceTree.vue（项目/业务/环境/服务 同映射同色），保证两棵树观感一致。
 // 树上选中的节点转成挂载上下文，新增任务时预填挂载点。
-const taskNavContext = computed(() => {
-  const key = String(taskNavNode.value)
+function contextFromKey(key) {
+  key = String(key)
   if (key.startsWith('svc-')) {
     const service = services.value.find((item) => `svc-${item.id}` === key)
     if (!service) return {}
@@ -1114,7 +1203,8 @@ const taskNavContext = computed(() => {
     return { project_id: Number(key.slice(5)) }
   }
   return {}
-})
+}
+const taskNavContext = computed(() => contextFromKey(taskNavNode.value))
 const taskNavIconType = (key) => {
   if (key === 'all') return 'all'
   if (String(key).startsWith('proj-')) return 'project'
@@ -1258,11 +1348,10 @@ const instanceModeOptions = [
   { label: '全部实例', value: 'all' },
   { label: '主实例（HA 场景，选一台在线实例）', value: 'once' },
 ]
-function defaultBinding(group) {
+function defaultBinding(group, context = taskNavContext.value) {
   // 挂载点由树节点决定，与组类型无关：
   //   服务节点 → 该服务；业务/环境节点 → 业务×环境；项目节点 → 项目。
   // 组类型只影响解析粒度（应用组按部署实例展开变量），instance_mode 仅应用组有。
-  const context = taskNavContext.value
   const isApp = (group.category || 'general') === 'application'
   const mode = isApp ? 'all' : undefined
   if (context.service_id) {
@@ -1273,13 +1362,17 @@ function defaultBinding(group) {
   }
   return { group_id: group.id, mount_type: 'project', project_id: context.project_id ?? projects.value[0]?.id, environment_id: undefined }
 }
+// 当前生效的巡检对象上下文：优先取下拉树选择，其次左侧树节点
+const activeTargetContext = computed(() => contextFromKey(taskTargetSelectKey.value || taskNavNode.value))
 const taskGroupSelectOptions = computed(() => {
-  const context = taskNavContext.value
+  const context = activeTargetContext.value
   // 目标为逻辑服务时，应用类型巡检组只保留与该服务所属应用一致的：
   // 组的"适用应用"(group.application) 必须等于服务的所属应用(service.application)。
   const targetService = context.service_id
     ? services.value.find((item) => String(item.id) === String(context.service_id))
     : null
+  // 项目/环境挂载只允许通用组（与后端 validateMountBinding 对齐）
+  const appEligible = !!(context.business_system_id || context.service_id)
   const pick = (category) => groupOptions.value
     .filter((group) => (group.category || 'general') === category)
     .filter((group) => (
@@ -1289,15 +1382,22 @@ const taskGroupSelectOptions = computed(() => {
     .map((group) => ({ label: group.name, value: group.id }))
   const options = []
   if (pick('general').length) options.push({ label: '通用巡检组', options: pick('general') })
-  if (pick('application').length) options.push({ label: '应用类型巡检组', options: pick('application') })
+  if (appEligible && pick('application').length) options.push({ label: '应用类型巡检组', options: pick('application') })
   return options.length ? options : groupOptions.value.map((group) => ({ label: group.name, value: group.id }))
 })
-// 切换巡检对象后，已选巡检组可能不再出现在候选里（如应用组与应用不匹配），自动清掉防止提交脏数据
+// 切换巡检对象后，已选巡检组可能不再出现在候选里（如应用组遇项目/环境对象、应用不匹配）：
+// 自动切换到第一个可用组并重新推导挂载，而不是清空让用户重选。
 watch(taskGroupSelectOptions, (options) => {
   const current = taskForm.groups?.[0]
   if (current && !options.some((option) => option.value === current || option.options?.some((child) => child.value === current))) {
-    taskForm.groups = []
-    taskForm.bindings = []
+    const first = options[0]?.value ?? options[0]?.options?.[0]?.value
+    if (first) {
+      taskForm.groups = [first]
+      applyTaskTargetContext(activeTargetContext.value, first)
+    } else {
+      taskForm.groups = []
+      taskForm.bindings = []
+    }
   }
 })
 function handleTaskGroupsChange(value) {  // 单组模型：选择即替换，绑定数组至多一项。
@@ -1310,8 +1410,14 @@ function handleTaskGroupsChange(value) {  // 单组模型：选择即替换，�
     return
   }
   const existing = (taskForm.bindings || []).find((binding) => binding.group_id === id)
-  taskForm.bindings = [existing || defaultBinding(groupById(id) || { id, category: 'general' })]
-  syncTaskParamAssignments()
+  if (existing) {
+    taskForm.bindings = [existing]
+    setTaskTargetSelectDisplay(bindingTargetKey(existing))
+    syncTaskParamAssignments()
+    return
+  }
+  // 换成新组：以当前巡检对象重新推导挂载；应用组遇项目/环境对象会自动适应（见 applyTaskTargetContext）
+  applyTaskTargetContext(activeTargetContext.value, id)
 }
 const scopeLabel = (scope) => ({
   per_deployment: '逻辑服务·每个部署实例',
@@ -1634,6 +1740,8 @@ function openTaskModal(record) {
     } catch { savedValues = {} }
   }
   syncTaskParamAssignments(savedValues)
+  // 下拉树回显当前绑定挂载点对应的节点（层级路径）
+  setTaskTargetSelectDisplay(bindingTargetKey(taskForm.bindings[0]))
   // 新建时若树上有选中节点，选组后即按树上下文生成挂载（handleTaskGroupsChange 处理）。
   taskModalOpen.value = true
 }
@@ -1837,7 +1945,7 @@ function confirmDeleteGroup(record) {
     items: [record.name],
     onConfirm: async () => {
       try {
-        await deleteInspectionGroup(record.id)
+        await batchDeleteInspectionGroups([record.id])
         await Promise.all([loadGroups(), loadSelectOptions()])
       } catch (error) {
         message.error(error?.message || '巡检组删除失败')
@@ -1852,7 +1960,7 @@ function confirmDeleteTask(record) {
     items: [record.name],
     onConfirm: async () => {
       try {
-        await deleteInspectionTask(record.id)
+        await batchDeleteInspectionTasks([record.id])
         await Promise.all([loadTasks(), loadSelectOptions()])
       } catch (error) {
         message.error(error?.message || '巡检任务删除失败')

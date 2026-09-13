@@ -40,7 +40,7 @@
                        antd 会把整行当成新行卸载重建，正打字的 input 节点被卸载后触发原生事件时就会报错。
                        也不能用 (record, index) => index：antd 明确标记 rowKey 函数的 index 参数为 deprecated，
                        改为每行创建时写死一个不变的 _uid 字段。 -->
-                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="_uid" size="small">
+                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="_uid" size="small" :locale="tableLocale">
                     <template #bodyCell="{ column, record, index }">
                       <template v-if="column.key === 'name'"><a-input v-model:value="record.name" placeholder="例如 ORACLE_SID" /></template>
                       <template v-else-if="column.key === 'value'"><a-input v-model:value="record.value" placeholder="默认值，可为空" /></template>
@@ -188,6 +188,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import {
   getApplicationList,

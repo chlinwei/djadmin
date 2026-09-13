@@ -140,7 +140,7 @@ export function batchDeleteUser(ids) {
         message.error("用户id数组必须大于1")
         return;
     }else {
-        return requestUtil.del("sys/users/userBatchDelete/",{user_ids:ids})
+        return requestUtil.post("sys/users/batch-delete/",{ids})
     }
 }
 

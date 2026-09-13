@@ -3,6 +3,7 @@ package monitor
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -59,20 +60,38 @@ func (handler *Handler) CreateRetentionTier(context *gin.Context) {
 func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
 	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTierThenSync)
 }
-func (handler *Handler) DeleteRetentionTier(context *gin.Context) {
-	id := parseID(context.Param("id"))
+// deleteRetentionTierByID 复用原单删逻辑：仍被逻辑服务/日志设置引用的档位拒绝删除。
+func (handler *Handler) deleteRetentionTierByID(context *gin.Context, id int64) error {
 	var serviceCount, settingCount int
 	if err := handler.db.QueryRowContext(context, `SELECT (SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id=?), (SELECT COUNT(*) FROM assets_application_service_log_setting WHERE retention_tier_id=?)`, id, id).Scan(&serviceCount, &settingCount); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	if serviceCount+settingCount > 0 {
-		response.BusinessError(context, 400, "该档位仍被逻辑服务引用，不能删除", nil)
+		return errors.New("该档位仍被逻辑服务引用，不能删除")
+	}
+	return handler.deleteResourceByID(context, retentionSpec, id)
+}
+
+func (handler *Handler) BatchDeleteRetentionTiers(context *gin.Context) {
+	ids, ok := logTargetIDs(context)
+	if !ok {
 		return
 	}
-	handler.deleteResource(context, retentionSpec)
-	// 档位删除后已启用集群的 ISM 策略需要重新对账。
-	go handler.syncAllClusterLogStorage()
+	results := make([]gin.H, 0, len(ids))
+	okCount := 0
+	for _, id := range ids {
+		if err := handler.deleteRetentionTierByID(context, id); err != nil {
+			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
+			continue
+		}
+		okCount++
+		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+	}
+	if okCount > 0 {
+		// 档位删除后已启用集群的 ISM 策略需要重新对账。
+		go handler.syncAllClusterLogStorage()
+	}
+	response.Success(context, gin.H{"count": okCount, "results": results})
 }
 
 // respondRetentionTierThenSync 档位保存成功后异步刷新所有启用集群的模板与 ISM 策略。
@@ -88,34 +107,30 @@ func (handler *Handler) CreateProcessingRule(context *gin.Context) {
 func (handler *Handler) UpdateProcessingRule(context *gin.Context) {
 	handler.saveResource(context, processingSpec, parseID(context.Param("id")), handler.respondProcessingRule, handler.publishProcessingRuleBeforeSave)
 }
-func (handler *Handler) DeleteProcessingRule(context *gin.Context) {
-	id := parseID(context.Param("id"))
+// deleteProcessingRuleByID 复用原单删逻辑：被日志定义引用的规则拒绝删除；先删集群上的
+// pipeline 再删记录，集群侧失败则中止（与 Django destroy 行为一致）。
+func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64) error {
 	var name string
 	var clusterID int64
 	err := handler.db.QueryRowContext(context, `SELECT name,cluster_id FROM monitor_log_processing_rule WHERE id=?`, id).Scan(&name, &clusterID)
-	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "resource not found", nil)
-		return
-	}
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	var referenceCount int
 	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id=?`, id).Scan(&referenceCount); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	if referenceCount > 0 {
-		response.BusinessError(context, 400, "规则仍被日志定义引用，不能删除", nil)
-		return
+		return errors.New("规则仍被日志定义引用，不能删除")
 	}
-	// 先删集群上的 pipeline 再删记录；集群侧失败则中止（与 Django destroy 行为一致）。
 	if err := handler.deleteProcessingPipeline(context, clusterID, name); err != nil {
-		response.BusinessError(context, 400, fmt.Sprintf("删除 Pipeline 失败: %v", err), nil)
-		return
+		return fmt.Errorf("删除 Pipeline 失败: %w", err)
 	}
-	handler.deleteResource(context, processingSpec)
+	return handler.deleteResourceByID(context, processingSpec, id)
+}
+
+func (handler *Handler) BatchDeleteProcessingRules(context *gin.Context) {
+	handler.batchDeleteResources(context, processingSpec, handler.deleteProcessingRuleByID)
 }
 
 // publishProcessingRuleBeforeSave 对齐 Django LogProcessingRuleViewSet：先发布 pipeline
@@ -157,8 +172,10 @@ func (handler *Handler) CreateFilterRule(context *gin.Context) {
 func (handler *Handler) UpdateFilterRule(context *gin.Context) {
 	handler.saveResource(context, filterRuleSpec, parseID(context.Param("id")), handler.respondFilterRule)
 }
-func (handler *Handler) DeleteFilterRule(context *gin.Context) {
-	handler.deleteResource(context, filterRuleSpec)
+func (handler *Handler) BatchDeleteFilterRules(context *gin.Context) {
+	handler.batchDeleteResources(context, filterRuleSpec, func(context *gin.Context, id int64) error {
+		return handler.deleteResourceByID(context, filterRuleSpec, id)
+	})
 }
 
 // beforeSave 在校验通过后、落库前执行（返回非空文案则以 400 中止），
@@ -293,19 +310,71 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 	return ""
 }
 
-func (handler *Handler) deleteResource(context *gin.Context, spec resourceSpec) {
-	id := parseID(context.Param("id"))
+// deleteResourceByID 按表名删除记录；不存在时返回 sql.ErrNoRows，由批删入口记录 ok:false。
+func (handler *Handler) deleteResourceByID(context *gin.Context, spec resourceSpec, id int64) error {
 	result, err := handler.db.ExecContext(context, "DELETE FROM "+spec.table+" WHERE id=?", id)
 	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
+		return err
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		response.BusinessError(context, 404, "resource not found", nil)
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// batchErrMessage 把 sql.ErrNoRows 统一转成 "resource not found"，其余透传原始错误文案。
+func batchErrMessage(err error) string {
+	if err == sql.ErrNoRows {
+		return "resource not found"
+	}
+	return err.Error()
+}
+
+// batchDeleteResources 通用批删入口：解析 {"ids":[...]}，逐 id 执行 deleteOne 并汇总
+// count/results；单条失败不中断其余 id（与 BatchDeleteLogTargets 范式一致）。
+func (handler *Handler) batchDeleteResources(context *gin.Context, spec resourceSpec, deleteOne func(*gin.Context, int64) error) {
+	ids, ok := logTargetIDs(context)
+	if !ok {
 		return
 	}
-	response.Success(context, gin.H{"deleted": true})
+	results := make([]gin.H, 0, len(ids))
+	okCount := 0
+	for _, id := range ids {
+		if err := deleteOne(context, id); err != nil {
+			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
+			continue
+		}
+		okCount++
+		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+	}
+	response.Success(context, gin.H{"count": okCount, "results": results})
+}
+
+// batchDeleteMonitorRows 无前置校验的简单表通用批删（alert media、alert route、OpenSearch 集群）。
+func batchDeleteMonitorRows(context *gin.Context, handler *Handler, table string) {
+	ids, ok := logTargetIDs(context)
+	if !ok {
+		return
+	}
+	results := make([]gin.H, 0, len(ids))
+	okCount := 0
+	for _, id := range ids {
+		result, err := handler.db.ExecContext(context, "DELETE FROM "+table+" WHERE id=?", id)
+		if err == nil {
+			affected, _ := result.RowsAffected()
+			if affected == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+		if err != nil {
+			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
+			continue
+		}
+		okCount++
+		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
+	}
+	response.Success(context, gin.H{"count": okCount, "results": results})
 }
 
 func floatValue(value any) float64 {

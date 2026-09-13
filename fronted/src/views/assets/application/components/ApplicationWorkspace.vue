@@ -34,6 +34,8 @@
       :loading="loading"
       :pagination="pagination"
       :scroll="currentTableScroll"
+      size="small"
+      :locale="tableLocale"
       @change="handleTableChange"
     >
       <template #bodyCell="{ column, record }">
@@ -218,6 +220,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import store from '@/store'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -228,9 +231,9 @@ import { asArray } from '@/util/normalize'
 import {
   batchDeleteApplication,
   controlApplicationDeployment,
-  deleteProject,
-  deleteClusterProfile,
-  deleteApplicationDeployment,
+  batchDeleteProjects,
+  batchDeleteClusterProfiles,
+  batchDeleteApplicationDeployments,
   getProjectList,
   getClusterProfileList,
   getApplicationDeploymentList,
@@ -334,14 +337,7 @@ let runtimePollTimer = null
 let runtimePollInFlight = false
 let reloadSequence = 0
 const runtimePollIntervalMs = 10000
-const pagination = computed(() => ({
-  current: paginationState.current,
-  pageSize: paginationState.pageSize,
-  total: paginationState.total,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-}))
+const pagination = computed(() => createPagination(paginationState.total, paginationState.pageSize, { current: paginationState.current }))
 
 async function reload(resetPage = false) {
   if (resetPage) paginationState.current = 1
@@ -502,7 +498,7 @@ function confirmDeleteProject(record) {
     title: '删除项目',
     summary: '删除项目只会解除项目关联，不会删除业务系统和服务。',
     items: [record.name || record.code || record.id],
-    remove: () => deleteProject(record.id),
+    remove: () => batchDeleteProjects([record.id]),
   })
 }
 function confirmDeleteClusterProfile(record) {
@@ -510,7 +506,7 @@ function confirmDeleteClusterProfile(record) {
     title: '删除集群模型',
     summary: '仍被逻辑服务引用的集群模型不能删除。',
     items: [record.name || record.code || record.id],
-    remove: () => deleteClusterProfile(record.id),
+    remove: () => batchDeleteClusterProfiles([record.id]),
   })
 }
 function formatDateTime(value) {
@@ -584,7 +580,7 @@ function confirmDeleteDeployment(record) {
     title: '确认删除部署实例',
     summary: '仅删除该主机上的实例登记，不会删除应用版本或部署模板。',
     items: [`${record.application_name} / ${record.instance_name} / ${record.host_ip}`],
-    remove: () => deleteApplicationDeployment(record.id),
+    remove: () => batchDeleteApplicationDeployments([record.id]),
     successMessage: '部署实例删除成功',
   })
 }

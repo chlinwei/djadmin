@@ -110,13 +110,6 @@ func (h *Handler) UpdateVersion(c *gin.Context) {
 	item, err := h.service.UpdateVersion(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteVersion(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteVersion(c.Request.Context(), id))
-}
 func (h *Handler) ListProfiles(c *gin.Context) {
 	p, err := page(c)
 	if err != nil {
@@ -162,11 +155,4 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	}
 	item, err := h.service.UpdateProfile(c.Request.Context(), id, input)
 	respond(c, item, err)
-}
-func (h *Handler) DeleteProfile(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteProfile(c.Request.Context(), id))
 }

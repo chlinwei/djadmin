@@ -47,8 +47,9 @@
         :data-source="filteredRows"
         :loading="loading"
         size="small"
+        :locale="tableLocale"
         :scroll="{ x: 1600 }"
-        :pagination="{ showSizeChanger: true, showQuickJumper: true, showTotal: (total) => `共有 ${total} 条数据` }"
+        :pagination="pagination"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'type'">
@@ -93,7 +94,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import { getPrometheusAlertRules } from '@/api/monitor'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -134,6 +136,8 @@ const stateFilterOptions = computed(() => {
   const values = Array.from(new Set(flatRows.value.filter((row) => row.type === 'alerting').map((row) => row.state).filter((v) => v)))
   return [{ label: '全部状态', value: 'all' }, ...values.map((v) => ({ label: v, value: v }))]
 })
+
+const pagination = reactive(createPagination())
 
 const columns = [
   { title: '规则组', dataIndex: 'group_name', key: 'group_name', width: 160 },

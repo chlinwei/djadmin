@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -16,12 +17,18 @@ import (
 )
 
 type Handler struct {
-	service *Service
-	gateway *agent.Gateway
+	service   *Service
+	gateway   *agent.Gateway
+	mediaRoot string
 }
 
-func NewHandler(service *Service, gateway *agent.Gateway) *Handler {
-	return &Handler{service: service, gateway: gateway}
+// mediaRoot 为空时回退 Django MEDIA_ROOT 默认值（与 monitor.Handler.packageRoot 一致）。
+func NewHandler(service *Service, gateway *agent.Gateway, mediaRoot string) *Handler {
+	if strings.TrimSpace(mediaRoot) == "" {
+		mediaRoot = filepath.Join("..", "backend", "djadmin", "media")
+	}
+	mediaRoot, _ = filepath.Abs(mediaRoot)
+	return &Handler{service: service, gateway: gateway, mediaRoot: mediaRoot}
 }
 
 func (h *Handler) applyAgentPresence(host *Host) {
@@ -139,14 +146,6 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 	item, err := h.service.UpdateProject(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteProject(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteProject(c.Request.Context(), id))
-}
-
 func (h *Handler) ListBusinessSystems(c *gin.Context) {
 	page, err := page(c)
 	if err != nil {
@@ -188,14 +187,6 @@ func (h *Handler) UpdateBusinessSystem(c *gin.Context) {
 	item, err := h.service.UpdateBusinessSystem(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteBusinessSystem(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteBusinessSystem(c.Request.Context(), id))
-}
-
 func (h *Handler) ListEnvironments(c *gin.Context) {
 	page, err := page(c)
 	if err != nil {
@@ -237,14 +228,6 @@ func (h *Handler) UpdateEnvironment(c *gin.Context) {
 	item, err := h.service.UpdateEnvironment(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteEnvironment(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteEnvironment(c.Request.Context(), id))
-}
-
 func (h *Handler) ListCredentials(c *gin.Context) {
 	page, err := page(c)
 	if err != nil {
@@ -286,14 +269,6 @@ func (h *Handler) UpdateCredential(c *gin.Context) {
 	item, err := h.service.UpdateCredential(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteCredential(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteCredential(c.Request.Context(), id))
-}
-
 func (h *Handler) ListHostGroups(c *gin.Context) {
 	page, err := page(c)
 	if err != nil {
@@ -335,14 +310,6 @@ func (h *Handler) UpdateHostGroup(c *gin.Context) {
 	item, err := h.service.UpdateHostGroup(c.Request.Context(), id, input)
 	respond(c, item, err)
 }
-func (h *Handler) DeleteHostGroup(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteHostGroup(c.Request.Context(), id))
-}
-
 func (h *Handler) ListHosts(c *gin.Context) {
 	page, err := page(c)
 	if err != nil {
@@ -452,11 +419,4 @@ func (h *Handler) UpdateHost(c *gin.Context) {
 	}
 	item, err := h.service.UpdateHost(c.Request.Context(), id, input)
 	respond(c, item, err)
-}
-func (h *Handler) DeleteHost(c *gin.Context) {
-	id, ok := resourceID(c)
-	if !ok {
-		return
-	}
-	respond(c, nil, h.service.DeleteHost(c.Request.Context(), id))
 }

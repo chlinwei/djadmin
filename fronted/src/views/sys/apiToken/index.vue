@@ -117,6 +117,7 @@ import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { createApiToken, deleteApiToken, disableApiToken, getApiTokenList, rotateApiToken } from '@/api/user/apiToken'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { tableLocale } from '@/util/tableStyle'
 
 defineOptions({
   name: 'apiToken',

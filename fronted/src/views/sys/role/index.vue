@@ -33,7 +33,7 @@
         <a-col :span="24">
             <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
                 :columns="columns" :data-source="users" :pagination="pagination" :loading="loading"
-                @change="handleTableChange">
+                size="small" :locale="tableLocale" @change="handleTableChange">
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'create_time'">
                         <span>{{ formatDateTime(record.create_time) }}</span>
@@ -83,6 +83,7 @@ import { ref } from 'vue'
 import { getRoleList } from '@/api/role/index.js';
 import { usePagination } from 'vue-request';
 import { computed, reactive, onMounted } from 'vue';
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue';
 import Dialog from '@/views/sys/role/components/Dialog.vue';
 import MenuAssign from '@/views/sys/role/components/MenuAssign.vue';
@@ -201,15 +202,7 @@ const {
 
 
 
-const pagination = computed(() => ({
-    total: total.value,
-    current: current.value,
-    pageSize: pageSize.value,
-    showSizeChanger: true,
-    showTotal: (total) => `共有${total}条数据`,
-    pageSizeOptions: ['10', '20', '30'],
-    showQuickJumper: true,
-}))
+const pagination = computed(() => createPagination(total.value, pageSize.value, { current: current.value }))
 const handleTableChange = (page, filters, sorter) => {
     let sorter_str = ""
     if (sorter.order && sorter.field === 'create_time') {

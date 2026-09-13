@@ -22,7 +22,7 @@ export function getApplicationById(id) {
 
 // 删除
 export function batchDeleteApplication(ids) {
-    return requestUtil.del(prefix +"batch-delete/",{"ids":ids})
+    return requestUtil.post(prefix +"batch-delete/",{"ids":ids})
 }
 
 const versionPrefix = 'assets/application-versions/'
@@ -47,8 +47,8 @@ export function saveBusinessSystem(obj) {
     return requestUtil.post(businessSystemPrefix, obj)
 }
 
-export function deleteBusinessSystem(id) {
-    return requestUtil.del(`${businessSystemPrefix}${id}/`)
+export function batchDeleteBusinessSystems(ids) {
+    return requestUtil.post(`${businessSystemPrefix}batch-delete/`, { ids })
 }
 
 export function getProjectList(params) {
@@ -64,8 +64,8 @@ export function saveProject(obj) {
     return requestUtil.post(projectPrefix, obj)
 }
 
-export function deleteProject(id) {
-    return requestUtil.del(`${projectPrefix}${id}/`)
+export function batchDeleteProjects(ids) {
+    return requestUtil.post(`${projectPrefix}batch-delete/`, { ids })
 }
 
 export function getBusinessEnvironmentList(params) {
@@ -81,8 +81,8 @@ export function saveBusinessEnvironment(obj) {
     return requestUtil.post(businessEnvironmentPrefix, obj)
 }
 
-export function deleteBusinessEnvironment(id) {
-    return requestUtil.del(`${businessEnvironmentPrefix}${id}/`)
+export function batchDeleteBusinessEnvironments(ids) {
+    return requestUtil.post(`${businessEnvironmentPrefix}batch-delete/`, { ids })
 }
 
 export function getClusterProfileList(params) {
@@ -98,8 +98,8 @@ export function saveClusterProfile(obj) {
     return requestUtil.post(clusterProfilePrefix, obj)
 }
 
-export function deleteClusterProfile(id) {
-    return requestUtil.del(`${clusterProfilePrefix}${id}/`)
+export function batchDeleteClusterProfiles(ids) {
+    return requestUtil.post(`${clusterProfilePrefix}batch-delete/`, { ids })
 }
 
 export function getApplicationServiceList(params) {
@@ -119,8 +119,8 @@ export function saveApplicationService(obj) {
     return requestUtil.post(applicationServicePrefix, obj)
 }
 
-export function deleteApplicationService(id) {
-    return requestUtil.del(`${applicationServicePrefix}${id}/`)
+export function batchDeleteApplicationServices(ids) {
+    return requestUtil.post(`${applicationServicePrefix}batch-delete/`, { ids })
 }
 
 export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000) {
@@ -136,8 +136,8 @@ export function saveApplicationVersion(obj) {
     return requestUtil.post(versionPrefix, obj)
 }
 
-export function deleteApplicationVersion(id) {
-    return requestUtil.del(`${versionPrefix}${id}/`)
+export function batchDeleteApplicationVersions(ids) {
+    return requestUtil.post(`${versionPrefix}batch-delete/`, { ids })
 }
 
 export function getApplicationDeploymentTemplateList(params) {
@@ -153,8 +153,8 @@ export function saveApplicationDeploymentTemplate(obj) {
     return requestUtil.post(templatePrefix, obj)
 }
 
-export function deleteApplicationDeploymentTemplate(id) {
-    return requestUtil.del(`${templatePrefix}${id}/`)
+export function batchDeleteApplicationDeploymentTemplates(ids) {
+    return requestUtil.post(`${templatePrefix}batch-delete/`, { ids })
 }
 
 export function getApplicationDeploymentList(params) {
@@ -170,8 +170,8 @@ export function saveApplicationDeployment(obj) {
     return requestUtil.post(deploymentPrefix, obj)
 }
 
-export function deleteApplicationDeployment(id) {
-    return requestUtil.del(`${deploymentPrefix}${id}/`)
+export function batchDeleteApplicationDeployments(ids) {
+    return requestUtil.post(`${deploymentPrefix}batch-delete/`, { ids })
 }
 
 export function controlApplicationDeployment(id, action, options = {}) {

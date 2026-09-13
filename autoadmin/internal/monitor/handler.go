@@ -30,6 +30,8 @@ type Handler struct {
 	secrets     *assets.SecretEncryptor
 	packageRoot string
 	jobs        *automation.Handler
+	// 告警通知的 SMTP 发信能力，缺省 sendSMTPMedia；单测可注入假实现。
+	smtpSend smtpSender
 }
 
 func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, encryptionKey, djangoSecret string) (*Handler, error) {
@@ -42,7 +44,16 @@ func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, en
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}, nil
+	handler := &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}
+	handler.smtpSend = handler.handlerSendSMTP
+	// 失联对账 ticker：单实例部署，进程内唯一 goroutine，随进程退出终止（无需优雅停止）。
+	go handler.reconcileStaleAlertsLoop()
+	return handler, nil
+}
+
+// handlerSendSMTP 适配 media_send.go 的 sendSMTPMedia 到通知链路使用的 smtpSender 签名。
+func (handler *Handler) handlerSendSMTP(config map[string]any, subject, body string, recipients []string) (bool, string) {
+	return handler.sendSMTPMedia(config, subject, body, recipients)
 }
 
 func (handler *Handler) Summary(context *gin.Context) {
@@ -65,7 +76,7 @@ func (handler *Handler) PrometheusOverview(context *gin.Context) {
 		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error()})
 		return
 	}
-	activeTargets, _ := payload.Data["activeTargets"].([]any)
+	activeTargets, _ := payload.dataMap()["activeTargets"].([]any)
 	up := 0
 	for _, rawTarget := range activeTargets {
 		target, _ := rawTarget.(map[string]any)
@@ -82,7 +93,7 @@ func (handler *Handler) PrometheusTargets(context *gin.Context) {
 		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "results": []any{}})
 		return
 	}
-	activeTargets, _ := payload.Data["activeTargets"].([]any)
+	activeTargets, _ := payload.dataMap()["activeTargets"].([]any)
 	results := make([]gin.H, 0, len(activeTargets))
 	for _, rawTarget := range activeTargets {
 		target, _ := rawTarget.(map[string]any)
@@ -102,7 +113,7 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "results": []any{}})
 		return
 	}
-	alerts, _ := payload.Data["alerts"].([]any)
+	alerts, _ := payload.dataMap()["alerts"].([]any)
 	results := make([]gin.H, 0, len(alerts))
 	firingCount, resolvedCount := 0, 0
 	for _, rawAlert := range alerts {
@@ -126,7 +137,7 @@ func (handler *Handler) PrometheusRules(context *gin.Context) {
 		response.Success(context, gin.H{"status": "error", "prometheus_base_url": baseURL, "error": err.Error(), "group_count": 0, "rule_count": 0, "groups": []any{}})
 		return
 	}
-	rawGroups, _ := payload.Data["groups"].([]any)
+	rawGroups, _ := payload.dataMap()["groups"].([]any)
 	groups := make([]gin.H, 0, len(rawGroups))
 	ruleCount := 0
 	for _, rawGroup := range rawGroups {
@@ -173,7 +184,8 @@ func (handler *Handler) prometheusQuery(context *gin.Context, path string, allow
 		response.Success(context, gin.H{"status": "error", "error": err.Error(), "error_type": payload.Error, "result_type": "", "result": []any{}})
 		return
 	}
-	response.Success(context, gin.H{"status": "success", "result_type": stringValue(payload.Data["resultType"]), "result": payload.Data["result"], "warnings": payload.Warnings})
+	data := payload.dataMap()
+	response.Success(context, gin.H{"status": "success", "result_type": stringValue(data["resultType"]), "result": data["result"], "warnings": payload.Warnings})
 }
 
 func (handler *Handler) PrometheusProxy(context *gin.Context) {
@@ -182,7 +194,18 @@ func (handler *Handler) PrometheusProxy(context *gin.Context) {
 		context.JSON(http.StatusBadRequest, gin.H{"status": "error", "errorType": "bad_data", "error": "only /api/v1/* is allowed"})
 		return
 	}
-	_, payload, err := handler.prometheusGet(context, path, context.Request.URL.Query())
+	query := context.Request.URL.Query()
+	// codemirror-promql 会以 POST + form 提交 /labels、/series 等请求，统一转成 query 参数发给上游
+	if context.Request.Method == http.MethodPost {
+		if err := context.Request.ParseForm(); err == nil {
+			for key, values := range context.Request.PostForm {
+				for _, value := range values {
+					query.Set(key, value)
+				}
+			}
+		}
+	}
+	_, payload, err := handler.prometheusGet(context, path, query)
 	if err != nil {
 		context.JSON(http.StatusOK, gin.H{"status": "error", "data": gin.H{}, "errorType": payload.Error, "error": err.Error(), "warnings": payload.Warnings})
 		return
@@ -298,19 +321,27 @@ func (handler *Handler) prometheusStatus(context *gin.Context, path, fallbackErr
 		response.Success(context, data)
 		return
 	}
-	data["result"] = payload.Data
+	result := payload.dataMap()
+	data["result"] = result
 	data["warnings"] = payload.Warnings
 	if includeYAML {
-		data["config_yaml"] = fmt.Sprint(payload.Data["yaml"])
+		data["config_yaml"] = fmt.Sprint(result["yaml"])
 	}
 	response.Success(context, data)
 }
 
 type prometheusPayload struct {
-	Status   string         `json:"status"`
-	Data     map[string]any `json:"data"`
-	Warnings []any          `json:"warnings"`
-	Error    string         `json:"error"`
+	Status   string          `json:"status"`
+	Data     json.RawMessage `json:"data"`
+	Warnings []any           `json:"warnings"`
+	Error    string          `json:"error"`
+}
+
+// dataMap 将 data 解为对象；label values、series 等端点的 data 是数组，会得到 nil。
+func (payload prometheusPayload) dataMap() map[string]any {
+	data := map[string]any{}
+	_ = json.Unmarshal(payload.Data, &data)
+	return data
 }
 
 func (handler *Handler) prometheusGet(requestContext context.Context, path string, query url.Values) (string, prometheusPayload, error) {
@@ -340,7 +371,7 @@ func (handler *Handler) prometheusGet(requestContext context.Context, path strin
 		return baseURL, payload, fmt.Errorf("%s", payload.Error)
 	}
 	if payload.Data == nil {
-		payload.Data = map[string]any{}
+		payload.Data = json.RawMessage(`{}`)
 	}
 	return baseURL, payload, nil
 }

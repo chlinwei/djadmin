@@ -69,7 +69,7 @@ func (handler *Handler) Update(context *gin.Context) {
 }
 func (handler *Handler) DeleteMany(context *gin.Context) {
 	var request struct {
-		RoleIDs []int32 `json:"role_ids"`
+		RoleIDs []int32 `json:"ids"`
 	}
 	if context.ShouldBindJSON(&request) != nil || len(request.RoleIDs) == 0 {
 		response.Error(context, ErrRoleIDsEmpty)

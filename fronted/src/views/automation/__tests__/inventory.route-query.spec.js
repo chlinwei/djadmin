@@ -25,7 +25,7 @@ vi.mock('@/api/sys/automation', () => ({
   getInventoryList: (...args) => getInventoryList(...args),
   createInventory: vi.fn(),
   updateInventory: vi.fn(),
-  deleteInventory: vi.fn(),
+  batchDeleteInventories: vi.fn(),
   getAutomationHostOptions: (...args) => getAutomationHostOptions(...args),
   getAutomationGroupTree: (...args) => getAutomationGroupTree(...args),
 }))

@@ -37,7 +37,7 @@
         <a-col :span="24">
             <a-table :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }" rowKey="id"
                 :columns="columns" :data-source="datasources" :pagination="pagination" :loading="loading"
-                onSelectChange="onSelectChange" @change="handleTableChange">
+                onSelectChange="onSelectChange" @change="handleTableChange" size="small" :locale="tableLocale">
                 
                 <template #bodyCell="{ column, record }">
                     <template v-if="column.key === 'create_time'">
@@ -91,6 +91,7 @@ import { usePagination } from 'vue-request';
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue';
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
@@ -241,15 +242,9 @@ const openDeleteRecordConfirm = (record) => {
 
 
 
-const pagination = computed(() => ({
-    total: total.value,
+const pagination = computed(() => createPagination(total.value, pageSize.value, {
     current: current.value,
-    pageSize: pageSize.value,
-    showSizeChanger: true,
     responsive: true,
-    showTotal: (total) => `共有${total}条数据`,
-    pageSizeOptions: ['10', '20', '30'],
-    showQuickJumper: true,
 }))
 
 const refreshCredentialList = () => {

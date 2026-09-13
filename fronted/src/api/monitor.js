@@ -27,8 +27,8 @@ export function syncSoftwarePackageFromOfficial(id, version) {
   return requestUtil.post(prefix + `packages/${id}/sync-official/`, { version }, 60000)
 }
 
-export function deleteSoftwarePackage(id) {
-  return requestUtil.del(prefix + `packages/${id}/`)
+export function batchDeleteSoftwarePackages(ids) {
+  return requestUtil.post(prefix + 'packages/batch-delete/', { ids })
 }
 
 export function getPrometheusOverview() {
@@ -78,6 +78,16 @@ export function getAlertNotificationStatus(alertId) {
   return requestUtil.get(prefix + `alert-histories/${alertId}/notification-status/`)
 }
 
+// 用户视角的通知链路诊断（P1）：userId 为空表示当前登录用户。
+export function getUserNotificationChain(userId) {
+  return requestUtil.get(prefix + 'alert-notification/user-chain/', userId ? { user_id: userId } : {})
+}
+
+// 单条历史告警的完整通知链路（P2）：路由匹配 → 媒介 → 用户绑定 → 事件/投递明细。
+export function getAlertNotificationChain(historyId) {
+  return requestUtil.get(prefix + `alert-notification/chain/${historyId}/`)
+}
+
 export function getAlertMediaList(params) {
   return requestUtil.get(prefix + 'media/', params)
 }
@@ -90,8 +100,8 @@ export function updateAlertMedia(id, data) {
   return requestUtil.patch(prefix + `media/${id}/`, data)
 }
 
-export function deleteAlertMedia(id) {
-  return requestUtil.del(prefix + `media/${id}/`)
+export function batchDeleteAlertMedias(ids) {
+  return requestUtil.post(prefix + 'media/batch-delete/', { ids })
 }
 
 export function testAlertMedia(id, data) {
@@ -110,8 +120,8 @@ export function updateAlertRoute(id, data) {
   return requestUtil.patch(prefix + `alert-routes/${id}/`, data)
 }
 
-export function deleteAlertRoute(id) {
-  return requestUtil.del(prefix + `alert-routes/${id}/`)
+export function batchDeleteAlertRoutes(ids) {
+  return requestUtil.post(prefix + 'alert-routes/batch-delete/', { ids })
 }
 
 export function retryManagedTarget(id) {
@@ -132,11 +142,6 @@ export function startManagedTargetService(id) {
 
 export function stopManagedTargetService(id) {
   return requestUtil.post(prefix + `targets/${id}/stop-service/`)
-}
-
-
-export function deleteManagedTarget(id) {
-  return requestUtil.del(prefix + `targets/${id}/`)
 }
 
 export function getMonitorInstallHistoryList(params) {
@@ -161,8 +166,8 @@ export function saveOpenSearchCluster(data) {
     : requestUtil.post(prefix + 'opensearch-clusters/', data)
 }
 
-export function deleteOpenSearchCluster(id) {
-  return requestUtil.del(prefix + `opensearch-clusters/${id}/`)
+export function batchDeleteOpenSearchClusters(ids) {
+  return requestUtil.post(prefix + 'opensearch-clusters/batch-delete/', { ids })
 }
 
 export function testOpenSearchCluster(id) {
@@ -198,8 +203,8 @@ export function saveLogProcessingRule(data) {
     : requestUtil.post(prefix + 'log-processing-rules/', data)
 }
 
-export function deleteLogProcessingRule(id) {
-  return requestUtil.del(prefix + `log-processing-rules/${id}/`)
+export function batchDeleteLogProcessingRules(ids) {
+  return requestUtil.post(prefix + 'log-processing-rules/batch-delete/', { ids })
 }
 
 export function getLogCollectionFilterRules(params) {
@@ -212,8 +217,8 @@ export function saveLogCollectionFilterRule(data) {
     : requestUtil.post(prefix + 'log-collection-filter-rules/', data)
 }
 
-export function deleteLogCollectionFilterRule(id) {
-  return requestUtil.del(prefix + `log-collection-filter-rules/${id}/`)
+export function batchDeleteLogCollectionFilterRules(ids) {
+  return requestUtil.post(prefix + 'log-collection-filter-rules/batch-delete/', { ids })
 }
 
 // 日志保留档位：档位即 data stream 后缀，保存后后端会把 ISM policy 重新下发到集群
@@ -227,8 +232,8 @@ export function saveLogRetentionTier(data) {
     : requestUtil.post(prefix + 'log-retention-tiers/', data)
 }
 
-export function deleteLogRetentionTier(id) {
-  return requestUtil.del(prefix + `log-retention-tiers/${id}/`)
+export function batchDeleteLogRetentionTiers(ids) {
+  return requestUtil.post(prefix + 'log-retention-tiers/batch-delete/', { ids })
 }
 
 export function applyLogCollectionConfig(id) {
@@ -253,10 +258,6 @@ export function stopLogCollectionService(id) {
 
 export function cancelLogCollectionTarget(id) {
   return requestUtil.post(prefix + `log-targets/${id}/cancel/`, {})
-}
-
-export function deleteLogCollectionTarget(id) {
-  return requestUtil.del(prefix + `log-targets/${id}/`)
 }
 
 export function batchRetryLogCollectionTargets(ids) {

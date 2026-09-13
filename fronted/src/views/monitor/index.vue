@@ -51,7 +51,8 @@
             :loading="loading"
             size="small"
             :scroll="{ x: 1700 }"
-            :pagination="{ pageSize: 10, showSizeChanger: true }"
+            :locale="tableLocale"
+            :pagination="promTargetPagination"
           />
         </a-tab-pane>
 
@@ -292,6 +293,7 @@
                 :row-selection="overviewRowSelection"
                 size="small"
                 :scroll="{ x: overviewScrollX }"
+                :locale="tableLocale"
                 :pagination="overviewPagination"
                 @change="handleOverviewTableChange"
               >
@@ -646,6 +648,7 @@
             :loading="packagesLoading"
             size="small"
             :scroll="{ x: 1800 }"
+            :locale="tableLocale"
             :pagination="packagePagination"
             @change="handlePackageTableChange"
           >
@@ -731,6 +734,7 @@
                   :data-source="tsdbLabelValueCount.slice(0, 10)"
                   :pagination="false"
                   size="small"
+                  :locale="tableLocale"
                   :scroll="{ x: 420 }"
                 />
               </a-card>
@@ -743,6 +747,7 @@
                   :data-source="tsdbSeriesByMetric.slice(0, 10)"
                   :pagination="false"
                   size="small"
+                  :locale="tableLocale"
                   :scroll="{ x: 420 }"
                 />
               </a-card>
@@ -755,6 +760,7 @@
                   :data-source="tsdbMemoryByLabel.slice(0, 10)"
                   :pagination="false"
                   size="small"
+                  :locale="tableLocale"
                   :scroll="{ x: 420 }"
                 />
               </a-card>
@@ -767,6 +773,7 @@
                   :data-source="tsdbSeriesByLabelValuePair.slice(0, 10)"
                   :pagination="false"
                   size="small"
+                  :locale="tableLocale"
                   :scroll="{ x: 420 }"
                 />
               </a-card>
@@ -816,7 +823,8 @@
             :columns="promFlagsColumns"
             :data-source="filteredPromFlagsRows"
             size="small"
-            :pagination="{ pageSize: 20, showSizeChanger: true }"
+            :pagination="promFlagsPagination"
+            :locale="tableLocale"
             :scroll="{ x: 1300 }"
           />
         </a-tab-pane>
@@ -1107,6 +1115,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -1124,10 +1133,8 @@ import {
   cancelLogCollectionTarget,
   checkLogCollectionStatus,
   checkManagedTargetServiceStatus,
+  batchDeleteSoftwarePackages,
   createSoftwarePackage,
-  deleteManagedTarget,
-  deleteLogCollectionTarget,
-  deleteSoftwarePackage,
   getPrometheusFlags,
   getMonitorInstallHistoryList,
   getMonitorSummary,
@@ -1222,13 +1229,9 @@ const exporterCreateModalVisible = ref(false)
 const exporterCreateSubmitting = ref(false)
 const exporterCreateHostIds = ref([])
 const exporterCreateForm = reactive({ exporter_type: undefined, scrape_port: 9100 })
-const overviewPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showTotal: (total) => `共有 ${total} 台主机`,
-})
+const promTargetPagination = reactive(createPagination(0, 10))
+const promFlagsPagination = reactive(createPagination(0, 20))
+const overviewPagination = reactive(createPagination())
 const managedRetryLoading = reactive({})
 const managedCancelLoading = reactive({})
 const managedServiceStatusLoading = reactive({})
@@ -1344,14 +1347,7 @@ const packageEditForm = reactive({
   service_run_as_group: '',
   work_directory: '',
 })
-const packagePagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const packagePagination = reactive(createPagination())
 
 // 新增软件包：先建“未同步”占位记录（与后端 ensure_defaults 预置行同一语义），再行内上传补全文件。
 const packageCreateModalVisible = ref(false)
@@ -1748,7 +1744,7 @@ function openPackageDeleteConfirm(record) {
     onConfirm: async () => {
       packageRowLoading[record.id] = true
       try {
-        await deleteSoftwarePackage(record.id)
+        await batchDeleteSoftwarePackages([record.id])
         message.success('删除成功')
       } catch (error) {
         // 删除失败（如记录已被其他会话删除导致 404）时只提示，不向上抛出，避免弹窗因 Promise 拒绝卡住/控制台报 Uncaught rejection
@@ -2543,7 +2539,7 @@ function openFluentBitDeleteConfirm(record) {
     onConfirm: async () => {
       fluentBitDeleteLoading[record.id] = true
       try {
-        const data = parseApiData(await deleteLogCollectionTarget(record.id))
+        const data = parseApiData(await batchDeleteLogCollectionTargets([record.id]))
         message.success(data?.pending_uninstall
           ? '已下发卸载任务，卸载成功后自动删除'
           : 'Fluent Bit 目标已删除')
@@ -2747,7 +2743,7 @@ function openManagedTargetDeleteConfirm(record) {
     onConfirm: async () => {
       managedDeleteLoading[record.id] = true
       try {
-        await deleteManagedTarget(record.id)
+        await batchDeleteMonitorTargets([record.id])
         message.success('删除成功')
       } catch (error) {
         message.error(error?.response?.data?.msg || error?.message || '删除失败')

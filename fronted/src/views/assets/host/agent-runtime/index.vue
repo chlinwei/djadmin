@@ -60,6 +60,7 @@
                                 size="small"
                                 :scroll="{ x: 1300 }"
                                 :rowKey="buildRuntimeTaskRowKey"
+                                :locale="tableLocale"
                             >
                                 <template #bodyCell="{ column, record }">
                                     <template v-if="column.key === 'last_result_text'">
@@ -112,17 +113,11 @@
                                         :columns="runtimeTaskColumns"
                                         :data-source="selectedDynamicDisplayRows"
                                         :loading="selectedDynamicGroup?.loading"
-                                        :pagination="{
-                                            current: selectedDynamicGroup?.page || 1,
-                                            pageSize: selectedDynamicGroup?.pageSize || 10,
-                                            total: selectedDynamicGroup?.total || 0,
-                                            showSizeChanger: true,
-                                            pageSizeOptions: ['10', '20', '50'],
-                                            showTotal: (value) => `共 ${value} 条`,
-                                        }"
+                                        :pagination="dynamicGroupPagination"
                                         size="small"
                                         :scroll="{ x: 1300 }"
                                         :rowKey="buildRuntimeTaskRowKey"
+                                        :locale="tableLocale"
                                         @change="(pagination) => onDynamicGroupTableChange(selectedDynamicGroup?.action || '', pagination)"
                                     >
                                         <template #bodyCell="{ column, record }">
@@ -163,6 +158,7 @@ defineOptions({
 
 import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import { refreshHostInfo, getHostAgentRuntimeStatus, getHostById, queryHostDynamicTasks } from '@/api/assets/host/index.js'
 import { formatDateTimeWithTimezone } from '../utils/hostDisplayUtils'
@@ -512,6 +508,12 @@ const loadDynamicGroupPage = async (action, page = 1, pageSize = 10) => {
         message.error(error?.response?.data?.msg || error?.message || '获取动态任务失败')
     }
 }
+
+const dynamicGroupPagination = computed(() => createPagination(
+    selectedDynamicGroup.value?.total || 0,
+    selectedDynamicGroup.value?.pageSize || 10,
+    { current: selectedDynamicGroup.value?.page || 1 },
+))
 
 const onDynamicGroupTableChange = async (action, pagination) => {
     if (!action) {

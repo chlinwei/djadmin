@@ -19,6 +19,7 @@
         <a-col :span="24">
             <a-table v-if="treeData.length" 
             :columns="columns" :data-source="treeData"
+            :pagination="false" size="small" :locale="tableLocale"
             >
                
                 <template #bodyCell="{ column, record }">
@@ -62,6 +63,7 @@ import { ref, reactive, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Dialog from '@/views/sys/menu/components/Dialog.vue';
 import { message } from 'ant-design-vue';
+import { tableLocale } from '@/util/tableStyle';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission';
 import { formatTimeWithTimezone } from '@/util/timezone'

@@ -59,6 +59,7 @@
         :data-source="monitorInstallHistoryRows"
         :loading="monitorInstallHistoryLoading"
         :pagination="monitorInstallHistoryPagination"
+        :locale="tableLocale"
         :scroll="{ x: 1700 }"
         rowKey="id"
         size="small"
@@ -103,6 +104,7 @@
 
 <script setup>
 import { inject } from 'vue'
+import { tableLocale } from '@/util/tableStyle'
 
 const ctx = inject('automationLogsCtx')
 if (!ctx) {

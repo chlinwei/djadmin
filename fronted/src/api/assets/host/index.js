@@ -17,12 +17,8 @@ export function saveOrCreateHost(obj) {
     return requestUtil.patch(prefix + obj.id + '/', obj)
 }
 
-export function deleteHostById(id) {
-    return requestUtil.del(prefix + id + '/', { id })
-}
-
 export function batchDeleteHost(ids) {
-    return requestUtil.del(prefix + 'batch-delete/', { ids })
+    return requestUtil.post(prefix + 'batch-delete/', { ids })
 }
 
 

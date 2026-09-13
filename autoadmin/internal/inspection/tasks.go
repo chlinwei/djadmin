@@ -170,38 +170,33 @@ func nullableInt64Ptr(value sql.NullInt64) *int64 {
 	return &value.Int64
 }
 
-func (handler *Handler) DeleteTask(context *gin.Context) {
+// deleteTaskByID 复用原单删逻辑：执行记录 task_id 置空（Django ORM SET_NULL，物理外键
+// NO ACTION）、解绑任务-组挂载，再删任务。不存在时返回 sql.ErrNoRows。
+func (handler *Handler) deleteTaskByID(context *gin.Context, id int64) error {
 	transaction, err := handler.db.BeginTx(context, nil)
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	defer transaction.Rollback()
-	id := parseID(context.Param("id"))
-	// Django applies SET_NULL in the ORM while the physical MySQL foreign key remains NO ACTION.
 	if _, err = transaction.ExecContext(context, `UPDATE inspection_execution SET task_id=NULL,update_time=NOW() WHERE task_id=?`, id); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_task_group WHERE task_id=?`, id); err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	result, err := transaction.ExecContext(context, `DELETE FROM inspection_task WHERE id=?`, id)
 	if err != nil {
-		response.Error(context, err)
-		return
+		return err
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		response.BusinessError(context, 404, "巡检任务不存在", nil)
-		return
+		return sql.ErrNoRows
 	}
-	if err = transaction.Commit(); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, nil)
+	return transaction.Commit()
+}
+
+func (handler *Handler) BatchDeleteTasks(context *gin.Context) {
+	batchDeleteInspection(context, handler, handler.deleteTaskByID)
 }
 
 func (handler *Handler) loadTask(context *gin.Context, id int64) (inspectionTaskResponse, error) {

@@ -3,8 +3,8 @@ import Antd from 'ant-design-vue'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
-  deleteBusinessSystem: vi.fn(() => Promise.resolve({ data: { data: null } })),
-  deleteApplicationService: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  batchDeleteBusinessSystems: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  batchDeleteApplicationServices: vi.fn(() => Promise.resolve({ data: { data: null } })),
 }))
 
 vi.mock('@/util/deleteConfirm', () => ({
@@ -135,7 +135,7 @@ describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
     const { onConfirm } = openDeleteConfirm.mock.calls.at(-1)[0]
     await onConfirm()
 
-    expect(applicationApi.deleteBusinessSystem).toHaveBeenCalledWith(7)
+    expect(applicationApi.batchDeleteBusinessSystems).toHaveBeenCalledWith([7])
   })
 })
 
@@ -204,6 +204,6 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
     const { onConfirm } = openDeleteConfirm.mock.calls.at(-1)[0]
     await onConfirm()
 
-    expect(applicationApi.deleteApplicationService).toHaveBeenCalledWith(21)
+    expect(applicationApi.batchDeleteApplicationServices).toHaveBeenCalledWith([21])
   })
 })

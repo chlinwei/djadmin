@@ -52,6 +52,8 @@
         :data-source="logs"
         :loading="loading"
         :pagination="pagination"
+        size="small"
+        :locale="tableLocale"
         rowKey="id"
         :scroll="{ x: 1300 }"
         @change="handleTableChange"
@@ -120,6 +122,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import store from '@/store'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
@@ -148,15 +151,7 @@ function onTimeRangeOpenChange(open) {
   }
 }
 
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  pageSizeOptions: ['10', '20', '30'],
-  showTotal: (total) => `共有${total}条数据`,
-  showQuickJumper: true,
-})
+const pagination = reactive(createPagination())
 
 const methodOptions = [
   { label: 'POST', value: 'POST' },

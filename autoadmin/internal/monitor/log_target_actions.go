@@ -469,41 +469,6 @@ func (handler *Handler) CancelLogTarget(context *gin.Context) {
 	response.Success(context, gin.H{"id": id})
 }
 
-func (handler *Handler) DeleteLogTarget(context *gin.Context) {
-	id := parseID(context.Param("id"))
-	row, err := loadLogTarget(context, handler.db, id)
-	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "log collection target not found", nil)
-		return
-	}
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if row.ManagedEnabled {
-		response.BusinessError(context, 400, "disable the monitor target before deleting it", nil)
-		return
-	}
-	pending, _, err := logTargetPending(context, handler.db, id)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	if pending {
-		response.BusinessError(context, 400, "wait for the uninstall task to finish before deleting", nil)
-		return
-	}
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_target_install_history SET log_collection_target_id=NULL WHERE log_collection_target_id=?`, id); err != nil {
-		response.Error(context, err)
-		return
-	}
-	if _, err = handler.db.ExecContext(context, `DELETE FROM monitor_log_collection_target WHERE id=?`, id); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, gin.H{"id": id})
-}
-
 func logTargetIDs(context *gin.Context) ([]int64, bool) {
 	var input struct {
 		IDs []int64 `json:"ids"`

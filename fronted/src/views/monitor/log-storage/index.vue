@@ -33,6 +33,8 @@
       :data-source="clusters"
       :loading="loading"
       :pagination="false"
+      size="small"
+      :locale="tableLocale"
       :scroll="{ x: 1650 }"
     >
       <template #bodyCell="{ column, record }">
@@ -195,9 +197,10 @@ defineOptions({
 })
 
 import { onMounted, reactive, ref, computed } from 'vue'
+import { tableLocale } from '@/util/tableStyle'
 import { message, Empty } from 'ant-design-vue'
 import {
-  deleteOpenSearchCluster,
+  batchDeleteOpenSearchClusters,
   getLogPipelineHealth,
   getOpenSearchClusterList,
   saveOpenSearchCluster,
@@ -355,7 +358,7 @@ function confirmDelete(record) {
     summary: '删除后依赖该集群的日志采集与查询将不可用。',
     items: [`${record.name} (${record.hosts})`],
     onConfirm: async () => {
-      await deleteOpenSearchCluster(record.id)
+      await batchDeleteOpenSearchClusters([record.id])
       message.success('删除成功')
       await loadClusters()
     },

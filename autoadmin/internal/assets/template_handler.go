@@ -65,10 +65,3 @@ func (handler *Handler) UpdateDeploymentTemplate(context *gin.Context) {
 	respond(context, item, err)
 }
 
-func (handler *Handler) DeleteDeploymentTemplate(context *gin.Context) {
-	id, ok := resourceID(context)
-	if !ok {
-		return
-	}
-	respond(context, nil, handler.service.DeleteDeploymentTemplate(context.Request.Context(), id))
-}

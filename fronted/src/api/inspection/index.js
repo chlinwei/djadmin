@@ -18,8 +18,8 @@ export function saveInspectionGroup(data) {
     : requestUtil.post(groupPrefix, data)
 }
 
-export function deleteInspectionGroup(id) {
-  return requestUtil.del(`${groupPrefix}${id}/`)
+export function batchDeleteInspectionGroups(ids) {
+  return requestUtil.post(`${groupPrefix}batch-delete/`, { ids })
 }
 
 export function getInspectionTasks(params) {
@@ -32,8 +32,8 @@ export function saveInspectionTask(data) {
     : requestUtil.post(taskPrefix, data)
 }
 
-export function deleteInspectionTask(id) {
-  return requestUtil.del(`${taskPrefix}${id}/`)
+export function batchDeleteInspectionTasks(ids) {
+  return requestUtil.post(`${taskPrefix}batch-delete/`, { ids })
 }
 
 export function runInspectionTask(id) {

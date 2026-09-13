@@ -70,29 +70,6 @@ func (handler *Handler) UpdateTarget(context *gin.Context) {
 	handler.GetTarget(context)
 }
 
-func (handler *Handler) DeleteTarget(context *gin.Context) {
-	id := parseID(context.Param("id"))
-	var enabled bool
-	var status string
-	if err := handler.db.QueryRowContext(context, `SELECT managed_enabled,install_status FROM monitor_target WHERE id=?`, id).Scan(&enabled, &status); err != nil {
-		response.Error(context, err)
-		return
-	}
-	if enabled {
-		response.BusinessError(context, 400, "disable the monitor target before deleting it", nil)
-		return
-	}
-	if status == "pending" {
-		response.BusinessError(context, 400, "wait for the uninstall task to finish before deleting", nil)
-		return
-	}
-	if _, err := handler.db.ExecContext(context, `DELETE FROM monitor_target WHERE id=?`, id); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, gin.H{"id": id})
-}
-
 func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 	var input struct {
 		HostIDs      []int64 `json:"host_ids"`

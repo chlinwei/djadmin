@@ -39,7 +39,7 @@ export function batchDeleteRole(ids) {
         message.error("角色id数组必须大于1")
         return;
     }else {
-        return requestUtil.del("sys/roles/batch-delete/",{role_ids:ids})
+        return requestUtil.post("sys/roles/batch-delete/",{ids})
     }
 }
 

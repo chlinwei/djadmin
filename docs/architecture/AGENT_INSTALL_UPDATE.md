@@ -36,12 +36,46 @@
 
 前置校验全部通过后：
 
-1. 校验 Agent 二进制（`../dj_agent/bin/dj-agent`）：拒绝旧 RabbitMQ 构建产物、要求含 `DJ_AGENT_GRPC_FILE_ADDR` 标记。
+1. 加载 Agent 二进制（见下节"二进制来源选择"）：激活包优先，回退构建产物；无论哪种来源都做双标记校验（拒绝旧 RabbitMQ 构建产物、要求含 `DJ_AGENT_GRPC_FILE_ADDR`）。
 2. 加载 Agent 安装专用模板并完成上述校验。
 3. 读取系统参数 `sys.assets.agent.grpc_advertise_addr`（缺失报错）。
 4. 创建 `automation_execution_job`（running）+ 每主机 `assets_agent_job`（queued，action=install_agent）+ `automation_execution_host_log`；前端跳转 `/sys/automation/logs?job_id=<automation_job_id>` 看进度。
    - install：`job_type=ansible`，params 含 credential_id；无 agent_id 的主机作业行回填 `host-<id>` 占位。
    - update：`job_type=grpc`。
+
+响应 `data` 携带 `agent_package` 字段，供前端展示本次使用的包来源：
+
+```json
+{
+  "automation_job_id": 123,
+  "jobs": [{"job_id": "...", "host_id": 1}],
+  "agent_package": {"source": "uploaded", "version": "default", "sha256": "<64位hex>"}
+}
+```
+
+`source` 取值 `uploaded`（已上传激活包）或 `build`（本机构建产物，`version` 固定为 `"dev"`）。
+
+## 二进制来源选择（`loadAgentBinary`，agent_update.go）
+
+1. 优先查 `agent_package` 表中 `is_active=1` 的记录，从 mediaRoot + `file` 读取二进制并校验 sha256 与记录一致；激活包存在但文件缺失 / sha256 不匹配 / 标记校验失败时**直接报错，不静默回退**——操作者显式激活的包损坏应暴露问题。
+2. 无激活包记录时回退历史行为：读取 `../dj_agent/bin/dj-agent` 并做双标记校验。
+
+## dj-agent 安装包管理（`agent_package` 表 + agent_package.go）
+
+- 存储：文件落盘 `<mediaRoot>/agent_packages/<version>/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 `../backend/djadmin/media` 取绝对路径，即 Django MEDIA_ROOT）；记录含 `version`/`file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
+- API（均挂 `Authenticate + RequirePermission("assets:hosts:update")`，与 `/api/agent/install` 相同中间件链）：
+  - `GET /api/agent/packages/`：列表，按 `is_active DESC, create_time DESC` 排序。
+  - `POST /api/agent/packages/upload/`：multipart 上传，字段 `file`（二进制）+ `version`（**可选**：当前 agent 二进制不带版本元数据，不填统一存 `default`，即单槽位"当前包"语义；填写时 ≤64 字符、禁路径分隔符，保留未来多版本能力）。校验 ≤200MiB 与双字节标记；`sha256` 服务端计算；同 `version` 重复上传覆盖文件并更新记录；上传成功即在事务内独占激活（清其他记录的 `is_active` 再置本条）。
+  - `POST /api/agent/packages/:id/activate/`：事务内独占激活；id 不存在返回 404。
+  - `POST /api/agent/packages/batch-delete/`：body `{"ids":[...]}`，响应 `{"count":n,"results":[{"id","ok","message"}]}`（项目批删约定）；删除记录时同步删除磁盘文件（路径限制在 mediaRoot 内，防目录穿越）。
+- 上传/激活包的校验标记与构建产物完全一致（`validateAgentBinary` 共用）。
+
+## 前端交互（fronted）
+
+- **API 层**：`fronted/src/api/assets/agentPackage.js` 封装 `listAgentPackages()`、`uploadAgentPackage({version, file})`（FormData，走 `requestUtil.fileUpload`）、`activateAgentPackage(id)`、`batchDeleteAgentPackages(ids)`（唯一批删接口，单删传 `ids:[id]`，遵循项目删除约定）。
+- **主机列表"批量管理 Agent"弹窗**（`fronted/src/views/assets/host/index.vue`）：顶部展示当前激活包（版本 / sha256 前 12 位 / 上传时间）；列表接口拉取失败不阻塞安装/更新流程（静默置空，仅在包管理弹窗打开时提示）。无激活包时显示警示：将回退使用服务端构建产物 `dj_agent/bin/dj-agent`（路径依赖部署目录，不可靠）。
+- **"Agent 包管理"弹窗**：两个入口——主机列表工具栏"Agent 包"按钮（**无需选择主机**，纯包管理场景）与"批量管理 Agent"弹窗内的"Agent 包管理"链接，打开同一弹窗。small 密度表格列出包记录（sha256 只展示前 12 位）；支持上传（版本号可选、文件必选、accept 不限制后缀）、设为激活（二次确认）、按版本号批量删除（`openDeleteConfirm` 二次确认，部分失败时按 `results[].ok` 提示失败数）。
+- **提交反馈**：`POST /api/agent/install` 响应携带 `agent_package` 时，成功提示追加来源与版本——`uploaded` 显示"（包：uploaded v<version>）"，`build` 显示"（包：构建产物 dev）"；响应无该字段时（旧后端）保持原提示不变。
 
 ## install 链路（SSH + Ansible 引导，`agent_install.go`）
 

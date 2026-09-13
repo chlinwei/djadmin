@@ -93,7 +93,7 @@ func (handler *Handler) CheckUsername(context *gin.Context) {
 
 func (handler *Handler) BatchDeleteUsers(context *gin.Context) {
 	var request struct {
-		UserIDs []int32 `json:"user_ids"`
+		UserIDs []int32 `json:"ids"`
 	}
 	if context.ShouldBindJSON(&request) != nil || len(request.UserIDs) == 0 {
 		response.Error(context, ErrUserIDsEmpty)

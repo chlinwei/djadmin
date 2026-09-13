@@ -49,7 +49,7 @@ vi.mock('@/api/monitor', () => ({
   getOpenSearchClusterList: vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } })),
   getLogPipelineHealth: vi.fn(() => Promise.resolve({ data: { data: HEALTH } })),
   saveOpenSearchCluster: vi.fn(() => Promise.resolve({ data: { data: CLUSTER } })),
-  deleteOpenSearchCluster: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  batchDeleteOpenSearchClusters: vi.fn(() => Promise.resolve({ data: { data: null } })),
   testOpenSearchCluster: vi.fn(() => Promise.resolve({ data: { data: {} } })),
 }))
 

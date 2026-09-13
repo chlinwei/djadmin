@@ -11,3 +11,7 @@
 - 架构/功能文档放 `docs/architecture/`
 - 文档写"最终逻辑"（数据流、入口、关键决策、失败语义），不写"本次改了什么"的流水账
 - 涉及 Django 与 Go 双实现的功能，文档中需标注两者语义是否对齐及差异点
+
+## API 设计规则（必须遵守）
+
+**删除类 API 只保留批量删除**：列表型资源一律只提供 `POST <资源前缀>/batch-delete/`（body `{"ids":[...]}`），不新增单条删除接口。全部 API/UI/文档约定见 [docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md)（含文档组织约定：新增文档前先查 README 索引，主题已存在则并入，过程性内容进 docs/plans 或 docs/archive）。

@@ -220,16 +220,6 @@ func sortedColumns(values map[string]any) []string {
 	return columns
 }
 
-func (handler *Handler) DeleteOpenSearchCluster(context *gin.Context) {
-	result, err := handler.db.ExecContext(context, `DELETE FROM monitor_opensearch_cluster WHERE id=?`, parseID(context.Param("id")))
-	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
-		return
-	}
-	response.Success(context, gin.H{"deleted": true})
+func (handler *Handler) BatchDeleteOpenSearchClusters(context *gin.Context) {
+	batchDeleteMonitorRows(context, handler, "monitor_opensearch_cluster")
 }

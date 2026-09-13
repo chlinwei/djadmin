@@ -21,7 +21,7 @@ export function getCredentailById(id) {
 
 // 删除
 export function batchDeleteCredential(ids) {
-    return requestUtil.del("assets/credentials/batch-delete/",{"ids":ids})
+    return requestUtil.post("assets/credentials/batch-delete/",{"ids":ids})
 }
 
 // 批量导入

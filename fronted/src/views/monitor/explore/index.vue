@@ -52,7 +52,8 @@
             :loading="loading"
             size="small"
             :scroll="{ x: 1200 }"
-            :pagination="{ showSizeChanger: true, showQuickJumper: true, showTotal: (total) => `共有 ${total} 条数据` }"
+            :pagination="pagination"
+            :locale="tableLocale"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'metric'">
@@ -75,6 +76,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import dayjs from 'dayjs'
 import store from '@/store'
 import { getServerUrl } from '@/util/request'

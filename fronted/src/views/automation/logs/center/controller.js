@@ -1,4 +1,5 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createPagination } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import dayjs from 'dayjs'
@@ -68,14 +69,7 @@ const jobOutputKeyword = ref('')
 const jobTimeRange = ref([])
 const logsTimeRangePresets = ref([])
 const logsTimeRangeShowTime = buildUserTimezoneShowTime(getActiveUserTimezone())
-const jobPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const jobPagination = reactive(createPagination())
 
 const selectedTaskId = ref(null)
 const selectedTaskName = ref('')
@@ -95,14 +89,7 @@ const workflowRunStatusOptions = [
   { label: '已取消', value: 'cancelled' },
   { label: '等待中', value: 'pending' },
 ]
-const workflowRunPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const workflowRunPagination = reactive(createPagination())
 const workflowRunSort = reactive({
   field: null,
   order: null,
@@ -125,14 +112,7 @@ const monitorInstallHistoryAction = ref(undefined)
 const monitorInstallHistoryTargetId = ref('')
 const monitorInstallHistoryTargetType = ref('')
 const monitorInstallHistoryTimeRange = ref([])
-const monitorInstallHistoryPagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const monitorInstallHistoryPagination = reactive(createPagination())
 const monitorInstallHistoryStatusOptions = [
   { label: '待执行', value: 'pending' },
   { label: '执行中', value: 'running' },

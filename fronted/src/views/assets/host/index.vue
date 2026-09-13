@@ -119,6 +119,12 @@
                         <span>&nbsp;管理 Agent</span>
                     </a-button>
                 </a-col>
+                <a-col class="tool-item" v-permission="'assets:hosts:update'">
+                    <a-button size="large" @click="openAgentPackageManagerFromToolbar">
+                        <FontAwesomeIcon :icon="['fas', 'box-open']" />
+                        <span>&nbsp;Agent 包</span>
+                    </a-button>
+                </a-col>
                 <a-col class="tool-item" v-permission="'assets:hosts:view'">
                     <a-button size="large" type="primary" ghost class="refresh-btn" @click="refreshList" :disabled="loading">
                         <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="loading" />
@@ -159,6 +165,8 @@
                     :pagination="pagination"
                     :loading="loading"
                     :row-class-name="getRowClassName"
+                    size="small"
+                    :locale="tableLocale"
                     @change="handleTableChange"
                 >
                     <template #bodyCell="{ column, record }">
@@ -264,6 +272,30 @@
                         : '更新走已建立的 Agent 通道自动完成，无需 SSH 凭证；仅对当前在线的主机生效。'"
                     style="margin-bottom: 16px"
                 />
+                <div class="agent-package-info">
+                    <a-spin v-if="agentPackageLoading" size="small" />
+                    <template v-else>
+                        <a-alert
+                            v-if="!activeAgentPackage"
+                            type="warning"
+                            show-icon
+                            message="未上传 Agent 包"
+                            description="未上传 Agent 包，将回退使用服务端构建产物 dj_agent/bin/dj-agent（路径依赖部署目录，不可靠）。"
+                            style="margin-bottom: 8px"
+                        />
+                        <a-alert
+                            v-else
+                            type="success"
+                            show-icon
+                            :message="`当前 Agent 包：v${activeAgentPackage.version || '-'}`"
+                            :description="`sha256: ${shortSha(activeAgentPackage.sha256)} ｜ 上传时间：${formatDateTime(activeAgentPackage.create_time)}`"
+                            style="margin-bottom: 8px"
+                        />
+                    </template>
+                    <a-button type="link" size="small" style="padding: 0" @click="openAgentPackageManager">
+                        Agent 包管理
+                    </a-button>
+                </div>
                 <a-form layout="vertical">
                     <a-form-item label="操作">
                         <a-radio-group v-model:value="agentManageOperation">
@@ -283,6 +315,90 @@
                         />
                     </a-form-item>
                 </a-form>
+            </a-modal>
+
+            <a-modal
+                v-model:open="agentPackageManagerVisible"
+                title="Agent 包管理"
+                :footer="null"
+                width="760px"
+            >
+                <div style="margin-bottom: 12px; display: flex; gap: 8px">
+                    <a-button type="primary" size="small" @click="openAgentPackageUpload">上传 Agent 包</a-button>
+                    <a-button
+                        size="small"
+                        danger
+                        :disabled="!agentPackageSelectedRowKeys.length"
+                        @click="submitDeleteAgentPackages"
+                    >
+                        批量删除
+                    </a-button>
+                </div>
+                <a-table
+                    size="small"
+                    :columns="agentPackageColumns"
+                    :data-source="agentPackages"
+                    :pagination="false"
+                    :locale="tableLocale"
+                    :loading="agentPackageManagerLoading"
+                    :getPopupContainer="getPopupContainer"
+                    row-key="id"
+                    :row-selection="{ selectedRowKeys: agentPackageSelectedRowKeys, onChange: onAgentPackageSelectionChange }"
+                >
+                    <template #bodyCell="{ column, record }">
+                        <template v-if="column.key === 'sha256'">
+                            <span>{{ shortSha(record.sha256) }}</span>
+                        </template>
+                        <template v-else-if="column.key === 'size_bytes'">
+                            <span>{{ formatSize(record.size_bytes) }}</span>
+                        </template>
+                        <template v-else-if="column.key === 'create_time'">
+                            <span>{{ formatDateTime(record.create_time) }}</span>
+                        </template>
+                        <template v-else-if="column.key === 'is_active'">
+                            <a-tag v-if="record.is_active" color="green">激活</a-tag>
+                            <span v-else>-</span>
+                        </template>
+                        <template v-else-if="column.key === 'action'">
+                            <a-button
+                                v-if="!record.is_active"
+                                type="link"
+                                size="small"
+                                style="padding: 0"
+                                @click="submitActivateAgentPackage(record)"
+                            >
+                                设为激活
+                            </a-button>
+                            <span v-else>当前激活</span>
+                        </template>
+                    </template>
+                </a-table>
+
+                <a-modal
+                    v-model:open="agentPackageUploadVisible"
+                    title="上传 Agent 包"
+                    ok-text="上传"
+                    cancel-text="取消"
+                    :confirm-loading="agentPackageUploading"
+                    @ok="submitUploadAgentPackage"
+                    @cancel="closeAgentPackageUpload"
+                >
+                    <a-form layout="vertical">
+                        <a-form-item label="版本号（可选）">
+                            <a-input
+                                v-model:value="agentPackageUploadVersion"
+                                placeholder="不填默认为 default（当前二进制不带版本号）"
+                            />
+                        </a-form-item>
+                        <a-form-item label="dj-agent 二进制文件" required>
+                            <!-- 二进制无固定扩展名，accept 不限制；仅前端校验非空 -->
+                            <input
+                                ref="agentPackageFileInputRef"
+                                type="file"
+                            />
+                        </a-form-item>
+                    </a-form>
+                </a-modal>
             </a-modal>
 
     <Dialog
@@ -499,22 +615,28 @@ defineOptions({
 })
 
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import {
     batchDeleteHost,
     batchRefreshHostInfo,
-    deleteHostById,
     getHostById,
     getHostList,
     getCredentialOptionList,
     installAgents,
     saveOrCreateHost,
 } from '@/api/assets/host/index.js'
-import { getHostGroupTree, deleteHostGroupById } from '@/api/assets/hostgroup/index.js'
+import {
+    activateAgentPackage,
+    batchDeleteAgentPackages,
+    listAgentPackages,
+    uploadAgentPackage,
+} from '@/api/assets/agentPackage.js'
+import { getHostGroupTree, batchDeleteHostGroups } from '@/api/assets/hostgroup/index.js'
 import { getConfigByKey, CONFIG_KEYS } from '@/api/sys/sysconfig.js'
 import { getBusinessEnvironmentList } from '@/api/assets/application'
-import { deleteManagedTarget, getSoftwarePackages } from '@/api/monitor.js'
+import { batchDeleteMonitorTargets, getSoftwarePackages } from '@/api/monitor.js'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -572,6 +694,23 @@ const agentManageLoading = ref(false)
 const agentManageOperation = ref('install')
 const agentManageCredentialId = ref(undefined)
 const agentCredentials = ref([])
+const agentPackages = ref([])
+const agentPackageLoading = ref(false)
+const agentPackageManagerVisible = ref(false)
+const agentPackageManagerLoading = ref(false)
+const agentPackageSelectedRowKeys = ref([])
+const agentPackageUploadVisible = ref(false)
+const agentPackageUploading = ref(false)
+const agentPackageUploadVersion = ref('')
+const agentPackageFileInputRef = ref(null)
+const agentPackageColumns = [
+    { title: '版本', dataIndex: 'version', key: 'version', width: 110 },
+    { title: 'sha256', dataIndex: 'sha256', key: 'sha256', width: 130 },
+    { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', width: 90 },
+    { title: '上传时间', dataIndex: 'create_time', key: 'create_time', width: 170 },
+    { title: '状态', dataIndex: 'is_active', key: 'is_active', width: 90 },
+    { title: '操作', key: 'action', width: 110 },
+]
 
 let hostListAutoRefreshTimer = null
 
@@ -751,7 +890,7 @@ const removeMonitorRow = (index) => {
         onConfirm: async () => {
             monitorRowDeleteLoading[item.id] = true
             try {
-                await deleteManagedTarget(item.id)
+                await batchDeleteMonitorTargets([item.id])
                 message.success('删除成功')
                 form.monitors.splice(index, 1)
             } catch (error) {
@@ -783,14 +922,7 @@ const columns = [
     { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
 
-const pagination = reactive({
-    current: 1,
-    pageSize: 10,
-    total: 0,
-    showTotal: (value) => `共有${value}条数据`,
-    pageSizeOptions: ['10', '20', '30'],
-    showQuickJumper: true,
-})
+const pagination = reactive(createPagination())
 
 const groupDeleteHostCount = computed(() => {
     const rootNodes = Array.isArray(groupDeletePreviewTreeData.value) ? groupDeletePreviewTreeData.value : []
@@ -916,6 +1048,153 @@ const closeAgentManage = () => {
     agentManageVisible.value = false
 }
 
+// Agent 包管理（dj-agent 二进制包）--------------------------------------------------
+const shortSha = (sha) => String(sha || '').slice(0, 12) || '-'
+
+// 安装/更新响应携带的 agent_package 拼进成功提示；无该字段时（旧后端）保持原提示
+const buildAgentPackageHint = (pkg) => {
+    if (!pkg) {
+        return ''
+    }
+    if (pkg.source === 'build') {
+        return '（包：构建产物 dev）'
+    }
+    return `（包：${pkg.source || 'uploaded'} v${pkg.version || '-'}）`
+}
+
+
+const activeAgentPackage = computed(() => {
+    return agentPackages.value.find((item) => item.is_active) || null
+})
+
+const loadAgentPackages = async () => {
+    agentPackageLoading.value = true
+    try {
+        const res = await listAgentPackages({ page: 1, size: 200 })
+        const payload = res?.data?.data || {}
+        agentPackages.value = Array.isArray(payload.results) ? payload.results : []
+    } catch (error) {
+        // 列表拉取失败不阻塞安装/更新流程，仅在包管理弹窗内提示
+        agentPackages.value = []
+        if (agentPackageManagerVisible.value) {
+            message.error('获取 Agent 包列表失败')
+        }
+    } finally {
+        agentPackageLoading.value = false
+    }
+}
+
+// 工具栏独立入口：不选主机也能上传/管理 Agent 包
+const openAgentPackageManagerFromToolbar = () => {
+    openAgentPackageManager()
+}
+
+const openAgentPackageManager = () => {
+    agentPackageManagerVisible.value = true
+    agentPackageSelectedRowKeys.value = []
+    loadAgentPackages()
+}
+
+const onAgentPackageSelectionChange = (keys) => {
+    agentPackageSelectedRowKeys.value = keys
+}
+
+const openAgentPackageUpload = () => {
+    agentPackageUploadVersion.value = ''
+    agentPackageUploadVisible.value = true
+}
+
+const closeAgentPackageUpload = () => {
+    agentPackageUploadVisible.value = false
+    if (agentPackageFileInputRef.value) {
+        agentPackageFileInputRef.value.value = ''
+    }
+}
+
+const submitUploadAgentPackage = async () => {
+    // 版本号可选：当前 agent 二进制不带版本元数据，不填由后端统一存 default
+    const version = String(agentPackageUploadVersion.value || '').trim()
+    const file = agentPackageFileInputRef.value?.files?.[0]
+    if (!file) {
+        message.warning('请选择 dj-agent 二进制文件')
+        return
+    }
+    agentPackageUploading.value = true
+    try {
+        const res = await uploadAgentPackage({ version, file })
+        if (res?.data?.code !== 200) {
+            message.error(res?.data?.msg || 'Agent 包上传失败')
+            return
+        }
+        message.success(`Agent 包 v${version} 上传成功`)
+        closeAgentPackageUpload()
+        await loadAgentPackages()
+    } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || 'Agent 包上传失败')
+    } finally {
+        agentPackageUploading.value = false
+    }
+}
+
+const submitActivateAgentPackage = (record) => {
+    Modal.confirm({
+        title: '设为激活包',
+        content: `确认将 Agent 包 v${record.version || record.id} 设为激活？后续安装/更新任务将使用该包下发。`,
+        okText: '确认',
+        cancelText: '取消',
+        onOk: async () => {
+            try {
+                const res = await activateAgentPackage(record.id)
+                if (res?.data?.code !== 200) {
+                    message.error(res?.data?.msg || '激活 Agent 包失败')
+                    return
+                }
+                message.success(`Agent 包 v${record.version} 已设为激活`)
+                await loadAgentPackages()
+            } catch (error) {
+                message.error(error?.response?.data?.msg || error?.message || '激活 Agent 包失败')
+            }
+        },
+    })
+}
+
+const submitDeleteAgentPackages = () => {
+    const ids = agentPackageSelectedRowKeys.value
+    if (!ids.length) {
+        return
+    }
+    openDeleteConfirm({
+        title: '删除 Agent 包',
+        items: agentPackages.value
+            .filter((item) => ids.includes(item.id))
+            .map((item) => `v${item.version}`),
+        onConfirm: async () => {
+            try {
+                const res = await batchDeleteAgentPackages(ids)
+                if (res?.data?.code !== 200) {
+                    message.error(res?.data?.msg || '删除 Agent 包失败')
+                    return
+                }
+                const failed = (res.data.data?.results || []).filter((item) => item?.ok === false)
+                if (failed.length) {
+                    message.warning(`已删除 ${res.data.data?.count ?? 0} 个包，${failed.length} 个删除失败`)
+                } else {
+                    message.success(`已删除 ${res.data.data?.count ?? ids.length} 个包`)
+                }
+                agentPackageSelectedRowKeys.value = []
+                await loadAgentPackages()
+            } catch (error) {
+                if (error?.isAxiosError) {
+                    message.error(error?.message || '删除 Agent 包失败')
+                } else {
+                    throw error
+                }
+            }
+        },
+    })
+}
+// ----------------------------------------------------------------------------------
+
 const openAgentManage = () => {
     if (!state.selectedRowKeys.length) {
         message.warning('请先在主机列表中选择目标主机')
@@ -928,6 +1207,8 @@ const openAgentManage = () => {
     }
     agentManageCredentialId.value = undefined
     agentManageVisible.value = true
+    // 弹窗打开时刷新当前激活包信息（失败不阻塞安装/更新流程）
+    loadAgentPackages()
 }
 
 const submitAgentManage = async () => {
@@ -962,7 +1243,7 @@ const submitAgentManage = async () => {
             message.error('Agent 任务已提交，但未返回运行记录 ID')
             return
         }
-        message.success(`已提交 ${res.data.data?.jobs?.length || 0} 个 Agent 任务`)
+        message.success(`已提交 ${res.data.data?.jobs?.length || 0} 个 Agent 任务${buildAgentPackageHint(res.data.data?.agent_package)}`)
         closeAgentManage()
         state.selectedRowKeys = []
         await router.push({
@@ -1198,7 +1479,7 @@ const confirmDeleteGroupWithPreview = async () => {
 
     groupDeleteLoading.value = true
     try {
-        const res = await deleteHostGroupById(node.key)
+        const res = await batchDeleteHostGroups([node.key])
         if (res.data.code === 200 || res.status === 204) {
             message.success('删除成功')
             groupDeleteConfirmVisible.value = false
@@ -1477,7 +1758,7 @@ const cancel = () => {}
 
 const delconfirm = (id) => {
     rowLoadingStates['delete_' + id] = true
-    deleteHostById(id)
+    batchDeleteHost([id])
         .then((res) => {
             if (res.data.code === 200) {
                 message.success('删除成功')
@@ -1646,6 +1927,8 @@ const formatDateTime = (value) => {
 useKeepAliveRefreshLifecycle(startHostListAutoRefresh, stopHostListAutoRefresh)
 
 onMounted(async () => {
+    // 预取 Agent 包列表：安装/更新弹窗顶部需要展示当前激活包信息
+    loadAgentPackages()
     const environmentResponse = await getBusinessEnvironmentList({ page: 1, page_size: 1000, enabled: true })
     environmentOptions.value = (environmentResponse?.data?.data?.results || []).map((item) => ({ label: item.name, value: item.id }))
     // 先加载主机分组最大层级配置，再构建树（buildTreeData 依赖此值）

@@ -14,8 +14,9 @@
         :data-source="routeList"
         :loading="listLoading"
         :scroll="{ x: 1200 }"
-        :pagination="{ showSizeChanger: true, showQuickJumper: true }"
+        :pagination="pagination"
         size="small"
+        :locale="tableLocale"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'enabled'">
@@ -118,10 +119,11 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
 import {
   createAlertRoute,
-  deleteAlertRoute,
+  batchDeleteAlertRoutes,
   getAlertMediaList,
   getAlertRouteList,
   updateAlertRoute,
@@ -130,6 +132,8 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+
+const pagination = reactive(createPagination())
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 220 },
@@ -301,7 +305,7 @@ async function handleDelete(record) {
     onConfirm: async () => {
       rowDeleteLoading[record.id] = true
       try {
-        await deleteAlertRoute(record.id)
+        await batchDeleteAlertRoutes([record.id])
         message.success('告警路由已删除')
         await loadRoutes()
       } finally {

@@ -114,7 +114,8 @@
                                         :data-source="alertMediaBindings"
                                         :loading="bindingLoading"
                                         :pagination="false"
-                                        :scroll="{ x: 760 }"
+                                        :locale="tableLocale"
+                                        :scroll="{ x: 940 }"
                                         row-key="id"
                                         size="small"
                                     >
@@ -126,6 +127,16 @@
                                                 <a-tag :color="record.enabled ? 'success' : 'default'">
                                                     {{ record.enabled ? '已启用' : '已禁用' }}
                                                 </a-tag>
+                                            </template>
+                                            <template v-else-if="column.key === 'scope'">
+                                                <template v-if="isGlobalScope(record.scope)">
+                                                    <a-tag color="default">全局</a-tag>
+                                                </template>
+                                                <template v-else>
+                                                    <a-tag v-for="(item, index) in record.scope" :key="index" :color="item.missing ? 'red' : 'blue'">
+                                                        {{ formatScopeItem(item, scopeNameById) }}
+                                                    </a-tag>
+                                                </template>
                                             </template>
                                             <template v-else-if="column.key === 'operation'">
                                                 <a-space>
@@ -143,6 +154,11 @@
                                             </template>
                                         </template>
                                     </a-table>
+                                    <!-- 通知链路诊断：绑定 → 媒介 → 关联路由，逐环节展示问题 tag -->
+                                    <div class="notification-chain-card">
+                                        <h3 class="notification-chain-title">通知链路诊断</h3>
+                                        <UserNotificationChain />
+                                    </div>
                                 </a-space>
                             </div>
                         </a-tab-pane>
@@ -174,6 +190,23 @@
                                     :rows="3"
                                 />
                             </a-form-item>
+                            <a-form-item label="订阅范围">
+                                <!-- 不选 = 全局订阅；选择后仅接收归属这些服务树节点的告警。multiple 模式下点选的每个节点本身就是一条 scope，不做父子联动勾选。 -->
+                                <a-tree-select
+                                    v-model:value="bindingForm.scopeValues"
+                                    multiple
+                                    allow-clear
+                                    show-search
+                                    max-tag-count="responsive"
+                                    :tree-data="scopeTreeData"
+                                    :tree-node-filter-prop="'title'"
+                                    :tree-default-expand-all="false"
+                                    :loading="scopeTreeLoading"
+                                    :getPopupContainer="getPopupContainer"
+                                    placeholder="不选 = 订阅全部告警"
+                                />
+                                <div class="scope-hint">不选 = 订阅全部告警；选择后只收归属这些节点主机的告警。</div>
+                            </a-form-item>
                             <a-form-item label="启用此绑定">
                                 <a-switch v-model:checked="bindingForm.enabled" />
                             </a-form-item>
@@ -187,6 +220,7 @@
 </template>
 <script setup>
 import { ref } from 'vue';
+import { tableLocale } from '@/util/tableStyle';
 import { reactive } from 'vue';
 import {
     getCurrentUser,
@@ -200,10 +234,25 @@ import { updateUserTimezone, getCurrentUserInfo } from '@/api/sys/userTimezone'
 import { onMounted } from 'vue';
 import { message } from 'ant-design-vue';
 import Avatar from '@/views/userCenter/components/Avatar.vue';
+import UserNotificationChain from '@/views/monitor/alerts/UserNotificationChain.vue';
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { TIMEZONE_LIST, formatTimeWithTimezone } from '@/util/timezone'
 import { emitUserTimezoneChanged } from '@/util/userTimezoneSync'
+import { fetchAllPages } from '@/util/fetchAllPages'
+import {
+    getApplicationServiceList,
+    getBusinessEnvironmentList,
+    getBusinessSystemList,
+    getProjectList,
+} from '@/api/assets/application'
+import {
+    buildAlertScopeTreeData,
+    formatScopeItem,
+    isGlobalScope,
+    scopeToSelectValues,
+    selectValuesToScope,
+} from '@/util/alertScope'
 
 
 
@@ -227,7 +276,36 @@ const bindingForm = reactive({
     media_id: undefined,
     recipientsText: '',
     enabled: true,
+    scopeValues: [],
 })
+const scopeTreeData = ref([])
+const scopeTreeLoading = ref(false)
+const scopeNameById = ref({})
+const scopeTreeLoaded = ref(false)
+
+const loadScopeTreeData = async () => {
+    if (scopeTreeLoaded.value) return
+    scopeTreeLoading.value = true
+    try {
+        const [projects, systems, services, environments] = await Promise.all([
+            fetchAllPages(getProjectList),
+            fetchAllPages(getBusinessSystemList),
+            fetchAllPages(getApplicationServiceList),
+            fetchAllPages(getBusinessEnvironmentList),
+        ])
+        const environmentNames = new Map(environments.map((item) => [String(item.id), item.name]))
+        scopeTreeData.value = buildAlertScopeTreeData({ projects, systems, services, environmentNames })
+        scopeNameById.value = {
+            ...Object.fromEntries(systems.map((item) => [`business:${item.id}`, item.name])),
+            ...Object.fromEntries(environments.map((item) => [`environment:${item.id}`, item.name])),
+            ...Object.fromEntries(services.map((item) => [`service:${item.id}`, item.name])),
+            ...Object.fromEntries(projects.map((item) => [`project:${item.id}`, item.name])),
+        }
+        scopeTreeLoaded.value = true
+    } finally {
+        scopeTreeLoading.value = false
+    }
+}
 const password_formState = reactive({
     old_password: '',
     new_password: '',
@@ -331,6 +409,7 @@ const loadAlertMediaBindings = async () => {
                 ...item,
                 media_type: mediaTypeById.get(item.media_id) || '-',
                 recipients: Array.isArray(item.recipients) ? item.recipients : [],
+                scope: Array.isArray(item.scope) ? item.scope : [],
             }))
             : []
     } finally {
@@ -358,7 +437,9 @@ const openBindingModal = () => {
     bindingForm.media_id = undefined
     bindingForm.recipientsText = ''
     bindingForm.enabled = true
+    bindingForm.scopeValues = []
     bindingModalVisible.value = true
+    loadScopeTreeData().catch((error) => console.error('加载服务树失败:', error))
 }
 
 const editBinding = (binding) => {
@@ -366,13 +447,16 @@ const editBinding = (binding) => {
     bindingForm.media_id = binding.media_id
     bindingForm.recipientsText = binding.recipients.join('\n')
     bindingForm.enabled = binding.enabled
+    bindingForm.scopeValues = scopeToSelectValues(binding.scope)
     bindingModalVisible.value = true
+    loadScopeTreeData().catch((error) => console.error('加载服务树失败:', error))
 }
 
 const toBindingPayload = (bindings) => bindings.map((binding) => ({
     media_id: binding.media_id,
     recipients: binding.recipients,
     enabled: binding.enabled,
+    scope: Array.isArray(binding.scope) ? binding.scope.map((item) => ({ ...item })) : [],
 }))
 
 const saveBinding = async () => {
@@ -400,6 +484,7 @@ const saveBinding = async () => {
         media_id: bindingForm.media_id,
         recipients,
         enabled: bindingForm.enabled,
+        scope: selectValuesToScope(bindingForm.scopeValues),
     }
     const nextBindings = editingBindingId.value
         ? alertMediaBindings.value.map((item) => item.id === editingBindingId.value ? nextBinding : item)
@@ -435,6 +520,7 @@ const bindingColumns = [
     { title: '媒介类型', dataIndex: 'media_type', key: 'media_type', width: 100 },
     { title: '收件人', dataIndex: 'recipients', key: 'recipients', width: 300 },
     { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80 },
+    { title: '订阅范围', key: 'scope', width: 200 },
     { title: '操作', key: 'operation', fixed: 'right', width: 100 },
 ]
 
@@ -566,6 +652,25 @@ const password_rules = {
 
 .alert-media-container {
     padding: 20px 0;
+}
+
+.scope-hint {
+    margin-top: 4px;
+    color: rgba(0, 0, 0, 0.45);
+    font-size: 12px;
+}
+
+.notification-chain-card {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.notification-chain-title {
+    margin: 0 0 12px;
+    color: rgba(0, 0, 0, 0.88);
+    font-size: 15px;
+    font-weight: 600;
 }
 
 

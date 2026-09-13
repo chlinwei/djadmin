@@ -8,7 +8,7 @@ vi.mock('@/api/assets/application', () => ({
       { id: 2, name: 'tomcat-systemd', application: 1, application_name: 'Tomcat', control_type: 'systemd', run_user: 'app', app_home: '/srv/tomcat', enabled: true, service_count: 0 },
     ], count: 1 } },
   })),
-  deleteApplicationDeploymentTemplate: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  batchDeleteApplicationDeploymentTemplates: vi.fn(() => Promise.resolve({ data: { data: null } })),
 }))
 
 vi.mock('@/util/deleteConfirm', () => ({
@@ -122,7 +122,7 @@ describe('TemplateManagerDialog', () => {
     const { onConfirm } = openDeleteConfirm.mock.calls.at(-1)[0]
     await onConfirm()
 
-    expect(applicationApi.deleteApplicationDeploymentTemplate).toHaveBeenCalledWith(2)
+    expect(applicationApi.batchDeleteApplicationDeploymentTemplates).toHaveBeenCalledWith([2])
     expect(wrapper.emitted('changed')).toBeTruthy()
     wrapper.unmount()
   })

@@ -29,6 +29,7 @@
         :pagination="pagination"
         rowKey="id"
         size="small"
+        :locale="tableLocale"
         @change="onTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -190,12 +191,13 @@ import { checkPermission } from '@/directives/permission/permission'
 import {
   getInventoryList,
   createInventory,
+  batchDeleteInventories,
   updateInventory,
-  deleteInventory,
   getAutomationHostOptions,
   getAutomationGroupTree,
 } from '@/api/sys/automation'
 import { flattenGroupPathMap } from '../utils/scopeSummary'
+import { createPagination, tableLocale } from '@/util/tableStyle'
 
 const ASSET_HOST_ROUTE_CANDIDATES = ['/assets/hosts', '/assets/host', '/assets/hosts/index', '/assets/host/index']
 const route = useRoute()
@@ -224,14 +226,7 @@ const groupPathMap = ref({})
 const hostOptions = ref([])
 const checkedKeys = ref([])
 
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共有 ${total} 条数据`,
-})
+const pagination = reactive(createPagination())
 
 const form = reactive({
   name: '',
@@ -792,7 +787,7 @@ async function submitForm() {
 }
 
 async function removeRecord(record) {
-  await deleteInventory(record.id)
+  await batchDeleteInventories([record.id])
   message.success('Inventory 已删除')
   await loadInventories(false)
 }

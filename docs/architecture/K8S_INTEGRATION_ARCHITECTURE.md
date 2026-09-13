@@ -124,7 +124,7 @@ dj-agent（K8s 模式，Deployment 形态驻集群内，in-cluster ServiceAccoun
 
 ### 4.2 调度器扩展
 
-现有调度器（见 docs/ops/SCHEDULER_README.md）增加一类 **Prometheus 数据源**告警规则：
+现有调度器（autoadmin 进程内 dispatcher，见 docs/architecture/INSPECTION_ARCHITECTURE.md 调度章节）增加一类 **Prometheus 数据源**告警规则：
 
 - 告警规则同一张表，增加 `datasource` 字段（agent / prometheus）
 - Prometheus 数据源规则评估时调 `GET /api/v1/query`，多集群 = 多 Prometheus 地址，查询带 `cluster` 标签

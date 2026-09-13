@@ -99,7 +99,7 @@
                                 <span>磁盘分区详情</span>
                             </a-space>
                         </template>
-                        <a-table :columns="diskColumns" :data-source="enhancedDiskRows" :pagination="false" rowKey="device" size="small">
+                        <a-table :columns="diskColumns" :data-source="enhancedDiskRows" :pagination="false" rowKey="device" size="small" :locale="tableLocale">
                             <template #bodyCell="{ column, record }">
                                 <template v-if="column.key === 'size_gb'">
                                     {{ formatSize(record.size_gb) }}
@@ -207,6 +207,7 @@ defineOptions({
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import { refreshHostInfo, getHostById } from '@/api/assets/host/index.js'
 import { queryPrometheusRange } from '@/api/monitor'

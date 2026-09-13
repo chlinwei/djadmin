@@ -4,7 +4,6 @@ import { shallowMount } from '@vue/test-utils'
 
 vi.mock('@/api/assets/host/index.js', () => ({
   batchDeleteHost: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
-  deleteHostById: vi.fn(() => Promise.resolve({ data: { code: 200 } })),
   getHostById: vi.fn(() =>
     Promise.resolve({
       data: {
@@ -25,9 +24,16 @@ vi.mock('@/api/assets/host/index.js', () => ({
   installAgents: vi.fn(() => Promise.resolve({ data: { code: 200, data: { automation_job_id: 1, jobs: [1] } } })),
 }))
 
+vi.mock('@/api/assets/agentPackage.js', () => ({
+  listAgentPackages: vi.fn(() => Promise.resolve({ data: { code: 200, data: { results: [] } } })),
+  uploadAgentPackage: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
+  activateAgentPackage: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
+  batchDeleteAgentPackages: vi.fn(() => Promise.resolve({ data: { code: 200, data: { count: 0, results: [] } } })),
+}))
+
 vi.mock('@/api/assets/hostgroup/index.js', () => ({
   getHostGroupTree: vi.fn(() => Promise.resolve({ data: { code: 200, data: [] } })),
-  deleteHostGroupById: vi.fn(() => Promise.resolve({ data: { code: 200 } })),
+  batchDeleteHostGroups: vi.fn(() => Promise.resolve({ data: { code: 200 } })),
 }))
 
 vi.mock('@/api/assets/credential/index.js', () => ({

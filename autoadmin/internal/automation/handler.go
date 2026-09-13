@@ -201,26 +201,6 @@ func (handler *Handler) GetByID(context *gin.Context, id int64) {
 	}
 	response.Success(context, item)
 }
-func (handler *Handler) Delete(context *gin.Context) {
-	id, err := strconv.ParseInt(context.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	category, exists := handler.playbookCategoryByID(context, id)
-	if !exists {
-		return
-	}
-	if category == playbookCategoryAgent {
-		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，禁止删除", "data": nil})
-		return
-	}
-	if _, err = handler.db.ExecContext(context, `DELETE FROM automation_playbook_template WHERE id=?`, id); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, gin.H{"id": id})
-}
 func (handler *Handler) Validate(context *gin.Context) {
 	var input struct {
 		Content string `json:"content"`

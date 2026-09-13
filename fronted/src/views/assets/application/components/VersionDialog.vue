@@ -24,6 +24,7 @@
       :loading="loading"
       :pagination="false"
       :scroll="{ x: 640 }"
+      :locale="tableLocale"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'enabled'">
@@ -44,9 +45,10 @@
 <script setup>
 import { reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { tableLocale } from '@/util/tableStyle'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
-  deleteApplicationVersion,
+  batchDeleteApplicationVersions,
   getApplicationVersionList,
   saveApplicationVersion,
 } from '@/api/assets/application'
@@ -113,7 +115,7 @@ function confirmDelete(record) {
     summary: '已被部署实例引用的版本不能删除。',
     items: [`${props.application?.name || '应用'} ${record.version}`],
     onConfirm: async () => {
-      await deleteApplicationVersion(record.id)
+      await batchDeleteApplicationVersions([record.id])
       message.success('版本删除成功')
       await loadVersions()
       emit('changed')

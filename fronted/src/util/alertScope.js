@@ -1,60 +1,11 @@
 /**
- * 告警媒介绑定的「服务树订阅范围」公共逻辑，供个人中心绑定表单/列表与通知链路视图复用。
- * scope 的唯一真相是 [{ type, id }] 数组（type: service|environment|business|project）；
- * null / 空数组 = 全局订阅（不限制归属）。
+ * 服务树公共树数据构建，供「通知策略」页面的 tree matcher（tree type 条目）选择服务树节点使用。
+ * 树层级：项目 → 业务系统 → 环境 → 服务，全部节点可直接选中（订阅/路由语义是"命中任一所选节点"）。
+ * 数据来源与 assets/service-tree 页面一致（projects / business-systems / application-services）。
  */
 
-export const SCOPE_TYPE_LABELS = {
-  service: '服务',
-  environment: '环境',
-  business: '业务',
-  project: '项目',
-}
-
-export function isGlobalScope(scope) {
-  return !Array.isArray(scope) || scope.length === 0
-}
-
-/** scope → a-tree-select 的 value（'type:id' 字符串），忽略无法解析的项。 */
-export function scopeToSelectValues(scope) {
-  if (isGlobalScope(scope)) return []
-  return scope
-    .map((item) => {
-      const id = Number(item?.id)
-      const type = String(item?.type || '')
-      if (!SCOPE_TYPE_LABELS[type] || !Number.isInteger(id) || id <= 0) return null
-      return `${type}:${id}`
-    })
-    .filter(Boolean)
-}
-
-/** a-tree-select 的 value → scope，保持勾选顺序。 */
-export function selectValuesToScope(values) {
-  return (Array.isArray(values) ? values : [])
-    .map((value) => {
-      const match = String(value || '').match(/^(service|environment|business|project):(\d+)$/)
-      if (!match) return null
-      return { type: match[1], id: Number(match[2]) }
-    })
-    .filter(Boolean)
-}
-
-/** 单个 scope 项的展示名：环境优先用已知名，否则补类型前缀；missing 节点标「已删除」。 */
-export function formatScopeItem(item, nameFallbacks = {}) {
-  const type = String(item?.type || '')
-  const id = Number(item?.id)
-  const typeLabel = SCOPE_TYPE_LABELS[type] || type
-  const name = String(item?.name || nameFallbacks[`${type}:${id}`] || '').trim()
-  const suffix = item?.missing ? '（已删除）' : ''
-  if (name) return `${typeLabel}：${name}${suffix}`
-  return `${typeLabel} #${Number.isInteger(id) ? id : '?'}${suffix}`
-}
-
 /**
- * 构建订阅范围 tree-select 的树数据。
- * 层级：项目 → 业务系统 → 环境 → 服务，全部节点可直接选中（multiple 模式，不做父子联动勾选，
- * 因为订阅语义是"命中任一所选节点"，选父节点本身就是一条 scope，无需展开成叶子）。
- * 数据来源与 assets/service-tree 页面一致（projects / business-systems / application-services）。
+ * 构建 a-tree-select 的树数据；节点 value 形如 `type:id`（type: service|environment|business|project）。
  */
 export function buildAlertScopeTreeData({ projects = [], systems = [], services = [], environmentNames = new Map() }) {
   const servicesBySystem = new Map()
@@ -72,6 +23,10 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
     isLeaf: true,
   })
 
+  // 同一环境可挂在多个业务系统下：只在首次出现的位置携带 value（可选），
+  // 其余分支的同环境节点仅作层级展示（key 追加业务后缀，不可选），避免 a-tree `value` 重复。
+  const valuedEnvironmentIds = new Set()
+
   const environmentNodesFor = (businessId) => {
     const byEnv = new Map()
     const order = []
@@ -88,29 +43,38 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
     }
     return order.map((envId) => {
       const group = byEnv.get(envId)
-      const selectable = envId !== 'unassigned'
-      return {
-        key: selectable ? `environment:${envId}` : `environment:unassigned:${businessId}`,
-        value: selectable ? `environment:${envId}` : undefined,
+      const selectable = envId !== 'unassigned' && !valuedEnvironmentIds.has(String(envId))
+      if (selectable) {
+        valuedEnvironmentIds.add(String(envId))
+      }
+      const key = selectable
+        ? `environment:${envId}`
+        : `environment:${envId === 'unassigned' ? 'unassigned' : `${envId}:dup`}:${businessId}`
+      const node = {
+        key,
         selectable,
         checkable: selectable,
         title: group.name,
         children: group.services.map(serviceNode),
       }
+      // 不可选节点也必须带 value 且等于 key，否则 rc-tree-select 告警 key/value 不一致。
+      node.value = selectable ? `environment:${envId}` : key
+      return node
     })
   }
 
   const businessNode = (system) => {
     const businessId = system.id
     const selectable = businessId !== 'unassigned' && businessId !== undefined && businessId !== null && businessId !== ''
-    return {
+    const node = {
       key: selectable ? `business:${businessId}` : `business:unassigned:${system.name || ''}`,
-      value: selectable ? `business:${businessId}` : undefined,
       selectable,
       checkable: selectable,
       title: String(system.name || `业务#${businessId}`),
       children: environmentNodesFor(businessId),
     }
+    node.value = selectable ? `business:${businessId}` : node.key
+    return node
   }
 
   const systemsByProject = new Map()
@@ -142,6 +106,7 @@ export function buildAlertScopeTreeData({ projects = [], systems = [], services 
   if (unassignedChildren.length) {
     projectNodes.push({
       key: 'project:unassigned',
+      value: 'project:unassigned',
       selectable: false,
       checkable: false,
       title: '未分配项目',

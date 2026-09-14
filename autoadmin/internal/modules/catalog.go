@@ -22,8 +22,8 @@ var Catalog = []Module{
 		"inspection_group", "inspection_check", "inspection_task", "inspection_execution", "inspection_target_execution", "inspection_result",
 	}},
 	{Name: "monitor", RoutePrefix: "/monitor", Tables: []string{
-		"monitor_target", "monitor_target_install_history", "monitor_alert_history", "monitor_alert_media", "monitor_alert_route",
-		"monitor_alert_notification_event", "monitor_alert_notification_delivery", "monitor_user_alert_media_binding", "monitor_alert_route_media",
+		"monitor_target", "monitor_target_install_history", "monitor_alert_history", "monitor_alert_media", "monitor_notification_policy",
+		"monitor_alert_notification_event", "monitor_alert_notification_delivery", "monitor_user_alert_media_binding",
 		"monitor_software_package", "monitor_opensearch_cluster", "monitor_log_retention_tier", "monitor_log_processing_rule",
 		"monitor_log_collection_filter_rule", "monitor_log_collection_target",
 	}},

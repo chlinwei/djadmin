@@ -33,16 +33,6 @@
             <div class="chain-node-head">
               <span class="chain-node-title">绑定 #{{ binding.binding_id }}</span>
               <a-tag :color="binding.enabled ? 'success' : 'default'">{{ binding.enabled ? '已启用' : '已禁用' }}</a-tag>
-              <span class="chain-scope">
-                订阅范围：
-                <template v-if="isGlobalScope(binding.scope)">
-                  <a-tag color="default">全局</a-tag>
-                </template>
-                <template v-else>
-                  <a-tag v-for="(item, index) in binding.scope" :key="`s-${index}`" :color="item.missing ? 'red' : 'blue'">{{ formatScopeItem(item) }}</a-tag>
-                </template>
-                <a-tag v-if="binding.scoped_in === false" color="red">不含该告警归属</a-tag>
-              </span>
               <a-tag v-for="(issue, index) in binding.issues" :key="`b-${index}`" :color="issueColor(issue)" class="issue-tag">{{ issue }}</a-tag>
             </div>
 
@@ -57,19 +47,26 @@
                 <a-tag v-for="recipient in binding.recipients" :key="recipient" class="recipient-tag">{{ recipient }}</a-tag>
               </div>
 
-              <div v-if="binding.routes.length" class="chain-routes">
-                <div v-for="route in binding.routes" :key="route.route_id" class="chain-route">
+              <div v-if="binding.policies.length" class="chain-routes">
+                <div v-for="policy in binding.policies" :key="policy.id" class="chain-route">
                   <div class="chain-node-head">
-                    <span class="chain-node-title">路由：{{ route.name }}</span>
-                    <a-tag :color="route.enabled ? 'success' : 'default'">{{ route.enabled ? '已启用' : '已禁用' }}</a-tag>
-                    <a-tag :color="route.notify_on_firing ? 'red' : 'default'">firing {{ route.notify_on_firing ? '开' : '关' }}</a-tag>
-                    <a-tag :color="route.notify_on_resolved ? 'green' : 'default'">resolved {{ route.notify_on_resolved ? '开' : '关' }}</a-tag>
-                    <a-tag v-for="(issue, index) in route.issues" :key="`r-${route.route_id}-${index}`" :color="issueColor(issue)" class="issue-tag">{{ issue }}</a-tag>
+                    <span class="chain-node-title">通知策略：{{ policy.name }}</span>
+                    <a-tag color="blue">{{ policy.path }}</a-tag>
+                    <a-tag :color="policy.notify_on_firing ? 'red' : 'default'">firing {{ policy.notify_on_firing ? '开' : '关' }}</a-tag>
+                    <a-tag :color="policy.notify_on_resolved ? 'green' : 'default'">resolved {{ policy.notify_on_resolved ? '开' : '关' }}</a-tag>
                   </div>
-                  <div v-if="route.matchers" class="chain-matchers">matchers：{{ route.matchers }}</div>
+                  <div class="chain-matchers">
+                  接收组：
+                  <template v-if="policy.user_group_ids">
+                    <a-tag v-for="name in policy.user_group_names" :key="name" color="purple">{{ name }}</a-tag>
+                    <a-tag v-if="policy.user_in_group === false" color="red">当前用户不在组内，收不到</a-tag>
+                  </template>
+                  <a-tag v-else color="default">不限</a-tag>
+                </div>
+                <div v-if="policy.matchers && policy.matchers !== '[]'" class="chain-matchers">matchers：{{ policy.matchers }}</div>
                 </div>
               </div>
-              <div v-else class="chain-no-route">无关联路由</div>
+              <div v-else class="chain-no-route">未被任何通知策略出口命中</div>
             </div>
           </div>
         </a-timeline-item>
@@ -81,7 +78,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getUserNotificationChain } from '@/api/monitor'
-import { formatScopeItem, isGlobalScope } from '@/util/alertScope'
 
 defineOptions({
   name: 'UserNotificationChain',

@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,10 +9,10 @@ import (
 	"time"
 )
 
-// 告警通知分发链路：对齐 Django alert_history.enqueue_notification + tasks.resolve_alert_media
-// + tasks.send_alert_notification。链路为 webhook/对账提交事务 -> enqueue（有媒介预判 + 去重建
+// 告警通知分发链路（策略树版）：webhook/对账提交事务 -> enqueue（策略树预判 + 去重建
 // monitor_alert_notification_event）-> 事务提交后的 goroutine 异步逐地址投递（SMTP 能力复用
 // media_send.go 的 sendSMTPMedia）并落 monitor_alert_notification_delivery。
+// 范围路由由管理员维护的通知策略树（notification_policy.go）决定；用户绑定只是收件配置。
 
 const (
 	notificationEventPending = "pending"
@@ -59,60 +60,11 @@ func mergeAlertLabels(labels map[string]any, alertname, severity, instance strin
 	return merged
 }
 
-// matchersMatch 对齐 Django 的全量等值匹配：matchers 中每个 key=value 都必须命中 labels。
-func matchersMatch(matchers map[string]any, labels map[string]string) bool {
-	for key, rawValue := range matchers {
-		if labels[key] != stringValue(rawValue) {
-			return false
-		}
-	}
-	return true
-}
-
-// matchedAlertMedias 对齐 tasks.resolve_alert_media：仅取 enabled 路由，按事件类型检查
-// notify_on_firing/notify_on_resolved，matchers 对合并后的 labels 做全量等值匹配，
-// 命中路由收集其所有 enabled 媒介（monitor_alert_route_media 多对多）。
-func (handler *Handler) matchedAlertMedias(target alertNotificationTarget, eventType string) ([]alertNotificationMedia, error) {
-	rows, err := handler.db.Query(`SELECT r.matchers,m.id,m.name,m.media_type,m.config
-FROM monitor_alert_route r
-JOIN monitor_alert_route_media rm ON rm.alertroute_id=r.id
-JOIN monitor_alert_media m ON m.id=rm.alertmedia_id
-WHERE r.enabled=TRUE AND m.enabled=TRUE AND (CASE WHEN ?='firing' THEN r.notify_on_firing ELSE r.notify_on_resolved END)=TRUE
-ORDER BY m.id`, eventType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	merged := mergeAlertLabels(target.labels, target.alertname, target.severity, target.instance)
-	seen := map[int64]bool{}
-	medias := make([]alertNotificationMedia, 0)
-	for rows.Next() {
-		var matchersJSON, config []byte
-		media := alertNotificationMedia{}
-		if err = rows.Scan(&matchersJSON, &media.id, &media.name, &media.mediaType, &config); err != nil {
-			return nil, err
-		}
-		if seen[media.id] {
-			continue
-		}
-		matchers := map[string]any{}
-		_ = json.Unmarshal(matchersJSON, &matchers)
-		if !matchersMatch(matchers, merged) {
-			continue
-		}
-		seen[media.id] = true
-		media.config = config
-		medias = append(medias, media)
-	}
-	return medias, rows.Err()
-}
-
-// enqueueAlertNotification 对齐 enqueue_notification：先做“有无可投递媒介”预判（无命中不建
-// 事件，避免注定失败的垃圾记录），再按 deduplication_key={alert_id}:{event_type} 幂等建事件。
-// 返回是否新建了事件。
+// enqueueAlertNotification 对齐 enqueue_notification：先做“有无可投递媒介”预判（策略树未命中
+// 或出口为空不建事件，避免注定失败的垃圾记录），再按 deduplication_key={alert_id}:{event_type}
+// 幂等建事件。返回是否新建了事件。
 func (handler *Handler) enqueueAlertNotification(target alertNotificationTarget, eventType string) (bool, error) {
-	medias, err := handler.matchedAlertMedias(target, eventType)
+	medias, _, err := handler.matchedPolicyMedias(context.Background(), target, eventType)
 	if err != nil {
 		return false, err
 	}
@@ -197,14 +149,14 @@ FROM monitor_alert_notification_event e JOIN monitor_alert_history a ON a.id=e.a
 		return false, nil
 	}
 
-	medias, err := handler.matchedAlertMedias(target, eventType)
+	medias, userGroupIDs, err := handler.matchedPolicyMedias(context.Background(), target, eventType)
 	if err != nil {
 		return false, err
 	}
 	now := time.Now().UTC()
 	if len(medias) == 0 {
-		// 入队时已筛过一次，走到这里说明媒介在入队后被停用或路由被改；不可重试。
-		_, _ = handler.db.Exec(`UPDATE monitor_alert_notification_event SET status='failed',error_message='媒介在入队后被停用或路由已变更',update_time=? WHERE id=?`, now, eventID)
+		// 入队时已筛过一次，走到这里说明媒介在入队后被停用或策略树已变更；不可重试。
+		_, _ = handler.db.Exec(`UPDATE monitor_alert_notification_event SET status='failed',error_message='媒介在入队后被停用或策略树已变更',update_time=? WHERE id=?`, now, eventID)
 		return false, nil
 	}
 	if _, err = handler.db.Exec(`UPDATE monitor_alert_notification_event SET status='sending',attempt_count=attempt_count+1,update_time=? WHERE id=?`, now, eventID); err != nil {
@@ -219,21 +171,37 @@ FROM monitor_alert_notification_event e JOIN monitor_alert_history a ON a.id=e.a
 			// 当前仅实现 Email，其余媒介类型后续补充。
 			continue
 		}
-		// 每个绑定 = 一个用户在该媒介上的收件人列表。
+		// 每个绑定 = 一个用户在该媒介上的收件人列表（范围路由由策略树统一决定，绑定不再过滤）。
 		type bindingRow struct {
 			userID     int64
 			username   string
 			recipients []byte
-			scope      []byte
 		}
-		rows, err := handler.db.Query(`SELECT b.user_id,u.username,b.recipients,b.scope FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id=b.user_id WHERE b.media_id=? AND b.enabled=TRUE ORDER BY b.id`, media.id)
+		// 出口用户组限制：nil=不限组（媒介全部绑定）；否则仅组成员的绑定可收。
+		var rows *sql.Rows
+		if userGroupIDs != nil {
+			placeholders := ""
+			args := make([]any, 0, len(userGroupIDs)+1)
+			args = append(args, media.id)
+			for index, groupID := range userGroupIDs {
+				if index > 0 {
+					placeholders += ","
+				}
+				placeholders += "?"
+				args = append(args, groupID)
+			}
+			rows, err = handler.db.Query(`SELECT b.user_id,u.username,b.recipients FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id=b.user_id
+WHERE b.media_id=? AND b.enabled=TRUE AND b.user_id IN (SELECT user_id FROM sys_user_group_member WHERE group_id IN (`+placeholders+`)) ORDER BY b.id`, args...)
+		} else {
+			rows, err = handler.db.Query(`SELECT b.user_id,u.username,b.recipients FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id=b.user_id WHERE b.media_id=? AND b.enabled=TRUE ORDER BY b.id`, media.id)
+		}
 		if err != nil {
 			return false, err
 		}
 		bindings := make([]bindingRow, 0)
 		for rows.Next() {
 			var binding bindingRow
-			if err = rows.Scan(&binding.userID, &binding.username, &binding.recipients, &binding.scope); err != nil {
+			if err = rows.Scan(&binding.userID, &binding.username, &binding.recipients); err != nil {
 				rows.Close()
 				return false, err
 			}
@@ -243,15 +211,6 @@ FROM monitor_alert_notification_event e JOIN monitor_alert_history a ON a.id=e.a
 		if err = rows.Err(); err != nil {
 			return false, err
 		}
-		// 订阅范围过滤（路线三）：scope 为 NULL = 全局；否则需与告警主机的服务树归属节点有交集。
-		scopeNodes := handler.alertScopeNodes(target)
-		filtered := make([]bindingRow, 0, len(bindings))
-		for _, binding := range bindings {
-			if bindingMatchesScope(binding.scope, scopeNodes) {
-				filtered = append(filtered, binding)
-			}
-		}
-		bindings = filtered
 		if len(bindings) == 0 {
 			errors = append(errors, fmt.Sprintf("媒介 %q 没有任何用户绑定", media.name))
 			continue
@@ -438,8 +397,9 @@ func (handler *Handler) reconcileStaleAlerts() {
 	}
 }
 
-// alertScopeNodes 解析告警主机的服务树归属节点（key 形如 "project:3"）。
-// labels 无 host_id 或主机未挂任何服务时返回空集——只有全局订阅绑定的用户能收到。
+// alertScopeNodes 解析告警主机的服务树归属节点（key 形如 "project:3"），供策略树的
+// tree matcher 使用。labels 无 host_id 或主机未挂任何服务时返回空集——只有不带 tree
+// matcher 的策略（如默认策略）能接住这类告警。
 // 解析结果不缓存：每个事件每次派发各查一次（告警频率低，表很小）。
 func (handler *Handler) alertScopeNodes(target alertNotificationTarget) map[string]bool {
 	nodes := map[string]bool{}
@@ -476,25 +436,4 @@ func (handler *Handler) alertScopeNodes(target alertNotificationTarget) map[stri
 		}
 	}
 	return nodes
-}
-
-// bindingMatchesScope：scope 为 NULL/空 = 全局订阅恒命中；
-// 否则解析 scope 条目，任一 type:id 命中告警归属节点即命中。坏 JSON 按全局处理（不因数据问题静默吞掉通知）。
-func bindingMatchesScope(scope []byte, nodes map[string]bool) bool {
-	if len(scope) == 0 || string(scope) == "null" {
-		return true
-	}
-	var entries []struct {
-		Type string `json:"type"`
-		ID   int64  `json:"id"`
-	}
-	if err := json.Unmarshal(scope, &entries); err != nil {
-		return true
-	}
-	for _, entry := range entries {
-		if entry.ID > 0 && nodes[fmt.Sprintf("%s:%d", entry.Type, entry.ID)] {
-			return true
-		}
-	}
-	return false
 }

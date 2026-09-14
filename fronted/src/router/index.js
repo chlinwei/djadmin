@@ -46,6 +46,11 @@ export const staticRouterMap = [
                 component: () => import('../views/inspection/index.vue'),
             },
             {
+                path: '/sys/user-groups',
+                name: '用户组',
+                component: () => import('../views/sys/usergroups/index.vue'),
+            },
+            {
                 path: '/sys/security/baseline',
                 name: '基线扫描',
                 component: () => import('../views/security/baseline/index.vue'),
@@ -96,9 +101,14 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/media/index.vue'),
             },
             {
+                path: '/monitor/notification-policies',
+                name: '通知策略',
+                component: () => import('../views/monitor/notification-policies/index.vue'),
+            },
+            {
+                // 旧「告警路由」页已被通知策略树取代：旧地址（菜单/收藏）一律重定向。
                 path: '/monitor/alert-routes',
-                name: '告警路由',
-                component: () => import('../views/monitor/alert-routes/index.vue'),
+                redirect: '/monitor/notification-policies',
             },
             {
                 path: '/monitor/log-storage',

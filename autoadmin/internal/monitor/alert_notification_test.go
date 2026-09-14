@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -22,19 +23,85 @@ func TestMergeAlertLabelsConvenienceKeys(t *testing.T) {
 	}
 }
 
-func TestMatchersMatch(t *testing.T) {
-	labels := map[string]string{"alertname": "HighDiskUsage", "severity": "warning", "env": "prod"}
-	if !matchersMatch(map[string]any{"severity": "warning", "env": "prod"}, labels) {
-		t.Fatal("full equality match expected")
+func TestPolicyMatcherMatch(t *testing.T) {
+	labels := map[string]string{"alertname": "HighDiskUsage", "severity": "warning"}
+	scopeNodes := map[string]bool{"business:3": true, "environment:7": true}
+	cases := []struct {
+		matcher policyMatcher
+		want    bool
+	}{
+		{policyMatcher{Type: "label", Label: "severity", Operator: "=", Value: "warning"}, true},
+		{policyMatcher{Type: "label", Label: "severity", Operator: "=", Value: "critical"}, false},
+		{policyMatcher{Type: "label", Label: "severity", Operator: "!=", Value: "critical"}, true},
+		// Prometheus 语义：缺失 label 视为空串。
+		{policyMatcher{Type: "label", Label: "missing", Operator: "!=", Value: "x"}, true},
+		{policyMatcher{Type: "label", Label: "missing", Operator: "!~", Value: ".+"}, true},
+		{policyMatcher{Type: "label", Label: "alertname", Operator: "=~", Value: "High.*"}, true},
+		{policyMatcher{Type: "label", Label: "alertname", Operator: "!~", Value: "Disk$"}, true},
+		{policyMatcher{Type: "label", Label: "alertname", Operator: "=~", Value: "^Low"}, false},
+		{policyMatcher{Type: "tree", NodeType: "business", ID: 3}, true},
+		{policyMatcher{Type: "tree", NodeType: "business", ID: 4}, false},
+		{policyMatcher{Type: "tree", NodeType: "service", ID: 9}, false},
 	}
-	if matchersMatch(map[string]any{"severity": "critical"}, labels) {
-		t.Fatal("severity mismatch must not match")
+	for _, testCase := range cases {
+		matched, _ := policyMatcherMatch(testCase.matcher, labels, scopeNodes)
+		if matched != testCase.want {
+			t.Fatalf("matcher %+v: got %v want %v", testCase.matcher, matched, testCase.want)
+		}
 	}
-	if matchersMatch(map[string]any{"missing": "x"}, labels) {
-		t.Fatal("missing label key must not match")
+}
+
+func TestNormalizePolicyMatchers(t *testing.T) {
+	if _, errMsg := normalizePolicyMatchers(nil); errMsg != "" {
+		t.Fatalf("nil matchers must pass: %s", errMsg)
 	}
-	if !matchersMatch(map[string]any{}, labels) {
-		t.Fatal("empty matchers must match everything")
+	valid, _ := json.Marshal([]policyMatcher{
+		{Type: "label", Label: "severity", Operator: "=", Value: "critical"},
+		{Type: "tree", NodeType: "business", ID: 3},
+	})
+	if _, errMsg := normalizePolicyMatchers(valid); errMsg != "" {
+		t.Fatalf("valid matchers must pass: %s", errMsg)
+	}
+	bad, _ := json.Marshal([]policyMatcher{{Type: "label", Label: "severity", Operator: "~", Value: "x"}})
+	if _, errMsg := normalizePolicyMatchers(bad); errMsg == "" {
+		t.Fatal("unknown operator must fail")
+	}
+	badRegex, _ := json.Marshal([]policyMatcher{{Type: "label", Label: "a", Operator: "=~", Value: "("}})
+	if _, errMsg := normalizePolicyMatchers(badRegex); errMsg == "" {
+		t.Fatal("invalid regex must fail")
+	}
+}
+
+func TestResolvePolicyRouteAndEffectiveMedia(t *testing.T) {
+	root := &policyNode{ID: 1, Name: "root", MediaIDs: []int64{2}}
+	child := &policyNode{ID: 2, ParentID: 1, Name: "critical", Matchers: []policyMatcher{{Type: "label", Label: "severity", Operator: "=", Value: "critical"}}}
+	grandchild := &policyNode{ID: 3, ParentID: 2, Name: "mute", Matchers: []policyMatcher{{Type: "label", Label: "env", Operator: "=", Value: "prod"}}, MediaIDs: []int64{}}
+	root.Children = []*policyNode{child}
+	child.Children = []*policyNode{grandchild}
+
+	labels := map[string]string{"severity": "critical", "env": "prod"}
+	path := resolvePolicyRoute(root, labels, map[string]bool{})
+	if len(path) != 3 || path[len(path)-1].ID != 3 {
+		t.Fatalf("unexpected path: %+v", path)
+	}
+	if ids := effectivePolicyMedia(path); len(ids) != 0 {
+		t.Fatalf("explicit empty media must mute: %v", ids)
+	}
+
+	// env 不命中 grandchild：停在 child，继承根出口。
+	path = resolvePolicyRoute(root, map[string]string{"severity": "critical"}, map[string]bool{})
+	if len(path) != 2 || path[len(path)-1].ID != 2 {
+		t.Fatalf("unexpected path: %+v", path)
+	}
+	if ids := effectivePolicyMedia(path); len(ids) != 1 || ids[0] != 2 {
+		t.Fatalf("inherited media expected: %v", ids)
+	}
+}
+
+func TestPolicyAllowsEvent(t *testing.T) {
+	node := &policyNode{NotifyOnFiring: true, NotifyOnResolved: false}
+	if !policyAllowsEvent(node, "firing") || policyAllowsEvent(node, "resolved") {
+		t.Fatal("unexpected event allowance")
 	}
 }
 
@@ -50,16 +117,29 @@ func notificationTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, *sql.DB) 
 	return &Handler{db: database}, mock, database
 }
 
-func mediaRows(name, mediaType string) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}).
-		AddRow(`{"severity":"warning"}`, int64(2), name, mediaType, `{"smtpServer":"smtp.x.com"}`)
+// policyTreeRows 根节点：matchers=[] 恒命中，出口媒介 [2]。
+func policyTreeRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "parent_id", "name", "position", "remark", "matchers", "media_ids", "user_group_ids", "notify_on_firing", "notify_on_resolved"}).
+		AddRow(int64(1), int64(0), "默认策略", 0, "", `[]`, `[2]`, nil, true, true)
+}
+
+func expectPolicyMediaHit(mock sqlmock.Sqlmock, name, mediaType string) {
+	mock.ExpectQuery("FROM monitor_notification_policy").WillReturnRows(policyTreeRows())
+	mock.ExpectQuery("FROM monitor_alert_media WHERE enabled=TRUE AND id IN").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "media_type", "config"}).
+			AddRow(int64(2), name, mediaType, `{"smtpServer":"smtp.x.com"}`))
+}
+
+func expectPolicyMediaMiss(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("FROM monitor_notification_policy").WillReturnRows(policyTreeRows())
+	mock.ExpectQuery("FROM monitor_alert_media WHERE enabled=TRUE AND id IN").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "media_type", "config"}))
 }
 
 func TestEnqueueAlertNotificationSkipsWithoutMedia(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
-	// 预判查询无命中：不得出现任何 INSERT。
-	mock.ExpectQuery("FROM monitor_alert_route").
-		WillReturnRows(sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}))
+	// 策略树出口为空：不得出现任何 INSERT。
+	expectPolicyMediaMiss(mock)
 	created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -74,7 +154,7 @@ func TestEnqueueAlertNotificationSkipsWithoutMedia(t *testing.T) {
 
 func TestEnqueueAlertNotificationCreatesDedupedEvent(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
 		WillReturnResult(sqlmock.NewResult(9, 1))
@@ -86,7 +166,7 @@ func TestEnqueueAlertNotificationCreatesDedupedEvent(t *testing.T) {
 		t.Fatal("expected event created")
 	}
 	// 第二次同 key 入队：预判仍命中但 INSERT IGNORE 去重，不计入也不派发。
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
 		WillReturnResult(sqlmock.NewResult(9, 0))
@@ -105,15 +185,14 @@ func TestEnqueueAlertNotificationCreatesDedupedEvent(t *testing.T) {
 func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
 	// 第一个目标命中并创建事件；第二个目标预判无媒介不建事件。
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
 		WillReturnResult(sqlmock.NewResult(9, 1))
 	mock.ExpectQuery("SELECT id FROM monitor_alert_notification_event WHERE deduplication_key").
 		WithArgs("7:firing").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
-	mock.ExpectQuery("FROM monitor_alert_route").
-		WillReturnRows(sqlmock.NewRows([]string{"matchers", "id", "name", "media_type", "config"}))
+	expectPolicyMediaMiss(mock)
 	count, ids := handler.enqueueWebhookNotifications([]alertNotificationTarget{
 		{id: 7, alertname: "HighDiskUsage", severity: "warning", state: "firing", labels: map[string]any{"severity": "warning"}},
 		{id: 8, alertname: "Other", severity: "info", state: "firing", labels: map[string]any{"severity": "info"}},
@@ -142,12 +221,12 @@ func TestSendAlertNotificationEventNoBindings(t *testing.T) {
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	// 该媒介没有任何 enabled 绑定。
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}))
 	mock.ExpectExec("SET status='failed'").
 		WithArgs("媒介 \"公司邮箱\" 没有任何用户绑定", sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -174,7 +253,7 @@ func TestSendAlertNotificationEventNonEmailMediaOnly(t *testing.T) {
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
 	// 预判能命中媒介（非 email），但发送阶段全部被跳过。
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("钉钉群", "webhook"))
+	expectPolicyMediaHit(mock, "钉钉群", "webhook")
 	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("SET status='failed'").
 		WithArgs("匹配的告警媒介没有可投递的用户地址", sqlmock.AnyArg(), int64(1)).
@@ -210,11 +289,11 @@ func TestSendAlertNotificationEventDeliverySuccess(t *testing.T) {
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}).AddRow(int64(5), "zhang", `["a@b.com", "a@b.com", " "]`, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", `["a@b.com", "a@b.com", " "]`))
 	// get-or-create delivery：去重后的 a@b.com 一条。
 	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
@@ -251,11 +330,11 @@ func TestSendAlertNotificationEventDeliveryFailureIsRetryable(t *testing.T) {
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectQuery("FROM monitor_alert_route").WillReturnRows(mediaRows("公司邮箱", "email"))
+	expectPolicyMediaHit(mock, "公司邮箱", "email")
 	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "scope"}).AddRow(int64(5), "zhang", `["a@b.com"]`, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", `["a@b.com"]`))
 	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
 		WillReturnResult(sqlmock.NewResult(11, 1))

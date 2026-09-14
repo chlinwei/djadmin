@@ -108,20 +108,21 @@ export function testAlertMedia(id, data) {
   return requestUtil.post(prefix + `media/${id}/test/`, data)
 }
 
-export function getAlertRouteList(params) {
-  return requestUtil.get(prefix + 'alert-routes/', params)
+// 通知策略树（Grafana notification policy 模型）：根节点内置，子策略按 position 排序。
+export function getNotificationPolicyList() {
+  return requestUtil.get(prefix + 'notification-policies/')
 }
 
-export function createAlertRoute(data) {
-  return requestUtil.post(prefix + 'alert-routes/', data)
+export function createNotificationPolicy(data) {
+  return requestUtil.post(prefix + 'notification-policies/create/', data)
 }
 
-export function updateAlertRoute(id, data) {
-  return requestUtil.patch(prefix + `alert-routes/${id}/`, data)
+export function updateNotificationPolicy(data) {
+  return requestUtil.post(prefix + 'notification-policies/update/', data)
 }
 
-export function batchDeleteAlertRoutes(ids) {
-  return requestUtil.post(prefix + 'alert-routes/batch-delete/', { ids })
+export function batchDeleteNotificationPolicies(ids) {
+  return requestUtil.post(prefix + 'notification-policies/batch-delete/', { ids })
 }
 
 export function retryManagedTarget(id) {

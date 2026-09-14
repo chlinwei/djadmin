@@ -15,40 +15,47 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// 通知链路诊断视图（策略树版）：
+// - P1 user-chain：用户绑定（收件配置）× 命中该媒介出口的策略树路径；
+// - P2 chain/:historyId：沿策略树逐层评估 matcher，展示最深命中策略的出口媒介、
+//   用户绑定与实际 event/delivery 记录。
+// 范围路由语义与分发侧（alert_notification.go + notification_policy.go）共用同一套判定。
+
 // ---- 契约结构 ----
 
 type alertChainMediaBrief struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	MediaType  string `json:"media_type"`
-	Enabled    bool   `json:"enabled"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	Enabled   bool   `json:"enabled"`
 }
 
-type alertChainRouteBrief struct {
-	RouteID         int64           `json:"route_id"`
-	Name            string `json:"name"`
-	Enabled         bool   `json:"enabled"`
-	NotifyOnFiring   bool   `json:"notify_on_firing"`
-	NotifyOnResolved bool   `json:"notify_on_resolved"`
-	Matchers        map[string]any `json:"matchers"`
-	Issues          []string       `json:"issues"`
+type alertChainPolicyBrief struct {
+	ID               int64           `json:"id"`
+	Name             string          `json:"name"`
+	Path             string          `json:"path"`
+	Matchers         json.RawMessage `json:"matchers"`
+	UserGroupIDs     *[]int64        `json:"user_group_ids"`
+	UserGroupNames   []string        `json:"user_group_names"`
+	UserInGroup      bool            `json:"user_in_group"` // 组限制生效时当前用户是否在组内；未限制恒 true
+	NotifyOnFiring   bool            `json:"notify_on_firing"`
+	NotifyOnResolved bool            `json:"notify_on_resolved"`
 }
 
 type alertChainBinding struct {
-	BindingID  int64                  `json:"binding_id"`
-	Enabled    bool                   `json:"enabled"`
-	Recipients []string               `json:"recipients"`
-	Scope      []alertChainScopeItem  `json:"scope"`
-	Media      alertChainMediaBrief   `json:"media"`
-	Issues     []string               `json:"issues"`
-	Routes     []alertChainRouteBrief `json:"routes"`
+	BindingID  int64                   `json:"binding_id"`
+	Enabled    bool                    `json:"enabled"`
+	Recipients []string                `json:"recipients"`
+	Media      alertChainMediaBrief    `json:"media"`
+	Policies   []alertChainPolicyBrief `json:"policies"`
+	Issues     []string                `json:"issues"`
 }
 
 type alertChainUserChain struct {
-	User          gin.H                 `json:"user"`
-	Bindings      []alertChainBinding   `json:"bindings"`
-	CanReceive    bool                  `json:"can_receive"`
-	SummaryIssues []string              `json:"summary_issues"`
+	User          gin.H               `json:"user"`
+	Bindings      []alertChainBinding `json:"bindings"`
+	CanReceive    bool                `json:"can_receive"`
+	SummaryIssues []string            `json:"summary_issues"`
 }
 
 type alertChainDelivery struct {
@@ -60,37 +67,48 @@ type alertChainDelivery struct {
 }
 
 type alertChainEvent struct {
-	ID           int64                `json:"id"`
-	EventType    string               `json:"event_type"`
-	Status       string               `json:"status"`
-	AttemptCount int64                `json:"attempt_count"`
-	Error        string               `json:"error"`
+	ID           int64  `json:"id"`
+	EventType    string `json:"event_type"`
+	Status       string `json:"status"`
+	AttemptCount int64  `json:"attempt_count"`
+	Error        string `json:"error"`
 }
 
 type alertChainMediaDetail struct {
-	ID       int64                `json:"id"`
-	Name     string               `json:"name"`
-	Enabled  bool                 `json:"enabled"`
-	Bindings []gin.H              `json:"bindings"`
-	Event    *alertChainEvent     `json:"event"`
+	ID         int64                `json:"id"`
+	Name       string               `json:"name"`
+	Enabled    bool                 `json:"enabled"`
+	Bindings   []gin.H              `json:"bindings"`
+	Event      *alertChainEvent     `json:"event"`
 	Deliveries []alertChainDelivery `json:"deliveries"`
 }
 
-type alertChainRouteDetail struct {
-	RouteID          int64                    `json:"route_id"`
-	Name             string                   `json:"name"`
-	Enabled          bool                     `json:"enabled"`
-	Matched          bool                     `json:"matched"`
-	MissReason       string                   `json:"miss_reason"`
-	NotifyOnFiring   bool                     `json:"notify_on_firing"`
-	NotifyOnResolved bool                     `json:"notify_on_resolved"`
-	Media            []alertChainMediaDetail  `json:"media"`
-
-	// Labels 告警原始 labels（不入 JSON），供 scope 判定取 host_id。
-	Labels map[string]any `json:"-"`
+// alertChainPolicyEval 单层兄弟策略的评估结果。
+type alertChainPolicyEval struct {
+	ID         int64           `json:"id"`
+	Name       string          `json:"name"`
+	Matchers   json.RawMessage `json:"matchers"`
+	Matched    bool            `json:"matched"`
+	MissReason string          `json:"miss_reason"`
+	Selected   bool            `json:"selected"`
 }
 
-// ---- 纯判定逻辑（可单测） ----
+type alertChainPolicyDetail struct {
+	ID                int64           `json:"id"`
+	Name              string          `json:"name"`
+	Matchers          json.RawMessage `json:"matchers"`
+	MediaIDs          *[]int64        `json:"media_ids"`
+	MediaInherited    bool            `json:"media_inherited"`
+	EffectiveMedia    []int64         `json:"effective_media_ids"`
+	UserGroupIDs      *[]int64        `json:"user_group_ids"`
+	UserGroupNames    []string        `json:"user_group_names"`
+	UserGroupsLimited bool            `json:"user_groups_limited"` // 是否启用接收组限制
+	NotifyOnFiring    bool            `json:"notify_on_firing"`
+	NotifyOnResolved  bool            `json:"notify_on_resolved"`
+	EventAllowed      bool            `json:"event_allowed"`
+}
+
+// ---- 纯判定逻辑 ----
 
 // chainMergeLabels 把 alertname/severity/instance 便捷键合并进 labels（显式 labels 值优先）。
 func chainMergeLabels(labels map[string]any, alertname, severity, instance string) map[string]any {
@@ -111,33 +129,7 @@ func chainMergeLabels(labels map[string]any, alertname, severity, instance strin
 	return merged
 }
 
-// matchRouteMatchers 对 matchers 做 labels 全量等值匹配，返回是否命中与第一个不匹配键。
-func matchRouteMatchers(matchers map[string]any, labels map[string]any) (bool, string) {
-	for key, expected := range matchers {
-		actual, exists := labels[key]
-		if !exists || fmt.Sprintf("%v", actual) != fmt.Sprintf("%v", expected) {
-			return false, key
-		}
-	}
-	return true, ""
-}
-
-// routeNotifyMiss 依据告警 state 判断 notify 开关是否匹配，返回 miss 说明（空串=匹配）。
-func routeNotifyMiss(state string, notifyOnFiring, notifyOnResolved bool) string {
-	switch strings.ToLower(state) {
-	case "firing":
-		if !notifyOnFiring {
-			return "告警 state=firing 但该路由未开启 firing 通知"
-		}
-	case "resolved":
-		if !notifyOnResolved {
-			return "告警 state=resolved 但该路由未开启 resolved 通知"
-		}
-	}
-	return ""
-}
-
-// userBindingIssues 计算用户视角单条绑定的媒介级 issues。
+// userBindingIssues 计算单条绑定的媒介级 issues。
 func userBindingIssues(bindingEnabled bool, mediaEnabled bool, mediaType string, recipients []string) []string {
 	issues := make([]string, 0, 4)
 	if !bindingEnabled {
@@ -155,167 +147,6 @@ func userBindingIssues(bindingEnabled bool, mediaEnabled bool, mediaType string,
 	return issues
 }
 
-// userRouteIssues 计算用户视角路由 issues（matchers 是对告警的，与用户无关，故不校验）。
-func userRouteIssues(routeEnabled, notifyOnFiring, notifyOnResolved bool) []string {
-	var issues []string
-	if !routeEnabled {
-		issues = append(issues, "路由已禁用")
-	}
-	if !notifyOnFiring {
-		if notifyOnResolved {
-			issues = append(issues, "该路由仅通知 resolved，firing 通知未开启")
-		} else {
-			issues = append(issues, "该路由未开启任何事件通知")
-		}
-	}
-	return issues
-}
-
-// userCanReceive 判断是否存在绑定启用+媒介启用+email+收件地址非空+挂在启用且开启 firing 通知的路由上的完整通路。
-
-// alertChainScopeItem 订阅范围条目；missing=true 表示节点已被删除。
-type alertChainScopeItem struct {
-	Type    string `json:"type"`
-	ID      int64  `json:"id"`
-	Name    string `json:"name"`
-	Missing bool   `json:"missing"`
-}
-
-// resolveScopeItems 把绑定的 scope JSON 解析为带节点名的条目列表。
-// 名称按类型查服务树表；查不到即 missing（节点已删除）。
-func (handler *Handler) resolveScopeItems(context context.Context, raw []byte) []alertChainScopeItem {
-	if len(raw) == 0 || string(raw) == "null" {
-		return []alertChainScopeItem{}
-	}
-	var entries []struct {
-		Type string `json:"type"`
-		ID   int64  `json:"id"`
-	}
-	if err := json.Unmarshal(raw, &entries); err != nil {
-		return []alertChainScopeItem{}
-	}
-	items := make([]alertChainScopeItem, 0, len(entries))
-	for _, entry := range entries {
-		item := alertChainScopeItem{Type: entry.Type, ID: entry.ID, Missing: true}
-		var name string
-		var table string
-		switch entry.Type {
-		case "service":
-			table = "assets_application_service"
-		case "environment":
-			table = "assets_business_environment"
-		case "business":
-			table = "assets_business_system"
-		case "project":
-			table = "assets_project"
-		default:
-			table = ""
-		}
-		if table != "" {
-			query := fmt.Sprintf("SELECT name FROM `%s` WHERE id=?", table)
-			if err := handler.db.QueryRowContext(context, query, entry.ID).Scan(&name); err == nil {
-				item.Name = name
-				item.Missing = false
-			}
-		}
-		items = append(items, item)
-	}
-	return items
-}
-
-// scopeIssues：scope 绑定的范围相关断点（missing 节点、全部 missing）。
-func scopeIssues(items []alertChainScopeItem) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	issues := make([]string, 0)
-	missingCount := 0
-	for _, item := range items {
-		if item.Missing {
-			missingCount++
-		}
-	}
-	if missingCount > 0 {
-		issues = append(issues, "订阅范围包含已删除的服务树节点")
-	}
-	if missingCount == len(items) {
-		issues = append(issues, "订阅范围不含任何存在的服务树节点，等同于收不到告警")
-	}
-	return issues
-}
-
-// scopeCoversAlert：告警历史 labels 的 host_id 解析出的服务树归属节点，
-// 是否落在该用户绑定 scope 内（scope 为空 = 全局恒命中；复用分发侧的解析与匹配语义）。
-func (handler *Handler) scopeCoversAlert(context context.Context, detail *alertChainRouteDetail, userID int32) bool {
-	var scopeRaw []byte
-	if err := handler.db.QueryRowContext(context,
-		`SELECT scope FROM monitor_user_alert_media_binding WHERE user_id=? LIMIT 1`, userID).Scan(&scopeRaw); err != nil {
-		return true
-	}
-	var entries []struct {
-		Type string `json:"type"`
-		ID   int64  `json:"id"`
-	}
-	if len(scopeRaw) == 0 || string(scopeRaw) == "null" || json.Unmarshal(scopeRaw, &entries) != nil || len(entries) == 0 {
-		return true
-	}
-	var hostID int64
-	if detail.Labels != nil {
-		if raw, ok := detail.Labels["host_id"]; ok {
-			_, _ = fmt.Sscan(strings.TrimSpace(fmt.Sprint(raw)), &hostID)
-		}
-	}
-	if hostID <= 0 {
-		return false
-	}
-	nodeSet := map[string]bool{}
-	rows, err := handler.db.QueryContext(context, `SELECT DISTINCT s.id, s.business_system_id, s.environment_id, bs.project
-		FROM assets_application_deployment d
-		JOIN assets_application_service_deployment sd ON sd.deployment_id=d.id
-		JOIN assets_application_service s ON s.id=sd.service_id
-		JOIN assets_business_system bs ON bs.id=s.business_system_id
-		WHERE d.host_id=? AND d.enabled=TRUE AND sd.enabled=TRUE`, hostID)
-	if err != nil {
-		return true
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var serviceID, businessID int64
-		var environmentID, projectID sql.NullInt64
-		if err = rows.Scan(&serviceID, &businessID, &environmentID, &projectID); err != nil {
-			return true
-		}
-		nodeSet[fmt.Sprintf("service:%d", serviceID)] = true
-		nodeSet[fmt.Sprintf("business:%d", businessID)] = true
-		if environmentID.Valid {
-			nodeSet[fmt.Sprintf("environment:%d", environmentID.Int64)] = true
-		}
-		if projectID.Valid {
-			nodeSet[fmt.Sprintf("project:%d", projectID.Int64)] = true
-		}
-	}
-	for _, entry := range entries {
-		if entry.ID > 0 && nodeSet[fmt.Sprintf("%s:%d", entry.Type, entry.ID)] {
-			return true
-		}
-	}
-	return false
-}
-
-func userCanReceive(bindings []alertChainBinding) bool {
-	for _, binding := range bindings {
-		if !binding.Enabled || !binding.Media.Enabled || binding.Media.MediaType != "email" || len(binding.Recipients) == 0 {
-			continue
-		}
-		for _, route := range binding.Routes {
-			if route.Enabled && route.NotifyOnFiring {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func truncateError(message string) string {
 	message = strings.TrimSpace(message)
 	if len(message) > 120 {
@@ -324,26 +155,11 @@ func truncateError(message string) string {
 	return message
 }
 
-// ---- SQL 行结构 ----
-
-type userBindingRow struct {
-	BindingID    int64
-	Enabled      bool
-	Recipients   []byte
-	MediaID      int64
-	MediaName    string
-	MediaType    string
-	MediaEnabled bool
-	Scope        []byte
-}
-
-type routeRow struct {
-	ID               int64
-	Name             string
-	Enabled          bool
-	NotifyOnFiring   bool
-	NotifyOnResolved bool
-	Matchers         []byte
+func derefInt32(value *int32) int32 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // ---- API 1: GET /monitor/alert-notification/user-chain/ ----
@@ -359,7 +175,7 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 		return
 	}
 
-	bindingRows, err := handler.db.QueryContext(context, `SELECT b.id,b.enabled,b.recipients,m.id,m.name,m.media_type,m.enabled,b.scope
+	bindingRows, err := handler.db.QueryContext(context, `SELECT b.id,b.enabled,b.recipients,m.id,m.name,m.media_type,m.enabled
 		FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id=b.media_id
 		WHERE b.user_id=? ORDER BY b.id`, userID)
 	if err != nil {
@@ -367,6 +183,12 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 		return
 	}
 	defer bindingRows.Close()
+
+	root, err := handler.loadNotificationPolicyTree(context.Request.Context())
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 
 	bindings := make([]alertChainBinding, 0)
 	summaryIssues := make([]string, 0)
@@ -378,56 +200,54 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 		}
 	}
 	for bindingRows.Next() {
-		var row userBindingRow
-		if err = bindingRows.Scan(&row.BindingID, &row.Enabled, &row.Recipients, &row.MediaID, &row.MediaName, &row.MediaType, &row.MediaEnabled, &row.Scope); err != nil {
+		var bindingID, mediaID int64
+		var enabled, mediaEnabled bool
+		var mediaName, mediaType string
+		var recipientsRaw []byte
+		if err = bindingRows.Scan(&bindingID, &enabled, &recipientsRaw, &mediaID, &mediaName, &mediaType, &mediaEnabled); err != nil {
 			response.Error(context, err)
 			return
 		}
 		recipients := make([]string, 0)
-		_ = json.Unmarshal(row.Recipients, &recipients)
+		_ = json.Unmarshal(recipientsRaw, &recipients)
 
-		scopeItems := handler.resolveScopeItems(context, row.Scope)
-		issues := userBindingIssues(row.Enabled, row.MediaEnabled, row.MediaType, recipients)
-		issues = append(issues, scopeIssues(scopeItems)...)
+		issues := userBindingIssues(enabled, mediaEnabled, mediaType, recipients)
 		for _, issue := range issues {
-			switch issue {
-			case "该绑定已禁用":
-				addSummary(fmt.Sprintf("绑定 %d 已禁用", row.BindingID))
-			case "媒介已停用":
-				addSummary(fmt.Sprintf("媒介 %d 已停用", row.MediaID))
-			case "订阅范围包含已删除的服务树节点":
-				addSummary(fmt.Sprintf("绑定 %d：%s", row.BindingID, issue))
-			default:
-				addSummary(fmt.Sprintf("绑定 %d：%s", row.BindingID, issue))
-			}
+			addSummary(fmt.Sprintf("绑定 %d：%s", bindingID, issue))
 		}
 
-		routes, routeErr := handler.routesForMedia(context, row.MediaID)
-		if routeErr != nil {
-			response.Error(context, routeErr)
+		// 生效出口含该媒介的策略：沿父链继承判定（与分发侧 effectivePolicyMedia 同语义）。
+		policies, policyErr := handler.policiesEffectiveForMedia(context.Request.Context(), root, mediaID, int32(userID))
+		if policyErr != nil {
+			response.Error(context, policyErr)
 			return
 		}
-		routeBriefs := make([]alertChainRouteBrief, 0, len(routes))
-		for _, route := range routes {
-			var matchers map[string]any
-			_ = json.Unmarshal(route.Matchers, &matchers)
-			if matchers == nil {
-				matchers = map[string]any{}
+		for _, policy := range policies {
+			if !policy.NotifyOnFiring && policy.NotifyOnResolved {
+				addSummary(fmt.Sprintf("策略 %s 仅通知 resolved，firing 通知未开启", policy.Name))
 			}
-			routeIssues := userRouteIssues(route.Enabled, route.NotifyOnFiring, route.NotifyOnResolved)
-			for _, issue := range routeIssues {
-				addSummary(fmt.Sprintf("路由 %s：%s", route.Name, issue))
+		}
+		if len(policies) == 0 {
+			addSummary(fmt.Sprintf("媒介 %s 未被任何通知策略出口命中", mediaName))
+		}
+		// 用户组限制：仅当所有覆盖该媒介的策略都把当前用户排除在组外时才算断点
+		// （分发侧只投递"组成员的绑定"，用户不在组内即收不到）。
+		restrictedOut := len(policies) > 0
+		for _, policy := range policies {
+			if policy.UserGroupIDs == nil || policy.UserInGroup {
+				restrictedOut = false
+				break
 			}
-			routeBriefs = append(routeBriefs, alertChainRouteBrief{
-				RouteID: route.ID, Name: route.Name, Enabled: route.Enabled,
-				NotifyOnFiring: route.NotifyOnFiring, NotifyOnResolved: route.NotifyOnResolved,
-				Matchers: matchers, Issues: routeIssues,
-			})
+		}
+		if restrictedOut {
+			issue := "当前用户不在该策略的接收组内，收不到对应告警"
+			issues = append(issues, issue)
+			addSummary(fmt.Sprintf("绑定 %d：%s", bindingID, issue))
 		}
 		bindings = append(bindings, alertChainBinding{
-			BindingID: row.BindingID, Enabled: row.Enabled, Recipients: recipients, Scope: scopeItems,
-			Media: alertChainMediaBrief{ID: row.MediaID, Name: row.MediaName, MediaType: row.MediaType, Enabled: row.MediaEnabled},
-			Issues: issues, Routes: routeBriefs,
+			BindingID: bindingID, Enabled: enabled, Recipients: recipients,
+			Media:    alertChainMediaBrief{ID: mediaID, Name: mediaName, MediaType: mediaType, Enabled: mediaEnabled},
+			Policies: policies, Issues: issues,
 		})
 	}
 	if err = bindingRows.Err(); err != nil {
@@ -438,10 +258,113 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 		addSummary(fmt.Sprintf("用户 %s 未配置任何告警媒介绑定", username))
 	}
 
+	canReceive := userCanReceive(bindings)
+	if !canReceive && len(bindings) > 0 {
+		addSummary("不存在「绑定启用 + 媒介启用 + 邮件媒介 + 收件地址 + 策略出口命中 + firing 通知开启」的完整通路")
+	}
+
 	response.Success(context, alertChainUserChain{
-		User: gin.H{"id": userID, "username": username},
-		Bindings: bindings, CanReceive: userCanReceive(bindings), SummaryIssues: summaryIssues,
+		User:     gin.H{"id": userID, "username": username},
+		Bindings: bindings, CanReceive: canReceive, SummaryIssues: summaryIssues,
 	})
+}
+
+// policiesEffectiveForMedia 返回生效出口包含 mediaID 的策略（带 "根 / 子 / 孙" 路径名、
+// 生效用户组限制及当前用户是否受限）。userID<1 时（如管理员视角外部邮箱）不判定 user_in_group。
+func (handler *Handler) policiesEffectiveForMedia(ctx context.Context, root *policyNode, mediaID int64, userID int32) ([]alertChainPolicyBrief, error) {
+	policies := make([]alertChainPolicyBrief, 0)
+	var walk func(node *policyNode, path []*policyNode, media []int64, groups []int64) error
+	walk = func(node *policyNode, path []*policyNode, media []int64, groups []int64) error {
+		currentPath := append(append([]*policyNode{}, path...), node)
+		if !node.MediaInherited && node.MediaIDs != nil {
+			media = append(media[:0:0], node.MediaIDs...)
+		}
+		if !node.UserGroupInherited && node.UserGroupIDs != nil {
+			groups = append(groups[:0:0], node.UserGroupIDs...)
+		}
+		for _, id := range media {
+			if id != mediaID {
+				continue
+			}
+			names := make([]string, 0, len(currentPath))
+			for _, item := range currentPath {
+				names = append(names, item.Name)
+			}
+			matchersRaw, err := json.Marshal(node.Matchers)
+			if err != nil {
+				return err
+			}
+			brief := alertChainPolicyBrief{
+				ID: node.ID, Name: node.Name, Path: strings.Join(names, " / "), Matchers: matchersRaw,
+				UserGroupNames: []string{}, UserInGroup: true,
+				NotifyOnFiring: node.NotifyOnFiring, NotifyOnResolved: node.NotifyOnResolved,
+			}
+			if groups != nil {
+				groupCopy := append([]int64{}, groups...)
+				brief.UserGroupIDs = &groupCopy
+				groupNames, err := handler.userGroupNamesByIDs(ctx, groupCopy)
+				if err != nil {
+					return err
+				}
+				brief.UserGroupNames = groupNames
+				if userID > 0 {
+					brief.UserInGroup = handler.userInGroups(ctx, userID, groupCopy)
+				}
+			}
+			policies = append(policies, brief)
+			break
+		}
+		for _, child := range node.Children {
+			if err := walk(child, currentPath, media, groups); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	media := []int64{}
+	if !root.MediaInherited && root.MediaIDs != nil {
+		media = append(media, root.MediaIDs...)
+	}
+	if err := walk(root, []*policyNode{}, media, nil); err != nil {
+		return nil, err
+	}
+	return policies, nil
+}
+
+// userInGroups 判断用户是否属于任一组；组列表为空（显式不限/静音语义由调用方区分）返回 false。
+func (handler *Handler) userInGroups(ctx context.Context, userID int32, groupIDs []int64) bool {
+	if len(groupIDs) == 0 {
+		return false
+	}
+	placeholders := ""
+	args := make([]any, 0, len(groupIDs)+1)
+	args = append(args, userID)
+	for index, groupID := range groupIDs {
+		if index > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, groupID)
+	}
+	var count int
+	if err := handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sys_user_group_member WHERE user_id=? AND group_id IN (`+placeholders+`)`, args...).Scan(&count); err != nil {
+		return false
+	}
+	return count > 0
+}
+
+func userCanReceive(bindings []alertChainBinding) bool {
+	for _, binding := range bindings {
+		if !binding.Enabled || !binding.Media.Enabled || binding.Media.MediaType != "email" || len(binding.Recipients) == 0 {
+			continue
+		}
+		for _, policy := range binding.Policies {
+			if policy.NotifyOnFiring && (policy.UserGroupIDs == nil || policy.UserInGroup) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func resolveTargetUser(context *gin.Context) (int64, bool) {
@@ -459,25 +382,6 @@ func resolveTargetUser(context *gin.Context) (int64, bool) {
 		return 0, false
 	}
 	return int64(claims.UserID), true
-}
-
-func (handler *Handler) routesForMedia(context *gin.Context, mediaID int64) ([]routeRow, error) {
-	rows, err := handler.db.QueryContext(context, `SELECT r.id,r.name,r.enabled,r.notify_on_firing,r.notify_on_resolved,r.matchers
-		FROM monitor_alert_route r JOIN monitor_alert_route_media rm ON rm.alertroute_id=r.id
-		WHERE rm.alertmedia_id=? ORDER BY r.id`, mediaID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	routes := make([]routeRow, 0)
-	for rows.Next() {
-		var route routeRow
-		if err = rows.Scan(&route.ID, &route.Name, &route.Enabled, &route.NotifyOnFiring, &route.NotifyOnResolved, &route.Matchers); err != nil {
-			return nil, err
-		}
-		routes = append(routes, route)
-	}
-	return routes, rows.Err()
 }
 
 // ---- API 2: GET /monitor/alert-notification/chain/:historyId/ ----
@@ -501,83 +405,113 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 	labels := map[string]any{}
 	_ = json.Unmarshal(labelsRaw, &labels)
 	mergedLabels := chainMergeLabels(labels, alertname, severity, instance)
+	mergedString := map[string]string{}
+	for key, value := range mergedLabels {
+		mergedString[key] = fmt.Sprintf("%v", value)
+	}
 
-	routeRows, err := handler.db.QueryContext(context, `SELECT id,name,enabled,notify_on_firing,notify_on_resolved,matchers
-		FROM monitor_alert_route ORDER BY id`)
+	root, err := handler.loadNotificationPolicyTree(context.Request.Context())
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer routeRows.Close()
+	scopeNodes := handler.alertScopeNodes(alertNotificationTarget{id: historyID, labels: labels})
 
-	routeDetails := make([]alertChainRouteDetail, 0)
+	// 沿命中路径逐层评估兄弟策略（与分发侧 resolvePolicyRoute 同序：每层取第一条命中）。
+	levels := make([][]alertChainPolicyEval, 0)
+	path := []*policyNode{root}
 	summaryIssues := make([]string, 0)
-	anyMatched := false
-	for routeRows.Next() {
-		var route routeRow
-		if err = routeRows.Scan(&route.ID, &route.Name, &route.Enabled, &route.NotifyOnFiring, &route.NotifyOnResolved, &route.Matchers); err != nil {
+	current := root
+	for {
+		level := make([]alertChainPolicyEval, 0, len(current.Children))
+		next := (*policyNode)(nil)
+		for _, child := range current.Children {
+			matched, missReason := policyNodeMatches(child, mergedString, scopeNodes)
+			eval := alertChainPolicyEval{
+				ID: child.ID, Name: child.Name,
+				Matchers: mustMarshalMatchers(child.Matchers),
+				Matched:  matched, MissReason: missReason,
+			}
+			if matched && next == nil {
+				next = child
+				eval.Selected = true
+			}
+			if !matched {
+				summaryIssues = append(summaryIssues, fmt.Sprintf("策略 %s 未命中：%s", child.Name, missReason))
+			}
+			level = append(level, eval)
+		}
+		if len(level) > 0 {
+			levels = append(levels, level)
+		}
+		if next == nil {
+			break
+		}
+		path = append(path, next)
+		current = next
+	}
+
+	final := path[len(path)-1]
+	eventType := strings.ToLower(state)
+	eventAllowed := policyAllowsEvent(final, eventType)
+	mediaIDs := effectivePolicyMedia(path)
+	userGroupIDs := effectivePolicyUserGroups(path)
+
+	policyDetail := alertChainPolicyDetail{
+		ID: final.ID, Name: final.Name, Matchers: mustMarshalMatchers(final.Matchers),
+		MediaInherited: final.MediaInherited, EffectiveMedia: mediaIDs,
+		UserGroupNames: []string{}, UserGroupsLimited: userGroupIDs != nil,
+		NotifyOnFiring: final.NotifyOnFiring, NotifyOnResolved: final.NotifyOnResolved,
+		EventAllowed: eventAllowed,
+	}
+	if userGroupIDs != nil {
+		groupCopy := append([]int64{}, userGroupIDs...)
+		policyDetail.UserGroupIDs = &groupCopy
+		groupNames, err := handler.userGroupNamesByIDs(context.Request.Context(), groupCopy)
+		if err != nil {
 			response.Error(context, err)
 			return
 		}
-		var matchers map[string]any
-		_ = json.Unmarshal(route.Matchers, &matchers)
-		if matchers == nil {
-			matchers = map[string]any{}
-		}
+		policyDetail.UserGroupNames = groupNames
+	}
+	if !final.MediaInherited {
+		mediaCopy := append([]int64{}, final.MediaIDs...)
+		policyDetail.MediaIDs = &mediaCopy
+	}
 
-		detail := alertChainRouteDetail{
-			RouteID: route.ID, Name: route.Name, Enabled: route.Enabled,
-			NotifyOnFiring: route.NotifyOnFiring, NotifyOnResolved: route.NotifyOnResolved,
-			Labels: labels, Media: make([]alertChainMediaDetail, 0),
-		}
-		mediaErr := handler.evaluateRouteMedia(context, &detail, historyID, state)
-		if mediaErr != nil {
-			response.Error(context, mediaErr)
+	medias := make([]alertChainMediaDetail, 0)
+	if len(mediaIDs) > 0 {
+		medias, err = handler.policyMediasDetail(context, mediaIDs, historyID, eventType, userGroupIDs)
+		if err != nil {
+			response.Error(context, err)
 			return
 		}
-		detail.Matched = false
-		switch {
-		case !route.Enabled:
-			detail.MissReason = "路由已禁用"
-		default:
-			if matched, missKey := matchRouteMatchers(matchers, mergedLabels); !matched {
-				detail.MissReason = fmt.Sprintf("labels 不匹配（matchers 需要 %s=%v）", missKey, matchers[missKey])
-			} else if miss := routeNotifyMiss(state, route.NotifyOnFiring, route.NotifyOnResolved); miss != "" {
-				detail.MissReason = miss
-			} else {
-				detail.Matched = true
-				anyMatched = true
-			}
-		}
-		if !detail.Matched {
-			summaryIssues = append(summaryIssues, fmt.Sprintf("路由 %s 未命中：%s", route.Name, detail.MissReason))
-		} else {
-			for _, media := range detail.Media {
-				if media.Event == nil {
-					summaryIssues = append(summaryIssues, fmt.Sprintf("路由 %s：无 %s 事件记录，通知未触发", route.Name, state))
-					break
-				}
-			}
-		}
-		for _, media := range detail.Media {
-			for _, delivery := range media.Deliveries {
-				if delivery.Status != "success" {
-					name := delivery.Username
-					if name == "" {
-						name = fmt.Sprintf("%d", derefInt32(delivery.UserID))
-					}
-					summaryIssues = append(summaryIssues, fmt.Sprintf("用户 %s 的投递失败：%s", name, truncateError(delivery.Error)))
-				}
-			}
-		}
-		routeDetails = append(routeDetails, detail)
+	} else {
+		summaryIssues = append(summaryIssues, fmt.Sprintf("最深命中策略 %s 的出口为空（静音），不会投递", final.Name))
 	}
-	if err = routeRows.Err(); err != nil {
-		response.Error(context, err)
-		return
+	if !eventAllowed {
+		summaryIssues = append(summaryIssues, fmt.Sprintf("策略 %s 未开启 %s 通知", final.Name, eventType))
 	}
-	if !anyMatched && len(routeDetails) == 0 {
-		summaryIssues = append(summaryIssues, "未配置任何告警路由，通知不会触发")
+	for _, media := range medias {
+		if media.Event == nil {
+			summaryIssues = append(summaryIssues, fmt.Sprintf("媒介 %s：无 %s 事件记录，通知未触发", media.Name, eventType))
+		}
+		for _, delivery := range media.Deliveries {
+			if delivery.Status != "success" {
+				name := delivery.Username
+				if name == "" {
+					name = fmt.Sprintf("%d", derefInt32(delivery.UserID))
+				}
+				summaryIssues = append(summaryIssues, fmt.Sprintf("用户 %s 的投递失败：%s", name, truncateError(delivery.Error)))
+			}
+		}
+	}
+
+	pathNames := make([]string, 0, len(path))
+	pathIDs := make([]int64, 0, len(path))
+	for _, node := range path {
+		pathNames = append(pathNames, node.Name)
+		pathIDs = append(pathIDs, node.ID)
 	}
 
 	response.Success(context, gin.H{
@@ -585,25 +519,39 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 			"id": historyID, "alertname": alertname, "state": state,
 			"labels": mergedLabels, "started_at": startedAt,
 		},
-		"routes":         routeDetails,
+		"policy_tree": gin.H{
+			"matched_path_ids": pathIDs,
+			"matched_path":     strings.Join(pathNames, " / "),
+			"levels":           levels,
+			"final_policy":     policyDetail,
+		},
+		"medias":         medias,
 		"summary_issues": summaryIssues,
 	})
 }
 
-func derefInt32(value *int32) int32 {
-	if value == nil {
-		return 0
+func mustMarshalMatchers(matchers []policyMatcher) json.RawMessage {
+	raw, err := json.Marshal(matchers)
+	if err != nil {
+		return json.RawMessage("[]")
 	}
-	return *value
+	return raw
 }
 
-// evaluateRouteMedia 填充命中路由下的媒介、用户绑定与实际 event/delivery 记录。
-func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertChainRouteDetail, historyID int64, state string) error {
-	mediaRows, err := handler.db.QueryContext(context, `SELECT m.id,m.name,m.enabled
-		FROM monitor_alert_route_media rm JOIN monitor_alert_media m ON m.id=rm.alertmedia_id
-		WHERE rm.alertroute_id=? ORDER BY m.id`, detail.RouteID)
+// policyMediasDetail 填充出口媒介的绑定与实际 event/delivery 记录（含停用媒介，便于展示断点）。
+func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int64, historyID int64, eventType string, userGroupIDs []int64) ([]alertChainMediaDetail, error) {
+	placeholders := ""
+	args := make([]any, 0, len(mediaIDs))
+	for index, mediaID := range mediaIDs {
+		if index > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, mediaID)
+	}
+	mediaRows, err := handler.db.QueryContext(context, `SELECT id,name,enabled FROM monitor_alert_media WHERE id IN (`+placeholders+`) ORDER BY id`, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer mediaRows.Close()
 
@@ -616,57 +564,56 @@ func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertCh
 	for mediaRows.Next() {
 		var media mediaRow
 		if err = mediaRows.Scan(&media.ID, &media.Name, &media.Enabled); err != nil {
-			return err
+			return nil, err
 		}
 		medias = append(medias, media)
 	}
 	if err = mediaRows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
+	details := make([]alertChainMediaDetail, 0, len(medias))
 	for _, media := range medias {
 		mediaDetail := alertChainMediaDetail{
 			ID: media.ID, Name: media.Name, Enabled: media.Enabled,
 			Bindings: make([]gin.H, 0), Deliveries: make([]alertChainDelivery, 0),
 		}
-		bindingRows, err := handler.db.QueryContext(context, `SELECT b.user_id,u.username,b.recipients,b.enabled,b.scope
+		bindingRows, err := handler.db.QueryContext(context, `SELECT b.user_id,u.username,b.recipients,b.enabled
 			FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id=b.user_id
 			WHERE b.media_id=? ORDER BY b.id`, media.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for bindingRows.Next() {
 			var userID int32
 			var username string
-			var recipientsRaw, scopeRaw []byte
+			var recipientsRaw []byte
 			var enabled bool
-			if err = bindingRows.Scan(&userID, &username, &recipientsRaw, &enabled, &scopeRaw); err != nil {
+			if err = bindingRows.Scan(&userID, &username, &recipientsRaw, &enabled); err != nil {
 				bindingRows.Close()
-				return err
+				return nil, err
 			}
 			recipients := make([]string, 0)
 			_ = json.Unmarshal(recipientsRaw, &recipients)
-			scopeItems := handler.resolveScopeItems(context, scopeRaw)
-			scopedIn := true
-			if len(scopeItems) > 0 {
-				scopedIn = handler.scopeCoversAlert(context, detail, userID)
-			}
+			// 用户组限制生效时标注成员归属（未标注 = 不限组，全部绑定都可收）。
 			bindingView := gin.H{
 				"user_id": userID, "username": username, "recipients": recipients, "enabled": enabled,
-				"scope": scopeItems, "scoped_in": scopedIn,
 			}
-			if !scopedIn {
-				bindingView["issue"] = "订阅范围不含该告警的归属节点"
+			if userGroupIDs != nil {
+				inGroup := handler.userInGroups(context.Request.Context(), userID, userGroupIDs)
+				bindingView["in_group"] = inGroup
+				if !inGroup {
+					bindingView["issue"] = "不在命中策略的接收组内，不会收到该告警"
+				}
 			}
 			mediaDetail.Bindings = append(mediaDetail.Bindings, bindingView)
 		}
 		if err = bindingRows.Err(); err != nil {
 			bindingRows.Close()
-			return err
+			return nil, err
 		}
 		bindingRows.Close()
 
-		eventType := strings.ToLower(state)
 		var eventID int64
 		var dbEventType, eventStatus, eventError string
 		var attemptCount int64
@@ -677,7 +624,7 @@ func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertCh
 		case eventErr == sql.ErrNoRows:
 			mediaDetail.Event = nil
 		case eventErr != nil:
-			return eventErr
+			return nil, eventErr
 		default:
 			mediaDetail.Event = &alertChainEvent{
 				ID: eventID, EventType: dbEventType, Status: eventStatus,
@@ -687,7 +634,7 @@ func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertCh
 				FROM monitor_alert_notification_delivery d LEFT JOIN sys_user u ON u.id=d.user_id
 				WHERE d.event_id=? ORDER BY d.id`, eventID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			for deliveryRows.Next() {
 				var delivery alertChainDelivery
@@ -695,7 +642,7 @@ func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertCh
 				var username sql.NullString
 				if err = deliveryRows.Scan(&userID, &username, &delivery.Address, &delivery.Status, &delivery.Error); err != nil {
 					deliveryRows.Close()
-					return err
+					return nil, err
 				}
 				if userID.Valid {
 					value := userID.Int32
@@ -706,11 +653,11 @@ func (handler *Handler) evaluateRouteMedia(context *gin.Context, detail *alertCh
 			}
 			if err = deliveryRows.Err(); err != nil {
 				deliveryRows.Close()
-				return err
+				return nil, err
 			}
 			deliveryRows.Close()
 		}
-		detail.Media = append(detail.Media, mediaDetail)
+		details = append(details, mediaDetail)
 	}
-	return nil
+	return details, nil
 }

@@ -26,11 +26,12 @@ import (
 const (
 	maxAgentPackageSize     = 200 << 20
 	agentPackageRelativeDir = "agent_packages"
+	// 单槽位"当前包"语义：存储目录与记录固定 default，不暴露版本概念。
+	agentPackageSlot = "default"
 )
 
 type agentPackage struct {
 	ID         int64
-	Version    string
 	File       string
 	SHA256     string
 	SizeBytes  int64
@@ -50,43 +51,27 @@ func validateAgentBinary(data []byte) error {
 }
 
 func (handler *Handler) ListAgentPackages(context *gin.Context) {
-	rows, err := handler.service.repository.pool.QueryContext(context,
-		`SELECT id,version,file,sha256,size_bytes,is_active,create_time FROM agent_package ORDER BY is_active DESC, create_time DESC, id DESC`)
-	if err != nil {
+	// 单包语义：直接返回当前包对象（无包时 items 为 null），不是列表。
+	var item agentPackage
+	err := handler.service.repository.pool.QueryRowContext(context,
+		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
+		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	items := make([]gin.H, 0, 8)
-	for rows.Next() {
-		var item agentPackage
-		if err = rows.Scan(&item.ID, &item.Version, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime); err != nil {
-			response.Error(context, err)
-			return
+	data := gin.H{}
+	if err == nil {
+		data = gin.H{
+			"id": item.ID, "file": item.File, "sha256": item.SHA256,
+			"size_bytes": item.SizeBytes, "is_active": item.IsActive,
+			"create_time": agentPackageCreateTime(item.CreateTime),
 		}
-		items = append(items, gin.H{
-			"id": item.ID, "version": item.Version, "file": item.File,
-			"sha256": item.SHA256, "size_bytes": item.SizeBytes,
-			"is_active": item.IsActive, "create_time": agentPackageCreateTime(item.CreateTime),
-		})
 	}
-	if err = rows.Err(); err != nil {
-		response.Error(context, err)
-		return
-	}
-	response.Success(context, gin.H{"items": items})
+	response.Success(context, data)
 }
 
 func (handler *Handler) UploadAgentPackage(context *gin.Context) {
-	// 当前 agent 二进制不带版本元数据，版本号可选：不填统一存 default（单槽位"当前包"语义）。
-	version := strings.TrimSpace(context.PostForm("version"))
-	if version == "" {
-		version = "default"
-	}
-	if len(version) > 64 || filepath.Base(version) != version || version == "." || version == ".." {
-		response.BusinessError(context, 400, "version最长 64 字符且不能包含路径分隔符", nil)
-		return
-	}
 	context.Request.Body = http.MaxBytesReader(context.Writer, context.Request.Body, maxAgentPackageSize+(1<<20))
 	upload, err := context.FormFile("file")
 	if err != nil {
@@ -113,7 +98,7 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 		return
 	}
 	mediaRoot := handler.mediaRoot
-	relativePath := filepath.ToSlash(filepath.Join(agentPackageRelativeDir, version, "dj-agent"))
+	relativePath := filepath.ToSlash(filepath.Join(agentPackageRelativeDir, agentPackageSlot, "dj-agent"))
 	targetPath := filepath.Join(mediaRoot, filepath.FromSlash(relativePath))
 	if err = os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		response.Error(context, err)
@@ -125,7 +110,7 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 		return
 	}
 
-	// 同 version 重复上传覆盖文件并更新记录；上传成功即独占激活。
+	// 重复上传覆盖文件并更新记录；上传成功即独占激活。
 	pool := handler.service.repository.pool
 	tx, err := pool.BeginTx(context, nil)
 	if err != nil {
@@ -134,11 +119,11 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 	}
 	now := time.Now().UTC()
 	var itemID int64
-	err = tx.QueryRowContext(context, `SELECT id FROM agent_package WHERE version=?`, version).Scan(&itemID)
+	err = tx.QueryRowContext(context, `SELECT id FROM agent_package WHERE version=?`, agentPackageSlot).Scan(&itemID)
 	switch {
 	case err == sql.ErrNoRows:
 		result, insertErr := tx.ExecContext(context, `INSERT INTO agent_package(version,file,sha256,size_bytes,is_active,create_time) VALUES(?,?,?,?,1,?)`,
-			version, relativePath, sum, len(data), now)
+			agentPackageSlot, relativePath, sum, len(data), now)
 		if insertErr != nil {
 			tx.Rollback()
 			response.Error(context, insertErr)
@@ -166,7 +151,35 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	response.Success(context, gin.H{"id": itemID, "version": version, "sha256": sum, "size_bytes": len(data), "is_active": true})
+	response.Success(context, gin.H{"id": itemID, "sha256": sum, "size_bytes": len(data), "is_active": true})
+}
+
+func (handler *Handler) DownloadAgentPackage(context *gin.Context) {
+	pool := handler.service.repository.pool
+	var file string
+	err := pool.QueryRowContext(context,
+		`SELECT file FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).Scan(&file)
+	if errors.Is(err, sql.ErrNoRows) {
+		response.BusinessError(context, 404, "尚未上传 Agent 安装包", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	target := filepath.Join(handler.mediaRoot, filepath.FromSlash(file))
+	// 路径限制在 mediaRoot 内，防目录穿越。
+	relative, relErr := filepath.Rel(handler.mediaRoot, target)
+	if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		response.Error(context, fmt.Errorf("package file path escapes media root"))
+		return
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		response.BusinessError(context, 404, "Agent 安装包文件缺失，请重新上传", nil)
+		return
+	}
+	context.Header("Content-Disposition", `attachment; filename="dj-agent"`)
+	context.File(target)
 }
 
 func (handler *Handler) ActivateAgentPackage(context *gin.Context) {
@@ -243,8 +256,8 @@ func batchDeleteAgentResults(ids []int64, deleteOne func(id int64) error) ([]gin
 func (handler *Handler) deleteAgentPackageByID(context *gin.Context, id int64) error {
 	var item agentPackage
 	err := handler.service.repository.pool.QueryRowContext(context,
-		`SELECT id,version,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE id=?`, id).
-		Scan(&item.ID, &item.Version, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE id=?`, id).
+		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
 	if err != nil {
 		return err
 	}

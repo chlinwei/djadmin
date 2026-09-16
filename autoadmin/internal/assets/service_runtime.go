@@ -34,6 +34,7 @@ type ApplicationService struct {
 	ClusterProfileName     string          `json:"cluster_profile_name"`
 	MacroValues            json.RawMessage `json:"macro_values"`
 	LogCollectionEnabled   bool            `json:"log_collection_enabled"`
+	LogRetentionTier       *int64          `json:"log_retention_tier"`
 	DeploymentCount        int64           `json:"deployment_count"`
 	MemberInstances        []int64         `json:"member_instances"`
 }
@@ -52,6 +53,7 @@ type ApplicationDeployment struct {
 	HaRole                string          `json:"ha_role"`
 	RuntimeVariables      json.RawMessage `json:"runtime_variables"`
 	ApplicationServiceIDs []int64         `json:"application_service_ids"`
+	ApplicationID        *int64          `json:"application_id"` // 部署关联的首个服务所属应用，供前端按应用过滤实例
 }
 
 func nullableID(value sql.NullInt64) *int64 {
@@ -83,7 +85,7 @@ func (r *Repository) ListApplicationServices(ctx context.Context, search string,
 	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_service s WHERE "+whereClause, arguments...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.pool.QueryContext(ctx, "SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),s.macro_values,s.log_collection_enabled,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE "+whereClause+" ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?", append(arguments, page.Size, page.Offset)...)
+	rows, err := r.pool.QueryContext(ctx, "SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),	s.macro_values,s.log_collection_enabled,s.log_retention_tier_id,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE "+whereClause+" ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?", append(arguments, page.Size, page.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -93,9 +95,9 @@ func (r *Repository) ListApplicationServices(ctx context.Context, search string,
 		var item ApplicationService
 		var created, updated time.Time
 		var remark sql.NullString
-		var env, profile sql.NullInt64
+		var env, profile, retention sql.NullInt64
 		var raw []byte
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &item.DeploymentCount); err != nil {
+		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &retention, &item.DeploymentCount); err != nil {
 			return nil, 0, err
 		}
 		item.CreateTime = timestamp(created)
@@ -103,6 +105,7 @@ func (r *Repository) ListApplicationServices(ctx context.Context, search string,
 		item.Remark = stringValue(remark)
 		item.Environment = nullableID(env)
 		item.ClusterProfile = nullableID(profile)
+		item.LogRetentionTier = nullableID(retention)
 		item.MacroValues = json.RawMessage(raw)
 		items = append(items, item)
 	}
@@ -112,9 +115,9 @@ func (r *Repository) GetApplicationService(ctx context.Context, id int64) (Appli
 	var item ApplicationService
 	var created, updated time.Time
 	var remark sql.NullString
-	var env, profile sql.NullInt64
+	var env, profile, retention sql.NullInt64
 	var raw []byte
-	err := r.pool.QueryRowContext(ctx, `SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),s.macro_values,s.log_collection_enabled,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE s.id=?`, id).Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &item.DeploymentCount)
+	err := r.pool.QueryRowContext(ctx, `SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),	s.macro_values,s.log_collection_enabled,s.log_retention_tier_id,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE s.id=?`, id).Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &retention, &item.DeploymentCount)
 	if err != nil {
 		return item, err
 	}
@@ -123,6 +126,7 @@ func (r *Repository) GetApplicationService(ctx context.Context, id int64) (Appli
 	item.Remark = stringValue(remark)
 	item.Environment = nullableID(env)
 	item.ClusterProfile = nullableID(profile)
+	item.LogRetentionTier = nullableID(retention)
 	item.MacroValues = json.RawMessage(raw)
 	rows, err := r.pool.QueryContext(ctx, `SELECT deployment_id FROM assets_application_service_deployment WHERE service_id=? ORDER BY id`, id)
 	if err != nil {
@@ -168,7 +172,7 @@ func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagina
 	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_deployment d WHERE "+whereClause, arguments...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
-	query := "SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,COALESCE(h.ip,''),d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,d.runtime_variables FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id WHERE " + whereClause + " ORDER BY d.id DESC LIMIT ? OFFSET ?"
+	query := "SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,COALESCE(h.ip,''),d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,d.runtime_variables,(SELECT s.application_id FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1) FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id WHERE " + whereClause + " ORDER BY d.id DESC LIMIT ? OFFSET ?"
 	rows, err := r.pool.QueryContext(ctx, query, append(arguments, page.Size, page.Offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -181,9 +185,11 @@ func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagina
 		var remark sql.NullString
 		var checked sql.NullTime
 		var raw []byte
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.InstanceName, &item.Enabled, &item.Host, &item.HostIP, &item.RuntimeStatus, &item.RuntimeStatusOutput, &checked, &item.HaRole, &raw); err != nil {
+		var applicationID sql.NullInt64
+		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.InstanceName, &item.Enabled, &item.Host, &item.HostIP, &item.RuntimeStatus, &item.RuntimeStatusOutput, &checked, &item.HaRole, &raw, &applicationID); err != nil {
 			return nil, 0, err
 		}
+		item.ApplicationID = nullableID(applicationID)
 		item.CreateTime = timestamp(created)
 		item.UpdateTime = timestamp(updated)
 		item.Remark = stringValue(remark)

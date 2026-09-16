@@ -604,9 +604,16 @@ async function initialize() {
       const data = response?.data?.data || {}
       Object.assign(form, initialForm(), data)
       form.macro_values = { ...(data.macro_values || {}) }
-      selectedDeploymentIds.value = (data.member_instances || []).map((item) => item.deployment)
+      // 后端 member_instances 为部署 ID 数组（无覆盖记录时无 enabled 信息，默认启用）
+      selectedDeploymentIds.value = (data.member_instances || [])
+        .map((item) => (item && typeof item === 'object' ? item.deployment : item))
+        .filter((id) => id !== undefined && id !== null)
       for (const item of data.member_instances || []) {
-        memberEnabled[item.deployment] = item.enabled !== false
+        if (item && typeof item === 'object') {
+          memberEnabled[item.deployment] = item.enabled !== false
+        } else {
+          memberEnabled[item] = true
+        }
       }
       await loadLogConfig(props.serviceId)
     } else if (props.clusterProfileId) {
@@ -688,7 +695,12 @@ function setLogOverride(logDefinition, field, value) {
 }
 
 async function submit() {
-  await formRef.value.validate()
+  // 校验失败是正常交互（红字提示补字段），catch 住避免未处理的 Promise 拒绝刷控制台
+  try {
+    await formRef.value.validate()
+  } catch {
+    return
+  }
   const minimumMemberCount = isHaCluster.value ? 2 : 1
   if (selectedDeploymentIds.value.length < minimumMemberCount) {
     message.error(isHaCluster.value ? 'HA 集群至少需要两个成员实例' : form.topology_type === 'standalone' ? '请选择部署实例' : '请选择至少一个后端成员实例')

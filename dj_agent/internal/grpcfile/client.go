@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/chlinwei/djadmin/dj_agent/internal/buildinfo"
 	"github.com/chlinwei/djadmin/dj_agent/internal/executor"
 	"github.com/chlinwei/djadmin/dj_agent/internal/grpcfile/pb"
 )
@@ -156,7 +157,7 @@ func runOnce(ctx context.Context, addr, agentID, backendToken string, exec *exec
 		terminals:             make(map[string]*terminalSession),
 	}
 	defer sess.closeAllTerminals()
-	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: agentID, Token: backendToken}}}); err != nil {
+	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: agentID, Token: backendToken, Version: buildinfo.Version}}}); err != nil {
 		return established, fmt.Errorf("send hello failed: %w", err)
 	}
 

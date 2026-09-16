@@ -83,6 +83,7 @@ vi.mock('@/api/assets/application', () => ({
     collection_enabled: true,
     collection_mode: 'error_only',
     filter_pattern: '(?i)(error|failed|critical|fatal)',
+    collection_filter_rule_id: 91,
     processing_rule_id: null,
     effective_processing_rule_name: '',
     retention_tier: null,
@@ -94,6 +95,9 @@ vi.mock('@/api/assets/application', () => ({
 vi.mock('@/api/monitor', () => ({
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
   getLogProcessingRules: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
+  getLogCollectionFilterRules: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 91, name: 'error | failed | critical | fatal', enabled: true, application: null, filter_pattern: '(?i)(error|failed|critical|fatal)' },
+  ] } } })),
 }))
 
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'

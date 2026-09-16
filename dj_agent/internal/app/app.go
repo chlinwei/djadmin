@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chlinwei/djadmin/dj_agent/internal/buildinfo"
 	"github.com/chlinwei/djadmin/dj_agent/internal/config"
 	"github.com/chlinwei/djadmin/dj_agent/internal/executor"
 	"github.com/chlinwei/djadmin/dj_agent/internal/grpcfile"
@@ -113,7 +114,7 @@ func (a *App) getRuntimeStatusData() map[string]any {
 
 	return map[string]any{
 		"agent_id": a.cfg.AgentID,
-		"version":  "dev",
+		"version":  buildinfo.Version,
 		"process": map[string]any{
 			"pid":            os.Getpid(),
 			"running":        isRunning,

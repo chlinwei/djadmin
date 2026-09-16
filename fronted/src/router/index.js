@@ -76,54 +76,96 @@ export const staticRouterMap = [
                 component: () => import('../views/automation/inventory/index.vue'),
             },
             {
+                // 监控中心菜单已按职能分组（监控告警/通知管理/日志管理），旧扁平地址全部重定向兜底。
                 path: '/monitor',
+                redirect: '/monitor/alerting/dashboard',
+            },
+            {
+                path: '/monitor/alerting/dashboard',
                 name: '智能监控',
                 component: () => import('../views/monitor/index.vue'),
             },
             {
-                path: '/monitor/alert-rules',
+                path: '/monitor/alerting/rules',
                 name: '告警规则',
                 component: () => import('../views/monitor/alert-rules/index.vue'),
             },
             {
-                path: '/monitor/alerts',
+                path: '/monitor/alert-rules',
+                redirect: '/monitor/alerting/rules',
+            },
+            {
+                path: '/monitor/alerting/alerts',
                 name: '告警',
                 component: () => import('../views/monitor/alerts/index.vue'),
             },
             {
-                path: '/monitor/explore',
+                path: '/monitor/alerts',
+                redirect: '/monitor/alerting/alerts',
+            },
+            {
+                path: '/monitor/alerting/explore',
                 name: 'Explore',
                 component: () => import('../views/monitor/explore/index.vue'),
             },
             {
-                path: '/monitor/media',
+                path: '/monitor/explore',
+                redirect: '/monitor/alerting/explore',
+            },
+            {
+                path: '/monitor/notification/media',
                 name: '媒介',
                 component: () => import('../views/monitor/media/index.vue'),
             },
             {
-                path: '/monitor/notification-policies',
+                path: '/monitor/media',
+                redirect: '/monitor/notification/media',
+            },
+            {
+                path: '/monitor/notification/policies',
                 name: '通知策略',
                 component: () => import('../views/monitor/notification-policies/index.vue'),
             },
             {
-                // 旧「告警路由」页已被通知策略树取代：旧地址（菜单/收藏）一律重定向。
-                path: '/monitor/alert-routes',
-                redirect: '/monitor/notification-policies',
+                path: '/monitor/notification-policies',
+                redirect: '/monitor/notification/policies',
             },
             {
-                path: '/monitor/log-storage',
+                // 旧「告警路由」页已被通知策略树取代：旧地址（菜单/收藏）一律重定向。
+                path: '/monitor/alert-routes',
+                redirect: '/monitor/notification/policies',
+            },
+            {
+                path: '/monitor/logging/overview',
+                name: '存储水位',
+                component: () => import('../views/monitor/log-storage-overview/index.vue'),
+            },
+            {
+                path: '/monitor/logging/storage',
                 name: '日志存储',
                 component: () => import('../views/monitor/log-storage/index.vue'),
             },
             {
-                path: '/monitor/log-parsers',
+                path: '/monitor/log-storage',
+                redirect: '/monitor/logging/storage',
+            },
+            {
+                path: '/monitor/logging/parsers',
                 name: '日志处理规则',
                 component: () => import('../views/monitor/log-parsers/index.vue'),
             },
             {
-                path: '/monitor/log-retention',
+                path: '/monitor/log-parsers',
+                redirect: '/monitor/logging/parsers',
+            },
+            {
+                path: '/monitor/logging/retention',
                 name: '日志保留档位',
                 component: () => import('../views/monitor/log-retention/index.vue'),
+            },
+            {
+                path: '/monitor/log-retention',
+                redirect: '/monitor/logging/retention',
             },
             {
                 path: '/assets/hosts',

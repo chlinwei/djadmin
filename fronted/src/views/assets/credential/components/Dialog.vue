@@ -112,9 +112,9 @@ const handleOk = (e) => {
                 message.success("保存credential成功");
                 emits('initList')
                 emits('update:open', false);
-            })
+            }).catch(handleApiError)
         }
-    })
+    }).catch(() => {})
 
 };
 

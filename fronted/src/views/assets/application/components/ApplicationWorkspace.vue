@@ -203,6 +203,7 @@
       @changed="reload(false)"
     />
     <TemplateManagerDialog
+      v-if="templateManagerMounted"
       :open="templateManagerOpen"
       :application="templateManagerApplication"
       @update:open="templateManagerOpen = $event"
@@ -265,6 +266,30 @@ const selectedClusterProfileId = ref(null)
 const applicationDialogOpen = ref(false)
 const versionDialogOpen = ref(false)
 const templateManagerOpen = ref(false)
+// 关闭延迟卸载：与 antd Modal 关闭动画(约 300ms)同步，避免 Portal 锚点被同帧移动导致
+// "insertBefore / not a child of this node" 崩溃（父组件同帧 reload 时触发）。
+const templateManagerMounted = ref(false)
+let templateManagerUnmountTimer = null
+onBeforeUnmount(() => {
+  if (templateManagerUnmountTimer) {
+    clearTimeout(templateManagerUnmountTimer)
+    templateManagerUnmountTimer = null
+  }
+})
+watch(templateManagerOpen, (open) => {
+  if (open) {
+    if (templateManagerUnmountTimer) {
+      clearTimeout(templateManagerUnmountTimer)
+      templateManagerUnmountTimer = null
+    }
+    templateManagerMounted.value = true
+  } else {
+    templateManagerUnmountTimer = setTimeout(() => {
+      templateManagerMounted.value = false
+      templateManagerUnmountTimer = null
+    }, 350)
+  }
+})
 const templateManagerApplication = ref(null)
 const deploymentDialogOpen = ref(false)
 const selectedApplication = ref(null)

@@ -194,6 +194,16 @@ export function searchOpenSearchLogFacetStats(id, params) {
   return requestUtil.get(prefix + `opensearch-clusters/${id}/log-facet-stats/`, params)
 }
 
+// 存储水位总览：data stream 运行态（大小/docs/rollover/ISM）+ 节点磁盘 + 服务树维度数据
+export function getLogStorageOverview(id) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-storage-overview/`)
+}
+
+// 逻辑服务写入量：terms 聚合文档数（非磁盘占用口径），params: business_system/environment/days
+export function getLogServiceUsage(id, params) {
+  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-service-usage/`, params)
+}
+
 export function getLogProcessingRules(params) {
   return requestUtil.get(prefix + 'log-processing-rules/', params)
 }

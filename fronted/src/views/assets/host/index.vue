@@ -287,7 +287,7 @@
                             v-else
                             type="success"
                             show-icon
-                            :message="`当前 Agent 包：v${activeAgentPackage.version || '-'}`"
+                            :message="`当前 Agent 包已激活`"
                             :description="`sha256: ${shortSha(activeAgentPackage.sha256)} ｜ 上传时间：${formatDateTime(activeAgentPackage.create_time)}`"
                             style="margin-bottom: 8px"
                         />
@@ -321,75 +321,66 @@
                 v-model:open="agentPackageManagerVisible"
                 title="Agent 包管理"
                 :footer="null"
-                width="760px"
+                width="560px"
             >
-                <div style="margin-bottom: 12px; display: flex; gap: 8px">
-                    <a-button type="primary" size="small" @click="openAgentPackageUpload">上传 Agent 包</a-button>
-                    <a-button
-                        size="small"
-                        danger
-                        :disabled="!agentPackageSelectedRowKeys.length"
-                        @click="submitDeleteAgentPackages"
-                    >
-                        批量删除
+                <!-- 单包语义：服务端仅保留一个当前包，重复上传直接覆盖 -->
+                <a-alert
+                    v-if="!agentPackageManagerLoading && !activeAgentPackage"
+                    type="warning"
+                    show-icon
+                    message="尚未上传 Agent 包"
+                    description="上传后安装/更新任务将使用该包下发；未上传时回退使用服务端构建产物（路径依赖部署目录，不可靠）。"
+                    style="margin-bottom: 12px"
+                />
+                <a-descriptions
+                    v-else-if="activeAgentPackage"
+                    :column="1"
+                    size="small"
+                    bordered
+                    style="margin-bottom: 12px"
+                >
+                    <a-descriptions-item label="状态">
+                        <a-tag color="green">当前包</a-tag>
+                    </a-descriptions-item>
+                    <a-descriptions-item label="sha256">
+                        <span>{{ shortSha(activeAgentPackage.sha256) }}</span>
+                    </a-descriptions-item>
+                    <a-descriptions-item label="大小">
+                        <span>{{ formatBytes(activeAgentPackage.size_bytes) }}</span>
+                    </a-descriptions-item>
+                    <a-descriptions-item label="上传时间">
+                        <span>{{ formatDateTime(activeAgentPackage.create_time) }}</span>
+                    </a-descriptions-item>
+                </a-descriptions>
+                <div style="display: flex; gap: 8px">
+                    <a-button type="primary" size="small" @click="openAgentPackageUpload">
+                        {{ activeAgentPackage ? '重新上传（覆盖）' : '上传 Agent 包' }}
+                    </a-button>
+                    <a-button size="small" :disabled="!activeAgentPackage" :loading="agentPackageDownloadLoading" @click="downloadAgentPackageFile">
+                        下载
+                    </a-button>
+                    <a-button size="small" danger :disabled="!activeAgentPackage" @click="submitDeleteAgentPackages">
+                        删除
                     </a-button>
                 </div>
-                <a-table
-                    size="small"
-                    :columns="agentPackageColumns"
-                    :data-source="agentPackages"
-                    :pagination="false"
-                    :locale="tableLocale"
-                    :loading="agentPackageManagerLoading"
-                    :getPopupContainer="getPopupContainer"
-                    row-key="id"
-                    :row-selection="{ selectedRowKeys: agentPackageSelectedRowKeys, onChange: onAgentPackageSelectionChange }"
-                >
-                    <template #bodyCell="{ column, record }">
-                        <template v-if="column.key === 'sha256'">
-                            <span>{{ shortSha(record.sha256) }}</span>
-                        </template>
-                        <template v-else-if="column.key === 'size_bytes'">
-                            <span>{{ formatSize(record.size_bytes) }}</span>
-                        </template>
-                        <template v-else-if="column.key === 'create_time'">
-                            <span>{{ formatDateTime(record.create_time) }}</span>
-                        </template>
-                        <template v-else-if="column.key === 'is_active'">
-                            <a-tag v-if="record.is_active" color="green">激活</a-tag>
-                            <span v-else>-</span>
-                        </template>
-                        <template v-else-if="column.key === 'action'">
-                            <a-button
-                                v-if="!record.is_active"
-                                type="link"
-                                size="small"
-                                style="padding: 0"
-                                @click="submitActivateAgentPackage(record)"
-                            >
-                                设为激活
-                            </a-button>
-                            <span v-else>当前激活</span>
-                        </template>
-                    </template>
-                </a-table>
 
                 <a-modal
                     v-model:open="agentPackageUploadVisible"
-                    title="上传 Agent 包"
+                    :title="activeAgentPackage ? '重新上传 Agent 包' : '上传 Agent 包'"
                     ok-text="上传"
                     cancel-text="取消"
                     :confirm-loading="agentPackageUploading"
                     @ok="submitUploadAgentPackage"
                     @cancel="closeAgentPackageUpload"
                 >
+                    <a-alert
+                        v-if="activeAgentPackage"
+                        type="info"
+                        show-icon
+                        message="已存在当前包，再次上传将直接覆盖（sha256 与上传时间随之更新）。"
+                        style="margin-bottom: 12px"
+                    />
                     <a-form layout="vertical">
-                        <a-form-item label="版本号（可选）">
-                            <a-input
-                                v-model:value="agentPackageUploadVersion"
-                                placeholder="不填默认为 default（当前二进制不带版本号）"
-                            />
-                        </a-form-item>
                         <a-form-item label="dj-agent 二进制文件" required>
                             <!-- 二进制无固定扩展名，accept 不限制；仅前端校验非空 -->
                             <input
@@ -615,7 +606,7 @@ defineOptions({
 })
 
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -628,8 +619,8 @@ import {
     saveOrCreateHost,
 } from '@/api/assets/host/index.js'
 import {
-    activateAgentPackage,
     batchDeleteAgentPackages,
+    downloadAgentPackage,
     listAgentPackages,
     uploadAgentPackage,
 } from '@/api/assets/agentPackage.js'
@@ -660,6 +651,7 @@ import {
     formatOsInfo,
     formatPercent,
     formatSize,
+    formatBytes,
 } from './utils/hostDisplayUtils'
 
 const searchText = ref('')
@@ -698,19 +690,10 @@ const agentPackages = ref([])
 const agentPackageLoading = ref(false)
 const agentPackageManagerVisible = ref(false)
 const agentPackageManagerLoading = ref(false)
-const agentPackageSelectedRowKeys = ref([])
+const agentPackageDownloadLoading = ref(false)
 const agentPackageUploadVisible = ref(false)
 const agentPackageUploading = ref(false)
-const agentPackageUploadVersion = ref('')
 const agentPackageFileInputRef = ref(null)
-const agentPackageColumns = [
-    { title: '版本', dataIndex: 'version', key: 'version', width: 110 },
-    { title: 'sha256', dataIndex: 'sha256', key: 'sha256', width: 130 },
-    { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', width: 90 },
-    { title: '上传时间', dataIndex: 'create_time', key: 'create_time', width: 170 },
-    { title: '状态', dataIndex: 'is_active', key: 'is_active', width: 90 },
-    { title: '操作', key: 'action', width: 110 },
-]
 
 let hostListAutoRefreshTimer = null
 
@@ -1057,30 +1040,33 @@ const buildAgentPackageHint = (pkg) => {
         return ''
     }
     if (pkg.source === 'build') {
-        return '（包：构建产物 dev）'
+        return '（包：构建产物）'
     }
-    return `（包：${pkg.source || 'uploaded'} v${pkg.version || '-'}）`
+    return `（包：${pkg.source || 'uploaded'}，sha256 ${shortSha(pkg.sha256)}）`
 }
 
 
 const activeAgentPackage = computed(() => {
-    return agentPackages.value.find((item) => item.is_active) || null
+    return agentPackages.value.find((item) => item.is_active) || agentPackages.value[0] || null
 })
 
 const loadAgentPackages = async () => {
     agentPackageLoading.value = true
+    agentPackageManagerLoading.value = true
     try {
-        const res = await listAgentPackages({ page: 1, size: 200 })
-        const payload = res?.data?.data || {}
-        agentPackages.value = Array.isArray(payload.results) ? payload.results : []
+        const res = await listAgentPackages()
+        const payload = res?.data?.data || null
+        // 单包语义：服务端直接返回当前包对象，无包时为空
+        agentPackages.value = payload && payload.id ? [payload] : []
     } catch (error) {
         // 列表拉取失败不阻塞安装/更新流程，仅在包管理弹窗内提示
         agentPackages.value = []
         if (agentPackageManagerVisible.value) {
-            message.error('获取 Agent 包列表失败')
+            message.error('获取 Agent 包信息失败')
         }
     } finally {
         agentPackageLoading.value = false
+        agentPackageManagerLoading.value = false
     }
 }
 
@@ -1091,16 +1077,10 @@ const openAgentPackageManagerFromToolbar = () => {
 
 const openAgentPackageManager = () => {
     agentPackageManagerVisible.value = true
-    agentPackageSelectedRowKeys.value = []
     loadAgentPackages()
 }
 
-const onAgentPackageSelectionChange = (keys) => {
-    agentPackageSelectedRowKeys.value = keys
-}
-
 const openAgentPackageUpload = () => {
-    agentPackageUploadVersion.value = ''
     agentPackageUploadVisible.value = true
 }
 
@@ -1112,8 +1092,6 @@ const closeAgentPackageUpload = () => {
 }
 
 const submitUploadAgentPackage = async () => {
-    // 版本号可选：当前 agent 二进制不带版本元数据，不填由后端统一存 default
-    const version = String(agentPackageUploadVersion.value || '').trim()
     const file = agentPackageFileInputRef.value?.files?.[0]
     if (!file) {
         message.warning('请选择 dj-agent 二进制文件')
@@ -1121,12 +1099,12 @@ const submitUploadAgentPackage = async () => {
     }
     agentPackageUploading.value = true
     try {
-        const res = await uploadAgentPackage({ version, file })
+        const res = await uploadAgentPackage(file)
         if (res?.data?.code !== 200) {
             message.error(res?.data?.msg || 'Agent 包上传失败')
             return
         }
-        message.success(`Agent 包 v${version} 上传成功`)
+        message.success('Agent 包上传成功')
         closeAgentPackageUpload()
         await loadAgentPackages()
     } catch (error) {
@@ -1136,52 +1114,52 @@ const submitUploadAgentPackage = async () => {
     }
 }
 
-const submitActivateAgentPackage = (record) => {
-    Modal.confirm({
-        title: '设为激活包',
-        content: `确认将 Agent 包 v${record.version || record.id} 设为激活？后续安装/更新任务将使用该包下发。`,
-        okText: '确认',
-        cancelText: '取消',
-        onOk: async () => {
-            try {
-                const res = await activateAgentPackage(record.id)
-                if (res?.data?.code !== 200) {
-                    message.error(res?.data?.msg || '激活 Agent 包失败')
-                    return
-                }
-                message.success(`Agent 包 v${record.version} 已设为激活`)
-                await loadAgentPackages()
-            } catch (error) {
-                message.error(error?.response?.data?.msg || error?.message || '激活 Agent 包失败')
-            }
-        },
-    })
+// 下载当前包：blob 响应（走统一鉴权），按 dj-agent 文件名保存
+const downloadAgentPackageFile = async () => {
+    agentPackageDownloadLoading.value = true
+    try {
+        const res = await downloadAgentPackage()
+        const blob = res?.data
+        if (!(blob instanceof Blob)) {
+            message.error('下载 Agent 包失败')
+            return
+        }
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = 'dj-agent'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        URL.revokeObjectURL(url)
+    } catch (error) {
+        message.error(error?.response?.data?.msg || error?.message || '下载 Agent 包失败')
+    } finally {
+        agentPackageDownloadLoading.value = false
+    }
 }
 
 const submitDeleteAgentPackages = () => {
-    const ids = agentPackageSelectedRowKeys.value
-    if (!ids.length) {
+    const current = activeAgentPackage.value
+    if (!current) {
         return
     }
     openDeleteConfirm({
         title: '删除 Agent 包',
-        items: agentPackages.value
-            .filter((item) => ids.includes(item.id))
-            .map((item) => `v${item.version}`),
+        items: [`sha256 ${shortSha(current.sha256)}`],
         onConfirm: async () => {
             try {
-                const res = await batchDeleteAgentPackages(ids)
+                const res = await batchDeleteAgentPackages([current.id])
                 if (res?.data?.code !== 200) {
                     message.error(res?.data?.msg || '删除 Agent 包失败')
                     return
                 }
                 const failed = (res.data.data?.results || []).filter((item) => item?.ok === false)
                 if (failed.length) {
-                    message.warning(`已删除 ${res.data.data?.count ?? 0} 个包，${failed.length} 个删除失败`)
+                    message.warning(`删除失败：${failed[0]?.message || '未知错误'}`)
                 } else {
-                    message.success(`已删除 ${res.data.data?.count ?? ids.length} 个包`)
+                    message.success('Agent 包已删除')
                 }
-                agentPackageSelectedRowKeys.value = []
                 await loadAgentPackages()
             } catch (error) {
                 if (error?.isAxiosError) {
@@ -1688,7 +1666,7 @@ const handleOk = () => {
             .finally(() => {
                 dialogLoading.value = false
             })
-    })
+    }).catch(() => {})
 }
 
 const handleCancel = () => {

@@ -35,7 +35,15 @@
 
 禁止在页面里手写 `showTotal`、`pageSizeOptions` 等分页配置；新增页面一律 import `createPagination` / `tableLocale`。
 
-## 三、文档组织约定
+## 三、懒挂载弹窗的数据加载
+
+父组件用 `v-if` + `open` 懒挂载的弹窗（关闭延迟卸载动画结束后 `v-if` 置 false 的模式），
+**首次打开时组件挂载瞬间 `open` 已经是 `true`**。组件内 `watch(() => props.open)` 若不带
+`{ immediate: true }`，永远观察不到变更，首开不会加载数据（表格空白且不发请求）。
+约定：懒挂载弹窗的 open watch 必须写 `watch(() => props.open, (v) => { if (v) load() }, { immediate: true })`，
+加载函数内部自行用 `props.xxx?.id` 等守卫兜住"挂载但未就绪"的场景。
+
+## 四、文档组织约定
 
 1. **新增文档前先查 `README.md` 索引**：主题已存在则并入，不另起新文件；确需新建的放对目录（见 README 分类）。
 2. 文档分四类，各归其位：

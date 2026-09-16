@@ -7,12 +7,16 @@ BIN ?= bin/autoadmin
 PKG ?= ./...
 TESTFLAGS ?=
 
+# 版本注入：make build VERSION=v1.2.3（缺省用 git describe，仓库不可用则 dev）。
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS ?= -s -w -X autoadmin/internal/buildinfo.Version=$(VERSION)
+
 .PHONY: all build test vet fmt generate
 
 all: vet test build
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -buildvcs=false -trimpath -o $(BIN) ./cmd/autoadmin
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -buildvcs=false -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/autoadmin
 
 test:
 	go test $(TESTFLAGS) $(PKG)

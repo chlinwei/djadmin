@@ -3,6 +3,7 @@ package monitor
 import (
 	"database/sql"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// nullStringInterface 把 NullString 转为驱动参数（无效即 nil=NULL）。
+func nullStringInterface(value sql.NullString) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
+}
+
+// labelKeyRegexp 用于剔除 label_key 中的 JSON path 特殊字符（仅保留字母/数字/下划线）。
+var labelKeyRegexp = regexp.MustCompile(`[^A-Za-z0-9_]`)
 
 func optionalLikeParam(context *gin.Context, name string) sql.NullString {
 	value := strings.TrimSpace(context.Query(name))
@@ -229,10 +241,19 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	state, severity := optionalStringParam(context, "state"), optionalStringParam(context, "severity")
 	keyword := optionalLikeParam(context, "keyword")
 	startTime, endTime := optionalTimeParam(context, "start_time"), optionalTimeParam(context, "end_time")
+	// labels 精确过滤：label_key 仅允许字母/数字/下划线（防 JSON path 注入），label_value 精确等值。
+	// 未过滤时 key 兜底为恒存在的安全 path（value 为 NULL，WHERE 短路不会真正比较）。
+	labelKey := labelKeyRegexp.ReplaceAllString(strings.TrimSpace(context.Query("label_key")), "")
+	labelValue := optionalStringParam(context, "label_value")
+	if labelKey == "" {
+		labelKey = "alertname"
+		labelValue = sql.NullString{}
+	}
 
 	queries := db.New(handler.db)
 	count, err := queries.CountAlertHistories(context, db.CountAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), LabelValue_2: nullStringInterface(labelValue),
 	})
 	if err != nil {
 		response.Error(context, err)
@@ -240,6 +261,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	}
 	rows, err := queries.ListAlertHistories(context, db.ListAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), LabelValue_2: nullStringInterface(labelValue),
 		Limit: int32(size), Offset: int32((page - 1) * size),
 	})
 	if err != nil {

@@ -120,7 +120,11 @@ async function initialize() {
 }
 
 async function submit() {
-  await formRef.value?.validate()
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
   const payload = { ...form }
   payload.id = props.deploymentId || undefined
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os/signal"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api"
+	"autoadmin/internal/buildinfo"
 	"autoadmin/internal/config"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/messaging/rabbitmq"
@@ -38,6 +40,7 @@ func Run(args []string) error {
 	if _, ok := supportedCommands[args[0]]; !ok {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+	slog.Info("autoadmin starting", "version", buildinfo.Version, "role", args[0])
 	configuration, err := config.Load()
 	if err != nil {
 		return err
@@ -101,7 +104,7 @@ func runAPI(configuration config.Config) error {
 	if configuration.AgentGRPCAuthMode == "token" {
 		agentValidator = newAgentTokenValidator(databaseConnection)
 	}
-	agentGateway := agent.NewGateway(agentValidator)
+	agentGateway := agent.NewGateway(agentValidator, newAgentHelloRecorder(databaseConnection))
 	server, err := api.NewServerWithGateway(configuration.HTTPAddress, databaseConnection, tokens, configuration.CORSOrigins, rabbitClient, configuration.AssetsCredentialEncryptionKey, configuration.JWTSecret, agentGateway)
 	if err != nil {
 		return err
@@ -159,7 +162,41 @@ func newAgentTokenValidator(databaseConnection *sql.DB) func(string, string) boo
 				return true
 			}
 		}
-		return false
+	return false
+	}
+}
+
+// newAgentHelloRecorder 在 agent 握手成功时把版本与在线状态落库：Hello.version 为
+// 构建期注入的版本号，agent 安装/更新重启后即刷新，无需等待按需 get_host_info 采集。
+// 仅更新已有记录；agent_id 未绑定主机或主机尚无 hostsystem 行时跳过（后续采集补全），
+// 失败只记日志，不阻断会话。
+func newAgentHelloRecorder(databaseConnection *sql.DB) func(agentID, version string) {
+	return func(agentID, version string) {
+		if strings.TrimSpace(agentID) == "" {
+			return
+		}
+		result, err := databaseConnection.Exec(`
+			UPDATE assets_host
+			SET agent_online = TRUE, agent_online_time = UTC_TIMESTAMP(6), update_time = UTC_TIMESTAMP(6)
+			WHERE agent_id = ?`, agentID)
+		if err != nil {
+			slog.Warn("agent hello: update host online failed", "agent_id", agentID, "err", err)
+			return
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			slog.Warn("agent hello: no host bound to agent_id", "agent_id", agentID)
+			return
+		}
+		if strings.TrimSpace(version) == "" {
+			return
+		}
+		if _, err = databaseConnection.Exec(`
+			UPDATE assets_hostsystem hs
+			JOIN assets_host h ON h.id = hs.host_id
+			SET hs.agent_version = ?, hs.update_time = UTC_TIMESTAMP(6)
+			WHERE h.agent_id = ?`, version, agentID); err != nil {
+			slog.Warn("agent hello: update agent_version failed", "agent_id", agentID, "version", version, "err", err)
+		}
 	}
 }
 

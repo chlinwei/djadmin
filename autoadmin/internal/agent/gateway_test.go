@@ -15,7 +15,7 @@ import (
 
 func TestGatewayExecuteRoundTrip(t *testing.T) {
 	const token = "test-token"
-	gateway := NewGateway(func(agentID, receivedToken string) bool { return agentID == "agent-1" && receivedToken == token })
+	gateway := NewGateway(func(agentID, receivedToken string) bool { return agentID == "agent-1" && receivedToken == token }, nil)
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
 	gateway.Register(server)

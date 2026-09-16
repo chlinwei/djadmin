@@ -147,7 +147,13 @@
               <span v-else>-</span>
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-button size="small" @click="openScanDetail(record)">详情</a-button>            </template>
+              <a-space>
+                <a-button size="small" @click="openScanDetail(record)">详情</a-button>
+                <a-popconfirm v-if="['pending', 'running'].includes(record.status)" title="确定取消该扫描吗？" @confirm="handleCancelScan(record)">
+                  <a-button size="small" danger>取消</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
           </template>
         </a-table>
       </a-tab-pane>
@@ -284,6 +290,7 @@ const createBaselineCategory = (id, data) => requestUtil.post(`${baselinePrefix}
 const updateBaselineCategory = (baselineId, categoryId, data) => requestUtil.patch(`${baselinePrefix}${baselineId}/categories/${categoryId}/`, data)
 const deleteBaselineCategory = (baselineId, categoryId) => requestUtil.del(`${baselinePrefix}${baselineId}/categories/${categoryId}/`)
 const startBaselineScan = (id, data) => requestUtil.post(`${baselinePrefix}${id}/scan/`, data)
+const cancelScan = (id) => requestUtil.post(`sys/security/scans/${id}/cancel/`)
 const getSecurityScans = (params) => requestUtil.get('sys/security/scans/', params)
 const getProjectListSimple = (params) => requestUtil.get('assets/projects/', params)
 const getEnvironmentListSimple = (params) => requestUtil.get('assets/business-environments/', params)
@@ -329,8 +336,14 @@ const scanForm = reactive({ project_id: undefined, environment_id: undefined })
 const projectOptions = ref([])
 const environmentOptions = ref([])
 
-const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default' }[status] || 'default')
+const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
+const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
+
+const handleCancelScan = async (record) => {
+  await cancelScan(record.id)
+  message.success('扫描已取消')
+  await loadScans()
+}
 const severityLabel = (severity) => ({ high: '高', medium: '中', low: '低' }[severity] || severity)
 const opaParseOptions = [
   { label: 'raw 原文', value: 'raw' },

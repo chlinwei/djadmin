@@ -102,6 +102,11 @@ M/C/F 枚举（不是 0/1/2），location=1、is_expanded 与现有菜单一致�
    主机聚合 passed/failed/compliance_rate；
 4. **收尾**（`finishScan`）：聚合 summary（total/success/failed/skipped）并置终态
    （failed>0 → failed；全 skipped → skipped）。
+5. **取消**（`POST /sys/security/scans/:id/cancel/`，对齐巡检 CancelExecution）：仅
+   pending/running 可取消；事务内置 `status='canceled'` + end_time + summary 标记
+   `canceled:true`，未开始的 target 同步置 canceled；内存镜像（sync.Map）让扫描
+   goroutine 跳过剩余主机、丢弃已下发言语为在响应、不聚合覆盖终态。Agent 协议无
+   cancel 帧，已下发到主机上的执行无法远程终止（与 automation CancelJob 同限制）。
 
 ## 结果语义
 

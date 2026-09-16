@@ -71,17 +71,25 @@ Go 等语言专用分支；Java 堆栈、普通缩进续行和其他多行格式
 
 ## 4. 索引设计
 
-### 4.1 索引按「环境 + 业务系统 + 保留档位」切分
+### 4.1 索引按「项目 + 环境 + 业务系统 + 逻辑服务 + 保留档位」切分
 
 ```
-logs-<environment.code>-<business_system.code>-<tier>
+logs-<project.code>-<environment.code>-<business_system.code>-<service.code>-<tier>
 
-logs-prod-tib-hot
-logs-prod-tib-std
-logs-test-esb-std
+logs-tib-prod-esb-tomcat-svc-hot
+logs-tib-prod-esb-tomcat-svc-std
+logs-nkg-test-esb-gateway-std
 ```
 
-服务、实例、主机、日志类型**不进索引名，作为字段存储**。
+- 档位必须在尾部（ISM 的 `ism_template` 靠 `logs-*-<tier>` 后缀挂载），可含连字符。
+- 统一构造入口：Go `monitor.LogDataStreamName(prefix, project, env, bizsys, service, tier)`，
+  禁止各自拼接。
+- 服务、实例、主机、日志类型**同时作为字段存储**（`service` 等字段保留，检索过滤仍靠字段）。
+- **旧命名兼容**：`logs-<project>-<environment>-<business_system>-<tier>`（无服务段）为
+  过渡期遗留流，ISM 按保留期自然删除，不做 reindex；存储水位页对两种命名都可见，
+  旧流在"未识别"判定之外正常聚合展示。
+- 编码（服务/档位）**可含连字符**，流名解析禁止按 `-` 盲切，必须用数据库维度码做
+  前缀匹配（见 9.0）。
 
 ### 4.2 为什么需要保留档位
 
@@ -96,6 +104,21 @@ ISM 是**索引级**的，同一索引内无法按 `service` 区分保留期，�
 | `cold` | 90 天 | 量小但需长期保留，如审计、对账 |
 
 档位配置在**逻辑服务**上（`ApplicationService.log_retention_tier`），不配则为 `std`。
+服务级默认档位还可在**模板日志表格上方**的"默认保留档位"下拉单独覆盖到某条日志
+（`assets_application_service_log_setting.retention_tier_id`，null 表示继承服务默认）。
+
+**保存链路（Go 版）**：前端逻辑服务表单提交 `log_retention_tier`（档位 ID，可为 null）
+→ `assets.SaveApplicationService` 在 INSERT/UPDATE 中写入
+`assets_application_service.log_retention_tier_id`；GET 返回同名字段回显。档位 ID
+必须指向 `monitor_log_retention_tier` 中存在的记录，前端下拉只列 enabled 档位。
+
+**模板日志回显（编辑弹窗）**：`GET /assets/application-services/:id/log-config/`
+（Go `assets.ListServiceTemplateLogs`）除覆盖值外还返回 `resolved_path` 与
+`data_stream`——`resolved_path` 用服务级 `macro_values` 替换 `${VAR}`（实例级宏因
+逐实例而异不展开，未定义的宏保留原样）；`data_stream` 用 `shared/logstream.Name`
+生成（`logs-<项目>-<环境>-<业务系统>-<服务>-<有效档位>`），有效档位取值顺序为
+日志覆盖档位 → 服务默认档位 → `is_default` 档位 → `std`，与 Fluent Bit 下发的
+Index 命名（`monitor.LogDataStreamName`，内部委托同一 shared 实现）完全一致。
 
 ### 4.3 为什么不直接按服务建索引
 
@@ -326,7 +349,8 @@ dj-agent 具备文件读取能力，可实现「读取该实例最近 N 行日�
 ```
 ApplicationService
   + log_collection_enabled    BooleanField(default=False)
-  + log_retention_tier        CharField(choices=[hot/std/cold], default='std')
+  + log_retention_tier        档位 FK（Go: assets_application_service.log_retention_tier_id
+                              → monitor_log_retention_tier.id，null=按 std 处理）
 
 ApplicationLogDefinition      已存在 path_pattern / encoding / collection_enabled
   + processing_rule           ForeignKey(LogProcessingRule, PROTECT, nullable)
@@ -425,6 +449,11 @@ OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日
 
 日志路径由 `${APP_HOME}` 等变量展开得到，与部署模板保持一致。
 
+INPUT 指令的属性名必须是 Fluent Bit 官方的下划线风格（如 `refresh_interval`、
+`rotate_wait`、`mem_buf_limit`）。Fluent Bit v4 不再兼容驼峰写法，驼峰属性会让
+fluent-bit 启动失败（`unknown configuration property`）并进入 crash loop，导致主机上
+所有日志采集中断。
+
 规则的 `input_format=json` 时额外生成 `Parser json`；文本格式不指定 Parser。未启用多行时不生成
 `MULTILINE_PARSER` 和 `Multiline.parser`。
 
@@ -454,19 +483,59 @@ OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固�
 
 凭据通过 systemd `Environment=` 注入，不写入配置文件。
 
-### 8.4 下发流程
+### 8.4 下发流程（Go 版，log_config_render.go + apply_fluent_bit_config）
 
 ```
-开启逻辑服务的日志采集
-  → 检查目标主机 Fluent Bit 安装状态，未安装则走软件包安装流程
-  → 汇总该主机上所有启用的实例，生成各自的 inputs.d 片段
-  → 从日志定义关联的 processing_rule 渲染格式、多行参数和 Pipeline 名称
-  → 校验同主机内日志路径不重复
-  → 计算配置指纹，与 LogCollectionTarget.config_fingerprint 比对，一致则跳过
-  → 经 dj-agent 写入配置文件
-  → 调用 POST http://127.0.0.1:2020/api/v2/reload
-  → 更新配置指纹与下发时间
+「下发配置」（applyLogTargetConfigRow，log_target_actions.go）
+  → agent 在线检查
+  → loadHostLogRenderInput：主机上启用采集的服务×日志定义（有效采集开关 =
+    COALESCE(log_setting.collection_enabled, log_definition.collection_enabled)，
+    即覆盖行为 NULL/"继承"时跟随模板值判断，而非要求覆盖行自身为 TRUE；
+    且 log_definition.collection_enabled 且 deployment_template 匹配服务模板），
+    带出 项目/环境/业务/服务 code、有效档位（log_setting 优先回落服务表）、
+    有效处理规则（同上优先级）、服务级宏（macro_values）
+  → renderHostLogConfig（纯函数）：
+      inputs.d/<app>__<svc>__<logname>.conf —— 每实例一个 [INPUT] tail（路径按
+      服务级+实例级宏替换 ${VAR}。宏来源：部署实例运行时变量（runtime_variables）
+      与服务级 macro_values，部署模板 app_home 自动作为 APP_HOME 默认值（实例变量
+      显式配置的值优先，与巡检模块的宏推导一致）；替换后仍含 ${VAR} 的实例视为
+      路径无效，直接跳过不生成 INPUT，同时记入渲染告警 warnings 随下发/预览
+      结果返回——含未定义宏的 Path 会让 tail 静默监听不到任何文件，禁止带病下发），
+      外加每实例一条 [FILTER] record_modifier（Match 精确到实例 Tag）注入维度字段
+      service/instance/application/log_name/business_system/environment/host_ip——
+      OpenSearch 侧检索（buildLogQuery）按这些字段 term 过滤，缺字段会导致
+      服务树日志查询永远查不到数据，Tag =
+      <app>.<svc>.<instance>.<logname>。有效处理规则开启多行时（multiline_enabled +
+      start_pattern 取自 monitor_log_processing_rule，服务级覆盖优先回落日志定义
+      关联规则），[MULTILINE_PARSER] 集中生成到独立 parsers 文件
+      parsers.d/djadmin-multiline.conf（Fluent Bit v4 禁止 MULTILINE_PARSER 出现在
+      主配置及其 @INCLUDE 片段中），各 INPUT 通过 Multiline.parser
+      [MULTILINE_PARSER]（Name = multiline_<app>.<svc>.<logname>，regex 型，
+      continuation 规则以首行正则负向前瞻锚定），各 INPUT 通过 Multiline.parser
+      引用——多行合并必须在 Fluent Bit（发送前）完成，ingest pipeline 拿到的
+      已是按行拆开的独立文档，无法回溯合并
+      outputs.d/<app>__<svc>__<logname>.conf —— Match 实例段通配，Index =
+      LogDataStreamName（服务级命名），处理规则非空则带 Pipeline
+      指纹 = 全部片段内容的 sha256；某条日志的全部实例都被跳过时不产出任何片段
+  → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
+  → 片段中含 parsers 文件（即启用多行）时，自动附带下发主配置
+    fluent-bit.conf（内容 = fluentBitMainConfig()，含 Parsers_File 指向
+    parsers.d/djadmin-multiline.conf——老主机安装时的主配置可能缺该行，下发即自愈）
+  → agent 动作 configure_fluent_bit_opensearch（连接 env，保持不变）
+  → agent 动作 apply_fluent_bit_config（写片段文件，任一变化则 systemctl restart fluent-bit）
+  → 回写 config_fingerprint / last_applied_time
 ```
+
+- 解析（多行/格式）由 OpenSearch ingest pipeline（处理规则 pipeline_body，名称即规则 name）
+  承担，INPUT 不携带 multiline 配置。
+- **片段目录由 backend 全量托管**：渲染结果即该主机期望的完整片段集合，agent 落盘后会
+  删除 inputs.d/outputs.d 中不在本次清单内的 `*.conf` 遗留片段（改名/维度修正/服务下线
+  后的残留），删除与写入任一发生即重启 Fluent Bit——残留片段的 Match 与新片段重叠时
+  会把同一条日志重复写进多条流，必须清理。
+- 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），
+  只渲染不下发。
+- 历史差异：Django 版片段由后端 Celery 渲染；Go 版渲染在 API 进程内完成，agent 与
+  片段格式解耦（只落盘+重启），格式演进不动 agent。
 
 ### 8.5 热重载
 
@@ -483,6 +552,31 @@ Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 i
 ---
 
 ## 9. 查询与洞察
+
+### 9.0 存储水位（data stream 运行态）
+
+前端「日志管理 → 存储水位」（`/monitor/logging/overview`，迁移 000019），左侧层级树
+`顶层 → 项目 → 业务系统 → 环境 → 逻辑服务`，右侧按层级展示。
+
+**数据口径（关键）**：真实磁盘占用/rollover 状态的原子粒度是 data stream
+（命名 = `logs-<项目>-<环境>-<业务系统>-<档位编码>`，见 4.1）。树的顶层/项目/业务系统/环境层
+都是流的真实聚合；**逻辑服务层只有写入量（文档数）口径**——服务是流内字段不是索引维度，
+不存在按服务的真实磁盘拆分，UI 必须明示该差异。
+
+- 数据来源：`GET /monitor/opensearch-clusters/:id/log-storage-overview/`
+  （`datastream_status.go`）聚合 `_cat/indices`（流大小/docs/健康）、
+  `_plugins/_ism/explain`（rollover/ISM 状态）、`_cat/allocation`（节点磁盘水位，
+  失败不阻塞总览），并从 MySQL 带回项目/业务系统/环境/服务维度数据，前端组装树。
+- 流名解析：后备索引名形如 `.ds-<流名>-<代数>`（或传统 `<流名>-<YYYY.MM.DD>`），先剥离
+  `.ds-` 前缀与后缀还原流名，再用数据库维度码做前缀匹配（`streamNameMatcher`，编码可含
+  连字符，禁止按 `-` 盲切）：新命名按 服务 维度命中，流即服务本身；旧命名（无服务段）
+  要求剩余段恰好是已知档位。两种都命中不了才归"未识别"节点（手工建的、维度已删的），不丢数据。
+- **逻辑服务层（新命名流）展示真实磁盘占用**（流即服务本身）；旧流的叶子层只有写入量
+  （文档数）口径，UI 明示"未按服务分流的旧流"。
+- `GET .../log-service-usage/?business_system=&environment=`：环境节点展开时按需调用，
+  `service` 字段 terms 聚合文档数（默认近 30 天，仅叶子层使用），索引匹配用
+  `<prefix>-*<环境>-<业务系统>-*`（项目段通配）。
+- 手动刷新，无轮询（聚合查询对集群有成本）。
 
 ### 9.1 自动错误清单
 

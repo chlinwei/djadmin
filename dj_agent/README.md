@@ -84,6 +84,23 @@ make all            # vet + test + build
 make build GOARCH=arm64
 ```
 
+**版本注入**：`dj_agent/internal/buildinfo` 定义 `Version`/`Commit`（源码默认 `dev`/`none`），构建时通过 `-ldflags -X` 注入，出现在启动日志与运行时状态接口中。`VERSION` 缺省用 `git describe --tags --always --dirty`（仓库不可用则 `dev`），也可显式指定：
+
+```bash
+make build VERSION=v1.2.3
+```
+
+查看版本：`./bin/dj-agent --version`（或 `-v`），输出如 `dj-agent v1.2.3`。
+
+裸 `make build`（不指定 `VERSION`）时的版本取决于构建时 git 仓库状态：
+
+| 场景 | 版本 |
+|---|---|
+| 打了标签 `v1.0.0` 且代码干净 | `v1.0.0` |
+| 打了标签但有未提交改动 | `v1.0.0-dirty` |
+| 无标签 | 短 commit，如 `ed4330d`；有未提交改动则 `ed4330d-dirty` |
+| git 不可用（如源码包构建） | `dev` |
+
 **为什么强制 `CGO_ENABLED=0`**：生成纯 Go 静态二进制，避免运行时依赖构建机的 glibc 版本，否则分发到较旧发行版会直接起不来。
 
 `cmd/agent/cgo_guard.go` 是 `//go:build cgo` 构建守卫：一旦在 `CGO_ENABLED=1` 下编译会直接报错失败，禁止删除或绕过。

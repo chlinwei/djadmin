@@ -43,6 +43,18 @@
               allow-clear
               style="width: 260px"
             />
+            <a-input
+              v-model:value="labelFilterKey"
+              placeholder="label 名，如 job"
+              allow-clear
+              style="width: 160px"
+            />
+            <a-input
+              v-model:value="labelFilterValue"
+              placeholder="label 值（精确匹配）"
+              allow-clear
+              style="width: 160px"
+            />
           </a-space>
 
           <a-alert v-if="loadError" type="error" show-icon :message="loadError" style="margin-bottom: 12px" />
@@ -156,6 +168,20 @@
               allow-clear
               style="width: 260px"
               @search="onHistoryFilterChange"
+            />
+            <a-input
+              v-model:value="historyLabelKey"
+              placeholder="label 名，如 job"
+              allow-clear
+              style="width: 160px"
+              @pressEnter="onHistoryFilterChange"
+            />
+            <a-input
+              v-model:value="historyLabelValue"
+              placeholder="label 值（精确匹配）"
+              allow-clear
+              style="width: 160px"
+              @pressEnter="onHistoryFilterChange"
             />
             <a-range-picker
               v-model:value="historyTimeRange"
@@ -419,6 +445,8 @@ const resolvedCount = ref(0)
 const rawRows = ref([])
 const keyword = ref('')
 const stateFilter = ref('all')
+const labelFilterKey = ref('')
+const labelFilterValue = ref('')
 const severityFilter = ref('all')
 const notificationFilter = ref('all')
 
@@ -580,6 +608,7 @@ function isAlertEntryExpandable(record) {
 const filteredRows = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return rawRows.value.filter((row) => {
+    if (labelFilterKey.value.trim() && String(row.labels?.[labelFilterKey.value.trim()] ?? '') !== labelFilterValue.value.trim()) return false
     if (stateFilter.value !== 'all' && row.state !== stateFilter.value) return false
     if (severityFilter.value !== 'all' && row.severity !== severityFilter.value) return false
     if (notificationFilter.value !== 'all' && row.notification_status !== notificationFilter.value) return false
@@ -648,6 +677,8 @@ const historyLoading = ref(false)
 const historyLoadError = ref('')
 const historyRows = ref([])
 const historyKeyword = ref('')
+const historyLabelKey = ref('')
+const historyLabelValue = ref('')
 const historyState = ref('all')
 const historySeverity = ref('all')
 const historyNotificationStatus = ref('all')
@@ -821,6 +852,8 @@ function buildHistoryQueryParams() {
     page: historyPagination.current,
     page_size: historyPagination.pageSize,
     keyword: historyKeyword.value || undefined,
+    label_key: historyLabelKey.value.trim() || undefined,
+    label_value: historyLabelValue.value.trim() || undefined,
     state: historyState.value !== 'all' ? historyState.value : undefined,
     severity: historySeverity.value !== 'all' ? historySeverity.value : undefined,
     notification_status: historyNotificationStatus.value !== 'all' ? historyNotificationStatus.value : undefined,
@@ -902,7 +935,14 @@ function restartRefreshTimer() {
 watch(() => autoRefreshEnabled.value, restartRefreshTimer)
 watch(() => refreshIntervalSeconds.value, restartRefreshTimer)
 watch(() => activeTabKey.value, restartRefreshTimer)
-watch([keyword, stateFilter, severityFilter, notificationFilter], () => {
+watch([historyLabelKey, historyLabelValue], (newValue, oldValue) => {
+  // 输入变化不主动刷接口（统一回车/其他筛选触发）；但清空时立即刷新。
+  if ((newValue[0] === '' && oldValue[0] !== '') || (newValue[1] === '' && oldValue[1] !== '')) {
+    onHistoryFilterChange()
+  }
+})
+
+watch([keyword, stateFilter, severityFilter, notificationFilter, labelFilterKey, labelFilterValue], () => {
   currentPagination.current = 1
 })
 watch(() => filteredRows.value.length, (total) => {

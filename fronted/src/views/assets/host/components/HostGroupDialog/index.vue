@@ -125,7 +125,7 @@ const handleOk = () => {
                 handleApiError({data: res.data})
             }
         }).catch(handleApiError)
-    })
+    }).catch(() => {})
 }
 
 const handleCancel = () => {

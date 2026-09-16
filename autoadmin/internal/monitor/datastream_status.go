@@ -1,0 +1,433 @@
+package monitor
+
+import (
+	"database/sql"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/logstream"
+
+	"github.com/gin-gonic/gin"
+)
+
+// 存储水位：data stream 运行态只读展示。真实磁盘占用/rollover 状态的原子粒度是
+// data stream（环境×业务系统×档位，即索引名的物理隔离维度）；逻辑服务只是流内字段，
+// 只能展示写入量（文档数），不提供按服务的磁盘拆分。
+
+type dataStreamBackingIndex struct {
+	Index    string `json:"index"`
+	Health   string `json:"health"`
+	Docs     float64
+	Bytes    float64
+	CreateAt string `json:"create_at"`
+	ISMState string `json:"ism_state"`
+}
+
+type dataStreamEntry struct {
+	Name           string                   `json:"name"`
+	Project        string                   `json:"project"`
+	Environment    string                   `json:"environment"`
+	BusinessSystem string                   `json:"business_system"`
+	Service        string                   `json:"service"`
+	Tier           string                   `json:"tier"`
+	Health         string                   `json:"health"`
+	Docs           float64                  `json:"docs"`
+	Bytes          float64                  `json:"bytes"`
+	ISMState       string                   `json:"ism_state"`
+	Recognized     bool                     `json:"recognized"`
+	BackingIndices []dataStreamBackingIndex `json:"backing_indices"`
+}
+
+// data stream 后备索引名为 .ds-<stream>-<generation>（如 .ds-logs-kul-test-tib-hot-000015），
+// 传统索引为 <stream>-<YYYY.MM.DD>；两种后缀都要剥离才能还原流名。
+var backingIndexDateSuffix = regexp.MustCompile(`-\d{4}\.\d{2}\.\d{2}(-\d+)?$`)
+var backingIndexGenerationSuffix = regexp.MustCompile(`-\d{5,}$`)
+
+// parsedStreamName：流名解析结果。
+type parsedStreamName struct {
+	Stream, Project, Environment, BusinessSystem, Service, Tier string
+	Recognized                                                  bool
+}
+
+// streamNameMatcher 基于数据库维度码做流名匹配。编码可含连字符（如服务 tomcat-svc、
+// 档位 wuhan-test），纯字符串切分必有歧义，必须拿已知维度码做前缀匹配：
+// 新命名 = <prefix>-<项目>-<环境>-<业务系统>-<逻辑服务>-<档位>；
+// 旧命名 = <prefix>-<项目>-<环境>-<业务系统>-<档位>（无服务段）。
+type streamNameMatcher struct {
+	prefix   string
+	services []streamServiceKey // 新命名候选
+	legacy   []streamLegacyKey  // 旧命名候选
+	tiers    map[string]bool
+}
+
+type streamServiceKey struct {
+	Match                                         string // "<项目>-<环境>-<业务系统>-<逻辑服务>-"
+	Project, Environment, BusinessSystem, Service string
+}
+
+type streamLegacyKey struct {
+	Match                                string // "<项目>-<环境>-<业务系统>-"
+	Project, Environment, BusinessSystem string
+}
+
+// loadStreamDims 加载启用服务的维度码，构造流名匹配候选（新命名 + 旧命名兼容）。
+func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) streamNameMatcher {
+	matcher := streamNameMatcher{prefix: prefix, tiers: map[string]bool{}}
+	var serviceKeys []streamServiceKey
+	var legacyKeys []streamLegacyKey
+	rows, err := handler.db.QueryContext(context, `
+		SELECT DISTINCT p.code, e.code, bs.code, s.code, COALESCE(t.code, '')
+		FROM assets_application_service s
+		JOIN assets_business_system bs ON bs.id = s.business_system_id
+		JOIN assets_project p ON p.id = bs.project_id
+		JOIN assets_business_environment e ON e.id = s.environment_id
+		LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
+		WHERE s.enabled = TRUE`)
+	if err == nil {
+		for rows.Next() {
+			var project, env, biz, service, tier string
+			if err = rows.Scan(&project, &env, &biz, &service, &tier); err == nil {
+				serviceKeys = append(serviceKeys, streamServiceKey{
+					Match:   strings.Join([]string{project, env, biz, service}, "-") + "-",
+					Project: project, Environment: env, BusinessSystem: biz, Service: service,
+				})
+				legacyKeys = append(legacyKeys, streamLegacyKey{
+					Match:   strings.Join([]string{env, biz}, "-") + "-",
+					Project: project, Environment: env, BusinessSystem: biz,
+				})
+				if tier != "" {
+					matcher.tiers[tier] = true
+				}
+			}
+		}
+		rows.Close()
+	}
+	// 兜底：把所有档位码也带上，旧命名流（无服务维度）至少档位能对上
+	tierRows, tierErr := handler.db.QueryContext(context, `SELECT code FROM monitor_log_retention_tier WHERE enabled = TRUE`)
+	if tierErr == nil {
+		for tierRows.Next() {
+			var tier string
+			if scanErr := tierRows.Scan(&tier); scanErr == nil && tier != "" {
+				matcher.tiers[tier] = true
+			}
+		}
+		tierRows.Close()
+	}
+	matcher.services = serviceKeys
+	matcher.legacy = legacyKeys
+	return matcher
+}
+
+// resolveStreamName 按候选码匹配流名；新命名优先（更长前缀），旧命名要求剩余段恰好是已知档位。
+func (m streamNameMatcher) resolveStreamName(stream string) parsedStreamName {
+	var result parsedStreamName
+	result.Stream = stream
+	if !strings.HasPrefix(stream, m.prefix+"-") {
+		return result
+	}
+	rest := strings.TrimPrefix(stream, m.prefix+"-")
+	for _, candidate := range m.services {
+		if strings.HasPrefix(rest, candidate.Match) {
+			tier := strings.TrimPrefix(rest, candidate.Match)
+			result.Project, result.Environment, result.BusinessSystem, result.Service, result.Tier = candidate.Project, candidate.Environment, candidate.BusinessSystem, candidate.Service, tier
+			result.Recognized = true
+			return result
+		}
+	}
+	for _, candidate := range m.legacy {
+		if strings.HasPrefix(rest, candidate.Match) {
+			tier := strings.TrimPrefix(rest, candidate.Match)
+			if m.tiers[tier] {
+				result.Project, result.Environment, result.BusinessSystem, result.Tier = candidate.Project, candidate.Environment, candidate.BusinessSystem, tier
+				result.Recognized = true
+				return result
+			}
+		}
+	}
+	return result
+}
+
+// LogDataStreamName 构造逻辑服务级 data stream 名（logs-<项目>-<环境>-<业务系统>-<逻辑服务>-<档位>）。
+// 后续生成 Fluent Bit 采集配置的地方必须统一调用本函数，禁止各自拼接。
+func LogDataStreamName(prefix, project, environment, businessSystem, service, tier string) string {
+	return logstream.Name(prefix, project, environment, businessSystem, service, tier)
+}
+
+// stripBackingIndexSuffixes 剥离 .ds- 前缀与代数/日期后缀，还原 data stream 名。
+func stripBackingIndexSuffixes(prefix, index string) string {
+	stream := strings.TrimPrefix(index, ".ds-")
+	stream = backingIndexDateSuffix.ReplaceAllString(stream, "")
+	stream = backingIndexGenerationSuffix.ReplaceAllString(stream, "")
+	return stream
+}
+
+func catFloat(row map[string]any, key string) float64 {
+	switch value := row[key].(type) {
+	case string:
+		parsed, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		return parsed
+	case float64:
+		return value
+	}
+	return 0
+}
+
+func catString(row map[string]any, key string) string {
+	value, _ := row[key].(string)
+	return strings.TrimSpace(value)
+}
+
+// fetchDataStreamEntries 基于 _cat/indices + _ism/explain 组装流级运行态。
+func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster openSearchCluster, matcher streamNameMatcher) ([]dataStreamEntry, map[string]string, error) {
+	prefix := logHealthPrefix(cluster)
+	indices, err := handler.openSearchRequestArray(context, cluster, "GET",
+		"/_cat/indices/"+prefix+"-*?format=json&h=index,health,status,docs.count,store.size,creation.date.string&bytes=b")
+	if err != nil {
+		return nil, nil, fmt.Errorf("查询索引列表失败: %w", err)
+	}
+	ismStates := map[string]string{}
+	explain, explainErr := handler.openSearchRequest(context, cluster, "GET", "/_plugins/_ism/explain/"+prefix+"-*?show_policy=false", nil)
+	if explainErr == nil {
+		// 响应顶层键即索引名（形如 {".ds-logs-x-000016":{"state":{"name":"hot"},...}}），
+		// 另有 total_managed_ans 等聚合键，靠 state 字段是否存在过滤。
+		for key, raw := range explain {
+			payload, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if state, ok := payload["state"].(map[string]any); ok {
+				name, _ := state["name"].(string)
+				ismStates[key] = name
+			}
+		}
+	}
+
+	entries := map[string]*dataStreamEntry{}
+	var order []string
+	for _, row := range indices {
+		index := catString(row, "index")
+		if index == "" {
+			continue
+		}
+		parsed := matcher.resolveStreamName(stripBackingIndexSuffixes(prefix, index))
+		entry, exists := entries[parsed.Stream]
+		if !exists {
+			entry = &dataStreamEntry{
+				Name: parsed.Stream, Project: parsed.Project, Environment: parsed.Environment,
+				BusinessSystem: parsed.BusinessSystem, Service: parsed.Service, Tier: parsed.Tier,
+				Recognized: parsed.Recognized,
+			}
+			entries[parsed.Stream] = entry
+			order = append(order, parsed.Stream)
+		}
+		entry.Docs += catFloat(row, "docs.count")
+		entry.Bytes += catFloat(row, "store.size")
+		if entry.Health == "" || catString(row, "health") == "red" {
+			entry.Health = catString(row, "health")
+		}
+		entry.BackingIndices = append(entry.BackingIndices, dataStreamBackingIndex{
+			Index: index, Health: catString(row, "health"), Docs: catFloat(row, "docs.count"),
+			Bytes: catFloat(row, "store.size"), CreateAt: catString(row, "creation.date.string"),
+			ISMState: ismStates[index],
+		})
+		// 流级 ISM 状态取任一后备索引的非空状态（同一流的策略一致）。
+		if entry.ISMState == "" && ismStates[index] != "" {
+			entry.ISMState = ismStates[index]
+		}
+	}
+	sort.Strings(order)
+	result := make([]dataStreamEntry, 0, len(order))
+	for _, name := range order {
+		backing := entries[name].BackingIndices
+		sort.Slice(backing, func(i, j int) bool { return backing[i].Index < backing[j].Index })
+		result = append(result, *entries[name])
+	}
+	return result, ismStates, nil
+}
+
+// GetLogStorageOverview 存储水位总览：流级运行态（OpenSearch）+ 维度数据（MySQL）一次返回，
+// 由前端组装 顶层→项目→业务系统→环境→逻辑服务 的层级树。
+func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
+	cluster, err := handler.loadOpenSearchCluster(context)
+	if err == sql.ErrNoRows {
+		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	matcher := handler.loadStreamDims(context, logHealthPrefix(cluster))
+	entries, _, err := handler.fetchDataStreamEntries(context, cluster, matcher)
+	if err != nil {
+		response.BusinessError(context, 502, err.Error(), nil)
+		return
+	}
+	// 节点磁盘水位：失败不阻塞总览（旧版本/云托管可能拒绝该端点）。
+	allocation, allocErr := handler.openSearchRequestArray(context, cluster, "GET", "/_cat/allocation?format=json&h=node,name,shards,disk.used,disk.total,disk.percent")
+
+	type bizsysRow struct {
+		ID        int64  `json:"id"`
+		Code      string `json:"code"`
+		Name      string `json:"name"`
+		ProjectID *int64 `json:"project_id"`
+	}
+	type projectRow struct {
+		ID   int64  `json:"id"`
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	type envRow struct {
+		ID   int64  `json:"id"`
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	type serviceRow struct {
+		Code           string  `json:"code"`
+		Name           string  `json:"name"`
+		BusinessSystem string  `json:"business_system_code"`
+		Environment    *string `json:"environment_code"`
+		Tier           *string `json:"retention_tier"`
+		CollectEnabled bool    `json:"log_collection_enabled"`
+	}
+	projects := []projectRow{}
+	rows, err := handler.db.QueryContext(context, `SELECT id,code,name FROM assets_project WHERE enabled=TRUE ORDER BY name`)
+	if err == nil {
+		for rows.Next() {
+			var item projectRow
+			if err = rows.Scan(&item.ID, &item.Code, &item.Name); err == nil {
+				projects = append(projects, item)
+			}
+		}
+		rows.Close()
+	}
+	bizsystems := []bizsysRow{}
+	rows, err = handler.db.QueryContext(context, `SELECT id,code,name,project_id FROM assets_business_system WHERE enabled=TRUE ORDER BY name`)
+	if err == nil {
+		for rows.Next() {
+			var item bizsysRow
+			if err = rows.Scan(&item.ID, &item.Code, &item.Name, &item.ProjectID); err == nil {
+				bizsystems = append(bizsystems, item)
+			}
+		}
+		rows.Close()
+	}
+	environments := []envRow{}
+	rows, err = handler.db.QueryContext(context, `SELECT id,code,name FROM assets_business_environment WHERE enabled=TRUE ORDER BY `+"`order`"+`,name`)
+	if err == nil {
+		for rows.Next() {
+			var item envRow
+			if err = rows.Scan(&item.ID, &item.Code, &item.Name); err == nil {
+				environments = append(environments, item)
+			}
+		}
+		rows.Close()
+	}
+	services := []serviceRow{}
+	rows, err = handler.db.QueryContext(context, `SELECT s.code,s.name,bs.code,e.code,t.code,s.log_collection_enabled
+		FROM assets_application_service s
+		JOIN assets_business_system bs ON bs.id=s.business_system_id
+		LEFT JOIN assets_business_environment e ON e.id=s.environment_id
+		LEFT JOIN monitor_log_retention_tier t ON t.id=s.log_retention_tier_id
+		WHERE s.enabled=TRUE ORDER BY s.name`)
+	if err == nil {
+		for rows.Next() {
+			var item serviceRow
+			if err = rows.Scan(&item.Code, &item.Name, &item.BusinessSystem, &item.Environment, &item.Tier, &item.CollectEnabled); err == nil {
+				services = append(services, item)
+			}
+		}
+		rows.Close()
+	}
+
+	response.Success(context, gin.H{
+		"cluster":      gin.H{"id": cluster.ID, "index_prefix": cluster.IndexPrefix},
+		"data_streams": entries,
+		"allocation":   allocation,
+		"alloc_error":  errorString(allocErr),
+		"dims": gin.H{
+			"projects":         projects,
+			"business_systems": bizsystems,
+			"environments":     environments,
+			"services":         services,
+		},
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// GetLogServiceUsage 逻辑服务写入量：按 service 字段的 terms 聚合（文档数口径，
+// 非磁盘占用）。点进逻辑服务层时按需调用。
+func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
+	cluster, err := handler.loadOpenSearchCluster(context)
+	if err == sql.ErrNoRows {
+		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+		return
+	}
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	businessSystem := strings.TrimSpace(context.Query("business_system"))
+	environment := strings.TrimSpace(context.Query("environment"))
+	if businessSystem == "" || environment == "" {
+		response.BusinessError(context, 400, "business_system 与 environment 必填", nil)
+		return
+	}
+	if strings.ContainsAny(businessSystem, " ,\"*") || strings.ContainsAny(environment, " ,\"*") {
+		response.BusinessError(context, 400, "参数包含非法字符", nil)
+		return
+	}
+	days := 30
+	if raw := context.Query("days"); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 && parsed <= 365 {
+			days = parsed
+		}
+	}
+	prefix := logHealthPrefix(cluster)
+	body := gin.H{
+		"size":  0,
+		"query": gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dd", days)}}},
+		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 500}}},
+	}
+	result, err := handler.openSearchRequest(context, cluster, "POST",
+		// 流名 = <prefix>-<项目>-<环境>-<业务系统>-<档位>，项目段不参与查询条件，用 * 通配。
+		"/"+prefix+"-*-"+environment+"-"+businessSystem+"-*/_search", body)
+	if err != nil {
+		response.BusinessError(context, 502, fmt.Sprintf("查询失败: %v", err), nil)
+		return
+	}
+	items := []gin.H{}
+	total := 0.0
+	if aggregations, ok := result["aggregations"].(map[string]any); ok {
+		if byService, ok := aggregations["by_service"].(map[string]any); ok {
+			buckets, _ := byService["buckets"].([]any)
+			for _, bucketRaw := range buckets {
+				bucket, _ := bucketRaw.(map[string]any)
+				name, _ := bucket["key"].(string)
+				count, _ := bucket["doc_count"].(float64)
+				total += count
+				items = append(items, gin.H{"service": name, "docs": count})
+			}
+		}
+	}
+	response.Success(context, gin.H{
+		"business_system": businessSystem,
+		"environment":     environment,
+		"days":            days,
+		"total_docs":      total,
+		"items":           items,
+		"generated_at":    time.Now().UTC().Format(time.RFC3339),
+	})
+}

@@ -5,11 +5,16 @@ import (
 	"os"
 
 	"github.com/chlinwei/djadmin/dj_agent/internal/app"
+	"github.com/chlinwei/djadmin/dj_agent/internal/buildinfo"
 	"github.com/chlinwei/djadmin/dj_agent/internal/config"
 	"github.com/chlinwei/djadmin/dj_agent/internal/logger"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		println("dj-agent " + buildinfo.Version)
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("dj_agent exit with error", "err", err)
 		os.Exit(1)
@@ -24,7 +29,7 @@ func run() error {
 
 	logger.Init(cfg.LogLevel)
 	slog.Info("dj_agent starting",
-		"version", "dev",
+		"version", buildinfo.Version,
 		"pid", os.Getpid(),
 		"agent_id", cfg.AgentID,
 		"log_level", cfg.LogLevel,

@@ -24,6 +24,7 @@ type ApplicationServiceInput struct {
 	ClusterProfile       *int64                    `json:"cluster_profile"`
 	MacroValues          json.RawMessage           `json:"macro_values"`
 	LogCollectionEnabled *bool                     `json:"log_collection_enabled"`
+	LogRetentionTier     *int64                    `json:"log_retention_tier"`
 	MemberConfigs        *[]ServiceMemberInput     `json:"member_configs"`
 	Remark               *string                   `json:"remark"`
 	LogSettings          *[]ServiceLogSettingInput `json:"log_settings"`
@@ -63,13 +64,13 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	logs := boolValue(input.LogCollectionEnabled, false)
 	var serviceID int64
 	if id == 0 {
-		result, execErr := tx.ExecContext(ctx, `INSERT INTO assets_application_service (create_time,update_time,remark,name,code,topology_type,access_address,enabled,application_id,cluster_profile_id,environment_id,application_version_id,deployment_template_id,business_system_id,macro_values,log_collection_enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs)
+		result, execErr := tx.ExecContext(ctx, `INSERT INTO assets_application_service (create_time,update_time,remark,name,code,topology_type,access_address,enabled,application_id,cluster_profile_id,environment_id,application_version_id,deployment_template_id,business_system_id,macro_values,log_collection_enabled,log_retention_tier_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs, nullableInt(input.LogRetentionTier))
 		if execErr != nil {
 			return 0, execErr
 		}
 		serviceID, err = result.LastInsertId()
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE assets_application_service SET update_time=?,remark=?,name=?,code=?,topology_type=?,access_address=?,enabled=?,application_id=?,cluster_profile_id=?,environment_id=?,application_version_id=?,deployment_template_id=?,business_system_id=?,macro_values=?,log_collection_enabled=? WHERE id=?`, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs, id)
+		_, err = tx.ExecContext(ctx, `UPDATE assets_application_service SET update_time=?,remark=?,name=?,code=?,topology_type=?,access_address=?,enabled=?,application_id=?,cluster_profile_id=?,environment_id=?,application_version_id=?,deployment_template_id=?,business_system_id=?,macro_values=?,log_collection_enabled=?,log_retention_tier_id=? WHERE id=?`, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs, nullableInt(input.LogRetentionTier), id)
 		serviceID = id
 	}
 	if err != nil {

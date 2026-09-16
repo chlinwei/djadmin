@@ -20,6 +20,9 @@ type Gateway struct {
 	mu       sync.RWMutex
 	sessions map[string]*session
 	validate func(string, string) bool
+	// onHello 在握手校验通过后回调（agent_id + Hello.version），用于把 agent 版本
+	// 与在线时间落库；回调失败只记日志，不影响会话建立。
+	onHello func(agentID, version string)
 }
 type session struct {
 	agentID        string
@@ -31,8 +34,8 @@ type session struct {
 	fileEvents     map[string]chan *pb.AgentFrame
 }
 
-func NewGateway(validate func(string, string) bool) *Gateway {
-	return &Gateway{sessions: make(map[string]*session), validate: validate}
+func NewGateway(validate func(string, string) bool, onHello func(agentID, version string)) *Gateway {
+	return &Gateway{sessions: make(map[string]*session), validate: validate, onHello: onHello}
 }
 func (gateway *Gateway) Register(server *grpc.Server) { pb.RegisterAgentChannelServer(server, gateway) }
 
@@ -61,6 +64,9 @@ func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
 		return fmt.Errorf("agent authentication failed")
 	}
 	sess := &session{agentID: hello.AgentId, stream: stream, pending: make(map[string]chan *pb.AutomationExecuteResponse), terminalEvents: make(map[string]chan *pb.AgentFrame), fileEvents: make(map[string]chan *pb.AgentFrame)}
+	if gateway.onHello != nil {
+		gateway.onHello(sess.agentID, hello.Version)
+	}
 	gateway.mu.Lock()
 	old := gateway.sessions[sess.agentID]
 	gateway.sessions[sess.agentID] = sess
@@ -128,6 +134,17 @@ func (sess *session) closePending() {
 		close(ch)
 	}
 }
+
+// dropSession 摘除已判死的会话：仅当 sessions 里仍是该会话（未被同 ID 的新连接顶替）时删除，
+// 并关闭其全部 pending 管道让等待方立刻得到离线错误。
+func (gateway *Gateway) dropSession(sess *session) {
+	gateway.mu.Lock()
+	if gateway.sessions[sess.agentID] == sess {
+		delete(gateway.sessions, sess.agentID)
+	}
+	gateway.mu.Unlock()
+	sess.closePending()
+}
 func (sess *session) sendTerminalEvent(requestID string, frame *pb.AgentFrame) {
 	sess.mu.Lock()
 	channel := sess.terminalEvents[requestID]
@@ -166,10 +183,11 @@ func (gateway *Gateway) Execute(ctx context.Context, agentID string, request *pb
 	sess.pending[request.RequestId] = result
 	sess.mu.Unlock()
 	if err := sess.send(&pb.ServerFrame{Payload: &pb.ServerFrame_AutomationExecuteRequest{AutomationExecuteRequest: request}}); err != nil {
-		sess.mu.Lock()
-		delete(sess.pending, request.RequestId)
-		sess.mu.Unlock()
-		return nil, err
+		// send 失败说明底层传输已断（典型报错 transport is closing）。此时必须把死会话
+		// 从 sessions 摘除并唤醒所有等待者，否则 IsOnline 仍报在线、后续请求继续撞同一
+		// 个晦涩的 gRPC 错误，而 agent 重连前 UI 无法得到"离线"语义。
+		gateway.dropSession(sess)
+		return nil, ErrAgentOffline
 	}
 	select {
 	case response, ok := <-result:

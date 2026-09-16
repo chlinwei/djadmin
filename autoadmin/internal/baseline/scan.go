@@ -162,15 +162,24 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 	var waitGroup sync.WaitGroup
 	semaphore := make(chan struct{}, 20)
 	for _, host := range hosts {
+		if handler.isCanceled(scanID) {
+			break // 已取消：剩余目标的 target 行已被 CancelScan 置 canceled
+		}
 		waitGroup.Add(1)
 		go func(host scanHost) {
 			defer waitGroup.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
+			if handler.isCanceled(scanID) {
+				return
+			}
 			handler.runScanHost(ctx, scanID, items, host)
 		}(host)
 	}
 	waitGroup.Wait()
+	if handler.isCanceled(scanID) {
+		return // 终态已由 CancelScan 落库（canceled），不聚合覆盖
+	}
 	handler.finishScan(ctx, scanID, len(hosts))
 }
 
@@ -213,6 +222,9 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		Action: "check_application_baseline", ParamsJson: string(paramsJSON), TimeoutSeconds: 540,
 	})
 	cancel()
+	if handler.isCanceled(scanID) {
+		return // 取消后丢弃迟到响应（target 终态已由 CancelScan 落库）
+	}
 	if execErr != nil {
 		setFailed(execErr.Error())
 		return
@@ -284,21 +296,69 @@ func (handler *Handler) finishScan(ctx context.Context, scanID int64, totalHosts
 	handler.db.ExecContext(ctx, `UPDATE security_scan SET status=?,summary=?,end_time=NOW(6),update_time=NOW(6) WHERE id=?`, status, summary, scanID)
 }
 
+// CancelScan 取消进行中的扫描（对齐巡检 CancelExecution）：
+// 仅 pending/running 可取消；DB 原子置 canceled + end_time，未开始的目标同步置 canceled；
+// 内存镜像让扫描 goroutine 丢弃迟到结果并不再聚合。Agent 侧已下发的执行无法远程终止。
+func (handler *Handler) CancelScan(context *gin.Context) {
+	scanID := int64(0)
+	fmt.Sscanf(strings.TrimSpace(context.Param("id")), "%d", &scanID)
+	if scanID < 1 {
+		response.BusinessError(context, 400, "scan id 无效", nil)
+		return
+	}
+	tx, err := handler.db.BeginTx(context.Request.Context(), nil)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	defer tx.Rollback()
+	var status string
+	if err = tx.QueryRowContext(context.Request.Context(), `SELECT status FROM security_scan WHERE id=? FOR UPDATE`, scanID).Scan(&status); err != nil {
+		if err == sql.ErrNoRows {
+			response.BusinessError(context, 404, "扫描不存在", nil)
+			return
+		}
+		response.Error(context, err)
+		return
+	}
+	if status != "pending" && status != "running" {
+		response.BusinessError(context, 400, "扫描已结束，无法取消", nil)
+		return
+	}
+	if _, err = tx.ExecContext(context.Request.Context(),
+		`UPDATE security_scan SET status='canceled',end_time=NOW(6),update_time=NOW(6),summary=JSON_MERGE_PATCH(COALESCE(summary,'{}'),CAST(? AS JSON)) WHERE id=?`,
+		`{"canceled": true}`, scanID); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if _, err = tx.ExecContext(context.Request.Context(),
+		`UPDATE security_scan_target SET status='canceled',error_message='扫描被取消' WHERE scan_id=? AND status IN ('pending','running')`, scanID); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		response.Error(context, err)
+		return
+	}
+	handler.markCanceled(scanID)
+	response.Success(context, gin.H{"id": scanID, "status": "canceled"})
+}
+
 // flushResults 批量落基线条目结果（100 行/批）。
 func flushResults(ctx context.Context, dbWriter dbExecutor, scanID, hostID int64, results []gin.H) {
 	const batchSize = 100
 	for start := 0; start < len(results); start += batchSize {
 		end := min(start+batchSize, len(results))
 		var builder strings.Builder
-	builder.WriteString(`INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES `)
-	arguments := make([]any, 0, (end-start)*8)
-	for index := start; index < end; index++ {
-		if index > start {
-			builder.WriteString(",")
-		}
-		builder.WriteString("(?,?,?,?,?,?,?,?,?,?,?)")
-		item := results[index]
-		arguments = append(arguments, scanID, hostID, item["item_id"], item["item_name"], item["chapter"], item["severity"], item["status"], jsonBytes(item["expected"]), jsonBytes(item["actual"]), item["message"], item["remediation"])
+		builder.WriteString(`INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES `)
+		arguments := make([]any, 0, (end-start)*8)
+		for index := start; index < end; index++ {
+			if index > start {
+				builder.WriteString(",")
+			}
+			builder.WriteString("(?,?,?,?,?,?,?,?,?,?,?)")
+			item := results[index]
+			arguments = append(arguments, scanID, hostID, item["item_id"], item["item_name"], item["chapter"], item["severity"], item["status"], jsonBytes(item["expected"]), jsonBytes(item["actual"]), item["message"], item["remediation"])
 		}
 		if _, err := dbWriter.ExecContext(ctx, builder.String(), arguments...); err != nil {
 			return

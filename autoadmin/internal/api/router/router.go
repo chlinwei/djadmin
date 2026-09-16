@@ -191,6 +191,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 与 /api/agent/install 相同的中间件链：安装包管理直接影响主机上的 Agent 二进制，权限口径一致。
 	agentPackages := engine.Group("/api/agent/packages", middleware.Authenticate(tokens), middleware.RequirePermission("assets:hosts:update"))
 	agentPackages.GET("/", assetsHandler.ListAgentPackages)
+	agentPackages.GET("/download/", assetsHandler.DownloadAgentPackage)
 	agentPackages.POST("/upload/", assetsHandler.UploadAgentPackage)
 	agentPackages.POST("/:id/activate/", assetsHandler.ActivateAgentPackage)
 	agentPackages.POST("/batch-delete/", assetsHandler.BatchDeleteAgentPackages)
@@ -301,6 +302,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	securityScans := engine.Group("/sys/security/scans", middleware.Authenticate(tokens))
 	securityScans.GET("/", middleware.RequirePermission("baseline:manage"), baselineHandler.ListScans)
 	securityScans.GET("/:id/", middleware.RequirePermission("baseline:manage"), baselineHandler.GetScan)
+	securityScans.POST("/:id/cancel/", middleware.RequirePermission("baseline:scan"), baselineHandler.CancelScan)
 
 	templates := engine.Group("/assets/application-deployment-templates", middleware.Authenticate(tokens))
 	templates.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListDeploymentTemplates)
@@ -439,6 +441,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.POST("/opensearch-clusters/:id/pipeline-simulate/", monitorHandler.SimulateOpenSearchPipeline)
 	monitorRoutes.GET("/opensearch-clusters/:id/log-search/", monitorHandler.OpenSearchLogSearch)
 	monitorRoutes.GET("/opensearch-clusters/:id/log-facet-stats/", monitorHandler.OpenSearchLogFacetStats)
+	monitorRoutes.GET("/opensearch-clusters/:id/log-storage-overview/", monitorHandler.GetLogStorageOverview)
+	monitorRoutes.GET("/opensearch-clusters/:id/log-service-usage/", monitorHandler.GetLogServiceUsage)
+	monitorRoutes.GET("/log-targets/:id/config-preview/", monitorHandler.GetHostLogConfigPreview)
 	monitorRoutes.GET("/targets/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/targets/prometheus/overview/", monitorHandler.PrometheusOverview)
 	monitorRoutes.GET("/targets/prometheus/targets/", monitorHandler.PrometheusTargets)

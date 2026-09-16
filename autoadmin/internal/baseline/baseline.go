@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -23,6 +24,16 @@ import (
 type Handler struct {
 	db      *sql.DB
 	gateway *agent.Gateway
+	// canceledScans 内存镜像已取消扫描（扫描 goroutine 据此丢弃结果/提前收尾）；
+	// Agent 协议无 cancel 帧，无法真正终止已下发的执行，与巡检 CancelExecution 同语义。
+	canceledScans sync.Map
+}
+
+// markCanceled / isCanceled：取消标记的进程内读写。
+func (handler *Handler) markCanceled(scanID int64) { handler.canceledScans.Store(scanID, struct{}{}) }
+func (handler *Handler) isCanceled(scanID int64) bool {
+	_, canceled := handler.canceledScans.Load(scanID)
+	return canceled
 }
 
 func NewHandler(database *sql.DB, gateway *agent.Gateway) *Handler {
@@ -226,7 +237,7 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 			}
 		}
 	}
- 	version, description, enabled := "v1", deref(input.Description), true
+	version, description, enabled := "v1", deref(input.Description), true
 	if input.Version != nil && strings.TrimSpace(*input.Version) != "" {
 		version = strings.TrimSpace(*input.Version)
 	}

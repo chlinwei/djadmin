@@ -64,9 +64,12 @@ message AgentFrame {
 
 // 会话建立后 agent 发送的第一帧：携带 agent_id 与共享密钥供 backend 校验注册，
 // 校验失败 backend 会直接关闭流，避免未授权 client 冒充 agent 下发文件操作。
+// version 为 agent 构建期注入的版本号（buildinfo.Version），会话建立即随握手上报，
+// backend 据此更新主机表，保证 agent 安装/更新后版本信息无需等待按需采集即刷新。
 message Hello {
   string agent_id = 1;
   string token = 2;
+  string version = 3;
 }
 
 message HelloAck {

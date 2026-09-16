@@ -33,6 +33,7 @@
 - `operation=update`：不要求 `credential_id`；要求每台主机已绑定 Agent 且当前在线。
 - 两种操作共用同一拦截：目标主机存在活跃（queued/running 且 30 秒内 `update_time` 有更新）的 `install_agent` 任务时拒绝；超时 30 秒无更新的旧任务先标记失败。
   - 说明：项目没有应用层心跳，Agent 在线判定权威是活跃的 gRPC 会话（`Gateway.IsOnline`），保活由 gRPC 内建 keepalive（30s ping / 10s 超时）承担；任务失联判定依据是任务行 `update_time` 的更新间隔。
+  - 死会话清理：`Gateway.Execute` 向会话发送帧失败（底层传输已断，典型报错 `transport is closing`）时，网关立即把该会话从 sessions 摘除（`dropSession`，同 ID 新连接顶替时不误删）并关闭其全部 pending 管道——等待方立刻得到 `agent offline` 语义，`IsOnline` 不再对死连接误报在线；agent 侧随后自动重连重建会话。
 
 前置校验全部通过后：
 
@@ -49,11 +50,13 @@
 {
   "automation_job_id": 123,
   "jobs": [{"job_id": "...", "host_id": 1}],
-  "agent_package": {"source": "uploaded", "version": "default", "sha256": "<64位hex>"}
+  "agent_package": {"source": "uploaded", "sha256": "<64位hex>"}
 }
 ```
 
-`source` 取值 `uploaded`（已上传激活包）或 `build`（本机构建产物，`version` 固定为 `"dev"`）。
+`source` 取值 `uploaded`（已上传激活包）或 `build`（本机构建产物）。
+
+agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源码默认 `dev`/`none`，Makefile 构建时经 `-ldflags -X` 注入 `git describe` 结果），出现在 agent 启动日志、运行时状态接口及 `dj-agent --version`（`-v`）输出中。gRPC `Hello` 握手帧携带 `version`，backend 网关校验通过后写入 `assets_hostsystem.agent_version`，因此安装/更新重启后主机列表版本即自动刷新；上传包管理已删除版本号概念，该内嵌版本不参与包管理与服务端来源判定。
 
 ## 二进制来源选择（`loadAgentBinary`，agent_update.go）
 
@@ -62,20 +65,21 @@
 
 ## dj-agent 安装包管理（`agent_package` 表 + agent_package.go）
 
-- 存储：文件落盘 `<mediaRoot>/agent_packages/<version>/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 `../backend/djadmin/media` 取绝对路径，即 Django MEDIA_ROOT）；记录含 `version`/`file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
+- 存储：文件落盘 `<mediaRoot>/agent_packages/default/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 `../backend/djadmin/media` 取绝对路径，即 Django MEDIA_ROOT）；单槽位"当前包"语义，存储目录与 DB `version` 列固定 `default`（历史遗留列，不对外暴露）；记录含 `file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
 - API（均挂 `Authenticate + RequirePermission("assets:hosts:update")`，与 `/api/agent/install` 相同中间件链）：
-  - `GET /api/agent/packages/`：列表，按 `is_active DESC, create_time DESC` 排序。
-  - `POST /api/agent/packages/upload/`：multipart 上传，字段 `file`（二进制）+ `version`（**可选**：当前 agent 二进制不带版本元数据，不填统一存 `default`，即单槽位"当前包"语义；填写时 ≤64 字符、禁路径分隔符，保留未来多版本能力）。校验 ≤200MiB 与双字节标记；`sha256` 服务端计算；同 `version` 重复上传覆盖文件并更新记录；上传成功即在事务内独占激活（清其他记录的 `is_active` 再置本条）。
-  - `POST /api/agent/packages/:id/activate/`：事务内独占激活；id 不存在返回 404。
-  - `POST /api/agent/packages/batch-delete/`：body `{"ids":[...]}`，响应 `{"count":n,"results":[{"id","ok","message"}]}`（项目批删约定）；删除记录时同步删除磁盘文件（路径限制在 mediaRoot 内，防目录穿越）。
+  - `GET /api/agent/packages/`：查询当前包，响应直接是包对象 `{id,file,sha256,size_bytes,is_active,create_time}`，无包时为空对象（非列表）。
+  - `GET /api/agent/packages/download/`：下载当前包二进制（`Content-Disposition: attachment; filename="dj-agent"`）；未上传或文件缺失返回 404 业务错误；路径限制在 mediaRoot 内防目录穿越。
+  - `POST /api/agent/packages/upload/`：multipart 上传，字段仅 `file`（二进制）。校验 ≤200MiB 与双字节标记；`sha256` 服务端计算；重复上传覆盖文件并更新记录；上传成功即在事务内独占激活。
+  - `POST /api/agent/packages/batch-delete/`：body `{"ids":[...]}`，响应 `{"count":n,"results":[{"id","ok","message"}]}`（项目批删约定，删除当前包传 `ids:[id]`）；删除记录时同步删除磁盘文件（路径限制在 mediaRoot 内，防目录穿越）。
+  - `POST /api/agent/packages/:id/activate/`：历史保留接口；单包语义下上传即激活，前端不再使用。
 - 上传/激活包的校验标记与构建产物完全一致（`validateAgentBinary` 共用）。
 
 ## 前端交互（fronted）
 
-- **API 层**：`fronted/src/api/assets/agentPackage.js` 封装 `listAgentPackages()`、`uploadAgentPackage({version, file})`（FormData，走 `requestUtil.fileUpload`）、`activateAgentPackage(id)`、`batchDeleteAgentPackages(ids)`（唯一批删接口，单删传 `ids:[id]`，遵循项目删除约定）。
-- **主机列表"批量管理 Agent"弹窗**（`fronted/src/views/assets/host/index.vue`）：顶部展示当前激活包（版本 / sha256 前 12 位 / 上传时间）；列表接口拉取失败不阻塞安装/更新流程（静默置空，仅在包管理弹窗打开时提示）。无激活包时显示警示：将回退使用服务端构建产物 `dj_agent/bin/dj-agent`（路径依赖部署目录，不可靠）。
-- **"Agent 包管理"弹窗**：两个入口——主机列表工具栏"Agent 包"按钮（**无需选择主机**，纯包管理场景）与"批量管理 Agent"弹窗内的"Agent 包管理"链接，打开同一弹窗。small 密度表格列出包记录（sha256 只展示前 12 位）；支持上传（版本号可选、文件必选、accept 不限制后缀）、设为激活（二次确认）、按版本号批量删除（`openDeleteConfirm` 二次确认，部分失败时按 `results[].ok` 提示失败数）。
-- **提交反馈**：`POST /api/agent/install` 响应携带 `agent_package` 时，成功提示追加来源与版本——`uploaded` 显示"（包：uploaded v<version>）"，`build` 显示"（包：构建产物 dev）"；响应无该字段时（旧后端）保持原提示不变。
+- **API 层**：`fronted/src/api/assets/agentPackage.js` 封装 `listAgentPackages()`、`uploadAgentPackage(file)`（FormData，走 `requestUtil.fileUpload`）、`downloadAgentPackage()`（blob，走 `requestUtil.download`）、`batchDeleteAgentPackages(ids)`（唯一批删接口，单删传 `ids:[id]`，遵循项目删除约定）。
+- **主机列表"批量管理 Agent"弹窗**（`fronted/src/views/assets/host/index.vue`）：顶部展示当前包状态（sha256 前 12 位 / 大小 / 上传时间）；列表接口拉取失败不阻塞安装/更新流程。无包时显示警示：将回退使用服务端构建产物 `dj_agent/bin/dj-agent`（路径依赖部署目录，不可靠）。
+- **"Agent 包管理"弹窗**：两个入口——主机列表工具栏"Agent 包"按钮（**无需选择主机**，纯包管理场景）与"批量管理 Agent"弹窗内的"Agent 包管理"链接，打开同一弹窗。单包语义：无表格列表，直接用 descriptions 展示当前包（状态/sha256/大小/上传时间），三个操作——上传（有包时文案"重新上传（覆盖）"，弹窗内提示覆盖语义）、下载（blob 按统一鉴权拉取，落盘文件名 `dj-agent`）、删除（`openDeleteConfirm` 二次确认，按 sha256 标识，走批删接口）。
+- **提交反馈**：`POST /api/agent/install` 响应携带 `agent_package` 时，成功提示追加来源——`uploaded` 显示"（包：uploaded，sha256 xxx）"，`build` 显示"（包：构建产物）"；响应无该字段时（旧后端）保持原提示不变。
 
 ## install 链路（SSH + Ansible 引导，`agent_install.go`）
 

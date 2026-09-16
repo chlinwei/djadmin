@@ -149,9 +149,11 @@ function confirmDelete(record) {
   })
 }
 
+// 父组件 v-if 懒挂载：首次打开时组件挂载瞬间 open 已是 true，watch 不会产生变更，
+// 必须 immediate 才能在挂载即打开的场景触发加载。
 watch(() => props.open, (visible) => {
   if (visible) loadTemplates()
-})
+}, { immediate: true })
 </script>
 
 <style scoped>

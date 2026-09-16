@@ -264,7 +264,11 @@ WHERE (sqlc.narg(id) IS NULL OR ah.id = sqlc.narg(id))
   AND (sqlc.narg(severity) IS NULL OR ah.severity = sqlc.narg(severity))
   AND (sqlc.narg(keyword) IS NULL OR ah.alertname LIKE sqlc.narg(keyword) OR ah.instance LIKE sqlc.narg(keyword))
   AND (sqlc.narg(start_time) IS NULL OR ah.started_at >= sqlc.narg(start_time))
-  AND (sqlc.narg(end_time) IS NULL OR ah.started_at <= sqlc.narg(end_time));
+  AND (sqlc.narg(end_time) IS NULL OR ah.started_at <= sqlc.narg(end_time))
+  AND (
+    sqlc.narg(label_value) IS NULL
+    OR JSON_UNQUOTE(JSON_EXTRACT(ah.labels, CONCAT('$.', sqlc.arg(label_key)))) = CAST(sqlc.narg(label_value) AS CHAR)
+  );
 
 -- name: ListAlertHistories :many
 SELECT ah.id, ah.create_time, ah.update_time, ah.remark, ah.fingerprint, ah.alertname, ah.severity, ah.instance,
@@ -281,6 +285,10 @@ WHERE (sqlc.narg(id) IS NULL OR ah.id = sqlc.narg(id))
   AND (sqlc.narg(keyword) IS NULL OR ah.alertname LIKE sqlc.narg(keyword) OR ah.instance LIKE sqlc.narg(keyword))
   AND (sqlc.narg(start_time) IS NULL OR ah.started_at >= sqlc.narg(start_time))
   AND (sqlc.narg(end_time) IS NULL OR ah.started_at <= sqlc.narg(end_time))
+  AND (
+    sqlc.narg(label_value) IS NULL
+    OR JSON_UNQUOTE(JSON_EXTRACT(ah.labels, CONCAT('$.', sqlc.arg(label_key)))) = CAST(sqlc.narg(label_value) AS CHAR)
+  )
 ORDER BY ah.started_at DESC, ah.id DESC
 LIMIT ? OFFSET ?;
 

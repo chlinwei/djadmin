@@ -560,19 +560,54 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 	if handler.gateway == nil || !handler.gateway.IsOnline(row.AgentID) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
-	var clusterHosts, username, encryptedPassword string
-	err := handler.db.QueryRowContext(context, `SELECT hosts,username,password FROM monitor_opensearch_cluster WHERE enabled=TRUE ORDER BY is_default DESC, id LIMIT 1`).Scan(&clusterHosts, &username, &encryptedPassword)
+	var clusterHosts, username, encryptedPassword, indexPrefix string
+	err := handler.db.QueryRowContext(context, `SELECT hosts,username,password,COALESCE(index_prefix,'logs') FROM monitor_opensearch_cluster WHERE enabled=TRUE ORDER BY is_default DESC, id LIMIT 1`).Scan(&clusterHosts, &username, &encryptedPassword, &indexPrefix)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("没有已启用的默认 OpenSearch 集群，请先在日志存储里配置")
 	}
 	if err != nil {
 		return nil, err
 	}
-	host, port, err := firstOpenSearchEndpoint(clusterHosts)
+	password, err := handler.secrets.Decrypt(encryptedPassword)
 	if err != nil {
 		return nil, err
 	}
-	password, err := handler.secrets.Decrypt(encryptedPassword)
+
+	// 渲染服务级 inputs.d/outputs.d 片段（Index = logs-<项目>-<环境>-<业务>-<服务>-<档位>），
+	// 指纹一致则跳过，避免无谓重启 Fluent Bit。
+	entries, instances, renderErr := handler.loadHostLogRenderInput(context, row.HostID)
+	if renderErr != nil {
+		return nil, fmt.Errorf("渲染 Fluent Bit 配置失败: %w", renderErr)
+	}
+	for index := range entries {
+		entries[index].Prefix = indexPrefix
+	}
+	rendered := renderHostLogConfig(entries, instances)
+	if len(rendered.Fragments) == 0 {
+		return nil, fmt.Errorf("主机没有可下发的日志片段：请先在服务的日志设置里开启采集（服务与日志定义的采集开关均需启用，且日志定义的部署模板需与服务一致）")
+	}
+	// 启用多行时随片段一并下发主配置：老主机安装时的主配置可能没有
+	// Parsers_File 行（缺失会让 fluent-bit 启动失败），主配置内容始终由
+	// backend 托管（fluentBitMainConfig 契约），重写为期望状态即自愈。
+	for _, fragment := range rendered.Fragments {
+		if fragment.Path == fluentBitParsersFile {
+			rendered.Fragments = append(rendered.Fragments, logConfigFragment{
+				Path:    fluentBitMainConfigPath,
+				Content: fluentBitMainConfig(),
+			})
+			break
+		}
+	}
+
+	var currentFingerprint string
+	_ = handler.db.QueryRowContext(context, `SELECT COALESCE(config_fingerprint,'') FROM monitor_log_collection_target WHERE id=?`, row.ID).Scan(&currentFingerprint)
+	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint {
+		now := time.Now().UTC()
+		_, _ = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,update_time=? WHERE id=?`, now, now, row.ID)
+		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
+	}
+
+	host, port, err := firstOpenSearchEndpoint(clusterHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -585,11 +620,21 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
 		return nil, fmt.Errorf("Fluent Bit 配置下发失败: %s", reason)
 	}
-	now := time.Now().UTC()
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,runtime_status='running',last_error='',update_time=? WHERE id=?`, now, now, row.ID); err != nil {
+	// 片段内容全部由 backend 渲染，agent 只落盘 + 重启（见 apply_fluent_bit_config）。
+	fragmentParams, _ := json.Marshal(gin.H{"files": rendered.Fragments, "restart": "true"})
+	fragmentResult, err := handler.gateway.Execute(context, row.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_fluent_bit_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
+	if err != nil {
 		return nil, err
 	}
-	return gin.H{"skipped": false, "applied_at": now}, nil
+	if fragmentResult.Status != "success" {
+		reason := firstNonEmpty(strings.TrimSpace(fragmentResult.ErrorMessage), strings.TrimSpace(fragmentResult.Stderr), strings.TrimSpace(fragmentResult.Stdout))
+		return nil, fmt.Errorf("Fluent Bit 片段下发失败: %s", reason)
+	}
+	now := time.Now().UTC()
+	if _, err = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,runtime_status='running',last_error='',config_fingerprint=?,update_time=? WHERE id=?`, now, rendered.Fingerprint, now, row.ID); err != nil {
+		return nil, err
+	}
+	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
 }
 
 // ---- 批量创建（纳管 Fluent Bit） ----

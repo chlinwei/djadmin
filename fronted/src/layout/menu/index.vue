@@ -59,6 +59,7 @@ const buildMenuItems = (menus = [], parentPrefix = 'menu') => {
       rows.push({
         key,
         label: title,
+        title,
         icon: iconVNode,
       })
       return
@@ -68,6 +69,7 @@ const buildMenuItems = (menus = [], parentPrefix = 'menu') => {
     rows.push({
       key,
       label: title,
+      title,
       icon: iconVNode,
       children,
     })
@@ -86,6 +88,7 @@ const menuItems = computed(() => {
     {
       key: '/index',
       label: '首页',
+      title: '首页',
       icon: () => h('span', { class: 'menu-icon-wrap' }, [h(FontAwesomeIconComp, { icon: 'fa-home' })]),
     },
     ...buildMenuItems(visibleMenuList.value, 'root'),

@@ -60,6 +60,7 @@ func (handler *Handler) CreateRetentionTier(context *gin.Context) {
 func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
 	handler.saveResource(context, retentionSpec, parseID(context.Param("id")), handler.respondRetentionTierThenSync)
 }
+
 // deleteRetentionTierByID 复用原单删逻辑：仍被逻辑服务/日志设置引用的档位拒绝删除。
 func (handler *Handler) deleteRetentionTierByID(context *gin.Context, id int64) error {
 	var serviceCount, settingCount int
@@ -107,6 +108,7 @@ func (handler *Handler) CreateProcessingRule(context *gin.Context) {
 func (handler *Handler) UpdateProcessingRule(context *gin.Context) {
 	handler.saveResource(context, processingSpec, parseID(context.Param("id")), handler.respondProcessingRule, handler.publishProcessingRuleBeforeSave)
 }
+
 // deleteProcessingRuleByID 复用原单删逻辑：被日志定义引用的规则拒绝删除；先删集群上的
 // pipeline 再删记录，集群侧失败则中止（与 Django destroy 行为一致）。
 func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64) error {

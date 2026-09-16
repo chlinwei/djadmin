@@ -224,13 +224,13 @@ DELETE FROM assets_application WHERE id=?;
 
 -- name: CountApplicationVersions :one
 SELECT COUNT(*) FROM assets_application_version
-WHERE (sqlc.arg(application_id) IS NULL OR application_id=sqlc.arg(application_id))
+WHERE (sqlc.arg(application_id) = 0 OR application_id=sqlc.arg(application_id))
   AND version LIKE CAST(sqlc.arg(pattern) AS CHAR);
 
 -- name: ListApplicationVersions :many
 SELECT v.*,a.name AS application_name FROM assets_application_version v
 JOIN assets_application a ON a.id=v.application_id
-WHERE (sqlc.arg(application_id) IS NULL OR v.application_id=sqlc.arg(application_id))
+WHERE (sqlc.arg(application_id) = 0 OR v.application_id=sqlc.arg(application_id))
   AND v.version LIKE CAST(sqlc.arg(pattern) AS CHAR)
 ORDER BY v.id DESC LIMIT ? OFFSET ?;
 
@@ -250,13 +250,13 @@ DELETE FROM assets_application_version WHERE id=?;
 
 -- name: CountClusterProfiles :one
 SELECT COUNT(*) FROM assets_cluster_profile
-WHERE (sqlc.arg(application_id) IS NULL OR application_id=sqlc.arg(application_id))
+WHERE (sqlc.arg(application_id) = 0 OR application_id=sqlc.arg(application_id))
   AND name LIKE CAST(sqlc.arg(pattern) AS CHAR);
 
 -- name: ListClusterProfiles :many
 SELECT p.*,COALESCE(a.name,'') AS application_name,0 AS service_count FROM assets_cluster_profile p
 LEFT JOIN assets_application a ON a.id=p.application_id
-WHERE (sqlc.arg(application_id) IS NULL OR p.application_id=sqlc.arg(application_id))
+WHERE (sqlc.arg(application_id) = 0 OR p.application_id=sqlc.arg(application_id))
   AND p.name LIKE CAST(sqlc.arg(pattern) AS CHAR)
 ORDER BY p.id DESC LIMIT ? OFFSET ?;
 

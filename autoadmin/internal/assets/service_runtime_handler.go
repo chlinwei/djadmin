@@ -43,8 +43,13 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := handler.service.repository.ListServiceLogSettings(context.Request.Context(), id)
-	respond(context, items, translate(err))
+	items, err := handler.service.repository.ListServiceTemplateLogs(context.Request.Context(), id)
+	if err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
+	// 前端契约：{logs: [...]}（模板日志定义 + 服务级覆盖三态）
+	respond(context, gin.H{"logs": items}, nil)
 }
 
 // optionalIDQuery 读取可选的整数型 query 参数；未传返回 0，传了但不是合法整数返回 400。

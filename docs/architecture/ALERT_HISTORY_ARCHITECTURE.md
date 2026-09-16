@@ -18,6 +18,14 @@
 
 前端告警列表 `rule_details.query` 即快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
 
+## 列表过滤（历史告警）
+
+`GET /monitor/alert-histories/` 支持在既有 `state/severity/keyword/start_time/end_time` 之外按 label 精确过滤：
+
+- `label_key` + `label_value`：`JSON_UNQUOTE(JSON_EXTRACT(labels, '$.{key}')) = {value}` 等值匹配；label 缺失或值不等即排除。`label_value` 为空时不过滤（WHERE 短路，`label_key` 兜底为 `alertname` 安全 path）。
+- `label_key` 服务端清洗为 `[A-Za-z0-9_]`，防 JSON path 注入。
+- 过滤在 SQL 层执行（Count + List 同条件），分页计数正确；当前告警（Prometheus 实时数据）由前端按 `row.labels` 同语义过滤。
+
 ## 双实现对齐
 
 与 Django 版语义一致（索引构建、指纹优先、空快照回填）。差异：Go 版心跳/恢复用单条 UPDATE + `IF()` 原子回填；Django 为先读后写。

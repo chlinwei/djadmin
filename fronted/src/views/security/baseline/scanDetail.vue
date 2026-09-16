@@ -13,10 +13,19 @@
         </a-space>
       </template>
       <template #extra>
-        <a-button type="primary" ghost :loading="loading" @click="loadDetail">
-          <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
-          <span>&nbsp;刷新</span>
-        </a-button>
+        <a-space>
+          <a-popconfirm
+            v-if="['pending', 'running'].includes(scan?.status)"
+            title="确定取消该扫描吗？"
+            @confirm="handleCancel"
+          >
+            <a-button danger :loading="canceling">取消扫描</a-button>
+          </a-popconfirm>
+          <a-button type="primary" ghost :loading="loading" @click="loadDetail">
+            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
+            <span>&nbsp;刷新</span>
+          </a-button>
+        </a-space>
       </template>
 
       <a-spin :spinning="loading">
@@ -133,6 +142,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
@@ -208,8 +218,20 @@ const formatActual = (value) => {
   return String(value)
 }
 
-const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过' }[status] || status)
-const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default' }[status] || 'default')
+const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
+const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
+
+const canceling = ref(false)
+const handleCancel = async () => {
+  canceling.value = true
+  try {
+    await requestUtil.post(`sys/security/scans/${Number(route.params.id)}/cancel/`)
+    message.success('扫描已取消')
+    await loadDetail()
+  } finally {
+    canceling.value = false
+  }
+}
 const severityLabel = (severity) => ({ high: '高', medium: '中', low: '低' }[severity] || severity)
 
 const summaryText = computed(() => {

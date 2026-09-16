@@ -20,20 +20,27 @@ dj-agent 主动连接系统参数 `sys.assets.agent.grpc_advertise_addr` 指向�
 Agent 使用该参数原值，本机 Agent 使用 `127.0.0.1` 和相同端口。backend 不需要
 主动访问目标主机。
 
-同一条双向流按 `request_id` 多路复用。Django 通过 `AgentChannelClient` 下发命令，
+同一条双向流按 `request_id` 多路复用。backend 通过网关下发命令，
 Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent 自动重连。
+
+会话建立时 Agent 发送的第一帧 `Hello` 携带 `agent_id`、`token`（共享密钥校验）
+与 `version`（构建期注入的 `buildinfo.Version`）。校验通过后 backend 回 `HelloAck`。
 
 ---
 
-## 3. 在线状态
+## 3. 在线状态与版本上报
 
-`AgentSessionRegistry` 是在线状态的唯一依据：
+Go 版网关（`autoadmin/internal/agent/gateway.go`）是在线状态的唯一依据，
+握手成功即回调 `newAgentHelloRecorder`（`autoadmin/internal/app/app.go`）落库：
 
-- Session 建立时写入 `Host.agent_online=True` 和 `agent_online_time`。
-- Session 断开且没有同 Agent 的新 Session 时写入 `Host.agent_online=False`。
+- 更新 `assets_host.agent_online=True` 和 `agent_online_time`（按 `agent_id` 绑定）。
+- `Hello.version` 非空时同步更新 `assets_hostsystem.agent_version`（仅更新 `update_time`，
+  不动 `collected_at`，因为 OS 信息并未重新采集）。
+- `agent_id` 未绑定主机或主机尚无 hostsystem 行时跳过并记日志；回调失败只记日志，不阻断会话。
 - 不按历史时间戳做心跳超时，避免覆盖仍然存活的 gRPC Session。
 
-主机信息由 backend 按需通过 gRPC 调用 Agent 的 `get_host_info` 获取。
+因此 agent 安装/更新重启后，主机列表的 Agent 版本即随握手自动刷新，
+无需等待按需 `get_host_info` 采集（采集仅用于补全 OS 等完整主机信息）。
 
 ---
 

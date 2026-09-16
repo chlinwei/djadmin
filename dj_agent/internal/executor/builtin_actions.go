@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chlinwei/djadmin/dj_agent/internal/buildinfo"
 	"github.com/chlinwei/djadmin/dj_agent/internal/protocol"
 )
 
@@ -30,8 +31,8 @@ const (
 	actionControlApplication           = "control_application"
 	actionReloadFluentBit              = "reload_fluent_bit"
 	actionConfigureFluentBitOpenSearch = "configure_fluent_bit_opensearch"
+	actionApplyFluentBitConfig         = "apply_fluent_bit_config"
 	actionApplyAgentUpdate             = "apply_agent_update"
-	defaultAgentVersion                = "v1"
 )
 
 const (
@@ -67,6 +68,8 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.reloadFluentBit(ctx, job), true
 	case actionConfigureFluentBitOpenSearch:
 		return e.configureFluentBitOpenSearch(ctx, job), true
+	case actionApplyFluentBitConfig:
+		return e.applyFluentBitConfig(ctx, job), true
 	case actionApplyAgentUpdate:
 		return e.applyAgentUpdate(ctx, job), true
 	default:
@@ -137,6 +140,75 @@ func (e *Executor) configureFluentBitOpenSearch(ctx context.Context, job protoco
 	}
 	finished := time.Now()
 	return protocol.JobResult{JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess, ExitCode: 0, StartedAt: started, FinishedAt: finished, CostMS: finished.Sub(started).Milliseconds()}
+}
+
+// applyFluentBitConfig 写入 backend 渲染好的 Fluent Bit 配置片段（inputs.d/outputs.d），
+// 任一文件有变化则重启 fluent-bit。文件内容全部由 backend 渲染，agent 只做落盘与重启，
+// 不理解片段语义——保持 agent 与配置格式的解耦，格式演进只动 backend。
+func (e *Executor) applyFluentBitConfig(ctx context.Context, job protocol.Job) protocol.JobResult {
+	started := time.Now()
+	rawFiles, ok := job.Params["files"].([]any)
+	if !ok || len(rawFiles) == 0 {
+		return failedJobResult(job, started, fmt.Errorf("files is required"))
+	}
+	changed := []string{}
+	removed := []string{}
+	// 片段目录由 backend 全量托管（渲染结果即该主机期望的完整片段集合），
+	// 目录中不在本次清单内的 *.conf 一律视为遗留片段（改名/服务下线后残留），
+	// 残留片段的 Match 与新片段重叠时会造成同一条日志重复写入多条流，必须删除。
+	delivered := map[string]bool{}
+	dirs := map[string]bool{}
+	for _, rawFile := range rawFiles {
+		file, _ := rawFile.(map[string]any)
+		path, _ := file["path"].(string)
+		content, _ := file["content"].(string)
+		if path == "" {
+			return failedJobResult(job, started, fmt.Errorf("file path is required"))
+		}
+		if dir := filepath.Dir(path); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return failedJobResult(job, started, fmt.Errorf("create dir %s: %w", dir, err))
+			}
+			dirs[dir] = true
+		}
+		changedFlag, err := writeFileIfChanged(path, []byte(content), 0o644)
+		if err != nil {
+			return failedJobResult(job, started, fmt.Errorf("write %s: %w", path, err))
+		}
+		delivered[filepath.Base(path)] = true
+		if changedFlag {
+			changed = append(changed, path)
+		}
+	}
+	for dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".conf") || delivered[name] {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, name)); err != nil {
+				return failedJobResult(job, started, fmt.Errorf("remove stale fragment %s: %w", name, err))
+			}
+			removed = append(removed, filepath.Join(dir, name))
+		}
+	}
+	restart := strings.EqualFold(fmt.Sprint(job.Params["restart"]), "true")
+	if restart && (len(changed) > 0 || len(removed) > 0) {
+		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "fluent-bit.service").CombinedOutput(); err != nil {
+			return failedJobResult(job, started, fmt.Errorf("Fluent Bit restart failed: %s", strings.TrimSpace(string(output))))
+		}
+	}
+	finished := time.Now()
+	return protocol.JobResult{
+		JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess,
+		ExitCode: 0, StartedAt: started, FinishedAt: finished,
+		CostMS: finished.Sub(started).Milliseconds(),
+		Data:   map[string]any{"changed_files": changed, "removed_files": removed, "restarted": restart && (len(changed) > 0 || len(removed) > 0)},
+	}
 }
 
 // applyAgentUpdate 处理在线自更新：backend 已经通过 gRPC 文件通道把新二进制暂存到
@@ -338,11 +410,7 @@ func (e *Executor) getAgentVersion(ctx context.Context, job protocol.Job) protoc
 	default:
 	}
 
-	version := strings.TrimSpace(os.Getenv("DJ_AGENT_VERSION"))
-	if version == "" {
-		version = defaultAgentVersion
-	}
-	versionTag := fmt.Sprintf("dj_agent:%s", version)
+	versionTag := fmt.Sprintf("dj_agent:%s", buildinfo.Version)
 
 	finished := time.Now()
 	return protocol.JobResult{
@@ -356,7 +424,7 @@ func (e *Executor) getAgentVersion(ctx context.Context, job protocol.Job) protoc
 		CostMS:     finished.Sub(started).Milliseconds(),
 		Data: map[string]any{
 			"agent_version":     versionTag,
-			"agent_version_raw": version,
+			"agent_version_raw": buildinfo.Version,
 			"go_version":        runtime.Version(),
 			"os":                runtime.GOOS,
 			"arch":              runtime.GOARCH,
@@ -381,10 +449,7 @@ func (e *Executor) getHostInfo(ctx context.Context, job protocol.Job) protocol.J
 
 	ips, addrErr := localIPv4Addresses()
 
-	version := strings.TrimSpace(os.Getenv("DJ_AGENT_VERSION"))
-	if version == "" {
-		version = defaultAgentVersion
-	}
+	version := buildinfo.Version
 
 	finished := time.Now()
 	result := protocol.JobResult{

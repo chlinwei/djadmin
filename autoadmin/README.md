@@ -26,7 +26,18 @@ make build
 ./bin/autoadmin scheduler
 ./bin/autoadmin worker
 ./bin/autoadmin migrate
+./bin/autoadmin --version   # 或 -v
 ```
+
+## Version
+
+`internal/buildinfo` 定义 `Version`（源码默认 `dev`），构建时由 Makefile 经 `-ldflags -X` 注入。`VERSION` 缺省用 `git describe --tags --always --dirty`（git 不可用则 `dev`），也可显式指定：
+
+```bash
+make build VERSION=v1.2.3
+```
+
+版本出现在 `--version` 输出及各角色（api/scheduler/worker/migrate）启动日志中。裸 `make build` 时的取值规则与 dj-agent 一致：标签干净 → `v1.0.0`；有未提交改动追加 `-dirty`；无标签 → 短 commit。
 
 Only the API bootstrap and infrastructure adapters are wired in the initial skeleton. Scheduler definitions, worker dispatch and migrations are intentionally enabled domain by domain after the schema baseline is generated.
 

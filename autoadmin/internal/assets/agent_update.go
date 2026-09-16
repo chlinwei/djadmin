@@ -274,9 +274,8 @@ func (handler *Handler) rejectActiveAgentJobs(context *gin.Context, hosts []agen
 
 // agentBinarySource 描述本次安装/更新使用的二进制来源，随响应返回给前端展示。
 type agentBinarySource struct {
-	Source  string `json:"source"`  // uploaded：已上传激活包；build：本机构建产物
-	Version string `json:"version"` // uploaded 包版本；build 固定 "dev"
-	SHA256  string `json:"sha256"`  // 二进制摘要
+	Source string `json:"source"` // uploaded：已上传激活包；build：本机构建产物
+	SHA256 string `json:"sha256"` // 二进制摘要
 }
 
 // loadAgentBinary 优先使用 agent_package 中 is_active=1 的激活包（校验 sha256）；
@@ -285,8 +284,8 @@ type agentBinarySource struct {
 func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
 	var item agentPackage
 	err := handler.service.repository.pool.QueryRowContext(context.Background(),
-		`SELECT id,version,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
-		Scan(&item.ID, &item.Version, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
+		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
 	switch {
 	case err == nil:
 		path := filepath.Join(handler.mediaRoot, filepath.FromSlash(item.File))
@@ -301,7 +300,7 @@ func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
 		if err = validateAgentBinary(data); err != nil {
 			return nil, agentBinarySource{}, err
 		}
-		return data, agentBinarySource{Source: "uploaded", Version: item.Version, SHA256: sum}, nil
+		return data, agentBinarySource{Source: "uploaded", SHA256: sum}, nil
 	case errors.Is(err, sql.ErrNoRows):
 		// 无激活包：回退构建产物，语义与历史行为一致。
 	default:
@@ -320,7 +319,7 @@ func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
 		return nil, agentBinarySource{}, err
 	}
 	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	return data, agentBinarySource{Source: "build", Version: "dev", SHA256: sum}, nil
+	return data, agentBinarySource{Source: "build", SHA256: sum}, nil
 }
 
 func (handler *Handler) agentAdvertiseAddr() (string, error) {

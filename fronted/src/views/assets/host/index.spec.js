@@ -25,9 +25,9 @@ vi.mock('@/api/assets/host/index.js', () => ({
 }))
 
 vi.mock('@/api/assets/agentPackage.js', () => ({
-  listAgentPackages: vi.fn(() => Promise.resolve({ data: { code: 200, data: { results: [] } } })),
+  listAgentPackages: vi.fn(() => Promise.resolve({ data: { code: 200, data: { items: [] } } })),
   uploadAgentPackage: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
-  activateAgentPackage: vi.fn(() => Promise.resolve({ data: { code: 200, data: {} } })),
+  downloadAgentPackage: vi.fn(() => Promise.resolve({ data: new Blob() })),
   batchDeleteAgentPackages: vi.fn(() => Promise.resolve({ data: { code: 200, data: { count: 0, results: [] } } })),
 }))
 

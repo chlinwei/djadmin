@@ -37,7 +37,8 @@ func (handler *Handler) loadOpenSearchCluster(context *gin.Context) (openSearchC
 	return cluster, err
 }
 
-func (handler *Handler) openSearchRequest(context *gin.Context, cluster openSearchCluster, method, path string, body any) (map[string]any, error) {
+// openSearchRequestRaw 发送请求并返回原始 JSON（对象或数组，_cat 系列端点返回数组）。
+func (handler *Handler) openSearchRequestRaw(context *gin.Context, cluster openSearchCluster, method, path string, body any) (json.RawMessage, error) {
 	var rawBody []byte
 	var err error
 	if body != nil {
@@ -89,19 +90,43 @@ func (handler *Handler) openSearchRequest(context *gin.Context, cluster openSear
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 			return nil, fmt.Errorf("opensearch %s: %s", upstream.Status, strings.TrimSpace(string(payload)))
 		}
-		if len(payload) == 0 {
-			return map[string]any{}, nil
-		}
-		var result map[string]any
-		if err = json.Unmarshal(payload, &result); err != nil {
-			return nil, fmt.Errorf("invalid OpenSearch JSON: %w", err)
-		}
-		return result, nil
+		return json.RawMessage(payload), nil
 	}
 	if lastError == nil {
 		lastError = fmt.Errorf("no OpenSearch hosts configured")
 	}
 	return nil, lastError
+}
+
+func (handler *Handler) openSearchRequest(context *gin.Context, cluster openSearchCluster, method, path string, body any) (map[string]any, error) {
+	payload, err := handler.openSearchRequestRaw(context, cluster, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 {
+		return map[string]any{}, nil
+	}
+	var result map[string]any
+	if err = json.Unmarshal(payload, &result); err != nil {
+		return nil, fmt.Errorf("invalid OpenSearch JSON: %w", err)
+	}
+	return result, nil
+}
+
+// openSearchRequestArray：_cat 系列端点返回 JSON 数组，解码为 []map[string]any。
+func (handler *Handler) openSearchRequestArray(context *gin.Context, cluster openSearchCluster, method, path string) ([]map[string]any, error) {
+	payload, err := handler.openSearchRequestRaw(context, cluster, method, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 {
+		return []map[string]any{}, nil
+	}
+	var result []map[string]any
+	if err = json.Unmarshal(payload, &result); err != nil {
+		return nil, fmt.Errorf("invalid OpenSearch JSON: %w", err)
+	}
+	return result, nil
 }
 
 func (handler *Handler) TestOpenSearchConnection(context *gin.Context) {

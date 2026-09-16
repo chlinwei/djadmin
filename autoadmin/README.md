@@ -45,7 +45,7 @@ make facade                   # rebuild the dialect facade (must run after make 
 
 Environment: the default build reads `MYSQL_DSN`; the `-tags postgres` build reads `POSTGRES_DSN` (pgx DSN, must carry `TimeZone=UTC`). `MIGRATION_DATABASE_URL` / `MIGRATION_SOURCE_URL` are used by the `migrate` role. Configuration is not read from dotenv files — export it (`set -a; . ./config.env; set +a`) or inject it from the deployment environment.
 
-Note: the `migrate` role registers only the MySQL driver today, so it cannot drive a PostgreSQL database yet — that lands together with `db/migrations/postgres/` (plan item P1-7).
+Note: `db/migrations/postgres/` holds the PostgreSQL translation of every MySQL migration (same 44 file names and version numbers; see SQL_DESIGN §4.7). The `migrate` role registers the driver matching the build: `!postgres` → `migrate/v4/database/mysql`, `-tags postgres` → `migrate/v4/database/pgx/v5`. **The PG variant's `MIGRATION_DATABASE_URL` must use the `pgx5://` scheme** (golang-migrate dispatches by scheme), e.g. `pgx5://user:pass@host:5432/djadmin?sslmode=disable`; `MIGRATION_SOURCE_URL` then points at `file://db/migrations/postgres`.
 
 **Both tags must be built and tested in CI**: the PostgreSQL adapters are hand-written, so a new divergence between the two artifacts only surfaces when the `postgres` tag is compiled (see SQL_DESIGN §4.8).
 
@@ -83,6 +83,7 @@ db/schema/<dialect>/             schema baseline consumed by sqlc, one per diale
 db/queries/mysql/                the single hand-maintained source of queries
 db/queries/postgres/             derived from db/queries/mysql (do not edit by hand)
 db/migrations/mysql/             post-baseline migrations (000001…000022, up/down per version)
+db/migrations/postgres/          same 44 file names/versions, translated for PostgreSQL (hand-maintained)
 docs/                            architecture, contracts and migration plan
 ```
 

@@ -102,3 +102,10 @@ CREATE TABLE inspection_result (
   PRIMARY KEY (id),
   CONSTRAINT inspection_result_target_fk FOREIGN KEY (target_id) REFERENCES inspection_target_execution (id)
 );
+-- 外键列的索引：MySQL 建外键时若没有可用索引会自动创建一个（`SHOW CREATE TABLE` 里能看到），
+-- PG **不会**自动创建 —— 于是同一个查询在两侧的计划不同（实测：告警主机服务树归属的那条
+-- JOIN 在 90k 行的 assets_application_service_deployment 上退化成 Seq Scan，21.5ms；
+-- 补上 deployment_id 的索引后 0.18ms）。这里按 MySQL 的既有索引逐列补齐（P1-9）。
+CREATE INDEX inspection_execution_task_id_idx ON inspection_execution (task_id);
+CREATE INDEX inspection_result_target_id_idx ON inspection_result (target_id);
+CREATE INDEX inspection_task_group_id_idx ON inspection_task (group_id);

@@ -1,0 +1,24 @@
+-- 回滚 000023：删掉本迁移新增的索引。
+
+DROP INDEX assets_application_service_application_id_idx;
+DROP INDEX assets_application_service_application_version_id_idx;
+DROP INDEX assets_application_service_deployment_template_id_idx;
+DROP INDEX assets_application_service_deployment_deployment_id_idx;
+DROP INDEX assets_application_service_log_setting_log_definition_id_idx;
+DROP INDEX assets_cluster_profile_application_id_idx;
+DROP INDEX assets_hostcredential_credential_id_idx;
+DROP INDEX assets_hostgroup_parent_id_idx;
+DROP INDEX automation_execution_job_task_id_idx;
+DROP INDEX automation_task_inventory_id_idx;
+DROP INDEX automation_task_playbook_template_id_idx;
+DROP INDEX inspection_execution_task_id_idx;
+DROP INDEX inspection_result_target_id_idx;
+DROP INDEX inspection_task_group_id_idx;
+DROP INDEX monitor_alert_notification_delivery_media_id_idx;
+DROP INDEX monitor_alert_notification_delivery_user_id_idx;
+DROP INDEX monitor_alert_notification_event_alert_id_idx;
+DROP INDEX monitor_log_processing_rule_cluster_id_idx;
+DROP INDEX monitor_software_package_install_playbook_template_id_idx;
+DROP INDEX monitor_software_package_uninstall_playbook_template_id_idx;
+DROP INDEX monitor_target_install_history_target_id_idx;
+DROP INDEX monitor_alert_history_firing_recent_idx;

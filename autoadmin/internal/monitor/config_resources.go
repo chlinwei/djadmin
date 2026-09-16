@@ -60,14 +60,6 @@ var filterRuleSpec = resourceSpec{
 	create:   createLogCollectionFilterRule, update: updateLogCollectionFilterRule, delete: deleteLogCollectionFilterRule,
 }
 
-// resourceColumn 把请求体里的键映射到列名（cluster/application 是 *_id）。
-func resourceColumn(key string) string {
-	if key == "cluster" || key == "application" {
-		return key + "_id"
-	}
-	return key
-}
-
 // requiredResourceColumns 返回缺失的必填键（保持 required 的顺序，便于稳定报错文案）。
 func requiredResourceColumns(spec resourceSpec, input map[string]any) []string {
 	missing := make([]string, 0, len(spec.required))

@@ -1,0 +1,27 @@
+-- 补齐 PG 侧缺失的外键列索引（MySQL 建外键时自动创建，PG 不会），
+-- 外加一条告警失联对账用的 partial index。背景、实测数据与取舍见 SQL_DESIGN §2.6 与计划 P1-9。
+
+CREATE INDEX assets_application_service_application_id_idx ON assets_application_service (application_id);
+CREATE INDEX assets_application_service_application_version_id_idx ON assets_application_service (application_version_id);
+CREATE INDEX assets_application_service_deployment_template_id_idx ON assets_application_service (deployment_template_id);
+CREATE INDEX assets_application_service_deployment_deployment_id_idx ON assets_application_service_deployment (deployment_id);
+CREATE INDEX assets_application_service_log_setting_log_definition_id_idx ON assets_application_service_log_setting (log_definition_id);
+CREATE INDEX assets_cluster_profile_application_id_idx ON assets_cluster_profile (application_id);
+CREATE INDEX assets_hostcredential_credential_id_idx ON assets_hostcredential (credential_id);
+CREATE INDEX assets_hostgroup_parent_id_idx ON assets_hostgroup (parent_id);
+CREATE INDEX automation_execution_job_task_id_idx ON automation_execution_job (task_id);
+CREATE INDEX automation_task_inventory_id_idx ON automation_task (inventory_id);
+CREATE INDEX automation_task_playbook_template_id_idx ON automation_task (playbook_template_id);
+CREATE INDEX inspection_execution_task_id_idx ON inspection_execution (task_id);
+CREATE INDEX inspection_result_target_id_idx ON inspection_result (target_id);
+CREATE INDEX inspection_task_group_id_idx ON inspection_task (group_id);
+CREATE INDEX monitor_alert_notification_delivery_media_id_idx ON monitor_alert_notification_delivery (media_id);
+CREATE INDEX monitor_alert_notification_delivery_user_id_idx ON monitor_alert_notification_delivery (user_id);
+CREATE INDEX monitor_alert_notification_event_alert_id_idx ON monitor_alert_notification_event (alert_id);
+CREATE INDEX monitor_log_processing_rule_cluster_id_idx ON monitor_log_processing_rule (cluster_id);
+CREATE INDEX monitor_software_package_install_playbook_template_id_idx ON monitor_software_package (install_playbook_template_id);
+CREATE INDEX monitor_software_package_uninstall_playbook_template_id_idx ON monitor_software_package (uninstall_playbook_template_id);
+CREATE INDEX monitor_target_install_history_target_id_idx ON monitor_target_install_history (target_id);
+
+CREATE INDEX monitor_alert_history_firing_recent_idx ON monitor_alert_history (last_seen_at)
+  WHERE state = 'firing' AND source = 'prometheus';

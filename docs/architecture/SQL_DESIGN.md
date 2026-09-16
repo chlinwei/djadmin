@@ -151,6 +151,28 @@ WHERE COALESCE(name, '') LIKE sqlc.narg(pattern) OR COALESCE(code, '') LIKE sqlc
 1. 一个参数要在同一查询里出现多次时，**列的可空性必须一致**（用 `COALESCE(col,'')` 统一），并**用 `sqlc.narg`**，不要用 `sqlc.arg`。
 2. 新增/修改查询后，**检查生成的 `Params` 结构体里有没有 `Xxx_2` / `Xxx_3` 这类后缀字段**——它们出现就说明调用点需要重复传值，漏传是静默失效。这是 §1.2 里"多字段"病症在参数侧的表现。
 
+### 2.6 PostgreSQL 侧的索引：P1-9 的实测结论（2026-09-16）
+
+方法与局限先说清楚：本仓库真库的规模很小（19 台主机、146 条告警、882 条基线明细），在这个量级上
+**任何**索引讨论都没有意义 —— 所以这次试验是"按真库基数放大"的合成数据（50k 主机、200k 告警、
+400k 投递记录、800k 基线明细、约 437MB），在 /tmp 单跑的 PostgreSQL 14 上逐条 `EXPLAIN (ANALYZE,
+BUFFERS)` 对比。**结论只在"数据涨到几十万行以后"这个前提下成立**；今天就有意义的只有第 1 条
+（它修的是结构与计划的对齐，不是速度）。
+
+| 项 | 决定 | 证据 |
+|---|---|---|
+| **外键列索引**（21 处） | ✅ **补齐**（`db/schema/postgres` + 迁移 000023） | MySQL 建外键时若没有可用索引会**自动创建**一个，**PG 不会** —— 两侧因此会有不同的计划。实测最热的一条（告警主机服务树归属：`deployment → service_deployment → service`）：`assets_application_service_deployment.deployment_id` 没索引时是 Seq Scan（90k 行、Rows Removed 45000），**21.5ms**；补索引后 Bitmap Index Scan，**0.18ms**（约 120×）。这条查询在每次告警派发时都会跑。补齐即让两侧的写入成本与访问路径同源 |
+| **失联对账的 partial index**（`monitor_alert_history(last_seen_at) WHERE state='firing' AND source='prometheus'`） | ✅ **补上** | 该语句每 5 分钟跑一次（每个进程）。200k 行、5% firing 的数据下：Seq Scan **35.9ms**（14917 buffers）→ Index Scan **12.1ms**，索引仅 **88kB**。**普通 `last_seen_at` 索引不会被选中**（95% 的行都满足 `< now()`，实测仍是 Seq Scan 38.3ms）——这正是 partial index 的典型场景：索引大小只跟"当前未恢复告警"成正比，与历史总量无关 |
+| **`pg_trgm`（模糊搜索）** | ❌ **不采用** | 试了 `gin_trgm_ops` 索引（实例名 `LIKE '%host-1234%'`）：**计划没变**（仍 Seq Scan，12.4ms → 11.3ms）。原因是查询形状 `(instance_name LIKE \$1 OR COALESCE(ip,'') LIKE \$1)` 里的 `COALESCE(ip,'')` 与 OR 分支让 trgm 索引用不上，且 50k 行的 Seq Scan 本身只要 12ms。要在更大规模上用它，得先改查询形状（给 ip 建表达式索引、或拆成 UNION），属于"先有证据再说" |
+| **BRIN** | ❌ **不采用** | 只有"写得极多、且列值与物理顺序强相关"的大表才划算。本仓库最大的表是明细/日志类（`baseline_scan_result` 800k、`automation_execution_host_log` 400k），但它们的访问模式都是按外键（scan_id / job_id）取一小组行，**选择性索引已经是最优解**；BRIN 的块级摘要在这种等值/范围过滤上不占优。数据再涨一个量级且出现"按时间范围扫大段"的查询时再评估 |
+| **INCLUDE（覆盖索引）** | ❌ **不采用** | 宿主列表（`ListMonitorHosts`）是 JOIN + 多种可选过滤 + `ORDER BY instance_name`，不是"单表按索引取多列"的形状；要让它走 Index Only Scan 得把 JOIN 后的列都塞进 INCLUDE，收益不明而索引会显著变胖。当前 50k 行下各类列表都在十几毫秒内 |
+
+**这次唯一"顺手修掉"的旧缺口**：`monitor_alert_history` 上原本没有任何索引与 `ListStaleFiringAlerts` /
+`GetOpenFiringAlertForUpdate` 的过滤条件匹配（后者走 `fingerprint = ? AND state='firing'`，200k 行上是
+Seq Scan）。前者由 partial index 覆盖，后者在 `(fingerprint)` 上没有索引 —— **没有补**，因为按指纹查未恢复
+告警的调用频率低（每次 webhook 摄取一次）且 `fingerprint` 的取值分散，Seq Scan 的选择性判断与实际耗时
+在本次数据规模下都可接受；数据再涨一个量级时它会是第一个要补的。
+
 ## 3. 字段映射约定
 
 ### 3.1 可空性：不要让 `COALESCE` 兼职表达可空
@@ -363,7 +385,7 @@ autoadmin/
 │   └── migrations/                 基线之后的结构变更
 │       ├── mysql/                  000001…000022，每个都有 .up.sql/.down.sql（44 文件）
 │       │                           MIGRATION_SOURCE_URL 指向此处
-│       └── postgres/               平行迁移，版本号对齐（待建，见计划 P1-7）
+│       └── postgres/               同上 44 文件（000001…000022，版本号与文件名逐字对齐 mysql 侧）
 └── internal/platform/database/
     ├── configuration.go            连接参数（MySQLDSN 与 PostgresDSN 都在这里，由 tag 选用）
     ├── mysql.go                    MySQL 连接池实现
@@ -489,6 +511,31 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 修复后：79 张表、71 个外键，零错误装载成功。**注意 PG 侧新增/改列时也要守这两条**：约束与索引名必须全库唯一（用表名前缀），整数列的默认值不要写成布尔。
 
 **装载顺序**：`db/schema/postgres/*.sql` 是"折叠后的当前状态"，按 Django 域切分，**不能按文件名顺序直接执行**。需要按 `REFERENCES` 依赖排序（跳过自引用）后再建索引；`assets_host` 一类被大量引用的表会被排到靠后。
+
+**迁移文件的 PG 平行版本（`db/migrations/postgres/`）**
+
+`db/migrations/postgres/` 与 `db/migrations/mysql/` **同版本号、同文件名**（000001…000022，各含 `.up.sql`/`.down.sql`，共 44 文件），由 mysql 侧逐条翻译而来；down 是对应 up 的严格逆操作。DDL 的类型与命名一律照 §4.7 与 `db/schema/postgres` 的既有写法，语句级另有下列非机械改写（每个受影响文件顶部都有 `-- PG 侧差异：` 注释说明）：
+
+| MySQL 写法 | PG 写法 | 理由 |
+|---|---|---|
+| 会话变量 `SET @x := (SELECT ...)` + 后续引用 | 子查询 / 自连接 `sys_menu p` 按 `name`、`path` 取父 id | PG 无会话变量（菜单种子 000008/000016/000018/000019） |
+| 多表 `UPDATE ... JOIN ... SET` | `UPDATE ... FROM`（自连接） | 多表更新在 PG 就是 `UPDATE ... FROM`；且 PG 的 `SET` 目标列不能带别名 |
+| 多表 `DELETE t FROM t JOIN u ...` | `DELETE FROM t WHERE NOT EXISTS (...)` / `WHERE menu_id IN (子查询)` | 同语义，PG 无多表 DELETE |
+| `INSERT IGNORE` | `INSERT ... ON CONFLICT DO NOTHING` | `sys_role_menu` 的唯一键是 `(menu_id, role_id)` |
+| `CHANGE COLUMN old new <类型>` | `RENAME COLUMN`（仅类型真变时才追加 `ALTER COLUMN ... TYPE`） | PG 改名与改类型是两条语句（000020） |
+| `MODIFY COLUMN c <类型> NOT NULL` | `ALTER COLUMN c SET NOT NULL` | 同上（000011） |
+| `DROP INDEX` / `DROP KEY`（唯一键）、`DROP FOREIGN KEY` | `DROP CONSTRAINT` | MySQL 的 UNIQUE KEY / FK 在 PG 都是约束 |
+| `KEY x (col)` 内联声明 | 独立 `CREATE INDEX x ON t (col)` | PG 无内联非唯一索引声明 |
+| 布尔列写 `0` / `1` | `FALSE` / `TRUE` | PG 不接受整数隐式转 boolean（000018/000019 的 `is_expanded`） |
+| `NOW(6)` / `CURDATE()` | `now()` / `CURRENT_DATE` | `sys_menu.create_time` 是 `date`，由 PG 隐式赋值截断为当天 |
+| `ADD COLUMN c text NULL AFTER x` | 去掉 `AFTER`（新列落在表末尾） | PG 不支持列位置 |
+| 字面量里的 `\\.` | 只写一个 `\` | MySQL 用反斜杠转义，PG 的 `standard_conforming_strings=on` 下反斜杠是普通字符。判据是**落库字符串两侧必须逐字节一致**（000001 的模板正文已实测相同） |
+
+不可逆的部分沿用 mysql 侧语义，不额外补默认值：`ADD COLUMN ... jsonb NOT NULL`（000005/000006 的 down）在 PG 同样要求表内无数据；`000005.down` 同样只恢复列结构、不恢复 Django 时代的外键；`000010.down` / `000020.down` 也只恢复列与索引。**约束名全库唯一**这条在迁移里同样要守：mysql 侧名为 `name` / `agent_id` 的唯一键，在 PG 侧按 `<表名>_<键名>` 约定命名（`inspection_task_name`、`monitor_alert_route_name`；`agent_id` 全库无冲突故保持原名）。
+
+**验收方式**（没有"迁移前的 PG 基线"，所以不能用空库灌迁移）：① 用 `db/schema/postgres` 在真 PG 14 建库（79 表 0 错误）；② 倒序执行全部 down 迁移（22→1，每个文件按 golang-migrate 的方式作为**一个多语句批次**执行），回到折叠前状态；③ 再正序执行全部 up 迁移（1→22）。②③ 均 0 失败，最终 `information_schema` 的列（914）、约束（216）、索引（171）与折叠态逐条一致。唯一需要人工补的是 `000005.up` 要删的那个 Django 时代外键——`000005.down` 本身就不恢复它（mysql 侧同样如此），重放前按该名字补回即可。
+
+**已知限制**：`autoadmin migrate` 角色仍只注册了 MySQL 驱动（见 §5.1 末尾），所以这 44 个文件目前只能用 `MIGRATION_SOURCE_URL=file://db/migrations/postgres` 配合 PG 驱动使用，角色侧接线仍属计划 P1-7。
 
 ### 4.8 方言切换：固定路径门面 + 构建标签（已落地 2026-09-16）
 

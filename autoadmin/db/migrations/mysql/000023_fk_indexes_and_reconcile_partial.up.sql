@@ -1,0 +1,4 @@
+-- 本迁移只改 PostgreSQL 侧：MySQL 在建外键时若没有可用索引会自动创建（`SHOW CREATE TABLE`
+-- 里能看到 KEY），PG 不会 —— 所以缺的索引只存在于 PG 侧。这里保留一个空迁移，
+-- 让两侧版本号继续一一对应（守卫见 internal/platform/migration/migrations_test.go）。
+-- 具体内容见 db/migrations/postgres/000023_fk_indexes_and_reconcile_partial.up.sql。

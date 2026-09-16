@@ -8369,3 +8369,529 @@
 2026/09/16 23:50:02 INFO agent session established instance_name=pvg-esb4-204 session_count=18
 [GIN] 2026/09/16 - 23:50:03 | 200 | 349.65ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
 2026/09/16 23:50:03 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/16 - 23:50:33 | 200 | 347.97ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:50:49 | 200 | 345.12ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:50:49 | 200 | 352.22ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:51:02 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:51:02 | 200 | 129.346µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:51:03 | 200 | 357.65ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:51:19 | 200 | 349.89ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:51:32 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:51:32 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/16 23:51:32 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/16 23:51:32 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:51:32 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:51:32 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:51:32 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/16 23:51:32 INFO agent session ended instance_name=177 session_count=11
+2026/09/16 23:51:32 INFO agent session ended instance_name=localhost session_count=10
+2026/09/16 23:51:32 INFO agent session ended instance_name=mysql134 session_count=9
+2026/09/16 23:51:32 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:51:33 INFO agent session ended instance_name=tib-oracle session_count=7
+[GIN] 2026/09/16 - 23:51:33 | 200 | 370.52ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:51:33 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:51:33 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/16 23:51:33 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/16 23:51:33 INFO agent session ended instance_name=cdm-oracle-159 session_count=9
+2026/09/16 23:51:33 INFO agent session ended instance_name=tib_nginx-208 session_count=8
+2026/09/16 23:51:33 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/16 23:51:33 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/16 23:51:33 INFO agent session ended instance_name=pvg-esb4-207 session_count=7
+2026/09/16 23:51:33 INFO agent session established instance_name=pvg-esb4-206 session_count=8
+2026/09/16 23:51:33 INFO agent session established instance_name=mysql136 session_count=9
+2026/09/16 23:51:33 INFO agent session ended instance_name=tib-es-redis-209 session_count=8
+2026/09/16 23:51:33 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/16 23:51:33 INFO agent session established instance_name=177 session_count=10
+2026/09/16 23:51:33 INFO agent session established instance_name=localhost session_count=11
+2026/09/16 23:51:33 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/16 23:51:33 INFO agent session established instance_name=mysql134 session_count=11
+2026/09/16 23:51:33 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:51:34 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:51:34 INFO agent session established instance_name=cdm-oracle-159 session_count=14
+2026/09/16 23:51:34 INFO agent session established instance_name=tib_nginx-208 session_count=15
+2026/09/16 23:51:34 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:51:34 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:51:34 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:51:34 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:51:34 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:51:35 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/16 23:52:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:52:01 | 200 | 127.301µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:52:03 | 200 | 349.55ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:52:19 | 200 | 349.13ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:52:20 | 200 | 358.32ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:52:32 | 200 | 338.44ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:52:49 | 200 | 351.39ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:53:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:53:01 | 200 | 114.021µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:53:03 | 200 | 355.83ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:53:04 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:53:04 INFO agent session ended instance_name=pvg-esb4-201 session_count=17
+2026/09/16 23:53:04 INFO agent session ended instance_name=pvg4-esb-208 session_count=16
+2026/09/16 23:53:04 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:53:04 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:53:04 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:53:04 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/16 23:53:04 INFO agent session ended instance_name=177 session_count=11
+2026/09/16 23:53:04 INFO agent session ended instance_name=localhost session_count=10
+2026/09/16 23:53:04 INFO agent session ended instance_name=mysql134 session_count=9
+2026/09/16 23:53:04 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:53:05 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/16 23:53:05 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:53:05 INFO agent session established instance_name=pvg-esb4-201 session_count=9
+2026/09/16 23:53:05 INFO agent session established instance_name=pvg4-esb-208 session_count=10
+2026/09/16 23:53:05 INFO agent session ended instance_name=cdm-oracle-159 session_count=9
+2026/09/16 23:53:05 INFO agent session ended instance_name=tib_nginx-208 session_count=8
+2026/09/16 23:53:05 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/16 23:53:05 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/16 23:53:05 INFO agent session ended instance_name=pvg-esb4-207 session_count=7
+2026/09/16 23:53:05 INFO agent session established instance_name=pvg-esb4-206 session_count=8
+2026/09/16 23:53:05 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/16 23:53:05 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/16 23:53:05 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/16 23:53:05 INFO agent session established instance_name=177 session_count=10
+2026/09/16 23:53:05 INFO agent session established instance_name=localhost session_count=11
+2026/09/16 23:53:05 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/16 23:53:05 INFO agent session established instance_name=mysql134 session_count=11
+2026/09/16 23:53:05 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:53:06 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:53:06 INFO agent session established instance_name=cdm-oracle-159 session_count=14
+2026/09/16 23:53:06 INFO agent session established instance_name=tib_nginx-208 session_count=15
+2026/09/16 23:53:06 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:53:06 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:53:06 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:53:06 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:53:06 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:53:07 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/16 - 23:53:32 | 200 | 340.67ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:53:49 | 200 |  367.3ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:53:50 | 200 | 410.28ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:54:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:54:01 | 200 | 102.773µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:54:03 | 200 | 370.46ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:54:19 | 200 | 361.22ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:54:32 | 200 | 340.18ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:54:36 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:54:36 INFO agent session ended instance_name=pvg-esb4-201 session_count=17
+2026/09/16 23:54:36 INFO agent session ended instance_name=pvg4-esb-208 session_count=16
+2026/09/16 23:54:36 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:54:36 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:54:36 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:54:36 INFO agent session ended instance_name=177 session_count=12
+2026/09/16 23:54:36 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=11
+2026/09/16 23:54:36 INFO agent session ended instance_name=mysql134 session_count=10
+2026/09/16 23:54:36 INFO agent session ended instance_name=localhost session_count=9
+2026/09/16 23:54:37 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:54:37 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/16 23:54:37 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:54:37 INFO agent session established instance_name=pvg-esb4-201 session_count=9
+2026/09/16 23:54:37 INFO agent session established instance_name=pvg4-esb-208 session_count=10
+2026/09/16 23:54:37 INFO agent session ended instance_name=cdm-oracle-159 session_count=9
+2026/09/16 23:54:37 INFO agent session ended instance_name=tib_nginx-208 session_count=8
+2026/09/16 23:54:37 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/16 23:54:37 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/16 23:54:37 INFO agent session ended instance_name=pvg-esb4-207 session_count=7
+2026/09/16 23:54:37 INFO agent session established instance_name=pvg-esb4-206 session_count=8
+2026/09/16 23:54:37 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/16 23:54:37 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/16 23:54:37 INFO agent session established instance_name=177 session_count=9
+2026/09/16 23:54:37 INFO agent session established instance_name=kul-tib-tomcat2 session_count=10
+2026/09/16 23:54:37 INFO agent session ended instance_name=pvg-esb4-204 session_count=9
+2026/09/16 23:54:37 INFO agent session established instance_name=mysql134 session_count=10
+2026/09/16 23:54:38 INFO agent session established instance_name=localhost session_count=11
+2026/09/16 23:54:38 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:54:38 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:54:38 INFO agent session established instance_name=cdm-oracle-159 session_count=14
+2026/09/16 23:54:38 INFO agent session established instance_name=tib_nginx-208 session_count=15
+2026/09/16 23:54:38 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:54:38 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:54:38 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:54:38 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:54:38 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:54:39 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/16 23:55:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:55:01 | 200 | 278.341µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:55:03 | 200 | 359.36ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:55:19 | 200 | 404.08ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:55:20 | 200 |  367.4ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:55:33 | 200 |  343.7ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:55:49 | 200 | 352.74ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:56:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:56:01 | 200 | 102.232µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:56:03 | 200 | 359.46ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:56:08 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:56:08 INFO agent session ended instance_name=pvg-esb4-201 session_count=17
+2026/09/16 23:56:08 INFO agent session ended instance_name=pvg4-esb-208 session_count=16
+2026/09/16 23:56:08 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:56:08 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:56:08 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:56:08 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/16 23:56:09 INFO agent session ended instance_name=177 session_count=11
+2026/09/16 23:56:09 INFO agent session ended instance_name=localhost session_count=10
+2026/09/16 23:56:09 INFO agent session ended instance_name=mysql134 session_count=9
+2026/09/16 23:56:09 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:56:09 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/16 23:56:09 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:56:09 INFO agent session established instance_name=pvg-esb4-201 session_count=9
+2026/09/16 23:56:09 INFO agent session established instance_name=pvg4-esb-208 session_count=10
+2026/09/16 23:56:09 INFO agent session ended instance_name=cdm-oracle-159 session_count=9
+2026/09/16 23:56:09 INFO agent session ended instance_name=tib_nginx-208 session_count=8
+2026/09/16 23:56:09 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/16 23:56:09 INFO agent session established instance_name=pvg-esb4-206 session_count=10
+2026/09/16 23:56:09 INFO agent session ended instance_name=mysql135 session_count=9
+2026/09/16 23:56:09 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/16 23:56:09 INFO agent session established instance_name=mysql136 session_count=9
+2026/09/16 23:56:09 INFO agent session ended instance_name=tib-es-redis-209 session_count=8
+2026/09/16 23:56:09 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/16 23:56:10 INFO agent session ended instance_name=pvg-esb4-204 session_count=8
+2026/09/16 23:56:10 INFO agent session established instance_name=177 session_count=9
+2026/09/16 23:56:10 INFO agent session established instance_name=localhost session_count=10
+2026/09/16 23:56:10 INFO agent session established instance_name=mysql134 session_count=11
+2026/09/16 23:56:10 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:56:10 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:56:10 INFO agent session established instance_name=cdm-oracle-159 session_count=14
+2026/09/16 23:56:10 INFO agent session established instance_name=tib_nginx-208 session_count=15
+2026/09/16 23:56:10 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:56:10 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:56:10 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:56:10 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:56:11 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:56:11 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/16 - 23:56:33 | 200 | 348.84ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:56:49 | 200 | 371.67ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:56:50 | 200 | 357.28ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:57:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:57:01 | 200 | 109.669µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:57:03 | 200 | 384.76ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:57:19 | 200 | 359.55ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:57:33 | 200 | 359.87ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:57:40 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:57:40 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/16 23:57:40 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/16 23:57:40 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:57:40 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:57:40 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:57:41 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/16 23:57:41 INFO agent session ended instance_name=177 session_count=11
+2026/09/16 23:57:41 INFO agent session ended instance_name=localhost session_count=10
+2026/09/16 23:57:41 INFO agent session ended instance_name=mysql134 session_count=9
+2026/09/16 23:57:41 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:57:41 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/16 23:57:41 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:57:41 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/16 23:57:41 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/16 23:57:41 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/16 23:57:41 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/16 23:57:41 INFO agent session ended instance_name=mysql135 session_count=7
+2026/09/16 23:57:41 INFO agent session established instance_name=cdm-179 session_count=8
+2026/09/16 23:57:41 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/16 23:57:41 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/16 23:57:41 INFO agent session established instance_name=mysql136 session_count=9
+2026/09/16 23:57:41 INFO agent session ended instance_name=tib-es-redis-209 session_count=8
+2026/09/16 23:57:42 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/16 23:57:42 INFO agent session established instance_name=177 session_count=10
+2026/09/16 23:57:42 INFO agent session ended instance_name=pvg-esb4-204 session_count=9
+2026/09/16 23:57:42 INFO agent session established instance_name=localhost session_count=10
+2026/09/16 23:57:42 INFO agent session established instance_name=mysql134 session_count=11
+2026/09/16 23:57:42 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:57:42 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:57:42 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/16 23:57:42 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/16 23:57:42 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:57:42 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:57:42 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:57:42 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:57:43 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:57:43 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/16 23:58:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:58:01 | 200 |  90.07µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:58:03 | 200 | 350.37ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:58:19 | 200 | 355.54ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:58:20 | 200 | 368.63ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:58:33 | 200 | 359.54ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:58:49 | 200 | 436.92ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/16 23:59:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/16 - 23:59:01 | 200 | 107.518µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/16 - 23:59:03 | 200 | 357.79ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/16 23:59:12 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/16 23:59:12 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/16 23:59:12 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/16 23:59:12 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/16 23:59:12 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/16 23:59:12 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/16 23:59:13 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/16 23:59:13 INFO agent session ended instance_name=177 session_count=11
+2026/09/16 23:59:13 INFO agent session ended instance_name=mysql134 session_count=10
+2026/09/16 23:59:13 INFO agent session ended instance_name=localhost session_count=9
+2026/09/16 23:59:13 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/16 23:59:13 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/16 23:59:13 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/16 23:59:13 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/16 23:59:13 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/16 23:59:13 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/16 23:59:13 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/16 23:59:13 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/16 23:59:13 INFO agent session established instance_name=pvg-esb4-206 session_count=10
+2026/09/16 23:59:13 INFO agent session ended instance_name=mysql135 session_count=9
+2026/09/16 23:59:13 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/16 23:59:13 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/16 23:59:13 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/16 23:59:14 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/16 23:59:14 INFO agent session established instance_name=177 session_count=10
+2026/09/16 23:59:14 INFO agent session ended instance_name=pvg-esb4-204 session_count=9
+2026/09/16 23:59:14 INFO agent session established instance_name=mysql134 session_count=10
+2026/09/16 23:59:14 INFO agent session established instance_name=localhost session_count=11
+2026/09/16 23:59:14 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/16 23:59:14 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/16 23:59:14 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/16 23:59:14 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/16 23:59:14 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/16 23:59:14 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/16 23:59:14 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/16 23:59:14 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/16 23:59:15 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/16 23:59:16 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/16 - 23:59:33 | 200 | 344.61ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/16 - 23:59:49 | 200 | 441.97ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/16 - 23:59:50 | 200 | 350.35ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:00:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:00:01 | 200 | 106.757µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:00:03 | 200 |  358.7ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:00:19 | 200 | 379.02ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:00:33 | 200 | 348.62ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:00:44 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:00:44 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/17 00:00:44 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/17 00:00:44 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/17 00:00:44 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/17 00:00:44 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:00:45 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/17 00:00:45 INFO agent session ended instance_name=177 session_count=11
+2026/09/17 00:00:45 INFO agent session ended instance_name=mysql134 session_count=10
+2026/09/17 00:00:45 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:00:45 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:00:45 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:00:45 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:00:45 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/17 00:00:45 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/17 00:00:45 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:00:45 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:00:45 INFO agent session ended instance_name=mysql135 session_count=7
+2026/09/17 00:00:45 INFO agent session established instance_name=cdm-179 session_count=8
+2026/09/17 00:00:45 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/17 00:00:45 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:00:45 INFO agent session established instance_name=mysql136 session_count=9
+2026/09/17 00:00:45 INFO agent session ended instance_name=tib-es-redis-209 session_count=8
+2026/09/17 00:00:46 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/17 00:00:46 INFO agent session established instance_name=177 session_count=10
+2026/09/17 00:00:46 INFO agent session established instance_name=mysql134 session_count=11
+2026/09/17 00:00:46 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:00:46 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:00:46 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:00:46 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:00:46 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:00:46 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:00:46 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:00:46 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:00:47 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:00:47 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:00:47 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:00:48 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/17 00:01:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:01:01 | 200 | 131.006µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:01:03 | 200 | 382.79ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:01:19 | 200 | 402.25ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:01:20 | 200 | 360.44ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:01:33 | 200 | 359.45ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:01:49 | 200 | 361.05ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:02:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:02:01 | 200 | 95.423µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:02:03 | 200 | 382.15ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:02:16 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:02:16 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/17 00:02:16 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/17 00:02:16 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/17 00:02:16 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/17 00:02:17 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:02:17 INFO agent session ended instance_name=mysql134 session_count=12
+2026/09/17 00:02:17 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=11
+2026/09/17 00:02:17 INFO agent session ended instance_name=177 session_count=10
+2026/09/17 00:02:17 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:02:17 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:02:17 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:02:17 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:02:17 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/17 00:02:17 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/17 00:02:17 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:02:17 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:02:17 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/17 00:02:17 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/17 00:02:17 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/17 00:02:17 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:02:18 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/17 00:02:18 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/17 00:02:18 INFO agent session established instance_name=mysql134 session_count=9
+2026/09/17 00:02:18 INFO agent session established instance_name=177 session_count=10
+2026/09/17 00:02:18 INFO agent session established instance_name=kul-tib-tomcat2 session_count=11
+2026/09/17 00:02:18 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:02:18 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:02:18 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:02:18 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:02:18 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:02:18 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:02:18 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:02:18 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:02:19 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:02:19 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:02:19 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:02:20 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/17 - 00:02:33 | 200 | 355.98ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:02:49 | 200 | 402.39ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:02:50 | 200 | 373.55ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:03:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:03:01 | 200 | 247.24µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:03:03 | 200 | 367.36ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:03:19 | 200 | 352.08ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:03:33 | 200 | 389.44ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:03:48 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:03:48 INFO agent session ended instance_name=pvg-esb4-201 session_count=17
+2026/09/17 00:03:48 INFO agent session ended instance_name=pvg4-esb-208 session_count=16
+2026/09/17 00:03:48 INFO agent session ended instance_name=cdm-179 session_count=15
+2026/09/17 00:03:48 INFO agent session ended instance_name=pvg-esb4-206 session_count=14
+2026/09/17 00:03:49 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:03:49 INFO agent session ended instance_name=mysql134 session_count=12
+2026/09/17 00:03:49 INFO agent session ended instance_name=177 session_count=11
+2026/09/17 00:03:49 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=10
+2026/09/17 00:03:49 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:03:49 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:03:49 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:03:49 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:03:49 INFO agent session established instance_name=pvg-esb4-201 session_count=9
+2026/09/17 00:03:49 INFO agent session established instance_name=pvg4-esb-208 session_count=10
+2026/09/17 00:03:49 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:03:49 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:03:49 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/17 00:03:49 INFO agent session established instance_name=pvg-esb4-206 session_count=10
+2026/09/17 00:03:49 INFO agent session ended instance_name=mysql135 session_count=9
+2026/09/17 00:03:50 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:03:50 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/17 00:03:50 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/17 00:03:50 INFO agent session established instance_name=mysql134 session_count=9
+2026/09/17 00:03:50 INFO agent session established instance_name=177 session_count=10
+2026/09/17 00:03:50 INFO agent session established instance_name=kul-tib-tomcat2 session_count=11
+2026/09/17 00:03:50 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:03:50 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:03:50 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:03:50 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:03:50 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:03:50 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:03:51 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:03:51 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:03:51 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:03:51 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:03:51 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:03:52 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/17 00:04:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:04:01 | 200 | 233.017µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:04:03 | 200 | 378.76ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:04:19 | 200 |  355.3ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:04:20 | 200 |  353.7ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:04:33 | 200 | 342.68ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:04:49 | 200 |  369.5ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:05:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:05:01 | 200 | 114.477µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:05:03 | 200 | 369.46ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:05:20 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:05:20 INFO agent session ended instance_name=pvg-esb4-201 session_count=17
+2026/09/17 00:05:20 INFO agent session ended instance_name=pvg4-esb-208 session_count=16
+2026/09/17 00:05:20 INFO agent session ended instance_name=pvg-esb4-206 session_count=15
+2026/09/17 00:05:21 INFO agent session ended instance_name=cdm-179 session_count=14
+2026/09/17 00:05:21 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:05:21 INFO agent session ended instance_name=177 session_count=12
+2026/09/17 00:05:21 INFO agent session ended instance_name=mysql134 session_count=11
+2026/09/17 00:05:21 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=10
+2026/09/17 00:05:21 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:05:21 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:05:21 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:05:21 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:05:21 INFO agent session established instance_name=pvg-esb4-201 session_count=9
+2026/09/17 00:05:21 INFO agent session established instance_name=pvg4-esb-208 session_count=10
+2026/09/17 00:05:21 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:05:21 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:05:22 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/17 00:05:22 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/17 00:05:22 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/17 00:05:22 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:05:22 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/17 00:05:22 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/17 00:05:22 INFO agent session established instance_name=177 session_count=9
+2026/09/17 00:05:22 INFO agent session established instance_name=mysql134 session_count=10
+2026/09/17 00:05:22 INFO agent session established instance_name=kul-tib-tomcat2 session_count=11
+2026/09/17 00:05:22 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:05:22 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:05:22 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:05:22 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:05:22 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:05:22 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:05:23 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:05:23 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:05:23 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:05:23 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:05:23 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:05:24 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/17 - 00:05:33 | 200 | 377.16ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:05:49 | 200 | 341.54ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:05:49 | 200 | 353.67ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:06:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:06:01 | 200 | 111.024µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:06:03 | 200 | 382.39ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:06:19 | 200 | 375.68ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:06:32 | 200 | 335.05ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:06:52 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:06:52 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/17 00:06:52 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/17 00:06:53 INFO agent session ended instance_name=pvg-esb4-206 session_count=15
+2026/09/17 00:06:53 INFO agent session ended instance_name=cdm-179 session_count=14
+2026/09/17 00:06:53 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:06:53 INFO agent session ended instance_name=mysql134 session_count=12
+2026/09/17 00:06:53 INFO agent session ended instance_name=177 session_count=11
+2026/09/17 00:06:53 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=10
+2026/09/17 00:06:53 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:06:53 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:06:53 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:06:53 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:06:53 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/17 00:06:53 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/17 00:06:53 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:06:54 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:06:54 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/17 00:06:54 INFO agent session ended instance_name=mysql135 session_count=8
+2026/09/17 00:06:54 INFO agent session established instance_name=cdm-179 session_count=9
+2026/09/17 00:06:54 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:06:54 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/17 00:06:54 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/17 00:06:54 INFO agent session established instance_name=mysql134 session_count=9
+2026/09/17 00:06:54 INFO agent session established instance_name=177 session_count=10
+2026/09/17 00:06:54 INFO agent session established instance_name=kul-tib-tomcat2 session_count=11
+2026/09/17 00:06:54 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:06:54 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:06:54 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:06:54 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:06:54 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:06:55 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:06:55 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:06:55 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:06:55 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:06:55 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:06:55 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:06:56 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+2026/09/17 00:07:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:07:01 | 200 | 116.885µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:07:03 | 200 | 370.07ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:07:19 | 200 | 365.54ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:07:20 | 200 | 362.84ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:07:32 | 200 | 329.62ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:07:49 | 200 | 415.75ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:08:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:08:01 | 200 | 229.654µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:08:03 | 200 | 351.19ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"

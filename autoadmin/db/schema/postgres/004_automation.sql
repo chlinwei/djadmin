@@ -102,3 +102,10 @@ CREATE TABLE automation_execution_host_log (
 CREATE INDEX automation_execution_host_log_host_id_b2ec126e_fk_assets_host_id ON automation_execution_host_log (host_id);
 
 CREATE INDEX automation_execution_job_id_d6edd8d4_fk_automatio ON automation_execution_host_log (job_id);
+-- 外键列的索引：MySQL 建外键时若没有可用索引会自动创建一个（`SHOW CREATE TABLE` 里能看到），
+-- PG **不会**自动创建 —— 于是同一个查询在两侧的计划不同（实测：告警主机服务树归属的那条
+-- JOIN 在 90k 行的 assets_application_service_deployment 上退化成 Seq Scan，21.5ms；
+-- 补上 deployment_id 的索引后 0.18ms）。这里按 MySQL 的既有索引逐列补齐（P1-9）。
+CREATE INDEX automation_execution_job_task_id_idx ON automation_execution_job (task_id);
+CREATE INDEX automation_task_inventory_id_idx ON automation_task (inventory_id);
+CREATE INDEX automation_task_playbook_template_id_idx ON automation_task (playbook_template_id);

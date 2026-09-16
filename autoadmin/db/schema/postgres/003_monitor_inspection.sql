@@ -305,3 +305,21 @@ CREATE TABLE monitor_user_alert_media_binding (
 );
 
 CREATE INDEX monitor_user_alert_m_media_id_41516ddb_fk_monitor_a ON monitor_user_alert_media_binding (media_id);
+-- 外键列的索引：MySQL 建外键时若没有可用索引会自动创建一个（`SHOW CREATE TABLE` 里能看到），
+-- PG **不会**自动创建 —— 于是同一个查询在两侧的计划不同（实测：告警主机服务树归属的那条
+-- JOIN 在 90k 行的 assets_application_service_deployment 上退化成 Seq Scan，21.5ms；
+-- 补上 deployment_id 的索引后 0.18ms）。这里按 MySQL 的既有索引逐列补齐（P1-9）。
+CREATE INDEX monitor_alert_notification_delivery_media_id_idx ON monitor_alert_notification_delivery (media_id);
+CREATE INDEX monitor_alert_notification_delivery_user_id_idx ON monitor_alert_notification_delivery (user_id);
+CREATE INDEX monitor_alert_notification_event_alert_id_idx ON monitor_alert_notification_event (alert_id);
+CREATE INDEX monitor_log_processing_rule_cluster_id_idx ON monitor_log_processing_rule (cluster_id);
+CREATE INDEX monitor_software_package_install_playbook_template_id_idx ON monitor_software_package (install_playbook_template_id);
+CREATE INDEX monitor_software_package_uninstall_playbook_template_id_idx ON monitor_software_package (uninstall_playbook_template_id);
+CREATE INDEX monitor_target_install_history_target_id_idx ON monitor_target_install_history (target_id);
+
+-- 告警失联对账（每 5 分钟一次）用的 PG 专属 partial index：只索引未恢复的 prometheus 告警，
+-- 于是索引大小只跟「当前未恢复告警」成正比，而不是跟历史告警总量成正比。
+-- 实测（200k 行告警、5% firing）：Seq Scan 35.9ms → Index Scan 12.1ms，索引 88kB；
+-- 普通 last_seen_at 索引不会被选中（95% 的行都满足谓词）。
+CREATE INDEX monitor_alert_history_firing_recent_idx ON monitor_alert_history (last_seen_at)
+  WHERE state = 'firing' AND source = 'prometheus';

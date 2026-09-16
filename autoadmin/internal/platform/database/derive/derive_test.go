@@ -128,6 +128,143 @@ func TestDeriveRejectsMultiRowInsertWithReturning(t *testing.T) {
 	}
 }
 
+// 可变长 IN 必须分叉成 PG 的数组参数：留着 sqlc.slice 的话 PG 产物是坏的（标记渲染成
+// `IN ($1)` 而运行时替换找不到标记），传多个值时查询报错、调用点吞掉错误就静默变空（P4-7）。
+// 两侧生成的签名都必须是 `[]int64`，否则调用点要分叉。
+func TestDeriveRewritesSliceToArrayParameter(t *testing.T) {
+	source := "-- name: ListHostsByIDs :many\n" +
+		"SELECT id FROM assets_host WHERE id IN (sqlc.slice(host_ids)) ORDER BY id;\n"
+	got, err := deriveFile("thing.sql", source, map[string]bool{})
+	if err != nil {
+		t.Fatalf("派生失败：%v", err)
+	}
+	if !strings.Contains(got, "WHERE id = ANY(sqlc.arg(host_ids)::bigint[])") {
+		t.Errorf("可变长 IN 应改写成数组参数：\n%s", got)
+	}
+	if strings.Contains(got, "sqlc.slice") {
+		t.Errorf("派生结果里不应残留 sqlc.slice：\n%s", got)
+	}
+}
+
+// 非标准写法（不在 rewriteSlices 覆盖范围内的 sqlc.slice）必须让派生失败：
+// 静默产出一份 PG 上跑不通的 SQL 比报错危险得多。
+func TestDeriveRejectsUnrewrittenSlice(t *testing.T) {
+	source := "-- name: ListHostsByIDs :many\n" +
+		"SELECT id FROM assets_host WHERE json_contains(sqlc.slice(host_ids)) ORDER BY id;\n"
+	if _, err := deriveFile("thing.sql", source, map[string]bool{}); err == nil {
+		t.Fatal("未被改写的 sqlc.slice 应报错")
+	}
+}
+
+// UPSERT 的冲突目标无法从 MySQL 语句推断（ON DUPLICATE KEY 对任意唯一键生效），
+// 必须由源里的 `-- conflict:` 注释声明；缺注释要报错而不是产出一份语义可能不同的 SQL。
+func TestDeriveRewritesUpsertToOnConflict(t *testing.T) {
+	source := "-- name: UpsertHostRuntime :exec\n" +
+		"-- conflict: host_id\n" +
+		"INSERT INTO assets_hostruntime(create_time, update_time, host_id, memory)\n" +
+		"VALUES (?, ?, ?, ?)\n" +
+		"ON DUPLICATE KEY UPDATE update_time=VALUES(update_time), memory=VALUES(memory);\n"
+	got, err := deriveFile("thing.sql", source, map[string]bool{})
+	if err != nil {
+		t.Fatalf("派生失败：%v", err)
+	}
+	for _, want := range []string{"ON CONFLICT (host_id) DO UPDATE SET", "update_time=EXCLUDED.update_time", "memory=EXCLUDED.memory"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("派生结果缺少 %q：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ON DUPLICATE KEY") || strings.Contains(got, "VALUES(update_time)") {
+		t.Errorf("MySQL 的 UPSERT 写法应被完全改写：\n%s", got)
+	}
+	// INSERT 自己的值列表不能被误改。
+	if !strings.Contains(got, "VALUES ($1, $2, $3, $4)") {
+		t.Errorf("INSERT 值列表被误改：\n%s", got)
+	}
+}
+
+func TestDeriveRejectsUpsertWithoutConflictTarget(t *testing.T) {
+	source := "-- name: UpsertThing :exec\n" +
+		"INSERT INTO thing(a, b) VALUES (?, ?) ON DUPLICATE KEY UPDATE b=VALUES(b);\n"
+	if _, err := deriveFile("thing.sql", source, map[string]bool{}); err == nil {
+		t.Fatal("缺少 -- conflict 注释的 UPSERT 应报错")
+	}
+}
+
+// INSERT IGNORE 必须改写成 PG 的 ON CONFLICT DO NOTHING；且不能与 ON DUPLICATE KEY 混用。
+func TestDeriveRewritesInsertIgnore(t *testing.T) {
+	source := "-- name: CreateTargetIfAbsent :execresult\n" +
+		"INSERT IGNORE INTO monitor_target(create_time, host_id, exporter_type)\n" +
+		"VALUES (?, ?, ?);\n"
+	got, err := deriveFile("thing.sql", source, map[string]bool{})
+	if err != nil {
+		t.Fatalf("派生失败：%v", err)
+	}
+	if !strings.Contains(got, "INSERT INTO monitor_target(create_time, host_id, exporter_type)") {
+		t.Errorf("IGNORE 关键字应被去掉：\n%s", got)
+	}
+	// 冲突子句必须在 RETURNING 之前（:execresult 的 INSERT 会被追加 RETURNING id）。
+	if !strings.Contains(got, "ON CONFLICT DO NOTHING\nRETURNING id;") {
+		t.Errorf("应先接 ON CONFLICT DO NOTHING 再 RETURNING：\n%s", got)
+	}
+	if !strings.Contains(got, "-- name: CreateTargetIfAbsent :one\n") {
+		t.Errorf("INSERT 的 :execresult 应派生为 :one：\n%s", got)
+	}
+}
+
+func TestDeriveRejectsInsertIgnoreWithUpsert(t *testing.T) {
+	source := "-- name: Bad :exec\n" +
+		"INSERT IGNORE INTO thing(a) VALUES (?) ON DUPLICATE KEY UPDATE a=VALUES(a);\n"
+	if _, err := deriveFile("thing.sql", source, map[string]bool{}); err == nil {
+		t.Fatal("INSERT IGNORE 与 ON DUPLICATE KEY 混用应报错")
+	}
+}
+
+// 语句之后、下一条 `-- name:` 之前的注释属于同一个查询体但不属于这条语句：
+// 冲突子句与 RETURNING 必须紧贴语句尾插入，否则会被注释吃掉 —— 曾真的产出过
+// `-- 说明… ON CONFLICT DO NOTHING` 这种被注释掉的坏 SQL（sqlc 解析不出来，只有真跑才炸）。
+func TestDeriveInsertsConflictClauseBeforeTrailingComment(t *testing.T) {
+	source := "-- name: CreateThingIfAbsent :execresult\n" +
+		"INSERT IGNORE INTO monitor_target(create_time, host_id, exporter_type)\n" +
+		"VALUES (?, ?, ?);\n" +
+		"\n" +
+		"-- 下一条语句的文档注释：不能落到语句与冲突子句之间。\n"
+	got, err := deriveFile("thing.sql", source, map[string]bool{})
+	if err != nil {
+		t.Fatalf("派生失败：%v", err)
+	}
+	if !strings.Contains(got, "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING\nRETURNING id;") {
+		t.Errorf("冲突子句与 RETURNING 未紧贴语句尾：\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") && strings.Contains(line, "ON CONFLICT") {
+			t.Errorf("冲突子句被注释吃掉：%q", line)
+		}
+	}
+	if !strings.Contains(got, "-- 下一条语句的文档注释") {
+		t.Errorf("尾随注释应原样保留：\n%s", got)
+	}
+}
+
+// UPSERT 的尾随注释同理：EXCLUDED 替换后的子句不能被注释行隔开。
+func TestDeriveInsertsUpsertBeforeTrailingComment(t *testing.T) {
+	source := "-- name: UpsertThing :exec\n" +
+		"-- conflict: host_id\n" +
+		"INSERT INTO thing(host_id, memory) VALUES (?, ?)\n" +
+		"ON DUPLICATE KEY UPDATE memory=VALUES(memory);\n" +
+		"\n" +
+		"-- 尾随注释。\n"
+	got, err := deriveFile("thing.sql", source, map[string]bool{})
+	if err != nil {
+		t.Fatalf("派生失败：%v", err)
+	}
+	if !strings.Contains(got, "memory=EXCLUDED.memory;\n") {
+		t.Errorf("UPSERT 子句应紧贴语句尾并以分号结束：\n%s", got)
+	}
+	if strings.Contains(got, "尾随注释。\n\n") {
+		t.Errorf("尾随注释位置异常：\n%s", got)
+	}
+}
+
 func queryDirs(t *testing.T) (string, string) {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

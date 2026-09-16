@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/opapolicy"
 
 	"github.com/gin-gonic/gin"
@@ -64,12 +66,14 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 		response.BusinessError(context, 400, message, nil)
 		return
 	}
+	now := time.Now().UTC()
 	transaction, err := handler.db.BeginTx(context, nil)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
 	defer transaction.Rollback()
+	queries := db.New(transaction)
 	if id == 0 {
 		if input.Name == nil || strings.TrimSpace(*input.Name) == "" {
 			response.BusinessError(context, 400, "巡检组名称不能为空", nil)
@@ -86,38 +90,72 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 			response.BusinessError(context, 400, message, nil)
 			return
 		}
-		result, execErr := transaction.ExecContext(context, `INSERT INTO inspection_group(name,description,enabled,category,application_id,params,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, strings.TrimSpace(*input.Name), description, enabled, category, nullableIDPtr(input.Application), jsonBytes(input.Params))
-		if execErr != nil {
+		params := json.RawMessage("[]")
+		if input.Params != nil {
+			params = jsonBytes(*input.Params)
+		}
+		id, err = queries.CreateInspectionGroup(context, db.CreateInspectionGroupParams{
+			CreateTime: now, UpdateTime: now, Name: strings.TrimSpace(*input.Name), Description: description,
+			Enabled: enabled, Category: category, ApplicationID: nullableIDParam(input.Application), Params: params,
+		})
+		if err != nil {
+			// 组名是唯一键：重名在这里回业务文案（translate 未覆盖该域，沿用原文案）。
 			response.BusinessError(context, 400, "巡检组名称已存在", nil)
 			return
 		}
-		id, err = result.LastInsertId()
 	} else {
-		var currentCategory string
-		if err = transaction.QueryRowContext(context, `SELECT category FROM inspection_group WHERE id=? FOR UPDATE`, id).Scan(&currentCategory); err != nil {
+		// 部分更新（PATCH）语义：先 FOR UPDATE 读回现值，在应用层合并后再整行写。
+		// 不用 `COALESCE(?, col)`：可空布尔/JSON 在两侧 sqlc 的推导不同，会把签名分歧带进门面。
+		current, scanErr := queries.GetInspectionGroupForUpdate(context, id)
+		if scanErr == sql.ErrNoRows {
 			response.BusinessError(context, 404, "巡检组不存在", nil)
 			return
 		}
-		// 编辑：提交了分类或应用标签就按"编辑后的分类"校验必选（分类未提交则查原值）。
+		if scanErr != nil {
+			response.Error(context, scanErr)
+			return
+		}
+		name, description, enabled, category := current.Name, current.Description, current.Enabled, current.Category
+		application, params := current.ApplicationID, current.Params
+		if input.Name != nil {
+			name = strings.TrimSpace(*input.Name)
+		}
+		if input.Description != nil {
+			description = *input.Description
+		}
+		if input.Enabled != nil {
+			enabled = *input.Enabled
+		}
+		if input.Category != nil {
+			category = *input.Category
+		}
+		if input.Application != nil {
+			application = nullableIDParam(input.Application)
+		}
+		if input.Params != nil {
+			params = jsonBytes(*input.Params)
+		}
+		// 编辑：提交了分类或应用标签就按"编辑后的分类"校验必选（分类未提交则用合并后的值）。
 		if input.Category != nil || input.Application != nil {
-			effectiveCategory := groupCategory(input.Category, currentCategory)
-			if message, valid := handler.validateGroupApplication(context, input.Application, effectiveCategory); !valid {
+			if message, valid := handler.validateGroupApplication(context, input.Application, category); !valid {
 				response.BusinessError(context, 400, message, nil)
 				return
 			}
 		}
-		var paramsJSON any
-		if input.Params != nil {
-			paramsJSON = jsonBytes(*input.Params)
+		if _, err = queries.UpdateInspectionGroup(context, db.UpdateInspectionGroupParams{
+			Name: name, Description: description, Enabled: enabled, Category: category,
+			ApplicationID: application, Params: params, UpdateTime: now, ID: id,
+		}); err != nil {
+			response.Error(context, err)
+			return
 		}
-		_, err = transaction.ExecContext(context, `UPDATE inspection_group SET name=COALESCE(?,name),description=COALESCE(?,description),enabled=COALESCE(?,enabled),category=COALESCE(?,category),application_id=COALESCE(?,application_id),params=COALESCE(?,params),update_time=NOW() WHERE id=?`, input.Name, input.Description, input.Enabled, input.Category, nullableIDPtr(input.Application), paramsJSON, id)
 	}
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
 	if input.Checks != nil {
-		if _, err = transaction.ExecContext(context, `DELETE FROM inspection_check WHERE group_id=?`, id); err != nil {
+		if err = queries.DeleteInspectionChecksByGroup(context, id); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -131,8 +169,10 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 				enabled = *check.Enabled
 			}
 			// 唯一执行器 OPA、唯一执行位置 Agent 端：executor/execution_location 列已删除（迁移 000009）。
-			_, err = transaction.ExecContext(context, `INSERT INTO inspection_check(group_id,name,config,severity,enabled,`+"`order`"+`,create_time,update_time) VALUES(?,?,?,?,?,?,NOW(),NOW())`, id, check.Name, config, severity, enabled, check.Order)
-			if err != nil {
+			if err = queries.CreateInspectionCheck(context, db.CreateInspectionCheckParams{
+				GroupID: id, Name: check.Name, Config: config, Severity: severity, Enabled: enabled,
+				CheckOrder: uint32(check.Order), CreateTime: now, UpdateTime: now,
+			}); err != nil {
 				// 名称重复在上面的 validateGroupInput 已拦截并带名字；能走到这里的失败是别的原因，
 				// 必须透传真实错误，不能笼统归为名称重复。
 				response.Error(context, err)
@@ -155,8 +195,9 @@ func (handler *Handler) SaveGroup(context *gin.Context) {
 // deleteGroupByID 复用原单删逻辑：被任务引用的组拒绝删除；组内 checks 由应用层级联删除
 // （Django 在 ORM 层 CASCADE，物理外键为 NO ACTION）。不存在时返回 sql.ErrNoRows。
 func (handler *Handler) deleteGroupByID(context *gin.Context, id int64) error {
-	var count int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM inspection_task WHERE group_id=?`, id).Scan(&count); err != nil {
+	queries := db.New(handler.db)
+	count, err := queries.CountInspectionTasksByGroup(context, id)
+	if err != nil {
 		return err
 	}
 	if count > 0 {
@@ -167,14 +208,14 @@ func (handler *Handler) deleteGroupByID(context *gin.Context, id int64) error {
 		return err
 	}
 	defer transaction.Rollback()
-	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_check WHERE group_id=?`, id); err != nil {
+	txQueries := db.New(transaction)
+	if err = txQueries.DeleteInspectionChecksByGroup(context, id); err != nil {
 		return err
 	}
-	result, err := transaction.ExecContext(context, `DELETE FROM inspection_group WHERE id=?`, id)
+	affected, err := txQueries.DeleteInspectionGroup(context, id)
 	if err != nil {
 		return err
 	}
-	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
@@ -274,8 +315,8 @@ func (handler *Handler) validateGroupApplication(context *gin.Context, applicati
 	if application == nil || *application <= 0 {
 		return "应用类型巡检组必须选择适用应用", false
 	}
-	var count int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application WHERE id=?`, *application).Scan(&count); err != nil {
+	count, err := db.New(handler.db).CountApplicationByID(context, *application)
+	if err != nil {
 		return "校验应用标签失败", false
 	}
 	if count == 0 {
@@ -284,9 +325,10 @@ func (handler *Handler) validateGroupApplication(context *gin.Context, applicati
 	return "", true
 }
 
-func nullableIDPtr(value *int64) any {
+// nullableIDParam 把可空 ID 指针转成 sqlc 参数：nil 或非正数即 NULL。
+func nullableIDParam(value *int64) sql.NullInt64 {
 	if value == nil || *value <= 0 {
-		return nil
+		return sql.NullInt64{}
 	}
-	return *value
+	return sql.NullInt64{Int64: *value, Valid: true}
 }

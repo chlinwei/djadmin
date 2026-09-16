@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -298,24 +299,10 @@ func sameSignatureValue(actual, desired any) bool {
 
 // checkLogPipelines pipeline 没发布时日志照样写入，只是不被解析，界面上看不出任何异常。
 func (handler *Handler) checkLogPipelines(context *gin.Context, cluster openSearchCluster) gin.H {
-	type processingRuleRow struct {
-		Name         string
-		PipelineBody json.RawMessage
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT name,pipeline_body FROM monitor_log_processing_rule WHERE cluster_id=? ORDER BY name`, cluster.ID)
+	rules, err := db.New(handler.db).ListProcessingRulesByCluster(context, cluster.ID)
 	if err != nil {
 		return logHealthLayer("pipelines", "解析规则", logHealthError, "读取解析规则失败: "+err.Error(), nil)
 	}
-	rules := make([]processingRuleRow, 0, 8)
-	for rows.Next() {
-		var rule processingRuleRow
-		if err := rows.Scan(&rule.Name, &rule.PipelineBody); err != nil {
-			rows.Close()
-			return logHealthLayer("pipelines", "解析规则", logHealthError, "读取解析规则失败: "+err.Error(), nil)
-		}
-		rules = append(rules, rule)
-	}
-	rows.Close()
 
 	items := []gin.H{}
 	for _, rule := range rules {
@@ -348,30 +335,14 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster openSear
 // 后端没有期望指纹生成器，因此这里只判断「已下发与否」，不比对内容一致性；
 // 主机被人手工改过的情况由 agent 侧上报与数据流层兜底。
 func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
-	type targetRow struct {
-		ID                int64
-		HostIP            string
-		AgentInstalled    bool
-		ConfigFingerprint string
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT l.id,COALESCE(h.ip,''),l.agent_installed,COALESCE(l.config_fingerprint,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.managed_enabled=TRUE ORDER BY l.id`)
+	targets, err := db.New(handler.db).ListManagedLogTargetConfigs(context)
 	if err != nil {
 		return logHealthLayer("host_configs", "主机配置", logHealthError, "读取采集目标失败: "+err.Error(), nil)
 	}
-	targets := make([]targetRow, 0, 16)
-	for rows.Next() {
-		var target targetRow
-		if err := rows.Scan(&target.ID, &target.HostIP, &target.AgentInstalled, &target.ConfigFingerprint); err != nil {
-			rows.Close()
-			return logHealthLayer("host_configs", "主机配置", logHealthError, "读取采集目标失败: "+err.Error(), nil)
-		}
-		targets = append(targets, target)
-	}
-	rows.Close()
 
 	items := []gin.H{}
 	for _, target := range targets {
-		label := target.HostIP
+		label := target.Ip
 		if label == "" {
 			label = fmt.Sprintf("host-%d", target.ID)
 		}
@@ -390,34 +361,18 @@ func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
 
 // checkLogRuntime 运行状态取自数据库缓存，反映最近一次探测结果，不是实时探活。
 func (handler *Handler) checkLogRuntime(context *gin.Context) gin.H {
-	type targetRow struct {
-		ID        int64
-		HostIP    string
-		Runtime   string
-		LastError string
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT l.id,COALESCE(h.ip,''),COALESCE(l.runtime_status,''),COALESCE(l.last_error,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.managed_enabled=TRUE AND l.agent_installed=TRUE ORDER BY l.id`)
+	targets, err := db.New(handler.db).ListInstalledLogTargetRuntime(context)
 	if err != nil {
 		return logHealthLayer("runtime", "采集进程", logHealthError, "读取采集目标失败: "+err.Error(), nil)
 	}
-	targets := make([]targetRow, 0, 16)
-	for rows.Next() {
-		var target targetRow
-		if err := rows.Scan(&target.ID, &target.HostIP, &target.Runtime, &target.LastError); err != nil {
-			rows.Close()
-			return logHealthLayer("runtime", "采集进程", logHealthError, "读取采集目标失败: "+err.Error(), nil)
-		}
-		targets = append(targets, target)
-	}
-	rows.Close()
 
 	items := []gin.H{}
 	for _, target := range targets {
-		label := target.HostIP
+		label := target.Ip
 		if label == "" {
 			label = fmt.Sprintf("host-%d", target.ID)
 		}
-		switch target.Runtime {
+		switch target.RuntimeStatus {
 		case "running":
 			items = append(items, logHealthItem(label, logHealthOK, "运行中"))
 		case "error":

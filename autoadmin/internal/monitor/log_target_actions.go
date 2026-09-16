@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	generated "autoadmin/internal/platform/database/generated"
+
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -36,17 +38,16 @@ type logTargetRow struct {
 	OSVersionID    string
 }
 
-func loadLogTarget(context *gin.Context, db *sql.DB, id int64) (logTargetRow, error) {
-	var row logTargetRow
-	err := db.QueryRowContext(context, `SELECT l.id,l.host_id,l.managed_enabled,l.install_status,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
-		COALESCE(s.os_type,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,'')
-		FROM monitor_log_collection_target l
-		JOIN assets_host h ON h.id=l.host_id
-		LEFT JOIN assets_hostsystem s ON s.host_id=l.host_id
-		WHERE l.id=?`, id).Scan(&row.ID, &row.HostID, &row.ManagedEnabled, &row.InstallStatus,
-		&row.HostName, &row.HostIP, &row.OSType, &row.OSIDLike, &row.OSVersionID)
-	return row, err
+func loadLogTarget(ctx context.Context, pool generated.DBTX, id int64) (logTargetRow, error) {
+	row, err := generated.New(pool).GetLogTargetForAction(ctx, id)
+	if err != nil {
+		return logTargetRow{}, err
+	}
+	return logTargetRow{
+		ID: row.ID, HostID: row.HostID, ManagedEnabled: row.ManagedEnabled,
+		InstallStatus: row.InstallStatus, HostName: row.InstanceName, HostIP: row.Ip,
+		OSType: row.OsType, OSIDLike: row.OsIDLike, OSVersionID: row.OsVersionID,
+	}, nil
 }
 
 func (row logTargetRow) label() string {
@@ -59,17 +60,16 @@ func (row logTargetRow) label() string {
 	return fmt.Sprintf("log-target-%d", row.ID)
 }
 
-func logTargetPending(context *gin.Context, db *sql.DB, id int64) (bool, int64, error) {
-	var historyID int64
-	var status string
-	err := db.QueryRowContext(context, `SELECT id,status FROM monitor_target_install_history WHERE log_collection_target_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&historyID, &status)
+// logTargetPending 取最近一条安装历史，判断是否有任务在执行中（无历史时 pending=false）。
+func logTargetPending(ctx context.Context, pool generated.DBTX, id int64) (bool, generated.GetLatestLogTargetInstallHistoryRow, error) {
+	history, err := generated.New(pool).GetLatestLogTargetInstallHistory(ctx, sql.NullInt64{Int64: id, Valid: true})
 	if err == sql.ErrNoRows {
-		return false, 0, nil
+		return false, generated.GetLatestLogTargetInstallHistoryRow{}, nil
 	}
 	if err != nil {
-		return false, 0, err
+		return false, generated.GetLatestLogTargetInstallHistoryRow{}, err
 	}
-	return status == "pending" || status == "running", historyID, nil
+	return history.Status == "pending" || history.Status == "running", history, nil
 }
 
 // ---- 安装/卸载（离线 playbook） ----
@@ -85,28 +85,33 @@ type fluentBitPackage struct {
 	PlaybookDir string // install 或 uninstall
 }
 
-func (handler *Handler) pickFluentBitPackage(context *gin.Context, row logTargetRow, uninstall bool) (*fluentBitPackage, error) {
-	playbookColumn := "install_playbook_template_id"
-	if uninstall {
-		playbookColumn = "uninstall_playbook_template_id"
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT id,platform_family,platform_major,package_format,file,sha256,`+playbookColumn+`
-		FROM monitor_software_package
-		WHERE package_type='fluent_bit' AND enabled=TRUE AND `+playbookColumn+` IS NOT NULL ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// pickFluentBitPackage 按主机的包格式/发行版/主版本挑一个最合适的 Fluent Bit 软件包。
+// 安装与卸载要读不同的 playbook 列，原来是运行时拼列名——现在按角色分派到两条显式语句。
+func (handler *Handler) pickFluentBitPackage(ctx context.Context, row logTargetRow, uninstall bool) (*fluentBitPackage, error) {
+	queries := generated.New(handler.db)
 	candidates := make([]*fluentBitPackage, 0)
-	for rows.Next() {
-		item := &fluentBitPackage{}
-		if err = rows.Scan(&item.ID, &item.Family, &item.Major, &item.Format, &item.File, &item.SHA256, &item.PlaybookID); err != nil {
+	if uninstall {
+		rows, err := queries.ListUninstallableFluentBitPackages(ctx)
+		if err != nil {
 			return nil, err
 		}
-		candidates = append(candidates, item)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
+		for _, item := range rows {
+			candidates = append(candidates, &fluentBitPackage{
+				ID: item.ID, Family: item.PlatformFamily, Major: item.PlatformMajor, Format: item.PackageFormat,
+				File: item.File, SHA256: item.Sha256, PlaybookID: item.UninstallPlaybookTemplateID,
+			})
+		}
+	} else {
+		rows, err := queries.ListInstallableFluentBitPackages(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range rows {
+			candidates = append(candidates, &fluentBitPackage{
+				ID: item.ID, Family: item.PlatformFamily, Major: item.PlatformMajor, Format: item.PackageFormat,
+				File: item.File, SHA256: item.Sha256, PlaybookID: item.InstallPlaybookTemplateID,
+			})
+		}
 	}
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("没有可用的 Fluent Bit 软件包（需要在软件仓库维护 package_type=fluent_bit 且配置安装 playbook 的启用包）")
@@ -167,10 +172,13 @@ func osMajor(row logTargetRow) string {
 	return version
 }
 
-func playbookContent(context *gin.Context, db *sql.DB, playbookID int64) (string, error) {
-	var content string
-	err := db.QueryRowContext(context, `SELECT content FROM automation_playbook_template WHERE id=?`, playbookID).Scan(&content)
-	return content, err
+func playbookContent(context *gin.Context, pool *sql.DB, playbookID int64) (string, error) {
+	// 复用 automation 域已有的取模板查询（内容是唯一需要的列）。
+	playbook, err := generated.New(pool).GetAutomationPlaybook(context, playbookID)
+	if err != nil {
+		return "", err
+	}
+	return playbook.Content, nil
 }
 
 // fluentBitMainConfig 安装时一次性写入的主配置，与 Django render_main_config() 契约一致：
@@ -232,53 +240,94 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	}}}
 	inventoryJSON, _ := json.Marshal(inventory)
 	extraJSON, _ := json.Marshal(extra)
-	result, err := handler.db.ExecContext(ginContext, `INSERT INTO automation_execution_job
-		(create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
-		 task_name_snapshot,template_name_snapshot,template_content_snapshot,`+"`limit`"+`,run_as_user_snapshot,run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		now, now, nil, uuid.NewString(), "pending", "manual", string(inventoryJSON), string(extraJSON),
-		`{"message":"Fluent Bit install/uninstall job queued"}`, fmt.Sprintf("Fluent Bit %s", action), "fluent-bit", content, "", "", "", "", nil, "system")
+	queries := generated.New(handler.db)
+	// 作业行的列集与常量与 exporter 安装一致，直接复用 CreateMonitorTargetJob。
+	jobID, err := queries.CreateMonitorTargetJob(ginContext, generated.CreateMonitorTargetJobParams{
+		CreateTime: now, UpdateTime: now, JobID: uuid.NewString(),
+		InventorySnapshot: inventoryJSON, ExtraVars: extraJSON,
+		ResultSummary:        json.RawMessage(`{"message":"Fluent Bit install/uninstall job queued"}`),
+		TaskNameSnapshot:     fmt.Sprintf("Fluent Bit %s", action),
+		TemplateNameSnapshot: "fluent-bit", TemplateContentSnapshot: content,
+		RunAsUserSnapshot: "", RunAsGroupSnapshot: "", WorkDirectorySnapshot: "",
+		RequestedUserID: sql.NullInt32{}, RequestedUsername: "system",
+	})
 	if err != nil {
 		return nil, err
 	}
-	jobID, _ := result.LastInsertId()
-	historyResult, err := handler.db.ExecContext(ginContext, `INSERT INTO monitor_target_install_history
-		(create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
-		 exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-		 requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`,
-		now, now, nil, action, "manual", "pending", sql.NullInt64{Int64: row.HostID, Valid: true},
-		row.HostName, row.HostIP, "fluent_bit", "", "", "", "", `{"checks":[]}`, nil, "system", row.HostID, row.ID)
+	historyID, err := queries.CreateLogTargetInstallHistory(ginContext, generated.CreateLogTargetInstallHistoryParams{
+		CreateTime: now, UpdateTime: now, Action: action,
+		HostIDSnapshot:       sql.NullInt32{Int32: int32(row.HostID), Valid: true},
+		HostNameSnapshot:     row.HostName,
+		HostIpSnapshot:       row.HostIP,
+		ExporterTypeSnapshot: "fluent_bit",
+		SummaryMessage:       "",
+		RequestedUserIDSnapshot: sql.NullInt32{}, RequestedUsernameSnapshot: "system",
+		HostID:                sql.NullInt64{Int64: row.HostID, Valid: true},
+		LogCollectionTargetID: sql.NullInt64{Int64: row.ID, Valid: true},
+	})
 	if err != nil {
 		return nil, err
 	}
-	historyID, _ := historyResult.LastInsertId()
-	if _, err = handler.db.ExecContext(ginContext, `UPDATE monitor_log_collection_target SET install_status='pending',install_message='',last_dispatch_manual=TRUE,update_time=? WHERE id=?`, now, row.ID); err != nil {
+	if err = queries.MarkLogTargetInstallPending(ginContext, generated.MarkLogTargetInstallPendingParams{
+		UpdateTime: now, ID: row.ID,
+	}); err != nil {
 		return nil, err
 	}
 	// playbook 可能执行数分钟，异步跑，前端通过列表刷新和安装历史查看进度。
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		runContext, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		_ = handler.jobs.RunJobByID(ctx, jobID)
+		_ = handler.jobs.RunJobByID(runContext, jobID)
 		// 任务结束后把 install_status 落成终态，供列表直接展示；安装历史本身由 automation 侧结果快照追溯。
+		background := context.Background()
+		asyncQueries := generated.New(handler.db)
 		finalStatus := "failed"
-		var summary string
-		var jobStatus string
-		if err := handler.db.QueryRowContext(context.Background(), `SELECT status,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(result_summary,'$.message')),'') FROM automation_execution_job WHERE id=?`, jobID).Scan(&jobStatus, &summary); err == nil && jobStatus == "success" {
-			finalStatus = desiredStatus
-		} else if summary == "" {
+		var summary, jobStatus string
+		if job, scanErr := asyncQueries.GetJobResultSummary(background, jobID); scanErr == nil {
+			jobStatus = job.Status
+			summary = jobResultMessage(job.ResultSummary)
+			if jobStatus == "success" {
+				finalStatus = desiredStatus
+			}
+		}
+		if summary == "" {
 			summary = "Fluent Bit 任务执行失败"
 		}
 		message := summary
 		if finalStatus == desiredStatus {
 			message = ""
 		}
-		_, _ = handler.db.ExecContext(context.Background(), `UPDATE monitor_log_collection_target SET install_status=?,install_message=?,runtime_status=CASE WHEN ?='success' THEN 'running' ELSE runtime_status END,update_time=? WHERE id=? AND install_status='pending'`, finalStatus, message, finalStatus, time.Now().UTC(), row.ID)
-		_, _ = handler.db.ExecContext(context.Background(), `UPDATE monitor_target_install_history SET status=?,summary_message=?,end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000,update_time=? WHERE id=? AND status='pending'`, finalStatus, message, time.Now().UTC(), time.Now().UTC(), time.Now().UTC(), historyID)
+		// 时长由应用层算：历史的 create_time 就是上面的 now
+		// （原实现用 TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000）。
+		finishedAt := time.Now().UTC()
+		succeeded := 0
+		if finalStatus == "success" {
+			succeeded = 1
+		}
+		_, _ = asyncQueries.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
+			InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
+			UpdateTime: finishedAt, ID: row.ID,
+		})
+		_, _ = asyncQueries.FinishLogTargetInstallHistory(background, generated.FinishLogTargetInstallHistoryParams{
+			Status: finalStatus, SummaryMessage: message,
+			EndTime:         sql.NullTime{Time: finishedAt, Valid: true},
+			DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(now).Seconds(), Valid: true},
+			UpdateTime:      finishedAt, ID: historyID,
+		})
 	}()
 	_ = desiredStatus
 	return gin.H{"id": row.ID, "action": action, "history_id": historyID, "job_id": jobID}, nil
+}
+
+// jobResultMessage 取作业结果摘要里的 message 字段。
+// 原实现用 JSON_UNQUOTE(JSON_EXTRACT(result_summary,'$.message'))，是 MySQL 方言函数；
+// 改成取回 json 列在应用层解析（与 target 域 target_install.go 同一手法）。
+func jobResultMessage(raw json.RawMessage) string {
+	var summary struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(raw, &summary)
+	return strings.TrimSpace(summary.Message)
 }
 
 func (handler *Handler) RetryLogTarget(context *gin.Context) {
@@ -323,8 +372,8 @@ func (handler *Handler) controlLogTargetService(context *gin.Context, action str
 }
 
 func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
-	var instanceName string
-	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.instance_name,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.id=?`, id).Scan(&instanceName); err != nil {
+	instanceName, err := generated.New(handler.db).GetLogTargetHostName(context, id)
+	if err != nil {
 		return nil, fmt.Errorf("log collection target not found")
 	}
 	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
@@ -362,20 +411,16 @@ func (handler *Handler) persistLogTargetRuntimeStatus(context *gin.Context, id i
 			runtimeStatus = "stopped"
 		}
 	}
-	_, _ = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET runtime_status=?,update_time=? WHERE id=?`, runtimeStatus, time.Now().UTC(), id)
+	_ = generated.New(handler.db).SetLogTargetRuntimeStatus(context, generated.SetLogTargetRuntimeStatusParams{
+		RuntimeStatus: runtimeStatus, UpdateTime: time.Now().UTC(), ID: id,
+	})
 }
 
 // ---- 下发配置（agent 内置 configure_fluent_bit_opensearch） ----
 
 func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	var instanceName string
-	var clusterHosts, username, encryptedPassword string
-	err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.instance_name,''), c.hosts, c.username, c.password
-		FROM monitor_log_collection_target l
-		JOIN assets_host h ON h.id=l.host_id
-		JOIN monitor_opensearch_cluster c ON c.enabled=TRUE
-		WHERE l.id=? ORDER BY c.is_default DESC, c.id LIMIT 1`, id).Scan(&instanceName, &clusterHosts, &username, &encryptedPassword)
+	cluster, err := generated.New(handler.db).GetLogTargetDefaultCluster(context, id)
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 400, "没有已启用的默认 OpenSearch 集群，请先在日志存储里配置", nil)
 		return
@@ -384,21 +429,22 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	instanceName := cluster.InstanceName
 	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
 		response.BusinessError(context, 400, "host agent is offline", nil)
 		return
 	}
-	host, port, err := firstOpenSearchEndpoint(clusterHosts)
+	host, port, err := firstOpenSearchEndpoint(cluster.Hosts)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}
-	password, err := handler.secrets.Decrypt(encryptedPassword)
+	password, err := handler.secrets.Decrypt(cluster.Password)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": username, "password": password})
+	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": cluster.Username, "password": password})
 	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
@@ -410,7 +456,9 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,runtime_status='running',last_error='',update_time=? WHERE id=?`, now, now, id); err != nil {
+	if err = generated.New(handler.db).MarkLogTargetApplied(context, generated.MarkLogTargetAppliedParams{
+		LastAppliedTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: id,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -447,7 +495,7 @@ func firstOpenSearchEndpoint(clusterHosts string) (string, string, error) {
 
 func (handler *Handler) CancelLogTarget(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	pending, historyID, err := logTargetPending(context, handler.db, id)
+	pending, history, err := logTargetPending(context, handler.db, id)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -457,11 +505,20 @@ func (handler *Handler) CancelLogTarget(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_target_install_history SET status='cancelled',summary_message='任务已取消',error_message_snapshot='任务已由用户取消',end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000,update_time=? WHERE id=?`, now, now, now, historyID); err != nil {
+	queries := generated.New(handler.db)
+	// 时长由应用层算：该流程的历史行 start_time 为 NULL，create_time 就是派发时刻
+	//（原实现用 TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000）。
+	if err = queries.CancelInstallHistory(context, generated.CancelInstallHistoryParams{
+		EndTime:         sql.NullTime{Time: now, Valid: true},
+		DurationSeconds: sql.NullFloat64{Float64: now.Sub(history.CreateTime).Seconds(), Valid: true},
+		UpdateTime:      now, ID: history.ID,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET install_status='failed',install_message='安装/卸载任务已取消',update_time=? WHERE id=?`, now, id); err != nil {
+	if err = queries.MarkLogTargetInstallCancelled(context, generated.MarkLogTargetInstallCancelledParams{
+		UpdateTime: now, ID: id,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -539,10 +596,11 @@ func (handler *Handler) BatchDeleteLogTargets(context *gin.Context) {
 		if pending {
 			return nil, fmt.Errorf("wait for the uninstall task to finish before deleting")
 		}
-		if _, err = handler.db.ExecContext(context, `UPDATE monitor_target_install_history SET log_collection_target_id=NULL WHERE log_collection_target_id=?`, row.ID); err != nil {
+		queries := generated.New(handler.db)
+		if err = queries.DetachInstallHistoryFromLogTarget(context, sql.NullInt64{Int64: row.ID, Valid: true}); err != nil {
 			return nil, err
 		}
-		if _, err = handler.db.ExecContext(context, `DELETE FROM monitor_log_collection_target WHERE id=?`, row.ID); err != nil {
+		if err = deleteRowsAffected(queries.DeleteLogCollectionTarget(context, row.ID)); err != nil {
 			return nil, err
 		}
 		return gin.H{"id": row.ID}, nil
@@ -559,15 +617,16 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
-	var clusterHosts, username, encryptedPassword, indexPrefix string
-	err := handler.db.QueryRowContext(context, `SELECT hosts,username,password,COALESCE(index_prefix,'logs') FROM monitor_opensearch_cluster WHERE enabled=TRUE ORDER BY is_default DESC, id LIMIT 1`).Scan(&clusterHosts, &username, &encryptedPassword, &indexPrefix)
+	queries := generated.New(handler.db)
+	cluster, err := queries.GetDefaultEnabledOpenSearchCluster(context)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("没有已启用的默认 OpenSearch 集群，请先在日志存储里配置")
 	}
 	if err != nil {
 		return nil, err
 	}
-	password, err := handler.secrets.Decrypt(encryptedPassword)
+	indexPrefix := cluster.IndexPrefix
+	password, err := handler.secrets.Decrypt(cluster.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -598,19 +657,20 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		}
 	}
 
-	var currentFingerprint string
-	_ = handler.db.QueryRowContext(context, `SELECT COALESCE(config_fingerprint,'') FROM monitor_log_collection_target WHERE id=?`, row.ID).Scan(&currentFingerprint)
+	currentFingerprint, _ := queries.GetLogTargetConfigFingerprint(context, row.ID)
 	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint {
 		now := time.Now().UTC()
-		_, _ = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,update_time=? WHERE id=?`, now, now, row.ID)
+		_ = queries.MarkLogTargetConfigApplied(context, generated.MarkLogTargetConfigAppliedParams{
+			LastAppliedTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: row.ID,
+		})
 		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
 	}
 
-	host, port, err := firstOpenSearchEndpoint(clusterHosts)
+	host, port, err := firstOpenSearchEndpoint(cluster.Hosts)
 	if err != nil {
 		return nil, err
 	}
-	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": username, "password": password})
+	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": cluster.Username, "password": password})
 	result, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		return nil, err
@@ -630,7 +690,10 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		return nil, fmt.Errorf("Fluent Bit 片段下发失败: %s", reason)
 	}
 	now := time.Now().UTC()
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_log_collection_target SET last_applied_time=?,runtime_status='running',last_error='',config_fingerprint=?,update_time=? WHERE id=?`, now, rendered.Fingerprint, now, row.ID); err != nil {
+	if err = queries.MarkLogTargetConfigSynced(context, generated.MarkLogTargetConfigSyncedParams{
+		LastAppliedTime: sql.NullTime{Time: now, Valid: true}, ConfigFingerprint: rendered.Fingerprint,
+		UpdateTime: now, ID: row.ID,
+	}); err != nil {
 		return nil, err
 	}
 	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
@@ -647,33 +710,33 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 		response.BusinessError(context, 400, "host_ids must be a non-empty array", nil)
 		return
 	}
+	queries := generated.New(handler.db)
 	results := make([]gin.H, 0, len(input.HostIDs))
 	success := 0
 	for _, hostID := range input.HostIDs {
-		var name, ip string
-		var deleted bool
-		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &deleted); err != nil || deleted {
-			results = append(results, gin.H{"host_id": hostID, "host": name, "ok": false, "message": "host not found"})
+		// 主机读取复用监控目标域的 GetHostTargetIdentity（列集一致：实例名、IP、是否已下线）。
+		host, err := queries.GetHostTargetIdentity(context, hostID)
+		if err != nil || host.IsDeletedInCloud {
+			results = append(results, gin.H{"host_id": hostID, "host": host.InstanceName, "ok": false, "message": "host not found"})
 			continue
 		}
+		name, ip := host.InstanceName, host.Ip
 		label := name
 		if label == "" {
 			label = ip
 		}
 		now := time.Now().UTC()
-		result, err := handler.db.ExecContext(context, `INSERT IGNORE INTO monitor_log_collection_target
-			(create_time,update_time,remark,host_id,agent_installed,agent_version,runtime_status,config_fingerprint,last_error,install_status,install_message,last_dispatch_manual,managed_enabled,retry_count)
-			VALUES(?,?,?,?,FALSE,'','unknown','','','unknown','',FALSE,TRUE,0)`, now, now, nil, hostID)
+		targetID, created, err := createLogCollectionTargetIfAbsent(context, queries, generated.CreateLogCollectionTargetIfAbsentParams{
+			CreateTime: now, UpdateTime: now, HostID: hostID,
+		})
 		if err != nil {
 			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
 			continue
 		}
-		affected, _ := result.RowsAffected()
-		if affected == 0 {
+		if !created {
 			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": "target already managed"})
 			continue
 		}
-		targetID, _ := result.LastInsertId()
 		if input.InstallNow {
 			row := logTargetRow{ID: targetID, HostID: hostID, ManagedEnabled: true, HostName: name, HostIP: ip}
 			if _, err := handler.dispatchLogTargetInstall(context, row); err != nil {

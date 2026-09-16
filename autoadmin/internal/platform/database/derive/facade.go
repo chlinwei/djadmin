@@ -33,6 +33,12 @@ var facadeAdapterTypes = map[string]bool{
 	"CountCredentialsParams": true, "CountHostGroupsParams": true,
 	"CountInspectionGroupsParams": true, "CountInspectionTasksParams": true,
 	"CountInventoriesParams": true, "CountProjectsParams": true,
+	// automation 的主机选项计数：同上（只有 pattern 一个入参）
+	"CountAutomationHostOptionsParams": true,
+	// 可变长 IN 的元素类型分歧（列可空 → MySQL []sql.NullInt64 vs PG []int64）
+	"FailStaleAgentInstallJobsParams": true,
+	// 宿主总览的过滤参数（空串表示不过滤的 string vs interface{}、可空列的切片元素类型）
+	"CountMonitorHostsParams": true, "ListMonitorHostsParams": true,
 }
 
 var facadeTypePattern = regexp.MustCompile(`(?m)^type (\w+) (?:struct|interface)`)

@@ -244,7 +244,11 @@ parse 枚举合法；**策略引用的 `input.<key>` 必须存在于采集列表
   （service → business_system → project，environment 取自 service），每个
   target_snapshot 同样带 `business` 字段；
 - 主机组任务：按目标主机经 deployment → service 链路解析每台主机的业务归属，
-  写入对应 target_snapshot 的 `business`（一台主机多服务时取任一）；
+  写入对应 target_snapshot 的 `business`（一台主机多服务时取任一）；该查询按主机
+  **集合**一次取回（可变长 `IN (sqlc.slice(host_ids))`，PG 侧派生为 `= ANY($1::bigint[])`）。
+  这条查询曾有一个只在 PostgreSQL 上暴露的缺陷：`sqlc.slice` 的 PG 产物占位符个数与
+  参数不符、调用点又忽略了错误，表现为"快照里的业务链路静默为空"——2026-09-16 已修，并在
+  真库冒烟里用多个（含不存在的）host_id 覆盖（见 SQL_DESIGN §4.2 与计划 P4-7）；
 - 各层级 ID 为空时该层级省略，owner 字段一并冗余（`project.owner`/`business_system.owner`）。
 
 ## 执行流程（最终逻辑）
@@ -319,7 +323,8 @@ POST /sys/inspection/executions/{id}/cancel/   事务置 canceled 并 markCancel
 
 - 调度器循环内每 24h 执行一次保留期清理：删除 `end_time` 早于保留期且状态非
   pending/running 的 execution 及其 target_execution、inspection_result（先删子表，
-  仅 `inspection_result` 有物理外键）。
+  仅 `inspection_result` 有物理外键）。语句形状是 `DELETE … WHERE … IN (子查询)`
+  （迁移前是 MySQL 的多表 `DELETE r FROM … JOIN …`，PG 不认）。
 - 保留天数读 `sys_config` 的 `inspection.results.retention_days`，缺省 180 天；配置
   缺失或非法时用缺省值，不会中断清理。
 
@@ -342,3 +347,29 @@ Django 后端（`backend/djadmin/inspection/`，已冻结不再修改）仍保�
 - Django 后端：四种旧执行器 + 双执行位置，表结构仍保留历史列（恒写默认值）；其下发的
   `shell` / `http` / `tcp` 检查计划会被新版 dj-agent 以"不支持的能力/执行器"拒绝。
 - 历史脏数据（旧执行器）在 Go 侧保存时被校验拒绝，执行时表现为计划级 error。
+
+## 数据访问层（sqlc，2026-09-16）
+
+巡检域的**内联 SQL 已清零**：全部语句定义在 `autoadmin/db/queries/mysql/inspection.sql`
+（调度与保留期清理、组与检查项、任务与绑定、执行与目标、检查结果、挂载点解析与命名查询），
+Go 侧只调 `internal/platform/database/generated`（方言门面，默认 MySQL、`-tags postgres` 走 PG）。
+选 sqlc 还是内联、方言可移植规则见 [SQL_DESIGN.md](SQL_DESIGN.md)，这里只记本域的最终逻辑与取舍：
+
+- **时间由应用层传入**：调度判定（`next_run_time <= ?`）、各表的 `create_time`/`update_time`、
+  目标与执行的 start/end_time 都是参数。`NOW()`/`UTC_TIMESTAMP(6)` 已全部去掉（方言函数，
+  且 PG 的 `now()` 返回 timestamptz，落到 timestamp 列会按会话时区换算）。
+- **组的部分更新在应用层合并**：`GetInspectionGroupForUpdate` 先 `FOR UPDATE` 读回
+  name/description/enabled/category/application_id/params，合并后再整行写（`UpdateInspectionGroup`）。
+  不用 `COALESCE(?, col)`：可空布尔与 JSON 参数在两方言的推导不同，会把签名分歧带进门面。
+- **取消执行**：`FOR UPDATE` 读回 `summary` 后由应用层合并 `canceled=true` 再写回
+  （迁移前是 MySQL 的 `JSON_SET(COALESCE(summary,JSON_OBJECT()),'$.canceled',TRUE)`）。
+- **结果落库逐条写**：检查结果从"100 行/批的多行 INSERT"改为逐条 sqlc INSERT。
+  原因同 baseline 的 `flushResults`：占位符个数随入参变化、且用 `?` 占位符，PG 变体跑不通。
+  结果条数由检查项数量决定，摊在"每主机一次远端检查"的耗时里可以忽略。
+- **执行统计**：目标结果用 `COUNT(CASE WHEN status='…' THEN 1 END)`（迁移前是 `SUM(status='…')`，
+  MySQL 把布尔当 0/1、PG 不接受；且零行时 `SUM` 返回 NULL 会让 Scan 报错，现在稳定为 0）。
+- **`requested_user_id`**：定时/匿名触发仍写 0（列可空，但保持迁移前的值语义）。
+- **验证**：`internal/inspection/smoke_test.go`（`INSPECTION_SMOKE_DSN`）在真 MySQL 与真 PG 上
+  跑一遍建组→建任务→建执行→目标状态流转→结果落库→取消→保留期清理→级联删除的写路径，
+  并覆盖多值 IN、零行聚合、可空 json 列等只有真库能验的东西。保留期清理这类全局语句
+  只在回滚事务里验证（避免误删共享库上他人的历史记录）。

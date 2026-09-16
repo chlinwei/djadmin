@@ -152,8 +152,11 @@ INSERT INTO sys_user_group_member(create_time, group_id, user_id) VALUES ($1, $2
 -- name: ListEnabledAlertMedia :many
 SELECT id, name, media_type, enabled FROM monitor_alert_media WHERE enabled = TRUE ORDER BY id;
 
+-- 用户中心的"我的告警媒介绑定"与 monitor 的通知链路诊断（user-chain）共用一条：
+-- 后两者要的 media_type / media_enabled 补在列尾（身份域只按字段名取前几列，不受影响）。
 -- name: ListUserAlertMediaBindings :many
-SELECT b.id, b.media_id, m.name AS media_name, b.recipients, b.enabled
+SELECT b.id, b.media_id, m.name AS media_name, b.recipients, b.enabled,
+       m.media_type, m.enabled AS media_enabled
 FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id = b.media_id
 WHERE b.user_id = $1 ORDER BY b.id;
 

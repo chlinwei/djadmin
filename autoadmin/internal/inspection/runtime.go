@@ -127,13 +127,15 @@ func (handler *Handler) startRun(ctx context.Context, taskID int64, triggerType 
 
 func (handler *Handler) prepareRunTask(ctx context.Context, id int64) (runTask, string, error) {
 	var task runTask
-	err := handler.db.QueryRowContext(ctx, `SELECT t.id,t.name,t.concurrency,t.timeout_seconds,t.enabled FROM inspection_task t WHERE t.id=?`, id).Scan(&task.ID, &task.Name, &task.Concurrency, &task.Timeout, &task.Enabled)
+	current, err := db.New(handler.db).GetInspectionTaskRunState(ctx, id)
 	if err == sql.ErrNoRows {
 		return task, "巡检任务不存在", nil
 	}
 	if err != nil {
 		return task, "", err
 	}
+	task.ID, task.Name = current.ID, current.Name
+	task.Concurrency, task.Timeout, task.Enabled = int(current.Concurrency), int(current.TimeoutSeconds), current.Enabled
 	if !task.Enabled {
 		return task, "巡检任务已禁用", nil
 	}
@@ -227,32 +229,55 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		}
 		targetSnapshot = append(targetSnapshot, item)
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO inspection_execution(task_id,status,trigger_type,task_snapshot,group_snapshot,service_snapshot,target_snapshot,summary,requested_user_id,requested_username,start_time,end_time,create_time,update_time) VALUES(?,'pending',?,?,?,?,?,JSON_OBJECT(),?,?,NULL,NULL,NOW(),NOW())`, task.ID, triggerType, taskSnapshot, groupSnapshot, jsonBytes(serviceSnapshot), jsonBytes(targetSnapshot), userID, username)
-	if err != nil {
-		return 0, err
-	}
-	executionID, err := result.LastInsertId()
+	queries := db.New(tx)
+	now := time.Now().UTC()
+	executionID, err := queries.CreateInspectionExecution(ctx, db.CreateInspectionExecutionParams{
+		TaskID:            sql.NullInt64{Int64: task.ID, Valid: true},
+		TriggerType:       triggerType,
+		TaskSnapshot:      taskSnapshot,
+		GroupSnapshot:     groupSnapshot,
+		ServiceSnapshot:   jsonBytes(serviceSnapshot),
+		TargetSnapshot:    jsonBytes(targetSnapshot),
+		RequestedUserID:   sql.NullInt32{Int32: userID, Valid: true},
+		RequestedUsername: username,
+		CreateTime:        now,
+		UpdateTime:        now,
+	})
 	if err != nil {
 		return 0, err
 	}
 	for index := range targets {
-		result, insertErr := tx.ExecContext(ctx, `INSERT INTO inspection_target_execution(execution_id,deployment_id,host_id,target_name,host_id_snapshot,host_ip_snapshot,instance_name_snapshot,status,passed,error_message,raw_result,start_time,end_time,create_time,update_time) VALUES(?,?,?,?,?,?,?,'pending',NULL,'',JSON_OBJECT(),NULL,NULL,NOW(),NOW())`, executionID, nullablePositive(targets[index].DeploymentID), targets[index].HostID, targets[index].Name, targets[index].HostID, targets[index].HostIP, targets[index].HostInstanceName)
+		targetID, insertErr := queries.CreateInspectionTargetExecution(ctx, db.CreateInspectionTargetExecutionParams{
+			ExecutionID:          executionID,
+			DeploymentID:         nullablePositiveID(targets[index].DeploymentID),
+			HostID:               sql.NullInt64{Int64: targets[index].HostID, Valid: true},
+			TargetName:           targets[index].Name,
+			HostIDSnapshot:       sql.NullInt32{Int32: int32(targets[index].HostID), Valid: true},
+			HostIpSnapshot:       targets[index].HostIP,
+			InstanceNameSnapshot: targets[index].HostInstanceName,
+			CreateTime:           now,
+			UpdateTime:           now,
+		})
 		if insertErr != nil {
 			return 0, insertErr
 		}
-		targets[index].ID, err = result.LastInsertId()
-		if err != nil {
-			return 0, err
-		}
+		targets[index].ID = targetID
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE inspection_task SET last_run_time=NOW(),update_time=NOW() WHERE id=?`, task.ID); err != nil {
+	if err = queries.TouchInspectionTaskLastRun(ctx, db.TouchInspectionTaskLastRunParams{
+		LastRunTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: task.ID,
+	}); err != nil {
 		return 0, err
 	}
 	return executionID, tx.Commit()
 }
 
 func (handler *Handler) execute(executionID int64, task runTask, targets []runTarget) {
-	if result, _ := handler.db.Exec(`UPDATE inspection_execution SET status='running',start_time=NOW(),update_time=NOW() WHERE id=? AND status='pending'`, executionID); rowsAffected(result) == 0 {
+	ctx, queries := context.Background(), db.New(handler.db)
+	now := time.Now().UTC()
+	claimed, claimErr := queries.MarkInspectionExecutionRunning(ctx, db.MarkInspectionExecutionRunningParams{
+		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: executionID,
+	})
+	if claimErr != nil || claimed == 0 {
 		return
 	}
 	limit := task.Concurrency
@@ -275,26 +300,31 @@ func (handler *Handler) execute(executionID int64, task runTask, targets []runTa
 		}(target)
 	}
 	group.Wait()
-	var failed, success, canceled, skippedCount, warnings int
-	handler.db.QueryRow(`SELECT SUM(status='failed'),SUM(status='success'),SUM(status='canceled'),SUM(status='skipped') FROM inspection_target_execution WHERE execution_id=?`, executionID).Scan(&failed, &success, &canceled, &skippedCount)
-	handler.db.QueryRow(`SELECT COUNT(*) FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? AND r.severity='warning' AND r.status NOT IN ('pass','skipped')`, executionID).Scan(&warnings)
+	// 统计失败不影响执行记录收尾（与迁移前一致：查询出错时各计数保持 0）。
+	outcomes, _ := queries.CountInspectionTargetOutcomes(ctx, executionID)
+	warnings, _ := queries.CountInspectionWarningResults(ctx, executionID)
 	status := "success"
 	switch {
-	case failed > 0:
+	case outcomes.Failed > 0:
 		status = "failed"
-	case success == 0 && canceled > 0:
+	case outcomes.Success == 0 && outcomes.Canceled > 0:
 		status = "canceled"
-	case success == 0 && skippedCount > 0:
+	case outcomes.Success == 0 && outcomes.Skipped > 0:
 		// 没有任何目标真正执行（全部离线跳过）时不算失败。
 		status = "skipped"
-	case success == 0:
+	case outcomes.Success == 0:
 		status = "failed"
 	}
 	if handler.isCanceled(executionID) {
 		status = "canceled"
 	}
-	summary := jsonBytes(gin.H{"total": len(targets), "success": success, "failed": failed, "canceled": canceled, "skipped": skippedCount, "warning": warnings})
-	handler.db.Exec(`UPDATE inspection_execution SET status=?,summary=?,end_time=NOW(),update_time=NOW() WHERE id=?`, status, summary, executionID)
+	summary := jsonBytes(gin.H{"total": len(targets), "success": outcomes.Success, "failed": outcomes.Failed,
+		"canceled": outcomes.Canceled, "skipped": outcomes.Skipped, "warning": warnings})
+	now = time.Now().UTC()
+	_, _ = queries.FinishInspectionExecution(ctx, db.FinishInspectionExecutionParams{
+		Status: status, Summary: summary, EndTime: sql.NullTime{Time: now, Valid: true},
+		UpdateTime: now, ID: executionID,
+	})
 }
 
 func targetType(scope string) string {
@@ -313,16 +343,17 @@ func (handler *Handler) mountTargetName(ctx context.Context, bindings []mountBin
 		return ""
 	}
 	binding := bindings[0]
+	queries := db.New(handler.db)
 	switch binding.MountType {
 	case mountService:
 		if !binding.ServiceID.Valid {
 			return ""
 		}
-		var serviceName string
-		if err := handler.db.QueryRowContext(ctx, `SELECT name FROM assets_application_service WHERE id=?`, binding.ServiceID.Int64).Scan(&serviceName); err != nil || serviceName == "" {
+		serviceName, err := queries.GetApplicationServiceName(ctx, binding.ServiceID.Int64)
+		if err != nil || serviceName == "" {
 			return fmt.Sprintf("逻辑服务 #%d", binding.ServiceID.Int64)
 		}
-		chain, err := db.New(handler.db).GetInspectionServiceBusinessChain(ctx, binding.ServiceID.Int64)
+		chain, err := queries.GetInspectionServiceBusinessChain(ctx, binding.ServiceID.Int64)
 		if err != nil {
 			return "逻辑服务 " + serviceName
 		}
@@ -335,36 +366,30 @@ func (handler *Handler) mountTargetName(ctx context.Context, bindings []mountBin
 		if !binding.BusinessSystemID.Valid {
 			return ""
 		}
-		var businessName, projectName string
-		err := handler.db.QueryRowContext(ctx, `SELECT b.name, COALESCE(p.name,'') FROM assets_business_system b LEFT JOIN assets_project p ON p.id=b.project_id WHERE b.id=?`, binding.BusinessSystemID.Int64).Scan(&businessName, &projectName)
-		if err != nil || businessName == "" {
+		business, err := queries.GetBusinessSystem(ctx, binding.BusinessSystemID.Int64)
+		if err != nil || business.Name == "" {
 			return fmt.Sprintf("业务 #%d", binding.BusinessSystemID.Int64)
 		}
-		text := "业务 " + businessName
+		text := "业务 " + business.Name
 		if binding.EnvironmentID.Valid {
-			var environmentName string
-			_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_business_environment WHERE id=?`, binding.EnvironmentID.Int64).Scan(&environmentName)
-			if environmentName != "" {
+			if environmentName, envErr := queries.GetBusinessEnvironmentNameByID(ctx, binding.EnvironmentID.Int64); envErr == nil && environmentName != "" {
 				text += " @ " + environmentName
 			}
 		}
-		if projectName != "" {
-			text = "项目 " + projectName + " · " + text
+		if business.ProjectName != "" {
+			text = "项目 " + business.ProjectName + " · " + text
 		}
 		return text
 	case mountProject, mountEnv:
 		if !binding.ProjectID.Valid {
 			return ""
 		}
-		projectName := ""
-		_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_project WHERE id=?`, binding.ProjectID.Int64).Scan(&projectName)
+		projectName, _ := queries.GetProjectNameByID(ctx, binding.ProjectID.Int64)
 		if projectName == "" {
 			return fmt.Sprintf("项目 #%d", binding.ProjectID.Int64)
 		}
 		if binding.MountType == mountEnv && binding.EnvironmentID.Valid {
-			var environmentName string
-			_ = handler.db.QueryRowContext(ctx, `SELECT name FROM assets_business_environment WHERE id=?`, binding.EnvironmentID.Int64).Scan(&environmentName)
-			if environmentName != "" {
+			if environmentName, envErr := queries.GetBusinessEnvironmentNameByID(ctx, binding.EnvironmentID.Int64); envErr == nil && environmentName != "" {
 				return fmt.Sprintf("项目 %s @ %s", projectName, environmentName)
 			}
 		}
@@ -407,25 +432,24 @@ func businessChainSnapshot(projectID, businessSystemID, environmentID sql.NullIn
 	return chain
 }
 func jsonBytes(value any) []byte { raw, _ := json.Marshal(value); return raw }
-func nullablePositive(value int64) any {
+
+// nullablePositiveID 把非正的 ID 当成"没有值"写 NULL。
+func nullablePositiveID(value int64) sql.NullInt64 {
 	if value > 0 {
-		return value
+		return sql.NullInt64{Int64: value, Valid: true}
 	}
-	return nil
-}
-func rowsAffected(result sql.Result) int64 {
-	if result == nil {
-		return 0
-	}
-	count, _ := result.RowsAffected()
-	return count
+	return sql.NullInt64{}
 }
 
 func (handler *Handler) executeTarget(executionID int64, task runTask, target runTarget) {
 	if handler.isCanceled(executionID) {
 		return
 	}
-	handler.db.Exec(`UPDATE inspection_target_execution SET status='running',start_time=NOW(),update_time=NOW() WHERE id=?`, target.ID)
+	ctx, queries := context.Background(), db.New(handler.db)
+	now := func() time.Time { return time.Now().UTC() }
+	_ = queries.MarkInspectionTargetRunning(ctx, db.MarkInspectionTargetRunningParams{
+		StartTime: sql.NullTime{Time: now(), Valid: true}, UpdateTime: now(), ID: target.ID,
+	})
 	results := make([]checkResult, 0)
 	agentChecks, checks, missingParams := buildCheckPlan(task, target, executionID)
 	errorMessage := ""
@@ -439,13 +463,16 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		if target.HostInstanceName == "" || !handler.gateway.IsOnline(target.HostInstanceName) {
 			// 离线是"未执行"而非"检查失败"：目标置 skipped、不产生检查结果，
 			// 避免常态离线的机器污染失败统计。
-			handler.db.Exec(`UPDATE inspection_target_execution SET status='skipped',passed=FALSE,error_message='Agent 离线，未执行巡检',end_time=NOW(),update_time=NOW() WHERE id=?`, target.ID)
+			_ = queries.SkipInspectionTarget(ctx, db.SkipInspectionTargetParams{
+				ErrorMessage: "Agent 离线，未执行巡检", EndTime: sql.NullTime{Time: now(), Valid: true},
+				UpdateTime: now(), ID: target.ID,
+			})
 			return
 		}
 		// 巡检中心模式：只下发检查计划，基线类的应用控制状态/端口/路径/日志内置检查已移除。
 		params := jsonBytes(gin.H{"check_plan": gin.H{"schema_version": 1, "checks": agentChecks}})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(task.Timeout+45)*time.Second)
-		agentResponse, err := handler.gateway.Execute(ctx, target.HostInstanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
+		requestCtx, cancel := context.WithTimeout(ctx, time.Duration(task.Timeout+45)*time.Second)
+		agentResponse, err := handler.gateway.Execute(requestCtx, target.HostInstanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
 		cancel()
 		if err != nil {
 			errorMessage = err.Error()
@@ -456,7 +483,9 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		}
 	}
 	if handler.isCanceled(executionID) {
-		handler.db.Exec(`UPDATE inspection_target_execution SET status='canceled',end_time=NOW(),update_time=NOW() WHERE id=?`, target.ID)
+		_ = queries.CancelInspectionTarget(ctx, db.CancelInspectionTargetParams{
+			EndTime: sql.NullTime{Time: now(), Valid: true}, UpdateTime: now(), ID: target.ID,
+		})
 		return
 	}
 	failed := false
@@ -469,33 +498,34 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 	if failed || len(results) == 0 {
 		status = "failed"
 	}
-	if insertErr := handler.insertResults(context.Background(), target.ID, results); insertErr != nil {
+	if insertErr := handler.insertResults(ctx, target.ID, results); insertErr != nil {
 		errorMessage = strings.TrimSpace(errorMessage + "；巡检结果写入失败: " + insertErr.Error())
 		status = "failed"
 	}
-	handler.db.Exec(`UPDATE inspection_target_execution SET status=?,passed=?,error_message=?,raw_result=?,end_time=NOW(),update_time=NOW() WHERE id=?`, status, status == "success", errorMessage, jsonBytes(gin.H{"passed": status == "success", "checks": results}), target.ID)
+	passed := status == "success"
+	_ = queries.FinishInspectionTarget(ctx, db.FinishInspectionTargetParams{
+		Status: status, Passed: &passed, ErrorMessage: errorMessage,
+		RawResult: jsonBytes(gin.H{"passed": passed, "checks": results}),
+		EndTime:   sql.NullTime{Time: now(), Valid: true}, UpdateTime: now(), ID: target.ID,
+	})
 }
 
-// insertResults writes check results in multi-row batches instead of one INSERT
-// per row; a 500-target × 20-check execution produces ~10k rows and row-by-row
-// commits were the tail-latency bottleneck.
+// insertResults 逐条落检查结果。
+//
+// 原实现按 100 行/批拼一条多行 INSERT：占位符个数随入参变化、且用 `?` 占位符——是 sqlc
+// 表达不了、PG 变体（pgx）也跑不通的形状。改为逐条 sqlc INSERT：结果落在"每主机一次远端
+// 检查"之后，条数由检查项数量决定（几十到几百），摊在以远端命令为主的耗时里可以忽略；
+// 真要回到批量插入就按方言各写一份。与 baseline 的 flushResults 同一取舍（SQL_DESIGN §6.3）。
 func (handler *Handler) insertResults(ctx context.Context, targetID int64, results []checkResult) error {
-	const batchSize = 100
-	statement := `INSERT INTO inspection_result(target_id,check_key,check_type,name,status,severity,group_id,group_name,expected_value,actual_value,message,create_time,update_time) VALUES `
-	for start := 0; start < len(results); start += batchSize {
-		end := min(start+batchSize, len(results))
-		var builder strings.Builder
-		builder.WriteString(statement)
-		arguments := make([]any, 0, (end-start)*11)
-		for index := start; index < end; index++ {
-			if index > start {
-				builder.WriteString(",")
-			}
-			builder.WriteString("(?,?,?,?,?,?,?,?,?,?,?,NOW(),NOW())")
-			item := results[index]
-			arguments = append(arguments, targetID, item.Key, item.Type, item.Name, item.Status, item.Severity, nullablePositive(item.GroupID), item.Group, nullableJSON(item.Expected), nullableJSON(item.Actual), item.Message)
-		}
-		if _, err := handler.db.ExecContext(ctx, builder.String(), arguments...); err != nil {
+	queries := db.New(handler.db)
+	now := time.Now().UTC()
+	for _, item := range results {
+		if err := queries.CreateInspectionResult(ctx, db.CreateInspectionResultParams{
+			TargetID: targetID, CheckKey: item.Key, CheckType: item.Type, Name: item.Name, Status: item.Status,
+			Severity: item.Severity, GroupID: nullablePositiveID(item.GroupID), GroupName: item.Group,
+			ExpectedValue: nullableJSON(item.Expected), ActualValue: nullableJSON(item.Actual),
+			Message: item.Message, CreateTime: now, UpdateTime: now,
+		}); err != nil {
 			return err
 		}
 	}
@@ -601,7 +631,7 @@ func decodeAgentResults(raw string, checks []runCheck) []checkResult {
 	return results
 }
 
-func nullableJSON(value any) any {
+func nullableJSON(value any) json.RawMessage {
 	if value == nil {
 		return nil
 	}

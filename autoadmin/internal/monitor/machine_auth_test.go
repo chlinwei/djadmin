@@ -14,7 +14,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const activeTokenQuery = `SELECT id,token_hash FROM sys_agent_token WHERE is_active=TRUE AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))`
+// 过期判定改成应用层传时间后，查询里只剩一个位置参数（原实现是 UTC_TIMESTAMP(6)）。
+// 片段到占位符之前为止：`?` 与 `$1` 的差异不该进断言。
+const activeTokenQuery = `SELECT id, token_hash FROM sys_agent_token WHERE is_active = TRUE AND (expires_at IS NULL`
 
 func TestMachineAuthenticateExcludesExpiredAgentTokens(t *testing.T) {
 	database, mock, err := sqlmock.New()
@@ -23,7 +25,7 @@ func TestMachineAuthenticateExcludesExpiredAgentTokens(t *testing.T) {
 	}
 	defer database.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(activeTokenQuery)).
+	mock.ExpectQuery(regexp.QuoteMeta(activeTokenQuery)).WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "token_hash"}))
 
 	gin.SetMode(gin.TestMode)
@@ -59,7 +61,8 @@ func TestMachineAuthenticateAcceptsValidBearerTokenAndTracksUsage(t *testing.T) 
 	}
 	mock.ExpectQuery(regexp.QuoteMeta(activeTokenQuery)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "token_hash"}).AddRow(42, encoded))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE sys_agent_token SET last_used_at=? WHERE id=?`)).
+	// 片段不写占位符：两侧是 `?` / `$n`。
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE sys_agent_token SET last_used_at =`)).
 		WithArgs(sqlmock.AnyArg(), int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -102,7 +105,7 @@ func TestMachineAuthenticateReturnsServerErrorWhenTokenQueryFails(t *testing.T) 
 	}
 	defer database.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(activeTokenQuery)).WillReturnError(errors.New("database unavailable"))
+	mock.ExpectQuery(regexp.QuoteMeta(activeTokenQuery)).WithArgs(sqlmock.AnyArg()).WillReturnError(errors.New("database unavailable"))
 
 	recorder := serveMachineRequest(database, "agent-token")
 	if recorder.Code != http.StatusInternalServerError {

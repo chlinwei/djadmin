@@ -17,6 +17,7 @@ import (
 	"autoadmin/internal/assets"
 	"autoadmin/internal/automation"
 	"autoadmin/internal/identity"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -58,12 +59,12 @@ func (handler *Handler) handlerSendSMTP(config map[string]any, subject, body str
 }
 
 func (handler *Handler) Summary(context *gin.Context) {
-	var total, managedEnabled, installSuccess, scrapeUp int64
-	err := handler.db.QueryRowContext(context, `SELECT COUNT(*),COALESCE(SUM(managed_enabled=1),0),COALESCE(SUM(install_status='success'),0),COALESCE(SUM(last_scrape_status='up'),0) FROM monitor_target`).Scan(&total, &managedEnabled, &installSuccess, &scrapeUp)
+	summary, err := db.New(handler.db).CountMonitorTargetSummary(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
+	total, managedEnabled, installSuccess, scrapeUp := summary.Total, summary.ManagedEnabled, summary.InstallSuccess, summary.ScrapeUp
 	response.Success(context, gin.H{
 		"module": "monitor", "name": "智能监控", "status": "ready",
 		"message": "智能监控模块已就绪，可在此扩展告警、巡检与AI分析能力。",
@@ -225,63 +226,64 @@ func (handler *Handler) MachineAuthenticate() gin.HandlerFunc {
 				token = authorization
 			}
 		}
-		rows, err := handler.db.QueryContext(context, `SELECT id,token_hash FROM sys_agent_token WHERE is_active=TRUE AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))`)
-		if err == nil {
-			defer rows.Close()
-		}
-		valid := false
-		var matchedID int64
-		for err == nil && rows.Next() {
-			var id int64
-			var encoded string
-			if rows.Scan(&id, &encoded) == nil && identity.VerifyPassword(encoded, token) {
-				valid = true
-				matchedID = id
-				break
-			}
-		}
-		if err == nil {
-			err = rows.Err()
-		}
+		// 过期判定用应用层传的时间（原实现是 SQL 里的 UTC_TIMESTAMP(6)，是方言函数）。
+		tokens, err := db.New(handler.db).ListActiveAgentTokens(context, sql.NullTime{Time: time.Now().UTC(), Valid: true})
 		if err != nil {
 			context.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "token validation failed"})
 			return
+		}
+		valid := false
+		var matchedID int32
+		for _, row := range tokens {
+			if identity.VerifyPassword(row.TokenHash, token) {
+				valid = true
+				matchedID = row.ID
+				break
+			}
 		}
 		if !valid {
 			context.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			return
 		}
-		_, _ = handler.db.ExecContext(context, `UPDATE sys_agent_token SET last_used_at=? WHERE id=?`, time.Now().UTC(), matchedID)
+		_ = db.New(handler.db).MarkAgentTokenUsed(context, db.MarkAgentTokenUsedParams{
+			LastUsedAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, ID: matchedID,
+		})
 		context.Next()
 	}
 }
 
 func (handler *Handler) PrometheusHTTPServiceDiscovery(context *gin.Context) {
-	rows, err := handler.db.QueryContext(context, `SELECT t.exporter_type,t.scrape_port,h.id,h.instance_name,h.ip FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.managed_enabled=TRUE AND t.install_status='success' AND h.ip IS NOT NULL ORDER BY t.id DESC`)
+	rows, err := db.New(handler.db).ListPrometheusServiceDiscoveryTargets(context)
 	if err != nil {
 		context.JSON(http.StatusInternalServerError, gin.H{"error": "query targets failed"})
 		return
 	}
-	defer rows.Close()
-	results := make([]gin.H, 0)
-	for rows.Next() {
-		var exporterType string
-		var scrapePort, hostID int64
-		var instanceName, ip sql.NullString
-		if rows.Scan(&exporterType, &scrapePort, &hostID, &instanceName, &ip) != nil || !ip.Valid || strings.TrimSpace(ip.String) == "" {
+	results := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		if !row.Ip.Valid || strings.TrimSpace(row.Ip.String) == "" {
 			continue
 		}
-		job := strings.TrimSpace(exporterType)
+		job := strings.TrimSpace(row.ExporterType)
 		if job == "" {
 			job = "exporter"
 		}
-		results = append(results, gin.H{"targets": []string{fmt.Sprintf("%s:%d", strings.TrimSpace(ip.String), scrapePort)}, "labels": gin.H{"job": job, "__meta_dj_exporter_type": exporterType, "__meta_dj_host_id": strconv.FormatInt(hostID, 10), "__meta_dj_instance_name": instanceName.String}})
-	}
-	if err = rows.Err(); err != nil {
-		context.JSON(http.StatusInternalServerError, gin.H{"error": "query targets failed"})
-		return
+		results = append(results, gin.H{"targets": []string{fmt.Sprintf("%s:%d", strings.TrimSpace(row.Ip.String), row.ScrapePort)}, "labels": gin.H{"job": job, "__meta_dj_exporter_type": row.ExporterType, "__meta_dj_host_id": strconv.FormatInt(row.ID, 10), "__meta_dj_instance_name": row.InstanceName.String}})
 	}
 	context.JSON(http.StatusOK, results)
+}
+
+// boolValue 把 PATCH 提交的 JSON 值转成 bool（兼容 true/1/"true" 三种写法）。
+func boolValue(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case string:
+		return typed == "true" || typed == "1"
+	default:
+		return false
+	}
 }
 
 func stringValue(value any) string {
@@ -378,10 +380,9 @@ func (handler *Handler) prometheusGet(requestContext context.Context, path strin
 }
 
 func (handler *Handler) prometheusBaseURL(context context.Context) string {
-	var value sql.NullString
-	err := handler.db.QueryRowContext(context, "SELECT value FROM sys_config WHERE `key`=? ORDER BY id LIMIT 1", "monitor.prometheus.base_url").Scan(&value)
-	if err == nil && value.Valid && strings.TrimSpace(value.String) != "" {
-		return strings.TrimRight(strings.TrimSpace(value.String), "/")
+	value, err := db.New(handler.db).GetConfigValueByKey(context, "monitor.prometheus.base_url")
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.TrimRight(strings.TrimSpace(value), "/")
 	}
 	return defaultPrometheusBaseURL
 }

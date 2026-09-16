@@ -14,7 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const openSearchClusterQuery = `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster WHERE id=?`
+// 片段到 WHERE 为止：占位符形态两侧不同（`?` / `$1`），断言不依赖它。
+const openSearchClusterQuery = `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster`
 
 // 回归用例：OpenSearch 的 _simulate API 要求每个 doc 是 {"_source": {...}}，
 // 之前 SimulateOpenSearchPipeline 直接透传前端的 docs 数组，触发

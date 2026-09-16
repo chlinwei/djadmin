@@ -886,10 +886,10 @@ type MonitorNotificationPolicy struct {
 	Name             string          `json:"name"`
 	Position         int32           `json:"position"`
 	Matchers         json.RawMessage `json:"matchers"`
-	MediaIds         json.RawMessage `json:"media_ids"`
+	MediaIds         sql.NullString  `json:"media_ids"`
 	NotifyOnFiring   bool            `json:"notify_on_firing"`
 	NotifyOnResolved bool            `json:"notify_on_resolved"`
-	UserGroupIds     json.RawMessage `json:"user_group_ids"`
+	UserGroupIds     sql.NullString  `json:"user_group_ids"`
 }
 
 type MonitorOpensearchCluster struct {

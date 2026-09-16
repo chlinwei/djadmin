@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -106,7 +107,8 @@ func TestMountTargetNameByBinding(t *testing.T) {
 	t.Run("service", func(t *testing.T) {
 		serviceID := int64(10)
 		bindings := []mountBinding{{MountType: mountService, ServiceID: nullInt64Of(serviceID)}}
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id=?`)).
+		// 片段断言按方言无关写：sqlc 生成的两侧 SQL 只差占位符风格（? / $n）与查询头注释。
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id`)).
 			WithArgs(serviceID).
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("artemis"))
 		// 业务链查询：目标名需带 项目/业务/环境 前缀。
@@ -122,10 +124,12 @@ func TestMountTargetNameByBinding(t *testing.T) {
 	t.Run("business with environment", func(t *testing.T) {
 		businessID, environmentID := int64(7), int64(1)
 		bindings := []mountBinding{{MountType: mountBusiness, BusinessSystemID: nullInt64Of(businessID), EnvironmentID: nullInt64Of(environmentID)}}
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT b.name, COALESCE(p.name,'') FROM assets_business_system b LEFT JOIN assets_project p ON p.id=b.project_id WHERE b.id=?`)).
+		// GetBusinessSystem 取 s.* + 项目名（复用 assets 域已有定义，不新造查询）。
+		mock.ExpectQuery(regexp.QuoteMeta(`FROM assets_business_system s LEFT JOIN assets_project p`)).
 			WithArgs(businessID).
-			WillReturnRows(sqlmock.NewRows([]string{"name", "project"}).AddRow("cdm", "kul"))
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_business_environment WHERE id=?`)).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "code", "owner", "enabled", "project_id", "project_name", "project_code"}).
+				AddRow(7, testTime(), testTime(), nil, "cdm", "cdm", "", true, 1, "kul", "kul"))
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_business_environment WHERE id`)).
 			WithArgs(environmentID).
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("test"))
 		if got := handler.mountTargetName(ctx, bindings); got != "项目 kul · 业务 cdm @ test" {
@@ -136,7 +140,7 @@ func TestMountTargetNameByBinding(t *testing.T) {
 	t.Run("project", func(t *testing.T) {
 		projectID := int64(1)
 		bindings := []mountBinding{{MountType: mountProject, ProjectID: nullInt64Of(projectID)}}
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_project WHERE id=?`)).
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_project WHERE id`)).
 			WithArgs(projectID).
 			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("kul"))
 		if got := handler.mountTargetName(ctx, bindings); got != "项目 kul" {
@@ -144,6 +148,9 @@ func TestMountTargetNameByBinding(t *testing.T) {
 		}
 	})
 }
+
+// testTime 给需要时间列的 mock 行一个稳定值。
+func testTime() interface{} { return time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC) }
 
 func nullInt64Of(v int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: v, Valid: true}

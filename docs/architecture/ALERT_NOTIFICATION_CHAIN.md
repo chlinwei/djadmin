@@ -36,7 +36,7 @@
 
 ### P1 user-chain 数据流
 
-1. 目标用户：query `user_id` 合法时用之（供管理员查他人）；否则取登录态 `identity.ClaimsFromContext` 的 `UserID`。随后 `SELECT username FROM sys_user WHERE id=?` 取用户名。
+1. 目标用户：query `user_id` 合法时用之（供管理员查他人）；否则取登录态 `identity.ClaimsFromContext` 的 `UserID`。随后取用户名（`GetUsernameByID`）。
 2. 绑定：`monitor_user_alert_media_binding JOIN monitor_alert_media`（按 user_id，`ORDER BY b.id`），recipients 为 JSON 数组；**不再返回 scope/routes**。
 3. 每绑定的 `policies`：加载策略树后整树遍历，凡（继承后）出口包含该媒介 id 的策略均返回 `{id,name,path,matchers,user_group_ids,user_group_names,user_in_group,notify_on_firing,notify_on_resolved}`（`path` 为 `根 / 子 / 孙` 名称链；`user_group_ids=null` 表示不限组，`user_in_group` 在组限制生效时判定当前用户是否在组内，未限制恒 true）。media `config` 一律不返回（含 SMTP 密码等敏感信息）。
 
@@ -54,7 +54,7 @@ issues 判定（按序并入，可叠加）：
 ### P2 chain/:historyId 数据流
 
 1. 取 `monitor_alert_history` 行（alertname/severity/instance/labels/state/started_at），不存在返回业务码 404。labels JSON 解析后合并便捷键：显式 labels 值优先，缺失时补 alertname/severity/instance；再全值转字符串供 matcher 匹配。
-2. 加载策略树 + `alertScopeNodes`（告警 `labels.host_id` → 服务树归属节点集合），沿命中路径**逐层评估全部兄弟策略**：`levels[i][j] = {id,name,matchers,matched,miss_reason,selected}`，`selected` 为该层按 `position,id` 序第一条命中（与分发侧 `resolvePolicyRoute` 同序同语义）；未命中兄弟进 summary（`策略 {name} 未命中：{miss_reason}`）。
+2. 加载策略树 + `alertScopeNodes`（告警 `labels.host_id` → 服务树归属节点集合；该查询的"取错列导致归属恒为空"问题见 `ALERT_NOTIFICATION_DISPATCH.md` 的策略树一节，2026-09-16 已修），沿命中路径**逐层评估全部兄弟策略**：`levels[i][j] = {id,name,matchers,matched,miss_reason,selected}`，`selected` 为该层按 `position,id` 序第一条命中（与分发侧 `resolvePolicyRoute` 同序同语义）；未命中兄弟进 summary（`策略 {name} 未命中：{miss_reason}`）。
 3. `policy_tree`：`{matched_path_ids, matched_path, levels, final_policy}`。`final_policy` 为最深命中节点：`{matchers, media_ids（null=继承）, media_inherited, effective_media_ids, user_group_ids, user_group_names, user_groups_limited, notify_on_firing, notify_on_resolved, event_allowed}`。
 4. `medias`：`final_policy.effective_media_ids` 对应媒介（含停用媒介，便于展示断点；字段 id/name/enabled）——每媒介带用户绑定（username、recipients、enabled，接收组限制生效时附 `in_group` 与 `issue`"不在命中策略的接收组内，不会收到该告警"）、事件（按 `alert_id + event_type=告警 state` 最新一条；无记录 `event=null`）与投递明细（delivery JOIN sys_user）。
 

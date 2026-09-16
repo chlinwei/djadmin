@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,11 +28,21 @@ type openSearchCluster struct {
 	Enabled                                        bool
 }
 
+// loadOpenSearchCluster 读当前请求 URL 上的集群（管理端按 id 操作），并解密密文密码。
 func (handler *Handler) loadOpenSearchCluster(context *gin.Context) (openSearchCluster, error) {
-	var cluster openSearchCluster
-	err := handler.db.QueryRowContext(context, `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster WHERE id=?`, parseID(context.Param("id"))).Scan(&cluster.ID, &cluster.Hosts, &cluster.Username, &cluster.Password, &cluster.VerifyTLS, &cluster.CACert, &cluster.IndexPrefix, &cluster.Timeout, &cluster.Enabled)
+	return handler.loadOpenSearchClusterByID(context, parseID(context.Param("id")))
+}
+
+// loadOpenSearchClusterByID 与上面的唯一差别是 id 来源（后台任务没有请求上下文）。
+func (handler *Handler) loadOpenSearchClusterByID(context *gin.Context, id int64) (openSearchCluster, error) {
+	row, err := db.New(handler.db).GetOpenSearchClusterConnection(context, id)
 	if err != nil {
-		return cluster, err
+		return openSearchCluster{}, err
+	}
+	cluster := openSearchCluster{
+		ID: row.ID, Hosts: row.Hosts, Username: row.Username, Password: row.Password,
+		VerifyTLS: row.VerifyTls, CACert: row.CaCert, IndexPrefix: row.IndexPrefix,
+		Timeout: int(row.RequestTimeout), Enabled: row.Enabled,
 	}
 	cluster.Password, err = handler.secrets.Decrypt(cluster.Password)
 	return cluster, err
@@ -138,7 +149,10 @@ func (handler *Handler) TestOpenSearchConnection(context *gin.Context) {
 	info, err := handler.openSearchRequest(context, cluster, http.MethodGet, "/", nil)
 	now := time.Now().UTC()
 	if err != nil {
-		_, _ = handler.db.ExecContext(context, `UPDATE monitor_opensearch_cluster SET last_check_time=?,last_check_success=FALSE,last_check_message=?,update_time=? WHERE id=?`, now, err.Error(), now, cluster.ID)
+		_ = db.New(handler.db).MarkOpenSearchClusterCheckFailed(context, db.MarkOpenSearchClusterCheckFailedParams{
+			LastCheckTime: sql.NullTime{Time: now, Valid: true}, LastCheckMessage: err.Error(),
+			UpdateTime: now, ID: cluster.ID,
+		})
 		response.BusinessError(context, 400, "connection failed: "+err.Error(), nil)
 		return
 	}
@@ -150,7 +164,10 @@ func (handler *Handler) TestOpenSearchConnection(context *gin.Context) {
 	version, _ := info["version"].(map[string]any)
 	result := gin.H{"cluster_name": info["cluster_name"], "distribution": version["distribution"], "version": version["number"], "status": health["status"], "number_of_nodes": health["number_of_nodes"]}
 	message := fmt.Sprintf("%v %v / %v / %v", result["distribution"], result["version"], result["cluster_name"], result["status"])
-	_, _ = handler.db.ExecContext(context, `UPDATE monitor_opensearch_cluster SET last_check_time=?,last_check_success=TRUE,last_check_message=?,update_time=? WHERE id=?`, now, message, now, cluster.ID)
+	_ = db.New(handler.db).MarkOpenSearchClusterCheckSuccess(context, db.MarkOpenSearchClusterCheckSuccessParams{
+		LastCheckTime: sql.NullTime{Time: now, Valid: true}, LastCheckMessage: message,
+		UpdateTime: now, ID: cluster.ID,
+	})
 	response.Success(context, result)
 }
 
@@ -188,8 +205,8 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (openSearchCluster, 
 	if serviceID == 0 {
 		return cluster, "", nil, fmt.Errorf("application_service_id is required")
 	}
-	var serviceCode string
-	if err = handler.db.QueryRowContext(context, `SELECT code FROM assets_application_service WHERE id=?`, serviceID).Scan(&serviceCode); err != nil {
+	serviceCode, err := db.New(handler.db).GetApplicationServiceCode(context, serviceID)
+	if err != nil {
 		return cluster, "", nil, fmt.Errorf("application service not found")
 	}
 	start, end, err := parseLogWindow(context)

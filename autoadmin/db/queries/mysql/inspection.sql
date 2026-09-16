@@ -205,3 +205,234 @@ SELECT id, check_key, check_type, name, status, severity, group_id, group_name,
        COALESCE(expected_value, 'null') AS expected_value,
        COALESCE(actual_value, 'null') AS actual_value, message
 FROM inspection_result WHERE target_id = sqlc.arg(target_id) ORDER BY id;
+-- ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
+--
+-- 两条与内联版本不同的约定：
+--  1. 时间一律由应用层传入。`NOW()`/`UTC_TIMESTAMP(6)` 是方言函数，且 PG 的 `now()` 返回
+--     timestamptz（落到 timestamp 列会按会话时区换算），跨方言语义不一致（SQL_DESIGN §4.2）。
+--  2. PATCH 合并（组的部分更新）在应用层做：先 `FOR UPDATE` 读回现值再整行写，而不是
+--     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
+
+-- name: ListDueInspectionTasks :many
+SELECT id, cron_expression
+FROM inspection_task
+WHERE enabled = TRUE AND cron_expression <> '' AND next_run_time IS NOT NULL
+  AND next_run_time <= sqlc.arg(now)
+ORDER BY id;
+
+-- name: ClaimDueInspectionTask :execrows
+UPDATE inspection_task
+SET next_run_time = sqlc.arg(next_run_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id) AND next_run_time <= sqlc.arg(now);
+
+-- 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
+-- 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
+-- name: DeleteFinishedInspectionResults :execrows
+DELETE FROM inspection_result
+WHERE target_id IN (
+  SELECT t.id FROM inspection_target_execution t
+  JOIN inspection_execution e ON e.id = t.execution_id
+  WHERE e.status <> 'pending' AND e.status <> 'running' AND e.end_time < sqlc.arg(cutoff)
+);
+
+-- name: DeleteFinishedInspectionTargetExecutions :execrows
+DELETE FROM inspection_target_execution
+WHERE execution_id IN (
+  SELECT e.id FROM inspection_execution e
+  WHERE e.status <> 'pending' AND e.status <> 'running' AND e.end_time < sqlc.arg(cutoff)
+);
+
+-- name: DeleteFinishedInspectionExecutions :execrows
+DELETE FROM inspection_execution
+WHERE status <> 'pending' AND status <> 'running' AND end_time < sqlc.arg(cutoff);
+
+-- name: CreateInspectionGroup :execlastid
+INSERT INTO inspection_group(name, description, enabled, category, application_id, params, create_time, update_time)
+VALUES (sqlc.arg(name), sqlc.arg(description), sqlc.arg(enabled), sqlc.arg(category), sqlc.narg(application_id),
+        sqlc.arg(params), sqlc.arg(create_time), sqlc.arg(update_time));
+
+-- name: GetInspectionGroupForUpdate :one
+SELECT name, description, enabled, category, application_id, params
+FROM inspection_group WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: UpdateInspectionGroup :execrows
+UPDATE inspection_group
+SET name = sqlc.arg(name), description = sqlc.arg(description), enabled = sqlc.arg(enabled),
+    category = sqlc.arg(category), application_id = sqlc.narg(application_id), params = sqlc.arg(params),
+    update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: DeleteInspectionChecksByGroup :exec
+DELETE FROM inspection_check WHERE group_id = sqlc.arg(group_id);
+
+-- name: CreateInspectionCheck :exec
+INSERT INTO inspection_check(group_id, name, config, severity, enabled, `order`, create_time, update_time)
+VALUES (sqlc.arg(group_id), sqlc.arg(name), sqlc.arg(config), sqlc.arg(severity), sqlc.arg(enabled),
+        sqlc.arg(check_order), sqlc.arg(create_time), sqlc.arg(update_time));
+
+-- name: CountInspectionTasksByGroup :one
+SELECT COUNT(*) FROM inspection_task WHERE group_id = sqlc.arg(group_id);
+
+-- name: DeleteInspectionGroup :execrows
+DELETE FROM inspection_group WHERE id = sqlc.arg(id);
+
+-- name: CountApplicationByID :one
+SELECT COUNT(*) FROM assets_application WHERE id = sqlc.arg(id);
+
+-- name: CountApplicationServiceByID :one
+SELECT COUNT(*) FROM assets_application_service WHERE id = sqlc.arg(id);
+
+-- name: GetInspectionTaskState :one
+SELECT name, inspection_name, group_id, concurrency, timeout_seconds, cron_expression, enabled
+FROM inspection_task WHERE id = sqlc.arg(id);
+
+-- name: CreateInspectionTask :execlastid
+INSERT INTO inspection_task(name, inspection_name, group_id, concurrency, timeout_seconds, cron_expression,
+                           next_run_time, last_run_time, enabled, create_time, update_time)
+VALUES (sqlc.arg(name), sqlc.arg(inspection_name), sqlc.arg(group_id), sqlc.arg(concurrency),
+        sqlc.arg(timeout_seconds), sqlc.arg(cron_expression), sqlc.narg(next_run_time), NULL,
+        sqlc.arg(enabled), sqlc.arg(create_time), sqlc.arg(update_time));
+
+-- name: UpdateInspectionTask :execrows
+UPDATE inspection_task
+SET name = sqlc.arg(name), inspection_name = sqlc.arg(inspection_name), group_id = sqlc.arg(group_id),
+    concurrency = sqlc.arg(concurrency), timeout_seconds = sqlc.arg(timeout_seconds),
+    cron_expression = sqlc.arg(cron_expression), next_run_time = sqlc.narg(next_run_time),
+    enabled = sqlc.arg(enabled), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: DeleteInspectionTaskGroups :exec
+DELETE FROM inspection_task_group WHERE task_id = sqlc.arg(task_id);
+
+-- name: CreateInspectionTaskGroup :exec
+INSERT INTO inspection_task_group(task_id, group_id, mount_type, project_id, environment_id, business_system_id,
+                                  service_id, instance_mode, param_values)
+VALUES (sqlc.arg(task_id), sqlc.arg(group_id), sqlc.arg(mount_type), sqlc.narg(project_id),
+        sqlc.narg(environment_id), sqlc.narg(business_system_id), sqlc.narg(service_id),
+        sqlc.narg(instance_mode), sqlc.arg(param_values));
+
+-- name: DetachInspectionExecutionsFromTask :exec
+UPDATE inspection_execution SET task_id = NULL, update_time = sqlc.arg(update_time)
+WHERE task_id = sqlc.arg(task_id);
+
+-- name: DeleteInspectionTask :execrows
+DELETE FROM inspection_task WHERE id = sqlc.arg(id);
+
+-- name: CountInspectionTasksByNameInGroup :one
+SELECT COUNT(*) FROM inspection_task
+WHERE name = sqlc.arg(name) AND group_id = sqlc.arg(group_id) AND id <> sqlc.arg(exclude_id);
+
+-- name: GetInspectionGroupRunMeta :one
+SELECT g.enabled, g.category,
+       (SELECT COUNT(*) FROM inspection_check c WHERE c.group_id = g.id AND c.enabled = TRUE) AS enabled_check_count
+FROM inspection_group g WHERE g.id = sqlc.arg(id);
+
+-- name: ListInspectionResultsByExecution :many
+SELECT r.id, r.target_id, r.check_key, r.check_type, r.name, r.status, r.severity, r.group_id, r.group_name,
+       COALESCE(r.expected_value, 'null') AS expected_value,
+       COALESCE(r.actual_value, 'null') AS actual_value, r.message
+FROM inspection_result r
+JOIN inspection_target_execution t ON t.id = r.target_id
+WHERE t.execution_id = sqlc.arg(execution_id)
+ORDER BY r.target_id, r.id;
+
+-- name: GetInspectionExecutionForUpdate :one
+SELECT status, summary FROM inspection_execution WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: CancelInspectionExecution :execrows
+UPDATE inspection_execution
+SET status = 'canceled', end_time = sqlc.arg(end_time), summary = sqlc.arg(summary), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: CancelRunningInspectionTargets :execrows
+UPDATE inspection_target_execution
+SET status = 'canceled', end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
+WHERE execution_id = sqlc.arg(execution_id) AND status IN ('pending', 'running');
+
+-- name: GetInspectionTaskRunState :one
+SELECT id, name, concurrency, timeout_seconds, enabled FROM inspection_task WHERE id = sqlc.arg(id);
+
+-- name: CreateInspectionExecution :execlastid
+INSERT INTO inspection_execution(task_id, status, trigger_type, task_snapshot, group_snapshot, service_snapshot,
+                                 target_snapshot, summary, requested_user_id, requested_username, start_time, end_time,
+                                 create_time, update_time)
+VALUES (sqlc.narg(task_id), 'pending', sqlc.arg(trigger_type), sqlc.arg(task_snapshot), sqlc.arg(group_snapshot),
+        sqlc.arg(service_snapshot), sqlc.arg(target_snapshot), '{}', sqlc.narg(requested_user_id),
+        sqlc.arg(requested_username), NULL, NULL, sqlc.arg(create_time), sqlc.arg(update_time));
+
+-- name: CreateInspectionTargetExecution :execlastid
+INSERT INTO inspection_target_execution(execution_id, deployment_id, host_id, target_name, host_id_snapshot,
+                                        host_ip_snapshot, instance_name_snapshot, status, passed, error_message,
+                                        raw_result, start_time, end_time, create_time, update_time)
+VALUES (sqlc.arg(execution_id), sqlc.narg(deployment_id), sqlc.narg(host_id), sqlc.arg(target_name),
+        sqlc.narg(host_id_snapshot), sqlc.arg(host_ip_snapshot), sqlc.arg(instance_name_snapshot), 'pending',
+        NULL, '', '{}', NULL, NULL, sqlc.arg(create_time), sqlc.arg(update_time));
+
+-- name: TouchInspectionTaskLastRun :exec
+UPDATE inspection_task SET last_run_time = sqlc.arg(last_run_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: MarkInspectionExecutionRunning :execrows
+UPDATE inspection_execution
+SET status = 'running', start_time = sqlc.arg(start_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id) AND status = 'pending';
+
+-- 目标结果统计：原实现用 `SUM(status='failed')`（MySQL 把布尔当 0/1，PG 不接受），
+-- 换成两方言都认的 `COUNT(CASE WHEN ... THEN 1 END)`，且零行时为 0 而不是 NULL（§4.3）。
+-- name: CountInspectionTargetOutcomes :one
+SELECT COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+       COUNT(CASE WHEN status = 'success' THEN 1 END) AS success,
+       COUNT(CASE WHEN status = 'canceled' THEN 1 END) AS canceled,
+       COUNT(CASE WHEN status = 'skipped' THEN 1 END) AS skipped
+FROM inspection_target_execution WHERE execution_id = sqlc.arg(execution_id);
+
+-- name: CountInspectionWarningResults :one
+SELECT COUNT(*) FROM inspection_result r
+JOIN inspection_target_execution t ON t.id = r.target_id
+WHERE t.execution_id = sqlc.arg(execution_id) AND r.severity = 'warning' AND r.status NOT IN ('pass', 'skipped');
+
+-- name: FinishInspectionExecution :execrows
+UPDATE inspection_execution
+SET status = sqlc.arg(status), summary = sqlc.arg(summary), end_time = sqlc.arg(end_time),
+    update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: GetApplicationServiceName :one
+SELECT name FROM assets_application_service WHERE id = sqlc.arg(id) LIMIT 1;
+
+-- name: GetProjectNameByID :one
+SELECT name FROM assets_project WHERE id = sqlc.arg(id) LIMIT 1;
+
+-- name: GetBusinessEnvironmentNameByID :one
+SELECT name FROM assets_business_environment WHERE id = sqlc.arg(id) LIMIT 1;
+
+-- name: MarkInspectionTargetRunning :exec
+UPDATE inspection_target_execution
+SET status = 'running', start_time = sqlc.arg(start_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: SkipInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = 'skipped', passed = FALSE, error_message = sqlc.arg(error_message),
+    end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: CancelInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = 'canceled', end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: FinishInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = sqlc.arg(status), passed = sqlc.narg(passed), error_message = sqlc.arg(error_message),
+    raw_result = sqlc.arg(raw_result), end_time = sqlc.arg(end_time), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 检查结果落库：原实现按 100 行/批拼多行 INSERT（占位符个数随入参变化，且用 `?`，
+-- PG 变体跑不通），改为逐条 sqlc INSERT —— 与 baseline 的 flushResults 同一取舍（见 SQL_DESIGN §6.3）。
+-- name: CreateInspectionResult :exec
+INSERT INTO inspection_result(target_id, check_key, check_type, name, status, severity, group_id, group_name,
+                              expected_value, actual_value, message, create_time, update_time)
+VALUES (sqlc.arg(target_id), sqlc.arg(check_key), sqlc.arg(check_type), sqlc.arg(name), sqlc.arg(status),
+        sqlc.arg(severity), sqlc.narg(group_id), sqlc.arg(group_name), sqlc.narg(expected_value),
+        sqlc.narg(actual_value), sqlc.arg(message), sqlc.arg(create_time), sqlc.arg(update_time));

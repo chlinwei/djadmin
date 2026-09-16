@@ -577,19 +577,24 @@ func (q *Queries) ListRolesByUserID(ctx context.Context, userID int32) ([]SysRol
 }
 
 const listUserAlertMediaBindings = `-- name: ListUserAlertMediaBindings :many
-SELECT b.id, b.media_id, m.name AS media_name, b.recipients, b.enabled
+SELECT b.id, b.media_id, m.name AS media_name, b.recipients, b.enabled,
+       m.media_type, m.enabled AS media_enabled
 FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id = b.media_id
 WHERE b.user_id = ? ORDER BY b.id
 `
 
 type ListUserAlertMediaBindingsRow struct {
-	ID         int64           `json:"id"`
-	MediaID    int64           `json:"media_id"`
-	MediaName  string          `json:"media_name"`
-	Recipients json.RawMessage `json:"recipients"`
-	Enabled    bool            `json:"enabled"`
+	ID           int64           `json:"id"`
+	MediaID      int64           `json:"media_id"`
+	MediaName    string          `json:"media_name"`
+	Recipients   json.RawMessage `json:"recipients"`
+	Enabled      bool            `json:"enabled"`
+	MediaType    string          `json:"media_type"`
+	MediaEnabled bool            `json:"media_enabled"`
 }
 
+// 用户中心的"我的告警媒介绑定"与 monitor 的通知链路诊断（user-chain）共用一条：
+// 后两者要的 media_type / media_enabled 补在列尾（身份域只按字段名取前几列，不受影响）。
 func (q *Queries) ListUserAlertMediaBindings(ctx context.Context, userID int32) ([]ListUserAlertMediaBindingsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listUserAlertMediaBindings, userID)
 	if err != nil {
@@ -605,6 +610,8 @@ func (q *Queries) ListUserAlertMediaBindings(ctx context.Context, userID int32) 
 			&i.MediaName,
 			&i.Recipients,
 			&i.Enabled,
+			&i.MediaType,
+			&i.MediaEnabled,
 		); err != nil {
 			return nil, err
 		}

@@ -10,7 +10,130 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
+
+const cancelAutomationJob = `-- name: CancelAutomationJob :execrows
+UPDATE automation_execution_job
+SET status = 'cancelled', start_time = COALESCE(start_time, $1), end_time = $2,
+    duration_seconds = $3, result_summary = $4,
+    update_time = $5
+WHERE id = $6 AND status IN ('pending', 'running')
+`
+
+type CancelAutomationJobParams struct {
+	StartTime       sql.NullTime    `json:"start_time"`
+	EndTime         sql.NullTime    `json:"end_time"`
+	DurationSeconds sql.NullFloat64 `json:"duration_seconds"`
+	ResultSummary   json.RawMessage `json:"result_summary"`
+	UpdateTime      time.Time       `json:"update_time"`
+	ID              int64           `json:"id"`
+}
+
+func (q *Queries) CancelAutomationJob(ctx context.Context, arg CancelAutomationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelAutomationJob,
+		arg.StartTime,
+		arg.EndTime,
+		arg.DurationSeconds,
+		arg.ResultSummary,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const claimAutomationJob = `-- name: ClaimAutomationJob :execrows
+UPDATE automation_execution_job
+SET status = 'running', start_time = $1, result_summary = $2,
+    update_time = $3
+WHERE id = $4 AND status = 'pending'
+`
+
+type ClaimAutomationJobParams struct {
+	StartTime     sql.NullTime    `json:"start_time"`
+	ResultSummary json.RawMessage `json:"result_summary"`
+	UpdateTime    time.Time       `json:"update_time"`
+	ID            int64           `json:"id"`
+}
+
+func (q *Queries) ClaimAutomationJob(ctx context.Context, arg ClaimAutomationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimAutomationJob,
+		arg.StartTime,
+		arg.ResultSummary,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const countAutomationHostOptions = `-- name: CountAutomationHostOptions :one
+SELECT COUNT(*) FROM assets_host h
+LEFT JOIN assets_hostsystem s ON s.host_id = h.id
+WHERE h.ip IS NOT NULL
+  AND (h.instance_name LIKE $1 OR s.hostname LIKE $1
+       OR h.ip LIKE $1 OR $1 IS NULL)
+`
+
+// Inventory 的主机选项（新建 Inventory 时的选择器）：同样是运行时拼 WHERE 改成 narg。
+func (q *Queries) CountAutomationHostOptions(ctx context.Context, pattern sql.NullString) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAutomationHostOptions, pattern)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAutomationInventoryHosts = `-- name: CountAutomationInventoryHosts :one
+SELECT COUNT(*) AS existing,
+       COUNT(CASE WHEN ip IS NOT NULL THEN 1 END) AS resolved,
+       COUNT(DISTINCT group_id) AS group_count
+FROM assets_host WHERE id = ANY($1::bigint[])
+`
+
+type CountAutomationInventoryHostsRow struct {
+	Existing   int64 `json:"existing"`
+	Resolved   int64 `json:"resolved"`
+	GroupCount int64 `json:"group_count"`
+}
+
+func (q *Queries) CountAutomationInventoryHosts(ctx context.Context, hostIds []int64) (CountAutomationInventoryHostsRow, error) {
+	row := q.db.QueryRowContext(ctx, countAutomationInventoryHosts, pq.Array(hostIds))
+	var i CountAutomationInventoryHostsRow
+	err := row.Scan(&i.Existing, &i.Resolved, &i.GroupCount)
+	return i, err
+}
+
+const countAutomationPlaybooks = `-- name: CountAutomationPlaybooks :one
+
+SELECT COUNT(*) FROM automation_playbook_template
+WHERE (name LIKE $1 OR description LIKE $1
+       OR COALESCE(remark, '') LIKE $1 OR $1 IS NULL)
+  AND (category = $2 OR $2 IS NULL)
+`
+
+type CountAutomationPlaybooksParams struct {
+	Pattern  sql.NullString `json:"pattern"`
+	Category sql.NullString `json:"category"`
+}
+
+// ---- P2-2：automation 包内联 SQL 的收纳处（模板 / Inventory / 任务 / 作业运行期 / 主机解析）----
+//
+// 与 inspection 同一套约定：时间由应用层传（NOW()/UTC_TIMESTAMP 是方言函数）、PATCH 合并在
+// 应用层做（不用 COALESCE(narg(...), col)，可空布尔/JSON 在两侧的推导不同）、可变长 IN 用
+// `= ANY(sqlc.arg(x)::bigint[])`（派生脚本会改写成 PG 的 `= ANY(sqlc.arg(x)::bigint[])`，见 P4-7）。
+// 模板列表：原实现运行时拼 `WHERE (?=” OR name LIKE ? ...)`，改成 sqlc.narg 可选过滤。
+func (q *Queries) CountAutomationPlaybooks(ctx context.Context, arg CountAutomationPlaybooksParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAutomationPlaybooks, arg.Pattern, arg.Category)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const countInventories = `-- name: CountInventories :one
 
@@ -73,6 +196,354 @@ func (q *Queries) CountTasks(ctx context.Context, arg CountTasksParams) (int64, 
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createAutomationControllerKey = `-- name: CreateAutomationControllerKey :exec
+INSERT INTO automation_controller_ssh_key(create_time, update_time, remark, public_key, private_key)
+VALUES ($1, $2, NULL, $3, $4)
+`
+
+type CreateAutomationControllerKeyParams struct {
+	CreateTime time.Time `json:"create_time"`
+	UpdateTime time.Time `json:"update_time"`
+	PublicKey  string    `json:"public_key"`
+	PrivateKey string    `json:"private_key"`
+}
+
+func (q *Queries) CreateAutomationControllerKey(ctx context.Context, arg CreateAutomationControllerKeyParams) error {
+	_, err := q.db.ExecContext(ctx, createAutomationControllerKey,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.PublicKey,
+		arg.PrivateKey,
+	)
+	return err
+}
+
+const createAutomationInventory = `-- name: CreateAutomationInventory :one
+INSERT INTO automation_inventory(create_time, update_time, remark, name, selected_host_ids, enabled,
+                                 update_on_launch, update_cache_timeout, last_sync_status, last_sync_message,
+                                 last_sync_host_count)
+VALUES ($1, $2, $3, $4,
+        $5, $6, $7,
+        $8, 'never', '', 0)
+RETURNING id
+`
+
+type CreateAutomationInventoryParams struct {
+	CreateTime         time.Time       `json:"create_time"`
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	Name               string          `json:"name"`
+	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
+	Enabled            bool            `json:"enabled"`
+	UpdateOnLaunch     bool            `json:"update_on_launch"`
+	UpdateCacheTimeout uint32          `json:"update_cache_timeout"`
+}
+
+func (q *Queries) CreateAutomationInventory(ctx context.Context, arg CreateAutomationInventoryParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAutomationInventory,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.SelectedHostIds,
+		arg.Enabled,
+		arg.UpdateOnLaunch,
+		arg.UpdateCacheTimeout,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createAutomationJob = `-- name: CreateAutomationJob :one
+INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type,
+                                     inventory_snapshot, task_name_snapshot, template_name_snapshot,
+                                     template_content_snapshot, extra_vars, "limit", result_summary,
+                                     run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot,
+                                     requested_user_id, requested_username)
+VALUES ($1, $2, NULL, $3, $4, 'pending', 'manual',
+        $5, $6, $7,
+        $8, $9, $10, $11,
+        $12, $13, $14,
+        $15, $16)
+RETURNING id
+`
+
+type CreateAutomationJobParams struct {
+	CreateTime              time.Time       `json:"create_time"`
+	UpdateTime              time.Time       `json:"update_time"`
+	JobID                   string          `json:"job_id"`
+	TaskID                  sql.NullInt64   `json:"task_id"`
+	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
+	TaskNameSnapshot        string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
+	TemplateContentSnapshot string          `json:"template_content_snapshot"`
+	ExtraVars               json.RawMessage `json:"extra_vars"`
+	JobLimit                string          `json:"job_limit"`
+	ResultSummary           json.RawMessage `json:"result_summary"`
+	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
+	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername       string          `json:"requested_username"`
+}
+
+func (q *Queries) CreateAutomationJob(ctx context.Context, arg CreateAutomationJobParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAutomationJob,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.JobID,
+		arg.TaskID,
+		arg.InventorySnapshot,
+		arg.TaskNameSnapshot,
+		arg.TemplateNameSnapshot,
+		arg.TemplateContentSnapshot,
+		arg.ExtraVars,
+		arg.JobLimit,
+		arg.ResultSummary,
+		arg.RunAsUserSnapshot,
+		arg.RunAsGroupSnapshot,
+		arg.WorkDirectorySnapshot,
+		arg.RequestedUserID,
+		arg.RequestedUsername,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createAutomationJobHostLog = `-- name: CreateAutomationJobHostLog :exec
+INSERT INTO automation_execution_host_log(create_time, update_time, remark, job_id, host_id, host_id_snapshot,
+                                          host_name_snapshot, host_ip_snapshot, agent_job_id, status, exit_code,
+                                          stdout, stderr, error_message, result_data)
+VALUES ($1, $2, NULL, $3, $4,
+        $5, $6, $7, '', $8,
+        $9, $10, $11, $12, '{}')
+`
+
+type CreateAutomationJobHostLogParams struct {
+	CreateTime       time.Time     `json:"create_time"`
+	UpdateTime       time.Time     `json:"update_time"`
+	JobID            int64         `json:"job_id"`
+	HostID           sql.NullInt64 `json:"host_id"`
+	HostIDSnapshot   sql.NullInt32 `json:"host_id_snapshot"`
+	HostNameSnapshot string        `json:"host_name_snapshot"`
+	HostIpSnapshot   string        `json:"host_ip_snapshot"`
+	Status           string        `json:"status"`
+	ExitCode         sql.NullInt32 `json:"exit_code"`
+	Stdout           string        `json:"stdout"`
+	Stderr           string        `json:"stderr"`
+	ErrorMessage     string        `json:"error_message"`
+}
+
+func (q *Queries) CreateAutomationJobHostLog(ctx context.Context, arg CreateAutomationJobHostLogParams) error {
+	_, err := q.db.ExecContext(ctx, createAutomationJobHostLog,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.JobID,
+		arg.HostID,
+		arg.HostIDSnapshot,
+		arg.HostNameSnapshot,
+		arg.HostIpSnapshot,
+		arg.Status,
+		arg.ExitCode,
+		arg.Stdout,
+		arg.Stderr,
+		arg.ErrorMessage,
+	)
+	return err
+}
+
+const createAutomationPlaybook = `-- name: CreateAutomationPlaybook :one
+INSERT INTO automation_playbook_template(create_time, update_time, remark, name, description, content, category)
+VALUES ($1, $2, $3, $4,
+        $5, $6, $7)
+RETURNING id
+`
+
+type CreateAutomationPlaybookParams struct {
+	CreateTime  time.Time      `json:"create_time"`
+	UpdateTime  time.Time      `json:"update_time"`
+	Remark      sql.NullString `json:"remark"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Content     string         `json:"content"`
+	Category    string         `json:"category"`
+}
+
+func (q *Queries) CreateAutomationPlaybook(ctx context.Context, arg CreateAutomationPlaybookParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAutomationPlaybook,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Description,
+		arg.Content,
+		arg.Category,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createAutomationTask = `-- name: CreateAutomationTask :one
+INSERT INTO automation_task(create_time, update_time, remark, name, playbook_template_id, inventory_id,
+                            env_vars, default_limit, enabled, execution_timeout_seconds, run_as_user,
+                            run_as_group, work_directory)
+VALUES ($1, $2, $3, $4,
+        $5, $6, $7, $8,
+        $9, $10, $11, $12,
+        $13)
+RETURNING id
+`
+
+type CreateAutomationTaskParams struct {
+	CreateTime              time.Time       `json:"create_time"`
+	UpdateTime              time.Time       `json:"update_time"`
+	Remark                  sql.NullString  `json:"remark"`
+	Name                    string          `json:"name"`
+	PlaybookTemplateID      sql.NullInt64   `json:"playbook_template_id"`
+	InventoryID             sql.NullInt64   `json:"inventory_id"`
+	EnvVars                 json.RawMessage `json:"env_vars"`
+	DefaultLimit            string          `json:"default_limit"`
+	Enabled                 bool            `json:"enabled"`
+	ExecutionTimeoutSeconds uint32          `json:"execution_timeout_seconds"`
+	RunAsUser               string          `json:"run_as_user"`
+	RunAsGroup              string          `json:"run_as_group"`
+	WorkDirectory           string          `json:"work_directory"`
+}
+
+func (q *Queries) CreateAutomationTask(ctx context.Context, arg CreateAutomationTaskParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAutomationTask,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.PlaybookTemplateID,
+		arg.InventoryID,
+		arg.EnvVars,
+		arg.DefaultLimit,
+		arg.Enabled,
+		arg.ExecutionTimeoutSeconds,
+		arg.RunAsUser,
+		arg.RunAsGroup,
+		arg.WorkDirectory,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const deleteAutomationControllerKeys = `-- name: DeleteAutomationControllerKeys :exec
+DELETE FROM automation_controller_ssh_key
+`
+
+func (q *Queries) DeleteAutomationControllerKeys(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteAutomationControllerKeys)
+	return err
+}
+
+const deleteAutomationInventory = `-- name: DeleteAutomationInventory :execrows
+DELETE FROM automation_inventory WHERE id = $1
+`
+
+func (q *Queries) DeleteAutomationInventory(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAutomationInventory, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAutomationPlaybook = `-- name: DeleteAutomationPlaybook :execrows
+DELETE FROM automation_playbook_template WHERE id = $1
+`
+
+func (q *Queries) DeleteAutomationPlaybook(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAutomationPlaybook, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAutomationTask = `-- name: DeleteAutomationTask :execrows
+DELETE FROM automation_task WHERE id = $1
+`
+
+func (q *Queries) DeleteAutomationTask(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAutomationTask, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const finishAutomationJob = `-- name: FinishAutomationJob :execrows
+UPDATE automation_execution_job
+SET status = $1, end_time = $2, duration_seconds = $3,
+    result_summary = $4, update_time = $5
+WHERE id = $6 AND status <> 'cancelled'
+`
+
+type FinishAutomationJobParams struct {
+	Status          string          `json:"status"`
+	EndTime         sql.NullTime    `json:"end_time"`
+	DurationSeconds sql.NullFloat64 `json:"duration_seconds"`
+	ResultSummary   json.RawMessage `json:"result_summary"`
+	UpdateTime      time.Time       `json:"update_time"`
+	ID              int64           `json:"id"`
+}
+
+func (q *Queries) FinishAutomationJob(ctx context.Context, arg FinishAutomationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishAutomationJob,
+		arg.Status,
+		arg.EndTime,
+		arg.DurationSeconds,
+		arg.ResultSummary,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getAutomationJobStartTime = `-- name: GetAutomationJobStartTime :one
+SELECT start_time FROM automation_execution_job WHERE id = $1
+`
+
+// 取消要算 duration，而 TIMESTAMPDIFF 是 MySQL 方言函数（PG 用 EXTRACT(EPOCH ...)）：
+// 读回 start_time 后在应用层算，别让时长计算把这条语句变成方言分叉。
+func (q *Queries) GetAutomationJobStartTime(ctx context.Context, id int64) (sql.NullTime, error) {
+	row := q.db.QueryRowContext(ctx, getAutomationJobStartTime, id)
+	var start_time sql.NullTime
+	err := row.Scan(&start_time)
+	return start_time, err
+}
+
+const getAutomationPlaybook = `-- name: GetAutomationPlaybook :one
+SELECT id, create_time, update_time, remark, name, description, content, category
+FROM automation_playbook_template WHERE id = $1
+`
+
+func (q *Queries) GetAutomationPlaybook(ctx context.Context, id int64) (AutomationPlaybookTemplate, error) {
+	row := q.db.QueryRowContext(ctx, getAutomationPlaybook, id)
+	var i AutomationPlaybookTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Description,
+		&i.Content,
+		&i.Category,
+	)
+	return i, err
 }
 
 const getInventoryTyped = `-- name: GetInventoryTyped :one
@@ -219,6 +690,322 @@ func (q *Queries) GetTaskTyped(ctx context.Context, id int64) (GetTaskTypedRow, 
 		&i.InventoryName,
 	)
 	return i, err
+}
+
+const listAutomationControllerKeysForUpdate = `-- name: ListAutomationControllerKeysForUpdate :many
+SELECT id, public_key, private_key FROM automation_controller_ssh_key FOR UPDATE
+`
+
+type ListAutomationControllerKeysForUpdateRow struct {
+	ID         int64  `json:"id"`
+	PublicKey  string `json:"public_key"`
+	PrivateKey string `json:"private_key"`
+}
+
+func (q *Queries) ListAutomationControllerKeysForUpdate(ctx context.Context) ([]ListAutomationControllerKeysForUpdateRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationControllerKeysForUpdate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationControllerKeysForUpdateRow{}
+	for rows.Next() {
+		var i ListAutomationControllerKeysForUpdateRow
+		if err := rows.Scan(&i.ID, &i.PublicKey, &i.PrivateKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationHostAgentIdentities = `-- name: ListAutomationHostAgentIdentities :many
+SELECT id, COALESCE(instance_name, '') AS instance_name
+FROM assets_host WHERE id = ANY($1::bigint[]) ORDER BY id
+`
+
+type ListAutomationHostAgentIdentitiesRow struct {
+	ID           int64  `json:"id"`
+	InstanceName string `json:"instance_name"`
+}
+
+func (q *Queries) ListAutomationHostAgentIdentities(ctx context.Context, hostIds []int64) ([]ListAutomationHostAgentIdentitiesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationHostAgentIdentities, pq.Array(hostIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationHostAgentIdentitiesRow{}
+	for rows.Next() {
+		var i ListAutomationHostAgentIdentitiesRow
+		if err := rows.Scan(&i.ID, &i.InstanceName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationHostGroupTree = `-- name: ListAutomationHostGroupTree :many
+SELECT id, name, parent_id FROM assets_hostgroup ORDER BY id
+`
+
+type ListAutomationHostGroupTreeRow struct {
+	ID       int64         `json:"id"`
+	Name     string        `json:"name"`
+	ParentID sql.NullInt64 `json:"parent_id"`
+}
+
+func (q *Queries) ListAutomationHostGroupTree(ctx context.Context) ([]ListAutomationHostGroupTreeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationHostGroupTree)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationHostGroupTreeRow{}
+	for rows.Next() {
+		var i ListAutomationHostGroupTreeRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.ParentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationHostOptions = `-- name: ListAutomationHostOptions :many
+SELECT h.id, h.instance_name, s.hostname, h.ip, h.group_id
+FROM assets_host h
+LEFT JOIN assets_hostsystem s ON s.host_id = h.id
+WHERE h.ip IS NOT NULL
+  AND (h.instance_name LIKE $3 OR s.hostname LIKE $3
+       OR h.ip LIKE $3 OR $3 IS NULL)
+ORDER BY h.id
+LIMIT $1 OFFSET $2
+`
+
+type ListAutomationHostOptionsParams struct {
+	Limit   int32          `json:"limit"`
+	Offset  int32          `json:"offset"`
+	Pattern sql.NullString `json:"pattern"`
+}
+
+type ListAutomationHostOptionsRow struct {
+	ID           int64          `json:"id"`
+	InstanceName sql.NullString `json:"instance_name"`
+	Hostname     sql.NullString `json:"hostname"`
+	Ip           sql.NullString `json:"ip"`
+	GroupID      sql.NullInt64  `json:"group_id"`
+}
+
+func (q *Queries) ListAutomationHostOptions(ctx context.Context, arg ListAutomationHostOptionsParams) ([]ListAutomationHostOptionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationHostOptions, arg.Limit, arg.Offset, arg.Pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationHostOptionsRow{}
+	for rows.Next() {
+		var i ListAutomationHostOptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Hostname,
+			&i.Ip,
+			&i.GroupID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationInventoryHosts = `-- name: ListAutomationInventoryHosts :many
+SELECT h.id, COALESCE(h.instance_name, '') AS instance_name, COALESCE(h.ip, '') AS ip, h.group_id,
+       COALESCE(g.name, '') AS group_name, h.agent_online
+FROM assets_host h
+LEFT JOIN assets_hostgroup g ON g.id = h.group_id
+WHERE h.id = ANY($1::bigint[]) AND h.ip IS NOT NULL
+ORDER BY h.id
+`
+
+type ListAutomationInventoryHostsRow struct {
+	ID           int64         `json:"id"`
+	InstanceName string        `json:"instance_name"`
+	Ip           string        `json:"ip"`
+	GroupID      sql.NullInt64 `json:"group_id"`
+	GroupName    string        `json:"group_name"`
+	AgentOnline  bool          `json:"agent_online"`
+}
+
+// 目标主机快照：原实现按主机 ID 个数拼 `IN (?,?,...)`。
+func (q *Queries) ListAutomationInventoryHosts(ctx context.Context, hostIds []int64) ([]ListAutomationInventoryHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationInventoryHosts, pq.Array(hostIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationInventoryHostsRow{}
+	for rows.Next() {
+		var i ListAutomationInventoryHostsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstanceName,
+			&i.Ip,
+			&i.GroupID,
+			&i.GroupName,
+			&i.AgentOnline,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationJobHostLogs = `-- name: ListAutomationJobHostLogs :many
+SELECT host_id_snapshot, host_ip_snapshot, status, agent_job_id, stdout, stderr, error_message
+FROM automation_execution_host_log WHERE job_id = $1 ORDER BY id
+`
+
+type ListAutomationJobHostLogsRow struct {
+	HostIDSnapshot sql.NullInt32 `json:"host_id_snapshot"`
+	HostIpSnapshot string        `json:"host_ip_snapshot"`
+	Status         string        `json:"status"`
+	AgentJobID     string        `json:"agent_job_id"`
+	Stdout         string        `json:"stdout"`
+	Stderr         string        `json:"stderr"`
+	ErrorMessage   string        `json:"error_message"`
+}
+
+func (q *Queries) ListAutomationJobHostLogs(ctx context.Context, jobID int64) ([]ListAutomationJobHostLogsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationJobHostLogs, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAutomationJobHostLogsRow{}
+	for rows.Next() {
+		var i ListAutomationJobHostLogsRow
+		if err := rows.Scan(
+			&i.HostIDSnapshot,
+			&i.HostIpSnapshot,
+			&i.Status,
+			&i.AgentJobID,
+			&i.Stdout,
+			&i.Stderr,
+			&i.ErrorMessage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAutomationPlaybooks = `-- name: ListAutomationPlaybooks :many
+SELECT id, create_time, update_time, remark, name, description, content, category
+FROM automation_playbook_template
+WHERE (name LIKE $3 OR description LIKE $3
+       OR COALESCE(remark, '') LIKE $3 OR $3 IS NULL)
+  AND (category = $4 OR $4 IS NULL)
+ORDER BY
+  CASE WHEN $5 = 'id' THEN id END ASC,
+  CASE WHEN $5 = '-id' THEN id END DESC,
+  CASE WHEN $5 = 'name' THEN name END ASC,
+  CASE WHEN $5 = '-name' THEN name END DESC,
+  CASE WHEN $5 = 'create_time' THEN create_time END ASC,
+  CASE WHEN $5 = '-create_time' THEN create_time END DESC,
+  CASE WHEN $5 = 'update_time' THEN update_time END ASC,
+  CASE WHEN $5 = '-update_time' THEN update_time END DESC,
+  id DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAutomationPlaybooksParams struct {
+	Limit    int32          `json:"limit"`
+	Offset   int32          `json:"offset"`
+	Pattern  sql.NullString `json:"pattern"`
+	Category sql.NullString `json:"category"`
+	SortKey  interface{}    `json:"sort_key"`
+}
+
+// 排序：原实现按白名单拼列名与方向（`ORDER BY <column> <dir>`）。标识符不能被参数化，
+// 改成按 sort_key（带 '-' 前缀表示倒序）选择的 CASE 表达式——两方言等价，代价是排序
+// 不再走索引（模板表很小，可接受）；未命中任何分支时回落到 `id DESC`。
+func (q *Queries) ListAutomationPlaybooks(ctx context.Context, arg ListAutomationPlaybooksParams) ([]AutomationPlaybookTemplate, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationPlaybooks,
+		arg.Limit,
+		arg.Offset,
+		arg.Pattern,
+		arg.Category,
+		arg.SortKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AutomationPlaybookTemplate{}
+	for rows.Next() {
+		var i AutomationPlaybookTemplate
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Description,
+			&i.Content,
+			&i.Category,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listInventoriesTyped = `-- name: ListInventoriesTyped :many
@@ -426,4 +1213,148 @@ func (q *Queries) ListTasksTyped(ctx context.Context, arg ListTasksTypedParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const setAutomationTaskEnabled = `-- name: SetAutomationTaskEnabled :exec
+UPDATE automation_task SET enabled = $1, update_time = $2 WHERE id = $3
+`
+
+type SetAutomationTaskEnabledParams struct {
+	Enabled    bool      `json:"enabled"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+// 列表里的启用开关只提交 enabled，其余字段保持原值（走这一条，不当成整表单提交）。
+func (q *Queries) SetAutomationTaskEnabled(ctx context.Context, arg SetAutomationTaskEnabledParams) error {
+	_, err := q.db.ExecContext(ctx, setAutomationTaskEnabled, arg.Enabled, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const updateAutomationInventory = `-- name: UpdateAutomationInventory :exec
+UPDATE automation_inventory
+SET update_time = $1, remark = $2, name = $3,
+    selected_host_ids = $4, enabled = $5,
+    update_on_launch = $6, update_cache_timeout = $7
+WHERE id = $8
+`
+
+type UpdateAutomationInventoryParams struct {
+	UpdateTime         time.Time       `json:"update_time"`
+	Remark             sql.NullString  `json:"remark"`
+	Name               string          `json:"name"`
+	SelectedHostIds    json.RawMessage `json:"selected_host_ids"`
+	Enabled            bool            `json:"enabled"`
+	UpdateOnLaunch     bool            `json:"update_on_launch"`
+	UpdateCacheTimeout uint32          `json:"update_cache_timeout"`
+	ID                 int64           `json:"id"`
+}
+
+func (q *Queries) UpdateAutomationInventory(ctx context.Context, arg UpdateAutomationInventoryParams) error {
+	_, err := q.db.ExecContext(ctx, updateAutomationInventory,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.SelectedHostIds,
+		arg.Enabled,
+		arg.UpdateOnLaunch,
+		arg.UpdateCacheTimeout,
+		arg.ID,
+	)
+	return err
+}
+
+const updateAutomationPlaybook = `-- name: UpdateAutomationPlaybook :exec
+UPDATE automation_playbook_template
+SET update_time = $1, remark = $2, name = $3,
+    description = $4, content = $5, category = $6
+WHERE id = $7
+`
+
+type UpdateAutomationPlaybookParams struct {
+	UpdateTime  time.Time      `json:"update_time"`
+	Remark      sql.NullString `json:"remark"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Content     string         `json:"content"`
+	Category    string         `json:"category"`
+	ID          int64          `json:"id"`
+}
+
+func (q *Queries) UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error {
+	_, err := q.db.ExecContext(ctx, updateAutomationPlaybook,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Description,
+		arg.Content,
+		arg.Category,
+		arg.ID,
+	)
+	return err
+}
+
+const updateAutomationPlaybookContent = `-- name: UpdateAutomationPlaybookContent :execrows
+UPDATE automation_playbook_template
+SET content = $1, update_time = $2
+WHERE id = $3
+`
+
+type UpdateAutomationPlaybookContentParams struct {
+	Content    string    `json:"content"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) UpdateAutomationPlaybookContent(ctx context.Context, arg UpdateAutomationPlaybookContentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateAutomationPlaybookContent, arg.Content, arg.UpdateTime, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateAutomationTask = `-- name: UpdateAutomationTask :exec
+UPDATE automation_task
+SET update_time = $1, remark = $2, name = $3,
+    playbook_template_id = $4, inventory_id = $5,
+    env_vars = $6, default_limit = $7, enabled = $8,
+    execution_timeout_seconds = $9, run_as_user = $10,
+    run_as_group = $11, work_directory = $12
+WHERE id = $13
+`
+
+type UpdateAutomationTaskParams struct {
+	UpdateTime              time.Time       `json:"update_time"`
+	Remark                  sql.NullString  `json:"remark"`
+	Name                    string          `json:"name"`
+	PlaybookTemplateID      sql.NullInt64   `json:"playbook_template_id"`
+	InventoryID             sql.NullInt64   `json:"inventory_id"`
+	EnvVars                 json.RawMessage `json:"env_vars"`
+	DefaultLimit            string          `json:"default_limit"`
+	Enabled                 bool            `json:"enabled"`
+	ExecutionTimeoutSeconds uint32          `json:"execution_timeout_seconds"`
+	RunAsUser               string          `json:"run_as_user"`
+	RunAsGroup              string          `json:"run_as_group"`
+	WorkDirectory           string          `json:"work_directory"`
+	ID                      int64           `json:"id"`
+}
+
+func (q *Queries) UpdateAutomationTask(ctx context.Context, arg UpdateAutomationTaskParams) error {
+	_, err := q.db.ExecContext(ctx, updateAutomationTask,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.PlaybookTemplateID,
+		arg.InventoryID,
+		arg.EnvVars,
+		arg.DefaultLimit,
+		arg.Enabled,
+		arg.ExecutionTimeoutSeconds,
+		arg.RunAsUser,
+		arg.RunAsGroup,
+		arg.WorkDirectory,
+		arg.ID,
+	)
+	return err
 }

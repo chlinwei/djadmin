@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,19 +49,17 @@ func (handler *Handler) BatchDeletePlaybooks(context *gin.Context) {
 		return
 	}
 	respondBatchDelete(context, ids, func(id int64) error {
-		var category string
-		err := handler.db.QueryRowContext(context, `SELECT category FROM automation_playbook_template WHERE id=?`, id).Scan(&category)
+		playbook, err := db.New(handler.db).GetAutomationPlaybook(context, id)
 		if err != nil {
 			return err
 		}
-		if category == playbookCategoryAgent {
+		if playbook.Category == playbookCategoryAgent {
 			return fmt.Errorf("该模板是 Agent 安装/更新的唯一配置源，禁止删除")
 		}
-		result, err := handler.db.ExecContext(context, `DELETE FROM automation_playbook_template WHERE id=?`, id)
+		affected, err := db.New(handler.db).DeleteAutomationPlaybook(context, id)
 		if err != nil {
 			return err
 		}
-		affected, _ := result.RowsAffected()
 		if affected == 0 {
 			return sql.ErrNoRows
 		}
@@ -74,11 +73,10 @@ func (handler *Handler) BatchDeleteInventories(context *gin.Context) {
 		return
 	}
 	respondBatchDelete(context, ids, func(id int64) error {
-		result, err := handler.db.ExecContext(context, `DELETE FROM automation_inventory WHERE id=?`, id)
+		affected, err := db.New(handler.db).DeleteAutomationInventory(context, id)
 		if err != nil {
 			return err
 		}
-		affected, _ := result.RowsAffected()
 		if affected == 0 {
 			return sql.ErrNoRows
 		}
@@ -92,11 +90,10 @@ func (handler *Handler) BatchDeleteTasks(context *gin.Context) {
 		return
 	}
 	respondBatchDelete(context, ids, func(id int64) error {
-		result, err := handler.db.ExecContext(context, `DELETE FROM automation_task WHERE id=?`, id)
+		affected, err := db.New(handler.db).DeleteAutomationTask(context, id)
 		if err != nil {
 			return err
 		}
-		affected, _ := result.RowsAffected()
 		if affected == 0 {
 			return sql.ErrNoRows
 		}

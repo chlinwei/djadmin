@@ -5,9 +5,10 @@ import (
 	"fmt"
 
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/mysql"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
+
+// 数据库驱动按构建标签在 driver_mysql.go / driver_postgres.go 里注册。
 
 func Up(sourceURL string, databaseURL string) error {
 	migrator, err := migrate.New(sourceURL, databaseURL)

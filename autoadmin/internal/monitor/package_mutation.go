@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	db "autoadmin/internal/platform/database/generated"
+
 	"database/sql"
 	"fmt"
 	"os"
@@ -53,12 +55,16 @@ func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	result, err := handler.db.ExecContext(context, `INSERT INTO monitor_software_package(create_time,update_time,remark,package_type,name,version,default_port,os,arch,platform_family,platform_major,package_format,file,sha256,size_bytes,enabled,work_directory,service_file_content,service_run_as_user,service_run_as_group) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, now, nil, item.PackageType, item.Name, item.Version, item.DefaultPort, item.OS, item.Arch, item.PlatformFamily, item.PlatformMajor, item.PackageFormat, "", "", 0, true, "/tmp", "", item.ServiceRunAsUser, "dj-agent")
+	id, err := db.New(handler.db).CreateSoftwarePackage(context, db.CreateSoftwarePackageParams{
+		CreateTime: now, UpdateTime: now, PackageType: item.PackageType, Name: item.Name,
+		Version: item.Version, DefaultPort: uint32(item.DefaultPort), Os: item.OS, Arch: item.Arch,
+		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor,
+		PackageFormat: item.PackageFormat, ServiceRunAsUser: item.ServiceRunAsUser,
+	})
 	if err != nil {
 		response.BusinessError(context, 400, "invalid software package configuration", gin.H{"detail": err.Error()})
 		return
 	}
-	id, _ := result.LastInsertId()
 	handler.respondSoftwarePackage(context, id)
 }
 
@@ -144,7 +150,14 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 			return
 		}
 	}
-	_, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET default_port=?,service_file_content=COALESCE(?,service_file_content),service_run_as_user=?,service_run_as_group=COALESCE(?,service_run_as_group),work_directory=COALESCE(?,work_directory),package_format=?,platform_family=?,platform_major=?,update_time=? WHERE id=?`, item.DefaultPort, input.ServiceFileContent, item.ServiceRunAsUser, input.ServiceRunAsGroup, input.WorkDirectory, item.PackageFormat, item.PlatformFamily, item.PlatformMajor, time.Now().UTC(), id)
+	// 三项 COALESCE：传 NULL 表示保留原值（原实现靠 `COALESCE(?,col)` 表达同一语义）。
+	err = db.New(transaction).UpdateSoftwarePackageConfig(context, db.UpdateSoftwarePackageConfigParams{
+		DefaultPort: uint32(item.DefaultPort), ServiceFileContent: nullIfEmpty(input.ServiceFileContent),
+		ServiceRunAsUser: item.ServiceRunAsUser, ServiceRunAsGroup: nullIfEmpty(input.ServiceRunAsGroup),
+		WorkDirectory: nullIfEmpty(input.WorkDirectory), PackageFormat: item.PackageFormat,
+		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor,
+		UpdateTime: time.Now().UTC(), ID: id,
+	})
 	if err == nil {
 		err = syncExistingPackagePlaybook(context, transaction, item, "install", item.InstallTemplateID, input.InstallPlaybookContent)
 	}
@@ -191,13 +204,17 @@ func (handler *Handler) migrateSoftwarePackageFile(context *gin.Context, transac
 	}
 	oldRelative := item.File
 	item.File = newRelative
-	if _, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET file=? WHERE id=?`, newRelative, item.ID); err != nil {
+	if err = db.New(transaction).UpdateSoftwarePackageFilePath(context, db.UpdateSoftwarePackageFilePathParams{
+		File: newRelative, ID: item.ID,
+	}); err != nil {
 		return err
 	}
 	// DB 更新成功后再物理移动文件；移动失败自动回滚 DB 的 file 列，两侧保持一致。
 	if err = os.Rename(oldPath, newPath); err != nil {
 		item.File = oldRelative
-		_, _ = transaction.ExecContext(context, `UPDATE monitor_software_package SET file=? WHERE id=?`, oldRelative, item.ID)
+		_ = db.New(transaction).UpdateSoftwarePackageFilePath(context, db.UpdateSoftwarePackageFilePathParams{
+			File: oldRelative, ID: item.ID,
+		})
 		return fmt.Errorf("failed to move package file to the new platform directory: %w", err)
 	}
 	return nil
@@ -205,38 +222,64 @@ func (handler *Handler) migrateSoftwarePackageFile(context *gin.Context, transac
 
 // packageFileConflict 判断目标平台目录是否已有同版本记录（不含自身）。
 func (handler *Handler) packageFileConflict(context *gin.Context, item softwarePackage) (bool, error) {
-	var count int
-	err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM monitor_software_package
-		WHERE package_type=? AND name=? AND version=? AND os=? AND arch=? AND platform_family=? AND platform_major=? AND id<>?`,
-		item.PackageType, item.Name, item.Version, item.OS, item.Arch, item.PlatformFamily, item.PlatformMajor, item.ID).Scan(&count)
+	count, err := db.New(handler.db).CountSoftwarePackageVariantConflict(context, db.CountSoftwarePackageVariantConflictParams{
+		PackageType: item.PackageType, Name: item.Name, Version: item.Version, Os: item.OS, Arch: item.Arch,
+		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor, ExcludeID: item.ID,
+	})
 	return count > 0, err
+}
+
+// nullIfEmpty 空串表示"不改这一列"（对应 SQL 里的 COALESCE(narg(x), col)）。
+func nullIfEmpty(value *string) sql.NullString {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
 }
 
 func syncExistingPackagePlaybook(context *gin.Context, transaction *sql.Tx, item softwarePackage, role string, templateID sql.NullInt64, content *string) error {
 	if content == nil {
 		return nil
 	}
+	queries := db.New(transaction)
+	// 角色（install/uninstall）决定改哪一列：原实现拼列名，这里按角色分派到显式语句。
+	clearTemplate := func() error {
+		if role == "install" {
+			return queries.ClearSoftwarePackageInstallTemplate(context, item.ID)
+		}
+		return queries.ClearSoftwarePackageUninstallTemplate(context, item.ID)
+	}
+	setTemplate := func(id int64) error {
+		if role == "install" {
+			return queries.SetSoftwarePackageInstallTemplate(context, db.SetSoftwarePackageInstallTemplateParams{TemplateID: sql.NullInt64{Int64: id, Valid: true}, ID: item.ID})
+		}
+		return queries.SetSoftwarePackageUninstallTemplate(context, db.SetSoftwarePackageUninstallTemplateParams{TemplateID: sql.NullInt64{Int64: id, Valid: true}, ID: item.ID})
+	}
 	trimmed := strings.TrimSpace(*content)
 	if templateID.Valid {
 		if trimmed == "" {
-			if _, err := transaction.ExecContext(context, `UPDATE monitor_software_package SET `+role+`_playbook_template_id=NULL WHERE id=?`, item.ID); err != nil {
+			if err := clearTemplate(); err != nil {
 				return err
 			}
-			_, err := transaction.ExecContext(context, `DELETE FROM automation_playbook_template WHERE id=?`, templateID.Int64)
+			_, err := queries.DeleteAutomationPlaybook(context, templateID.Int64)
 			return err
 		}
-		_, err := transaction.ExecContext(context, `UPDATE automation_playbook_template SET content=?,update_time=? WHERE id=?`, trimmed, time.Now().UTC(), templateID.Int64)
+		_, err := queries.UpdateAutomationPlaybookContent(context, db.UpdateAutomationPlaybookContentParams{
+			Content: trimmed, UpdateTime: time.Now().UTC(), ID: templateID.Int64,
+		})
 		return err
 	}
 	if trimmed == "" {
 		return nil
 	}
 	now := time.Now().UTC()
-	result, err := transaction.ExecContext(context, `INSERT INTO automation_playbook_template(create_time,update_time,remark,name,description,content,category) VALUES(?,?,?,?,?,?,?)`, now, now, nil, fmt.Sprintf("%s-%d-%s", item.Name, item.ID, role), "", trimmed, "software_package")
+	newID, err := queries.CreateAutomationPlaybook(context, db.CreateAutomationPlaybookParams{
+		CreateTime: now, UpdateTime: now, Remark: sql.NullString{},
+		Name:        fmt.Sprintf("%s-%d-%s", item.Name, item.ID, role),
+		Description: "", Content: trimmed, Category: "software_package",
+	})
 	if err != nil {
 		return err
 	}
-	newID, _ := result.LastInsertId()
-	_, err = transaction.ExecContext(context, `UPDATE monitor_software_package SET `+role+`_playbook_template_id=? WHERE id=?`, newID, item.ID)
-	return err
+	return setTemplate(newID)
 }

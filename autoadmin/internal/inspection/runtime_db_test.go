@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"testing"
 
+	"database/sql/driver"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
@@ -37,23 +39,24 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 	targets := []runTarget{{Name: "target-1", HostInstanceName: "host-01"}}
 
 	mock.ExpectBegin()
-	// status 恒为字面量 'pending'，trigger_type 才是参数——占位符错位的回归锚点。
+	// status/summary 恒为字面量（'pending' / '{}'），trigger_type 才是参数——占位符错位的回归锚点。
 	// mountTargetName：服务名 + 业务链路（Begin 后、快照构建时查库）
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT name FROM assets_application_service WHERE id`)).
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("artemis"))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT s.id AS service_id, b.id AS business_system_id`)).
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"service_id", "business_system_id", "business_system_name", "business_system_owner", "project_id", "project_name", "project_owner", "environment_id", "environment_name"}).
 			AddRow(9, 7, "cdm", "", 1, "kul", "", 1, "test"))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO inspection_execution(task_id,status,trigger_type,")).
-		WithArgs(int64(5), "manual", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int32(7), "ops").
-		WillReturnResult(sqlmock.NewResult(201, 1))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO inspection_target_execution(")).
-		WithArgs(int64(201), sqlmock.AnyArg(), sqlmock.AnyArg(), "target-1", sqlmock.AnyArg(), sqlmock.AnyArg(), "host-01").
-		WillReturnResult(sqlmock.NewResult(301, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE inspection_task SET last_run_time=NOW()")).
-		WithArgs(int64(5)).
+	expectCreateReturnsID(mock, "INSERT INTO inspection_execution(", []driver.Value{
+		int64(5), "manual", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+		int64(7), "ops", sqlmock.AnyArg(), sqlmock.AnyArg(),
+	}, 201)
+	expectCreateReturnsID(mock, "INSERT INTO inspection_target_execution(", []driver.Value{
+		int64(201), nil, int64(0), "target-1", int64(0), "", "host-01", sqlmock.AnyArg(), sqlmock.AnyArg(),
+	}, 301)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE inspection_task SET last_run_time")).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -90,7 +93,8 @@ func TestListExecutionResultsMapsGroupColumns(t *testing.T) {
 	}
 	defer database.Close()
 
-	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
+	// 方言无关片段：两侧生成的这条查询只差占位符风格（? / $n）。
+	query := regexp.QuoteMeta("FROM inspection_result r JOIN inspection_target_execution t ON t.id = r.target_id")
 	mock.ExpectQuery(query).WithArgs(int64(201)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
 			AddRow(1, 301, "inspection:201:0", "opa", "check-1", "fail", "critical", 1, "group-a", []byte("null"), []byte("null"), "failed").
@@ -168,7 +172,8 @@ func TestListExecutionResultsSQLCoalescesNullableJSON(t *testing.T) {
 	}
 	defer database.Close()
 
-	query := regexp.QuoteMeta("SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id")
+	// 方言无关片段：两侧生成的这条查询只差占位符风格（? / $n）。
+	query := regexp.QuoteMeta("FROM inspection_result r JOIN inspection_target_execution t ON t.id = r.target_id")
 	mock.ExpectQuery(query).WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "target_id", "check_key", "check_type", "name", "status", "severity", "group_id", "group_name", "expected_value", "actual_value", "message"}).
 			AddRow(1, 2, "k", "opa", "n", "error", "critical", nil, "", []byte("null"), []byte("null"), "plan error"))

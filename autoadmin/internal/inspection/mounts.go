@@ -420,8 +420,8 @@ func (handler *Handler) validateMountBinding(ctx *gin.Context, binding *groupBin
 			if binding.ServiceID == nil || *binding.ServiceID <= 0 {
 				return resolved, "挂载到逻辑服务时必须选择逻辑服务", nil
 			}
-			var count int
-			if err := handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets_application_service WHERE id=?`, *binding.ServiceID).Scan(&count); err != nil {
+			count, err := db.New(handler.db).CountApplicationServiceByID(ctx, *binding.ServiceID)
+			if err != nil {
 				return resolved, "", err
 			}
 			if count == 0 {

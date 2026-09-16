@@ -26,6 +26,15 @@ sql:
             go_type:
               type: "bool"
               pointer: true
+          # monitor_notification_policy 的 media_ids / user_group_ids 用 NULL 表达"继承父节点"，
+          # 而 NULL 是常态。sqlc 默认把（可空）json 列映射成 json.RawMessage，而
+          # encoding/json 的 RawMessage 在 Go 1.25 起实现了 sql.Scanner 但**不接受 NULL**
+          #（报 "unsupported Scan, storing driver.Value type <nil> into type *jsontext.Value"），
+          # 于是"继承"的节点一读就炸。改用 sql.NullString：NULL 可扫，非 NULL 是 json 文本。
+          - column: "monitor_notification_policy.media_ids"
+            go_type: "database/sql.NullString"
+          - column: "monitor_notification_policy.user_group_ids"
+            go_type: "database/sql.NullString"
         output_db_file_name: "db.go"
         output_models_file_name: "models.go"
         output_querier_file_name: "querier.go"
@@ -56,6 +65,11 @@ sql:
           - db_type: "jsonb"
             nullable: true
             go_type: "encoding/json.RawMessage"
+          # 列级 override 排在 db_type 之后（后匹配者生效）：这两列见 MySQL block 的说明。
+          - column: "monitor_notification_policy.media_ids"
+            go_type: "database/sql.NullString"
+          - column: "monitor_notification_policy.user_group_ids"
+            go_type: "database/sql.NullString"
           # MySQL 的 unsigned 在 PG 没有对应类型（int unsigned→uint32 会退化成 int32）。
           # 这些列语义上非负（端口 / 计数 / 超时秒数），用逐列 override 保持两侧生成的
           # Go 类型一致，避免为此改动 MySQL 的库结构与调用点。共 24 列。

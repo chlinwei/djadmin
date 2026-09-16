@@ -56,9 +56,3 @@ func pagination(context *gin.Context) (int, int) {
 	}
 	return page, size
 }
-
-func queryCount(context *gin.Context, db *sql.DB, query string, arguments ...any) (int64, error) {
-	var count int64
-	err := db.QueryRowContext(context, query, arguments...).Scan(&count)
-	return count, err
-}

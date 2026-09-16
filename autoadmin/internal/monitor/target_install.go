@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	db "autoadmin/internal/platform/database/generated"
+
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -37,19 +39,16 @@ type targetInstallRow struct {
 	Architecture   string
 }
 
-func loadMonitorTargetRow(ginContext *gin.Context, db *sql.DB, id int64) (targetInstallRow, error) {
-	var row targetInstallRow
-	err := db.QueryRowContext(ginContext, `SELECT t.id,t.host_id,t.managed_enabled,t.exporter_type,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
-		COALESCE(s.os_id,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,''),
-		COALESCE(hw.architecture,'')
-		FROM monitor_target t
-		JOIN assets_host h ON h.id=t.host_id
-		LEFT JOIN assets_hostsystem s ON s.host_id=t.host_id
-		LEFT JOIN assets_hosthardware hw ON hw.host_id=t.host_id
-		WHERE t.id=?`, id).Scan(&row.ID, &row.HostID, &row.ManagedEnabled, &row.ExporterType,
-		&row.HostName, &row.HostIP, &row.OSID, &row.OSIDLike, &row.OSVersionID, &row.Architecture)
-	return row, err
+func loadMonitorTargetRow(ginContext *gin.Context, pool *sql.DB, id int64) (targetInstallRow, error) {
+	row, err := db.New(pool).GetTargetInstallContext(ginContext, id)
+	if err != nil {
+		return targetInstallRow{}, err
+	}
+	return targetInstallRow{
+		ID: row.ID, HostID: row.HostID, ManagedEnabled: row.ManagedEnabled, ExporterType: row.ExporterType,
+		HostName: row.InstanceName, HostIP: row.Ip, OSID: row.OsID, OSIDLike: row.OsIDLike,
+		OSVersionID: row.OsVersionID, Architecture: row.Architecture,
+	}, nil
 }
 
 func (handler *Handler) RetryTarget(ginContext *gin.Context) {
@@ -69,8 +68,9 @@ func (handler *Handler) RetryTarget(ginContext *gin.Context) {
 	}
 	// 人工触发视为新一轮操作周期，重置历史重试计数。
 	// 注意：这里不先把 install_status 写成 pending，否则派发里的 pending 防重会直接短路。
-	now := time.Now().UTC()
-	if _, err = handler.db.ExecContext(ginContext, `UPDATE monitor_target SET retry_count=0,install_message='人工触发重试',update_time=? WHERE id=?`, now, id); err != nil {
+	if err = db.New(handler.db).ResetTargetInstallRetry(ginContext, db.ResetTargetInstallRetryParams{
+		UpdateTime: time.Now().UTC(), ID: id,
+	}); err != nil {
 		response.Error(ginContext, err)
 		return
 	}
@@ -98,7 +98,9 @@ func (failure guardFailure) Error() string {
 
 // setTargetInstallState 记录业务失败/挂起原因，成功时以 guardFailure 回传给上层识别。
 func (handler *Handler) setTargetInstallState(ginContext *gin.Context, id int64, status, message string) error {
-	if _, err := handler.db.ExecContext(ginContext, `UPDATE monitor_target SET install_status=?,install_message=?,update_time=? WHERE id=?`, status, message, time.Now().UTC(), id); err != nil {
+	if err := db.New(handler.db).SetTargetInstallState(ginContext, db.SetTargetInstallStateParams{
+		InstallStatus: status, InstallMessage: message, UpdateTime: time.Now().UTC(), ID: id,
+	}); err != nil {
 		return err
 	}
 	return guardFailure{status: status, message: message}
@@ -145,29 +147,38 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 	}}}
 	inventoryJSON, _ := json.Marshal(inventory)
 	extraJSON, _ := json.Marshal(extra)
-	jobResult, err := handler.db.ExecContext(ginContext, `INSERT INTO automation_execution_job
-		(create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
-		 task_name_snapshot,template_name_snapshot,template_content_snapshot,`+"`limit`"+`,run_as_user_snapshot,run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		now, now, nil, uuid.NewString(), "pending", "manual", string(inventoryJSON), string(extraJSON),
-		fmt.Sprintf(`{"message":"%s %s job queued"}`, exporter, action), fmt.Sprintf("%s %s", exporter, action), exporter, content,
-		"", "", "", packageRow.WorkDirectory, nil, "system")
+	queries := db.New(handler.db)
+	jobID, err := queries.CreateMonitorTargetJob(ginContext, db.CreateMonitorTargetJobParams{
+		CreateTime: now, UpdateTime: now, JobID: uuid.NewString(),
+		InventorySnapshot: inventoryJSON, ExtraVars: extraJSON,
+		ResultSummary:           json.RawMessage(fmt.Sprintf(`{"message":"%s %s job queued"}`, exporter, action)),
+		TaskNameSnapshot:        fmt.Sprintf("%s %s", exporter, action),
+		TemplateNameSnapshot:    exporter,
+		TemplateContentSnapshot: content,
+		WorkDirectorySnapshot:   packageRow.WorkDirectory,
+		RequestedUsername:       "system",
+	})
 	if err != nil {
 		return err
 	}
-	jobID, _ := jobResult.LastInsertId()
-	historyResult, err := handler.db.ExecContext(ginContext, `INSERT INTO monitor_target_install_history
-		(create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
-		 exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-		 requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		now, now, nil, action, "manual", "pending", row.HostID, row.HostName, row.HostIP,
-		exporter, summary, "", "", "", "{}", nil, "system", now, row.HostID, row.ID)
+	historyID, err := queries.CreateTargetInstallHistory(ginContext, db.CreateTargetInstallHistoryParams{
+		CreateTime: now, UpdateTime: now, Action: action,
+		HostIDSnapshot:            sql.NullInt32{Int32: int32(row.HostID), Valid: true},
+		HostNameSnapshot:          row.HostName,
+		HostIpSnapshot:            row.HostIP,
+		ExporterTypeSnapshot:      exporter,
+		SummaryMessage:            summary,
+		RequestedUsernameSnapshot: "system",
+		StartTime:                 sql.NullTime{Time: now, Valid: true},
+		HostID:                    sql.NullInt64{Int64: row.HostID, Valid: true},
+		TargetID:                  sql.NullInt64{Int64: row.ID, Valid: true},
+	})
 	if err != nil {
 		return err
 	}
-	historyID, _ := historyResult.LastInsertId()
-	if _, err = handler.db.ExecContext(ginContext, `UPDATE monitor_target SET install_status='pending',install_message=?,last_dispatch_manual=TRUE,update_time=? WHERE id=?`, summary, now, row.ID); err != nil {
+	if err = queries.MarkTargetInstallPending(ginContext, db.MarkTargetInstallPendingParams{
+		InstallMessage: summary, UpdateTime: now, ID: row.ID,
+	}); err != nil {
 		return err
 	}
 	// playbook 可能执行数分钟，异步跑，前端通过列表刷新和安装历史查看进度。
@@ -178,9 +189,20 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 		finalStatus := "failed"
 		var summaryMessage string
 		var jobStatus string
-		if err := handler.db.QueryRowContext(context.Background(), `SELECT status,COALESCE(JSON_UNQUOTE(JSON_EXTRACT(result_summary,'$.message')),'') FROM automation_execution_job WHERE id=?`, jobID).Scan(&jobStatus, &summaryMessage); err == nil && jobStatus == "success" {
-			finalStatus = "success"
-		} else if summaryMessage == "" {
+		// 结果摘要里的 message 在应用层解析（原实现用 MySQL 的 JSON_UNQUOTE(JSON_EXTRACT(...))）。
+		if summaryRow, err := db.New(handler.db).GetJobResultSummary(context.Background(), jobID); err == nil {
+			jobStatus = summaryRow.Status
+			var summaryBody struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(summaryRow.ResultSummary, &summaryBody) == nil {
+				summaryMessage = summaryBody.Message
+			}
+			if jobStatus == "success" {
+				finalStatus = "success"
+			}
+		}
+		if summaryMessage == "" {
 			summaryMessage = fmt.Sprintf("%s %s任务执行失败", exporter, action)
 		}
 		message := summaryMessage
@@ -188,8 +210,16 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 			message = ""
 		}
 		finish := time.Now().UTC()
-		_, _ = handler.db.ExecContext(context.Background(), `UPDATE monitor_target SET install_status=?,install_message=?,update_time=? WHERE id=? AND install_status='pending'`, finalStatus, message, finish, row.ID)
-		_, _ = handler.db.ExecContext(context.Background(), `UPDATE monitor_target_install_history SET status=?,summary_message=?,end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000,update_time=? WHERE id=? AND status='pending'`, finalStatus, message, finish, finish, finish, historyID)
+		finishQueries := db.New(handler.db)
+		_, _ = finishQueries.FinishTargetInstallState(context.Background(), db.FinishTargetInstallStateParams{
+			InstallStatus: finalStatus, InstallMessage: message, UpdateTime: finish, ID: row.ID,
+		})
+		// 时长在应用层算：历史的 create_time 就是派发时刻（now），原实现用 MySQL 的 TIMESTAMPDIFF。
+		_, _ = finishQueries.FinishTargetInstallHistory(context.Background(), db.FinishTargetInstallHistoryParams{
+			Status: finalStatus, SummaryMessage: message, EndTime: sql.NullTime{Time: finish, Valid: true},
+			DurationSeconds: sql.NullFloat64{Float64: finish.Sub(now).Seconds(), Valid: true},
+			UpdateTime:      finish, ID: historyID,
+		})
 	}()
 	return nil
 }
@@ -210,62 +240,51 @@ type exporterPackageRow struct {
 
 // prepareExporterDispatch 选包、取 playbook 并组装 extra_vars。
 // 失败原因写入 target.install_message（返回 nil error 时 handler 仍会返回目标对象）。
-func (handler *Handler) prepareExporterDispatch(ginContext *gin.Context, row targetInstallRow, action string) (exporterPackageRow, int64, gin.H, error) {
-	exporter := strings.TrimSpace(row.ExporterType)
+func (handler *Handler) prepareExporterDispatch(ginContext *gin.Context, target targetInstallRow, action string) (exporterPackageRow, int64, gin.H, error) {
+	exporter := strings.TrimSpace(target.ExporterType)
 	noop := exporterPackageRow{}
 	if action == "uninstall" {
-		var pkg exporterPackageRow
-		var playbookID sql.NullInt64
-		err := handler.db.QueryRowContext(ginContext, `SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),COALESCE(sha256,''),
-			service_file_content,service_run_as_user,service_run_as_group,work_directory,uninstall_playbook_template_id
-			FROM monitor_software_package
-			WHERE package_type='exporter' AND name=? AND enabled=TRUE
-			ORDER BY create_time DESC LIMIT 1`, exporter).Scan(
-			&pkg.Version, &pkg.Arch, &pkg.Family, &pkg.Major, &pkg.Format, &pkg.File, &pkg.SHA256,
-			&pkg.ServiceFileContent, &pkg.RunAsUser, &pkg.RunAsGroup, &pkg.WorkDirectory, &playbookID)
+		row, err := db.New(handler.db).GetUninstallPackageForTarget(ginContext, exporter)
 		if err == sql.ErrNoRows {
-			return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("本地软件仓库缺少 %s 的启用安装包，无法下发卸载任务", exporter))
+			return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", fmt.Sprintf("本地软件仓库缺少 %s 的启用安装包，无法下发卸载任务", exporter))
 		}
 		if err != nil {
 			return noop, 0, nil, err
 		}
-		if !playbookID.Valid {
-			return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("%s 未配置卸载 Playbook，请在监控软件仓库中选择", exporter))
+		if !row.UninstallPlaybookTemplateID.Valid {
+			return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", fmt.Sprintf("%s 未配置卸载 Playbook，请在监控软件仓库中选择", exporter))
 		}
-		return pkg, playbookID.Int64, gin.H{"exporter_name": exporter, "service_name": exporter + ".service"}, nil
+		return exporterPackageRow{
+			Version: row.Version, Arch: row.Arch, Family: row.PlatformFamily, Major: row.PlatformMajor,
+			Format: row.PackageFormat, File: row.File, SHA256: row.Sha256,
+			ServiceFileContent: row.ServiceFileContent, RunAsUser: row.ServiceRunAsUser,
+			RunAsGroup: row.ServiceRunAsGroup, WorkDirectory: row.WorkDirectory,
+		}, row.UninstallPlaybookTemplateID.Int64, gin.H{"exporter_name": exporter, "service_name": exporter + ".service"}, nil
 	}
 
 	// 安装：按 /etc/os-release 与 CPU 架构选唯一适配包，rpm/deb 不做跨发行版兜底，tar.gz(any) 作可移植兜底。
-	rows, err := handler.db.QueryContext(ginContext, `SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
-		service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
-		FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND enabled=TRUE AND file<>''
-		ORDER BY create_time DESC`, exporter)
+	packageRows, err := db.New(handler.db).ListInstallPackagesForTarget(ginContext, exporter)
 	if err != nil {
 		return noop, 0, nil, err
 	}
-	defer rows.Close()
-	candidates := make([]exporterPackageRow, 0, 4)
-	playbookIDs := make([]sql.NullInt64, 0, 4)
-	for rows.Next() {
-		var pkg exporterPackageRow
-		var playbookID sql.NullInt64
-		if err = rows.Scan(&pkg.Version, &pkg.Arch, &pkg.Family, &pkg.Major, &pkg.Format, &pkg.File, &pkg.SHA256,
-			&pkg.ServiceFileContent, &pkg.RunAsUser, &pkg.RunAsGroup, &pkg.WorkDirectory, &playbookID); err != nil {
-			return noop, 0, nil, err
-		}
-		candidates = append(candidates, pkg)
-		playbookIDs = append(playbookIDs, playbookID)
-	}
-	if err = rows.Err(); err != nil {
-		return noop, 0, nil, err
+	candidates := make([]exporterPackageRow, 0, len(packageRows))
+	playbookIDs := make([]sql.NullInt64, 0, len(packageRows))
+	for _, packageRow := range packageRows {
+		candidates = append(candidates, exporterPackageRow{
+			Version: packageRow.Version, Arch: packageRow.Arch, Family: packageRow.PlatformFamily,
+			Major: packageRow.PlatformMajor, Format: packageRow.PackageFormat, File: packageRow.File,
+			SHA256: packageRow.Sha256, ServiceFileContent: packageRow.ServiceFileContent,
+			RunAsUser: packageRow.ServiceRunAsUser, RunAsGroup: packageRow.ServiceRunAsGroup,
+			WorkDirectory: packageRow.WorkDirectory,
+		})
+		playbookIDs = append(playbookIDs, packageRow.InstallPlaybookTemplateID)
 	}
 	if len(candidates) == 0 {
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("本地软件仓库缺少 %s 的启用 exporter 安装包，请先上传对应的离线安装包", exporter))
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", fmt.Sprintf("本地软件仓库缺少 %s 的启用 exporter 安装包，请先上传对应的离线安装包", exporter))
 	}
-	family, major, arch := normalizeExporterPlatform(row)
+	family, major, arch := normalizeExporterPlatform(target)
 	if arch == "" {
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", "主机架构信息缺失，请先执行资产采集")
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", "主机架构信息缺失，请先执行资产采集")
 	}
 	// 包格式取决于平台族（rhel→rpm、ubuntu/debian→deb），架构只参与 family/arch 匹配键。
 	expectedFormat := map[string]string{"rhel": "rpm", "ubuntu": "deb", "debian": "deb"}[family]
@@ -295,34 +314,27 @@ func (handler *Handler) prepareExporterDispatch(ginContext *gin.Context, row tar
 		if majorLabel == "" {
 			majorLabel = "unknown"
 		}
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed",
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed",
 			fmt.Sprintf("本地软件仓库缺少 %s 的 %s-%s/%s 安装包；请先上传匹配的离线 rpm/deb 包", exporter, familyLabel, majorLabel, arch))
 	}
 	if !playbookID.Valid {
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("%s 未配置安装 Playbook，请在监控软件仓库中选择", exporter))
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", fmt.Sprintf("%s 未配置安装 Playbook，请在监控软件仓库中选择", exporter))
 	}
 	pkg := candidates[selected]
 	packageLocalPath := filepath.Join(handler.packageRoot, filepath.FromSlash(pkg.File))
 	if info, statErr := os.Stat(packageLocalPath); statErr != nil || info.IsDir() {
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("%s 的安装包文件不存在，请重新上传并启用对应包", exporter))
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", fmt.Sprintf("%s 的安装包文件不存在，请重新上传并启用对应包", exporter))
 	}
 	// 同名同版本跨平台包的校验和清单，供 playbook 做一致性校验。
-	checksumRows, err := handler.db.QueryContext(ginContext, `SELECT os,arch,sha256 FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND version=? AND enabled=TRUE AND sha256<>''`, exporter, pkg.Version)
+	checksumRows, err := db.New(handler.db).ListPackageChecksums(ginContext, db.ListPackageChecksumsParams{
+		Name: exporter, Version: pkg.Version,
+	})
 	if err != nil {
 		return noop, 0, nil, err
 	}
-	defer checksumRows.Close()
 	checksums := gin.H{}
-	for checksumRows.Next() {
-		var packageOS, packageArch, packageSHA string
-		if err = checksumRows.Scan(&packageOS, &packageArch, &packageSHA); err != nil {
-			return noop, 0, nil, err
-		}
-		checksums[packageOS+"-"+packageArch] = packageSHA
-	}
-	if err = checksumRows.Err(); err != nil {
-		return noop, 0, nil, err
+	for _, checksumRow := range checksumRows {
+		checksums[checksumRow.Os+"-"+checksumRow.Arch] = checksumRow.Sha256
 	}
 	extra := gin.H{
 		"exporter_name":           exporter,
@@ -384,22 +396,23 @@ func normalizeExporterPlatform(row targetInstallRow) (family, major, arch string
 // monitorTargetPending 检查目标最近一次安装/卸载历史是否仍在执行。
 // 派发 goroutine 兜底 30 分钟超时，因此超过 31 分钟的 pending 视为进程中断遗留，
 // 置为 failed 后放行本次下发（对应 Django 的 stale pending 过期逻辑）。
-func monitorTargetPending(ginContext *gin.Context, db *sql.DB, id int64) (bool, int64, error) {
-	var historyID int64
-	var status string
-	var createTime time.Time
-	err := db.QueryRowContext(ginContext, `SELECT id,status,create_time FROM monitor_target_install_history WHERE target_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&historyID, &status, &createTime)
+func monitorTargetPending(ginContext *gin.Context, pool *sql.DB, id int64) (bool, int64, error) {
+	queries := db.New(pool)
+	latest, err := queries.GetTargetInstallHistoryForTimeout(ginContext, sql.NullInt64{Int64: id, Valid: true})
 	if err == sql.ErrNoRows {
 		return false, 0, nil
 	}
 	if err != nil {
 		return false, 0, err
 	}
+	historyID, status, createTime := latest.ID, latest.Status, latest.CreateTime
 	if status != "pending" && status != "running" {
 		return false, historyID, nil
 	}
 	if time.Since(createTime) > 31*time.Minute {
-		if _, err = db.ExecContext(ginContext, `UPDATE monitor_target_install_history SET status='failed',error_message_snapshot='任务执行超时（进程中断遗留），已自动过期',update_time=? WHERE id=? AND status IN ('pending','running')`, time.Now().UTC(), historyID); err != nil {
+		if _, err = queries.ExpireTargetInstallHistory(ginContext, db.ExpireTargetInstallHistoryParams{
+			UpdateTime: time.Now().UTC(), ID: historyID,
+		}); err != nil {
 			return false, 0, err
 		}
 		return false, historyID, nil

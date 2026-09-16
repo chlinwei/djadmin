@@ -11,6 +11,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/logstream"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -81,43 +82,30 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 	matcher := streamNameMatcher{prefix: prefix, tiers: map[string]bool{}}
 	var serviceKeys []streamServiceKey
 	var legacyKeys []streamLegacyKey
-	rows, err := handler.db.QueryContext(context, `
-		SELECT DISTINCT p.code, e.code, bs.code, s.code, COALESCE(t.code, '')
-		FROM assets_application_service s
-		JOIN assets_business_system bs ON bs.id = s.business_system_id
-		JOIN assets_project p ON p.id = bs.project_id
-		JOIN assets_business_environment e ON e.id = s.environment_id
-		LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
-		WHERE s.enabled = TRUE`)
-	if err == nil {
-		for rows.Next() {
-			var project, env, biz, service, tier string
-			if err = rows.Scan(&project, &env, &biz, &service, &tier); err == nil {
-				serviceKeys = append(serviceKeys, streamServiceKey{
-					Match:   strings.Join([]string{project, biz, env, service}, "-") + "-",
-					Project: project, Environment: env, BusinessSystem: biz, Service: service,
-				})
-				legacyKeys = append(legacyKeys, streamLegacyKey{
-					Match:   strings.Join([]string{env, biz}, "-") + "-",
-					Project: project, Environment: env, BusinessSystem: biz,
-				})
-				if tier != "" {
-					matcher.tiers[tier] = true
-				}
+	queries := db.New(handler.db)
+	if rows, err := queries.ListEnabledServiceStreamDims(context); err == nil {
+		for _, row := range rows {
+			serviceKeys = append(serviceKeys, streamServiceKey{
+				Match:   strings.Join([]string{row.ProjectCode, row.BusinessSystemCode, row.EnvironmentCode, row.ServiceCode}, "-") + "-",
+				Project: row.ProjectCode, Environment: row.EnvironmentCode,
+				BusinessSystem: row.BusinessSystemCode, Service: row.ServiceCode,
+			})
+			legacyKeys = append(legacyKeys, streamLegacyKey{
+				Match:   strings.Join([]string{row.EnvironmentCode, row.BusinessSystemCode}, "-") + "-",
+				Project: row.ProjectCode, Environment: row.EnvironmentCode, BusinessSystem: row.BusinessSystemCode,
+			})
+			if row.TierCode != "" {
+				matcher.tiers[row.TierCode] = true
 			}
 		}
-		rows.Close()
 	}
 	// 兜底：把所有档位码也带上，旧命名流（无服务维度）至少档位能对上
-	tierRows, tierErr := handler.db.QueryContext(context, `SELECT code FROM monitor_log_retention_tier WHERE enabled = TRUE`)
-	if tierErr == nil {
-		for tierRows.Next() {
-			var tier string
-			if scanErr := tierRows.Scan(&tier); scanErr == nil && tier != "" {
-				matcher.tiers[tier] = true
+	if tiers, tierErr := queries.ListEnabledRetentionTiers(context); tierErr == nil {
+		for _, tier := range tiers {
+			if tier.Code != "" {
+				matcher.tiers[tier.Code] = true
 			}
 		}
-		tierRows.Close()
 	}
 	matcher.services = serviceKeys
 	matcher.legacy = legacyKeys
@@ -296,54 +284,47 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 		Tier           *string `json:"retention_tier"`
 		CollectEnabled bool    `json:"log_collection_enabled"`
 	}
+	queries := db.New(handler.db)
 	projects := []projectRow{}
-	rows, err := handler.db.QueryContext(context, `SELECT id,code,name FROM assets_project WHERE enabled=TRUE ORDER BY name`)
-	if err == nil {
-		for rows.Next() {
-			var item projectRow
-			if err = rows.Scan(&item.ID, &item.Code, &item.Name); err == nil {
-				projects = append(projects, item)
-			}
+	if rows, queryErr := queries.ListEnabledProjects(context); queryErr == nil {
+		for _, row := range rows {
+			projects = append(projects, projectRow{ID: row.ID, Code: row.Code, Name: row.Name})
 		}
-		rows.Close()
 	}
 	bizsystems := []bizsysRow{}
-	rows, err = handler.db.QueryContext(context, `SELECT id,code,name,project_id FROM assets_business_system WHERE enabled=TRUE ORDER BY name`)
-	if err == nil {
-		for rows.Next() {
-			var item bizsysRow
-			if err = rows.Scan(&item.ID, &item.Code, &item.Name, &item.ProjectID); err == nil {
-				bizsystems = append(bizsystems, item)
+	if rows, queryErr := queries.ListEnabledBusinessSystems(context); queryErr == nil {
+		for _, row := range rows {
+			var projectID *int64
+			if row.ProjectID.Valid {
+				value := row.ProjectID.Int64
+				projectID = &value
 			}
+			bizsystems = append(bizsystems, bizsysRow{ID: row.ID, Code: row.Code, Name: row.Name, ProjectID: projectID})
 		}
-		rows.Close()
 	}
 	environments := []envRow{}
-	rows, err = handler.db.QueryContext(context, `SELECT id,code,name FROM assets_business_environment WHERE enabled=TRUE ORDER BY `+"`order`"+`,name`)
-	if err == nil {
-		for rows.Next() {
-			var item envRow
-			if err = rows.Scan(&item.ID, &item.Code, &item.Name); err == nil {
-				environments = append(environments, item)
-			}
+	if rows, queryErr := queries.ListEnabledBusinessEnvironments(context); queryErr == nil {
+		for _, row := range rows {
+			environments = append(environments, envRow{ID: row.ID, Code: row.Code, Name: row.Name})
 		}
-		rows.Close()
 	}
 	services := []serviceRow{}
-	rows, err = handler.db.QueryContext(context, `SELECT s.code,s.name,bs.code,e.code,t.code,s.log_collection_enabled
-		FROM assets_application_service s
-		JOIN assets_business_system bs ON bs.id=s.business_system_id
-		LEFT JOIN assets_business_environment e ON e.id=s.environment_id
-		LEFT JOIN monitor_log_retention_tier t ON t.id=s.log_retention_tier_id
-		WHERE s.enabled=TRUE ORDER BY s.name`)
-	if err == nil {
-		for rows.Next() {
-			var item serviceRow
-			if err = rows.Scan(&item.Code, &item.Name, &item.BusinessSystem, &item.Environment, &item.Tier, &item.CollectEnabled); err == nil {
-				services = append(services, item)
+	if rows, queryErr := queries.ListEnabledServiceStreamRows(context); queryErr == nil {
+		for _, row := range rows {
+			var environment, tier *string
+			if row.EnvironmentCode.Valid {
+				value := row.EnvironmentCode.String
+				environment = &value
 			}
+			if row.RetentionTier.Valid {
+				value := row.RetentionTier.String
+				tier = &value
+			}
+			services = append(services, serviceRow{
+				Code: row.Code, Name: row.Name, BusinessSystem: row.BusinessSystemCode,
+				Environment: environment, Tier: tier, CollectEnabled: row.LogCollectionEnabled,
+			})
 		}
-		rows.Close()
 	}
 
 	response.Success(context, gin.H{

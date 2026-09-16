@@ -10,7 +10,101 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
+
+const activateAgentPackage = `-- name: ActivateAgentPackage :execrows
+UPDATE agent_package SET is_active = 1 WHERE id = $1
+`
+
+func (q *Queries) ActivateAgentPackage(ctx context.Context, id uint64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, activateAgentPackage, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const countActiveAgentInstallJobs = `-- name: CountActiveAgentInstallJobs :one
+SELECT COUNT(*) FROM assets_agent_job
+WHERE host_id = ANY($1::bigint[]) AND action='install_agent' AND status IN ('queued','running')
+`
+
+func (q *Queries) CountActiveAgentInstallJobs(ctx context.Context, hostIds []int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveAgentInstallJobs, pq.Array(hostIds))
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAgentJobs = `-- name: CountAgentJobs :one
+SELECT COUNT(*) FROM assets_agent_job
+WHERE (host_id = $1 OR $1 IS NULL)
+  AND (action = $2 OR $2 IS NULL)
+`
+
+type CountAgentJobsParams struct {
+	HostID sql.NullInt64  `json:"host_id"`
+	Action sql.NullString `json:"action"`
+}
+
+func (q *Queries) CountAgentJobs(ctx context.Context, arg CountAgentJobsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAgentJobs, arg.HostID, arg.Action)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countApplicationDeployments = `-- name: CountApplicationDeployments :one
+SELECT COUNT(*) FROM assets_application_deployment d
+WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               WHERE l.deployment_id = d.id AND l.service_id = $1)
+       OR $1 IS NULL)
+  AND (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               JOIN assets_application_service s ON s.id = l.service_id
+               WHERE l.deployment_id = d.id AND s.business_system_id = $2)
+       OR $2 IS NULL)
+  AND (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               JOIN assets_application_service s ON s.id = l.service_id
+               WHERE l.deployment_id = d.id AND s.environment_id = $3)
+       OR $3 IS NULL)
+`
+
+type CountApplicationDeploymentsParams struct {
+	ServiceID        sql.NullInt64 `json:"service_id"`
+	BusinessSystemID sql.NullInt64 `json:"business_system_id"`
+	EnvironmentID    sql.NullInt64 `json:"environment_id"`
+}
+
+func (q *Queries) CountApplicationDeployments(ctx context.Context, arg CountApplicationDeploymentsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countApplicationDeployments, arg.ServiceID, arg.BusinessSystemID, arg.EnvironmentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countApplicationServices = `-- name: CountApplicationServices :one
+
+SELECT COUNT(*) FROM assets_application_service s
+WHERE (s.name LIKE $1 OR s.code LIKE $1 OR $1 IS NULL)
+  AND (s.business_system_id = $2 OR $2 IS NULL)
+`
+
+type CountApplicationServicesParams struct {
+	Pattern          sql.NullString `json:"pattern"`
+	BusinessSystemID sql.NullInt64  `json:"business_system_id"`
+}
+
+// ---- P2-3：逻辑服务 / 部署实例（列表过滤、详情、成员关联）+ 逻辑服务的日志设置 --------
+// 原实现的列表过滤是运行时拼 WHERE（搜索 + 可选业务系统/应用过滤 + EXISTS 子查询），
+// 改成 NULL 表示不过滤的 sqlc.narg；`IS NULL` 仍写在 OR 链末尾（SQL_DESIGN §2.2）。
+func (q *Queries) CountApplicationServices(ctx context.Context, arg CountApplicationServicesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countApplicationServices, arg.Pattern, arg.BusinessSystemID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const countApplicationVersions = `-- name: CountApplicationVersions :one
 SELECT COUNT(*) FROM assets_application_version
@@ -210,6 +304,38 @@ func (q *Queries) CountHostsByGroup(ctx context.Context, groupID sql.NullInt64) 
 	return count, err
 }
 
+const countOtherHostsByIP = `-- name: CountOtherHostsByIP :one
+SELECT COUNT(*) FROM assets_host WHERE ip = $1 AND id <> $2
+`
+
+type CountOtherHostsByIPParams struct {
+	Ip        sql.NullString `json:"ip"`
+	ExcludeID int64          `json:"exclude_id"`
+}
+
+func (q *Queries) CountOtherHostsByIP(ctx context.Context, arg CountOtherHostsByIPParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOtherHostsByIP, arg.Ip, arg.ExcludeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countOtherHostsByInstanceName = `-- name: CountOtherHostsByInstanceName :one
+SELECT COUNT(*) FROM assets_host WHERE instance_name = $1 AND id <> $2
+`
+
+type CountOtherHostsByInstanceNameParams struct {
+	InstanceName sql.NullString `json:"instance_name"`
+	ExcludeID    int64          `json:"exclude_id"`
+}
+
+func (q *Queries) CountOtherHostsByInstanceName(ctx context.Context, arg CountOtherHostsByInstanceNameParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOtherHostsByInstanceName, arg.InstanceName, arg.ExcludeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countProjects = `-- name: CountProjects :one
 
 SELECT COUNT(*) FROM assets_project
@@ -224,6 +350,185 @@ func (q *Queries) CountProjects(ctx context.Context, pattern sql.NullString) (in
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createAgentExecutionJob = `-- name: CreateAgentExecutionJob :one
+INSERT INTO automation_execution_job
+  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+   task_name_snapshot,template_name_snapshot,template_content_snapshot,"limit",run_as_user_snapshot,
+   run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username,start_time)
+VALUES ($1,$2,NULL,$3,'running','manual',
+        $4,$5,$6,
+        $7,$8,$9,'',
+        $10,$11,$12,
+        $13,$14,$15)
+RETURNING id
+`
+
+type CreateAgentExecutionJobParams struct {
+	CreateTime              time.Time       `json:"create_time"`
+	UpdateTime              time.Time       `json:"update_time"`
+	JobID                   string          `json:"job_id"`
+	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
+	ExtraVars               json.RawMessage `json:"extra_vars"`
+	ResultSummary           json.RawMessage `json:"result_summary"`
+	TaskNameSnapshot        string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
+	TemplateContentSnapshot string          `json:"template_content_snapshot"`
+	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
+	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername       string          `json:"requested_username"`
+	StartTime               sql.NullTime    `json:"start_time"`
+}
+
+func (q *Queries) CreateAgentExecutionJob(ctx context.Context, arg CreateAgentExecutionJobParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAgentExecutionJob,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.JobID,
+		arg.InventorySnapshot,
+		arg.ExtraVars,
+		arg.ResultSummary,
+		arg.TaskNameSnapshot,
+		arg.TemplateNameSnapshot,
+		arg.TemplateContentSnapshot,
+		arg.RunAsUserSnapshot,
+		arg.RunAsGroupSnapshot,
+		arg.WorkDirectorySnapshot,
+		arg.RequestedUserID,
+		arg.RequestedUsername,
+		arg.StartTime,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createAgentJob = `-- name: CreateAgentJob :exec
+INSERT INTO assets_agent_job
+  (create_time,update_time,remark,job_id,instance_name,job_type,action,params,timeout_seconds,status,
+   result_data,error_message,host_id,exit_code,stderr,stdout)
+VALUES ($1,$2,NULL,$3,$4,
+        $5,$6,$7,$8,$9,
+        $10,$11,$12,$13,
+        $14,$15)
+`
+
+type CreateAgentJobParams struct {
+	CreateTime     time.Time       `json:"create_time"`
+	UpdateTime     time.Time       `json:"update_time"`
+	JobID          string          `json:"job_id"`
+	InstanceName   string          `json:"instance_name"`
+	JobType        string          `json:"job_type"`
+	Action         string          `json:"action"`
+	Params         json.RawMessage `json:"params"`
+	TimeoutSeconds uint32          `json:"timeout_seconds"`
+	Status         string          `json:"status"`
+	ResultData     json.RawMessage `json:"result_data"`
+	ErrorMessage   string          `json:"error_message"`
+	HostID         sql.NullInt64   `json:"host_id"`
+	ExitCode       int32           `json:"exit_code"`
+	Stderr         string          `json:"stderr"`
+	Stdout         string          `json:"stdout"`
+}
+
+func (q *Queries) CreateAgentJob(ctx context.Context, arg CreateAgentJobParams) error {
+	_, err := q.db.ExecContext(ctx, createAgentJob,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.JobID,
+		arg.InstanceName,
+		arg.JobType,
+		arg.Action,
+		arg.Params,
+		arg.TimeoutSeconds,
+		arg.Status,
+		arg.ResultData,
+		arg.ErrorMessage,
+		arg.HostID,
+		arg.ExitCode,
+		arg.Stderr,
+		arg.Stdout,
+	)
+	return err
+}
+
+const createAgentJobHostLog = `-- name: CreateAgentJobHostLog :one
+INSERT INTO automation_execution_host_log
+  (create_time,update_time,remark,host_id_snapshot,host_name_snapshot,host_ip_snapshot,agent_job_id,status,
+   exit_code,stdout,stderr,error_message,result_data,host_id,job_id)
+VALUES ($1,$2,NULL,$3,$4,
+        $5,$6,$7,$8,$9,
+        $10,$11,$12,$13,$14)
+RETURNING id
+`
+
+type CreateAgentJobHostLogParams struct {
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	HostIDSnapshot   sql.NullInt32   `json:"host_id_snapshot"`
+	HostNameSnapshot string          `json:"host_name_snapshot"`
+	HostIpSnapshot   string          `json:"host_ip_snapshot"`
+	AgentJobID       string          `json:"agent_job_id"`
+	Status           string          `json:"status"`
+	ExitCode         sql.NullInt32   `json:"exit_code"`
+	Stdout           string          `json:"stdout"`
+	Stderr           string          `json:"stderr"`
+	ErrorMessage     string          `json:"error_message"`
+	ResultData       json.RawMessage `json:"result_data"`
+	HostID           sql.NullInt64   `json:"host_id"`
+	JobID            int64           `json:"job_id"`
+}
+
+func (q *Queries) CreateAgentJobHostLog(ctx context.Context, arg CreateAgentJobHostLogParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createAgentJobHostLog,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.HostIDSnapshot,
+		arg.HostNameSnapshot,
+		arg.HostIpSnapshot,
+		arg.AgentJobID,
+		arg.Status,
+		arg.ExitCode,
+		arg.Stdout,
+		arg.Stderr,
+		arg.ErrorMessage,
+		arg.ResultData,
+		arg.HostID,
+		arg.JobID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createAgentPackage = `-- name: CreateAgentPackage :one
+INSERT INTO agent_package(version,file,sha256,size_bytes,is_active,create_time)
+VALUES($1,$2,$3,$4,1,$5)
+RETURNING id
+`
+
+type CreateAgentPackageParams struct {
+	Version    string       `json:"version"`
+	File       string       `json:"file"`
+	Sha256     string       `json:"sha256"`
+	SizeBytes  int64        `json:"size_bytes"`
+	CreateTime sql.NullTime `json:"create_time"`
+}
+
+func (q *Queries) CreateAgentPackage(ctx context.Context, arg CreateAgentPackageParams) (uint64, error) {
+	row := q.db.QueryRowContext(ctx, createAgentPackage,
+		arg.Version,
+		arg.File,
+		arg.Sha256,
+		arg.SizeBytes,
+		arg.CreateTime,
+	)
+	var id uint64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createApplication = `-- name: CreateApplication :one
@@ -255,6 +560,106 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 		arg.Description,
 		arg.Enabled,
 		arg.Vendor,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createApplicationDeployment = `-- name: CreateApplicationDeployment :one
+INSERT INTO assets_application_deployment
+  (create_time,update_time,remark,instance_name,enabled,host_id,runtime_status,runtime_status_output,ha_role,runtime_variables)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,$9,
+        $10)
+RETURNING id
+`
+
+type CreateApplicationDeploymentParams struct {
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	InstanceName        string          `json:"instance_name"`
+	Enabled             bool            `json:"enabled"`
+	HostID              int64           `json:"host_id"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	RuntimeStatusOutput string          `json:"runtime_status_output"`
+	HaRole              string          `json:"ha_role"`
+	RuntimeVariables    json.RawMessage `json:"runtime_variables"`
+}
+
+func (q *Queries) CreateApplicationDeployment(ctx context.Context, arg CreateApplicationDeploymentParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createApplicationDeployment,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.InstanceName,
+		arg.Enabled,
+		arg.HostID,
+		arg.RuntimeStatus,
+		arg.RuntimeStatusOutput,
+		arg.HaRole,
+		arg.RuntimeVariables,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createApplicationService = `-- name: CreateApplicationService :one
+
+INSERT INTO assets_application_service
+  (create_time,update_time,remark,name,code,topology_type,access_address,enabled,application_id,cluster_profile_id,
+   environment_id,application_version_id,deployment_template_id,business_system_id,macro_values,
+   log_collection_enabled,log_retention_tier_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,$9,
+        $10,$11,$12,
+        $13,$14,$15,
+        $16,$17)
+RETURNING id
+`
+
+type CreateApplicationServiceParams struct {
+	CreateTime           time.Time       `json:"create_time"`
+	UpdateTime           time.Time       `json:"update_time"`
+	Remark               sql.NullString  `json:"remark"`
+	Name                 string          `json:"name"`
+	Code                 string          `json:"code"`
+	TopologyType         string          `json:"topology_type"`
+	AccessAddress        string          `json:"access_address"`
+	Enabled              bool            `json:"enabled"`
+	ApplicationID        int64           `json:"application_id"`
+	ClusterProfileID     sql.NullInt64   `json:"cluster_profile_id"`
+	EnvironmentID        sql.NullInt64   `json:"environment_id"`
+	ApplicationVersionID int64           `json:"application_version_id"`
+	DeploymentTemplateID int64           `json:"deployment_template_id"`
+	BusinessSystemID     int64           `json:"business_system_id"`
+	MacroValues          json.RawMessage `json:"macro_values"`
+	LogCollectionEnabled bool            `json:"log_collection_enabled"`
+	LogRetentionTierID   sql.NullInt64   `json:"log_retention_tier_id"`
+}
+
+// ---- 逻辑服务写路径 ----
+func (q *Queries) CreateApplicationService(ctx context.Context, arg CreateApplicationServiceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createApplicationService,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Code,
+		arg.TopologyType,
+		arg.AccessAddress,
+		arg.Enabled,
+		arg.ApplicationID,
+		arg.ClusterProfileID,
+		arg.EnvironmentID,
+		arg.ApplicationVersionID,
+		arg.DeploymentTemplateID,
+		arg.BusinessSystemID,
+		arg.MacroValues,
+		arg.LogCollectionEnabled,
+		arg.LogRetentionTierID,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -427,6 +832,66 @@ func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialPara
 	return id, err
 }
 
+const createDeploymentTemplate = `-- name: CreateDeploymentTemplate :one
+
+INSERT INTO assets_application_deployment_template
+  (create_time,update_time,remark,name,control_type,run_user,run_group,app_home,work_directory,service_name,
+   ha_system_name,ha_cluster_name,ha_resource_name,enabled,application_id,systemd_scope,macro_definitions)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,$9,$10,
+        $11,$12,$13,$14,
+        $15,$16,$17)
+RETURNING id
+`
+
+type CreateDeploymentTemplateParams struct {
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Name             string          `json:"name"`
+	ControlType      string          `json:"control_type"`
+	RunUser          string          `json:"run_user"`
+	RunGroup         string          `json:"run_group"`
+	AppHome          string          `json:"app_home"`
+	WorkDirectory    string          `json:"work_directory"`
+	ServiceName      string          `json:"service_name"`
+	HaSystemName     string          `json:"ha_system_name"`
+	HaClusterName    string          `json:"ha_cluster_name"`
+	HaResourceName   string          `json:"ha_resource_name"`
+	Enabled          bool            `json:"enabled"`
+	ApplicationID    sql.NullInt64   `json:"application_id"`
+	SystemdScope     string          `json:"systemd_scope"`
+	MacroDefinitions json.RawMessage `json:"macro_definitions"`
+}
+
+// ---- P2-3：部署模板（含嵌套子表）----
+// 原实现的嵌套子表删除是运行时拼表名（`DELETE FROM `+table+` WHERE …`），sqlc 表达不了，
+// 改成每个子表一条显式语句（调用点按表名分派），表名不再是变量。
+func (q *Queries) CreateDeploymentTemplate(ctx context.Context, arg CreateDeploymentTemplateParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createDeploymentTemplate,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.ControlType,
+		arg.RunUser,
+		arg.RunGroup,
+		arg.AppHome,
+		arg.WorkDirectory,
+		arg.ServiceName,
+		arg.HaSystemName,
+		arg.HaClusterName,
+		arg.HaResourceName,
+		arg.Enabled,
+		arg.ApplicationID,
+		arg.SystemdScope,
+		arg.MacroDefinitions,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createHost = `-- name: CreateHost :one
 INSERT INTO assets_host (
   create_time, update_time, remark, status, instance_id, ip, is_deleted_in_cloud,
@@ -482,6 +947,32 @@ func (q *Queries) CreateHost(ctx context.Context, arg CreateHostParams) (int64, 
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const createHostDisk = `-- name: CreateHostDisk :exec
+INSERT INTO assets_hostdisk(host_id,device,mount_point,size_gb,used_gb,filesystem)
+VALUES($1,$2,$3,$4,$5,$6)
+`
+
+type CreateHostDiskParams struct {
+	HostID     int64           `json:"host_id"`
+	Device     string          `json:"device"`
+	MountPoint sql.NullString  `json:"mount_point"`
+	SizeGb     sql.NullFloat64 `json:"size_gb"`
+	UsedGb     sql.NullFloat64 `json:"used_gb"`
+	Filesystem sql.NullString  `json:"filesystem"`
+}
+
+func (q *Queries) CreateHostDisk(ctx context.Context, arg CreateHostDiskParams) error {
+	_, err := q.db.ExecContext(ctx, createHostDisk,
+		arg.HostID,
+		arg.Device,
+		arg.MountPoint,
+		arg.SizeGb,
+		arg.UsedGb,
+		arg.Filesystem,
+	)
+	return err
 }
 
 const createHostGroup = `-- name: CreateHostGroup :one
@@ -540,12 +1031,355 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (i
 	return id, err
 }
 
+const createServiceDeployment = `-- name: CreateServiceDeployment :exec
+INSERT INTO assets_application_service_deployment (create_time,update_time,remark,enabled,deployment_id,service_id)
+VALUES ($1,$2,NULL,$3,$4,$5)
+`
+
+type CreateServiceDeploymentParams struct {
+	CreateTime   time.Time `json:"create_time"`
+	UpdateTime   time.Time `json:"update_time"`
+	Enabled      bool      `json:"enabled"`
+	DeploymentID int64     `json:"deployment_id"`
+	ServiceID    int64     `json:"service_id"`
+}
+
+func (q *Queries) CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error {
+	_, err := q.db.ExecContext(ctx, createServiceDeployment,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Enabled,
+		arg.DeploymentID,
+		arg.ServiceID,
+	)
+	return err
+}
+
+const createServiceLogSetting = `-- name: CreateServiceLogSetting :exec
+INSERT INTO assets_application_service_log_setting
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,processing_rule_id,collection_filter_rule_id)
+VALUES ($1,$2,NULL,$3,$4,
+        $5,$6,$7,
+        $8)
+`
+
+type CreateServiceLogSettingParams struct {
+	CreateTime             time.Time     `json:"create_time"`
+	UpdateTime             time.Time     `json:"update_time"`
+	CollectionEnabled      *bool         `json:"collection_enabled"`
+	LogDefinitionID        int64         `json:"log_definition_id"`
+	RetentionTierID        sql.NullInt64 `json:"retention_tier_id"`
+	ServiceID              int64         `json:"service_id"`
+	ProcessingRuleID       sql.NullInt64 `json:"processing_rule_id"`
+	CollectionFilterRuleID sql.NullInt64 `json:"collection_filter_rule_id"`
+}
+
+func (q *Queries) CreateServiceLogSetting(ctx context.Context, arg CreateServiceLogSettingParams) error {
+	_, err := q.db.ExecContext(ctx, createServiceLogSetting,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.CollectionEnabled,
+		arg.LogDefinitionID,
+		arg.RetentionTierID,
+		arg.ServiceID,
+		arg.ProcessingRuleID,
+		arg.CollectionFilterRuleID,
+	)
+	return err
+}
+
+const createTemplateComposeConfig = `-- name: CreateTemplateComposeConfig :exec
+INSERT INTO assets_docker_compose_control_config
+  (create_time,update_time,remark,project_name,service_name,compose_file_path,working_directory,env_file,expected_image,expected_image_tag,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,$9,
+        $10,$11)
+`
+
+type CreateTemplateComposeConfigParams struct {
+	CreateTime           time.Time      `json:"create_time"`
+	UpdateTime           time.Time      `json:"update_time"`
+	Remark               sql.NullString `json:"remark"`
+	ProjectName          string         `json:"project_name"`
+	ServiceName          string         `json:"service_name"`
+	ComposeFilePath      string         `json:"compose_file_path"`
+	WorkingDirectory     string         `json:"working_directory"`
+	EnvFile              string         `json:"env_file"`
+	ExpectedImage        string         `json:"expected_image"`
+	ExpectedImageTag     string         `json:"expected_image_tag"`
+	DeploymentTemplateID int64          `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplateComposeConfig(ctx context.Context, arg CreateTemplateComposeConfigParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplateComposeConfig,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.ProjectName,
+		arg.ServiceName,
+		arg.ComposeFilePath,
+		arg.WorkingDirectory,
+		arg.EnvFile,
+		arg.ExpectedImage,
+		arg.ExpectedImageTag,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const createTemplateConfigFile = `-- name: CreateTemplateConfigFile :exec
+INSERT INTO assets_application_config_file
+  (create_time,update_time,remark,name,path,file_format,required,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8)
+`
+
+type CreateTemplateConfigFileParams struct {
+	CreateTime           time.Time      `json:"create_time"`
+	UpdateTime           time.Time      `json:"update_time"`
+	Remark               sql.NullString `json:"remark"`
+	Name                 string         `json:"name"`
+	Path                 string         `json:"path"`
+	FileFormat           string         `json:"file_format"`
+	Required             bool           `json:"required"`
+	DeploymentTemplateID int64          `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplateConfigFile(ctx context.Context, arg CreateTemplateConfigFileParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplateConfigFile,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Path,
+		arg.FileFormat,
+		arg.Required,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const createTemplateControlAction = `-- name: CreateTemplateControlAction :exec
+INSERT INTO assets_application_control_action
+  (create_time,update_time,remark,action,command,timeout_seconds,success_exit_codes,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8)
+`
+
+type CreateTemplateControlActionParams struct {
+	CreateTime           time.Time       `json:"create_time"`
+	UpdateTime           time.Time       `json:"update_time"`
+	Remark               sql.NullString  `json:"remark"`
+	Action               string          `json:"action"`
+	Command              string          `json:"command"`
+	TimeoutSeconds       uint32          `json:"timeout_seconds"`
+	SuccessExitCodes     json.RawMessage `json:"success_exit_codes"`
+	DeploymentTemplateID int64           `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplateControlAction(ctx context.Context, arg CreateTemplateControlActionParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplateControlAction,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Action,
+		arg.Command,
+		arg.TimeoutSeconds,
+		arg.SuccessExitCodes,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const createTemplateDockerConfig = `-- name: CreateTemplateDockerConfig :exec
+INSERT INTO assets_docker_control_config
+  (create_time,update_time,remark,container_name,docker_host,expected_image,expected_image_tag,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8)
+`
+
+type CreateTemplateDockerConfigParams struct {
+	CreateTime           time.Time      `json:"create_time"`
+	UpdateTime           time.Time      `json:"update_time"`
+	Remark               sql.NullString `json:"remark"`
+	ContainerName        string         `json:"container_name"`
+	DockerHost           string         `json:"docker_host"`
+	ExpectedImage        string         `json:"expected_image"`
+	ExpectedImageTag     string         `json:"expected_image_tag"`
+	DeploymentTemplateID int64          `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplateDockerConfig(ctx context.Context, arg CreateTemplateDockerConfigParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplateDockerConfig,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.ContainerName,
+		arg.DockerHost,
+		arg.ExpectedImage,
+		arg.ExpectedImageTag,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const createTemplateLogDefinition = `-- name: CreateTemplateLogDefinition :exec
+INSERT INTO assets_application_log_definition
+  (create_time,update_time,remark,name,path_pattern,collection_enabled,deployment_template_id,extra_fields,processing_rule_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,
+        $9)
+`
+
+type CreateTemplateLogDefinitionParams struct {
+	CreateTime           time.Time       `json:"create_time"`
+	UpdateTime           time.Time       `json:"update_time"`
+	Remark               sql.NullString  `json:"remark"`
+	Name                 string          `json:"name"`
+	PathPattern          string          `json:"path_pattern"`
+	CollectionEnabled    bool            `json:"collection_enabled"`
+	DeploymentTemplateID int64           `json:"deployment_template_id"`
+	ExtraFields          json.RawMessage `json:"extra_fields"`
+	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
+}
+
+func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTemplateLogDefinitionParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplateLogDefinition,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.PathPattern,
+		arg.CollectionEnabled,
+		arg.DeploymentTemplateID,
+		arg.ExtraFields,
+		arg.ProcessingRuleID,
+	)
+	return err
+}
+
+const createTemplatePath = `-- name: CreateTemplatePath :exec
+INSERT INTO assets_application_path
+  (create_time,update_time,remark,name,path_type,path,required,expected_owner,expected_group,expected_mode,check_enabled,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,$6,
+        $7,$8,$9,$10,
+        $11,$12)
+`
+
+type CreateTemplatePathParams struct {
+	CreateTime           time.Time      `json:"create_time"`
+	UpdateTime           time.Time      `json:"update_time"`
+	Remark               sql.NullString `json:"remark"`
+	Name                 string         `json:"name"`
+	PathType             string         `json:"path_type"`
+	Path                 string         `json:"path"`
+	Required             bool           `json:"required"`
+	ExpectedOwner        string         `json:"expected_owner"`
+	ExpectedGroup        string         `json:"expected_group"`
+	ExpectedMode         string         `json:"expected_mode"`
+	CheckEnabled         bool           `json:"check_enabled"`
+	DeploymentTemplateID int64          `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplatePath(ctx context.Context, arg CreateTemplatePathParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplatePath,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.PathType,
+		arg.Path,
+		arg.Required,
+		arg.ExpectedOwner,
+		arg.ExpectedGroup,
+		arg.ExpectedMode,
+		arg.CheckEnabled,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const createTemplatePort = `-- name: CreateTemplatePort :exec
+INSERT INTO assets_application_port
+  (create_time,update_time,remark,name,protocol,bind_address,port,required,external_access,check_enabled,deployment_template_id)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,$8,$9,$10,
+        $11)
+`
+
+type CreateTemplatePortParams struct {
+	CreateTime           time.Time      `json:"create_time"`
+	UpdateTime           time.Time      `json:"update_time"`
+	Remark               sql.NullString `json:"remark"`
+	Name                 string         `json:"name"`
+	Protocol             string         `json:"protocol"`
+	BindAddress          string         `json:"bind_address"`
+	Port                 uint32         `json:"port"`
+	Required             bool           `json:"required"`
+	ExternalAccess       bool           `json:"external_access"`
+	CheckEnabled         bool           `json:"check_enabled"`
+	DeploymentTemplateID int64          `json:"deployment_template_id"`
+}
+
+func (q *Queries) CreateTemplatePort(ctx context.Context, arg CreateTemplatePortParams) error {
+	_, err := q.db.ExecContext(ctx, createTemplatePort,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Protocol,
+		arg.BindAddress,
+		arg.Port,
+		arg.Required,
+		arg.ExternalAccess,
+		arg.CheckEnabled,
+		arg.DeploymentTemplateID,
+	)
+	return err
+}
+
+const deactivateOtherAgentPackages = `-- name: DeactivateOtherAgentPackages :exec
+UPDATE agent_package SET is_active = 0 WHERE id <> $1 AND is_active = 1
+`
+
+func (q *Queries) DeactivateOtherAgentPackages(ctx context.Context, id uint64) error {
+	_, err := q.db.ExecContext(ctx, deactivateOtherAgentPackages, id)
+	return err
+}
+
+const deleteAgentPackage = `-- name: DeleteAgentPackage :exec
+DELETE FROM agent_package WHERE id = $1
+`
+
+func (q *Queries) DeleteAgentPackage(ctx context.Context, id uint64) error {
+	_, err := q.db.ExecContext(ctx, deleteAgentPackage, id)
+	return err
+}
+
 const deleteApplication = `-- name: DeleteApplication :exec
 DELETE FROM assets_application WHERE id=$1
 `
 
 func (q *Queries) DeleteApplication(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteApplication, id)
+	return err
+}
+
+const deleteApplicationDeployment = `-- name: DeleteApplicationDeployment :exec
+DELETE FROM assets_application_deployment WHERE id=$1
+`
+
+func (q *Queries) DeleteApplicationDeployment(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteApplicationDeployment, id)
+	return err
+}
+
+const deleteApplicationService = `-- name: DeleteApplicationService :exec
+DELETE FROM assets_application_service WHERE id=$1
+`
+
+func (q *Queries) DeleteApplicationService(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteApplicationService, id)
 	return err
 }
 
@@ -594,12 +1428,31 @@ func (q *Queries) DeleteCredential(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteDeploymentTemplate = `-- name: DeleteDeploymentTemplate :exec
+DELETE FROM assets_application_deployment_template WHERE id=$1
+`
+
+func (q *Queries) DeleteDeploymentTemplate(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteDeploymentTemplate, id)
+	return err
+}
+
 const deleteHost = `-- name: DeleteHost :exec
 DELETE FROM assets_host WHERE id = $1
 `
 
 func (q *Queries) DeleteHost(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteHost, id)
+	return err
+}
+
+const deleteHostDisks = `-- name: DeleteHostDisks :exec
+DELETE FROM assets_hostdisk WHERE host_id = $1
+`
+
+// 磁盘表没有按 device 的唯一键：整表重建以丢掉已卸载的分区。
+func (q *Queries) DeleteHostDisks(ctx context.Context, hostID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteHostDisks, hostID)
 	return err
 }
 
@@ -619,6 +1472,352 @@ DELETE FROM assets_project WHERE id = $1
 func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteProject, id)
 	return err
+}
+
+const deleteServiceDeployments = `-- name: DeleteServiceDeployments :exec
+DELETE FROM assets_application_service_deployment WHERE service_id=$1
+`
+
+func (q *Queries) DeleteServiceDeployments(ctx context.Context, serviceID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteServiceDeployments, serviceID)
+	return err
+}
+
+const deleteServiceLogSettings = `-- name: DeleteServiceLogSettings :exec
+DELETE FROM assets_application_service_log_setting WHERE service_id=$1
+`
+
+func (q *Queries) DeleteServiceLogSettings(ctx context.Context, serviceID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteServiceLogSettings, serviceID)
+	return err
+}
+
+const deleteTemplateComposeConfig = `-- name: DeleteTemplateComposeConfig :exec
+DELETE FROM assets_docker_compose_control_config WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplateComposeConfig, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplateConfigFiles = `-- name: DeleteTemplateConfigFiles :exec
+DELETE FROM assets_application_config_file WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplateConfigFiles, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplateControlActions = `-- name: DeleteTemplateControlActions :exec
+DELETE FROM assets_application_control_action WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplateControlActions(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplateControlActions, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplateDockerConfig = `-- name: DeleteTemplateDockerConfig :exec
+DELETE FROM assets_docker_control_config WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplateDockerConfig, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplateLogDefinitions = `-- name: DeleteTemplateLogDefinitions :exec
+DELETE FROM assets_application_log_definition WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplateLogDefinitions, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplatePaths = `-- name: DeleteTemplatePaths :exec
+DELETE FROM assets_application_path WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplatePaths(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplatePaths, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplatePorts = `-- name: DeleteTemplatePorts :exec
+DELETE FROM assets_application_port WHERE deployment_template_id=$1
+`
+
+func (q *Queries) DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteTemplatePorts, deploymentTemplateID)
+	return err
+}
+
+const failAgentJob = `-- name: FailAgentJob :exec
+UPDATE assets_agent_job
+SET status=$1, error_message=$2, exit_code=$3,
+    stdout=$4, stderr=$5, finished_at=$6, update_time=$7
+WHERE job_id = $8
+`
+
+type FailAgentJobParams struct {
+	Status       string       `json:"status"`
+	ErrorMessage string       `json:"error_message"`
+	ExitCode     int32        `json:"exit_code"`
+	Stdout       string       `json:"stdout"`
+	Stderr       string       `json:"stderr"`
+	FinishedAt   sql.NullTime `json:"finished_at"`
+	UpdateTime   time.Time    `json:"update_time"`
+	JobID        string       `json:"job_id"`
+}
+
+// status 由调用方给（失败 'failed' / 超时 'timeout'），其余列语义相同。
+func (q *Queries) FailAgentJob(ctx context.Context, arg FailAgentJobParams) error {
+	_, err := q.db.ExecContext(ctx, failAgentJob,
+		arg.Status,
+		arg.ErrorMessage,
+		arg.ExitCode,
+		arg.Stdout,
+		arg.Stderr,
+		arg.FinishedAt,
+		arg.UpdateTime,
+		arg.JobID,
+	)
+	return err
+}
+
+const failAgentJobHostLog = `-- name: FailAgentJobHostLog :exec
+UPDATE automation_execution_host_log
+SET status=$1, error_message=$2, exit_code=$3,
+    stdout=$4, stderr=$5, update_time=$6
+WHERE id = $7
+`
+
+type FailAgentJobHostLogParams struct {
+	Status       string        `json:"status"`
+	ErrorMessage string        `json:"error_message"`
+	ExitCode     sql.NullInt32 `json:"exit_code"`
+	Stdout       string        `json:"stdout"`
+	Stderr       string        `json:"stderr"`
+	UpdateTime   time.Time     `json:"update_time"`
+	ID           int64         `json:"id"`
+}
+
+func (q *Queries) FailAgentJobHostLog(ctx context.Context, arg FailAgentJobHostLogParams) error {
+	_, err := q.db.ExecContext(ctx, failAgentJobHostLog,
+		arg.Status,
+		arg.ErrorMessage,
+		arg.ExitCode,
+		arg.Stdout,
+		arg.Stderr,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const failStaleAgentInstallJobs = `-- name: FailStaleAgentInstallJobs :exec
+UPDATE assets_agent_job
+SET status='failed', error_message='Agent 任务执行进程已失联，请重新提交', exit_code=1,
+    finished_at=$1, update_time=$2
+WHERE host_id = ANY($3::bigint[]) AND action='install_agent' AND status IN ('queued','running')
+  AND update_time < $4
+`
+
+type FailStaleAgentInstallJobsParams struct {
+	FinishedAt  sql.NullTime `json:"finished_at"`
+	UpdateTime  time.Time    `json:"update_time"`
+	HostIds     []int64      `json:"host_ids"`
+	StaleBefore time.Time    `json:"stale_before"`
+}
+
+// 同一批主机上"仍在跑"的 Agent 安装任务：先把失联超过 30 秒的标记失败，再拦截活跃的。
+func (q *Queries) FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAgentInstallJobsParams) error {
+	_, err := q.db.ExecContext(ctx, failStaleAgentInstallJobs,
+		arg.FinishedAt,
+		arg.UpdateTime,
+		pq.Array(arg.HostIds),
+		arg.StaleBefore,
+	)
+	return err
+}
+
+const finishAgentExecutionJob = `-- name: FinishAgentExecutionJob :exec
+UPDATE automation_execution_job
+SET status=$1, end_time=$2, duration_seconds=$3,
+    result_summary=$4, update_time=$5
+WHERE id = $6
+`
+
+type FinishAgentExecutionJobParams struct {
+	Status          string          `json:"status"`
+	EndTime         sql.NullTime    `json:"end_time"`
+	DurationSeconds sql.NullFloat64 `json:"duration_seconds"`
+	ResultSummary   json.RawMessage `json:"result_summary"`
+	UpdateTime      time.Time       `json:"update_time"`
+	ID              int64           `json:"id"`
+}
+
+func (q *Queries) FinishAgentExecutionJob(ctx context.Context, arg FinishAgentExecutionJobParams) error {
+	_, err := q.db.ExecContext(ctx, finishAgentExecutionJob,
+		arg.Status,
+		arg.EndTime,
+		arg.DurationSeconds,
+		arg.ResultSummary,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const finishAgentJob = `-- name: FinishAgentJob :exec
+UPDATE assets_agent_job
+SET status=$1, exit_code=$2, error_message=$3,
+    result_data=$4, finished_at=$5, update_time=$6
+WHERE job_id = $7
+`
+
+type FinishAgentJobParams struct {
+	Status       string          `json:"status"`
+	ExitCode     int32           `json:"exit_code"`
+	ErrorMessage string          `json:"error_message"`
+	ResultData   json.RawMessage `json:"result_data"`
+	FinishedAt   sql.NullTime    `json:"finished_at"`
+	UpdateTime   time.Time       `json:"update_time"`
+	JobID        string          `json:"job_id"`
+}
+
+func (q *Queries) FinishAgentJob(ctx context.Context, arg FinishAgentJobParams) error {
+	_, err := q.db.ExecContext(ctx, finishAgentJob,
+		arg.Status,
+		arg.ExitCode,
+		arg.ErrorMessage,
+		arg.ResultData,
+		arg.FinishedAt,
+		arg.UpdateTime,
+		arg.JobID,
+	)
+	return err
+}
+
+const finishAgentJobHostLog = `-- name: FinishAgentJobHostLog :exec
+UPDATE automation_execution_host_log
+SET status=$1, exit_code=$2, error_message=$3,
+    result_data=COALESCE($4, result_data), update_time=$5
+WHERE id = $6
+`
+
+type FinishAgentJobHostLogParams struct {
+	Status       string          `json:"status"`
+	ExitCode     sql.NullInt32   `json:"exit_code"`
+	ErrorMessage string          `json:"error_message"`
+	ResultData   json.RawMessage `json:"result_data"`
+	UpdateTime   time.Time       `json:"update_time"`
+	ID           int64           `json:"id"`
+}
+
+// result_data 传 NULL 表示"保持原值"（更新流程的收尾不写 result_data，只有安装流程写）。
+func (q *Queries) FinishAgentJobHostLog(ctx context.Context, arg FinishAgentJobHostLogParams) error {
+	_, err := q.db.ExecContext(ctx, finishAgentJobHostLog,
+		arg.Status,
+		arg.ExitCode,
+		arg.ErrorMessage,
+		arg.ResultData,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const getActiveAgentPackage = `-- name: GetActiveAgentPackage :one
+SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package
+WHERE is_active = 1 ORDER BY create_time DESC, id DESC LIMIT 1
+`
+
+type GetActiveAgentPackageRow struct {
+	ID         uint64       `json:"id"`
+	File       string       `json:"file"`
+	Sha256     string       `json:"sha256"`
+	SizeBytes  int64        `json:"size_bytes"`
+	IsActive   bool         `json:"is_active"`
+	CreateTime sql.NullTime `json:"create_time"`
+}
+
+// 单槽位 Agent 安装包：列表接口返回"当前激活包"，下载返回它的文件路径。
+func (q *Queries) GetActiveAgentPackage(ctx context.Context) (GetActiveAgentPackageRow, error) {
+	row := q.db.QueryRowContext(ctx, getActiveAgentPackage)
+	var i GetActiveAgentPackageRow
+	err := row.Scan(
+		&i.ID,
+		&i.File,
+		&i.Sha256,
+		&i.SizeBytes,
+		&i.IsActive,
+		&i.CreateTime,
+	)
+	return i, err
+}
+
+const getActiveAgentPackageFile = `-- name: GetActiveAgentPackageFile :one
+SELECT file FROM agent_package WHERE is_active = 1 ORDER BY create_time DESC, id DESC LIMIT 1
+`
+
+func (q *Queries) GetActiveAgentPackageFile(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getActiveAgentPackageFile)
+	var file string
+	err := row.Scan(&file)
+	return file, err
+}
+
+const getAgentInstallPlaybook = `-- name: GetAgentInstallPlaybook :one
+SELECT content FROM automation_playbook_template WHERE category = $1 ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) GetAgentInstallPlaybook(ctx context.Context, category string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAgentInstallPlaybook, category)
+	var content string
+	err := row.Scan(&content)
+	return content, err
+}
+
+const getAgentPackage = `-- name: GetAgentPackage :one
+SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE id = $1
+`
+
+type GetAgentPackageRow struct {
+	ID         uint64       `json:"id"`
+	File       string       `json:"file"`
+	Sha256     string       `json:"sha256"`
+	SizeBytes  int64        `json:"size_bytes"`
+	IsActive   bool         `json:"is_active"`
+	CreateTime sql.NullTime `json:"create_time"`
+}
+
+func (q *Queries) GetAgentPackage(ctx context.Context, id uint64) (GetAgentPackageRow, error) {
+	row := q.db.QueryRowContext(ctx, getAgentPackage, id)
+	var i GetAgentPackageRow
+	err := row.Scan(
+		&i.ID,
+		&i.File,
+		&i.Sha256,
+		&i.SizeBytes,
+		&i.IsActive,
+		&i.CreateTime,
+	)
+	return i, err
+}
+
+const getAgentPackageIDByVersion = `-- name: GetAgentPackageIDByVersion :one
+SELECT id FROM agent_package WHERE version = $1 LIMIT 1
+`
+
+func (q *Queries) GetAgentPackageIDByVersion(ctx context.Context, version string) (uint64, error) {
+	row := q.db.QueryRowContext(ctx, getAgentPackageIDByVersion, version)
+	var id uint64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getApplication = `-- name: GetApplication :one
@@ -661,6 +1860,85 @@ func (q *Queries) GetApplication(ctx context.Context, id int64) (GetApplicationR
 		&i.Vendor,
 		&i.VersionCount,
 		&i.DeploymentTemplateCount,
+		&i.DeploymentCount,
+	)
+	return i, err
+}
+
+const getApplicationServiceDetail = `-- name: GetApplicationServiceDetail :one
+SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,
+       s.application_id,a.name AS application_name,s.business_system_id,b.name AS business_system_name,
+       s.environment_id,COALESCE(e.name,'') AS environment_name,s.application_version_id,
+       v.version AS application_version_name,s.deployment_template_id,t.name AS deployment_template_name,
+       s.cluster_profile_id,COALESCE(c.name,'') AS cluster_profile_name,s.macro_values,s.log_collection_enabled,
+       s.log_retention_tier_id,
+       (SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) AS deployment_count
+FROM assets_application_service s
+JOIN assets_application a ON a.id=s.application_id
+JOIN assets_business_system b ON b.id=s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id=s.environment_id
+JOIN assets_application_version v ON v.id=s.application_version_id
+JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id
+LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id
+WHERE s.id=$1 LIMIT 1
+`
+
+type GetApplicationServiceDetailRow struct {
+	ID                     int64           `json:"id"`
+	CreateTime             time.Time       `json:"create_time"`
+	UpdateTime             time.Time       `json:"update_time"`
+	Remark                 sql.NullString  `json:"remark"`
+	Name                   string          `json:"name"`
+	Code                   string          `json:"code"`
+	TopologyType           string          `json:"topology_type"`
+	AccessAddress          string          `json:"access_address"`
+	Enabled                bool            `json:"enabled"`
+	ApplicationID          int64           `json:"application_id"`
+	ApplicationName        string          `json:"application_name"`
+	BusinessSystemID       int64           `json:"business_system_id"`
+	BusinessSystemName     string          `json:"business_system_name"`
+	EnvironmentID          sql.NullInt64   `json:"environment_id"`
+	EnvironmentName        string          `json:"environment_name"`
+	ApplicationVersionID   int64           `json:"application_version_id"`
+	ApplicationVersionName string          `json:"application_version_name"`
+	DeploymentTemplateID   int64           `json:"deployment_template_id"`
+	DeploymentTemplateName string          `json:"deployment_template_name"`
+	ClusterProfileID       sql.NullInt64   `json:"cluster_profile_id"`
+	ClusterProfileName     string          `json:"cluster_profile_name"`
+	MacroValues            json.RawMessage `json:"macro_values"`
+	LogCollectionEnabled   bool            `json:"log_collection_enabled"`
+	LogRetentionTierID     sql.NullInt64   `json:"log_retention_tier_id"`
+	DeploymentCount        int64           `json:"deployment_count"`
+}
+
+func (q *Queries) GetApplicationServiceDetail(ctx context.Context, id int64) (GetApplicationServiceDetailRow, error) {
+	row := q.db.QueryRowContext(ctx, getApplicationServiceDetail, id)
+	var i GetApplicationServiceDetailRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Code,
+		&i.TopologyType,
+		&i.AccessAddress,
+		&i.Enabled,
+		&i.ApplicationID,
+		&i.ApplicationName,
+		&i.BusinessSystemID,
+		&i.BusinessSystemName,
+		&i.EnvironmentID,
+		&i.EnvironmentName,
+		&i.ApplicationVersionID,
+		&i.ApplicationVersionName,
+		&i.DeploymentTemplateID,
+		&i.DeploymentTemplateName,
+		&i.ClusterProfileID,
+		&i.ClusterProfileName,
+		&i.MacroValues,
+		&i.LogCollectionEnabled,
+		&i.LogRetentionTierID,
 		&i.DeploymentCount,
 	)
 	return i, err
@@ -819,6 +2097,47 @@ func (q *Queries) GetCredential(ctx context.Context, id int64) (AssetsCredential
 		&i.AuthType,
 		&i.Username,
 		&i.Port,
+	)
+	return i, err
+}
+
+const getDeploymentControlContext = `-- name: GetDeploymentControlContext :one
+SELECT COALESCE(h.instance_name, ''), t.control_type, t.run_user, t.work_directory, t.app_home,
+       t.service_name, t.systemd_scope, t.macro_definitions,
+       d.instance_name AS deployment_instance_name
+FROM assets_application_deployment d
+JOIN assets_host h ON h.id = d.host_id
+JOIN assets_application_service_deployment l ON l.deployment_id = d.id
+JOIN assets_application_service s ON s.id = l.service_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+WHERE d.id = $1 LIMIT 1
+`
+
+type GetDeploymentControlContextRow struct {
+	InstanceName           string          `json:"instance_name"`
+	ControlType            string          `json:"control_type"`
+	RunUser                string          `json:"run_user"`
+	WorkDirectory          string          `json:"work_directory"`
+	AppHome                string          `json:"app_home"`
+	ServiceName            string          `json:"service_name"`
+	SystemdScope           string          `json:"systemd_scope"`
+	MacroDefinitions       json.RawMessage `json:"macro_definitions"`
+	DeploymentInstanceName string          `json:"deployment_instance_name"`
+}
+
+func (q *Queries) GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error) {
+	row := q.db.QueryRowContext(ctx, getDeploymentControlContext, id)
+	var i GetDeploymentControlContextRow
+	err := row.Scan(
+		&i.InstanceName,
+		&i.ControlType,
+		&i.RunUser,
+		&i.WorkDirectory,
+		&i.AppHome,
+		&i.ServiceName,
+		&i.SystemdScope,
+		&i.MacroDefinitions,
+		&i.DeploymentInstanceName,
 	)
 	return i, err
 }
@@ -990,6 +2309,110 @@ func (q *Queries) GetHostGroup(ctx context.Context, id int64) (GetHostGroupRow, 
 	return i, err
 }
 
+const getHostHardware = `-- name: GetHostHardware :one
+SELECT cpu_cores,cpu_model,memory_gb,disk_total_gb,architecture
+FROM assets_hosthardware WHERE host_id = $1 LIMIT 1
+`
+
+type GetHostHardwareRow struct {
+	CpuCores     sql.NullInt32   `json:"cpu_cores"`
+	CpuModel     sql.NullString  `json:"cpu_model"`
+	MemoryGb     sql.NullFloat64 `json:"memory_gb"`
+	DiskTotalGb  sql.NullFloat64 `json:"disk_total_gb"`
+	Architecture sql.NullString  `json:"architecture"`
+}
+
+func (q *Queries) GetHostHardware(ctx context.Context, hostID int64) (GetHostHardwareRow, error) {
+	row := q.db.QueryRowContext(ctx, getHostHardware, hostID)
+	var i GetHostHardwareRow
+	err := row.Scan(
+		&i.CpuCores,
+		&i.CpuModel,
+		&i.MemoryGb,
+		&i.DiskTotalGb,
+		&i.Architecture,
+	)
+	return i, err
+}
+
+const getHostRuntime = `-- name: GetHostRuntime :one
+SELECT cpu_usage_percent,cpu_times,memory_usage_percent,memory,disk_io,os_uptime_seconds,os_boot_time,
+       metrics_sample_window_ms,collected_at
+FROM assets_hostruntime WHERE host_id = $1 LIMIT 1
+`
+
+type GetHostRuntimeRow struct {
+	CpuUsagePercent       sql.NullFloat64 `json:"cpu_usage_percent"`
+	CpuTimes              json.RawMessage `json:"cpu_times"`
+	MemoryUsagePercent    sql.NullFloat64 `json:"memory_usage_percent"`
+	Memory                json.RawMessage `json:"memory"`
+	DiskIo                json.RawMessage `json:"disk_io"`
+	OsUptimeSeconds       sql.NullInt64   `json:"os_uptime_seconds"`
+	OsBootTime            sql.NullTime    `json:"os_boot_time"`
+	MetricsSampleWindowMs sql.NullInt32   `json:"metrics_sample_window_ms"`
+	CollectedAt           sql.NullTime    `json:"collected_at"`
+}
+
+func (q *Queries) GetHostRuntime(ctx context.Context, hostID int64) (GetHostRuntimeRow, error) {
+	row := q.db.QueryRowContext(ctx, getHostRuntime, hostID)
+	var i GetHostRuntimeRow
+	err := row.Scan(
+		&i.CpuUsagePercent,
+		&i.CpuTimes,
+		&i.MemoryUsagePercent,
+		&i.Memory,
+		&i.DiskIo,
+		&i.OsUptimeSeconds,
+		&i.OsBootTime,
+		&i.MetricsSampleWindowMs,
+		&i.CollectedAt,
+	)
+	return i, err
+}
+
+const getHostRuntimeFingerprint = `-- name: GetHostRuntimeFingerprint :one
+SELECT static_fingerprint FROM assets_hostruntime WHERE host_id = $1 LIMIT 1
+`
+
+func (q *Queries) GetHostRuntimeFingerprint(ctx context.Context, hostID int64) (string, error) {
+	row := q.db.QueryRowContext(ctx, getHostRuntimeFingerprint, hostID)
+	var static_fingerprint string
+	err := row.Scan(&static_fingerprint)
+	return static_fingerprint, err
+}
+
+const getHostSystem = `-- name: GetHostSystem :one
+SELECT os_type,os_version,kernel_version,hostname,agent_version,timezone_name,utc_offset,collector_source
+FROM assets_hostsystem WHERE host_id = $1 LIMIT 1
+`
+
+type GetHostSystemRow struct {
+	OsType          sql.NullString `json:"os_type"`
+	OsVersion       sql.NullString `json:"os_version"`
+	KernelVersion   sql.NullString `json:"kernel_version"`
+	Hostname        sql.NullString `json:"hostname"`
+	AgentVersion    sql.NullString `json:"agent_version"`
+	TimezoneName    sql.NullString `json:"timezone_name"`
+	UtcOffset       sql.NullString `json:"utc_offset"`
+	CollectorSource sql.NullString `json:"collector_source"`
+}
+
+func (q *Queries) GetHostSystem(ctx context.Context, hostID int64) (GetHostSystemRow, error) {
+	row := q.db.QueryRowContext(ctx, getHostSystem, hostID)
+	var i GetHostSystemRow
+	err := row.Scan(
+		&i.OsType,
+		&i.OsVersion,
+		&i.KernelVersion,
+		&i.Hostname,
+		&i.AgentVersion,
+		&i.TimezoneName,
+		&i.UtcOffset,
+		&i.CollectorSource,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 SELECT p.id, p.create_time, p.update_time, p.remark, p.name, p.code, p.owner, p.enabled,
        COALESCE((SELECT string_agg(bs.name, '||' ORDER BY bs.id) FROM assets_business_system bs WHERE bs.project_id = p.id), '') AS business_system_names,
@@ -1028,6 +2451,274 @@ func (q *Queries) GetProject(ctx context.Context, id int64) (GetProjectRow, erro
 	return i, err
 }
 
+const getTemplateComposeConfig = `-- name: GetTemplateComposeConfig :one
+SELECT id,create_time,update_time,remark,project_name,service_name,compose_file_path,working_directory,env_file,expected_image,expected_image_tag
+FROM assets_docker_compose_control_config WHERE deployment_template_id=$1 LIMIT 1
+`
+
+type GetTemplateComposeConfigRow struct {
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	ProjectName      string         `json:"project_name"`
+	ServiceName      string         `json:"service_name"`
+	ComposeFilePath  string         `json:"compose_file_path"`
+	WorkingDirectory string         `json:"working_directory"`
+	EnvFile          string         `json:"env_file"`
+	ExpectedImage    string         `json:"expected_image"`
+	ExpectedImageTag string         `json:"expected_image_tag"`
+}
+
+func (q *Queries) GetTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) (GetTemplateComposeConfigRow, error) {
+	row := q.db.QueryRowContext(ctx, getTemplateComposeConfig, deploymentTemplateID)
+	var i GetTemplateComposeConfigRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.ProjectName,
+		&i.ServiceName,
+		&i.ComposeFilePath,
+		&i.WorkingDirectory,
+		&i.EnvFile,
+		&i.ExpectedImage,
+		&i.ExpectedImageTag,
+	)
+	return i, err
+}
+
+const getTemplateDockerConfig = `-- name: GetTemplateDockerConfig :one
+SELECT id,create_time,update_time,remark,container_name,docker_host,expected_image,expected_image_tag
+FROM assets_docker_control_config WHERE deployment_template_id=$1 LIMIT 1
+`
+
+type GetTemplateDockerConfigRow struct {
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	ContainerName    string         `json:"container_name"`
+	DockerHost       string         `json:"docker_host"`
+	ExpectedImage    string         `json:"expected_image"`
+	ExpectedImageTag string         `json:"expected_image_tag"`
+}
+
+func (q *Queries) GetTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) (GetTemplateDockerConfigRow, error) {
+	row := q.db.QueryRowContext(ctx, getTemplateDockerConfig, deploymentTemplateID)
+	var i GetTemplateDockerConfigRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.ContainerName,
+		&i.DockerHost,
+		&i.ExpectedImage,
+		&i.ExpectedImageTag,
+	)
+	return i, err
+}
+
+const listAgentHostTargets = `-- name: ListAgentHostTargets :many
+SELECT id, COALESCE(instance_name, '') AS instance_name, COALESCE(ip, '') AS ip
+FROM assets_host WHERE id = ANY($1::bigint[]) ORDER BY id
+`
+
+type ListAgentHostTargetsRow struct {
+	ID           int64  `json:"id"`
+	InstanceName string `json:"instance_name"`
+	Ip           string `json:"ip"`
+}
+
+func (q *Queries) ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]ListAgentHostTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentHostTargets, pq.Array(hostIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentHostTargetsRow{}
+	for rows.Next() {
+		var i ListAgentHostTargetsRow
+		if err := rows.Scan(&i.ID, &i.InstanceName, &i.Ip); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentJobActionCounts = `-- name: ListAgentJobActionCounts :many
+
+SELECT action, COUNT(*) AS total FROM assets_agent_job
+WHERE (host_id = $1 OR $1 IS NULL)
+  AND (action = $2 OR $2 IS NULL)
+GROUP BY action ORDER BY COUNT(*) DESC
+`
+
+type ListAgentJobActionCountsParams struct {
+	HostID sql.NullInt64  `json:"host_id"`
+	Action sql.NullString `json:"action"`
+}
+
+type ListAgentJobActionCountsRow struct {
+	Action string `json:"action"`
+	Total  int64  `json:"total"`
+}
+
+// ---- P2-3：agent 作业 / 安装包 / 应用控制 / 安装模板 ----
+// agent 作业列表的过滤是"运行时拼 WHERE"（`(?=0 OR host_id=?) AND (?=” OR action=?)`），
+// 改成 NULL 表示不过滤的 sqlc.narg（SQL_DESIGN §4.1），四条查询共用同一组过滤条件。
+func (q *Queries) ListAgentJobActionCounts(ctx context.Context, arg ListAgentJobActionCountsParams) ([]ListAgentJobActionCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentJobActionCounts, arg.HostID, arg.Action)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentJobActionCountsRow{}
+	for rows.Next() {
+		var i ListAgentJobActionCountsRow
+		if err := rows.Scan(&i.Action, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentJobStatusCounts = `-- name: ListAgentJobStatusCounts :many
+SELECT status, COUNT(*) AS total FROM assets_agent_job
+WHERE (host_id = $1 OR $1 IS NULL)
+  AND (action = $2 OR $2 IS NULL)
+GROUP BY status
+`
+
+type ListAgentJobStatusCountsParams struct {
+	HostID sql.NullInt64  `json:"host_id"`
+	Action sql.NullString `json:"action"`
+}
+
+type ListAgentJobStatusCountsRow struct {
+	Status string `json:"status"`
+	Total  int64  `json:"total"`
+}
+
+func (q *Queries) ListAgentJobStatusCounts(ctx context.Context, arg ListAgentJobStatusCountsParams) ([]ListAgentJobStatusCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentJobStatusCounts, arg.HostID, arg.Action)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentJobStatusCountsRow{}
+	for rows.Next() {
+		var i ListAgentJobStatusCountsRow
+		if err := rows.Scan(&i.Status, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentJobs = `-- name: ListAgentJobs :many
+SELECT job_id,instance_name,host_id,job_type,action,status,timeout_seconds,params,result_data,
+       error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at
+FROM assets_agent_job
+WHERE (host_id = $3 OR $3 IS NULL)
+  AND (action = $4 OR $4 IS NULL)
+ORDER BY id DESC LIMIT $1 OFFSET $2
+`
+
+type ListAgentJobsParams struct {
+	Limit  int32          `json:"limit"`
+	Offset int32          `json:"offset"`
+	HostID sql.NullInt64  `json:"host_id"`
+	Action sql.NullString `json:"action"`
+}
+
+type ListAgentJobsRow struct {
+	JobID          string          `json:"job_id"`
+	InstanceName   string          `json:"instance_name"`
+	HostID         sql.NullInt64   `json:"host_id"`
+	JobType        string          `json:"job_type"`
+	Action         string          `json:"action"`
+	Status         string          `json:"status"`
+	TimeoutSeconds uint32          `json:"timeout_seconds"`
+	Params         json.RawMessage `json:"params"`
+	ResultData     json.RawMessage `json:"result_data"`
+	ErrorMessage   string          `json:"error_message"`
+	ExitCode       int32           `json:"exit_code"`
+	Stdout         string          `json:"stdout"`
+	Stderr         string          `json:"stderr"`
+	CreateTime     time.Time       `json:"create_time"`
+	PickedAt       sql.NullTime    `json:"picked_at"`
+	FinishedAt     sql.NullTime    `json:"finished_at"`
+}
+
+func (q *Queries) ListAgentJobs(ctx context.Context, arg ListAgentJobsParams) ([]ListAgentJobsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentJobs,
+		arg.Limit,
+		arg.Offset,
+		arg.HostID,
+		arg.Action,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentJobsRow{}
+	for rows.Next() {
+		var i ListAgentJobsRow
+		if err := rows.Scan(
+			&i.JobID,
+			&i.InstanceName,
+			&i.HostID,
+			&i.JobType,
+			&i.Action,
+			&i.Status,
+			&i.TimeoutSeconds,
+			&i.Params,
+			&i.ResultData,
+			&i.ErrorMessage,
+			&i.ExitCode,
+			&i.Stdout,
+			&i.Stderr,
+			&i.CreateTime,
+			&i.PickedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllHostGroups = `-- name: ListAllHostGroups :many
 SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
@@ -1064,6 +2755,207 @@ func (q *Queries) ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow
 			&i.ParentID,
 			&i.ParentName,
 			&i.HostCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApplicationDeployments = `-- name: ListApplicationDeployments :many
+SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,
+       COALESCE(h.ip,'') AS host_ip,d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,
+       d.runtime_variables,
+       (SELECT s.application_id FROM assets_application_service_deployment l
+        JOIN assets_application_service s ON s.id=l.service_id
+        WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1) AS application_id
+FROM assets_application_deployment d
+JOIN assets_host h ON h.id=d.host_id
+WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               WHERE l.deployment_id = d.id AND l.service_id = $3)
+       OR $3 IS NULL)
+  AND (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               JOIN assets_application_service s ON s.id = l.service_id
+               WHERE l.deployment_id = d.id AND s.business_system_id = $4)
+       OR $4 IS NULL)
+  AND (EXISTS (SELECT 1 FROM assets_application_service_deployment l
+               JOIN assets_application_service s ON s.id = l.service_id
+               WHERE l.deployment_id = d.id AND s.environment_id = $5)
+       OR $5 IS NULL)
+ORDER BY d.id DESC LIMIT $1 OFFSET $2
+`
+
+type ListApplicationDeploymentsParams struct {
+	Limit            int32         `json:"limit"`
+	Offset           int32         `json:"offset"`
+	ServiceID        sql.NullInt64 `json:"service_id"`
+	BusinessSystemID sql.NullInt64 `json:"business_system_id"`
+	EnvironmentID    sql.NullInt64 `json:"environment_id"`
+}
+
+type ListApplicationDeploymentsRow struct {
+	ID                  int64           `json:"id"`
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	InstanceName        string          `json:"instance_name"`
+	Enabled             bool            `json:"enabled"`
+	HostID              int64           `json:"host_id"`
+	HostIp              string          `json:"host_ip"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	RuntimeStatusOutput string          `json:"runtime_status_output"`
+	LastStatusCheckTime sql.NullTime    `json:"last_status_check_time"`
+	HaRole              string          `json:"ha_role"`
+	RuntimeVariables    json.RawMessage `json:"runtime_variables"`
+	ApplicationID       int64           `json:"application_id"`
+}
+
+func (q *Queries) ListApplicationDeployments(ctx context.Context, arg ListApplicationDeploymentsParams) ([]ListApplicationDeploymentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listApplicationDeployments,
+		arg.Limit,
+		arg.Offset,
+		arg.ServiceID,
+		arg.BusinessSystemID,
+		arg.EnvironmentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApplicationDeploymentsRow{}
+	for rows.Next() {
+		var i ListApplicationDeploymentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.InstanceName,
+			&i.Enabled,
+			&i.HostID,
+			&i.HostIp,
+			&i.RuntimeStatus,
+			&i.RuntimeStatusOutput,
+			&i.LastStatusCheckTime,
+			&i.HaRole,
+			&i.RuntimeVariables,
+			&i.ApplicationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApplicationServices = `-- name: ListApplicationServices :many
+SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,
+       s.application_id,a.name AS application_name,s.business_system_id,b.name AS business_system_name,
+       s.environment_id,COALESCE(e.name,'') AS environment_name,s.application_version_id,
+       v.version AS application_version_name,s.deployment_template_id,t.name AS deployment_template_name,
+       s.cluster_profile_id,COALESCE(c.name,'') AS cluster_profile_name,s.macro_values,s.log_collection_enabled,
+       s.log_retention_tier_id,
+       (SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) AS deployment_count
+FROM assets_application_service s
+JOIN assets_application a ON a.id=s.application_id
+JOIN assets_business_system b ON b.id=s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id=s.environment_id
+JOIN assets_application_version v ON v.id=s.application_version_id
+JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id
+LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id
+WHERE (s.name LIKE $3 OR s.code LIKE $3 OR $3 IS NULL)
+  AND (s.business_system_id = $4 OR $4 IS NULL)
+ORDER BY s.business_system_id,s.environment_id,s.name LIMIT $1 OFFSET $2
+`
+
+type ListApplicationServicesParams struct {
+	Limit            int32          `json:"limit"`
+	Offset           int32          `json:"offset"`
+	Pattern          sql.NullString `json:"pattern"`
+	BusinessSystemID sql.NullInt64  `json:"business_system_id"`
+}
+
+type ListApplicationServicesRow struct {
+	ID                     int64           `json:"id"`
+	CreateTime             time.Time       `json:"create_time"`
+	UpdateTime             time.Time       `json:"update_time"`
+	Remark                 sql.NullString  `json:"remark"`
+	Name                   string          `json:"name"`
+	Code                   string          `json:"code"`
+	TopologyType           string          `json:"topology_type"`
+	AccessAddress          string          `json:"access_address"`
+	Enabled                bool            `json:"enabled"`
+	ApplicationID          int64           `json:"application_id"`
+	ApplicationName        string          `json:"application_name"`
+	BusinessSystemID       int64           `json:"business_system_id"`
+	BusinessSystemName     string          `json:"business_system_name"`
+	EnvironmentID          sql.NullInt64   `json:"environment_id"`
+	EnvironmentName        string          `json:"environment_name"`
+	ApplicationVersionID   int64           `json:"application_version_id"`
+	ApplicationVersionName string          `json:"application_version_name"`
+	DeploymentTemplateID   int64           `json:"deployment_template_id"`
+	DeploymentTemplateName string          `json:"deployment_template_name"`
+	ClusterProfileID       sql.NullInt64   `json:"cluster_profile_id"`
+	ClusterProfileName     string          `json:"cluster_profile_name"`
+	MacroValues            json.RawMessage `json:"macro_values"`
+	LogCollectionEnabled   bool            `json:"log_collection_enabled"`
+	LogRetentionTierID     sql.NullInt64   `json:"log_retention_tier_id"`
+	DeploymentCount        int64           `json:"deployment_count"`
+}
+
+func (q *Queries) ListApplicationServices(ctx context.Context, arg ListApplicationServicesParams) ([]ListApplicationServicesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listApplicationServices,
+		arg.Limit,
+		arg.Offset,
+		arg.Pattern,
+		arg.BusinessSystemID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApplicationServicesRow{}
+	for rows.Next() {
+		var i ListApplicationServicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Code,
+			&i.TopologyType,
+			&i.AccessAddress,
+			&i.Enabled,
+			&i.ApplicationID,
+			&i.ApplicationName,
+			&i.BusinessSystemID,
+			&i.BusinessSystemName,
+			&i.EnvironmentID,
+			&i.EnvironmentName,
+			&i.ApplicationVersionID,
+			&i.ApplicationVersionName,
+			&i.DeploymentTemplateID,
+			&i.DeploymentTemplateName,
+			&i.ClusterProfileID,
+			&i.ClusterProfileName,
+			&i.MacroValues,
+			&i.LogCollectionEnabled,
+			&i.LogRetentionTierID,
+			&i.DeploymentCount,
 		); err != nil {
 			return nil, err
 		}
@@ -1439,6 +3331,50 @@ func (q *Queries) ListCredentials(ctx context.Context, arg ListCredentialsParams
 	return items, nil
 }
 
+const listDeploymentControlActions = `-- name: ListDeploymentControlActions :many
+SELECT action,command,timeout_seconds,success_exit_codes FROM assets_application_control_action
+WHERE deployment_template_id = (
+  SELECT deployment_template_id FROM assets_application_service s
+  JOIN assets_application_service_deployment l ON l.service_id = s.id
+  WHERE l.deployment_id = $1 LIMIT 1
+)
+`
+
+type ListDeploymentControlActionsRow struct {
+	Action           string          `json:"action"`
+	Command          string          `json:"command"`
+	TimeoutSeconds   uint32          `json:"timeout_seconds"`
+	SuccessExitCodes json.RawMessage `json:"success_exit_codes"`
+}
+
+func (q *Queries) ListDeploymentControlActions(ctx context.Context, deploymentID int64) ([]ListDeploymentControlActionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeploymentControlActions, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeploymentControlActionsRow{}
+	for rows.Next() {
+		var i ListDeploymentControlActionsRow
+		if err := rows.Scan(
+			&i.Action,
+			&i.Command,
+			&i.TimeoutSeconds,
+			&i.SuccessExitCodes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeploymentTemplates = `-- name: ListDeploymentTemplates :many
 SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.control_type, t.run_user, t.run_group, t.app_home, t.work_directory, t.service_name, t.ha_system_name, t.ha_cluster_name, t.ha_resource_name, t.enabled, t.application_id, t.systemd_scope, t.macro_definitions, a.name AS application_name,
   (SELECT COUNT(*) FROM assets_application_port p WHERE p.deployment_template_id=t.id) AS port_count,
@@ -1546,6 +3482,48 @@ func (q *Queries) ListDeploymentTemplates(ctx context.Context, arg ListDeploymen
 	return items, nil
 }
 
+const listHostDisks = `-- name: ListHostDisks :many
+SELECT device,mount_point,size_gb,used_gb,filesystem FROM assets_hostdisk
+WHERE host_id = $1 ORDER BY id
+`
+
+type ListHostDisksRow struct {
+	Device     string          `json:"device"`
+	MountPoint sql.NullString  `json:"mount_point"`
+	SizeGb     sql.NullFloat64 `json:"size_gb"`
+	UsedGb     sql.NullFloat64 `json:"used_gb"`
+	Filesystem sql.NullString  `json:"filesystem"`
+}
+
+func (q *Queries) ListHostDisks(ctx context.Context, hostID int64) ([]ListHostDisksRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostDisks, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostDisksRow{}
+	for rows.Next() {
+		var i ListHostDisksRow
+		if err := rows.Scan(
+			&i.Device,
+			&i.MountPoint,
+			&i.SizeGb,
+			&i.UsedGb,
+			&i.Filesystem,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listHostGroups = `-- name: ListHostGroups :many
 SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
@@ -1589,6 +3567,54 @@ func (q *Queries) ListHostGroups(ctx context.Context, arg ListHostGroupsParams) 
 			&i.ParentID,
 			&i.ParentName,
 			&i.HostCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostMonitors = `-- name: ListHostMonitors :many
+SELECT id,exporter_type,scrape_port,managed_enabled,install_status,install_message,retry_count,update_time
+FROM monitor_target WHERE host_id = $1 ORDER BY id DESC
+`
+
+type ListHostMonitorsRow struct {
+	ID             int64     `json:"id"`
+	ExporterType   string    `json:"exporter_type"`
+	ScrapePort     uint32    `json:"scrape_port"`
+	ManagedEnabled bool      `json:"managed_enabled"`
+	InstallStatus  string    `json:"install_status"`
+	InstallMessage string    `json:"install_message"`
+	RetryCount     uint32    `json:"retry_count"`
+	UpdateTime     time.Time `json:"update_time"`
+}
+
+func (q *Queries) ListHostMonitors(ctx context.Context, hostID int64) ([]ListHostMonitorsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostMonitors, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostMonitorsRow{}
+	for rows.Next() {
+		var i ListHostMonitorsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ExporterType,
+			&i.ScrapePort,
+			&i.ManagedEnabled,
+			&i.InstallStatus,
+			&i.InstallMessage,
+			&i.RetryCount,
+			&i.UpdateTime,
 		); err != nil {
 			return nil, err
 		}
@@ -1790,6 +3816,560 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]L
 	return items, nil
 }
 
+const listServiceDeploymentIDs = `-- name: ListServiceDeploymentIDs :many
+SELECT deployment_id FROM assets_application_service_deployment
+WHERE service_id=$1 ORDER BY id
+`
+
+func (q *Queries) ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceDeploymentIDs, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var deployment_id int64
+		if err := rows.Scan(&deployment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, deployment_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceDeploymentLinks = `-- name: ListServiceDeploymentLinks :many
+SELECT deployment_id,service_id FROM assets_application_service_deployment
+WHERE deployment_id = ANY($1::bigint[]) ORDER BY deployment_id,service_id
+`
+
+type ListServiceDeploymentLinksRow struct {
+	DeploymentID int64 `json:"deployment_id"`
+	ServiceID    int64 `json:"service_id"`
+}
+
+func (q *Queries) ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceDeploymentLinks, pq.Array(deploymentIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceDeploymentLinksRow{}
+	for rows.Next() {
+		var i ListServiceDeploymentLinksRow
+		if err := rows.Scan(&i.DeploymentID, &i.ServiceID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceLogSettings = `-- name: ListServiceLogSettings :many
+SELECT log_definition_id,retention_tier_id,collection_enabled,collection_filter_rule_id,processing_rule_id
+FROM assets_application_service_log_setting WHERE service_id=$1 ORDER BY log_definition_id
+`
+
+type ListServiceLogSettingsRow struct {
+	LogDefinitionID        int64         `json:"log_definition_id"`
+	RetentionTierID        sql.NullInt64 `json:"retention_tier_id"`
+	CollectionEnabled      *bool         `json:"collection_enabled"`
+	CollectionFilterRuleID sql.NullInt64 `json:"collection_filter_rule_id"`
+	ProcessingRuleID       sql.NullInt64 `json:"processing_rule_id"`
+}
+
+func (q *Queries) ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceLogSettings, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceLogSettingsRow{}
+	for rows.Next() {
+		var i ListServiceLogSettingsRow
+		if err := rows.Scan(
+			&i.LogDefinitionID,
+			&i.RetentionTierID,
+			&i.CollectionEnabled,
+			&i.CollectionFilterRuleID,
+			&i.ProcessingRuleID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceTemplateLogs = `-- name: ListServiceTemplateLogs :many
+
+SELECT ld.id, ld.name, ld.path_pattern, ld.collection_enabled,
+       ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
+       ls.collection_filter_rule_id, ls.processing_rule_id,
+       s.code AS service_code, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
+       COALESCE(s.macro_values, '{}') AS macro_values,
+       COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
+FROM assets_application_log_definition ld
+JOIN assets_application_service s ON s.id = $1
+LEFT JOIN assets_application_service_log_setting ls
+  ON ls.log_definition_id = ld.id AND ls.service_id = s.id
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
+WHERE ld.deployment_template_id = s.deployment_template_id
+ORDER BY ld.id
+`
+
+type ListServiceTemplateLogsRow struct {
+	ID                        int64           `json:"id"`
+	Name                      string          `json:"name"`
+	PathPattern               string          `json:"path_pattern"`
+	CollectionEnabled         bool            `json:"collection_enabled"`
+	RetentionTierID           sql.NullInt64   `json:"retention_tier_id"`
+	OverrideCollectionEnabled *bool           `json:"override_collection_enabled"`
+	CollectionFilterRuleID    sql.NullInt64   `json:"collection_filter_rule_id"`
+	ProcessingRuleID          sql.NullInt64   `json:"processing_rule_id"`
+	ServiceCode               string          `json:"service_code"`
+	ProjectCode               string          `json:"project_code"`
+	EnvironmentCode           sql.NullString  `json:"environment_code"`
+	BusinessSystemCode        string          `json:"business_system_code"`
+	MacroValues               json.RawMessage `json:"macro_values"`
+	TierCode                  string          `json:"tier_code"`
+}
+
+// ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
+func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceTemplateLogs, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceTemplateLogsRow{}
+	for rows.Next() {
+		var i ListServiceTemplateLogsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.PathPattern,
+			&i.CollectionEnabled,
+			&i.RetentionTierID,
+			&i.OverrideCollectionEnabled,
+			&i.CollectionFilterRuleID,
+			&i.ProcessingRuleID,
+			&i.ServiceCode,
+			&i.ProjectCode,
+			&i.EnvironmentCode,
+			&i.BusinessSystemCode,
+			&i.MacroValues,
+			&i.TierCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTemplateConfigFiles = `-- name: ListTemplateConfigFiles :many
+SELECT id,create_time,update_time,remark,name,path,file_format,required
+FROM assets_application_config_file WHERE deployment_template_id=$1 ORDER BY id
+`
+
+type ListTemplateConfigFilesRow struct {
+	ID         int64          `json:"id"`
+	CreateTime time.Time      `json:"create_time"`
+	UpdateTime time.Time      `json:"update_time"`
+	Remark     sql.NullString `json:"remark"`
+	Name       string         `json:"name"`
+	Path       string         `json:"path"`
+	FileFormat string         `json:"file_format"`
+	Required   bool           `json:"required"`
+}
+
+func (q *Queries) ListTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateConfigFilesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTemplateConfigFiles, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplateConfigFilesRow{}
+	for rows.Next() {
+		var i ListTemplateConfigFilesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Path,
+			&i.FileFormat,
+			&i.Required,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTemplateControlActions = `-- name: ListTemplateControlActions :many
+SELECT id,create_time,update_time,remark,action,command,timeout_seconds,success_exit_codes
+FROM assets_application_control_action WHERE deployment_template_id=$1 ORDER BY id
+`
+
+type ListTemplateControlActionsRow struct {
+	ID               int64           `json:"id"`
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Action           string          `json:"action"`
+	Command          string          `json:"command"`
+	TimeoutSeconds   uint32          `json:"timeout_seconds"`
+	SuccessExitCodes json.RawMessage `json:"success_exit_codes"`
+}
+
+func (q *Queries) ListTemplateControlActions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateControlActionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTemplateControlActions, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplateControlActionsRow{}
+	for rows.Next() {
+		var i ListTemplateControlActionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Action,
+			&i.Command,
+			&i.TimeoutSeconds,
+			&i.SuccessExitCodes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTemplateLogDefinitions = `-- name: ListTemplateLogDefinitions :many
+SELECT id,create_time,update_time,remark,name,path_pattern,collection_enabled,extra_fields,processing_rule_id
+FROM assets_application_log_definition WHERE deployment_template_id=$1 ORDER BY id
+`
+
+type ListTemplateLogDefinitionsRow struct {
+	ID                int64           `json:"id"`
+	CreateTime        time.Time       `json:"create_time"`
+	UpdateTime        time.Time       `json:"update_time"`
+	Remark            sql.NullString  `json:"remark"`
+	Name              string          `json:"name"`
+	PathPattern       string          `json:"path_pattern"`
+	CollectionEnabled bool            `json:"collection_enabled"`
+	ExtraFields       json.RawMessage `json:"extra_fields"`
+	ProcessingRuleID  sql.NullInt64   `json:"processing_rule_id"`
+}
+
+func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTemplateLogDefinitions, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplateLogDefinitionsRow{}
+	for rows.Next() {
+		var i ListTemplateLogDefinitionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.PathPattern,
+			&i.CollectionEnabled,
+			&i.ExtraFields,
+			&i.ProcessingRuleID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTemplatePaths = `-- name: ListTemplatePaths :many
+SELECT id,create_time,update_time,remark,name,path_type,path,required,expected_owner,expected_group,expected_mode,check_enabled
+FROM assets_application_path WHERE deployment_template_id=$1 ORDER BY path_type,id
+`
+
+type ListTemplatePathsRow struct {
+	ID            int64          `json:"id"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	PathType      string         `json:"path_type"`
+	Path          string         `json:"path"`
+	Required      bool           `json:"required"`
+	ExpectedOwner string         `json:"expected_owner"`
+	ExpectedGroup string         `json:"expected_group"`
+	ExpectedMode  string         `json:"expected_mode"`
+	CheckEnabled  bool           `json:"check_enabled"`
+}
+
+func (q *Queries) ListTemplatePaths(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePathsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTemplatePaths, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplatePathsRow{}
+	for rows.Next() {
+		var i ListTemplatePathsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.PathType,
+			&i.Path,
+			&i.Required,
+			&i.ExpectedOwner,
+			&i.ExpectedGroup,
+			&i.ExpectedMode,
+			&i.CheckEnabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTemplatePorts = `-- name: ListTemplatePorts :many
+SELECT id,create_time,update_time,remark,name,protocol,bind_address,port,required,external_access,check_enabled
+FROM assets_application_port WHERE deployment_template_id=$1 ORDER BY protocol,port
+`
+
+type ListTemplatePortsRow struct {
+	ID             int64          `json:"id"`
+	CreateTime     time.Time      `json:"create_time"`
+	UpdateTime     time.Time      `json:"update_time"`
+	Remark         sql.NullString `json:"remark"`
+	Name           string         `json:"name"`
+	Protocol       string         `json:"protocol"`
+	BindAddress    string         `json:"bind_address"`
+	Port           uint32         `json:"port"`
+	Required       bool           `json:"required"`
+	ExternalAccess bool           `json:"external_access"`
+	CheckEnabled   bool           `json:"check_enabled"`
+}
+
+func (q *Queries) ListTemplatePorts(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePortsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTemplatePorts, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplatePortsRow{}
+	for rows.Next() {
+		var i ListTemplatePortsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Remark,
+			&i.Name,
+			&i.Protocol,
+			&i.BindAddress,
+			&i.Port,
+			&i.Required,
+			&i.ExternalAccess,
+			&i.CheckEnabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markAgentJobHostLogRunning = `-- name: MarkAgentJobHostLogRunning :exec
+UPDATE automation_execution_host_log SET status='running', update_time=$1 WHERE id = $2
+`
+
+type MarkAgentJobHostLogRunningParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error {
+	_, err := q.db.ExecContext(ctx, markAgentJobHostLogRunning, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const markAgentJobRunning = `-- name: MarkAgentJobRunning :exec
+
+UPDATE assets_agent_job SET status='running', picked_at=$1, update_time=$2
+WHERE job_id = $3
+`
+
+type MarkAgentJobRunningParams struct {
+	PickedAt   sql.NullTime `json:"picked_at"`
+	UpdateTime time.Time    `json:"update_time"`
+	JobID      string       `json:"job_id"`
+}
+
+// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
+// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。
+// 时长（duration_seconds）由应用层算：原实现是 MySQL 的 TIMESTAMPDIFF。
+func (q *Queries) MarkAgentJobRunning(ctx context.Context, arg MarkAgentJobRunningParams) error {
+	_, err := q.db.ExecContext(ctx, markAgentJobRunning, arg.PickedAt, arg.UpdateTime, arg.JobID)
+	return err
+}
+
+const markHostCollected = `-- name: MarkHostCollected :exec
+
+UPDATE assets_host
+SET collect_status = $1, collect_message = $2,
+    collect_time = COALESCE($3, collect_time), update_time = $4
+WHERE id = $5
+`
+
+type MarkHostCollectedParams struct {
+	CollectStatus  string       `json:"collect_status"`
+	CollectMessage string       `json:"collect_message"`
+	CollectTime    sql.NullTime `json:"collect_time"`
+	UpdateTime     time.Time    `json:"update_time"`
+	ID             int64        `json:"id"`
+}
+
+// ---- P2-3：主机域（采集信息落库 / 详情读取 / 身份唯一性校验）----
+//
+// 约定与 inspection/automation 一致：时间由应用层传；UPSERT 用 `ON DUPLICATE KEY UPDATE`
+// 并在查询上声明 `-- conflict: <列名>`（派生脚本据此改写成 PG 的 `ON CONFLICT (…) DO UPDATE`；
+// MySQL 的 ON DUPLICATE KEY 对"任意唯一键"生效，语句本身看不出打在哪个键上，必须显式声明）。
+// collect_time 为 NULL 表示"本次失败、保留上次采集时间"（原实现靠两条 UPDATE 区分）。
+func (q *Queries) MarkHostCollected(ctx context.Context, arg MarkHostCollectedParams) error {
+	_, err := q.db.ExecContext(ctx, markHostCollected,
+		arg.CollectStatus,
+		arg.CollectMessage,
+		arg.CollectTime,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const updateAgentJobHostLogStdout = `-- name: UpdateAgentJobHostLogStdout :exec
+UPDATE automation_execution_host_log SET stdout=$1, update_time=$2 WHERE id = $3
+`
+
+type UpdateAgentJobHostLogStdoutParams struct {
+	Stdout     string    `json:"stdout"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) UpdateAgentJobHostLogStdout(ctx context.Context, arg UpdateAgentJobHostLogStdoutParams) error {
+	_, err := q.db.ExecContext(ctx, updateAgentJobHostLogStdout, arg.Stdout, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const updateAgentJobStdout = `-- name: UpdateAgentJobStdout :exec
+UPDATE assets_agent_job SET stdout=$1, update_time=$2 WHERE job_id = $3
+`
+
+type UpdateAgentJobStdoutParams struct {
+	Stdout     string    `json:"stdout"`
+	UpdateTime time.Time `json:"update_time"`
+	JobID      string    `json:"job_id"`
+}
+
+func (q *Queries) UpdateAgentJobStdout(ctx context.Context, arg UpdateAgentJobStdoutParams) error {
+	_, err := q.db.ExecContext(ctx, updateAgentJobStdout, arg.Stdout, arg.UpdateTime, arg.JobID)
+	return err
+}
+
+const updateAgentPackageFile = `-- name: UpdateAgentPackageFile :exec
+UPDATE agent_package SET file = $1, sha256 = $2, size_bytes = $3,
+       is_active = 1 WHERE id = $4
+`
+
+type UpdateAgentPackageFileParams struct {
+	File      string `json:"file"`
+	Sha256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+	ID        uint64 `json:"id"`
+}
+
+func (q *Queries) UpdateAgentPackageFile(ctx context.Context, arg UpdateAgentPackageFileParams) error {
+	_, err := q.db.ExecContext(ctx, updateAgentPackageFile,
+		arg.File,
+		arg.Sha256,
+		arg.SizeBytes,
+		arg.ID,
+	)
+	return err
+}
+
 const updateApplication = `-- name: UpdateApplication :exec
 UPDATE assets_application SET update_time=$1,remark=$2,name=$3,category=$4,code=$5,description=$6,enabled=$7,vendor=$8 WHERE id=$9
 `
@@ -1816,6 +4396,99 @@ func (q *Queries) UpdateApplication(ctx context.Context, arg UpdateApplicationPa
 		arg.Description,
 		arg.Enabled,
 		arg.Vendor,
+		arg.ID,
+	)
+	return err
+}
+
+const updateApplicationDeployment = `-- name: UpdateApplicationDeployment :exec
+UPDATE assets_application_deployment
+SET update_time=$1,remark=$2,instance_name=$3,
+    enabled=$4,host_id=$5,runtime_status=$6,
+    runtime_status_output=$7,ha_role=$8,
+    runtime_variables=$9
+WHERE id=$10
+`
+
+type UpdateApplicationDeploymentParams struct {
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	InstanceName        string          `json:"instance_name"`
+	Enabled             bool            `json:"enabled"`
+	HostID              int64           `json:"host_id"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	RuntimeStatusOutput string          `json:"runtime_status_output"`
+	HaRole              string          `json:"ha_role"`
+	RuntimeVariables    json.RawMessage `json:"runtime_variables"`
+	ID                  int64           `json:"id"`
+}
+
+func (q *Queries) UpdateApplicationDeployment(ctx context.Context, arg UpdateApplicationDeploymentParams) error {
+	_, err := q.db.ExecContext(ctx, updateApplicationDeployment,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.InstanceName,
+		arg.Enabled,
+		arg.HostID,
+		arg.RuntimeStatus,
+		arg.RuntimeStatusOutput,
+		arg.HaRole,
+		arg.RuntimeVariables,
+		arg.ID,
+	)
+	return err
+}
+
+const updateApplicationService = `-- name: UpdateApplicationService :exec
+UPDATE assets_application_service
+SET update_time=$1,remark=$2,name=$3,code=$4,
+    topology_type=$5,access_address=$6,enabled=$7,
+    application_id=$8,cluster_profile_id=$9,
+    environment_id=$10,application_version_id=$11,
+    deployment_template_id=$12,business_system_id=$13,
+    macro_values=$14,log_collection_enabled=$15,
+    log_retention_tier_id=$16
+WHERE id=$17
+`
+
+type UpdateApplicationServiceParams struct {
+	UpdateTime           time.Time       `json:"update_time"`
+	Remark               sql.NullString  `json:"remark"`
+	Name                 string          `json:"name"`
+	Code                 string          `json:"code"`
+	TopologyType         string          `json:"topology_type"`
+	AccessAddress        string          `json:"access_address"`
+	Enabled              bool            `json:"enabled"`
+	ApplicationID        int64           `json:"application_id"`
+	ClusterProfileID     sql.NullInt64   `json:"cluster_profile_id"`
+	EnvironmentID        sql.NullInt64   `json:"environment_id"`
+	ApplicationVersionID int64           `json:"application_version_id"`
+	DeploymentTemplateID int64           `json:"deployment_template_id"`
+	BusinessSystemID     int64           `json:"business_system_id"`
+	MacroValues          json.RawMessage `json:"macro_values"`
+	LogCollectionEnabled bool            `json:"log_collection_enabled"`
+	LogRetentionTierID   sql.NullInt64   `json:"log_retention_tier_id"`
+	ID                   int64           `json:"id"`
+}
+
+func (q *Queries) UpdateApplicationService(ctx context.Context, arg UpdateApplicationServiceParams) error {
+	_, err := q.db.ExecContext(ctx, updateApplicationService,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.Code,
+		arg.TopologyType,
+		arg.AccessAddress,
+		arg.Enabled,
+		arg.ApplicationID,
+		arg.ClusterProfileID,
+		arg.EnvironmentID,
+		arg.ApplicationVersionID,
+		arg.DeploymentTemplateID,
+		arg.BusinessSystemID,
+		arg.MacroValues,
+		arg.LogCollectionEnabled,
+		arg.LogRetentionTierID,
 		arg.ID,
 	)
 	return err
@@ -1970,6 +4643,86 @@ func (q *Queries) UpdateCredential(ctx context.Context, arg UpdateCredentialPara
 	return err
 }
 
+const updateDeploymentRuntimeStatus = `-- name: UpdateDeploymentRuntimeStatus :exec
+UPDATE assets_application_deployment
+SET update_time = $1, runtime_status = $2,
+    runtime_status_output = $3, last_status_check_time = $4
+WHERE id = $5
+`
+
+type UpdateDeploymentRuntimeStatusParams struct {
+	UpdateTime          time.Time    `json:"update_time"`
+	RuntimeStatus       string       `json:"runtime_status"`
+	RuntimeStatusOutput string       `json:"runtime_status_output"`
+	LastStatusCheckTime sql.NullTime `json:"last_status_check_time"`
+	ID                  int64        `json:"id"`
+}
+
+func (q *Queries) UpdateDeploymentRuntimeStatus(ctx context.Context, arg UpdateDeploymentRuntimeStatusParams) error {
+	_, err := q.db.ExecContext(ctx, updateDeploymentRuntimeStatus,
+		arg.UpdateTime,
+		arg.RuntimeStatus,
+		arg.RuntimeStatusOutput,
+		arg.LastStatusCheckTime,
+		arg.ID,
+	)
+	return err
+}
+
+const updateDeploymentTemplate = `-- name: UpdateDeploymentTemplate :exec
+UPDATE assets_application_deployment_template
+SET update_time=$1,remark=$2,name=$3,control_type=$4,
+    run_user=$5,run_group=$6,app_home=$7,
+    work_directory=$8,service_name=$9,
+    ha_system_name=$10,ha_cluster_name=$11,
+    ha_resource_name=$12,enabled=$13,application_id=$14,
+    systemd_scope=$15,macro_definitions=$16
+WHERE id=$17
+`
+
+type UpdateDeploymentTemplateParams struct {
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Name             string          `json:"name"`
+	ControlType      string          `json:"control_type"`
+	RunUser          string          `json:"run_user"`
+	RunGroup         string          `json:"run_group"`
+	AppHome          string          `json:"app_home"`
+	WorkDirectory    string          `json:"work_directory"`
+	ServiceName      string          `json:"service_name"`
+	HaSystemName     string          `json:"ha_system_name"`
+	HaClusterName    string          `json:"ha_cluster_name"`
+	HaResourceName   string          `json:"ha_resource_name"`
+	Enabled          bool            `json:"enabled"`
+	ApplicationID    sql.NullInt64   `json:"application_id"`
+	SystemdScope     string          `json:"systemd_scope"`
+	MacroDefinitions json.RawMessage `json:"macro_definitions"`
+	ID               int64           `json:"id"`
+}
+
+func (q *Queries) UpdateDeploymentTemplate(ctx context.Context, arg UpdateDeploymentTemplateParams) error {
+	_, err := q.db.ExecContext(ctx, updateDeploymentTemplate,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.ControlType,
+		arg.RunUser,
+		arg.RunGroup,
+		arg.AppHome,
+		arg.WorkDirectory,
+		arg.ServiceName,
+		arg.HaSystemName,
+		arg.HaClusterName,
+		arg.HaResourceName,
+		arg.Enabled,
+		arg.ApplicationID,
+		arg.SystemdScope,
+		arg.MacroDefinitions,
+		arg.ID,
+	)
+	return err
+}
+
 const updateHost = `-- name: UpdateHost :exec
 UPDATE assets_host SET
   update_time = $1, remark = $2, status = $3, instance_id = $4, ip = $5,
@@ -2071,6 +4824,151 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) er
 		arg.Owner,
 		arg.Enabled,
 		arg.ID,
+	)
+	return err
+}
+
+const upsertHostHardware = `-- name: UpsertHostHardware :exec
+INSERT INTO assets_hosthardware(create_time,update_time,remark,host_id,cpu_cores,cpu_model,memory_gb,
+                                disk_total_gb,architecture,collected_at)
+VALUES($1,$2,NULL,$3,$4,
+       $5,$6,$7,$8,
+       $9)
+ON CONFLICT (host_id) DO UPDATE SET update_time=EXCLUDED.update_time,cpu_cores=EXCLUDED.cpu_cores,cpu_model=EXCLUDED.cpu_model,
+  memory_gb=EXCLUDED.memory_gb,disk_total_gb=EXCLUDED.disk_total_gb,architecture=EXCLUDED.architecture,
+  collected_at=EXCLUDED.collected_at
+`
+
+type UpsertHostHardwareParams struct {
+	CreateTime   time.Time       `json:"create_time"`
+	UpdateTime   time.Time       `json:"update_time"`
+	HostID       int64           `json:"host_id"`
+	CpuCores     sql.NullInt32   `json:"cpu_cores"`
+	CpuModel     sql.NullString  `json:"cpu_model"`
+	MemoryGb     sql.NullFloat64 `json:"memory_gb"`
+	DiskTotalGb  sql.NullFloat64 `json:"disk_total_gb"`
+	Architecture sql.NullString  `json:"architecture"`
+	CollectedAt  sql.NullTime    `json:"collected_at"`
+}
+
+// conflict: host_id
+func (q *Queries) UpsertHostHardware(ctx context.Context, arg UpsertHostHardwareParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHostHardware,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.HostID,
+		arg.CpuCores,
+		arg.CpuModel,
+		arg.MemoryGb,
+		arg.DiskTotalGb,
+		arg.Architecture,
+		arg.CollectedAt,
+	)
+	return err
+}
+
+const upsertHostRuntime = `-- name: UpsertHostRuntime :exec
+INSERT INTO assets_hostruntime(create_time,update_time,remark,host_id,cpu_usage_percent,cpu_times,
+                              memory_usage_percent,memory,disk_io,os_uptime_seconds,os_boot_time,
+                              metrics_sample_window_ms,static_fingerprint,collected_at)
+VALUES($1,$2,NULL,$3,$4,
+       $5,$6,$7,$8,
+       $9,$10,$11,
+       $12,$13)
+ON CONFLICT (host_id) DO UPDATE SET update_time=EXCLUDED.update_time,cpu_usage_percent=EXCLUDED.cpu_usage_percent,
+  cpu_times=EXCLUDED.cpu_times,memory_usage_percent=EXCLUDED.memory_usage_percent,memory=EXCLUDED.memory,
+  disk_io=EXCLUDED.disk_io,os_uptime_seconds=EXCLUDED.os_uptime_seconds,os_boot_time=EXCLUDED.os_boot_time,
+  metrics_sample_window_ms=EXCLUDED.metrics_sample_window_ms,static_fingerprint=EXCLUDED.static_fingerprint,
+  collected_at=EXCLUDED.collected_at
+`
+
+type UpsertHostRuntimeParams struct {
+	CreateTime            time.Time       `json:"create_time"`
+	UpdateTime            time.Time       `json:"update_time"`
+	HostID                int64           `json:"host_id"`
+	CpuUsagePercent       sql.NullFloat64 `json:"cpu_usage_percent"`
+	CpuTimes              json.RawMessage `json:"cpu_times"`
+	MemoryUsagePercent    sql.NullFloat64 `json:"memory_usage_percent"`
+	Memory                json.RawMessage `json:"memory"`
+	DiskIo                json.RawMessage `json:"disk_io"`
+	OsUptimeSeconds       sql.NullInt64   `json:"os_uptime_seconds"`
+	OsBootTime            sql.NullTime    `json:"os_boot_time"`
+	MetricsSampleWindowMs sql.NullInt32   `json:"metrics_sample_window_ms"`
+	StaticFingerprint     string          `json:"static_fingerprint"`
+	CollectedAt           sql.NullTime    `json:"collected_at"`
+}
+
+// conflict: host_id
+func (q *Queries) UpsertHostRuntime(ctx context.Context, arg UpsertHostRuntimeParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHostRuntime,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.HostID,
+		arg.CpuUsagePercent,
+		arg.CpuTimes,
+		arg.MemoryUsagePercent,
+		arg.Memory,
+		arg.DiskIo,
+		arg.OsUptimeSeconds,
+		arg.OsBootTime,
+		arg.MetricsSampleWindowMs,
+		arg.StaticFingerprint,
+		arg.CollectedAt,
+	)
+	return err
+}
+
+const upsertHostSystem = `-- name: UpsertHostSystem :exec
+INSERT INTO assets_hostsystem(create_time,update_time,remark,host_id,os_type,os_version,os_id,os_id_like,
+                              os_version_id,kernel_version,hostname,agent_version,timezone_name,utc_offset,
+                              collector_source,collected_at)
+VALUES($1,$2,NULL,$3,$4,
+       $5,$6,$7,$8,
+       $9,$10,$11,$12,
+       $13,$14,$15)
+ON CONFLICT (host_id) DO UPDATE SET update_time=EXCLUDED.update_time,os_type=EXCLUDED.os_type,os_version=EXCLUDED.os_version,
+  os_id=EXCLUDED.os_id,os_id_like=EXCLUDED.os_id_like,os_version_id=EXCLUDED.os_version_id,
+  kernel_version=EXCLUDED.kernel_version,hostname=EXCLUDED.hostname,agent_version=EXCLUDED.agent_version,
+  timezone_name=EXCLUDED.timezone_name,utc_offset=EXCLUDED.utc_offset,collector_source=EXCLUDED.collector_source,
+  collected_at=EXCLUDED.collected_at
+`
+
+type UpsertHostSystemParams struct {
+	CreateTime      time.Time      `json:"create_time"`
+	UpdateTime      time.Time      `json:"update_time"`
+	HostID          int64          `json:"host_id"`
+	OsType          sql.NullString `json:"os_type"`
+	OsVersion       sql.NullString `json:"os_version"`
+	OsID            sql.NullString `json:"os_id"`
+	OsIDLike        sql.NullString `json:"os_id_like"`
+	OsVersionID     sql.NullString `json:"os_version_id"`
+	KernelVersion   sql.NullString `json:"kernel_version"`
+	Hostname        sql.NullString `json:"hostname"`
+	AgentVersion    sql.NullString `json:"agent_version"`
+	TimezoneName    sql.NullString `json:"timezone_name"`
+	UtcOffset       sql.NullString `json:"utc_offset"`
+	CollectorSource sql.NullString `json:"collector_source"`
+	CollectedAt     sql.NullTime   `json:"collected_at"`
+}
+
+// conflict: host_id
+func (q *Queries) UpsertHostSystem(ctx context.Context, arg UpsertHostSystemParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHostSystem,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.HostID,
+		arg.OsType,
+		arg.OsVersion,
+		arg.OsID,
+		arg.OsIDLike,
+		arg.OsVersionID,
+		arg.KernelVersion,
+		arg.Hostname,
+		arg.AgentVersion,
+		arg.TimezoneName,
+		arg.UtcOffset,
+		arg.CollectorSource,
+		arg.CollectedAt,
 	)
 	return err
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -62,22 +63,34 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	macro := jsonValue(input.MacroValues, "{}")
 	enabled := boolValue(input.Enabled, true)
 	logs := boolValue(input.LogCollectionEnabled, false)
+	queries := db.New(tx)
+	name, code := strings.TrimSpace(input.Name), strings.TrimSpace(input.Code)
 	var serviceID int64
 	if id == 0 {
-		result, execErr := tx.ExecContext(ctx, `INSERT INTO assets_application_service (create_time,update_time,remark,name,code,topology_type,access_address,enabled,application_id,cluster_profile_id,environment_id,application_version_id,deployment_template_id,business_system_id,macro_values,log_collection_enabled,log_retention_tier_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs, nullableInt(input.LogRetentionTier))
-		if execErr != nil {
-			return 0, execErr
-		}
-		serviceID, err = result.LastInsertId()
+		serviceID, err = queries.CreateApplicationService(ctx, db.CreateApplicationServiceParams{
+			CreateTime: now, UpdateTime: now, Remark: nullableString(input.Remark), Name: name, Code: code,
+			TopologyType: input.TopologyType, AccessAddress: input.AccessAddress, Enabled: enabled,
+			ApplicationID: input.Application, ClusterProfileID: profile, EnvironmentID: env,
+			ApplicationVersionID: input.ApplicationVersion, DeploymentTemplateID: input.DeploymentTemplate,
+			BusinessSystemID: input.BusinessSystem, MacroValues: macro, LogCollectionEnabled: logs,
+			LogRetentionTierID: nullableInt(input.LogRetentionTier),
+		})
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE assets_application_service SET update_time=?,remark=?,name=?,code=?,topology_type=?,access_address=?,enabled=?,application_id=?,cluster_profile_id=?,environment_id=?,application_version_id=?,deployment_template_id=?,business_system_id=?,macro_values=?,log_collection_enabled=?,log_retention_tier_id=? WHERE id=?`, now, nullableString(input.Remark), strings.TrimSpace(input.Name), strings.TrimSpace(input.Code), input.TopologyType, input.AccessAddress, enabled, input.Application, profile, env, input.ApplicationVersion, input.DeploymentTemplate, input.BusinessSystem, macro, logs, nullableInt(input.LogRetentionTier), id)
+		err = queries.UpdateApplicationService(ctx, db.UpdateApplicationServiceParams{
+			UpdateTime: now, Remark: nullableString(input.Remark), Name: name, Code: code,
+			TopologyType: input.TopologyType, AccessAddress: input.AccessAddress, Enabled: enabled,
+			ApplicationID: input.Application, ClusterProfileID: profile, EnvironmentID: env,
+			ApplicationVersionID: input.ApplicationVersion, DeploymentTemplateID: input.DeploymentTemplate,
+			BusinessSystemID: input.BusinessSystem, MacroValues: macro, LogCollectionEnabled: logs,
+			LogRetentionTierID: nullableInt(input.LogRetentionTier), ID: id,
+		})
 		serviceID = id
 	}
 	if err != nil {
 		return 0, err
 	}
 	if input.MemberConfigs != nil {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM assets_application_service_deployment WHERE service_id=?`, serviceID); err != nil {
+		if err = queries.DeleteServiceDeployments(ctx, serviceID); err != nil {
 			return 0, err
 		}
 		seen := map[int64]bool{}
@@ -86,24 +99,32 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 				return 0, fmt.Errorf("invalid service member")
 			}
 			seen[member.Deployment] = true
-			if _, err = tx.ExecContext(ctx, `INSERT INTO assets_application_service_deployment (create_time,update_time,remark,enabled,deployment_id,service_id) VALUES (?,?,?,?,?,?)`, now, now, nil, boolValue(member.Enabled, true), member.Deployment, serviceID); err != nil {
+			if err = queries.CreateServiceDeployment(ctx, db.CreateServiceDeploymentParams{
+				CreateTime: now, UpdateTime: now, Enabled: boolValue(member.Enabled, true),
+				DeploymentID: member.Deployment, ServiceID: serviceID,
+			}); err != nil {
 				return 0, err
 			}
 		}
 	}
 	if input.LogSettings != nil {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM assets_application_service_log_setting WHERE service_id=?`, serviceID); err != nil {
+		if err = queries.DeleteServiceLogSettings(ctx, serviceID); err != nil {
 			return 0, err
 		}
 		for _, setting := range *input.LogSettings {
 			if setting.LogDefinition < 1 {
 				return 0, fmt.Errorf("invalid service log definition")
 			}
-			var collection any
+			var collection *bool
 			if setting.CollectionEnabled != nil {
-				collection = *setting.CollectionEnabled
+				collection = setting.CollectionEnabled
 			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO assets_application_service_log_setting (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,processing_rule_id,collection_filter_rule_id) VALUES (?,?,?,?,?,?,?,?,?)`, now, now, nil, collection, setting.LogDefinition, nullableInt(setting.RetentionTier), serviceID, nullableInt(setting.ProcessingRule), nullableInt(setting.CollectionFilterRule)); err != nil {
+			if err = queries.CreateServiceLogSetting(ctx, db.CreateServiceLogSettingParams{
+				CreateTime: now, UpdateTime: now, CollectionEnabled: collection,
+				LogDefinitionID: setting.LogDefinition, RetentionTierID: nullableInt(setting.RetentionTier),
+				ServiceID: serviceID, ProcessingRuleID: nullableInt(setting.ProcessingRule),
+				CollectionFilterRuleID: nullableInt(setting.CollectionFilterRule),
+			}); err != nil {
 				return 0, err
 			}
 		}
@@ -114,8 +135,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	return serviceID, nil
 }
 func (r *Repository) DeleteApplicationService(ctx context.Context, id int64) error {
-	_, err := r.pool.ExecContext(ctx, `DELETE FROM assets_application_service WHERE id=?`, id)
-	return err
+	return r.queries.DeleteApplicationService(ctx, id)
 }
 func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput) (int64, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
@@ -134,15 +154,21 @@ func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, in
 	}
 	raw := jsonValue(input.RuntimeVariables, "{}")
 	enabled := boolValue(input.Enabled, true)
+	queries := db.New(tx)
+	instanceName := strings.TrimSpace(input.InstanceName)
 	var deploymentID int64
 	if id == 0 {
-		result, execErr := tx.ExecContext(ctx, `INSERT INTO assets_application_deployment (create_time,update_time,remark,instance_name,enabled,host_id,runtime_status,runtime_status_output,ha_role,runtime_variables) VALUES (?,?,?,?,?,?,?,?,?,?)`, now, now, nullableString(input.Remark), strings.TrimSpace(input.InstanceName), enabled, input.Host, status, input.RuntimeStatusOutput, role, raw)
-		if execErr != nil {
-			return 0, execErr
-		}
-		deploymentID, err = result.LastInsertId()
+		deploymentID, err = queries.CreateApplicationDeployment(ctx, db.CreateApplicationDeploymentParams{
+			CreateTime: now, UpdateTime: now, Remark: nullableString(input.Remark), InstanceName: instanceName,
+			Enabled: enabled, HostID: input.Host, RuntimeStatus: status,
+			RuntimeStatusOutput: input.RuntimeStatusOutput, HaRole: role, RuntimeVariables: raw,
+		})
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE assets_application_deployment SET update_time=?,remark=?,instance_name=?,enabled=?,host_id=?,runtime_status=?,runtime_status_output=?,ha_role=?,runtime_variables=? WHERE id=?`, now, nullableString(input.Remark), strings.TrimSpace(input.InstanceName), enabled, input.Host, status, input.RuntimeStatusOutput, role, raw, id)
+		err = queries.UpdateApplicationDeployment(ctx, db.UpdateApplicationDeploymentParams{
+			UpdateTime: now, Remark: nullableString(input.Remark), InstanceName: instanceName,
+			Enabled: enabled, HostID: input.Host, RuntimeStatus: status,
+			RuntimeStatusOutput: input.RuntimeStatusOutput, HaRole: role, RuntimeVariables: raw, ID: id,
+		})
 		deploymentID = id
 	}
 	if err != nil {
@@ -154,8 +180,7 @@ func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, in
 	return deploymentID, nil
 }
 func (r *Repository) DeleteApplicationDeployment(ctx context.Context, id int64) error {
-	_, err := r.pool.ExecContext(ctx, `DELETE FROM assets_application_deployment WHERE id=?`, id)
-	return err
+	return r.queries.DeleteApplicationDeployment(ctx, id)
 }
 
 func (s *Service) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput) (ApplicationService, error) {

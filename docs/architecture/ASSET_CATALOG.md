@@ -55,3 +55,50 @@
 
 - 分页/参数非法 → 400；数据库错误 → 500（`response.Error`）。
 - 空列表返回 `{results: [], count: 0}`，前端已做数组归一化。
+
+## 数据访问层（sqlc，迁移中 2026-09-16）
+
+assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛到 sqlc：语句定义在
+`autoadmin/db/queries/mysql/assets.sql`，Go 侧只调 `internal/platform/database/generated`
+（方言门面，默认 MySQL、`-tags postgres` 走 PostgreSQL）。**已完成主机域与 agent 作业/安装包部分**，
+模板与逻辑服务域待迁（进度与剩余清单见 `docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md` 的 P2-3）。
+
+已迁部分的最终逻辑与取舍：
+
+- **采集结果落库（`persistHostInfo`）**：`assets_hostruntime`/`assets_hostsystem`/`assets_hosthardware`
+  三张表按 `host_id` 唯一键 UPSERT。MySQL 源写 `ON DUPLICATE KEY UPDATE a=VALUES(a)`，查询头声明
+  `-- conflict: host_id`，派生脚本改写成 PG 的 `ON CONFLICT (host_id) DO UPDATE SET a=EXCLUDED.a`
+  （两侧生成的参数结构体一致，调用点不分叉；缺声明或残留 MySQL 子句会让派生失败）。
+  「静态指纹未变则跳过 system/hardware 落库」的判断保持在应用层（读 `GetHostRuntimeFingerprint`）。
+- **采集状态两态**：成功写 `collect_time`，失败传 NULL 由 `collect_time = COALESCE(?, collect_time)`
+  保留上次采集时间（迁移前是两条不同的 UPDATE）。
+- **磁盘整表重建**：`assets_hostdisk` 没有按 device 的唯一键，采集时先 `DeleteHostDisks` 再逐条
+  `CreateHostDisk`（顺序与事务范围不变）。
+- **主机详情**：`GetHostSystem`/`GetHostHardware`/`GetHostRuntime`/`ListHostDisks`/`ListHostMonitors`
+  五个只读查询分别对应详情页的 system/hardware/runtime/磁盘/监控目标区块；缺行时是 `sql.ErrNoRows`
+  而不是驱动错误（迁移前依赖手写 Scan 的零值语义）。
+- **身份唯一性校验**：`HostIPExists`/`InstanceNameExists` 由 `CountOtherHostsByIP` /
+  `CountOtherHostsByInstanceName` 承担（`WHERE col = ? AND id <> ?`），仍是服务层校验而非 DB 唯一约束
+  （IP 侧为存量重复数据留收敛余地；`instance_name` 侧另有迁移 000022 的 UNIQUE KEY 兜底）。
+- **agent 作业列表**：`GET /agent/jobs` 的 host_id/action 过滤从运行时拼 `WHERE (?=0 OR …)` 改成
+  `sqlc.narg`（NULL 表示不过滤），四条查询共用同一组条件；`group_by=action` 与状态汇总分别走
+  `ListAgentJobActionCounts` / `ListAgentJobStatusCounts`。
+- **agent 安装包**：仍是"单槽位当前包"语义（`version='default'`，`is_active` 唯一激活），
+  列表/下载取 `is_active=1` 的最新一行，激活时先把其它行置 0。**注意 `agent_package.id` 是
+  `bigint unsigned`，两侧都生成为 `uint64`**，调用点按 `uint64(id)` 传（HTTP 层的 id 仍是 int64）。
+- **Agent 安装/更新流程**：`agent_install.go` 与 `agent_update.go` 原本各写一份重复的裸 SQL，现在收敛到
+  `agent_job_queries.go` 的一组共用封装（作业与主机日志的 running→failed/timeout/finished 状态流转、
+  stdout 追加、执行作业收尾）；作业行的 `duration_seconds` 由应用层算（读回 `start_time`，复用 automation 域的
+  `GetAutomationJobStartTime`，替换 MySQL 的 `TIMESTAMPDIFF`）。列表/拦截用的是可变长 `IN (sqlc.slice(...))`。
+- **部署模板**：模板主体 + 5 类嵌套子表（端口/路径/配置文件/日志定义/控制动作）+ docker 与 compose 配置。
+  原实现删子表时运行时拼表名（`DELETE FROM `+table+` WHERE …`），现在按表名分派到 7 条显式语句；
+  子表读取保持各自的排序（端口按 `protocol,port`、路径按 `path_type,id`、其余按 `id`）。
+- **逻辑服务与部署实例**：服务 CRUD 含成员（`assets_application_service_deployment`）与日志设置
+  （`assets_application_service_log_setting`）的**整表替换**；列表的搜索/业务系统/环境过滤从运行时拼 `WHERE`
+  （含 `EXISTS` 子查询）改成 `sqlc.narg`（NULL 表示不过滤，`IS NULL` 写在 OR 链末尾）。
+- **验证**：`internal/assets/smoke_test.go` 与 `smoke_template_test.go`（`ASSETS_SMOKE_DSN`）在真 MySQL 与真 PG 上
+  跑一遍上述写路径（主机域：三类快照各写两次验 UPSERT 真走 UPDATE 分支、磁盘重建、采集两态、唯一性计数；
+  模板与服务域：模板 + 全部嵌套子表建成后读回、服务 + 成员 + 日志设置、部署实例 CRUD、列表的三种过滤组合），
+  全程一个事务并回滚，不往库里留数据。
+
+> 迁移进度与剩余清单见 `docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md` 的 P2-3（`assets` 已清零，`monitor` 待迁）。

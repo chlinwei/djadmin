@@ -52,4 +52,14 @@ var perQueryOverrides = map[string][]Override{
 		{Old: "GROUP_CONCAT(bs.name ORDER BY bs.id SEPARATOR '||')", New: "string_agg(bs.name, '||' ORDER BY bs.id)"},
 		{Old: "GROUP_CONCAT(bs.id ORDER BY bs.id SEPARATOR '||')", New: "string_agg(bs.id::text, '||' ORDER BY bs.id)"},
 	},
+	// 单地址投递的 get-or-create：MySQL 用 `id=LAST_INSERT_ID(id)` 把既有行的主键
+	// 变成 LastInsertId。PG 没有这个函数，等价写法是 `id = <表>.id`（一个保持原值的空操作）——
+	// 写成 EXCLUDED.id 会命中这条 INSERT 自己算出的下一个序列值，等于把主键改成新值。
+	// 冲突目标 (event_id,media_id,user_id,address) 由源里 `-- conflict:` 注释提供。
+	"CreateAlertNotificationDeliveryOrGetID": {
+		{
+			Old: "id=LAST_INSERT_ID(id)",
+			New: "id=monitor_alert_notification_delivery.id",
+		},
+	},
 }

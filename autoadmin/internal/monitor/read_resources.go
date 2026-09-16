@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"database/sql"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -81,31 +80,23 @@ type monitorGroup struct {
 }
 
 func (handler *Handler) HostGroupTree(context *gin.Context) {
-	rows, err := handler.db.QueryContext(context, `SELECT g.id,g.name,g.parent_id,COUNT(h.id) AS host_count,COALESCE(SUM(CASE WHEN h.id IS NOT NULL AND (EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id=h.id) OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id=h.id)) THEN 1 ELSE 0 END),0) AS managed_count FROM assets_hostgroup g LEFT JOIN assets_host h ON h.group_id=g.id AND h.is_deleted_in_cloud=FALSE GROUP BY g.id,g.name,g.parent_id ORDER BY g.name,g.id`)
+	queries := db.New(handler.db)
+	rows, err := queries.ListMonitorHostGroupTree(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	groups := make([]monitorGroup, 0)
-	for rows.Next() {
-		var item monitorGroup
-		if err = rows.Scan(&item.ID, &item.Name, &item.ParentID, &item.HostCount, &item.ManagedCount); err != nil {
-			response.Error(context, err)
-			return
-		}
-		groups = append(groups, item)
+	groups := make([]monitorGroup, 0, len(rows))
+	for _, row := range rows {
+		groups = append(groups, monitorGroup{ID: row.ID, Name: row.Name, ParentID: row.ParentID,
+			HostCount: row.HostCount, ManagedCount: row.ManagedCount})
 	}
-	if err = rows.Err(); err != nil {
-		response.Error(context, err)
-		return
-	}
-	var totalHosts, totalManaged, ungrouped int64
-	err = handler.db.QueryRowContext(context, `SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id=h.id) OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id=h.id)),0),COALESCE(SUM(h.group_id IS NULL),0) FROM assets_host h WHERE h.is_deleted_in_cloud=FALSE`).Scan(&totalHosts, &totalManaged, &ungrouped)
+	totals, err := queries.CountMonitorHostTotals(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
+	totalHosts, totalManaged, ungrouped := totals.Count, totals.ManagedTotal, totals.Ungrouped
 	children := make(map[int64][]monitorGroup)
 	for _, item := range groups {
 		parentID := int64(0)
@@ -139,12 +130,21 @@ func (handler *Handler) HostGroupTree(context *gin.Context) {
 
 func (handler *Handler) HostOverview(context *gin.Context) {
 	page, size := pagination(context)
-	clauses := []string{"h.is_deleted_in_cloud=FALSE"}
-	arguments := make([]any, 0)
-	if search := strings.TrimSpace(context.Query("search")); search != "" {
-		clauses = append(clauses, "(h.instance_name LIKE ? OR h.ip LIKE ?)")
-		arguments = append(arguments, "%"+search+"%", "%"+search+"%")
+	// 过滤条件全部走参数（原来的四种组合是运行时拼 WHERE）：
+	// 搜索空串 / 分组为空 / 纳管状态与日志采集状态为 NULL 都表示"不过滤"。
+	// GroupFilter 是"空串表示不过滤"的开关：必须显式传空串而不是 nil，
+	// 否则 SQL 里 `$n = ''` 变成 `NULL = ''`（NULL 不是 true），整条过滤会把所有主机排除。
+	filter := db.CountMonitorHostsParams{
+		ExporterType: strings.TrimSpace(context.Query("exporter_type")),
+		GroupFilter:  "",
 	}
+	// 搜索同样是"空串表示不过滤"：必须显式传空串（传 NULL 会让 `? = ''` 求值为 NULL，
+	// 整条 AND 变 NULL，所有主机都被排除）。
+	pattern := strings.TrimSpace(context.Query("search"))
+	if pattern != "" {
+		pattern = "%" + pattern + "%"
+	}
+	filter.SearchPattern = sql.NullString{String: pattern, Valid: true}
 	if groupID := strings.TrimSpace(context.Query("group_id")); groupID != "" {
 		groupIDs, err := handler.descendantGroupIDs(context, groupID)
 		if err != nil {
@@ -152,67 +152,47 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			return
 		}
 		if len(groupIDs) > 0 {
-			placeholders := make([]string, len(groupIDs))
-			for index, id := range groupIDs {
-				placeholders[index] = "?"
-				arguments = append(arguments, id)
+			filter.GroupFilter = groupID
+			filter.GroupIds = make([]sql.NullInt64, 0, len(groupIDs))
+			for _, id := range groupIDs {
+				filter.GroupIds = append(filter.GroupIds, sql.NullInt64{Int64: id, Valid: true})
 			}
-			clauses = append(clauses, "h.group_id IN ("+strings.Join(placeholders, ",")+")")
 		}
 	}
-	exporterType := strings.TrimSpace(context.Query("exporter_type"))
 	managedFilter := strings.TrimSpace(context.Query("exporter_managed"))
 	if managedFilter == "" {
 		managedFilter = strings.TrimSpace(context.Query("managed"))
 	}
 	if managedFilter == "true" || managedFilter == "false" {
-		exists := "EXISTS(SELECT 1 FROM monitor_target mt WHERE mt.host_id=h.id"
-		if exporterType != "" {
-			exists += " AND mt.exporter_type=?"
-			arguments = append(arguments, exporterType)
-		}
-		exists += ")"
-		if managedFilter == "false" {
-			exists = "NOT " + exists
-		}
-		clauses = append(clauses, exists)
-	} else if exporterType != "" {
-		// 单独选中某个 Exporter、不搭配"已纳管/未纳管"时，也要把主机列表收窄到"纳管过这个 exporter"，
-		// 否则下拉只是摆设——选了也不过滤，用户看到的还是全部主机。
-		clauses = append(clauses, "EXISTS(SELECT 1 FROM monitor_target mt WHERE mt.host_id=h.id AND mt.exporter_type=?)")
-		arguments = append(arguments, exporterType)
+		filter.ManagedFilter = managedFilter
 	}
-	if fluentManaged := strings.TrimSpace(context.Query("fluent_bit_managed")); fluentManaged == "true" {
-		clauses = append(clauses, "EXISTS(SELECT 1 FROM monitor_log_collection_target lc WHERE lc.host_id=h.id AND lc.agent_installed=TRUE)")
-	} else if fluentManaged == "false" {
-		clauses = append(clauses, "NOT EXISTS(SELECT 1 FROM monitor_log_collection_target lc WHERE lc.host_id=h.id AND lc.agent_installed=TRUE)")
+	if fluentManaged := strings.TrimSpace(context.Query("fluent_bit_managed")); fluentManaged == "true" || fluentManaged == "false" {
+		filter.FluentFilter = fluentManaged
 	}
-	where := " WHERE " + strings.Join(clauses, " AND ")
-	count, err := queryCount(context, handler.db, `SELECT COUNT(*) FROM assets_host h`+where, arguments)
+	queries := db.New(handler.db)
+	count, err := queries.CountMonitorHosts(context, filter)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, `SELECT h.id,h.instance_name,h.ip,h.group_id,COALESCE(g.name,''),lc.id,lc.agent_installed,lc.agent_version,lc.runtime_status,lc.install_status,lc.config_fingerprint,lc.last_applied_time,lc.last_error FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id LEFT JOIN monitor_log_collection_target lc ON lc.host_id=h.id`+where+` ORDER BY h.instance_name,h.id LIMIT ? OFFSET ?`, queryArguments...)
+	rows, err := queries.ListMonitorHosts(context, db.ListMonitorHostsParams{
+		SearchPattern: filter.SearchPattern, GroupIds: filter.GroupIds, GroupFilter: filter.GroupFilter,
+		ManagedFilter: filter.ManagedFilter, ExporterType: filter.ExporterType, FluentFilter: filter.FluentFilter,
+		Limit: int32(size), Offset: int32((page - 1) * size),
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	results := make([]gin.H, 0)
-	for rows.Next() {
-		var hostID int64
-		var hostName, hostIP, groupName sql.NullString
-		var groupID, logTargetID sql.NullInt64
-		var agentInstalled sql.NullBool
-		var agentVersion, runtimeStatus, installStatus, fingerprint, lastError sql.NullString
-		var lastApplied sql.NullTime
-		if err = rows.Scan(&hostID, &hostName, &hostIP, &groupID, &groupName, &logTargetID, &agentInstalled, &agentVersion, &runtimeStatus, &installStatus, &fingerprint, &lastApplied, &lastError); err != nil {
-			response.Error(context, err)
-			return
-		}
-		exporters, queryErr := db.New(handler.db).ListMonitorTargetsByHost(context, db.ListMonitorTargetsByHostParams{
+	results := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		hostID := row.ID
+		hostName, hostIP, groupName := row.InstanceName, row.Ip, row.GroupName
+		groupID, logTargetID := row.GroupID, row.LogTargetID
+		agentInstalled := row.AgentInstalled
+		agentVersion, runtimeStatus, installStatus := row.AgentVersion, row.RuntimeStatus, row.InstallStatus
+		fingerprint, lastError, lastApplied := row.ConfigFingerprint, row.LastError, row.LastAppliedTime
+		exporters, queryErr := queries.ListMonitorTargetsByHost(context, db.ListMonitorTargetsByHostParams{
 			HostID:       hostID,
 			ExporterType: optionalStringParam(context, "exporter_type"),
 		})
@@ -236,8 +216,8 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			appliedValue = lastApplied.Time
 		}
 		fluentBit := gin.H{"id": logIDValue, "host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "host_agent_online": online, "managed": logTargetID.Valid, "agent_installed": agentInstalled.Valid && agentInstalled.Bool, "agent_version": agentVersion.String, "runtime_status": runtimeStatus.String, "install_status": installStatus.String, "config_fingerprint": fingerprint.String, "last_applied_time": appliedValue, "last_error": lastError.String}
-		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName.String, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "fluent_bit": fluentBit}
-		if exporterType != "" && len(typedExporters) > 0 {
+		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "fluent_bit": fluentBit}
+		if filter.ExporterType != "" && len(typedExporters) > 0 {
 			first := typedExporters[0]
 			item["id"] = first.ID
 			item["exporter_type"] = first.ExporterType
@@ -249,10 +229,6 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		}
 		results = append(results, item)
 	}
-	if err = rows.Err(); err != nil {
-		response.Error(context, err)
-		return
-	}
 	paginated(context, results, count, page, size)
 }
 
@@ -261,24 +237,16 @@ func (handler *Handler) descendantGroupIDs(context *gin.Context, root string) ([
 	if err != nil || rootID <= 0 {
 		return nil, nil
 	}
-	rows, err := handler.db.QueryContext(context, `SELECT id,parent_id FROM assets_hostgroup`)
+	rows, err := db.New(handler.db).ListMonitorHostGroupParents(context)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	children := make(map[int64][]int64)
-	for rows.Next() {
-		var id int64
-		var parent sql.NullInt64
-		if err = rows.Scan(&id, &parent); err != nil {
-			return nil, err
-		}
+	for _, row := range rows {
+		id, parent := row.ID, row.ParentID
 		if parent.Valid {
 			children[parent.Int64] = append(children[parent.Int64], id)
 		}
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
 	}
 	result, pending, seen := make([]int64, 0), []int64{rootID}, map[int64]bool{}
 	for len(pending) > 0 {
@@ -306,35 +274,44 @@ func (handler *Handler) CancelInstallHistory(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	var status string
-	var targetID, logTargetID sql.NullInt64
-	var start sql.NullTime
-	if err = tx.QueryRowContext(context, `SELECT status,target_id,log_collection_target_id,start_time FROM monitor_target_install_history WHERE id=? FOR UPDATE`, id).Scan(&status, &targetID, &logTargetID, &start); err != nil {
+	txQueries := db.New(tx)
+	history, err := txQueries.GetInstallHistoryForUpdate(context, id)
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
+	status, targetID, logTargetID, start := history.Status, history.TargetID, history.LogCollectionTargetID, history.StartTime
 	if status != "pending" && status != "running" {
 		response.BusinessError(context, 400, "current task has ended and cannot be cancelled", nil)
 		return
 	}
 	now := time.Now().UTC()
-	var duration any
+	duration := sql.NullFloat64{}
 	if start.Valid {
-		duration = now.Sub(start.Time).Seconds()
+		duration = sql.NullFloat64{Float64: now.Sub(start.Time).Seconds(), Valid: true}
 	}
-	if _, err = tx.ExecContext(context, `UPDATE monitor_target_install_history SET status='cancelled',summary_message='任务已取消',error_message_snapshot='任务已由用户取消',end_time=?,duration_seconds=?,update_time=? WHERE id=?`, now, duration, now, id); err != nil {
+	if err = txQueries.CancelInstallHistory(context, db.CancelInstallHistoryParams{
+		EndTime: sql.NullTime{Time: now, Valid: true}, DurationSeconds: duration,
+		UpdateTime: now, ID: id,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
-	table, target := `monitor_target`, targetID
-	if logTargetID.Valid {
-		table, target = `monitor_log_collection_target`, logTargetID
-	}
-	if !target.Valid {
+	// 取消的是监控目标还是日志采集目标，决定更新哪张表（原实现拼表名，这里按类型分派）。
+	switch {
+	case targetID.Valid:
+		err = txQueries.CancelMonitorTargetInstallState(context, db.CancelMonitorTargetInstallStateParams{
+			UpdateTime: now, ID: targetID.Int64,
+		})
+	case logTargetID.Valid:
+		err = txQueries.CancelLogTargetInstallState(context, db.CancelLogTargetInstallStateParams{
+			UpdateTime: now, ID: logTargetID.Int64,
+		})
+	default:
 		response.BusinessError(context, 400, "task has no managed target", nil)
 		return
 	}
-	if _, err = tx.ExecContext(context, fmt.Sprintf(`UPDATE %s SET install_status='unknown',install_message='安装/卸载任务已取消',update_time=? WHERE id=?`, table), now, target.Int64); err != nil {
+	if err != nil {
 		response.Error(context, err)
 		return
 	}

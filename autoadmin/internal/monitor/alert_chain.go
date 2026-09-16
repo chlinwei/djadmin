@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -169,20 +169,18 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 	if !ok {
 		return
 	}
-	var username string
-	if err := handler.db.QueryRowContext(context, `SELECT username FROM sys_user WHERE id=?`, userID).Scan(&username); err != nil {
-		response.Error(context, err)
-		return
-	}
-
-	bindingRows, err := handler.db.QueryContext(context, `SELECT b.id,b.enabled,b.recipients,m.id,m.name,m.media_type,m.enabled
-		FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id=b.media_id
-		WHERE b.user_id=? ORDER BY b.id`, userID)
+	queries := db.New(handler.db)
+	username, err := queries.GetUsernameByID(context, int32(userID))
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer bindingRows.Close()
+
+	bindingRows, err := queries.ListUserAlertMediaBindings(context, int32(userID))
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 
 	root, err := handler.loadNotificationPolicyTree(context.Request.Context())
 	if err != nil {
@@ -199,17 +197,12 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 			summaryIssues = append(summaryIssues, item)
 		}
 	}
-	for bindingRows.Next() {
-		var bindingID, mediaID int64
-		var enabled, mediaEnabled bool
-		var mediaName, mediaType string
-		var recipientsRaw []byte
-		if err = bindingRows.Scan(&bindingID, &enabled, &recipientsRaw, &mediaID, &mediaName, &mediaType, &mediaEnabled); err != nil {
-			response.Error(context, err)
-			return
-		}
+	for _, row := range bindingRows {
+		bindingID, mediaID := row.ID, row.MediaID
+		enabled, mediaEnabled := row.Enabled, row.MediaEnabled
+		mediaName, mediaType := row.MediaName, row.MediaType
 		recipients := make([]string, 0)
-		_ = json.Unmarshal(recipientsRaw, &recipients)
+		_ = json.Unmarshal(row.Recipients, &recipients)
 
 		issues := userBindingIssues(enabled, mediaEnabled, mediaType, recipients)
 		for _, issue := range issues {
@@ -249,10 +242,6 @@ func (handler *Handler) UserAlertChain(context *gin.Context) {
 			Media:    alertChainMediaBrief{ID: mediaID, Name: mediaName, MediaType: mediaType, Enabled: mediaEnabled},
 			Policies: policies, Issues: issues,
 		})
-	}
-	if err = bindingRows.Err(); err != nil {
-		response.Error(context, err)
-		return
 	}
 	if len(bindings) == 0 {
 		addSummary(fmt.Sprintf("用户 %s 未配置任何告警媒介绑定", username))
@@ -336,18 +325,10 @@ func (handler *Handler) userInGroups(ctx context.Context, userID int32, groupIDs
 	if len(groupIDs) == 0 {
 		return false
 	}
-	placeholders := ""
-	args := make([]any, 0, len(groupIDs)+1)
-	args = append(args, userID)
-	for index, groupID := range groupIDs {
-		if index > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
-		args = append(args, groupID)
-	}
-	var count int
-	if err := handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sys_user_group_member WHERE user_id=? AND group_id IN (`+placeholders+`)`, args...).Scan(&count); err != nil {
+	count, err := db.New(handler.db).CountUserGroupMemberships(ctx, db.CountUserGroupMembershipsParams{
+		UserID: userID, GroupIds: groupIDs,
+	})
+	if err != nil {
 		return false
 	}
 	return count > 0
@@ -388,12 +369,8 @@ func resolveTargetUser(context *gin.Context) (int64, bool) {
 
 func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 	historyID := parseID(context.Param("historyId"))
-	var alertname, severity, instance, state string
-	var labelsRaw []byte
-	var startedAt time.Time
-	err := handler.db.QueryRowContext(context,
-		`SELECT alertname,severity,instance,labels,state,started_at FROM monitor_alert_history WHERE id=?`, historyID,
-	).Scan(&alertname, &severity, &instance, &labelsRaw, &state, &startedAt)
+	queries := db.New(handler.db)
+	history, err := queries.GetAlertHistoryForChain(context, historyID)
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 404, "alert history not found", nil)
 		return
@@ -402,8 +379,9 @@ func (handler *Handler) AlertChainEvaluation(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	alertname, severity, instance, state, startedAt := history.Alertname, history.Severity, history.Instance, history.State, history.StartedAt
 	labels := map[string]any{}
-	_ = json.Unmarshal(labelsRaw, &labels)
+	_ = json.Unmarshal(history.Labels, &labels)
 	mergedLabels := chainMergeLabels(labels, alertname, severity, instance)
 	mergedString := map[string]string{}
 	for key, value := range mergedLabels {
@@ -540,67 +518,31 @@ func mustMarshalMatchers(matchers []policyMatcher) json.RawMessage {
 
 // policyMediasDetail 填充出口媒介的绑定与实际 event/delivery 记录（含停用媒介，便于展示断点）。
 func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int64, historyID int64, eventType string, userGroupIDs []int64) ([]alertChainMediaDetail, error) {
-	placeholders := ""
-	args := make([]any, 0, len(mediaIDs))
-	for index, mediaID := range mediaIDs {
-		if index > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
-		args = append(args, mediaID)
-	}
-	mediaRows, err := handler.db.QueryContext(context, `SELECT id,name,enabled FROM monitor_alert_media WHERE id IN (`+placeholders+`) ORDER BY id`, args...)
+	queries := db.New(handler.db)
+	mediaRows, err := queries.ListAlertMediaBriefByIDs(context, mediaIDs)
 	if err != nil {
 		return nil, err
 	}
-	defer mediaRows.Close()
 
-	type mediaRow struct {
-		ID      int64
-		Name    string
-		Enabled bool
-	}
-	medias := make([]mediaRow, 0)
-	for mediaRows.Next() {
-		var media mediaRow
-		if err = mediaRows.Scan(&media.ID, &media.Name, &media.Enabled); err != nil {
-			return nil, err
-		}
-		medias = append(medias, media)
-	}
-	if err = mediaRows.Err(); err != nil {
-		return nil, err
-	}
-
-	details := make([]alertChainMediaDetail, 0, len(medias))
-	for _, media := range medias {
+	details := make([]alertChainMediaDetail, 0, len(mediaRows))
+	for _, media := range mediaRows {
 		mediaDetail := alertChainMediaDetail{
 			ID: media.ID, Name: media.Name, Enabled: media.Enabled,
 			Bindings: make([]gin.H, 0), Deliveries: make([]alertChainDelivery, 0),
 		}
-		bindingRows, err := handler.db.QueryContext(context, `SELECT b.user_id,u.username,b.recipients,b.enabled
-			FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id=b.user_id
-			WHERE b.media_id=? ORDER BY b.id`, media.ID)
+		bindingRows, err := queries.ListAlertMediaBindingsWithUser(context, media.ID)
 		if err != nil {
 			return nil, err
 		}
-		for bindingRows.Next() {
-			var userID int32
-			var username string
-			var recipientsRaw []byte
-			var enabled bool
-			if err = bindingRows.Scan(&userID, &username, &recipientsRaw, &enabled); err != nil {
-				bindingRows.Close()
-				return nil, err
-			}
+		for _, row := range bindingRows {
 			recipients := make([]string, 0)
-			_ = json.Unmarshal(recipientsRaw, &recipients)
+			_ = json.Unmarshal(row.Recipients, &recipients)
 			// 用户组限制生效时标注成员归属（未标注 = 不限组，全部绑定都可收）。
 			bindingView := gin.H{
-				"user_id": userID, "username": username, "recipients": recipients, "enabled": enabled,
+				"user_id": row.UserID, "username": row.Username, "recipients": recipients, "enabled": row.Enabled,
 			}
 			if userGroupIDs != nil {
-				inGroup := handler.userInGroups(context.Request.Context(), userID, userGroupIDs)
+				inGroup := handler.userInGroups(context.Request.Context(), row.UserID, userGroupIDs)
 				bindingView["in_group"] = inGroup
 				if !inGroup {
 					bindingView["issue"] = "不在命中策略的接收组内，不会收到该告警"
@@ -608,18 +550,10 @@ func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int6
 			}
 			mediaDetail.Bindings = append(mediaDetail.Bindings, bindingView)
 		}
-		if err = bindingRows.Err(); err != nil {
-			bindingRows.Close()
-			return nil, err
-		}
-		bindingRows.Close()
 
-		var eventID int64
-		var dbEventType, eventStatus, eventError string
-		var attemptCount int64
-		eventErr := handler.db.QueryRowContext(context, `SELECT id,event_type,status,attempt_count,error_message
-			FROM monitor_alert_notification_event WHERE alert_id=? AND event_type=? ORDER BY id DESC LIMIT 1`,
-			historyID, eventType).Scan(&eventID, &dbEventType, &eventStatus, &attemptCount, &eventError)
+		event, eventErr := queries.GetLatestAlertNotificationEventForAlert(context, db.GetLatestAlertNotificationEventForAlertParams{
+			AlertID: historyID, EventType: eventType,
+		})
 		switch {
 		case eventErr == sql.ErrNoRows:
 			mediaDetail.Event = nil
@@ -627,35 +561,24 @@ func (handler *Handler) policyMediasDetail(context *gin.Context, mediaIDs []int6
 			return nil, eventErr
 		default:
 			mediaDetail.Event = &alertChainEvent{
-				ID: eventID, EventType: dbEventType, Status: eventStatus,
-				AttemptCount: attemptCount, Error: eventError,
+				ID: event.ID, EventType: event.EventType, Status: event.Status,
+				AttemptCount: int64(event.AttemptCount), Error: event.ErrorMessage,
 			}
-			deliveryRows, err := handler.db.QueryContext(context, `SELECT d.user_id,u.username,d.address,d.status,d.error_message
-				FROM monitor_alert_notification_delivery d LEFT JOIN sys_user u ON u.id=d.user_id
-				WHERE d.event_id=? ORDER BY d.id`, eventID)
+			deliveryRows, err := queries.ListAlertNotificationDeliveriesForChain(context, event.ID)
 			if err != nil {
 				return nil, err
 			}
-			for deliveryRows.Next() {
-				var delivery alertChainDelivery
-				var userID sql.NullInt32
-				var username sql.NullString
-				if err = deliveryRows.Scan(&userID, &username, &delivery.Address, &delivery.Status, &delivery.Error); err != nil {
-					deliveryRows.Close()
-					return nil, err
+			for _, row := range deliveryRows {
+				delivery := alertChainDelivery{
+					Address: row.Address, Status: row.Status, Error: row.ErrorMessage,
+					Username: row.Username.String,
 				}
-				if userID.Valid {
-					value := userID.Int32
+				if row.UserID.Valid {
+					value := row.UserID.Int32
 					delivery.UserID = &value
 				}
-				delivery.Username = username.String
 				mediaDetail.Deliveries = append(mediaDetail.Deliveries, delivery)
 			}
-			if err = deliveryRows.Err(); err != nil {
-				deliveryRows.Close()
-				return nil, err
-			}
-			deliveryRows.Close()
 		}
 		details = append(details, mediaDetail)
 	}

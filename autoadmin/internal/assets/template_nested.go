@@ -4,147 +4,112 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"time"
+	"errors"
 )
 
-func scanRaw(raw *[]byte) json.RawMessage {
-	if raw == nil {
+// rawJSONOrObject / rawJSONOrEmptyArray 给 json 列兜底（空值分别回退 {} / []，与迁移前的 scanRaw 同义）。
+func rawJSONOrObject(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
 		return json.RawMessage("{}")
 	}
-	return json.RawMessage(*raw)
+	return raw
+}
+
+func rawJSONOrEmptyArray(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("[]")
+	}
+	return raw
 }
 func (r *Repository) loadTemplateNested(ctx context.Context, id int64) (DeploymentTemplate, error) {
 	result := DeploymentTemplate{}
-	rows, err := r.pool.QueryContext(ctx, `SELECT id,create_time,update_time,remark,name,protocol,bind_address,port,required,external_access,check_enabled FROM assets_application_port WHERE deployment_template_id=? ORDER BY protocol,port`, id)
+	queries := r.queries
+	ports, err := queries.ListTemplatePorts(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for rows.Next() {
+	for _, row := range ports {
 		var item TemplatePort
-		var remark sql.NullString
-		var created, updated time.Time
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Protocol, &item.BindAddress, &item.Port, &item.Required, &item.ExternalAccess, &item.CheckEnabled); err != nil {
-			rows.Close()
-			return result, err
-		}
-		item.Remark = stringValue(remark)
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Name, item.Protocol, item.BindAddress = row.Name, row.Protocol, row.BindAddress
+		item.Port, item.Required = int(row.Port), row.Required
+		item.ExternalAccess, item.CheckEnabled = row.ExternalAccess, row.CheckEnabled
 		result.Ports = append(result.Ports, item)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return result, err
-	}
-	rows.Close()
-	rows, err = r.pool.QueryContext(ctx, `SELECT id,create_time,update_time,remark,name,path_type,path,required,expected_owner,expected_group,expected_mode,check_enabled FROM assets_application_path WHERE deployment_template_id=? ORDER BY path_type,id`, id)
+	paths, err := queries.ListTemplatePaths(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for rows.Next() {
+	for _, row := range paths {
 		var item TemplatePath
-		var remark sql.NullString
-		var created, updated time.Time
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.PathType, &item.Path, &item.Required, &item.ExpectedOwner, &item.ExpectedGroup, &item.ExpectedMode, &item.CheckEnabled); err != nil {
-			rows.Close()
-			return result, err
-		}
-		item.Remark = stringValue(remark)
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Name, item.PathType, item.Path = row.Name, row.PathType, row.Path
+		item.Required, item.ExpectedOwner = row.Required, row.ExpectedOwner
+		item.ExpectedGroup, item.ExpectedMode = row.ExpectedGroup, row.ExpectedMode
+		item.CheckEnabled = row.CheckEnabled
 		result.Paths = append(result.Paths, item)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return result, err
-	}
-	rows.Close()
-	rows, err = r.pool.QueryContext(ctx, `SELECT id,create_time,update_time,remark,name,path,file_format,required FROM assets_application_config_file WHERE deployment_template_id=? ORDER BY id`, id)
+	configFiles, err := queries.ListTemplateConfigFiles(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for rows.Next() {
+	for _, row := range configFiles {
 		var item TemplateConfigFile
-		var remark sql.NullString
-		var created, updated time.Time
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Path, &item.FileFormat, &item.Required); err != nil {
-			rows.Close()
-			return result, err
-		}
-		item.Remark = stringValue(remark)
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Name, item.Path, item.FileFormat, item.Required = row.Name, row.Path, row.FileFormat, row.Required
 		result.ConfigFiles = append(result.ConfigFiles, item)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return result, err
-	}
-	rows.Close()
-	rows, err = r.pool.QueryContext(ctx, `SELECT id,create_time,update_time,remark,name,path_pattern,collection_enabled,extra_fields,processing_rule_id FROM assets_application_log_definition WHERE deployment_template_id=? ORDER BY id`, id)
+	logs, err := queries.ListTemplateLogDefinitions(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for rows.Next() {
+	for _, row := range logs {
 		var item TemplateLog
-		var remark sql.NullString
-		var raw []byte
-		var rule sql.NullInt64
-		var created, updated time.Time
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.PathPattern, &item.CollectionEnabled, &raw, &rule); err != nil {
-			rows.Close()
-			return result, err
-		}
-		item.Remark = stringValue(remark)
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
-		item.ExtraFields = scanRaw(&raw)
-		item.ProcessingRule = intPtr(rule)
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Name, item.PathPattern, item.CollectionEnabled = row.Name, row.PathPattern, row.CollectionEnabled
+		item.ExtraFields = rawJSONOrObject(row.ExtraFields)
+		item.ProcessingRule = intPtr(row.ProcessingRuleID)
 		result.Logs = append(result.Logs, item)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return result, err
-	}
-	rows.Close()
-	rows, err = r.pool.QueryContext(ctx, `SELECT id,create_time,update_time,remark,action,command,timeout_seconds,success_exit_codes FROM assets_application_control_action WHERE deployment_template_id=? ORDER BY id`, id)
+	controlActions, err := queries.ListTemplateControlActions(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for rows.Next() {
+	for _, row := range controlActions {
 		var item TemplateControlAction
-		var remark sql.NullString
-		var raw []byte
-		var created, updated time.Time
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Action, &item.Command, &item.TimeoutSeconds, &raw); err != nil {
-			rows.Close()
-			return result, err
-		}
-		item.Remark = stringValue(remark)
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
-		item.SuccessExitCodes = scanRaw(&raw)
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Action, item.Command = row.Action, row.Command
+		item.TimeoutSeconds = int(row.TimeoutSeconds)
+		item.SuccessExitCodes = rawJSONOrEmptyArray(row.SuccessExitCodes)
 		result.ControlActions = append(result.ControlActions, item)
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
+	dockerConfig, err := queries.GetTemplateDockerConfig(ctx, id)
+	if err == nil {
+		result.DockerConfig = &DockerConfig{
+			ID: dockerConfig.ID, CreateTime: timestamp(dockerConfig.CreateTime),
+			UpdateTime: timestamp(dockerConfig.UpdateTime), Remark: stringValue(dockerConfig.Remark),
+			ContainerName: dockerConfig.ContainerName, DockerHost: dockerConfig.DockerHost,
+			ExpectedImage: dockerConfig.ExpectedImage, ExpectedImageTag: dockerConfig.ExpectedImageTag,
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return result, err
 	}
-	rows.Close()
-	var item DockerConfig
-	var remark sql.NullString
-	var created, updated time.Time
-	err = r.pool.QueryRowContext(ctx, `SELECT id,create_time,update_time,remark,container_name,docker_host,expected_image,expected_image_tag FROM assets_docker_control_config WHERE deployment_template_id=?`, id).Scan(&item.ID, &created, &updated, &remark, &item.ContainerName, &item.DockerHost, &item.ExpectedImage, &item.ExpectedImageTag)
+	composeConfig, err := queries.GetTemplateComposeConfig(ctx, id)
 	if err == nil {
-		item.CreateTime, item.UpdateTime = timestamp(created), timestamp(updated)
-		item.Remark = stringValue(remark)
-		result.DockerConfig = &item
-	} else if err != sql.ErrNoRows {
-		return result, err
-	}
-	var compose ComposeConfig
-	remark = sql.NullString{}
-	err = r.pool.QueryRowContext(ctx, `SELECT id,create_time,update_time,remark,project_name,service_name,compose_file_path,working_directory,env_file,expected_image,expected_image_tag FROM assets_docker_compose_control_config WHERE deployment_template_id=?`, id).Scan(&compose.ID, &created, &updated, &remark, &compose.ProjectName, &compose.ServiceName, &compose.ComposeFilePath, &compose.WorkingDirectory, &compose.EnvFile, &compose.ExpectedImage, &compose.ExpectedImageTag)
-	if err == nil {
-		compose.CreateTime, compose.UpdateTime = timestamp(created), timestamp(updated)
-		compose.Remark = stringValue(remark)
-		result.ComposeConfig = &compose
-	} else if err != sql.ErrNoRows {
+		result.ComposeConfig = &ComposeConfig{
+			ID: composeConfig.ID, CreateTime: timestamp(composeConfig.CreateTime),
+			UpdateTime: timestamp(composeConfig.UpdateTime), Remark: stringValue(composeConfig.Remark),
+			ProjectName: composeConfig.ProjectName, ServiceName: composeConfig.ServiceName,
+			ComposeFilePath: composeConfig.ComposeFilePath, WorkingDirectory: composeConfig.WorkingDirectory,
+			EnvFile:       composeConfig.EnvFile,
+			ExpectedImage: composeConfig.ExpectedImage, ExpectedImageTag: composeConfig.ExpectedImageTag,
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return result, err
 	}
 	return result, nil

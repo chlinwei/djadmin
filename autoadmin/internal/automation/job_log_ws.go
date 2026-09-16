@@ -1,12 +1,13 @@
 package automation
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -115,31 +116,22 @@ func (handler *Handler) jobLogTextAndStatus(context *gin.Context, id int64) (str
 	if err != nil {
 		return "", "", err
 	}
-	rows, err := handler.db.QueryContext(context, `SELECT host_id_snapshot,host_ip_snapshot,status,agent_job_id,stdout,stderr,error_message FROM automation_execution_host_log WHERE job_id=? ORDER BY id`, id)
+	rows, err := db.New(handler.db).ListAutomationJobHostLogs(context, id)
 	if err != nil {
 		return "", "", err
 	}
-	defer rows.Close()
 	var log strings.Builder
-	for rows.Next() {
-		var hostID sql.NullInt64
-		var hostIP, status, agentJobID, stdout, stderr, message string
-		if err = rows.Scan(&hostID, &hostIP, &status, &agentJobID, &stdout, &stderr, &message); err != nil {
-			return "", "", err
+	for _, row := range rows {
+		fmt.Fprintf(&log, "\n\n===== Agent Host #%v (%s) | status=%s | job=%s =====\n", nullableInt32(row.HostIDSnapshot), row.HostIpSnapshot, row.Status, row.AgentJobID)
+		if row.Stdout != "" {
+			log.WriteString(strings.TrimRight(row.Stdout, "\n") + "\n")
 		}
-		fmt.Fprintf(&log, "\n\n===== Agent Host #%v (%s) | status=%s | job=%s =====\n", nullableInt(hostID), hostIP, status, agentJobID)
-		if stdout != "" {
-			log.WriteString(strings.TrimRight(stdout, "\n") + "\n")
+		if row.Stderr != "" {
+			log.WriteString("[stderr]\n" + strings.TrimRight(row.Stderr, "\n") + "\n")
 		}
-		if stderr != "" {
-			log.WriteString("[stderr]\n" + strings.TrimRight(stderr, "\n") + "\n")
+		if row.ErrorMessage != "" {
+			log.WriteString("[error]\n" + strings.TrimRight(row.ErrorMessage, "\n") + "\n")
 		}
-		if message != "" {
-			log.WriteString("[error]\n" + strings.TrimRight(message, "\n") + "\n")
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return "", "", err
 	}
 	status := ""
 	if raw, ok := job["status"]; ok && raw != nil {
@@ -152,9 +144,8 @@ func (handler *Handler) jobLogTextAndStatus(context *gin.Context, id int64) (str
 // Django 会 get_or_create 配置行，Go 只读：未配置时用缺省值，不在读路径写库。
 func (handler *Handler) jobLogPollInterval(context *gin.Context) time.Duration {
 	interval := 0.5
-	var value string
-	if err := handler.db.QueryRowContext(context, "SELECT value FROM sys_config WHERE `key`=?", "sys.automation.websocket.job_log_poll_interval_seconds").Scan(&value); err == nil {
-		if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64); parseErr == nil {
+	if row, err := db.New(handler.db).GetConfigByKey(context, "sys.automation.websocket.job_log_poll_interval_seconds"); err == nil {
+		if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(row.Value), 64); parseErr == nil {
 			interval = parsed
 		}
 	}

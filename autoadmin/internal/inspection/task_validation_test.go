@@ -8,9 +8,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const groupValidationQuery = `SELECT g.enabled,g.category,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`
+// 断言用方言无关片段（不含占位符）：sqlc 生成的 SQL 两侧只差占位符风格（? / $n）。
+const groupValidationQuery = `AS enabled_check_count`
 
-const taskNameScopeQuery = `SELECT COUNT(*) FROM inspection_task WHERE name=? AND group_id=? AND id<>?`
+const taskNameScopeQuery = `FROM inspection_task WHERE name`
 
 // 挂载点绑定（bindings 输入）必须走挂载校验路径，而不是回落到静态范围校验。
 func TestValidateTaskAcceptsServiceMountBinding(t *testing.T) {
@@ -33,7 +34,7 @@ func TestValidateTaskAcceptsServiceMountBinding(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(regexp.QuoteMeta(groupValidationQuery)).WithArgs(group).
 		WillReturnRows(sqlmock.NewRows([]string{"enabled", "category", "check_count"}).AddRow(true, "application", 1))
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM assets_application_service WHERE id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM assets_application_service WHERE id`)).
 		WithArgs(serviceID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 

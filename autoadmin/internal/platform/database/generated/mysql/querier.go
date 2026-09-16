@@ -7,22 +7,57 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
 type Querier interface {
+	ActivateAgentPackage(ctx context.Context, id uint64) (int64, error)
 	AddRoleMenu(ctx context.Context, arg AddRoleMenuParams) error
 	AddUserRole(ctx context.Context, arg AddUserRoleParams) error
+	CancelAutomationJob(ctx context.Context, arg CancelAutomationJobParams) (int64, error)
 	CancelBaselineScan(ctx context.Context, arg CancelBaselineScanParams) (int64, error)
 	CancelBaselineScanTargets(ctx context.Context, scanID int64) error
+	CancelInspectionExecution(ctx context.Context, arg CancelInspectionExecutionParams) (int64, error)
+	CancelInspectionTarget(ctx context.Context, arg CancelInspectionTargetParams) error
+	CancelInstallHistory(ctx context.Context, arg CancelInstallHistoryParams) error
+	CancelLogTargetInstallState(ctx context.Context, arg CancelLogTargetInstallStateParams) error
+	CancelMonitorTargetInstallState(ctx context.Context, arg CancelMonitorTargetInstallStateParams) error
+	CancelRunningInspectionTargets(ctx context.Context, arg CancelRunningInspectionTargetsParams) (int64, error)
+	ClaimAutomationJob(ctx context.Context, arg ClaimAutomationJobParams) (int64, error)
 	ClaimBaselineScan(ctx context.Context, arg ClaimBaselineScanParams) (int64, error)
+	ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspectionTaskParams) (int64, error)
 	ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error)
+	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
+	ClearDefaultOpenSearchCluster(ctx context.Context, arg ClearDefaultOpenSearchClusterParams) error
+	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
+	ClearSoftwarePackageUninstallTemplate(ctx context.Context, id int64) error
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
 	CountAPITokensByAgentID(ctx context.Context, agentID string) (int64, error)
+	CountActiveAgentInstallJobs(ctx context.Context, hostIds []sql.NullInt64) (int64, error)
+	CountAgentJobs(ctx context.Context, arg CountAgentJobsParams) (int64, error)
 	CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error)
 	CountAlertMedia(ctx context.Context, arg CountAlertMediaParams) (int64, error)
+	CountAllOpenSearchClusters(ctx context.Context) (int64, error)
+	CountApplicationByID(ctx context.Context, id int64) (int64, error)
+	CountApplicationDeployments(ctx context.Context, arg CountApplicationDeploymentsParams) (int64, error)
+	CountApplicationServiceByID(ctx context.Context, id int64) (int64, error)
+	// ---- P2-3：逻辑服务 / 部署实例（列表过滤、详情、成员关联）+ 逻辑服务的日志设置 --------
+	// 原实现的列表过滤是运行时拼 WHERE（搜索 + 可选业务系统/应用过滤 + EXISTS 子查询），
+	// 改成 NULL 表示不过滤的 sqlc.narg；`IS NULL` 仍写在 OR 链末尾（SQL_DESIGN §2.2）。
+	CountApplicationServices(ctx context.Context, arg CountApplicationServicesParams) (int64, error)
 	CountApplicationVersions(ctx context.Context, arg CountApplicationVersionsParams) (int64, error)
 	CountApplications(ctx context.Context, arg CountApplicationsParams) (int64, error)
+	// Inventory 的主机选项（新建 Inventory 时的选择器）：同样是运行时拼 WHERE 改成 narg。
+	CountAutomationHostOptions(ctx context.Context, arg CountAutomationHostOptionsParams) (int64, error)
+	CountAutomationInventoryHosts(ctx context.Context, hostIds []int64) (CountAutomationInventoryHostsRow, error)
+	// ---- P2-2：automation 包内联 SQL 的收纳处（模板 / Inventory / 任务 / 作业运行期 / 主机解析）----
+	//
+	// 与 inspection 同一套约定：时间由应用层传（NOW()/UTC_TIMESTAMP 是方言函数）、PATCH 合并在
+	// 应用层做（不用 COALESCE(narg(...), col)，可空布尔/JSON 在两侧的推导不同）、可变长 IN 用
+	// `IN (sqlc.slice(x))`（派生脚本会改写成 PG 的 `= ANY(sqlc.arg(x)::bigint[])`，见 P4-7）。
+	// 模板列表：原实现运行时拼 `WHERE (?='' OR name LIKE ? ...)`，改成 sqlc.narg 可选过滤。
+	CountAutomationPlaybooks(ctx context.Context, arg CountAutomationPlaybooksParams) (int64, error)
 	CountBaselineItems(ctx context.Context, baselineID int64) (int64, error)
 	// 类目删除前的占用检查（非空禁止删）。
 	CountBaselineItemsByCategory(ctx context.Context, categoryID int64) (int64, error)
@@ -54,18 +89,38 @@ type Querier interface {
 	CountHostsByGroup(ctx context.Context, groupID sql.NullInt64) (int64, error)
 	CountInspectionExecutions(ctx context.Context, arg CountInspectionExecutionsParams) (int64, error)
 	CountInspectionGroups(ctx context.Context, arg CountInspectionGroupsParams) (int64, error)
+	// 目标结果统计：原实现用 `SUM(status='failed')`（MySQL 把布尔当 0/1，PG 不接受），
+	// 换成两方言都认的 `COUNT(CASE WHEN ... THEN 1 END)`，且零行时为 0 而不是 NULL（§4.3）。
+	CountInspectionTargetOutcomes(ctx context.Context, executionID int64) (CountInspectionTargetOutcomesRow, error)
 	CountInspectionTasks(ctx context.Context, arg CountInspectionTasksParams) (int64, error)
+	CountInspectionTasksByGroup(ctx context.Context, groupID int64) (int64, error)
+	CountInspectionTasksByNameInGroup(ctx context.Context, arg CountInspectionTasksByNameInGroupParams) (int64, error)
+	CountInspectionWarningResults(ctx context.Context, executionID int64) (int64, error)
 	CountInstallHistories(ctx context.Context, arg CountInstallHistoriesParams) (int64, error)
 	CountInventories(ctx context.Context, arg CountInventoriesParams) (int64, error)
 	CountJobs(ctx context.Context, arg CountJobsParams) (int64, error)
 	CountLogCollectionFilterRules(ctx context.Context, arg CountLogCollectionFilterRulesParams) (int64, error)
+	// ---- 日志解析规则 / 采集过滤规则的引用计数与应用名称（读路径的补充列）----
+	CountLogDefinitionReferences(ctx context.Context, processingRuleID sql.NullInt64) (int64, error)
 	CountLogProcessingRules(ctx context.Context, arg CountLogProcessingRulesParams) (int64, error)
 	CountLogRetentionTiers(ctx context.Context, arg CountLogRetentionTiersParams) (int64, error)
 	CountLoginAudits(ctx context.Context, arg CountLoginAuditsParams) (int64, error)
+	CountMonitorHostTotals(ctx context.Context) (CountMonitorHostTotalsRow, error)
+	// 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
+	// managed_filter 与 fluent_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
+	CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error)
+	// 计数用 COUNT(CASE WHEN …) 而不是 SUM(布尔)：PG 里布尔不能求和（同 inspection/automation 的处理）。
+	CountMonitorTargetSummary(ctx context.Context) (CountMonitorTargetSummaryRow, error)
 	CountMonitorTargets(ctx context.Context, arg CountMonitorTargetsParams) (int64, error)
 	CountOpenSearchClusters(ctx context.Context, arg CountOpenSearchClustersParams) (int64, error)
 	CountOperationAudits(ctx context.Context, arg CountOperationAuditsParams) (int64, error)
+	CountOtherHostsByIP(ctx context.Context, arg CountOtherHostsByIPParams) (int64, error)
+	CountOtherHostsByInstanceName(ctx context.Context, arg CountOtherHostsByInstanceNameParams) (int64, error)
 	CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error)
+	CountRetentionTierLogSettings(ctx context.Context, retentionTierID sql.NullInt64) (int64, error)
+	// 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
+	// 而 PG 引擎合并成一个（同一个调用点在两侧就编译不过），拆开写才是可移植的形状。
+	CountRetentionTierServices(ctx context.Context, retentionTierID sql.NullInt64) (int64, error)
 	CountRoles(ctx context.Context) (int64, error)
 	CountRolesBySearch(ctx context.Context, arg CountRolesBySearchParams) (int64, error)
 	// 终态聚合：不能用 SUM(status='success')——MySQL 把布尔当 0/1，PG 不接受；
@@ -75,14 +130,47 @@ type Querier interface {
 	CountScansByType(ctx context.Context, scanType string) (int64, error)
 	CountScheduledTaskLogs(ctx context.Context, arg CountScheduledTaskLogsParams) (int64, error)
 	CountScheduledTasks(ctx context.Context, arg CountScheduledTasksParams) (int64, error)
+	// ---- P2-3：监控软件包管理（读取复用 GetSoftwarePackageTyped；写路径见下）----
+	// 原实现有运行时拼列名的地方（`SET `+role+`_playbook_template_id=…`），改成按角色分派的显式语句。
+	CountSoftwarePackageSyncConflict(ctx context.Context, arg CountSoftwarePackageSyncConflictParams) (int64, error)
+	CountSoftwarePackageVariantConflict(ctx context.Context, arg CountSoftwarePackageVariantConflictParams) (int64, error)
 	CountSoftwarePackages(ctx context.Context, arg CountSoftwarePackagesParams) (int64, error)
 	CountTasks(ctx context.Context, arg CountTasksParams) (int64, error)
+	// 用户绑定（含媒介的 media_type/media_enabled）复用 user.sql 的 ListUserAlertMediaBindings。
+	CountUserGroupMemberships(ctx context.Context, arg CountUserGroupMembershipsParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CountUsersBySearch(ctx context.Context, arg CountUsersBySearchParams) (int64, error)
 	CountWebSSHSessions(ctx context.Context, arg CountWebSSHSessionsParams) (int64, error)
 	CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) (sql.Result, error)
+	CreateAgentExecutionJob(ctx context.Context, arg CreateAgentExecutionJobParams) (int64, error)
+	CreateAgentJob(ctx context.Context, arg CreateAgentJobParams) error
+	CreateAgentJobHostLog(ctx context.Context, arg CreateAgentJobHostLogParams) (int64, error)
+	CreateAgentPackage(ctx context.Context, arg CreateAgentPackageParams) (int64, error)
+	CreateAlertHistory(ctx context.Context, arg CreateAlertHistoryParams) (int64, error)
+	CreateAlertMedia(ctx context.Context, arg CreateAlertMediaParams) (int64, error)
+	// 单地址投递的 get-or-create：唯一键 (event_id, media_id, user_id, address) 冲突时把既有行的
+	// 主键作为 LastInsertId 返回（MySQL 惯用法 `id=LAST_INSERT_ID(id)`）。PG 没有 LAST_INSERT_ID，
+	// 由 derive 的 perQueryOverride 换成 `id = monitor_alert_notification_delivery.id` 的等价空操作
+	// —— 不能写成 VALUES(id)/EXCLUDED.id，那是序列的下一个值，不是既有行的 id。
+	// conflict: event_id, media_id, user_id, address
+	// conflict: event_id, media_id, user_id, address
+	CreateAlertNotificationDeliveryOrGetID(ctx context.Context, arg CreateAlertNotificationDeliveryOrGetIDParams) (int64, error)
+	// ---- 告警通知分发链路（event / delivery / 失联对账 / 服务树归属）----
+	// 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。
+	// MySQL 用 INSERT IGNORE（影响行数 0），PG 侧派生为 ON CONFLICT DO NOTHING
+	// （被跳过时 RETURNING 不返回行）；两侧判定见 alert_event_dialect_*.go。
+	CreateAlertNotificationEventIfAbsent(ctx context.Context, arg CreateAlertNotificationEventIfAbsentParams) (sql.Result, error)
 	CreateApplication(ctx context.Context, arg CreateApplicationParams) (sql.Result, error)
+	CreateApplicationDeployment(ctx context.Context, arg CreateApplicationDeploymentParams) (int64, error)
+	// ---- 逻辑服务写路径 ----
+	CreateApplicationService(ctx context.Context, arg CreateApplicationServiceParams) (int64, error)
 	CreateApplicationVersion(ctx context.Context, arg CreateApplicationVersionParams) (sql.Result, error)
+	CreateAutomationControllerKey(ctx context.Context, arg CreateAutomationControllerKeyParams) error
+	CreateAutomationInventory(ctx context.Context, arg CreateAutomationInventoryParams) (int64, error)
+	CreateAutomationJob(ctx context.Context, arg CreateAutomationJobParams) (int64, error)
+	CreateAutomationJobHostLog(ctx context.Context, arg CreateAutomationJobHostLogParams) error
+	CreateAutomationPlaybook(ctx context.Context, arg CreateAutomationPlaybookParams) (int64, error)
+	CreateAutomationTask(ctx context.Context, arg CreateAutomationTaskParams) (int64, error)
 	CreateBaseline(ctx context.Context, arg CreateBaselineParams) (int64, error)
 	CreateBaselineCategory(ctx context.Context, arg CreateBaselineCategoryParams) (int64, error)
 	CreateBaselineItem(ctx context.Context, arg CreateBaselineItemParams) (int64, error)
@@ -94,21 +182,77 @@ type Querier interface {
 	CreateClusterProfile(ctx context.Context, arg CreateClusterProfileParams) (sql.Result, error)
 	CreateConfig(ctx context.Context, arg CreateConfigParams) (sql.Result, error)
 	CreateCredential(ctx context.Context, arg CreateCredentialParams) (sql.Result, error)
+	// ---- P2-3：部署模板（含嵌套子表）----
+	// 原实现的嵌套子表删除是运行时拼表名（`DELETE FROM `+table+` WHERE …`），sqlc 表达不了，
+	// 改成每个子表一条显式语句（调用点按表名分派），表名不再是变量。
+	CreateDeploymentTemplate(ctx context.Context, arg CreateDeploymentTemplateParams) (int64, error)
 	CreateHost(ctx context.Context, arg CreateHostParams) (sql.Result, error)
+	CreateHostDisk(ctx context.Context, arg CreateHostDiskParams) error
 	CreateHostGroup(ctx context.Context, arg CreateHostGroupParams) (sql.Result, error)
+	CreateInspectionCheck(ctx context.Context, arg CreateInspectionCheckParams) error
+	CreateInspectionExecution(ctx context.Context, arg CreateInspectionExecutionParams) (int64, error)
+	CreateInspectionGroup(ctx context.Context, arg CreateInspectionGroupParams) (int64, error)
+	// 检查结果落库：原实现按 100 行/批拼多行 INSERT（占位符个数随入参变化，且用 `?`，
+	// PG 变体跑不通），改为逐条 sqlc INSERT —— 与 baseline 的 flushResults 同一取舍（见 SQL_DESIGN §6.3）。
+	CreateInspectionResult(ctx context.Context, arg CreateInspectionResultParams) error
+	CreateInspectionTargetExecution(ctx context.Context, arg CreateInspectionTargetExecutionParams) (int64, error)
+	CreateInspectionTask(ctx context.Context, arg CreateInspectionTaskParams) (int64, error)
+	CreateInspectionTaskGroup(ctx context.Context, arg CreateInspectionTaskGroupParams) error
+	CreateLogCollectionFilterRule(ctx context.Context, arg CreateLogCollectionFilterRuleParams) (int64, error)
+	// 批量纳管：host_id 唯一键冲突即"已纳管"（MySQL 的 INSERT IGNORE / PG 的 ON CONFLICT DO NOTHING）。
+	CreateLogCollectionTargetIfAbsent(ctx context.Context, arg CreateLogCollectionTargetIfAbsentParams) (sql.Result, error)
+	CreateLogProcessingRule(ctx context.Context, arg CreateLogProcessingRuleParams) (int64, error)
+	// ---- P2-3：通用配置资源的写路径（原实现运行时拼表名与列名）----
+	// 表名按资源分派成显式语句；"只写提交了的列"这一 PATCH 语义改由应用层承担：
+	// 更新前读回整行 → 合并提交的字段 → 整行写（与 inspection 组 PATCH 同一手法）。
+	// 这样做的前提是这三张表的可写列都在 Get* 查询的列集里（已确认）。
+	CreateLogRetentionTier(ctx context.Context, arg CreateLogRetentionTierParams) (int64, error)
+	CreateLogTargetInstallHistory(ctx context.Context, arg CreateLogTargetInstallHistoryParams) (int64, error)
 	CreateLoginAudit(ctx context.Context, arg CreateLoginAuditParams) error
 	CreateMenu(ctx context.Context, arg CreateMenuParams) (sql.Result, error)
+	// 已纳管（host_id, exporter_type 唯一键冲突）时跳过：MySQL 的 INSERT IGNORE 影响行数为 0，
+	// PG 侧派生为 ON CONFLICT DO NOTHING（被跳过时 RETURNING 不返回行）。
+	CreateMonitorTargetIfAbsent(ctx context.Context, arg CreateMonitorTargetIfAbsentParams) (sql.Result, error)
+	CreateMonitorTargetJob(ctx context.Context, arg CreateMonitorTargetJobParams) (int64, error)
+	// parent_id / media_ids / user_group_ids 的 NULL 是有意义的（根节点、继承），
+	// 所以用 narg：nil 即写 NULL。
+	CreateNotificationPolicy(ctx context.Context, arg CreateNotificationPolicyParams) (int64, error)
+	// 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
+	// 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
+	// doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
+	// 这里按"尚未探测/尚未同步"的语义显式写空串。
+	CreateOpenSearchCluster(ctx context.Context, arg CreateOpenSearchClusterParams) (int64, error)
 	CreateOperationAudit(ctx context.Context, arg CreateOperationAuditParams) error
 	CreateProject(ctx context.Context, arg CreateProjectParams) (sql.Result, error)
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
+	CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error
+	CreateServiceLogSetting(ctx context.Context, arg CreateServiceLogSettingParams) error
+	CreateSoftwarePackage(ctx context.Context, arg CreateSoftwarePackageParams) (int64, error)
+	CreateTargetInstallHistory(ctx context.Context, arg CreateTargetInstallHistoryParams) (int64, error)
+	CreateTemplateComposeConfig(ctx context.Context, arg CreateTemplateComposeConfigParams) error
+	CreateTemplateConfigFile(ctx context.Context, arg CreateTemplateConfigFileParams) error
+	CreateTemplateControlAction(ctx context.Context, arg CreateTemplateControlActionParams) error
+	CreateTemplateDockerConfig(ctx context.Context, arg CreateTemplateDockerConfigParams) error
+	CreateTemplateLogDefinition(ctx context.Context, arg CreateTemplateLogDefinitionParams) error
+	CreateTemplatePath(ctx context.Context, arg CreateTemplatePathParams) error
+	CreateTemplatePort(ctx context.Context, arg CreateTemplatePortParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (sql.Result, error)
 	CreateUserAlertMediaBinding(ctx context.Context, arg CreateUserAlertMediaBindingParams) error
 	CreateUserGroup(ctx context.Context, arg CreateUserGroupParams) (sql.Result, error)
 	CreateUserGroupMember(ctx context.Context, arg CreateUserGroupMemberParams) error
+	DeactivateOtherAgentPackages(ctx context.Context, id uint64) error
 	DeleteAPIToken(ctx context.Context, id int32) error
+	DeleteAgentPackage(ctx context.Context, id uint64) error
+	DeleteAlertMedia(ctx context.Context, id int64) (sql.Result, error)
 	DeleteApplication(ctx context.Context, id int64) error
+	DeleteApplicationDeployment(ctx context.Context, id int64) error
+	DeleteApplicationService(ctx context.Context, id int64) error
 	DeleteApplicationVersion(ctx context.Context, id int64) error
+	DeleteAutomationControllerKeys(ctx context.Context) error
+	DeleteAutomationInventory(ctx context.Context, id int64) (int64, error)
+	DeleteAutomationPlaybook(ctx context.Context, id int64) (int64, error)
+	DeleteAutomationTask(ctx context.Context, id int64) (int64, error)
 	DeleteBaseline(ctx context.Context, id int64) (int64, error)
 	DeleteBaselineCategory(ctx context.Context, id int64) (int64, error)
 	// 删除必须带 baseline_id：条目路由形如 /baseline/{id}/items/{itemId}/，
@@ -123,56 +267,183 @@ type Querier interface {
 	DeleteBusinessSystem(ctx context.Context, id int64) error
 	DeleteClusterProfile(ctx context.Context, id int64) error
 	DeleteCredential(ctx context.Context, id int64) error
+	DeleteDeploymentTemplate(ctx context.Context, id int64) error
+	DeleteFinishedInspectionExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error)
+	// 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
+	// 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
+	DeleteFinishedInspectionResults(ctx context.Context, cutoff sql.NullTime) (int64, error)
+	DeleteFinishedInspectionTargetExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error)
 	DeleteHost(ctx context.Context, id int64) error
+	// 磁盘表没有按 device 的唯一键：整表重建以丢掉已卸载的分区。
+	DeleteHostDisks(ctx context.Context, hostID int64) error
 	DeleteHostGroup(ctx context.Context, id int64) error
+	DeleteInspectionChecksByGroup(ctx context.Context, groupID int64) error
+	DeleteInspectionGroup(ctx context.Context, id int64) (int64, error)
+	DeleteInspectionTask(ctx context.Context, id int64) (int64, error)
+	DeleteInspectionTaskGroups(ctx context.Context, taskID int64) error
+	DeleteLogCollectionFilterRule(ctx context.Context, id int64) (sql.Result, error)
+	DeleteLogCollectionTarget(ctx context.Context, id int64) (sql.Result, error)
+	DeleteLogProcessingRule(ctx context.Context, id int64) (sql.Result, error)
+	DeleteLogRetentionTier(ctx context.Context, id int64) (sql.Result, error)
 	DeleteLoginAuditsBefore(ctx context.Context, loginTime time.Time) (sql.Result, error)
 	DeleteMenuByID(ctx context.Context, id int32) error
 	DeleteMenuRoles(ctx context.Context, menuID int32) error
+	DeleteMonitorTarget(ctx context.Context, id int64) error
+	DeleteNotificationPolicy(ctx context.Context, id int64) error
+	DeleteOpenSearchCluster(ctx context.Context, id int64) (sql.Result, error)
 	DeleteOperationAuditsBefore(ctx context.Context, createdAt time.Time) (sql.Result, error)
 	DeleteProject(ctx context.Context, id int64) error
 	DeleteRoleByID(ctx context.Context, id int32) error
 	DeleteRoleMenus(ctx context.Context, roleID int32) error
 	DeleteRoleUsers(ctx context.Context, roleID int32) error
+	DeleteServiceDeployments(ctx context.Context, serviceID int64) error
+	DeleteServiceLogSettings(ctx context.Context, serviceID int64) error
+	DeleteSoftwarePackage(ctx context.Context, id int64) error
+	DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplateControlActions(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplatePaths(ctx context.Context, deploymentTemplateID int64) error
+	DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error
 	DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error
 	DeleteUserByID(ctx context.Context, id int32) error
 	DeleteUserGroup(ctx context.Context, id int64) (int64, error)
 	DeleteUserGroupMembers(ctx context.Context, groupID int64) error
 	DeleteUserRoles(ctx context.Context, userID int32) error
+	DetachInspectionExecutionsFromTask(ctx context.Context, arg DetachInspectionExecutionsFromTaskParams) error
+	// 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
+	DetachInstallHistoryFromLogTarget(ctx context.Context, logCollectionTargetID sql.NullInt64) error
 	DisableAPIToken(ctx context.Context, arg DisableAPITokenParams) error
+	ExpireTargetInstallHistory(ctx context.Context, arg ExpireTargetInstallHistoryParams) (int64, error)
+	// status 由调用方给（失败 'failed' / 超时 'timeout'），其余列语义相同。
+	FailAgentJob(ctx context.Context, arg FailAgentJobParams) error
+	FailAgentJobHostLog(ctx context.Context, arg FailAgentJobHostLogParams) error
+	// 同一批主机上"仍在跑"的 Agent 安装任务：先把失联超过 30 秒的标记失败，再拦截活跃的。
+	FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAgentInstallJobsParams) error
+	FinishAgentExecutionJob(ctx context.Context, arg FinishAgentExecutionJobParams) error
+	FinishAgentJob(ctx context.Context, arg FinishAgentJobParams) error
+	// result_data 传 NULL 表示"保持原值"（更新流程的收尾不写 result_data，只有安装流程写）。
+	FinishAgentJobHostLog(ctx context.Context, arg FinishAgentJobHostLogParams) error
+	FinishAutomationJob(ctx context.Context, arg FinishAutomationJobParams) (int64, error)
 	FinishBaselineScan(ctx context.Context, arg FinishBaselineScanParams) error
 	FinishBaselineScanTarget(ctx context.Context, arg FinishBaselineScanTargetParams) error
+	FinishInspectionExecution(ctx context.Context, arg FinishInspectionExecutionParams) (int64, error)
+	FinishInspectionTarget(ctx context.Context, arg FinishInspectionTargetParams) error
+	FinishLogTargetInstallHistory(ctx context.Context, arg FinishLogTargetInstallHistoryParams) (int64, error)
+	// 收尾：只有仍处于 pending 的任务才落终态。
+	// install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
+	// 而 PG 只合并成一个参数——同一个调用点在两侧就编译不过），用整数比较避开这个分歧。
+	FinishLogTargetInstallState(ctx context.Context, arg FinishLogTargetInstallStateParams) (int64, error)
+	FinishTargetInstallHistory(ctx context.Context, arg FinishTargetInstallHistoryParams) (int64, error)
+	FinishTargetInstallState(ctx context.Context, arg FinishTargetInstallStateParams) (int64, error)
 	GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken, error)
+	// 单槽位 Agent 安装包：列表接口返回"当前激活包"，下载返回它的文件路径。
+	GetActiveAgentPackage(ctx context.Context) (GetActiveAgentPackageRow, error)
+	GetActiveAgentPackageFile(ctx context.Context) (string, error)
+	GetAgentInstallPlaybook(ctx context.Context, category string) (string, error)
+	GetAgentPackage(ctx context.Context, id uint64) (GetAgentPackageRow, error)
+	GetAgentPackageIDByVersion(ctx context.Context, version string) (uint64, error)
 	GetAlertHistoryAlertnameInstance(ctx context.Context, id int64) (GetAlertHistoryAlertnameInstanceRow, error)
+	GetAlertHistoryForChain(ctx context.Context, id int64) (GetAlertHistoryForChainRow, error)
+	// ---- P2-3：告警媒介（monitor_alert_media）写路径与详情读取 ----
+	// recipients 是 NOT NULL 的 json 列：MySQL 侧靠列默认值 '[]' 兜住，PG 的 schema 没有默认值，
+	// 所以 INSERT 里显式写 '[]'。
+	GetAlertMediaConfig(ctx context.Context, id int64) (json.RawMessage, error)
+	GetAlertMediaName(ctx context.Context, id int64) (string, error)
 	GetAlertMediaTyped(ctx context.Context, id int64) (MonitorAlertMedium, error)
+	GetAlertNotificationDeliveryStatus(ctx context.Context, id int64) (string, error)
+	// 事件与告警关键字段一次取齐（原实现分两条语句读同一行，合并为一条）：
+	// event_type 决定路由匹配开关，status 决定是否跳过已成功的事件，labels 用于 matchers 匹配。
+	GetAlertNotificationEventDispatch(ctx context.Context, id int64) (GetAlertNotificationEventDispatchRow, error)
 	GetApplication(ctx context.Context, id int64) (GetApplicationRow, error)
+	GetApplicationNameCode(ctx context.Context, id int64) (GetApplicationNameCodeRow, error)
+	GetApplicationServiceCode(ctx context.Context, id int64) (string, error)
+	GetApplicationServiceDetail(ctx context.Context, id int64) (GetApplicationServiceDetailRow, error)
+	GetApplicationServiceName(ctx context.Context, id int64) (string, error)
 	GetApplicationVersion(ctx context.Context, id int64) (GetApplicationVersionRow, error)
+	// 取消要算 duration，而 TIMESTAMPDIFF 是 MySQL 方言函数（PG 用 EXTRACT(EPOCH ...)）：
+	// 读回 start_time 后在应用层算，别让时长计算把这条语句变成方言分叉。
+	GetAutomationJobStartTime(ctx context.Context, id int64) (sql.NullTime, error)
+	GetAutomationPlaybook(ctx context.Context, id int64) (AutomationPlaybookTemplate, error)
 	GetBaseline(ctx context.Context, id int64) (GetBaselineRow, error)
 	GetBaselineCategory(ctx context.Context, id int64) (GetBaselineCategoryRow, error)
 	GetBaselineForScan(ctx context.Context, id int64) (GetBaselineForScanRow, error)
 	GetBaselineItem(ctx context.Context, id int64) (GetBaselineItemRow, error)
 	GetBaselineScanTarget(ctx context.Context, arg GetBaselineScanTargetParams) (GetBaselineScanTargetRow, error)
 	GetBusinessEnvironment(ctx context.Context, id int64) (AssetsBusinessEnvironment, error)
+	GetBusinessEnvironmentNameByID(ctx context.Context, id int64) (string, error)
 	GetBusinessSystem(ctx context.Context, id int64) (GetBusinessSystemRow, error)
 	GetClusterProfile(ctx context.Context, id int64) (GetClusterProfileRow, error)
 	GetConfigByID(ctx context.Context, id int64) (SysConfig, error)
 	GetConfigByKey(ctx context.Context, key string) (SysConfig, error)
+	// ---- 模块总览 / Prometheus 服务发现 / 机器令牌校验 ----
+	// Prometheus 基地址：只要 value 一列（放本域而不是 sys_config.sql，因为调用方在 monitor；
+	// 也不复用 GetConfigByKey —— 那条是 SELECT *，为读一个配置值拖回整行没必要）。
+	// 参数名不能叫 key（P5 陷阱 23：命名参数与保留字相撞会让 MySQL 引擎语法错误）。
+	GetConfigValueByKey(ctx context.Context, configKey string) (string, error)
 	GetCredential(ctx context.Context, id int64) (AssetsCredential, error)
+	GetDefaultEnabledOpenSearchCluster(ctx context.Context) (GetDefaultEnabledOpenSearchClusterRow, error)
+	GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error)
 	GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error)
+	// ---- P2-3：监控目标域（目标 CRUD/服务控制、安装与卸载下发、安装历史、宿主总览）----
+	// 三处方言/结构改写：① 批量建目标用 `INSERT IGNORE`（已纳管则跳过），派生改写成 PG 的
+	// `ON CONFLICT DO NOTHING`；② PATCH 的字段白名单从"运行时拼 SET"改成"读回+应用层合并+整行写"；
+	// ③ 宿主总览的四种过滤（有目标/指定 exporter/日志已装/未装）改成 narg + CASE，三条查询共用。
+	GetExporterPackageDefaultPort(ctx context.Context, name string) (uint32, error)
 	GetHost(ctx context.Context, id int64) (GetHostRow, error)
 	GetHostGroup(ctx context.Context, id int64) (GetHostGroupRow, error)
+	GetHostHardware(ctx context.Context, hostID int64) (GetHostHardwareRow, error)
+	GetHostRuntime(ctx context.Context, hostID int64) (GetHostRuntimeRow, error)
+	GetHostRuntimeFingerprint(ctx context.Context, hostID int64) (string, error)
+	GetHostSystem(ctx context.Context, hostID int64) (GetHostSystemRow, error)
+	GetHostTargetIdentity(ctx context.Context, id int64) (GetHostTargetIdentityRow, error)
+	GetInspectionExecutionForUpdate(ctx context.Context, id int64) (GetInspectionExecutionForUpdateRow, error)
 	GetInspectionExecutionTyped(ctx context.Context, id int64) (GetInspectionExecutionTypedRow, error)
 	GetInspectionGroup(ctx context.Context, id int64) (GetInspectionGroupRow, error)
+	GetInspectionGroupForUpdate(ctx context.Context, id int64) (GetInspectionGroupForUpdateRow, error)
+	GetInspectionGroupRunMeta(ctx context.Context, id int64) (GetInspectionGroupRunMetaRow, error)
 	GetInspectionServiceBusinessChain(ctx context.Context, serviceID int64) (GetInspectionServiceBusinessChainRow, error)
 	GetInspectionTask(ctx context.Context, id int64) (GetInspectionTaskRow, error)
+	GetInspectionTaskRunState(ctx context.Context, id int64) (GetInspectionTaskRunStateRow, error)
+	GetInspectionTaskState(ctx context.Context, id int64) (GetInspectionTaskStateRow, error)
+	GetInstallHistoryForUpdate(ctx context.Context, id int64) (GetInstallHistoryForUpdateRow, error)
 	GetInventoryTyped(ctx context.Context, id int64) (AutomationInventory, error)
+	// 作业收尾时读回结果摘要（原实现用 MySQL 的 JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))，
+	// 改成取回 json 列在应用层解析）。
+	GetJobResultSummary(ctx context.Context, id int64) (GetJobResultSummaryRow, error)
 	GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, error)
+	GetLatestAlertNotificationEventForAlert(ctx context.Context, arg GetLatestAlertNotificationEventForAlertParams) (GetLatestAlertNotificationEventForAlertRow, error)
+	// 取最近一条安装历史用于"是否有任务在执行中"（NULL 行由 ErrNoRows 表达）。
+	// create_time 用于取消时算时长（该流程的历史行 start_time 为 NULL，只有 create_time
+	// 是派发时刻）。
+	GetLatestLogTargetInstallHistory(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryRow, error)
+	GetLatestTargetInstallHistory(ctx context.Context, targetID sql.NullInt64) (GetLatestTargetInstallHistoryRow, error)
 	GetLogCollectionFilterRule(ctx context.Context, id int64) (MonitorLogCollectionFilterRule, error)
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
+	GetLogTargetConfigFingerprint(ctx context.Context, id int64) (string, error)
+	// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名）。
+	GetLogTargetDefaultCluster(ctx context.Context, id int64) (GetLogTargetDefaultClusterRow, error)
+	// ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
+	// 原实现有两处运行时拼 SQL：① Fluent Bit 软件包按"安装/卸载"拼 playbook 列名；
+	// ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
+	// 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
+	GetLogTargetForAction(ctx context.Context, id int64) (GetLogTargetForActionRow, error)
+	GetLogTargetHostName(ctx context.Context, id int64) (string, error)
 	GetMenuByID(ctx context.Context, id int32) (SysMenu, error)
 	GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTargetRow, error)
+	GetMonitorTargetState(ctx context.Context, id int64) (GetMonitorTargetStateRow, error)
+	GetNotificationPolicyParent(ctx context.Context, id int64) (int64, error)
+	// ---- 告警摄取 webhook（monitor_alert_history）----
+	// 同 fingerprint 的未恢复告警行：加锁读，顺带取回 rule_group/rule_snapshot 供应用层合并
+	// （原实现在 UPDATE 里用 IF(rule_group='',?,rule_group) 与
+	// IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) 表达"已有值优先"，是 MySQL 方言函数）。
+	GetOpenFiringAlertForUpdate(ctx context.Context, fingerprint string) (GetOpenFiringAlertForUpdateRow, error)
+	GetOpenSearchClusterConnection(ctx context.Context, id int64) (GetOpenSearchClusterConnectionRow, error)
 	GetOpenSearchClusterTyped(ctx context.Context, id int64) (MonitorOpensearchCluster, error)
 	GetProject(ctx context.Context, id int64) (GetProjectRow, error)
+	GetProjectNameByID(ctx context.Context, id int64) (string, error)
 	GetRoleByID(ctx context.Context, id int32) (SysRole, error)
 	// 扫描头（不含目标与明细）。原来用 JSON_OBJECT 在库里拼响应体，PG 没有该函数，
 	// 改为取出各列、由应用层组装 JSON（见 docs/architecture/SQL_DESIGN.md §4.2）。
@@ -182,18 +453,60 @@ type Querier interface {
 	GetScheduledTask(ctx context.Context, id int64) (GetScheduledTaskRow, error)
 	GetScheduledTaskLog(ctx context.Context, id int64) (GetScheduledTaskLogRow, error)
 	GetSoftwarePackageTyped(ctx context.Context, id int64) (GetSoftwarePackageTypedRow, error)
+	GetTargetHostAddress(ctx context.Context, id int64) (GetTargetHostAddressRow, error)
+	// ---- 安装/卸载下发 ----
+	GetTargetInstallContext(ctx context.Context, id int64) (GetTargetInstallContextRow, error)
+	GetTargetInstallHistoryForTimeout(ctx context.Context, targetID sql.NullInt64) (GetTargetInstallHistoryForTimeoutRow, error)
+	GetTargetServiceContext(ctx context.Context, id int64) (GetTargetServiceContextRow, error)
 	GetTaskTyped(ctx context.Context, id int64) (GetTaskTypedRow, error)
+	GetTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) (GetTemplateComposeConfigRow, error)
+	GetTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) (GetTemplateDockerConfigRow, error)
+	// 平台匹配用的软件包查询：卸载取最近一条（不论有无文件），安装只取已落文件的一批。
+	GetUninstallPackageForTarget(ctx context.Context, name string) (GetUninstallPackageForTargetRow, error)
 	GetUserByID(ctx context.Context, id int32) (SysUser, error)
 	GetUserByUsername(ctx context.Context, username string) (SysUser, error)
+	GetUserGroupName(ctx context.Context, id int64) (string, error)
+	// ---- 告警链诊断（user-chain / chain/:historyId）----
+	GetUsernameByID(ctx context.Context, id int32) (string, error)
 	GetWebSSHSessionContent(ctx context.Context, id int64) (GetWebSSHSessionContentRow, error)
 	ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
+	// 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
+	ListActiveAgentTokens(ctx context.Context, now sql.NullTime) ([]ListActiveAgentTokensRow, error)
+	ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]ListAgentHostTargetsRow, error)
+	// ---- P2-3：agent 作业 / 安装包 / 应用控制 / 安装模板 ----
+	// agent 作业列表的过滤是"运行时拼 WHERE"（`(?=0 OR host_id=?) AND (?='' OR action=?)`），
+	// 改成 NULL 表示不过滤的 sqlc.narg（SQL_DESIGN §4.1），四条查询共用同一组过滤条件。
+	ListAgentJobActionCounts(ctx context.Context, arg ListAgentJobActionCountsParams) ([]ListAgentJobActionCountsRow, error)
+	ListAgentJobStatusCounts(ctx context.Context, arg ListAgentJobStatusCountsParams) ([]ListAgentJobStatusCountsRow, error)
+	ListAgentJobs(ctx context.Context, arg ListAgentJobsParams) ([]ListAgentJobsRow, error)
 	ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error)
 	ListAlertMedia(ctx context.Context, arg ListAlertMediaParams) ([]MonitorAlertMedium, error)
+	// 出口媒介的收件人绑定：不限组 / 仅限指定用户组成员两种（组限制为可变长 IN）。
+	ListAlertMediaBindingsByMedia(ctx context.Context, mediaID int64) ([]ListAlertMediaBindingsByMediaRow, error)
+	ListAlertMediaBindingsByMediaInUserGroups(ctx context.Context, arg ListAlertMediaBindingsByMediaInUserGroupsParams) ([]ListAlertMediaBindingsByMediaInUserGroupsRow, error)
+	ListAlertMediaBindingsWithUser(ctx context.Context, mediaID int64) ([]ListAlertMediaBindingsWithUserRow, error)
+	ListAlertMediaBriefByIDs(ctx context.Context, mediaIds []int64) ([]ListAlertMediaBriefByIDsRow, error)
 	ListAlertNotificationDeliveries(ctx context.Context, eventID int64) ([]ListAlertNotificationDeliveriesRow, error)
+	// 链诊断里的投递记录：用户名保持可空（未登录用户的历史记录），与历史详情页的
+	// ListAlertNotificationDeliveries（把空值渲染成 '-'）语义不同，故单独一条。
+	ListAlertNotificationDeliveriesForChain(ctx context.Context, eventID int64) ([]ListAlertNotificationDeliveriesForChainRow, error)
 	ListAlertNotificationEvents(ctx context.Context, alertID int64) ([]MonitorAlertNotificationEvent, error)
 	ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow, error)
+	ListApplicationDeployments(ctx context.Context, arg ListApplicationDeploymentsParams) ([]ListApplicationDeploymentsRow, error)
+	ListApplicationServices(ctx context.Context, arg ListApplicationServicesParams) ([]ListApplicationServicesRow, error)
 	ListApplicationVersions(ctx context.Context, arg ListApplicationVersionsParams) ([]ListApplicationVersionsRow, error)
 	ListApplications(ctx context.Context, arg ListApplicationsParams) ([]ListApplicationsRow, error)
+	ListAutomationControllerKeysForUpdate(ctx context.Context) ([]ListAutomationControllerKeysForUpdateRow, error)
+	ListAutomationHostAgentIdentities(ctx context.Context, hostIds []int64) ([]ListAutomationHostAgentIdentitiesRow, error)
+	ListAutomationHostGroupTree(ctx context.Context) ([]ListAutomationHostGroupTreeRow, error)
+	ListAutomationHostOptions(ctx context.Context, arg ListAutomationHostOptionsParams) ([]ListAutomationHostOptionsRow, error)
+	// 目标主机快照：原实现按主机 ID 个数拼 `IN (?,?,...)`。
+	ListAutomationInventoryHosts(ctx context.Context, hostIds []int64) ([]ListAutomationInventoryHostsRow, error)
+	ListAutomationJobHostLogs(ctx context.Context, jobID int64) ([]ListAutomationJobHostLogsRow, error)
+	// 排序：原实现按白名单拼列名与方向（`ORDER BY <column> <dir>`）。标识符不能被参数化，
+	// 改成按 sort_key（带 '-' 前缀表示倒序）选择的 CASE 表达式——两方言等价，代价是排序
+	// 不再走索引（模板表很小，可接受）；未命中任何分支时回落到 `id DESC`。
+	ListAutomationPlaybooks(ctx context.Context, arg ListAutomationPlaybooksParams) ([]AutomationPlaybookTemplate, error)
 	// ---- 类目（策略分组实体，迁移 000011 起）----
 	ListBaselineCategories(ctx context.Context, baselineID int64) ([]ListBaselineCategoriesRow, error)
 	ListBaselineItems(ctx context.Context, baselineID int64) ([]ListBaselineItemsRow, error)
@@ -207,21 +520,49 @@ type Querier interface {
 	ListClusterProfiles(ctx context.Context, arg ListClusterProfilesParams) ([]ListClusterProfilesRow, error)
 	ListConfigs(ctx context.Context, arg ListConfigsParams) ([]SysConfig, error)
 	ListCredentials(ctx context.Context, arg ListCredentialsParams) ([]AssetsCredential, error)
+	ListDeploymentControlActions(ctx context.Context, deploymentID int64) ([]ListDeploymentControlActionsRow, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
+	// ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
+	//
+	// 两条与内联版本不同的约定：
+	//  1. 时间一律由应用层传入。`NOW()`/`UTC_TIMESTAMP(6)` 是方言函数，且 PG 的 `now()` 返回
+	//     timestamptz（落到 timestamp 列会按会话时区换算），跨方言语义不一致（SQL_DESIGN §4.2）。
+	//  2. PATCH 合并（组的部分更新）在应用层做：先 `FOR UPDATE` 读回现值再整行写，而不是
+	//     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
+	ListDueInspectionTasks(ctx context.Context, now sql.NullTime) ([]ListDueInspectionTasksRow, error)
 	// ---- 用户中心的告警媒介绑定（monitor_alert_media / monitor_user_alert_media_binding）----
 	// 查询定义按「调用方所属域」放这里（同 inspection.sql 里的 assets_* 查询）。
 	ListEnabledAlertMedia(ctx context.Context) ([]ListEnabledAlertMediaRow, error)
+	// 策略出口媒介：只有启用中的才投递，且要 config（SMTP 参数）。
+	ListEnabledAlertMediaByIDs(ctx context.Context, mediaIds []int64) ([]ListEnabledAlertMediaByIDsRow, error)
+	ListEnabledBusinessEnvironments(ctx context.Context) ([]ListEnabledBusinessEnvironmentsRow, error)
+	ListEnabledBusinessSystems(ctx context.Context) ([]ListEnabledBusinessSystemsRow, error)
 	ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error)
+	ListEnabledOpenSearchClusterIDs(ctx context.Context) ([]int64, error)
+	ListEnabledProjects(ctx context.Context) ([]ListEnabledProjectsRow, error)
+	// ---- 日志存储（OpenSearch 集群）与保留档位 ----
+	ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error)
+	// 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
+	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
+	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
+	ListEnabledServiceStreamRows(ctx context.Context) ([]ListEnabledServiceStreamRowsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
+	// 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。
+	// 原实现写的是 bs.project —— assets_business_system 没有这一列（真库与 schema 都没有），
+	// 语句恒报 1054，被调用点忽略后 tree matcher 永远匹配不上：改成 bs.project_id。
+	ListHostAlertScopeNodes(ctx context.Context, hostID int64) ([]ListHostAlertScopeNodesRow, error)
 	ListHostBusinessChains(ctx context.Context, hostIds []int64) ([]ListHostBusinessChainsRow, error)
+	ListHostDisks(ctx context.Context, hostID int64) ([]ListHostDisksRow, error)
 	ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
+	ListHostMonitors(ctx context.Context, hostID int64) ([]ListHostMonitorsRow, error)
 	// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
 	// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
 	ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error)
 	ListInspectionChecksByGroup(ctx context.Context, groupID int64) ([]ListInspectionChecksByGroupRow, error)
 	ListInspectionExecutions(ctx context.Context, arg ListInspectionExecutionsParams) ([]ListInspectionExecutionsRow, error)
 	ListInspectionGroups(ctx context.Context, arg ListInspectionGroupsParams) ([]ListInspectionGroupsRow, error)
+	ListInspectionResultsByExecution(ctx context.Context, executionID int64) ([]ListInspectionResultsByExecutionRow, error)
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 	ListInspectionResultsByTarget(ctx context.Context, targetID int64) ([]ListInspectionResultsByTargetRow, error)
 	ListInspectionTargetExecutions(ctx context.Context, executionID int64) ([]ListInspectionTargetExecutionsRow, error)
@@ -229,15 +570,23 @@ type Querier interface {
 	ListInspectionTaskGroupIDs(ctx context.Context, taskID int64) ([]int64, error)
 	ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error)
 	ListInstallHistories(ctx context.Context, arg ListInstallHistoriesParams) ([]ListInstallHistoriesRow, error)
+	ListInstallPackagesForTarget(ctx context.Context, name string) ([]ListInstallPackagesForTargetRow, error)
+	ListInstallableFluentBitPackages(ctx context.Context) ([]ListInstallableFluentBitPackagesRow, error)
+	ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInstalledLogTargetRuntimeRow, error)
 	ListInventoriesTyped(ctx context.Context, arg ListInventoriesTypedParams) ([]AutomationInventory, error)
 	ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([]AutomationExecutionJob, error)
 	ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error)
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)
 	ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error)
 	ListLoginAudits(ctx context.Context, arg ListLoginAuditsParams) ([]AuditLoginLog, error)
+	ListManagedLogTargetConfigs(ctx context.Context) ([]ListManagedLogTargetConfigsRow, error)
 	ListMenuIDsByRoleID(ctx context.Context, roleID int32) ([]int32, error)
 	ListMenus(ctx context.Context) ([]SysMenu, error)
 	ListMenusByUserID(ctx context.Context, userID int32) ([]SysMenu, error)
+	ListMonitorHostGroupParents(ctx context.Context) ([]ListMonitorHostGroupParentsRow, error)
+	// ---- 宿主总览（监控纳管情况）----
+	ListMonitorHostGroupTree(ctx context.Context) ([]ListMonitorHostGroupTreeRow, error)
+	ListMonitorHosts(ctx context.Context, arg ListMonitorHostsParams) ([]ListMonitorHostsRow, error)
 	ListMonitorTargets(ctx context.Context, arg ListMonitorTargetsParams) ([]ListMonitorTargetsRow, error)
 	// managed_enabled 是 monitor_target 表里 TINYINT(1) 列，schema 里已按约定标成 BOOLEAN，
 	// 这里生成的 struct 字段就是真正的 Go bool，取代 monitor 包里手写的 map[string]any 扫描。
@@ -250,11 +599,19 @@ type Querier interface {
 	ListMountProjectHosts(ctx context.Context, projectID sql.NullInt64) ([]ListMountProjectHostsRow, error)
 	// 挂载点解析：应用组@逻辑服务 → 该服务的部署实例（精确绑定）。
 	ListMountServiceInstances(ctx context.Context, serviceID int64) ([]ListMountServiceInstancesRow, error)
+	// ---- 通知策略树（monitor_notification_policy）----
+	// 树加载与管理列表共用一条：列集取并集（树的加载忽略 create_time/update_time）。
+	// media_ids / user_group_ids 用左连接的 NULL 表达"继承父节点"，不能 COALESCE 成空串。
+	ListNotificationPolicyNodes(ctx context.Context) ([]ListNotificationPolicyNodesRow, error)
 	ListOpenSearchClustersTyped(ctx context.Context, arg ListOpenSearchClustersTypedParams) ([]MonitorOpensearchCluster, error)
 	ListOperationAudits(ctx context.Context, arg ListOperationAuditsParams) ([]AuditOperationLog, error)
+	ListPackageChecksums(ctx context.Context, arg ListPackageChecksumsParams) ([]ListPackageChecksumsRow, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
+	// ---- 日志链路对账与数据流水位（只读）----
+	ListProcessingRulesByCluster(ctx context.Context, clusterID int64) ([]ListProcessingRulesByClusterRow, error)
 	// business_system_names/business_system_ids 用 '||' 聚合（项目名/系统名可能含逗号），Go 侧拆分为数组。
 	ListProjects(ctx context.Context, arg ListProjectsParams) ([]ListProjectsRow, error)
+	ListPrometheusServiceDiscoveryTargets(ctx context.Context) ([]ListPrometheusServiceDiscoveryTargetsRow, error)
 	ListRoleCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]SysRole, error)
 	ListRolesByUserID(ctx context.Context, userID int32) ([]SysRole, error)
@@ -262,8 +619,24 @@ type Querier interface {
 	ListScans(ctx context.Context, arg ListScansParams) ([]ListScansRow, error)
 	ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTaskLogsParams) ([]ListScheduledTaskLogsRow, error)
 	ListScheduledTasks(ctx context.Context, arg ListScheduledTasksParams) ([]ListScheduledTasksRow, error)
+	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
+	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
+	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
+	// ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
+	ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error)
 	ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error)
+	// 失联对账：阈值改为应用层算好的时间点（原实现用 UTC_TIMESTAMP(6) - INTERVAL ? MINUTE，
+	// 既有方言函数又让阈值跟着库时钟走）。
+	ListStaleFiringAlerts(ctx context.Context, staleBefore time.Time) ([]ListStaleFiringAlertsRow, error)
 	ListTasksTyped(ctx context.Context, arg ListTasksTypedParams) ([]ListTasksTypedRow, error)
+	ListTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateConfigFilesRow, error)
+	ListTemplateControlActions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateControlActionsRow, error)
+	ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error)
+	ListTemplatePaths(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePathsRow, error)
+	ListTemplatePorts(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePortsRow, error)
+	ListUninstallableFluentBitPackages(ctx context.Context) ([]ListUninstallableFluentBitPackagesRow, error)
+	// 用户中心的"我的告警媒介绑定"与 monitor 的通知链路诊断（user-chain）共用一条：
+	// 后两者要的 media_type / media_enabled 补在列尾（身份域只按字段名取前几列，不受影响）。
 	ListUserAlertMediaBindings(ctx context.Context, userID int32) ([]ListUserAlertMediaBindingsRow, error)
 	// 一次取回全部成员，调用方按 group_id 归组（原实现就是这么做的，避免 N+1）。
 	ListUserGroupMembers(ctx context.Context) ([]ListUserGroupMembersRow, error)
@@ -271,19 +644,80 @@ type Querier interface {
 	ListUserGroups(ctx context.Context) ([]ListUserGroupsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]SysUser, error)
 	ListWebSSHSessions(ctx context.Context, arg ListWebSSHSessionsParams) ([]ListWebSSHSessionsRow, error)
+	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
+	// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
+	// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。
+	// 时长（duration_seconds）由应用层算：原实现是 MySQL 的 TIMESTAMPDIFF。
+	MarkAgentJobRunning(ctx context.Context, arg MarkAgentJobRunningParams) error
+	MarkAgentTokenUsed(ctx context.Context, arg MarkAgentTokenUsedParams) error
+	MarkAlertNotificationDeliveryFailed(ctx context.Context, arg MarkAlertNotificationDeliveryFailedParams) error
+	MarkAlertNotificationDeliverySending(ctx context.Context, arg MarkAlertNotificationDeliverySendingParams) error
+	MarkAlertNotificationDeliverySuccess(ctx context.Context, arg MarkAlertNotificationDeliverySuccessParams) error
+	MarkAlertNotificationEventFailed(ctx context.Context, arg MarkAlertNotificationEventFailedParams) error
+	MarkAlertNotificationEventPending(ctx context.Context, arg MarkAlertNotificationEventPendingParams) error
+	MarkAlertNotificationEventSending(ctx context.Context, arg MarkAlertNotificationEventSendingParams) error
+	MarkAlertNotificationEventSuccess(ctx context.Context, arg MarkAlertNotificationEventSuccessParams) error
+	MarkClusterStorageSyncFailed(ctx context.Context, arg MarkClusterStorageSyncFailedParams) error
+	// 存储同步（index template + ISM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
+	MarkClusterStorageSyncPending(ctx context.Context, arg MarkClusterStorageSyncPendingParams) error
+	MarkClusterStorageSyncSuccess(ctx context.Context, arg MarkClusterStorageSyncSuccessParams) error
+	// ---- P2-3：主机域（采集信息落库 / 详情读取 / 身份唯一性校验）----
+	//
+	// 约定与 inspection/automation 一致：时间由应用层传；UPSERT 用 `ON DUPLICATE KEY UPDATE`
+	// 并在查询上声明 `-- conflict: <列名>`（派生脚本据此改写成 PG 的 `ON CONFLICT (…) DO UPDATE`；
+	// MySQL 的 ON DUPLICATE KEY 对"任意唯一键"生效，语句本身看不出打在哪个键上，必须显式声明）。
+	// collect_time 为 NULL 表示"本次失败、保留上次采集时间"（原实现靠两条 UPDATE 区分）。
+	MarkHostCollected(ctx context.Context, arg MarkHostCollectedParams) error
+	MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error)
+	MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error
+	MarkLogTargetApplied(ctx context.Context, arg MarkLogTargetAppliedParams) error
+	// 指纹未变时的"只刷新下发时间"路径。
+	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
+	// 指纹变化并下发成功后：记下发时间与指纹。
+	MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTargetConfigSyncedParams) error
+	MarkLogTargetInstallCancelled(ctx context.Context, arg MarkLogTargetInstallCancelledParams) error
+	MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error
+	// openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
+	// 这里只更新探测结果，其余列不动。
+	MarkOpenSearchClusterCheckFailed(ctx context.Context, arg MarkOpenSearchClusterCheckFailedParams) error
+	MarkOpenSearchClusterCheckSuccess(ctx context.Context, arg MarkOpenSearchClusterCheckSuccessParams) error
+	MarkTargetInstallCancelled(ctx context.Context, arg MarkTargetInstallCancelledParams) error
+	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
 	MaxBaselineItemSort(ctx context.Context, categoryID int64) (int64, error)
 	RenameBaselineCategory(ctx context.Context, arg RenameBaselineCategoryParams) (int64, error)
 	ResetConfigValue(ctx context.Context, arg ResetConfigValueParams) error
+	ResetTargetInstallRetry(ctx context.Context, arg ResetTargetInstallRetryParams) error
+	ResolveAlertHistoryFromWebhook(ctx context.Context, arg ResolveAlertHistoryFromWebhookParams) error
+	ResolveStaleAlert(ctx context.Context, arg ResolveStaleAlertParams) (int64, error)
 	RotateAPIToken(ctx context.Context, arg RotateAPITokenParams) error
 	SearchConfigs(ctx context.Context, arg SearchConfigsParams) ([]SysConfig, error)
 	SearchRoles(ctx context.Context, arg SearchRolesParams) ([]SysRole, error)
 	SearchUsers(ctx context.Context, arg SearchUsersParams) ([]SysUser, error)
+	// 列表里的启用开关只提交 enabled，其余字段保持原值（走这一条，不当成整表单提交）。
+	SetAutomationTaskEnabled(ctx context.Context, arg SetAutomationTaskEnabledParams) error
 	// 仅改状态 + 报错文案（失败/跳过两类终态），不动计数列。
 	SetBaselineScanTargetStatus(ctx context.Context, arg SetBaselineScanTargetStatusParams) error
+	SetLogTargetRuntimeStatus(ctx context.Context, arg SetLogTargetRuntimeStatusParams) error
 	SetScheduledTaskEnabled(ctx context.Context, arg SetScheduledTaskEnabledParams) error
+	SetSoftwarePackageInstallTemplate(ctx context.Context, arg SetSoftwarePackageInstallTemplateParams) error
+	SetSoftwarePackageUninstallTemplate(ctx context.Context, arg SetSoftwarePackageUninstallTemplateParams) error
+	SetTargetInstallState(ctx context.Context, arg SetTargetInstallStateParams) error
+	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
+	TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error
+	UpdateAgentJobHostLogStdout(ctx context.Context, arg UpdateAgentJobHostLogStdoutParams) error
+	UpdateAgentJobStdout(ctx context.Context, arg UpdateAgentJobStdoutParams) error
+	UpdateAgentPackageFile(ctx context.Context, arg UpdateAgentPackageFileParams) error
+	UpdateAlertHistoryHeartbeat(ctx context.Context, arg UpdateAlertHistoryHeartbeatParams) error
+	UpdateAlertMedia(ctx context.Context, arg UpdateAlertMediaParams) (int64, error)
 	UpdateApplication(ctx context.Context, arg UpdateApplicationParams) error
+	UpdateApplicationDeployment(ctx context.Context, arg UpdateApplicationDeploymentParams) error
+	UpdateApplicationService(ctx context.Context, arg UpdateApplicationServiceParams) error
 	UpdateApplicationVersion(ctx context.Context, arg UpdateApplicationVersionParams) error
+	UpdateAutomationInventory(ctx context.Context, arg UpdateAutomationInventoryParams) error
+	UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error
+	UpdateAutomationPlaybookContent(ctx context.Context, arg UpdateAutomationPlaybookContentParams) (int64, error)
+	UpdateAutomationTask(ctx context.Context, arg UpdateAutomationTaskParams) error
 	UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) error
 	UpdateBaselineCategorySort(ctx context.Context, arg UpdateBaselineCategorySortParams) (int64, error)
 	UpdateBaselineItem(ctx context.Context, arg UpdateBaselineItemParams) (int64, error)
@@ -292,17 +726,39 @@ type Querier interface {
 	UpdateClusterProfile(ctx context.Context, arg UpdateClusterProfileParams) error
 	UpdateConfigValue(ctx context.Context, arg UpdateConfigValueParams) error
 	UpdateCredential(ctx context.Context, arg UpdateCredentialParams) error
+	UpdateDeploymentRuntimeStatus(ctx context.Context, arg UpdateDeploymentRuntimeStatusParams) error
+	UpdateDeploymentTemplate(ctx context.Context, arg UpdateDeploymentTemplateParams) error
 	UpdateHost(ctx context.Context, arg UpdateHostParams) error
 	UpdateHostGroup(ctx context.Context, arg UpdateHostGroupParams) error
+	UpdateInspectionGroup(ctx context.Context, arg UpdateInspectionGroupParams) (int64, error)
+	UpdateInspectionTask(ctx context.Context, arg UpdateInspectionTaskParams) (int64, error)
+	UpdateLogCollectionFilterRule(ctx context.Context, arg UpdateLogCollectionFilterRuleParams) (int64, error)
+	UpdateLogProcessingRule(ctx context.Context, arg UpdateLogProcessingRuleParams) (int64, error)
+	UpdateLogRetentionTier(ctx context.Context, arg UpdateLogRetentionTierParams) (int64, error)
 	UpdateMenu(ctx context.Context, arg UpdateMenuParams) error
+	UpdateMonitorTargetPatch(ctx context.Context, arg UpdateMonitorTargetPatchParams) error
+	UpdateNotificationPolicy(ctx context.Context, arg UpdateNotificationPolicyParams) error
+	// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 opensearch_config.go）。
+	UpdateOpenSearchCluster(ctx context.Context, arg UpdateOpenSearchClusterParams) (int64, error)
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
+	// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
+	UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error
+	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
+	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error
+	UpdateSoftwarePackageSource(ctx context.Context, arg UpdateSoftwarePackageSourceParams) error
 	UpdateUserGroup(ctx context.Context, arg UpdateUserGroupParams) (int64, error)
 	UpdateUserLoginDate(ctx context.Context, arg UpdateUserLoginDateParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserPhonenumber(ctx context.Context, arg UpdateUserPhonenumberParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	// conflict: host_id
+	UpsertHostHardware(ctx context.Context, arg UpsertHostHardwareParams) error
+	// conflict: host_id
+	UpsertHostRuntime(ctx context.Context, arg UpsertHostRuntimeParams) error
+	// conflict: host_id
+	UpsertHostSystem(ctx context.Context, arg UpsertHostSystemParams) error
 }
 
 var _ Querier = (*Queries)(nil)

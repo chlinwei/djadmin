@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	db "autoadmin/internal/platform/database/generated"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -37,6 +39,8 @@ func (handler *Handler) AlertWebhook(context *gin.Context) {
 	}
 	created, resolved, heartbeats := 0, 0, 0
 	now := time.Now().UTC()
+	// 事务内的语句走同一组 sqlc 查询（db.New 接受 *sql.Tx）。
+	queries := db.New(tx)
 	// 通知事件在事务提交后入队（对齐 Django transaction.on_commit），避免读连接看到未提交数据。
 	notificationTargets := make([]alertNotificationTarget, 0)
 	for _, alert := range alerts {
@@ -57,28 +61,44 @@ func (handler *Handler) AlertWebhook(context *gin.Context) {
 		}
 		resolvedAt, isResolved := resolvedTime(alert.EndsAt, now)
 
-		var openID int64
-		selectErr := tx.QueryRowContext(context, `SELECT id FROM monitor_alert_history WHERE fingerprint=? AND state='firing' ORDER BY id DESC LIMIT 1 FOR UPDATE`, fingerprint).Scan(&openID)
+		// 同 fingerprint 的未恢复告警行：加锁读，顺带取回 rule_group/rule_snapshot。
+		// 原实现把"已有值优先"写在 UPDATE 里（IF(rule_group='',?,rule_group) 与
+		// IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot)），是 MySQL 方言函数；
+		// 现在改成读回后在应用层合并（见 keepExistingRuleSnapshot）。
+		open, selectErr := queries.GetOpenFiringAlertForUpdate(context, fingerprint)
 		if selectErr != nil && selectErr != sql.ErrNoRows {
 			tx.Rollback()
 			context.JSON(500, gin.H{"error": "persist alerts failed"})
 			return
 		}
+		if selectErr == nil {
+			ruleSnapshotJSON = keepExistingRuleSnapshot(open.RuleSnapshot, ruleSnapshotJSON)
+			if ruleGroup == "" {
+				ruleGroup = open.RuleGroup
+			}
+		}
 		if isResolved {
 			if selectErr == nil {
-				_, err = tx.ExecContext(context, `UPDATE monitor_alert_history SET state='resolved',resolved_at=?,last_seen_at=?,annotations=?,resolved_by_reconciliation=FALSE,update_time=?,rule_group=IF(rule_group='',?,rule_group),rule_snapshot=IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) WHERE id=?`, resolvedAt, now, annotationsJSON, now, ruleGroup, ruleSnapshotJSON, openID)
+				err = queries.ResolveAlertHistoryFromWebhook(context, db.ResolveAlertHistoryFromWebhookParams{
+					ResolvedAt: sql.NullTime{Time: resolvedAt, Valid: true}, LastSeenAt: now,
+					Annotations: annotationsJSON, UpdateTime: now, RuleGroup: ruleGroup,
+					RuleSnapshot: ruleSnapshotJSON, ID: open.ID,
+				})
 				if err != nil {
 					tx.Rollback()
 					context.JSON(500, gin.H{"error": "persist alerts failed"})
 					return
 				}
 				resolved++
-				notificationTargets = append(notificationTargets, alertNotificationTarget{id: openID, alertname: alertname, severity: mapString(alert.Labels, "severity"), instance: mapString(alert.Labels, "instance"), state: "resolved", labels: nonNilMap(alert.Labels)})
+				notificationTargets = append(notificationTargets, alertNotificationTarget{id: open.ID, alertname: alertname, severity: mapString(alert.Labels, "severity"), instance: mapString(alert.Labels, "instance"), state: "resolved", labels: nonNilMap(alert.Labels)})
 			}
 			continue
 		}
 		if selectErr == nil {
-			_, err = tx.ExecContext(context, `UPDATE monitor_alert_history SET last_seen_at=?,labels=?,annotations=?,update_time=?,rule_group=IF(rule_group='',?,rule_group),rule_snapshot=IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) WHERE id=?`, now, labelsJSON, annotationsJSON, now, ruleGroup, ruleSnapshotJSON, openID)
+			err = queries.UpdateAlertHistoryHeartbeat(context, db.UpdateAlertHistoryHeartbeatParams{
+				LastSeenAt: now, Labels: labelsJSON, Annotations: annotationsJSON,
+				UpdateTime: now, RuleGroup: ruleGroup, RuleSnapshot: ruleSnapshotJSON, ID: open.ID,
+			})
 			if err != nil {
 				tx.Rollback()
 				context.JSON(500, gin.H{"error": "persist alerts failed"})
@@ -87,17 +107,19 @@ func (handler *Handler) AlertWebhook(context *gin.Context) {
 			heartbeats++
 			continue
 		}
-		startedAt := parseAlertTime(alert.StartsAt, now)
-		result, err := tx.ExecContext(context, `INSERT INTO monitor_alert_history(create_time,update_time,remark,source,fingerprint,alertname,rule_group,rule_snapshot,severity,instance,labels,annotations,generator_url,state,started_at,resolved_at,last_seen_at,resolved_by_reconciliation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'firing',?,NULL,?,FALSE)`, now, now, "", "prometheus", fingerprint, mapString(alert.Labels, "alertname"), ruleGroup, ruleSnapshotJSON, mapString(alert.Labels, "severity"), mapString(alert.Labels, "instance"), labelsJSON, annotationsJSON, alert.GeneratorURL, startedAt, now)
+		// 新告警行：主键由插入语句取回（MySQL 的 LastInsertId / PG 的 RETURNING，见 derive），
+		// 供通知事件 deduplication_key={alert_id}:{event_type} 使用。
+		newAlertID, err := queries.CreateAlertHistory(context, db.CreateAlertHistoryParams{
+			CreateTime: now, UpdateTime: now, Source: "prometheus", Fingerprint: fingerprint,
+			Alertname: mapString(alert.Labels, "alertname"), RuleGroup: ruleGroup,
+			RuleSnapshot: ruleSnapshotJSON, Severity: mapString(alert.Labels, "severity"),
+			Instance: mapString(alert.Labels, "instance"), Labels: labelsJSON, Annotations: annotationsJSON,
+			GeneratorUrl: alert.GeneratorURL, StartedAt: parseAlertTime(alert.StartsAt, now), LastSeenAt: now,
+		})
 		if err != nil {
 			tx.Rollback()
 			context.JSON(500, gin.H{"error": "persist alerts failed"})
 			return
-		}
-		// 拿到新告警行 id，供通知事件 deduplication_key={alert_id}:{event_type} 使用。
-		var newAlertID int64
-		if lastInsertID, lastErr := result.LastInsertId(); lastErr == nil {
-			newAlertID = lastInsertID
 		}
 		created++
 		notificationTargets = append(notificationTargets, alertNotificationTarget{id: newAlertID, alertname: alertname, severity: mapString(alert.Labels, "severity"), instance: mapString(alert.Labels, "instance"), state: "firing", labels: nonNilMap(alert.Labels)})
@@ -111,6 +133,36 @@ func (handler *Handler) AlertWebhook(context *gin.Context) {
 		go handler.dispatchAlertNotificationEvent(eventID)
 	}
 	context.JSON(200, gin.H{"status": "success", "created": created, "resolved": resolved, "heartbeats": heartbeats, "notifications": notifications})
+}
+
+// keepExistingRuleSnapshot 复刻原 SQL 里 `IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0, <新值>, rule_snapshot)`
+// 的语义：既有值"有内容"时保留既有值，否则写新值。
+// JSON_LENGTH 的等价判定：NULL / 无效 JSON / 空对象 / 空数组都算"没内容"（长度 0），
+// 标量与非空容器算"有内容"。
+func keepExistingRuleSnapshot(existing, incoming []byte) []byte {
+	if !jsonValueHasContent(existing) {
+		return incoming
+	}
+	return existing
+}
+
+func jsonValueHasContent(raw []byte) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return false
+	}
+	switch typed := decoded.(type) {
+	case map[string]any:
+		return len(typed) > 0
+	case []any:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 func alertFingerprint(labels map[string]any) string {

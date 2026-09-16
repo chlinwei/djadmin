@@ -4,9 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strings"
-	"time"
 
+	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/pagination"
 )
 
@@ -71,76 +70,66 @@ func nullableTime(value sql.NullTime) *string {
 }
 
 func (r *Repository) ListApplicationServices(ctx context.Context, search string, page pagination.Page, businessSystemID int64) ([]ApplicationService, int64, error) {
-	pattern := "%" + search + "%"
-	conditions := []string{"(?='' OR s.name LIKE ? OR s.code LIKE ?)"}
-	arguments := []any{search, pattern, pattern}
+	// 搜索为空传 NULL、业务系统为 0 传 NULL，走查询里"不过滤"的分支。
+	filter := db.CountApplicationServicesParams{Pattern: pattern(search)}
 	if businessSystemID > 0 {
 		// 与 Django 版 DRF filter 的 business_system 字段对齐：
 		// 服务树的业务系统/环境节点靠它收敛到当前业务下的逻辑服务。
-		conditions = append(conditions, "s.business_system_id=?")
-		arguments = append(arguments, businessSystemID)
+		filter.BusinessSystemID = sql.NullInt64{Int64: businessSystemID, Valid: true}
 	}
-	whereClause := strings.Join(conditions, " AND ")
-	var count int64
-	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_service s WHERE "+whereClause, arguments...).Scan(&count); err != nil {
-		return nil, 0, err
-	}
-	rows, err := r.pool.QueryContext(ctx, "SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),	s.macro_values,s.log_collection_enabled,s.log_retention_tier_id,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE "+whereClause+" ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?", append(arguments, page.Size, page.Offset)...)
+	count, err := r.queries.CountApplicationServices(ctx, filter)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	items := make([]ApplicationService, 0)
-	for rows.Next() {
-		var item ApplicationService
-		var created, updated time.Time
-		var remark sql.NullString
-		var env, profile, retention sql.NullInt64
-		var raw []byte
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &retention, &item.DeploymentCount); err != nil {
-			return nil, 0, err
-		}
-		item.CreateTime = timestamp(created)
-		item.UpdateTime = timestamp(updated)
-		item.Remark = stringValue(remark)
-		item.Environment = nullableID(env)
-		item.ClusterProfile = nullableID(profile)
-		item.LogRetentionTier = nullableID(retention)
-		item.MacroValues = json.RawMessage(raw)
-		items = append(items, item)
+	rows, err := r.queries.ListApplicationServices(ctx, db.ListApplicationServicesParams{
+		Pattern: filter.Pattern, BusinessSystemID: filter.BusinessSystemID,
+		Limit: page.Size, Offset: page.Offset,
+	})
+	if err != nil {
+		return nil, 0, err
 	}
-	return items, count, rows.Err()
+	items := make([]ApplicationService, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, ApplicationService{
+			ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime),
+			Remark: stringValue(row.Remark), Name: row.Name, Code: row.Code, TopologyType: row.TopologyType,
+			AccessAddress: row.AccessAddress, Enabled: row.Enabled, Application: row.ApplicationID,
+			ApplicationName: row.ApplicationName, BusinessSystem: row.BusinessSystemID,
+			BusinessSystemName: row.BusinessSystemName, Environment: nullableID(row.EnvironmentID),
+			EnvironmentName: row.EnvironmentName, ApplicationVersion: row.ApplicationVersionID,
+			ApplicationVersionName: row.ApplicationVersionName, DeploymentTemplate: row.DeploymentTemplateID,
+			DeploymentTemplateName: row.DeploymentTemplateName, ClusterProfile: nullableID(row.ClusterProfileID),
+			ClusterProfileName: row.ClusterProfileName, MacroValues: row.MacroValues,
+			LogCollectionEnabled: row.LogCollectionEnabled, LogRetentionTier: nullableID(row.LogRetentionTierID),
+			DeploymentCount: row.DeploymentCount,
+		})
+	}
+	return items, count, nil
 }
 func (r *Repository) GetApplicationService(ctx context.Context, id int64) (ApplicationService, error) {
-	var item ApplicationService
-	var created, updated time.Time
-	var remark sql.NullString
-	var env, profile, retention sql.NullInt64
-	var raw []byte
-	err := r.pool.QueryRowContext(ctx, `SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,s.application_id,a.name,s.business_system_id,b.name,s.environment_id,COALESCE(e.name,''),s.application_version_id,v.version,s.deployment_template_id,t.name,s.cluster_profile_id,COALESCE(c.name,''),	s.macro_values,s.log_collection_enabled,s.log_retention_tier_id,(SELECT COUNT(*) FROM assets_application_service_deployment l WHERE l.service_id=s.id) FROM assets_application_service s JOIN assets_application a ON a.id=s.application_id JOIN assets_business_system b ON b.id=s.business_system_id LEFT JOIN assets_business_environment e ON e.id=s.environment_id JOIN assets_application_version v ON v.id=s.application_version_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id WHERE s.id=?`, id).Scan(&item.ID, &created, &updated, &remark, &item.Name, &item.Code, &item.TopologyType, &item.AccessAddress, &item.Enabled, &item.Application, &item.ApplicationName, &item.BusinessSystem, &item.BusinessSystemName, &env, &item.EnvironmentName, &item.ApplicationVersion, &item.ApplicationVersionName, &item.DeploymentTemplate, &item.DeploymentTemplateName, &profile, &item.ClusterProfileName, &raw, &item.LogCollectionEnabled, &retention, &item.DeploymentCount)
+	row, err := r.queries.GetApplicationServiceDetail(ctx, id)
+	if err != nil {
+		return ApplicationService{}, err
+	}
+	item := ApplicationService{
+		ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime),
+		Remark: stringValue(row.Remark), Name: row.Name, Code: row.Code, TopologyType: row.TopologyType,
+		AccessAddress: row.AccessAddress, Enabled: row.Enabled, Application: row.ApplicationID,
+		ApplicationName: row.ApplicationName, BusinessSystem: row.BusinessSystemID,
+		BusinessSystemName: row.BusinessSystemName, Environment: nullableID(row.EnvironmentID),
+		EnvironmentName: row.EnvironmentName, ApplicationVersion: row.ApplicationVersionID,
+		ApplicationVersionName: row.ApplicationVersionName, DeploymentTemplate: row.DeploymentTemplateID,
+		DeploymentTemplateName: row.DeploymentTemplateName, ClusterProfile: nullableID(row.ClusterProfileID),
+		ClusterProfileName: row.ClusterProfileName, MacroValues: row.MacroValues,
+		LogCollectionEnabled: row.LogCollectionEnabled, LogRetentionTier: nullableID(row.LogRetentionTierID),
+		DeploymentCount: row.DeploymentCount,
+	}
+	deploymentIDs, err := r.queries.ListServiceDeploymentIDs(ctx, id)
 	if err != nil {
 		return item, err
 	}
-	item.CreateTime = timestamp(created)
-	item.UpdateTime = timestamp(updated)
-	item.Remark = stringValue(remark)
-	item.Environment = nullableID(env)
-	item.ClusterProfile = nullableID(profile)
-	item.LogRetentionTier = nullableID(retention)
-	item.MacroValues = json.RawMessage(raw)
-	rows, err := r.pool.QueryContext(ctx, `SELECT deployment_id FROM assets_application_service_deployment WHERE service_id=? ORDER BY id`, id)
-	if err != nil {
-		return item, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var deploymentID int64
-		if err = rows.Scan(&deploymentID); err != nil {
-			return item, err
-		}
-		item.MemberInstances = append(item.MemberInstances, deploymentID)
-	}
-	return item, rows.Err()
+	item.MemberInstances = deploymentIDs
+	return item, nil
 }
 
 // ApplicationDeploymentFilter 部署实例列表的过滤条件，对应 Django 版 DRF filter 字段：
@@ -153,58 +142,51 @@ type ApplicationDeploymentFilter struct {
 }
 
 func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagination.Page, filter ApplicationDeploymentFilter) ([]ApplicationDeployment, int64, error) {
-	conditions := []string{"1=1"}
-	arguments := []any{}
+	// 三个过滤条件都是可选的：0 / nil 传 NULL，走查询里"不过滤"的分支。
+	params := db.CountApplicationDeploymentsParams{}
 	if filter.ApplicationServiceID > 0 {
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l WHERE l.deployment_id=d.id AND l.service_id=?)")
-		arguments = append(arguments, filter.ApplicationServiceID)
+		params.ServiceID = sql.NullInt64{Int64: filter.ApplicationServiceID, Valid: true}
 	}
 	if filter.BusinessSystemID > 0 {
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id AND s.business_system_id=?)")
-		arguments = append(arguments, filter.BusinessSystemID)
+		params.BusinessSystemID = sql.NullInt64{Int64: filter.BusinessSystemID, Valid: true}
 	}
 	if filter.EnvironmentID != nil {
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id AND s.environment_id=?)")
-		arguments = append(arguments, *filter.EnvironmentID)
+		params.EnvironmentID = sql.NullInt64{Int64: *filter.EnvironmentID, Valid: true}
 	}
-	whereClause := strings.Join(conditions, " AND ")
-	var count int64
-	if err := r.pool.QueryRowContext(ctx, "SELECT COUNT(*) FROM assets_application_deployment d WHERE "+whereClause, arguments...).Scan(&count); err != nil {
-		return nil, 0, err
-	}
-	query := "SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,COALESCE(h.ip,''),d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,d.runtime_variables,(SELECT s.application_id FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1) FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id WHERE " + whereClause + " ORDER BY d.id DESC LIMIT ? OFFSET ?"
-	rows, err := r.pool.QueryContext(ctx, query, append(arguments, page.Size, page.Offset)...)
+	count, err := r.queries.CountApplicationDeployments(ctx, params)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	items := make([]ApplicationDeployment, 0)
-	for rows.Next() {
-		var item ApplicationDeployment
-		var created, updated time.Time
-		var remark sql.NullString
-		var checked sql.NullTime
-		var raw []byte
-		var applicationID sql.NullInt64
-		if err = rows.Scan(&item.ID, &created, &updated, &remark, &item.InstanceName, &item.Enabled, &item.Host, &item.HostIP, &item.RuntimeStatus, &item.RuntimeStatusOutput, &checked, &item.HaRole, &raw, &applicationID); err != nil {
-			return nil, 0, err
-		}
-		item.ApplicationID = nullableID(applicationID)
-		item.CreateTime = timestamp(created)
-		item.UpdateTime = timestamp(updated)
-		item.Remark = stringValue(remark)
-		item.LastStatusCheckTime = nullableTime(checked)
-		item.RuntimeVariables = json.RawMessage(raw)
-		item.ApplicationServiceIDs = []int64{}
-		items = append(items, item)
-	}
-	if err = rows.Err(); err != nil {
+	rows, err := r.queries.ListApplicationDeployments(ctx, db.ListApplicationDeploymentsParams{
+		ServiceID: params.ServiceID, BusinessSystemID: params.BusinessSystemID,
+		EnvironmentID: params.EnvironmentID, Limit: page.Size, Offset: page.Offset,
+	})
+	if err != nil {
 		return nil, 0, err
+	}
+	items := make([]ApplicationDeployment, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, ApplicationDeployment{
+			ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime),
+			Remark: stringValue(row.Remark), InstanceName: row.InstanceName, Enabled: row.Enabled,
+			Host: row.HostID, HostIP: row.HostIp, RuntimeStatus: row.RuntimeStatus,
+			RuntimeStatusOutput: row.RuntimeStatusOutput, LastStatusCheckTime: nullableTime(row.LastStatusCheckTime),
+			HaRole: row.HaRole, RuntimeVariables: row.RuntimeVariables,
+			ApplicationID: nullableInt64Ptr(row.ApplicationID), ApplicationServiceIDs: []int64{},
+		})
 	}
 	if err = r.attachApplicationServiceIDs(ctx, items); err != nil {
 		return nil, 0, err
 	}
 	return items, count, nil
+}
+
+// nullableInt64Ptr 把"子查询取回的 application_id"（0 表示没有关联服务）转成 nil。
+func nullableInt64Ptr(value int64) *int64 {
+	if value == 0 {
+		return nil
+	}
+	return &value
 }
 
 // attachApplicationServiceIDs 批量补齐部署与逻辑服务的 M2M 关联（assets_application_service_deployment），
@@ -217,26 +199,13 @@ func (r *Repository) attachApplicationServiceIDs(ctx context.Context, items []Ap
 	for index := range items {
 		ids = append(ids, items[index].ID)
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	arguments := make([]any, 0, len(ids))
-	for _, id := range ids {
-		arguments = append(arguments, id)
-	}
-	rows, err := r.pool.QueryContext(ctx, `SELECT deployment_id,service_id FROM assets_application_service_deployment WHERE deployment_id IN (`+placeholders[:len(placeholders)-1]+`) ORDER BY deployment_id,service_id`, arguments...)
+	rows, err := r.queries.ListServiceDeploymentLinks(ctx, ids)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	linksByDeployment := make(map[int64][]int64)
-	for rows.Next() {
-		var deploymentID, serviceID int64
-		if err = rows.Scan(&deploymentID, &serviceID); err != nil {
-			return err
-		}
-		linksByDeployment[deploymentID] = append(linksByDeployment[deploymentID], serviceID)
-	}
-	if err = rows.Err(); err != nil {
-		return err
+	for _, row := range rows {
+		linksByDeployment[row.DeploymentID] = append(linksByDeployment[row.DeploymentID], row.ServiceID)
 	}
 	for index := range items {
 		if links, ok := linksByDeployment[items[index].ID]; ok {

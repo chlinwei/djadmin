@@ -201,10 +201,10 @@ WHERE COALESCE(name, '') LIKE sqlc.narg(pattern) OR COALESCE(code, '') LIKE sqlc
 | `JSON_OBJECT` / `JSON_EXTRACT` / `JSON_UNQUOTE` / `JSON_ARRAYAGG` | 方言 JSON 函数 | 按方言各写一份（派生 override 表），或在应用层组装/解析 JSON |
 | `GROUP_CONCAT` | 方言函数 | `string_agg`（PG）/ `GROUP_CONCAT`（MySQL）→ 派生 override 表 |
 | `TIMESTAMPDIFF` / `DATE_ADD` / `DATE_FORMAT` / `STR_TO_DATE` / `UNIX_TIMESTAMP` | 方言函数 | 应用层计算，或按方言各写一份 |
-| `INSERT IGNORE` | 方言语句 | `ON CONFLICT DO NOTHING`（PG）；按方言各写一份 |
-| `ON DUPLICATE KEY UPDATE` | 方言语句 | `ON CONFLICT ... DO UPDATE`（PG）；按方言各写一份 |
+| `INSERT IGNORE` | 方言语句 | **写成 `INSERT IGNORE INTO t(…) VALUES(…)` 即可**：派生脚本改写成 PG 的 `INSERT INTO … ON CONFLICT DO NOTHING`（见 §4.6）。**语义差异**：MySQL 的 INSERT IGNORE 还吞掉外键等可忽略错误，PG 的 ON CONFLICT 只处理唯一/排他冲突——新增用法时要确认被吞掉的是哪类错误 |
+| `ON DUPLICATE KEY UPDATE` | 方言语句 | **写成 `ON DUPLICATE KEY UPDATE a=VALUES(a)` + 查询上声明一行 `-- conflict: <列名>`**：派生脚本据此改写成 PG 的 `ON CONFLICT (<列名>) DO UPDATE SET a=EXCLUDED.a`（见 §4.6）。MySQL 的 ON DUPLICATE KEY 对"表上任意唯一键"生效、语句本身看不出打在哪个键上，所以冲突目标必须显式声明；缺声明直接报错 |
 | `SUM(布尔表达式)` | MySQL 把布尔当 0/1，PG 需要显式转换 | `COUNT(*) FILTER (WHERE ...)`（PG）/ `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`（两方言都可） |
-| `sqlc.slice(x)` 做可变长 `IN` | 两侧生成物不等价：MySQL 生成 `/*SLICE:x*/?` 标记 + 运行时替换，**PG 把标记直接渲染成 `IN ($1)`，生成代码里的替换找不到标记**，传入 N>1 个值时参数数与占位符不符（实测：inspection 的 `ListHostBusinessChains` 在 PG 下必错，调用点吞了错误所以静默） | 改成"取回集合在应用层比对"，或按方言各写一份（见计划 P4-7） |
+| **裸的** `sqlc.slice(x)` 做可变长 `IN` | 两侧生成物不等价：MySQL 生成 `/*SLICE:x*/?` 标记 + 运行时替换，**PG 把标记直接渲染成 `IN ($1)`，生成代码里的替换找不到标记**，传入 N>1 个值时参数数与占位符不符（实测：inspection 的 `ListHostBusinessChains` 在 PG 下必错，调用点吞了错误所以静默） | **写成 `IN (sqlc.slice(x))` 即可**：派生脚本会把 PG 侧改写成 `x = ANY(sqlc.arg(x)::bigint[])`，两侧签名都是 `[]int64`、都走索引（见下方 2026-09-16 更正与计划 P4-7）。**其它形状的 `sqlc.slice` 在派生期直接报错**，不会静默产出坏 SQL |
 | `FOR UPDATE` 语法差异 | 方言差异（`FOR UPDATE OF` / 锁强度） | 谨慎使用，需按方言验证 |
 
 **更正（2026-09-16，实测）**：
@@ -213,6 +213,14 @@ WHERE COALESCE(name, '') LIKE sqlc.narg(pattern) OR COALESCE(code, '') LIKE sqlc
 - **`CAST(... AS CHAR)` 不能直接删。** 早先记录说它「多余，去掉后 LIKE 结果一致」——结果一致是对的，但**去掉会让 sqlc 生成失败**：同一个参数既与可空列比较、又与 `COALESCE(...)` 比较时，会推断出 `sql.NullString` 与 `string` 两种类型，报 `named param Pattern has incompatible types: sql.NullString, string`。这个 CAST 是把参数类型统一成文本的手段，必须保留；派生时只把目标类型换成 `text`。
 - **`sqlc.narg` 的可选过滤保留原样即可，不要改成位置参数**（见 §4.6 的更正）。
 - **`sqlc.narg(x) IS NULL` 不能写在 OR 链最前面**：PG 在解析期用参数的首次出现定类型，裸 `$1 IS NULL` 出现在最前面会直接报 `could not determine data type of parameter $1`（不是计划退化，是解析失败）。必须写成 `(col = sqlc.narg(x) OR sqlc.narg(x) IS NULL)`，见 §2.2 的实测与修法。
+- **UPSERT 也能机械派生，但冲突目标必须由源声明**（2026-09-16 实测，P2-3）：MySQL 源写
+  `ON DUPLICATE KEY UPDATE update_time=VALUES(update_time), …`，查询头上写一行 `-- conflict: host_id`，
+  派生结果即 `ON CONFLICT (host_id) DO UPDATE SET update_time=EXCLUDED.update_time, …`。
+  两侧生成的 Go 签名完全一致（`UpsertHostRuntimeParams` 等），调用点零分叉；真库实测第二次写入
+  确实走 UPDATE 分支（`ASSETS_SMOKE_DSN` 冒烟里连写两次断言指纹变化）。**缺 `-- conflict:` 注释
+  或残留 `ON DUPLICATE KEY UPDATE` 都会让派生失败**——猜错冲突目标等于改了语义（可能命中另一条唯一键）。
+- **可变长 `IN` 有可移植解法了，不必退回"取回集合在应用层比对"**（2026-09-16 实测，P2-2）：MySQL 源写 `WHERE id IN (sqlc.slice(host_ids))`，派生脚本把 PG 侧改写成 `WHERE id = ANY(sqlc.arg(host_ids)::bigint[])` —— **两侧生成的 Go 签名都是 `[]int64`**（`func (q *Queries) ListHostBusinessChains(ctx, hostIds []int64)`），调用点零分叉，两方言都用得上索引。PG 侧 sqlc 会为数组参数生成 `pq.Array(...)` 并 import `github.com/lib/pq`（因此 `go.mod` 需要它，且只在 `-tags postgres` 下编译）；实测 pgx 的 `database/sql` 适配层接受 `pq.Array`（也接受裸 `[]int64`）。这条改写是机械的（`derive.rewriteSlices`），**派生后若仍残留 `sqlc.slice` 会直接失败**，所以 P4-7 那种"生成通过、PG 静默出错"的形态不会复现。
+  **一个边界情况**（2026-09-16 P2-3 实测）：**被比较列可空**时，MySQL 侧的切片元素类型取自列的可空性（`assets_agent_job.host_id` 可空 → `[]sql.NullInt64`），而 PG 侧的 `::bigint[]` 固定是 `[]int64` —— 两侧签名不一致，要在门面里补一段换算（丢掉 NULL 元素；集合成员判定里 NULL 永远不可能命中）。列非空时两侧都是 `[]int64`，无需适配。
 
 
 ### 4.3 生成的 Go 类型：默认相同，只有 OR-IS-NULL 链会分歧（实测，含一次更正）
@@ -347,7 +355,9 @@ autoadmin/
 │   │   └── postgres/               同上 6 个；由 mysql 翻译而成，之后各自维护
 │   ├── queries/                    查询定义
 │   │   ├── mysql/                  assets/audit/audit_history/automation/baseline/inspection/menu/
-│   │   │                           monitor/role/scheduler/sys_config/user（12 文件 228 条查询）
+│   │   │                           monitor/role/scheduler/sys_config/user
+│   │   │                           （12 文件 559 条查询；228 → 559 是 P2-1/P2-2/P2-3 新增的 331 条，
+│   │                            其中 P2-3 新增 234 条、monitor.sql 一个文件占 175 条）
 │   │   │                           ← 唯一人工维护来源
 │   │   └── postgres/               同名文件 + README；make derive 的产物，禁止手改
 │   └── migrations/                 基线之后的结构变更
@@ -403,6 +413,11 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 | 反引号标识符 | 机械转**双引号**（不是「去掉」：`ORDER BY order` 在 MySQL 里同样是语法错误，反引号是必需的） |
 | `TRUE`/`FALSE`、`sqlc.arg`/`sqlc.narg` | 两侧通用，原样保留（PG 侧靠 `sqlc.narg` 保住参数名） |
 | **`:execlastid` → `:one` + 语句末尾 `RETURNING id`** | 机械改写（`appendReturningID`）：PG 侧取不回 `LastInsertId`，两侧签名仍是 `(int64, error)`。**只能是 `id` 列**，非 `id` 主键的表会在生成期报错（不会静默）；多行 INSERT 同样在派生期报错 |
+| **`IN (sqlc.slice(x))` → `x = ANY(sqlc.arg(x)::bigint[])`** | 机械改写（`rewriteSlices`）：PG 侧的可变长 IN 只能用数组参数。两侧签名都是 `[]int64`，**残留的 `sqlc.slice` 会让派生直接失败**（防 P4-7 那种静默坏产物） |
+| **冲突子句 / `RETURNING` 的插入点是「第一条语句的结束分号处」** | `splitAtStatementEnd`：查询体包含"本条语句 + 其后、下一条 `-- name:` 之前的注释"（那些注释是**下一条**语句的文档）。按查询体末尾插入会让子句落进注释里（产出 `-- 说明… ON CONFLICT DO NOTHING`，sqlc 照样解析通过，只有真跑才炸）。见 P5 陷阱 29 |
+| **可空 json 列 → `database/sql.NullString`（列级 override）** | 生成物默认是 `json.RawMessage`，而它**扫不了 NULL**（Go 1.25 的 `jsontext.Value` 只接受 `[]byte`/`string`）。用 NULL 表达"未设置/继承"的可空 json 列（`monitor_notification_policy.media_ids` / `user_group_ids`）必须在 `sqlc.yaml` 里 override；PG block 的列级 override 要排在 `db_type: jsonb nullable` 那条**之后**（后匹配者生效）。见 P5 陷阱 26 |
+| **`INSERT IGNORE INTO t(…) VALUES(…)` → `INSERT INTO t(…) VALUES(…) ON CONFLICT DO NOTHING`** | 机械改写（`rewriteInsertIgnore`）：两侧"影响行数"的表达不同（MySQL 用 `:execresult` 拿 id + RowsAffected；PG 派生后是 `:one`+RETURNING，被跳过时返回 `ErrNoRows`），所以调用点要按方言分叉成两个 build-tag 文件（示例见 `internal/monitor/target_dialect_*.go`） |
+| **`ON DUPLICATE KEY UPDATE a=VALUES(a)` → `ON CONFLICT (<冲突目标>) DO UPDATE SET a=EXCLUDED.a`** | 机械改写（`rewriteUpserts`）：冲突目标取自查询上的 `-- conflict: <列名>` 注释（MySQL 侧看不出打在哪个唯一键上）。缺注释、或改写后仍残留 MySQL 子句都直接报错 |
 | **INSERT 的 `:execresult` → `:one` + `RETURNING id`** | 同上（`:execresult` 的调用点也靠 `LastInsertId()`）；UPDATE/DELETE 的 `:execresult` 保持原样。PG 侧返回的是 id，由门面的 `insertResult` 包回 `sql.Result` 以对齐 MySQL 签名 |
 | `GROUP_CONCAT`→`string_agg`、`JSON_ARRAYAGG`→`json_agg`、`JSON_UNQUOTE(JSON_EXTRACT(x,'$.k'))`→`x->>'k'`、`CAST(… AS CHAR/SIGNED)`→`AS text/bigint` | 显式 override 表（`derive/overrides.go`）；**未命中即报错**，静默跳过等于产出语义错的 SQL |
 | 时间函数 `NOW(6)`/`UTC_TIMESTAMP` | **在 MySQL 源里改掉**，由应用层传时间参数（baseline 的 16 处已改） |
@@ -505,7 +520,9 @@ MySQL 侧是全部导出类型的别名 + `New` 转发；PG 侧是「嵌入 `*po
 
 **已验证**：`go build` / `go vet` / `go test ./...` 在两个 tag 下都是 20 个包全绿；PG 变体实际连本机 PostgreSQL 跑通（按 code 搜索、按 name 搜索、不过滤、主机列表都返回正确结果）。
 
-**残留的适配债（要正视）**：`dialect_postgres_adapters.go` 是手写的，两侧产物再出现分歧时它不会自动跟上——只有 `-tags postgres` 的构建/测试失败才会暴露。所以 **CI 必须两个 tag 都跑**（`make test && make test TESTFLAGS=-tags=postgres`，或至少 `make vet-postgres` + `make build-postgres`）。此外内联 SQL（P2 尚未迁移的其余包）在 PG 变体下仍是 MySQL 写法，**PG 变体目前只有 sqlc 查询部分真正可用**：`baseline` 域已于 2026-09-16 全部迁完并在真 PG 上跑通（§6.3），**所有 sqlc 的 INSERT 取主键已在 PG 侧修好（P1-10）**；其余包的内联 INSERT 仍是 `ExecContext` + `LastInsertId()`，在 PG 下本来就因为 `?` 占位符不可用，随各包迁 sqlc 消除。
+**残留的适配债（要正视）**：`dialect_postgres_adapters.go` 是手写的，两侧产物再出现分歧时它不会自动跟上——只有 `-tags postgres` 的构建/测试失败才会暴露。所以 **CI 必须两个 tag 都跑**（`make test && make test TESTFLAGS=-tags=postgres`，或至少 `make vet-postgres` + `make build-postgres`）。此外内联 SQL（P2 尚未迁移的其余包）在 PG 变体下仍是 MySQL 写法，**PG 变体目前只有 sqlc 查询部分真正可用**：`baseline`、`identity`、`inspection`、`automation` 四个域已于 2026-09-16 全部迁完并在真 PG 上跑通（§6.3），**所有 sqlc 的 INSERT 取主键已在 PG 侧修好（P1-10）**；`assets`/`monitor` 的内联 SQL 仍是 `ExecContext` + `LastInsertId()`，在 PG 下本来就因为 `?` 占位符不可用，随 P2-3 消除。
+
+**P2-3 新增的适配**：`FailStaleAgentInstallJobsParams` / `CountActiveAgentInstallJobs`（可变长 IN 的元素类型分歧，见 §4.2）、`CountAutomationHostOptionsParams`（P2-2 的单 pattern 计数）。**新增适配的判定方式**：分歧不是靠事先盘点的——写查询时不用管，**`-tags postgres` 的编译会指名道姓地报出缺哪个类型/方法**，再去 `facadeAdapterTypes`（`derive/facade.go`）登记并把结构体与薄转发写进 `dialect_postgres_adapters.go`（`TestFacadeAdapterTypesDeclared` 会盯着两边一致）。P2-2 只新增了 1 条（`CountAutomationHostOptionsParams`：PG 侧单 pattern 入参被展开成裸参数）；`:execlastid` 与 INSERT 的 `:execresult` **不需要**适配——派生后两侧签名都是 `(int64, error)`；不需要 id 的 INSERT 一律写 `:execrows`/`:exec`，直接绕开 `LastInsertId` 这条方言分叉。
 
 ## 5. 落地机制
 
@@ -517,10 +534,13 @@ MySQL 侧是全部导出类型的别名 + `New` 转发；PG 侧是「嵌入 `*po
    - `TestNoInlineSQLReferencesDroppedHostAgentIDColumn`：源码中不得再引用已删列；
    - `TestLoadAgentTargetHostsColumnArity`：具体查询的列数/Scan 数锁定；
    - `derive.TestDerivedQueriesMatchRepository`：`db/queries/postgres/` 内容 == 现场派生结果（已实现，见 §4.6）；
+   - `derive.TestDeriveRewritesSliceToArrayParameter` / `TestDeriveRejectsUnrewrittenSlice`：可变长 IN 必须改写成 `= ANY(sqlc.arg(x)::bigint[])`，**残留 `sqlc.slice` 即失败**（P4-7 的静默陷阱）；
+   - `derive.TestDeriveRewritesUpsertToOnConflict` / `TestDeriveRejectsUpsertWithoutConflictTarget`：UPSERT 必须改写成 `ON CONFLICT (<目标>) DO UPDATE`，**缺 `-- conflict:` 声明即失败**，且 INSERT 自己的值列表不能被误改；
    - `derive.TestDeriveIsDeterministic`：同一输入两次派生结果一致；
    - `derive.TestDeriveRewritesLastInsertIDToReturning`：`:execlastid` 与 INSERT 的 `:execresult` 必须被改写成 `:one` + `RETURNING id`，UPDATE 的 `:execresult` 必须保持原样（§4.3；漏了它 PG 变体的新建接口全部运行时失败）；
    - `derive.TestDeriveRejectsMultiRowInsertWithReturning`：多行 INSERT 不能用 RETURNING 取主键，必须在派生期报错；
    - `database_test.TestInsertQueriesReturnLastInsertIDAgainstRealDatabase`：**真库**插入冒烟（`DB_SMOKE_DSN` 未设即跳过），覆盖 14 条 INSERT 的 `LastInsertId`/`RowsAffected` 契约，两个方言各跑一次；
+   - `inspection.TestSmokeInspectionQueriesAgainstRealDatabase`（`INSPECTION_SMOKE_DSN`）/ `automation.TestSmokeAutomationQueriesAgainstRealDatabase`（`AUTOMATION_SMOKE_DSN`）/ `assets.TestSmokeHostDomainQueriesAgainstRealDatabase`（`ASSETS_SMOKE_DSN`）：**真库**业务流程冒烟，两个方言各跑一次；含可变长 IN 的数组参数、UPSERT 的冲突分支、零行聚合、可空 json/数值列、`double` 列等只有真库能验的东西（见 §6.3）；
    - `derive.TestFacadeMatchesRepository` / `TestFacadeAdapterTypesDeclared`：门面（§4.8）漂移与适配清单一致性；
    - `database_test.TestNoUnreviewedDuplicateParams`：重复参数字段（§2.5）。
 5. **改 schema 的完整动作**：改 `db/schema/mysql` → 加迁移（`db/migrations/mysql`，up/down）→ `make generate` → **同步翻译 `db/schema/postgres` 并重生成 PG 产物** → 跑守卫与全量测试。只改一侧即为半成品。
@@ -589,11 +609,51 @@ go test -tags postgres ./...  # 全量测试也要在 PG 变体下跑
 | 动态行数的多行 INSERT | 1 | 同上（占位符个数随入参变化） |
 | UPSERT | 3（1%） | 按方言分叉 |
 
-按包分布与进度：`baseline` 47 → **0**、`identity` 14 → **0**（均为 2026-09-16 完成）；`monitor` 138、`assets` 91、`automation` 36、`inspection` 33 待迁。
+**P2 已完成（2026-09-16）**：七个包内联 SQL 全部清零，全仓库 `grep` 无 SELECT/INSERT/UPDATE/DELETE 字面量
+（只剩派生脚本自身的常量与注释），`db/queries/mysql` 的查询定义从 228 条增到 559 条。
 
-已迁移的两个包各自留下一个**真库冒烟**（`*_SMOKE_DSN` 触发、默认跳过）：`internal/baseline/smoke_test.go`
-（该域全流程 44 步，事务内回滚）与 `internal/identity/smoke_test.go`（handler 级写路径 + 清理临时行）；
-另有跨域的 `internal/platform/database/insert_smoke_test.go` 覆盖"插入取主键"契约。
+按包分布与进度：`baseline` 47 → **0**、`identity` 14 → **0**、`inspection` 33 → **0**、`automation` 36 → **0**、
+`assets` 91 → **0**（主机域、agent 作业/安装包/应用控制、Agent 安装与更新流程、部署模板含 5 类嵌套子表 +
+docker/compose 配置、逻辑服务与部署实例）、**`monitor` 138 → 0**（2026-09-16：监控软件包管理 15、监控目标域 36、
+告警域 47、日志采集域 44、配置资源与 OpenSearch 11 —— `monitor.sql` 从 30 条定义增到 175 条）。
+
+`monitor` 这一轮用到的构造（对上游规律有增补，已并入 §4.6 的规则表与 P5 陷阱 26–30）：
+- **两类"插入即跳过"**（通知事件按 `deduplication_key`、日志目标按 `host_id`）→ `INSERT IGNORE` + 派生改写成
+  `ON CONFLICT DO NOTHING`，两侧判定收敛到按方言分文件的 `insertIgnoreOutcome`；
+- **单地址投递的 get-or-create**（唯一键含可空列）→ MySQL 的 `id=LAST_INSERT_ID(id)`，PG 侧由 perQueryOverride
+  换成 `DO UPDATE SET id=<表>.id RETURNING id`（**不能写 `EXCLUDED.id`**）；
+- **通用配置资源的"运行时拼表名 + 列名"** → 表名按资源分派到显式语句，"只写提交了的列"改由
+  "读回整行 + 应用层合并 + 整行写"承担（`COALESCE(narg,col)` 表达不了"显式写入空值"）；
+- 其余方言构造就地改掉：`TIMESTAMPDIFF`/`UTC_TIMESTAMP` → 应用层算、`IF(...)`+`JSON_LENGTH(...)` →
+  加锁读回后应用层合并、`JSON_UNQUOTE(JSON_EXTRACT(...))` → 取列应用层解析、`SUM(布尔)` →
+  `COUNT(CASE WHEN …)`、动态 `SET` 列名 → 整行写。
+
+**三条与"生成物 vs 真库"有关的教训**（都是真库冒烟逮到的，见 P5 陷阱 26–28）：
+可空 json 列扫不了 NULL（要 override 成 `sql.NullString`）、INSERT 必须列全"NOT NULL 且无默认值"的列
+（否则严格模式 1364；`monitor_opensearch_cluster` 的建表语句一直缺三列）、含可空列的唯一键上做 get-or-create
+必须给非 NULL 值（UNIQUE 把 NULL 视为互不相同）。
+
+已迁移的七个包各自留下一个**真库冒烟**（`*_SMOKE_DSN` 触发、默认跳过）：`internal/baseline/smoke_test.go`
+（该域全流程 44 步，事务内回滚）、`internal/identity/smoke_test.go`、`internal/inspection/smoke_test.go`、
+`internal/automation/smoke_test.go`（后四个是 handler/queries 级写路径 + 按 id 清理自己造的行）、
+`internal/monitor/smoke_test.go`（监控目标域）与 `internal/monitor/smoke_alert_log_test.go`
+（告警/日志/配置三域，共用 `MONITOR_SMOKE_DSN`，约 90 步）；另有跨域的
+`internal/platform/database/insert_smoke_test.go` 覆盖"插入取主键"契约。
+
+两条**真库冒烟的纪律**（2026-09-16，P2-2 踩出来的）：
+1. **会改动全局数据的语句只在回滚事务里验语义**。保留期清理的 cutoff 是全局的、控制器 SSH 密钥一换
+   就打断线上自动化链路——这类语句在共享库上直接跑会删掉/改掉别人的数据。做法是：开一个事务跑语句、
+   在事务内断言效果、然后 `Rollback`，自己造的行再用**按 id 的精确删除**收尾。
+2. **`db/schema` 的快照可能没有真库上的外键**。`inspection_target_execution.host_id → assets_host(id)`
+   只存在于真库（`db/schema/mysql/003_monitor_inspection.sql` 是"够 JOIN 用"的部分声明），
+   sqlc 不校验外键所以生成期无感，写数据时才被拒——造数据要么取真实主机 id，要么写 NULL。
+   这类漂移归 P3-4 的守卫管。
+
+路径类差异也在这一步暴露：inspection/automation 的迁移里，`NOW()`/`UTC_TIMESTAMP` 全部改成应用层传时间，
+`JSON_SET`/`JSON_MERGE_PATCH` 改成"`FOR UPDATE` 读回 + 应用层合并"，`TIMESTAMPDIFF` 改成应用层算时长
+（取消路径先读回 `start_time`），`SUM(布尔)` 改成 `COUNT(CASE WHEN … THEN 1 END)`（零行从 NULL 变 0），
+MySQL 多表 `DELETE … JOIN …` 改成 `WHERE … IN (子查询)`，运行时拼 `WHERE`/`ORDER BY` 改成
+`sqlc.narg` 可选过滤 / 按 `sort_key` 选择的 CASE 表达式（标识符不能被参数化，代价是排序不再走索引）。
 
 `baseline` 试点（2026-09-16）验证了迁移的固定动作与代价，后续包按同一套做（`identity` 已照此完成）：
 

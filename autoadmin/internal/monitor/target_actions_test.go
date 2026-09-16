@@ -23,21 +23,21 @@ func TestBatchDeleteTargetsReportsPerItemResult(t *testing.T) {
 	defer database.Close()
 
 	// id=1: 主机名查询、校验通过、删除成功。
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT h.instance_name,h.ip FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT h.instance_name, h.ip`)).
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"instance_name", "ip"}).AddRow("host-a", "10.0.0.1"))
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT managed_enabled,install_status FROM monitor_target WHERE id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT managed_enabled, install_status FROM monitor_target`)).
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"managed_enabled", "install_status"}).AddRow(false, "success"))
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM monitor_target WHERE id=?`)).
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM monitor_target WHERE id`)).
 		WithArgs(int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// id=2: 仍启用中，必须拒绝删除并原样保留记录。
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT h.instance_name,h.ip FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT h.instance_name, h.ip`)).
 		WithArgs(int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"instance_name", "ip"}).AddRow("host-b", "10.0.0.2"))
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT managed_enabled,install_status FROM monitor_target WHERE id=?`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT managed_enabled, install_status FROM monitor_target`)).
 		WithArgs(int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"managed_enabled", "install_status"}).AddRow(true, "success"))
 

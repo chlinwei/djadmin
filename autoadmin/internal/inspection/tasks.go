@@ -69,14 +69,18 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 	}
 	id := parseID(context.Param("id"))
 	state := taskState{Concurrency: 20, TimeoutSeconds: 60, Enabled: true, GroupIDs: []int64{}}
+	queries := db.New(handler.db)
 	if id > 0 {
-		var primaryGroup int64
-		if err := handler.db.QueryRowContext(context, `SELECT name,inspection_name,group_id,concurrency,timeout_seconds,cron_expression,enabled FROM inspection_task WHERE id=?`, id).Scan(&state.Name, &state.InspectionName, &primaryGroup, &state.Concurrency, &state.TimeoutSeconds, &state.CronExpression, &state.Enabled); err != nil {
+		current, loadErr := queries.GetInspectionTaskState(context, id)
+		if loadErr != nil {
 			response.BusinessError(context, 404, "巡检任务不存在", nil)
 			return
 		}
+		state.Name, state.InspectionName = current.Name, current.InspectionName
+		state.Concurrency, state.TimeoutSeconds = int(current.Concurrency), int(current.TimeoutSeconds)
+		state.CronExpression, state.Enabled = current.CronExpression, current.Enabled
 		// 现有绑定优先（带挂载点）；无绑定行的存量任务要求重新选择巡检组。
-		if bindings, bindErr := db.New(handler.db).ListInspectionTaskBindings(context, id); bindErr == nil && len(bindings) > 0 {
+		if bindings, bindErr := queries.ListInspectionTaskBindings(context, id); bindErr == nil && len(bindings) > 0 {
 			state.Bindings = make([]groupBindingInput, 0, len(bindings))
 			for _, row := range bindings {
 				state.Bindings = append(state.Bindings, groupBindingInput{
@@ -102,17 +106,23 @@ func (handler *Handler) SaveTask(context *gin.Context) {
 		response.BusinessError(context, 400, message, nil)
 		return
 	}
+	now := time.Now().UTC()
 	nextRun := nextRunTime(state.CronExpression, state.Enabled)
 	var err error
 	if id == 0 {
-		result, execErr := handler.db.ExecContext(context, `INSERT INTO inspection_task(name,inspection_name,group_id,concurrency,timeout_seconds,cron_expression,next_run_time,last_run_time,enabled,create_time,update_time) VALUES(?,?,?,?,?,?,?,NULL,?,NOW(),NOW())`, state.Name, state.InspectionName, state.GroupIDs[0], state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled)
-		if execErr != nil {
-			response.Error(context, execErr)
-			return
-		}
-		id, err = result.LastInsertId()
+		id, err = queries.CreateInspectionTask(context, db.CreateInspectionTaskParams{
+			Name: state.Name, InspectionName: state.InspectionName, GroupID: state.GroupIDs[0],
+			Concurrency: uint32(state.Concurrency), TimeoutSeconds: uint32(state.TimeoutSeconds),
+			CronExpression: state.CronExpression, NextRunTime: nextRun, Enabled: state.Enabled,
+			CreateTime: now, UpdateTime: now,
+		})
 	} else {
-		_, err = handler.db.ExecContext(context, `UPDATE inspection_task SET name=?,inspection_name=?,group_id=?,concurrency=?,timeout_seconds=?,cron_expression=?,next_run_time=?,enabled=?,update_time=NOW() WHERE id=?`, state.Name, state.InspectionName, state.GroupIDs[0], state.Concurrency, state.TimeoutSeconds, state.CronExpression, nextRun, state.Enabled, id)
+		_, err = queries.UpdateInspectionTask(context, db.UpdateInspectionTaskParams{
+			Name: state.Name, InspectionName: state.InspectionName, GroupID: state.GroupIDs[0],
+			Concurrency: uint32(state.Concurrency), TimeoutSeconds: uint32(state.TimeoutSeconds),
+			CronExpression: state.CronExpression, NextRunTime: nextRun, Enabled: state.Enabled,
+			UpdateTime: now, ID: id,
+		})
 	}
 	if err != nil {
 		response.Error(context, err)
@@ -137,7 +147,8 @@ func (handler *Handler) saveTaskGroups(context *gin.Context, taskID int64, bindi
 		return err
 	}
 	defer transaction.Rollback()
-	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_task_group WHERE task_id=?`, taskID); err != nil {
+	queries := db.New(transaction)
+	if err = queries.DeleteInspectionTaskGroups(context, taskID); err != nil {
 		return err
 	}
 	for _, binding := range bindings {
@@ -148,19 +159,23 @@ func (handler *Handler) saveTaskGroups(context *gin.Context, taskID int64, bindi
 		if len(paramValues) == 0 {
 			paramValues = json.RawMessage("{}")
 		}
-		if _, err = transaction.ExecContext(context, `INSERT INTO inspection_task_group(task_id,group_id,mount_type,project_id,environment_id,business_system_id,service_id,instance_mode,param_values) VALUES(?,?,?,?,?,?,?,?,?)`,
-			taskID, *binding.Group, binding.MountType, nullableIDPtr(binding.ProjectID), nullableIDPtr(binding.EnvironmentID), nullableIDPtr(binding.BusinessSystemID), nullableIDPtr(binding.ServiceID), instanceModeValue(binding.InstanceMode), paramValues); err != nil {
+		if err = queries.CreateInspectionTaskGroup(context, db.CreateInspectionTaskGroupParams{
+			TaskID: taskID, GroupID: *binding.Group, MountType: binding.MountType,
+			ProjectID: nullableIDParam(binding.ProjectID), EnvironmentID: nullableIDParam(binding.EnvironmentID),
+			BusinessSystemID: nullableIDParam(binding.BusinessSystemID), ServiceID: nullableIDParam(binding.ServiceID),
+			InstanceMode: instanceModeValue(binding.InstanceMode), ParamValues: paramValues,
+		}); err != nil {
 			return err
 		}
 	}
 	return transaction.Commit()
 }
 
-func instanceModeValue(mode string) any {
+func instanceModeValue(mode string) sql.NullString {
 	if mode == "" {
-		return nil
+		return sql.NullString{}
 	}
-	return mode
+	return sql.NullString{String: mode, Valid: true}
 }
 
 func nullableInt64Ptr(value sql.NullInt64) *int64 {
@@ -178,17 +193,19 @@ func (handler *Handler) deleteTaskByID(context *gin.Context, id int64) error {
 		return err
 	}
 	defer transaction.Rollback()
-	if _, err = transaction.ExecContext(context, `UPDATE inspection_execution SET task_id=NULL,update_time=NOW() WHERE task_id=?`, id); err != nil {
+	queries := db.New(transaction)
+	if err = queries.DetachInspectionExecutionsFromTask(context, db.DetachInspectionExecutionsFromTaskParams{
+		TaskID: sql.NullInt64{Int64: id, Valid: true}, UpdateTime: time.Now().UTC(),
+	}); err != nil {
 		return err
 	}
-	if _, err = transaction.ExecContext(context, `DELETE FROM inspection_task_group WHERE task_id=?`, id); err != nil {
+	if err = queries.DeleteInspectionTaskGroups(context, id); err != nil {
 		return err
 	}
-	result, err := transaction.ExecContext(context, `DELETE FROM inspection_task WHERE id=?`, id)
+	affected, err := queries.DeleteInspectionTask(context, id)
 	if err != nil {
 		return err
 	}
-	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
@@ -274,9 +291,11 @@ func (handler *Handler) validateTask(context *gin.Context, state *taskState, val
 	// 任务名称唯一性收窄为"同巡检组内唯一"（迁移 000010 删除全局唯一键）：
 	// 列表/执行记录都展示所属组，歧义只发生在同组内；不同组允许复用通用名。
 	if len(state.GroupIDs) == 1 {
-		var count int
-		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM inspection_task WHERE name=? AND group_id=? AND id<>?`, state.Name, state.GroupIDs[0], excludeID).Scan(&count); err != nil {
-			return "", err
+		count, countErr := db.New(handler.db).CountInspectionTasksByNameInGroup(context, db.CountInspectionTasksByNameInGroupParams{
+			Name: state.Name, GroupID: state.GroupIDs[0], ExcludeID: excludeID,
+		})
+		if countErr != nil {
+			return "", countErr
 		}
 		if count > 0 {
 			return "同一巡检组下任务名称已存在", nil
@@ -291,7 +310,7 @@ func (handler *Handler) validateTask(context *gin.Context, state *taskState, val
 	// 逐绑定校验：组存在（启用/检查项在显式提交时校验）+ 挂载点规则。
 	type groupMeta struct {
 		enabled    bool
-		checkCount int
+		checkCount int64
 	}
 	metas := make(map[int64]groupMeta, len(state.Bindings))
 	for index := range state.Bindings {
@@ -299,15 +318,14 @@ func (handler *Handler) validateTask(context *gin.Context, state *taskState, val
 		if binding.Group == nil || *binding.Group <= 0 {
 			return "巡检组无效", nil
 		}
-		var meta groupMeta
-		var category string
-		err := handler.db.QueryRowContext(context, `SELECT g.enabled,g.category,(SELECT COUNT(*) FROM inspection_check c WHERE c.group_id=g.id AND c.enabled=TRUE) FROM inspection_group g WHERE g.id=?`, *binding.Group).Scan(&meta.enabled, &category, &meta.checkCount)
+		current, err := db.New(handler.db).GetInspectionGroupRunMeta(context, *binding.Group)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "巡检组不存在", nil
 		}
 		if err != nil {
 			return "", err
 		}
+		meta, category := groupMeta{enabled: current.Enabled, checkCount: current.EnabledCheckCount}, current.Category
 		metas[*binding.Group] = meta
 		if binding.MountType == "" {
 			return "挂载范围无效：请通过页面选择巡检对象", nil
@@ -400,13 +418,13 @@ func bindingGroupIDs(bindings []groupBindingInput) []int64 {
 	return uniqueInt64s(ids)
 }
 
-func nextRunTime(expression string, enabled bool) any {
+func nextRunTime(expression string, enabled bool) sql.NullTime {
 	if expression == "" || !enabled {
-		return nil
+		return sql.NullTime{}
 	}
 	schedule, err := cron.ParseStandard(expression)
 	if err != nil {
-		return nil
+		return sql.NullTime{}
 	}
-	return schedule.Next(time.Now().UTC())
+	return sql.NullTime{Time: schedule.Next(time.Now().UTC()), Valid: true}
 }

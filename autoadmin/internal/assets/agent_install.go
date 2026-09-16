@@ -63,9 +63,7 @@ func (handler *Handler) runAgentInstalls(binary []byte, advertisedAddr, playbook
 	}
 	now := time.Now().UTC()
 	summary := fmt.Sprintf(`{"message":%q,"succeeded":%d,"failed":%d}`, message, successCount, failed)
-	_, _ = handler.service.repository.pool.ExecContext(context.Background(), `UPDATE automation_execution_job
-		SET status=?,end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,start_time,?)/1000000,result_summary=?,update_time=? WHERE id=?`,
-		status, now, now, summary, now, executionID)
+	handler.finishAgentExecutionJob(context.Background(), executionID, status, summary, now)
 	_ = userID
 	_ = username
 }
@@ -73,17 +71,10 @@ func (handler *Handler) runAgentInstalls(binary []byte, advertisedAddr, playbook
 func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte, advertisedAddr, playbook string, credential db.AssetsCredential) bool {
 	background := context.Background()
 	now := time.Now().UTC()
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job SET status='running',picked_at=?,update_time=? WHERE job_id=?`, now, now, host.AgentJobID)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log SET status='running',update_time=? WHERE id=?`, now, host.LogID)
+	handler.markAgentJobRunning(background, host.AgentJobID, host.LogID, now)
 
 	fail := func(message string, exitCode int64, stdout, stderr string) bool {
-		now := time.Now().UTC()
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
-			SET status='failed',error_message=?,exit_code=?,stdout=?,stderr=?,finished_at=?,update_time=? WHERE job_id=?`,
-			message, exitCode, stdout, stderr, now, now, host.AgentJobID)
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
-			SET status='failed',error_message=?,exit_code=?,stdout=?,stderr=?,update_time=? WHERE id=?`,
-			message, exitCode, stdout, stderr, now, host.LogID)
+		handler.failAgentJob(background, host, "failed", message, exitCode, stdout, stderr)
 		return false
 	}
 
@@ -199,8 +190,7 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 		live := output.String()
 		outputLock.Unlock()
 		now := time.Now().UTC()
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job SET stdout=?,update_time=? WHERE job_id=?`, live, now, host.AgentJobID)
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log SET stdout=?,update_time=? WHERE id=?`, live, now, host.LogID)
+		handler.updateAgentJobStdout(background, host.AgentJobID, host.LogID, live, now)
 	}
 	readerDone := make(chan struct{})
 	go func() {
@@ -240,13 +230,7 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 	persist()
 
 	if commandCtx.Err() == context.DeadlineExceeded {
-		now := time.Now().UTC()
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
-			SET status='timeout',error_message='Ansible Agent 安装任务超时',exit_code=124,stdout=?,stderr='',finished_at=?,update_time=? WHERE job_id=?`,
-			stdout, now, now, host.AgentJobID)
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
-			SET status='failed',error_message='Ansible Agent 安装任务超时',exit_code=124,stdout=?,update_time=? WHERE id=?`,
-			stdout, now, host.LogID)
+		handler.failAgentJob(background, host, "timeout", "Ansible Agent 安装任务超时", 124, stdout, "")
 		return false
 	}
 
@@ -278,12 +262,7 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 		"ansible_recap": recap, "agent_connected": agentConnected,
 	})
 	now = time.Now().UTC()
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
-		SET status=?,exit_code=?,error_message=?,result_data=?,finished_at=?,update_time=? WHERE job_id=?`,
-		finalStatus, exitCode, message, string(resultData), now, now, host.AgentJobID)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
-		SET status=?,exit_code=?,error_message=?,result_data=?,update_time=? WHERE id=?`,
-		finalStatus, exitCode, message, string(resultData), now, host.LogID)
+	handler.finishAgentJob(background, host, finalStatus, int64(exitCode), message, string(resultData), resultData, now)
 	return finalStatus == "success"
 }
 

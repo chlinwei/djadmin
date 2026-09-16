@@ -294,3 +294,933 @@ LEFT JOIN sys_user u ON u.id = d.user_id
 LEFT JOIN monitor_alert_media m ON m.id = d.media_id
 WHERE d.event_id = sqlc.arg(event_id)
 ORDER BY d.id;
+-- ---- P2-3：监控软件包管理（读取复用 GetSoftwarePackageTyped；写路径见下）----
+-- 原实现有运行时拼列名的地方（`SET `+role+`_playbook_template_id=…`），改成按角色分派的显式语句。
+
+-- name: CountSoftwarePackageSyncConflict :one
+SELECT COUNT(*) FROM monitor_software_package
+WHERE name=sqlc.arg(name) AND version=sqlc.arg(version) AND os=sqlc.arg(os) AND arch=sqlc.arg(arch)
+  AND platform_family=sqlc.arg(platform_family) AND platform_major=sqlc.arg(platform_major)
+  AND id<>sqlc.arg(exclude_id);
+
+-- name: CountSoftwarePackageVariantConflict :one
+SELECT COUNT(*) FROM monitor_software_package
+WHERE package_type=sqlc.arg(package_type) AND name=sqlc.arg(name) AND version=sqlc.arg(version)
+  AND os=sqlc.arg(os) AND arch=sqlc.arg(arch) AND platform_family=sqlc.arg(platform_family)
+  AND platform_major=sqlc.arg(platform_major) AND id<>sqlc.arg(exclude_id);
+
+-- name: CreateSoftwarePackage :one
+INSERT INTO monitor_software_package(create_time,update_time,remark,package_type,name,version,default_port,
+                                     os,arch,platform_family,platform_major,package_format,file,sha256,size_bytes,
+                                     enabled,work_directory,service_file_content,service_run_as_user,service_run_as_group)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(package_type),sqlc.arg(name),sqlc.arg(version),
+        sqlc.arg(default_port),sqlc.arg(os),sqlc.arg(arch),sqlc.arg(platform_family),sqlc.arg(platform_major),
+        sqlc.arg(package_format),'', '', 0, TRUE, '/tmp', '', sqlc.arg(service_run_as_user), 'dj-agent')
+RETURNING id;
+
+-- name: UpdateSoftwarePackageSource :exec
+UPDATE monitor_software_package
+SET version=sqlc.arg(version),file=sqlc.arg(file),sha256=sqlc.arg(sha256),size_bytes=sqlc.arg(size_bytes),
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: UpdateSoftwarePackageFile :exec
+UPDATE monitor_software_package
+SET file=sqlc.arg(file),sha256=sqlc.arg(sha256),size_bytes=sqlc.arg(size_bytes),update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: UpdateSoftwarePackageFilePath :exec
+UPDATE monitor_software_package SET file=sqlc.arg(file) WHERE id=sqlc.arg(id);
+
+-- COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
+-- name: UpdateSoftwarePackageConfig :exec
+UPDATE monitor_software_package
+SET default_port=sqlc.arg(default_port),
+    service_file_content=COALESCE(sqlc.narg(service_file_content), service_file_content),
+    service_run_as_user=sqlc.arg(service_run_as_user),
+    service_run_as_group=COALESCE(sqlc.narg(service_run_as_group), service_run_as_group),
+    work_directory=COALESCE(sqlc.narg(work_directory), work_directory),
+    package_format=sqlc.arg(package_format), platform_family=sqlc.arg(platform_family),
+    platform_major=sqlc.arg(platform_major), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteSoftwarePackage :exec
+DELETE FROM monitor_software_package WHERE id=sqlc.arg(id);
+
+-- name: ClearSoftwarePackageInstallTemplate :exec
+UPDATE monitor_software_package SET install_playbook_template_id=NULL WHERE id=sqlc.arg(id);
+
+-- name: ClearSoftwarePackageUninstallTemplate :exec
+UPDATE monitor_software_package SET uninstall_playbook_template_id=NULL WHERE id=sqlc.arg(id);
+
+-- name: SetSoftwarePackageInstallTemplate :exec
+UPDATE monitor_software_package SET install_playbook_template_id=sqlc.arg(template_id) WHERE id=sqlc.arg(id);
+
+-- name: SetSoftwarePackageUninstallTemplate :exec
+UPDATE monitor_software_package SET uninstall_playbook_template_id=sqlc.arg(template_id) WHERE id=sqlc.arg(id);
+
+-- ---- P2-3：监控目标域（目标 CRUD/服务控制、安装与卸载下发、安装历史、宿主总览）----
+-- 三处方言/结构改写：① 批量建目标用 `INSERT IGNORE`（已纳管则跳过），派生改写成 PG 的
+-- `ON CONFLICT DO NOTHING`；② PATCH 的字段白名单从"运行时拼 SET"改成"读回+应用层合并+整行写"；
+-- ③ 宿主总览的四种过滤（有目标/指定 exporter/日志已装/未装）改成 narg + CASE，三条查询共用。
+
+-- name: GetExporterPackageDefaultPort :one
+SELECT default_port FROM monitor_software_package
+WHERE name = sqlc.arg(name) AND package_type = 'exporter' AND enabled = TRUE ORDER BY id LIMIT 1;
+
+-- name: GetHostTargetIdentity :one
+SELECT COALESCE(instance_name, ''), COALESCE(ip, ''), is_deleted_in_cloud FROM assets_host WHERE id = sqlc.arg(id);
+
+-- 已纳管（host_id, exporter_type 唯一键冲突）时跳过：MySQL 的 INSERT IGNORE 影响行数为 0，
+-- PG 侧派生为 ON CONFLICT DO NOTHING（被跳过时 RETURNING 不返回行）。
+-- name: CreateMonitorTargetIfAbsent :one
+INSERT INTO monitor_target(create_time,update_time,remark,host_id,exporter_type,scrape_port,managed_enabled,
+                                  install_status,install_message,retry_count,last_scrape_status,labels,last_dispatch_manual)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(host_id),sqlc.arg(exporter_type),
+        sqlc.arg(scrape_port),TRUE,'unknown','',0,'unknown','{}',FALSE) ON CONFLICT DO NOTHING
+RETURNING id;
+
+-- name: UpdateMonitorTargetPatch :exec
+UPDATE monitor_target
+SET exporter_type=sqlc.arg(exporter_type), scrape_port=sqlc.arg(scrape_port),
+    managed_enabled=sqlc.arg(managed_enabled), labels=sqlc.arg(labels), remark=sqlc.narg(remark),
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: GetMonitorTargetState :one
+SELECT managed_enabled, install_status FROM monitor_target WHERE id = sqlc.arg(id);
+
+-- name: DeleteMonitorTarget :exec
+DELETE FROM monitor_target WHERE id = sqlc.arg(id);
+
+-- name: GetLatestTargetInstallHistory :one
+SELECT id, status, start_time FROM monitor_target_install_history
+WHERE target_id = sqlc.arg(target_id) ORDER BY id DESC LIMIT 1;
+
+-- name: CancelInstallHistory :exec
+UPDATE monitor_target_install_history
+SET status='cancelled', summary_message='任务已取消', error_message_snapshot='任务已由用户取消',
+    end_time=sqlc.arg(end_time), duration_seconds=sqlc.arg(duration_seconds), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkTargetInstallCancelled :exec
+UPDATE monitor_target
+SET install_status='failed', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: GetTargetServiceContext :one
+SELECT COALESCE(h.instance_name, ''), t.exporter_type
+FROM monitor_target t JOIN assets_host h ON h.id = t.host_id WHERE t.id = sqlc.arg(id);
+
+-- name: GetTargetHostAddress :one
+SELECT h.instance_name, h.ip
+FROM monitor_target t JOIN assets_host h ON h.id = t.host_id WHERE t.id = sqlc.arg(id);
+
+-- ---- 安装/卸载下发 ----
+
+-- name: GetTargetInstallContext :one
+SELECT t.id, t.host_id, t.managed_enabled, t.exporter_type,
+       COALESCE(h.instance_name, ''), COALESCE(h.ip, ''),
+       COALESCE(s.os_id, ''), COALESCE(s.os_id_like, ''), COALESCE(s.os_version_id, ''),
+       COALESCE(hw.architecture, '')
+FROM monitor_target t
+JOIN assets_host h ON h.id = t.host_id
+LEFT JOIN assets_hostsystem s ON s.host_id = t.host_id
+LEFT JOIN assets_hosthardware hw ON hw.host_id = t.host_id
+WHERE t.id = sqlc.arg(id);
+
+-- name: ResetTargetInstallRetry :exec
+UPDATE monitor_target SET retry_count=0, install_message='人工触发重试', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: SetTargetInstallState :exec
+UPDATE monitor_target SET install_status=sqlc.arg(install_status), install_message=sqlc.arg(install_message),
+       update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: CreateMonitorTargetJob :one
+INSERT INTO automation_execution_job
+  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+   task_name_snapshot,template_name_snapshot,template_content_snapshot,"limit",run_as_user_snapshot,
+   run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'pending','manual',
+        sqlc.arg(inventory_snapshot),sqlc.arg(extra_vars),sqlc.arg(result_summary),sqlc.arg(task_name_snapshot),
+        sqlc.arg(template_name_snapshot),sqlc.arg(template_content_snapshot),'',sqlc.arg(run_as_user_snapshot),
+        sqlc.arg(run_as_group_snapshot),sqlc.arg(work_directory_snapshot),sqlc.narg(requested_user_id),
+        sqlc.arg(requested_username))
+RETURNING id;
+
+-- name: CreateTargetInstallHistory :one
+INSERT INTO monitor_target_install_history
+  (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
+   exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(action),'manual','pending',
+        sqlc.narg(host_id_snapshot),sqlc.arg(host_name_snapshot),sqlc.arg(host_ip_snapshot),
+        sqlc.arg(exporter_type_snapshot),sqlc.arg(summary_message),'','','','{}',
+        sqlc.narg(requested_user_id_snapshot),sqlc.arg(requested_username_snapshot),
+        sqlc.narg(start_time),sqlc.narg(host_id),sqlc.arg(target_id))
+RETURNING id;
+
+-- name: MarkTargetInstallPending :exec
+UPDATE monitor_target
+SET install_status='pending', install_message=sqlc.arg(install_message), last_dispatch_manual=TRUE,
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- 作业收尾时读回结果摘要（原实现用 MySQL 的 JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))，
+-- 改成取回 json 列在应用层解析）。
+-- name: GetJobResultSummary :one
+SELECT status, result_summary FROM automation_execution_job WHERE id = sqlc.arg(id);
+
+-- name: FinishTargetInstallState :execrows
+UPDATE monitor_target SET install_status=sqlc.arg(install_status), install_message=sqlc.arg(install_message),
+       update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND install_status='pending';
+
+-- name: FinishTargetInstallHistory :execrows
+UPDATE monitor_target_install_history
+SET status=sqlc.arg(status), summary_message=sqlc.arg(summary_message), end_time=sqlc.narg(end_time),
+    duration_seconds=sqlc.narg(duration_seconds), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status='pending';
+
+-- name: GetTargetInstallHistoryForTimeout :one
+SELECT id, status, create_time FROM monitor_target_install_history
+WHERE target_id = sqlc.arg(target_id) ORDER BY id DESC LIMIT 1;
+
+-- name: ExpireTargetInstallHistory :execrows
+UPDATE monitor_target_install_history
+SET status='failed', error_message_snapshot='任务执行超时（进程中断遗留），已自动过期', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status IN ('pending','running');
+
+-- 平台匹配用的软件包查询：卸载取最近一条（不论有无文件），安装只取已落文件的一批。
+-- name: GetUninstallPackageForTarget :one
+SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,
+       COALESCE(file,''),COALESCE(sha256,''),service_file_content,service_run_as_user,service_run_as_group,
+       work_directory,uninstall_playbook_template_id
+FROM monitor_software_package
+WHERE package_type='exporter' AND name=sqlc.arg(name) AND enabled=TRUE
+ORDER BY create_time DESC LIMIT 1;
+
+-- name: ListInstallPackagesForTarget :many
+SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
+       service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
+FROM monitor_software_package
+WHERE package_type='exporter' AND name=sqlc.arg(name) AND enabled=TRUE AND file<>''
+ORDER BY create_time DESC;
+
+-- name: ListPackageChecksums :many
+SELECT os,arch,sha256 FROM monitor_software_package
+WHERE package_type='exporter' AND name=sqlc.arg(name) AND version=sqlc.arg(version) AND enabled=TRUE AND sha256<>'';
+
+-- ---- 宿主总览（监控纳管情况）----
+
+-- name: ListMonitorHostGroupTree :many
+SELECT g.id, g.name, g.parent_id, COUNT(h.id) AS host_count,
+       COUNT(CASE WHEN h.id IS NOT NULL AND (EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id = h.id)
+             OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id = h.id)) THEN 1 END) AS managed_count
+FROM assets_hostgroup g
+LEFT JOIN assets_host h ON h.group_id = g.id AND h.is_deleted_in_cloud = FALSE
+GROUP BY g.id, g.name, g.parent_id
+ORDER BY g.name, g.id;
+
+-- name: CountMonitorHostTotals :one
+SELECT COUNT(*),
+       COUNT(CASE WHEN EXISTS(SELECT 1 FROM monitor_target t WHERE t.host_id = h.id)
+             OR EXISTS(SELECT 1 FROM monitor_log_collection_target l WHERE l.host_id = h.id) THEN 1 END) AS managed_total,
+       COUNT(CASE WHEN h.group_id IS NULL THEN 1 END) AS ungrouped
+FROM assets_host h WHERE h.is_deleted_in_cloud = FALSE;
+
+-- name: ListMonitorHostGroupParents :many
+SELECT id, parent_id FROM assets_hostgroup;
+
+-- 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
+-- managed_filter 与 fluent_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
+-- name: CountMonitorHosts :one
+SELECT COUNT(*) FROM assets_host h
+WHERE h.is_deleted_in_cloud = FALSE
+  AND (sqlc.arg(search_pattern) = '' OR h.instance_name LIKE sqlc.arg(search_pattern)
+       OR COALESCE(h.ip, '') LIKE sqlc.arg(search_pattern))
+  AND (sqlc.arg(group_filter) = '' OR h.group_id = ANY(sqlc.arg(group_ids)::bigint[]))
+  AND (CASE sqlc.narg(managed_filter)
+         WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_target mt WHERE mt.host_id = h.id
+                AND (sqlc.arg(exporter_type) = '' OR mt.exporter_type = sqlc.arg(exporter_type))) > 0
+         WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_target mt WHERE mt.host_id = h.id
+                AND (sqlc.arg(exporter_type) = '' OR mt.exporter_type = sqlc.arg(exporter_type))) = 0
+         ELSE (sqlc.arg(exporter_type) = '' OR EXISTS (SELECT 1 FROM monitor_target mt
+                WHERE mt.host_id = h.id AND mt.exporter_type = sqlc.arg(exporter_type)))
+       END)
+  AND (CASE sqlc.narg(fluent_filter)
+         WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) > 0
+         WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) = 0
+         ELSE TRUE
+       END);
+
+-- name: ListMonitorHosts :many
+SELECT h.id, h.instance_name, h.ip, h.group_id, COALESCE(g.name, '') AS group_name,
+       lc.id AS log_target_id, lc.agent_installed, lc.agent_version, lc.runtime_status,
+       lc.install_status, lc.config_fingerprint, lc.last_applied_time, lc.last_error
+FROM assets_host h
+LEFT JOIN assets_hostgroup g ON g.id = h.group_id
+LEFT JOIN monitor_log_collection_target lc ON lc.host_id = h.id
+WHERE h.is_deleted_in_cloud = FALSE
+  AND (sqlc.arg(search_pattern) = '' OR h.instance_name LIKE sqlc.arg(search_pattern)
+       OR COALESCE(h.ip, '') LIKE sqlc.arg(search_pattern))
+  AND (sqlc.arg(group_filter) = '' OR h.group_id = ANY(sqlc.arg(group_ids)::bigint[]))
+  AND (CASE sqlc.narg(managed_filter)
+         WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_target mt WHERE mt.host_id = h.id
+                AND (sqlc.arg(exporter_type) = '' OR mt.exporter_type = sqlc.arg(exporter_type))) > 0
+         WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_target mt WHERE mt.host_id = h.id
+                AND (sqlc.arg(exporter_type) = '' OR mt.exporter_type = sqlc.arg(exporter_type))) = 0
+         ELSE (sqlc.arg(exporter_type) = '' OR EXISTS (SELECT 1 FROM monitor_target mt
+                WHERE mt.host_id = h.id AND mt.exporter_type = sqlc.arg(exporter_type)))
+       END)
+  AND (CASE sqlc.narg(fluent_filter)
+         WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) > 0
+         WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) = 0
+         ELSE TRUE
+       END)
+ORDER BY h.instance_name, h.id LIMIT $1 OFFSET $2;
+
+-- name: GetInstallHistoryForUpdate :one
+SELECT status, target_id, log_collection_target_id, start_time FROM monitor_target_install_history
+WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: CancelMonitorTargetInstallState :exec
+UPDATE monitor_target SET install_status='unknown', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: CancelLogTargetInstallState :exec
+UPDATE monitor_log_collection_target SET install_status='unknown', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- ---- P2-3：告警媒介（monitor_alert_media）写路径与详情读取 ----
+-- recipients 是 NOT NULL 的 json 列：MySQL 侧靠列默认值 '[]' 兜住，PG 的 schema 没有默认值，
+-- 所以 INSERT 里显式写 '[]'。
+
+-- name: GetAlertMediaConfig :one
+SELECT config FROM monitor_alert_media WHERE id = sqlc.arg(id);
+
+-- name: GetAlertMediaName :one
+SELECT name FROM monitor_alert_media WHERE id = sqlc.arg(id);
+
+-- name: CreateAlertMedia :one
+INSERT INTO monitor_alert_media(create_time,update_time,remark,name,media_type,config,enabled,recipients)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(remark),sqlc.arg(name),sqlc.arg(media_type),
+        sqlc.arg(config),sqlc.arg(enabled),'[]')
+RETURNING id;
+
+-- name: UpdateAlertMedia :execrows
+UPDATE monitor_alert_media
+SET update_time=sqlc.arg(update_time),remark=sqlc.arg(remark),name=sqlc.arg(name),
+    media_type=sqlc.arg(media_type),config=sqlc.arg(config),enabled=sqlc.arg(enabled)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteAlertMedia :execresult
+DELETE FROM monitor_alert_media WHERE id=sqlc.arg(id);
+
+-- ---- 告警通知分发链路（event / delivery / 失联对账 / 服务树归属）----
+
+-- 入队去重：deduplication_key 是唯一键，"已有事件"即影响行数为 0。
+-- MySQL 用 INSERT IGNORE（影响行数 0），PG 侧派生为 ON CONFLICT DO NOTHING
+-- （被跳过时 RETURNING 不返回行）；两侧判定见 alert_event_dialect_*.go。
+-- name: CreateAlertNotificationEventIfAbsent :one
+INSERT INTO monitor_alert_notification_event
+  (create_time,update_time,remark,event_type,deduplication_key,status,attempt_count,error_message,sent_at,alert_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(event_type),sqlc.arg(deduplication_key),
+        'pending',0,'',NULL,sqlc.arg(alert_id)) ON CONFLICT DO NOTHING
+RETURNING id;
+
+-- 事件与告警关键字段一次取齐（原实现分两条语句读同一行，合并为一条）：
+-- event_type 决定路由匹配开关，status 决定是否跳过已成功的事件，labels 用于 matchers 匹配。
+-- name: GetAlertNotificationEventDispatch :one
+SELECT e.event_type, e.attempt_count, e.status,
+       a.id, a.alertname, a.severity, a.instance, a.state, a.labels
+FROM monitor_alert_notification_event e
+JOIN monitor_alert_history a ON a.id = e.alert_id
+WHERE e.id = sqlc.arg(id);
+
+-- name: MarkAlertNotificationEventFailed :exec
+UPDATE monitor_alert_notification_event
+SET status='failed', error_message=sqlc.arg(error_message), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkAlertNotificationEventSending :exec
+UPDATE monitor_alert_notification_event
+SET status='sending', attempt_count=attempt_count+1, update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkAlertNotificationEventSuccess :exec
+UPDATE monitor_alert_notification_event
+SET status='success', sent_at=sqlc.arg(sent_at), error_message='', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkAlertNotificationEventPending :exec
+UPDATE monitor_alert_notification_event
+SET status='pending', error_message=sqlc.arg(error_message), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- 出口媒介的收件人绑定：不限组 / 仅限指定用户组成员两种（组限制为可变长 IN）。
+-- name: ListAlertMediaBindingsByMedia :many
+SELECT b.user_id, u.username, b.recipients
+FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
+WHERE b.media_id = sqlc.arg(media_id) AND b.enabled = TRUE
+ORDER BY b.id;
+
+-- name: ListAlertMediaBindingsByMediaInUserGroups :many
+SELECT b.user_id, u.username, b.recipients
+FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
+WHERE b.media_id = sqlc.arg(media_id) AND b.enabled = TRUE
+  AND b.user_id IN (SELECT user_id FROM sys_user_group_member WHERE group_id = ANY(sqlc.arg(group_ids)::bigint[]))
+ORDER BY b.id;
+
+-- 单地址投递的 get-or-create：唯一键 (event_id, media_id, user_id, address) 冲突时把既有行的
+-- 主键作为 LastInsertId 返回（MySQL 惯用法 `id=LAST_INSERT_ID(id)`）。PG 没有 LAST_INSERT_ID，
+-- 由 derive 的 perQueryOverride 换成 `id = monitor_alert_notification_delivery.id` 的等价空操作
+-- —— 不能写成 VALUES(id)/EXCLUDED.id，那是序列的下一个值，不是既有行的 id。
+-- conflict: event_id, media_id, user_id, address
+-- name: CreateAlertNotificationDeliveryOrGetID :one
+-- conflict: event_id, media_id, user_id, address
+INSERT INTO monitor_alert_notification_delivery
+  (create_time,update_time,remark,address,status,attempt_count,error_message,sent_at,event_id,media_id,user_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(address),'pending',0,'',NULL,
+        sqlc.arg(event_id),sqlc.arg(media_id),sqlc.arg(user_id))
+ON CONFLICT (event_id, media_id, user_id, address) DO UPDATE SET id=monitor_alert_notification_delivery.id
+RETURNING id;
+
+-- name: GetAlertNotificationDeliveryStatus :one
+SELECT status FROM monitor_alert_notification_delivery WHERE id = sqlc.arg(id);
+
+-- name: MarkAlertNotificationDeliverySending :exec
+UPDATE monitor_alert_notification_delivery
+SET status='sending', attempt_count=attempt_count+1, error_message='', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkAlertNotificationDeliverySuccess :exec
+UPDATE monitor_alert_notification_delivery
+SET status='success', sent_at=sqlc.arg(sent_at), error_message='', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: MarkAlertNotificationDeliveryFailed :exec
+UPDATE monitor_alert_notification_delivery
+SET status='failed', error_message=sqlc.arg(error_message), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- 失联对账：阈值改为应用层算好的时间点（原实现用 UTC_TIMESTAMP(6) - INTERVAL ? MINUTE，
+-- 既有方言函数又让阈值跟着库时钟走）。
+-- name: ListStaleFiringAlerts :many
+SELECT id, alertname, severity, instance, labels
+FROM monitor_alert_history
+WHERE state = 'firing' AND source = 'prometheus' AND last_seen_at < sqlc.arg(stale_before);
+
+-- name: ResolveStaleAlert :execrows
+UPDATE monitor_alert_history
+SET state='resolved', resolved_at=sqlc.arg(resolved_at), resolved_by_reconciliation=TRUE,
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND state='firing';
+
+-- 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。
+-- 原实现写的是 bs.project —— assets_business_system 没有这一列（真库与 schema 都没有），
+-- 语句恒报 1054，被调用点忽略后 tree matcher 永远匹配不上：改成 bs.project_id。
+-- name: ListHostAlertScopeNodes :many
+SELECT DISTINCT s.id AS service_id, s.business_system_id, s.environment_id, bs.project_id
+FROM assets_application_deployment d
+JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+WHERE d.host_id = sqlc.arg(host_id) AND d.enabled = TRUE AND sd.enabled = TRUE;
+
+-- ---- 告警链诊断（user-chain / chain/:historyId）----
+
+-- name: GetUsernameByID :one
+SELECT username FROM sys_user WHERE id = sqlc.arg(id);
+
+-- 用户绑定（含媒介的 media_type/media_enabled）复用 user.sql 的 ListUserAlertMediaBindings。
+
+-- name: CountUserGroupMemberships :one
+SELECT COUNT(*) FROM sys_user_group_member
+WHERE user_id = sqlc.arg(user_id) AND group_id = ANY(sqlc.arg(group_ids)::bigint[]);
+
+-- name: GetAlertHistoryForChain :one
+SELECT alertname, severity, instance, labels, state, started_at
+FROM monitor_alert_history WHERE id = sqlc.arg(id);
+
+-- 策略出口媒介：只有启用中的才投递，且要 config（SMTP 参数）。
+-- name: ListEnabledAlertMediaByIDs :many
+SELECT id, name, media_type, config FROM monitor_alert_media
+WHERE enabled = TRUE AND id = ANY(sqlc.arg(media_ids)::bigint[])
+ORDER BY id;
+
+-- name: ListAlertMediaBriefByIDs :many
+SELECT id, name, enabled FROM monitor_alert_media
+WHERE id = ANY(sqlc.arg(media_ids)::bigint[])
+ORDER BY id;
+
+-- name: ListAlertMediaBindingsWithUser :many
+SELECT b.user_id, u.username, b.recipients, b.enabled
+FROM monitor_user_alert_media_binding b JOIN sys_user u ON u.id = b.user_id
+WHERE b.media_id = sqlc.arg(media_id)
+ORDER BY b.id;
+
+-- name: GetLatestAlertNotificationEventForAlert :one
+SELECT id, event_type, status, attempt_count, error_message
+FROM monitor_alert_notification_event
+WHERE alert_id = sqlc.arg(alert_id) AND event_type = sqlc.arg(event_type)
+ORDER BY id DESC LIMIT 1;
+
+-- 链诊断里的投递记录：用户名保持可空（未登录用户的历史记录），与历史详情页的
+-- ListAlertNotificationDeliveries（把空值渲染成 '-'）语义不同，故单独一条。
+-- name: ListAlertNotificationDeliveriesForChain :many
+SELECT d.user_id, d.address, d.status, d.error_message, u.username
+FROM monitor_alert_notification_delivery d
+LEFT JOIN sys_user u ON u.id = d.user_id
+WHERE d.event_id = sqlc.arg(event_id)
+ORDER BY d.id;
+
+-- ---- 通知策略树（monitor_notification_policy）----
+
+-- 树加载与管理列表共用一条：列集取并集（树的加载忽略 create_time/update_time）。
+-- media_ids / user_group_ids 用左连接的 NULL 表达"继承父节点"，不能 COALESCE 成空串。
+-- name: ListNotificationPolicyNodes :many
+SELECT id, COALESCE(parent_id, 0) AS parent_id, name, position, COALESCE(remark, '') AS remark,
+       matchers, media_ids, user_group_ids, notify_on_firing, notify_on_resolved,
+       create_time, update_time
+FROM monitor_notification_policy
+ORDER BY position, id;
+
+-- name: GetNotificationPolicyParent :one
+SELECT COALESCE(parent_id, 0) FROM monitor_notification_policy WHERE id = sqlc.arg(id);
+
+-- name: GetUserGroupName :one
+SELECT name FROM sys_user_group WHERE id = sqlc.arg(id);
+
+-- parent_id / media_ids / user_group_ids 的 NULL 是有意义的（根节点、继承），
+-- 所以用 narg：nil 即写 NULL。
+-- name: CreateNotificationPolicy :one
+INSERT INTO monitor_notification_policy
+  (create_time,update_time,remark,parent_id,name,position,matchers,media_ids,user_group_ids,
+   notify_on_firing,notify_on_resolved)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(remark),sqlc.narg(parent_id),sqlc.arg(name),
+        sqlc.arg(position),sqlc.arg(matchers),sqlc.narg(media_ids),sqlc.narg(user_group_ids),
+        sqlc.arg(notify_on_firing),sqlc.arg(notify_on_resolved))
+RETURNING id;
+
+-- name: UpdateNotificationPolicy :exec
+UPDATE monitor_notification_policy
+SET update_time=sqlc.arg(update_time),remark=sqlc.arg(remark),parent_id=sqlc.narg(parent_id),
+    name=sqlc.arg(name),position=sqlc.arg(position),matchers=sqlc.arg(matchers),
+    media_ids=sqlc.narg(media_ids),user_group_ids=sqlc.narg(user_group_ids),
+    notify_on_firing=sqlc.arg(notify_on_firing),notify_on_resolved=sqlc.arg(notify_on_resolved)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteNotificationPolicy :exec
+DELETE FROM monitor_notification_policy WHERE id=sqlc.arg(id);
+
+-- ---- 告警摄取 webhook（monitor_alert_history）----
+
+-- 同 fingerprint 的未恢复告警行：加锁读，顺带取回 rule_group/rule_snapshot 供应用层合并
+-- （原实现在 UPDATE 里用 IF(rule_group='',?,rule_group) 与
+-- IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) 表达"已有值优先"，是 MySQL 方言函数）。
+-- name: GetOpenFiringAlertForUpdate :one
+SELECT id, rule_group, rule_snapshot FROM monitor_alert_history
+WHERE fingerprint = sqlc.arg(fingerprint) AND state = 'firing'
+ORDER BY id DESC LIMIT 1 FOR UPDATE;
+
+-- name: ResolveAlertHistoryFromWebhook :exec
+UPDATE monitor_alert_history
+SET state='resolved', resolved_at=sqlc.arg(resolved_at), last_seen_at=sqlc.arg(last_seen_at),
+    annotations=sqlc.arg(annotations), resolved_by_reconciliation=FALSE, update_time=sqlc.arg(update_time),
+    rule_group=sqlc.arg(rule_group), rule_snapshot=sqlc.arg(rule_snapshot)
+WHERE id=sqlc.arg(id);
+
+-- name: UpdateAlertHistoryHeartbeat :exec
+UPDATE monitor_alert_history
+SET last_seen_at=sqlc.arg(last_seen_at), labels=sqlc.arg(labels), annotations=sqlc.arg(annotations),
+    update_time=sqlc.arg(update_time), rule_group=sqlc.arg(rule_group), rule_snapshot=sqlc.arg(rule_snapshot)
+WHERE id=sqlc.arg(id);
+
+-- name: CreateAlertHistory :one
+INSERT INTO monitor_alert_history
+  (create_time,update_time,remark,source,fingerprint,alertname,rule_group,rule_snapshot,severity,instance,
+   labels,annotations,generator_url,state,started_at,resolved_at,last_seen_at,resolved_by_reconciliation)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),'',sqlc.arg(source),sqlc.arg(fingerprint),
+        sqlc.arg(alertname),sqlc.arg(rule_group),sqlc.arg(rule_snapshot),sqlc.arg(severity),sqlc.arg(instance),
+        sqlc.arg(labels),sqlc.arg(annotations),sqlc.arg(generator_url),'firing',sqlc.arg(started_at),NULL,
+        sqlc.arg(last_seen_at),FALSE)
+RETURNING id;
+
+-- ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
+-- 原实现有两处运行时拼 SQL：① Fluent Bit 软件包按"安装/卸载"拼 playbook 列名；
+-- ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
+-- 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
+
+-- name: GetLogTargetForAction :one
+SELECT l.id, l.host_id, l.managed_enabled, l.install_status,
+       COALESCE(h.instance_name, ''), COALESCE(h.ip, ''),
+       COALESCE(s.os_type, ''), COALESCE(s.os_id_like, ''), COALESCE(s.os_version_id, '')
+FROM monitor_log_collection_target l
+JOIN assets_host h ON h.id = l.host_id
+LEFT JOIN assets_hostsystem s ON s.host_id = l.host_id
+WHERE l.id = sqlc.arg(id);
+
+-- 取最近一条安装历史用于"是否有任务在执行中"（NULL 行由 ErrNoRows 表达）。
+-- create_time 用于取消时算时长（该流程的历史行 start_time 为 NULL，只有 create_time
+-- 是派发时刻）。
+-- name: GetLatestLogTargetInstallHistory :one
+SELECT id, status, create_time FROM monitor_target_install_history
+WHERE log_collection_target_id = sqlc.arg(log_collection_target_id)
+ORDER BY id DESC LIMIT 1;
+
+-- name: ListInstallableFluentBitPackages :many
+SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
+       COALESCE(sha256,''),install_playbook_template_id
+FROM monitor_software_package
+WHERE package_type='fluent_bit' AND enabled=TRUE AND install_playbook_template_id IS NOT NULL
+ORDER BY id;
+
+-- name: ListUninstallableFluentBitPackages :many
+SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
+       COALESCE(sha256,''),uninstall_playbook_template_id
+FROM monitor_software_package
+WHERE package_type='fluent_bit' AND enabled=TRUE AND uninstall_playbook_template_id IS NOT NULL
+ORDER BY id;
+
+-- name: CreateLogTargetInstallHistory :one
+INSERT INTO monitor_target_install_history
+  (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
+   exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(action),'manual','pending',
+        sqlc.narg(host_id_snapshot),sqlc.arg(host_name_snapshot),sqlc.arg(host_ip_snapshot),
+        sqlc.arg(exporter_type_snapshot),sqlc.arg(summary_message),'','','','{}',
+        sqlc.narg(requested_user_id_snapshot),sqlc.arg(requested_username_snapshot),
+        NULL,sqlc.narg(host_id),sqlc.arg(log_collection_target_id))
+RETURNING id;
+
+-- name: MarkLogTargetInstallPending :exec
+UPDATE monitor_log_collection_target
+SET install_status='pending', install_message='', last_dispatch_manual=TRUE, update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 收尾：只有仍处于 pending 的任务才落终态。
+-- install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
+-- 而 PG 只合并成一个参数——同一个调用点在两侧就编译不过），用整数比较避开这个分歧。
+-- name: FinishLogTargetInstallState :execrows
+UPDATE monitor_log_collection_target
+SET install_status=sqlc.arg(install_status), install_message=sqlc.arg(install_message),
+    runtime_status=CASE WHEN sqlc.arg(install_succeeded) = 1 THEN 'running' ELSE runtime_status END,
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND install_status='pending';
+
+-- name: FinishLogTargetInstallHistory :execrows
+UPDATE monitor_target_install_history
+SET status=sqlc.arg(status), summary_message=sqlc.arg(summary_message), end_time=sqlc.arg(end_time),
+    duration_seconds=sqlc.arg(duration_seconds), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status='pending';
+
+-- name: GetLogTargetHostName :one
+SELECT COALESCE(h.instance_name, '')
+FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
+WHERE l.id = sqlc.arg(id);
+
+-- name: SetLogTargetRuntimeStatus :exec
+UPDATE monitor_log_collection_target
+SET runtime_status=sqlc.arg(runtime_status), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名）。
+-- name: GetLogTargetDefaultCluster :one
+SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password
+FROM monitor_log_collection_target l
+JOIN assets_host h ON h.id = l.host_id
+JOIN monitor_opensearch_cluster c ON c.enabled = TRUE
+WHERE l.id = sqlc.arg(id)
+ORDER BY c.is_default DESC, c.id LIMIT 1;
+
+-- name: GetDefaultEnabledOpenSearchCluster :one
+SELECT hosts, username, password, COALESCE(index_prefix, 'logs')
+FROM monitor_opensearch_cluster
+WHERE enabled = TRUE
+ORDER BY is_default DESC, id LIMIT 1;
+
+-- name: MarkLogTargetApplied :exec
+UPDATE monitor_log_collection_target
+SET last_applied_time=sqlc.arg(last_applied_time), runtime_status='running', last_error='',
+    update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: GetLogTargetConfigFingerprint :one
+SELECT COALESCE(config_fingerprint, '') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
+
+-- 指纹未变时的"只刷新下发时间"路径。
+-- name: MarkLogTargetConfigApplied :exec
+UPDATE monitor_log_collection_target
+SET last_applied_time=sqlc.arg(last_applied_time), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 指纹变化并下发成功后：记下发时间与指纹。
+-- name: MarkLogTargetConfigSynced :exec
+UPDATE monitor_log_collection_target
+SET last_applied_time=sqlc.arg(last_applied_time), runtime_status='running', last_error='',
+    config_fingerprint=sqlc.arg(config_fingerprint), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: MarkLogTargetInstallCancelled :exec
+UPDATE monitor_log_collection_target
+SET install_status='failed', install_message='安装/卸载任务已取消', update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
+-- name: DetachInstallHistoryFromLogTarget :exec
+UPDATE monitor_target_install_history SET log_collection_target_id=NULL
+WHERE log_collection_target_id = sqlc.arg(log_collection_target_id);
+
+-- name: DeleteLogCollectionTarget :execresult
+DELETE FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
+
+-- 批量纳管：host_id 唯一键冲突即"已纳管"（MySQL 的 INSERT IGNORE / PG 的 ON CONFLICT DO NOTHING）。
+-- name: CreateLogCollectionTargetIfAbsent :one
+INSERT INTO monitor_log_collection_target
+  (create_time,update_time,remark,host_id,agent_installed,agent_version,runtime_status,config_fingerprint,
+   last_error,install_status,install_message,last_dispatch_manual,managed_enabled,retry_count)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(host_id),FALSE,'','unknown','',
+        '','unknown','',FALSE,TRUE,0) ON CONFLICT DO NOTHING
+RETURNING id;
+
+-- ---- 日志存储（OpenSearch 集群）与保留档位 ----
+
+-- name: ListEnabledRetentionTiers :many
+SELECT code,retention_days,daily_size_gb,rollover_min_index_age
+FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id;
+
+-- name: GetOpenSearchClusterConnection :one
+SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
+FROM monitor_opensearch_cluster WHERE id = sqlc.arg(id);
+
+-- openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
+-- 这里只更新探测结果，其余列不动。
+-- name: MarkOpenSearchClusterCheckFailed :exec
+UPDATE monitor_opensearch_cluster
+SET last_check_time=sqlc.arg(last_check_time), last_check_success=FALSE,
+    last_check_message=sqlc.arg(last_check_message), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: MarkOpenSearchClusterCheckSuccess :exec
+UPDATE monitor_opensearch_cluster
+SET last_check_time=sqlc.arg(last_check_time), last_check_success=TRUE,
+    last_check_message=sqlc.arg(last_check_message), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- 存储同步（index template + ISM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
+-- name: MarkClusterStorageSyncPending :exec
+UPDATE monitor_opensearch_cluster
+SET storage_sync_status='pending', storage_sync_error='', storage_sync_time=NULL, update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: MarkClusterStorageSyncFailed :exec
+UPDATE monitor_opensearch_cluster
+SET storage_sync_status='failed', storage_sync_error=sqlc.arg(storage_sync_error),
+    storage_sync_time=sqlc.arg(storage_sync_time), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: MarkClusterStorageSyncSuccess :exec
+UPDATE monitor_opensearch_cluster
+SET storage_sync_status='success', storage_sync_error='',
+    storage_sync_time=sqlc.arg(storage_sync_time), update_time=sqlc.arg(update_time)
+WHERE id = sqlc.arg(id);
+
+-- name: ListEnabledOpenSearchClusterIDs :many
+SELECT id FROM monitor_opensearch_cluster WHERE enabled = TRUE;
+
+-- name: CountAllOpenSearchClusters :one
+SELECT COUNT(*) FROM monitor_opensearch_cluster;
+
+-- name: ClearDefaultOpenSearchCluster :exec
+UPDATE monitor_opensearch_cluster SET is_default=FALSE, update_time=sqlc.arg(update_time)
+WHERE is_default=TRUE AND id<>sqlc.arg(id);
+
+-- 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
+-- 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
+-- doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
+-- 这里按"尚未探测/尚未同步"的语义显式写空串。
+-- name: CreateOpenSearchCluster :one
+INSERT INTO monitor_opensearch_cluster
+  (create_time,update_time,name,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,
+   enabled,is_default,remark,last_check_time,last_check_success,last_check_message,
+   storage_sync_error,storage_sync_status,storage_sync_time)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(name),sqlc.arg(hosts),sqlc.arg(username),
+        sqlc.arg(password),sqlc.arg(verify_tls),sqlc.arg(ca_cert),sqlc.arg(index_prefix),
+        sqlc.arg(request_timeout),sqlc.arg(enabled),sqlc.arg(is_default),sqlc.arg(remark),
+        NULL,NULL,'','','',NULL)
+RETURNING id;
+
+-- 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 opensearch_config.go）。
+-- name: UpdateOpenSearchCluster :execrows
+UPDATE monitor_opensearch_cluster
+SET update_time=sqlc.arg(update_time),name=sqlc.arg(name),hosts=sqlc.arg(hosts),username=sqlc.arg(username),
+    password=sqlc.arg(password),verify_tls=sqlc.arg(verify_tls),ca_cert=sqlc.arg(ca_cert),
+    index_prefix=sqlc.arg(index_prefix),request_timeout=sqlc.arg(request_timeout),enabled=sqlc.arg(enabled),
+    is_default=sqlc.arg(is_default),remark=sqlc.arg(remark)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteOpenSearchCluster :execresult
+DELETE FROM monitor_opensearch_cluster WHERE id = sqlc.arg(id);
+
+-- ---- 日志解析规则 / 采集过滤规则的引用计数与应用名称（读路径的补充列）----
+
+-- name: CountLogDefinitionReferences :one
+SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id = sqlc.arg(processing_rule_id);
+
+-- 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
+-- 而 PG 引擎合并成一个（同一个调用点在两侧就编译不过），拆开写才是可移植的形状。
+-- name: CountRetentionTierServices :one
+SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id = sqlc.arg(retention_tier_id);
+
+-- name: CountRetentionTierLogSettings :one
+SELECT COUNT(*) FROM assets_application_service_log_setting WHERE retention_tier_id = sqlc.arg(retention_tier_id);
+
+-- name: GetApplicationNameCode :one
+SELECT COALESCE(name, ''), COALESCE(code, '') FROM assets_application WHERE id = sqlc.arg(id);
+
+-- name: GetApplicationServiceCode :one
+SELECT code FROM assets_application_service WHERE id = sqlc.arg(id);
+
+-- ---- P2-3：通用配置资源的写路径（原实现运行时拼表名与列名）----
+-- 表名按资源分派成显式语句；"只写提交了的列"这一 PATCH 语义改由应用层承担：
+-- 更新前读回整行 → 合并提交的字段 → 整行写（与 inspection 组 PATCH 同一手法）。
+-- 这样做的前提是这三张表的可写列都在 Get* 查询的列集里（已确认）。
+
+-- name: CreateLogRetentionTier :one
+INSERT INTO monitor_log_retention_tier
+  (create_time,update_time,code,name,daily_size_gb,retention_days,rollover_min_index_age,enabled,is_default,remark)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(code),sqlc.arg(name),sqlc.arg(daily_size_gb),
+        sqlc.arg(retention_days),sqlc.arg(rollover_min_index_age),sqlc.arg(enabled),sqlc.arg(is_default),
+        sqlc.arg(remark))
+RETURNING id;
+
+-- name: UpdateLogRetentionTier :execrows
+UPDATE monitor_log_retention_tier
+SET update_time=sqlc.arg(update_time),code=sqlc.arg(code),name=sqlc.arg(name),daily_size_gb=sqlc.arg(daily_size_gb),
+    retention_days=sqlc.arg(retention_days),rollover_min_index_age=sqlc.arg(rollover_min_index_age),
+    enabled=sqlc.arg(enabled),is_default=sqlc.arg(is_default),remark=sqlc.arg(remark)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteLogRetentionTier :execresult
+DELETE FROM monitor_log_retention_tier WHERE id = sqlc.arg(id);
+
+-- name: ClearDefaultLogRetentionTier :exec
+UPDATE monitor_log_retention_tier SET is_default=FALSE WHERE id <> sqlc.arg(id);
+
+-- name: CreateLogProcessingRule :one
+INSERT INTO monitor_log_processing_rule
+  (create_time,update_time,remark,name,description,input_format,multiline_enabled,start_pattern,
+   continuation_pattern,flush_timeout,pipeline_body,cluster_id,application_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(description),
+        sqlc.arg(input_format),sqlc.arg(multiline_enabled),sqlc.arg(start_pattern),
+        sqlc.arg(continuation_pattern),sqlc.arg(flush_timeout),sqlc.arg(pipeline_body),
+        sqlc.arg(cluster_id),sqlc.narg(application_id))
+RETURNING id;
+
+-- name: UpdateLogProcessingRule :execrows
+UPDATE monitor_log_processing_rule
+SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),description=sqlc.arg(description),
+    input_format=sqlc.arg(input_format),multiline_enabled=sqlc.arg(multiline_enabled),
+    start_pattern=sqlc.arg(start_pattern),continuation_pattern=sqlc.arg(continuation_pattern),
+    flush_timeout=sqlc.arg(flush_timeout),pipeline_body=sqlc.arg(pipeline_body),
+    cluster_id=sqlc.arg(cluster_id),application_id=sqlc.narg(application_id)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteLogProcessingRule :execresult
+DELETE FROM monitor_log_processing_rule WHERE id = sqlc.arg(id);
+
+-- name: CreateLogCollectionFilterRule :one
+INSERT INTO monitor_log_collection_filter_rule
+  (create_time,update_time,remark,name,description,pattern,enabled,application_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(description),
+        sqlc.arg(pattern),sqlc.arg(enabled),sqlc.narg(application_id))
+RETURNING id;
+
+-- name: UpdateLogCollectionFilterRule :execrows
+UPDATE monitor_log_collection_filter_rule
+SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),description=sqlc.arg(description),
+    pattern=sqlc.arg(pattern),enabled=sqlc.arg(enabled),application_id=sqlc.narg(application_id)
+WHERE id=sqlc.arg(id);
+
+-- name: DeleteLogCollectionFilterRule :execresult
+DELETE FROM monitor_log_collection_filter_rule WHERE id = sqlc.arg(id);
+
+-- ---- 日志链路对账与数据流水位（只读）----
+
+-- name: ListProcessingRulesByCluster :many
+SELECT name, pipeline_body FROM monitor_log_processing_rule
+WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
+
+-- name: ListManagedLogTargetConfigs :many
+SELECT l.id, COALESCE(h.ip, ''), l.agent_installed, COALESCE(l.config_fingerprint, '')
+FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
+WHERE l.managed_enabled = TRUE ORDER BY l.id;
+
+-- name: ListInstalledLogTargetRuntime :many
+SELECT l.id, COALESCE(h.ip, ''), COALESCE(l.runtime_status, ''), COALESCE(l.last_error, '')
+FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
+WHERE l.managed_enabled = TRUE AND l.agent_installed = TRUE ORDER BY l.id;
+
+-- 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
+-- 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
+-- name: ListEnabledServiceStreamDims :many
+SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
+       s.code AS service_code, COALESCE(t.code, '') AS tier_code
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
+WHERE s.enabled = TRUE;
+
+-- name: ListEnabledProjects :many
+SELECT id, code, name FROM assets_project WHERE enabled = TRUE ORDER BY name;
+
+-- name: ListEnabledBusinessSystems :many
+SELECT id, code, name, project_id FROM assets_business_system WHERE enabled = TRUE ORDER BY name;
+
+-- name: ListEnabledBusinessEnvironments :many
+SELECT id, code, name FROM assets_business_environment WHERE enabled = TRUE ORDER BY "order", name;
+
+-- name: ListEnabledServiceStreamRows :many
+SELECT s.code, s.name, bs.code AS business_system_code, e.code AS environment_code,
+       t.code AS retention_tier, s.log_collection_enabled
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
+WHERE s.enabled = TRUE ORDER BY s.name;
+
+-- ---- 模块总览 / Prometheus 服务发现 / 机器令牌校验 ----
+
+-- Prometheus 基地址：只要 value 一列（放本域而不是 sys_config.sql，因为调用方在 monitor；
+-- 也不复用 GetConfigByKey —— 那条是 SELECT *，为读一个配置值拖回整行没必要）。
+-- 参数名不能叫 key（P5 陷阱 23：命名参数与保留字相撞会让 MySQL 引擎语法错误）。
+-- name: GetConfigValueByKey :one
+SELECT value FROM sys_config WHERE "key" = sqlc.arg(config_key) ORDER BY id LIMIT 1;
+
+-- name: CountMonitorTargetSummary :one
+-- 计数用 COUNT(CASE WHEN …) 而不是 SUM(布尔)：PG 里布尔不能求和（同 inspection/automation 的处理）。
+SELECT COUNT(*) AS total,
+       COUNT(CASE WHEN managed_enabled THEN 1 END) AS managed_enabled,
+       COUNT(CASE WHEN install_status='success' THEN 1 END) AS install_success,
+       COUNT(CASE WHEN last_scrape_status='up' THEN 1 END) AS scrape_up
+FROM monitor_target;
+
+-- name: ListPrometheusServiceDiscoveryTargets :many
+SELECT t.exporter_type, t.scrape_port, h.id, h.instance_name, h.ip
+FROM monitor_target t JOIN assets_host h ON h.id = t.host_id
+WHERE t.managed_enabled = TRUE AND t.install_status = 'success' AND h.ip IS NOT NULL
+ORDER BY t.id DESC;
+
+-- 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
+-- name: ListActiveAgentTokens :many
+SELECT id, token_hash FROM sys_agent_token
+WHERE is_active = TRUE AND (expires_at IS NULL OR expires_at > sqlc.arg(now));
+
+-- name: MarkAgentTokenUsed :exec
+UPDATE sys_agent_token SET last_used_at = sqlc.arg(last_used_at) WHERE id = sqlc.arg(id);

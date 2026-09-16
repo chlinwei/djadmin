@@ -40,8 +40,8 @@ func TestNormalizeExporterPlatform(t *testing.T) {
 }
 
 func TestMonitorTargetPending(t *testing.T) {
-	query := regexp.QuoteMeta(`SELECT id,status,create_time FROM monitor_target_install_history WHERE target_id=? ORDER BY id DESC LIMIT 1`)
-	expireUpdate := regexp.QuoteMeta(`UPDATE monitor_target_install_history SET status='failed',error_message_snapshot='任务执行超时（进程中断遗留），已自动过期',update_time=? WHERE id=? AND status IN ('pending','running')`)
+	query := regexp.QuoteMeta(`SELECT id, status, create_time FROM monitor_target_install_history`)
+	expireUpdate := regexp.QuoteMeta(`SET status='failed', error_message_snapshot='任务执行超时`)
 
 	gin.SetMode(gin.TestMode)
 	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -107,7 +107,7 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 	row := targetInstallRow{ID: 5, HostID: 221, ManagedEnabled: true, ExporterType: "node_exporter",
 		HostName: "localhost", HostIP: "10.25.66.150",
 		OSID: "centos", OSVersionID: "9.4", Architecture: "x86_64"}
-	failedUpdate := regexp.QuoteMeta(`UPDATE monitor_target SET install_status=?,install_message=?,update_time=? WHERE id=?`)
+	failedUpdate := regexp.QuoteMeta(setTargetInstallStateFragment())
 
 	runGuard := func(t *testing.T, setup func(mock sqlmock.Sqlmock)) (string, string) {
 		t.Helper()
@@ -136,11 +136,7 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 
 	// 仓库无启用包
 	_, message := runGuard(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
-		service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
-		FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND enabled=TRUE AND file<>''
-		ORDER BY create_time DESC`)).
+		mock.ExpectQuery(regexp.QuoteMeta(`AND enabled=TRUE AND file<>''`)).
 			WithArgs("node_exporter").
 			WillReturnRows(sqlmock.NewRows([]string{"version", "arch", "platform_family", "platform_major", "package_format", "file", "sha256", "service_file_content", "service_run_as_user", "service_run_as_group", "work_directory", "install_playbook_template_id"}))
 		mock.ExpectExec(failedUpdate).WithArgs("failed", sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -151,11 +147,7 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 
 	// 平台不匹配（仅 ubuntu deb 包，主机是 rhel9）
 	_, message = runGuard(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
-		service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
-		FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND enabled=TRUE AND file<>''
-		ORDER BY create_time DESC`)).
+		mock.ExpectQuery(regexp.QuoteMeta(`AND enabled=TRUE AND file<>''`)).
 			WithArgs("node_exporter").
 			WillReturnRows(sqlmock.NewRows([]string{"version", "arch", "platform_family", "platform_major", "package_format", "file", "sha256", "service_file_content", "service_run_as_user", "service_run_as_group", "work_directory", "install_playbook_template_id"}).
 				AddRow("1.7.0", "amd64", "ubuntu", "22", "deb", "monitor_packages/node_exporter/x.deb", "abc", "", "", "", "/tmp", sql.NullInt64{Int64: 3, Valid: true}))
@@ -167,11 +159,7 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 
 	// 命中包但未配置安装 playbook
 	_, message = runGuard(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery(regexp.QuoteMeta(`SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
-		service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
-		FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND enabled=TRUE AND file<>''
-		ORDER BY create_time DESC`)).
+		mock.ExpectQuery(regexp.QuoteMeta(`AND enabled=TRUE AND file<>''`)).
 			WithArgs("node_exporter").
 			WillReturnRows(sqlmock.NewRows([]string{"version", "arch", "platform_family", "platform_major", "package_format", "file", "sha256", "service_file_content", "service_run_as_user", "service_run_as_group", "work_directory", "install_playbook_template_id"}).
 				AddRow("1.7.0", "amd64", "rhel", "9", "rpm", "monitor_packages/node_exporter/x.rpm", "abc", "", "", "", "/tmp", sql.NullInt64{}))
@@ -204,16 +192,11 @@ func TestPrepareExporterDispatchInstallExtraVars(t *testing.T) {
 	handler := &Handler{db: database, packageRoot: packageRoot}
 	row := targetInstallRow{ID: 5, HostID: 221, ManagedEnabled: true, ExporterType: "node_exporter",
 		OSID: "rocky", OSVersionID: "9.4", Architecture: "x86_64"}
-	selectQuery := regexp.QuoteMeta(`SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,file,sha256,
-		service_file_content,service_run_as_user,service_run_as_group,work_directory,install_playbook_template_id
-		FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND enabled=TRUE AND file<>''
-		ORDER BY create_time DESC`)
+	selectQuery := regexp.QuoteMeta(`AND enabled=TRUE AND file<>''`)
 	mock.ExpectQuery(selectQuery).WithArgs("node_exporter").
 		WillReturnRows(sqlmock.NewRows([]string{"version", "arch", "platform_family", "platform_major", "package_format", "file", "sha256", "service_file_content", "service_run_as_user", "service_run_as_group", "work_directory", "install_playbook_template_id"}).
 			AddRow("1.7.0", "amd64", "rhel", "9", "rpm", relative, "sha-rhel9", "[Unit]", "", "dj-agent", "/var/lib/exporter", sql.NullInt64{Int64: 3, Valid: true}))
-	checksumQuery := regexp.QuoteMeta(`SELECT os,arch,sha256 FROM monitor_software_package
-		WHERE package_type='exporter' AND name=? AND version=? AND enabled=TRUE AND sha256<>''`)
+	checksumQuery := regexp.QuoteMeta(`SELECT os,arch,sha256 FROM monitor_software_package`)
 	mock.ExpectQuery(checksumQuery).WithArgs("node_exporter", "1.7.0").
 		WillReturnRows(sqlmock.NewRows([]string{"os", "arch", "sha256"}).
 			AddRow("linux", "amd64", "sha-rhel9").AddRow("linux", "arm64", "sha-arm64"))
@@ -260,11 +243,7 @@ func TestPrepareExporterDispatchUninstall(t *testing.T) {
 	defer database.Close()
 	handler := &Handler{db: database}
 	row := targetInstallRow{ID: 5, HostID: 221, ManagedEnabled: false, ExporterType: "node_exporter"}
-	selectQuery := regexp.QuoteMeta(`SELECT version,arch,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),COALESCE(sha256,''),
-			service_file_content,service_run_as_user,service_run_as_group,work_directory,uninstall_playbook_template_id
-			FROM monitor_software_package
-			WHERE package_type='exporter' AND name=? AND enabled=TRUE
-			ORDER BY create_time DESC LIMIT 1`)
+	selectQuery := regexp.QuoteMeta(`ORDER BY create_time DESC LIMIT 1`)
 	mock.ExpectQuery(selectQuery).WithArgs("node_exporter").
 		WillReturnRows(sqlmock.NewRows([]string{"version", "arch", "platform_family", "platform_major", "package_format", "file", "sha256", "service_file_content", "service_run_as_user", "service_run_as_group", "work_directory", "uninstall_playbook_template_id"}).
 			AddRow("1.7.0", "amd64", "rhel", "9", "rpm", "monitor_packages/node_exporter/missing.rpm", "abc", "", "", "", "", sql.NullInt64{Int64: 9, Valid: true}))

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -64,12 +65,14 @@ func (handler *Handler) UploadFile(context *gin.Context) {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}
-	result, err := handler.db.ExecContext(context, `UPDATE automation_playbook_template SET content=?,update_time=? WHERE id=?`, content, time.Now().UTC(), id)
+	affected, err := db.New(handler.db).UpdateAutomationPlaybookContent(context, db.UpdateAutomationPlaybookContentParams{
+		Content: content, UpdateTime: time.Now().UTC(), ID: id,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	if affected == 0 {
 		response.BusinessError(context, 404, "playbook not found", nil)
 		return
 	}
@@ -83,8 +86,7 @@ func (handler *Handler) DownloadFile(context *gin.Context) {
 		response.BusinessError(context, 400, "invalid playbook id", nil)
 		return
 	}
-	var name, content string
-	err = handler.db.QueryRowContext(context, `SELECT name,content FROM automation_playbook_template WHERE id=?`, id).Scan(&name, &content)
+	playbook, err := db.New(handler.db).GetAutomationPlaybook(context, id)
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 404, "playbook not found", nil)
 		return
@@ -93,7 +95,7 @@ func (handler *Handler) DownloadFile(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	filename := playbookFilenamePattern.ReplaceAllString(name, "-") + ".yml"
+	filename := playbookFilenamePattern.ReplaceAllString(playbook.Name, "-") + ".yml"
 	context.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(filename))
-	context.Data(http.StatusOK, "text/yaml; charset=utf-8", []byte(content))
+	context.Data(http.StatusOK, "text/yaml; charset=utf-8", []byte(playbook.Content))
 }

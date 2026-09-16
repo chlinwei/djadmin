@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,21 +15,23 @@ import (
 func (handler *Handler) QueryAgentJobs(context *gin.Context) {
 	hostID, _ := strconv.ParseInt(context.Query("host_id"), 10, 64)
 	action := strings.TrimSpace(context.Query("action"))
-	where := ` WHERE (?=0 OR host_id=?) AND (?='' OR action=?)`
+	// 过滤条件：host_id=0 / action='' 表示不过滤 → 传 NULL 走 `narg(...) IS NULL` 分支。
+	filter := db.ListAgentJobActionCountsParams{Action: sql.NullString{String: action, Valid: action != ""}}
+	if hostID != 0 {
+		filter.HostID = sql.NullInt64{Int64: hostID, Valid: true}
+	}
+	jobQueries := db.New(handler.service.repository.pool)
 	if context.Query("group_by") == "action" {
-		rows, err := handler.service.repository.pool.QueryContext(context, `SELECT action,COUNT(*) FROM assets_agent_job`+where+` GROUP BY action ORDER BY COUNT(*) DESC`, hostID, hostID, action, action)
+		rows, err := jobQueries.ListAgentJobActionCounts(context, db.ListAgentJobActionCountsParams{
+			HostID: filter.HostID, Action: filter.Action,
+		})
 		if err != nil {
 			response.Error(context, err)
 			return
 		}
-		defer rows.Close()
-		items := []gin.H{}
-		for rows.Next() {
-			var name string
-			var count int64
-			if rows.Scan(&name, &count) == nil {
-				items = append(items, gin.H{"action": name, "count": count})
-			}
+		items := make([]gin.H, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, gin.H{"action": row.Action, "count": row.Total})
 		}
 		response.Success(context, gin.H{"count": len(items), "results": items})
 		return
@@ -44,48 +47,35 @@ func (handler *Handler) QueryAgentJobs(context *gin.Context) {
 	if size > 200 {
 		size = 200
 	}
-	var total int64
-	if err := handler.service.repository.pool.QueryRowContext(context, `SELECT COUNT(*) FROM assets_agent_job`+where, hostID, hostID, action, action).Scan(&total); err != nil {
-		response.Error(context, err)
-		return
-	}
-	rows, err := handler.service.repository.pool.QueryContext(context, `SELECT job_id,instance_name,host_id,job_type,action,status,timeout_seconds,params,result_data,error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at FROM assets_agent_job`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, hostID, hostID, action, action, size, (page-1)*size)
+	total, err := jobQueries.CountAgentJobs(context, db.CountAgentJobsParams{HostID: filter.HostID, Action: filter.Action})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	items := []gin.H{}
-	for rows.Next() {
-		var jobID, instanceName, jobType, act, status, errorMessage, stdout, stderr string
-		var host sql.NullInt64
-		var timeout, exit int64
-		var paramsRaw, resultRaw []byte
-		var created any
-		var picked, finished sql.NullTime
-		if err = rows.Scan(&jobID, &instanceName, &host, &jobType, &act, &status, &timeout, &paramsRaw, &resultRaw, &errorMessage, &exit, &stdout, &stderr, &created, &picked, &finished); err != nil {
-			response.Error(context, err)
-			return
-		}
-		items = append(items, gin.H{"job_id": jobID, "instance_name": instanceName, "host_id": nullIntValue(host), "type": jobType, "action": act, "status": status, "timeout_seconds": timeout, "params": agentJobJSON(paramsRaw), "result_data": agentJobJSON(resultRaw), "error_message": errorMessage, "exit_code": exit, "stdout": stdout, "stderr": stderr, "create_time": created, "picked_at": nullTimeValue(picked), "finished_at": nullTimeValue(finished)})
+	rows, err := jobQueries.ListAgentJobs(context, db.ListAgentJobsParams{
+		HostID: filter.HostID, Action: filter.Action, Limit: int32(size), Offset: int32((page - 1) * size),
+	})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, gin.H{"job_id": row.JobID, "instance_name": row.InstanceName, "host_id": nullIntValue(row.HostID), "type": row.JobType, "action": row.Action, "status": row.Status, "timeout_seconds": row.TimeoutSeconds, "params": agentJobJSON(row.Params), "result_data": agentJobJSON(row.ResultData), "error_message": row.ErrorMessage, "exit_code": row.ExitCode, "stdout": row.Stdout, "stderr": row.Stderr, "create_time": row.CreateTime, "picked_at": nullTimeValue(row.PickedAt), "finished_at": nullTimeValue(row.FinishedAt)})
 	}
 	summary := gin.H{}
-	statusRows, err := handler.service.repository.pool.QueryContext(context, `SELECT status,COUNT(*) FROM assets_agent_job`+where+` GROUP BY status`, hostID, hostID, action, action)
-	if err == nil {
-		defer statusRows.Close()
-		for statusRows.Next() {
-			var name string
-			var count int64
-			if statusRows.Scan(&name, &count) == nil {
-				summary[name] = count
-			}
+	if statusRows, statusErr := jobQueries.ListAgentJobStatusCounts(context, db.ListAgentJobStatusCountsParams{
+		HostID: filter.HostID, Action: filter.Action,
+	}); statusErr == nil {
+		for _, row := range statusRows {
+			summary[row.Status] = row.Total
 		}
 	}
 	summary["total"] = total
 	totalPages := (total + int64(size) - 1) / int64(size)
 	response.Success(context, gin.H{"count": len(items), "pageNumber": page, "pageSize": size, "total": total, "totalPages": totalPages, "results": items, "summary": summary, "recent_failure_reasons": []any{}})
 }
-func agentJobJSON(raw []byte) any {
+func agentJobJSON(raw json.RawMessage) any {
 	var value any
 	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
 		return gin.H{}

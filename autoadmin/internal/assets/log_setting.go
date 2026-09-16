@@ -2,7 +2,6 @@ package assets
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,50 +30,25 @@ type ServiceTemplateLog struct {
 // （logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>，档位 = 覆盖档位 → 服务默认档位
 // → is_default 档位 → 'std'），与 Fluent Bit 下发的 Index 命名保持一致。
 func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ServiceTemplateLog, error) {
-	rows, err := r.pool.QueryContext(ctx, `
-		SELECT ld.id, ld.name, ld.path_pattern, ld.collection_enabled,
-		       ls.retention_tier_id, ls.collection_enabled, ls.collection_filter_rule_id, ls.processing_rule_id,
-		       s.code, p.code, e.code, bs.code,
-		       COALESCE(s.macro_values, '{}'),
-		       COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std')
-		FROM assets_application_log_definition ld
-		JOIN assets_application_service s ON s.id = ?
-		LEFT JOIN assets_application_service_log_setting ls
-			ON ls.log_definition_id = ld.id AND ls.service_id = s.id
-		JOIN assets_business_system bs ON bs.id = s.business_system_id
-		JOIN assets_project p ON p.id = bs.project_id
-		LEFT JOIN assets_business_environment e ON e.id = s.environment_id
-		LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
-		WHERE ld.deployment_template_id = s.deployment_template_id
-		ORDER BY ld.id`, serviceID)
+	rows, err := r.queries.ListServiceTemplateLogs(ctx, serviceID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := make([]ServiceTemplateLog, 0)
-	for rows.Next() {
-		var item ServiceTemplateLog
-		var retention, filterRule, processing sql.NullInt64
-		var overrideCollection sql.NullBool
-		var serviceCode, projectCode, businessSystemCode, tierCode, macroValuesRaw string
-		var environmentCode sql.NullString
-		if err = rows.Scan(&item.LogDefinition, &item.Name, &item.PathPattern, &item.TemplateCollectionEnabled,
-			&retention, &overrideCollection, &filterRule, &processing,
-			&serviceCode, &projectCode, &environmentCode, &businessSystemCode,
-			&macroValuesRaw, &tierCode); err != nil {
-			return nil, err
+	items := make([]ServiceTemplateLog, 0, len(rows))
+	for _, row := range rows {
+		item := ServiceTemplateLog{
+			LogDefinition: row.ID, Name: row.Name, PathPattern: row.PathPattern,
+			TemplateCollectionEnabled: row.CollectionEnabled,
+			RetentionTier:             intPtr(row.RetentionTierID),
+			CollectionFilterRuleID:    intPtr(row.CollectionFilterRuleID),
+			ProcessingRuleID:          intPtr(row.ProcessingRuleID),
+			CollectionEnabled:         row.OverrideCollectionEnabled,
 		}
-		item.RetentionTier = intPtr(retention)
-		item.CollectionFilterRuleID = intPtr(filterRule)
-		item.ProcessingRuleID = intPtr(processing)
-		if overrideCollection.Valid {
-			item.CollectionEnabled = &overrideCollection.Bool
-		}
-		item.ResolvedPath = resolveServiceMacros(item.PathPattern, macroValuesRaw)
-		item.DataStream = logstream.Name("logs", projectCode, environmentCode.String, businessSystemCode, serviceCode, tierCode)
+		item.ResolvedPath = resolveServiceMacros(item.PathPattern, string(row.MacroValues))
+		item.DataStream = logstream.Name("logs", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 // resolveServiceMacros 用服务级宏替换路径里的 ${VAR}，未定义的保持原样以暴露数据缺口。
@@ -95,26 +69,19 @@ func resolveServiceMacros(path, macroValuesRaw string) string {
 }
 
 func (r *Repository) ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ServiceLogSettingInput, error) {
-	rows, err := r.pool.QueryContext(ctx, `SELECT log_definition_id,retention_tier_id,collection_enabled,collection_filter_rule_id,processing_rule_id FROM assets_application_service_log_setting WHERE service_id=? ORDER BY log_definition_id`, serviceID)
+	rows, err := r.queries.ListServiceLogSettings(ctx, serviceID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := make([]ServiceLogSettingInput, 0)
-	for rows.Next() {
-		var item ServiceLogSettingInput
-		var retention, filterRule, processing sql.NullInt64
-		var collection sql.NullBool
-		if err = rows.Scan(&item.LogDefinition, &retention, &collection, &filterRule, &processing); err != nil {
-			return nil, err
-		}
-		item.RetentionTier = intPtr(retention)
-		item.CollectionFilterRule = intPtr(filterRule)
-		item.ProcessingRule = intPtr(processing)
-		if collection.Valid {
-			item.CollectionEnabled = &collection.Bool
-		}
-		items = append(items, item)
+	items := make([]ServiceLogSettingInput, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, ServiceLogSettingInput{
+			LogDefinition:        row.LogDefinitionID,
+			RetentionTier:        intPtr(row.RetentionTierID),
+			CollectionEnabled:    row.CollectionEnabled,
+			CollectionFilterRule: intPtr(row.CollectionFilterRuleID),
+			ProcessingRule:       intPtr(row.ProcessingRuleID),
+		})
 	}
-	return items, rows.Err()
+	return items, nil
 }

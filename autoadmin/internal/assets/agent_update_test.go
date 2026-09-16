@@ -22,8 +22,9 @@ func TestLoadAgentTargetHostsColumnArity(t *testing.T) {
 	}
 	defer database.Close()
 
-	query := regexp.QuoteMeta(`SELECT id,COALESCE(instance_name,''),COALESCE(ip,'') FROM assets_host WHERE id IN (?,?) ORDER BY id`)
-	mock.ExpectQuery(query).WithArgs(int64(221), int64(222)).
+	// 方言无关片段：MySQL 侧是 IN (?,?) 展开成两个参数，PG 侧是数组参数（见 agentListTargetArgs）。
+	query := regexp.QuoteMeta(`SELECT id, COALESCE(instance_name, '') AS instance_name, COALESCE(ip, '') AS ip`)
+	mock.ExpectQuery(query).WithArgs(agentListTargetArgs(2)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "instance_name", "ip"}).
 			AddRow(221, "localhost", "10.25.66.150").
 			AddRow(222, "mysql134", "10.25.66.134"))

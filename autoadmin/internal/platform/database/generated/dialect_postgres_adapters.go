@@ -89,6 +89,14 @@ func (q *Queries) CountInventories(ctx context.Context, arg CountInventoriesPara
 	return q.Queries.CountInventories(ctx, arg.Pattern)
 }
 
+type CountAutomationHostOptionsParams struct {
+	Pattern sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountAutomationHostOptions(ctx context.Context, arg CountAutomationHostOptionsParams) (int64, error) {
+	return q.Queries.CountAutomationHostOptions(ctx, arg.Pattern)
+}
+
 type CountInspectionGroupsParams struct {
 	Pattern sql.NullString `json:"pattern"`
 }
@@ -350,6 +358,84 @@ func (q *Queries) CreateUserGroup(ctx context.Context, arg CreateUserGroupParams
 		return nil, err
 	}
 	return insertResult{id: id}, nil
+}
+
+// ---- 6) 可变长 IN 的元素类型分歧：列可空时 MySQL 给 []sql.NullInt64，PG 的 ::bigint[] 给 []int64 ----
+//
+// 为什么会有分歧：MySQL 侧 sqlc.slice(x) 的元素类型取自"被比较列"的可空性
+// （assets_agent_job.host_id 可空 → sql.NullInt64），而 PG 侧的派生 override 显式写了
+// `::bigint[]`，元素类型固定为 int64。语义上两者等价：集合成员判定里的 NULL 元素永远
+// 不可能命中（SQL 里 NULL 的比较是 unknown），调用方传的也都是真实主机 id。这里只做类型换算。
+
+func int64SliceArg(values []sql.NullInt64) []int64 {
+	converted := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value.Valid {
+			converted = append(converted, value.Int64)
+		}
+	}
+	return converted
+}
+
+func (q *Queries) CountActiveAgentInstallJobs(ctx context.Context, hostIds []sql.NullInt64) (int64, error) {
+	return q.Queries.CountActiveAgentInstallJobs(ctx, int64SliceArg(hostIds))
+}
+
+type FailStaleAgentInstallJobsParams struct {
+	FinishedAt  sql.NullTime    `json:"finished_at"`
+	UpdateTime  time.Time       `json:"update_time"`
+	HostIds     []sql.NullInt64 `json:"host_ids"`
+	StaleBefore time.Time       `json:"stale_before"`
+}
+
+func (q *Queries) FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAgentInstallJobsParams) error {
+	return q.Queries.FailStaleAgentInstallJobs(ctx, postgres.FailStaleAgentInstallJobsParams{
+		FinishedAt: arg.FinishedAt, UpdateTime: arg.UpdateTime,
+		HostIds: int64SliceArg(arg.HostIds), StaleBefore: arg.StaleBefore,
+	})
+}
+
+// ---- 7) 宿主总览的过滤参数：字符串/切片在两侧的可空性推导不同 ----
+//
+// `sqlc.arg(search_pattern) = ''` 这类"空串表示不过滤"的写法，MySQL 引擎推断为 string、
+// PG 引擎推断为 interface{}；group_ids 因列可空在 MySQL 侧是 []sql.NullInt64、PG 侧是 []int64。
+// 语义一致，这里只做类型换算（sql.NullString 本身实现 Valuer，PG 侧直接透传即可）。
+
+type CountMonitorHostsParams struct {
+	SearchPattern sql.NullString  `json:"search_pattern"`
+	GroupIds      []sql.NullInt64 `json:"group_ids"`
+	GroupFilter   interface{}     `json:"group_filter"`
+	ManagedFilter interface{}     `json:"managed_filter"`
+	ExporterType  string          `json:"exporter_type"`
+	FluentFilter  interface{}     `json:"fluent_filter"`
+}
+
+func (q *Queries) CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error) {
+	return q.Queries.CountMonitorHosts(ctx, postgres.CountMonitorHostsParams{
+		SearchPattern: arg.SearchPattern, GroupIds: int64SliceArg(arg.GroupIds),
+		GroupFilter: arg.GroupFilter, ManagedFilter: arg.ManagedFilter,
+		ExporterType: arg.ExporterType, FluentFilter: arg.FluentFilter,
+	})
+}
+
+type ListMonitorHostsParams struct {
+	SearchPattern sql.NullString  `json:"search_pattern"`
+	GroupIds      []sql.NullInt64 `json:"group_ids"`
+	GroupFilter   interface{}     `json:"group_filter"`
+	ManagedFilter interface{}     `json:"managed_filter"`
+	ExporterType  string          `json:"exporter_type"`
+	FluentFilter  interface{}     `json:"fluent_filter"`
+	Limit         int32           `json:"limit"`
+	Offset        int32           `json:"offset"`
+}
+
+func (q *Queries) ListMonitorHosts(ctx context.Context, arg ListMonitorHostsParams) ([]ListMonitorHostsRow, error) {
+	return q.Queries.ListMonitorHosts(ctx, postgres.ListMonitorHostsParams{
+		Limit: arg.Limit, Offset: arg.Offset,
+		SearchPattern: arg.SearchPattern, GroupIds: int64SliceArg(arg.GroupIds),
+		GroupFilter: arg.GroupFilter, ManagedFilter: arg.ManagedFilter,
+		ExporterType: arg.ExporterType, FluentFilter: arg.FluentFilter,
+	})
 }
 
 // ---- 转换 helper：三种参数形态的显式换算 ----

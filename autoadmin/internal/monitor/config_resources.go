@@ -1,16 +1,16 @@
 package monitor
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,6 +22,14 @@ type resourceSpec struct {
 	filterFields map[string]string
 	searchFields []string
 	order        string
+	// required 是"落库必需"的列（NOT NULL 且库级没有默认值）。新建时缺了就 400——
+	// 与改动前把语句交给 MySQL 严格模式报错的语义一致，只是文案更明确。
+	required []string
+	// 表名与列名过去是运行时拼进 SQL 的；sqlc 的语句编译期固定，所以写路径按表分派到
+	// 下面这三个显式实现（PATCH 的"只写提交了的列"改由"读回整行 + 合并 + 整行写"承担）。
+	create func(context.Context, db.DBTX, map[string]any) (int64, error)
+	update func(context.Context, db.DBTX, int64, map[string]any) error
+	delete func(context.Context, db.DBTX, int64) error
 }
 
 var retentionSpec = resourceSpec{
@@ -29,6 +37,8 @@ var retentionSpec = resourceSpec{
 	fields:       fieldSet("code", "name", "daily_size_gb", "retention_days", "rollover_min_index_age", "enabled", "is_default", "remark"),
 	filterFields: map[string]string{"enabled": "enabled", "is_default": "is_default"},
 	searchFields: []string{"code", "name", "remark"}, order: "retention_days,id",
+	required: []string{"code", "name", "daily_size_gb", "retention_days", "rollover_min_index_age", "enabled", "is_default", "remark"},
+	create:   createLogRetentionTier, update: updateLogRetentionTier, delete: deleteLogRetentionTier,
 }
 
 var processingSpec = resourceSpec{
@@ -37,6 +47,8 @@ var processingSpec = resourceSpec{
 	jsonFields:   fieldSet("pipeline_body"),
 	filterFields: map[string]string{"cluster": "cluster_id", "application": "application_id", "input_format": "input_format", "multiline_enabled": "multiline_enabled"},
 	searchFields: []string{"name", "description"}, order: "name,id",
+	required: []string{"cluster", "name", "description", "input_format", "multiline_enabled", "start_pattern", "continuation_pattern", "flush_timeout", "pipeline_body"},
+	create:   createLogProcessingRule, update: updateLogProcessingRule, delete: deleteLogProcessingRule,
 }
 
 var filterRuleSpec = resourceSpec{
@@ -44,6 +56,27 @@ var filterRuleSpec = resourceSpec{
 	fields:       fieldSet("application", "name", "description", "pattern", "enabled", "remark"),
 	filterFields: map[string]string{"application": "application_id", "enabled": "enabled"},
 	searchFields: []string{"name", "description", "pattern"}, order: "name,id",
+	required: []string{"name", "description", "pattern", "enabled"},
+	create:   createLogCollectionFilterRule, update: updateLogCollectionFilterRule, delete: deleteLogCollectionFilterRule,
+}
+
+// resourceColumn 把请求体里的键映射到列名（cluster/application 是 *_id）。
+func resourceColumn(key string) string {
+	if key == "cluster" || key == "application" {
+		return key + "_id"
+	}
+	return key
+}
+
+// requiredResourceColumns 返回缺失的必填键（保持 required 的顺序，便于稳定报错文案）。
+func requiredResourceColumns(spec resourceSpec, input map[string]any) []string {
+	missing := make([]string, 0, len(spec.required))
+	for _, key := range spec.required {
+		if _, ok := input[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	return missing
 }
 
 func fieldSet(names ...string) map[string]bool {
@@ -63,14 +96,19 @@ func (handler *Handler) UpdateRetentionTier(context *gin.Context) {
 
 // deleteRetentionTierByID 复用原单删逻辑：仍被逻辑服务/日志设置引用的档位拒绝删除。
 func (handler *Handler) deleteRetentionTierByID(context *gin.Context, id int64) error {
-	var serviceCount, settingCount int
-	if err := handler.db.QueryRowContext(context, `SELECT (SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id=?), (SELECT COUNT(*) FROM assets_application_service_log_setting WHERE retention_tier_id=?)`, id, id).Scan(&serviceCount, &settingCount); err != nil {
+	queries := db.New(handler.db)
+	serviceCount, err := queries.CountRetentionTierServices(context, sql.NullInt64{Int64: id, Valid: true})
+	if err != nil {
+		return err
+	}
+	settingCount, err := queries.CountRetentionTierLogSettings(context, sql.NullInt64{Int64: id, Valid: true})
+	if err != nil {
 		return err
 	}
 	if serviceCount+settingCount > 0 {
 		return errors.New("该档位仍被逻辑服务引用，不能删除")
 	}
-	return handler.deleteResourceByID(context, retentionSpec, id)
+	return retentionSpec.delete(context, handler.db, id)
 }
 
 func (handler *Handler) BatchDeleteRetentionTiers(context *gin.Context) {
@@ -112,23 +150,22 @@ func (handler *Handler) UpdateProcessingRule(context *gin.Context) {
 // deleteProcessingRuleByID 复用原单删逻辑：被日志定义引用的规则拒绝删除；先删集群上的
 // pipeline 再删记录，集群侧失败则中止（与 Django destroy 行为一致）。
 func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64) error {
-	var name string
-	var clusterID int64
-	err := handler.db.QueryRowContext(context, `SELECT name,cluster_id FROM monitor_log_processing_rule WHERE id=?`, id).Scan(&name, &clusterID)
+	queries := db.New(handler.db)
+	rule, err := queries.GetLogProcessingRule(context, id)
 	if err != nil {
 		return err
 	}
-	var referenceCount int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id=?`, id).Scan(&referenceCount); err != nil {
+	referenceCount, err := queries.CountLogDefinitionReferences(context, sql.NullInt64{Int64: id, Valid: true})
+	if err != nil {
 		return err
 	}
 	if referenceCount > 0 {
 		return errors.New("规则仍被日志定义引用，不能删除")
 	}
-	if err := handler.deleteProcessingPipeline(context, clusterID, name); err != nil {
+	if err := handler.deleteProcessingPipeline(context, rule.ClusterID, rule.Name); err != nil {
 		return fmt.Errorf("删除 Pipeline 失败: %w", err)
 	}
-	return handler.deleteResourceByID(context, processingSpec, id)
+	return processingSpec.delete(context, handler.db, id)
 }
 
 func (handler *Handler) BatchDeleteProcessingRules(context *gin.Context) {
@@ -143,19 +180,16 @@ func (handler *Handler) publishProcessingRuleBeforeSave(context *gin.Context, in
 	clusterID := int64(clusterValue)
 	pipelineBody := input["pipeline_body"]
 	if id != 0 {
-		var existingName string
-		var existingCluster int64
-		var existingBody json.RawMessage
-		err := handler.db.QueryRowContext(context, `SELECT name,cluster_id,pipeline_body FROM monitor_log_processing_rule WHERE id=?`, id).Scan(&existingName, &existingCluster, &existingBody)
-		if err == nil {
+		// 复用整行读：更新时未提交的字段沿用旧值。
+		if existing, err := db.New(handler.db).GetLogProcessingRule(context, id); err == nil {
 			if name == "" {
-				name = existingName
+				name = existing.Name
 			}
 			if clusterID == 0 {
-				clusterID = existingCluster
+				clusterID = existing.ClusterID
 			}
 			if pipelineBody == nil {
-				pipelineBody = existingBody
+				pipelineBody = existing.PipelineBody
 			}
 		}
 	}
@@ -176,7 +210,7 @@ func (handler *Handler) UpdateFilterRule(context *gin.Context) {
 }
 func (handler *Handler) BatchDeleteFilterRules(context *gin.Context) {
 	handler.batchDeleteResources(context, filterRuleSpec, func(context *gin.Context, id int64) error {
-		return handler.deleteResourceByID(context, filterRuleSpec, id)
+		return filterRuleSpec.delete(context, handler.db, id)
 	})
 }
 
@@ -198,69 +232,50 @@ func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id
 			return
 		}
 	}
-	keys := make([]string, 0)
+	if len(writableResourceKeys(spec, input)) == 0 {
+		response.BusinessError(context, 400, "no writable fields", nil)
+		return
+	}
+	if id == 0 {
+		if missing := requiredResourceColumns(spec, input); len(missing) > 0 {
+			response.BusinessError(context, 400, "缺少必填字段: "+strings.Join(missing, ", "), nil)
+			return
+		}
+		newID, err := spec.create(context, handler.db, input)
+		if err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+		id = newID
+	} else {
+		if err := spec.update(context, handler.db, id, input); err != nil {
+			if err == sql.ErrNoRows {
+				response.BusinessError(context, 404, "resource not found", nil)
+				return
+			}
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+	}
+	if input["is_default"] == true {
+		if err := clearDefaultLogRetentionTier(context, handler.db, id); err != nil {
+			response.Error(context, err)
+			return
+		}
+	}
+	respond(context, id)
+}
+
+// writableResourceKeys 返回请求体里可写的键（与建表列一致的子集），供"没有可写字段"判定。
+func writableResourceKeys(spec resourceSpec, input map[string]any) []string {
+	keys := make([]string, 0, len(input))
 	for key := range input {
 		if spec.fields[key] {
 			keys = append(keys, key)
 		}
 	}
 	sort.Strings(keys)
-	if len(keys) == 0 {
-		response.BusinessError(context, 400, "no writable fields", nil)
-		return
-	}
-	columns, values, arguments := make([]string, 0, len(keys)), make([]string, 0, len(keys)), make([]any, 0, len(keys)+2)
-	for _, key := range keys {
-		column := key
-		if key == "cluster" || key == "application" {
-			column = key + "_id"
-		}
-		value := input[key]
-		if spec.jsonFields[key] {
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				response.BusinessError(context, 400, key+" must be valid JSON", nil)
-				return
-			}
-			value = string(encoded)
-		}
-		columns = append(columns, column)
-		values = append(values, "?")
-		arguments = append(arguments, value)
-	}
-	now := time.Now().UTC()
-	if id == 0 {
-		columns = append(columns, "create_time", "update_time")
-		values = append(values, "?", "?")
-		arguments = append(arguments, now, now)
-		result, err := handler.db.ExecContext(context, "INSERT INTO "+spec.table+" ("+strings.Join(columns, ",")+") VALUES ("+strings.Join(values, ",")+")", arguments...)
-		if err != nil {
-			response.BusinessError(context, 400, err.Error(), nil)
-			return
-		}
-		id, _ = result.LastInsertId()
-	} else {
-		sets := make([]string, len(columns))
-		for index, column := range columns {
-			sets[index] = column + "=?"
-		}
-		sets = append(sets, "update_time=?")
-		arguments = append(arguments, now, id)
-		result, err := handler.db.ExecContext(context, "UPDATE "+spec.table+" SET "+strings.Join(sets, ",")+" WHERE id=?", arguments...)
-		if err != nil {
-			response.BusinessError(context, 400, err.Error(), nil)
-			return
-		}
-		affected, _ := result.RowsAffected()
-		if affected == 0 {
-			response.BusinessError(context, 404, "resource not found", nil)
-			return
-		}
-	}
-	if input["is_default"] == true {
-		_, _ = handler.db.ExecContext(context, "UPDATE "+spec.table+" SET is_default=FALSE WHERE id<>?", id)
-	}
-	respond(context, id)
+	return keys
 }
 
 func validateResource(spec resourceSpec, input map[string]any, id int64) string {
@@ -312,19 +327,6 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 	return ""
 }
 
-// deleteResourceByID 按表名删除记录；不存在时返回 sql.ErrNoRows，由批删入口记录 ok:false。
-func (handler *Handler) deleteResourceByID(context *gin.Context, spec resourceSpec, id int64) error {
-	result, err := handler.db.ExecContext(context, "DELETE FROM "+spec.table+" WHERE id=?", id)
-	if err != nil {
-		return err
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
 // batchErrMessage 把 sql.ErrNoRows 统一转成 "resource not found"，其余透传原始错误文案。
 func batchErrMessage(err error) string {
 	if err == sql.ErrNoRows {
@@ -353,8 +355,22 @@ func (handler *Handler) batchDeleteResources(context *gin.Context, spec resource
 	response.Success(context, gin.H{"count": okCount, "results": results})
 }
 
-// batchDeleteMonitorRows 无前置校验的简单表通用批删（alert media、alert route、OpenSearch 集群）。
-func batchDeleteMonitorRows(context *gin.Context, handler *Handler, table string) {
+// deleteRowsAffected 把"没删到行"统一成 sql.ErrNoRows，供 batchDeleteMonitorRows 的各调用方复用
+// （sqlc 生成的 DELETE 都是 :execresult，两侧都返回 sql.Result）。
+func deleteRowsAffected(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// batchDeleteMonitorRows 无前置校验的简单表通用批删（alert media、OpenSearch 集群）。
+// 表名不再作为字符串传入：sqlc 的语句是编译期固定的，按表分派由调用方给出的 deleteOne 承担。
+func batchDeleteMonitorRows(context *gin.Context, handler *Handler, deleteOne func(*gin.Context, int64) error) {
 	ids, ok := logTargetIDs(context)
 	if !ok {
 		return
@@ -362,13 +378,7 @@ func batchDeleteMonitorRows(context *gin.Context, handler *Handler, table string
 	results := make([]gin.H, 0, len(ids))
 	okCount := 0
 	for _, id := range ids {
-		result, err := handler.db.ExecContext(context, "DELETE FROM "+table+" WHERE id=?", id)
-		if err == nil {
-			affected, _ := result.RowsAffected()
-			if affected == 0 {
-				err = sql.ErrNoRows
-			}
-		}
+		err := deleteOne(context, id)
 		if err != nil {
 			results = append(results, gin.H{"id": id, "ok": false, "message": batchErrMessage(err)})
 			continue

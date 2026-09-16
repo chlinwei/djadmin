@@ -94,9 +94,12 @@ func userChainEngine(handler *Handler) *gin.Engine {
 	return engine
 }
 
+// policyTreeRow 的列集与 ListNotificationPolicyNodes 一致（树加载与管理列表共用一条查询）：
+// media_ids/user_group_ids 在生成物里是 sql.NullString（可空 json 扫不了 NULL 才改的，见 sqlc.yaml）。
 func policyTreeRow(id, parentID int64, name string, mediaIDs any, matchers string) *sqlmock.Rows {
-	rows := sqlmock.NewRows([]string{"id", "parent_id", "name", "position", "remark", "matchers", "media_ids", "user_group_ids", "notify_on_firing", "notify_on_resolved"})
-	rows.AddRow(id, parentID, name, 0, "", matchers, mediaIDs, nil, true, true)
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"id", "parent_id", "name", "position", "remark", "matchers", "media_ids", "user_group_ids", "notify_on_firing", "notify_on_resolved", "create_time", "update_time"})
+	rows.AddRow(id, parentID, name, int32(0), "", []byte(matchers), mediaIDs, nil, true, true, now, now)
 	return rows
 }
 
@@ -113,14 +116,14 @@ func TestUserAlertChainViaEngine(t *testing.T) {
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"username"}).AddRow("zhang"))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m").
-		WithArgs(int64(5)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "enabled", "recipients", "media_id", "name", "media_type", "media_enabled"}).
-			AddRow(1, true, `["a@b.com"]`, 2, "公司邮箱", "email", true).
-			AddRow(2, true, `[]`, 3, "钉钉", "webhook", false))
+		WithArgs(int32(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "media_id", "media_name", "recipients", "enabled", "media_type", "media_enabled"}).
+			AddRow(int64(1), int64(2), "公司邮箱", []byte(`["a@b.com"]`), true, "email", true).
+			AddRow(int64(2), int64(3), "钉钉", []byte(`[]`), true, "webhook", false))
 	// 策略树：根出口 [2]，critical 子策略继承。
 	mock.ExpectQuery("FROM monitor_notification_policy").
-		WillReturnRows(policyTreeRow(1, 0, "默认策略", `[2]`, `[]`).
-			AddRow(2, 1, "critical", 0, "", `[{"type":"label","label":"severity","operator":"=","value":"critical"}]`, nil, nil, true, true))
+		WillReturnRows(policyTreeRow(1, 0, "默认策略", "[2]", `[]`).
+			AddRow(int64(2), int64(1), "critical", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()))
 
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/monitor/alert-notification/user-chain/", nil))
@@ -192,15 +195,15 @@ func TestUserAlertChainAllBroken(t *testing.T) {
 	engine := userChainEngine(handler)
 
 	mock.ExpectQuery("SELECT username FROM sys_user").
-		WithArgs(int64(5)).
+		WithArgs(int32(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"username"}).AddRow("zhang"))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m").
-		WithArgs(int64(5)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "enabled", "recipients", "media_id", "name", "media_type", "media_enabled"}).
-			AddRow(7, false, `[]`, 8, "公司邮箱", "email", true))
+		WithArgs(int32(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "media_id", "media_name", "recipients", "enabled", "media_type", "media_enabled"}).
+			AddRow(int64(7), int64(8), "公司邮箱", []byte(`[]`), false, "email", true))
 	// 根出口为空：没有任何策略出口命中。
 	mock.ExpectQuery("FROM monitor_notification_policy").
-		WillReturnRows(policyTreeRow(1, 0, "默认策略", `[]`, `[]`))
+		WillReturnRows(policyTreeRow(1, 0, "默认策略", "[]", `[]`))
 
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/monitor/alert-notification/user-chain/", nil))
@@ -255,32 +258,32 @@ func TestAlertChainEvaluation(t *testing.T) {
 	engine.GET("/monitor/alert-notification/chain/:historyId/", handler.AlertChainEvaluation)
 
 	startedAt := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT alertname,severity,instance,labels,state,started_at FROM monitor_alert_history").
+	mock.ExpectQuery("SELECT alertname, severity, instance, labels, state, started_at FROM monitor_alert_history").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"alertname", "severity", "instance", "labels", "state", "started_at"}).
-			AddRow("HighDiskUsage", "warning", "host-1", `{"env":"prod"}`, "firing", startedAt))
+			AddRow("HighDiskUsage", "warning", "host-1", []byte(`{"env":"prod"}`), "firing", startedAt))
 
 	// 根出口 [2]；子策略 severity=warning 命中（selected），severity=critical 未命中。
 	mock.ExpectQuery("FROM monitor_notification_policy").
-		WillReturnRows(policyTreeRow(1, 0, "默认策略", `[2]`, `[]`).
-			AddRow(2, 1, "disk", 0, "", `[{"type":"label","label":"severity","operator":"=","value":"warning"}]`, nil, nil, true, true).
-			AddRow(3, 1, "cpu", 0, "", `[{"type":"label","label":"severity","operator":"=","value":"critical"}]`, nil, nil, true, true))
+		WillReturnRows(policyTreeRow(1, 0, "默认策略", "[2]", `[]`).
+			AddRow(int64(2), int64(1), "disk", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"warning"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()).
+			AddRow(int64(3), int64(1), "cpu", int32(0), "", []byte(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`), nil, nil, true, true, time.Now().UTC(), time.Now().UTC()))
 
 	// 出口媒介 [2] 的绑定与事件/投递记录。
-	mock.ExpectQuery("FROM monitor_alert_media WHERE id IN").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "enabled"}).AddRow(2, "公司邮箱", true))
+	mock.ExpectQuery("SELECT id, name, enabled FROM monitor_alert_media").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "enabled"}).AddRow(int64(2), "公司邮箱", true))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients", "enabled"}).
-			AddRow(5, "zhang", `["a@b.com"]`, true))
-	mock.ExpectQuery("FROM monitor_alert_notification_event WHERE alert_id=.*AND event_type").
+			AddRow(int32(5), "zhang", []byte(`["a@b.com"]`), true))
+	mock.ExpectQuery("SELECT id, event_type, status, attempt_count, error_message FROM monitor_alert_notification_event").
 		WithArgs(int64(1), "firing").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "event_type", "status", "attempt_count", "error_message"}).
-			AddRow(9, "firing", "success", 1, ""))
+			AddRow(int64(9), "firing", "success", int64(1), ""))
 	mock.ExpectQuery("FROM monitor_alert_notification_delivery d LEFT JOIN sys_user u").
 		WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "address", "status", "error_message"}).
-			AddRow(5, "zhang", "a@b.com", "failed", "smtp timeout"))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "address", "status", "error_message", "username"}).
+			AddRow(int32(5), "a@b.com", "failed", "smtp timeout", "zhang"))
 
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/monitor/alert-notification/chain/1/", nil))
@@ -370,7 +373,7 @@ func TestAlertChainEvaluationNotFound(t *testing.T) {
 	engine := gin.New()
 	engine.GET("/monitor/alert-notification/chain/:historyId/", handler.AlertChainEvaluation)
 
-	mock.ExpectQuery("SELECT alertname,severity,instance,labels,state,started_at FROM monitor_alert_history").
+	mock.ExpectQuery("SELECT alertname, severity, instance, labels, state, started_at FROM monitor_alert_history").
 		WithArgs(int64(99)).
 		WillReturnError(sql.ErrNoRows)
 

@@ -1,12 +1,15 @@
 package monitor
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
 	"strings"
 	"time"
+
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -173,40 +176,51 @@ func (handler *Handler) bootstrapOpenSearchStorage(context *gin.Context, cluster
 }
 
 func (handler *Handler) loadEnabledRetentionTiers(context *gin.Context) ([]retentionTierRow, error) {
-	rows, err := handler.db.QueryContext(context, `SELECT code,retention_days,daily_size_gb,rollover_min_index_age FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id`)
+	rows, err := db.New(handler.db).ListEnabledRetentionTiers(context)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	tiers := make([]retentionTierRow, 0, 4)
-	for rows.Next() {
-		var tier retentionTierRow
-		if err := rows.Scan(&tier.Code, &tier.RetentionDays, &tier.DailySizeGB, &tier.RolloverMinIndexAge); err != nil {
-			return nil, err
-		}
-		tiers = append(tiers, tier)
+	tiers := make([]retentionTierRow, 0, len(rows))
+	for _, row := range rows {
+		tiers = append(tiers, retentionTierRow{
+			Code: row.Code, RetentionDays: int64(row.RetentionDays), DailySizeGB: row.DailySizeGb,
+			RolloverMinIndexAge: row.RolloverMinIndexAge,
+		})
 	}
-	return tiers, rows.Err()
+	return tiers, nil
 }
 
 // syncClusterLogStorage 对单个启用集群下发模板与保留策略，并回写 storage_sync_* 状态，
 // 对应 Django 的 celery 任务 sync_log_storage（失败不抛出，只落状态供前端展示）。
 func (handler *Handler) syncClusterLogStorage(clusterID int64) {
 	ginContext, _ := gin.CreateTestContext(nil)
-	if _, err := handler.db.ExecContext(ginContext, `UPDATE monitor_opensearch_cluster SET storage_sync_status='pending',storage_sync_error='',storage_sync_time=NULL,update_time=? WHERE id=?`, time.Now().UTC(), clusterID); err != nil {
+	queries := db.New(handler.db)
+	err := queries.MarkClusterStorageSyncPending(ginContext, db.MarkClusterStorageSyncPendingParams{
+		UpdateTime: time.Now().UTC(), ID: clusterID,
+	})
+	if err != nil {
 		return
 	}
 	cluster, err := handler.loadOpenSearchClusterByID(ginContext, clusterID)
+	fail := func(message string) {
+		_ = queries.MarkClusterStorageSyncFailed(ginContext, db.MarkClusterStorageSyncFailedParams{
+			StorageSyncError: message, StorageSyncTime: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+			UpdateTime: time.Now().UTC(), ID: clusterID,
+		})
+	}
 	switch {
 	case err != nil:
-		_, _ = handler.db.ExecContext(ginContext, `UPDATE monitor_opensearch_cluster SET storage_sync_status='failed',storage_sync_error=?,storage_sync_time=?,update_time=? WHERE id=?`, err.Error(), time.Now().UTC(), time.Now().UTC(), clusterID)
+		fail(err.Error())
 	case !cluster.Enabled:
-		_, _ = handler.db.ExecContext(ginContext, `UPDATE monitor_opensearch_cluster SET storage_sync_status='failed',storage_sync_error='集群未启用，跳过同步',storage_sync_time=?,update_time=? WHERE id=?`, time.Now().UTC(), time.Now().UTC(), clusterID)
+		fail("集群未启用，跳过同步")
 	default:
 		if bootstrapErr := handler.bootstrapOpenSearchStorage(ginContext, cluster); bootstrapErr != nil {
-			_, _ = handler.db.ExecContext(ginContext, `UPDATE monitor_opensearch_cluster SET storage_sync_status='failed',storage_sync_error=?,storage_sync_time=?,update_time=? WHERE id=?`, truncateOpenSearchError(bootstrapErr), time.Now().UTC(), time.Now().UTC(), clusterID)
+			fail(truncateOpenSearchError(bootstrapErr))
 		} else {
-			_, _ = handler.db.ExecContext(ginContext, `UPDATE monitor_opensearch_cluster SET storage_sync_status='success',storage_sync_error='',storage_sync_time=?,update_time=? WHERE id=?`, time.Now().UTC(), time.Now().UTC(), clusterID)
+			_ = queries.MarkClusterStorageSyncSuccess(ginContext, db.MarkClusterStorageSyncSuccessParams{
+				StorageSyncTime: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+				UpdateTime:      time.Now().UTC(), ID: clusterID,
+			})
 		}
 	}
 }
@@ -214,31 +228,13 @@ func (handler *Handler) syncClusterLogStorage(clusterID int64) {
 // syncAllClusterLogStorage 对所有启用集群异步下发，对应 Django 档位改动后的 _apply_policies。
 func (handler *Handler) syncAllClusterLogStorage() {
 	ginContext, _ := gin.CreateTestContext(nil)
-	rows, err := handler.db.QueryContext(ginContext, `SELECT id FROM monitor_opensearch_cluster WHERE enabled=TRUE`)
+	ids, err := db.New(handler.db).ListEnabledOpenSearchClusterIDs(ginContext)
 	if err != nil {
 		return
 	}
-	ids := make([]int64, 0, 2)
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	rows.Close()
 	for _, id := range ids {
 		handler.syncClusterLogStorage(id)
 	}
-}
-
-func (handler *Handler) loadOpenSearchClusterByID(context *gin.Context, id int64) (openSearchCluster, error) {
-	var cluster openSearchCluster
-	err := handler.db.QueryRowContext(context, `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_opensearch_cluster WHERE id=?`, id).Scan(&cluster.ID, &cluster.Hosts, &cluster.Username, &cluster.Password, &cluster.VerifyTLS, &cluster.CACert, &cluster.IndexPrefix, &cluster.Timeout, &cluster.Enabled)
-	if err != nil {
-		return cluster, err
-	}
-	cluster.Password, err = handler.secrets.Decrypt(cluster.Password)
-	return cluster, err
 }
 
 func truncateOpenSearchError(err error) string {

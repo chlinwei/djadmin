@@ -137,14 +137,22 @@ func (handler *Handler) saveInventory(context *gin.Context, id int64) {
 		automationBadRequest(context, "invalid request body")
 		return
 	}
+	queries := db.New(handler.db)
 	if id != 0 {
 		// 部分更新（PATCH）语义：前端状态开关等场景只传部分字段，未提供的字段保留原值。
-		var existing inventoryExisting
-		scanErr := handler.db.QueryRowContext(context, `SELECT name,remark,selected_host_ids,enabled,update_on_launch,update_cache_timeout FROM automation_inventory WHERE id=?`, id).
-			Scan(&existing.Name, &existing.Remark, &existing.SelectedHostIDs, &existing.Enabled, &existing.UpdateOnLaunch, &existing.UpdateCacheTimeout)
+		row, scanErr := queries.GetInventoryTyped(context, id)
 		if scanErr != nil {
 			automationResourceError(context, scanErr)
 			return
+		}
+		// 两列都是 NOT NULL，原实现（Scan 进 sql.Null*）恒为 Valid，这里保持一致：
+		// 不能把"值为 0"当成"没有值"，否则 update_cache_timeout=0 会被默认值覆盖。
+		existing := inventoryExisting{
+			Name: row.Name, Remark: row.Remark,
+			SelectedHostIDs:    sql.NullString{String: string(row.SelectedHostIds), Valid: true},
+			Enabled:            row.Enabled,
+			UpdateOnLaunch:     row.UpdateOnLaunch,
+			UpdateCacheTimeout: sql.NullInt64{Int64: int64(row.UpdateCacheTimeout), Valid: true},
 		}
 		merged, mergeErr := resolveInventoryUpdate(existing, input)
 		if mergeErr != nil {
@@ -177,13 +185,17 @@ func (handler *Handler) saveInventory(context *gin.Context, id int64) {
 	now := time.Now().UTC()
 	var err error
 	if id == 0 {
-		result, createErr := handler.db.ExecContext(context, `INSERT INTO automation_inventory(create_time,update_time,remark,name,selected_host_ids,enabled,update_on_launch,update_cache_timeout,last_sync_status,last_sync_message,last_sync_host_count) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullString(derefString(input.Remark)), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, "never", "", 0)
-		err = createErr
-		if err == nil {
-			id, _ = result.LastInsertId()
-		}
+		id, err = queries.CreateAutomationInventory(context, db.CreateAutomationInventoryParams{
+			CreateTime: now, UpdateTime: now, Remark: nullString(derefString(input.Remark)),
+			Name: strings.TrimSpace(input.Name), SelectedHostIds: marshalJSON(ids), Enabled: *input.Enabled,
+			UpdateOnLaunch: *input.UpdateOnLaunch, UpdateCacheTimeout: uint32(*input.UpdateCacheTimeout),
+		})
 	} else {
-		_, err = handler.db.ExecContext(context, `UPDATE automation_inventory SET update_time=?,remark=?,name=?,selected_host_ids=?,enabled=?,update_on_launch=?,update_cache_timeout=? WHERE id=?`, now, nullString(derefString(input.Remark)), strings.TrimSpace(input.Name), marshalJSON(ids), *input.Enabled, *input.UpdateOnLaunch, *input.UpdateCacheTimeout, id)
+		err = queries.UpdateAutomationInventory(context, db.UpdateAutomationInventoryParams{
+			UpdateTime: now, Remark: nullString(derefString(input.Remark)), Name: strings.TrimSpace(input.Name),
+			SelectedHostIds: marshalJSON(ids), Enabled: *input.Enabled, UpdateOnLaunch: *input.UpdateOnLaunch,
+			UpdateCacheTimeout: uint32(*input.UpdateCacheTimeout), ID: id,
+		})
 	}
 	if err != nil {
 		response.Error(context, err)
@@ -260,9 +272,12 @@ func (handler *Handler) saveTask(context *gin.Context, id int64) {
 		automationBadRequest(context, "request body is invalid")
 		return
 	}
+	queries := db.New(handler.db)
 	if id > 0 && input.Enabled != nil && strings.TrimSpace(input.Name) == "" && input.PlaybookTemplateID == nil && strings.TrimSpace(input.RunAsUser) == "" {
 		// The list switch sends only enabled; retaining the rest avoids treating it as a form submission.
-		if _, err := handler.db.ExecContext(context, `UPDATE automation_task SET enabled=?,update_time=? WHERE id=?`, *input.Enabled, time.Now().UTC(), id); err != nil {
+		if err := queries.SetAutomationTaskEnabled(context, db.SetAutomationTaskEnabledParams{
+			Enabled: *input.Enabled, UpdateTime: time.Now().UTC(), ID: id,
+		}); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -310,36 +325,45 @@ func (handler *Handler) saveTask(context *gin.Context, id int64) {
 	if strings.TrimSpace(input.WorkDirectory) == "" {
 		input.WorkDirectory = "/tmp"
 	}
-	var templateExists int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM automation_playbook_template WHERE id=?`, *input.PlaybookTemplateID).Scan(&templateExists); err != nil {
+	// 存在性检查复用已有的取行查询：不存在即 ErrNoRows（与原来的 COUNT(*)=0 同义）。
+	if _, err := queries.GetAutomationPlaybook(context, *input.PlaybookTemplateID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			automationBadRequest(context, "playbook_template does not exist")
+			return
+		}
 		response.Error(context, err)
 		return
 	}
-	if templateExists == 0 {
-		automationBadRequest(context, "playbook_template does not exist")
-		return
-	}
 	if input.InventoryID != nil {
-		var inventoryExists int
-		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM automation_inventory WHERE id=?`, *input.InventoryID).Scan(&inventoryExists); err != nil {
+		if _, err := queries.GetInventoryTyped(context, *input.InventoryID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				automationBadRequest(context, "inventory does not exist")
+				return
+			}
 			response.Error(context, err)
-			return
-		}
-		if inventoryExists == 0 {
-			automationBadRequest(context, "inventory does not exist")
 			return
 		}
 	}
 	now := time.Now().UTC()
 	var err error
 	if id == 0 {
-		result, createErr := handler.db.ExecContext(context, `INSERT INTO automation_task(create_time,update_time,remark,name,playbook_template_id,inventory_id,env_vars,default_limit,enabled,execution_timeout_seconds,run_as_user,run_as_group,work_directory) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, now, now, nullString(input.Remark), strings.TrimSpace(input.Name), *input.PlaybookTemplateID, nullableID(input.InventoryID), marshalJSON(input.EnvVars), strings.TrimSpace(input.DefaultLimit), *input.Enabled, *input.ExecutionTimeoutSeconds, strings.TrimSpace(input.RunAsUser), strings.TrimSpace(input.RunAsGroup), strings.TrimSpace(input.WorkDirectory))
-		err = createErr
-		if err == nil {
-			id, _ = result.LastInsertId()
-		}
+		id, err = queries.CreateAutomationTask(context, db.CreateAutomationTaskParams{
+			CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
+			PlaybookTemplateID: sql.NullInt64{Int64: *input.PlaybookTemplateID, Valid: true},
+			InventoryID:        nullableID(input.InventoryID), EnvVars: marshalJSON(input.EnvVars),
+			DefaultLimit: strings.TrimSpace(input.DefaultLimit), Enabled: *input.Enabled,
+			ExecutionTimeoutSeconds: uint32(*input.ExecutionTimeoutSeconds), RunAsUser: strings.TrimSpace(input.RunAsUser),
+			RunAsGroup: strings.TrimSpace(input.RunAsGroup), WorkDirectory: strings.TrimSpace(input.WorkDirectory),
+		})
 	} else {
-		_, err = handler.db.ExecContext(context, `UPDATE automation_task SET update_time=?,remark=?,name=?,playbook_template_id=?,inventory_id=?,env_vars=?,default_limit=?,enabled=?,execution_timeout_seconds=?,run_as_user=?,run_as_group=?,work_directory=? WHERE id=?`, now, nullString(input.Remark), strings.TrimSpace(input.Name), *input.PlaybookTemplateID, nullableID(input.InventoryID), marshalJSON(input.EnvVars), strings.TrimSpace(input.DefaultLimit), *input.Enabled, *input.ExecutionTimeoutSeconds, strings.TrimSpace(input.RunAsUser), strings.TrimSpace(input.RunAsGroup), strings.TrimSpace(input.WorkDirectory), id)
+		err = queries.UpdateAutomationTask(context, db.UpdateAutomationTaskParams{
+			UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
+			PlaybookTemplateID: sql.NullInt64{Int64: *input.PlaybookTemplateID, Valid: true},
+			InventoryID:        nullableID(input.InventoryID), EnvVars: marshalJSON(input.EnvVars),
+			DefaultLimit: strings.TrimSpace(input.DefaultLimit), Enabled: *input.Enabled,
+			ExecutionTimeoutSeconds: uint32(*input.ExecutionTimeoutSeconds), RunAsUser: strings.TrimSpace(input.RunAsUser),
+			RunAsGroup: strings.TrimSpace(input.RunAsGroup), WorkDirectory: strings.TrimSpace(input.WorkDirectory), ID: id,
+		})
 	}
 	if err != nil {
 		response.Error(context, err)
@@ -422,31 +446,20 @@ func (handler *Handler) JobLog(context *gin.Context) {
 		automationResourceError(context, err)
 		return
 	}
-	rows, err := handler.db.QueryContext(context, `SELECT host_id_snapshot,host_ip_snapshot,status,agent_job_id,stdout,stderr,error_message FROM automation_execution_host_log WHERE job_id=? ORDER BY id`, id)
+	rows, err := db.New(handler.db).ListAutomationJobHostLogs(context, id)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
 	var log strings.Builder
-	for rows.Next() {
-		var hostID sql.NullInt64
-		var hostIP, status, agentJobID, stdout, stderr, message string
-		if err = rows.Scan(&hostID, &hostIP, &status, &agentJobID, &stdout, &stderr, &message); err != nil {
-			response.Error(context, err)
-			return
+	for _, row := range rows {
+		fmt.Fprintf(&log, "\n\n===== Agent Host #%v (%s) | status=%s | job=%s =====\n%s", nullableInt32(row.HostIDSnapshot), row.HostIpSnapshot, row.Status, row.AgentJobID, row.Stdout)
+		if row.Stderr != "" {
+			fmt.Fprintf(&log, "\n[stderr]\n%s", row.Stderr)
 		}
-		fmt.Fprintf(&log, "\n\n===== Agent Host #%v (%s) | status=%s | job=%s =====\n%s", nullableInt(hostID), hostIP, status, agentJobID, stdout)
-		if stderr != "" {
-			fmt.Fprintf(&log, "\n[stderr]\n%s", stderr)
+		if row.ErrorMessage != "" {
+			fmt.Fprintf(&log, "\n[error]\n%s", row.ErrorMessage)
 		}
-		if message != "" {
-			fmt.Fprintf(&log, "\n[error]\n%s", message)
-		}
-	}
-	if err = rows.Err(); err != nil {
-		response.Error(context, err)
-		return
 	}
 	response.Success(context, gin.H{"job_id": id, "status": job["status"], "job_output": log.String()})
 }
@@ -491,13 +504,31 @@ func (handler *Handler) CancelJob(context *gin.Context) {
 	if !ok {
 		return
 	}
+	// duration 在应用层算：TIMESTAMPDIFF 是 MySQL 方言函数，PG 侧没有对应写法
+	// （分叉清单 §4.2）。start_time 为 NULL 时原语义等价于"现在开始"，即时长 0。
+	queries := db.New(handler.db)
 	now := time.Now().UTC()
-	result, err := handler.db.ExecContext(context, `UPDATE automation_execution_job SET status='cancelled',start_time=COALESCE(start_time,?),end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,COALESCE(start_time,?),?)/1000000,result_summary=?,update_time=? WHERE id=? AND status IN ('pending','running')`, now, now, now, now, marshalJSON(gin.H{"message": "Cancelled by user"}), now, id)
+	startTime, startErr := queries.GetAutomationJobStartTime(context, id)
+	if startErr != nil && !errors.Is(startErr, sql.ErrNoRows) {
+		response.Error(context, startErr)
+		return
+	}
+	effectiveStart := now
+	if startTime.Valid {
+		effectiveStart = startTime.Time
+	}
+	changed, err := queries.CancelAutomationJob(context, db.CancelAutomationJobParams{
+		StartTime:       sql.NullTime{Time: now, Valid: true},
+		EndTime:         sql.NullTime{Time: now, Valid: true},
+		DurationSeconds: sql.NullFloat64{Float64: now.Sub(effectiveStart).Seconds(), Valid: true},
+		ResultSummary:   marshalJSON(gin.H{"message": "Cancelled by user"}),
+		UpdateTime:      now,
+		ID:              id,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	changed, _ := result.RowsAffected()
 	if changed == 0 {
 		automationBadRequest(context, "Job is already finished")
 		return
@@ -581,26 +612,17 @@ func (handler *Handler) snapshotHosts(ctx context.Context, ids []int64, limit st
 	if len(ids) == 0 {
 		return []hostSnapshot{}, nil
 	}
-	marks := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
-	args := make([]any, len(ids))
-	for index, id := range ids {
-		args[index] = id
-	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT h.id,COALESCE(h.instance_name,''),h.ip,h.group_id,COALESCE(g.name,''),h.agent_online FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id WHERE h.id IN (`+marks+`) AND h.ip IS NOT NULL ORDER BY h.id`, args...)
+	rows, err := db.New(handler.db).ListAutomationInventoryHosts(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	hosts := []hostSnapshot{}
-	for rows.Next() {
-		var host hostSnapshot
-		var groupID sql.NullInt64
+	for _, row := range rows {
 		// HostName 即 h.instance_name，同时作为 gateway 会话 key（见 hostSnapshot）。
-		if err = rows.Scan(&host.HostID, &host.HostName, &host.HostIP, &groupID, &host.GroupName, &host.AgentOnline); err != nil {
-			return nil, err
-		}
-		if groupID.Valid {
-			value := groupID.Int64
+		host := hostSnapshot{HostID: row.ID, HostName: row.InstanceName, HostIP: row.Ip,
+			GroupName: row.GroupName, AgentOnline: row.AgentOnline}
+		if row.GroupID.Valid {
+			value := row.GroupID.Int64
 			host.GroupID = &value
 		}
 		host.InstanceName = host.HostName
@@ -608,9 +630,6 @@ func (handler *Handler) snapshotHosts(ctx context.Context, ids []int64, limit st
 		// must use the live Gateway session so the confirmation precheck is accurate.
 		host.AgentOnline = handler.gateway != nil && handler.gateway.IsOnline(host.InstanceName)
 		hosts = append(hosts, host)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
 	}
 	return applyAnsibleLimit(hosts, limit), nil
 }
@@ -662,20 +681,46 @@ func matchLimit(host hostSnapshot, token string) bool {
 
 func (handler *Handler) createAutomationJob(ctx context.Context, task gin.H, hosts []hostSnapshot, extra map[string]any, limit, message string) (int64, error) {
 	now := time.Now().UTC()
-	result, err := handler.db.ExecContext(ctx, "INSERT INTO automation_execution_job(create_time,update_time,remark,job_id,task_id,status,trigger_type,inventory_snapshot,task_name_snapshot,template_name_snapshot,template_content_snapshot,extra_vars,`limit`,result_summary,run_as_user_snapshot,run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", now, now, nil, uuid.NewString(), task["id"], "pending", "manual", marshalJSON(gin.H{"selected_host_ids": hostIDs(hosts), "hosts": hosts}), stringValue(task["name"]), stringValue(task["template_name"]), stringValue(task["template_content"]), marshalJSON(extra), strings.TrimSpace(limit), marshalJSON(gin.H{"message": message}), stringValue(task["run_as_user"]), stringValue(task["run_as_group"]), stringValue(task["work_directory"]), nil, "")
-	if err != nil {
-		return 0, err
+	// requested_user_id 保持 NULL：这条派发路径（RunTaskNow / Fluent Bit 安装）
+	// 迁移前就没记发起人。
+	return db.New(handler.db).CreateAutomationJob(ctx, db.CreateAutomationJobParams{
+		CreateTime:              now,
+		UpdateTime:              now,
+		JobID:                   uuid.NewString(),
+		TaskID:                  nullableTaskID(task["id"]),
+		InventorySnapshot:       marshalJSON(gin.H{"selected_host_ids": hostIDs(hosts), "hosts": hosts}),
+		TaskNameSnapshot:        stringValue(task["name"]),
+		TemplateNameSnapshot:    stringValue(task["template_name"]),
+		TemplateContentSnapshot: stringValue(task["template_content"]),
+		ExtraVars:               marshalJSON(extra),
+		JobLimit:                strings.TrimSpace(limit),
+		ResultSummary:           marshalJSON(gin.H{"message": message}),
+		RunAsUserSnapshot:       stringValue(task["run_as_user"]),
+		RunAsGroupSnapshot:      stringValue(task["run_as_group"]),
+		WorkDirectorySnapshot:   stringValue(task["work_directory"]),
+		RequestedUsername:       "",
+	})
+}
+
+// nullableTaskID 把 gin.H 里的 id 转成 sqlc 的 sql.NullInt64 参数（缺值即 NULL）。
+func nullableTaskID(value any) sql.NullInt64 {
+	if id, ok := jsonID(value); ok {
+		return sql.NullInt64{Int64: id, Valid: true}
 	}
-	return result.LastInsertId()
+	return sql.NullInt64{}
 }
 
 func (handler *Handler) runAutomationJob(ctx context.Context, jobID int64) error {
 	now := time.Now().UTC()
-	claim, err := handler.db.ExecContext(ctx, `UPDATE automation_execution_job SET status='running',start_time=?,result_summary=?,update_time=? WHERE id=? AND status='pending'`, now, marshalJSON(gin.H{"message": "Job is running"}), now, jobID)
+	claimed, err := db.New(handler.db).ClaimAutomationJob(ctx, db.ClaimAutomationJobParams{
+		StartTime:     sql.NullTime{Time: now, Valid: true},
+		ResultSummary: marshalJSON(gin.H{"message": "Job is running"}),
+		UpdateTime:    now,
+		ID:            jobID,
+	})
 	if err != nil {
 		return err
 	}
-	claimed, _ := claim.RowsAffected()
 	if claimed == 0 {
 		return nil
 	}
@@ -726,28 +771,14 @@ func (handler *Handler) rehydrateExecutionAgents(ctx context.Context, hosts []ho
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
-	arguments := make([]any, len(ids))
-	for index, id := range ids {
-		arguments[index] = id
-	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(instance_name,'') FROM assets_host WHERE id IN (`+placeholders+`)`, arguments...)
+	rows, err := db.New(handler.db).ListAutomationHostAgentIdentities(ctx, ids)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	agents := make(map[int64]string, len(hosts))
-	for rows.Next() {
-		var hostID int64
-		var instanceName string
-		if err = rows.Scan(&hostID, &instanceName); err != nil {
-			return err
-		}
+	for _, row := range rows {
 		// instance_name 即 gateway 会话 key，回填到 hostSnapshot.
-		agents[hostID] = strings.TrimSpace(instanceName)
-	}
-	if err = rows.Err(); err != nil {
-		return err
+		agents[row.ID] = strings.TrimSpace(row.InstanceName)
 	}
 	for index := range hosts {
 		hosts[index].InstanceName = agents[hosts[index].HostID]
@@ -765,24 +796,17 @@ func (handler *Handler) loadOrCreateControllerKey(ctx context.Context) (string, 
 		return "", "", err
 	}
 	defer transaction.Rollback()
-	rows, err := transaction.QueryContext(ctx, `SELECT id,public_key,private_key FROM automation_controller_ssh_key FOR UPDATE`)
+	queries := db.New(transaction)
+	controllerKeys, err := queries.ListAutomationControllerKeysForUpdate(ctx)
 	if err != nil {
 		return "", "", err
 	}
 	var ids []int64
 	var publicKey, encryptedPrivateKey string
-	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id, &publicKey, &encryptedPrivateKey); err != nil {
-			rows.Close()
-			return "", "", err
-		}
-		ids = append(ids, id)
+	for _, row := range controllerKeys {
+		ids = append(ids, row.ID)
+		publicKey, encryptedPrivateKey = row.PublicKey, row.PrivateKey
 	}
-	if err = rows.Err(); err != nil {
-		return "", "", err
-	}
-	rows.Close()
 	if len(ids) == 1 && strings.HasPrefix(encryptedPrivateKey, controllerKeyPrefix) {
 		privateKey, decryptErr := decryptControllerKey(key, encryptedPrivateKey)
 		if decryptErr == nil {
@@ -801,12 +825,14 @@ func (handler *Handler) loadOrCreateControllerKey(ctx context.Context) (string, 
 		return "", "", err
 	}
 	if len(ids) > 0 {
-		if _, err = transaction.ExecContext(ctx, `DELETE FROM automation_controller_ssh_key`); err != nil {
+		if err = queries.DeleteAutomationControllerKeys(ctx); err != nil {
 			return "", "", err
 		}
 	}
 	now := time.Now().UTC()
-	if _, err = transaction.ExecContext(ctx, `INSERT INTO automation_controller_ssh_key(create_time,update_time,remark,public_key,private_key) VALUES(?,?,?,?,?)`, now, now, nil, public, encrypted); err != nil {
+	if err = queries.CreateAutomationControllerKey(ctx, db.CreateAutomationControllerKeyParams{
+		CreateTime: now, UpdateTime: now, PublicKey: public, PrivateKey: encrypted,
+	}); err != nil {
 		return "", "", err
 	}
 	if err = transaction.Commit(); err != nil {
@@ -971,12 +997,28 @@ func (handler *Handler) finishJob(ctx context.Context, id int64, start time.Time
 	if failed > 0 || code != 0 {
 		status = "failed"
 	}
-	_, err := handler.db.ExecContext(ctx, `UPDATE automation_execution_job SET status=?,end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,?,?)/1000000,result_summary=?,update_time=? WHERE id=? AND status<>'cancelled'`, status, now, start, now, marshalJSON(gin.H{"message": message, "total": succeeded + failed, "success": succeeded, "failed": failed, "rc": code, "execution_mode": "local_ansible"}), now, id)
+	// duration_seconds 在应用层算（TIMESTAMPDIFF 是方言函数，见 CancelJob 的说明）。
+	_, err := db.New(handler.db).FinishAutomationJob(ctx, db.FinishAutomationJobParams{
+		Status:          status,
+		EndTime:         sql.NullTime{Time: now, Valid: true},
+		DurationSeconds: sql.NullFloat64{Float64: now.Sub(start).Seconds(), Valid: true},
+		ResultSummary: marshalJSON(gin.H{"message": message, "total": succeeded + failed, "success": succeeded,
+			"failed": failed, "rc": code, "execution_mode": "local_ansible"}),
+		UpdateTime: now,
+		ID:         id,
+	})
 	return err
 }
 func (handler *Handler) persistTargetFailures(ctx context.Context, jobID int64, failures map[int64]string) {
+	queries := db.New(handler.db)
+	now := time.Now().UTC()
 	for hostID, message := range failures {
-		_, _ = handler.db.ExecContext(ctx, `INSERT INTO automation_execution_host_log(create_time,update_time,remark,job_id,host_id,host_id_snapshot,host_name_snapshot,host_ip_snapshot,agent_job_id,status,exit_code,stdout,stderr,error_message,result_data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, time.Now().UTC(), time.Now().UTC(), nil, jobID, hostID, hostID, "", "", "", "failed", nil, "", "", message, "{}")
+		_ = queries.CreateAutomationJobHostLog(ctx, db.CreateAutomationJobHostLogParams{
+			CreateTime: now, UpdateTime: now, JobID: jobID,
+			HostID:         sql.NullInt64{Int64: hostID, Valid: true},
+			HostIDSnapshot: sql.NullInt32{Int32: int32(hostID), Valid: true},
+			Status:         "failed", ErrorMessage: message,
+		})
 	}
 }
 func (handler *Handler) persistTargetResults(ctx context.Context, jobID int64, hosts []hostSnapshot, code int, stdout, stderr string, runErr error) {
@@ -984,12 +1026,21 @@ func (handler *Handler) persistTargetResults(ctx context.Context, jobID int64, h
 	if code != 0 || runErr != nil {
 		status = "failed"
 	}
+	queries := db.New(handler.db)
+	now := time.Now().UTC()
 	for _, host := range hosts {
 		message := ""
 		if runErr != nil {
 			message = runErr.Error()
 		}
-		_, _ = handler.db.ExecContext(ctx, `INSERT INTO automation_execution_host_log(create_time,update_time,remark,job_id,host_id,host_id_snapshot,host_name_snapshot,host_ip_snapshot,agent_job_id,status,exit_code,stdout,stderr,error_message,result_data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, time.Now().UTC(), time.Now().UTC(), nil, jobID, host.HostID, host.HostID, host.HostName, host.HostIP, "", status, code, stdout, stderr, message, "{}")
+		_ = queries.CreateAutomationJobHostLog(ctx, db.CreateAutomationJobHostLogParams{
+			CreateTime: now, UpdateTime: now, JobID: jobID,
+			HostID:           sql.NullInt64{Int64: host.HostID, Valid: true},
+			HostIDSnapshot:   sql.NullInt32{Int32: int32(host.HostID), Valid: true},
+			HostNameSnapshot: host.HostName, HostIpSnapshot: host.HostIP, Status: status,
+			ExitCode: sql.NullInt32{Int32: int32(code), Valid: true},
+			Stdout:   stdout, Stderr: stderr, ErrorMessage: message,
+		})
 	}
 }
 func (handler *Handler) inventoryByID(ctx context.Context, id int64) (gin.H, error) {
@@ -1007,15 +1058,11 @@ func (handler *Handler) decorateInventoryContext(ctx context.Context, item gin.H
 		item["scope_summary"], item["health_status"], item["resolved_host_count"] = gin.H{"label": "0 groups / 0 hosts", "group_count": 0, "host_count": 0, "is_empty_scope": true}, gin.H{"status": "empty", "label": "Empty", "message": "Inventory has no usable hosts"}, 0
 		return
 	}
-	marks := strings.TrimRight(strings.Repeat("?,", len(hostIDs)), ",")
-	args := make([]any, len(hostIDs))
-	for index, hostID := range hostIDs {
-		args[index] = hostID
-	}
-	var existing, resolved, groups int
-	if err := handler.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(ip IS NOT NULL),0),COUNT(DISTINCT group_id) FROM assets_host WHERE id IN (`+marks+`)`, args...).Scan(&existing, &resolved, &groups); err != nil {
+	counts, err := db.New(handler.db).CountAutomationInventoryHosts(ctx, hostIDs)
+	if err != nil {
 		return
 	}
+	existing, resolved, groups := int(counts.Existing), int(counts.Resolved), int(counts.GroupCount)
 	item["scope_summary"], item["resolved_host_count"] = gin.H{"label": fmt.Sprintf("%d groups / %d hosts", groups, resolved), "group_count": groups, "host_count": resolved, "is_empty_scope": false}, resolved
 	if existing < len(hostIDs) {
 		item["health_status"] = gin.H{"status": "invalid", "label": "Invalid", "message": "Inventory contains deleted hosts"}

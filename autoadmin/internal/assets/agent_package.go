@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -52,10 +53,7 @@ func validateAgentBinary(data []byte) error {
 
 func (handler *Handler) ListAgentPackages(context *gin.Context) {
 	// 单包语义：直接返回当前包对象（无包时 items 为 null），不是列表。
-	var item agentPackage
-	err := handler.service.repository.pool.QueryRowContext(context,
-		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
-		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+	item, err := db.New(handler.service.repository.pool).GetActiveAgentPackage(context)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		response.Error(context, err)
 		return
@@ -63,7 +61,7 @@ func (handler *Handler) ListAgentPackages(context *gin.Context) {
 	data := gin.H{}
 	if err == nil {
 		data = gin.H{
-			"id": item.ID, "file": item.File, "sha256": item.SHA256,
+			"id": item.ID, "file": item.File, "sha256": item.Sha256,
 			"size_bytes": item.SizeBytes, "is_active": item.IsActive,
 			"create_time": agentPackageCreateTime(item.CreateTime),
 		}
@@ -118,31 +116,36 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	var itemID int64
-	err = tx.QueryRowContext(context, `SELECT id FROM agent_package WHERE version=?`, agentPackageSlot).Scan(&itemID)
+	txQueries := db.New(tx)
+	var itemID uint64
+	existingID, lookupErr := txQueries.GetAgentPackageIDByVersion(context, agentPackageSlot)
 	switch {
-	case err == sql.ErrNoRows:
-		result, insertErr := tx.ExecContext(context, `INSERT INTO agent_package(version,file,sha256,size_bytes,is_active,create_time) VALUES(?,?,?,?,1,?)`,
-			agentPackageSlot, relativePath, sum, len(data), now)
+	case errors.Is(lookupErr, sql.ErrNoRows):
+		insertedID, insertErr := txQueries.CreateAgentPackage(context, db.CreateAgentPackageParams{
+			Version: agentPackageSlot, File: relativePath, Sha256: sum,
+			SizeBytes: int64(len(data)), CreateTime: sql.NullTime{Time: now, Valid: true},
+		})
 		if insertErr != nil {
 			tx.Rollback()
 			response.Error(context, insertErr)
 			return
 		}
-		itemID, _ = result.LastInsertId()
-	case err != nil:
+		itemID = uint64(insertedID)
+	case lookupErr != nil:
 		tx.Rollback()
-		response.Error(context, err)
+		response.Error(context, lookupErr)
 		return
 	default:
-		if _, err = tx.ExecContext(context, `UPDATE agent_package SET file=?,sha256=?,size_bytes=?,is_active=1 WHERE id=?`,
-			relativePath, sum, len(data), itemID); err != nil {
+		if err = txQueries.UpdateAgentPackageFile(context, db.UpdateAgentPackageFileParams{
+			File: relativePath, Sha256: sum, SizeBytes: int64(len(data)), ID: existingID,
+		}); err != nil {
 			tx.Rollback()
 			response.Error(context, err)
 			return
 		}
+		itemID = existingID
 	}
-	if _, err = tx.ExecContext(context, `UPDATE agent_package SET is_active=0 WHERE id<>? AND is_active=1`, itemID); err != nil {
+	if err = txQueries.DeactivateOtherAgentPackages(context, itemID); err != nil {
 		tx.Rollback()
 		response.Error(context, err)
 		return
@@ -156,9 +159,7 @@ func (handler *Handler) UploadAgentPackage(context *gin.Context) {
 
 func (handler *Handler) DownloadAgentPackage(context *gin.Context) {
 	pool := handler.service.repository.pool
-	var file string
-	err := pool.QueryRowContext(context,
-		`SELECT file FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).Scan(&file)
+	file, err := db.New(pool).GetActiveAgentPackageFile(context)
 	if errors.Is(err, sql.ErrNoRows) {
 		response.BusinessError(context, 404, "尚未上传 Agent 安装包", nil)
 		return
@@ -193,13 +194,8 @@ func (handler *Handler) ActivateAgentPackage(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	result, err := tx.ExecContext(context, `UPDATE agent_package SET is_active=1 WHERE id=?`, id)
-	if err != nil {
-		tx.Rollback()
-		response.Error(context, err)
-		return
-	}
-	affected, err := result.RowsAffected()
+	txQueries := db.New(tx)
+	affected, err := txQueries.ActivateAgentPackage(context, uint64(id))
 	if err != nil {
 		tx.Rollback()
 		response.Error(context, err)
@@ -210,7 +206,7 @@ func (handler *Handler) ActivateAgentPackage(context *gin.Context) {
 		response.BusinessError(context, 404, "agent package not found", nil)
 		return
 	}
-	if _, err = tx.ExecContext(context, `UPDATE agent_package SET is_active=0 WHERE id<>? AND is_active=1`, id); err != nil {
+	if err = txQueries.DeactivateOtherAgentPackages(context, uint64(id)); err != nil {
 		tx.Rollback()
 		response.Error(context, err)
 		return
@@ -254,18 +250,15 @@ func batchDeleteAgentResults(ids []int64, deleteOne func(id int64) error) ([]gin
 }
 
 func (handler *Handler) deleteAgentPackageByID(context *gin.Context, id int64) error {
-	var item agentPackage
-	err := handler.service.repository.pool.QueryRowContext(context,
-		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE id=?`, id).
-		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+	queries := db.New(handler.service.repository.pool)
+	item, err := queries.GetAgentPackage(context, uint64(id))
 	if err != nil {
 		return err
 	}
 	if err = handler.deleteAgentPackageFile(item.File); err != nil {
 		return err
 	}
-	_, err = handler.service.repository.pool.ExecContext(context, `DELETE FROM agent_package WHERE id=?`, id)
-	return err
+	return queries.DeleteAgentPackage(context, uint64(id))
 }
 
 // deleteAgentPackageFile 只允许删除 mediaRoot 内的相对路径，防目录穿越。

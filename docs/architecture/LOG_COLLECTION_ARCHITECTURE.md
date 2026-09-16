@@ -381,6 +381,29 @@ LogCollectionTarget           新增，主机级
 
 OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日志处理规则明确关联目标集群。
 
+### 7.1 管理面的写路径（Go 版最终逻辑，2026-09-16 随 SQL 迁移定型）
+
+**保留档位 / 解析规则 / 采集过滤规则**（`/monitor/log-retention-tiers|log-processing-rules|log-filter-rules`，实现见
+`internal/monitor/config_resources.go` 与 `config_resource_writers.go`）：
+
+- **"只写提交了的字段"这一 PATCH 语义**由「更新前读回整行 → 合并提交的字段 → 整行写」承担
+  （`COALESCE(narg,col)` 表达不了"显式写入空值/删除"，例如把解析规则的 `application` 显式提交为 `null`）。
+- **新建**是整行插入：请求体缺了"NOT NULL 且库级没有默认值"的列时返回 400 并列出缺哪些键
+  （原先由 MySQL 严格模式报 `Field 'x' doesn't have a default value`，文案不可读）。
+- 校验规则（档位 code 格式、`daily_size_gb > 0`、`retention_days ∈ [1,3650]`、`rollover_min_index_age` 形如 `30m/12h/1d`、
+  规则名 `^[a-z0-9][a-z0-9._-]*$`、`pattern` 不得含换行且必须是合法正则、`flush_timeout ∈ [100,60000]`）不变；
+  解析规则保存前先发布 pipeline 到集群、失败则整条请求 400 且不落库的行为不变。
+- 删除仍是"逐 id + 汇总 `{count, results}`"的批量语义；档位被逻辑服务/日志设置引用、规则被日志定义引用时拒绝删除
+  （引用计数用取行/计数查询，不再 `SELECT COUNT(*)` 兼职判存在）。
+
+**OpenSearch 集群**（`/monitor/opensearch-clusters/*`，实现见 `opensearch_config.go`）：
+
+- "只支持一个集群"；新建前计数校验，`is_default` 提交为 true 时先清掉其它行的默认标记（事务内）。
+- 密码列存的是密文：提交值等于 `******` 时保持原值，空串表示清空。
+- **建集群时显式写 `last_check_message` / `storage_sync_error` / `storage_sync_status` 三列**（都是 NOT NULL 且库级
+  没有默认值）：原实现从不写这三列，在严格模式下建集群恒报 1364，**该接口一直不可用**（"只支持一个集群"、
+  现场早有记录，所以没人碰到）；2026-09-16 随 SQL 迁移发现并修掉。
+
 ---
 
 ## 8. 配置下发
@@ -528,6 +551,13 @@ OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固�
   → 回写 config_fingerprint / last_applied_time
 ```
 
+- **安装/卸载与下发的时间口径（Go 版，2026-09-16 随 SQL 迁移定型）**：作业/历史的时长由应用层算
+  （历史的 `create_time` 就是派发时刻；原实现用 `TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000`），
+  取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
+  在应用层解析（原实现是 `JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))`）；收尾语句里
+  "成功则把 runtime_status 置 running" 用整数标志传（同一条语句里重复写同一个 `sqlc.arg` 会让
+  MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
+  （0=运行中、3=已停止、其余=异常）。
 - 解析（多行/格式）由 OpenSearch ingest pipeline（处理规则 pipeline_body，名称即规则 name）
   承担，INPUT 不携带 multiline 配置。
 - **片段目录由 backend 全量托管**：渲染结果即该主机期望的完整片段集合，agent 落盘后会

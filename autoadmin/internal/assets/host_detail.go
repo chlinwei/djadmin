@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+
+	db "autoadmin/internal/platform/database/generated"
 )
 
 type HostDetail struct {
@@ -30,67 +32,58 @@ type HostDetail struct {
 
 func (handler *Handler) getHostDetail(ctx context.Context, host Host) (HostDetail, error) {
 	detail := HostDetail{Host: host, Disks: []map[string]any{}, Monitors: []any{}, LastCollectTime: host.CollectTime}
-	var osType, osVersion, kernelVersion, hostname, agentVersion, timezoneName, utcOffset, collectorSource sql.NullString
-	err := handler.service.repository.pool.QueryRowContext(ctx, `SELECT os_type,os_version,kernel_version,hostname,agent_version,timezone_name,utc_offset,collector_source FROM assets_hostsystem WHERE host_id=? LIMIT 1`, host.ID).Scan(&osType, &osVersion, &kernelVersion, &hostname, &agentVersion, &timezoneName, &utcOffset, &collectorSource)
+	queries := db.New(handler.service.repository.pool)
+
+	system, err := queries.GetHostSystem(ctx, host.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return detail, err
 	}
 	if err == nil {
-		detail.System = map[string]any{"os_type": nullStringValue(osType), "os_version": nullStringValue(osVersion), "kernel_version": nullStringValue(kernelVersion), "hostname": nullStringValue(hostname), "agent_version": nullStringValue(agentVersion), "timezone_name": nullStringValue(timezoneName), "utc_offset": nullStringValue(utcOffset), "collector_source": nullStringValue(collectorSource), "agent_last_seen_at": host.AgentOnlineTime, "agent_online": host.AgentOnline}
-		detail.OSType, detail.OSVersion, detail.KernelVersion, detail.Hostname = nullStringValue(osType), nullStringValue(osVersion), nullStringValue(kernelVersion), nullStringValue(hostname)
+		systemMap := map[string]any{"os_type": nullStringValue(system.OsType), "os_version": nullStringValue(system.OsVersion), "kernel_version": nullStringValue(system.KernelVersion), "hostname": nullStringValue(system.Hostname), "agent_version": nullStringValue(system.AgentVersion), "timezone_name": nullStringValue(system.TimezoneName), "utc_offset": nullStringValue(system.UtcOffset), "collector_source": nullStringValue(system.CollectorSource), "agent_last_seen_at": host.AgentOnlineTime, "agent_online": host.AgentOnline}
+		detail.System = systemMap
+		detail.OSType, detail.OSVersion = nullStringValue(system.OsType), nullStringValue(system.OsVersion)
+		detail.KernelVersion, detail.Hostname = nullStringValue(system.KernelVersion), nullStringValue(system.Hostname)
 	}
-	var cpuCores sql.NullInt64
-	var cpuModel, architecture sql.NullString
-	var memoryGB, diskTotalGB sql.NullFloat64
-	err = handler.service.repository.pool.QueryRowContext(ctx, `SELECT cpu_cores,cpu_model,memory_gb,disk_total_gb,architecture FROM assets_hosthardware WHERE host_id=? LIMIT 1`, host.ID).Scan(&cpuCores, &cpuModel, &memoryGB, &diskTotalGB, &architecture)
+
+	hardware, err := queries.GetHostHardware(ctx, host.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return detail, err
 	}
 	if err == nil {
-		detail.Hardware = map[string]any{"cpu_cores": nullIntValue(cpuCores), "cpu_model": nullStringValue(cpuModel), "memory_gb": nullFloatValue(memoryGB), "disk_total_gb": nullFloatValue(diskTotalGB), "architecture": nullStringValue(architecture)}
-		detail.CPUCores, detail.CPUModel, detail.MemoryGB, detail.DiskTotalGB, detail.Architecture = nullIntValue(cpuCores), nullStringValue(cpuModel), nullFloatValue(memoryGB), nullFloatValue(diskTotalGB), nullStringValue(architecture)
+		hardwareMap := map[string]any{"cpu_cores": nullInt32Value(hardware.CpuCores), "cpu_model": nullStringValue(hardware.CpuModel), "memory_gb": nullFloatValue(hardware.MemoryGb), "disk_total_gb": nullFloatValue(hardware.DiskTotalGb), "architecture": nullStringValue(hardware.Architecture)}
+		detail.Hardware = hardwareMap
+		detail.CPUCores, detail.CPUModel = nullInt32Value(hardware.CpuCores), nullStringValue(hardware.CpuModel)
+		detail.MemoryGB, detail.DiskTotalGB = nullFloatValue(hardware.MemoryGb), nullFloatValue(hardware.DiskTotalGb)
+		detail.Architecture = nullStringValue(hardware.Architecture)
 	}
-	var cpuUsage, memoryUsage sql.NullFloat64
-	var cpuTimes, memory, diskIO []byte
-	var uptime sql.NullInt64
-	var bootTime, collectedAt sql.NullTime
-	var sampleWindow sql.NullInt64
-	err = handler.service.repository.pool.QueryRowContext(ctx, `SELECT cpu_usage_percent,cpu_times,memory_usage_percent,memory,disk_io,os_uptime_seconds,os_boot_time,metrics_sample_window_ms,collected_at FROM assets_hostruntime WHERE host_id=? LIMIT 1`, host.ID).Scan(&cpuUsage, &cpuTimes, &memoryUsage, &memory, &diskIO, &uptime, &bootTime, &sampleWindow, &collectedAt)
+
+	runtime, err := queries.GetHostRuntime(ctx, host.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return detail, err
 	}
 	if err == nil {
-		detail.Runtime = map[string]any{"cpu_usage_percent": nullFloatValue(cpuUsage), "cpu_times": hostJSONValue(cpuTimes, map[string]any{}), "memory_usage_percent": nullFloatValue(memoryUsage), "memory": hostJSONValue(memory, map[string]any{}), "disk_io": hostJSONValue(diskIO, []any{}), "os_uptime_seconds": nullIntValue(uptime), "os_boot_time": nullTimeValue(bootTime), "metrics_sample_window_ms": nullIntValue(sampleWindow), "collected_at": nullTimeValue(collectedAt)}
+		detail.Runtime = map[string]any{"cpu_usage_percent": nullFloatValue(runtime.CpuUsagePercent), "cpu_times": hostJSONValue(runtime.CpuTimes, map[string]any{}), "memory_usage_percent": nullFloatValue(runtime.MemoryUsagePercent), "memory": hostJSONValue(runtime.Memory, map[string]any{}), "disk_io": hostJSONValue(runtime.DiskIo, []any{}), "os_uptime_seconds": nullIntValue(runtime.OsUptimeSeconds), "os_boot_time": nullTimeValue(runtime.OsBootTime), "metrics_sample_window_ms": nullInt32Value(runtime.MetricsSampleWindowMs), "collected_at": nullTimeValue(runtime.CollectedAt)}
 	}
-	rows, err := handler.service.repository.pool.QueryContext(ctx, `SELECT device,mount_point,size_gb,used_gb,filesystem FROM assets_hostdisk WHERE host_id=? ORDER BY id`, host.ID)
+
+	diskRows, err := queries.ListHostDisks(ctx, host.ID)
 	if err != nil {
 		return detail, err
 	}
-	defer rows.Close()
 	var total, used float64
-	for rows.Next() {
-		var device string
-		var mountPoint, filesystem sql.NullString
-		var sizeGB, usedGB sql.NullFloat64
-		if err = rows.Scan(&device, &mountPoint, &sizeGB, &usedGB, &filesystem); err != nil {
-			return detail, err
-		}
+	for _, disk := range diskRows {
 		var usage any
-		if sizeGB.Valid && sizeGB.Float64 > 0 && usedGB.Valid {
-			usage = math.Round(usedGB.Float64/sizeGB.Float64*10000) / 100
-			total += sizeGB.Float64
-			used += usedGB.Float64
+		if disk.SizeGb.Valid && disk.SizeGb.Float64 > 0 && disk.UsedGb.Valid {
+			usage = math.Round(disk.UsedGb.Float64/disk.SizeGb.Float64*10000) / 100
+			total += disk.SizeGb.Float64
+			used += disk.UsedGb.Float64
 		}
-		detail.Disks = append(detail.Disks, map[string]any{"device": device, "mount_point": nullStringValue(mountPoint), "size_gb": nullFloatValue(sizeGB), "used_gb": nullFloatValue(usedGB), "filesystem": nullStringValue(filesystem), "usage_percent": usage})
+		detail.Disks = append(detail.Disks, map[string]any{"device": disk.Device, "mount_point": nullStringValue(disk.MountPoint), "size_gb": nullFloatValue(disk.SizeGb), "used_gb": nullFloatValue(disk.UsedGb), "filesystem": nullStringValue(disk.Filesystem), "usage_percent": usage})
 	}
 	if total > 0 {
 		detail.DiskUsedPercent = math.Round(used/total*10000) / 100
-		if hardware, ok := detail.Hardware.(map[string]any); ok {
-			hardware["disk_used_percent"] = detail.DiskUsedPercent
+		if hardwareMap, ok := detail.Hardware.(map[string]any); ok {
+			hardwareMap["disk_used_percent"] = detail.DiskUsedPercent
 		}
-	}
-	if err = rows.Err(); err != nil {
-		return detail, err
 	}
 
 	monitors, err := handler.getHostMonitors(ctx, host.ID)
@@ -104,45 +97,39 @@ func (handler *Handler) getHostDetail(ctx context.Context, host Host) (HostDetai
 // getHostMonitors 与 Django assets.serializer.HostDetailSerializer.get_monitors 保持字段一致，
 // 前端"性能监控" tab 依赖 monitors[].name=="node_exporter" && enabled==true 判断是否展示。
 func (handler *Handler) getHostMonitors(ctx context.Context, hostID int64) ([]any, error) {
-	rows, err := handler.service.repository.pool.QueryContext(ctx, `SELECT id,exporter_type,scrape_port,managed_enabled,install_status,install_message,retry_count,update_time FROM monitor_target WHERE host_id=? ORDER BY id DESC`, hostID)
+	rows, err := db.New(handler.service.repository.pool).ListHostMonitors(ctx, hostID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	monitors := []any{}
-	for rows.Next() {
-		var id int64
-		var exporterType string
-		var scrapePort int64
-		var managedEnabled bool
-		var installStatus, installMessage sql.NullString
-		var retryCount int64
-		var updateTime sql.NullTime
-		if err = rows.Scan(&id, &exporterType, &scrapePort, &managedEnabled, &installStatus, &installMessage, &retryCount, &updateTime); err != nil {
-			return nil, err
-		}
-		status := installStatus.String
+	monitors := make([]any, 0, len(rows))
+	for _, row := range rows {
+		status := row.InstallStatus
 		if status == "" {
 			status = "unknown"
 		}
 		monitors = append(monitors, map[string]any{
-			"id":              id,
-			"name":            exporterType,
-			"port":            scrapePort,
-			"enabled":         managedEnabled,
+			"id":              row.ID,
+			"name":            row.ExporterType,
+			"port":            row.ScrapePort,
+			"enabled":         row.ManagedEnabled,
 			"install_status":  status,
-			"install_message": nullStringValue(installMessage),
-			"retry_count":     retryCount,
-			"update_time":     nullTimeValue(updateTime),
+			"install_message": nullStringValue(sql.NullString{String: row.InstallMessage, Valid: row.InstallMessage != ""}),
+			"retry_count":     row.RetryCount,
+			"update_time":     row.UpdateTime,
 		})
 	}
-	return monitors, rows.Err()
+	return monitors, nil
 }
 
 func nullStringValue(value sql.NullString) any {
 	if value.Valid {
 		return value.String
+	}
+	return nil
+}
+func nullInt32Value(value sql.NullInt32) any {
+	if value.Valid {
+		return value.Int32
 	}
 	return nil
 }
@@ -164,7 +151,7 @@ func nullTimeValue(value sql.NullTime) any {
 	}
 	return nil
 }
-func hostJSONValue(raw []byte, fallback any) any {
+func hostJSONValue(raw json.RawMessage, fallback any) any {
 	if len(raw) == 0 {
 		return fallback
 	}

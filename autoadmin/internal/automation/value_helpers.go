@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -61,11 +62,12 @@ func stringValue(value any) string {
 	}
 }
 
-func nullableID(value *int64) any {
+// nullableID 把可空 ID 指针转成 sqlc 的 sql.NullInt64 参数：nil 或非正数即 NULL。
+func nullableID(value *int64) sql.NullInt64 {
 	if value == nil || *value < 1 {
-		return nil
+		return sql.NullInt64{}
 	}
-	return *value
+	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
 func jsonID(value any) (int64, bool) {

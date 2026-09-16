@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	db "autoadmin/internal/platform/database/generated"
+
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
@@ -55,10 +57,11 @@ func (handler *Handler) SyncSoftwarePackageFromOfficial(context *gin.Context) {
 		return
 	}
 	// 目标版本若已被同名 os/arch 的其他记录占用，提前拦截，避免落库时触发唯一约束报错。
-	var conflict int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM monitor_software_package
-		WHERE name=? AND version=? AND os=? AND arch=? AND platform_family=? AND platform_major=? AND id<>?`,
-		item.Name, targetVersion, item.OS, item.Arch, item.PlatformFamily, item.PlatformMajor, item.ID).Scan(&conflict); err != nil {
+	conflict, err := db.New(handler.db).CountSoftwarePackageSyncConflict(context, db.CountSoftwarePackageSyncConflictParams{
+		Name: item.Name, Version: targetVersion, Os: item.OS, Arch: item.Arch,
+		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor, ExcludeID: item.ID,
+	})
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -81,8 +84,10 @@ func (handler *Handler) SyncSoftwarePackageFromOfficial(context *gin.Context) {
 	if item.File != "" && item.File != relativePath {
 		_ = handler.deleteSoftwarePackageFile(item.File)
 	}
-	if _, err = handler.db.ExecContext(context, `UPDATE monitor_software_package SET version=?,file=?,sha256=?,size_bytes=?,update_time=? WHERE id=?`,
-		targetVersion, relativePath, checksum, size, time.Now().UTC(), item.ID); err != nil {
+	if err = db.New(handler.db).UpdateSoftwarePackageSource(context, db.UpdateSoftwarePackageSourceParams{
+		Version: targetVersion, File: relativePath, Sha256: checksum, SizeBytes: size,
+		UpdateTime: time.Now().UTC(), ID: item.ID,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}

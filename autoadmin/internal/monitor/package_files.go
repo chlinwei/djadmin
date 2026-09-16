@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	db "autoadmin/internal/platform/database/generated"
+
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
@@ -81,7 +83,10 @@ func (handler *Handler) UploadSoftwarePackage(context *gin.Context) {
 	if item.File != "" && item.File != relativePath {
 		_ = handler.deleteSoftwarePackageFile(item.File)
 	}
-	_, err = handler.db.ExecContext(context, `UPDATE monitor_software_package SET file=?,sha256=?,size_bytes=?,update_time=? WHERE id=?`, relativePath, fmt.Sprintf("%x", hasher.Sum(nil)), written, time.Now().UTC(), item.ID)
+	err = db.New(handler.db).UpdateSoftwarePackageFile(context, db.UpdateSoftwarePackageFileParams{
+		File: relativePath, Sha256: fmt.Sprintf("%x", hasher.Sum(nil)), SizeBytes: written,
+		UpdateTime: time.Now().UTC(), ID: item.ID,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -131,7 +136,7 @@ func (handler *Handler) deleteSoftwarePackageByID(context *gin.Context, id int64
 	if err = handler.deleteSoftwarePackageFile(item.File); err != nil {
 		return err
 	}
-	if _, err = handler.db.ExecContext(context, `DELETE FROM monitor_software_package WHERE id=?`, item.ID); err != nil {
+	if err = db.New(handler.db).DeleteSoftwarePackage(context, item.ID); err != nil {
 		return err
 	}
 	return nil

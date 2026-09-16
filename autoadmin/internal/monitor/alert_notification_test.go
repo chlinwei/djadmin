@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -118,21 +119,23 @@ func notificationTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, *sql.DB) 
 }
 
 // policyTreeRows 根节点：matchers=[] 恒命中，出口媒介 [2]。
+// 列集与 ListNotificationPolicyNodes 一致（树加载与管理列表共用一条查询，含建/改时间）。
 func policyTreeRows() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "parent_id", "name", "position", "remark", "matchers", "media_ids", "user_group_ids", "notify_on_firing", "notify_on_resolved"}).
-		AddRow(int64(1), int64(0), "默认策略", 0, "", `[]`, `[2]`, nil, true, true)
+	now := time.Now().UTC()
+	return sqlmock.NewRows([]string{"id", "parent_id", "name", "position", "remark", "matchers", "media_ids", "user_group_ids", "notify_on_firing", "notify_on_resolved", "create_time", "update_time"}).
+		AddRow(int64(1), int64(0), "默认策略", int32(0), "", []byte(`[]`), "[2]", nil, true, true, now, now)
 }
 
 func expectPolicyMediaHit(mock sqlmock.Sqlmock, name, mediaType string) {
 	mock.ExpectQuery("FROM monitor_notification_policy").WillReturnRows(policyTreeRows())
-	mock.ExpectQuery("FROM monitor_alert_media WHERE enabled=TRUE AND id IN").
+	mock.ExpectQuery("SELECT id, name, media_type, config FROM monitor_alert_media").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "media_type", "config"}).
-			AddRow(int64(2), name, mediaType, `{"smtpServer":"smtp.x.com"}`))
+			AddRow(int64(2), name, mediaType, []byte(`{"smtpServer":"smtp.x.com"}`)))
 }
 
 func expectPolicyMediaMiss(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("FROM monitor_notification_policy").WillReturnRows(policyTreeRows())
-	mock.ExpectQuery("FROM monitor_alert_media WHERE enabled=TRUE AND id IN").
+	mock.ExpectQuery("SELECT id, name, media_type, config FROM monitor_alert_media").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "media_type", "config"}))
 }
 
@@ -140,7 +143,7 @@ func TestEnqueueAlertNotificationSkipsWithoutMedia(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
 	// 策略树出口为空：不得出现任何 INSERT。
 	expectPolicyMediaMiss(mock)
-	created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	_, created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
@@ -155,22 +158,18 @@ func TestEnqueueAlertNotificationSkipsWithoutMedia(t *testing.T) {
 func TestEnqueueAlertNotificationCreatesDedupedEvent(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
-		WillReturnResult(sqlmock.NewResult(9, 1))
-	created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	expectAlertNotificationEventInsert(mock, "firing", "7:firing", 7, 9, true)
+	eventID, created, err := handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if !created {
-		t.Fatal("expected event created")
+	if !created || eventID != 9 {
+		t.Fatalf("expected event created with id 9, got id=%d created=%v", eventID, created)
 	}
 	// 第二次同 key 入队：预判仍命中但 INSERT IGNORE 去重，不计入也不派发。
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
-		WillReturnResult(sqlmock.NewResult(9, 0))
-	created, err = handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
+	expectAlertNotificationEventInsert(mock, "firing", "7:firing", 7, 9, false)
+	_, created, err = handler.enqueueAlertNotification(alertNotificationTarget{id: 7, alertname: "HighDiskUsage", severity: "warning", labels: map[string]any{"severity": "warning"}}, "firing")
 	if err != nil {
 		t.Fatalf("duplicate enqueue: %v", err)
 	}
@@ -186,12 +185,7 @@ func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 	handler, mock, _ := notificationTestHandler(t)
 	// 第一个目标命中并创建事件；第二个目标预判无媒介不建事件。
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("INSERT IGNORE INTO monitor_alert_notification_event").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "firing", "7:firing", int64(7)).
-		WillReturnResult(sqlmock.NewResult(9, 1))
-	mock.ExpectQuery("SELECT id FROM monitor_alert_notification_event WHERE deduplication_key").
-		WithArgs("7:firing").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
+	expectAlertNotificationEventInsert(mock, "firing", "7:firing", 7, 9, true)
 	expectPolicyMediaMiss(mock)
 	count, ids := handler.enqueueWebhookNotifications([]alertNotificationTarget{
 		{id: 7, alertname: "HighDiskUsage", severity: "warning", state: "firing", labels: map[string]any{"severity": "warning"}},
@@ -207,9 +201,11 @@ func TestEnqueueWebhookNotificationsCounts(t *testing.T) {
 
 // ---- 发送：绑定筛选 ----
 
+// eventRow 对应 GetAlertNotificationEventDispatch：事件字段（含 status/attempt_count，
+// 原实现分两条语句读同一行，现在合并为一条）与告警关键字段一次返回。
 func eventRow() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"event_type", "attempt_count", "id", "alertname", "severity", "instance", "state", "labels"}).
-		AddRow("firing", 0, int64(7), "HighDiskUsage", "warning", "host-1", "firing", `{"severity":"warning"}`)
+	return sqlmock.NewRows([]string{"event_type", "attempt_count", "status", "id", "alertname", "severity", "instance", "state", "labels"}).
+		AddRow("firing", int64(0), "pending", int64(7), "HighDiskUsage", "warning", "host-1", "firing", []byte(`{"severity":"warning"}`))
 }
 
 func TestSendAlertNotificationEventNoBindings(t *testing.T) {
@@ -219,10 +215,8 @@ func TestSendAlertNotificationEventNoBindings(t *testing.T) {
 		return true, ""
 	}
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
-	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	// 该媒介没有任何 enabled 绑定。
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
@@ -250,11 +244,9 @@ func TestSendAlertNotificationEventNonEmailMediaOnly(t *testing.T) {
 		return true, ""
 	}
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
-	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
 	// 预判能命中媒介（非 email），但发送阶段全部被跳过。
 	expectPolicyMediaHit(mock, "钉钉群", "webhook")
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("SET status='failed'").
 		WithArgs("匹配的告警媒介没有可投递的用户地址", sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -287,23 +279,19 @@ func TestSendAlertNotificationEventDeliverySuccess(t *testing.T) {
 		return true, ""
 	}
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
-	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", `["a@b.com", "a@b.com", " "]`))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", []byte(`["a@b.com", "a@b.com", " "]`)))
 	// get-or-create delivery：去重后的 a@b.com 一条。
-	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
-		WillReturnResult(sqlmock.NewResult(11, 1))
+	expectAlertNotificationDeliveryCreate(mock, 11)
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
 		WithArgs(int64(11)).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("SET status='success',sent_at").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("SET status='success',sent_at=\\?,error_message='',update_time=\\? WHERE id=\\?").
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	// 片段不写占位符：两侧是 `?` / `$n`。
+	mock.ExpectExec("SET status='success', sent_at").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -328,21 +316,17 @@ func TestSendAlertNotificationEventDeliveryFailureIsRetryable(t *testing.T) {
 		return false, "邮件发送失败: connection refused"
 	}
 	mock.ExpectQuery("FROM monitor_alert_notification_event e JOIN monitor_alert_history").WillReturnRows(eventRow())
-	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_event").
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
 	expectPolicyMediaHit(mock, "公司邮箱", "email")
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("FROM monitor_user_alert_media_binding b JOIN sys_user u").
 		WithArgs(int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", `["a@b.com"]`))
-	mock.ExpectExec("INSERT INTO monitor_alert_notification_delivery").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "a@b.com", int64(1), int64(2), int64(5)).
-		WillReturnResult(sqlmock.NewResult(11, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "recipients"}).AddRow(int64(5), "zhang", []byte(`["a@b.com"]`)))
+	expectAlertNotificationDeliveryCreate(mock, 11)
 	mock.ExpectQuery("SELECT status FROM monitor_alert_notification_delivery").
 		WithArgs(int64(11)).
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("pending"))
-	mock.ExpectExec("SET status='sending',attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("SET status='failed',error_message").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='sending', attempt_count=attempt_count\\+1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("SET status='failed', error_message").WillReturnResult(sqlmock.NewResult(0, 1))
 	// attempt_count 尚未用尽：事件回 pending 等待退避重试。
 	mock.ExpectExec("SET status='pending'").WillReturnResult(sqlmock.NewResult(0, 1))
 

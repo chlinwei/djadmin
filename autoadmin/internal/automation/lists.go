@@ -143,13 +143,11 @@ func (handler *Handler) decorateInventory(context *gin.Context, item gin.H) {
 		item["resolved_host_count"] = 0
 		return
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(hostIDs)), ",")
-	arguments := make([]any, len(hostIDs))
-	for index, id := range hostIDs {
-		arguments[index] = id
+	counts, err := db.New(handler.db).CountAutomationInventoryHosts(context, hostIDs)
+	if err != nil {
+		return
 	}
-	var existing, resolved, groups int
-	handler.db.QueryRowContext(context, "SELECT COUNT(*),COALESCE(SUM(ip IS NOT NULL),0),COUNT(DISTINCT group_id) FROM assets_host WHERE id IN ("+placeholders+")", arguments...).Scan(&existing, &resolved, &groups)
+	existing, resolved, groups := int(counts.Existing), int(counts.Resolved), int(counts.GroupCount)
 	item["scope_summary"] = gin.H{"label": strconv.Itoa(groups) + "组 / " + strconv.Itoa(resolved) + "台主机", "group_count": groups, "host_count": resolved, "is_empty_scope": false}
 	item["resolved_host_count"] = resolved
 	if existing < len(hostIDs) {

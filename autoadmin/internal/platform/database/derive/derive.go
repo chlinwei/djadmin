@@ -15,6 +15,11 @@
 //     （改写成 $n 会让 sqlc 退回 Column1/Column2 的兜底命名，丢掉 Parameter 名）。
 //  4. `:execlastid` → `:one` + 语句末尾 `RETURNING id`（自增主键的取回方式必须分叉，见
 //     appendReturningID 的说明）。两侧生成的签名都是 `(int64, error)`，调用点不用变。
+//  5. 可变长 `IN (sqlc.slice(x))` → `x = ANY(sqlc.arg(x)::bigint[])`（Sqlc.slice 在 PG 侧是坏的，
+//     见 rewriteSlices；残留的 sqlc.slice 会让派生直接失败）。
+//  6. `ON DUPLICATE KEY UPDATE a=VALUES(a)` → `ON CONFLICT (<目标>) DO UPDATE SET a=EXCLUDED.a`
+//     （见 rewriteUpserts；冲突目标由源里的 `-- conflict: 列名` 注释声明，缺了直接报错）。
+//  7. `INSERT IGNORE INTO t(…)` → `INSERT INTO t(…) ON CONFLICT DO NOTHING`（见 rewriteInsertIgnore）。
 //
 // 关于命名参数与位置参数混用：sqlc 会把 sqlc.arg/sqlc.narg 的编号排在显式 $n 之后
 // （实测 `... (sqlc.narg(k) IS NULL OR s LIKE sqlc.narg(k)) AND n = $1 LIMIT $2` 里
@@ -27,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -223,7 +229,13 @@ func parseNameLine(line string) (queryHeader, bool) {
 }
 
 func rewriteQuery(header queryHeader, body string, returningID bool, matched map[string]bool) (string, error) {
-	rewritten := body
+	rewritten, err := rewriteInsertIgnore(rewriteSlices(body))
+	if err != nil {
+		return "", fmt.Errorf("查询 %s: %w", header.name, err)
+	}
+	if rewritten, err = rewriteUpserts(rewritten); err != nil {
+		return "", fmt.Errorf("查询 %s: %w", header.name, err)
+	}
 	for _, override := range perQueryOverrides[header.name] {
 		if !strings.Contains(rewritten, override.Old) {
 			return "", fmt.Errorf("查询 %s 的 override 未匹配：%q", header.name, clip(override.Old))
@@ -236,6 +248,20 @@ func rewriteQuery(header queryHeader, body string, returningID bool, matched map
 			rewritten = strings.ReplaceAll(rewritten, override.Old, override.New)
 		}
 	}
+	// sqlc.slice 是两侧生成物不等价的写法：MySQL 生成 `/*SLICE:x*/?` 标记 + 运行时替换占位符，
+	// PG 引擎把标记直接渲染成 `IN ($1)`，而生成代码里的替换仍在找 MySQL 的那个标记 —— 传 N>1 个
+	// 值时占位符与参数个数不符，查询报错（P4-7：inspection 的业务链路快照曾因此静默变空）。
+	// 上面 rewriteSlices 已把标准写法改成 PG 的数组参数，这里是兜底：还有残留说明写法不在覆盖
+	// 范围内（例如不是 `IN (sqlc.slice(x))` 的形状），直接报错而不是产出一份 PG 上跑不通的 SQL。
+	if strings.Contains(rewritten, "sqlc.slice(") {
+		return "", fmt.Errorf("查询 %s 里还有未被改写的 sqlc.slice：PG 产物会坏（P4-7），请改用 `IN (sqlc.slice(x))` 的标准写法", header.name)
+	}
+	if strings.Count(stripLiteralsAndComments(rewritten), upsertMarker) > 0 {
+		return "", fmt.Errorf("查询 %s 里还有未被改写的 %s（一条语句只支持一个 UPSERT）", header.name, upsertMarker)
+	}
+	if strings.Contains(stripLiteralsAndComments(rewritten), insertIgnorePrefix) {
+		return "", fmt.Errorf("查询 %s 里还有未被改写的 %s（必须写成 `INSERT IGNORE INTO`，见 rewriteInsertIgnore）", header.name, insertIgnorePrefix)
+	}
 	syntaxRewritten, err := rewriteSyntax(rewritten)
 	if err != nil {
 		return "", err
@@ -244,6 +270,114 @@ func rewriteQuery(header queryHeader, body string, returningID bool, matched map
 		return syntaxRewritten, nil
 	}
 	return appendReturningID(syntaxRewritten)
+}
+
+// insertIgnorePrefix 是 MySQL 的"插入冲突即跳过"写法。
+const insertIgnorePrefix = "INSERT IGNORE INTO"
+
+// rewriteInsertIgnore 把 `INSERT IGNORE INTO t(…) VALUES(…)` 改写成
+// `INSERT INTO t(…) VALUES(…) ON CONFLICT DO NOTHING`。
+//
+// **语义差异（不要当等价）**：MySQL 的 INSERT IGNORE 会吞掉所有"可忽略错误"（唯一冲突、外键、
+// 部分类型错误），PG 的 ON CONFLICT DO NOTHING 只处理唯一/排他冲突——外键类错误在 PG 侧会照常
+// 报错。仓库里的用法（monitor_target 的 (host_id, exporter_type) 唯一键：已纳管就跳过）正好落在
+// 唯一冲突这一类，所以这个改写是安全的；新增用法时要确认一下被吞掉的到底是哪类错误。
+func rewriteInsertIgnore(body string) (string, error) {
+	if !strings.Contains(stripLiteralsAndComments(body), insertIgnorePrefix) {
+		return body, nil
+	}
+	if strings.Contains(stripLiteralsAndComments(body), upsertMarker) {
+		return "", fmt.Errorf("%s 与 %s 不能同时用（一条语句只能有一个冲突子句）", insertIgnorePrefix, upsertMarker)
+	}
+	rewritten := strings.Replace(body, insertIgnorePrefix, "INSERT INTO", 1)
+	before, after := splitAtStatementEnd(rewritten)
+	// 语句尾的空白与注释（同查询体内、属于下一条语句的文档注释）原样留在子句之后。
+	if strings.HasSuffix(strings.TrimRight(before, " \t\r\n"), ";") {
+		end := strings.TrimRight(before, " \t\r\n")
+		statement := strings.TrimSuffix(end, ";")
+		return statement + " ON CONFLICT DO NOTHING;" + before[len(end):] + after, nil
+	}
+	return before + " ON CONFLICT DO NOTHING" + after, nil
+}
+
+// splitAtStatementEnd 把查询体切成「第一条语句（含结束分号）」与「其后的剩余文本」
+// （空行、以及写在语句之后、下一条 `-- name:` 之前的注释——它们属于本查询体但不属于这条语句）。
+// 找不到结束分号时整体算语句，剩余为空。
+//
+// 为什么要切：冲突子句 / RETURNING 必须紧贴语句尾插入。若按"整个查询体的末尾"插入，
+// 语句后紧跟的注释会把子句吃到注释里，产出一份被注释掉的坏 SQL（`-- 说明… ON CONFLICT DO NOTHING`）。
+// 这类错误 sqlc 解析不出来（注释对它是透明文本，语句照旧成立），只有真跑才会炸。
+func splitAtStatementEnd(body string) (string, string) {
+	for i := 0; i < len(body); {
+		switch {
+		case strings.HasPrefix(body[i:], "--"):
+			end := strings.IndexByte(body[i:], '\n')
+			if end < 0 {
+				return body, ""
+			}
+			i += end + 1
+		case body[i] == '\'':
+			end, err := scanStringLiteral(body, i)
+			if err != nil {
+				return body, ""
+			}
+			i = end
+		case body[i] == ';':
+			return body[:i+1], body[i+1:]
+		default:
+			i++
+		}
+	}
+	return body, ""
+}
+
+// upsertMarker 是 MySQL 的 UPSERT 子句开头。
+const upsertMarker = "ON DUPLICATE KEY UPDATE"
+
+// conflictPattern 匹配 UPSERT 的冲突目标声明：源里的一行 `-- conflict: host_id`。
+var conflictPattern = regexp.MustCompile(`(?m)^[ \t]*--[ \t]*conflict:[ \t]*([\w", ]+?)[ \t]*$`)
+
+// valuesColumnPattern 匹配 MySQL UPSERT 子句里的 `VALUES(col)`（INSERT 的值列表写作
+// `VALUES (…)`、带空格，且这里只作用于子句内部，不会误伤）。
+var valuesColumnPattern = regexp.MustCompile(`VALUES\((\w+)\)`)
+
+// rewriteUpserts 把 `ON DUPLICATE KEY UPDATE a=VALUES(a), …` 改写成
+// `ON CONFLICT (a) DO UPDATE SET a=EXCLUDED.a, …`。
+//
+// 为什么冲突目标只能由源显式声明：MySQL 的 ON DUPLICATE KEY 对"表上任意一个唯一键"生效，
+// 语句本身看不出打在哪个键上；而 PG 的 ON CONFLICT 必须写出目标列。猜错等于改了语义
+// （可能命中另一条唯一键），所以缺 `-- conflict: <列名>` 注释时直接报错。
+func rewriteUpserts(body string) (string, error) {
+	// 只在"去掉注释与字面量"的文本上判断有没有 UPSERT：注释里提到这个关键字
+	// （例如说明这条规则的文档注释）不能被当成真语句。
+	if !strings.Contains(stripLiteralsAndComments(body), upsertMarker) {
+		return body, nil
+	}
+	index := strings.Index(body, upsertMarker)
+	if index < 0 {
+		return body, nil
+	}
+	match := conflictPattern.FindStringSubmatch(body)
+	if match == nil {
+		return "", fmt.Errorf("UPSERT 缺少冲突目标声明，请在该查询上写一行 `-- conflict: <列名>`")
+	}
+	head, clause := body[:index], body[index+len(upsertMarker):]
+	return head + "ON CONFLICT (" + strings.TrimSpace(match[1]) + ") DO UPDATE SET" +
+		valuesColumnPattern.ReplaceAllString(clause, "EXCLUDED.$1"), nil
+}
+
+// slicePattern 匹配可变长 IN 的 MySQL 写法 `IN (sqlc.slice(host_ids))`。
+var slicePattern = regexp.MustCompile(`IN\s*\(\s*sqlc\.slice\((\w+)\)\s*\)`)
+
+// rewriteSlices 把可变长 IN 改写成 PG 的数组参数：`IN (sqlc.slice(host_ids))` →
+// `h.id = ANY(sqlc.arg(host_ids)::bigint[])`。
+//
+// 为什么要分叉：MySQL 的 IN 只能接一组占位符（sqlc 用 slice 标记 + 运行时展开实现），
+// PG 侧的等价能力是数组参数。改成 `= ANY(...)` 后两侧都走索引，且生成的 Go 签名都是
+// `[]int64`，调用点不需要分叉（实测见 TestDeriveRewritesSliceToArrayParameter）。
+// 列不是 bigint 时这个 CAST 会在 PG 侧运行时报类型错——是响的失败，不静默。
+func rewriteSlices(body string) string {
+	return slicePattern.ReplaceAllString(body, "= ANY(sqlc.arg($1)::bigint[])")
 }
 
 // appendReturningID 把 `INSERT … VALUES (…);` 变成 `INSERT … VALUES (…)\nRETURNING id;`。
@@ -261,12 +395,17 @@ func appendReturningID(body string) (string, error) {
 	if strings.Contains(plain, "),(") || strings.Contains(plain, "), (") {
 		return "", fmt.Errorf("多行 INSERT 不能用 RETURNING 取主键 id：改成 :execrows，或逐条插入（见 SQL_DESIGN §4.3）")
 	}
-	end := strings.TrimRight(body, " \t\r\n")
+	before, after := splitAtStatementEnd(body)
+	end := strings.TrimRight(before, " \t\r\n")
+	if !strings.HasSuffix(end, ";") {
+		// 没有结束分号的语句（源里允许省略）：直接在语句文本后补 RETURNING。
+		return before + "\nRETURNING id" + after, nil
+	}
 	// 分号要去掉再接 RETURNING，但末尾必须补回来：sqlc 靠分号切分查询，
 	// PG 解析器遇到"没有终结符就跟着下一条语句"会报 syntax error。
 	statement := strings.TrimSuffix(end, ";")
-	// 语句后的空白（含查询之间的空行）原样保留，产物文件的分隔与其它查询一致。
-	return statement + "\nRETURNING id;" + body[len(end):], nil
+	// 语句后的空白与注释（见 splitAtStatementEnd）原样保留，产物文件的分隔与其它查询一致。
+	return statement + "\nRETURNING id;" + before[len(end):] + after, nil
 }
 
 // stripLiteralsAndComments 去掉字符串字面量与注释（保留其它字符），供关键字/形状判断使用：

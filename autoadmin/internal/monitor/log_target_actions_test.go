@@ -89,13 +89,8 @@ func TestRetryLogTargetGuards(t *testing.T) {
 	}
 	defer database.Close()
 
-	selectQuery := regexp.QuoteMeta(`SELECT l.id,l.host_id,l.managed_enabled,l.install_status,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
-		COALESCE(s.os_type,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,'')
-		FROM monitor_log_collection_target l
-		JOIN assets_host h ON h.id=l.host_id
-		LEFT JOIN assets_hostsystem s ON s.host_id=l.host_id
-		WHERE l.id=?`)
+	// 片段到 WHERE 为止：占位符形态两侧不同（`?` / `$1`），断言不依赖它。
+	selectQuery := regexp.QuoteMeta(`SELECT l.id, l.host_id, l.managed_enabled, l.install_status, COALESCE(h.instance_name, ''), COALESCE(h.ip, ''), COALESCE(s.os_type, ''), COALESCE(s.os_id_like, ''), COALESCE(s.os_version_id, '') FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id LEFT JOIN assets_hostsystem s ON s.host_id = l.host_id`)
 
 	gin.SetMode(gin.TestMode)
 

@@ -56,30 +56,21 @@ type agentUpdateHost struct {
 // 只取一列身份（instance_name）配一个字段，SQL 列数与 Scan 目标数必须一致——
 // 曾因 SELECT 去掉一列而 Scan 未同步，导致接口直接 500。
 func loadAgentTargetHosts(ctx context.Context, pool *sql.DB, ids []int64) ([]agentUpdateHost, error) {
-	placeholders := make([]string, 0, len(ids))
-	arguments := make([]any, 0, len(ids))
 	for _, id := range ids {
 		if id <= 0 {
 			return nil, ErrInvalid
 		}
-		placeholders = append(placeholders, "?")
-		arguments = append(arguments, id)
 	}
-	rows, err := pool.QueryContext(ctx,
-		`SELECT id,COALESCE(instance_name,''),COALESCE(ip,'') FROM assets_host WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`, arguments...)
+	rows, err := db.New(pool).ListAgentHostTargets(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	hosts := make([]agentUpdateHost, 0, len(ids))
-	for rows.Next() {
-		var host agentUpdateHost
-		if err = rows.Scan(&host.ID, &host.InstanceName, &host.HostIP); err != nil {
-			return nil, err
-		}
+	for _, row := range rows {
+		host := agentUpdateHost{ID: row.ID, InstanceName: row.InstanceName, HostIP: row.Ip}
 		hosts = append(hosts, host)
 	}
-	return hosts, rows.Err()
+	return hosts, nil
 }
 
 func (handler *Handler) AgentInstall(context *gin.Context) {
@@ -189,18 +180,21 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		return items
 	}()}
 	inventoryJSON, _ := json.Marshal(inventory)
-	result, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO automation_execution_job
-		(create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
-		 task_name_snapshot,template_name_snapshot,template_content_snapshot,`+"`limit`"+`,run_as_user_snapshot,run_as_group_snapshot,work_directory_snapshot,
-		 requested_user_id,requested_username,start_time)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		now, now, nil, uuid.NewString(), "running", "manual", inventoryJSON, extraVars,
-		`{"message":"Agent update running"}`, taskName, templateName, templateContent, "", "", "", "", nullableUserID(userID), username, now)
+	executionID, err := db.New(handler.service.repository.pool).CreateAgentExecutionJob(context, db.CreateAgentExecutionJobParams{
+		CreateTime: now, UpdateTime: now, JobID: uuid.NewString(),
+		InventorySnapshot: inventoryJSON, ExtraVars: json.RawMessage(extraVars),
+		ResultSummary:           json.RawMessage(`{"message":"Agent update running"}`),
+		TaskNameSnapshot:        taskName,
+		TemplateNameSnapshot:    templateName,
+		TemplateContentSnapshot: templateContent,
+		RequestedUserID:         nullableUserID(userID),
+		RequestedUsername:       username,
+		StartTime:               sql.NullTime{Time: now, Valid: true},
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	executionID, _ := result.LastInsertId()
 
 	for index := range hosts {
 		host := &hosts[index]
@@ -215,26 +209,27 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 				jobInstanceName = fmt.Sprintf("instance-%d", host.ID)
 			}
 		}
-		jobResult, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO assets_agent_job
-			(create_time,update_time,remark,job_id,instance_name,job_type,action,params,timeout_seconds,status,result_data,error_message,host_id,exit_code,stderr,stdout)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, nil, host.AgentJobID, jobInstanceName, jobType, "install_agent",
-			jobParams, 300, "queued", `{}`, "", sql.NullInt64{Int64: host.ID, Valid: true}, 0, "", "")
+		queries := db.New(handler.service.repository.pool)
+		if err = queries.CreateAgentJob(context, db.CreateAgentJobParams{
+			CreateTime: now, UpdateTime: now, JobID: host.AgentJobID, InstanceName: jobInstanceName,
+			JobType: jobType, Action: "install_agent", Params: json.RawMessage(jobParams),
+			TimeoutSeconds: 300, Status: "queued", ResultData: json.RawMessage(`{}`), ErrorMessage: "",
+			HostID: sql.NullInt64{Int64: host.ID, Valid: true}, ExitCode: 0, Stderr: "", Stdout: "",
+		}); err != nil {
+			response.Error(context, err)
+			return
+		}
+		host.LogID, err = queries.CreateAgentJobHostLog(context, db.CreateAgentJobHostLogParams{
+			CreateTime: now, UpdateTime: now, HostIDSnapshot: sql.NullInt32{Int32: int32(host.ID), Valid: true},
+			HostNameSnapshot: host.InstanceName, HostIpSnapshot: host.HostIP, AgentJobID: host.AgentJobID,
+			Status: "queued", ExitCode: sql.NullInt32{Int32: 0, Valid: true}, Stdout: "", Stderr: "",
+			ErrorMessage: "", ResultData: json.RawMessage(`{}`),
+			HostID:       sql.NullInt64{Int64: host.ID, Valid: true}, JobID: executionID,
+		})
 		if err != nil {
 			response.Error(context, err)
 			return
 		}
-		jobRowID, _ := jobResult.LastInsertId()
-		_ = jobRowID
-		logResult, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO automation_execution_host_log
-			(create_time,update_time,remark,host_id_snapshot,host_name_snapshot,host_ip_snapshot,agent_job_id,status,exit_code,stdout,stderr,error_message,result_data,host_id,job_id)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, nil, host.ID, host.InstanceName, host.HostIP, host.AgentJobID, "queued", 0, "", "", "", `{}`, sql.NullInt64{Int64: host.ID, Valid: true}, executionID)
-		if err != nil {
-			response.Error(context, err)
-			return
-		}
-		host.LogID, _ = logResult.LastInsertId()
 	}
 
 	go func() {
@@ -253,28 +248,22 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 }
 
 func (handler *Handler) rejectActiveAgentJobs(context *gin.Context, hosts []agentUpdateHost) error {
-	placeholders := make([]string, 0, len(hosts))
-	arguments := make([]any, 0, len(hosts))
+	hostIDs := make([]sql.NullInt64, 0, len(hosts))
 	for _, host := range hosts {
-		placeholders = append(placeholders, "?")
-		arguments = append(arguments, host.ID)
+		hostIDs = append(hostIDs, sql.NullInt64{Int64: host.ID, Valid: true})
 	}
 	staleBefore := time.Now().UTC().Add(-30 * time.Second)
 	now := time.Now().UTC()
+	queries := db.New(handler.service.repository.pool)
 	// Django 语义：先把超过 30 秒未动的 queued/running 安装任务标记失败，再拦截仍然活跃的任务。
-	// 占位符顺序：finished_at=?, update_time=?, host_id IN (...), update_time < ?
-	updateArgs := append([]any{now, now}, arguments...)
-	updateArgs = append(updateArgs, staleBefore)
-	if _, err := handler.service.repository.pool.ExecContext(context, `UPDATE assets_agent_job
-		SET status='failed',error_message='Agent 任务执行进程已失联，请重新提交',exit_code=1,finished_at=?,update_time=?
-		WHERE host_id IN (`+strings.Join(placeholders, ",")+`) AND action='install_agent'
-		  AND status IN ('queued','running') AND update_time < ?`,
-		updateArgs...); err != nil {
+	if err := queries.FailStaleAgentInstallJobs(context, db.FailStaleAgentInstallJobsParams{
+		FinishedAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now,
+		HostIds: hostIDs, StaleBefore: staleBefore,
+	}); err != nil {
 		return err
 	}
-	var active int
-	if err := handler.service.repository.pool.QueryRowContext(context, `SELECT COUNT(*) FROM assets_agent_job
-		WHERE host_id IN (`+strings.Join(placeholders, ",")+`) AND action='install_agent' AND status IN ('queued','running')`, arguments...).Scan(&active); err != nil {
+	active, err := queries.CountActiveAgentInstallJobs(context, hostIDs)
+	if err != nil {
 		return err
 	}
 	if active > 0 {
@@ -293,10 +282,7 @@ type agentBinarySource struct {
 // 未激活包时回退本机构建产物 ../dj_agent/bin/dj-agent。激活包存在但读取/校验失败时
 // 直接报错，不静默回退——操作者显式激活的包坏了应暴露问题而不是悄悄换源。
 func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
-	var item agentPackage
-	err := handler.service.repository.pool.QueryRowContext(context.Background(),
-		`SELECT id,file,sha256,size_bytes,is_active,create_time FROM agent_package WHERE is_active=1 ORDER BY create_time DESC, id DESC LIMIT 1`).
-		Scan(&item.ID, &item.File, &item.SHA256, &item.SizeBytes, &item.IsActive, &item.CreateTime)
+	item, err := db.New(handler.service.repository.pool).GetActiveAgentPackage(context.Background())
 	switch {
 	case err == nil:
 		path := filepath.Join(handler.mediaRoot, filepath.FromSlash(item.File))
@@ -305,8 +291,8 @@ func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
 			return nil, agentBinarySource{}, fmt.Errorf("激活的 Agent 安装包文件缺失: %s，请重新上传或取消激活", path)
 		}
 		sum := fmt.Sprintf("%x", sha256.Sum256(data))
-		if item.SHA256 != "" && sum != item.SHA256 {
-			return nil, agentBinarySource{}, fmt.Errorf("激活的 Agent 安装包 sha256 不匹配（记录 %s，实际 %s），请重新上传", item.SHA256, sum)
+		if item.Sha256 != "" && sum != item.Sha256 {
+			return nil, agentBinarySource{}, fmt.Errorf("激活的 Agent 安装包 sha256 不匹配（记录 %s，实际 %s），请重新上传", item.Sha256, sum)
 		}
 		if err = validateAgentBinary(data); err != nil {
 			return nil, agentBinarySource{}, err
@@ -334,13 +320,11 @@ func (handler *Handler) loadAgentBinary() ([]byte, agentBinarySource, error) {
 }
 
 func (handler *Handler) agentAdvertiseAddr() (string, error) {
-	var value string
-	err := handler.service.repository.pool.QueryRowContext(context.Background(),
-		`SELECT value FROM sys_config WHERE `+"`key`"+`=?`, agentGrpcAdvertiseKey).Scan(&value)
+	row, err := db.New(handler.service.repository.pool).GetConfigByKey(context.Background(), agentGrpcAdvertiseKey)
 	if err != nil {
 		return "", fmt.Errorf("未配置“Agent gRPC 对外地址”（sys.assets.agent.grpc_advertise_addr），请先在系统参数中填写")
 	}
-	value = strings.TrimSpace(value)
+	value := strings.TrimSpace(row.Value)
 	if value == "" {
 		return "", fmt.Errorf("未配置“Agent gRPC 对外地址”，请先在系统参数中填写")
 	}
@@ -382,26 +366,17 @@ func (handler *Handler) runAgentUpdates(binary []byte, advertisedAddr, envTempla
 	}
 	now := time.Now().UTC()
 	summary := fmt.Sprintf(`{"message":%q,"succeeded":%d,"failed":%d}`, message, successCount, failed)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_job
-		SET status=?,end_time=?,duration_seconds=TIMESTAMPDIFF(MICROSECOND,start_time,?)/1000000,result_summary=?,update_time=? WHERE id=?`,
-		status, now, now, summary, now, executionID)
+	handler.finishAgentExecutionJob(background, executionID, status, summary, now)
 	_ = userID
 	_ = username
 }
 
 func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background context.Context, host agentUpdateHost, binary []byte, advertisedAddr, envTemplate, unitTemplate string, executionID int64) bool {
 	now := time.Now().UTC()
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job SET status='running',picked_at=?,update_time=? WHERE job_id=?`, now, now, host.AgentJobID)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log SET status='running',update_time=? WHERE id=?`, now, host.LogID)
+	handler.markAgentJobRunning(background, host.AgentJobID, host.LogID, now)
 
-	fail := func(message string, exitCode int32, stdout, stderr string) bool {
-		now := time.Now().UTC()
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
-			SET status='failed',error_message=?,exit_code=?,stdout=?,stderr=?,finished_at=?,update_time=? WHERE job_id=?`,
-			message, exitCode, stdout, stderr, now, now, host.AgentJobID)
-		_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
-			SET status='failed',error_message=?,exit_code=?,stdout=?,stderr=?,update_time=? WHERE id=?`,
-			message, exitCode, stdout, stderr, now, host.LogID)
+	fail := func(message string, exitCode int64, stdout, stderr string) bool {
+		handler.failAgentJob(background, host, "failed", message, exitCode, stdout, stderr)
 		return false
 	}
 
@@ -435,7 +410,7 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 	}
 	if result.Status != "success" || (result.ExitCode != 0 && result.ExitCode != int32(0)) {
 		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		return fail("自更新失败: "+reason, result.ExitCode, result.Stdout, result.Stderr)
+		return fail("自更新失败: "+reason, int64(result.ExitCode), result.Stdout, result.Stderr)
 	}
 
 	// agent 重启期间会短暂断线；轮询等它用新版本重新上线（略长于 agent 侧重启窗口）。
@@ -454,20 +429,15 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 		message = "自更新已下发，但重启后 Agent 未重新连接，请人工检查该主机"
 	}
 	resultData := fmt.Sprintf(`{"host_id":%d,"instance_name":%q,"operation":"update","agent_connected":%t}`, host.ID, host.InstanceName, reconnected)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
-		SET status=?,exit_code=?,error_message=?,result_data=?,finished_at=?,update_time=? WHERE job_id=?`,
-		finalStatus, exitCode, message, resultData, now, now, host.AgentJobID)
-	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
-		SET status=?,exit_code=?,error_message=?,update_time=? WHERE id=?`,
-		finalStatus, exitCode, message, now, host.LogID)
+	handler.finishAgentJob(background, host, finalStatus, exitCode, message, resultData, nil, now)
 	return reconnected
 }
 
-func nullableUserID(value int32) any {
+func nullableUserID(value int32) sql.NullInt32 {
 	if value == 0 {
-		return nil
+		return sql.NullInt32{}
 	}
-	return value
+	return sql.NullInt32{Int32: value, Valid: true}
 }
 
 func firstNonEmpty(values ...string) string {

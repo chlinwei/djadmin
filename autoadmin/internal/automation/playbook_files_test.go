@@ -44,8 +44,9 @@ func multipartBody(t *testing.T, fieldName, fileName, content string) (*strings.
 
 // 上传回归：合法 YAML 覆盖 content 并返回模板对象；非 .yml/.yaml 直接 400 不碰库。
 func TestPlaybookUploadFile(t *testing.T) {
-	updateQuery := regexp.QuoteMeta(`UPDATE automation_playbook_template SET content=?,update_time=? WHERE id=?`)
-	selectQuery := regexp.QuoteMeta(`SELECT id,create_time,update_time,remark,name,description,content,category FROM automation_playbook_template WHERE id=?`)
+	// 方言无关片段：两条语句在两侧只差占位符风格（? / $n）。
+	updateQuery := regexp.QuoteMeta(`UPDATE automation_playbook_template`)
+	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, category`)
 	now := time.Now().UTC()
 
 	database, mock, err := sqlmock.New()
@@ -100,7 +101,8 @@ func TestPlaybookUploadFile(t *testing.T) {
 
 // 下载回归：text/yaml 附件、filename* 按 RFC 5987 编码。
 func TestPlaybookDownloadFile(t *testing.T) {
-	selectQuery := regexp.QuoteMeta(`SELECT name,content FROM automation_playbook_template WHERE id=?`)
+	// 下载走的是取行查询（原先只取 name/content，现复用 GetAutomationPlaybook）。
+	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, category`)
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
@@ -109,7 +111,8 @@ func TestPlaybookDownloadFile(t *testing.T) {
 	engine := newPlaybookFileServer(t, database)
 
 	mock.ExpectQuery(selectQuery).WithArgs(int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"name", "content"}).AddRow("deploy main v2", "- hosts: all\n"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "category"}).
+			AddRow(int64(3), time.Now().UTC(), time.Now().UTC(), nil, "deploy main v2", "", "- hosts: all\n", "general"))
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/playbooks/3/download/", nil))
 	if recorder.Code != http.StatusOK {

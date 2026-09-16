@@ -77,8 +77,8 @@ func (handler *Handler) retentionTierResponse(context *gin.Context, row db.Monit
 	if threshold < 1 {
 		threshold = 1
 	}
-	var serviceCount int64
-	_ = handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_application_service WHERE log_retention_tier_id=?`, row.ID).Scan(&serviceCount)
+	// 引用计数用于前端提示"仍被逻辑服务引用，不能删除"。
+	serviceCount, _ := db.New(handler.db).CountRetentionTierServices(context, sql.NullInt64{Int64: row.ID, Valid: true})
 	return retentionTierResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime,
 		Code: row.Code, Name: row.Name, DailySizeGB: row.DailySizeGb,
@@ -242,9 +242,9 @@ func (handler *Handler) processingRuleResponse(context *gin.Context, row db.Moni
 	var applicationName, applicationCode string
 	if row.ApplicationID.Valid {
 		application = &row.ApplicationID.Int64
-		var name, code sql.NullString
-		_ = handler.db.QueryRowContext(context, `SELECT name,code FROM assets_application WHERE id=?`, row.ApplicationID.Int64).Scan(&name, &code)
-		applicationName, applicationCode = name.String, code.String
+		if applicationRow, err := db.New(handler.db).GetApplicationNameCode(context, row.ApplicationID.Int64); err == nil {
+			applicationName, applicationCode = applicationRow.Name, applicationRow.Code
+		}
 	}
 	return processingRuleResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark.String,
@@ -318,9 +318,9 @@ func (handler *Handler) filterRuleResponse(context *gin.Context, row db.MonitorL
 	var applicationName string
 	if row.ApplicationID.Valid {
 		application = &row.ApplicationID.Int64
-		var name sql.NullString
-		_ = handler.db.QueryRowContext(context, `SELECT name FROM assets_application WHERE id=?`, row.ApplicationID.Int64).Scan(&name)
-		applicationName = name.String
+		if applicationRow, err := db.New(handler.db).GetApplicationNameCode(context, row.ApplicationID.Int64); err == nil {
+			applicationName = applicationRow.Name
+		}
 	}
 	return filterRuleResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark.String,

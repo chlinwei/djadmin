@@ -28,4 +28,8 @@
 
 ## 双实现对齐
 
-与 Django 版语义一致（索引构建、指纹优先、空快照回填）。差异：Go 版心跳/恢复用单条 UPDATE + `IF()` 原子回填；Django 为先读后写。
+与 Django 版语义一致（索引构建、指纹优先、空快照回填）。差异：Django 为先读后写；Go 版原先用单条
+UPDATE + `IF()`（`IF(rule_group='',?,rule_group)`、`IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot)`）
+在库里原子回填，2026-09-16 随 SQL 迁移改成**同一事务内 `FOR UPDATE` 加锁读回 + 应用层合并**
+（`keepExistingRuleSnapshot`，MySQL 的 `IF`/`JSON_LENGTH` 是方言函数；语义等价：NULL/无效 JSON/空对象/空数组
+都算"没内容"）。

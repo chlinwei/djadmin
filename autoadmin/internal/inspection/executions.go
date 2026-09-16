@@ -240,25 +240,24 @@ func inspectionTargetExecutionDTO(row db.ListInspectionTargetExecutionsRow) insp
 func (handler *Handler) listExecutionResults(ctx context.Context, executionID int64) (map[int64][]inspectionResultResponse, error) {
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage（jsontext.Value），
 	// 统一回填 JSON null 字面量——与 ListInspectionResultsByTarget 同源语义。
-	rows, err := handler.db.QueryContext(ctx, `SELECT r.id,r.target_id,r.check_key,r.check_type,r.name,r.status,r.severity,r.group_id,r.group_name,COALESCE(r.expected_value,'null') AS expected_value,COALESCE(r.actual_value,'null') AS actual_value,r.message FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id WHERE t.execution_id=? ORDER BY r.target_id,r.id`, executionID)
+	rows, err := db.New(handler.db).ListInspectionResultsByExecution(ctx, executionID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	results := make(map[int64][]inspectionResultResponse)
-	for rows.Next() {
-		var targetID int64
-		var item inspectionResultResponse
-		var groupID sql.NullInt64
-		if err = rows.Scan(&item.ID, &targetID, &item.CheckKey, &item.CheckType, &item.Name, &item.Status, &item.Severity, &groupID, &item.GroupName, &item.ExpectedValue, &item.ActualValue, &item.Message); err != nil {
-			return nil, err
+	for _, row := range rows {
+		item := inspectionResultResponse{
+			ID: row.ID, CheckKey: row.CheckKey, CheckType: row.CheckType, Name: row.Name, Status: row.Status,
+			Severity: row.Severity, GroupName: row.GroupName, ExpectedValue: row.ExpectedValue,
+			ActualValue: row.ActualValue, Message: row.Message,
 		}
-		if groupID.Valid {
-			item.GroupID = &groupID.Int64
+		if row.GroupID.Valid {
+			groupID := row.GroupID.Int64
+			item.GroupID = &groupID
 		}
-		results[targetID] = append(results[targetID], item)
+		results[row.TargetID] = append(results[row.TargetID], item)
 	}
-	return results, rows.Err()
+	return results, nil
 }
 
 func (handler *Handler) CancelExecution(context *gin.Context) {
@@ -269,25 +268,40 @@ func (handler *Handler) CancelExecution(context *gin.Context) {
 		return
 	}
 	defer transaction.Rollback()
-	var status string
-	if err = transaction.QueryRowContext(context, `SELECT status FROM inspection_execution WHERE id=? FOR UPDATE`, id).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
-			response.BusinessError(context, 404, "巡检执行不存在", nil)
-		} else {
-			response.Error(context, err)
-		}
+	queries := db.New(transaction)
+	current, err := queries.GetInspectionExecutionForUpdate(context, id)
+	if err == sql.ErrNoRows {
+		response.BusinessError(context, 404, "巡检执行不存在", nil)
 		return
 	}
-	if status != "pending" && status != "running" {
-		response.BusinessError(context, 400, "只有等待中或执行中的巡检可以取消", nil)
-		return
-	}
-	// The current Agent protocol has no cancel frame, so persist cancellation atomically and let in-flight responses be ignored by status checks.
-	if _, err = transaction.ExecContext(context, `UPDATE inspection_execution SET status='canceled',end_time=NOW(),summary=JSON_SET(COALESCE(summary,JSON_OBJECT()),'$.canceled',TRUE),update_time=NOW() WHERE id=?`, id); err != nil {
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = transaction.ExecContext(context, `UPDATE inspection_target_execution SET status='canceled',end_time=NOW(),update_time=NOW() WHERE execution_id=? AND status IN ('pending','running')`, id); err != nil {
+	if current.Status != "pending" && current.Status != "running" {
+		response.BusinessError(context, 400, "只有等待中或执行中的巡检可以取消", nil)
+		return
+	}
+	// The current Agent protocol has no cancel frame, so persist cancellation atomically and let
+	// in-flight responses be ignored by status checks.
+	//
+	// summary 的 `$.canceled=true` 在应用层合并：原实现用 `JSON_SET(COALESCE(summary,JSON_OBJECT()),...)`，
+	// 那是 MySQL 方言函数（分叉清单 §4.2），而 summary 是 NOT NULL 的 json 列，读回来合并不丢失任何信息。
+	summary := gin.H{}
+	if len(current.Summary) > 0 {
+		_ = json.Unmarshal(current.Summary, &summary)
+	}
+	summary["canceled"] = true
+	now := time.Now().UTC()
+	if _, err = queries.CancelInspectionExecution(context, db.CancelInspectionExecutionParams{
+		EndTime: sql.NullTime{Time: now, Valid: true}, Summary: jsonBytes(summary), UpdateTime: now, ID: id,
+	}); err != nil {
+		response.Error(context, err)
+		return
+	}
+	if _, err = queries.CancelRunningInspectionTargets(context, db.CancelRunningInspectionTargetsParams{
+		EndTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ExecutionID: id,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}

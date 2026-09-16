@@ -2,10 +2,13 @@ package inspection
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
+
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/robfig/cron/v3"
 )
@@ -45,25 +48,15 @@ func (handler *Handler) dispatchDueTasks() {
 		id             int64
 		cronExpression string
 	}
-	rows, err := handler.db.Query(`SELECT id,cron_expression FROM inspection_task WHERE enabled=TRUE AND cron_expression<>'' AND next_run_time IS NOT NULL AND next_run_time<=UTC_TIMESTAMP(6)`)
+	now := time.Now().UTC()
+	rows, err := db.New(handler.db).ListDueInspectionTasks(context.Background(), sql.NullTime{Time: now, Valid: true})
 	if err != nil {
 		slog.Error("list due inspection tasks", "error", err)
 		return
 	}
-	dueTasks := make([]dueTask, 0)
-	for rows.Next() {
-		var task dueTask
-		if err = rows.Scan(&task.id, &task.cronExpression); err != nil {
-			rows.Close()
-			slog.Error("scan due inspection task", "error", err)
-			return
-		}
-		dueTasks = append(dueTasks, task)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		slog.Error("iterate due inspection tasks", "error", err)
-		return
+	dueTasks := make([]dueTask, 0, len(rows))
+	for _, row := range rows {
+		dueTasks = append(dueTasks, dueTask{id: row.ID, cronExpression: row.CronExpression})
 	}
 	for _, task := range dueTasks {
 		schedule, parseErr := cron.ParseStandard(task.cronExpression)
@@ -71,9 +64,13 @@ func (handler *Handler) dispatchDueTasks() {
 			slog.Warn("skip inspection task with invalid cron", "task_id", task.id, "cron", task.cronExpression)
 			continue
 		}
-		next := schedule.Next(time.Now().UTC())
-		result, claimErr := handler.db.Exec(`UPDATE inspection_task SET next_run_time=?,update_time=NOW() WHERE id=? AND next_run_time<=UTC_TIMESTAMP(6)`, next, task.id)
-		if claimErr != nil || rowsAffected(result) == 0 {
+		now := time.Now().UTC()
+		next := schedule.Next(now)
+		claimed, claimErr := db.New(handler.db).ClaimDueInspectionTask(context.Background(), db.ClaimDueInspectionTaskParams{
+			NextRunTime: sql.NullTime{Time: next, Valid: true}, UpdateTime: now,
+			ID: task.id, Now: sql.NullTime{Time: now, Valid: true},
+		})
+		if claimErr != nil || claimed == 0 {
 			continue
 		}
 		executionID, message, runErr := handler.startRun(context.Background(), task.id, "scheduled", 0, "scheduler")
@@ -90,11 +87,11 @@ func (handler *Handler) dispatchDueTasks() {
 
 // configValue 读 sys_config 字符串值；key 不存在或读失败返回空串（调用方用缺省值）。
 func (handler *Handler) configValue(key string) string {
-	var value string
-	if err := handler.db.QueryRow(`SELECT value FROM sys_config WHERE `+"`key`"+`=?`, key).Scan(&value); err != nil {
+	row, err := db.New(handler.db).GetConfigByKey(context.Background(), key)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(value)
+	return strings.TrimSpace(row.Value)
 }
 
 // cleanupExpiredExecutions prunes finished executions older than the retention
@@ -106,22 +103,23 @@ func (handler *Handler) cleanupExpiredExecutions() {
 	if parsed, parseErr := strconv.Atoi(handler.configValue(retentionConfigKey)); parseErr == nil && parsed > 0 {
 		days = parsed
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	cutoff := sql.NullTime{Time: time.Now().UTC().AddDate(0, 0, -days), Valid: true}
 	transaction, err := handler.db.Begin()
 	if err != nil {
 		slog.Error("begin inspection cleanup", "error", err)
 		return
 	}
 	defer transaction.Rollback()
-	if _, err = transaction.Exec(`DELETE r FROM inspection_result r JOIN inspection_target_execution t ON t.id=r.target_id JOIN inspection_execution e ON e.id=t.execution_id WHERE e.status<>'pending' AND e.status<>'running' AND e.end_time<?`, cutoff); err != nil {
+	queries := db.New(transaction)
+	if _, err = queries.DeleteFinishedInspectionResults(context.Background(), cutoff); err != nil {
 		slog.Error("cleanup inspection results", "error", err)
 		return
 	}
-	if _, err = transaction.Exec(`DELETE t FROM inspection_target_execution t JOIN inspection_execution e ON e.id=t.execution_id WHERE e.status<>'pending' AND e.status<>'running' AND e.end_time<?`, cutoff); err != nil {
+	if _, err = queries.DeleteFinishedInspectionTargetExecutions(context.Background(), cutoff); err != nil {
 		slog.Error("cleanup inspection target executions", "error", err)
 		return
 	}
-	result, err := transaction.Exec(`DELETE FROM inspection_execution WHERE status<>'pending' AND status<>'running' AND end_time<?`, cutoff)
+	deleted, err := queries.DeleteFinishedInspectionExecutions(context.Background(), cutoff)
 	if err != nil {
 		slog.Error("cleanup inspection executions", "error", err)
 		return
@@ -130,7 +128,7 @@ func (handler *Handler) cleanupExpiredExecutions() {
 		slog.Error("commit inspection cleanup", "error", err)
 		return
 	}
-	if deleted, _ := result.RowsAffected(); deleted > 0 {
+	if deleted > 0 {
 		slog.Info("inspection retention cleanup done", "executions_deleted", deleted, "retention_days", days)
 	}
 }

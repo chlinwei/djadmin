@@ -13,6 +13,117 @@ import (
 	"time"
 )
 
+const cancelInspectionExecution = `-- name: CancelInspectionExecution :execrows
+UPDATE inspection_execution
+SET status = 'canceled', end_time = ?, summary = ?, update_time = ?
+WHERE id = ?
+`
+
+type CancelInspectionExecutionParams struct {
+	EndTime    sql.NullTime    `json:"end_time"`
+	Summary    json.RawMessage `json:"summary"`
+	UpdateTime time.Time       `json:"update_time"`
+	ID         int64           `json:"id"`
+}
+
+func (q *Queries) CancelInspectionExecution(ctx context.Context, arg CancelInspectionExecutionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelInspectionExecution,
+		arg.EndTime,
+		arg.Summary,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const cancelInspectionTarget = `-- name: CancelInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = 'canceled', end_time = ?, update_time = ?
+WHERE id = ?
+`
+
+type CancelInspectionTargetParams struct {
+	EndTime    sql.NullTime `json:"end_time"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) CancelInspectionTarget(ctx context.Context, arg CancelInspectionTargetParams) error {
+	_, err := q.db.ExecContext(ctx, cancelInspectionTarget, arg.EndTime, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const cancelRunningInspectionTargets = `-- name: CancelRunningInspectionTargets :execrows
+UPDATE inspection_target_execution
+SET status = 'canceled', end_time = ?, update_time = ?
+WHERE execution_id = ? AND status IN ('pending', 'running')
+`
+
+type CancelRunningInspectionTargetsParams struct {
+	EndTime     sql.NullTime `json:"end_time"`
+	UpdateTime  time.Time    `json:"update_time"`
+	ExecutionID int64        `json:"execution_id"`
+}
+
+func (q *Queries) CancelRunningInspectionTargets(ctx context.Context, arg CancelRunningInspectionTargetsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelRunningInspectionTargets, arg.EndTime, arg.UpdateTime, arg.ExecutionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const claimDueInspectionTask = `-- name: ClaimDueInspectionTask :execrows
+UPDATE inspection_task
+SET next_run_time = ?, update_time = ?
+WHERE id = ? AND next_run_time <= ?
+`
+
+type ClaimDueInspectionTaskParams struct {
+	NextRunTime sql.NullTime `json:"next_run_time"`
+	UpdateTime  time.Time    `json:"update_time"`
+	ID          int64        `json:"id"`
+	Now         sql.NullTime `json:"now"`
+}
+
+func (q *Queries) ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspectionTaskParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimDueInspectionTask,
+		arg.NextRunTime,
+		arg.UpdateTime,
+		arg.ID,
+		arg.Now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const countApplicationByID = `-- name: CountApplicationByID :one
+SELECT COUNT(*) FROM assets_application WHERE id = ?
+`
+
+func (q *Queries) CountApplicationByID(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countApplicationByID, id)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countApplicationServiceByID = `-- name: CountApplicationServiceByID :one
+SELECT COUNT(*) FROM assets_application_service WHERE id = ?
+`
+
+func (q *Queries) CountApplicationServiceByID(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countApplicationServiceByID, id)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countInspectionExecutions = `-- name: CountInspectionExecutions :one
 SELECT COUNT(*) FROM inspection_execution e
 WHERE (e.task_id = ? OR ? IS NULL)
@@ -64,6 +175,35 @@ func (q *Queries) CountInspectionGroups(ctx context.Context, arg CountInspection
 	return count, err
 }
 
+const countInspectionTargetOutcomes = `-- name: CountInspectionTargetOutcomes :one
+SELECT COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+       COUNT(CASE WHEN status = 'success' THEN 1 END) AS success,
+       COUNT(CASE WHEN status = 'canceled' THEN 1 END) AS canceled,
+       COUNT(CASE WHEN status = 'skipped' THEN 1 END) AS skipped
+FROM inspection_target_execution WHERE execution_id = ?
+`
+
+type CountInspectionTargetOutcomesRow struct {
+	Failed   int64 `json:"failed"`
+	Success  int64 `json:"success"`
+	Canceled int64 `json:"canceled"`
+	Skipped  int64 `json:"skipped"`
+}
+
+// 目标结果统计：原实现用 `SUM(status='failed')`（MySQL 把布尔当 0/1，PG 不接受），
+// 换成两方言都认的 `COUNT(CASE WHEN ... THEN 1 END)`，且零行时为 0 而不是 NULL（§4.3）。
+func (q *Queries) CountInspectionTargetOutcomes(ctx context.Context, executionID int64) (CountInspectionTargetOutcomesRow, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionTargetOutcomes, executionID)
+	var i CountInspectionTargetOutcomesRow
+	err := row.Scan(
+		&i.Failed,
+		&i.Success,
+		&i.Canceled,
+		&i.Skipped,
+	)
+	return i, err
+}
+
 const countInspectionTasks = `-- name: CountInspectionTasks :one
 SELECT COUNT(*) FROM inspection_task t
 JOIN inspection_group g ON g.id = t.group_id
@@ -79,6 +219,515 @@ func (q *Queries) CountInspectionTasks(ctx context.Context, arg CountInspectionT
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countInspectionTasksByGroup = `-- name: CountInspectionTasksByGroup :one
+SELECT COUNT(*) FROM inspection_task WHERE group_id = ?
+`
+
+func (q *Queries) CountInspectionTasksByGroup(ctx context.Context, groupID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionTasksByGroup, groupID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countInspectionTasksByNameInGroup = `-- name: CountInspectionTasksByNameInGroup :one
+SELECT COUNT(*) FROM inspection_task
+WHERE name = ? AND group_id = ? AND id <> ?
+`
+
+type CountInspectionTasksByNameInGroupParams struct {
+	Name      string `json:"name"`
+	GroupID   int64  `json:"group_id"`
+	ExcludeID int64  `json:"exclude_id"`
+}
+
+func (q *Queries) CountInspectionTasksByNameInGroup(ctx context.Context, arg CountInspectionTasksByNameInGroupParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionTasksByNameInGroup, arg.Name, arg.GroupID, arg.ExcludeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countInspectionWarningResults = `-- name: CountInspectionWarningResults :one
+SELECT COUNT(*) FROM inspection_result r
+JOIN inspection_target_execution t ON t.id = r.target_id
+WHERE t.execution_id = ? AND r.severity = 'warning' AND r.status NOT IN ('pass', 'skipped')
+`
+
+func (q *Queries) CountInspectionWarningResults(ctx context.Context, executionID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInspectionWarningResults, executionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createInspectionCheck = `-- name: CreateInspectionCheck :exec
+INSERT INTO inspection_check(group_id, name, config, severity, enabled, ` + "`" + `order` + "`" + `, create_time, update_time)
+VALUES (?, ?, ?, ?, ?,
+        ?, ?, ?)
+`
+
+type CreateInspectionCheckParams struct {
+	GroupID    int64           `json:"group_id"`
+	Name       string          `json:"name"`
+	Config     json.RawMessage `json:"config"`
+	Severity   string          `json:"severity"`
+	Enabled    bool            `json:"enabled"`
+	CheckOrder uint32          `json:"check_order"`
+	CreateTime time.Time       `json:"create_time"`
+	UpdateTime time.Time       `json:"update_time"`
+}
+
+func (q *Queries) CreateInspectionCheck(ctx context.Context, arg CreateInspectionCheckParams) error {
+	_, err := q.db.ExecContext(ctx, createInspectionCheck,
+		arg.GroupID,
+		arg.Name,
+		arg.Config,
+		arg.Severity,
+		arg.Enabled,
+		arg.CheckOrder,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	return err
+}
+
+const createInspectionExecution = `-- name: CreateInspectionExecution :execlastid
+INSERT INTO inspection_execution(task_id, status, trigger_type, task_snapshot, group_snapshot, service_snapshot,
+                                 target_snapshot, summary, requested_user_id, requested_username, start_time, end_time,
+                                 create_time, update_time)
+VALUES (?, 'pending', ?, ?, ?,
+        ?, ?, '{}', ?,
+        ?, NULL, NULL, ?, ?)
+`
+
+type CreateInspectionExecutionParams struct {
+	TaskID            sql.NullInt64   `json:"task_id"`
+	TriggerType       string          `json:"trigger_type"`
+	TaskSnapshot      json.RawMessage `json:"task_snapshot"`
+	GroupSnapshot     json.RawMessage `json:"group_snapshot"`
+	ServiceSnapshot   json.RawMessage `json:"service_snapshot"`
+	TargetSnapshot    json.RawMessage `json:"target_snapshot"`
+	RequestedUserID   sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername string          `json:"requested_username"`
+	CreateTime        time.Time       `json:"create_time"`
+	UpdateTime        time.Time       `json:"update_time"`
+}
+
+func (q *Queries) CreateInspectionExecution(ctx context.Context, arg CreateInspectionExecutionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createInspectionExecution,
+		arg.TaskID,
+		arg.TriggerType,
+		arg.TaskSnapshot,
+		arg.GroupSnapshot,
+		arg.ServiceSnapshot,
+		arg.TargetSnapshot,
+		arg.RequestedUserID,
+		arg.RequestedUsername,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+const createInspectionGroup = `-- name: CreateInspectionGroup :execlastid
+INSERT INTO inspection_group(name, description, enabled, category, application_id, params, create_time, update_time)
+VALUES (?, ?, ?, ?, ?,
+        ?, ?, ?)
+`
+
+type CreateInspectionGroupParams struct {
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Enabled       bool            `json:"enabled"`
+	Category      string          `json:"category"`
+	ApplicationID sql.NullInt64   `json:"application_id"`
+	Params        json.RawMessage `json:"params"`
+	CreateTime    time.Time       `json:"create_time"`
+	UpdateTime    time.Time       `json:"update_time"`
+}
+
+func (q *Queries) CreateInspectionGroup(ctx context.Context, arg CreateInspectionGroupParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createInspectionGroup,
+		arg.Name,
+		arg.Description,
+		arg.Enabled,
+		arg.Category,
+		arg.ApplicationID,
+		arg.Params,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+const createInspectionResult = `-- name: CreateInspectionResult :exec
+INSERT INTO inspection_result(target_id, check_key, check_type, name, status, severity, group_id, group_name,
+                              expected_value, actual_value, message, create_time, update_time)
+VALUES (?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?)
+`
+
+type CreateInspectionResultParams struct {
+	TargetID      int64           `json:"target_id"`
+	CheckKey      string          `json:"check_key"`
+	CheckType     string          `json:"check_type"`
+	Name          string          `json:"name"`
+	Status        string          `json:"status"`
+	Severity      string          `json:"severity"`
+	GroupID       sql.NullInt64   `json:"group_id"`
+	GroupName     string          `json:"group_name"`
+	ExpectedValue json.RawMessage `json:"expected_value"`
+	ActualValue   json.RawMessage `json:"actual_value"`
+	Message       string          `json:"message"`
+	CreateTime    time.Time       `json:"create_time"`
+	UpdateTime    time.Time       `json:"update_time"`
+}
+
+// 检查结果落库：原实现按 100 行/批拼多行 INSERT（占位符个数随入参变化，且用 `?`，
+// PG 变体跑不通），改为逐条 sqlc INSERT —— 与 baseline 的 flushResults 同一取舍（见 SQL_DESIGN §6.3）。
+func (q *Queries) CreateInspectionResult(ctx context.Context, arg CreateInspectionResultParams) error {
+	_, err := q.db.ExecContext(ctx, createInspectionResult,
+		arg.TargetID,
+		arg.CheckKey,
+		arg.CheckType,
+		arg.Name,
+		arg.Status,
+		arg.Severity,
+		arg.GroupID,
+		arg.GroupName,
+		arg.ExpectedValue,
+		arg.ActualValue,
+		arg.Message,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	return err
+}
+
+const createInspectionTargetExecution = `-- name: CreateInspectionTargetExecution :execlastid
+INSERT INTO inspection_target_execution(execution_id, deployment_id, host_id, target_name, host_id_snapshot,
+                                        host_ip_snapshot, instance_name_snapshot, status, passed, error_message,
+                                        raw_result, start_time, end_time, create_time, update_time)
+VALUES (?, ?, ?, ?,
+        ?, ?, ?, 'pending',
+        NULL, '', '{}', NULL, NULL, ?, ?)
+`
+
+type CreateInspectionTargetExecutionParams struct {
+	ExecutionID          int64         `json:"execution_id"`
+	DeploymentID         sql.NullInt64 `json:"deployment_id"`
+	HostID               sql.NullInt64 `json:"host_id"`
+	TargetName           string        `json:"target_name"`
+	HostIDSnapshot       sql.NullInt32 `json:"host_id_snapshot"`
+	HostIpSnapshot       string        `json:"host_ip_snapshot"`
+	InstanceNameSnapshot string        `json:"instance_name_snapshot"`
+	CreateTime           time.Time     `json:"create_time"`
+	UpdateTime           time.Time     `json:"update_time"`
+}
+
+func (q *Queries) CreateInspectionTargetExecution(ctx context.Context, arg CreateInspectionTargetExecutionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createInspectionTargetExecution,
+		arg.ExecutionID,
+		arg.DeploymentID,
+		arg.HostID,
+		arg.TargetName,
+		arg.HostIDSnapshot,
+		arg.HostIpSnapshot,
+		arg.InstanceNameSnapshot,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+const createInspectionTask = `-- name: CreateInspectionTask :execlastid
+INSERT INTO inspection_task(name, inspection_name, group_id, concurrency, timeout_seconds, cron_expression,
+                           next_run_time, last_run_time, enabled, create_time, update_time)
+VALUES (?, ?, ?, ?,
+        ?, ?, ?, NULL,
+        ?, ?, ?)
+`
+
+type CreateInspectionTaskParams struct {
+	Name           string       `json:"name"`
+	InspectionName string       `json:"inspection_name"`
+	GroupID        int64        `json:"group_id"`
+	Concurrency    uint32       `json:"concurrency"`
+	TimeoutSeconds uint32       `json:"timeout_seconds"`
+	CronExpression string       `json:"cron_expression"`
+	NextRunTime    sql.NullTime `json:"next_run_time"`
+	Enabled        bool         `json:"enabled"`
+	CreateTime     time.Time    `json:"create_time"`
+	UpdateTime     time.Time    `json:"update_time"`
+}
+
+func (q *Queries) CreateInspectionTask(ctx context.Context, arg CreateInspectionTaskParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createInspectionTask,
+		arg.Name,
+		arg.InspectionName,
+		arg.GroupID,
+		arg.Concurrency,
+		arg.TimeoutSeconds,
+		arg.CronExpression,
+		arg.NextRunTime,
+		arg.Enabled,
+		arg.CreateTime,
+		arg.UpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+const createInspectionTaskGroup = `-- name: CreateInspectionTaskGroup :exec
+INSERT INTO inspection_task_group(task_id, group_id, mount_type, project_id, environment_id, business_system_id,
+                                  service_id, instance_mode, param_values)
+VALUES (?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?)
+`
+
+type CreateInspectionTaskGroupParams struct {
+	TaskID           int64           `json:"task_id"`
+	GroupID          int64           `json:"group_id"`
+	MountType        string          `json:"mount_type"`
+	ProjectID        sql.NullInt64   `json:"project_id"`
+	EnvironmentID    sql.NullInt64   `json:"environment_id"`
+	BusinessSystemID sql.NullInt64   `json:"business_system_id"`
+	ServiceID        sql.NullInt64   `json:"service_id"`
+	InstanceMode     sql.NullString  `json:"instance_mode"`
+	ParamValues      json.RawMessage `json:"param_values"`
+}
+
+func (q *Queries) CreateInspectionTaskGroup(ctx context.Context, arg CreateInspectionTaskGroupParams) error {
+	_, err := q.db.ExecContext(ctx, createInspectionTaskGroup,
+		arg.TaskID,
+		arg.GroupID,
+		arg.MountType,
+		arg.ProjectID,
+		arg.EnvironmentID,
+		arg.BusinessSystemID,
+		arg.ServiceID,
+		arg.InstanceMode,
+		arg.ParamValues,
+	)
+	return err
+}
+
+const deleteFinishedInspectionExecutions = `-- name: DeleteFinishedInspectionExecutions :execrows
+DELETE FROM inspection_execution
+WHERE status <> 'pending' AND status <> 'running' AND end_time < ?
+`
+
+func (q *Queries) DeleteFinishedInspectionExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteFinishedInspectionExecutions, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteFinishedInspectionResults = `-- name: DeleteFinishedInspectionResults :execrows
+DELETE FROM inspection_result
+WHERE target_id IN (
+  SELECT t.id FROM inspection_target_execution t
+  JOIN inspection_execution e ON e.id = t.execution_id
+  WHERE e.status <> 'pending' AND e.status <> 'running' AND e.end_time < ?
+)
+`
+
+// 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
+// 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
+func (q *Queries) DeleteFinishedInspectionResults(ctx context.Context, cutoff sql.NullTime) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteFinishedInspectionResults, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteFinishedInspectionTargetExecutions = `-- name: DeleteFinishedInspectionTargetExecutions :execrows
+DELETE FROM inspection_target_execution
+WHERE execution_id IN (
+  SELECT e.id FROM inspection_execution e
+  WHERE e.status <> 'pending' AND e.status <> 'running' AND e.end_time < ?
+)
+`
+
+func (q *Queries) DeleteFinishedInspectionTargetExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteFinishedInspectionTargetExecutions, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteInspectionChecksByGroup = `-- name: DeleteInspectionChecksByGroup :exec
+DELETE FROM inspection_check WHERE group_id = ?
+`
+
+func (q *Queries) DeleteInspectionChecksByGroup(ctx context.Context, groupID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteInspectionChecksByGroup, groupID)
+	return err
+}
+
+const deleteInspectionGroup = `-- name: DeleteInspectionGroup :execrows
+DELETE FROM inspection_group WHERE id = ?
+`
+
+func (q *Queries) DeleteInspectionGroup(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInspectionGroup, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteInspectionTask = `-- name: DeleteInspectionTask :execrows
+DELETE FROM inspection_task WHERE id = ?
+`
+
+func (q *Queries) DeleteInspectionTask(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInspectionTask, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteInspectionTaskGroups = `-- name: DeleteInspectionTaskGroups :exec
+DELETE FROM inspection_task_group WHERE task_id = ?
+`
+
+func (q *Queries) DeleteInspectionTaskGroups(ctx context.Context, taskID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteInspectionTaskGroups, taskID)
+	return err
+}
+
+const detachInspectionExecutionsFromTask = `-- name: DetachInspectionExecutionsFromTask :exec
+UPDATE inspection_execution SET task_id = NULL, update_time = ?
+WHERE task_id = ?
+`
+
+type DetachInspectionExecutionsFromTaskParams struct {
+	UpdateTime time.Time     `json:"update_time"`
+	TaskID     sql.NullInt64 `json:"task_id"`
+}
+
+func (q *Queries) DetachInspectionExecutionsFromTask(ctx context.Context, arg DetachInspectionExecutionsFromTaskParams) error {
+	_, err := q.db.ExecContext(ctx, detachInspectionExecutionsFromTask, arg.UpdateTime, arg.TaskID)
+	return err
+}
+
+const finishInspectionExecution = `-- name: FinishInspectionExecution :execrows
+UPDATE inspection_execution
+SET status = ?, summary = ?, end_time = ?,
+    update_time = ?
+WHERE id = ?
+`
+
+type FinishInspectionExecutionParams struct {
+	Status     string          `json:"status"`
+	Summary    json.RawMessage `json:"summary"`
+	EndTime    sql.NullTime    `json:"end_time"`
+	UpdateTime time.Time       `json:"update_time"`
+	ID         int64           `json:"id"`
+}
+
+func (q *Queries) FinishInspectionExecution(ctx context.Context, arg FinishInspectionExecutionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishInspectionExecution,
+		arg.Status,
+		arg.Summary,
+		arg.EndTime,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const finishInspectionTarget = `-- name: FinishInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = ?, passed = ?, error_message = ?,
+    raw_result = ?, end_time = ?, update_time = ?
+WHERE id = ?
+`
+
+type FinishInspectionTargetParams struct {
+	Status       string          `json:"status"`
+	Passed       *bool           `json:"passed"`
+	ErrorMessage string          `json:"error_message"`
+	RawResult    json.RawMessage `json:"raw_result"`
+	EndTime      sql.NullTime    `json:"end_time"`
+	UpdateTime   time.Time       `json:"update_time"`
+	ID           int64           `json:"id"`
+}
+
+func (q *Queries) FinishInspectionTarget(ctx context.Context, arg FinishInspectionTargetParams) error {
+	_, err := q.db.ExecContext(ctx, finishInspectionTarget,
+		arg.Status,
+		arg.Passed,
+		arg.ErrorMessage,
+		arg.RawResult,
+		arg.EndTime,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const getApplicationServiceName = `-- name: GetApplicationServiceName :one
+SELECT name FROM assets_application_service WHERE id = ? LIMIT 1
+`
+
+func (q *Queries) GetApplicationServiceName(ctx context.Context, id int64) (string, error) {
+	row := q.db.QueryRowContext(ctx, getApplicationServiceName, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
+const getBusinessEnvironmentNameByID = `-- name: GetBusinessEnvironmentNameByID :one
+SELECT name FROM assets_business_environment WHERE id = ? LIMIT 1
+`
+
+func (q *Queries) GetBusinessEnvironmentNameByID(ctx context.Context, id int64) (string, error) {
+	row := q.db.QueryRowContext(ctx, getBusinessEnvironmentNameByID, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
+const getInspectionExecutionForUpdate = `-- name: GetInspectionExecutionForUpdate :one
+SELECT status, summary FROM inspection_execution WHERE id = ? FOR UPDATE
+`
+
+type GetInspectionExecutionForUpdateRow struct {
+	Status  string          `json:"status"`
+	Summary json.RawMessage `json:"summary"`
+}
+
+func (q *Queries) GetInspectionExecutionForUpdate(ctx context.Context, id int64) (GetInspectionExecutionForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionExecutionForUpdate, id)
+	var i GetInspectionExecutionForUpdateRow
+	err := row.Scan(&i.Status, &i.Summary)
+	return i, err
 }
 
 const getInspectionExecutionTyped = `-- name: GetInspectionExecutionTyped :one
@@ -166,6 +815,53 @@ func (q *Queries) GetInspectionGroup(ctx context.Context, id int64) (GetInspecti
 		&i.CreateTime,
 		&i.UpdateTime,
 	)
+	return i, err
+}
+
+const getInspectionGroupForUpdate = `-- name: GetInspectionGroupForUpdate :one
+SELECT name, description, enabled, category, application_id, params
+FROM inspection_group WHERE id = ? FOR UPDATE
+`
+
+type GetInspectionGroupForUpdateRow struct {
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Enabled       bool            `json:"enabled"`
+	Category      string          `json:"category"`
+	ApplicationID sql.NullInt64   `json:"application_id"`
+	Params        json.RawMessage `json:"params"`
+}
+
+func (q *Queries) GetInspectionGroupForUpdate(ctx context.Context, id int64) (GetInspectionGroupForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionGroupForUpdate, id)
+	var i GetInspectionGroupForUpdateRow
+	err := row.Scan(
+		&i.Name,
+		&i.Description,
+		&i.Enabled,
+		&i.Category,
+		&i.ApplicationID,
+		&i.Params,
+	)
+	return i, err
+}
+
+const getInspectionGroupRunMeta = `-- name: GetInspectionGroupRunMeta :one
+SELECT g.enabled, g.category,
+       (SELECT COUNT(*) FROM inspection_check c WHERE c.group_id = g.id AND c.enabled = TRUE) AS enabled_check_count
+FROM inspection_group g WHERE g.id = ?
+`
+
+type GetInspectionGroupRunMetaRow struct {
+	Enabled           bool   `json:"enabled"`
+	Category          string `json:"category"`
+	EnabledCheckCount int64  `json:"enabled_check_count"`
+}
+
+func (q *Queries) GetInspectionGroupRunMeta(ctx context.Context, id int64) (GetInspectionGroupRunMetaRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionGroupRunMeta, id)
+	var i GetInspectionGroupRunMetaRow
+	err := row.Scan(&i.Enabled, &i.Category, &i.EnabledCheckCount)
 	return i, err
 }
 
@@ -261,6 +957,116 @@ func (q *Queries) GetInspectionTask(ctx context.Context, id int64) (GetInspectio
 		&i.UpdateTime,
 	)
 	return i, err
+}
+
+const getInspectionTaskRunState = `-- name: GetInspectionTaskRunState :one
+SELECT id, name, concurrency, timeout_seconds, enabled FROM inspection_task WHERE id = ?
+`
+
+type GetInspectionTaskRunStateRow struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Concurrency    uint32 `json:"concurrency"`
+	TimeoutSeconds uint32 `json:"timeout_seconds"`
+	Enabled        bool   `json:"enabled"`
+}
+
+func (q *Queries) GetInspectionTaskRunState(ctx context.Context, id int64) (GetInspectionTaskRunStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionTaskRunState, id)
+	var i GetInspectionTaskRunStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Concurrency,
+		&i.TimeoutSeconds,
+		&i.Enabled,
+	)
+	return i, err
+}
+
+const getInspectionTaskState = `-- name: GetInspectionTaskState :one
+SELECT name, inspection_name, group_id, concurrency, timeout_seconds, cron_expression, enabled
+FROM inspection_task WHERE id = ?
+`
+
+type GetInspectionTaskStateRow struct {
+	Name           string `json:"name"`
+	InspectionName string `json:"inspection_name"`
+	GroupID        int64  `json:"group_id"`
+	Concurrency    uint32 `json:"concurrency"`
+	TimeoutSeconds uint32 `json:"timeout_seconds"`
+	CronExpression string `json:"cron_expression"`
+	Enabled        bool   `json:"enabled"`
+}
+
+func (q *Queries) GetInspectionTaskState(ctx context.Context, id int64) (GetInspectionTaskStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getInspectionTaskState, id)
+	var i GetInspectionTaskStateRow
+	err := row.Scan(
+		&i.Name,
+		&i.InspectionName,
+		&i.GroupID,
+		&i.Concurrency,
+		&i.TimeoutSeconds,
+		&i.CronExpression,
+		&i.Enabled,
+	)
+	return i, err
+}
+
+const getProjectNameByID = `-- name: GetProjectNameByID :one
+SELECT name FROM assets_project WHERE id = ? LIMIT 1
+`
+
+func (q *Queries) GetProjectNameByID(ctx context.Context, id int64) (string, error) {
+	row := q.db.QueryRowContext(ctx, getProjectNameByID, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
+const listDueInspectionTasks = `-- name: ListDueInspectionTasks :many
+
+SELECT id, cron_expression
+FROM inspection_task
+WHERE enabled = TRUE AND cron_expression <> '' AND next_run_time IS NOT NULL
+  AND next_run_time <= ?
+ORDER BY id
+`
+
+type ListDueInspectionTasksRow struct {
+	ID             int64  `json:"id"`
+	CronExpression string `json:"cron_expression"`
+}
+
+// ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
+//
+// 两条与内联版本不同的约定：
+//  1. 时间一律由应用层传入。`NOW()`/`UTC_TIMESTAMP(6)` 是方言函数，且 PG 的 `now()` 返回
+//     timestamptz（落到 timestamp 列会按会话时区换算），跨方言语义不一致（SQL_DESIGN §4.2）。
+//  2. PATCH 合并（组的部分更新）在应用层做：先 `FOR UPDATE` 读回现值再整行写，而不是
+//     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
+func (q *Queries) ListDueInspectionTasks(ctx context.Context, now sql.NullTime) ([]ListDueInspectionTasksRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDueInspectionTasks, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDueInspectionTasksRow{}
+	for rows.Next() {
+		var i ListDueInspectionTasksRow
+		if err := rows.Scan(&i.ID, &i.CronExpression); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listEnabledInspectionChecksForRun = `-- name: ListEnabledInspectionChecksForRun :many
@@ -595,6 +1401,67 @@ func (q *Queries) ListInspectionGroups(ctx context.Context, arg ListInspectionGr
 			&i.ApplicationName,
 			&i.CreateTime,
 			&i.UpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInspectionResultsByExecution = `-- name: ListInspectionResultsByExecution :many
+SELECT r.id, r.target_id, r.check_key, r.check_type, r.name, r.status, r.severity, r.group_id, r.group_name,
+       COALESCE(r.expected_value, 'null') AS expected_value,
+       COALESCE(r.actual_value, 'null') AS actual_value, r.message
+FROM inspection_result r
+JOIN inspection_target_execution t ON t.id = r.target_id
+WHERE t.execution_id = ?
+ORDER BY r.target_id, r.id
+`
+
+type ListInspectionResultsByExecutionRow struct {
+	ID            int64           `json:"id"`
+	TargetID      int64           `json:"target_id"`
+	CheckKey      string          `json:"check_key"`
+	CheckType     string          `json:"check_type"`
+	Name          string          `json:"name"`
+	Status        string          `json:"status"`
+	Severity      string          `json:"severity"`
+	GroupID       sql.NullInt64   `json:"group_id"`
+	GroupName     string          `json:"group_name"`
+	ExpectedValue json.RawMessage `json:"expected_value"`
+	ActualValue   json.RawMessage `json:"actual_value"`
+	Message       string          `json:"message"`
+}
+
+func (q *Queries) ListInspectionResultsByExecution(ctx context.Context, executionID int64) ([]ListInspectionResultsByExecutionRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInspectionResultsByExecution, executionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInspectionResultsByExecutionRow{}
+	for rows.Next() {
+		var i ListInspectionResultsByExecutionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.CheckKey,
+			&i.CheckType,
+			&i.Name,
+			&i.Status,
+			&i.Severity,
+			&i.GroupID,
+			&i.GroupName,
+			&i.ExpectedValue,
+			&i.ActualValue,
+			&i.Message,
 		); err != nil {
 			return nil, err
 		}
@@ -1147,4 +2014,158 @@ func (q *Queries) ListMountServiceInstances(ctx context.Context, serviceID int64
 		return nil, err
 	}
 	return items, nil
+}
+
+const markInspectionExecutionRunning = `-- name: MarkInspectionExecutionRunning :execrows
+UPDATE inspection_execution
+SET status = 'running', start_time = ?, update_time = ?
+WHERE id = ? AND status = 'pending'
+`
+
+type MarkInspectionExecutionRunningParams struct {
+	StartTime  sql.NullTime `json:"start_time"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markInspectionExecutionRunning, arg.StartTime, arg.UpdateTime, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markInspectionTargetRunning = `-- name: MarkInspectionTargetRunning :exec
+UPDATE inspection_target_execution
+SET status = 'running', start_time = ?, update_time = ?
+WHERE id = ?
+`
+
+type MarkInspectionTargetRunningParams struct {
+	StartTime  sql.NullTime `json:"start_time"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error {
+	_, err := q.db.ExecContext(ctx, markInspectionTargetRunning, arg.StartTime, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const skipInspectionTarget = `-- name: SkipInspectionTarget :exec
+UPDATE inspection_target_execution
+SET status = 'skipped', passed = FALSE, error_message = ?,
+    end_time = ?, update_time = ?
+WHERE id = ?
+`
+
+type SkipInspectionTargetParams struct {
+	ErrorMessage string       `json:"error_message"`
+	EndTime      sql.NullTime `json:"end_time"`
+	UpdateTime   time.Time    `json:"update_time"`
+	ID           int64        `json:"id"`
+}
+
+func (q *Queries) SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error {
+	_, err := q.db.ExecContext(ctx, skipInspectionTarget,
+		arg.ErrorMessage,
+		arg.EndTime,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const touchInspectionTaskLastRun = `-- name: TouchInspectionTaskLastRun :exec
+UPDATE inspection_task SET last_run_time = ?, update_time = ?
+WHERE id = ?
+`
+
+type TouchInspectionTaskLastRunParams struct {
+	LastRunTime sql.NullTime `json:"last_run_time"`
+	UpdateTime  time.Time    `json:"update_time"`
+	ID          int64        `json:"id"`
+}
+
+func (q *Queries) TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error {
+	_, err := q.db.ExecContext(ctx, touchInspectionTaskLastRun, arg.LastRunTime, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const updateInspectionGroup = `-- name: UpdateInspectionGroup :execrows
+UPDATE inspection_group
+SET name = ?, description = ?, enabled = ?,
+    category = ?, application_id = ?, params = ?,
+    update_time = ?
+WHERE id = ?
+`
+
+type UpdateInspectionGroupParams struct {
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Enabled       bool            `json:"enabled"`
+	Category      string          `json:"category"`
+	ApplicationID sql.NullInt64   `json:"application_id"`
+	Params        json.RawMessage `json:"params"`
+	UpdateTime    time.Time       `json:"update_time"`
+	ID            int64           `json:"id"`
+}
+
+func (q *Queries) UpdateInspectionGroup(ctx context.Context, arg UpdateInspectionGroupParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateInspectionGroup,
+		arg.Name,
+		arg.Description,
+		arg.Enabled,
+		arg.Category,
+		arg.ApplicationID,
+		arg.Params,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateInspectionTask = `-- name: UpdateInspectionTask :execrows
+UPDATE inspection_task
+SET name = ?, inspection_name = ?, group_id = ?,
+    concurrency = ?, timeout_seconds = ?,
+    cron_expression = ?, next_run_time = ?,
+    enabled = ?, update_time = ?
+WHERE id = ?
+`
+
+type UpdateInspectionTaskParams struct {
+	Name           string       `json:"name"`
+	InspectionName string       `json:"inspection_name"`
+	GroupID        int64        `json:"group_id"`
+	Concurrency    uint32       `json:"concurrency"`
+	TimeoutSeconds uint32       `json:"timeout_seconds"`
+	CronExpression string       `json:"cron_expression"`
+	NextRunTime    sql.NullTime `json:"next_run_time"`
+	Enabled        bool         `json:"enabled"`
+	UpdateTime     time.Time    `json:"update_time"`
+	ID             int64        `json:"id"`
+}
+
+func (q *Queries) UpdateInspectionTask(ctx context.Context, arg UpdateInspectionTaskParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateInspectionTask,
+		arg.Name,
+		arg.InspectionName,
+		arg.GroupID,
+		arg.Concurrency,
+		arg.TimeoutSeconds,
+		arg.CronExpression,
+		arg.NextRunTime,
+		arg.Enabled,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -45,8 +46,8 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 		return
 	}
 	if password := stringValue(input.Config["password"]); password == "********" && id > 0 {
-		var current []byte
-		if err := handler.db.QueryRowContext(context, `SELECT config FROM monitor_alert_media WHERE id=?`, id).Scan(&current); err == nil {
+		current, err := db.New(handler.db).GetAlertMediaConfig(context, id)
+		if err == nil {
 			var existing map[string]any
 			_ = json.Unmarshal(current, &existing)
 			input.Config["password"] = existing["password"]
@@ -65,20 +66,26 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 		enabled = *input.Enabled
 	}
 	now := time.Now().UTC()
+	queries := db.New(handler.db)
 	if id == 0 {
-		result, err := handler.db.ExecContext(context, `INSERT INTO monitor_alert_media(create_time,update_time,remark,name,media_type,config,enabled) VALUES(?,?,?,?,?,?,?)`, now, now, input.Remark, input.Name, input.MediaType, string(config), enabled)
+		createdID, err := queries.CreateAlertMedia(context, db.CreateAlertMediaParams{
+			CreateTime: now, UpdateTime: now, Remark: sql.NullString{String: input.Remark, Valid: true},
+			Name: input.Name, MediaType: input.MediaType, Config: config, Enabled: enabled,
+		})
 		if err != nil {
 			response.BusinessError(context, 400, err.Error(), nil)
 			return
 		}
-		id, _ = result.LastInsertId()
+		id = createdID
 	} else {
-		result, err := handler.db.ExecContext(context, `UPDATE monitor_alert_media SET update_time=?,remark=?,name=?,media_type=?,config=?,enabled=? WHERE id=?`, now, input.Remark, input.Name, input.MediaType, string(config), enabled, id)
+		affected, err := queries.UpdateAlertMedia(context, db.UpdateAlertMediaParams{
+			UpdateTime: now, Remark: sql.NullString{String: input.Remark, Valid: true},
+			Name: input.Name, MediaType: input.MediaType, Config: config, Enabled: enabled, ID: id,
+		})
 		if err != nil {
 			response.BusinessError(context, 400, err.Error(), nil)
 			return
 		}
-		affected, _ := result.RowsAffected()
 		if affected == 0 {
 			response.BusinessError(context, 404, "alert media not found", nil)
 			return
@@ -88,7 +95,10 @@ func (handler *Handler) saveAlertMedia(context *gin.Context, id int64) {
 }
 
 func (handler *Handler) BatchDeleteAlertMedia(context *gin.Context) {
-	batchDeleteMonitorRows(context, handler, "monitor_alert_media")
+	batchDeleteMonitorRows(context, handler, handler.deleteAlertMediaByID)
 }
 
-var _ = sql.ErrNoRows
+// deleteAlertMediaByID 找不到行时返回 sql.ErrNoRows，由批删入口记成 ok:false。
+func (handler *Handler) deleteAlertMediaByID(context *gin.Context, id int64) error {
+	return deleteRowsAffected(db.New(handler.db).DeleteAlertMedia(context, id))
+}

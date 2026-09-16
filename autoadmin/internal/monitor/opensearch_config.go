@@ -1,12 +1,13 @@
 package monitor
 
 import (
+	"context"
 	"database/sql"
-	"sort"
 	"strings"
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,9 +40,10 @@ func (handler *Handler) saveOpenSearchCluster(context *gin.Context, id int64) {
 		response.BusinessError(context, 400, "invalid request body", nil)
 		return
 	}
+	queries := db.New(handler.db)
 	if id == 0 {
-		var count int
-		if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM monitor_opensearch_cluster`).Scan(&count); err != nil {
+		count, err := queries.CountAllOpenSearchClusters(context)
+		if err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -66,17 +68,49 @@ func (handler *Handler) saveOpenSearchCluster(context *gin.Context, id int64) {
 		return
 	}
 	defer transaction.Rollback()
+	txQueries := db.New(transaction)
 	if isDefault, ok := values["is_default"].(bool); ok && isDefault {
-		_, err = transaction.ExecContext(context, `UPDATE monitor_opensearch_cluster SET is_default=FALSE,update_time=? WHERE is_default=TRUE AND id<>?`, time.Now().UTC(), id)
-		if err != nil {
+		if err = txQueries.ClearDefaultOpenSearchCluster(context, db.ClearDefaultOpenSearchClusterParams{
+			UpdateTime: time.Now().UTC(), ID: id,
+		}); err != nil {
 			response.Error(context, err)
 			return
 		}
 	}
 	if id == 0 {
-		id, err = insertOpenSearchCluster(context, transaction, values)
+		// 新建时 openSearchClusterValues(creating=true) 已把未提交的列补上默认值，直接整行插入。
+		id, err = txQueries.CreateOpenSearchCluster(context, db.CreateOpenSearchClusterParams{
+			CreateTime: time.Now().UTC(), UpdateTime: time.Now().UTC(),
+			Name: stringValue(values["name"]), Hosts: stringValue(values["hosts"]),
+			Username: stringValue(values["username"]), Password: stringValue(values["password"]),
+			VerifyTls: boolValue(values["verify_tls"]), CaCert: stringValue(values["ca_cert"]),
+			IndexPrefix: stringValue(values["index_prefix"]), RequestTimeout: uint32(intValue(values["request_timeout"])),
+			Enabled: boolValue(values["enabled"]), IsDefault: boolValue(values["is_default"]),
+			Remark: stringValue(values["remark"]),
+		})
 	} else {
-		err = updateOpenSearchCluster(context, transaction, id, values)
+		// PATCH 语义：读回整行 → 合并提交的字段 → 整行写
+		//（原实现是运行时拼 `SET ` + 列名，sqlc 的语句是编译期固定的）。
+		merged, mergeErr := mergedOpenSearchCluster(context, queries, id, values)
+		if mergeErr == sql.ErrNoRows {
+			response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+			return
+		}
+		if mergeErr != nil {
+			response.Error(context, mergeErr)
+			return
+		}
+		affected, updateErr := txQueries.UpdateOpenSearchCluster(context, db.UpdateOpenSearchClusterParams{
+			UpdateTime: time.Now().UTC(),
+			Name:       merged.Name, Hosts: merged.Hosts, Username: merged.Username, Password: merged.Password,
+			VerifyTls: merged.VerifyTls, CaCert: merged.CaCert, IndexPrefix: merged.IndexPrefix,
+			RequestTimeout: merged.RequestTimeout, Enabled: merged.Enabled, IsDefault: merged.IsDefault,
+			Remark: merged.Remark, ID: id,
+		})
+		err = updateErr
+		if err == nil && affected == 0 {
+			err = sql.ErrNoRows
+		}
 	}
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
@@ -94,6 +128,54 @@ func (handler *Handler) saveOpenSearchCluster(context *gin.Context, id int64) {
 	// 失败只落 storage_sync_* 状态，不阻塞保存。
 	go handler.syncClusterLogStorage(id)
 	handler.respondOpenSearchCluster(context, id)
+}
+
+// mergedOpenSearchCluster 把已提交的字段合并进数据库里的当前行（整行写的输入）。
+// 密码列存的是密文，未提交时原样保留（openSearchClusterValues 只把提交的新密码加密后放进来）。
+// businessValidationError 标记"入参校验失败"（与库/网络错误区分：调用点按 400 返回原文案）。
+type businessValidationError string
+
+func (err businessValidationError) Error() string { return string(err) }
+
+func mergedOpenSearchCluster(context context.Context, queries *db.Queries, id int64, values map[string]any) (db.MonitorOpensearchCluster, error) {
+	current, err := queries.GetOpenSearchClusterTyped(context, id)
+	if err != nil {
+		return db.MonitorOpensearchCluster{}, err
+	}
+	if value, ok := values["name"]; ok {
+		current.Name = stringValue(value)
+	}
+	if value, ok := values["hosts"]; ok {
+		current.Hosts = stringValue(value)
+	}
+	if value, ok := values["username"]; ok {
+		current.Username = stringValue(value)
+	}
+	if value, ok := values["password"]; ok {
+		current.Password = stringValue(value)
+	}
+	if value, ok := values["verify_tls"]; ok {
+		current.VerifyTls = boolValue(value)
+	}
+	if value, ok := values["ca_cert"]; ok {
+		current.CaCert = stringValue(value)
+	}
+	if value, ok := values["index_prefix"]; ok {
+		current.IndexPrefix = stringValue(value)
+	}
+	if value, ok := values["request_timeout"]; ok {
+		current.RequestTimeout = uint32(intValue(value))
+	}
+	if value, ok := values["enabled"]; ok {
+		current.Enabled = boolValue(value)
+	}
+	if value, ok := values["is_default"]; ok {
+		current.IsDefault = boolValue(value)
+	}
+	if value, ok := values["remark"]; ok {
+		current.Remark = stringValue(value)
+	}
+	return current, nil
 }
 
 func (handler *Handler) openSearchClusterValues(input openSearchClusterInput, creating bool) (map[string]any, error) {
@@ -169,57 +251,11 @@ func (handler *Handler) openSearchClusterValues(input openSearchClusterInput, cr
 	return values, nil
 }
 
-type businessValidationError string
-
-func (err businessValidationError) Error() string { return string(err) }
-
-func insertOpenSearchCluster(context *gin.Context, transaction *sql.Tx, values map[string]any) (int64, error) {
-	columns := sortedColumns(values)
-	placeholders, arguments := make([]string, 0, len(columns)+2), make([]any, 0, len(columns)+2)
-	for _, column := range columns {
-		placeholders = append(placeholders, "?")
-		arguments = append(arguments, values[column])
-	}
-	now := time.Now().UTC()
-	columns = append(columns, "create_time", "update_time")
-	placeholders = append(placeholders, "?", "?")
-	arguments = append(arguments, now, now)
-	result, err := transaction.ExecContext(context, `INSERT INTO monitor_opensearch_cluster (`+strings.Join(columns, ",")+`) VALUES (`+strings.Join(placeholders, ",")+`)`, arguments...)
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
-}
-
-func updateOpenSearchCluster(context *gin.Context, transaction *sql.Tx, id int64, values map[string]any) error {
-	columns := sortedColumns(values)
-	assignments, arguments := make([]string, 0, len(columns)+1), make([]any, 0, len(columns)+2)
-	for _, column := range columns {
-		assignments = append(assignments, column+"=?")
-		arguments = append(arguments, values[column])
-	}
-	assignments = append(assignments, "update_time=?")
-	arguments = append(arguments, time.Now().UTC(), id)
-	result, err := transaction.ExecContext(context, `UPDATE monitor_opensearch_cluster SET `+strings.Join(assignments, ",")+` WHERE id=?`, arguments...)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err == nil && affected == 0 {
-		return sql.ErrNoRows
-	}
-	return err
-}
-
-func sortedColumns(values map[string]any) []string {
-	columns := make([]string, 0, len(values))
-	for column := range values {
-		columns = append(columns, column)
-	}
-	sort.Strings(columns)
-	return columns
-}
-
 func (handler *Handler) BatchDeleteOpenSearchClusters(context *gin.Context) {
-	batchDeleteMonitorRows(context, handler, "monitor_opensearch_cluster")
+	batchDeleteMonitorRows(context, handler, handler.deleteOpenSearchClusterByID)
+}
+
+// deleteOpenSearchClusterByID 找不到行时返回 sql.ErrNoRows，由批删入口记成 ok:false。
+func (handler *Handler) deleteOpenSearchClusterByID(context *gin.Context, id int64) error {
+	return deleteRowsAffected(db.New(handler.db).DeleteOpenSearchCluster(context, id))
 }

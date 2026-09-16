@@ -9,6 +9,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/agent/pb"
+	db "autoadmin/internal/platform/database/generated"
 )
 
 var deploymentGateway *agent.Gateway
@@ -16,43 +17,37 @@ var deploymentGateway *agent.Gateway
 func SetDeploymentGateway(gateway *agent.Gateway) { deploymentGateway = gateway }
 
 func (r *Repository) deploymentControl(ctx context.Context, id int64) (string, map[string]any, error) {
-	var instanceName, controlType, runUser, workDirectory, appHome, serviceName, systemdScope, deploymentInstanceName string
-	var macro []byte
-	err := r.pool.QueryRowContext(ctx, `SELECT COALESCE(h.instance_name,''),t.control_type,t.run_user,t.work_directory,t.app_home,t.service_name,t.systemd_scope,t.macro_definitions,d.instance_name FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id JOIN assets_application_service_deployment l ON l.deployment_id=d.id JOIN assets_application_service s ON s.id=l.service_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id WHERE d.id=? LIMIT 1`, id).Scan(&instanceName, &controlType, &runUser, &workDirectory, &appHome, &serviceName, &systemdScope, &macro, &deploymentInstanceName)
+	contextRow, err := r.queries.GetDeploymentControlContext(ctx, id)
 	if err != nil {
 		return "", nil, err
 	}
-	params := map[string]any{"control_type": controlType, "run_user": runUser, "work_directory": workDirectory, "app_home": appHome, "service_name": serviceName, "systemd_scope": systemdScope, "instance_name": deploymentInstanceName}
+	params := map[string]any{"control_type": contextRow.ControlType, "run_user": contextRow.RunUser,
+		"work_directory": contextRow.WorkDirectory, "app_home": contextRow.AppHome,
+		"service_name": contextRow.ServiceName, "systemd_scope": contextRow.SystemdScope,
+		"instance_name": contextRow.DeploymentInstanceName}
 	var macroValues any
-	if json.Unmarshal(macro, &macroValues) == nil {
+	if json.Unmarshal(contextRow.MacroDefinitions, &macroValues) == nil {
 		params["macro_definitions"] = macroValues
 	}
-	actions := map[string]any{}
-	rows, err := r.pool.QueryContext(ctx, `SELECT action,command,timeout_seconds,success_exit_codes FROM assets_application_control_action WHERE deployment_template_id=(SELECT deployment_template_id FROM assets_application_service s JOIN assets_application_service_deployment l ON l.service_id=s.id WHERE l.deployment_id=? LIMIT 1)`, id)
+	rows, err := r.queries.ListDeploymentControlActions(ctx, id)
 	if err != nil {
 		return "", nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var action, command string
-		var timeout int
-		var exits []byte
-		if err = rows.Scan(&action, &command, &timeout, &exits); err != nil {
-			return "", nil, err
-		}
+	actions := map[string]any{}
+	for _, row := range rows {
 		var codes any
-		_ = json.Unmarshal(exits, &codes)
-		actions[action] = map[string]any{"command": command, "timeout_seconds": timeout, "success_exit_codes": codes}
-	}
-	if err = rows.Err(); err != nil {
-		return "", nil, err
+		_ = json.Unmarshal(row.SuccessExitCodes, &codes)
+		actions[row.Action] = map[string]any{"command": row.Command, "timeout_seconds": row.TimeoutSeconds, "success_exit_codes": codes}
 	}
 	params["control_actions"] = actions
-	return instanceName, params, nil
+	return contextRow.InstanceName, params, nil
 }
 func (r *Repository) updateRuntimeStatus(ctx context.Context, id int64, status, output string) error {
-	_, err := r.pool.ExecContext(ctx, `UPDATE assets_application_deployment SET update_time=?,runtime_status=?,runtime_status_output=?,last_status_check_time=? WHERE id=?`, time.Now().UTC(), status, output, time.Now().UTC(), id)
-	return err
+	now := time.Now().UTC()
+	return r.queries.UpdateDeploymentRuntimeStatus(ctx, db.UpdateDeploymentRuntimeStatusParams{
+		UpdateTime: now, RuntimeStatus: status, RuntimeStatusOutput: output,
+		LastStatusCheckTime: sql.NullTime{Time: now, Valid: true}, ID: id,
+	})
 }
 func (s *Service) executeDeploymentControl(ctx context.Context, gateway *agent.Gateway, id int64, action string) (map[string]any, error) {
 	if gateway == nil {

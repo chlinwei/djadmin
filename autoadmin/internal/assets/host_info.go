@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"autoadmin/internal/agent/pb"
+	db "autoadmin/internal/platform/database/generated"
 )
 
 // hostInfoOutcome mirrors Django's refresh_host_info() return contract so the frontend's
@@ -84,14 +86,17 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 	now := time.Now().UTC()
 	isSuccess := status == "success"
 
+	queries := db.New(pool)
+	// 成功时写 collect_time；失败时传 NULL 保留上次采集时间（原实现是两条 UPDATE）。
+	collectTime := sql.NullTime{}
 	if isSuccess {
-		if _, err := pool.ExecContext(ctx, `UPDATE assets_host SET collect_status=?,collect_message=?,collect_time=?,update_time=? WHERE id=?`, "success", errorMessage, now, now, hostID); err != nil {
-			return false, err
-		}
-	} else {
-		if _, err := pool.ExecContext(ctx, `UPDATE assets_host SET collect_status=?,collect_message=?,update_time=? WHERE id=?`, "failed", errorMessage, now, hostID); err != nil {
-			return false, err
-		}
+		collectTime = sql.NullTime{Time: now, Valid: true}
+	}
+	if err := queries.MarkHostCollected(ctx, db.MarkHostCollectedParams{
+		CollectStatus: status, CollectMessage: errorMessage, CollectTime: collectTime,
+		UpdateTime: now, ID: hostID,
+	}); err != nil {
+		return false, err
 	}
 	if !isSuccess || len(resultData) == 0 {
 		return false, nil
@@ -100,9 +105,8 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 	disks := normalizeHostDisks(resultData["disks"])
 	fingerprint := buildStaticFingerprint(resultData, disks)
 
-	var previousFingerprint sql.NullString
-	err := pool.QueryRowContext(ctx, `SELECT static_fingerprint FROM assets_hostruntime WHERE host_id=? LIMIT 1`, hostID).Scan(&previousFingerprint)
-	if err != nil && err != sql.ErrNoRows {
+	previousFingerprint, err := queries.GetHostRuntimeFingerprint(ctx, hostID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
 
@@ -110,15 +114,23 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 	memory := jsonOrDefault(resultData["memory"], map[string]any{})
 	diskIO := jsonOrDefault(resultData["disk_io"], []any{})
 
-	_, err = pool.ExecContext(ctx, `INSERT INTO assets_hostruntime(create_time,update_time,remark,host_id,cpu_usage_percent,cpu_times,memory_usage_percent,memory,disk_io,os_uptime_seconds,os_boot_time,metrics_sample_window_ms,static_fingerprint,collected_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),cpu_usage_percent=VALUES(cpu_usage_percent),cpu_times=VALUES(cpu_times),memory_usage_percent=VALUES(memory_usage_percent),memory=VALUES(memory),disk_io=VALUES(disk_io),os_uptime_seconds=VALUES(os_uptime_seconds),os_boot_time=VALUES(os_boot_time),metrics_sample_window_ms=VALUES(metrics_sample_window_ms),static_fingerprint=VALUES(static_fingerprint),collected_at=VALUES(collected_at)`,
-		now, now, "", hostID, floatOrNil(resultData["cpu_usage_percent"]), cpuTimes, floatOrNil(resultData["memory_usage_percent"]), memory, diskIO, intOrNil(resultData["os_uptime_seconds"]), timeOrNil(resultData["os_boot_time"]), intOrNil(resultData["metrics_sample_window_ms"]), fingerprint, now)
-	if err != nil {
+	if err = queries.UpsertHostRuntime(ctx, db.UpsertHostRuntimeParams{
+		CreateTime: now, UpdateTime: now, HostID: hostID,
+		CpuUsagePercent:       nullFloat64Of(floatOrNil(resultData["cpu_usage_percent"])),
+		CpuTimes:              json.RawMessage(cpuTimes),
+		MemoryUsagePercent:    nullFloat64Of(floatOrNil(resultData["memory_usage_percent"])),
+		Memory:                json.RawMessage(memory),
+		DiskIo:                json.RawMessage(diskIO),
+		OsUptimeSeconds:       nullInt64Of(intOrNil(resultData["os_uptime_seconds"])),
+		OsBootTime:            nullTimeOf(timeOrNil(resultData["os_boot_time"])),
+		MetricsSampleWindowMs: nullInt32Of(intOrNil(resultData["metrics_sample_window_ms"])),
+		StaticFingerprint:     fingerprint,
+		CollectedAt:           sql.NullTime{Time: now, Valid: true},
+	}); err != nil {
 		return false, err
 	}
 
-	if previousFingerprint.Valid && previousFingerprint.String != "" && previousFingerprint.String == fingerprint {
+	if previousFingerprint != "" && previousFingerprint == fingerprint {
 		// Static assets unchanged: dynamic runtime snapshot above is already fresh, skip the rest.
 		return true, nil
 	}
@@ -127,15 +139,25 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 	if osType == "" {
 		osType = stringOrEmpty(resultData["os"])
 	}
-	_, err = pool.ExecContext(ctx, `INSERT INTO assets_hostsystem(create_time,update_time,remark,host_id,os_type,os_version,os_id,os_id_like,os_version_id,kernel_version,hostname,agent_version,timezone_name,utc_offset,collector_source,collected_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),os_type=VALUES(os_type),os_version=VALUES(os_version),os_id=VALUES(os_id),os_id_like=VALUES(os_id_like),os_version_id=VALUES(os_version_id),kernel_version=VALUES(kernel_version),hostname=VALUES(hostname),agent_version=VALUES(agent_version),timezone_name=VALUES(timezone_name),utc_offset=VALUES(utc_offset),collector_source=VALUES(collector_source),collected_at=VALUES(collected_at)`,
-		now, now, "", hostID, nullableStr(osType), nullableStr(stringOrEmpty(resultData["os_version"])), nullableStr(strings.ToLower(stringOrEmpty(resultData["os_id"]))), nullableStr(strings.ToLower(stringOrEmpty(resultData["os_id_like"]))), nullableStr(stringOrEmpty(resultData["os_version_id"])), nullableStr(stringOrEmpty(resultData["kernel_version"])), nullableStr(stringOrEmpty(resultData["hostname"])), nullableStr(stringOrEmpty(resultData["agent_version"])), nullableStr(stringOrEmpty(resultData["os_timezone"])), nullableStr(stringOrEmpty(resultData["os_utc_offset"])), "agent", now)
-	if err != nil {
+	if err = queries.UpsertHostSystem(ctx, db.UpsertHostSystemParams{
+		CreateTime: now, UpdateTime: now, HostID: hostID,
+		OsType:          nullableStrField(osType),
+		OsVersion:       nullableStrField(stringOrEmpty(resultData["os_version"])),
+		OsID:            nullableStrField(strings.ToLower(stringOrEmpty(resultData["os_id"]))),
+		OsIDLike:        nullableStrField(strings.ToLower(stringOrEmpty(resultData["os_id_like"]))),
+		OsVersionID:     nullableStrField(stringOrEmpty(resultData["os_version_id"])),
+		KernelVersion:   nullableStrField(stringOrEmpty(resultData["kernel_version"])),
+		Hostname:        nullableStrField(stringOrEmpty(resultData["hostname"])),
+		AgentVersion:    nullableStrField(stringOrEmpty(resultData["agent_version"])),
+		TimezoneName:    nullableStrField(stringOrEmpty(resultData["os_timezone"])),
+		UtcOffset:       nullableStrField(stringOrEmpty(resultData["os_utc_offset"])),
+		CollectorSource: sql.NullString{String: "agent", Valid: true},
+		CollectedAt:     sql.NullTime{Time: now, Valid: true},
+	}); err != nil {
 		return false, err
 	}
 
-	var diskTotalGB any
+	diskTotalGB := sql.NullFloat64{}
 	total := 0.0
 	for _, disk := range disks {
 		if size, ok := disk["size_gb"].(float64); ok {
@@ -143,14 +165,18 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 		}
 	}
 	if total > 0 {
-		diskTotalGB = float64(int(total*10+0.5)) / 10
+		diskTotalGB = sql.NullFloat64{Float64: float64(int(total*10+0.5)) / 10, Valid: true}
 	}
 
-	_, err = pool.ExecContext(ctx, `INSERT INTO assets_hosthardware(create_time,update_time,remark,host_id,cpu_cores,cpu_model,memory_gb,disk_total_gb,architecture,collected_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),cpu_cores=VALUES(cpu_cores),cpu_model=VALUES(cpu_model),memory_gb=VALUES(memory_gb),disk_total_gb=VALUES(disk_total_gb),architecture=VALUES(architecture),collected_at=VALUES(collected_at)`,
-		now, now, "", hostID, intOrNil(resultData["cpu_count"]), nullableStr(stringOrEmpty(resultData["cpu_model"])), floatOrNil(resultData["memory_total_gb"]), diskTotalGB, nullableStr(stringOrEmpty(resultData["arch"])), now)
-	if err != nil {
+	if err = queries.UpsertHostHardware(ctx, db.UpsertHostHardwareParams{
+		CreateTime: now, UpdateTime: now, HostID: hostID,
+		CpuCores:     nullInt32Of(intOrNil(resultData["cpu_count"])),
+		CpuModel:     nullableStrField(stringOrEmpty(resultData["cpu_model"])),
+		MemoryGb:     nullFloat64Of(floatOrNil(resultData["memory_total_gb"])),
+		DiskTotalGb:  diskTotalGB,
+		Architecture: nullableStrField(stringOrEmpty(resultData["arch"])),
+		CollectedAt:  sql.NullTime{Time: now, Valid: true},
+	}); err != nil {
 		return false, err
 	}
 
@@ -159,7 +185,8 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 	if err != nil {
 		return false, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM assets_hostdisk WHERE host_id=?`, hostID); err != nil {
+	txQueries := db.New(tx)
+	if err = txQueries.DeleteHostDisks(ctx, hostID); err != nil {
 		tx.Rollback()
 		return false, err
 	}
@@ -168,21 +195,24 @@ func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status stri
 		if device == "" {
 			continue
 		}
-		var mountPoint, filesystem any
+		mountPoint, filesystem := sql.NullString{}, sql.NullString{}
 		if v, ok := disk["mount_point"].(string); ok && v != "" {
-			mountPoint = v
+			mountPoint = sql.NullString{String: v, Valid: true}
 		}
 		if v, ok := disk["filesystem"].(string); ok && v != "" {
-			filesystem = v
+			filesystem = sql.NullString{String: v, Valid: true}
 		}
-		var sizeGB, usedGB any
+		sizeGB, usedGB := sql.NullFloat64{}, sql.NullFloat64{}
 		if v, ok := disk["size_gb"].(float64); ok {
-			sizeGB = v
+			sizeGB = sql.NullFloat64{Float64: v, Valid: true}
 		}
 		if v, ok := disk["used_gb"].(float64); ok {
-			usedGB = v
+			usedGB = sql.NullFloat64{Float64: v, Valid: true}
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO assets_hostdisk(host_id,device,mount_point,size_gb,used_gb,filesystem) VALUES(?,?,?,?,?,?)`, hostID, device, mountPoint, sizeGB, usedGB, filesystem); err != nil {
+		if err = txQueries.CreateHostDisk(ctx, db.CreateHostDiskParams{
+			HostID: hostID, Device: device, MountPoint: mountPoint, SizeGb: sizeGB,
+			UsedGb: usedGB, Filesystem: filesystem,
+		}); err != nil {
 			tx.Rollback()
 			return false, err
 		}
@@ -262,6 +292,57 @@ func buildStaticFingerprint(resultData map[string]any, disks []map[string]any) s
 	encoded, _ := json.Marshal(payload)
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:])
+}
+
+// nullableStrField 把"空串即 NULL"的字段钉成 sqlc 的 sql.NullString
+// （与 nullableStr 同语义，只是返回具体类型给参数结构体用）。
+func nullableStrField(value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
+}
+
+// nullInt32Of / nullInt64Of / nullFloat64Of / nullTimeOf 把 resultData 里的 any 形态值
+// （agent 上报的 JSON）转成 sqlc 需要的具体可空类型，nil 一律落 NULL。
+func nullInt32Of(value any) sql.NullInt32 {
+	switch typed := value.(type) {
+	case int64:
+		return sql.NullInt32{Int32: int32(typed), Valid: true}
+	case int:
+		return sql.NullInt32{Int32: int32(typed), Valid: true}
+	case float64:
+		return sql.NullInt32{Int32: int32(typed), Valid: true}
+	default:
+		return sql.NullInt32{}
+	}
+}
+
+func nullInt64Of(value any) sql.NullInt64 {
+	switch typed := value.(type) {
+	case int64:
+		return sql.NullInt64{Int64: typed, Valid: true}
+	case int:
+		return sql.NullInt64{Int64: int64(typed), Valid: true}
+	case float64:
+		return sql.NullInt64{Int64: int64(typed), Valid: true}
+	default:
+		return sql.NullInt64{}
+	}
+}
+
+func nullFloat64Of(value any) sql.NullFloat64 {
+	if typed, ok := value.(float64); ok {
+		return sql.NullFloat64{Float64: typed, Valid: true}
+	}
+	return sql.NullFloat64{}
+}
+
+func nullTimeOf(value any) sql.NullTime {
+	if typed, ok := value.(time.Time); ok {
+		return sql.NullTime{Time: typed, Valid: true}
+	}
+	return sql.NullTime{}
 }
 
 func stringOrEmpty(value any) string {

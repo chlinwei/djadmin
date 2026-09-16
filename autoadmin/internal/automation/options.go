@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,65 +23,44 @@ func (handler *Handler) HostOptions(context *gin.Context) {
 	if size > 30 {
 		size = 30
 	}
+	// 搜索：空串传 NULL，查询里是 `... LIKE narg(pattern) OR narg(pattern) IS NULL` 的"不过滤"分支。
 	search := strings.TrimSpace(context.Query("search"))
-	pattern := "%" + search + "%"
-	where := ` WHERE h.ip IS NOT NULL AND (?='' OR h.instance_name LIKE ? OR s.hostname LIKE ? OR h.ip LIKE ?)`
-
-	var count int64
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM assets_host h LEFT JOIN assets_hostsystem s ON s.host_id=h.id`+where, search, pattern, pattern, pattern).Scan(&count); err != nil {
-		response.Error(context, err)
-		return
+	pattern := sql.NullString{}
+	if search != "" {
+		pattern = sql.NullString{String: "%" + search + "%", Valid: true}
 	}
-	rows, err := handler.db.QueryContext(context, `SELECT h.id,h.instance_name,s.hostname,h.ip,h.group_id FROM assets_host h LEFT JOIN assets_hostsystem s ON s.host_id=h.id`+where+` ORDER BY h.id LIMIT ? OFFSET ?`, search, pattern, pattern, pattern, size, (page-1)*size)
+	queries := db.New(handler.db)
+	count, err := queries.CountAutomationHostOptions(context, db.CountAutomationHostOptionsParams{Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-
-	items := make([]gin.H, 0)
-	for rows.Next() {
-		var id int64
-		var instanceName, hostname, ip sql.NullString
-		var groupID sql.NullInt64
-		if err = rows.Scan(&id, &instanceName, &hostname, &ip, &groupID); err != nil {
-			response.Error(context, err)
-			return
-		}
-		items = append(items, gin.H{"id": id, "instance_name": nullableString(instanceName), "hostname": nullableString(hostname), "ip": nullableString(ip), "group_id": nullableInt(groupID)})
-	}
-	if err = rows.Err(); err != nil {
+	rows, err := queries.ListAutomationHostOptions(context, db.ListAutomationHostOptionsParams{
+		Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size),
+	})
+	if err != nil {
 		response.Error(context, err)
 		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, gin.H{"id": row.ID, "instance_name": row.InstanceName, "hostname": nullableString(row.Hostname), "ip": nullableString(row.Ip), "group_id": nullableInt(row.GroupID)})
 	}
 	response.Paginated(context, items, count, int32(page), int32(size))
 }
 
 func (handler *Handler) GroupTree(context *gin.Context) {
-	rows, err := handler.db.QueryContext(context, `SELECT id,name,parent_id FROM assets_hostgroup ORDER BY id`)
+	rows, err := db.New(handler.db).ListAutomationHostGroupTree(context)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-
 	nodes := make(map[int64]gin.H)
-	ordered := make([]gin.H, 0)
-	for rows.Next() {
-		var id int64
-		var name string
-		var parentID sql.NullInt64
-		if err = rows.Scan(&id, &name, &parentID); err != nil {
-			response.Error(context, err)
-			return
-		}
-		node := gin.H{"id": id, "name": name, "parent_id": nullableInt(parentID), "children": []gin.H{}}
-		nodes[id] = node
+	ordered := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		node := gin.H{"id": row.ID, "name": row.Name, "parent_id": nullableInt(row.ParentID), "children": []gin.H{}}
+		nodes[row.ID] = node
 		ordered = append(ordered, node)
-	}
-	if err = rows.Err(); err != nil {
-		response.Error(context, err)
-		return
 	}
 	roots := make([]gin.H, 0)
 	for _, node := range ordered {
@@ -105,6 +85,14 @@ func nullableString(value sql.NullString) any {
 func nullableInt(value sql.NullInt64) any {
 	if value.Valid {
 		return value.Int64
+	}
+	return nil
+}
+
+// nullableInt32 与 nullableInt 同理，用于 int（host_id_snapshot 一类）列。
+func nullableInt32(value sql.NullInt32) any {
+	if value.Valid {
+		return value.Int32
 	}
 	return nil
 }

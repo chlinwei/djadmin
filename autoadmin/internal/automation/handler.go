@@ -9,6 +9,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
@@ -53,47 +54,54 @@ func (handler *Handler) List(context *gin.Context) {
 	if size > 30 {
 		size = 30
 	}
-	search, category := strings.TrimSpace(context.Query("search")), strings.TrimSpace(context.Query("category"))
-	pattern := "%" + search + "%"
-	where := ` WHERE (?='' OR name LIKE ? OR description LIKE ? OR COALESCE(remark,'') LIKE ?) AND (?='' OR category=?)`
-	var count int64
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM automation_playbook_template`+where, search, pattern, pattern, pattern, category, category).Scan(&count); err != nil {
-		response.Error(context, err)
-		return
+	// 搜索：空串传 NULL，查询里是 `LIKE narg(pattern) OR narg(pattern) IS NULL` 的"不过滤"分支。
+	search := strings.TrimSpace(context.Query("search"))
+	category := strings.TrimSpace(context.Query("category"))
+	pattern := sql.NullString{}
+	if search != "" {
+		pattern = sql.NullString{String: "%" + search + "%", Valid: true}
 	}
-	orders := map[string]string{"id": "id", "name": "name", "create_time": "create_time", "update_time": "update_time"}
+	// 排序参数走白名单：合法值原样（含 '-' 前缀表示倒序）交给 SQL 的 CASE 表达式，
+	// 非法值回落到默认的 `id DESC`（sort_key 传 NULL）。
 	rawOrder := context.DefaultQuery("ordering", "-id")
-	direction := "ASC"
-	key := rawOrder
-	if strings.HasPrefix(rawOrder, "-") {
-		direction = "DESC"
-		key = strings.TrimPrefix(rawOrder, "-")
+	var sortKey any
+	if _, valid := playbookSortKeys[strings.TrimPrefix(rawOrder, "-")]; valid {
+		sortKey = rawOrder
 	}
-	column, ok := orders[key]
-	if !ok {
-		column = "id"
-		direction = "DESC"
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT id,create_time,update_time,remark,name,description,content,category FROM automation_playbook_template`+where+` ORDER BY `+column+` `+direction+` LIMIT ? OFFSET ?`, search, pattern, pattern, pattern, category, category, size, (page-1)*size)
+	queries := db.New(handler.db)
+	params := db.CountAutomationPlaybooksParams{Pattern: pattern, Category: nullIfEmpty(category)}
+	count, err := queries.CountAutomationPlaybooks(context, params)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	items := make([]Playbook, 0)
-	for rows.Next() {
-		var item Playbook
-		if err = rows.Scan(&item.ID, &item.CreateTime, &item.UpdateTime, &item.Remark, &item.Name, &item.Description, &item.Content, &item.Category); err != nil {
-			response.Error(context, err)
-			return
-		}
-		items = append(items, item)
-	}
-	if err = rows.Err(); err != nil {
+	rows, err := queries.ListAutomationPlaybooks(context, db.ListAutomationPlaybooksParams{
+		Pattern: params.Pattern, Category: params.Category, SortKey: sortKey,
+		Limit: int32(size), Offset: int32((page - 1) * size),
+	})
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
+	items := make([]Playbook, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, Playbook{
+			ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
+			Name: row.Name, Description: row.Description, Content: row.Content, Category: row.Category,
+		})
+	}
 	response.Paginated(context, items, count, int32(page), int32(size))
+}
+
+// playbookSortKeys 是可排序的列白名单（与前端表头一一对应）。
+var playbookSortKeys = map[string]bool{"id": true, "name": true, "create_time": true, "update_time": true}
+
+// optionalString 把空串转成 NULL（清单里的分类过滤用"NULL 表示不过滤"）。
+func nullIfEmpty(value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
 }
 
 func validatePlaybook(content string) error {
@@ -132,13 +140,12 @@ func bindPlaybook(context *gin.Context) (playbookInput, bool) {
 }
 
 func (handler *Handler) playbookCategoryByID(context *gin.Context, id int64) (string, bool) {
-	var category string
-	err := handler.db.QueryRowContext(context, `SELECT category FROM automation_playbook_template WHERE id=?`, id).Scan(&category)
+	row, err := db.New(handler.db).GetAutomationPlaybook(context, id)
 	if err != nil {
 		response.Error(context, err)
 		return "", false
 	}
-	return category, true
+	return row.Category, true
 }
 
 func (handler *Handler) Create(context *gin.Context) {
@@ -151,12 +158,14 @@ func (handler *Handler) Create(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	result, err := handler.db.ExecContext(context, `INSERT INTO automation_playbook_template(create_time,update_time,remark,name,description,content,category) VALUES(?,?,?,?,?,?,?)`, now, now, nullString(input.Remark), strings.TrimSpace(input.Name), input.Description, input.Content, input.Category)
+	id, err := db.New(handler.db).CreateAutomationPlaybook(context, db.CreateAutomationPlaybookParams{
+		CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
+		Description: input.Description, Content: input.Content, Category: input.Category,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	id, _ := result.LastInsertId()
 	handler.GetByID(context, id)
 }
 
@@ -176,7 +185,10 @@ func (handler *Handler) Update(context *gin.Context) {
 		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，无法改为其他分类", "data": nil})
 		return
 	}
-	_, err = handler.db.ExecContext(context, `UPDATE automation_playbook_template SET update_time=?,remark=?,name=?,description=?,content=?,category=? WHERE id=?`, time.Now().UTC(), nullString(input.Remark), strings.TrimSpace(input.Name), input.Description, input.Content, input.Category, id)
+	err = db.New(handler.db).UpdateAutomationPlaybook(context, db.UpdateAutomationPlaybookParams{
+		UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
+		Description: input.Description, Content: input.Content, Category: input.Category, ID: id,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -193,13 +205,15 @@ func (handler *Handler) Get(context *gin.Context) {
 	handler.GetByID(context, id)
 }
 func (handler *Handler) GetByID(context *gin.Context, id int64) {
-	var item Playbook
-	err := handler.db.QueryRowContext(context, `SELECT id,create_time,update_time,remark,name,description,content,category FROM automation_playbook_template WHERE id=?`, id).Scan(&item.ID, &item.CreateTime, &item.UpdateTime, &item.Remark, &item.Name, &item.Description, &item.Content, &item.Category)
+	row, err := db.New(handler.db).GetAutomationPlaybook(context, id)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	response.Success(context, item)
+	response.Success(context, Playbook{
+		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
+		Name: row.Name, Description: row.Description, Content: row.Content, Category: row.Category,
+	})
 }
 func (handler *Handler) Validate(context *gin.Context) {
 	var input struct {

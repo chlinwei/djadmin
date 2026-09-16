@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -107,43 +108,35 @@ type policyNode struct {
 // loadNotificationPolicyTree 读取全部策略并建树。坏 matchers JSON 的节点按「无条件命中」处理
 // （不因配置数据问题静默吞掉通知），与管理端写入前强校验配合。
 func (handler *Handler) loadNotificationPolicyTree(ctx context.Context) (*policyNode, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(parent_id,0),name,position,COALESCE(remark,''),matchers,media_ids,user_group_ids,notify_on_firing,notify_on_resolved
-FROM monitor_notification_policy ORDER BY position,id`)
+	rows, err := db.New(handler.db).ListNotificationPolicyNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	nodes := map[int64]*policyNode{}
 	var root *policyNode
-	for rows.Next() {
-		node := &policyNode{}
-		var matchersRaw, mediaIDsRaw, userGroupIDsRaw []byte
-		var remark string
-		if err = rows.Scan(&node.ID, &node.ParentID, &node.Name, &node.Position, &remark, &matchersRaw, &mediaIDsRaw, &userGroupIDsRaw, &node.NotifyOnFiring, &node.NotifyOnResolved); err != nil {
-			return nil, err
+	for _, row := range rows {
+		node := &policyNode{
+			ID: row.ID, ParentID: row.ParentID, Name: row.Name, Position: int(row.Position),
+			Remark: row.Remark, NotifyOnFiring: row.NotifyOnFiring, NotifyOnResolved: row.NotifyOnResolved,
 		}
-		node.Remark = remark
-		if err := json.Unmarshal(matchersRaw, &node.Matchers); err != nil {
+		if err := json.Unmarshal(row.Matchers, &node.Matchers); err != nil {
 			node.Matchers = nil
 		}
-		if mediaIDsRaw == nil || string(mediaIDsRaw) == "null" {
+		if jsonColumnSet(row.MediaIds) {
+			_ = json.Unmarshal([]byte(row.MediaIds.String), &node.MediaIDs)
+		} else {
 			node.MediaInherited = true
-		} else {
-			_ = json.Unmarshal(mediaIDsRaw, &node.MediaIDs)
 		}
-		if userGroupIDsRaw == nil || string(userGroupIDsRaw) == "null" {
-			node.UserGroupInherited = true
+		if jsonColumnSet(row.UserGroupIds) {
+			_ = json.Unmarshal([]byte(row.UserGroupIds.String), &node.UserGroupIDs)
 		} else {
-			_ = json.Unmarshal(userGroupIDsRaw, &node.UserGroupIDs)
+			node.UserGroupInherited = true
 		}
 		nodes[node.ID] = node
 		if node.ParentID == 0 {
 			root = node
 		}
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
 	}
 	if root == nil {
 		return nil, fmt.Errorf("通知策略树缺少根节点（parent_id IS NULL）")
@@ -168,6 +161,13 @@ FROM monitor_notification_policy ORDER BY position,id`)
 		})
 	}
 	return root, nil
+}
+
+// jsonColumnSet 判断一个可空 json 列是否"有值"：SQL NULL 与字面量 JSON null 都算"未设置"
+// （`media_ids` 列用这两种形态表达"继承父节点"）。
+// 列在生成物里是 sql.NullString 而不是 json.RawMessage——后者扫不了 NULL（见 sqlc.yaml 的 override）。
+func jsonColumnSet(value sql.NullString) bool {
+	return value.Valid && strings.TrimSpace(value.String) != "" && strings.TrimSpace(value.String) != "null"
 }
 
 // policyMatcherMatch 单条 matcher 判定；返回命中与否与未命中说明（空串=命中）。
@@ -294,29 +294,17 @@ func (handler *Handler) matchedPolicyMedias(ctx context.Context, target alertNot
 	if len(mediaIDs) == 0 || !policyAllowsEvent(final, eventType) {
 		return nil, userGroupIDs, nil
 	}
-	placeholders := ""
-	args := make([]any, 0, len(mediaIDs))
-	for index, mediaID := range mediaIDs {
-		if index > 0 {
-			placeholders += ","
-		}
-		placeholders += "?"
-		args = append(args, mediaID)
-	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT id,name,media_type,config FROM monitor_alert_media WHERE enabled=TRUE AND id IN (`+placeholders+`) ORDER BY id`, args...)
+	rows, err := db.New(handler.db).ListEnabledAlertMediaByIDs(ctx, mediaIDs)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
-	medias := make([]alertNotificationMedia, 0, len(mediaIDs))
-	for rows.Next() {
-		media := alertNotificationMedia{}
-		if err = rows.Scan(&media.id, &media.name, &media.mediaType, &media.config); err != nil {
-			return nil, nil, err
-		}
-		medias = append(medias, media)
+	medias := make([]alertNotificationMedia, 0, len(rows))
+	for _, row := range rows {
+		medias = append(medias, alertNotificationMedia{
+			id: row.ID, name: row.Name, mediaType: row.MediaType, config: row.Config,
+		})
 	}
-	return medias, userGroupIDs, rows.Err()
+	return medias, userGroupIDs, nil
 }
 
 // ---- 管理 API ----
@@ -349,31 +337,29 @@ func (handler *Handler) ListNotificationPolicies(context *gin.Context) {
 }
 
 func (handler *Handler) listNotificationPolicies(ctx context.Context) ([]notificationPolicyItem, error) {
-	rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(parent_id,0),name,position,COALESCE(remark,''),matchers,media_ids,user_group_ids,notify_on_firing,notify_on_resolved,create_time,update_time
-FROM monitor_notification_policy ORDER BY position,id`)
+	rows, err := db.New(handler.db).ListNotificationPolicyNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := make([]notificationPolicyItem, 0)
-	for rows.Next() {
-		item := notificationPolicyItem{MediaNames: []string{}, UserGroupNames: []string{}}
-		var parentID int64
-		var matchersRaw, mediaIDsRaw, userGroupIDsRaw []byte
-		var remark string
-		if err = rows.Scan(&item.ID, &parentID, &item.Name, &item.Position, &remark, &matchersRaw, &mediaIDsRaw, &userGroupIDsRaw, &item.NotifyOnFiring, &item.NotifyOnResolved, &item.CreateTime, &item.UpdateTime); err != nil {
-			return nil, err
+	items := make([]notificationPolicyItem, 0, len(rows))
+	for _, row := range rows {
+		item := notificationPolicyItem{
+			MediaNames: []string{}, UserGroupNames: []string{},
+			ID: row.ID, Name: row.Name, Position: int(row.Position), Remark: row.Remark,
+			Matchers:         json.RawMessage(row.Matchers),
+			NotifyOnFiring:   row.NotifyOnFiring,
+			NotifyOnResolved: row.NotifyOnResolved,
+			CreateTime:       row.CreateTime, UpdateTime: row.UpdateTime,
 		}
-		item.Remark = remark
-		if parentID > 0 {
+		if row.ParentID > 0 {
+			parentID := row.ParentID
 			item.ParentID = &parentID
 		} else {
 			item.IsRoot = true
 		}
-		item.Matchers = json.RawMessage(matchersRaw)
-		if mediaIDsRaw != nil && string(mediaIDsRaw) != "null" {
+		if jsonColumnSet(row.MediaIds) {
 			mediaIDs := []int64{}
-			_ = json.Unmarshal(mediaIDsRaw, &mediaIDs)
+			_ = json.Unmarshal([]byte(row.MediaIds.String), &mediaIDs)
 			item.MediaIDs = &mediaIDs
 			names, err := handler.mediaNamesByIDs(ctx, mediaIDs)
 			if err != nil {
@@ -381,9 +367,9 @@ FROM monitor_notification_policy ORDER BY position,id`)
 			}
 			item.MediaNames = names
 		}
-		if userGroupIDsRaw != nil && string(userGroupIDsRaw) != "null" {
+		if jsonColumnSet(row.UserGroupIds) {
 			groupIDs := []int64{}
-			_ = json.Unmarshal(userGroupIDsRaw, &groupIDs)
+			_ = json.Unmarshal([]byte(row.UserGroupIds.String), &groupIDs)
 			item.UserGroupIDs = &groupIDs
 			groupNames, err := handler.userGroupNamesByIDs(ctx, groupIDs)
 			if err != nil {
@@ -393,14 +379,15 @@ FROM monitor_notification_policy ORDER BY position,id`)
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 func (handler *Handler) userGroupNamesByIDs(ctx context.Context, groupIDs []int64) ([]string, error) {
+	queries := db.New(handler.db)
 	names := make([]string, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
-		var name string
-		if err := handler.db.QueryRowContext(ctx, `SELECT name FROM sys_user_group WHERE id=?`, groupID).Scan(&name); err == nil {
+		name, err := queries.GetUserGroupName(ctx, groupID)
+		if err == nil {
 			names = append(names, name)
 		} else if err != sql.ErrNoRows {
 			return nil, err
@@ -410,10 +397,11 @@ func (handler *Handler) userGroupNamesByIDs(ctx context.Context, groupIDs []int6
 }
 
 func (handler *Handler) mediaNamesByIDs(ctx context.Context, mediaIDs []int64) ([]string, error) {
+	queries := db.New(handler.db)
 	names := make([]string, 0, len(mediaIDs))
 	for _, mediaID := range mediaIDs {
-		var name string
-		if err := handler.db.QueryRowContext(ctx, `SELECT name FROM monitor_alert_media WHERE id=?`, mediaID).Scan(&name); err == nil {
+		name, err := queries.GetAlertMediaName(ctx, mediaID)
+		if err == nil {
 			names = append(names, name)
 		} else if err != sql.ErrNoRows {
 			return nil, err
@@ -481,6 +469,7 @@ func (handler *Handler) UpdateNotificationPolicy(context *gin.Context) {
 
 // saveNotificationPolicy 创建/更新策略；返回 (新id, 用户可读错误文案, 内部错误)。
 func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, input *saveNotificationPolicyInput) (int64, string, error) {
+	queries := db.New(handler.db)
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return 0, "name 不能为空", nil
@@ -521,12 +510,12 @@ func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, in
 		}
 		sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 		for _, mediaID := range unique {
-			var count int
-			if err = handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM monitor_alert_media WHERE id=?`, mediaID).Scan(&count); err != nil {
+			// 用取行查询代替 COUNT(*)：ErrNoRows 即不存在（P2-2b 起统一的手法）。
+			if _, err = queries.GetAlertMediaName(ctx, mediaID); err != nil {
+				if err == sql.ErrNoRows {
+					return 0, fmt.Sprintf("媒介 %d 不存在", mediaID), nil
+				}
 				return 0, "", err
-			}
-			if count == 0 {
-				return 0, fmt.Sprintf("媒介 %d 不存在", mediaID), nil
 			}
 		}
 		encoded, err := json.Marshal(unique)
@@ -550,12 +539,11 @@ func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, in
 		}
 		sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
 		for _, groupID := range unique {
-			var count int
-			if err = handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sys_user_group WHERE id=?`, groupID).Scan(&count); err != nil {
+			if _, err = queries.GetUserGroupName(ctx, groupID); err != nil {
+				if err == sql.ErrNoRows {
+					return 0, fmt.Sprintf("用户组 %d 不存在", groupID), nil
+				}
 				return 0, "", err
-			}
-			if count == 0 {
-				return 0, fmt.Sprintf("用户组 %d 不存在", groupID), nil
 			}
 		}
 		encoded, err := json.Marshal(unique)
@@ -567,18 +555,20 @@ func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, in
 
 	// 更新根节点：父节点/位置不可变，仅允许改名称、备注、出口与事件开关。
 	var currentParent int64
-	if err = handler.db.QueryRowContext(ctx, `SELECT COALESCE(parent_id,0) FROM monitor_notification_policy WHERE id=?`, id).Scan(&currentParent); err != nil && err != sql.ErrNoRows {
-		return 0, "", err
+	if id > 0 {
+		currentParent, err = queries.GetNotificationPolicyParent(ctx, id)
+		if err == sql.ErrNoRows {
+			return 0, "策略不存在", nil
+		}
+		if err != nil {
+			return 0, "", err
+		}
 	}
 	isRoot := id > 0 && currentParent == 0
-	if id > 0 && err == sql.ErrNoRows {
-		return 0, "策略不存在", nil
-	}
 	if isRoot && input.ParentID != nil && *input.ParentID != 0 {
 		return 0, "根节点不可变更父节点", nil
 	}
 	parentID := int64(0)
-	var parentColumn any
 	if !isRoot {
 		if input.ParentID == nil || *input.ParentID <= 0 {
 			return 0, "parent_id 必填", nil
@@ -592,34 +582,50 @@ func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, in
 		}
 	}
 	now := time.Now().UTC()
+	params := db.CreateNotificationPolicyParams{
+		CreateTime: now, UpdateTime: now, Remark: sql.NullString{String: input.Remark, Valid: true},
+		Name:       name,
+		Position:   int32(position), Matchers: matchersRaw,
+		MediaIds: jsonColumn(mediaColumn), UserGroupIds: jsonColumn(userGroupColumn),
+		NotifyOnFiring: firing, NotifyOnResolved: resolved,
+	}
 	if id == 0 {
-		var parentExists int
-		if err = handler.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM monitor_notification_policy WHERE id=?`, parentID).Scan(&parentExists); err != nil {
+		if _, err = queries.GetNotificationPolicyParent(ctx, parentID); err != nil {
+			if err == sql.ErrNoRows {
+				return 0, "父策略不存在", nil
+			}
 			return 0, "", err
 		}
-		if parentExists == 0 {
-			return 0, "父策略不存在", nil
-		}
-		result, execErr := handler.db.ExecContext(ctx, `INSERT INTO monitor_notification_policy(create_time,update_time,remark,parent_id,name,position,matchers,media_ids,user_group_ids,notify_on_firing,notify_on_resolved) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, input.Remark, parentID, name, position, string(matchersRaw), mediaColumn, userGroupColumn, firing, resolved)
+		params.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+		createdID, execErr := queries.CreateNotificationPolicy(ctx, params)
 		if execErr != nil {
 			return 0, "", execErr
 		}
-		id, _ = result.LastInsertId()
-		return id, "", nil
+		return createdID, "", nil
 	}
 	if isRoot {
 		// FK 约束：根节点父列必须写 NULL 而不是 0。
-		parentColumn = nil
+		params.ParentID = sql.NullInt64{}
 	} else {
-		parentColumn = parentID
+		params.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
 	}
-	_, execErr := handler.db.ExecContext(ctx, `UPDATE monitor_notification_policy SET update_time=?,remark=?,parent_id=?,name=?,position=?,matchers=?,media_ids=?,user_group_ids=?,notify_on_firing=?,notify_on_resolved=? WHERE id=?`,
-		now, input.Remark, parentColumn, name, position, string(matchersRaw), mediaColumn, userGroupColumn, firing, resolved, id)
-	if execErr != nil {
-		return 0, "", execErr
+	if err = queries.UpdateNotificationPolicy(ctx, db.UpdateNotificationPolicyParams{
+		UpdateTime: now, Remark: params.Remark, ParentID: params.ParentID, Name: name,
+		Position: int32(position), Matchers: matchersRaw, MediaIds: params.MediaIds,
+		UserGroupIds: params.UserGroupIds, NotifyOnFiring: firing, NotifyOnResolved: resolved, ID: id,
+	}); err != nil {
+		return 0, "", err
 	}
 	return id, "", nil
+}
+
+// jsonColumn 把"要写入的 json 列值"（string / nil）转成列参数：nil 即 SQL NULL（= 继承）。
+func jsonColumn(value any) sql.NullString {
+	text, ok := value.(string)
+	if !ok {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: text, Valid: true}
 }
 
 // isPolicyDescendant 校验 candidateID 不是 excludeID 的后代（防环）。
@@ -629,8 +635,8 @@ func (handler *Handler) isPolicyDescendant(ctx context.Context, candidateID, exc
 		if current == excludeID {
 			return fmt.Errorf("父节点不能是自己的后代")
 		}
-		var parent int64
-		if err := handler.db.QueryRowContext(ctx, `SELECT COALESCE(parent_id,0) FROM monitor_notification_policy WHERE id=?`, current).Scan(&parent); err != nil {
+		parent, err := db.New(handler.db).GetNotificationPolicyParent(ctx, current)
+		if err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("父策略不存在")
 			}
@@ -670,8 +676,9 @@ func (handler *Handler) BatchDeleteNotificationPolicies(context *gin.Context) {
 		if id <= 0 {
 			continue
 		}
-		var parentID int64
-		if err := handler.db.QueryRowContext(context.Request.Context(), `SELECT COALESCE(parent_id,0) FROM monitor_notification_policy WHERE id=?`, id).Scan(&parentID); err != nil {
+		queries := db.New(handler.db)
+		parentID, err := queries.GetNotificationPolicyParent(context.Request.Context(), id)
+		if err != nil {
 			if err == sql.ErrNoRows {
 				continue
 			}
@@ -683,14 +690,11 @@ func (handler *Handler) BatchDeleteNotificationPolicies(context *gin.Context) {
 			return
 		}
 		// FK ON DELETE CASCADE：子树随之删除。
-		result, err := handler.db.ExecContext(context.Request.Context(), `DELETE FROM monitor_notification_policy WHERE id=?`, id)
-		if err != nil {
+		if err = queries.DeleteNotificationPolicy(context.Request.Context(), id); err != nil {
 			response.Error(context, err)
 			return
 		}
-		if affected, _ := result.RowsAffected(); affected > 0 {
-			deleted++
-		}
+		deleted++
 	}
 	response.Success(context, gin.H{"deleted": deleted})
 }

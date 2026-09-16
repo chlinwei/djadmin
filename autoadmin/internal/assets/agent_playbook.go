@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 
+	db "autoadmin/internal/platform/database/generated"
+
 	"github.com/goccy/go-yaml"
 )
 
@@ -31,9 +33,7 @@ const (
 // loadAgentInstallPlaybook 从模板表读取 Agent 安装专用模板（category='agent'），
 // 约定该分类下只有一条模板；查不到或多条时直接报错，不静默兜底。
 func (handler *Handler) loadAgentInstallPlaybook() (string, error) {
-	var playbook string
-	err := handler.service.repository.pool.QueryRowContext(context.Background(),
-		`SELECT content FROM automation_playbook_template WHERE category=? ORDER BY id DESC`, agentInstallTemplateCategory).Scan(&playbook)
+	playbook, err := db.New(handler.service.repository.pool).GetAgentInstallPlaybook(context.Background(), agentInstallTemplateCategory)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("未找到 Agent 安装专用模板（automation_playbook_template.category=%s），请先在模板管理中创建", agentInstallTemplateCategory)
 	}

@@ -115,7 +115,7 @@ func (handler *Handler) GetHostAgentRuntimeStatus(context *gin.Context) {
 		return
 	}
 	handler.applyAgentPresence(&item)
-	respond(context, gin.H{"agent_id": item.AgentID, "online": item.AgentOnline, "last_seen": item.AgentOnlineTime, "collect_status": item.CollectStatus, "collect_message": item.CollectMessage}, nil)
+	respond(context, gin.H{"instance_name": webSSHString(item.InstanceName), "online": item.AgentOnline, "last_seen": item.AgentOnlineTime, "collect_status": item.CollectStatus, "collect_message": item.CollectMessage}, nil)
 }
 
 func (handler *Handler) GetHostWebSSHActiveCount(context *gin.Context) {

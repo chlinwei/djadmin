@@ -41,7 +41,7 @@
 2. 加载 Agent 安装专用模板并完成上述校验。
 3. 读取系统参数 `sys.assets.agent.grpc_advertise_addr`（缺失报错）。
 4. 创建 `automation_execution_job`（running）+ 每主机 `assets_agent_job`（queued，action=install_agent）+ `automation_execution_host_log`；前端跳转 `/sys/automation/logs?job_id=<automation_job_id>` 看进度。
-   - install：`job_type=ansible`，params 含 credential_id；无 agent_id 的主机作业行回填 `host-<id>` 占位。
+   - install：`job_type=ansible`，params 含 credential_id；用于部署后回连的 `dj_agent_instance_name` 渲染变量取主机的 `assets_host.instance_name`（前端创建主机时必填，见 [主机身份](DJ_AGENT_ARCHITECTURE.md#2-主机身份实例名instance_name)），不再用 `host-<id>` 之类的占位标识。
    - update：`job_type=grpc`。
 
 响应 `data` 携带 `agent_package` 字段，供前端展示本次使用的包来源：
@@ -65,7 +65,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 
 ## dj-agent 安装包管理（`agent_package` 表 + agent_package.go）
 
-- 存储：文件落盘 `<mediaRoot>/agent_packages/default/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 `../backend/djadmin/media` 取绝对路径，即 Django MEDIA_ROOT）；单槽位"当前包"语义，存储目录与 DB `version` 列固定 `default`（历史遗留列，不对外暴露）；记录含 `file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
+- 存储：文件落盘 `<mediaRoot>/agent_packages/default/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 autoadmin 工作目录下的 `media/` 取绝对路径；backend/ 废弃后媒体根已从 Django MEDIA_ROOT 迁出）；单槽位"当前包"语义，存储目录与 DB `version` 列固定 `default`（历史遗留列，不对外暴露）；记录含 `file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
 - API（均挂 `Authenticate + RequirePermission("assets:hosts:update")`，与 `/api/agent/install` 相同中间件链）：
   - `GET /api/agent/packages/`：查询当前包，响应直接是包对象 `{id,file,sha256,size_bytes,is_active,create_time}`，无包时为空对象（非列表）。
   - `GET /api/agent/packages/download/`：下载当前包二进制（`Content-Disposition: attachment; filename="dj-agent"`）；未上传或文件缺失返回 404 业务错误；路径限制在 mediaRoot 内防目录穿越。
@@ -85,14 +85,14 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 
 多主机并发执行（每主机一个 goroutine），单台流程：
 
-1. agent_id 取主机绑定值，空则 `host-<id>`；按主机 IP 与对外地址计算 gRPC 地址（同机走 `127.0.0.1`）。
+1. 取主机 `instance_name` 作为 agent 身份；实例名为空直接判该主机失败（提示在主机列表补填实例名），不再有占位或 IP 派生兜底。按主机 IP 与对外地址计算 gRPC 地址（同机走 `127.0.0.1`）。
 2. 建临时目录，写 inventory（JSON 格式）：
    - 密码凭证：解密后写入 `ansible_password`；SSH Key 凭证：解密后写私钥文件（0600）+ `ansible_ssh_private_key_file`。
    - 非 root 用户自动加 sudo become（含 become_password）。凭证解密失败/为空 → 该主机失败。
-3. 写入二进制副本（0755）与模板内容 playbook，执行 `ansible-playbook -i inventory --timeout 10 -e dj_agent_binary_source/...`，超时 300 秒（进程组 SIGKILL）。
+3. 写入二进制副本（0755）与模板内容 playbook，执行 `ansible-playbook -i inventory --timeout 10 -e dj_agent_binary_source/... -e dj_agent_instance_name=<instance_name>`，超时 300 秒（进程组 SIGKILL）。
 4. stdout 每秒流式回写 `assets_agent_job.stdout` 与 host log。
-5. 结束判定：exit code ≠ 0 或 recap 的 failed/unreachable > 0 → 失败；成功后轮询 `gateway.IsOnline` 最多 10 秒确认 agent 回连 gRPC，未回连仍判失败。
-6. 成功且主机原先无 agent_id 时，回填 `assets_host.agent_id`。
+5. 结束判定：exit code ≠ 0 或 recap 的 failed/unreachable > 0 → 失败；成功后按实例名轮询 `gateway.IsOnline(instance_name)` 最多 10 秒确认 agent 回连 gRPC，未回连仍判失败。
+6. 不回填任何主机标识：主机身份只有实例名，安装流程不改写 `assets_host`（实例名由创建主机时保证）。
 7. 超时：状态 `timeout`、exit 124。全部主机结束后汇总更新 automation job 的 status/result_summary。
 
 ## update 链路（gRPC 在线自更新，`agent_update.go`）
@@ -101,7 +101,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 
 1. 经 gRPC 文件通道把新二进制推到主机 `/var/lib/dj-agent/update/dj-agent.new`。
 2. 下发 `apply_agent_update` 动作，参数为两个**文件内容**（非 playbook 本身）：
-   - `env_content`：模板中 `config.env` 的 copy content 渲染 `{{ dj_agent_id }}` / `{{ dj_agent_grpc_addr }}` 后的结果。
+   - `env_content`：模板中 `config.env` 的 copy content 渲染 `{{ dj_agent_instance_name }}` / `{{ dj_agent_grpc_addr }}` 后的结果（实例名取主机 `instance_name`）。
    - `unit_content`：模板中 `dj-agent.service` 的 copy content。
 3. agent 侧自替换二进制、重写配置与 unit 并重启；服务端轮询重连最多 15 秒作为最终结论。
 4. 全部主机结束后汇总更新 automation job。

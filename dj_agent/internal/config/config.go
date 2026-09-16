@@ -9,7 +9,7 @@ import (
 )
 
 type Config struct {
-	AgentID               string
+	InstanceName          string
 	LogLevel              string
 	MaxWorkers            int
 	ShutdownTimeout       time.Duration
@@ -20,8 +20,11 @@ type Config struct {
 }
 
 func LoadFromEnv() (Config, error) {
+	// 实例名（assets_host.instance_name）是主机的全局唯一标识：agent 握手时上报此值，
+	// backend 按 instance_name 匹配 assets_host 中的主机行。该值必须与前端创建主机时
+	// 填的实例名一致，因此没有默认值——缺失即启动失败，避免静默用一个无意义的标识。
 	cfg := Config{
-		AgentID:         getEnv("DJ_AGENT_ID", "agent-dev"),
+		InstanceName:    strings.TrimSpace(os.Getenv("DJ_AGENT_INSTANCE_NAME")),
 		LogLevel:        strings.ToLower(getEnv("DJ_AGENT_LOG_LEVEL", "info")),
 		MaxWorkers:      3,
 		ShutdownTimeout: 5 * time.Second,
@@ -64,8 +67,8 @@ func LoadFromEnv() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.AgentID) == "" {
-		return fmt.Errorf("agent_id is required")
+	if c.InstanceName == "" {
+		return fmt.Errorf("DJ_AGENT_INSTANCE_NAME is required（须与 assets_host.instance_name 一致）")
 	}
 	if c.MaxWorkers <= 0 {
 		return fmt.Errorf("max_workers must be > 0")

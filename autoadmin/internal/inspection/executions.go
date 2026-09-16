@@ -194,26 +194,26 @@ type inspectionResultResponse struct {
 }
 
 type inspectionTargetExecutionResponse struct {
-	ID              int64                      `json:"id"`
-	Deployment      *int64                     `json:"deployment"`
-	Host            *int64                     `json:"host"`
-	TargetName      string                     `json:"target_name"`
-	HostIDSnapshot  *int32                     `json:"host_id_snapshot"`
-	HostIPSnapshot  string                     `json:"host_ip_snapshot"`
-	AgentIDSnapshot string                     `json:"agent_id_snapshot"`
-	Status          string                     `json:"status"`
-	Passed          *bool                      `json:"passed"`
-	ErrorMessage    string                     `json:"error_message"`
-	RawResult       json.RawMessage            `json:"raw_result"`
-	StartTime       *time.Time                 `json:"start_time"`
-	EndTime         *time.Time                 `json:"end_time"`
-	Results         []inspectionResultResponse `json:"results"`
+	ID                   int64                      `json:"id"`
+	Deployment           *int64                     `json:"deployment"`
+	Host                 *int64                     `json:"host"`
+	TargetName           string                     `json:"target_name"`
+	HostIDSnapshot       *int32                     `json:"host_id_snapshot"`
+	HostIPSnapshot       string                     `json:"host_ip_snapshot"`
+	InstanceNameSnapshot string                     `json:"instance_name_snapshot"`
+	Status               string                     `json:"status"`
+	Passed               *bool                      `json:"passed"`
+	ErrorMessage         string                     `json:"error_message"`
+	RawResult            json.RawMessage            `json:"raw_result"`
+	StartTime            *time.Time                 `json:"start_time"`
+	EndTime              *time.Time                 `json:"end_time"`
+	Results              []inspectionResultResponse `json:"results"`
 }
 
 func inspectionTargetExecutionDTO(row db.ListInspectionTargetExecutionsRow) inspectionTargetExecutionResponse {
 	result := inspectionTargetExecutionResponse{
 		ID: row.ID, TargetName: row.TargetName, HostIPSnapshot: row.HostIpSnapshot,
-		AgentIDSnapshot: row.AgentIDSnapshot, Status: row.Status, ErrorMessage: row.ErrorMessage,
+		InstanceNameSnapshot: row.InstanceNameSnapshot, Status: row.Status, ErrorMessage: row.ErrorMessage,
 		Passed: row.Passed, RawResult: row.RawResult, Results: make([]inspectionResultResponse, 0),
 	}
 	if row.Deployment.Valid {

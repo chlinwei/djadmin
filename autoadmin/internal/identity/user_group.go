@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/apperror"
+
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,48 +47,32 @@ func (handler *Handler) ListUserGroups(context *gin.Context) {
 	response.Success(context, gin.H{"items": items})
 }
 
-func listUserGroups(ctx context.Context, db *sql.DB) ([]userGroupItem, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id,name,COALESCE(remark,''),create_time,update_time FROM sys_user_group ORDER BY id`)
+func listUserGroups(ctx context.Context, pool *sql.DB) ([]userGroupItem, error) {
+	queries := db.New(pool)
+	rows, err := queries.ListUserGroups(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := make([]userGroupItem, 0)
-	indexByID := map[int64]int{}
-	for rows.Next() {
-		item := userGroupItem{Members: []userGroupMember{}}
-		if err = rows.Scan(&item.ID, &item.Name, &item.Remark, &item.CreateTime, &item.UpdateTime); err != nil {
-			return nil, err
-		}
-		indexByID[item.ID] = len(items)
-		items = append(items, item)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
+	items := make([]userGroupItem, 0, len(rows))
+	indexByID := make(map[int64]int, len(rows))
+	for _, row := range rows {
+		indexByID[row.ID] = len(items)
+		items = append(items, userGroupItem{ID: row.ID, Name: row.Name, Remark: row.Remark,
+			Members: []userGroupMember{}, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime})
 	}
 	if len(items) == 0 {
 		return items, nil
 	}
-	memberRows, err := db.QueryContext(ctx, `SELECT m.group_id,m.user_id,u.username
-FROM sys_user_group_member m JOIN sys_user u ON u.id=m.user_id ORDER BY m.group_id,m.id`)
+	members, err := queries.ListUserGroupMembers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer memberRows.Close()
-	for memberRows.Next() {
-		var groupID int64
-		var member userGroupMember
-		if err = memberRows.Scan(&groupID, &member.UserID, &member.Username); err != nil {
-			return nil, err
-		}
-		index, ok := indexByID[groupID]
+	for _, member := range members {
+		index, ok := indexByID[member.GroupID]
 		if !ok {
 			continue
 		}
-		items[index].Members = append(items[index].Members, member)
-	}
-	if err = memberRows.Err(); err != nil {
-		return nil, err
+		items[index].Members = append(items[index].Members, userGroupMember{UserID: member.UserID, Username: member.Username})
 	}
 	for index := range items {
 		items[index].MemberCount = len(items[index].Members)
@@ -157,13 +144,14 @@ func (handler *Handler) saveUserGroup(ctx context.Context, id int64, input *save
 		userIDs = append(userIDs, userID)
 	}
 	sort.Slice(userIDs, func(i, j int) bool { return userIDs[i] < userIDs[j] })
+	queries := db.New(handler.pool())
 	for _, userID := range userIDs {
-		var count int
-		if err := handler.pool().QueryRowContext(ctx, `SELECT COUNT(*) FROM sys_user WHERE id=?`, userID).Scan(&count); err != nil {
+		// 用户不存在即拒绝（原实现用 SELECT COUNT(*) 判存在，这里取行更精确）。
+		if _, err := queries.GetUserByID(ctx, userID); err != nil {
+			if err == sql.ErrNoRows {
+				return 0, fmt.Sprintf("用户 %d 不存在", userID), nil
+			}
 			return 0, "", err
-		}
-		if count == 0 {
-			return 0, fmt.Sprintf("用户 %d 不存在", userID), nil
 		}
 	}
 
@@ -173,8 +161,11 @@ func (handler *Handler) saveUserGroup(ctx context.Context, id int64, input *save
 		return 0, "", err
 	}
 	defer tx.Rollback()
+	txQueries := db.New(tx)
 	if id == 0 {
-		result, execErr := tx.ExecContext(ctx, `INSERT INTO sys_user_group(create_time,update_time,remark,name) VALUES(?,?,?,?)`, now, now, input.Remark, name)
+		result, execErr := txQueries.CreateUserGroup(ctx, db.CreateUserGroupParams{
+			CreateTime: now, UpdateTime: now, Remark: nullableString(&input.Remark), Name: name,
+		})
 		if execErr != nil {
 			if isDuplicateEntry(execErr) {
 				return 0, "用户组名称已存在", nil
@@ -183,29 +174,27 @@ func (handler *Handler) saveUserGroup(ctx context.Context, id int64, input *save
 		}
 		id, _ = result.LastInsertId()
 	} else {
-		var exists int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sys_user_group WHERE id=?`, id).Scan(&exists); err != nil {
-			return 0, "", err
-		}
-		if exists == 0 {
-			return 0, "用户组不存在", nil
-		}
-		result, execErr := tx.ExecContext(ctx, `UPDATE sys_user_group SET update_time=?,remark=?,name=? WHERE id=?`, now, input.Remark, name, id)
+		// 更新用受影响行数判存在：id 不存在时命中 0 行（原实现先 COUNT(*) 再 UPDATE）。
+		affected, execErr := txQueries.UpdateUserGroup(ctx, db.UpdateUserGroupParams{
+			UpdateTime: now, Remark: nullableString(&input.Remark), Name: name, ID: id,
+		})
 		if execErr != nil {
 			if isDuplicateEntry(execErr) {
 				return 0, "用户组名称已存在", nil
 			}
 			return 0, "", execErr
 		}
-		if affected, _ := result.RowsAffected(); affected == 0 {
+		if affected == 0 {
 			return 0, "用户组不存在", nil
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM sys_user_group_member WHERE group_id=?`, id); err != nil {
+	if err = txQueries.DeleteUserGroupMembers(ctx, id); err != nil {
 		return 0, "", err
 	}
 	for _, userID := range userIDs {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO sys_user_group_member(create_time,group_id,user_id) VALUES(?,?,?)`, now, id, userID); err != nil {
+		if err = txQueries.CreateUserGroupMember(ctx, db.CreateUserGroupMemberParams{
+			CreateTime: now, GroupID: id, UserID: userID,
+		}); err != nil {
 			return 0, "", err
 		}
 	}
@@ -215,8 +204,20 @@ func (handler *Handler) saveUserGroup(ctx context.Context, id int64, input *save
 	return id, "", nil
 }
 
+// isDuplicateEntry 判唯一约束冲突（用户组名重复要回业务文案而不是 500）：
+// MySQL 是错误号 1062，PostgreSQL 是 SQLSTATE 23505（见 SQL_DESIGN §2.4）。
 func isDuplicateEntry(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "Error 1062")
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "Error 1062") {
+		return true
+	}
+	var sqlState interface{ SQLState() string }
+	if errors.As(err, &sqlState) && sqlState.SQLState() == "23505" {
+		return true
+	}
+	return false
 }
 
 func (handler *Handler) respondUserGroup(context *gin.Context, id int64) {
@@ -243,16 +244,17 @@ func (handler *Handler) BatchDeleteUserGroups(context *gin.Context) {
 		return
 	}
 	deleted := 0
+	queries := db.New(handler.pool())
 	for _, id := range input.IDs {
 		if id < 1 {
 			continue
 		}
-		result, err := handler.pool().ExecContext(context.Request.Context(), `DELETE FROM sys_user_group WHERE id=?`, id)
+		affected, err := queries.DeleteUserGroup(context.Request.Context(), id)
 		if err != nil {
 			response.Error(context, err)
 			return
 		}
-		if affected, _ := result.RowsAffected(); affected > 0 {
+		if affected > 0 {
 			deleted++
 		}
 	}

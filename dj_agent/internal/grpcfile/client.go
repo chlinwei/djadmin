@@ -89,7 +89,7 @@ func (s *session) unregisterAutomation(jobID string) {
 }
 
 // Run 阻塞运行文件传输会话，断线后按指数退避自动重连，直至 ctx 被取消。
-func Run(ctx context.Context, addr, agentID, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
+func Run(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
 	if strings.TrimSpace(addr) == "" {
 		slog.Warn("grpc file-transfer disabled: empty addr")
 		onConnectionState(false)
@@ -104,7 +104,7 @@ func Run(ctx context.Context, addr, agentID, backendToken string, exec *executor
 		default:
 		}
 		onConnectionState(false)
-		established, err := runOnce(ctx, addr, agentID, backendToken, exec, runtimeStatusProvider, onConnectionState)
+		established, err := runOnce(ctx, addr, instanceName, backendToken, exec, runtimeStatusProvider, onConnectionState)
 		if err != nil {
 			slog.Warn("grpc file-transfer session ended", "err", err)
 		}
@@ -123,7 +123,7 @@ func Run(ctx context.Context, addr, agentID, backendToken string, exec *executor
 	}
 }
 
-func runOnce(ctx context.Context, addr, agentID, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) (bool, error) {
+func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) (bool, error) {
 	established := false
 	conn, err := grpc.NewClient(
 		addr,
@@ -157,7 +157,7 @@ func runOnce(ctx context.Context, addr, agentID, backendToken string, exec *exec
 		terminals:             make(map[string]*terminalSession),
 	}
 	defer sess.closeAllTerminals()
-	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: agentID, Token: backendToken, Version: buildinfo.Version}}}); err != nil {
+	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{InstanceName: instanceName, Token: backendToken, Version: buildinfo.Version}}}); err != nil {
 		return established, fmt.Errorf("send hello failed: %w", err)
 	}
 
@@ -175,7 +175,7 @@ func runOnce(ctx context.Context, addr, agentID, backendToken string, exec *exec
 				return established, fmt.Errorf("hello rejected: %s", payload.HelloAck.Message)
 			}
 			established = true
-			slog.Info("grpc file-transfer session established", "agent_id", agentID, "addr", addr)
+			slog.Info("grpc file-transfer session established", "instance_name", instanceName, "addr", addr)
 			onConnectionState(true)
 		case *pb.ServerFrame_ListRequest:
 			sess.handleList(payload.ListRequest)

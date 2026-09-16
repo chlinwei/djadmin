@@ -2,5 +2,5 @@
 dj_agent_backend_grpc_addr: "autoadmin.example.com:9001"
 dj_agent_backend_token: "replace-with-a-vault-secret"
 dj_agent_run_user: root
-# Optional: override the default inventory hostname-derived Agent ID.
-# dj_agent_id: "host-001"
+# 必填：实例名（须与 frontend 创建主机时填的 instance_name 保持一致）。
+dj_agent_instance_name: "host-001"

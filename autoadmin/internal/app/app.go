@@ -63,9 +63,11 @@ func Run(args []string) error {
 	}
 }
 
+// openDatabase 按构建期方言打开数据库（默认 MySQL；-tags postgres 走 PostgreSQL）。
 func openDatabase(ctx context.Context, configuration config.Config) (*sql.DB, error) {
-	return database.OpenMySQL(ctx, database.MySQLConfig{
-		DSN: configuration.MySQLDSN, MaxOpenConns: configuration.MySQLMaxOpen,
+	return database.Open(ctx, database.Configuration{
+		MySQLDSN: configuration.MySQLDSN, PostgresDSN: configuration.PostgresDSN,
+		MaxOpenConns: configuration.MySQLMaxOpen,
 		MaxIdleConns: configuration.MySQLMaxIdle, ConnMaxLifetime: configuration.MySQLMaxLife,
 	})
 }
@@ -162,29 +164,31 @@ func newAgentTokenValidator(databaseConnection *sql.DB) func(string, string) boo
 				return true
 			}
 		}
-	return false
+		return false
 	}
 }
 
 // newAgentHelloRecorder 在 agent 握手成功时把版本与在线状态落库：Hello.version 为
 // 构建期注入的版本号，agent 安装/更新重启后即刷新，无需等待按需 get_host_info 采集。
-// 仅更新已有记录；agent_id 未绑定主机或主机尚无 hostsystem 行时跳过（后续采集补全），
-// 失败只记日志，不阻断会话。
-func newAgentHelloRecorder(databaseConnection *sql.DB) func(agentID, version string) {
-	return func(agentID, version string) {
-		if strings.TrimSpace(agentID) == "" {
+// 仅更新已有记录；instance_name 未匹配到主机时跳过，失败只记日志，不阻断会话。
+//
+// dj-agent 上报 instance_name（= DJ_AGENT_INSTANCE_NAME = assets_host.instance_name）
+// 作为 gRPC 会话标识，backend 按该列匹配主机行；主机没有独立的 agent_id 列。
+func newAgentHelloRecorder(databaseConnection *sql.DB) func(instanceName, version string) {
+	return func(instanceName, version string) {
+		if strings.TrimSpace(instanceName) == "" {
 			return
 		}
 		result, err := databaseConnection.Exec(`
 			UPDATE assets_host
 			SET agent_online = TRUE, agent_online_time = UTC_TIMESTAMP(6), update_time = UTC_TIMESTAMP(6)
-			WHERE agent_id = ?`, agentID)
+			WHERE instance_name = ?`, instanceName)
 		if err != nil {
-			slog.Warn("agent hello: update host online failed", "agent_id", agentID, "err", err)
+			slog.Warn("agent hello: update host online failed", "instance_name", instanceName, "err", err)
 			return
 		}
 		if affected, _ := result.RowsAffected(); affected == 0 {
-			slog.Warn("agent hello: no host bound to agent_id", "agent_id", agentID)
+			slog.Warn("agent hello: no host bound to instance_name", "instance_name", instanceName)
 			return
 		}
 		if strings.TrimSpace(version) == "" {
@@ -194,8 +198,8 @@ func newAgentHelloRecorder(databaseConnection *sql.DB) func(agentID, version str
 			UPDATE assets_hostsystem hs
 			JOIN assets_host h ON h.id = hs.host_id
 			SET hs.agent_version = ?, hs.update_time = UTC_TIMESTAMP(6)
-			WHERE h.agent_id = ?`, version, agentID); err != nil {
-			slog.Warn("agent hello: update agent_version failed", "agent_id", agentID, "version", version, "err", err)
+			WHERE h.instance_name = ?`, version, instanceName); err != nil {
+			slog.Warn("agent hello: update agent_version failed", "instance_name", instanceName, "version", version, "err", err)
 		}
 	}
 }

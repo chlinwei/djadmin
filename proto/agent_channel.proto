@@ -62,12 +62,15 @@ message AgentFrame {
   }
 }
 
-// 会话建立后 agent 发送的第一帧：携带 agent_id 与共享密钥供 backend 校验注册，
+// 会话建立后 agent 发送的第一帧：携带 instance_name 与共享密钥供 backend 校验注册，
 // 校验失败 backend 会直接关闭流，避免未授权 client 冒充 agent 下发文件操作。
+// instance_name 即 assets_host.instance_name（agent 侧来源 DJ_AGENT_INSTANCE_NAME），
+// 同时是 backend 网关会话的路由 key。旧字段名 agent_id 已废弃，字段号 1 不变，
+// 新旧 agent 在二进制协议上保持互通。
 // version 为 agent 构建期注入的版本号（buildinfo.Version），会话建立即随握手上报，
 // backend 据此更新主机表，保证 agent 安装/更新后版本信息无需等待按需采集即刷新。
 message Hello {
-  string agent_id = 1;
+  string instance_name = 1;
   string token = 2;
   string version = 3;
 }

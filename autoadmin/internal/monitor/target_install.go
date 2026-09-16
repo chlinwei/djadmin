@@ -31,7 +31,6 @@ type targetInstallRow struct {
 	ExporterType   string
 	HostName       string
 	HostIP         string
-	AgentID        string
 	OSID           string
 	OSIDLike       string
 	OSVersionID    string
@@ -41,7 +40,7 @@ type targetInstallRow struct {
 func loadMonitorTargetRow(ginContext *gin.Context, db *sql.DB, id int64) (targetInstallRow, error) {
 	var row targetInstallRow
 	err := db.QueryRowContext(ginContext, `SELECT t.id,t.host_id,t.managed_enabled,t.exporter_type,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),COALESCE(h.agent_id,''),
+		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
 		COALESCE(s.os_id,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,''),
 		COALESCE(hw.architecture,'')
 		FROM monitor_target t
@@ -49,7 +48,7 @@ func loadMonitorTargetRow(ginContext *gin.Context, db *sql.DB, id int64) (target
 		LEFT JOIN assets_hostsystem s ON s.host_id=t.host_id
 		LEFT JOIN assets_hosthardware hw ON hw.host_id=t.host_id
 		WHERE t.id=?`, id).Scan(&row.ID, &row.HostID, &row.ManagedEnabled, &row.ExporterType,
-		&row.HostName, &row.HostIP, &row.AgentID, &row.OSID, &row.OSIDLike, &row.OSVersionID, &row.Architecture)
+		&row.HostName, &row.HostIP, &row.OSID, &row.OSIDLike, &row.OSVersionID, &row.Architecture)
 	return row, err
 }
 
@@ -111,10 +110,10 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 		action = "uninstall"
 	}
 	exporter := strings.TrimSpace(row.ExporterType)
-	if strings.TrimSpace(row.AgentID) == "" {
+	if strings.TrimSpace(row.HostName) == "" {
 		return handler.setTargetInstallState(ginContext, row.ID, "failed", fmt.Sprintf("主机未绑定 agent 实例，无法下发 %s %s任务", exporter, action))
 	}
-	if handler.gateway == nil || !handler.gateway.IsOnline(row.AgentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
 		return handler.setTargetInstallState(ginContext, row.ID, "failed", "主机 agent 离线，无法下发任务，请先确认 agent 运行状态")
 	}
 	pending, _, err := monitorTargetPending(ginContext, handler.db, row.ID)

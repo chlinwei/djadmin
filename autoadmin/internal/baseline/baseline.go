@@ -73,42 +73,36 @@ func isNoRows(err error) bool { return err == sql.ErrNoRows }
 func (handler *Handler) ListBaselines(context *gin.Context) {
 	search := strings.TrimSpace(context.Query("search"))
 	pageNumber, pageSize := 1, 20
-	rows, err := handler.db.QueryContext(context, `SELECT b.id, b.name, b.version, b.description, b.enabled, b.create_time, b.update_time,
-       (SELECT COUNT(*) FROM baseline_item i WHERE i.baseline_id = b.id) AS item_count,
-       (SELECT COUNT(*) FROM security_scan sc WHERE sc.baseline_id = b.id) AS scan_count
-FROM baseline b
-WHERE (? = '' OR b.name LIKE ? OR b.description LIKE ?)
-ORDER BY b.id DESC LIMIT ? OFFSET ?`, search, "%"+search+"%", "%"+search+"%", pageSize, 0)
+	// 空搜索传 NULL：查询里写的是 `LIKE narg(pattern) OR narg(pattern) IS NULL`，
+	// 传 NULL 才走"不过滤"分支（传空串会变成 LIKE ''，只剩空名字能命中）。
+	pattern := sql.NullString{}
+	if search != "" {
+		pattern = sql.NullString{String: "%" + search + "%", Valid: true}
+	}
+	queries := db.New(handler.db)
+	total, err := queries.CountBaselines(context, db.CountBaselinesParams{Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	items := make([]gin.H, 0)
-	for rows.Next() {
-		var id int64
-		var name, version, description string
-		var enabled bool
-		var createTime, updateTime time.Time
-		var itemCount, scanCount int64
-		if err := rows.Scan(&id, &name, &version, &description, &enabled, &createTime, &updateTime, &itemCount, &scanCount); err != nil {
-			response.Error(context, err)
-			return
-		}
-		items = append(items, gin.H{"id": id, "name": name, "version": version, "description": description,
-			"enabled": enabled, "item_count": itemCount, "scan_count": scanCount, "create_time": createTime, "update_time": updateTime})
+	rows, err := queries.ListBaselines(context, db.ListBaselinesParams{Pattern: pattern, Limit: int32(pageSize), Offset: 0})
+	if err != nil {
+		response.Error(context, err)
+		return
 	}
-	response.Paginated(context, items, int64(len(items)), int32(pageNumber), int32(pageSize))
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, gin.H{"id": row.ID, "name": row.Name, "version": row.Version, "description": row.Description,
+			"enabled": row.Enabled, "item_count": row.ItemCount, "scan_count": row.ScanCount,
+			"create_time": row.CreateTime, "update_time": row.UpdateTime})
+	}
+	response.Paginated(context, items, total, int32(pageNumber), int32(pageSize))
 }
 
 func (handler *Handler) GetBaseline(context *gin.Context) {
-	var id int64
-	fmt.Sscanf(strings.TrimSpace(context.Param("id")), "%d", &id)
-	var name, version, description string
-	var enabled bool
-	var createTime, updateTime time.Time
-	err := handler.db.QueryRowContext(context, `SELECT name,version,description,enabled,create_time,update_time FROM baseline WHERE id=?`, id).
-		Scan(&name, &version, &description, &enabled, &createTime, &updateTime)
+	id := pathID(context)
+	queries := db.New(handler.db)
+	row, err := queries.GetBaseline(context, id)
 	if isNoRows(err) {
 		response.BusinessError(context, 404, "基线不存在", nil)
 		return
@@ -118,42 +112,30 @@ func (handler *Handler) GetBaseline(context *gin.Context) {
 		return
 	}
 	categories := make([]gin.H, 0)
-	categoryRows, categoryErr := handler.db.QueryContext(context, `SELECT id, sort, name FROM baseline_category WHERE baseline_id=? ORDER BY sort, id`, id)
-	if categoryErr != nil {
-		response.Error(context, categoryErr)
+	categoryRows, err := queries.ListBaselineCategories(context, id)
+	if err != nil {
+		response.Error(context, err)
 		return
 	}
-	defer categoryRows.Close()
-	categoryNames := make(map[int64]string)
-	for categoryRows.Next() {
-		var categoryID, sort int64
-		var categoryName string
-		if categoryRows.Scan(&categoryID, &sort, &categoryName) == nil {
-			categoryNames[categoryID] = categoryName
-			categories = append(categories, gin.H{"id": categoryID, "sort": sort, "name": categoryName})
-		}
+	for _, category := range categoryRows {
+		categories = append(categories, gin.H{"id": category.ID, "sort": category.Sort, "name": category.Name})
 	}
-	items := make([]gin.H, 0)
-	itemRows, itemErr := handler.db.QueryContext(context, `SELECT id,category_id,sort,name,description,config,severity FROM baseline_item WHERE baseline_id=? ORDER BY sort,id`, id)
-	if itemErr != nil {
-		response.Error(context, itemErr)
+	// 这里用的是 ListBaselineItems（带 JOIN 类目名），因此条目按"类目顺序 → 类目内 sort"排列，
+	// 与前端按类目分组展示的顺序一致。
+	itemRows, err := queries.ListBaselineItems(context, id)
+	if err != nil {
+		response.Error(context, err)
 		return
 	}
-	defer itemRows.Close()
-	for itemRows.Next() {
-		var itemID, categoryID, sort int64
-		var itemName, severity string
-		var itemDescription string
-		var config []byte
-		if itemRows.Scan(&itemID, &categoryID, &sort, &itemName, &itemDescription, &config, &severity) == nil {
-			var configDecoded any
-			_ = json.Unmarshal(config, &configDecoded)
-			items = append(items, gin.H{"id": itemID, "category_id": categoryID, "category": categoryNames[categoryID], "sort": sort, "name": itemName,
-				"description": itemDescription, "config": configDecoded, "severity": severity})
-		}
+	items := make([]gin.H, 0, len(itemRows))
+	for _, item := range itemRows {
+		var configDecoded any
+		_ = json.Unmarshal(item.Config, &configDecoded)
+		items = append(items, gin.H{"id": item.ID, "category_id": item.CategoryID, "category": item.Category, "sort": item.Sort, "name": item.Name,
+			"description": item.Description, "config": configDecoded, "severity": item.Severity})
 	}
-	response.Success(context, gin.H{"baseline": gin.H{"id": id, "name": name, "version": version,
-		"description": description, "enabled": enabled, "create_time": createTime, "update_time": updateTime},
+	response.Success(context, gin.H{"baseline": gin.H{"id": row.ID, "name": row.Name, "version": row.Version,
+		"description": row.Description, "enabled": row.Enabled, "create_time": row.CreateTime, "update_time": row.UpdateTime},
 		"categories": categories, "items": items})
 }
 
@@ -181,7 +163,6 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 	if input.Items != nil {
 		seen := make(map[string]bool)
 		categoryIDs := make(map[int64]bool)
-		categoryIDArgs := make([]any, 0, len(*input.Items))
 		for _, item := range *input.Items {
 			name := strings.TrimSpace(item.Name)
 			if name == "" {
@@ -193,7 +174,6 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 				return
 			}
 			categoryIDs[item.CategoryID] = true
-			categoryIDArgs = append(categoryIDArgs, item.CategoryID)
 			if seen[name] {
 				response.BusinessError(context, 400, fmt.Sprintf("基线策略名称不能重复: %q", name), nil)
 				return
@@ -212,28 +192,25 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 		}
 		// 提交的类目必须全部属于当前基线（防止跨基线挂策略）；新建基线（id=0）
 		// 还没有类目，提交策略直接拒绝——前端流程是先建基线再进条目编辑。
+		//
+		// 这里取回基线的全部类目在应用层比对，而不是拼 `id IN (?,?,?)`：占位符个数随入参变化
+		// 正是 sqlc 表达不了的形状（SQL_DESIGN §1 的"可变长 IN → 内联"），
+		// 而基线的类目数量很小，一次查询足够。
 		if id > 0 && len(categoryIDs) > 0 {
-			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(categoryIDs)), ",")
-			args := make([]any, 0, len(categoryIDArgs)+1)
-			args = append(args, id)
-			args = append(args, categoryIDArgs...)
-			rows, err := handler.db.QueryContext(context, `SELECT COUNT(*) FROM baseline_category WHERE baseline_id=? AND id IN (`+placeholders+`)`, args...)
+			ownedCategories, err := db.New(handler.db).ListBaselineCategories(context, id)
 			if err != nil {
 				response.Error(context, err)
 				return
 			}
-			var matched int64
-			if rows.Next() {
-				if err := rows.Scan(&matched); err != nil {
-					rows.Close()
-					response.Error(context, err)
+			owned := make(map[int64]bool, len(ownedCategories))
+			for _, category := range ownedCategories {
+				owned[category.ID] = true
+			}
+			for categoryID := range categoryIDs {
+				if !owned[categoryID] {
+					response.BusinessError(context, 400, "策略的类目不存在或不属于当前基线", nil)
 					return
 				}
-			}
-			rows.Close()
-			if int(matched) != len(categoryIDs) {
-				response.BusinessError(context, 400, "策略的类目不存在或不属于当前基线", nil)
-				return
 			}
 		}
 	}
@@ -251,22 +228,25 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
+	queries := db.New(tx)
+	now := time.Now().UTC()
 	if id == 0 {
-		result, execErr := tx.ExecContext(context, `INSERT INTO baseline(create_time,update_time,name,version,description,enabled) VALUES(NOW(6),NOW(6),?,?,?,?)`, name, version, description, enabled)
-		if execErr != nil {
+		id, err = queries.CreateBaseline(context, db.CreateBaselineParams{CreateTime: now, UpdateTime: now,
+			Name: name, Version: version, Description: description, Enabled: enabled})
+		if err != nil {
 			response.BusinessError(context, 400, "基线名称已存在", nil)
 			return
 		}
-		id, err = result.LastInsertId()
 	} else {
-		_, err = tx.ExecContext(context, `UPDATE baseline SET name=?,version=?,description=?,enabled=?,update_time=NOW(6) WHERE id=?`, name, version, description, enabled, id)
+		err = queries.UpdateBaseline(context, db.UpdateBaselineParams{UpdateTime: now, Name: name, Version: version,
+			Description: description, Enabled: enabled, ID: id})
 	}
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
 	if input.Items != nil {
-		if _, err = tx.ExecContext(context, `DELETE FROM baseline_item WHERE baseline_id=?`, id); err != nil {
+		if err = queries.DeleteBaselineItems(context, id); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -276,8 +256,10 @@ func (handler *Handler) SaveBaseline(context *gin.Context) {
 				severity = "high"
 			}
 			// 类目归属已在保存前校验（迁移 000011：chapter 列已删除，策略挂 category_id）。
-			if _, err = tx.ExecContext(context, `INSERT INTO baseline_item(create_time,update_time,baseline_id,category_id,sort,name,description,config,severity) VALUES(NOW(6),NOW(6),?,?,?,?,?,?,?)`,
-				id, item.CategoryID, index, strings.TrimSpace(item.Name), item.Description, jsonBytes(item.Config), severity); err != nil {
+			if _, err = queries.CreateBaselineItem(context, db.CreateBaselineItemParams{
+				CreateTime: now, UpdateTime: now, BaselineID: id, CategoryID: item.CategoryID, Sort: uint32(index),
+				Name: strings.TrimSpace(item.Name), Description: item.Description, Config: item.Config, Severity: severity,
+			}); err != nil {
 				response.Error(context, err)
 				return
 			}
@@ -298,29 +280,30 @@ func (handler *Handler) DeleteBaseline(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
+	queries := db.New(tx)
 	// 扫描历史随基线一并删除（外键未设级联，须先删子表：明细 → 目标 → 扫描记录）。
-	if _, err = tx.ExecContext(context, `DELETE FROM baseline_scan_result WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)`, id); err != nil {
+	if err = queries.DeleteBaselineScanResults(context, id); err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = tx.ExecContext(context, `DELETE FROM security_scan_target WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)`, id); err != nil {
+	if err = queries.DeleteBaselineScanTargets(context, id); err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = tx.ExecContext(context, `DELETE FROM security_scan WHERE baseline_id=?`, id); err != nil {
+	if err = queries.DeleteBaselineScans(context, id); err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = tx.ExecContext(context, `DELETE FROM baseline_item WHERE baseline_id=?`, id); err != nil {
+	if err = queries.DeleteBaselineItems(context, id); err != nil {
 		response.Error(context, err)
 		return
 	}
-	result, err := tx.ExecContext(context, `DELETE FROM baseline WHERE id=?`, id)
+	affected, err := queries.DeleteBaseline(context, id)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	if affected == 0 {
 		response.BusinessError(context, 404, "基线不存在", nil)
 		return
 	}
@@ -348,22 +331,28 @@ func (handler *Handler) CreateBaselineCategory(context *gin.Context) {
 		response.BusinessError(context, 400, "类目名称不能为空", nil)
 		return
 	}
-	var exists int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM baseline WHERE id=?`, baselineID).Scan(&exists); err != nil || exists == 0 {
-		response.BusinessError(context, 404, "基线不存在", nil)
-		return
-	}
-	var maxSort int64
-	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(MAX(sort), -1) FROM baseline_category WHERE baseline_id=?`, baselineID).Scan(&maxSort); err != nil {
+	queries := db.New(handler.db)
+	if _, err := queries.GetBaselineForScan(context, baselineID); err != nil {
+		if isNoRows(err) {
+			response.BusinessError(context, 404, "基线不存在", nil)
+			return
+		}
 		response.Error(context, err)
 		return
 	}
-	result, err := handler.db.ExecContext(context, `INSERT INTO baseline_category(create_time,update_time,name,sort,baseline_id) VALUES(NOW(6),NOW(6),?,?,?)`, name, maxSort+1, baselineID)
+	maxSort, err := queries.MaxBaselineCategorySort(context, baselineID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	categoryID, _ := result.LastInsertId()
+	now := time.Now().UTC()
+	categoryID, err := queries.CreateBaselineCategory(context, db.CreateBaselineCategoryParams{
+		CreateTime: now, UpdateTime: now, Name: name, Sort: uint32(maxSort + 1), BaselineID: baselineID,
+	})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 	response.Success(context, gin.H{"id": categoryID, "name": name, "sort": maxSort + 1})
 }
 
@@ -378,9 +367,8 @@ func (handler *Handler) UpdateBaselineCategory(context *gin.Context) {
 		response.BusinessError(context, 400, "请求参数无效", nil)
 		return
 	}
-	var baselineID, sort int64
-	var currentName string
-	err := handler.db.QueryRowContext(context, `SELECT baseline_id, sort, name FROM baseline_category WHERE id=?`, categoryID).Scan(&baselineID, &sort, &currentName)
+	queries := db.New(handler.db)
+	current, err := queries.GetBaselineCategory(context, categoryID)
 	if isNoRows(err) {
 		response.BusinessError(context, 404, "类目不存在", nil)
 		return
@@ -389,6 +377,8 @@ func (handler *Handler) UpdateBaselineCategory(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
+	baselineID := current.BaselineID
+	now := time.Now().UTC()
 	switch {
 	case input.Name != nil:
 		name := strings.TrimSpace(*input.Name)
@@ -396,30 +386,24 @@ func (handler *Handler) UpdateBaselineCategory(context *gin.Context) {
 			response.BusinessError(context, 400, "类目名称不能为空", nil)
 			return
 		}
-		if _, err := handler.db.ExecContext(context, `UPDATE baseline_category SET name=?, update_time=NOW(6) WHERE id=?`, name, categoryID); err != nil {
+		if _, err := queries.RenameBaselineCategory(context, db.RenameBaselineCategoryParams{Name: name, UpdateTime: now, ID: categoryID}); err != nil {
 			response.Error(context, err)
 			return
 		}
 		response.Success(context, gin.H{"id": categoryID, "name": name})
 	case input.Direction == "up" || input.Direction == "down":
-		rows, err := handler.db.QueryContext(context, `SELECT id, sort FROM baseline_category WHERE baseline_id=? ORDER BY sort, id`, baselineID)
+		rows, err := queries.ListBaselineCategories(context, baselineID)
 		if err != nil {
 			response.Error(context, err)
 			return
 		}
-		defer rows.Close()
-		var ids []int64
-		var sorts []int64
+		ids := make([]int64, 0, len(rows))
+		sorts := make([]int64, 0, len(rows))
 		selfIndex := -1
-		for rows.Next() {
-			var rowID, rowSort int64
-			if err := rows.Scan(&rowID, &rowSort); err != nil {
-				response.Error(context, err)
-				return
-			}
-			ids = append(ids, rowID)
-			sorts = append(sorts, rowSort)
-			if rowID == categoryID {
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+			sorts = append(sorts, int64(row.Sort))
+			if row.ID == categoryID {
 				selfIndex = len(ids) - 1
 			}
 		}
@@ -436,11 +420,11 @@ func (handler *Handler) UpdateBaselineCategory(context *gin.Context) {
 			return
 		}
 		// 交换与相邻类目的 sort 值。
-		if _, err := handler.db.ExecContext(context, `UPDATE baseline_category SET sort=?, update_time=NOW(6) WHERE id=?`, sorts[neighbor], ids[selfIndex]); err != nil {
+		if _, err := queries.UpdateBaselineCategorySort(context, db.UpdateBaselineCategorySortParams{Sort: uint32(sorts[neighbor]), UpdateTime: now, ID: ids[selfIndex]}); err != nil {
 			response.Error(context, err)
 			return
 		}
-		if _, err := handler.db.ExecContext(context, `UPDATE baseline_category SET sort=?, update_time=NOW(6) WHERE id=?`, sorts[selfIndex], ids[neighbor]); err != nil {
+		if _, err := queries.UpdateBaselineCategorySort(context, db.UpdateBaselineCategorySortParams{Sort: uint32(sorts[selfIndex]), UpdateTime: now, ID: ids[neighbor]}); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -453,8 +437,9 @@ func (handler *Handler) UpdateBaselineCategory(context *gin.Context) {
 // DeleteBaselineCategory DELETE /sys/security/baseline/categories/{id}/ —— 非空禁止删除。
 func (handler *Handler) DeleteBaselineCategory(context *gin.Context) {
 	categoryID := pathParamID(context, "categoryId")
-	var itemCount int64
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM baseline_item WHERE category_id=?`, categoryID).Scan(&itemCount); err != nil {
+	queries := db.New(handler.db)
+	itemCount, err := queries.CountBaselineItemsByCategory(context, categoryID)
+	if err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -462,12 +447,12 @@ func (handler *Handler) DeleteBaselineCategory(context *gin.Context) {
 		response.BusinessError(context, 400, fmt.Sprintf("类目下还有 %d 个策略，请先移走或删除", itemCount), nil)
 		return
 	}
-	result, err := handler.db.ExecContext(context, `DELETE FROM baseline_category WHERE id=?`, categoryID)
+	affected, err := queries.DeleteBaselineCategory(context, categoryID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	if affected == 0 {
 		response.BusinessError(context, 404, "类目不存在", nil)
 		return
 	}
@@ -485,11 +470,11 @@ func (handler *Handler) validateItemPayload(context *gin.Context, baselineID, ca
 	if categoryID <= 0 {
 		return "", "策略缺少类目", nil
 	}
-	var belongs int64
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM baseline_category WHERE id=? AND baseline_id=?`, categoryID, baselineID).Scan(&belongs); err != nil {
+	category, err := db.New(handler.db).GetBaselineCategory(context, categoryID)
+	if err != nil && !isNoRows(err) {
 		return "", "", err
 	}
-	if belongs == 0 {
+	if isNoRows(err) || category.BaselineID != baselineID {
 		return "", "类目不存在或不属于当前基线", nil
 	}
 	var opaConfig map[string]any
@@ -527,13 +512,15 @@ func (handler *Handler) AddBaselineItem(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	result, err := handler.db.ExecContext(context, `INSERT INTO baseline_item(create_time,update_time,baseline_id,category_id,sort,name,description,config,severity) VALUES(NOW(6),NOW(6),?,?,?,?,?,?,?)`,
-		baselineID, input.CategoryID, sort+1, strings.TrimSpace(input.Name), input.Description, jsonBytes(input.Config), severity)
+	now := time.Now().UTC()
+	itemID, err := db.New(handler.db).CreateBaselineItem(context, db.CreateBaselineItemParams{
+		CreateTime: now, UpdateTime: now, BaselineID: baselineID, CategoryID: input.CategoryID, Sort: uint32(sort + 1),
+		Name: strings.TrimSpace(input.Name), Description: input.Description, Config: input.Config, Severity: severity,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	itemID, _ := result.LastInsertId()
 	response.Success(context, gin.H{"id": itemID})
 }
 
@@ -546,8 +533,8 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 		response.BusinessError(context, 400, "请求参数无效", nil)
 		return
 	}
-	var ownerBaseline int64
-	err := handler.db.QueryRowContext(context, `SELECT baseline_id FROM baseline_item WHERE id=?`, itemID).Scan(&ownerBaseline)
+	queries := db.New(handler.db)
+	current, err := queries.GetBaselineItem(context, itemID)
 	if isNoRows(err) {
 		response.BusinessError(context, 404, "策略不存在", nil)
 		return
@@ -556,7 +543,7 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	if ownerBaseline != baselineID {
+	if current.BaselineID != baselineID {
 		response.BusinessError(context, 404, "策略不存在", nil)
 		return
 	}
@@ -569,8 +556,10 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 		response.BusinessError(context, 400, message, nil)
 		return
 	}
-	if _, err := handler.db.ExecContext(context, `UPDATE baseline_item SET category_id=?, name=?, description=?, config=?, severity=?, update_time=NOW(6) WHERE id=?`,
-		input.CategoryID, strings.TrimSpace(input.Name), input.Description, jsonBytes(input.Config), severity, itemID); err != nil {
+	if _, err := queries.UpdateBaselineItem(context, db.UpdateBaselineItemParams{
+		CategoryID: input.CategoryID, Name: strings.TrimSpace(input.Name), Description: input.Description,
+		Config: input.Config, Severity: severity, UpdateTime: time.Now().UTC(), ID: itemID,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -581,12 +570,12 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 func (handler *Handler) DeleteBaselineItem(context *gin.Context) {
 	baselineID := pathID(context)
 	itemID := pathParamID(context, "itemId")
-	result, err := handler.db.ExecContext(context, `DELETE FROM baseline_item WHERE id=? AND baseline_id=?`, itemID, baselineID)
+	affected, err := db.New(handler.db).DeleteBaselineItem(context, db.DeleteBaselineItemParams{ID: itemID, BaselineID: baselineID})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	if affected == 0 {
 		response.BusinessError(context, 404, "策略不存在", nil)
 		return
 	}

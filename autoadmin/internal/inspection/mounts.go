@@ -103,10 +103,10 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 	instanceSets := make(map[int64]*checkSet)           // deploymentID -> 实例分片
 	instanceOrder := make([]int64, 0)
 
-	ensureTarget := func(hostID int64, name, hostName, ip, agentID string, online bool) *runTarget {
+	ensureTarget := func(hostID int64, name, hostName, ip, hostInstanceName string, online bool) *runTarget {
 		target, exists := targetsByHost[hostID]
 		if !exists {
-			target = &runTarget{HostID: hostID, Name: name, HostName: hostName, HostIP: ip, AgentID: agentID, AgentOnline: online}
+			target = &runTarget{HostID: hostID, Name: name, HostName: hostName, HostIP: ip, HostInstanceName: hostInstanceName, AgentOnline: online}
 			if target.Name == "" {
 				target.Name = target.HostIP
 			}
@@ -129,7 +129,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 					continue
 				}
 				for _, row := range rows {
-					target := ensureTarget(row.ID, row.InstanceName, row.InstanceName, row.Ip, row.AgentID, row.AgentOnline)
+					target := ensureTarget(row.ID, row.InstanceName, row.InstanceName, row.Ip, row.InstanceName, row.AgentOnline)
 					if hostSetGroups[row.ID] == nil {
 						hostSetGroups[row.ID] = make(map[int64]runGroup)
 					}
@@ -147,7 +147,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 					continue
 				}
 				for _, row := range rows {
-					target := ensureTarget(row.ID, row.InstanceName, row.InstanceName, row.Ip, row.AgentID, row.AgentOnline)
+					target := ensureTarget(row.ID, row.InstanceName, row.InstanceName, row.Ip, row.InstanceName, row.AgentOnline)
 					if hostSetGroups[row.ID] == nil {
 						hostSetGroups[row.ID] = make(map[int64]runGroup)
 					}
@@ -185,7 +185,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 				// HA 场景：只选一台在线实例（优先 online，按 service/deployment 稳定排序）。
 				selected := -1
 				for i, row := range rows {
-					if row.AgentOnline && row.AgentID != "" {
+					if row.AgentOnline && row.HostName != "" {
 						selected = i
 						break
 					}
@@ -203,7 +203,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 				continue
 			}
 			for _, row := range rows {
-				target := ensureTarget(row.HostID, row.HostName, row.HostName, row.Ip, row.AgentID, row.AgentOnline)
+				target := ensureTarget(row.HostID, row.HostName, row.HostName, row.Ip, row.HostName, row.AgentOnline)
 				target.RunUser, target.WorkDirectory = "root", "/"
 				if !applicationGroup {
 					if hostSetGroups[row.HostID] == nil {
@@ -216,7 +216,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 				set, exists := instanceSets[row.DeploymentID]
 				if !exists {
 					set = &checkSet{
-						Context:  runTarget{HostID: row.HostID, HostName: row.HostName, HostIP: row.Ip, AgentID: row.AgentID, AgentOnline: row.AgentOnline, DeploymentID: row.DeploymentID, InstanceName: row.InstanceName, ServiceName: row.ServiceName, AppHome: row.AppHome, RunUser: row.RunUser, WorkDirectory: row.WorkDirectory, Version: row.Version, Name: instanceDisplayName(row), Macros: macrosFromRaw(row.MacroValues)},
+						Context:  runTarget{HostID: row.HostID, HostName: row.HostName, HostIP: row.Ip, HostInstanceName: row.HostName, AgentOnline: row.AgentOnline, DeploymentID: row.DeploymentID, InstanceName: row.InstanceName, ServiceName: row.ServiceName, AppHome: row.AppHome, RunUser: row.RunUser, WorkDirectory: row.WorkDirectory, Version: row.Version, Name: instanceDisplayName(row), Macros: macrosFromRaw(row.MacroValues)},
 						Instance: instanceDisplayName(row),
 					}
 					instanceSets[row.DeploymentID] = set

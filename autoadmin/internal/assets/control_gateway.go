@@ -16,13 +16,13 @@ var deploymentGateway *agent.Gateway
 func SetDeploymentGateway(gateway *agent.Gateway) { deploymentGateway = gateway }
 
 func (r *Repository) deploymentControl(ctx context.Context, id int64) (string, map[string]any, error) {
-	var agentID, controlType, runUser, workDirectory, appHome, serviceName, systemdScope, instanceName string
+	var instanceName, controlType, runUser, workDirectory, appHome, serviceName, systemdScope, deploymentInstanceName string
 	var macro []byte
-	err := r.pool.QueryRowContext(ctx, `SELECT h.agent_id,t.control_type,t.run_user,t.work_directory,t.app_home,t.service_name,t.systemd_scope,t.macro_definitions,d.instance_name FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id JOIN assets_application_service_deployment l ON l.deployment_id=d.id JOIN assets_application_service s ON s.id=l.service_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id WHERE d.id=? LIMIT 1`, id).Scan(&agentID, &controlType, &runUser, &workDirectory, &appHome, &serviceName, &systemdScope, &macro, &instanceName)
+	err := r.pool.QueryRowContext(ctx, `SELECT COALESCE(h.instance_name,''),t.control_type,t.run_user,t.work_directory,t.app_home,t.service_name,t.systemd_scope,t.macro_definitions,d.instance_name FROM assets_application_deployment d JOIN assets_host h ON h.id=d.host_id JOIN assets_application_service_deployment l ON l.deployment_id=d.id JOIN assets_application_service s ON s.id=l.service_id JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id WHERE d.id=? LIMIT 1`, id).Scan(&instanceName, &controlType, &runUser, &workDirectory, &appHome, &serviceName, &systemdScope, &macro, &deploymentInstanceName)
 	if err != nil {
 		return "", nil, err
 	}
-	params := map[string]any{"control_type": controlType, "run_user": runUser, "work_directory": workDirectory, "app_home": appHome, "service_name": serviceName, "systemd_scope": systemdScope, "instance_name": instanceName}
+	params := map[string]any{"control_type": controlType, "run_user": runUser, "work_directory": workDirectory, "app_home": appHome, "service_name": serviceName, "systemd_scope": systemdScope, "instance_name": deploymentInstanceName}
 	var macroValues any
 	if json.Unmarshal(macro, &macroValues) == nil {
 		params["macro_definitions"] = macroValues
@@ -48,7 +48,7 @@ func (r *Repository) deploymentControl(ctx context.Context, id int64) (string, m
 		return "", nil, err
 	}
 	params["control_actions"] = actions
-	return agentID, params, nil
+	return instanceName, params, nil
 }
 func (r *Repository) updateRuntimeStatus(ctx context.Context, id int64, status, output string) error {
 	_, err := r.pool.ExecContext(ctx, `UPDATE assets_application_deployment SET update_time=?,runtime_status=?,runtime_status_output=?,last_status_check_time=? WHERE id=?`, time.Now().UTC(), status, output, time.Now().UTC(), id)
@@ -58,16 +58,16 @@ func (s *Service) executeDeploymentControl(ctx context.Context, gateway *agent.G
 	if gateway == nil {
 		gateway = deploymentGateway
 	}
-	agentID, params, err := s.repository.deploymentControl(ctx, id)
+	instanceName, params, err := s.repository.deploymentControl(ctx, id)
 	if err != nil {
 		return nil, translate(err)
 	}
-	if agentID == "" {
+	if instanceName == "" {
 		return nil, ErrAgentUnavailable
 	}
 	params["control_action"] = action
 	raw, _ := json.Marshal(params)
-	response, err := gateway.Execute(ctx, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("app-control-%d", time.Now().UnixNano()), Type: "custom", Action: "control_application", ParamsJson: string(raw), TimeoutSeconds: 120})
+	response, err := gateway.Execute(ctx, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("app-control-%d", time.Now().UnixNano()), Type: "custom", Action: "control_application", ParamsJson: string(raw), TimeoutSeconds: 120})
 	if err != nil {
 		return nil, ErrAgentUnavailable
 	}

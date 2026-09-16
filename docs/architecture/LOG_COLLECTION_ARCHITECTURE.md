@@ -116,7 +116,7 @@ ISM 是**索引级**的，同一索引内无法按 `service` 区分保留期，�
 （Go `assets.ListServiceTemplateLogs`）除覆盖值外还返回 `resolved_path` 与
 `data_stream`——`resolved_path` 用服务级 `macro_values` 替换 `${VAR}`（实例级宏因
 逐实例而异不展开，未定义的宏保留原样）；`data_stream` 用 `shared/logstream.Name`
-生成（`logs-<项目>-<环境>-<业务系统>-<服务>-<有效档位>`），有效档位取值顺序为
+生成（`logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>`），有效档位取值顺序为
 日志覆盖档位 → 服务默认档位 → `is_default` 档位 → `std`，与 Fluent Bit 下发的
 Index 命名（`monitor.LogDataStreamName`，内部委托同一 shared 实现）完全一致。
 
@@ -516,7 +516,9 @@ OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固�
       已是按行拆开的独立文档，无法回溯合并
       outputs.d/<app>__<svc>__<logname>.conf —— Match 实例段通配，Index =
       LogDataStreamName（服务级命名），处理规则非空则带 Pipeline
-      指纹 = 全部片段内容的 sha256；某条日志的全部实例都被跳过时不产出任何片段
+      指纹 = 全部片段内容的 sha256；某条日志的全部实例都被跳过时不产出任何片段；
+      片段非空时附带 /var/lib/fluent-bit/db/.keep 占位文件——agent 落盘时的
+      MkdirAll 会顺带创建 DB 目录，避免 tail 因打不开 offset 数据库而启动失败
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
   → 片段中含 parsers 文件（即启用多行）时，自动附带下发主配置
     fluent-bit.conf（内容 = fluentBitMainConfig()，含 Parsers_File 指向
@@ -559,7 +561,7 @@ Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 i
 `顶层 → 项目 → 业务系统 → 环境 → 逻辑服务`，右侧按层级展示。
 
 **数据口径（关键）**：真实磁盘占用/rollover 状态的原子粒度是 data stream
-（命名 = `logs-<项目>-<环境>-<业务系统>-<档位编码>`，见 4.1）。树的顶层/项目/业务系统/环境层
+（命名 = `logs-<项目>-<业务系统>-<环境>-<档位编码>`，见 4.1）。树的顶层/项目/业务系统/环境层
 都是流的真实聚合；**逻辑服务层只有写入量（文档数）口径**——服务是流内字段不是索引维度，
 不存在按服务的真实磁盘拆分，UI 必须明示该差异。
 
@@ -575,7 +577,7 @@ Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 i
   （文档数）口径，UI 明示"未按服务分流的旧流"。
 - `GET .../log-service-usage/?business_system=&environment=`：环境节点展开时按需调用，
   `service` 字段 terms 聚合文档数（默认近 30 天，仅叶子层使用），索引匹配用
-  `<prefix>-*<环境>-<业务系统>-*`（项目段通配）。
+  `<prefix>-*<业务系统>-<环境>-*`（项目段通配）。
 - 手动刷新，无轮询（聚合查询对集群有成本）。
 
 ### 9.1 自动错误清单

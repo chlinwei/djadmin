@@ -27,9 +27,9 @@ ApiToken 明文只在创建或 rotate 时返回一次，库内只存 hash。当�
 
 ### Agent 在线状态
 
-真实在线状态来自进程内 gRPC connection registry，而不是数据库布尔值。相同 `agent_id` 重连会替换旧连接，请求按 request_id 路由等待响应。
+真实在线状态来自进程内 gRPC connection registry，而不是数据库布尔值。相同实例名（`instance_name`，即网关会话 key）重连会替换旧连接，请求按 request_id 路由等待响应。
 
-当前 hello 只要求非空 agent_id，没有验证共享密钥。Go gateway 必须在注册连接前做 mTLS 或 per-agent token 校验，禁止未经认证的新连接驱逐旧连接。
+Go gateway 已在注册连接前校验共享密钥（`newAgentTokenValidator`：`sys_agent_token` 中 `bind_mode='agent'` 的活动 token 逐个校验），校验失败直接关流，禁止未经认证的新连接驱逐旧连接；hello 还要求非空 `instance_name`。
 
 ### Agent 安装/升级
 

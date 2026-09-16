@@ -79,7 +79,7 @@ func TestBatchCreateTargetsInstallNowOfflineGuard(t *testing.T) {
 	}
 }
 
-// dispatchTargetServiceControl：目标主机无 agent（agent_id 为空）时必须拒绝服务控制。
+// dispatchTargetServiceControl：目标主机无实例名（未纳管 agent）时必须拒绝服务控制。
 func TestTargetServiceControlRejectsMissingAgent(t *testing.T) {
 	pool := openMonitorTestDB(t)
 	if pool == nil {

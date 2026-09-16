@@ -22,10 +22,10 @@ type Handler struct {
 	mediaRoot string
 }
 
-// mediaRoot 为空时回退 Django MEDIA_ROOT 默认值（与 monitor.Handler.packageRoot 一致）。
+// mediaRoot 为空时回退 autoadmin 自身的 media 目录（与 monitor.Handler.packageRoot 一致）。
 func NewHandler(service *Service, gateway *agent.Gateway, mediaRoot string) *Handler {
 	if strings.TrimSpace(mediaRoot) == "" {
-		mediaRoot = filepath.Join("..", "backend", "djadmin", "media")
+		mediaRoot = "media"
 	}
 	mediaRoot, _ = filepath.Abs(mediaRoot)
 	return &Handler{service: service, gateway: gateway, mediaRoot: mediaRoot}
@@ -35,12 +35,13 @@ func (h *Handler) applyAgentPresence(host *Host) {
 	if host == nil {
 		return
 	}
-	agentID := ""
-	if host.AgentID != nil {
-		agentID = strings.TrimSpace(*host.AgentID)
+	// instance_name 即 dj-agent 的 DJ_AGENT_INSTANCE_NAME，作为 gRPC 会话 key。
+	instanceName := ""
+	if host.InstanceName != nil {
+		instanceName = strings.TrimSpace(*host.InstanceName)
 	}
 	// The active gRPC session is authoritative; database heartbeat state may be stale.
-	host.AgentOnline = h.gateway.IsOnline(agentID)
+	host.AgentOnline = h.gateway.IsOnline(instanceName)
 }
 
 func page(c *gin.Context) (pagination.Page, error) {

@@ -197,7 +197,7 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
 
     const setupState = wrapper.vm.$.setupState
     setupState.state.selectedRowKeys = [101]
-    setupState.datasources = [{ id: 101, agent_id: '' }]
+    setupState.datasources = [{ id: 101, instance_name: 'host-101', agent_online: false }]
 
     setupState.openAgentManage()
     await flushPromises()
@@ -236,12 +236,13 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
 
     const setupState = wrapper.vm.$.setupState
     setupState.state.selectedRowKeys = [101]
-    setupState.datasources = [{ id: 101, agent_id: 'agent-101', agent_online: false }]
+    setupState.datasources = [{ id: 101, instance_name: 'host-101', agent_online: false }]
 
     setupState.openAgentManage()
     await flushPromises()
 
-    expect(setupState.agentManageOperation).toBe('update')
+    // 离线主机的默认操作是 install；这里显式切到 update 以验证提交守卫。
+    setupState.agentManageOperation = 'update'
     setupState.agentManageCredentialId = 2
 
     await setupState.submitAgentManage()
@@ -271,7 +272,7 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
 
     const setupState = wrapper.vm.$.setupState
     setupState.state.selectedRowKeys = [101]
-    setupState.datasources = [{ id: 101, agent_id: 'agent-101', agent_online: true }]
+    setupState.datasources = [{ id: 101, instance_name: 'host-101', agent_online: true }]
 
     setupState.openAgentManage()
     await flushPromises()

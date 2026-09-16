@@ -42,12 +42,44 @@ type agentInstallInput struct {
 }
 
 type agentUpdateHost struct {
-	ID         int64
-	HostName   string
-	HostIP     string
-	AgentID    string
-	AgentJobID string
-	LogID      int64
+	ID int64
+	// InstanceName 即 assets_host.instance_name：既是展示名，也是 gRPC 网关会话的
+	// 路由 key（主机没有独立 agent_id）。HostName 一名不再使用，避免与
+	// assets_hostsystem.hostname 混淆。
+	InstanceName string
+	HostIP       string
+	AgentJobID   string
+	LogID        int64
+}
+
+// loadAgentTargetHosts 按 host_ids 读取安装/更新所需的主机标识。
+// 只取一列身份（instance_name）配一个字段，SQL 列数与 Scan 目标数必须一致——
+// 曾因 SELECT 去掉一列而 Scan 未同步，导致接口直接 500。
+func loadAgentTargetHosts(ctx context.Context, pool *sql.DB, ids []int64) ([]agentUpdateHost, error) {
+	placeholders := make([]string, 0, len(ids))
+	arguments := make([]any, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, ErrInvalid
+		}
+		placeholders = append(placeholders, "?")
+		arguments = append(arguments, id)
+	}
+	rows, err := pool.QueryContext(ctx,
+		`SELECT id,COALESCE(instance_name,''),COALESCE(ip,'') FROM assets_host WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	hosts := make([]agentUpdateHost, 0, len(ids))
+	for rows.Next() {
+		var host agentUpdateHost
+		if err = rows.Scan(&host.ID, &host.InstanceName, &host.HostIP); err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, rows.Err()
 }
 
 func (handler *Handler) AgentInstall(context *gin.Context) {
@@ -80,33 +112,12 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		credential = row
 	}
 
-	hosts := make([]agentUpdateHost, 0, len(input.HostIDs))
-	placeholders := make([]string, 0, len(input.HostIDs))
-	arguments := make([]any, 0, len(input.HostIDs))
-	for _, id := range input.HostIDs {
-		if id <= 0 {
-			response.BusinessError(context, 400, "host_ids 必须是正整数", nil)
-			return
-		}
-		placeholders = append(placeholders, "?")
-		arguments = append(arguments, id)
-	}
-	rows, err := handler.service.repository.pool.QueryContext(context,
-		`SELECT id,COALESCE(instance_name,''),COALESCE(ip,''),COALESCE(agent_id,'') FROM assets_host WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`, arguments...)
+	hosts, err := loadAgentTargetHosts(context, handler.service.repository.pool, input.HostIDs)
 	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var host agentUpdateHost
-		if err = rows.Scan(&host.ID, &host.HostName, &host.HostIP, &host.AgentID); err != nil {
-			response.Error(context, err)
+		if err == sql.ErrNoRows {
+			response.BusinessError(context, 400, "部分主机不存在，请刷新后重试", nil)
 			return
 		}
-		hosts = append(hosts, host)
-	}
-	if err = rows.Err(); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -116,12 +127,12 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	}
 	for _, host := range hosts {
 		if operation == "update" {
-			if strings.TrimSpace(host.AgentID) == "" {
-				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 未绑定 Agent，更新操作仅支持已绑定 Agent 的主机", host.HostName), nil)
+			if strings.TrimSpace(host.InstanceName) == "" {
+				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 未配置实例名，更新操作仅支持已配置实例名的主机", host.InstanceName), nil)
 				return
 			}
-			if !handler.gateway.IsOnline(host.AgentID) {
-				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 的 Agent 离线，更新操作仅支持当前在线的主机", host.HostName), nil)
+			if !handler.gateway.IsOnline(host.InstanceName) {
+				response.BusinessError(context, 400, fmt.Sprintf("主机 %s 的 Agent 离线，更新操作仅支持当前在线的主机", host.InstanceName), nil)
 				return
 			}
 		}
@@ -173,7 +184,7 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 	inventory := gin.H{"hosts": func() []gin.H {
 		items := make([]gin.H, 0, len(hosts))
 		for _, host := range hosts {
-			items = append(items, gin.H{"host_id": host.ID, "name": host.HostName, "ip": host.HostIP})
+			items = append(items, gin.H{"host_id": host.ID, "name": host.InstanceName, "ip": host.HostIP})
 		}
 		return items
 	}()}
@@ -195,19 +206,19 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		host := &hosts[index]
 		host.AgentJobID = fmt.Sprintf("install-agent-%s", uuid.NewString()[:16])
 		jobType, jobParams := "grpc", `{"operation":"update"}`
-		jobAgentID := host.AgentID
+		jobInstanceName := host.InstanceName
 		if operation == "install" {
 			jobType = "ansible"
 			jobParams = fmt.Sprintf(`{"credential_id":%d,"operation":"install"}`, credentialID)
-			// 与 Django 一致：全新主机没有 agent_id，作业行回填 host-<id> 占位。
-			if strings.TrimSpace(jobAgentID) == "" {
-				jobAgentID = fmt.Sprintf("host-%d", host.ID)
+			// instance_name 由前端必填校验兜底；此处仅为防御性兜底避免 SQL 写入失败。
+			if strings.TrimSpace(jobInstanceName) == "" {
+				jobInstanceName = fmt.Sprintf("instance-%d", host.ID)
 			}
 		}
 		jobResult, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO assets_agent_job
-			(create_time,update_time,remark,job_id,agent_id,job_type,action,params,timeout_seconds,status,result_data,error_message,host_id,exit_code,stderr,stdout)
+			(create_time,update_time,remark,job_id,instance_name,job_type,action,params,timeout_seconds,status,result_data,error_message,host_id,exit_code,stderr,stdout)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, nil, host.AgentJobID, jobAgentID, jobType, "install_agent",
+			now, now, nil, host.AgentJobID, jobInstanceName, jobType, "install_agent",
 			jobParams, 300, "queued", `{}`, "", sql.NullInt64{Int64: host.ID, Valid: true}, 0, "", "")
 		if err != nil {
 			response.Error(context, err)
@@ -218,7 +229,7 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 		logResult, err := handler.service.repository.pool.ExecContext(context, `INSERT INTO automation_execution_host_log
 			(create_time,update_time,remark,host_id_snapshot,host_name_snapshot,host_ip_snapshot,agent_job_id,status,exit_code,stdout,stderr,error_message,result_data,host_id,job_id)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			now, now, nil, host.ID, host.HostName, host.HostIP, host.AgentJobID, "queued", 0, "", "", "", `{}`, sql.NullInt64{Int64: host.ID, Valid: true}, executionID)
+			now, now, nil, host.ID, host.InstanceName, host.HostIP, host.AgentJobID, "queued", 0, "", "", "", `{}`, sql.NullInt64{Int64: host.ID, Valid: true}, executionID)
 		if err != nil {
 			response.Error(context, err)
 			return
@@ -398,21 +409,21 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 	if err != nil {
 		return fail(err.Error(), 1, "", "")
 	}
-	if handler.gateway == nil || !handler.gateway.IsOnline(host.AgentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(host.InstanceName) {
 		return fail("agent 已离线，无法走在线更新", 1, "", "")
 	}
 	// env/unit 内容以 agent_install.yml 中的 copy 模板为唯一来源（入口处已校验）。
-	envContent := renderAgentEnvTemplate(envTemplate, host.AgentID, grpcAddr)
+	envContent := renderAgentEnvTemplate(envTemplate, host.InstanceName, grpcAddr)
 	unitContent := unitTemplate + "\n"
 
-	if _, err = handler.gateway.MakeDirectory(ctx, host.AgentID, "/var/lib/dj-agent", "update"); err != nil {
+	if _, err = handler.gateway.MakeDirectory(ctx, host.InstanceName, "/var/lib/dj-agent", "update"); err != nil {
 		return fail("创建远端 update 目录失败: "+err.Error(), 1, "", "")
 	}
-	if _, err = handler.gateway.WriteFile(ctx, host.AgentID, "/var/lib/dj-agent/update", agentUpdateRemoteFile, bytes.NewReader(binary)); err != nil {
+	if _, err = handler.gateway.WriteFile(ctx, host.InstanceName, "/var/lib/dj-agent/update", agentUpdateRemoteFile, bytes.NewReader(binary)); err != nil {
 		return fail("推送 Agent 二进制失败: "+err.Error(), 1, "", "")
 	}
 	params, _ := json.Marshal(gin.H{"env_content": envContent, "unit_content": unitContent})
-	result, err := handler.gateway.Execute(ctx, host.AgentID, &pb.AutomationExecuteRequest{
+	result, err := handler.gateway.Execute(ctx, host.InstanceName, &pb.AutomationExecuteRequest{
 		JobId:          fmt.Sprintf("agent-update-%s", host.AgentJobID),
 		Type:           "custom",
 		Action:         "apply_agent_update",
@@ -431,7 +442,7 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 	reconnected := false
 	for attempt := 0; attempt < 15; attempt++ {
 		time.Sleep(time.Second)
-		if handler.gateway.IsOnline(host.AgentID) {
+		if handler.gateway.IsOnline(host.InstanceName) {
 			reconnected = true
 			break
 		}
@@ -442,7 +453,7 @@ func (handler *Handler) runAgentUpdateOnce(ctx context.Context, background conte
 		finalStatus, exitCode = "failed", int64(1)
 		message = "自更新已下发，但重启后 Agent 未重新连接，请人工检查该主机"
 	}
-	resultData := fmt.Sprintf(`{"host_id":%d,"agent_id":%q,"operation":"update","agent_connected":%t}`, host.ID, host.AgentID, reconnected)
+	resultData := fmt.Sprintf(`{"host_id":%d,"instance_name":%q,"operation":"update","agent_connected":%t}`, host.ID, host.InstanceName, reconnected)
 	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE assets_agent_job
 		SET status=?,exit_code=?,error_message=?,result_data=?,finished_at=?,update_time=? WHERE job_id=?`,
 		finalStatus, exitCode, message, resultData, now, now, host.AgentJobID)

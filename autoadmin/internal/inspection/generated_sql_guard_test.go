@@ -13,20 +13,26 @@ import (
 // 所以这里直接扫整个生成文件。
 func TestGeneratedInspectionSQLHasNoDroppedColumns(t *testing.T) {
 	root := findModuleRoot(t)
-	path := filepath.Join(root, "internal", "platform", "database", "generated", "inspection.sql.go")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
+	// 两个方言的产物都要扫：MySQL 是当前在跑的，PG 是 -tags postgres 的潜在实现。
+	paths := []string{
+		filepath.Join(root, "internal", "platform", "database", "generated", "mysql", "inspection.sql.go"),
+		filepath.Join(root, "internal", "platform", "database", "generated", "postgres", "inspection.sql.go"),
 	}
-	content := string(raw)
-	for _, pattern := range []string{
-		`t\.logical_service_id`,
-		`t\.selected_host_ids`,
-		`g\.scope`,
-		`'scope', g2?\.scope`,
-	} {
-		if regexp.MustCompile(pattern).MatchString(content) {
-			t.Errorf("generated inspection.sql.go references dropped column: %s", pattern)
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read generated file: %v", err)
+		}
+		content := string(raw)
+		for _, pattern := range []string{
+			`t\.logical_service_id`,
+			`t\.selected_host_ids`,
+			`g\.scope`,
+			`'scope', g2?\.scope`,
+		} {
+			if regexp.MustCompile(pattern).MatchString(content) {
+				t.Errorf("%s references dropped column: %s", filepath.Base(path), pattern)
+			}
 		}
 	}
 }

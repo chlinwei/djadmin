@@ -31,7 +31,7 @@ func run() error {
 	slog.Info("dj_agent starting",
 		"version", buildinfo.Version,
 		"pid", os.Getpid(),
-		"agent_id", cfg.AgentID,
+		"instance_name", cfg.InstanceName,
 		"log_level", cfg.LogLevel,
 		"max_workers", cfg.MaxWorkers,
 		"shutdown_timeout", cfg.ShutdownTimeout.String(),
@@ -43,6 +43,6 @@ func run() error {
 		return err
 	}
 
-	slog.Info("dj_agent stopped", "agent_id", cfg.AgentID)
+	slog.Info("dj_agent stopped", "instance_name", cfg.InstanceName)
 	return nil
 }

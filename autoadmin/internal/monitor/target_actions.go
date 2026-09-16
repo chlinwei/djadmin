@@ -101,9 +101,9 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 	results := make([]gin.H, 0, len(input.HostIDs))
 	success := 0
 	for _, hostID := range input.HostIDs {
-		var name, ip, agentID string
+		var name, ip string
 		var deleted bool
-		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),COALESCE(agent_id,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &agentID, &deleted); err != nil || deleted {
+		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &deleted); err != nil || deleted {
 			results = append(results, gin.H{"host_id": hostID, "host": name, "ok": false, "message": "host not found"})
 			continue
 		}
@@ -126,7 +126,7 @@ func (handler *Handler) BatchCreateTargets(context *gin.Context) {
 		// 与 Django 一致：install_now=true 时创建后立即下发安装（agent 离线/缺包等守卫
 		// 在 dispatchExporterJob 内部判定，原因写入 target.install_message）。
 		if input.InstallNow {
-			row := targetInstallRow{ID: targetID, HostID: hostID, ManagedEnabled: true, ExporterType: input.ExporterType, HostName: name, HostIP: ip, AgentID: agentID}
+			row := targetInstallRow{ID: targetID, HostID: hostID, ManagedEnabled: true, ExporterType: input.ExporterType, HostName: name, HostIP: ip}
 			if err := handler.dispatchExporterJob(context, row); err != nil {
 				results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
 				continue
@@ -201,11 +201,11 @@ func (handler *Handler) controlTargetService(context *gin.Context, action string
 // dispatchTargetServiceControl 是 controlTargetService 与批量接口共用的下发核心，
 // 避免批量版本和单台版本的 systemctl 命令拼接逻辑各写一份、后续改一处漏一处。
 func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
-	var agentID, exporterType string
-	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.agent_id,''),t.exporter_type FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`, id).Scan(&agentID, &exporterType); err != nil {
+	var instanceName, exporterType string
+	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.instance_name,''),t.exporter_type FROM monitor_target t JOIN assets_host h ON h.id=t.host_id WHERE t.id=?`, id).Scan(&instanceName, &exporterType); err != nil {
 		return nil, fmt.Errorf("monitor target not found")
 	}
-	if handler.gateway == nil || !handler.gateway.IsOnline(agentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	if !serviceNamePattern.MatchString(exporterType) {
@@ -219,7 +219,7 @@ func (handler *Handler) dispatchTargetServiceControl(context *gin.Context, id in
 		return nil, fmt.Errorf("unsupported service action %q", action)
 	}
 	params, _ := json.Marshal(gin.H{"service_name": exporterType + ".service"})
-	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: builtinAction, ParamsJson: string(params), TimeoutSeconds: 30})
+	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("monitor-service-%d", time.Now().UnixNano()), Type: "custom", Action: builtinAction, ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
 		return nil, err
 	}

@@ -44,9 +44,12 @@ type runCheck struct {
 }
 
 type runTarget struct {
-	ID, HostID, DeploymentID           int64
-	Name, HostName, HostIP, AgentID    string
-	AgentOnline                        bool
+	ID, HostID, DeploymentID int64
+	Name, HostName, HostIP   string
+	AgentOnline              bool
+	// HostInstanceName 是主机 instance_name（= assets_host.instance_name），
+	// 也是 gRPC 网关会话的路由 key；与逻辑服务的 InstanceName 不是一回事。
+	HostInstanceName                   string
 	AppHome, RunUser, WorkDirectory    string
 	InstanceName, Version, ServiceName string
 	// Macros 是逻辑服务实例化宏（assets_application_service.macro_values，
@@ -215,7 +218,7 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 	}
 	targetSnapshot := make([]gin.H, 0, len(targets))
 	for _, target := range targets {
-		item := gin.H{"deployment_id": target.DeploymentID, "host_id": target.HostID, "host_name": target.HostName, "instance_name": target.InstanceName, "host_ip": target.HostIP, "agent_id": target.AgentID, "agent_online": target.AgentOnline}
+		item := gin.H{"deployment_id": target.DeploymentID, "host_id": target.HostID, "host_name": target.HostName, "instance_name": target.InstanceName, "host_ip": target.HostIP, "agent_online": target.AgentOnline}
 		if business, ok := businessByHostForTargets[target.HostID]; ok {
 			item["business"] = business
 		}
@@ -233,7 +236,7 @@ func (handler *Handler) createExecution(ctx context.Context, task runTask, targe
 		return 0, err
 	}
 	for index := range targets {
-		result, insertErr := tx.ExecContext(ctx, `INSERT INTO inspection_target_execution(execution_id,deployment_id,host_id,target_name,host_id_snapshot,host_ip_snapshot,agent_id_snapshot,status,passed,error_message,raw_result,start_time,end_time,create_time,update_time) VALUES(?,?,?,?,?,?,?,'pending',NULL,'',JSON_OBJECT(),NULL,NULL,NOW(),NOW())`, executionID, nullablePositive(targets[index].DeploymentID), targets[index].HostID, targets[index].Name, targets[index].HostID, targets[index].HostIP, targets[index].AgentID)
+		result, insertErr := tx.ExecContext(ctx, `INSERT INTO inspection_target_execution(execution_id,deployment_id,host_id,target_name,host_id_snapshot,host_ip_snapshot,instance_name_snapshot,status,passed,error_message,raw_result,start_time,end_time,create_time,update_time) VALUES(?,?,?,?,?,?,?,'pending',NULL,'',JSON_OBJECT(),NULL,NULL,NOW(),NOW())`, executionID, nullablePositive(targets[index].DeploymentID), targets[index].HostID, targets[index].Name, targets[index].HostID, targets[index].HostIP, targets[index].HostInstanceName)
 		if insertErr != nil {
 			return 0, insertErr
 		}
@@ -433,7 +436,7 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		errorMessage = message
 	}
 	if len(agentChecks) > 0 {
-		if target.AgentID == "" || !handler.gateway.IsOnline(target.AgentID) {
+		if target.HostInstanceName == "" || !handler.gateway.IsOnline(target.HostInstanceName) {
 			// 离线是"未执行"而非"检查失败"：目标置 skipped、不产生检查结果，
 			// 避免常态离线的机器污染失败统计。
 			handler.db.Exec(`UPDATE inspection_target_execution SET status='skipped',passed=FALSE,error_message='Agent 离线，未执行巡检',end_time=NOW(),update_time=NOW() WHERE id=?`, target.ID)
@@ -442,7 +445,7 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		// 巡检中心模式：只下发检查计划，基线类的应用控制状态/端口/路径/日志内置检查已移除。
 		params := jsonBytes(gin.H{"check_plan": gin.H{"schema_version": 1, "checks": agentChecks}})
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(task.Timeout+45)*time.Second)
-		agentResponse, err := handler.gateway.Execute(ctx, target.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
+		agentResponse, err := handler.gateway.Execute(ctx, target.HostInstanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
 		cancel()
 		if err != nil {
 			errorMessage = err.Error()

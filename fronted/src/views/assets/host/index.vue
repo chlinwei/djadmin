@@ -223,6 +223,13 @@
                                             </a-button>
                                         </a-tooltip>
                                     </a-col>
+                                    <a-col v-permission="'assets:hosts:create'">
+                                        <a-tooltip title="克隆（复制分组/环境/监控项等配置，新建一台主机）">
+                                            <a-button @click="handleCloneHost(record)">
+                                                <FontAwesomeIcon :icon="['fas', 'clone']" />
+                                            </a-button>
+                                        </a-tooltip>
+                                    </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
                                         <a-tooltip title="查看 Agent 状态">
                                             <a-button @click="openAgentRuntimePage(record)">
@@ -427,11 +434,8 @@
                 <a-form-item name="instance_name" label="实例名">
                     <a-input v-model:value="form.instance_name" placeholder="例如：app-01" />
                 </a-form-item>
-                <a-form-item name="agent_id" label="Agent ID">
-                    <a-input v-model:value="form.agent_id" placeholder="必须与 dj-agent 的 DJ_AGENT_ID 一致" />
-                </a-form-item>
                 <a-form-item name="ip" label="IP 地址">
-                    <a-input v-model:value="form.ip" placeholder="例如：192.168.1.10" />
+                    <a-input v-model:value="form.ip" placeholder="主机的唯一标识，例如：192.168.1.10" />
                 </a-form-item>
                 <a-form-item name="group_id" label="主机分组">
                     <a-tree-select
@@ -762,7 +766,6 @@ const form = reactive({
     monitors: [],
     remark: '',
     instance_name: '',
-    agent_id: '',
     webssh_default_username: 'root',
     webssh_login_users: 'root',
 })
@@ -893,7 +896,6 @@ const rules = {
 const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
     { title: '实例名', dataIndex: 'instance_name', key: 'instance_name', width: 160 },
-    { title: 'Agent ID', dataIndex: 'agent_id', key: 'agent_id', width: 150 },
     { title: '状态', dataIndex: 'agent_status', key: 'agent_status', width: 110 },
     { title: '主机名称', dataIndex: 'hostname', key: 'hostname', width: 160 },
     { title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 150 },
@@ -1179,7 +1181,10 @@ const openAgentManage = () => {
         return
     }
     const selectedHosts = datasources.value.filter((host) => state.selectedRowKeys.includes(host.id))
-    agentManageOperation.value = selectedHosts.some((host) => !String(host.agent_id || '').trim()) ? 'install' : 'update'
+    // 主机身份只有实例名（没有独立 agent_id），无法再用「是否已绑定」判断安装还是更新：
+    // 改为按 agent 在线状态给默认值——全部在线说明已有 gRPC 通道走更新，否则走 SSH 安装。
+    // 用户仍可在弹窗里用单选手动指定（提交时按各自的必要条件校验）。
+    agentManageOperation.value = selectedHosts.every((host) => host.agent_online === true) ? 'update' : 'install'
     if (!agentCredentials.value.length) {
         loadAgentCredentials()
     }
@@ -1195,10 +1200,6 @@ const submitAgentManage = async () => {
         return
     }
     const selectedHosts = datasources.value.filter((host) => state.selectedRowKeys.includes(host.id))
-    if (agentManageOperation.value === 'update' && selectedHosts.some((host) => !String(host.agent_id || '').trim())) {
-        message.warning('更新操作仅支持已安装 Agent 的主机')
-        return
-    }
     if (agentManageOperation.value === 'update' && selectedHosts.some((host) => host.agent_online !== true)) {
         // 更新走已建立的 gRPC 通道让 agent 自己替换并重启，离线主机没有通道可下发。
         message.warning('更新操作仅支持当前在线的主机，请去掉离线主机后重试')
@@ -1552,7 +1553,6 @@ const onGroupSelect = async (selectedKeys, info) => {
 const resetForm = () => {
     form.id = -1
     form.instance_name = ''
-    form.agent_id = ''
     form.ip = ''
     form.environment = null
     form.group_id = selectedGroupId.value && selectedGroupId.value !== 0 ? selectedGroupId.value : undefined
@@ -1568,6 +1568,48 @@ const handleAdd = async () => {
     resetForm()
     dialogTitle.value = '新增主机'
     dialogVisible.value = true
+}
+
+// 克隆主机：以已有主机为模板填表（分组/环境/监控项/WebSSH 用户等照搬）。
+// 实例名加 -copy 后缀，IP 清空由用户填写（服务端按 IP 唯一校验并标识），提交走新增逻辑。
+const handleCloneHost = async (record) => {
+    await loadMonitorNameOptions()
+    resetForm()
+    dialogTitle.value = '克隆主机'
+    dialogLoading.value = true
+    dialogVisible.value = true
+    getHostById(record.id)
+        .then((res) => {
+            if (res.data.code === 200) {
+                const data = res.data.data || {}
+                form.id = -1
+                form.instance_name = `${data.instance_name || ''}-copy`
+                form.ip = ''
+                form.environment = data.environment ?? null
+                form.group_id = data.group ?? data.group_id ?? undefined
+                const monitorRows = Array.isArray(data.monitors) ? data.monitors : []
+                form.monitors = monitorRows.map((item) => ({
+                    name: item.name,
+                    port: normalizeMonitorPort(item.port) || resolveMonitorDefaultPort(item.name),
+                    enabled: Boolean(item.enabled),
+                }))
+                form.remark = data.remark || ''
+                form.webssh_default_username = String(data.webssh_default_username || 'root').trim() || 'root'
+                form.webssh_login_users = String(data.webssh_login_users || 'root').trim() || 'root'
+                formWebSshNewUser.value = ''
+                normalizeFormWebSshUserSettings()
+            } else {
+                message.error(res.data.msg || '获取主机详情失败')
+                dialogVisible.value = false
+            }
+        })
+        .catch(() => {
+            message.error('获取主机详情失败')
+            dialogVisible.value = false
+        })
+        .finally(() => {
+            dialogLoading.value = false
+        })
 }
 
 const handleApiError = (err) => {
@@ -1598,7 +1640,6 @@ const onSaveOrCreate = async (id) => {
                 const data = res.data.data || {}
                 form.id = data.id ?? id
                 form.instance_name = data.instance_name || ''
-                form.agent_id = data.agent_id || ''
                 form.ip = data.ip || ''
                 form.environment = data.environment ?? null
                 form.group_id = data.group ?? data.group_id ?? undefined

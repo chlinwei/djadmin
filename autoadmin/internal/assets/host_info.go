@@ -30,13 +30,13 @@ type hostInfoOutcome struct {
 func (h *Handler) refreshHostAgentInfo(ctx context.Context, host Host) hostInfoOutcome {
 	outcome := hostInfoOutcome{HostID: host.ID}
 
-	agentID := ""
-	if host.AgentID != nil {
-		agentID = strings.TrimSpace(*host.AgentID)
+	instanceName := ""
+	if host.InstanceName != nil {
+		instanceName = strings.TrimSpace(*host.InstanceName)
 	}
-	if agentID == "" {
+	if instanceName == "" {
 		outcome.Skipped = true
-		outcome.Error = "主机未配置 agent_id，无法定位 agent"
+		outcome.Error = "主机未配置实例名，无法定位 agent"
 		return outcome
 	}
 	if !host.AgentOnline {
@@ -45,7 +45,7 @@ func (h *Handler) refreshHostAgentInfo(ctx context.Context, host Host) hostInfoO
 		return outcome
 	}
 
-	response, err := h.gateway.Execute(ctx, agentID, &pb.AutomationExecuteRequest{
+	response, err := h.gateway.Execute(ctx, instanceName, &pb.AutomationExecuteRequest{
 		JobId:          fmt.Sprintf("host-info-%d-%d", host.ID, time.Now().UnixNano()),
 		Type:           "inventory",
 		Action:         "get_host_info",

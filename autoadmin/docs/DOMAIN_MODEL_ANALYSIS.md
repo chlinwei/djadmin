@@ -83,14 +83,14 @@ Service serializer 还负责：version/template 必须属于 application、HA �
 | `Credential` / `assets_credential` | name、username=root、加密 password/private_key、port=22、auth type 1/2 | HostCredential 两端 CASCADE；secret 必须可逆加密 |
 | `HostGroup` / `assets_hostgroup` | name unique | parent self FK SET_NULL；深度/环仅 serializer 校验 |
 | `CloudAccount` / `assets_cloudaccount` | provider type、凭据 | Host SET_NULL；无唯一约束 |
-| `Host` / `assets_host` | nullable agent_id unique；IP/cloud/status/deleted/preferences | environment PROTECT；cloud/group SET_NULL；删除会级联大量运行配置 |
+| `Host` / `assets_host` | instance_name（业务标识，agent 侧 `DJ_AGENT_INSTANCE_NAME`，与 IP 同为全局唯一且非空，唯一性在服务层校验）；IP/cloud/status/deleted/preferences；无 agent_id 列（已删除） | environment PROTECT；cloud/group SET_NULL；删除会级联大量运行配置 |
 | `HostCredential` / `assets_hostcredential` | unique(host,credential)；每 Host 条件唯一 default | 两端 CASCADE |
 | `HostHardware` / `assets_hosthardware` | CPU/memory/disk/arch/collected | Host O2O CASCADE |
 | `HostSystem` / `assets_hostsystem` | OS/kernel/hostname/agent version/timezone/source | Host O2O CASCADE |
 | `HostRuntime` / `assets_hostruntime` | 最新 CPU/memory/IO JSON、uptime、fingerprint | Host O2O；不是历史时序表 |
 | `HostDisk` / `assets_hostdisk` | device/mount/size/used/filesystem | Host CASCADE；DB 无 host+device+mount 唯一约束 |
-| `AgentJob` / `assets_agent_job` | job_id unique；nullable client_request_id unique；action/type/params/status/output/result | Host SET_NULL；agent/status 与 status/time indexes |
-| `AgentJobEvent` / `assets_agent_job_event` | tag、job_id、agent_id、event_type、payload JSON | 不用 FK 关联 AgentJob，保留独立事件快照 |
+| `AgentJob` / `assets_agent_job` | job_id unique；nullable client_request_id unique；action/type/params/status/output/result；`instance_name`（列名曾为 agent_id） | Host SET_NULL；agent/status 与 status/time indexes |
+| `AgentJobEvent` / `assets_agent_job_event` | tag、job_id、agent_id（该表已不再是实际链路的一部分）、event_type、payload JSON | 不用 FK 关联 AgentJob，保留独立事件快照 |
 | `WebSSHSessionLog` / `assets_webssh_session_log` | requested/effective user、close metadata、input/output、计数/truncated | host CASCADE；user_id 是 integer snapshot，不是 FK |
 | `WebSSHTempCredential` / `assets_webssh_temp_credential` | credential O2O；nullable indexed session_pk | credential CASCADE；session_pk 故意不是 FK |
 

@@ -20,12 +20,12 @@ type Gateway struct {
 	mu       sync.RWMutex
 	sessions map[string]*session
 	validate func(string, string) bool
-	// onHello 在握手校验通过后回调（agent_id + Hello.version），用于把 agent 版本
+	// onHello 在握手校验通过后回调（instance_name + Hello.version），用于把 agent 版本
 	// 与在线时间落库；回调失败只记日志，不影响会话建立。
-	onHello func(agentID, version string)
+	onHello func(instanceName, version string)
 }
 type session struct {
-	agentID        string
+	instanceName   string
 	stream         pb.AgentChannel_SessionServer
 	sendMu         sync.Mutex
 	mu             sync.Mutex
@@ -34,18 +34,19 @@ type session struct {
 	fileEvents     map[string]chan *pb.AgentFrame
 }
 
-func NewGateway(validate func(string, string) bool, onHello func(agentID, version string)) *Gateway {
+func NewGateway(validate func(string, string) bool, onHello func(instanceName, version string)) *Gateway {
 	return &Gateway{sessions: make(map[string]*session), validate: validate, onHello: onHello}
 }
 func (gateway *Gateway) Register(server *grpc.Server) { pb.RegisterAgentChannelServer(server, gateway) }
 
-func (gateway *Gateway) IsOnline(agentID string) bool {
-	if gateway == nil || agentID == "" {
+// IsOnline 判断该实例名的 agent 是否有活跃 gRPC 会话；instance_name 就是会话路由 key。
+func (gateway *Gateway) IsOnline(instanceName string) bool {
+	if gateway == nil || instanceName == "" {
 		return false
 	}
 	gateway.mu.RLock()
 	defer gateway.mu.RUnlock()
-	return gateway.sessions[agentID] != nil
+	return gateway.sessions[instanceName] != nil
 }
 
 func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
@@ -54,36 +55,36 @@ func (gateway *Gateway) Session(stream pb.AgentChannel_SessionServer) error {
 		return err
 	}
 	hello := frame.GetHello()
-	if hello == nil || hello.AgentId == "" || (gateway.validate != nil && !gateway.validate(hello.AgentId, hello.Token)) {
-		agentID := ""
+	if hello == nil || hello.InstanceName == "" || (gateway.validate != nil && !gateway.validate(hello.InstanceName, hello.Token)) {
+		instanceName := ""
 		if hello != nil {
-			agentID = hello.AgentId
+			instanceName = hello.InstanceName
 		}
-		slog.Warn("agent session rejected", "agent_id", agentID)
+		slog.Warn("agent session rejected", "instance_name", instanceName)
 		_ = stream.Send(&pb.ServerFrame{Payload: &pb.ServerFrame_HelloAck{HelloAck: &pb.HelloAck{Accepted: false, Message: "agent authentication failed"}}})
 		return fmt.Errorf("agent authentication failed")
 	}
-	sess := &session{agentID: hello.AgentId, stream: stream, pending: make(map[string]chan *pb.AutomationExecuteResponse), terminalEvents: make(map[string]chan *pb.AgentFrame), fileEvents: make(map[string]chan *pb.AgentFrame)}
+	sess := &session{instanceName: hello.InstanceName, stream: stream, pending: make(map[string]chan *pb.AutomationExecuteResponse), terminalEvents: make(map[string]chan *pb.AgentFrame), fileEvents: make(map[string]chan *pb.AgentFrame)}
 	if gateway.onHello != nil {
-		gateway.onHello(sess.agentID, hello.Version)
+		gateway.onHello(sess.instanceName, hello.Version)
 	}
 	gateway.mu.Lock()
-	old := gateway.sessions[sess.agentID]
-	gateway.sessions[sess.agentID] = sess
+	old := gateway.sessions[sess.instanceName]
+	gateway.sessions[sess.instanceName] = sess
 	sessionCount := len(gateway.sessions)
 	gateway.mu.Unlock()
-	slog.Info("agent session established", "agent_id", sess.agentID, "session_count", sessionCount)
+	slog.Info("agent session established", "instance_name", sess.instanceName, "session_count", sessionCount)
 	if old != nil {
 		old.closePending()
 	}
 	defer func() {
 		gateway.mu.Lock()
-		if gateway.sessions[sess.agentID] == sess {
-			delete(gateway.sessions, sess.agentID)
+		if gateway.sessions[sess.instanceName] == sess {
+			delete(gateway.sessions, sess.instanceName)
 		}
 		sessionCount := len(gateway.sessions)
 		gateway.mu.Unlock()
-		slog.Info("agent session ended", "agent_id", sess.agentID, "session_count", sessionCount)
+		slog.Info("agent session ended", "instance_name", sess.instanceName, "session_count", sessionCount)
 		sess.closePending()
 	}()
 	if err = stream.Send(&pb.ServerFrame{Payload: &pb.ServerFrame_HelloAck{HelloAck: &pb.HelloAck{Accepted: true, Message: "accepted"}}}); err != nil {
@@ -139,8 +140,8 @@ func (sess *session) closePending() {
 // 并关闭其全部 pending 管道让等待方立刻得到离线错误。
 func (gateway *Gateway) dropSession(sess *session) {
 	gateway.mu.Lock()
-	if gateway.sessions[sess.agentID] == sess {
-		delete(gateway.sessions, sess.agentID)
+	if gateway.sessions[sess.instanceName] == sess {
+		delete(gateway.sessions, sess.instanceName)
 	}
 	gateway.mu.Unlock()
 	sess.closePending()
@@ -168,9 +169,9 @@ func (sess *session) send(frame *pb.ServerFrame) error {
 	defer sess.sendMu.Unlock()
 	return sess.stream.Send(frame)
 }
-func (gateway *Gateway) Execute(ctx context.Context, agentID string, request *pb.AutomationExecuteRequest) (*pb.AutomationExecuteResponse, error) {
+func (gateway *Gateway) Execute(ctx context.Context, instanceName string, request *pb.AutomationExecuteRequest) (*pb.AutomationExecuteResponse, error) {
 	gateway.mu.RLock()
-	sess := gateway.sessions[agentID]
+	sess := gateway.sessions[instanceName]
 	gateway.mu.RUnlock()
 	if sess == nil {
 		return nil, ErrAgentOffline

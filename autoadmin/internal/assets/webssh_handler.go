@@ -57,8 +57,8 @@ func (handler *Handler) WebSSH(context *gin.Context) {
 		respond(context, nil, err)
 		return
 	}
-	if host.AgentID == nil || strings.TrimSpace(*host.AgentID) == "" {
-		context.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "主机未绑定 Agent", "data": nil})
+	if host.InstanceName == nil || strings.TrimSpace(*host.InstanceName) == "" {
+		context.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "主机未配置实例名，无法定位 agent", "data": nil})
 		return
 	}
 	socket, err := webSSHUpgrader.Upgrade(context.Writer, context.Request, nil)
@@ -68,7 +68,7 @@ func (handler *Handler) WebSSH(context *gin.Context) {
 	defer socket.Close()
 	requestID := uuid.NewString()
 	targetUser := strings.TrimSpace(context.Query("target_user"))
-	events, err := deploymentGateway.OpenTerminal(context.Request.Context(), *host.AgentID, requestID, targetUser, 120, 32)
+	events, err := deploymentGateway.OpenTerminal(context.Request.Context(), *host.InstanceName, requestID, targetUser, 120, 32)
 	if err != nil {
 		_ = socket.WriteJSON(gin.H{"type": "error", "message": err.Error()})
 		return
@@ -125,17 +125,17 @@ func (handler *Handler) WebSSH(context *gin.Context) {
 		}
 		switch strings.ToLower(message.Type) {
 		case "resize":
-			_ = deploymentGateway.ResizeTerminal(context.Request.Context(), *host.AgentID, requestID, message.Cols, message.Rows)
+			_ = deploymentGateway.ResizeTerminal(context.Request.Context(), *host.InstanceName, requestID, message.Cols, message.Rows)
 		case "input", "data":
-			_ = deploymentGateway.SendTerminalData(context.Request.Context(), *host.AgentID, requestID, []byte(message.Data))
+			_ = deploymentGateway.SendTerminalData(context.Request.Context(), *host.InstanceName, requestID, []byte(message.Data))
 		case "close":
-			_ = deploymentGateway.CloseTerminal(context.Request.Context(), *host.AgentID, requestID)
+			_ = deploymentGateway.CloseTerminal(context.Request.Context(), *host.InstanceName, requestID)
 			return
 		}
 	}
 	closeCtx, cancelClose := stdcontext.WithTimeout(stdcontext.Background(), 2*time.Second)
 	defer cancelClose()
-	_ = deploymentGateway.CloseTerminal(closeCtx, *host.AgentID, requestID)
+	_ = deploymentGateway.CloseTerminal(closeCtx, *host.InstanceName, requestID)
 }
 
 func webSSHString(value *string) string {

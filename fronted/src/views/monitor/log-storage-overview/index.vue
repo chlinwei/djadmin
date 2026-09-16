@@ -3,14 +3,7 @@
     <a-card :bordered="false" style="margin-bottom: 12px">
       <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
         <span style="font-weight: 600">日志存储水位</span>
-        <a-select
-          v-model:value="selectedClusterId"
-          :options="clusterOptions"
-          style="width: 280px"
-          placeholder="选择 OpenSearch 集群"
-          @change="loadOverview"
-        />
-        <a-button size="small" :loading="loading" :disabled="!selectedClusterId" @click="loadOverview">
+        <a-button type="primary" ghost :loading="loading" :disabled="!selectedClusterId" @click="loadOverview">
           刷新
         </a-button>
         <span v-if="generatedAt" style="color: #999; font-size: 12px">数据时间：{{ generatedAt }}</span>
@@ -36,9 +29,6 @@
               <template #title="{ dataRef }">
                 <span>{{ dataRef.title }}</span>
                 <a-tag v-if="dataRef.meta && dataRef.meta.bytes" style="margin-left: 8px" :color="healthColor(dataRef.meta.health)">
-                  {{ formatBytes(dataRef.meta.bytes) }}
-                </a-tag>
-                <a-tag v-if="dataRef.level === 'service' && dataRef.meta?.bytes" style="margin-left: 8px" :color="healthColor(dataRef.meta.health)">
                   {{ formatBytes(dataRef.meta.bytes) }}
                 </a-tag>
               </template>
@@ -71,7 +61,7 @@
 
               <!-- 顶层下未识别流的容器 -->
               <template v-else-if="selectedLevel === 'unknown'">
-                <a-alert type="warning" show-icon message="以下 data stream 无法按 <前缀>-<项目>-<环境>-<业务系统>-<档位编码> 解析（可能为手工创建或维度已删除）" style="margin-bottom: 12px" />
+                <a-alert type="warning" show-icon message="以下 data stream 无法按 <前缀>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位编码> 解析（可能为手工创建或维度已删除）" style="margin-bottom: 12px" />
                 <a-table
                   size="small"
                   row-key="name"
@@ -148,7 +138,7 @@
                 </template>
               </template>
 
-              <!-- 逻辑服务：新命名下每个服务有自己的流，可显示真实占用；旧流只有写入量 -->
+              <!-- 逻辑服务：流名已含服务维度，可显示真实磁盘占用与后备索引 -->
               <template v-else-if="selectedLevel === 'service'">
                 <a-descriptions v-if="selectedService" :column="2" size="small" bordered style="margin-bottom: 12px">
                   <a-descriptions-item label="所属业务系统">{{ selectedService.bizsysName }}</a-descriptions-item>
@@ -166,22 +156,61 @@
                 </a-descriptions>
                 <a-table
                   size="small"
-                  row-key="service"
-                  :columns="[
-                    { title: '逻辑服务', dataIndex: 'service', key: 'service' },
-                    { title: `近 ${serviceUsageDays} 天写入文档数`, dataIndex: 'docs', key: 'docs', width: 180 },
-                  ]"
-                  :data-source="serviceUsage"
+                  row-key="name"
+                  :columns="streamColumns"
+                  :data-source="selectedStreams"
                   :pagination="false"
                   :locale="tableLocale"
-                  :loading="serviceUsageLoading"
                 >
                   <template #bodyCell="{ column, record }">
-                    <template v-if="column.key === 'docs'">
-                      <span>{{ Number(record.docs).toLocaleString() }}</span>
+                    <template v-if="column.key === 'bytes'">
+                      <span>{{ formatBytes(record.bytes) }}</span>
+                    </template>
+                    <template v-else-if="column.key === 'docs'">
+                      <span>{{ Number(record.docs || 0).toLocaleString() }}</span>
+                    </template>
+                    <template v-else-if="column.key === 'backing_count'">
+                      <span>{{ (record.backing_indices || []).length }}</span>
+                    </template>
+                    <template v-else-if="column.key === 'ism'">
+                      <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                      <span v-else>-</span>
+                    </template>
+                    <template v-else-if="column.key === 'actions'">
+                      <a-button type="link" size="small" style="padding: 0" @click="expandStream(record)">后备索引</a-button>
                     </template>
                   </template>
                 </a-table>
+                <template v-if="expandedStream">
+                  <a-divider style="margin: 12px 0" />
+                  <a-alert
+                    type="info"
+                    show-icon
+                    :message="`data stream ${expandedStream.name} 的后备索引（这是真实磁盘占用的最细粒度）`"
+                    style="margin-bottom: 8px"
+                  />
+                  <a-table
+                    size="small"
+                    row-key="index"
+                    :columns="backingColumns"
+                    :data-source="expandedStream.backing_indices"
+                    :pagination="false"
+                    :locale="tableLocale"
+                  >
+                    <template #bodyCell="{ column, record }">
+                      <template v-if="column.key === 'bytes'">
+                        <span>{{ formatBytes(record.bytes) }}</span>
+                      </template>
+                      <template v-else-if="column.key === 'docs'">
+                        <span>{{ Number(record.docs || 0).toLocaleString() }}</span>
+                      </template>
+                      <template v-else-if="column.key === 'ism'">
+                        <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                        <span v-else>-</span>
+                      </template>
+                    </template>
+                  </a-table>
+                </template>
               </template>
             </template>
           </a-card>
@@ -195,10 +224,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
-import { getLogServiceUsage, getLogStorageOverview, getOpenSearchClusterList } from '@/api/monitor.js'
+import { getLogStorageOverview, getOpenSearchClusterList } from '@/api/monitor.js'
 
-// 存储水位：真实磁盘占用的原子粒度是 data stream，命名 = logs-<项目>-<环境>-<业务系统>-<档位编码>。
-// 树的顶层/项目/业务系统/环境是流的真实聚合；逻辑服务层只有写入量（文档数）口径。
+// 存储水位：真实磁盘占用的原子粒度是 data stream，命名 = logs-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位编码>。
+// 树只渲染有数据（流）的节点；逻辑服务层直接来自流名解析，可显示真实占用。
 
 const clusters = ref([])
 const selectedClusterId = ref(undefined)
@@ -209,13 +238,6 @@ const treeSearch = ref('')
 const selectedKeys = ref([])
 const expandedKeys = ref([])
 const expandedStream = ref(null)
-const serviceUsage = ref([])
-const serviceUsageLoading = ref(false)
-const serviceUsageDays = ref(30)
-
-const clusterOptions = computed(() =>
-  clusters.value.map((item) => ({ value: item.id, label: item.name || `集群 #${item.id}` }))
-)
 
 const streams = computed(() => overview.value?.data_streams || [])
 const allocation = computed(() => overview.value?.allocation || [])
@@ -269,6 +291,7 @@ const allocationColumns = [
 
 const streamColumns = [
   { title: 'data stream', dataIndex: 'name', key: 'name' },
+  { title: '逻辑服务', dataIndex: 'service', key: 'service', width: 120 },
   { title: '健康', dataIndex: 'health', key: 'health', width: 80 },
   { title: '占用', dataIndex: 'bytes', key: 'bytes', width: 110 },
   { title: '文档数', dataIndex: 'docs', key: 'docs', width: 110 },
@@ -303,28 +326,33 @@ const treeData = computed(() => {
       .filter((item) => item.project_id === project.id)
       .forEach((bizsys) => {
         usedBizsys.add(bizsys.code)
-        children.push(bizsysNode(bizsys, match))
+        const node = bizsysNode(bizsys, match)
+        // 没有任何流的业务系统不渲染，避免点开右侧空白
+        if (node) children.push(node)
       })
-    if (!search || match(project.name) || match(project.code) || children.length) {
-      projectNodes.push({
-        key: `project:${project.code || project.id}`,
-        title: `项目：${project.name}`,
-        level: 'project',
-        meta: {},
-        children,
-      })
-    }
+    // 没有子节点且自身不匹配搜索的项目不渲染
+    if (!children.length && !match(project.name) && !match(project.code)) return
+    projectNodes.push({
+      key: `project:${project.code || project.id}`,
+      title: `项目：${project.name}`,
+      level: 'project',
+      meta: {},
+      children,
+    })
   })
 
   // 未挂项目的业务系统
-  const orphan = bizsystems.filter((item) => !usedBizsys.has(item.code))
+  const orphan = bizsystems
+    .filter((item) => !usedBizsys.has(item.code))
+    .map((bizsys) => bizsysNode(bizsys, match))
+    .filter(Boolean)
   if (orphan.length) {
     projectNodes.push({
       key: 'ungrouped',
       title: '未分组业务系统',
       level: 'ungrouped',
       meta: {},
-      children: orphan.map((bizsys) => bizsysNode(bizsys, match)),
+      children: orphan,
     })
   }
 
@@ -345,9 +373,36 @@ const treeData = computed(() => {
 function bizsysNode(bizsys, match) {
   const bizsysStreams = streams.value.filter((item) => item.recognized && item.business_system === bizsys.code)
   const environments = dims.value.environments || []
-  const children = environments
+  const envNodes = environments
     .map((env) => {
       const envStreams = bizsysStreams.filter((item) => item.environment === env.code)
+      // 没有流的环境不渲染
+      if (!envStreams.length) return null
+      // 流名已含逻辑服务：按服务分组挂到环境层下，点服务节点可看真实磁盘占用
+      const byService = {}
+      envStreams.forEach((item) => {
+        const serviceCode = item.service || ''
+        if (!byService[serviceCode]) byService[serviceCode] = []
+        byService[serviceCode].push(item)
+      })
+      const serviceChildren = Object.entries(byService)
+        .filter(([serviceCode]) => serviceCode)
+        .map(([serviceCode, list]) => ({
+          key: `bizsys:${bizsys.code}:env:${env.code}:svc:${serviceCode}`,
+          title: `服务：${serviceCode}`,
+          level: 'service',
+          bizsysCode: bizsys.code,
+          bizsysName: bizsys.name,
+          envCode: env.code,
+          envName: env.name,
+          serviceCode,
+          streamName: list[0].name,
+          tier: list[0].tier,
+          meta: { bytes: sumBytes(list), docs: sumDocs(list), health: worstHealth(list) },
+          streams: list,
+          children: [],
+          isLeaf: true,
+        }))
       return {
         key: `bizsys:${bizsys.code}:env:${env.code}`,
         title: `环境：${env.name}`,
@@ -358,11 +413,13 @@ function bizsysNode(bizsys, match) {
         envName: env.name,
         meta: { bytes: sumBytes(envStreams), health: worstHealth(envStreams) },
         streams: envStreams,
-        children: [],
+        children: serviceChildren,
         isLeaf: false,
       }
     })
-    .filter((node) => node.streams.length)
+    .filter(Boolean)
+  // 没有任何流的业务系统不渲染（搜索命中名称时保留，便于定位）
+  if (!envNodes.length && !match(bizsys.name) && !match(bizsys.code)) return null
   return {
     key: `bizsys:${bizsys.code}`,
     title: `业务系统：${bizsys.name}`,
@@ -370,7 +427,8 @@ function bizsysNode(bizsys, match) {
     bizsysCode: bizsys.code,
     bizsysName: bizsys.name,
     meta: { bytes: sumBytes(bizsysStreams), health: worstHealth(bizsysStreams) },
-    children: match(bizsys.name) || match(bizsys.code) || children.length ? children : [],
+    streams: bizsysStreams,
+    children: envNodes,
   }
 }
 
@@ -406,7 +464,8 @@ function selectNode(selectedKeysValue, { node }) {
       bytes: node.meta?.bytes || 0,
       docs: node.meta?.docs || 0,
     }
-    loadServiceUsage(node.bizsysCode, node.envCode, node.serviceCode)
+    // 服务节点右侧展示该服务的 data stream 明细（真实占用口径）
+    selectedStreams.value = node.streams || []
     return
   }
   if (node.level === 'root') {
@@ -442,30 +501,6 @@ function bizsysHasProject(code) {
 
 function expandStream(record) {
   expandedStream.value = record
-}
-
-async function loadServiceUsage(bizsysCode, envCode, serviceCode) {
-  serviceUsageLoading.value = true
-  try {
-    const response = await getLogServiceUsage(selectedClusterId.value, {
-      business_system: bizsysCode,
-      environment: envCode,
-      days: serviceUsageDays.value,
-    })
-    const payload = response?.data?.data || {}
-    let items = payload.items || []
-    if (serviceCode) {
-      items = items.filter((item) => item.service === serviceCode)
-    }
-    serviceUsage.value = items
-    if (!items.length) {
-      message.info('该范围内近期没有日志写入')
-    }
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '获取服务写入量失败')
-  } finally {
-    serviceUsageLoading.value = false
-  }
 }
 
 async function loadClusters() {

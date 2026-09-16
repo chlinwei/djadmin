@@ -624,13 +624,16 @@ func (*AgentFrame_TerminalExitResponse) isAgentFrame_Payload() {}
 
 func (*AgentFrame_AutomationExecuteResponse) isAgentFrame_Payload() {}
 
-// 会话建立后 agent 发送的第一帧：携带 agent_id 与共享密钥供 backend 校验注册，
+// 会话建立后 agent 发送的第一帧：携带 instance_name 与共享密钥供 backend 校验注册，
 // 校验失败 backend 会直接关闭流，避免未授权 client 冒充 agent 下发文件操作。
+// instance_name 即 assets_host.instance_name（agent 侧来源 DJ_AGENT_INSTANCE_NAME），
+// 同时是 backend 网关会话的路由 key。旧字段名 agent_id 已废弃，字段号 1 不变，
+// 新旧 agent 在二进制协议上保持互通。
 // version 为 agent 构建期注入的版本号（buildinfo.Version），会话建立即随握手上报，
 // backend 据此更新主机表，保证 agent 安装/更新后版本信息无需等待按需采集即刷新。
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	InstanceName  string                 `protobuf:"bytes,1,opt,name=instance_name,json=instanceName,proto3" json:"instance_name,omitempty"`
 	Token         string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -667,9 +670,9 @@ func (*Hello) Descriptor() ([]byte, []int) {
 	return file_proto_agent_channel_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *Hello) GetAgentId() string {
+func (x *Hello) GetInstanceName() string {
 	if x != nil {
-		return x.AgentId
+		return x.InstanceName
 	}
 	return ""
 }
@@ -2715,9 +2718,9 @@ const file_proto_agent_channel_proto_rawDesc = "" +
 	"\x16terminal_data_response\x18\r \x01(\v2&.djadmin.agent.v1.TerminalDataResponseH\x00R\x14terminalDataResponse\x12^\n" +
 	"\x16terminal_exit_response\x18\x0e \x01(\v2&.djadmin.agent.v1.TerminalExitResponseH\x00R\x14terminalExitResponse\x12m\n" +
 	"\x1bautomation_execute_response\x18\x0f \x01(\v2+.djadmin.agent.v1.AutomationExecuteResponseH\x00R\x19automationExecuteResponseB\t\n" +
-	"\apayload\"R\n" +
-	"\x05Hello\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x14\n" +
+	"\apayload\"\\\n" +
+	"\x05Hello\x12#\n" +
+	"\rinstance_name\x18\x01 \x01(\tR\finstanceName\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x12\x18\n" +
 	"\aversion\x18\x03 \x01(\tR\aversion\"@\n" +
 	"\bHelloAck\x12\x1a\n" +

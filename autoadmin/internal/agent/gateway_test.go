@@ -15,7 +15,9 @@ import (
 
 func TestGatewayExecuteRoundTrip(t *testing.T) {
 	const token = "test-token"
-	gateway := NewGateway(func(agentID, receivedToken string) bool { return agentID == "agent-1" && receivedToken == token }, nil)
+	gateway := NewGateway(func(instanceName, receivedToken string) bool {
+		return instanceName == "host-01" && receivedToken == token
+	}, nil)
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
 	gateway.Register(server)
@@ -33,7 +35,7 @@ func TestGatewayExecuteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.Send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{AgentId: "agent-1", Token: token}}}); err != nil {
+	if err := stream.Send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{InstanceName: "host-01", Token: token}}}); err != nil {
 		t.Fatal(err)
 	}
 	ack, err := stream.Recv()
@@ -55,7 +57,7 @@ func TestGatewayExecuteRoundTrip(t *testing.T) {
 		_ = stream.Send(&pb.AgentFrame{Payload: &pb.AgentFrame_AutomationExecuteResponse{AutomationExecuteResponse: &pb.AutomationExecuteResponse{RequestId: request.RequestId, JobId: request.JobId, Status: "success", ExitCode: 0, Stdout: "running"}}})
 	}()
 
-	response, err := gateway.Execute(ctx, "agent-1", &pb.AutomationExecuteRequest{RequestId: "request-1", JobId: "job-1", Type: "custom", Action: "control_application", ParamsJson: `{"control_action":"status"}`})
+	response, err := gateway.Execute(ctx, "host-01", &pb.AutomationExecuteRequest{RequestId: "request-1", JobId: "job-1", Type: "custom", Action: "control_application", ParamsJson: `{"control_action":"status"}`})
 	if err != nil {
 		t.Fatal(err)
 	}

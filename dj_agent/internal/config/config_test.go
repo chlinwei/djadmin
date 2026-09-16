@@ -7,7 +7,7 @@ import (
 
 func TestValidate_OK(t *testing.T) {
 	cfg := Config{
-		AgentID:            "agent-001",
+		InstanceName:       "host-01",
 		LogLevel:           "info",
 		MaxWorkers:         2,
 		ShutdownTimeout:    5 * time.Second,
@@ -20,7 +20,7 @@ func TestValidate_OK(t *testing.T) {
 
 func TestValidate_BadLogLevel(t *testing.T) {
 	cfg := Config{
-		AgentID:            "agent-001",
+		InstanceName:       "host-01",
 		LogLevel:           "verbose",
 		MaxWorkers:         2,
 		ShutdownTimeout:    5 * time.Second,
@@ -32,7 +32,7 @@ func TestValidate_BadLogLevel(t *testing.T) {
 }
 
 func TestLoadFromEnv_Override(t *testing.T) {
-	t.Setenv("DJ_AGENT_ID", "agent-from-env")
+	t.Setenv("DJ_AGENT_INSTANCE_NAME", "host-from-env")
 	t.Setenv("DJ_AGENT_LOG_LEVEL", "debug")
 	t.Setenv("DJ_AGENT_MAX_WORKERS", "7")
 	t.Setenv("DJ_AGENT_SHUTDOWN_TIMEOUT", "3s")
@@ -43,8 +43,8 @@ func TestLoadFromEnv_Override(t *testing.T) {
 		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
 
-	if cfg.AgentID != "agent-from-env" {
-		t.Fatalf("AgentID mismatch: %s", cfg.AgentID)
+	if cfg.InstanceName != "host-from-env" {
+		t.Fatalf("InstanceName mismatch: %s", cfg.InstanceName)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Fatalf("LogLevel mismatch: %s", cfg.LogLevel)

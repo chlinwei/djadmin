@@ -110,7 +110,6 @@ type Host struct {
 	AgentOnlineTime       *string           `json:"agent_online_time"`
 	WebSSHDefaultUsername string            `json:"webssh_default_username"`
 	WebSSHLoginUsers      string            `json:"webssh_login_users"`
-	AgentID               *string           `json:"agent_id"`
 	Environment           *int64            `json:"environment"`
 	EnvironmentName       string            `json:"environment_name"`
 	System                *HostSystemInfo   `json:"system"`
@@ -158,8 +157,7 @@ type HostGroupInput struct {
 	Remark   *string `json:"remark"`
 }
 type HostInput struct {
-	InstanceName          *string `json:"instance_name"`
-	AgentID               *string `json:"agent_id"`
+	InstanceName          string  `json:"instance_name"`
 	IP                    *string `json:"ip"`
 	InstanceID            *string `json:"instance_id"`
 	Environment           *int64  `json:"environment"`
@@ -193,7 +191,6 @@ func (field *PatchField[T]) UnmarshalJSON(data []byte) error {
 
 type HostPatchInput struct {
 	InstanceName          PatchField[string] `json:"instance_name"`
-	AgentID               PatchField[string] `json:"agent_id"`
 	IP                    PatchField[string] `json:"ip"`
 	InstanceID            PatchField[string] `json:"instance_id"`
 	Environment           PatchField[int64]  `json:"environment"`
@@ -240,5 +237,12 @@ func timeValue(value sql.NullTime) *string {
 	result := timestamp(value.Time)
 	return &result
 }
-func enabled(value *bool) bool     { return value == nil || *value }
-func pattern(search string) string { return "%" + strings.TrimSpace(search) + "%" }
+func enabled(value *bool) bool { return value == nil || *value }
+
+// pattern 把搜索词包成 LIKE 模式。返回 sql.NullString 是因为 sqlc 只有在参数可空时
+// 才能把同一条查询里多次出现的同名参数合并成一个（见 SQL_DESIGN §2.2）：
+// 用 sqlc.arg + CAST 会生成 Pattern/Pattern_2/… 多个参数，调用点漏设就退化成 LIKE NULL。
+// 这里 Valid 恒为 true —— 空搜索必须是 '%%' 匹配全部，不能是 NULL。
+func pattern(search string) sql.NullString {
+	return sql.NullString{String: "%" + strings.TrimSpace(search) + "%", Valid: true}
+}

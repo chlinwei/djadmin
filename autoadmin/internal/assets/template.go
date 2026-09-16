@@ -451,13 +451,13 @@ func templateFromDetail(row db.GetDeploymentTemplateRow) DeploymentTemplate {
 }
 
 func (r *Repository) ListDeploymentTemplates(ctx context.Context, applicationID sql.NullInt64, search string, page pagination.Page) ([]db.ListDeploymentTemplatesRow, int64, error) {
-	patternValue := pattern(search)
-	args := db.CountDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue, Name_2: patternValue}
+	patternValue := pattern(search) // 位置参数版本的两个 LIKE 用 string 字段，取 .String（Valid 恒 true）
+	args := db.CountDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue.String, Name_2: patternValue.String}
 	count, err := r.queries.CountDeploymentTemplates(ctx, args)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.queries.ListDeploymentTemplates(ctx, db.ListDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue, Name_2: patternValue, Limit: page.Size, Offset: page.Offset})
+	rows, err := r.queries.ListDeploymentTemplates(ctx, db.ListDeploymentTemplatesParams{ApplicationID: applicationID, Column3: search, Name: patternValue.String, Name_2: patternValue.String, Limit: page.Size, Offset: page.Offset})
 	return rows, count, err
 }
 

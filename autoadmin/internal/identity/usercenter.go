@@ -216,55 +216,45 @@ func (service *Service) UpdatePassword(ctx context.Context, userID int32, hashed
 }
 
 func (service *Service) ListAlertMediaBindings(ctx context.Context, userID int32) ([]alertMediaOption, []alertMediaBindingItem, error) {
-	options := make([]alertMediaOption, 0)
-	rows, err := service.repository.Pool().QueryContext(ctx, `SELECT id,name,media_type,enabled FROM monitor_alert_media WHERE enabled=TRUE ORDER BY id`)
+	queries := db.New(service.repository.Pool())
+	optionRows, err := queries.ListEnabledAlertMedia(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var option alertMediaOption
-		if err = rows.Scan(&option.ID, &option.Name, &option.MediaType, &option.Enabled); err != nil {
-			return nil, nil, err
-		}
-		options = append(options, option)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, nil, err
+	options := make([]alertMediaOption, 0, len(optionRows))
+	for _, row := range optionRows {
+		options = append(options, alertMediaOption{ID: row.ID, Name: row.Name, MediaType: row.MediaType, Enabled: row.Enabled})
 	}
 
-	selected := make([]alertMediaBindingItem, 0)
-	rows, err = service.repository.Pool().QueryContext(ctx, `SELECT b.id,b.media_id,m.name,b.recipients,b.enabled
-		FROM monitor_user_alert_media_binding b JOIN monitor_alert_media m ON m.id=b.media_id
-		WHERE b.user_id=? ORDER BY b.id`, userID)
+	bindingRows, err := queries.ListUserAlertMediaBindings(ctx, userID)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var item alertMediaBindingItem
-		var recipientsRaw []byte
-		if err = rows.Scan(&item.ID, &item.MediaID, &item.MediaName, &recipientsRaw, &item.Enabled); err != nil {
-			return nil, nil, err
-		}
-		_ = json.Unmarshal(recipientsRaw, &item.Recipients)
+	selected := make([]alertMediaBindingItem, 0, len(bindingRows))
+	for _, row := range bindingRows {
+		item := alertMediaBindingItem{ID: row.ID, MediaID: row.MediaID, MediaName: row.MediaName, Enabled: row.Enabled}
+		_ = json.Unmarshal(row.Recipients, &item.Recipients)
 		if item.Recipients == nil {
 			item.Recipients = []string{}
 		}
 		selected = append(selected, item)
 	}
-	return options, selected, rows.Err()
+	return options, selected, nil
 }
 
 func (service *Service) ReplaceAlertMediaBindings(ctx context.Context, userID int32, bindings []validatedBinding) error {
 	// 逐个校验媒介存在且启用（Django: AlertMedia.objects.filter(id=.., enabled=True)），
 	// 然后整表替换该用户的绑定。
+	queries := db.New(service.repository.Pool())
 	for _, binding := range bindings {
-		var count int
-		if err := service.repository.Pool().QueryRowContext(ctx, `SELECT COUNT(*) FROM monitor_alert_media WHERE id=? AND enabled=TRUE`, binding.MediaID).Scan(&count); err != nil {
+		media, err := queries.GetAlertMediaTyped(ctx, binding.MediaID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
 			return err
 		}
-		if count == 0 {
+		if !media.Enabled {
 			return sql.ErrNoRows
 		}
 	}
@@ -273,7 +263,8 @@ func (service *Service) ReplaceAlertMediaBindings(ctx context.Context, userID in
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM monitor_user_alert_media_binding WHERE user_id=?`, userID); err != nil {
+	txQueries := db.New(tx)
+	if err := txQueries.DeleteUserAlertMediaBindings(ctx, userID); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -282,8 +273,10 @@ func (service *Service) ReplaceAlertMediaBindings(ctx context.Context, userID in
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO monitor_user_alert_media_binding(create_time,update_time,remark,recipients,enabled,media_id,user_id) VALUES(?,?,?,?,?,?,?)`,
-			now, now, nil, string(recipientsJSON), binding.Enabled, binding.MediaID, userID); err != nil {
+		if err := txQueries.CreateUserAlertMediaBinding(ctx, db.CreateUserAlertMediaBindingParams{
+			CreateTime: now, UpdateTime: now, Remark: sql.NullString{}, Recipients: recipientsJSON,
+			Enabled: binding.Enabled, MediaID: binding.MediaID, UserID: userID,
+		}); err != nil {
 			return err
 		}
 	}

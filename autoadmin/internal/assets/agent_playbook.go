@@ -19,8 +19,8 @@ import (
 const agentInstallTemplateCategory = "agent"
 
 var (
-	agentVarIDPattern   = regexp.MustCompile(`\{\{\s*dj_agent_id\s*\}\}`)
-	agentVarAddrPattern = regexp.MustCompile(`\{\{\s*dj_agent_grpc_addr\s*\}\}`)
+	agentVarInstanceNamePattern = regexp.MustCompile(`\{\{\s*dj_agent_instance_name\s*\}\}`)
+	agentVarAddrPattern         = regexp.MustCompile(`\{\{\s*dj_agent_grpc_addr\s*\}\}`)
 )
 
 const (
@@ -68,10 +68,12 @@ func playbookAgentTemplates(contents map[string]string) (envTemplate, unitTempla
 	return envTemplate, unitTemplate, nil
 }
 
-// renderAgentEnvTemplate 渲染模板中的 dj_agent_id / dj_agent_grpc_addr 变量。
-func renderAgentEnvTemplate(envTemplate, agentID, grpcAddr string) string {
+// renderAgentEnvTemplate 渲染模板中的 dj_agent_instance_name / dj_agent_grpc_addr 变量。
+// instanceName 即 assets_host.instance_name（前端创建主机时填的实例名），与
+// dj-agent 进程配置的 DJ_AGENT_INSTANCE_NAME 保持一致。
+func renderAgentEnvTemplate(envTemplate, instanceName, grpcAddr string) string {
 	rendered := agentVarAddrPattern.ReplaceAllString(envTemplate, grpcAddr)
-	rendered = agentVarIDPattern.ReplaceAllString(rendered, agentID)
+	rendered = agentVarInstanceNamePattern.ReplaceAllString(rendered, instanceName)
 	return rendered + "\n"
 }
 

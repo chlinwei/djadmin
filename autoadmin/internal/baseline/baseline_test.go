@@ -2,6 +2,7 @@ package baseline
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -123,6 +125,10 @@ func TestSaveBaselineRejectsInvalidOpaConfig(t *testing.T) {
 
 // ---- SaveBaseline 落库形状：items 整体覆盖（DELETE 后重建），条目参数顺序钉死。
 
+// 说明：迁移到 sqlc 后查询文本由生成物决定，两侧方言的占位符与参数顺序并不完全相同
+// （例如分页查询的行参数在 PG 侧编号在前），所以这里的期望一律写成「方言无关的 SQL 片段 +
+// 片段内稳定的参数顺序」，让同一批用例在 `go test -tags postgres` 下也成立。
+
 func TestSaveBaselineInsertShape(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {
@@ -130,21 +136,20 @@ func TestSaveBaselineInsertShape(t *testing.T) {
 	}
 	defer database.Close()
 
-	// 类目归属校验（策略提交的 category_id 必须属于该基线）。
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM baseline_category WHERE baseline_id=? AND id IN (?)")).
-		WithArgs(int64(7), int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// 类目归属校验（策略提交的 category_id 必须属于该基线）：取回基线的全部类目在应用层比对。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, baseline_id, sort, name FROM baseline_category")).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "baseline_id", "sort", "name"}).AddRow(3, 7, 0, "账号与口令"))
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE baseline SET name=?,version=?,description=?,enabled=?,update_time=NOW(6) WHERE id=?")).
-		WithArgs("等保2.0主机基线", "v1", "desc", true, int64(7)).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE baseline SET update_time")).
+		WithArgs(sqlmock.AnyArg(), "等保2.0主机基线", "v1", "desc", true, int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// items 提交即整体重建：先删后插。
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE baseline_id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE baseline_id")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_item(create_time,update_time,baseline_id,category_id,sort,name,description,config,severity)")).
-		WithArgs(int64(7), int64(3), 0, "密码长度", "desc", opaItemConfigBytes(), "high").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCreateReturnsID(mock, "INSERT INTO baseline_item", []driver.Value{
+		sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7), int64(3), uint32(0), "密码长度", "desc", opaItemConfigBytes(), "high"}, 0)
 	mock.ExpectCommit()
 
 	handler := &Handler{db: database}
@@ -166,6 +171,40 @@ func TestSaveBaselineInsertShape(t *testing.T) {
 
 	if recorder.Code != 200 {
 		t.Fatalf("status = %d body %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+// 提交的策略挂到别的基线的类目上 → 400，且不进入事务。
+func TestSaveBaselineRejectsForeignCategory(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	// 基线 7 只有类目 3；提交的策略挂在类目 9（别的基线的类目）→ 不在集合里。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, baseline_id, sort, name FROM baseline_category")).
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "baseline_id", "sort", "name"}).AddRow(3, 7, 0, "本基线的类目"))
+
+	handler := &Handler{db: database}
+	name := "等保2.0主机基线"
+	context, recorder := ginTestContext("PATCH", "/sys/security/baseline/7/", map[string]any{
+		"name": &name,
+		"items": []map[string]any{
+			{"name": "密码长度", "category_id": 9, "config": opaItemConfig()},
+		},
+	})
+	handler.SaveBaseline(context)
+
+	if code := decodeResponse(t, recorder)["code"]; code != float64(400) {
+		t.Fatalf("code = %v body %s, want 400", code, recorder.Body.String())
+	}
+	if msg := decodeResponse(t, recorder)["msg"]; !strings.Contains(fmt.Sprint(msg), "不属于当前基线") {
+		t.Fatalf("msg = %v, want foreign-category error", msg)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
@@ -254,7 +293,7 @@ func TestStartScanRejectsEnvironmentWithoutEnvironmentID(t *testing.T) {
 	}
 }
 
-// ---- flushResults：批量 INSERT 形状与分批边界。
+// ---- flushResults：每条结果一行 INSERT（迁移 sqlc 后不再拼多行 INSERT，见 scan.go 的说明）。
 
 func TestFlushResultsInsertShape(t *testing.T) {
 	database, mock, err := sqlmock.New()
@@ -263,20 +302,21 @@ func TestFlushResultsInsertShape(t *testing.T) {
 	}
 	defer database.Close()
 
-	results := make([]gin.H, 0, 3)
+	results := make([]scanResultRow, 0, 3)
 	for i := 0; i < 3; i++ {
-		results = append(results, map[string]any{
-			"item_id": i + 1, "item_name": fmt.Sprintf("item-%d", i+1), "chapter": "身份鉴别",
-			"severity": "high", "status": "pass", "message": "ok", "actual": "x",
+		results = append(results, scanResultRow{
+			itemID: int64(i + 1), itemName: fmt.Sprintf("item-%d", i+1), chapter: "身份鉴别",
+			severity: "high", status: "pass", message: "ok", actual: "x",
 		})
 	}
 
-	// 11 列/行 × 3 行 = 33 占位符；expected_value 落 JSON（nil → null）。
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES (?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?)")).
-		WithArgs(int64(5), int64(9), 1, "item-1", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil,
-			int64(5), int64(9), 2, "item-2", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil,
-			int64(5), int64(9), 3, "item-3", "身份鉴别", "high", "pass", []byte("null"), []byte(`"x"`), "ok", nil).
-		WillReturnResult(sqlmock.NewResult(0, 3))
+	// expected 为空时落 JSON null；remediation 为空时落 NULL。
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result")).
+			WithArgs(int64(5), int64(9), int64(i+1), fmt.Sprintf("item-%d", i+1), "身份鉴别", "high", "pass",
+				[]byte("null"), []byte(`"x"`), "ok", nil).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
 
 	flushResults(context.Background(), database, 5, 9, results)
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -284,24 +324,18 @@ func TestFlushResultsInsertShape(t *testing.T) {
 	}
 }
 
-func TestFlushResultsBatchesOverHundred(t *testing.T) {
+// 传入的 DBTX 出错即停止，不继续写后面的行（原批量实现对失败的语义是"丢弃本批"）。
+func TestFlushResultsStopsOnError(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
 
-	results := make([]gin.H, 0, 150)
-	for i := 0; i < 150; i++ {
-		results = append(results, map[string]any{"item_id": i + 1, "status": "fail"})
-	}
-
-	// 100 行/批：150 条 → 100 + 50 两批（两条 INSERT、列数由形状用例钉住）。
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result")).
-		WillReturnResult(sqlmock.NewResult(0, 100))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_scan_result")).
-		WillReturnResult(sqlmock.NewResult(0, 50))
+		WillReturnError(fmt.Errorf("boom"))
 
+	results := []scanResultRow{{itemID: 1, status: "pass"}, {itemID: 2, status: "pass"}}
 	flushResults(context.Background(), database, 5, 9, results)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
@@ -357,9 +391,9 @@ func TestNullInt64FromPtr(t *testing.T) {
 
 func TestFinishScanAggregatesSummary(t *testing.T) {
 	cases := []struct {
-		name                 string
+		name                  string
 		success, failed, skip int
-		want                 string
+		want                  string
 	}{
 		{"any failed wins", 3, 1, 2, "failed"},
 		{"all success", 4, 0, 0, "success"},
@@ -374,11 +408,11 @@ func TestFinishScanAggregatesSummary(t *testing.T) {
 			}
 			defer database.Close()
 
-			mock.ExpectQuery(regexp.QuoteMeta("SELECT SUM(status='success'),SUM(status='failed'),SUM(status='skipped') FROM security_scan_target WHERE scan_id=?")).
+			mock.ExpectQuery(regexp.QuoteMeta("COUNT(CASE WHEN status =")).
 				WithArgs(int64(5)).
-				WillReturnRows(sqlmock.NewRows([]string{"s", "f", "k"}).AddRow(testCase.success, testCase.failed, testCase.skip))
-			mock.ExpectExec(regexp.QuoteMeta("UPDATE security_scan SET status=?,summary=?,end_time=NOW(6),update_time=NOW(6) WHERE id=?")).
-				WithArgs(testCase.want, sqlmock.AnyArg(), int64(5)).
+				WillReturnRows(sqlmock.NewRows([]string{"success", "failed", "skipped"}).AddRow(testCase.success, testCase.failed, testCase.skip))
+			mock.ExpectExec(regexp.QuoteMeta("UPDATE security_scan SET status")).
+				WithArgs(testCase.want, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5)).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
 			(&Handler{db: database}).finishScan(context.Background(), 5, 4)
@@ -424,15 +458,16 @@ func TestAddBaselineItemInsertShape(t *testing.T) {
 	defer database.Close()
 
 	// 校验链：类目归属 → 类目内最大 sort → 插入。
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM baseline_category WHERE id=? AND baseline_id=?")).
-		WithArgs(int64(3), int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT CAST(COALESCE(MAX(sort), -1) AS SIGNED) AS max_sort FROM baseline_item WHERE category_id = ?")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, baseline_id, sort, name FROM baseline_category")).
+		WithArgs(int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "baseline_id", "sort", "name"}).AddRow(3, 7, 0, "账号与口令"))
+	// SQL 文本只断言方言无关的核心片段：两侧产物分别是 ? / $1、SIGNED / bigint，
+	// 写死 MySQL 形态会让 -tags postgres 的测试失败（本测试关心的是调用链与入参）。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM baseline_item WHERE category_id")).
 		WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"max_sort"}).AddRow(0))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO baseline_item(create_time,update_time,baseline_id,category_id,sort,name,description,config,severity)")).
-		WithArgs(int64(7), int64(3), int64(1), "密码长度", "desc", opaItemConfigBytes(), "high").
-		WillReturnResult(sqlmock.NewResult(88, 1))
+	expectCreateReturnsID(mock, "INSERT INTO baseline_item", []driver.Value{
+		sqlmock.AnyArg(), sqlmock.AnyArg(), int64(7), int64(3), uint32(1), "密码长度", "desc", opaItemConfigBytes(), "high"}, 88)
 
 	handler := &Handler{db: database}
 	context, recorder := itemTestContext("POST", "/sys/security/baseline/7/items/", map[string]any{
@@ -459,10 +494,10 @@ func TestAddBaselineItemRejectsForeignCategory(t *testing.T) {
 	}
 	defer database.Close()
 
-	// 类目不属于该基线 → 400，且不得触碰 INSERT。
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM baseline_category WHERE id=? AND baseline_id=?")).
-		WithArgs(int64(3), int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	// 类目不属于该基线（取回的类目挂在别的基线上）→ 400，且不得触碰 INSERT。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, baseline_id, sort, name FROM baseline_category")).
+		WithArgs(int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "baseline_id", "sort", "name"}).AddRow(3, 8, 0, "别的基线的类目"))
 
 	handler := &Handler{db: database}
 	context, recorder := itemTestContext("POST", "/sys/security/baseline/7/items/", map[string]any{
@@ -488,7 +523,7 @@ func TestDeleteBaselineItem(t *testing.T) {
 	}
 	defer database.Close()
 
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE id=? AND baseline_id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE id")).
 		WithArgs(int64(88), int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -513,19 +548,19 @@ func TestDeleteBaselineCascadesScanHistory(t *testing.T) {
 	defer database.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_scan_result WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_scan_result")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 3))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan_target WHERE scan_id IN (SELECT id FROM security_scan WHERE baseline_id=?)")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan_target")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan WHERE baseline_id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM security_scan WHERE baseline_id")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE baseline_id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline_item WHERE baseline_id")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 5))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM baseline WHERE id")).
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(7, 1))
 	mock.ExpectCommit()
@@ -541,4 +576,106 @@ func TestDeleteBaselineCascadesScanHistory(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
 	}
+}
+
+// ---- 扫描列表 / 详情：JSON 组装从库内（JSON_OBJECT）搬到了应用层，这里钉住响应形状。
+
+func TestListScansMapsRows(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM security_scan")).
+		WithArgs("baseline").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	// 行参数顺序两侧方言不同（PG 侧 named 参数排在 $n 之后），这里不断言入参。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan s JOIN baseline b")).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "mount_type", "status", "summary",
+			"requested_username", "start_time", "end_time", "create_time"}).
+			AddRow(7, "baseline", "等保2.0", "project", "success", []byte(`{"total":2,"success":2}`), "admin", nil, nil, testTime()))
+
+	handler := &Handler{db: database}
+	context, recorder := ginTestContext("GET", "/sys/security/scans/?type=baseline", nil)
+	handler.ListScans(context)
+
+	data := decodeResponse(t, recorder)["data"].(map[string]any)
+	if count := data["count"]; count != float64(3) {
+		t.Fatalf("count = %v, want 3", count)
+	}
+	row := data["results"].([]any)[0].(map[string]any)
+	if row["baseline"] != "等保2.0" || row["status"] != "success" {
+		t.Fatalf("row = %v", row)
+	}
+	if row["summary"].(map[string]any)["success"] != float64(2) {
+		t.Fatalf("summary = %v", row["summary"])
+	}
+	if row["start_time"] != nil {
+		t.Fatalf("start_time = %v, want nil（NULL 时间必须落 null 而不是零值时间）", row["start_time"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan s JOIN baseline b")).
+		WithArgs(int64(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "baseline_id", "mount_type", "status",
+			"summary", "requested_username", "start_time", "end_time"}).
+			AddRow(5, "baseline", "等保2.0", 7, "project", "failed", []byte(`{"total":1}`), "admin", testTime(), nil))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan_target")).
+		WithArgs(int64(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"host_name", "host_ip", "status", "passed_items", "failed_items",
+			"compliance_rate", "error_message"}).
+			AddRow("node-1", "10.0.0.5", "failed", 2, 1, "66.67", ""))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM baseline_scan_result r")).
+		WithArgs(int64(5)).
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
+			"status", "expected_value", "actual_value", "message", "remediation"}).
+			AddRow(3, "node-1", "10.0.0.5", "密码长度", "身份鉴别", "high", "fail",
+				[]byte(`{"min":8}`), []byte(`{"actual":4}`), "不满足", "修改 /etc/login.defs"))
+
+	handler := &Handler{db: database}
+	context, recorder := ginTestContext("GET", "/sys/security/scans/5/", nil)
+	context.Params = gin.Params{{Key: "id", Value: "5"}}
+	handler.GetScan(context)
+
+	data := decodeResponse(t, recorder)["data"].(map[string]any)
+	scan := data["scan"].(map[string]any)
+	if scan["baseline"] != "等保2.0" || scan["baseline_id"] != float64(7) {
+		t.Fatalf("scan = %v", scan)
+	}
+	if scan["end_time"] != nil {
+		t.Fatalf("end_time = %v, want nil", scan["end_time"])
+	}
+	if scan["summary"].(map[string]any)["total"] != float64(1) {
+		t.Fatalf("summary = %v", scan["summary"])
+	}
+	target := data["targets"].([]any)[0].(map[string]any)
+	// decimal(5,2) 列在两侧产物里都是 string，响应必须还原成数值（前端按百分比展示）。
+	if target["compliance_rate"] != 66.67 {
+		t.Fatalf("compliance_rate = %v, want 66.67", target["compliance_rate"])
+	}
+	item := data["items"].([]any)[0].(map[string]any)
+	if item["expected"].(map[string]any)["min"] != float64(8) {
+		t.Fatalf("expected = %v", item["expected"])
+	}
+	if item["remediation"] != "修改 /etc/login.defs" {
+		t.Fatalf("remediation = %v", item["remediation"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func testTime() time.Time {
+	return time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 }

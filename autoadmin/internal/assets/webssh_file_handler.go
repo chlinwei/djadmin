@@ -24,11 +24,12 @@ func (handler *Handler) webSSHFileAgent(context *gin.Context) (string, bool) {
 		respond(context, nil, err)
 		return "", false
 	}
-	if host.AgentID == nil || strings.TrimSpace(*host.AgentID) == "" {
-		context.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "主机未绑定 Agent", "data": nil})
+	// instance_name 必填且与 dj-agent 的 DJ_AGENT_INSTANCE_NAME 一致；缺失即无法定位 agent。
+	if host.InstanceName == nil || strings.TrimSpace(*host.InstanceName) == "" {
+		context.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "主机未配置实例名，无法定位 agent", "data": nil})
 		return "", false
 	}
-	return strings.TrimSpace(*host.AgentID), true
+	return strings.TrimSpace(*host.InstanceName), true
 }
 
 func (handler *Handler) ListWebSSHFiles(context *gin.Context) {

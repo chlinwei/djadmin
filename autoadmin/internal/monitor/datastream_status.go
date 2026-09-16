@@ -15,9 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 存储水位：data stream 运行态只读展示。真实磁盘占用/rollover 状态的原子粒度是
-// data stream（环境×业务系统×档位，即索引名的物理隔离维度）；逻辑服务只是流内字段，
-// 只能展示写入量（文档数），不提供按服务的磁盘拆分。
+// 存储水位：data stream 运行态只读展示。物理隔离粒度是 data stream
+//（项目×业务系统×环境×逻辑服务×档位，服务维度直接编码在流名中），
+// 因此流级即可按逻辑服务拆分磁盘占用与文档数。
 
 type dataStreamBackingIndex struct {
 	Index    string `json:"index"`
@@ -56,8 +56,9 @@ type parsedStreamName struct {
 
 // streamNameMatcher 基于数据库维度码做流名匹配。编码可含连字符（如服务 tomcat-svc、
 // 档位 wuhan-test），纯字符串切分必有歧义，必须拿已知维度码做前缀匹配：
-// 新命名 = <prefix>-<项目>-<环境>-<业务系统>-<逻辑服务>-<档位>；
-// 旧命名 = <prefix>-<项目>-<环境>-<业务系统>-<档位>（无服务段）。
+// 新命名 = <prefix>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>；
+// 旧命名 = <prefix>-<项目>-<环境>-<业务系统>-<档位>（无服务段，业务系统/环境段序
+// 为调整前的旧段序）。
 type streamNameMatcher struct {
 	prefix   string
 	services []streamServiceKey // 新命名候选
@@ -66,12 +67,12 @@ type streamNameMatcher struct {
 }
 
 type streamServiceKey struct {
-	Match                                         string // "<项目>-<环境>-<业务系统>-<逻辑服务>-"
+	Match                                         string // "<项目>-<业务系统>-<环境>-<逻辑服务>-"
 	Project, Environment, BusinessSystem, Service string
 }
 
 type streamLegacyKey struct {
-	Match                                string // "<项目>-<环境>-<业务系统>-"
+	Match                                string // "<环境>-<业务系统>-"
 	Project, Environment, BusinessSystem string
 }
 
@@ -93,7 +94,7 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 			var project, env, biz, service, tier string
 			if err = rows.Scan(&project, &env, &biz, &service, &tier); err == nil {
 				serviceKeys = append(serviceKeys, streamServiceKey{
-					Match:   strings.Join([]string{project, env, biz, service}, "-") + "-",
+					Match:   strings.Join([]string{project, biz, env, service}, "-") + "-",
 					Project: project, Environment: env, BusinessSystem: biz, Service: service,
 				})
 				legacyKeys = append(legacyKeys, streamLegacyKey{
@@ -152,7 +153,7 @@ func (m streamNameMatcher) resolveStreamName(stream string) parsedStreamName {
 	return result
 }
 
-// LogDataStreamName 构造逻辑服务级 data stream 名（logs-<项目>-<环境>-<业务系统>-<逻辑服务>-<档位>）。
+// LogDataStreamName 构造逻辑服务级 data stream 名（logs-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>）。
 // 后续生成 Fluent Bit 采集配置的地方必须统一调用本函数，禁止各自拼接。
 func LogDataStreamName(prefix, project, environment, businessSystem, service, tier string) string {
 	return logstream.Name(prefix, project, environment, businessSystem, service, tier)
@@ -402,8 +403,8 @@ func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
 		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 500}}},
 	}
 	result, err := handler.openSearchRequest(context, cluster, "POST",
-		// 流名 = <prefix>-<项目>-<环境>-<业务系统>-<档位>，项目段不参与查询条件，用 * 通配。
-		"/"+prefix+"-*-"+environment+"-"+businessSystem+"-*/_search", body)
+		// 流名 = <prefix>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>，项目段不参与查询条件，用 * 通配。
+		"/"+prefix+"-*-"+businessSystem+"-"+environment+"-*/_search", body)
 	if err != nil {
 		response.BusinessError(context, 502, fmt.Sprintf("查询失败: %v", err), nil)
 		return

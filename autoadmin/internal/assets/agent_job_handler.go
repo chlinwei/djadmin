@@ -49,7 +49,7 @@ func (handler *Handler) QueryAgentJobs(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	rows, err := handler.service.repository.pool.QueryContext(context, `SELECT job_id,agent_id,host_id,job_type,action,status,timeout_seconds,params,result_data,error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at FROM assets_agent_job`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, hostID, hostID, action, action, size, (page-1)*size)
+	rows, err := handler.service.repository.pool.QueryContext(context, `SELECT job_id,instance_name,host_id,job_type,action,status,timeout_seconds,params,result_data,error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at FROM assets_agent_job`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, hostID, hostID, action, action, size, (page-1)*size)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -57,17 +57,17 @@ func (handler *Handler) QueryAgentJobs(context *gin.Context) {
 	defer rows.Close()
 	items := []gin.H{}
 	for rows.Next() {
-		var jobID, agentID, jobType, act, status, errorMessage, stdout, stderr string
+		var jobID, instanceName, jobType, act, status, errorMessage, stdout, stderr string
 		var host sql.NullInt64
 		var timeout, exit int64
 		var paramsRaw, resultRaw []byte
 		var created any
 		var picked, finished sql.NullTime
-		if err = rows.Scan(&jobID, &agentID, &host, &jobType, &act, &status, &timeout, &paramsRaw, &resultRaw, &errorMessage, &exit, &stdout, &stderr, &created, &picked, &finished); err != nil {
+		if err = rows.Scan(&jobID, &instanceName, &host, &jobType, &act, &status, &timeout, &paramsRaw, &resultRaw, &errorMessage, &exit, &stdout, &stderr, &created, &picked, &finished); err != nil {
 			response.Error(context, err)
 			return
 		}
-		items = append(items, gin.H{"job_id": jobID, "agent_id": agentID, "host_id": nullIntValue(host), "type": jobType, "action": act, "status": status, "timeout_seconds": timeout, "params": agentJobJSON(paramsRaw), "result_data": agentJobJSON(resultRaw), "error_message": errorMessage, "exit_code": exit, "stdout": stdout, "stderr": stderr, "create_time": created, "picked_at": nullTimeValue(picked), "finished_at": nullTimeValue(finished)})
+		items = append(items, gin.H{"job_id": jobID, "instance_name": instanceName, "host_id": nullIntValue(host), "type": jobType, "action": act, "status": status, "timeout_seconds": timeout, "params": agentJobJSON(paramsRaw), "result_data": agentJobJSON(resultRaw), "error_message": errorMessage, "exit_code": exit, "stdout": stdout, "stderr": stderr, "create_time": created, "picked_at": nullTimeValue(picked), "finished_at": nullTimeValue(finished)})
 	}
 	summary := gin.H{}
 	statusRows, err := handler.service.repository.pool.QueryContext(context, `SELECT status,COUNT(*) FROM assets_agent_job`+where+` GROUP BY status`, hostID, hostID, action, action)

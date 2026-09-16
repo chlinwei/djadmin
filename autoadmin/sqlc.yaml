@@ -1,12 +1,18 @@
 version: "2"
+# 两个方言各自一套 schema / queries / 产物（见 docs/architecture/SQL_DESIGN.md §4.6）：
+#   - schema 与 queries 分别放 db/schema/<dialect>/ 与 db/queries/<dialect>/
+#   - 应用代码统一 import internal/platform/database/generated（方言门面包），
+#     门面按 build tag 选择实现：默认 MySQL，-tags postgres 走 PostgreSQL
+#   - PostgreSQL 产物输出到 internal/platform/database/generated/postgres/
+#   - db/queries/postgres 是 make derive 从 db/queries/mysql 派生的产物，禁止手改
 sql:
   - engine: "mysql"
-    schema: "db/schema"
-    queries: "db/queries"
+    schema: "db/schema/mysql"
+    queries: "db/queries/mysql"
     gen:
       go:
         package: "db"
-        out: "internal/platform/database/generated"
+        out: "internal/platform/database/generated/mysql"
         emit_json_tags: true
         emit_interface: true
         emit_empty_slices: true
@@ -20,6 +26,111 @@ sql:
             go_type:
               type: "bool"
               pointer: true
+        output_db_file_name: "db.go"
+        output_models_file_name: "models.go"
+        output_querier_file_name: "querier.go"
+
+
+  - engine: "postgresql"
+    schema: "db/schema/postgres"
+    queries: "db/queries/postgres"
+    gen:
+      go:
+        package: "db"
+        out: "internal/platform/database/generated/postgres"
+        emit_json_tags: true
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+        overrides:
+          - column: "assets_application_service_log_setting.collection_enabled"
+            go_type:
+              type: "bool"
+              pointer: true
+          - column: "inspection_target_execution.passed"
+            go_type:
+              type: "bool"
+              pointer: true
+          # 可空 jsonb：MySQL 侧 sqlc 生成 json.RawMessage，PG 侧默认生成
+          # pqtype.NullRawMessage，会导致同一查询两侧签名不同 —— 强制对齐为 json.RawMessage。
+          - db_type: "jsonb"
+            nullable: true
+            go_type: "encoding/json.RawMessage"
+          # MySQL 的 unsigned 在 PG 没有对应类型（int unsigned→uint32 会退化成 int32）。
+          # 这些列语义上非负（端口 / 计数 / 超时秒数），用逐列 override 保持两侧生成的
+          # Go 类型一致，避免为此改动 MySQL 的库结构与调用点。共 24 列。
+          - column: "assets_business_environment.order"
+            go_type:
+              type: "uint32"
+          - column: "assets_credential.port"
+            go_type:
+              type: "uint32"
+          - column: "assets_application_port.port"
+            go_type:
+              type: "uint32"
+          - column: "assets_application_control_action.timeout_seconds"
+            go_type:
+              type: "uint32"
+          - column: "agent_package.id"
+            go_type:
+              type: "uint64"
+          - column: "assets_agent_job.timeout_seconds"
+            go_type:
+              type: "uint32"
+          # 该列是可空（DEFAULT NULL），MySQL 侧生成 sql.NullInt32，不能强制成非空 uint32
+          - column: "assets_hostruntime.metrics_sample_window_ms"
+            go_type: "database/sql.NullInt32"
+          - column: "monitor_target.retry_count"
+            go_type:
+              type: "uint32"
+          - column: "monitor_target.scrape_port"
+            go_type:
+              type: "uint32"
+          - column: "monitor_log_retention_tier.retention_days"
+            go_type:
+              type: "uint32"
+          - column: "monitor_opensearch_cluster.request_timeout"
+            go_type:
+              type: "uint32"
+          - column: "monitor_log_processing_rule.flush_timeout"
+            go_type:
+              type: "uint32"
+          - column: "monitor_software_package.default_port"
+            go_type:
+              type: "uint32"
+          - column: "monitor_alert_notification_event.attempt_count"
+            go_type:
+              type: "uint32"
+          - column: "monitor_alert_notification_delivery.attempt_count"
+            go_type:
+              type: "uint32"
+          - column: "monitor_log_collection_target.retry_count"
+            go_type:
+              type: "uint32"
+          - column: "automation_inventory.last_sync_host_count"
+            go_type:
+              type: "uint32"
+          - column: "automation_inventory.update_cache_timeout"
+            go_type:
+              type: "uint32"
+          - column: "automation_task.execution_timeout_seconds"
+            go_type:
+              type: "uint32"
+          - column: "inspection_check.order"
+            go_type:
+              type: "uint32"
+          - column: "inspection_task.concurrency"
+            go_type:
+              type: "uint32"
+          - column: "inspection_task.timeout_seconds"
+            go_type:
+              type: "uint32"
+          - column: "baseline_category.sort"
+            go_type:
+              type: "uint32"
+          - column: "baseline_item.sort"
+            go_type:
+              type: "uint32"
         output_db_file_name: "db.go"
         output_models_file_name: "models.go"
         output_querier_file_name: "querier.go"

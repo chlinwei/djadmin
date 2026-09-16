@@ -14,7 +14,9 @@
     dj_agent_host_report_interval: 40s
     dj_agent_binary_source: "{{ playbook_dir }}/../bin/dj-agent"
     dj_agent_backend_grpc_addr: "127.0.0.1:19090"
-    dj_agent_id: "{{ inventory_hostname }}"
+    # 实例名（必填）：与 frontend 创建主机时填的 instance_name 保持一致。
+    # backend 握手按 instance_name 匹配主机行。agent 自身探测不再介入。
+    dj_agent_instance_name: ""
     dj_agent_backend_token: ""
 
   pre_tasks:
@@ -32,11 +34,21 @@
           - ansible_system == 'Linux'
         fail_msg: dj-agent deployment currently supports Linux targets only.
 
-    - name: Validate Agent ID
+    - name: Require Agent instance_name
       ansible.builtin.assert:
         that:
-          - dj_agent_id is match('^[A-Za-z0-9._:-]+$')
-        fail_msg: dj_agent_id contains unsupported characters.
+          - dj_agent_instance_name | length > 0
+        fail_msg: >-
+          dj_agent_instance_name is required and has no default: it must equal the
+          instance_name of this host's row in autoadmin assets (assets_host.instance_name),
+          because the backend matches the gRPC handshake by that value. Pass it via
+          -e dj_agent_instance_name=..., an external vars file, or Ansible Vault.
+
+    - name: Validate instance_name characters
+      ansible.builtin.assert:
+        that:
+          - dj_agent_instance_name is match('^[A-Za-z0-9._:-]+$')
+        fail_msg: dj_agent_instance_name contains unsupported characters.
 
   tasks:
     - name: Ensure the Agent configuration directory exists

@@ -19,8 +19,8 @@ func TestRenderHostLogConfig(t *testing.T) {
 		{Service: "tomcat-svc", Instance: "tomcat2"},
 	}
 	rendered := renderHostLogConfig(entries, instances)
-	if len(rendered.Fragments) != 3 {
-		t.Fatalf("fragments = %d, want 3 (input+output+parsers)", len(rendered.Fragments))
+	if len(rendered.Fragments) != 4 {
+		t.Fatalf("fragments = %d, want 4 (input+output+parsers+db-keep)", len(rendered.Fragments))
 	}
 	var inputFragment, outputFragment, parsersFragment logConfigFragment
 	for _, fragment := range rendered.Fragments {
@@ -35,7 +35,7 @@ func TestRenderHostLogConfig(t *testing.T) {
 		}
 	}
 	// Index 必须是服务级命名
-	if !contains(outputFragment.Content, "Index               logs-kul-test-tib-tomcat-svc-wuhan-test") {
+	if !contains(outputFragment.Content, "Index               logs-kul-tib-test-tomcat-svc-wuhan-test") {
 		t.Errorf("output index wrong:\n%s", outputFragment.Content)
 	}
 	// Pipeline 指令
@@ -81,8 +81,8 @@ func TestRenderHostLogConfig(t *testing.T) {
 	// 多行合并必须在 Fluent Bit 侧完成（pipeline 拿到的已是按行拆开的文档）：
 	// MULTILINE_PARSER 落在独立 parsers 文件（v4 禁止出现在主配置/主配置 include 的
 	// 片段中），INPUT 通过 Multiline.parser 引用
-	if len(rendered.Fragments) != 3 {
-		t.Fatalf("fragments = %d, want 3 (input+output+parsers)", len(rendered.Fragments))
+	if len(rendered.Fragments) != 4 {
+		t.Fatalf("fragments = %d, want 4 (input+output+parsers+db-keep)", len(rendered.Fragments))
 	}
 	if parsersFragment.Path != "/etc/fluent-bit/parsers.d/djadmin-multiline.conf" {
 		t.Fatalf("parsers file path wrong: %s", parsersFragment.Path)

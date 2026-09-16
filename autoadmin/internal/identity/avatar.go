@@ -14,8 +14,8 @@ import (
 )
 
 // 用户头像上传（POST /user/changeAvatar），行为与 Django ChangeAvatarView 一致：
-// 文件存 <MEDIA_ROOT>/userAvatar/<时间戳><后缀>，只返回文件名，不更新用户记录。
-// MEDIA_ROOT 与 monitor 模块共用（backend/djadmin/media）。
+// 文件存 <media>/userAvatar/<时间戳><后缀>，只返回文件名，不更新用户记录。
+// media 目录与 monitor/assets 模块共用（autoadmin/media）。
 func (handler *Handler) ChangeAvatar(context *gin.Context) {
 	file, err := context.FormFile("avatar")
 	if err != nil {
@@ -32,7 +32,7 @@ func (handler *Handler) ChangeAvatar(context *gin.Context) {
 		return
 	}
 	newFileName := time.Now().Format("20060102150405") + suffix
-	directory, err := filepath.Abs(filepath.Join("..", "backend", "djadmin", "media", "userAvatar"))
+	directory, err := filepath.Abs(filepath.Join("media", "userAvatar"))
 	if err != nil {
 		response.Error(context, err)
 		return

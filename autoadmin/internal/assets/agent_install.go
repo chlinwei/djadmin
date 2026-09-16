@@ -21,9 +21,9 @@ import (
 
 // Agent SSH 引导安装：全新主机 agent 尚未上线，用主机上配置的 SSH 凭证在本机执行
 // ansible-playbook（agent_install.yml）完成安装。语义与 Django assets/agent_install_service.py
-// 的 run_agent_install_job 一致：流式回写 stdout、解析 recap、等待 agent 回连 gRPC、
-// 成功后回填 host.agent_id。playbook 运行时从磁盘加载（见 agent_playbook.go），
-// 找不到时入口直接报错，无内嵌兜底。
+// 的 run_agent_install_job 一致：流式回写 stdout、解析 recap、按实例名等待 agent 回连 gRPC。
+// 主机身份只有实例名，安装流程不改写 assets_host（实例名由创建主机时保证非空且唯一）。
+// playbook 运行时从磁盘加载（见 agent_playbook.go），找不到时入口直接报错，无内嵌兜底。
 
 const (
 	agentInstallTimeoutSeconds = 300
@@ -87,9 +87,11 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 		return false
 	}
 
-	agentID := strings.TrimSpace(host.AgentID)
-	if agentID == "" {
-		agentID = fmt.Sprintf("host-%d", host.ID)
+	// dj-agent 用 instance_name（assets_host.instance_name）作为全局标识；该值必填
+	// 由前端创建主机时保证唯一并与 DJ_AGENT_INSTANCE_NAME 保持一致。
+	instanceName := strings.TrimSpace(host.InstanceName)
+	if instanceName == "" {
+		return fail("主机实例名为空，无法安装 Agent：请在主机列表补填 instance_name", 1, "", "")
 	}
 	grpcAddr, err := agentGRPCAddrForHost(host.HostIP, advertisedAddr)
 	if err != nil {
@@ -167,7 +169,7 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 	defer cancel()
 	command := exec.CommandContext(commandCtx, "ansible-playbook", "-i", inventoryPath, "--timeout", "10",
 		"-e", "dj_agent_binary_source="+binaryPath,
-		"-e", "dj_agent_id="+agentID,
+		"-e", "dj_agent_instance_name="+instanceName,
 		"-e", "dj_agent_grpc_addr="+grpcAddr,
 		"-e", "dj_agent_is_local="+strconv.FormatBool(isLocal),
 		playbookPath)
@@ -265,14 +267,14 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 	}
 	agentConnected := false
 	if finalStatus == "success" {
-		agentConnected = handler.waitForAgentConnection(agentID, 10*time.Second)
+		agentConnected = handler.waitForAgentConnection(instanceName, 10*time.Second)
 		if !agentConnected {
 			finalStatus = "failed"
 			message = "Ansible 安装完成，但 Agent 未连接到后端 gRPC 服务"
 		}
 	}
 	resultData, _ := json.Marshal(gin.H{
-		"host_id": host.ID, "agent_id": agentID, "operation": "install",
+		"host_id": host.ID, "instance_name": instanceName, "operation": "install",
 		"ansible_recap": recap, "agent_connected": agentConnected,
 	})
 	now = time.Now().UTC()
@@ -282,23 +284,17 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 	_, _ = handler.service.repository.pool.ExecContext(background, `UPDATE automation_execution_host_log
 		SET status=?,exit_code=?,error_message=?,result_data=?,update_time=? WHERE id=?`,
 		finalStatus, exitCode, message, string(resultData), now, host.LogID)
-
-	if finalStatus == "success" && strings.TrimSpace(host.AgentID) == "" {
-		_, _ = handler.service.repository.pool.ExecContext(background,
-			`UPDATE assets_host SET agent_id=?,update_time=? WHERE id=? AND (agent_id IS NULL OR agent_id='')`,
-			agentID, now, host.ID)
-	}
 	return finalStatus == "success"
 }
 
-func (handler *Handler) waitForAgentConnection(agentID string, timeout time.Duration) bool {
+func (handler *Handler) waitForAgentConnection(instanceName string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
-		if handler.gateway != nil && handler.gateway.IsOnline(agentID) {
+		if handler.gateway != nil && handler.gateway.IsOnline(instanceName) {
 			return true
 		}
 		if time.Now().After(deadline) {
-			return handler.gateway != nil && handler.gateway.IsOnline(agentID)
+			return handler.gateway != nil && handler.gateway.IsOnline(instanceName)
 		}
 		time.Sleep(time.Second)
 	}

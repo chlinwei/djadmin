@@ -4,7 +4,7 @@
 
 ```
 dj-agent (Go)
-  └── gRPC 双向长连接 → Django 主进程 :9001
+  └── gRPC 双向长连接 → autoadmin gRPC 网关 :9001
       ├── 在线状态
       ├── 自动化任务与结果
       ├── 主机信息采集
@@ -12,9 +12,40 @@ dj-agent (Go)
       └── 文件管理与传输
 ```
 
+Agent 自身不区分"注册/数据"两条通道：文件传输、WebSSH、任务执行复用同一条
+`AgentChannel.Session` 双向流（见 `proto/agent_channel.proto`）。
+
 ---
 
-## 2. gRPC 通道
+## 2. 主机身份：实例名（instance_name）
+
+**主机只有一个标识：`assets_host.instance_name`（实例名）。** 历史上曾用独立的
+`assets_host.agent_id` 承载 agent 身份，该字段已彻底删除（迁移
+`000020_drop_host_agent_id`），不再存在"agent_id 与实例名两份标识"。
+
+契约：
+
+- **唯一性**：实例名与 IP 都要求全局唯一且非空，作为主机的双重标识——
+  实例名是业务标识（agent 侧来源 `DJ_AGENT_INSTANCE_NAME`），IP 是寻址标识。
+  校验在服务层完成（`assets.checkInstanceNameUnique` / `checkHostIPUnique`），
+  不依赖 DB 唯一约束，以便存量重复数据平滑收敛。
+- **agent 侧**：`DJ_AGENT_INSTANCE_NAME` **必填无默认值**，缺失即启动失败
+  （`dj_agent/internal/config`），避免静默用一个无意义的标识。安装时由平台渲染
+  playbook 变量 `dj_agent_instance_name` 写入 `/etc/dj-agent/config.env`。
+- **网关会话 key**：握手 `Hello.instance_name` 即网关会话的路由 key，
+  `Gateway.IsOnline(instanceName)` / `Gateway.Execute(ctx, instanceName, …)`
+  以及所有下发路径（应用控制、WebSSH、文件传输、监控/日志下发、巡检、基线扫描、
+  自动化）都按该值定位 agent。协议字段号保持为 1（仅改名，未改号），
+  因此新旧 agent 在二进制协议上互通。
+- **落库匹配**：握手回调按 `instance_name` 匹配 `assets_host` 行；实例名未匹配到
+  主机时跳过并记日志，不阻断会话。
+- **快照列**：`security_scan_target.instance_name_snapshot`、
+  `inspection_target_execution.instance_name_snapshot` 记录执行当时的主机实例名
+  （列名曾为 `agent_id` / `agent_id_snapshot`，同一次迁移改名并回填）。
+
+---
+
+## 3. gRPC 通道
 
 dj-agent 主动连接系统参数 `sys.assets.agent.grpc_advertise_addr` 指向的地址。远程
 Agent 使用该参数原值，本机 Agent 使用 `127.0.0.1` 和相同端口。backend 不需要
@@ -23,20 +54,21 @@ Agent 使用该参数原值，本机 Agent 使用 `127.0.0.1` 和相同端口。
 同一条双向流按 `request_id` 多路复用。backend 通过网关下发命令，
 Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent 自动重连。
 
-会话建立时 Agent 发送的第一帧 `Hello` 携带 `agent_id`、`token`（共享密钥校验）
-与 `version`（构建期注入的 `buildinfo.Version`）。校验通过后 backend 回 `HelloAck`。
+会话建立时 Agent 发送的第一帧 `Hello` 携带 `instance_name`（= `DJ_AGENT_INSTANCE_NAME`）、
+`token`（共享密钥校验）与 `version`（构建期注入的 `buildinfo.Version`）。
+校验通过后 backend 回 `HelloAck`；校验失败直接关闭流，避免未授权 client 冒充 agent。
 
 ---
 
-## 3. 在线状态与版本上报
+## 4. 在线状态与版本上报
 
 Go 版网关（`autoadmin/internal/agent/gateway.go`）是在线状态的唯一依据，
 握手成功即回调 `newAgentHelloRecorder`（`autoadmin/internal/app/app.go`）落库：
 
-- 更新 `assets_host.agent_online=True` 和 `agent_online_time`（按 `agent_id` 绑定）。
+- 更新 `assets_host.agent_online=True` 和 `agent_online_time`（按 `instance_name` 匹配主机行）。
 - `Hello.version` 非空时同步更新 `assets_hostsystem.agent_version`（仅更新 `update_time`，
   不动 `collected_at`，因为 OS 信息并未重新采集）。
-- `agent_id` 未绑定主机或主机尚无 hostsystem 行时跳过并记日志；回调失败只记日志，不阻断会话。
+- `instance_name` 未匹配到主机或主机尚无 hostsystem 行时跳过并记日志；回调失败只记日志，不阻断会话。
 - 不按历史时间戳做心跳超时，避免覆盖仍然存活的 gRPC Session。
 
 因此 agent 安装/更新重启后，主机列表的 Agent 版本即随握手自动刷新，
@@ -44,7 +76,7 @@ Go 版网关（`autoadmin/internal/agent/gateway.go`）是在线状态的唯一�
 
 ---
 
-## 4. 任务执行身份
+## 5. 任务执行身份
 
 Agent 进程以 root 运行，执行任务时才降权到目标用户。
 
@@ -63,7 +95,7 @@ Agent 进程以 root 运行，执行任务时才降权到目标用户。
 
 ---
 
-## 5. 构建约束
+## 6. 构建约束
 
 dj-agent 必须编译为纯静态二进制，否则会动态链接构建机的 glibc，跨发行版分发失败。
 
@@ -76,7 +108,7 @@ dj-agent 必须编译为纯静态二进制，否则会动态链接构建机的 g
 
 ---
 
-## 6. 后端进程说明
+## 7. 后端进程说明
 
 | 进程 | 启动命令 | 职责 |
 |---|---|---|

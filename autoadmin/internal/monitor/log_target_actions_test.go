@@ -90,7 +90,7 @@ func TestRetryLogTargetGuards(t *testing.T) {
 	defer database.Close()
 
 	selectQuery := regexp.QuoteMeta(`SELECT l.id,l.host_id,l.managed_enabled,l.install_status,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),COALESCE(h.agent_id,''),
+		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
 		COALESCE(s.os_type,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,'')
 		FROM monitor_log_collection_target l
 		JOIN assets_host h ON h.id=l.host_id
@@ -110,8 +110,8 @@ func TestRetryLogTargetGuards(t *testing.T) {
 
 	// 400：agent 离线（gateway 为 nil 视同离线）
 	mock.ExpectQuery(selectQuery).WithArgs(int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "host_id", "managed_enabled", "install_status", "instance_name", "ip", "agent_id", "os_type", "os_id_like", "os_version_id"}).
-			AddRow(3, 221, true, "success", "localhost", "10.25.66.150", "localhost", "Ubuntu", "debian", "22.04"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "host_id", "managed_enabled", "install_status", "instance_name", "ip", "os_type", "os_id_like", "os_version_id"}).
+			AddRow(3, 221, true, "success", "localhost", "10.25.66.150", "Ubuntu", "debian", "22.04"))
 	recorder = httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/log-targets/3/retry/", nil))
 	if !strings.Contains(recorder.Body.String(), "host agent is offline") {

@@ -28,6 +28,20 @@ func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Se
 	return &Service{repository: repository, encryptor: encryptor}, nil
 }
 
+// sqlStateError 是 PG 驱动错误类型都具备的接口：pgx 的 *pgconn.PgError 实现了
+// SQLState() string。用接口断言而不是导入具体驱动，translate 就不必为「用哪个
+// PG 驱动」这个还没定的问题绑定答案。若最终选 lib/pq（*pq.Error 只有 Code 字段、
+// 没有这个方法），需要在这里补一个适配分支。
+type sqlStateError interface {
+	SQLState() string
+}
+
+// PG 的 SQLSTATE（MySQL 用数字错误号，两者的取值没有交集）。
+const (
+	pgUniqueViolation     = "23505" // unique_violation
+	pgForeignKeyViolation = "23503" // foreign_key_violation
+)
+
 func translate(err error) error {
 	if err == nil {
 		return nil
@@ -43,6 +57,23 @@ func translate(err error) error {
 		case 1451:
 			return ErrDeleteProtected
 		case 1452:
+			return ErrInvalidRelation
+		}
+	}
+	var stateError sqlStateError
+	if errors.As(err, &stateError) {
+		switch stateError.SQLState() {
+		case pgUniqueViolation:
+			return ErrDuplicate
+		case pgForeignKeyViolation:
+			// MySQL 用 1451/1452 两个错误号区分「被引用不能删」和「关联不存在」，
+			// PG 两者都是 23503，只能看报文：删除被引用行时 PG 报
+			// "update or delete on table ..."，插入/更新指向不存在的父行时报
+			// "insert or update on table ..."。message 依赖 PG 的 lc_messages（默认英文），
+			// 认不出来时退到语义更宽的「关联资产不存在」，至少不会 500。
+			if strings.Contains(err.Error(), "update or delete on table") {
+				return ErrDeleteProtected
+			}
 			return ErrInvalidRelation
 		}
 	}
@@ -592,7 +623,7 @@ func hostHardwareInfo(row db.ListHostsRow) *HostHardwareInfo {
 }
 
 func host(row db.ListHostsRow) Host {
-	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, AgentID: stringValue(row.AgentID), Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName,
+	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName,
 		System:        hostSystemInfo(row),
 		Hardware:      hostHardwareInfo(row),
 		OsType:        nullStringPtr(row.SystemOsType),
@@ -601,7 +632,7 @@ func host(row db.ListHostsRow) Host {
 	}
 }
 func hostDetail(row db.GetHostRow) Host {
-	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, AgentID: stringValue(row.AgentID), Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName}
+	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName}
 }
 func (s *Service) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page) ([]Host, int64, error) {
 	rows, count, err := s.repository.ListHosts(ctx, search, groupID, environmentID, page)
@@ -647,6 +678,54 @@ func (s *Service) validateHostPatch(ctx context.Context, patch HostPatchInput) e
 	}
 	return nil
 }
+
+// checkHostIPUnique 校验主机 IP 必填且未被其他主机占用。
+func (s *Service) checkHostIPUnique(ctx context.Context, ip *string, excludeHostID int64) error {
+	value := ""
+	if ip != nil {
+		value = strings.TrimSpace(*ip)
+	}
+	if value == "" {
+		return ErrHostIPRequired
+	}
+	exists, err := s.repository.HostIPExists(ctx, value, excludeHostID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrHostIPDuplicate
+	}
+	return nil
+}
+
+// checkInstanceNameUnique 校验 instance_name 必填且全局唯一（dj-agent 的
+// DJ_AGENT_INSTANCE_NAME 全局标识即来源此字段）。
+func (s *Service) checkInstanceNameUnique(ctx context.Context, instanceName string, excludeHostID int64) error {
+	value := strings.TrimSpace(instanceName)
+	if value == "" {
+		return ErrHostInstanceNameRequired
+	}
+	exists, err := s.repository.InstanceNameExists(ctx, value, excludeHostID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrHostInstanceNameDuplicate
+	}
+	return nil
+}
+
+// normalizeHostInput 归一化主机输入里参与比较的字段：实例名与 IP 先去掉首尾空白，
+// 再走必填/格式/唯一性校验。否则「带空白的 IP 被 net.ParseIP 判非法」与
+// 「带空白的实例名被当成另一个标识」会各自表现成难查的坑。
+func normalizeHostInput(input *HostInput) {
+	input.InstanceName = strings.TrimSpace(input.InstanceName)
+	if input.IP != nil {
+		value := strings.TrimSpace(*input.IP)
+		input.IP = &value
+	}
+}
+
 func normalizeWebSSH(input *HostInput) {
 	users := strings.Fields(input.WebSSHLoginUsers)
 	if len(users) == 0 {
@@ -700,9 +779,18 @@ func mergeHostPatch(current db.GetHostRow, patch HostPatchInput) (HostInput, err
 		}
 		webSSHLoginUsers = *patch.WebSSHLoginUsers.Value
 	}
+	mergedInstanceName := ""
+	if patch.InstanceName.Present {
+		if patch.InstanceName.Value == nil {
+			return HostInput{}, ErrInvalid
+		}
+		mergedInstanceName = *patch.InstanceName.Value
+	} else if current.InstanceName.Valid {
+		mergedInstanceName = current.InstanceName.String
+	}
+
 	return HostInput{
-		InstanceName:          mergePatchValue(patch.InstanceName, stringValue(current.InstanceName)),
-		AgentID:               mergePatchValue(patch.AgentID, stringValue(current.AgentID)),
+		InstanceName:          mergedInstanceName,
 		IP:                    mergePatchValue(patch.IP, stringValue(current.Ip)),
 		InstanceID:            mergePatchValue(patch.InstanceID, stringValue(current.InstanceID)),
 		Environment:           mergePatchValue(patch.Environment, intValue(current.EnvironmentID)),
@@ -716,7 +804,16 @@ func mergeHostPatch(current db.GetHostRow, patch HostPatchInput) (HostInput, err
 	}, nil
 }
 func (s *Service) CreateHost(ctx context.Context, input HostInput) (Host, error) {
+	normalizeHostInput(&input)
 	if err := s.validateHostInput(ctx, input); err != nil {
+		return Host{}, err
+	}
+	// 主机的双重唯一标识：instance_name 与 ip 均须全局唯一且非空。实例名是业务标识，
+	// 也是 dj-agent 的全局标识（DJ_AGENT_INSTANCE_NAME）；IP 是寻址标识。
+	if err := s.checkInstanceNameUnique(ctx, input.InstanceName, 0); err != nil {
+		return Host{}, err
+	}
+	if err := s.checkHostIPUnique(ctx, input.IP, 0); err != nil {
 		return Host{}, err
 	}
 	normalizeWebSSH(&input)
@@ -724,7 +821,7 @@ func (s *Service) CreateHost(ctx context.Context, input HostInput) (Host, error)
 		input.Status = "running"
 	}
 	now := time.Now().UTC()
-	id, err := s.repository.CreateHost(ctx, db.CreateHostParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: nullString(input.InstanceName), CollectStatus: "unknown", CollectMessage: "", WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, AgentID: nullString(input.AgentID), EnvironmentID: nullInt(input.Environment)})
+	id, err := s.repository.CreateHost(ctx, db.CreateHostParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: sql.NullString{String: input.InstanceName, Valid: true}, CollectStatus: "unknown", CollectMessage: "", WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, EnvironmentID: nullInt(input.Environment)})
 	if err != nil {
 		return Host{}, translate(err)
 	}
@@ -755,11 +852,19 @@ func (s *Service) PatchHost(ctx context.Context, id int64, patch HostPatchInput)
 	return s.updateHost(ctx, id, current, input)
 }
 func (s *Service) updateHost(ctx context.Context, id int64, current db.GetHostRow, input HostInput) (Host, error) {
+	normalizeHostInput(&input)
+	// 主机的双重唯一标识在变更时同样要校验。
+	if err := s.checkInstanceNameUnique(ctx, input.InstanceName, id); err != nil {
+		return Host{}, err
+	}
+	if err := s.checkHostIPUnique(ctx, input.IP, id); err != nil {
+		return Host{}, err
+	}
 	normalizeWebSSH(&input)
 	if input.Status == "" {
 		input.Status = current.Status
 	}
-	err := s.repository.UpdateHost(ctx, db.UpdateHostParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: nullString(input.InstanceName), CollectStatus: current.CollectStatus, CollectMessage: current.CollectMessage, CollectTime: current.CollectTime, AgentOnline: current.AgentOnline, AgentOnlineTime: current.AgentOnlineTime, WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, AgentID: nullString(input.AgentID), EnvironmentID: nullInt(input.Environment), ID: id})
+	err := s.repository.UpdateHost(ctx, db.UpdateHostParams{UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Status: input.Status, InstanceID: nullString(input.InstanceID), Ip: nullString(input.IP), IsDeletedInCloud: input.IsDeletedInCloud, CloudAccountID: nullInt(input.CloudAccount), GroupID: nullInt(input.GroupID), InstanceName: sql.NullString{String: input.InstanceName, Valid: true}, CollectStatus: current.CollectStatus, CollectMessage: current.CollectMessage, CollectTime: current.CollectTime, AgentOnline: current.AgentOnline, AgentOnlineTime: current.AgentOnlineTime, WebsshDefaultUsername: input.WebSSHDefaultUsername, WebsshLoginUsers: input.WebSSHLoginUsers, EnvironmentID: nullInt(input.Environment), ID: id})
 	if err != nil {
 		return Host{}, translate(err)
 	}

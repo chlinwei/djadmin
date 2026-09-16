@@ -2,8 +2,10 @@ package baseline
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -11,7 +13,6 @@ import (
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
-	"database/sql"
 
 	db "autoadmin/internal/platform/database/generated"
 
@@ -31,8 +32,10 @@ type scanHost struct {
 	HostID   int64
 	HostName string
 	HostIP   string
-	AgentID  string
-	Online   bool
+	// InstanceName 是主机 instance_name（= assets_host.instance_name），
+	// 也是 gRPC 网关会话的路由 key。
+	InstanceName string
+	Online       bool
 }
 
 // resolveHosts 复用 inspection 域的项目/环境主机集合查询（OS 基线只扫主机）。
@@ -60,7 +63,7 @@ func (handler *Handler) resolveHosts(ctx context.Context, input scanInput) ([]sc
 	}
 	hosts := make([]scanHost, 0, len(rows))
 	for _, row := range rows {
-		hosts = append(hosts, scanHost{HostID: row.ID, HostName: row.InstanceName, HostIP: row.Ip, AgentID: row.AgentID, Online: row.AgentOnline})
+		hosts = append(hosts, scanHost{HostID: row.ID, HostName: row.InstanceName, HostIP: row.Ip, InstanceName: row.InstanceName, Online: row.AgentOnline})
 	}
 	return hosts, nil
 }
@@ -84,21 +87,26 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		return
 	}
 	baselineID := pathID(context)
-	var enabled bool
-	if err := handler.db.QueryRowContext(context, `SELECT enabled FROM baseline WHERE id=?`, baselineID).Scan(&enabled); err != nil {
-		if err == sql.ErrNoRows {
+	queries := db.New(handler.db)
+	baselineRow, err := queries.GetBaselineForScan(context, baselineID)
+	if err != nil {
+		if isNoRows(err) {
 			response.BusinessError(context, 404, "基线不存在", nil)
 		} else {
 			response.Error(context, err)
 		}
 		return
 	}
-	if !enabled {
+	if !baselineRow.Enabled {
 		response.BusinessError(context, 400, "基线已禁用", nil)
 		return
 	}
-	var itemCount int
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM baseline_item WHERE baseline_id=?`, baselineID).Scan(&itemCount); err != nil || itemCount == 0 {
+	itemCount, err := queries.CountBaselineItems(context, baselineID)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	if itemCount == 0 {
 		response.BusinessError(context, 400, "基线没有检查条目", nil)
 		return
 	}
@@ -121,20 +129,21 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(context, `INSERT INTO security_scan(create_time,update_time,scan_type,baseline_id,mount_type,project_id,environment_id,status,summary,requested_username) VALUES(NOW(6),NOW(6),'baseline',?,?,?,?, 'pending', JSON_OBJECT(), ?)`,
-		baselineID, input.MountType, nullInt64FromPtr(input.ProjectID), nullInt64FromPtr(input.EnvironmentID), username)
-	if err != nil {
-		response.Error(context, err)
-		return
-	}
-	scanID, err := result.LastInsertId()
+	now := time.Now().UTC()
+	scanID, err := db.New(tx).CreateBaselineScan(context, db.CreateBaselineScanParams{
+		CreateTime: now, UpdateTime: now, BaselineID: baselineID, MountType: input.MountType,
+		ProjectID: nullInt64FromPtr(input.ProjectID), EnvironmentID: nullInt64FromPtr(input.EnvironmentID),
+		RequestedUsername: username,
+	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
 	for _, host := range hosts {
-		if _, err = tx.ExecContext(context, `INSERT INTO security_scan_target(scan_id,host_id,host_name,host_ip,agent_id,status,error_message) VALUES(?,?,?,?,?,'pending','')`,
-			scanID, host.HostID, host.HostName, host.HostIP, host.AgentID); err != nil {
+		if err = db.New(tx).CreateBaselineScanTargets(context, db.CreateBaselineScanTargetsParams{
+			ScanID: scanID, HostID: host.HostID, HostName: host.HostName, HostIp: host.HostIP,
+			InstanceNameSnapshot: host.InstanceName,
+		}); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -143,7 +152,7 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	itemRows, err := db.New(handler.db).ListBaselineItems(context, baselineID)
+	itemRows, err := queries.ListBaselineItems(context, baselineID)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -156,7 +165,10 @@ func (handler *Handler) StartScan(context *gin.Context) {
 func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, hosts []scanHost) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if _, err := handler.db.Exec(`UPDATE security_scan SET status='running',update_time=NOW(6) WHERE id=? AND status='pending'`, scanID); err != nil {
+	now := time.Now().UTC()
+	if _, err := db.New(handler.db).ClaimBaselineScan(ctx, db.ClaimBaselineScanParams{
+		StartTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: scanID,
+	}); err != nil {
 		return
 	}
 	var waitGroup sync.WaitGroup
@@ -185,15 +197,17 @@ func (handler *Handler) runScan(scanID int64, items []db.ListBaselineItemsRow, h
 
 // runScanHost 对单台主机执行全部基线条目（编译为一次 OPA 检查下发）。
 func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []db.ListBaselineItemsRow, host scanHost) {
-	var targetRowID int64
-	if err := handler.db.QueryRowContext(ctx, `SELECT id FROM security_scan_target WHERE scan_id=? AND host_id=?`, scanID, host.HostID).Scan(&targetRowID); err != nil {
+	queries := db.New(handler.db)
+	targetRow, err := queries.GetBaselineScanTarget(ctx, db.GetBaselineScanTargetParams{ScanID: scanID, HostID: host.HostID})
+	if err != nil {
 		return
 	}
+	targetRowID := targetRow.ID
 	setFailed := func(message string) {
-		handler.db.ExecContext(ctx, `UPDATE security_scan_target SET status='failed',error_message=? WHERE id=?`, message, targetRowID)
+		queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{Status: "failed", ErrorMessage: message, ID: targetRowID})
 	}
-	if host.AgentID == "" || !handler.gateway.IsOnline(host.AgentID) {
-		handler.db.ExecContext(ctx, `UPDATE security_scan_target SET status='skipped',error_message='Agent 离线，未执行扫描' WHERE id=?`, targetRowID)
+	if host.InstanceName == "" || !handler.gateway.IsOnline(host.InstanceName) {
+		queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{Status: "skipped", ErrorMessage: "Agent 离线，未执行扫描", ID: targetRowID})
 		return
 	}
 	target := hostContext(host)
@@ -217,7 +231,7 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 	}
 	paramsJSON := jsonBytes(gin.H{"check_plan": gin.H{"schema_version": 1, "checks": agentChecks}})
 	execCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	responseData, execErr := handler.gateway.Execute(execCtx, host.AgentID, &pb.AutomationExecuteRequest{
+	responseData, execErr := handler.gateway.Execute(execCtx, host.InstanceName, &pb.AutomationExecuteRequest{
 		JobId: fmt.Sprintf("baseline-%d-%d", scanID, targetRowID), Type: "custom",
 		Action: "check_application_baseline", ParamsJson: string(paramsJSON), TimeoutSeconds: 540,
 	})
@@ -247,7 +261,7 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		actualByKey[check.Key] = check.Actual
 	}
 	passed, failed := 0, 0
-	results := make([]gin.H, 0)
+	results := make([]scanResultRow, 0, len(items))
 	for index, item := range items {
 		key := fmt.Sprintf("baseline:%d:%d", scanID, index)
 		checkStatus, exists := statusByKey[key]
@@ -262,10 +276,10 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		}
 		var config map[string]any
 		_ = json.Unmarshal(item.Config, &config)
-		results = append(results, gin.H{"item_id": item.ID, "item_name": item.Name, "chapter": item.Category,
-			"severity": item.Severity, "status": resultStatus, "message": messageByKey[key],
-			"expected": expectedByKey[key], "actual": actualByKey[key],
-			"remediation": stringFrom(config["remediation"])})
+		results = append(results, scanResultRow{itemID: item.ID, itemName: item.Name, chapter: item.Category,
+			severity: item.Severity, status: resultStatus, message: messageByKey[key],
+			expected: expectedByKey[key], actual: actualByKey[key],
+			remediation: stringFrom(config["remediation"])})
 	}
 	compliance := 0.0
 	if passed+failed > 0 {
@@ -275,25 +289,30 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 	if failed == 0 && passed > 0 {
 		status = "success"
 	}
-	handler.db.ExecContext(ctx, `UPDATE security_scan_target SET status=?,passed_items=?,failed_items=?,compliance_rate=?,error_message='' WHERE id=?`,
-		status, passed, failed, compliance, targetRowID)
+	queries.FinishBaselineScanTarget(ctx, db.FinishBaselineScanTargetParams{
+		Status: status, PassedItems: int32(passed), FailedItems: int32(failed),
+		ComplianceRate: decimalString(compliance), ErrorMessage: "", ID: targetRowID,
+	})
 	flushResults(ctx, handler.db, scanID, host.HostID, results)
 }
 
 // finishScan 聚合全部目标结果并关闭扫描。
 func (handler *Handler) finishScan(ctx context.Context, scanID int64, totalHosts int) {
-	var success, failed, skipped int
-	handler.db.QueryRowContext(ctx, `SELECT SUM(status='success'),SUM(status='failed'),SUM(status='skipped') FROM security_scan_target WHERE scan_id=?`, scanID).Scan(&success, &failed, &skipped)
+	// 聚合失败不能把扫描卡在 running：拿不到计数就按 0 处理（与原实现一致，那里也忽略了 scan 错误）。
+	counts, _ := db.New(handler.db).CountScanTargetsByStatus(ctx, scanID)
 	status := "success"
-	if failed > 0 {
+	if counts.Failed > 0 {
 		status = "failed"
-	} else if success == 0 && skipped > 0 {
+	} else if counts.Success == 0 && counts.Skipped > 0 {
 		status = "skipped"
-	} else if success == 0 {
+	} else if counts.Success == 0 {
 		status = "failed"
 	}
-	summary := jsonBytes(gin.H{"total": totalHosts, "success": success, "failed": failed, "skipped": skipped})
-	handler.db.ExecContext(ctx, `UPDATE security_scan SET status=?,summary=?,end_time=NOW(6),update_time=NOW(6) WHERE id=?`, status, summary, scanID)
+	summary := jsonBytes(gin.H{"total": totalHosts, "success": counts.Success, "failed": counts.Failed, "skipped": counts.Skipped})
+	now := time.Now().UTC()
+	db.New(handler.db).FinishBaselineScan(ctx, db.FinishBaselineScanParams{
+		Status: status, Summary: summary, EndTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: scanID,
+	})
 }
 
 // CancelScan 取消进行中的扫描（对齐巡检 CancelExecution）：
@@ -312,27 +331,30 @@ func (handler *Handler) CancelScan(context *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	var status string
-	if err = tx.QueryRowContext(context.Request.Context(), `SELECT status FROM security_scan WHERE id=? FOR UPDATE`, scanID).Scan(&status); err != nil {
-		if err == sql.ErrNoRows {
+	queries := db.New(tx)
+	// FOR UPDATE 锁行后由应用层读改写 summary（JSON_MERGE_PATCH 是 MySQL 专有函数）。
+	current, err := queries.GetScanStatusForUpdate(context.Request.Context(), scanID)
+	if err != nil {
+		if isNoRows(err) {
 			response.BusinessError(context, 404, "扫描不存在", nil)
 			return
 		}
 		response.Error(context, err)
 		return
 	}
-	if status != "pending" && status != "running" {
+	if current.Status != "pending" && current.Status != "running" {
 		response.BusinessError(context, 400, "扫描已结束，无法取消", nil)
 		return
 	}
-	if _, err = tx.ExecContext(context.Request.Context(),
-		`UPDATE security_scan SET status='canceled',end_time=NOW(6),update_time=NOW(6),summary=JSON_MERGE_PATCH(COALESCE(summary,'{}'),CAST(? AS JSON)) WHERE id=?`,
-		`{"canceled": true}`, scanID); err != nil {
+	now := time.Now().UTC()
+	if _, err = queries.CancelBaselineScan(context.Request.Context(), db.CancelBaselineScanParams{
+		Summary: mergeCanceledSummary(current.Summary), EndTime: sql.NullTime{Time: now, Valid: true},
+		UpdateTime: now, ID: scanID,
+	}); err != nil {
 		response.Error(context, err)
 		return
 	}
-	if _, err = tx.ExecContext(context.Request.Context(),
-		`UPDATE security_scan_target SET status='canceled',error_message='扫描被取消' WHERE scan_id=? AND status IN ('pending','running')`, scanID); err != nil {
+	if err = queries.CancelBaselineScanTargets(context.Request.Context(), scanID); err != nil {
 		response.Error(context, err)
 		return
 	}
@@ -344,30 +366,66 @@ func (handler *Handler) CancelScan(context *gin.Context) {
 	response.Success(context, gin.H{"id": scanID, "status": "canceled"})
 }
 
-// flushResults 批量落基线条目结果（100 行/批）。
-func flushResults(ctx context.Context, dbWriter dbExecutor, scanID, hostID int64, results []gin.H) {
-	const batchSize = 100
-	for start := 0; start < len(results); start += batchSize {
-		end := min(start+batchSize, len(results))
-		var builder strings.Builder
-		builder.WriteString(`INSERT INTO baseline_scan_result(scan_id,host_id,item_id,item_name,chapter,severity,status,expected_value,actual_value,message,remediation) VALUES `)
-		arguments := make([]any, 0, (end-start)*8)
-		for index := start; index < end; index++ {
-			if index > start {
-				builder.WriteString(",")
-			}
-			builder.WriteString("(?,?,?,?,?,?,?,?,?,?,?)")
-			item := results[index]
-			arguments = append(arguments, scanID, hostID, item["item_id"], item["item_name"], item["chapter"], item["severity"], item["status"], jsonBytes(item["expected"]), jsonBytes(item["actual"]), item["message"], item["remediation"])
-		}
-		if _, err := dbWriter.ExecContext(ctx, builder.String(), arguments...); err != nil {
+// mergeCanceledSummary 等价于原来的 JSON_MERGE_PATCH(summary, '{"canceled":true}')：
+// 对象则合并键，非对象（JSON_MERGE_PATCH 的语义是整体替换）则重建为只带标记的对象。
+func mergeCanceledSummary(raw json.RawMessage) json.RawMessage {
+	merged := map[string]any{}
+	_ = json.Unmarshal(raw, &merged)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	merged["canceled"] = true
+	return jsonBytes(merged)
+}
+
+// scanResultRow 是一条待落库的条目结果。用结构体而不是 gin.H：这里的所有字段都要落库，
+// 结构体让字段名/类型由编译器钉住（原来从 map 里取 item_id 要做类型断言，断言失败会静默落 0）。
+type scanResultRow struct {
+	itemID      int64
+	itemName    string
+	chapter     string
+	severity    string
+	status      string
+	message     string
+	expected    any
+	actual      any
+	remediation string
+}
+
+// flushResults 逐条落基线条目结果。
+//
+// 原实现按 100 行/批拼一条多行 INSERT：占位符个数随入参变化，是 sqlc 表达不了、只能内联的形状
+// （SQL_DESIGN §1），而拼出来的文本用 `?` 占位符——PG 变体（pgx）不接受 `?`，那条路径在 PG 上
+// 根本跑不通。这里改成走 sqlc 的单行 INSERT：目标是每主机几十到几百条，摊在按主机并发、
+// 单机耗时以远端命令执行为主的扫描里可以忽略；真要回到批量插入，就按方言各写一份。
+func flushResults(ctx context.Context, executor db.DBTX, scanID, hostID int64, results []scanResultRow) {
+	queries := db.New(executor)
+	for _, item := range results {
+		if err := queries.CreateBaselineScanResults(ctx, db.CreateBaselineScanResultsParams{
+			ScanID: scanID, HostID: hostID, ItemID: item.itemID,
+			ItemName: item.itemName, Chapter: item.chapter, Severity: item.severity, Status: item.status,
+			ExpectedValue: jsonBytes(item.expected), ActualValue: jsonBytes(item.actual),
+			Message:     item.message,
+			Remediation: sql.NullString{String: item.remediation, Valid: item.remediation != ""},
+		}); err != nil {
 			return
 		}
 	}
 }
 
-type dbExecutor interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+// decimalString 把数值写成 decimal(5,2) 列能接受的文本：sqlc 两侧都把该列生成为 string
+// （MySQL 驱动把 DECIMAL 当文本返回，PG 的 numeric 同理），写入也就必须给文本。
+func decimalString(value float64) string {
+	return strconv.FormatFloat(value, 'f', 2, 64)
+}
+
+// decimalValue 把取回的 decimal(5,2) 文本还原成 API 契约里的数值。列 NOT NULL，解析失败退 0。
+func decimalValue(text string) float64 {
+	value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 // hostContext 提供 OS 基线可用的主机上下文变量（HOST_IP/HOST_NAME）。
@@ -449,34 +507,26 @@ func (handler *Handler) ListScans(context *gin.Context) {
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	var total int64
-	if err := handler.db.QueryRowContext(context, `SELECT COUNT(*) FROM security_scan WHERE scan_type=?`, scanType).Scan(&total); err != nil {
-		response.Error(context, err)
-		return
-	}
-	rows, err := handler.db.QueryContext(context, `SELECT s.id, s.scan_type, b.name, s.mount_type, s.status, s.summary, s.requested_username, s.start_time, s.end_time, s.create_time
-FROM security_scan s JOIN baseline b ON b.id = s.baseline_id
-WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT ? OFFSET ?`, scanType, pageSize, (page-1)*pageSize)
+	queries := db.New(handler.db)
+	total, err := queries.CountScansByType(context, scanType)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer rows.Close()
-	items := make([]gin.H, 0)
-	for rows.Next() {
-		var id int64
-		var scanTypeValue, baselineName, mountType, status, requestedUsername string
-		var summary []byte
-		var startTime, endTime, createTime sql.NullTime
-		if err := rows.Scan(&id, &scanTypeValue, &baselineName, &mountType, &status, &summary, &requestedUsername, &startTime, &endTime, &createTime); err != nil {
-			response.Error(context, err)
-			return
-		}
+	scanRows, err := queries.ListScans(context, db.ListScansParams{
+		ScanType: scanType, Limit: int32(pageSize), Offset: int32((page - 1) * pageSize),
+	})
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items := make([]gin.H, 0, len(scanRows))
+	for _, row := range scanRows {
 		var summaryDecoded any
-		_ = json.Unmarshal(summary, &summaryDecoded)
-		items = append(items, gin.H{"id": id, "scan_type": scanTypeValue, "baseline": baselineName, "mount_type": mountType,
-			"status": status, "summary": summaryDecoded, "requested_username": requestedUsername,
-			"start_time": nullTimeString(startTime), "end_time": nullTimeString(endTime), "create_time": createTime})
+		_ = json.Unmarshal(row.Summary, &summaryDecoded)
+		items = append(items, gin.H{"id": row.ID, "scan_type": row.ScanType, "baseline": row.Baseline, "mount_type": row.MountType,
+			"status": row.Status, "summary": summaryDecoded, "requested_username": row.RequestedUsername,
+			"start_time": nullTimeString(row.StartTime), "end_time": nullTimeString(row.EndTime), "create_time": row.CreateTime})
 	}
 	response.Success(context, gin.H{"count": total, "results": items})
 }
@@ -485,67 +535,49 @@ WHERE s.scan_type = ? ORDER BY s.id DESC LIMIT ? OFFSET ?`, scanType, pageSize, 
 func (handler *Handler) GetScan(context *gin.Context) {
 	var scanID int64
 	fmt.Sscanf(strings.TrimSpace(context.Param("id")), "%d", &scanID)
-	var scanJSON, summary []byte
-	err := handler.db.QueryRowContext(context, `SELECT JSON_OBJECT('id',s.id,'scan_type',s.scan_type,'baseline',b.name,'baseline_id',s.baseline_id,'mount_type',s.mount_type,'status',s.status,'requested_username',s.requested_username,'start_time',s.start_time,'end_time',s.end_time), s.summary
-FROM security_scan s JOIN baseline b ON b.id=s.baseline_id WHERE s.id=?`, scanID).Scan(&scanJSON, &summary)
+	queries := db.New(handler.db)
+	// 响应体在应用层组装：原来用 JSON_OBJECT 在库里拼，PG 没有该函数。
+	header, err := queries.GetScanHeader(context, scanID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if isNoRows(err) {
 			response.BusinessError(context, 404, "扫描记录不存在", nil)
 		} else {
 			response.Error(context, err)
 		}
 		return
 	}
-	var scan gin.H
-	if err := json.Unmarshal(scanJSON, &scan); err != nil {
-		response.Error(context, err)
-		return
-	}
 	var summaryDecoded any
-	_ = json.Unmarshal(summary, &summaryDecoded)
-	scan["summary"] = summaryDecoded
+	_ = json.Unmarshal(header.Summary, &summaryDecoded)
+	scan := gin.H{"id": header.ID, "scan_type": header.ScanType, "baseline": header.Baseline, "baseline_id": header.BaselineID,
+		"mount_type": header.MountType, "status": header.Status, "summary": summaryDecoded,
+		"requested_username": header.RequestedUsername,
+		// 时间列从 JSON_OBJECT 的库内文本变成本地 time.Time：格式从
+		// "2026-09-16 21:00:00.000000" 变成 RFC3339，与列表接口的表示一致。
+		"start_time": nullTimeString(header.StartTime), "end_time": nullTimeString(header.EndTime)}
 
-	targets := make([]gin.H, 0)
-	targetRows, err := handler.db.QueryContext(context, `SELECT host_name,host_ip,status,passed_items,failed_items,compliance_rate,error_message FROM security_scan_target WHERE scan_id=? ORDER BY id`, scanID)
+	targetRows, err := queries.ListScanTargets(context, scanID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer targetRows.Close()
-	for targetRows.Next() {
-		var hostName, hostIP, status, errorMessage string
-		var passed, failed int32
-		var compliance float64
-		if err := targetRows.Scan(&hostName, &hostIP, &status, &passed, &failed, &compliance, &errorMessage); err != nil {
-			response.Error(context, err)
-			return
-		}
-		targets = append(targets, gin.H{"host_name": hostName, "host_ip": hostIP, "status": status,
-			"passed_items": passed, "failed_items": failed, "compliance_rate": compliance, "error_message": errorMessage})
+	targets := make([]gin.H, 0, len(targetRows))
+	for _, row := range targetRows {
+		targets = append(targets, gin.H{"host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
+			"passed_items": row.PassedItems, "failed_items": row.FailedItems,
+			"compliance_rate": decimalValue(row.ComplianceRate), "error_message": row.ErrorMessage})
 	}
 
-	items := make([]gin.H, 0)
-	itemRows, err := handler.db.QueryContext(context, `SELECT r.host_id, t.host_name, t.host_ip, r.item_name, r.chapter, r.severity, r.status, r.expected_value, r.actual_value, r.message, r.remediation
-FROM baseline_scan_result r JOIN security_scan_target t ON t.scan_id=r.scan_id AND t.host_id=r.host_id
-WHERE r.scan_id=? ORDER BY t.id, FIELD(r.status,'fail','pass'), r.severity, r.id`, scanID)
+	itemRows, err := queries.ListBaselineScanResults(context, scanID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer itemRows.Close()
-	for itemRows.Next() {
-		var hostID int64
-		var hostName, hostIP, itemName, chapter, severity, status, message string
-		var expectedValue, actualValue []byte
-		var remediation sql.NullString
-		if err := itemRows.Scan(&hostID, &hostName, &hostIP, &itemName, &chapter, &severity, &status, &expectedValue, &actualValue, &message, &remediation); err != nil {
-			response.Error(context, err)
-			return
-		}
-		items = append(items, gin.H{"host_id": hostID, "host_name": hostName, "host_ip": hostIP, "item_name": itemName,
-			"chapter": chapter, "severity": severity, "status": status,
-			"expected": json.RawMessage(expectedValue), "actual": json.RawMessage(actualValue), "message": message,
-			"remediation": remediation.String})
+	items := make([]gin.H, 0, len(itemRows))
+	for _, row := range itemRows {
+		items = append(items, gin.H{"host_id": row.HostID, "host_name": row.HostName, "host_ip": row.HostIp,
+			"item_name": row.ItemName, "chapter": row.Chapter, "severity": row.Severity, "status": row.Status,
+			"expected": row.ExpectedValue, "actual": row.ActualValue, "message": row.Message,
+			"remediation": row.Remediation})
 	}
 	response.Success(context, gin.H{"scan": scan, "targets": targets, "items": items})
 }

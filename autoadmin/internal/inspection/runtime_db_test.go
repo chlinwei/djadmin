@@ -34,7 +34,7 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 			MountType: mountService, ServiceID: sql.NullInt64{Int64: 9, Valid: true},
 		}},
 	}
-	targets := []runTarget{{Name: "target-1", AgentID: "agent-1"}}
+	targets := []runTarget{{Name: "target-1", HostInstanceName: "host-01"}}
 
 	mock.ExpectBegin()
 	// status 恒为字面量 'pending'，trigger_type 才是参数——占位符错位的回归锚点。
@@ -50,7 +50,7 @@ func TestCreateExecutionInsertShape(t *testing.T) {
 		WithArgs(int64(5), "manual", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int32(7), "ops").
 		WillReturnResult(sqlmock.NewResult(201, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO inspection_target_execution(")).
-		WithArgs(int64(201), sqlmock.AnyArg(), sqlmock.AnyArg(), "target-1", sqlmock.AnyArg(), sqlmock.AnyArg(), "agent-1").
+		WithArgs(int64(201), sqlmock.AnyArg(), sqlmock.AnyArg(), "target-1", sqlmock.AnyArg(), sqlmock.AnyArg(), "host-01").
 		WillReturnResult(sqlmock.NewResult(301, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE inspection_task SET last_run_time=NOW()")).
 		WithArgs(int64(5)).

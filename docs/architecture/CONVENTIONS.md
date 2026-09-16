@@ -53,3 +53,4 @@
    - `docs/archive/`——历史方案、旧实现说明（文件头必须标注"历史归档"）
 3. 变更记录/总结类内容（"本次改了什么"）一律不进 architecture；要么并入对应架构文档的"最终逻辑"，要么进 `docs/archive/`。
 4. 后端唯一实现为 Go 版 autoadmin；文档禁止引用 `backend/` 源码（见 AGENTS.md）。
+5. **数据访问层约定（选 sqlc 还是内联 SQL、字段映射、SQL 方言可移植性）统一见 [SQL_DESIGN.md](SQL_DESIGN.md)**，本文不重复；新增或修改任何 SQL 前先读该文档。

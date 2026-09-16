@@ -27,11 +27,53 @@
 
 注意：`security_scan_target.error_message` NOT NULL 无默认——INSERT 必须显式给 `''`。
 
+## 数据访问（sqlc，2026-09-16 起）
+
+本域**没有任何内联 SQL**：全部语句在 `db/queries/mysql/baseline.sql`（唯一人工维护源），
+PostgreSQL 一套由 `make derive` 从它派生（`db/queries/postgres/baseline.sql`，禁止手改），
+两侧由 `make generate` 各生成一份（见 [SQL_DESIGN.md](SQL_DESIGN.md) §4.6）。
+迁移落地时确定的三条实现约定：
+
+| 约定 | 原因 |
+|---|---|
+| **响应体在应用层组装**，查询只取列 | 原来 `GetScan` 用 `JSON_OBJECT` 在库里拼响应、`CancelScan` 用 `JSON_MERGE_PATCH` 合并 summary，都是 MySQL 专有函数；PG 侧改为应用层拼装（取消时在同一事务内 `SELECT … FOR UPDATE` 读回 summary 再合并） |
+| **可变长 `IN (?,?)` 改为"取回集合在应用层比对"** | `PATCH /{id}/` 的类目归属校验原先按提交的类目个数拼占位符，是 sqlc 表达不了的形状；现在取回该基线的全部类目（`ListBaselineCategories`）在 Go 侧判包含 |
+| **排序/聚合不用方言函数** | 明细排序用 `CASE r.status WHEN 'fail' THEN 1 WHEN 'pass' THEN 2 ELSE 0 END`（等价于 MySQL 的 `FIELD()`）；终态计数用 `COUNT(CASE WHEN … THEN 1 END)`（不写 `SUM(布尔)`，PG 不接受） |
+
+两处方言差异由派生层消化，调用点不分叉：
+
+- **自增主键**：MySQL 源写 `:execlastid`（`LastInsertId()`），PG 产物派生为 `:one` + `RETURNING id`
+  —— pgx 的 `database/sql` 适配层不实现 `LastInsertId`（恒返回 `LastInsertId is not supported by this driver`），
+  只能用 RETURNING。两侧生成的方法签名都是 `(int64, error)`。
+- **`compliance_rate` 是 `decimal(5,2)`**：sqlc 两侧都把它生成为 `string`，落库时写
+  `strconv.FormatFloat(v,'f',2,64)`、读出时解析回 `float64` 再进响应（对外契约仍是数值）。
+
+已验证：MySQL 9.1 与 PostgreSQL 14 各跑通全流程（建基线→类目→策略→扫描→目标→明细→取消→级联删除，
+事务内 44 步零失败）；PG 侧 43 条派生查询全部 `PREPARE` 通过；终态聚合与明细排序的
+执行计划与迁移前逐项一致（`type=ref` + 同一索引；排序实测 3 个扫描各 98 行顺序一致）。
+
+这段流程已固化为可重跑的 opt-in 测试 `internal/baseline/smoke_test.go`
+（`BASELINE_SMOKE_DSN` 未设置即跳过，全程一个事务、结束回滚，不留数据）：
+
+```bash
+# MySQL（默认构建）
+BASELINE_SMOKE_DSN='root:pwd@tcp(host:3306)/djadmin?parseTime=true&loc=UTC' \
+  go test ./internal/baseline/ -run Smoke -v
+# PostgreSQL
+BASELINE_SMOKE_DSN='postgres://user@host:5432/db?sslmode=disable&TimeZone=UTC' \
+  go test -tags postgres ./internal/baseline/ -run Smoke -v
+```
+
+它存在的理由：sqlmock 用例在两个 tag 下全绿也不代表 PG 可用——`:execlastid`
+（pgx 不实现 `LastInsertId`）与 `decimal` 列的驱动行为都是它抓出来的。
+
 ## 接口（/sys/security/baseline，权限 baseline:manage / baseline:scan）
 
 ```
-GET    /sys/security/baseline/          基线列表（search，含 item_count/scan_count）
-GET    /sys/security/baseline/{id}/     详情（categories[] + 全部策略 items[]，item 带 category_id/category）
+GET    /sys/security/baseline/          基线列表（search，含 item_count/scan_count；count 为真实总数，
+                                        但行仍是固定首页 20 条——前端不传分页参数，见下方"数据访问"）
+GET    /sys/security/baseline/{id}/     详情（categories[] + 全部策略 items[]，item 带 category_id/category；
+                                        items 按「类目顺序 → 类目内 sort」排列）
 POST   /sys/security/baseline/          新建（不接受 items：类目未建立，策略须建基线后添加）
 PATCH  /sys/security/baseline/{id}/     更新（items 提交时整体重建；item.category_id 必须属于该基线）
                                         策略 config 走 opapolicy.Validate 共享校验
@@ -47,6 +89,8 @@ DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效
 POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id, environment_id}
 GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline；page/page_size 分页，page_size 默认 10 上限 100，返回 count+results）
 GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合率 + 条目明细：全部 pass/fail 条目，含主机、级别、expected（Rego 策略）/actual（违规明细）、消息，fail 排前）
+                                        start_time/end_time 为 RFC3339（与列表接口一致，迁移 sqlc 前是
+                                        库内 JSON_OBJECT 产出的 "YYYY-MM-DD HH:MM:SS.ffffff" 文本）
 ```
 
 前端：`fronted/src/views/security/baseline/index.vue`，「基线标准」tab 为**二层主从布局**
@@ -98,8 +142,8 @@ M/C/F 枚举（不是 0/1/2），location=1、is_expanded 与现有菜单一致�
 2. **执行**（`runScan`）：20 并发逐主机；每主机把全部条目编译为**一次 OPA 检查下发**
    （单次 check_plan 下发，10 分钟超时，条目 key `baseline:{scan}:{index}`）；
    Agent 离线 → 目标 skipped；
-3. **落库**：条目结果（violations 空即 pass，否则 fail）100 行/批 INSERT；
-   主机聚合 passed/failed/compliance_rate；
+3. **落库**：条目结果逐条 INSERT（violations 空即 pass，否则 fail）；
+   主机聚合 passed/failed/compliance_rate（decimal 列，写文本）；
 4. **收尾**（`finishScan`）：聚合 summary（total/success/failed/skipped）并置终态
    （failed>0 → failed；全 skipped → skipped）。
 5. **取消**（`POST /sys/security/scans/:id/cancel/`，对齐巡检 CancelExecution）：仅

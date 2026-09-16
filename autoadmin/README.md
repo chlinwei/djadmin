@@ -1,13 +1,14 @@
 # autoadmin
 
-Go rewrite of the djadmin backend. The project preserves the existing Vue frontend API contract and MySQL tables while domains are migrated incrementally.
+Go rewrite of the djadmin backend. The project preserves the existing Vue frontend API contract and the MySQL tables while domains are migrated incrementally; the data access layer also targets PostgreSQL as a second dialect (see [SQL_DESIGN](../docs/architecture/SQL_DESIGN.md)).
 
 ## Stack
 
 - Go 1.27.0
 - Gin v1.12.0
-- sqlc v1.31.1
-- go-sql-driver/mysql v1.10.0
+- sqlc — generation **must** use v1.30.0 (`go.mod` pins the tool at v1.31.1, which silently changes generated params; the Makefile guards the version). See SQL_DESIGN §5.1
+- go-sql-driver/mysql v1.10.0 (default build)
+- jackc/pgx v5 (`-tags postgres` build)
 - gocron v2.22.0
 - RabbitMQ 4.3.5 with amqp091-go v1.14.0
 - go-ansible v2.4.1
@@ -16,18 +17,37 @@ Go rewrite of the djadmin backend. The project preserves the existing Vue fronte
 
 All builds and tests must use the Makefile. It exports `CGO_ENABLED=0`, and the command package contains a build guard that intentionally fails when CGO is enabled.
 
-## Commands
+## Build and run
 
 ```bash
-make test
-make vet
-make build
-./bin/autoadmin api
+# ---- default build: MySQL (behaviour identical to before the dialect work) ----
+make test                     # go test ./...
+make vet                      # go vet ./...
+make build                    # -> bin/autoadmin
+
+# ---- PostgreSQL variant: queries use the PG artifacts, connection uses pgx ----
+make build-postgres           # go build -tags postgres -> bin/autoadmin-postgres
+make vet-postgres             # go vet -tags postgres ./...
+go test -tags postgres ./...  # run the full suite for this variant too
+
+# ---- SQL generation pipeline (order matters; see SQL_DESIGN §4.6) ----
+make derive                   # db/queries/mysql -> db/queries/postgres (never edit the PG side)
+make generate SQLC=~/go/bin/sqlc   # both sqlc artifacts; requires sqlc v1.30.0
+make facade                   # rebuild the dialect facade (must run after make generate)
+
+# ---- run (one binary, four roles) ----
+./bin/autoadmin api           # HTTP :9000 + agent gRPC :9001
 ./bin/autoadmin scheduler
 ./bin/autoadmin worker
-./bin/autoadmin migrate
-./bin/autoadmin --version   # 或 -v
+./bin/autoadmin migrate       # applies db/migrations/<dialect> up migrations
+./bin/autoadmin --version     # or -v
 ```
+
+Environment: the default build reads `MYSQL_DSN`; the `-tags postgres` build reads `POSTGRES_DSN` (pgx DSN, must carry `TimeZone=UTC`). `MIGRATION_DATABASE_URL` / `MIGRATION_SOURCE_URL` are used by the `migrate` role. Configuration is not read from dotenv files — export it (`set -a; . ./config.env; set +a`) or inject it from the deployment environment.
+
+Note: the `migrate` role registers only the MySQL driver today, so it cannot drive a PostgreSQL database yet — that lands together with `db/migrations/postgres/` (plan item P1-7).
+
+**Both tags must be built and tested in CI**: the PostgreSQL adapters are hand-written, so a new divergence between the two artifacts only surfaces when the `postgres` tag is compiled (see SQL_DESIGN §4.8).
 
 ## Version
 
@@ -49,15 +69,24 @@ internal/api/                    Gin server, routing and response envelope
 internal/app/                    role composition and lifecycle
 internal/config/                 environment configuration
 internal/modules/                Django-to-Go domain catalog
-internal/platform/database/      MySQL pool and generated sqlc package
+internal/platform/database/      database pool, query derivation, dialect facade and generated sqlc
+  derive/                        query derivation + facade generator + drift tests (make derive / facade)
+  generated/                     dialect facade (fixed path imported by app code; dialect_mysql.go /
+                                 dialect_postgres.go are generated, *_adapters.go is hand-written)
+  generated/mysql/               MySQL sqlc output (default build)
+  generated/postgres/            PostgreSQL sqlc output (-tags postgres)
 internal/messaging/rabbitmq/     durable topology, publisher and consumer
 internal/scheduler/              gocron scheduler and message publication
 internal/automation/ansible/     go-ansible adapter
-db/schema/                       schema baseline consumed by sqlc
-db/queries/                      named sqlc queries grouped by domain
-db/migrations/                   post-baseline schema migrations
+sqlc.yaml                        sqlc config: both dialects (make generate emits both)
+db/schema/<dialect>/             schema baseline consumed by sqlc, one per dialect
+db/queries/mysql/                the single hand-maintained source of queries
+db/queries/postgres/             derived from db/queries/mysql (do not edit by hand)
+db/migrations/mysql/             post-baseline migrations (000001…000022, up/down per version)
 docs/                            architecture, contracts and migration plan
 ```
+
+The full SQL tree — which directory is hand-maintained, which is a generated artifact, and the required order of the `derive` / `generate` / `facade` steps — is in [SQL_DESIGN §4.6](../docs/architecture/SQL_DESIGN.md).
 
 Use `config.example.env` as the local environment template and provide real credentials outside Git. The application does not load dotenv files itself.
 

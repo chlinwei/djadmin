@@ -39,8 +39,9 @@ func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, en
 	if err != nil {
 		return nil, err
 	}
-	// Both backends use Django's MEDIA_ROOT while the migration is in progress.
-	packageRoot, err := filepath.Abs(filepath.Join("..", "backend", "djadmin", "media"))
+	// 软件包根目录：autoadmin 自身的 media 目录（monitor_packages/ 与 agent_packages/）。
+	// backend/ 已废弃，包存储随之从 Django MEDIA_ROOT 迁出。
+	packageRoot, err := filepath.Abs("media")
 	if err != nil {
 		return nil, err
 	}

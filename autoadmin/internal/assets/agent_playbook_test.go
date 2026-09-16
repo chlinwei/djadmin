@@ -12,7 +12,7 @@ const testAgentPlaybook = `---
     - name: Write config
       ansible.builtin.copy:
         content: |
-          DJ_AGENT_ID={{ dj_agent_id }}
+          DJ_AGENT_INSTANCE_NAME={{ dj_agent_instance_name }}
           DJ_AGENT_GRPC_FILE_ADDR={{ dj_agent_grpc_addr }}
         dest: /etc/dj-agent/config.env
     - name: Write unit
@@ -28,7 +28,7 @@ func TestPlaybookCopyContentsExtractsCopyTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(contents["/etc/dj-agent/config.env"], "DJ_AGENT_ID=") {
+	if !strings.Contains(contents["/etc/dj-agent/config.env"], "DJ_AGENT_INSTANCE_NAME=") {
 		t.Fatalf("config.env content missing: %q", contents["/etc/dj-agent/config.env"])
 	}
 	if !strings.Contains(contents["/usr/lib/systemd/system/dj-agent.service"], "ExecStart=") {
@@ -51,7 +51,7 @@ func TestPlaybookAgentTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(env, "{{ dj_agent_id }}") || !strings.Contains(env, "{{ dj_agent_grpc_addr }}") {
+	if !strings.Contains(env, "{{ dj_agent_instance_name }}") || !strings.Contains(env, "{{ dj_agent_grpc_addr }}") {
 		t.Fatalf("env template should keep placeholders: %q", env)
 	}
 	if !strings.Contains(unit, "ExecStart=") {
@@ -70,8 +70,8 @@ func TestPlaybookAgentTemplatesRejectsMissingTasks(t *testing.T) {
 }
 
 func TestRenderAgentEnvTemplate(t *testing.T) {
-	rendered := renderAgentEnvTemplate("DJ_AGENT_ID={{ dj_agent_id }}\nDJ_AGENT_GRPC_FILE_ADDR={{ dj_agent_grpc_addr }}\nDJ_AGENT_LOG_LEVEL=info", "agent-001", "10.0.0.1:9100")
-	want := "DJ_AGENT_ID=agent-001\nDJ_AGENT_GRPC_FILE_ADDR=10.0.0.1:9100\nDJ_AGENT_LOG_LEVEL=info\n"
+	rendered := renderAgentEnvTemplate("DJ_AGENT_INSTANCE_NAME={{ dj_agent_instance_name }}\nDJ_AGENT_GRPC_FILE_ADDR={{ dj_agent_grpc_addr }}\nDJ_AGENT_LOG_LEVEL=info", "host-01", "10.0.0.1:9100")
+	want := "DJ_AGENT_INSTANCE_NAME=host-01\nDJ_AGENT_GRPC_FILE_ADDR=10.0.0.1:9100\nDJ_AGENT_LOG_LEVEL=info\n"
 	if rendered != want {
 		t.Fatalf("rendered mismatch:\n got: %q\nwant: %q", rendered, want)
 	}

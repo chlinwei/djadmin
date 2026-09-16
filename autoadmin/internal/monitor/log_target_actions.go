@@ -31,7 +31,6 @@ type logTargetRow struct {
 	InstallStatus  string
 	HostName       string
 	HostIP         string
-	AgentID        string
 	OSType         string
 	OSIDLike       string
 	OSVersionID    string
@@ -40,13 +39,13 @@ type logTargetRow struct {
 func loadLogTarget(context *gin.Context, db *sql.DB, id int64) (logTargetRow, error) {
 	var row logTargetRow
 	err := db.QueryRowContext(context, `SELECT l.id,l.host_id,l.managed_enabled,l.install_status,
-		COALESCE(h.instance_name,''),COALESCE(h.ip,''),COALESCE(h.agent_id,''),
+		COALESCE(h.instance_name,''),COALESCE(h.ip,''),
 		COALESCE(s.os_type,''),COALESCE(s.os_id_like,''),COALESCE(s.os_version_id,'')
 		FROM monitor_log_collection_target l
 		JOIN assets_host h ON h.id=l.host_id
 		LEFT JOIN assets_hostsystem s ON s.host_id=l.host_id
 		WHERE l.id=?`, id).Scan(&row.ID, &row.HostID, &row.ManagedEnabled, &row.InstallStatus,
-		&row.HostName, &row.HostIP, &row.AgentID, &row.OSType, &row.OSIDLike, &row.OSVersionID)
+		&row.HostName, &row.HostIP, &row.OSType, &row.OSIDLike, &row.OSVersionID)
 	return row, err
 }
 
@@ -192,7 +191,7 @@ func fluentBitMainConfig() string {
 }
 
 func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row logTargetRow) (gin.H, error) {
-	if handler.gateway == nil || !handler.gateway.IsOnline(row.AgentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	pending, _, err := logTargetPending(ginContext, handler.db, row.ID)
@@ -324,16 +323,16 @@ func (handler *Handler) controlLogTargetService(context *gin.Context, action str
 }
 
 func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
-	var agentID string
-	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.agent_id,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.id=?`, id).Scan(&agentID); err != nil {
+	var instanceName string
+	if err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.instance_name,'') FROM monitor_log_collection_target l JOIN assets_host h ON h.id=l.host_id WHERE l.id=?`, id).Scan(&instanceName); err != nil {
 		return nil, fmt.Errorf("log collection target not found")
 	}
-	if handler.gateway == nil || !handler.gateway.IsOnline(agentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	// agent 通用命令通道：agent 以 root 运行，直接 systemctl，无需 sudo。
 	params, _ := json.Marshal(gin.H{"command": "systemctl", "args": []string{action, fluentBitServiceName + ".service"}})
-	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-service-%d", time.Now().UnixNano()), Type: "command", Action: "fluent_bit_service_control", ParamsJson: string(params), TimeoutSeconds: 30})
+	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-service-%d", time.Now().UnixNano()), Type: "command", Action: "fluent_bit_service_control", ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
 		return nil, err
 	}
@@ -370,13 +369,13 @@ func (handler *Handler) persistLogTargetRuntimeStatus(context *gin.Context, id i
 
 func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 	id := parseID(context.Param("id"))
-	var agentID string
+	var instanceName string
 	var clusterHosts, username, encryptedPassword string
-	err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.agent_id,''), c.hosts, c.username, c.password
+	err := handler.db.QueryRowContext(context, `SELECT COALESCE(h.instance_name,''), c.hosts, c.username, c.password
 		FROM monitor_log_collection_target l
 		JOIN assets_host h ON h.id=l.host_id
 		JOIN monitor_opensearch_cluster c ON c.enabled=TRUE
-		WHERE l.id=? ORDER BY c.is_default DESC, c.id LIMIT 1`, id).Scan(&agentID, &clusterHosts, &username, &encryptedPassword)
+		WHERE l.id=? ORDER BY c.is_default DESC, c.id LIMIT 1`, id).Scan(&instanceName, &clusterHosts, &username, &encryptedPassword)
 	if err == sql.ErrNoRows {
 		response.BusinessError(context, 400, "没有已启用的默认 OpenSearch 集群，请先在日志存储里配置", nil)
 		return
@@ -385,7 +384,7 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	if handler.gateway == nil || !handler.gateway.IsOnline(agentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(instanceName) {
 		response.BusinessError(context, 400, "host agent is offline", nil)
 		return
 	}
@@ -400,7 +399,7 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 		return
 	}
 	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": username, "password": password})
-	result, err := handler.gateway.Execute(context, agentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
+	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -557,7 +556,7 @@ func (handler *Handler) batchServiceControl(context *gin.Context, action string)
 }
 
 func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTargetRow) (gin.H, error) {
-	if handler.gateway == nil || !handler.gateway.IsOnline(row.AgentID) {
+	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	var clusterHosts, username, encryptedPassword, indexPrefix string
@@ -612,7 +611,7 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		return nil, err
 	}
 	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": username, "password": password})
-	result, err := handler.gateway.Execute(context, row.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
+	result, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +621,7 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 	}
 	// 片段内容全部由 backend 渲染，agent 只落盘 + 重启（见 apply_fluent_bit_config）。
 	fragmentParams, _ := json.Marshal(gin.H{"files": rendered.Fragments, "restart": "true"})
-	fragmentResult, err := handler.gateway.Execute(context, row.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_fluent_bit_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
+	fragmentResult, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_fluent_bit_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
 	if err != nil {
 		return nil, err
 	}
@@ -651,9 +650,9 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 	results := make([]gin.H, 0, len(input.HostIDs))
 	success := 0
 	for _, hostID := range input.HostIDs {
-		var name, ip, agentID string
+		var name, ip string
 		var deleted bool
-		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),COALESCE(agent_id,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &agentID, &deleted); err != nil || deleted {
+		if err := handler.db.QueryRowContext(context, `SELECT COALESCE(instance_name,''),COALESCE(ip,''),is_deleted_in_cloud FROM assets_host WHERE id=?`, hostID).Scan(&name, &ip, &deleted); err != nil || deleted {
 			results = append(results, gin.H{"host_id": hostID, "host": name, "ok": false, "message": "host not found"})
 			continue
 		}
@@ -676,7 +675,7 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 		}
 		targetID, _ := result.LastInsertId()
 		if input.InstallNow {
-			row := logTargetRow{ID: targetID, HostID: hostID, ManagedEnabled: true, HostName: name, HostIP: ip, AgentID: agentID}
+			row := logTargetRow{ID: targetID, HostID: hostID, ManagedEnabled: true, HostName: name, HostIP: ip}
 			if _, err := handler.dispatchLogTargetInstall(context, row); err != nil {
 				results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
 				continue

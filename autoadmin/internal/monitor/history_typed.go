@@ -253,7 +253,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	queries := db.New(handler.db)
 	count, err := queries.CountAlertHistories(context, db.CountAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
-		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), LabelValue_2: nullStringInterface(labelValue),
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue),
 	})
 	if err != nil {
 		response.Error(context, err)
@@ -261,7 +261,7 @@ func (handler *Handler) alertHistories(context *gin.Context, id int64) {
 	}
 	rows, err := queries.ListAlertHistories(context, db.ListAlertHistoriesParams{
 		ID: idFilter, State: state, Severity: severity, Keyword: keyword, StartTime: startTime, EndTime: endTime,
-		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue), LabelValue_2: nullStringInterface(labelValue),
+		LabelKey: labelKey, LabelValue: nullStringInterface(labelValue),
 		Limit: int32(size), Offset: int32((page - 1) * size),
 	})
 	if err != nil {

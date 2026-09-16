@@ -36,7 +36,7 @@
             <a-spin :spinning="loading">
                 <a-descriptions bordered :column="2" size="small" v-if="runtimeData">
                     <a-descriptions-item label="主机 ID">{{ hostId || '-' }}</a-descriptions-item>
-                    <a-descriptions-item label="Agent ID">{{ runtimeData.agent_id || '-' }}</a-descriptions-item>
+                    <a-descriptions-item label="实例名">{{ runtimeData.instance_name || '-' }}</a-descriptions-item>
                     <a-descriptions-item label="Agent 版本">{{ runtimeData.version || '-' }}</a-descriptions-item>
                     <a-descriptions-item label="进程状态">{{ runtimeData.process?.running ? '运行中' : '已停止' }}</a-descriptions-item>
                     <a-descriptions-item label="运行时长">{{ formatUptimeDuration(runtimeData.process?.uptime_seconds) }}</a-descriptions-item>
@@ -212,8 +212,8 @@ const builtinTaskColumns = runtimeTaskColumns.filter((column) => column.key !== 
 const hostId = computed(() => Number(route.params.id || 0))
 
 const canDispatchCollect = computed(() => {
-    const agentId = String(hostRecord.value?.instance_name || '').trim()
-    return Boolean(hostId.value > 0 && agentId)
+    const instanceName = String(hostRecord.value?.instance_name || '').trim()
+    return Boolean(hostId.value > 0 && instanceName)
 })
 
 const shouldShowUnboundAgentAlert = computed(() => {
@@ -617,8 +617,8 @@ watch(
 )
 
 const triggerAgentRuntimeCollect = async () => {
-    const agentId = String(hostRecord.value?.instance_name || '').trim()
-    if (hostId.value <= 0 || !agentId) {
+    const instanceName = String(hostRecord.value?.instance_name || '').trim()
+    if (hostId.value <= 0 || !instanceName) {
         message.warning('主机未绑定 agent 实例，无法下发采集任务')
         return
     }

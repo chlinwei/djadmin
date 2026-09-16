@@ -24,3 +24,6 @@ TEST_REPORT.md
 FRONTEND_TEST_REPORT.md
 fronted/test-results/
 backend/djadmin/coverage/
+
+# agent 本地安装包缓存目录
+agent_packages/

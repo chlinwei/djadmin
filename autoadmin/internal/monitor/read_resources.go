@@ -43,7 +43,7 @@ func (handler *Handler) GetTarget(context *gin.Context) {
 		TargetType: row.TargetType, HostName: row.HostName, HostIp: row.HostIp,
 		HostAgentOnline: row.HostAgentOnline,
 	})
-	item.HostAgentOnline = handler.gateway != nil && handler.gateway.IsOnline(row.AgentID.String)
+	item.HostAgentOnline = handler.gateway != nil && handler.gateway.IsOnline(row.HostName.String)
 	response.Success(context, item)
 }
 
@@ -194,7 +194,7 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		return
 	}
 	queryArguments := append(append([]any{}, arguments...), size, (page-1)*size)
-	rows, err := handler.db.QueryContext(context, `SELECT h.id,h.instance_name,h.ip,h.group_id,COALESCE(g.name,''),h.agent_id,lc.id,lc.agent_installed,lc.agent_version,lc.runtime_status,lc.install_status,lc.config_fingerprint,lc.last_applied_time,lc.last_error FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id LEFT JOIN monitor_log_collection_target lc ON lc.host_id=h.id`+where+` ORDER BY h.instance_name,h.id LIMIT ? OFFSET ?`, queryArguments...)
+	rows, err := handler.db.QueryContext(context, `SELECT h.id,h.instance_name,h.ip,h.group_id,COALESCE(g.name,''),lc.id,lc.agent_installed,lc.agent_version,lc.runtime_status,lc.install_status,lc.config_fingerprint,lc.last_applied_time,lc.last_error FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id LEFT JOIN monitor_log_collection_target lc ON lc.host_id=h.id`+where+` ORDER BY h.instance_name,h.id LIMIT ? OFFSET ?`, queryArguments...)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -203,12 +203,12 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 	results := make([]gin.H, 0)
 	for rows.Next() {
 		var hostID int64
-		var hostName, hostIP, groupName, agentID sql.NullString
+		var hostName, hostIP, groupName sql.NullString
 		var groupID, logTargetID sql.NullInt64
 		var agentInstalled sql.NullBool
 		var agentVersion, runtimeStatus, installStatus, fingerprint, lastError sql.NullString
 		var lastApplied sql.NullTime
-		if err = rows.Scan(&hostID, &hostName, &hostIP, &groupID, &groupName, &agentID, &logTargetID, &agentInstalled, &agentVersion, &runtimeStatus, &installStatus, &fingerprint, &lastApplied, &lastError); err != nil {
+		if err = rows.Scan(&hostID, &hostName, &hostIP, &groupID, &groupName, &logTargetID, &agentInstalled, &agentVersion, &runtimeStatus, &installStatus, &fingerprint, &lastApplied, &lastError); err != nil {
 			response.Error(context, err)
 			return
 		}
@@ -224,7 +224,7 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		for _, target := range exporters {
 			typedExporters = append(typedExporters, exporterTargetResponseFrom(target))
 		}
-		online := handler.gateway != nil && handler.gateway.IsOnline(agentID.String)
+		online := handler.gateway != nil && handler.gateway.IsOnline(hostName.String)
 		var groupValue, logIDValue, appliedValue any
 		if groupID.Valid {
 			groupValue = groupID.Int64

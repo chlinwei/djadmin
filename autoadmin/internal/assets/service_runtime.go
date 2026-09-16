@@ -53,7 +53,7 @@ type ApplicationDeployment struct {
 	HaRole                string          `json:"ha_role"`
 	RuntimeVariables      json.RawMessage `json:"runtime_variables"`
 	ApplicationServiceIDs []int64         `json:"application_service_ids"`
-	ApplicationID        *int64          `json:"application_id"` // 部署关联的首个服务所属应用，供前端按应用过滤实例
+	ApplicationID         *int64          `json:"application_id"` // 部署关联的首个服务所属应用，供前端按应用过滤实例
 }
 
 func nullableID(value sql.NullInt64) *int64 {

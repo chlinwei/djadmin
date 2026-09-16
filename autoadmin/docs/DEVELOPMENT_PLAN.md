@@ -15,7 +15,7 @@ Exit criterion: `make all` succeeds and API liveness/readiness checks pass again
 - [x] Verify the configured development MySQL and applied Django migration graph.
 - [x] Capture live DDL for the first identity/RBAC/config tables in `db/schema`.
 - [x] Add typed sqlc queries and repositories for user, role, menu and system configuration.
-- [ ] Export the remaining fully migrated Django MySQL schema into `db/schema`.
+- [x] Export the remaining fully migrated Django MySQL schema into `db/schema`（2026-09-16：补齐最后 14 张业务表，79/91 张；其余 12 张为 Django 框架记账表，不建模）。
 - [ ] Baseline golang-migrate without recreating existing tables.
 - [ ] Capture representative Django API fixtures and build differential contract tests.
 

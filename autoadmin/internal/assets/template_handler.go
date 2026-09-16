@@ -64,4 +64,3 @@ func (handler *Handler) UpdateDeploymentTemplate(context *gin.Context) {
 	item, err := handler.service.SaveDeploymentTemplate(context.Request.Context(), id, input)
 	respond(context, item, err)
 }
-

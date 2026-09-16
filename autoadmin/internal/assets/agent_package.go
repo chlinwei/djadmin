@@ -19,7 +19,7 @@ import (
 )
 
 // dj-agent 安装包管理：上传、激活、批删与列表。上传的激活包优先用于 Agent 安装/更新
-// （见 agent_update.go 的 loadAgentBinary 来源选择）；文件落盘在 Django MEDIA_ROOT 下的
+// （见 agent_update.go 的 loadAgentBinary 来源选择）；文件落盘在 autoadmin media 目录下的
 // agent_packages/<version>/dj-agent，与 monitor 软件包共用同一个媒体根解析逻辑。
 // 字节标记校验与构建产物一致：拒绝旧 RabbitMQ 版本、要求含 DJ_AGENT_GRPC_FILE_ADDR。
 

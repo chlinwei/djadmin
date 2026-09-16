@@ -55,14 +55,16 @@ type taskInput struct {
 }
 
 type hostSnapshot struct {
-	HostID      int64  `json:"host_id"`
-	HostName    string `json:"host_name"`
-	HostIP      string `json:"host_ip"`
-	GroupID     *int64 `json:"group_id"`
-	GroupName   string `json:"group_name"`
-	GroupPath   string `json:"group_path"`
-	AgentID     string `json:"-"`
-	AgentOnline bool   `json:"agent_online"`
+	HostID    int64  `json:"host_id"`
+	HostName  string `json:"host_name"`
+	HostIP    string `json:"host_ip"`
+	GroupID   *int64 `json:"group_id"`
+	GroupName string `json:"group_name"`
+	GroupPath string `json:"group_path"`
+	// InstanceName 是主机 instance_name（= assets_host.instance_name），同时是
+	// gateway 会话的路由 key；仅内部使用，不参与 inventory 对外序列化。
+	InstanceName string `json:"-"`
+	AgentOnline  bool   `json:"agent_online"`
 }
 
 func (handler *Handler) CreateInventory(context *gin.Context) { handler.saveInventory(context, 0) }
@@ -84,6 +86,7 @@ func (handler *Handler) GetInventory(context *gin.Context) {
 	}
 	response.Success(context, item)
 }
+
 // inventoryExisting 是 inventory 部分更新时从库中读出的现值快照。
 type inventoryExisting struct {
 	Name               string
@@ -583,7 +586,7 @@ func (handler *Handler) snapshotHosts(ctx context.Context, ids []int64, limit st
 	for index, id := range ids {
 		args[index] = id
 	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT h.id,COALESCE(h.instance_name,''),h.ip,h.group_id,COALESCE(g.name,''),COALESCE(h.agent_id,''),h.agent_online FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id WHERE h.id IN (`+marks+`) AND h.ip IS NOT NULL ORDER BY h.id`, args...)
+	rows, err := handler.db.QueryContext(ctx, `SELECT h.id,COALESCE(h.instance_name,''),h.ip,h.group_id,COALESCE(g.name,''),h.agent_online FROM assets_host h LEFT JOIN assets_hostgroup g ON g.id=h.group_id WHERE h.id IN (`+marks+`) AND h.ip IS NOT NULL ORDER BY h.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -592,16 +595,18 @@ func (handler *Handler) snapshotHosts(ctx context.Context, ids []int64, limit st
 	for rows.Next() {
 		var host hostSnapshot
 		var groupID sql.NullInt64
-		if err = rows.Scan(&host.HostID, &host.HostName, &host.HostIP, &groupID, &host.GroupName, &host.AgentID, &host.AgentOnline); err != nil {
+		// HostName 即 h.instance_name，同时作为 gateway 会话 key（见 hostSnapshot）。
+		if err = rows.Scan(&host.HostID, &host.HostName, &host.HostIP, &groupID, &host.GroupName, &host.AgentOnline); err != nil {
 			return nil, err
 		}
 		if groupID.Valid {
 			value := groupID.Int64
 			host.GroupID = &value
 		}
+		host.InstanceName = host.HostName
 		// Database online flags can lag after a stream closes; execution eligibility
 		// must use the live Gateway session so the confirmation precheck is accurate.
-		host.AgentOnline = handler.gateway != nil && handler.gateway.IsOnline(host.AgentID)
+		host.AgentOnline = handler.gateway != nil && handler.gateway.IsOnline(host.InstanceName)
 		hosts = append(hosts, host)
 	}
 	if err = rows.Err(); err != nil {
@@ -726,7 +731,7 @@ func (handler *Handler) rehydrateExecutionAgents(ctx context.Context, hosts []ho
 	for index, id := range ids {
 		arguments[index] = id
 	}
-	rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(agent_id,'') FROM assets_host WHERE id IN (`+placeholders+`)`, arguments...)
+	rows, err := handler.db.QueryContext(ctx, `SELECT id,COALESCE(instance_name,'') FROM assets_host WHERE id IN (`+placeholders+`)`, arguments...)
 	if err != nil {
 		return err
 	}
@@ -734,17 +739,18 @@ func (handler *Handler) rehydrateExecutionAgents(ctx context.Context, hosts []ho
 	agents := make(map[int64]string, len(hosts))
 	for rows.Next() {
 		var hostID int64
-		var agentID string
-		if err = rows.Scan(&hostID, &agentID); err != nil {
+		var instanceName string
+		if err = rows.Scan(&hostID, &instanceName); err != nil {
 			return err
 		}
-		agents[hostID] = strings.TrimSpace(agentID)
+		// instance_name 即 gateway 会话 key，回填到 hostSnapshot.
+		agents[hostID] = strings.TrimSpace(instanceName)
 	}
 	if err = rows.Err(); err != nil {
 		return err
 	}
 	for index := range hosts {
-		hosts[index].AgentID = agents[hosts[index].HostID]
+		hosts[index].InstanceName = agents[hosts[index].HostID]
 	}
 	return nil
 }
@@ -888,13 +894,13 @@ func (handler *Handler) syncControllerKey(ctx context.Context, hosts []hostSnaps
 			failures[host.HostID] = "automation agent gateway is unavailable"
 			continue
 		}
-		if strings.TrimSpace(host.AgentID) == "" {
+		if strings.TrimSpace(host.InstanceName) == "" {
 			failures[host.HostID] = "host has no usable agent identity"
 			continue
 		}
 		params, _ := json.Marshal(gin.H{"public_key": publicKey})
 		requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		result, err := handler.gateway.Execute(requestCtx, host.AgentID, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("sync-automation-ssh-key-%d-%d", host.HostID, time.Now().UnixNano()), Type: "custom", Action: "sync_automation_ssh_key", ParamsJson: string(params), TimeoutSeconds: 30})
+		result, err := handler.gateway.Execute(requestCtx, host.InstanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("sync-automation-ssh-key-%d-%d", host.HostID, time.Now().UnixNano()), Type: "custom", Action: "sync_automation_ssh_key", ParamsJson: string(params), TimeoutSeconds: 30})
 		cancel()
 		if err != nil || result.GetStatus() != "success" {
 			if err != nil {

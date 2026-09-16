@@ -1241,6 +1241,10 @@ const managedDeleteLoading = reactive({})
 // 按 record.id 缓存每行最近一次查询到的服务运行状态，让“服务状态”列常驻展示，
 // 不需要每次都重新打开弹窗；弹窗仍用于查看完整 systemctl 输出。
 const serviceStatusMap = reactive({})
+// Fluent Bit 真实运行状态缓存：key = log_collection_target.id。
+// 列表里的 runtime_status 是上次安装/启停/查状态时落库的快照，服务在平台外被停掉
+// 不会变，所以展示时优先用这份"点过查状态/自动刷新时真实 systemctl status"的结果。
+const fluentBitRealStatusMap = reactive({})
 const serviceStatusModalVisible = ref(false)
 const serviceStatusModalRecord = ref(null)
 const serviceStatusModalResult = ref(null)
@@ -2027,7 +2031,22 @@ function handleOverviewGroupSelect(keys) {
   reloadOverviewHosts()
 }
 
+function fluentBitRealStatusInfo(record) {
+  const cached = fluentBitRealStatusMap[record?.id]
+  if (!cached) return null
+  const exitCode = Number(cached.exitCode)
+  if (exitCode === 0) {
+    return { status: 'running', text: '运行中 (2020)', color: 'success', tooltip: 'Fluent Bit 正常运行 (HTTP API: 2020)' }
+  }
+  if (exitCode === 3) {
+    return { status: 'stopped', text: '已停止', color: 'warning', tooltip: 'Fluent Bit 服务已停止' }
+  }
+  return { status: 'error', text: '异常', color: 'error', tooltip: 'Fluent Bit 运行异常' }
+}
+
 function fluentBitStatusColor(record) {
+  const real = fluentBitRealStatusInfo(record)
+  if (real) return real.color
   if (!record || !record.managed) return 'default'
   if (record.install_status === 'pending') return 'processing'
   if (record.install_status === 'failed') return 'error'
@@ -2041,6 +2060,8 @@ function fluentBitStatusColor(record) {
 }
 
 function fluentBitStatusText(record) {
+  const real = fluentBitRealStatusInfo(record)
+  if (real) return real.text
   if (!record || !record.managed) return '未安装'
   if (record.install_status === 'pending') return '安装中'
   if (record.install_status === 'failed') return '安装失败'
@@ -2054,6 +2075,8 @@ function fluentBitStatusText(record) {
 }
 
 function fluentBitStatusTooltip(record) {
+  const real = fluentBitRealStatusInfo(record)
+  if (real) return real.tooltip
   if (!record || !record.managed) return '未纳管 Fluent Bit 日志采集'
   if (record.install_status === 'pending') return '任务执行中，请稍候'
   if (record.install_status === 'failed') return record.last_error || '安装失败，请点击重试'
@@ -2087,6 +2110,7 @@ async function loadOverviewHosts() {
     overviewHosts.value = Array.isArray(data.results) ? data.results : []
     overviewPagination.total = Number(data.count || 0)
     await refreshVisibleExporterServiceStatuses()
+    await refreshVisibleFluentBitStatuses()
   } finally {
     overviewLoading.value = false
   }
@@ -2105,6 +2129,28 @@ async function refreshVisibleExporterServiceStatuses() {
     .flatMap((item) => (Array.isArray(item.exporters) ? item.exporters.map((exporter) => exporter.id) : []))
     .filter(Boolean)
   await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
+}
+
+// 与 Exporter 状态同思路：列表加载后对当前页已纳管且 agent 在线的 Fluent Bit
+// 逐台调 check-status（后端真实执行 systemctl status 并回写 runtime_status）。
+// 不查的话界面会一直显示上次安装/下发时落库的旧状态——服务在平台外被停掉，
+// 列表看起来仍是"运行中"。失败（agent 离线等）静默保留原状态，不弹错误。
+async function refreshVisibleFluentBitStatuses() {
+  if (!overviewHosts.value.length) return
+  const ids = overviewHosts.value
+    .filter((item) => item.host_agent_online && item.fluent_bit && item.fluent_bit.managed)
+    .map((item) => item.fluent_bit.id)
+    .filter(Boolean)
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const job = parseApiData(await checkLogCollectionStatus(id))
+      if (job && job.exit_code !== undefined && job.exit_code !== null) {
+        fluentBitRealStatusMap[id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
+      }
+    } catch (error) {
+      console.warn('[fluent_bit_status] 查询运行状态失败', id, error?.response?.data?.msg || error?.message)
+    }
+  }))
 }
 
 async function loadOverviewGroupTree() {
@@ -2401,9 +2447,11 @@ function formatManagedTargetTime(value) {
 async function handleCheckFluentBitStatus(record) {
   fluentBitStatusLoading[record.id] = true
   try {
-    await checkLogCollectionStatus(record.id)
+    const job = parseApiData(await checkLogCollectionStatus(record.id))
+    if (job && job.exit_code !== undefined && job.exit_code !== null) {
+      fluentBitRealStatusMap[record.id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
+    }
     message.success('Fluent Bit 状态已更新')
-    await loadOverviewHosts()
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 状态检查失败')
   } finally {

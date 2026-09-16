@@ -195,6 +195,24 @@ func (r *Repository) ListHosts(ctx context.Context, search string, groupID, envi
 func (r *Repository) GetHost(ctx context.Context, id int64) (db.GetHostRow, error) {
 	return r.queries.GetHost(ctx, id)
 }
+
+// HostIPExists 判断同一 IP 是否已被其他主机占用（IP 是主机的自然唯一标识，
+// 创建/更新时由服务层校验，不依赖 DB 唯一约束以便存量重复数据平滑收敛）。
+func (r *Repository) HostIPExists(ctx context.Context, ip string, excludeHostID int64) (bool, error) {
+	var count int
+	err := r.pool.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assets_host WHERE ip = ? AND id <> ?`, ip, excludeHostID).Scan(&count)
+	return count > 0, err
+}
+
+// InstanceNameExists 判断同一 instance_name 是否已被其他主机占用（instance_name 是
+// 主机的业务标识，也是 dj-agent 的 DJ_AGENT_INSTANCE_NAME 全局唯一键）。
+func (r *Repository) InstanceNameExists(ctx context.Context, instanceName string, excludeHostID int64) (bool, error) {
+	var count int
+	err := r.pool.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assets_host WHERE instance_name = ? AND id <> ?`, instanceName, excludeHostID).Scan(&count)
+	return count > 0, err
+}
 func (r *Repository) CreateHost(ctx context.Context, p db.CreateHostParams) (int64, error) {
 	result, err := r.queries.CreateHost(ctx, p)
 	if err != nil {

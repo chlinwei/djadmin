@@ -2,3 +2,5 @@
 .env
 .env.*
 !config.example.env
+# autoadmin 本地媒体/软件包存储（monitor_packages、agent_packages、userAvatar）
+autoadmin/media/

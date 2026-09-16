@@ -105,7 +105,7 @@ func TestPrepareExporterDispatchGuards(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	row := targetInstallRow{ID: 5, HostID: 221, ManagedEnabled: true, ExporterType: "node_exporter",
-		HostName: "localhost", HostIP: "10.25.66.150", AgentID: "localhost",
+		HostName: "localhost", HostIP: "10.25.66.150",
 		OSID: "centos", OSVersionID: "9.4", Architecture: "x86_64"}
 	failedUpdate := regexp.QuoteMeta(`UPDATE monitor_target SET install_status=?,install_message=?,update_time=? WHERE id=?`)
 

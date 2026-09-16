@@ -28,7 +28,7 @@ func New(cfg config.Config) *App {
 }
 
 func (a *App) Run() error {
-	slog.Info("app run begin", "agent_id", a.cfg.AgentID)
+	slog.Info("app run begin", "instance_name", a.cfg.InstanceName)
 	a.markStarted()
 	exec := executor.New(0)
 
@@ -39,22 +39,22 @@ func (a *App) Run() error {
 	// 启动统一 gRPC 通道客户端（agent 主动拨号连接 backend，断线自动重连）。
 	// 该长连接承载文件传输、WebSSH 终端以及自动化任务同步执行，复用同一 exec 执行器。
 	// backend 未启动或网络中断时，客户端会持续重连，不结束 Agent 进程。
-	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.AgentID, a.cfg.BackendToken, exec, a.getRuntimeStatusData, a.setGRPCConnected)
+	go grpcfile.Run(ctx, a.cfg.GRPCFileAddr, a.cfg.InstanceName, a.cfg.BackendToken, exec, a.getRuntimeStatusData, a.setGRPCConnected)
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Warn("shutdown signal received; agent will exit", "agent_id", a.cfg.AgentID, "signal", "SIGTERM or SIGINT", "grpc_connected", a.isGRPCConnected())
+			slog.Warn("shutdown signal received; agent will exit", "instance_name", a.cfg.InstanceName, "signal", "SIGTERM or SIGINT", "grpc_connected", a.isGRPCConnected())
 			a.markStopped()
 
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
 			defer cancel()
 
 			if err := a.gracefulShutdown(shutdownCtx); err != nil {
-				slog.Error("graceful shutdown failed", "agent_id", a.cfg.AgentID, "err", err)
+				slog.Error("graceful shutdown failed", "instance_name", a.cfg.InstanceName, "err", err)
 				return err
 			}
-			slog.Warn("agent stopped after shutdown signal", "agent_id", a.cfg.AgentID)
+			slog.Warn("agent stopped after shutdown signal", "instance_name", a.cfg.InstanceName)
 			return nil
 		}
 	}
@@ -66,7 +66,7 @@ func (a *App) setGRPCConnected(connected bool) {
 	a.grpcConnected = connected
 	a.statusMu.Unlock()
 	if changed {
-		slog.Info("grpc connection state changed", "agent_id", a.cfg.AgentID, "connected", connected)
+		slog.Info("grpc connection state changed", "instance_name", a.cfg.InstanceName, "connected", connected)
 	}
 }
 
@@ -113,7 +113,7 @@ func (a *App) getRuntimeStatusData() map[string]any {
 	}
 
 	return map[string]any{
-		"agent_id": a.cfg.AgentID,
+		"instance_name": a.cfg.InstanceName,
 		"version":  buildinfo.Version,
 		"process": map[string]any{
 			"pid":            os.Getpid(),

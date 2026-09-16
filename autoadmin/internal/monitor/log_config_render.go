@@ -222,6 +222,15 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		})
 		sort.Slice(fragments, func(i, j int) bool { return fragments[i].Path < fragments[j].Path })
 	}
+	// tail 的 DB offset 文件都在 /var/lib/fluent-bit/db 下；agent 只对片段文件做
+	// MkdirAll，目录不存在时 fluent-bit 打不开 DB 会启动失败（sqldb cannot open
+	// database）。放一个占位文件让 agent 顺带把目录建出来。
+	if len(fragments) > 0 {
+		fragments = append(fragments, logConfigFragment{
+			Path:    fluentBitDBDir + "/.keep",
+			Content: "",
+		})
+	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%v", fragments)))
 	return renderedHostLogConfig{
 		Fragments:   fragments,

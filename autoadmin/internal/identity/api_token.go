@@ -63,7 +63,7 @@ func parseExpiry(raw string) (interface{}, error) {
 }
 func (handler *APITokenHandler) Create(context *gin.Context) {
 	var input struct {
-		AgentID   string `json:"agent_id"`
+		ApiID   string `json:"api_id"`
 		BindMode  string `json:"bind_mode"`
 		Name      string `json:"name"`
 		ExpiresAt string `json:"expires_at"`
@@ -81,21 +81,21 @@ func (handler *APITokenHandler) Create(context *gin.Context) {
 		response.Error(context, ErrAPITokenBindModeInvalid)
 		return
 	}
-	agentID := strings.TrimSpace(input.AgentID)
+	apiID := strings.TrimSpace(input.ApiID)
 	if mode == "agent" {
-		agentID = "global"
-	} else if agentID == "" {
-		response.Error(context, ErrAPITokenAgentIDRequired)
+		apiID = "global"
+	} else if apiID == "" {
+		response.Error(context, ErrAPITokenApiIDRequired)
 		return
-	} else if agentID == "global" {
-		response.Error(context, ErrAPITokenAgentIDReserved)
+	} else if apiID == "global" {
+		response.Error(context, ErrAPITokenApiIDReserved)
 		return
 	}
-	if count, err := handler.queries.CountAPITokensByAgentID(context, agentID); err != nil {
+	if count, err := handler.queries.CountAPITokensByApiID(context, apiID); err != nil {
 		response.Error(context, apperror.WithCause(ErrAPITokenCreateInternal, err))
 		return
 	} else if count > 0 {
-		response.Error(context, ErrAPITokenAgentIDExists)
+		response.Error(context, ErrAPITokenApiIDExists)
 		return
 	}
 	expiry, err := parseExpiry(strings.TrimSpace(input.ExpiresAt))
@@ -118,13 +118,13 @@ func (handler *APITokenHandler) Create(context *gin.Context) {
 	if claims != nil {
 		userID = sql.NullInt32{Int32: claims.UserID, Valid: true}
 	}
-	result, err := handler.queries.CreateAPIToken(context, db.CreateAPITokenParams{AgentID: agentID, TokenHash: hash, Name: apiTokenNullableString(input.Name), IsActive: true, ExpiresAt: nullableTime(expiry), Remark: apiTokenNullableString(input.Remark), CreateTime: time.Now().UTC(), UpdateTime: time.Now().UTC(), CreatedByID: userID, BindMode: mode})
+	result, err := handler.queries.CreateAPIToken(context, db.CreateAPITokenParams{ApiID: apiID, TokenHash: hash, Name: apiTokenNullableString(input.Name), IsActive: true, ExpiresAt: nullableTime(expiry), Remark: apiTokenNullableString(input.Remark), CreateTime: time.Now().UTC(), UpdateTime: time.Now().UTC(), CreatedByID: userID, BindMode: mode})
 	if err != nil {
 		response.Error(context, apperror.WithCause(ErrAPITokenCreateInternal, err))
 		return
 	}
 	id, _ := result.LastInsertId()
-	response.Success(context, gin.H{"id": id, "agent_id": agentID, "bind_mode": mode, "token": plain, "expires_at": expiry, "is_active": true})
+	response.Success(context, gin.H{"id": id, "api_id": apiID, "bind_mode": mode, "token": plain, "expires_at": expiry, "is_active": true})
 }
 func (handler *APITokenHandler) Rotate(context *gin.Context) {
 	id := context.PostForm("id")
@@ -166,7 +166,7 @@ func (handler *APITokenHandler) Rotate(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	response.Success(context, gin.H{"id": record.ID, "agent_id": record.AgentID, "bind_mode": record.BindMode, "token": plain})
+	response.Success(context, gin.H{"id": record.ID, "api_id": record.ApiID, "bind_mode": record.BindMode, "token": plain})
 }
 func (handler *APITokenHandler) Disable(context *gin.Context) { handler.change(context, false) }
 func (handler *APITokenHandler) Delete(context *gin.Context) {

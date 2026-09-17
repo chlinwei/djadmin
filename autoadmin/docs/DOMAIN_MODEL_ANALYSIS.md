@@ -20,7 +20,7 @@
 |---|---|---|
 | `SysUser` / `sys_user` | 显式 AutoField；username unique；password hash；status 1/0；timezone 默认 UTC | 识别 Django hash；登录时可把历史明文升级为 hash |
 | `SysUserRole` / `sys_user_role` | unique(user,role) | user、role 均 CASCADE |
-| `ApiToken` / `sys_agent_token` | agent_id、bind_mode agent/api、token hash、active、expires/last_used | creator SET_NULL；API 层检查 agent_id 唯一，但 DB 无对应唯一约束 |
+| `ApiToken` / `sys_agent_token` | api_id（列名原为 agent_id，迁移 000024 改名：agent 模式恒为 'global'，api 模式为用户自填的外部 API 令牌标识）、bind_mode agent/api、token hash、active、expires/last_used | creator SET_NULL；API 层检查 api_id 唯一，但 DB 无对应唯一约束 |
 | implicit M2M / `sys_user_alert_media` | user_id、alertmedia_id | 与带 recipients 的 UserAlertMediaBinding 并存，后者才是告警发送主关系 |
 
 密码、API token 和 secret 型系统配置是**单向哈希**，不能设计解密接口。

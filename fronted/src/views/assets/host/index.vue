@@ -231,13 +231,6 @@
                                         </a-tooltip>
                                     </a-col>
                                     <a-col v-permission="'assets:hosts:view'">
-                                        <a-tooltip title="查看 Agent 状态">
-                                            <a-button @click="openAgentRuntimePage(record)">
-                                                <FontAwesomeIcon :icon="['fas', 'server']" />
-                                            </a-button>
-                                        </a-tooltip>
-                                    </a-col>
-                                    <a-col v-permission="'assets:hosts:view'">
                                         <a-tooltip :title="getWebSshActionTooltip(record)">
                                             <a-button :disabled="!canOpenWebSsh(record)" @click="openWebSsh(record)">
                                                 <FontAwesomeIcon :icon="['fas', 'terminal']" />
@@ -1828,21 +1821,6 @@ const openWebSsh = async (record) => {
     const preferredUser = resolveHostPreferredWebSshUser(record)
     webSshTargetUsername.value = preferredUser
     webSshUserSelectorVisible.value = true
-}
-
-const openAgentRuntimePage = (record) => {
-    if (!record?.id) {
-        message.warning('主机信息不存在，请刷新后重试')
-        return
-    }
-
-    router.push({
-        path: `/assets/hosts/agent-runtime/${record.id}`,
-        query: {
-            instance_name: record.instance_name || '',
-            ip: record.ip || '',
-        },
-    })
 }
 
 const confirmOpenWebSshWithUser = async () => {

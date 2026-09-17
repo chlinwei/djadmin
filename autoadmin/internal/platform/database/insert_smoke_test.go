@@ -120,7 +120,7 @@ func TestInsertQueriesReturnLastInsertIDAgainstRealDatabase(t *testing.T) {
 				CreateTime: nullTime(now), UpdateTime: nullTime(now)})
 		}},
 		{"CreateAPIToken", func() (sql.Result, error) {
-			return queries.CreateAPIToken(ctx, db.CreateAPITokenParams{AgentID: "smoke-" + suffix, TokenHash: "hash",
+			return queries.CreateAPIToken(ctx, db.CreateAPITokenParams{ApiID: "smoke-" + suffix, TokenHash: "hash",
 				IsActive: true, BindMode: "strict", CreateTime: now, UpdateTime: now})
 		}},
 		{"CreateConfig", func() (sql.Result, error) {

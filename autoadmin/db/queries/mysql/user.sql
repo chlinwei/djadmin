@@ -80,7 +80,7 @@ INSERT INTO audit_login_log (
 ) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListAPITokens :many
-SELECT t.id, t.agent_id, t.bind_mode, t.name, t.is_active, t.expires_at,
+SELECT t.id, t.api_id, t.bind_mode, t.name, t.is_active, t.expires_at,
        t.last_used_at, t.created_by_id, u.username AS created_by_username,
        t.remark, t.create_time, t.update_time
 FROM sys_agent_token AS t
@@ -90,12 +90,12 @@ ORDER BY t.id DESC;
 -- name: GetAPITokenByID :one
 SELECT * FROM sys_agent_token WHERE id = ? LIMIT 1;
 
--- name: CountAPITokensByAgentID :one
-SELECT COUNT(*) FROM sys_agent_token WHERE bind_mode = 'api' AND agent_id = ?;
+-- name: CountAPITokensByApiID :one
+SELECT COUNT(*) FROM sys_agent_token WHERE bind_mode = 'api' AND api_id = ?;
 
 -- name: CreateAPIToken :execresult
 INSERT INTO sys_agent_token (
-  agent_id, token_hash, name, is_active, expires_at, last_used_at,
+  api_id, token_hash, name, is_active, expires_at, last_used_at,
   remark, create_time, update_time, created_by_id, bind_mode
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 

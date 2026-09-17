@@ -81,7 +81,7 @@
   <a-modal v-model:open="createVisible" :title="createModalTitle" :confirm-loading="createLoading" @ok="submitCreate">
     <a-form :model="createForm" layout="vertical">
       <a-form-item label="Agent ID">
-        <a-input v-model:value="createForm.agent_id" :disabled="createForm.bind_mode === 'agent'" placeholder="api 模式必填" />
+        <a-input v-model:value="createForm.api_id" :disabled="createForm.bind_mode === 'agent'" placeholder="api 模式必填" />
       </a-form-item>
       <a-form-item label="名称">
         <a-input v-model:value="createForm.name" placeholder="可选" />
@@ -128,7 +128,7 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const activeMode = ref('agent')
 
 const columns = [
-  { title: 'Api ID', dataIndex: 'agent_id', key: 'agent_id', width: 180, fixed: 'left' },
+  { title: 'Api ID', dataIndex: 'api_id', key: 'api_id', width: 180, fixed: 'left' },
   { title: '绑定模式', dataIndex: 'bind_mode', key: 'bind_mode', width: 130 },
   { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
   { title: '状态', dataIndex: 'is_active', key: 'is_active', width: 100 },
@@ -156,7 +156,7 @@ const createVisible = ref(false)
 const createLoading = ref(false)
 const createForm = reactive({
   bind_mode: 'agent',
-  agent_id: '',
+  api_id: '',
   name: '',
   expires_at: '',
   remark: '',
@@ -249,7 +249,7 @@ const loadList = async () => {
 
 const resetCreateForm = () => {
   createForm.bind_mode = activeMode.value
-  createForm.agent_id = ''
+  createForm.api_id = ''
   createForm.name = ''
   createForm.expires_at = ''
   createForm.remark = ''
@@ -261,8 +261,8 @@ const openCreateModal = () => {
 }
 
 const submitCreate = async () => {
-  if (createForm.bind_mode === 'api' && !createForm.agent_id.trim()) {
-    message.error('api 模式下 agent_id 不能为空')
+  if (createForm.bind_mode === 'api' && !createForm.api_id.trim()) {
+    message.error('api 模式下 api_id 不能为空')
     return
   }
 
@@ -273,7 +273,7 @@ const submitCreate = async () => {
   }
 
   if (createForm.bind_mode === 'api') {
-    payload.agent_id = createForm.agent_id.trim()
+    payload.api_id = createForm.api_id.trim()
   }
   if (createForm.bind_mode === 'api' && createForm.expires_at.trim()) {
     payload.expires_at = createForm.expires_at.trim()
@@ -312,7 +312,7 @@ const handleRotate = async (record) => {
 const handleDisable = (record) => {
   Modal.confirm({
     title: '确认禁用 Api Token',
-    content: `将禁用 ${record.agent_id}，禁用后无法继续用于 Agent 鉴权。`,
+    content: `将禁用 ${record.api_id}，禁用后无法继续用于 Agent 鉴权。`,
     okText: '确认',
     cancelText: '取消',
     onOk: async () => {
@@ -332,7 +332,7 @@ const handleDelete = async (record) => {
   await openDeleteConfirm({
     title: '确认删除 Api Token',
     summary: '删除后该 Token 将不可恢复，请确认影响范围。',
-    items: [`${record.agent_id} (${record.bind_mode})`],
+    items: [`${record.api_id} (${record.bind_mode})`],
     onConfirm: async () => {
       setRowDeleteLoading(record.id, true)
       try {
@@ -349,7 +349,7 @@ const handleDelete = async (record) => {
 watch(activeMode, (mode) => {
   createForm.bind_mode = mode
   if (mode === 'agent') {
-    createForm.agent_id = ''
+    createForm.api_id = ''
     createForm.expires_at = ''
   }
 })

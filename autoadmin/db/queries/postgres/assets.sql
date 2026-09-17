@@ -408,34 +408,7 @@ SELECT COUNT(*) FROM assets_host WHERE ip = sqlc.arg(ip) AND id <> sqlc.arg(excl
 -- name: CountOtherHostsByInstanceName :one
 SELECT COUNT(*) FROM assets_host WHERE instance_name = sqlc.arg(instance_name) AND id <> sqlc.arg(exclude_id);
 
--- ---- P2-3：agent 作业 / 安装包 / 应用控制 / 安装模板 ----
--- agent 作业列表的过滤是"运行时拼 WHERE"（`(?=0 OR host_id=?) AND (?='' OR action=?)`），
--- 改成 NULL 表示不过滤的 sqlc.narg（SQL_DESIGN §4.1），四条查询共用同一组过滤条件。
-
--- name: ListAgentJobActionCounts :many
-SELECT action, COUNT(*) AS total FROM assets_agent_job
-WHERE (host_id = sqlc.narg(host_id) OR sqlc.narg(host_id) IS NULL)
-  AND (action = sqlc.narg(action) OR sqlc.narg(action) IS NULL)
-GROUP BY action ORDER BY COUNT(*) DESC;
-
--- name: CountAgentJobs :one
-SELECT COUNT(*) FROM assets_agent_job
-WHERE (host_id = sqlc.narg(host_id) OR sqlc.narg(host_id) IS NULL)
-  AND (action = sqlc.narg(action) OR sqlc.narg(action) IS NULL);
-
--- name: ListAgentJobs :many
-SELECT job_id,instance_name,host_id,job_type,action,status,timeout_seconds,params,result_data,
-       error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at
-FROM assets_agent_job
-WHERE (host_id = sqlc.narg(host_id) OR sqlc.narg(host_id) IS NULL)
-  AND (action = sqlc.narg(action) OR sqlc.narg(action) IS NULL)
-ORDER BY id DESC LIMIT $1 OFFSET $2;
-
--- name: ListAgentJobStatusCounts :many
-SELECT status, COUNT(*) AS total FROM assets_agent_job
-WHERE (host_id = sqlc.narg(host_id) OR sqlc.narg(host_id) IS NULL)
-  AND (action = sqlc.narg(action) OR sqlc.narg(action) IS NULL)
-GROUP BY status;
+-- ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 
 -- name: GetDeploymentControlContext :one
 SELECT COALESCE(h.instance_name, ''), t.control_type, t.run_user, t.work_directory, t.app_home,
@@ -781,9 +754,7 @@ WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l
 SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,
        COALESCE(h.ip,'') AS host_ip,d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,
        d.runtime_variables,
-       (SELECT s.application_id FROM assets_application_service_deployment l
-        JOIN assets_application_service s ON s.id=l.service_id
-        WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1) AS application_id
+       CAST(COALESCE((SELECT s.application_id FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1), 0) AS bigint) AS application_id
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id=d.host_id
 WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l

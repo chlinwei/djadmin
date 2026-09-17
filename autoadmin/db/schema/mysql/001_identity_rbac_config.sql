@@ -70,7 +70,7 @@ CREATE TABLE `sys_role_menu` (
 
 CREATE TABLE `sys_agent_token` (
   `id` int NOT NULL AUTO_INCREMENT,
-  `agent_id` varchar(128) NOT NULL,
+  `api_id` varchar(128) NOT NULL,
   `token_hash` varchar(255) NOT NULL,
   `name` varchar(128) DEFAULT NULL,
   `is_active` BOOLEAN NOT NULL,

@@ -19,7 +19,7 @@ PostgreSQL 建表时要求被引用的表已存在，而本目录按域切分 �
 ```bash
 python3 db/schema/generate_load_order.py > /tmp/pgschema_ordered.sql
 psql "postgres://user@host:5432/scratch?sslmode=disable" -v ON_ERROR_STOP=1 -f /tmp/pgschema_ordered.sql
-# 期望：79 张表、193 个索引（含 1 个 partial index），0 报错
+# 期望：78 张表、0 报错
 ```
 
 脚本做三件事：`CREATE TABLE` 按外键依赖**拓扑排序** → 其余语句（`ALTER`/`COMMENT`）→ `CREATE INDEX`

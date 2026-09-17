@@ -41,8 +41,6 @@ type session struct {
 
 	// exec 复用 agent 内统一的任务执行器，保持一致的执行、降权和超时语义。
 	exec *executor.Executor
-	// 运行状态提供器：用于通过 gRPC 返回 agent runtime 状态，替代旧 HTTP 状态接口。
-	runtimeStatusProvider func() map[string]any
 
 	writesMu sync.Mutex
 	writes   map[string]*writeHandle
@@ -89,7 +87,7 @@ func (s *session) unregisterAutomation(jobID string) {
 }
 
 // Run 阻塞运行文件传输会话，断线后按指数退避自动重连，直至 ctx 被取消。
-func Run(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) {
+func Run(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, onConnectionState func(bool)) {
 	if strings.TrimSpace(addr) == "" {
 		slog.Warn("grpc file-transfer disabled: empty addr")
 		onConnectionState(false)
@@ -104,7 +102,7 @@ func Run(ctx context.Context, addr, instanceName, backendToken string, exec *exe
 		default:
 		}
 		onConnectionState(false)
-		established, err := runOnce(ctx, addr, instanceName, backendToken, exec, runtimeStatusProvider, onConnectionState)
+		established, err := runOnce(ctx, addr, instanceName, backendToken, exec, onConnectionState)
 		if err != nil {
 			slog.Warn("grpc file-transfer session ended", "err", err)
 		}
@@ -123,7 +121,7 @@ func Run(ctx context.Context, addr, instanceName, backendToken string, exec *exe
 	}
 }
 
-func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, runtimeStatusProvider func() map[string]any, onConnectionState func(bool)) (bool, error) {
+func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec *executor.Executor, onConnectionState func(bool)) (bool, error) {
 	established := false
 	conn, err := grpc.NewClient(
 		addr,
@@ -150,11 +148,10 @@ func runOnce(ctx context.Context, addr, instanceName, backendToken string, exec 
 	}
 
 	sess := &session{
-		stream:                stream,
-		exec:                  exec,
-		runtimeStatusProvider: runtimeStatusProvider,
-		writes:                make(map[string]*writeHandle),
-		terminals:             make(map[string]*terminalSession),
+		stream:    stream,
+		exec:      exec,
+		writes:    make(map[string]*writeHandle),
+		terminals: make(map[string]*terminalSession),
 	}
 	defer sess.closeAllTerminals()
 	if err := sess.send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{InstanceName: instanceName, Token: backendToken, Version: buildinfo.Version}}}); err != nil {

@@ -151,7 +151,7 @@ func newAgentTokenValidator(databaseConnection *sql.DB) func(string, string) boo
 			SELECT token_hash
 			FROM sys_agent_token
 			WHERE bind_mode = 'agent'
-			  AND agent_id = 'global'
+			  AND api_id = 'global'
 			  AND is_active = TRUE
 			  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(6))`)
 		if err != nil {

@@ -150,9 +150,13 @@ func (handler *Handler) bootstrapOpenSearchStorage(context *gin.Context, cluster
 	if strings.TrimSpace(prefix) == "" {
 		prefix = "logs"
 	}
-	if _, err := handler.openSearchRequest(context, cluster, "PUT", "/_index_template/"+safeIndexSegment(prefix), buildIndexTemplateBody(prefix)); err != nil {
+	// 模板名必须是 `<prefix>-template`（与 Django / LOG_COLLECTION_ARCHITECTURE §4.4 一致）。
+	// 早期版本误用了不带后缀的 `<prefix>`，导致健康检查查 `logs-template` 却报了另一个名字；
+	// 这里同时清理那个错名模板，避免同一 index_patterns 挂着两份模板。
+	if _, err := handler.openSearchRequest(context, cluster, "PUT", "/_index_template/"+buildIndexTemplateName(prefix), buildIndexTemplateBody(prefix)); err != nil {
 		return err
 	}
+	handler.cleanupLegacyIndexTemplate(context, cluster, prefix)
 	tiers, err := handler.loadEnabledRetentionTiers(context)
 	if err != nil {
 		return err
@@ -173,6 +177,39 @@ func (handler *Handler) bootstrapOpenSearchStorage(context *gin.Context, cluster
 		}
 	}
 	return nil
+}
+
+// cleanupLegacyIndexTemplate 删除历史版本用错名字（`<prefix>` 而非 `<prefix>-template`）建的模板。
+// 只在该名字确实存在、且 index_patterns 命中 `<prefix>-*` 时才删，避免误删恰好同名的其它模板。
+// 失败不影响 bootstrap 结果（`logs-template` 已写入，且同优先级下后建者生效）。
+func (handler *Handler) cleanupLegacyIndexTemplate(context *gin.Context, cluster openSearchCluster, prefix string) {
+	legacy := safeIndexSegment(prefix)
+	if legacy == buildIndexTemplateName(prefix) {
+		return
+	}
+	existing, err := handler.openSearchRequest(context, cluster, "GET", "/_index_template/"+legacy, nil)
+	if err != nil || !indexTemplateMatchesPrefix(existing, legacy) {
+		return
+	}
+	_, _ = handler.openSearchRequest(context, cluster, "DELETE", "/_index_template/"+legacy, nil)
+}
+
+// indexTemplateMatchesPrefix 判断 GET /_index_template/<name> 的响应里 pattern 是否正好是 `<prefix>-*`。
+func indexTemplateMatchesPrefix(payload map[string]any, prefix string) bool {
+	templates, _ := payload["index_templates"].([]any)
+	if len(templates) == 0 {
+		return false
+	}
+	first, _ := templates[0].(map[string]any)
+	definition, _ := first["index_template"].(map[string]any)
+	patterns, _ := definition["index_patterns"].([]any)
+	want := prefix + "-*"
+	for _, pattern := range patterns {
+		if fmt.Sprint(pattern) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (handler *Handler) loadEnabledRetentionTiers(context *gin.Context) ([]retentionTierRow, error) {

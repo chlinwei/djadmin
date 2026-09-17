@@ -165,6 +165,10 @@ PUT _index_template/logs-template
 
 `min_primary_shard_size` 与 `min_index_age` 同时配置，先满足哪个就滚动，高低流量都能自适应。
 
+> 模板名固定为 `<index_prefix>-template`（缺省 prefix 为 `logs`）。bootstrap 的 PUT 与链路体检的 GET
+> 必须用同一个名字——早期 Go 版漏了 `-template` 后缀，去查不存在的 `logs`，表现为"`logs-template`
+> 不存在"（2026-09-17 修复，bootstrap 同时清理历史错名模板）。
+
 ### 4.5 ISM 按档位配置
 
 三条 policy，通过 `ism_template` 的索引名后缀自动挂载，新建业务不需手工配置：

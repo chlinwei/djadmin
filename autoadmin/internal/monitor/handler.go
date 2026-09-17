@@ -116,6 +116,10 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 		return
 	}
 	alerts, _ := payload.dataMap()["alerts"].([]any)
+	// `/api/v1/alerts` 不含规则表达式（PromQL 只在 `/api/v1/rules`），这里按 alertname
+	// 关联规则索引，补上 rule_group / rule_details（query、labels、annotations）。
+	// 否则前端"当前告警"的规则组与展开行的 PromQL 恒为空（历史告警读的是落库快照，所以正常）。
+	ruleIndexes := handler.prometheusAlertRuleIndexes(context.Request.Context())
 	results := make([]gin.H, 0, len(alerts))
 	firingCount, resolvedCount := 0, 0
 	for _, rawAlert := range alerts {
@@ -128,7 +132,13 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 		} else if state == "resolved" {
 			resolvedCount++
 		}
-		results = append(results, gin.H{"name": stringValue(labels["alertname"]), "severity": stringValue(labels["severity"]), "state": defaultString(state, "unknown"), "instance": stringValue(labels["instance"]), "labels": labels, "summary": defaultString(annotations["summary"], stringValue(annotations["description"])), "active_at": stringValue(alert["activeAt"]), "value": stringValue(alert["value"]), "history_id": nil, "notification_count": 0, "notification_delivery_count": 0, "notification_status": "none"})
+		ruleDetails, hasRuleDetails := ruleIndexes.byAlertname[strings.TrimSpace(stringValue(labels["alertname"]))]
+		ruleGroup, ruleDetailsValue := "", any(nil)
+		if hasRuleDetails {
+			ruleGroup = ruleDetails.GroupName
+			ruleDetailsValue = ruleDetails
+		}
+		results = append(results, gin.H{"name": stringValue(labels["alertname"]), "severity": stringValue(labels["severity"]), "state": defaultString(state, "unknown"), "instance": stringValue(labels["instance"]), "labels": labels, "summary": defaultString(annotations["summary"], stringValue(annotations["description"])), "active_at": stringValue(alert["activeAt"]), "value": stringValue(alert["value"]), "rule_group": ruleGroup, "rule_details": ruleDetailsValue, "history_id": nil, "notification_count": 0, "notification_delivery_count": 0, "notification_status": "none"})
 	}
 	response.Success(context, gin.H{"status": "success", "prometheus_base_url": baseURL, "count": len(results), "firing_count": firingCount, "resolved_count": resolvedCount, "results": results, "warnings": payload.Warnings})
 }

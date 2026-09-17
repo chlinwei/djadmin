@@ -355,22 +355,6 @@ CREATE TABLE `assets_agent_job` (
   CONSTRAINT `assets_agent_job_chk_1` CHECK ((`timeout_seconds` >= 0))
 );
 
-CREATE TABLE `assets_agent_job_event` (
-  `id` bigint NOT NULL AUTO_INCREMENT,
-  `create_time` datetime(6) NOT NULL,
-  `update_time` datetime(6) NOT NULL,
-  `remark` longtext,
-  `tag` varchar(255) NOT NULL,
-  `job_id` varchar(128) NOT NULL,
-  `agent_id` varchar(128) NOT NULL,
-  `event_type` varchar(64) NOT NULL,
-  `payload` json NOT NULL,
-  PRIMARY KEY (`id`),
-  KEY `assets_agen_job_id_33a15f_idx` (`job_id`,`create_time`),
-  KEY `assets_agen_agent_i_854bb7_idx` (`agent_id`,`create_time`),
-  KEY `assets_agen_tag_02986e_idx` (`tag`,`create_time`)
-);
-
 CREATE TABLE `assets_cloudaccount` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `create_time` datetime(6) NOT NULL,

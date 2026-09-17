@@ -26,12 +26,12 @@ func (q *Queries) AddUserRole(ctx context.Context, arg AddUserRoleParams) error 
 	return err
 }
 
-const countAPITokensByAgentID = `-- name: CountAPITokensByAgentID :one
-SELECT COUNT(*) FROM sys_agent_token WHERE bind_mode = 'api' AND agent_id = $1
+const countAPITokensByApiID = `-- name: CountAPITokensByApiID :one
+SELECT COUNT(*) FROM sys_agent_token WHERE bind_mode = 'api' AND api_id = $1
 `
 
-func (q *Queries) CountAPITokensByAgentID(ctx context.Context, agentID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countAPITokensByAgentID, agentID)
+func (q *Queries) CountAPITokensByApiID(ctx context.Context, apiID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAPITokensByApiID, apiID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -70,14 +70,14 @@ func (q *Queries) CountUsersBySearch(ctx context.Context, arg CountUsersBySearch
 
 const createAPIToken = `-- name: CreateAPIToken :one
 INSERT INTO sys_agent_token (
-  agent_id, token_hash, name, is_active, expires_at, last_used_at,
+  api_id, token_hash, name, is_active, expires_at, last_used_at,
   remark, create_time, update_time, created_by_id, bind_mode
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id
 `
 
 type CreateAPITokenParams struct {
-	AgentID     string         `json:"agent_id"`
+	ApiID       string         `json:"api_id"`
 	TokenHash   string         `json:"token_hash"`
 	Name        sql.NullString `json:"name"`
 	IsActive    bool           `json:"is_active"`
@@ -92,7 +92,7 @@ type CreateAPITokenParams struct {
 
 func (q *Queries) CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) (int32, error) {
 	row := q.db.QueryRowContext(ctx, createAPIToken,
-		arg.AgentID,
+		arg.ApiID,
 		arg.TokenHash,
 		arg.Name,
 		arg.IsActive,
@@ -316,7 +316,7 @@ func (q *Queries) DisableAPIToken(ctx context.Context, arg DisableAPITokenParams
 }
 
 const getAPITokenByID = `-- name: GetAPITokenByID :one
-SELECT id, agent_id, token_hash, name, is_active, expires_at, last_used_at, remark, create_time, update_time, created_by_id, bind_mode FROM sys_agent_token WHERE id = $1 LIMIT 1
+SELECT id, api_id, token_hash, name, is_active, expires_at, last_used_at, remark, create_time, update_time, created_by_id, bind_mode FROM sys_agent_token WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken, error) {
@@ -324,7 +324,7 @@ func (q *Queries) GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken,
 	var i SysAgentToken
 	err := row.Scan(
 		&i.ID,
-		&i.AgentID,
+		&i.ApiID,
 		&i.TokenHash,
 		&i.Name,
 		&i.IsActive,
@@ -390,7 +390,7 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (SysUs
 }
 
 const listAPITokens = `-- name: ListAPITokens :many
-SELECT t.id, t.agent_id, t.bind_mode, t.name, t.is_active, t.expires_at,
+SELECT t.id, t.api_id, t.bind_mode, t.name, t.is_active, t.expires_at,
        t.last_used_at, t.created_by_id, u.username AS created_by_username,
        t.remark, t.create_time, t.update_time
 FROM sys_agent_token AS t
@@ -400,7 +400,7 @@ ORDER BY t.id DESC
 
 type ListAPITokensRow struct {
 	ID                int32          `json:"id"`
-	AgentID           string         `json:"agent_id"`
+	ApiID             string         `json:"api_id"`
 	BindMode          string         `json:"bind_mode"`
 	Name              sql.NullString `json:"name"`
 	IsActive          bool           `json:"is_active"`
@@ -424,7 +424,7 @@ func (q *Queries) ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
 		var i ListAPITokensRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.AgentID,
+			&i.ApiID,
 			&i.BindMode,
 			&i.Name,
 			&i.IsActive,

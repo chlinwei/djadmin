@@ -51,6 +51,7 @@ func TestPrometheusAlertRuleIndexes(t *testing.T) {
 	if _, exists := indexes.byAlertname["AgentDown"]; !exists {
 		t.Fatalf("alertname index missing AgentDown")
 	}
+	assertConfigQueryConsumed(t, mock)
 }
 
 // rules 接口失败时返回空索引，不阻塞告警入库（与 Django 版语义一致）。
@@ -73,6 +74,7 @@ func TestPrometheusAlertRuleIndexesUpstreamError(t *testing.T) {
 	if len(indexes.byAlertname) != 0 || len(indexes.byFingerprint) != 0 {
 		t.Fatalf("expected empty indexes, got %+v", indexes)
 	}
+	assertConfigQueryConsumed(t, mock)
 }
 
 // 规则快照可序列化为前端期望的 {query, labels, annotations, ...} 结构。

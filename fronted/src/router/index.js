@@ -208,11 +208,6 @@ export const staticRouterMap = [
                 name: '主机详情页',
                 component: () => import('../views/assets/host/detail/index.vue'),
             },
-            {
-                path: '/assets/hosts/agent-runtime/:id',
-                name: '主机 Agent 运行状态页',
-                component: () => import('../views/assets/host/agent-runtime/index.vue'),
-            },
         ]
     },
 ]

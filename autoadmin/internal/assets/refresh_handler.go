@@ -104,20 +104,6 @@ func (handler *Handler) RefreshApplicationServiceRuntimeStatus(context *gin.Cont
 	respond(context, item, translate(err))
 }
 
-func (handler *Handler) GetHostAgentRuntimeStatus(context *gin.Context) {
-	id, ok := resourceID(context)
-	if !ok {
-		return
-	}
-	item, err := handler.service.GetHost(context.Request.Context(), id)
-	if err != nil {
-		respond(context, nil, err)
-		return
-	}
-	handler.applyAgentPresence(&item)
-	respond(context, gin.H{"instance_name": webSSHString(item.InstanceName), "online": item.AgentOnline, "last_seen": item.AgentOnlineTime, "collect_status": item.CollectStatus, "collect_message": item.CollectMessage}, nil)
-}
-
 func (handler *Handler) GetHostWebSSHActiveCount(context *gin.Context) {
 	if _, ok := resourceID(context); !ok {
 		return

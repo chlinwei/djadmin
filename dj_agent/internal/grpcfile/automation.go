@@ -41,10 +41,6 @@ func (s *session) handleAutomationExecute(ctx context.Context, req *pb.Automatio
 	}
 
 	action := strings.TrimSpace(req.Action)
-	if action == "get_agent_runtime_status" {
-		s.handleAgentRuntimeStatus(resp)
-		return
-	}
 	if action == "" {
 		resp.Status = string(protocol.StatusFailed)
 		resp.ErrorMessage = "action is required"
@@ -142,32 +138,6 @@ func stringMapParam(params map[string]any, key string) map[string]string {
 		result[name] = fmt.Sprintf("%v", item)
 	}
 	return result
-}
-
-func (s *session) handleAgentRuntimeStatus(resp *pb.AutomationExecuteResponse) {
-	statusData := map[string]any{}
-	if s.runtimeStatusProvider != nil {
-		if provided := s.runtimeStatusProvider(); provided != nil {
-			statusData = provided
-		}
-	}
-
-	resp.Status = string(protocol.StatusSuccess)
-	resp.ExitCode = 0
-	resp.Stdout = ""
-	resp.Stderr = ""
-	resp.ErrorMessage = ""
-	resp.CostMs = 0
-
-	raw, err := json.Marshal(statusData)
-	if err != nil {
-		resp.Status = string(protocol.StatusFailed)
-		resp.ErrorMessage = fmt.Sprintf("encode runtime status failed: %v", err)
-		s.sendAutomationResponse(resp)
-		return
-	}
-	resp.ResultDataJson = string(raw)
-	s.sendAutomationResponse(resp)
 }
 
 func (s *session) sendAutomationResponse(resp *pb.AutomationExecuteResponse) {

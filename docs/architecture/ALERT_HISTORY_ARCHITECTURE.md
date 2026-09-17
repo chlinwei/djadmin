@@ -16,7 +16,11 @@
 
 ## 展示
 
-前端告警列表 `rule_details.query` 即快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
+前端历史告警列表 `rule_details.query` 即规则快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
+
+**当前告警**（`GET /monitor/targets/prometheus/alerts/`）同样带 `rule_group` / `rule_details`：`/api/v1/alerts`
+本身不含规则表达式（PromQL 只在 `/api/v1/rules`），所以 handler 复用同一套 `prometheusAlertRuleIndexes`
+按 alertname 关联补全；否则"当前告警"的规则组列与展开行 PromQL 恒为空（历史告警读落库快照，不受影响）。
 
 ## 列表过滤（历史告警）
 

@@ -32,10 +32,6 @@ export function getHostWebSshActiveSessions(id) {
     return requestUtil.get(prefix + `${id}/webssh-active-sessions/`)
 }
 
-export function getHostAgentRuntimeStatus(id) {
-    return requestUtil.get(prefix + `${id}/agent-runtime-status/`)
-}
-
 export function refreshHostInfo(id) {
     return requestUtil.post(prefix + `${id}/refresh-info/`, {})
 }
@@ -104,28 +100,6 @@ export function getCredentialOptionList(params) {
     return requestUtil.get('assets/credentials/', params)
 }
 
-export function createAgentJob(payload) {
-    return requestUtil.post('api/agent/jobs/create', payload)
-}
-
 export function installAgents(payload) {
     return requestUtil.post('api/agent/install', payload)
 }
-
-
-export function queryHostDynamicTasks(hostId, options = {}) {
-    const params = {
-        host_id: hostId,
-        page: options.page ?? 1,
-        size: options.size ?? 20,
-    }
-    if (options.action) {
-        params.action = options.action
-    }
-    if (options.groupBy) {
-        params.group_by = options.groupBy
-    }
-    return requestUtil.get('api/agent/jobs/query', params)
-}
-
-

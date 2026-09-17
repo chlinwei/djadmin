@@ -9,14 +9,12 @@ import (
 )
 
 type Config struct {
-	InstanceName          string
-	LogLevel              string
-	MaxWorkers            int
-	ShutdownTimeout       time.Duration
-	BackendToken          string
-	HostReportInterval    time.Duration
-	HostReportIntervalRaw string
-	GRPCFileAddr          string
+	InstanceName    string
+	LogLevel        string
+	MaxWorkers      int
+	ShutdownTimeout time.Duration
+	BackendToken    string
+	GRPCFileAddr    string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -32,17 +30,6 @@ func LoadFromEnv() (Config, error) {
 		// Agent 主动拨号连接 backend，不要求 backend 主动访问目标主机。
 		GRPCFileAddr: strings.TrimSpace(getEnv("DJ_AGENT_GRPC_FILE_ADDR", "127.0.0.1:9001")),
 	}
-
-	rawHostReportInterval := strings.TrimSpace(os.Getenv("DJ_AGENT_HOST_REPORT_INTERVAL"))
-	if rawHostReportInterval == "" {
-		rawHostReportInterval = "40s"
-	}
-	hostReportInterval, err := parseHostReportInterval(rawHostReportInterval)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.HostReportIntervalRaw = rawHostReportInterval
-	cfg.HostReportInterval = hostReportInterval
 
 	if v := os.Getenv("DJ_AGENT_MAX_WORKERS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -76,27 +63,12 @@ func (c Config) Validate() error {
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
 	}
-	if c.HostReportInterval <= 0 {
-		return fmt.Errorf("host_report_interval must be > 0")
-	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log_level must be one of debug/info/warn/error")
 	}
 	return nil
-}
-
-func parseHostReportInterval(raw string) (time.Duration, error) {
-	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
-		return d, nil
-	}
-
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds <= 0 {
-		return 0, fmt.Errorf("invalid DJ_AGENT_HOST_REPORT_INTERVAL: %s", raw)
-	}
-	return time.Duration(seconds) * time.Second, nil
 }
 
 func getEnv(key, def string) string {

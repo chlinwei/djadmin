@@ -27,10 +27,10 @@ vet:
 fmt:
 	gofmt -w ./cmd ./internal
 
-# sqlc 版本必须与仓库产物一致（v1.30.0）。go.mod 的 tool 指令是 v1.31.1，它会
-# 把重复的 sqlc.arg 去重、改变生成结果并打断调用方 —— 静默产出错误代码比报错更危险，
-# 所以这里先校验版本。用 v1.30.0 的独立二进制可绕过：make generate SQLC=~/go/bin/sqlc
-# 详见 docs/architecture/SQL_DESIGN.md §5。
+# sqlc 版本必须与仓库产物一致（v1.30.0）。go.mod 的 tool 指令已 pin 到 v1.30.0，
+# 这里再校验一次作为兜底：v1.31.1 会把重复的 sqlc.arg 去重、改变生成结果并打断
+# 调用方 —— 静默产出错误代码比报错更危险。需要临时用其它二进制可覆盖：
+# make generate SQLC=~/go/bin/sqlc。详见 docs/architecture/SQL_DESIGN.md §5。
 SQLC ?= go tool sqlc
 SQLC_REQUIRED := v1.30.0
 

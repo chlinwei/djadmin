@@ -35,3 +35,13 @@ func agentListTargetArgs(count int) []driver.Value {
 	}
 	return args
 }
+
+// clusterProfileCountArgs / clusterProfileListArgs 给出 ListProfiles 在该方言下的驱动参数。
+// MySQL 侧 `? = 0` 复用同一个参数两次；两个 application_id 位置都必须非 nil（notNilArg）。
+func clusterProfileCountArgs() []driver.Value {
+	return []driver.Value{notNilArg{}, notNilArg{}, "%%"}
+}
+
+func clusterProfileListArgs(limit, offset int32) []driver.Value {
+	return []driver.Value{notNilArg{}, notNilArg{}, "%%", int64(limit), int64(offset)}
+}

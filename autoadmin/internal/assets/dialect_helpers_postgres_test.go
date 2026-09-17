@@ -35,3 +35,14 @@ func agentListTargetArgs(count int) []driver.Value {
 	}
 	return args
 }
+
+// clusterProfileCountArgs / clusterProfileListArgs 给出 ListProfiles 在该方言下的驱动参数。
+// PG 侧 `= 0` 只出现一次，且命名参数被排到位置参数（LIMIT/OFFSET）之后；
+// application_id 位置必须非 nil（notNilArg）。
+func clusterProfileCountArgs() []driver.Value {
+	return []driver.Value{notNilArg{}, "%%"}
+}
+
+func clusterProfileListArgs(limit, offset int32) []driver.Value {
+	return []driver.Value{int64(limit), int64(offset), notNilArg{}, "%%"}
+}

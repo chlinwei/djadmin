@@ -157,7 +157,7 @@ Service 额外端点：
 | `GET /assets/host-groups/tree/` | 完整树，不分页 |
 | `DELETE /assets/host-groups/batch-delete/` | `ids`；递归展开，空输入返回裸数组 |
 | `/assets/hosts/` CRUD | 递归 group 过滤；按采集/Agent/环境过滤；list 与 detail serializer 不同 |
-| `GET /assets/hosts/{id}/agent-runtime-status/` | 同步 gRPC；要求绑定且在线 Agent |
+| `GET /assets/hosts/{id}/agent-runtime-status/` | 同步 gRPC；要求绑定且在线 Agent。**Go 重写已彻底删除该功能**（含前端 Agent 运行状态页与 `get_agent_runtime_status` 动作），见 SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md P4-2 |
 | `POST /assets/hosts/{id}/refresh-info/` | 同步采集并更新硬件/系统/磁盘 |
 | `POST /assets/hosts/refresh-info/` | `ids`；最多 8 线程同步批量采集 |
 | `DELETE /assets/hosts/batch-delete/` | `ids`；先关闭 WebSSH，再删主机 |

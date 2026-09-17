@@ -118,7 +118,7 @@ func logHealthPrefix(cluster openSearchCluster) string {
 func (handler *Handler) checkLogIndexTemplate(context *gin.Context, cluster openSearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
 	name := buildIndexTemplateName(prefix)
-	responseBody, err := handler.openSearchRequest(context, cluster, "GET", "/_index_template/"+safeIndexSegment(prefix), nil)
+	responseBody, err := handler.openSearchRequest(context, cluster, "GET", "/_index_template/"+name, nil)
 	if err != nil {
 		if isOpenSearchNotFound(err) {
 			return logHealthLayer("index_template", "索引模板", logHealthDrift, fmt.Sprintf("模板 %s 不存在，新建索引会走动态映射", name), nil)

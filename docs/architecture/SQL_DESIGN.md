@@ -383,9 +383,9 @@ autoadmin/
 │   │   │                           ← 唯一人工维护来源
 │   │   └── postgres/               同名文件 + README；make derive 的产物，禁止手改
 │   └── migrations/                 基线之后的结构变更
-│       ├── mysql/                  000001…000022，每个都有 .up.sql/.down.sql（44 文件）
+│       ├── mysql/                  000001…000024，每个都有 .up.sql/.down.sql（48 文件）
 │       │                           MIGRATION_SOURCE_URL 指向此处
-│       └── postgres/               同上 44 文件（000001…000022，版本号与文件名逐字对齐 mysql 侧）
+│       └── postgres/               同上 48 文件（000001…000024，版本号与文件名逐字对齐 mysql 侧）
 └── internal/platform/database/
     ├── configuration.go            连接参数（MySQLDSN 与 PostgresDSN 都在这里，由 tag 选用）
     ├── mysql.go                    MySQL 连接池实现
@@ -493,7 +493,7 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 | 反引号 `KEY` | 独立的 `CREATE INDEX` 语句 |
 | `int unsigned` / `bigint unsigned` | PG 无 unsigned → `integer`/`bigint`（**类型会退化**，见下） |
 
-**已验证的一致性结果**：两侧各生成 79 个 model 结构体，**字段与类型完全一致**（含可空性）。达成一致需要在 `sqlc.yaml` 的 postgresql block 里加两类 `overrides`：
+**已验证的一致性结果**：两侧各生成 78 个 model 结构体，**字段与类型完全一致**（含可空性）。达成一致需要在 `sqlc.yaml` 的 postgresql block 里加两类 `overrides`：
 
 - **可空 jsonb**：MySQL 侧生成 `json.RawMessage`，PG 侧默认生成 `pqtype.NullRawMessage` → 强制 `encoding/json.RawMessage`。
 - **24 个 unsigned 列**：PG 无 unsigned，`int unsigned` 会退化成 `int32`（MySQL 侧是 `uint32`）→ 逐列 override 回 `uint32`/`uint64`。这些列语义非负（端口 / 计数 / 超时秒数），其中可空的那一个（`assets_hostruntime.metrics_sample_window_ms`）须 override 成 `database/sql.NullInt32` 以免丢掉 NULL 语义。
@@ -508,13 +508,13 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 | **列默认值类型不匹配** | `` `position` int NOT NULL DEFAULT '0' `` 被误翻成 `DEFAULT false`（把 tinyint(1) 的 0/1→false/true 规则套到了 int 列上），PG 报 `column "position" is of type integer but default expression is of type boolean` | 改回 `DEFAULT 0` |
 | **跨文件外键导致装载顺序敏感** | `assets_webssh_session_log`（001 域文件）外键指向 `assets_host`（002 域文件），按文件名顺序执行时被引用表还不存在（MySQL 同理，是这份 schema 基线一贯的性质，不是翻译引入的） | 装载时按外键依赖拓扑排序；**表内自引用外键**（`assets_hostgroup.parent_id`、`monitor_notification_policy.parent_id`）不算依赖 |
 
-修复后：79 张表、71 个外键，零错误装载成功。**注意 PG 侧新增/改列时也要守这两条**：约束与索引名必须全库唯一（用表名前缀），整数列的默认值不要写成布尔。
+修复后：78 张表、71 个外键，零错误装载成功。**注意 PG 侧新增/改列时也要守这两条**：约束与索引名必须全库唯一（用表名前缀），整数列的默认值不要写成布尔。
 
 **装载顺序**：`db/schema/postgres/*.sql` 是"折叠后的当前状态"，按 Django 域切分，**不能按文件名顺序直接执行**。需要按 `REFERENCES` 依赖排序（跳过自引用）后再建索引；`assets_host` 一类被大量引用的表会被排到靠后。
 
 **迁移文件的 PG 平行版本（`db/migrations/postgres/`）**
 
-`db/migrations/postgres/` 与 `db/migrations/mysql/` **同版本号、同文件名**（000001…000022，各含 `.up.sql`/`.down.sql`，共 44 文件），由 mysql 侧逐条翻译而来；down 是对应 up 的严格逆操作。DDL 的类型与命名一律照 §4.7 与 `db/schema/postgres` 的既有写法，语句级另有下列非机械改写（每个受影响文件顶部都有 `-- PG 侧差异：` 注释说明）：
+`db/migrations/postgres/` 与 `db/migrations/mysql/` **同版本号、同文件名**（000001…000024，各含 `.up.sql`/`.down.sql`，共 48 文件），由 mysql 侧逐条翻译而来；down 是对应 up 的严格逆操作。DDL 的类型与命名一律照 §4.7 与 `db/schema/postgres` 的既有写法，语句级另有下列非机械改写（每个受影响文件顶部都有 `-- PG 侧差异：` 注释说明）：
 
 | MySQL 写法 | PG 写法 | 理由 |
 |---|---|---|
@@ -533,7 +533,7 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 
 不可逆的部分沿用 mysql 侧语义，不额外补默认值：`ADD COLUMN ... jsonb NOT NULL`（000005/000006 的 down）在 PG 同样要求表内无数据；`000005.down` 同样只恢复列结构、不恢复 Django 时代的外键；`000010.down` / `000020.down` 也只恢复列与索引。**约束名全库唯一**这条在迁移里同样要守：mysql 侧名为 `name` / `agent_id` 的唯一键，在 PG 侧按 `<表名>_<键名>` 约定命名（`inspection_task_name`、`monitor_alert_route_name`；`agent_id` 全库无冲突故保持原名）。
 
-**验收方式**（没有"迁移前的 PG 基线"，所以不能用空库灌迁移）：① 用 `db/schema/postgres` 在真 PG 14 建库（79 表 0 错误）；② 倒序执行全部 down 迁移（22→1，每个文件按 golang-migrate 的方式作为**一个多语句批次**执行），回到折叠前状态；③ 再正序执行全部 up 迁移（1→22）。②③ 均 0 失败，最终 `information_schema` 的列（914）、约束（216）、索引（171）与折叠态逐条一致。唯一需要人工补的是 `000005.up` 要删的那个 Django 时代外键——`000005.down` 本身就不恢复它（mysql 侧同样如此），重放前按该名字补回即可。
+**验收方式**（没有"迁移前的 PG 基线"，所以不能用空库灌迁移）：① 用 `db/schema/postgres` 在真 PG 14 建库（当时 79 表 0 错误；未使用的 `assets_agent_job_event` 已于 2026-09-17 移除，现为 78 表）；② 倒序执行全部 down 迁移（该轮为 22→1，每个文件按 golang-migrate 的方式作为**一个多语句批次**执行），回到折叠前状态；③ 再正序执行全部 up 迁移（该轮 1→22；此后又新增 000023 索引迁移与 000024 `sys_agent_token.api_id` 改名）。②③ 均 0 失败，最终 `information_schema` 的列（914）、约束（216）、索引（171）与折叠态逐条一致（数字为含 `assets_agent_job_event` 的 22 版快照）。唯一需要人工补的是 `000005.up` 要删的那个 Django 时代外键——`000005.down` 本身就不恢复它（mysql 侧同样如此），重放前按该名字补回即可。
 
 **已知限制**：`autoadmin migrate` 角色仍只注册了 MySQL 驱动（见 §5.1 末尾），所以这 44 个文件目前只能用 `MIGRATION_SOURCE_URL=file://db/migrations/postgres` 配合 PG 驱动使用，角色侧接线仍属计划 P1-7。
 
@@ -573,7 +573,7 @@ MySQL 侧是全部导出类型的别名 + `New` 转发；PG 侧是「嵌入 `*po
 
 ## 5. 落地机制
 
-1. **sqlc 版本固定**：`go.mod` 的 tool 指令当前是 v1.31.1，但仓库产物是 v1.30.0 生成的；v1.31.1 会把重复的 `sqlc.arg` 去重（`Pattern_2/3/4` 合并），直接重新生成会打断一批调用方。**改动 schema/查询后请用 v1.30.0 生成**（`make generate SQLC=~/go/bin/sqlc`，Makefile 里有版本守卫），并确认 `git diff` 只有预期变化。
+1. **sqlc 版本固定**：`go.mod` 的 tool 指令已 pin 到 v1.30.0（2026-09-17，之前是 v1.31.1），`go tool sqlc` 与仓库产物同版本；v1.31.1 会把重复的 `sqlc.arg` 去重（`Pattern_2/3/4` 合并），直接重新生成会打断一批调用方。**改动 schema/查询后请用 v1.30.0 生成**（`make generate`，Makefile 里仍有版本守卫兜底），并确认 `git diff` 只有预期变化。
 2. **一个生成配置**：`sqlc.yaml` 里有两个 block（mysql → `internal/platform/database/generated/mysql/`、postgresql → `.../generated/postgres/`），`make generate` 一次产出两侧。
 3. **生成必须幂等**：同一个配置连续两次 `sqlc generate` 应零差异（2026-09-16 实测两侧同时生成仍为零差异）；`make derive` 与 `make facade` 同样实测幂等。
 4. **守卫测试**（把编译期抓不到的错误挡在 CI）：
@@ -581,6 +581,9 @@ MySQL 侧是全部导出类型的别名 + `New` 转发；PG 侧是「嵌入 `*po
    - `TestNoInlineSQLReferencesDroppedHostAgentIDColumn`：源码中不得再引用已删列；
    - `TestLoadAgentTargetHostsColumnArity`：具体查询的列数/Scan 数锁定；
    - `derive.TestDerivedQueriesMatchRepository`：`db/queries/postgres/` 内容 == 现场派生结果（已实现，见 §4.6）；
+   - `database_test.TestGeneratedCodeMatchesQueries`：**生成物漂移检查（P3-2）**。把 `db/schema` + `db/queries` 复制到临时目录、用 `go tool sqlc`（版本由 go.mod 的 tool 指令锁到 v1.30.0）重新生成，再与 `internal/platform/database/generated/{mysql,postgres}/` 已提交的产物逐字节比对，**改了查询/schema 没跑 `make generate` 即失败**，孤儿/新增产物也会报；不改工作区、不依赖数据库（`go test -short` 跳过）。
+   - `database_test.TestSchemaMatchesRealDatabase`：**schema 与真库一致性（P3-4）**。解析 `db/schema/<dialect>` 的表与列，逐项断言真实库 `information_schema` 里存在（只查 schema→库方向，真库多出的 Django 框架表按设计忽略）；需 `SCHEMA_GUARD_DSN`，未设即跳过，两个 tag 各连本方言。
+   - `database_test.TestInsertStatementsCoverRequiredColumns`：**INSERT 列集完整性（P4-10）**。纯文本解析：从 schema 取出"NOT NULL 且无默认值且非自增"的必填列，从 `db/queries/mysql` 取出每条显式列名的 INSERT，缺任一必填列即失败（P5 陷阱 27 的 `monitor_opensearch_cluster` 就是这么漏的）；不依赖数据库。
    - `derive.TestDeriveRewritesSliceToArrayParameter` / `TestDeriveRejectsUnrewrittenSlice`：可变长 IN 必须改写成 `= ANY(sqlc.arg(x)::bigint[])`，**残留 `sqlc.slice` 即失败**（P4-7 的静默陷阱）；
    - `derive.TestDeriveRewritesUpsertToOnConflict` / `TestDeriveRejectsUpsertWithoutConflictTarget`：UPSERT 必须改写成 `ON CONFLICT (<目标>) DO UPDATE`，**缺 `-- conflict:` 声明即失败**，且 INSERT 自己的值列表不能被误改；
    - `derive.TestDeriveIsDeterministic`：同一输入两次派生结果一致；
@@ -635,7 +638,7 @@ go test -tags postgres ./...  # 全量测试也要在 PG 变体下跑
 
 ### 6.2 未建模的表（已补，仅剩框架表）
 
-真实库 91 张表，`db/schema` 已建模 79 张。此前缺失的 14 张业务表已补入（`agent_package`、`assets_agent_job`、`assets_agent_job_event`、`assets_cloudaccount`、`assets_hostdisk`、`assets_hostruntime`、`assets_webssh_temp_credential`、`automation_controller_ssh_key`、`automation_execution_host_log`、`monitor_log_collection_target`、`monitor_notification_policy`、`monitor_user_alert_media_binding`、`sys_user_group`、`sys_user_group_member`），解开了约 80 条内联 SQL 的迁移阻塞。
+真实库 91 张表，`db/schema` 已建模 78 张。此前缺失的 14 张业务表已补入（`agent_package`、`assets_agent_job`、`assets_cloudaccount`、`assets_hostdisk`、`assets_hostruntime`、`assets_webssh_temp_credential`、`automation_controller_ssh_key`、`automation_execution_host_log`、`monitor_log_collection_target`、`monitor_notification_policy`、`monitor_user_alert_media_binding`、`sys_user_group`、`sys_user_group_member`、以及后经确认无 Go 调用方而于 2026-09-17 移除的 `assets_agent_job_event`），解开了约 80 条内联 SQL 的迁移阻塞。
 
 剩余 12 张未建模的是 Django 框架记账表（`auth_*`、`django_*`、`schema_migrations`），**不应建模**。
 

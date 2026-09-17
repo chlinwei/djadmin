@@ -18,7 +18,7 @@ function mountChain(props = {}) {
 }
 
 describe('UserNotificationChain', () => {
-  it('can_receive=false 时展示红色横幅和 summary_issues，并在绑定/路由旁展示 issue tag', async () => {
+  it('can_receive=false 时展示红色横幅和 summary_issues，并在绑定/策略旁展示 issue tag', async () => {
     getUserNotificationChain.mockResolvedValue({
       data: {
         data: {
@@ -32,15 +32,17 @@ describe('UserNotificationChain', () => {
               recipients: ['op@example.com'],
               media: { id: 2, name: 'email', media_type: 'email', enabled: true },
               issues: ['该绑定已禁用'],
-              routes: [
+              policies: [
                 {
-                  route_id: 5,
-                  name: ' critical 路由',
-                  enabled: true,
+                  id: 5,
+                  name: 'critical 路由',
+                  path: '默认策略 / critical',
                   notify_on_firing: true,
                   notify_on_resolved: false,
                   matchers: 'severity="critical"',
-                  issues: ['该路由不会在恢复时通知'],
+                  user_group_ids: [7],
+                  user_group_names: ['运维组'],
+                  user_in_group: false,
                 },
               ],
             },
@@ -60,10 +62,13 @@ describe('UserNotificationChain', () => {
     expect(text).toContain('未绑定任何告警媒介')
     expect(text).toContain('警告：媒介 email 已禁用')
     expect(text).toContain('该绑定已禁用')
-    expect(text).toContain('该路由不会在恢复时通知')
     expect(text).toContain('email')
     expect(text).toContain('op@example.com')
     expect(text).toContain('critical 路由')
+    expect(text).toContain('默认策略 / critical')
+    expect(text).toContain('运维组')
+    expect(text).toContain('当前用户不在组内，收不到')
+    expect(text).toContain('resolved 关')
   })
 
   it('can_receive=true 时展示绿色横幅且不调用链路问题列表', async () => {
@@ -79,7 +84,7 @@ describe('UserNotificationChain', () => {
               recipients: ['a@b.com'],
               media: { id: 2, name: 'email', media_type: 'email', enabled: true },
               issues: [],
-              routes: [],
+              policies: [],
             },
           ],
         },

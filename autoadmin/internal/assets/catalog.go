@@ -131,7 +131,10 @@ func (r *Repository) DeleteVersion(ctx context.Context, id int64) error {
 }
 func (r *Repository) ListProfiles(ctx context.Context, applicationID int64, search string, page pagination.Page) ([]db.ListClusterProfilesRow, int64, error) {
 	p := pattern(search)
-	app := sql.NullInt64{Int64: applicationID, Valid: applicationID > 0}
+	// 查询用 `sqlc.arg(application_id) = 0` 表示"不过滤"（BUG_SQLC_NULLABLE_FILTER 的约定），
+	// 该表达式要求参数是**有效的 0** 而不是 NULL——列可空使 sqlc 把参数生成为 sql.NullInt64，
+	// 传 NULL 时 `NULL = 0` 求值为 NULL，整条 WHERE 变 NULL，列表恒空（P5 陷阱 22）。
+	app := sql.NullInt64{Int64: applicationID, Valid: true}
 	count, err := r.queries.CountClusterProfiles(ctx, db.CountClusterProfilesParams{ApplicationID: app, Pattern: p})
 	if err != nil {
 		return nil, 0, err

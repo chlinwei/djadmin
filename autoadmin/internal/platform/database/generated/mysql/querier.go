@@ -33,9 +33,8 @@ type Querier interface {
 	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
 	ClearSoftwarePackageUninstallTemplate(ctx context.Context, id int64) error
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
-	CountAPITokensByAgentID(ctx context.Context, agentID string) (int64, error)
+	CountAPITokensByApiID(ctx context.Context, apiID string) (int64, error)
 	CountActiveAgentInstallJobs(ctx context.Context, hostIds []sql.NullInt64) (int64, error)
-	CountAgentJobs(ctx context.Context, arg CountAgentJobsParams) (int64, error)
 	CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error)
 	CountAlertMedia(ctx context.Context, arg CountAlertMediaParams) (int64, error)
 	CountAllOpenSearchClusters(ctx context.Context) (int64, error)
@@ -384,6 +383,7 @@ type Querier interface {
 	GetConfigValueByKey(ctx context.Context, configKey string) (string, error)
 	GetCredential(ctx context.Context, id int64) (AssetsCredential, error)
 	GetDefaultEnabledOpenSearchCluster(ctx context.Context) (GetDefaultEnabledOpenSearchClusterRow, error)
+	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error)
 	GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error)
 	// ---- P2-3：监控目标域（目标 CRUD/服务控制、安装与卸载下发、安装历史、宿主总览）----
@@ -473,12 +473,6 @@ type Querier interface {
 	// 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
 	ListActiveAgentTokens(ctx context.Context, now sql.NullTime) ([]ListActiveAgentTokensRow, error)
 	ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]ListAgentHostTargetsRow, error)
-	// ---- P2-3：agent 作业 / 安装包 / 应用控制 / 安装模板 ----
-	// agent 作业列表的过滤是"运行时拼 WHERE"（`(?=0 OR host_id=?) AND (?='' OR action=?)`），
-	// 改成 NULL 表示不过滤的 sqlc.narg（SQL_DESIGN §4.1），四条查询共用同一组过滤条件。
-	ListAgentJobActionCounts(ctx context.Context, arg ListAgentJobActionCountsParams) ([]ListAgentJobActionCountsRow, error)
-	ListAgentJobStatusCounts(ctx context.Context, arg ListAgentJobStatusCountsParams) ([]ListAgentJobStatusCountsRow, error)
-	ListAgentJobs(ctx context.Context, arg ListAgentJobsParams) ([]ListAgentJobsRow, error)
 	ListAlertHistories(ctx context.Context, arg ListAlertHistoriesParams) ([]ListAlertHistoriesRow, error)
 	ListAlertMedia(ctx context.Context, arg ListAlertMediaParams) ([]MonitorAlertMedium, error)
 	// 出口媒介的收件人绑定：不限组 / 仅限指定用户组成员两种（组限制为可变长 IN）。

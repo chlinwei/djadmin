@@ -81,3 +81,34 @@ WHERE (sqlc.arg(application_id) = 0 OR v.application_id=sqlc.arg(application_id)
 
 **新增教训**：`Params` 里出现 `Xxx_2` / `Xxx_3` 这类后缀字段时，**必须逐个确认调用点是否传值**——
 sqlc 不会为"漏设字段"报错，编译器也不会（字段存在且可零值）。这是 review 时的固定检查项。
+
+---
+
+## 家族里的第三个 bug：`= 0` 约定下传了 NULL，列表恒空（2026-09-17）
+
+- **现象**：`GET /assets/cluster-profiles/`（不选应用、`search=` 空）返回 `count:0`，a-table 无数据。
+- **根因**：查询用 `sqlc.arg(application_id) = 0` 表示"不过滤"（本文档第一处修复的约定）。但
+  `assets_cluster_profile.application_id` 可空，sqlc 把这个 `sqlc.arg` 生成为 **`sql.NullInt64`**；
+  仓储层又写成 `sql.NullInt64{Int64: applicationID, Valid: applicationID > 0}` —— app=0 时是
+  `{0, false}` 即 **NULL**，`NULL = 0` 求值为 NULL，整条 WHERE 变 NULL → 恒 0 行。
+  这是 [P5 陷阱 22](SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md)（"空值表示不过滤"必须传**有效的**
+  空串/0，不能传 NULL）的一个实例，也是本文档第一处 bug 的复发。
+- **修法**：`Valid: true`（app=0 时传有效的 0）。修在 `internal/assets/catalog.go` 的 `ListProfiles`。
+- **守卫**：新增 `TestListProfilesWithoutApplicationFilterReturnsRows`（sqlmock，`notNilArg`
+  匹配器断言 application_id 位置参数**非 nil**）；参数退回 NULL 时 mock 不匹配、用例失败。
+- **同类排查**：全仓库只有这一处 `Valid: .. > 0` 喂给 `= 0` 查询；另 4 处同模式查询
+  （versions / hosts 的 group、environment）调用点传的是有效值，未中招。
+
+## 附：可空标量子查询不能直接 Scan 进非空 int64（同一轮发现的 500）
+
+`GET /assets/application-deployments/` 返回 500：`sql: Scan error on column index 13, name
+"application_id": converting NULL to int64 is unsupported`。部署实例可以没有任何关联逻辑服务
+（`assets_application_service_deployment` 无行），此时查询里的标量子查询
+`(SELECT s.application_id ... LIMIT 1) AS application_id` 返回 NULL，而 sqlc 按列的非空性生成了
+`int64`。
+
+修法：在 SQL 里用 `CAST(COALESCE((...), 0) AS SIGNED) AS application_id` 消掉 NULL（Go 侧本就
+把 0 当"无关联"）。**注意不能只写 `COALESCE(subquery, 0)`**：sqlc 的 MySQL 引擎对没 CAST 的
+`COALESCE(标量子查询, 0)` 推断成 `interface{}`（PG 侧同样），调用点用不了；`CAST(... AS SIGNED)`
+才能钉成 int64，并由 `derive` 的 global override 把 `AS SIGNED` 翻成 PG 的 `AS bigint`。
+

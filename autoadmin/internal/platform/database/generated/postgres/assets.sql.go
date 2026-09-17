@@ -38,24 +38,6 @@ func (q *Queries) CountActiveAgentInstallJobs(ctx context.Context, hostIds []int
 	return count, err
 }
 
-const countAgentJobs = `-- name: CountAgentJobs :one
-SELECT COUNT(*) FROM assets_agent_job
-WHERE (host_id = $1 OR $1 IS NULL)
-  AND (action = $2 OR $2 IS NULL)
-`
-
-type CountAgentJobsParams struct {
-	HostID sql.NullInt64  `json:"host_id"`
-	Action sql.NullString `json:"action"`
-}
-
-func (q *Queries) CountAgentJobs(ctx context.Context, arg CountAgentJobsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countAgentJobs, arg.HostID, arg.Action)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countApplicationDeployments = `-- name: CountApplicationDeployments :one
 SELECT COUNT(*) FROM assets_application_deployment d
 WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l
@@ -2102,6 +2084,7 @@ func (q *Queries) GetCredential(ctx context.Context, id int64) (AssetsCredential
 }
 
 const getDeploymentControlContext = `-- name: GetDeploymentControlContext :one
+
 SELECT COALESCE(h.instance_name, ''), t.control_type, t.run_user, t.work_directory, t.app_home,
        t.service_name, t.systemd_scope, t.macro_definitions,
        d.instance_name AS deployment_instance_name
@@ -2125,6 +2108,7 @@ type GetDeploymentControlContextRow struct {
 	DeploymentInstanceName string          `json:"deployment_instance_name"`
 }
 
+// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 func (q *Queries) GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error) {
 	row := q.db.QueryRowContext(ctx, getDeploymentControlContext, id)
 	var i GetDeploymentControlContextRow
@@ -2555,170 +2539,6 @@ func (q *Queries) ListAgentHostTargets(ctx context.Context, hostIds []int64) ([]
 	return items, nil
 }
 
-const listAgentJobActionCounts = `-- name: ListAgentJobActionCounts :many
-
-SELECT action, COUNT(*) AS total FROM assets_agent_job
-WHERE (host_id = $1 OR $1 IS NULL)
-  AND (action = $2 OR $2 IS NULL)
-GROUP BY action ORDER BY COUNT(*) DESC
-`
-
-type ListAgentJobActionCountsParams struct {
-	HostID sql.NullInt64  `json:"host_id"`
-	Action sql.NullString `json:"action"`
-}
-
-type ListAgentJobActionCountsRow struct {
-	Action string `json:"action"`
-	Total  int64  `json:"total"`
-}
-
-// ---- P2-3：agent 作业 / 安装包 / 应用控制 / 安装模板 ----
-// agent 作业列表的过滤是"运行时拼 WHERE"（`(?=0 OR host_id=?) AND (?=” OR action=?)`），
-// 改成 NULL 表示不过滤的 sqlc.narg（SQL_DESIGN §4.1），四条查询共用同一组过滤条件。
-func (q *Queries) ListAgentJobActionCounts(ctx context.Context, arg ListAgentJobActionCountsParams) ([]ListAgentJobActionCountsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAgentJobActionCounts, arg.HostID, arg.Action)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListAgentJobActionCountsRow{}
-	for rows.Next() {
-		var i ListAgentJobActionCountsRow
-		if err := rows.Scan(&i.Action, &i.Total); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listAgentJobStatusCounts = `-- name: ListAgentJobStatusCounts :many
-SELECT status, COUNT(*) AS total FROM assets_agent_job
-WHERE (host_id = $1 OR $1 IS NULL)
-  AND (action = $2 OR $2 IS NULL)
-GROUP BY status
-`
-
-type ListAgentJobStatusCountsParams struct {
-	HostID sql.NullInt64  `json:"host_id"`
-	Action sql.NullString `json:"action"`
-}
-
-type ListAgentJobStatusCountsRow struct {
-	Status string `json:"status"`
-	Total  int64  `json:"total"`
-}
-
-func (q *Queries) ListAgentJobStatusCounts(ctx context.Context, arg ListAgentJobStatusCountsParams) ([]ListAgentJobStatusCountsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAgentJobStatusCounts, arg.HostID, arg.Action)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListAgentJobStatusCountsRow{}
-	for rows.Next() {
-		var i ListAgentJobStatusCountsRow
-		if err := rows.Scan(&i.Status, &i.Total); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listAgentJobs = `-- name: ListAgentJobs :many
-SELECT job_id,instance_name,host_id,job_type,action,status,timeout_seconds,params,result_data,
-       error_message,exit_code,stdout,stderr,create_time,picked_at,finished_at
-FROM assets_agent_job
-WHERE (host_id = $3 OR $3 IS NULL)
-  AND (action = $4 OR $4 IS NULL)
-ORDER BY id DESC LIMIT $1 OFFSET $2
-`
-
-type ListAgentJobsParams struct {
-	Limit  int32          `json:"limit"`
-	Offset int32          `json:"offset"`
-	HostID sql.NullInt64  `json:"host_id"`
-	Action sql.NullString `json:"action"`
-}
-
-type ListAgentJobsRow struct {
-	JobID          string          `json:"job_id"`
-	InstanceName   string          `json:"instance_name"`
-	HostID         sql.NullInt64   `json:"host_id"`
-	JobType        string          `json:"job_type"`
-	Action         string          `json:"action"`
-	Status         string          `json:"status"`
-	TimeoutSeconds uint32          `json:"timeout_seconds"`
-	Params         json.RawMessage `json:"params"`
-	ResultData     json.RawMessage `json:"result_data"`
-	ErrorMessage   string          `json:"error_message"`
-	ExitCode       int32           `json:"exit_code"`
-	Stdout         string          `json:"stdout"`
-	Stderr         string          `json:"stderr"`
-	CreateTime     time.Time       `json:"create_time"`
-	PickedAt       sql.NullTime    `json:"picked_at"`
-	FinishedAt     sql.NullTime    `json:"finished_at"`
-}
-
-func (q *Queries) ListAgentJobs(ctx context.Context, arg ListAgentJobsParams) ([]ListAgentJobsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAgentJobs,
-		arg.Limit,
-		arg.Offset,
-		arg.HostID,
-		arg.Action,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListAgentJobsRow{}
-	for rows.Next() {
-		var i ListAgentJobsRow
-		if err := rows.Scan(
-			&i.JobID,
-			&i.InstanceName,
-			&i.HostID,
-			&i.JobType,
-			&i.Action,
-			&i.Status,
-			&i.TimeoutSeconds,
-			&i.Params,
-			&i.ResultData,
-			&i.ErrorMessage,
-			&i.ExitCode,
-			&i.Stdout,
-			&i.Stderr,
-			&i.CreateTime,
-			&i.PickedAt,
-			&i.FinishedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listAllHostGroups = `-- name: ListAllHostGroups :many
 SELECT g.id, g.create_time, g.update_time, g.remark, g.name, g.parent_id, COALESCE(p.name, '') AS parent_name,
        (SELECT COUNT(*) FROM assets_host h WHERE h.group_id = g.id) AS host_count
@@ -2773,9 +2593,7 @@ const listApplicationDeployments = `-- name: ListApplicationDeployments :many
 SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,
        COALESCE(h.ip,'') AS host_ip,d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,
        d.runtime_variables,
-       (SELECT s.application_id FROM assets_application_service_deployment l
-        JOIN assets_application_service s ON s.id=l.service_id
-        WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1) AS application_id
+       CAST(COALESCE((SELECT s.application_id FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1), 0) AS bigint) AS application_id
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id=d.host_id
 WHERE (EXISTS (SELECT 1 FROM assets_application_service_deployment l

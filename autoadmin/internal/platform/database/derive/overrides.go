@@ -23,7 +23,9 @@ var globalOverrides = []Override{
 	// 会生成 Pattern/Pattern_2/… 多个参数，调用点漏设就变成 LIKE NULL（真库上复现过搜索失效）。
 	{Old: "CAST(sqlc.narg(label_value) AS CHAR)", New: "CAST(sqlc.narg(label_value) AS text)"},
 	// SIGNED 是 MySQL 专有类型名，PG 用 bigint；两侧都落到 Go 的 int64。
-	{Old: "CAST(COALESCE(MAX(sort), -1) AS SIGNED)", New: "CAST(COALESCE(MAX(sort), -1) AS bigint)"},
+	// 覆盖所有 `CAST(... AS SIGNED)`：baseline 的 max_sort 取序号，assets 的部署列表
+	// 用标量子查询取 application_id（无匹配行时靠 COALESCE(...,0) 兜底，否则 NULL 扫不进 int64）。
+	{Old: " AS SIGNED)", New: " AS bigint)"},
 
 	// json_agg/json_build_object 对应 JSON_ARRAYAGG/JSON_OBJECT。MySQL 的 JSON_ARRAY()
 	// 空数组字面量在 PG 里是 '[]'::json（json_agg 对零行返回 NULL，COALESCE 兜住）。

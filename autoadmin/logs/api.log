@@ -8895,3 +8895,48 @@
 2026/09/17 00:08:01 [API-ERROR] GET /assets/hosts/: <nil>
 [GIN] 2026/09/17 - 00:08:01 | 200 | 229.654µs |  192.168.124.15 | GET      "/assets/hosts/"
 [GIN] 2026/09/17 - 00:08:03 | 200 | 351.19ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+2026/09/17 00:08:24 INFO agent session ended instance_name=pvg-esb4-202 session_count=18
+2026/09/17 00:08:24 INFO agent session ended instance_name=pvg4-esb-208 session_count=17
+2026/09/17 00:08:24 INFO agent session ended instance_name=pvg-esb4-201 session_count=16
+2026/09/17 00:08:25 INFO agent session ended instance_name=pvg-esb4-206 session_count=15
+2026/09/17 00:08:25 INFO agent session ended instance_name=cdm-179 session_count=14
+2026/09/17 00:08:25 INFO agent session ended instance_name=mysql136 session_count=13
+2026/09/17 00:08:25 INFO agent session ended instance_name=kul-tib-tomcat2 session_count=12
+2026/09/17 00:08:25 INFO agent session ended instance_name=mysql134 session_count=11
+2026/09/17 00:08:25 INFO agent session ended instance_name=177 session_count=10
+2026/09/17 00:08:25 INFO agent session ended instance_name=localhost session_count=9
+2026/09/17 00:08:25 INFO agent session ended instance_name=kul-tib-tomcat1 session_count=8
+2026/09/17 00:08:25 INFO agent session ended instance_name=tib-oracle session_count=7
+2026/09/17 00:08:25 INFO agent session established instance_name=pvg-esb4-202 session_count=8
+2026/09/17 00:08:25 INFO agent session established instance_name=pvg4-esb-208 session_count=9
+2026/09/17 00:08:25 INFO agent session established instance_name=pvg-esb4-201 session_count=10
+2026/09/17 00:08:26 INFO agent session ended instance_name=tib_nginx-208 session_count=9
+2026/09/17 00:08:26 INFO agent session ended instance_name=cdm-oracle-159 session_count=8
+2026/09/17 00:08:26 INFO agent session established instance_name=pvg-esb4-206 session_count=9
+2026/09/17 00:08:26 INFO agent session established instance_name=cdm-179 session_count=10
+2026/09/17 00:08:26 INFO agent session ended instance_name=mysql135 session_count=9
+2026/09/17 00:08:26 INFO agent session ended instance_name=pvg-esb4-207 session_count=8
+2026/09/17 00:08:26 INFO agent session ended instance_name=tib-es-redis-209 session_count=7
+2026/09/17 00:08:26 INFO agent session established instance_name=mysql136 session_count=8
+2026/09/17 00:08:26 INFO agent session established instance_name=kul-tib-tomcat2 session_count=9
+2026/09/17 00:08:26 INFO agent session established instance_name=mysql134 session_count=10
+2026/09/17 00:08:26 INFO agent session established instance_name=177 session_count=11
+2026/09/17 00:08:26 INFO agent session ended instance_name=pvg-esb4-204 session_count=10
+2026/09/17 00:08:26 INFO agent session established instance_name=localhost session_count=11
+2026/09/17 00:08:26 INFO agent session established instance_name=kul-tib-tomcat1 session_count=12
+2026/09/17 00:08:26 INFO agent session established instance_name=tib-oracle session_count=13
+2026/09/17 00:08:27 INFO agent session established instance_name=tib_nginx-208 session_count=14
+2026/09/17 00:08:27 INFO agent session established instance_name=cdm-oracle-159 session_count=15
+2026/09/17 00:08:27 INFO agent session established instance_name=mysql135 session_count=16
+2026/09/17 00:08:27 INFO agent session established instance_name=pvg-esb4-207 session_count=17
+2026/09/17 00:08:27 INFO agent session established instance_name=tib-es-redis-209 session_count=18
+2026/09/17 00:08:27 INFO agent session ended instance_name=cgk-oracle-10 session_count=17
+2026/09/17 00:08:27 INFO agent session established instance_name=pvg-esb4-204 session_count=18
+2026/09/17 00:08:28 INFO agent session established instance_name=cgk-oracle-10 session_count=19
+[GIN] 2026/09/17 - 00:08:33 | 200 | 361.34ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:08:49 | 200 | 448.91ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+[GIN] 2026/09/17 - 00:08:50 | 200 | 441.04ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"
+2026/09/17 00:09:01 [API-ERROR] GET /assets/hosts/: <nil>
+[GIN] 2026/09/17 - 00:09:01 | 200 | 145.569µs |  192.168.124.15 | GET      "/assets/hosts/"
+[GIN] 2026/09/17 - 00:09:03 | 200 | 425.95ms |   192.168.240.2 | GET      "/monitor/prometheus/http-sd/"
+[GIN] 2026/09/17 - 00:09:19 | 200 | 411.57ms |   192.168.240.2 | POST     "/monitor/alert-webhook/api/v2/alerts"

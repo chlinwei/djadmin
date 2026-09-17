@@ -7,11 +7,10 @@ import (
 
 func TestValidate_OK(t *testing.T) {
 	cfg := Config{
-		InstanceName:       "host-01",
-		LogLevel:           "info",
-		MaxWorkers:         2,
-		ShutdownTimeout:    5 * time.Second,
-		HostReportInterval: 40 * time.Second,
+		InstanceName:    "host-01",
+		LogLevel:        "info",
+		MaxWorkers:      2,
+		ShutdownTimeout: 5 * time.Second,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
@@ -20,11 +19,10 @@ func TestValidate_OK(t *testing.T) {
 
 func TestValidate_BadLogLevel(t *testing.T) {
 	cfg := Config{
-		InstanceName:       "host-01",
-		LogLevel:           "verbose",
-		MaxWorkers:         2,
-		ShutdownTimeout:    5 * time.Second,
-		HostReportInterval: 40 * time.Second,
+		InstanceName:    "host-01",
+		LogLevel:        "verbose",
+		MaxWorkers:      2,
+		ShutdownTimeout: 5 * time.Second,
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error, got nil")
@@ -36,7 +34,6 @@ func TestLoadFromEnv_Override(t *testing.T) {
 	t.Setenv("DJ_AGENT_LOG_LEVEL", "debug")
 	t.Setenv("DJ_AGENT_MAX_WORKERS", "7")
 	t.Setenv("DJ_AGENT_SHUTDOWN_TIMEOUT", "3s")
-	t.Setenv("DJ_AGENT_HOST_REPORT_INTERVAL", "55s")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -54,8 +51,5 @@ func TestLoadFromEnv_Override(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 3*time.Second {
 		t.Fatalf("ShutdownTimeout mismatch: %s", cfg.ShutdownTimeout)
-	}
-	if cfg.HostReportInterval != 55*time.Second {
-		t.Fatalf("HostReportInterval mismatch: %s", cfg.HostReportInterval)
 	}
 }

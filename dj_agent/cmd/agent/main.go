@@ -36,7 +36,6 @@ func run() error {
 		"max_workers", cfg.MaxWorkers,
 		"shutdown_timeout", cfg.ShutdownTimeout.String(),
 		"grpc_file_addr", cfg.GRPCFileAddr,
-		"host_report_interval_fallback", cfg.HostReportInterval.String(),
 	)
 
 	if err := app.New(cfg).Run(); err != nil {

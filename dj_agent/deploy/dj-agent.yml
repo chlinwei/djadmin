@@ -11,7 +11,6 @@
     dj_agent_service_path: /usr/lib/systemd/system/dj-agent.service
     dj_agent_run_user: root
     dj_agent_log_level: info
-    dj_agent_host_report_interval: 40s
     dj_agent_binary_source: "{{ playbook_dir }}/../bin/dj-agent"
     dj_agent_backend_grpc_addr: "127.0.0.1:19090"
     # 实例名（必填）：与 frontend 创建主机时填的 instance_name 保持一致。

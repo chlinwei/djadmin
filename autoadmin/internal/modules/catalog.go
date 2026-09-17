@@ -34,6 +34,6 @@ var Catalog = []Module{
 		"assets_application_service", "assets_application_deployment", "assets_application_service_deployment", "assets_application_port",
 		"assets_application_path", "assets_application_config_file", "assets_application_log_definition", "assets_application_service_log_setting",
 		"assets_application_control_action", "assets_docker_control_config", "assets_docker_compose_control_config", "assets_agent_job",
-		"assets_agent_job_event", "assets_webssh_session_log", "assets_webssh_temp_credential",
+		"assets_webssh_session_log", "assets_webssh_temp_credential",
 	}},
 }

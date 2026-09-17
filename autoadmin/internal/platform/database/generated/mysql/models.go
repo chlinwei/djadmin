@@ -43,18 +43,6 @@ type AssetsAgentJob struct {
 	Stdout          string          `json:"stdout"`
 }
 
-type AssetsAgentJobEvent struct {
-	ID         int64           `json:"id"`
-	CreateTime time.Time       `json:"create_time"`
-	UpdateTime time.Time       `json:"update_time"`
-	Remark     sql.NullString  `json:"remark"`
-	Tag        string          `json:"tag"`
-	JobID      string          `json:"job_id"`
-	AgentID    string          `json:"agent_id"`
-	EventType  string          `json:"event_type"`
-	Payload    json.RawMessage `json:"payload"`
-}
-
 type AssetsApplication struct {
 	ID          int64          `json:"id"`
 	CreateTime  time.Time      `json:"create_time"`
@@ -1061,7 +1049,7 @@ type SecurityScanTarget struct {
 
 type SysAgentToken struct {
 	ID          int32          `json:"id"`
-	AgentID     string         `json:"agent_id"`
+	ApiID       string         `json:"api_id"`
 	TokenHash   string         `json:"token_hash"`
 	Name        sql.NullString `json:"name"`
 	IsActive    bool           `json:"is_active"`

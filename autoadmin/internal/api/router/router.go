@@ -187,7 +187,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	}
 	assetsHandler := assets.NewHandler(assetsService, gateway, "")
 	assets.SetDeploymentGateway(gateway)
-	engine.GET("/api/agent/jobs/query", middleware.Authenticate(tokens), assetsHandler.QueryAgentJobs)
 	// 与 /api/agent/install 相同的中间件链：安装包管理直接影响主机上的 Agent 二进制，权限口径一致。
 	agentPackages := engine.Group("/api/agent/packages", middleware.Authenticate(tokens), middleware.RequirePermission("assets:hosts:update"))
 	agentPackages.GET("/", assetsHandler.ListAgentPackages)
@@ -240,7 +239,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 
 	hosts := engine.Group("/assets/hosts", middleware.Authenticate(tokens))
 	hosts.GET("/:id/webssh/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.WebSSH)
-	hosts.GET("/:id/agent-runtime-status/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.GetHostAgentRuntimeStatus)
 	hosts.GET("/:id/webssh-active-count/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.GetHostWebSSHActiveCount)
 	hosts.GET("/:id/webssh-active-sessions/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.GetHostWebSSHActiveSessions)
 	hosts.GET("/:id/files/list/", middleware.RequirePermission("assets:hosts:view"), assetsHandler.ListWebSSHFiles)

@@ -8,25 +8,25 @@ import (
 	"strings"
 
 	"autoadmin/internal/api/response"
+	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Fluent Bit 配置片段渲染：按主机上启用的逻辑服务×日志定义生成 inputs.d/outputs.d 片段。
-// 职责分层：多行合并在 Fluent Bit 侧（MULTILINE_PARSER，必须在发送前完成），
-// 字段提取/时间戳归一由 OpenSearch ingest pipeline（处理规则 pipeline_body）承担；
-// INPUT 做 tail+Tag+维度字段注入，OUTPUT 的 Index 用 LogDataStreamName（服务级命名）。
+// Filebeat 采集配置渲染：按主机上启用的 逻辑服务×日志定义×实例 生成
+// /etc/filebeat/inputs.d/<app>__<svc>__<log>.yml。
+//
+// 职责分层：多行合并由 Filebeat filestream 的 multiline parser 在发送前完成；
+// 字段提取/时间戳归一由 Elasticsearch ingest pipeline（处理规则 pipeline_body）承担；
+// input 做文件监听 + 维度字段注入，index 用 LogDataStreamName（服务级数据流命名）。
+// output（Elasticsearch 地址/账号）与 filebeat.config.inputs 在主配置 filebeat.yml，
+// 由 agent 的 configure_filebeat_output 下发。
+//
 // 渲染是纯函数（数据由 loader 填充），与 SQL 解耦，便于单测。
 
 const (
-	fluentBitInputsDir  = "/etc/fluent-bit/inputs.d"
-	fluentBitOutputsDir = "/etc/fluent-bit/outputs.d"
-	fluentBitDBDir      = "/var/lib/fluent-bit/db"
-	// MULTILINE_PARSER 不允许出现在主配置（含 @INCLUDE 片段），必须由
-	// [SERVICE] 的 parsers_file 指令加载（Fluent Bit v4 强校验，违者启动失败）。
-	// 文件名与 fluentBitMainConfig() 的 Parsers_File 行保持同一契约。
-	fluentBitParsersFile    = "/etc/fluent-bit/parsers.d/djadmin-multiline.conf"
-	fluentBitMainConfigPath = "/etc/fluent-bit/fluent-bit.conf"
+	filebeatInputsDir = "/etc/filebeat/inputs.d"
+	filebeatDataDir   = "/var/lib/filebeat"
 )
 
 type logConfigFragment struct {
@@ -44,7 +44,7 @@ type renderedHostLogConfig struct {
 // hostLogRenderInput 渲染所需的全部维度数据（由 loadHostLogRenderInput 查询填充）。
 type hostLogRenderInput struct {
 	Prefix         string
-	Application    string // 应用 code（Tag 首段）
+	Application    string // 应用 code
 	Service        string // 逻辑服务 code
 	Instance       string // 实例名（deployment.instance_name）
 	Project        string
@@ -60,9 +60,9 @@ type hostLogRenderInput struct {
 	FlushTimeout   int64  // 多行 flush 超时（毫秒，处理规则）
 }
 
-// fragmentBaseName 片段文件名：backend__service__logname.conf（与 Django 时代约定一致）。
-func fragmentBaseName(application, service, logName string) string {
-	return fmt.Sprintf("%s__%s__%s.conf", application, service, logName)
+// configBaseName inputs.d 文件名基名：<app>__<service>__<logname>（不带后缀）。
+func configBaseName(application, service, logName string) string {
+	return fmt.Sprintf("%s__%s__%s", application, service, logName)
 }
 
 // resolveMacros 合并服务级与服务实例级变量，替换路径中的 ${VAR}；未定义的保持原样。
@@ -80,28 +80,27 @@ func resolveMacros(path string, macroSets ...map[string]string) string {
 	return result
 }
 
-// renderHostLogConfig 纯函数：为单主机生成 inputs.d/outputs.d 片段与指纹。
-// 每个服务×日志定义产出一个 input 文件（内含各实例的 [INPUT]）和一个 output 文件。
+// yamlScalar 用单引号包裹 YAML 标量（单引号转义为两个），保证路径/正则/维度值里的
+// 反斜杠、冒号、引号等不会被 YAML 误解析。
+func yamlScalar(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// renderHostLogConfig 纯函数：每个 服务×日志定义 一个 inputs.d/<base>.yml，文件内每个实例一个
+// filestream input（instance/host_ip 等维度必须按实例区分，不能合并成单 input 多 paths）。
 func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceInput) renderedHostLogConfig {
-	// input/output 片段按 服务×日志定义 聚合，实例聚合进同一文件
 	type fragmentPair struct {
-		inputs  []string
-		output  string
-		base    string
-		service string
-		logName string
+		base   string
+		inputs []string
 	}
 	pairs := map[string]*fragmentPair{}
 	order := []string{}
 	warnings := []string{}
-	parsersSections := []string{}
 
 	instancesByService := map[string][]hostInstanceInput{}
 	for _, instance := range instances {
 		instancesByService[instance.Service] = append(instancesByService[instance.Service], instance)
 	}
-
-	// 服务实例排序保证渲染稳定
 	for key := range instancesByService {
 		list := instancesByService[key]
 		sort.Slice(list, func(i, j int) bool { return list[i].Instance < list[j].Instance })
@@ -109,127 +108,76 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	}
 
 	for _, entry := range entries {
-		base := fragmentBaseName(entry.Application, entry.Service, entry.LogName)
+		base := configBaseName(entry.Application, entry.Service, entry.LogName)
 		pair, exists := pairs[base]
 		if !exists {
-			pair = &fragmentPair{base: base, service: entry.Service, logName: entry.LogName}
+			pair = &fragmentPair{base: base}
 			pairs[base] = pair
 			order = append(order, base)
 		}
 		indexName := LogDataStreamName(entry.Prefix, entry.Project, entry.Environment, entry.BusinessSystem, entry.Service, entry.Tier)
-		multilineName := ""
-		if entry.Multiline && strings.TrimSpace(entry.StartPattern) != "" {
-			multilineName = fmt.Sprintf("multiline_%s.%s.%s", entry.Application, entry.Service, entry.LogName)
-			timeout := entry.FlushTimeout
-			if timeout <= 0 {
-				timeout = 2000
-			}
-			// 多行合并必须在发送前（Fluent Bit）完成：ingest pipeline 拿到的已是按行
-			// 拆开的独立文档，无法回溯合并。continuation 规则用负向前瞻锚定首行正则。
-			// 注意 section 落在独立 parsers 文件（见 fluentBitParsersFile），不能进主配置。
-			parsersSections = append(parsersSections, strings.Join([]string{
-				"[MULTILINE_PARSER]",
-				fmt.Sprintf("    Name          %s", multilineName),
-				"    Type          regex",
-				fmt.Sprintf("    Flush_Timeout %d", timeout),
-				fmt.Sprintf("    Rule          \"start_state\" \"/%s/\" \"continuation\"", entry.StartPattern),
-				fmt.Sprintf("    Rule          \"continuation\" \"/^(?!%s)/\" \"continuation\"", entry.StartPattern),
-			}, "\n")+"\n")
-		}
-		pair.output = strings.Join([]string{
-			"[OUTPUT]",
-			"    Name                opensearch",
-			fmt.Sprintf("    Match               %s.%s.*.%s", entry.Application, entry.Service, entry.LogName),
-			"    Host                ${OS_HOST}",
-			"    Port                ${OS_PORT}",
-			"    HTTP_User           ${OS_USER}",
-			"    HTTP_Passwd         ${OS_PASSWORD}",
-			"    tls                 On",
-			"    tls.verify          Off",
-			fmt.Sprintf("    Index               %s", indexName),
-		}, "\n") + "\n"
-		if entry.Pipeline != "" {
-			pair.output += fmt.Sprintf("    Pipeline            %s\n", entry.Pipeline)
-		}
-		pair.output += "    Suppress_Type_Name  On\n    Retry_Limit         5\n"
-
 		for _, instance := range instancesByService[entry.Service] {
 			resolved := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
-			// 含未展开宏的路径会导致 Fluent Bit 监听不到任何文件（${VAR} 未定义时
-			// tail 静默失败），必须跳过该实例并记录告警，不允许带病下发。
+			// 含未展开宏的路径会导致 Filebeat 监听不到任何文件，必须跳过该实例并记录告警。
 			if strings.Contains(resolved, "${") {
 				warnings = append(warnings, fmt.Sprintf(
 					"服务 %s 实例 %s 日志 %s 的路径含未定义宏，已跳过: %s",
 					entry.Service, instance.Instance, entry.LogName, resolved))
 				continue
 			}
-			tag := strings.Join([]string{entry.Application, entry.Service, instance.Instance, entry.LogName}, ".")
-			dbFile := fmt.Sprintf("%s/%s__%s__%s__%s.db", fluentBitDBDir, entry.Application, entry.Service, instance.Instance, entry.LogName)
-			// 属性名必须用 Fluent Bit 官方下划线风格（v4 不再兼容驼峰，
-			// 驼峰会让 fluent-bit 启动失败：unknown configuration property）。
-			inputLines := []string{
-				"[INPUT]",
-				"    Name              tail",
-				fmt.Sprintf("    Path              %s", resolved),
-				fmt.Sprintf("    Tag               %s", tag),
-				"    refresh_interval  5",
-				"    rotate_wait       30",
-				fmt.Sprintf("    DB                %s", dbFile),
-				"    mem_buf_limit     10MB",
-			}
-			if multilineName != "" {
-				inputLines = append(inputLines, fmt.Sprintf("    Multiline.parser  %s", multilineName))
-			}
-			pair.inputs = append(pair.inputs, strings.Join(inputLines, "\n")+"\n")
-			// 维度字段注入：OpenSearch 侧的日志检索按 service/instance/host_ip 等
-			// term 过滤（buildLogQuery），没有这些字段就查不到任何日志。每实例一条
-			// record_modifier，Match 精确到实例 Tag。
-			filterLines := []string{
-				"[FILTER]",
-				"    Name    record_modifier",
-				fmt.Sprintf("    Match   %s", tag),
-				fmt.Sprintf("    Record  service %s", entry.Service),
-				fmt.Sprintf("    Record  instance %s", instance.Instance),
-				fmt.Sprintf("    Record  application %s", entry.Application),
-				fmt.Sprintf("    Record  log_name %s", entry.LogName),
-				fmt.Sprintf("    Record  business_system %s", entry.BusinessSystem),
-				fmt.Sprintf("    Record  environment %s", entry.Environment),
+			lines := []string{
+				"- type: filestream",
+				fmt.Sprintf("  id: %s", yamlScalar(base+"__"+instance.Instance)),
+				"  enabled: true",
+				"  paths:",
+				fmt.Sprintf("    - %s", yamlScalar(resolved)),
+				"  fields_under_root: true",
+				"  fields:",
+				fmt.Sprintf("    service: %s", yamlScalar(entry.Service)),
+				fmt.Sprintf("    instance: %s", yamlScalar(instance.Instance)),
+				fmt.Sprintf("    application: %s", yamlScalar(entry.Application)),
+				fmt.Sprintf("    log_name: %s", yamlScalar(entry.LogName)),
+				fmt.Sprintf("    business_system: %s", yamlScalar(entry.BusinessSystem)),
+				fmt.Sprintf("    environment: %s", yamlScalar(entry.Environment)),
 			}
 			if instance.HostIP != "" {
-				filterLines = append(filterLines, fmt.Sprintf("    Record  host_ip %s", instance.HostIP))
+				lines = append(lines, fmt.Sprintf("    host_ip: %s", yamlScalar(instance.HostIP)))
 			}
-			pair.inputs = append(pair.inputs, strings.Join(filterLines, "\n")+"\n")
+			lines = append(lines, fmt.Sprintf("  index: %s", yamlScalar(indexName)))
+			if entry.Pipeline != "" {
+				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。
+				lines = append(lines, fmt.Sprintf("  pipeline: %s", yamlScalar(processingPipelineName(entry.Prefix, entry.Application, entry.Pipeline))))
+			}
+			if entry.Multiline && strings.TrimSpace(entry.StartPattern) != "" {
+				timeout := entry.FlushTimeout
+				if timeout <= 0 {
+					timeout = 2000
+				}
+				lines = append(lines,
+					"  parsers:",
+					"    - multiline:",
+					fmt.Sprintf("        pattern: %s", yamlScalar(entry.StartPattern)),
+					"        negate: true",
+					"        match: after",
+					fmt.Sprintf("        timeout: %s", yamlScalar(fmt.Sprintf("%dms", timeout))),
+				)
+			}
+			pair.inputs = append(pair.inputs, strings.Join(lines, "\n")+"\n")
 		}
 	}
 
 	fragments := []logConfigFragment{}
 	for _, base := range order {
 		pair := pairs[base]
-		// 全部实例都被跳过时不产出任何片段（避免只有 OUTPUT 没有 INPUT 的死配置）
 		if len(pair.inputs) == 0 {
 			continue
 		}
-		fragments = append(fragments, logConfigFragment{Path: fluentBitInputsDir + "/" + base, Content: strings.Join(pair.inputs, "\n")})
-		if pair.output != "" {
-			fragments = append(fragments, logConfigFragment{Path: fluentBitOutputsDir + "/" + base, Content: pair.output})
-		}
+		fragments = append(fragments, logConfigFragment{Path: filebeatInputsDir + "/" + base + ".yml", Content: strings.Join(pair.inputs, "\n")})
 	}
 	sort.Slice(fragments, func(i, j int) bool { return fragments[i].Path < fragments[j].Path })
-	if len(parsersSections) > 0 {
-		fragments = append(fragments, logConfigFragment{
-			Path:    fluentBitParsersFile,
-			Content: strings.Join(parsersSections, "\n"),
-		})
-		sort.Slice(fragments, func(i, j int) bool { return fragments[i].Path < fragments[j].Path })
-	}
-	// tail 的 DB offset 文件都在 /var/lib/fluent-bit/db 下；agent 只对片段文件做
-	// MkdirAll，目录不存在时 fluent-bit 打不开 DB 会启动失败（sqldb cannot open
-	// database）。放一个占位文件让 agent 顺带把目录建出来。
+	// registry/data 目录由 agent 对文件路径做 MkdirAll 时顺带建出。
 	if len(fragments) > 0 {
-		fragments = append(fragments, logConfigFragment{
-			Path:    fluentBitDBDir + "/.keep",
-			Content: "",
-		})
+		fragments = append(fragments, logConfigFragment{Path: filebeatDataDir + "/.keep", Content: ""})
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%v", fragments)))
 	return renderedHostLogConfig{
@@ -320,7 +268,7 @@ func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int6
 			return nil, nil, err
 		}
 		entry = hostLogRenderInput{
-			Prefix: "logs", Application: application, Service: serviceCode,
+			Prefix: "autoadmin", Application: application, Service: serviceCode,
 			Project: projectCode, Environment: environmentCode, BusinessSystem: businessSystemCode,
 			Tier: tier, Pipeline: pipeline, LogName: logName,
 			ResolvedPath: pathPattern, Macros: parseMacroJSON(macroValuesRaw),
@@ -360,7 +308,7 @@ func parseMacroJSON(raw string) map[string]string {
 	return result
 }
 
-// GetHostLogConfigPreview 预览采集目标主机的 Fluent Bit 片段（不下发）：路由参数为采集目标 id。
+// GetHostLogConfigPreview 预览采集目标主机的 Filebeat inputs 片段（不下发）：路由参数为采集目标 id。
 func (handler *Handler) GetHostLogConfigPreview(context *gin.Context) {
 	row, err := loadLogTarget(context, handler.db, parseID(context.Param("id")))
 	if err != nil {
@@ -371,6 +319,12 @@ func (handler *Handler) GetHostLogConfigPreview(context *gin.Context) {
 	if err != nil {
 		response.Error(context, err)
 		return
+	}
+	// 与下发一致：索引前缀/数据流名/pipeline 名都用默认集群的 index_prefix。
+	if cluster, clusterErr := db.New(handler.db).GetDefaultEnabledElasticsearchCluster(context); clusterErr == nil {
+		for index := range entries {
+			entries[index].Prefix = cluster.IndexPrefix
+		}
 	}
 	rendered := renderHostLogConfig(entries, instances)
 	response.Success(context, rendered)

@@ -257,4 +257,3 @@ assertions contains a if {
 		t.Fatalf("expected 1 violation, got err=%v defined=%v items=%d", err, defined, len(items))
 	}
 }
-

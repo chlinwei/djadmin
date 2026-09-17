@@ -31,8 +31,15 @@ type Handler struct {
 	secrets     *assets.SecretEncryptor
 	packageRoot string
 	jobs        *automation.Handler
+	// 目标安装缺少主机平台/架构信息时主动补采一次资产信息（由 assets 域注入，避免 monitor 反向依赖采集实现）。
+	refreshHostInfo func(ctx context.Context, hostID int64) error
 	// 告警通知的 SMTP 发信能力，缺省 sendSMTPMedia；单测可注入假实现。
 	smtpSend smtpSender
+}
+
+// SetHostInfoRefresher 注入主机资产补采能力（assets.Handler.RefreshHostInfoByID）。
+func (handler *Handler) SetHostInfoRefresher(refresher func(ctx context.Context, hostID int64) error) {
+	handler.refreshHostInfo = refresher
 }
 
 func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, encryptionKey, djangoSecret string) (*Handler, error) {
@@ -48,6 +55,8 @@ func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, en
 	}
 	handler := &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}
 	handler.smtpSend = handler.handlerSendSMTP
+	// 给历史 Filebeat 软件包补默认安装/卸载 Playbook（没配的补齐到软件包配置里）。
+	handler.backfillFilebeatPackagePlaybooks()
 	// 失联对账 ticker：单实例部署，进程内唯一 goroutine，随进程退出终止（无需优雅停止）。
 	go handler.reconcileStaleAlertsLoop()
 	return handler, nil

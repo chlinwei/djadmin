@@ -43,7 +43,7 @@ func TestBootstrapIndexTemplateUsesTemplateSuffix(t *testing.T) {
 
 	handler := &Handler{db: database}
 	ginContext, _ := gin.CreateTestContext(nil)
-	if err := handler.bootstrapOpenSearchStorage(ginContext, openSearchCluster{Hosts: server.URL, IndexPrefix: "logs", Timeout: 5}); err != nil {
+	if err := handler.bootstrapElasticsearchStorage(ginContext, elasticsearchCluster{Hosts: server.URL, IndexPrefix: "logs", Timeout: 5}); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 

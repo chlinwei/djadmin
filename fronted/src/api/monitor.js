@@ -157,51 +157,51 @@ export function cancelMonitorInstallHistory(id) {
   return requestUtil.post(prefix + `install-histories/${id}/cancel/`)
 }
 
-export function getOpenSearchClusterList(params) {
-  return requestUtil.get(prefix + 'opensearch-clusters/', params)
+export function getElasticsearchClusterList(params) {
+  return requestUtil.get(prefix + 'elasticsearch-clusters/', params)
 }
 
-export function saveOpenSearchCluster(data) {
+export function saveElasticsearchCluster(data) {
   return data.id
-    ? requestUtil.patch(prefix + `opensearch-clusters/${data.id}/`, data)
-    : requestUtil.post(prefix + 'opensearch-clusters/', data)
+    ? requestUtil.patch(prefix + `elasticsearch-clusters/${data.id}/`, data)
+    : requestUtil.post(prefix + 'elasticsearch-clusters/', data)
 }
 
-export function batchDeleteOpenSearchClusters(ids) {
-  return requestUtil.post(prefix + 'opensearch-clusters/batch-delete/', { ids })
+export function batchDeleteElasticsearchClusters(ids) {
+  return requestUtil.post(prefix + 'elasticsearch-clusters/batch-delete/', { ids })
 }
 
-export function testOpenSearchCluster(id) {
-  return requestUtil.post(prefix + `opensearch-clusters/${id}/test-connection/`, {})
+export function testElasticsearchCluster(id) {
+  return requestUtil.post(prefix + `elasticsearch-clusters/${id}/test-connection/`, {})
 }
 
 // 日志采集链路逐层对账（只读）：索引模板 / 保留策略 / 解析规则 / 主机配置 / 采集进程 / 数据写入
 export function getLogPipelineHealth(id) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-health/`)
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-health/`)
 }
 
-export function simulateOpenSearchPipeline(id, payload) {
-  return requestUtil.post(prefix + `opensearch-clusters/${id}/pipeline-simulate/`, payload)
+export function simulateElasticsearchPipeline(id, payload) {
+  return requestUtil.post(prefix + `elasticsearch-clusters/${id}/pipeline-simulate/`, payload)
 }
 
 // 按逻辑服务查询原始日志：params 仅支持后端白名单字段（application_service_id/start/end/keyword/log_level/instance/host_ip/log_name/error_fingerprint/size/offset）
-export function searchOpenSearchLogs(id, params) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-search/`, params)
+export function searchElasticsearchLogs(id, params) {
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-search/`, params)
 }
 
 // 通用分面统计：params.field 必须是后端白名单字段之一，返回按该字段聚合的计数/样例/时间趋势
-export function searchOpenSearchLogFacetStats(id, params) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-facet-stats/`, params)
+export function searchElasticsearchLogFacetStats(id, params) {
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-facet-stats/`, params)
 }
 
-// 存储水位总览：data stream 运行态（大小/docs/rollover/ISM）+ 节点磁盘 + 服务树维度数据
+// 存储水位总览：data stream 运行态（大小/docs/rollover/ILM）+ 节点磁盘 + 服务树维度数据
 export function getLogStorageOverview(id) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-storage-overview/`)
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-storage-overview/`)
 }
 
 // 逻辑服务写入量：terms 聚合文档数（非磁盘占用口径），params: business_system/environment/days
 export function getLogServiceUsage(id, params) {
-  return requestUtil.get(prefix + `opensearch-clusters/${id}/log-service-usage/`, params)
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-service-usage/`, params)
 }
 
 export function getLogProcessingRules(params) {
@@ -232,7 +232,7 @@ export function batchDeleteLogCollectionFilterRules(ids) {
   return requestUtil.post(prefix + 'log-collection-filter-rules/batch-delete/', { ids })
 }
 
-// 日志保留档位：档位即 data stream 后缀，保存后后端会把 ISM policy 重新下发到集群
+// 日志保留档位：档位即 data stream 后缀，保存后后端会把 ILM policy 重新下发到集群
 export function getLogRetentionTiers(params) {
   return requestUtil.get(prefix + 'log-retention-tiers/', params)
 }

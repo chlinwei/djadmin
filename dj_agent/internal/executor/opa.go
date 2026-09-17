@@ -401,8 +401,6 @@ func firstNonEmptyStrings(values ...string) string {
 	return ""
 }
 
-
-
 func asExitError(err error, target **exec.ExitError) bool {
 	exitErr, ok := err.(*exec.ExitError)
 	if ok {

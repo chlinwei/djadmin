@@ -22,7 +22,7 @@ import (
 // exporter 监控目标（monitor_target）的人工重试/重新下发，对应 Django retry action。
 // 前端"重新下发"按钮对 install_status 不做限制（失败重试 + 修复历史遗留），
 // 后端只看 managed_enabled 决定装还是卸；安装/卸载复用监控软件仓库绑定 playbook，
-// 与 Fluent Bit 派发同链路（automation_execution_job + monitor_target_install_history）。
+// 与 Filebeat 派发同链路（automation_execution_job + monitor_target_install_history）。
 // 业务失败（无 agent/无包/无 playbook/文件缺失）沿用 Django 行为：把原因写入
 // target.install_message 后仍返回目标对象，只有数据库错误才走 400。
 
@@ -284,7 +284,18 @@ func (handler *Handler) prepareExporterDispatch(ginContext *gin.Context, target 
 	}
 	family, major, arch := normalizeExporterPlatform(target)
 	if arch == "" {
-		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", "主机架构信息缺失，请先执行资产采集")
+		// 架构来自资产采集（hosthardware）。缺了就先自动补采一次再继续选包，省去用户
+		// 先手动去主机页采集再回来重试。补采失败/agent 离线时才回退到原来的提示。
+		if handler.refreshHostInfo != nil && target.HostID != 0 {
+			if refreshErr := handler.refreshHostInfo(ginContext, target.HostID); refreshErr == nil {
+				if refreshed, loadErr := loadMonitorTargetRow(ginContext, handler.db, target.ID); loadErr == nil {
+					family, major, arch = normalizeExporterPlatform(refreshed)
+				}
+			}
+		}
+	}
+	if arch == "" {
+		return noop, 0, nil, handler.setTargetInstallState(ginContext, target.ID, "failed", "主机架构信息缺失且自动采集未获取到，请确认 agent 在线后重试（或先执行资产采集）")
 	}
 	// 包格式取决于平台族（rhel→rpm、ubuntu/debian→deb），架构只参与 family/arch 匹配键。
 	expectedFormat := map[string]string{"rhel": "rpm", "ubuntu": "deb", "debian": "deb"}[family]

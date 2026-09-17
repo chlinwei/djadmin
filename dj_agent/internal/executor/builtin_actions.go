@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,19 +19,25 @@ import (
 )
 
 const (
-	actionGetAgentVersion              = "get_agent_version"
-	actionGetHostInfo                  = "get_host_info"
-	actionGetLocalAddresses            = "get_local_addresses"
-	actionSyncAutomationSSHKey         = "sync_automation_ssh_key"
-	actionStartExporter                = "start_exporter"
-	actionStopExporter                 = "stop_exporter"
-	actionCheckExporterStatus          = "check_exporter_status"
-	actionCheckApplicationBaseline     = "check_application_baseline"
-	actionControlApplication           = "control_application"
-	actionReloadFluentBit              = "reload_fluent_bit"
-	actionConfigureFluentBitOpenSearch = "configure_fluent_bit_opensearch"
-	actionApplyFluentBitConfig         = "apply_fluent_bit_config"
-	actionApplyAgentUpdate             = "apply_agent_update"
+	actionGetAgentVersion          = "get_agent_version"
+	actionGetHostInfo              = "get_host_info"
+	actionGetLocalAddresses        = "get_local_addresses"
+	actionSyncAutomationSSHKey     = "sync_automation_ssh_key"
+	actionStartExporter            = "start_exporter"
+	actionStopExporter             = "stop_exporter"
+	actionCheckExporterStatus      = "check_exporter_status"
+	actionCheckApplicationBaseline = "check_application_baseline"
+	actionControlApplication       = "control_application"
+	actionConfigureFilebeatOutput  = "configure_filebeat_output"
+	actionApplyFilebeatConfig      = "apply_filebeat_config"
+	actionApplyAgentUpdate         = "apply_agent_update"
+)
+
+const (
+	filebeatMainConfigPath = "/etc/filebeat/filebeat.yml"
+	filebeatInputsDir      = "/etc/filebeat/inputs.d"
+	// 官方便携 tar.gz 解压后的二进制路径；PATH 里没有时兜底用它做 test config。
+	filebeatBinaryPath = "/opt/filebeat/filebeat"
 )
 
 const (
@@ -64,12 +69,10 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.checkApplicationBaseline(ctx, job), true
 	case actionControlApplication:
 		return e.controlApplication(ctx, job), true
-	case actionReloadFluentBit:
-		return e.reloadFluentBit(ctx, job), true
-	case actionConfigureFluentBitOpenSearch:
-		return e.configureFluentBitOpenSearch(ctx, job), true
-	case actionApplyFluentBitConfig:
-		return e.applyFluentBitConfig(ctx, job), true
+	case actionConfigureFilebeatOutput:
+		return e.configureFilebeatOutput(ctx, job), true
+	case actionApplyFilebeatConfig:
+		return e.applyFilebeatConfig(ctx, job), true
 	case actionApplyAgentUpdate:
 		return e.applyAgentUpdate(ctx, job), true
 	default:
@@ -111,53 +114,90 @@ func writeFileIfChanged(path string, content []byte, mode os.FileMode) (bool, er
 	return true, nil
 }
 
-func (e *Executor) configureFluentBitOpenSearch(ctx context.Context, job protocol.Job) protocol.JobResult {
+// yamlQuote 用单引号包裹 YAML 标量（单引号转义为两个），密码/URL 里的特殊字符不会被误解析。
+func yamlQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// filebeatExecutable 优先用 PATH 里的 filebeat，缺失时回退官方便携包解压路径。
+func filebeatExecutable() string {
+	if path, err := exec.LookPath("filebeat"); err == nil {
+		return path
+	}
+	return filebeatBinaryPath
+}
+
+// validateFilebeatConfig 用 `filebeat test config` 校验主配置，避免带病重启。
+func validateFilebeatConfig(ctx context.Context, path string) error {
+	output, err := exec.CommandContext(ctx, filebeatExecutable(), "test", "config", "-c", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("filebeat test config failed: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// configureFilebeatOutput 写 Filebeat 主配置（output.elasticsearch + 托管 inputs.d），
+// 校验通过后重启。地址/账号/TLS 开关来自 backend 的默认 Elasticsearch 集群。
+func (e *Executor) configureFilebeatOutput(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
-	host := strings.TrimSpace(fmt.Sprint(job.Params["host"]))
-	port := strings.TrimSpace(fmt.Sprint(job.Params["port"]))
+	url := strings.TrimSpace(fmt.Sprint(job.Params["url"]))
 	username := fmt.Sprint(job.Params["username"])
 	password := fmt.Sprint(job.Params["password"])
-	if host == "" || port == "" {
-		return failedJobResult(job, started, fmt.Errorf("OpenSearch host and port are required"))
+	if url == "" {
+		return failedJobResult(job, started, fmt.Errorf("elasticsearch url is required"))
 	}
-	envContent := []byte(fmt.Sprintf("OS_HOST=%s\nOS_PORT=%s\nOS_USER=%s\nOS_PASSWORD=%s\n", host, port, username, password))
-	dropInContent := []byte("[Service]\nEnvironmentFile=/etc/fluent-bit/djadmin-opensearch.env\n")
-	envChanged, err := writeFileIfChanged("/etc/fluent-bit/djadmin-opensearch.env", envContent, 0o600)
+	verification := "none"
+	if strings.EqualFold(fmt.Sprint(job.Params["verify_tls"]), "true") {
+		verification = "full"
+	}
+	mainConfig := strings.Join([]string{
+		"filebeat.inputs: []",
+		"filebeat.config.inputs:",
+		"  enabled: true",
+		"  path: " + filebeatInputsDir + "/*.yml",
+		"  reload.enabled: true",
+		"  reload.period: 10s",
+		"output.elasticsearch:",
+		"  hosts: [" + yamlQuote(url) + "]",
+		"  username: " + yamlQuote(username),
+		"  password: " + yamlQuote(password),
+		"  ssl.verification_mode: " + verification,
+		"",
+	}, "\n")
+	changed, err := writeFileIfChanged(filebeatMainConfigPath, []byte(mainConfig), 0o600)
 	if err != nil {
 		return failedJobResult(job, started, err)
 	}
-	dropInChanged, err := writeFileIfChanged("/etc/systemd/system/fluent-bit.service.d/djadmin.conf", dropInContent, 0o644)
-	if err != nil {
-		return failedJobResult(job, started, err)
-	}
-	if envChanged || dropInChanged {
-		if output, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
-			return failedJobResult(job, started, fmt.Errorf("systemd daemon-reload failed: %s", strings.TrimSpace(string(output))))
+	if changed {
+		if err := validateFilebeatConfig(ctx, filebeatMainConfigPath); err != nil {
+			return failedJobResult(job, started, err)
 		}
-		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "fluent-bit.service").CombinedOutput(); err != nil {
-			return failedJobResult(job, started, fmt.Errorf("Fluent Bit restart failed: %s", strings.TrimSpace(string(output))))
+		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "filebeat.service").CombinedOutput(); err != nil {
+			return failedJobResult(job, started, fmt.Errorf("Filebeat restart failed: %s", strings.TrimSpace(string(output))))
 		}
 	}
 	finished := time.Now()
 	return protocol.JobResult{JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess, ExitCode: 0, StartedAt: started, FinishedAt: finished, CostMS: finished.Sub(started).Milliseconds()}
 }
 
-// applyFluentBitConfig 写入 backend 渲染好的 Fluent Bit 配置片段（inputs.d/outputs.d），
-// 任一文件有变化则重启 fluent-bit。文件内容全部由 backend 渲染，agent 只做落盘与重启，
-// 不理解片段语义——保持 agent 与配置格式的解耦，格式演进只动 backend。
-func (e *Executor) applyFluentBitConfig(ctx context.Context, job protocol.Job) protocol.JobResult {
+// applyFilebeatConfig 写入 backend 渲染好的 inputs.d/*.yml；目录由 backend 全量托管，
+// 不在本次清单内的 *.yml 视为遗留片段删除。有变化则校验并重启 Filebeat。
+// 文件内容全部由 backend 渲染，agent 只做落盘/清理/重启，不理解片段语义。
+func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) protocol.JobResult {
 	started := time.Now()
 	rawFiles, ok := job.Params["files"].([]any)
-	if !ok || len(rawFiles) == 0 {
+	if !ok {
 		return failedJobResult(job, started, fmt.Errorf("files is required"))
 	}
 	changed := []string{}
 	removed := []string{}
-	// 片段目录由 backend 全量托管（渲染结果即该主机期望的完整片段集合），
-	// 目录中不在本次清单内的 *.conf 一律视为遗留片段（改名/服务下线后残留），
-	// 残留片段的 Match 与新片段重叠时会造成同一条日志重复写入多条流，必须删除。
 	delivered := map[string]bool{}
 	dirs := map[string]bool{}
+	// files 为空表示"该主机当前没有任何启用的日志采集"：仍要清理 inputs.d 里的旧片段并重启，
+	// 不能因为空列表报错（否则目标永远下发失败、/etc/filebeat 也建不出来）。
+	if len(rawFiles) == 0 {
+		dirs[filebeatInputsDir] = true
+	}
 	for _, rawFile := range rawFiles {
 		file, _ := rawFile.(map[string]any)
 		path, _ := file["path"].(string)
@@ -187,27 +227,32 @@ func (e *Executor) applyFluentBitConfig(ctx context.Context, job protocol.Job) p
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if entry.IsDir() || !strings.HasSuffix(name, ".conf") || delivered[name] {
+			if entry.IsDir() || !strings.HasSuffix(name, ".yml") || delivered[name] {
 				continue
 			}
 			if err := os.Remove(filepath.Join(dir, name)); err != nil {
-				return failedJobResult(job, started, fmt.Errorf("remove stale fragment %s: %w", name, err))
+				return failedJobResult(job, started, fmt.Errorf("remove stale input %s: %w", name, err))
 			}
 			removed = append(removed, filepath.Join(dir, name))
 		}
 	}
 	restart := strings.EqualFold(fmt.Sprint(job.Params["restart"]), "true")
+	restarted := false
 	if restart && (len(changed) > 0 || len(removed) > 0) {
-		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "fluent-bit.service").CombinedOutput(); err != nil {
-			return failedJobResult(job, started, fmt.Errorf("Fluent Bit restart failed: %s", strings.TrimSpace(string(output))))
+		if err := validateFilebeatConfig(ctx, filebeatMainConfigPath); err != nil {
+			return failedJobResult(job, started, err)
 		}
+		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "filebeat.service").CombinedOutput(); err != nil {
+			return failedJobResult(job, started, fmt.Errorf("Filebeat restart failed: %s", strings.TrimSpace(string(output))))
+		}
+		restarted = true
 	}
 	finished := time.Now()
 	return protocol.JobResult{
 		JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess,
 		ExitCode: 0, StartedAt: started, FinishedAt: finished,
 		CostMS: finished.Sub(started).Milliseconds(),
-		Data:   map[string]any{"changed_files": changed, "removed_files": removed, "restarted": restart && (len(changed) > 0 || len(removed) > 0)},
+		Data:   map[string]any{"changed_files": changed, "removed_files": removed, "restarted": restarted},
 	}
 }
 
@@ -311,29 +356,6 @@ func fileContainsMarker(file *os.File, marker []byte) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-	}
-}
-
-func (e *Executor) reloadFluentBit(ctx context.Context, job protocol.Job) protocol.JobResult {
-	started := time.Now()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:2020/api/v2/reload", nil)
-	if err != nil {
-		return failedJobResult(job, started, err)
-	}
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
-	if err != nil {
-		return failedJobResult(job, started, fmt.Errorf("Fluent Bit 热重载请求失败: %w", err))
-	}
-	defer response.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return failedJobResult(job, started, fmt.Errorf("Fluent Bit 热重载返回 HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body))))
-	}
-	finished := time.Now()
-	return protocol.JobResult{
-		JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess,
-		ExitCode: 0, Stdout: string(body), StartedAt: started, FinishedAt: finished,
-		CostMS: finished.Sub(started).Milliseconds(),
 	}
 }
 

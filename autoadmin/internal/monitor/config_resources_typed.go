@@ -129,9 +129,9 @@ func (handler *Handler) GetRetentionTier(context *gin.Context) {
 	handler.respondRetentionTier(context, parseID(context.Param("id")))
 }
 
-// ---- monitor_opensearch_cluster ----
+// ---- monitor_elasticsearch_cluster ----
 
-type openSearchClusterResponse struct {
+type elasticsearchClusterResponse struct {
 	ID                 int64      `json:"id"`
 	CreateTime         time.Time  `json:"create_time"`
 	UpdateTime         time.Time  `json:"update_time"`
@@ -154,7 +154,7 @@ type openSearchClusterResponse struct {
 	StorageSyncTime    *time.Time `json:"storage_sync_time"`
 }
 
-func openSearchClusterResponseFrom(row db.MonitorOpensearchCluster) openSearchClusterResponse {
+func elasticsearchClusterResponseFrom(row db.MonitorElasticsearchCluster) elasticsearchClusterResponse {
 	var lastCheckTime, storageSyncTime *time.Time
 	if row.LastCheckTime.Valid {
 		lastCheckTime = &row.LastCheckTime.Time
@@ -166,7 +166,7 @@ func openSearchClusterResponseFrom(row db.MonitorOpensearchCluster) openSearchCl
 	if row.LastCheckSuccess.Valid {
 		lastCheckSuccess = &row.LastCheckSuccess.Bool
 	}
-	return openSearchClusterResponse{
+	return elasticsearchClusterResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime,
 		Name: row.Name, Hosts: row.Hosts, Username: row.Username, PasswordConfigured: row.Password != "",
 		VerifyTLS: row.VerifyTls, CACert: row.CaCert, IndexPrefix: row.IndexPrefix,
@@ -177,43 +177,43 @@ func openSearchClusterResponseFrom(row db.MonitorOpensearchCluster) openSearchCl
 	}
 }
 
-func (handler *Handler) ListOpenSearchClusters(context *gin.Context) {
+func (handler *Handler) ListElasticsearchClusters(context *gin.Context) {
 	page, size := pagination(context)
 	queries := db.New(handler.db)
 	enabled, isDefault, pattern := optionalBoolParam(context, "enabled"), optionalBoolParam(context, "is_default"), searchPatternParam(context)
-	count, err := queries.CountOpenSearchClusters(context, db.CountOpenSearchClustersParams{Enabled: enabled, IsDefault: isDefault, Pattern: pattern})
+	count, err := queries.CountElasticsearchClusters(context, db.CountElasticsearchClustersParams{Enabled: enabled, IsDefault: isDefault, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	rows, err := queries.ListOpenSearchClustersTyped(context, db.ListOpenSearchClustersTypedParams{
+	rows, err := queries.ListElasticsearchClustersTyped(context, db.ListElasticsearchClustersTypedParams{
 		Enabled: enabled, IsDefault: isDefault, Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size),
 	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	items := make([]openSearchClusterResponse, 0, len(rows))
+	items := make([]elasticsearchClusterResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, openSearchClusterResponseFrom(row))
+		items = append(items, elasticsearchClusterResponseFrom(row))
 	}
 	response.Paginated(context, items, count, int32(page), int32(size))
 }
 
-func (handler *Handler) respondOpenSearchCluster(context *gin.Context, id int64) {
-	row, err := db.New(handler.db).GetOpenSearchClusterTyped(context, id)
+func (handler *Handler) respondElasticsearchCluster(context *gin.Context, id int64) {
+	row, err := db.New(handler.db).GetElasticsearchClusterTyped(context, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+			response.BusinessError(context, 404, "Elasticsearch cluster not found", nil)
 			return
 		}
 		response.Error(context, err)
 		return
 	}
-	response.Success(context, openSearchClusterResponseFrom(row))
+	response.Success(context, elasticsearchClusterResponseFrom(row))
 }
-func (handler *Handler) GetOpenSearchCluster(context *gin.Context) {
-	handler.respondOpenSearchCluster(context, parseID(context.Param("id")))
+func (handler *Handler) GetElasticsearchCluster(context *gin.Context) {
+	handler.respondElasticsearchCluster(context, parseID(context.Param("id")))
 }
 
 // ---- monitor_log_processing_rule ----
@@ -229,6 +229,7 @@ type processingRuleResponse struct {
 	MultilineEnabled    bool            `json:"multiline_enabled"`
 	StartPattern        string          `json:"start_pattern"`
 	ContinuationPattern string          `json:"continuation_pattern"`
+	SampleLog           string          `json:"sample_log"`
 	FlushTimeout        int64           `json:"flush_timeout"`
 	PipelineBody        json.RawMessage `json:"pipeline_body"`
 	Cluster             int64           `json:"cluster"`
@@ -250,7 +251,7 @@ func (handler *Handler) processingRuleResponse(context *gin.Context, row db.Moni
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark.String,
 		Name: row.Name, Description: row.Description, InputFormat: row.InputFormat,
 		MultilineEnabled: row.MultilineEnabled, StartPattern: row.StartPattern, ContinuationPattern: row.ContinuationPattern,
-		FlushTimeout: int64(row.FlushTimeout), PipelineBody: row.PipelineBody, Cluster: row.ClusterID,
+		SampleLog: row.SampleLog, FlushTimeout: int64(row.FlushTimeout), PipelineBody: row.PipelineBody, Cluster: row.ClusterID,
 		Application: application, ApplicationName: applicationName, ApplicationCode: applicationCode,
 	}
 }

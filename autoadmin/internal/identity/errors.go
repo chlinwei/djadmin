@@ -18,9 +18,9 @@ var (
 	ErrUserDisabled            = apperror.New(CodeUserDisabled, "用户已被禁用，无法登录")
 	ErrAPITokenRequestInvalid  = apperror.New(apperror.CodeInvalidArgument, "API Token 请求参数错误")
 	ErrAPITokenBindModeInvalid = apperror.New(apperror.CodeInvalidArgument, "bind_mode仅支持api或agent")
-	ErrAPITokenApiIDRequired = apperror.New(apperror.CodeInvalidArgument, "api模式下api_id不能为空")
-	ErrAPITokenApiIDReserved = apperror.New(apperror.CodeInvalidArgument, "api_id不能为global保留字")
-	ErrAPITokenApiIDExists   = apperror.New(apperror.CodeInvalidArgument, "api_id已存在")
+	ErrAPITokenApiIDRequired   = apperror.New(apperror.CodeInvalidArgument, "api模式下api_id不能为空")
+	ErrAPITokenApiIDReserved   = apperror.New(apperror.CodeInvalidArgument, "api_id不能为global保留字")
+	ErrAPITokenApiIDExists     = apperror.New(apperror.CodeInvalidArgument, "api_id已存在")
 
 	ErrLoginInternal          = apperror.NewWithHTTP(apperror.CodeInternal, "登录失败", http.StatusInternalServerError)
 	ErrUserQueryInternal      = apperror.NewWithHTTP(apperror.CodeInternal, "查询用户失败", http.StatusInternalServerError)

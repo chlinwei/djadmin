@@ -93,8 +93,8 @@ func TestSmokeTargetDomainQueriesAgainstRealDatabase(t *testing.T) {
 		"指定已纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", ExporterType: "node_exporter", ManagedFilter: "true"},
 		"指定未纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", ExporterType: "node_exporter", ManagedFilter: "false"},
 		"按名字收窄": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", ExporterType: "node_exporter"},
-		"日志未纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", FluentFilter: "false"},
-		"日志已纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", FluentFilter: "true"},
+		"日志未纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", FilebeatFilter: "false"},
+		"日志已纳管": {SearchPattern: sql.NullString{String: "", Valid: true}, GroupFilter: "", FilebeatFilter: "true"},
 	} {
 		if _, err = queries.CountMonitorHosts(ctx, filter); err != nil {
 			t.Fatalf("宿主过滤 %s：%v", name, err)

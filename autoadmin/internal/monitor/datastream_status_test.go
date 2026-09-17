@@ -38,7 +38,7 @@ func TestResolveStreamName(t *testing.T) {
 }
 
 func TestLogDataStreamName(t *testing.T) {
-	if name := LogDataStreamName("", "kul", "test", "tib", "tomcat-svc", "hot"); name != "logs-kul-tib-test-tomcat-svc-hot" {
+	if name := LogDataStreamName("", "kul", "test", "tib", "tomcat-svc", "hot"); name != "autoadmin-kul-tib-test-tomcat-svc-hot" {
 		t.Errorf("LogDataStreamName = %q", name)
 	}
 }

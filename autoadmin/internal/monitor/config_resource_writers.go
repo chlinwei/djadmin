@@ -27,8 +27,8 @@ func createLogRetentionTier(context context.Context, pool db.DBTX, input map[str
 	return db.New(pool).CreateLogRetentionTier(context, db.CreateLogRetentionTierParams{
 		CreateTime: now, UpdateTime: now,
 		Code: stringValue(input["code"]), Name: stringValue(input["name"]),
-		DailySizeGb:   floatValue(input["daily_size_gb"]),
-		RetentionDays: uint32(intValue(input["retention_days"])),
+		DailySizeGb:         floatValue(input["daily_size_gb"]),
+		RetentionDays:       uint32(intValue(input["retention_days"])),
 		RolloverMinIndexAge: stringValue(input["rollover_min_index_age"]),
 		Enabled:             boolValue(input["enabled"]), IsDefault: boolValue(input["is_default"]),
 		Remark: stringValue(input["remark"]),
@@ -98,10 +98,11 @@ func createLogProcessingRule(context context.Context, pool db.DBTX, input map[st
 		CreateTime: now, UpdateTime: now,
 		Remark: nullableStringValue(input, "remark"),
 		Name:   stringValue(input["name"]), Description: stringValue(input["description"]),
-		InputFormat:      stringValue(input["input_format"]),
-		MultilineEnabled: boolValue(input["multiline_enabled"]),
-		StartPattern:     stringValue(input["start_pattern"]),
+		InputFormat:         stringValue(input["input_format"]),
+		MultilineEnabled:    boolValue(input["multiline_enabled"]),
+		StartPattern:        stringValue(input["start_pattern"]),
 		ContinuationPattern: stringValue(input["continuation_pattern"]),
+		SampleLog:           stringValue(input["sample_log"]),
 		FlushTimeout:        uint32(intValue(input["flush_timeout"])),
 		PipelineBody:        body,
 		ClusterID:           intValue(input["cluster"]),
@@ -136,6 +137,9 @@ func updateLogProcessingRule(context context.Context, pool db.DBTX, id int64, in
 	if value, ok := input["continuation_pattern"]; ok {
 		current.ContinuationPattern = stringValue(value)
 	}
+	if value, ok := input["sample_log"]; ok {
+		current.SampleLog = stringValue(value)
+	}
 	if value, ok := input["flush_timeout"]; ok {
 		current.FlushTimeout = uint32(intValue(value))
 	}
@@ -156,7 +160,8 @@ func updateLogProcessingRule(context context.Context, pool db.DBTX, id int64, in
 		UpdateTime: time.Now().UTC(), Remark: current.Remark, Name: current.Name,
 		Description: current.Description, InputFormat: current.InputFormat,
 		MultilineEnabled: current.MultilineEnabled, StartPattern: current.StartPattern,
-		ContinuationPattern: current.ContinuationPattern, FlushTimeout: current.FlushTimeout,
+		ContinuationPattern: current.ContinuationPattern, SampleLog: current.SampleLog,
+		FlushTimeout: current.FlushTimeout,
 		PipelineBody: current.PipelineBody, ClusterID: current.ClusterID,
 		ApplicationID: current.ApplicationID, ID: id,
 	})

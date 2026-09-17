@@ -26,7 +26,7 @@ func (c schemaColumn) Required() bool {
 
 // TestInsertStatementsCoverRequiredColumns 是本仓库 INSERT 列集完整性的守卫（P4-10）。
 //
-// 背景：`monitor_opensearch_cluster` 的建集群 INSERT 漏写了三列 NOT NULL 且无默认值的列，
+// 背景：`monitor_elasticsearch_cluster` 的建集群 INSERT 漏写了三列 NOT NULL 且无默认值的列，
 // 在严格模式下恒报 1364（P5 陷阱 27）。这类错误在宽松模式下会静默写错值，编译器与
 // sqlc 都不会拦。守卫的做法是**纯文本解析**（不连数据库）：
 //   - 从 `db/schema/mysql/*.sql` 的 CREATE TABLE 解析每列的 NOT NULL / DEFAULT / AUTO_INCREMENT；

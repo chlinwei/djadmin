@@ -107,7 +107,11 @@ Agent protocol 应继续版本化。未知 capability 必须拒绝或降级为�
 
 ## 9. Automation 与进程执行
 
-go-ansible 实际调用外部 `ansible-playbook`，Worker 镜像仍需要 Python/ansible-core。每次运行要求：
+Ansible 通过 `internal/automation/ansiblecmd` 执行 `ansible-playbook`。两种构建变体（见 `docs/architecture/AGENT_INSTALL_UPDATE.md` 的"Ansible 运行方式"）：
+- 默认：依赖宿主 PATH 的 `ansible-playbook`，Worker 需要自行安装 Python/ansible-core；
+- `make build`（默认内嵌，先 `make ansible-embed`；`ANSIBLE_EMBED=` 关闭）：把 CPython + `ansible-core==2.16.*` 打进二进制，Worker 不再需要宿主 Python。
+
+每次运行要求：
 
 - context deadline 对应 execution timeout。
 - 独立 process group，取消先 TERM、超时后 KILL。

@@ -70,28 +70,28 @@ SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, 
 FROM monitor_log_retention_tier
 WHERE id = sqlc.arg(id);
 
--- name: CountOpenSearchClusters :one
-SELECT COUNT(*) FROM monitor_opensearch_cluster
+-- name: CountElasticsearchClusters :one
+SELECT COUNT(*) FROM monitor_elasticsearch_cluster
 WHERE (enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
   AND (is_default = sqlc.narg(is_default) OR sqlc.narg(is_default) IS NULL)
   AND (name LIKE sqlc.narg(pattern) OR hosts LIKE sqlc.narg(pattern) OR remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL);
 
--- name: ListOpenSearchClustersTyped :many
+-- name: ListElasticsearchClustersTyped :many
 SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
        request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
        remark, storage_sync_error, storage_sync_status, storage_sync_time
-FROM monitor_opensearch_cluster
+FROM monitor_elasticsearch_cluster
 WHERE (enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
   AND (is_default = sqlc.narg(is_default) OR sqlc.narg(is_default) IS NULL)
   AND (name LIKE sqlc.narg(pattern) OR hosts LIKE sqlc.narg(pattern) OR remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL)
 ORDER BY is_default DESC, id ASC
 LIMIT ? OFFSET ?;
 
--- name: GetOpenSearchClusterTyped :one
+-- name: GetElasticsearchClusterTyped :one
 SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
        request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
        remark, storage_sync_error, storage_sync_status, storage_sync_time
-FROM monitor_opensearch_cluster
+FROM monitor_elasticsearch_cluster
 WHERE id = sqlc.arg(id);
 
 -- name: CountLogProcessingRules :one
@@ -104,7 +104,7 @@ WHERE (cluster_id = sqlc.narg(cluster_id) OR sqlc.narg(cluster_id) IS NULL)
 
 -- name: ListLogProcessingRules :many
 SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
-       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+       continuation_pattern, sample_log, flush_timeout, pipeline_body, cluster_id, application_id
 FROM monitor_log_processing_rule
 WHERE (cluster_id = sqlc.narg(cluster_id) OR sqlc.narg(cluster_id) IS NULL)
   AND (application_id = sqlc.narg(application_id) OR sqlc.narg(application_id) IS NULL)
@@ -116,7 +116,7 @@ LIMIT ? OFFSET ?;
 
 -- name: GetLogProcessingRule :one
 SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
-       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+       continuation_pattern, sample_log, flush_timeout, pipeline_body, cluster_id, application_id
 FROM monitor_log_processing_rule
 WHERE id = sqlc.arg(id);
 
@@ -226,7 +226,7 @@ SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_t
        COALESCE(h.ip, ih.host_ip_snapshot) AS host_ip,
        COALESCE(mt.exporter_type, ih.exporter_type_snapshot) AS target_exporter_type,
        COALESCE(ih.target_id, ih.log_collection_target_id) AS managed_target_id,
-       CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'fluent_bit' END AS target_type
+       CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'filebeat' END AS target_type
 FROM monitor_target_install_history ih
 LEFT JOIN assets_host h ON h.id = ih.host_id
 LEFT JOIN monitor_target mt ON mt.id = ih.target_id
@@ -311,7 +311,7 @@ INSERT INTO monitor_software_package(create_time,update_time,remark,package_type
                                      enabled,work_directory,service_file_content,service_run_as_user,service_run_as_group)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(package_type),sqlc.arg(name),sqlc.arg(version),
         sqlc.arg(default_port),sqlc.arg(os),sqlc.arg(arch),sqlc.arg(platform_family),sqlc.arg(platform_major),
-        sqlc.arg(package_format),'', '', 0, TRUE, '/tmp', '', sqlc.arg(service_run_as_user), 'dj-agent');
+        sqlc.arg(package_format),'', '', 0, TRUE, '/tmp', sqlc.narg(service_file_content), sqlc.arg(service_run_as_user), 'dj-agent');
 
 -- name: UpdateSoftwarePackageSource :exec
 UPDATE monitor_software_package
@@ -328,6 +328,11 @@ WHERE id=sqlc.arg(id);
 UPDATE monitor_software_package SET file=sqlc.arg(file) WHERE id=sqlc.arg(id);
 
 -- COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
+-- name: SetSoftwarePackageServiceFileContent :exec
+UPDATE monitor_software_package
+SET service_file_content=sqlc.arg(service_file_content), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
 -- name: UpdateSoftwarePackageConfig :exec
 UPDATE monitor_software_package
 SET default_port=sqlc.arg(default_port),
@@ -527,7 +532,7 @@ FROM assets_host h WHERE h.is_deleted_in_cloud = FALSE;
 SELECT id, parent_id FROM assets_hostgroup;
 
 -- 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
--- managed_filter 与 fluent_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
+-- managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 -- name: CountMonitorHosts :one
 SELECT COUNT(*) FROM assets_host h
 WHERE h.is_deleted_in_cloud = FALSE
@@ -542,7 +547,7 @@ WHERE h.is_deleted_in_cloud = FALSE
          ELSE (sqlc.arg(exporter_type) = '' OR EXISTS (SELECT 1 FROM monitor_target mt
                 WHERE mt.host_id = h.id AND mt.exporter_type = sqlc.arg(exporter_type)))
        END)
-  AND (CASE sqlc.narg(fluent_filter)
+  AND (CASE sqlc.narg(filebeat_filter)
          WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) > 0
          WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) = 0
          ELSE TRUE
@@ -567,7 +572,7 @@ WHERE h.is_deleted_in_cloud = FALSE
          ELSE (sqlc.arg(exporter_type) = '' OR EXISTS (SELECT 1 FROM monitor_target mt
                 WHERE mt.host_id = h.id AND mt.exporter_type = sqlc.arg(exporter_type)))
        END)
-  AND (CASE sqlc.narg(fluent_filter)
+  AND (CASE sqlc.narg(filebeat_filter)
          WHEN 'true' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) > 0
          WHEN 'false' THEN (SELECT COUNT(*) FROM monitor_log_collection_target lc WHERE lc.host_id = h.id AND lc.agent_installed = TRUE) = 0
          ELSE TRUE
@@ -837,7 +842,7 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),'',sqlc.arg(source),sqlc.arg
         sqlc.arg(last_seen_at),FALSE);
 
 -- ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
--- 原实现有两处运行时拼 SQL：① Fluent Bit 软件包按"安装/卸载"拼 playbook 列名；
+-- 原实现有两处运行时拼 SQL：① Filebeat 软件包按"安装/卸载"拼 playbook 列名；
 -- ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
 -- 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
 
@@ -858,18 +863,18 @@ SELECT id, status, create_time FROM monitor_target_install_history
 WHERE log_collection_target_id = sqlc.arg(log_collection_target_id)
 ORDER BY id DESC LIMIT 1;
 
--- name: ListInstallableFluentBitPackages :many
-SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
-       COALESCE(sha256,''),install_playbook_template_id
+-- Filebeat 只用官方便携 tar.gz，按 CPU 架构匹配，不区分发行版/主版本/包格式。
+-- playbook 是否配置交给应用层判断，便于区分"没有包"与"包没配 playbook"。
+-- name: ListInstallableFilebeatPackages :many
+SELECT id,COALESCE(arch,''),COALESCE(file,''),COALESCE(sha256,''),COALESCE(service_file_content,''),install_playbook_template_id
 FROM monitor_software_package
-WHERE package_type='fluent_bit' AND enabled=TRUE AND install_playbook_template_id IS NOT NULL
+WHERE package_type='filebeat' AND package_format='tar.gz' AND enabled=TRUE
 ORDER BY id;
 
--- name: ListUninstallableFluentBitPackages :many
-SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
-       COALESCE(sha256,''),uninstall_playbook_template_id
+-- name: ListUninstallableFilebeatPackages :many
+SELECT id,COALESCE(arch,''),COALESCE(file,''),COALESCE(sha256,''),COALESCE(service_file_content,''),uninstall_playbook_template_id
 FROM monitor_software_package
-WHERE package_type='fluent_bit' AND enabled=TRUE AND uninstall_playbook_template_id IS NOT NULL
+WHERE package_type='filebeat' AND package_format='tar.gz' AND enabled=TRUE
 ORDER BY id;
 
 -- name: CreateLogTargetInstallHistory :execlastid
@@ -891,10 +896,13 @@ WHERE id = sqlc.arg(id);
 -- 收尾：只有仍处于 pending 的任务才落终态。
 -- install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
 -- 而 PG 只合并成一个参数——同一个调用点在两侧就编译不过），用整数比较避开这个分歧。
+-- agent_installed 是"Filebeat 二进制已装"的持久态，只有成功收尾才改写（install 成功 TRUE、
+-- uninstall 成功 FALSE）；失败时传 NULL 保持原值，避免安装失败把已装状态抹掉。
 -- name: FinishLogTargetInstallState :execrows
 UPDATE monitor_log_collection_target
 SET install_status=sqlc.arg(install_status), install_message=sqlc.arg(install_message),
     runtime_status=CASE WHEN sqlc.arg(install_succeeded) = 1 THEN 'running' ELSE runtime_status END,
+    agent_installed=COALESCE(sqlc.narg(agent_installed), agent_installed),
     update_time=sqlc.arg(update_time)
 WHERE id=sqlc.arg(id) AND install_status='pending';
 
@@ -914,18 +922,18 @@ UPDATE monitor_log_collection_target
 SET runtime_status=sqlc.arg(runtime_status), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名）。
+-- 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
 -- name: GetLogTargetDefaultCluster :one
-SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password
+SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password, c.verify_tls
 FROM monitor_log_collection_target l
 JOIN assets_host h ON h.id = l.host_id
-JOIN monitor_opensearch_cluster c ON c.enabled = TRUE
+JOIN monitor_elasticsearch_cluster c ON c.enabled = TRUE
 WHERE l.id = sqlc.arg(id)
 ORDER BY c.is_default DESC, c.id LIMIT 1;
 
--- name: GetDefaultEnabledOpenSearchCluster :one
-SELECT hosts, username, password, COALESCE(index_prefix, 'logs')
-FROM monitor_opensearch_cluster
+-- name: GetDefaultEnabledElasticsearchCluster :one
+SELECT hosts, username, password, COALESCE(index_prefix, 'logs'), verify_tls
+FROM monitor_elasticsearch_cluster
 WHERE enabled = TRUE
 ORDER BY is_default DESC, id LIMIT 1;
 
@@ -937,6 +945,11 @@ WHERE id = sqlc.arg(id);
 
 -- name: GetLogTargetConfigFingerprint :one
 SELECT COALESCE(config_fingerprint, '') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
+
+-- name: SetLogTargetLastError :exec
+UPDATE monitor_log_collection_target
+SET last_error=sqlc.arg(last_error), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
 
 -- 指纹未变时的"只刷新下发时间"路径。
 -- name: MarkLogTargetConfigApplied :exec
@@ -972,64 +985,64 @@ INSERT IGNORE INTO monitor_log_collection_target
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(host_id),FALSE,'','unknown','',
         '','unknown','',FALSE,TRUE,0);
 
--- ---- 日志存储（OpenSearch 集群）与保留档位 ----
+-- ---- 日志存储（Elasticsearch 集群）与保留档位 ----
 
 -- name: ListEnabledRetentionTiers :many
 SELECT code,retention_days,daily_size_gb,rollover_min_index_age
 FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id;
 
--- name: GetOpenSearchClusterConnection :one
+-- name: GetElasticsearchClusterConnection :one
 SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
-FROM monitor_opensearch_cluster WHERE id = sqlc.arg(id);
+FROM monitor_elasticsearch_cluster WHERE id = sqlc.arg(id);
 
 -- openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
 -- 这里只更新探测结果，其余列不动。
--- name: MarkOpenSearchClusterCheckFailed :exec
-UPDATE monitor_opensearch_cluster
+-- name: MarkElasticsearchClusterCheckFailed :exec
+UPDATE monitor_elasticsearch_cluster
 SET last_check_time=sqlc.arg(last_check_time), last_check_success=FALSE,
     last_check_message=sqlc.arg(last_check_message), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- name: MarkOpenSearchClusterCheckSuccess :exec
-UPDATE monitor_opensearch_cluster
+-- name: MarkElasticsearchClusterCheckSuccess :exec
+UPDATE monitor_elasticsearch_cluster
 SET last_check_time=sqlc.arg(last_check_time), last_check_success=TRUE,
     last_check_message=sqlc.arg(last_check_message), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- 存储同步（index template + ISM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
+-- 存储同步（index template + ILM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
 -- name: MarkClusterStorageSyncPending :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='pending', storage_sync_error='', storage_sync_time=NULL, update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
 -- name: MarkClusterStorageSyncFailed :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='failed', storage_sync_error=sqlc.arg(storage_sync_error),
     storage_sync_time=sqlc.arg(storage_sync_time), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
 -- name: MarkClusterStorageSyncSuccess :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='success', storage_sync_error='',
     storage_sync_time=sqlc.arg(storage_sync_time), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- name: ListEnabledOpenSearchClusterIDs :many
-SELECT id FROM monitor_opensearch_cluster WHERE enabled = TRUE;
+-- name: ListEnabledElasticsearchClusterIDs :many
+SELECT id FROM monitor_elasticsearch_cluster WHERE enabled = TRUE;
 
--- name: CountAllOpenSearchClusters :one
-SELECT COUNT(*) FROM monitor_opensearch_cluster;
+-- name: CountAllElasticsearchClusters :one
+SELECT COUNT(*) FROM monitor_elasticsearch_cluster;
 
--- name: ClearDefaultOpenSearchCluster :exec
-UPDATE monitor_opensearch_cluster SET is_default=FALSE, update_time=sqlc.arg(update_time)
+-- name: ClearDefaultElasticsearchCluster :exec
+UPDATE monitor_elasticsearch_cluster SET is_default=FALSE, update_time=sqlc.arg(update_time)
 WHERE is_default=TRUE AND id<>sqlc.arg(id);
 
 -- 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
 -- 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
 -- doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
 -- 这里按"尚未探测/尚未同步"的语义显式写空串。
--- name: CreateOpenSearchCluster :execlastid
-INSERT INTO monitor_opensearch_cluster
+-- name: CreateElasticsearchCluster :execlastid
+INSERT INTO monitor_elasticsearch_cluster
   (create_time,update_time,name,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,
    enabled,is_default,remark,last_check_time,last_check_success,last_check_message,
    storage_sync_error,storage_sync_status,storage_sync_time)
@@ -1038,17 +1051,17 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(name),sqlc.arg(host
         sqlc.arg(request_timeout),sqlc.arg(enabled),sqlc.arg(is_default),sqlc.arg(remark),
         NULL,NULL,'','','',NULL);
 
--- 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 opensearch_config.go）。
--- name: UpdateOpenSearchCluster :execrows
-UPDATE monitor_opensearch_cluster
+-- 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 elasticsearch_config.go）。
+-- name: UpdateElasticsearchCluster :execrows
+UPDATE monitor_elasticsearch_cluster
 SET update_time=sqlc.arg(update_time),name=sqlc.arg(name),hosts=sqlc.arg(hosts),username=sqlc.arg(username),
     password=sqlc.arg(password),verify_tls=sqlc.arg(verify_tls),ca_cert=sqlc.arg(ca_cert),
     index_prefix=sqlc.arg(index_prefix),request_timeout=sqlc.arg(request_timeout),enabled=sqlc.arg(enabled),
     is_default=sqlc.arg(is_default),remark=sqlc.arg(remark)
 WHERE id=sqlc.arg(id);
 
--- name: DeleteOpenSearchCluster :execresult
-DELETE FROM monitor_opensearch_cluster WHERE id = sqlc.arg(id);
+-- name: DeleteElasticsearchCluster :execresult
+DELETE FROM monitor_elasticsearch_cluster WHERE id = sqlc.arg(id);
 
 -- ---- 日志解析规则 / 采集过滤规则的引用计数与应用名称（读路径的补充列）----
 
@@ -1097,10 +1110,10 @@ UPDATE monitor_log_retention_tier SET is_default=FALSE WHERE id <> sqlc.arg(id);
 -- name: CreateLogProcessingRule :execlastid
 INSERT INTO monitor_log_processing_rule
   (create_time,update_time,remark,name,description,input_format,multiline_enabled,start_pattern,
-   continuation_pattern,flush_timeout,pipeline_body,cluster_id,application_id)
+   continuation_pattern,sample_log,flush_timeout,pipeline_body,cluster_id,application_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(description),
         sqlc.arg(input_format),sqlc.arg(multiline_enabled),sqlc.arg(start_pattern),
-        sqlc.arg(continuation_pattern),sqlc.arg(flush_timeout),sqlc.arg(pipeline_body),
+        sqlc.arg(continuation_pattern),sqlc.arg(sample_log),sqlc.arg(flush_timeout),sqlc.arg(pipeline_body),
         sqlc.arg(cluster_id),sqlc.narg(application_id));
 
 -- name: UpdateLogProcessingRule :execrows
@@ -1108,6 +1121,7 @@ UPDATE monitor_log_processing_rule
 SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),description=sqlc.arg(description),
     input_format=sqlc.arg(input_format),multiline_enabled=sqlc.arg(multiline_enabled),
     start_pattern=sqlc.arg(start_pattern),continuation_pattern=sqlc.arg(continuation_pattern),
+    sample_log=sqlc.arg(sample_log),
     flush_timeout=sqlc.arg(flush_timeout),pipeline_body=sqlc.arg(pipeline_body),
     cluster_id=sqlc.arg(cluster_id),application_id=sqlc.narg(application_id)
 WHERE id=sqlc.arg(id);
@@ -1133,7 +1147,7 @@ DELETE FROM monitor_log_collection_filter_rule WHERE id = sqlc.arg(id);
 -- ---- 日志链路对账与数据流水位（只读）----
 
 -- name: ListProcessingRulesByCluster :many
-SELECT name, pipeline_body FROM monitor_log_processing_rule
+SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
 WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
 
 -- name: ListManagedLogTargetConfigs :many

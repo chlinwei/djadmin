@@ -584,8 +584,8 @@ func (handler *Handler) saveNotificationPolicy(ctx context.Context, id int64, in
 	now := time.Now().UTC()
 	params := db.CreateNotificationPolicyParams{
 		CreateTime: now, UpdateTime: now, Remark: sql.NullString{String: input.Remark, Valid: true},
-		Name:       name,
-		Position:   int32(position), Matchers: matchersRaw,
+		Name:     name,
+		Position: int32(position), Matchers: matchersRaw,
 		MediaIds: jsonColumn(mediaColumn), UserGroupIds: jsonColumn(userGroupColumn),
 		NotifyOnFiring: firing, NotifyOnResolved: resolved,
 	}

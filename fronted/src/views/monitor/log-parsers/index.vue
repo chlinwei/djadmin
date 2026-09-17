@@ -124,13 +124,13 @@
       @ok="publishPipeline"
     >
       <a-tabs v-model:activeKey="activeTab">
-        <a-tab-pane key="preprocess" tab="发送前处理（Fluent Bit）">
+        <a-tab-pane key="preprocess" tab="发送前处理（Filebeat）">
           <a-form ref="formRef" :model="form" :rules="formRules" layout="vertical">
             <a-form-item name="name" label="规则名称">
               <a-input
                 v-model:value="form.name"
                 :disabled="Boolean(editingOriginalName)"
-                placeholder="例如 logs-tomcat-access"
+                placeholder="例如 autoadmin-tomcat-access"
               />
             </a-form-item>
             <a-form-item label="说明">
@@ -161,12 +161,7 @@
               <a-row :gutter="16">
                 <a-col :span="12">
                   <a-form-item name="start_pattern" label="首行正则">
-                    <a-input v-model:value="form.start_pattern" placeholder="例如 ^\d{4}-\d{2}-\d{2}" />
-                  </a-form-item>
-                </a-col>
-                <a-col :span="12">
-                  <a-form-item name="continuation_pattern" label="续行正则">
-                    <a-input v-model:value="form.continuation_pattern" placeholder="例如 ^(?!\d{4}-\d{2}-\d{2})" />
+                    <a-input v-model:value="form.start_pattern" placeholder="例如 ^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}" />
                   </a-form-item>
                 </a-col>
                 <a-col :span="12">
@@ -178,7 +173,7 @@
             </template>
           </a-form>
         </a-tab-pane>
-        <a-tab-pane key="ingest" tab="字段解析（OpenSearch Ingest）">
+        <a-tab-pane key="ingest" tab="字段解析（Elasticsearch Ingest）">
           <a-form layout="vertical">
             <a-form-item label="Pipeline JSON">
               <a-textarea
@@ -200,7 +195,7 @@
                 v-model:value="sampleText"
                 class="json-editor"
                 :rows="12"
-                :placeholder="sampleMode === 'raw' ? '直接粘贴包含换行的完整日志' : '输入包含 message 或 log 字段的 JSON 对象'"
+                :placeholder="sampleMode === 'raw' ? '直接粘贴包含换行的完整日志' : '输入包含 message 字段的 JSON 对象（Filebeat filestream）'"
                 spellcheck="false"
               />
             </a-form-item>
@@ -209,6 +204,17 @@
               <span>&nbsp;运行</span>
             </a-button>
             <a-alert
+              v-if="missingFields.length"
+              class="schema-violation-alert"
+              type="error"
+              show-icon
+              :message="`缺少必备字段：${missingFields.join('、')}`"
+            >
+              <template #description>
+                <div>处理规则产物必须包含这些字段，否则错误清单/聚类会失效。请在 Pipeline 里补对应处理器（如 <code>fingerprint.target_field=error_fingerprint</code>）后再发布。</div>
+              </template>
+            </a-alert>
+            <a-alert
               v-if="schemaViolations.length"
               class="schema-violation-alert"
               type="error"
@@ -216,7 +222,7 @@
               message="存在不符合标准字段的输出"
             >
               <template #description>
-                <div>以下字段不在标准字段列表内，写入 OpenSearch 时会被丢弃（不报错但无法检索和聚合），请改写到 <code>app_fields.&lt;字段名&gt;</code> 下：</div>
+                <div>以下字段不在标准字段列表内，写入 Elasticsearch 时会被丢弃（不报错但无法检索和聚合），请改写到 <code>app_fields.&lt;字段名&gt;</code> 下：</div>
                 <a-space wrap class="schema-violation-tags">
                   <a-tag v-for="field in schemaViolations" :key="field" color="red">{{ field }}</a-tag>
                 </a-space>
@@ -299,11 +305,11 @@ import {
   batchDeleteLogCollectionFilterRules,
   batchDeleteLogProcessingRules,
   getLogCollectionFilterRules,
-  getOpenSearchClusterList,
+  getElasticsearchClusterList,
   getLogProcessingRules,
   saveLogCollectionFilterRule,
   saveLogProcessingRule,
-  simulateOpenSearchPipeline,
+  simulateElasticsearchPipeline,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { getApplicationList } from '@/api/assets/application'
@@ -332,6 +338,7 @@ const sampleMode = ref('raw')
 const sampleText = ref('2026-08-27 13:00:00 INFO service started')
 const simulationText = ref('')
 const schemaViolations = ref([])
+const missingFields = ref([])
 const resultFullscreen = ref(false)
 const expandNewline = ref(true)
 
@@ -431,8 +438,13 @@ const formRules = {
     { required: true, message: '请输入规则名称' },
     { pattern: /^[a-z0-9][a-z0-9._-]*$/, message: '仅支持小写字母、数字、点、下划线和连字符' },
   ],
-  start_pattern: [{ required: true, message: '请输入首行正则' }],
-  continuation_pattern: [{ required: true, message: '请输入续行正则' }],
+  start_pattern: [
+    {
+      validator: () => (form.multiline_enabled && !String(form.start_pattern || '').trim()
+        ? Promise.reject(new Error('请输入首行正则'))
+        : Promise.resolve()),
+    },
+  ],
 }
 
 function parseJson(text, label) {
@@ -450,9 +462,9 @@ function parseJson(text, label) {
   }
 }
 
-// 平台只对接一套 OpenSearch，集群不给用户选，直接取默认（或唯一启用）集群。
+// 平台只对接一套 Elasticsearch，集群不给用户选，直接取默认（或唯一启用）集群。
 async function loadClusters() {
-  const response = await getOpenSearchClusterList({ page: 1, page_size: 100 })
+  const response = await getElasticsearchClusterList({ page: 1, page_size: 100 })
   const enabledClusters = (response?.data?.data?.results || []).filter((item) => item.enabled)
   const preferred = enabledClusters.find((item) => item.is_default) || enabledClusters[0]
   selectedClusterId.value = preferred?.id || null
@@ -515,6 +527,8 @@ function resetEditor() {
   activeTab.value = 'preprocess'
   simulationText.value = ''
   schemaViolations.value = []
+  missingFields.value = []
+  sampleText.value = ''
 }
 
 function openCreate() {
@@ -533,6 +547,8 @@ function openEdit(record) {
     ...record,
     bodyText: JSON.stringify(record.pipeline_body || { processors: [] }, null, 2),
   })
+  // 恢复该规则上次保存的调试样例，省得每次重贴
+  sampleText.value = record.sample_log || ''
   editorOpen.value = true
 }
 
@@ -588,12 +604,14 @@ async function publishPipeline() {
     await saveLogProcessingRule({
       id: form.id,
       cluster: selectedClusterId.value,
+      application: form.application || null,
       name: form.name,
       description: form.description,
       input_format: form.input_format,
       multiline_enabled: form.multiline_enabled,
       start_pattern: form.multiline_enabled ? form.start_pattern : '',
       continuation_pattern: form.multiline_enabled ? form.continuation_pattern : '',
+      sample_log: sampleText.value || '',
       flush_timeout: form.flush_timeout,
       pipeline_body: body,
     })
@@ -607,29 +625,28 @@ async function publishPipeline() {
   }
 }
 
-// 还原 Fluent Bit 采集侧行为：tail 默认逐行成记录，开启多行合并后按首行/续行正则聚合成一个事件。
+// 还原 Filebeat filestream 行为：默认逐行成记录；开启多行后 `negate: true, match: after`，
+// 即"不以首行正则开头的行并入上一行"，不需要单独的续行正则。
 // 调试时若不做这一步，粘贴多条日志会被当成单条文档送进 pipeline，结果与真实采集不一致。
 function buildRawDocs(text) {
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   if (!form.multiline_enabled) {
-    return lines.filter((line) => line.trim()).map((line) => ({ log: line }))
+    return lines.filter((line) => line.trim()).map((line) => ({ message: line }))
   }
-  if (!form.start_pattern.trim() || !form.continuation_pattern.trim()) {
-    throw new Error('已启用多行合并，请先在“发送前处理”填写首行和续行正则')
+  if (!form.start_pattern.trim()) {
+    throw new Error('已启用多行合并，请先在“发送前处理”填写首行正则')
   }
   let startRe
-  let continuationRe
   try {
     startRe = new RegExp(form.start_pattern)
-    continuationRe = new RegExp(form.continuation_pattern)
   } catch (error) {
-    throw new Error(`多行正则不合法：${error.message}`)
+    throw new Error(`首行正则不合法：${error.message}`)
   }
   const docs = []
   let buffer = []
   const flush = () => {
     if (buffer.length) {
-      docs.push({ log: buffer.join('\n') })
+      docs.push({ message: buffer.join('\n') })
       buffer = []
     }
   }
@@ -637,12 +654,12 @@ function buildRawDocs(text) {
     if (startRe.test(line)) {
       flush()
       buffer = [line]
-    } else if (buffer.length && continuationRe.test(line)) {
+    } else if (buffer.length) {
+      // 非首行一律并到上一行（Filebeat negate+after 语义）
       buffer.push(line)
-    } else {
-      // 两条规则都没命中：Fluent Bit 会把该行单独输出，不并入上一个事件
-      flush()
-      if (line.trim()) docs.push({ log: line })
+    } else if (line.trim()) {
+      // 首行之前的前导行单独成一条
+      docs.push({ message: line })
     }
   }
   flush()
@@ -667,14 +684,17 @@ async function simulate() {
   }
   simulating.value = true
   try {
-    const response = await simulateOpenSearchPipeline(selectedClusterId.value, {
+    const response = await simulateElasticsearchPipeline(selectedClusterId.value, {
       pipeline: body,
       docs,
     })
     const result = response?.data?.data || {}
     schemaViolations.value = result.schema_violations || []
+    missingFields.value = result.missing_fields || []
     simulationText.value = JSON.stringify(result, null, 2)
-    if (schemaViolations.value.length) {
+    if (missingFields.value.length) {
+      message.warning(`运行成功，但缺少必备字段：${missingFields.value.join('、')}`)
+    } else if (schemaViolations.value.length) {
       message.warning(`运行成功，但有 ${schemaViolations.value.length} 个字段不符合标准字段规范`)
     } else {
       message.success(`运行成功，共 ${docs.length} 条事件`)
@@ -682,6 +702,7 @@ async function simulate() {
   } catch (error) {
     simulationText.value = ''
     schemaViolations.value = []
+    missingFields.value = []
     message.error(error?.response?.data?.msg || error?.message || '运行失败')
   } finally {
     simulating.value = false

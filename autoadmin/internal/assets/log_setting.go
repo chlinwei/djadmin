@@ -28,7 +28,7 @@ type ServiceTemplateLog struct {
 // resolved_path 用服务级 macro_values 替换 ${VAR} 后回显（实例级宏因逐实例而异不在
 // 此处展开）；data_stream 按 monitor.LogDataStreamName 的同一构造规则生成
 // （logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>，档位 = 覆盖档位 → 服务默认档位
-// → is_default 档位 → 'std'），与 Fluent Bit 下发的 Index 命名保持一致。
+// → is_default 档位 → 'std'），与 Filebeat 下发的 Index 命名保持一致。
 func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ServiceTemplateLog, error) {
 	rows, err := r.queries.ListServiceTemplateLogs(ctx, serviceID)
 	if err != nil {
@@ -45,7 +45,7 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 			CollectionEnabled:         row.OverrideCollectionEnabled,
 		}
 		item.ResolvedPath = resolveServiceMacros(item.PathPattern, string(row.MacroValues))
-		item.DataStream = logstream.Name("logs", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
+		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		items = append(items, item)
 	}
 	return items, nil

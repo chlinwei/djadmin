@@ -22,6 +22,7 @@ import (
 
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/automation/ansiblecmd"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -533,6 +534,20 @@ func (handler *Handler) CancelJob(context *gin.Context) {
 		automationBadRequest(context, "Job is already finished")
 		return
 	}
+	// Agent 安装/更新作业另有一套 assets_agent_job 状态；取消 automation 作业时一并收尾，
+	// 否则再次安装会被 rejectActiveAgentJobs 的"已有 Agent 任务执行中"一直拦住。
+	if cancelErr := queries.CancelAgentJobsByExecution(context, db.CancelAgentJobsByExecutionParams{
+		FinishedAt: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, JobID: id,
+	}); cancelErr != nil {
+		response.Error(context, cancelErr)
+		return
+	}
+	if cancelErr := queries.CancelAgentJobHostLogsByExecution(context, db.CancelAgentJobHostLogsByExecutionParams{
+		UpdateTime: now, JobID: id,
+	}); cancelErr != nil {
+		response.Error(context, cancelErr)
+		return
+	}
 	job, err := handler.jobByID(context, id)
 	if err != nil {
 		response.Error(context, err)
@@ -681,7 +696,7 @@ func matchLimit(host hostSnapshot, token string) bool {
 
 func (handler *Handler) createAutomationJob(ctx context.Context, task gin.H, hosts []hostSnapshot, extra map[string]any, limit, message string) (int64, error) {
 	now := time.Now().UTC()
-	// requested_user_id 保持 NULL：这条派发路径（RunTaskNow / Fluent Bit 安装）
+	// requested_user_id 保持 NULL：这条派发路径（RunTaskNow / Filebeat 安装）
 	// 迁移前就没记发起人。
 	return db.New(handler.db).CreateAutomationJob(ctx, db.CreateAutomationJobParams{
 		CreateTime:              now,
@@ -752,15 +767,7 @@ func (handler *Handler) runAutomationJob(ctx context.Context, jobID int64) error
 		successful = len(ready)
 	}
 	failed := len(hosts) - successful
-	message := "Playbook executed successfully by local ansible-playbook"
-	if runErr != nil {
-		message = runErr.Error()
-	} else if code != 0 {
-		message = strings.TrimSpace(stderr)
-		if message == "" {
-			message = "ansible-playbook failed"
-		}
-	}
+	message := ansibleResultMessage(code, output, stderr, runErr)
 	return handler.finishJob(ctx, jobID, now, code, successful, failed, message)
 }
 
@@ -966,7 +973,10 @@ func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSna
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
-	command := exec.CommandContext(commandCtx, "ansible-playbook", "-i", inventoryPath, "--forks", strconv.Itoa(minimum(10, len(hosts))), playbookPath)
+	command, err := ansiblecmd.CommandContext(commandCtx, "-i", inventoryPath, "--forks", strconv.Itoa(minimum(10, len(hosts))), playbookPath)
+	if err != nil {
+		return "", "", -1, err
+	}
 	if len(extra) > 0 {
 		value, _ := json.Marshal(extra)
 		command.Args = append(command.Args, "--extra-vars", string(value))
@@ -1021,6 +1031,26 @@ func (handler *Handler) persistTargetFailures(ctx context.Context, jobID int64, 
 		})
 	}
 }
+
+// ansibleResultMessage 生成作业摘要文案：失败时优先返回 stderr（真正的 ansible 报错），
+// 其次是 stdout，最后才回退到 runErr。ansible 退出码非 0 时 runErr 就是 *exec.ExitError，
+// 直接取 Error() 只能得到 "exit status 2" 这种无信息量文案，不要用它覆盖 stderr。
+func ansibleResultMessage(code int, stdout, stderr string, runErr error) string {
+	if code == 0 && runErr == nil {
+		return "Playbook executed successfully by local ansible-playbook"
+	}
+	if message := strings.TrimSpace(stderr); message != "" {
+		return message
+	}
+	if message := strings.TrimSpace(stdout); message != "" {
+		return message
+	}
+	if runErr != nil {
+		return runErr.Error()
+	}
+	return "ansible-playbook failed"
+}
+
 func (handler *Handler) persistTargetResults(ctx context.Context, jobID int64, hosts []hostSnapshot, code int, stdout, stderr string, runErr error) {
 	status := "success"
 	if code != 0 || runErr != nil {
@@ -1030,8 +1060,8 @@ func (handler *Handler) persistTargetResults(ctx context.Context, jobID int64, h
 	now := time.Now().UTC()
 	for _, host := range hosts {
 		message := ""
-		if runErr != nil {
-			message = runErr.Error()
+		if status == "failed" {
+			message = ansibleResultMessage(code, stdout, stderr, runErr)
 		}
 		_ = queries.CreateAutomationJobHostLog(ctx, db.CreateAutomationJobHostLogParams{
 			CreateTime: now, UpdateTime: now, JobID: jobID,
@@ -1174,7 +1204,7 @@ func minimum(first, second int) int {
 	return second
 }
 
-// RunJobByID 执行一个已创建（pending）的自动化任务，供其它模块（如 Fluent Bit 安装派发）
+// RunJobByID 执行一个已创建（pending）的自动化任务，供其它模块（如 Filebeat 安装派发）
 // 复用离线 playbook 执行链路；调用方负责先按 createAutomationJob 的表结构写入任务行。
 func (handler *Handler) RunJobByID(ctx context.Context, jobID int64) error {
 	return handler.runAutomationJob(ctx, jobID)

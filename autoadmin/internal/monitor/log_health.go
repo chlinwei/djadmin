@@ -69,15 +69,15 @@ func logHealthLayerFromItems(key, name string, items []gin.H, emptySummary strin
 	return logHealthLayer(key, name, worstLogHealthStatus(statuses), summary, items)
 }
 
-// isOpenSearchNotFound：openSearchRequest 的错误形如 "opensearch 404 Not Found: <body>"。
-func isOpenSearchNotFound(err error) bool {
-	return strings.HasPrefix(err.Error(), "opensearch 404")
+// isElasticsearchNotFound：elasticsearchRequest 的错误形如 "elasticsearch 404 Not Found: <body>"。
+func isElasticsearchNotFound(err error) bool {
+	return strings.HasPrefix(err.Error(), "elasticsearch 404")
 }
 
-func (handler *Handler) OpenSearchLogHealth(context *gin.Context) {
-	cluster, err := handler.loadOpenSearchCluster(context)
+func (handler *Handler) ElasticsearchLogHealth(context *gin.Context) {
+	cluster, err := handler.loadElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+		response.BusinessError(context, 404, "Elasticsearch cluster not found", nil)
 		return
 	}
 	if err != nil {
@@ -86,7 +86,7 @@ func (handler *Handler) OpenSearchLogHealth(context *gin.Context) {
 	}
 	layers := []gin.H{
 		handler.checkLogIndexTemplate(context, cluster),
-		handler.checkLogISMPolicies(context, cluster),
+		handler.checkLogRetentionPolicies(context, cluster),
 		handler.checkLogPipelines(context, cluster),
 		handler.checkLogHostConfigs(context),
 		handler.checkLogRuntime(context),
@@ -107,20 +107,20 @@ func layerStatuses(layers []gin.H) []string {
 	return statuses
 }
 
-func logHealthPrefix(cluster openSearchCluster) string {
+func logHealthPrefix(cluster elasticsearchCluster) string {
 	if strings.TrimSpace(cluster.IndexPrefix) == "" {
-		return "logs"
+		return "autoadmin"
 	}
 	return cluster.IndexPrefix
 }
 
 // checkLogIndexTemplate 模板决定字段类型：dynamic 漏成 true 会把 keyword 建成 text，聚合功能全部失效。
-func (handler *Handler) checkLogIndexTemplate(context *gin.Context, cluster openSearchCluster) gin.H {
+func (handler *Handler) checkLogIndexTemplate(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
 	name := buildIndexTemplateName(prefix)
-	responseBody, err := handler.openSearchRequest(context, cluster, "GET", "/_index_template/"+name, nil)
+	responseBody, err := handler.elasticsearchRequest(context, cluster, "GET", "/_index_template/"+name, nil)
 	if err != nil {
-		if isOpenSearchNotFound(err) {
+		if isElasticsearchNotFound(err) {
 			return logHealthLayer("index_template", "索引模板", logHealthDrift, fmt.Sprintf("模板 %s 不存在，新建索引会走动态映射", name), nil)
 		}
 		return logHealthLayer("index_template", "索引模板", logHealthError, fmt.Sprintf("读取模板失败: %v", err), nil)
@@ -190,73 +190,52 @@ func asAnySlice(value any) []any {
 	return nil
 }
 
-// ismPolicySignature 只提取影响保留行为的字段：集群会补 policy_id/last_updated_time 等元数据，全量比对必然误报。
-func ismPolicySignature(policy map[string]any) gin.H {
-	signature := gin.H{"rollover_size": nil, "rollover_age": nil, "delete_after": nil, "index_patterns": []string{}}
-	hot := map[string]any{}
-	for _, stateRaw := range asAnySlice(policy["states"]) {
-		state := asStringMap(stateRaw)
-		if name, _ := state["name"].(string); name == "hot" {
-			hot = state
+// ilmPolicySignature 只提取影响保留行为的字段：ES 会补 hot.min_age=0ms、delete_searchable_snapshot
+// 等默认值，全量比对必然误报。
+func ilmPolicySignature(policy map[string]any) gin.H {
+	signature := gin.H{"rollover_size": nil, "rollover_age": nil, "delete_after": nil}
+	phases := asStringMap(policy["phases"])
+	if phases == nil {
+		return signature
+	}
+	if hot := asStringMap(phases["hot"]); hot != nil {
+		if rollover := asStringMap(asStringMap(hot["actions"])["rollover"]); rollover != nil {
+			signature["rollover_size"] = rollover["max_primary_shard_size"]
+			signature["rollover_age"] = rollover["max_age"]
 		}
 	}
-	for _, actionRaw := range asAnySlice(hot["actions"]) {
-		action := asStringMap(actionRaw)
-		if rollover := asStringMap(action["rollover"]); rollover != nil {
-			signature["rollover_size"] = rollover["min_primary_shard_size"]
-			signature["rollover_age"] = rollover["min_index_age"]
-			break
-		}
+	if del := asStringMap(phases["delete"]); del != nil {
+		signature["delete_after"] = del["min_age"]
 	}
-	for _, transitionRaw := range asAnySlice(hot["transitions"]) {
-		transition := asStringMap(transitionRaw)
-		if stateName, _ := transition["state_name"].(string); stateName == "delete" {
-			conditions := asStringMap(transition["conditions"])
-			signature["delete_after"] = conditions["min_index_age"]
-			break
-		}
-	}
-	patterns := []string{}
-	templates := asAnySlice(policy["ism_template"])
-	if templateDict := asStringMap(policy["ism_template"]); templateDict != nil {
-		templates = []any{templateDict}
-	}
-	for _, templateRaw := range templates {
-		template := asStringMap(templateRaw)
-		for _, patternRaw := range asAnySlice(template["index_patterns"]) {
-			patterns = append(patterns, fmt.Sprint(patternRaw))
-		}
-	}
-	sort.Strings(patterns)
-	signature["index_patterns"] = patterns
 	return signature
 }
 
-// checkLogISMPolicies ISM 缺失时索引既不滚动也不清理，磁盘会被慢慢撑满，属于静默故障。
-func (handler *Handler) checkLogISMPolicies(context *gin.Context, cluster openSearchCluster) gin.H {
+// checkLogRetentionPolicies ILM 策略缺失时索引既不滚动也不清理，磁盘会被慢慢撑满，属于静默故障。
+// GET `_ilm/policy/<name>` 的响应形如 {<name>:{version,modified_date,policy:{phases:...},in_use_by:{}}}。
+func (handler *Handler) checkLogRetentionPolicies(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
 	tiers, err := handler.loadEnabledRetentionTiers(context)
 	if err != nil {
-		return logHealthLayer("ism_policies", "保留策略", logHealthError, "读取保留档位失败: "+err.Error(), nil)
+		return logHealthLayer("retention_policies", "保留策略", logHealthError, "读取保留档位失败: "+err.Error(), nil)
 	}
 	items := []gin.H{}
 	for _, tier := range tiers {
-		name := buildISMPolicyName(prefix, tier.Code)
-		desired := ismPolicySignature(buildISMPolicyBody(prefix, tier)["policy"].(gin.H))
-		remote, err := handler.openSearchRequest(context, cluster, "GET", "/_plugins/_ism/policies/"+name, nil)
+		name := buildILMPolicyName(prefix, tier.Code)
+		desired := ilmPolicySignature(buildILMPolicyBody(prefix, tier)["policy"].(gin.H))
+		remote, err := handler.elasticsearchRequest(context, cluster, "GET", "/_ilm/policy/"+name, nil)
 		if err != nil {
-			if isOpenSearchNotFound(err) {
+			if isElasticsearchNotFound(err) {
 				items = append(items, logHealthItem(name, logHealthDrift, "策略不存在，索引不会自动滚动与清理"))
 			} else {
-				items = append(items, logHealthItem(name, logHealthError, truncateOpenSearchError(err)))
+				items = append(items, logHealthItem(name, logHealthError, truncateElasticsearchError(err)))
 			}
 			continue
 		}
-		policy, _ := remote["policy"].(map[string]any)
+		policy, _ := asStringMap(remote[name])["policy"].(map[string]any)
 		if policy == nil {
 			policy = map[string]any{}
 		}
-		actual := ismPolicySignature(policy)
+		actual := ilmPolicySignature(policy)
 		differing := differingSignatureKeys(actual, desired)
 		if len(differing) == 0 {
 			items = append(items, logHealthItem(name, logHealthOK, fmt.Sprintf("保留 %d 天", tier.RetentionDays)))
@@ -264,12 +243,12 @@ func (handler *Handler) checkLogISMPolicies(context *gin.Context, cluster openSe
 		}
 		items = append(items, logHealthItem(name, logHealthDrift, "与档位配置不一致: "+strings.Join(differing, ", ")))
 	}
-	return logHealthLayerFromItems("ism_policies", "保留策略", items, "没有启用中的保留档位")
+	return logHealthLayerFromItems("retention_policies", "保留策略", items, "没有启用中的保留档位")
 }
 
 func differingSignatureKeys(actual, desired gin.H) []string {
 	differing := make([]string, 0, 4)
-	for _, key := range []string{"rollover_size", "rollover_age", "delete_after", "index_patterns"} {
+	for _, key := range []string{"rollover_size", "rollover_age", "delete_after"} {
 		if !sameSignatureValue(actual[key], desired[key]) {
 			differing = append(differing, key)
 		}
@@ -298,7 +277,7 @@ func sameSignatureValue(actual, desired any) bool {
 }
 
 // checkLogPipelines pipeline 没发布时日志照样写入，只是不被解析，界面上看不出任何异常。
-func (handler *Handler) checkLogPipelines(context *gin.Context, cluster openSearchCluster) gin.H {
+func (handler *Handler) checkLogPipelines(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	rules, err := db.New(handler.db).ListProcessingRulesByCluster(context, cluster.ID)
 	if err != nil {
 		return logHealthLayer("pipelines", "解析规则", logHealthError, "读取解析规则失败: "+err.Error(), nil)
@@ -306,32 +285,34 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster openSear
 
 	items := []gin.H{}
 	for _, rule := range rules {
-		remote, err := handler.openSearchRequest(context, cluster, "GET", "/_ingest/pipeline/"+rule.Name, nil)
+		// pipeline id 与发布/删除/渲染统一：<前缀>-<应用 code|general>-<规则名>。
+		pipelineName := processingPipelineName(logHealthPrefix(cluster), handler.applicationPipelineSegment(context, rule.ApplicationID), rule.Name)
+		remote, err := handler.elasticsearchRequest(context, cluster, "GET", "/_ingest/pipeline/"+pipelineName, nil)
 		if err != nil {
-			if isOpenSearchNotFound(err) {
-				items = append(items, logHealthItem(rule.Name, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
+			if isElasticsearchNotFound(err) {
+				items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
 			} else {
-				items = append(items, logHealthItem(rule.Name, logHealthError, truncateOpenSearchError(err)))
+				items = append(items, logHealthItem(pipelineName, logHealthError, truncateElasticsearchError(err)))
 			}
 			continue
 		}
-		body, _ := remote[rule.Name].(map[string]any)
+		body, _ := remote[pipelineName].(map[string]any)
 		if body == nil {
-			items = append(items, logHealthItem(rule.Name, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
+			items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
 		} else if pipelineSignature(body) != pipelineSignature(json.RawMessage(rule.PipelineBody)) {
-			items = append(items, logHealthItem(rule.Name, logHealthDrift, "集群上的 pipeline 与页面配置不一致，需重新发布"))
+			items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上的 pipeline 与页面配置不一致，需重新发布"))
 		} else {
 			var decoded map[string]any
 			_ = json.Unmarshal(rule.PipelineBody, &decoded)
 			processors, _ := decoded["processors"].([]any)
-			items = append(items, logHealthItem(rule.Name, logHealthOK, fmt.Sprintf("%d 个处理器", len(processors))))
+			items = append(items, logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器", len(processors))))
 		}
 	}
 	return logHealthLayerFromItems("pipelines", "解析规则", items, "尚未配置解析规则")
 }
 
 // checkLogHostConfigs 比对数据库记录，暴露未安装/未下发配置的主机。
-// 注意：Go 侧 Fluent Bit 配置由 agent 渲染（configure_fluent_bit_opensearch），
+// 注意：Go 侧 Filebeat 配置由 agent 渲染（configure_filebeat_output），
 // 后端没有期望指纹生成器，因此这里只判断「已下发与否」，不比对内容一致性；
 // 主机被人手工改过的情况由 agent 侧上报与数据流层兜底。
 func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
@@ -347,7 +328,7 @@ func (handler *Handler) checkLogHostConfigs(context *gin.Context) gin.H {
 			label = fmt.Sprintf("host-%d", target.ID)
 		}
 		if !target.AgentInstalled {
-			items = append(items, logHealthItem(label, logHealthWarn, "Fluent Bit 未安装"))
+			items = append(items, logHealthItem(label, logHealthWarn, "Filebeat 未安装"))
 			continue
 		}
 		if strings.TrimSpace(target.ConfigFingerprint) == "" {
@@ -390,18 +371,18 @@ func (handler *Handler) checkLogRuntime(context *gin.Context) gin.H {
 			items = append(items, logHealthItem(label, logHealthWarn, "状态未知，需刷新"))
 		}
 	}
-	return logHealthLayerFromItems("runtime", "采集进程", items, "没有已安装 Fluent Bit 的主机")
+	return logHealthLayerFromItems("runtime", "采集进程", items, "没有已安装 Filebeat 的主机")
 }
 
 // checkLogDataFlow 前面几层全绿也可能没数据，这一层是唯一能证明链路真正通了的证据。
-func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster openSearchCluster) gin.H {
+func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
 	body := gin.H{
 		"size":  0,
 		"query": gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dm", logHealthDataFlowWindowMinutes)}}},
 		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 50}}},
 	}
-	result, err := handler.openSearchRequest(context, cluster, "POST", "/"+prefix+"-*/_search", body)
+	result, err := handler.elasticsearchRequest(context, cluster, "POST", "/"+prefix+"-*/_search", body)
 	if err != nil {
 		return logHealthLayer("data_flow", "数据写入", logHealthError, fmt.Sprintf("查询失败: %v", err), nil)
 	}

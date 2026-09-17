@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -43,11 +44,12 @@ var retentionSpec = resourceSpec{
 
 var processingSpec = resourceSpec{
 	table:        "monitor_log_processing_rule",
-	fields:       fieldSet("cluster", "application", "name", "description", "input_format", "multiline_enabled", "start_pattern", "continuation_pattern", "flush_timeout", "pipeline_body", "remark"),
+	fields:       fieldSet("cluster", "application", "name", "description", "input_format", "multiline_enabled", "start_pattern", "continuation_pattern", "sample_log", "flush_timeout", "pipeline_body", "remark"),
 	jsonFields:   fieldSet("pipeline_body"),
 	filterFields: map[string]string{"cluster": "cluster_id", "application": "application_id", "input_format": "input_format", "multiline_enabled": "multiline_enabled"},
 	searchFields: []string{"name", "description"}, order: "name,id",
-	required: []string{"cluster", "name", "description", "input_format", "multiline_enabled", "start_pattern", "continuation_pattern", "flush_timeout", "pipeline_body"},
+	// continuation_pattern 不再是必填：Filebeat 用 negate/match=after 表达续行，续行正则可选/忽略。
+	required: []string{"cluster", "name", "description", "input_format", "multiline_enabled", "start_pattern", "flush_timeout", "pipeline_body"},
 	create:   createLogProcessingRule, update: updateLogProcessingRule, delete: deleteLogProcessingRule,
 }
 
@@ -119,13 +121,13 @@ func (handler *Handler) BatchDeleteRetentionTiers(context *gin.Context) {
 		results = append(results, gin.H{"id": id, "ok": true, "message": ""})
 	}
 	if okCount > 0 {
-		// 档位删除后已启用集群的 ISM 策略需要重新对账。
+		// 档位删除后已启用集群的 ILM 策略需要重新对账。
 		go handler.syncAllClusterLogStorage()
 	}
 	response.Success(context, gin.H{"count": okCount, "results": results})
 }
 
-// respondRetentionTierThenSync 档位保存成功后异步刷新所有启用集群的模板与 ISM 策略。
+// respondRetentionTierThenSync 档位保存成功后异步刷新所有启用集群的模板与 ILM 策略。
 // Django 走 celery 异步任务（_apply_policies），Go 用 goroutine 等价实现，不阻塞保存响应。
 func (handler *Handler) respondRetentionTierThenSync(context *gin.Context, id int64) {
 	handler.respondRetentionTier(context, id)
@@ -154,8 +156,16 @@ func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64)
 	if referenceCount > 0 {
 		return errors.New("规则仍被日志定义引用，不能删除")
 	}
-	if err := handler.deleteProcessingPipeline(context, rule.ClusterID, rule.Name); err != nil {
+	// 删除时同时清理新命名（<前缀>-<应用 code|general>-<规则名>）与历史上的裸规则名。
+	pipelineName := rule.Name
+	if cluster, clusterErr := handler.loadElasticsearchClusterByID(context, rule.ClusterID); clusterErr == nil {
+		pipelineName = processingPipelineName(cluster.IndexPrefix, handler.applicationPipelineSegment(context, rule.ApplicationID), rule.Name)
+	}
+	if err := handler.deleteProcessingPipeline(context, rule.ClusterID, pipelineName); err != nil {
 		return fmt.Errorf("删除 Pipeline 失败: %w", err)
+	}
+	if pipelineName != rule.Name {
+		_ = handler.deleteProcessingPipeline(context, rule.ClusterID, rule.Name)
 	}
 	return processingSpec.delete(context, handler.db, id)
 }
@@ -165,33 +175,74 @@ func (handler *Handler) BatchDeleteProcessingRules(context *gin.Context) {
 }
 
 // publishProcessingRuleBeforeSave 对齐 Django LogProcessingRuleViewSet：先发布 pipeline
-// 到 OpenSearch，发布失败则整条请求以 400 中止、不落库；更新时未提供的字段沿用旧值。
+// 到 Elasticsearch，发布失败则整条请求以 400 中止、不落库；更新时未提供的字段沿用旧值。
 func (handler *Handler) publishProcessingRuleBeforeSave(context *gin.Context, input map[string]any, id int64) string {
 	name := stringValue(input["name"])
 	clusterValue, _ := input["cluster"].(float64)
 	clusterID := int64(clusterValue)
 	pipelineBody := input["pipeline_body"]
+	applicationID := sql.NullInt64{}
+	applicationProvided := false
+	if value, ok := input["application"]; ok {
+		applicationProvided = true
+		applicationID = nullableInt64Value(map[string]any{"application": value}, "application")
+	}
+	var existing db.MonitorLogProcessingRule
+	hasExisting := false
 	if id != 0 {
 		// 复用整行读：更新时未提交的字段沿用旧值。
-		if existing, err := db.New(handler.db).GetLogProcessingRule(context, id); err == nil {
+		if row, err := db.New(handler.db).GetLogProcessingRule(context, id); err == nil {
+			existing, hasExisting = row, true
 			if name == "" {
-				name = existing.Name
+				name = row.Name
 			}
 			if clusterID == 0 {
-				clusterID = existing.ClusterID
+				clusterID = row.ClusterID
 			}
 			if pipelineBody == nil {
-				pipelineBody = existing.PipelineBody
+				pipelineBody = row.PipelineBody
+			}
+			if !applicationProvided {
+				applicationID = row.ApplicationID
 			}
 		}
 	}
 	if name == "" || clusterID == 0 || pipelineBody == nil {
 		return "name、cluster 与 pipeline_body 均为必填"
 	}
-	if err := handler.publishProcessingPipeline(context, clusterID, name, pipelineBody); err != nil {
+	cluster, err := handler.loadElasticsearchClusterByID(context, clusterID)
+	if err != nil {
+		return fmt.Sprintf("读取 Elasticsearch 集群失败: %v", err)
+	}
+	newName := processingPipelineName(cluster.IndexPrefix, handler.applicationPipelineSegment(context, applicationID), name)
+	if err := handler.publishProcessingPipeline(context, clusterID, newName, pipelineBody); err != nil {
 		return fmt.Sprintf("发布 Pipeline 失败: %v", err)
 	}
+	// 改名 / 换应用 / 换集群前缀时清理旧 pipeline，避免 ES 上残留。
+	if hasExisting {
+		if oldCluster, oldErr := handler.loadElasticsearchClusterByID(context, existing.ClusterID); oldErr == nil {
+			oldName := processingPipelineName(oldCluster.IndexPrefix, handler.applicationPipelineSegment(context, existing.ApplicationID), existing.Name)
+			if oldName != newName {
+				_ = handler.deleteProcessingPipeline(context, existing.ClusterID, oldName)
+			}
+		}
+	}
 	return ""
+}
+
+// applicationPipelineSegment 取应用在 pipeline id 里的段：优先 code（稳定、无中文/空格），回落 name。
+func (handler *Handler) applicationPipelineSegment(context *gin.Context, applicationID sql.NullInt64) string {
+	if !applicationID.Valid {
+		return ""
+	}
+	row, err := db.New(handler.db).GetApplicationNameCode(context, applicationID.Int64)
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(row.Code) != "" {
+		return row.Code
+	}
+	return row.Name
 }
 
 func (handler *Handler) CreateFilterRule(context *gin.Context) {
@@ -207,7 +258,7 @@ func (handler *Handler) BatchDeleteFilterRules(context *gin.Context) {
 }
 
 // beforeSave 在校验通过后、落库前执行（返回非空文案则以 400 中止），
-// 供解析规则等需要“先发布到 OpenSearch 再写库”的资源挂接外部副作用。
+// 供解析规则等需要“先发布到 Elasticsearch 再写库”的资源挂接外部副作用。
 func (handler *Handler) saveResource(context *gin.Context, spec resourceSpec, id int64, respond func(*gin.Context, int64), beforeSave ...func(*gin.Context, map[string]any, int64) string) {
 	var input map[string]any
 	if err := context.ShouldBindJSON(&input); err != nil {
@@ -294,12 +345,17 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 				return "pipeline_body.processors must be an array"
 			}
 		}
+		// 错误清单/聚类依赖 error_fingerprint；pipeline 不产出它时能力静默失效，直接拦截发布。
+		if !pipelineWritesErrorFingerprint(input["pipeline_body"]) {
+			return "pipeline_body 必须写入 error_fingerprint（例如 fingerprint 处理器 target_field=error_fingerprint）"
+		}
 		if value, ok := input["flush_timeout"].(float64); ok && (value < 100 || value > 60000) {
 			return "flush_timeout must be between 100 and 60000"
 		}
 		if enabled, _ := input["multiline_enabled"].(bool); enabled {
-			if strings.TrimSpace(stringValue(input["start_pattern"])) == "" || strings.TrimSpace(stringValue(input["continuation_pattern"])) == "" {
-				return "multiline patterns are required"
+			// Filebeat 下只需首行正则；续行由 negate/match=after 隐式表达。
+			if strings.TrimSpace(stringValue(input["start_pattern"])) == "" {
+				return "start_pattern is required when multiline_enabled"
 			}
 		}
 	}
@@ -317,6 +373,36 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 		}
 	}
 	return ""
+}
+
+// pipelineWritesErrorFingerprint 静态判断 pipeline 是否会写入 error_fingerprint：
+// 覆盖 fingerprint/set/copy/rename（target_field 或 field 命中即认为会产出）。
+func pipelineWritesErrorFingerprint(raw any) bool {
+	body, ok := raw.(map[string]any)
+	if !ok {
+		if message, isRaw := raw.(json.RawMessage); isRaw {
+			_ = json.Unmarshal(message, &body)
+		}
+	}
+	if body == nil {
+		return false
+	}
+	processors, _ := body["processors"].([]any)
+	for _, rawProcessor := range processors {
+		processor, _ := rawProcessor.(map[string]any)
+		for _, name := range []string{"fingerprint", "set", "copy", "rename"} {
+			config, _ := processor[name].(map[string]any)
+			if config == nil {
+				continue
+			}
+			for _, key := range []string{"target_field", "field"} {
+				if value, exists := config[key]; exists && fmt.Sprint(value) == "error_fingerprint" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // batchErrMessage 把 sql.ErrNoRows 统一转成 "resource not found"，其余透传原始错误文案。
@@ -360,7 +446,7 @@ func deleteRowsAffected(result sql.Result, err error) error {
 	return nil
 }
 
-// batchDeleteMonitorRows 无前置校验的简单表通用批删（alert media、OpenSearch 集群）。
+// batchDeleteMonitorRows 无前置校验的简单表通用批删（alert media、Elasticsearch 集群）。
 // 表名不再作为字符串传入：sqlc 的语句是编译期固定的，按表分派由调用方给出的 deleteOne 承担。
 func batchDeleteMonitorRows(context *gin.Context, handler *Handler, deleteOne func(*gin.Context, int64) error) {
 	ids, ok := logTargetIDs(context)

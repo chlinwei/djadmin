@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,12 +20,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// Fluent Bit 纳管目标（monitor_log_collection_target）的运维操作。
-// 之前前端调用的 /monitor/log-targets/* 接口后端完全没有实现，点击全部 404；
-// 这里补齐：安装/卸载（离线 playbook，与 exporter 安装同链路）、启停/查状态（agent 通用命令）、
-// 下发配置（agent 内置 configure_fluent_bit_opensearch 动作）、取消/删除/批量操作。
+// Filebeat 纳管目标（monitor_log_collection_target）的运维操作：
+// 安装/卸载（离线 playbook，与 exporter 安装同链路）、启停/查状态（agent 通用命令）、
+// 下发配置（agent 内置 configure_filebeat_output + apply_filebeat_config 动作）、取消/删除/批量操作。
 
-const fluentBitServiceName = "fluent-bit"
+const filebeatServiceName = "filebeat"
 
 type logTargetRow struct {
 	ID             int64
@@ -72,104 +72,112 @@ func logTargetPending(ctx context.Context, pool generated.DBTX, id int64) (bool,
 	return history.Status == "pending" || history.Status == "running", history, nil
 }
 
-// ---- 安装/卸载（离线 playbook） ----
+// ---- 安装/卸载（离线 playbook，仅 Filebeat tar.gz 便携包） ----
 
-type fluentBitPackage struct {
-	ID          int64
-	Family      string
-	Major       string
-	Format      string
-	File        string
-	SHA256      string
-	PlaybookID  sql.NullInt64
-	PlaybookDir string // install 或 uninstall
+type filebeatPackage struct {
+	ID                 int64
+	Arch               string
+	File               string
+	SHA256             string
+	ServiceFileContent string
+	PlaybookID         sql.NullInt64
 }
 
-// pickFluentBitPackage 按主机的包格式/发行版/主版本挑一个最合适的 Fluent Bit 软件包。
-// 安装与卸载要读不同的 playbook 列，原来是运行时拼列名——现在按角色分派到两条显式语句。
-func (handler *Handler) pickFluentBitPackage(ctx context.Context, row logTargetRow, uninstall bool) (*fluentBitPackage, error) {
+// pickFilebeatPackage 只认 package_type=filebeat、format=tar.gz(any) 的启用包，按主机架构匹配。
+// Filebeat 官方包是单静态二进制（自带依赖），只关心架构，不再区分发行版/主版本/包格式。
+func (handler *Handler) pickFilebeatPackage(ctx context.Context, row logTargetRow, uninstall bool) (*filebeatPackage, error) {
 	queries := generated.New(handler.db)
-	candidates := make([]*fluentBitPackage, 0)
+	arch := handler.hostArchitecture(ctx, row.HostID)
+	if arch == "" && handler.refreshHostInfo != nil && row.HostID > 0 {
+		// 架构来自资产采集，缺了先自动补采一次（与 exporter 选包同一策略）。
+		if err := handler.refreshHostInfo(ctx, row.HostID); err == nil {
+			arch = handler.hostArchitecture(ctx, row.HostID)
+		}
+	}
+	if arch == "" {
+		return nil, fmt.Errorf("主机架构信息缺失且自动采集未获取到，请确认 agent 在线后重试（或先执行资产采集）")
+	}
+	candidates := make([]*filebeatPackage, 0)
 	if uninstall {
-		rows, err := queries.ListUninstallableFluentBitPackages(ctx)
+		rows, err := queries.ListUninstallableFilebeatPackages(ctx)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range rows {
-			candidates = append(candidates, &fluentBitPackage{
-				ID: item.ID, Family: item.PlatformFamily, Major: item.PlatformMajor, Format: item.PackageFormat,
-				File: item.File, SHA256: item.Sha256, PlaybookID: item.UninstallPlaybookTemplateID,
+			candidates = append(candidates, &filebeatPackage{
+				ID: item.ID, Arch: item.Arch, File: item.File, SHA256: item.Sha256, ServiceFileContent: item.ServiceFileContent, PlaybookID: item.UninstallPlaybookTemplateID,
 			})
 		}
 	} else {
-		rows, err := queries.ListInstallableFluentBitPackages(ctx)
+		rows, err := queries.ListInstallableFilebeatPackages(ctx)
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range rows {
-			candidates = append(candidates, &fluentBitPackage{
-				ID: item.ID, Family: item.PlatformFamily, Major: item.PlatformMajor, Format: item.PackageFormat,
-				File: item.File, SHA256: item.Sha256, PlaybookID: item.InstallPlaybookTemplateID,
+			candidates = append(candidates, &filebeatPackage{
+				ID: item.ID, Arch: item.Arch, File: item.File, SHA256: item.Sha256, ServiceFileContent: item.ServiceFileContent, PlaybookID: item.InstallPlaybookTemplateID,
 			})
 		}
 	}
+	role := "安装"
+	if uninstall {
+		role = "卸载"
+	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("没有可用的 Fluent Bit 软件包（需要在软件仓库维护 package_type=fluent_bit 且配置安装 playbook 的启用包）")
+		return nil, fmt.Errorf("软件仓库没有可用的 Filebeat %s包：需存在 package_type=filebeat、package_format=tar.gz、enabled 的软件包", role)
 	}
-	format := hostPackageFormat(row)
-	osLine := strings.ToLower(row.OSType + " " + row.OSIDLike)
-	best, bestScore := (*fluentBitPackage)(nil), -1
+	// 按架构筛选，并把仓库里现有的架构列出来，便于排查是没建包还是架构填错。
+	existingArch := map[string]bool{}
+	matched := make([]*filebeatPackage, 0)
 	for _, item := range candidates {
-		if item.Format != format {
-			continue
+		if arch := strings.TrimSpace(item.Arch); arch != "" {
+			existingArch[arch] = true
 		}
-		score := 1
-		if packageFamilyMatches(item.Family, osLine) {
-			score += 2
-		}
-		if item.Major != "" && strings.HasPrefix(osMajor(row), item.Major) {
-			score += 4
-		}
-		if score > bestScore {
-			best, bestScore = item, score
+		if item.Arch == arch {
+			matched = append(matched, item)
 		}
 	}
-	if best == nil {
-		return nil, fmt.Errorf("主机系统 %s/%s 没有匹配的 %s 格式 Fluent Bit 软件包", row.OSType, row.OSIDLike, format)
+	if len(matched) == 0 {
+		archList := make([]string, 0, len(existingArch))
+		for value := range existingArch {
+			archList = append(archList, value)
+		}
+		sort.Strings(archList)
+		if len(archList) == 0 {
+			return nil, fmt.Errorf("软件仓库的 Filebeat 包未填写架构（arch），请在包配置里选择 amd64/arm64")
+		}
+		return nil, fmt.Errorf("没有匹配主机架构 %s 的 Filebeat tar.gz 包（仓库现有架构：%s）", arch, strings.Join(archList, ", "))
 	}
-	return best, nil
+	for _, item := range matched {
+		if strings.TrimSpace(item.File) == "" {
+			return nil, fmt.Errorf("Filebeat %s包缺少已上传的 tar.gz 文件，请先在软件仓库上传", role)
+		}
+		// 未配置 playbook 时用内置默认（见 filebeat_playbook.go），不再强制用户手写。
+		return item, nil
+	}
+	return nil, fmt.Errorf("没有匹配主机架构 %s 的 Filebeat tar.gz 包", arch)
 }
 
-// hostPackageFormat 依据 agent 采集的系统信息决定离线包格式：debian 系用 deb，其余默认 rpm。
-func hostPackageFormat(row logTargetRow) string {
-	osLine := strings.ToLower(row.OSType + " " + row.OSIDLike)
-	if strings.Contains(osLine, "debian") || strings.Contains(osLine, "ubuntu") {
-		return "deb"
+// hostArchitecture 读取资产采集的 CPU 架构并归一为仓库匹配键（amd64/arm64）。
+func (handler *Handler) hostArchitecture(ctx context.Context, hostID int64) string {
+	if hostID < 1 {
+		return ""
 	}
-	return "rpm"
+	row, err := generated.New(handler.db).GetHostHardware(ctx, hostID)
+	if err != nil {
+		return ""
+	}
+	return normalizeHostArch(row.Architecture.String)
 }
 
-func packageFamilyMatches(family, osLine string) bool {
-	family = strings.ToLower(strings.TrimSpace(family))
-	if family == "" || family == "any" {
-		return true
+func normalizeHostArch(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
 	}
-	if strings.Contains(osLine, family) {
-		return true
-	}
-	if family == "rhel" && (strings.Contains(osLine, "red hat") || strings.Contains(osLine, "centos") || strings.Contains(osLine, "rocky") || strings.Contains(osLine, "almalinux") || strings.Contains(osLine, "fedora")) {
-		return true
-	}
-	return false
-}
-
-// osMajor 取 os_version_id 的主版本段（如 "9.4"→"9"、"22.04"→"22"），用于匹配 rhel7/rhel9 这类包目录。
-func osMajor(row logTargetRow) string {
-	version := strings.TrimSpace(row.OSVersionID)
-	if index := strings.Index(version, "."); index > 0 {
-		version = version[:index]
-	}
-	return version
+	return ""
 }
 
 func playbookContent(context *gin.Context, pool *sql.DB, playbookID int64) (string, error) {
@@ -179,23 +187,6 @@ func playbookContent(context *gin.Context, pool *sql.DB, playbookID int64) (stri
 		return "", err
 	}
 	return playbook.Content, nil
-}
-
-// fluentBitMainConfig 安装时一次性写入的主配置，与 Django render_main_config() 契约一致：
-// 开启热重载与本地 HTTP 状态接口（§8.1/§8.5），并挂载 inputs.d/outputs.d 片段目录。
-func fluentBitMainConfig() string {
-	return "[SERVICE]\n" +
-		"    Flush                  5\n" +
-		"    Log_Level              info\n" +
-		"    Hot_Reload             On\n" +
-		"    HTTP_Server            On\n" +
-		"    HTTP_Listen            127.0.0.1\n" +
-		"    HTTP_Port              2020\n" +
-		"    Parsers_File           /etc/fluent-bit/parsers.d/djadmin-multiline.conf\n" +
-		"    storage.path           /var/lib/fluent-bit/storage/\n" +
-		"\n" +
-		"@INCLUDE inputs.d/*.conf\n" +
-		"@INCLUDE outputs.d/*.conf\n"
 }
 
 func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row logTargetRow) (gin.H, error) {
@@ -213,19 +204,27 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	if !row.ManagedEnabled {
 		action, desiredStatus = "uninstall", "uninstalled"
 	}
-	item, err := handler.pickFluentBitPackage(ginContext, row, !row.ManagedEnabled)
+	item, err := handler.pickFilebeatPackage(ginContext, row, !row.ManagedEnabled)
 	if err != nil {
 		return nil, err
 	}
+	if !item.PlaybookID.Valid {
+		return nil, fmt.Errorf("Filebeat %s包未配置 %s Playbook，请在软件仓库编辑该包并保存（系统会自动填入默认 Playbook），或手动填写", action, action)
+	}
 	content, err := playbookContent(ginContext, handler.db, item.PlaybookID.Int64)
 	if err != nil {
-		return nil, fmt.Errorf("Fluent Bit %s playbook 不存在: %w", action, err)
+		return nil, fmt.Errorf("Filebeat %s playbook 不存在: %w", action, err)
 	}
-	extra := gin.H{"service_name": fluentBitServiceName, "package_format": item.Format, "fluent_bit_main_config": fluentBitMainConfig()}
+	// systemd unit 内容从软件包配置取（创建/编辑/回填时已写默认值），空则用内置默认兜底。
+	serviceFileContent := strings.TrimSpace(item.ServiceFileContent)
+	if serviceFileContent == "" {
+		serviceFileContent = strings.TrimSpace(builtinFilebeatServiceUnitContent())
+	}
+	extra := gin.H{"service_name": filebeatServiceName, "package_format": "tar.gz", "service_file_content": serviceFileContent}
 	packageDirectory := ""
 	if action == "install" {
 		if strings.TrimSpace(item.File) == "" || strings.TrimSpace(item.SHA256) == "" {
-			return nil, fmt.Errorf("选中的 Fluent Bit 软件包缺少离线文件或校验和，请先在软件仓库上传")
+			return nil, fmt.Errorf("选中的 Filebeat 软件包缺少离线文件或校验和，请先在软件仓库上传")
 		}
 		packageDirectory = filepath.Join(handler.packageRoot, filepath.Dir(filepath.FromSlash(item.File)))
 		extra["package_file_name"] = filepath.Base(item.File)
@@ -245,9 +244,9 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	jobID, err := queries.CreateMonitorTargetJob(ginContext, generated.CreateMonitorTargetJobParams{
 		CreateTime: now, UpdateTime: now, JobID: uuid.NewString(),
 		InventorySnapshot: inventoryJSON, ExtraVars: extraJSON,
-		ResultSummary:        json.RawMessage(`{"message":"Fluent Bit install/uninstall job queued"}`),
-		TaskNameSnapshot:     fmt.Sprintf("Fluent Bit %s", action),
-		TemplateNameSnapshot: "fluent-bit", TemplateContentSnapshot: content,
+		ResultSummary:        json.RawMessage(`{"message":"Filebeat install/uninstall job queued"}`),
+		TaskNameSnapshot:     fmt.Sprintf("Filebeat %s", action),
+		TemplateNameSnapshot: "filebeat", TemplateContentSnapshot: content,
 		RunAsUserSnapshot: "", RunAsGroupSnapshot: "", WorkDirectorySnapshot: "",
 		RequestedUserID: sql.NullInt32{}, RequestedUsername: "system",
 	})
@@ -256,11 +255,11 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	}
 	historyID, err := queries.CreateLogTargetInstallHistory(ginContext, generated.CreateLogTargetInstallHistoryParams{
 		CreateTime: now, UpdateTime: now, Action: action,
-		HostIDSnapshot:       sql.NullInt32{Int32: int32(row.HostID), Valid: true},
-		HostNameSnapshot:     row.HostName,
-		HostIpSnapshot:       row.HostIP,
-		ExporterTypeSnapshot: "fluent_bit",
-		SummaryMessage:       "",
+		HostIDSnapshot:          sql.NullInt32{Int32: int32(row.HostID), Valid: true},
+		HostNameSnapshot:        row.HostName,
+		HostIpSnapshot:          row.HostIP,
+		ExporterTypeSnapshot:    "filebeat",
+		SummaryMessage:          "",
 		RequestedUserIDSnapshot: sql.NullInt32{}, RequestedUsernameSnapshot: "system",
 		HostID:                sql.NullInt64{Int64: row.HostID, Valid: true},
 		LogCollectionTargetID: sql.NullInt64{Int64: row.ID, Valid: true},
@@ -291,7 +290,7 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 			}
 		}
 		if summary == "" {
-			summary = "Fluent Bit 任务执行失败"
+			summary = "Filebeat 任务执行失败"
 		}
 		message := summary
 		if finalStatus == desiredStatus {
@@ -304,9 +303,18 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 		if finalStatus == "success" {
 			succeeded = 1
 		}
+		// agent_installed 是"Filebeat 二进制已装"的持久态：安装成功置 TRUE、卸载成功置 FALSE；
+		// 失败时传 NULL 保持原值（安装/卸载失败不该抹掉已知的已装/未装状态）。
+		agentInstalled := sql.NullBool{}
+		switch finalStatus {
+		case "success":
+			agentInstalled = sql.NullBool{Bool: true, Valid: true}
+		case "uninstalled":
+			agentInstalled = sql.NullBool{Bool: false, Valid: true}
+		}
 		_, _ = asyncQueries.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
 			InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
-			UpdateTime: finishedAt, ID: row.ID,
+			AgentInstalled: agentInstalled, UpdateTime: finishedAt, ID: row.ID,
 		})
 		_, _ = asyncQueries.FinishLogTargetInstallHistory(background, generated.FinishLogTargetInstallHistoryParams{
 			Status: finalStatus, SummaryMessage: message,
@@ -314,6 +322,17 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 			DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(now).Seconds(), Valid: true},
 			UpdateTime:      finishedAt, ID: historyID,
 		})
+		// 安装成功后自动下发一次采集配置（写 /etc/filebeat/filebeat.yml + inputs.d 并启动），
+		// 这样"安装"即可用，不用再手动点「下发配置」；失败不影响安装结论，但把原因写进
+		// last_error 供前端展示（常见：agent 版本落后不认新动作、没有默认 ES 集群、没有可下发片段）。
+		if finalStatus == desiredStatus && action == "install" {
+			applyContext, _ := gin.CreateTestContext(nil)
+			if _, applyErr := handler.applyLogTargetConfigRow(applyContext, row); applyErr != nil {
+				_ = asyncQueries.SetLogTargetLastError(background, generated.SetLogTargetLastErrorParams{
+					LastError: applyErr.Error(), UpdateTime: time.Now().UTC(), ID: row.ID,
+				})
+			}
+		}
 	}()
 	_ = desiredStatus
 	return gin.H{"id": row.ID, "action": action, "history_id": historyID, "job_id": jobID}, nil
@@ -380,12 +399,12 @@ func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	// agent 通用命令通道：agent 以 root 运行，直接 systemctl，无需 sudo。
-	params, _ := json.Marshal(gin.H{"command": "systemctl", "args": []string{action, fluentBitServiceName + ".service"}})
-	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-service-%d", time.Now().UnixNano()), Type: "command", Action: "fluent_bit_service_control", ParamsJson: string(params), TimeoutSeconds: 30})
+	params, _ := json.Marshal(gin.H{"command": "systemctl", "args": []string{action, filebeatServiceName + ".service"}})
+	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-service-%d", time.Now().UnixNano()), Type: "command", Action: "filebeat_service_control", ParamsJson: string(params), TimeoutSeconds: 30})
 	if err != nil {
 		return nil, err
 	}
-	detail, err := serviceControlResult(result, action, fluentBitServiceName)
+	detail, err := serviceControlResult(result, action, filebeatServiceName)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +412,7 @@ func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id
 	return detail, nil
 }
 
-// persistLogTargetRuntimeStatus 把启停/查状态的真实结果落库，列表里的 Fluent Bit 状态列
+// persistLogTargetRuntimeStatus 把启停/查状态的真实结果落库，列表里的 Filebeat 状态列
 // 读的就是这个字段；之前没人更新它，服务停了界面仍显示旧的"running"。
 // systemctl status 退出码语义与 exporter 一致：0=运行中，3=已停止，其余=异常。
 func (handler *Handler) persistLogTargetRuntimeStatus(context *gin.Context, id int64, action string, exitCode int32) {
@@ -416,13 +435,13 @@ func (handler *Handler) persistLogTargetRuntimeStatus(context *gin.Context, id i
 	})
 }
 
-// ---- 下发配置（agent 内置 configure_fluent_bit_opensearch） ----
+// ---- 下发配置（agent 内置 configure_filebeat_output） ----
 
 func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 	id := parseID(context.Param("id"))
 	cluster, err := generated.New(handler.db).GetLogTargetDefaultCluster(context, id)
 	if err == sql.ErrNoRows {
-		response.BusinessError(context, 400, "没有已启用的默认 OpenSearch 集群，请先在日志存储里配置", nil)
+		response.BusinessError(context, 400, "没有已启用的默认 Elasticsearch 集群，请先在日志存储里配置", nil)
 		return
 	}
 	if err != nil {
@@ -434,25 +453,25 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 		response.BusinessError(context, 400, "host agent is offline", nil)
 		return
 	}
-	host, port, err := firstOpenSearchEndpoint(cluster.Hosts)
-	if err != nil {
-		response.BusinessError(context, 400, err.Error(), nil)
-		return
-	}
 	password, err := handler.secrets.Decrypt(cluster.Password)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": cluster.Username, "password": password})
-	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
+	outputParams, err := filebeatOutputParams(cluster.Hosts, cluster.Username, password, cluster.VerifyTls)
+	if err != nil {
+		response.BusinessError(context, 400, err.Error(), nil)
+		return
+	}
+	params, _ := json.Marshal(outputParams)
+	result, err := handler.gateway.Execute(context, instanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-output-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_filebeat_output", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}
 	if result.Status != "success" {
 		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		response.BusinessError(context, 400, "Fluent Bit 配置下发失败: "+reason, nil)
+		response.BusinessError(context, 400, "Filebeat 输出配置下发失败: "+reason, nil)
 		return
 	}
 	now := time.Now().UTC()
@@ -465,8 +484,9 @@ func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 	response.Success(context, gin.H{"skipped": false, "applied_at": now})
 }
 
-// firstOpenSearchEndpoint 从集群 hosts 列表（逗号分隔，可带 scheme）取第一个端点。
-func firstOpenSearchEndpoint(clusterHosts string) (string, string, error) {
+// firstElasticsearchURL 从集群 hosts 列表（逗号分隔，可带 scheme）取第一个端点，返回完整 URL
+// （Filebeat output.elasticsearch.hosts 需要带 scheme，https 表示启用 TLS）。
+func firstElasticsearchURL(clusterHosts string) (string, error) {
 	for _, entry := range strings.Split(clusterHosts, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
@@ -476,19 +496,25 @@ func firstOpenSearchEndpoint(clusterHosts string) (string, string, error) {
 			entry = "http://" + entry
 		}
 		parsed, err := url.Parse(entry)
-		if err != nil {
-			continue
-		}
-		if parsed.Hostname() == "" {
+		if err != nil || parsed.Hostname() == "" {
 			continue
 		}
 		port := parsed.Port()
 		if port == "" {
 			port = "9200"
 		}
-		return parsed.Hostname(), port, nil
+		return fmt.Sprintf("%s://%s:%s", parsed.Scheme, parsed.Hostname(), port), nil
 	}
-	return "", "", fmt.Errorf("OpenSearch 集群地址无效: %s", clusterHosts)
+	return "", fmt.Errorf("Elasticsearch 集群地址无效: %s", clusterHosts)
+}
+
+// filebeatOutputParams 组装 agent configure_filebeat_output 的参数。
+func filebeatOutputParams(clusterHosts, username, password string, verifyTLS bool) (gin.H, error) {
+	url, err := firstElasticsearchURL(clusterHosts)
+	if err != nil {
+		return nil, err
+	}
+	return gin.H{"url": url, "username": username, "password": password, "verify_tls": verifyTLS}, nil
 }
 
 // ---- 取消/删除/批量 ----
@@ -618,9 +644,9 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		return nil, fmt.Errorf("host agent is offline")
 	}
 	queries := generated.New(handler.db)
-	cluster, err := queries.GetDefaultEnabledOpenSearchCluster(context)
+	cluster, err := queries.GetDefaultEnabledElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("没有已启用的默认 OpenSearch 集群，请先在日志存储里配置")
+		return nil, fmt.Errorf("没有已启用的默认 Elasticsearch 集群，请先在日志存储里配置")
 	}
 	if err != nil {
 		return nil, err
@@ -631,30 +657,21 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		return nil, err
 	}
 
-	// 渲染服务级 inputs.d/outputs.d 片段（Index = logs-<项目>-<环境>-<业务>-<服务>-<档位>），
-	// 指纹一致则跳过，避免无谓重启 Fluent Bit。
+	// 渲染服务级 inputs.d 片段（index = logs-<项目>-<业务>-<环境>-<服务>-<档位>），
+	// 指纹一致则跳过，避免无谓重启 Filebeat。
 	entries, instances, renderErr := handler.loadHostLogRenderInput(context, row.HostID)
 	if renderErr != nil {
-		return nil, fmt.Errorf("渲染 Fluent Bit 配置失败: %w", renderErr)
+		return nil, fmt.Errorf("渲染 Filebeat 配置失败: %w", renderErr)
 	}
 	for index := range entries {
 		entries[index].Prefix = indexPrefix
 	}
 	rendered := renderHostLogConfig(entries, instances)
 	if len(rendered.Fragments) == 0 {
-		return nil, fmt.Errorf("主机没有可下发的日志片段：请先在服务的日志设置里开启采集（服务与日志定义的采集开关均需启用，且日志定义的部署模板需与服务一致）")
-	}
-	// 启用多行时随片段一并下发主配置：老主机安装时的主配置可能没有
-	// Parsers_File 行（缺失会让 fluent-bit 启动失败），主配置内容始终由
-	// backend 托管（fluentBitMainConfig 契约），重写为期望状态即自愈。
-	for _, fragment := range rendered.Fragments {
-		if fragment.Path == fluentBitParsersFile {
-			rendered.Fragments = append(rendered.Fragments, logConfigFragment{
-				Path:    fluentBitMainConfigPath,
-				Content: fluentBitMainConfig(),
-			})
-			break
-		}
+		// 没有任何启用的日志采集配置时不报错：output 配置（filebeat.yml）仍然下发，
+		// inputs 清空并启动，主机先"纳管可用"；之后开启采集再下发一次即可。
+		rendered.Warnings = append(rendered.Warnings,
+			"未发现启用的日志采集配置，仅下发 output.elasticsearch（请在服务的日志设置里开启采集后再下发一次）")
 	}
 
 	currentFingerprint, _ := queries.GetLogTargetConfigFingerprint(context, row.ID)
@@ -666,28 +683,28 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
 	}
 
-	host, port, err := firstOpenSearchEndpoint(cluster.Hosts)
+	outputParams, err := filebeatOutputParams(cluster.Hosts, cluster.Username, password, cluster.VerifyTls)
 	if err != nil {
 		return nil, err
 	}
-	params, _ := json.Marshal(gin.H{"host": host, "port": port, "username": cluster.Username, "password": password})
-	result, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-apply-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_fluent_bit_opensearch", ParamsJson: string(params), TimeoutSeconds: 60})
+	params, _ := json.Marshal(outputParams)
+	result, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-output-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_filebeat_output", ParamsJson: string(params), TimeoutSeconds: 60})
 	if err != nil {
 		return nil, err
 	}
 	if result.Status != "success" {
 		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		return nil, fmt.Errorf("Fluent Bit 配置下发失败: %s", reason)
+		return nil, fmt.Errorf("Filebeat 输出配置下发失败: %s", reason)
 	}
-	// 片段内容全部由 backend 渲染，agent 只落盘 + 重启（见 apply_fluent_bit_config）。
+	// 片段内容全部由 backend 渲染，agent 只落盘 + 校验 + 重启（见 apply_filebeat_config）。
 	fragmentParams, _ := json.Marshal(gin.H{"files": rendered.Fragments, "restart": "true"})
-	fragmentResult, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("fluentbit-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_fluent_bit_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
+	fragmentResult, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_filebeat_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
 	if err != nil {
 		return nil, err
 	}
 	if fragmentResult.Status != "success" {
 		reason := firstNonEmpty(strings.TrimSpace(fragmentResult.ErrorMessage), strings.TrimSpace(fragmentResult.Stderr), strings.TrimSpace(fragmentResult.Stdout))
-		return nil, fmt.Errorf("Fluent Bit 片段下发失败: %s", reason)
+		return nil, fmt.Errorf("Filebeat 片段下发失败: %s", reason)
 	}
 	now := time.Now().UTC()
 	if err = queries.MarkLogTargetConfigSynced(context, generated.MarkLogTargetConfigSyncedParams{
@@ -699,7 +716,7 @@ func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTar
 	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
 }
 
-// ---- 批量创建（纳管 Fluent Bit） ----
+// ---- 批量创建（纳管 Filebeat） ----
 
 func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 	var input struct {

@@ -67,9 +67,9 @@
             </a-tooltip>
           </div>
 
-          <div class="fluent-bit-batch-bar">
-            <div class="fluent-bit-batch-bar__head">
-              <span class="fluent-bit-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
+          <div class="filebeat-batch-bar">
+            <div class="filebeat-batch-bar__head">
+              <span class="filebeat-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
               <a-segmented v-model:value="batchTargetKind" size="small" :options="batchTargetKindOptions" />
             </div>
 
@@ -140,79 +140,79 @@
 
             <div v-else class="batch-action-group">
               <a-space :size="8" wrap>
-                <a-tooltip title="为选中的未纳管主机批量安装 Fluent Bit" placement="top">
+                <a-tooltip title="为选中的未纳管主机批量安装 Filebeat" placement="top">
                   <a-button
                     type="primary"
                     size="small"
-                    :disabled="!fluentBitSelectedUnmanaged.length"
-                    :loading="fluentBitBatchLoading === 'create'"
-                    @click="handleFluentBitBatchCreate"
+                    :disabled="!filebeatSelectedUnmanaged.length"
+                    :loading="filebeatBatchLoading === 'create'"
+                    @click="handleFilebeatBatchCreate"
                   >
                     <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                    &nbsp;装（{{ fluentBitSelectedUnmanaged.length }}）
+                    &nbsp;装（{{ filebeatSelectedUnmanaged.length }}）
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="批量重新安装 Fluent Bit" placement="top">
+                <a-tooltip title="批量重新安装 Filebeat" placement="top">
                   <a-button
                     type="primary"
                     ghost
                     size="small"
-                    :disabled="!fluentBitSelectedManagedIds.length"
-                    :loading="fluentBitBatchLoading === 'retry'"
-                    @click="handleFluentBitBatch('retry')"
+                    :disabled="!filebeatSelectedManagedIds.length"
+                    :loading="filebeatBatchLoading === 'retry'"
+                    @click="handleFilebeatBatch('retry')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                    &nbsp;重新安装（{{ fluentBitSelectedManagedIds.length }}）
+                    &nbsp;重新安装（{{ filebeatSelectedManagedIds.length }}）
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="批量启动 Fluent Bit" placement="top">
+                <a-tooltip title="批量启动 Filebeat" placement="top">
                   <a-button
                     type="primary"
                     ghost
                     size="small"
-                    :disabled="!fluentBitSelectedManagedIds.length"
-                    :loading="fluentBitBatchLoading === 'start'"
-                    @click="handleFluentBitBatch('start')"
+                    :disabled="!filebeatSelectedManagedIds.length"
+                    :loading="filebeatBatchLoading === 'start'"
+                    @click="handleFilebeatBatch('start')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'play']" />
                     &nbsp;启动
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="批量停止 Fluent Bit" placement="top">
+                <a-tooltip title="批量停止 Filebeat" placement="top">
                   <a-button
                     danger
                     ghost
                     size="small"
-                    :disabled="!fluentBitSelectedManagedIds.length"
-                    :loading="fluentBitBatchLoading === 'stop'"
-                    @click="handleFluentBitBatch('stop')"
+                    :disabled="!filebeatSelectedManagedIds.length"
+                    :loading="filebeatBatchLoading === 'stop'"
+                    @click="handleFilebeatBatch('stop')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'stop']" />
                     &nbsp;停止
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="批量下发 Fluent Bit 配置" placement="top">
+                <a-tooltip title="批量下发 Filebeat 配置" placement="top">
                   <a-button
                     type="primary"
                     ghost
                     size="small"
-                    :disabled="!fluentBitSelectedManagedIds.length"
-                    :loading="fluentBitBatchLoading === 'apply'"
-                    @click="handleFluentBitBatch('apply')"
+                    :disabled="!filebeatSelectedManagedIds.length"
+                    :loading="filebeatBatchLoading === 'apply'"
+                    @click="handleFilebeatBatch('apply')"
                   >
                     <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
                     &nbsp;下发配置
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="批量删除 Fluent Bit 目标" placement="top">
+                <a-tooltip title="批量删除 Filebeat 目标" placement="top">
                   <a-button
                     class="delBtn"
                     danger
                     type="primary"
                     size="small"
-                    :disabled="!fluentBitSelectedManagedIds.length"
-                    :loading="fluentBitBatchLoading === 'delete'"
-                    @click="openFluentBitBatchDeleteConfirm"
+                    :disabled="!filebeatSelectedManagedIds.length"
+                    :loading="filebeatBatchLoading === 'delete'"
+                    @click="openFilebeatBatchDeleteConfirm"
                   >
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                     &nbsp;删除
@@ -222,16 +222,16 @@
             </div>
           </div>
 
-          <div class="fluent-bit-layout">
-            <div class="fluent-bit-tree">
+          <div class="filebeat-layout">
+            <div class="filebeat-tree">
               <a-input
                 v-model:value="overviewGroupKeyword"
                 allow-clear
                 size="small"
                 placeholder="搜索分组"
-                class="fluent-bit-tree__search"
+                class="filebeat-tree__search"
               />
-              <div class="fluent-bit-tree__body">
+              <div class="filebeat-tree__body">
                 <a-tree
                   block-node
                   :tree-data="overviewGroupTreeData"
@@ -243,8 +243,8 @@
                 />
               </div>
             </div>
-            <div class="fluent-bit-table">
-              <div class="fluent-bit-table__filters">
+            <div class="filebeat-table">
+              <div class="filebeat-table__filters">
                 <a-input-search
                   v-model:value="overviewKeyword"
                   allow-clear
@@ -276,11 +276,11 @@
                 </a-radio-group>
                 <a-radio-group
                   v-else
-                  v-model:value="fluentBitManagedFilter"
+                  v-model:value="filebeatManagedFilter"
                   size="small"
                   @change="reloadOverviewHosts"
                 >
-                  <a-radio-button value="">全部 Fluent Bit</a-radio-button>
+                  <a-radio-button value="">全部 Filebeat</a-radio-button>
                   <a-radio-button value="true">已安装</a-radio-button>
                   <a-radio-button value="false">未安装</a-radio-button>
                 </a-radio-group>
@@ -322,22 +322,22 @@
                     </a-tag>
                     <a-tag v-else color="default">未纳管</a-tag>
                   </template>
-                  <template v-else-if="column.key === 'fluent_bit_status'">
-                    <a-tooltip v-if="fluentBitStatusTooltip(record.fluent_bit)" :title="fluentBitStatusTooltip(record.fluent_bit)" placement="top">
-                      <a-tag :color="fluentBitStatusColor(record.fluent_bit)">
-                        {{ fluentBitStatusText(record.fluent_bit) }}
+                  <template v-else-if="column.key === 'filebeat_status'">
+                    <a-tooltip v-if="filebeatStatusTooltip(record.filebeat)" :title="filebeatStatusTooltip(record.filebeat)" placement="top">
+                      <a-tag :color="filebeatStatusColor(record.filebeat)">
+                        {{ filebeatStatusText(record.filebeat) }}
                       </a-tag>
                     </a-tooltip>
-                    <a-tag v-else :color="fluentBitStatusColor(record.fluent_bit)">
-                      {{ fluentBitStatusText(record.fluent_bit) }}
+                    <a-tag v-else :color="filebeatStatusColor(record.filebeat)">
+                      {{ filebeatStatusText(record.filebeat) }}
                     </a-tag>
                   </template>
                   <template v-else-if="column.key === 'last_applied_time'">
-                    {{ record.fluent_bit.managed ? formatManagedTargetTime(record.fluent_bit.last_applied_time) : '-' }}
+                    {{ record.filebeat.managed ? formatManagedTargetTime(record.filebeat.last_applied_time) : '-' }}
                   </template>
                   <template v-else-if="column.key === 'last_error'">
-                    <a-tooltip v-if="record.fluent_bit.last_error" :title="record.fluent_bit.last_error" placement="top">
-                      <a-typography-text type="danger" :content="record.fluent_bit.last_error" ellipsis />
+                    <a-tooltip v-if="record.filebeat.last_error" :title="record.filebeat.last_error" placement="top">
+                      <a-typography-text type="danger" :content="record.filebeat.last_error" ellipsis />
                     </a-tooltip>
                     <span v-else>-</span>
                   </template>
@@ -482,8 +482,8 @@
                       </a-dropdown>
 
                       <a-tooltip
-                        v-if="!record.fluent_bit.managed"
-                        :title="record.host_agent_online ? '纳管并安装 Fluent Bit' : 'dj-agent 离线，操作不可用'"
+                        v-if="!record.filebeat.managed"
+                        :title="record.host_agent_online ? '纳管并安装 Filebeat' : 'dj-agent 离线，操作不可用'"
                         placement="top"
                       >
                         <a-button
@@ -491,16 +491,16 @@
                           ghost
                           size="small"
                           :disabled="!record.host_agent_online"
-                          :loading="fluentBitCreateLoading[record.host_id]"
-                          @click="handleFluentBitCreateOne(record.fluent_bit)"
+                          :loading="filebeatCreateLoading[record.host_id]"
+                          @click="handleFilebeatCreateOne(record.filebeat)"
                         >
                           <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                          &nbsp;Fluent Bit
+                          &nbsp;Filebeat
                         </a-button>
                       </a-tooltip>
                       <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
-                        <a-button type="primary" ghost size="small" title="Fluent Bit 操作">
-                          Fluent Bit&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
+                        <a-button type="primary" ghost size="small" title="Filebeat 操作">
+                          Filebeat&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
                         </a-button>
                         <template #overlay>
                           <div class="row-action-menu">
@@ -511,8 +511,8 @@
                                 ghost
                                 size="small"
                                 :disabled="!record.host_agent_online"
-                                :loading="fluentBitRetryLoading[record.fluent_bit.id]"
-                                @click="openFluentBitRetryConfirm(record.fluent_bit)"
+                                :loading="filebeatRetryLoading[record.filebeat.id]"
+                                @click="openFilebeatRetryConfirm(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'rotate']" />
                                 &nbsp;重新安装
@@ -524,50 +524,50 @@
                                 type="primary"
                                 ghost
                                 size="small"
-                                :disabled="fluentBitRetryLoading[record.fluent_bit.id]"
-                                @click="openFluentBitJobLog(record.fluent_bit)"
+                                :disabled="filebeatRetryLoading[record.filebeat.id]"
+                                @click="openFilebeatJobLog(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'file-lines']" />
                                 &nbsp;查看日志
                               </a-button>
                             </a-tooltip>
-                            <a-tooltip :title="record.fluent_bit.agent_installed ? '运行' : 'Fluent Bit 尚未安装，无法启动'" placement="left">
+                            <a-tooltip :title="record.filebeat.agent_installed ? '运行' : 'Filebeat 尚未安装，无法启动'" placement="left">
                               <a-button
                                 block
                                 type="primary"
                                 ghost
                                 size="small"
-                                :disabled="!record.host_agent_online || !record.fluent_bit.agent_installed"
-                                :loading="fluentBitStartLoading[record.fluent_bit.id]"
-                                @click="handleStartFluentBitService(record.fluent_bit)"
+                                :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
+                                :loading="filebeatStartLoading[record.filebeat.id]"
+                                @click="handleStartFilebeatService(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'play']" />
                                 &nbsp;运行
                               </a-button>
                             </a-tooltip>
-                            <a-tooltip :title="record.fluent_bit.agent_installed ? '停止服务' : 'Fluent Bit 尚未安装，无法停止'" placement="left">
+                            <a-tooltip :title="record.filebeat.agent_installed ? '停止服务' : 'Filebeat 尚未安装，无法停止'" placement="left">
                               <a-button
                                 block
                                 danger
                                 ghost
                                 size="small"
-                                :disabled="!record.host_agent_online || !record.fluent_bit.agent_installed"
-                                :loading="fluentBitStopLoading[record.fluent_bit.id]"
-                                @click="handleStopFluentBitService(record.fluent_bit)"
+                                :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
+                                :loading="filebeatStopLoading[record.filebeat.id]"
+                                @click="handleStopFilebeatService(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'stop']" />
                                 &nbsp;停止
                               </a-button>
                             </a-tooltip>
-                            <a-tooltip :title="fluentBitApplyTooltip(record.fluent_bit)" placement="left">
+                            <a-tooltip :title="filebeatApplyTooltip(record.filebeat)" placement="left">
                               <a-button
                                 block
                                 type="primary"
                                 ghost
                                 size="small"
-                                :disabled="!canApplyFluentBitConfig(record.fluent_bit)"
-                                :loading="fluentBitApplyLoading[record.fluent_bit.id]"
-                                @click="handleApplyFluentBitConfig(record.fluent_bit)"
+                                :disabled="!canApplyFilebeatConfig(record.filebeat)"
+                                :loading="filebeatApplyLoading[record.filebeat.id]"
+                                @click="handleApplyFilebeatConfig(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
                                 &nbsp;下发配置
@@ -580,37 +580,37 @@
                                 ghost
                                 size="small"
                                 :disabled="!record.host_agent_online"
-                                :loading="fluentBitStatusLoading[record.fluent_bit.id]"
-                                @click="handleCheckFluentBitStatus(record.fluent_bit)"
+                                :loading="filebeatStatusLoading[record.filebeat.id]"
+                                @click="handleCheckFilebeatStatus(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'rotate']" />
                                 &nbsp;查看状态图
                               </a-button>
                             </a-tooltip>
-                            <a-tooltip :title="canCancelFluentBitTarget(record.fluent_bit) ? '取消' : '当前任务已结束，无需取消'" placement="left">
+                            <a-tooltip :title="canCancelFilebeatTarget(record.filebeat) ? '取消' : '当前任务已结束，无需取消'" placement="left">
                               <a-button
                                 block
                                 danger
                                 ghost
                                 size="small"
-                                :disabled="!canCancelFluentBitTarget(record.fluent_bit)"
-                                :loading="fluentBitCancelLoading[record.fluent_bit.id]"
-                                @click="handleCancelFluentBitTarget(record.fluent_bit)"
+                                :disabled="!canCancelFilebeatTarget(record.filebeat)"
+                                :loading="filebeatCancelLoading[record.filebeat.id]"
+                                @click="handleCancelFilebeatTarget(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'ban']" />
                                 &nbsp;取消
                               </a-button>
                             </a-tooltip>
-                            <a-tooltip :title="record.fluent_bit.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="left">
+                            <a-tooltip :title="record.filebeat.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="left">
                               <a-button
                                 block
                                 class="delBtn"
                                 danger
                                 type="primary"
                                 size="small"
-                                :disabled="record.fluent_bit.install_status === 'pending' || (!record.host_agent_online && record.fluent_bit.agent_installed)"
-                                :loading="fluentBitDeleteLoading[record.fluent_bit.id]"
-                                @click="openFluentBitDeleteConfirm(record.fluent_bit)"
+                                :disabled="record.filebeat.install_status === 'pending' || (!record.host_agent_online && record.filebeat.agent_installed)"
+                                :loading="filebeatDeleteLoading[record.filebeat.id]"
+                                @click="openFilebeatDeleteConfirm(record.filebeat)"
                               >
                                 <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                                 &nbsp;删除
@@ -654,8 +654,8 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'package_type'">
-                <a-tag :color="record.package_type === 'fluent_bit' ? 'cyan' : 'blue'">
-                  {{ record.package_type === 'fluent_bit' ? 'Fluent Bit' : 'Exporter' }}
+                <a-tag :color="record.package_type === 'filebeat' ? 'cyan' : 'blue'">
+                  {{ record.package_type === 'filebeat' ? 'Filebeat' : 'Exporter' }}
                 </a-tag>
               </template>
               <template v-else-if="column.key === 'enabled'">
@@ -893,7 +893,7 @@
         <a-form-item label="软件包名称" required>
           <a-input
             v-model:value="packageCreateForm.name"
-            :disabled="packageCreateForm.package_type === 'fluent_bit'"
+            :disabled="packageCreateForm.package_type === 'filebeat'"
             placeholder="如 node_exporter（小写字母/数字/-/_）"
           />
           <div class="form-item-hint">{{ packageNameHint }}</div>
@@ -909,7 +909,7 @@
             />
           </a-space>
         </a-form-item>
-        <a-row :gutter="12">
+        <a-row v-if="packageCreateForm.package_type !== 'filebeat'" :gutter="12">
           <a-col :xs="24" :sm="7">
             <a-form-item label="包格式" required>
               <a-select
@@ -940,7 +940,10 @@
             </a-form-item>
           </a-col>
         </a-row>
-        <div class="form-item-hint package-platform-hint">RPM 按 RHEL/CentOS 主版本隔离；DEB 按 Ubuntu/Debian 主版本隔离；Host 无需联网</div>
+        <div v-if="packageCreateForm.package_type === 'filebeat'" class="form-item-hint package-platform-hint">
+          Filebeat 固定使用官方便携 tar.gz（自带依赖），只按架构区分：x86_64/amd64、aarch64/arm64
+        </div>
+        <div v-else class="form-item-hint package-platform-hint">RPM 按 RHEL/CentOS 主版本隔离；DEB 按 Ubuntu/Debian 主版本隔离；Host 无需联网</div>
         <a-form-item label="默认端口">
           <a-input-number v-model:value="packageCreateForm.default_port" :min="1" :max="65535" :precision="0" style="width: 100%" />
         </a-form-item>
@@ -962,7 +965,7 @@
         <a-form-item label="软件包">
           <span>{{ packageEditTarget ? `${packageEditTarget.name} (${packageEditTarget.os}-${packageEditTarget.arch})` : '-' }}</span>
         </a-form-item>
-        <a-row :gutter="12">
+        <a-row v-if="packageEditTarget?.package_type !== 'filebeat'" :gutter="12">
           <a-col :xs="24" :sm="8">
             <a-form-item label="包格式" required>
               <a-select
@@ -992,7 +995,10 @@
             </a-form-item>
           </a-col>
         </a-row>
-        <div class="form-item-hint package-platform-hint">
+        <div v-if="packageEditTarget?.package_type === 'filebeat'" class="form-item-hint package-platform-hint">
+          Filebeat 固定为官方便携 tar.gz，只按架构区分；系统/架构不允许修改（决定存储路径）
+        </div>
+        <div v-else class="form-item-hint package-platform-hint">
           修改平台后，已上传的软件包文件会自动迁移到新目录；系统/架构不允许修改（决定存储路径）
         </div>
         <a-form-item label="默认监控端口" required>
@@ -1196,22 +1202,22 @@ const promFlagsLoadError = ref('')
 const promFlagsKeyword = ref('')
 
 const promTargets = ref([])
-const fluentBitStatusLoading = reactive({})
-const fluentBitApplyLoading = reactive({})
-const fluentBitRetryLoading = reactive({})
-const fluentBitStartLoading = reactive({})
-const fluentBitStopLoading = reactive({})
-const fluentBitCancelLoading = reactive({})
-const fluentBitDeleteLoading = reactive({})
-const fluentBitBatchLoading = ref('')
+const filebeatStatusLoading = reactive({})
+const filebeatApplyLoading = reactive({})
+const filebeatRetryLoading = reactive({})
+const filebeatStartLoading = reactive({})
+const filebeatStopLoading = reactive({})
+const filebeatCancelLoading = reactive({})
+const filebeatDeleteLoading = reactive({})
+const filebeatBatchLoading = ref('')
 const exporterBatchLoading = ref('')
-// 批量操作区一次只展示一组按钮，用户先选"针对谁"，避免 Exporter/Fluent Bit 十几个按钮同屏堆叠。
+// 批量操作区一次只展示一组按钮，用户先选"针对谁"，避免 Exporter/Filebeat 十几个按钮同屏堆叠。
 const batchTargetKind = ref('exporter')
 const batchTargetKindOptions = [
   { label: 'Exporter', value: 'exporter' },
-  { label: 'Fluent Bit', value: 'fluent_bit' },
+  { label: 'Filebeat', value: 'filebeat' },
 ]
-const fluentBitCreateLoading = reactive({})
+const filebeatCreateLoading = reactive({})
 const overviewHosts = ref([])
 const overviewLoading = ref(false)
 const overviewSelectedHostIds = ref([])
@@ -1222,7 +1228,7 @@ const overviewGroupExpandedKeys = ref([])
 const overviewSelectedGroupKeys = ref(['all'])
 const overviewKeyword = ref('')
 const overviewManagedFilter = ref('')
-const fluentBitManagedFilter = ref('')
+const filebeatManagedFilter = ref('')
 const exporterFilterType = ref(undefined)
 const exporterOptionList = ref([])
 const exporterCreateModalVisible = ref(false)
@@ -1241,10 +1247,10 @@ const managedDeleteLoading = reactive({})
 // 按 record.id 缓存每行最近一次查询到的服务运行状态，让“服务状态”列常驻展示，
 // 不需要每次都重新打开弹窗；弹窗仍用于查看完整 systemctl 输出。
 const serviceStatusMap = reactive({})
-// Fluent Bit 真实运行状态缓存：key = log_collection_target.id。
+// Filebeat 真实运行状态缓存：key = log_collection_target.id。
 // 列表里的 runtime_status 是上次安装/启停/查状态时落库的快照，服务在平台外被停掉
 // 不会变，所以展示时优先用这份"点过查状态/自动刷新时真实 systemctl status"的结果。
-const fluentBitRealStatusMap = reactive({})
+const filebeatRealStatusMap = reactive({})
 const serviceStatusModalVisible = ref(false)
 const serviceStatusModalRecord = ref(null)
 const serviceStatusModalResult = ref(null)
@@ -1285,9 +1291,9 @@ const OVERVIEW_EXPORTER_DETAIL_COLUMNS = [
 ]
 
 const OVERVIEW_FLUENT_BIT_COLUMNS = [
-  { title: 'Fluent Bit 状态', key: 'fluent_bit_status', width: 150 },
-  { title: 'Fluent Bit 下发', key: 'last_applied_time', width: 170 },
-  { title: 'Fluent Bit 错误', key: 'last_error', width: 200 },
+  { title: 'Filebeat 状态', key: 'filebeat_status', width: 150 },
+  { title: 'Filebeat 下发', key: 'last_applied_time', width: 170 },
+  { title: 'Filebeat 错误', key: 'last_error', width: 200 },
 ]
 
 const OVERVIEW_ACTION_COLUMN = { title: '操作', key: 'action', width: 250, fixed: 'right' }
@@ -1370,14 +1376,14 @@ const packageCreateForm = reactive({
 
 const packageTypeOptions = [
   { value: 'exporter', label: 'Exporter' },
-  { value: 'fluent_bit', label: 'Fluent Bit' },
+  { value: 'filebeat', label: 'Filebeat' },
 ]
 const packageCreateButtonText = computed(() => (
-  packageTypeFilter.value === 'fluent_bit' ? '新增 Fluent Bit 包' : '新增 Exporter 包'
+  packageTypeFilter.value === 'filebeat' ? '新增 Filebeat 包' : '新增 Exporter 包'
 ))
 const packageNameHint = computed(() => (
-  packageCreateForm.package_type === 'fluent_bit'
-    ? 'Fluent Bit 使用固定包名；请根据目标系统上传对应的 RPM 或 DEB'
+  packageCreateForm.package_type === 'filebeat'
+    ? 'Filebeat 固定包名；请上传与目标架构对应的官方 tar.gz，如 filebeat-8.13.0-linux-x86_64.tar.gz'
     : '上传文件名需以 Exporter 名称为前缀，如 node_exporter-1.8.2.linux-amd64.tar.gz'
 ))
 
@@ -1400,11 +1406,13 @@ const platformFamilyOptions = computed(() => {
 })
 
 function handlePackageTypeChange(packageType) {
-  if (packageType === 'fluent_bit') {
-    packageCreateForm.name = 'fluent-bit'
-    packageCreateForm.default_port = 2020
-    packageCreateForm.package_format = 'rpm'
-    handlePackageFormatChange('rpm')
+  if (packageType === 'filebeat') {
+    // Filebeat 只用官方便携 tar.gz，只按架构区分。
+    packageCreateForm.name = 'filebeat'
+    packageCreateForm.default_port = 5066
+    packageCreateForm.package_format = 'tar.gz'
+    packageCreateForm.platform_family = 'any'
+    packageCreateForm.platform_major = ''
     return
   }
   packageCreateForm.name = ''
@@ -1443,7 +1451,7 @@ function openPackageCreateModal() {
 async function submitPackageCreate() {
   const name = String(packageCreateForm.name || '').trim()
   if (!name) {
-    message.error('请填写软件包名称（如 fluent-bit）')
+    message.error('请填写软件包名称（如 filebeat）')
     return
   }
   if (packageCreateForm.package_format !== 'tar.gz' && !String(packageCreateForm.platform_major || '').trim()) {
@@ -1542,6 +1550,14 @@ function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// 官方 tar.gz 的架构命名不统一（node_exporter 用 amd64，filebeat 用 x86_64），统一归一到仓库的 amd64/arm64。
+function normalizeArchToken(value) {
+  const token = String(value || '').toLowerCase()
+  if (token === 'x86_64' || token === 'amd64' || token === 'x64') return 'amd64'
+  if (token === 'aarch64' || token === 'arm64') return 'arm64'
+  return token
+}
+
 // 按当前仓库记录解析官方包名，避免 RPM 的 name/version/release 连字符产生歧义。
 function parsePackageFilename(filename, record) {
   const value = String(filename || '')
@@ -1560,13 +1576,19 @@ function parsePackageFilename(filename, record) {
       arch: match[2].toLowerCase() === 'x86_64' ? 'amd64' : 'arm64',
     }
   }
-  const match = /^([a-z0-9][a-z0-9_-]*)-([A-Za-z0-9][A-Za-z0-9.+-]*)\.([a-z0-9]+)-([a-z0-9]+)\.tar\.gz$/i.exec(value)
-  return match ? {
-    name: match[1].toLowerCase(),
-    version: match[2],
-    os: match[3].toLowerCase(),
-    arch: match[4].toLowerCase(),
-  } : null
+  // tar.gz：以记录名称为前缀，兼容两种官方命名——
+  //   node_exporter：<name>-<version>.<os>-<arch>.tar.gz
+  //   filebeat   ：<name>-<version>-<os>-<arch>.tar.gz（也有省略 os 的 <name>-<version>-<arch>）
+  if (!expectedName || !value.toLowerCase().startsWith(`${expectedName}-`)) return null
+  const rest = value.slice(expectedName.length + 1).replace(/\.tar\.gz$/i, '')
+  const match = /^(.+?)(?:[-.]([A-Za-z][A-Za-z0-9]*))?-(x86_64|aarch64|amd64|arm64|x64)$/i.exec(rest)
+  if (!match) return null
+  return {
+    name: expectedName,
+    version: match[1],
+    os: (match[2] || 'linux').toLowerCase(),
+    arch: normalizeArchToken(match[3]),
+  }
 }
 
 async function loadPackages() {
@@ -1702,7 +1724,13 @@ function beforePackageUpload(file, record) {
   }
   const parsed = parsePackageFilename(filename, record)
   if (!parsed) {
-    message.error(`文件名与 ${record.package_format} 官方命名或当前记录名称不匹配`)
+    // 最常见的是把 GitHub 源码包（filebeat-5.1.2.tar.gz，无 os/arch 段）当成预编译包上传，
+    // 单独提示，避免用户反复试错。
+    if (record.package_format === 'tar.gz') {
+      message.error('tar.gz 文件名缺少 os/arch 段：需上传预编译二进制包，如 filebeat-5.1.2-linux-x86_64.tar.gz；GitHub 的源码包 filebeat-5.1.2.tar.gz 不含可执行文件，无法安装')
+    } else {
+      message.error(`文件名与 ${record.package_format} 官方命名或当前记录名称不匹配`)
+    }
     return false
   }
   // 前端提前校验名称与架构匹配，避免无谓上传后被后端拒绝
@@ -2031,21 +2059,21 @@ function handleOverviewGroupSelect(keys) {
   reloadOverviewHosts()
 }
 
-function fluentBitRealStatusInfo(record) {
-  const cached = fluentBitRealStatusMap[record?.id]
+function filebeatRealStatusInfo(record) {
+  const cached = filebeatRealStatusMap[record?.id]
   if (!cached) return null
   const exitCode = Number(cached.exitCode)
   if (exitCode === 0) {
-    return { status: 'running', text: '运行中 (2020)', color: 'success', tooltip: 'Fluent Bit 正常运行 (HTTP API: 2020)' }
+    return { status: 'running', text: '运行中', color: 'success', tooltip: 'Filebeat 正常运行' }
   }
   if (exitCode === 3) {
-    return { status: 'stopped', text: '已停止', color: 'warning', tooltip: 'Fluent Bit 服务已停止' }
+    return { status: 'stopped', text: '已停止', color: 'warning', tooltip: 'Filebeat 服务已停止' }
   }
-  return { status: 'error', text: '异常', color: 'error', tooltip: 'Fluent Bit 运行异常' }
+  return { status: 'error', text: '异常', color: 'error', tooltip: 'Filebeat 运行异常' }
 }
 
-function fluentBitStatusColor(record) {
-  const real = fluentBitRealStatusInfo(record)
+function filebeatStatusColor(record) {
+  const real = filebeatRealStatusInfo(record)
   if (real) return real.color
   if (!record || !record.managed) return 'default'
   if (record.install_status === 'pending') return 'processing'
@@ -2059,14 +2087,14 @@ function fluentBitStatusColor(record) {
   return 'default'
 }
 
-function fluentBitStatusText(record) {
-  const real = fluentBitRealStatusInfo(record)
+function filebeatStatusText(record) {
+  const real = filebeatRealStatusInfo(record)
   if (real) return real.text
   if (!record || !record.managed) return '未安装'
   if (record.install_status === 'pending') return '安装中'
   if (record.install_status === 'failed') return '安装失败'
   if (record.agent_installed) {
-    if (record.runtime_status === 'running') return '运行中 (2020)'
+    if (record.runtime_status === 'running') return '运行中'
     if (record.runtime_status === 'stopped') return '已停止'
     if (record.runtime_status === 'error') return '异常'
     return '已安装'
@@ -2074,16 +2102,16 @@ function fluentBitStatusText(record) {
   return '未安装'
 }
 
-function fluentBitStatusTooltip(record) {
-  const real = fluentBitRealStatusInfo(record)
+function filebeatStatusTooltip(record) {
+  const real = filebeatRealStatusInfo(record)
   if (real) return real.tooltip
-  if (!record || !record.managed) return '未纳管 Fluent Bit 日志采集'
+  if (!record || !record.managed) return '未纳管 Filebeat 日志采集'
   if (record.install_status === 'pending') return '任务执行中，请稍候'
   if (record.install_status === 'failed') return record.last_error || '安装失败，请点击重试'
   if (record.agent_installed) {
-    if (record.runtime_status === 'running') return 'Fluent Bit 正常运行 (HTTP API: 2020)'
-    if (record.runtime_status === 'stopped') return 'Fluent Bit 服务已停止'
-    if (record.runtime_status === 'error') return record.last_error || 'Fluent Bit 运行异常'
+    if (record.runtime_status === 'running') return 'Filebeat 正常运行'
+    if (record.runtime_status === 'stopped') return 'Filebeat 服务已停止'
+    if (record.runtime_status === 'error') return record.last_error || 'Filebeat 运行异常'
   }
   return ''
 }
@@ -2105,12 +2133,12 @@ async function loadOverviewHosts() {
       search: overviewKeyword.value.trim() || undefined,
       exporter_type: exporterFilterType.value || undefined,
       exporter_managed: overviewManagedFilter.value || undefined,
-      fluent_bit_managed: fluentBitManagedFilter.value || undefined,
+      filebeat_managed: filebeatManagedFilter.value || undefined,
     }))
     overviewHosts.value = Array.isArray(data.results) ? data.results : []
     overviewPagination.total = Number(data.count || 0)
     await refreshVisibleExporterServiceStatuses()
-    await refreshVisibleFluentBitStatuses()
+    await refreshVisibleFilebeatStatuses()
   } finally {
     overviewLoading.value = false
   }
@@ -2131,24 +2159,24 @@ async function refreshVisibleExporterServiceStatuses() {
   await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
 }
 
-// 与 Exporter 状态同思路：列表加载后对当前页已纳管且 agent 在线的 Fluent Bit
+// 与 Exporter 状态同思路：列表加载后对当前页已纳管且 agent 在线的 Filebeat
 // 逐台调 check-status（后端真实执行 systemctl status 并回写 runtime_status）。
 // 不查的话界面会一直显示上次安装/下发时落库的旧状态——服务在平台外被停掉，
 // 列表看起来仍是"运行中"。失败（agent 离线等）静默保留原状态，不弹错误。
-async function refreshVisibleFluentBitStatuses() {
+async function refreshVisibleFilebeatStatuses() {
   if (!overviewHosts.value.length) return
   const ids = overviewHosts.value
-    .filter((item) => item.host_agent_online && item.fluent_bit && item.fluent_bit.managed)
-    .map((item) => item.fluent_bit.id)
+    .filter((item) => item.host_agent_online && item.filebeat && item.filebeat.managed)
+    .map((item) => item.filebeat.id)
     .filter(Boolean)
   await Promise.all(ids.map(async (id) => {
     try {
       const job = parseApiData(await checkLogCollectionStatus(id))
       if (job && job.exit_code !== undefined && job.exit_code !== null) {
-        fluentBitRealStatusMap[id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
+        filebeatRealStatusMap[id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
       }
     } catch (error) {
-      console.warn('[fluent_bit_status] 查询运行状态失败', id, error?.response?.data?.msg || error?.message)
+      console.warn('[filebeat_status] 查询运行状态失败', id, error?.response?.data?.msg || error?.message)
     }
   }))
 }
@@ -2268,7 +2296,7 @@ async function submitExporterCreate() {
       scrape_port: port,
       install_now: true,
     }))
-    reportFluentBitBatchResult('纳管并下发安装', data)
+    reportFilebeatBatchResult('纳管并下发安装', data)
     exporterCreateModalVisible.value = false
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
@@ -2279,15 +2307,15 @@ async function submitExporterCreate() {
   }
 }
 
-// 选中项按 host_id 存；Fluent Bit 批量动作要按「已纳管/未纳管」拆成两条链路，前者用 target id。
+// 选中项按 host_id 存；Filebeat 批量动作要按「已纳管/未纳管」拆成两条链路，前者用 target id。
 const overviewSelectedRows = computed(
   () => overviewHosts.value.filter((item) => overviewSelectedHostIds.value.includes(item.host_id)),
 )
-const fluentBitSelectedManagedIds = computed(
-  () => overviewSelectedRows.value.filter((item) => item.fluent_bit.managed).map((item) => item.fluent_bit.id),
+const filebeatSelectedManagedIds = computed(
+  () => overviewSelectedRows.value.filter((item) => item.filebeat.managed).map((item) => item.filebeat.id),
 )
-const fluentBitSelectedUnmanaged = computed(
-  () => overviewSelectedRows.value.filter((item) => !item.fluent_bit.managed),
+const filebeatSelectedUnmanaged = computed(
+  () => overviewSelectedRows.value.filter((item) => !item.filebeat.managed),
 )
 
 // 未选定具体 Exporter 类型时 record.exporters 可能混装多种 exporter，批量操作语义不明确，
@@ -2312,7 +2340,7 @@ async function handleExporterBatch(action) {
   exporterBatchLoading.value = action
   try {
     const data = parseApiData(await config.request(ids))
-    reportFluentBitBatchResult(config.label, data)
+    reportFilebeatBatchResult(config.label, data)
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
     // 批量启停后逐台刷新真实服务状态（systemctl status），否则"Exporter 状态"列
@@ -2351,26 +2379,26 @@ const FLUENT_BIT_BATCH_ACTIONS = {
   delete: { label: '批量删除', request: batchDeleteLogCollectionTargets },
 }
 
-async function handleFluentBitBatch(action) {
+async function handleFilebeatBatch(action) {
   const config = FLUENT_BIT_BATCH_ACTIONS[action]
-  const ids = [...fluentBitSelectedManagedIds.value]
+  const ids = [...filebeatSelectedManagedIds.value]
   if (!config || !ids.length) {
     return
   }
-  fluentBitBatchLoading.value = action
+  filebeatBatchLoading.value = action
   try {
     const data = parseApiData(await config.request(ids))
-    reportFluentBitBatchResult(config.label, data)
+    reportFilebeatBatchResult(config.label, data)
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || `${config.label}失败`)
   } finally {
-    fluentBitBatchLoading.value = ''
+    filebeatBatchLoading.value = ''
   }
 }
 
-function reportFluentBitBatchResult(label, data) {
+function reportFilebeatBatchResult(label, data) {
   const failed = Array.isArray(data.results) ? data.results.filter((item) => !item.ok) : []
   if (failed.length === 0) {
     message.success(`${label}成功：${data.success} 台`)
@@ -2382,60 +2410,60 @@ function reportFluentBitBatchResult(label, data) {
   message.warning(`${label}完成：成功 ${data.success} 台，失败 ${data.failed} 台。${detail}${suffix}`)
 }
 
-async function handleFluentBitBatchCreate() {
-  const hostIds = fluentBitSelectedUnmanaged.value.map((item) => item.host_id)
+async function handleFilebeatBatchCreate() {
+  const hostIds = filebeatSelectedUnmanaged.value.map((item) => item.host_id)
   if (!hostIds.length) {
     return
   }
-  fluentBitBatchLoading.value = 'create'
+  filebeatBatchLoading.value = 'create'
   try {
     const data = parseApiData(await batchCreateLogCollectionTargets(hostIds, true))
-    reportFluentBitBatchResult('纳管并下发安装', data)
+    reportFilebeatBatchResult('纳管并下发安装', data)
     overviewSelectedHostIds.value = []
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '纳管失败')
   } finally {
-    fluentBitBatchLoading.value = ''
+    filebeatBatchLoading.value = ''
   }
 }
 
-async function handleFluentBitCreateOne(record) {
-  fluentBitCreateLoading[record.host_id] = true
+async function handleFilebeatCreateOne(record) {
+  filebeatCreateLoading[record.host_id] = true
   try {
     const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
-    reportFluentBitBatchResult('纳管并下发安装', data)
+    reportFilebeatBatchResult('纳管并下发安装', data)
     await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '纳管失败')
   } finally {
-    fluentBitCreateLoading[record.host_id] = false
+    filebeatCreateLoading[record.host_id] = false
   }
 }
 
-function openFluentBitBatchDeleteConfirm() {
-  const selected = overviewSelectedRows.value.filter((item) => item.fluent_bit.managed)
+function openFilebeatBatchDeleteConfirm() {
+  const selected = overviewSelectedRows.value.filter((item) => item.filebeat.managed)
   if (!selected.length) {
     return
   }
   openDeleteConfirm({
-    title: '确认批量删除 Fluent Bit 目标',
+    title: '确认批量删除 Filebeat 目标',
     summary: '已安装的主机会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。',
-    items: selected.map((item) => `${item.host_name || item.host_ip || `Host-${item.host_id}`} - Fluent Bit`),
-    onConfirm: () => handleFluentBitBatch('delete'),
+    items: selected.map((item) => `${item.host_name || item.host_ip || `Host-${item.host_id}`} - Filebeat`),
+    onConfirm: () => handleFilebeatBatch('delete'),
   })
 }
 
-function canApplyFluentBitConfig(record) {
+function canApplyFilebeatConfig(record) {
   return Boolean(record?.host_agent_online)
     && Boolean(record?.agent_installed)
     && record?.runtime_status === 'running'
 }
 
-function fluentBitApplyTooltip(record) {
+function filebeatApplyTooltip(record) {
   if (!record?.host_agent_online) return 'dj-agent 离线，操作不可用'
-  if (!record?.agent_installed) return 'Fluent Bit 未安装，请先完成离线安装'
-  if (record?.runtime_status !== 'running') return 'Fluent Bit 未运行，请先启动服务'
+  if (!record?.agent_installed) return 'Filebeat 未安装，请先完成离线安装'
+  if (record?.runtime_status !== 'running') return 'Filebeat 未运行，请先启动服务'
   return '运行'
 }
 
@@ -2444,62 +2472,62 @@ function formatManagedTargetTime(value) {
   return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
 }
 
-async function handleCheckFluentBitStatus(record) {
-  fluentBitStatusLoading[record.id] = true
+async function handleCheckFilebeatStatus(record) {
+  filebeatStatusLoading[record.id] = true
   try {
     const job = parseApiData(await checkLogCollectionStatus(record.id))
     if (job && job.exit_code !== undefined && job.exit_code !== null) {
-      fluentBitRealStatusMap[record.id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
+      filebeatRealStatusMap[record.id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
     }
-    message.success('Fluent Bit 状态已更新')
+    message.success('Filebeat 状态已更新')
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 状态检查失败')
+    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 状态检查失败')
   } finally {
-    fluentBitStatusLoading[record.id] = false
+    filebeatStatusLoading[record.id] = false
   }
 }
 
-async function handleApplyFluentBitConfig(record) {
-  fluentBitApplyLoading[record.id] = true
+async function handleApplyFilebeatConfig(record) {
+  filebeatApplyLoading[record.id] = true
   try {
     const result = parseApiData(await applyLogCollectionConfig(record.id))
-    message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Fluent Bit 配置已下发')
+    message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Filebeat 配置已下发')
     await loadOverviewHosts()
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 配置下发失败')
+    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 配置下发失败')
   } finally {
-    fluentBitApplyLoading[record.id] = false
+    filebeatApplyLoading[record.id] = false
   }
 }
 
-async function handleFluentBitRedispatch(record) {
-  fluentBitRetryLoading[record.id] = true
+async function handleFilebeatRedispatch(record) {
+  filebeatRetryLoading[record.id] = true
   try {
     await retryLogCollectionTarget(record.id)
-    message.success('已下发 Fluent Bit 重新安装任务，请稍后刷新查看结果')
+    message.success('已下发 Filebeat 重新安装任务，请稍后刷新查看结果')
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 重新安装失败')
+    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 重新安装失败')
   } finally {
-    fluentBitRetryLoading[record.id] = false
+    filebeatRetryLoading[record.id] = false
     await loadOverviewHosts()
   }
 }
 
-async function openFluentBitRetryConfirm(record) {
+async function openFilebeatRetryConfirm(record) {
   if (!record?.host_agent_online) return
   const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
   await openDeleteConfirm({
     title: '确认重新安装',
     okText: '确认',
     summary: '将从 djadmin 本地仓库选择与目标系统精确匹配的 RPM/DEB 包并重新安装。',
-    items: [`${hostLabel} - Fluent Bit`],
+    items: [`${hostLabel} - Filebeat`],
     onConfirm: () => {
-      void handleFluentBitRedispatch(record)
+      void handleFilebeatRedispatch(record)
     },
   })
 }
 
-async function openFluentBitJobLog(record) {
+async function openFilebeatJobLog(record) {
   let latestHistoryId = null
   try {
     const historyRes = await getMonitorInstallHistoryList({
@@ -2513,7 +2541,7 @@ async function openFluentBitJobLog(record) {
     const latestId = Number(rows[0]?.id)
     if (Number.isInteger(latestId) && latestId > 0) latestHistoryId = latestId
   } catch (_error) {
-    // 历史页仍可按 Fluent Bit 目标 ID 打开，详情查询失败不阻断入口。
+    // 历史页仍可按 Filebeat 目标 ID 打开，详情查询失败不阻断入口。
   }
   const query = {
     tab: 'monitor_history',
@@ -2524,77 +2552,77 @@ async function openFluentBitJobLog(record) {
   router.push({ path: '/sys/automation/logs', query })
 }
 
-async function handleStartFluentBitService(record) {
-  fluentBitStartLoading[record.id] = true
+async function handleStartFilebeatService(record) {
+  filebeatStartLoading[record.id] = true
   try {
     const result = parseApiData(await startLogCollectionService(record.id))
     if (result?.status === 'success' && result?.exit_code === 0) {
-      message.success('Fluent Bit 启动成功')
+      message.success('Filebeat 启动成功')
     } else {
-      message.error(`Fluent Bit 启动失败：${result?.stderr || result?.error_message || result?.status}`)
+      message.error(`Filebeat 启动失败：${result?.stderr || result?.error_message || result?.status}`)
     }
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 启动失败')
+    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 启动失败')
   } finally {
-    fluentBitStartLoading[record.id] = false
+    filebeatStartLoading[record.id] = false
     await loadOverviewHosts()
   }
 }
 
-async function handleStopFluentBitService(record) {
-  fluentBitStopLoading[record.id] = true
+async function handleStopFilebeatService(record) {
+  filebeatStopLoading[record.id] = true
   try {
     const result = parseApiData(await stopLogCollectionService(record.id))
     if (result?.status === 'success' && result?.exit_code === 0) {
-      message.success('Fluent Bit 停止成功')
+      message.success('Filebeat 停止成功')
     } else {
-      message.error(`Fluent Bit 停止失败：${result?.stderr || result?.error_message || result?.status}`)
+      message.error(`Filebeat 停止失败：${result?.stderr || result?.error_message || result?.status}`)
     }
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 停止失败')
+    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 停止失败')
   } finally {
-    fluentBitStopLoading[record.id] = false
+    filebeatStopLoading[record.id] = false
     await loadOverviewHosts()
   }
 }
 
-function canCancelFluentBitTarget(record) {
+function canCancelFilebeatTarget(record) {
   return ['pending', 'running'].includes(String(record?.install_status || '').toLowerCase())
 }
 
-async function handleCancelFluentBitTarget(record) {
-  if (!canCancelFluentBitTarget(record)) return
-  fluentBitCancelLoading[record.id] = true
+async function handleCancelFilebeatTarget(record) {
+  if (!canCancelFilebeatTarget(record)) return
+  filebeatCancelLoading[record.id] = true
   try {
     await cancelLogCollectionTarget(record.id)
     message.success('任务已取消')
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
   } finally {
-    fluentBitCancelLoading[record.id] = false
+    filebeatCancelLoading[record.id] = false
     await loadOverviewHosts()
   }
 }
 
-function openFluentBitDeleteConfirm(record) {
+function openFilebeatDeleteConfirm(record) {
   const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
   openDeleteConfirm({
-    title: '确认删除 Fluent Bit 目标',
+    title: '确认删除 Filebeat 目标',
     summary: record.agent_installed
       ? '会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。'
       : '目标删除后，如需继续采集日志必须重新创建并安装。',
-    items: [`${hostLabel} - Fluent Bit`],
+    items: [`${hostLabel} - Filebeat`],
     onConfirm: async () => {
-      fluentBitDeleteLoading[record.id] = true
+      filebeatDeleteLoading[record.id] = true
       try {
         const data = parseApiData(await batchDeleteLogCollectionTargets([record.id]))
         message.success(data?.pending_uninstall
           ? '已下发卸载任务，卸载成功后自动删除'
-          : 'Fluent Bit 目标已删除')
+          : 'Filebeat 目标已删除')
       } catch (error) {
-        message.error(error?.response?.data?.msg || error?.message || 'Fluent Bit 目标删除失败')
+        message.error(error?.response?.data?.msg || error?.message || 'Filebeat 目标删除失败')
       } finally {
-        fluentBitDeleteLoading[record.id] = false
+        filebeatDeleteLoading[record.id] = false
         await loadOverviewHosts()
       }
     },
@@ -2929,7 +2957,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.fluent-bit-batch-bar {
+.filebeat-batch-bar {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2940,7 +2968,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
 }
 
-.fluent-bit-batch-bar__head {
+.filebeat-batch-bar__head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -2954,19 +2982,19 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.fluent-bit-batch-bar__count {
+.filebeat-batch-bar__count {
   color: #666;
   font-size: 13px;
   white-space: nowrap;
 }
 
-.fluent-bit-layout {
+.filebeat-layout {
   display: flex;
   align-items: flex-start;
   gap: 12px;
 }
 
-.fluent-bit-tree {
+.filebeat-tree {
   flex: 0 0 200px;
   width: 200px;
   padding: 8px;
@@ -2974,22 +3002,22 @@ onBeforeUnmount(() => {
   border-radius: 6px;
 }
 
-.fluent-bit-tree__search {
+.filebeat-tree__search {
   margin-bottom: 8px;
 }
 
-.fluent-bit-tree__body {
+.filebeat-tree__body {
   max-height: 520px;
   overflow: auto;
 }
 
 /* 表格区必须能收缩，否则 flex 子项默认 min-width:auto 会被 1900px 的表格撑破布局。 */
-.fluent-bit-table {
+.filebeat-table {
   flex: 1;
   min-width: 0;
 }
 
-.fluent-bit-table__filters {
+.filebeat-table__filters {
   display: flex;
   align-items: center;
   gap: 12px;

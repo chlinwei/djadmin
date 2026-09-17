@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
-	"autoadmin/internal/shared/logstream"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/logstream"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,7 +26,7 @@ type dataStreamBackingIndex struct {
 	Docs     float64
 	Bytes    float64
 	CreateAt string `json:"create_at"`
-	ISMState string `json:"ism_state"`
+	ILMState string `json:"ilm_state"`
 }
 
 type dataStreamEntry struct {
@@ -39,7 +39,7 @@ type dataStreamEntry struct {
 	Health         string                   `json:"health"`
 	Docs           float64                  `json:"docs"`
 	Bytes          float64                  `json:"bytes"`
-	ISMState       string                   `json:"ism_state"`
+	ILMState       string                   `json:"ilm_state"`
 	Recognized     bool                     `json:"recognized"`
 	BackingIndices []dataStreamBackingIndex `json:"backing_indices"`
 }
@@ -142,7 +142,7 @@ func (m streamNameMatcher) resolveStreamName(stream string) parsedStreamName {
 }
 
 // LogDataStreamName 构造逻辑服务级 data stream 名（logs-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>）。
-// 后续生成 Fluent Bit 采集配置的地方必须统一调用本函数，禁止各自拼接。
+// 后续生成 Filebeat 采集配置的地方必须统一调用本函数，禁止各自拼接。
 func LogDataStreamName(prefix, project, environment, businessSystem, service, tier string) string {
 	return logstream.Name(prefix, project, environment, businessSystem, service, tier)
 }
@@ -172,26 +172,31 @@ func catString(row map[string]any, key string) string {
 }
 
 // fetchDataStreamEntries 基于 _cat/indices + _ism/explain 组装流级运行态。
-func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster openSearchCluster, matcher streamNameMatcher) ([]dataStreamEntry, map[string]string, error) {
+func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster elasticsearchCluster, matcher streamNameMatcher) ([]dataStreamEntry, map[string]string, error) {
 	prefix := logHealthPrefix(cluster)
-	indices, err := handler.openSearchRequestArray(context, cluster, "GET",
+	indices, err := handler.elasticsearchRequestArray(context, cluster, "GET",
 		"/_cat/indices/"+prefix+"-*?format=json&h=index,health,status,docs.count,store.size,creation.date.string&bytes=b")
 	if err != nil {
 		return nil, nil, fmt.Errorf("查询索引列表失败: %w", err)
 	}
-	ismStates := map[string]string{}
-	explain, explainErr := handler.openSearchRequest(context, cluster, "GET", "/_plugins/_ism/explain/"+prefix+"-*?show_policy=false", nil)
+	ilmStates := map[string]string{}
+	// ES 8 的 ILM explain：GET <prefix>-*/_ilm/explain -> {"indices":{"<index>":{"phase":"hot",...}}}，
+	// 未挂策略/未托管的索引没有 phase（只有 step）。没有匹配索引时返回 {"indices":{}}。
+	explain, explainErr := handler.elasticsearchRequest(context, cluster, "GET", "/"+prefix+"-*/_ilm/explain", nil)
 	if explainErr == nil {
-		// 响应顶层键即索引名（形如 {".ds-logs-x-000016":{"state":{"name":"hot"},...}}），
-		// 另有 total_managed_ans 等聚合键，靠 state 字段是否存在过滤。
-		for key, raw := range explain {
-			payload, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if state, ok := payload["state"].(map[string]any); ok {
-				name, _ := state["name"].(string)
-				ismStates[key] = name
+		if indices, ok := explain["indices"].(map[string]any); ok {
+			for key, raw := range indices {
+				payload, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if phase, _ := payload["phase"].(string); phase != "" {
+					ilmStates[key] = phase
+					continue
+				}
+				if step, _ := payload["step"].(string); step != "" {
+					ilmStates[key] = step
+				}
 			}
 		}
 	}
@@ -222,11 +227,11 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ope
 		entry.BackingIndices = append(entry.BackingIndices, dataStreamBackingIndex{
 			Index: index, Health: catString(row, "health"), Docs: catFloat(row, "docs.count"),
 			Bytes: catFloat(row, "store.size"), CreateAt: catString(row, "creation.date.string"),
-			ISMState: ismStates[index],
+			ILMState: ilmStates[index],
 		})
-		// 流级 ISM 状态取任一后备索引的非空状态（同一流的策略一致）。
-		if entry.ISMState == "" && ismStates[index] != "" {
-			entry.ISMState = ismStates[index]
+		// 流级 ILM 状态取任一后备索引的非空状态（同一流的策略一致）。
+		if entry.ILMState == "" && ilmStates[index] != "" {
+			entry.ILMState = ilmStates[index]
 		}
 	}
 	sort.Strings(order)
@@ -236,15 +241,15 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ope
 		sort.Slice(backing, func(i, j int) bool { return backing[i].Index < backing[j].Index })
 		result = append(result, *entries[name])
 	}
-	return result, ismStates, nil
+	return result, ilmStates, nil
 }
 
-// GetLogStorageOverview 存储水位总览：流级运行态（OpenSearch）+ 维度数据（MySQL）一次返回，
+// GetLogStorageOverview 存储水位总览：流级运行态（Elasticsearch）+ 维度数据（MySQL）一次返回，
 // 由前端组装 顶层→项目→业务系统→环境→逻辑服务 的层级树。
 func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
-	cluster, err := handler.loadOpenSearchCluster(context)
+	cluster, err := handler.loadElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+		response.BusinessError(context, 404, "Elasticsearch cluster not found", nil)
 		return
 	}
 	if err != nil {
@@ -258,7 +263,7 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 		return
 	}
 	// 节点磁盘水位：失败不阻塞总览（旧版本/云托管可能拒绝该端点）。
-	allocation, allocErr := handler.openSearchRequestArray(context, cluster, "GET", "/_cat/allocation?format=json&h=node,name,shards,disk.used,disk.total,disk.percent")
+	allocation, allocErr := handler.elasticsearchRequestArray(context, cluster, "GET", "/_cat/allocation?format=json&h=node,name,shards,disk.used,disk.total,disk.percent")
 
 	type bizsysRow struct {
 		ID        int64  `json:"id"`
@@ -352,9 +357,9 @@ func errorString(err error) string {
 // GetLogServiceUsage 逻辑服务写入量：按 service 字段的 terms 聚合（文档数口径，
 // 非磁盘占用）。点进逻辑服务层时按需调用。
 func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
-	cluster, err := handler.loadOpenSearchCluster(context)
+	cluster, err := handler.loadElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
-		response.BusinessError(context, 404, "OpenSearch cluster not found", nil)
+		response.BusinessError(context, 404, "Elasticsearch cluster not found", nil)
 		return
 	}
 	if err != nil {
@@ -383,7 +388,7 @@ func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
 		"query": gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dd", days)}}},
 		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 500}}},
 	}
-	result, err := handler.openSearchRequest(context, cluster, "POST",
+	result, err := handler.elasticsearchRequest(context, cluster, "POST",
 		// 流名 = <prefix>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>，项目段不参与查询条件，用 * 通配。
 		"/"+prefix+"-*-"+businessSystem+"-"+environment+"-*/_search", body)
 	if err != nil {

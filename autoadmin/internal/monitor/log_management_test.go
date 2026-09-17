@@ -29,44 +29,51 @@ func TestBuildIndexTemplateNameAndPolicyName(t *testing.T) {
 	if got := buildIndexTemplateName("Logs"); got != "logs-template" {
 		t.Fatalf("buildIndexTemplateName = %q", got)
 	}
-	if got := buildISMPolicyName("logs", "std"); got != "logs-std-retention" {
-		t.Fatalf("buildISMPolicyName = %q", got)
+	if got := buildILMPolicyName("logs", "std"); got != "logs-std-retention" {
+		t.Fatalf("buildILMPolicyName = %q", got)
+	}
+	if got := buildTierIndexTemplateName("logs", "std"); got != "logs-std-template" {
+		t.Fatalf("buildTierIndexTemplateName = %q", got)
 	}
 }
 
-// ISM policy 期望体回归：滚动阈值不小于 1gb、删除按 retention_days、按索引名后缀挂载。
-func TestBuildISMPolicyBody(t *testing.T) {
-	body := buildISMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})
+// ILM policy 期望体回归：滚动阈值不小于 1gb、删除按 retention_days。
+func TestBuildILMPolicyBody(t *testing.T) {
+	body := buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})
 	policy, ok := body["policy"].(gin.H)
 	if !ok {
 		t.Fatalf("policy missing: %v", body)
 	}
-	states := policy["states"].([]any)
-	if len(states) != 2 {
-		t.Fatalf("states = %v", states)
-	}
-	hot := states[0].(gin.H)
-	if hot["name"] != "hot" || policy["default_state"] != "hot" {
-		t.Fatalf("hot state = %v", hot)
-	}
-	rollover := hot["actions"].([]any)[0].(gin.H)["rollover"].(gin.H)
-	if rollover["min_primary_shard_size"] != "5gb" || rollover["min_index_age"] != "1d" {
+	phases := policy["phases"].(gin.H)
+	rollover := phases["hot"].(gin.H)["actions"].(gin.H)["rollover"].(gin.H)
+	if rollover["max_primary_shard_size"] != "5gb" || rollover["max_age"] != "1d" {
 		t.Fatalf("rollover = %v", rollover)
 	}
-	transition := hot["transitions"].([]any)[0].(gin.H)
-	if transition["state_name"] != "delete" || transition["conditions"].(gin.H)["min_index_age"] != "30d" {
-		t.Fatalf("transition = %v", transition)
-	}
-	template := policy["ism_template"].([]any)[0].(gin.H)
-	if got := asAnySlice(template["index_patterns"]); len(got) != 1 || got[0] != "logs-*-std" {
-		t.Fatalf("ism_template = %v", template)
+	if got := phases["delete"].(gin.H)["min_age"]; got != "30d" {
+		t.Fatalf("delete min_age = %v", got)
 	}
 
 	// 小写入量档位的滚动阈值必须被抬到 1gb。
-	small := buildISMPolicyBody("logs", retentionTierRow{Code: "tiny", RetentionDays: 7, DailySizeGB: 0.2, RolloverMinIndexAge: "1d"})
-	smallRollover := small["policy"].(gin.H)["states"].([]any)[0].(gin.H)["actions"].([]any)[0].(gin.H)["rollover"].(gin.H)
-	if smallRollover["min_primary_shard_size"] != "1gb" {
+	small := buildILMPolicyBody("logs", retentionTierRow{Code: "tiny", RetentionDays: 7, DailySizeGB: 0.2, RolloverMinIndexAge: "1d"})
+	smallRollover := small["policy"].(gin.H)["phases"].(gin.H)["hot"].(gin.H)["actions"].(gin.H)["rollover"].(gin.H)
+	if smallRollover["max_primary_shard_size"] != "1gb" {
 		t.Fatalf("small rollover = %v", smallRollover)
+	}
+
+	// 档位模板必须是自包含的（data_stream + mappings + lifecycle），并匹配 `logs-*-<tier>`。
+	tier := buildTierIndexTemplateBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5})
+	if _, ok := tier["data_stream"]; !ok {
+		t.Fatalf("tier template must declare data_stream: %v", tier)
+	}
+	if got := tier["index_patterns"].([]string)[0]; got != "logs-*-std" {
+		t.Fatalf("tier template pattern = %v", got)
+	}
+	settings := tier["template"].(gin.H)["settings"].(gin.H)
+	if settings["index.lifecycle.name"] != "logs-std-retention" {
+		t.Fatalf("tier template lifecycle = %v", settings)
+	}
+	if _, ok := tier["template"].(gin.H)["mappings"]; !ok {
+		t.Fatalf("tier template must carry mappings: %v", tier)
 	}
 }
 
@@ -74,6 +81,10 @@ func TestBuildIndexTemplateBody(t *testing.T) {
 	body := buildIndexTemplateBody("logs")
 	if body["index_patterns"].([]string)[0] != "logs-*" {
 		t.Fatalf("patterns = %v", body["index_patterns"])
+	}
+	// 基础模板不设 priority（默认 0）；与已有同 priority 模板的冲突由 bootstrap 前置检查报错。
+	if _, ok := body["priority"]; ok {
+		t.Fatalf("base template should not set priority: %v", body["priority"])
 	}
 	mappings := body["template"].(gin.H)["mappings"].(gin.H)
 	if mappings["dynamic"] != false {
@@ -104,38 +115,73 @@ func TestPipelineSignature(t *testing.T) {
 	}
 }
 
-// ISM 实际状态签名提取：只取 rollover/delete/patterns，忽略集群补充的元数据。
-func TestISMPolicySignature(t *testing.T) {
+// ILM 实际状态签名提取：只取 rollover/delete，忽略 ES 补充的 min_age=0ms / delete_searchable_snapshot。
+func TestILMPolicySignature(t *testing.T) {
 	remote := map[string]any{
-		"policy_id":         "logs-std-retention",
-		"last_updated_time": 1725264000000,
+		"version":       1,
+		"modified_date": "2026-09-17T05:09:15.460Z",
 		"policy": map[string]any{
-			"description":   "server-side description",
-			"default_state": "hot",
-			"states": []any{
-				map[string]any{
-					"name": "hot",
-					"actions": []any{
-						map[string]any{"rollover": map[string]any{"min_primary_shard_size": "5gb", "min_index_age": "1d"}},
-					},
-					"transitions": []any{
-						map[string]any{"state_name": "delete", "conditions": map[string]any{"min_index_age": "30d"}},
+			"phases": map[string]any{
+				"hot": map[string]any{
+					"min_age": "0ms",
+					"actions": map[string]any{
+						"rollover": map[string]any{"max_primary_shard_size": "5gb", "max_age": "1d"},
 					},
 				},
-				map[string]any{"name": "delete", "actions": []any{map[string]any{"delete": map[string]any{}}}},
+				"delete": map[string]any{
+					"min_age": "30d",
+					"actions": map[string]any{"delete": map[string]any{"delete_searchable_snapshot": true}},
+				},
 			},
-			"ism_template": []any{map[string]any{"index_patterns": []any{"logs-*-std"}, "priority": 100}},
 		},
 	}
-	actual := ismPolicySignature(remote["policy"].(map[string]any))
-	desired := ismPolicySignature(buildISMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
+	actual := ilmPolicySignature(remote["policy"].(map[string]any))
+	desired := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
 	if keys := differingSignatureKeys(actual, desired); len(keys) != 0 {
 		t.Fatalf("expected no drift, got %v (actual=%v desired=%v)", keys, actual, desired)
 	}
 	// 保留天数变更 → delete_after 漂移
-	drifted := ismPolicySignature(buildISMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 7, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
+	drifted := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 7, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
 	if keys := differingSignatureKeys(actual, drifted); len(keys) == 0 || keys[0] != "delete_after" {
 		t.Fatalf("expected delete_after drift, got %v", keys)
+	}
+}
+
+// 冲突预检：pattern 去通配符后互为前缀视为重叠（logs* vs logs-*、logs vs logs-* 都算）。
+func TestIndexPatternsOverlap(t *testing.T) {
+	cases := []struct {
+		left, right string
+		want        bool
+	}{
+		{"logs*", "logs-*", true},
+		{"logs", "logs-*", true},
+		{"logs-*", "logs-*", true},
+		{"logs-*", "nginx-*", false},
+		{"logs-*-std", "logs-*", true},
+		{"test", "logs-*", false},
+	}
+	for _, testCase := range cases {
+		if got := indexPatternsOverlap(testCase.left, testCase.right); got != testCase.want {
+			t.Errorf("indexPatternsOverlap(%q, %q) = %v, want %v", testCase.left, testCase.right, got, testCase.want)
+		}
+	}
+	if got := splitCatPatterns("[logs*, logs-*]"); len(got) != 2 || got[0] != "logs*" || got[1] != "logs-*" {
+		t.Fatalf("splitCatPatterns = %v", got)
+	}
+}
+
+// pipeline id 命名：<前缀>-<应用 code|general>-<规则名>，各段归一化为小写安全段。
+func TestProcessingPipelineName(t *testing.T) {
+	cases := []struct{ prefix, application, rule, want string }{
+		{"autoadmin", "tomcat-app", "access-err", "autoadmin-tomcat-app-access-err"},
+		{"autoadmin", "", "access-err", "autoadmin-general-access-err"},
+		{"", "", "x", "autoadmin-general-x"},
+		{"Logs", "My App", "Rule.Name", "logs-my-app-rule-name"},
+	}
+	for _, testCase := range cases {
+		if got := processingPipelineName(testCase.prefix, testCase.application, testCase.rule); got != testCase.want {
+			t.Errorf("processingPipelineName(%q,%q,%q) = %q, want %q", testCase.prefix, testCase.application, testCase.rule, got, testCase.want)
+		}
 	}
 }
 

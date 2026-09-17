@@ -224,7 +224,7 @@ func (handler *Handler) AgentInstall(context *gin.Context) {
 			HostNameSnapshot: host.InstanceName, HostIpSnapshot: host.HostIP, AgentJobID: host.AgentJobID,
 			Status: "queued", ExitCode: sql.NullInt32{Int32: 0, Valid: true}, Stdout: "", Stderr: "",
 			ErrorMessage: "", ResultData: json.RawMessage(`{}`),
-			HostID:       sql.NullInt64{Int64: host.ID, Valid: true}, JobID: executionID,
+			HostID: sql.NullInt64{Int64: host.ID, Valid: true}, JobID: executionID,
 		})
 		if err != nil {
 			response.Error(context, err)

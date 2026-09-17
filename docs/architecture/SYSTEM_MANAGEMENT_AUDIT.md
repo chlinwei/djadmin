@@ -34,13 +34,13 @@
 |---|---|---|
 | Exporter 安装/卸载（retry、批量纳管 install_now） | `dispatchExporterJob` | ✅ 离线→target 标记 failed + install_message |
 | Exporter 启动/停止/查状态（单台/批量） | `dispatchTargetServiceControl` | ✅ 400 `host agent is offline` |
-| Fluent Bit 安装/卸载（retry、批量纳管 install_now） | `dispatchLogTargetInstall` | ✅ 同上语义 |
-| Fluent Bit 启停/查状态/下发配置 | `dispatchLogTargetServiceControl` / `ApplyLogTargetConfig` | ✅ |
+| Filebeat 安装/卸载（retry、批量纳管 install_now） | `dispatchLogTargetInstall` | ✅ 同上语义 |
+| Filebeat 启停/查状态/下发配置 | `dispatchLogTargetServiceControl` / `ApplyLogTargetConfig` | ✅ |
 | 取消任务 / 删除目标 / PATCH 目标字段 | 仅改库，不触 agent | 不需要在线 |
 
 - ⚠️ `BatchCreateTargets`（Exporter 批量纳管）必须实现 `install_now=true` 时立即调用 `dispatchExporterJob`（前端固定传 install_now=true，Django 同语义）；此前曾漏实现导致纳管后目标停在未安装状态，勿回退。
 - 列表展示的 `host_agent_online` 来自实时 gRPC 会话（`read_resources.go`），不是落库快照。
-- 前端所有操作按钮以 `host_agent_online` 置灰（含 Fluent Bit 需 `agent_installed`），与后端校验双保险。
+- 前端所有操作按钮以 `host_agent_online` 置灰（含 Filebeat 需 `agent_installed`），与后端校验双保险。
 - TOCTOU 余留：在线校验与 agent 实际执行间极小窗口内掉线，`gateway.Execute` 会以错误返回并落库失败状态，属可接受语义。
 
 ## 纳管目标在线守卫测试（internal/monitor/target_online_guard_test.go）

@@ -977,10 +977,10 @@ async function loadMonitorInstallHistories(resetPage = false) {
       keyword: String(monitorInstallHistoryKeyword.value || '').trim() || undefined,
       status: monitorInstallHistoryStatus.value || undefined,
       action: monitorInstallHistoryAction.value || undefined,
-      target_id: monitorInstallHistoryTargetType.value === 'fluent_bit'
+      target_id: monitorInstallHistoryTargetType.value === 'filebeat'
         ? undefined
         : String(monitorInstallHistoryTargetId.value || '').trim() || undefined,
-      log_collection_target_id: monitorInstallHistoryTargetType.value === 'fluent_bit'
+      log_collection_target_id: monitorInstallHistoryTargetType.value === 'filebeat'
         ? String(monitorInstallHistoryTargetId.value || '').trim() || undefined
         : undefined,
       start_time: startTime,
@@ -1398,7 +1398,7 @@ onMounted(async () => {
     const queryLogCollectionTargetId = route.query.log_collection_target_id
     const queryHistoryId = route.query.history_id
     if (queryLogCollectionTargetId) {
-      monitorInstallHistoryTargetType.value = 'fluent_bit'
+      monitorInstallHistoryTargetType.value = 'filebeat'
       monitorInstallHistoryTargetId.value = String(
         Array.isArray(queryLogCollectionTargetId) ? queryLogCollectionTargetId[0] : queryLogCollectionTargetId,
       ).trim()

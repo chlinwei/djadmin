@@ -96,4 +96,3 @@ func newPlanCheckResult(check map[string]any, status string, actual any, message
 		Status: status, Expected: check["expected"], Actual: actual, Message: message,
 	}
 }
-

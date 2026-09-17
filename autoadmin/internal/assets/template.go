@@ -227,6 +227,7 @@ func jsonValue(value json.RawMessage, fallback string) []byte {
 	}
 	return value
 }
+
 // nullableString / nullableInt 把可空指针转成 sqlc 的参数类型（nil 即 NULL）。
 func nullableString(value *string) sql.NullString {
 	if value == nil {
@@ -234,6 +235,7 @@ func nullableString(value *string) sql.NullString {
 	}
 	return sql.NullString{String: *value, Valid: true}
 }
+
 // nullableIntPtr 用于"非可空 int64 字段写可空列"的场景（如 application_id 由前端保证非空）。
 func nullableIntPtr(value int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: value, Valid: true}

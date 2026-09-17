@@ -46,7 +46,7 @@ Infrastructure packages must not import HTTP handlers. Domain packages may depen
 - Store and exchange timestamps in UTC; convert only at the frontend boundary using the user's timezone.
 - Never put credential secrets, private keys or sudo passwords in RabbitMQ messages or logs. Messages carry database identifiers and immutable execution ids.
 - Encrypt sensitive credential columns before the assets domain is migrated.
-- Ansible runs as an external process. The Go binary remains CGO-free, but worker images require `ansible-core` and Python.
+- Ansible runs as an external process. The Go binary remains CGO-free. By default the worker needs `ansible-core` and Python on the host; `make build` bundles CPython + ansible-core into the binary by default (after `make ansible-embed`); set `ANSIBLE_EMBED=` to disable (see `docs/architecture/AGENT_INSTALL_UPDATE.md`).
 
 ## Agent channel
 

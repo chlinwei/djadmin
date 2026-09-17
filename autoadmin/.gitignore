@@ -4,3 +4,6 @@
 !config.example.env
 # autoadmin 本地媒体/软件包存储（monitor_packages、agent_packages、userAvatar）
 autoadmin/media/
+
+# embedansible 变体的嵌入数据（由 make ansible-embed 生成，约 19MB；不入库）
+/internal/automation/ansiblecmd/embeddata/

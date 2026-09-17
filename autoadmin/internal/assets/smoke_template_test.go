@@ -96,8 +96,8 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	}
 	hostResult, err := queries.CreateHost(ctx, db.CreateHostParams{
 		CreateTime: now, UpdateTime: now, Status: "active", IsDeletedInCloud: false,
-		InstanceName: sql.NullString{String: "smoke-svc-host-" + suffix, Valid: true},
-		Ip:           sql.NullString{String: "10.255.255.202", Valid: true},
+		InstanceName:  sql.NullString{String: "smoke-svc-host-" + suffix, Valid: true},
+		Ip:            sql.NullString{String: "10.255.255.202", Valid: true},
 		CollectStatus: "pending", CollectMessage: "", AgentOnline: false,
 		WebsshDefaultUsername: "", WebsshLoginUsers: "",
 	})
@@ -268,7 +268,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("按不存在环境过滤 = %d, %v，期望 0", matches, err)
 	}
 	if matches, err = queries.CountApplicationDeployments(ctx, db.CountApplicationDeploymentsParams{
-		ServiceID: sql.NullInt64{Int64: serviceID, Valid: true},
+		ServiceID:     sql.NullInt64{Int64: serviceID, Valid: true},
 		EnvironmentID: sql.NullInt64{Int64: 2_000_000_000, Valid: true},
 	}); err != nil || matches != 0 {
 		t.Fatalf("服务命中但环境不命中 = %d, %v，期望 0", matches, err)

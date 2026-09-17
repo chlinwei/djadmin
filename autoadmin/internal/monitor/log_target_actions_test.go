@@ -12,61 +12,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Fluent Bit 包匹配回归用例：按 agent 采集的系统信息（os_type/os_id_like/os_version_id）
-// 选择 deb/rpm 与平台目录（rhel7/rhel9/ubuntu），选错包会导致离线安装直接失败。
-func TestHostPackageFormat(t *testing.T) {
-	cases := map[logTargetRow]string{
-		{OSType: "Ubuntu", OSIDLike: "debian"}:     "deb",
-		{OSType: "Debian GNU/Linux", OSIDLike: ""}: "deb",
-		{OSType: "CentOS Linux", OSIDLike: "rhel"}: "rpm",
-		{OSType: "Red Hat Enterprise Linux"}:       "rpm",
-		{OSType: "Kylin Linux Advanced Server"}:    "rpm",
-		{OSType: "", OSIDLike: ""}:                 "rpm",
+// Filebeat 只按 CPU 架构匹配（官方 tar.gz 单二进制，自带依赖）。
+func TestNormalizeHostArch(t *testing.T) {
+	cases := map[string]string{
+		"x86_64": "amd64", "AMD64": "amd64", "aarch64": "arm64", "arm64": "arm64",
+		"": "", "ppc64le": "",
 	}
-	for row, want := range cases {
-		if got := hostPackageFormat(row); got != want {
-			t.Fatalf("hostPackageFormat(%v) = %s, want %s", row, got, want)
+	for input, want := range cases {
+		if got := normalizeHostArch(input); got != want {
+			t.Fatalf("normalizeHostArch(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestPackageFamilyMatches(t *testing.T) {
-	if !packageFamilyMatches("ubuntu", "ubuntu debian") {
-		t.Fatal("ubuntu host should match ubuntu package")
+func TestFirstElasticsearchURL(t *testing.T) {
+	url, err := firstElasticsearchURL("https://10.0.0.1:9200,https://10.0.0.2:9200")
+	if err != nil || url != "https://10.0.0.1:9200" {
+		t.Fatalf("firstElasticsearchURL = %s, %v", url, err)
 	}
-	if !packageFamilyMatches("rhel", "red hat enterprise linux") {
-		t.Fatal("RHEL host should match rhel package")
+	url, err = firstElasticsearchURL("10.0.0.3")
+	if err != nil || url != "http://10.0.0.3:9200" {
+		t.Fatalf("default scheme/port = %s, %v", url, err)
 	}
-	if packageFamilyMatches("ubuntu", "red hat enterprise linux rhel fedora") {
-		t.Fatal("RHEL host must not match ubuntu package")
-	}
-	if !packageFamilyMatches("any", "whatever") {
-		t.Fatal("family=any matches everything")
-	}
-}
-
-func TestOSMajor(t *testing.T) {
-	if got := osMajor(logTargetRow{OSVersionID: "9.4"}); got != "9" {
-		t.Fatalf("osMajor(9.4) = %s, want 9", got)
-	}
-	if got := osMajor(logTargetRow{OSVersionID: "22.04"}); got != "22" {
-		t.Fatalf("osMajor(22.04) = %s, want 22", got)
-	}
-	if got := osMajor(logTargetRow{}); got != "" {
-		t.Fatalf("osMajor(empty) = %s, want empty", got)
-	}
-}
-
-func TestFirstOpenSearchEndpoint(t *testing.T) {
-	host, port, err := firstOpenSearchEndpoint("https://10.0.0.1:9200,https://10.0.0.2:9200")
-	if err != nil || host != "10.0.0.1" || port != "9200" {
-		t.Fatalf("firstOpenSearchEndpoint = %s:%s, %v", host, port, err)
-	}
-	host, port, err = firstOpenSearchEndpoint("10.0.0.3")
-	if err != nil || host != "10.0.0.3" || port != "9200" {
-		t.Fatalf("default port = %s:%s, %v", host, port, err)
-	}
-	if _, _, err := firstOpenSearchEndpoint(""); err == nil {
+	if _, err := firstElasticsearchURL(""); err == nil {
 		t.Fatal("empty hosts should fail")
 	}
 }

@@ -63,7 +63,7 @@ func parseExpiry(raw string) (interface{}, error) {
 }
 func (handler *APITokenHandler) Create(context *gin.Context) {
 	var input struct {
-		ApiID   string `json:"api_id"`
+		ApiID     string `json:"api_id"`
 		BindMode  string `json:"bind_mode"`
 		Name      string `json:"name"`
 		ExpiresAt string `json:"expires_at"`

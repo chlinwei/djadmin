@@ -67,27 +67,27 @@ func (q *Queries) CancelMonitorTargetInstallState(ctx context.Context, arg Cance
 	return err
 }
 
+const clearDefaultElasticsearchCluster = `-- name: ClearDefaultElasticsearchCluster :exec
+UPDATE monitor_elasticsearch_cluster SET is_default=FALSE, update_time=?
+WHERE is_default=TRUE AND id<>?
+`
+
+type ClearDefaultElasticsearchClusterParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) ClearDefaultElasticsearchCluster(ctx context.Context, arg ClearDefaultElasticsearchClusterParams) error {
+	_, err := q.db.ExecContext(ctx, clearDefaultElasticsearchCluster, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const clearDefaultLogRetentionTier = `-- name: ClearDefaultLogRetentionTier :exec
 UPDATE monitor_log_retention_tier SET is_default=FALSE WHERE id <> ?
 `
 
 func (q *Queries) ClearDefaultLogRetentionTier(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, clearDefaultLogRetentionTier, id)
-	return err
-}
-
-const clearDefaultOpenSearchCluster = `-- name: ClearDefaultOpenSearchCluster :exec
-UPDATE monitor_opensearch_cluster SET is_default=FALSE, update_time=?
-WHERE is_default=TRUE AND id<>?
-`
-
-type ClearDefaultOpenSearchClusterParams struct {
-	UpdateTime time.Time `json:"update_time"`
-	ID         int64     `json:"id"`
-}
-
-func (q *Queries) ClearDefaultOpenSearchCluster(ctx context.Context, arg ClearDefaultOpenSearchClusterParams) error {
-	_, err := q.db.ExecContext(ctx, clearDefaultOpenSearchCluster, arg.UpdateTime, arg.ID)
 	return err
 }
 
@@ -182,12 +182,41 @@ func (q *Queries) CountAlertMedia(ctx context.Context, arg CountAlertMediaParams
 	return count, err
 }
 
-const countAllOpenSearchClusters = `-- name: CountAllOpenSearchClusters :one
-SELECT COUNT(*) FROM monitor_opensearch_cluster
+const countAllElasticsearchClusters = `-- name: CountAllElasticsearchClusters :one
+SELECT COUNT(*) FROM monitor_elasticsearch_cluster
 `
 
-func (q *Queries) CountAllOpenSearchClusters(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countAllOpenSearchClusters)
+func (q *Queries) CountAllElasticsearchClusters(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAllElasticsearchClusters)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countElasticsearchClusters = `-- name: CountElasticsearchClusters :one
+SELECT COUNT(*) FROM monitor_elasticsearch_cluster
+WHERE (enabled = ? OR ? IS NULL)
+  AND (is_default = ? OR ? IS NULL)
+  AND (name LIKE ? OR hosts LIKE ? OR remark LIKE ? OR ? IS NULL)
+`
+
+type CountElasticsearchClustersParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+}
+
+func (q *Queries) CountElasticsearchClusters(ctx context.Context, arg CountElasticsearchClustersParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countElasticsearchClusters,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -399,16 +428,16 @@ WHERE h.is_deleted_in_cloud = FALSE
 `
 
 type CountMonitorHostsParams struct {
-	SearchPattern sql.NullString  `json:"search_pattern"`
-	GroupFilter   interface{}     `json:"group_filter"`
-	GroupIds      []sql.NullInt64 `json:"group_ids"`
-	ManagedFilter interface{}     `json:"managed_filter"`
-	ExporterType  string          `json:"exporter_type"`
-	FluentFilter  interface{}     `json:"fluent_filter"`
+	SearchPattern  sql.NullString  `json:"search_pattern"`
+	GroupFilter    interface{}     `json:"group_filter"`
+	GroupIds       []sql.NullInt64 `json:"group_ids"`
+	ManagedFilter  interface{}     `json:"managed_filter"`
+	ExporterType   string          `json:"exporter_type"`
+	FilebeatFilter interface{}     `json:"filebeat_filter"`
 }
 
 // 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
-// managed_filter 与 fluent_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
+// managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 func (q *Queries) CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error) {
 	query := countMonitorHosts
 	var queryParams []interface{}
@@ -431,7 +460,7 @@ func (q *Queries) CountMonitorHosts(ctx context.Context, arg CountMonitorHostsPa
 	queryParams = append(queryParams, arg.ExporterType)
 	queryParams = append(queryParams, arg.ExporterType)
 	queryParams = append(queryParams, arg.ExporterType)
-	queryParams = append(queryParams, arg.FluentFilter)
+	queryParams = append(queryParams, arg.FilebeatFilter)
 	row := q.db.QueryRowContext(ctx, query, queryParams...)
 	var count int64
 	err := row.Scan(&count)
@@ -499,35 +528,6 @@ func (q *Queries) CountMonitorTargets(ctx context.Context, arg CountMonitorTarge
 		arg.SearchPattern,
 		arg.SearchPattern,
 		arg.SearchPattern,
-	)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countOpenSearchClusters = `-- name: CountOpenSearchClusters :one
-SELECT COUNT(*) FROM monitor_opensearch_cluster
-WHERE (enabled = ? OR ? IS NULL)
-  AND (is_default = ? OR ? IS NULL)
-  AND (name LIKE ? OR hosts LIKE ? OR remark LIKE ? OR ? IS NULL)
-`
-
-type CountOpenSearchClustersParams struct {
-	Enabled   sql.NullBool   `json:"enabled"`
-	IsDefault sql.NullBool   `json:"is_default"`
-	Pattern   sql.NullString `json:"pattern"`
-}
-
-func (q *Queries) CountOpenSearchClusters(ctx context.Context, arg CountOpenSearchClustersParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countOpenSearchClusters,
-		arg.Enabled,
-		arg.Enabled,
-		arg.IsDefault,
-		arg.IsDefault,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -851,6 +851,59 @@ func (q *Queries) CreateAlertNotificationEventIfAbsent(ctx context.Context, arg 
 	)
 }
 
+const createElasticsearchCluster = `-- name: CreateElasticsearchCluster :execlastid
+INSERT INTO monitor_elasticsearch_cluster
+  (create_time,update_time,name,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,
+   enabled,is_default,remark,last_check_time,last_check_success,last_check_message,
+   storage_sync_error,storage_sync_status,storage_sync_time)
+VALUES (?,?,?,?,?,
+        ?,?,?,?,
+        ?,?,?,?,
+        NULL,NULL,'','','',NULL)
+`
+
+type CreateElasticsearchClusterParams struct {
+	CreateTime     time.Time `json:"create_time"`
+	UpdateTime     time.Time `json:"update_time"`
+	Name           string    `json:"name"`
+	Hosts          string    `json:"hosts"`
+	Username       string    `json:"username"`
+	Password       string    `json:"password"`
+	VerifyTls      bool      `json:"verify_tls"`
+	CaCert         string    `json:"ca_cert"`
+	IndexPrefix    string    `json:"index_prefix"`
+	RequestTimeout uint32    `json:"request_timeout"`
+	Enabled        bool      `json:"enabled"`
+	IsDefault      bool      `json:"is_default"`
+	Remark         string    `json:"remark"`
+}
+
+// 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
+// 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
+// doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
+// 这里按"尚未探测/尚未同步"的语义显式写空串。
+func (q *Queries) CreateElasticsearchCluster(ctx context.Context, arg CreateElasticsearchClusterParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createElasticsearchCluster,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Name,
+		arg.Hosts,
+		arg.Username,
+		arg.Password,
+		arg.VerifyTls,
+		arg.CaCert,
+		arg.IndexPrefix,
+		arg.RequestTimeout,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.Remark,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
 const createLogCollectionFilterRule = `-- name: CreateLogCollectionFilterRule :execlastid
 INSERT INTO monitor_log_collection_filter_rule
   (create_time,update_time,remark,name,description,pattern,enabled,application_id)
@@ -908,10 +961,10 @@ func (q *Queries) CreateLogCollectionTargetIfAbsent(ctx context.Context, arg Cre
 const createLogProcessingRule = `-- name: CreateLogProcessingRule :execlastid
 INSERT INTO monitor_log_processing_rule
   (create_time,update_time,remark,name,description,input_format,multiline_enabled,start_pattern,
-   continuation_pattern,flush_timeout,pipeline_body,cluster_id,application_id)
+   continuation_pattern,sample_log,flush_timeout,pipeline_body,cluster_id,application_id)
 VALUES (?,?,?,?,?,
         ?,?,?,
-        ?,?,?,
+        ?,?,?,?,
         ?,?)
 `
 
@@ -925,6 +978,7 @@ type CreateLogProcessingRuleParams struct {
 	MultilineEnabled    bool            `json:"multiline_enabled"`
 	StartPattern        string          `json:"start_pattern"`
 	ContinuationPattern string          `json:"continuation_pattern"`
+	SampleLog           string          `json:"sample_log"`
 	FlushTimeout        uint32          `json:"flush_timeout"`
 	PipelineBody        json.RawMessage `json:"pipeline_body"`
 	ClusterID           int64           `json:"cluster_id"`
@@ -942,6 +996,7 @@ func (q *Queries) CreateLogProcessingRule(ctx context.Context, arg CreateLogProc
 		arg.MultilineEnabled,
 		arg.StartPattern,
 		arg.ContinuationPattern,
+		arg.SampleLog,
 		arg.FlushTimeout,
 		arg.PipelineBody,
 		arg.ClusterID,
@@ -1170,81 +1225,29 @@ func (q *Queries) CreateNotificationPolicy(ctx context.Context, arg CreateNotifi
 	return result.LastInsertId()
 }
 
-const createOpenSearchCluster = `-- name: CreateOpenSearchCluster :execlastid
-INSERT INTO monitor_opensearch_cluster
-  (create_time,update_time,name,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,
-   enabled,is_default,remark,last_check_time,last_check_success,last_check_message,
-   storage_sync_error,storage_sync_status,storage_sync_time)
-VALUES (?,?,?,?,?,
-        ?,?,?,?,
-        ?,?,?,?,
-        NULL,NULL,'','','',NULL)
-`
-
-type CreateOpenSearchClusterParams struct {
-	CreateTime     time.Time `json:"create_time"`
-	UpdateTime     time.Time `json:"update_time"`
-	Name           string    `json:"name"`
-	Hosts          string    `json:"hosts"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	VerifyTls      bool      `json:"verify_tls"`
-	CaCert         string    `json:"ca_cert"`
-	IndexPrefix    string    `json:"index_prefix"`
-	RequestTimeout uint32    `json:"request_timeout"`
-	Enabled        bool      `json:"enabled"`
-	IsDefault      bool      `json:"is_default"`
-	Remark         string    `json:"remark"`
-}
-
-// 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
-// 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
-// doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
-// 这里按"尚未探测/尚未同步"的语义显式写空串。
-func (q *Queries) CreateOpenSearchCluster(ctx context.Context, arg CreateOpenSearchClusterParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createOpenSearchCluster,
-		arg.CreateTime,
-		arg.UpdateTime,
-		arg.Name,
-		arg.Hosts,
-		arg.Username,
-		arg.Password,
-		arg.VerifyTls,
-		arg.CaCert,
-		arg.IndexPrefix,
-		arg.RequestTimeout,
-		arg.Enabled,
-		arg.IsDefault,
-		arg.Remark,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
-}
-
 const createSoftwarePackage = `-- name: CreateSoftwarePackage :execlastid
 INSERT INTO monitor_software_package(create_time,update_time,remark,package_type,name,version,default_port,
                                      os,arch,platform_family,platform_major,package_format,file,sha256,size_bytes,
                                      enabled,work_directory,service_file_content,service_run_as_user,service_run_as_group)
 VALUES (?,?,NULL,?,?,?,
         ?,?,?,?,?,
-        ?,'', '', 0, TRUE, '/tmp', '', ?, 'dj-agent')
+        ?,'', '', 0, TRUE, '/tmp', ?, ?, 'dj-agent')
 `
 
 type CreateSoftwarePackageParams struct {
-	CreateTime       time.Time `json:"create_time"`
-	UpdateTime       time.Time `json:"update_time"`
-	PackageType      string    `json:"package_type"`
-	Name             string    `json:"name"`
-	Version          string    `json:"version"`
-	DefaultPort      uint32    `json:"default_port"`
-	Os               string    `json:"os"`
-	Arch             string    `json:"arch"`
-	PlatformFamily   string    `json:"platform_family"`
-	PlatformMajor    string    `json:"platform_major"`
-	PackageFormat    string    `json:"package_format"`
-	ServiceRunAsUser string    `json:"service_run_as_user"`
+	CreateTime         time.Time      `json:"create_time"`
+	UpdateTime         time.Time      `json:"update_time"`
+	PackageType        string         `json:"package_type"`
+	Name               string         `json:"name"`
+	Version            string         `json:"version"`
+	DefaultPort        uint32         `json:"default_port"`
+	Os                 string         `json:"os"`
+	Arch               string         `json:"arch"`
+	PlatformFamily     string         `json:"platform_family"`
+	PlatformMajor      string         `json:"platform_major"`
+	PackageFormat      string         `json:"package_format"`
+	ServiceFileContent sql.NullString `json:"service_file_content"`
+	ServiceRunAsUser   string         `json:"service_run_as_user"`
 }
 
 func (q *Queries) CreateSoftwarePackage(ctx context.Context, arg CreateSoftwarePackageParams) (int64, error) {
@@ -1260,6 +1263,7 @@ func (q *Queries) CreateSoftwarePackage(ctx context.Context, arg CreateSoftwareP
 		arg.PlatformFamily,
 		arg.PlatformMajor,
 		arg.PackageFormat,
+		arg.ServiceFileContent,
 		arg.ServiceRunAsUser,
 	)
 	if err != nil {
@@ -1326,6 +1330,14 @@ func (q *Queries) DeleteAlertMedia(ctx context.Context, id int64) (sql.Result, e
 	return q.db.ExecContext(ctx, deleteAlertMedia, id)
 }
 
+const deleteElasticsearchCluster = `-- name: DeleteElasticsearchCluster :execresult
+DELETE FROM monitor_elasticsearch_cluster WHERE id = ?
+`
+
+func (q *Queries) DeleteElasticsearchCluster(ctx context.Context, id int64) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteElasticsearchCluster, id)
+}
+
 const deleteLogCollectionFilterRule = `-- name: DeleteLogCollectionFilterRule :execresult
 DELETE FROM monitor_log_collection_filter_rule WHERE id = ?
 `
@@ -1374,14 +1386,6 @@ DELETE FROM monitor_notification_policy WHERE id=?
 func (q *Queries) DeleteNotificationPolicy(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteNotificationPolicy, id)
 	return err
-}
-
-const deleteOpenSearchCluster = `-- name: DeleteOpenSearchCluster :execresult
-DELETE FROM monitor_opensearch_cluster WHERE id = ?
-`
-
-func (q *Queries) DeleteOpenSearchCluster(ctx context.Context, id int64) (sql.Result, error) {
-	return q.db.ExecContext(ctx, deleteOpenSearchCluster, id)
 }
 
 const deleteSoftwarePackage = `-- name: DeleteSoftwarePackage :exec
@@ -1458,26 +1462,31 @@ const finishLogTargetInstallState = `-- name: FinishLogTargetInstallState :execr
 UPDATE monitor_log_collection_target
 SET install_status=?, install_message=?,
     runtime_status=CASE WHEN ? = 1 THEN 'running' ELSE runtime_status END,
+    agent_installed=COALESCE(?, agent_installed),
     update_time=?
 WHERE id=? AND install_status='pending'
 `
 
 type FinishLogTargetInstallStateParams struct {
-	InstallStatus    string      `json:"install_status"`
-	InstallMessage   string      `json:"install_message"`
-	InstallSucceeded interface{} `json:"install_succeeded"`
-	UpdateTime       time.Time   `json:"update_time"`
-	ID               int64       `json:"id"`
+	InstallStatus    string       `json:"install_status"`
+	InstallMessage   string       `json:"install_message"`
+	InstallSucceeded interface{}  `json:"install_succeeded"`
+	AgentInstalled   sql.NullBool `json:"agent_installed"`
+	UpdateTime       time.Time    `json:"update_time"`
+	ID               int64        `json:"id"`
 }
 
 // 收尾：只有仍处于 pending 的任务才落终态。
 // install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
 // 而 PG 只合并成一个参数——同一个调用点在两侧就编译不过），用整数比较避开这个分歧。
+// agent_installed 是"Filebeat 二进制已装"的持久态，只有成功收尾才改写（install 成功 TRUE、
+// uninstall 成功 FALSE）；失败时传 NULL 保持原值，避免安装失败把已装状态抹掉。
 func (q *Queries) FinishLogTargetInstallState(ctx context.Context, arg FinishLogTargetInstallStateParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, finishLogTargetInstallState,
 		arg.InstallStatus,
 		arg.InstallMessage,
 		arg.InstallSucceeded,
+		arg.AgentInstalled,
 		arg.UpdateTime,
 		arg.ID,
 	)
@@ -1730,28 +1739,100 @@ func (q *Queries) GetConfigValueByKey(ctx context.Context, configKey string) (st
 	return value, err
 }
 
-const getDefaultEnabledOpenSearchCluster = `-- name: GetDefaultEnabledOpenSearchCluster :one
-SELECT hosts, username, password, COALESCE(index_prefix, 'logs')
-FROM monitor_opensearch_cluster
+const getDefaultEnabledElasticsearchCluster = `-- name: GetDefaultEnabledElasticsearchCluster :one
+SELECT hosts, username, password, COALESCE(index_prefix, 'logs'), verify_tls
+FROM monitor_elasticsearch_cluster
 WHERE enabled = TRUE
 ORDER BY is_default DESC, id LIMIT 1
 `
 
-type GetDefaultEnabledOpenSearchClusterRow struct {
+type GetDefaultEnabledElasticsearchClusterRow struct {
 	Hosts       string `json:"hosts"`
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	IndexPrefix string `json:"index_prefix"`
+	VerifyTls   bool   `json:"verify_tls"`
 }
 
-func (q *Queries) GetDefaultEnabledOpenSearchCluster(ctx context.Context) (GetDefaultEnabledOpenSearchClusterRow, error) {
-	row := q.db.QueryRowContext(ctx, getDefaultEnabledOpenSearchCluster)
-	var i GetDefaultEnabledOpenSearchClusterRow
+func (q *Queries) GetDefaultEnabledElasticsearchCluster(ctx context.Context) (GetDefaultEnabledElasticsearchClusterRow, error) {
+	row := q.db.QueryRowContext(ctx, getDefaultEnabledElasticsearchCluster)
+	var i GetDefaultEnabledElasticsearchClusterRow
 	err := row.Scan(
 		&i.Hosts,
 		&i.Username,
 		&i.Password,
 		&i.IndexPrefix,
+		&i.VerifyTls,
+	)
+	return i, err
+}
+
+const getElasticsearchClusterConnection = `-- name: GetElasticsearchClusterConnection :one
+SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
+FROM monitor_elasticsearch_cluster WHERE id = ?
+`
+
+type GetElasticsearchClusterConnectionRow struct {
+	ID             int64  `json:"id"`
+	Hosts          string `json:"hosts"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	VerifyTls      bool   `json:"verify_tls"`
+	CaCert         string `json:"ca_cert"`
+	IndexPrefix    string `json:"index_prefix"`
+	RequestTimeout uint32 `json:"request_timeout"`
+	Enabled        bool   `json:"enabled"`
+}
+
+func (q *Queries) GetElasticsearchClusterConnection(ctx context.Context, id int64) (GetElasticsearchClusterConnectionRow, error) {
+	row := q.db.QueryRowContext(ctx, getElasticsearchClusterConnection, id)
+	var i GetElasticsearchClusterConnectionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Hosts,
+		&i.Username,
+		&i.Password,
+		&i.VerifyTls,
+		&i.CaCert,
+		&i.IndexPrefix,
+		&i.RequestTimeout,
+		&i.Enabled,
+	)
+	return i, err
+}
+
+const getElasticsearchClusterTyped = `-- name: GetElasticsearchClusterTyped :one
+SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
+       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
+       remark, storage_sync_error, storage_sync_status, storage_sync_time
+FROM monitor_elasticsearch_cluster
+WHERE id = ?
+`
+
+func (q *Queries) GetElasticsearchClusterTyped(ctx context.Context, id int64) (MonitorElasticsearchCluster, error) {
+	row := q.db.QueryRowContext(ctx, getElasticsearchClusterTyped, id)
+	var i MonitorElasticsearchCluster
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Name,
+		&i.Hosts,
+		&i.Username,
+		&i.Password,
+		&i.VerifyTls,
+		&i.CaCert,
+		&i.IndexPrefix,
+		&i.RequestTimeout,
+		&i.Enabled,
+		&i.IsDefault,
+		&i.LastCheckTime,
+		&i.LastCheckSuccess,
+		&i.LastCheckMessage,
+		&i.Remark,
+		&i.StorageSyncError,
+		&i.StorageSyncStatus,
+		&i.StorageSyncTime,
 	)
 	return i, err
 }
@@ -1930,7 +2011,7 @@ func (q *Queries) GetLogCollectionFilterRule(ctx context.Context, id int64) (Mon
 
 const getLogProcessingRule = `-- name: GetLogProcessingRule :one
 SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
-       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+       continuation_pattern, sample_log, flush_timeout, pipeline_body, cluster_id, application_id
 FROM monitor_log_processing_rule
 WHERE id = ?
 `
@@ -1949,6 +2030,7 @@ func (q *Queries) GetLogProcessingRule(ctx context.Context, id int64) (MonitorLo
 		&i.MultilineEnabled,
 		&i.StartPattern,
 		&i.ContinuationPattern,
+		&i.SampleLog,
 		&i.FlushTimeout,
 		&i.PipelineBody,
 		&i.ClusterID,
@@ -1994,10 +2076,10 @@ func (q *Queries) GetLogTargetConfigFingerprint(ctx context.Context, id int64) (
 }
 
 const getLogTargetDefaultCluster = `-- name: GetLogTargetDefaultCluster :one
-SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password
+SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password, c.verify_tls
 FROM monitor_log_collection_target l
 JOIN assets_host h ON h.id = l.host_id
-JOIN monitor_opensearch_cluster c ON c.enabled = TRUE
+JOIN monitor_elasticsearch_cluster c ON c.enabled = TRUE
 WHERE l.id = ?
 ORDER BY c.is_default DESC, c.id LIMIT 1
 `
@@ -2007,9 +2089,10 @@ type GetLogTargetDefaultClusterRow struct {
 	Hosts        string `json:"hosts"`
 	Username     string `json:"username"`
 	Password     string `json:"password"`
+	VerifyTls    bool   `json:"verify_tls"`
 }
 
-// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名）。
+// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
 func (q *Queries) GetLogTargetDefaultCluster(ctx context.Context, id int64) (GetLogTargetDefaultClusterRow, error) {
 	row := q.db.QueryRowContext(ctx, getLogTargetDefaultCluster, id)
 	var i GetLogTargetDefaultClusterRow
@@ -2018,6 +2101,7 @@ func (q *Queries) GetLogTargetDefaultCluster(ctx context.Context, id int64) (Get
 		&i.Hosts,
 		&i.Username,
 		&i.Password,
+		&i.VerifyTls,
 	)
 	return i, err
 }
@@ -2046,7 +2130,7 @@ type GetLogTargetForActionRow struct {
 }
 
 // ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
-// 原实现有两处运行时拼 SQL：① Fluent Bit 软件包按"安装/卸载"拼 playbook 列名；
+// 原实现有两处运行时拼 SQL：① Filebeat 软件包按"安装/卸载"拼 playbook 列名；
 // ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
 // 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
 func (q *Queries) GetLogTargetForAction(ctx context.Context, id int64) (GetLogTargetForActionRow, error) {
@@ -2188,76 +2272,6 @@ func (q *Queries) GetOpenFiringAlertForUpdate(ctx context.Context, fingerprint s
 	row := q.db.QueryRowContext(ctx, getOpenFiringAlertForUpdate, fingerprint)
 	var i GetOpenFiringAlertForUpdateRow
 	err := row.Scan(&i.ID, &i.RuleGroup, &i.RuleSnapshot)
-	return i, err
-}
-
-const getOpenSearchClusterConnection = `-- name: GetOpenSearchClusterConnection :one
-SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
-FROM monitor_opensearch_cluster WHERE id = ?
-`
-
-type GetOpenSearchClusterConnectionRow struct {
-	ID             int64  `json:"id"`
-	Hosts          string `json:"hosts"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	VerifyTls      bool   `json:"verify_tls"`
-	CaCert         string `json:"ca_cert"`
-	IndexPrefix    string `json:"index_prefix"`
-	RequestTimeout uint32 `json:"request_timeout"`
-	Enabled        bool   `json:"enabled"`
-}
-
-func (q *Queries) GetOpenSearchClusterConnection(ctx context.Context, id int64) (GetOpenSearchClusterConnectionRow, error) {
-	row := q.db.QueryRowContext(ctx, getOpenSearchClusterConnection, id)
-	var i GetOpenSearchClusterConnectionRow
-	err := row.Scan(
-		&i.ID,
-		&i.Hosts,
-		&i.Username,
-		&i.Password,
-		&i.VerifyTls,
-		&i.CaCert,
-		&i.IndexPrefix,
-		&i.RequestTimeout,
-		&i.Enabled,
-	)
-	return i, err
-}
-
-const getOpenSearchClusterTyped = `-- name: GetOpenSearchClusterTyped :one
-SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
-       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
-       remark, storage_sync_error, storage_sync_status, storage_sync_time
-FROM monitor_opensearch_cluster
-WHERE id = ?
-`
-
-func (q *Queries) GetOpenSearchClusterTyped(ctx context.Context, id int64) (MonitorOpensearchCluster, error) {
-	row := q.db.QueryRowContext(ctx, getOpenSearchClusterTyped, id)
-	var i MonitorOpensearchCluster
-	err := row.Scan(
-		&i.ID,
-		&i.CreateTime,
-		&i.UpdateTime,
-		&i.Name,
-		&i.Hosts,
-		&i.Username,
-		&i.Password,
-		&i.VerifyTls,
-		&i.CaCert,
-		&i.IndexPrefix,
-		&i.RequestTimeout,
-		&i.Enabled,
-		&i.IsDefault,
-		&i.LastCheckTime,
-		&i.LastCheckSuccess,
-		&i.LastCheckMessage,
-		&i.Remark,
-		&i.StorageSyncError,
-		&i.StorageSyncStatus,
-		&i.StorageSyncTime,
-	)
 	return i, err
 }
 
@@ -3053,6 +3067,81 @@ func (q *Queries) ListAlertNotificationEvents(ctx context.Context, alertID int64
 	return items, nil
 }
 
+const listElasticsearchClustersTyped = `-- name: ListElasticsearchClustersTyped :many
+SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
+       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
+       remark, storage_sync_error, storage_sync_status, storage_sync_time
+FROM monitor_elasticsearch_cluster
+WHERE (enabled = ? OR ? IS NULL)
+  AND (is_default = ? OR ? IS NULL)
+  AND (name LIKE ? OR hosts LIKE ? OR remark LIKE ? OR ? IS NULL)
+ORDER BY is_default DESC, id ASC
+LIMIT ? OFFSET ?
+`
+
+type ListElasticsearchClustersTypedParams struct {
+	Enabled   sql.NullBool   `json:"enabled"`
+	IsDefault sql.NullBool   `json:"is_default"`
+	Pattern   sql.NullString `json:"pattern"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
+}
+
+func (q *Queries) ListElasticsearchClustersTyped(ctx context.Context, arg ListElasticsearchClustersTypedParams) ([]MonitorElasticsearchCluster, error) {
+	rows, err := q.db.QueryContext(ctx, listElasticsearchClustersTyped,
+		arg.Enabled,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.IsDefault,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Pattern,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MonitorElasticsearchCluster{}
+	for rows.Next() {
+		var i MonitorElasticsearchCluster
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreateTime,
+			&i.UpdateTime,
+			&i.Name,
+			&i.Hosts,
+			&i.Username,
+			&i.Password,
+			&i.VerifyTls,
+			&i.CaCert,
+			&i.IndexPrefix,
+			&i.RequestTimeout,
+			&i.Enabled,
+			&i.IsDefault,
+			&i.LastCheckTime,
+			&i.LastCheckSuccess,
+			&i.LastCheckMessage,
+			&i.Remark,
+			&i.StorageSyncError,
+			&i.StorageSyncStatus,
+			&i.StorageSyncTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledAlertMediaByIDs = `-- name: ListEnabledAlertMediaByIDs :many
 SELECT id, name, media_type, config FROM monitor_alert_media
 WHERE enabled = TRUE AND id IN (/*SLICE:media_ids*/?)
@@ -3177,12 +3266,12 @@ func (q *Queries) ListEnabledBusinessSystems(ctx context.Context) ([]ListEnabled
 	return items, nil
 }
 
-const listEnabledOpenSearchClusterIDs = `-- name: ListEnabledOpenSearchClusterIDs :many
-SELECT id FROM monitor_opensearch_cluster WHERE enabled = TRUE
+const listEnabledElasticsearchClusterIDs = `-- name: ListEnabledElasticsearchClusterIDs :many
+SELECT id FROM monitor_elasticsearch_cluster WHERE enabled = TRUE
 `
 
-func (q *Queries) ListEnabledOpenSearchClusterIDs(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.QueryContext(ctx, listEnabledOpenSearchClusterIDs)
+func (q *Queries) ListEnabledElasticsearchClusterIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listEnabledElasticsearchClusterIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -3250,7 +3339,7 @@ type ListEnabledRetentionTiersRow struct {
 	RolloverMinIndexAge string  `json:"rollover_min_index_age"`
 }
 
-// ---- 日志存储（OpenSearch 集群）与保留档位 ----
+// ---- 日志存储（Elasticsearch 集群）与保留档位 ----
 func (q *Queries) ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error) {
 	rows, err := q.db.QueryContext(ctx, listEnabledRetentionTiers)
 	if err != nil {
@@ -3470,7 +3559,7 @@ SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_t
        COALESCE(h.ip, ih.host_ip_snapshot) AS host_ip,
        COALESCE(mt.exporter_type, ih.exporter_type_snapshot) AS target_exporter_type,
        COALESCE(ih.target_id, ih.log_collection_target_id) AS managed_target_id,
-       CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'fluent_bit' END AS target_type
+       CASE WHEN ih.log_collection_target_id IS NULL THEN 'exporter' ELSE 'filebeat' END AS target_type
 FROM monitor_target_install_history ih
 LEFT JOIN assets_host h ON h.id = ih.host_id
 LEFT JOIN monitor_target mt ON mt.id = ih.target_id
@@ -3669,40 +3758,39 @@ func (q *Queries) ListInstallPackagesForTarget(ctx context.Context, name string)
 	return items, nil
 }
 
-const listInstallableFluentBitPackages = `-- name: ListInstallableFluentBitPackages :many
-SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
-       COALESCE(sha256,''),install_playbook_template_id
+const listInstallableFilebeatPackages = `-- name: ListInstallableFilebeatPackages :many
+SELECT id,COALESCE(arch,''),COALESCE(file,''),COALESCE(sha256,''),COALESCE(service_file_content,''),install_playbook_template_id
 FROM monitor_software_package
-WHERE package_type='fluent_bit' AND enabled=TRUE AND install_playbook_template_id IS NOT NULL
+WHERE package_type='filebeat' AND package_format='tar.gz' AND enabled=TRUE
 ORDER BY id
 `
 
-type ListInstallableFluentBitPackagesRow struct {
+type ListInstallableFilebeatPackagesRow struct {
 	ID                        int64         `json:"id"`
-	PlatformFamily            string        `json:"platform_family"`
-	PlatformMajor             string        `json:"platform_major"`
-	PackageFormat             string        `json:"package_format"`
+	Arch                      string        `json:"arch"`
 	File                      string        `json:"file"`
 	Sha256                    string        `json:"sha256"`
+	ServiceFileContent        string        `json:"service_file_content"`
 	InstallPlaybookTemplateID sql.NullInt64 `json:"install_playbook_template_id"`
 }
 
-func (q *Queries) ListInstallableFluentBitPackages(ctx context.Context) ([]ListInstallableFluentBitPackagesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listInstallableFluentBitPackages)
+// Filebeat 只用官方便携 tar.gz，按 CPU 架构匹配，不区分发行版/主版本/包格式。
+// playbook 是否配置交给应用层判断，便于区分"没有包"与"包没配 playbook"。
+func (q *Queries) ListInstallableFilebeatPackages(ctx context.Context) ([]ListInstallableFilebeatPackagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listInstallableFilebeatPackages)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListInstallableFluentBitPackagesRow{}
+	items := []ListInstallableFilebeatPackagesRow{}
 	for rows.Next() {
-		var i ListInstallableFluentBitPackagesRow
+		var i ListInstallableFilebeatPackagesRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.PlatformFamily,
-			&i.PlatformMajor,
-			&i.PackageFormat,
+			&i.Arch,
 			&i.File,
 			&i.Sha256,
+			&i.ServiceFileContent,
 			&i.InstallPlaybookTemplateID,
 		); err != nil {
 			return nil, err
@@ -3823,7 +3911,7 @@ func (q *Queries) ListLogCollectionFilterRules(ctx context.Context, arg ListLogC
 
 const listLogProcessingRules = `-- name: ListLogProcessingRules :many
 SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
-       continuation_pattern, flush_timeout, pipeline_body, cluster_id, application_id
+       continuation_pattern, sample_log, flush_timeout, pipeline_body, cluster_id, application_id
 FROM monitor_log_processing_rule
 WHERE (cluster_id = ? OR ? IS NULL)
   AND (application_id = ? OR ? IS NULL)
@@ -3878,6 +3966,7 @@ func (q *Queries) ListLogProcessingRules(ctx context.Context, arg ListLogProcess
 			&i.MultilineEnabled,
 			&i.StartPattern,
 			&i.ContinuationPattern,
+			&i.SampleLog,
 			&i.FlushTimeout,
 			&i.PipelineBody,
 			&i.ClusterID,
@@ -4110,14 +4199,14 @@ ORDER BY h.instance_name, h.id LIMIT ? OFFSET ?
 `
 
 type ListMonitorHostsParams struct {
-	SearchPattern sql.NullString  `json:"search_pattern"`
-	GroupFilter   interface{}     `json:"group_filter"`
-	GroupIds      []sql.NullInt64 `json:"group_ids"`
-	ManagedFilter interface{}     `json:"managed_filter"`
-	ExporterType  string          `json:"exporter_type"`
-	FluentFilter  interface{}     `json:"fluent_filter"`
-	Limit         int32           `json:"limit"`
-	Offset        int32           `json:"offset"`
+	SearchPattern  sql.NullString  `json:"search_pattern"`
+	GroupFilter    interface{}     `json:"group_filter"`
+	GroupIds       []sql.NullInt64 `json:"group_ids"`
+	ManagedFilter  interface{}     `json:"managed_filter"`
+	ExporterType   string          `json:"exporter_type"`
+	FilebeatFilter interface{}     `json:"filebeat_filter"`
+	Limit          int32           `json:"limit"`
+	Offset         int32           `json:"offset"`
 }
 
 type ListMonitorHostsRow struct {
@@ -4158,7 +4247,7 @@ func (q *Queries) ListMonitorHosts(ctx context.Context, arg ListMonitorHostsPara
 	queryParams = append(queryParams, arg.ExporterType)
 	queryParams = append(queryParams, arg.ExporterType)
 	queryParams = append(queryParams, arg.ExporterType)
-	queryParams = append(queryParams, arg.FluentFilter)
+	queryParams = append(queryParams, arg.FilebeatFilter)
 	queryParams = append(queryParams, arg.Limit)
 	queryParams = append(queryParams, arg.Offset)
 	rows, err := q.db.QueryContext(ctx, query, queryParams...)
@@ -4423,81 +4512,6 @@ func (q *Queries) ListNotificationPolicyNodes(ctx context.Context) ([]ListNotifi
 	return items, nil
 }
 
-const listOpenSearchClustersTyped = `-- name: ListOpenSearchClustersTyped :many
-SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
-       request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,
-       remark, storage_sync_error, storage_sync_status, storage_sync_time
-FROM monitor_opensearch_cluster
-WHERE (enabled = ? OR ? IS NULL)
-  AND (is_default = ? OR ? IS NULL)
-  AND (name LIKE ? OR hosts LIKE ? OR remark LIKE ? OR ? IS NULL)
-ORDER BY is_default DESC, id ASC
-LIMIT ? OFFSET ?
-`
-
-type ListOpenSearchClustersTypedParams struct {
-	Enabled   sql.NullBool   `json:"enabled"`
-	IsDefault sql.NullBool   `json:"is_default"`
-	Pattern   sql.NullString `json:"pattern"`
-	Limit     int32          `json:"limit"`
-	Offset    int32          `json:"offset"`
-}
-
-func (q *Queries) ListOpenSearchClustersTyped(ctx context.Context, arg ListOpenSearchClustersTypedParams) ([]MonitorOpensearchCluster, error) {
-	rows, err := q.db.QueryContext(ctx, listOpenSearchClustersTyped,
-		arg.Enabled,
-		arg.Enabled,
-		arg.IsDefault,
-		arg.IsDefault,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Pattern,
-		arg.Limit,
-		arg.Offset,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []MonitorOpensearchCluster{}
-	for rows.Next() {
-		var i MonitorOpensearchCluster
-		if err := rows.Scan(
-			&i.ID,
-			&i.CreateTime,
-			&i.UpdateTime,
-			&i.Name,
-			&i.Hosts,
-			&i.Username,
-			&i.Password,
-			&i.VerifyTls,
-			&i.CaCert,
-			&i.IndexPrefix,
-			&i.RequestTimeout,
-			&i.Enabled,
-			&i.IsDefault,
-			&i.LastCheckTime,
-			&i.LastCheckSuccess,
-			&i.LastCheckMessage,
-			&i.Remark,
-			&i.StorageSyncError,
-			&i.StorageSyncStatus,
-			&i.StorageSyncTime,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPackageChecksums = `-- name: ListPackageChecksums :many
 SELECT os,arch,sha256 FROM monitor_software_package
 WHERE package_type='exporter' AND name=? AND version=? AND enabled=TRUE AND sha256<>''
@@ -4539,13 +4553,14 @@ func (q *Queries) ListPackageChecksums(ctx context.Context, arg ListPackageCheck
 
 const listProcessingRulesByCluster = `-- name: ListProcessingRulesByCluster :many
 
-SELECT name, pipeline_body FROM monitor_log_processing_rule
+SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
 WHERE cluster_id = ? ORDER BY name
 `
 
 type ListProcessingRulesByClusterRow struct {
-	Name         string          `json:"name"`
-	PipelineBody json.RawMessage `json:"pipeline_body"`
+	Name          string          `json:"name"`
+	PipelineBody  json.RawMessage `json:"pipeline_body"`
+	ApplicationID sql.NullInt64   `json:"application_id"`
 }
 
 // ---- 日志链路对账与数据流水位（只读）----
@@ -4558,7 +4573,7 @@ func (q *Queries) ListProcessingRulesByCluster(ctx context.Context, clusterID in
 	items := []ListProcessingRulesByClusterRow{}
 	for rows.Next() {
 		var i ListProcessingRulesByClusterRow
-		if err := rows.Scan(&i.Name, &i.PipelineBody); err != nil {
+		if err := rows.Scan(&i.Name, &i.PipelineBody, &i.ApplicationID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -4793,40 +4808,37 @@ func (q *Queries) ListStaleFiringAlerts(ctx context.Context, staleBefore time.Ti
 	return items, nil
 }
 
-const listUninstallableFluentBitPackages = `-- name: ListUninstallableFluentBitPackages :many
-SELECT id,COALESCE(platform_family,''),COALESCE(platform_major,''),package_format,COALESCE(file,''),
-       COALESCE(sha256,''),uninstall_playbook_template_id
+const listUninstallableFilebeatPackages = `-- name: ListUninstallableFilebeatPackages :many
+SELECT id,COALESCE(arch,''),COALESCE(file,''),COALESCE(sha256,''),COALESCE(service_file_content,''),uninstall_playbook_template_id
 FROM monitor_software_package
-WHERE package_type='fluent_bit' AND enabled=TRUE AND uninstall_playbook_template_id IS NOT NULL
+WHERE package_type='filebeat' AND package_format='tar.gz' AND enabled=TRUE
 ORDER BY id
 `
 
-type ListUninstallableFluentBitPackagesRow struct {
+type ListUninstallableFilebeatPackagesRow struct {
 	ID                          int64         `json:"id"`
-	PlatformFamily              string        `json:"platform_family"`
-	PlatformMajor               string        `json:"platform_major"`
-	PackageFormat               string        `json:"package_format"`
+	Arch                        string        `json:"arch"`
 	File                        string        `json:"file"`
 	Sha256                      string        `json:"sha256"`
+	ServiceFileContent          string        `json:"service_file_content"`
 	UninstallPlaybookTemplateID sql.NullInt64 `json:"uninstall_playbook_template_id"`
 }
 
-func (q *Queries) ListUninstallableFluentBitPackages(ctx context.Context) ([]ListUninstallableFluentBitPackagesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listUninstallableFluentBitPackages)
+func (q *Queries) ListUninstallableFilebeatPackages(ctx context.Context) ([]ListUninstallableFilebeatPackagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUninstallableFilebeatPackages)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListUninstallableFluentBitPackagesRow{}
+	items := []ListUninstallableFilebeatPackagesRow{}
 	for rows.Next() {
-		var i ListUninstallableFluentBitPackagesRow
+		var i ListUninstallableFilebeatPackagesRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.PlatformFamily,
-			&i.PlatformMajor,
-			&i.PackageFormat,
+			&i.Arch,
 			&i.File,
 			&i.Sha256,
+			&i.ServiceFileContent,
 			&i.UninstallPlaybookTemplateID,
 		); err != nil {
 			return nil, err
@@ -4974,7 +4986,7 @@ func (q *Queries) MarkAlertNotificationEventSuccess(ctx context.Context, arg Mar
 }
 
 const markClusterStorageSyncFailed = `-- name: MarkClusterStorageSyncFailed :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='failed', storage_sync_error=?,
     storage_sync_time=?, update_time=?
 WHERE id = ?
@@ -4998,7 +5010,7 @@ func (q *Queries) MarkClusterStorageSyncFailed(ctx context.Context, arg MarkClus
 }
 
 const markClusterStorageSyncPending = `-- name: MarkClusterStorageSyncPending :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='pending', storage_sync_error='', storage_sync_time=NULL, update_time=?
 WHERE id = ?
 `
@@ -5008,14 +5020,14 @@ type MarkClusterStorageSyncPendingParams struct {
 	ID         int64     `json:"id"`
 }
 
-// 存储同步（index template + ISM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
+// 存储同步（index template + ILM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
 func (q *Queries) MarkClusterStorageSyncPending(ctx context.Context, arg MarkClusterStorageSyncPendingParams) error {
 	_, err := q.db.ExecContext(ctx, markClusterStorageSyncPending, arg.UpdateTime, arg.ID)
 	return err
 }
 
 const markClusterStorageSyncSuccess = `-- name: MarkClusterStorageSyncSuccess :exec
-UPDATE monitor_opensearch_cluster
+UPDATE monitor_elasticsearch_cluster
 SET storage_sync_status='success', storage_sync_error='',
     storage_sync_time=?, update_time=?
 WHERE id = ?
@@ -5029,6 +5041,56 @@ type MarkClusterStorageSyncSuccessParams struct {
 
 func (q *Queries) MarkClusterStorageSyncSuccess(ctx context.Context, arg MarkClusterStorageSyncSuccessParams) error {
 	_, err := q.db.ExecContext(ctx, markClusterStorageSyncSuccess, arg.StorageSyncTime, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const markElasticsearchClusterCheckFailed = `-- name: MarkElasticsearchClusterCheckFailed :exec
+UPDATE monitor_elasticsearch_cluster
+SET last_check_time=?, last_check_success=FALSE,
+    last_check_message=?, update_time=?
+WHERE id = ?
+`
+
+type MarkElasticsearchClusterCheckFailedParams struct {
+	LastCheckTime    sql.NullTime `json:"last_check_time"`
+	LastCheckMessage string       `json:"last_check_message"`
+	UpdateTime       time.Time    `json:"update_time"`
+	ID               int64        `json:"id"`
+}
+
+// openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
+// 这里只更新探测结果，其余列不动。
+func (q *Queries) MarkElasticsearchClusterCheckFailed(ctx context.Context, arg MarkElasticsearchClusterCheckFailedParams) error {
+	_, err := q.db.ExecContext(ctx, markElasticsearchClusterCheckFailed,
+		arg.LastCheckTime,
+		arg.LastCheckMessage,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
+const markElasticsearchClusterCheckSuccess = `-- name: MarkElasticsearchClusterCheckSuccess :exec
+UPDATE monitor_elasticsearch_cluster
+SET last_check_time=?, last_check_success=TRUE,
+    last_check_message=?, update_time=?
+WHERE id = ?
+`
+
+type MarkElasticsearchClusterCheckSuccessParams struct {
+	LastCheckTime    sql.NullTime `json:"last_check_time"`
+	LastCheckMessage string       `json:"last_check_message"`
+	UpdateTime       time.Time    `json:"update_time"`
+	ID               int64        `json:"id"`
+}
+
+func (q *Queries) MarkElasticsearchClusterCheckSuccess(ctx context.Context, arg MarkElasticsearchClusterCheckSuccessParams) error {
+	_, err := q.db.ExecContext(ctx, markElasticsearchClusterCheckSuccess,
+		arg.LastCheckTime,
+		arg.LastCheckMessage,
+		arg.UpdateTime,
+		arg.ID,
+	)
 	return err
 }
 
@@ -5122,56 +5184,6 @@ type MarkLogTargetInstallPendingParams struct {
 
 func (q *Queries) MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error {
 	_, err := q.db.ExecContext(ctx, markLogTargetInstallPending, arg.UpdateTime, arg.ID)
-	return err
-}
-
-const markOpenSearchClusterCheckFailed = `-- name: MarkOpenSearchClusterCheckFailed :exec
-UPDATE monitor_opensearch_cluster
-SET last_check_time=?, last_check_success=FALSE,
-    last_check_message=?, update_time=?
-WHERE id = ?
-`
-
-type MarkOpenSearchClusterCheckFailedParams struct {
-	LastCheckTime    sql.NullTime `json:"last_check_time"`
-	LastCheckMessage string       `json:"last_check_message"`
-	UpdateTime       time.Time    `json:"update_time"`
-	ID               int64        `json:"id"`
-}
-
-// openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
-// 这里只更新探测结果，其余列不动。
-func (q *Queries) MarkOpenSearchClusterCheckFailed(ctx context.Context, arg MarkOpenSearchClusterCheckFailedParams) error {
-	_, err := q.db.ExecContext(ctx, markOpenSearchClusterCheckFailed,
-		arg.LastCheckTime,
-		arg.LastCheckMessage,
-		arg.UpdateTime,
-		arg.ID,
-	)
-	return err
-}
-
-const markOpenSearchClusterCheckSuccess = `-- name: MarkOpenSearchClusterCheckSuccess :exec
-UPDATE monitor_opensearch_cluster
-SET last_check_time=?, last_check_success=TRUE,
-    last_check_message=?, update_time=?
-WHERE id = ?
-`
-
-type MarkOpenSearchClusterCheckSuccessParams struct {
-	LastCheckTime    sql.NullTime `json:"last_check_time"`
-	LastCheckMessage string       `json:"last_check_message"`
-	UpdateTime       time.Time    `json:"update_time"`
-	ID               int64        `json:"id"`
-}
-
-func (q *Queries) MarkOpenSearchClusterCheckSuccess(ctx context.Context, arg MarkOpenSearchClusterCheckSuccessParams) error {
-	_, err := q.db.ExecContext(ctx, markOpenSearchClusterCheckSuccess,
-		arg.LastCheckTime,
-		arg.LastCheckMessage,
-		arg.UpdateTime,
-		arg.ID,
-	)
 	return err
 }
 
@@ -5276,6 +5288,23 @@ func (q *Queries) ResolveStaleAlert(ctx context.Context, arg ResolveStaleAlertPa
 	return result.RowsAffected()
 }
 
+const setLogTargetLastError = `-- name: SetLogTargetLastError :exec
+UPDATE monitor_log_collection_target
+SET last_error=?, update_time=?
+WHERE id=?
+`
+
+type SetLogTargetLastErrorParams struct {
+	LastError  string    `json:"last_error"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) SetLogTargetLastError(ctx context.Context, arg SetLogTargetLastErrorParams) error {
+	_, err := q.db.ExecContext(ctx, setLogTargetLastError, arg.LastError, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const setLogTargetRuntimeStatus = `-- name: SetLogTargetRuntimeStatus :exec
 UPDATE monitor_log_collection_target
 SET runtime_status=?, update_time=?
@@ -5304,6 +5333,24 @@ type SetSoftwarePackageInstallTemplateParams struct {
 
 func (q *Queries) SetSoftwarePackageInstallTemplate(ctx context.Context, arg SetSoftwarePackageInstallTemplateParams) error {
 	_, err := q.db.ExecContext(ctx, setSoftwarePackageInstallTemplate, arg.TemplateID, arg.ID)
+	return err
+}
+
+const setSoftwarePackageServiceFileContent = `-- name: SetSoftwarePackageServiceFileContent :exec
+UPDATE monitor_software_package
+SET service_file_content=?, update_time=?
+WHERE id=?
+`
+
+type SetSoftwarePackageServiceFileContentParams struct {
+	ServiceFileContent string    `json:"service_file_content"`
+	UpdateTime         time.Time `json:"update_time"`
+	ID                 int64     `json:"id"`
+}
+
+// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
+func (q *Queries) SetSoftwarePackageServiceFileContent(ctx context.Context, arg SetSoftwarePackageServiceFileContentParams) error {
+	_, err := q.db.ExecContext(ctx, setSoftwarePackageServiceFileContent, arg.ServiceFileContent, arg.UpdateTime, arg.ID)
 	return err
 }
 
@@ -5407,6 +5454,54 @@ func (q *Queries) UpdateAlertMedia(ctx context.Context, arg UpdateAlertMediaPara
 	return result.RowsAffected()
 }
 
+const updateElasticsearchCluster = `-- name: UpdateElasticsearchCluster :execrows
+UPDATE monitor_elasticsearch_cluster
+SET update_time=?,name=?,hosts=?,username=?,
+    password=?,verify_tls=?,ca_cert=?,
+    index_prefix=?,request_timeout=?,enabled=?,
+    is_default=?,remark=?
+WHERE id=?
+`
+
+type UpdateElasticsearchClusterParams struct {
+	UpdateTime     time.Time `json:"update_time"`
+	Name           string    `json:"name"`
+	Hosts          string    `json:"hosts"`
+	Username       string    `json:"username"`
+	Password       string    `json:"password"`
+	VerifyTls      bool      `json:"verify_tls"`
+	CaCert         string    `json:"ca_cert"`
+	IndexPrefix    string    `json:"index_prefix"`
+	RequestTimeout uint32    `json:"request_timeout"`
+	Enabled        bool      `json:"enabled"`
+	IsDefault      bool      `json:"is_default"`
+	Remark         string    `json:"remark"`
+	ID             int64     `json:"id"`
+}
+
+// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 elasticsearch_config.go）。
+func (q *Queries) UpdateElasticsearchCluster(ctx context.Context, arg UpdateElasticsearchClusterParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateElasticsearchCluster,
+		arg.UpdateTime,
+		arg.Name,
+		arg.Hosts,
+		arg.Username,
+		arg.Password,
+		arg.VerifyTls,
+		arg.CaCert,
+		arg.IndexPrefix,
+		arg.RequestTimeout,
+		arg.Enabled,
+		arg.IsDefault,
+		arg.Remark,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateLogCollectionFilterRule = `-- name: UpdateLogCollectionFilterRule :execrows
 UPDATE monitor_log_collection_filter_rule
 SET update_time=?,remark=?,name=?,description=?,
@@ -5447,6 +5542,7 @@ UPDATE monitor_log_processing_rule
 SET update_time=?,remark=?,name=?,description=?,
     input_format=?,multiline_enabled=?,
     start_pattern=?,continuation_pattern=?,
+    sample_log=?,
     flush_timeout=?,pipeline_body=?,
     cluster_id=?,application_id=?
 WHERE id=?
@@ -5461,6 +5557,7 @@ type UpdateLogProcessingRuleParams struct {
 	MultilineEnabled    bool            `json:"multiline_enabled"`
 	StartPattern        string          `json:"start_pattern"`
 	ContinuationPattern string          `json:"continuation_pattern"`
+	SampleLog           string          `json:"sample_log"`
 	FlushTimeout        uint32          `json:"flush_timeout"`
 	PipelineBody        json.RawMessage `json:"pipeline_body"`
 	ClusterID           int64           `json:"cluster_id"`
@@ -5478,6 +5575,7 @@ func (q *Queries) UpdateLogProcessingRule(ctx context.Context, arg UpdateLogProc
 		arg.MultilineEnabled,
 		arg.StartPattern,
 		arg.ContinuationPattern,
+		arg.SampleLog,
 		arg.FlushTimeout,
 		arg.PipelineBody,
 		arg.ClusterID,
@@ -5601,54 +5699,6 @@ func (q *Queries) UpdateNotificationPolicy(ctx context.Context, arg UpdateNotifi
 	return err
 }
 
-const updateOpenSearchCluster = `-- name: UpdateOpenSearchCluster :execrows
-UPDATE monitor_opensearch_cluster
-SET update_time=?,name=?,hosts=?,username=?,
-    password=?,verify_tls=?,ca_cert=?,
-    index_prefix=?,request_timeout=?,enabled=?,
-    is_default=?,remark=?
-WHERE id=?
-`
-
-type UpdateOpenSearchClusterParams struct {
-	UpdateTime     time.Time `json:"update_time"`
-	Name           string    `json:"name"`
-	Hosts          string    `json:"hosts"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	VerifyTls      bool      `json:"verify_tls"`
-	CaCert         string    `json:"ca_cert"`
-	IndexPrefix    string    `json:"index_prefix"`
-	RequestTimeout uint32    `json:"request_timeout"`
-	Enabled        bool      `json:"enabled"`
-	IsDefault      bool      `json:"is_default"`
-	Remark         string    `json:"remark"`
-	ID             int64     `json:"id"`
-}
-
-// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 opensearch_config.go）。
-func (q *Queries) UpdateOpenSearchCluster(ctx context.Context, arg UpdateOpenSearchClusterParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateOpenSearchCluster,
-		arg.UpdateTime,
-		arg.Name,
-		arg.Hosts,
-		arg.Username,
-		arg.Password,
-		arg.VerifyTls,
-		arg.CaCert,
-		arg.IndexPrefix,
-		arg.RequestTimeout,
-		arg.Enabled,
-		arg.IsDefault,
-		arg.Remark,
-		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const updateSoftwarePackageConfig = `-- name: UpdateSoftwarePackageConfig :exec
 UPDATE monitor_software_package
 SET default_port=?,
@@ -5674,7 +5724,6 @@ type UpdateSoftwarePackageConfigParams struct {
 	ID                 int64          `json:"id"`
 }
 
-// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
 func (q *Queries) UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error {
 	_, err := q.db.ExecContext(ctx, updateSoftwarePackageConfig,
 		arg.DefaultPort,

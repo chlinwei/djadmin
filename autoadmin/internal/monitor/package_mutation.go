@@ -32,6 +32,74 @@ type packageMutationInput struct {
 	PlatformMajorUpdate                          *string `json:"platform_major"`
 }
 
+// backfillFilebeatPackagePlaybooks 启动时把历史 Filebeat 软件包缺失的安装/卸载 Playbook
+// 用内置默认内容补齐到软件包配置里（老包建的时候还没有默认 playbook 逻辑）。
+// best-effort：失败只跳过，不影响启动；下次编辑保存时仍会补。
+func (handler *Handler) backfillFilebeatPackagePlaybooks() {
+	if handler.db == nil {
+		return
+	}
+	rows, err := handler.db.Query(`SELECT id, name, COALESCE(service_file_content,''), install_playbook_template_id, uninstall_playbook_template_id FROM monitor_software_package WHERE package_type='filebeat'`)
+	if err != nil {
+		return
+	}
+	type filebeatPackageRow struct {
+		id                 int64
+		name               string
+		serviceFileContent string
+		install, uninstall sql.NullInt64
+	}
+	items := []filebeatPackageRow{}
+	for rows.Next() {
+		var item filebeatPackageRow
+		if err = rows.Scan(&item.id, &item.name, &item.serviceFileContent, &item.install, &item.uninstall); err != nil {
+			rows.Close()
+			return
+		}
+		items = append(items, item)
+	}
+	rows.Close()
+
+	ginContext, _ := gin.CreateTestContext(nil)
+	for _, item := range items {
+		if item.install.Valid && item.uninstall.Valid && strings.TrimSpace(item.serviceFileContent) != "" {
+			continue
+		}
+		transaction, err := handler.db.BeginTx(ginContext, nil)
+		if err != nil {
+			return
+		}
+		queries := db.New(transaction)
+		target := softwarePackage{ID: item.id, PackageType: "filebeat", Name: item.name, InstallTemplateID: item.install, UninstallTemplateID: item.uninstall}
+		ok := true
+		if !item.install.Valid {
+			content := builtinFilebeatInstallPlaybookContent()
+			if err = syncExistingPackagePlaybook(ginContext, transaction, target, "install", item.install, &content); err != nil {
+				ok = false
+			}
+		}
+		if ok && !item.uninstall.Valid {
+			content := builtinFilebeatUninstallPlaybookContent()
+			if err = syncExistingPackagePlaybook(ginContext, transaction, target, "uninstall", item.uninstall, &content); err != nil {
+				ok = false
+			}
+		}
+		if ok && strings.TrimSpace(item.serviceFileContent) == "" {
+			if err = queries.SetSoftwarePackageServiceFileContent(ginContext, db.SetSoftwarePackageServiceFileContentParams{
+				ServiceFileContent: builtinFilebeatServiceUnitContent(),
+				UpdateTime:         time.Now().UTC(), ID: item.id,
+			}); err != nil {
+				ok = false
+			}
+		}
+		if ok {
+			_ = transaction.Commit()
+		} else {
+			_ = transaction.Rollback()
+		}
+	}
+}
+
 func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
 	var input struct {
 		PackageType      string `json:"package_type"`
@@ -55,28 +123,66 @@ func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	id, err := db.New(handler.db).CreateSoftwarePackage(context, db.CreateSoftwarePackageParams{
+	transaction, err := handler.db.BeginTx(context, nil)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	defer transaction.Rollback()
+	serviceFileContent := sql.NullString{}
+	if item.PackageType == "filebeat" {
+		serviceFileContent = sql.NullString{String: builtinFilebeatServiceUnitContent(), Valid: true}
+	}
+	id, err := db.New(transaction).CreateSoftwarePackage(context, db.CreateSoftwarePackageParams{
 		CreateTime: now, UpdateTime: now, PackageType: item.PackageType, Name: item.Name,
 		Version: item.Version, DefaultPort: uint32(item.DefaultPort), Os: item.OS, Arch: item.Arch,
 		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor,
 		PackageFormat: item.PackageFormat, ServiceRunAsUser: item.ServiceRunAsUser,
+		ServiceFileContent: serviceFileContent,
 	})
 	if err != nil {
 		response.BusinessError(context, 400, "invalid software package configuration", gin.H{"detail": err.Error()})
+		return
+	}
+	// Filebeat 创建时就把默认安装/卸载 Playbook 写进软件包配置，避免"能建包但没 playbook"。
+	// 用户之后可在编辑弹窗里改这两份内容，改了就沿用用户的。
+	if item.PackageType == "filebeat" {
+		created := item
+		created.ID = id
+		installContent := builtinFilebeatInstallPlaybookContent()
+		uninstallContent := builtinFilebeatUninstallPlaybookContent()
+		if err = syncExistingPackagePlaybook(context, transaction, created, "install", sql.NullInt64{}, &installContent); err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+		if err = syncExistingPackagePlaybook(context, transaction, created, "uninstall", sql.NullInt64{}, &uninstallContent); err != nil {
+			response.BusinessError(context, 400, err.Error(), nil)
+			return
+		}
+	}
+	if err = transaction.Commit(); err != nil {
+		response.Error(context, err)
 		return
 	}
 	handler.respondSoftwarePackage(context, id)
 }
 
 func validatePackageMetadata(item softwarePackage) error {
-	if item.PackageType != "exporter" && item.PackageType != "fluent_bit" {
+	if item.PackageType != "exporter" && item.PackageType != "filebeat" {
 		return fmt.Errorf("invalid package_type")
 	}
 	if item.Name == "" || item.Version == "" || item.ServiceRunAsUser == "" || item.OS != "linux" || (item.Arch != "amd64" && item.Arch != "arm64") || item.DefaultPort < 1 || item.DefaultPort > 65535 {
 		return fmt.Errorf("invalid required fields, architecture, or default port")
 	}
-	if item.PackageType == "fluent_bit" && item.Name != "fluent-bit" {
-		return fmt.Errorf("Fluent Bit package name must be fluent-bit")
+	// Filebeat 只用官方便携 tar.gz（单静态二进制、自带依赖），只关心架构，不区分发行版/主版本。
+	if item.PackageType == "filebeat" {
+		if item.Name != "filebeat" {
+			return fmt.Errorf("Filebeat package name must be filebeat")
+		}
+		if item.PackageFormat != "tar.gz" || item.PlatformFamily != "any" || item.PlatformMajor != "" {
+			return fmt.Errorf("Filebeat 只支持 tar.gz(any) 便携包")
+		}
+		return nil
 	}
 	if item.PackageFormat == "tar.gz" && item.PlatformFamily == "any" && item.PlatformMajor == "" {
 		return nil
@@ -151,18 +257,36 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 		}
 	}
 	// 三项 COALESCE：传 NULL 表示保留原值（原实现靠 `COALESCE(?,col)` 表达同一语义）。
+	// Filebeat 的 systemd unit 也要落在软件包配置里：为空则补默认（可在编辑弹窗改）。
+	serviceFileContent := nullIfEmpty(input.ServiceFileContent)
+	if item.PackageType == "filebeat" && !serviceFileContent.Valid {
+		serviceFileContent = sql.NullString{String: builtinFilebeatServiceUnitContent(), Valid: true}
+	}
 	err = db.New(transaction).UpdateSoftwarePackageConfig(context, db.UpdateSoftwarePackageConfigParams{
-		DefaultPort: uint32(item.DefaultPort), ServiceFileContent: nullIfEmpty(input.ServiceFileContent),
+		DefaultPort: uint32(item.DefaultPort), ServiceFileContent: serviceFileContent,
 		ServiceRunAsUser: item.ServiceRunAsUser, ServiceRunAsGroup: nullIfEmpty(input.ServiceRunAsGroup),
 		WorkDirectory: nullIfEmpty(input.WorkDirectory), PackageFormat: item.PackageFormat,
 		PlatformFamily: item.PlatformFamily, PlatformMajor: item.PlatformMajor,
 		UpdateTime: time.Now().UTC(), ID: id,
 	})
-	if err == nil {
-		err = syncExistingPackagePlaybook(context, transaction, item, "install", item.InstallTemplateID, input.InstallPlaybookContent)
+	// Filebeat 的安装/卸载 Playbook 一律要落到软件包配置：为空时用内置默认内容补上
+	// （而不是运行时兜底），这样编辑弹窗里能看到、也能按需改。
+	installContent, uninstallContent := input.InstallPlaybookContent, input.UninstallPlaybookContent
+	if item.PackageType == "filebeat" {
+		if installContent == nil || strings.TrimSpace(*installContent) == "" {
+			value := builtinFilebeatInstallPlaybookContent()
+			installContent = &value
+		}
+		if uninstallContent == nil || strings.TrimSpace(*uninstallContent) == "" {
+			value := builtinFilebeatUninstallPlaybookContent()
+			uninstallContent = &value
+		}
 	}
 	if err == nil {
-		err = syncExistingPackagePlaybook(context, transaction, item, "uninstall", item.UninstallTemplateID, input.UninstallPlaybookContent)
+		err = syncExistingPackagePlaybook(context, transaction, item, "install", item.InstallTemplateID, installContent)
+	}
+	if err == nil {
+		err = syncExistingPackagePlaybook(context, transaction, item, "uninstall", item.UninstallTemplateID, uninstallContent)
 	}
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
@@ -176,7 +300,7 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 }
 
 // migrateSoftwarePackageFile 平台元数据变化时把已上传的软件包文件搬到新目录
-// （monitor_packages/<fluentBit|name>/<arch>/<platformDirectory>/<file>），保持 file/sha256/size 一致。
+// （monitor_packages/<filebeat|name>/<arch>/<platformDirectory>/<file>），保持 file/sha256/size 一致。
 func (handler *Handler) migrateSoftwarePackageFile(context *gin.Context, transaction *sql.Tx, item softwarePackage) error {
 	if item.File == "" {
 		return nil

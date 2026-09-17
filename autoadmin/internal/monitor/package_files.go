@@ -96,8 +96,8 @@ func (handler *Handler) UploadSoftwarePackage(context *gin.Context) {
 
 func softwarePackageRelativePath(item softwarePackage, fileName string) (string, error) {
 	packageDirectory := item.Name
-	if item.PackageType == "fluent_bit" {
-		packageDirectory = "fluentBit"
+	if item.PackageType == "filebeat" {
+		packageDirectory = "filebeat"
 	}
 	if packageDirectory == "" || filepath.Base(packageDirectory) != packageDirectory || filepath.Base(item.Arch) != item.Arch {
 		return "", fmt.Errorf("invalid package path metadata")

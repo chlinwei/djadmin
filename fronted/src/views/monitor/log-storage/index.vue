@@ -2,7 +2,7 @@
   <div class="log-storage-page">
     <div class="page-header">
       <h2>日志存储</h2>
-      <p>配置 OpenSearch 连接，供日志采集与日志检索使用。</p>
+      <p>配置 Elasticsearch 连接，供日志采集与日志检索使用。</p>
     </div>
 
     <div class="toolbar">
@@ -133,7 +133,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="index_prefix" label="索引前缀">
-              <a-input v-model:value="form.index_prefix" placeholder="logs" />
+              <a-input v-model:value="form.index_prefix" placeholder="autoadmin" />
             </a-form-item>
           </a-col>
           <a-col :span="24">
@@ -200,11 +200,11 @@ import { onMounted, reactive, ref, computed } from 'vue'
 import { tableLocale } from '@/util/tableStyle'
 import { message, Empty } from 'ant-design-vue'
 import {
-  batchDeleteOpenSearchClusters,
+  batchDeleteElasticsearchClusters,
   getLogPipelineHealth,
-  getOpenSearchClusterList,
-  saveOpenSearchCluster,
-  testOpenSearchCluster,
+  getElasticsearchClusterList,
+  saveElasticsearchCluster,
+  testElasticsearchCluster,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -229,7 +229,7 @@ const emptyForm = () => ({
   password_configured: false,
   verify_tls: false,
   ca_cert: '',
-  index_prefix: 'logs',
+  index_prefix: 'autoadmin',
   request_timeout: 10,
   enabled: true,
   is_default: false,
@@ -303,7 +303,7 @@ async function loadHealth() {
 async function loadClusters() {
   loading.value = true
   try {
-    const response = await getOpenSearchClusterList({ page: 1, page_size: 100 })
+    const response = await getElasticsearchClusterList({ page: 1, page_size: 100 })
     clusters.value = response?.data?.data?.results || []
   } finally {
     loading.value = false
@@ -327,7 +327,7 @@ async function submit() {
     const payload = { ...form }
     delete payload.password_configured
     if (!payload.password) delete payload.password
-    await saveOpenSearchCluster(payload)
+    await saveElasticsearchCluster(payload)
     message.success('保存成功，索引模板与保留策略正在后台同步')
     dialogOpen.value = false
     await loadClusters()
@@ -341,9 +341,9 @@ async function submit() {
 async function testConnection(record) {
   testingId.value = record.id
   try {
-    const response = await testOpenSearchCluster(record.id)
+    const response = await testElasticsearchCluster(record.id)
     const info = response?.data?.data || {}
-    message.success(`连接成功：${info.distribution || 'opensearch'} ${info.version}，状态 ${info.status}`)
+    message.success(`连接成功：${info.distribution || 'elasticsearch'} ${info.version}，状态 ${info.status}`)
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '连接失败')
   } finally {
@@ -358,7 +358,7 @@ function confirmDelete(record) {
     summary: '删除后依赖该集群的日志采集与查询将不可用。',
     items: [`${record.name} (${record.hosts})`],
     onConfirm: async () => {
-      await batchDeleteOpenSearchClusters([record.id])
+      await batchDeleteElasticsearchClusters([record.id])
       message.success('删除成功')
       await loadClusters()
     },

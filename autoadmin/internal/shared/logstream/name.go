@@ -1,5 +1,5 @@
 // Package logstream 统一构造逻辑服务级 data stream 名，
-// 供 monitor（Fluent Bit 渲染 / 流状态解析）与 assets（逻辑服务弹窗预览）共用，
+// 供 monitor（Filebeat 渲染 / 流状态解析）与 assets（逻辑服务弹窗预览）共用，
 // 任何生成或解析流名的地方禁止自行拼接。
 package logstream
 
@@ -12,7 +12,7 @@ import "strings"
 func Name(prefix, project, environment, businessSystem, service, tier string) string {
 	base := prefix
 	if base == "" {
-		base = "logs"
+		base = "autoadmin"
 	}
 	return strings.Join([]string{base, project, businessSystem, environment, service, tier}, "-")
 }

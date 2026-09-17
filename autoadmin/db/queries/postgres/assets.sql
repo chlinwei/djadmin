@@ -559,6 +559,20 @@ WHERE host_id = ANY(sqlc.arg(host_ids)::bigint[]) AND action='install_agent' AND
 SELECT COUNT(*) FROM assets_agent_job
 WHERE host_id = ANY(sqlc.arg(host_ids)::bigint[]) AND action='install_agent' AND status IN ('queued','running');
 
+-- 用户在运行记录中心取消 Agent 安装/更新作业时，同步把对应的 assets_agent_job 与主机日志
+-- 置为失败，否则 rejectActiveAgentJobs 会一直拦着"任务执行中"（agent job 与 automation job 是两套状态）。
+-- name: CancelAgentJobsByExecution :exec
+UPDATE assets_agent_job
+SET status='failed', error_message='任务已取消', exit_code=1,
+    finished_at=sqlc.arg(finished_at), update_time=sqlc.arg(update_time)
+WHERE action='install_agent' AND status IN ('queued','running')
+  AND job_id IN (SELECT l.agent_job_id FROM automation_execution_host_log l WHERE l.job_id = sqlc.arg(job_id));
+
+-- name: CancelAgentJobHostLogsByExecution :exec
+UPDATE automation_execution_host_log
+SET status='failed', error_message='任务已取消', exit_code=1, update_time=sqlc.arg(update_time)
+WHERE job_id = sqlc.arg(job_id) AND status IN ('queued','running');
+
 -- name: FinishAgentExecutionJob :exec
 UPDATE automation_execution_job
 SET status=sqlc.arg(status), end_time=sqlc.narg(end_time), duration_seconds=sqlc.narg(duration_seconds),

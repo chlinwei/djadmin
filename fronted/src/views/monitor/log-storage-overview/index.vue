@@ -10,7 +10,7 @@
       </div>
     </a-card>
 
-    <a-empty v-if="!clusters.length" description="尚未配置 OpenSearch 集群，请先到「日志存储」页添加" />
+    <a-empty v-if="!clusters.length" description="尚未配置 Elasticsearch 集群，请先到「日志存储」页添加" />
     <template v-else>
       <a-row :gutter="12">
         <a-col :span="8">
@@ -98,7 +98,7 @@
                       <span>{{ (record.backing_indices || []).length }}</span>
                     </template>
                     <template v-else-if="column.key === 'ism'">
-                      <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                      <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
                       <span v-else>-</span>
                     </template>
                     <template v-else-if="column.key === 'actions'">
@@ -130,7 +130,7 @@
                         <span>{{ Number(record.docs || 0).toLocaleString() }}</span>
                       </template>
                       <template v-else-if="column.key === 'ism'">
-                        <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                        <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
                         <span v-else>-</span>
                       </template>
                     </template>
@@ -173,7 +173,7 @@
                       <span>{{ (record.backing_indices || []).length }}</span>
                     </template>
                     <template v-else-if="column.key === 'ism'">
-                      <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                      <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
                       <span v-else>-</span>
                     </template>
                     <template v-else-if="column.key === 'actions'">
@@ -205,7 +205,7 @@
                         <span>{{ Number(record.docs || 0).toLocaleString() }}</span>
                       </template>
                       <template v-else-if="column.key === 'ism'">
-                        <a-tag v-if="record.ism_state" color="blue">{{ record.ism_state }}</a-tag>
+                        <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
                         <span v-else>-</span>
                       </template>
                     </template>
@@ -224,9 +224,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { tableLocale } from '@/util/tableStyle'
 import { message } from 'ant-design-vue'
-import { getLogStorageOverview, getOpenSearchClusterList } from '@/api/monitor.js'
+import { getLogStorageOverview, getElasticsearchClusterList } from '@/api/monitor.js'
 
-// 存储水位：真实磁盘占用的原子粒度是 data stream，命名 = logs-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位编码>。
+// 存储水位：真实磁盘占用的原子粒度是 data stream，命名 = <索引前缀>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位编码>（默认前缀 autoadmin）。
 // 树只渲染有数据（流）的节点；逻辑服务层直接来自流名解析，可显示真实占用。
 
 const clusters = ref([])
@@ -296,7 +296,7 @@ const streamColumns = [
   { title: '占用', dataIndex: 'bytes', key: 'bytes', width: 110 },
   { title: '文档数', dataIndex: 'docs', key: 'docs', width: 110 },
   { title: '后备索引数', dataIndex: 'backing_count', key: 'backing_count', width: 110 },
-  { title: 'ISM 状态', dataIndex: 'ism_state', key: 'ism', width: 120 },
+  { title: 'ILM 状态', dataIndex: 'ilm_state', key: 'ilm', width: 120 },
   { title: '详情', key: 'actions', width: 90 },
 ]
 
@@ -306,7 +306,7 @@ const backingColumns = [
   { title: '占用', dataIndex: 'bytes', key: 'bytes', width: 110 },
   { title: '文档数', dataIndex: 'docs', key: 'docs', width: 110 },
   { title: '创建时间', dataIndex: 'create_at', key: 'create_at', width: 180 },
-  { title: 'ISM 状态', dataIndex: 'ism_state', key: 'ism', width: 120 },
+  { title: 'ILM 状态', dataIndex: 'ilm_state', key: 'ilm', width: 120 },
 ]
 
 // ---- 树构建 ----
@@ -505,7 +505,7 @@ function expandStream(record) {
 
 async function loadClusters() {
   try {
-    const response = await getOpenSearchClusterList({ page: 1, page_size: 100 })
+    const response = await getElasticsearchClusterList({ page: 1, page_size: 100 })
     const payload = response?.data?.data || {}
     clusters.value = Array.isArray(payload.results) ? payload.results : []
     if (clusters.value.length && !selectedClusterId.value) {

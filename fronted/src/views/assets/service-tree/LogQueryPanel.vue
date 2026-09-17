@@ -199,7 +199,7 @@ import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getOpenSearchClusterList, searchOpenSearchLogFacetStats, searchOpenSearchLogs } from '@/api/monitor'
+import { getElasticsearchClusterList, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -367,7 +367,7 @@ function buildFacetParams() {
 
 async function ensureClusterId() {
   if (clusterId.value) return clusterId.value
-  const response = await getOpenSearchClusterList({ page: 1, page_size: 100 })
+  const response = await getElasticsearchClusterList({ page: 1, page_size: 100 })
   const results = response?.data?.data?.results || []
   const cluster = results.find((item) => item.is_default) || results[0]
   clusterId.value = cluster?.id || null
@@ -389,7 +389,7 @@ async function loadLogs() {
       pagination.total = 0
       return
     }
-    const response = await searchOpenSearchLogs(id, buildQueryParams())
+    const response = await searchElasticsearchLogs(id, buildQueryParams())
     const payload = response?.data?.data || {}
     logs.value = payload.results || []
     pagination.total = Math.min(payload.count || 0, MAX_RESULT_WINDOW)
@@ -413,7 +413,7 @@ async function loadStats() {
       statsBuckets.value = []
       return
     }
-    const response = await searchOpenSearchLogFacetStats(id, buildFacetParams())
+    const response = await searchElasticsearchLogFacetStats(id, buildFacetParams())
     const payload = response?.data?.data || {}
     statsBuckets.value = payload.buckets || []
     statsIntervalMinutes.value = payload.interval_minutes || 1
@@ -477,7 +477,7 @@ async function loadLogLevelOptions() {
     if (!id) return
     const params = buildBaseParams()
     delete params.log_level
-    const response = await searchOpenSearchLogFacetStats(id, { ...params, field: 'log_level', size: 50 })
+    const response = await searchElasticsearchLogFacetStats(id, { ...params, field: 'log_level', size: 50 })
     const buckets = response?.data?.data?.buckets || []
     logLevelOptions.value = buckets
       .filter((bucket) => bucket.value != null && bucket.value !== '')

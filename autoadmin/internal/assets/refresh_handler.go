@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -95,13 +96,54 @@ func (handler *Handler) refreshOneHostForBatch(ctx context.Context, id int64) ho
 	return handler.refreshHostAgentInfo(ctx, item)
 }
 
+// RefreshApplicationServiceRuntimeStatus 同步检查逻辑服务名下所有启用部署实例的运行状态
+// （最多 8 并发，与批量采集主机信息的限流口径一致），逐实例把结果写回 runtime_status，
+// 并返回 {running, stopped, error, unknown} 汇总，供服务树刷新后的提示与状态列使用。
 func (handler *Handler) RefreshApplicationServiceRuntimeStatus(context *gin.Context) {
 	id, ok := resourceID(context)
 	if !ok {
 		return
 	}
-	item, err := handler.service.repository.GetApplicationService(context.Request.Context(), id)
-	respond(context, item, translate(err))
+	ctx := context.Request.Context()
+	if _, err := handler.service.repository.GetApplicationService(ctx, id); err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
+	deployments, _, err := handler.service.repository.ListApplicationDeployments(ctx, pagination.Page{Number: 1, Size: 100000, Offset: 0}, ApplicationDeploymentFilter{ApplicationServiceID: id})
+	if err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
+	targets := make([]int64, 0, len(deployments))
+	for _, item := range deployments {
+		if item.Enabled {
+			targets = append(targets, item.ID)
+		}
+	}
+	statuses := make([]string, len(targets))
+	const maxConcurrency = 8
+	semaphore := make(chan struct{}, maxConcurrency)
+	var waitGroup sync.WaitGroup
+	for index := range targets {
+		waitGroup.Add(1)
+		semaphore <- struct{}{}
+		go func(index int) {
+			defer waitGroup.Done()
+			defer func() { <-semaphore }()
+			statuses[index] = handler.service.checkDeploymentRuntimeStatus(ctx, targets[index])
+		}(index)
+	}
+	waitGroup.Wait()
+
+	summary := map[string]int{"running": 0, "stopped": 0, "error": 0, "unknown": 0}
+	for _, status := range statuses {
+		if _, ok := summary[status]; ok {
+			summary[status]++
+			continue
+		}
+		summary["unknown"]++
+	}
+	response.Success(context, gin.H{"summary": summary, "total": len(targets)})
 }
 
 func (handler *Handler) GetHostWebSSHActiveCount(context *gin.Context) {

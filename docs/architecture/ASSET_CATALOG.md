@@ -101,4 +101,11 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   模板与服务域：模板 + 全部嵌套子表建成后读回、服务 + 成员 + 日志设置、部署实例 CRUD、列表的三种过滤组合），
   全程一个事务并回滚，不往库里留数据。
 
+## 部署实例运行状态检查
+
+- **单实例**：`POST /assets/application-deployments/{id}/control/`，`action=start|stop|status`。经 Agent 数据面（`agent.Gateway`）下发 `control_application`，用 `GetDeploymentControlContext` + 模板控制动作（含成功退出码）执行；`status` 按退出码判定 `running(0)/stopped(非0)`，`response.Status != success` 或 Agent 调用失败记为 `error`，结果写回 `runtime_status` / `runtime_status_output` / `last_status_check_time`。
+- **逻辑服务批量**：`POST /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。服务树选中逻辑服务时的手动刷新与 15s 轮询都走这里。
+- **失败语义**：Agent 未连接 / 命令执行失败时 `executeDeploymentControl` 会提前返回，`checkDeploymentRuntimeStatus` 必须补写 `error` + 错误原因，否则前端只会显示「未知」且没有任何报错。前端在服务树与 `ApplicationWorkspace` 对 `runtime_status=error` 时用 `runtime_status_output` 展示 tooltip。
+- **前端消费**：逻辑服务节点刷新成功后按 `summary` 提示「运行中/已停止/检查失败」，随后重载实例列表读取最新状态。
+
 > 迁移进度与剩余清单见 `docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md` 的 P2-3（`assets` 已清零，`monitor` 待迁）。

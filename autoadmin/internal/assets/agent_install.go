@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"autoadmin/internal/automation/ansiblecmd"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -158,12 +159,15 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 	timeout := agentInstallTimeoutSeconds
 	commandCtx, cancel := context.WithTimeout(background, time.Duration(timeout)*time.Second)
 	defer cancel()
-	command := exec.CommandContext(commandCtx, "ansible-playbook", "-i", inventoryPath, "--timeout", "10",
+	command, err := ansiblecmd.CommandContext(commandCtx, "-i", inventoryPath, "--timeout", "10",
 		"-e", "dj_agent_binary_source="+binaryPath,
 		"-e", "dj_agent_instance_name="+instanceName,
 		"-e", "dj_agent_grpc_addr="+grpcAddr,
 		"-e", "dj_agent_is_local="+strconv.FormatBool(isLocal),
 		playbookPath)
+	if err != nil {
+		return fail("初始化 ansible-playbook 失败: "+err.Error(), 1, "", "")
+	}
 	command.Dir = directory
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {

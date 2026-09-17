@@ -25,6 +25,43 @@ func (q *Queries) ActivateAgentPackage(ctx context.Context, id uint64) (int64, e
 	return result.RowsAffected()
 }
 
+const cancelAgentJobHostLogsByExecution = `-- name: CancelAgentJobHostLogsByExecution :exec
+UPDATE automation_execution_host_log
+SET status='failed', error_message='任务已取消', exit_code=1, update_time=?
+WHERE job_id = ? AND status IN ('queued','running')
+`
+
+type CancelAgentJobHostLogsByExecutionParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	JobID      int64     `json:"job_id"`
+}
+
+func (q *Queries) CancelAgentJobHostLogsByExecution(ctx context.Context, arg CancelAgentJobHostLogsByExecutionParams) error {
+	_, err := q.db.ExecContext(ctx, cancelAgentJobHostLogsByExecution, arg.UpdateTime, arg.JobID)
+	return err
+}
+
+const cancelAgentJobsByExecution = `-- name: CancelAgentJobsByExecution :exec
+UPDATE assets_agent_job
+SET status='failed', error_message='任务已取消', exit_code=1,
+    finished_at=?, update_time=?
+WHERE action='install_agent' AND status IN ('queued','running')
+  AND job_id IN (SELECT l.agent_job_id FROM automation_execution_host_log l WHERE l.job_id = ?)
+`
+
+type CancelAgentJobsByExecutionParams struct {
+	FinishedAt sql.NullTime `json:"finished_at"`
+	UpdateTime time.Time    `json:"update_time"`
+	JobID      int64        `json:"job_id"`
+}
+
+// 用户在运行记录中心取消 Agent 安装/更新作业时，同步把对应的 assets_agent_job 与主机日志
+// 置为失败，否则 rejectActiveAgentJobs 会一直拦着"任务执行中"（agent job 与 automation job 是两套状态）。
+func (q *Queries) CancelAgentJobsByExecution(ctx context.Context, arg CancelAgentJobsByExecutionParams) error {
+	_, err := q.db.ExecContext(ctx, cancelAgentJobsByExecution, arg.FinishedAt, arg.UpdateTime, arg.JobID)
+	return err
+}
+
 const countActiveAgentInstallJobs = `-- name: CountActiveAgentInstallJobs :one
 SELECT COUNT(*) FROM assets_agent_job
 WHERE host_id IN (/*SLICE:host_ids*/?) AND action='install_agent' AND status IN ('queued','running')

@@ -1,18 +1,25 @@
 # djadmin 日志采集架构文档
 
-OpenSearch + Fluent Bit 日志采集与分析能力的设计文档。
+Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
+
+> **迁移进行中**：
+> - 搜索后端已从 OpenSearch 迁到 **Elasticsearch 8.x**：保留策略用 ILM（`_ilm/policy`）替代
+>   ISM，每档位索引模板绑定 `index.lifecycle.name`，映射用 `flattened` 替代 `flat_object`，
+>   集群表更名为 `monitor_elasticsearch_cluster`。本文主体已按 ES 8 更新。
+> - 采集器仍在 **Filebeat**，将迁到 Filebeat（Filebeat 配置渲染已落地，agent/安装链路待做），
+>   进度见 [../plans/LOG_COLLECTOR_MIGRATION.md](../plans/LOG_COLLECTOR_MIGRATION.md)。
 
 ---
 
 ## 1. 目标
 
-把各业务主机上的应用日志集中收集到 OpenSearch，并在 djadmin 内提供检索与错误分析，
-不需要用户登录主机 `tail` 日志，也不需要跳转到 OpenSearch Dashboards 才能看到错误分布。
+把各业务主机上的应用日志集中收集到 Elasticsearch，并在 djadmin 内提供检索与错误分析，
+不需要用户登录主机 `tail` 日志，也不需要跳转到 Elasticsearch Dashboards 才能看到错误分布。
 
 核心能力：
 
 - 在逻辑服务上一键开启/关闭日志收集
-- 一条日志处理规则统一维护 Fluent Bit 发送前处理与 OpenSearch Ingest 字段解析
+- 一条日志处理规则统一维护 Filebeat 发送前处理与 Elasticsearch Ingest 字段解析
 - 日志定义只关联一条处理规则，规则可由同格式的应用日志复用
 - 不输入关键词即可看到「出现了哪些错误、各多少次、集中在哪台机器」
 - 自动识别新增错误与突增错误
@@ -24,10 +31,10 @@ OpenSearch + Fluent Bit 日志采集与分析能力的设计文档。
 ```
 业务主机（每台）                   日志服务器                    djadmin
 ┌──────────────────┐          ┌──────────────────┐        ┌──────────────┐
-│ 应用日志文件      │          │ OpenSearch       │        │ 配置下发      │
+│ 应用日志文件      │          │ Elasticsearch       │        │ 配置下发      │
 │      ↓           │          │  ├ ingest pipeline│◀──────│ 处理规则管理   │
-│ Fluent Bit       │─────────▶│  ├ index template │  REST  │ 聚合查询      │
-│  ├ tail          │  HTTPS   │  └ ISM policy     │        │ 日志洞察页面   │
+│ Filebeat       │─────────▶│  ├ index template │  REST  │ 聚合查询      │
+│  ├ tail          │  HTTPS   │  └ ILM policy     │        │ 日志洞察页面   │
 │  ├ multiline     │   9200   │                  │        └──────┬───────┘
 │  └ record_modifier│          │ Dashboards :5601 │               │
 └────────▲─────────┘          └──────────────────┘               │
@@ -41,25 +48,25 @@ OpenSearch + Fluent Bit 日志采集与分析能力的设计文档。
 
 | 链路 | 方向 | 用途 |
 |---|---|---|
-| Fluent Bit → OpenSearch | 主机 → 日志服务器 | 日志数据写入 |
-| djadmin → OpenSearch | 控制端 → 日志服务器 | 管理 pipeline、执行聚合查询 |
+| Filebeat → Elasticsearch | 主机 → 日志服务器 | 日志数据写入 |
+| djadmin → Elasticsearch | 控制端 → 日志服务器 | 管理 pipeline、执行聚合查询 |
 | djadmin → dj-agent → 主机 | 控制端 → 主机 | 下发采集配置、触发热重载 |
 
 ---
 
 ## 3. 采集器选型
 
-**采集器使用 Fluent Bit，不使用 Filebeat。**
+**采集器使用 Filebeat，不使用 Filebeat。**
 
 Filebeat 从 7.14 起在 elasticsearch output 中加入服务端版本校验，检测到对端不是
-Elasticsearch 会直接拒绝连接，返回 `400 Bad Request`。OpenSearch 由 ES 7.10 fork
+Elasticsearch 会直接拒绝连接，返回 `400 Bad Request`。Elasticsearch 由 ES 7.10 fork
 而来，会被该校验拦截。可用的 Filebeat 只有 7.12.1 OSS，停留在 2021 年且不再有安全更新。
 
-| 采集器 | OpenSearch 支持 | 单实例内存 | 结论 |
+| 采集器 | Elasticsearch 支持 | 单实例内存 | 结论 |
 |---|---|---|---|
-| Fluent Bit | 原生 `opensearch` output | 5-15 MB | 采用 |
+| Filebeat | 原生 `elasticsearch` output | 5-15 MB | 采用 |
 | Vector | `elasticsearch` sink 兼容 | 30-60 MB | 备选 |
-| Fluentd | 需插件 | 60-100 MB | 过重 |
+| Filebeatd | 需插件 | 60-100 MB | 过重 |
 | Logstash OSS | 官方插件 | 500 MB+ | 仅适合中转层 |
 | Filebeat 7.12.1 | 版本校验前的最后一版 | 60-100 MB | 不采用 |
 
@@ -74,19 +81,19 @@ Go 等语言专用分支；Java 堆栈、普通缩进续行和其他多行格式
 ### 4.1 索引按「项目 + 环境 + 业务系统 + 逻辑服务 + 保留档位」切分
 
 ```
-logs-<project.code>-<environment.code>-<business_system.code>-<service.code>-<tier>
+autoadmin-<project.code>-<environment.code>-<business_system.code>-<service.code>-<tier>
 
-logs-tib-prod-esb-tomcat-svc-hot
-logs-tib-prod-esb-tomcat-svc-std
-logs-nkg-test-esb-gateway-std
+autoadmin-tib-prod-esb-tomcat-svc-hot
+autoadmin-tib-prod-esb-tomcat-svc-std
+autoadmin-nkg-test-esb-gateway-std
 ```
 
-- 档位必须在尾部（ISM 的 `ism_template` 靠 `logs-*-<tier>` 后缀挂载），可含连字符。
+- 档位必须在尾部（ILM 的 `index.lifecycle.name` 靠 `autoadmin-*-<tier>` 后缀挂载），可含连字符。
 - 统一构造入口：Go `monitor.LogDataStreamName(prefix, project, env, bizsys, service, tier)`，
   禁止各自拼接。
 - 服务、实例、主机、日志类型**同时作为字段存储**（`service` 等字段保留，检索过滤仍靠字段）。
-- **旧命名兼容**：`logs-<project>-<environment>-<business_system>-<tier>`（无服务段）为
-  过渡期遗留流，ISM 按保留期自然删除，不做 reindex；存储水位页对两种命名都可见，
+- **旧命名兼容**：`autoadmin-<project>-<environment>-<business_system>-<tier>`（无服务段）为
+  过渡期遗留流，ILM 按保留期自然删除，不做 reindex；存储水位页对两种命名都可见，
   旧流在"未识别"判定之外正常聚合展示。
 - 编码（服务/档位）**可含连字符**，流名解析禁止按 `-` 盲切，必须用数据库维度码做
   前缀匹配（见 9.0）。
@@ -94,7 +101,7 @@ logs-nkg-test-esb-gateway-std
 ### 4.2 为什么需要保留档位
 
 同一业务内部的日志量差异就很大：接入层服务每天几十 GB，定时任务每天几 MB。
-ISM 是**索引级**的，同一索引内无法按 `service` 区分保留期，统一 30 天会撞爆磁盘，
+ILM 是**索引级**的，同一索引内无法按 `service` 区分保留期，统一 30 天会撞爆磁盘，
 统一 7 天又丢失了小服务的历史数据。
 
 | 档位 | 保留 | 适用 |
@@ -116,8 +123,8 @@ ISM 是**索引级**的，同一索引内无法按 `service` 区分保留期，�
 （Go `assets.ListServiceTemplateLogs`）除覆盖值外还返回 `resolved_path` 与
 `data_stream`——`resolved_path` 用服务级 `macro_values` 替换 `${VAR}`（实例级宏因
 逐实例而异不展开，未定义的宏保留原样）；`data_stream` 用 `shared/logstream.Name`
-生成（`logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>`），有效档位取值顺序为
-日志覆盖档位 → 服务默认档位 → `is_default` 档位 → `std`，与 Fluent Bit 下发的
+生成（`autoadmin-<项目>-<业务系统>-<环境>-<服务>-<有效档位>`），有效档位取值顺序为
+日志覆盖档位 → 服务默认档位 → `is_default` 档位 → `std`，与 Filebeat 下发的
 Index 命名（`monitor.LogDataStreamName`，内部委托同一 shared 实现）完全一致。
 
 ### 4.3 为什么不直接按服务建索引
@@ -145,12 +152,12 @@ Index 命名（`monitor.LogDataStreamName`，内部委托同一 shared 实现）
 
 ### 4.4 用 rollover 代替按天建索引
 
-按天切分对低流量业务是浪费。使用 data stream + ISM，按大小或时间自动滚动：
+按天切分对低流量业务是浪费。使用 data stream + ILM，按大小或时间自动滚动：
 
 ```json
-PUT _index_template/logs-template
+PUT _index_template/autoadmin-template
 {
-  "index_patterns": ["logs-*"],
+  "index_patterns": ["autoadmin-*"],
   "data_stream": {},
   "template": {
     "settings": {
@@ -165,13 +172,13 @@ PUT _index_template/logs-template
 
 `min_primary_shard_size` 与 `min_index_age` 同时配置，先满足哪个就滚动，高低流量都能自适应。
 
-> 模板名固定为 `<index_prefix>-template`（缺省 prefix 为 `logs`）。bootstrap 的 PUT 与链路体检的 GET
-> 必须用同一个名字——早期 Go 版漏了 `-template` 后缀，去查不存在的 `logs`，表现为"`logs-template`
+> 模板名固定为 `<index_prefix>-template`（缺省 prefix 为 `autoadmin`）。bootstrap 的 PUT 与链路体检的 GET
+> 必须用同一个名字——早期 Go 版漏了 `-template` 后缀，去查不存在的 `logs`，表现为"`autoadmin-template`
 > 不存在"（2026-09-17 修复，bootstrap 同时清理历史错名模板）。
 
-### 4.5 ISM 按档位配置
+### 4.5 ILM 按档位配置
 
-三条 policy，通过 `ism_template` 的索引名后缀自动挂载，新建业务不需手工配置：
+三条 policy，通过 `index.lifecycle.name` 的索引名后缀自动挂载，新建业务不需手工配置：
 
 ```json
 {
@@ -183,7 +190,7 @@ PUT _index_template/logs-template
         "transitions": [{ "state_name": "delete", "conditions": { "min_index_age": "7d" }}] },
       { "name": "delete", "actions": [{ "delete": {} }] }
     ],
-    "ism_template": [{ "index_patterns": ["logs-*-hot"], "priority": 100 }]
+    "index.lifecycle.name": [{ "index_patterns": ["autoadmin-*-hot"], "priority": 100 }]
   }
 }
 ```
@@ -226,7 +233,7 @@ cold 0.1GB/天 × 90 天 =   9 GB
 业务附加字段统一增加 `labels_` 前缀，避免与平台固定字段冲突。需要聚合或告警的字段应提升
 为固定字段，并在索引模板中预先定义 mapping，不能让任意业务字段无边界增长。
 
-字段名统一使用下划线，不使用点号，避免 Fluent Bit `record_modifier` 注入时的歧义。
+字段名统一使用下划线，不使用点号，避免 Filebeat `record_modifier` 注入时的歧义。
 
 ---
 
@@ -236,31 +243,35 @@ cold 0.1GB/天 × 90 天 =   9 GB
 
 | 处理类型 | 位置 | 原因 |
 |---|---|---|
-| multiline 多行合并 | Fluent Bit | 必须在采集时合并，堆栈跨行到后端已无法还原 |
-| 字段提取 | OpenSearch ingest pipeline | 改规则不需要下发配置到主机，也不消耗主机 CPU |
+| multiline 多行合并 | Filebeat | 必须在采集时合并，堆栈跨行到后端已无法还原 |
+| 字段提取 | Elasticsearch ingest pipeline | 改规则不需要下发配置到主机，也不消耗主机 CPU |
 
 两阶段在技术上分别执行，但在 djadmin 中只管理一条 `LogProcessingRule`：
 
-- **发送前处理（Fluent Bit）**：`input_format`、`multiline_enabled`、`start_pattern`、
-  `continuation_pattern`、`flush_timeout`
-- **字段解析（OpenSearch Ingest）**：`pipeline_body`
+- **发送前处理（Filebeat）**：`input_format`、`multiline_enabled`、`start_pattern`、`flush_timeout`。
+  Filebeat filestream 的多行用 `negate: true, match: after` 表达"非首行并入上一行"，**不需要续行正则**；
+  历史列 `continuation_pattern` 保留但已不参与渲染（可选/忽略）。
+- **字段解析（Elasticsearch Ingest）**：`pipeline_body`
 
-修改 Pipeline JSON 后会立即发布同名 OpenSearch Pipeline，不需要下发主机配置。修改日志格式或
-多行参数后，必须重新应用引用该规则的日志采集目标，使 Fluent Bit 片段更新。
+修改 Pipeline JSON 后会立即发布同名 Elasticsearch Pipeline，不需要下发主机配置。修改日志格式或
+多行参数后，必须重新应用引用该规则的日志采集目标，使 Filebeat 片段更新。
 
 ### 5.2 统一规则与 Pipeline 生命周期
 
-`LogProcessingRule.name` 同时是 djadmin 规则名称和 OpenSearch Pipeline 名称，仅允许小写字母、
-数字、点、下划线和连字符，发布后不可改名。例如：
+`LogProcessingRule.name` 是 djadmin 规则名称（全局唯一），**Elasticsearch Pipeline 名称按下列规则派生**：
 
 ```
-springboot-tomcat-exception
-nginx-access
+<索引前缀>-<应用 code|general>-<规则名>        # 各段小写、非字母数字归一化为 -
 ```
 
-规则创建或更新时，djadmin 先调用 OpenSearch `PUT _ingest/pipeline/<rule.name>`，成功后保存
-规则。删除规则时同步删除同名 Pipeline；仍被日志定义引用的规则禁止删除。平台不再提供独立的
-Pipeline 写入、删除入口，避免数据库规则与 OpenSearch Pipeline 形成两个配置源。
+- 索引前缀取该规则所属集群的 `index_prefix`（默认 `autoadmin`）；
+- 应用段取应用 `code`（无 code 回落 name；未选应用的通用规则用 `general`）；
+- 规则名段由 `name` 归一化；例如 `autoadmin-tomcat-app-access-err`。
+
+规则创建或更新时，djadmin 先 `PUT _ingest/pipeline/<派生名>`，成功后保存规则；改名/换应用/换集群时
+自动删除旧的派生 Pipeline。删除规则时同步删除派生 Pipeline（并顺带清理历史的裸规则名）；仍被
+日志定义引用的规则禁止删除。渲染 Filebeat 的 `pipeline` 字段、链路体检、发布/删除四处必须用同一个
+派生名（`processingPipelineName`），禁止各自拼接。
 
 `ApplicationLogDefinition.processing_rule` 是日志定义唯一的规则关联。同格式日志可复用规则，
 Pipeline 数量不会随部署实例增长。
@@ -307,17 +318,22 @@ processor 优先使用 `dissect`，比 `grok` 快 3-5 倍。仅在格式不规�
 
 ### 5.4 解析规则调试
 
-页面通过 OpenSearch inline Pipeline `_simulate` 在保存前验证当前 JSON，不需要先创建临时
-Pipeline。在线调试支持两种样例格式：
+页面通过 Elasticsearch inline Pipeline `_simulate` 在保存前验证当前 JSON，不需要先创建临时
+Pipeline。在线调试支持两种样例格式（原始日志会随规则保存，见 `sample_log`）：
 
-- **原始日志**：直接粘贴包含真实换行的完整日志，页面自动包装为 `{ "log": "..." }`，与
-  Fluent Bit `tail` 插件实际产生的字段一致。
+- **原始日志**：直接粘贴包含真实换行的完整日志，页面自动包装为 `{ "message": "..." }`，与
+  Filebeat filestream 实际产生的字段一致；多行按首行正则聚合。
 - **文档 JSON**：输入合法 JSON 对象，用于携带额外元数据；JSON 字符串内部的换行必须写为
   `\n`，不能直接回车。
 
-Pipeline 若需要兼容页面调试中的 `message` 和真实采集的 `log`，应先使用 `rename` processor
-把 `log` 统一为 `message`，并配置 `ignore_missing`。调试结果直接展示 OpenSearch 返回的完整
-文档，包括解析字段和 `_ingest` 信息。
+**校验以集群真实 mapping 为准**：调试时后端 `GET _index_template/<prefix>-template` 取
+`mapping.properties` 的顶层字段集，输出文档里不在其中的字段会作为 `schema_violations` 报出
+（`dynamic:false` 下会被静默丢弃，需改写到 `app_fields.<字段名>`）；模板取不到时回退内置标准字段。
+
+**必备字段校验**：处理规则产物必须包含 `error_fingerprint`（错误清单/聚类按它聚合），
+调试结果里缺失会报 `missing_fields`；保存时后端静态检查 `pipeline_body` 是否含写入
+`error_fingerprint` 的 processor（`fingerprint`/`set`/`copy`/`rename`，见 §5.3），没有直接 400
+拦截发布。
 
 dj-agent 具备文件读取能力，可实现「读取该实例最近 N 行日志」直接作为样例输入，
 形成闭环。
@@ -361,13 +377,14 @@ ApplicationLogDefinition      已存在 path_pattern / encoding / collection_ena
   + extra_fields              JSONField    附加标签
 
 LogProcessingRule
-  cluster                     ForeignKey(OpenSearchCluster)
-  name                        CharField(unique=True)；同时作为 Pipeline 名称
+  cluster                     ForeignKey(ElasticsearchCluster)
+  name                        CharField(unique=True)；Pipeline 名称由 <前缀>-<应用 code|general>-<name> 派生
   description                 CharField
   input_format                CharField(text/json)
   multiline_enabled           BooleanField
   start_pattern               TextField
-  continuation_pattern        TextField
+  continuation_pattern        TextField（保留列，Filebeat 不参与渲染）
+  sample_log                  TextField；「在线调试」的原始日志样例，随规则保存
   flush_timeout               PositiveIntegerField(100-60000 ms)
   pipeline_body               JSONField；必须包含 processors 数组
 
@@ -383,7 +400,7 @@ LogCollectionTarget           新增，主机级
 旧的 `ApplicationLogDefinition.multiline_parser`、`ingest_pipeline` 和 `retention_days` 已删除，
 不保留兼容分支。保留期由索引档位决定。
 
-OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日志处理规则明确关联目标集群。
+Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码；日志处理规则明确关联目标集群。
 
 ### 7.1 管理面的写路径（Go 版最终逻辑，2026-09-16 随 SQL 迁移定型）
 
@@ -400,7 +417,7 @@ OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日
 - 删除仍是"逐 id + 汇总 `{count, results}`"的批量语义；档位被逻辑服务/日志设置引用、规则被日志定义引用时拒绝删除
   （引用计数用取行/计数查询，不再 `SELECT COUNT(*)` 兼职判存在）。
 
-**OpenSearch 集群**（`/monitor/opensearch-clusters/*`，实现见 `opensearch_config.go`）：
+**Elasticsearch 集群**（`/monitor/elasticsearch-clusters/*`，实现见 `elasticsearch_config.go`）：
 
 - "只支持一个集群"；新建前计数校验，`is_default` 提交为 true 时先清掉其它行的默认标记（事务内）。
 - 密码列存的是密文：提交值等于 `******` 时保持原值，空串表示清空。
@@ -415,102 +432,72 @@ OpenSearch 连接信息由 `OpenSearchCluster` 统一保存，不硬编码；日
 ### 8.1 主机侧目录结构
 
 ```
-/etc/fluent-bit/fluent-bit.conf       主配置，安装时一次写入
-/etc/fluent-bit/inputs.d/             djadmin 按实例的每条日志下发
-/etc/fluent-bit/outputs.d/            djadmin 按应用、逻辑服务和日志名下发
-/var/lib/fluent-bit/                  offset 数据库，必须持久化
+/opt/filebeat/filebeat          预编译单二进制（官方 tar.gz 解压，自带依赖）
+/etc/filebeat/filebeat.yml      主配置：output.elasticsearch + filebeat.config.inputs 托管 inputs.d
+/etc/filebeat/inputs.d/         后端按 服务×日志定义 生成，每实例一个 filestream input
+/var/lib/filebeat/              registry（offset）与 data，必须持久化
 ```
 
-主配置：
+主配置（agent `configure_filebeat_output` 写入，0600）：
 
-```ini
-[SERVICE]
-    Flush                  5
-    Log_Level              info
-    Hot_Reload             On
-    HTTP_Server            On
-    HTTP_Listen            127.0.0.1
-    HTTP_Port              2020
-    storage.path           /var/lib/fluent-bit/storage/
-
-@INCLUDE inputs.d/*.conf
-@INCLUDE outputs.d/*.conf
+```yaml
+filebeat.inputs: []
+filebeat.config.inputs:
+  enabled: true
+  path: /etc/filebeat/inputs.d/*.yml
+  reload.enabled: true
+  reload.period: 10s
+output.elasticsearch:
+  hosts: ['https://<es>:9200']
+  username: '<user>'
+  password: '<pass>'
+  ssl.verification_mode: none   # verify_tls=false 时；true 用 full
 ```
 
-### 8.2 日志输入片段
+### 8.2 日志输入片段（filestream）
 
-每个实例的每条日志独立生成片段，文件名为
-`<application>__<service>__<instance>__<log_name>.conf`。多行规则直接渲染为通用
-`MULTILINE_PARSER`：
+按**服务×日志定义**聚合为 `/etc/filebeat/inputs.d/<app>__<svc>__<log>.yml`，
+文件内**每个实例一个 filestream input**（维度字段必须按实例区分，不能合并成单 input 多 paths）：
 
-```ini
-[MULTILINE_PARSER]
-    Name          multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina
-    Type          regex
-    Flush_Timeout 2000
-    Rule          "start_state" "/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+/" "continuation"
-    Rule          "continuation" "/^(?!\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+)/" "continuation"
-
-[INPUT]
-    Name              tail
-    Path              /home/esb/tomcat/apache-tomcat-9.0.35/logs/catalina.out
-    Tag               tomcat.tomcat-svc.kul-tib-tomcat1.catalina
-    DB                /var/lib/fluent-bit/tomcat__tomcat-svc__kul-tib-tomcat1__catalina.db
-    Multiline.parser  multiline_tomcat.tomcat-svc.kul-tib-tomcat1.catalina
-    Encoding          utf-8
-    Refresh_Interval  10
-    Skip_Long_Lines   On
-
-[FILTER]
-    Name    record_modifier
-    Match   tomcat.tomcat-svc.kul-tib-tomcat1.catalina
-    Record  business_system tib
-    Record  environment     test
-    Record  service         tomcat
-    Record  instance        kul-tib-tomcat1
-    Record  application     tomcat
-    Record  version         9.0.35
-    Record  host_ip         192.168.201.211
-    Record  log_name        catalina
+```yaml
+- type: filestream
+  id: '<app>__<svc>__<log>__<instance>'
+  enabled: true
+  paths:
+    - '/home/esb/tomcat/logs/catalina.out'
+  fields_under_root: true
+  fields:
+    service: 'tomcat-svc'
+    instance: 'kul-tib-tomcat1'
+    application: 'tomcat'
+    log_name: 'catalina'
+    business_system: 'tib'
+    environment: 'test'
+    host_ip: '192.168.201.211'
+  index: 'autoadmin-<项目>-<业务>-<环境>-<服务>-<档位>'
+  pipeline: 'springboot-tomcat-exception'   # 可选，处理规则非空时
+  parsers:                                    # 可选，处理规则开启多行时
+    - multiline:
+        pattern: '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+'
+        negate: true
+        match: after
+        timeout: '2s'
 ```
 
-日志路径由 `${APP_HOME}` 等变量展开得到，与部署模板保持一致。
+- 路径由 `${APP_HOME}` 等宏展开；展开后仍含 `${VAR}` 的实例跳过并记入 warnings（带病下发会静默监听不到文件）。
+- 多行由 filestream multiline 在发送前完成：`negate: true` + `match: after` = 不匹配首行正则的行并入上一行；ingest pipeline 拿到的已是按行拆开的文档，无法回溯合并。
+- 字段提取/时间戳归一由 Elasticsearch ingest pipeline 承担。
 
-INPUT 指令的属性名必须是 Fluent Bit 官方的下划线风格（如 `refresh_interval`、
-`rotate_wait`、`mem_buf_limit`）。Fluent Bit v4 不再兼容驼峰写法，驼峰属性会让
-fluent-bit 启动失败（`unknown configuration property`）并进入 crash loop，导致主机上
-所有日志采集中断。
+### 8.3 输出与索引
 
-规则的 `input_format=json` 时额外生成 `Parser json`；文本格式不指定 Parser。未启用多行时不生成
-`MULTILINE_PARSER` 和 `Multiline.parser`。
+- **output.elasticsearch**（地址/账号/TLS）统一写在主配置，由 agent 下发；凭据不落 inputs 片段。
+- **output 与是否有日志无关**：只要存在启用的默认 Elasticsearch 集群，「下发配置」就一定会写
+  `/etc/filebeat/filebeat.yml` 并启动 Filebeat；该主机当前没有启用任何日志采集时，inputs.d 为空
+  （agent 会清理旧片段），不再报“没有可下发的日志片段”。之后开启采集再下发一次即可。
+- 每个 input 用 `index` 指定 **LogDataStreamName**（服务级数据流命名 `autoadmin-<项目>-<业务>-<环境>-<服务>-<档位>`），保留档位/ILM 按此后缀生效。
+- 维度字段通过 `fields_under_root` 写入文档根，服务树日志检索（buildLogQuery）按这些 term 过滤，缺字段会查不到。
 
-### 8.3 输出片段
-
-Fluent Bit 的 `Pipeline` 参数不支持按记录动态取值，因此按**应用 + 逻辑服务 + 日志名**生成
-OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固定为
-`<application>.<service>.<instance>.<log_name>`，避免不同服务、实例或日志交叉路由。
-
-```ini
-[OUTPUT]
-    Name                opensearch
-    Match               tomcat.tomcat-svc.*.catalina
-    Host                ${OS_HOST}
-    Port                ${OS_PORT}
-    HTTP_User           ${OS_USER}
-    HTTP_Passwd         ${OS_PASSWORD}
-    tls                 On
-    Index               logs-test-tib
-    Pipeline            springboot-tomcat-exception
-    Suppress_Type_Name  On
-    Retry_Limit         5
-```
-
-输出片段文件名为 `<application>__<service>__<log_name>.conf`。日志定义未关联处理规则时不生成
-`Pipeline` 指令，日志仍可按原文写入 OpenSearch。
-
-凭据通过 systemd `Environment=` 注入，不写入配置文件。
-
-### 8.4 下发流程（Go 版，log_config_render.go + apply_fluent_bit_config）
+### 8.4 下发流程（Go 版，log_config_render.go + apply_filebeat_config）
 
 ```
 「下发配置」（applyLogTargetConfigRow，log_target_actions.go）
@@ -522,36 +509,20 @@ OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固�
     带出 项目/环境/业务/服务 code、有效档位（log_setting 优先回落服务表）、
     有效处理规则（同上优先级）、服务级宏（macro_values）
   → renderHostLogConfig（纯函数）：
-      inputs.d/<app>__<svc>__<logname>.conf —— 每实例一个 [INPUT] tail（路径按
-      服务级+实例级宏替换 ${VAR}。宏来源：部署实例运行时变量（runtime_variables）
-      与服务级 macro_values，部署模板 app_home 自动作为 APP_HOME 默认值（实例变量
-      显式配置的值优先，与巡检模块的宏推导一致）；替换后仍含 ${VAR} 的实例视为
-      路径无效，直接跳过不生成 INPUT，同时记入渲染告警 warnings 随下发/预览
-      结果返回——含未定义宏的 Path 会让 tail 静默监听不到任何文件，禁止带病下发），
-      外加每实例一条 [FILTER] record_modifier（Match 精确到实例 Tag）注入维度字段
-      service/instance/application/log_name/business_system/environment/host_ip——
-      OpenSearch 侧检索（buildLogQuery）按这些字段 term 过滤，缺字段会导致
-      服务树日志查询永远查不到数据，Tag =
-      <app>.<svc>.<instance>.<logname>。有效处理规则开启多行时（multiline_enabled +
-      start_pattern 取自 monitor_log_processing_rule，服务级覆盖优先回落日志定义
-      关联规则），[MULTILINE_PARSER] 集中生成到独立 parsers 文件
-      parsers.d/djadmin-multiline.conf（Fluent Bit v4 禁止 MULTILINE_PARSER 出现在
-      主配置及其 @INCLUDE 片段中），各 INPUT 通过 Multiline.parser
-      [MULTILINE_PARSER]（Name = multiline_<app>.<svc>.<logname>，regex 型，
-      continuation 规则以首行正则负向前瞻锚定），各 INPUT 通过 Multiline.parser
-      引用——多行合并必须在 Fluent Bit（发送前）完成，ingest pipeline 拿到的
-      已是按行拆开的独立文档，无法回溯合并
-      outputs.d/<app>__<svc>__<logname>.conf —— Match 实例段通配，Index =
-      LogDataStreamName（服务级命名），处理规则非空则带 Pipeline
-      指纹 = 全部片段内容的 sha256；某条日志的全部实例都被跳过时不产出任何片段；
-      片段非空时附带 /var/lib/fluent-bit/db/.keep 占位文件——agent 落盘时的
-      MkdirAll 会顺带创建 DB 目录，避免 tail 因打不开 offset 数据库而启动失败
+      inputs.d/<app>__<svc>__<log>.yml —— 每实例一个 filestream input：
+        路径按 服务级+实例级宏替换 ${VAR}（宏来源：部署实例 runtime_variables +
+        服务级 macro_values，部署模板 app_home 作为 APP_HOME 默认值；替换后仍含
+        ${VAR} 的实例跳过并记 warnings）；
+        fields_under_root 注入 service/instance/application/log_name/
+        business_system/environment/host_ip；
+        index = LogDataStreamName；处理规则非空带 pipeline；开启多行带 multiline parser
+      指纹 = 全部片段内容的 sha256；全实例被跳过时不产出片段；
+      片段非空时附带 /var/lib/filebeat/.keep 占位（agent MkdirAll 顺带建 registry 目录）
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
-  → 片段中含 parsers 文件（即启用多行）时，自动附带下发主配置
-    fluent-bit.conf（内容 = fluentBitMainConfig()，含 Parsers_File 指向
-    parsers.d/djadmin-multiline.conf——老主机安装时的主配置可能缺该行，下发即自愈）
-  → agent 动作 configure_fluent_bit_opensearch（连接 env，保持不变）
-  → agent 动作 apply_fluent_bit_config（写片段文件，任一变化则 systemctl restart fluent-bit）
+  → agent 动作 configure_filebeat_output（写 filebeat.yml：output.elasticsearch +
+    filebeat.config.inputs 托管 inputs.d，`filebeat test config` 后 restart）
+  → agent 动作 apply_filebeat_config（写 inputs.d/*.yml，删残留片段，files 为空时只清理，test config 后 restart）
+      —— inputs 为空不报错：output 配置照常下发，主机先纳管可用
   → 回写 config_fingerprint / last_applied_time
 ```
 
@@ -560,30 +531,93 @@ OUTPUT，同一逻辑服务的同名日志多实例共用一个输出。Tag 固�
   取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
   在应用层解析（原实现是 `JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))`）；收尾语句里
   "成功则把 runtime_status 置 running" 用整数标志传（同一条语句里重复写同一个 `sqlc.arg` 会让
-  MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
+   MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
   （0=运行中、3=已停止、其余=异常）。
-- 解析（多行/格式）由 OpenSearch ingest pipeline（处理规则 pipeline_body，名称即规则 name）
-  承担，INPUT 不携带 multiline 配置。
-- **片段目录由 backend 全量托管**：渲染结果即该主机期望的完整片段集合，agent 落盘后会
-  删除 inputs.d/outputs.d 中不在本次清单内的 `*.conf` 遗留片段（改名/维度修正/服务下线
-  后的残留），删除与写入任一发生即重启 Fluent Bit——残留片段的 Match 与新片段重叠时
-  会把同一条日志重复写进多条流，必须清理。
-- 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），
-  只渲染不下发。
-- 历史差异：Django 版片段由后端 Celery 渲染；Go 版渲染在 API 进程内完成，agent 与
-  片段格式解耦（只落盘+重启），格式演进不动 agent。
+- **`agent_installed` 由收尾语句维护（2026-09-17 修复）**：它是"Filebeat 二进制已装"的持久态，
+  安装成功置 TRUE、卸载成功置 FALSE，失败时传 NULL 保持原值（`COALESCE(narg, agent_installed)`）。
+  此前 Go 版只写 `install_status/runtime_status`，从未维护该列，导致链路体检"主机配置"层恒报
+  "Filebeat 未安装"、"采集进程"层恒空、宿主列表 `filebeat_filter` 与前端启停按钮误判。
+  历史行由迁移 `000029_backfill_log_target_agent_installed` 按 `install_status` 回填
+  （success→TRUE、uninstalled→FALSE，其余不动）。
+- **失败文案取 stderr（关键）**：local ansible 退出码非 0 时 `runErr` 就是 `*exec.ExitError`，
+  直接写 `runErr.Error()` 只会得到 `exit status 2` 这种无信息量文案。作业摘要与主机日志统一走
+  `ansibleResultMessage`：优先 stderr（真正的 ansible 报错），其次 stdout，只有进程没起来/无输出
+  时才回退 `runErr`。这条同样适用于 exporter 安装等所有 `automation_execution_job`。
+- **Filebeat 只支持 tar.gz（官方便携包）**：软件包 `package_type=filebeat`、`package_format=tar.gz`、
+  `platform_family=any`、`platform_major` 留空；选包只按资产采集的 CPU 架构
+  （`assets_hosthardware.architecture` 归一为 amd64/arm64）匹配，不再区分发行版/主版本，也不支持 rpm/deb。
+  架构缺失时 `pickFilebeatPackage` 会先自动补采一次。
+  便携包布局：二进制 `/opt/filebeat/filebeat`、配置 `/etc/filebeat`、数据 `/var/lib/filebeat`，
+  systemd 服务名固定 `filebeat.service`。
+  上传文件名以记录名为前缀，接受 `<name>-<version>.<os>-<arch>.tar.gz` 与
+  `<name>-<version>-<os>-<arch>.tar.gz`（也接受省略 os 的 `<name>-<version>-<arch>`），
+  arch 支持 `x86_64`/`amd64`、`aarch64`/`arm64`。**必须放预编译二进制包**（解压后含 `filebeat`）。
+  安装 Playbook 只做「拷贝 tar.gz → 校验 sha256 → 解压到 `/opt/filebeat` → 写 systemd unit → enable」，
+  主配置/inputs 由 agent 在「下发配置」时写入（见 §8.4），playbook 不碰文件内容。
+  **默认配置会写进软件包**：创建/编辑 Filebeat 包时，若「安装/卸载 Playbook 内容」和
+  「systemd unit 文件内容」为空，后端用 `internal/monitor/filebeat_playbook.go` 的默认内容
+  创建 `automation_playbook_template` 并绑定、把默认 unit 写进 `service_file_content`
+  （启动时也会给历史 Filebeat 包回填一次），用户可在编辑弹窗里看到并修改；
+  extra_vars 为 `service_name`/`package_local_directory`/`package_file_name`/`package_sha256`/
+  `service_file_content`。下方这份是等价参考。
+  安装成功后后端会**自动下发一次采集配置**（等价于「下发配置」），写入 `/etc/filebeat/filebeat.yml`
+  与 `inputs.d` 并启动服务，所以「安装」即可用，无需再手动点一次。
 
-### 8.5 热重载
+  ```yaml
+  # 安装（tar.gz）
+  - hosts: all
+    become: true
+    gather_facts: false
+    vars:
+      fb_home: /opt/filebeat
+      archive: "/tmp/{{ package_file_name }}"
+    tasks:
+      - copy: { src: "{{ package_local_directory }}/{{ package_file_name }}", dest: "{{ archive }}", mode: "0644" }
+      - shell: 'echo "{{ package_sha256 }}  {{ archive }}" | sha256sum -c -'
+      - shell: |
+          set -euo pipefail
+          rm -rf {{ fb_home }}.new && mkdir -p {{ fb_home }}.new
+          tar -xzf {{ archive }} -C {{ fb_home }}.new --strip-components=1
+          rm -rf {{ fb_home }} && mv {{ fb_home }}.new {{ fb_home }}
+      - file: { path: /var/lib/filebeat, state: directory, mode: "0755" }
+      - copy:
+          dest: "/etc/systemd/system/{{ service_name }}.service"
+          mode: "0644"
+          content: "{{ service_file_content }}"
+      # 只 enable 不 start：安装成功后端会自动下发配置并启动；手动流程则点「下发配置」。
+      - systemd: { daemon_reload: true, name: "{{ service_name }}", enabled: true }
+  ```
 
-Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 input 独立重载。
-由于 `DB` 记录了 offset，重载后从断点继续，不会丢日志，仅有一到两秒采集间隙。
+  ```yaml
+  # 卸载（tar.gz）
+  - hosts: all
+    become: true
+    gather_facts: false
+    tasks:
+      - systemd: { name: "{{ service_name }}.service", enabled: false, state: stopped }
+        failed_when: false
+      - file: { path: "/etc/systemd/system/{{ service_name }}.service", state: absent }
+      - file: { path: /opt/filebeat, state: absent }
+      - systemd: { daemon_reload: true }
+  ```
 
-**不使用 `systemctl restart`**。
+- **片段目录由 backend 全量托管**：渲染结果即该主机期望的完整 inputs 片段集合，agent 落盘后会
+  删除 `inputs.d` 中不在本次清单内的 `*.yml` 遗留片段（改名/维度修正/服务下线后的残留），
+  删除与写入任一发生即 `filebeat test config` + `systemctl restart filebeat`。
+- 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），只渲染不下发。
+- agent 侧动作：`configure_filebeat_output`（写主配置 output/托管段）、`apply_filebeat_config`
+  （写 inputs + 清理 + 校验 + 重启）；服务启停走通用 `systemctl` 命令通道（`filebeat.service`）。
+
+### 8.5 重载
+
+Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热加载；当前下发流程为保证
+主配置与片段一致，仍在有变化时 `filebeat test config` 后重启 `filebeat.service`（registry 记录 offset，
+重启后从断点继续，仅一到两秒间隙）。
 
 ### 8.6 清理
 
-服务关闭采集、实例移除、服务删除时，必须删除对应的 `inputs.d` 片段并触发重载。
-否则 Fluent Bit 会持续尝试采集无人管理的文件，或因文件不存在反复报错。
+服务关闭采集、实例移除、服务删除时，必须删除对应的 `inputs.d` 片段；agent 全量托管会
+在下次下发时清理残留。否则 Filebeat 会持续尝试采集无人管理的文件，或因文件不存在反复报错。
 
 ---
 
@@ -595,13 +629,13 @@ Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 i
 `顶层 → 项目 → 业务系统 → 环境 → 逻辑服务`，右侧按层级展示。
 
 **数据口径（关键）**：真实磁盘占用/rollover 状态的原子粒度是 data stream
-（命名 = `logs-<项目>-<业务系统>-<环境>-<档位编码>`，见 4.1）。树的顶层/项目/业务系统/环境层
+（命名 = `autoadmin-<项目>-<业务系统>-<环境>-<档位编码>`，见 4.1）。树的顶层/项目/业务系统/环境层
 都是流的真实聚合；**逻辑服务层只有写入量（文档数）口径**——服务是流内字段不是索引维度，
 不存在按服务的真实磁盘拆分，UI 必须明示该差异。
 
-- 数据来源：`GET /monitor/opensearch-clusters/:id/log-storage-overview/`
+- 数据来源：`GET /monitor/elasticsearch-clusters/:id/log-storage-overview/`
   （`datastream_status.go`）聚合 `_cat/indices`（流大小/docs/健康）、
-  `_plugins/_ism/explain`（rollover/ISM 状态）、`_cat/allocation`（节点磁盘水位，
+  `_ilm/explain`（rollover/ILM 状态）、`_cat/allocation`（节点磁盘水位，
   失败不阻塞总览），并从 MySQL 带回项目/业务系统/环境/服务维度数据，前端组装树。
 - 流名解析：后备索引名形如 `.ds-<流名>-<代数>`（或传统 `<流名>-<YYYY.MM.DD>`），先剥离
   `.ds-` 前缀与后缀还原流名，再用数据库维度码做前缀匹配（`streamNameMatcher`，编码可含
@@ -692,8 +726,8 @@ Fluent Bit 的热重载是**全局重新初始化所有 pipeline**，不是单 i
 
 告警接入现有 `AlertRoute` / `AlertMedia` 通知链路。
 
-**OpenSearch 能力边界**：Elasticsearch 的 `categorize_text` 聚合可做完全无监督的日志
-聚类，OpenSearch 由 ES 7.10 fork，不包含该功能。因此聚类质量完全取决于 ingest 阶段的
+**Elasticsearch 能力边界**：Elasticsearch 的 `categorize_text` 聚合可做完全无监督的日志
+聚类，Elasticsearch 由 ES 7.10 fork，不包含该功能。因此聚类质量完全取决于 ingest 阶段的
 fingerprint 归一化质量。
 
 ---
@@ -702,7 +736,7 @@ fingerprint 归一化质量。
 
 | 需求 | 复用 |
 |---|---|
-| Fluent Bit 安装、卸载、状态检查 | monitor 的 `SoftwarePackage` + `MonitorTarget` 纳管体系 |
+| Filebeat 安装、卸载、状态检查 | monitor 的 `SoftwarePackage` + `MonitorTarget` 纳管体系 |
 | 配置文件下发 | dj-agent gRPC 文件写入 `write_open` / `write_chunk` / `write_close` |
 | 服务状态检查 | dj-agent `check_exporter_status` 模式 |
 | 路径变量展开 | `${APP_HOME}` / `${INSTANCE_NAME}` 现有机制 |
@@ -716,16 +750,16 @@ fingerprint 归一化质量。
 
 | 阶段 | 内容 | 状态 | 说明 |
 |---|---|---|---|
-| 1 | OpenSearch 连接、index template、ISM policy | 已完成 | 支持集群连接测试和幂等 bootstrap |
+| 1 | Elasticsearch 连接、index template、ILM policy | 已完成 | 支持集群连接测试和幂等 bootstrap |
 | 2 | 统一日志处理规则、Pipeline 发布、`_simulate` 调试 | 已完成 | 页面明确区分发送前处理与 Ingest，仍只保存一条规则 |
 | 3 | 数据模型与迁移 | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键 |
-| 4 | Fluent Bit 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
+| 4 | Filebeat 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
 | 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离 |
 | 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行 |
 | 7 | 日志洞察页面与告警接入 | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善 |
 
 解析规则调试仍是后续扩展的回归基线：新增日志格式必须先用真实样例通过 `_simulate`，再关联
-日志定义并应用 Fluent Bit 配置。
+日志定义并应用 Filebeat 配置。
 
 ---
 
@@ -733,10 +767,10 @@ fingerprint 归一化质量。
 
 | 项 | 说明 |
 |---|---|
-| 日志读取权限 | 应用日志属于 `esb` 等业务用户，Fluent Bit 需以 root 运行或配置 ACL。安装检查时应一并验证可读性，避免配置下发成功但无数据 |
-| 同主机路径冲突 | 同一主机上多个实例日志文件名可能相同，下发前必须校验展开后的绝对路径唯一，否则 Fluent Bit 会产生 harvester 冲突 |
+| 日志读取权限 | 应用日志属于 `esb` 等业务用户，Filebeat 需以 root 运行或配置 ACL。安装检查时应一并验证可读性，避免配置下发成功但无数据 |
+| 同主机路径冲突 | 同一主机上多个实例日志文件名可能相同，下发前必须校验展开后的绝对路径唯一，否则 Filebeat 会产生 harvester 冲突 |
 | mapping 字段膨胀 | 业务附加字段统一使用 `labels_` 前缀；需聚合的字段提升为固定字段，并设置 `total_fields.limit` |
 | 时间戳 | 必须在 pipeline 中用 `date` processor 覆盖 `@timestamp`，否则记录的是采集时间而非日志产生时间 |
-| 容器化采集器 | 若 Fluent Bit 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内 |
-| 磁盘水位 | OpenSearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ISM 自动清理 |
+| 容器化采集器 | 若 Filebeat 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内 |
+| 磁盘水位 | Elasticsearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ILM 自动清理 |
 | TLS 证书 | 自签证书阶段使用 `tls.verify Off`，生产需分发 CA 证书并开启校验 |

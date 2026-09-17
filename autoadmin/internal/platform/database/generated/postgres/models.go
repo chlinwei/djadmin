@@ -803,6 +803,29 @@ type MonitorAlertNotificationEvent struct {
 	AlertID          int64          `json:"alert_id"`
 }
 
+type MonitorElasticsearchCluster struct {
+	ID                int64        `json:"id"`
+	CreateTime        time.Time    `json:"create_time"`
+	UpdateTime        time.Time    `json:"update_time"`
+	Name              string       `json:"name"`
+	Hosts             string       `json:"hosts"`
+	Username          string       `json:"username"`
+	Password          string       `json:"password"`
+	VerifyTls         bool         `json:"verify_tls"`
+	CaCert            string       `json:"ca_cert"`
+	IndexPrefix       string       `json:"index_prefix"`
+	RequestTimeout    int32        `json:"request_timeout"`
+	Enabled           bool         `json:"enabled"`
+	IsDefault         bool         `json:"is_default"`
+	LastCheckTime     sql.NullTime `json:"last_check_time"`
+	LastCheckSuccess  sql.NullBool `json:"last_check_success"`
+	LastCheckMessage  string       `json:"last_check_message"`
+	Remark            string       `json:"remark"`
+	StorageSyncError  string       `json:"storage_sync_error"`
+	StorageSyncStatus string       `json:"storage_sync_status"`
+	StorageSyncTime   sql.NullTime `json:"storage_sync_time"`
+}
+
 type MonitorLogCollectionFilterRule struct {
 	ID            int64          `json:"id"`
 	CreateTime    time.Time      `json:"create_time"`
@@ -845,6 +868,7 @@ type MonitorLogProcessingRule struct {
 	MultilineEnabled    bool            `json:"multiline_enabled"`
 	StartPattern        string          `json:"start_pattern"`
 	ContinuationPattern string          `json:"continuation_pattern"`
+	SampleLog           string          `json:"sample_log"`
 	FlushTimeout        uint32          `json:"flush_timeout"`
 	PipelineBody        json.RawMessage `json:"pipeline_body"`
 	ClusterID           int64           `json:"cluster_id"`
@@ -878,29 +902,6 @@ type MonitorNotificationPolicy struct {
 	NotifyOnFiring   bool            `json:"notify_on_firing"`
 	NotifyOnResolved bool            `json:"notify_on_resolved"`
 	UserGroupIds     sql.NullString  `json:"user_group_ids"`
-}
-
-type MonitorOpensearchCluster struct {
-	ID                int64        `json:"id"`
-	CreateTime        time.Time    `json:"create_time"`
-	UpdateTime        time.Time    `json:"update_time"`
-	Name              string       `json:"name"`
-	Hosts             string       `json:"hosts"`
-	Username          string       `json:"username"`
-	Password          string       `json:"password"`
-	VerifyTls         bool         `json:"verify_tls"`
-	CaCert            string       `json:"ca_cert"`
-	IndexPrefix       string       `json:"index_prefix"`
-	RequestTimeout    uint32       `json:"request_timeout"`
-	Enabled           bool         `json:"enabled"`
-	IsDefault         bool         `json:"is_default"`
-	LastCheckTime     sql.NullTime `json:"last_check_time"`
-	LastCheckSuccess  sql.NullBool `json:"last_check_success"`
-	LastCheckMessage  string       `json:"last_check_message"`
-	Remark            string       `json:"remark"`
-	StorageSyncError  string       `json:"storage_sync_error"`
-	StorageSyncStatus string       `json:"storage_sync_status"`
-	StorageSyncTime   sql.NullTime `json:"storage_sync_time"`
 }
 
 type MonitorSoftwarePackage struct {

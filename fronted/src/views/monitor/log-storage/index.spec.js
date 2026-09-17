@@ -15,7 +15,7 @@ const CLUSTER = {
   is_default: true,
   verify_tls: false,
   last_check_success: true,
-  last_check_message: 'opensearch 2.19.0',
+  last_check_message: 'elasticsearch 2.19.0',
   last_check_time: '2026-08-30T10:00:00Z',
   storage_sync_status: 'success',
   storage_sync_error: '',
@@ -46,11 +46,11 @@ const HEALTH = {
 }
 
 vi.mock('@/api/monitor', () => ({
-  getOpenSearchClusterList: vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } })),
+  getElasticsearchClusterList: vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } })),
   getLogPipelineHealth: vi.fn(() => Promise.resolve({ data: { data: HEALTH } })),
-  saveOpenSearchCluster: vi.fn(() => Promise.resolve({ data: { data: CLUSTER } })),
-  batchDeleteOpenSearchClusters: vi.fn(() => Promise.resolve({ data: { data: null } })),
-  testOpenSearchCluster: vi.fn(() => Promise.resolve({ data: { data: {} } })),
+  saveElasticsearchCluster: vi.fn(() => Promise.resolve({ data: { data: CLUSTER } })),
+  batchDeleteElasticsearchClusters: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  testElasticsearchCluster: vi.fn(() => Promise.resolve({ data: { data: {} } })),
 }))
 
 function mountPage() {

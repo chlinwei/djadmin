@@ -120,7 +120,6 @@ func validateJobByType(job protocol.Job) error {
 		// exporter_name/脚本内容等 params，不再像旧版 node_exporter 动作那样允许空参数）
 		if job.Action != actionGetAgentVersion &&
 			job.Action != actionGetHostInfo &&
-			job.Action != actionReloadFluentBit &&
 			len(job.Params) == 0 {
 			return fmt.Errorf("params is required for type=%s", job.Type)
 		}

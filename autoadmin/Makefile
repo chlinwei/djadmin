@@ -11,18 +11,30 @@ TESTFLAGS ?=
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS ?= -s -w -X autoadmin/internal/buildinfo.Version=$(VERSION)
 
-.PHONY: all build test vet fmt generate derive facade build-postgres vet-postgres
+# 默认把 CPython + ansible-core 打进二进制（自包含，部署机不需要宿主 Python/ansible-core）：
+#   make ansible-embed              # 首次/requirements 变更后生成嵌入数据
+#   make / make build               # 默认即内嵌（约 +50MB）
+#   make build ANSIBLE_EMBED=       # 显式关闭，走宿主 PATH 的 ansible-playbook
+# 注意：ansible-core 是 GPL-3.0-or-later，随二进制分发需评估许可证义务。
+ANSIBLE_EMBED ?= 1
+EMBED_TAG := $(if $(filter 1,$(ANSIBLE_EMBED)),embedansible,)
+GO_TAGS := $(strip $(EMBED_TAG))
+TAGFLAG := $(if $(GO_TAGS),-tags "$(GO_TAGS)",)
+
+.PHONY: all build test vet fmt generate derive facade build-postgres vet-postgres ansible-embed
 
 all: vet test build
 
 build:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -buildvcs=false -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/autoadmin
+	@if [ -n "$(EMBED_TAG)" ] && [ ! -d internal/automation/ansiblecmd/embeddata/linux-amd64 ]; then \
+		echo "缺少嵌入数据：请先运行 make ansible-embed（需要联网下载 wheel）"; exit 1; fi
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(TAGFLAG) -buildvcs=false -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/autoadmin
 
 test:
-	go test $(TESTFLAGS) $(PKG)
+	go test $(TAGFLAG) $(TESTFLAGS) $(PKG)
 
 vet:
-	go vet ./...
+	go vet $(TAGFLAG) ./...
 
 fmt:
 	gofmt -w ./cmd ./internal
@@ -60,7 +72,12 @@ facade:
 
 # PostgreSQL 变体：查询与连接都走 PG 产物/驱动，需要 POSTGRES_DSN。
 build-postgres:
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -tags postgres -buildvcs=false -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)-postgres ./cmd/autoadmin
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -tags "postgres $(GO_TAGS)" -buildvcs=false -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)-postgres ./cmd/autoadmin
 
 vet-postgres:
-	go vet -tags postgres ./...
+	go vet -tags "postgres $(GO_TAGS)" ./...
+
+# 生成 embedansible 变体的嵌入数据（Python 包按 internal/automation/ansiblecmd/requirements.txt）。
+# 需要联网下载 wheel；requirements 变更后重跑。产物在 internal/automation/ansiblecmd/embeddata/。
+ansible-embed:
+	cd $(dir $(lastword $(MAKEFILE_LIST))) && go generate ./internal/automation/ansiblecmd/...

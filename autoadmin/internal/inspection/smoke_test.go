@@ -348,7 +348,6 @@ func TestSmokeInspectionQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("执行收尾：%v", err)
 	}
 
-
 	// 保留期清理（多表 DELETE 的改写）：cutoff 放到将来，三条语句应在**回滚事务**里把刚
 	// 终态的执行删掉。放在事务里是为了不误删库里别人的历史记录——这条语句的 cutoff 是全局的。
 	cleanupTx, err := pool.BeginTx(ctx, nil)

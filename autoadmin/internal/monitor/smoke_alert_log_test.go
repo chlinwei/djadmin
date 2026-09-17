@@ -145,9 +145,9 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	childID, err := queries.CreateNotificationPolicy(ctx, db.CreateNotificationPolicyParams{
 		CreateTime: now, UpdateTime: now, Remark: sql.NullString{String: "静音", Valid: true},
 		ParentID: sql.NullInt64{Int64: rootID, Valid: true}, Name: "静音-" + suffix, Position: 1,
-		Matchers: json.RawMessage(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`),
-		MediaIds: sql.NullString{String: "[]", Valid: true}, // 显式静音
-		UserGroupIds: sql.NullString{String: `[]`, Valid: true},
+		Matchers:       json.RawMessage(`[{"type":"label","label":"severity","operator":"=","value":"critical"}]`),
+		MediaIds:       sql.NullString{String: "[]", Valid: true}, // 显式静音
+		UserGroupIds:   sql.NullString{String: `[]`, Valid: true},
 		NotifyOnFiring: false, NotifyOnResolved: true,
 	})
 	if err != nil {
@@ -353,7 +353,7 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 		HostIDSnapshot:       sql.NullInt32{Int32: int32(hostID), Valid: true},
 		HostNameSnapshot:     targetRow.InstanceName,
 		HostIpSnapshot:       targetRow.Ip,
-		ExporterTypeSnapshot: "fluent_bit", SummaryMessage: "",
+		ExporterTypeSnapshot: "filebeat", SummaryMessage: "",
 		RequestedUserIDSnapshot: sql.NullInt32{}, RequestedUsernameSnapshot: "system",
 		HostID:                sql.NullInt64{Int64: hostID, Valid: true},
 		LogCollectionTargetID: sql.NullInt64{Int64: targetID, Valid: true},
@@ -369,9 +369,23 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	finishedAt := time.Now().UTC()
 	if affected, err := queries.FinishLogTargetInstallState(ctx, db.FinishLogTargetInstallStateParams{
 		InstallStatus: "success", InstallMessage: "", InstallSucceeded: 1,
-		UpdateTime: finishedAt, ID: targetID,
+		AgentInstalled: sql.NullBool{Bool: true, Valid: true},
+		UpdateTime:     finishedAt, ID: targetID,
 	}); err != nil || affected != 1 {
 		t.Fatalf("收尾日志目标：affected=%d err=%v", affected, err)
+	}
+	managed, err := queries.ListManagedLogTargetConfigs(ctx)
+	if err != nil {
+		t.Fatalf("读纳管日志目标配置：%v", err)
+	}
+	agentInstalled := false
+	for _, item := range managed {
+		if item.ID == targetID {
+			agentInstalled = item.AgentInstalled
+		}
+	}
+	if !agentInstalled {
+		t.Fatal("安装成功后 agent_installed 应置 TRUE（否则链路体检误报未安装）")
 	}
 	if affected, err := queries.FinishLogTargetInstallHistory(ctx, db.FinishLogTargetInstallHistoryParams{
 		Status: "success", SummaryMessage: "",
@@ -403,7 +417,7 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("刷新下发时间：%v", err)
 	}
 	if err := queries.MarkLogTargetConfigSynced(ctx, db.MarkLogTargetConfigSyncedParams{
-		LastAppliedTime: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		LastAppliedTime:   sql.NullTime{Time: time.Now().UTC(), Valid: true},
 		ConfigFingerprint: "smoke-" + suffix, UpdateTime: time.Now().UTC(), ID: targetID,
 	}); err != nil {
 		t.Fatalf("写配置指纹：%v", err)
@@ -418,29 +432,29 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("新建的日志目标应处于纳管状态")
 	}
 
-	// ---- OpenSearch 集群（整行插入 / 整行更新 / 探测与同步状态 / 默认唯一）----
-	clusterID, err := queries.CreateOpenSearchCluster(ctx, db.CreateOpenSearchClusterParams{
+	// ---- Elasticsearch 集群（整行插入 / 整行更新 / 探测与同步状态 / 默认唯一）----
+	clusterID, err := queries.CreateElasticsearchCluster(ctx, db.CreateElasticsearchClusterParams{
 		CreateTime: now, UpdateTime: now, Name: "smoke-cluster-" + suffix, Hosts: "http://127.0.0.1:9200",
 		Username: "admin", Password: "encrypted", VerifyTls: false, CaCert: "",
 		IndexPrefix: "smoke-" + suffix, RequestTimeout: 10, Enabled: true, IsDefault: true, Remark: "冒烟",
 	})
 	if err != nil {
-		t.Fatalf("建 OpenSearch 集群：%v", err)
+		t.Fatalf("建 Elasticsearch 集群：%v", err)
 	}
-	if count, err := queries.CountAllOpenSearchClusters(ctx); err != nil || count < 1 {
+	if count, err := queries.CountAllElasticsearchClusters(ctx); err != nil || count < 1 {
 		t.Fatalf("集群计数：%d err=%v", count, err)
 	}
-	if err := queries.ClearDefaultOpenSearchCluster(ctx, db.ClearDefaultOpenSearchClusterParams{
+	if err := queries.ClearDefaultElasticsearchCluster(ctx, db.ClearDefaultElasticsearchClusterParams{
 		UpdateTime: time.Now().UTC(), ID: clusterID,
 	}); err != nil {
 		t.Fatalf("清理其它默认集群：%v", err)
 	}
-	cluster, err := queries.GetOpenSearchClusterConnection(ctx, clusterID)
+	cluster, err := queries.GetElasticsearchClusterConnection(ctx, clusterID)
 	if err != nil || cluster.IndexPrefix != "smoke-"+suffix {
 		t.Fatalf("读集群连接：%+v err=%v", cluster, err)
 	}
 	// 整行写：这里直接复用生产代码的"读回 + 合并"路径（未提交的列必须保持原值）。
-	merged, err := mergedOpenSearchCluster(context.Background(), queries, clusterID, map[string]any{
+	merged, err := mergedElasticsearchCluster(context.Background(), queries, clusterID, map[string]any{
 		"hosts": "http://127.0.0.1:9201", "remark": "改过",
 	})
 	if err != nil {
@@ -449,7 +463,7 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if merged.Name != "smoke-cluster-"+suffix || merged.Password != "encrypted" {
 		t.Fatalf("合并语义不符：%+v", merged)
 	}
-	if affected, err := queries.UpdateOpenSearchCluster(ctx, db.UpdateOpenSearchClusterParams{
+	if affected, err := queries.UpdateElasticsearchCluster(ctx, db.UpdateElasticsearchClusterParams{
 		UpdateTime: time.Now().UTC(), Name: merged.Name, Hosts: merged.Hosts,
 		Username: merged.Username, Password: merged.Password, VerifyTls: merged.VerifyTls,
 		CaCert: merged.CaCert, IndexPrefix: merged.IndexPrefix, RequestTimeout: merged.RequestTimeout,
@@ -457,16 +471,16 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	}); err != nil || affected != 1 {
 		t.Fatalf("更新集群：affected=%d err=%v", affected, err)
 	}
-	if updated, err := queries.GetOpenSearchClusterTyped(ctx, clusterID); err != nil || updated.Password != "encrypted" || updated.Hosts != "http://127.0.0.1:9201" {
+	if updated, err := queries.GetElasticsearchClusterTyped(ctx, clusterID); err != nil || updated.Password != "encrypted" || updated.Hosts != "http://127.0.0.1:9201" {
 		t.Fatalf("合并后的集群：%+v err=%v", updated, err)
 	}
-	if err := queries.MarkOpenSearchClusterCheckFailed(ctx, db.MarkOpenSearchClusterCheckFailedParams{
+	if err := queries.MarkElasticsearchClusterCheckFailed(ctx, db.MarkElasticsearchClusterCheckFailedParams{
 		LastCheckTime: sql.NullTime{Time: time.Now().UTC(), Valid: true}, LastCheckMessage: "探测失败",
 		UpdateTime: time.Now().UTC(), ID: clusterID,
 	}); err != nil {
 		t.Fatalf("写探测失败：%v", err)
 	}
-	if err := queries.MarkOpenSearchClusterCheckSuccess(ctx, db.MarkOpenSearchClusterCheckSuccessParams{
+	if err := queries.MarkElasticsearchClusterCheckSuccess(ctx, db.MarkElasticsearchClusterCheckSuccessParams{
 		LastCheckTime: sql.NullTime{Time: time.Now().UTC(), Valid: true}, LastCheckMessage: "ok",
 		UpdateTime: time.Now().UTC(), ID: clusterID,
 	}); err != nil {
@@ -489,10 +503,10 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("写同步成功：%v", err)
 	}
-	if _, err := queries.ListEnabledOpenSearchClusterIDs(ctx); err != nil {
+	if _, err := queries.ListEnabledElasticsearchClusterIDs(ctx); err != nil {
 		t.Fatalf("列启用集群：%v", err)
 	}
-	if defaultCluster, err := queries.GetDefaultEnabledOpenSearchCluster(ctx); err != nil || defaultCluster.Hosts == "" {
+	if defaultCluster, err := queries.GetDefaultEnabledElasticsearchCluster(ctx); err != nil || defaultCluster.Hosts == "" {
 		t.Fatalf("读默认启用集群：%+v err=%v", defaultCluster, err)
 	}
 
@@ -574,7 +588,7 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("列纳管中的日志目标：%v", err)
 	}
 	if _, err := queries.ListInstalledLogTargetRuntime(ctx); err != nil {
-		t.Fatalf("列已装 Fluent Bit 的目标：%v", err)
+		t.Fatalf("列已装 Filebeat 的目标：%v", err)
 	}
 	if _, err := queries.ListEnabledServiceStreamDims(ctx); err != nil {
 		t.Fatalf("列服务流维度：%v", err)
@@ -630,7 +644,7 @@ func TestSmokeAlertLogConfigQueriesAgainstRealDatabase(t *testing.T) {
 	if err := deleteLogCollectionFilterRule(ctx, tx, filterRuleID); err != nil {
 		t.Fatalf("删过滤规则：%v", err)
 	}
-	if err := deleteRowsAffected(queries.DeleteOpenSearchCluster(ctx, clusterID)); err != nil {
+	if err := deleteRowsAffected(queries.DeleteElasticsearchCluster(ctx, clusterID)); err != nil {
 		t.Fatalf("删集群：%v", err)
 	}
 	// 第一条媒介被投递记录以 FK 引用（不能直接删），另建一条验证删除路径 + "删不到行"语义。

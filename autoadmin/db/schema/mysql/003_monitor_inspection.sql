@@ -60,7 +60,7 @@ CREATE TABLE `monitor_log_retention_tier` (
   UNIQUE KEY `code` (`code`)
 );
 
-CREATE TABLE `monitor_opensearch_cluster` (
+CREATE TABLE `monitor_elasticsearch_cluster` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `create_time` datetime(6) NOT NULL,
   `update_time` datetime(6) NOT NULL,
@@ -96,13 +96,14 @@ CREATE TABLE `monitor_log_processing_rule` (
   `multiline_enabled` BOOLEAN NOT NULL,
   `start_pattern` longtext NOT NULL,
   `continuation_pattern` longtext NOT NULL,
+  `sample_log` longtext NOT NULL,
   `flush_timeout` int unsigned NOT NULL,
   `pipeline_body` json NOT NULL,
   `cluster_id` bigint NOT NULL,
   `application_id` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
-  CONSTRAINT `monitor_log_processing_rule_cluster_fk` FOREIGN KEY (`cluster_id`) REFERENCES `monitor_opensearch_cluster` (`id`)
+  CONSTRAINT `monitor_log_processing_rule_cluster_fk` FOREIGN KEY (`cluster_id`) REFERENCES `monitor_elasticsearch_cluster` (`id`)
 );
 
 CREATE TABLE `monitor_log_collection_filter_rule` (

@@ -49,9 +49,9 @@ func TestCheckApplicationPlanForState_RequiresRunningSkips(t *testing.T) {
 func TestCheckApplicationPlanForState_RejectsUnknownCapability(t *testing.T) {
 	executor := New(0)
 	plan := map[string]any{
-		"schema_version": 1,
+		"schema_version":        1,
 		"required_capabilities": []any{"goss:v1"},
-		"checks":               []any{},
+		"checks":                []any{},
 	}
 	results := executor.checkApplicationPlanForState(context.Background(), map[string]any{"check_plan": plan}, true)
 	if len(results) != 1 || results[0].Status != "error" {

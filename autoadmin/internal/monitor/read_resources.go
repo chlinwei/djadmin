@@ -166,8 +166,8 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 	if managedFilter == "true" || managedFilter == "false" {
 		filter.ManagedFilter = managedFilter
 	}
-	if fluentManaged := strings.TrimSpace(context.Query("fluent_bit_managed")); fluentManaged == "true" || fluentManaged == "false" {
-		filter.FluentFilter = fluentManaged
+	if filebeatManaged := strings.TrimSpace(context.Query("filebeat_managed")); filebeatManaged == "true" || filebeatManaged == "false" {
+		filter.FilebeatFilter = filebeatManaged
 	}
 	queries := db.New(handler.db)
 	count, err := queries.CountMonitorHosts(context, filter)
@@ -177,7 +177,7 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 	}
 	rows, err := queries.ListMonitorHosts(context, db.ListMonitorHostsParams{
 		SearchPattern: filter.SearchPattern, GroupIds: filter.GroupIds, GroupFilter: filter.GroupFilter,
-		ManagedFilter: filter.ManagedFilter, ExporterType: filter.ExporterType, FluentFilter: filter.FluentFilter,
+		ManagedFilter: filter.ManagedFilter, ExporterType: filter.ExporterType, FilebeatFilter: filter.FilebeatFilter,
 		Limit: int32(size), Offset: int32((page - 1) * size),
 	})
 	if err != nil {
@@ -215,8 +215,8 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		if lastApplied.Valid {
 			appliedValue = lastApplied.Time
 		}
-		fluentBit := gin.H{"id": logIDValue, "host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "host_agent_online": online, "managed": logTargetID.Valid, "agent_installed": agentInstalled.Valid && agentInstalled.Bool, "agent_version": agentVersion.String, "runtime_status": runtimeStatus.String, "install_status": installStatus.String, "config_fingerprint": fingerprint.String, "last_applied_time": appliedValue, "last_error": lastError.String}
-		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "fluent_bit": fluentBit}
+		filebeat := gin.H{"id": logIDValue, "host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "host_agent_online": online, "managed": logTargetID.Valid, "agent_installed": agentInstalled.Valid && agentInstalled.Bool, "agent_version": agentVersion.String, "runtime_status": runtimeStatus.String, "install_status": installStatus.String, "config_fingerprint": fingerprint.String, "last_applied_time": appliedValue, "last_error": lastError.String}
+		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "filebeat": filebeat}
 		if filter.ExporterType != "" && len(typedExporters) > 0 {
 			first := typedExporters[0]
 			item["id"] = first.ID

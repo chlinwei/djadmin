@@ -221,6 +221,15 @@ export function keepAliveNameOf(path) {
     return `view_${normalized || 'root'}`
 }
 
+// 别名路由（alias）会生成独立 record，其 record.path 是别名，但与它共享同一个组件对象；
+// 组件名是按原 route.path 盖的，所以取缓存名必须先归一到 aliasOf.path，否则 include 与
+// 组件名对不上：页面不会被缓存，且在标签增删时会错误地 prune 已缓存实例导致 vnode 崩溃。
+export function keepAliveNameOfRecord(record) {
+    if (!record) return ''
+    const base = record.aliasOf && record.aliasOf.path ? record.aliasOf.path : record.path
+    return keepAliveNameOf(base)
+}
+
 function withKeepAliveName(loader, path) {
     if (typeof loader !== 'function') {
         return loader

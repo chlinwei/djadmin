@@ -32,6 +32,7 @@
 - `operation=install`：必须带有效的 `credential_id`（`assets_credential` 中存在）；不要求主机已绑定/在线 Agent。
 - `operation=update`：不要求 `credential_id`；要求每台主机已绑定 Agent 且当前在线。
 - 两种操作共用同一拦截：目标主机存在活跃（queued/running 且 30 秒内 `update_time` 有更新）的 `install_agent` 任务时拒绝；超时 30 秒无更新的旧任务先标记失败。
+  - 取消联动：在运行记录中心「取消」自动化作业（`CancelJob`）时，会一并把该作业下 `assets_agent_job`（action=install_agent）与 `automation_execution_host_log` 的 queued/running 置为 failed，否则 agent job 仍算活跃，下次安装/更新会被这条拦截误挡（agent job 与 automation job 是两套状态）。
   - 说明：项目没有应用层心跳，Agent 在线判定权威是活跃的 gRPC 会话（`Gateway.IsOnline`），保活由 gRPC 内建 keepalive（30s ping / 10s 超时）承担；任务失联判定依据是任务行 `update_time` 的更新间隔。
   - 死会话清理：`Gateway.Execute` 向会话发送帧失败（底层传输已断，典型报错 `transport is closing`）时，网关立即把该会话从 sessions 摘除（`dropSession`，同 ID 新连接顶替时不误删）并关闭其全部 pending 管道——等待方立刻得到 `agent offline` 语义，`IsOnline` 不再对死连接误报在线；agent 侧随后自动重连重建会话。
 
@@ -89,11 +90,26 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 2. 建临时目录，写 inventory（JSON 格式）：
    - 密码凭证：解密后写入 `ansible_password`；SSH Key 凭证：解密后写私钥文件（0600）+ `ansible_ssh_private_key_file`。
    - 非 root 用户自动加 sudo become（含 become_password）。凭证解密失败/为空 → 该主机失败。
-3. 写入二进制副本（0755）与模板内容 playbook，执行 `ansible-playbook -i inventory --timeout 10 -e dj_agent_binary_source/... -e dj_agent_instance_name=<instance_name>`，超时 300 秒（进程组 SIGKILL）。
+3. 写入二进制副本（0755）与模板内容 playbook，执行 `ansible-playbook -i inventory --timeout 10 -e dj_agent_binary_source/... -e dj_agent_instance_name=<instance_name>`，超时 300 秒（进程组 SIGKILL）。命令统一由 `internal/automation/ansiblecmd.CommandContext` 构造（见下）。
 4. stdout 每秒流式回写 `assets_agent_job.stdout` 与 host log。
 5. 结束判定：exit code ≠ 0 或 recap 的 failed/unreachable > 0 → 失败；成功后按实例名轮询 `gateway.IsOnline(instance_name)` 最多 10 秒确认 agent 回连 gRPC，未回连仍判失败。
 6. 不回填任何主机标识：主机身份只有实例名，安装流程不改写 `assets_host`（实例名由创建主机时保证）。
 7. 超时：状态 `timeout`、exit 124。全部主机结束后汇总更新 automation job 的 status/result_summary。
+
+### Ansible 运行方式（构建开关，2026-09-17）
+
+`ansible-playbook` 的执行统一走 `internal/automation/ansiblecmd`，按构建标签分两个变体：
+
+| 变体 | 构建 | 运行时依赖 | 产物 |
+|---|---|---|---|
+| 默认 | `make build` | 部署机自带 Python + `ansible-playbook`（PATH 查找） | 30MB |
+| 内嵌 | `make ansible-embed && make build`（默认即内嵌；`ANSIBLE_EMBED=` 可关闭） | 无（自带 CPython + ansible-core） | ~74MB |
+
+内嵌变体（`-tags embedansible`）：把 CPython 3.11 与 `requirements.txt` 钉的 `ansible-core==2.16.14`（及依赖）经 `go:embed` 打进二进制，首次运行解压到临时目录（约 1s，之后走内容哈希缓存）。ansible 路径通过嵌入 Python 的 `.pth` 注入，**不设 `PYTHONHOME/PYTHONPATH`**，避免被 Ansible 的 local 连接继承而污染目标端 Python；同时用自带的空 `ansible.cfg` 屏蔽部署机的 `/etc/ansible/ansible.cfg`。
+
+为什么钉 2.16：ansible-core **2.17 起要求目标机 Python ≥3.7**，老目标机（如 CentOS 7 的 Python 3.6）会因 `module_utils/basic.py` 的 `from __future__ import annotations` 报 SyntaxError；2.16 是最后支持目标机 3.6 的版本。嵌入数据由 `make ansible-embed` 生成（不入库，见 `.gitignore`），改用 `requirements.txt` 里的版本后需重跑。
+
+> ⚠️ `ansible-core` 是 **GPL-3.0-or-later**，随二进制分发（尤其内嵌变体）需评估许可证义务。
 
 ## update 链路（gRPC 在线自更新，`agent_update.go`）
 

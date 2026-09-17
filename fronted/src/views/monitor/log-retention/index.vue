@@ -21,7 +21,7 @@
       class="page-hint"
       type="info"
       show-icon
-      message="档位即 data stream 名称后缀：logs-&lt;项目&gt;-&lt;环境&gt;-&lt;业务系统&gt;-&lt;档位编码&gt;；保存后 ISM 策略会自动下发到启用的集群。"
+      message="档位即 data stream 名称后缀：&lt;索引前缀&gt;-&lt;项目&gt;-&lt;业务系统&gt;-&lt;环境&gt;-&lt;逻辑服务&gt;-&lt;档位编码&gt;；保存后 ILM 策略会自动下发到启用的集群。"
     />
 
     <a-table
@@ -254,7 +254,7 @@ async function submit() {
   saving.value = true
   try {
     await saveLogRetentionTier({ ...form })
-    message.success(form.id ? '保存成功，ISM 策略已下发' : '新增成功，ISM 策略已下发')
+    message.success(form.id ? '保存成功，ILM 策略已下发' : '新增成功，ILM 策略已下发')
     editorOpen.value = false
     await loadTiers()
   } catch (error) {

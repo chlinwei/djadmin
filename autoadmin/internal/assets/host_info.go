@@ -79,6 +79,22 @@ func (h *Handler) refreshHostAgentInfo(ctx context.Context, host Host) hostInfoO
 	return outcome
 }
 
+// RefreshHostInfoByID 供其他域（如 monitor 的 exporter 目标安装）在缺少主机平台/架构信息时
+// 主动补采一次资产信息并落库：同步向 agent 下发 get_host_info，成功后 hardware/system 等
+// 平台字段即可用于选包。返回采集失败原因，供调用方决定是否继续或提示。
+func (h *Handler) RefreshHostInfoByID(ctx context.Context, hostID int64) error {
+	item, err := h.service.GetHost(ctx, hostID)
+	if err != nil {
+		return err
+	}
+	h.applyAgentPresence(&item)
+	outcome := h.refreshHostAgentInfo(ctx, item)
+	if outcome.Error != "" {
+		return errors.New(outcome.Error)
+	}
+	return nil
+}
+
 // persistHostInfo writes one get_host_info result into assets_host/hostsystem/hosthardware/
 // hostruntime/hostdisk, matching Django's persist_host_info() field-for-field.
 func (s *Service) persistHostInfo(ctx context.Context, hostID int64, status string, resultData map[string]any, errorMessage string) (bool, error) {

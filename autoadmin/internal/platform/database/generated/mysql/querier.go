@@ -15,6 +15,10 @@ type Querier interface {
 	ActivateAgentPackage(ctx context.Context, id uint64) (int64, error)
 	AddRoleMenu(ctx context.Context, arg AddRoleMenuParams) error
 	AddUserRole(ctx context.Context, arg AddUserRoleParams) error
+	CancelAgentJobHostLogsByExecution(ctx context.Context, arg CancelAgentJobHostLogsByExecutionParams) error
+	// 用户在运行记录中心取消 Agent 安装/更新作业时，同步把对应的 assets_agent_job 与主机日志
+	// 置为失败，否则 rejectActiveAgentJobs 会一直拦着"任务执行中"（agent job 与 automation job 是两套状态）。
+	CancelAgentJobsByExecution(ctx context.Context, arg CancelAgentJobsByExecutionParams) error
 	CancelAutomationJob(ctx context.Context, arg CancelAutomationJobParams) (int64, error)
 	CancelBaselineScan(ctx context.Context, arg CancelBaselineScanParams) (int64, error)
 	CancelBaselineScanTargets(ctx context.Context, scanID int64) error
@@ -28,8 +32,8 @@ type Querier interface {
 	ClaimBaselineScan(ctx context.Context, arg ClaimBaselineScanParams) (int64, error)
 	ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspectionTaskParams) (int64, error)
 	ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error)
+	ClearDefaultElasticsearchCluster(ctx context.Context, arg ClearDefaultElasticsearchClusterParams) error
 	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
-	ClearDefaultOpenSearchCluster(ctx context.Context, arg ClearDefaultOpenSearchClusterParams) error
 	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
 	ClearSoftwarePackageUninstallTemplate(ctx context.Context, id int64) error
 	CompleteScheduledTask(ctx context.Context, arg CompleteScheduledTaskParams) error
@@ -37,7 +41,7 @@ type Querier interface {
 	CountActiveAgentInstallJobs(ctx context.Context, hostIds []sql.NullInt64) (int64, error)
 	CountAlertHistories(ctx context.Context, arg CountAlertHistoriesParams) (int64, error)
 	CountAlertMedia(ctx context.Context, arg CountAlertMediaParams) (int64, error)
-	CountAllOpenSearchClusters(ctx context.Context) (int64, error)
+	CountAllElasticsearchClusters(ctx context.Context) (int64, error)
 	CountApplicationByID(ctx context.Context, id int64) (int64, error)
 	CountApplicationDeployments(ctx context.Context, arg CountApplicationDeploymentsParams) (int64, error)
 	CountApplicationServiceByID(ctx context.Context, id int64) (int64, error)
@@ -81,6 +85,7 @@ type Querier interface {
 	CountConfigsBySearch(ctx context.Context, arg CountConfigsBySearchParams) (int64, error)
 	CountCredentials(ctx context.Context, arg CountCredentialsParams) (int64, error)
 	CountDeploymentTemplates(ctx context.Context, arg CountDeploymentTemplatesParams) (int64, error)
+	CountElasticsearchClusters(ctx context.Context, arg CountElasticsearchClustersParams) (int64, error)
 	CountHostCredentialsByCredential(ctx context.Context, credentialID int64) (int64, error)
 	CountHostGroups(ctx context.Context, arg CountHostGroupsParams) (int64, error)
 	CountHosts(ctx context.Context, arg CountHostsParams) (int64, error)
@@ -106,12 +111,11 @@ type Querier interface {
 	CountLoginAudits(ctx context.Context, arg CountLoginAuditsParams) (int64, error)
 	CountMonitorHostTotals(ctx context.Context) (CountMonitorHostTotalsRow, error)
 	// 宿主列表的过滤：搜索 / 组（含子组，可变长 IN）/ exporter 纳管状态 / 日志采集纳管状态。
-	// managed_filter 与 fluent_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
+	// managed_filter 与 filebeat_filter 是 'true'/'false'/NULL 三态，用 CASE 表达"命中/未命中/不过滤"。
 	CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error)
 	// 计数用 COUNT(CASE WHEN …) 而不是 SUM(布尔)：PG 里布尔不能求和（同 inspection/automation 的处理）。
 	CountMonitorTargetSummary(ctx context.Context) (CountMonitorTargetSummaryRow, error)
 	CountMonitorTargets(ctx context.Context, arg CountMonitorTargetsParams) (int64, error)
-	CountOpenSearchClusters(ctx context.Context, arg CountOpenSearchClustersParams) (int64, error)
 	CountOperationAudits(ctx context.Context, arg CountOperationAuditsParams) (int64, error)
 	CountOtherHostsByIP(ctx context.Context, arg CountOtherHostsByIPParams) (int64, error)
 	CountOtherHostsByInstanceName(ctx context.Context, arg CountOtherHostsByInstanceNameParams) (int64, error)
@@ -185,6 +189,11 @@ type Querier interface {
 	// 原实现的嵌套子表删除是运行时拼表名（`DELETE FROM `+table+` WHERE …`），sqlc 表达不了，
 	// 改成每个子表一条显式语句（调用点按表名分派），表名不再是变量。
 	CreateDeploymentTemplate(ctx context.Context, arg CreateDeploymentTemplateParams) (int64, error)
+	// 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
+	// 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
+	// doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
+	// 这里按"尚未探测/尚未同步"的语义显式写空串。
+	CreateElasticsearchCluster(ctx context.Context, arg CreateElasticsearchClusterParams) (int64, error)
 	CreateHost(ctx context.Context, arg CreateHostParams) (sql.Result, error)
 	CreateHostDisk(ctx context.Context, arg CreateHostDiskParams) error
 	CreateHostGroup(ctx context.Context, arg CreateHostGroupParams) (sql.Result, error)
@@ -216,11 +225,6 @@ type Querier interface {
 	// parent_id / media_ids / user_group_ids 的 NULL 是有意义的（根节点、继承），
 	// 所以用 narg：nil 即写 NULL。
 	CreateNotificationPolicy(ctx context.Context, arg CreateNotificationPolicyParams) (int64, error)
-	// 探测与同步状态三列是 NOT NULL 且库级没有默认值：原实现在建集群时根本不写这三列，
-	// 于是在严格模式（真库 sql_mode 含 STRICT_TRANS_TABLES）下报 1364 "Field 'last_check_message'
-	// doesn't have a default value" —— 建集群接口一直不可用（"只支持一个集群"所以没人碰到）。
-	// 这里按"尚未探测/尚未同步"的语义显式写空串。
-	CreateOpenSearchCluster(ctx context.Context, arg CreateOpenSearchClusterParams) (int64, error)
 	CreateOperationAudit(ctx context.Context, arg CreateOperationAuditParams) error
 	CreateProject(ctx context.Context, arg CreateProjectParams) (sql.Result, error)
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
@@ -267,6 +271,7 @@ type Querier interface {
 	DeleteClusterProfile(ctx context.Context, id int64) error
 	DeleteCredential(ctx context.Context, id int64) error
 	DeleteDeploymentTemplate(ctx context.Context, id int64) error
+	DeleteElasticsearchCluster(ctx context.Context, id int64) (sql.Result, error)
 	DeleteFinishedInspectionExecutions(ctx context.Context, cutoff sql.NullTime) (int64, error)
 	// 保留期清理：原实现是 MySQL 的多表 DELETE（`DELETE r FROM ... JOIN ...`），PG 不认这个语法，
 	// 改成 `WHERE ... IN (子查询)` —— 两方言都接受（子查询查的是别的表，MySQL 的限制不触发）。
@@ -289,7 +294,6 @@ type Querier interface {
 	DeleteMenuRoles(ctx context.Context, menuID int32) error
 	DeleteMonitorTarget(ctx context.Context, id int64) error
 	DeleteNotificationPolicy(ctx context.Context, id int64) error
-	DeleteOpenSearchCluster(ctx context.Context, id int64) (sql.Result, error)
 	DeleteOperationAuditsBefore(ctx context.Context, createdAt time.Time) (sql.Result, error)
 	DeleteProject(ctx context.Context, id int64) error
 	DeleteRoleByID(ctx context.Context, id int32) error
@@ -333,6 +337,8 @@ type Querier interface {
 	// 收尾：只有仍处于 pending 的任务才落终态。
 	// install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
 	// 而 PG 只合并成一个参数——同一个调用点在两侧就编译不过），用整数比较避开这个分歧。
+	// agent_installed 是"Filebeat 二进制已装"的持久态，只有成功收尾才改写（install 成功 TRUE、
+	// uninstall 成功 FALSE）；失败时传 NULL 保持原值，避免安装失败把已装状态抹掉。
 	FinishLogTargetInstallState(ctx context.Context, arg FinishLogTargetInstallStateParams) (int64, error)
 	FinishTargetInstallHistory(ctx context.Context, arg FinishTargetInstallHistoryParams) (int64, error)
 	FinishTargetInstallState(ctx context.Context, arg FinishTargetInstallStateParams) (int64, error)
@@ -382,10 +388,12 @@ type Querier interface {
 	// 参数名不能叫 key（P5 陷阱 23：命名参数与保留字相撞会让 MySQL 引擎语法错误）。
 	GetConfigValueByKey(ctx context.Context, configKey string) (string, error)
 	GetCredential(ctx context.Context, id int64) (AssetsCredential, error)
-	GetDefaultEnabledOpenSearchCluster(ctx context.Context) (GetDefaultEnabledOpenSearchClusterRow, error)
+	GetDefaultEnabledElasticsearchCluster(ctx context.Context) (GetDefaultEnabledElasticsearchClusterRow, error)
 	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error)
 	GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error)
+	GetElasticsearchClusterConnection(ctx context.Context, id int64) (GetElasticsearchClusterConnectionRow, error)
+	GetElasticsearchClusterTyped(ctx context.Context, id int64) (MonitorElasticsearchCluster, error)
 	// ---- P2-3：监控目标域（目标 CRUD/服务控制、安装与卸载下发、安装历史、宿主总览）----
 	// 三处方言/结构改写：① 批量建目标用 `INSERT IGNORE`（已纳管则跳过），派生改写成 PG 的
 	// `ON CONFLICT DO NOTHING`；② PATCH 的字段白名单从"运行时拼 SET"改成"读回+应用层合并+整行写"；
@@ -423,10 +431,10 @@ type Querier interface {
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
 	GetLogTargetConfigFingerprint(ctx context.Context, id int64) (string, error)
-	// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名）。
+	// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
 	GetLogTargetDefaultCluster(ctx context.Context, id int64) (GetLogTargetDefaultClusterRow, error)
 	// ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
-	// 原实现有两处运行时拼 SQL：① Fluent Bit 软件包按"安装/卸载"拼 playbook 列名；
+	// 原实现有两处运行时拼 SQL：① Filebeat 软件包按"安装/卸载"拼 playbook 列名；
 	// ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
 	// 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
 	GetLogTargetForAction(ctx context.Context, id int64) (GetLogTargetForActionRow, error)
@@ -440,8 +448,6 @@ type Querier interface {
 	// （原实现在 UPDATE 里用 IF(rule_group='',?,rule_group) 与
 	// IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) 表达"已有值优先"，是 MySQL 方言函数）。
 	GetOpenFiringAlertForUpdate(ctx context.Context, fingerprint string) (GetOpenFiringAlertForUpdateRow, error)
-	GetOpenSearchClusterConnection(ctx context.Context, id int64) (GetOpenSearchClusterConnectionRow, error)
-	GetOpenSearchClusterTyped(ctx context.Context, id int64) (MonitorOpensearchCluster, error)
 	GetProject(ctx context.Context, id int64) (GetProjectRow, error)
 	GetProjectNameByID(ctx context.Context, id int64) (string, error)
 	GetRoleByID(ctx context.Context, id int32) (SysRole, error)
@@ -524,6 +530,7 @@ type Querier interface {
 	//  2. PATCH 合并（组的部分更新）在应用层做：先 `FOR UPDATE` 读回现值再整行写，而不是
 	//     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
 	ListDueInspectionTasks(ctx context.Context, now sql.NullTime) ([]ListDueInspectionTasksRow, error)
+	ListElasticsearchClustersTyped(ctx context.Context, arg ListElasticsearchClustersTypedParams) ([]MonitorElasticsearchCluster, error)
 	// ---- 用户中心的告警媒介绑定（monitor_alert_media / monitor_user_alert_media_binding）----
 	// 查询定义按「调用方所属域」放这里（同 inspection.sql 里的 assets_* 查询）。
 	ListEnabledAlertMedia(ctx context.Context) ([]ListEnabledAlertMediaRow, error)
@@ -531,10 +538,10 @@ type Querier interface {
 	ListEnabledAlertMediaByIDs(ctx context.Context, mediaIds []int64) ([]ListEnabledAlertMediaByIDsRow, error)
 	ListEnabledBusinessEnvironments(ctx context.Context) ([]ListEnabledBusinessEnvironmentsRow, error)
 	ListEnabledBusinessSystems(ctx context.Context) ([]ListEnabledBusinessSystemsRow, error)
+	ListEnabledElasticsearchClusterIDs(ctx context.Context) ([]int64, error)
 	ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error)
-	ListEnabledOpenSearchClusterIDs(ctx context.Context) ([]int64, error)
 	ListEnabledProjects(ctx context.Context) ([]ListEnabledProjectsRow, error)
-	// ---- 日志存储（OpenSearch 集群）与保留档位 ----
+	// ---- 日志存储（Elasticsearch 集群）与保留档位 ----
 	ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error)
 	// 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
 	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
@@ -565,7 +572,9 @@ type Querier interface {
 	ListInspectionTasksTyped(ctx context.Context, arg ListInspectionTasksTypedParams) ([]ListInspectionTasksTypedRow, error)
 	ListInstallHistories(ctx context.Context, arg ListInstallHistoriesParams) ([]ListInstallHistoriesRow, error)
 	ListInstallPackagesForTarget(ctx context.Context, name string) ([]ListInstallPackagesForTargetRow, error)
-	ListInstallableFluentBitPackages(ctx context.Context) ([]ListInstallableFluentBitPackagesRow, error)
+	// Filebeat 只用官方便携 tar.gz，按 CPU 架构匹配，不区分发行版/主版本/包格式。
+	// playbook 是否配置交给应用层判断，便于区分"没有包"与"包没配 playbook"。
+	ListInstallableFilebeatPackages(ctx context.Context) ([]ListInstallableFilebeatPackagesRow, error)
 	ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInstalledLogTargetRuntimeRow, error)
 	ListInventoriesTyped(ctx context.Context, arg ListInventoriesTypedParams) ([]AutomationInventory, error)
 	ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([]AutomationExecutionJob, error)
@@ -597,7 +606,6 @@ type Querier interface {
 	// 树加载与管理列表共用一条：列集取并集（树的加载忽略 create_time/update_time）。
 	// media_ids / user_group_ids 用左连接的 NULL 表达"继承父节点"，不能 COALESCE 成空串。
 	ListNotificationPolicyNodes(ctx context.Context) ([]ListNotificationPolicyNodesRow, error)
-	ListOpenSearchClustersTyped(ctx context.Context, arg ListOpenSearchClustersTypedParams) ([]MonitorOpensearchCluster, error)
 	ListOperationAudits(ctx context.Context, arg ListOperationAuditsParams) ([]AuditOperationLog, error)
 	ListPackageChecksums(ctx context.Context, arg ListPackageChecksumsParams) ([]ListPackageChecksumsRow, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
@@ -628,7 +636,7 @@ type Querier interface {
 	ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error)
 	ListTemplatePaths(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePathsRow, error)
 	ListTemplatePorts(ctx context.Context, deploymentTemplateID int64) ([]ListTemplatePortsRow, error)
-	ListUninstallableFluentBitPackages(ctx context.Context) ([]ListUninstallableFluentBitPackagesRow, error)
+	ListUninstallableFilebeatPackages(ctx context.Context) ([]ListUninstallableFilebeatPackagesRow, error)
 	// 用户中心的"我的告警媒介绑定"与 monitor 的通知链路诊断（user-chain）共用一条：
 	// 后两者要的 media_type / media_enabled 补在列尾（身份域只按字段名取前几列，不受影响）。
 	ListUserAlertMediaBindings(ctx context.Context, userID int32) ([]ListUserAlertMediaBindingsRow, error)
@@ -652,9 +660,13 @@ type Querier interface {
 	MarkAlertNotificationEventSending(ctx context.Context, arg MarkAlertNotificationEventSendingParams) error
 	MarkAlertNotificationEventSuccess(ctx context.Context, arg MarkAlertNotificationEventSuccessParams) error
 	MarkClusterStorageSyncFailed(ctx context.Context, arg MarkClusterStorageSyncFailedParams) error
-	// 存储同步（index template + ISM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
+	// 存储同步（index template + ILM 策略）的三个状态落库入口，对应 Django sync_log_storage 任务。
 	MarkClusterStorageSyncPending(ctx context.Context, arg MarkClusterStorageSyncPendingParams) error
 	MarkClusterStorageSyncSuccess(ctx context.Context, arg MarkClusterStorageSyncSuccessParams) error
+	// openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
+	// 这里只更新探测结果，其余列不动。
+	MarkElasticsearchClusterCheckFailed(ctx context.Context, arg MarkElasticsearchClusterCheckFailedParams) error
+	MarkElasticsearchClusterCheckSuccess(ctx context.Context, arg MarkElasticsearchClusterCheckSuccessParams) error
 	// ---- P2-3：主机域（采集信息落库 / 详情读取 / 身份唯一性校验）----
 	//
 	// 约定与 inspection/automation 一致：时间由应用层传；UPSERT 用 `ON DUPLICATE KEY UPDATE`
@@ -671,10 +683,6 @@ type Querier interface {
 	MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTargetConfigSyncedParams) error
 	MarkLogTargetInstallCancelled(ctx context.Context, arg MarkLogTargetInstallCancelledParams) error
 	MarkLogTargetInstallPending(ctx context.Context, arg MarkLogTargetInstallPendingParams) error
-	// openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
-	// 这里只更新探测结果，其余列不动。
-	MarkOpenSearchClusterCheckFailed(ctx context.Context, arg MarkOpenSearchClusterCheckFailedParams) error
-	MarkOpenSearchClusterCheckSuccess(ctx context.Context, arg MarkOpenSearchClusterCheckSuccessParams) error
 	MarkTargetInstallCancelled(ctx context.Context, arg MarkTargetInstallCancelledParams) error
 	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
@@ -692,9 +700,12 @@ type Querier interface {
 	SetAutomationTaskEnabled(ctx context.Context, arg SetAutomationTaskEnabledParams) error
 	// 仅改状态 + 报错文案（失败/跳过两类终态），不动计数列。
 	SetBaselineScanTargetStatus(ctx context.Context, arg SetBaselineScanTargetStatusParams) error
+	SetLogTargetLastError(ctx context.Context, arg SetLogTargetLastErrorParams) error
 	SetLogTargetRuntimeStatus(ctx context.Context, arg SetLogTargetRuntimeStatusParams) error
 	SetScheduledTaskEnabled(ctx context.Context, arg SetScheduledTaskEnabledParams) error
 	SetSoftwarePackageInstallTemplate(ctx context.Context, arg SetSoftwarePackageInstallTemplateParams) error
+	// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
+	SetSoftwarePackageServiceFileContent(ctx context.Context, arg SetSoftwarePackageServiceFileContentParams) error
 	SetSoftwarePackageUninstallTemplate(ctx context.Context, arg SetSoftwarePackageUninstallTemplateParams) error
 	SetTargetInstallState(ctx context.Context, arg SetTargetInstallStateParams) error
 	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
@@ -722,6 +733,8 @@ type Querier interface {
 	UpdateCredential(ctx context.Context, arg UpdateCredentialParams) error
 	UpdateDeploymentRuntimeStatus(ctx context.Context, arg UpdateDeploymentRuntimeStatusParams) error
 	UpdateDeploymentTemplate(ctx context.Context, arg UpdateDeploymentTemplateParams) error
+	// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 elasticsearch_config.go）。
+	UpdateElasticsearchCluster(ctx context.Context, arg UpdateElasticsearchClusterParams) (int64, error)
 	UpdateHost(ctx context.Context, arg UpdateHostParams) error
 	UpdateHostGroup(ctx context.Context, arg UpdateHostGroupParams) error
 	UpdateInspectionGroup(ctx context.Context, arg UpdateInspectionGroupParams) (int64, error)
@@ -732,12 +745,9 @@ type Querier interface {
 	UpdateMenu(ctx context.Context, arg UpdateMenuParams) error
 	UpdateMonitorTargetPatch(ctx context.Context, arg UpdateMonitorTargetPatchParams) error
 	UpdateNotificationPolicy(ctx context.Context, arg UpdateNotificationPolicyParams) error
-	// 整行写（PATCH 语义由应用层"读回现值 + 合并提交的字段"承担，见 opensearch_config.go）。
-	UpdateOpenSearchCluster(ctx context.Context, arg UpdateOpenSearchClusterParams) (int64, error)
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
-	// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
 	UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error
 	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
 	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error

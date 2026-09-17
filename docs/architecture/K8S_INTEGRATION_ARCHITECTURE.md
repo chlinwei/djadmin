@@ -12,7 +12,7 @@ autoadmin 对 K8s 的定位是**统一运维平台的资源域**，不是 K8s �
 
 - 集群/节点/工作负载/Pod 的资产纳管与状态展示
 - K8s 告警汇入平台统一告警链路（AlertRoute / AlertMedia）
-- 容器日志汇入平台统一日志链路（Fluent Bit + OpenSearch）
+- 容器日志汇入平台统一日志链路（Filebeat + Elasticsearch）
 - 少量高频操作（重启 Deployment、扩缩容、删 Pod），走平台权限、审批、审计体系
 
 ### 1.2 不做什么
@@ -46,10 +46,10 @@ autoadmin 对 K8s 的定位是**统一运维平台的资源域**，不是 K8s �
                         └────────────────────────────────────────────────────────┘
    控制面 (gRPC, 复用现有通道)      数据面(日志)             指标面
 ┌──────────────────────┐   ┌──────────────────┐   ┌──────────────────────────┐
-│ dj-agent K8s 模式     │   │ Fluent Bit       │   │ Prometheus (集群内)       │
+│ dj-agent K8s 模式     │   │ Filebeat       │   │ Prometheus (集群内)       │
 │ Deployment, 单副本    │   │ DaemonSet        │   │  ├ http_sd  (主机, 现有)  │
 │ ├ watch 资产/事件上报  │   │ tail 容器日志     │   │  └ kubernetes_sd (K8s)   │
-│ └ 写 Fluent Bit 配置   │   │  → OpenSearch    │   └──────────────────────────┘
+│ └ 写 Filebeat 配置   │   │  → Elasticsearch    │   └──────────────────────────┘
 │   (ConfigMap)         │   └──────────────────┘
 └──────────────────────┘
 ```
@@ -58,12 +58,12 @@ autoadmin 对 K8s 的定位是**统一运维平台的资源域**，不是 K8s �
 
 | 决策 | 结论 | 理由 |
 |---|---|---|
-| Agent 职责 | 只做控制面：配置下发、资产/事件上报、操作执行。**不采集日志、不做指标抓取** | 与虚拟机侧"Agent 管配置、Fluent Bit 管数据"分工对称；避免每节点双采集器 |
+| Agent 职责 | 只做控制面：配置下发、资产/事件上报、操作执行。**不采集日志、不做指标抓取** | 与虚拟机侧"Agent 管配置、Filebeat 管数据"分工对称；避免每节点双采集器 |
 | 告警大脑 | autoadmin 调度器，**不引入 Alertmanager** | 平台现有模式即调度器轮询评估 → AlertRoute → AlertMedia；规则、静默、收敛、通知只有一个大脑 |
 | Prometheus 角色 | 只做采集与存储（指标数据库） | kubernetes_sd 负责目标发现；`/api/v1/query` 供调度器评估告警、`/query_range` 供前端画图 |
 | 资产全集来源 | dj-agent 上报为准 | Prometheus targets 只是采集视角（随注解增减），不能反推资产清单 |
 | 多集群模型 | 每集群一套三件套，autoadmin 侧多数据源配置 | 天然分片，无跨集群状态 |
-| 日志采集器 | 沿用 Fluent Bit（集群内 DaemonSet 形态） | 与虚拟机侧同款，索引/字段/解析规则全复用 |
+| 日志采集器 | 沿用 Filebeat（集群内 DaemonSet 形态） | 与虚拟机侧同款，索引/字段/解析规则全复用 |
 
 ---
 
@@ -140,21 +140,21 @@ dj-agent（K8s 模式，Deployment 形态驻集群内，in-cluster ServiceAccoun
 
 ## 5. 日志统一
 
-完全复用现有 Fluent Bit + OpenSearch 链路（见 docs/architecture/LOG_COLLECTION_ARCHITECTURE.md），仅采集器位置从"主机上"变为"集群里"。
+完全复用现有 Filebeat + Elasticsearch 链路（见 docs/architecture/LOG_COLLECTION_ARCHITECTURE.md），仅采集器位置从"主机上"变为"集群里"。
 
 ### 5.1 数据流
 
 ```
 虚拟机（现有）：
-  主机上的 Fluent Bit ──tail 文件──▶ OpenSearch ──▶ 日志洞察页
+  主机上的 Filebeat ──tail 文件──▶ Elasticsearch ──▶ 日志洞察页
 
 K8s（新增）：
-  Fluent Bit DaemonSet（每节点一个）
+  Filebeat DaemonSet（每节点一个）
     └─ tail /var/log/containers/*.log（kubelet 已落盘的容器 stdout/stderr）
-         └─ 同一个 OpenSearch ──▶ 同一个日志洞察页
+         └─ 同一个 Elasticsearch ──▶ 同一个日志洞察页
 ```
 
-dj-agent 不采集日志，只负责**控制面**：接收 djadmin 下发的采集规则 → 渲染成 Fluent Bit 配置写入 **ConfigMap** → DaemonSet 挂载自动热加载（对应虚拟机侧"写 inputs.d + 热重载"模式）。
+dj-agent 不采集日志，只负责**控制面**：接收 djadmin 下发的采集规则 → 渲染成 Filebeat 配置写入 **ConfigMap** → DaemonSet 挂载自动热加载（对应虚拟机侧"写 inputs.d + 热重载"模式）。
 
 ### 5.2 索引与字段对齐
 
@@ -238,7 +238,7 @@ scrape_configs:
 |---|---|---|
 | 1 | dj-agent K8s 模式（资产/状态上报）+ 集群资产模型 + 前端集群页（只读） | 1-2 周 |
 | 2 | 告警收口：events 告警 + 调度器 Prometheus 数据源规则 | ~1 周 |
-| 3 | 日志接入：Fluent Bit DaemonSet + namespace 映射 + 字段对齐 + ConfigMap 下发 | ~1 周 |
+| 3 | 日志接入：Filebeat DaemonSet + namespace 映射 + 字段对齐 + ConfigMap 下发 | ~1 周 |
 | 4 | 高频操作：重启/扩缩容/删 Pod + 审批审计 | ~1 周 |
 
 前置条件：阶段 1 的 Agent K8s 模式与业务标签契约（§3.2）是后续所有阶段的地基。

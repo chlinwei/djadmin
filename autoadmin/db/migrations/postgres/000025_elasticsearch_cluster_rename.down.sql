@@ -1,0 +1,4 @@
+-- 回滚：monitor_elasticsearch_cluster → monitor_opensearch_cluster（表名与唯一约束名）。
+ALTER TABLE monitor_elasticsearch_cluster
+  RENAME CONSTRAINT monitor_elasticsearch_cluster_name TO monitor_opensearch_cluster_name;
+ALTER TABLE monitor_elasticsearch_cluster RENAME TO monitor_opensearch_cluster;

@@ -67,7 +67,12 @@
       <a-descriptions v-else-if="scope.nodeType === 'deployment' && detail" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="实例名称">{{ detail.instance_name }}</a-descriptions-item>
         <a-descriptions-item label="主机">{{ detail.host_name || '-' }}（{{ detail.host_ip || '-' }}）</a-descriptions-item>
-        <a-descriptions-item label="运行状态"><a-badge :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" /></a-descriptions-item>
+        <a-descriptions-item label="运行状态">
+          <a-tooltip v-if="detail.runtime_status === 'error' && detail.runtime_status_output" :title="detail.runtime_status_output" placement="top">
+            <a-badge :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" />
+          </a-tooltip>
+          <a-badge v-else :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" />
+        </a-descriptions-item>
         <a-descriptions-item v-if="detail.cluster_type === 'ha'" label="主备状态">{{ haRoleLabels[detail.ha_role] || '未知' }}</a-descriptions-item>
         <a-descriptions-item label="备注">{{ detail.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
@@ -92,7 +97,12 @@
             </template>
             <template v-else-if="column.key === 'topology_type'"><a-tag :color="record.topology_type === 'cluster' ? 'blue' : record.topology_type === 'load_balancer' ? 'green' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : record.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-tag></template>
             <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
-            <template v-else-if="column.key === 'runtime_status'"><a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" /></template>
+            <template v-else-if="column.key === 'runtime_status'">
+              <a-tooltip v-if="record.runtime_status === 'error' && record.runtime_status_output" :title="record.runtime_status_output" placement="top">
+                <a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" />
+              </a-tooltip>
+              <a-badge v-else :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" />
+            </template>
             <template v-else-if="column.key === 'ha_role'"><a-tag :color="haRoleColors[record.ha_role] || 'default'">{{ haRoleLabels[record.ha_role] || '未知' }}</a-tag></template>
             <template v-else-if="column.key === 'business_system_action'">
               <a-space :size="6">

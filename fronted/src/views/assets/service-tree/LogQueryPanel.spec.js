@@ -39,10 +39,10 @@ const LEVEL_BUCKETS = [
   { value: 'WARN', count: 3, sample: { ...LOG_DOC, log_level: 'WARN' }, trend: [] },
 ]
 
-const getOpenSearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
-const searchOpenSearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
+const getElasticsearchClusterList = vi.fn(() => Promise.resolve({ data: { data: { results: [CLUSTER], count: 1 } } }))
+const searchElasticsearchLogs = vi.fn(() => Promise.resolve({ data: { data: { results: [LOG_DOC], count: 1, size: 100, offset: 0 } } }))
 // 日志级别下拉复用同一个分面统计接口，按 field 区分返回真实级别值还是统计 tab 的指纹分面。
-const searchOpenSearchLogFacetStats = vi.fn((id, params) => {
+const searchElasticsearchLogFacetStats = vi.fn((id, params) => {
   if (params.field === 'log_level') {
     return Promise.resolve({ data: { data: { field: 'log_level', interval_minutes: 1, buckets: LEVEL_BUCKETS } } })
   }
@@ -50,9 +50,9 @@ const searchOpenSearchLogFacetStats = vi.fn((id, params) => {
 })
 
 vi.mock('@/api/monitor', () => ({
-  getOpenSearchClusterList: (...args) => getOpenSearchClusterList(...args),
-  searchOpenSearchLogs: (...args) => searchOpenSearchLogs(...args),
-  searchOpenSearchLogFacetStats: (...args) => searchOpenSearchLogFacetStats(...args),
+  getElasticsearchClusterList: (...args) => getElasticsearchClusterList(...args),
+  searchElasticsearchLogs: (...args) => searchElasticsearchLogs(...args),
+  searchElasticsearchLogFacetStats: (...args) => searchElasticsearchLogFacetStats(...args),
 }))
 
 function mountPanel(scope = { nodeType: 'all', nodeTitle: '全部业务' }) {
@@ -71,7 +71,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     const wrapper = mountPanel()
     await flushPromises()
     expect(wrapper.text()).toContain('请选择左侧逻辑服务或部署实例查看日志')
-    expect(searchOpenSearchLogs).not.toHaveBeenCalled()
+    expect(searchElasticsearchLogs).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -87,8 +87,8 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     })
     await flushPromises()
 
-    expect(getOpenSearchClusterList).toHaveBeenCalled()
-    expect(searchOpenSearchLogs).toHaveBeenCalledWith(
+    expect(getElasticsearchClusterList).toHaveBeenCalled()
+    expect(searchElasticsearchLogs).toHaveBeenCalledWith(
       CLUSTER.id,
       expect.objectContaining({ application_service_id: 42 }),
     )
@@ -104,7 +104,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
 
     expect(wrapper.text()).toContain('当前查询范围：')
     expect(wrapper.text()).not.toContain('未选择时的默认范围')
-    const params = searchOpenSearchLogs.mock.calls.at(-1)[1]
+    const params = searchElasticsearchLogs.mock.calls.at(-1)[1]
     expect(params.start).toEqual(expect.any(String))
     expect(params.end).toEqual(expect.any(String))
     wrapper.unmount()
@@ -116,7 +116,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
     await flushPromises()
 
-    expect(searchOpenSearchLogFacetStats).toHaveBeenCalledWith(
+    expect(searchElasticsearchLogFacetStats).toHaveBeenCalledWith(
       CLUSTER.id,
       expect.objectContaining({ application_service_id: 42, field: 'log_level' }),
     )
@@ -133,14 +133,14 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
     await flushPromises()
 
-    const levelCallsBefore = searchOpenSearchLogFacetStats.mock.calls.filter((call) => call[1]?.field === 'log_level').length
+    const levelCallsBefore = searchElasticsearchLogFacetStats.mock.calls.filter((call) => call[1]?.field === 'log_level').length
     expect(levelCallsBefore).toBeGreaterThan(0)
 
     wrapper.vm.filters.timeRange = [wrapper.vm.filters.timeRange[0], wrapper.vm.filters.timeRange[1]]
     wrapper.vm.handleFilterChange()
     await flushPromises()
 
-    const levelCallsAfter = searchOpenSearchLogFacetStats.mock.calls.filter((call) => call[1]?.field === 'log_level').length
+    const levelCallsAfter = searchElasticsearchLogFacetStats.mock.calls.filter((call) => call[1]?.field === 'log_level').length
     expect(levelCallsAfter).toBeGreaterThan(levelCallsBefore)
     wrapper.unmount()
   })
@@ -157,7 +157,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     })
     await flushPromises()
 
-    expect(searchOpenSearchLogs).toHaveBeenCalledWith(
+    expect(searchElasticsearchLogs).toHaveBeenCalledWith(
       CLUSTER.id,
       expect.objectContaining({ instance: 'kul-tib-tomcat1' }),
     )
@@ -188,7 +188,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     wrapper.vm.handleTabChange('stats')
     await flushPromises()
 
-    expect(searchOpenSearchLogFacetStats).toHaveBeenCalledWith(
+    expect(searchElasticsearchLogFacetStats).toHaveBeenCalledWith(
       CLUSTER.id,
       expect.objectContaining({ application_service_id: 42, field: 'error_fingerprint' }),
     )
@@ -204,7 +204,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     wrapper.vm.handleTabChange('stats')
     await flushPromises()
 
-    const params = searchOpenSearchLogFacetStats.mock.calls.at(-1)[1]
+    const params = searchElasticsearchLogFacetStats.mock.calls.at(-1)[1]
     expect(params.interval_minutes).toBeUndefined()
     wrapper.unmount()
   })
@@ -221,7 +221,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     await wrapper.vm.loadStats()
     await flushPromises()
 
-    expect(searchOpenSearchLogFacetStats).toHaveBeenLastCalledWith(
+    expect(searchElasticsearchLogFacetStats).toHaveBeenLastCalledWith(
       CLUSTER.id,
       expect.objectContaining({ interval_minutes: '15' }),
     )
@@ -241,7 +241,7 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
 
     expect(wrapper.vm.activeTab).toBe('logs')
     expect(wrapper.vm.filters.errorFingerprint).toBe('fp-1')
-    expect(searchOpenSearchLogs).toHaveBeenLastCalledWith(
+    expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(
       CLUSTER.id,
       expect.objectContaining({ error_fingerprint: 'fp-1' }),
     )
@@ -254,11 +254,11 @@ describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
     await flushPromises()
 
-    const callsBefore = searchOpenSearchLogs.mock.calls.length
+    const callsBefore = searchElasticsearchLogs.mock.calls.length
     await wrapper.vm.reload()
     await flushPromises()
 
-    expect(searchOpenSearchLogs.mock.calls.length).toBeGreaterThan(callsBefore)
+    expect(searchElasticsearchLogs.mock.calls.length).toBeGreaterThan(callsBefore)
     wrapper.unmount()
   })
 })

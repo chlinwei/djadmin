@@ -402,31 +402,31 @@ func (q *Queries) FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAg
 // 语义一致，这里只做类型换算（sql.NullString 本身实现 Valuer，PG 侧直接透传即可）。
 
 type CountMonitorHostsParams struct {
-	SearchPattern sql.NullString  `json:"search_pattern"`
-	GroupIds      []sql.NullInt64 `json:"group_ids"`
-	GroupFilter   interface{}     `json:"group_filter"`
-	ManagedFilter interface{}     `json:"managed_filter"`
-	ExporterType  string          `json:"exporter_type"`
-	FluentFilter  interface{}     `json:"fluent_filter"`
+	SearchPattern  sql.NullString  `json:"search_pattern"`
+	GroupIds       []sql.NullInt64 `json:"group_ids"`
+	GroupFilter    interface{}     `json:"group_filter"`
+	ManagedFilter  interface{}     `json:"managed_filter"`
+	ExporterType   string          `json:"exporter_type"`
+	FilebeatFilter interface{}     `json:"filebeat_filter"`
 }
 
 func (q *Queries) CountMonitorHosts(ctx context.Context, arg CountMonitorHostsParams) (int64, error) {
 	return q.Queries.CountMonitorHosts(ctx, postgres.CountMonitorHostsParams{
 		SearchPattern: arg.SearchPattern, GroupIds: int64SliceArg(arg.GroupIds),
 		GroupFilter: arg.GroupFilter, ManagedFilter: arg.ManagedFilter,
-		ExporterType: arg.ExporterType, FluentFilter: arg.FluentFilter,
+		ExporterType: arg.ExporterType, FilebeatFilter: arg.FilebeatFilter,
 	})
 }
 
 type ListMonitorHostsParams struct {
-	SearchPattern sql.NullString  `json:"search_pattern"`
-	GroupIds      []sql.NullInt64 `json:"group_ids"`
-	GroupFilter   interface{}     `json:"group_filter"`
-	ManagedFilter interface{}     `json:"managed_filter"`
-	ExporterType  string          `json:"exporter_type"`
-	FluentFilter  interface{}     `json:"fluent_filter"`
-	Limit         int32           `json:"limit"`
-	Offset        int32           `json:"offset"`
+	SearchPattern  sql.NullString  `json:"search_pattern"`
+	GroupIds       []sql.NullInt64 `json:"group_ids"`
+	GroupFilter    interface{}     `json:"group_filter"`
+	ManagedFilter  interface{}     `json:"managed_filter"`
+	ExporterType   string          `json:"exporter_type"`
+	FilebeatFilter interface{}     `json:"filebeat_filter"`
+	Limit          int32           `json:"limit"`
+	Offset         int32           `json:"offset"`
 }
 
 func (q *Queries) ListMonitorHosts(ctx context.Context, arg ListMonitorHostsParams) ([]ListMonitorHostsRow, error) {
@@ -434,7 +434,7 @@ func (q *Queries) ListMonitorHosts(ctx context.Context, arg ListMonitorHostsPara
 		Limit: arg.Limit, Offset: arg.Offset,
 		SearchPattern: arg.SearchPattern, GroupIds: int64SliceArg(arg.GroupIds),
 		GroupFilter: arg.GroupFilter, ManagedFilter: arg.ManagedFilter,
-		ExporterType: arg.ExporterType, FluentFilter: arg.FluentFilter,
+		ExporterType: arg.ExporterType, FilebeatFilter: arg.FilebeatFilter,
 	})
 }
 

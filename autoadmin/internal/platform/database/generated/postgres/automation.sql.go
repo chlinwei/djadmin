@@ -156,13 +156,15 @@ SELECT COUNT(*) FROM automation_execution_job a
 WHERE (a.id = $1 OR $1 IS NULL)
   AND (a.status = $2 OR $2 IS NULL)
   AND (a.task_id = $3 OR $3 IS NULL)
-  AND (a.requested_username LIKE $4 OR a.template_name_snapshot LIKE $4 OR a.task_name_snapshot LIKE $4 OR a.remark LIKE $4 OR $4 IS NULL)
+  AND (a.source = $4 OR $4 IS NULL)
+  AND (a.requested_username LIKE $5 OR a.template_name_snapshot LIKE $5 OR a.task_name_snapshot LIKE $5 OR a.remark LIKE $5 OR $5 IS NULL)
 `
 
 type CountJobsParams struct {
 	ID      sql.NullInt64  `json:"id"`
 	Status  sql.NullString `json:"status"`
 	TaskID  sql.NullInt64  `json:"task_id"`
+	Source  sql.NullString `json:"source"`
 	Pattern sql.NullString `json:"pattern"`
 }
 
@@ -171,6 +173,7 @@ func (q *Queries) CountJobs(ctx context.Context, arg CountJobsParams) (int64, er
 		arg.ID,
 		arg.Status,
 		arg.TaskID,
+		arg.Source,
 		arg.Pattern,
 	)
 	var count int64
@@ -258,12 +261,12 @@ func (q *Queries) CreateAutomationInventory(ctx context.Context, arg CreateAutom
 }
 
 const createAutomationJob = `-- name: CreateAutomationJob :one
-INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type,
+INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type, source,
                                      inventory_snapshot, task_name_snapshot, template_name_snapshot,
                                      template_content_snapshot, extra_vars, "limit", result_summary,
                                      run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot,
                                      requested_user_id, requested_username)
-VALUES ($1, $2, NULL, $3, $4, 'pending', 'manual',
+VALUES ($1, $2, NULL, $3, $4, 'pending', 'manual', 'manual',
         $5, $6, $7,
         $8, $9, $10, $11,
         $12, $13, $14,
@@ -572,7 +575,7 @@ func (q *Queries) GetInventoryTyped(ctx context.Context, id int64) (AutomationIn
 }
 
 const getJobTyped = `-- name: GetJobTyped :one
-SELECT j.id, j.create_time, j.update_time, j.remark, j.job_id, j.status, j.trigger_type, j.inventory_snapshot, j.extra_vars, j.result_summary, j.requested_user_id, j.requested_username, j.start_time, j.end_time, j.duration_seconds, j.task_id, j.template_content_snapshot, j.task_name_snapshot, j.template_name_snapshot, j."limit", j.run_as_user_snapshot, j.run_as_group_snapshot, j.work_directory_snapshot, COALESCE(t.execution_timeout_seconds,600) AS execution_timeout_seconds
+SELECT j.id, j.create_time, j.update_time, j.remark, j.job_id, j.status, j.trigger_type, j.source, j.inventory_snapshot, j.extra_vars, j.result_summary, j.requested_user_id, j.requested_username, j.start_time, j.end_time, j.duration_seconds, j.task_id, j.template_content_snapshot, j.task_name_snapshot, j.template_name_snapshot, j."limit", j.run_as_user_snapshot, j.run_as_group_snapshot, j.work_directory_snapshot, COALESCE(t.execution_timeout_seconds,600) AS execution_timeout_seconds
 FROM automation_execution_job j
 LEFT JOIN automation_task t ON t.id = j.task_id
 WHERE j.id = $1
@@ -586,6 +589,7 @@ type GetJobTypedRow struct {
 	JobID                   string          `json:"job_id"`
 	Status                  string          `json:"status"`
 	TriggerType             string          `json:"trigger_type"`
+	Source                  string          `json:"source"`
 	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
 	ExtraVars               json.RawMessage `json:"extra_vars"`
 	ResultSummary           json.RawMessage `json:"result_summary"`
@@ -616,6 +620,7 @@ func (q *Queries) GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, er
 		&i.JobID,
 		&i.Status,
 		&i.TriggerType,
+		&i.Source,
 		&i.InventorySnapshot,
 		&i.ExtraVars,
 		&i.ResultSummary,
@@ -1059,11 +1064,12 @@ func (q *Queries) ListInventoriesTyped(ctx context.Context, arg ListInventoriesT
 }
 
 const listJobsTyped = `-- name: ListJobsTyped :many
-SELECT id, create_time, update_time, remark, job_id, status, trigger_type, inventory_snapshot, extra_vars, result_summary, requested_user_id, requested_username, start_time, end_time, duration_seconds, task_id, template_content_snapshot, task_name_snapshot, template_name_snapshot, "limit", run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot FROM automation_execution_job a
+SELECT id, create_time, update_time, remark, job_id, status, trigger_type, source, inventory_snapshot, extra_vars, result_summary, requested_user_id, requested_username, start_time, end_time, duration_seconds, task_id, template_content_snapshot, task_name_snapshot, template_name_snapshot, "limit", run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot FROM automation_execution_job a
 WHERE (a.id = $3 OR $3 IS NULL)
   AND (a.status = $4 OR $4 IS NULL)
   AND (a.task_id = $5 OR $5 IS NULL)
-  AND (a.requested_username LIKE $6 OR a.template_name_snapshot LIKE $6 OR a.task_name_snapshot LIKE $6 OR a.remark LIKE $6 OR $6 IS NULL)
+  AND (a.source = $6 OR $6 IS NULL)
+  AND (a.requested_username LIKE $7 OR a.template_name_snapshot LIKE $7 OR a.task_name_snapshot LIKE $7 OR a.remark LIKE $7 OR $7 IS NULL)
 ORDER BY a.id DESC
 LIMIT $1 OFFSET $2
 `
@@ -1074,6 +1080,7 @@ type ListJobsTypedParams struct {
 	ID      sql.NullInt64  `json:"id"`
 	Status  sql.NullString `json:"status"`
 	TaskID  sql.NullInt64  `json:"task_id"`
+	Source  sql.NullString `json:"source"`
 	Pattern sql.NullString `json:"pattern"`
 }
 
@@ -1084,6 +1091,7 @@ func (q *Queries) ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([
 		arg.ID,
 		arg.Status,
 		arg.TaskID,
+		arg.Source,
 		arg.Pattern,
 	)
 	if err != nil {
@@ -1101,6 +1109,7 @@ func (q *Queries) ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([
 			&i.JobID,
 			&i.Status,
 			&i.TriggerType,
+			&i.Source,
 			&i.InventorySnapshot,
 			&i.ExtraVars,
 			&i.ResultSummary,

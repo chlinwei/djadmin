@@ -108,7 +108,7 @@ ORDER BY h.id;
 SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
        COALESCE(h.ip,'') AS ip, h.agent_online,
        s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
-       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values, t.macro_definitions
 FROM assets_application_service s
 JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
 JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE
@@ -124,7 +124,7 @@ ORDER BY s.id, d.id;
 SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
        COALESCE(h.ip,'') AS ip, h.agent_online,
        s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
-       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values, t.macro_definitions
 FROM assets_application_service s
 JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
 JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE

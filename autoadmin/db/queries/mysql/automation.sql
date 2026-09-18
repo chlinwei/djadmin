@@ -44,6 +44,7 @@ SELECT COUNT(*) FROM automation_execution_job a
 WHERE (a.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (a.status = sqlc.narg(status) OR sqlc.narg(status) IS NULL)
   AND (a.task_id = sqlc.narg(task_id) OR sqlc.narg(task_id) IS NULL)
+  AND (a.source = sqlc.narg(source) OR sqlc.narg(source) IS NULL)
   AND (a.requested_username LIKE sqlc.narg(pattern) OR a.template_name_snapshot LIKE sqlc.narg(pattern) OR a.task_name_snapshot LIKE sqlc.narg(pattern) OR a.remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL);
 
 -- name: ListJobsTyped :many
@@ -51,6 +52,7 @@ SELECT * FROM automation_execution_job a
 WHERE (a.id = sqlc.narg(id) OR sqlc.narg(id) IS NULL)
   AND (a.status = sqlc.narg(status) OR sqlc.narg(status) IS NULL)
   AND (a.task_id = sqlc.narg(task_id) OR sqlc.narg(task_id) IS NULL)
+  AND (a.source = sqlc.narg(source) OR sqlc.narg(source) IS NULL)
   AND (a.requested_username LIKE sqlc.narg(pattern) OR a.template_name_snapshot LIKE sqlc.narg(pattern) OR a.task_name_snapshot LIKE sqlc.narg(pattern) OR a.remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL)
 ORDER BY a.id DESC
 LIMIT ? OFFSET ?;
@@ -183,12 +185,12 @@ UPDATE automation_task SET enabled = sqlc.arg(enabled), update_time = sqlc.arg(u
 DELETE FROM automation_task WHERE id = sqlc.arg(id);
 
 -- name: CreateAutomationJob :execlastid
-INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type,
+INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type, source,
                                      inventory_snapshot, task_name_snapshot, template_name_snapshot,
                                      template_content_snapshot, extra_vars, `limit`, result_summary,
                                      run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot,
                                      requested_user_id, requested_username)
-VALUES (sqlc.arg(create_time), sqlc.arg(update_time), NULL, sqlc.arg(job_id), sqlc.narg(task_id), 'pending', 'manual',
+VALUES (sqlc.arg(create_time), sqlc.arg(update_time), NULL, sqlc.arg(job_id), sqlc.narg(task_id), 'pending', 'manual', 'manual',
         sqlc.arg(inventory_snapshot), sqlc.arg(task_name_snapshot), sqlc.arg(template_name_snapshot),
         sqlc.arg(template_content_snapshot), sqlc.arg(extra_vars), sqlc.arg(job_limit), sqlc.arg(result_summary),
         sqlc.arg(run_as_user_snapshot), sqlc.arg(run_as_group_snapshot), sqlc.arg(work_directory_snapshot),

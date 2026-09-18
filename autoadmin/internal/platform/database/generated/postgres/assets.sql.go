@@ -373,10 +373,10 @@ func (q *Queries) CountProjects(ctx context.Context, pattern sql.NullString) (in
 
 const createAgentExecutionJob = `-- name: CreateAgentExecutionJob :one
 INSERT INTO automation_execution_job
-  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+  (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
    task_name_snapshot,template_name_snapshot,template_content_snapshot,"limit",run_as_user_snapshot,
    run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username,start_time)
-VALUES ($1,$2,NULL,$3,'running','manual',
+VALUES ($1,$2,NULL,$3,'running','manual','agent_install',
         $4,$5,$6,
         $7,$8,$9,'',
         $10,$11,$12,

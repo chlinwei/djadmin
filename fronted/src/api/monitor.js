@@ -323,3 +323,8 @@ export function batchStopMonitorTargets(ids) {
   return requestUtil.post(prefix + 'targets/batch-stop-service/', { ids })
 }
 
+// 清理逻辑服务的数据流数据：mode=all|hours|days，amount 为小时/天数（all 可省略）。
+export function cleanupLogDataStream(payload) {
+  return requestUtil.post(prefix + 'log-datastreams/cleanup/', payload)
+}
+

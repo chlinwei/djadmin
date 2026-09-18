@@ -261,8 +261,9 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 		ExporterTypeSnapshot:    "filebeat",
 		SummaryMessage:          "",
 		RequestedUserIDSnapshot: sql.NullInt32{}, RequestedUsernameSnapshot: "system",
-		HostID:                sql.NullInt64{Int64: row.HostID, Valid: true},
-		LogCollectionTargetID: sql.NullInt64{Int64: row.ID, Valid: true},
+		HostID:                  sql.NullInt64{Int64: row.HostID, Valid: true},
+		LogCollectionTargetID:   sql.NullInt64{Int64: row.ID, Valid: true},
+		AutomationJobIDSnapshot: sql.NullInt64{Int64: jobID, Valid: true},
 	})
 	if err != nil {
 		return nil, err

@@ -129,3 +129,67 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+// 宏解析口径：部署模板 macro_definitions 的 value 作默认值，服务级 macro_values 覆盖同名项。
+func TestTemplateMacroDefaultsAndMerge(t *testing.T) {
+	defaults := templateMacroDefaults(`[{"name":"LOG_DIR","value":"/home/esb/data/logs/mgmt","description":""},{"name":"ORACLE_SID","value":"orcl"}]`)
+	if defaults["LOG_DIR"] != "/home/esb/data/logs/mgmt" || defaults["ORACLE_SID"] != "orcl" {
+		t.Fatalf("templateMacroDefaults = %#v", defaults)
+	}
+	merged := mergeMacroValues(defaults, parseMacroJSON(`{"LOG_DIR":"/custom/logs"}`))
+	if merged["LOG_DIR"] != "/custom/logs" {
+		t.Fatalf("service macro_values should override template default, got %#v", merged)
+	}
+	if merged["ORACLE_SID"] != "orcl" {
+		t.Fatalf("non-overridden template default should survive, got %#v", merged)
+	}
+	if got := templateMacroDefaults(`bad json`); len(got) != 0 {
+		t.Fatalf("invalid macro_definitions should be empty, got %#v", got)
+	}
+}
+
+// 日志定义名称里带 ${...} 直接作文件名会生成监听不到文件的坏片段，必须跳过并告警。
+func TestRenderSkipsMacroInLogDefinitionName(t *testing.T) {
+	entries := []hostLogRenderInput{
+		{
+			Prefix: "autoadmin", Application: "mgmt", Service: "mgmt",
+			Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std",
+			LogName: "${LOG_DIR}", ResolvedPath: "${LOG_DIR}/log_error.log",
+			Macros: map[string]string{"LOG_DIR": "/home/esb/data/logs/mgmt"},
+		},
+	}
+	instances := []hostInstanceInput{{Service: "mgmt", Instance: "yilake-nginx-106", HostIP: "192.168.201.106"}}
+	rendered := renderHostLogConfig(entries, instances)
+	if len(rendered.Fragments) != 0 {
+		t.Fatalf("fragments = %d, want 0 when log name contains macro", len(rendered.Fragments))
+	}
+	if len(rendered.Warnings) == 0 {
+		t.Fatal("warnings should mention the macro in log name")
+	}
+}
+
+// 未关联处理规则 = 没有 pipeline，按约定不采集：跳过该日志定义并告警。
+func TestRenderSkipsWhenNoProcessingRule(t *testing.T) {
+	entries := []hostLogRenderInput{
+		{
+			Prefix: "autoadmin", Application: "mgmt", Service: "mgmt",
+			Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std",
+			LogName: "log_error", ResolvedPath: "/data/logs/log_error.log",
+			Macros: map[string]string{},
+		},
+	}
+	instances := []hostInstanceInput{{Service: "mgmt", Instance: "nginx-106", HostIP: "192.168.201.106"}}
+	rendered := renderHostLogConfig(entries, instances)
+	if len(rendered.Fragments) != 0 {
+		t.Fatalf("fragments = %d, want 0 when no processing rule", len(rendered.Fragments))
+	}
+	found := false
+	for _, warning := range rendered.Warnings {
+		if contains(warning, "未关联处理规则") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings should mention missing processing rule, got %v", rendered.Warnings)
+	}
+}

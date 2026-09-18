@@ -49,6 +49,7 @@ CREATE TABLE `automation_execution_job` (
   `job_id` varchar(36) NOT NULL,
   `status` varchar(16) NOT NULL,
   `trigger_type` varchar(16) NOT NULL,
+  `source` varchar(32) NOT NULL DEFAULT 'manual',
   `inventory_snapshot` json NOT NULL,
   `extra_vars` json NOT NULL,
   `result_summary` json NOT NULL,

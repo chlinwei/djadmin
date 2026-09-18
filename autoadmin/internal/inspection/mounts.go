@@ -216,7 +216,7 @@ func (handler *Handler) resolveMounts(ctx context.Context, bindings []mountBindi
 				set, exists := instanceSets[row.DeploymentID]
 				if !exists {
 					set = &checkSet{
-						Context:  runTarget{HostID: row.HostID, HostName: row.HostName, HostIP: row.Ip, HostInstanceName: row.HostName, AgentOnline: row.AgentOnline, DeploymentID: row.DeploymentID, InstanceName: row.InstanceName, ServiceName: row.ServiceName, AppHome: row.AppHome, RunUser: row.RunUser, WorkDirectory: row.WorkDirectory, Version: row.Version, Name: instanceDisplayName(row), Macros: macrosFromRaw(row.MacroValues)},
+						Context:  runTarget{HostID: row.HostID, HostName: row.HostName, HostIP: row.Ip, HostInstanceName: row.HostName, AgentOnline: row.AgentOnline, DeploymentID: row.DeploymentID, InstanceName: row.InstanceName, ServiceName: row.ServiceName, AppHome: row.AppHome, RunUser: row.RunUser, WorkDirectory: row.WorkDirectory, Version: row.Version, Name: instanceDisplayName(row), Macros: macrosWithTemplateDefaults(row.MacroDefinitions, row.MacroValues)},
 						Instance: instanceDisplayName(row),
 					}
 					instanceSets[row.DeploymentID] = set
@@ -293,6 +293,31 @@ func normalizeMacroKey(key string) string {
 		return key[2 : len(key)-1]
 	}
 	return key
+}
+
+// macrosWithTemplateDefaults 宏解析口径统一：部署模板 macro_definitions 的 value 作默认值，
+// 逻辑服务 macro_values 覆盖同名项（与服务弹窗展示、日志采集渲染一致）。
+func macrosWithTemplateDefaults(definitions, values json.RawMessage) map[string]string {
+	merged := map[string]string{}
+	var defs []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if len(definitions) > 0 && json.Unmarshal(definitions, &defs) == nil {
+		for _, definition := range defs {
+			name := strings.TrimSpace(definition.Name)
+			if name != "" {
+				merged[name] = strings.TrimSpace(definition.Value)
+			}
+		}
+	}
+	for key, value := range macrosFromRaw(values) {
+		merged[key] = value
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 func instanceDisplayName(row db.ListMountBusinessInstancesRow) string {

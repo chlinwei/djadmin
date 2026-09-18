@@ -383,7 +383,7 @@
                             </a-tooltip>
                             <a-tooltip :title="isManagedTargetActionDisabledByAgent(record)
                               ? 'dj-agent 离线，操作不可用'
-                              : '查看监控安装历史日志'" placement="left">
+                              : '查看自动化作业日志'" placement="left">
                               <a-button
                                 block
                                 type="primary"
@@ -2399,7 +2399,12 @@ async function handleFilebeatBatch(action) {
 }
 
 function reportFilebeatBatchResult(label, data) {
-  const failed = Array.isArray(data.results) ? data.results.filter((item) => !item.ok) : []
+  const results = Array.isArray(data.results) ? data.results : []
+  const failed = results.filter((item) => !item.ok)
+  const warnings = results.flatMap((item) => item?.detail?.warnings || [])
+  if (warnings.length) {
+    reportApplyWarnings(warnings)
+  }
   if (failed.length === 0) {
     message.success(`${label}成功：${data.success} 台`)
     return
@@ -2492,12 +2497,22 @@ async function handleApplyFilebeatConfig(record) {
   try {
     const result = parseApiData(await applyLogCollectionConfig(record.id))
     message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Filebeat 配置已下发')
+    reportApplyWarnings(result?.warnings)
     await loadOverviewHosts()
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || 'Filebeat 配置下发失败')
   } finally {
     filebeatApplyLoading[record.id] = false
   }
+}
+
+// 下发/预览返回的 warnings（未展开宏、未关联处理规则等）以前被丢弃，导致"下发成功但日志不解析"
+// 无从发现；这里统一提示，最多展开 2 条。
+function reportApplyWarnings(warnings) {
+  const list = Array.isArray(warnings) ? warnings.filter(Boolean) : []
+  if (!list.length) return
+  const suffix = list.length > 2 ? ` 等 ${list.length} 条` : ''
+  message.warning(`下发成功，但存在告警：${list.slice(0, 2).join('；')}${suffix}`, 8)
 }
 
 async function handleFilebeatRedispatch(record) {
@@ -2527,29 +2542,35 @@ async function openFilebeatRetryConfirm(record) {
   })
 }
 
-async function openFilebeatJobLog(record) {
-  let latestHistoryId = null
+// 监控安装历史不再单独占运行记录中心的 tab：取该目标最新一条历史关联的自动化作业，
+// 直接跳到运行记录中心的作业日志（历史行由 backend 写入 automation_job_id_snapshot）。
+async function openInstallHistoryAutomationJob(filter) {
+  let jobId = null
   try {
     const historyRes = await getMonitorInstallHistoryList({
       page: 1,
       page_size: 1,
       ordering: '-id',
-      log_collection_target_id: String(record.id),
+      ...filter,
     })
     const historyData = parseApiData(historyRes)
     const rows = Array.isArray(historyData?.results) ? historyData.results : []
-    const latestId = Number(rows[0]?.id)
-    if (Number.isInteger(latestId) && latestId > 0) latestHistoryId = latestId
+    const parsed = Number(rows[0]?.automation_job_id_snapshot)
+    if (Number.isInteger(parsed) && parsed > 0) {
+      jobId = parsed
+    }
   } catch (_error) {
-    // 历史页仍可按 Filebeat 目标 ID 打开，详情查询失败不阻断入口。
+    // 查询失败不阻断入口，下面统一提示。
   }
-  const query = {
-    tab: 'monitor_history',
-    log_collection_target_id: String(record.id),
-    keyword: String(record.host_ip || record.host_name || ''),
+  if (!jobId) {
+    message.warning('未找到该目标对应的自动化作业日志')
+    return
   }
-  if (latestHistoryId) query.history_id = String(latestHistoryId)
-  router.push({ path: '/sys/automation/logs', query })
+  router.push({ path: '/sys/automation/logs', query: { job_id: String(jobId) } })
+}
+
+async function openFilebeatJobLog(record) {
+  await openInstallHistoryAutomationJob({ log_collection_target_id: String(record.id) })
 }
 
 async function handleStartFilebeatService(record) {
@@ -2774,38 +2795,8 @@ async function openManagedTargetJobLog(record) {
     return
   }
 
-  // 仅以“监控安装历史”作为日志来源：优先打开该目标最新一条历史记录详情。
-  let latestHistoryId = null
-  try {
-    const historyRes = await getMonitorInstallHistoryList({
-      page: 1,
-      page_size: 1,
-      ordering: '-id',
-      target_id: String(record.id),
-    })
-    const historyData = parseApiData(historyRes)
-    const rows = Array.isArray(historyData?.results) ? historyData.results : []
-    const latestId = Number(rows[0]?.id)
-    if (Number.isInteger(latestId) && latestId > 0) {
-      latestHistoryId = latestId
-    }
-  } catch (_error) {
-    // 查询最新历史失败时，回退为仅按 target_id 打开历史页签。
-  }
-
-  const query = {
-    tab: 'monitor_history',
-    target_id: String(record.id),
-    keyword: String(record.host_ip || record.host_name || ''),
-  }
-  if (latestHistoryId) {
-    query.history_id = String(latestHistoryId)
-  }
-
-  router.push({
-    path: '/sys/automation/logs',
-    query,
-  })
+  // 监控安装历史不再单独占 tab：取该目标最新一条历史关联的自动化作业，跳到运行记录中心。
+  await openInstallHistoryAutomationJob({ target_id: String(record.id) })
 }
 
 // 删除操作统一走公共确认弹窗（openDeleteConfirm），禁止自行用 a-popconfirm 拼一套删除确认。

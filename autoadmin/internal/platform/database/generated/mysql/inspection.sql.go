@@ -1770,7 +1770,7 @@ const listMountBusinessInstances = `-- name: ListMountBusinessInstances :many
 SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
        COALESCE(h.ip,'') AS ip, h.agent_online,
        s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
-       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values, t.macro_definitions
 FROM assets_application_service s
 JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
 JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE
@@ -1788,20 +1788,21 @@ type ListMountBusinessInstancesParams struct {
 }
 
 type ListMountBusinessInstancesRow struct {
-	DeploymentID  int64           `json:"deployment_id"`
-	HostID        int64           `json:"host_id"`
-	HostId2       int64           `json:"host_id2"`
-	HostName      string          `json:"host_name"`
-	Ip            string          `json:"ip"`
-	AgentOnline   bool            `json:"agent_online"`
-	ServiceID     int64           `json:"service_id"`
-	ServiceName   string          `json:"service_name"`
-	InstanceName  string          `json:"instance_name"`
-	AppHome       string          `json:"app_home"`
-	RunUser       string          `json:"run_user"`
-	WorkDirectory string          `json:"work_directory"`
-	Version       string          `json:"version"`
-	MacroValues   json.RawMessage `json:"macro_values"`
+	DeploymentID     int64           `json:"deployment_id"`
+	HostID           int64           `json:"host_id"`
+	HostId2          int64           `json:"host_id2"`
+	HostName         string          `json:"host_name"`
+	Ip               string          `json:"ip"`
+	AgentOnline      bool            `json:"agent_online"`
+	ServiceID        int64           `json:"service_id"`
+	ServiceName      string          `json:"service_name"`
+	InstanceName     string          `json:"instance_name"`
+	AppHome          string          `json:"app_home"`
+	RunUser          string          `json:"run_user"`
+	WorkDirectory    string          `json:"work_directory"`
+	Version          string          `json:"version"`
+	MacroValues      json.RawMessage `json:"macro_values"`
+	MacroDefinitions json.RawMessage `json:"macro_definitions"`
 }
 
 // 挂载点解析：应用组@业务(×环境) → 部署实例（每个逻辑服务独立目标，变量各自展开）。
@@ -1829,6 +1830,7 @@ func (q *Queries) ListMountBusinessInstances(ctx context.Context, arg ListMountB
 			&i.WorkDirectory,
 			&i.Version,
 			&i.MacroValues,
+			&i.MacroDefinitions,
 		); err != nil {
 			return nil, err
 		}
@@ -1949,7 +1951,7 @@ const listMountServiceInstances = `-- name: ListMountServiceInstances :many
 SELECT d.id AS deployment_id, d.host_id, h.id AS host_id2, COALESCE(h.instance_name,'') AS host_name,
        COALESCE(h.ip,'') AS ip, h.agent_online,
        s.id AS service_id, s.name AS service_name, COALESCE(d.instance_name,'') AS instance_name,
-       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values
+       t.app_home, t.run_user, t.work_directory, v.version, s.macro_values, t.macro_definitions
 FROM assets_application_service s
 JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
 JOIN assets_application_deployment d ON d.id = l.deployment_id AND d.enabled = TRUE
@@ -1961,20 +1963,21 @@ ORDER BY d.id
 `
 
 type ListMountServiceInstancesRow struct {
-	DeploymentID  int64           `json:"deployment_id"`
-	HostID        int64           `json:"host_id"`
-	HostId2       int64           `json:"host_id2"`
-	HostName      string          `json:"host_name"`
-	Ip            string          `json:"ip"`
-	AgentOnline   bool            `json:"agent_online"`
-	ServiceID     int64           `json:"service_id"`
-	ServiceName   string          `json:"service_name"`
-	InstanceName  string          `json:"instance_name"`
-	AppHome       string          `json:"app_home"`
-	RunUser       string          `json:"run_user"`
-	WorkDirectory string          `json:"work_directory"`
-	Version       string          `json:"version"`
-	MacroValues   json.RawMessage `json:"macro_values"`
+	DeploymentID     int64           `json:"deployment_id"`
+	HostID           int64           `json:"host_id"`
+	HostId2          int64           `json:"host_id2"`
+	HostName         string          `json:"host_name"`
+	Ip               string          `json:"ip"`
+	AgentOnline      bool            `json:"agent_online"`
+	ServiceID        int64           `json:"service_id"`
+	ServiceName      string          `json:"service_name"`
+	InstanceName     string          `json:"instance_name"`
+	AppHome          string          `json:"app_home"`
+	RunUser          string          `json:"run_user"`
+	WorkDirectory    string          `json:"work_directory"`
+	Version          string          `json:"version"`
+	MacroValues      json.RawMessage `json:"macro_values"`
+	MacroDefinitions json.RawMessage `json:"macro_definitions"`
 }
 
 // 挂载点解析：应用组@逻辑服务 → 该服务的部署实例（精确绑定）。
@@ -2002,6 +2005,7 @@ func (q *Queries) ListMountServiceInstances(ctx context.Context, serviceID int64
 			&i.WorkDirectory,
 			&i.Version,
 			&i.MacroValues,
+			&i.MacroDefinitions,
 		); err != nil {
 			return nil, err
 		}

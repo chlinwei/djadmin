@@ -130,6 +130,10 @@ parse 枚举合法；**策略引用的 `input.<key>` 必须存在于采集列表
   显式化，缺配在保存/执行两端都有明确报错；
 - **服务宏 Key 归一**：`macro_values` 的键兼容两种存法——裸名（`ORACLE_SID`）与
   模板渲染形式（`${ORACLE_SID}`），`macrosFromRaw` 读取时统一剥掉 `${}` 包裹；
+- **服务宏值来源（2026-09-17 修复）**：目标 `Macros` = 部署模板 `macro_definitions` 的
+  `value`（默认值）+ 服务 `macro_values`（覆盖同名项），与前端服务弹窗展示、日志采集
+  渲染统一。此前只读 `macro_values`，导致模板里配了默认值、弹窗看着有值，执行时却
+  报宏缺失；`macrosWithTemplateDefaults` 负责合并；
 - **可空 JSON 列纪律**：手写 SQL 凡涉及 `expected_value`/`actual_value` 等可空
   JSON 列，必须 `COALESCE(列,'null')`（jsontext.Value 不接受 driver NULL，
   漏写会导致详情接口 500，回归测试

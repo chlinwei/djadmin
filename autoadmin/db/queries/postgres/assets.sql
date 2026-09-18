@@ -515,10 +515,10 @@ WHERE id = sqlc.arg(id);
 
 -- name: CreateAgentExecutionJob :one
 INSERT INTO automation_execution_job
-  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+  (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
    task_name_snapshot,template_name_snapshot,template_content_snapshot,"limit",run_as_user_snapshot,
    run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username,start_time)
-VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'running','manual',
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'running','manual','agent_install',
         sqlc.arg(inventory_snapshot),sqlc.arg(extra_vars),sqlc.arg(result_summary),
         sqlc.arg(task_name_snapshot),sqlc.arg(template_name_snapshot),sqlc.arg(template_content_snapshot),'',
         sqlc.arg(run_as_user_snapshot),sqlc.arg(run_as_group_snapshot),sqlc.arg(work_directory_snapshot),

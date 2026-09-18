@@ -517,6 +517,7 @@ type AutomationExecutionJob struct {
 	JobID                   string          `json:"job_id"`
 	Status                  string          `json:"status"`
 	TriggerType             string          `json:"trigger_type"`
+	Source                  string          `json:"source"`
 	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
 	ExtraVars               json.RawMessage `json:"extra_vars"`
 	ResultSummary           json.RawMessage `json:"result_summary"`
@@ -973,6 +974,7 @@ type MonitorTargetInstallHistory struct {
 	HostID                    sql.NullInt64   `json:"host_id"`
 	TargetID                  sql.NullInt64   `json:"target_id"`
 	LogCollectionTargetID     sql.NullInt64   `json:"log_collection_target_id"`
+	AutomationJobIDSnapshot   sql.NullInt64   `json:"automation_job_id_snapshot"`
 }
 
 type MonitorUserAlertMediaBinding struct {

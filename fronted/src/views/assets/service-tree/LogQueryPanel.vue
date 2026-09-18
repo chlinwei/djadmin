@@ -12,12 +12,17 @@
           <div class="log-query-kicker">{{ scope.businessSystemName || '-' }} / {{ scope.environmentName || '-' }}</div>
           <h2>{{ scope.nodeTitle }}</h2>
         </div>
-        <a-tooltip title="刷新">
-          <a-button type="primary" ghost :loading="activeLoading" @click="reload">
-            <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="activeLoading" />
-            <span>&nbsp;刷新</span>
-          </a-button>
-        </a-tooltip>
+        <a-space>
+          <a-tooltip title="清理该逻辑服务数据流中的历史日志（不可恢复）">
+            <a-button danger :disabled="!scope.applicationServiceId" @click="openCleanup">清理日志数据</a-button>
+          </a-tooltip>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="activeLoading" @click="reload">
+              <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="activeLoading" />
+              <span>&nbsp;刷新</span>
+            </a-button>
+          </a-tooltip>
+        </a-space>
       </header>
 
       <a-row class="log-query-filters" :gutter="16">
@@ -190,6 +195,40 @@
         <pre class="detail-content">{{ formatJsonText(activeLog.app_fields) }}</pre>
       </template>
     </a-drawer>
+
+    <a-modal
+      v-model:open="cleanupOpen"
+      title="清理日志数据"
+      :confirm-loading="cleanupSubmitting"
+      ok-text="确认清理"
+      cancel-text="取消"
+      @ok="submitCleanup"
+    >
+      <a-alert
+        type="warning"
+        show-icon
+        message="清理不可恢复"
+        description="按时间清理只删除早于所选时间的数据；全部清空会删除该逻辑服务数据流的所有文档。"
+      />
+      <a-form layout="vertical" style="margin-top: 16px">
+        <a-form-item label="清理范围">
+          <a-radio-group v-model:value="cleanupMode">
+            <a-radio value="hours">保留最近 N 小时</a-radio>
+            <a-radio value="days">保留最近 N 天</a-radio>
+            <a-radio value="all">全部清空</a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-if="cleanupMode !== 'all'" :label="cleanupMode === 'hours' ? '保留小时数' : '保留天数'">
+          <a-input-number
+            v-model:value="cleanupAmount"
+            :min="1"
+            :max="cleanupMode === 'hours' ? 87600 : 3650"
+            style="width: 180px"
+          />
+        </a-form-item>
+        <div class="field-hint">按数据流的 <code>@timestamp</code> 判断，Elasticsearch 后台异步执行。</div>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -199,7 +238,7 @@ import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getElasticsearchClusterList, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
+import { cleanupLogDataStream, getElasticsearchClusterList, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -254,6 +293,11 @@ const loading = ref(false)
 const logs = ref([])
 const detailOpen = ref(false)
 const activeLog = ref(null)
+
+const cleanupOpen = ref(false)
+const cleanupMode = ref('days')
+const cleanupAmount = ref(7)
+const cleanupSubmitting = ref(false)
 
 const statsField = ref('error_fingerprint')
 const statsIntervalOption = ref('auto')
@@ -507,6 +551,38 @@ function openDetail(record) {
   if (!record) return
   activeLog.value = record
   detailOpen.value = true
+}
+
+function openCleanup() {
+  if (!props.scope.applicationServiceId) return
+  cleanupMode.value = 'days'
+  cleanupAmount.value = 7
+  cleanupOpen.value = true
+}
+
+async function submitCleanup() {
+  if (!props.scope.applicationServiceId) return
+  const mode = cleanupMode.value
+  const amount = mode === 'all' ? 0 : Number(cleanupAmount.value || 0)
+  if (mode !== 'all' && amount < 1) {
+    message.warning('请填写大于 0 的保留数量')
+    return
+  }
+  cleanupSubmitting.value = true
+  try {
+    const response = await cleanupLogDataStream({ service_id: props.scope.applicationServiceId, mode, amount })
+    const data = response?.data?.data || {}
+    if (data.matched === false) {
+      message.info('没有匹配到该服务的数据流，无需清理')
+    } else {
+      message.success('清理任务已提交，Elasticsearch 后台执行中')
+    }
+    cleanupOpen.value = false
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '清理日志数据失败')
+  } finally {
+    cleanupSubmitting.value = false
+  }
 }
 
 function formatJsonText(value) {

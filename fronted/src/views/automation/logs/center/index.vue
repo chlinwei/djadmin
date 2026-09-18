@@ -1,13 +1,6 @@
 <template>
   <div class="automation-logs-page">
-    <a-tabs v-model:activeKey="activeRecordTab" @change="handleRecordTabChange">
-      <a-tab-pane key="job" tab="自动化任务运行记录">
-        <JobRunRecordsTab />
-      </a-tab-pane>
-      <a-tab-pane key="monitor_history" tab="监控安装历史">
-        <MonitorInstallHistoryTab />
-      </a-tab-pane>
-    </a-tabs>
+    <JobRunRecordsTab />
 
     <a-drawer
       :title="`查看日志 / 作业 #${jobLogViewerJobId || ''}`"
@@ -83,30 +76,6 @@
       </div>
       <pre class="runtime-template-content">{{ runtimeTemplateContent || '-' }}</pre>
     </a-modal>
-
-    <a-modal
-      :open="monitorHistoryDetailVisible"
-      :title="'监控安装历史日志详情'"
-      width="1000px"
-      :footer="null"
-      @cancel="closeMonitorHistoryDetail"
-    >
-      <LogViewerPanel
-        :status-tag-color="statusColor(monitorHistoryDetailStatus)"
-        :status-text="monitorHistoryDetailStatus"
-        :last-output-text="monitorHistoryDetailLastOutput"
-        :wrap="monitorHistoryDetailWrap"
-        :font-size="monitorHistoryDetailFontSize"
-        :html-content="monitorHistoryDetailHtml"
-        @update:wrap="(value) => (monitorHistoryDetailWrap = value)"
-        @decrease-font="decreaseMonitorHistoryDetailFontSize"
-        @increase-font="increaseMonitorHistoryDetailFontSize"
-        @copy="copyMonitorHistoryDetail"
-      >
-        <template #actions>
-        </template>
-      </LogViewerPanel>
-    </a-modal>
   </div>
 </template>
 
@@ -115,7 +84,6 @@ import { provide } from 'vue'
 import ExecutionScopePreviewModal from '../../components/ExecutionScopePreviewModal.vue'
 import LogViewerPanel from '../LogViewerPanel/index.vue'
 import JobRunRecordsTab from '../tabs/JobRunRecordsTab/index.vue'
-import MonitorInstallHistoryTab from '../tabs/MonitorInstallHistoryTab/index.vue'
 import { useAutomationLogsController } from './controller'
 import './style.css'
 
@@ -123,135 +91,32 @@ const logsCtx = useAutomationLogsController()
 provide('automationLogsCtx', logsCtx)
 
 const {
-  getPopupContainer,
-  activeRecordTab,
-  handleRecordTabChange,
-  jobRecordId,
-  onJobRecordIdSearch,
-  jobKeyword,
-  loadJobs,
-  selectedJobStatus,
-  jobStatusOptions,
-  jobOutputKeyword,
-  selectedTaskId,
-  taskOptions,
-  onTaskFilterChange,
-  jobTimeRange,
-  selectedTaskName,
-  clearTaskFilter,
-  jobLoading,
-  reloadPage,
-  jobColumns,
-  jobs,
-  jobPagination,
-  handleJobTableChange,
-  statusColor,
-  formatDateTime,
-  formatRuntimeTemplateLabel,
-  openRuntimeTemplateViewer,
-  getInventoryHostList,
-  openJobHostViewer,
-  openJobTargetLogViewer,
-  isJobFinished,
-  openJobLogViewer,
-  canDownloadJobLog,
-  downloadingJobLogId,
-  downloadJobLog,
-  onCancelJob,
-  monitorInstallHistoryRows,
-  monitorInstallHistoryLoading,
-  monitorInstallHistoryKeyword,
-  monitorInstallHistoryStatus,
-  monitorInstallHistoryAction,
-  monitorInstallHistoryTargetId,
-  monitorInstallHistoryStatusOptions,
-  monitorInstallHistoryActionOptions,
-  monitorInstallHistoryColumns,
-  monitorInstallHistoryPagination,
-  loadMonitorInstallHistories,
-  clearMonitorInstallHistoryFilters,
-  handleMonitorInstallHistoryTableChange,
-  openMonitorHistoryDetail,
-  cancelMonitorHistory,
-  monitorHistoryDetailVisible,
-  monitorHistoryDetailLoading,
-  monitorHistoryDetailHtml,
-  monitorHistoryDetailStatus,
-  monitorHistoryDetailLastOutput,
-  monitorHistoryDetailWrap,
-  monitorHistoryDetailFontSize,
-  monitorHistorySourceJobExists,
-  monitorHistorySourceJobChecking,
-  closeMonitorHistoryDetail,
-  increaseMonitorHistoryDetailFontSize,
-  decreaseMonitorHistoryDetailFontSize,
-  copyMonitorHistoryDetail,
-  jumpToMonitorHistorySourceJob,
-  openLogViewer,
-  logViewerHostLabel,
-  logViewerVisible,
-  closeDetailLogViewer,
   streamStatusTagColor,
   streamStatusLabel,
   streamLastOutputText,
-  logWrap,
-  logFontSize,
-  decreaseLogFontSize,
-  increaseLogFontSize,
-  copyCurrentLog,
-  downloadCurrentLog,
-  currentLogText,
-  currentLogHtml,
+  jobLogWrap,
+  jobLogFontSize,
+  jobLogHtml,
+  jobLogAutoFollowEnabled,
+  jobLogAutoFollowSuspended,
+  cancellingJobId,
   jobLogViewerJobId,
   jobLogViewerVisible,
-  bindJobLogViewerShell,
-  closeJobLogViewer,
-  handleJobLogViewerScroll,
-  jobLogWrap,
-  jobLogAutoFollowEnabled,
-  toggleJobLogAutoFollow,
-  jobLogAutoFollowSuspended,
-  resumeJobLogAutoFollow,
   canCancelViewerJob,
-  cancellingJobId,
+  toggleJobLogAutoFollow,
+  resumeJobLogAutoFollow,
+  decreaseJobLogFontSize,
+  increaseJobLogFontSize,
   onCancelViewerJob,
   copyJobLog,
   downloadJobLogText,
-  jobLogFontSize,
-  decreaseJobLogFontSize,
-  increaseJobLogFontSize,
-  jobLogText,
-  jobLogHtml,
+  handleJobLogViewerScroll,
+  bindJobLogViewerShell,
+  closeJobLogViewer,
   jobHostViewerVisible,
   jobHostViewerTitle,
   jobHostViewerHosts,
   handleJobHostViewerHostClick,
-  targetLogViewerVisible,
-  targetLogViewerLoading,
-  targetLogViewerJobId,
-  targetLogViewerRows,
-  targetLogViewerStatus,
-  targetLogViewerHostId,
-  targetLogStatusSummary,
-  closeJobTargetLogViewer,
-  refreshTargetLogViewer,
-  applyTargetLogFilters,
-  applyTargetLogStatusQuickFilter,
-  resetTargetLogFilters,
-  openTargetLogDetail,
-  downloadTargetLog,
-  targetLogDetailVisible,
-  targetLogDetailTitle,
-  targetLogDetailHtml,
-  targetLogDetailStatus,
-  targetLogDetailLastOutput,
-  targetLogDetailWrap,
-  targetLogDetailFontSize,
-  decreaseTargetLogDetailFontSize,
-  increaseTargetLogDetailFontSize,
-  copyTargetLogDetail,
-  downloadTargetLogDetail,
-  closeTargetLogDetail,
   runtimeTemplateVisible,
   runtimeTemplateTitle,
   closeRuntimeTemplateViewer,

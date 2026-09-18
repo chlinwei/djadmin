@@ -1057,12 +1057,12 @@ const createLogTargetInstallHistory = `-- name: CreateLogTargetInstallHistory :e
 INSERT INTO monitor_target_install_history
   (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
    exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id)
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id,automation_job_id_snapshot)
 VALUES (?,?,NULL,?,'manual','pending',
         ?,?,?,
         ?,?,'','','','{}',
         ?,?,
-        NULL,?,?)
+        NULL,?,?,?)
 `
 
 type CreateLogTargetInstallHistoryParams struct {
@@ -1078,6 +1078,7 @@ type CreateLogTargetInstallHistoryParams struct {
 	RequestedUsernameSnapshot string        `json:"requested_username_snapshot"`
 	HostID                    sql.NullInt64 `json:"host_id"`
 	LogCollectionTargetID     sql.NullInt64 `json:"log_collection_target_id"`
+	AutomationJobIDSnapshot   sql.NullInt64 `json:"automation_job_id_snapshot"`
 }
 
 func (q *Queries) CreateLogTargetInstallHistory(ctx context.Context, arg CreateLogTargetInstallHistoryParams) (int64, error) {
@@ -1094,6 +1095,7 @@ func (q *Queries) CreateLogTargetInstallHistory(ctx context.Context, arg CreateL
 		arg.RequestedUsernameSnapshot,
 		arg.HostID,
 		arg.LogCollectionTargetID,
+		arg.AutomationJobIDSnapshot,
 	)
 	if err != nil {
 		return 0, err
@@ -1130,10 +1132,10 @@ func (q *Queries) CreateMonitorTargetIfAbsent(ctx context.Context, arg CreateMon
 
 const createMonitorTargetJob = `-- name: CreateMonitorTargetJob :execlastid
 INSERT INTO automation_execution_job
-  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+  (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
    task_name_snapshot,template_name_snapshot,template_content_snapshot,` + "`" + `limit` + "`" + `,run_as_user_snapshot,
    run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username)
-VALUES (?,?,NULL,?,'pending','manual',
+VALUES (?,?,NULL,?,'pending','manual','monitor_target',
         ?,?,?,?,
         ?,?,'',?,
         ?,?,?,
@@ -1276,12 +1278,12 @@ const createTargetInstallHistory = `-- name: CreateTargetInstallHistory :execlas
 INSERT INTO monitor_target_install_history
   (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
    exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id)
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id,automation_job_id_snapshot)
 VALUES (?,?,NULL,?,'manual','pending',
         ?,?,?,
         ?,?,'','','','{}',
         ?,?,
-        ?,?,?)
+        ?,?,?,?)
 `
 
 type CreateTargetInstallHistoryParams struct {
@@ -1298,6 +1300,7 @@ type CreateTargetInstallHistoryParams struct {
 	StartTime                 sql.NullTime  `json:"start_time"`
 	HostID                    sql.NullInt64 `json:"host_id"`
 	TargetID                  sql.NullInt64 `json:"target_id"`
+	AutomationJobIDSnapshot   sql.NullInt64 `json:"automation_job_id_snapshot"`
 }
 
 func (q *Queries) CreateTargetInstallHistory(ctx context.Context, arg CreateTargetInstallHistoryParams) (int64, error) {
@@ -1315,6 +1318,7 @@ func (q *Queries) CreateTargetInstallHistory(ctx context.Context, arg CreateTarg
 		arg.StartTime,
 		arg.HostID,
 		arg.TargetID,
+		arg.AutomationJobIDSnapshot,
 	)
 	if err != nil {
 		return 0, err
@@ -1723,6 +1727,35 @@ func (q *Queries) GetApplicationServiceCode(ctx context.Context, id int64) (stri
 	return code, err
 }
 
+const getApplicationServiceStreamDims = `-- name: GetApplicationServiceStreamDims :one
+SELECT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code, s.code AS service_code
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.id = ?
+`
+
+type GetApplicationServiceStreamDimsRow struct {
+	ProjectCode        string `json:"project_code"`
+	EnvironmentCode    string `json:"environment_code"`
+	BusinessSystemCode string `json:"business_system_code"`
+	ServiceCode        string `json:"service_code"`
+}
+
+// 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
+func (q *Queries) GetApplicationServiceStreamDims(ctx context.Context, id int64) (GetApplicationServiceStreamDimsRow, error) {
+	row := q.db.QueryRowContext(ctx, getApplicationServiceStreamDims, id)
+	var i GetApplicationServiceStreamDimsRow
+	err := row.Scan(
+		&i.ProjectCode,
+		&i.EnvironmentCode,
+		&i.BusinessSystemCode,
+		&i.ServiceCode,
+	)
+	return i, err
+}
+
 const getConfigValueByKey = `-- name: GetConfigValueByKey :one
 
 SELECT value FROM sys_config WHERE ` + "`" + `key` + "`" + ` = ? ORDER BY id LIMIT 1
@@ -1763,6 +1796,43 @@ func (q *Queries) GetDefaultEnabledElasticsearchCluster(ctx context.Context) (Ge
 		&i.Password,
 		&i.IndexPrefix,
 		&i.VerifyTls,
+	)
+	return i, err
+}
+
+const getDefaultEnabledElasticsearchClusterConnection = `-- name: GetDefaultEnabledElasticsearchClusterConnection :one
+SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
+FROM monitor_elasticsearch_cluster
+WHERE enabled = TRUE
+ORDER BY is_default DESC, id LIMIT 1
+`
+
+type GetDefaultEnabledElasticsearchClusterConnectionRow struct {
+	ID             int64  `json:"id"`
+	Hosts          string `json:"hosts"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	VerifyTls      bool   `json:"verify_tls"`
+	CaCert         string `json:"ca_cert"`
+	IndexPrefix    string `json:"index_prefix"`
+	RequestTimeout uint32 `json:"request_timeout"`
+	Enabled        bool   `json:"enabled"`
+}
+
+// 清理数据流用的完整默认集群连接信息（含 id/ca_cert/request_timeout，供 elasticsearchRequest 使用）。
+func (q *Queries) GetDefaultEnabledElasticsearchClusterConnection(ctx context.Context) (GetDefaultEnabledElasticsearchClusterConnectionRow, error) {
+	row := q.db.QueryRowContext(ctx, getDefaultEnabledElasticsearchClusterConnection)
+	var i GetDefaultEnabledElasticsearchClusterConnectionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Hosts,
+		&i.Username,
+		&i.Password,
+		&i.VerifyTls,
+		&i.CaCert,
+		&i.IndexPrefix,
+		&i.RequestTimeout,
+		&i.Enabled,
 	)
 	return i, err
 }
@@ -3555,6 +3625,7 @@ SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_t
        ih.summary_message, ih.stdout_snapshot, ih.stderr_snapshot, ih.error_message_snapshot,
        ih.result_summary_snapshot, ih.requested_user_id_snapshot, ih.requested_username_snapshot,
        ih.start_time, ih.end_time, ih.duration_seconds, ih.host_id, ih.target_id, ih.log_collection_target_id,
+       ih.automation_job_id_snapshot,
        COALESCE(h.instance_name, ih.host_name_snapshot) AS host_name,
        COALESCE(h.ip, ih.host_ip_snapshot) AS host_ip,
        COALESCE(mt.exporter_type, ih.exporter_type_snapshot) AS target_exporter_type,
@@ -3615,6 +3686,7 @@ type ListInstallHistoriesRow struct {
 	HostID                    sql.NullInt64   `json:"host_id"`
 	TargetID                  sql.NullInt64   `json:"target_id"`
 	LogCollectionTargetID     sql.NullInt64   `json:"log_collection_target_id"`
+	AutomationJobIDSnapshot   sql.NullInt64   `json:"automation_job_id_snapshot"`
 	HostName                  string          `json:"host_name"`
 	HostIp                    string          `json:"host_ip"`
 	TargetExporterType        string          `json:"target_exporter_type"`
@@ -3680,6 +3752,7 @@ func (q *Queries) ListInstallHistories(ctx context.Context, arg ListInstallHisto
 			&i.HostID,
 			&i.TargetID,
 			&i.LogCollectionTargetID,
+			&i.AutomationJobIDSnapshot,
 			&i.HostName,
 			&i.HostIp,
 			&i.TargetExporterType,

@@ -38,6 +38,12 @@
   派生时 PG 侧改写成 `= ANY($1::bigint[])`（见 SQL_DESIGN §4.2 的更正与计划 P4-7）。
   这条路径此前在 PG 下会因为占位符与参数个数不符而报错，调用点没检查错误时表现为"解析到 0 台主机"。
 - **存在性校验**：模板/Inventory 的存在性用取行查询的 `sql.ErrNoRows` 判定（不再 `SELECT COUNT(*)`）。
+- **作业来源（`automation_execution_job.source`）**：区分作业由谁派发，取值 `manual`（普通任务，
+  `CreateAutomationJob` 显式写）、`agent_install`（Agent 安装/更新，`assets.CreateAgentExecutionJob`）、
+  `monitor_target`（exporter/Filebeat 安装，`monitor.CreateMonitorTargetJob`）；列默认 `manual`。
+  `CountJobs`/`ListJobsTyped` 支持可选 `source` 过滤（`sqlc.narg`）。运行记录中心是单页无 tab，只展示
+  自动化任务运行记录，来源列 + 来源过滤用于区分普通任务 / Agent 安装 / 监控安装；监控安装历史不再单独占 tab，
+  纳管目标「查看日志」用历史行的 `automation_job_id_snapshot` 跳到对应作业。
 - **验证**：`internal/automation/smoke_test.go`（`AUTOMATION_SMOKE_DSN`）在真 MySQL 与真 PG 上
   跑一遍上述写路径（模板/Inventory/任务 CRUD、作业派发-认领-收尾-取消、主机日志、多值 IN 与聚合计数、
   控制器密钥三条语句）；`scripts` 级的用法写在文件的函数注释里。会改动全局数据的语句

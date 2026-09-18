@@ -172,6 +172,7 @@ func (handler *Handler) dispatchExporterJob(ginContext *gin.Context, row targetI
 		StartTime:                 sql.NullTime{Time: now, Valid: true},
 		HostID:                    sql.NullInt64{Int64: row.HostID, Valid: true},
 		TargetID:                  sql.NullInt64{Int64: row.ID, Valid: true},
+		AutomationJobIDSnapshot:   sql.NullInt64{Int64: jobID, Valid: true},
 	})
 	if err != nil {
 		return err

@@ -445,10 +445,10 @@ func (q *Queries) CountProjects(ctx context.Context, arg CountProjectsParams) (i
 
 const createAgentExecutionJob = `-- name: CreateAgentExecutionJob :execlastid
 INSERT INTO automation_execution_job
-  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+  (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
    task_name_snapshot,template_name_snapshot,template_content_snapshot,` + "`" + `limit` + "`" + `,run_as_user_snapshot,
    run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username,start_time)
-VALUES (?,?,NULL,?,'running','manual',
+VALUES (?,?,NULL,?,'running','manual','agent_install',
         ?,?,?,
         ?,?,?,'',
         ?,?,?,

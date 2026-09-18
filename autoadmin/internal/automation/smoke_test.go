@@ -210,6 +210,21 @@ func TestSmokeAutomationQueriesAgainstRealDatabase(t *testing.T) {
 	if job.Status != "success" || !job.DurationSeconds.Valid || job.DurationSeconds.Float64 != 1.5 {
 		t.Fatalf("作业字段不符：status=%q duration=%+v", job.Status, job.DurationSeconds)
 	}
+	// 普通任务作业来源固定为 manual，且列表可按来源过滤（PG/MySQL 参数推导一致）。
+	if job.Source != "manual" {
+		t.Fatalf("普通任务作业来源应为 manual，实际 %q", job.Source)
+	}
+	jobPattern := sql.NullString{String: "%smoke-task-" + suffix + "%", Valid: true}
+	if count, err := queries.CountJobs(ctx, db.CountJobsParams{
+		Source: sql.NullString{String: "manual", Valid: true}, Pattern: jobPattern,
+	}); err != nil || count != 1 {
+		t.Fatalf("按来源 manual 过滤 = %d, %v，期望 1", count, err)
+	}
+	if count, err := queries.CountJobs(ctx, db.CountJobsParams{
+		Source: sql.NullString{String: "monitor_target", Valid: true}, Pattern: jobPattern,
+	}); err != nil || count != 0 {
+		t.Fatalf("monitor_target 来源不应命中普通任务：%d, %v", count, err)
+	}
 	// 取消路径：读 start_time → 算时长 → 置 cancelled（status<>'pending'/'running' 时为 0 行）。
 	if _, err = queries.GetAutomationJobStartTime(ctx, jobID); err != nil {
 		t.Fatalf("读作业开始时间：%v", err)

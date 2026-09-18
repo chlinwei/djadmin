@@ -1,7 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { createPagination } from '@/util/tableStyle'
 import { useRoute, useRouter } from 'vue-router'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { AnsiUp } from 'ansi_up'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -12,8 +12,7 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import store from '@/store'
 import { getWebSocketBaseUrl } from '@/util/request'
-import { getJobList, getJobDetail, cancelJob, getTaskList, getJobLog } from '@/api/sys/automation'
-import { cancelMonitorInstallHistory, getMonitorInstallHistoryDetail, getMonitorInstallHistoryList } from '@/api/monitor'
+import { getJobList, cancelJob, getTaskList, getJobLog } from '@/api/sys/automation'
 import {
   buildHostScopedLogText,
   copyTextWithFallback,
@@ -54,7 +53,6 @@ export function useAutomationLogsController() {
 const route = useRoute()
 const router = useRouter()
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
-const activeRecordTab = ref('job')
 
 function getActiveUserTimezone() {
   return String(store.state.user?.timezone || 'Asia/Shanghai')
@@ -65,6 +63,7 @@ const jobLoading = ref(false)
 const jobRecordId = ref('')
 const jobKeyword = ref('')
 const selectedJobStatus = ref(null)
+const selectedJobSource = ref(null)
 const jobOutputKeyword = ref('')
 const jobTimeRange = ref([])
 const logsTimeRangePresets = ref([])
@@ -104,47 +103,6 @@ const workflowRunColumns = [
   { title: '耗时', dataIndex: 'duration_seconds', key: 'duration_seconds', width: 100, sorter: true },
   { title: '操作', key: 'action', width: 220, fixed: 'right' },
 ]
-const monitorInstallHistoryRows = ref([])
-const monitorInstallHistoryLoading = ref(false)
-const monitorInstallHistoryKeyword = ref('')
-const monitorInstallHistoryStatus = ref(undefined)
-const monitorInstallHistoryAction = ref(undefined)
-const monitorInstallHistoryTargetId = ref('')
-const monitorInstallHistoryTargetType = ref('')
-const monitorInstallHistoryTimeRange = ref([])
-const monitorInstallHistoryPagination = reactive(createPagination())
-const monitorInstallHistoryStatusOptions = [
-  { label: '待执行', value: 'pending' },
-  { label: '执行中', value: 'running' },
-  { label: '成功', value: 'success' },
-  { label: '失败', value: 'failed' },
-  { label: '已取消', value: 'cancelled' },
-]
-const monitorInstallHistoryActionOptions = [
-  { label: '安装', value: 'install' },
-  { label: '卸载', value: 'uninstall' },
-]
-const monitorInstallHistoryColumns = [
-  { title: '历史ID', dataIndex: 'id', key: 'id', width: 100 },
-  { title: '纳管目标ID', dataIndex: 'managed_target_id', key: 'managed_target_id', width: 110 },
-  { title: '动作', dataIndex: 'action', key: 'action', width: 100 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
-  { title: '主机IP', dataIndex: 'host_ip', key: 'host_ip', width: 150 },
-  { title: '监控项', dataIndex: 'target_exporter_type', key: 'target_exporter_type', width: 140 },
-  { title: '摘要', dataIndex: 'summary_message', key: 'summary_message', width: 360 },
-  { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 170 },
-  { title: '操作', key: 'action_col', width: 220, fixed: 'right' },
-]
-const monitorHistoryDetailVisible = ref(false)
-const monitorHistoryDetailLoading = ref(false)
-const monitorHistoryDetailRecord = ref(null)
-const monitorHistoryDetailText = ref('')
-const monitorHistoryDetailWrap = ref(true)
-const monitorHistoryDetailFontSize = ref(13)
-const monitorHistorySourceJobId = ref(null)
-const monitorHistorySourceJobExists = ref(false)
-const monitorHistorySourceJobChecking = ref(false)
 const hasWorkflowRunFilters = computed(() => {
   return !!(
     workflowRunKeyword.value ||
@@ -173,6 +131,29 @@ const jobStatusOptions = [
   { value: 'failed', label: '失败' },
   { value: 'cancelled', label: '已取消' },
 ]
+
+const jobSourceOptions = [
+  { value: 'manual', label: '普通任务' },
+  { value: 'agent_install', label: 'Agent 安装/更新' },
+  { value: 'monitor_target', label: '监控安装' },
+]
+
+const jobSourceLabels = {
+  manual: '普通任务',
+  agent_install: 'Agent 安装/更新',
+  monitor_target: '监控安装',
+}
+
+function formatJobSource(value) {
+  if (!value) {
+    return '-'
+  }
+  return jobSourceLabels[value] || value
+}
+
+function jobSourceTagColor(value) {
+  return jobSourceLabels[value] ? 'blue' : 'default'
+}
 
 const logViewerVisible = ref(false)
 const logViewerRecord = ref(null)
@@ -285,6 +266,7 @@ async function loadAutomationLogsRefreshIntervalConfig() {
 const jobColumns = [
   { title: '任务ID', dataIndex: 'job_id', key: 'job_id', width: 100, sorter: true },
   { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 140 },
+  { title: '来源', dataIndex: 'source', key: 'source', width: 130 },
   { title: '运行模板', key: 'runtime_template', width: 160 },
   { title: '运行主机', key: 'inventory_hosts', width: 260 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100, sorter: true },
@@ -309,12 +291,6 @@ const currentLogText = computed(() => {
 const currentLogHtml = computed(() => renderAnsiLogToHtml(currentLogText.value))
 
 const jobLogHtml = computed(() => renderAnsiLogToHtml(jobLogText.value))
-const monitorHistoryDetailHtml = computed(() => renderAnsiLogToHtml(monitorHistoryDetailText.value))
-const monitorHistoryDetailStatus = computed(() => String(monitorHistoryDetailRecord.value?.status || '-'))
-const monitorHistoryDetailLastOutput = computed(() => {
-  const sourceTime = monitorHistoryDetailRecord.value?.end_time || monitorHistoryDetailRecord.value?.update_time || monitorHistoryDetailRecord.value?.create_time
-  return formatDateTime(sourceTime)
-})
 
 function bindJobLogViewerShell(element) {
   jobLogViewerShellRef.value = element
@@ -957,193 +933,6 @@ function resetWorkflowRunFilters() {
   loadWorkflowRuns(true)
 }
 
-async function loadMonitorInstallHistories(resetPage = false) {
-  if (resetPage) {
-    monitorInstallHistoryPagination.current = 1
-  }
-  monitorInstallHistoryLoading.value = true
-  try {
-    const startTime = Array.isArray(monitorInstallHistoryTimeRange.value) && monitorInstallHistoryTimeRange.value[0]
-      ? toUtcQueryISOStringByUserTimezone(monitorInstallHistoryTimeRange.value[0], getActiveUserTimezone())
-      : undefined
-    const endTime = Array.isArray(monitorInstallHistoryTimeRange.value) && monitorInstallHistoryTimeRange.value[1]
-      ? toUtcQueryISOStringByUserTimezone(monitorInstallHistoryTimeRange.value[1], getActiveUserTimezone())
-      : undefined
-
-    const params = {
-      page: monitorInstallHistoryPagination.current,
-      page_size: monitorInstallHistoryPagination.pageSize,
-      ordering: '-id',
-      keyword: String(monitorInstallHistoryKeyword.value || '').trim() || undefined,
-      status: monitorInstallHistoryStatus.value || undefined,
-      action: monitorInstallHistoryAction.value || undefined,
-      target_id: monitorInstallHistoryTargetType.value === 'filebeat'
-        ? undefined
-        : String(monitorInstallHistoryTargetId.value || '').trim() || undefined,
-      log_collection_target_id: monitorInstallHistoryTargetType.value === 'filebeat'
-        ? String(monitorInstallHistoryTargetId.value || '').trim() || undefined
-        : undefined,
-      start_time: startTime,
-      end_time: endTime,
-    }
-    const res = await getMonitorInstallHistoryList(params)
-    const data = res?.data?.data || {}
-    monitorInstallHistoryRows.value = Array.isArray(data.results) ? data.results : []
-    monitorInstallHistoryPagination.total = Number(data.count || 0)
-  } catch (error) {
-    message.error(error?.message || '加载监控安装历史失败')
-    monitorInstallHistoryRows.value = []
-  } finally {
-    monitorInstallHistoryLoading.value = false
-  }
-}
-
-function handleMonitorInstallHistoryTableChange(page) {
-  monitorInstallHistoryPagination.current = Number(page?.current || 1)
-  monitorInstallHistoryPagination.pageSize = Number(page?.pageSize || 10)
-  loadMonitorInstallHistories(false)
-}
-
-async function openMonitorHistoryDetail(record) {
-  const historyId = Number(record?.id)
-  if (!Number.isInteger(historyId) || historyId <= 0) {
-    message.warning('历史记录ID无效')
-    return
-  }
-  monitorHistoryDetailVisible.value = true
-  monitorHistoryDetailLoading.value = true
-  try {
-    const res = await getMonitorInstallHistoryDetail(historyId)
-    const data = res?.data?.data || {}
-    monitorHistoryDetailRecord.value = data
-    const chunks = []
-    if (data.summary_message) {
-      chunks.push(`[summary]\n${String(data.summary_message).trimEnd()}`)
-    }
-    if (data.stdout_snapshot) {
-      chunks.push(`[stdout]\n${String(data.stdout_snapshot).trimEnd()}`)
-    }
-    if (data.stderr_snapshot) {
-      chunks.push(`[stderr]\n${String(data.stderr_snapshot).trimEnd()}`)
-    }
-    if (data.error_message_snapshot) {
-      chunks.push(`[error]\n${String(data.error_message_snapshot).trimEnd()}`)
-    }
-    monitorHistoryDetailText.value = chunks.filter(Boolean).join('\n\n')
-  } catch (error) {
-    monitorHistoryDetailRecord.value = null
-    monitorHistoryDetailText.value = ''
-    message.error(error?.message || '加载历史详情失败')
-  } finally {
-    monitorHistoryDetailLoading.value = false
-  }
-}
-
-function cancelMonitorHistory(record) {
-  const historyId = Number(record?.id)
-  if (!Number.isInteger(historyId) || !['pending', 'running'].includes(String(record?.status || '').toLowerCase())) {
-    return
-  }
-
-  Modal.confirm({
-    title: '确认取消监控任务？',
-    content: `主机 ${record?.host_name || record?.host_ip || '-'} 的${record?.action === 'install' ? '安装' : '卸载'}任务将停止继续执行。`,
-    okText: '确认取消',
-    cancelText: '返回',
-    onOk: async () => {
-      try {
-        await cancelMonitorInstallHistory(historyId)
-        message.success('监控任务已取消')
-        await loadMonitorInstallHistories(false)
-      } catch (error) {
-        message.error(error?.message || '取消监控任务失败')
-      }
-    },
-  })
-}
-
-function resolveMonitorHistorySourceJobId(detail) {
-  const rawValue = detail?.automation_job_id_snapshot
-  const parsed = Number(rawValue)
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed
-  }
-  return null
-}
-
-async function probeMonitorHistorySourceJob(detail) {
-  monitorHistorySourceJobId.value = resolveMonitorHistorySourceJobId(detail)
-  monitorHistorySourceJobExists.value = false
-  if (!monitorHistorySourceJobId.value) {
-    return
-  }
-
-  monitorHistorySourceJobChecking.value = true
-  try {
-    const res = await getJobDetail(monitorHistorySourceJobId.value)
-    if (Number(res?.data?.code) === 200 && res?.data?.data) {
-      monitorHistorySourceJobExists.value = true
-    }
-  } catch (_error) {
-    monitorHistorySourceJobExists.value = false
-  } finally {
-    monitorHistorySourceJobChecking.value = false
-  }
-}
-
-function jumpToMonitorHistorySourceJob() {
-  const sourceJobId = Number(monitorHistorySourceJobId.value)
-  if (!Number.isInteger(sourceJobId) || sourceJobId <= 0 || !monitorHistorySourceJobExists.value) {
-    return
-  }
-
-  closeMonitorHistoryDetail()
-  activeRecordTab.value = 'job'
-  // 跳回自动化任务记录时，按作业ID精确过滤并清空其他条件，避免命中过去筛选导致看不到目标记录。
-  jobRecordId.value = String(sourceJobId)
-  jobKeyword.value = ''
-  selectedJobStatus.value = null
-  jobOutputKeyword.value = ''
-  selectedTaskId.value = null
-  selectedTaskName.value = ''
-  jobTimeRange.value = []
-  loadJobs(true)
-  router.replace({ path: route.path, query: { tab: 'job', job_id: String(sourceJobId) } }).catch(() => {})
-}
-
-function closeMonitorHistoryDetail() {
-  monitorHistoryDetailVisible.value = false
-  monitorHistoryDetailRecord.value = null
-  monitorHistoryDetailText.value = ''
-}
-
-function increaseMonitorHistoryDetailFontSize() {
-  monitorHistoryDetailFontSize.value = Math.min(20, monitorHistoryDetailFontSize.value + 1)
-}
-
-function decreaseMonitorHistoryDetailFontSize() {
-  monitorHistoryDetailFontSize.value = Math.max(11, monitorHistoryDetailFontSize.value - 1)
-}
-
-async function copyMonitorHistoryDetail() {
-  const copied = await copyTextWithFallback(monitorHistoryDetailText.value || '')
-  if (copied) {
-    message.success('历史日志已复制')
-  } else {
-    message.error('复制失败，请检查浏览器权限')
-  }
-}
-
-function clearMonitorInstallHistoryFilters() {
-  monitorInstallHistoryKeyword.value = ''
-  monitorInstallHistoryStatus.value = undefined
-  monitorInstallHistoryAction.value = undefined
-  monitorInstallHistoryTargetId.value = ''
-  monitorInstallHistoryTargetType.value = ''
-  monitorInstallHistoryTimeRange.value = []
-  loadMonitorInstallHistories(true)
-}
-
 async function loadTaskOptions() {
   const res = await getTaskList({ page: 1, page_size: 300, ordering: '-id' })
   const data = res?.data?.data || {}
@@ -1164,6 +953,7 @@ function onJobRecordIdSearch(value) {
   // 按执行记录ID精确搜索，清空其他过滤条件
   jobKeyword.value = ''
   selectedJobStatus.value = null
+  selectedJobSource.value = null
   jobOutputKeyword.value = ''
   selectedTaskId.value = null
   selectedTaskName.value = ''
@@ -1200,6 +990,7 @@ async function loadJobs(resetPage = false) {
       ...(jobRecordId.value ? { job_id: jobRecordId.value } : {}),
       ...(jobKeyword.value && !jobRecordId.value ? { keyword: jobKeyword.value } : {}),
       status: selectedJobStatus.value || undefined,
+      source: selectedJobSource.value || undefined,
       output_keyword: jobOutputKeyword.value || undefined,
       task_id: selectedTaskId.value || undefined,
       start_time_from: startTimeFrom,
@@ -1270,14 +1061,6 @@ function clearTaskFilter() {
 }
 
 function reloadPage() {
-  if (activeRecordTab.value === 'monitor_history') {
-    loadMonitorInstallHistories(false)
-    return
-  }
-  if (activeRecordTab.value === 'workflow') {
-    loadWorkflowRuns(false)
-    return
-  }
   loadJobs(false)
 }
 
@@ -1296,20 +1079,6 @@ function goWorkflowCenter() {
   router.push('/sys/automation/workflow')
 }
 
-function handleRecordTabChange(key) {
-  const activeKey = String(key || 'job')
-  if (activeKey === 'monitor_history' && monitorInstallHistoryRows.value.length === 0) {
-    loadMonitorInstallHistories(true)
-  }
-  if (activeKey === 'workflow' && workflowRuns.value.length === 0) {
-    loadWorkflowRuns(true)
-  }
-  // 切换标签后重置轮询，确保两类记录都按统一配置间隔自动刷新。
-  startPolling()
-}
-
-
-
 function startPolling() {
   if (pollTimer) {
     window.clearInterval(pollTimer)
@@ -1317,15 +1086,6 @@ function startPolling() {
   const pollingIntervalMs = automationLogsRefreshIntervalSeconds.value * 1000
   pollTimer = window.setInterval(() => {
     streamClockTick.value = Date.now()
-    if (activeRecordTab.value === 'monitor_history') {
-      loadMonitorInstallHistories(false)
-      return
-    }
-    if (activeRecordTab.value === 'workflow') {
-      loadWorkflowRuns(false)
-      return
-    }
-    
     // 如果通过 job_id 精确搜索且任务已完成，停止轮询
     if (jobRecordId.value && jobs.value.length > 0) {
       const job = jobs.value[0]
@@ -1371,6 +1131,7 @@ watch(() => route.query.job_id, (jobID, previousJobID) => {
   jobRecordId.value = String(Array.isArray(jobID) ? jobID[0] : jobID).trim()
   jobKeyword.value = ''
   selectedJobStatus.value = null
+  selectedJobSource.value = null
   jobOutputKeyword.value = ''
   selectedTaskId.value = null
   selectedTaskName.value = ''
@@ -1379,56 +1140,13 @@ watch(() => route.query.job_id, (jobID, previousJobID) => {
 
 onMounted(async () => {
   refreshLogsTimeRangePresets()
-  const queryTab = String(route.query.tab || '').trim()
-  if (queryTab === 'monitor_history') {
-    activeRecordTab.value = 'monitor_history'
-  }
-  if (queryTab === 'workflow') {
-    activeRecordTab.value = 'workflow'
-  }
-
   const queryTaskId = route.query.task_id
   const queryTaskName = route.query.task_name
   const queryKeyword = route.query.keyword
   const queryJobId = route.query.job_id
   const queryOpenLog = String(route.query.open_log || '').trim().toLowerCase()
 
-  if (activeRecordTab.value === 'monitor_history') {
-    const queryTargetId = route.query.target_id
-    const queryLogCollectionTargetId = route.query.log_collection_target_id
-    const queryHistoryId = route.query.history_id
-    if (queryLogCollectionTargetId) {
-      monitorInstallHistoryTargetType.value = 'filebeat'
-      monitorInstallHistoryTargetId.value = String(
-        Array.isArray(queryLogCollectionTargetId) ? queryLogCollectionTargetId[0] : queryLogCollectionTargetId,
-      ).trim()
-    } else if (queryTargetId) {
-      monitorInstallHistoryTargetType.value = 'exporter'
-      monitorInstallHistoryTargetId.value = String(Array.isArray(queryTargetId) ? queryTargetId[0] : queryTargetId).trim()
-    }
-    if (queryKeyword) {
-      monitorInstallHistoryKeyword.value = String(queryKeyword).trim()
-    }
-    await loadAutomationLogsRefreshIntervalConfig()
-    await loadMonitorInstallHistories(true)
-    const parsedHistoryId = Number(Array.isArray(queryHistoryId) ? queryHistoryId[0] : queryHistoryId)
-    if (Number.isInteger(parsedHistoryId) && parsedHistoryId > 0) {
-      await openMonitorHistoryDetail({ id: parsedHistoryId })
-    }
-    startPolling()
-    return
-  }
-
-  if (activeRecordTab.value === 'workflow') {
-    if (queryKeyword) {
-      workflowRunKeyword.value = String(queryKeyword).trim()
-    }
-    await loadAutomationLogsRefreshIntervalConfig()
-    await loadWorkflowRuns(true)
-    startPolling()
-    return
-  }
-  
+  // 页面已取消 tab，只保留自动化任务运行记录。
   // 优先级：job_id > keyword > 其他参数
   if (queryJobId) {
     jobRecordId.value = String(queryJobId).trim()
@@ -1464,7 +1182,7 @@ onMounted(async () => {
       || queryOpenLog === 'true'
     )
   )
-  if (activeRecordTab.value === 'job' && shouldAutoOpenLog) {
+  if (shouldAutoOpenLog) {
     const parsedJobId = Number(Array.isArray(queryJobId) ? queryJobId[0] : queryJobId)
     if (Number.isInteger(parsedJobId) && parsedJobId > 0) {
       await openJobLogViewerById(parsedJobId)
@@ -1503,14 +1221,16 @@ onBeforeUnmount(() => {
 
   return {
     getPopupContainer,
-    activeRecordTab,
-    handleRecordTabChange,
     jobRecordId,
     onJobRecordIdSearch,
     jobKeyword,
     loadJobs,
     selectedJobStatus,
     jobStatusOptions,
+    selectedJobSource,
+    jobSourceOptions,
+    formatJobSource,
+    jobSourceTagColor,
     jobOutputKeyword,
     selectedTaskId,
     taskOptions,
@@ -1561,36 +1281,6 @@ onBeforeUnmount(() => {
     canCancelWorkflowRunRecord,
     cancelWorkflowRunRecord,
     workflowRunCancelingId,
-    monitorInstallHistoryRows,
-    monitorInstallHistoryLoading,
-    monitorInstallHistoryKeyword,
-    monitorInstallHistoryStatus,
-    monitorInstallHistoryAction,
-    monitorInstallHistoryTargetId,
-    monitorInstallHistoryTimeRange,
-    monitorInstallHistoryStatusOptions,
-    monitorInstallHistoryActionOptions,
-    monitorInstallHistoryColumns,
-    monitorInstallHistoryPagination,
-    loadMonitorInstallHistories,
-    clearMonitorInstallHistoryFilters,
-    handleMonitorInstallHistoryTableChange,
-    openMonitorHistoryDetail,
-    cancelMonitorHistory,
-    monitorHistoryDetailVisible,
-    monitorHistoryDetailLoading,
-    monitorHistoryDetailHtml,
-    monitorHistoryDetailStatus,
-    monitorHistoryDetailLastOutput,
-    monitorHistoryDetailWrap,
-    monitorHistoryDetailFontSize,
-    monitorHistorySourceJobExists,
-    monitorHistorySourceJobChecking,
-    closeMonitorHistoryDetail,
-    increaseMonitorHistoryDetailFontSize,
-    decreaseMonitorHistoryDetailFontSize,
-    copyMonitorHistoryDetail,
-    jumpToMonitorHistorySourceJob,
     openLogViewer,
     logViewerHostLabel,
     logViewerVisible,

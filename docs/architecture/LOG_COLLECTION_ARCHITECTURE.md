@@ -507,17 +507,23 @@ output.elasticsearch:
     即覆盖行为 NULL/"继承"时跟随模板值判断，而非要求覆盖行自身为 TRUE；
     且 log_definition.collection_enabled 且 deployment_template 匹配服务模板），
     带出 项目/环境/业务/服务 code、有效档位（log_setting 优先回落服务表）、
-    有效处理规则（同上优先级）、服务级宏（macro_values）
-  → renderHostLogConfig（纯函数）：
+    有效处理规则（同上优先级）、服务级宏（macro_values）、部署模板宏定义（macro_definitions）
+   → renderHostLogConfig（纯函数）：
       inputs.d/<app>__<svc>__<log>.yml —— 每实例一个 filestream input：
-        路径按 服务级+实例级宏替换 ${VAR}（宏来源：部署实例 runtime_variables +
-        服务级 macro_values，部署模板 app_home 作为 APP_HOME 默认值；替换后仍含
-        ${VAR} 的实例跳过并记 warnings）；
+        路径按 服务级+实例级宏替换 ${VAR}（宏来源，优先级从低到高：
+        部署模板 macro_definitions 的 value（默认值，与前端服务弹窗展示口径一致）→
+        服务级 macro_values（覆盖同名项）→ 部署实例 runtime_variables；部署模板 app_home
+        作为 APP_HOME 默认值；替换后仍含 ${VAR} 的实例跳过并记 warnings）；
+        日志定义 name 直接作为文件名/维度值、不参与宏展开——name 含 ${...} 时跳过该定义
+        并记 warnings（宏应写在 path_pattern 里，否则会生成监听不到文件的坏片段）；
+        日志定义未关联处理规则（无 pipeline）时不采集：跳过该日志定义并记 warnings
+        （避免"采进来了但查不到 log_level/log_message/error_fingerprint"的半成品数据）；
         fields_under_root 注入 service/instance/application/log_name/
         business_system/environment/host_ip；
         index = LogDataStreamName；处理规则非空带 pipeline；开启多行带 multiline parser
       指纹 = 全部片段内容的 sha256；全实例被跳过时不产出片段；
       片段非空时附带 /var/lib/filebeat/.keep 占位（agent MkdirAll 顺带建 registry 目录）
+      warnings 随 preview/apply 响应返回，前端在「下发配置」成功/批量结果里提示（此前被丢弃）。
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
   → agent 动作 configure_filebeat_output（写 filebeat.yml：output.elasticsearch +
     filebeat.config.inputs 托管 inputs.d，`filebeat test config` 后 restart）
@@ -562,6 +568,10 @@ output.elasticsearch:
   `service_file_content`。下方这份是等价参考。
   安装成功后后端会**自动下发一次采集配置**（等价于「下发配置」），写入 `/etc/filebeat/filebeat.yml`
   与 `inputs.d` 并启动服务，所以「安装」即可用，无需再手动点一次。
+  Filebeat 安装与 exporter 安装同链路：一次派发同时写 `automation_execution_job`
+  （`source='monitor_target'`）与 `monitor_target_install_history`（`automation_job_id_snapshot`
+  指向该作业）。运行记录中心是单页无 tab（只有自动化任务运行记录，可按来源过滤）；
+  纳管目标的「查看日志」取最新历史关联的作业 ID，跳到运行记录中心对应作业日志。
 
   ```yaml
   # 安装（tar.gz）
@@ -729,6 +739,24 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 **Elasticsearch 能力边界**：Elasticsearch 的 `categorize_text` 聚合可做完全无监督的日志
 聚类，Elasticsearch 由 ES 7.10 fork，不包含该功能。因此聚类质量完全取决于 ingest 阶段的
 fingerprint 归一化质量。
+
+### 9.6 数据流清理（Go 版，2026-09-17）
+
+逻辑服务维度的历史数据清理，让用户自助释放存储，不用 DBA 上 ES 手删。
+
+- 入口：**日志查询界面**（服务树内嵌的 `LogQueryPanel`，选中逻辑服务/部署实例后）头部
+  「清理日志数据」按钮；后端 `POST /monitor/log-datastreams/cleanup/`（`log_datastream_cleanup.go`，
+  继承 `monitor:view`）。不放编辑弹窗（那里是编辑态，不适合破坏性操作）。
+- 请求体只接受 `{service_id, mode, amount}`：`mode=all` 清空；`mode=hours|days` 保留最近
+  N 小时/天（`amount` 上限 87600 小时 / 3650 天）。**不接受客户端传索引名**，流名由后端按
+  service_id 解析维度码后拼 `<prefix>-<项目>-<业务>-<环境>-<服务>-*`（档位段 `*` 通配，
+  覆盖换过档位的历史流）。
+- 执行方式：对匹配的数据流发 `_delete_by_query?wait_for_completion=false&conflicts=proceed&refresh=false`，
+  异步后台执行（同步删大量数据会超时），**保留 data stream 本身**（不删 backing index/流），
+  避免 Filebeat 重建流时的空窗与 ILM 绑定问题；按 `@timestamp` 判定（与写入时区无关，存 UTC）。
+- 失败语义：没有任何匹配的数据流（ES 404 `index_not_found`）视为已清理、返回 `matched=false`；
+  其余 ES 报错原样返回 400。返回 `{stream_pattern, mode, amount, task, matched}`。
+- 破坏性操作，前端二次确认（不可恢复提示 + 范围选择）。
 
 ---
 

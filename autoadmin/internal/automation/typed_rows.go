@@ -92,7 +92,7 @@ func taskRowToMapFromGet(row db.GetTaskTypedRow) gin.H {
 func jobRowToMap(row db.AutomationExecutionJob) gin.H {
 	return gin.H{
 		"id": row.ID, "create_time": row.CreateTime, "update_time": row.UpdateTime, "remark": nullStringAny(row.Remark),
-		"job_id": row.JobID, "status": row.Status, "trigger_type": row.TriggerType,
+		"job_id": row.JobID, "status": row.Status, "trigger_type": row.TriggerType, "source": row.Source,
 		"inventory_snapshot": decodeJSONAny(row.InventorySnapshot), "extra_vars": decodeJSONAny(row.ExtraVars),
 		"result_summary": decodeJSONAny(row.ResultSummary), "requested_user_id": nullInt32Any(row.RequestedUserID),
 		"requested_username": row.RequestedUsername, "start_time": nullTimeAny(row.StartTime), "end_time": nullTimeAny(row.EndTime),
@@ -107,7 +107,7 @@ func jobRowToMap(row db.AutomationExecutionJob) gin.H {
 func jobRowToMapTyped(row db.GetJobTypedRow) gin.H {
 	item := jobRowToMap(db.AutomationExecutionJob{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark, JobID: row.JobID,
-		Status: row.Status, TriggerType: row.TriggerType, InventorySnapshot: row.InventorySnapshot, ExtraVars: row.ExtraVars,
+		Status: row.Status, TriggerType: row.TriggerType, Source: row.Source, InventorySnapshot: row.InventorySnapshot, ExtraVars: row.ExtraVars,
 		ResultSummary: row.ResultSummary, RequestedUserID: row.RequestedUserID, RequestedUsername: row.RequestedUsername,
 		StartTime: row.StartTime, EndTime: row.EndTime, DurationSeconds: row.DurationSeconds, TaskID: row.TaskID,
 		TemplateContentSnapshot: row.TemplateContentSnapshot, TaskNameSnapshot: row.TaskNameSnapshot,

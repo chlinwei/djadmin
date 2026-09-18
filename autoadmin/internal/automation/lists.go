@@ -114,12 +114,13 @@ func (handler *Handler) ListJobs(context *gin.Context) {
 	queries := db.New(handler.db)
 	idFilter, pattern := automationOptionalInt64(context, "job_id"), automationSearchPattern(context)
 	status, taskID := automationOptionalString(context, "status"), automationOptionalInt64(context, "task_id")
-	count, err := queries.CountJobs(context, db.CountJobsParams{ID: idFilter, Status: status, TaskID: taskID, Pattern: pattern})
+	source := automationOptionalString(context, "source")
+	count, err := queries.CountJobs(context, db.CountJobsParams{ID: idFilter, Status: status, TaskID: taskID, Source: source, Pattern: pattern})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	rows, err := queries.ListJobsTyped(context, db.ListJobsTypedParams{ID: idFilter, Status: status, TaskID: taskID, Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size)})
+	rows, err := queries.ListJobsTyped(context, db.ListJobsTypedParams{ID: idFilter, Status: status, TaskID: taskID, Source: source, Pattern: pattern, Limit: int32(size), Offset: int32((page - 1) * size)})
 	if err != nil {
 		response.Error(context, err)
 		return

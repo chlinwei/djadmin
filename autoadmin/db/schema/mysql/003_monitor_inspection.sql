@@ -189,8 +189,10 @@ CREATE TABLE `monitor_target_install_history` (
   `host_id` bigint DEFAULT NULL,
   `target_id` bigint DEFAULT NULL,
   `log_collection_target_id` bigint DEFAULT NULL,
+  `automation_job_id_snapshot` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),
-  CONSTRAINT `monitor_target_install_history_target_fk` FOREIGN KEY (`target_id`) REFERENCES `monitor_target` (`id`)
+  CONSTRAINT `monitor_target_install_history_target_fk` FOREIGN KEY (`target_id`) REFERENCES `monitor_target` (`id`),
+  KEY `monitor_hist_auto_job_id_idx` (`automation_job_id_snapshot`)
 );
 
 CREATE TABLE `monitor_alert_history` (

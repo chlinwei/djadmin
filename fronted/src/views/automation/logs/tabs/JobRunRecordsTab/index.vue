@@ -23,6 +23,15 @@
             style="width: 180px"
             @change="loadJobs(true)"
           />
+          <a-select
+            v-model:value="selectedJobSource"
+            :getPopupContainer="getPopupContainer"
+            :options="jobSourceOptions"
+            allow-clear
+            placeholder="按来源过滤"
+            style="width: 180px"
+            @change="loadJobs(true)"
+          />
           <a-input-search
             v-model:value="jobOutputKeyword"
             placeholder="按日志过滤"
@@ -84,6 +93,9 @@
           </template>
           <template v-else-if="column.key === 'duration_seconds'">
             {{ record.duration_seconds ? `${record.duration_seconds.toFixed(2)}s` : '-' }}
+          </template>
+          <template v-else-if="column.key === 'source'">
+            <a-tag :color="jobSourceTagColor(record.source)">{{ formatJobSource(record.source) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'runtime_template'">
             <a-button type="link" size="small" class="runtime-template-link" @click="openRuntimeTemplateViewer(record)">
@@ -148,6 +160,10 @@ const {
   loadJobs,
   selectedJobStatus,
   jobStatusOptions,
+  selectedJobSource,
+  jobSourceOptions,
+  formatJobSource,
+  jobSourceTagColor,
   jobOutputKeyword,
   selectedTaskId,
   taskOptions,

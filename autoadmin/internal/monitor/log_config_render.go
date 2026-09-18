@@ -109,6 +109,21 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 
 	for _, entry := range entries {
 		base := configBaseName(entry.Application, entry.Service, entry.LogName)
+		// 日志定义名称直接作为文件名/维度值，不参与宏展开；名称里带 ${...} 说明配置写错位置，
+		// 继续下发会生成监听不到文件的坏片段，这里跳过并告警（宏应写在 path_pattern 里）。
+		if strings.Contains(base, "${") {
+			warnings = append(warnings, fmt.Sprintf(
+				"日志定义名称含未展开宏，已跳过（宏应写在路径里）: %s", base))
+			continue
+		}
+		// 未关联处理规则 = 没有 pipeline，日志不会被解析：按约定直接不采集（跳过并告警），
+		// 避免"采进来了但查不到 log_level/log_message/error_fingerprint"这种半成品数据。
+		if strings.TrimSpace(entry.Pipeline) == "" {
+			warnings = append(warnings, fmt.Sprintf(
+				"服务 %s 日志 %s 未关联处理规则，已跳过（未挂 pipeline 的日志不采集）",
+				entry.Service, entry.LogName))
+			continue
+		}
 		pair, exists := pairs[base]
 		if !exists {
 			pair = &fragmentPair{base: base}
@@ -229,7 +244,7 @@ func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int6
 			COALESCE(app.code, ''),
 			COALESCE(tier.code, ''),
 			COALESCE(rule_setting.name, rule_definition.name, ''),
-			ld.name, ld.path_pattern, COALESCE(s.macro_values, '{}'),
+			ld.name, ld.path_pattern, COALESCE(s.macro_values, '{}'), COALESCE(t.macro_definitions, '[]'),
 			COALESCE(rule_setting.multiline_enabled, rule_definition.multiline_enabled, FALSE),
 			COALESCE(rule_setting.start_pattern, rule_definition.start_pattern, ''),
 			COALESCE(rule_setting.flush_timeout, rule_definition.flush_timeout, 2000)
@@ -238,6 +253,7 @@ func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int6
 		JOIN assets_project p ON p.id = bs.project_id
 		JOIN assets_business_environment e ON e.id = s.environment_id
 		JOIN assets_application app ON app.id = s.application_id
+		JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 		JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
 			AND ld.collection_enabled = TRUE
 		LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
@@ -258,12 +274,12 @@ func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int6
 		// 变量写反，导致流名 project 段填了服务码、service 段填了项目码）。
 		var projectCode, environmentCode, businessSystemCode, serviceCode string
 		var applicationID int64
-		var application, tier, pipeline, logName, pathPattern, macroValuesRaw string
+		var application, tier, pipeline, logName, pathPattern, macroValuesRaw, macroDefinitionsRaw string
 		var multilineEnabled bool
 		var startPattern string
 		var flushTimeout int64
 		if err = rows.Scan(&projectCode, &environmentCode, &businessSystemCode, &serviceCode, &applicationID,
-			&application, &tier, &pipeline, &logName, &pathPattern, &macroValuesRaw,
+			&application, &tier, &pipeline, &logName, &pathPattern, &macroValuesRaw, &macroDefinitionsRaw,
 			&multilineEnabled, &startPattern, &flushTimeout); err != nil {
 			return nil, nil, err
 		}
@@ -271,7 +287,7 @@ func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int6
 			Prefix: "autoadmin", Application: application, Service: serviceCode,
 			Project: projectCode, Environment: environmentCode, BusinessSystem: businessSystemCode,
 			Tier: tier, Pipeline: pipeline, LogName: logName,
-			ResolvedPath: pathPattern, Macros: parseMacroJSON(macroValuesRaw),
+			ResolvedPath: pathPattern, Macros: mergeMacroValues(templateMacroDefaults(macroDefinitionsRaw), parseMacroJSON(macroValuesRaw)),
 			Multiline: multilineEnabled, StartPattern: startPattern, FlushTimeout: flushTimeout,
 		}
 		entries = append(entries, entry)
@@ -306,6 +322,43 @@ func parseMacroJSON(raw string) map[string]string {
 		result[key] = strings.TrimSpace(fmt.Sprint(value))
 	}
 	return result
+}
+
+// templateMacroDefaults 把部署模板的 macro_definitions（[{name,value,description}]）摊平成
+// name→value，作为宏解析的默认值；服务级 macro_values 覆盖同名项。
+// 与服务弹窗展示口径一致（弹窗显示 服务覆盖 ?? 模板默认），避免前端看着有值、后端展不开。
+func templateMacroDefaults(raw string) map[string]string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "[]" {
+		return map[string]string{}
+	}
+	var definitions []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &definitions); err != nil {
+		return map[string]string{}
+	}
+	result := map[string]string{}
+	for _, definition := range definitions {
+		name := strings.TrimSpace(definition.Name)
+		if name == "" {
+			continue
+		}
+		result[name] = strings.TrimSpace(definition.Value)
+	}
+	return result
+}
+
+// mergeMacroValues 合并宏集合：后面的覆盖前面的（默认值在前、覆盖值在后）。
+func mergeMacroValues(sets ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, set := range sets {
+		for key, value := range set {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 // GetHostLogConfigPreview 预览采集目标主机的 Filebeat inputs 片段（不下发）：路由参数为采集目标 id。

@@ -132,12 +132,20 @@ func TestSmokeTargetDomainQueriesAgainstRealDatabase(t *testing.T) {
 		HostIpSnapshot: "10.255.255.203", ExporterTypeSnapshot: "node_exporter", SummaryMessage: "已下发安装任务",
 		RequestedUsernameSnapshot: "system", StartTime: sql.NullTime{Time: now, Valid: true},
 		HostID: sql.NullInt64{Int64: hostID, Valid: true}, TargetID: sql.NullInt64{Int64: targetID, Valid: true},
+		AutomationJobIDSnapshot: sql.NullInt64{Int64: 424242, Valid: true},
 	})
 	if err != nil {
 		t.Fatalf("建安装历史：%v", err)
 	}
 	if latest, err := queries.GetLatestTargetInstallHistory(ctx, sql.NullInt64{Int64: targetID, Valid: true}); err != nil || latest.ID != historyID {
 		t.Fatalf("最新历史 = %+v, %v", latest, err)
+	}
+	// 历史列表须回传对应的自动化作业 ID（运行记录中心据此从历史跳转到作业）。
+	listed, err := queries.ListInstallHistories(ctx, db.ListInstallHistoriesParams{
+		TargetID: sql.NullInt64{Int64: targetID, Valid: true}, Limit: 10, Offset: 0,
+	})
+	if err != nil || len(listed) != 1 || !listed[0].AutomationJobIDSnapshot.Valid || listed[0].AutomationJobIDSnapshot.Int64 != 424242 {
+		t.Fatalf("历史列表关联作业ID不符：%+v err=%v", listed, err)
 	}
 	if affected, err := queries.FinishTargetInstallHistory(ctx, db.FinishTargetInstallHistoryParams{
 		Status: "success", SummaryMessage: "", EndTime: sql.NullTime{Time: time.Now().UTC(), Valid: true},

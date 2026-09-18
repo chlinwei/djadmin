@@ -98,6 +98,7 @@ type installHistoryResponse struct {
 	HostID                    *int64          `json:"host_id"`
 	TargetID                  *int64          `json:"target_id"`
 	LogCollectionTargetID     *int64          `json:"log_collection_target_id"`
+	AutomationJobIDSnapshot   *int64          `json:"automation_job_id_snapshot"`
 	HostName                  string          `json:"host_name"`
 	HostIP                    string          `json:"host_ip"`
 	TargetExporterType        string          `json:"target_exporter_type"`
@@ -116,7 +117,8 @@ func installHistoryResponseFrom(row db.ListInstallHistoriesRow) installHistoryRe
 		RequestedUserIDSnapshot: nullInt32Ptr(row.RequestedUserIDSnapshot), RequestedUsernameSnapshot: row.RequestedUsernameSnapshot,
 		StartTime: nullTimePtr(row.StartTime), EndTime: nullTimePtr(row.EndTime), DurationSeconds: nullFloat64Ptr(row.DurationSeconds),
 		HostID: nullInt64Ptr(row.HostID), TargetID: nullInt64Ptr(row.TargetID), LogCollectionTargetID: nullInt64Ptr(row.LogCollectionTargetID),
-		HostName: row.HostName, HostIP: row.HostIp, TargetExporterType: row.TargetExporterType,
+		AutomationJobIDSnapshot: nullInt64Ptr(row.AutomationJobIDSnapshot),
+		HostName:                row.HostName, HostIP: row.HostIp, TargetExporterType: row.TargetExporterType,
 		ManagedTargetID: nullInt64Ptr(row.ManagedTargetID), TargetType: row.TargetType,
 	}
 }

@@ -396,6 +396,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	logTargets.POST("/:id/start-service/", monitorHandler.StartLogTargetService)
 	logTargets.POST("/:id/stop-service/", monitorHandler.StopLogTargetService)
 	logTargets.POST("/:id/apply/", monitorHandler.ApplyLogTargetConfig)
+	monitorRoutes.POST("/log-datastreams/cleanup/", monitorHandler.CleanupLogDataStream)
 	monitorRoutes.GET("/alert-histories/", monitorHandler.ListAlertHistories)
 	monitorRoutes.GET("/alert-histories/:id/", monitorHandler.GetAlertHistory)
 	monitorRoutes.GET("/alert-histories/:id/notification-status/", monitorHandler.AlertNotificationStatus)

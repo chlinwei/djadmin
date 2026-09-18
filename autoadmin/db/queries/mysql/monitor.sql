@@ -222,6 +222,7 @@ SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_t
        ih.summary_message, ih.stdout_snapshot, ih.stderr_snapshot, ih.error_message_snapshot,
        ih.result_summary_snapshot, ih.requested_user_id_snapshot, ih.requested_username_snapshot,
        ih.start_time, ih.end_time, ih.duration_seconds, ih.host_id, ih.target_id, ih.log_collection_target_id,
+       ih.automation_job_id_snapshot,
        COALESCE(h.instance_name, ih.host_name_snapshot) AS host_name,
        COALESCE(h.ip, ih.host_ip_snapshot) AS host_ip,
        COALESCE(mt.exporter_type, ih.exporter_type_snapshot) AS target_exporter_type,
@@ -439,10 +440,10 @@ WHERE id=sqlc.arg(id);
 
 -- name: CreateMonitorTargetJob :execlastid
 INSERT INTO automation_execution_job
-  (create_time,update_time,remark,job_id,status,trigger_type,inventory_snapshot,extra_vars,result_summary,
+  (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
    task_name_snapshot,template_name_snapshot,template_content_snapshot,`limit`,run_as_user_snapshot,
    run_as_group_snapshot,work_directory_snapshot,requested_user_id,requested_username)
-VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'pending','manual',
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'pending','manual','monitor_target',
         sqlc.arg(inventory_snapshot),sqlc.arg(extra_vars),sqlc.arg(result_summary),sqlc.arg(task_name_snapshot),
         sqlc.arg(template_name_snapshot),sqlc.arg(template_content_snapshot),'',sqlc.arg(run_as_user_snapshot),
         sqlc.arg(run_as_group_snapshot),sqlc.arg(work_directory_snapshot),sqlc.narg(requested_user_id),
@@ -452,12 +453,12 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(job_id),'pendi
 INSERT INTO monitor_target_install_history
   (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
    exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id)
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,target_id,automation_job_id_snapshot)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(action),'manual','pending',
         sqlc.narg(host_id_snapshot),sqlc.arg(host_name_snapshot),sqlc.arg(host_ip_snapshot),
         sqlc.arg(exporter_type_snapshot),sqlc.arg(summary_message),'','','','{}',
         sqlc.narg(requested_user_id_snapshot),sqlc.arg(requested_username_snapshot),
-        sqlc.narg(start_time),sqlc.narg(host_id),sqlc.arg(target_id));
+        sqlc.narg(start_time),sqlc.narg(host_id),sqlc.arg(target_id),sqlc.narg(automation_job_id_snapshot));
 
 -- name: MarkTargetInstallPending :exec
 UPDATE monitor_target
@@ -881,12 +882,12 @@ ORDER BY id;
 INSERT INTO monitor_target_install_history
   (create_time,update_time,remark,action,trigger_type,status,host_id_snapshot,host_name_snapshot,host_ip_snapshot,
    exporter_type_snapshot,summary_message,stdout_snapshot,stderr_snapshot,error_message_snapshot,result_summary_snapshot,
-   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id)
+   requested_user_id_snapshot,requested_username_snapshot,start_time,host_id,log_collection_target_id,automation_job_id_snapshot)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(action),'manual','pending',
         sqlc.narg(host_id_snapshot),sqlc.arg(host_name_snapshot),sqlc.arg(host_ip_snapshot),
         sqlc.arg(exporter_type_snapshot),sqlc.arg(summary_message),'','','','{}',
         sqlc.narg(requested_user_id_snapshot),sqlc.arg(requested_username_snapshot),
-        NULL,sqlc.narg(host_id),sqlc.arg(log_collection_target_id));
+        NULL,sqlc.narg(host_id),sqlc.arg(log_collection_target_id),sqlc.narg(automation_job_id_snapshot));
 
 -- name: MarkLogTargetInstallPending :exec
 UPDATE monitor_log_collection_target
@@ -933,6 +934,13 @@ ORDER BY c.is_default DESC, c.id LIMIT 1;
 
 -- name: GetDefaultEnabledElasticsearchCluster :one
 SELECT hosts, username, password, COALESCE(index_prefix, 'logs'), verify_tls
+FROM monitor_elasticsearch_cluster
+WHERE enabled = TRUE
+ORDER BY is_default DESC, id LIMIT 1;
+
+-- 清理数据流用的完整默认集群连接信息（含 id/ca_cert/request_timeout，供 elasticsearchRequest 使用）。
+-- name: GetDefaultEnabledElasticsearchClusterConnection :one
+SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
 FROM monitor_elasticsearch_cluster
 WHERE enabled = TRUE
 ORDER BY is_default DESC, id LIMIT 1;
@@ -1171,6 +1179,15 @@ JOIN assets_project p ON p.id = bs.project_id
 JOIN assets_business_environment e ON e.id = s.environment_id
 LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
 WHERE s.enabled = TRUE;
+
+-- 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
+-- name: GetApplicationServiceStreamDims :one
+SELECT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code, s.code AS service_code
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.id = sqlc.arg(id);
 
 -- name: ListEnabledProjects :many
 SELECT id, code, name FROM assets_project WHERE enabled = TRUE ORDER BY name;

@@ -228,3 +228,20 @@ func TestMacrosFromRawNormalizesKey(t *testing.T) {
 		t.Fatalf("macros = %v", macros)
 	}
 }
+
+// 模板 macro_definitions 的 value 作默认值，服务 macro_values 覆盖同名项。
+func TestMacrosWithTemplateDefaults(t *testing.T) {
+	macros := macrosWithTemplateDefaults(
+		json.RawMessage(`[{"name":"LOG_DIR","value":"/home/esb/logs"},{"name":"ORACLE_SID","value":"orcl"}]`),
+		json.RawMessage(`{"${LOG_DIR}":"/custom/logs"}`),
+	)
+	if macros["LOG_DIR"] != "/custom/logs" {
+		t.Fatalf("service override should win, got %v", macros)
+	}
+	if macros["ORACLE_SID"] != "orcl" {
+		t.Fatalf("template default should survive, got %v", macros)
+	}
+	if got := macrosWithTemplateDefaults(json.RawMessage(`[]`), json.RawMessage(`{}`)); got != nil {
+		t.Fatalf("empty macro sources should return nil, got %v", got)
+	}
+}

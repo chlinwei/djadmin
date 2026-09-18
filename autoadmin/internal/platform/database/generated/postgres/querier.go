@@ -384,6 +384,8 @@ type Querier interface {
 	GetApplicationServiceCode(ctx context.Context, id int64) (string, error)
 	GetApplicationServiceDetail(ctx context.Context, id int64) (GetApplicationServiceDetailRow, error)
 	GetApplicationServiceName(ctx context.Context, id int64) (string, error)
+	// 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
+	GetApplicationServiceStreamDims(ctx context.Context, id int64) (GetApplicationServiceStreamDimsRow, error)
 	GetApplicationVersion(ctx context.Context, id int64) (GetApplicationVersionRow, error)
 	// 取消要算 duration，而 TIMESTAMPDIFF 是 MySQL 方言函数（PG 用 EXTRACT(EPOCH ...)）：
 	// 读回 start_time 后在应用层算，别让时长计算把这条语句变成方言分叉。
@@ -410,6 +412,8 @@ type Querier interface {
 	GetConfigValueByKey(ctx context.Context, configKey string) (string, error)
 	GetCredential(ctx context.Context, id int64) (AssetsCredential, error)
 	GetDefaultEnabledElasticsearchCluster(ctx context.Context) (GetDefaultEnabledElasticsearchClusterRow, error)
+	// 清理数据流用的完整默认集群连接信息（含 id/ca_cert/request_timeout，供 elasticsearchRequest 使用）。
+	GetDefaultEnabledElasticsearchClusterConnection(ctx context.Context) (GetDefaultEnabledElasticsearchClusterConnectionRow, error)
 	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error)
 	GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error)

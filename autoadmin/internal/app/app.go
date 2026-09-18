@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api"
@@ -23,6 +24,7 @@ import (
 	"autoadmin/internal/shared/pagination"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 var supportedCommands = map[string]struct{}{
@@ -119,7 +121,20 @@ func runAPI(configuration config.Config) error {
 		if listenErr != nil {
 			return fmt.Errorf("listen Agent gRPC: %w", listenErr)
 		}
-		grpcServer = grpc.NewServer()
+		// Agent 客户端每 30s 发一次 keepalive ping（PermitWithoutStream），gRPC 服务端默认
+		// EnforcementPolicy 的 MinTime=5m 会把这种高频 ping 判为 too_many_pings 并 GOAWAY，
+		// 表现为 agent 每约 90s 被断开重连一次（基线/巡检恰好撞在断开窗口就误报离线）。
+		// 放宽到接受 15s 以上的 ping，并允许无活跃 stream 时 ping；同时由服务端每 60s 探测死连接。
+		grpcServer = grpc.NewServer(
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:    60 * time.Second,
+				Timeout: 20 * time.Second,
+			}),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				MinTime:             15 * time.Second,
+				PermitWithoutStream: true,
+			}),
+		)
 		agentGateway.Register(grpcServer)
 		go func() {
 			if serveErr := grpcServer.Serve(grpcListener); serveErr != nil {

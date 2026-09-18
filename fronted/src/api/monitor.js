@@ -180,6 +180,11 @@ export function getLogPipelineHealth(id) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-health/`)
 }
 
+// 展示集群实际的索引模板 mapping（字段名/类型），读不到时后端回退内置标准字段
+export function getElasticsearchIndexTemplate(id) {
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/index-template/`)
+}
+
 export function simulateElasticsearchPipeline(id, payload) {
   return requestUtil.post(prefix + `elasticsearch-clusters/${id}/pipeline-simulate/`, payload)
 }

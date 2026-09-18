@@ -42,7 +42,7 @@
           </a-descriptions>
 
           <h4 class="section-title">主机符合率</h4>
-          <a-table row-key="host_ip" :columns="targetColumns" :data-source="targets" :pagination="targetPagination" size="small" :locale="tableLocale">
+          <a-table row-key="host_ip" :columns="targetColumns" :data-source="targets" :pagination="targetPagination" size="small" :locale="tableLocale" @change="handleTargetTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
@@ -94,7 +94,7 @@
               </a-radio-group>
             </a-space>
           </div>
-          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="itemPagination" size="small" :locale="tableLocale">
+          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="itemPagination" size="small" :locale="tableLocale" @change="handleItemTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
@@ -141,7 +141,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
@@ -154,8 +154,9 @@ const router = useRouter()
 const loading = ref(false)
 const scan = ref(null)
 const targets = ref([])
-const targetPagination = createPagination()
-const itemPagination = createPagination()
+// 必须是 reactive：分页对象作为受控参数传给 a-table，翻页只在 @change 里改 current 才生效。
+const targetPagination = reactive(createPagination())
+const itemPagination = reactive(createPagination())
 const items = ref([])
 const statusFilter = ref('all')
 const itemSearchText = ref('')
@@ -261,6 +262,21 @@ const filteredItems = computed(() => {
   })
 })
 
+// 受控分页：a-table 传入 current/total 后，翻页必须在这里回写，否则点第 2 页无反应。
+const handleTargetTableChange = (pagination) => {
+  targetPagination.current = pagination.current
+  targetPagination.pageSize = pagination.pageSize
+}
+const handleItemTableChange = (pagination) => {
+  itemPagination.current = pagination.current
+  itemPagination.pageSize = pagination.pageSize
+}
+
+watch(filteredItems, (rows) => {
+  itemPagination.total = rows.length
+  itemPagination.current = 1
+}, { immediate: true })
+
 const loadDetail = async () => {
   const scanId = Number(route.params.id)
   if (!Number.isFinite(scanId) || scanId <= 0) return
@@ -271,6 +287,8 @@ const loadDetail = async () => {
     scan.value = data.scan || null
     targets.value = data.targets || []
     items.value = (data.items || []).map((item, index) => ({ ...item, idx: index }))
+    targetPagination.total = targets.value.length
+    targetPagination.current = 1
   } finally {
     loading.value = false
   }

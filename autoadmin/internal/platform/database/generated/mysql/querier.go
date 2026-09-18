@@ -756,6 +756,7 @@ type Querier interface {
 	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
 	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error
 	UpdateSoftwarePackageSource(ctx context.Context, arg UpdateSoftwarePackageSourceParams) error
+	UpdateUserAvatar(ctx context.Context, arg UpdateUserAvatarParams) error
 	UpdateUserGroup(ctx context.Context, arg UpdateUserGroupParams) (int64, error)
 	UpdateUserLoginDate(ctx context.Context, arg UpdateUserLoginDateParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error

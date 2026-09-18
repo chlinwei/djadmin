@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -98,6 +100,91 @@ var standardLogFields = gin.H{
 	"error_fingerprint": gin.H{"type": "keyword"},
 	// flat_object 是 Elasticsearch 专有类型；Elasticsearch 用 flattened（8.x 自带，无需额外插件）。
 	"app_fields": gin.H{"type": "flattened"},
+}
+
+// GetElasticsearchIndexTemplate 展示集群实际的索引模板 mapping（日志存储页「查看 Mapping」）。
+// 读不到模板时回退内置标准字段并标记 exists=false，便于对比"期望 vs 实际"。
+func (handler *Handler) GetElasticsearchIndexTemplate(context *gin.Context) {
+	cluster, err := handler.loadElasticsearchCluster(context)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	prefix := strings.TrimSpace(cluster.IndexPrefix)
+	if prefix == "" {
+		prefix = "autoadmin"
+	}
+	name := buildIndexTemplateName(prefix)
+	result := gin.H{
+		"template_name":  name,
+		"index_prefix":   prefix,
+		"exists":         false,
+		"index_patterns": []string{},
+		"dynamic":        nil,
+		"fields":         fieldRowsFromProperties(standardLogFields),
+	}
+	if payload, err := handler.elasticsearchRequest(context, cluster, "GET", "/_index_template/"+name, nil); err == nil {
+		if definition, ok := firstIndexTemplateDefinition(payload); ok {
+			result["exists"] = true
+			if patterns, ok := definition["index_patterns"].([]any); ok {
+				result["index_patterns"] = patterns
+			}
+			if properties, ok := indexTemplateProperties(definition); ok {
+				result["fields"] = fieldRowsFromProperties(properties)
+			}
+			if template, ok := definition["template"].(map[string]any); ok {
+				if mappings, ok := template["mappings"].(map[string]any); ok {
+					result["dynamic"] = mappings["dynamic"]
+				}
+			}
+		}
+	}
+	response.Success(context, result)
+}
+
+// firstIndexTemplateDefinition 从 GET /_index_template/<name> 响应取第一个 index_template 定义。
+func firstIndexTemplateDefinition(payload map[string]any) (map[string]any, bool) {
+	templates, _ := payload["index_templates"].([]any)
+	if len(templates) == 0 {
+		return nil, false
+	}
+	first, _ := templates[0].(map[string]any)
+	definition, _ := first["index_template"].(map[string]any)
+	if definition == nil {
+		return nil, false
+	}
+	return definition, true
+}
+
+// indexTemplateProperties 取 index_template.template.mappings.properties。
+func indexTemplateProperties(definition map[string]any) (map[string]any, bool) {
+	template, _ := definition["template"].(map[string]any)
+	mappings, _ := template["mappings"].(map[string]any)
+	properties, _ := mappings["properties"].(map[string]any)
+	if properties == nil {
+		return nil, false
+	}
+	return properties, true
+}
+
+// fieldRowsFromProperties 把 mapping.properties 拍平成按字段名排序的 [{name,type}]，供前端表格展示。
+func fieldRowsFromProperties(properties map[string]any) []gin.H {
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rows := make([]gin.H, 0, len(names))
+	for _, name := range names {
+		fieldType := ""
+		if definition, ok := properties[name].(map[string]any); ok {
+			if value, ok := definition["type"].(string); ok {
+				fieldType = value
+			}
+		}
+		rows = append(rows, gin.H{"name": name, "type": fieldType})
+	}
+	return rows
 }
 
 func buildILMPolicyName(indexPrefix, tierCode string) string {

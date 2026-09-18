@@ -230,6 +230,20 @@ export function getServerUrl(){
     return baseUrl;
 }
 
+// 把后端返回的头像/媒体文件名拼成可直接给 <img> 用的地址。
+// 后端静态目录是 /media（autoadmin/media），avatar 可能只存文件名或 /media/... 相对路径。
+export function getMediaUrl(file) {
+    if (!file) {
+        return '';
+    }
+    const value = String(file);
+    if (/^https?:\/\//i.test(value)) {
+        return value;
+    }
+    const relative = value.replace(/^\/?media\//, '').replace(/^\/+/, '');
+    return `${baseUrl.replace(/\/+$/, '')}/media/${relative}`;
+}
+
 export function getWebSocketBaseUrl() {
     const parsed = new URL(baseUrl, window.location.origin)
     const wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -281,6 +295,7 @@ export default {
     del,
     fileUpload,
     getServerUrl,
+    getMediaUrl,
     getWebSocketBaseUrl,
     getTransferServerUrl,
     patch,

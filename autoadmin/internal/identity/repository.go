@@ -155,3 +155,7 @@ func (repository *Repository) Pool() *sql.DB {
 func (repository *Repository) UpdatePhonenumber(ctx context.Context, params db.UpdateUserPhonenumberParams) error {
 	return repository.queries.UpdateUserPhonenumber(ctx, params)
 }
+
+func (repository *Repository) UpdateAvatar(ctx context.Context, params db.UpdateUserAvatarParams) error {
+	return repository.queries.UpdateUserAvatar(ctx, params)
+}

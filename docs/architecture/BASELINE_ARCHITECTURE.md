@@ -141,7 +141,8 @@ M/C/F 枚举（不是 0/1/2），location=1、is_expanded 与现有菜单一致�
    → 异步 `runScan`；
 2. **执行**（`runScan`）：20 并发逐主机；每主机把全部条目编译为**一次 OPA 检查下发**
    （单次 check_plan 下发，10 分钟超时，条目 key `baseline:{scan}:{index}`）；
-   Agent 离线 → 目标 skipped；
+   Agent 离线 → 目标 skipped（含下发瞬间会话断开的竞态：`gateway.Execute` 返回
+   `ErrAgentOffline` 时同样置 skipped，不把离线误报成"存在不符合"）；
 3. **落库**：条目结果逐条 INSERT（violations 空即 pass，否则 fail）；
    主机聚合 passed/failed/compliance_rate（decimal 列，写文本）；
 4. **收尾**（`finishScan`）：聚合 summary（total/success/failed/skipped）并置终态

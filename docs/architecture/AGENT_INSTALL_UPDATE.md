@@ -79,7 +79,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 
 - **API 层**：`fronted/src/api/assets/agentPackage.js` 封装 `listAgentPackages()`、`uploadAgentPackage(file)`（FormData，走 `requestUtil.fileUpload`）、`downloadAgentPackage()`（blob，走 `requestUtil.download`）、`batchDeleteAgentPackages(ids)`（唯一批删接口，单删传 `ids:[id]`，遵循项目删除约定）。
 - **主机列表"批量管理 Agent"弹窗**（`fronted/src/views/assets/host/index.vue`）：顶部展示当前包状态（sha256 前 12 位 / 大小 / 上传时间）；列表接口拉取失败不阻塞安装/更新流程。无包时显示警示：将回退使用服务端构建产物 `dj_agent/bin/dj-agent`（路径依赖部署目录，不可靠）。
-- **"Agent 包管理"弹窗**：两个入口——主机列表工具栏"Agent 包"按钮（**无需选择主机**，纯包管理场景）与"批量管理 Agent"弹窗内的"Agent 包管理"链接，打开同一弹窗。单包语义：无表格列表，直接用 descriptions 展示当前包（状态/sha256/大小/上传时间），三个操作——上传（有包时文案"重新上传（覆盖）"，弹窗内提示覆盖语义）、下载（blob 按统一鉴权拉取，落盘文件名 `dj-agent`）、删除（`openDeleteConfirm` 二次确认，按 sha256 标识，走批删接口）。
+- **"Agent 包管理"弹窗**：两个入口——主机列表工具栏"Agent 包"按钮（**无需选择主机**，纯包管理场景）与"批量管理 Agent"弹窗内的"Agent 包管理"链接，打开同一弹窗。单包语义：无表格列表，直接用 descriptions 展示当前包（状态/sha256/大小/上传时间），三个操作——上传（有包时文案"重新上传（覆盖）"，点击后由隐藏的 `<input type="file">` 直接唤起系统文件选择，选中即上传覆盖，不再弹出二次上传弹窗）、下载（blob 按统一鉴权拉取，落盘文件名 `dj-agent`）、删除（`openDeleteConfirm` 二次确认，按 sha256 标识，走批删接口）。
 - **提交反馈**：`POST /api/agent/install` 响应携带 `agent_package` 时，成功提示追加来源——`uploaded` 显示"（包：uploaded，sha256 xxx）"，`build` 显示"（包：构建产物）"；响应无该字段时（旧后端）保持原提示不变。
 
 ## install 链路（SSH + Ansible 引导，`agent_install.go`）

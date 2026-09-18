@@ -26,7 +26,7 @@
 - **A5/A6**：`internal/automation/playbook_files.go`。上传：multipart `file`、仅 .yml/.yaml、10MB 上限、UTF-8 校验、复用现有 `validatePlaybook`（与 Go Create/Update 一致），UPDATE content 后返回模板对象（前端取 `data.content`）；下载：`text/yaml` + `filename*=UTF-8''`，文件名清洗规则与 Django 一致（`[^A-Za-z0-9._-]+`→`-`，纯中文名会清洗成 `-`，属 Django 原行为）。
 - **A7**：`internal/automation/job_log_ws.go`。鉴权复用 `Authenticate`（原生支持 `?token=`）+ `automation:jobs:view`；消息协议与前端 `logs/center/controller.js` 逐字段对齐（snapshot/output/status/completed，payload 含 job_id/status/data）；终态推送 completed 后服务端关闭，前端不再重连。增量策略：全量重建 + 前缀比较，能续传发增量、历史行被原地改写时退回 snapshot 重同步（对前端语义等价于 Django 的行级 offset）；轮询间隔读 sys_config `sys.automation.websocket.job_log_poll_interval_seconds`（缺省 0.5s，范围 [0.2,10]，只读不建行）。
 - **A8**：`internal/assets/credential_batch.go`。CSV 表头与凭证字段同名（name/username/password/private_key/port/auth_type/remark，必含 username 列）；逐行调用现有 `CreateCredential`（加密/校验复用服务层）；整批遇错中止并提示行号；单次上限 1000 行/5MB。
-- **A9**：`internal/identity/avatar.go`。multipart `avatar`，存 `<MEDIA_ROOT>/userAvatar/<时间戳><后缀>`，返回 `{new_file_name}`，不更新用户记录（与 Django 一致）；新增了 Django 没有的后缀白名单（png/jpg/jpeg/gif/webp）与 5MB 上限。
+- **A9**：`internal/identity/avatar.go`。multipart `avatar`，存 `<MEDIA_ROOT>/userAvatar/<时间戳><后缀>`；新增了 Django 没有的后缀白名单（png/jpg/jpeg/gif/webp）与 5MB 上限。后续把头像链路补全：上传后写回 `sys_user.avatar`、删除旧文件，并新增 `/media` 静态服务；最终逻辑见 [USER_AVATAR.md](../architecture/USER_AVATAR.md)。
 
 **路由注册汇总**（均在 `internal/api/router/router.go`）：
 - `/monitor/packages/:id/sync-official/`（POST，monitor 组）

@@ -222,9 +222,9 @@ cold 0.1GB/天 × 90 天 =   9 GB
   @timestamp, message, log_level, logger_name, thread_name, process_id
   error_message, error_template, error_fingerprint, stack_trace
   exception_type, exception_message, root_cause_type, root_cause_message
-  business_system, environment
+  project, business_system, environment
   service, instance, host_ip
-  application, version, log_name
+  application, version, log_name, log_path
 
 业务特有字段
   labels_<key>    由日志定义的 extra_fields 注入
@@ -424,6 +424,9 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
 - **建集群时显式写 `last_check_message` / `storage_sync_error` / `storage_sync_status` 三列**（都是 NOT NULL 且库级
   没有默认值）：原实现从不写这三列，在严格模式下建集群恒报 1364，**该接口一直不可用**（"只支持一个集群"、
   现场早有记录，所以没人碰到）；2026-09-16 随 SQL 迁移发现并修掉。
+- `GET /monitor/elasticsearch-clusters/:id/index-template/`（`GetElasticsearchIndexTemplate`）：日志存储页
+  「查看 Mapping」用，`GET /_index_template/<prefix>-template` 取实际 mapping 的顶层字段（名/类型）返回；
+  模板不存在时回退内置 `standardLogFields` 并标记 `exists=false`，便于对比"期望 vs 实际"。
 
 ---
 
@@ -472,8 +475,10 @@ output.elasticsearch:
     application: 'tomcat'
     log_name: 'catalina'
     business_system: 'tib'
+    project: 'kul'
     environment: 'test'
     host_ip: '192.168.201.211'
+    log_path: '/home/esb/tomcat/logs/catalina.out'   # 该实例实际监听的绝对路径
   index: 'autoadmin-<项目>-<业务>-<环境>-<服务>-<档位>'
   pipeline: 'springboot-tomcat-exception'   # 可选，处理规则非空时
   parsers:                                    # 可选，处理规则开启多行时
@@ -519,7 +524,7 @@ output.elasticsearch:
         日志定义未关联处理规则（无 pipeline）时不采集：跳过该日志定义并记 warnings
         （避免"采进来了但查不到 log_level/log_message/error_fingerprint"的半成品数据）；
         fields_under_root 注入 service/instance/application/log_name/
-        business_system/environment/host_ip；
+        business_system/project/environment/host_ip/log_path（log_path 为该实例实际监听的绝对路径）；
         index = LogDataStreamName；处理规则非空带 pipeline；开启多行带 multiline parser
       指纹 = 全部片段内容的 sha256；全实例被跳过时不产出片段；
       片段非空时附带 /var/lib/filebeat/.keep 占位（agent MkdirAll 顺带建 registry 目录）

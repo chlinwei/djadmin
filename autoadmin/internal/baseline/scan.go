@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"autoadmin/internal/agent"
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
@@ -240,6 +242,14 @@ func (handler *Handler) runScanHost(ctx context.Context, scanID int64, items []d
 		return // 取消后丢弃迟到响应（target 终态已由 CancelScan 落库）
 	}
 	if execErr != nil {
+		// 离线是"未执行"而非"检查失败"：下发瞬间会话可能已断（IsOnline 仍看得到半死会话），
+		// 此时必须与前置检查一致地置 skipped，否则会把离线机器算作"存在不符合"。
+		if errors.Is(execErr, agent.ErrAgentOffline) {
+			queries.SetBaselineScanTargetStatus(ctx, db.SetBaselineScanTargetStatusParams{
+				Status: "skipped", ErrorMessage: "Agent 离线，未执行扫描", ID: targetRowID,
+			})
+			return
+		}
 		setFailed(execErr.Error())
 		return
 	}

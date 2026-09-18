@@ -531,6 +531,7 @@ type UpdateSoftwarePackageConfigParams = postgres.UpdateSoftwarePackageConfigPar
 type UpdateSoftwarePackageFileParams = postgres.UpdateSoftwarePackageFileParams
 type UpdateSoftwarePackageFilePathParams = postgres.UpdateSoftwarePackageFilePathParams
 type UpdateSoftwarePackageSourceParams = postgres.UpdateSoftwarePackageSourceParams
+type UpdateUserAvatarParams = postgres.UpdateUserAvatarParams
 type UpdateUserGroupParams = postgres.UpdateUserGroupParams
 type UpdateUserLoginDateParams = postgres.UpdateUserLoginDateParams
 type UpdateUserPasswordParams = postgres.UpdateUserPasswordParams

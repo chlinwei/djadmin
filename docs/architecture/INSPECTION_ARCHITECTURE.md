@@ -313,8 +313,9 @@ POST /sys/inspection/executions/{id}/cancel/   事务置 canceled 并 markCancel
 2. 全部检查项编译为 Agent 检查计划（`check_plan`），通过 gRPC
    `check_application_baseline` 下发，超时 = 任务超时 + 45s；
 3. **Agent 离线/未注册 → 目标置 `skipped`（"未执行"而非"检查失败"）**，不产生检查结果，
-   error_message 记 "Agent 离线，未执行巡检"；全部目标 skipped 时 execution 状态为
-   `skipped`（不算失败），summary 单独计 `skipped` 数；
+   error_message 记 "Agent 离线，未执行巡检"；下发瞬间会话断开的竞态（`gateway.Execute`
+   返回 `ErrAgentOffline`）同样按 skipped 处理，不误报为检查失败；全部目标 skipped 时
+   execution 状态为 `skipped`（不算失败），summary 单独计 `skipped` 数；
 4. 结果按 `inspection:{execution}:{index}` 关联回快照中的检查项取得 severity；
 5. **结果批量落库**：`insertResults` 以 100 行/批 multi-value INSERT 写
    `inspection_result`（原逐行 INSERT 是大规模执行的尾延迟瓶颈）；批量写入失败时目标

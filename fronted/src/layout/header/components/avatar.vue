@@ -9,6 +9,11 @@
 
         <a-dropdown>
             <a class="ant-dropdown-link" @click.prevent>
+                <a-avatar :size="28" :src="avatarUrl || undefined" class="header-avatar">
+                    <template #icon>
+                        <SvgIcon name="user" />
+                    </template>
+                </a-avatar>
                 {{ currentUser?.username || '用户' }}
             </a>
             <template #overlay>
@@ -28,12 +33,17 @@
 <script setup>
 import { getCurrentUser } from '@/api/user'
 import { getCurrentUserInfo } from '@/api/sys/userTimezone'
+import { getMediaUrl } from '@/util/request'
 import router from '@/router'
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { formatTimeWithTimezone, getTimezoneLabel } from '@/util/timezone'
 import { listenUserTimezoneChanged } from '@/util/userTimezoneSync'
 
 const currentUser = ref(getCurrentUser() || {})
+const avatarUrl = computed(() => {
+    const raw = currentUser.value?.avatar || currentUser.value?.user?.avatar || ''
+    return raw ? getMediaUrl(raw) : ''
+})
 const currentTime = ref('')
 const userTimezone = ref(currentUser.value?.timezone || 'UTC')
 let timeInterval = null
@@ -117,6 +127,11 @@ const logout = () => {
 .hoverColoir:hover {
     background-color: #1677ff;
     color: #fff !important;
+}
+
+.header-avatar {
+    margin-right: 8px;
+    vertical-align: middle;
 }
 
 .header-user-wrap {

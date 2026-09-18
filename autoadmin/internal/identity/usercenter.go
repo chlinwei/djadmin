@@ -203,6 +203,14 @@ func (service *Service) UpdatePhonenumber(ctx context.Context, userID int32, pho
 	return user, nil
 }
 
+func (service *Service) UpdateAvatar(ctx context.Context, userID int32, avatar string) error {
+	return service.repository.UpdateAvatar(ctx, db.UpdateUserAvatarParams{
+		Avatar:     sql.NullString{String: avatar, Valid: avatar != ""},
+		UpdateTime: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		ID:         userID,
+	})
+}
+
 func (service *Service) GetByID(ctx context.Context, userID int32) (db.SysUser, error) {
 	return service.repository.GetByID(ctx, userID)
 }

@@ -51,11 +51,6 @@
     <div v-if="props.showStats" class="service-tree-stats">
       <div class="service-tree-stats-header">
         <span>资源占比</span>
-        <a-segmented
-          v-model:value="currentStatsDimension"
-          :options="statsDimensionOptions"
-          size="small"
-        />
       </div>
       <div class="service-tree-stats-subtitle">按 CPU / 内存 资源汇总</div>
       <div v-if="cpuPieData.length || memoryPieData.length" class="service-tree-stats-grid">
@@ -120,12 +115,11 @@ import { getHostList } from '@/api/assets/host'
 const props = defineProps({
   selectedScope: { type: Object, default: () => ({ nodeType: 'all' }) },
   showStats: { type: Boolean, default: true },
-  statsDimension: { type: String, default: 'business' },
   // 参考“逻辑服务” tab 的左侧树：需要看项目层级的页面（如日志查询）传 true，
   // 默认 false 不动服务树页自己的现有层级，避免影响已有页面/测试。
   groupByProject: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'stats-change', 'update:statsDimension'])
+const emit = defineEmits(['select', 'stats-change'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
@@ -143,10 +137,6 @@ const debouncedSearchText = ref('')
 const searchDebounceTimer = ref(null)
 const scopeByKey = new Map()
 const lazyDeploymentChildrenByServiceKey = new Map()
-const statsDimensionOptions = [
-  { label: '按业务', value: 'business' },
-  { label: '按项目', value: 'project' },
-]
 const hostPieRef = ref(null)
 const deploymentPieRef = ref(null)
 const hostPieChart = ref(null)
@@ -155,13 +145,6 @@ const chartServices = ref([])
 const chartDeployments = ref([])
 const chartHosts = ref([])
 const chartProjects = ref([])
-const chartSystems = ref([])
-const currentStatsDimension = computed({
-  get: () => (props.statsDimension === 'project' ? 'project' : 'business'),
-  set: (value) => {
-    emit('update:statsDimension', value)
-  },
-})
 const SEARCH_DEBOUNCE_MS = 180
 const MIN_TREE_HEIGHT = 320
 
@@ -194,9 +177,6 @@ const pieStats = computed(() => {
     return { cpuRows: [], memoryRows: [] }
   }
 
-  const systemsById = new Map(
-    chartSystems.value.map((item) => [String(item.id), String(item.name || `业务-${item.id}`)]),
-  )
   const serviceById = new Map(serviceList.map((item) => [Number(item.id), item]))
   const projectRows = chartProjects.value
   const hostById = new Map(hostList.map((item) => [Number(item.id), item]))
@@ -236,25 +216,15 @@ const pieStats = computed(() => {
     const hostCpu = Number(host.hardware?.cpu_cores ?? host.cpu_cores ?? 0) || 0
     const hostMemory = Number(host.hardware?.memory_gb ?? host.memory_gb ?? 0) || 0
 
-    if (currentStatsDimension.value === 'project') {
-      for (const service of linkedServices) {
-        const businessId = String(service.business_system || '')
-        if (!businessId) continue
-        for (const project of projectRows) {
-          const relatedSystems = Array.isArray(project.business_systems) ? project.business_systems : []
-          if (relatedSystems.map((id) => String(id)).includes(businessId)) {
-            targetGroups.set(String(project.id), String(project.name || `项目-${project.id}`))
-          }
+    // 资源占比只按项目聚合（已去掉“按业务”维度）。
+    for (const service of linkedServices) {
+      const businessId = String(service.business_system || '')
+      if (!businessId) continue
+      for (const project of projectRows) {
+        const relatedSystems = Array.isArray(project.business_systems) ? project.business_systems : []
+        if (relatedSystems.map((id) => String(id)).includes(businessId)) {
+          targetGroups.set(String(project.id), String(project.name || `项目-${project.id}`))
         }
-      }
-    } else {
-      for (const service of linkedServices) {
-        const businessId = service.business_system
-        if (!businessId) continue
-        const businessName = String(
-          service.business_system_name || systemsById.get(String(businessId)) || `业务-${businessId}`,
-        )
-        targetGroups.set(String(businessId), businessName)
       }
     }
 
@@ -635,9 +605,9 @@ watch(searchText, (value) => {
   }, SEARCH_DEBOUNCE_MS)
 })
 
-watch([cpuPieData, memoryPieData, totalCpu, totalMemory, currentStatsDimension], () => {
+watch([cpuPieData, memoryPieData, totalCpu, totalMemory], () => {
   emit('stats-change', {
-    dimension: currentStatsDimension.value,
+    dimension: 'project',
     cpuRows: cpuPieData.value,
     memoryRows: memoryPieData.value,
     totalCpu: totalCpu.value,
@@ -680,7 +650,6 @@ async function refresh() {
         .filter((item) => Number.isInteger(item) && item > 0)
       return linkedServiceIds.some((serviceId) => visibleServiceIdSet.has(serviceId))
     })
-    chartSystems.value = systems
     chartProjects.value = projects
     chartServices.value = projectServices
     chartDeployments.value = visibleDeployments

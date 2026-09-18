@@ -112,6 +112,9 @@ DELETE FROM sys_agent_token WHERE id = ?;
 -- name: UpdateUserPhonenumber :exec
 UPDATE sys_user SET phonenumber = ?, update_time = ? WHERE id = ?;
 
+-- name: UpdateUserAvatar :exec
+UPDATE sys_user SET avatar = ?, update_time = ? WHERE id = ?;
+
 -- ---- 用户组（sys_user_group / sys_user_group_member，identity 域）----
 
 -- name: ListUserGroups :many

@@ -153,11 +153,15 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 				fmt.Sprintf("    application: %s", yamlScalar(entry.Application)),
 				fmt.Sprintf("    log_name: %s", yamlScalar(entry.LogName)),
 				fmt.Sprintf("    business_system: %s", yamlScalar(entry.BusinessSystem)),
+				fmt.Sprintf("    project: %s", yamlScalar(entry.Project)),
 				fmt.Sprintf("    environment: %s", yamlScalar(entry.Environment)),
 			}
 			if instance.HostIP != "" {
 				lines = append(lines, fmt.Sprintf("    host_ip: %s", yamlScalar(instance.HostIP)))
 			}
+			// log_path 是该实例实际监听的绝对路径，便于按文件定位日志来源
+			//（索引模板 standardLogFields 已声明 log_path/project 为 keyword，此前从未注入导致两列恒空）。
+			lines = append(lines, fmt.Sprintf("    log_path: %s", yamlScalar(resolved)))
 			lines = append(lines, fmt.Sprintf("  index: %s", yamlScalar(indexName)))
 			if entry.Pipeline != "" {
 				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。

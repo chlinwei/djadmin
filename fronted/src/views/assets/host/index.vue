@@ -353,7 +353,7 @@
                     </a-descriptions-item>
                 </a-descriptions>
                 <div style="display: flex; gap: 8px">
-                    <a-button type="primary" size="small" @click="openAgentPackageUpload">
+                    <a-button type="primary" size="small" :loading="agentPackageUploading" @click="openAgentPackageUpload">
                         {{ activeAgentPackage ? '重新上传（覆盖）' : '上传 Agent 包' }}
                     </a-button>
                     <a-button size="small" :disabled="!activeAgentPackage" :loading="agentPackageDownloadLoading" @click="downloadAgentPackageFile">
@@ -363,33 +363,14 @@
                         删除
                     </a-button>
                 </div>
-
-                <a-modal
-                    v-model:open="agentPackageUploadVisible"
-                    :title="activeAgentPackage ? '重新上传 Agent 包' : '上传 Agent 包'"
-                    ok-text="上传"
-                    cancel-text="取消"
-                    :confirm-loading="agentPackageUploading"
-                    @ok="submitUploadAgentPackage"
-                    @cancel="closeAgentPackageUpload"
-                >
-                    <a-alert
-                        v-if="activeAgentPackage"
-                        type="info"
-                        show-icon
-                        message="已存在当前包，再次上传将直接覆盖（sha256 与上传时间随之更新）。"
-                        style="margin-bottom: 12px"
-                    />
-                    <a-form layout="vertical">
-                        <a-form-item label="dj-agent 二进制文件" required>
-                            <!-- 二进制无固定扩展名，accept 不限制；仅前端校验非空 -->
-                            <input
-                                ref="agentPackageFileInputRef"
-                                type="file"
-                            />
-                        </a-form-item>
-                    </a-form>
-                </a-modal>
+                <!-- 直接触发系统文件选择，选完即上传覆盖，不再弹二次确认弹窗。
+                     二进制无固定扩展名，accept 不限制；仅前端校验非空。 -->
+                <input
+                    ref="agentPackageFileInputRef"
+                    type="file"
+                    style="display: none"
+                    @change="onAgentPackageFileChange"
+                />
             </a-modal>
 
     <Dialog
@@ -688,7 +669,6 @@ const agentPackageLoading = ref(false)
 const agentPackageManagerVisible = ref(false)
 const agentPackageManagerLoading = ref(false)
 const agentPackageDownloadLoading = ref(false)
-const agentPackageUploadVisible = ref(false)
 const agentPackageUploading = ref(false)
 const agentPackageFileInputRef = ref(null)
 
@@ -1075,14 +1055,23 @@ const openAgentPackageManager = () => {
     loadAgentPackages()
 }
 
+// 点击「上传/重新上传」直接唤起系统文件选择，选完立即上传覆盖，不再弹二次确认弹窗。
 const openAgentPackageUpload = () => {
-    agentPackageUploadVisible.value = true
+    if (agentPackageUploading.value) {
+        return
+    }
+    agentPackageFileInputRef.value?.click()
 }
 
-const closeAgentPackageUpload = () => {
-    agentPackageUploadVisible.value = false
+const resetAgentPackageFileInput = () => {
     if (agentPackageFileInputRef.value) {
         agentPackageFileInputRef.value.value = ''
+    }
+}
+
+const onAgentPackageFileChange = () => {
+    if (agentPackageFileInputRef.value?.files?.[0]) {
+        submitUploadAgentPackage()
     }
 }
 
@@ -1100,12 +1089,12 @@ const submitUploadAgentPackage = async () => {
             return
         }
         message.success('Agent 包上传成功')
-        closeAgentPackageUpload()
         await loadAgentPackages()
     } catch (error) {
         message.error(error?.response?.data?.msg || error?.message || 'Agent 包上传失败')
     } finally {
         agentPackageUploading.value = false
+        resetAgentPackageFileInput()
     }
 }
 

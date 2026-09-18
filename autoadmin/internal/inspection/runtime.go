@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"autoadmin/internal/agent"
 	"autoadmin/internal/agent/pb"
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/identity"
@@ -475,6 +477,14 @@ func (handler *Handler) executeTarget(executionID int64, task runTask, target ru
 		agentResponse, err := handler.gateway.Execute(requestCtx, target.HostInstanceName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("inspection-%d-%d", executionID, target.ID), Type: "custom", Action: "check_application_baseline", ParamsJson: string(params), TimeoutSeconds: int32(task.Timeout)})
 		cancel()
 		if err != nil {
+			// 与前置在线检查一致：下发瞬间掉线按"未执行"跳过，不计为检查失败。
+			if errors.Is(err, agent.ErrAgentOffline) {
+				_ = queries.SkipInspectionTarget(ctx, db.SkipInspectionTargetParams{
+					ErrorMessage: "Agent 离线，未执行巡检", EndTime: sql.NullTime{Time: now(), Valid: true},
+					UpdateTime: now(), ID: target.ID,
+				})
+				return
+			}
 			errorMessage = err.Error()
 			results = append(results, checkResult{Key: "check_plan", Type: "plan", Name: "Agent 检查计划", Status: "error", Severity: "critical", Message: errorMessage})
 		} else {

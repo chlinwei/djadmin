@@ -25,16 +25,17 @@
 - ⚠️ 聚合分隔符必须用 `'||'` 而不是逗号：名称本身可能含逗号；拆分逻辑在 `splitBusinessSystemNames`/`splitBusinessSystemIDs`（`internal/assets/service.go`）。
 - 注意 `sqlc` 对 COALESCE 子查询形式的 GROUP_CONCAT 推导为 `interface{}`（GetProject），需在 Go 侧做 string/[]byte 断言（`businessSystemIDsFromAny`/`nameRaw`）。
 
-## 服务树"资源占比"数据链（部署→服务→业务系统/项目）
+## 服务树"资源占比"数据链（部署→服务→项目）
 
-前端 `ServiceTree.vue` 用四份数据聚合 CPU/内存饼图，Go API 必须提供：
+服务树"资源占比"只按**项目**聚合（"按业务"维度已移除）。前端 `ServiceTree.vue` 用四份数据聚合 CPU/内存饼图，
+Go API 必须提供：
 
 - `GET /assets/application-deployments/`：每条部署带 **`application_service_ids`**（`assets_application_service_deployment` M2M 关联，`attachApplicationServiceIDs` 批量补齐，未关联输出 `[]` 非 null）+ `host`（关联主机 ID）。
-- `GET /assets/application-services/`：带 `business_system` + `business_system_name`。
+- `GET /assets/application-services/`：带 `business_system`（用于经项目的 `business_systems` 归集到项目）。
 - `GET /assets/hosts/`：带 `hardware.cpu_cores` / `hardware.memory_gb`。
 - `GET /assets/projects/`：带 `business_systems`（见上）。
 
-缺失任一关联字段，饼图在该维度恒为空（前端 `linkedServices` 过滤后无归集桶）。
+缺失任一关联字段，饼图恒为空（前端 `linkedServices` 过滤后无归集桶）。
 
 ## 逻辑服务 / 部署实例列表的 scope 过滤（服务树右侧面板）
 

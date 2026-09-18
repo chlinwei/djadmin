@@ -6,8 +6,6 @@
         :selected-scope="serviceScope"
         :show-stats="false"
         group-by-project
-        :stats-dimension="statsDimension"
-        @update:statsDimension="statsDimension = $event"
         @stats-change="handleStatsChange"
         @select="serviceScope = $event"
       />
@@ -37,11 +35,6 @@
             <section v-show="serviceScope.nodeType === 'all'" class="service-tree-right-stats">
               <div class="service-tree-right-stats-header">
                 <span>资源占比</span>
-                <a-segmented
-                  v-model:value="statsDimension"
-                  :options="statsDimensionOptions"
-                  size="small"
-                />
               </div>
               <div class="service-tree-right-stats-subtitle">按 CPU / 内存 资源汇总</div>
               <div class="service-tree-right-stats-grid">
@@ -123,11 +116,6 @@ const serviceCreateInitialBusinessSystemId = ref(null)
 const serviceCreateInitialEnvironmentId = ref(null)
 // 只有能定位到业务系统层级以上的节点才适合新增逻辑服务（service/deployment 自身就是详情，不再支持再新增）。
 const canCreateService = computed(() => ['all', 'project', 'businessSystem', 'environment'].includes(serviceScope.value.nodeType))
-const statsDimension = ref('business')
-const statsDimensionOptions = [
-  { label: '按业务', value: 'business' },
-  { label: '按项目', value: 'project' },
-]
 const statsData = ref({ cpuRows: [], memoryRows: [], totalCpu: 0, totalMemory: 0 })
 const hostPieRef = ref(null)
 const deploymentPieRef = ref(null)

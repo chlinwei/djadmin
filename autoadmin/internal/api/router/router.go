@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"autoadmin/internal/agent"
@@ -46,6 +47,14 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 		response.Success(context, gin.H{"status": "ok"})
 	})
 	engine.GET("/health/ready", readiness(database))
+
+	// 静态文件（用户头像等）：与 identity/assets/monitor 的 media 目录一致（默认 autoadmin/media）。
+	// 匿名可访问，路径穿越由 http.Dir 拦截；audit 中间件已跳过 /media 前缀。
+	mediaRoot, err := filepath.Abs("media")
+	if err != nil {
+		return nil, err
+	}
+	engine.Static("/media", mediaRoot)
 
 	identityRepository := identity.NewRepository(database)
 	identityHandler := identity.NewHandler(identity.NewService(identityRepository, tokens))
@@ -439,6 +448,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.POST("/elasticsearch-clusters/batch-delete/", monitorHandler.BatchDeleteElasticsearchClusters)
 	monitorRoutes.POST("/elasticsearch-clusters/:id/test-connection/", monitorHandler.TestElasticsearchConnection)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-health/", monitorHandler.ElasticsearchLogHealth)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/index-template/", monitorHandler.GetElasticsearchIndexTemplate)
 	monitorRoutes.POST("/elasticsearch-clusters/:id/pipeline-simulate/", monitorHandler.SimulateElasticsearchPipeline)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-search/", monitorHandler.ElasticsearchLogSearch)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-facet-stats/", monitorHandler.ElasticsearchLogFacetStats)

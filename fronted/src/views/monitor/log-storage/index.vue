@@ -25,6 +25,12 @@
           <span>&nbsp;链路体检</span>
         </a-button>
       </a-tooltip>
+      <a-tooltip title="查看集群实际的索引模板 Mapping（字段名与类型）">
+        <a-button size="large" :disabled="!clusters.length" :loading="mappingLoading" @click="loadMapping">
+          <FontAwesomeIcon :icon="['fas', 'table-list']" />
+          <span>&nbsp;查看 Mapping</span>
+        </a-button>
+      </a-tooltip>
     </div>
 
     <a-table
@@ -188,6 +194,43 @@
         </a-row>
       </a-form>
     </a-modal>
+
+    <a-modal
+      v-model:open="mappingOpen"
+      title="索引模板 Mapping"
+      :width="760"
+      :footer="null"
+    >
+      <a-descriptions v-if="mappingData" bordered :column="2" size="small" class="mapping-meta">
+        <a-descriptions-item label="模板名称">{{ mappingData.template_name }}</a-descriptions-item>
+        <a-descriptions-item label="索引前缀">{{ mappingData.index_prefix }}</a-descriptions-item>
+        <a-descriptions-item label="是否已下发">
+          <a-tag :color="mappingData.exists ? 'green' : 'red'">{{ mappingData.exists ? '已存在' : '未找到' }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="dynamic">
+          {{ mappingData.dynamic === undefined || mappingData.dynamic === null ? '-' : String(mappingData.dynamic) }}
+        </a-descriptions-item>
+        <a-descriptions-item label="匹配模式" :span="2">
+          {{ (mappingData.index_patterns || []).join(', ') || '-' }}
+        </a-descriptions-item>
+      </a-descriptions>
+      <a-alert
+        v-if="mappingData && !mappingData.exists"
+        type="warning"
+        show-icon
+        message="集群上找不到该索引模板，以下为平台内置标准字段。请先保存集群配置以同步模板。"
+        style="margin: 12px 0"
+      />
+      <a-table
+        row-key="name"
+        :columns="mappingColumns"
+        :data-source="mappingData?.fields || []"
+        :pagination="false"
+        size="small"
+        :scroll="{ y: 420 }"
+        :locale="tableLocale"
+      />
+    </a-modal>
   </div>
 </template>
 
@@ -201,6 +244,7 @@ import { tableLocale } from '@/util/tableStyle'
 import { message, Empty } from 'ant-design-vue'
 import {
   batchDeleteElasticsearchClusters,
+  getElasticsearchIndexTemplate,
   getLogPipelineHealth,
   getElasticsearchClusterList,
   saveElasticsearchCluster,
@@ -273,6 +317,29 @@ const OVERALL_TEXT = {
   warn: '链路基本一致，有需要关注的项',
   drift: '存在未下发的配置，展开查看需要处理的项',
   error: '链路存在异常，展开查看失败原因',
+}
+
+const mappingOpen = ref(false)
+const mappingLoading = ref(false)
+const mappingData = ref(null)
+const mappingColumns = [
+  { title: '字段', dataIndex: 'name', key: 'name', width: 260 },
+  { title: '类型', dataIndex: 'type', key: 'type', width: 160 },
+]
+
+async function loadMapping() {
+  const cluster = clusters.value[0]
+  if (!cluster) return
+  mappingLoading.value = true
+  try {
+    const response = await getElasticsearchIndexTemplate(cluster.id)
+    mappingData.value = response?.data?.data || null
+    mappingOpen.value = true
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '获取 Mapping 失败')
+  } finally {
+    mappingLoading.value = false
+  }
 }
 
 const health = ref(null)

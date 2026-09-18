@@ -827,6 +827,21 @@ func (q *Queries) SearchUsers(ctx context.Context, arg SearchUsersParams) ([]Sys
 	return items, nil
 }
 
+const updateUserAvatar = `-- name: UpdateUserAvatar :exec
+UPDATE sys_user SET avatar = ?, update_time = ? WHERE id = ?
+`
+
+type UpdateUserAvatarParams struct {
+	Avatar     sql.NullString `json:"avatar"`
+	UpdateTime sql.NullTime   `json:"update_time"`
+	ID         int32          `json:"id"`
+}
+
+func (q *Queries) UpdateUserAvatar(ctx context.Context, arg UpdateUserAvatarParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserAvatar, arg.Avatar, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const updateUserGroup = `-- name: UpdateUserGroup :execrows
 UPDATE sys_user_group SET update_time = ?, remark = ?, name = ? WHERE id = ?
 `

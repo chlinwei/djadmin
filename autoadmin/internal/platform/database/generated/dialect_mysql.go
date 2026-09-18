@@ -547,6 +547,7 @@ type UpdateSoftwarePackageConfigParams = mysql.UpdateSoftwarePackageConfigParams
 type UpdateSoftwarePackageFileParams = mysql.UpdateSoftwarePackageFileParams
 type UpdateSoftwarePackageFilePathParams = mysql.UpdateSoftwarePackageFilePathParams
 type UpdateSoftwarePackageSourceParams = mysql.UpdateSoftwarePackageSourceParams
+type UpdateUserAvatarParams = mysql.UpdateUserAvatarParams
 type UpdateUserGroupParams = mysql.UpdateUserGroupParams
 type UpdateUserLoginDateParams = mysql.UpdateUserLoginDateParams
 type UpdateUserPasswordParams = mysql.UpdateUserPasswordParams

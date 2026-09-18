@@ -254,6 +254,7 @@ type Querier interface {
 	DeleteApplicationVersion(ctx context.Context, id int64) error
 	DeleteAutomationControllerKeys(ctx context.Context) error
 	DeleteAutomationInventory(ctx context.Context, id int64) (int64, error)
+	DeleteAutomationJobLogChunks(ctx context.Context, jobID int64) error
 	DeleteAutomationPlaybook(ctx context.Context, id int64) (int64, error)
 	DeleteAutomationTask(ctx context.Context, id int64) (int64, error)
 	DeleteBaseline(ctx context.Context, id int64) (int64, error)
@@ -324,6 +325,9 @@ type Querier interface {
 	FailAgentJobHostLog(ctx context.Context, arg FailAgentJobHostLogParams) error
 	// 同一批主机上"仍在跑"的 Agent 安装任务：先把失联超过 30 秒的标记失败，再拦截活跃的。
 	FailStaleAgentInstallJobs(ctx context.Context, arg FailStaleAgentInstallJobsParams) error
+	// 失联作业置失败。带 status='running' 守卫：正常收尾（finishJob）可能同时在写，
+	// 没有守卫会把刚成功的作业改写成失败。
+	FailStaleAutomationJob(ctx context.Context, arg FailStaleAutomationJobParams) (int64, error)
 	FinishAgentExecutionJob(ctx context.Context, arg FinishAgentExecutionJobParams) error
 	FinishAgentJob(ctx context.Context, arg FinishAgentJobParams) error
 	// result_data 传 NULL 表示"保持原值"（更新流程的收尾不写 result_data，只有安装流程写）。
@@ -435,8 +439,6 @@ type Querier interface {
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
 	GetLogTargetConfigFingerprint(ctx context.Context, id int64) (string, error)
-	// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
-	GetLogTargetDefaultCluster(ctx context.Context, id int64) (GetLogTargetDefaultClusterRow, error)
 	// ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
 	// 原实现有两处运行时拼 SQL：① Filebeat 软件包按"安装/卸载"拼 playbook 列名；
 	// ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，
@@ -479,6 +481,8 @@ type Querier interface {
 	// ---- 告警链诊断（user-chain / chain/:historyId）----
 	GetUsernameByID(ctx context.Context, id int32) (string, error)
 	GetWebSSHSessionContent(ctx context.Context, id int64) (GetWebSSHSessionContentRow, error)
+	// 作业实时输出块（运行期间才存在，结束时由执行方删除）：
+	InsertAutomationJobLogChunk(ctx context.Context, arg InsertAutomationJobLogChunkParams) error
 	ListAPITokens(ctx context.Context) ([]ListAPITokensRow, error)
 	// 机器令牌校验：过期判定改成应用层传时间（原实现用 UTC_TIMESTAMP(6)）。
 	ListActiveAgentTokens(ctx context.Context, now sql.NullTime) ([]ListActiveAgentTokensRow, error)
@@ -507,6 +511,7 @@ type Querier interface {
 	// 目标主机快照：原实现按主机 ID 个数拼 `IN (?,?,...)`。
 	ListAutomationInventoryHosts(ctx context.Context, hostIds []int64) ([]ListAutomationInventoryHostsRow, error)
 	ListAutomationJobHostLogs(ctx context.Context, jobID int64) ([]ListAutomationJobHostLogsRow, error)
+	ListAutomationJobLogChunks(ctx context.Context, jobID int64) ([]string, error)
 	// 排序：原实现按白名单拼列名与方向（`ORDER BY <column> <dir>`）。标识符不能被参数化，
 	// 改成按 sort_key（带 '-' 前缀表示倒序）选择的 CASE 表达式——两方言等价，代价是排序
 	// 不再走索引（模板表很小，可接受）；未命中任何分支时回落到 `id DESC`。
@@ -560,6 +565,14 @@ type Querier interface {
 	ListHostDisks(ctx context.Context, hostID int64) ([]ListHostDisksRow, error)
 	ListHostGroupTreeNodes(ctx context.Context) ([]ListHostGroupTreeNodesRow, error)
 	ListHostGroups(ctx context.Context, arg ListHostGroupsParams) ([]ListHostGroupsRow, error)
+	// 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
+	// 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
+	// 因此把子查询改成对 deployment 的 JOIN 并 SELECT d.host_id；DISTINCT 保证同一主机上
+	// 一个服务部署多实例时只出一行（与逐主机查询的行为一致）。
+	ListHostLogRenderEntries(ctx context.Context, hostIds []int64) ([]ListHostLogRenderEntriesRow, error)
+	// 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
+	// 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
+	ListHostLogRenderInstances(ctx context.Context, hostIds []int64) ([]ListHostLogRenderInstancesRow, error)
 	ListHostMonitors(ctx context.Context, hostID int64) ([]ListHostMonitorsRow, error)
 	// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
 	// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
@@ -621,6 +634,9 @@ type Querier interface {
 	ListRoleCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]SysRole, error)
 	ListRolesByUserID(ctx context.Context, userID int32) ([]SysRole, error)
+	// 对账用：仍在 running 的作业（含各自超时与开始时间），由对账循环判断是否已失联。
+	// 超时在任务表上、作业行只存 task_id，口径与 GetJobTyped 一致（无任务时回落 600s）。
+	ListRunningAutomationJobs(ctx context.Context) ([]ListRunningAutomationJobsRow, error)
 	ListScanTargets(ctx context.Context, scanID int64) ([]ListScanTargetsRow, error)
 	ListScans(ctx context.Context, arg ListScansParams) ([]ListScansRow, error)
 	ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTaskLogsParams) ([]ListScheduledTaskLogsRow, error)
@@ -680,7 +696,6 @@ type Querier interface {
 	MarkHostCollected(ctx context.Context, arg MarkHostCollectedParams) error
 	MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error)
 	MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error
-	MarkLogTargetApplied(ctx context.Context, arg MarkLogTargetAppliedParams) error
 	// 指纹未变时的"只刷新下发时间"路径。
 	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
 	// 指纹变化并下发成功后：记下发时间与指纹。

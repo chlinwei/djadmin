@@ -14,6 +14,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api"
+	"autoadmin/internal/automation"
 	"autoadmin/internal/buildinfo"
 	"autoadmin/internal/config"
 	"autoadmin/internal/identity"
@@ -269,6 +270,9 @@ func runWorker(configuration config.Config) error {
 		return err
 	}
 	defer rabbitClient.Close()
+	// 失联作业对账：作业执行归 worker，执行进程一旦消失作业会永久停在 running，
+	// 由这个循环收敛（单实例部署，进程内唯一 goroutine）。
+	automation.StartStaleJobReaper(ctx, databaseConnection)
 	err = rabbitClient.Consume(ctx, configuration.WorkerName, configuration.WorkerPrefetch, scheduler.NewWorker(scheduler.NewRepository(databaseConnection)))
 	if errors.Is(err, context.Canceled) {
 		return nil

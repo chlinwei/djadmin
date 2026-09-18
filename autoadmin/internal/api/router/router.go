@@ -16,6 +16,7 @@ import (
 	"autoadmin/internal/baseline"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/inspection"
+	"autoadmin/internal/logcollect"
 	"autoadmin/internal/monitor"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/rbac"
@@ -357,12 +358,28 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	inspectionExecutions.GET("/:id/", middleware.RequirePermission("inspection:view"), inspectionHandler.GetExecution)
 	inspectionExecutions.POST("/:id/cancel/", middleware.RequirePermission("inspection:executions:cancel"), inspectionHandler.CancelExecution)
 
-	monitorHandler, err := monitor.NewHandler(database, gateway, playbookHandler, credentialEncryptionKey, djangoSecret)
+	// 监控域与日志采集域共用的两件依赖，集中构造后分别注入，避免各自再建一份：
+	// 凭据加解密器（读写 Elasticsearch 集群口令等敏感配置）、软件包根目录
+	//（autoadmin 自身的 media 目录：monitor_packages/ 与 agent_packages/）。
+	// backend/ 已废弃，包存储随之从 Django MEDIA_ROOT 迁出。
+	secretEncryptor, err := assets.NewSecretEncryptor(credentialEncryptionKey, djangoSecret)
 	if err != nil {
 		return nil, err
 	}
+	packageRoot, err := filepath.Abs("media")
+	if err != nil {
+		return nil, err
+	}
+	monitorHandler := monitor.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
 	// 目标安装选包缺少主机架构时，允许 monitor 主动调 assets 补采一次资产信息。
 	monitorHandler.SetHostInfoRefresher(assetsHandler.RefreshHostInfoByID)
+	// 日志采集域（Filebeat 纳管目标、采集配置下发、链路体检、数据流清理、ES 集群与检索）
+	// 与监控域挂在同一个 /monitor 路由组下，共用组级鉴权；两者的依赖由上面统一构造。
+	logcollectHandler := logcollect.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
+	// Filebeat 选包同样可能在架构缺失时补采一次资产信息。
+	logcollectHandler.SetHostInfoRefresher(assetsHandler.RefreshHostInfoByID)
+	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
+	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)
 	monitorRoutes := engine.Group("/monitor", middleware.Authenticate(tokens), middleware.RequirePermission("monitor:view"))
 	monitorRoutes.GET("/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/packages/", monitorHandler.ListPackages)
@@ -392,20 +409,23 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/install-histories/", monitorHandler.ListInstallHistories)
 	monitorRoutes.GET("/install-histories/:id/", monitorHandler.GetInstallHistory)
 	monitorRoutes.POST("/install-histories/:id/cancel/", monitorHandler.CancelInstallHistory)
-	logTargets := monitorRoutes.Group("/log-targets")
-	logTargets.POST("/batch-create/", monitorHandler.BatchCreateLogTargets)
-	logTargets.POST("/batch-retry/", monitorHandler.BatchRetryLogTargets)
-	logTargets.POST("/batch-start-service/", monitorHandler.BatchStartLogTargets)
-	logTargets.POST("/batch-stop-service/", monitorHandler.BatchStopLogTargets)
-	logTargets.POST("/batch-apply/", monitorHandler.BatchApplyLogTargets)
-	logTargets.POST("/:id/retry/", monitorHandler.RetryLogTarget)
-	logTargets.POST("/:id/cancel/", monitorHandler.CancelLogTarget)
-	logTargets.POST("/batch-delete/", monitorHandler.BatchDeleteLogTargets)
-	logTargets.POST("/:id/check-status/", monitorHandler.CheckLogTargetService)
-	logTargets.POST("/:id/start-service/", monitorHandler.StartLogTargetService)
-	logTargets.POST("/:id/stop-service/", monitorHandler.StopLogTargetService)
-	logTargets.POST("/:id/apply/", monitorHandler.ApplyLogTargetConfig)
-	monitorRoutes.POST("/log-datastreams/cleanup/", monitorHandler.CleanupLogDataStream)
+	// 采集目标（Filebeat 纳管）单独挂 monitor:log_collect:view：这批接口只服务「日志管理 → 日志采集」，
+	// 与 exporter 目标互不相干（同 . 主机列表 /targets/host-overview/ 两个页面共用，仍留在组级的
+	// monitor:view 下）。存量登录用户的权限码随 JWT 签发，升级后需重新登录才能访问。
+	logTargets := monitorRoutes.Group("/log-targets", middleware.RequirePermission("monitor:log_collect:view"))
+	logTargets.POST("/batch-create/", logcollectHandler.BatchCreateLogTargets)
+	logTargets.POST("/batch-retry/", logcollectHandler.BatchRetryLogTargets)
+	logTargets.POST("/batch-start-service/", logcollectHandler.BatchStartLogTargets)
+	logTargets.POST("/batch-stop-service/", logcollectHandler.BatchStopLogTargets)
+	logTargets.POST("/batch-apply/", logcollectHandler.BatchApplyLogTargets)
+	logTargets.POST("/:id/retry/", logcollectHandler.RetryLogTarget)
+	logTargets.POST("/:id/cancel/", logcollectHandler.CancelLogTarget)
+	logTargets.POST("/batch-delete/", logcollectHandler.BatchDeleteLogTargets)
+	logTargets.POST("/:id/check-status/", logcollectHandler.CheckLogTargetService)
+	logTargets.POST("/:id/start-service/", logcollectHandler.StartLogTargetService)
+	logTargets.POST("/:id/stop-service/", logcollectHandler.StopLogTargetService)
+	logTargets.POST("/:id/apply/", logcollectHandler.ApplyLogTargetConfig)
+	monitorRoutes.POST("/log-datastreams/cleanup/", logcollectHandler.CleanupLogDataStream)
 	monitorRoutes.GET("/alert-histories/", monitorHandler.ListAlertHistories)
 	monitorRoutes.GET("/alert-histories/:id/", monitorHandler.GetAlertHistory)
 	monitorRoutes.GET("/alert-histories/:id/notification-status/", monitorHandler.AlertNotificationStatus)
@@ -422,39 +442,39 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.POST("/notification-policies/create/", monitorHandler.CreateNotificationPolicy)
 	monitorRoutes.POST("/notification-policies/update/", monitorHandler.UpdateNotificationPolicy)
 	monitorRoutes.POST("/notification-policies/batch-delete/", monitorHandler.BatchDeleteNotificationPolicies)
-	monitorRoutes.GET("/log-retention-tiers/", monitorHandler.ListRetentionTiers)
-	monitorRoutes.POST("/log-retention-tiers/", monitorHandler.CreateRetentionTier)
-	monitorRoutes.GET("/log-retention-tiers/:id/", monitorHandler.GetRetentionTier)
-	monitorRoutes.PATCH("/log-retention-tiers/:id/", monitorHandler.UpdateRetentionTier)
-	monitorRoutes.PUT("/log-retention-tiers/:id/", monitorHandler.UpdateRetentionTier)
-	monitorRoutes.POST("/log-retention-tiers/batch-delete/", monitorHandler.BatchDeleteRetentionTiers)
-	monitorRoutes.GET("/log-processing-rules/", monitorHandler.ListProcessingRules)
-	monitorRoutes.POST("/log-processing-rules/", monitorHandler.CreateProcessingRule)
-	monitorRoutes.GET("/log-processing-rules/:id/", monitorHandler.GetProcessingRule)
-	monitorRoutes.PATCH("/log-processing-rules/:id/", monitorHandler.UpdateProcessingRule)
-	monitorRoutes.PUT("/log-processing-rules/:id/", monitorHandler.UpdateProcessingRule)
-	monitorRoutes.POST("/log-processing-rules/batch-delete/", monitorHandler.BatchDeleteProcessingRules)
-	monitorRoutes.GET("/log-collection-filter-rules/", monitorHandler.ListFilterRules)
-	monitorRoutes.POST("/log-collection-filter-rules/", monitorHandler.CreateFilterRule)
-	monitorRoutes.GET("/log-collection-filter-rules/:id/", monitorHandler.GetFilterRule)
-	monitorRoutes.PATCH("/log-collection-filter-rules/:id/", monitorHandler.UpdateFilterRule)
-	monitorRoutes.PUT("/log-collection-filter-rules/:id/", monitorHandler.UpdateFilterRule)
-	monitorRoutes.POST("/log-collection-filter-rules/batch-delete/", monitorHandler.BatchDeleteFilterRules)
-	monitorRoutes.GET("/elasticsearch-clusters/", monitorHandler.ListElasticsearchClusters)
-	monitorRoutes.POST("/elasticsearch-clusters/", monitorHandler.CreateElasticsearchCluster)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/", monitorHandler.GetElasticsearchCluster)
-	monitorRoutes.PATCH("/elasticsearch-clusters/:id/", monitorHandler.UpdateElasticsearchCluster)
-	monitorRoutes.PUT("/elasticsearch-clusters/:id/", monitorHandler.UpdateElasticsearchCluster)
-	monitorRoutes.POST("/elasticsearch-clusters/batch-delete/", monitorHandler.BatchDeleteElasticsearchClusters)
-	monitorRoutes.POST("/elasticsearch-clusters/:id/test-connection/", monitorHandler.TestElasticsearchConnection)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/log-health/", monitorHandler.ElasticsearchLogHealth)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/index-template/", monitorHandler.GetElasticsearchIndexTemplate)
-	monitorRoutes.POST("/elasticsearch-clusters/:id/pipeline-simulate/", monitorHandler.SimulateElasticsearchPipeline)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/log-search/", monitorHandler.ElasticsearchLogSearch)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/log-facet-stats/", monitorHandler.ElasticsearchLogFacetStats)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/log-storage-overview/", monitorHandler.GetLogStorageOverview)
-	monitorRoutes.GET("/elasticsearch-clusters/:id/log-service-usage/", monitorHandler.GetLogServiceUsage)
-	monitorRoutes.GET("/log-targets/:id/config-preview/", monitorHandler.GetHostLogConfigPreview)
+	monitorRoutes.GET("/log-retention-tiers/", logcollectHandler.ListRetentionTiers)
+	monitorRoutes.POST("/log-retention-tiers/", logcollectHandler.CreateRetentionTier)
+	monitorRoutes.GET("/log-retention-tiers/:id/", logcollectHandler.GetRetentionTier)
+	monitorRoutes.PATCH("/log-retention-tiers/:id/", logcollectHandler.UpdateRetentionTier)
+	monitorRoutes.PUT("/log-retention-tiers/:id/", logcollectHandler.UpdateRetentionTier)
+	monitorRoutes.POST("/log-retention-tiers/batch-delete/", logcollectHandler.BatchDeleteRetentionTiers)
+	monitorRoutes.GET("/log-processing-rules/", logcollectHandler.ListProcessingRules)
+	monitorRoutes.POST("/log-processing-rules/", logcollectHandler.CreateProcessingRule)
+	monitorRoutes.GET("/log-processing-rules/:id/", logcollectHandler.GetProcessingRule)
+	monitorRoutes.PATCH("/log-processing-rules/:id/", logcollectHandler.UpdateProcessingRule)
+	monitorRoutes.PUT("/log-processing-rules/:id/", logcollectHandler.UpdateProcessingRule)
+	monitorRoutes.POST("/log-processing-rules/batch-delete/", logcollectHandler.BatchDeleteProcessingRules)
+	monitorRoutes.GET("/log-collection-filter-rules/", logcollectHandler.ListFilterRules)
+	monitorRoutes.POST("/log-collection-filter-rules/", logcollectHandler.CreateFilterRule)
+	monitorRoutes.GET("/log-collection-filter-rules/:id/", logcollectHandler.GetFilterRule)
+	monitorRoutes.PATCH("/log-collection-filter-rules/:id/", logcollectHandler.UpdateFilterRule)
+	monitorRoutes.PUT("/log-collection-filter-rules/:id/", logcollectHandler.UpdateFilterRule)
+	monitorRoutes.POST("/log-collection-filter-rules/batch-delete/", logcollectHandler.BatchDeleteFilterRules)
+	monitorRoutes.GET("/elasticsearch-clusters/", logcollectHandler.ListElasticsearchClusters)
+	monitorRoutes.POST("/elasticsearch-clusters/", logcollectHandler.CreateElasticsearchCluster)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/", logcollectHandler.GetElasticsearchCluster)
+	monitorRoutes.PATCH("/elasticsearch-clusters/:id/", logcollectHandler.UpdateElasticsearchCluster)
+	monitorRoutes.PUT("/elasticsearch-clusters/:id/", logcollectHandler.UpdateElasticsearchCluster)
+	monitorRoutes.POST("/elasticsearch-clusters/batch-delete/", logcollectHandler.BatchDeleteElasticsearchClusters)
+	monitorRoutes.POST("/elasticsearch-clusters/:id/test-connection/", logcollectHandler.TestElasticsearchConnection)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/log-health/", logcollectHandler.ElasticsearchLogHealth)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/index-template/", logcollectHandler.GetElasticsearchIndexTemplate)
+	monitorRoutes.POST("/elasticsearch-clusters/:id/pipeline-simulate/", logcollectHandler.SimulateElasticsearchPipeline)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/log-search/", logcollectHandler.ElasticsearchLogSearch)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/log-facet-stats/", logcollectHandler.ElasticsearchLogFacetStats)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/log-storage-overview/", logcollectHandler.GetLogStorageOverview)
+	monitorRoutes.GET("/elasticsearch-clusters/:id/log-service-usage/", logcollectHandler.GetLogServiceUsage)
+	monitorRoutes.GET("/log-targets/:id/config-preview/", logcollectHandler.GetHostLogConfigPreview)
 	monitorRoutes.GET("/targets/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/targets/prometheus/overview/", monitorHandler.PrometheusOverview)
 	monitorRoutes.GET("/targets/prometheus/targets/", monitorHandler.PrometheusTargets)

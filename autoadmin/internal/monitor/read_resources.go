@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/logcollect"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,64 @@ func queryCount(context *gin.Context, database *sql.DB, query string, arguments 
 
 func paginated(context *gin.Context, items []gin.H, count int64, page, size int) {
 	response.Paginated(context, items, count, int32(page), int32(size))
+}
+
+// paginatedWith 在分页信封上追加页面级字段。
+func paginatedWith(context *gin.Context, items []gin.H, count int64, page, size int, extra gin.H) {
+	response.PaginatedWith(context, items, count, int32(page), int32(size), extra)
+}
+
+// logConfigStateUnknown 配置态无法计算时的占位（缺省未注入评估器、或没有启用的默认 ES 集群）。
+const logConfigStateUnknown = "unknown"
+
+// validConfigStateFilter 校验配置态筛选值。取值不合法直接 400，避免前端写错时静默返回全量。
+func validConfigStateFilter(value string) bool {
+	switch value {
+	case logcollect.LogConfigSynced, logcollect.LogConfigDrift, logcollect.LogConfigNever, logConfigStateUnknown:
+		return true
+	}
+	return false
+}
+
+// filterRowsByConfigState 按配置态保留主机。未纳管的主机没有日志目标，任何配置态筛选都不应命中它
+// （否则"待下发"里会混进根本没纳管 Filebeat 的机器，与"从未下发"语义冲突）。
+func filterRowsByConfigState(rows []db.ListMonitorHostsRow, states map[int64]logcollect.LogConfigState, want string) []db.ListMonitorHostsRow {
+	filtered := make([]db.ListMonitorHostsRow, 0, len(rows))
+	for _, row := range rows {
+		if !row.LogTargetID.Valid {
+			continue
+		}
+		state := states[row.ID]
+		status := logConfigStateUnknown
+		if state.HostID != 0 {
+			status = state.Status
+		}
+		if status == want {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+// pageRows 对已过滤的行做内存分页（筛选路径下 SQL 无法按状态分页）。
+func pageRows(rows []db.ListMonitorHostsRow, page, size int) []db.ListMonitorHostsRow {
+	start := (page - 1) * size
+	if start >= len(rows) {
+		return []db.ListMonitorHostsRow{}
+	}
+	end := start + size
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[start:end]
+}
+
+// errorString 取错误文案（nil 时为空串），用于把"为何算不出配置态"带给前端。
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (handler *Handler) GetTarget(context *gin.Context) {
@@ -170,20 +229,55 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		filter.FilebeatFilter = filebeatManaged
 	}
 	queries := db.New(handler.db)
+
+	// 配置态筛选：状态是后端实时渲染算出来的，SQL 没法按它过滤。启用筛选时先把**全部**
+	// 匹配主机取回（不按页取），批量评估后过滤，再在内存里分页——见计划 §2.4 的算力约束：
+	// 筛选/统计场景允许一次全量渲染，展示场景只算当前页。
+	stateFilter := strings.TrimSpace(context.Query("config_state"))
+	if stateFilter != "" && !validConfigStateFilter(stateFilter) {
+		response.BusinessError(context, 400, "config_state must be synced|drift|never|unknown", nil)
+		return
+	}
+
 	count, err := queries.CountMonitorHosts(context, filter)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	rows, err := queries.ListMonitorHosts(context, db.ListMonitorHostsParams{
-		SearchPattern: filter.SearchPattern, GroupIds: filter.GroupIds, GroupFilter: filter.GroupFilter,
-		ManagedFilter: filter.ManagedFilter, ExporterType: filter.ExporterType, FilebeatFilter: filter.FilebeatFilter,
-		Limit: int32(size), Offset: int32((page - 1) * size),
-	})
-	if err != nil {
-		response.Error(context, err)
-		return
+	listLimit, listOffset := int32(size), int32((page-1)*size)
+	if stateFilter != "" {
+		listLimit, listOffset = int32(count), 0
 	}
+	rows := []db.ListMonitorHostsRow{}
+	if listLimit > 0 {
+		rows, err = queries.ListMonitorHosts(context, db.ListMonitorHostsParams{
+			SearchPattern: filter.SearchPattern, GroupIds: filter.GroupIds, GroupFilter: filter.GroupFilter,
+			ManagedFilter: filter.ManagedFilter, ExporterType: filter.ExporterType, FilebeatFilter: filter.FilebeatFilter,
+			Limit: listLimit, Offset: listOffset,
+		})
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+	}
+
+	// 一次评估覆盖本次取回的全部主机（本页或全量），不逐台查库/渲染。
+	stateRefs := make([]logcollect.LogConfigTargetRef, 0, len(rows))
+	for _, row := range rows {
+		if row.LogTargetID.Valid {
+			stateRefs = append(stateRefs, logcollect.LogConfigTargetRef{
+				HostID: row.ID, AppliedFingerprint: row.ConfigFingerprint.String,
+			})
+		}
+	}
+	configStates, configStateErr := handler.evaluateConfigStates(context, stateRefs)
+
+	if stateFilter != "" {
+		rows = filterRowsByConfigState(rows, configStates, stateFilter)
+		count = int64(len(rows))
+		rows = pageRows(rows, page, size)
+	}
+
 	results := make([]gin.H, 0, len(rows))
 	for _, row := range rows {
 		hostID := row.ID
@@ -216,6 +310,20 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 			appliedValue = lastApplied.Time
 		}
 		filebeat := gin.H{"id": logIDValue, "host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "host_agent_online": online, "managed": logTargetID.Valid, "agent_installed": agentInstalled.Valid && agentInstalled.Bool, "agent_version": agentVersion.String, "runtime_status": runtimeStatus.String, "install_status": installStatus.String, "config_fingerprint": fingerprint.String, "last_applied_time": appliedValue, "last_error": lastError.String}
+		// 配置态只对已纳管的目标有意义：未纳管主机没有日志目标，"从未下发"会误导。
+		if logTargetID.Valid {
+			state := configStates[hostID]
+			status := logConfigStateUnknown
+			if state.HostID != 0 {
+				status = state.Status
+			}
+			filebeat["config_state"] = status
+			filebeat["expected_fingerprint"] = state.ExpectedFingerprint
+			filebeat["config_service_num"] = state.ServiceNum
+			if len(state.Warnings) > 0 {
+				filebeat["config_warnings"] = state.Warnings
+			}
+		}
 		item := gin.H{"host_id": hostID, "host_name": hostName.String, "host_ip": hostIP.String, "group_id": groupValue, "group_name": groupName, "host_agent_online": online, "managed": len(typedExporters) > 0, "exporters": typedExporters, "filebeat": filebeat}
 		if filter.ExporterType != "" && len(typedExporters) > 0 {
 			first := typedExporters[0]
@@ -229,7 +337,17 @@ func (handler *Handler) HostOverview(context *gin.Context) {
 		}
 		results = append(results, item)
 	}
-	paginated(context, results, count, page, size)
+	// 评估失败不能让主机列表整体失败（该列表同时服务 exporter 纳管）：状态显示"未知"并回传原因。
+	paginatedWith(context, results, count, page, size, gin.H{"config_state_error": errorString(configStateErr)})
+}
+
+// evaluateConfigStates 调用日志采集域注入的配置态评估。未注入（如未接线的测试）或没有入参时
+// 返回空结果且不报错，调用方把状态渲染成"未知"。
+func (handler *Handler) evaluateConfigStates(context *gin.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error) {
+	if handler.evaluateLogConfigStates == nil || len(refs) == 0 {
+		return map[int64]logcollect.LogConfigState{}, nil
+	}
+	return handler.evaluateLogConfigStates(context, refs)
 }
 
 func (handler *Handler) descendantGroupIDs(context *gin.Context, root string) ([]int64, error) {

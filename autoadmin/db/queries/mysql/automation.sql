@@ -220,6 +220,33 @@ SET status = sqlc.arg(status), end_time = sqlc.arg(end_time), duration_seconds =
     result_summary = sqlc.arg(result_summary), update_time = sqlc.arg(update_time)
 WHERE id = sqlc.arg(id) AND status <> 'cancelled';
 
+-- 作业实时输出块（运行期间才存在，结束时由执行方删除）：
+-- name: InsertAutomationJobLogChunk :exec
+INSERT INTO automation_execution_job_log (remark, create_time, update_time, job_id, content)
+VALUES (NULL, sqlc.arg(create_time), sqlc.arg(update_time), sqlc.arg(job_id), sqlc.arg(content));
+
+-- name: ListAutomationJobLogChunks :many
+SELECT content FROM automation_execution_job_log WHERE job_id = sqlc.arg(job_id) ORDER BY id;
+
+-- name: DeleteAutomationJobLogChunks :exec
+DELETE FROM automation_execution_job_log WHERE job_id = sqlc.arg(job_id);
+
+-- 对账用：仍在 running 的作业（含各自超时与开始时间），由对账循环判断是否已失联。
+-- 超时在任务表上、作业行只存 task_id，口径与 GetJobTyped 一致（无任务时回落 600s）。
+-- name: ListRunningAutomationJobs :many
+SELECT j.id, j.start_time, COALESCE(t.execution_timeout_seconds, 600) AS execution_timeout_seconds
+FROM automation_execution_job j
+LEFT JOIN automation_task t ON t.id = j.task_id
+WHERE j.status = 'running' AND j.start_time IS NOT NULL;
+
+-- 失联作业置失败。带 status='running' 守卫：正常收尾（finishJob）可能同时在写，
+-- 没有守卫会把刚成功的作业改写成失败。
+-- name: FailStaleAutomationJob :execrows
+UPDATE automation_execution_job
+SET status = 'failed', end_time = sqlc.arg(end_time), duration_seconds = sqlc.arg(duration_seconds),
+    result_summary = sqlc.arg(result_summary), update_time = sqlc.arg(update_time)
+WHERE id = sqlc.arg(id) AND status = 'running';
+
 -- name: ListAutomationJobHostLogs :many
 SELECT host_id_snapshot, host_ip_snapshot, status, agent_job_id, stdout, stderr, error_message
 FROM automation_execution_host_log WHERE job_id = sqlc.arg(job_id) ORDER BY id;

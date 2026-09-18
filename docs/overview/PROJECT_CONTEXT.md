@@ -23,14 +23,15 @@
 |---|---|---|
 | api/router | 全部路由注册 | — |
 | assets | 主机、凭证、服务树（项目/业务系统/环境/逻辑服务）、应用目录与部署 | ASSET_CATALOG.md |
-| automation | Playbook / Inventory / 任务 / 作业执行 | AUTOMATION_INVENTORY.md |
+| automation | Playbook / Inventory / 任务 / 作业执行 | AUTOMATION_INVENTORY.md、[AUTOMATION_JOB_EXECUTION.md](AUTOMATION_JOB_EXECUTION.md)（作业执行/超时/失联对账/日志边界） |
 | inspection | 巡检组（分类、挂载点模型）/ 巡检任务 / 执行快照 | INSPECTION_ARCHITECTURE.md |
-| monitor | 监控目标、Prometheus 集成与代理、告警（规则/路由/媒介）、日志采集（存储/解析/保留/过滤） | LOG_COLLECTION_ARCHITECTURE.md、MONITOR_PROMETHEUS_PROXY.md、ALERT_HISTORY_ARCHITECTURE.md、ALERT_NOTIFICATION_DISPATCH.md、ALERT_NOTIFICATION_CHAIN.md、ops/ALERT_MEDIA_SETUP_GUIDE.md |
+| monitor | 监控目标、Prometheus 集成与代理、告警（规则/路由/媒介）、主机列表 | MONITOR_PROMETHEUS_PROXY.md、ALERT_HISTORY_ARCHITECTURE.md、ALERT_NOTIFICATION_DISPATCH.md、ALERT_NOTIFICATION_CHAIN.md、ops/ALERT_MEDIA_SETUP_GUIDE.md |
 | baseline | 基线（组/分类/检查项）与扫描 | BASELINE_ARCHITECTURE.md |
 | scheduler | 进程内定时调度 | ops 说明以 INSPECTION_ARCHITECTURE.md 调度章节为准 |
 | rbac / identity / audit | 菜单角色权限、用户、操作审计 | SYSTEM_MANAGEMENT_AUDIT.md |
 | k8s | Kubernetes 集成 | K8S_INTEGRATION_ARCHITECTURE.md |
-| shared | binding / opapolicy / pagination 等公共件 | — |
+| logcollect | 日志采集（Filebeat 纳管/渲染/下发/体检/清理）与日志存储（ES 集群/索引模板/ILM/pipeline/检索） | LOG_COLLECTION_ARCHITECTURE.md |
+| shared | binding / opapolicy / pagination / logstream / filebeat 等公共件 | — |
 
 ## 前端结构（fronted/src）
 

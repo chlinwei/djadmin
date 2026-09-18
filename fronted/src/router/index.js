@@ -141,6 +141,13 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/log-storage-overview/index.vue'),
             },
             {
+                // 日志采集（Filebeat 纳管目标）：从「智能监控 → 纳管目标」拆出，见
+                // docs/architecture/MENU_STRUCTURE.md。exporter 目标留在智能监控页。
+                path: '/monitor/logging/collectors',
+                name: '日志采集',
+                component: () => import('../views/monitor/log-collectors/index.vue'),
+            },
+            {
                 path: '/monitor/logging/storage',
                 name: '日志存储',
                 component: () => import('../views/monitor/log-storage/index.vue'),

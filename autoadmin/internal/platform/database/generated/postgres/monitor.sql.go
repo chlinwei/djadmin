@@ -777,7 +777,7 @@ type CreateElasticsearchClusterParams struct {
 	VerifyTls      bool      `json:"verify_tls"`
 	CaCert         string    `json:"ca_cert"`
 	IndexPrefix    string    `json:"index_prefix"`
-	RequestTimeout int32     `json:"request_timeout"`
+	RequestTimeout uint32    `json:"request_timeout"`
 	Enabled        bool      `json:"enabled"`
 	IsDefault      bool      `json:"is_default"`
 	Remark         string    `json:"remark"`
@@ -1727,7 +1727,7 @@ type GetDefaultEnabledElasticsearchClusterConnectionRow struct {
 	VerifyTls      bool   `json:"verify_tls"`
 	CaCert         string `json:"ca_cert"`
 	IndexPrefix    string `json:"index_prefix"`
-	RequestTimeout int32  `json:"request_timeout"`
+	RequestTimeout uint32 `json:"request_timeout"`
 	Enabled        bool   `json:"enabled"`
 }
 
@@ -1762,7 +1762,7 @@ type GetElasticsearchClusterConnectionRow struct {
 	VerifyTls      bool   `json:"verify_tls"`
 	CaCert         string `json:"ca_cert"`
 	IndexPrefix    string `json:"index_prefix"`
-	RequestTimeout int32  `json:"request_timeout"`
+	RequestTimeout uint32 `json:"request_timeout"`
 	Enabled        bool   `json:"enabled"`
 }
 
@@ -2055,37 +2055,6 @@ func (q *Queries) GetLogTargetConfigFingerprint(ctx context.Context, id int64) (
 	var config_fingerprint string
 	err := row.Scan(&config_fingerprint)
 	return config_fingerprint, err
-}
-
-const getLogTargetDefaultCluster = `-- name: GetLogTargetDefaultCluster :one
-SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password, c.verify_tls
-FROM monitor_log_collection_target l
-JOIN assets_host h ON h.id = l.host_id
-JOIN monitor_elasticsearch_cluster c ON c.enabled = TRUE
-WHERE l.id = $1
-ORDER BY c.is_default DESC, c.id LIMIT 1
-`
-
-type GetLogTargetDefaultClusterRow struct {
-	InstanceName string `json:"instance_name"`
-	Hosts        string `json:"hosts"`
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-	VerifyTls    bool   `json:"verify_tls"`
-}
-
-// 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
-func (q *Queries) GetLogTargetDefaultCluster(ctx context.Context, id int64) (GetLogTargetDefaultClusterRow, error) {
-	row := q.db.QueryRowContext(ctx, getLogTargetDefaultCluster, id)
-	var i GetLogTargetDefaultClusterRow
-	err := row.Scan(
-		&i.InstanceName,
-		&i.Hosts,
-		&i.Username,
-		&i.Password,
-		&i.VerifyTls,
-	)
-	return i, err
 }
 
 const getLogTargetForAction = `-- name: GetLogTargetForAction :one
@@ -3484,6 +3453,152 @@ func (q *Queries) ListHostAlertScopeNodes(ctx context.Context, hostID int64) ([]
 	return items, nil
 }
 
+const listHostLogRenderEntries = `-- name: ListHostLogRenderEntries :many
+SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
+    bs.code AS business_system_code, s.code AS service_code,
+    COALESCE(app.code, '') AS application_code,
+    COALESCE(tier.code, '') AS tier_code,
+    COALESCE(rule_setting.name, rule_definition.name, '') AS pipeline_name,
+    ld.name AS log_name, ld.path_pattern,
+    COALESCE(s.macro_values, '{}') AS macro_values,
+    COALESCE(t.macro_definitions, '[]') AS macro_definitions,
+    COALESCE(rule_setting.multiline_enabled, rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
+    COALESCE(rule_setting.start_pattern, rule_definition.start_pattern, '') AS start_pattern,
+    COALESCE(rule_setting.flush_timeout, rule_definition.flush_timeout, 2000) AS flush_timeout
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+JOIN assets_application app ON app.id = s.application_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
+    AND ld.collection_enabled = TRUE
+JOIN assets_application_service_deployment sd ON sd.service_id = s.id AND sd.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = sd.deployment_id AND d.enabled = TRUE
+LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
+LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
+LEFT JOIN monitor_log_processing_rule rule_setting ON rule_setting.id = ls.processing_rule_id
+LEFT JOIN monitor_log_processing_rule rule_definition ON rule_definition.id = ld.processing_rule_id
+WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND COALESCE(ls.collection_enabled, ld.collection_enabled) = TRUE
+  AND d.host_id = ANY($1::bigint[])
+`
+
+type ListHostLogRenderEntriesRow struct {
+	HostID             int64           `json:"host_id"`
+	ProjectCode        string          `json:"project_code"`
+	EnvironmentCode    string          `json:"environment_code"`
+	BusinessSystemCode string          `json:"business_system_code"`
+	ServiceCode        string          `json:"service_code"`
+	ApplicationCode    string          `json:"application_code"`
+	TierCode           string          `json:"tier_code"`
+	PipelineName       string          `json:"pipeline_name"`
+	LogName            string          `json:"log_name"`
+	PathPattern        string          `json:"path_pattern"`
+	MacroValues        json.RawMessage `json:"macro_values"`
+	MacroDefinitions   json.RawMessage `json:"macro_definitions"`
+	MultilineEnabled   bool            `json:"multiline_enabled"`
+	StartPattern       string          `json:"start_pattern"`
+	FlushTimeout       uint32          `json:"flush_timeout"`
+}
+
+// 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
+// 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
+// 因此把子查询改成对 deployment 的 JOIN 并 SELECT d.host_id；DISTINCT 保证同一主机上
+// 一个服务部署多实例时只出一行（与逐主机查询的行为一致）。
+func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64) ([]ListHostLogRenderEntriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostLogRenderEntries, pq.Array(hostIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostLogRenderEntriesRow{}
+	for rows.Next() {
+		var i ListHostLogRenderEntriesRow
+		if err := rows.Scan(
+			&i.HostID,
+			&i.ProjectCode,
+			&i.EnvironmentCode,
+			&i.BusinessSystemCode,
+			&i.ServiceCode,
+			&i.ApplicationCode,
+			&i.TierCode,
+			&i.PipelineName,
+			&i.LogName,
+			&i.PathPattern,
+			&i.MacroValues,
+			&i.MacroDefinitions,
+			&i.MultilineEnabled,
+			&i.StartPattern,
+			&i.FlushTimeout,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHostLogRenderInstances = `-- name: ListHostLogRenderInstances :many
+SELECT d.host_id, s.code AS service_code, d.instance_name,
+       COALESCE(d.runtime_variables, '{}') AS runtime_variables,
+       COALESCE(t.app_home, '') AS app_home, COALESCE(h.ip, '') AS host_ip
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_host h ON h.id = d.host_id
+WHERE d.host_id = ANY($1::bigint[])
+  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE
+`
+
+type ListHostLogRenderInstancesRow struct {
+	HostID           int64           `json:"host_id"`
+	ServiceCode      string          `json:"service_code"`
+	InstanceName     string          `json:"instance_name"`
+	RuntimeVariables json.RawMessage `json:"runtime_variables"`
+	AppHome          string          `json:"app_home"`
+	HostIp           string          `json:"host_ip"`
+}
+
+// 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
+// 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
+func (q *Queries) ListHostLogRenderInstances(ctx context.Context, hostIds []int64) ([]ListHostLogRenderInstancesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHostLogRenderInstances, pq.Array(hostIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHostLogRenderInstancesRow{}
+	for rows.Next() {
+		var i ListHostLogRenderInstancesRow
+		if err := rows.Scan(
+			&i.HostID,
+			&i.ServiceCode,
+			&i.InstanceName,
+			&i.RuntimeVariables,
+			&i.AppHome,
+			&i.HostIp,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInstallHistories = `-- name: ListInstallHistories :many
 SELECT ih.id, ih.create_time, ih.update_time, ih.remark, ih.action, ih.trigger_type, ih.status,
        ih.host_id_snapshot, ih.host_name_snapshot, ih.host_ip_snapshot, ih.exporter_type_snapshot,
@@ -3960,13 +4075,14 @@ func (q *Queries) ListLogRetentionTiers(ctx context.Context, arg ListLogRetentio
 }
 
 const listManagedLogTargetConfigs = `-- name: ListManagedLogTargetConfigs :many
-SELECT l.id, COALESCE(h.ip, ''), l.agent_installed, COALESCE(l.config_fingerprint, '')
+SELECT l.id, l.host_id, COALESCE(h.ip, ''), l.agent_installed, COALESCE(l.config_fingerprint, '')
 FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
 WHERE l.managed_enabled = TRUE ORDER BY l.id
 `
 
 type ListManagedLogTargetConfigsRow struct {
 	ID                int64  `json:"id"`
+	HostID            int64  `json:"host_id"`
 	Ip                string `json:"ip"`
 	AgentInstalled    bool   `json:"agent_installed"`
 	ConfigFingerprint string `json:"config_fingerprint"`
@@ -3983,6 +4099,7 @@ func (q *Queries) ListManagedLogTargetConfigs(ctx context.Context) ([]ListManage
 		var i ListManagedLogTargetConfigsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.HostID,
 			&i.Ip,
 			&i.AgentInstalled,
 			&i.ConfigFingerprint,
@@ -4978,24 +5095,6 @@ func (q *Queries) MarkElasticsearchClusterCheckSuccess(ctx context.Context, arg 
 	return err
 }
 
-const markLogTargetApplied = `-- name: MarkLogTargetApplied :exec
-UPDATE monitor_log_collection_target
-SET last_applied_time=$1, runtime_status='running', last_error='',
-    update_time=$2
-WHERE id = $3
-`
-
-type MarkLogTargetAppliedParams struct {
-	LastAppliedTime sql.NullTime `json:"last_applied_time"`
-	UpdateTime      time.Time    `json:"update_time"`
-	ID              int64        `json:"id"`
-}
-
-func (q *Queries) MarkLogTargetApplied(ctx context.Context, arg MarkLogTargetAppliedParams) error {
-	_, err := q.db.ExecContext(ctx, markLogTargetApplied, arg.LastAppliedTime, arg.UpdateTime, arg.ID)
-	return err
-}
-
 const markLogTargetConfigApplied = `-- name: MarkLogTargetConfigApplied :exec
 UPDATE monitor_log_collection_target
 SET last_applied_time=$1, update_time=$2
@@ -5356,7 +5455,7 @@ type UpdateElasticsearchClusterParams struct {
 	VerifyTls      bool      `json:"verify_tls"`
 	CaCert         string    `json:"ca_cert"`
 	IndexPrefix    string    `json:"index_prefix"`
-	RequestTimeout int32     `json:"request_timeout"`
+	RequestTimeout uint32    `json:"request_timeout"`
 	Enabled        bool      `json:"enabled"`
 	IsDefault      bool      `json:"is_default"`
 	Remark         string    `json:"remark"`

@@ -56,9 +56,9 @@
           />
         </a-tab-pane>
 
-        <a-tab-pane key="managed-targets" tab="纳管目标">
+        <a-tab-pane key="managed-targets" tab="Exporter 目标">
           <div class="managed-target-toolbar">
-            <span class="managed-target-toolbar__title">主机纳管总览</span>
+            <span class="managed-target-toolbar__title">Exporter 纳管总览</span>
             <a-tooltip title="刷新">
               <a-button size="large" :loading="overviewLoading" @click="reloadOverviewHosts">
                 <FontAwesomeIcon :icon="['fas', 'rotate']" />
@@ -67,13 +67,48 @@
             </a-tooltip>
           </div>
 
-          <div class="filebeat-batch-bar">
-            <div class="filebeat-batch-bar__head">
-              <span class="filebeat-batch-bar__count">已选 {{ overviewSelectedHostIds.length }} 台主机</span>
-              <a-segmented v-model:value="batchTargetKind" size="small" :options="batchTargetKindOptions" />
-            </div>
+          <!-- 主机表外壳（主机树/筛选条/分页/行选择）与日志采集页共用，见 components/HostTargetPanel.vue；
+               状态与加载逻辑在 @/util/hostTargetTable.js。Filebeat 已拆到「日志管理 → 日志采集」。 -->
+          <HostTargetPanel
+            v-model:keyword="overviewKeyword"
+            v-model:group-keyword="overviewGroupKeyword"
+            v-model:group-expanded-keys="overviewGroupExpandedKeys"
+            :rows="overviewHosts"
+            :columns="overviewColumns"
+            :loading="overviewLoading"
+            :scroll-x="overviewScrollX"
+            :pagination="overviewPagination"
+            :row-selection="overviewRowSelection"
+            :selected-count="overviewSelectedHostIds.length"
+            :group-tree-data="overviewGroupTreeData"
+            :selected-group-keys="overviewSelectedGroupKeys"
+            @reload="reloadOverviewHosts"
+            @group-select="handleOverviewGroupSelect"
+            @table-change="handleOverviewTableChange"
+          >
+            <template #filters>
+                <a-select
+                  v-model:value="exporterFilterType"
+                  size="small"
+                  style="width: 170px"
+                  placeholder="全部 Exporter"
+                  allow-clear
+                  :options="exporterFilterOptions"
+                  :getPopupContainer="getPopupContainer"
+                  @change="reloadOverviewHosts"
+                />
+                <a-radio-group
+                  v-model:value="overviewManagedFilter"
+                  size="small"
+                  @change="reloadOverviewHosts"
+                >
+                  <a-radio-button value="">全部 Exporter</a-radio-button>
+                  <a-radio-button value="true">已纳管</a-radio-button>
+                  <a-radio-button value="false">未纳管</a-radio-button>
+                </a-radio-group>
+            </template>
 
-            <div v-if="batchTargetKind === 'exporter'" class="batch-action-group">
+            <template #batch-actions>
               <a-space :size="8" wrap>
                 <a-tooltip title="为选中主机批量纳管并安装 Exporter" placement="top">
                   <a-button
@@ -136,168 +171,9 @@
                   </a-button>
                 </a-tooltip>
               </a-space>
-            </div>
+            </template>
 
-            <div v-else class="batch-action-group">
-              <a-space :size="8" wrap>
-                <a-tooltip title="为选中的未纳管主机批量安装 Filebeat" placement="top">
-                  <a-button
-                    type="primary"
-                    size="small"
-                    :disabled="!filebeatSelectedUnmanaged.length"
-                    :loading="filebeatBatchLoading === 'create'"
-                    @click="handleFilebeatBatchCreate"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                    &nbsp;装（{{ filebeatSelectedUnmanaged.length }}）
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="批量重新安装 Filebeat" placement="top">
-                  <a-button
-                    type="primary"
-                    ghost
-                    size="small"
-                    :disabled="!filebeatSelectedManagedIds.length"
-                    :loading="filebeatBatchLoading === 'retry'"
-                    @click="handleFilebeatBatch('retry')"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                    &nbsp;重新安装（{{ filebeatSelectedManagedIds.length }}）
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="批量启动 Filebeat" placement="top">
-                  <a-button
-                    type="primary"
-                    ghost
-                    size="small"
-                    :disabled="!filebeatSelectedManagedIds.length"
-                    :loading="filebeatBatchLoading === 'start'"
-                    @click="handleFilebeatBatch('start')"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'play']" />
-                    &nbsp;启动
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="批量停止 Filebeat" placement="top">
-                  <a-button
-                    danger
-                    ghost
-                    size="small"
-                    :disabled="!filebeatSelectedManagedIds.length"
-                    :loading="filebeatBatchLoading === 'stop'"
-                    @click="handleFilebeatBatch('stop')"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'stop']" />
-                    &nbsp;停止
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="批量下发 Filebeat 配置" placement="top">
-                  <a-button
-                    type="primary"
-                    ghost
-                    size="small"
-                    :disabled="!filebeatSelectedManagedIds.length"
-                    :loading="filebeatBatchLoading === 'apply'"
-                    @click="handleFilebeatBatch('apply')"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-                    &nbsp;下发配置
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="批量删除 Filebeat 目标" placement="top">
-                  <a-button
-                    class="delBtn"
-                    danger
-                    type="primary"
-                    size="small"
-                    :disabled="!filebeatSelectedManagedIds.length"
-                    :loading="filebeatBatchLoading === 'delete'"
-                    @click="openFilebeatBatchDeleteConfirm"
-                  >
-                    <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                    &nbsp;删除
-                  </a-button>
-                </a-tooltip>
-              </a-space>
-            </div>
-          </div>
-
-          <div class="filebeat-layout">
-            <div class="filebeat-tree">
-              <a-input
-                v-model:value="overviewGroupKeyword"
-                allow-clear
-                size="small"
-                placeholder="搜索分组"
-                class="filebeat-tree__search"
-              />
-              <div class="filebeat-tree__body">
-                <a-tree
-                  block-node
-                  :tree-data="overviewGroupTreeData"
-                  :selected-keys="overviewSelectedGroupKeys"
-                  :expanded-keys="overviewGroupExpandedKeys"
-                  :auto-expand-parent="true"
-                  @select="handleOverviewGroupSelect"
-                  @expand="(keys) => (overviewGroupExpandedKeys = keys)"
-                />
-              </div>
-            </div>
-            <div class="filebeat-table">
-              <div class="filebeat-table__filters">
-                <a-input-search
-                  v-model:value="overviewKeyword"
-                  allow-clear
-                  size="small"
-                  placeholder="搜索主机名 / IP"
-                  style="width: 200px"
-                  @search="reloadOverviewHosts"
-                />
-                <a-select
-                  v-if="batchTargetKind === 'exporter'"
-                  v-model:value="exporterFilterType"
-                  size="small"
-                  style="width: 170px"
-                  placeholder="全部 Exporter"
-                  allow-clear
-                  :options="exporterFilterOptions"
-                  :getPopupContainer="getPopupContainer"
-                  @change="reloadOverviewHosts"
-                />
-                <a-radio-group
-                  v-if="batchTargetKind === 'exporter'"
-                  v-model:value="overviewManagedFilter"
-                  size="small"
-                  @change="reloadOverviewHosts"
-                >
-                  <a-radio-button value="">全部 Exporter</a-radio-button>
-                  <a-radio-button value="true">已纳管</a-radio-button>
-                  <a-radio-button value="false">未纳管</a-radio-button>
-                </a-radio-group>
-                <a-radio-group
-                  v-else
-                  v-model:value="filebeatManagedFilter"
-                  size="small"
-                  @change="reloadOverviewHosts"
-                >
-                  <a-radio-button value="">全部 Filebeat</a-radio-button>
-                  <a-radio-button value="true">已安装</a-radio-button>
-                  <a-radio-button value="false">未安装</a-radio-button>
-                </a-radio-group>
-              </div>
-              <a-table
-                rowKey="host_id"
-                :columns="overviewColumns"
-                :data-source="overviewHosts"
-                :loading="overviewLoading"
-                :row-selection="overviewRowSelection"
-                size="small"
-                :scroll="{ x: overviewScrollX }"
-                :locale="tableLocale"
-                :pagination="overviewPagination"
-                @change="handleOverviewTableChange"
-              >
-                <template #bodyCell="{ column, record }">
+            <template #cell="{ column, record }">
                   <template v-if="column.key === 'exporters'">
                     <a-space v-if="record.exporters.length" :size="4" wrap>
                       <a-tooltip
@@ -322,26 +198,7 @@
                     </a-tag>
                     <a-tag v-else color="default">未纳管</a-tag>
                   </template>
-                  <template v-else-if="column.key === 'filebeat_status'">
-                    <a-tooltip v-if="filebeatStatusTooltip(record.filebeat)" :title="filebeatStatusTooltip(record.filebeat)" placement="top">
-                      <a-tag :color="filebeatStatusColor(record.filebeat)">
-                        {{ filebeatStatusText(record.filebeat) }}
-                      </a-tag>
-                    </a-tooltip>
-                    <a-tag v-else :color="filebeatStatusColor(record.filebeat)">
-                      {{ filebeatStatusText(record.filebeat) }}
-                    </a-tag>
-                  </template>
-                  <template v-else-if="column.key === 'last_applied_time'">
-                    {{ record.filebeat.managed ? formatManagedTargetTime(record.filebeat.last_applied_time) : '-' }}
-                  </template>
-                  <template v-else-if="column.key === 'last_error'">
-                    <a-tooltip v-if="record.filebeat.last_error" :title="record.filebeat.last_error" placement="top">
-                      <a-typography-text type="danger" :content="record.filebeat.last_error" ellipsis />
-                    </a-tooltip>
-                    <span v-else>-</span>
-                  </template>
-                  <template v-else-if="column.key === 'action'">
+              <template v-else-if="column.key === 'action'">
                     <a-space :size="6">
                       <a-tooltip
                         v-if="!exporterFilterType || !record.managed"
@@ -480,151 +337,10 @@
                           </div>
                         </template>
                       </a-dropdown>
-
-                      <a-tooltip
-                        v-if="!record.filebeat.managed"
-                        :title="record.host_agent_online ? '纳管并安装 Filebeat' : 'dj-agent 离线，操作不可用'"
-                        placement="top"
-                      >
-                        <a-button
-                          type="primary"
-                          ghost
-                          size="small"
-                          :disabled="!record.host_agent_online"
-                          :loading="filebeatCreateLoading[record.host_id]"
-                          @click="handleFilebeatCreateOne(record.filebeat)"
-                        >
-                          <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                          &nbsp;Filebeat
-                        </a-button>
-                      </a-tooltip>
-                      <a-dropdown v-else trigger="click" :getPopupContainer="getPopupContainer">
-                        <a-button type="primary" ghost size="small" title="Filebeat 操作">
-                          Filebeat&nbsp;<FontAwesomeIcon :icon="['fas', 'angle-down']" />
-                        </a-button>
-                        <template #overlay>
-                          <div class="row-action-menu">
-                            <a-tooltip :title="record.host_agent_online ? '重新安装' : 'dj-agent 离线，操作不可用'" placement="left">
-                              <a-button
-                                block
-                                type="primary"
-                                ghost
-                                size="small"
-                                :disabled="!record.host_agent_online"
-                                :loading="filebeatRetryLoading[record.filebeat.id]"
-                                @click="openFilebeatRetryConfirm(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                                &nbsp;重新安装
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip title="查看日志" placement="left">
-                              <a-button
-                                block
-                                type="primary"
-                                ghost
-                                size="small"
-                                :disabled="filebeatRetryLoading[record.filebeat.id]"
-                                @click="openFilebeatJobLog(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'file-lines']" />
-                                &nbsp;查看日志
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="record.filebeat.agent_installed ? '运行' : 'Filebeat 尚未安装，无法启动'" placement="left">
-                              <a-button
-                                block
-                                type="primary"
-                                ghost
-                                size="small"
-                                :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
-                                :loading="filebeatStartLoading[record.filebeat.id]"
-                                @click="handleStartFilebeatService(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'play']" />
-                                &nbsp;运行
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="record.filebeat.agent_installed ? '停止服务' : 'Filebeat 尚未安装，无法停止'" placement="left">
-                              <a-button
-                                block
-                                danger
-                                ghost
-                                size="small"
-                                :disabled="!record.host_agent_online || !record.filebeat.agent_installed"
-                                :loading="filebeatStopLoading[record.filebeat.id]"
-                                @click="handleStopFilebeatService(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'stop']" />
-                                &nbsp;停止
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="filebeatApplyTooltip(record.filebeat)" placement="left">
-                              <a-button
-                                block
-                                type="primary"
-                                ghost
-                                size="small"
-                                :disabled="!canApplyFilebeatConfig(record.filebeat)"
-                                :loading="filebeatApplyLoading[record.filebeat.id]"
-                                @click="handleApplyFilebeatConfig(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-                                &nbsp;下发配置
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="record.host_agent_online ? '查看状态图' : 'dj-agent 离线，操作不可用'" placement="left">
-                              <a-button
-                                block
-                                type="primary"
-                                ghost
-                                size="small"
-                                :disabled="!record.host_agent_online"
-                                :loading="filebeatStatusLoading[record.filebeat.id]"
-                                @click="handleCheckFilebeatStatus(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'rotate']" />
-                                &nbsp;查看状态图
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="canCancelFilebeatTarget(record.filebeat) ? '取消' : '当前任务已结束，无需取消'" placement="left">
-                              <a-button
-                                block
-                                danger
-                                ghost
-                                size="small"
-                                :disabled="!canCancelFilebeatTarget(record.filebeat)"
-                                :loading="filebeatCancelLoading[record.filebeat.id]"
-                                @click="handleCancelFilebeatTarget(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'ban']" />
-                                &nbsp;取消
-                              </a-button>
-                            </a-tooltip>
-                            <a-tooltip :title="record.filebeat.install_status === 'pending' ? '任务执行中，暂不可删除' : '删除'" placement="left">
-                              <a-button
-                                block
-                                class="delBtn"
-                                danger
-                                type="primary"
-                                size="small"
-                                :disabled="record.filebeat.install_status === 'pending' || (!record.host_agent_online && record.filebeat.agent_installed)"
-                                :loading="filebeatDeleteLoading[record.filebeat.id]"
-                                @click="openFilebeatDeleteConfirm(record.filebeat)"
-                              >
-                                <FontAwesomeIcon :icon="['fas', 'trash-can']" />
-                                &nbsp;删除
-                              </a-button>
-                            </a-tooltip>
-                          </div>
-                        </template>
-                      </a-dropdown>
                     </a-space>
                   </template>
-                </template>
-              </a-table>
-            </div>
-          </div>
+            </template>
+          </HostTargetPanel>
         </a-tab-pane>
 
         <a-tab-pane key="packages" tab="软件仓库">
@@ -1125,19 +841,10 @@ import { createPagination, tableLocale } from '@/util/tableStyle'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
-  applyLogCollectionConfig,
-  batchApplyLogCollectionTargets,
-  batchCreateLogCollectionTargets,
   batchCreateMonitorTargets,
-  batchDeleteLogCollectionTargets,
   batchDeleteMonitorTargets,
-  batchRetryLogCollectionTargets,
-  batchStartLogCollectionTargets,
   batchStartMonitorTargets,
-  batchStopLogCollectionTargets,
   batchStopMonitorTargets,
-  cancelLogCollectionTarget,
-  checkLogCollectionStatus,
   checkManagedTargetServiceStatus,
   batchDeleteSoftwarePackages,
   createSoftwarePackage,
@@ -1145,25 +852,22 @@ import {
   getMonitorInstallHistoryList,
   getMonitorSummary,
   getMonitorExporterOptions,
-  getMonitorHostGroupTree,
-  getMonitorHostOverview,
   getPrometheusConfig,
   getPrometheusOverview,
   getPrometheusTsdbStatus,
   getPrometheusTargets,
   getSoftwarePackages,
   retryManagedTarget,
-  retryLogCollectionTarget,
   cancelManagedTarget,
   startManagedTargetService,
-  startLogCollectionService,
-  stopLogCollectionService,
   stopManagedTargetService,
   syncSoftwarePackageFromOfficial,
   updateSoftwarePackage,
   uploadSoftwarePackageFile,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { useHostTargetTable } from '@/util/hostTargetTable'
+import HostTargetPanel from './components/HostTargetPanel.vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
@@ -1202,33 +906,47 @@ const promFlagsLoadError = ref('')
 const promFlagsKeyword = ref('')
 
 const promTargets = ref([])
-const filebeatStatusLoading = reactive({})
-const filebeatApplyLoading = reactive({})
-const filebeatRetryLoading = reactive({})
-const filebeatStartLoading = reactive({})
-const filebeatStopLoading = reactive({})
-const filebeatCancelLoading = reactive({})
-const filebeatDeleteLoading = reactive({})
-const filebeatBatchLoading = ref('')
+// 配置状态筛选（服务端按 config_state 过滤）与"本页为何算不出配置状态"的原因。
+// 状态由后端实时渲染期望配置算出，所以筛选走服务端；无法计算时（典型是没有启用的默认
+// Elasticsearch 集群）不谎报状态，而是显示"未知"并在这里给出原因。
 const exporterBatchLoading = ref('')
-// 批量操作区一次只展示一组按钮，用户先选"针对谁"，避免 Exporter/Filebeat 十几个按钮同屏堆叠。
-const batchTargetKind = ref('exporter')
-const batchTargetKindOptions = [
-  { label: 'Exporter', value: 'exporter' },
-  { label: 'Filebeat', value: 'filebeat' },
-]
-const filebeatCreateLoading = reactive({})
-const overviewHosts = ref([])
-const overviewLoading = ref(false)
-const overviewSelectedHostIds = ref([])
-const overviewGroupTree = ref([])
-const overviewGroupTotals = reactive({ total: 0, managed: 0 })
-const overviewGroupKeyword = ref('')
-const overviewGroupExpandedKeys = ref([])
-const overviewSelectedGroupKeys = ref(['all'])
-const overviewKeyword = ref('')
 const overviewManagedFilter = ref('')
-const filebeatManagedFilter = ref('')
+// 「纳管目标」主机表的共享机械（主机树/搜索/筛选/分页/行选择 + 列表后刷新真实运行态）。
+// 日志采集页（views/monitor/log-collectors/index.vue）用同一套，见 @/util/hostTargetTable。
+// 这里把返回值别名回本文件既有的变量名，页面其余逻辑不受影响。
+const {
+  hosts: overviewHosts,
+  loading: overviewLoading,
+  selectedHostIds: overviewSelectedHostIds,
+  groupKeyword: overviewGroupKeyword,
+  groupExpandedKeys: overviewGroupExpandedKeys,
+  selectedGroupKeys: overviewSelectedGroupKeys,
+  keyword: overviewKeyword,
+  pagination: overviewPagination,
+  groupTreeData: overviewGroupTreeData,
+  selectedRows: overviewSelectedRows,
+  rowSelection: overviewRowSelection,
+  load: loadOverviewHosts,
+  reload: reloadOverviewHosts,
+  loadGroupTree: loadOverviewGroupTree,
+  handleTableChange: handleOverviewTableChange,
+  handleGroupSelect: handleOverviewGroupSelect,
+} = useHostTargetTable({
+  extraQuery: () => ({
+    exporter_type: exporterFilterType.value || undefined,
+    exporter_managed: overviewManagedFilter.value || undefined,
+  }),
+  // "Exporter 状态"列与 exporters 摘要 chip 都要展示真实 systemctl 运行状态：列表加载后为当前页
+  // 已纳管的 exporter 逐台查一次（离线主机跳过，否则每次刷新弹一屏错误 toast）。
+  refreshRowStatuses: async (hosts) => {
+    const targetIds = hosts
+      .filter((item) => item.host_agent_online)
+      .flatMap((item) => (Array.isArray(item.exporters) ? item.exporters.map((exporter) => exporter.id) : []))
+      .filter(Boolean)
+    await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
+  },
+})
+
 const exporterFilterType = ref(undefined)
 const exporterOptionList = ref([])
 const exporterCreateModalVisible = ref(false)
@@ -1237,7 +955,6 @@ const exporterCreateHostIds = ref([])
 const exporterCreateForm = reactive({ exporter_type: undefined, scrape_port: 9100 })
 const promTargetPagination = reactive(createPagination(0, 10))
 const promFlagsPagination = reactive(createPagination(0, 20))
-const overviewPagination = reactive(createPagination())
 const managedRetryLoading = reactive({})
 const managedCancelLoading = reactive({})
 const managedServiceStatusLoading = reactive({})
@@ -1247,10 +964,8 @@ const managedDeleteLoading = reactive({})
 // 按 record.id 缓存每行最近一次查询到的服务运行状态，让“服务状态”列常驻展示，
 // 不需要每次都重新打开弹窗；弹窗仍用于查看完整 systemctl 输出。
 const serviceStatusMap = reactive({})
-// Filebeat 真实运行状态缓存：key = log_collection_target.id。
 // 列表里的 runtime_status 是上次安装/启停/查状态时落库的快照，服务在平台外被停掉
 // 不会变，所以展示时优先用这份"点过查状态/自动刷新时真实 systemctl status"的结果。
-const filebeatRealStatusMap = reactive({})
 const serviceStatusModalVisible = ref(false)
 const serviceStatusModalRecord = ref(null)
 const serviceStatusModalResult = ref(null)
@@ -1290,18 +1005,12 @@ const OVERVIEW_EXPORTER_DETAIL_COLUMNS = [
   { title: 'Exporter 状态', key: 'exporter_status', width: 120 },
 ]
 
-const OVERVIEW_FLUENT_BIT_COLUMNS = [
-  { title: 'Filebeat 状态', key: 'filebeat_status', width: 150 },
-  { title: 'Filebeat 下发', key: 'last_applied_time', width: 170 },
-  { title: 'Filebeat 错误', key: 'last_error', width: 200 },
-]
 
 const OVERVIEW_ACTION_COLUMN = { title: '操作', key: 'action', width: 250, fixed: 'right' }
 
 const overviewColumns = computed(() => [
   ...OVERVIEW_BASE_COLUMNS,
   ...(exporterFilterType.value ? OVERVIEW_EXPORTER_DETAIL_COLUMNS : [OVERVIEW_EXPORTER_SUMMARY_COLUMN]),
-  ...OVERVIEW_FLUENT_BIT_COLUMNS,
   OVERVIEW_ACTION_COLUMN,
 ])
 // 列随筛选模式变化，横向滚动宽度跟着算，避免固定值与列对不上导致列挤压。
@@ -2016,105 +1725,24 @@ async function copyPromConfig() {
 }
 
 
-function collectGroupKeys(nodes) {
-  const keys = []
-  const walk = (items) => {
-    ;(Array.isArray(items) ? items : []).forEach((node) => {
-      keys.push(node.key)
-      walk(node.children)
-    })
-  }
-  walk(nodes)
-  return keys
-}
 
-function buildMonitorGroupTreeData(groups, keyword, totals) {
-  const kw = String(keyword || '').trim().toLowerCase()
-  const build = (nodes) => (Array.isArray(nodes) ? nodes : []).reduce((rows, node) => {
-    const children = build(node.children)
-    const matched = !kw || String(node.name || '').toLowerCase().includes(kw)
-    if (matched || children.length) {
-      rows.push({
-        key: `group-${node.id}`,
-        title: `${node.name}（${node.managed_count}/${node.host_count}）`,
-        children,
-      })
-    }
-    return rows
-  }, [])
-  return [{
-    key: 'all',
-    title: `全部主机（${totals.managed}/${totals.total}）`,
-    children: build(groups),
-  }]
-}
 
-const overviewGroupTreeData = computed(
-  () => buildMonitorGroupTreeData(overviewGroupTree.value, overviewGroupKeyword.value, overviewGroupTotals),
-)
 
-function handleOverviewGroupSelect(keys) {
-  // 点已选中的节点时 antd 会回传空数组，这里保持原选中，避免过滤条件被意外清空。
-  overviewSelectedGroupKeys.value = keys.length ? keys : overviewSelectedGroupKeys.value
-  reloadOverviewHosts()
-}
 
-function filebeatRealStatusInfo(record) {
-  const cached = filebeatRealStatusMap[record?.id]
-  if (!cached) return null
-  const exitCode = Number(cached.exitCode)
-  if (exitCode === 0) {
-    return { status: 'running', text: '运行中', color: 'success', tooltip: 'Filebeat 正常运行' }
-  }
-  if (exitCode === 3) {
-    return { status: 'stopped', text: '已停止', color: 'warning', tooltip: 'Filebeat 服务已停止' }
-  }
-  return { status: 'error', text: '异常', color: 'error', tooltip: 'Filebeat 运行异常' }
-}
 
-function filebeatStatusColor(record) {
-  const real = filebeatRealStatusInfo(record)
-  if (real) return real.color
-  if (!record || !record.managed) return 'default'
-  if (record.install_status === 'pending') return 'processing'
-  if (record.install_status === 'failed') return 'error'
-  if (record.agent_installed) {
-    if (record.runtime_status === 'running') return 'success'
-    if (record.runtime_status === 'stopped') return 'warning'
-    if (record.runtime_status === 'error') return 'error'
-    return 'success'
-  }
-  return 'default'
-}
+// ---- 配置状态（期望配置 vs 已下发配置，由后端实时渲染比对）----
+// 与"Filebeat 状态"（运行态）正交：配置一致不代表进程在跑，进程在跑也不代表配置是最新的。
 
-function filebeatStatusText(record) {
-  const real = filebeatRealStatusInfo(record)
-  if (real) return real.text
-  if (!record || !record.managed) return '未安装'
-  if (record.install_status === 'pending') return '安装中'
-  if (record.install_status === 'failed') return '安装失败'
-  if (record.agent_installed) {
-    if (record.runtime_status === 'running') return '运行中'
-    if (record.runtime_status === 'stopped') return '已停止'
-    if (record.runtime_status === 'error') return '异常'
-    return '已安装'
-  }
-  return '未安装'
-}
 
-function filebeatStatusTooltip(record) {
-  const real = filebeatRealStatusInfo(record)
-  if (real) return real.tooltip
-  if (!record || !record.managed) return '未纳管 Filebeat 日志采集'
-  if (record.install_status === 'pending') return '任务执行中，请稍候'
-  if (record.install_status === 'failed') return record.last_error || '安装失败，请点击重试'
-  if (record.agent_installed) {
-    if (record.runtime_status === 'running') return 'Filebeat 正常运行'
-    if (record.runtime_status === 'stopped') return 'Filebeat 服务已停止'
-    if (record.runtime_status === 'error') return record.last_error || 'Filebeat 运行异常'
-  }
-  return ''
-}
+
+
+// 本页需要重新下发的主机（已变更 + 从未下发）。只作用于当前页：全量"一键下发"涉及
+// 500–1000 台的批量执行，需要后端异步化，属计划 Phase 2（见 §8 规模基线）。
+
+
+
+
+
 
 function exporterActionTooltip(record) {
   if (!record.host_agent_online) return 'dj-agent 离线，操作不可用'
@@ -2122,27 +1750,6 @@ function exporterActionTooltip(record) {
   return `纳管并安装 ${exporterFilterType.value}`
 }
 
-async function loadOverviewHosts() {
-  overviewLoading.value = true
-  try {
-    const groupKey = overviewSelectedGroupKeys.value[0]
-    const data = parseApiData(await getMonitorHostOverview({
-      page: overviewPagination.current,
-      page_size: overviewPagination.pageSize,
-      group_id: String(groupKey || '').startsWith('group-') ? String(groupKey).slice('group-'.length) : undefined,
-      search: overviewKeyword.value.trim() || undefined,
-      exporter_type: exporterFilterType.value || undefined,
-      exporter_managed: overviewManagedFilter.value || undefined,
-      filebeat_managed: filebeatManagedFilter.value || undefined,
-    }))
-    overviewHosts.value = Array.isArray(data.results) ? data.results : []
-    overviewPagination.total = Number(data.count || 0)
-    await refreshVisibleExporterServiceStatuses()
-    await refreshVisibleFilebeatStatuses()
-  } finally {
-    overviewLoading.value = false
-  }
-}
 
 // "Exporter 状态"列和 exporters 摘要 chip 都要展示真实 systemctl 运行状态。
 // 列表加载后立即为当前页已纳管的 exporter 目标逐台查询一次（不区分摘要/详情模式，
@@ -2150,48 +1757,12 @@ async function loadOverviewHosts() {
 // 只查 host_agent_online=true 的主机：agent 离线时查询必失败（后端报 host agent is offline），
 // 全量查会每次刷新弹一屏错误 toast；离线主机继续显示纳管状态，等上线后自动恢复真实状态。
 // 查询结果写入 serviceStatusMap，后续由自动刷新定时器接力更新。
-async function refreshVisibleExporterServiceStatuses() {
-  if (!overviewHosts.value.length) return
-  const targetIds = overviewHosts.value
-    .filter((item) => item.host_agent_online)
-    .flatMap((item) => (Array.isArray(item.exporters) ? item.exporters.map((exporter) => exporter.id) : []))
-    .filter(Boolean)
-  await Promise.all(targetIds.map((id) => refreshServiceStatus(id)))
-}
 
 // 与 Exporter 状态同思路：列表加载后对当前页已纳管且 agent 在线的 Filebeat
 // 逐台调 check-status（后端真实执行 systemctl status 并回写 runtime_status）。
 // 不查的话界面会一直显示上次安装/下发时落库的旧状态——服务在平台外被停掉，
 // 列表看起来仍是"运行中"。失败（agent 离线等）静默保留原状态，不弹错误。
-async function refreshVisibleFilebeatStatuses() {
-  if (!overviewHosts.value.length) return
-  const ids = overviewHosts.value
-    .filter((item) => item.host_agent_online && item.filebeat && item.filebeat.managed)
-    .map((item) => item.filebeat.id)
-    .filter(Boolean)
-  await Promise.all(ids.map(async (id) => {
-    try {
-      const job = parseApiData(await checkLogCollectionStatus(id))
-      if (job && job.exit_code !== undefined && job.exit_code !== null) {
-        filebeatRealStatusMap[id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
-      }
-    } catch (error) {
-      console.warn('[filebeat_status] 查询运行状态失败', id, error?.response?.data?.msg || error?.message)
-    }
-  }))
-}
 
-async function loadOverviewGroupTree() {
-  try {
-    const data = parseApiData(await getMonitorHostGroupTree())
-    overviewGroupTree.value = Array.isArray(data.groups) ? data.groups : []
-    overviewGroupTotals.total = Number(data.total_host_count || 0)
-    overviewGroupTotals.managed = Number(data.total_managed_count || 0)
-    overviewGroupExpandedKeys.value = collectGroupKeys(overviewGroupTreeData.value)
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '主机分组树加载失败')
-  }
-}
 
 async function loadExporterOptions() {
   try {
@@ -2202,26 +1773,8 @@ async function loadExporterOptions() {
   }
 }
 
-function reloadOverviewHosts() {
-  overviewPagination.current = 1
-  overviewSelectedHostIds.value = []
-  loadOverviewHosts()
-}
 
-function handleOverviewTableChange(pagination) {
-  overviewPagination.current = Number(pagination?.current || 1)
-  overviewPagination.pageSize = Number(pagination?.pageSize || 10)
-  // 勾选态只对当前页有效，翻页后不清会把上一页的 id 带进批量请求。
-  overviewSelectedHostIds.value = []
-  loadOverviewHosts()
-}
 
-const overviewRowSelection = computed(() => ({
-  selectedRowKeys: overviewSelectedHostIds.value,
-  onChange: (keys) => {
-    overviewSelectedHostIds.value = keys
-  },
-}))
 
 // systemctl status 退出码语义：0=运行中，3=inactive/已停止，4=unit 不存在；其余视为异常。
 // 这是点「查状态」/单台启停后真实调用 systemctl 得到的权威结果，缓存于 serviceStatusMap。
@@ -2308,15 +1861,6 @@ async function submitExporterCreate() {
 }
 
 // 选中项按 host_id 存；Filebeat 批量动作要按「已纳管/未纳管」拆成两条链路，前者用 target id。
-const overviewSelectedRows = computed(
-  () => overviewHosts.value.filter((item) => overviewSelectedHostIds.value.includes(item.host_id)),
-)
-const filebeatSelectedManagedIds = computed(
-  () => overviewSelectedRows.value.filter((item) => item.filebeat.managed).map((item) => item.filebeat.id),
-)
-const filebeatSelectedUnmanaged = computed(
-  () => overviewSelectedRows.value.filter((item) => !item.filebeat.managed),
-)
 
 // 未选定具体 Exporter 类型时 record.exporters 可能混装多种 exporter，批量操作语义不明确，
 // 所以批量按钮只在 exporterFilterType 选中后才可用（与单行下拉菜单的可用条件保持一致）。
@@ -2371,176 +1915,21 @@ function openExporterBatchDeleteConfirm() {
   })
 }
 
-const FLUENT_BIT_BATCH_ACTIONS = {
-  retry: { label: '批量下发安装', request: batchRetryLogCollectionTargets },
-  start: { label: '批量启动', request: batchStartLogCollectionTargets },
-  stop: { label: '批量停止', request: batchStopLogCollectionTargets },
-  apply: { label: '批量下发配置', request: batchApplyLogCollectionTargets },
-  delete: { label: '批量删除', request: batchDeleteLogCollectionTargets },
-}
 
-async function handleFilebeatBatch(action) {
-  const config = FLUENT_BIT_BATCH_ACTIONS[action]
-  const ids = [...filebeatSelectedManagedIds.value]
-  if (!config || !ids.length) {
-    return
-  }
-  filebeatBatchLoading.value = action
-  try {
-    const data = parseApiData(await config.request(ids))
-    reportFilebeatBatchResult(config.label, data)
-    overviewSelectedHostIds.value = []
-    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || `${config.label}失败`)
-  } finally {
-    filebeatBatchLoading.value = ''
-  }
-}
 
-function reportFilebeatBatchResult(label, data) {
-  const results = Array.isArray(data.results) ? data.results : []
-  const failed = results.filter((item) => !item.ok)
-  const warnings = results.flatMap((item) => item?.detail?.warnings || [])
-  if (warnings.length) {
-    reportApplyWarnings(warnings)
-  }
-  if (failed.length === 0) {
-    message.success(`${label}成功：${data.success} 台`)
-    return
-  }
-  // 逐台执行，部分失败是常态；把失败主机和原因摊开，避免只报一个笼统错误。
-  const detail = failed.slice(0, 3).map((item) => `${item.host}：${item.message}`).join('；')
-  const suffix = failed.length > 3 ? ` 等 ${failed.length} 台` : ''
-  message.warning(`${label}完成：成功 ${data.success} 台，失败 ${data.failed} 台。${detail}${suffix}`)
-}
 
-async function handleFilebeatBatchCreate() {
-  const hostIds = filebeatSelectedUnmanaged.value.map((item) => item.host_id)
-  if (!hostIds.length) {
-    return
-  }
-  filebeatBatchLoading.value = 'create'
-  try {
-    const data = parseApiData(await batchCreateLogCollectionTargets(hostIds, true))
-    reportFilebeatBatchResult('纳管并下发安装', data)
-    overviewSelectedHostIds.value = []
-    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '纳管失败')
-  } finally {
-    filebeatBatchLoading.value = ''
-  }
-}
 
-async function handleFilebeatCreateOne(record) {
-  filebeatCreateLoading[record.host_id] = true
-  try {
-    const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
-    reportFilebeatBatchResult('纳管并下发安装', data)
-    await Promise.all([loadOverviewHosts(), loadOverviewGroupTree()])
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '纳管失败')
-  } finally {
-    filebeatCreateLoading[record.host_id] = false
-  }
-}
 
-function openFilebeatBatchDeleteConfirm() {
-  const selected = overviewSelectedRows.value.filter((item) => item.filebeat.managed)
-  if (!selected.length) {
-    return
-  }
-  openDeleteConfirm({
-    title: '确认批量删除 Filebeat 目标',
-    summary: '已安装的主机会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。',
-    items: selected.map((item) => `${item.host_name || item.host_ip || `Host-${item.host_id}`} - Filebeat`),
-    onConfirm: () => handleFilebeatBatch('delete'),
-  })
-}
 
-function canApplyFilebeatConfig(record) {
-  return Boolean(record?.host_agent_online)
-    && Boolean(record?.agent_installed)
-    && record?.runtime_status === 'running'
-}
 
-function filebeatApplyTooltip(record) {
-  if (!record?.host_agent_online) return 'dj-agent 离线，操作不可用'
-  if (!record?.agent_installed) return 'Filebeat 未安装，请先完成离线安装'
-  if (record?.runtime_status !== 'running') return 'Filebeat 未运行，请先启动服务'
-  return '运行'
-}
 
-function formatManagedTargetTime(value) {
-  if (!value) return '-'
-  return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
-}
 
-async function handleCheckFilebeatStatus(record) {
-  filebeatStatusLoading[record.id] = true
-  try {
-    const job = parseApiData(await checkLogCollectionStatus(record.id))
-    if (job && job.exit_code !== undefined && job.exit_code !== null) {
-      filebeatRealStatusMap[record.id] = { exitCode: Number(job.exit_code), checkedAt: new Date().toISOString() }
-    }
-    message.success('Filebeat 状态已更新')
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 状态检查失败')
-  } finally {
-    filebeatStatusLoading[record.id] = false
-  }
-}
 
-async function handleApplyFilebeatConfig(record) {
-  filebeatApplyLoading[record.id] = true
-  try {
-    const result = parseApiData(await applyLogCollectionConfig(record.id))
-    message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Filebeat 配置已下发')
-    reportApplyWarnings(result?.warnings)
-    await loadOverviewHosts()
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 配置下发失败')
-  } finally {
-    filebeatApplyLoading[record.id] = false
-  }
-}
 
 // 下发/预览返回的 warnings（未展开宏、未关联处理规则等）以前被丢弃，导致"下发成功但日志不解析"
 // 无从发现；这里统一提示，最多展开 2 条。
-function reportApplyWarnings(warnings) {
-  const list = Array.isArray(warnings) ? warnings.filter(Boolean) : []
-  if (!list.length) return
-  const suffix = list.length > 2 ? ` 等 ${list.length} 条` : ''
-  message.warning(`下发成功，但存在告警：${list.slice(0, 2).join('；')}${suffix}`, 8)
-}
 
-async function handleFilebeatRedispatch(record) {
-  filebeatRetryLoading[record.id] = true
-  try {
-    await retryLogCollectionTarget(record.id)
-    message.success('已下发 Filebeat 重新安装任务，请稍后刷新查看结果')
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 重新安装失败')
-  } finally {
-    filebeatRetryLoading[record.id] = false
-    await loadOverviewHosts()
-  }
-}
 
-async function openFilebeatRetryConfirm(record) {
-  if (!record?.host_agent_online) return
-  const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
-  await openDeleteConfirm({
-    title: '确认重新安装',
-    okText: '确认',
-    summary: '将从 djadmin 本地仓库选择与目标系统精确匹配的 RPM/DEB 包并重新安装。',
-    items: [`${hostLabel} - Filebeat`],
-    onConfirm: () => {
-      void handleFilebeatRedispatch(record)
-    },
-  })
-}
 
 // 监控安装历史不再单独占运行记录中心的 tab：取该目标最新一条历史关联的自动化作业，
 // 直接跳到运行记录中心的作业日志（历史行由 backend 写入 automation_job_id_snapshot）。
@@ -2569,86 +1958,11 @@ async function openInstallHistoryAutomationJob(filter) {
   router.push({ path: '/sys/automation/logs', query: { job_id: String(jobId) } })
 }
 
-async function openFilebeatJobLog(record) {
-  await openInstallHistoryAutomationJob({ log_collection_target_id: String(record.id) })
-}
 
-async function handleStartFilebeatService(record) {
-  filebeatStartLoading[record.id] = true
-  try {
-    const result = parseApiData(await startLogCollectionService(record.id))
-    if (result?.status === 'success' && result?.exit_code === 0) {
-      message.success('Filebeat 启动成功')
-    } else {
-      message.error(`Filebeat 启动失败：${result?.stderr || result?.error_message || result?.status}`)
-    }
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 启动失败')
-  } finally {
-    filebeatStartLoading[record.id] = false
-    await loadOverviewHosts()
-  }
-}
 
-async function handleStopFilebeatService(record) {
-  filebeatStopLoading[record.id] = true
-  try {
-    const result = parseApiData(await stopLogCollectionService(record.id))
-    if (result?.status === 'success' && result?.exit_code === 0) {
-      message.success('Filebeat 停止成功')
-    } else {
-      message.error(`Filebeat 停止失败：${result?.stderr || result?.error_message || result?.status}`)
-    }
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 停止失败')
-  } finally {
-    filebeatStopLoading[record.id] = false
-    await loadOverviewHosts()
-  }
-}
 
-function canCancelFilebeatTarget(record) {
-  return ['pending', 'running'].includes(String(record?.install_status || '').toLowerCase())
-}
 
-async function handleCancelFilebeatTarget(record) {
-  if (!canCancelFilebeatTarget(record)) return
-  filebeatCancelLoading[record.id] = true
-  try {
-    await cancelLogCollectionTarget(record.id)
-    message.success('任务已取消')
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '取消任务失败')
-  } finally {
-    filebeatCancelLoading[record.id] = false
-    await loadOverviewHosts()
-  }
-}
 
-function openFilebeatDeleteConfirm(record) {
-  const hostLabel = record.host_name || record.host_ip || String(record.host || '-')
-  openDeleteConfirm({
-    title: '确认删除 Filebeat 目标',
-    summary: record.agent_installed
-      ? '会先下发卸载任务，卸载成功后自动删除纳管记录；卸载失败则保留记录和安装日志。'
-      : '目标删除后，如需继续采集日志必须重新创建并安装。',
-    items: [`${hostLabel} - Filebeat`],
-    onConfirm: async () => {
-      filebeatDeleteLoading[record.id] = true
-      try {
-        const data = parseApiData(await batchDeleteLogCollectionTargets([record.id]))
-        message.success(data?.pending_uninstall
-          ? '已下发卸载任务，卸载成功后自动删除'
-          : 'Filebeat 目标已删除')
-      } catch (error) {
-        message.error(error?.response?.data?.msg || error?.message || 'Filebeat 目标删除失败')
-      } finally {
-        filebeatDeleteLoading[record.id] = false
-        await loadOverviewHosts()
-      }
-    },
-  })
-}
 
 
 
@@ -2948,72 +2262,16 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.filebeat-batch-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
-}
 
-.filebeat-batch-bar__head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
 
-.batch-action-group {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 
-.filebeat-batch-bar__count {
-  color: #666;
-  font-size: 13px;
-  white-space: nowrap;
-}
 
-.filebeat-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
 
-.filebeat-tree {
-  flex: 0 0 200px;
-  width: 200px;
-  padding: 8px;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
-}
 
-.filebeat-tree__search {
-  margin-bottom: 8px;
-}
 
-.filebeat-tree__body {
-  max-height: 520px;
-  overflow: auto;
-}
 
 /* 表格区必须能收缩，否则 flex 子项默认 min-width:auto 会被 1900px 的表格撑破布局。 */
-.filebeat-table {
-  flex: 1;
-  min-width: 0;
-}
 
-.filebeat-table__filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}
 
 /* 行内动作收进下拉面板，避免合并后操作列被 14 个按钮撑到不可用。 */
 .row-action-menu {

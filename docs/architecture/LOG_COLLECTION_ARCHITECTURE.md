@@ -405,7 +405,7 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
 ### 7.1 管理面的写路径（Go 版最终逻辑，2026-09-16 随 SQL 迁移定型）
 
 **保留档位 / 解析规则 / 采集过滤规则**（`/monitor/log-retention-tiers|log-processing-rules|log-filter-rules`，实现见
-`internal/monitor/config_resources.go` 与 `config_resource_writers.go`）：
+`internal/logcollect/config_resources.go` 与 `config_resource_writers.go`）：
 
 - **"只写提交了的字段"这一 PATCH 语义**由「更新前读回整行 → 合并提交的字段 → 整行写」承担
   （`COALESCE(narg,col)` 表达不了"显式写入空值/删除"，例如把解析规则的 `application` 显式提交为 `null`）。
@@ -496,13 +496,28 @@ output.elasticsearch:
 ### 8.3 输出与索引
 
 - **output.elasticsearch**（地址/账号/TLS）统一写在主配置，由 agent 下发；凭据不落 inputs 片段。
-- **output 与是否有日志无关**：只要存在启用的默认 Elasticsearch 集群，「下发配置」就一定会写
+- **output 与是否有日志无关**：只要存在启用的默认 Elasticsearch 集群，「下发配置」就写
   `/etc/filebeat/filebeat.yml` 并启动 Filebeat；该主机当前没有启用任何日志采集时，inputs.d 为空
   （agent 会清理旧片段），不再报“没有可下发的日志片段”。之后开启采集再下发一次即可。
+- **配置指纹覆盖「输出段 + 全部片段」**（2026-09 修复）：`renderHostLogConfig` 的 digest 输入的
+  `outputIdentity` 由默认集群的 **地址 / 账号 / verify_tls** 组成（`filebeatOutputIdentity`），
+  再加上全部片段内容。任一变化都会让指纹变化 → 重新下发主配置与片段。
+  修复前 digest 只对 fragments 求和，导致「只改集群地址/账号/TLS → 指纹不变 → 下发被跳过 →
+  `filebeat.yml` 停留在旧值」。
+- **指纹刻意不含口令**：指纹会随 apply/preview 响应与主机列表返回给前端，把口令（即使只是哈希）
+  放进去等于给出离线猜测的口子。代价是"只改口令"不判为漂移，需人工重新下发一次。
 - 每个 input 用 `index` 指定 **LogDataStreamName**（服务级数据流命名 `autoadmin-<项目>-<业务>-<环境>-<服务>-<档位>`），保留档位/ILM 按此后缀生效。
 - 维度字段通过 `fields_under_root` 写入文档根，服务树日志检索（buildLogQuery）按这些 term 过滤，缺字段会查不到。
 
 ### 8.4 下发流程（Go 版，log_config_render.go + apply_filebeat_config）
+
+> **入口唯一**（2026-09 统一）：单条 `POST /log-targets/:id/apply/`（`ApplyLogTargetConfig`）与
+> 「批量下发」「安装成功后自动下发」走的是**同一条** `applyLogTargetConfigRow` 全流程。
+> 此前单条入口有一条旁路：只调 `configure_filebeat_output`（只写主配置，见
+> `dj_agent/internal/executor/builtin_actions.go`），不下发 inputs.d 片段、不写 `config_fingerprint`，
+> 却把 `runtime_status` 置 running 并清空 `last_error` —— 表现为"下发成功"但主机上没有采集片段，
+> 且指纹永远为空（漂移判定会把它一直当成"从未下发"）。该旁路及其独占的两条语句
+> （`GetLogTargetDefaultCluster`、`MarkLogTargetApplied`）已删除。
 
 ```
 「下发配置」（applyLogTargetConfigRow，log_target_actions.go）
@@ -526,7 +541,8 @@ output.elasticsearch:
         fields_under_root 注入 service/instance/application/log_name/
         business_system/project/environment/host_ip/log_path（log_path 为该实例实际监听的绝对路径）；
         index = LogDataStreamName；处理规则非空带 pipeline；开启多行带 multiline parser
-      指纹 = 全部片段内容的 sha256；全实例被跳过时不产出片段；
+      指纹 = outputIdentity（集群地址/账号/verify_tls）+ 全部片段内容 的 sha256；
+      全实例被跳过时不产出片段；
       片段非空时附带 /var/lib/filebeat/.keep 占位（agent MkdirAll 顺带建 registry 目录）
       warnings 随 preview/apply 响应返回，前端在「下发配置」成功/批量结果里提示（此前被丢弃）。
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
@@ -537,6 +553,11 @@ output.elasticsearch:
   → 回写 config_fingerprint / last_applied_time
 ```
 
+- **`runtime_status` 的写入语义（避免与旧旁路混淆）**：统一后的成功路径在**两次 agent 调用都成功**
+  （`configure_filebeat_output` + `apply_filebeat_config` 已重启 Filebeat）之后才回写
+  `runtime_status='running'` / 清空 `last_error`——这是"刚重启过、服务应在运行"的推断，
+  不是独立探活（真实状态仍由启停/查状态的结果维护）。指纹一致走跳过分支时只刷新
+  `last_applied_time`，**不动** `runtime_status`。旧单条旁路的问题是没有任何下发动作却直接置 running。
 - **安装/卸载与下发的时间口径（Go 版，2026-09-16 随 SQL 迁移定型）**：作业/历史的时长由应用层算
   （历史的 `create_time` 就是派发时刻；原实现用 `TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000`），
   取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
@@ -566,7 +587,7 @@ output.elasticsearch:
   安装 Playbook 只做「拷贝 tar.gz → 校验 sha256 → 解压到 `/opt/filebeat` → 写 systemd unit → enable」，
   主配置/inputs 由 agent 在「下发配置」时写入（见 §8.4），playbook 不碰文件内容。
   **默认配置会写进软件包**：创建/编辑 Filebeat 包时，若「安装/卸载 Playbook 内容」和
-  「systemd unit 文件内容」为空，后端用 `internal/monitor/filebeat_playbook.go` 的默认内容
+  「systemd unit 文件内容」为空，后端用 `internal/shared/filebeat` 的默认内容
   创建 `automation_playbook_template` 并绑定、把默认 unit 写进 `service_file_content`
   （启动时也会给历史 Filebeat 包回填一次），用户可在编辑弹窗里看到并修改；
   extra_vars 为 `service_name`/`package_local_directory`/`package_file_name`/`package_sha256`/
@@ -633,6 +654,46 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 
 服务关闭采集、实例移除、服务删除时，必须删除对应的 `inputs.d` 片段；agent 全量托管会
 在下次下发时清理残留。否则 Filebeat 会持续尝试采集无人管理的文件，或因文件不存在反复报错。
+
+### 8.7 配置状态（期望 vs 已下发）与链路体检（2026-09-18）
+
+**配置态**回答"主机上的采集配置是不是当前该有的那份"，与运行态（agent/Filebeat 是否在跑）
+正交：配置一致不代表进程在跑，进程在跑也不代表配置是最新的。
+
+| 状态 | 判定 | 含义 |
+|---|---|---|
+| `synced` | 期望指纹 == `config_fingerprint` | 主机上的配置与当前期望一致 |
+| `drift` | 已下发（指纹非空）但两者不同 | 配置变更后未重新下发 |
+| `never` | `config_fingerprint` 为空 | 从未下发过 |
+| `unknown` | 期望指纹算不出来 | 缺省未注入评估器，或没有启用的默认集群；原因经 `config_state_error` 回传 |
+
+- **计算口径与下发完全一致**：期望指纹由渲染纯函数 `renderHostLogConfig` 算出
+  （= 输出段 `outputIdentity` + 全部片段内容，见 §8.3），索引前缀/流名取默认集群的 `index_prefix`。
+  实时算、不落库——存下来的状态会过期。
+- **算力约束（500–1000 台）**：一次批量评估只做 **1 次默认集群查询 + 2 次渲染输入查询**
+  （`ListHostLogRenderInstances` / `ListHostLogRenderEntries` 按 `host_id IN (…)` 批量取），
+  查询次数与主机数无关，渲染是纯函数无 IO。展示场景只算当前页（`page_size` ≤30）；
+  **筛选/统计场景必须一次算全量**（见下）。
+- **列表暴露**（`GET /monitor/targets/host-overview/`）：`filebeat.config_state` /
+  `expected_fingerprint` / `config_service_num` / `config_warnings`（未关联处理规则、路径宏展不开
+  等渲染告警），页面级 `config_state_error`。未纳管的主机没有日志目标，**不参与任何配置态**
+  （否则"待下发"里会混进根本没纳管 Filebeat 的机器）。
+- **筛选 `config_state`**：状态是实时算出来的，SQL 无法按它过滤，所以启用筛选时先取回全部匹配
+  主机、批量评估、再在内存里过滤与分页；取值只接受 `synced|drift|never|unknown`，非法值 400
+  （避免前端写错时静默返回全量）。
+- **体检"主机配置"层改为内容比对**：逐主机比对期望指纹与已下发指纹，`drift` 报"配置已过期，
+  需重新下发"、`never` 报"从未下发"；`synced` 的明细带上覆盖的服务数与渲染告警。
+  期望配置算不出来时（典型是没有启用的默认集群）**退回"是否下发过"的判断并把原因写进明细，
+  不谎报"一致"**。（此前只看指纹是否为空、不比对内容，主机配置过期在体检里完全看不出来。）
+- **"下发待变更"目前只作用于当前页**：前端「下发本页待变更（N）」用现有批量下发接口，N 为本页
+  `drift`+`never` 的台数。跨全量的一键下发涉及 500–1000 台的批量执行，必须后端异步化，
+  属计划 Phase 2（见 [LOG_COLLECTION_LIFECYCLE](../plans/LOG_COLLECTION_LIFECYCLE.md) §8 规模基线）。
+- **界面位置**：采集目标的日常操作与配置状态都在「日志管理 → 日志采集」
+  （`fronted/src/views/monitor/log-collectors/index.vue`，2026-09-18 从「智能监控 → 纳管目标」拆出，
+  见 [MENU_STRUCTURE](MENU_STRUCTURE.md)）；主机表外壳与状态逻辑与 Exporter 目标页共用
+  `components/HostTargetPanel.vue` + `util/hostTargetTable.js`。
+- **一次性影响**：Phase 0 改了指纹语义（纳入输出段），因此存量主机的 `config_fingerprint`
+  与期望值不再一致，升级后会全部显示 `drift`，重新下发一次即恢复稳定。
 
 ---
 
@@ -762,10 +823,50 @@ fingerprint 归一化质量。
 - 失败语义：没有任何匹配的数据流（ES 404 `index_not_found`）视为已清理、返回 `matched=false`；
   其余 ES 报错原样返回 400。返回 `{stream_pattern, mode, amount, task, matched}`。
 - 破坏性操作，前端二次确认（不可恢复提示 + 范围选择）。
+- **范围必填、无服务端默认**：`mode` 是必填参数，`all` 也必须由用户显式选择——计划中"清理不默认全清"
+  的结论与现状一致（[LOG_COLLECTION_LIFECYCLE](../plans/LOG_COLLECTION_LIFECYCLE.md) §9 第 3 条）。
+- **权限现状与目标**：当前该接口只继承 `monitor:view`（`router.go:366`），意味着只读权限即可删数据。
+  计划按"破坏性动作整体拆权限"修正（数据清理 / 目标删除 / 停止服务 / 配置下发），见计划文档 §7、§9 第 4 条。
 
 ---
 
-## 10. 复用现有能力
+## 10. 代码组织
+
+采集与存储两条链路的实现在 **`autoadmin/internal/logcollect/`**，不在 `internal/monitor/`。
+拆分的依据是职责边界：日志采集/存储自成一套对象（Filebeat 纳管目标、ES 集群、日志定义、数据流），
+与监控域的 exporter 目标、告警/通知、软件包仓库没有共享状态。
+
+| 文件 | 职责 |
+|---|---|
+| `log_config_render.go` | 片段渲染与指纹（**纯函数、不访问数据库**，与 SQL 解耦便于单测） |
+| `log_target_actions.go` | 纳管目标的安装/卸载、启停、配置下发、批量操作 |
+| `log_health.go` | 链路体检六层对账 |
+| `log_management.go` | 索引模板、ILM 策略、bootstrap |
+| `log_datastream_cleanup.go` | 数据流按服务/日志文件/时间窗清理 |
+| `datastream_status.go` | 存储水位：流级运行态与维度树 |
+| `elasticsearch.go` | Elasticsearch 客户端、日志检索、聚合 |
+| `elasticsearch_config.go` / `elasticsearch_pipeline.go` | 集群配置 CRUD、pipeline 模拟 |
+| `config_resources.go` / `config_resource_writers.go` / `config_resources_typed.go` | 保留档位 / 处理规则 / 采集过滤规则的通用配置资源 CRUD |
+| `collect_target_dialect_{mysql,postgres}.go` | `createLogCollectionTargetIfAbsent` 的按方言实现（`INSERT IGNORE` vs `ON CONFLICT DO NOTHING`） |
+| `smoke_log_test.go` | 真库冒烟（`MONITOR_SMOKE_DSN`，事务内回滚） |
+
+配套的共享与归属说明：
+
+- `internal/shared/logstream`：data stream 命名的唯一构造函数，`logcollect` 与 `assets` 共用
+  （任何生成或解析流名的地方都不得自行拼接）。
+- `internal/shared/filebeat`：Filebeat 内置安装/卸载 Playbook 与 systemd unit 内容。
+  软件包仓库（`internal/monitor`，创建/编辑/回填软件包配置）与采集派发（`logcollect`，unit 兜底）共用。
+- `internal/monitor/` 保留：exporter 纳管目标、告警历史与通知、Prometheus 代理、软件包仓库、
+  主机列表与安装历史（主机列表按 SQL 直读采集目标列，不反向依赖 `logcollect`）。
+- 依赖方向：`router` 构造两域共用的依赖（数据库、gateway、automation、凭据加解密器、软件包根目录）
+  后分别注入；`logcollect` 不 import `monitor`。两域挂在同一个 `/monitor` 路由组下共用组级鉴权，
+  但 URL 完全不变。
+- 各域自备同名小工具（`parseID` / `ids` / `firstNonEmpty` / `deleteRowsAffected` 等）是仓库既有约定
+  （assets、automation、monitor 等包此前就是各自一份），不为两行函数建公共包。
+
+---
+
+## 11. 复用现有能力
 
 | 需求 | 复用 |
 |---|---|
@@ -779,7 +880,7 @@ fingerprint 归一化质量。
 
 ---
 
-## 11. 实施状态
+## 12. 实施状态
 
 | 阶段 | 内容 | 状态 | 说明 |
 |---|---|---|---|
@@ -787,8 +888,8 @@ fingerprint 归一化质量。
 | 2 | 统一日志处理规则、Pipeline 发布、`_simulate` 调试 | 已完成 | 页面明确区分发送前处理与 Ingest，仍只保存一条规则 |
 | 3 | 数据模型与迁移 | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键 |
 | 4 | Filebeat 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
-| 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离 |
-| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行 |
+| 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离；单条与批量走同一条全流程，指纹覆盖输出段 |
+| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行；**批量应用仍是请求内串行、无并发上限**，1000 台规模下的异步化见计划 §8 |
 | 7 | 日志洞察页面与告警接入 | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善 |
 
 解析规则调试仍是后续扩展的回归基线：新增日志格式必须先用真实样例通过 `_simulate`，再关联
@@ -796,7 +897,7 @@ fingerprint 归一化质量。
 
 ---
 
-## 12. 风险与注意事项
+## 13. 风险与注意事项
 
 | 项 | 说明 |
 |---|---|
@@ -807,3 +908,4 @@ fingerprint 归一化质量。
 | 容器化采集器 | 若 Filebeat 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内 |
 | 磁盘水位 | Elasticsearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ILM 自动清理 |
 | TLS 证书 | 自签证书阶段使用 `tls.verify Off`，生产需分发 CA 证书并开启校验 |
+| 规模（500–1000 台） | 批量下发当前在**单个 HTTP 请求内串行**执行、每台 2 次 agent gRPC（超时 60s+120s）；批量安装/重试对每台内联起 goroutine、**无并发上限**且绕过 `worker` + `WorkerPrefetch` 限流。主机列表服务端分页（`page_size` ≤30），但"按配置状态筛选"需全量计算。改造方案见 [计划](../plans/LOG_COLLECTION_LIFECYCLE.md) §8 规模基线 |

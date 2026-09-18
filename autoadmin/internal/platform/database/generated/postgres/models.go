@@ -536,6 +536,15 @@ type AutomationExecutionJob struct {
 	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
 }
 
+type AutomationExecutionJobLog struct {
+	ID         int64          `json:"id"`
+	Remark     sql.NullString `json:"remark"`
+	CreateTime time.Time      `json:"create_time"`
+	UpdateTime time.Time      `json:"update_time"`
+	JobID      int64          `json:"job_id"`
+	Content    string         `json:"content"`
+}
+
 type AutomationInventory struct {
 	ID                 int64           `json:"id"`
 	CreateTime         time.Time       `json:"create_time"`
@@ -815,7 +824,7 @@ type MonitorElasticsearchCluster struct {
 	VerifyTls         bool         `json:"verify_tls"`
 	CaCert            string       `json:"ca_cert"`
 	IndexPrefix       string       `json:"index_prefix"`
-	RequestTimeout    int32        `json:"request_timeout"`
+	RequestTimeout    uint32       `json:"request_timeout"`
 	Enabled           bool         `json:"enabled"`
 	IsDefault         bool         `json:"is_default"`
 	LastCheckTime     sql.NullTime `json:"last_check_time"`

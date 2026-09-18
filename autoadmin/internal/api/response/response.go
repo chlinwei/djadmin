@@ -40,13 +40,25 @@ func Error(context *gin.Context, err error) {
 }
 
 func Paginated(context *gin.Context, results any, count int64, pageNumber int32, pageSize int32) {
+	PaginatedWith(context, results, count, pageNumber, pageSize, nil)
+}
+
+// PaginatedWith 在标准分页信封上追加页面级字段（如"本页某列为何无法计算"的说明）。
+// extra 里的键不会覆盖信封本身的键。
+func PaginatedWith(context *gin.Context, results any, count int64, pageNumber int32, pageSize int32, extra gin.H) {
 	totalPages := int64(0)
 	if count > 0 {
 		totalPages = (count + int64(pageSize) - 1) / int64(pageSize)
 	}
-	Success(context, gin.H{
+	payload := gin.H{
 		"results": results, "count": count, "pageNumber": pageNumber,
 		"pageSize": pageSize, "totalPages": totalPages,
 		"next": nil, "previous": nil,
-	})
+	}
+	for key, value := range extra {
+		if _, exists := payload[key]; !exists {
+			payload[key] = value
+		}
+	}
+	Success(context, payload)
 }

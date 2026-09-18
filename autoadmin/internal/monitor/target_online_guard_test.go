@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"autoadmin/internal/assets"
+
 	"github.com/gin-gonic/gin"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -131,13 +133,13 @@ func openMonitorTestDB(t *testing.T) *sql.DB {
 
 func newMonitorTestHandler(t *testing.T, pool *sql.DB) *Handler {
 	gin.SetMode(gin.TestMode)
-	// gateway=nil 等价于所有 agent 离线；encryptionKey/djangoSecret 只在加解密路径用到，
-	// 这里给一个合法 Fernet key 以通过构造校验。
-	handler, err := NewHandler(pool, nil, nil, os.Getenv("ASSETS_CREDENTIAL_ENCRYPTION_KEY"), os.Getenv("DJANGO_SECRET_KEY"))
+	// gateway=nil 等价于所有 agent 离线；secrets 只在加解密路径用到，
+	// 这里给一个合法 Fernet key 以通过构造校验。packageRoot 用临时目录（构造期不会读它）。
+	secrets, err := assets.NewSecretEncryptor(os.Getenv("ASSETS_CREDENTIAL_ENCRYPTION_KEY"), os.Getenv("DJANGO_SECRET_KEY"))
 	if err != nil {
-		t.Skipf("cannot construct handler (missing key config): %v", err)
+		t.Skipf("cannot construct secrets (missing key config): %v", err)
 	}
-	return handler
+	return NewHandler(pool, nil, nil, secrets, t.TempDir())
 }
 
 func createMonitorTestHost(t *testing.T, pool *sql.DB) int64 {

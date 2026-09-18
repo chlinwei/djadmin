@@ -105,3 +105,16 @@ CREATE TABLE `automation_execution_host_log` (
   CONSTRAINT `automation_execution_host_log_host_id_b2ec126e_fk_assets_host_id` FOREIGN KEY (`host_id`) REFERENCES `assets_host` (`id`),
   CONSTRAINT `automation_execution_job_id_d6edd8d4_fk_automatio` FOREIGN KEY (`job_id`) REFERENCES `automation_execution_job` (`id`)
 );
+
+CREATE TABLE `automation_execution_job_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `remark` longtext,
+  `create_time` datetime(6) NOT NULL,
+  `update_time` datetime(6) NOT NULL,
+  `job_id` bigint NOT NULL,
+  `content` longtext NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `automation_execution_job_log_job_id_7f1c2a94` (`job_id`),
+  CONSTRAINT `automation_execution_job_log_job_id_7f1c2a94_fk_automatio` FOREIGN KEY (`job_id`) REFERENCES `automation_execution_job` (`id`)
+);
+

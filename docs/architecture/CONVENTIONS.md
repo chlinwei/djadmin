@@ -11,7 +11,7 @@
 - 请求体：`{"ids": [<数字>...]}`
 - 权限点：沿用删除权限（如 `inspection:tasks:delete`）
 - 响应 data：`{"count": <成功条数>, "results": [{"id": 1, "ok": true, "message": ""}, ...]}`，不存在的 id 记 `ok:false`，不整体失败
-- handler 范式：逐 id 复用单删的全部前置校验，参考 `autoadmin/internal/monitor/log_target_actions.go` 的 `BatchDeleteLogTargets`
+- handler 范式：逐 id 复用单删的全部前置校验，参考 `autoadmin/internal/logcollect/log_target_actions.go` 的 `BatchDeleteLogTargets`
 - 前端：每个资源在 `src/api/**` 只保留一个 `batchDeleteXxx(ids)`；单删按钮传 `[record.id]`
 - 带 body 的删除统一用 POST（避免 DELETE+body 的网关兼容性问题）
 

@@ -460,6 +460,15 @@ func (q *Queries) DeleteAutomationInventory(ctx context.Context, id int64) (int6
 	return result.RowsAffected()
 }
 
+const deleteAutomationJobLogChunks = `-- name: DeleteAutomationJobLogChunks :exec
+DELETE FROM automation_execution_job_log WHERE job_id = $1
+`
+
+func (q *Queries) DeleteAutomationJobLogChunks(ctx context.Context, jobID int64) error {
+	_, err := q.db.ExecContext(ctx, deleteAutomationJobLogChunks, jobID)
+	return err
+}
+
 const deleteAutomationPlaybook = `-- name: DeleteAutomationPlaybook :execrows
 DELETE FROM automation_playbook_template WHERE id = $1
 `
@@ -478,6 +487,37 @@ DELETE FROM automation_task WHERE id = $1
 
 func (q *Queries) DeleteAutomationTask(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteAutomationTask, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const failStaleAutomationJob = `-- name: FailStaleAutomationJob :execrows
+UPDATE automation_execution_job
+SET status = 'failed', end_time = $1, duration_seconds = $2,
+    result_summary = $3, update_time = $4
+WHERE id = $5 AND status = 'running'
+`
+
+type FailStaleAutomationJobParams struct {
+	EndTime         sql.NullTime    `json:"end_time"`
+	DurationSeconds sql.NullFloat64 `json:"duration_seconds"`
+	ResultSummary   json.RawMessage `json:"result_summary"`
+	UpdateTime      time.Time       `json:"update_time"`
+	ID              int64           `json:"id"`
+}
+
+// 失联作业置失败。带 status='running' 守卫：正常收尾（finishJob）可能同时在写，
+// 没有守卫会把刚成功的作业改写成失败。
+func (q *Queries) FailStaleAutomationJob(ctx context.Context, arg FailStaleAutomationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failStaleAutomationJob,
+		arg.EndTime,
+		arg.DurationSeconds,
+		arg.ResultSummary,
+		arg.UpdateTime,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -695,6 +735,29 @@ func (q *Queries) GetTaskTyped(ctx context.Context, id int64) (GetTaskTypedRow, 
 		&i.InventoryName,
 	)
 	return i, err
+}
+
+const insertAutomationJobLogChunk = `-- name: InsertAutomationJobLogChunk :exec
+INSERT INTO automation_execution_job_log (remark, create_time, update_time, job_id, content)
+VALUES (NULL, $1, $2, $3, $4)
+`
+
+type InsertAutomationJobLogChunkParams struct {
+	CreateTime time.Time `json:"create_time"`
+	UpdateTime time.Time `json:"update_time"`
+	JobID      int64     `json:"job_id"`
+	Content    string    `json:"content"`
+}
+
+// 作业实时输出块（运行期间才存在，结束时由执行方删除）：
+func (q *Queries) InsertAutomationJobLogChunk(ctx context.Context, arg InsertAutomationJobLogChunkParams) error {
+	_, err := q.db.ExecContext(ctx, insertAutomationJobLogChunk,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.JobID,
+		arg.Content,
+	)
+	return err
 }
 
 const listAutomationControllerKeysForUpdate = `-- name: ListAutomationControllerKeysForUpdate :many
@@ -945,6 +1008,33 @@ func (q *Queries) ListAutomationJobHostLogs(ctx context.Context, jobID int64) ([
 	return items, nil
 }
 
+const listAutomationJobLogChunks = `-- name: ListAutomationJobLogChunks :many
+SELECT content FROM automation_execution_job_log WHERE job_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAutomationJobLogChunks(ctx context.Context, jobID int64) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAutomationJobLogChunks, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			return nil, err
+		}
+		items = append(items, content)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAutomationPlaybooks = `-- name: ListAutomationPlaybooks :many
 SELECT id, create_time, update_time, remark, name, description, content, category
 FROM automation_playbook_template
@@ -1127,6 +1217,44 @@ func (q *Queries) ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([
 			&i.RunAsGroupSnapshot,
 			&i.WorkDirectorySnapshot,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunningAutomationJobs = `-- name: ListRunningAutomationJobs :many
+SELECT j.id, j.start_time, COALESCE(t.execution_timeout_seconds, 600) AS execution_timeout_seconds
+FROM automation_execution_job j
+LEFT JOIN automation_task t ON t.id = j.task_id
+WHERE j.status = 'running' AND j.start_time IS NOT NULL
+`
+
+type ListRunningAutomationJobsRow struct {
+	ID                      int64        `json:"id"`
+	StartTime               sql.NullTime `json:"start_time"`
+	ExecutionTimeoutSeconds uint32       `json:"execution_timeout_seconds"`
+}
+
+// 对账用：仍在 running 的作业（含各自超时与开始时间），由对账循环判断是否已失联。
+// 超时在任务表上、作业行只存 task_id，口径与 GetJobTyped 一致（无任务时回落 600s）。
+func (q *Queries) ListRunningAutomationJobs(ctx context.Context) ([]ListRunningAutomationJobsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRunningAutomationJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunningAutomationJobsRow{}
+	for rows.Next() {
+		var i ListRunningAutomationJobsRow
+		if err := rows.Scan(&i.ID, &i.StartTime, &i.ExecutionTimeoutSeconds); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

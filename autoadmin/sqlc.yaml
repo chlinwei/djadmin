@@ -103,7 +103,7 @@ sql:
           - column: "monitor_log_retention_tier.retention_days"
             go_type:
               type: "uint32"
-          - column: "monitor_opensearch_cluster.request_timeout"
+          - column: "monitor_elasticsearch_cluster.request_timeout"
             go_type:
               type: "uint32"
           - column: "monitor_log_processing_rule.flush_timeout"

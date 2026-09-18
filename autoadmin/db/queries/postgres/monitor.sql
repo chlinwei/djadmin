@@ -937,15 +937,6 @@ UPDATE monitor_log_collection_target
 SET runtime_status=sqlc.arg(runtime_status), update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
--- 下发配置用的默认集群：按 is_default 优先取一条启用的集群（连同采集目标所在主机名与 TLS 校验开关）。
--- name: GetLogTargetDefaultCluster :one
-SELECT COALESCE(h.instance_name, ''), c.hosts, c.username, c.password, c.verify_tls
-FROM monitor_log_collection_target l
-JOIN assets_host h ON h.id = l.host_id
-JOIN monitor_elasticsearch_cluster c ON c.enabled = TRUE
-WHERE l.id = sqlc.arg(id)
-ORDER BY c.is_default DESC, c.id LIMIT 1;
-
 -- name: GetDefaultEnabledElasticsearchCluster :one
 SELECT hosts, username, password, COALESCE(index_prefix, 'logs'), verify_tls
 FROM monitor_elasticsearch_cluster
@@ -959,14 +950,56 @@ FROM monitor_elasticsearch_cluster
 WHERE enabled = TRUE
 ORDER BY is_default DESC, id LIMIT 1;
 
--- name: MarkLogTargetApplied :exec
-UPDATE monitor_log_collection_target
-SET last_applied_time=sqlc.arg(last_applied_time), runtime_status='running', last_error='',
-    update_time=sqlc.arg(update_time)
-WHERE id = sqlc.arg(id);
-
 -- name: GetLogTargetConfigFingerprint :one
 SELECT COALESCE(config_fingerprint, '') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
+
+-- 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
+-- 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
+-- name: ListHostLogRenderInstances :many
+SELECT d.host_id, s.code AS service_code, d.instance_name,
+       COALESCE(d.runtime_variables, '{}') AS runtime_variables,
+       COALESCE(t.app_home, '') AS app_home, COALESCE(h.ip, '') AS host_ip
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_host h ON h.id = d.host_id
+WHERE d.host_id = ANY(sqlc.arg(host_ids)::bigint[])
+  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE;
+
+-- 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
+-- 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
+-- 因此把子查询改成对 deployment 的 JOIN 并 SELECT d.host_id；DISTINCT 保证同一主机上
+-- 一个服务部署多实例时只出一行（与逐主机查询的行为一致）。
+-- name: ListHostLogRenderEntries :many
+SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
+    bs.code AS business_system_code, s.code AS service_code,
+    COALESCE(app.code, '') AS application_code,
+    COALESCE(tier.code, '') AS tier_code,
+    COALESCE(rule_setting.name, rule_definition.name, '') AS pipeline_name,
+    ld.name AS log_name, ld.path_pattern,
+    COALESCE(s.macro_values, '{}') AS macro_values,
+    COALESCE(t.macro_definitions, '[]') AS macro_definitions,
+    COALESCE(rule_setting.multiline_enabled, rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
+    COALESCE(rule_setting.start_pattern, rule_definition.start_pattern, '') AS start_pattern,
+    COALESCE(rule_setting.flush_timeout, rule_definition.flush_timeout, 2000) AS flush_timeout
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+JOIN assets_application app ON app.id = s.application_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
+    AND ld.collection_enabled = TRUE
+JOIN assets_application_service_deployment sd ON sd.service_id = s.id AND sd.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = sd.deployment_id AND d.enabled = TRUE
+LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
+LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
+LEFT JOIN monitor_log_processing_rule rule_setting ON rule_setting.id = ls.processing_rule_id
+LEFT JOIN monitor_log_processing_rule rule_definition ON rule_definition.id = ld.processing_rule_id
+WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND COALESCE(ls.collection_enabled, ld.collection_enabled) = TRUE
+  AND d.host_id = ANY(sqlc.arg(host_ids)::bigint[]);
 
 -- name: SetLogTargetLastError :exec
 UPDATE monitor_log_collection_target
@@ -1178,7 +1211,7 @@ SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
 WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
 
 -- name: ListManagedLogTargetConfigs :many
-SELECT l.id, COALESCE(h.ip, ''), l.agent_installed, COALESCE(l.config_fingerprint, '')
+SELECT l.id, l.host_id, COALESCE(h.ip, ''), l.agent_installed, COALESCE(l.config_fingerprint, '')
 FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
 WHERE l.managed_enabled = TRUE ORDER BY l.id;
 

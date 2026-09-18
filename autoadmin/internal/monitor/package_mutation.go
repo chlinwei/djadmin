@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/shared/filebeat"
 
 	"github.com/gin-gonic/gin"
 )
@@ -73,20 +74,20 @@ func (handler *Handler) backfillFilebeatPackagePlaybooks() {
 		target := softwarePackage{ID: item.id, PackageType: "filebeat", Name: item.name, InstallTemplateID: item.install, UninstallTemplateID: item.uninstall}
 		ok := true
 		if !item.install.Valid {
-			content := builtinFilebeatInstallPlaybookContent()
+			content := filebeat.InstallPlaybookContent()
 			if err = syncExistingPackagePlaybook(ginContext, transaction, target, "install", item.install, &content); err != nil {
 				ok = false
 			}
 		}
 		if ok && !item.uninstall.Valid {
-			content := builtinFilebeatUninstallPlaybookContent()
+			content := filebeat.UninstallPlaybookContent()
 			if err = syncExistingPackagePlaybook(ginContext, transaction, target, "uninstall", item.uninstall, &content); err != nil {
 				ok = false
 			}
 		}
 		if ok && strings.TrimSpace(item.serviceFileContent) == "" {
 			if err = queries.SetSoftwarePackageServiceFileContent(ginContext, db.SetSoftwarePackageServiceFileContentParams{
-				ServiceFileContent: builtinFilebeatServiceUnitContent(),
+				ServiceFileContent: filebeat.ServiceUnitContent(),
 				UpdateTime:         time.Now().UTC(), ID: item.id,
 			}); err != nil {
 				ok = false
@@ -131,7 +132,7 @@ func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
 	defer transaction.Rollback()
 	serviceFileContent := sql.NullString{}
 	if item.PackageType == "filebeat" {
-		serviceFileContent = sql.NullString{String: builtinFilebeatServiceUnitContent(), Valid: true}
+		serviceFileContent = sql.NullString{String: filebeat.ServiceUnitContent(), Valid: true}
 	}
 	id, err := db.New(transaction).CreateSoftwarePackage(context, db.CreateSoftwarePackageParams{
 		CreateTime: now, UpdateTime: now, PackageType: item.PackageType, Name: item.Name,
@@ -149,8 +150,8 @@ func (handler *Handler) CreateSoftwarePackage(context *gin.Context) {
 	if item.PackageType == "filebeat" {
 		created := item
 		created.ID = id
-		installContent := builtinFilebeatInstallPlaybookContent()
-		uninstallContent := builtinFilebeatUninstallPlaybookContent()
+		installContent := filebeat.InstallPlaybookContent()
+		uninstallContent := filebeat.UninstallPlaybookContent()
 		if err = syncExistingPackagePlaybook(context, transaction, created, "install", sql.NullInt64{}, &installContent); err != nil {
 			response.BusinessError(context, 400, err.Error(), nil)
 			return
@@ -260,7 +261,7 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 	// Filebeat 的 systemd unit 也要落在软件包配置里：为空则补默认（可在编辑弹窗改）。
 	serviceFileContent := nullIfEmpty(input.ServiceFileContent)
 	if item.PackageType == "filebeat" && !serviceFileContent.Valid {
-		serviceFileContent = sql.NullString{String: builtinFilebeatServiceUnitContent(), Valid: true}
+		serviceFileContent = sql.NullString{String: filebeat.ServiceUnitContent(), Valid: true}
 	}
 	err = db.New(transaction).UpdateSoftwarePackageConfig(context, db.UpdateSoftwarePackageConfigParams{
 		DefaultPort: uint32(item.DefaultPort), ServiceFileContent: serviceFileContent,
@@ -274,11 +275,11 @@ func (handler *Handler) UpdateSoftwarePackage(context *gin.Context) {
 	installContent, uninstallContent := input.InstallPlaybookContent, input.UninstallPlaybookContent
 	if item.PackageType == "filebeat" {
 		if installContent == nil || strings.TrimSpace(*installContent) == "" {
-			value := builtinFilebeatInstallPlaybookContent()
+			value := filebeat.InstallPlaybookContent()
 			installContent = &value
 		}
 		if uninstallContent == nil || strings.TrimSpace(*uninstallContent) == "" {
-			value := builtinFilebeatUninstallPlaybookContent()
+			value := filebeat.UninstallPlaybookContent()
 			uninstallContent = &value
 		}
 	}

@@ -795,7 +795,8 @@ async function confirmRunNow() {
 
     const res = await runTaskNow(runNowTask.value.id, payload)
     const createdJobId = Number(res?.data?.data?.id || 0)
-    message.success('任务执行完成')
+    // 作业改为后台执行：接口只负责派发，不再等跑完。状态与输出在运行记录中心看。
+    message.success('任务已下发，正在执行；可在运行记录中心查看状态与日志')
     goToLogs(runNowTask.value, createdJobId)
     closeRunNowModal()
   } finally {

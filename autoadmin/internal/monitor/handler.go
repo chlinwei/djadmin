@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"autoadmin/internal/assets"
 	"autoadmin/internal/automation"
 	"autoadmin/internal/identity"
+	"autoadmin/internal/logcollect"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +33,9 @@ type Handler struct {
 	jobs        *automation.Handler
 	// 目标安装缺少主机平台/架构信息时主动补采一次资产信息（由 assets 域注入，避免 monitor 反向依赖采集实现）。
 	refreshHostInfo func(ctx context.Context, hostID int64) error
+	// 采集目标的配置态评估（期望指纹 vs 已下发指纹）由日志采集域注入：主机列表要显示
+	// 「配置状态」，但渲染采集配置的实现属于 logcollect。缺省时列表该列显示"未知"。
+	evaluateLogConfigStates func(ctx *gin.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)
 	// 告警通知的 SMTP 发信能力，缺省 sendSMTPMedia；单测可注入假实现。
 	smtpSend smtpSender
 }
@@ -42,24 +45,21 @@ func (handler *Handler) SetHostInfoRefresher(refresher func(ctx context.Context,
 	handler.refreshHostInfo = refresher
 }
 
-func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, encryptionKey, djangoSecret string) (*Handler, error) {
-	secrets, err := assets.NewSecretEncryptor(encryptionKey, djangoSecret)
-	if err != nil {
-		return nil, err
-	}
-	// 软件包根目录：autoadmin 自身的 media 目录（monitor_packages/ 与 agent_packages/）。
-	// backend/ 已废弃，包存储随之从 Django MEDIA_ROOT 迁出。
-	packageRoot, err := filepath.Abs("media")
-	if err != nil {
-		return nil, err
-	}
+// SetLogConfigStateEvaluator 注入采集目标配置态评估能力（logcollect.Handler.EvaluateLogConfigStates）。
+func (handler *Handler) SetLogConfigStateEvaluator(evaluator func(ctx *gin.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)) {
+	handler.evaluateLogConfigStates = evaluator
+}
+
+// NewHandler 装配监控域 Handler。凭据加解密器与软件包根目录由调用方（router）统一构造后注入：
+// 日志采集域（logcollect）同样需要这两者，集中构造可以保证两域指向同一份配置与同一个 media 目录。
+func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, secrets *assets.SecretEncryptor, packageRoot string) *Handler {
 	handler := &Handler{db: db, client: &http.Client{Timeout: 8 * time.Second}, gateway: gateway, secrets: secrets, packageRoot: packageRoot, jobs: jobs}
 	handler.smtpSend = handler.handlerSendSMTP
 	// 给历史 Filebeat 软件包补默认安装/卸载 Playbook（没配的补齐到软件包配置里）。
 	handler.backfillFilebeatPackagePlaybooks()
 	// 失联对账 ticker：单实例部署，进程内唯一 goroutine，随进程退出终止（无需优雅停止）。
 	go handler.reconcileStaleAlertsLoop()
-	return handler, nil
+	return handler
 }
 
 // handlerSendSMTP 适配 media_send.go 的 sendSMTPMedia 到通知链路使用的 smtpSender 签名。

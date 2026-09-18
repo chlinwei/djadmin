@@ -13,11 +13,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"autoadmin/internal/agent/pb"
@@ -413,16 +416,32 @@ func (handler *Handler) RunTaskNow(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	if err := handler.runAutomationJob(context.Request.Context(), jobID); err != nil {
-		response.Error(context, err)
-		return
-	}
+	// 后台执行，**不在请求里等**。多主机作业要跑几分钟，请求一断（浏览器关闭、网关超时、
+	// 服务重启）请求的 context 就会被取消：不但会把 ansible 杀掉，还会让收尾写入一起失败，
+	// 作业永久停在 running（2026-09-18 作业 #831 即此）。与监控域安装派发同一做法：
+	// 脱离请求的 context + 独立 goroutine，前端按作业 id 看状态与日志。
+	handler.dispatchJobAsync(jobID)
 	job, err := handler.jobByID(context, jobID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
 	response.Success(context, job)
+}
+
+// jobDispatchTimeout 是后台执行的兜底上限。单个作业真正的时限是任务上的
+// execution_timeout_seconds（最大 4 小时，见 executeLocalAnsible），这里给足余量，
+// 只用于防止 goroutine 因意外永久挂住。
+const jobDispatchTimeout = 6 * time.Hour
+
+// dispatchJobAsync 脱离请求 context 在后台执行作业（对应 RunTaskNow 的"立即执行"）。
+// 不用请求 context 是刻意的：请求结束/取消不该中断已经派发的作业，更不该让收尾写不进去。
+func (handler *Handler) dispatchJobAsync(jobID int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), jobDispatchTimeout)
+		defer cancel()
+		_ = handler.RunJobByID(ctx, jobID)
+	}()
 }
 
 func (handler *Handler) GetJob(context *gin.Context) {
@@ -739,36 +758,44 @@ func (handler *Handler) runAutomationJob(ctx context.Context, jobID int64) error
 	if claimed == 0 {
 		return nil
 	}
+	// 收尾写入一律用**不可取消**的 context：运行中进程收到关闭信号时 ctx 会被取消，
+	// 若沿用同一个 ctx，下面这些更新会因 "context canceled" 失败，作业就永久停在 running。
+	// 2026-09-18 作业 #831 即此情形（命令已返回、临时目录已被 defer 清掉，但收尾没写进去）。
+	persistCtx := persistenceContext(ctx)
 	job, err := handler.jobByIDContext(ctx, jobID)
 	if err != nil {
 		return err
 	}
 	hosts := decodeHostSnapshots(jsonObject(job["inventory_snapshot"])["hosts"])
 	if strings.TrimSpace(stringValue(job["template_content_snapshot"])) == "" || len(hosts) == 0 {
-		return handler.finishJob(ctx, jobID, now, 1, 0, len(hosts), "Template snapshot is empty or target inventory is empty")
+		return handler.finishJob(persistCtx, jobID, now, 1, 0, len(hosts), "Template snapshot is empty or target inventory is empty")
 	}
 	if err := handler.rehydrateExecutionAgents(ctx, hosts); err != nil {
-		return handler.finishJob(ctx, jobID, now, 1, 0, len(hosts), err.Error())
+		return handler.finishJob(persistCtx, jobID, now, 1, 0, len(hosts), err.Error())
 	}
 	privateKey, publicKey, err := handler.loadOrCreateControllerKey(ctx)
 	if err != nil {
-		return handler.finishJob(ctx, jobID, now, 1, 0, len(hosts), err.Error())
+		return handler.finishJob(persistCtx, jobID, now, 1, 0, len(hosts), err.Error())
 	}
 	ready, failures := handler.syncControllerKey(ctx, hosts, publicKey)
 	if len(ready) == 0 {
-		handler.persistTargetFailures(ctx, jobID, failures)
-		return handler.finishJob(ctx, jobID, now, 1, 0, len(hosts), "No target agent accepted the controller key")
+		handler.persistTargetFailures(persistCtx, jobID, failures)
+		return handler.finishJob(persistCtx, jobID, now, 1, 0, len(hosts), "No target agent accepted the controller key")
 	}
-	output, stderr, code, runErr := executeLocalAnsible(ctx, privateKey, ready, stringValue(job["template_content_snapshot"]), jsonObject(job["extra_vars"]), stringValue(job["run_as_user_snapshot"]), intValue(job["execution_timeout_seconds"], 600))
-	handler.persistTargetFailures(ctx, jobID, failures)
-	handler.persistTargetResults(ctx, jobID, ready, code, output, stderr, runErr)
+	output, stderr, code, runErr := executeLocalAnsible(ctx, privateKey, ready, stringValue(job["template_content_snapshot"]), jsonObject(job["extra_vars"]), stringValue(job["run_as_user_snapshot"]), intValue(job["execution_timeout_seconds"], 600), handler.jobLogSink(persistCtx, jobID))
+	handler.persistTargetFailures(persistCtx, jobID, failures)
+	handler.persistTargetResults(persistCtx, jobID, ready, code, output, stderr, runErr)
 	successful := 0
 	if code == 0 && runErr == nil {
 		successful = len(ready)
 	}
 	failed := len(hosts) - successful
 	message := ansibleResultMessage(code, output, stderr, runErr)
-	return handler.finishJob(ctx, jobID, now, code, successful, failed, message)
+	finishErr := handler.finishJob(persistCtx, jobID, now, code, successful, failed, message)
+	// 实时输出的块到此使命结束：终态后日志视图改读按主机的结果行，留着只会让同一份
+	// ansible 输出重复展示。清理失败不影响作业结论（对账也会兜底清）。
+	_ = db.New(handler.db).DeleteAutomationJobLogChunks(persistCtx, jobID)
+	return finishErr
 }
 
 // Agent identities are deliberately excluded from the immutable job snapshot,
@@ -947,7 +974,10 @@ func (handler *Handler) syncControllerKey(ctx context.Context, hosts []hostSnaps
 	}
 	return ready, failures
 }
-func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSnapshot, content string, extra map[string]any, runAsUser string, timeoutSeconds int) (string, string, int, error) {
+
+// executeLocalAnsible 本地执行一趟 ansible。sink 非空时，运行期间的输出会按块交给它
+// （用于实时落库，见 liveLogStreamer），作业结束后仍返回完整 stdout/stderr。
+func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSnapshot, content string, extra map[string]any, runAsUser string, timeoutSeconds int, sink func(string)) (string, string, int, error) {
 	directory, err := os.MkdirTemp("", "autoadmin-ansible-")
 	if err != nil {
 		return "", "", -1, err
@@ -961,8 +991,12 @@ func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSna
 		return "", "", -1, err
 	}
 	lines := []string{"[all]"}
+	// 别名用 <主机名>(<IP>)：ansible 会把它原样打印在任务输出与 PLAY RECAP 里，
+	// 换成可读标签后，日志里一眼能看出是哪台机器（此前是 host_<id>，无法对应到服务器）。
+	usedLabels := map[string]bool{}
 	for _, host := range hosts {
-		lines = append(lines, fmt.Sprintf("host_%d ansible_host=%s ansible_user=root ansible_port=22", host.HostID, host.HostIP))
+		label := inventoryHostLabel(host, usedLabels)
+		lines = append(lines, fmt.Sprintf("%s ansible_host=%s ansible_user=root ansible_port=22", label, host.HostIP))
 	}
 	lines = append(lines, "", "[all:vars]", "ansible_ssh_private_key_file="+keyPath, "ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="+filepath.Join(directory, "known_hosts")+"'")
 	if err = os.WriteFile(inventoryPath, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
@@ -977,6 +1011,7 @@ func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSna
 	if err != nil {
 		return "", "", -1, err
 	}
+	isolateProcessGroup(command)
 	if len(extra) > 0 {
 		value, _ := json.Marshal(extra)
 		command.Args = append(command.Args, "--extra-vars", string(value))
@@ -986,8 +1021,25 @@ func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSna
 	}
 	command.Dir = directory
 	var stdout, stderr strings.Builder
-	command.Stdout, command.Stderr = &stdout, &stderr
-	err = command.Run()
+	// 用管道而不是直接把 strings.Builder 交给 Cmd：这样能在输出的同时按块推给 sink，
+	// 「查看日志」在作业跑完之前就能看到进度，而不是一直"等待新输出"。
+	stream := newLiveLogStreamer(sink)
+	stdoutPipe, pipeErr := command.StdoutPipe()
+	if pipeErr != nil {
+		return "", "", -1, pipeErr
+	}
+	stderrPipe, pipeErr := command.StderrPipe()
+	if pipeErr != nil {
+		return "", "", -1, pipeErr
+	}
+	var pumps sync.WaitGroup
+	pumps.Add(2)
+	go func() { defer pumps.Done(); _, _ = io.Copy(io.MultiWriter(&stdout, stream), stdoutPipe) }()
+	go func() { defer pumps.Done(); _, _ = io.Copy(io.MultiWriter(&stderr, stream), stderrPipe) }()
+	err = runInProcessGroup(command)
+	// 进程（及其进程组）已经收干净，管道随之 EOF，两个 pump 必然结束。
+	pumps.Wait()
+	stream.Flush()
 	if commandCtx.Err() == context.DeadlineExceeded {
 		return stdout.String(), stderr.String() + "\nPlaybook execution timed out.", 124, commandCtx.Err()
 	}
@@ -999,6 +1051,169 @@ func executeLocalAnsible(ctx context.Context, privateKey string, hosts []hostSna
 		return stdout.String(), stderr.String(), exitError.ExitCode(), err
 	}
 	return stdout.String(), stderr.String(), -1, err
+}
+
+// isolateProcessGroup 把 ansible 放到独立进程组，并在取消/超时时按**整组**杀。
+//
+// 为什么必须这样：exec.CommandContext 默认只对 controller 进程发 SIGKILL，而 ansible 的
+// `--forks N` 会 fork 出多个工作进程（还有它们拉起的 ssh）。只杀 controller 会把工作进程
+// 遗弃成孤儿（PPID=1），它们又都卡在"输出管道已无人读取"上永不退出：
+// 2026-09-18 现场作业 #831 就留下 8 个这样的孤儿进程，占着到生产主机的 ssh 连接。
+//
+// WaitDelay 是第二道保险：进程被杀后若还有子进程持有 stdout/stderr 管道，Wait 会一直等 I/O
+// 结束；给一个兜底期限保证 Run() 一定会返回，作业能被正常收尾。
+func isolateProcessGroup(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		// 负号 = 整个进程组（组 id 即组长 pid）。
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		return nil
+	}
+	command.WaitDelay = 10 * time.Second
+}
+
+// runInProcessGroup 运行命令，并保证**返回前整组进程都已回收**（配合 isolateProcessGroup 使用）。
+//
+// 单靠 Cancel 按组杀不够：实测 Wait 返回后进程组仍然存在（ansible fork 出来的工作进程还在，
+// 它们持有 ssh 连接并卡在"输出管道无人读取"上）。因此返回前无条件再按组补一刀——
+// 正常结束、超时、被杀三种路径都覆盖，且对已经消失的组只是忽略 ESRCH。
+func runInProcessGroup(command *exec.Cmd) error {
+	if err := command.Start(); err != nil {
+		return err
+	}
+	defer func() {
+		if command.Process != nil {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		}
+	}()
+	err := command.Wait()
+	// 命令已退出、但仍有子进程（如挂住的 ssh）持有输出管道时，WaitDelay 到期会返回
+	// ErrWaitDelay 覆盖掉"退出码 0"。对作业而言 ansible 跑完就是成功，不能因为一个
+	// 残留子进程把作业判失败——这里按真实退出码判定（残留子进程由上面的 defer 清掉）。
+	if errors.Is(err, exec.ErrWaitDelay) && command.ProcessState != nil && command.ProcessState.Success() {
+		return nil
+	}
+	return err
+}
+
+// persistenceContext 返回"必须落库"的写入用 context：作业一旦进入执行，收尾状态就必须写进去，
+// 进程关闭、请求取消都不该阻止它。cancel 只用来中断执行本身，不用来中断结果落库。
+func persistenceContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
+}
+
+// liveLogChunkBytes / liveLogChunkInterval 控制实时输出落库的频度：
+// 攒够字节数或到间隔就刷一次，避免每个 read 都写库。
+const (
+	liveLogChunkBytes    = 4096
+	liveLogChunkInterval = 1500 * time.Millisecond
+)
+
+// liveLogStreamer 是 io.Writer：把运行中的 ansible 输出按块交给 sink 落库。
+// 两个 pump goroutine（stdout/stderr）会并发写，因此内部用互斥保护。
+// sink 为 nil 时退化为只计数、不落库。
+type liveLogStreamer struct {
+	sink   func(string)
+	mu     sync.Mutex
+	buffer strings.Builder
+	last   time.Time
+}
+
+func newLiveLogStreamer(sink func(string)) *liveLogStreamer {
+	return &liveLogStreamer{sink: sink, last: time.Now()}
+}
+
+func (streamer *liveLogStreamer) Write(p []byte) (int, error) {
+	streamer.mu.Lock()
+	defer streamer.mu.Unlock()
+	streamer.buffer.Write(p)
+	if streamer.sink != nil && (streamer.buffer.Len() >= liveLogChunkBytes || time.Since(streamer.last) >= liveLogChunkInterval) {
+		streamer.flushLocked()
+	}
+	return len(p), nil
+}
+
+// Flush 把剩余缓冲写出去（执行结束时调用，保证最后一段不丢）。
+func (streamer *liveLogStreamer) Flush() {
+	streamer.mu.Lock()
+	defer streamer.mu.Unlock()
+	streamer.flushLocked()
+}
+
+func (streamer *liveLogStreamer) flushLocked() {
+	if streamer.buffer.Len() == 0 {
+		return
+	}
+	chunk := streamer.buffer.String()
+	streamer.buffer.Reset()
+	streamer.last = time.Now()
+	if streamer.sink != nil {
+		streamer.sink(chunk)
+	}
+}
+
+// jobLogSink 返回把输出块写进 automation_execution_job_log 的回调（见 AUTOMATION_JOB_EXECUTION.md）。
+// 写失败只丢弃该块：实时输出是"尽力而为"的展示，不该影响作业本身。
+func (handler *Handler) jobLogSink(ctx context.Context, jobID int64) func(string) {
+	return func(chunk string) {
+		now := time.Now().UTC()
+		_ = db.New(handler.db).InsertAutomationJobLogChunk(ctx, db.InsertAutomationJobLogChunkParams{
+			CreateTime: now, UpdateTime: now, JobID: jobID, Content: chunk,
+		})
+	}
+}
+
+// inventoryHostLabel 生成 inventory 里的主机别名：<主机名>(<IP>)。
+//
+// ansible 的 task 输出与 PLAY RECAP 都用这个别名标识主机，所以它是给人看的：
+// 早先用 host_<id>，日志里看不出是哪台服务器。别名必须唯一——同名同 IP 的两条主机记录
+// 会被 ansible 并成一台（任务只跑一次），因此撞名时加 #<id> 后缀区分。
+func inventoryHostLabel(host hostSnapshot, used map[string]bool) string {
+	name := sanitizeInventoryLabel(host.HostName)
+	// 名字为空、或含非 ASCII 字符（如中文名，规整后只剩一串下划线加数字）时回落 host-<id>，
+	// 免得出现 "__-01(10.0.0.7)" 这种比 ID 更看不懂的别名。ASCII 名（含空格/斜杠）正常规整。
+	if !isPureASCII(host.HostName) {
+		name = ""
+	}
+	if name == "" {
+		name = fmt.Sprintf("host-%d", host.HostID)
+	}
+	label := fmt.Sprintf("%s(%s)", name, host.HostIP)
+	if used[label] {
+		label = fmt.Sprintf("%s#%d", label, host.HostID)
+	}
+	used[label] = true
+	return label
+}
+
+// sanitizeInventoryLabel 只保留 INI 主机名安全的字符：空格会把别名拆成 inventory 变量，
+// 其余特殊字符在 pattern/分组语法里有语义，统一替换成下划线（中文名等也会被规整掉）。
+func sanitizeInventoryLabel(value string) string {
+	var builder strings.Builder
+	for _, char := range strings.TrimSpace(value) {
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+			builder.WriteRune(char)
+		case char == '.', char == '_', char == '-':
+			builder.WriteRune(char)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+	return builder.String()
+}
+
+// isPureASCII 判断名字是否全为 ASCII：非 ASCII（中文等）无法规整成可读别名。
+func isPureASCII(value string) bool {
+	for _, char := range value {
+		if char > 127 {
+			return false
+		}
+	}
+	return true
 }
 
 func (handler *Handler) finishJob(ctx context.Context, id int64, start time.Time, code, succeeded, failed int, message string) error {

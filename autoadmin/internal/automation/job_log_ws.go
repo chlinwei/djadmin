@@ -116,6 +116,23 @@ func (handler *Handler) jobLogTextAndStatus(context *gin.Context, id int64) (str
 	if err != nil {
 		return "", "", err
 	}
+	status := ""
+	if raw, ok := job["status"]; ok && raw != nil {
+		status = fmt.Sprint(raw)
+	}
+	// 运行中优先展示**实时输出**：按主机的输出行要等作业结束才写入（见
+	// AUTOMATION_JOB_EXECUTION.md），运行期间只有实时块有内容可读——否则界面会一直
+	// 停在"等待新输出"。终态后改回按主机的结果行，避免同一份 ansible 输出重复展示。
+	if !isTerminalJobStatus(status) {
+		live, liveErr := handler.liveJobLog(context, id)
+		if liveErr != nil {
+			return "", "", liveErr
+		}
+		if strings.TrimSpace(live) != "" {
+			return live, status, nil
+		}
+	}
+
 	rows, err := db.New(handler.db).ListAutomationJobHostLogs(context, id)
 	if err != nil {
 		return "", "", err
@@ -133,11 +150,29 @@ func (handler *Handler) jobLogTextAndStatus(context *gin.Context, id int64) (str
 			log.WriteString("[error]\n" + strings.TrimRight(row.ErrorMessage, "\n") + "\n")
 		}
 	}
-	status := ""
-	if raw, ok := job["status"]; ok && raw != nil {
-		status = fmt.Sprint(raw)
-	}
 	return log.String(), status, nil
+}
+
+// isTerminalJobStatus 判断作业是否已到终态（终态后不再有实时输出可增量推送）。
+func isTerminalJobStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// liveJobLog 拼出运行中作业的实时输出（按写入顺序）。
+func (handler *Handler) liveJobLog(context *gin.Context, id int64) (string, error) {
+	chunks, err := db.New(handler.db).ListAutomationJobLogChunks(context, id)
+	if err != nil {
+		return "", err
+	}
+	var log strings.Builder
+	for _, chunk := range chunks {
+		log.WriteString(chunk)
+	}
+	return log.String(), nil
 }
 
 // jobLogPollInterval 读取轮询间隔配置（秒），缺省 0.5，允许范围 [0.2, 10]。

@@ -143,7 +143,7 @@ func (handler *Handler) deleteSoftwarePackageByID(context *gin.Context, id int64
 }
 
 func (handler *Handler) BatchDeleteSoftwarePackages(context *gin.Context) {
-	ids, ok := logTargetIDs(context)
+	ids, ok := batchTargetIDs(context)
 	if !ok {
 		return
 	}

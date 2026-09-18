@@ -17,12 +17,6 @@ func createAlertNotificationEventIfAbsent(ctx context.Context, queries *db.Queri
 	return insertIgnoreOutcome(id, err)
 }
 
-// createLogCollectionTargetIfAbsent 同上：host_id 唯一键冲突时 PG 不返回行。
-func createLogCollectionTargetIfAbsent(ctx context.Context, queries *db.Queries, arg db.CreateLogCollectionTargetIfAbsentParams) (int64, bool, error) {
-	id, err := queries.CreateLogCollectionTargetIfAbsent(ctx, arg)
-	return insertIgnoreOutcome(id, err)
-}
-
 // insertIgnoreOutcome 把「INSERT … ON CONFLICT DO NOTHING RETURNING id」的结果翻成
 // (id, 是否新建, err)：被跳过时 sqlc 的 :one 走 QueryRow，返回 sql.ErrNoRows。
 func insertIgnoreOutcome(id int64, err error) (int64, bool, error) {

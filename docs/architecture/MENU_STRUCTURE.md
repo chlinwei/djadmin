@@ -20,10 +20,25 @@
 │   ├── 媒介            /monitor/notification/media
 │   └── 通知策略        /monitor/notification/policies
 └── 日志管理 /monitor/logging
+    ├── 日志采集        /monitor/logging/collectors
     ├── 日志存储        /monitor/logging/storage
     ├── 日志处理规则    /monitor/logging/parsers
     └── 日志保留档位    /monitor/logging/retention
 ```
+
+### 日志采集从「智能监控 → 纳管目标」拆出（迁移 000031）
+
+原来是 exporter 与 Filebeat 混在同一张主机表里、用 segmented 切换目标类型。2026-09-18 拆开：
+
+- **日志管理 → 日志采集**（`/monitor/logging/collectors`）承载 Filebeat 纳管目标：安装/卸载、启停、
+  下发采集配置、配置状态（期望 vs 已下发）。放到这里的理由是采集与日志存储/处理规则/保留档位同属
+  一条链路，而监控页只保留 exporter 目标（该 tab 同时更名为「Exporter 目标」）。
+- **权限**：新菜单带 `monitor:log_collect:view`，`/monitor/log-targets/*` 按它鉴权；主机列表
+  `/monitor/targets/host-overview/` 两个页面共用，仍留在组级的 `monitor:view` 下。
+  权限码随 JWT 签发，升级后存量登录用户需要重新登录才能访问采集接口。
+- **前端共享**：主机树/搜索/分页/行选择/运行态刷新抽到 `fronted/src/util/hostTargetTable.js`，
+  表格外壳抽到 `fronted/src/views/monitor/components/HostTargetPanel.vue`，两个页面共用同一份实现
+  （避免"拆成两个页面 = 两套机械"的漂移）。
 
 ## 约定
 

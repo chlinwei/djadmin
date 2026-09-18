@@ -438,7 +438,8 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 | **`IN (sqlc.slice(x))` → `x = ANY(sqlc.arg(x)::bigint[])`** | 机械改写（`rewriteSlices`）：PG 侧的可变长 IN 只能用数组参数。两侧签名都是 `[]int64`，**残留的 `sqlc.slice` 会让派生直接失败**（防 P4-7 那种静默坏产物） |
 | **冲突子句 / `RETURNING` 的插入点是「第一条语句的结束分号处」** | `splitAtStatementEnd`：查询体包含"本条语句 + 其后、下一条 `-- name:` 之前的注释"（那些注释是**下一条**语句的文档）。按查询体末尾插入会让子句落进注释里（产出 `-- 说明… ON CONFLICT DO NOTHING`，sqlc 照样解析通过，只有真跑才炸）。见 P5 陷阱 29 |
 | **可空 json 列 → `database/sql.NullString`（列级 override）** | 生成物默认是 `json.RawMessage`，而它**扫不了 NULL**（Go 1.25 的 `jsontext.Value` 只接受 `[]byte`/`string`）。用 NULL 表达"未设置/继承"的可空 json 列（`monitor_notification_policy.media_ids` / `user_group_ids`）必须在 `sqlc.yaml` 里 override；PG block 的列级 override 要排在 `db_type: jsonb nullable` 那条**之后**（后匹配者生效）。见 P5 陷阱 26 |
-| **`INSERT IGNORE INTO t(…) VALUES(…)` → `INSERT INTO t(…) VALUES(…) ON CONFLICT DO NOTHING`** | 机械改写（`rewriteInsertIgnore`）：两侧"影响行数"的表达不同（MySQL 用 `:execresult` 拿 id + RowsAffected；PG 派生后是 `:one`+RETURNING，被跳过时返回 `ErrNoRows`），所以调用点要按方言分叉成两个 build-tag 文件（示例见 `internal/monitor/target_dialect_*.go`） |
+| **列级 override 的列名不会随表改名自动更新（静默失效）** | `overrides[].column` 是 `表名.列名`；表改名后旧条目匹配不到任何列，该列在 PG 侧悄悄退回退化类型（`int unsigned` → `int32`，MySQL 侧仍是 `uint32`）。**只有 `-tags postgres` 构建才报错**（`cannot use uint32(...) as int32`），只看 MySQL 构建发现不了，"两侧类型完全一致"的结论也会失真。改表名时必须同步核对 `sqlc.yaml` 的 override 列表并跑 `go build -tags postgres ./...`（2026-09 修 `monitor_elasticsearch_cluster.request_timeout`：表已从 `monitor_opensearch_cluster` 改名，override 仍写旧名） |
+| **`INSERT IGNORE INTO t(…) VALUES(…)` → `INSERT INTO t(…) VALUES(…) ON CONFLICT DO NOTHING`** | 机械改写（`rewriteInsertIgnore`）：两侧"影响行数"的表达不同（MySQL 用 `:execresult` 拿 id + RowsAffected；PG 派生后是 `:one`+RETURNING，被跳过时返回 `ErrNoRows`），所以调用点要按方言分叉成两个 build-tag 文件（示例见 `internal/monitor/target_dialect_*.go` 与 `internal/logcollect/collect_target_dialect_*.go`） |
 | **`ON DUPLICATE KEY UPDATE a=VALUES(a)` → `ON CONFLICT (<冲突目标>) DO UPDATE SET a=EXCLUDED.a`** | 机械改写（`rewriteUpserts`）：冲突目标取自查询上的 `-- conflict: <列名>` 注释（MySQL 侧看不出打在哪个唯一键上）。缺注释、或改写后仍残留 MySQL 子句都直接报错 |
 | **INSERT 的 `:execresult` → `:one` + `RETURNING id`** | 同上（`:execresult` 的调用点也靠 `LastInsertId()`）；UPDATE/DELETE 的 `:execresult` 保持原样。PG 侧返回的是 id，由门面的 `insertResult` 包回 `sql.Result` 以对齐 MySQL 签名 |
 | `GROUP_CONCAT`→`string_agg`、`JSON_ARRAYAGG`→`json_agg`、`JSON_UNQUOTE(JSON_EXTRACT(x,'$.k'))`→`x->>'k'`、`CAST(… AS CHAR/SIGNED)`→`AS text/bigint` | 显式 override 表（`derive/overrides.go`）；**未命中即报错**，静默跳过等于产出语义错的 SQL |
@@ -686,8 +687,9 @@ docker/compose 配置、逻辑服务与部署实例）、**`monitor` 138 → 0**
 已迁移的七个包各自留下一个**真库冒烟**（`*_SMOKE_DSN` 触发、默认跳过）：`internal/baseline/smoke_test.go`
 （该域全流程 44 步，事务内回滚）、`internal/identity/smoke_test.go`、`internal/inspection/smoke_test.go`、
 `internal/automation/smoke_test.go`（后四个是 handler/queries 级写路径 + 按 id 清理自己造的行）、
-`internal/monitor/smoke_test.go`（监控目标域）与 `internal/monitor/smoke_alert_log_test.go`
-（告警/日志/配置三域，共用 `MONITOR_SMOKE_DSN`，约 90 步）；另有跨域的
+`internal/monitor/smoke_test.go`（监控目标域）、`internal/monitor/smoke_alert_test.go`（告警/通知/监控总览）
+与 `internal/logcollect/smoke_log_test.go`（日志采集与 ES 存储，含通用配置资源写路径），三者共用
+`MONITOR_SMOKE_DSN`；另有跨域的
 `internal/platform/database/insert_smoke_test.go` 覆盖"插入取主键"契约。
 
 两条**真库冒烟的纪律**（2026-09-16，P2-2 踩出来的）：

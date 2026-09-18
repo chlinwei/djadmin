@@ -18,6 +18,7 @@ autoadmin/bin/
 autoadmin/bin/autoadmin
 # 监控安装包缓存
 backend/djadmin/media/monitor_packages/
+autoadmin/media/monitor_packages/
 
 # 自动生成的测试报告（由CI/CD生成）
 TEST_REPORT.md

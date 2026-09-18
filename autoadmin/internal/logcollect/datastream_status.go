@@ -30,18 +30,22 @@ type dataStreamBackingIndex struct {
 }
 
 type dataStreamEntry struct {
-	Name           string                   `json:"name"`
-	Project        string                   `json:"project"`
-	Environment    string                   `json:"environment"`
-	BusinessSystem string                   `json:"business_system"`
-	Service        string                   `json:"service"`
-	Tier           string                   `json:"tier"`
-	Health         string                   `json:"health"`
-	Docs           float64                  `json:"docs"`
-	Bytes          float64                  `json:"bytes"`
-	ILMState       string                   `json:"ilm_state"`
-	Recognized     bool                     `json:"recognized"`
-	BackingIndices []dataStreamBackingIndex `json:"backing_indices"`
+	Name           string  `json:"name"`
+	Project        string  `json:"project"`
+	Environment    string  `json:"environment"`
+	BusinessSystem string  `json:"business_system"`
+	Service        string  `json:"service"`
+	Tier           string  `json:"tier"`
+	Health         string  `json:"health"`
+	Docs           float64 `json:"docs"`
+	Bytes          float64 `json:"bytes"`
+	ILMState       string  `json:"ilm_state"`
+	Recognized     bool    `json:"recognized"`
+	// 服务级采集开关（配置事实，直接来自逻辑服务行）：页面据此标注"已停用 / 未开启采集"，
+	// 表示这条流不会再被写入新的配置，存量数据按档位保留到期（计划 §3）。
+	ServiceEnabled     bool                     `json:"service_enabled"`
+	CollectedByService bool                     `json:"service_collection_enabled"`
+	BackingIndices     []dataStreamBackingIndex `json:"backing_indices"`
 }
 
 // data stream 后备索引名为 .ds-<stream>-<generation>（如 .ds-logs-kul-test-tib-hot-000015），
@@ -49,10 +53,13 @@ type dataStreamEntry struct {
 var backingIndexDateSuffix = regexp.MustCompile(`-\d{4}\.\d{2}\.\d{2}(-\d+)?$`)
 var backingIndexGenerationSuffix = regexp.MustCompile(`-\d{5,}$`)
 
-// parsedStreamName：流名解析结果。
+// parsedStreamName：流名解析结果。ServiceEnabled / ServiceCollectEnabled 只在识别成功时有效，
+// 取自逻辑服务行（DISTINCT 维度码已按服务去重，同码服务视为同一服务）。
 type parsedStreamName struct {
 	Stream, Project, Environment, BusinessSystem, Service, Tier string
 	Recognized                                                  bool
+	ServiceEnabled                                              bool
+	ServiceCollectEnabled                                       bool
 }
 
 // streamNameMatcher 基于数据库维度码做流名匹配。编码可含连字符（如服务 tomcat-svc、
@@ -70,6 +77,8 @@ type streamNameMatcher struct {
 type streamServiceKey struct {
 	Match                                         string // "<项目>-<业务系统>-<环境>-<逻辑服务>-"
 	Project, Environment, BusinessSystem, Service string
+	// 服务级采集开关，随解析结果一路带到页面（见 dataStreamEntry 的说明）。
+	Enabled, CollectEnabled bool
 }
 
 type streamLegacyKey struct {
@@ -77,18 +86,22 @@ type streamLegacyKey struct {
 	Project, Environment, BusinessSystem string
 }
 
-// loadStreamDims 加载启用服务的维度码，构造流名匹配候选（新命名 + 旧命名兼容）。
+// loadStreamDims 加载**全部**逻辑服务的维度码，构造流名匹配候选（新命名 + 旧命名兼容）。
+//
+// 这里刻意不按 `enabled` 过滤：识别回答的是"这条已有的流属于哪个已知服务"，
+// 停用不影响归属，只影响下发（见 ListServiceStreamDims 查询上的说明）。
 func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) streamNameMatcher {
 	matcher := streamNameMatcher{prefix: prefix, tiers: map[string]bool{}}
 	var serviceKeys []streamServiceKey
 	var legacyKeys []streamLegacyKey
 	queries := db.New(handler.db)
-	if rows, err := queries.ListEnabledServiceStreamDims(context); err == nil {
+	if rows, err := queries.ListServiceStreamDims(context); err == nil {
 		for _, row := range rows {
 			serviceKeys = append(serviceKeys, streamServiceKey{
 				Match:   strings.Join([]string{row.ProjectCode, row.BusinessSystemCode, row.EnvironmentCode, row.ServiceCode}, "-") + "-",
 				Project: row.ProjectCode, Environment: row.EnvironmentCode,
 				BusinessSystem: row.BusinessSystemCode, Service: row.ServiceCode,
+				Enabled: row.ServiceEnabled, CollectEnabled: row.LogCollectionEnabled,
 			})
 			legacyKeys = append(legacyKeys, streamLegacyKey{
 				Match:   strings.Join([]string{row.EnvironmentCode, row.BusinessSystemCode}, "-") + "-",
@@ -99,11 +112,13 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 			}
 		}
 	}
-	// 兜底：把所有档位码也带上，旧命名流（无服务维度）至少档位能对上
-	if tiers, tierErr := queries.ListEnabledRetentionTiers(context); tierErr == nil {
-		for _, tier := range tiers {
-			if tier.Code != "" {
-				matcher.tiers[tier.Code] = true
+	// 兜底：把所有档位码也带上，旧命名流（无服务维度）至少档位能对上。
+	// 用不过滤 enabled 的 ListRetentionTierCodes：停用一个档位不该让既有旧命名流变成"未识别"
+	//（下拉/管理路径要的"只列启用档位"仍用 ListEnabledRetentionTiers）。
+	if tierCodes, tierErr := queries.ListRetentionTierCodes(context); tierErr == nil {
+		for _, code := range tierCodes {
+			if code != "" {
+				matcher.tiers[code] = true
 			}
 		}
 	}
@@ -125,6 +140,8 @@ func (m streamNameMatcher) resolveStreamName(stream string) parsedStreamName {
 			tier := strings.TrimPrefix(rest, candidate.Match)
 			result.Project, result.Environment, result.BusinessSystem, result.Service, result.Tier = candidate.Project, candidate.Environment, candidate.BusinessSystem, candidate.Service, tier
 			result.Recognized = true
+			result.ServiceEnabled = candidate.Enabled
+			result.ServiceCollectEnabled = candidate.CollectEnabled
 			return result
 		}
 	}
@@ -215,6 +232,8 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 				Name: parsed.Stream, Project: parsed.Project, Environment: parsed.Environment,
 				BusinessSystem: parsed.BusinessSystem, Service: parsed.Service, Tier: parsed.Tier,
 				Recognized: parsed.Recognized,
+				// 旧命名流没有服务段，识别不出服务，两个开关都没有意义（保持 false，页面不标注）。
+				ServiceEnabled: parsed.ServiceEnabled, CollectedByService: parsed.ServiceCollectEnabled,
 			}
 			entries[parsed.Stream] = entry
 			order = append(order, parsed.Stream)
@@ -281,14 +300,6 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 		Code string `json:"code"`
 		Name string `json:"name"`
 	}
-	type serviceRow struct {
-		Code           string  `json:"code"`
-		Name           string  `json:"name"`
-		BusinessSystem string  `json:"business_system_code"`
-		Environment    *string `json:"environment_code"`
-		Tier           *string `json:"retention_tier"`
-		CollectEnabled bool    `json:"log_collection_enabled"`
-	}
 	queries := db.New(handler.db)
 	projects := []projectRow{}
 	if rows, queryErr := queries.ListEnabledProjects(context); queryErr == nil {
@@ -313,35 +324,19 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 			environments = append(environments, envRow{ID: row.ID, Code: row.Code, Name: row.Name})
 		}
 	}
-	services := []serviceRow{}
-	if rows, queryErr := queries.ListEnabledServiceStreamRows(context); queryErr == nil {
-		for _, row := range rows {
-			var environment, tier *string
-			if row.EnvironmentCode.Valid {
-				value := row.EnvironmentCode.String
-				environment = &value
-			}
-			if row.RetentionTier.Valid {
-				value := row.RetentionTier.String
-				tier = &value
-			}
-			services = append(services, serviceRow{
-				Code: row.Code, Name: row.Name, BusinessSystem: row.BusinessSystemCode,
-				Environment: environment, Tier: tier, CollectEnabled: row.LogCollectionEnabled,
-			})
-		}
-	}
-
 	response.Success(context, gin.H{
 		"cluster":      gin.H{"id": cluster.ID, "index_prefix": cluster.IndexPrefix},
 		"data_streams": entries,
 		"allocation":   allocation,
 		"alloc_error":  errorString(allocErr),
+		// dims：树的层级元数据。**曾经**还有一份 services（服务维度元数据），但前端只用
+		// 流自身的字段渲染服务层（服务码来自流名解析），那份 payload 从未被消费；
+		// 2026-09-18 连同它的查询一起删除，避免留一份"看着有用、实际没人读"的死数据
+		// （服务级的采集开关现在随每条流返回：service_enabled / service_collection_enabled）。
 		"dims": gin.H{
 			"projects":         projects,
 			"business_systems": bizsystems,
 			"environments":     environments,
-			"services":         services,
 		},
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 	})

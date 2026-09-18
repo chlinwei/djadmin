@@ -181,7 +181,7 @@ func normalizeHostArch(value string) string {
 	return ""
 }
 
-func playbookContent(context *gin.Context, pool *sql.DB, playbookID int64) (string, error) {
+func playbookContent(context context.Context, pool *sql.DB, playbookID int64) (string, error) {
 	// 复用 automation 域已有的取模板查询（内容是唯一需要的列）。
 	playbook, err := generated.New(pool).GetAutomationPlaybook(context, playbookID)
 	if err != nil {
@@ -190,31 +190,48 @@ func playbookContent(context *gin.Context, pool *sql.DB, playbookID int64) (stri
 	return playbook.Content, nil
 }
 
-func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row logTargetRow) (gin.H, error) {
+// logTargetInstallDispatch 是一次已派发的 Filebeat 安装/卸载：作业与历史行都已建好、
+// 目标已置 pending，剩下的是"等作业跑完 + 收尾落库"。
+type logTargetInstallDispatch struct {
+	row           logTargetRow
+	jobID         int64
+	historyID     int64
+	action        string
+	desiredStatus string
+	dispatchedAt  time.Time
+}
+
+// prepareLogTargetInstall 建作业/历史行并把目标置为 pending，返回待执行句柄。
+//
+// 拆成"准备"与"执行+收尾"两步是为了两类调用方：
+//   - 单台重试（HTTP 请求）走 dispatchLogTargetInstall：准备完就返回，后台 goroutine 跑；
+//   - 批量作业（worker 的批量 runner）要**等待本次安装真正结束**才能把 item 落成终态，
+//     否则进度会报"已成功"而 ansible 还在跑，批量并发上限也就形同虚设。
+func (handler *Handler) prepareLogTargetInstall(context context.Context, row logTargetRow) (logTargetInstallDispatch, error) {
 	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
-		return nil, fmt.Errorf("host agent is offline")
+		return logTargetInstallDispatch{}, fmt.Errorf("host agent is offline")
 	}
-	pending, _, err := logTargetPending(ginContext, handler.db, row.ID)
+	pending, _, err := logTargetPending(context, handler.db, row.ID)
 	if err != nil {
-		return nil, err
+		return logTargetInstallDispatch{}, err
 	}
 	if pending {
-		return nil, fmt.Errorf("已有安装/卸载任务在执行中，请等待完成或先取消")
+		return logTargetInstallDispatch{}, fmt.Errorf("已有安装/卸载任务在执行中，请等待完成或先取消")
 	}
 	action, desiredStatus := "install", "success"
 	if !row.ManagedEnabled {
 		action, desiredStatus = "uninstall", "uninstalled"
 	}
-	item, err := handler.pickFilebeatPackage(ginContext, row, !row.ManagedEnabled)
+	item, err := handler.pickFilebeatPackage(context, row, !row.ManagedEnabled)
 	if err != nil {
-		return nil, err
+		return logTargetInstallDispatch{}, err
 	}
 	if !item.PlaybookID.Valid {
-		return nil, fmt.Errorf("Filebeat %s包未配置 %s Playbook，请在软件仓库编辑该包并保存（系统会自动填入默认 Playbook），或手动填写", action, action)
+		return logTargetInstallDispatch{}, fmt.Errorf("Filebeat %s包未配置 %s Playbook，请在软件仓库编辑该包并保存（系统会自动填入默认 Playbook），或手动填写", action, action)
 	}
-	content, err := playbookContent(ginContext, handler.db, item.PlaybookID.Int64)
+	content, err := playbookContent(context, handler.db, item.PlaybookID.Int64)
 	if err != nil {
-		return nil, fmt.Errorf("Filebeat %s playbook 不存在: %w", action, err)
+		return logTargetInstallDispatch{}, fmt.Errorf("Filebeat %s playbook 不存在: %w", action, err)
 	}
 	// systemd unit 内容从软件包配置取（创建/编辑/回填时已写默认值），空则用内置默认兜底。
 	serviceFileContent := strings.TrimSpace(item.ServiceFileContent)
@@ -225,7 +242,7 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	packageDirectory := ""
 	if action == "install" {
 		if strings.TrimSpace(item.File) == "" || strings.TrimSpace(item.SHA256) == "" {
-			return nil, fmt.Errorf("选中的 Filebeat 软件包缺少离线文件或校验和，请先在软件仓库上传")
+			return logTargetInstallDispatch{}, fmt.Errorf("选中的 Filebeat 软件包缺少离线文件或校验和，请先在软件仓库上传")
 		}
 		packageDirectory = filepath.Join(handler.packageRoot, filepath.Dir(filepath.FromSlash(item.File)))
 		extra["package_file_name"] = filepath.Base(item.File)
@@ -242,7 +259,7 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 	extraJSON, _ := json.Marshal(extra)
 	queries := generated.New(handler.db)
 	// 作业行的列集与常量与 exporter 安装一致，直接复用 CreateMonitorTargetJob。
-	jobID, err := queries.CreateMonitorTargetJob(ginContext, generated.CreateMonitorTargetJobParams{
+	jobID, err := queries.CreateMonitorTargetJob(context, generated.CreateMonitorTargetJobParams{
 		CreateTime: now, UpdateTime: now, JobID: uuid.NewString(),
 		InventorySnapshot: inventoryJSON, ExtraVars: extraJSON,
 		ResultSummary:        json.RawMessage(`{"message":"Filebeat install/uninstall job queued"}`),
@@ -252,9 +269,9 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 		RequestedUserID: sql.NullInt32{}, RequestedUsername: "system",
 	})
 	if err != nil {
-		return nil, err
+		return logTargetInstallDispatch{}, err
 	}
-	historyID, err := queries.CreateLogTargetInstallHistory(ginContext, generated.CreateLogTargetInstallHistoryParams{
+	historyID, err := queries.CreateLogTargetInstallHistory(context, generated.CreateLogTargetInstallHistoryParams{
 		CreateTime: now, UpdateTime: now, Action: action,
 		HostIDSnapshot:          sql.NullInt32{Int32: int32(row.HostID), Valid: true},
 		HostNameSnapshot:        row.HostName,
@@ -267,77 +284,100 @@ func (handler *Handler) dispatchLogTargetInstall(ginContext *gin.Context, row lo
 		AutomationJobIDSnapshot: sql.NullInt64{Int64: jobID, Valid: true},
 	})
 	if err != nil {
-		return nil, err
+		return logTargetInstallDispatch{}, err
 	}
-	if err = queries.MarkLogTargetInstallPending(ginContext, generated.MarkLogTargetInstallPendingParams{
+	if err = queries.MarkLogTargetInstallPending(context, generated.MarkLogTargetInstallPendingParams{
 		UpdateTime: now, ID: row.ID,
 	}); err != nil {
+		return logTargetInstallDispatch{}, err
+	}
+	return logTargetInstallDispatch{
+		row: row, jobID: jobID, historyID: historyID, action: action,
+		desiredStatus: desiredStatus, dispatchedAt: now,
+	}, nil
+}
+
+// runLogTargetInstall 阻塞执行 ansible 作业并收尾（安装历史终态、目标的 install_status /
+// runtime_status、安装成功后自动下发一次采集配置），返回收尾后的 install_status 与提示信息
+// （批量作业用返回值决定这一台算成功还是失败；单台派发丢弃返回值，前端看列表）。
+//
+// 收尾写入用 `context.WithoutCancel`：作业执行上下文可能因超时/取消结束，但"这次安装已经结束"
+// 这个事实必须落库，否则目标会永久停在 install_status=pending。
+func (handler *Handler) runLogTargetInstall(ctx context.Context, dispatch logTargetInstallDispatch) (string, string) {
+	row, jobID, historyID := dispatch.row, dispatch.jobID, dispatch.historyID
+	if handler.jobs != nil {
+		_ = handler.jobs.RunJobByID(ctx, jobID)
+	}
+	background, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	asyncQueries := generated.New(handler.db)
+	finalStatus := "failed"
+	var summary, jobStatus string
+	if job, scanErr := asyncQueries.GetJobResultSummary(background, jobID); scanErr == nil {
+		jobStatus = job.Status
+		summary = jobResultMessage(job.ResultSummary)
+		if jobStatus == "success" {
+			finalStatus = dispatch.desiredStatus
+		}
+	}
+	if summary == "" {
+		summary = "Filebeat 任务执行失败"
+	}
+	message := summary
+	if finalStatus == dispatch.desiredStatus {
+		message = ""
+	}
+	// 时长由应用层算：历史的 create_time 就是上面的 now
+	//（原实现用 TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000）。
+	finishedAt := time.Now().UTC()
+	succeeded := 0
+	if finalStatus == "success" {
+		succeeded = 1
+	}
+	// agent_installed 是"Filebeat 二进制已装"的持久态：安装成功置 TRUE、卸载成功置 FALSE；
+	// 失败时传 NULL 保持原值（安装/卸载失败不该抹掉已知的已装/未装状态）。
+	agentInstalled := sql.NullBool{}
+	switch finalStatus {
+	case "success":
+		agentInstalled = sql.NullBool{Bool: true, Valid: true}
+	case "uninstalled":
+		agentInstalled = sql.NullBool{Bool: false, Valid: true}
+	}
+	_, _ = asyncQueries.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
+		InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
+		AgentInstalled: agentInstalled, UpdateTime: finishedAt, ID: row.ID,
+	})
+	_, _ = asyncQueries.FinishLogTargetInstallHistory(background, generated.FinishLogTargetInstallHistoryParams{
+		Status: finalStatus, SummaryMessage: message,
+		EndTime:         sql.NullTime{Time: finishedAt, Valid: true},
+		DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(dispatch.dispatchedAt).Seconds(), Valid: true},
+		UpdateTime:      finishedAt, ID: historyID,
+	})
+	// 安装成功后自动下发一次采集配置（写 /etc/filebeat/filebeat.yml + inputs.d 并启动），
+	// 这样"安装"即可用，不用再手动点「下发配置」；失败不影响安装结论，但把原因写进
+	// last_error 供前端展示（常见：agent 版本落后不认新动作、没有默认 ES 集群、没有可下发片段）。
+	if finalStatus == dispatch.desiredStatus && dispatch.action == "install" {
+		if _, applyErr := handler.applyLogTargetConfigRow(background, row); applyErr != nil {
+			_ = asyncQueries.SetLogTargetLastError(background, generated.SetLogTargetLastErrorParams{
+				LastError: applyErr.Error(), UpdateTime: time.Now().UTC(), ID: row.ID,
+			})
+		}
+	}
+	return finalStatus, message
+}
+
+// dispatchLogTargetInstall 单台重试/安装：准备完立即返回，作业在后台跑（前端看列表与安装历史）。
+func (handler *Handler) dispatchLogTargetInstall(ctx context.Context, row logTargetRow) (gin.H, error) {
+	dispatch, err := handler.prepareLogTargetInstall(ctx, row)
+	if err != nil {
 		return nil, err
 	}
-	// playbook 可能执行数分钟，异步跑，前端通过列表刷新和安装历史查看进度。
 	go func() {
 		runContext, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		_ = handler.jobs.RunJobByID(runContext, jobID)
-		// 任务结束后把 install_status 落成终态，供列表直接展示；安装历史本身由 automation 侧结果快照追溯。
-		background := context.Background()
-		asyncQueries := generated.New(handler.db)
-		finalStatus := "failed"
-		var summary, jobStatus string
-		if job, scanErr := asyncQueries.GetJobResultSummary(background, jobID); scanErr == nil {
-			jobStatus = job.Status
-			summary = jobResultMessage(job.ResultSummary)
-			if jobStatus == "success" {
-				finalStatus = desiredStatus
-			}
-		}
-		if summary == "" {
-			summary = "Filebeat 任务执行失败"
-		}
-		message := summary
-		if finalStatus == desiredStatus {
-			message = ""
-		}
-		// 时长由应用层算：历史的 create_time 就是上面的 now
-		// （原实现用 TIMESTAMPDIFF(MICROSECOND,create_time,?)/1000000）。
-		finishedAt := time.Now().UTC()
-		succeeded := 0
-		if finalStatus == "success" {
-			succeeded = 1
-		}
-		// agent_installed 是"Filebeat 二进制已装"的持久态：安装成功置 TRUE、卸载成功置 FALSE；
-		// 失败时传 NULL 保持原值（安装/卸载失败不该抹掉已知的已装/未装状态）。
-		agentInstalled := sql.NullBool{}
-		switch finalStatus {
-		case "success":
-			agentInstalled = sql.NullBool{Bool: true, Valid: true}
-		case "uninstalled":
-			agentInstalled = sql.NullBool{Bool: false, Valid: true}
-		}
-		_, _ = asyncQueries.FinishLogTargetInstallState(background, generated.FinishLogTargetInstallStateParams{
-			InstallStatus: finalStatus, InstallMessage: message, InstallSucceeded: succeeded,
-			AgentInstalled: agentInstalled, UpdateTime: finishedAt, ID: row.ID,
-		})
-		_, _ = asyncQueries.FinishLogTargetInstallHistory(background, generated.FinishLogTargetInstallHistoryParams{
-			Status: finalStatus, SummaryMessage: message,
-			EndTime:         sql.NullTime{Time: finishedAt, Valid: true},
-			DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(now).Seconds(), Valid: true},
-			UpdateTime:      finishedAt, ID: historyID,
-		})
-		// 安装成功后自动下发一次采集配置（写 /etc/filebeat/filebeat.yml + inputs.d 并启动），
-		// 这样"安装"即可用，不用再手动点「下发配置」；失败不影响安装结论，但把原因写进
-		// last_error 供前端展示（常见：agent 版本落后不认新动作、没有默认 ES 集群、没有可下发片段）。
-		if finalStatus == desiredStatus && action == "install" {
-			applyContext, _ := gin.CreateTestContext(nil)
-			if _, applyErr := handler.applyLogTargetConfigRow(applyContext, row); applyErr != nil {
-				_ = asyncQueries.SetLogTargetLastError(background, generated.SetLogTargetLastErrorParams{
-					LastError: applyErr.Error(), UpdateTime: time.Now().UTC(), ID: row.ID,
-				})
-			}
-		}
+		_, _ = handler.runLogTargetInstall(runContext, dispatch)
 	}()
-	_ = desiredStatus
-	return gin.H{"id": row.ID, "action": action, "history_id": historyID, "job_id": jobID}, nil
+	return gin.H{"id": row.ID, "action": dispatch.action, "history_id": dispatch.historyID, "job_id": dispatch.jobID}, nil
 }
 
 // jobResultMessage 取作业结果摘要里的 message 字段。
@@ -392,7 +432,11 @@ func (handler *Handler) controlLogTargetService(context *gin.Context, action str
 	response.Success(context, result)
 }
 
-func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id int64, action string) (gin.H, error) {
+// dispatchLogTargetServiceControl 走 agent 通用命令通道启停/查状态。
+//
+// 入参是 context.Context（而非 *gin.Context）：批量启停要脱离请求执行，
+// 而 *gin.Context 一离开请求生命周期就被取消，会把已在主机上执行的 systemctl 结果一起丢掉。
+func (handler *Handler) dispatchLogTargetServiceControl(context context.Context, id int64, action string) (gin.H, error) {
 	instanceName, err := generated.New(handler.db).GetLogTargetHostName(context, id)
 	if err != nil {
 		return nil, fmt.Errorf("log collection target not found")
@@ -417,7 +461,7 @@ func (handler *Handler) dispatchLogTargetServiceControl(context *gin.Context, id
 // persistLogTargetRuntimeStatus 把启停/查状态的真实结果落库，列表里的 Filebeat 状态列
 // 读的就是这个字段；之前没人更新它，服务停了界面仍显示旧的"running"。
 // systemctl status 退出码语义与 exporter 一致：0=运行中，3=已停止，其余=异常。
-func (handler *Handler) persistLogTargetRuntimeStatus(context *gin.Context, id int64, action string, exitCode int32) {
+func (handler *Handler) persistLogTargetRuntimeStatus(context context.Context, id int64, action string, exitCode int32) {
 	runtimeStatus := "error"
 	switch {
 	case action == "stop" && exitCode == 0:
@@ -582,24 +626,15 @@ func (handler *Handler) batchLogTargets(context *gin.Context, label string, run 
 	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
 }
 
-func (handler *Handler) BatchRetryLogTargets(context *gin.Context) {
-	handler.batchLogTargets(context, "retry", func(row logTargetRow) (gin.H, error) {
-		return handler.dispatchLogTargetInstall(context, row)
-	})
-}
-
+// BatchStartLogTargets / BatchStopLogTargets 仍是同步批量：单台只是一次 30 秒超时的
+// systemctl 调用，逐台串行的代价可接受；而"批量下发/批量安装"要跑分钟级操作，必须走
+// 批量作业（见 log_batch_api.go 与 log_batch_job.go）。
 func (handler *Handler) BatchStartLogTargets(context *gin.Context) {
 	handler.batchServiceControl(context, "start")
 }
 
 func (handler *Handler) BatchStopLogTargets(context *gin.Context) {
 	handler.batchServiceControl(context, "stop")
-}
-
-func (handler *Handler) BatchApplyLogTargets(context *gin.Context) {
-	handler.batchLogTargets(context, "apply", func(row logTargetRow) (gin.H, error) {
-		return handler.applyLogTargetConfigRow(context, row)
-	})
 }
 
 func (handler *Handler) BatchDeleteLogTargets(context *gin.Context) {
@@ -631,7 +666,12 @@ func (handler *Handler) batchServiceControl(context *gin.Context, action string)
 	})
 }
 
-func (handler *Handler) applyLogTargetConfigRow(context *gin.Context, row logTargetRow) (gin.H, error) {
+// applyLogTargetConfigRow 是全流程下发：读默认集群 → 渲染期望片段（含 output 指纹）→
+// 指纹比对（一致则跳过）→ 下发 filebeat.yml → 下发 inputs.d 片段 → 回写 config_fingerprint。
+//
+// 入参是 context.Context：批量作业的执行在队列消费者里跑，没有 *gin.Context 可依附；
+// 而 *gin.Context 不能带出请求生命周期（请求一结束就被取消，会把已下发的片段结果丢掉）。
+func (handler *Handler) applyLogTargetConfigRow(context context.Context, row logTargetRow) (gin.H, error) {
 	if handler.gateway == nil || !handler.gateway.IsOnline(row.HostName) {
 		return nil, fmt.Errorf("host agent is offline")
 	}
@@ -727,6 +767,7 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 	}
 	queries := generated.New(handler.db)
 	results := make([]gin.H, 0, len(input.HostIDs))
+	installTargetIDs := make([]int64, 0, len(input.HostIDs))
 	success := 0
 	for _, hostID := range input.HostIDs {
 		// 主机读取复用监控目标域的 GetHostTargetIdentity（列集一致：实例名、IP、是否已下线）。
@@ -752,15 +793,22 @@ func (handler *Handler) BatchCreateLogTargets(context *gin.Context) {
 			results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": "target already managed"})
 			continue
 		}
-		if input.InstallNow {
-			row := logTargetRow{ID: targetID, HostID: hostID, ManagedEnabled: true, HostName: name, HostIP: ip}
-			if _, err := handler.dispatchLogTargetInstall(context, row); err != nil {
-				results = append(results, gin.H{"host_id": hostID, "host": label, "ok": false, "message": err.Error()})
-				continue
-			}
-		}
 		success++
 		results = append(results, gin.H{"host_id": hostID, "host": label, "ok": true, "message": ""})
+		if input.InstallNow {
+			installTargetIDs = append(installTargetIDs, targetID)
+		}
 	}
-	response.Success(context, gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results})
+	result := gin.H{"total": len(results), "success": success, "failed": len(results) - success, "results": results}
+	// 「纳管并立即安装」不再逐台起无上限的 goroutine（1000 台会把 agent 侧打满），
+	// 而是把新建的目标交给一个批量作业：入队 + 有界并发 + 进度可在作业详情里查。
+	if len(installTargetIDs) > 0 {
+		batch, err := handler.createLogBatchJob(context, LogBatchActionInstall, installTargetIDs, requestedUsername(context))
+		if err != nil {
+			result["install_error"] = err.Error()
+		} else {
+			result["install_batch"] = batch
+		}
+	}
+	response.Success(context, result)
 }

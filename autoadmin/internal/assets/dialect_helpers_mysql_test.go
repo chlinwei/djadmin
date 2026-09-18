@@ -45,3 +45,10 @@ func clusterProfileCountArgs() []driver.Value {
 func clusterProfileListArgs(limit, offset int32) []driver.Value {
 	return []driver.Value{notNilArg{}, notNilArg{}, "%%", int64(limit), int64(offset)}
 }
+
+// serviceDeploymentLinkArgs 给出"按 deployment_ids 取服务关联"在该方言下的驱动参数：
+// MySQL 的 `IN (?)` 是一个位置参数，PG 侧是单个数组参数（`= ANY($1::bigint[])`，
+// 驱动看到的是 "{20}" 这样的字符串），因此两侧不能共用一个 int64 断言。
+func serviceDeploymentLinkArgs(deploymentID int64) []driver.Value {
+	return []driver.Value{deploymentID}
+}

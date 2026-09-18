@@ -16,7 +16,9 @@ import (
 	"autoadmin/internal/baseline"
 	"autoadmin/internal/identity"
 	"autoadmin/internal/inspection"
+	"autoadmin/internal/job"
 	"autoadmin/internal/logcollect"
+	"autoadmin/internal/messaging/rabbitmq"
 	"autoadmin/internal/monitor"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/rbac"
@@ -27,11 +29,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string) (*gin.Engine, error) {
-	return NewWithGateway(database, tokens, allowedOrigins, schedulerPublisher, credentialEncryptionKey, djangoSecret, nil)
+// logBatchPublisher 是日志采集批量作业需要的投递能力：只用到"向采集队列投递一条消息"。
+// 用窄接口而不是具体客户端类型，装配方给不出投递能力时（如未接队列的进程）批量执行器
+// 依然能构造，只是批量接口会明确报错。
+type logBatchPublisher interface {
+	PublishLogCollect(ctx context.Context, message job.Message) error
 }
 
-func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway) (*gin.Engine, error) {
+// LogBatchOptions 是日志采集批量动作的执行规模，由角色装配方（app）从配置注入。
+// 放在这里而不是直接读环境变量：并发上限属于部署参数，配置集中在 internal/config。
+type LogBatchOptions struct {
+	InstallConcurrency int
+	ApplyConcurrency   int
+	Prefetch           int
+	Budget             time.Duration
+}
+
+// New 只返回 HTTP 引擎（历史签名，供不消费队列的调用方使用）。
+func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string) (*gin.Engine, error) {
+	engine, _, err := NewWithGateway(database, tokens, allowedOrigins, schedulerPublisher, credentialEncryptionKey, djangoSecret, nil, LogBatchOptions{})
+	return engine, err
+}
+
+// NewWithGateway 装配 HTTP 路由，并返回本进程需要消费的队列消费者。
+//
+// 第二个返回值是「日志采集批量作业」的消费者：这类作业要通过 agent gRPC 会话执行，
+// 会话只存在于跑 api 角色的进程里，所以必须由 api 角色消费（见 rabbitmq.LogCollectRoute）。
+// batchOptions 的零值字段用 logcollect 的缺省规模（0 视为未配置）。
+func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, error) {
 	engine := gin.New()
 	engine.Use(cors.New(cors.Config{
 		AllowOrigins:  allowedOrigins,
@@ -53,7 +78,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 匿名可访问，路径穿越由 http.Dir 拦截；audit 中间件已跳过 /media 前缀。
 	mediaRoot, err := filepath.Abs("media")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	engine.Static("/media", mediaRoot)
 
@@ -193,7 +218,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 
 	assetsService, err := assets.NewService(assets.NewRepository(database), credentialEncryptionKey, djangoSecret)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	assetsHandler := assets.NewHandler(assetsService, gateway, "")
 	assets.SetDeploymentGateway(gateway)
@@ -364,11 +389,11 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// backend/ 已废弃，包存储随之从 Django MEDIA_ROOT 迁出。
 	secretEncryptor, err := assets.NewSecretEncryptor(credentialEncryptionKey, djangoSecret)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	packageRoot, err := filepath.Abs("media")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	monitorHandler := monitor.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
 	// 目标安装选包缺少主机架构时，允许 monitor 主动调 assets 补采一次资产信息。
@@ -380,6 +405,26 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	logcollectHandler.SetHostInfoRefresher(assetsHandler.RefreshHostInfoByID)
 	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
 	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)
+	// 批量动作执行器：入队 + 有界并发 + 进度可查（见 logcollect/log_batch_job.go）。
+	// 发布者取自 schedulerPublisher——它是同一个 rabbit 客户端，只是这里用采集队列那条路由；
+	// 拿不到投递能力（如测试或未接队列的进程）时 runner 仍会建起来，只是批量作业接口会
+	// 明确报"执行器未装配"，而不是静默地同步跑几千台。
+	resolvedBatchOptions := logcollect.DefaultLogBatchOptions()
+	if batchOptions.InstallConcurrency > 0 {
+		resolvedBatchOptions.InstallConcurrency = batchOptions.InstallConcurrency
+	}
+	if batchOptions.ApplyConcurrency > 0 {
+		resolvedBatchOptions.ApplyConcurrency = batchOptions.ApplyConcurrency
+	}
+	if batchOptions.Prefetch > 0 {
+		resolvedBatchOptions.Prefetch = batchOptions.Prefetch
+	}
+	if batchOptions.Budget > 0 {
+		resolvedBatchOptions.Budget = batchOptions.Budget
+	}
+	batchPublisher, _ := schedulerPublisher.(logBatchPublisher)
+	batchRunner := logcollect.NewLogBatchRunner(logcollectHandler, batchPublisher, resolvedBatchOptions)
+	logcollectHandler.SetLogBatchRunner(batchRunner)
 	monitorRoutes := engine.Group("/monitor", middleware.Authenticate(tokens), middleware.RequirePermission("monitor:view"))
 	monitorRoutes.GET("/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/packages/", monitorHandler.ListPackages)
@@ -414,10 +459,15 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// monitor:view 下）。存量登录用户的权限码随 JWT 签发，升级后需重新登录才能访问。
 	logTargets := monitorRoutes.Group("/log-targets", middleware.RequirePermission("monitor:log_collect:view"))
 	logTargets.POST("/batch-create/", logcollectHandler.BatchCreateLogTargets)
-	logTargets.POST("/batch-retry/", logcollectHandler.BatchRetryLogTargets)
 	logTargets.POST("/batch-start-service/", logcollectHandler.BatchStartLogTargets)
 	logTargets.POST("/batch-stop-service/", logcollectHandler.BatchStopLogTargets)
-	logTargets.POST("/batch-apply/", logcollectHandler.BatchApplyLogTargets)
+	// 批量动作（下发配置 / 安装重试）不再在请求里跑完：建作业 + 入队，前端轮询作业进度。
+	// 这两个动作原本分别是 /batch-apply/ 与 /batch-retry/（同步、逐台串行，1000 台必超时）。
+	logTargets.POST("/batch-jobs/", logcollectHandler.CreateLogBatchJob)
+	logTargets.GET("/batch-jobs/active/", logcollectHandler.GetActiveLogBatchJob)
+	logTargets.GET("/batch-jobs/:id/", logcollectHandler.GetLogBatchJob)
+	// 全量"待下发"口径（列表的 config_state 筛选是逐页/全量二选一，这里是单独特意的一次数统计）。
+	logTargets.GET("/pending-summary/", logcollectHandler.PendingConfigSummary)
 	logTargets.POST("/:id/retry/", logcollectHandler.RetryLogTarget)
 	logTargets.POST("/:id/cancel/", logcollectHandler.CancelLogTarget)
 	logTargets.POST("/batch-delete/", logcollectHandler.BatchDeleteLogTargets)
@@ -494,7 +544,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	for _, prefix := range []string{"/sys", "/sys/scheduler", "/sys/automation", "/sys/inspection", "/sys/audit", "/assets", "/monitor", "/api/agent"} {
 		engine.Group(prefix)
 	}
-	return engine, nil
+	return engine, batchRunner, nil
 }
 
 func readiness(database *sql.DB) gin.HandlerFunc {

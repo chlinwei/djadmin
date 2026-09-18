@@ -1,8 +1,9 @@
 # 日志采集配置与数据生命周期（变更 / 状态 / 下发 / 清理）
 
-> 状态：设计已定（剩余待确认项见 §9）。**§8 Phase 0 前置修复、Phase 1 漂移可见均已完成（2026-09-18）**，
-> 可进入 Phase 2（下发闭环）——其中"批量动作异步化"是 §9 第 8/9 条的前提。
-> 定稿后最终语义并入 [LOG_COLLECTION_ARCHITECTURE.md](../architecture/LOG_COLLECTION_ARCHITECTURE.md)。
+> 状态：设计已定（剩余待确认项见 §9）。**§8 Phase 0 前置修复、Phase 1 漂移可见、Phase 2 下发闭环均已完成
+> （2026-09-18）**；Phase 2 的最终语义已并入
+> [LOG_COLLECTION_ARCHITECTURE.md](../architecture/LOG_COLLECTION_ARCHITECTURE.md) §8.8。
+> 剩余为 Phase 3 清理闭环（前置是"模板日志定义行加稳定 id"）。
 >
 > 相关：采集器迁移见 [LOG_COLLECTOR_MIGRATION.md](LOG_COLLECTOR_MIGRATION.md)。
 
@@ -22,15 +23,15 @@
 |---|---|---|
 | 1 | 期望态与实际态未比对：体检只看 `config_fingerprint` 是否非空，不比对内容 | `internal/logcollect/log_health.go:318-340`（注释仍写"后端没有期望指纹生成器"） |
 | 2 | 期望指纹能力其实已存在，只用于"下发时跳过" | `internal/logcollect/log_config_render.go`（`loadHostLogRenderInput` + `renderHostLogConfig`） |
-| 3 | 配置变更本身不触发下发：只有「安装成功后自动下发一次」与「批量下发」两个入口，改完配置要人工点 | `internal/logcollect/log_target_actions.go:327-331`、`BatchApplyLogTargets` |
-| 4 | Filebeat 停止就点不了「下发配置」 | `fronted/src/views/monitor/log-collectors/index.vue`（`canApplyConfig` 要求 `runtime_status==='running'`；2026-09-18 前该逻辑在 `monitor/index.vue`） |
+| 3 | 配置变更本身不触发下发：只有「安装成功后自动下发一次」与「批量下发」两个入口，改完配置要人工点。✅**已收敛**（Phase 2）：不做自动下发（§9 第 8 条），但待下发的**全量台数**在页面上可见（`pending-summary`），并有一键应用入口 | `internal/logcollect/log_batch_api.go`、`fronted/src/views/monitor/log-collectors/index.vue` |
+| 4 | ✅**已修复**（Phase 2）原为：Filebeat 停止就点不了「下发配置」 | `fronted/src/views/monitor/log-collectors/index.vue`（`canApplyConfig` 原来还要求 `runtime_status==='running'`；2026-09-18 前该逻辑在 `monitor/index.vue`） |
 | 5 | 数据流是服务级、档位在流名里 → 改档位必产生新流；旧流无管理 | `internal/shared/logstream/name.go:17`、`internal/logcollect/datastream_status.go:146` |
 | 6 | 主机片段由 agent 全量托管、下发时清残留；ES 数据不随之清理 | `dj_agent/internal/executor/builtin_actions.go:183` |
 | 7 | 清理只有按服务，不支持按日志文件；孤儿流只以 `Recognized=false` 隐式呈现，无显式状态与清理入口 | `internal/logcollect/log_datastream_cleanup.go` |
 | 8 | 模板保存是全量替换日志定义，且不带稳定 id → 改名与删除无法区分 | `internal/assets/template.go:322-326` |
 | 9 | ✅**已修复**（Phase 0）原为：**两条下发路径语义不一致**：单条 `POST /log-targets/:id/apply/` 只调 `configure_filebeat_output`（只写 `filebeat.yml`），不下发 inputs.d 片段、不写 `config_fingerprint`，却把 `runtime_status` 置 running、清空 `last_error`；批量/安装后自动走的是 `applyLogTargetConfigRow` 全流程 | `internal/logcollect/log_target_actions.go:442-487` vs `:633-708`；agent 侧 `dj_agent/internal/executor/builtin_actions.go:143` |
 | 10 | ✅**已修复**（Phase 0）原为：**指纹只覆盖 inputs.d 片段，不含 output**（ES 地址/账号/TLS）：只改默认集群地址时指纹不变 → 命中"指纹一致则跳过"，`filebeat.yml` 保持旧值（与架构文档 §8.3"下发一定会写主配置"的承诺冲突） | `internal/logcollect/log_config_render.go:201`、`log_target_actions.go:669` |
-| 11 | **批量动作在 1000 台规模下不成立**：批量下发在单个 HTTP 请求内**串行**遍历目标、每台 2 次 agent gRPC（超时 60s+120s），无进度、无断点；批量安装/重试对每台 `go func()` 内联跑 ansible，**无并发上限**且绕过平台 worker 队列 | `internal/logcollect/log_target_actions.go:556-582`、`:278-281`、`internal/automation/runtime.go:1207` |
+| 11 | ✅**已修复**（Phase 2）原为：**批量动作在 1000 台规模下不成立**：批量下发在单个 HTTP 请求内**串行**遍历目标、每台 2 次 agent gRPC（超时 60s+120s），无进度、无断点；批量安装/重试对每台 `go func()` 内联跑 ansible，**无并发上限**且绕过平台 worker 队列 | 现为 `internal/logcollect/log_batch_job.go`（执行器）、`log_batch_api.go`（入口）、`db/migrations/*/000033_log_batch_job.*.sql` |
 
 ## 2. 状态模型（核心）
 
@@ -89,6 +90,14 @@
 `orphan` 无需新造识别逻辑：`streamNameMatcher.resolveStreamName` 对已删除/改名的维度本就返回
 `Recognized=false`（`internal/logcollect/datastream_status.go`），存储水位页已经在用这个信号，
 只需把它接成显式状态与清理入口。
+
+**`orphan` 只认"行已删/改名"，不认"已停用"**（2026-09-18 落地时修正）：识别候选集必须覆盖
+**全部**服务与档位，不能按 `enabled` 过滤。原实现给候选查询加了 `WHERE s.enabled = TRUE`，
+于是停用一个服务（或档位）会让它既有的流被判成"未识别"——既是误报，更危险的是 Phase 3 的
+"孤儿整流删除入口"正是复用这个信号，等于把暂停采集的存量数据标成待清理对象，与 §0 的
+「停止采集 ≠ 删除数据」直接冲突。落地改动：`ListServiceStreamDims` / `ListServiceStreamRows` /
+`ListRetentionTierCodes` 三条识别路径的查询去掉 enabled 过滤（下发路径 `ListHostLogRenderEntries`
+保持不变），守卫用例 `internal/logcollect/stream_recognition_guard_test.go`。
 
 ### 2.4 计算与展示原则
 
@@ -200,9 +209,13 @@
 - **批量动作必须异步化**：当前批量下发串行阻塞在单个 HTTP 请求内、批量安装/重试无并发上限（§1 第 11 条）。
   1000 台下的目标形态是「入队 + 有界并发 + 进度可查 + 可续跑」。这也是 Phase 2「一键应用 N 台待下发」的
   前提——否则 N=1000 时该功能只会超时并留下部分下发的中间态。
-- **限流设施已有，只是没走**：平台自带 `worker` 模式 + RabbitMQ `WorkerPrefetch`
-  （`internal/app/app.go:259-272`），但日志采集的安装/下发路径目前内联在 API 进程执行
-  （`RunJobByID`，`internal/automation/runtime.go:1207`），应改为走队列复用这套限流。
+- **限流设施已有，落地时按"执行者需要什么"分了两条队列**：原计划的"走 worker 模式复用
+  prefetch"在实现时发现一个硬约束——日志采集的下发/安装要通过 **agent gRPC 会话**在主机上执行，
+  而 agent 会话只存在于 api 进程（`Gateway` 是进程内的会话表），放到 worker 角色上
+  `IsOnline` 恒为 false、作业会全部失败。因此新增 `rabbitmq.LogCollectRoute`
+  （`autoadmin.logcollect.execute`）**由 api 角色消费**，计划任务那条队列仍归 worker 角色。
+  `prefetch` 语义同时被修正：原 `Consume` 在 `for range deliveries` 里同步调 `Handle`，
+  prefetch 只让消息被取到本地、处理仍严格串行，现已改为 prefetch 个 goroutine 并发处理。
 
 **Phase 0 · 前置修复（不做则后续状态全是错的）—— ✅ 已完成（2026-09-18）**
 
@@ -253,15 +266,50 @@
   且不要把它放进会自动刷新的 summary 路径。
 - 「批量下发待变更」。
 
-**Phase 2 · 下发闭环**
+**Phase 2 · 下发闭环 —— ✅ 已完成（2026-09-18）**
 
-- 放宽 `canApplyFilebeatConfig`：仅需 agent 在线 + Filebeat 已装；`runtime_status` 只作提示；
-  apply 顺带启动服务。（单条按钮此时已等价于全流程，放宽门槛才安全；否则只是把更多主机推到残缺路径。）
-- 配置变更后提示"N 台主机待下发"，一键应用（是否自动下发见 §9）。
-- **批量动作异步化（规模前提，见上文规模基线）**：批量下发 / 一键应用改为「入队 + 有界并发 + 进度可查 +
-  可续跑」，走 worker 队列与 prefetch 限流；安装/重试不再在 API 进程内联无上限起 goroutine。
-  前端按作业进度刷新，不再等一个可能跑几十分钟的同步响应。
-- 改档位提示："写入新流 `<新>`，旧流 `<旧>` 保留至原档位到期，不迁移"。
+实际落点：`internal/logcollect/log_batch_job.go`（执行器：入队/分片/有界并发/心跳/失联对账）、
+`log_batch_api.go`（批量作业入口、进度查询、全量待下发汇总）、
+`internal/messaging/rabbitmq/client.go`（`LogCollectRoute` 拓扑 + prefetch 真并发消费）、
+`internal/api/server.go` 与 `internal/app/app.go`（api 角色消费采集队列）、
+`db/migrations/*/000033_log_batch_job.*.sql`（两张表 + 查询 + 派生 + 门面）、
+`fronted/src/views/monitor/log-collectors/index.vue`（全量待下发计数、一键下发、作业进度轮询弹窗，
+进度逻辑落在 `components/HostTargetPanel.vue` 的宿主页里）、
+`fronted/src/views/assets/application/components/ApplicationServiceDialog.vue`（改档位提示）。
+回归用例：`log_batch_job_test.go`（终态 success/partial/failed、分片续跑、已结束作业的重投不做事、
+认领抢不到时不推进、失联对账重投、外来 kind 拒绝、投递失败冒泡），
+以及 `smoke_log_batch_test.go`（`MONITOR_SMOKE_DSN` 触发的真库冒烟：整套语句 + 对账链路，
+自己造的行按 id 精确删除）。
+
+原定范围（四项均落地，两处与计划的差异记在下面）：
+
+- 放宽 `canApplyConfig`：`fronted` 侧已改为只要求 agent 在线 + Filebeat 已装，`runtime_status`
+  只在提示里说明（"当前未运行，下发后会一并启动"）；下发流程本身会写主配置 + 片段并重启服务。
+- 配置变更后提示"N 台主机待下发"，一键应用：`GET /log-targets/pending-summary/` 给全量口径，
+  「一键下发全部待变更（N）」按钮用 `POST /log-targets/batch-jobs/`（省略 ids → 服务端实时算全量）。
+- **批量动作异步化**：见上文"限流设施"一条与架构文档 §8.8。
+- 改档位提示：在服务/日志定义的保留档位处提示"写入新流，旧流停写并按原档位保留到期、不迁移"，
+  并提示需重新下发才生效。
+
+与原计划的差异（有意为之）：
+
+- 队列**由 api 角色消费**而不是 worker 角色（agent 会话只在 api 进程，见上文规模基线）。
+- **批量启停与批量删除仍是同步接口**：单台只是一次 30 秒超时的 `systemctl` 调用或一条 DELETE，
+  逐台串行的代价可接受；分钟级的「下发 / 安装」才作业化。这是刻意收窄的范围。
+- 单台重试仍旧是"后台 goroutine + 看安装历史"（一次只派一台，不存在无上限扇出），
+  只有批量安装才进作业；`纳管并立即安装` 的安装部分已改为建批量作业。
+
+### 关联与状态的归属（2026-09-18 定案，Phase 2 之后）
+
+- **实例 ↔ 逻辑服务的绑定只由服务侧维护**（服务编辑弹窗的成员列表 → `member_configs`，
+  整组删后重建）。**不做实例侧"反向绑定"**：一个实例可同时属于多个应用下的服务，
+  实例侧保存去改关联会和"服务侧整组重建"互相踩。实例弹窗里的 `application_service` 字段
+  已从前端移除（后端本就不接收，此前是静默忽略的假绑定），详见 ASSET_CATALOG 的
+  「逻辑服务 ↔ 部署实例关联」一节。
+- **日志状态一律按逻辑服务归属**：存储水位的"已停用 / 未开启采集"标注取自逻辑服务行
+  （`service_enabled` / `service_collection_enabled`），随每条流返回；
+  主机级状态（agent 在线、Filebeat 运行、配置是否已下发）仍按主机归属——那本质是每台主机的事实
+  （见 §2.1 与 §2.2 的分层）。
 
 **Phase 3 · 清理闭环**
 
@@ -285,16 +333,23 @@
    （建议：主机级短词 + 服务级带数值；数据态徽标列表默认显示"未校验"，点开才查）
 7. 日志定义改名是否清旧数据？（建议：**不改名清数据**。为区分"改名"与"真删除"，模板日志行**必须加稳定 id**，
    这一步是 Phase 3 的前置而非可选项，见 §8）
-8. 配置变更后**是否自动下发**，还是提示后人工一键应用？（建议：提示 + 人工一键，不自动。
-   500–1000 台规模下自动下发会把一次误配置瞬间放大到全网，且重启 Filebeat 的噪声无法收敛）
-9. 批量动作的**有界并发批大小**（如每批 50 台）？批量安装与批量下发是否分开限流？
-   （建议：分开配置，安装走 worker 队列的 prefetch，下发用独立的较小并发，避免 1000 台同时重启 Filebeat）
+8. 配置变更后**是否自动下发**，还是提示后人工一键应用？**已按建议落地：提示 + 人工一键，不自动。**
+   500–1000 台规模下自动下发会把一次误配置瞬间放大到全网，且重启 Filebeat 的噪声无法收敛。
+9. 批量动作的**有界并发批大小**？批量安装与批量下发是否分开限流？
+   **已按建议落地：分开配置**——`LOG_BATCH_INSTALL_CONCURRENCY`（默认 20）与
+   `LOG_BATCH_APPLY_CONCURRENCY`（默认 5，下发会重启 Filebeat 所以要小）；
+   另加 `LOG_BATCH_PREFETCH`（同时在跑的作业数，默认 2）与 `LOG_BATCH_BUDGET`（单条消息的时间预算，
+   默认 15 分钟）。"批大小"最终不按台数而按**时间预算**分片：台数分片会让单条消息的时长随
+   单台耗时浮动，撞上 RabbitMQ 的 `consumer_timeout`(默认 30 分钟) 就会被服务端强断并重投。
 
 ## 10. 相关代码 / 文档索引
 
 - 采集与存储全部在 `internal/logcollect/`：`log_config_render.go`（渲染与指纹，纯函数）、
-  `log_target_actions.go`（安装/启停/下发/批量）、`log_health.go`（体检）、
-  `log_management.go`（索引模板 / ILM / `standardLogFields` / bootstrap）
+  `log_target_actions.go`（安装/启停/下发/批量启停删除）、`log_batch_job.go`（批量作业执行器）、
+  `log_batch_api.go`（批量作业入口与全量待下发汇总）、`log_target_state.go`（配置态评估）、
+  `log_health.go`（体检）、`log_management.go`（索引模板 / ILM / `standardLogFields` / bootstrap）
+- 队列：`internal/messaging/rabbitmq/client.go`（`JobRoute`=worker 角色 / `LogCollectRoute`=api 角色、
+  prefetch 并发消费）、`internal/logcollect`+`internal/api/server.go`（消费者装配）
 - 日志配置资源：`internal/logcollect/config_resources.go`、`config_resource_writers.go`
 - ES 客户端与检索：`internal/logcollect/elasticsearch.go`、`elasticsearch_config.go`、`elasticsearch_pipeline.go`
 - 清理：`internal/logcollect/log_datastream_cleanup.go`

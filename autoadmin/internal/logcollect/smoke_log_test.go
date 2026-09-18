@@ -322,7 +322,7 @@ func TestSmokeLogCollectQueriesAgainstRealDatabase(t *testing.T) {
 	if _, err := queries.ListInstalledLogTargetRuntime(ctx); err != nil {
 		t.Fatalf("列已装 Filebeat 的目标：%v", err)
 	}
-	if _, err := queries.ListEnabledServiceStreamDims(ctx); err != nil {
+	if _, err := queries.ListServiceStreamDims(ctx); err != nil {
 		t.Fatalf("列服务流维度：%v", err)
 	}
 	if _, err := queries.ListEnabledProjects(ctx); err != nil {
@@ -334,9 +334,6 @@ func TestSmokeLogCollectQueriesAgainstRealDatabase(t *testing.T) {
 	if _, err := queries.ListEnabledBusinessEnvironments(ctx); err != nil {
 		// `ORDER BY \`order\`,name` —— 保留字列名在 PG 侧必须由派生加成双引号。
 		t.Fatalf("列启用环境：%v", err)
-	}
-	if _, err := queries.ListEnabledServiceStreamRows(ctx); err != nil {
-		t.Fatalf("列启用服务：%v", err)
 	}
 
 	if _, err := queries.GetApplicationNameCode(ctx, realApplicationID); err != nil && err != sql.ErrNoRows {

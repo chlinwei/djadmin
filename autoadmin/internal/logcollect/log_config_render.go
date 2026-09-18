@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -230,7 +231,7 @@ type renderInputSet struct {
 // 返回按 host_id 分组的输入；没有任何采集配置的主机不会出现在 map 里。
 //
 // 行序不影响结果：片段最终按路径排序、实例按名称排序后才参与渲染与指纹。
-func (handler *Handler) loadHostLogRenderInputs(context *gin.Context, hostIDs []int64) (map[int64]renderInputSet, error) {
+func (handler *Handler) loadHostLogRenderInputs(context context.Context, hostIDs []int64) (map[int64]renderInputSet, error) {
 	sets := map[int64]renderInputSet{}
 	if len(hostIDs) == 0 {
 		return sets, nil
@@ -275,7 +276,7 @@ func (handler *Handler) loadHostLogRenderInputs(context *gin.Context, hostIDs []
 }
 
 // loadHostLogRenderInput 单台主机的渲染输入（下发、预览用）；批量场景用 loadHostLogRenderInputs。
-func (handler *Handler) loadHostLogRenderInput(context *gin.Context, hostID int64) ([]hostLogRenderInput, []hostInstanceInput, error) {
+func (handler *Handler) loadHostLogRenderInput(context context.Context, hostID int64) ([]hostLogRenderInput, []hostInstanceInput, error) {
 	sets, err := handler.loadHostLogRenderInputs(context, []int64{hostID})
 	if err != nil {
 		return nil, nil, err

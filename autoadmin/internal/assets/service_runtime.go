@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/pagination"
@@ -166,19 +167,71 @@ func (r *Repository) ListApplicationDeployments(ctx context.Context, page pagina
 	}
 	items := make([]ApplicationDeployment, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, ApplicationDeployment{
-			ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime),
-			Remark: stringValue(row.Remark), InstanceName: row.InstanceName, Enabled: row.Enabled,
-			Host: row.HostID, HostIP: row.HostIp, RuntimeStatus: row.RuntimeStatus,
-			RuntimeStatusOutput: row.RuntimeStatusOutput, LastStatusCheckTime: nullableTime(row.LastStatusCheckTime),
-			HaRole: row.HaRole, RuntimeVariables: row.RuntimeVariables,
-			ApplicationID: nullableInt64Ptr(row.ApplicationID), ApplicationServiceIDs: []int64{},
-		})
+		items = append(items, buildApplicationDeployment(applicationDeploymentFields{
+			ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
+			InstanceName: row.InstanceName, Enabled: row.Enabled, HostID: row.HostID, HostIP: row.HostIp,
+			RuntimeStatus: row.RuntimeStatus, RuntimeStatusOutput: row.RuntimeStatusOutput,
+			LastStatusCheckTime: row.LastStatusCheckTime, HaRole: row.HaRole,
+			RuntimeVariables: row.RuntimeVariables, ApplicationID: row.ApplicationID,
+		}))
 	}
 	if err = r.attachApplicationServiceIDs(ctx, items); err != nil {
 		return nil, 0, err
 	}
 	return items, count, nil
+}
+
+// GetApplicationDeployment 按 id 取单个部署实例（附带服务关联 id）。
+//
+// 不要用列表查询 + 内存里找目标行的写法代替它：列表是 `ORDER BY id DESC LIMIT ?`，
+// "取一页一行"会恒得到 id 最大的一台，保存后回读就会把刚保存的实例判成"不存在"。
+func (r *Repository) GetApplicationDeployment(ctx context.Context, id int64) (ApplicationDeployment, error) {
+	row, err := r.queries.GetApplicationDeploymentDetail(ctx, id)
+	if err != nil {
+		return ApplicationDeployment{}, err
+	}
+	items := []ApplicationDeployment{buildApplicationDeployment(applicationDeploymentFields{
+		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
+		InstanceName: row.InstanceName, Enabled: row.Enabled, HostID: row.HostID, HostIP: row.HostIp,
+		RuntimeStatus: row.RuntimeStatus, RuntimeStatusOutput: row.RuntimeStatusOutput,
+		LastStatusCheckTime: row.LastStatusCheckTime, HaRole: row.HaRole,
+		RuntimeVariables: row.RuntimeVariables, ApplicationID: row.ApplicationID,
+	})}
+	if err = r.attachApplicationServiceIDs(ctx, items); err != nil {
+		return ApplicationDeployment{}, err
+	}
+	return items[0], nil
+}
+
+// applicationDeploymentFields 是部署实例各查询结果里列名相同的字段集合。
+// 单独抽出来是因为列表行与按 id 行在 sqlc 里是两个不同的类型，但对外必须是同一份结构
+// （字段映射只写一次，避免两处漂移）。
+type applicationDeploymentFields struct {
+	ID                  int64
+	CreateTime          time.Time
+	UpdateTime          time.Time
+	Remark              sql.NullString
+	InstanceName        string
+	Enabled             bool
+	HostID              int64
+	HostIP              string
+	RuntimeStatus       string
+	RuntimeStatusOutput string
+	LastStatusCheckTime sql.NullTime
+	HaRole              string
+	RuntimeVariables    json.RawMessage
+	ApplicationID       int64
+}
+
+func buildApplicationDeployment(fields applicationDeploymentFields) ApplicationDeployment {
+	return ApplicationDeployment{
+		ID: fields.ID, CreateTime: timestamp(fields.CreateTime), UpdateTime: timestamp(fields.UpdateTime),
+		Remark: stringValue(fields.Remark), InstanceName: fields.InstanceName, Enabled: fields.Enabled,
+		Host: fields.HostID, HostIP: fields.HostIP, RuntimeStatus: fields.RuntimeStatus,
+		RuntimeStatusOutput: fields.RuntimeStatusOutput, LastStatusCheckTime: nullableTime(fields.LastStatusCheckTime),
+		HaRole: fields.HaRole, RuntimeVariables: fields.RuntimeVariables,
+		ApplicationID: nullableInt64Ptr(fields.ApplicationID), ApplicationServiceIDs: []int64{},
+	}
 }
 
 // nullableInt64Ptr 把"子查询取回的 application_id"（0 表示没有关联服务）转成 nil。

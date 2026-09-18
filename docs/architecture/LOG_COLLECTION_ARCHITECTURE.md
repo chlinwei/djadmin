@@ -685,15 +685,72 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
   需重新下发"、`never` 报"从未下发"；`synced` 的明细带上覆盖的服务数与渲染告警。
   期望配置算不出来时（典型是没有启用的默认集群）**退回"是否下发过"的判断并把原因写进明细，
   不谎报"一致"**。（此前只看指纹是否为空、不比对内容，主机配置过期在体检里完全看不出来。）
-- **"下发待变更"目前只作用于当前页**：前端「下发本页待变更（N）」用现有批量下发接口，N 为本页
-  `drift`+`never` 的台数。跨全量的一键下发涉及 500–1000 台的批量执行，必须后端异步化，
-  属计划 Phase 2（见 [LOG_COLLECTION_LIFECYCLE](../plans/LOG_COLLECTION_LIFECYCLE.md) §8 规模基线）。
+- **"下发待变更"的全量口径**：`GET /monitor/log-targets/pending-summary/` 一次算完全部纳管目标
+  （查询次数与主机数无关），前端按钮显示的就是这个全量台数（`drift`+`never`）；
+  点击后由后端建批量作业执行。2026-09-18 之前只作用当前页，属计划 Phase 2 的半成品形态。
 - **界面位置**：采集目标的日常操作与配置状态都在「日志管理 → 日志采集」
   （`fronted/src/views/monitor/log-collectors/index.vue`，2026-09-18 从「智能监控 → 纳管目标」拆出，
   见 [MENU_STRUCTURE](MENU_STRUCTURE.md)）；主机表外壳与状态逻辑与 Exporter 目标页共用
   `components/HostTargetPanel.vue` + `util/hostTargetTable.js`。
 - **一次性影响**：Phase 0 改了指纹语义（纳入输出段），因此存量主机的 `config_fingerprint`
   与期望值不再一致，升级后会全部显示 `drift`，重新下发一次即恢复稳定。
+
+### 8.8 批量动作：异步作业（2026-09-18，计划 Phase 2）
+
+批量「下发配置」与批量「安装/重新安装」不在请求内执行，而是**入队 + 有界并发 + 进度可查 + 可续跑**
+的作业。1000 台规模下这不是优化而是前提：旧实现把目标放在一个 HTTP 请求里逐台串行（每台 2 次
+agent 调用、超时 60s+120s），必然超时并留下部分下发的中间态；批量安装则在 API 进程内联对每台
+起一个 `go func()`，没有并发上限。
+
+- **落库载体**：`monitor_log_batch_job`（动作/状态/计数/并发）+ `monitor_log_batch_job_item`
+  （每台的状态与失败原因，`host_name`/`host_ip` 是**快照**，主机改名后进度页仍如实展示当时的目标）。
+  计数**从 item 表重算**而不在应用层累加（并发下累加必然漂移）。
+- **入口**：`POST /monitor/log-targets/batch-jobs/`，body `{action: "apply"|"install", ids?: [...]}`。
+  `ids` 省略且 `action=apply` 表示"全部待下发"——由服务端按配置态实时算全量（一键应用 N 台待变更）。
+  另有 `GET /monitor/log-targets/batch-jobs/:id/`（进度 + 逐台明细）、
+  `GET /monitor/log-targets/batch-jobs/active/?action=`（页面刷新后接着看进度；没有进行中的作业时 `data: null`，
+  不用 404——那是每次进页面都会调的查询，404 会在前端弹无意义的错误提示）、
+  `GET /monitor/log-targets/pending-summary/`（全量"待下发"计数：drift + never）。
+- **队列与消费方**：消息投到 `rabbitmq.LogCollectRoute`（`autoadmin.logcollect.execute`），
+  **由 api 角色消费**。原因：这些动作要通过 agent gRPC 会话在主机上执行，而 agent 会话是 api
+  进程内的 `Gateway` 会话表，放到 worker 角色上 `IsOnline` 恒为 false、作业会全部失败。
+  计划任务那条队列（`autoadmin.job.execute`）仍归 worker 角色。
+  消费者的"停"是显式失败：连接断开导致消息流关闭时 `ConsumeVia` 返回错误而不是静默收工
+  （否则队列从此无人消费、批量作业永久排队），由 `Restart=on-failure` 拉起；
+  停机期间（ctx 已取消）的返回不算失败，避免一次干净的 SIGTERM 被记成异常退出。
+- **有界并发**：`LOG_BATCH_INSTALL_CONCURRENCY`（默认 20）与 `LOG_BATCH_APPLY_CONCURRENCY`
+  （默认 5）分开配置——下发会重启 Filebeat，并发放大等于让全网同时抖动（计划 §9 第 9 条）。
+  `LOG_BATCH_PREFETCH`（默认 2）是同时在跑的作业数。
+- **分片与可续跑**：一条消息只跑 `LOG_BATCH_BUDGET`（默认 15 分钟）就投一条续跑消息并返回
+  （必须明显小于 RabbitMQ 的 `consumer_timeout` 30 分钟，否则会被服务端强断并重投）。
+  消息只在分片跑完/已让出后才 ack；进程被杀时消息未 ack、重启后重投，而执行只挑仍是
+  `pending` 的 item（续跑前把上一轮遗留的 `running` 回落为 `pending`），**已成功的不会重跑**。
+  **进入执行前先读作业状态**：终态 → ack 掉（跑完的一批不会被跑第二遍）；`pending` → 用
+  `pending → running` 的条件更新认领，抢不到就 ack；`running` → 说明这是自己上一个分片投出的
+  续跑消息，继续推进。**续跑这一支不能靠 UPDATE 的行数判断**——MySQL 的 UPDATE 返回"实际改变的
+  行数"（未开 `CLIENT_FOUND_ROWS`），把 `running` 再写成 `running` 会返回 0 行，
+  那样分片续跑会被误判成"抢不到执行权"而永远停在 `running`（此坑是真库验证时逮到的）。
+- **失联对账**：作业每 30 秒刷新一次头表心跳；`StartReaper`（api 进程内每分钟一次）把
+  "running 且 5 分钟没有心跳"的作业回落为 `pending`、把遗留的 `running` item 落回 `pending`，再重投——
+  执行进程消失后作业不会永久停在 running。"没有待处理项但计数不满"（只有 `running` item）时
+  执行器**不收尾也不重投**，让出给对账收敛：既不把半途而废的一批报成完成，也不会变成热循环。
+  注意失联判定的前提是**单实例部署 api 角色**（仓库既有假设，对账本身也是进程内单 goroutine）；
+  若将来并行多实例，需要把对账改成带 leader 选举或让 Redis/DB 做租约。
+- **同一作业的分片串行**：续跑消息与当前分片可能在同一个进程内并发被取到（prefetch>1），
+  执行器按作业 id 加进程内互斥锁后才动手，避免两个分片同时从 item 表挑 `pending` 项、把同一台跑两遍。
+- **批量启停/删除仍是同步接口**：单台只是一次 30 秒超时的 `systemctl` 调用或一条 DELETE，
+  逐台串行的代价可接受；分钟级的「下发 / 安装」才需要作业化。
+- **前端**：`GET pending-summary` 的全量计数驱动「一键下发全部待变更（N）」按钮；作业创建后用
+  作业详情接口每 2 秒轮询一次，进度弹窗展示百分比、成功/失败台数与**逐台失败原因**，
+  关闭弹窗不中断作业；页面重新进入时用 `batch-jobs/active/` 恢复未跑完作业的进度视图。
+- **回归**：`log_batch_job_test.go` 覆盖终态判定与分片/续跑/对账分支；`smoke_log_batch_test.go`
+  （`MONITOR_SMOKE_DSN` 触发）在真库上跑整套语句与对账链路——`ClaimLogBatchJob` 的"影响行数"语义
+  就是真库冒烟逮出来的（见上文续跑那一支）。
+- **下发门槛放宽**：单台「下发配置」只要 `agent 在线 + Filebeat 已装`即可（原来还要求
+  `runtime_status=running`）。下发本身会写 `filebeat.yml` 与 `inputs.d` 并重启 Filebeat，
+  要求"先在跑"会让停机待修的主机永远无法通过下发恢复。
+- **改档位提示**：档位在服务/日志定义上改动时提示"写入新流，旧流停写并按原档位保留到期、不迁移"，
+  并提示需重新下发采集配置（计划 Phase 2 的第四项）。
 
 ---
 
@@ -712,11 +769,30 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 - 数据来源：`GET /monitor/elasticsearch-clusters/:id/log-storage-overview/`
   （`datastream_status.go`）聚合 `_cat/indices`（流大小/docs/健康）、
   `_ilm/explain`（rollover/ILM 状态）、`_cat/allocation`（节点磁盘水位，
-  失败不阻塞总览），并从 MySQL 带回项目/业务系统/环境/服务维度数据，前端组装树。
+  失败不阻塞总览），并从 MySQL 带回项目/业务系统/环境维度数据，前端组装树。
+  `dims` 只含 projects / business_systems / environments 三项——**曾经**还有一份 services
+  （服务维度元数据），但前端渲染服务层用的是流名解析出的服务码，那份 payload 从未被消费，
+  2026-09-18 连同它的查询一起删除（服务级的采集开关改为随每条流返回，见下条）。
+- **"已停用 / 未开启采集"按逻辑服务标注（2026-09-18）**：每条流带
+  `service_enabled` 与 `service_collection_enabled`（来自逻辑服务行，是**配置事实**，
+  不需要查 ES）。服务停用或服务级采集开关关闭时，树上服务节点与右侧明细都标「已停用」/
+  「未开启采集」，tooltip 说明"已写入的数据按保留档位到期、不会自动清理"——这是计划 §3 的语义
+  （关闭采集 = 停写 + 保留到期，不删数据），避免运维把停用服务的存量数据当成待清理对象。
+  正常采集不标（"在采集"是数据态，按 §2.4 不在未查询 ES 时断言）。旧命名流没有服务段，
+  识别不出服务，因此不带这两个标记。
 - 流名解析：后备索引名形如 `.ds-<流名>-<代数>`（或传统 `<流名>-<YYYY.MM.DD>`），先剥离
   `.ds-` 前缀与后缀还原流名，再用数据库维度码做前缀匹配（`streamNameMatcher`，编码可含
   连字符，禁止按 `-` 盲切）：新命名按 服务 维度命中，流即服务本身；旧命名（无服务段）
-  要求剩余段恰好是已知档位。两种都命中不了才归"未识别"节点（手工建的、维度已删的），不丢数据。
+  要求剩余段恰好是已知档位。两种都命中不了才归"未识别"节点（手工建的、维度已删/改名的），不丢数据。
+- **识别候选集不按 `enabled` 过滤（2026-09-18 修复）**：构造候选用 `ListServiceStreamDims` /
+  `ListServiceStreamRows` / `ListRetentionTierCodes`，三条都**不过滤** `enabled`。
+  识别回答的是"这条已有的流属于哪个已知服务"，与"这个服务现在是否在采集"无关：停用是可逆状态，
+  存量流要么还在写（尚未重新下发配置）要么停写并保留到 ILM 到期（§0 原则「停止采集 ≠ 删除数据」）。
+  早先 `ListServiceStreamDims` 带 `WHERE s.enabled = TRUE`，停用服务的流在页面上直接从所属
+  项目/业务系统掉进「未识别」，等于把暂停采集的存量数据标成了待清理的孤儿
+  （真实案例：停用 `yilake nginx` 后 `logs-yilake-tib-poc-nginx-wuhan-test` 被判未识别）。
+  对照：**下发**路径（`ListHostLogRenderEntries`）照旧过滤 `s.enabled = TRUE`——停用的服务
+  不该再往主机推片段。守卫用例：`internal/logcollect/stream_recognition_guard_test.go`。
 - **逻辑服务层（新命名流）展示真实磁盘占用**（流即服务本身）；旧流的叶子层只有写入量
   （文档数）口径，UI 明示"未按服务分流的旧流"。
 - `GET .../log-service-usage/?business_system=&environment=`：环境节点展开时按需调用，
@@ -889,7 +965,7 @@ fingerprint 归一化质量。
 | 3 | 数据模型与迁移 | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键 |
 | 4 | Filebeat 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
 | 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离；单条与批量走同一条全流程，指纹覆盖输出段 |
-| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行；**批量应用仍是请求内串行、无并发上限**，1000 台规模下的异步化见计划 §8 |
+| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行；批量下发/安装已作业化（入队 + 有界并发 + 进度 + 续跑，见 §8.8），批量启停/删除仍是同步批量 |
 | 7 | 日志洞察页面与告警接入 | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善 |
 
 解析规则调试仍是后续扩展的回归基线：新增日志格式必须先用真实样例通过 `_simulate`，再关联

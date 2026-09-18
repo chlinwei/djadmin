@@ -17,13 +17,20 @@ type Config struct {
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 	MySQLDSN          string        `env:"MYSQL_DSN"`
 	// PostgresDSN 只在 -tags postgres 的构建里被使用（见 platform/database/open_postgres.go）。
-	PostgresDSN                   string        `env:"POSTGRES_DSN"`
-	MySQLMaxOpen                  int           `env:"MYSQL_MAX_OPEN_CONNS" envDefault:"30"`
-	MySQLMaxIdle                  int           `env:"MYSQL_MAX_IDLE_CONNS" envDefault:"10"`
-	MySQLMaxLife                  time.Duration `env:"MYSQL_CONN_MAX_LIFETIME" envDefault:"30m"`
-	RabbitMQURL                   string        `env:"RABBITMQ_URL"`
-	WorkerName                    string        `env:"WORKER_NAME" envDefault:"autoadmin-worker"`
-	WorkerPrefetch                int           `env:"WORKER_PREFETCH" envDefault:"4"`
+	PostgresDSN    string        `env:"POSTGRES_DSN"`
+	MySQLMaxOpen   int           `env:"MYSQL_MAX_OPEN_CONNS" envDefault:"30"`
+	MySQLMaxIdle   int           `env:"MYSQL_MAX_IDLE_CONNS" envDefault:"10"`
+	MySQLMaxLife   time.Duration `env:"MYSQL_CONN_MAX_LIFETIME" envDefault:"30m"`
+	RabbitMQURL    string        `env:"RABBITMQ_URL"`
+	WorkerName     string        `env:"WORKER_NAME" envDefault:"autoadmin-worker"`
+	WorkerPrefetch int           `env:"WORKER_PREFETCH" envDefault:"4"`
+	// 日志采集批量动作的执行规模（计划 LOG_COLLECTION_LIFECYCLE §8 Phase 2 / §9 第 9 条）：
+	// 安装与下发**分开**限流——下发会重启 Filebeat，并发放大等于让全网同时抖动；
+	// LogBatchPrefetch 是同时在跑的批量作业数（api 角色消费采集队列时的未确认上限）。
+	LogBatchInstallConcurrency    int           `env:"LOG_BATCH_INSTALL_CONCURRENCY" envDefault:"20"`
+	LogBatchApplyConcurrency      int           `env:"LOG_BATCH_APPLY_CONCURRENCY" envDefault:"5"`
+	LogBatchPrefetch              int           `env:"LOG_BATCH_PREFETCH" envDefault:"2"`
+	LogBatchBudget                time.Duration `env:"LOG_BATCH_BUDGET" envDefault:"15m"`
 	JWTSecret                     string        `env:"JWT_SECRET"`
 	JWTExpiration                 time.Duration `env:"JWT_EXPIRATION" envDefault:"24h"`
 	AssetsCredentialEncryptionKey string        `env:"ASSETS_CREDENTIAL_ENCRYPTION_KEY"`

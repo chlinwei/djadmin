@@ -52,6 +52,42 @@ Go API 必须提供：
 - 非法整数参数 → 400（`applicationDeploymentFilterFromQuery` / `optionalIDQuery`）；
 - 过滤在 SQL WHERE 层完成（EXISTS 子查询），COUNT 与列表共用同一条件，分页计数正确。
 
+## 逻辑服务 ↔ 部署实例关联：归属与按 id 读取（2026-09-18 修复）
+
+关联表 `assets_application_service_deployment`（实例与逻辑服务的 M2M）有两条必须守住的规则：
+
+- **唯一写入口在服务侧，且按设计不提供"实例侧反向绑定"（2026-09-18 定案）**：
+  `POST/PATCH /assets/application-services/` 的 `member_configs`（整组替换：`DeleteServiceDeployments`
+  后按键重建），成员级的 `enabled` 也在这里。**实例侧不接收服务关联字段**——
+  `ApplicationDeploymentInput`（`internal/assets/service_runtime_write.go`）没有该字段，这是刻意的：
+  一个实例可同时属于多个应用下的服务，让实例侧保存去改关联，与"服务侧整组重建"的语义会互相踩
+  （实例侧保存若不替换就会失效，要替换就会删掉别的服务的关联）。
+  历史缺陷：前端 `DeploymentDialog` 曾把 `application_service` 放进提交体，后端结构体并不接收、
+  静默忽略，表现为"在实例弹窗里绑定了服务，其实库里没写"；该字段已从前端 payload 移除。
+  绑定入口只有两个：服务编辑弹窗成员区的「新增部署实例」与「从已有实例中选择」，
+  两者都只是把实例加进成员列表，真正的关联写入发生在保存服务时（服务侧）。
+- **部署实例的读取一律按 id**：`GET /assets/application-deployments/:id/`、`POST .../{id}/control/`
+  与"保存后回读"都走 `GetApplicationDeploymentDetail`（`WHERE d.id = ?`）。
+  **禁止**改回"用列表查询在内存里找目标行"：列表是 `ORDER BY d.id DESC LIMIT ?`，
+  "第 1 页、每页 1 条"恒为全库 id 最大的一台，保存后回读会把刚保存的实例判成不存在
+  （2026-09-18「编辑实例报资产不存在」，而写入其实已生效）；`GET` 与 `control` 原先用
+  `Size: 100000` 把全部实例拉回来找一行，实例数一多就是每请求一次全表。
+
+`application_id`（"部署关联的首个服务所属应用"）是**派生展示字段**，不等于"实例自己的应用"：
+一个实例可以同时属于多个应用下的服务（如 105 同时在 redis 与 nginx 下），取的是它**最早**
+那条关联（`ORDER BY l.id LIMIT 1`）。因此：
+
+- 前端**不得**用它过滤成员列表或候选实例。此前 `ApplicationServiceDialog.vue` 用
+  `application_id === form.application` 过滤已选成员，两个 watcher 又拿这份列表去删
+  `selectedDeploymentIds`，于是已绑定的实例一进编辑弹窗就被静默剔除（库里关联还在），
+  保存时还会把空成员写回去。现在该过滤已整体移除，成员列表只以服务端返回的
+  `member_instances` 为准，移除成员只走成员行的删除按钮。
+- 绑定入口有两处：成员区的「新增部署实例」（走模板/版本校验的新建流程）与
+  **「从已有实例中选择」**（候选 = 全部实例刨掉已绑定的，同应用仅用于排序）；
+  两者都只是把实例加进成员列表，真正的关联写入仍在保存服务时（`member_configs`）。
+
+失败语义：目标实例不存在时，读取与保存后回读都返回 404「资产不存在」（`translate(sql.ErrNoRows)`）。
+
 ## 失败语义
 
 - 分页/参数非法 → 400；数据库错误 → 500（`response.Error`）。

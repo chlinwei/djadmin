@@ -1884,6 +1884,61 @@ func (q *Queries) GetApplication(ctx context.Context, id int64) (GetApplicationR
 	return i, err
 }
 
+const getApplicationDeploymentDetail = `-- name: GetApplicationDeploymentDetail :one
+SELECT d.id,d.create_time,d.update_time,d.remark,d.instance_name,d.enabled,d.host_id,
+       COALESCE(h.ip,'') AS host_ip,d.runtime_status,d.runtime_status_output,d.last_status_check_time,d.ha_role,
+       d.runtime_variables,
+       CAST(COALESCE((SELECT s.application_id FROM assets_application_service_deployment l JOIN assets_application_service s ON s.id=l.service_id WHERE l.deployment_id=d.id ORDER BY l.id LIMIT 1), 0) AS bigint) AS application_id
+FROM assets_application_deployment d
+JOIN assets_host h ON h.id=d.host_id
+WHERE d.id = $1
+`
+
+type GetApplicationDeploymentDetailRow struct {
+	ID                  int64           `json:"id"`
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	InstanceName        string          `json:"instance_name"`
+	Enabled             bool            `json:"enabled"`
+	HostID              int64           `json:"host_id"`
+	HostIp              string          `json:"host_ip"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	RuntimeStatusOutput string          `json:"runtime_status_output"`
+	LastStatusCheckTime sql.NullTime    `json:"last_status_check_time"`
+	HaRole              string          `json:"ha_role"`
+	RuntimeVariables    json.RawMessage `json:"runtime_variables"`
+	ApplicationID       int64           `json:"application_id"`
+}
+
+// 按 id 取单个部署实例。列集与 ListApplicationDeployments 完全一致（同一份映射），
+// 供"保存后回读""进详情/控制"这类**按 id** 的场景使用。
+//
+// 存在的理由：这些场景原先复用列表查询（`LIMIT 1` 或 `Size: 100000`）在内存里找目标行，
+// 前者恒取 id 最大的一台（编辑任意不是最新的一台都会被误判成"不存在"，见 2026-09-18 的
+// "编辑实例报资产不存在"），后者每次请求要把全部实例拉回来。
+func (q *Queries) GetApplicationDeploymentDetail(ctx context.Context, id int64) (GetApplicationDeploymentDetailRow, error) {
+	row := q.db.QueryRowContext(ctx, getApplicationDeploymentDetail, id)
+	var i GetApplicationDeploymentDetailRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.InstanceName,
+		&i.Enabled,
+		&i.HostID,
+		&i.HostIp,
+		&i.RuntimeStatus,
+		&i.RuntimeStatusOutput,
+		&i.LastStatusCheckTime,
+		&i.HaRole,
+		&i.RuntimeVariables,
+		&i.ApplicationID,
+	)
+	return i, err
+}
+
 const getApplicationServiceDetail = `-- name: GetApplicationServiceDetail :one
 SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,
        s.application_id,a.name AS application_name,s.business_system_id,b.name AS business_system_name,

@@ -164,6 +164,76 @@ describe('ApplicationServiceDialog', () => {
     wrapper.unmount()
   })
 
+  // 回归用例：已绑定的实例不能因为"派生的应用不同"而从成员列表里消失。
+  //
+  // 2026-09-18 现场：yilake nginx（应用 15）绑定了实例 yilake-nginx-105，但该实例最早挂在
+  // redis 下，后端派生的 application_id 是 8 ≠ 15；旧版 availableDeploymentOptions 只用
+  // 应用相等来过滤，两个 watcher 又拿它去删 selectedDeploymentIds，于是库里关联还在，
+  // 编辑弹窗里成员却是空的，用户以为"绑定的实例丢了"。
+  it('keeps a bound instance whose derived application differs from the service application', async () => {
+    // 该实例（id=12）的派生 application_id=1，而服务 20 的应用是 5 —— 必须仍然显示。
+    const { getApplicationService } = await import('@/api/assets/application')
+    getApplicationService.mockResolvedValueOnce({
+      data: { data: {
+        id: 20,
+        name: 'tomcat-group',
+        code: 'tomcat-group',
+        application: 5,
+        deployment_template: 62,
+        topology_type: 'cluster',
+        cluster_profile: 4,
+        member_instances: [
+          { deployment: 12, port: null },
+          { deployment: 13, port: null },
+        ],
+      } },
+    })
+
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(wrapper.vm.selectedDeploymentIds).toEqual([12, 13])
+    expect(document.body.textContent).toContain('mysql-1 (node-2)')
+    expect(document.body.textContent).toContain('tomcat-1 (node-3)')
+    wrapper.unmount()
+  })
+
+  // 从已有实例中添加成员：实例已在别的服务下（派生 application_id 与当前服务不同）也要能绑上。
+  // 此前只能走「新增部署实例」→ 按主机+实例名去重转成编辑的绕路，且那条路会撞上后端的回读缺陷。
+  it('binds an existing instance picked from the candidate list', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    // 候选里能看到"另一个应用"下的实例（id=12，派生 application_id=1），
+    // 但已经绑定的 13/14 不出现在候选里。
+    const candidateIds = wrapper.vm.addableDeploymentOptions.map((item) => item.value)
+    expect(candidateIds).toContain(12)
+    expect(candidateIds).not.toContain(13)
+    expect(candidateIds).not.toContain(14)
+
+    wrapper.vm.addPickedDeployment(12)
+    await flushPromises()
+    expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14, 12])
+    expect(document.body.textContent).toContain('mysql-1 (node-2)')
+    wrapper.unmount()
+  })
+
   it('shows the effective error-only collection policy for each template log', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, serviceId: 20 },

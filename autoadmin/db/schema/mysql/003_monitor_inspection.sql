@@ -311,3 +311,40 @@ CREATE TABLE `monitor_user_alert_media_binding` (
   CONSTRAINT `monitor_user_alert_m_media_id_41516ddb_fk_monitor_a` FOREIGN KEY (`media_id`) REFERENCES `monitor_alert_media` (`id`),
   CONSTRAINT `monitor_user_alert_media_binding_user_id_e65368f8_fk_sys_user_id` FOREIGN KEY (`user_id`) REFERENCES `sys_user` (`id`)
 );
+
+CREATE TABLE `monitor_log_batch_job` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `create_time` datetime(6) NOT NULL,
+  `update_time` datetime(6) NOT NULL,
+  `remark` longtext,
+  `action` varchar(16) NOT NULL,
+  `status` varchar(16) NOT NULL,
+  `total_count` int NOT NULL,
+  `success_count` int NOT NULL,
+  `failed_count` int NOT NULL,
+  `concurrency` int NOT NULL,
+  `message` longtext NOT NULL,
+  `requested_user_id` bigint DEFAULT NULL,
+  `requested_username` varchar(150) NOT NULL,
+  `started_at` datetime(6) DEFAULT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+);
+
+CREATE TABLE `monitor_log_batch_job_item` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `create_time` datetime(6) NOT NULL,
+  `update_time` datetime(6) NOT NULL,
+  `batch_job_id` bigint NOT NULL,
+  `target_id` bigint NOT NULL,
+  `host_id` bigint NOT NULL,
+  `host_name` varchar(128) NOT NULL,
+  `host_ip` varchar(64) NOT NULL,
+  `status` varchar(16) NOT NULL,
+  `message` longtext NOT NULL,
+  `started_at` datetime(6) DEFAULT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `monitor_log_batch_job_item_batch_job_id_idx` (`batch_job_id`),
+  CONSTRAINT `monitor_log_batch_job_item_batch_job_id_fk` FOREIGN KEY (`batch_job_id`) REFERENCES `monitor_log_batch_job` (`id`)
+);

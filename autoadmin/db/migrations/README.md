@@ -16,8 +16,8 @@ Both dialects carry the same migration set, one directory each:
 
 | Directory | Content |
 |---|---|
-| `mysql/` | hand-maintained source: `000001…000022`, each with `.up.sql` / `.down.sql` (44 files). `MIGRATION_SOURCE_URL=file://db/migrations/mysql` for the default build. |
-| `postgres/` | the PostgreSQL translation of the same 44 files — **identical version numbers and file names**. `MIGRATION_SOURCE_URL=file://db/migrations/postgres` once the `migrate` role registers the PG driver (still pending, SQL_DESIGN §5.1). |
+| `mysql/` | hand-maintained source: `000001…000033`, each with `.up.sql` / `.down.sql` (66 files). `MIGRATION_SOURCE_URL=file://db/migrations/mysql` for the default build. |
+| `postgres/` | the PostgreSQL translation of the same 66 files — **identical version numbers and file names**. `MIGRATION_SOURCE_URL=file://db/migrations/postgres` once the `migrate` role registers the PG driver (still pending, SQL_DESIGN §5.1). |
 
 Rules for the PostgreSQL set:
 

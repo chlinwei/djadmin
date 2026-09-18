@@ -103,14 +103,14 @@
             &nbsp;停止
           </a-button>
         </a-tooltip>
-        <a-tooltip title="批量下发 Filebeat 配置" placement="top">
+        <a-tooltip :title="selectedManagedIds.length ? `为选中的 ${selectedManagedIds.length} 台下发采集配置` : '请先选择已纳管的主机'" placement="top">
           <a-button
             type="primary"
             ghost
             size="small"
             :disabled="!selectedManagedIds.length"
-            :loading="batchLoading === 'apply'"
-            @click="handleBatch('apply')"
+            :loading="batchLoading === 'batch-apply'"
+            @click="handleSelectedApply"
           >
             <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
             &nbsp;下发配置
@@ -119,14 +119,24 @@
         <a-tooltip :title="pendingTooltip" placement="top">
           <a-button
             type="primary"
-            ghost
             size="small"
-            :disabled="!pendingOnPageIds.length"
-            :loading="batchLoading === 'apply-pending'"
-            @click="handleApplyPendingOnPage"
+            :disabled="!pendingSummary.pending"
+            :loading="batchLoading === 'batch-apply'"
+            @click="handleApplyAllPending"
           >
             <FontAwesomeIcon :icon="['fas', 'cloud-arrow-down']" />
-            &nbsp;下发本页待变更（{{ pendingOnPageIds.length }}）
+            &nbsp;一键下发全部待变更（{{ pendingSummary.pending }}）
+          </a-button>
+        </a-tooltip>
+        <a-tooltip :title="selectedManagedIds.length ? `为选中的 ${selectedManagedIds.length} 台重新安装 Filebeat` : '请先选择已纳管的主机'" placement="top">
+          <a-button
+            size="small"
+            :disabled="!selectedManagedIds.length"
+            :loading="batchLoading === 'batch-install'"
+            @click="handleBatchInstall"
+          >
+            <FontAwesomeIcon :icon="['fas', 'rotate-right']" />
+            &nbsp;批量重新安装
           </a-button>
         </a-tooltip>
         <a-tooltip title="删除" placement="top">
@@ -319,6 +329,45 @@
         </template>
       </template>
     </HostTargetPanel>
+
+    <a-modal
+      v-model:open="batchJobVisible"
+      :title="batchJobTitle"
+      :footer="null"
+      width="640px"
+    >
+      <div v-if="batchJob" class="batch-job">
+        <a-progress :percent="batchJobPercent" :status="batchJob.is_running ? 'active' : (batchJob.failed_count ? 'exception' : 'success')" />
+        <div class="batch-job__counts">
+          <span>共 {{ batchJob.total_count }} 台</span>
+          <span class="ok">成功 {{ batchJob.success_count }}</span>
+          <span class="fail">失败 {{ batchJob.failed_count }}</span>
+          <span>待处理 {{ batchJob.pending_count }}</span>
+          <span v-if="batchJob.is_running">并发 {{ batchJob.concurrency }} 台</span>
+        </div>
+        <a-alert
+          v-if="batchJob.is_running"
+          type="info"
+          show-icon
+          :message="`作业在后台按并发上限推进，关掉这个窗口不会中断；失败的主机会在下面逐台列出。`"
+        />
+        <a-alert
+          v-else
+          :type="batchJob.failed_count ? 'warning' : 'success'"
+          show-icon
+          :message="batchJob.message || '作业已结束'"
+        />
+        <div v-if="batchJobFailedItems.length" class="batch-job__failures">
+          <p class="batch-job__failures-title">失败主机（{{ batchJobFailedItems.length }}）</p>
+          <ul>
+            <li v-for="item in batchJobFailedItems" :key="item.id">
+              <strong>{{ item.host_name || item.host_ip || `Host-${item.host_id}` }}</strong>
+              <span class="reason">{{ item.message || '未返回原因' }}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -329,14 +378,16 @@ import { message } from 'ant-design-vue'
 
 import {
   applyLogCollectionConfig,
-  batchApplyLogCollectionTargets,
   batchCreateLogCollectionTargets,
   batchDeleteLogCollectionTargets,
-  batchRetryLogCollectionTargets,
   batchStartLogCollectionTargets,
   batchStopLogCollectionTargets,
   cancelLogCollectionTarget,
   checkLogCollectionStatus,
+  createLogBatchJob,
+  getActiveLogBatchJob,
+  getLogBatchJob,
+  getLogPendingSummary,
   getMonitorInstallHistoryList,
   retryLogCollectionTarget,
   startLogCollectionService,
@@ -434,20 +485,100 @@ const selectedUnmanaged = computed(() =>
   selectedRows.value.filter((item) => item.filebeat && !item.filebeat.managed),
 )
 
-// 本页需要重新下发的主机（已变更 + 从未下发）。只作用于当前页：跨全量的一键下发涉及
-// 500–1000 台的批量执行，需后端异步化（见 docs/plans/LOG_COLLECTION_LIFECYCLE.md Phase 2）。
-const pendingOnPageIds = computed(() =>
-  table.hosts.value
-    .filter((item) => item.filebeat?.managed && ['drift', 'never'].includes(item.filebeat.config_state))
-    .map((item) => item.filebeat.id)
-    .filter(Boolean),
-)
+// 全量「待下发」台数（drift + never）。算的是**全部纳管目标**而不是当前页：一键下发要跨页，
+// 分页无关的全局计数才有意义（后端一次批量渲染，见 pending-summary 接口的说明）。
+const pendingSummary = ref({ total: 0, synced: 0, drift: 0, never: 0, unknown: 0, pending: 0, error: '' })
+
+async function loadPendingSummary() {
+  try {
+    pendingSummary.value = parseApiData(await getLogPendingSummary())
+  } catch (error) {
+    // 计数取不到时不能显示"0 台待下发"（那是在谎报"全都同步了"），把原因带出来。
+    pendingSummary.value = {
+      total: 0, synced: 0, drift: 0, never: 0, unknown: 0, pending: 0,
+      error: error?.response?.data?.msg || error?.message || '待下发台数获取失败',
+    }
+  }
+}
 
 const pendingTooltip = computed(() => {
+  const summary = pendingSummary.value
   if (configStateError.value) return `配置状态无法计算：${configStateError.value}`
-  if (!pendingOnPageIds.value.length) return '本页没有配置待下发的主机'
-  return `对本页 ${pendingOnPageIds.value.length} 台配置已变更/从未下发的主机重新下发采集配置`
+  if (summary.error) return `配置状态无法计算：${summary.error}`
+  if (!summary.pending) return '所有已纳管主机的采集配置都是最新的'
+  return `对全部 ${summary.pending} 台配置已变更/从未下发的主机下发采集配置`
+  + `（已变更 ${summary.drift} 台、从未下发 ${summary.never} 台）`
 })
+
+// ---- 批量作业进度 ----
+// 作业在后台按有界并发推进（安装 20 / 下发 5 台并发，见 §9 第 9 条），这里只轮询作业详情：
+// 进度、成功/失败台数、失败主机与原因。关掉弹窗不停作业——作业是服务端的事实，与页面无关。
+const LOG_BATCH_LABELS = { apply: '下发采集配置', install: '重新安装 Filebeat' }
+const LOG_BATCH_POLL_INTERVAL = 2000
+const batchJobVisible = ref(false)
+const batchJob = ref(null)
+const batchJobAction = ref('apply')
+let batchJobTimer = null
+
+const batchJobTitle = computed(() => `${LOG_BATCH_LABELS[batchJobAction.value] || '批量作业'}进度`)
+const batchJobFailedItems = computed(() =>
+  (batchJob.value?.items || []).filter((item) => item.status === 'failed'),
+)
+const batchJobPercent = computed(() => {
+  const job = batchJob.value
+  if (!job?.total_count) return 0
+  return Math.round(((job.success_count + job.failed_count) / job.total_count) * 100)
+})
+
+function openBatchJobProgress(jobId, action) {
+  batchJobAction.value = action
+  batchJob.value = { id: jobId, total_count: 0, success_count: 0, failed_count: 0, pending_count: 0, status: 'pending', items: [] }
+  batchJobVisible.value = true
+  startBatchJobPolling(jobId)
+}
+
+function startBatchJobPolling(jobId) {
+  stopBatchJobPolling()
+  const poll = async () => {
+    try {
+      const job = parseApiData(await getLogBatchJob(jobId))
+      batchJob.value = job
+      if (!job.is_running) {
+        stopBatchJobPolling()
+        await loadPendingSummary()
+        await table.load()
+        return
+      }
+    } catch (error) {
+      stopBatchJobPolling()
+      return
+    }
+    batchJobTimer = setTimeout(poll, LOG_BATCH_POLL_INTERVAL)
+  }
+  poll()
+}
+
+function stopBatchJobPolling() {
+  if (batchJobTimer) {
+    clearTimeout(batchJobTimer)
+    batchJobTimer = null
+  }
+}
+
+// 刷新页面后接着看还在跑的作业：作业在服务端，页面只是它的视图。
+async function resumeActiveBatchJob() {
+  for (const action of ['apply', 'install']) {
+    try {
+      const job = parseApiData(await getActiveLogBatchJob(action))
+      if (job?.id) {
+        openBatchJobProgress(job.id, action)
+        return
+      }
+    } catch (error) {
+      // 查询失败不打扰用户：没有进行中的作业才是常态。
+    }
+  }
+}
 
 // ---- 运行态与配置状态展示 ----
 
@@ -559,16 +690,17 @@ function formatTimelineTime(value) {
   return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
 }
 
+// 下发门槛只要求「agent 在线 + Filebeat 已装」：下发本身会写 filebeat.yml 与 inputs.d 并重启
+// Filebeat（agent 侧 restart），所以"服务当前没在跑"不构成阻碍——反过来，要求先 running
+// 会让停机待修的主机永远无法通过下发恢复。runtime_status 只在提示里说明。
 function canApplyConfig(record) {
-  return Boolean(record?.host_agent_online)
-    && Boolean(record?.agent_installed)
-    && record?.runtime_status === 'running'
+  return Boolean(record?.host_agent_online) && Boolean(record?.agent_installed)
 }
 
 function applyTooltip(record) {
   if (!record?.host_agent_online) return 'dj-agent 离线，操作不可用'
   if (!record?.agent_installed) return 'Filebeat 未安装，请先完成离线安装'
-  if (record?.runtime_status !== 'running') return 'Filebeat 未运行，请先启动服务'
+  if (record?.runtime_status !== 'running') return 'Filebeat 当前未运行，下发后会一并启动'
   return '运行'
 }
 
@@ -578,11 +710,10 @@ function canCancelTarget(record) {
 
 // ---- 批量与单台动作 ----
 
+// 同步批量：单台只是一次 30 秒超时的 agent 调用，逐台串行的代价可接受。
 const BATCH_ACTIONS = {
-  retry: { label: '批量重新安装', request: batchRetryLogCollectionTargets },
   start: { label: '批量启动', request: batchStartLogCollectionTargets },
   stop: { label: '批量停止', request: batchStopLogCollectionTargets },
-  apply: { label: '批量下发配置', request: batchApplyLogCollectionTargets },
   delete: { label: '批量删除', request: batchDeleteLogCollectionTargets },
 }
 
@@ -603,19 +734,47 @@ async function handleBatch(action) {
   }
 }
 
-async function handleApplyPendingOnPage() {
-  const ids = pendingOnPageIds.value
-  if (!ids.length) return
-  batchLoading.value = 'apply-pending'
+// 纳管并安装：安装部分由后端建了批量作业，把进度弹窗接上（失败原因逐台可见）。
+function followCreatedInstallBatch(data) {
+  if (data?.install_batch?.id) {
+    openBatchJobProgress(data.install_batch.id, 'install')
+    return
+  }
+  if (data?.install_error) message.warning(`纳管成功，但安装作业创建失败：${data.install_error}`)
+}
+
+// 异步批量作业：下发配置（apply）与安装重试（install）都要跑分钟级操作，1000 台时不可能在
+// 一个请求里跑完。后端只建作业 + 入队，前端按作业号轮询进度（见 log_batch_job.go）。
+async function handleStartLogBatch(action, ids) {
+  batchLoading.value = `batch-${action}`
   try {
-    const data = parseApiData(await batchApplyLogCollectionTargets(ids))
-    reportBatchResult('下发待变更', data)
+    const job = parseApiData(await createLogBatchJob(action, ids))
+    message.success(`${LOG_BATCH_LABELS[action] || '批量作业'}已入队，共 ${job.total_count} 台`)
+    openBatchJobProgress(job.id, action)
+    table.clearSelection()
     await table.load()
   } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || '下发待变更失败')
+    message.error(error?.response?.data?.msg || error?.message || '批量作业创建失败')
   } finally {
     batchLoading.value = ''
   }
+}
+
+// 「下发配置」：只作用于选中的已纳管主机。
+function handleSelectedApply() {
+  const ids = [...selectedManagedIds.value]
+  if (ids.length) handleStartLogBatch('apply', ids)
+}
+
+// 「一键下发全部待变更」：ids 省略 → 后端按配置态实时算出全部 drift/never 的主机。
+function handleApplyAllPending() {
+  if (!pendingSummary.value.pending) return
+  handleStartLogBatch('apply', null)
+}
+
+function handleBatchInstall() {
+  const ids = [...selectedManagedIds.value]
+  if (ids.length) handleStartLogBatch('install', ids)
 }
 
 async function handleBatchCreate() {
@@ -624,7 +783,9 @@ async function handleBatchCreate() {
   batchLoading.value = 'create'
   try {
     const data = parseApiData(await batchCreateLogCollectionTargets(hostIds, true))
-    reportBatchResult('纳管并下发安装', data)
+    reportBatchResult('纳管', data)
+    // 安装走批量作业（后端入队），前台不再逐台等；进度在作业弹窗里看。
+    followCreatedInstallBatch(data)
     table.clearSelection()
     await Promise.all([table.load(), table.loadGroupTree()])
   } catch (error) {
@@ -638,7 +799,8 @@ async function handleCreateOne(record) {
   createLoading[record.host_id] = true
   try {
     const data = parseApiData(await batchCreateLogCollectionTargets([record.host_id], true))
-    reportBatchResult('纳管并下发安装', data)
+    reportBatchResult('纳管', data)
+    followCreatedInstallBatch(data)
     await Promise.all([table.load(), table.loadGroupTree()])
   } catch (error) {
     message.error(error?.response?.data?.msg || error?.message || '纳管失败')
@@ -842,7 +1004,7 @@ function reportApplyWarnings(warnings) {
 let refreshTimer = null
 
 async function loadAll() {
-  await Promise.all([table.load(), table.loadGroupTree()])
+  await Promise.all([table.load(), table.loadGroupTree(), loadPendingSummary()])
 }
 
 function startRefresh() {
@@ -863,11 +1025,54 @@ function stopRefresh() {
 // 页面切走时暂停轮询，避免后台持续请求（与其它页面同一约定）。
 useKeepAliveRefreshLifecycle(startRefresh, stopRefresh)
 
-onMounted(loadAll)
-onBeforeUnmount(stopRefresh)
+onMounted(async () => {
+  await loadAll()
+  // 回到页面时接着看还没跑完的批量作业（作业在服务端，与页面生命周期无关）。
+  await resumeActiveBatchJob()
+})
+onBeforeUnmount(() => {
+  stopRefresh()
+  stopBatchJobPolling()
+})
 </script>
 
 <style scoped>
+.batch-job__counts {
+  display: flex;
+  gap: 16px;
+  margin: 12px 0;
+  color: #595959;
+}
+
+.batch-job__counts .ok {
+  color: #52c41a;
+}
+
+.batch-job__counts .fail {
+  color: #ff4d4f;
+}
+
+.batch-job__failures {
+  margin-top: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.batch-job__failures-title {
+  margin: 0 0 6px;
+  color: #595959;
+}
+
+.batch-job__failures ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.batch-job__failures .reason {
+  margin-left: 8px;
+  color: #8c8c8c;
+}
+
 .page-head {
   margin-bottom: 12px;
 }

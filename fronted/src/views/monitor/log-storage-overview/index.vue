@@ -97,6 +97,13 @@
                     <template v-else-if="column.key === 'backing_count'">
                       <span>{{ (record.backing_indices || []).length }}</span>
                     </template>
+                    <template v-else-if="column.key === 'collect_state'">
+                      <a-tooltip v-if="serviceCollectState(record)" :title="serviceCollectState(record).tooltip" placement="top">
+                        <a-tag color="orange">{{ serviceCollectState(record).label }}</a-tag>
+                      </a-tooltip>
+                      <span v-else-if="record.recognized">采集中</span>
+                      <span v-else>-</span>
+                    </template>
                     <template v-else-if="column.key === 'ism'">
                       <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
                       <span v-else>-</span>
@@ -147,6 +154,12 @@
                   <a-descriptions-item label="保留档位">
                     <a-tag v-if="selectedService.tier" color="blue">{{ selectedService.tier }}</a-tag>
                     <span v-else>-</span>
+                  </a-descriptions-item>
+                  <a-descriptions-item label="采集状态">
+                    <a-tooltip v-if="selectedService.collectState" :title="selectedService.collectState.tooltip" placement="top">
+                      <a-tag color="orange">{{ selectedService.collectState.label }}</a-tag>
+                    </a-tooltip>
+                    <span v-else>采集中</span>
                   </a-descriptions-item>
                   <a-descriptions-item label="磁盘占用">
                     <span v-if="selectedService.bytes">{{ formatBytes(selectedService.bytes) }}（真实值）</span>
@@ -292,6 +305,7 @@ const allocationColumns = [
 const streamColumns = [
   { title: 'data stream', dataIndex: 'name', key: 'name' },
   { title: '逻辑服务', dataIndex: 'service', key: 'service', width: 120 },
+  { title: '采集状态', key: 'collect_state', width: 110 },
   { title: '健康', dataIndex: 'health', key: 'health', width: 80 },
   { title: '占用', dataIndex: 'bytes', key: 'bytes', width: 110 },
   { title: '文档数', dataIndex: 'docs', key: 'docs', width: 110 },
@@ -314,7 +328,6 @@ const treeData = computed(() => {
   const search = treeSearch.value.trim().toLowerCase()
   const projects = dims.value.projects || []
   const bizsystems = dims.value.business_systems || []
-  const services = dims.value.services || []
 
   const match = (text) => !search || String(text || '').toLowerCase().includes(search)
 
@@ -387,22 +400,28 @@ function bizsysNode(bizsys, match) {
       })
       const serviceChildren = Object.entries(byService)
         .filter(([serviceCode]) => serviceCode)
-        .map(([serviceCode, list]) => ({
-          key: `bizsys:${bizsys.code}:env:${env.code}:svc:${serviceCode}`,
-          title: `服务：${serviceCode}`,
-          level: 'service',
-          bizsysCode: bizsys.code,
-          bizsysName: bizsys.name,
-          envCode: env.code,
-          envName: env.name,
-          serviceCode,
-          streamName: list[0].name,
-          tier: list[0].tier,
-          meta: { bytes: sumBytes(list), docs: sumDocs(list), health: worstHealth(list) },
-          streams: list,
-          children: [],
-          isLeaf: true,
-        }))
+        .map(([serviceCode, list]) => {
+          const collectState = serviceCollectState(list[0])
+          return {
+            key: `bizsys:${bizsys.code}:env:${env.code}:svc:${serviceCode}`,
+            // 状态挂在**逻辑服务**上（用户侧的心智模型与服务/日志设置一致），
+            // 树节点标题直接带上，避免"停用的服务"看起来跟正常采集一样。
+            title: collectState ? `服务：${serviceCode}（${collectState.label}）` : `服务：${serviceCode}`,
+            level: 'service',
+            bizsysCode: bizsys.code,
+            bizsysName: bizsys.name,
+            envCode: env.code,
+            envName: env.name,
+            serviceCode,
+            streamName: list[0].name,
+            tier: list[0].tier,
+            collectState,
+            meta: { bytes: sumBytes(list), docs: sumDocs(list), health: worstHealth(list) },
+            streams: list,
+            children: [],
+            isLeaf: true,
+          }
+        })
       return {
         key: `bizsys:${bizsys.code}:env:${env.code}`,
         title: `环境：${env.name}`,
@@ -450,6 +469,30 @@ function worstHealth(list) {
   return 'green'
 }
 
+// 逻辑服务的采集状态（配置事实，直接来自服务行，不需要查 ES）：
+//   - 服务停用 → 采集已停止，已写入的数据按档位保留到期、不会自动清理；
+//   - 服务启用但没开启日志采集 → 同上（服务级开关链里"服务"这一层关着）。
+// 两者都不是"数据已删"，也与"孤儿流"无关，因此只做标注、不参与任何清理入口。
+// 没有服务段可解析的旧命名流 list[0] 里两个开关都是 false，会返回 null（不标注）。
+function serviceCollectState(stream) {
+  if (!stream?.recognized || !stream?.service) return null
+  if (!stream.service_enabled) {
+    return {
+      key: 'service_disabled',
+      label: '已停用',
+      tooltip: '该逻辑服务已停用：不再下发采集配置，已写入的数据按保留档位到期，不会自动清理。',
+    }
+  }
+  if (!stream.service_collection_enabled) {
+    return {
+      key: 'collection_off',
+      label: '未开启采集',
+      tooltip: '该逻辑服务没有开启日志采集：不再下发采集配置，已写入的数据按保留档位到期，不会自动清理。',
+    }
+  }
+  return null
+}
+
 function selectNode(selectedKeysValue, { node }) {
   const meta = node.meta || {}
   expandedStream.value = null
@@ -461,6 +504,7 @@ function selectNode(selectedKeysValue, { node }) {
       envName: node.envName,
       streamName: node.streamName,
       tier: node.tier,
+      collectState: node.collectState || null,
       bytes: node.meta?.bytes || 0,
       docs: node.meta?.docs || 0,
     }

@@ -25,6 +25,9 @@ type Handler struct {
 	// 目标安装缺少主机平台/架构信息时主动补采一次资产信息（由 assets 域注入，
 	// 避免日志采集反向依赖资产采集实现）。
 	refreshHostInfo func(ctx context.Context, hostID int64) error
+	// 批量动作的执行器（入队 + 有界并发 + 进度可查），见 log_batch_job.go。
+	// 由 router 在装配队列发布者后注入；未注入时批量作业接口直接报"执行器未装配"。
+	batchRunner *LogBatchRunner
 }
 
 // NewHandler 装配日志采集域 Handler。凭据加解密器与软件包根目录由调用方（router）统一构造后注入：
@@ -32,6 +35,11 @@ type Handler struct {
 // 集中构造保证与监控域指向同一份配置和同一个 media 目录。
 func NewHandler(db *sql.DB, gateway *agent.Gateway, jobs *automation.Handler, secrets *assets.SecretEncryptor, packageRoot string) *Handler {
 	return &Handler{db: db, gateway: gateway, jobs: jobs, secrets: secrets, packageRoot: packageRoot}
+}
+
+// SetLogBatchRunner 注入批量动作执行器（转发给执行器的句柄，建作业时要用到它的并发上限与发布者）。
+func (handler *Handler) SetLogBatchRunner(runner *LogBatchRunner) {
+	handler.batchRunner = runner
 }
 
 // SetHostInfoRefresher 注入主机资产补采能力（assets.Handler.RefreshHostInfoByID）。

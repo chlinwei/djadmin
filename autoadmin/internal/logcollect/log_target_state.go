@@ -1,13 +1,12 @@
 package logcollect
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 
 	db "autoadmin/internal/platform/database/generated"
-
-	"github.com/gin-gonic/gin"
 )
 
 // 采集目标的**配置态**：后端实时渲染出"期望指纹"，与主机上已下发的 `config_fingerprint` 比对。
@@ -19,6 +18,8 @@ const (
 	LogConfigDrift = "drift"
 	// LogConfigNever 从未下发过（指纹为空）。
 	LogConfigNever = "never"
+	// LogConfigUnknown 期望配置算不出来（例如没有启用的默认集群），此时不谎报"已同步"。
+	LogConfigUnknown = "unknown"
 )
 
 // LogConfigTargetRef 配置态评估的入参：目标主机 + 其已下发的配置指纹。
@@ -45,7 +46,10 @@ type LogConfigState struct {
 // 因此调用方可以按页传（展示场景）或一次传全部（筛选/统计场景）。
 //
 // 只对**已纳管**的采集目标评估：未纳管的主机没有日志目标，配置态不适用（属监控域的"未纳管"概念）。
-func (handler *Handler) EvaluateLogConfigStates(context *gin.Context, refs []LogConfigTargetRef) (map[int64]LogConfigState, error) {
+//
+// 入参是 context.Context 而非 *gin.Context：批量作业的执行发生在 worker 的批量 runner 里，
+// 没有 HTTP 请求可依附（*gin.Context 也不能带出请求生命周期——请求一结束它就被取消了）。
+func (handler *Handler) EvaluateLogConfigStates(context context.Context, refs []LogConfigTargetRef) (map[int64]LogConfigState, error) {
 	states := map[int64]LogConfigState{}
 	if len(refs) == 0 {
 		return states, nil

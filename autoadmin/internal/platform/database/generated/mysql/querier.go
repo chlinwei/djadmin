@@ -31,6 +31,14 @@ type Querier interface {
 	ClaimAutomationJob(ctx context.Context, arg ClaimAutomationJobParams) (int64, error)
 	ClaimBaselineScan(ctx context.Context, arg ClaimBaselineScanParams) (int64, error)
 	ClaimDueInspectionTask(ctx context.Context, arg ClaimDueInspectionTaskParams) (int64, error)
+	// 首次认领（pending → running）：拿到 0 行说明作业已被别的分片认领或已结束，直接 ack。
+	//
+	// 只认 pending、且**不用 "status IN (pending,running)"**：MySQL 的 UPDATE 默认返回"实际改变的行数"
+	// （客户端未开 CLIENT_FOUND_ROWS），把已经在 running 的行再写一次同样值会返回 0 行，
+	// 于是分片续跑会被误判成"抢不到执行权"而永远停在 running（真库验出，2026-07-XX 版本曾如此）。
+	// 分片续跑不走这条语句：执行器先读作业状态，读到 running 就继续（进程内按作业 id 串行，
+	// 见 log_batch_job.go 的说明）。
+	ClaimLogBatchJob(ctx context.Context, arg ClaimLogBatchJobParams) (int64, error)
 	ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error)
 	ClearDefaultElasticsearchCluster(ctx context.Context, arg ClearDefaultElasticsearchClusterParams) error
 	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
@@ -206,6 +214,12 @@ type Querier interface {
 	CreateInspectionTargetExecution(ctx context.Context, arg CreateInspectionTargetExecutionParams) (int64, error)
 	CreateInspectionTask(ctx context.Context, arg CreateInspectionTaskParams) (int64, error)
 	CreateInspectionTaskGroup(ctx context.Context, arg CreateInspectionTaskGroupParams) error
+	// ---- 日志采集批量动作的作业与进度（monitor_log_batch_job / _item）----
+	// 见 migration 000033 与 docs/plans/LOG_COLLECTION_LIFECYCLE.md §8 Phase 2。
+	// 状态机：作业 pending → running → success|partial|failed；item pending → running → success|failed。
+	// 计数不应用层自增，而是从 item 表重算（RefreshLogBatchJobProgress），避免并发下计数漂移。
+	CreateLogBatchJob(ctx context.Context, arg CreateLogBatchJobParams) (int64, error)
+	CreateLogBatchJobItem(ctx context.Context, arg CreateLogBatchJobItemParams) error
 	CreateLogCollectionFilterRule(ctx context.Context, arg CreateLogCollectionFilterRuleParams) (int64, error)
 	// 批量纳管：host_id 唯一键冲突即"已纳管"（MySQL 的 INSERT IGNORE / PG 的 ON CONFLICT DO NOTHING）。
 	CreateLogCollectionTargetIfAbsent(ctx context.Context, arg CreateLogCollectionTargetIfAbsentParams) (sql.Result, error)
@@ -337,6 +351,8 @@ type Querier interface {
 	FinishBaselineScanTarget(ctx context.Context, arg FinishBaselineScanTargetParams) error
 	FinishInspectionExecution(ctx context.Context, arg FinishInspectionExecutionParams) (int64, error)
 	FinishInspectionTarget(ctx context.Context, arg FinishInspectionTargetParams) error
+	FinishLogBatchJob(ctx context.Context, arg FinishLogBatchJobParams) (int64, error)
+	FinishLogBatchJobItem(ctx context.Context, arg FinishLogBatchJobItemParams) error
 	FinishLogTargetInstallHistory(ctx context.Context, arg FinishLogTargetInstallHistoryParams) (int64, error)
 	// 收尾：只有仍处于 pending 的任务才落终态。
 	// install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
@@ -350,6 +366,8 @@ type Querier interface {
 	// 单槽位 Agent 安装包：列表接口返回"当前激活包"，下载返回它的文件路径。
 	GetActiveAgentPackage(ctx context.Context) (GetActiveAgentPackageRow, error)
 	GetActiveAgentPackageFile(ctx context.Context) (string, error)
+	// 页面上挂着的"进行中的批量作业"（刷新页面后仍能接着看进度）。
+	GetActiveLogBatchJobByAction(ctx context.Context, action string) (GetActiveLogBatchJobByActionRow, error)
 	GetAgentInstallPlaybook(ctx context.Context, category string) (string, error)
 	GetAgentPackage(ctx context.Context, id uint64) (GetAgentPackageRow, error)
 	GetAgentPackageIDByVersion(ctx context.Context, version string) (uint64, error)
@@ -366,6 +384,13 @@ type Querier interface {
 	// event_type 决定路由匹配开关，status 决定是否跳过已成功的事件，labels 用于 matchers 匹配。
 	GetAlertNotificationEventDispatch(ctx context.Context, id int64) (GetAlertNotificationEventDispatchRow, error)
 	GetApplication(ctx context.Context, id int64) (GetApplicationRow, error)
+	// 按 id 取单个部署实例。列集与 ListApplicationDeployments 完全一致（同一份映射），
+	// 供"保存后回读""进详情/控制"这类**按 id** 的场景使用。
+	//
+	// 存在的理由：这些场景原先复用列表查询（`LIMIT 1` 或 `Size: 100000`）在内存里找目标行，
+	// 前者恒取 id 最大的一台（编辑任意不是最新的一台都会被误判成"不存在"，见 2026-09-18 的
+	// "编辑实例报资产不存在"），后者每次请求要把全部实例拉回来。
+	GetApplicationDeploymentDetail(ctx context.Context, id int64) (GetApplicationDeploymentDetailRow, error)
 	GetApplicationNameCode(ctx context.Context, id int64) (GetApplicationNameCodeRow, error)
 	GetApplicationServiceCode(ctx context.Context, id int64) (string, error)
 	GetApplicationServiceDetail(ctx context.Context, id int64) (GetApplicationServiceDetailRow, error)
@@ -435,6 +460,7 @@ type Querier interface {
 	// 是派发时刻）。
 	GetLatestLogTargetInstallHistory(ctx context.Context, logCollectionTargetID sql.NullInt64) (GetLatestLogTargetInstallHistoryRow, error)
 	GetLatestTargetInstallHistory(ctx context.Context, targetID sql.NullInt64) (GetLatestTargetInstallHistoryRow, error)
+	GetLogBatchJob(ctx context.Context, id int64) (GetLogBatchJobRow, error)
 	GetLogCollectionFilterRule(ctx context.Context, id int64) (MonitorLogCollectionFilterRule, error)
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
@@ -551,11 +577,9 @@ type Querier interface {
 	ListEnabledInspectionChecksForRun(ctx context.Context, groupID int64) ([]ListEnabledInspectionChecksForRunRow, error)
 	ListEnabledProjects(ctx context.Context) ([]ListEnabledProjectsRow, error)
 	// ---- 日志存储（Elasticsearch 集群）与保留档位 ----
+	// 保留档位列表（下拉/管理路径用：只列启用的）。
+	// 识别流名要的是**全部**档位码，用 ListRetentionTierCodes：停用一个档位不该让既有流变成"未识别"。
 	ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error)
-	// 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
-	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
-	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
-	ListEnabledServiceStreamRows(ctx context.Context) ([]ListEnabledServiceStreamRowsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
 	// 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。
 	// 原实现写的是 bs.project —— assets_business_system 没有这一列（真库与 schema 都没有），
@@ -595,6 +619,9 @@ type Querier interface {
 	ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInstalledLogTargetRuntimeRow, error)
 	ListInventoriesTyped(ctx context.Context, arg ListInventoriesTypedParams) ([]AutomationInventory, error)
 	ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([]AutomationExecutionJob, error)
+	ListLogBatchJobItems(ctx context.Context, batchJobID int64) ([]ListLogBatchJobItemsRow, error)
+	// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
+	ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error)
 	ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error)
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)
 	ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error)
@@ -625,12 +652,17 @@ type Querier interface {
 	ListNotificationPolicyNodes(ctx context.Context) ([]ListNotificationPolicyNodesRow, error)
 	ListOperationAudits(ctx context.Context, arg ListOperationAuditsParams) ([]AuditOperationLog, error)
 	ListPackageChecksums(ctx context.Context, arg ListPackageChecksumsParams) ([]ListPackageChecksumsRow, error)
+	// 续跑/分片执行时取下一批待处理项。只取 pending：已成功的不重跑，running 的由
+	// ResetStaleLogBatchJobItems 在续跑前回落为 pending。
+	ListPendingLogBatchJobItems(ctx context.Context, arg ListPendingLogBatchJobItemsParams) ([]ListPendingLogBatchJobItemsRow, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
 	// ---- 日志链路对账与数据流水位（只读）----
 	ListProcessingRulesByCluster(ctx context.Context, clusterID int64) ([]ListProcessingRulesByClusterRow, error)
 	// business_system_names/business_system_ids 用 '||' 聚合（项目名/系统名可能含逗号），Go 侧拆分为数组。
 	ListProjects(ctx context.Context, arg ListProjectsParams) ([]ListProjectsRow, error)
 	ListPrometheusServiceDiscoveryTargets(ctx context.Context) ([]ListPrometheusServiceDiscoveryTargetsRow, error)
+	// 流名匹配用的档位码全集（不过滤 enabled，理由见 ListServiceStreamDims 的说明）。
+	ListRetentionTierCodes(ctx context.Context) ([]string, error)
 	ListRoleCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]SysRole, error)
 	ListRolesByUserID(ctx context.Context, userID int32) ([]SysRole, error)
@@ -644,12 +676,29 @@ type Querier interface {
 	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
 	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
+	// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
+	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
+	//
+	// 刻意**不**过滤 `s.enabled`：这条查询回答的是"这条已有的流属于哪个已知服务"，
+	// 而不是"这个服务现在是否在采集"。停用是可逆状态、服务行还在、存量流要么还在写
+	// （还没重新下发配置）要么停写并保留到 ILM 到期（见计划 §0「停止采集 ≠ 删除数据」）。
+	// 早先带 `WHERE s.enabled = TRUE` 会让停用服务的流解析不出来 → 在存储水位页被判成
+	// 「未识别」孤儿，等于把暂停采集的存量数据标成待清理对象（2026-09-18 修复）。
+	// 真正被判成孤儿的应该是"服务行已删/改名"——那种情况下这里本来就查不到维度码。
+	//
+	// 下发路径（ListHostLogRenderEntries）仍照旧过滤 `s.enabled = TRUE`：停用的服务不该再往主机推片段。
+	// 附带服务级的采集开关（enabled / log_collection_enabled）：存储水位页要按**逻辑服务**标注
+	// "已停用 / 未开启采集"——这是配置事实（来自库），不是对数据流的断言，所以不需要查 ES。
+	ListServiceStreamDims(ctx context.Context) ([]ListServiceStreamDimsRow, error)
 	// ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
 	ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error)
 	ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error)
 	// 失联对账：阈值改为应用层算好的时间点（原实现用 UTC_TIMESTAMP(6) - INTERVAL ? MINUTE，
 	// 既有方言函数又让阈值跟着库时钟走）。
 	ListStaleFiringAlerts(ctx context.Context, staleBefore time.Time) ([]ListStaleFiringAlertsRow, error)
+	// 失联作业对账：执行进程消失后作业会永久停在 running，由 reaper 回落为 pending 后重新入队。
+	// 判据是 update_time：健康作业每完成一个 item 都会刷新它。
+	ListStaleLogBatchJobs(ctx context.Context, staleBefore time.Time) ([]ListStaleLogBatchJobsRow, error)
 	ListTasksTyped(ctx context.Context, arg ListTasksTypedParams) ([]ListTasksTypedRow, error)
 	ListTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateConfigFilesRow, error)
 	ListTemplateControlActions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateControlActionsRow, error)
@@ -696,6 +745,7 @@ type Querier interface {
 	MarkHostCollected(ctx context.Context, arg MarkHostCollectedParams) error
 	MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error)
 	MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error
+	MarkLogBatchJobItemRunning(ctx context.Context, arg MarkLogBatchJobItemRunningParams) error
 	// 指纹未变时的"只刷新下发时间"路径。
 	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
 	// 指纹变化并下发成功后：记下发时间与指纹。
@@ -706,8 +756,14 @@ type Querier interface {
 	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
 	MaxBaselineItemSort(ctx context.Context, categoryID int64) (int64, error)
+	// 计数从 item 表重算，不依赖应用层累加（并发下应用层累加必然漂移）。
+	RefreshLogBatchJobProgress(ctx context.Context, arg RefreshLogBatchJobProgressParams) error
 	RenameBaselineCategory(ctx context.Context, arg RenameBaselineCategoryParams) (int64, error)
+	// 失联对账把停摆的作业放回 pending，重新投递后再由 ClaimLogBatchJob 认领。
+	RequeueLogBatchJob(ctx context.Context, arg RequeueLogBatchJobParams) (int64, error)
 	ResetConfigValue(ctx context.Context, arg ResetConfigValueParams) error
+	// 续跑前把"上一轮留下的 running"落回 pending：这些项的执行者已经不在了。
+	ResetStaleLogBatchJobItems(ctx context.Context, arg ResetStaleLogBatchJobItemsParams) (int64, error)
 	ResetTargetInstallRetry(ctx context.Context, arg ResetTargetInstallRetryParams) error
 	ResolveAlertHistoryFromWebhook(ctx context.Context, arg ResolveAlertHistoryFromWebhookParams) error
 	ResolveStaleAlert(ctx context.Context, arg ResolveStaleAlertParams) (int64, error)
@@ -758,6 +814,7 @@ type Querier interface {
 	UpdateHostGroup(ctx context.Context, arg UpdateHostGroupParams) error
 	UpdateInspectionGroup(ctx context.Context, arg UpdateInspectionGroupParams) (int64, error)
 	UpdateInspectionTask(ctx context.Context, arg UpdateInspectionTaskParams) (int64, error)
+	UpdateLogBatchJobHeartbeat(ctx context.Context, arg UpdateLogBatchJobHeartbeatParams) error
 	UpdateLogCollectionFilterRule(ctx context.Context, arg UpdateLogCollectionFilterRuleParams) (int64, error)
 	UpdateLogProcessingRule(ctx context.Context, arg UpdateLogProcessingRuleParams) (int64, error)
 	UpdateLogRetentionTier(ctx context.Context, arg UpdateLogRetentionTierParams) (int64, error)

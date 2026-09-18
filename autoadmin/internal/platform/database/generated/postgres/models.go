@@ -836,6 +836,39 @@ type MonitorElasticsearchCluster struct {
 	StorageSyncTime   sql.NullTime `json:"storage_sync_time"`
 }
 
+type MonitorLogBatchJob struct {
+	ID                int64          `json:"id"`
+	CreateTime        time.Time      `json:"create_time"`
+	UpdateTime        time.Time      `json:"update_time"`
+	Remark            sql.NullString `json:"remark"`
+	Action            string         `json:"action"`
+	Status            string         `json:"status"`
+	TotalCount        int32          `json:"total_count"`
+	SuccessCount      int32          `json:"success_count"`
+	FailedCount       int32          `json:"failed_count"`
+	Concurrency       int32          `json:"concurrency"`
+	Message           string         `json:"message"`
+	RequestedUserID   sql.NullInt64  `json:"requested_user_id"`
+	RequestedUsername string         `json:"requested_username"`
+	StartedAt         sql.NullTime   `json:"started_at"`
+	FinishedAt        sql.NullTime   `json:"finished_at"`
+}
+
+type MonitorLogBatchJobItem struct {
+	ID         int64        `json:"id"`
+	CreateTime time.Time    `json:"create_time"`
+	UpdateTime time.Time    `json:"update_time"`
+	BatchJobID int64        `json:"batch_job_id"`
+	TargetID   int64        `json:"target_id"`
+	HostID     int64        `json:"host_id"`
+	HostName   string       `json:"host_name"`
+	HostIp     string       `json:"host_ip"`
+	Status     string       `json:"status"`
+	Message    string       `json:"message"`
+	StartedAt  sql.NullTime `json:"started_at"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+}
+
 type MonitorLogCollectionFilterRule struct {
 	ID            int64          `json:"id"`
 	CreateTime    time.Time      `json:"create_time"`

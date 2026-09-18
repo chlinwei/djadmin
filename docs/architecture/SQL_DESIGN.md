@@ -639,7 +639,7 @@ go test -tags postgres ./...  # 全量测试也要在 PG 变体下跑
 
 ### 6.2 未建模的表（已补，仅剩框架表）
 
-真实库 91 张表，`db/schema` 已建模 78 张。此前缺失的 14 张业务表已补入（`agent_package`、`assets_agent_job`、`assets_cloudaccount`、`assets_hostdisk`、`assets_hostruntime`、`assets_webssh_temp_credential`、`automation_controller_ssh_key`、`automation_execution_host_log`、`monitor_log_collection_target`、`monitor_notification_policy`、`monitor_user_alert_media_binding`、`sys_user_group`、`sys_user_group_member`、以及后经确认无 Go 调用方而于 2026-09-17 移除的 `assets_agent_job_event`），解开了约 80 条内联 SQL 的迁移阻塞。
+真实库 91 张表，`db/schema` 已建模 78 张。此前缺失的 14 张业务表已补入（`agent_package`、`assets_agent_job`、`assets_cloudaccount`、`assets_hostdisk`、`assets_hostruntime`、`assets_webssh_temp_credential`、`automation_controller_ssh_key`、`automation_execution_host_log`、`monitor_log_collection_target`、`monitor_notification_policy`、`monitor_user_alert_media_binding`、`sys_user_group`、`sys_user_group_member`、以及后经确认无 Go 调用方而于 2026-09-17 移除的 `assets_agent_job_event`），解开了约 80 条内联 SQL 的迁移阻塞。2026-09-18 又补入两张日志采集批量作业表（`monitor_log_batch_job` / `monitor_log_batch_job_item`，见 migration 000033 与[LOG_COLLECTION_ARCHITECTURE](LOG_COLLECTION_ARCHITECTURE.md) §8.8）。
 
 剩余 12 张未建模的是 Django 框架记账表（`auth_*`、`django_*`、`schema_migrations`），**不应建模**。
 

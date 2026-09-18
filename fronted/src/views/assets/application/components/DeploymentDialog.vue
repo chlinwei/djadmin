@@ -57,9 +57,14 @@ const loading = ref(false)
 const saving = ref(false)
 const hostOptions = ref([])
 const serviceEnvironmentId = ref(null)
+// 注意：这里**不提交逻辑服务关联**。实例与服务的绑定由服务侧维护（服务编辑弹窗的成员列表 →
+// member_configs），实例侧改它会与"服务侧全量重建关联"的语义冲突（同一实例可能同时属于多个服务）。
+// 原先这里带了一个 application_service 字段，后端结构体并不接收 → 静默忽略，
+// 看起来"绑定成功"其实没有写库（2026-09-18 排查 yilake nginx 时发现）。
+// 从服务弹窗点「新增部署实例」创建的场景仍会绑定：保存后由服务侧 handleDeploymentSaved
+// 把新实例加入成员列表，再随服务一起保存。
 const createInitialForm = () => ({
   host: null,
-  application_service: null,
   instance_name: '',
   enabled: true,
   remark: '',
@@ -92,7 +97,6 @@ async function loadOptions() {
 async function initialize() {
   resetForm()
   serviceEnvironmentId.value = null
-  form.application_service = props.applicationServiceId
   loading.value = true
   applyingRecord.value = true
   try {

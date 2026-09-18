@@ -46,3 +46,8 @@ func clusterProfileCountArgs() []driver.Value {
 func clusterProfileListArgs(limit, offset int32) []driver.Value {
 	return []driver.Value{int64(limit), int64(offset), notNilArg{}, "%%"}
 }
+
+// serviceDeploymentLinkArgs 见 MySQL 侧说明：PG 的数组参数形态与单个位置参数不同。
+func serviceDeploymentLinkArgs(deploymentID int64) []driver.Value {
+	return []driver.Value{sqlmock.AnyArg()}
+}

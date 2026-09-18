@@ -36,16 +36,21 @@ make generate SQLC=~/go/bin/sqlc   # both sqlc artifacts; requires sqlc v1.30.0
 make facade                   # rebuild the dialect facade (must run after make generate)
 
 # ---- run (one binary, four roles) ----
-./bin/autoadmin api           # HTTP :9000 + agent gRPC :9001
+./bin/autoadmin api           # HTTP :9000 + agent gRPC :9001 + 日志采集批量作业队列
 ./bin/autoadmin scheduler
-./bin/autoadmin worker
+./bin/autoadmin worker        # 通用作业队列（计划任务）
 ./bin/autoadmin migrate       # applies db/migrations/<dialect> up migrations
 ./bin/autoadmin --version     # or -v
 ```
 
+队列按"执行者需要什么"分成两条（见 `rabbitmq.Routes`）：`autoadmin.job.execute`
+（不需要 agent 会话的作业：计划任务，worker 角色消费）与 `autoadmin.logcollect.execute`
+（日志采集批量动作：要经 agent gRPC 会话在主机上执行，而会话只存在于 api 进程里，
+因此**必须由 api 角色消费**，并发/预算由 `LOG_BATCH_*` 控制）。
+
 Environment: the default build reads `MYSQL_DSN`; the `-tags postgres` build reads `POSTGRES_DSN` (pgx DSN, must carry `TimeZone=UTC`). `MIGRATION_DATABASE_URL` / `MIGRATION_SOURCE_URL` are used by the `migrate` role. Configuration is not read from dotenv files — export it (`set -a; . ./config.env; set +a`) or inject it from the deployment environment.
 
-Note: `db/migrations/postgres/` holds the PostgreSQL translation of every MySQL migration (same 44 file names and version numbers; see SQL_DESIGN §4.7). The `migrate` role registers the driver matching the build: `!postgres` → `migrate/v4/database/mysql`, `-tags postgres` → `migrate/v4/database/pgx/v5`. **The PG variant's `MIGRATION_DATABASE_URL` must use the `pgx5://` scheme** (golang-migrate dispatches by scheme), e.g. `pgx5://user:pass@host:5432/djadmin?sslmode=disable`; `MIGRATION_SOURCE_URL` then points at `file://db/migrations/postgres`.
+Note: `db/migrations/postgres/` holds the PostgreSQL translation of every MySQL migration (same file names and version numbers; see SQL_DESIGN §4.7). The `migrate` role registers the driver matching the build: `!postgres` → `migrate/v4/database/mysql`, `-tags postgres` → `migrate/v4/database/pgx/v5`. **The PG variant's `MIGRATION_DATABASE_URL` must use the `pgx5://` scheme** (golang-migrate dispatches by scheme), e.g. `pgx5://user:pass@host:5432/djadmin?sslmode=disable`; `MIGRATION_SOURCE_URL` then points at `file://db/migrations/postgres`.
 
 **Both tags must be built and tested in CI**: the PostgreSQL adapters are hand-written, so a new divergence between the two artifacts only surfaces when the `postgres` tag is compiled (see SQL_DESIGN §4.8).
 

@@ -7,7 +7,6 @@ import (
 
 	"autoadmin/internal/api/response"
 	"autoadmin/internal/shared/apperror"
-	"autoadmin/internal/shared/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -123,18 +122,14 @@ func (handler *Handler) GetApplicationDeployment(context *gin.Context) {
 	if !ok {
 		return
 	}
-	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000}, ApplicationDeploymentFilter{})
+	// 按 id 直查。历史写法是把全部实例（Size: 100000）拉回来在内存里找目标行——
+	// 每请求一次全表，且找不到时的"不存在"结论依赖列表查询的可见性（列表 INNER JOIN 主机）。
+	item, err := handler.service.repository.GetApplicationDeployment(context.Request.Context(), id)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
 	}
-	for _, item := range items {
-		if item.ID == id {
-			respond(context, item, nil)
-			return
-		}
-	}
-	respond(context, nil, ErrNotFound)
+	respond(context, item, nil)
 }
 func (handler *Handler) CreateApplicationService(context *gin.Context) {
 	input, ok := bind[ApplicationServiceInput](context)
@@ -198,21 +193,15 @@ func (handler *Handler) ControlApplicationDeployment(context *gin.Context) {
 		respond(context, result, executeErr)
 		return
 	}
-	items, _, err := handler.service.repository.ListApplicationDeployments(context.Request.Context(), pagination.Page{Number: 1, Size: 100000}, ApplicationDeploymentFilter{})
+	// 没有 agent 网关时的兜底：只能读回库里的既有状态，不能真的执行启停。
+	item, err := handler.service.repository.GetApplicationDeployment(context.Request.Context(), id)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
 	}
-	for _, item := range items {
-		if item.ID != id {
-			continue
-		}
-		if action != "status" {
-			respond(context, nil, ErrAgentUnavailable)
-			return
-		}
-		respond(context, gin.H{"job_id": nil, "action": action, "status": "success", "output": item.RuntimeStatusOutput, "exit_code": 0, "runtime_status": item.RuntimeStatus, "last_status_check_time": item.LastStatusCheckTime}, nil)
+	if action != "status" {
+		respond(context, nil, ErrAgentUnavailable)
 		return
 	}
-	respond(context, nil, ErrNotFound)
+	respond(context, gin.H{"job_id": nil, "action": action, "status": "success", "output": item.RuntimeStatusOutput, "exit_code": 0, "runtime_status": item.RuntimeStatus, "last_status_check_time": item.LastStatusCheckTime}, nil)
 }

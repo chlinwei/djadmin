@@ -8,7 +8,6 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
-	"autoadmin/internal/shared/pagination"
 )
 
 type ApplicationServiceInput struct {
@@ -41,6 +40,12 @@ type ServiceLogSettingInput struct {
 	CollectionFilterRule *int64 `json:"collection_filter_rule"`
 	ProcessingRule       *int64 `json:"processing_rule"`
 }
+
+// ApplicationDeploymentInput 是部署实例的写入口。注意**不含**逻辑服务关联：
+// 实例与服务的绑定由服务侧的 member_configs 维护（SaveApplicationService，删除重建整组关联），
+// 实例侧改它会与"服务侧全量重建"的语义冲突（同一个实例可能同时属于多个服务）。
+// 前端 DeploymentDialog 曾把 application_service 放进提交体，后端结构体没有这个字段 →
+// 静默忽略，用户以为"绑定成功"其实没有写库；该字段已从前端 payload 移除（2026-09-18）。
 type ApplicationDeploymentInput struct {
 	InstanceName        string          `json:"instance_name"`
 	Enabled             *bool           `json:"enabled"`
@@ -207,16 +212,17 @@ func (s *Service) SaveApplicationDeployment(ctx context.Context, id int64, input
 	if err != nil {
 		return ApplicationDeployment{}, translate(err)
 	}
-	items, _, err := s.repository.ListApplicationDeployments(ctx, pagination.Page{Number: 1, Size: 1, Offset: 0}, ApplicationDeploymentFilter{})
+	// 回读必须按 id。历史缺陷：这里曾用列表查询的"第 1 页、每页 1 条"来取刚保存的行，
+	// 而列表是 `ORDER BY id DESC LIMIT ?`，Size: 1 恒返回**全库 id 最大的一台**——
+	// 于是编辑任何不是最新的一台实例，写入虽然成功，接口却返回 404「资产不存在」
+	// （2026-09-18 用户在 yilake nginx 上撞到）。
+	item, err := s.repository.GetApplicationDeployment(ctx, saved)
 	if err != nil {
+		// 目标不存在时 UPDATE 影响 0 行且不报错，这里按 id 读会拿到 sql.ErrNoRows：
+		// 翻译成 ErrNotFound（404「资产不存在」），保持原来的语义而不是变成 500。
 		return ApplicationDeployment{}, translate(err)
 	}
-	for _, item := range items {
-		if item.ID == saved {
-			return item, nil
-		}
-	}
-	return ApplicationDeployment{}, ErrNotFound
+	return item, nil
 }
 func (s *Service) DeleteApplicationDeployment(ctx context.Context, id int64) error {
 	return translate(s.repository.DeleteApplicationDeployment(ctx, id))

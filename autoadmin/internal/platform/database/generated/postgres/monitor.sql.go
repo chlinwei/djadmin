@@ -68,6 +68,40 @@ func (q *Queries) CancelMonitorTargetInstallState(ctx context.Context, arg Cance
 	return err
 }
 
+const claimLogBatchJob = `-- name: ClaimLogBatchJob :execrows
+UPDATE monitor_log_batch_job
+SET status='running', started_at=COALESCE(started_at, $1), message=$2,
+    update_time=$3
+WHERE id=$4 AND status='pending'
+`
+
+type ClaimLogBatchJobParams struct {
+	StartedAt  sql.NullTime `json:"started_at"`
+	Message    string       `json:"message"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+// 首次认领（pending → running）：拿到 0 行说明作业已被别的分片认领或已结束，直接 ack。
+//
+// 只认 pending、且**不用 "status IN (pending,running)"**：MySQL 的 UPDATE 默认返回"实际改变的行数"
+// （客户端未开 CLIENT_FOUND_ROWS），把已经在 running 的行再写一次同样值会返回 0 行，
+// 于是分片续跑会被误判成"抢不到执行权"而永远停在 running（真库验出，2026-07-XX 版本曾如此）。
+// 分片续跑不走这条语句：执行器先读作业状态，读到 running 就继续（进程内按作业 id 串行，
+// 见 log_batch_job.go 的说明）。
+func (q *Queries) ClaimLogBatchJob(ctx context.Context, arg ClaimLogBatchJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimLogBatchJob,
+		arg.StartedAt,
+		arg.Message,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const clearDefaultElasticsearchCluster = `-- name: ClearDefaultElasticsearchCluster :exec
 UPDATE monitor_elasticsearch_cluster SET is_default=FALSE, update_time=$1
 WHERE is_default=TRUE AND id<>$2
@@ -808,6 +842,75 @@ func (q *Queries) CreateElasticsearchCluster(ctx context.Context, arg CreateElas
 	return id, err
 }
 
+const createLogBatchJob = `-- name: CreateLogBatchJob :one
+
+INSERT INTO monitor_log_batch_job
+  (create_time,update_time,remark,action,status,total_count,success_count,failed_count,concurrency,message,
+   requested_user_id,requested_username,started_at,finished_at)
+VALUES ($1,$2,NULL,$3,'pending',$4,0,0,
+        $5,'',$6,$7,NULL,NULL)
+RETURNING id
+`
+
+type CreateLogBatchJobParams struct {
+	CreateTime        time.Time     `json:"create_time"`
+	UpdateTime        time.Time     `json:"update_time"`
+	Action            string        `json:"action"`
+	TotalCount        int32         `json:"total_count"`
+	Concurrency       int32         `json:"concurrency"`
+	RequestedUserID   sql.NullInt64 `json:"requested_user_id"`
+	RequestedUsername string        `json:"requested_username"`
+}
+
+// ---- 日志采集批量动作的作业与进度（monitor_log_batch_job / _item）----
+// 见 migration 000033 与 docs/plans/LOG_COLLECTION_LIFECYCLE.md §8 Phase 2。
+// 状态机：作业 pending → running → success|partial|failed；item pending → running → success|failed。
+// 计数不应用层自增，而是从 item 表重算（RefreshLogBatchJobProgress），避免并发下计数漂移。
+func (q *Queries) CreateLogBatchJob(ctx context.Context, arg CreateLogBatchJobParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, createLogBatchJob,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.Action,
+		arg.TotalCount,
+		arg.Concurrency,
+		arg.RequestedUserID,
+		arg.RequestedUsername,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createLogBatchJobItem = `-- name: CreateLogBatchJobItem :exec
+INSERT INTO monitor_log_batch_job_item
+  (create_time,update_time,batch_job_id,target_id,host_id,host_name,host_ip,status,message,started_at,finished_at)
+VALUES ($1,$2,$3,$4,$5,
+        $6,$7,'pending','',NULL,NULL)
+`
+
+type CreateLogBatchJobItemParams struct {
+	CreateTime time.Time `json:"create_time"`
+	UpdateTime time.Time `json:"update_time"`
+	BatchJobID int64     `json:"batch_job_id"`
+	TargetID   int64     `json:"target_id"`
+	HostID     int64     `json:"host_id"`
+	HostName   string    `json:"host_name"`
+	HostIp     string    `json:"host_ip"`
+}
+
+func (q *Queries) CreateLogBatchJobItem(ctx context.Context, arg CreateLogBatchJobItemParams) error {
+	_, err := q.db.ExecContext(ctx, createLogBatchJobItem,
+		arg.CreateTime,
+		arg.UpdateTime,
+		arg.BatchJobID,
+		arg.TargetID,
+		arg.HostID,
+		arg.HostName,
+		arg.HostIp,
+	)
+	return err
+}
+
 const createLogCollectionFilterRule = `-- name: CreateLogCollectionFilterRule :one
 INSERT INTO monitor_log_collection_filter_rule
   (create_time,update_time,remark,name,description,pattern,enabled,application_id)
@@ -1343,6 +1446,59 @@ func (q *Queries) ExpireTargetInstallHistory(ctx context.Context, arg ExpireTarg
 	return result.RowsAffected()
 }
 
+const finishLogBatchJob = `-- name: FinishLogBatchJob :execrows
+UPDATE monitor_log_batch_job
+SET status=$1, message=$2, finished_at=$3, update_time=$4
+WHERE id=$5 AND status='running'
+`
+
+type FinishLogBatchJobParams struct {
+	Status     string       `json:"status"`
+	Message    string       `json:"message"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) FinishLogBatchJob(ctx context.Context, arg FinishLogBatchJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishLogBatchJob,
+		arg.Status,
+		arg.Message,
+		arg.FinishedAt,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const finishLogBatchJobItem = `-- name: FinishLogBatchJobItem :exec
+UPDATE monitor_log_batch_job_item
+SET status=$1, message=$2, finished_at=$3, update_time=$4
+WHERE id=$5
+`
+
+type FinishLogBatchJobItemParams struct {
+	Status     string       `json:"status"`
+	Message    string       `json:"message"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) FinishLogBatchJobItem(ctx context.Context, arg FinishLogBatchJobItemParams) error {
+	_, err := q.db.ExecContext(ctx, finishLogBatchJobItem,
+		arg.Status,
+		arg.Message,
+		arg.FinishedAt,
+		arg.UpdateTime,
+		arg.ID,
+	)
+	return err
+}
+
 const finishLogTargetInstallHistory = `-- name: FinishLogTargetInstallHistory :execrows
 UPDATE monitor_target_install_history
 SET status=$1, summary_message=$2, end_time=$3,
@@ -1467,6 +1623,52 @@ func (q *Queries) FinishTargetInstallState(ctx context.Context, arg FinishTarget
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getActiveLogBatchJobByAction = `-- name: GetActiveLogBatchJobByAction :one
+SELECT id, action, status, total_count, success_count, failed_count, concurrency, message,
+       COALESCE(requested_username, ''), started_at, finished_at, create_time, update_time
+FROM monitor_log_batch_job
+WHERE action=$1 AND status IN ('pending','running')
+ORDER BY id DESC LIMIT 1
+`
+
+type GetActiveLogBatchJobByActionRow struct {
+	ID                int64        `json:"id"`
+	Action            string       `json:"action"`
+	Status            string       `json:"status"`
+	TotalCount        int32        `json:"total_count"`
+	SuccessCount      int32        `json:"success_count"`
+	FailedCount       int32        `json:"failed_count"`
+	Concurrency       int32        `json:"concurrency"`
+	Message           string       `json:"message"`
+	RequestedUsername string       `json:"requested_username"`
+	StartedAt         sql.NullTime `json:"started_at"`
+	FinishedAt        sql.NullTime `json:"finished_at"`
+	CreateTime        time.Time    `json:"create_time"`
+	UpdateTime        time.Time    `json:"update_time"`
+}
+
+// 页面上挂着的"进行中的批量作业"（刷新页面后仍能接着看进度）。
+func (q *Queries) GetActiveLogBatchJobByAction(ctx context.Context, action string) (GetActiveLogBatchJobByActionRow, error) {
+	row := q.db.QueryRowContext(ctx, getActiveLogBatchJobByAction, action)
+	var i GetActiveLogBatchJobByActionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Action,
+		&i.Status,
+		&i.TotalCount,
+		&i.SuccessCount,
+		&i.FailedCount,
+		&i.Concurrency,
+		&i.Message,
+		&i.RequestedUsername,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
+	return i, err
 }
 
 const getAlertHistoryAlertnameInstance = `-- name: GetAlertHistoryAlertnameInstance :one
@@ -1965,6 +2167,49 @@ func (q *Queries) GetLatestTargetInstallHistory(ctx context.Context, targetID sq
 	row := q.db.QueryRowContext(ctx, getLatestTargetInstallHistory, targetID)
 	var i GetLatestTargetInstallHistoryRow
 	err := row.Scan(&i.ID, &i.Status, &i.StartTime)
+	return i, err
+}
+
+const getLogBatchJob = `-- name: GetLogBatchJob :one
+SELECT id, action, status, total_count, success_count, failed_count, concurrency, message,
+       COALESCE(requested_username, ''), started_at, finished_at, create_time, update_time
+FROM monitor_log_batch_job WHERE id=$1
+`
+
+type GetLogBatchJobRow struct {
+	ID                int64        `json:"id"`
+	Action            string       `json:"action"`
+	Status            string       `json:"status"`
+	TotalCount        int32        `json:"total_count"`
+	SuccessCount      int32        `json:"success_count"`
+	FailedCount       int32        `json:"failed_count"`
+	Concurrency       int32        `json:"concurrency"`
+	Message           string       `json:"message"`
+	RequestedUsername string       `json:"requested_username"`
+	StartedAt         sql.NullTime `json:"started_at"`
+	FinishedAt        sql.NullTime `json:"finished_at"`
+	CreateTime        time.Time    `json:"create_time"`
+	UpdateTime        time.Time    `json:"update_time"`
+}
+
+func (q *Queries) GetLogBatchJob(ctx context.Context, id int64) (GetLogBatchJobRow, error) {
+	row := q.db.QueryRowContext(ctx, getLogBatchJob, id)
+	var i GetLogBatchJobRow
+	err := row.Scan(
+		&i.ID,
+		&i.Action,
+		&i.Status,
+		&i.TotalCount,
+		&i.SuccessCount,
+		&i.FailedCount,
+		&i.Concurrency,
+		&i.Message,
+		&i.RequestedUsername,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.CreateTime,
+		&i.UpdateTime,
+	)
 	return i, err
 }
 
@@ -3244,6 +3489,8 @@ type ListEnabledRetentionTiersRow struct {
 }
 
 // ---- 日志存储（Elasticsearch 集群）与保留档位 ----
+// 保留档位列表（下拉/管理路径用：只列启用的）。
+// 识别流名要的是**全部**档位码，用 ListRetentionTierCodes：停用一个档位不该让既有流变成"未识别"。
 func (q *Queries) ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error) {
 	rows, err := q.db.QueryContext(ctx, listEnabledRetentionTiers)
 	if err != nil {
@@ -3258,105 +3505,6 @@ func (q *Queries) ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledR
 			&i.RetentionDays,
 			&i.DailySizeGb,
 			&i.RolloverMinIndexAge,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listEnabledServiceStreamDims = `-- name: ListEnabledServiceStreamDims :many
-SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
-       s.code AS service_code, COALESCE(t.code, '') AS tier_code
-FROM assets_application_service s
-JOIN assets_business_system bs ON bs.id = s.business_system_id
-JOIN assets_project p ON p.id = bs.project_id
-JOIN assets_business_environment e ON e.id = s.environment_id
-LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
-WHERE s.enabled = TRUE
-`
-
-type ListEnabledServiceStreamDimsRow struct {
-	ProjectCode        string `json:"project_code"`
-	EnvironmentCode    string `json:"environment_code"`
-	BusinessSystemCode string `json:"business_system_code"`
-	ServiceCode        string `json:"service_code"`
-	TierCode           string `json:"tier_code"`
-}
-
-// 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
-// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
-func (q *Queries) ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listEnabledServiceStreamDims)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListEnabledServiceStreamDimsRow{}
-	for rows.Next() {
-		var i ListEnabledServiceStreamDimsRow
-		if err := rows.Scan(
-			&i.ProjectCode,
-			&i.EnvironmentCode,
-			&i.BusinessSystemCode,
-			&i.ServiceCode,
-			&i.TierCode,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listEnabledServiceStreamRows = `-- name: ListEnabledServiceStreamRows :many
-SELECT s.code, s.name, bs.code AS business_system_code, e.code AS environment_code,
-       t.code AS retention_tier, s.log_collection_enabled
-FROM assets_application_service s
-JOIN assets_business_system bs ON bs.id = s.business_system_id
-LEFT JOIN assets_business_environment e ON e.id = s.environment_id
-LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
-WHERE s.enabled = TRUE ORDER BY s.name
-`
-
-type ListEnabledServiceStreamRowsRow struct {
-	Code                 string         `json:"code"`
-	Name                 string         `json:"name"`
-	BusinessSystemCode   string         `json:"business_system_code"`
-	EnvironmentCode      sql.NullString `json:"environment_code"`
-	RetentionTier        sql.NullString `json:"retention_tier"`
-	LogCollectionEnabled bool           `json:"log_collection_enabled"`
-}
-
-func (q *Queries) ListEnabledServiceStreamRows(ctx context.Context) ([]ListEnabledServiceStreamRowsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listEnabledServiceStreamRows)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListEnabledServiceStreamRowsRow{}
-	for rows.Next() {
-		var i ListEnabledServiceStreamRowsRow
-		if err := rows.Scan(
-			&i.Code,
-			&i.Name,
-			&i.BusinessSystemCode,
-			&i.EnvironmentCode,
-			&i.RetentionTier,
-			&i.LogCollectionEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -3874,6 +4022,98 @@ func (q *Queries) ListInstalledLogTargetRuntime(ctx context.Context) ([]ListInst
 			&i.Ip,
 			&i.RuntimeStatus,
 			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLogBatchJobItems = `-- name: ListLogBatchJobItems :many
+SELECT id, target_id, host_id, host_name, host_ip, status, message, started_at, finished_at
+FROM monitor_log_batch_job_item WHERE batch_job_id=$1 ORDER BY id
+`
+
+type ListLogBatchJobItemsRow struct {
+	ID         int64        `json:"id"`
+	TargetID   int64        `json:"target_id"`
+	HostID     int64        `json:"host_id"`
+	HostName   string       `json:"host_name"`
+	HostIp     string       `json:"host_ip"`
+	Status     string       `json:"status"`
+	Message    string       `json:"message"`
+	StartedAt  sql.NullTime `json:"started_at"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+}
+
+func (q *Queries) ListLogBatchJobItems(ctx context.Context, batchJobID int64) ([]ListLogBatchJobItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLogBatchJobItems, batchJobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLogBatchJobItemsRow{}
+	for rows.Next() {
+		var i ListLogBatchJobItemsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.HostID,
+			&i.HostName,
+			&i.HostIp,
+			&i.Status,
+			&i.Message,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLogBatchTargets = `-- name: ListLogBatchTargets :many
+SELECT l.id, l.host_id, COALESCE(h.instance_name, ''), COALESCE(h.ip, '')
+FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
+WHERE l.id = ANY($1::bigint[])
+`
+
+type ListLogBatchTargetsRow struct {
+	ID           int64  `json:"id"`
+	HostID       int64  `json:"host_id"`
+	InstanceName string `json:"instance_name"`
+	Ip           string `json:"ip"`
+}
+
+// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
+func (q *Queries) ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLogBatchTargets, pq.Array(targetIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLogBatchTargetsRow{}
+	for rows.Next() {
+		var i ListLogBatchTargetsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.HostID,
+			&i.InstanceName,
+			&i.Ip,
 		); err != nil {
 			return nil, err
 		}
@@ -4560,6 +4800,65 @@ func (q *Queries) ListPackageChecksums(ctx context.Context, arg ListPackageCheck
 	return items, nil
 }
 
+const listPendingLogBatchJobItems = `-- name: ListPendingLogBatchJobItems :many
+SELECT id, target_id, host_id, host_name, host_ip, status, message, started_at, finished_at
+FROM monitor_log_batch_job_item
+WHERE batch_job_id=$2 AND status='pending'
+ORDER BY id LIMIT $1
+`
+
+type ListPendingLogBatchJobItemsParams struct {
+	Limit      int32 `json:"limit"`
+	BatchJobID int64 `json:"batch_job_id"`
+}
+
+type ListPendingLogBatchJobItemsRow struct {
+	ID         int64        `json:"id"`
+	TargetID   int64        `json:"target_id"`
+	HostID     int64        `json:"host_id"`
+	HostName   string       `json:"host_name"`
+	HostIp     string       `json:"host_ip"`
+	Status     string       `json:"status"`
+	Message    string       `json:"message"`
+	StartedAt  sql.NullTime `json:"started_at"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+}
+
+// 续跑/分片执行时取下一批待处理项。只取 pending：已成功的不重跑，running 的由
+// ResetStaleLogBatchJobItems 在续跑前回落为 pending。
+func (q *Queries) ListPendingLogBatchJobItems(ctx context.Context, arg ListPendingLogBatchJobItemsParams) ([]ListPendingLogBatchJobItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingLogBatchJobItems, arg.Limit, arg.BatchJobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingLogBatchJobItemsRow{}
+	for rows.Next() {
+		var i ListPendingLogBatchJobItemsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.HostID,
+			&i.HostName,
+			&i.HostIp,
+			&i.Status,
+			&i.Message,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProcessingRulesByCluster = `-- name: ListProcessingRulesByCluster :many
 
 SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
@@ -4626,6 +4925,99 @@ func (q *Queries) ListPrometheusServiceDiscoveryTargets(ctx context.Context) ([]
 			&i.ID,
 			&i.InstanceName,
 			&i.Ip,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRetentionTierCodes = `-- name: ListRetentionTierCodes :many
+SELECT code FROM monitor_log_retention_tier WHERE code <> '' ORDER BY id
+`
+
+// 流名匹配用的档位码全集（不过滤 enabled，理由见 ListServiceStreamDims 的说明）。
+func (q *Queries) ListRetentionTierCodes(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listRetentionTierCodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		items = append(items, code)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceStreamDims = `-- name: ListServiceStreamDims :many
+SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
+       s.code AS service_code, COALESCE(t.code, '') AS tier_code,
+       s.enabled AS service_enabled, s.log_collection_enabled
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
+`
+
+type ListServiceStreamDimsRow struct {
+	ProjectCode          string `json:"project_code"`
+	EnvironmentCode      string `json:"environment_code"`
+	BusinessSystemCode   string `json:"business_system_code"`
+	ServiceCode          string `json:"service_code"`
+	TierCode             string `json:"tier_code"`
+	ServiceEnabled       bool   `json:"service_enabled"`
+	LogCollectionEnabled bool   `json:"log_collection_enabled"`
+}
+
+// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
+// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
+//
+// 刻意**不**过滤 `s.enabled`：这条查询回答的是"这条已有的流属于哪个已知服务"，
+// 而不是"这个服务现在是否在采集"。停用是可逆状态、服务行还在、存量流要么还在写
+// （还没重新下发配置）要么停写并保留到 ILM 到期（见计划 §0「停止采集 ≠ 删除数据」）。
+// 早先带 `WHERE s.enabled = TRUE` 会让停用服务的流解析不出来 → 在存储水位页被判成
+// 「未识别」孤儿，等于把暂停采集的存量数据标成待清理对象（2026-09-18 修复）。
+// 真正被判成孤儿的应该是"服务行已删/改名"——那种情况下这里本来就查不到维度码。
+//
+// 下发路径（ListHostLogRenderEntries）仍照旧过滤 `s.enabled = TRUE`：停用的服务不该再往主机推片段。
+// 附带服务级的采集开关（enabled / log_collection_enabled）：存储水位页要按**逻辑服务**标注
+// "已停用 / 未开启采集"——这是配置事实（来自库），不是对数据流的断言，所以不需要查 ES。
+func (q *Queries) ListServiceStreamDims(ctx context.Context) ([]ListServiceStreamDimsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceStreamDims)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceStreamDimsRow{}
+	for rows.Next() {
+		var i ListServiceStreamDimsRow
+		if err := rows.Scan(
+			&i.ProjectCode,
+			&i.EnvironmentCode,
+			&i.BusinessSystemCode,
+			&i.ServiceCode,
+			&i.TierCode,
+			&i.ServiceEnabled,
+			&i.LogCollectionEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -4796,6 +5188,41 @@ func (q *Queries) ListStaleFiringAlerts(ctx context.Context, staleBefore time.Ti
 			&i.Instance,
 			&i.Labels,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleLogBatchJobs = `-- name: ListStaleLogBatchJobs :many
+SELECT id, action FROM monitor_log_batch_job
+WHERE status='running' AND update_time < $1 ORDER BY id
+`
+
+type ListStaleLogBatchJobsRow struct {
+	ID     int64  `json:"id"`
+	Action string `json:"action"`
+}
+
+// 失联作业对账：执行进程消失后作业会永久停在 running，由 reaper 回落为 pending 后重新入队。
+// 判据是 update_time：健康作业每完成一个 item 都会刷新它。
+func (q *Queries) ListStaleLogBatchJobs(ctx context.Context, staleBefore time.Time) ([]ListStaleLogBatchJobsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listStaleLogBatchJobs, staleBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleLogBatchJobsRow{}
+	for rows.Next() {
+		var i ListStaleLogBatchJobsRow
+		if err := rows.Scan(&i.ID, &i.Action); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -5095,6 +5522,23 @@ func (q *Queries) MarkElasticsearchClusterCheckSuccess(ctx context.Context, arg 
 	return err
 }
 
+const markLogBatchJobItemRunning = `-- name: MarkLogBatchJobItemRunning :exec
+UPDATE monitor_log_batch_job_item
+SET status='running', started_at=COALESCE(started_at, $1), update_time=$2
+WHERE id=$3
+`
+
+type MarkLogBatchJobItemRunningParams struct {
+	StartedAt  sql.NullTime `json:"started_at"`
+	UpdateTime time.Time    `json:"update_time"`
+	ID         int64        `json:"id"`
+}
+
+func (q *Queries) MarkLogBatchJobItemRunning(ctx context.Context, arg MarkLogBatchJobItemRunningParams) error {
+	_, err := q.db.ExecContext(ctx, markLogBatchJobItemRunning, arg.StartedAt, arg.UpdateTime, arg.ID)
+	return err
+}
+
 const markLogTargetConfigApplied = `-- name: MarkLogTargetConfigApplied :exec
 UPDATE monitor_log_collection_target
 SET last_applied_time=$1, update_time=$2
@@ -5202,6 +5646,64 @@ type MarkTargetInstallPendingParams struct {
 func (q *Queries) MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error {
 	_, err := q.db.ExecContext(ctx, markTargetInstallPending, arg.InstallMessage, arg.UpdateTime, arg.ID)
 	return err
+}
+
+const refreshLogBatchJobProgress = `-- name: RefreshLogBatchJobProgress :exec
+UPDATE monitor_log_batch_job j
+SET success_count=(SELECT COUNT(*) FROM monitor_log_batch_job_item i WHERE i.batch_job_id=j.id AND i.status='success'),
+    failed_count=(SELECT COUNT(*) FROM monitor_log_batch_job_item i WHERE i.batch_job_id=j.id AND i.status='failed'),
+    update_time=$1
+WHERE j.id=$2
+`
+
+type RefreshLogBatchJobProgressParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+// 计数从 item 表重算，不依赖应用层累加（并发下应用层累加必然漂移）。
+func (q *Queries) RefreshLogBatchJobProgress(ctx context.Context, arg RefreshLogBatchJobProgressParams) error {
+	_, err := q.db.ExecContext(ctx, refreshLogBatchJobProgress, arg.UpdateTime, arg.ID)
+	return err
+}
+
+const requeueLogBatchJob = `-- name: RequeueLogBatchJob :execrows
+UPDATE monitor_log_batch_job SET status='pending', update_time=$1
+WHERE id=$2 AND status='running'
+`
+
+type RequeueLogBatchJobParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+// 失联对账把停摆的作业放回 pending，重新投递后再由 ClaimLogBatchJob 认领。
+func (q *Queries) RequeueLogBatchJob(ctx context.Context, arg RequeueLogBatchJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, requeueLogBatchJob, arg.UpdateTime, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const resetStaleLogBatchJobItems = `-- name: ResetStaleLogBatchJobItems :execrows
+UPDATE monitor_log_batch_job_item
+SET status='pending', update_time=$1
+WHERE batch_job_id=$2 AND status='running'
+`
+
+type ResetStaleLogBatchJobItemsParams struct {
+	UpdateTime time.Time `json:"update_time"`
+	BatchJobID int64     `json:"batch_job_id"`
+}
+
+// 续跑前把"上一轮留下的 running"落回 pending：这些项的执行者已经不在了。
+func (q *Queries) ResetStaleLogBatchJobItems(ctx context.Context, arg ResetStaleLogBatchJobItemsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, resetStaleLogBatchJobItems, arg.UpdateTime, arg.BatchJobID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const resetTargetInstallRetry = `-- name: ResetTargetInstallRetry :exec
@@ -5483,6 +5985,21 @@ func (q *Queries) UpdateElasticsearchCluster(ctx context.Context, arg UpdateElas
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const updateLogBatchJobHeartbeat = `-- name: UpdateLogBatchJobHeartbeat :exec
+UPDATE monitor_log_batch_job SET message=$1, update_time=$2 WHERE id=$3
+`
+
+type UpdateLogBatchJobHeartbeatParams struct {
+	Message    string    `json:"message"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) UpdateLogBatchJobHeartbeat(ctx context.Context, arg UpdateLogBatchJobHeartbeatParams) error {
+	_, err := q.db.ExecContext(ctx, updateLogBatchJobHeartbeat, arg.Message, arg.UpdateTime, arg.ID)
+	return err
 }
 
 const updateLogCollectionFilterRule = `-- name: UpdateLogCollectionFilterRule :execrows

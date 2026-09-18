@@ -1043,9 +1043,15 @@ RETURNING id;
 
 -- ---- 日志存储（Elasticsearch 集群）与保留档位 ----
 
+-- 保留档位列表（下拉/管理路径用：只列启用的）。
+-- 识别流名要的是**全部**档位码，用 ListRetentionTierCodes：停用一个档位不该让既有流变成"未识别"。
 -- name: ListEnabledRetentionTiers :many
 SELECT code,retention_days,daily_size_gb,rollover_min_index_age
 FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id;
+
+-- 流名匹配用的档位码全集（不过滤 enabled，理由见 ListServiceStreamDims 的说明）。
+-- name: ListRetentionTierCodes :many
+SELECT code FROM monitor_log_retention_tier WHERE code <> '' ORDER BY id;
 
 -- name: GetElasticsearchClusterConnection :one
 SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
@@ -1220,17 +1226,28 @@ SELECT l.id, COALESCE(h.ip, ''), COALESCE(l.runtime_status, ''), COALESCE(l.last
 FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
 WHERE l.managed_enabled = TRUE AND l.agent_installed = TRUE ORDER BY l.id;
 
--- 流名匹配候选：启用中的逻辑服务维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
+-- 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
 -- 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
--- name: ListEnabledServiceStreamDims :many
+--
+-- 刻意**不**过滤 `s.enabled`：这条查询回答的是"这条已有的流属于哪个已知服务"，
+-- 而不是"这个服务现在是否在采集"。停用是可逆状态、服务行还在、存量流要么还在写
+-- （还没重新下发配置）要么停写并保留到 ILM 到期（见计划 §0「停止采集 ≠ 删除数据」）。
+-- 早先带 `WHERE s.enabled = TRUE` 会让停用服务的流解析不出来 → 在存储水位页被判成
+-- 「未识别」孤儿，等于把暂停采集的存量数据标成待清理对象（2026-09-18 修复）。
+-- 真正被判成孤儿的应该是"服务行已删/改名"——那种情况下这里本来就查不到维度码。
+--
+-- 下发路径（ListHostLogRenderEntries）仍照旧过滤 `s.enabled = TRUE`：停用的服务不该再往主机推片段。
+-- 附带服务级的采集开关（enabled / log_collection_enabled）：存储水位页要按**逻辑服务**标注
+-- "已停用 / 未开启采集"——这是配置事实（来自库），不是对数据流的断言，所以不需要查 ES。
+-- name: ListServiceStreamDims :many
 SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
-       s.code AS service_code, COALESCE(t.code, '') AS tier_code
+       s.code AS service_code, COALESCE(t.code, '') AS tier_code,
+       s.enabled AS service_enabled, s.log_collection_enabled
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
 JOIN assets_business_environment e ON e.id = s.environment_id
-LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
-WHERE s.enabled = TRUE;
+LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id;
 
 -- 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
 -- name: GetApplicationServiceStreamDims :one
@@ -1249,15 +1266,6 @@ SELECT id, code, name, project_id FROM assets_business_system WHERE enabled = TR
 
 -- name: ListEnabledBusinessEnvironments :many
 SELECT id, code, name FROM assets_business_environment WHERE enabled = TRUE ORDER BY "order", name;
-
--- name: ListEnabledServiceStreamRows :many
-SELECT s.code, s.name, bs.code AS business_system_code, e.code AS environment_code,
-       t.code AS retention_tier, s.log_collection_enabled
-FROM assets_application_service s
-JOIN assets_business_system bs ON bs.id = s.business_system_id
-LEFT JOIN assets_business_environment e ON e.id = s.environment_id
-LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
-WHERE s.enabled = TRUE ORDER BY s.name;
 
 -- ---- 模块总览 / Prometheus 服务发现 / 机器令牌校验 ----
 
@@ -1288,3 +1296,109 @@ WHERE is_active = TRUE AND (expires_at IS NULL OR expires_at > sqlc.arg(now));
 
 -- name: MarkAgentTokenUsed :exec
 UPDATE sys_agent_token SET last_used_at = sqlc.arg(last_used_at) WHERE id = sqlc.arg(id);
+
+-- ---- 日志采集批量动作的作业与进度（monitor_log_batch_job / _item）----
+-- 见 migration 000033 与 docs/plans/LOG_COLLECTION_LIFECYCLE.md §8 Phase 2。
+-- 状态机：作业 pending → running → success|partial|failed；item pending → running → success|failed。
+-- 计数不应用层自增，而是从 item 表重算（RefreshLogBatchJobProgress），避免并发下计数漂移。
+
+-- name: CreateLogBatchJob :one
+INSERT INTO monitor_log_batch_job
+  (create_time,update_time,remark,action,status,total_count,success_count,failed_count,concurrency,message,
+   requested_user_id,requested_username,started_at,finished_at)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(action),'pending',sqlc.arg(total_count),0,0,
+        sqlc.arg(concurrency),'',sqlc.narg(requested_user_id),sqlc.arg(requested_username),NULL,NULL)
+RETURNING id;
+
+-- 首次认领（pending → running）：拿到 0 行说明作业已被别的分片认领或已结束，直接 ack。
+--
+-- 只认 pending、且**不用 "status IN (pending,running)"**：MySQL 的 UPDATE 默认返回"实际改变的行数"
+-- （客户端未开 CLIENT_FOUND_ROWS），把已经在 running 的行再写一次同样值会返回 0 行，
+-- 于是分片续跑会被误判成"抢不到执行权"而永远停在 running（真库验出，2026-07-XX 版本曾如此）。
+-- 分片续跑不走这条语句：执行器先读作业状态，读到 running 就继续（进程内按作业 id 串行，
+-- 见 log_batch_job.go 的说明）。
+-- name: ClaimLogBatchJob :execrows
+UPDATE monitor_log_batch_job
+SET status='running', started_at=COALESCE(started_at, sqlc.arg(started_at)), message=sqlc.arg(message),
+    update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status='pending';
+
+-- name: GetLogBatchJob :one
+SELECT id, action, status, total_count, success_count, failed_count, concurrency, message,
+       COALESCE(requested_username, ''), started_at, finished_at, create_time, update_time
+FROM monitor_log_batch_job WHERE id=sqlc.arg(id);
+
+-- 页面上挂着的"进行中的批量作业"（刷新页面后仍能接着看进度）。
+-- name: GetActiveLogBatchJobByAction :one
+SELECT id, action, status, total_count, success_count, failed_count, concurrency, message,
+       COALESCE(requested_username, ''), started_at, finished_at, create_time, update_time
+FROM monitor_log_batch_job
+WHERE action=sqlc.arg(action) AND status IN ('pending','running')
+ORDER BY id DESC LIMIT 1;
+
+-- 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
+-- name: ListLogBatchTargets :many
+SELECT l.id, l.host_id, COALESCE(h.instance_name, ''), COALESCE(h.ip, '')
+FROM monitor_log_collection_target l JOIN assets_host h ON h.id = l.host_id
+WHERE l.id = ANY(sqlc.arg(target_ids)::bigint[]);
+
+-- name: CreateLogBatchJobItem :exec
+INSERT INTO monitor_log_batch_job_item
+  (create_time,update_time,batch_job_id,target_id,host_id,host_name,host_ip,status,message,started_at,finished_at)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(batch_job_id),sqlc.arg(target_id),sqlc.arg(host_id),
+        sqlc.arg(host_name),sqlc.arg(host_ip),'pending','',NULL,NULL);
+
+-- name: ListLogBatchJobItems :many
+SELECT id, target_id, host_id, host_name, host_ip, status, message, started_at, finished_at
+FROM monitor_log_batch_job_item WHERE batch_job_id=sqlc.arg(batch_job_id) ORDER BY id;
+
+-- 续跑/分片执行时取下一批待处理项。只取 pending：已成功的不重跑，running 的由
+-- ResetStaleLogBatchJobItems 在续跑前回落为 pending。
+-- name: ListPendingLogBatchJobItems :many
+SELECT id, target_id, host_id, host_name, host_ip, status, message, started_at, finished_at
+FROM monitor_log_batch_job_item
+WHERE batch_job_id=sqlc.arg(batch_job_id) AND status='pending'
+ORDER BY id LIMIT $1;
+
+-- name: MarkLogBatchJobItemRunning :exec
+UPDATE monitor_log_batch_job_item
+SET status='running', started_at=COALESCE(started_at, sqlc.arg(started_at)), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- name: FinishLogBatchJobItem :exec
+UPDATE monitor_log_batch_job_item
+SET status=sqlc.arg(status), message=sqlc.arg(message), finished_at=sqlc.arg(finished_at), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id);
+
+-- 续跑前把"上一轮留下的 running"落回 pending：这些项的执行者已经不在了。
+-- name: ResetStaleLogBatchJobItems :execrows
+UPDATE monitor_log_batch_job_item
+SET status='pending', update_time=sqlc.arg(update_time)
+WHERE batch_job_id=sqlc.arg(batch_job_id) AND status='running';
+
+-- 计数从 item 表重算，不依赖应用层累加（并发下应用层累加必然漂移）。
+-- name: RefreshLogBatchJobProgress :exec
+UPDATE monitor_log_batch_job j
+SET success_count=(SELECT COUNT(*) FROM monitor_log_batch_job_item i WHERE i.batch_job_id=j.id AND i.status='success'),
+    failed_count=(SELECT COUNT(*) FROM monitor_log_batch_job_item i WHERE i.batch_job_id=j.id AND i.status='failed'),
+    update_time=sqlc.arg(update_time)
+WHERE j.id=sqlc.arg(id);
+
+-- name: FinishLogBatchJob :execrows
+UPDATE monitor_log_batch_job
+SET status=sqlc.arg(status), message=sqlc.arg(message), finished_at=sqlc.arg(finished_at), update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status='running';
+
+-- name: UpdateLogBatchJobHeartbeat :exec
+UPDATE monitor_log_batch_job SET message=sqlc.arg(message), update_time=sqlc.arg(update_time) WHERE id=sqlc.arg(id);
+
+-- 失联作业对账：执行进程消失后作业会永久停在 running，由 reaper 回落为 pending 后重新入队。
+-- 判据是 update_time：健康作业每完成一个 item 都会刷新它。
+-- name: ListStaleLogBatchJobs :many
+SELECT id, action FROM monitor_log_batch_job
+WHERE status='running' AND update_time < sqlc.arg(stale_before) ORDER BY id;
+
+-- 失联对账把停摆的作业放回 pending，重新投递后再由 ClaimLogBatchJob 认领。
+-- name: RequeueLogBatchJob :execrows
+UPDATE monitor_log_batch_job SET status='pending', update_time=sqlc.arg(update_time)
+WHERE id=sqlc.arg(id) AND status='running';

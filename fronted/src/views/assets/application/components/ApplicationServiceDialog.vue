@@ -132,7 +132,20 @@
           <a-col v-if="form.topology_type !== 'standalone'" :span="12"><a-form-item name="access_address" :label="isHaCluster ? 'VIP' : form.topology_type === 'load_balancer' ? '负载均衡地址' : '入口地址'"><a-input v-model:value="form.access_address" :placeholder="isHaCluster ? '请输入 HA 集群 VIP' : form.topology_type === 'load_balancer' ? '请输入负载均衡地址' : 'IP 或入口地址'" /></a-form-item></a-col>
           <a-col :span="24">
             <a-form-item :label="isHaCluster ? '成员实例（至少 2 个）' : form.topology_type === 'load_balancer' ? '后端成员实例' : '部署实例'" required>
-              <a-button class="add-deployment-button" @click="openDeploymentDialog()">新增部署实例</a-button>
+              <a-space wrap>
+                <a-button class="add-deployment-button" @click="openDeploymentDialog()">新增部署实例</a-button>
+                <a-select
+                  v-model:value="pickedDeploymentId"
+                  show-search
+                  allow-clear
+                  placeholder="从已有实例中选择"
+                  style="width: 260px"
+                  :options="addableDeploymentOptions"
+                  :filter-option="filterOption"
+                  :getPopupContainer="getPopupContainer"
+                  @change="addPickedDeployment"
+                />
+              </a-space>
             </a-form-item>
           </a-col>
           <a-col v-for="deploymentId in selectedDeploymentIds" :key="deploymentId" :span="24">
@@ -164,7 +177,10 @@
                 :options="retentionTierOptions"
                 :getPopupContainer="getPopupContainer"
               />
-              <div class="field-hint">档位决定写入哪个 data stream 及其过期策略。</div>
+              <div class="field-hint">
+                档位决定写入哪个 data stream 及其过期策略。改档位会写入新流（旧流停止写入、按原档位保留到期，
+                不迁移数据）；改动需要重新下发采集配置后主机才会走新流。
+              </div>
             </a-form-item>
           </a-col>
           <a-col v-if="form.deployment_template" :span="24">
@@ -214,12 +230,17 @@
                     />
                   </template>
                   <template v-else-if="column.key === 'retention_tier'">
-                    <a-select
-                      :value="logOverrides[record.log_definition]?.retention_tier ?? null"
-                      :options="[{ label: '继承服务默认', value: null }, ...retentionTierOptions]"
-                      :getPopupContainer="getPopupContainer"
-                      @update:value="setLogOverride(record.log_definition, 'retention_tier', $event)"
-                    />
+                    <a-tooltip
+                      title="改档位会写入新流；旧流停止写入并按原档位保留到期，不迁移数据。保存后需要重新下发采集配置。"
+                      placement="top"
+                    >
+                      <a-select
+                        :value="logOverrides[record.log_definition]?.retention_tier ?? null"
+                        :options="[{ label: '继承服务默认', value: null }, ...retentionTierOptions]"
+                        :getPopupContainer="getPopupContainer"
+                        @update:value="setLogOverride(record.log_definition, 'retention_tier', $event)"
+                      />
+                    </a-tooltip>
                   </template>
                   <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
                 </template>
@@ -333,6 +354,7 @@ const deploymentRecords = ref([])
 const versionRecords = ref([])
 const templateRecords = ref([])
 const selectedDeploymentIds = ref([])
+const pickedDeploymentId = ref(null)
 const memberEnabled = reactive({})
 const environmentRecords = ref([])
 const retentionTierRecords = ref([])
@@ -428,9 +450,50 @@ function resetMacroValue(name) {
   delete form.macro_values[name]
 }
 const deploymentOptionLabel = (item) => `${item.instance_name} (${item.host_name || item.host_ip || '-'})`
-const availableDeploymentOptions = computed(() => deploymentRecords.value
-  .filter((item) => item.application_id === form.application)
-  .map((item) => ({ label: deploymentOptionLabel(item), value: item.id })))
+// 可选的实例候选 = 当前应用的实例 + **当前已绑定的实例**。
+//
+// 必须并上已绑定的那些：后端返回的 `application_id` 是"该实例**最早**绑定的那个服务所属的应用"
+// （不是实例自己的属性），而一个实例可以同时属于多个应用下的服务——例如 yilake-nginx-105 既在
+// redis(应用 8) 也在 nginx(应用 15) 下，它的 application_id 就是 8。旧版只用
+// `application_id === form.application` 过滤，而下面两个 watcher 又拿这份列表去**删**
+// selectedDeploymentIds，于是已绑定的实例一进编辑弹窗就被静默剔除（2026-09-18 yilake nginx 现场：
+// 库里关联还在，弹窗里却是空的）。
+//
+// 因此这份候选只用来收敛"新添加"的范围，绝不作为"删除已有成员"的依据：要移除成员请走成员行的
+// 删除按钮（confirmDeleteDeployment）。
+// "从已有实例中选择"的候选 = 全部实例刨掉已绑定的（关联表上有 (service_id, deployment_id)
+// 唯一键，重复提交会直接失败）。同应用的排在前面，但**不**把别的应用排除在外。
+//
+// 为什么不用 `application_id` 过滤：后端返回的它是"该实例**最早**绑定的那个服务所属的应用"，
+// 不是实例自己的属性——一个实例可以同时挂在多个应用下的服务上（yilake-nginx-105 既在
+// redis(应用 8) 也在 nginx(应用 15) 下，它是 8；106 只在 mgmt(应用 28) 下，它是 28）。
+// 拿它当"能不能绑到本服务"的判据，正好会把该绑的实例挡在外面（2026-09-18 yilake nginx 现场：
+// 库里关联还在、弹窗里成员却是空的、重新绑定也无路可走）。这里只用来排序。
+//
+// 已绑定成员**不进候选**，也不在任何 watcher 里被自动剔除：成员列表以服务端返回的
+// member_instances 为准，要移除只走成员行的删除按钮（confirmDeleteDeployment）。
+const addableDeploymentOptions = computed(() => {
+  const memberIds = new Set(selectedDeploymentIds.value)
+  return deploymentRecords.value
+    .filter((item) => !memberIds.has(item.id))
+    .map((item) => ({
+      label: deploymentOptionLabel(item),
+      value: item.id,
+      sameApplication: item.application_id === form.application,
+    }))
+    .sort((left, right) => Number(right.sameApplication) - Number(left.sameApplication))
+})
+
+// 绑定一台已存在的实例：这一步同时解决了"实例已在别的服务下、无法再绑到本服务"的场景
+// （此前只能走「新增部署实例」→ 前端按主机+实例名去重转成编辑，路径绕且容易误解）。
+function addPickedDeployment(deploymentId) {
+  if (!deploymentId) return
+  if (!selectedDeploymentIds.value.includes(deploymentId)) {
+    selectedDeploymentIds.value = [...selectedDeploymentIds.value, deploymentId]
+    memberEnabled[deploymentId] = true
+  }
+  pickedDeploymentId.value = null
+}
 const filterOption = (input, option) => String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
 
 // 已关联实例要按全量记录取名，按当前应用过滤会让跨应用实例回退成「实例 ID」。
@@ -754,6 +817,11 @@ watch(() => props.open, (visible) => {
     initialize()
   }
 })
+// 改应用 / 改集群模型时只清理不再适用的版本与模板。
+// **不要**顺手过滤 selectedDeploymentIds：成员属于这个逻辑服务，且可能同时挂在别的应用下的服务上，
+// 按 application_id 过滤会把已绑定的实例静默剔除出成员列表（2026-09-18 yilake nginx 现场：
+// 库里关联还在，编辑弹窗里成员却是空的，保存时又把空成员写回去）。
+// 移除成员只走成员行的删除按钮（confirmDeleteDeployment），那是显式动作。
 watch(() => form.application, () => {
   if (form.application_version && !versionOptions.value.some((item) => item.value === form.application_version)) {
     form.application_version = null
@@ -761,7 +829,6 @@ watch(() => form.application, () => {
   if (form.deployment_template && !templateOptions.value.some((item) => item.value === form.deployment_template)) {
     form.deployment_template = null
   }
-  selectedDeploymentIds.value = selectedDeploymentIds.value.filter((id) => availableDeploymentOptions.value.some((item) => item.value === id))
 })
 watch(() => form.deployment_template, (templateId) => {
   const definitions = templateRecords.value.find((item) => item.id === templateId)?.macro_definitions || []
@@ -789,7 +856,6 @@ watch(() => form.cluster_profile, () => {
   if (form.topology_type === 'cluster' && selectedProfile.value?.application) {
     form.application = selectedProfile.value.application
   }
-  selectedDeploymentIds.value = selectedDeploymentIds.value.filter((id) => availableDeploymentOptions.value.some((item) => item.value === id))
 })
 </script>
 

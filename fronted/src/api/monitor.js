@@ -276,8 +276,26 @@ export function cancelLogCollectionTarget(id) {
   return requestUtil.post(prefix + `log-targets/${id}/cancel/`, {})
 }
 
-export function batchRetryLogCollectionTargets(ids) {
-  return requestUtil.post(prefix + 'log-targets/batch-retry/', { ids })
+// 批量动作（下发配置 / 安装重试）不再同步跑完：后端建作业 + 入队，前端轮询作业进度。
+// ids 省略且 action=apply 表示"全部待下发"（由后端实时算）。
+export function createLogBatchJob(action, ids) {
+  const body = { action }
+  if (Array.isArray(ids) && ids.length) body.ids = ids
+  return requestUtil.post(prefix + 'log-targets/batch-jobs/', body)
+}
+
+export function getLogBatchJob(id) {
+  return requestUtil.get(prefix + `log-targets/batch-jobs/${id}/`)
+}
+
+// 页面上还在跑的批量作业（刷新页面后仍能接着看进度）；没有时 data 为 null。
+export function getActiveLogBatchJob(action) {
+  return requestUtil.get(prefix + 'log-targets/batch-jobs/active/', { action })
+}
+
+// "N 台待下发"的全量口径。
+export function getLogPendingSummary() {
+  return requestUtil.get(prefix + 'log-targets/pending-summary/')
 }
 
 export function batchStartLogCollectionTargets(ids) {
@@ -286,10 +304,6 @@ export function batchStartLogCollectionTargets(ids) {
 
 export function batchStopLogCollectionTargets(ids) {
   return requestUtil.post(prefix + 'log-targets/batch-stop-service/', { ids })
-}
-
-export function batchApplyLogCollectionTargets(ids) {
-  return requestUtil.post(prefix + 'log-targets/batch-apply/', { ids })
 }
 
 export function batchDeleteLogCollectionTargets(ids) {

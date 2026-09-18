@@ -35,7 +35,7 @@ type Handler struct {
 	refreshHostInfo func(ctx context.Context, hostID int64) error
 	// 采集目标的配置态评估（期望指纹 vs 已下发指纹）由日志采集域注入：主机列表要显示
 	// 「配置状态」，但渲染采集配置的实现属于 logcollect。缺省时列表该列显示"未知"。
-	evaluateLogConfigStates func(ctx *gin.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)
+	evaluateLogConfigStates func(ctx context.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)
 	// 告警通知的 SMTP 发信能力，缺省 sendSMTPMedia；单测可注入假实现。
 	smtpSend smtpSender
 }
@@ -46,7 +46,7 @@ func (handler *Handler) SetHostInfoRefresher(refresher func(ctx context.Context,
 }
 
 // SetLogConfigStateEvaluator 注入采集目标配置态评估能力（logcollect.Handler.EvaluateLogConfigStates）。
-func (handler *Handler) SetLogConfigStateEvaluator(evaluator func(ctx *gin.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)) {
+func (handler *Handler) SetLogConfigStateEvaluator(evaluator func(ctx context.Context, refs []logcollect.LogConfigTargetRef) (map[int64]logcollect.LogConfigState, error)) {
 	handler.evaluateLogConfigStates = evaluator
 }
 

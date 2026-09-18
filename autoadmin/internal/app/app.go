@@ -14,6 +14,7 @@ import (
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/api"
+	"autoadmin/internal/api/router"
 	"autoadmin/internal/automation"
 	"autoadmin/internal/buildinfo"
 	"autoadmin/internal/config"
@@ -110,12 +111,29 @@ func runAPI(configuration config.Config) error {
 		agentValidator = newAgentTokenValidator(databaseConnection)
 	}
 	agentGateway := agent.NewGateway(agentValidator, newAgentHelloRecorder(databaseConnection))
-	server, err := api.NewServerWithGateway(configuration.HTTPAddress, databaseConnection, tokens, configuration.CORSOrigins, rabbitClient, configuration.AssetsCredentialEncryptionKey, configuration.JWTSecret, agentGateway)
+	server, err := api.NewServerWithGateway(configuration.HTTPAddress, databaseConnection, tokens, configuration.CORSOrigins, rabbitClient, configuration.AssetsCredentialEncryptionKey, configuration.JWTSecret, agentGateway, router.LogBatchOptions{
+		InstallConcurrency: configuration.LogBatchInstallConcurrency,
+		ApplyConcurrency:   configuration.LogBatchApplyConcurrency,
+		Prefetch:           configuration.LogBatchPrefetch,
+		Budget:             configuration.LogBatchBudget,
+	})
 	if err != nil {
 		return err
 	}
 	errChannel := make(chan error, 1)
 	go func() { errChannel <- server.Run() }()
+	// 日志采集批量动作的队列由 api 角色消费：这些作业要通过 agent gRPC 会话在主机上执行，
+	// 而会话表在本进程（见 rabbitmq.LogCollectRoute）。计划任务那条队列仍归 worker 角色。
+	//
+	// 只在"非停机期间的失败"上报错：停机（ctx 已取消）时消费者的返回是正常收工，
+	// 报上去会让一次干净的 SIGTERM 变成失败退出（systemd 的 Restart=on-failure 会因此重启服务）。
+	go func() {
+		consumeErr := server.ConsumeQueues(ctx, rabbitClient)
+		if consumeErr == nil || ctx.Err() != nil {
+			return
+		}
+		errChannel <- fmt.Errorf("consume job queues: %w", consumeErr)
+	}()
 	var grpcServer *grpc.Server
 	if configuration.AgentGRPCAddress != "" {
 		grpcListener, listenErr := net.Listen("tcp", configuration.AgentGRPCAddress)

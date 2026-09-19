@@ -1076,20 +1076,22 @@ func (q *Queries) CreateServiceDeployment(ctx context.Context, arg CreateService
 
 const createServiceLogSetting = `-- name: CreateServiceLogSetting :exec
 INSERT INTO assets_application_service_log_setting
-  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
+   collection_filter_rule_id,collection_exclude_filter_rule_id)
 VALUES ($1,$2,NULL,$3,$4,
         $5,$6,
-        $7)
+        $7,$8)
 `
 
 type CreateServiceLogSettingParams struct {
-	CreateTime             time.Time     `json:"create_time"`
-	UpdateTime             time.Time     `json:"update_time"`
-	CollectionEnabled      *bool         `json:"collection_enabled"`
-	LogDefinitionID        int64         `json:"log_definition_id"`
-	RetentionTierID        sql.NullInt64 `json:"retention_tier_id"`
-	ServiceID              int64         `json:"service_id"`
-	CollectionFilterRuleID sql.NullInt64 `json:"collection_filter_rule_id"`
+	CreateTime                    time.Time     `json:"create_time"`
+	UpdateTime                    time.Time     `json:"update_time"`
+	CollectionEnabled             *bool         `json:"collection_enabled"`
+	LogDefinitionID               int64         `json:"log_definition_id"`
+	RetentionTierID               sql.NullInt64 `json:"retention_tier_id"`
+	ServiceID                     int64         `json:"service_id"`
+	CollectionFilterRuleID        sql.NullInt64 `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID sql.NullInt64 `json:"collection_exclude_filter_rule_id"`
 }
 
 // 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
@@ -1103,6 +1105,7 @@ func (q *Queries) CreateServiceLogSetting(ctx context.Context, arg CreateService
 		arg.RetentionTierID,
 		arg.ServiceID,
 		arg.CollectionFilterRuleID,
+		arg.CollectionExcludeFilterRuleID,
 	)
 	return err
 }
@@ -1244,10 +1247,12 @@ func (q *Queries) CreateTemplateDockerConfig(ctx context.Context, arg CreateTemp
 
 const createTemplateLogDefinition = `-- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
-  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id)
+  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id,
+   filter_include_rule_id,filter_exclude_rule_id)
 VALUES ($1,$2,$3,$4,$5,
         $6,$7,
-        $8)
+        $8,
+        $9,$10)
 `
 
 type CreateTemplateLogDefinitionParams struct {
@@ -1259,6 +1264,8 @@ type CreateTemplateLogDefinitionParams struct {
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
+	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
 }
 
 func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTemplateLogDefinitionParams) error {
@@ -1271,6 +1278,8 @@ func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTem
 		arg.DeploymentTemplateID,
 		arg.ExtraFields,
 		arg.ProcessingRuleID,
+		arg.FilterIncludeRuleID,
+		arg.FilterExcludeRuleID,
 	)
 	return err
 }
@@ -3942,14 +3951,22 @@ SELECT ld.id, ld.name, ld.path_pattern,
        COALESCE(rule.update_time, ld.create_time) AS processing_rule_update_time,
        s.application_version_id,
        ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
-       ls.collection_filter_rule_id,
+       -- 采集过滤：模板级是默认值、服务级是覆盖（三态 NULL/0/>0）。四个 id 都给出去，
+       -- 界面才能显示"继承了模板的哪条 / 自己覆盖成了哪条 / 显式关闭"，渲染也据此解析最终生效的正则。
+       ld.filter_include_rule_id, ld.filter_exclude_rule_id,
+       ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
        ls.format_verified_at, ls.format_verified_fingerprint,
        ls.format_verified_source, ls.format_verified_by,
        s.code AS service_code, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
        COALESCE(s.macro_values, '{}') AS macro_values,
+       -- 模板级宏默认值 + app_home（APP_HOME 的默认值）：界面要显示"解析后路径"，
+       -- 就必须用与渲染同一套顺序（模板默认 → 服务覆盖 → 实例变量），见 internal/shared/logmacro。
+       COALESCE(t.macro_definitions, '[]') AS macro_definitions,
+       COALESCE(t.app_home, '') AS app_home,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
 FROM assets_application_log_definition ld
 JOIN assets_application_service s ON s.id = $1
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 LEFT JOIN assets_application_service_log_setting ls
   ON ls.log_definition_id = ld.id AND ls.service_id = s.id
 LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
@@ -3962,26 +3979,31 @@ ORDER BY ld.id
 `
 
 type ListServiceTemplateLogsRow struct {
-	ID                        int64           `json:"id"`
-	Name                      string          `json:"name"`
-	PathPattern               string          `json:"path_pattern"`
-	ProcessingRuleID          sql.NullInt64   `json:"processing_rule_id"`
-	ProcessingRuleName        string          `json:"processing_rule_name"`
-	ProcessingRuleUpdateTime  time.Time       `json:"processing_rule_update_time"`
-	ApplicationVersionID      int64           `json:"application_version_id"`
-	RetentionTierID           sql.NullInt64   `json:"retention_tier_id"`
-	OverrideCollectionEnabled *bool           `json:"override_collection_enabled"`
-	CollectionFilterRuleID    sql.NullInt64   `json:"collection_filter_rule_id"`
-	FormatVerifiedAt          sql.NullTime    `json:"format_verified_at"`
-	FormatVerifiedFingerprint sql.NullString  `json:"format_verified_fingerprint"`
-	FormatVerifiedSource      sql.NullString  `json:"format_verified_source"`
-	FormatVerifiedBy          sql.NullString  `json:"format_verified_by"`
-	ServiceCode               string          `json:"service_code"`
-	ProjectCode               string          `json:"project_code"`
-	EnvironmentCode           sql.NullString  `json:"environment_code"`
-	BusinessSystemCode        string          `json:"business_system_code"`
-	MacroValues               json.RawMessage `json:"macro_values"`
-	TierCode                  string          `json:"tier_code"`
+	ID                            int64           `json:"id"`
+	Name                          string          `json:"name"`
+	PathPattern                   string          `json:"path_pattern"`
+	ProcessingRuleID              sql.NullInt64   `json:"processing_rule_id"`
+	ProcessingRuleName            string          `json:"processing_rule_name"`
+	ProcessingRuleUpdateTime      time.Time       `json:"processing_rule_update_time"`
+	ApplicationVersionID          int64           `json:"application_version_id"`
+	RetentionTierID               sql.NullInt64   `json:"retention_tier_id"`
+	OverrideCollectionEnabled     *bool           `json:"override_collection_enabled"`
+	FilterIncludeRuleID           sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID           sql.NullInt64   `json:"filter_exclude_rule_id"`
+	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
+	FormatVerifiedAt              sql.NullTime    `json:"format_verified_at"`
+	FormatVerifiedFingerprint     sql.NullString  `json:"format_verified_fingerprint"`
+	FormatVerifiedSource          sql.NullString  `json:"format_verified_source"`
+	FormatVerifiedBy              sql.NullString  `json:"format_verified_by"`
+	ServiceCode                   string          `json:"service_code"`
+	ProjectCode                   string          `json:"project_code"`
+	EnvironmentCode               sql.NullString  `json:"environment_code"`
+	BusinessSystemCode            string          `json:"business_system_code"`
+	MacroValues                   json.RawMessage `json:"macro_values"`
+	MacroDefinitions              json.RawMessage `json:"macro_definitions"`
+	AppHome                       string          `json:"app_home"`
+	TierCode                      string          `json:"tier_code"`
 }
 
 // ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
@@ -4012,7 +4034,10 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.ApplicationVersionID,
 			&i.RetentionTierID,
 			&i.OverrideCollectionEnabled,
+			&i.FilterIncludeRuleID,
+			&i.FilterExcludeRuleID,
 			&i.CollectionFilterRuleID,
+			&i.CollectionExcludeFilterRuleID,
 			&i.FormatVerifiedAt,
 			&i.FormatVerifiedFingerprint,
 			&i.FormatVerifiedSource,
@@ -4022,6 +4047,8 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.EnvironmentCode,
 			&i.BusinessSystemCode,
 			&i.MacroValues,
+			&i.MacroDefinitions,
+			&i.AppHome,
 			&i.TierCode,
 		); err != nil {
 			return nil, err
@@ -4134,19 +4161,22 @@ func (q *Queries) ListTemplateControlActions(ctx context.Context, deploymentTemp
 }
 
 const listTemplateLogDefinitions = `-- name: ListTemplateLogDefinitions :many
-SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id
+SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id,
+       filter_include_rule_id,filter_exclude_rule_id
 FROM assets_application_log_definition WHERE deployment_template_id=$1 ORDER BY id
 `
 
 type ListTemplateLogDefinitionsRow struct {
-	ID               int64           `json:"id"`
-	CreateTime       time.Time       `json:"create_time"`
-	UpdateTime       time.Time       `json:"update_time"`
-	Remark           sql.NullString  `json:"remark"`
-	Name             string          `json:"name"`
-	PathPattern      string          `json:"path_pattern"`
-	ExtraFields      json.RawMessage `json:"extra_fields"`
-	ProcessingRuleID sql.NullInt64   `json:"processing_rule_id"`
+	ID                  int64           `json:"id"`
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	Name                string          `json:"name"`
+	PathPattern         string          `json:"path_pattern"`
+	ExtraFields         json.RawMessage `json:"extra_fields"`
+	ProcessingRuleID    sql.NullInt64   `json:"processing_rule_id"`
+	FilterIncludeRuleID sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID sql.NullInt64   `json:"filter_exclude_rule_id"`
 }
 
 func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error) {
@@ -4167,6 +4197,8 @@ func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemp
 			&i.PathPattern,
 			&i.ExtraFields,
 			&i.ProcessingRuleID,
+			&i.FilterIncludeRuleID,
+			&i.FilterExcludeRuleID,
 		); err != nil {
 			return nil, err
 		}
@@ -4888,8 +4920,11 @@ const updateTemplateLogDefinition = `-- name: UpdateTemplateLogDefinition :execr
 UPDATE assets_application_log_definition
 SET update_time=$1,remark=$2,name=$3,
     path_pattern=$4,extra_fields=$5,
-    processing_rule_id=$6
-WHERE id=$7 AND deployment_template_id=$8
+    processing_rule_id=$6,
+    -- 采集过滤的模板级默认值（NULL = 该方向不过滤；服务级可覆盖/关闭）
+    filter_include_rule_id=$7,
+    filter_exclude_rule_id=$8
+WHERE id=$9 AND deployment_template_id=$10
 `
 
 type UpdateTemplateLogDefinitionParams struct {
@@ -4899,6 +4934,8 @@ type UpdateTemplateLogDefinitionParams struct {
 	PathPattern          string          `json:"path_pattern"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
+	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
 	ID                   int64           `json:"id"`
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 }
@@ -4913,6 +4950,8 @@ func (q *Queries) UpdateTemplateLogDefinition(ctx context.Context, arg UpdateTem
 		arg.PathPattern,
 		arg.ExtraFields,
 		arg.ProcessingRuleID,
+		arg.FilterIncludeRuleID,
+		arg.FilterExcludeRuleID,
 		arg.ID,
 		arg.DeploymentTemplateID,
 	)
@@ -5111,20 +5150,26 @@ func (q *Queries) UpsertLogSettingFormatVerified(ctx context.Context, arg Upsert
 
 const upsertServiceLogOverride = `-- name: UpsertServiceLogOverride :exec
 INSERT INTO assets_application_service_log_setting
-  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
+   collection_filter_rule_id,collection_exclude_filter_rule_id)
 VALUES ($1,$2,NULL,$3,$4,
-        $5,$6,NULL)
+        $5,$6,
+        $7,$8)
 ON CONFLICT (service_id, log_definition_id) DO UPDATE SET update_time=EXCLUDED.update_time,collection_enabled=EXCLUDED.collection_enabled,
-  retention_tier_id=EXCLUDED.retention_tier_id
+  retention_tier_id=EXCLUDED.retention_tier_id,
+  collection_filter_rule_id=EXCLUDED.collection_filter_rule_id,
+  collection_exclude_filter_rule_id=EXCLUDED.collection_exclude_filter_rule_id
 `
 
 type UpsertServiceLogOverrideParams struct {
-	CreateTime        time.Time     `json:"create_time"`
-	UpdateTime        time.Time     `json:"update_time"`
-	CollectionEnabled *bool         `json:"collection_enabled"`
-	LogDefinitionID   int64         `json:"log_definition_id"`
-	RetentionTierID   sql.NullInt64 `json:"retention_tier_id"`
-	ServiceID         int64         `json:"service_id"`
+	CreateTime                    time.Time     `json:"create_time"`
+	UpdateTime                    time.Time     `json:"update_time"`
+	CollectionEnabled             *bool         `json:"collection_enabled"`
+	LogDefinitionID               int64         `json:"log_definition_id"`
+	RetentionTierID               sql.NullInt64 `json:"retention_tier_id"`
+	ServiceID                     int64         `json:"service_id"`
+	CollectionFilterRuleID        sql.NullInt64 `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID sql.NullInt64 `json:"collection_exclude_filter_rule_id"`
 }
 
 // 服务级日志覆盖的**按行**写入：只写"这个服务在这条日志上的覆盖值"（采集开关 + 保留档位），
@@ -5149,6 +5194,8 @@ func (q *Queries) UpsertServiceLogOverride(ctx context.Context, arg UpsertServic
 		arg.LogDefinitionID,
 		arg.RetentionTierID,
 		arg.ServiceID,
+		arg.CollectionFilterRuleID,
+		arg.CollectionExcludeFilterRuleID,
 	)
 	return err
 }

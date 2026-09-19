@@ -29,12 +29,20 @@ func Error(context *gin.Context, err error) {
 	if !ok {
 		appError = apperror.WithCause(apperror.ErrInternal, err)
 	}
-	// 500 的根因必须落服务端日志，否则前端只看到笼统错误、无从排查。
+	// 服务端日志必须同时带上「给用户看的那句话」与根因：
+	// 只打 `errors.Unwrap(appError)`（cause）时，用 apperror.New 造出来的错误
+	//（请求参数错误 / 无权限 / 资源不存在 / token 失效…）**没有 cause**，日志里就只剩一句 `<nil>`。
+	// 2026-09-19 现场：菜单保存失败，服务端只留下 `[API-ERROR] PATCH /sys/menus/169/: <nil>`，
+	// 等于什么都没说——排查只能靠猜。cause 有值时必须补在后面（500 的根因是排查关键）。
 	// 测试环境下 Request 可能为 nil。
+	location := ""
 	if context.Request != nil {
-		log.Printf("[API-ERROR] %s %s: %v", context.Request.Method, context.Request.URL.Path, errors.Unwrap(appError))
+		location = context.Request.Method + " " + context.Request.URL.Path
+	}
+	if cause := errors.Unwrap(appError); cause != nil {
+		log.Printf("[API-ERROR] %s: [%d] %s: %v", location, appError.Code(), appError.Message(), cause)
 	} else {
-		log.Printf("[API-ERROR] %v", errors.Unwrap(appError))
+		log.Printf("[API-ERROR] %s: [%d] %s", location, appError.Code(), appError.Message())
 	}
 	context.JSON(appError.HTTPStatus(), Envelope{Code: appError.Code(), Msg: appError.Message(), Data: nil})
 }

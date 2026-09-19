@@ -93,6 +93,14 @@
           </a-col>
           <a-col v-if="templateMacros.length" :span="24">
             <a-form-item label="模板宏">
+              <a-alert
+                v-if="missingMacros.length"
+                type="warning"
+                show-icon
+                class="service-macro-alert"
+                :message="`模板没给默认值的宏必须在这里填：${missingMacrosText}`"
+                description="空着保存不了：下发时路径里的 ${VAR} 展不开，那台主机要么被跳过、要么拼出坏路径。"
+              />
               <a-table
                 :columns="macroTableColumns"
                 :data-source="templateMacros"
@@ -107,13 +115,16 @@
                   <template v-else-if="column.key === 'value'">
                     <a-input
                       :value="macroValue(record)"
-                      :placeholder="record.value || '未设置'"
+                      :status="isMacroMissing(record) ? 'error' : ''"
+                      :placeholder="record.value ? '' : '必填（模板未给默认值）'"
                       @update:value="setMacroValue(record.name, $event)"
                     />
                   </template>
                   <template v-else-if="column.key === 'description'">
                     <span>{{ record.description || '-' }}</span>
-                    <a-tag v-if="hasMacroOverride(record.name)" color="blue">已覆盖</a-tag>
+                    <!-- 模板没给值时不能显示"继承"——那是在骗人：根本没有可继承的东西。 -->
+                    <a-tag v-if="isMacroMissing(record)" color="red">必填</a-tag>
+                    <a-tag v-else-if="hasMacroOverride(record.name)" color="blue">已覆盖</a-tag>
                     <a-tag v-else color="default">继承</a-tag>
                   </template>
                   <template v-else-if="column.key === 'action'">
@@ -193,11 +204,39 @@
                 row-key="log_definition"
                 size="small"
                 :locale="tableLocale"
-                :scroll="{ x: 1580 }"
+                :scroll="{ x: 1940 }"
               >
+                <!-- 表头小开关：原始路径模式 ↔ 解析后（模板默认值 + 服务覆盖；实例级宏仍留占位符）。
+                     与日志中心共用 util/logPathMacro，口径一致。 -->
+                <template #headerCell="{ column }">
+                  <template v-if="column.key === 'resolved_path'">
+                    路径
+                    <a-tooltip :title="showResolvedPath ? '当前显示：解析后的路径（模板默认值 + 服务覆盖）。切回原始可看模板里的路径模式' : '当前显示：模板里的路径模式（原始 ${宏}）。切到解析后可看能展开的部分'" placement="top">
+                      <a-switch
+                        v-model:checked="showResolvedPath"
+                        size="small"
+                        checked-children="解析后"
+                        un-checked-children="原始"
+                        class="path-toggle"
+                      />
+                    </a-tooltip>
+                  </template>
+                  <template v-else>{{ column.title }}</template>
+                </template>
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'name'">{{ record.name }}</template>
-                  <template v-else-if="column.key === 'resolved_path'"><code>{{ record.resolved_path }}</code></template>
+                  <template v-else-if="column.key === 'resolved_path'">
+                    <a-tooltip :title="PATH_MACRO_HINT" placement="top">
+                      <code>{{ pathCellValue(record, showResolvedPath) }}</code>
+                      <a-tag
+                        v-if="showResolvedPath && unexpandedMacros(record.resolved_path).length"
+                        color="orange"
+                        class="path-macro-tag"
+                      >
+                        {{ unexpandedMacros(record.resolved_path).join(' ') }} 实例上展开
+                      </a-tag>
+                    </a-tooltip>
+                  </template>
                   <template v-else-if="column.key === 'processing_rule'">
                     <!-- 解析规则只由部署模板的日志定义决定（服务侧只读）：同一模板的日志格式相同，
                          规则就该相同；要不同就另建模板/另建日志定义。未挂规则的日志不会被采集。 -->
@@ -222,6 +261,38 @@
                         checked-children="采"
                         un-checked-children="不采"
                         @change="(checked) => setLogCollectEnabled(record.log_definition, checked)"
+                      />
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="column.key === 'filter_include'">
+                    <!-- 三态：null 继承模板 / 0 不过滤 / >0 指定规则。选项按方向过滤，
+                         白名单不会出现在排除槽里（反着用会只采到噪声）。 -->
+                    <a-tooltip
+                      title="只保留匹配的记录（白名单）。改完保存并重新下发采集配置才在主机上生效；被滤掉的日志不会进 ES、也补不回来。"
+                      placement="top"
+                    >
+                      <a-select
+                        :value="logOverrides[record.log_definition]?.collection_filter_rule ?? null"
+                        :options="[{ label: inheritedFilterLabel(record.template_filter_include_rule_id), value: null }, ...filterRuleOptions('include')]"
+                        :getPopupContainer="getPopupContainer"
+                        size="small"
+                        style="min-width: 150px"
+                        @update:value="(value) => setLogOverride(record.log_definition, 'collection_filter_rule', value ?? null)"
+                      />
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="column.key === 'filter_exclude'">
+                    <a-tooltip
+                      title="丢掉匹配的记录（黑名单，先保留后排除）。改完保存并重新下发采集配置才在主机上生效；被滤掉的日志不会进 ES、也补不回来。"
+                      placement="top"
+                    >
+                      <a-select
+                        :value="logOverrides[record.log_definition]?.collection_exclude_filter_rule ?? null"
+                        :options="[{ label: inheritedFilterLabel(record.template_filter_exclude_rule_id), value: null }, ...filterRuleOptions('exclude')]"
+                        :getPopupContainer="getPopupContainer"
+                        size="small"
+                        style="min-width: 150px"
+                        @update:value="(value) => setLogOverride(record.log_definition, 'collection_exclude_filter_rule', value ?? null)"
                       />
                     </a-tooltip>
                   </template>
@@ -337,6 +408,8 @@ import { tableLocale } from '@/util/tableStyle'
 import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { getLogCollectionFilterRules } from '@/api/monitor'
+import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros } from '@/util/logPathMacro'
 import { fetchAllPages } from '@/util/fetchAllPages'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
@@ -395,6 +468,9 @@ const environmentRecords = ref([])
 const retentionTierRecords = ref([])
 const processingRuleRecords = ref([])
 const templateLogRows = ref([])
+const collectionFilterRules = ref([])
+// 「路径」列显示原始模式还是解析后的路径（与日志中心同一套取值与标注）。
+const showResolvedPath = ref(true)
 // 日志配置加载失败的提示。与"后端确实返回空列表"必须区分：接口报错时表格同样是空的，
 // 静默吞掉会让故障表现成"这里本来就没有日志"（2026-09-19 现场就是被这个掩盖的）。
 const logConfigError = ref('')
@@ -419,14 +495,17 @@ function processingRuleLabel(record) {
   return found ? found.name : `规则 #${id}`
 }
 
-// 「处理规则」是只读列（值来自部署模板的日志定义）；「过滤规则」暂不展示——
-// 采集过滤规则目前只是资源 CRUD，渲染与 pipeline 都不读它（选了不生效），
-// 隐藏以免误以为过滤在起作用；已存在的覆盖值仍会随保存原样保留。
+// 「处理规则」是只读列（值来自部署模板的日志定义）；「采集过滤」两列可改：三态与日志中心一致
+// （NULL 继承模板 / 0 不过滤 / >0 指定规则），改完随整表提交，仍需重新下发才到主机上生效。
 const logTableColumns = [
   { title: '日志名称', key: 'name', width: 150 },
   { title: '路径', key: 'resolved_path', width: 260 },
   { title: '处理规则（模板）', key: 'processing_rule', width: 210 },
   { title: '采集', key: 'collection_enabled', width: 130 },
+  // 采集过滤（2026-09-19 接入渲染后不再隐藏）：与日志中心「日志配置」同一份规则、同一套三态，
+  // 两边显示同一条 (服务 × 日志定义) 的配置，口径就不会分叉。
+  { title: '采集过滤（保留）', key: 'filter_include', width: 180 },
+  { title: '采集过滤（排除）', key: 'filter_exclude', width: 180 },
   { title: '格式校验', key: 'format_state', width: 110 },
   { title: '格式认证', key: 'format_action', width: 120 },
   { title: '保留档位', key: 'retention_tier', width: 190 },
@@ -487,8 +566,25 @@ const macroTableColumns = [
   { title: '操作', key: 'action', width: 110 },
 ]
 const macroKeyLabel = (name) => `\${${name}}`
-const macroValue = (macro) => Object.prototype.hasOwnProperty.call(form.macro_values || {}, macro.name) ? form.macro_values[macro.name] : (macro.value || '')
-const hasMacroOverride = (name) => Object.prototype.hasOwnProperty.call(form.macro_values || {}, name)
+// 取服务级覆盖值。**用"取值是否 undefined"判断有没有覆盖，不要用 hasOwnProperty**：
+// Vue 3.5 里 hasOwnProperty 建立的依赖在"新增键"时不失效（取值依赖会失效），用它会让
+// "模板宏必填"的红标在用户填好值之后一直不消失（computed 缓存着旧结论，表单却已经能保存了）。
+const macroOverride = (name) => (form.macro_values || {})[name]
+const macroValue = (macro) => {
+  const override = macroOverride(macro.name)
+  return override === undefined ? (macro.value || '') : override
+}
+const hasMacroOverride = (name) => macroOverride(name) !== undefined
+// 模板宏必须"有值"才能保存：要么模板给了默认值（继承），要么本服务自己填。
+//
+// 为什么不能空着：下发时 `${VAR}` 按"模板默认 → 服务覆盖 → 实例变量"的顺序找值，一个都没有时
+// 要么整台实例被跳过（下发告警里只说"路径含未定义宏"），要么被替换成空串拼出坏路径
+// （如 `/catalina.out`），Filebeat 监听不到文件、采集静默为空。两者都是"事后才发现"的坑，
+// 所以在保存这一步就拦住——**模板没给默认值 = 本服务必填**。
+const missingMacros = computed(() => templateMacros.value
+  .filter((macro) => !String(macroValue(macro) ?? '').trim()))
+const isMacroMissing = (macro) => missingMacros.value.some((item) => item.name === macro.name)
+const missingMacrosText = computed(() => missingMacros.value.map((macro) => macroKeyLabel(macro.name)).join('、'))
 function setMacroValue(name, value) {
   if (value === '' || value === undefined || value === null) {
     delete form.macro_values[name]
@@ -684,6 +780,8 @@ async function initialize() {
       // 处理规则只用于把"模板日志定义上挂的规则 id"显示成名字（只读列），服务侧不可选。
       ['日志处理规则', () => fetchAllPages(getLogProcessingRules)],
       ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
+      // 采集过滤规则：两个下拉的选项（按方向分桶，见 filterRuleOptions）。
+      ['过滤规则', () => fetchAllPages(getLogCollectionFilterRules)],
     ]
     const results = await Promise.all(loaders.map(async ([label, loader]) => {
       try {
@@ -711,6 +809,7 @@ async function initialize() {
     profileRecords.value = profiles
     deploymentRecords.value = deployments
     retentionTierRecords.value = records['保留档位']
+    collectionFilterRules.value = records['过滤规则']
     if (props.serviceId) {
       const response = await getApplicationService(props.serviceId)
       const data = response?.data?.data || {}
@@ -764,6 +863,9 @@ async function loadLogConfig(serviceId) {
         retention_tier: row.retention_tier ?? null,
         collection_enabled: row.collection_enabled === false ? false : null,
         collection_filter_rule: row.collection_filter_rule_id ?? null,
+        // 排除方向也**必须原样带上**：本弹窗保存走整表替换（先 DELETE 再重插），
+        // 漏了这一列等于把服务级的排除覆盖静默清掉。日常改过滤在日志中心，这里只负责不丢。
+        collection_exclude_filter_rule: row.collection_exclude_filter_rule_id ?? null,
       }
     }
   } catch (error) {
@@ -795,9 +897,14 @@ function initializeTemplateLogs(templateId) {
     // 模板不再带采集开关：新选模板的服务默认全采，需要关再逐条关。
     collection_enabled: null,
     collection_filter_rule: null,
+    collection_exclude_filter_rule: null,
     // 规则名由 processingRuleLabel() 按 id 反查（模板列表只给 id）。
     template_processing_rule_id: log.processing_rule ?? null,
     template_processing_rule_name: '',
+    // 模板级的过滤默认值：用于"继承模板（规则名）"的显示（值本身不必回填，
+    // 未选覆盖时提交的就是 null = 继承）。
+    template_filter_include_rule_id: log.filter_include_rule ?? null,
+    template_filter_exclude_rule_id: log.filter_exclude_rule ?? null,
     retention_tier: null,
     data_stream: '保存后生成',
   }))
@@ -807,8 +914,27 @@ function initializeTemplateLogs(templateId) {
       retention_tier: null,
       collection_enabled: null,
       collection_filter_rule: null,
+      collection_exclude_filter_rule: null,
     }
   }
+}
+
+// 采集过滤规则（两列下拉用）：按**方向**分桶给两个下拉，白名单不会出现在排除槽里
+// （反着用会只采到噪声）；归属沿用解析规则那套约定——属于本应用 + 不限应用的通用规则。
+function filterRuleOptions(direction) {
+  return collectionFilterRules.value
+    .filter((item) => item.enabled && (item.rule_type || 'include') === direction)
+    .filter((item) => !item.application || item.application === form.application)
+    .map((item) => ({
+      label: item.application ? item.name : `${item.name}（通用）`,
+      value: item.id,
+    }))
+}
+// 继承模板时的说明：模板没配写"无"，配了就带规则名——用户要知道自己继承了什么。
+function inheritedFilterLabel(ruleId) {
+  if (!ruleId) return '继承模板（无）'
+  const rule = collectionFilterRules.value.find((item) => item.id === ruleId)
+  return `继承模板（${rule ? rule.name : `规则 #${ruleId}（已删除）`}）`
 }
 
 function setLogOverride(logDefinition, field, value) {
@@ -816,6 +942,7 @@ function setLogOverride(logDefinition, field, value) {
     retention_tier: null,
     collection_enabled: null,
     collection_filter_rule: null,
+    collection_exclude_filter_rule: null,
   }
   logOverrides[logDefinition] = { ...current, [field]: value ?? null }
 }
@@ -844,6 +971,12 @@ async function submit() {
     message.error(isHaCluster.value ? 'HA 集群至少需要两个成员实例' : form.topology_type === 'standalone' ? '请选择部署实例' : '请选择至少一个后端成员实例')
     return
   }
+  // 模板没给默认值的宏必须在本服务填：空着下发时路径展不开（跳过主机或拼出坏路径），
+  // 这是"采集静默为空"的常见原因，所以在保存这一步拦住（表格里也用红框与"必填"标出来了）。
+  if (missingMacros.value.length) {
+    message.error(`模板宏还没填：${missingMacrosText.value}（模板未给默认值，必须在本服务设置）`)
+    return
+  }
   saving.value = true
   try {
     const payload = { ...form }
@@ -864,12 +997,14 @@ async function submit() {
         value.retention_tier !== null
         || value.collection_enabled !== null
         || value.collection_filter_rule !== null
+        || value.collection_exclude_filter_rule !== null
       ))
       .map(([logDefinition, value]) => ({
         log_definition: Number(logDefinition),
         retention_tier: value.retention_tier,
         collection_enabled: value.collection_enabled,
         collection_filter_rule: value.collection_filter_rule,
+        collection_exclude_filter_rule: value.collection_exclude_filter_rule,
       }))
     await saveApplicationService(payload)
     message.success('保存成功')
@@ -935,6 +1070,17 @@ watch(() => form.cluster_profile, () => {
 </script>
 
 <style scoped>
+.path-toggle {
+  margin-left: 6px;
+}
+.path-macro-tag {
+  margin-left: 6px;
+  font-size: 11px;
+}
+/* 模板宏缺值时提示与表格贴在一起，别让"保存不了"变成只闪一下的 toast。 */
+.service-macro-alert {
+  margin-bottom: 8px;
+}
 .field-hint {
   margin-top: 4px;
   color: rgba(0, 0, 0, 0.45);

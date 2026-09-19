@@ -285,30 +285,114 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster elastics
 
 	items := []gin.H{}
 	for _, rule := range rules {
-		// pipeline id 与发布/删除/渲染统一：<前缀>-<应用 code|general>-<规则名>。
-		pipelineName := processingPipelineName(logHealthPrefix(cluster), handler.applicationPipelineSegment(context, rule.ApplicationID), rule.Name)
-		remote, err := handler.elasticsearchRequest(context, cluster, "GET", "/_ingest/pipeline/"+pipelineName, nil)
-		if err != nil {
-			if isElasticsearchNotFound(err) {
-				items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
-			} else {
-				items = append(items, logHealthItem(pipelineName, logHealthError, truncateElasticsearchError(err)))
-			}
-			continue
-		}
-		body, _ := remote[pipelineName].(map[string]any)
-		if body == nil {
-			items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析"))
-		} else if pipelineSignature(body) != pipelineSignature(json.RawMessage(rule.PipelineBody)) {
-			items = append(items, logHealthItem(pipelineName, logHealthDrift, "集群上的 pipeline 与页面配置不一致，需重新发布"))
-		} else {
-			var decoded map[string]any
-			_ = json.Unmarshal(rule.PipelineBody, &decoded)
-			processors, _ := decoded["processors"].([]any)
-			items = append(items, logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器", len(processors))))
-		}
+		items = append(items, handler.judgeRulePipeline(context, cluster, rulePipelineInput{
+			Name: rule.Name, ApplicationID: rule.ApplicationID, PipelineBody: rule.PipelineBody,
+			SampleLog: rule.SampleLog, MultilineEnabled: rule.MultilineEnabled, StartPattern: rule.StartPattern,
+		}))
 	}
 	return logHealthLayerFromItems("pipelines", "解析规则", items, "尚未配置解析规则")
+}
+
+// judgeRulePipeline 判一条规则在集群上的发布状态与**运行状态**：
+// 不存在 → drift；与页面配置不一致 → drift；用样例日志试跑跑不通 → drift；一致且跑得通 → ok。
+//
+// 试跑这条判据是 2026-09-19 加的（kul 的 tomcat 现场）：静态粗筛（missingPipelineOutputs）判不出
+// "处理器把 message 覆盖成对象"这种运行时错误，试算又能过（样例文档缺 Filebeat 自己的字段，
+// 见 sample_event.go），结果 ES 用 400 拒收每一条事件、Filebeat 全丢，而页面上处处绿灯。
+// 判定用**规则自带的样例日志**（没配就只报"未试跑"，不猜）。
+//
+// 体检的 pipelines 层与日志中心的"采集链路"（按服务）共用本函数：同一条规则在两处必须得出
+// 同一个结论，否则用户会看到"体检说没事、日志中心说没发布"。任何判据调整都要改这里一处。
+// rulePipelineInput 判定一条规则需要的最小字段集。
+//
+// 集群体检（ListProcessingRulesByCluster）与服务链路（GetLogProcessingRule）两条取数路径的
+// 列集不同，用一个结构收敛：判定只认它，谁调用谁负责把字段取全（取不全时试跑会明确报"未试跑"，
+// 而不是让"判不了"看起来像"没问题"）。
+type rulePipelineInput struct {
+	Name             string
+	ApplicationID    sql.NullInt64
+	PipelineBody     json.RawMessage
+	SampleLog        string
+	MultilineEnabled bool
+	StartPattern     string
+}
+
+// rulePipelineInputFromRow 从整行规则折出判定输入（服务链路走这条）。
+func rulePipelineInputFromRow(rule db.MonitorLogProcessingRule) rulePipelineInput {
+	return rulePipelineInput{
+		Name: rule.Name, ApplicationID: rule.ApplicationID, PipelineBody: rule.PipelineBody,
+		SampleLog: rule.SampleLog, MultilineEnabled: rule.MultilineEnabled, StartPattern: rule.StartPattern,
+	}
+}
+
+func (handler *Handler) judgeRulePipeline(context *gin.Context, cluster elasticsearchCluster, rule rulePipelineInput) gin.H {
+	// pipeline id 与发布/删除/渲染统一：<前缀>-<应用 code|general>-<规则名>。
+	pipelineName := processingPipelineName(logHealthPrefix(cluster), handler.applicationPipelineSegment(context, rule.ApplicationID), rule.Name)
+	remote, err := handler.elasticsearchRequest(context, cluster, "GET", "/_ingest/pipeline/"+pipelineName, nil)
+	if err != nil {
+		if isElasticsearchNotFound(err) {
+			return logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析")
+		}
+		return logHealthItem(pipelineName, logHealthError, truncateElasticsearchError(err))
+	}
+	body, _ := remote[pipelineName].(map[string]any)
+	if body == nil {
+		return logHealthItem(pipelineName, logHealthDrift, "集群上不存在该 pipeline，日志不会被解析")
+	}
+	if pipelineSignature(body) != pipelineSignature(rule.PipelineBody) {
+		return logHealthItem(pipelineName, logHealthDrift, "集群上的 pipeline 与页面配置不一致，需重新发布")
+	}
+	var decoded map[string]any
+	_ = json.Unmarshal(rule.PipelineBody, &decoded)
+	processors, _ := decoded["processors"].([]any)
+	check := handler.rulePipelineRunVerdict(context, cluster, pipelineName, rule)
+	switch {
+	case check.failed:
+		// 与"没发布"同级：集群上跑的这份 pipeline 会把事件弄丢，处置方式也一样（回去改规则）。
+		return logHealthItem(pipelineName, logHealthDrift, check.detail)
+	case check.skipped:
+		return logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器（%s）", len(processors), check.detail))
+	default:
+		return logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器（样例试跑通过）", len(processors)))
+	}
+}
+
+// rulePipelineRunVerdictResult 试跑结论（见 rulePipelineRunVerdict）。
+type rulePipelineRunVerdictResult struct {
+	failed  bool
+	skipped bool
+	detail  string
+}
+
+// rulePipelineRunVerdict 用规则自带的样例日志 + Filebeat 真实事件载荷试跑一次 pipeline，
+// 回答"这条规则产出的文档能不能被 ES 接受"（见 judgeRulePipeline 的说明）。
+//
+// 判定保守：**没有可信输入就不判**（没配样例日志 → skipped），与规则保存校验"宁可漏判不可误判"
+// 同一取舍——把合法规则冤枉成故障，比漏报更难收拾。
+func (handler *Handler) rulePipelineRunVerdict(context *gin.Context, cluster elasticsearchCluster, pipelineName string, rule rulePipelineInput) rulePipelineRunVerdictResult {
+	sample := strings.TrimSpace(rule.SampleLog)
+	if sample == "" {
+		return rulePipelineRunVerdictResult{skipped: true, detail: "规则没配样例日志，未做试跑"}
+	}
+	docs, err := logSampleDocs(sample, rule.MultilineEnabled, rule.StartPattern)
+	if err != nil {
+		return rulePipelineRunVerdictResult{skipped: true, detail: "样例日志还原不出记录（" + err.Error() + "），未做试跑"}
+	}
+	// 用**集群上已发布的**那份跑（上面刚比对过它与页面一致）：主机上 Filebeat 调用的就是它。
+	data, err := handler.simulatePipeline(context, cluster, pipelineName, nil, docs)
+	if err != nil {
+		return rulePipelineRunVerdictResult{failed: true, detail: "样例试跑被 Elasticsearch 拒绝：" + truncateElasticsearchError(err)}
+	}
+	missing, _ := data["missing_fields"].([]string)
+	if len(missing) == 0 {
+		return rulePipelineRunVerdictResult{}
+	}
+	detail := fmt.Sprintf("样例试跑缺必备字段 %s：这样的事件到主机上会被 Elasticsearch 拒收，Filebeat 只会报 400 并丢弃（采集链路看起来全绿、ES 里一条都没有）",
+		strings.Join(missing, "、"))
+	if hint := clobberedMessageHint(data, sample); hint != "" {
+		detail += "；" + hint
+	}
+	return rulePipelineRunVerdictResult{failed: true, detail: detail}
 }
 
 // checkLogHostConfigs 逐主机比对**期望配置与已下发配置**：后端实时渲染采集配置算出期望指纹，
@@ -408,14 +492,46 @@ func (handler *Handler) checkLogRuntime(context *gin.Context) gin.H {
 // checkLogDataFlow 前面几层全绿也可能没数据，这一层是唯一能证明链路真正通了的证据。
 func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
+	total, buckets, err := handler.queryLogDataFlow(context, cluster, prefix, "", logHealthDataFlowWindowMinutes)
+	if err != nil {
+		return logHealthLayer("data_flow", "数据写入", logHealthError, fmt.Sprintf("查询失败: %v", err), nil)
+	}
+	items := []gin.H{}
+	for _, bucketRaw := range buckets {
+		bucket, _ := bucketRaw.(map[string]any)
+		name, _ := bucket["key"].(string)
+		count, _ := bucket["doc_count"].(float64)
+		items = append(items, logHealthItem(name, logHealthOK, fmt.Sprintf("%.0f 条", count)))
+	}
+	if total == 0 {
+		return logHealthLayer("data_flow", "数据写入", logHealthWarn, fmt.Sprintf("最近 %d 分钟没有新日志写入", logHealthDataFlowWindowMinutes), items)
+	}
+	return logHealthLayer("data_flow", "数据写入", logHealthOK, fmt.Sprintf("最近 %d 分钟写入 %.0f 条，覆盖 %d 个服务", logHealthDataFlowWindowMinutes, total, len(items)), items)
+}
+
+// queryLogDataFlow 统计时间窗内写入的文档数，并按 service 聚合（供调用方列出每个服务多少条）。
+//
+// serviceCode 非空时按 `service` 字段收窄到单个服务——日志中心的"采集链路"要回答的是
+// "这个服务最近有没有在写"，不能把别的服务的量算进来。**体检（全集群）与采集链路共用本函数**，
+// 保证两处对"有没有在写"是同一个查询、同一套口径，只是范围不同。
+func (handler *Handler) queryLogDataFlow(context *gin.Context, cluster elasticsearchCluster, prefix, serviceCode string, windowMinutes int) (float64, []any, error) {
+	rangeClause := gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dm", windowMinutes)}}
+	query := gin.H{"bool": gin.H{"filter": []any{gin.H{"range": rangeClause}}}}
+	if strings.TrimSpace(serviceCode) != "" {
+		// service 是逻辑服务的 code（keyword 字段，见索引模板 standardLogFields）。
+		query = gin.H{"bool": gin.H{"filter": []any{
+			gin.H{"range": rangeClause},
+			gin.H{"term": gin.H{"service": serviceCode}},
+		}}}
+	}
 	body := gin.H{
 		"size":  0,
-		"query": gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dm", logHealthDataFlowWindowMinutes)}}},
+		"query": query,
 		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 50}}},
 	}
 	result, err := handler.elasticsearchRequest(context, cluster, "POST", "/"+prefix+"-*/_search", body)
 	if err != nil {
-		return logHealthLayer("data_flow", "数据写入", logHealthError, fmt.Sprintf("查询失败: %v", err), nil)
+		return 0, nil, err
 	}
 	total := 0.0
 	if hits, ok := result["hits"].(map[string]any); ok {
@@ -429,15 +545,5 @@ func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster elasticse
 			buckets, _ = byService["buckets"].([]any)
 		}
 	}
-	items := []gin.H{}
-	for _, bucketRaw := range buckets {
-		bucket, _ := bucketRaw.(map[string]any)
-		name, _ := bucket["key"].(string)
-		count, _ := bucket["doc_count"].(float64)
-		items = append(items, logHealthItem(name, logHealthOK, fmt.Sprintf("%.0f 条", count)))
-	}
-	if total == 0 {
-		return logHealthLayer("data_flow", "数据写入", logHealthWarn, fmt.Sprintf("最近 %d 分钟没有新日志写入", logHealthDataFlowWindowMinutes), items)
-	}
-	return logHealthLayer("data_flow", "数据写入", logHealthOK, fmt.Sprintf("最近 %d 分钟写入 %.0f 条，覆盖 %d 个服务", logHealthDataFlowWindowMinutes, total, len(items)), items)
+	return total, buckets, nil
 }

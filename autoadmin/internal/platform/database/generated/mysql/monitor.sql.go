@@ -1009,9 +1009,9 @@ func (q *Queries) CreateLogBatchJobItem(ctx context.Context, arg CreateLogBatchJ
 
 const createLogCollectionFilterRule = `-- name: CreateLogCollectionFilterRule :execlastid
 INSERT INTO monitor_log_collection_filter_rule
-  (create_time,update_time,remark,name,description,pattern,enabled,application_id)
+  (create_time,update_time,remark,name,description,pattern,rule_type,enabled,application_id)
 VALUES (?,?,?,?,?,
-        ?,?,?)
+        ?,?,?,?)
 `
 
 type CreateLogCollectionFilterRuleParams struct {
@@ -1021,6 +1021,7 @@ type CreateLogCollectionFilterRuleParams struct {
 	Name          string         `json:"name"`
 	Description   string         `json:"description"`
 	Pattern       string         `json:"pattern"`
+	RuleType      string         `json:"rule_type"`
 	Enabled       bool           `json:"enabled"`
 	ApplicationID sql.NullInt64  `json:"application_id"`
 }
@@ -1033,6 +1034,7 @@ func (q *Queries) CreateLogCollectionFilterRule(ctx context.Context, arg CreateL
 		arg.Name,
 		arg.Description,
 		arg.Pattern,
+		arg.RuleType,
 		arg.Enabled,
 		arg.ApplicationID,
 	)
@@ -2302,7 +2304,7 @@ func (q *Queries) GetLogBatchJob(ctx context.Context, id int64) (GetLogBatchJobR
 }
 
 const getLogCollectionFilterRule = `-- name: GetLogCollectionFilterRule :one
-SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+SELECT id, create_time, update_time, remark, name, description, pattern, rule_type, enabled, application_id
 FROM monitor_log_collection_filter_rule
 WHERE id = ?
 `
@@ -2318,6 +2320,7 @@ func (q *Queries) GetLogCollectionFilterRule(ctx context.Context, id int64) (Mon
 		&i.Name,
 		&i.Description,
 		&i.Pattern,
+		&i.RuleType,
 		&i.Enabled,
 		&i.ApplicationID,
 	)
@@ -3797,7 +3800,12 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     COALESCE(t.macro_definitions, '[]') AS macro_definitions,
     COALESCE(rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
     COALESCE(rule_definition.start_pattern, '') AS start_pattern,
-    COALESCE(rule_definition.flush_timeout, 2000) AS flush_timeout
+    COALESCE(rule_definition.flush_timeout, 2000) AS flush_timeout,
+    -- 采集过滤的两个方向：模板级是默认值，服务级是覆盖（三态：NULL 继承 / 0 显式关闭 / >0 指定规则）。
+    -- 只取 id，规则内容在 Go 侧按需要的一次查回来解析（见 log_collection_filter.go）：
+    -- 这里再 join 四张规则表会让这条最热的渲染查询又多四个 join，而规则数量本来就少。
+    ld.filter_include_rule_id, ld.filter_exclude_rule_id,
+    ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -3816,21 +3824,25 @@ WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
 `
 
 type ListHostLogRenderEntriesRow struct {
-	HostID             int64           `json:"host_id"`
-	ProjectCode        string          `json:"project_code"`
-	EnvironmentCode    string          `json:"environment_code"`
-	BusinessSystemCode string          `json:"business_system_code"`
-	ServiceCode        string          `json:"service_code"`
-	ApplicationCode    string          `json:"application_code"`
-	TierCode           string          `json:"tier_code"`
-	PipelineName       string          `json:"pipeline_name"`
-	LogName            string          `json:"log_name"`
-	PathPattern        string          `json:"path_pattern"`
-	MacroValues        json.RawMessage `json:"macro_values"`
-	MacroDefinitions   json.RawMessage `json:"macro_definitions"`
-	MultilineEnabled   bool            `json:"multiline_enabled"`
-	StartPattern       string          `json:"start_pattern"`
-	FlushTimeout       uint32          `json:"flush_timeout"`
+	HostID                        int64           `json:"host_id"`
+	ProjectCode                   string          `json:"project_code"`
+	EnvironmentCode               string          `json:"environment_code"`
+	BusinessSystemCode            string          `json:"business_system_code"`
+	ServiceCode                   string          `json:"service_code"`
+	ApplicationCode               string          `json:"application_code"`
+	TierCode                      string          `json:"tier_code"`
+	PipelineName                  string          `json:"pipeline_name"`
+	LogName                       string          `json:"log_name"`
+	PathPattern                   string          `json:"path_pattern"`
+	MacroValues                   json.RawMessage `json:"macro_values"`
+	MacroDefinitions              json.RawMessage `json:"macro_definitions"`
+	MultilineEnabled              bool            `json:"multiline_enabled"`
+	StartPattern                  string          `json:"start_pattern"`
+	FlushTimeout                  uint32          `json:"flush_timeout"`
+	FilterIncludeRuleID           sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID           sql.NullInt64   `json:"filter_exclude_rule_id"`
+	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
 }
 
 // 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
@@ -3881,6 +3893,10 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 			&i.MultilineEnabled,
 			&i.StartPattern,
 			&i.FlushTimeout,
+			&i.FilterIncludeRuleID,
+			&i.FilterExcludeRuleID,
+			&i.CollectionFilterRuleID,
+			&i.CollectionExcludeFilterRuleID,
 		); err != nil {
 			return nil, err
 		}
@@ -4363,7 +4379,7 @@ func (q *Queries) ListLogBatchTargets(ctx context.Context, targetIds []int64) ([
 }
 
 const listLogCollectionFilterRules = `-- name: ListLogCollectionFilterRules :many
-SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+SELECT id, create_time, update_time, remark, name, description, pattern, rule_type, enabled, application_id
 FROM monitor_log_collection_filter_rule
 WHERE (application_id = ? OR ? IS NULL)
   AND (enabled = ? OR ? IS NULL)
@@ -4408,6 +4424,7 @@ func (q *Queries) ListLogCollectionFilterRules(ctx context.Context, arg ListLogC
 			&i.Name,
 			&i.Description,
 			&i.Pattern,
+			&i.RuleType,
 			&i.Enabled,
 			&i.ApplicationID,
 		); err != nil {
@@ -5129,17 +5146,24 @@ func (q *Queries) ListPendingLogBatchJobItems(ctx context.Context, arg ListPendi
 
 const listProcessingRulesByCluster = `-- name: ListProcessingRulesByCluster :many
 
-SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
+SELECT name, pipeline_body, application_id, sample_log, multiline_enabled, start_pattern
+FROM monitor_log_processing_rule
 WHERE cluster_id = ? ORDER BY name
 `
 
 type ListProcessingRulesByClusterRow struct {
-	Name          string          `json:"name"`
-	PipelineBody  json.RawMessage `json:"pipeline_body"`
-	ApplicationID sql.NullInt64   `json:"application_id"`
+	Name             string          `json:"name"`
+	PipelineBody     json.RawMessage `json:"pipeline_body"`
+	ApplicationID    sql.NullInt64   `json:"application_id"`
+	SampleLog        string          `json:"sample_log"`
+	MultilineEnabled bool            `json:"multiline_enabled"`
+	StartPattern     string          `json:"start_pattern"`
 }
 
 // ---- 日志链路对账与数据流水位（只读）----
+// 集群体检的"解析规则"层判定一条规则是否可用，除了 pipeline 发布态还要**用规则自带的样例日志
+// 试跑一次**（判"产出的文档会被 ES 拒收"这类运行期错误，见 log_health.go 的 judgeRulePipeline），
+// 所以取数必须带上样例与多行合并配置——缺了就只能跳过试跑，把"判不了"显示成"没问题"。
 func (q *Queries) ListProcessingRulesByCluster(ctx context.Context, clusterID int64) ([]ListProcessingRulesByClusterRow, error) {
 	rows, err := q.db.QueryContext(ctx, listProcessingRulesByCluster, clusterID)
 	if err != nil {
@@ -5149,7 +5173,14 @@ func (q *Queries) ListProcessingRulesByCluster(ctx context.Context, clusterID in
 	items := []ListProcessingRulesByClusterRow{}
 	for rows.Next() {
 		var i ListProcessingRulesByClusterRow
-		if err := rows.Scan(&i.Name, &i.PipelineBody, &i.ApplicationID); err != nil {
+		if err := rows.Scan(
+			&i.Name,
+			&i.PipelineBody,
+			&i.ApplicationID,
+			&i.SampleLog,
+			&i.MultilineEnabled,
+			&i.StartPattern,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -5286,7 +5317,8 @@ func (q *Queries) ListServiceActiveStreamTiers(ctx context.Context) ([]ListServi
 const listServiceLogApplyTargets = `-- name: ListServiceLogApplyTargets :many
 SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
        COALESCE(h.instance_name, '') AS host_instance_name,
-       l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint
+       l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint,
+       COALESCE(l.runtime_status, '') AS runtime_status
 FROM assets_application_service_deployment sd
 JOIN assets_application_deployment d ON d.id = sd.deployment_id
 JOIN assets_host h ON h.id = d.host_id
@@ -5301,6 +5333,7 @@ type ListServiceLogApplyTargetsRow struct {
 	HostInstanceName  string        `json:"host_instance_name"`
 	TargetID          sql.NullInt64 `json:"target_id"`
 	ConfigFingerprint string        `json:"config_fingerprint"`
+	RuntimeStatus     string        `json:"runtime_status"`
 }
 
 // 服务级下发的解析：该服务**承载在哪些主机上**，以及每台主机对应的采集目标。
@@ -5313,6 +5346,8 @@ type ListServiceLogApplyTargetsRow struct {
 //  2. 只在 LEFT JOIN 里要求 `managed_enabled = TRUE`：没纳管（或已停用纳管）的主机没有采集目标行，
 //     下发不了，必须能被识别出来告诉用户（target_id 为 NULL），而不是静默少下发几台。
 //  3. SELECT DISTINCT：入参是服务，它可能在同一台主机上有多个部署实例，而去重后每一列都是主机级事实。
+//     runtime_status 一并带出：日志中心要按服务回答"为什么没日志"，Filebeat 进程态是其中一层
+//     （与日志采集页同一字段；那个字段是落库快照，谁看谁负责刷新，见 log_service_chain.go）。
 func (q *Queries) ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listServiceLogApplyTargets, serviceID)
 	if err != nil {
@@ -5328,6 +5363,7 @@ func (q *Queries) ListServiceLogApplyTargets(ctx context.Context, serviceID int6
 			&i.HostInstanceName,
 			&i.TargetID,
 			&i.ConfigFingerprint,
+			&i.RuntimeStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -6388,7 +6424,7 @@ func (q *Queries) UpdateLogBatchJobHeartbeat(ctx context.Context, arg UpdateLogB
 const updateLogCollectionFilterRule = `-- name: UpdateLogCollectionFilterRule :execrows
 UPDATE monitor_log_collection_filter_rule
 SET update_time=?,remark=?,name=?,description=?,
-    pattern=?,enabled=?,application_id=?
+    pattern=?,rule_type=?,enabled=?,application_id=?
 WHERE id=?
 `
 
@@ -6398,6 +6434,7 @@ type UpdateLogCollectionFilterRuleParams struct {
 	Name          string         `json:"name"`
 	Description   string         `json:"description"`
 	Pattern       string         `json:"pattern"`
+	RuleType      string         `json:"rule_type"`
 	Enabled       bool           `json:"enabled"`
 	ApplicationID sql.NullInt64  `json:"application_id"`
 	ID            int64          `json:"id"`
@@ -6410,6 +6447,7 @@ func (q *Queries) UpdateLogCollectionFilterRule(ctx context.Context, arg UpdateL
 		arg.Name,
 		arg.Description,
 		arg.Pattern,
+		arg.RuleType,
 		arg.Enabled,
 		arg.ApplicationID,
 		arg.ID,

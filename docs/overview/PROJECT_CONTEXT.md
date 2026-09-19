@@ -27,7 +27,7 @@
 | inspection | 巡检组（分类、挂载点模型）/ 巡检任务 / 执行快照 | INSPECTION_ARCHITECTURE.md |
 | monitor | 监控目标、Prometheus 集成与代理、告警（规则/路由/媒介）、主机列表 | MONITOR_PROMETHEUS_PROXY.md、ALERT_HISTORY_ARCHITECTURE.md、ALERT_NOTIFICATION_DISPATCH.md、ALERT_NOTIFICATION_CHAIN.md、ops/ALERT_MEDIA_SETUP_GUIDE.md |
 | baseline | 基线（组/分类/检查项）与扫描 | BASELINE_ARCHITECTURE.md |
-| scheduler | 进程内定时调度 | ops 说明以 INSPECTION_ARCHITECTURE.md 调度章节为准 |
+| scheduler | 通用定时任务（进程内 cron 派发 + worker 执行 handler） | SCHEDULER_ARCHITECTURE.md（任务编码↔handler 对照、"未迁移"任务的语义；巡检自己的调度见 INSPECTION_ARCHITECTURE.md） |
 | rbac / identity / audit | 菜单角色权限、用户、操作审计 | SYSTEM_MANAGEMENT_AUDIT.md |
 | k8s | Kubernetes 集成 | K8S_INTEGRATION_ARCHITECTURE.md |
 | logcollect | 日志采集（Filebeat 纳管/渲染/下发/体检/清理）与日志存储（ES 集群/索引模板/ILM/pipeline/检索） | LOG_COLLECTION_ARCHITECTURE.md |

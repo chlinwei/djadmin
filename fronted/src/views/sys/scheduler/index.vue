@@ -44,6 +44,16 @@
       </a-col>
     </a-row>
 
+    <!-- 这些任务看着是"启用/就绪"，其实永远不会执行（实现随 Django 后端移出）。
+         不提示的话，用户只会看到"最近结果：成功"（那是 Django 时代留下的），然后把它们当成在用。 -->
+    <a-alert
+      v-if="unsupportedTaskCount"
+      type="warning"
+      show-icon
+      class="unsupported-alert"
+      :message="`有 ${unsupportedTaskCount} 个定时任务的实现尚未迁移到 Go：定时调度会跳过它们、手动执行也会失败（列表里标注为「未迁移」，鼠标悬停看说明）。`"
+    />
+
     <a-card size="small" class="task-card">
       <a-table
         :columns="columns"
@@ -83,6 +93,14 @@
             </a-button>
             <span v-else>-</span>
           </template>
+          <template v-else-if="column.key === 'code'">
+            <span>{{ record.code }}</span>
+            <!-- 「看着启用的任务其实永远不会跑」不该靠猜：后端给了 supported/support_note，
+                 这里标出来 + tooltip 说清"定时调度会跳过、手动执行也失败"。 -->
+            <a-tooltip v-if="record.supported === false" :title="record.support_note">
+              <a-tag color="default" class="unsupported-tag">未迁移</a-tag>
+            </a-tooltip>
+          </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
               <a-tooltip title="编辑">
@@ -95,14 +113,16 @@
                   <FontAwesomeIcon :icon="['fas', 'eye']" />
                 </a-button>
               </a-tooltip>
-              <a-tooltip title="运行">
+              <!-- 没有 Go 实现的历史任务：置灰并说明原因。以前按钮可点，点完只弹一句
+                   "任务提交失败: 任务 handler 尚未迁移到 Go"，既不知道是谁的问题也不知道该怎么办。 -->
+              <a-tooltip :title="record.supported === false ? record.support_note : '运行'">
                 <a-button
                   size="small"
                   type="primary"
                   ghost
                   @click="runNow(record)"
                   :loading="runningTaskId === record.id"
-                  :disabled="record.is_running || runningTaskId === record.id"
+                  :disabled="record.is_running || runningTaskId === record.id || record.supported === false"
                 >
                   <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
                   <span>&nbsp;立即执行</span>
@@ -333,6 +353,9 @@ const router = useRouter()
 const currentTask = ref(null)
 const currentLogDetail = ref(null)
 const tasks = ref([])
+// 未迁移（没有 Go 实现）的任务数：>0 时页面顶部给一条警告。
+// 判据只有后端有（supported 字段来自 handler 注册表），前端不自己猜编码清单。
+const unsupportedTaskCount = computed(() => tasks.value.filter((task) => task.supported === false).length)
 const logs = ref([])
 const menuOptions = ref([])
 const logFilterVisible = ref(false)
@@ -937,6 +960,12 @@ useKeepAliveRefreshLifecycle(null, stopAllTaskPolling)
 }
 .task-card {
   margin-top: 12px;
+}
+.unsupported-alert {
+  margin-bottom: 12px;
+}
+.unsupported-tag {
+  margin-left: 6px;
 }
 .mb-3 {
   margin-bottom: 16px;

@@ -1,10 +1,8 @@
 package assets
 
 import (
+	"autoadmin/internal/shared/logmacro"
 	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -23,14 +21,24 @@ import (
 // 另带日志格式认证状态（迁移 000036，模型见 log_format_fingerprint.go 与架构文档 §4.8）：
 // FormatState 是"当前配置指纹 vs 认证时指纹"的比对结果，只读库即可得出，不需要碰主机。
 type ServiceTemplateLog struct {
-	LogDefinition          int64  `json:"log_definition"`
-	Name                   string `json:"name"`
-	PathPattern            string `json:"path_pattern"`
-	ResolvedPath           string `json:"resolved_path"`
-	DataStream             string `json:"data_stream"`
-	RetentionTier          *int64 `json:"retention_tier"`
-	CollectionEnabled      *bool  `json:"collection_enabled"`
-	CollectionFilterRuleID *int64 `json:"collection_filter_rule_id"`
+	LogDefinition int64  `json:"log_definition"`
+	Name          string `json:"name"`
+	PathPattern   string `json:"path_pattern"`
+	// ResolvedPath 是**尽力解析后的路径**：模板 macro_definitions 的默认值 → 服务 macro_values，
+	// 外加模板 app_home 作为 APP_HOME 默认值（与下发渲染同一套合并顺序，见 shared/logmacro）。
+	// 仍是"服务这一层能解析的部分"——实例 runtime_variables 只有到主机上才知道，
+	// 所以剩下的宏由 PendingMacros 显式列出来，界面标成"实例上展开"，不猜值。
+	ResolvedPath           string   `json:"resolved_path"`
+	PendingMacros          []string `json:"pending_macros"`
+	DataStream             string   `json:"data_stream"`
+	RetentionTier          *int64   `json:"retention_tier"`
+	CollectionEnabled      *bool    `json:"collection_enabled"`
+	CollectionFilterRuleID *int64   `json:"collection_filter_rule_id"`
+	// CollectionExcludeFilterRuleID 排除方向的覆盖（三态：NULL 继承模板 / 0 显式关闭 / >0 规则）。
+	CollectionExcludeFilterRuleID *int64 `json:"collection_exclude_filter_rule_id"`
+	// 模板级默认（来自日志定义本身）：界面用它显示"继承的是哪条"，渲染用它做兜底。
+	TemplateFilterIncludeRuleID *int64 `json:"template_filter_include_rule_id"`
+	TemplateFilterExcludeRuleID *int64 `json:"template_filter_exclude_rule_id"`
 	// TierCode 是这条日志**当前生效**的档位编码（覆盖档位 → 服务默认档位 → is_default → 'std' 的
 	// COALESCE 链，与 data_stream 的尾段一致）。页面据此区分"当前档位"与"改档位后留下的历史流"：
 	// 流的档位不在生效档位集合里，就说明它已停止写入、只是数据还没到期。
@@ -79,15 +87,26 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 	for _, row := range rows {
 		item := ServiceTemplateLog{
 			LogDefinition: row.ID, Name: row.Name, PathPattern: row.PathPattern,
-			RetentionTier:              intPtr(row.RetentionTierID),
-			CollectionFilterRuleID:     intPtr(row.CollectionFilterRuleID),
-			TierCode:                   row.TierCode,
-			ServiceCode:                row.ServiceCode,
-			TemplateProcessingRuleID:   intPtr(row.ProcessingRuleID),
-			TemplateProcessingRuleName: row.ProcessingRuleName,
-			CollectionEnabled:          row.OverrideCollectionEnabled,
+			RetentionTier:                 intPtr(row.RetentionTierID),
+			CollectionFilterRuleID:        intPtr(row.CollectionFilterRuleID),
+			CollectionExcludeFilterRuleID: intPtr(row.CollectionExcludeFilterRuleID),
+			TemplateFilterIncludeRuleID:   intPtr(row.FilterIncludeRuleID),
+			TemplateFilterExcludeRuleID:   intPtr(row.FilterExcludeRuleID),
+			TierCode:                      row.TierCode,
+			ServiceCode:                   row.ServiceCode,
+			TemplateProcessingRuleID:      intPtr(row.ProcessingRuleID),
+			TemplateProcessingRuleName:    row.ProcessingRuleName,
+			CollectionEnabled:             row.OverrideCollectionEnabled,
 		}
-		item.ResolvedPath = resolveServiceMacros(item.PathPattern, string(row.MacroValues))
+		// 与渲染同序：模板默认值（含 app_home 作 APP_HOME）→ 服务覆盖。未展开的留给实例变量，
+		// 由 PendingMacros 如实报出来（界面标注），而不是显示一个猜出来的路径。
+		item.ResolvedPath = logmacro.Resolve(
+			item.PathPattern,
+			logmacro.TemplateDefaults(string(row.MacroDefinitions)),
+			logmacro.InstanceValues("", row.AppHome),
+			logmacro.ParseValues(string(row.MacroValues)),
+		)
+		item.PendingMacros = logmacro.Pending(item.ResolvedPath)
 		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		// 格式认证状态：当前指纹现场算、与认证时存下的比（纯读库，不碰主机）。
 		item.FormatFingerprint = logFormatFingerprintOf(logFormatFingerprintInput{
@@ -112,23 +131,6 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 		items = append(items, item)
 	}
 	return items, nil
-}
-
-// resolveServiceMacros 用服务级宏替换路径里的 ${VAR}，未定义的保持原样以暴露数据缺口。
-func resolveServiceMacros(path, macroValuesRaw string) string {
-	trimmed := strings.TrimSpace(macroValuesRaw)
-	if trimmed == "" || trimmed == "{}" {
-		return path
-	}
-	decoded := map[string]any{}
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return path
-	}
-	result := path
-	for key, value := range decoded {
-		result = strings.ReplaceAll(result, "${"+key+"}", strings.TrimSpace(fmt.Sprint(value)))
-	}
-	return result
 }
 
 // ListServiceLogSettings 读回服务的日志覆盖行（只有采集开关/档位/过滤规则三项，
@@ -158,6 +160,10 @@ type ServiceLogOverrideInput struct {
 	LogDefinition     int64  `json:"log_definition_id"`
 	CollectionEnabled *bool  `json:"collection_enabled"`
 	RetentionTier     *int64 `json:"retention_tier"`
+	// 采集过滤的两个方向（三态：null 继承模板 / 0 显式关闭 / >0 指定规则）。
+	// 与采集开关、档位一样是"按行 upsert，不碰其他列"，所以内联改动不会影响别的日志。
+	CollectionFilterRule        *int64 `json:"collection_filter_rule"`
+	CollectionExcludeFilterRule *int64 `json:"collection_exclude_filter_rule"`
 }
 
 // UpsertServiceLogOverride 写回一条覆盖行（没有就插）。
@@ -170,10 +176,12 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 	now := time.Now().UTC()
 	return r.queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
 		CreateTime: now, UpdateTime: now,
-		CollectionEnabled: input.CollectionEnabled,
-		LogDefinitionID:   input.LogDefinition,
-		RetentionTierID:   nullableInt(input.RetentionTier),
-		ServiceID:         serviceID,
+		CollectionEnabled:             input.CollectionEnabled,
+		LogDefinitionID:               input.LogDefinition,
+		RetentionTierID:               nullableInt(input.RetentionTier),
+		ServiceID:                     serviceID,
+		CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
+		CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
 	})
 }
 

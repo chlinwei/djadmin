@@ -3,6 +3,8 @@ package rbac
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -113,5 +115,25 @@ func TestValidateParent(t *testing.T) {
 	self := int32(5)
 	if err := service.validateParent(context.Background(), 5, &self); err != ErrMenuSelfParent {
 		t.Fatalf("self parent = %v, want ErrMenuSelfParent", err)
+	}
+}
+
+// 回归（2026-09-19 现场）：字段类型不匹配时必须**说出是哪个字段**。
+//
+// 现场：编辑菜单时只要动了「显示顺序」（那时绑的是文本框，一改就是字符串），保存必失败；
+// 而错误信息一边是笼统的"请求参数错误"、另一边（服务端日志）只有一个 `<nil>`，
+// 谁都没法定位。绑定错误的原文里带着字段名，直接透给调用方。
+func TestMenuBindErrorNamesTheField(t *testing.T) {
+	var request menuRequest
+	err := json.Unmarshal([]byte(`{"name":"日志中心","order_num":"6"}`), &request)
+	if err == nil {
+		t.Fatal("字符串写进 int32 字段必须报错，否则这条用例失去意义")
+	}
+	message := menuBindError(err).Error()
+	if !strings.Contains(message, "order_num") {
+		t.Fatalf("错误信息里要指出字段名，得到 %q", message)
+	}
+	if !strings.Contains(message, "请求参数错误") {
+		t.Fatalf("保留原有的中文前缀，得到 %q", message)
 	}
 }

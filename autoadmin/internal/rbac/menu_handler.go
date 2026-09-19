@@ -25,6 +25,16 @@ type menuRequest struct {
 	IsExpanded *bool   `json:"is_expanded"`
 }
 
+// menuBindError 把 ShouldBindJSON 的失败原因带上（含**字段名**）。
+//
+// 只说"请求参数错误"时谁也定位不到：前端弹一个笼统提示、服务端日志只有一个 `<nil>`。
+// 2026-09-19 现场：菜单保存失败，真实原因只是「显示顺序」被当成字符串提交
+// （`json: cannot unmarshal string into Go struct field menuRequest.order_num of type int32`），
+// 而它必须是数字——这句原文比任何猜测都好用，所以直接透给调用方。
+func menuBindError(err error) error {
+	return apperror.New(apperror.CodeInvalidArgument, "请求参数错误："+err.Error())
+}
+
 func (h *Handler) MenuTree(c *gin.Context) {
 	tree, err := h.service.MenuTree(c.Request.Context())
 	if err != nil {
@@ -43,7 +53,11 @@ func (h *Handler) GetMenu(c *gin.Context) {
 }
 func (h *Handler) CreateMenu(c *gin.Context) {
 	var r menuRequest
-	if c.ShouldBindJSON(&r) != nil || strings.TrimSpace(r.Name) == "" {
+	if err := c.ShouldBindJSON(&r); err != nil {
+		response.Error(c, menuBindError(err))
+		return
+	}
+	if strings.TrimSpace(r.Name) == "" {
 		response.Error(c, ErrMenuNameRequired)
 		return
 	}
@@ -69,8 +83,11 @@ func (h *Handler) UpdateMenu(c *gin.Context) {
 		return
 	}
 	var r menuRequest
-	if c.ShouldBindJSON(&r) != nil {
-		response.Error(c, apperror.ErrInvalidRequest)
+	if err := c.ShouldBindJSON(&r); err != nil {
+		// 带出**是哪个字段**：只说"请求参数错误"时，前端与服务端都不知道该改哪里
+		// （2026-09-19 现场：菜单保存失败，服务端日志只有一个 `<nil>`，前端只弹出一个 `400`，
+		// 真正的原因是「显示顺序」被当成字符串提交，而它必须是数字）。
+		response.Error(c, menuBindError(err))
 		return
 	}
 	expanded := current.IsExpanded

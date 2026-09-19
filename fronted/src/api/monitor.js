@@ -202,7 +202,8 @@ export function searchElasticsearchLogFacetStats(id, params) {
 // 存储水位总览：data stream 运行态（大小/docs/rollover/ILM）+ 节点磁盘 + 服务树维度数据
 // 存储水位总览。params 支持 service_code：只取该逻辑服务的流，并且后端会直接把 ES 查询
 // 收窄到该服务的索引（不是取全量再前端过滤），供「日志中心 → 本服务水位」用。
-// 不传 service_code 时与以前完全一致（全量视图，存储水位页在用）。
+// 不传 service_code 时是**全量视图**：「日志中心 → 存储水位」tab 未选中服务（或选的是项目/
+// 业务系统/环境）时用，前端再按树的层级过滤。
 export function getLogStorageOverview(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-storage-overview/`, params)
 }
@@ -288,6 +289,12 @@ export function getServiceLogConfigState(applicationServiceId) {
   return requestUtil.get(prefix + 'log-targets/service-config-state/', { application_service_id: applicationServiceId })
 }
 
+// 服务级「采集链路」诊断：查不到日志时按层回答断在哪（agent 在线 / Filebeat 进程 / 配置下发 /
+// 解析规则是否已发布 / 最近有没有在写）。判定与链路体检同源，只是按服务收窄。
+export function getServiceCollectionChain(applicationServiceId) {
+  return requestUtil.get(prefix + 'log-targets/service-collection-chain/', { application_service_id: applicationServiceId })
+}
+
 // 服务级下发：对承载该服务的全部**已纳管**主机重下发（后端逐台全量——agent 侧 apply 是
 // "交付即该主机 inputs.d 全量，未交付的 .yml 删除"，所以只能整台来）。返回批量作业，进度另查。
 export function applyLogTargetsForService(applicationServiceId) {
@@ -359,7 +366,14 @@ export function batchStopMonitorTargets(ids) {
 }
 
 // 清理逻辑服务的数据流数据：mode=all|hours|days，amount 为小时/天数（all 可省略）。
+// tier 可选：把范围从"这个服务的所有档位"收窄到某一条流（回收换档位后留下的历史流）。
 export function cleanupLogDataStream(payload) {
   return requestUtil.post(prefix + 'log-datastreams/cleanup/', payload)
+}
+
+// 按**数据流名**清理（未识别流 / 档位段不在档位表里的历史流的兜底路径）。
+// 服务端只收一条具体的数据流名：通配符、后备索引、前缀之外的名字一律拒绝。
+export function cleanupLogDataStreamByStream(payload) {
+  return requestUtil.post(prefix + 'log-datastreams/cleanup-stream/', payload)
 }
 

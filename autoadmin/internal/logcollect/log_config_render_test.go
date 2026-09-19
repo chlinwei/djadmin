@@ -1,6 +1,9 @@
 package logcollect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // 测试里的输出段标识（地址/账号/TLS）。真实值由 filebeatOutputIdentity 从默认集群算出。
 const testOutputIdentity = "url=http://127.0.0.1:9200\nusername=admin\nverify_tls=false"
@@ -238,5 +241,54 @@ func TestRenderSkipsWhenNoProcessingRule(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("warnings should mention missing processing rule, got %v", rendered.Warnings)
+	}
+}
+
+// 首行正则必须是 Filebeat 能编译的（Go RE2）：编译不过的片段下发下去，主机上的 Filebeat
+// 会因这一行起不来，**整台主机的日志一起停**——比"少采一个文件"严重，所以按本文件既有的
+// "跳过并告警"处理，而不是把坏片段照发。
+//
+// 来源（2026-09-19）：规则 springboot-tomcat-exception 的首行正则写成 Java/JS 的
+// `[A-Za-z\u4e00-\u9fa5]`，RE2 编译不过；当时的下发路径不做检查，认证时才报错。
+func TestRenderHostLogConfigSkipsUncompilableMultilinePattern(t *testing.T) {
+	instances := []hostInstanceInput{
+		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "192.168.201.211"},
+		{Service: "nginx", Instance: "nginx1", HostIP: "192.168.201.212"},
+	}
+	entries := []hostLogRenderInput{
+		{
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
+			Pipeline: "springboot-tomcat-exception", LogName: "catalina.out",
+			ResolvedPath: "/data/tomcat1/logs/catalina.out",
+			Multiline:    true, StartPattern: `^(\d{4}-\d{2}-\d{2}|\d{2}-[A-Za-z\u4e00-\u9fa5]{3,4}-\d{4})`,
+		},
+		{
+			// 同一个 host 上的另一条日志：坏规则只能影响它自己，不能连坐。
+			Prefix: "logs", Application: "tib", Service: "nginx",
+			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
+			Pipeline: "nginx-access", LogName: "access.log",
+			ResolvedPath: "/var/log/nginx/access.log",
+		},
+	}
+
+	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
+	var paths []string
+	for _, fragment := range rendered.Fragments {
+		paths = append(paths, fragment.Path)
+	}
+	for _, path := range paths {
+		if contains(path, "tomcat-svc") {
+			t.Fatalf("首行正则编译不过的片段不应下发：%v", paths)
+		}
+	}
+	if !contains(strings.Join(paths, "\n"), "tib__nginx__access.log.yml") {
+		t.Fatalf("正常日志仍应下发：%v", paths)
+	}
+	warnings := strings.Join(rendered.Warnings, "\n")
+	for _, want := range []string{"编译不过", "catalina.out", `\u4e00 → \x{4e00}`} {
+		if !contains(warnings, want) {
+			t.Errorf("warnings 缺少 %q：%s", want, warnings)
+		}
 	}
 }

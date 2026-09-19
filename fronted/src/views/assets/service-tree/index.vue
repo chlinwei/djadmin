@@ -10,64 +10,57 @@
         @select="serviceScope = $event"
       />
       <main class="service-tree-content">
-        <a-tabs v-model:active-key="contentTab">
-          <a-tab-pane key="detail" tab="资源详情">
-            <div class="service-tree-detail-toolbar">
-              <a-tooltip v-if="serviceScope.nodeType === 'all' || serviceScope.nodeType === 'project'" title="新增业务系统">
-                <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openBusinessSystem()">
-                  <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-                  <span>&nbsp;新增业务系统</span>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip v-if="canCreateService" title="新增逻辑服务">
-                <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openApplicationService()">
-                  <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
-                  <span>&nbsp;新增逻辑服务</span>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip title="刷新">
-                <a-button type="primary" ghost :loading="refreshing" @click="refreshServiceTree">
-                  <ReloadOutlined />
-                  <span>刷新</span>
-                </a-button>
-              </a-tooltip>
+        <div class="service-tree-detail-toolbar">
+          <a-tooltip v-if="serviceScope.nodeType === 'all' || serviceScope.nodeType === 'project'" title="新增业务系统">
+            <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openBusinessSystem()">
+              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+              <span>&nbsp;新增业务系统</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip v-if="canCreateService" title="新增逻辑服务">
+            <a-button v-permission="'assets:service-tree:manage'" type="primary" @click="openApplicationService()">
+              <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
+              <span>&nbsp;新增逻辑服务</span>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="刷新">
+            <a-button type="primary" ghost :loading="refreshing" @click="refreshServiceTree">
+              <ReloadOutlined />
+              <span>刷新</span>
+            </a-button>
+          </a-tooltip>
+        </div>
+        <section v-show="serviceScope.nodeType === 'all'" class="service-tree-right-stats">
+          <div class="service-tree-right-stats-header">
+            <span>资源占比</span>
+          </div>
+          <div class="service-tree-right-stats-subtitle">按 CPU / 内存 资源汇总</div>
+          <div class="service-tree-right-stats-grid">
+            <div class="service-tree-right-chart-card">
+              <div class="service-tree-right-chart-title">
+                <span>CPU 占比</span>
+                <strong>总 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
+              </div>
+              <div ref="hostPieRef" class="service-tree-right-chart"></div>
             </div>
-            <section v-show="serviceScope.nodeType === 'all'" class="service-tree-right-stats">
-              <div class="service-tree-right-stats-header">
-                <span>资源占比</span>
+            <div class="service-tree-right-chart-card">
+              <div class="service-tree-right-chart-title">
+                <span>内存占比</span>
+                <strong>总内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
               </div>
-              <div class="service-tree-right-stats-subtitle">按 CPU / 内存 资源汇总</div>
-              <div class="service-tree-right-stats-grid">
-                <div class="service-tree-right-chart-card">
-                  <div class="service-tree-right-chart-title">
-                    <span>CPU 占比</span>
-                    <strong>总 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
-                  </div>
-                  <div ref="hostPieRef" class="service-tree-right-chart"></div>
-                </div>
-                <div class="service-tree-right-chart-card">
-                  <div class="service-tree-right-chart-title">
-                    <span>内存占比</span>
-                    <strong>总内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
-                  </div>
-                  <div ref="deploymentPieRef" class="service-tree-right-chart"></div>
-                </div>
-              </div>
-            </section>
-            <ServiceTreeNodeContent
-              ref="nodeContentRef"
-              :scope="serviceScope"
-              @navigate="serviceScope = $event"
-              @edit-business-system="openBusinessSystem"
-              @delete-business-system="confirmDeleteBusinessSystem"
-              @edit-service="openApplicationService"
-              @delete-service="confirmDeleteService"
-            />
-          </a-tab-pane>
-          <a-tab-pane key="logs" tab="日志查询" force-render>
-            <LogQueryPanel :scope="serviceScope" />
-          </a-tab-pane>
-        </a-tabs>
+              <div ref="deploymentPieRef" class="service-tree-right-chart"></div>
+            </div>
+          </div>
+        </section>
+        <ServiceTreeNodeContent
+          ref="nodeContentRef"
+          :scope="serviceScope"
+          @navigate="serviceScope = $event"
+          @edit-business-system="openBusinessSystem"
+          @delete-business-system="confirmDeleteBusinessSystem"
+          @edit-service="openApplicationService"
+          @delete-service="confirmDeleteService"
+        />
       </main>
     </div>
 
@@ -98,14 +91,12 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import ServiceTree from '../application/components/ServiceTree.vue'
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
-import LogQueryPanel from './LogQueryPanel.vue'
 import BusinessSystemDialog from '../application/components/BusinessSystemDialog.vue'
 import ApplicationServiceDialog from '../application/components/ApplicationServiceDialog.vue'
 
 const serviceScope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
 const serviceTreeRef = ref(null)
 const nodeContentRef = ref(null)
-const contentTab = ref('detail')
 const refreshing = ref(false)
 const businessSystemDialogOpen = ref(false)
 const selectedBusinessSystemId = ref(null)

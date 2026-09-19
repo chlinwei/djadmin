@@ -649,10 +649,12 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(n
 
 -- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
-  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id)
+  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id,
+   filter_include_rule_id,filter_exclude_rule_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(path_pattern),
         sqlc.arg(deployment_template_id),sqlc.arg(extra_fields),
-        sqlc.narg(processing_rule_id));
+        sqlc.narg(processing_rule_id),
+        sqlc.narg(filter_include_rule_id),sqlc.narg(filter_exclude_rule_id));
 
 -- 模板保存按 id 原地更新日志定义（改名/改路径/换规则都保留同一行 → 服务级覆盖行不会失效）。
 -- 带 deployment_template_id 条件：请求体混入其它模板的定义 id 时不会误改（影响 0 行）。
@@ -660,7 +662,10 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(n
 UPDATE assets_application_log_definition
 SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),
     path_pattern=sqlc.arg(path_pattern),extra_fields=sqlc.arg(extra_fields),
-    processing_rule_id=sqlc.narg(processing_rule_id)
+    processing_rule_id=sqlc.narg(processing_rule_id),
+    -- 采集过滤的模板级默认值（NULL = 该方向不过滤；服务级可覆盖/关闭）
+    filter_include_rule_id=sqlc.narg(filter_include_rule_id),
+    filter_exclude_rule_id=sqlc.narg(filter_exclude_rule_id)
 WHERE id=sqlc.arg(id) AND deployment_template_id=sqlc.arg(deployment_template_id);
 
 -- 模板保存时只删"本次未提交"的日志定义（不再整表删重建）。
@@ -705,7 +710,8 @@ SELECT id,create_time,update_time,remark,name,path,file_format,required
 FROM assets_application_config_file WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY id;
 
 -- name: ListTemplateLogDefinitions :many
-SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id
+SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id,
+       filter_include_rule_id,filter_exclude_rule_id
 FROM assets_application_log_definition WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY id;
 
 -- name: ListTemplateControlActions :many
@@ -882,10 +888,11 @@ DELETE FROM assets_application_service_log_setting WHERE service_id=sqlc.arg(ser
 -- 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
 -- name: CreateServiceLogSetting :exec
 INSERT INTO assets_application_service_log_setting
-  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
+   collection_filter_rule_id,collection_exclude_filter_rule_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.narg(collection_enabled),sqlc.arg(log_definition_id),
         sqlc.narg(retention_tier_id),sqlc.arg(service_id),
-        sqlc.narg(collection_filter_rule_id));
+        sqlc.narg(collection_filter_rule_id),sqlc.narg(collection_exclude_filter_rule_id));
 
 -- name: CreateApplicationDeployment :one
 INSERT INTO assets_application_deployment
@@ -922,14 +929,22 @@ SELECT ld.id, ld.name, ld.path_pattern,
        COALESCE(rule.update_time, ld.create_time) AS processing_rule_update_time,
        s.application_version_id,
        ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
-       ls.collection_filter_rule_id,
+       -- 采集过滤：模板级是默认值、服务级是覆盖（三态 NULL/0/>0）。四个 id 都给出去，
+       -- 界面才能显示"继承了模板的哪条 / 自己覆盖成了哪条 / 显式关闭"，渲染也据此解析最终生效的正则。
+       ld.filter_include_rule_id, ld.filter_exclude_rule_id,
+       ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
        ls.format_verified_at, ls.format_verified_fingerprint,
        ls.format_verified_source, ls.format_verified_by,
        s.code AS service_code, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
        COALESCE(s.macro_values, '{}') AS macro_values,
+       -- 模板级宏默认值 + app_home（APP_HOME 的默认值）：界面要显示"解析后路径"，
+       -- 就必须用与渲染同一套顺序（模板默认 → 服务覆盖 → 实例变量），见 internal/shared/logmacro。
+       COALESCE(t.macro_definitions, '[]') AS macro_definitions,
+       COALESCE(t.app_home, '') AS app_home,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
 FROM assets_application_log_definition ld
 JOIN assets_application_service s ON s.id = sqlc.arg(service_id)
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 LEFT JOIN assets_application_service_log_setting ls
   ON ls.log_definition_id = ld.id AND ls.service_id = s.id
 LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
@@ -1004,8 +1019,12 @@ FROM assets_application_service_log_setting WHERE service_id=sqlc.arg(service_id
 -- name: UpsertServiceLogOverride :exec
 -- conflict: service_id, log_definition_id
 INSERT INTO assets_application_service_log_setting
-  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
+   collection_filter_rule_id,collection_exclude_filter_rule_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.narg(collection_enabled),sqlc.arg(log_definition_id),
-        sqlc.narg(retention_tier_id),sqlc.arg(service_id),NULL)
+        sqlc.narg(retention_tier_id),sqlc.arg(service_id),
+        sqlc.narg(collection_filter_rule_id),sqlc.narg(collection_exclude_filter_rule_id))
 ON CONFLICT (service_id, log_definition_id) DO UPDATE SET update_time=EXCLUDED.update_time,collection_enabled=EXCLUDED.collection_enabled,
-  retention_tier_id=EXCLUDED.retention_tier_id;
+  retention_tier_id=EXCLUDED.retention_tier_id,
+  collection_filter_rule_id=EXCLUDED.collection_filter_rule_id,
+  collection_exclude_filter_rule_id=EXCLUDED.collection_exclude_filter_rule_id;

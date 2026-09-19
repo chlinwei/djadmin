@@ -206,7 +206,12 @@ CREATE TABLE `assets_application_config_file` (
 CREATE TABLE `assets_application_log_definition` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
   `name` varchar(128) NOT NULL, `path_pattern` varchar(512) NOT NULL,
-  `deployment_template_id` bigint NOT NULL, `extra_fields` json NOT NULL, `processing_rule_id` bigint DEFAULT NULL, PRIMARY KEY (`id`),
+  `deployment_template_id` bigint NOT NULL, `extra_fields` json NOT NULL, `processing_rule_id` bigint DEFAULT NULL,
+  -- 模板级采集过滤默认值（2026-09-19）：两条引用各自独立，NULL = 该方向不用过滤。
+  -- 服务级可覆盖/关闭（见 assets_application_service_log_setting 的两列），最终由渲染决定
+  -- 是否往 Filebeat 的 input 里写 include_lines / exclude_lines。规则方向由
+  -- monitor_log_collection_filter_rule.rule_type 声明，落槽时校验一致。
+  `filter_include_rule_id` bigint DEFAULT NULL, `filter_exclude_rule_id` bigint DEFAULT NULL, PRIMARY KEY (`id`),
   UNIQUE KEY `unique_template_log_name` (`deployment_template_id`,`name`),
   CONSTRAINT `assets_application_log_definition_template_fk` FOREIGN KEY (`deployment_template_id`) REFERENCES `assets_application_deployment_template` (`id`)
 );
@@ -265,7 +270,15 @@ CREATE TABLE `assets_application_service_deployment` (
 CREATE TABLE `assets_application_service_log_setting` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
   `collection_enabled` BOOLEAN DEFAULT NULL, `log_definition_id` bigint NOT NULL, `retention_tier_id` bigint DEFAULT NULL,
-  `service_id` bigint NOT NULL, `collection_filter_rule_id` bigint DEFAULT NULL,
+  `service_id` bigint NOT NULL,
+  -- 采集过滤的服务级覆盖（2026-09-19）：两列都是**三态** ——
+  -- NULL = 继承模板的对应方向；0 = 显式关闭该方向（模板配了也不过滤）；>0 = 指定规则。
+  -- 分成两列是因为一条日志可以同时有白名单与黑名单（Filebeat 上 include_lines 先、exclude_lines 后）。
+  -- **这两列不能挂外键**：0 是有效取值，挂上外键就会被当成"指向 id=0 的规则"，保存即报
+  -- 「关联资产不存在」（真库上 include 列的 Django 时代外键已由迁移 000040 摘掉；规则被删/停用
+  -- 由渲染侧降级成"该方向不过滤 + 下发告警"）。守卫见
+  -- internal/assets/log_filter_rule_fk_guard_test.go。
+  `collection_filter_rule_id` bigint DEFAULT NULL, `collection_exclude_filter_rule_id` bigint DEFAULT NULL,
   `format_verified_at` datetime(6) DEFAULT NULL, `format_verified_fingerprint` varchar(64) NOT NULL DEFAULT '',
   `format_verified_source` varchar(16) NOT NULL DEFAULT '', `format_verified_by` varchar(150) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),

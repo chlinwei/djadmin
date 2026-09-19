@@ -114,6 +114,11 @@ CREATE TABLE `monitor_log_collection_filter_rule` (
   `name` varchar(128) NOT NULL,
   `description` varchar(500) NOT NULL,
   `pattern` longtext NOT NULL,
+  -- 规则方向：include（只保留匹配的记录）或 exclude（丢掉匹配的记录）。
+  -- 方向必须显式声明、不能靠"用在哪个槽位"推：白名单被放进 exclude 槽会**反转语义**
+  -- （只采噪声、丢掉正常日志），属于丢数据级别的误用，所以类型与槽位要双向校验。
+  -- DEFAULT 'include' 只为存量回填（2026-09-19 之前建的规则都是白名单语义），应用总是显式写。
+  `rule_type` varchar(16) NOT NULL DEFAULT 'include',
   `enabled` BOOLEAN NOT NULL,
   `application_id` bigint DEFAULT NULL,
   PRIMARY KEY (`id`),

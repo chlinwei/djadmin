@@ -35,6 +35,12 @@ type Task struct {
 	CreateTime              string  `json:"create_time"`
 	UpdateTime              string  `json:"update_time"`
 	Logs                    []any   `json:"logs"`
+	// Supported 该任务的 handler 是否已实现（见 worker.go 的 supportedTaskCodes）。
+	// false = 随 Django 后端一起移出的历史任务：定时调度会**跳过**它、手动执行也必然失败。
+	// 页面据此把「立即执行」置灰并说明原因——不让人点一下再看报错（2026-09-19 现场）。
+	Supported bool `json:"supported"`
+	// SupportNote 不可执行时给用户看的一句说明（为什么、能执行什么）；可执行时为空串。
+	SupportNote string `json:"support_note"`
 }
 
 type TaskInput struct {
@@ -119,7 +125,9 @@ func (s *Service) RunNow(ctx context.Context, id int64) (Task, error) {
 		return Task{}, ErrTaskRunning
 	}
 	if !IsSupportedTaskCode(task.Code) {
-		return Task{}, ErrHandlerUnsupported
+		// 具体到任务名与编码，并给出"已实现的任务有哪些"：通用文案（ErrHandlerUnsupported）
+		// 只说"未迁移"，用户既不知道是谁的问题、也不知道要不要等它。
+		return Task{}, apperror.New(apperror.CodeInvalidArgument, UnsupportedTaskNote(task.Name, task.Code))
 	}
 	if s.publisher == nil {
 		return Task{}, ErrWorkerUnavailable
@@ -192,8 +200,20 @@ func timePtr(value sql.NullTime) *string {
 	return &text
 }
 func mapTask(row db.GetScheduledTaskRow) Task {
-	return Task{ID: row.ID, Name: row.Name, Code: row.Code, Description: stringPtr(row.Description), Menu: intPtr(row.MenuID), MenuName: stringPtr(row.MenuName), MenuPath: stringPtr(row.MenuPath), Enabled: row.Enabled, IsRunning: row.IsRunning, CronExpression: stringPtr(row.CronExpression), EffectiveCronExpression: row.CronExpression.String, IntervalMinutes: intPtr(row.IntervalMinutes), LastRunTime: timePtr(row.LastRunTime), NextRunTime: timePtr(row.NextRunTime), LastStatus: stringPtr(row.LastStatus), LastMessage: stringPtr(row.LastMessage), CreateTime: row.CreateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), UpdateTime: row.UpdateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), Logs: []any{}}
+	task := Task{ID: row.ID, Name: row.Name, Code: row.Code, Description: stringPtr(row.Description), Menu: intPtr(row.MenuID), MenuName: stringPtr(row.MenuName), MenuPath: stringPtr(row.MenuPath), Enabled: row.Enabled, IsRunning: row.IsRunning, CronExpression: stringPtr(row.CronExpression), EffectiveCronExpression: row.CronExpression.String, IntervalMinutes: intPtr(row.IntervalMinutes), LastRunTime: timePtr(row.LastRunTime), NextRunTime: timePtr(row.NextRunTime), LastStatus: stringPtr(row.LastStatus), LastMessage: stringPtr(row.LastMessage), CreateTime: row.CreateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), UpdateTime: row.UpdateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), Logs: []any{}}
+	withTaskSupport(&task)
+	return task
+}
+
+// withTaskSupport 给 DTO 补"这个任务的实现到底有没有"——列表与详情共用，避免两处口径不一致。
+func withTaskSupport(task *Task) {
+	task.Supported = IsSupportedTaskCode(task.Code)
+	if !task.Supported {
+		task.SupportNote = UnsupportedTaskNote(task.Name, task.Code)
+	}
 }
 func mapListTask(row db.ListScheduledTasksRow) Task {
-	return Task{ID: row.ID, Name: row.Name, Code: row.Code, Description: stringPtr(row.Description), Menu: intPtr(row.MenuID), MenuName: stringPtr(row.MenuName), MenuPath: stringPtr(row.MenuPath), Enabled: row.Enabled, IsRunning: row.IsRunning, CronExpression: stringPtr(row.CronExpression), EffectiveCronExpression: row.CronExpression.String, IntervalMinutes: intPtr(row.IntervalMinutes), LastRunTime: timePtr(row.LastRunTime), NextRunTime: timePtr(row.NextRunTime), LastStatus: stringPtr(row.LastStatus), LastMessage: stringPtr(row.LastMessage), CreateTime: row.CreateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), UpdateTime: row.UpdateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), Logs: []any{}}
+	task := Task{ID: row.ID, Name: row.Name, Code: row.Code, Description: stringPtr(row.Description), Menu: intPtr(row.MenuID), MenuName: stringPtr(row.MenuName), MenuPath: stringPtr(row.MenuPath), Enabled: row.Enabled, IsRunning: row.IsRunning, CronExpression: stringPtr(row.CronExpression), EffectiveCronExpression: row.CronExpression.String, IntervalMinutes: intPtr(row.IntervalMinutes), LastRunTime: timePtr(row.LastRunTime), NextRunTime: timePtr(row.NextRunTime), LastStatus: stringPtr(row.LastStatus), LastMessage: stringPtr(row.LastMessage), CreateTime: row.CreateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), UpdateTime: row.UpdateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), Logs: []any{}}
+	withTaskSupport(&task)
+	return task
 }

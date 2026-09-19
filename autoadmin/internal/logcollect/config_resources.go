@@ -357,8 +357,17 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 		}
 		if enabled, _ := input["multiline_enabled"].(bool); enabled {
 			// Filebeat 下只需首行正则；续行由 negate/match=after 隐式表达。
+			// 但**两个字段都要按 RE2 编译一遍**：首行正则是主机上真正会跑的（Filebeat 也是 RE2），
+			// 续行正则平台不消费，却是规则表里会长期显示的字段，存一个编译不过的值同样是坑。
+			// 在保存时挡住，别等到"认证报错"或"Filebeat 起不来"才发现（见 regex_pattern.go）。
 			if strings.TrimSpace(stringValue(input["start_pattern"])) == "" {
 				return "start_pattern is required when multiline_enabled"
+			}
+			if problem := validateRulePattern("首行正则", stringValue(input["start_pattern"])); problem != "" {
+				return problem
+			}
+			if problem := validateRulePattern("续行正则", stringValue(input["continuation_pattern"])); problem != "" {
+				return problem
 			}
 		}
 	}
@@ -366,25 +375,53 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 		if name, ok := input["name"].(string); ok && !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`).MatchString(name) {
 			return "name contains unsupported characters"
 		}
+		// 方向必须是两个取值之一：靠"用在哪个槽位"推方向，会让白名单落进 exclude 槽时反转语义
+		// （只采噪声、丢掉正常日志），所以类型是必填的显式声明。
+		if ruleType, ok := input["rule_type"].(string); ok {
+			ruleType = strings.TrimSpace(ruleType)
+			if ruleType != logFilterRuleInclude && ruleType != logFilterRuleExclude {
+				return "rule_type must be include or exclude"
+			}
+		}
 		if pattern, ok := input["pattern"].(string); ok {
 			if strings.ContainsAny(pattern, "\r\n") {
 				return "pattern cannot contain newlines"
 			}
-			if _, err := regexp.Compile(pattern); err != nil {
-				return "invalid pattern: " + err.Error()
+			// 空正则是最危险的边界：include 里的空匹配可能变成"全留"，exclude 里可能"全丢"
+			// （Filebeat 用的是 RE2 的部分匹配语义，空模式匹配一切）。宁可不给存。
+			if strings.TrimSpace(pattern) == "" {
+				return "pattern 不能为空：include 用空模式会放行全部、exclude 用空模式会丢弃全部"
+			}
+			// 与首行正则同一套 RE2 判定与"照着改"提示（Filebeat 编译的是同一个引擎，
+			// 编译不过会让 Filebeat 起不来，见 regex_pattern.go）。
+			if problem := validateRulePattern("过滤正则", pattern); problem != "" {
+				return problem
 			}
 		}
 	}
 	return ""
 }
 
+// 采集过滤规则的方向（与 monitor_log_collection_filter_rule.rule_type 取值一致）。
+const (
+	logFilterRuleInclude = "include"
+	logFilterRuleExclude = "exclude"
+)
+
 // missingPipelineOutputs 静态判断 pipeline 会产出哪些必备字段，返回**缺失**的那些。
 //
 // 这是"保存时的粗筛"，不是严格判定：它只认
 //   - fingerprint / set / copy / rename 的 `target_field` / `field` 命中字段名；
-//   - dissect / grok 的 `pattern` / `patterns` 文本里出现 `字段名` 或 `<字段名>`（命名捕获）。
+//   - dissect / grok 的 `pattern` / `patterns` 文本里出现 `字段名` 或 `<字段名>`（命名捕获）；
+//   - script 的源码里**赋值**给 `ctx.<字段名>` / `ctx['<字段名>']`（只读不算）。
 // 判不了条件分支，也判不了运行时数据 —— 真正的强制在写入时由索引模板挂的
 // `<prefix>-mapping-guard` 完成（见 log_management.go 的 buildMappingGuardPipelineBody）。
+//
+// script 这一条是 2026-09-19 补的（现场：Elasticsearch 服务端 JSON 日志规则）：ES 的 JSON 日志
+// 键里带点（`log.level` / `service.name` / `elasticsearch.node.name`），而 ingest 的字段参数把点
+// 当路径分隔符，ES 8.13 的 json 处理器又没有 `expand_dots`，所以"取出 log_level"只能用 painless
+// 读字面键。当时这条粗筛不认 script，导致一个能跑的规则**发布不出去**——粗筛宁可漏判
+//（漏了还有 guard 兜），也绝不能误判把合法规则拦在门外。
 func missingPipelineOutputs(raw any) []string {
 	body, ok := raw.(map[string]any)
 	if !ok {
@@ -431,6 +468,27 @@ func pipelineWritesField(body map[string]any, field string) bool {
 					return true
 				}
 			}
+		}
+		// script：painless 里"产出字段"就是赋值（`ctx.log_level = ...`）。只读的不算，
+		// 否则 `if (ctx.log_level != null)` 这种判断会被当成产出（判反了会把坏规则放进来）。
+		if config, _ := processor["script"].(map[string]any); config != nil {
+			if source, ok := config["source"].(string); ok && scriptAssignsField(source, field) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scriptAssignsField 判断 painless 源码里是否给 `ctx.<field>` 赋值（支持点号与方括号两种写法）。
+func scriptAssignsField(source, field string) bool {
+	quoted := regexp.QuoteMeta(field)
+	for _, pattern := range []string{
+		`ctx\s*\.\s*` + quoted + `\s*=(?:[^=]|$)`,
+		`ctx\s*\[\s*['"]` + quoted + `['"]\s*\]\s*=(?:[^=]|$)`,
+	} {
+		if regexp.MustCompile(pattern).MatchString(source) {
+			return true
 		}
 	}
 	return false

@@ -170,6 +170,73 @@ func (repository *Repository) CleanupOperationAudits(ctx context.Context, before
 	return result.RowsAffected()
 }
 
+// ---- 四类保留期清理（2026-09-19：从 Django 时代的历史任务迁到 Go）----
+//
+// 都是"删早于 cutoff 的行"：cutoff 由 handler 按 sys_config 的保留天数算好传进来（时间一律由应用层给，
+// 与巡检清理、审计清理同一口径），仓储层只负责跑语句并回影响行数——影响行数会写进任务执行日志，
+// 是"这次到底清了多少"的唯一证据。
+
+func (repository *Repository) DeleteWebSSHSessionLogsBefore(ctx context.Context, before time.Time) (int64, error) {
+	result, err := repository.queries.DeleteWebSSHSessionLogsBefore(ctx, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteAutomationExecutionLogsBefore 清理自动化执行记录：**先子后父**（外键无级联），
+// 顺序错了会直接撞外键。返回 (主机明细, 作业字节块, 作业行) 三个影响行数。
+func (repository *Repository) DeleteAutomationExecutionLogsBefore(ctx context.Context, before time.Time) (int64, int64, int64, error) {
+	// end_time / resolved_at 是可空列，sqlc 把参数推成 sql.NullTime（"早于 cutoff"的 cutoff 本身非空）。
+	cutoff := sql.NullTime{Time: before, Valid: true}
+	hostLogs, err := repository.queries.DeleteAutomationExecutionHostLogsBefore(ctx, cutoff)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	hostLogRows, _ := hostLogs.RowsAffected()
+	chunkLogs, err := repository.queries.DeleteAutomationExecutionJobLogsBefore(ctx, cutoff)
+	if err != nil {
+		return hostLogRows, 0, 0, err
+	}
+	chunkLogRows, _ := chunkLogs.RowsAffected()
+	jobs, err := repository.queries.DeleteAutomationExecutionJobsBefore(ctx, cutoff)
+	if err != nil {
+		return hostLogRows, chunkLogRows, 0, err
+	}
+	jobRows, _ := jobs.RowsAffected()
+	return hostLogRows, chunkLogRows, jobRows, nil
+}
+
+func (repository *Repository) DeleteMonitorInstallHistoriesBefore(ctx context.Context, before time.Time) (int64, error) {
+	result, err := repository.queries.DeleteMonitorInstallHistoriesBefore(ctx, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// DeleteResolvedAlertHistoriesBefore 清理已恢复的历史告警：**先投递记录、再通知事件、最后告警行**
+// （外键无级联，顺序错了会撞外键）。返回 (投递记录, 通知事件, 告警行) 三个影响行数。
+func (repository *Repository) DeleteResolvedAlertHistoriesBefore(ctx context.Context, before time.Time) (int64, int64, int64, error) {
+	cutoff := sql.NullTime{Time: before, Valid: true}
+	deliveries, err := repository.queries.DeleteAlertNotificationDeliveriesForHistoriesBefore(ctx, cutoff)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	deliveryRows, _ := deliveries.RowsAffected()
+	events, err := repository.queries.DeleteAlertNotificationEventsForHistoriesBefore(ctx, cutoff)
+	if err != nil {
+		return deliveryRows, 0, 0, err
+	}
+	eventRows, _ := events.RowsAffected()
+	histories, err := repository.queries.DeleteResolvedAlertHistoriesBefore(ctx, cutoff)
+	if err != nil {
+		return deliveryRows, eventRows, 0, err
+	}
+	historyRows, _ := histories.RowsAffected()
+	return deliveryRows, eventRows, historyRows, nil
+}
+
 func logParams(filter LogFilter) db.CountScheduledTaskLogsParams {
 	params := db.CountScheduledTaskLogsParams{}
 	if filter.TaskID != nil {

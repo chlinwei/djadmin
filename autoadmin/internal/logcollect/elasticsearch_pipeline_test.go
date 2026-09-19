@@ -69,14 +69,16 @@ func TestMissingPipelineOutputs(t *testing.T) {
 }
 
 // 字段校验按传入的 mapping 字段集，而不是硬编码。
+// 违规样本用**规则自己造的字段**：Filebeat 自带字段（log/host/…）由 nonStandardDocumentFields
+// 豁免（它们不在模板 mapping 里是有意为之，见 sample_event.go），拿 log 当样本测不到点子上。
 func TestNonStandardDocumentFieldsUsesMapping(t *testing.T) {
 	result := map[string]any{"docs": []any{map[string]any{"doc": map[string]any{"_source": map[string]any{
-		"message": "x", "log": "y", "app_fields": map[string]any{"pid": "1"},
+		"message": "x", "custom_field": "y", "app_fields": map[string]any{"pid": "1"},
 	}}}}}
 	allowed := map[string]bool{"message": true, "app_fields": true}
 	got := nonStandardDocumentFields(result, allowed)
-	if len(got) != 1 || got[0] != "log" {
-		t.Fatalf("nonStandardDocumentFields = %v, want [log]", got)
+	if len(got) != 1 || got[0] != "custom_field" {
+		t.Fatalf("nonStandardDocumentFields = %v, want [custom_field]", got)
 	}
 	// 三个必备字段一个都没有时全部列出（结果按字段名排序）。
 	missing := missingRequiredDocumentFields(result)

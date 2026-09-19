@@ -66,7 +66,7 @@ function mountPanel(scope = { nodeType: 'all', nodeTitle: '全部业务' }) {
   })
 }
 
-describe('LogQueryPanel（服务树内嵌的日志查询面板）', () => {
+describe('LogQueryPanel（日志中心的日志查询面板）', () => {
   it('未选择服务时展示空状态，不发起日志查询', async () => {
     const wrapper = mountPanel()
     await flushPromises()

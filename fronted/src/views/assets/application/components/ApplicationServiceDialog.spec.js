@@ -255,11 +255,49 @@ describe('ApplicationServiceDialog', () => {
     await wrapper.setProps({ open: true })
     await flushPromises()
 
-    // 规则列只读展示模板定义上的规则；服务侧没有选择控件。
+    // 解析规则**只读**：值来自模板日志定义，服务侧改不了（要不同就另建模板/日志定义）。
     expect(document.body.textContent).toContain('处理规则（模板）')
     expect(document.body.textContent).toContain('error | failed | critical | fatal')
     expect(wrapper.vm.processingRuleLabel({ template_processing_rule_id: 91 })).toBe('规则 #91')
-    expect(wrapper.findAll('.ant-select').some((node) => node.text().includes('error | failed'))).toBe(false)
+    // 精确断言"这一格是纯文本"：不能再用"页面上没有文本含规则名的 select"来判断——
+    // 采集过滤两列现在是可编辑的，它们的下拉选项里本来就会出现规则名。
+    const ruleCell = wrapper.findAll('td').find((cell) => cell.text().includes('error | failed | critical | fatal'))
+    expect(ruleCell, '找不到处理规则那一格').toBeTruthy()
+    expect(ruleCell.find('.ant-select').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  // 采集过滤在服务弹窗里可改（与日志中心同一份规则、同一套三态），改完随整表提交。
+  // 之前这一列是隐藏的（当时选了不生效），接入渲染后继续隐藏只会让人以为功能没做。
+  it('lets the service override the collection filter per log', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('采集过滤（保留）')
+    expect(document.body.textContent).toContain('采集过滤（排除）')
+    // 库里已有的覆盖值如实回填（这条 fixture 的 include 覆盖是 91），保存时原样提交。
+    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBe(91)
+    // 三态各自独立可表达：0 = 显式关闭（模板配了也不过滤）、null = 回到继承模板。
+    // 0 与 null 必须区分开，否则"模板配了过滤、这条服务不想过滤"就表达不出来。
+    wrapper.vm.setLogOverride(81, 'collection_filter_rule', 0)
+    await flushPromises()
+    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBe(0)
+    wrapper.vm.setLogOverride(81, 'collection_filter_rule', null)
+    await flushPromises()
+    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBeNull()
+    wrapper.vm.setLogOverride(81, 'collection_exclude_filter_rule', 91)
+    await flushPromises()
+    expect(wrapper.vm.logOverrides[81].collection_exclude_filter_rule).toBe(91)
+    // 排除方向模板没配 → 继承时显示"继承模板（无）"，用户要知道自己继承了什么。
+    expect(wrapper.vm.inheritedFilterLabel(null)).toBe('继承模板（无）')
     wrapper.unmount()
   })
 
@@ -368,6 +406,75 @@ describe('ApplicationServiceDialog', () => {
     expect(wrapper.vm.canVerifyLogFormat(wrapper.vm.templateLogRows[0])).toBe(false)
     const button = wrapper.findAll('button').find((node) => node.text().includes('发起认证'))
     expect(button.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  // 模板没给默认值的宏必须在本服务填，否则保存不了：下发时路径里的 ${VAR} 按
+  // 模板默认 → 服务覆盖 → 实例变量 找值，一个都没有时那台主机要么被跳过、要么拼出坏路径
+  // （Filebeat 监听不到文件，采集静默为空）。这是"事后才发现"的坑，所以在保存时拦住。
+  it('blocks saving while a template macro without a default is left empty', async () => {
+    const { getApplicationDeploymentTemplateList, getApplicationService, getApplicationVersionList, saveApplicationService } = await import('@/api/assets/application')
+    getApplicationVersionList.mockResolvedValue({ data: { data: { results: [{ id: 51, application: 5, version: '1.0' }] } } })
+    // 把表单填成"除了宏以外都合法"（HA 集群还要求 VIP），否则校验会先拦下来，
+    // 这条用例就测不到宏这一关。
+    getApplicationService.mockResolvedValue({ data: { data: {
+      id: 20,
+      name: 'tomcat-group',
+      code: 'tomcat-group',
+      application: 5,
+      application_version: 51,
+      deployment_template: 62,
+      topology_type: 'cluster',
+      cluster_profile: 4,
+      access_address: '10.0.0.100',
+      business_system: 3,
+      environment: 31,
+      member_instances: [{ deployment: 13 }, { deployment: 14 }],
+    } } })
+    getApplicationDeploymentTemplateList.mockResolvedValue({ data: { data: { results: [{
+      id: 62,
+      application: 5,
+      name: 'Tomcat Template',
+      control_type: 'external_ha',
+      enabled: true,
+      macro_definitions: [
+        { name: 'APP_HOME', value: '', description: '应用目录' },
+        { name: 'LOG_DIR', value: '/var/log/tomcat', description: '日志目录' },
+      ],
+      logs: [{ id: 82, name: 'application.log', path_pattern: '${APP_HOME}/logs/application.log', processing_rule: null }],
+    }] } } })
+
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    // 只有"模板没给默认值"的那条算缺；有默认值的照旧继承。
+    expect(wrapper.vm.missingMacros.map((macro) => macro.name)).toEqual(['APP_HOME'])
+    expect(wrapper.text()).toContain('模板没给默认值的宏必须在这里填：${APP_HOME}')
+    // 表格里要能看见"必填"，而不是显示成"继承"（没有可继承的东西）。
+    expect(wrapper.findAll('.ant-tag').map((tag) => tag.text()).join('|')).toContain('必填')
+
+    await wrapper.vm.submit()
+    await flushPromises()
+    expect(saveApplicationService).not.toHaveBeenCalled()
+
+    // 填上之后红标消失，也能保存了（覆盖值随 payload 提交，模板的默认值不动）。
+    wrapper.vm.setMacroValue('APP_HOME', '/opt/tomcat')
+    await flushPromises()
+    expect(wrapper.vm.missingMacros).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('模板没给默认值的宏必须在这里填')
+    await wrapper.vm.submit()
+    await flushPromises()
+    expect(saveApplicationService).toHaveBeenCalled()
+    const payload = saveApplicationService.mock.calls.at(-1)[0]
+    expect(payload.macro_values.APP_HOME).toBe('/opt/tomcat')
     wrapper.unmount()
   })
 })

@@ -137,7 +137,11 @@ describe('ServiceTree', () => {
     wrapper.unmount()
   })
 
-  it('marks services with log collection disabled so users can skip them without clicking in', async () => {
+  // 2026-09-19 起树上不再按"是否开启日志采集"灰节点/加禁用标记：树是所有资产页共用的，
+  // 而"采不采日志"只在日志域有意义；"为什么查不到日志"由日志中心的「采集链路」逐层回答。
+  // 这条用例钉住"别再灰回去"——节点颜色不该承担"有没有日志"这种多因结论
+  //（服务停用、配置没下发、规则没发布都会没日志，不只是采集开关）。
+  it('does not grey out services with log collection disabled', async () => {
     applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
       { id: 21, business_system: 7, environment: 71, environment_name: '生产环境', name: '订单 API', topology_type: 'cluster', log_collection_enabled: true },
       { id: 22, business_system: 7, environment: 72, environment_name: '测试环境', name: '订单任务', topology_type: 'standalone', log_collection_enabled: false },
@@ -145,10 +149,11 @@ describe('ServiceTree', () => {
     const wrapper = mount(ServiceTree, { global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
     await flushPromises()
 
-    const enabledLabel = wrapper.findAll('.service-tree-node-label').find((node) => node.text().includes('订单 API'))
-    const disabledLabel = wrapper.findAll('.service-tree-node-label').find((node) => node.text().includes('订单任务'))
-    expect(enabledLabel.classes()).not.toContain('service-tree-node-label--log-disabled')
-    expect(disabledLabel.classes()).toContain('service-tree-node-label--log-disabled')
+    const labels = wrapper.findAll('.service-tree-node-label')
+    const enabledLabel = labels.find((node) => node.text().includes('订单 API'))
+    const disabledLabel = labels.find((node) => node.text().includes('订单任务'))
+    expect(disabledLabel.classes()).toEqual(enabledLabel.classes())
+    expect(wrapper.findAll('.service-tree-log-disabled-badge')).toHaveLength(0)
     wrapper.unmount()
   })
 })

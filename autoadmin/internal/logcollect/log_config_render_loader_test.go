@@ -33,12 +33,17 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 			"host_id", "project_code", "environment_code", "business_system_code", "service_code",
 			"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
 			"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
+			// 采集过滤的四个 id：本例只验证装载，两个方向都不配（NULL）。
+			"filter_include_rule_id", "filter_exclude_rule_id",
+			"collection_filter_rule_id", "collection_exclude_filter_rule_id",
 		}).
 			AddRow(int64(1), "kul", "test", "tib", "svc-a", "app-a", "hot", "rule-a", "catalina.out",
 				"${APP_HOME}/logs/catalina.out", []byte(`{"LOG_DIR":"/svc/logs"}`),
-				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000)).
+				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000),
+				nil, nil, nil, nil).
 			AddRow(int64(2), "kul", "prod", "tib", "svc-b", "app-b", "std", "rule-b", "app.log",
-				"/data/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000)),
+				"/data/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
+				nil, nil, nil, nil),
 	)
 
 	gin.SetMode(gin.TestMode)

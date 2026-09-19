@@ -141,10 +141,15 @@ func (handler *Handler) SaveApplicationServiceLogSetting(context *gin.Context) {
 	if !ok {
 		return
 	}
+	// 字段必须与 ServiceLogOverrideInput **逐项对齐**：漏一个就等于静默清空那一列。
+	// 2026-09-19 现场：这里漏了采集过滤的两个方向，前端选完过滤后刷新就"没保存"——请求里带着，
+	// 绑定结构里没有（被丢），upsert 就把该列写成 NULL；更糟的是此后任何一列改动都会顺手清掉它。
 	var input struct {
-		LogDefinitionID   int64  `json:"log_definition_id"`
-		CollectionEnabled *bool  `json:"collection_enabled"`
-		RetentionTier     *int64 `json:"retention_tier"`
+		LogDefinitionID             int64  `json:"log_definition_id"`
+		CollectionEnabled           *bool  `json:"collection_enabled"`
+		RetentionTier               *int64 `json:"retention_tier"`
+		CollectionFilterRule        *int64 `json:"collection_filter_rule"`
+		CollectionExcludeFilterRule *int64 `json:"collection_exclude_filter_rule"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		response.Error(context, ErrInvalid)
@@ -152,7 +157,11 @@ func (handler *Handler) SaveApplicationServiceLogSetting(context *gin.Context) {
 	}
 	// 回读整行（覆盖值 + 认证状态都由后端算），前端据此就地更新那一行。
 	item, err := handler.service.SaveServiceLogOverride(context.Request.Context(), id, ServiceLogOverrideInput{
-		LogDefinition: input.LogDefinitionID, CollectionEnabled: input.CollectionEnabled, RetentionTier: input.RetentionTier,
+		LogDefinition:               input.LogDefinitionID,
+		CollectionEnabled:           input.CollectionEnabled,
+		RetentionTier:               input.RetentionTier,
+		CollectionFilterRule:        input.CollectionFilterRule,
+		CollectionExcludeFilterRule: input.CollectionExcludeFilterRule,
 	})
 	respond(context, item, err)
 }

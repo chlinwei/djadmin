@@ -136,9 +136,10 @@ export const staticRouterMap = [
                 redirect: '/monitor/notification/policies',
             },
             {
+                // 「存储水位」页已并入「日志中心」（能力逐条对照后无遗漏，菜单由迁移 000038 删除）：
+                // 旧地址一律重定向兜底，收藏/书签不断链。
                 path: '/monitor/logging/overview',
-                name: '存储水位',
-                component: () => import('../views/monitor/log-storage-overview/index.vue'),
+                redirect: '/monitor/logging/center',
             },
             {
                 // 日志中心：把「日志存储水位」「日志查询」「逻辑服务的日志配置」合成一个入口

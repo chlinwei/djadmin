@@ -31,11 +31,6 @@ const ServiceTreeNodeContentStub = {
   template: '<div class="node-content-stub" />',
   methods: { refresh: vi.fn() },
 }
-const LogQueryPanelStub = {
-  name: 'LogQueryPanel',
-  props: ['scope'],
-  template: '<div class="log-query-stub" />',
-}
 const BusinessSystemDialogStub = {
   name: 'BusinessSystemDialog',
   props: ['open', 'systemId', 'initialProjectId'],
@@ -54,7 +49,6 @@ function mountPage() {
       stubs: {
         ServiceTree: ServiceTreeStub,
         ServiceTreeNodeContent: ServiceTreeNodeContentStub,
-        LogQueryPanel: LogQueryPanelStub,
         BusinessSystemDialog: BusinessSystemDialogStub,
         ApplicationServiceDialog: ApplicationServiceDialogStub,
         FontAwesomeIcon: true,

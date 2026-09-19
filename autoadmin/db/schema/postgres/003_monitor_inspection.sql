@@ -110,6 +110,9 @@ CREATE TABLE monitor_log_collection_filter_rule (
   name varchar(128) NOT NULL,
   description varchar(500) NOT NULL,
   pattern text NOT NULL,
+  -- 规则方向：include（只保留匹配的记录）/ exclude（丢掉匹配的记录）。方向必须显式声明、
+  -- 不能靠"用在哪个槽位"推：白名单放进 exclude 槽会反转语义（只采噪声）。DEFAULT 只为存量回填。
+  rule_type varchar(16) NOT NULL DEFAULT 'include',
   enabled boolean NOT NULL,
   application_id bigint DEFAULT NULL,
   PRIMARY KEY (id),

@@ -7,13 +7,22 @@
     <div class="parser-layout">
       <div class="application-pane">
         <div class="pane-title">应用</div>
+        <!-- 应用多了以后在左侧逐个找太慢：按名称或编码把不相关的条目筛掉。
+             「全部规则」始终保留——它是回到全量的入口，也是筛空时的落点。 -->
+        <a-input-search
+          v-model:value="applicationKeyword"
+          allow-clear
+          size="small"
+          class="application-search"
+          placeholder="筛选应用 / 编码"
+        />
         <a-menu
           class="application-menu"
           mode="inline"
           :selected-keys="[selectedApplicationKey]"
           @select="({ key }) => (selectedApplicationKey = key)"
         >
-          <a-menu-item v-for="item in applicationGroups" :key="item.key">
+          <a-menu-item v-for="item in visibleApplicationGroups" :key="item.key">
             <span class="application-item">
               <span class="application-label" :title="item.label">{{ item.label }}</span>
               <a-badge
@@ -24,6 +33,9 @@
             </span>
           </a-menu-item>
         </a-menu>
+        <div v-if="applicationFilterMissed" class="application-empty">
+          没有匹配的应用，清空筛选回到全部
+        </div>
       </div>
 
       <div class="rule-pane">
@@ -112,6 +124,7 @@
             <a-table size="small" row-key="id" :columns="filterColumns" :data-source="visibleFilterRules" :loading="filterLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用暂无采集过滤规则' }">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'name'"><span class="pipeline-name">{{ record.name }}</span></template>
+                <template v-else-if="column.key === 'rule_type'"><a-tag :color="record.rule_type === 'exclude' ? 'orange' : 'green'">{{ filterRuleTypeLabel(record.rule_type) }}</a-tag></template>
                 <template v-else-if="column.key === 'description'"><span>{{ record.description || '-' }}</span></template>
                 <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
                 <template v-else-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
@@ -222,6 +235,9 @@
             >
               <template #description>
                 <div>处理规则产物必须包含这些字段，否则错误清单/聚类会失效。请在 Pipeline 里补对应处理器（如 <code>fingerprint.target_field=error_fingerprint</code>）后再发布。</div>
+                <div>判定口径与「格式认证」完全一致：认证是拿**主机上该日志文件的尾部若干行**跑同一个判定，
+                  所以这里的结论就是认证的结论。两边唯一的差别是输入——这里是你粘的样例，
+                  认证是文件尾部（窗口切出来的残尾行会被丢掉，与 Filebeat 合并语义一致）。</div>
               </template>
             </a-alert>
             <a-alert
@@ -273,8 +289,32 @@
         <a-form-item name="name" label="规则名称"><a-input v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
         <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" /></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="filterForm.description" placeholder="例如 仅采集错误、失败和严重级别日志" /></a-form-item>
-        <a-form-item name="pattern" label="匹配正则"><a-textarea v-model:value="filterForm.pattern" :rows="3" placeholder="例如 (?i)(error|failed|critical|fatal)" spellcheck="false" /></a-form-item>
+        <a-form-item name="rule_type" label="规则类型">
+          <a-segmented v-model:value="filterForm.rule_type" :options="filterRuleTypeOptions" block />
+          <div class="field-hint">
+            保留（include）= 只采匹配的记录；排除（exclude）= 丢掉匹配的记录。两者同时配时先保留、后排除。
+            方向由规则自己声明，落槽时校验一致——反着用会只采到噪声。
+          </div>
+        </a-form-item>
+        <a-form-item name="pattern" label="匹配正则">
+          <a-textarea v-model:value="filterForm.pattern" :rows="3" :placeholder="filterForm.rule_type === 'exclude' ? '例如 (?i)healthcheck|/ping|DEBUG' : '例如 (?i)(error|failed|critical|fatal)'" spellcheck="false" />
+          <div class="field-hint">Go RE2 方言（与 Filebeat 同一个引擎）：不支持 \uXXXX（要写 \x{XXXX}）与断言；过滤发生在多行合并之后，<code>^</code> 只匹配整条记录的开头。</div>
+        </a-form-item>
         <a-form-item label="启用"><a-switch v-model:checked="filterForm.enabled" /></a-form-item>
+        <a-form-item label="试算（可选）">
+          <a-textarea v-model:value="filterSample" :rows="5" placeholder="粘几行日志，下面显示这条规则会保留/丢掉哪些行——白名单写错的代价是数据永久丢失，先算一次。" spellcheck="false" />
+          <div v-if="filterSample.trim()" class="filter-sample-result">
+            <div class="field-hint">保留 {{ filterSampleKept.length }} 行 / 丢弃 {{ filterSampleDropped.length }} 行（共 {{ filterSampleLines.length }} 行）</div>
+            <div v-if="filterSampleError" class="apply-error">{{ filterSampleError }}</div>
+            <template v-else>
+              <div v-if="filterSampleDropped.length" class="filter-sample-dropped">
+                <div class="field-hint">会被丢弃的示例行：</div>
+                <code v-for="(line, index) in filterSampleDropped.slice(0, 5)" :key="index" class="filter-sample-line">{{ line }}</code>
+              </div>
+              <div v-else class="field-hint">没有任何行被丢弃。</div>
+            </template>
+          </div>
+        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -323,7 +363,9 @@ import {
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { getApplicationList } from '@/api/assets/application'
+import { filterApplicationGroups, isApplicationFilterMissed } from '@/util/applicationFilter'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { assertRe2Compatible, compilePreviewRegExp } from '@/util/re2Pattern'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
@@ -378,7 +420,36 @@ const form = reactive({
   flush_timeout: 1000,
   bodyText: '',
 })
-const filterForm = reactive({ id: null, name: '', application: null, description: '', pattern: '', enabled: true })
+const filterForm = reactive({ id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
+const filterRuleTypeOptions = [
+  { label: '保留（include）', value: 'include' },
+  { label: '排除（exclude）', value: 'exclude' },
+]
+const filterRuleTypeLabel = (value) => (value === 'exclude' ? '排除' : '保留')
+// 试算：把这条规则套在用户粘的样例上，直接告诉他"会丢掉哪些行"。
+// 用 re2Pattern 的预览编译（RE2 → 浏览器可编译），所以方言与主机上跑的 Filebeat 一致。
+const filterSample = ref('')
+const filterSampleLines = computed(() => filterSample.value.split(/\r?\n/).filter((line) => line.trim() !== ''))
+const filterSampleError = ref('')
+const filterSampleMatched = computed(() => {
+  filterSampleError.value = ''
+  const pattern = String(filterForm.pattern || '').trim()
+  if (!pattern) return []
+  try {
+    const expression = compilePreviewRegExp(pattern, '过滤正则')
+    return filterSampleLines.value.filter((line) => expression.test(line))
+  } catch (error) {
+    filterSampleError.value = error.message
+    return []
+  }
+})
+// 保留 = 命中的留下；排除 = 命中的丢掉。两个方向对样例的作用正好相反。
+const filterSampleKept = computed(() => (filterForm.rule_type === 'exclude'
+  ? filterSampleLines.value.filter((line) => !filterSampleMatched.value.includes(line))
+  : filterSampleMatched.value))
+const filterSampleDropped = computed(() => (filterForm.rule_type === 'exclude'
+  ? filterSampleMatched.value
+  : filterSampleLines.value.filter((line) => !filterSampleMatched.value.includes(line))))
 const applicationOptions = computed(() =>
   applications.value.map((item) => ({ label: item.name, value: item.id })),
 )
@@ -400,11 +471,24 @@ const applicationGroups = computed(() => {
     ...applications.value.map((item) => ({
       key: String(item.id),
       label: item.name,
+      // code 只用于筛选匹配（列表里显示 name，与应用下拉的口径一致）。
+      code: item.code || '',
       count: countByApplication.get(item.id) || 0,
     })),
     { key: 'generic', label: '通用（不限应用）', count: genericCount },
   ]
 })
+
+// 左侧筛选框的输入（2026-09-19 加）：匹配逻辑抽到 util/applicationFilter.js（有单测），
+// 这里只负责把"输入 + 分组"喂进去。
+const applicationKeyword = ref('')
+const visibleApplicationGroups = computed(() => (
+  filterApplicationGroups(applicationGroups.value, applicationKeyword.value)
+))
+// 筛空了要说一声，否则左侧只剩一行「全部规则」，看起来像应用丢了。
+const applicationFilterMissed = computed(() => (
+  isApplicationFilterMissed(visibleApplicationGroups.value, applicationKeyword.value)
+))
 
 const visibleRules = computed(() => {
   if (selectedApplicationKey.value === 'all') return processingRules.value
@@ -447,6 +531,7 @@ function requiredFieldsTooltip(record) {
 }
 const filterColumns = [
   { title: '规则名称', key: 'name', width: 240, fixed: 'left' },
+  { title: '类型', key: 'rule_type', width: 110 },
   { title: '说明', key: 'description', width: 300 },
   { title: '匹配正则', key: 'pattern', width: 300 },
   { title: '状态', key: 'enabled', width: 100, align: 'center' },
@@ -460,9 +545,20 @@ const formRules = {
   ],
   start_pattern: [
     {
-      validator: () => (form.multiline_enabled && !String(form.start_pattern || '').trim()
-        ? Promise.reject(new Error('请输入首行正则'))
-        : Promise.resolve()),
+      validator: () => {
+        if (!form.multiline_enabled) return Promise.resolve()
+        const pattern = String(form.start_pattern || '').trim()
+        if (!pattern) return Promise.reject(new Error('请输入首行正则'))
+        // 首行正则由主机上的 Filebeat 执行，Filebeat 与服务端都是 Go RE2。
+        // 这里先按 RE2 预检一遍：不然 Java/JS 写法（现场是 `[A-Za-z\u4e00-\u9fa5]`）能存能调试，
+        // 却在主机上编译不过、采集静默失效。权威判定仍在服务端保存/认证时那次编译。
+        try {
+          assertRe2Compatible(pattern)
+        } catch (error) {
+          return Promise.reject(error)
+        }
+        return Promise.resolve()
+      },
     },
   ],
 }
@@ -578,7 +674,8 @@ function openTest(record) {
 }
 
 function openFilterCreate() {
-  Object.assign(filterForm, { id: null, name: '', application: null, description: '', pattern: '', enabled: true })
+  filterSample.value = ''
+  Object.assign(filterForm, { id: null, name: '', application: null, description: '', pattern: '', rule_type: 'include', enabled: true })
   const selectedApplicationId = Number(selectedApplicationKey.value)
   filterForm.application = Number.isNaN(selectedApplicationId) ? null : selectedApplicationId
   filterEditorOpen.value = true
@@ -586,12 +683,29 @@ function openFilterCreate() {
 
 function openFilterEdit(record) {
   Object.assign(filterForm, record)
+  // 迁移前建的规则没有类型字段，一律按 include（白名单）处理。
+  if (!filterForm.rule_type) filterForm.rule_type = 'include'
   filterEditorOpen.value = true
 }
 
 const filterFormRules = {
   name: [{ required: true, message: '请输入规则名称' }],
-  pattern: [{ required: true, message: '请输入匹配正则' }],
+  pattern: [
+    {
+      validator: () => {
+        const pattern = String(filterForm.pattern || '').trim()
+        if (!pattern) return Promise.reject(new Error('请输入匹配正则'))
+        // 空模式在 Filebeat 里匹配全部：include 会放行一切、exclude 会丢弃一切，
+        // 两个方向都是灾难，所以只填空格也要拦住（后端同样校验）。
+        try {
+          assertRe2Compatible(pattern, filterForm.rule_type === 'exclude' ? '排除正则' : '保留正则')
+        } catch (error) {
+          return Promise.reject(error)
+        }
+        return Promise.resolve()
+      },
+    },
+  ],
 }
 
 async function saveFilterRule() {
@@ -658,7 +772,9 @@ function buildRawDocs(text) {
   }
   let startRe
   try {
-    startRe = new RegExp(form.start_pattern)
+    // 走 RE2 → 浏览器可编译形式的翻译（`\x{4e00}` → `\u4e00`），否则用户按提示改成 RE2 写法后，
+    // 浏览器反而抛 "Invalid hexadecimal escape sequence"，等于把人推回错误写法。
+    startRe = compilePreviewRegExp(form.start_pattern)
   } catch (error) {
     throw new Error(`首行正则不合法：${error.message}`)
   }
@@ -677,10 +793,11 @@ function buildRawDocs(text) {
     } else if (buffer.length) {
       // 非首行一律并到上一行（Filebeat negate+after 语义）
       buffer.push(line)
-    } else if (line.trim()) {
-      // 首行之前的前导行单独成一条
-      docs.push({ message: line })
     }
+    // else：第一条记录之前、又不匹配首行正则的行 —— **丢掉**，与服务端认证抽样同一口径。
+    // 这些行是反向读取窗口切出来的上一条记录的尾巴（堆栈续行），真实采集时 Filebeat 会把它们
+    // 并进上一条记录。两边口径不一，同一段文本就会出现"调试页判定不通过、认证却通过"（或反过来），
+    // 正是平台文档里点名要避免的情形。
   }
   flush()
   if (!docs.length) throw new Error('样例日志为空或未命中首行正则')
@@ -713,7 +830,9 @@ async function simulate() {
     missingFields.value = result.missing_fields || []
     simulationText.value = JSON.stringify(result, null, 2)
     if (missingFields.value.length) {
-      message.warning(`运行成功，但缺少必备字段：${missingFields.value.join('、')}`)
+      // 不说"运行成功"：管道跑起来了，但**判定没通过**，而认证用的是同一个判定函数与同一套
+      // 必备字段口径——把它呈成成功，就会让人以为"规则没问题、认证在挑刺"。
+      message.error(`判定不通过：缺少必备字段 ${missingFields.value.join('、')}（认证会用同一口径判不通过）`)
     } else if (schemaViolations.value.length) {
       message.warning(`运行成功，但有 ${schemaViolations.value.length} 个字段不符合标准字段规范`)
     } else {
@@ -795,10 +914,20 @@ onMounted(() => {
   font-weight: 600;
   border-bottom: 1px solid #f0f0f0;
 }
+.application-search {
+  padding: 8px 8px 0;
+}
 .application-menu {
   border-inline-end: none;
-  max-height: calc(100vh - 240px);
+  /* 减去页面标题、面板标题与筛选框的高度，让列表自己滚、筛选框留在原位。 */
+  max-height: calc(100vh - 288px);
   overflow: auto;
+}
+.application-empty {
+  padding: 12px 16px;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 18px;
 }
 .application-item {
   display: flex;

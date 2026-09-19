@@ -88,7 +88,7 @@
 `orphan`（维度已删）/ `expiring`（即将到期）。
 
 `orphan` 无需新造识别逻辑：`streamNameMatcher.resolveStreamName` 对已删除/改名的维度本就返回
-`Recognized=false`（`internal/logcollect/datastream_status.go`），存储水位页已经在用这个信号，
+`Recognized=false`（`internal/logcollect/datastream_status.go`），日志中心的水位 tab 已经在用这个信号，
 只需把它接成显式状态与清理入口。
 
 **`orphan` 只认"行已删/改名"，不认"已停用"**（2026-09-18 落地时修正）：识别候选集必须覆盖
@@ -309,7 +309,7 @@
   实例侧保存去改关联会和"服务侧整组重建"互相踩。实例弹窗里的 `application_service` 字段
   已从前端移除（后端本就不接收，此前是静默忽略的假绑定），详见 ASSET_CATALOG 的
   「逻辑服务 ↔ 部署实例关联」一节。
-- **日志状态一律按逻辑服务归属**：存储水位的"已停用 / 未开启采集"标注取自逻辑服务行
+- **日志状态一律按逻辑服务归属**：水位视图的"已停用 / 未开启采集"标注取自逻辑服务行
   （`service_enabled` / `service_collection_enabled`），随每条流返回；
   主机级状态（agent 在线、Filebeat 运行、配置是否已下发）仍按主机归属——那本质是每台主机的事实
   （见 §2.1 与 §2.2 的分层）。
@@ -324,7 +324,7 @@
 - 扩展清理接口支持 `log_names` + 新增 `log-names` 聚合接口。
 - 前端清理弹窗：服务 + 日志文件多选 + 时间窗 + 影响预览。
 - 删除日志定义：先给"疑似删除/改名"提示，显式确认后清理。
-- 存储水位：流清单（活跃/历史/孤儿，孤儿复用 `Recognized=false`）+ 孤儿整流删除入口。
+- 水位视图（日志中心的水位 tab）：流清单（活跃/历史/孤儿，孤儿复用 `Recognized=false`）+ 孤儿整流删除入口。
 
 ## 9. 待确认（含建议默认）
 

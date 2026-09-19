@@ -51,7 +51,17 @@ func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 		response.BusinessError(context, 400, "pipeline or name is required", nil)
 		return
 	}
-	data, err := handler.simulatePipeline(context, cluster, name, input.Pipeline, input.Docs)
+	// 样例文档按 Filebeat 的真实事件补齐（见 sample_event.go）：调试页的输入越接近主机上
+	// Filebeat 真正发给 ES 的事件，"平台上过、主机上炸"的空间越小。调用方给的字段优先。
+	docs := make([]any, 0, len(input.Docs))
+	for _, rawDoc := range input.Docs {
+		if doc, ok := rawDoc.(map[string]any); ok {
+			docs = append(docs, withFilebeatEventFields(doc))
+			continue
+		}
+		docs = append(docs, rawDoc)
+	}
+	data, err := handler.simulatePipeline(context, cluster, name, input.Pipeline, docs)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -87,7 +97,9 @@ func (handler *Handler) simulatePipeline(ctx context.Context, cluster elasticsea
 	}
 	data, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPost, path, body)
 	if err != nil {
-		return nil, err
+		// 处理器参数不被当前集群支持时补一句"该改成什么"（引擎方言，见 pipeline_compat.go）。
+		// 这里是调试页与格式认证的共同收口，所以一处接线两边都能看到提示。
+		return nil, fmt.Errorf("%w%s", err, pipelineCompatHint(err.Error()))
 	}
 	// 以集群实际索引模板 mapping 的字段为准校验，而不是硬编码列表；取不到时回退内置标准字段。
 	allowed := handler.processingRuleAllowedFields(ctx, cluster)
@@ -135,15 +147,19 @@ func indexTemplateMappingFields(payload map[string]any) map[string]bool {
 
 // nonStandardDocumentFields 输出文档里不在索引 mapping 顶层字段内的字段：dynamic=false 下会被静默丢弃。
 // app_fields 等 flattened/object 容器本身在 mapping 里，其子字段不逐个校验。
+//
+// Filebeat 自己的字段（log/host/agent/ecs/event/input，见 sample_event.go）**豁免**：
+// 它们由采集端写入、模板有意不映射，被丢弃是设计如此，不是规则写错了字段。
 func nonStandardDocumentFields(result map[string]any, allowed map[string]bool) []string {
 	violations := map[string]bool{}
+	filebeatOwned := filebeatOwnedFieldNames()
 	docs, _ := result["docs"].([]any)
 	for _, rawDoc := range docs {
 		doc, _ := rawDoc.(map[string]any)
 		detail, _ := doc["doc"].(map[string]any)
 		source, _ := detail["_source"].(map[string]any)
 		for field := range source {
-			if !allowed[field] {
+			if !allowed[field] && !filebeatOwned[field] {
 				violations[field] = true
 			}
 		}

@@ -29,10 +29,11 @@ func serviceTemplateLogColumns() []string {
 	return []string{
 		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
 		"processing_rule_update_time", "application_version_id", "retention_tier_id",
-		"override_collection_enabled", "collection_filter_rule_id", "format_verified_at",
+		"override_collection_enabled", "collection_filter_rule_id", "collection_exclude_filter_rule_id",
+		"filter_include_rule_id", "filter_exclude_rule_id", "format_verified_at",
 		"format_verified_fingerprint", "format_verified_source", "format_verified_by",
 		"service_code", "project_code", "environment_code", "business_system_code",
-		"macro_values", "tier_code",
+		"macro_values", "macro_definitions", "app_home", "tier_code",
 	}
 }
 
@@ -48,8 +49,11 @@ func addServiceTemplateLogRow(rows *sqlmock.Rows, stored sql.NullString) *sqlmoc
 	return rows.AddRow(
 		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
 		"nginx 规则", testRuleUpdatedAt, int64(3), sql.NullInt64{}, nil, sql.NullInt64{},
+		// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
+		sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
 		sql.NullTime{}, stored, sql.NullString{}, sql.NullString{},
-		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"), "std",
+		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
+		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
 	)
 }
 

@@ -98,6 +98,10 @@ type TemplateLog struct {
 	PathPattern    string          `json:"path_pattern"`
 	ProcessingRule *int64          `json:"processing_rule"`
 	ExtraFields    json.RawMessage `json:"extra_fields"`
+	// 采集过滤的模板级默认值（2026-09-19）：include 只采匹配、exclude 丢掉匹配；
+	// NULL = 该方向不过滤。服务级可覆盖或显式关闭（见 LOG_COLLECTION_ARCHITECTURE §6）。
+	FilterIncludeRule *int64 `json:"filter_include_rule"`
+	FilterExcludeRule *int64 `json:"filter_exclude_rule"`
 }
 type TemplateControlAction struct {
 	ID               int64           `json:"id"`
@@ -194,6 +198,10 @@ type TemplateLogInput struct {
 	ProcessingRule *int64          `json:"processing_rule"`
 	ExtraFields    json.RawMessage `json:"extra_fields"`
 	Remark         *string         `json:"remark"`
+	// 采集过滤默认值：规则类型必须与槽位一致（include 槽只接 include 规则），
+	// 渲染时还会再校验一次方向（见 logcollect/log_collection_filter.go）。
+	FilterIncludeRule *int64 `json:"filter_include_rule"`
+	FilterExcludeRule *int64 `json:"filter_exclude_rule"`
 }
 type TemplateControlActionInput struct {
 	Action           string          `json:"action"`
@@ -513,7 +521,10 @@ func applyTemplateLogWrites(
 			UpdateTime: now, Remark: nullableString(item.Remark), Name: strings.TrimSpace(item.Name),
 			PathPattern: item.PathPattern, ExtraFields: jsonValue(item.ExtraFields, "{}"),
 			ProcessingRuleID: nullableInt(item.ProcessingRule),
-			ID:               item.ID, DeploymentTemplateID: templateID,
+			// 模板级采集过滤默认值（服务级可覆盖/关闭，见 logcollect/log_collection_filter.go）
+			FilterIncludeRuleID: nullableInt(item.FilterIncludeRule),
+			FilterExcludeRuleID: nullableInt(item.FilterExcludeRule),
+			ID:                  item.ID, DeploymentTemplateID: templateID,
 		})
 		if updateErr != nil {
 			return updateErr
@@ -528,7 +539,9 @@ func applyTemplateLogWrites(
 			CreateTime: now, UpdateTime: now, Remark: nullableString(item.Remark),
 			Name: strings.TrimSpace(item.Name), PathPattern: item.PathPattern,
 			DeploymentTemplateID: templateID, ExtraFields: jsonValue(item.ExtraFields, "{}"),
-			ProcessingRuleID: nullableInt(item.ProcessingRule),
+			ProcessingRuleID:    nullableInt(item.ProcessingRule),
+			FilterIncludeRuleID: nullableInt(item.FilterIncludeRule),
+			FilterExcludeRuleID: nullableInt(item.FilterExcludeRule),
 		}); err != nil {
 			return err
 		}

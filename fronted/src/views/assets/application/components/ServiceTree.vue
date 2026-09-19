@@ -83,12 +83,9 @@
           <div class="service-tree-node">
             <FontAwesomeIcon
               :icon="nodeIcon(node.key)"
-              :class="['service-tree-icon', `service-tree-icon--${nodeIconType(node.key)}`, { 'service-tree-icon--log-disabled': node.logDisabled }]"
+              :class="['service-tree-icon', `service-tree-icon--${nodeIconType(node.key)}`]"
             />
-            <span class="service-tree-node-label" :class="{ 'service-tree-node-label--log-disabled': node.logDisabled }">{{ node.title }}</span>
-            <a-tooltip v-if="node.logDisabled" title="该服务未开启日志采集，查询不到日志">
-              <FontAwesomeIcon :icon="['fas', 'ban']" class="service-tree-log-disabled-badge" />
-            </a-tooltip>
+            <span class="service-tree-node-label">{{ node.title }}</span>
           </div>
         </template>
       </a-tree>
@@ -388,8 +385,10 @@ function buildTree(systems, services, deployments) {
         count: serviceDeployments.length,
         children: [],
         hasLazyChildren: deploymentNodes.length > 0,
-        // 未开启日志采集时树上直接标出来，省得用户点进去才发现查不到日志。
-        logDisabled: !service.log_collection_enabled,
+        // 这里曾按 `log_collection_enabled` 给服务节点加灰与禁用标记（"该服务未开启日志采集"）。
+        // 2026-09-19 去掉：树是所有资产页共用的，而"采不采日志"只在日志域有意义，灰节点在
+        // 资产/告警页只是噪声；判断"为什么查不到日志"现在由日志中心的「采集链路」逐层回答
+        // （服务停用 / 采集总开关关闭 / 主机三层 / 规则未发布 / 最近没写入）。
       }
     }
 
@@ -786,19 +785,10 @@ onBeforeUnmount(() => {
 .service-tree-icon--environment { color: #b56d2d; }
 .service-tree-icon--service { color: #ad6800; }
 .service-tree-icon--deployment { color: #8c8c8c; }
-.service-tree-icon--log-disabled { color: #c2c7cf; }
 .service-tree-node-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.service-tree-node-label--log-disabled {
-  color: #b0b7c0;
-}
-.service-tree-log-disabled-badge {
-  flex: none;
-  color: #d46b08;
-  width: 12px;
 }
 .service-tree-node-count {
   min-width: 20px;

@@ -63,10 +63,14 @@ func TestLogSampleDocs(t *testing.T) {
 			},
 		},
 		{
-			name:      "多行模式：首行之前的前导行单独成一条",
-			text:      "banner line\n2026-09-19 10:00:00 ERROR boom",
+			// 口径 2026-09-19 改：多行模式下首行之前的前导行**丢掉**。
+			// 那些行是反向读取窗口切出来的残尾（上一条记录的堆栈续行），真实采集时会被
+			// Filebeat 并进上一条记录；当成独立记录送进认证只会误报"缺少 log_level"
+			//（现场：catalina.out 认证一直被它挡住，与规则本身无关）。
+			name:      "多行模式：首行之前的前导行丢掉（窗口切出来的残尾，不是一条记录）",
+			text:      "\tat com.example.Foo.bar(Foo.java:42)\nbanner line\n2026-09-19 10:00:00 ERROR boom",
 			multiline: true, startPattern: `^\d{4}-\d{2}-\d{2}`,
-			want: []string{"banner line", "2026-09-19 10:00:00 ERROR boom"},
+			want: []string{"2026-09-19 10:00:00 ERROR boom"},
 		},
 		{
 			name:      "多行模式缺首行正则：报错而不是猜",
@@ -79,6 +83,34 @@ func TestLogSampleDocs(t *testing.T) {
 			text:      "anything",
 			multiline: true, startPattern: "([unclosed",
 			wantError: "首行正则不合法",
+		},
+		{
+			// 现场规则 `springboot-tomcat-exception` 的准确保真：catalina.out 里既有
+			// "2026-09-19 10:00:00" 这种数字日期开头的行，也有 "19-Sep-2026"（英文月）/ 中文这种
+			// `\d{2}-[字母或汉字]{3,4}-\d{4}` 开头，堆栈行必须并到上一行。
+			name: "多行模式：现场 tomcat 规则（含中文范围）能还原堆栈",
+			text: strings.Join([]string{
+				"19-Sep-2026 10:00:00.123 SEVERE [main] org.apache.catalina.startup.Catalina.start 启动失败",
+				"\tat java.base/java.lang.Thread.run(Thread.java:833)",
+				"\tCaused by: java.lang.IllegalStateException: boom",
+				"2026-09-19 10:00:01.456 INFO [main] 已恢复",
+			}, "\n"),
+			multiline:    true,
+			startPattern: `^(\d{4}-\d{2}-\d{2}|\d{2}-[A-Za-z\x{4e00}-\x{9fa5}]{3,4}-\d{4})`,
+			want: []string{
+				"19-Sep-2026 10:00:00.123 SEVERE [main] org.apache.catalina.startup.Catalina.start 启动失败\n" +
+					"\tat java.base/java.lang.Thread.run(Thread.java:833)\n" +
+					"\tCaused by: java.lang.IllegalStateException: boom",
+				"2026-09-19 10:00:01.456 INFO [main] 已恢复",
+			},
+		},
+		{
+			// 同一条规则改回 Java/JS 的 `\uXXXX` 就会走到这里：报错文案必须带上等价写法，
+			// 否则用户只看到 "invalid escape sequence: `\u`"，不知道该怎么改。
+			name:      "多行模式：Java/JS 的 \\uXXXX 写法被拒，并提示 \\x{XXXX}",
+			text:      "anything",
+			multiline: true, startPattern: `^(\d{4}-\d{2}-\d{2}|\d{2}-[A-Za-z\u4e00-\u9fa5]{3,4}-\d{4})`,
+			wantError: `\u4e00 → \x{4e00}`,
 		},
 		{
 			name:      "样例为空：报错",
@@ -140,10 +172,11 @@ func logFormatDefinitionColumns() []string {
 	return []string{
 		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
 		"processing_rule_update_time", "application_version_id", "retention_tier_id",
-		"override_collection_enabled", "collection_filter_rule_id", "format_verified_at",
+		"override_collection_enabled", "collection_filter_rule_id", "collection_exclude_filter_rule_id",
+		"filter_include_rule_id", "filter_exclude_rule_id", "format_verified_at",
 		"format_verified_fingerprint", "format_verified_source", "format_verified_by",
 		"service_code", "project_code", "environment_code", "business_system_code",
-		"macro_values", "tier_code",
+		"macro_values", "macro_definitions", "app_home", "tier_code",
 	}
 }
 
@@ -152,8 +185,12 @@ func expectLogFormatDefinition(mock sqlmock.Sqlmock) {
 		sqlmock.NewRows(logFormatDefinitionColumns()).AddRow(
 			int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
 			"nginx 规则", time.Date(2026, 9, 19, 1, 2, 3, 0, time.UTC), int64(3), sql.NullInt64{},
-			nil, sql.NullInt64{}, sql.NullTime{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
-			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"), "std",
+			nil, sql.NullInt64{},
+			// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
+			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
+			sql.NullTime{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
+			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
+			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
 		))
 }
 

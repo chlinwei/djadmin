@@ -20,7 +20,8 @@ vi.mock('@/api/assets/application', () => ({
   setApplicationServiceLogCollection: vi.fn((_id, enabled) => Promise.resolve({ data: { data: { log_collection_enabled: enabled } } })),
   saveApplicationServiceLogSetting: vi.fn((_id, payload) => Promise.resolve({ data: { data: {
     log_definition: payload.log_definition_id, name: 'access.log',
-    resolved_path: '/srv/tomcat/logs/application.log', template_processing_rule_id: 91,
+    resolved_path: '/srv/tomcat/logs/application.log',
+    path_pattern: '${APP_HOME}/logs/application.log', template_processing_rule_id: 91,
     template_processing_rule_name: 'tomcat rule', collection_enabled: payload.collection_enabled,
     retention_tier: payload.retention_tier, tier_code: 'hot', service_code: 'nginx', format_state: 'verified',
     data_stream: 'autoadmin-yilake-tib-poc-nginx-wuhan-test',
@@ -35,12 +36,15 @@ vi.mock('@/api/monitor', () => ({
     { id: 4, code: 'wuhan-test', name: '保留2天' },
   ] } } })),
   getLogStorageOverview: vi.fn(() => Promise.resolve({ data: { data: { data_streams: [
-    { name: 'autoadmin-yilake-tib-poc-nginx-wuhan-test', tier: 'wuhan-test', docs: 4758176, bytes: 1054670278, ilm_state: 'hot', recognized: true, historical: true, service_enabled: true, service_collection_enabled: true },
-    { name: 'autoadmin-yilake-tib-poc-nginx-hot', tier: 'hot', docs: 10, bytes: 55867, ilm_state: 'hot', recognized: true, historical: false, service_enabled: false, service_collection_enabled: true },
-  ], dims: {} } } })),
+    { name: 'autoadmin-yilake-tib-poc-nginx-wuhan-test', service: 'nginx', tier: 'wuhan-test', docs: 4758176, bytes: 1054670278, ilm_state: 'hot', recognized: true, historical: true, service_enabled: true, service_collection_enabled: true },
+    { name: 'autoadmin-yilake-tib-poc-nginx-hot', service: 'nginx', tier: 'hot', docs: 10, bytes: 55867, ilm_state: 'hot', recognized: true, historical: false, service_enabled: false, service_collection_enabled: true },
+  ], dims: { services: [
+    { id: 15, code: 'nginx', name: 'nginx', business_system: 'tib', environment: 'poc' },
+  ] } } } })),
   searchElasticsearchLogs: vi.fn(() => Promise.resolve({ data: { data: { results: [], count: 0 } } })),
   searchElasticsearchLogFacetStats: vi.fn(() => Promise.resolve({ data: { data: { buckets: [] } } })),
   cleanupLogDataStream: vi.fn(),
+  cleanupLogDataStreamByStream: vi.fn(),
   getLogProcessingRules: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
   getServiceLogConfigState: vi.fn(() => Promise.resolve({ data: { data: {
     summary: { hosts: 3, managed: 2, unmanaged: 1, synced: 1, drift: 1, never: 0, unknown: 0 },
@@ -50,6 +54,30 @@ vi.mock('@/api/monitor', () => ({
     ],
     unmanaged_hosts: [{ host_id: 30, host_ip: '10.0.0.30', host_instance_name: 'node-c', target_id: 0, managed: false }],
   } } })),
+  getServiceCollectionChain: vi.fn(() => Promise.resolve({ data: { data: {
+    service: { id: 15, name: 'nginx', code: 'nginx', enabled: true, log_collection_enabled: true },
+    layers: [
+      { key: 'agent', name: 'Agent 在线', status: 'ok', summary: '2/2 台正常', items: [] },
+      { key: 'runtime', name: '采集进程', status: 'drift', summary: '1/2 台正常（1 台待处理）', items: [
+        { name: 'node-a（10.0.0.10）', status: 'ok', detail: '运行中' },
+        { name: 'node-b（10.0.0.20）', status: 'drift', detail: 'Filebeat 服务已停止：日志不会写入' },
+      ] },
+      { key: 'host_configs', name: '主机配置', status: 'drift', summary: '1/2 台正常（1 台待处理）', items: [] },
+      { key: 'pipelines', name: '解析规则', status: 'ok', summary: '1 项全部一致', items: [] },
+      { key: 'data_flow', name: '数据写入', status: 'warn', summary: '最近 30 分钟没有新日志写入', items: [] },
+    ],
+    hosts: { items: [
+      { host_id: 10, host_ip: '10.0.0.10', host_instance_name: 'node-a', target_id: 101, managed: true, agent_online: true, runtime_status: 'running' },
+      { host_id: 20, host_ip: '10.0.0.20', host_instance_name: 'node-b', target_id: 102, managed: true, agent_online: true, runtime_status: 'stopped' },
+    ], unmanaged_items: [], summary: { total: 2 } },
+    window_minutes: 30,
+    checked_at: '2026-09-19T09:00:00Z',
+  } } })),
+  checkLogCollectionStatus: vi.fn(() => Promise.resolve({ data: { data: { exit_code: 0 } } })),
+  getLogCollectionFilterRules: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 1, name: 'common-error', rule_type: 'include', enabled: true, pattern: '(?i)error' },
+    { id: 2, name: 'drop-noise', rule_type: 'exclude', enabled: true, pattern: '(?i)healthcheck' },
+  ] } } })),
   applyLogTargetsForService: vi.fn(() => Promise.resolve({ data: { data: {
     job: { id: 77 }, target_total: 2,
     unmanaged_hosts: [{ host_id: 30, host_ip: '10.0.0.30', host_instance_name: 'node-c' }],
@@ -63,13 +91,15 @@ vi.mock('@/api/monitor', () => ({
 vi.mock('@/util/deleteConfirm', () => ({ openDeleteConfirm: vi.fn(() => Promise.resolve(true)) }))
 
 import LogCenter from './index.vue'
+import { formatStateTooltip } from '@/util/logFormatState'
 
 const serviceScope = {
   nodeType: 'service', applicationServiceId: 15, nodeTitle: 'nginx',
   businessSystemName: 'TIB', environmentName: 'poc',
 }
 
-// 富载荷：含集群/数据时间/节点磁盘/维度码/未识别流——对应当前存储水位页能看到的全部信息。
+// 富载荷：含集群/数据时间/节点磁盘/维度码/未识别流——旧「存储水位」页能看到的全部信息
+// （该页已并入日志中心，见迁移 000038，所以这里的字段不能少）。
 function fullOverviewPayload() {
   return {
     cluster: { id: 1, index_prefix: 'autoadmin' },
@@ -145,15 +175,290 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(document.body.textContent).toContain('access.log')
     expect(document.body.textContent).toContain('/srv/tomcat/logs/application.log')
     expect(document.body.textContent).toContain('tomcat rule')
-    // 页面上有两个开关，分属两层：服务级总开关（apply-switch）与逐条日志的采集开关（表格里）。
+    // 层次要分清：服务级总开关（apply-switch）、逐条日志的采集开关（表体行内）、
+    // 以及「路径」列表头那个"原始/解析后"小开关（只在表头，不是行内控件）。
     expect(wrapper.findAll('.apply-switch .ant-switch')).toHaveLength(1)
-    expect(wrapper.findAll('.ant-table .ant-switch')).toHaveLength(1)
+    expect(wrapper.findAll('.ant-table-tbody .ant-switch')).toHaveLength(1)
+    expect(wrapper.findAll('.ant-table-thead .ant-switch')).toHaveLength(1)
     // 无覆盖行 = 采：逐条开关处于勾选态（不再是"采集中"标签）。
-    expect(wrapper.findAll('.ant-table .ant-switch-checked')).toHaveLength(1)
+    expect(wrapper.findAll('.ant-table-tbody .ant-switch-checked')).toHaveLength(1)
     expect(wrapper.vm.isLogCollected(wrapper.vm.logRows[0])).toBe(true)
     // 档位列是下拉：显示当前档位名。
     expect(wrapper.find('.ant-select-selection-item').text()).toBe('标准 30 天')
     expect(document.body.textContent).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')
+    wrapper.unmount()
+  })
+
+  // 日志在哪台机器上：日志配置 tab 必须给出承载主机的 IP——用户是按行看"这条日志在哪台服务器"的，
+  // 只给"承载 3 台主机，1 台待下发"这种计数不够（现场反馈：找不到日志所在机器的 IP）。
+  // 采集过滤改一次可能永久丢数据（被滤掉的记录进不了 ES），所以选完先弹确认、确认后才入库。
+  // 其他列不弹：那是可逆的，而且每个都弹会把这一页变吵。
+  it('asks for confirmation before saving a collection filter change', async () => {
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const { saveApplicationServiceLogSetting } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    saveApplicationServiceLogSetting.mockClear()
+
+    // 取消：不落库（值也不会变，因为控件值由 record 派生）
+    openDeleteConfirm.mockResolvedValueOnce(false)
+    await wrapper.vm.confirmFilterChange(wrapper.vm.logRows[0], 'include', 1)
+    await flushPromises()
+    expect(saveApplicationServiceLogSetting).not.toHaveBeenCalled()
+    // 确认文案要说清后果与生效方式
+    const options = openDeleteConfirm.mock.calls.at(-1)[0]
+    expect(options.title).toContain('保留（白名单）')
+    expect(options.items.join('')).toContain('不会进 ES')
+    expect(options.items.join('')).toContain('下发')
+
+    // 确认：按行保存，且两个过滤列都带上（缺列会被清成"继承模板"）
+    openDeleteConfirm.mockResolvedValueOnce(true)
+    await wrapper.vm.confirmFilterChange(wrapper.vm.logRows[0], 'include', 1)
+    await flushPromises()
+    expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, expect.objectContaining({
+      log_definition_id: 81, collection_filter_rule: 1,
+    }))
+    wrapper.unmount()
+  })
+
+  // 改完覆盖值（过滤/档位/逐条开关）要**就地重拉采集链路**：期望配置指纹变了，「主机配置」层的
+  // 结论就从"一致"变成"待下发"。以前这里只重拉下发状态，链路停在旧结论上，用户只能去点
+  // 「刷新运行态」——而那个按钮只是顺带重拉了链路，看起来像"运行态需要刷新"（2026-09-19 现场）。
+  it('reloads the collection chain right after an override is saved', async () => {
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const { getServiceCollectionChain, checkLogCollectionStatus } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    getServiceCollectionChain.mockClear()
+    checkLogCollectionStatus.mockClear()
+
+    openDeleteConfirm.mockResolvedValueOnce(true)
+    await wrapper.vm.confirmFilterChange(wrapper.vm.logRows[0], 'exclude', 2)
+    await flushPromises()
+
+    expect(getServiceCollectionChain).toHaveBeenCalledWith(15)
+    // 重拉链路 ≠ 去查主机：链路是读库+读 ES，不该因为改了个过滤就往主机上打命令。
+    expect(checkLogCollectionStatus).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  // 一致性：这一页**每个**可写控件都先确认再入库。分开写用例是因为"只给一部分加确认"
+  // 正是之前的毛病——用户看到有的弹有的不弹，就会怀疑哪些改动真的保存了。
+  it('asks for confirmation on every editable control in the log config tab', async () => {
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const { saveApplicationServiceLogSetting, setApplicationServiceLogCollection } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    saveApplicationServiceLogSetting.mockClear()
+    setApplicationServiceLogCollection.mockClear()
+
+    // 逐条采集开关（关闭）
+    openDeleteConfirm.mockClear()
+    await wrapper.vm.confirmLogCollectChange(wrapper.vm.logRows[0], false)
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(saveApplicationServiceLogSetting).toHaveBeenCalledTimes(1)
+
+    // 保留档位
+    openDeleteConfirm.mockClear()
+    await wrapper.vm.confirmTierChange(wrapper.vm.logRows[0], 4)
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(openDeleteConfirm.mock.calls.at(-1)[0].title).toContain('保留档位')
+    expect(openDeleteConfirm.mock.calls.at(-1)[0].items.join('')).toContain('不迁移数据')
+
+    // 采集过滤（两个方向同一个确认入口）
+    openDeleteConfirm.mockClear()
+    await wrapper.vm.confirmFilterChange(wrapper.vm.logRows[0], 'exclude', 2)
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(openDeleteConfirm.mock.calls.at(-1)[0].title).toContain('排除（黑名单）')
+
+    // 服务采集总开关
+    openDeleteConfirm.mockClear()
+    await wrapper.vm.toggleServiceCollect(false)
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(setApplicationServiceLogCollection).toHaveBeenCalledWith(15, false)
+
+    // 打开逐条开关（回到默认）不需要确认：它不会让任何东西停止采集。
+    openDeleteConfirm.mockClear()
+    await wrapper.vm.confirmLogCollectChange(wrapper.vm.logRows[0], true)
+    expect(openDeleteConfirm).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  // 「路径」列的小开关：原始模式 ↔ 解析后。默认解析后（人想看的是"实际落在哪"），
+  // 但排查"这个宏是哪一层给的"时要能看回原始 —— 两页共用 util/logPathMacro，口径一致。
+  it('toggles the path column between the raw pattern and the resolved path', async () => {
+    // 不依赖用例顺序：别的用例会 mockResolvedValue 覆盖日志配置（且不清除），这里显式给这一条日志定义，
+    // 跑完再把模块级 mock 还原回去（否则会污染后面的用例）。
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const original = getApplicationServiceLogConfig.getMockImplementation()
+    getApplicationServiceLogConfig.mockResolvedValue({ data: { data: { logs: [{
+      log_definition: 81,
+      name: 'access.log',
+      resolved_path: '/srv/tomcat/logs/application.log',
+      path_pattern: '${APP_HOME}/logs/application.log',
+      collection_enabled: null,
+      template_processing_rule_id: 91,
+      template_processing_rule_name: 'tomcat rule',
+      retention_tier: 3,
+      format_state: 'unverified',
+      data_stream: 'autoadmin-yilake-tib-poc-nginx-wuhan-test',
+    }] } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(wrapper.vm.showResolvedPath).toBe(true)
+    expect(document.body.textContent).toContain('/srv/tomcat/logs/application.log')
+    wrapper.vm.showResolvedPath = false
+    await flushPromises()
+    expect(document.body.textContent).toContain('${APP_HOME}/logs/application.log')
+    expect(document.body.textContent).not.toContain('/srv/tomcat/logs/application.log')
+    wrapper.unmount()
+    getApplicationServiceLogConfig.mockImplementation(original)
+  })
+
+  // 采集链路：查不到日志时按层回答"断在哪"。判定来自后端（与链路体检同源），前端只呈现，
+  // 所以这里验证的是接线与呈现：五层都在、异常层的状态带出来、明细进 tooltip。
+  it('renders the collection chain layers with the failing layer visible', async () => {
+    const { getServiceCollectionChain } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(getServiceCollectionChain).toHaveBeenCalledWith(15)
+    const text = document.body.textContent
+    for (const layerName of ['Agent 在线', '采集进程', '主机配置', '解析规则', '数据写入']) {
+      expect(text).toContain(layerName)
+    }
+    // 断点要一眼可见：Filebeat 已停止的那台说明必须在明细里，而不是只在汇总计数里。
+    const runtimeLines = wrapper.vm.chainLayerTooltipLines(wrapper.vm.chainLayers[1])
+    expect(runtimeLines.join('\n')).toContain('Filebeat 服务已停止')
+    expect(runtimeLines.join('\n')).toContain('node-b（10.0.0.20）')
+    // 异常层的 class 决定了颜色，class 名是"状态 → 颜色"的唯一映射。
+    expect(wrapper.findAll('.chain-layer.chain-drift')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  // 刷新运行态：落库的 Filebeat 状态是快照，只有查过才新鲜。查的是"已纳管 + agent 在线"的主机，
+  // 未纳管的主机没有目标 id，查不了也不该查（后端会 400）。
+  it('refreshes filebeat runtime status per managed host and reloads the chain', async () => {
+    const { checkLogCollectionStatus, getServiceCollectionChain } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    getServiceCollectionChain.mockClear()
+
+    await wrapper.vm.refreshChainRuntime()
+
+    expect(checkLogCollectionStatus).toHaveBeenCalledTimes(2)
+    expect(checkLogCollectionStatus).toHaveBeenCalledWith(101)
+    expect(checkLogCollectionStatus).toHaveBeenCalledWith(102)
+    // 查完要重拉链路：状态文案由后端生成，前端不自己拼（否则会和体检说法不一致）。
+    expect(getServiceCollectionChain).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  // 状态未知（新纳管、刚下发重启过）时**自动查一次**，不必再手点「刷新运行态」。
+  // 现场反馈："日志配置里每次修改了东西都要手动刷新运行态，麻烦"（2026-09-19）。
+  it('auto-refreshes filebeat status when a host has never been checked', async () => {
+    const { getServiceCollectionChain, checkLogCollectionStatus } = await import('@/api/monitor')
+    getServiceCollectionChain.mockResolvedValueOnce({ data: { data: {
+      service: { id: 15, name: 'nginx', code: 'nginx', enabled: true, log_collection_enabled: true },
+      layers: [],
+      hosts: { items: [
+        { host_id: 10, host_ip: '10.0.0.10', host_instance_name: 'node-a', target_id: 101, managed: true, agent_online: true, runtime_status: '' },
+      ], unmanaged_items: [], summary: { total: 1 } },
+      window_minutes: 30,
+      checked_at: '2026-09-19T09:00:00Z',
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(checkLogCollectionStatus).toHaveBeenCalledTimes(1)
+    expect(checkLogCollectionStatus).toHaveBeenCalledWith(101)
+    // 查完重拉链路（状态文案由后端生成）；此刻状态已有值，不会反复自动查。
+    expect(getServiceCollectionChain.mock.calls.length).toBeGreaterThanOrEqual(2)
+    wrapper.unmount()
+  })
+
+  // 状态已知时**不许打扰主机**：自动刷新不能变成"每打开一次页面就把全网主机 systemctl 一遍"。
+  it('does not touch hosts when the runtime status is already known', async () => {
+    const { checkLogCollectionStatus } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(checkLogCollectionStatus).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  // 下发会**重启 Filebeat**，重启后的进程态谁都不知道 → 作业一结束就自动查一次。
+  // 这正是"改完还要手动刷新"的那一步：以前作业结束只重拉配置态，运行态还是重启前的旧快照。
+  it('refreshes filebeat status right after the delivery job finishes', async () => {
+    const { checkLogCollectionStatus } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    checkLogCollectionStatus.mockClear()
+
+    await wrapper.vm.applyService()
+    await flushPromises()
+
+    // 默认夹具里两台"已纳管 + agent 在线"的主机各查一次（未纳管的 target_id 为空，查不了）。
+    expect(checkLogCollectionStatus).toHaveBeenCalledTimes(2)
+    expect(checkLogCollectionStatus).toHaveBeenCalledWith(101)
+    expect(checkLogCollectionStatus).toHaveBeenCalledWith(102)
+    wrapper.unmount()
+  })
+
+  // 服务停用 / 服务级采集总开关关闭不在五层里，但它是"查不到日志"最常见的原因，必须显式提示。
+  it('calls out a stopped service as the reason for missing logs', async () => {
+    const { getServiceCollectionChain } = await import('@/api/monitor')
+    getServiceCollectionChain.mockResolvedValueOnce({ data: { data: {
+      service: { id: 15, name: 'nginx', code: 'nginx', enabled: false, log_collection_enabled: true },
+      layers: [], hosts: { items: [], unmanaged_items: [] }, window_minutes: 30,
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(wrapper.vm.chainServiceStopReason).toContain('该逻辑服务已停用')
+    expect(document.body.textContent).toContain('该逻辑服务已停用')
+    wrapper.unmount()
+  })
+
+  // 「未验证」标红：没验证就采集属于静默坏数据（日志查得到但级别/消息列为空、关键词搜不到、
+  // 错误清单失效）。灰色标签混在表格里会被忽略，所以标签颜色就是"要不要人去处理"。
+  it('marks an unverified log format in red and tells the admin how to fix it', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    const tag = wrapper.findAll('.ant-table .ant-tag').find((node) => node.text() === '未验证')
+    expect(tag, '未验证标签应该渲染出来').toBeTruthy()
+    expect(tag.classes()).toContain('ant-tag-red')
+    // 光红不够：要说清后果与下一步动作（点哪一行、点哪个按钮）。
+    const tooltip = formatStateTooltip(wrapper.vm.logRows[0])
+    expect(tooltip).toContain('静默坏数据')
+    expect(tooltip).toContain('发起认证')
+    wrapper.unmount()
+  })
+
+  it('shows the carrying hosts with their IPs in the log config tab', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    // 首台完整显示（主机实例名 + IP），其余折叠成"N 台"，全部明细进 tooltip。
+    expect(wrapper.vm.carryingHostsSummary).toBe('node-a（10.0.0.10） 等 3 台')
+    expect(document.body.textContent).toContain('node-a（10.0.0.10）')
+    // 未纳管的主机也要列出来并标注，否则用户以为这个服务就这几台机器（它与"下发不到"直接相关）。
+    expect(wrapper.vm.carryingHostsTooltip).toContain('node-b（10.0.0.20）')
+    expect(wrapper.vm.carryingHostsTooltip).toContain('node-c（10.0.0.30）（未纳管，配置下发不到）')
     wrapper.unmount()
   })
 
@@ -365,18 +670,28 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await wrapper.vm.submitSwitchTier()
     await flushPromises()
 
+    // 提交体是该行覆盖值的**全集**：两个采集过滤列也要原样带上，缺了会被清成"继承模板"。
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, retention_tier: 4, collection_enabled: null,
+      collection_filter_rule: null, collection_exclude_filter_rule: null,
     })
     // 档位改完要重新读配置/水位/下发状态（档位变了 → 渲染内容变 → 变成待下发）。
     expect(wrapper.vm.switchTierOpen).toBe(false)
     wrapper.unmount()
   })
 
-  // 「立即清理」：只清理这一条流（带 tier），并且确认框里必须写清"不可恢复 + 流对象保留"——
-  // 它是唯一会真删数据的入口，文案不能含糊。
-  it('cleans only the historical stream after an explicit confirmation', async () => {
-    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+  // 清理入口（2026-09-19）：改成**每条流**都能清，弹窗也换成与「日志查询」原来那套一致的
+  // 共享组件（范围可选 保留 N 小时 / N 天 / 全部清空）。日志查询面板里的清理按钮已删除，
+  // 清理入口统一在数据流列表（这里）。
+  //
+  // 分流规则：能归属到逻辑服务 → 服务维度（带 tier，只清这一条流）；未识别流 → 按流名。
+  async function openCleanupDialog(wrapper, stream) {
+    wrapper.vm.cleanupStream(stream)
+    await flushPromises()
+    return wrapper.findComponent({ name: 'LogCleanupDialog' })
+  }
+
+  it('cleans only the historical stream through the service-scoped path', async () => {
     const { cleanupLogDataStream } = await import('@/api/monitor')
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
@@ -385,20 +700,103 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await flushPromises()
 
     const historical = wrapper.vm.storageRows.find((row) => row.tier === 'wuhan-test')
-    wrapper.vm.cleanupHistoricalStream(historical)
+    const dialog = await openCleanupDialog(wrapper, historical)
+
+    // 弹窗必须点名清理对象（否则用户不知道点的是哪条流），且默认是"保留最近 7 天"。
+    expect(dialog.vm.targetLabel).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')
+    expect(dialog.vm.mode).toBe('days')
+    expect(dialog.vm.amount).toBe(7)
+
+    // 未确认前不发请求；选了"全部清空"后按 (服务, 档位) 清理。
+    expect(cleanupLogDataStream).not.toHaveBeenCalled()
+    dialog.vm.mode = 'all'
+    await dialog.vm.submit()
+    await flushPromises()
+    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'all', amount: 0, tier: 'wuhan-test' })
+    expect(wrapper.vm.cleanupOpen).toBe(false)
+    wrapper.unmount()
+  })
+
+  // 时间窗（保留最近 N 天）必须真的传下去：这是"只清旧数据、留最近"的唯一手段。
+  it('passes the keep-recent window through to the cleanup API', async () => {
+    const { cleanupLogDataStream } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
     await flushPromises()
 
-    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
-    const options = openDeleteConfirm.mock.calls[0][0]
-    expect(options.title).toContain('历史档位')
-    expect(options.summary).toContain('不可恢复')
-    expect(options.summary).toContain('只影响这个档位')
-    expect(options.items[0]).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')
+    const active = wrapper.vm.storageRows.find((row) => row.name.endsWith('-hot'))
+    const dialog = await openCleanupDialog(wrapper, active)
+    dialog.vm.mode = 'days'
+    dialog.vm.amount = 30
+    await dialog.vm.submit()
+    await flushPromises()
 
-    // 没有确认前不发请求；确认后才按 (服务, 档位) 清理。
+    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'days', amount: 30, tier: 'hot' })
+    wrapper.unmount()
+  })
+
+  it('cleans an active stream and says that collection continues', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    const active = wrapper.vm.storageRows.find((row) => row.name.endsWith('-hot'))
+    expect(wrapper.vm.streamCleanupTarget(active)).toEqual({ kind: 'service', serviceId: 15, tier: 'hot' })
+    const dialog = await openCleanupDialog(wrapper, active)
+    // 活跃流最容易被误解成"停止采集"：弹窗里必须写清"清理不停采集"（提示文字在正文里，断言渲染结果）。
+    expect(document.body.textContent).toContain('不会停止采集')
+    expect(dialog.vm.title).toBe('清理日志数据')
+    wrapper.unmount()
+  })
+
+  it('cleans an unrecognized stream by its name', async () => {
+    const { cleanupLogDataStream, cleanupLogDataStreamByStream, getLogStorageOverview } = await import('@/api/monitor')
+    // 未识别流单独注入（默认夹具不塞它，免得改坏"数流数量"的既有用例）。
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: {
+      data_streams: [
+        { name: 'autoadmin-nkg-tib-prod-oldservice-std', tier: 'std', docs: 4200, bytes: 33100000, ilm_state: 'hot', recognized: false, historical: false },
+      ],
+      dims: { services: [] },
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    const unrecognized = wrapper.vm.storageRows.find((row) => !row.recognized)
+    expect(unrecognized).toBeTruthy()
+    expect(wrapper.vm.streamCleanupTarget(unrecognized)).toEqual({ kind: 'stream', stream: unrecognized.name })
+    const dialog = await openCleanupDialog(wrapper, unrecognized)
+    expect(dialog.vm.alertDescription).toContain('未识别流')
+    dialog.vm.mode = 'all'
+    await dialog.vm.submit()
+    await flushPromises()
+
+    expect(cleanupLogDataStreamByStream).toHaveBeenCalledWith({ stream: unrecognized.name, mode: 'all', amount: 0 })
     expect(cleanupLogDataStream).not.toHaveBeenCalled()
-    await options.onConfirm()
-    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'all', tier: 'wuhan-test' })
+    wrapper.unmount()
+  })
+
+  it('cleans from the all-streams view too (no service selected)', async () => {
+    const { cleanupLogDataStream } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    // 不选服务（全量视图）——这正是用户要的"全部 data stream 也能清"。
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    const historical = wrapper.vm.storageRows.find((row) => row.historical)
+    // 服务 id 由响应里的 dims 映射得到（不依赖左侧选中的是谁）。
+    expect(wrapper.vm.streamCleanupTarget(historical)).toEqual({ kind: 'service', serviceId: 15, tier: 'wuhan-test' })
+    const dialog = await openCleanupDialog(wrapper, historical)
+    dialog.vm.mode = 'all'
+    await dialog.vm.submit()
+    await flushPromises()
+    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'all', amount: 0, tier: 'wuhan-test' })
     wrapper.unmount()
   })
 
@@ -433,6 +831,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, collection_enabled: false, retention_tier: 3,
+      collection_filter_rule: null, collection_exclude_filter_rule: null,
     })
     // 用后端回读的行更新界面（不在前端拼状态）
     expect(wrapper.vm.logRows[0].format_state).toBe('verified')
@@ -450,6 +849,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, collection_enabled: null, retention_tier: 3,
+      collection_filter_rule: null, collection_exclude_filter_rule: null,
     })
     wrapper.unmount()
   })
@@ -472,7 +872,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
-  // 存储水位页的集群级信息必须整合过来：节点磁盘（盘快满了比任何单条流都紧急）、
+  // 集群级信息必须在日志中心完整保留：节点磁盘（盘快满了比任何单条流都紧急）、
+  // 数据时间与集群前缀（水位是"某集群某时刻"的快照，不给这两项数字没法解读）。
   // 数据时间与集群前缀（水位是"某集群某时刻"的快照，不给这两项数字没法解读）。
   it('shows the cluster, data time and node disk levels from the water level payload', async () => {
     const { getLogStorageOverview } = await import('@/api/monitor')

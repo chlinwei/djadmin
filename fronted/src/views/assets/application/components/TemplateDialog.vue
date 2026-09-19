@@ -174,12 +174,34 @@
                 option-filter-prop="label"
                 placeholder="日志处理规则"
               />
+              <a-select
+                v-model:value="item.filter_include_rule"
+                :options="filterRuleOptions('include')"
+                :getPopupContainer="getPopupContainer"
+                allow-clear
+                show-search
+                option-filter-prop="label"
+                placeholder="只保留匹配的记录（可选）"
+              />
+              <a-select
+                v-model:value="item.filter_exclude_rule"
+                :options="filterRuleOptions('exclude')"
+                :getPopupContainer="getPopupContainer"
+                allow-clear
+                show-search
+                option-filter-prop="label"
+                placeholder="丢掉匹配的记录（可选）"
+              />
               <a-button danger @click="form.logs.splice(index, 1)">移除</a-button>
             </div>
             <a-button type="dashed" block @click="addLog">新增日志</a-button>
             <div class="field-hint">
-              模板只描述"这条日志的路径怎么算、挂哪条处理规则"；是否采集由逻辑服务的日志设置决定
-              （默认采、可按服务逐条关闭）。
+              模板描述"这条日志的路径怎么算、挂哪条处理规则"，以及**采集过滤的默认值**（可选）：
+              「只保留」是白名单、「丢掉」是黑名单，两者可同时配（先保留、后排除）。逻辑服务可以继承、
+              换成别的规则、或者关掉——改完要重新下发采集配置才在主机上生效。
+              <br />
+              注意：过滤是在**采集侧**按整条记录（多行合并之后）匹配正则，被丢掉的日志不会进 ES、也补不回来，
+              白名单写窄之前到「日志处理规则 → 采集过滤规则」里用试算确认一遍。
             </div>
           </a-tab-pane>
         </a-tabs>
@@ -198,6 +220,7 @@ import {
   getApplicationDeploymentTemplate,
   saveApplicationDeploymentTemplate,
 } from '@/api/assets/application'
+import { getLogCollectionFilterRules } from '@/api/monitor'
 import { getLogProcessingRules } from '@/api/monitor'
 
 const props = defineProps({
@@ -213,6 +236,7 @@ const loading = ref(false)
 const saving = ref(false)
 const applications = ref([])
 const processingRules = ref([])
+const collectionFilterRules = ref([])
 let loadToken = 0
 const commandValues = reactive({ start: '', stop: '', status: '', restart: '', reload: '' })
 
@@ -290,6 +314,22 @@ async function loadApplications() {
 async function loadProcessingRules() {
   const response = await getLogProcessingRules({ page_size: 100 })
   processingRules.value = response?.data?.data?.results || []
+}
+
+// 采集过滤规则：**按方向**分桶给两个下拉，白名单不会出现在"丢掉"槽里——反着用会只采噪声。
+// 归属与解析规则同一套约定：属于当前应用 + 不限应用的通用规则。
+function filterRuleOptions(direction) {
+  return collectionFilterRules.value
+    .filter((item) => item.enabled && (item.rule_type || 'include') === direction)
+    .filter((item) => !item.application || item.application === form.application)
+    .map((item) => ({
+      label: item.application ? item.name : `${item.name}（通用）`,
+      value: item.id,
+    }))
+}
+async function loadCollectionFilterRules() {
+  const response = await getLogCollectionFilterRules({ page_size: 200 })
+  collectionFilterRules.value = response?.data?.data?.results || []
 }
 async function loadTemplate(id) {
   if (!id) return
@@ -372,7 +412,10 @@ const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, b
 const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
-const addLog = () => form.logs.push({ name: '', path_pattern: '', processing_rule: null, extra_fields: {} })
+const addLog = () => form.logs.push({
+  name: '', path_pattern: '', processing_rule: null, extra_fields: {},
+  filter_include_rule: null, filter_exclude_rule: null,
+})
 
 watch(() => props.open, (visible) => {
   if (!visible) {
@@ -383,6 +426,7 @@ watch(() => props.open, (visible) => {
   Promise.all([
     loadApplications(),
     loadProcessingRules(),
+    loadCollectionFilterRules(),
     props.templateId || props.copyFromId
       ? loadTemplate(props.templateId || props.copyFromId)
       : Promise.resolve(),

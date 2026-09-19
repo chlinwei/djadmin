@@ -155,6 +155,8 @@ type Querier interface {
 	// 本文件由 make derive 从 db/queries/mysql/scheduler.sql 派生，禁止手改。
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。
+	// 不再硬编码排除 cleanup_alert_histories：那条过滤曾把它从列表里藏起来，后果是"历史上从来没被
+	// 清理过"这件事没人看得见（2026-09-19 才发现）。要隐藏某个任务请在业务上退役它（删行 + 写文档）。
 	CountScheduledTasks(ctx context.Context, arg CountScheduledTasksParams) (int64, error)
 	// ---- P2-3：监控软件包管理（读取复用 GetSoftwarePackageTyped；写路径见下）----
 	// 原实现有运行时拼列名的地方（`SET `+role+`_playbook_template_id=…`），改成按角色分派的显式语句。
@@ -282,11 +284,21 @@ type Querier interface {
 	DeleteAPIToken(ctx context.Context, id int32) error
 	DeleteAgentPackage(ctx context.Context, id uint64) error
 	DeleteAlertMedia(ctx context.Context, id int64) (sql.Result, error)
+	// 告警历史**有子记录**（通知事件 → 投递记录，外键都无级联），所以清理必须带上它们、且先子后父。
+	// 语义：投递记录是"这条告警的通知轨迹"，告警本身过期被清时它们失去归属；保留期跟着父记录走，
+	// 而不是让父记录因为"有子记录"永远清不掉（那样这条保留期配置就形同虚设）。
+	DeleteAlertNotificationDeliveriesForHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
+	DeleteAlertNotificationEventsForHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
 	DeleteApplication(ctx context.Context, id int64) error
 	DeleteApplicationDeployment(ctx context.Context, id int64) error
 	DeleteApplicationService(ctx context.Context, id int64) error
 	DeleteApplicationVersion(ctx context.Context, id int64) error
 	DeleteAutomationControllerKeys(ctx context.Context) error
+	// 子表先删（外键无级联）：主机明细 → 作业字节块 → 作业行。只清 end_time 已过保留期的作业，
+	// 运行中（end_time 为空）的一律不碰。
+	DeleteAutomationExecutionHostLogsBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
+	DeleteAutomationExecutionJobLogsBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
+	DeleteAutomationExecutionJobsBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
 	DeleteAutomationInventory(ctx context.Context, id int64) (int64, error)
 	DeleteAutomationJobLogChunks(ctx context.Context, jobID int64) error
 	DeleteAutomationPlaybook(ctx context.Context, id int64) (int64, error)
@@ -327,10 +339,21 @@ type Querier interface {
 	DeleteLoginAuditsBefore(ctx context.Context, loginTime time.Time) (sql.Result, error)
 	DeleteMenuByID(ctx context.Context, id int32) error
 	DeleteMenuRoles(ctx context.Context, menuID int32) error
+	// 每个纳管目标**至少保留最新一条**：清完也要能回答"这台机器最近一次装/卸是什么结果"
+	// （sys_config 里这条配置的说明就是这么写的）。
+	// target_id 为空的行（没有"目标"可留）按年龄删。
+	// 子查询再套一层派生表：MySQL 不允许 DELETE 的目标表直接出现在子查询里（错误 1093）；
+	// 外层与里层都必须给这张表起别名（SQL 里出现两次同名关系时，PG 解析 create_time 会报 ambiguous，
+	// sqlc 的 PG 解析器同样卡在这一步）。
+	DeleteMonitorInstallHistoriesBefore(ctx context.Context, before time.Time) (sql.Result, error)
 	DeleteMonitorTarget(ctx context.Context, id int64) error
 	DeleteNotificationPolicy(ctx context.Context, id int64) error
 	DeleteOperationAuditsBefore(ctx context.Context, createdAt time.Time) (sql.Result, error)
 	DeleteProject(ctx context.Context, id int64) error
+	// 只清**已恢复**的历史告警：仍在 firing 的记录是"当前状态"，删了会让告警页凭空少一条正在发的告警。
+	// 年龄取 COALESCE(resolved_at, started_at)：恢复时间才是"这条记录还能留多久"的起点，
+	// 而历史数据里有 state=resolved 但 resolved_at 为空的行（Django 时代的），回落到 started_at 才不会漏清。
+	DeleteResolvedAlertHistoriesBefore(ctx context.Context, before sql.NullTime) (sql.Result, error)
 	DeleteRoleByID(ctx context.Context, id int32) error
 	DeleteRoleMenus(ctx context.Context, roleID int32) error
 	DeleteRoleUsers(ctx context.Context, roleID int32) error
@@ -354,6 +377,13 @@ type Querier interface {
 	DeleteUserGroup(ctx context.Context, id int64) (int64, error)
 	DeleteUserGroupMembers(ctx context.Context, groupID int64) error
 	DeleteUserRoles(ctx context.Context, userID int32) error
+	// ---- 四类保留期清理（2026-09-19 从 Django 时代的历史任务迁到 Go）----
+	//
+	// 语义统一：**只删早于保留期的行，绝不动还在进行中的**（运行中的作业 / 没结束的会话都必须留着）；
+	// 保留期一律从 sys_config 读（键见各 handler 注释），与 Django 时代用的是同一个键，升级后行为不变。
+	// assets_webssh_session_log 没有子表；按 start_time 判年龄：这条记录本身的"保留天数"，
+	// 未正常结束（end_time 为空）的记录也要能清掉，否则崩溃留下的记录永远删不掉。
+	DeleteWebSSHSessionLogsBefore(ctx context.Context, before time.Time) (sql.Result, error)
 	DetachInspectionExecutionsFromTask(ctx context.Context, arg DetachInspectionExecutionsFromTaskParams) error
 	// 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
 	DetachInstallHistoryFromLogTarget(ctx context.Context, logCollectionTargetID sql.NullInt64) error
@@ -734,6 +764,9 @@ type Querier interface {
 	ListPendingLogBatchJobItems(ctx context.Context, arg ListPendingLogBatchJobItemsParams) ([]ListPendingLogBatchJobItemsRow, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
 	// ---- 日志链路对账与数据流水位（只读）----
+	// 集群体检的"解析规则"层判定一条规则是否可用，除了 pipeline 发布态还要**用规则自带的样例日志
+	// 试跑一次**（判"产出的文档会被 ES 拒收"这类运行期错误，见 log_health.go 的 judgeRulePipeline），
+	// 所以取数必须带上样例与多行合并配置——缺了就只能跳过试跑，把"判不了"显示成"没问题"。
 	ListProcessingRulesByCluster(ctx context.Context, clusterID int64) ([]ListProcessingRulesByClusterRow, error)
 	// business_system_names/business_system_ids 用 '||' 聚合（项目名/系统名可能含逗号），Go 侧拆分为数组。
 	ListProjects(ctx context.Context, arg ListProjectsParams) ([]ListProjectsRow, error)
@@ -772,6 +805,8 @@ type Querier interface {
 	//  2. 只在 LEFT JOIN 里要求 `managed_enabled = TRUE`：没纳管（或已停用纳管）的主机没有采集目标行，
 	//     下发不了，必须能被识别出来告诉用户（target_id 为 NULL），而不是静默少下发几台。
 	//  3. SELECT DISTINCT：入参是服务，它可能在同一台主机上有多个部署实例，而去重后每一列都是主机级事实。
+	//     runtime_status 一并带出：日志中心要按服务回答"为什么没日志"，Filebeat 进程态是其中一层
+	//     （与日志采集页同一字段；那个字段是落库快照，谁看谁负责刷新，见 log_service_chain.go）。
 	ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error)
 	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
 	// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；

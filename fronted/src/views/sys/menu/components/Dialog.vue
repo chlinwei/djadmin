@@ -52,7 +52,9 @@
                     <a-switch v-model:checked="form.is_expanded" checked-children="展开" un-checked-children="收起" />
                 </a-form-item>
                 <a-form-item label="显示顺序" name="order_num">
-                    <a-input v-model:value="form.order_num"/>
+                    <!-- 必须是数字输入框：后端按 int32 绑定，文本框一改就成了字符串，
+                         整个保存请求会被判成"请求参数错误"（2026-09-19 现场）。 -->
+                    <a-input-number v-model:value="form.order_num" :min="0" style="width: 100%" />
                 </a-form-item>
                 <a-form-item name="remark" label="备注">
                     <a-textarea v-model:value="form.remark" />
@@ -194,12 +196,19 @@ import { saveOrCreateMenu, getMenuById } from '@/api/menu/index.js';
 const handleApiError = (err) => {
     // 从响应中提取错误数据
     const responseData = err?.response?.data || err?.data
-    // 如果是统一格式的错误响应（code 和 msg），data 字段才是实际错误内容
+    // 平台统一信封是 {code, msg, data}：**先显示 msg**。
+    // 旧写法取 `Object.keys()[0]`（也就是 `code`）当消息，于是"请求参数错误"被弹成 `400`，
+    // 谁也看不懂（2026-09-19 现场：菜单保存失败只看到数字，只能去翻服务端日志）。
+    if (responseData && typeof responseData.msg === 'string' && responseData.msg.trim()) {
+        message.error(responseData.msg)
+        return
+    }
+    // 字段级错误（Django 风格的 {field: [msg]}）仍按原逻辑取第一条。
     let errorObj = responseData
     if (responseData && responseData.data && typeof responseData.data === 'object') {
         errorObj = responseData.data
     }
-    
+
     if (errorObj && typeof errorObj === 'object') {
         const firstKey = Object.keys(errorObj)[0]
         const msg = Array.isArray(errorObj[firstKey]) ? errorObj[firstKey][0] : errorObj[firstKey]
@@ -208,9 +217,26 @@ const handleApiError = (err) => {
     message.error('操作失败，请稍后重试')
 }
 
+// 提交前把**数值字段**归一成数字：后端按 int32/int16 绑定，收到字符串会整个请求 400
+//（"请求参数错误"）。弹窗里有些值来自文本输入/表格行，类型不保证是 number。
+// 2026-09-19 现场：改「显示顺序」后保存必失败——它绑的是文本框，一改就是字符串。
+const normalizeMenuPayload = (menu) => {
+    const toNumber = (value) => {
+        if (value === null || value === undefined || value === '') return null
+        const parsed = Number(value)
+        return Number.isNaN(parsed) ? null : parsed
+    }
+    return {
+        ...menu,
+        parent_id: toNumber(menu.parent_id),
+        order_num: toNumber(menu.order_num),
+        location: toNumber(menu.location),
+    }
+}
+
 const handleOk = e => {
     formRef.value?.validate().then((r1) => {
-        let obj = form.value;
+        let obj = normalizeMenuPayload(form.value);
         if (obj.id == -1) {
             saveOrCreateMenu(obj).then(result => {
                 if (result.data.code === 200) {

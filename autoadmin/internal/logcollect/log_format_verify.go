@@ -190,10 +190,16 @@ func (handler *Handler) tailRemoteFile(ctx context.Context, agentID, path string
 //
 // 与规则调试页的 buildRawDocs 同一语义：默认逐行成一条记录；开启多行后
 // `negate: true, match: after`（"不以首行正则开头的行并入上一行"），不需要续行正则。
+// **与调试页唯一的口径差异**：多行模式下，第一条命中首行正则的记录之前的行直接丢掉——
+// 那是采样窗口切出来的残尾（见下方 default 分支），不是一条真实记录。
 // 不做这一步的话，多行日志会被当成一条单行文档，校验结果与真实采集不符。
 //
 // 与前端唯一的有意差异：正则在服务端用 Go 的 RE2 编译（Filebeat 也是 RE2），
 // 而不是浏览器的 JS 正则——认证要测的是"主机上真正会跑的那套规则"。
+//
+// **每条文档都用 withFilebeatEventFields 补齐 Filebeat 自己的字段**（log/host/agent/…，见
+// sample_event.go）：样例只给 `message` 的话，"处理器把 message 覆盖成对象"这类错误在认证里
+// 永远看不见（ignore_missing 的 rename 会静默跳过），认证就变成了绿噪声。
 func logSampleDocs(text string, multiline bool, startPattern string) ([]any, error) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	// 只取尾部若干行：窗口是 1MiB，可能包含上万行，全部送进 _simulate 没有必要。
@@ -206,7 +212,7 @@ func logSampleDocs(text string, multiline bool, startPattern string) ([]any, err
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			docs = append(docs, map[string]any{"message": line})
+			docs = append(docs, withFilebeatEventFields(map[string]any{"message": line}))
 		}
 		if len(docs) == 0 {
 			return nil, apperror.New(apperror.CodeInvalidArgument, "样例日志为空，取不到可校验的内容")
@@ -217,8 +223,12 @@ func logSampleDocs(text string, multiline bool, startPattern string) ([]any, err
 	if pattern == "" {
 		return nil, apperror.New(apperror.CodeInvalidArgument, "规则启用了多行合并但未配置首行正则，无法还原样例")
 	}
+	if problem := validateRulePattern("首行正则", pattern); problem != "" {
+		return nil, apperror.New(apperror.CodeInvalidArgument, problem)
+	}
 	startExpression, err := regexp.Compile(pattern)
 	if err != nil {
+		// validateRulePattern 已经编译过一遍，这里理论到不了；留着是为了不给 panic 留口子。
 		return nil, apperror.New(apperror.CodeInvalidArgument, "首行正则不合法："+err.Error())
 	}
 	buffer := make([]string, 0, 8)
@@ -226,7 +236,7 @@ func logSampleDocs(text string, multiline bool, startPattern string) ([]any, err
 		if len(buffer) == 0 {
 			return
 		}
-		docs = append(docs, map[string]any{"message": strings.Join(buffer, "\n")})
+		docs = append(docs, withFilebeatEventFields(map[string]any{"message": strings.Join(buffer, "\n")}))
 		buffer = buffer[:0]
 	}
 	for _, line := range lines {
@@ -236,9 +246,16 @@ func logSampleDocs(text string, multiline bool, startPattern string) ([]any, err
 			buffer = append(buffer, line)
 		case len(buffer) > 0:
 			buffer = append(buffer, line)
-		case strings.TrimSpace(line) != "":
-			// 首行之前的前导行（横幅、启动日志）单独成一条。
-			docs = append(docs, map[string]any{"message": line})
+		default:
+			// 第一条记录之前、且不匹配首行正则的行：**丢掉**。
+			//
+			// 这些行是反向读取窗口切出来的"上一条记录的尾巴"（窗口起点落在某条多行记录的中间，
+			// 于是堆栈的 `\tat …` 成了采样文本的开头）。真实采集时 Filebeat 的
+			// `negate: true, match: after` 会把它们**并入上一条记录**，根本不会产生"只有 log_message、
+			// 没有 log_level"的独立记录；可一旦当成独立记录送进认证判定，就会让判定报
+			// "规则解析不出这些必备字段 —— log_level"（判定要求每一条记录都齐必备字段）。
+			// 2026-09-19 现场：tomcat 的 catalina.out 认证一直被这条挡着，跟规则本身无关。
+			continue
 		}
 	}
 	flush()

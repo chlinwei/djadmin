@@ -413,6 +413,11 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 日志格式认证（架构文档 §4.8）：编排与写回在 assets 侧，取样例 + 跑 ES 在日志采集域
 	// （只有它持有 agent 文件通道与 ES 客户端）→ 反向注入，避免 assets 反向依赖 logcollect 成环。
 	assetsService.SetLogFormatVerifier(logcollectHandler)
+	// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）：配置不自洽（路径展不开、
+	// 同主机上两个实例展开成同一路径、正则编译不过）就拒绝保存——这些问题是"只能回到配置里改"的，
+	// 等到下发才以"跳过并告警"暴露出来就太晚了（同主机同路径会让同一条日志进 ES 两次）。
+	// 同样是反向注入：渲染与宏展开的实现都在日志采集域。
+	assetsService.SetLogConfigConsistencyChecker(logcollectHandler)
 	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
 	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)
 	// 批量动作执行器：入队 + 有界并发 + 进度可查（见 logcollect/log_batch_job.go）。
@@ -478,6 +483,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 仍然逐台下发，原因见 logcollect/log_apply_service.go 的说明——agent 侧 apply 是全量替换，
 	// 只推一个服务的片段会删掉同主机其他服务的配置。
 	logTargets.GET("/service-config-state/", logcollectHandler.GetServiceLogConfigState)
+	// 服务维度的"采集链路"诊断：查不到日志时按层回答断在哪（agent / Filebeat / 配置 / 规则 / 写入）。
+	// 判定复用链路体检的同名函数，见 logcollect/log_service_chain.go。
+	logTargets.GET("/service-collection-chain/", logcollectHandler.GetServiceCollectionChain)
 	logTargets.POST("/service-apply/", logcollectHandler.ApplyLogTargetsForService)
 	logTargets.GET("/batch-jobs/active/", logcollectHandler.GetActiveLogBatchJob)
 	logTargets.GET("/batch-jobs/:id/", logcollectHandler.GetLogBatchJob)
@@ -491,6 +499,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	logTargets.POST("/:id/stop-service/", logcollectHandler.StopLogTargetService)
 	logTargets.POST("/:id/apply/", logcollectHandler.ApplyLogTargetConfig)
 	monitorRoutes.POST("/log-datastreams/cleanup/", logcollectHandler.CleanupLogDataStream)
+	// 按数据流名清理：只收**未识别流**（有服务归属的必须走服务维度那条路，见 handler 注释）。
+	monitorRoutes.POST("/log-datastreams/cleanup-stream/", logcollectHandler.CleanupLogDataStreamByStream)
 	monitorRoutes.GET("/alert-histories/", monitorHandler.ListAlertHistories)
 	monitorRoutes.GET("/alert-histories/:id/", monitorHandler.GetAlertHistory)
 	monitorRoutes.GET("/alert-histories/:id/notification-status/", monitorHandler.AlertNotificationStatus)

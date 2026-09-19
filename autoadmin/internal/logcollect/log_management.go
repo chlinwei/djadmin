@@ -541,7 +541,9 @@ func (handler *Handler) publishProcessingPipeline(context *gin.Context, clusterI
 		return fmt.Errorf("Elasticsearch 集群未启用")
 	}
 	if _, err := handler.elasticsearchRequest(context, cluster, "PUT", "/_ingest/pipeline/"+name, pipelineBody); err != nil {
-		return err
+		// 保存时的报错同样要能照着改（引擎方言，见 pipeline_compat.go）：规则从旧集群搬到新引擎时
+		// 最先炸的就是这一步，只说"400 不支持某参数"没人知道该改成什么。
+		return fmt.Errorf("%w%s", err, pipelineCompatHint(err.Error()))
 	}
 	return nil
 }

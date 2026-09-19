@@ -183,7 +183,8 @@ func createLogCollectionFilterRule(context context.Context, pool db.DBTX, input 
 		CreateTime: now, UpdateTime: now,
 		Remark: nullableStringValue(input, "remark"),
 		Name:   stringValue(input["name"]), Description: stringValue(input["description"]),
-		Pattern: stringValue(input["pattern"]), Enabled: boolValue(input["enabled"]),
+		Pattern: stringValue(input["pattern"]), RuleType: stringValue(input["rule_type"]),
+		Enabled:       boolValue(input["enabled"]),
 		ApplicationID: nullableInt64Value(input, "application"),
 	})
 }
@@ -206,6 +207,9 @@ func updateLogCollectionFilterRule(context context.Context, pool db.DBTX, id int
 	if value, ok := input["pattern"]; ok {
 		current.Pattern = stringValue(value)
 	}
+	if value, ok := input["rule_type"]; ok {
+		current.RuleType = stringValue(value)
+	}
 	if value, ok := input["enabled"]; ok {
 		current.Enabled = boolValue(value)
 	}
@@ -214,7 +218,8 @@ func updateLogCollectionFilterRule(context context.Context, pool db.DBTX, id int
 	}
 	affected, err := queries.UpdateLogCollectionFilterRule(context, db.UpdateLogCollectionFilterRuleParams{
 		UpdateTime: time.Now().UTC(), Remark: current.Remark, Name: current.Name,
-		Description: current.Description, Pattern: current.Pattern, Enabled: current.Enabled,
+		Description: current.Description, Pattern: current.Pattern, RuleType: current.RuleType,
+		Enabled:       current.Enabled,
 		ApplicationID: current.ApplicationID, ID: id,
 	})
 	if err == nil && affected == 0 {

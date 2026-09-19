@@ -3,10 +3,12 @@ package logcollect
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
+
+	"autoadmin/internal/shared/logmacro"
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
@@ -40,6 +42,15 @@ type renderedHostLogConfig struct {
 	Fingerprint string              `json:"fingerprint"`
 	ServiceNum  int                 `json:"service_num"`
 	Warnings    []string            `json:"warnings,omitempty"`
+	// Errors 是**硬问题**：配置本身不自洽，光靠"跳过并告警"下发只会让这台主机少采，
+	// 必须回到配置里去改。当下包括：日志定义名含未展开宏、首行正则/采集过滤正则编译不过、
+	// 实例路径含未定义宏、同主机上展开成同一路径（重复采集）。
+	//
+	// 为什么要单独一份而不是只看 Warnings：保存逻辑服务时要用它**拦住保存**（见
+	// CheckServiceLogConfigConsistency），而 Warnings 里还有"未挂解析规则所以不采"这类
+	// 按约定允许存在的状态，不能一棍子打死。同一件事仍然会同时进 Warnings，
+	// 这样日志采集页/链路体检现有的展示不需要改。
+	Errors []string `json:"errors,omitempty"`
 }
 
 // hostLogRenderInput 渲染所需的全部维度数据（由 loadHostLogRenderInput 查询填充）。
@@ -59,6 +70,14 @@ type hostLogRenderInput struct {
 	Multiline      bool   // 有效处理规则开启多行合并
 	StartPattern   string // 多行首行正则（处理规则）
 	FlushTimeout   int64  // 多行 flush 超时（毫秒，处理规则）
+	// 采集过滤（2026-09-19）：解析后的白名单/黑名单正则，空串 = 该方向不过滤。
+	// 解析规则（模板默认 → 服务覆盖 → 三态）见 log_collection_filter.go；
+	// 这里只拿最终结果，纯函数渲染不认识"继承"这种概念。
+	FilterIncludePattern string
+	FilterExcludePattern string
+	// FilterWarnings 该条日志的过滤解析告警（规则不存在/停用/方向不符/正则编译不过），
+	// 由渲染汇总进 warnings —— 只写服务端日志的话，用户看不到"过滤没生效"这件事。
+	FilterWarnings []string
 }
 
 // configBaseName inputs.d 文件名基名：<app>__<service>__<logname>（不带后缀）。
@@ -67,18 +86,11 @@ func configBaseName(application, service, logName string) string {
 }
 
 // resolveMacros 合并服务级与服务实例级变量，替换路径中的 ${VAR}；未定义的保持原样。
+//
+// 实现委托 internal/shared/logmacro：合并顺序（模板默认 → 服务覆盖 → 实例变量）与界面展示的
+// "解析后路径"必须是同一份，否则会出现"界面显示的路径与主机上实际采的不一致"。
 func resolveMacros(path string, macroSets ...map[string]string) string {
-	merged := map[string]string{}
-	for _, set := range macroSets {
-		for key, value := range set {
-			merged[key] = value
-		}
-	}
-	result := path
-	for key, value := range merged {
-		result = strings.ReplaceAll(result, "${"+key+"}", value)
-	}
-	return result
+	return logmacro.Resolve(path, macroSets...)
 }
 
 // yamlScalar 用单引号包裹 YAML 标量（单引号转义为两个），保证路径/正则/维度值里的
@@ -101,6 +113,15 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	pairs := map[string]*fragmentPair{}
 	order := []string{}
 	warnings := []string{}
+	errors := []string{}
+	// 同时进 warnings（既有展示不动）与 errors（保存校验用）的硬问题。
+	recordHardProblem := func(message string) {
+		warnings = append(warnings, message)
+		errors = append(errors, message)
+	}
+	// 本主机上已被占用的绝对路径 → 占用者描述（同一路径重复监听会导致日志翻倍，见下）。
+	// 渲染是以**单台主机**为单位调用的，所以这个集合天然就是"主机级"的。
+	claimedPaths := map[string]string{}
 
 	instancesByService := map[string][]hostInstanceInput{}
 	for _, instance := range instances {
@@ -117,7 +138,7 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		// 日志定义名称直接作为文件名/维度值，不参与宏展开；名称里带 ${...} 说明配置写错位置，
 		// 继续下发会生成监听不到文件的坏片段，这里跳过并告警（宏应写在 path_pattern 里）。
 		if strings.Contains(base, "${") {
-			warnings = append(warnings, fmt.Sprintf(
+			recordHardProblem(fmt.Sprintf(
 				"日志定义名称含未展开宏，已跳过（宏应写在路径里）: %s", base))
 			continue
 		}
@@ -128,6 +149,24 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 				"服务 %s 日志 %s 未关联处理规则，已跳过（未挂 pipeline 的日志不采集）",
 				entry.Service, entry.LogName))
 			continue
+		}
+		// 首行正则落到主机上是由 Filebeat 编译的（Go RE2）：编译不过的片段会让 Filebeat 起不来，
+		// **整台主机的日志一起停**——比"少采一个文件"严重得多，所以与上面两条同样"跳过并告警"。
+		// 保存路径已按 RE2 校验（见 regex_pattern.go），这里兜的是历史数据与其他环境的存量规则。
+		// 过滤解析的告警先冒出来：用户最需要知道的是"我配了过滤但没生效"，而不是先看到别的。
+		for _, warning := range entry.FilterWarnings {
+			if strings.TrimSpace(warning) == "" {
+				continue
+			}
+			recordHardProblem(fmt.Sprintf("服务 %s 日志 %s：%s", entry.Service, entry.LogName, warning))
+		}
+		if entry.Multiline {
+			if problem := validateRulePattern("首行正则", entry.StartPattern); problem != "" {
+				recordHardProblem(fmt.Sprintf(
+					"服务 %s 日志 %s 的处理规则 %s 首行正则 Filebeat 编译不过，已跳过（否则 Filebeat 无法启动，该主机所有日志都会停）：%s",
+					entry.Service, entry.LogName, entry.Pipeline, problem))
+				continue
+			}
 		}
 		pair, exists := pairs[base]
 		if !exists {
@@ -140,11 +179,23 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			resolved := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
 			// 含未展开宏的路径会导致 Filebeat 监听不到任何文件，必须跳过该实例并记录告警。
 			if strings.Contains(resolved, "${") {
-				warnings = append(warnings, fmt.Sprintf(
+				recordHardProblem(fmt.Sprintf(
 					"服务 %s 实例 %s 日志 %s 的路径含未定义宏，已跳过: %s",
 					entry.Service, instance.Instance, entry.LogName, resolved))
 				continue
 			}
+			// 同一主机上**同一个绝对路径**只能被一个 filestream input 监听：两个 input 各自维护 offset，
+			// 同一份日志会进 ES 两次（instance 字段不同），下游的错误聚类与容量统计跟着翻倍。
+			// 多实例服务最容易踩：实例没配各自的 APP_HOME，展开出来就是同一条路径。
+			// 保留先出现的那个（entries 按查询顺序、instances 按实例名排序，结果是确定的），跳过并告警——
+			// 与"未展开宏""未挂规则"同一处理：不带病下发，也绝不静默重复采集。
+			if owner, exists := claimedPaths[resolved]; exists {
+				recordHardProblem(fmt.Sprintf(
+					"服务 %s 实例 %s 日志 %s 与 %s 在同一主机上展开成同一路径 %s，已跳过（否则 Filebeat 会重复读取，同一条日志进 ES 两次）：请给实例配置各自的宏（如 APP_HOME）或拆成不同日志定义",
+					entry.Service, instance.Instance, entry.LogName, owner, resolved))
+				continue
+			}
+			claimedPaths[resolved] = fmt.Sprintf("服务 %s 实例 %s 日志 %s", entry.Service, instance.Instance, entry.LogName)
 			lines := []string{
 				"- type: filestream",
 				fmt.Sprintf("  id: %s", yamlScalar(base+"__"+instance.Instance)),
@@ -171,6 +222,15 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			if entry.Pipeline != "" {
 				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。
 				lines = append(lines, fmt.Sprintf("  pipeline: %s", yamlScalar(processingPipelineName(entry.Prefix, entry.Application, entry.Pipeline))))
+			}
+			// 采集过滤：写进 input 的 include_lines / exclude_lines（Filebeat 上是行级正则，
+			// 且在 multiline 合并**之后**评估，语义与 Fluent Bit 时代的 [FILTER] grep 一致）。
+			// 正则编译不过时上面已经把它降级成空串并在 warnings 里说明，所以这里直接写。
+			if pattern := strings.TrimSpace(entry.FilterIncludePattern); pattern != "" {
+				lines = append(lines, "  include_lines:", "    - "+yamlScalar(pattern))
+			}
+			if pattern := strings.TrimSpace(entry.FilterExcludePattern); pattern != "" {
+				lines = append(lines, "  exclude_lines:", "    - "+yamlScalar(pattern))
 			}
 			if entry.Multiline && strings.TrimSpace(entry.StartPattern) != "" {
 				timeout := entry.FlushTimeout
@@ -210,6 +270,7 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		Fingerprint: fmt.Sprintf("%x", digest),
 		ServiceNum:  len(instancesByService),
 		Warnings:    warnings,
+		Errors:      errors,
 	}
 }
 
@@ -232,11 +293,17 @@ type renderInputSet struct {
 //
 // 行序不影响结果：片段最终按路径排序、实例按名称排序后才参与渲染与指纹。
 func (handler *Handler) loadHostLogRenderInputs(context context.Context, hostIDs []int64) (map[int64]renderInputSet, error) {
+	return loadHostLogRenderInputsPool(context, handler.db, hostIDs)
+}
+
+// loadHostLogRenderInputsPool 与上面的唯一差别是取数走传入的 pool（*sql.DB 或事务）：
+// 保存逻辑服务时的"配置自洽性校验"要在**同一个事务里**读到刚写入的状态（见 CheckServiceLogConfigConsistency）。
+func loadHostLogRenderInputsPool(context context.Context, pool db.DBTX, hostIDs []int64) (map[int64]renderInputSet, error) {
 	sets := map[int64]renderInputSet{}
 	if len(hostIDs) == 0 {
 		return sets, nil
 	}
-	queries := db.New(handler.db)
+	queries := db.New(pool)
 
 	instanceRows, err := queries.ListHostLogRenderInstances(context, hostIDs)
 	if err != nil {
@@ -255,8 +322,36 @@ func (handler *Handler) loadHostLogRenderInputs(context context.Context, hostIDs
 	if err != nil {
 		return nil, err
 	}
+	// 采集过滤：先把这批条目引用到的规则一次性取回来，再逐条解析（模板默认 → 服务覆盖三态）。
+	// 规则数量很少，一次查询就够；放这里是因为渲染要的是"最终生效的两条正则"，
+	// 而不是"哪个 id"——解析与降级逻辑集中在 resolveLogFilter 里，便于单测。
+	ruleIDs := []int64{}
+	for _, row := range entryRows {
+		for _, id := range []sql.NullInt64{row.FilterIncludeRuleID, row.FilterExcludeRuleID, row.CollectionFilterRuleID, row.CollectionExcludeFilterRuleID} {
+			if id.Valid && id.Int64 > 0 {
+				ruleIDs = append(ruleIDs, id.Int64)
+			}
+		}
+	}
+	rules, err := loadLogFilterRulesPool(context, pool, ruleIDs)
+	if err != nil {
+		return nil, err
+	}
 	for _, row := range entryRows {
 		set := sets[row.HostID]
+		resolved := resolveLogFilter(
+			nullableToPointer(row.FilterIncludeRuleID), nullableToPointer(row.FilterExcludeRuleID),
+			nullableToPointer(row.CollectionFilterRuleID), nullableToPointer(row.CollectionExcludeFilterRuleID),
+			rules,
+		)
+		includePattern, warning := "", ""
+		if resolved.Include != nil {
+			includePattern, warning = validFilterPattern(logFilterRuleInclude, *resolved.Include)
+		}
+		excludePattern := ""
+		if resolved.Exclude != nil {
+			excludePattern, warning = validFilterPattern(logFilterRuleExclude, *resolved.Exclude)
+		}
 		set.Entries = append(set.Entries, hostLogRenderInput{
 			Prefix: "autoadmin", Application: row.ApplicationCode, Service: row.ServiceCode,
 			Project: row.ProjectCode, Environment: row.EnvironmentCode,
@@ -269,6 +364,9 @@ func (handler *Handler) loadHostLogRenderInputs(context context.Context, hostIDs
 			),
 			Multiline: row.MultilineEnabled, StartPattern: row.StartPattern,
 			FlushTimeout: int64(row.FlushTimeout),
+			// 坏规则/规则被删/方向不符：降级成"该方向不过滤"并把原因带给用户（见文件头取舍）。
+			FilterIncludePattern: includePattern, FilterExcludePattern: excludePattern,
+			FilterWarnings: append(append([]string{}, resolved.Warnings...), warning),
 		})
 		sets[row.HostID] = set
 	}
@@ -289,69 +387,22 @@ func (handler *Handler) loadHostLogRenderInput(context context.Context, hostID i
 // 默认值（实例变量显式配置的值优先）。APP_HOME 的权威来源是部署模板（与巡检模块
 // 一致）；未接入该来源会导致日志路径 ${APP_HOME} 永远无法展开。
 func instanceMacros(runtimeVariablesRaw, appHome string) map[string]string {
-	macros := parseMacroJSON(runtimeVariablesRaw)
-	if appHome = strings.TrimSpace(appHome); appHome != "" {
-		if _, exists := macros["APP_HOME"]; !exists {
-			macros["APP_HOME"] = appHome
-		}
-	}
-	return macros
+	return logmacro.InstanceValues(runtimeVariablesRaw, appHome)
 }
 
 func parseMacroJSON(raw string) map[string]string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || trimmed == "{}" {
-		return map[string]string{}
-	}
-	decoded := map[string]any{}
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return map[string]string{}
-	}
-	result := map[string]string{}
-	for key, value := range decoded {
-		result[key] = strings.TrimSpace(fmt.Sprint(value))
-	}
-	return result
+	return logmacro.ParseValues(raw)
 }
 
-// templateMacroDefaults 把部署模板的 macro_definitions（[{name,value,description}]）摊平成
-// name→value，作为宏解析的默认值；服务级 macro_values 覆盖同名项。
-// 与服务弹窗展示口径一致（弹窗显示 服务覆盖 ?? 模板默认），避免前端看着有值、后端展不开。
+// templateMacroDefaults 摊平部署模板的 macro_definitions 作为默认值（服务级覆盖同名项）。
 func templateMacroDefaults(raw string) map[string]string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || trimmed == "[]" {
-		return map[string]string{}
-	}
-	var definitions []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &definitions); err != nil {
-		return map[string]string{}
-	}
-	result := map[string]string{}
-	for _, definition := range definitions {
-		name := strings.TrimSpace(definition.Name)
-		if name == "" {
-			continue
-		}
-		result[name] = strings.TrimSpace(definition.Value)
-	}
-	return result
+	return logmacro.TemplateDefaults(raw)
 }
 
-// mergeMacroValues 合并宏集合：后面的覆盖前面的（默认值在前、覆盖值在后）。
-func mergeMacroValues(sets ...map[string]string) map[string]string {
-	merged := map[string]string{}
-	for _, set := range sets {
-		for key, value := range set {
-			merged[key] = value
-		}
-	}
-	return merged
+func mergeMacroValues(macroSets ...map[string]string) map[string]string {
+	return logmacro.Merge(macroSets...)
 }
 
-// GetHostLogConfigPreview 预览采集目标主机的 Filebeat inputs 片段（不下发）：路由参数为采集目标 id。
 func (handler *Handler) GetHostLogConfigPreview(context *gin.Context) {
 	row, err := loadLogTarget(context, handler.db, parseID(context.Param("id")))
 	if err != nil {

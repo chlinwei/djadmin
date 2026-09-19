@@ -73,6 +73,8 @@ func (r *Repository) loadTemplateNested(ctx context.Context, id int64) (Deployme
 		item.Name, item.PathPattern = row.Name, row.PathPattern
 		item.ExtraFields = rawJSONOrObject(row.ExtraFields)
 		item.ProcessingRule = intPtr(row.ProcessingRuleID)
+		item.FilterIncludeRule = intPtr(row.FilterIncludeRuleID)
+		item.FilterExcludeRule = intPtr(row.FilterExcludeRuleID)
 		result.Logs = append(result.Logs, item)
 	}
 	controlActions, err := queries.ListTemplateControlActions(ctx, id)

@@ -24,12 +24,19 @@
     ├── 日志存储        /monitor/logging/storage
     ├── 日志处理规则    /monitor/logging/parsers
     ├── 日志保留档位    /monitor/logging/retention
-    ├── 存储水位        /monitor/logging/overview      （迁移 000019）
     └── 日志中心        /monitor/logging/center        （迁移 000037）
 ```
 
-> 「存储水位」早先漏记在本节（迁移 000019 加的菜单），2026-09-19 一并补上。
 > 「日志中心」见 [LOG_COLLECTION_ARCHITECTURE.md](LOG_COLLECTION_ARCHITECTURE.md) §9.5。
+
+### 「存储水位」并入「日志中心」（迁移 000038）
+
+原「存储水位」（`/monitor/logging/overview`，迁移 000019）的页面能力已逐条并入「日志中心」，
+所以整条入口下线：**菜单行删除**（先清 `sys_role_menu` 再删 `sys_menu`，该菜单 perms 为空、
+不涉及权限点）、**页面组件删除**（`views/monitor/log-storage-overview/`）、
+**旧地址保留 redirect** `/monitor/logging/overview → /monitor/logging/center`（收藏/书签不断链）。
+后端接口 `GET /monitor/elasticsearch-clusters/:id/log-storage-overview/` **不删**——日志中心的水位 tab 在用。
+迁移的 `down` 只还原菜单行，回滚它必须同时回滚那次前端改动。
 
 ### 日志采集从「智能监控 → 纳管目标」拆出（迁移 000031）
 
@@ -47,6 +54,13 @@
 
 ## 约定
 
+- **菜单管理页保存时的字段类型**（2026-09-19 现场）：`parent_id` / `order_num` / `location` 在接口侧是整数
+  （`menuRequest` 的 `*int32` / `int16`），前端提交前必须归一成数字——文本框给出的字符串会让
+  `ShouldBindJSON` 整个请求失败，表现是"保存菜单失败"，而服务端日志只留 `<nil>`、弹窗只弹一个 `400`。
+  所以：这三个字段用数字型控件（「显示顺序」是 `a-input-number`），`Dialog.vue` 的 `normalizeMenuPayload`
+  再做一道兜底；绑定失败时后端把**字段名**带进消息（`menuBindError`，形如
+  `json: cannot unmarshal string into Go struct field menuRequest.order_num …`），前端 `handleApiError`
+  优先显示信封里的 `msg`（此前取 `Object.keys()[0]` = `code`，把数字 400 当消息弹出来）。
 - 新增监控类页面：菜单挂入对应二级目录，path 用嵌套前缀，同时在 `staticRouterMap` 加路由；旧 path 如有历史引用，保留 redirect 行。
 - 迁移 000018 的 SQL 幂等（按 path 条件定位），对新环境与已手动整理的环境都安全；down 脚本可完整还原扁平结构。
 - 目录节点（menu_type=M）不注册组件路由，仅作侧边栏分组；分组同时是权限边界，可按目录粒度授权（如值班人员只授"监控告警"）。

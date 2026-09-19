@@ -50,6 +50,25 @@ func (handler *Handler) loadElasticsearchClusterByID(context context.Context, id
 	return cluster, err
 }
 
+// defaultElasticsearchCluster 取"启用的默认集群"（is_default 优先，否则第一个启用的）。
+//
+// 这个才是**日志实际写到哪**：Filebeat 的 output 由它决定（见 log_config_render.go 与
+// log_target_actions.go 的下发路径），索引前缀与数据流名也取自它。所以"最近有没有在写"
+// 这类问题必须以它为准，不能用 URL 上的集群（那个是管理端在按 id 操作某个集群）。
+func (handler *Handler) defaultElasticsearchCluster(context context.Context) (elasticsearchCluster, error) {
+	row, err := db.New(handler.db).GetDefaultEnabledElasticsearchClusterConnection(context)
+	if err != nil {
+		return elasticsearchCluster{}, err
+	}
+	cluster := elasticsearchCluster{
+		ID: row.ID, Hosts: row.Hosts, Username: row.Username, Password: row.Password,
+		VerifyTLS: row.VerifyTls, CACert: row.CaCert, IndexPrefix: row.IndexPrefix,
+		Timeout: int(row.RequestTimeout), Enabled: row.Enabled,
+	}
+	cluster.Password, err = handler.secrets.Decrypt(cluster.Password)
+	return cluster, err
+}
+
 // elasticsearchRequestRaw 发送请求并返回原始 JSON（对象或数组，_cat 系列端点返回数组）。
 func (handler *Handler) elasticsearchRequestRaw(context context.Context, cluster elasticsearchCluster, method, path string, body any) (json.RawMessage, error) {
 	var rawBody []byte

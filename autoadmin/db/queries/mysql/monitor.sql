@@ -127,7 +127,7 @@ WHERE (application_id = sqlc.narg(application_id) OR sqlc.narg(application_id) I
   AND (name LIKE sqlc.narg(search_pattern) OR description LIKE sqlc.narg(search_pattern) OR pattern LIKE sqlc.narg(search_pattern) OR sqlc.narg(search_pattern) IS NULL);
 
 -- name: ListLogCollectionFilterRules :many
-SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+SELECT id, create_time, update_time, remark, name, description, pattern, rule_type, enabled, application_id
 FROM monitor_log_collection_filter_rule
 WHERE (application_id = sqlc.narg(application_id) OR sqlc.narg(application_id) IS NULL)
   AND (enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
@@ -136,7 +136,7 @@ ORDER BY name, id
 LIMIT ? OFFSET ?;
 
 -- name: GetLogCollectionFilterRule :one
-SELECT id, create_time, update_time, remark, name, description, pattern, enabled, application_id
+SELECT id, create_time, update_time, remark, name, description, pattern, rule_type, enabled, application_id
 FROM monitor_log_collection_filter_rule
 WHERE id = sqlc.arg(id);
 
@@ -977,7 +977,12 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     COALESCE(t.macro_definitions, '[]') AS macro_definitions,
     COALESCE(rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
     COALESCE(rule_definition.start_pattern, '') AS start_pattern,
-    COALESCE(rule_definition.flush_timeout, 2000) AS flush_timeout
+    COALESCE(rule_definition.flush_timeout, 2000) AS flush_timeout,
+    -- 采集过滤的两个方向：模板级是默认值，服务级是覆盖（三态：NULL 继承 / 0 显式关闭 / >0 指定规则）。
+    -- 只取 id，规则内容在 Go 侧按需要的一次查回来解析（见 log_collection_filter.go）：
+    -- 这里再 join 四张规则表会让这条最热的渲染查询又多四个 join，而规则数量本来就少。
+    ld.filter_include_rule_id, ld.filter_exclude_rule_id,
+    ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -1185,14 +1190,14 @@ DELETE FROM monitor_log_processing_rule WHERE id = sqlc.arg(id);
 
 -- name: CreateLogCollectionFilterRule :execlastid
 INSERT INTO monitor_log_collection_filter_rule
-  (create_time,update_time,remark,name,description,pattern,enabled,application_id)
+  (create_time,update_time,remark,name,description,pattern,rule_type,enabled,application_id)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(name),sqlc.arg(description),
-        sqlc.arg(pattern),sqlc.arg(enabled),sqlc.narg(application_id));
+        sqlc.arg(pattern),sqlc.arg(rule_type),sqlc.arg(enabled),sqlc.narg(application_id));
 
 -- name: UpdateLogCollectionFilterRule :execrows
 UPDATE monitor_log_collection_filter_rule
 SET update_time=sqlc.arg(update_time),remark=sqlc.narg(remark),name=sqlc.arg(name),description=sqlc.arg(description),
-    pattern=sqlc.arg(pattern),enabled=sqlc.arg(enabled),application_id=sqlc.narg(application_id)
+    pattern=sqlc.arg(pattern),rule_type=sqlc.arg(rule_type),enabled=sqlc.arg(enabled),application_id=sqlc.narg(application_id)
 WHERE id=sqlc.arg(id);
 
 -- name: DeleteLogCollectionFilterRule :execresult
@@ -1201,7 +1206,11 @@ DELETE FROM monitor_log_collection_filter_rule WHERE id = sqlc.arg(id);
 -- ---- 日志链路对账与数据流水位（只读）----
 
 -- name: ListProcessingRulesByCluster :many
-SELECT name, pipeline_body, application_id FROM monitor_log_processing_rule
+-- 集群体检的"解析规则"层判定一条规则是否可用，除了 pipeline 发布态还要**用规则自带的样例日志
+-- 试跑一次**（判"产出的文档会被 ES 拒收"这类运行期错误，见 log_health.go 的 judgeRulePipeline），
+-- 所以取数必须带上样例与多行合并配置——缺了就只能跳过试跑，把"判不了"显示成"没问题"。
+SELECT name, pipeline_body, application_id, sample_log, multiline_enabled, start_pattern
+FROM monitor_log_processing_rule
 WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
 
 -- 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
@@ -1232,10 +1241,13 @@ WHERE s.code <> '';
 --  2. 只在 LEFT JOIN 里要求 `managed_enabled = TRUE`：没纳管（或已停用纳管）的主机没有采集目标行，
 --     下发不了，必须能被识别出来告诉用户（target_id 为 NULL），而不是静默少下发几台。
 --  3. SELECT DISTINCT：入参是服务，它可能在同一台主机上有多个部署实例，而去重后每一列都是主机级事实。
+--     runtime_status 一并带出：日志中心要按服务回答"为什么没日志"，Filebeat 进程态是其中一层
+--     （与日志采集页同一字段；那个字段是落库快照，谁看谁负责刷新，见 log_service_chain.go）。
 -- name: ListServiceLogApplyTargets :many
 SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
        COALESCE(h.instance_name, '') AS host_instance_name,
-       l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint
+       l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint,
+       COALESCE(l.runtime_status, '') AS runtime_status
 FROM assets_application_service_deployment sd
 JOIN assets_application_deployment d ON d.id = sd.deployment_id
 JOIN assets_host h ON h.id = d.host_id

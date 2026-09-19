@@ -21,6 +21,9 @@ type Service struct {
 	// logFormatVerifier 由 logcollect 注入（见 log_format_verify.go）：认证的"取样例 + 跑 ES"部分。
 	// 未注入时只有 waiver 依据可用。
 	logFormatVerifier LogFormatVerifier
+	// logConfigChecker 由 logcollect 注入（见 log_config_consistency.go）：保存逻辑服务前
+	// 渲染一遍期望配置，配置不自洽（路径展不开、同主机同路径、正则编译不过）就拒绝保存。
+	logConfigChecker LogConfigConsistencyChecker
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {

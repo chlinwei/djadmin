@@ -34,6 +34,12 @@ type serviceApplyTarget struct {
 	ConfigState string `json:"config_state,omitempty"`
 	// Managed 是否已纳管日志采集：false = 没有可下发的目标，下发给不了它。
 	Managed bool `json:"managed"`
+	// AgentOnline 该主机的 agent 会话是否在线（**实时**来自网关，不是库里的字段）。
+	// 它是"为什么没日志"的第一层：agent 不在线，查状态/启停/下发都做不了。
+	AgentOnline bool `json:"agent_online"`
+	// RuntimeStatus Filebeat 进程态（running/stopped/error），**落库快照**：
+	// 只有安装/启停/查状态动作会写它，展示方要负责先刷新（见 log_service_chain.go）。
+	RuntimeStatus string `json:"runtime_status,omitempty"`
 }
 
 // groupServiceApplyTargets 把解析结果分成"已纳管（可下发）"与"未纳管（下发不了）"两组，各按主机 id 排序。
@@ -45,7 +51,7 @@ func groupServiceApplyTargets(rows []db.ListServiceLogApplyTargetsRow) (managed,
 	for _, row := range rows {
 		target := serviceApplyTarget{
 			HostID: row.HostID, HostIP: row.HostIp, HostInstanceName: row.HostInstanceName,
-			Managed: row.TargetID.Valid,
+			Managed: row.TargetID.Valid, RuntimeStatus: row.RuntimeStatus,
 		}
 		if row.TargetID.Valid {
 			target.TargetID = row.TargetID.Int64
@@ -58,6 +64,67 @@ func groupServiceApplyTargets(rows []db.ListServiceLogApplyTargetsRow) (managed,
 	sort.Slice(managed, func(i, j int) bool { return managed[i].HostID < managed[j].HostID })
 	sort.Slice(unmanaged, func(i, j int) bool { return unmanaged[i].HostID < unmanaged[j].HostID })
 	return managed, unmanaged
+}
+
+// buildServiceHostStates 读库 + 评估配置态，返回"承载该服务的主机"及其聚合。
+//
+// 抽出来是因为有两个消费方都要这份数据：日志中心的"本服务下发状态"与"采集链路"诊断。
+// 各写一遍会让两处对"几台待下发"给出不同数字——这种不一致比不显示更糟。
+func (handler *Handler) buildServiceHostStates(context context.Context, serviceID int64) ([]serviceApplyTarget, []serviceApplyTarget, serviceConfigStateSummary, error) {
+	managed, unmanaged, err := handler.resolveServiceApplyTargets(context, serviceID)
+	if err != nil {
+		return nil, nil, serviceConfigStateSummary{}, err
+	}
+	// agent 在线是**实时**事实（网关会话），与库里的配置态无关，所以在这里统一补上。
+	// 网关未接线（单测/无数据面部署）时一律 false，不谎报在线。
+	for index := range managed {
+		managed[index].AgentOnline = handler.agentOnline(managed[index].HostInstanceName)
+	}
+	for index := range unmanaged {
+		unmanaged[index].AgentOnline = handler.agentOnline(unmanaged[index].HostInstanceName)
+	}
+	summary := serviceConfigStateSummary{Hosts: len(managed) + len(unmanaged), Managed: len(managed), Unmanaged: len(unmanaged)}
+	if len(managed) == 0 {
+		return managed, unmanaged, summary, nil
+	}
+	refs := make([]LogConfigTargetRef, 0, len(managed))
+	for _, target := range managed {
+		refs = append(refs, LogConfigTargetRef{HostID: target.HostID, AppliedFingerprint: target.ConfigFingerprint})
+	}
+	states, err := handler.EvaluateLogConfigStates(context, refs)
+	if err != nil {
+		return nil, nil, summary, err
+	}
+	for index := range managed {
+		state, ok := states[managed[index].HostID]
+		if !ok {
+			// 评估函数对算不出期望配置的主机也会给条目；缺条目说明它被判成"不适用"，
+			// 这里如实标 unknown，不谎报"已同步"。
+			managed[index].ConfigState = LogConfigUnknown
+			summary.Unknown++
+			continue
+		}
+		managed[index].ConfigState = state.Status
+		switch state.Status {
+		case LogConfigSynced:
+			summary.Synced++
+		case LogConfigDrift:
+			summary.Drift++
+		case LogConfigNever:
+			summary.Never++
+		default:
+			summary.Unknown++
+		}
+	}
+	return managed, unmanaged, summary, nil
+}
+
+// agentOnline 问网关这台主机的 agent 会话在不在。
+func (handler *Handler) agentOnline(hostInstanceName string) bool {
+	if handler.gateway == nil || strings.TrimSpace(hostInstanceName) == "" {
+		return false
+	}
+	return handler.gateway.IsOnline(hostInstanceName)
 }
 
 // resolveServiceApplyTargets 读库并分组：服务承载在哪些主机上、其中哪些主机能下发。
@@ -93,43 +160,10 @@ func (handler *Handler) GetServiceLogConfigState(context *gin.Context) {
 		response.BusinessError(context, 400, "application_service_id is required", nil)
 		return
 	}
-	managed, unmanaged, err := handler.resolveServiceApplyTargets(context, serviceID)
+	managed, unmanaged, summary, err := handler.buildServiceHostStates(context, serviceID)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
-	}
-	summary := serviceConfigStateSummary{Hosts: len(managed) + len(unmanaged), Managed: len(managed), Unmanaged: len(unmanaged)}
-	if len(managed) > 0 {
-		refs := make([]LogConfigTargetRef, 0, len(managed))
-		for _, target := range managed {
-			refs = append(refs, LogConfigTargetRef{HostID: target.HostID, AppliedFingerprint: target.ConfigFingerprint})
-		}
-		states, evaluateErr := handler.EvaluateLogConfigStates(context, refs)
-		if evaluateErr != nil {
-			response.BusinessError(context, 400, evaluateErr.Error(), nil)
-			return
-		}
-		for index := range managed {
-			state, ok := states[managed[index].HostID]
-			if !ok {
-				// 评估函数对算不出期望配置的主机也会给条目；缺条目说明它被判成"不适用"，
-				// 这里如实标 unknown，不谎报"已同步"。
-				managed[index].ConfigState = LogConfigUnknown
-				summary.Unknown++
-				continue
-			}
-			managed[index].ConfigState = state.Status
-			switch state.Status {
-			case LogConfigSynced:
-				summary.Synced++
-			case LogConfigDrift:
-				summary.Drift++
-			case LogConfigNever:
-				summary.Never++
-			default:
-				summary.Unknown++
-			}
-		}
 	}
 	response.Success(context, gin.H{"summary": summary, "hosts": managed, "unmanaged_hosts": unmanaged})
 }
@@ -189,4 +223,3 @@ func unmanagedMessage(unmanaged []serviceApplyTarget) string {
 	return fmt.Sprintf("有 %d 台承载主机还没有纳管日志采集，本次不会下发：%s",
 		len(unmanaged), strings.Join(names, "、"))
 }
-

@@ -41,6 +41,8 @@ type ServiceLogSettingInput struct {
 	RetentionTier        *int64 `json:"retention_tier"`
 	CollectionEnabled    *bool  `json:"collection_enabled"`
 	CollectionFilterRule *int64 `json:"collection_filter_rule"`
+	// 采集过滤的排除方向（三态：null 继承模板 / 0 显式关闭 / >0 规则）。
+	CollectionExcludeFilterRule *int64 `json:"collection_exclude_filter_rule"`
 }
 
 // ApplicationDeploymentInput 是部署实例的写入口。注意**不含**逻辑服务关联：
@@ -59,7 +61,10 @@ type ApplicationDeploymentInput struct {
 	Remark              *string         `json:"remark"`
 }
 
-func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput) (int64, error) {
+// SaveApplicationService 写服务主体 + 成员 + 日志覆盖值，**提交前**跑一次自洽性校验
+// （checker 为 nil 表示不校验）。校验失败返回的错误会把事务整体回滚——这正是"配置不自洽
+// 就不许保存"的落点：宁可这次保存整体失败，也不要留下一个下发注定出问题的配置。
+func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput, checker func(context.Context, db.DBTX, int64) error) (int64, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -129,11 +134,18 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 			if err = queries.CreateServiceLogSetting(ctx, db.CreateServiceLogSettingParams{
 				CreateTime: now, UpdateTime: now, CollectionEnabled: collection,
 				LogDefinitionID: setting.LogDefinition, RetentionTierID: nullableInt(setting.RetentionTier),
-				ServiceID:              serviceID,
-				CollectionFilterRuleID: nullableInt(setting.CollectionFilterRule),
+				ServiceID:                     serviceID,
+				CollectionFilterRuleID:        nullableInt(setting.CollectionFilterRule),
+				CollectionExcludeFilterRuleID: nullableInt(setting.CollectionExcludeFilterRule),
 			}); err != nil {
 				return 0, err
 			}
+		}
+	}
+	// 配置自洽性：所有写操作已在本事务内完成，校验读到的就是"保存后"的状态；失败则不提交。
+	if checker != nil {
+		if err = checker(ctx, tx, serviceID); err != nil {
+			return 0, err
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -197,7 +209,7 @@ func (s *Service) SaveApplicationService(ctx context.Context, id int64, input Ap
 	if input.MemberConfigs != nil && len(*input.MemberConfigs) == 0 && input.TopologyType != "" {
 		return ApplicationService{}, ErrInvalid
 	}
-	saved, err := s.repository.SaveApplicationService(ctx, id, input)
+	saved, err := s.repository.SaveApplicationService(ctx, id, input, s.checkLogConfigConsistency)
 	if err != nil {
 		return ApplicationService{}, translate(err)
 	}

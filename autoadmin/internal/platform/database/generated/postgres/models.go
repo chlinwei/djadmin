@@ -126,6 +126,8 @@ type AssetsApplicationLogDefinition struct {
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
+	FilterIncludeRuleID  sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID  sql.NullInt64   `json:"filter_exclude_rule_id"`
 }
 
 type AssetsApplicationPath struct {
@@ -191,19 +193,20 @@ type AssetsApplicationServiceDeployment struct {
 }
 
 type AssetsApplicationServiceLogSetting struct {
-	ID                        int64          `json:"id"`
-	CreateTime                time.Time      `json:"create_time"`
-	UpdateTime                time.Time      `json:"update_time"`
-	Remark                    sql.NullString `json:"remark"`
-	CollectionEnabled         *bool          `json:"collection_enabled"`
-	LogDefinitionID           int64          `json:"log_definition_id"`
-	RetentionTierID           sql.NullInt64  `json:"retention_tier_id"`
-	ServiceID                 int64          `json:"service_id"`
-	CollectionFilterRuleID    sql.NullInt64  `json:"collection_filter_rule_id"`
-	FormatVerifiedAt          sql.NullTime   `json:"format_verified_at"`
-	FormatVerifiedFingerprint string         `json:"format_verified_fingerprint"`
-	FormatVerifiedSource      string         `json:"format_verified_source"`
-	FormatVerifiedBy          string         `json:"format_verified_by"`
+	ID                            int64          `json:"id"`
+	CreateTime                    time.Time      `json:"create_time"`
+	UpdateTime                    time.Time      `json:"update_time"`
+	Remark                        sql.NullString `json:"remark"`
+	CollectionEnabled             *bool          `json:"collection_enabled"`
+	LogDefinitionID               int64          `json:"log_definition_id"`
+	RetentionTierID               sql.NullInt64  `json:"retention_tier_id"`
+	ServiceID                     int64          `json:"service_id"`
+	CollectionFilterRuleID        sql.NullInt64  `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID sql.NullInt64  `json:"collection_exclude_filter_rule_id"`
+	FormatVerifiedAt              sql.NullTime   `json:"format_verified_at"`
+	FormatVerifiedFingerprint     string         `json:"format_verified_fingerprint"`
+	FormatVerifiedSource          string         `json:"format_verified_source"`
+	FormatVerifiedBy              string         `json:"format_verified_by"`
 }
 
 type AssetsApplicationVersion struct {
@@ -879,6 +882,7 @@ type MonitorLogCollectionFilterRule struct {
 	Name          string         `json:"name"`
 	Description   string         `json:"description"`
 	Pattern       string         `json:"pattern"`
+	RuleType      string         `json:"rule_type"`
 	Enabled       bool           `json:"enabled"`
 	ApplicationID sql.NullInt64  `json:"application_id"`
 }

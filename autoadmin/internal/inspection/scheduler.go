@@ -17,7 +17,7 @@ const (
 	schedulerTickInterval      = 30 * time.Second
 	cleanupInterval            = 24 * time.Hour
 	defaultResultRetentionDays = 180
-	retentionConfigKey         = "inspection.results.retention_days"
+	retentionConfigKey         = "sys.inspection.executions.retention_days"
 )
 
 // StartScheduler launches the background loop that fires cron-configured
@@ -95,7 +95,10 @@ func (handler *Handler) configValue(key string) string {
 }
 
 // cleanupExpiredExecutions prunes finished executions older than the retention
-// window (sys_config inspection.results.retention_days, default 180 days).
+// window (sys_config sys.inspection.executions.retention_days, default 180 days).
+// 键名必须与 sys_config 里真实存在的键逐字一致：此前写的是 inspection.results.retention_days
+// （只有 sys. 前缀与 executions/results 之别），于是**永远读不到用户配的 90 天**、一直按 180 天兜底
+// （2026-09-19 对着配置表逐条核对时发现）。
 // Child rows are removed before executions because only inspection_result
 // carries a physical foreign key.
 func (handler *Handler) cleanupExpiredExecutions() {

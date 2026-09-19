@@ -57,8 +57,11 @@ func overrideFixtureRows(stored sql.NullString, collectionEnabled *bool, tier sq
 		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
 		"nginx 规则", testRuleUpdatedAt, int64(3), tier,
 		collectionEnabled, sql.NullInt64{},
+		// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
+		sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
 		sql.NullTime{}, stored, sql.NullString{}, sql.NullString{},
-		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"), "std",
+		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
+		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
 	)
 	return rows
 }
@@ -77,7 +80,11 @@ func TestSaveServiceLogOverrideWritesSingleRowAndKeepsVerification(t *testing.T)
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
 	// 2) 按行 upsert（必须是这一条语句：整表替换会先 DELETE）
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15)).
+		WithArgs(
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
+			// 两个过滤方向：本例不提交（nil = 继承模板）。
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 3) 回读整行（覆盖值与认证状态都由后端算）
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
@@ -101,6 +108,45 @@ func TestSaveServiceLogOverrideWritesSingleRowAndKeepsVerification(t *testing.T)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+// 按行改采集过滤：三态要原样落库 —— NULL 继承模板、0 显式关闭、>0 指定规则。
+// 0 与 NULL 必须区分开，否则"模板配了过滤、这条服务想不过滤"就表达不出来。
+func TestSaveServiceLogOverrideWritesFilterTriState(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+
+	service, err := NewService(NewRepository(database), "", "test-django-secret")
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+	// include 方向写 0（显式关闭）、exclude 方向写 7（指定规则）：两个值必须都到 SQL 里。
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
+		WithArgs(
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
+			int64(0), int64(7),
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+
+	disabled := int64(0)
+	ruleID := int64(7)
+	if _, err = service.SaveServiceLogOverride(context.Background(), 15, ServiceLogOverrideInput{
+		LogDefinition: 24, CollectionFilterRule: &disabled, CollectionExcludeFilterRule: &ruleID,
+	}); err != nil {
+		t.Fatalf("save override: %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("三态没原样落库：%v", err)
 	}
 }
 

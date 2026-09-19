@@ -174,10 +174,13 @@
                 option-filter-prop="label"
                 placeholder="日志处理规则"
               />
-              <a-checkbox v-model:checked="item.collection_enabled">启用采集</a-checkbox>
               <a-button danger @click="form.logs.splice(index, 1)">移除</a-button>
             </div>
             <a-button type="dashed" block @click="addLog">新增日志</a-button>
+            <div class="field-hint">
+              模板只描述"这条日志的路径怎么算、挂哪条处理规则"；是否采集由逻辑服务的日志设置决定
+              （默认采、可按服务逐条关闭）。
+            </div>
           </a-tab-pane>
         </a-tabs>
       </a-form>
@@ -342,6 +345,10 @@ async function saveTemplate() {
     // _uid 只供 a-table 定位行用，不是后端字段，提交前剔除。
     macro_definitions: macroDefinitions.value.map(({ _uid, ...rest }) => rest),
   }
+  // 日志定义按 id 原地更新（id 不变，服务级覆盖不失效）：只有"编辑既有模板"才提交 id。
+  // 新建/复制时不能提交 id——复制场景里这些 id 属于源模板，后端会拒。
+  const keepLogIds = Boolean(props.templateId) && !props.copyFromId
+  payload.logs = (form.logs || []).map(({ id, ...rest }) => (keepLogIds ? { id, ...rest } : rest))
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
     : form.control_type === 'external_ha'
@@ -365,7 +372,7 @@ const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, b
 const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })
-const addLog = () => form.logs.push({ name: '', path_pattern: '', collection_enabled: false, processing_rule: null, extra_fields: {} })
+const addLog = () => form.logs.push({ name: '', path_pattern: '', processing_rule: null, extra_fields: {} })
 
 watch(() => props.open, (visible) => {
   if (!visible) {

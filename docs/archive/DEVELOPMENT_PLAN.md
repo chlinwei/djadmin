@@ -1,3 +1,6 @@
+> **历史归档**：Django（`backend/`）时代的文档。源码已从版本库移除，仅作历史参考；
+> 实现与文档一律以 Go 版 autoadmin（`autoadmin/` + `dj_agent/`）为准。
+
 # Development plan
 
 ## Phase 0: executable foundation

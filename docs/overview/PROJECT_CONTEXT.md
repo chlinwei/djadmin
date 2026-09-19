@@ -15,7 +15,7 @@
 | 执行代理 | **Go（dj_agent/）** | 目标主机上的常驻 agent，gRPC 双向流；承载自动化执行、巡检检查、指标/日志采集、WebSSH、文件传输 |
 | 前端 | Vue 3 + Vite + Ant Design Vue（fronted/） | 管理控制台 |
 | 认证 | JWT | |
-| 历史栈 | Django + Celery（backend/） | **已废弃**，目录仅存归档，禁止作为实现依据（见 AGENTS.md） |
+| 历史栈 | Django + Celery | **已废弃并移出版本库**（历史见 git，归档见 `docs/archive/`），禁止作为实现依据（见 AGENTS.md） |
 
 ## 后端模块地图（autoadmin/internal）
 

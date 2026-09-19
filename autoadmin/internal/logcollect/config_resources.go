@@ -345,9 +345,12 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 				return "pipeline_body.processors must be an array"
 			}
 		}
-		// 错误清单/聚类依赖 error_fingerprint；pipeline 不产出它时能力静默失效，直接拦截发布。
-		if !pipelineWritesErrorFingerprint(input["pipeline_body"]) {
-			return "pipeline_body 必须写入 error_fingerprint（例如 fingerprint 处理器 target_field=error_fingerprint）"
+		// 必备字段（"少一个都不行"）由 requiredProcessingRuleOutputs 定义；缺任何一个都直接拦截发布，
+		// 因为缺 log_level/log_message 的表现是"日志能查到但级别/消息为空、关键词搜不到"，
+		// 缺 error_fingerprint 的表现是错误清单静默失效——都不报错。
+		if missing := missingPipelineOutputs(input["pipeline_body"]); len(missing) > 0 {
+			return fmt.Sprintf("pipeline_body 必须写入必备字段（缺少 %s）：索引模板里其余字段由平台保证，只有这些必须由规则产出",
+				strings.Join(missing, "、"))
 		}
 		if value, ok := input["flush_timeout"].(float64); ok && (value < 100 || value > 60000) {
 			return "flush_timeout must be between 100 and 60000"
@@ -375,18 +378,34 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 	return ""
 }
 
-// pipelineWritesErrorFingerprint 静态判断 pipeline 是否会写入 error_fingerprint：
-// 覆盖 fingerprint/set/copy/rename（target_field 或 field 命中即认为会产出）。
-func pipelineWritesErrorFingerprint(raw any) bool {
+// missingPipelineOutputs 静态判断 pipeline 会产出哪些必备字段，返回**缺失**的那些。
+//
+// 这是"保存时的粗筛"，不是严格判定：它只认
+//   - fingerprint / set / copy / rename 的 `target_field` / `field` 命中字段名；
+//   - dissect / grok 的 `pattern` / `patterns` 文本里出现 `字段名` 或 `<字段名>`（命名捕获）。
+// 判不了条件分支，也判不了运行时数据 —— 真正的强制在写入时由索引模板挂的
+// `<prefix>-mapping-guard` 完成（见 log_management.go 的 buildMappingGuardPipelineBody）。
+func missingPipelineOutputs(raw any) []string {
 	body, ok := raw.(map[string]any)
 	if !ok {
 		if message, isRaw := raw.(json.RawMessage); isRaw {
 			_ = json.Unmarshal(message, &body)
 		}
 	}
+	missing := make([]string, 0, len(requiredProcessingRuleOutputs))
 	if body == nil {
-		return false
+		return append(missing, requiredProcessingRuleOutputs...)
 	}
+	for _, field := range requiredProcessingRuleOutputs {
+		if !pipelineWritesField(body, field) {
+			missing = append(missing, field)
+		}
+	}
+	return missing
+}
+
+// pipelineWritesField 在 processors 里找"会写入该字段"的迹象（见 missingPipelineOutputs 的说明）。
+func pipelineWritesField(body map[string]any, field string) bool {
 	processors, _ := body["processors"].([]any)
 	for _, rawProcessor := range processors {
 		processor, _ := rawProcessor.(map[string]any)
@@ -396,9 +415,39 @@ func pipelineWritesErrorFingerprint(raw any) bool {
 				continue
 			}
 			for _, key := range []string{"target_field", "field"} {
-				if value, exists := config[key]; exists && fmt.Sprint(value) == "error_fingerprint" {
+				if value, exists := config[key]; exists && fmt.Sprint(value) == field {
 					return true
 				}
+			}
+		}
+		// dissect/grok：字段名写在 pattern 文本里（`%{field}` / `<field>`），没有 target_field。
+		for _, name := range []string{"dissect", "grok"} {
+			config, _ := processor[name].(map[string]any)
+			if config == nil {
+				continue
+			}
+			for _, key := range []string{"pattern", "patterns"} {
+				if patternContainsField(config[key], field) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// patternContainsField 判断 dissect/grok 的 pattern（可能是单个字符串或字符串数组）里
+// 是否命名捕获了该字段：dissect 写 `%{field}`，grok 写 `%{PATTERN:field}`，正则写 `(?<field>...)`。
+func patternContainsField(raw any, field string) bool {
+	switch value := raw.(type) {
+	case string:
+		return strings.Contains(value, "%{"+field+"}") ||
+			strings.Contains(value, ":"+field+"}") ||
+			strings.Contains(value, "<"+field+">")
+	case []any:
+		for _, item := range value {
+			if patternContainsField(item, field) {
+				return true
 			}
 		}
 	}

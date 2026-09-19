@@ -161,9 +161,9 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 				fmt.Sprintf("    project: %s", yamlScalar(entry.Project)),
 				fmt.Sprintf("    environment: %s", yamlScalar(entry.Environment)),
 			}
-			if instance.HostIP != "" {
-				lines = append(lines, fmt.Sprintf("    host_ip: %s", yamlScalar(instance.HostIP)))
-			}
+			// host_ip 是索引模板里的必备字段之一：主机资产没采到 IP 时也写空串，
+			// 保证字段一定存在（否则"少一个字段都不行"的判定会把整台主机的日志判违规）。
+			lines = append(lines, fmt.Sprintf("    host_ip: %s", yamlScalar(instance.HostIP)))
 			// log_path 是该实例实际监听的绝对路径，便于按文件定位日志来源
 			//（索引模板 standardLogFields 已声明 log_path/project 为 keyword，此前从未注入导致两列恒空）。
 			lines = append(lines, fmt.Sprintf("    log_path: %s", yamlScalar(resolved)))

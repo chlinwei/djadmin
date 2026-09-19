@@ -10,6 +10,8 @@ package logcollect
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 
 	"autoadmin/internal/agent"
 	"autoadmin/internal/assets"
@@ -45,4 +47,14 @@ func (handler *Handler) SetLogBatchRunner(runner *LogBatchRunner) {
 // SetHostInfoRefresher 注入主机资产补采能力（assets.Handler.RefreshHostInfoByID）。
 func (handler *Handler) SetHostInfoRefresher(refresher func(ctx context.Context, hostID int64) error) {
 	handler.refreshHostInfo = refresher
+}
+
+// mappingGuardMode 必备字段 guard 的动作：tag（默认，打标不丢）或 drop（直接丢弃）。
+// 读环境变量而不是走 config.Config，是因为它只影响本域 bootstrap 写入的 pipeline 内容，
+// 与 assets/automation 读凭据环境变量的既有做法一致（配置清单 config.example.env 里已登记）。
+func (handler *Handler) mappingGuardMode() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("LOG_MAPPING_GUARD_MODE")), mappingGuardModeDrop) {
+		return mappingGuardModeDrop
+	}
+	return mappingGuardModeTag
 }

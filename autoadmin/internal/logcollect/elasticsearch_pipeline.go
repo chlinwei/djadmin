@@ -11,9 +11,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// requiredProcessingRuleOutputs 处理规则产物必须具备的标准字段：错误清单/聚类按 error_fingerprint 聚合，
-// pipeline 不产出它时该能力静默失效，所以校验阶段必须显式提示并拦截发布。
-var requiredProcessingRuleOutputs = []string{"error_fingerprint"}
+// requiredProcessingRuleOutputs 处理规则产物必须具备的标准字段（"少一个都不行"的那一组）。
+//
+// 为什么是这三个：索引模板里其余字段全部由平台保证（Filebeat 带 @timestamp/message，
+// 下发片段注入 project/business_system/environment/service/application/instance/host_ip/
+// log_name/log_path，guard 兜 app_fields），只有这三个必须由 pipeline 产出：
+//   - log_level：级别筛选、错误清单（terms 聚合）与查询页的级别列；
+//   - log_message：**日志检索的 default_field**，也是查询页的「消息」列与详情（不产出它 =
+//     日志能查到但消息为空、直接搜关键词搜不到内容）；
+//   - error_fingerprint：错误清单/聚类按它聚合。
+//
+// 三处共用这一份定义，改这里等于同时收紧规则保存校验、调试页的 missing_fields、以及
+// 索引模板上挂的 `<prefix>-mapping-guard`（写入时强制判定）。
+var requiredProcessingRuleOutputs = []string{"log_level", "log_message", "error_fingerprint"}
 
 func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 	var input struct {

@@ -164,11 +164,17 @@ PUT _index_template/autoadmin-template
       "number_of_shards": 1,
       "number_of_replicas": 0,
       "index.refresh_interval": "10s",
-      "index.mapping.total_fields.limit": 2000
+      "index.mapping.total_fields.limit": 2000,
+      "index.final_pipeline": "autoadmin-mapping-guard"
     }
   }
 }
 ```
+
+`index.final_pipeline` 是平台级必备字段闸门（见 §4.7 与 §5.4）：它以 final 阶段运行，
+在规则自己的 pipeline（由 Filebeat 片段的 `pipeline:` 指定）之后判定必备字段齐不齐——
+`tag`（默认）模式打 `mapping_violation` 标记、**不丢也不排除**，`drop` 模式直接丢弃（`LOG_MAPPING_GUARD_MODE`，非默认）。
+bootstrap 会先 PUT 这个 pipeline 再 PUT 引用它的模板。
 
 `min_primary_shard_size` 与 `min_index_age` 同时配置，先满足哪个就滚动，高低流量都能自适应。
 
@@ -217,21 +223,64 @@ cold 0.1GB/天 × 90 天 =   9 GB
 
 同一索引内混合多种应用的日志，若每种应用解析出的字段都独立建 mapping，字段数会持续膨胀。
 
-```
-固定字段（所有日志一致，可聚合）
-  @timestamp, message, log_level, logger_name, thread_name, process_id
-  error_message, error_template, error_fingerprint, stack_trace
-  exception_type, exception_message, root_cause_type, root_cause_message
-  project, business_system, environment
-  service, instance, host_ip
-  application, version, log_name, log_path
+**索引模板里实际声明的字段（= 唯一权威清单，与 `log_management.go` 的 `standardLogFields` 一致）**
+共 16 个，分三类：
 
-业务特有字段
-  labels_<key>    由日志定义的 extra_fields 注入
-```
+| 字段 | 类型 | 谁保证它存在 |
+|---|---|---|
+| `@timestamp` | date | Filebeat filestream（平台；值是否被 pipeline 的 `date` processor 覆盖成日志时间另说） |
+| `message` | text | Filebeat filestream（原始行） |
+| `project`、`business_system`、`environment`、`service`、`application`、`instance`、`host_ip`、`log_name`、`log_path` | keyword | 下发片段里的 `fields_under_root` 注入（`log_config_render.go`；`host_ip` 在主机没采到 IP 时写空串，保证键存在） |
+| `app_fields` | flattened | 平台 guard 兜空对象（业务字段一律写进这里，见下） |
+| **`log_level`、`log_message`、`error_fingerprint`** | keyword / text / keyword | **必须由处理规则的 pipeline 产出**（`requiredProcessingRuleOutputs`，见 §5.2、§5.4 与 §8.4 的 mapping-guard） |
+| `mapping_violation` | boolean | 平台标记字段（不是规则产出要求）：guard 在 `tag` 模式下给必备字段不齐的文档打标。**检索不做默认排除**（2026-09-19 定：guard 只当"认证失效的发现器"，日志一条都不能看不见），标记供巡检/告警用 |
 
-业务附加字段统一增加 `labels_` 前缀，避免与平台固定字段冲突。需要聚合或告警的字段应提升
-为固定字段，并在索引模板中预先定义 mapping，不能让任意业务字段无边界增长。
+> **2026-09-19 的字段变更**：删掉 `log_time`（全仓库只有模板声明它，Go/前端/文档都没有读者——
+> 检索按 `@timestamp` 排序、时间归一由 pipeline 的 `date` processor 负责），加 `mapping_violation`
+> （平台标记，同上是唯一读者）。删列对已有 backing index 无影响（ES mapping 只增不减），
+> 只影响新滚动出来的索引；`dynamic:false` 下残留的写入会被静默丢弃。
+
+**业务特有字段**：一律写进 `app_fields.<字段名>`（`flattened` 类型）。`error_message`、
+`error_template`、`stack_trace`、`exception_*` 这类**不在**索引模板里，属于业务附加字段，
+不要当固定字段用——写进顶层会被 `dynamic:false` 静默丢弃（§5.4 的 `schema_violations` 就是查这个）。
+
+> ⚠️ **`extra_fields` 目前不影响任何东西**（2026-09-19 核实）：片段渲染
+> （`log_config_render.go`）与渲染查询（`ListHostLogRenderEntries`）都没有读
+> `assets_application_log_definition.extra_fields`，因此改模板里的"附加字段"既不会改主机片段、
+> 也不会注入 `labels_*`（表格 §8.9 未收录该动作，正是因为它不改期望指纹）。要用它得先在渲染里
+> 注入字段——而注意字段名冲突：`fields_under_root: true` 下与固定字段重名会互相覆盖。
+> 当前要携带业务维度，用处理规则的 `pipeline_body` 在 ingest 阶段写 `app_fields.<字段名>`。
+
+**"必备字段"是不可协商的一组**：`log_level`、`log_message`、`error_fingerprint` 少一个都不行
+（缺了不报错、只是静默失效，所以必须显式拦截）——三处共用同一份定义（`requiredProcessingRuleOutputs`）：
+规则保存时的静态校验、调试页的 `missing_fields`、索引模板挂的 `<prefix>-mapping-guard`（写入时兜底）。
+
+### 4.8 日志格式认证（一次认证 + 指纹失效，2026-09-19 定）
+
+"少一个字段都不行"落地成**一次性认证**，而不是每次写入都判：新增服务/开启采集时**抽样校验一次**
+这条日志的格式能否被模板上的规则解析出必备字段；**通过后不再持续检查**，只在**格式指纹变化**时
+要求重新认证。这样"格式对不对"这件事在交付时回答一次，运行期不做拦截。
+
+**认证指纹只由库里的配置算出**（`internal/assets/log_format_fingerprint.go`），不依赖主机、不查 ES，
+所以"认证是否过期"是纯读库比对（`ListServiceTemplateLogs` 返回的 `format_state`：
+`unverified` / `verified` / `needs_recheck`）：
+
+| 变化 | 会不会改格式 | 能自动失效吗 |
+|---|---|---|
+| 换模板 / 模板增删日志定义 / 改名 / 改路径 | 会 | ✅ 指纹含 `ld.id` / `ld.name` / `ld.path_pattern` |
+| 改规则（`pipeline_body`、多行参数、首行正则） | 会 | ✅ 指纹含 `rule.update_time`（规则保存一定会更新它；代价是"只改说明"也会要求重新认证一次，偏保守） |
+| 换挂另一条规则 | 会 | ✅ 指纹含 `ld.processing_rule_id` |
+| 应用 / 中间件版本升级 | 会 | ✅ 指纹含 `s.application_version_id`（**每次版本升级后需要重新认证一次**，这是"改格式"里唯一无法事前断言的场景） |
+| 改服务级宏 `macro_values` | 会（换了另一个文件在采） | ✅ 指纹含它 |
+| 改实例级 `runtime_variables` | 会 | ❌ 逐实例而异、无法在服务级定义 → 需人工重新认证 |
+
+**认证依据**（记在 `assets_application_service_log_setting` 的 `format_verified_*` 四列上）：
+`instance`（取该实例最近 N 行真实日志，经 `StatFile` + `ReadFileChunk`，与 WebSSH 文件下载同一条
+文件通道）/ `sample_log`（规则自带样例）/ `waiver`（人工确认豁免，同样记指纹、记操作人）。
+
+**边界（必须知道）**：认证是**抽样**通过，不证明文件里每一行都合规（同一文件可能混着启动横幅、
+堆栈续行等）。这正是运行期 `mapping-guard` 不可替代的作用——它不拦截、只在**格式悄悄变坏**时
+留下 `mapping_violation` 标记供巡检/告警发现（见 §5.4）。
 
 字段名统一使用下划线，不使用点号，避免 Filebeat `record_modifier` 注入时的歧义。
 
@@ -273,8 +322,9 @@ cold 0.1GB/天 × 90 天 =   9 GB
 日志定义引用的规则禁止删除。渲染 Filebeat 的 `pipeline` 字段、链路体检、发布/删除四处必须用同一个
 派生名（`processingPipelineName`），禁止各自拼接。
 
-`ApplicationLogDefinition.processing_rule` 是日志定义唯一的规则关联。同格式日志可复用规则，
-Pipeline 数量不会随部署实例增长。
+`ApplicationLogDefinition.processing_rule` 是**唯一**的规则关联（2026-09-19 起服务侧不再有覆盖，
+见 §6）：同格式日志可复用规则，Pipeline 数量不会随部署实例增长。规则的引用保护也只数日志定义
+（`SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id = ?`）。
 
 ### 5.3 错误指纹
 
@@ -330,10 +380,21 @@ Pipeline。在线调试支持两种样例格式（原始日志会随规则保存
 `mapping.properties` 的顶层字段集，输出文档里不在其中的字段会作为 `schema_violations` 报出
 （`dynamic:false` 下会被静默丢弃，需改写到 `app_fields.<字段名>`）；模板取不到时回退内置标准字段。
 
-**必备字段校验**：处理规则产物必须包含 `error_fingerprint`（错误清单/聚类按它聚合），
-调试结果里缺失会报 `missing_fields`；保存时后端静态检查 `pipeline_body` 是否含写入
-`error_fingerprint` 的 processor（`fingerprint`/`set`/`copy`/`rename`，见 §5.3），没有直接 400
-拦截发布。
+**必备字段校验（三层，共用同一份定义 `requiredProcessingRuleOutputs`）**：产物必须包含
+`log_level`、`log_message`、`error_fingerprint`——缺了都不报错，只是静默失效：
+
+| 层 | 位置 | 行为 |
+|---|---|---|
+| 保存时静态检查 | `validateConfigInput` → `missingPipelineOutputs` | 缺任一必备字段直接 400 拦截发布（认 `fingerprint`/`set`/`copy`/`rename` 的 `target_field`/`field`，以及 `dissect`/`grok` 的 pattern 命名捕获；**是启发式**，判不了条件分支） |
+| 调试页 | `_simulate` 的 `missing_fields` | 用真实样例给出"缺哪个字段"，与上面的集合自动同步 |
+| 写入时兜底 | 索引模板 `index.final_pipeline` = `<prefix>-mapping-guard` | 在规则自己的 pipeline **之后**执行，按同一组字段判定：`tag`（默认）只打 `mapping_violation` 标记，不丢数据、不做检索排除（定位是"格式悄悄变坏"的发现器，配合巡检/告警）；`drop` 直接丢弃，非默认。规则作者改不到它 |
+
+另有一条**巡检清单**：规则列表的 `missing_required_fields`（前端「日志解析规则」页的「必备字段」
+列）把"静态看着缺字段"的规则直接标红——它是切换 `drop` 模式前必须先看的清单，因为丢弃后
+ES 里不留任何痕迹，违规无法事后核查。
+
+dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileChunk`）已具备
+「读取该实例最近 N 行日志」的能力，可作为 `_simulate` 的真实样例输入形成闭环（尚未接线）。
 
 dj-agent 具备文件读取能力，可实现「读取该实例最近 N 行日志」直接作为样例输入，
 形成闭环。
@@ -343,24 +404,64 @@ dj-agent 具备文件读取能力，可实现「读取该实例最近 N 行日�
 
 ---
 
-## 6. 开关粒度
+## 6. 开关粒度与"谁来定什么"
 
-采集范围由两层开关决定：
+一句话的分工：**模板决定"采什么、怎么采"（日志名单、路径、多行、解析规则），服务决定"采不采、
+采到哪个流"（采集开关、保留档位）**。三条边界都有明确的技术理由，且都落在 schema 上。
+
+采集范围由**两层开关，且两层的归属都在逻辑服务**：
 
 | 层级 | 字段 | 语义 |
 |---|---|---|
-| 部署模板 · 日志定义 | `ApplicationLogDefinition.collection_enabled` | 该条日志是否采集 |
-| 逻辑服务 | `ApplicationService.log_collection_enabled` | 该服务是否开启采集 |
+| 逻辑服务 | `ApplicationService.log_collection_enabled` | 该服务是否开启采集（总闸） |
+| 逻辑服务 × 日志定义 | `assets_application_service_log_setting.collection_enabled` | 该服务的**这条日志**是否采集 |
 
 ```
-服务开关 ON  AND  日志定义 collection_enabled ON
+服务总开关 ON  AND  该服务该条日志未被关闭
     → 服务下所有部署实例均采集该条日志
 ```
+
+**部署模板不设采集开关**（2026-09-19 迁移 000034 删除了
+`assets_application_log_definition.collection_enabled`）。理由：模板上的开关是**整模板**的，
+同一个模板被多个逻辑服务复用时，无法只关某个服务的某条日志；而且渲染查询曾把它写在 JOIN
+条件里（`ld.collection_enabled = TRUE`），服务级覆盖选"强制开启"也不生效——开关语义是坏的。
+模板现在只描述"这条日志的路径怎么算、挂哪条处理规则"（`path_pattern` / `processing_rule` /
+`extra_fields` / `name`），**是否采集完全由服务决定**。
+
+**解析规则反过来：只由模板的日志定义决定，服务侧只读**（2026-09-19 迁移 000035 删除了
+`assets_application_service_log_setting.processing_rule_id`）。理由与开关对称：同一模板下多个
+服务的日志格式大概率相同，规则就该相同；要不同就另建模板（或另加一条日志定义）。删掉服务级
+覆盖后，渲染查询里 `COALESCE(rule_setting.x, rule_definition.x)` 这一整族取值消失——
+`pipeline` 名与三个多行参数（`multiline_enabled` / `start_pattern` / `flush_timeout`）
+唯一来源是 `assets_application_log_definition.processing_rule_id`。
+
+> **升级语义（一次性）**：迁移 000035 **直接覆盖**，不留观察期——服务上原来自选的规则不再生效，
+> 相关主机进入「待下发」，重新下发后主机上的 `pipeline` 才真正换掉；已入库的历史数据不重新解析，
+> 新旧解析产物会混在同一个 data stream 里。另一个连带后果：**模板日志定义没挂规则时服务无法
+> "自救"**（以前可以覆盖一条规则把它采起来），必须先到模板给它挂规则——渲染跳过未挂规则的
+> 日志并产出 warning（§8.4）。
+
+**档位归服务**，因为 data stream 名里含服务 code 与档位（§4.1），模板天然决定不了"采到哪个流"。
+
+服务级每日志开关的取值语义（与渲染查询 `ListHostLogRenderEntries` 的
+`COALESCE(ls.collection_enabled, TRUE) = TRUE` 逐字一致）：
+
+| 覆盖行 | 该条日志 | 落库方式 |
+|---|---|---|
+| 无覆盖行 / `collection_enabled IS NULL` | 采（**默认采**） | 服务弹窗里开关保持"采"时不落行 |
+| `collection_enabled = FALSE` | 不采 | 服务弹窗关掉该条日志 → 写覆盖行 false |
+| `collection_enabled = TRUE` | 采 | 与"无覆盖行"等价，UI 归一成 null 不落行 |
+
+**默认采**是刻意的：新增模板日志定义、扩容新增实例都自动继承采集配置，不需要逐条确认；
+要停某条日志就在服务弹窗里显式关掉（`docs/plans/LOG_COLLECTION_LIFECYCLE.md` §9 第 8 条的
+"不漏采优先"）。给"新增日志定义"留的闸门是另一条既有约定：**未关联处理规则的日志不采集**
+（§8.4 渲染会跳过并告警），所以模板里新加的日志只要先不挂处理规则，就不会被采上来。
 
 **部署实例层不设开关**。同一逻辑服务下的实例配置一致是常态，HA 主备同样都需要采集；
 确有差异时拆分为两个逻辑服务处理，不为罕见例外向所有正常场景引入配置维度。
 
-附带收益：新增实例自动继承采集配置，扩容后不会漏采。
+附带收益：新增实例自动继承采集配置，扩容后不会漏采（"不漏采"指期望配置立即包含新实例；
+落到主机上仍需一次「下发配置」，见 §8.9 的自动下发建议）。
 
 ---
 
@@ -372,9 +473,21 @@ ApplicationService
   + log_retention_tier        档位 FK（Go: assets_application_service.log_retention_tier_id
                               → monitor_log_retention_tier.id，null=按 std 处理）
 
-ApplicationLogDefinition      已存在 path_pattern / encoding / collection_enabled
+ApplicationLogDefinition      已存在 path_pattern / encoding
   + processing_rule           ForeignKey(LogProcessingRule, PROTECT, nullable)
-  + extra_fields              JSONField    附加标签
+                              **解析规则的唯一来源**：服务侧不可覆盖（迁移 000035 删掉服务级覆盖）
+  + extra_fields              JSONField    附加标签（⚠️ 尚未参与渲染，见 §4.7）
+  （原 collection_enabled 已于迁移 000034 删除：采集开关下沉到逻辑服务，见 §6）
+
+ApplicationServiceLogSetting  服务级覆盖，一行 = (服务 × 日志定义)
+  collection_enabled          Boolean，NULL/无行 = 采；FALSE = 该服务不采这条日志
+  retention_tier_id           保留档位覆盖（NULL = 继承服务默认）
+  collection_filter_rule_id   采集过滤规则覆盖（⚠️ 目前不影响采集，见 §6 末）
+  format_verified_at / format_verified_fingerprint / format_verified_source / format_verified_by
+                              日志格式认证（迁移 000036）：认证时间、认证时的配置指纹、依据
+                              （instance/sample_log/waiver）、操作人。指纹与当前配置不一致 =
+                              needs_recheck（§4.8）
+  （原 processing_rule_id 已于迁移 000035 删除：解析规则只由模板日志定义决定）
 
 LogProcessingRule
   cluster                     ForeignKey(ElasticsearchCluster)
@@ -427,6 +540,18 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
 - `GET /monitor/elasticsearch-clusters/:id/index-template/`（`GetElasticsearchIndexTemplate`）：日志存储页
   「查看 Mapping」用，`GET /_index_template/<prefix>-template` 取实际 mapping 的顶层字段（名/类型）返回；
   模板不存在时回退内置 `standardLogFields` 并标记 `exists=false`，便于对比"期望 vs 实际"。
+
+**部署模板的日志定义**（`POST/PUT /assets/deployment-templates/*`，实现见 `internal/assets/template.go`）：
+
+- **按 id 增量写**（2026-09-19）：提交的日志列表带 `id` 的原地更新、不带的新增、库里没提交的删除，
+  不再"整表删掉重建"。这保住了两件事：日志定义 id 稳定 → 服务级覆盖行（档位/处理规则/采集开关/
+  过滤规则）不会因为改模板而失效；以及删除时不会撞外键。
+- 删除前**先清掉引用该定义的覆盖行**（`DeleteServiceLogSettingsByDefinitionIDs`——外键无级联），
+  顺序是先删后改再插（改名可以复用同一次保存里刚删掉的名字，唯一键不打回）。
+- 校验：提交的 `id` 必须属于本模板（否则 `ErrInvalidRelation`）、日志名不能为空
+  （否则会生成采不到文件的片段）；**新建/复制模板时提交里的 id 一律按新增处理**
+  （复制场景前端会把源模板的行原样提交，那些 id 属于源模板）。
+- 其它嵌套子表（端口/路径/配置文件/控制动作/docker）仍是"提交了就整组删重建"，与本次改动无关。
 
 ---
 
@@ -522,12 +647,13 @@ output.elasticsearch:
 ```
 「下发配置」（applyLogTargetConfigRow，log_target_actions.go）
   → agent 在线检查
-  → loadHostLogRenderInput：主机上启用采集的服务×日志定义（有效采集开关 =
-    COALESCE(log_setting.collection_enabled, log_definition.collection_enabled)，
-    即覆盖行为 NULL/"继承"时跟随模板值判断，而非要求覆盖行自身为 TRUE；
-    且 log_definition.collection_enabled 且 deployment_template 匹配服务模板），
+  → loadHostLogRenderInput：主机上启用采集的服务×日志定义（有效采集开关只有服务侧两处：
+    s.log_collection_enabled 且 COALESCE(log_setting.collection_enabled, TRUE)——
+    无覆盖行/覆盖为 NULL 即"采"，显式 FALSE 才不采，见 §6；
+    deployment_template 必须匹配服务所属模板），
     带出 项目/环境/业务/服务 code、有效档位（log_setting 优先回落服务表）、
-    有效处理规则（同上优先级）、服务级宏（macro_values）、部署模板宏定义（macro_definitions）
+    解析规则（只来自模板日志定义 ld.processing_rule_id，服务侧无覆盖，见 §6）、
+    服务级宏（macro_values）、部署模板宏定义（macro_definitions）
    → renderHostLogConfig（纯函数）：
       inputs.d/<app>__<svc>__<log>.yml —— 每实例一个 filestream input：
         路径按 服务级+实例级宏替换 ${VAR}（宏来源，优先级从低到高：
@@ -637,7 +763,7 @@ output.elasticsearch:
       - systemd: { daemon_reload: true }
   ```
 
-- **片段目录由 backend 全量托管**：渲染结果即该主机期望的完整 inputs 片段集合，agent 落盘后会
+- **片段目录由 autoadmin 全量托管**：渲染结果即该主机期望的完整 inputs 片段集合，agent 落盘后会
   删除 `inputs.d` 中不在本次清单内的 `*.yml` 遗留片段（改名/维度修正/服务下线后的残留），
   删除与写入任一发生即 `filebeat test config` + `systemctl restart filebeat`。
 - 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），只渲染不下发。
@@ -751,6 +877,93 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   要求"先在跑"会让停机待修的主机永远无法通过下发恢复。
 - **改档位提示**：档位在服务/日志定义上改动时提示"写入新流，旧流停写并按原档位保留到期、不迁移"，
   并提示需重新下发采集配置（计划 Phase 2 的第四项）。
+
+### 8.9 变更 → 影响矩阵与「配置自动下发」建议（2026-09-19）
+
+§8.7 的配置态回答"主机上的配置是不是当前该有的那份"；本节回答另一半：**改了什么配置会导致
+什么样的主机动作与数据流后果**，并对每个动作给出**是否值得改成配置自动下发**的建议。
+
+先记住三条机制（推导全部来自它们）：
+
+1. **期望指纹** = 输出段标识（默认集群地址/账号/`verify_tls`）+ 全部片段内容（§8.3）；
+   凡是能改动其中任一项的动作都让主机进入 `drift`（页面「待下发（已变更）」）。
+2. **下发是目录级全量对账**：agent 把 `/etc/filebeat/inputs.d` 恢复成"本次清单"，
+   不在清单里的 `*.yml` 一律删除（含手工放进去的文件、改名后的残留文件）；
+   有写入或删除才 `filebeat test config` + 重启（`builtin_actions.go:223-249`）。
+3. **指纹一致则跳过**：不碰主机、不重启，只刷新 `last_applied_time`（`log_target_actions.go:711`）。
+
+片段文件粒度是**服务 × 日志定义**（`<app code>__<svc code>__<日志定义 name>.yml`，
+`log_config_render.go:65`），文件内每个部署实例一个 filestream input——所以"关掉一个服务"
+等于删掉它的全部 `<app>__<svc>__*.yml`，不会碰到别的服务。
+
+| 你做的动作 | 期望指纹 | 配置态 | 下发时主机上的动作 | 数据流 / 数据 | 配置自动下发建议 |
+|---|---|---|---|---|---|
+| 新增部署实例（扩容） | 变（多一个 input） | 待下发 | 该实例的 input 加进片段，Filebeat 重启 | 流不变，新实例数据自动并入 | ✅ **建议自动（第一批，优先级最高）**：§6 承诺"新增实例自动继承采集配置、扩容后不会漏采"，现状是每次扩容都留一次人工下发，是**漏采的主要来源** |
+| 关闭采集（服务总开关 / 服务弹窗里关掉该服务的某条日志） | 变（该服务片段消失） | 待下发 | 该服务全部 `*.yml` 被删，Filebeat 重启；其他服务不受影响 | 流停写；已写入数据按档位到期，**不清** | ✅ 建议自动（第一批）：纯减法、可逆、不丢数据 |
+| 改日志路径 / 宏值（模板 `path_pattern`、服务级 `macro_values`、实例 `runtime_variables`） | 变 | 待下发 | 同名片段内容更新（`paths` 换新路径），Filebeat 重启 | 流不变；`log_path` 从新文档起变；**旧路径不再采集**；新路径按 Filebeat 规则从头读 | ✅ 建议自动（第一批）：改动局限在该服务实例，用户的意图就是"立即生效" |
+| 改多行参数（模板日志定义上的 `multiline_enabled` / `start_pattern` / `flush_timeout` / `input_format`） | 变（`parsers:` 段变） | 待下发 | 片段内容更新，Filebeat 重启 | 流不变；多行合并行为在下发后才变 | ✅ 建议自动（第一批）：改完不生效是明显的用户困惑（多行只能在发送前合并） |
+| 开启采集（重新开启） | 变回 | 待下发 → 已同步 | 片段重新写入（内容与关闭前相同也照写），Filebeat 重启 | **同一个流继续写入**（流名未变，不新建流）；registry 保留 offset，通常从断点继续，暂停期间的日志会被补采（除非文件被轮转/截断/改名） | ✅ 建议自动（**第二批**）：与关闭对称，但它引入**新写入**（ES 容量、档位预算需先有预检与量级提示） |
+| 新增日志定义（模板加一条日志） | 变（多一个片段） | 待下发 | 新增 `<app>__<svc>__<新日志>.yml`，Filebeat 重启 | 流不变（档位相同则同流） | ✅ 建议自动（**第二批**）：模板日志定义没有开关，新增后该模板下所有服务**默认采**（§6），未挂处理规则时才不采；因此自动下发前必须先做预检，否则会静默开始采集 |
+| 改解析规则，**仅改 `pipeline_body`** | **不变** | **不进入待下发** | **无主机动作、不重启**：保存规则时已 `PUT _ingest/pipeline`（§5.2） | 新写入立即用新解析；**历史文档不重新解析**（无 reindex） | ➖ 无需下发（本来就即时生效，唯一"已经自动"的一类） |
+| 换规则标识（改名 / 换应用 / 换集群 → `pipeline` 名变），或在模板日志定义上换挂另一条规则 | 变（`pipeline:` 行变） | 待下发 | 片段内容更新，Filebeat 重启 | 流不变；新旧数据的解析产物不一致 | ⛔ 保持人工：模板换规则影响所有引用服务（服务侧没有覆盖，§6）；规则本身还可被多个模板复用 |
+| 改保留档位（服务级或日志级） | 变（`index` 行变） | 待下发 | 片段内容更新，Filebeat 重启并开始写新流 | **新流**；旧流停写并按原档位到期，**不迁移数据** | ⛔ 保持人工：语义不可逆，必须显式确认 |
+| 删除模板里的日志定义 | 变（片段消失） | 待下发 | 对应 `*.yml` 被删，Filebeat 重启 | 流不变，已有数据仍在服务流里、仍可检索 | ⛔ 保持人工：删定义会**级联清掉各服务对它的覆盖值**（档位/规则/开关/过滤），影响面跨服务 |
+| 改日志定义 name（模板日志改名） | 变（片段**文件名**变） | 待下发 | 旧 `<app>__<svc>__<旧名>.yml` 被删、新文件写入，Filebeat 重启 | 流不变；`log_name` 从新文档起变（历史文档保留旧名，按 `log_name` 清理时要注意两代名字） | ⛔ 保持人工：id 不变所以服务级覆盖全部保留，但主机的片段文件与 `log_name` 维度会换一茬 |
+| 改模板的宏默认值 / 应用主目录（`macro_definitions` / `app_home`） | 变（未在服务/实例覆盖该宏的实例路径变） | 待下发 | 片段 `paths` 换新路径，Filebeat 重启 | 同"改路径"：流不变、`log_path` 变、旧路径停采 | ✅ 建议自动（第一批，与改路径同类） |
+| 换服务所属部署模板 | 变（期望配置整体换模板） | 待下发 | 旧模板的片段被删（同名文件则被覆盖），新模板的片段写入，Filebeat 重启 | 流不变（档位不再变时）；新模板的日志定义**默认全采**（§6） | ⛔ 保持人工：一次改动影响该服务全部主机与全部日志。注意编辑既有服务时，弹窗里的日志表格仍显示旧模板的行，需重开弹窗才刷新 |
+| 停用部署模板（`enabled=false`） | **不变** | 不影响配置态 | 无 | 不变 | ➖ 无需下发：渲染查询不检查模板 enabled，停用只让新建/改服务时下拉选不到它，**已在采的服务继续采** |
+| 停用 / 删除逻辑服务、删除部署模板 | 变（批量片段消失） | 待下发 | 该服务（或该模板下全部服务）的片段被删，Filebeat 重启 | 流变孤儿（维度已删 → 存储水位页"未识别"） | ⛔ 保持人工：影响面是该服务的全部主机，且与资产生命周期动作耦合 |
+| 默认 ES 集群输出段变更（地址 / 账号 / `verify_tls` / `index_prefix`） | 变 | **全部纳管主机**待下发 | 重写 `filebeat.yml` + 全部片段，Filebeat 重启 | 前缀变则流名全变 | ⛔ 保持人工（最危险）：全网影响、新集群不可达时整体采集中断 |
+| 只改 ES 口令 | **不变** | 不进入待下发 | 无 | 不变 | ⛔ 人工重新下发一次（指纹刻意不含口令，§8.3） |
+| 停 Filebeat 进程 / 卸载 Filebeat | 不变 | 不影响配置态（属运行态） | 无 | 停写 | ⛔ 人工（安装/卸载已作业化） |
+
+几个与直觉不符的点：
+
+- **采集开关只有服务侧，且默认是"采"**：模板日志定义上没有开关（§6，迁移 000034 删列）。
+  服务弹窗里那条日志的开关默认为开，关掉才写覆盖行（`collection_enabled=false`）。
+  推论：**给模板新增一条日志、给服务新增一个实例，都会自动进入采集范围**——这正是"不漏采
+  优先"的取舍，闸门是"未挂处理规则不采集"（模板里新加的日志先不挂规则就不会被采上来）。
+- **解析规则只归模板，服务侧只读**（2026-09-19，迁移 000035）：服务弹窗的「处理规则（模板）」列
+  是只读文本，渲染取 `ld.processing_rule_id`（§6）。所以**改模板的处理规则一定对所有引用服务生效**
+  （不再有"服务覆盖过的服务不受影响"这回事）；只改规则自身的 `pipeline_body` 仍然不经过模板
+  （即时生效、不需下发）。连带注意两点：模板日志定义**没挂规则时服务无法自救**，必须回模板挂；
+  而一条规则可以被多个日志定义/模板复用，所以改 `pipeline_body` 的影响面可能超过当前模板。
+- **模板保存是"按 id 增量"，不是整表删重建**（2026-09-19 改）：保存模板时后端把提交的日志列表
+  分成增/改/删三组（`applyTemplateLogWrites`）——带 `id` 的原地更新（**id 不变，服务级覆盖行
+  因此不会失效**）、不带 `id` 的新增、库里存在但本次没提交的删除。删除时会**先级联清掉引用该
+  定义的覆盖行**再删定义（外键无 `ON DELETE CASCADE`，不清就删不掉）；顺序是先删后改再插，
+  这样"改名到刚删掉的名字"也能一次保存成功。两条相关约束：提交的 `id` 必须属于本模板
+  （跨模板 id 会被拒），日志定义**名称不能为空**（空名会生成 `__svc__.yml` 这种采不到文件的片段）。
+  历史背景：改动前是每存一次就换一批 id，于是（a）改个路径也会让服务的档位/规则覆盖失效，
+  （b）"改名"与"删除"在配置层无法区分，（c）只要任何服务留过覆盖值，保存就会被外键拒绝
+  （计划 §1 第 8 条）。
+- **未挂处理规则的日志不采集**：渲染跳过并产出 warning，下发时该片段文件被删（§8.4）。
+- **路径清空不跳过**：只有"展开后仍含 `${VAR}`"才会跳过该实例；`path_pattern` 为空串会生成
+  `paths: - ''` 的片段且**没有告警**（要么 Filebeat 校验/启动失败、下发停在待下发，要么起一个采不到文件的 input）。
+- **关掉采集 ≠ 立刻停写**：开关只改期望；主机上的 Filebeat 仍按旧配置采集，直到真正下发。
+
+**自动下发的判据**（四条同时看）：① 影响面是否只落在**一个逻辑服务的部署实例**上（几十台级）；
+② 语义是否可逆（减法/幂等 vs 不可逆）；③ 是否引入新写入（容量）；④ 误配置能否**静默**（停采/漏采）。
+
+据此的建议是三档：
+
+- **建议自动（第一批）**：新增部署实例、关闭采集、改路径/宏、改多行参数。都在单服务范围内、可逆、
+  用户意图就是"改完生效"；其中**新增实例优先级最高**（现状 = 每次扩容都留一次人工下发，漏采风险最大）。
+- **建议自动（第二批，需先具备预检护栏）**：开启采集、新增日志定义。与"关闭/删除"对称，
+  但前者引入新写入、后者未挂规则会静默不采集。
+- **保持人工**：换规则标识/换集群、改档位、删除日志定义（前置未完成）、停用删除服务与模板、
+  集群输出段、口令、安装卸载。计划 §9 第 8 条"不自动"的原始理由
+  （误配置瞬间放大到全网、重启 Filebeat 的噪声无法收敛）**只对这一批成立**。
+
+若落地自动下发，护栏缺一不可：① 触发点在资产写路径**提交成功之后**，不在渲染路径里；
+② 复用批量作业队列 + 有界并发（`LOG_BATCH_APPLY_CONCURRENCY` 默认 5）+ **时间窗合并**
+（同一主机 N 分钟内多次变更合并成一次下发），避免连续改配置把 Filebeat 反复重启；
+③ 预检不通过不自动（渲染 warning 非空、片段为空、没有启用的默认集群、agent 离线）→ 落回
+"待下发 + 原因"，可见性不变；④ 幂等靠现有指纹比对（一致即跳过）；⑤ 失败不回滚配置、
+停在 `drift`，保留「一键下发」兜底。
+
+> **状态**：以上**是建议，尚未实现**。当前实现只有"安装成功后自动下发一次"（§8.4）
+> 与人工单条/批量一键下发（§8.8）；配置保存路径上没有任何自动下发触发。
 
 ---
 

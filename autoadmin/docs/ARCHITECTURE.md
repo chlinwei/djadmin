@@ -7,7 +7,7 @@ One binary exposes independently deployable roles:
 - `api`: Gin HTTP API, authentication, validation and domain services.
 - `scheduler`: loads enabled schedules from MySQL and uses gocron only to calculate trigger times.
 - `worker`: consumes durable RabbitMQ jobs and invokes domain handlers, including go-ansible.
-- `migrate`: applies schema migrations after the Django baseline handoff.
+- `migrate`: applies schema migrations (the Django baseline handoff is complete; schema is defined by `db/schema` + `db/migrations`).
 
 The scheduler never executes long-running work. It persists an execution identity and publishes a versioned message. Workers claim the execution idempotently before running it.
 
@@ -50,4 +50,4 @@ Infrastructure packages must not import HTTP handlers. Domain packages may depen
 
 ## Agent channel
 
-The Django implementation keeps live gRPC agent sessions in web-process memory. The rewrite must extract this into an explicit gateway owned by one process role before automation, inspection, monitoring installation, WebSSH or file transfer traffic moves to Go. Do not reproduce hidden process-local coupling.
+Live gRPC agent sessions are held in process memory, so they are owned by exactly one process role (the api role, see `internal/agent/gateway.go`). Automation, inspection, monitoring installation, WebSSH and file transfer all route through that gateway; do not reproduce hidden process-local coupling elsewhere.

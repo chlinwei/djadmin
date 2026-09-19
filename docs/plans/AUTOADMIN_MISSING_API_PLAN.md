@@ -1,7 +1,7 @@
 # autoadmin 缺失接口补齐计划
 
 > 背景：前端（fronted）已在调用、但 Go 新后端（autoadmin）尚未实现的接口清单与移植方案。
-> 参考实现：`backend/`（Django），**只读参考，不做修改**。
+> 参考实现曾是 Django 版（`backend/`），**已移出版本库**（历史见 git，接口基线见 `docs/archive/BACKEND_API_ANALYSIS.md`）。
 > 覆盖范围结论：经全量比对 fronted/src/api 与 autoadmin/internal/api/router/router.go，共 9 个前端在用的缺口（A1~A9）；另有 2 个前端已不调用的死代码接口（POST /api/agent/jobs/create、POST /sys/scheduler/tasks/），默认跳过。
 
 ## 进度

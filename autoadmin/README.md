@@ -1,6 +1,6 @@
 # autoadmin
 
-Go rewrite of the djadmin backend. The project preserves the existing Vue frontend API contract and the MySQL tables while domains are migrated incrementally; the data access layer also targets PostgreSQL as a second dialect (see [SQL_DESIGN](../docs/architecture/SQL_DESIGN.md)).
+The Go backend of djadmin (`autoadmin`). It serves the Vue frontend's existing API contract over the migrated MySQL schema; the data access layer also targets PostgreSQL as a second dialect (see [SQL_DESIGN](../docs/architecture/SQL_DESIGN.md)). The Django implementation has been fully retired and removed from the repository — historical docs live in [docs/archive/](../docs/archive/).
 
 ## Stack
 
@@ -40,8 +40,14 @@ make facade                   # rebuild the dialect facade (must run after make 
 ./bin/autoadmin scheduler
 ./bin/autoadmin worker        # 通用作业队列（计划任务）
 ./bin/autoadmin migrate       # applies db/migrations/<dialect> up migrations
+./bin/autoadmin migrate force 34   # 迁移失败后清脏标记（只改版本表，不动 schema）
 ./bin/autoadmin --version     # or -v
 ```
+
+迁移在真库上失败时（例如某个 `ALTER` 被外键挡住）：golang-migrate 会把版本表写成
+`(version=N, dirty=1)` 并从此拒绝执行。DDL 失败那一步通常没有落库，所以处理顺序是
+**改好迁移文件 → `migrate force <失败前的版本号>` → 再 `migrate`**。`force` 只改版本号，
+置错会让迁移链与库内实际结构错位，不确定时先核对 `schema_migrations` 与库内结构。
 
 队列按"执行者需要什么"分成两条（见 `rabbitmq.Routes`）：`autoadmin.job.execute`
 （不需要 agent 会话的作业：计划任务，worker 角色消费）与 `autoadmin.logcollect.execute`
@@ -96,12 +102,9 @@ The full SQL tree — which directory is hand-maintained, which is a generated a
 
 Use `config.example.env` as the local environment template and provide real credentials outside Git. The application does not load dotenv files itself.
 
-See [Architecture](docs/ARCHITECTURE.md), [backend module map](docs/BACKEND_MODULE_MAP.md), [API contract](docs/API_CONTRACT.md), and [development plan](docs/DEVELOPMENT_PLAN.md).
+See [Architecture](docs/ARCHITECTURE.md), [API contract](docs/API_CONTRACT.md), [business workflows](docs/BUSINESS_WORKFLOWS.md) and [error conventions](docs/ERROR_CONVENTIONS.md).
 
-The Django rewrite baseline is documented in:
+业务语义与错误约定仍以这两个为准：[Business workflows and state machines](docs/BUSINESS_WORKFLOWS.md)、[Error conventions](docs/ERROR_CONVENTIONS.md)。
 
-- [Backend API analysis](docs/BACKEND_API_ANALYSIS.md)
-- [Domain model analysis](docs/DOMAIN_MODEL_ANALYSIS.md)
-- [Business workflows and state machines](docs/BUSINESS_WORKFLOWS.md)
-- [Go rewrite implementation guide](docs/GO_REWRITE_GUIDE.md)
-- [Error conventions](docs/ERROR_CONVENTIONS.md)
+迁移期的 Django 基线文档（API 深度分析 / 领域模型分析 / 模块映射 / Go 重写指南 / 开发计划）已随实现迁出归档到
+[docs/archive/](../docs/archive/)（历史参考，不作为实现依据）。

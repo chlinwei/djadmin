@@ -3606,13 +3606,13 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     bs.code AS business_system_code, s.code AS service_code,
     COALESCE(app.code, '') AS application_code,
     COALESCE(tier.code, '') AS tier_code,
-    COALESCE(rule_setting.name, rule_definition.name, '') AS pipeline_name,
+    COALESCE(rule_definition.name, '') AS pipeline_name,
     ld.name AS log_name, ld.path_pattern,
     COALESCE(s.macro_values, '{}') AS macro_values,
     COALESCE(t.macro_definitions, '[]') AS macro_definitions,
-    COALESCE(rule_setting.multiline_enabled, rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
-    COALESCE(rule_setting.start_pattern, rule_definition.start_pattern, '') AS start_pattern,
-    COALESCE(rule_setting.flush_timeout, rule_definition.flush_timeout, 2000) AS flush_timeout
+    COALESCE(rule_definition.multiline_enabled, FALSE) AS multiline_enabled,
+    COALESCE(rule_definition.start_pattern, '') AS start_pattern,
+    COALESCE(rule_definition.flush_timeout, 2000) AS flush_timeout
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -3620,15 +3620,13 @@ JOIN assets_business_environment e ON e.id = s.environment_id
 JOIN assets_application app ON app.id = s.application_id
 JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
-    AND ld.collection_enabled = TRUE
 JOIN assets_application_service_deployment sd ON sd.service_id = s.id AND sd.enabled = TRUE
 JOIN assets_application_deployment d ON d.id = sd.deployment_id AND d.enabled = TRUE
 LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
 LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
-LEFT JOIN monitor_log_processing_rule rule_setting ON rule_setting.id = ls.processing_rule_id
 LEFT JOIN monitor_log_processing_rule rule_definition ON rule_definition.id = ld.processing_rule_id
 WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
-  AND COALESCE(ls.collection_enabled, ld.collection_enabled) = TRUE
+  AND COALESCE(ls.collection_enabled, TRUE) = TRUE
   AND d.host_id = ANY($1::bigint[])
 `
 
@@ -3654,6 +3652,15 @@ type ListHostLogRenderEntriesRow struct {
 // 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
 // 因此把子查询改成对 deployment 的 JOIN 并 SELECT d.host_id；DISTINCT 保证同一主机上
 // 一个服务部署多实例时只出一行（与逐主机查询的行为一致）。
+//
+// 采集开关只有两处且都在服务侧：服务总开关 `s.log_collection_enabled`，
+// 以及 `(服务×日志定义)` 的覆盖行 `ls.collection_enabled`（NULL 或无覆盖行 = 默认采，
+// 显式 FALSE = 不采）。模板日志定义不再带开关（迁移 000034 删列），
+// 因此这里**不能**再出现 `ld.collection_enabled`。
+//
+// 解析规则（pipeline 名 + 多行参数）**只来自模板日志定义**：删掉了服务级覆盖那一支
+// （迁移 000035 删掉 `ls.processing_rule_id`），所以 `rule_definition` 是唯一来源，
+// 不能再出现 `rule_setting` 这个别名。
 func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64) ([]ListHostLogRenderEntriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listHostLogRenderEntries, pq.Array(hostIds))
 	if err != nil {

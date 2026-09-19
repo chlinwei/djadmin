@@ -15,4 +15,4 @@
 
 ## 双实现对齐
 
-Django 侧已废弃（`backend/` 归档，不作为依据）；监控中心相关功能只以 Go 版 autoadmin 为准。
+Django 侧已废弃（源码已移出版本库）；监控中心相关功能只以 Go 版 autoadmin 为准。

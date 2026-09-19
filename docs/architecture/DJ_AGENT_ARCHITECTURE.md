@@ -48,21 +48,21 @@ Agent 自身不区分"注册/数据"两条通道：文件传输、WebSSH、任�
 ## 3. gRPC 通道
 
 dj-agent 主动连接系统参数 `sys.assets.agent.grpc_advertise_addr` 指向的地址。远程
-Agent 使用该参数原值，本机 Agent 使用 `127.0.0.1` 和相同端口。backend 不需要
+Agent 使用该参数原值，本机 Agent 使用 `127.0.0.1` 和相同端口。autoadmin 不需要
 主动访问目标主机。
 
-同一条双向流按 `request_id` 多路复用。backend 通过网关下发命令，
+同一条双向流按 `request_id` 多路复用。autoadmin 通过网关下发命令，
 Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent 自动重连。
 
 **keepalive 协商**：Agent 客户端每 30s 发送 keepalive ping（`PermitWithoutStream=true`，
-`grpcfile/client.go`）。backend gRPC server 必须放宽 `EnforcementPolicy`（`MinTime=15s`、
+`grpcfile/client.go`）。autoadmin 的 gRPC server 必须放宽 `EnforcementPolicy`（`MinTime=15s`、
 `PermitWithoutStream=true`）并配置服务端 `KeepaliveParams`（`app.go`）；否则默认
 `MinTime=5m` 会把高频 ping 判为 `too_many_pings` 并发 GOAWAY，表现为 agent 每约 90s
 被断开重连一次——两端看起来时而在线时而不在线，基线/巡检下发恰好撞在断开窗口就会误报离线。
 
 会话建立时 Agent 发送的第一帧 `Hello` 携带 `instance_name`（= `DJ_AGENT_INSTANCE_NAME`）、
 `token`（共享密钥校验）与 `version`（构建期注入的 `buildinfo.Version`）。
-校验通过后 backend 回 `HelloAck`；校验失败直接关闭流，避免未授权 client 冒充 agent。
+校验通过后 autoadmin 回 `HelloAck`；校验失败直接关闭流，避免未授权 client 冒充 agent。
 
 ---
 

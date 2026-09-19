@@ -21,7 +21,7 @@ import (
 )
 
 // Agent SSH 引导安装：全新主机 agent 尚未上线，用主机上配置的 SSH 凭证在本机执行
-// ansible-playbook（agent_install.yml）完成安装。语义与 Django assets/agent_install_service.py
+// ansible-playbook（agent_install.yml）完成安装。语义与 Django 时代的 agent 安装实现
 // 的 run_agent_install_job 一致：流式回写 stdout、解析 recap、按实例名等待 agent 回连 gRPC。
 // 主机身份只有实例名，安装流程不改写 assets_host（实例名由创建主机时保证非空且唯一）。
 // playbook 运行时从磁盘加载（见 agent_playbook.go），找不到时入口直接报错，无内嵌兜底。

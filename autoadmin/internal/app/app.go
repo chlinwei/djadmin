@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,8 +39,19 @@ var supportedCommands = map[string]struct{}{
 
 // Run dispatches independently deployable process roles from one binary.
 func Run(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: autoadmin <api|scheduler|worker|migrate>")
+	// 只有 migrate 额外带一层子命令：`migrate force <version>`（迁移失败后清脏标记）。
+	forced := false
+	var forceVersion int64
+	switch {
+	case len(args) == 1:
+	case len(args) == 3 && args[0] == "migrate" && args[1] == "force":
+		parsed, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil || parsed < 0 {
+			return fmt.Errorf("migrate force 需要一个非负整数版本号，收到 %q", args[2])
+		}
+		forced, forceVersion = true, parsed
+	default:
+		return fmt.Errorf("usage: autoadmin <api|scheduler|worker|migrate> 或 autoadmin migrate force <version>")
 	}
 	if _, ok := supportedCommands[args[0]]; !ok {
 		return fmt.Errorf("unknown command %q", args[0])
@@ -57,6 +69,9 @@ func Run(args []string) error {
 	case "api":
 		return runAPI(configuration)
 	case "migrate":
+		if forced {
+			return migration.Force(configuration.MigrationSource, configuration.MigrationDBURL, forceVersion)
+		}
 		return migration.Up(configuration.MigrationSource, configuration.MigrationDBURL)
 	case "scheduler":
 		return runScheduler(configuration)

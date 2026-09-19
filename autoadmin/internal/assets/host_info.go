@@ -27,7 +27,7 @@ type hostInfoOutcome struct {
 }
 
 // refreshHostAgentInfo dispatches a synchronous get_host_info job to the host's agent and
-// persists the result, mirroring Django's refresh_host_info + persist_host_info (host_info.py).
+// persists the result, mirroring the Django-era refresh_host_info + persist_host_info.
 // Requires the caller to have already called applyAgentPresence(&host) for a fresh online check.
 func (h *Handler) refreshHostAgentInfo(ctx context.Context, host Host) hostInfoOutcome {
 	outcome := hostInfoOutcome{HostID: host.ID}

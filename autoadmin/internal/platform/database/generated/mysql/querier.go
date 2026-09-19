@@ -244,6 +244,8 @@ type Querier interface {
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
 	CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error
+	// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
+	// 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
 	CreateServiceLogSetting(ctx context.Context, arg CreateServiceLogSettingParams) error
 	CreateSoftwarePackage(ctx context.Context, arg CreateSoftwarePackageParams) (int64, error)
 	CreateTargetInstallHistory(ctx context.Context, arg CreateTargetInstallHistoryParams) (int64, error)
@@ -316,12 +318,17 @@ type Querier interface {
 	DeleteRoleUsers(ctx context.Context, roleID int32) error
 	DeleteServiceDeployments(ctx context.Context, serviceID int64) error
 	DeleteServiceLogSettings(ctx context.Context, serviceID int64) error
+	// 删日志定义前先清掉引用它们的服务级覆盖行：外键没有 ON DELETE CASCADE，不清就删不掉；
+	// 语义上覆盖行（档位/规则/开关/过滤）依附于该定义，定义没了它也就没有意义。
+	DeleteServiceLogSettingsByDefinitionIDs(ctx context.Context, logDefinitionIds []int64) error
 	DeleteSoftwarePackage(ctx context.Context, id int64) error
 	DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateControlActions(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateDockerConfig(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) error
+	// 模板保存时只删"本次未提交"的日志定义（不再整表删重建）。
+	DeleteTemplateLogDefinitionsByIDs(ctx context.Context, arg DeleteTemplateLogDefinitionsByIDsParams) error
 	DeleteTemplatePaths(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error
 	DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error
@@ -593,6 +600,15 @@ type Querier interface {
 	// 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
 	// 因此把子查询改成对 deployment 的 JOIN 并 SELECT d.host_id；DISTINCT 保证同一主机上
 	// 一个服务部署多实例时只出一行（与逐主机查询的行为一致）。
+	//
+	// 采集开关只有两处且都在服务侧：服务总开关 `s.log_collection_enabled`，
+	// 以及 `(服务×日志定义)` 的覆盖行 `ls.collection_enabled`（NULL 或无覆盖行 = 默认采，
+	// 显式 FALSE = 不采）。模板日志定义不再带开关（迁移 000034 删列），
+	// 因此这里**不能**再出现 `ld.collection_enabled`。
+	//
+	// 解析规则（pipeline 名 + 多行参数）**只来自模板日志定义**：删掉了服务级覆盖那一支
+	// （迁移 000035 删掉 `ls.processing_rule_id`），所以 `rule_definition` 是唯一来源，
+	// 不能再出现 `rule_setting` 这个别名。
 	ListHostLogRenderEntries(ctx context.Context, hostIds []int64) ([]ListHostLogRenderEntriesRow, error)
 	// 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
 	// 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
@@ -691,6 +707,14 @@ type Querier interface {
 	// "已停用 / 未开启采集"——这是配置事实（来自库），不是对数据流的断言，所以不需要查 ES。
 	ListServiceStreamDims(ctx context.Context) ([]ListServiceStreamDimsRow, error)
 	// ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
+	// 模板日志定义 + 服务级覆盖。两条"只归一侧"的字段：
+	//   - 采集开关只有服务级一处（覆盖列，NULL/无覆盖行=采，见 ListHostLogRenderEntries），
+	//     模板不再有 collection_enabled（迁移 000034 删列）；
+	//   - **解析规则只有模板一处**（ld.processing_rule_id，服务侧只读展示），
+	//     服务不再有 processing_rule_id（迁移 000035 删列）。规则名一并带出来给弹窗只读展示；
+	//   - 日志格式认证（迁移 000036）：ls.format_verified_* 是上一次认证的结果，
+	//     与这里同时带出的"指纹输入"（规则 update_time、服务宏、应用版本）在应用层比对，
+	//     得出 format_state（verified / needs_recheck / unverified）。
 	ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error)
 	ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error)
 	// 失联对账：阈值改为应用层算好的时间点（原实现用 UTC_TIMESTAMP(6) - INTERVAL ? MINUTE，
@@ -746,6 +770,9 @@ type Querier interface {
 	MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error)
 	MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error
 	MarkLogBatchJobItemRunning(ctx context.Context, arg MarkLogBatchJobItemRunningParams) error
+	// 认证/失效：写回一次"格式认证"的结果（指纹 + 依据 + 操作人）。
+	// 由格式校验流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
+	MarkLogSettingFormatVerified(ctx context.Context, arg MarkLogSettingFormatVerifiedParams) (sql.Result, error)
 	// 指纹未变时的"只刷新下发时间"路径。
 	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
 	// 指纹变化并下发成功后：记下发时间与指纹。
@@ -828,6 +855,9 @@ type Querier interface {
 	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
 	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error
 	UpdateSoftwarePackageSource(ctx context.Context, arg UpdateSoftwarePackageSourceParams) error
+	// 模板保存按 id 原地更新日志定义（改名/改路径/换规则都保留同一行 → 服务级覆盖行不会失效）。
+	// 带 deployment_template_id 条件：请求体混入其它模板的定义 id 时不会误改（影响 0 行）。
+	UpdateTemplateLogDefinition(ctx context.Context, arg UpdateTemplateLogDefinitionParams) (sql.Result, error)
 	UpdateUserAvatar(ctx context.Context, arg UpdateUserAvatarParams) error
 	UpdateUserGroup(ctx context.Context, arg UpdateUserGroupParams) (int64, error)
 	UpdateUserLoginDate(ctx context.Context, arg UpdateUserLoginDateParams) error

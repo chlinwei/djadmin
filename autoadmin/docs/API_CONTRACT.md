@@ -47,4 +47,4 @@ List endpoints accept `page` and `page_size`. The compatibility default is 10 an
 - Preserve existing route prefixes and JSON field names until a coordinated frontend change is approved.
 - Preserve JWT permission strings in `module:resource:action` form.
 - Keep `/monitor/prometheus/http-sd/` and `/monitor/alert-webhook/api/v2/alerts` as explicitly authenticated machine endpoints according to their current behavior.
-- Contract tests must compare Django and Go responses for each migrated endpoint before traffic switches.
+- Contract tests keep pinning the frontend-visible response envelope for every endpoint (the historical Django-vs-Go comparison is done; the envelope is now defined by this document + `.github/API_RULES.md`).

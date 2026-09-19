@@ -41,7 +41,7 @@ const (
 )
 
 const (
-	// 与 backend agent_install_service.py 的目录/文件约定保持一致，两边不允许各自硬编码一份。
+	// 与平台侧（autoadmin）的目录/文件约定保持一致，两边不允许各自硬编码一份。
 	agentUpdateStagingBinaryPath = "/var/lib/dj-agent/update/dj-agent.new"
 	agentBinaryLivePath          = "/usr/local/bin/dj-agent"
 	agentConfigLivePath          = "/etc/dj-agent/config.env"

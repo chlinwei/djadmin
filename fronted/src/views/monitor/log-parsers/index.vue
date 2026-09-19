@@ -72,6 +72,16 @@
             <template v-else-if="column.key === 'processors'">
               <a-tag color="green">{{ record.pipeline_body?.processors?.length || 0 }}</a-tag>
             </template>
+            <template v-else-if="column.key === 'required_fields'">
+              <!-- 必备字段缺失是静默失败：日志能查到但级别/消息列为空、关键词搜不到、错误清单失效。
+                   这里直接暴露，也是切换 mapping-guard 到 drop 模式前的巡检清单。 -->
+              <a-tooltip :title="requiredFieldsTooltip(record)">
+                <a-tag v-if="(record.missing_required_fields || []).length" color="red">
+                  缺 {{ (record.missing_required_fields || []).join('、') }}
+                </a-tag>
+                <a-tag v-else color="green">齐</a-tag>
+              </a-tooltip>
+            </template>
             <template v-else-if="column.key === 'action'">
               <a-space :size="6">
                 <a-tooltip title="编辑">
@@ -423,8 +433,18 @@ const columns = [
   { title: '发送前格式', key: 'input_format', width: 120, align: 'center' },
   { title: '发送前行处理', key: 'multiline', width: 130, align: 'center' },
   { title: 'Ingest 处理器', key: 'processors', width: 130, align: 'center' },
+  { title: '必备字段', key: 'required_fields', width: 200, align: 'center' },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ]
+
+// 必备字段巡检提示：说清"缺了会怎样"，以及怎么补（字段必须由 pipeline 产出）。
+function requiredFieldsTooltip(record) {
+  const missing = record.missing_required_fields || []
+  if (!missing.length) return '产出了全部必备字段（log_level / log_message / error_fingerprint）'
+  return `缺少 ${missing.join('、')}：索引模板里其余字段由平台保证，这三个必须由 pipeline 产出。`
+    + '缺 log_level 则级别筛选/错误清单失效；缺 log_message 则查询页消息列为空、直接搜关键词搜不到；'
+    + '缺 error_fingerprint 则错误聚类失效。这类文档会被 mapping-guard 判为违规。'
+}
 const filterColumns = [
   { title: '规则名称', key: 'name', width: 240, fixed: 'left' },
   { title: '说明', key: 'description', width: 300 },

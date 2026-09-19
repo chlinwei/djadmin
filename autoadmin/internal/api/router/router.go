@@ -386,7 +386,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 监控域与日志采集域共用的两件依赖，集中构造后分别注入，避免各自再建一份：
 	// 凭据加解密器（读写 Elasticsearch 集群口令等敏感配置）、软件包根目录
 	//（autoadmin 自身的 media 目录：monitor_packages/ 与 agent_packages/）。
-	// backend/ 已废弃，包存储随之从 Django MEDIA_ROOT 迁出。
+	// Django 后端已废弃（源码已移出版本库），包存储随之从 MEDIA_ROOT 迁出。
 	secretEncryptor, err := assets.NewSecretEncryptor(credentialEncryptionKey, djangoSecret)
 	if err != nil {
 		return nil, nil, err

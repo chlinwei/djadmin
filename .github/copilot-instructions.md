@@ -2,31 +2,33 @@
 
 ## Project Context & Rules
 
-- **Primary Context**: Use [PROJECT_CONTEXT.md](../docs/overview/PROJECT_CONTEXT.md) as the primary context source for this repository.
+- **Primary Context**: [AGENTS.md](../AGENTS.md)（协作规则，优先级最高）+ [PROJECT_CONTEXT.md](../docs/overview/PROJECT_CONTEXT.md)。
+- **Backend**: 唯一实现是 Go 版 `autoadmin/`（一个二进制四个角色：api / scheduler / worker / migrate）与 `dj_agent/`。原 Django 实现已全面迁出并**从版本库移除**，历史文档在 `docs/archive/`——不要再引用它，也不要重建该目录。
+- **Architecture docs**: [docs/architecture/](../docs/architecture/) 是"最终逻辑"的落点，改代码必须同步更新（见 AGENTS.md 的文档同步规则）。
 - **API Standards**: Follow [API_RULES.md](API_RULES.md) for all API response formats, status codes, and implementation requirements.
-- **Compliance Status**: See [API_COMPLIANCE_REPORT.md](docs/API_COMPLIANCE_REPORT.md) for current API return format compliance check (55% compliant).
 - **User Request First**: If the user request conflicts with these files, follow the user request first.
 
 ## Tech Stack
 
-- Backend: Django + DRF (Python)
-- Database: MySQL
-- Frontend: Vue 3 + Vite
-- Frontend UI: Ant Design Vue (primary)
-- Scheduler: Celery + RabbitMQ (worker + beat separate processes required)
+- Backend: Go 1.27（`autoadmin/`，Gin + sqlc；构建强制 `CGO_ENABLED=0`），进程含 API 与定时调度
+- Agent: Go 1.26（`dj_agent/`，主动拨号 backend 建立 gRPC 长连接，承载作业执行与文件通道）
+- Database: MySQL（默认构建）；同一套查询同时支持 PostgreSQL（`-tags postgres`，见 SQL_DESIGN）
+- Queue: RabbitMQ 两条路由（任务队列由 worker 角色消费；日志采集批量动作必须由 api 角色消费，因为 agent 会话只在该进程）
+- Frontend: Vue 3 + Vite，UI 组件统一用 Ant Design Vue
 
 ## Repository Layout
 
-- Backend root: backend/djadmin
-- Frontend root: fronted
-- Main backend apps: user, role, menu, assets, scheduler, sys_config
+- Backend (Go): `autoadmin/` —— `internal/{api,app,assets,automation,baseline,inspection,logcollect,monitor,scheduler,platform,shared,modules}`；SQL 在 `autoadmin/db/{schema,queries,migrations}`（PG 查询是派生产物，禁止手改）
+- Agent (Go): `dj_agent/`；wire 协议：`proto/`
+- Frontend: `fronted/`（`src/api`、`src/views`、`src/util`）
+- Docs: `docs/architecture`（最终逻辑）/ `docs/plans`（计划）/ `docs/archive`（历史，含 Django 时代文档）
 
 ## Working Rules
 
 - **默认禁止兼容层**: 未经用户明确要求，禁止新增 legacy/fallback/shim/向后兼容分支；优先统一到当前唯一实现路径。
 - **兼容代码准入**: 只有在用户明确要求“兼容旧数据/旧接口/灰度迁移”时，才允许引入兼容代码，并且必须标注移除条件与目标版本。
 
-- **Pylance 类型优先**: 修改后端代码时，首先使用 `get_errors` 检查并解决 Pylance 报告的类型问题，再提交最终方案。区分真正的类型错误（需修复代码）和库的误报（加 `# type: ignore`）。
+- **Go 检查优先**: 改后端（Go）代码后必须先跑 `cd autoadmin && make vet && make test`（dj-agent 用 `dj_agent/Makefile` 的同名目标）再交付；动过 SQL 必须按 `make derive → make generate → make facade` 的顺序重跑生成物，顺序漏一步会被守卫测试挡住。
 - Do not break existing API contracts unless user explicitly asks for API changes.
 - Prefer minimal, targeted edits and keep current code style.
 - **注释规范**: 对非直观逻辑（复杂分支、关键边界条件、协议/时区/权限等）必须补充简洁注释；禁止无信息量注释（如“给变量赋值”）。
@@ -83,28 +85,20 @@
   - 统一行为：用户仅选中日期时，提交前必须将范围归一化为“开始日 `startOf('day')`、结束日 `endOf('day')`”
   - 查询语义：后端按时间范围筛选时，禁止混用“自然日范围”和“当前时刻范围”；默认使用自然日闭区间
   - 回归检查：至少验证“仅点日期不改时间”时请求参数是否分别为 `T00:00:00` 与 `T23:59:59`
-- For backend changes, include migration impact notes when models are changed.
-- For scheduler-related issues, always verify whether Celery worker and beat processes are running.
+- For backend changes, include migration impact notes when tables change（`autoadmin/db/schema` 两份 + `db/migrations` 两侧方言，见 SQL_DESIGN；删列前先看真库有没有旧外键）。
+- For scheduler-related issues, verify the `scheduler` role process is running（`./bin/autoadmin scheduler`）。
 - For bug fixes, provide quick verification steps (commands + expected result).
 
 ## Common Run Commands
 
-### Backend
+### Backend (autoadmin, Go)
 
-**First, activate virtual environment (Windows PowerShell):**
+构建/测试/运行统一走 Makefile（它导出 `CGO_ENABLED=0`，并有故意在开启 CGO 时失败的守卫）：
 
-```powershell
-(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& c:\workspace\python\djadmin\backend\.venv\Scripts\Activate.ps1)
-cd backend/djadmin
-python manage.py runserver 0.0.0.0:8000
-```
-
-**Or use these commands:**
-
-- `cd backend/djadmin`
-- Activate venv: `(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& .\.venv\Scripts\Activate.ps1)`
-- `pip install -r requirements.txt` (if needed)
-- `python manage.py runserver`
+- `cd autoadmin && make vet && make test && make build` → 产物 `bin/autoadmin`
+- 运行（一个二进制四个角色）：`./bin/autoadmin api`（HTTP :9000 + agent gRPC :9001）/ `scheduler` / `worker` / `migrate`
+- PostgreSQL 变体：`make build-postgres`、`make vet-postgres`
+- 环境变量见 `autoadmin/config.example.env`（不自动读 dotenv：`set -a; . ./config.env; set +a`）
 
 ### Frontend
 
@@ -126,33 +120,24 @@ python manage.py runserver 0.0.0.0:8000
 
 ### Scheduler
 
-- Recommended one-command startup: `cd backend/djadmin && python manage.py runscheduler` (starts worker + beat)
-- Split mode (for debugging):
-  - Worker: `cd backend/djadmin && python manage.py runceleryworker --loglevel=info --concurrency=2`
-  - Beat: `cd backend/djadmin && python manage.py runcelerybeat --loglevel=info`
+- 进程内调度：`./bin/autoadmin scheduler`（不再有独立的 worker/beat 进程，计划任务由它投递到 RabbitMQ 的 worker 路由）。
+- 计划任务排障：先确认 `scheduler` 角色在跑，再确认 worker 角色在消费 `autoadmin.job.execute`。
 
-### Tests & Test Report
+### 日志采集批量动作
 
-- Run backend tests (use test settings + keepdb):
-  - `cd backend/djadmin`
-  - `python manage.py test user role assets --settings=djadmin.test_settings --keepdb`
-- Generate the Markdown test report:
-  - `cd backend/djadmin`
-  - `python generate_test_report.py`
-  - Optional flags: `--apps user role assets` (which apps to test), `--output ../../TEST_REPORT.md` (report path).
-  - Output is written to `TEST_REPORT.md` at the repo root by default.
-  - The report includes a summary, a per-module summary, and a per-case detail table (module, test class, case name, description, duration, result).
-- Test conventions:
-  - API format compliance is verified inside business test cases via `BaseTestCase.assertResponseOK` (checks `{code, msg, data}` structure + `code==200`). Do NOT add a separate format-only test file; assert format alongside business assertions.
-  - Use `assertSuccess` when the case also requires `msg == 'success'` (pure CRUD success paths).
-  - SSH collection tests against fake IPs print connection-timeout tracebacks — these are expected, not failures.
+- 必须在 **api 角色**上消费（`autoadmin.logcollect.execute`）：这些动作要经 agent gRPC 会话在主机上执行，而 agent 会话只存在于 api 进程里。
+- 并发/预算由 `LOG_BATCH_*` 与 `LOG_MAPPING_GUARD_MODE` 控制，见 `autoadmin/config.example.env`。
 
-## Default Credentials
+### Tests
 
-- **Username:** admin
-- **Password:** admin
+- 后端：`cd autoadmin && make test`（真库冒烟需要 DSN，如 `ASSETS_SMOKE_DSN`/`MONITOR_SMOKE_DSN`，未设置时自动跳过）
+- 前端：`cd fronted && npm run test:run`（组件/单测，vitest）；`npm run check:ui-rules` 是仓库既有的 UI 规则自检
+- 改了 SQL 或 schema：`make derive && make generate && make facade` 必须重跑，守卫测试会挡住漏跑
 
-Login at: http://localhost:8000/sys/login or http://localhost:5173/login
+## 访问入口
+
+- 前端开发服务器：http://localhost:5173（`cd fronted && npm run dev`）
+- 后端 API：http://localhost:9000；登录账号取自数据库（由历史 Django 库迁移过来的账号沿用原密码）
 
 ## API Response Format
 

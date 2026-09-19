@@ -16,7 +16,7 @@ import (
 )
 
 // 个人中心（/sys/usercenter）：修改资料、修改密码、告警媒介绑定。
-// 语义与 Django user/views.py 的 updateUserInfo/updateUserPassword/
+// 语义沿用 Django 时代的 updateUserInfo/updateUserPassword/
 // alertMediaBindings/updateAlertMediaBindings 保持一致。
 
 type updateUserInfoRequest struct {

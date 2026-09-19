@@ -1,6 +1,6 @@
 # Agent 安装与更新（autoadmin）
 
-本文档描述 Agent 安装（SSH 引导）与更新（gRPC 在线自更新）的**最终逻辑**。后端唯一实现为 Go 版 autoadmin；Django 后端（backend/）已废弃，不再维护对齐说明。
+本文档描述 Agent 安装（SSH 引导）与更新（gRPC 在线自更新）的**最终逻辑**。后端唯一实现为 Go 版 autoadmin；Django 后端已废弃、源码已移出版本库，不再维护对齐说明。
 
 ## 唯一配置源：Agent 安装专用模板
 
@@ -57,7 +57,7 @@
 
 `source` 取值 `uploaded`（已上传激活包）或 `build`（本机构建产物）。
 
-agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源码默认 `dev`/`none`，Makefile 构建时经 `-ldflags -X` 注入 `git describe` 结果），出现在 agent 启动日志、运行时状态接口及 `dj-agent --version`（`-v`）输出中。gRPC `Hello` 握手帧携带 `version`，backend 网关校验通过后写入 `assets_hostsystem.agent_version`，因此安装/更新重启后主机列表版本即自动刷新；上传包管理已删除版本号概念，该内嵌版本不参与包管理与服务端来源判定。
+agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源码默认 `dev`/`none`，Makefile 构建时经 `-ldflags -X` 注入 `git describe` 结果），出现在 agent 启动日志、运行时状态接口及 `dj-agent --version`（`-v`）输出中。gRPC `Hello` 握手帧携带 `version`，autoadmin 网关校验通过后写入 `assets_hostsystem.agent_version`，因此安装/更新重启后主机列表版本即自动刷新；上传包管理已删除版本号概念，该内嵌版本不参与包管理与服务端来源判定。
 
 ## 二进制来源选择（`loadAgentBinary`，agent_update.go）
 
@@ -66,7 +66,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 
 ## dj-agent 安装包管理（`agent_package` 表 + agent_package.go）
 
-- 存储：文件落盘 `<mediaRoot>/agent_packages/default/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 autoadmin 工作目录下的 `media/` 取绝对路径；backend/ 废弃后媒体根已从 Django MEDIA_ROOT 迁出）；单槽位"当前包"语义，存储目录与 DB `version` 列固定 `default`（历史遗留列，不对外暴露）；记录含 `file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
+- 存储：文件落盘 `<mediaRoot>/agent_packages/default/dj-agent`（mediaRoot 解析与 monitor 软件包相同，默认 autoadmin 工作目录下的 `media/` 取绝对路径；Django 后端废弃后媒体根已从 Django MEDIA_ROOT 迁出）；单槽位"当前包"语义，存储目录与 DB `version` 列固定 `default`（历史遗留列，不对外暴露）；记录含 `file`（相对 mediaRoot 路径）/`sha256`/`size_bytes`/`is_active`/`create_time`（迁移 `000013_agent_package`）。
 - API（均挂 `Authenticate + RequirePermission("assets:hosts:update")`，与 `/api/agent/install` 相同中间件链）：
   - `GET /api/agent/packages/`：查询当前包，响应直接是包对象 `{id,file,sha256,size_bytes,is_active,create_time}`，无包时为空对象（非列表）。
   - `GET /api/agent/packages/download/`：下载当前包二进制（`Content-Disposition: attachment; filename="dj-agent"`）；未上传或文件缺失返回 404 业务错误；路径限制在 mediaRoot 内防目录穿越。

@@ -1112,9 +1112,9 @@ func (q *Queries) CreateServiceDeployment(ctx context.Context, arg CreateService
 
 const createServiceLogSetting = `-- name: CreateServiceLogSetting :exec
 INSERT INTO assets_application_service_log_setting
-  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,processing_rule_id,collection_filter_rule_id)
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
 VALUES (?,?,NULL,?,?,
-        ?,?,?,
+        ?,?,
         ?)
 `
 
@@ -1125,10 +1125,11 @@ type CreateServiceLogSettingParams struct {
 	LogDefinitionID        int64         `json:"log_definition_id"`
 	RetentionTierID        sql.NullInt64 `json:"retention_tier_id"`
 	ServiceID              int64         `json:"service_id"`
-	ProcessingRuleID       sql.NullInt64 `json:"processing_rule_id"`
 	CollectionFilterRuleID sql.NullInt64 `json:"collection_filter_rule_id"`
 }
 
+// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
+// 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
 func (q *Queries) CreateServiceLogSetting(ctx context.Context, arg CreateServiceLogSettingParams) error {
 	_, err := q.db.ExecContext(ctx, createServiceLogSetting,
 		arg.CreateTime,
@@ -1137,7 +1138,6 @@ func (q *Queries) CreateServiceLogSetting(ctx context.Context, arg CreateService
 		arg.LogDefinitionID,
 		arg.RetentionTierID,
 		arg.ServiceID,
-		arg.ProcessingRuleID,
 		arg.CollectionFilterRuleID,
 	)
 	return err
@@ -1280,9 +1280,9 @@ func (q *Queries) CreateTemplateDockerConfig(ctx context.Context, arg CreateTemp
 
 const createTemplateLogDefinition = `-- name: CreateTemplateLogDefinition :exec
 INSERT INTO assets_application_log_definition
-  (create_time,update_time,remark,name,path_pattern,collection_enabled,deployment_template_id,extra_fields,processing_rule_id)
+  (create_time,update_time,remark,name,path_pattern,deployment_template_id,extra_fields,processing_rule_id)
 VALUES (?,?,?,?,?,
-        ?,?,?,
+        ?,?,
         ?)
 `
 
@@ -1292,7 +1292,6 @@ type CreateTemplateLogDefinitionParams struct {
 	Remark               sql.NullString  `json:"remark"`
 	Name                 string          `json:"name"`
 	PathPattern          string          `json:"path_pattern"`
-	CollectionEnabled    bool            `json:"collection_enabled"`
 	DeploymentTemplateID int64           `json:"deployment_template_id"`
 	ExtraFields          json.RawMessage `json:"extra_fields"`
 	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
@@ -1305,7 +1304,6 @@ func (q *Queries) CreateTemplateLogDefinition(ctx context.Context, arg CreateTem
 		arg.Remark,
 		arg.Name,
 		arg.PathPattern,
-		arg.CollectionEnabled,
 		arg.DeploymentTemplateID,
 		arg.ExtraFields,
 		arg.ProcessingRuleID,
@@ -1547,6 +1545,27 @@ func (q *Queries) DeleteServiceLogSettings(ctx context.Context, serviceID int64)
 	return err
 }
 
+const deleteServiceLogSettingsByDefinitionIDs = `-- name: DeleteServiceLogSettingsByDefinitionIDs :exec
+DELETE FROM assets_application_service_log_setting WHERE log_definition_id IN (/*SLICE:log_definition_ids*/?)
+`
+
+// 删日志定义前先清掉引用它们的服务级覆盖行：外键没有 ON DELETE CASCADE，不清就删不掉；
+// 语义上覆盖行（档位/规则/开关/过滤）依附于该定义，定义没了它也就没有意义。
+func (q *Queries) DeleteServiceLogSettingsByDefinitionIDs(ctx context.Context, logDefinitionIds []int64) error {
+	query := deleteServiceLogSettingsByDefinitionIDs
+	var queryParams []interface{}
+	if len(logDefinitionIds) > 0 {
+		for _, v := range logDefinitionIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:log_definition_ids*/?", strings.Repeat(",?", len(logDefinitionIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:log_definition_ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
+
 const deleteTemplateComposeConfig = `-- name: DeleteTemplateComposeConfig :exec
 DELETE FROM assets_docker_compose_control_config WHERE deployment_template_id=?
 `
@@ -1589,6 +1608,33 @@ DELETE FROM assets_application_log_definition WHERE deployment_template_id=?
 
 func (q *Queries) DeleteTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteTemplateLogDefinitions, deploymentTemplateID)
+	return err
+}
+
+const deleteTemplateLogDefinitionsByIDs = `-- name: DeleteTemplateLogDefinitionsByIDs :exec
+DELETE FROM assets_application_log_definition
+WHERE deployment_template_id=? AND id IN (/*SLICE:ids*/?)
+`
+
+type DeleteTemplateLogDefinitionsByIDsParams struct {
+	DeploymentTemplateID int64   `json:"deployment_template_id"`
+	Ids                  []int64 `json:"ids"`
+}
+
+// 模板保存时只删"本次未提交"的日志定义（不再整表删重建）。
+func (q *Queries) DeleteTemplateLogDefinitionsByIDs(ctx context.Context, arg DeleteTemplateLogDefinitionsByIDsParams) error {
+	query := deleteTemplateLogDefinitionsByIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.DeploymentTemplateID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }
 
@@ -3905,7 +3951,7 @@ func (q *Queries) ListServiceDeploymentLinks(ctx context.Context, deploymentIds 
 }
 
 const listServiceLogSettings = `-- name: ListServiceLogSettings :many
-SELECT log_definition_id,retention_tier_id,collection_enabled,collection_filter_rule_id,processing_rule_id
+SELECT log_definition_id,retention_tier_id,collection_enabled,collection_filter_rule_id
 FROM assets_application_service_log_setting WHERE service_id=? ORDER BY log_definition_id
 `
 
@@ -3914,7 +3960,6 @@ type ListServiceLogSettingsRow struct {
 	RetentionTierID        sql.NullInt64 `json:"retention_tier_id"`
 	CollectionEnabled      *bool         `json:"collection_enabled"`
 	CollectionFilterRuleID sql.NullInt64 `json:"collection_filter_rule_id"`
-	ProcessingRuleID       sql.NullInt64 `json:"processing_rule_id"`
 }
 
 func (q *Queries) ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error) {
@@ -3931,7 +3976,6 @@ func (q *Queries) ListServiceLogSettings(ctx context.Context, serviceID int64) (
 			&i.RetentionTierID,
 			&i.CollectionEnabled,
 			&i.CollectionFilterRuleID,
-			&i.ProcessingRuleID,
 		); err != nil {
 			return nil, err
 		}
@@ -3948,9 +3992,14 @@ func (q *Queries) ListServiceLogSettings(ctx context.Context, serviceID int64) (
 
 const listServiceTemplateLogs = `-- name: ListServiceTemplateLogs :many
 
-SELECT ld.id, ld.name, ld.path_pattern, ld.collection_enabled,
+SELECT ld.id, ld.name, ld.path_pattern,
+       ld.processing_rule_id, COALESCE(rule.name, '') AS processing_rule_name,
+       COALESCE(rule.update_time, ld.create_time) AS processing_rule_update_time,
+       s.application_version_id,
        ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
-       ls.collection_filter_rule_id, ls.processing_rule_id,
+       ls.collection_filter_rule_id,
+       ls.format_verified_at, ls.format_verified_fingerprint,
+       ls.format_verified_source, ls.format_verified_by,
        s.code AS service_code, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
        COALESCE(s.macro_values, '{}') AS macro_values,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
@@ -3958,6 +4007,7 @@ FROM assets_application_log_definition ld
 JOIN assets_application_service s ON s.id = ?
 LEFT JOIN assets_application_service_log_setting ls
   ON ls.log_definition_id = ld.id AND ls.service_id = s.id
+LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
 LEFT JOIN assets_business_environment e ON e.id = s.environment_id
@@ -3970,11 +4020,17 @@ type ListServiceTemplateLogsRow struct {
 	ID                        int64           `json:"id"`
 	Name                      string          `json:"name"`
 	PathPattern               string          `json:"path_pattern"`
-	CollectionEnabled         bool            `json:"collection_enabled"`
+	ProcessingRuleID          sql.NullInt64   `json:"processing_rule_id"`
+	ProcessingRuleName        string          `json:"processing_rule_name"`
+	ProcessingRuleUpdateTime  time.Time       `json:"processing_rule_update_time"`
+	ApplicationVersionID      int64           `json:"application_version_id"`
 	RetentionTierID           sql.NullInt64   `json:"retention_tier_id"`
 	OverrideCollectionEnabled *bool           `json:"override_collection_enabled"`
 	CollectionFilterRuleID    sql.NullInt64   `json:"collection_filter_rule_id"`
-	ProcessingRuleID          sql.NullInt64   `json:"processing_rule_id"`
+	FormatVerifiedAt          sql.NullTime    `json:"format_verified_at"`
+	FormatVerifiedFingerprint sql.NullString  `json:"format_verified_fingerprint"`
+	FormatVerifiedSource      sql.NullString  `json:"format_verified_source"`
+	FormatVerifiedBy          sql.NullString  `json:"format_verified_by"`
 	ServiceCode               string          `json:"service_code"`
 	ProjectCode               string          `json:"project_code"`
 	EnvironmentCode           sql.NullString  `json:"environment_code"`
@@ -3984,6 +4040,14 @@ type ListServiceTemplateLogsRow struct {
 }
 
 // ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
+// 模板日志定义 + 服务级覆盖。两条"只归一侧"的字段：
+//   - 采集开关只有服务级一处（覆盖列，NULL/无覆盖行=采，见 ListHostLogRenderEntries），
+//     模板不再有 collection_enabled（迁移 000034 删列）；
+//   - **解析规则只有模板一处**（ld.processing_rule_id，服务侧只读展示），
+//     服务不再有 processing_rule_id（迁移 000035 删列）。规则名一并带出来给弹窗只读展示；
+//   - 日志格式认证（迁移 000036）：ls.format_verified_* 是上一次认证的结果，
+//     与这里同时带出的"指纹输入"（规则 update_time、服务宏、应用版本）在应用层比对，
+//     得出 format_state（verified / needs_recheck / unverified）。
 func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listServiceTemplateLogs, serviceID)
 	if err != nil {
@@ -3997,11 +4061,17 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.ID,
 			&i.Name,
 			&i.PathPattern,
-			&i.CollectionEnabled,
+			&i.ProcessingRuleID,
+			&i.ProcessingRuleName,
+			&i.ProcessingRuleUpdateTime,
+			&i.ApplicationVersionID,
 			&i.RetentionTierID,
 			&i.OverrideCollectionEnabled,
 			&i.CollectionFilterRuleID,
-			&i.ProcessingRuleID,
+			&i.FormatVerifiedAt,
+			&i.FormatVerifiedFingerprint,
+			&i.FormatVerifiedSource,
+			&i.FormatVerifiedBy,
 			&i.ServiceCode,
 			&i.ProjectCode,
 			&i.EnvironmentCode,
@@ -4119,20 +4189,19 @@ func (q *Queries) ListTemplateControlActions(ctx context.Context, deploymentTemp
 }
 
 const listTemplateLogDefinitions = `-- name: ListTemplateLogDefinitions :many
-SELECT id,create_time,update_time,remark,name,path_pattern,collection_enabled,extra_fields,processing_rule_id
+SELECT id,create_time,update_time,remark,name,path_pattern,extra_fields,processing_rule_id
 FROM assets_application_log_definition WHERE deployment_template_id=? ORDER BY id
 `
 
 type ListTemplateLogDefinitionsRow struct {
-	ID                int64           `json:"id"`
-	CreateTime        time.Time       `json:"create_time"`
-	UpdateTime        time.Time       `json:"update_time"`
-	Remark            sql.NullString  `json:"remark"`
-	Name              string          `json:"name"`
-	PathPattern       string          `json:"path_pattern"`
-	CollectionEnabled bool            `json:"collection_enabled"`
-	ExtraFields       json.RawMessage `json:"extra_fields"`
-	ProcessingRuleID  sql.NullInt64   `json:"processing_rule_id"`
+	ID               int64           `json:"id"`
+	CreateTime       time.Time       `json:"create_time"`
+	UpdateTime       time.Time       `json:"update_time"`
+	Remark           sql.NullString  `json:"remark"`
+	Name             string          `json:"name"`
+	PathPattern      string          `json:"path_pattern"`
+	ExtraFields      json.RawMessage `json:"extra_fields"`
+	ProcessingRuleID sql.NullInt64   `json:"processing_rule_id"`
 }
 
 func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemplateID int64) ([]ListTemplateLogDefinitionsRow, error) {
@@ -4151,7 +4220,6 @@ func (q *Queries) ListTemplateLogDefinitions(ctx context.Context, deploymentTemp
 			&i.Remark,
 			&i.Name,
 			&i.PathPattern,
-			&i.CollectionEnabled,
 			&i.ExtraFields,
 			&i.ProcessingRuleID,
 		); err != nil {
@@ -4343,6 +4411,38 @@ func (q *Queries) MarkHostCollected(ctx context.Context, arg MarkHostCollectedPa
 		arg.ID,
 	)
 	return err
+}
+
+const markLogSettingFormatVerified = `-- name: MarkLogSettingFormatVerified :execresult
+UPDATE assets_application_service_log_setting
+SET update_time=?,format_verified_at=?,
+    format_verified_fingerprint=?,
+    format_verified_source=?,format_verified_by=?
+WHERE service_id=? AND log_definition_id=?
+`
+
+type MarkLogSettingFormatVerifiedParams struct {
+	UpdateTime                time.Time    `json:"update_time"`
+	FormatVerifiedAt          sql.NullTime `json:"format_verified_at"`
+	FormatVerifiedFingerprint string       `json:"format_verified_fingerprint"`
+	FormatVerifiedSource      string       `json:"format_verified_source"`
+	FormatVerifiedBy          string       `json:"format_verified_by"`
+	ServiceID                 int64        `json:"service_id"`
+	LogDefinitionID           int64        `json:"log_definition_id"`
+}
+
+// 认证/失效：写回一次"格式认证"的结果（指纹 + 依据 + 操作人）。
+// 由格式校验流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
+func (q *Queries) MarkLogSettingFormatVerified(ctx context.Context, arg MarkLogSettingFormatVerifiedParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, markLogSettingFormatVerified,
+		arg.UpdateTime,
+		arg.FormatVerifiedAt,
+		arg.FormatVerifiedFingerprint,
+		arg.FormatVerifiedSource,
+		arg.FormatVerifiedBy,
+		arg.ServiceID,
+		arg.LogDefinitionID,
+	)
 }
 
 const updateAgentJobHostLogStdout = `-- name: UpdateAgentJobHostLogStdout :exec
@@ -4853,6 +4953,40 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) er
 		arg.ID,
 	)
 	return err
+}
+
+const updateTemplateLogDefinition = `-- name: UpdateTemplateLogDefinition :execresult
+UPDATE assets_application_log_definition
+SET update_time=?,remark=?,name=?,
+    path_pattern=?,extra_fields=?,
+    processing_rule_id=?
+WHERE id=? AND deployment_template_id=?
+`
+
+type UpdateTemplateLogDefinitionParams struct {
+	UpdateTime           time.Time       `json:"update_time"`
+	Remark               sql.NullString  `json:"remark"`
+	Name                 string          `json:"name"`
+	PathPattern          string          `json:"path_pattern"`
+	ExtraFields          json.RawMessage `json:"extra_fields"`
+	ProcessingRuleID     sql.NullInt64   `json:"processing_rule_id"`
+	ID                   int64           `json:"id"`
+	DeploymentTemplateID int64           `json:"deployment_template_id"`
+}
+
+// 模板保存按 id 原地更新日志定义（改名/改路径/换规则都保留同一行 → 服务级覆盖行不会失效）。
+// 带 deployment_template_id 条件：请求体混入其它模板的定义 id 时不会误改（影响 0 行）。
+func (q *Queries) UpdateTemplateLogDefinition(ctx context.Context, arg UpdateTemplateLogDefinitionParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, updateTemplateLogDefinition,
+		arg.UpdateTime,
+		arg.Remark,
+		arg.Name,
+		arg.PathPattern,
+		arg.ExtraFields,
+		arg.ProcessingRuleID,
+		arg.ID,
+		arg.DeploymentTemplateID,
+	)
 }
 
 const upsertHostHardware = `-- name: UpsertHostHardware :exec

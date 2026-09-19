@@ -7,7 +7,7 @@
 - **后端**：Go（`autoadmin/`），Gin + MySQL（默认构建）；数据访问层同时支持 PostgreSQL（`-tags postgres`，见 [SQL 设计](docs/architecture/SQL_DESIGN.md)），进程内含 API 与定时调度
 - **执行代理**：Go（`dj_agent/`），gRPC 双向流；必须通过 Makefile 构建（强制 `CGO_ENABLED=0`）
 - **前端**：Vue 3 + Vite + Ant Design Vue（`fronted/`）
-- `backend/`（Django）**已废弃**，仅存归档，勿作为实现或文档依据（见 [AGENTS.md](AGENTS.md)）
+- `backend/`（Django）**已全面迁出并移出版本库**（历史见 git 历史，归档见 `docs/archive/`），实现与文档一律以 `autoadmin/` 为准（见 [AGENTS.md](AGENTS.md)）
 
 ## 文档索引
 
@@ -60,6 +60,7 @@ make facade      # 重建方言门面
 ./bin/autoadmin scheduler  # 定时任务
 ./bin/autoadmin worker     # 消息消费
 ./bin/autoadmin migrate    # 执行 db/migrations/<dialect> 的 up 迁移
+./bin/autoadmin migrate force 34   # 迁移失败后清脏标记（只改版本表，不动 schema）
 ```
 
 环境变量：默认构建读 `MYSQL_DSN`，`-tags postgres` 读 `POSTGRES_DSN`（须带 `TimeZone=UTC`）；`MIGRATION_DATABASE_URL` / `MIGRATION_SOURCE_URL` 供 `migrate` 用。配置不自动读 dotenv，需自行 `set -a; . ./config.env; set +a`。两个 tag 都要在 CI 里构建与测试——PG 侧的适配是手写的，只有编译 `postgres` tag 才会暴露两侧产物的新分歧。

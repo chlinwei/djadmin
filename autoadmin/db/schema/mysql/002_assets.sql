@@ -205,7 +205,7 @@ CREATE TABLE `assets_application_config_file` (
 
 CREATE TABLE `assets_application_log_definition` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
-  `name` varchar(128) NOT NULL, `path_pattern` varchar(512) NOT NULL, `collection_enabled` BOOLEAN NOT NULL,
+  `name` varchar(128) NOT NULL, `path_pattern` varchar(512) NOT NULL,
   `deployment_template_id` bigint NOT NULL, `extra_fields` json NOT NULL, `processing_rule_id` bigint DEFAULT NULL, PRIMARY KEY (`id`),
   UNIQUE KEY `unique_template_log_name` (`deployment_template_id`,`name`),
   CONSTRAINT `assets_application_log_definition_template_fk` FOREIGN KEY (`deployment_template_id`) REFERENCES `assets_application_deployment_template` (`id`)
@@ -265,7 +265,10 @@ CREATE TABLE `assets_application_service_deployment` (
 CREATE TABLE `assets_application_service_log_setting` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
   `collection_enabled` BOOLEAN DEFAULT NULL, `log_definition_id` bigint NOT NULL, `retention_tier_id` bigint DEFAULT NULL,
-  `service_id` bigint NOT NULL, `processing_rule_id` bigint DEFAULT NULL, `collection_filter_rule_id` bigint DEFAULT NULL, PRIMARY KEY (`id`),
+  `service_id` bigint NOT NULL, `collection_filter_rule_id` bigint DEFAULT NULL,
+  `format_verified_at` datetime(6) DEFAULT NULL, `format_verified_fingerprint` varchar(64) NOT NULL DEFAULT '',
+  `format_verified_source` varchar(16) NOT NULL DEFAULT '', `format_verified_by` varchar(150) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`),
   UNIQUE KEY `unique_service_log_setting` (`service_id`,`log_definition_id`),
   CONSTRAINT `assets_application_service_log_setting_log_fk` FOREIGN KEY (`log_definition_id`) REFERENCES `assets_application_log_definition` (`id`),
   CONSTRAINT `assets_application_service_log_setting_service_fk` FOREIGN KEY (`service_id`) REFERENCES `assets_application_service` (`id`)

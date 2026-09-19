@@ -96,6 +96,47 @@ func TestBuildIndexTemplateBody(t *testing.T) {
 			t.Fatalf("standard field %s missing", field)
 		}
 	}
+	// log_time 是没人读的死字段（2026-09-19 删掉）；mapping_violation 是平台标记字段（tag 模式用）。
+	if _, ok := properties["log_time"]; ok {
+		t.Fatalf("log_time 已从 mapping 删除（没有代码读它）")
+	}
+	if _, ok := properties["mapping_violation"]; !ok {
+		t.Fatalf("mapping_violation（平台标记字段）应在 mapping 里，否则 tag 模式下标记会被 dynamic:false 丢掉")
+	}
+	// 必备字段 guard 挂在 final_pipeline 上：在规则自己的 pipeline 之后执行，规则作者改不到。
+	settings := body["template"].(gin.H)["settings"].(gin.H)
+	if settings["index.final_pipeline"] != "logs-mapping-guard" {
+		t.Fatalf("index.final_pipeline = %v", settings["index.final_pipeline"])
+	}
+}
+
+// 必备字段 guard：tag 模式打标不丢、drop 模式丢弃；判定条件与必备字段集合同源。
+func TestBuildMappingGuardPipelineBody(t *testing.T) {
+	tagProcessors := buildMappingGuardPipelineBody(mappingGuardModeTag)["processors"].([]any)
+	if len(tagProcessors) != 2 {
+		t.Fatalf("tag 模式应有 app_fields 兜底 + mapping_violation 打标两个处理器：%+v", tagProcessors)
+	}
+	if _, ok := tagProcessors[1].(gin.H)["set"]; !ok {
+		t.Fatalf("tag 模式第二个处理器应是 set（打标）：%+v", tagProcessors[1])
+	}
+
+	dropProcessor, ok := buildMappingGuardPipelineBody(mappingGuardModeDrop)["processors"].([]any)[1].(gin.H)["drop"].(gin.H)
+	if !ok {
+		t.Fatalf("drop 模式第二个处理器应是 drop")
+	}
+	condition, _ := dropProcessor["if"].(string)
+	for _, field := range requiredProcessingRuleOutputs {
+		if !strings.Contains(condition, "ctx."+field+" == null") {
+			t.Fatalf("drop 条件必须覆盖必备字段 %s：%s", field, condition)
+		}
+	}
+	// 未知/空模式一律退化成 tag（安全默认：不丢数据）。
+	if _, ok := buildMappingGuardPipelineBody("")["processors"].([]any)[1].(gin.H)["set"]; !ok {
+		t.Fatalf("空模式应退化成 tag")
+	}
+	if name := buildMappingGuardPipelineName("logs"); name != "logs-mapping-guard" {
+		t.Fatalf("guard pipeline 名 = %s", name)
+	}
 }
 
 // pipeline 签名只取 processors/on_failure 且 key 排序，与 Django json.dumps(sort_keys=True) 一致。

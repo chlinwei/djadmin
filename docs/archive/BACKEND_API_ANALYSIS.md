@@ -1,3 +1,6 @@
+> **历史归档**：Django（`backend/`）时代的文档。源码已从版本库移除，仅作历史参考；
+> 实现与文档一律以 Go 版 autoadmin（`autoadmin/` + `dj_agent/`）为准。
+
 # Django Backend API 深度分析
 
 本文基于当前 `backend/djadmin` 实现整理，是 Go 重写的接口事实基线。它记录现状，不代表所有现状都值得复制；需要修复的设计会在 `GO_REWRITE_GUIDE.md` 单独标记。

@@ -17,22 +17,53 @@ import (
 // 片段到 WHERE 为止：占位符形态两侧不同（`?` / `$1`），断言不依赖它。
 const elasticsearchClusterQuery = `SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled FROM monitor_elasticsearch_cluster`
 
-// 发布前静态校验：pipeline 必须会写入 error_fingerprint（fingerprint/set/copy/rename 任一命中）。
-func TestPipelineWritesErrorFingerprint(t *testing.T) {
+// 发布前静态校验：pipeline 必须会写入三个必备字段（log_level / log_message / error_fingerprint），
+// 覆盖 fingerprint/set/copy/rename 的 target_field/field，以及 dissect/grok 的命名捕获。
+// 注意它是启发式（判不了条件分支），真正的强制在索引模板挂的 mapping-guard。
+func TestMissingPipelineOutputs(t *testing.T) {
 	cases := []struct {
 		name string
 		body map[string]any
-		want bool
+		want []string
 	}{
-		{"fingerprint.target_field", map[string]any{"processors": []any{map[string]any{"fingerprint": map[string]any{"fields": []any{"a"}, "target_field": "error_fingerprint"}}}}, true},
-		{"set.field", map[string]any{"processors": []any{map[string]any{"set": map[string]any{"field": "error_fingerprint", "value": "x"}}}}, true},
-		{"rename.target_field", map[string]any{"processors": []any{map[string]any{"rename": map[string]any{"field": "a", "target_field": "error_fingerprint"}}}}, true},
-		{"missing", map[string]any{"processors": []any{map[string]any{"grok": map[string]any{"field": "message"}}}}, false},
-		{"fingerprint other target", map[string]any{"processors": []any{map[string]any{"fingerprint": map[string]any{"fields": []any{"a"}}}}}, false},
+		{
+			name: "全部齐（dissect 命名捕获 + fingerprint）",
+			body: map[string]any{"processors": []any{
+				map[string]any{"dissect": map[string]any{"field": "message", "pattern": "%{ts} %{log_level} %{log_message}"}},
+				map[string]any{"fingerprint": map[string]any{"fields": []any{"a"}, "target_field": "error_fingerprint"}},
+			}},
+			want: nil,
+		},
+		{
+			name: "grok 命名捕获也算",
+			body: map[string]any{"processors": []any{
+				map[string]any{"grok": map[string]any{"field": "message", "patterns": []any{"%{LOGLEVEL:log_level} %{GREEDYDATA:log_message}"}}},
+				map[string]any{"set": map[string]any{"field": "error_fingerprint", "value": "x"}},
+			}},
+			want: nil,
+		},
+		{
+			name: "只写了 error_fingerprint（历史规则的典型形态）",
+			body: map[string]any{"processors": []any{
+				map[string]any{"fingerprint": map[string]any{"fields": []any{"a"}, "target_field": "error_fingerprint"}},
+			}},
+			want: []string{"log_level", "log_message"},
+		},
+		{
+			name: "rename 也算写入",
+			body: map[string]any{"processors": []any{
+				map[string]any{"rename": map[string]any{"field": "lvl", "target_field": "log_level"}},
+				map[string]any{"set": map[string]any{"field": "log_message", "value": "x"}},
+				map[string]any{"set": map[string]any{"field": "error_fingerprint", "value": "x"}},
+			}},
+			want: nil,
+		},
+		{"没有 processors", map[string]any{}, []string{"log_level", "log_message", "error_fingerprint"}},
 	}
 	for _, testCase := range cases {
-		if got := pipelineWritesErrorFingerprint(testCase.body); got != testCase.want {
-			t.Errorf("%s: pipelineWritesErrorFingerprint = %v, want %v", testCase.name, got, testCase.want)
+		got := missingPipelineOutputs(testCase.body)
+		if strings.Join(got, ",") != strings.Join(testCase.want, ",") {
+			t.Errorf("%s: missingPipelineOutputs = %v, want %v", testCase.name, got, testCase.want)
 		}
 	}
 }
@@ -47,7 +78,9 @@ func TestNonStandardDocumentFieldsUsesMapping(t *testing.T) {
 	if len(got) != 1 || got[0] != "log" {
 		t.Fatalf("nonStandardDocumentFields = %v, want [log]", got)
 	}
-	if missing := missingRequiredDocumentFields(result); len(missing) != 1 || missing[0] != "error_fingerprint" {
+	// 三个必备字段一个都没有时全部列出（结果按字段名排序）。
+	missing := missingRequiredDocumentFields(result)
+	if strings.Join(missing, ",") != "error_fingerprint,log_level,log_message" {
 		t.Fatalf("missingRequiredDocumentFields = %v", missing)
 	}
 }

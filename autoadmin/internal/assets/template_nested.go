@@ -70,7 +70,7 @@ func (r *Repository) loadTemplateNested(ctx context.Context, id int64) (Deployme
 		var item TemplateLog
 		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
 		item.Remark = stringValue(row.Remark)
-		item.Name, item.PathPattern, item.CollectionEnabled = row.Name, row.PathPattern, row.CollectionEnabled
+		item.Name, item.PathPattern = row.Name, row.PathPattern
 		item.ExtraFields = rawJSONOrObject(row.ExtraFields)
 		item.ProcessingRule = intPtr(row.ProcessingRuleID)
 		result.Logs = append(result.Logs, item)

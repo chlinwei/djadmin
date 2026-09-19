@@ -141,7 +141,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	}
 	if err = queries.CreateTemplateLogDefinition(ctx, db.CreateTemplateLogDefinitionParams{
 		CreateTime: now, UpdateTime: now, Remark: sql.NullString{}, Name: "app.log",
-		PathPattern: "/opt/app/logs/*.log", CollectionEnabled: true, DeploymentTemplateID: templateID,
+		PathPattern: "/opt/app/logs/*.log", DeploymentTemplateID: templateID,
 		ExtraFields: json.RawMessage(`{"tag":"smoke"}`), ProcessingRuleID: sql.NullInt64{},
 	}); err != nil {
 		t.Fatalf("建模板日志定义：%v", err)
@@ -220,7 +220,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	if err = queries.CreateServiceLogSetting(ctx, db.CreateServiceLogSettingParams{
 		CreateTime: now, UpdateTime: now, CollectionEnabled: boolPtr(true),
 		LogDefinitionID: logDefinitions[0].ID, RetentionTierID: sql.NullInt64{}, ServiceID: serviceID,
-		ProcessingRuleID: sql.NullInt64{}, CollectionFilterRuleID: sql.NullInt64{},
+		CollectionFilterRuleID: sql.NullInt64{},
 	}); err != nil {
 		t.Fatalf("建服务日志设置：%v", err)
 	}
@@ -290,6 +290,39 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("按业务系统过滤的服务列表里找不到刚建的服务")
+	}
+
+	// 模板保存的日志定义写路径（按 id 增量，不再整表删重建）：
+	//   ① 改路径 → 定义 id 不变，引用它的服务级覆盖行必须还在（旧实现会换 id → 覆盖值失效，
+	//      而且外键会让这次保存直接失败）；
+	//   ② 移除该定义 → 级联清掉覆盖行，不撞外键。
+	// 直接调 applyTemplateLogWrites（与 SaveDeploymentTemplate 同一段逻辑），因为它接受
+	// 事务内的 queries；Repository.SaveDeploymentTemplate 会另开自己的事务，跑在冒烟事务之外。
+	if err = applyTemplateLogWrites(ctx, queries, templateID, false, []TemplateLogInput{{
+		ID: logDefinitions[0].ID, Name: logDefinitions[0].Name,
+		PathPattern: "/opt/app/logs/*.log", ExtraFields: json.RawMessage(`{"tag":"smoke"}`),
+	}}, now); err != nil {
+		t.Fatalf("按 id 更新日志定义：%v", err)
+	}
+	afterUpdate, err := queries.ListTemplateLogDefinitions(ctx, templateID)
+	if err != nil || len(afterUpdate) != 1 {
+		t.Fatalf("更新后应仍有 1 条日志定义：%d 行, %v", len(afterUpdate), err)
+	}
+	if afterUpdate[0].ID != logDefinitions[0].ID || afterUpdate[0].PathPattern != "/opt/app/logs/*.log" {
+		t.Fatalf("日志定义应原地更新（id 不变）：%+v", afterUpdate[0])
+	}
+	if logSettings, err = (&Repository{pool: pool, queries: queries}).ListServiceLogSettings(ctx, serviceID); err != nil || len(logSettings) != 1 {
+		t.Fatalf("改路径后服务级覆盖行应保留：%d 行, %v", len(logSettings), err)
+	}
+	// 空提交 = 该模板不再有日志定义 → 删行并级联清覆盖行。
+	if err = applyTemplateLogWrites(ctx, queries, templateID, false, nil, now); err != nil {
+		t.Fatalf("删除日志定义：%v", err)
+	}
+	if rows, err := queries.ListTemplateLogDefinitions(ctx, templateID); err != nil || len(rows) != 0 {
+		t.Fatalf("日志定义应已删除：%d 行, %v", len(rows), err)
+	}
+	if logSettings, err = (&Repository{pool: pool, queries: queries}).ListServiceLogSettings(ctx, serviceID); err != nil || len(logSettings) != 0 {
+		t.Fatalf("覆盖行应被级联清理：%d 行, %v", len(logSettings), err)
 	}
 
 	// 部署实例更新与删除、服务删除、模板嵌套删除。

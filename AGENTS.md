@@ -2,7 +2,7 @@
 
 ## 文件访问限制（必须遵守）
 
-**`backend/` 目录已废弃，禁止读写**：不要读取、检索、修改 `backend/` 下的任何文件，也不要在该目录下新建文件。所有后端逻辑的最终实现以 Go 版 autoadmin（`autoadmin/`）和 `dj_agent/` 为准。文档中如需引用历史实现，只允许引用 `docs/` 下的归档文档，不引用 `backend/` 源码。
+**后端唯一实现是 Go 版 autoadmin（`autoadmin/` + `dj_agent/`）**：原 Django 实现（`backend/`）已全面迁出并**从版本库移除**（历史见 git history，归档文档在 `docs/archive/`）。不要重新引入该目录，也不要读取/检索/修改其中的文件；文档引用历史实现只允许指向 `docs/archive/`。
 
 ## 文档同步规则（必须遵守）
 

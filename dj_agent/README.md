@@ -61,7 +61,9 @@ dj_agent/
 
 ### Ansible 安装
 
-平台批量纳管主机时使用 `../backend/djadmin/assets/agent_install.yml`。Playbook
+平台批量纳管主机时使用 **Agent 安装模板**（autoadmin「模板管理」里 `category=agent` 的
+`agent_install.yml`，后端执行时落盘再跑 ansible-playbook，实现见 `autoadmin/internal/assets/agent_install.go`，
+流程见 [AGENT_INSTALL_UPDATE.md](../docs/architecture/AGENT_INSTALL_UPDATE.md)）。Playbook
 当前支持 Linux amd64，会上传 `bin/dj-agent` 和 `deploy/install.sh`，生成 systemd
 配置并执行 `systemctl enable --now dj-agent`。开发阶段 gRPC 握手只使用 `DJ_AGENT_ID`，
 不需要 Token；后续切换 mTLS 时再替换认证配置。
@@ -174,7 +176,7 @@ djadmin Backend → SSH → dj-agent gRPC
   Target Host
 ```
 
-集成API文档见 `../backend/djadmin/assets/AGENT_JOB_API.md`
+集成 API 与协议见 [DJ_AGENT_ARCHITECTURE.md](../docs/architecture/DJ_AGENT_ARCHITECTURE.md)（wire 定义在 `../proto/`）
 
 ---
 
@@ -258,7 +260,7 @@ grpcurl -plaintext localhost:50051 agent.Agent.ExecuteTask
 - [DJ_AGENT_ARCHITECTURE.md](../docs/architecture/DJ_AGENT_ARCHITECTURE.md) - 架构设计详解
 - [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md) - 开发计划和roadmap
 - [TASK_RESULT_SCHEMA_V1.md](./TASK_RESULT_SCHEMA_V1.md) - 任务结果数据结构
-- [AGENT_JOB_API.md](../backend/djadmin/assets/AGENT_JOB_API.md) - 与后端的集成接口
+- [DJ_AGENT_ARCHITECTURE.md](../docs/architecture/DJ_AGENT_ARCHITECTURE.md) - 与平台的集成接口与协议
 
 ---
 

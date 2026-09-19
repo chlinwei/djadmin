@@ -344,7 +344,7 @@ POST /sys/inspection/executions/{id}/cancel/   事务置 canceled 并 markCancel
 
 ## 与 Django 双实现的差异（重要）
 
-Django 后端（`backend/djadmin/inspection/`，已冻结不再修改）仍保留 `shell` / `http` /
+Django 后端（历史实现，源码已移出版本库）仍保留 `shell` / `http` /
 `tcp` 执行器与 `controller` 执行位置，**两者语义不再对齐**：
 
 - Go 后端：`opa`，仅 Agent 执行；Agent 端能力 `opa:v1`；`executor` /

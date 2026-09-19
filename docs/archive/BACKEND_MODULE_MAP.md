@@ -1,3 +1,6 @@
+> **历史归档**：Django（`backend/`）时代的文档。源码已从版本库移除，仅作历史参考；
+> 实现与文档一律以 Go 版 autoadmin（`autoadmin/` + `dj_agent/`）为准。
+
 # Backend module map
 
 The current backend contains ten first-party Django apps, 70 concrete first-party models and two implicit many-to-many tables. This document defines initial Go ownership without renaming the existing schema.

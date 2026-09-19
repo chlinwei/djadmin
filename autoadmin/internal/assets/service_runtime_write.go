@@ -33,12 +33,14 @@ type ServiceMemberInput struct {
 	Deployment int64 `json:"deployment"`
 	Enabled    *bool `json:"enabled"`
 }
+// ServiceLogSettingInput 是 (逻辑服务 × 日志定义) 的覆盖值写入口。
+// **不含解析规则**：规则只由部署模板的日志定义决定（迁移 000035 删掉了服务级覆盖），
+// 提交体里带 processing_rule 会被静默忽略。采集开关/档位/过滤规则仍可覆盖。
 type ServiceLogSettingInput struct {
 	LogDefinition        int64  `json:"log_definition"`
 	RetentionTier        *int64 `json:"retention_tier"`
 	CollectionEnabled    *bool  `json:"collection_enabled"`
 	CollectionFilterRule *int64 `json:"collection_filter_rule"`
-	ProcessingRule       *int64 `json:"processing_rule"`
 }
 
 // ApplicationDeploymentInput 是部署实例的写入口。注意**不含**逻辑服务关联：
@@ -127,7 +129,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 			if err = queries.CreateServiceLogSetting(ctx, db.CreateServiceLogSettingParams{
 				CreateTime: now, UpdateTime: now, CollectionEnabled: collection,
 				LogDefinitionID: setting.LogDefinition, RetentionTierID: nullableInt(setting.RetentionTier),
-				ServiceID: serviceID, ProcessingRuleID: nullableInt(setting.ProcessingRule),
+				ServiceID:              serviceID,
 				CollectionFilterRuleID: nullableInt(setting.CollectionFilterRule),
 			}); err != nil {
 				return 0, err

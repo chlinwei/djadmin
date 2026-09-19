@@ -52,5 +52,5 @@
    - `docs/plans/`——未完成的计划/待办清单（如缺失接口补齐、规模化改造），完成一项更新一项状态，整体完成后归档
    - `docs/archive/`——历史方案、旧实现说明（文件头必须标注"历史归档"）
 3. 变更记录/总结类内容（"本次改了什么"）一律不进 architecture；要么并入对应架构文档的"最终逻辑"，要么进 `docs/archive/`。
-4. 后端唯一实现为 Go 版 autoadmin；文档禁止引用 `backend/` 源码（见 AGENTS.md）。
+4. 后端唯一实现为 Go 版 autoadmin；Django 实现已从版本库移除，文档禁止引用其源码，历史实现只允许引用 `docs/archive/`（见 AGENTS.md）。
 5. **数据访问层约定（选 sqlc 还是内联 SQL、字段映射、SQL 方言可移植性）统一见 [SQL_DESIGN.md](SQL_DESIGN.md)**，本文不重复；新增或修改任何 SQL 前先读该文档。

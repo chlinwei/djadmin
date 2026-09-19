@@ -476,6 +476,34 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 
 另：`internal/assets/service.go` 的 `translate` 是唯一依赖方言错误的代码，已补 PG SQLSTATE 分支（§2.4）。
 
+### 4.6.2 两条真库操作经验（2026-09-19，迁移 000035 现场）
+
+**① 删列前必须先摘掉"快照里没有、真库上有"的 Django 时代外键。**
+`db/schema` 的折叠快照缺真库外键是老问题（`inspection_target_execution.host_id` 就是这么发现的，
+完整清单见计划文档 `docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md` 的陷阱 24）。真库上
+`assets_application_service_log_setting.processing_rule_id` 挂着
+`assets_application_s_processing_rule_id_b56ded30_fk_monitor_l`（Django 生成的约束名，被 MySQL 按
+`max_name_length` 从中间截断），直接 `DROP COLUMN` 会报 `Error 1828: Cannot drop column ... needed in
+a foreign key constraint`。**两类库都要能跑**，所以迁移里按列现查现删，不写死约束名：
+
+- MySQL（没有 `DROP FOREIGN KEY IF EXISTS`，只能动态 SQL）：从 `information_schema.KEY_COLUMN_USAGE`
+  查该列上的外键 → `IF(@fk IS NULL, 'SELECT 1', CONCAT('ALTER TABLE … DROP FOREIGN KEY `', @fk, '`'))`
+  → `PREPARE` / `EXECUTE` / `DEALLOCATE`。多语句文件能这么用，前提是 DSN 带 `multiStatements=true`
+  （两侧既有迁移早就是多语句文件，说明运行时已满足）。
+- PG：`DO $$ … FOR fk IN SELECT conname FROM pg_constraint … contype='f' … LOOP EXECUTE format('… DROP
+  CONSTRAINT %I', fk.conname) END LOOP … $$;` 同样按列删，不猜约束名。
+
+down 迁移**不重建该外键**（与 `000005.down` 同一处理：快照里本就没有它，重建会与折叠态不一致；
+up 的"现查现删"保证幂等）。顺带一条：这类"真库有、快照无"的对象清单目前只有人读文档才知道，
+**改任何列之前，先在真库上 `SHOW CREATE TABLE` 看一眼**。
+
+**② 迁移失败后版本表会变脏，用 `migrate force` 恢复。**
+golang-migrate 在跑某个版本前就写 `(version=N, dirty=1)`，失败后 `migrate` 会直接拒绝执行。
+DDL 失败那一步通常没有落库（报错即回滚该语句），所以顺序是：
+**改好迁移文件 → `./bin/autoadmin migrate force <失败前的版本号>` → 再 `./bin/autoadmin migrate`**。
+`force` 只改版本号、不动 schema，置错会让迁移链与库内结构错位（实现见
+`internal/platform/migration/migration.go` 的 `Force`）。
+
 ### 4.7 DDL 映射与两侧模型一致性
 
 `db/schema/postgres/` 已由 `db/schema/mysql/` 翻译完成，映射规则：

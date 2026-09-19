@@ -27,14 +27,14 @@ vi.mock('@/api/assets/application', () => ({
       application: 2,
       name: 'Redis Template',
       enabled: true,
-      logs: [{ id: 81, name: 'redis.log', path_pattern: '/var/log/redis/*.log', collection_enabled: true, processing_rule: null }],
+      logs: [{ id: 81, name: 'redis.log', path_pattern: '/var/log/redis/*.log', processing_rule: null }],
     }, {
       id: 62,
       application: 5,
       name: 'Tomcat Template',
       control_type: 'external_ha',
       enabled: true,
-      logs: [{ id: 82, name: 'application.log', path_pattern: '/srv/tomcat/logs/application.log', collection_enabled: true, processing_rule: null }],
+      logs: [{ id: 82, name: 'application.log', path_pattern: '/srv/tomcat/logs/application.log', processing_rule: null }],
     }] } },
   })),
   getApplicationService: vi.fn(() => Promise.resolve({
@@ -79,13 +79,11 @@ vi.mock('@/api/assets/application', () => ({
     log_definition: 81,
     name: 'application.log',
     resolved_path: '/srv/tomcat/logs/application.log',
-    template_collection_enabled: true,
-    collection_enabled: true,
-    collection_mode: 'error_only',
-    filter_pattern: '(?i)(error|failed|critical|fatal)',
+    collection_enabled: null,
     collection_filter_rule_id: 91,
-    processing_rule_id: null,
-    effective_processing_rule_name: '',
+    // 解析规则只来自模板日志定义：服务侧只读展示。
+    template_processing_rule_id: 91,
+    template_processing_rule_name: 'error | failed | critical | fatal',
     retention_tier: null,
     data_stream: 'logs-production-order-std',
   }] } } })),
@@ -234,7 +232,7 @@ describe('ApplicationServiceDialog', () => {
     wrapper.unmount()
   })
 
-  it('shows the effective error-only collection policy for each template log', async () => {
+  it('shows the template-owned processing rule read-only for each template log', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, serviceId: 20 },
       attachTo: document.body,
@@ -246,13 +244,15 @@ describe('ApplicationServiceDialog', () => {
     await wrapper.setProps({ open: true })
     await flushPromises()
 
-    expect(document.body.textContent).toContain('采集策略')
-    expect(document.body.textContent).toContain('过滤规则')
+    // 规则列只读展示模板定义上的规则；服务侧没有选择控件。
+    expect(document.body.textContent).toContain('处理规则（模板）')
     expect(document.body.textContent).toContain('error | failed | critical | fatal')
+    expect(wrapper.vm.processingRuleLabel({ template_processing_rule_id: 91 })).toBe('规则 #91')
+    expect(wrapper.findAll('.ant-select').some((node) => node.text().includes('error | failed'))).toBe(false)
     wrapper.unmount()
   })
 
-  it('allows a new service to configure template log policies before its first save', async () => {
+  it('allows a new service to configure collection switch and tier before its first save', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false },
       attachTo: document.body,
@@ -269,7 +269,7 @@ describe('ApplicationServiceDialog', () => {
     await flushPromises()
 
     expect(document.body.textContent).toContain('redis.log')
-    expect(document.body.textContent).toContain('采集策略')
+    expect(document.body.textContent).toContain('保留档位')
     wrapper.unmount()
   })
 })

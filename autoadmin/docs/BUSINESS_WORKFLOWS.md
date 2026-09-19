@@ -79,7 +79,7 @@ Service 和 Template 是 aggregate：嵌套成员全量替换必须原子提交�
 
 ## 4. WebSSH 与文件传输
 
-链路为 `Browser WebSocket -> Backend session owner -> Agent gRPC -> PTY`。建立会话需要：JWT、菜单权限、Host、在线 Agent、有效 token 生命周期，以及可选 effective user 确认。
+链路为 `Browser WebSocket -> autoadmin 会话持有者 -> Agent gRPC -> PTY`。建立会话需要：JWT、菜单权限、Host、在线 Agent、有效 token 生命周期，以及可选 effective user 确认。
 
 会话状态：`connected -> closed|failed`。token 到期、空闲超时、Host/连接凭证变化均可主动关闭。
 

@@ -1,3 +1,6 @@
+> **历史归档**：Django（`backend/`）时代的文档。源码已从版本库移除，仅作历史参考；
+> 实现与文档一律以 Go 版 autoadmin（`autoadmin/` + `dj_agent/`）为准。
+
 # Django Model 与领域数据分析
 
 本文描述 Go/sqlc 必须承接的数据库事实与领域不变量。完整 DDL 仍应从应用全部 Django migrations 后的 MySQL 实例导出，不能根据本文手写猜测。

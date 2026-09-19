@@ -18,7 +18,7 @@ import (
 )
 
 // Elasticsearch 日志存储管理面：索引命名、index template、ILM policy、ingest pipeline
-// 的期望态构建与下发编排，对应 Django monitor/log_management.py。
+// 的期望态构建与下发编排，对应 Django 时代的同名模块（源码已移出版本库）。
 // 构建器全部为纯函数便于单测；bootstrapElasticsearchStorage 是唯一执行写入的编排入口。
 
 var indexSegmentPattern = regexp.MustCompile(`[^a-z0-9_-]+`)
@@ -61,7 +61,8 @@ func processingPipelineName(prefix, application, rule string) string {
 }
 
 // buildIndexTemplateBody data stream 模板：单分片、限制字段总数、标准字段之外不再自动建 mapping。
-// 字段契约与 Django log_schema.STANDARD_LOG_FIELDS 一致。
+// 字段契约与 Django log_schema.STANDARD_LOG_FIELDS 一致（2026-09-19 起删掉没人读的 log_time，
+// 并加一个平台标记字段 mapping_violation，见 buildMappingGuardPipelineBody）。
 func buildIndexTemplateBody(indexPrefix string) gin.H {
 	prefix := safeIndexSegment(indexPrefix)
 	return gin.H{
@@ -73,6 +74,11 @@ func buildIndexTemplateBody(indexPrefix string) gin.H {
 				"number_of_replicas":               0,
 				"index.refresh_interval":           "10s",
 				"index.mapping.total_fields.limit": 2000,
+				// 平台级"必备字段"闸门：所有写入这些流的文档最后都过它。
+				// 挂在 final_pipeline 而不是 default_pipeline，是因为规则自己的 pipeline 是
+				// Filebeat 片段里显式指定的（`pipeline:`），final_pipeline 在它之后执行，
+				// 因此能判定规则产出的最终结果；规则作者改不到这里。
+				"index.final_pipeline": buildMappingGuardPipelineName(prefix),
 			},
 			"mappings": gin.H{
 				"dynamic":    false,
@@ -80,6 +86,60 @@ func buildIndexTemplateBody(indexPrefix string) gin.H {
 			},
 		},
 	}
+}
+
+// mappingGuardMode 的取值（配置项 LOG_MAPPING_GUARD_MODE）：
+//   - tag（默认）：不丢数据，给不齐必备字段的文档打 mapping_violation 标记 + 记录缺哪些字段，
+//     由检索侧默认排除、并由巡检/告警看见；
+//   - drop：直接丢弃不齐的文档（严格"必须满足"，代价是不可逆地丢日志，且丢弃后 ES 里不留痕迹，
+//     所以切换前必须先看「处理规则巡检」里哪些规则不满足必备字段）。
+const (
+	mappingGuardModeTag  = "tag"
+	mappingGuardModeDrop = "drop"
+)
+
+func buildMappingGuardPipelineName(indexPrefix string) string {
+	return safeIndexSegment(indexPrefix) + "-mapping-guard"
+}
+
+// buildMappingGuardPipelineBody 生成平台级必备字段校验 pipeline（幂等 PUT，由 bootstrap 写入）。
+// 判定条件直接由 requiredProcessingRuleOutputs 拼出来，与规则保存校验、调试页 missing_fields
+// 共用同一份定义，不会出现"校验说齐了、guard 说没齐"。
+func buildMappingGuardPipelineBody(mode string) gin.H {
+	conditions := make([]string, 0, len(requiredProcessingRuleOutputs))
+	for _, field := range requiredProcessingRuleOutputs {
+		conditions = append(conditions, fmt.Sprintf("ctx.%s == null", field))
+	}
+	missing := "[" + strings.Join(quoteAll(requiredProcessingRuleOutputs), ",") + "]"
+	processors := []any{
+		// app_fields 是索引模板里的字段，规则没往它写时兜一个空对象，让"字段齐"的口径干净。
+		gin.H{"set": gin.H{"field": "app_fields", "value": gin.H{}, "override": false, "if": "ctx.app_fields == null"}},
+	}
+	if strings.EqualFold(strings.TrimSpace(mode), mappingGuardModeDrop) {
+		processors = append(processors, gin.H{"drop": gin.H{
+			"if":             strings.Join(conditions, " || "),
+			"description":    "必备字段不齐，按 LOG_MAPPING_GUARD_MODE=drop 丢弃",
+			"tag":            "mapping_guard",
+		}})
+	} else {
+		processors = append(processors, gin.H{"set": gin.H{
+			"field":    "mapping_violation",
+			"value":    true,
+			"override": false,
+			"if":       "(" + strings.Join(conditions, " || ") + ") && ctx.mapping_violation == null",
+			"description": "必备字段不齐，打标但不丢弃（LOG_MAPPING_GUARD_MODE=tag）",
+		}})
+	}
+	return gin.H{"processors": processors, "description": "平台级必备字段校验（" + missing + " 少一个都不行）"}
+}
+
+// quoteAll 给字段名加引号，只用于 pipeline 的描述文案。
+func quoteAll(values []string) []string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, `"`+value+`"`)
+	}
+	return quoted
 }
 
 var standardLogFields = gin.H{
@@ -95,9 +155,11 @@ var standardLogFields = gin.H{
 	"log_name":          gin.H{"type": "keyword"},
 	"log_path":          gin.H{"type": "keyword"},
 	"log_level":         gin.H{"type": "keyword"},
-	"log_time":          gin.H{"type": "keyword"},
 	"log_message":       gin.H{"type": "text"},
 	"error_fingerprint": gin.H{"type": "keyword"},
+	// 平台标记字段（不是规则产出要求）：LOG_MAPPING_GUARD_MODE=tag 时，必备字段不齐的文档
+	// 会被打上它，检索侧据此默认排除。放进 mapping 是因为 dynamic:false 下未声明的字段会被丢弃。
+	"mapping_violation": gin.H{"type": "boolean"},
 	// flat_object 是 Elasticsearch 专有类型；Elasticsearch 用 flattened（8.x 自带，无需额外插件）。
 	"app_fields": gin.H{"type": "flattened"},
 }
@@ -331,6 +393,11 @@ func (handler *Handler) bootstrapElasticsearchStorage(context *gin.Context, clus
 	// 早期版本误用了不带后缀的 `<prefix>`，导致健康检查查 `logs-template` 却报了另一个名字；
 	// 这里同时清理那个错名模板，避免同一 index_patterns 挂着两份模板。
 	baseName, basePatterns := buildIndexTemplateName(prefix), []string{prefix + "-*"}
+	// 必备字段 guard 必须先于引用它的索引模板写入（模板 settings 里挂了 final_pipeline）。
+	if _, err := handler.elasticsearchRequest(context, cluster, "PUT",
+		"/_ingest/pipeline/"+buildMappingGuardPipelineName(prefix), buildMappingGuardPipelineBody(handler.mappingGuardMode())); err != nil {
+		return err
+	}
 	if conflicts := handler.conflictingIndexTemplates(context, cluster, baseName, basePatterns, 0); len(conflicts) > 0 {
 		return fmt.Errorf("存在与索引模板 %s（priority=0）冲突的模板：%s；请删除该模板或调整其 priority 后重试",
 			baseName, strings.Join(conflicts, "; "))

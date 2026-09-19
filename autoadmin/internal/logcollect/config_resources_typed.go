@@ -236,6 +236,10 @@ type processingRuleResponse struct {
 	Application         *int64          `json:"application"`
 	ApplicationName     string          `json:"application_name"`
 	ApplicationCode     string          `json:"application_code"`
+	// 巡检用：这条规则静态看着缺哪些必备字段（log_level / log_message / error_fingerprint）。
+	// 非空意味着它采上来的日志会被 <prefix>-mapping-guard 判违规（drop 模式下直接丢弃），
+	// 所以它是切换 LOG_MAPPING_GUARD_MODE=drop 之前必须先看的清单。
+	MissingRequiredFields []string `json:"missing_required_fields,omitempty"`
 }
 
 func (handler *Handler) processingRuleResponse(context *gin.Context, row db.MonitorLogProcessingRule) processingRuleResponse {
@@ -253,6 +257,7 @@ func (handler *Handler) processingRuleResponse(context *gin.Context, row db.Moni
 		MultilineEnabled: row.MultilineEnabled, StartPattern: row.StartPattern, ContinuationPattern: row.ContinuationPattern,
 		SampleLog: row.SampleLog, FlushTimeout: int64(row.FlushTimeout), PipelineBody: row.PipelineBody, Cluster: row.ClusterID,
 		Application: application, ApplicationName: applicationName, ApplicationCode: applicationCode,
+		MissingRequiredFields: missingPipelineOutputs(row.PipelineBody),
 	}
 }
 

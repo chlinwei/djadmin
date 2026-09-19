@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/pagination"
 	"database/sql"
 )
@@ -85,16 +86,18 @@ type TemplateConfigFile struct {
 	FileFormat string  `json:"file_format"`
 	Required   bool    `json:"required"`
 }
+// TemplateLog 是部署模板的日志定义。**不含采集开关**：是否采集由逻辑服务决定
+// （`assets_application_service_log_setting.collection_enabled`，无覆盖行 = 采），
+// 模板只描述"这条日志的路径怎么算、挂哪条处理规则"（迁移 000034 删掉了模板级开关）。
 type TemplateLog struct {
-	ID                int64           `json:"id"`
-	CreateTime        string          `json:"create_time"`
-	UpdateTime        string          `json:"update_time"`
-	Remark            *string         `json:"remark"`
-	Name              string          `json:"name"`
-	PathPattern       string          `json:"path_pattern"`
-	CollectionEnabled bool            `json:"collection_enabled"`
-	ProcessingRule    *int64          `json:"processing_rule"`
-	ExtraFields       json.RawMessage `json:"extra_fields"`
+	ID             int64           `json:"id"`
+	CreateTime     string          `json:"create_time"`
+	UpdateTime     string          `json:"update_time"`
+	Remark         *string         `json:"remark"`
+	Name           string          `json:"name"`
+	PathPattern    string          `json:"path_pattern"`
+	ProcessingRule *int64          `json:"processing_rule"`
+	ExtraFields    json.RawMessage `json:"extra_fields"`
 }
 type TemplateControlAction struct {
 	ID               int64           `json:"id"`
@@ -183,12 +186,14 @@ type TemplateConfigFileInput struct {
 	Remark     *string `json:"remark"`
 }
 type TemplateLogInput struct {
-	Name              string          `json:"name"`
-	PathPattern       string          `json:"path_pattern"`
-	CollectionEnabled bool            `json:"collection_enabled"`
-	ProcessingRule    *int64          `json:"processing_rule"`
-	ExtraFields       json.RawMessage `json:"extra_fields"`
-	Remark            *string         `json:"remark"`
+	// ID 是模板日志定义行的 id：非 0 表示"更新这一行"（id 保持不变，引用它的服务级覆盖
+	// 因此不会失效），0/缺省表示新增。提交的 id 必须属于本模板，否则整个保存被拒。
+	ID             int64           `json:"id"`
+	Name           string          `json:"name"`
+	PathPattern    string          `json:"path_pattern"`
+	ProcessingRule *int64          `json:"processing_rule"`
+	ExtraFields    json.RawMessage `json:"extra_fields"`
+	Remark         *string         `json:"remark"`
 }
 type TemplateControlActionInput struct {
 	Action           string          `json:"action"`
@@ -284,6 +289,11 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 		return 0, err
 	}
 	// 嵌套子表按表名分派到各自的显式语句（原实现是运行时拼表名，sqlc 表达不了）。
+	//
+	// **日志定义不在这个"删后重建"的名单里**（2026-09-19）：它按 id 增量更新，见
+	// applyTemplateLogWrites。整表删重建会让每条定义都换 id，从而（a）"改名"与"删除"
+	// 无法区分，（b）引用了旧 id 的服务级覆盖行把删除挡住（外键无级联），
+	// （c）只是改个路径也会让覆盖值失效。
 	deleteNested := func(table string) error {
 		switch table {
 		case "assets_application_port":
@@ -292,8 +302,6 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 			return queries.DeleteTemplatePaths(ctx, templateID)
 		case "assets_application_config_file":
 			return queries.DeleteTemplateConfigFiles(ctx, templateID)
-		case "assets_application_log_definition":
-			return queries.DeleteTemplateLogDefinitions(ctx, templateID)
 		case "assets_application_control_action":
 			return queries.DeleteTemplateControlActions(ctx, templateID)
 		case "assets_docker_control_config":
@@ -320,7 +328,7 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 		}
 	}
 	if input.Logs != nil {
-		if err = deleteNested("assets_application_log_definition"); err != nil {
+		if err = applyTemplateLogWrites(ctx, queries, templateID, id == 0, *input.Logs, now); err != nil {
 			return 0, err
 		}
 	}
@@ -378,19 +386,6 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 			}
 		}
 	}
-	if input.Logs != nil {
-		for _, item := range *input.Logs {
-			err = queries.CreateTemplateLogDefinition(ctx, db.CreateTemplateLogDefinitionParams{
-				CreateTime: now, UpdateTime: now, Remark: nullableString(item.Remark), Name: item.Name,
-				PathPattern: item.PathPattern, CollectionEnabled: item.CollectionEnabled,
-				DeploymentTemplateID: templateID, ExtraFields: jsonValue(item.ExtraFields, "{}"),
-				ProcessingRuleID: nullableInt(item.ProcessingRule),
-			})
-			if err != nil {
-				return 0, err
-			}
-		}
-	}
 	if input.ControlActions != nil {
 		for _, item := range *input.ControlActions {
 			err = queries.CreateTemplateControlAction(ctx, db.CreateTemplateControlActionParams{
@@ -430,6 +425,115 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 		return 0, fmt.Errorf("commit template transaction: %w", err)
 	}
 	return templateID, nil
+}
+
+// templateLogWritePlan 是一次模板保存对日志定义的写计划（按 id 增量，不整表重建）。
+type templateLogWritePlan struct {
+	Updates []TemplateLogInput // ID 指向本模板已有行 → 原地更新（id 不变，服务级覆盖不失效）
+	Inserts []TemplateLogInput // 无 ID → 新增
+	Removed []int64            // 库里有、本次没提交 → 删除
+}
+
+// planTemplateLogWrites 纯函数：把"已有行 + 提交的日志列表"折算成增/改/删三组。
+//
+// 校验：提交的 ID 必须属于本模板（防跨模板误改），否则 ErrInvalidRelation。
+// 注意 **不接受空名字**：模板日志名会直接变成片段文件名与文档的 log_name 维度值，
+// 空名会生成 `<app>__<svc>__.yml` 这种监听不到文件的片段。
+//
+// creating=true（新建模板，含"复制模板"）：提交里带的 id 一律当新增——复制时前端会把源模板的
+// 行原样提交，那些 id 属于源模板，不能拿来做本模板的行。
+func planTemplateLogWrites(existingIDs []int64, submitted []TemplateLogInput, creating bool) (templateLogWritePlan, error) {
+	plan := templateLogWritePlan{}
+	existing := make(map[int64]bool, len(existingIDs))
+	for _, id := range existingIDs {
+		existing[id] = true
+	}
+	kept := make(map[int64]bool, len(submitted))
+	for _, item := range submitted {
+		if creating {
+			item.ID = 0
+		}
+		if strings.TrimSpace(item.Name) == "" {
+			return plan, apperror.New(apperror.CodeInvalidArgument, "日志定义名称不能为空")
+		}
+		switch {
+		case item.ID <= 0:
+			plan.Inserts = append(plan.Inserts, item)
+		case !existing[item.ID]:
+			return plan, ErrInvalidRelation
+		default:
+			kept[item.ID] = true
+			plan.Updates = append(plan.Updates, item)
+		}
+	}
+	for _, id := range existingIDs {
+		if !kept[id] {
+			plan.Removed = append(plan.Removed, id)
+		}
+	}
+	return plan, nil
+}
+
+// applyTemplateLogWrites 把写计划落库。顺序是**先删后改再插**：
+//   - 先删：删掉的行腾出的名字可以被同一次保存里的改名复用（不然唯一键会打回）；
+//     删定义前先清掉引用它的服务级覆盖行（外键无级联，不清就删不掉；覆盖值依附于定义，
+//     定义没了它也就没有意义了）；
+//   - 再改：按 id 原地更新，`WHERE deployment_template_id` 兜住跨模板 id，影响 0 行按关联不存在报错；
+//   - 后插：新增的行拿新 id。
+func applyTemplateLogWrites(
+	context context.Context, queries *db.Queries, templateID int64, creating bool,
+	submitted []TemplateLogInput, now time.Time,
+) error {
+	var existingIDs []int64
+	if !creating {
+		rows, err := queries.ListTemplateLogDefinitions(context, templateID)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			existingIDs = append(existingIDs, row.ID)
+		}
+	}
+	plan, err := planTemplateLogWrites(existingIDs, submitted, creating)
+	if err != nil {
+		return err
+	}
+	if len(plan.Removed) > 0 {
+		if err = queries.DeleteServiceLogSettingsByDefinitionIDs(context, plan.Removed); err != nil {
+			return err
+		}
+		if err = queries.DeleteTemplateLogDefinitionsByIDs(context, db.DeleteTemplateLogDefinitionsByIDsParams{
+			DeploymentTemplateID: templateID, Ids: plan.Removed,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, item := range plan.Updates {
+		result, updateErr := queries.UpdateTemplateLogDefinition(context, db.UpdateTemplateLogDefinitionParams{
+			UpdateTime: now, Remark: nullableString(item.Remark), Name: strings.TrimSpace(item.Name),
+			PathPattern: item.PathPattern, ExtraFields: jsonValue(item.ExtraFields, "{}"),
+			ProcessingRuleID: nullableInt(item.ProcessingRule),
+			ID:               item.ID, DeploymentTemplateID: templateID,
+		})
+		if updateErr != nil {
+			return updateErr
+		}
+		if affected, affectedErr := result.RowsAffected(); affectedErr == nil && affected == 0 {
+			// 计划里已经确认该 id 属于本模板，走到这里说明并发下被删了：报"关联不存在"而不是静默跳过。
+			return ErrInvalidRelation
+		}
+	}
+	for _, item := range plan.Inserts {
+		if err = queries.CreateTemplateLogDefinition(context, db.CreateTemplateLogDefinitionParams{
+			CreateTime: now, UpdateTime: now, Remark: nullableString(item.Remark),
+			Name: strings.TrimSpace(item.Name), PathPattern: item.PathPattern,
+			DeploymentTemplateID: templateID, ExtraFields: jsonValue(item.ExtraFields, "{}"),
+			ProcessingRuleID: nullableInt(item.ProcessingRule),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) DeleteDeploymentTemplate(ctx context.Context, id int64) error {

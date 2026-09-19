@@ -23,7 +23,7 @@ import (
 )
 
 // Agent 在线自更新：经 gRPC 文件通道推送新二进制到主机，agent 调内置 apply_agent_update
-// 自替换并重启；重启后回查重连状态作为最终结论。语义与 Django assets/agent_install_service.py
+// 自替换并重启；重启后回查重连状态作为最终结论。语义与 Django 时代的 agent 安装实现
 // 的 run_agent_update_via_grpc 一致。全新主机走 operation=install：SSH 凭证 + 本机
 // ansible-playbook 执行 agent_install.yml 引导安装，语义与 run_agent_install_job 一致，
 // 见 agent_install.go。env/unit 配置统一以磁盘上的 agent_install.yml 为唯一来源（agent_playbook.go），

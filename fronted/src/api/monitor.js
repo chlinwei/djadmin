@@ -200,8 +200,11 @@ export function searchElasticsearchLogFacetStats(id, params) {
 }
 
 // 存储水位总览：data stream 运行态（大小/docs/rollover/ILM）+ 节点磁盘 + 服务树维度数据
-export function getLogStorageOverview(id) {
-  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-storage-overview/`)
+// 存储水位总览。params 支持 service_code：只取该逻辑服务的流，并且后端会直接把 ES 查询
+// 收窄到该服务的索引（不是取全量再前端过滤），供「日志中心 → 本服务水位」用。
+// 不传 service_code 时与以前完全一致（全量视图，存储水位页在用）。
+export function getLogStorageOverview(id, params) {
+  return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-storage-overview/`, params)
 }
 
 // 逻辑服务写入量：terms 聚合文档数（非磁盘占用口径），params: business_system/environment/days
@@ -278,6 +281,19 @@ export function cancelLogCollectionTarget(id) {
 
 // 批量动作（下发配置 / 安装重试）不再同步跑完：后端建作业 + 入队，前端轮询作业进度。
 // ids 省略且 action=apply 表示"全部待下发"（由后端实时算）。
+// 服务级下发状态：承载该服务的**主机清单**（区分已纳管/未纳管）+ 各主机配置态聚合。
+// 聚合而不是服务级指纹：config_fingerprint 是主机级的（同一服务在不同主机上因实例级
+// runtime_variables 不同，渲染结果本就不同）。这个接口不查 ES，只做一次渲染比对。
+export function getServiceLogConfigState(applicationServiceId) {
+  return requestUtil.get(prefix + 'log-targets/service-config-state/', { application_service_id: applicationServiceId })
+}
+
+// 服务级下发：对承载该服务的全部**已纳管**主机重下发（后端逐台全量——agent 侧 apply 是
+// "交付即该主机 inputs.d 全量，未交付的 .yml 删除"，所以只能整台来）。返回批量作业，进度另查。
+export function applyLogTargetsForService(applicationServiceId) {
+  return requestUtil.post(prefix + 'log-targets/service-apply/', { application_service_id: applicationServiceId })
+}
+
 export function createLogBatchJob(action, ids) {
   const body = { action }
   if (Array.isArray(ids) && ids.length) body.ids = ids

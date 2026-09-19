@@ -141,6 +141,14 @@ export const staticRouterMap = [
                 component: () => import('../views/monitor/log-storage-overview/index.vue'),
             },
             {
+                // 日志中心：把「日志存储水位」「日志查询」「逻辑服务的日志配置」合成一个入口
+                // （左侧服务树 + 右侧三个 tab）。页面形态与取舍见
+                // docs/architecture/LOG_COLLECTION_ARCHITECTURE.md §9.5。
+                path: '/monitor/logging/center',
+                name: '日志中心',
+                component: () => import('../views/monitor/log-center/index.vue'),
+            },
+            {
                 // 日志采集（Filebeat 纳管目标）：从「智能监控 → 纳管目标」拆出，见
                 // docs/architecture/MENU_STRUCTURE.md。exporter 目标留在智能监控页。
                 path: '/monitor/logging/collectors',

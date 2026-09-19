@@ -832,6 +832,24 @@ WHERE id=sqlc.arg(id);
 -- name: DeleteApplicationService :exec
 DELETE FROM assets_application_service WHERE id=sqlc.arg(id);
 
+-- 服务级日志采集总开关（`log_collection_enabled`）的单独写入。
+--
+-- 为什么单独一条：它原先只能随整个服务表单（`UpdateApplicationService`，PATCH 校验要求
+-- 应用/版本/模板/名称/编码等全字段）一起提交，于是"只想开关采集"必须伪造一份完整表单；
+-- 日志中心页的服务级开关需要按一次改一个字段。与按行覆盖值（UpsertServiceLogOverride）
+-- 同一思路：粒度最小的写操作要有自己的接口。
+--
+-- 不动认证状态：采集总开关不进认证指纹（见 log_format_fingerprint.go 的输入清单），
+-- 而且认证四列在 log_setting 上、根本不在这一行。
+-- 单列读取：log-config 接口要带上服务级采集总开关（页面据此区分"总开关关了"与"逐条关了"）。
+-- name: GetApplicationServiceLogCollection :one
+SELECT log_collection_enabled FROM assets_application_service WHERE id=sqlc.arg(id);
+
+-- name: UpdateApplicationServiceLogCollection :execresult
+UPDATE assets_application_service
+SET update_time=sqlc.arg(update_time),log_collection_enabled=sqlc.arg(log_collection_enabled)
+WHERE id=sqlc.arg(id);
+
 -- name: DeleteServiceDeployments :exec
 DELETE FROM assets_application_service_deployment WHERE service_id=sqlc.arg(service_id);
 
@@ -903,15 +921,72 @@ LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tie
 WHERE ld.deployment_template_id = s.deployment_template_id
 ORDER BY ld.id;
 
+-- 日志格式认证的 instance 依据：一条 (逻辑服务 × 部署实例 × 日志定义) 的取样上下文。
+-- 只取"渲染该实例日志文件真实路径"所需的三层宏与实际路径模板：
+--   - 服务级 macro_values（模板 macro_definitions 作默认值）
+--   - 实例级 runtime_variables + 部署模板 app_home（作为 APP_HOME 默认值）
+-- 三层合并与 Filebeat 下发走同一套口径（见 logcollect.resolveMacros / instanceMacros），
+-- 所以这里展开出来的路径与主机上真正在采的文件一致。
+-- host_id 用于复用 logcollect 的批量渲染装载；host_instance_name 是 agent 会话的路由键
+-- （注意是 assets_host.instance_name，不是部署实例自己的 instance_name）。
+-- name: GetLogVerifyInstanceContext :one
+SELECT d.id AS deployment_id, d.host_id, COALESCE(h.instance_name, '') AS host_instance_name,
+       d.instance_name AS deployment_instance_name,
+       COALESCE(d.runtime_variables, '{}') AS runtime_variables,
+       COALESCE(t.app_home, '') AS app_home,
+       COALESCE(t.macro_definitions, '[]') AS macro_definitions,
+       COALESCE(s.macro_values, '{}') AS macro_values,
+       ld.path_pattern AS path_pattern
+FROM assets_application_deployment d
+JOIN assets_host h ON h.id = d.host_id
+JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id
+JOIN assets_application_service s ON s.id = sd.service_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = t.id
+WHERE d.id = sqlc.arg(deployment_id) AND s.id = sqlc.arg(service_id) AND ld.id = sqlc.arg(log_definition_id)
+LIMIT 1;
+
 -- 认证/失效：写回一次"格式认证"的结果（指纹 + 依据 + 操作人）。
--- 由格式校验流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
--- name: MarkLogSettingFormatVerified :execresult
-UPDATE assets_application_service_log_setting
-SET update_time=sqlc.arg(update_time),format_verified_at=sqlc.arg(format_verified_at),
-    format_verified_fingerprint=sqlc.arg(format_verified_fingerprint),
-    format_verified_source=sqlc.arg(format_verified_source),format_verified_by=sqlc.arg(format_verified_by)
-WHERE service_id=sqlc.arg(service_id) AND log_definition_id=sqlc.arg(log_definition_id);
+-- 由格式认证流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
+--
+-- **必须是 upsert**：认证状态读的是 (服务 × 日志定义)，而覆盖行只在"有覆盖"时才存在
+-- （ListServiceTemplateLogs 对 ls 是 LEFT JOIN）。UPDATE-only 对没有覆盖行的组合会静默影响 0 行，
+-- 认证结果写不进去、format_state 永远停在 unverified。冲突目标是唯一键
+-- unique_service_log_setting(service_id, log_definition_id)；插入行只带认证四列，
+-- 覆盖列（collection_enabled / retention_tier_id / collection_filter_rule_id）留 NULL = 不覆盖。
+-- name: UpsertLogSettingFormatVerified :exec
+-- conflict: service_id, log_definition_id
+INSERT INTO assets_application_service_log_setting
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
+   collection_filter_rule_id,format_verified_at,format_verified_fingerprint,format_verified_source,format_verified_by)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,NULL,sqlc.arg(log_definition_id),NULL,sqlc.arg(service_id),
+        NULL,sqlc.arg(format_verified_at),sqlc.arg(format_verified_fingerprint),
+        sqlc.arg(format_verified_source),sqlc.arg(format_verified_by))
+ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),format_verified_at=VALUES(format_verified_at),
+  format_verified_fingerprint=VALUES(format_verified_fingerprint),
+  format_verified_source=VALUES(format_verified_source),format_verified_by=VALUES(format_verified_by);
 
 -- name: ListServiceLogSettings :many
 SELECT log_definition_id,retention_tier_id,collection_enabled,collection_filter_rule_id
 FROM assets_application_service_log_setting WHERE service_id=sqlc.arg(service_id) ORDER BY log_definition_id;
+
+-- 服务级日志覆盖的**按行**写入：只写"这个服务在这条日志上的覆盖值"（采集开关 + 保留档位），
+-- 供日志中心页的内联开关/档位用。区别于 `SaveApplicationService` 的整表替换——那条是
+-- "提交的集合即全量"（DELETE 后重插），只允许**完整表单**调用；两者边界见
+-- docs/architecture/LOG_COLLECTION_ARCHITECTURE.md §9.5。
+--
+-- 三条必须守住的语义：
+--  1. **不碰 format_verified_\***：认证结果只由格式认证流程写（UpsertLogSettingFormatVerified）。
+--     改采集开关/档位不改日志格式、也不进认证指纹，所以覆盖值更新后认证状态必须原样保留
+--     ——UPDATE 分支只列这两个覆盖列，就是靠这一点保证的。
+--  2. narg 传 NULL = "不覆盖"（采集默认采、档位继承服务默认），与覆盖行不存在等价。
+--  3. 没有覆盖行时插入一条：插入行的认证四列取默认值，语义是"这个组合从未认证"。
+-- 冲突目标是唯一键 unique_service_log_setting(service_id, log_definition_id)。
+-- name: UpsertServiceLogOverride :exec
+-- conflict: service_id, log_definition_id
+INSERT INTO assets_application_service_log_setting
+  (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,collection_filter_rule_id)
+VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.narg(collection_enabled),sqlc.arg(log_definition_id),
+        sqlc.narg(retention_tier_id),sqlc.arg(service_id),NULL)
+ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),collection_enabled=VALUES(collection_enabled),
+  retention_tier_id=VALUES(retention_tier_id);

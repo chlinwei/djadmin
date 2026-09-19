@@ -17,4 +17,8 @@ var (
 	ErrHostIPDuplicate           = apperror.New(apperror.CodeInvalidArgument, "该 IP 已被其他主机使用，主机的寻址标识是 IP")
 	ErrHostInstanceNameRequired  = apperror.New(apperror.CodeInvalidArgument, "实例名必填：实例名是主机的业务标识，也是 dj-agent 的 DJ_AGENT_INSTANCE_NAME")
 	ErrHostInstanceNameDuplicate = apperror.New(apperror.CodeInvalidArgument, "该实例名已被其他主机使用，主机的业务标识是实例名")
+	// 日志格式认证（架构文档 §4.8）。
+	ErrLogFormatSourceInvalid      = apperror.New(apperror.CodeInvalidArgument, "认证依据无效：只能是 instance / sample_log / waiver")
+	ErrLogFormatDeploymentRequired = apperror.New(apperror.CodeInvalidArgument, "按实例抽样认证时必须指定部署实例")
+	ErrLogFormatUnavailable        = apperror.New(apperror.CodeInternal, "日志格式认证执行器未接线，无法取样校验")
 )

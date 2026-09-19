@@ -348,6 +348,13 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	services := engine.Group("/assets/application-services", middleware.Authenticate(tokens))
 	services.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListApplicationServices)
 	services.GET("/:id/log-config/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetApplicationServiceLogConfig)
+	// 日志格式认证（架构文档 §4.8）：对一条 (逻辑服务 × 日志定义) 抽样校验一次格式。
+	// 用 update 权限：认证要写回 format_verified_*（含人工豁免），属于改服务配置。
+	services.POST("/:id/log-config/verify/", middleware.RequirePermission("assets:applications:update"), assetsHandler.VerifyApplicationServiceLogFormat)
+	// 按行保存日志覆盖值（采集开关 / 保留档位），日志中心页的内联操作用。
+	services.POST("/:id/log-config/settings/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SaveApplicationServiceLogSetting)
+	// 服务级日志采集总开关（关掉后该服务下所有日志都不采集，逐条开关不生效）。
+	services.POST("/:id/log-collection/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SetApplicationServiceLogCollection)
 	services.POST("/:id/refresh-runtime-status/", middleware.RequirePermission("assets:applications:update"), assetsHandler.RefreshApplicationServiceRuntimeStatus)
 	services.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetApplicationService)
 	services.POST("/", middleware.RequirePermission("assets:applications:create"), assetsHandler.CreateApplicationService)
@@ -403,6 +410,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	logcollectHandler := logcollect.NewHandler(database, gateway, playbookHandler, secretEncryptor, packageRoot)
 	// Filebeat 选包同样可能在架构缺失时补采一次资产信息。
 	logcollectHandler.SetHostInfoRefresher(assetsHandler.RefreshHostInfoByID)
+	// 日志格式认证（架构文档 §4.8）：编排与写回在 assets 侧，取样例 + 跑 ES 在日志采集域
+	// （只有它持有 agent 文件通道与 ES 客户端）→ 反向注入，避免 assets 反向依赖 logcollect 成环。
+	assetsService.SetLogFormatVerifier(logcollectHandler)
 	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
 	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)
 	// 批量动作执行器：入队 + 有界并发 + 进度可查（见 logcollect/log_batch_job.go）。
@@ -464,6 +474,11 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 批量动作（下发配置 / 安装重试）不再在请求里跑完：建作业 + 入队，前端轮询作业进度。
 	// 这两个动作原本分别是 /batch-apply/ 与 /batch-retry/（同步、逐台串行，1000 台必超时）。
 	logTargets.POST("/batch-jobs/", logcollectHandler.CreateLogBatchJob)
+	// 服务维度的下发：对"承载该服务的全部已纳管主机"逐个全量重下发（一次批量作业，进度可查）。
+	// 仍然逐台下发，原因见 logcollect/log_apply_service.go 的说明——agent 侧 apply 是全量替换，
+	// 只推一个服务的片段会删掉同主机其他服务的配置。
+	logTargets.GET("/service-config-state/", logcollectHandler.GetServiceLogConfigState)
+	logTargets.POST("/service-apply/", logcollectHandler.ApplyLogTargetsForService)
 	logTargets.GET("/batch-jobs/active/", logcollectHandler.GetActiveLogBatchJob)
 	logTargets.GET("/batch-jobs/:id/", logcollectHandler.GetLogBatchJob)
 	// 全量"待下发"口径（列表的 config_state 筛选是逐页/全量二选一，这里是单独特意的一次数统计）。

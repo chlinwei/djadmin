@@ -16,14 +16,24 @@ import (
 // 的流名模式（覆盖换过档位的历史流），只接受 mode/amount，不接受客户端传索引名，
 // 避免变成任意删索引的口子。删除走 _delete_by_query（异步），保留 data stream 本身。
 //
-// mode=all   → 清空该服务所有文档（match_all）
+// mode=all   → 清空匹配范围所有文档（match_all）
 // mode=hours → 只删早于 now-<amount>h 的文档
 // mode=days  → 只删早于 now-<amount>d 的文档
+//
+// 可选 `tier`（档位编码）：把范围从"这个服务的所有档位"收窄到"某一条流"，用于回收
+// **改档位后留下、且不打算再切回的历史流**（旧流会按自己档位的保留期由 ILM 到期删除，
+// 但保留期长/数据大的时候用户希望立刻释放）。
+//
+// tier 同样**不接受客户端传索引名**：它必须先命中档位表里的编码，再参与拼流名
+// （`tier` 直接进 ES 的索引模式，不校验就等于把"删任意索引"的口子重新开出来）。
+// 注意语义仍是"删这条流里的文档"而不是"删掉 data stream 对象"：流本身留着（变空），
+// 与 mode=all 的既有行为一致；切回该档位时继续写入这条流。
 
 type logDataStreamCleanupInput struct {
 	ServiceID int64  `json:"service_id"`
 	Mode      string `json:"mode"`
 	Amount    int    `json:"amount"`
+	Tier      string `json:"tier"`
 }
 
 const (
@@ -93,8 +103,21 @@ func (handler *Handler) CleanupLogDataStream(context *gin.Context) {
 		return
 	}
 
-	// 档位用 * 通配：服务换过保留档位时，历史档位的数据流也一并命中。
-	pattern := LogDataStreamName(prefix, dims.ProjectCode, dims.EnvironmentCode, dims.BusinessSystemCode, dims.ServiceCode, "*")
+	// 档位：不传时用 * 通配（服务换过保留档位时历史档位的数据流一并命中）；
+	// 传了就必须是档位表里的编码——它直接进索引模式，放行任意字符串等于开了删任意索引的口子。
+	tier := strings.TrimSpace(input.Tier)
+	if tier != "" {
+		knownTiers, tierErr := queries.ListRetentionTierCodes(context)
+		if tierErr != nil {
+			response.Error(context, tierErr)
+			return
+		}
+		if !containsString(knownTiers, tier) {
+			response.BusinessError(context, 400, "unknown retention tier code: "+tier, nil)
+			return
+		}
+	}
+	pattern := LogDataStreamName(prefix, dims.ProjectCode, dims.EnvironmentCode, dims.BusinessSystemCode, dims.ServiceCode, defaultPatternSegment(tier))
 	body := gin.H{"query": gin.H{"match_all": gin.H{}}}
 	if cutoff != "" {
 		body = gin.H{"query": gin.H{"range": gin.H{"@timestamp": gin.H{"lt": cutoff}}}}
@@ -111,7 +134,24 @@ func (handler *Handler) CleanupLogDataStream(context *gin.Context) {
 		return
 	}
 	response.Success(context, gin.H{
-		"stream_pattern": pattern, "mode": mode, "amount": input.Amount,
+		"stream_pattern": pattern, "mode": mode, "amount": input.Amount, "tier": tier,
 		"task": result["task"], "matched": true,
 	})
+}
+
+// defaultPatternSegment 空档位回落通配符（与历史行为一致）。
+func defaultPatternSegment(tier string) string {
+	if strings.TrimSpace(tier) == "" {
+		return "*"
+	}
+	return tier
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

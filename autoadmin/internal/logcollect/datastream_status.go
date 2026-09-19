@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -41,6 +42,9 @@ type dataStreamEntry struct {
 	Bytes          float64 `json:"bytes"`
 	ILMState       string  `json:"ilm_state"`
 	Recognized     bool    `json:"recognized"`
+	// Historical 改档位后留下的历史流：属于某个服务，但它的档位已不在该服务的生效集合里
+	// （已停止写入，数据按原档位保留到期）。由后端判定，前端不再自己推。
+	Historical bool `json:"historical"`
 	// 服务级采集开关（配置事实，直接来自逻辑服务行）：页面据此标注"已停用 / 未开启采集"，
 	// 表示这条流不会再被写入新的配置，存量数据按档位保留到期（计划 §3）。
 	ServiceEnabled     bool                     `json:"service_enabled"`
@@ -72,6 +76,18 @@ type streamNameMatcher struct {
 	services []streamServiceKey // 新命名候选
 	legacy   []streamLegacyKey  // 旧命名候选
 	tiers    map[string]bool
+	// activeTiers：服务编码 → 该服务**当前生效**的档位集合。用于判定一条已有的流是不是
+	// "改档位留下的历史流"（不在集合里 = 已停止写入）。判定放后端做，全局视图才推得出来。
+	// 没有任何日志定义的服务不在 map 里 → 它的所有档位都不生效 → 存量流全判为历史流。
+	activeTiers map[string]map[string]bool
+}
+
+// isHistoricalStream 流是否已停止写入：属于某个服务，但它的档位不在该服务的生效档位集合里。
+func (m streamNameMatcher) isHistoricalStream(serviceCode, tierCode string) bool {
+	if serviceCode == "" || tierCode == "" {
+		return false
+	}
+	return !m.activeTiers[serviceCode][tierCode]
 }
 
 type streamServiceKey struct {
@@ -84,6 +100,27 @@ type streamServiceKey struct {
 type streamLegacyKey struct {
 	Match                                string // "<环境>-<业务系统>-"
 	Project, Environment, BusinessSystem string
+}
+
+// scopeIndexPattern 计算索引通配模式：serviceCode 为空＝全量 `<prefix>-*`；
+// 非空＝按该服务的维度段收窄成 `<prefix>-<项目>-<业务系统>-<环境>-<服务>-*`。
+//
+// 复用识别环节已经算好的 streamServiceKey.Match，而不是拿四个维度码现拼：段序
+// （项目-业务系统-环境-服务，业务系统在环境之前）与 logstream.Name 的形参顺序并不一致，
+// 手拼极易错位，而这个串必须与真实流名逐字节对齐。
+//
+// 第二个返回值表示"这个服务编码在维度表里是否存在"——不存在时调用方必须返回空视图，
+// 不能回落到全量（见调用点注释）。
+func scopeIndexPattern(prefix, serviceCode string, matcher streamNameMatcher) (string, bool) {
+	if serviceCode == "" {
+		return prefix + "-*", true
+	}
+	for _, key := range matcher.services {
+		if key.Service == serviceCode {
+			return prefix + "-" + key.Match + "*", true
+		}
+	}
+	return "", false
 }
 
 // loadStreamDims 加载**全部**逻辑服务的维度码，构造流名匹配候选（新命名 + 旧命名兼容）。
@@ -124,7 +161,28 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 	}
 	matcher.services = serviceKeys
 	matcher.legacy = legacyKeys
+	matcher.activeTiers = loadActiveStreamTiers(context, queries)
 	return matcher
+}
+
+// loadActiveStreamTiers 服务编码 → 生效档位集合（查询失败时返回空 map：判不出就都不标，
+// 宁可少标"历史流"，也不要把正在写的流错标成停写）。
+func loadActiveStreamTiers(context context.Context, queries *db.Queries) map[string]map[string]bool {
+	active := map[string]map[string]bool{}
+	rows, err := queries.ListServiceActiveStreamTiers(context)
+	if err != nil {
+		return active
+	}
+	for _, row := range rows {
+		if row.ServiceCode == "" || row.TierCode == "" {
+			continue
+		}
+		if active[row.ServiceCode] == nil {
+			active[row.ServiceCode] = map[string]bool{}
+		}
+		active[row.ServiceCode][row.TierCode] = true
+	}
+	return active
 }
 
 // resolveStreamName 按候选码匹配流名；新命名优先（更长前缀），旧命名要求剩余段恰好是已知档位。
@@ -189,17 +247,20 @@ func catString(row map[string]any, key string) string {
 }
 
 // fetchDataStreamEntries 基于 _cat/indices + _ism/explain 组装流级运行态。
-func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster elasticsearchCluster, matcher streamNameMatcher) ([]dataStreamEntry, map[string]string, error) {
-	prefix := logHealthPrefix(cluster)
+//
+// indexPattern 是索引通配模式（含前缀与 `*`），由调用方给：全量视图传 `<prefix>-*`，
+// 按服务收窄的视图传 `<prefix>-<项目>-<业务系统>-<环境>-<服务>-*`。收窄放在 ES 查询里
+// 而不是查完再过滤，因为 `_cat/indices` 是这一页最大的成本（全集群索引 + ILM explain）。
+func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster elasticsearchCluster, matcher streamNameMatcher, indexPattern string) ([]dataStreamEntry, map[string]string, error) {
 	indices, err := handler.elasticsearchRequestArray(context, cluster, "GET",
-		"/_cat/indices/"+prefix+"-*?format=json&h=index,health,status,docs.count,store.size,creation.date.string&bytes=b")
+		"/_cat/indices/"+indexPattern+"?format=json&h=index,health,status,docs.count,store.size,creation.date.string&bytes=b")
 	if err != nil {
 		return nil, nil, fmt.Errorf("查询索引列表失败: %w", err)
 	}
 	ilmStates := map[string]string{}
 	// ES 8 的 ILM explain：GET <prefix>-*/_ilm/explain -> {"indices":{"<index>":{"phase":"hot",...}}}，
 	// 未挂策略/未托管的索引没有 phase（只有 step）。没有匹配索引时返回 {"indices":{}}。
-	explain, explainErr := handler.elasticsearchRequest(context, cluster, "GET", "/"+prefix+"-*/_ilm/explain", nil)
+	explain, explainErr := handler.elasticsearchRequest(context, cluster, "GET", "/"+indexPattern+"/_ilm/explain", nil)
 	if explainErr == nil {
 		if indices, ok := explain["indices"].(map[string]any); ok {
 			for key, raw := range indices {
@@ -225,7 +286,7 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 		if index == "" {
 			continue
 		}
-		parsed := matcher.resolveStreamName(stripBackingIndexSuffixes(prefix, index))
+		parsed := matcher.resolveStreamName(stripBackingIndexSuffixes(matcher.prefix, index))
 		entry, exists := entries[parsed.Stream]
 		if !exists {
 			entry = &dataStreamEntry{
@@ -234,6 +295,8 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 				Recognized: parsed.Recognized,
 				// 旧命名流没有服务段，识别不出服务，两个开关都没有意义（保持 false，页面不标注）。
 				ServiceEnabled: parsed.ServiceEnabled, CollectedByService: parsed.ServiceCollectEnabled,
+				// 历史流判定：服务认得出来 + 档位不在该服务的生效集合里（= 改档位留下的旧流）。
+				Historical: matcher.isHistoricalStream(parsed.Service, parsed.Tier),
 			}
 			entries[parsed.Stream] = entry
 			order = append(order, parsed.Stream)
@@ -265,6 +328,10 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 
 // GetLogStorageOverview 存储水位总览：流级运行态（Elasticsearch）+ 维度数据（MySQL）一次返回，
 // 由前端组装 顶层→项目→业务系统→环境→逻辑服务 的层级树。
+//
+// 可选参数 `service_code`：只取该逻辑服务的流。给出口径一致的服务级视图（日志中心页的
+// 「本服务水位」tab）用，并且是**收窄 ES 查询**而不是查完再过滤——见 scopeIndexPattern。
+// 不带该参数时行为与以前完全一致（全量视图）。
 func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	cluster, err := handler.loadElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
@@ -275,8 +342,19 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 		response.Error(context, err)
 		return
 	}
-	matcher := handler.loadStreamDims(context, logHealthPrefix(cluster))
-	entries, _, err := handler.fetchDataStreamEntries(context, cluster, matcher)
+	prefix := logHealthPrefix(cluster)
+	matcher := handler.loadStreamDims(context, prefix)
+	indexPattern, scopeFound := scopeIndexPattern(prefix, strings.TrimSpace(context.Query("service_code")), matcher)
+	if !scopeFound {
+		// 给了服务编码但这个服务不在维度表里（已删除/编码写错）：返回空视图，**不能回落到全量**，
+		// 否则调用方以为看到的是"这个服务的流"，实际拿到整个集群。
+		response.Success(context, gin.H{
+			"data_streams": []any{}, "dims": gin.H{"projects": []any{}, "business_systems": []any{}, "environments": []any{}},
+			"scope": gin.H{"service_code": context.Query("service_code"), "found": false},
+		})
+		return
+	}
+	entries, _, err := handler.fetchDataStreamEntries(context, cluster, matcher, indexPattern)
 	if err != nil {
 		response.BusinessError(context, 502, err.Error(), nil)
 		return
@@ -299,6 +377,16 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 		ID   int64  `json:"id"`
 		Code string `json:"code"`
 		Name string `json:"name"`
+	}
+	// serviceRow：服务维度。2026-09-18 曾因"前端从未消费"删掉过这份 payload，现在日志中心的
+	// 容量统计要"把每一层的成员都列全（含没有任何日志的）"，以及反推"某业务系统下的环境"
+	// （环境是服务上的属性，不挂在业务系统下）——有了真正的消费方，所以加回来。
+	type serviceRow struct {
+		ID             int64  `json:"id"`
+		Code           string `json:"code"`
+		Name           string `json:"name"`
+		BusinessSystem string `json:"business_system"`
+		Environment    string `json:"environment"`
 	}
 	queries := db.New(handler.db)
 	projects := []projectRow{}
@@ -324,19 +412,30 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 			environments = append(environments, envRow{ID: row.ID, Code: row.Code, Name: row.Name})
 		}
 	}
+	services := []serviceRow{}
+	if rows, queryErr := queries.ListEnabledServiceStreamDims(context); queryErr == nil {
+		for _, row := range rows {
+			services = append(services, serviceRow{
+				ID: row.ID, Code: row.Code, Name: row.Name,
+				BusinessSystem: row.BusinessSystem, Environment: row.Environment,
+			})
+		}
+	}
 	response.Success(context, gin.H{
 		"cluster":      gin.H{"id": cluster.ID, "index_prefix": cluster.IndexPrefix},
 		"data_streams": entries,
 		"allocation":   allocation,
 		"alloc_error":  errorString(allocErr),
-		// dims：树的层级元数据。**曾经**还有一份 services（服务维度元数据），但前端只用
-		// 流自身的字段渲染服务层（服务码来自流名解析），那份 payload 从未被消费；
-		// 2026-09-18 连同它的查询一起删除，避免留一份"看着有用、实际没人读"的死数据
-		// （服务级的采集开关现在随每条流返回：service_enabled / service_collection_enabled）。
+		// dims：树的层级元数据，四层都给（projects / business_systems / environments / services）。
+		// services 曾在 2026-09-18 因"前端从未消费"删除；现在日志中心的容量统计需要"把每一层的
+		// 成员都列全（含没有任何日志的）"，且"某业务系统下的环境"只能由它名下服务反推
+		// （环境是服务上的属性，不挂在业务系统下）——消费方出现了，所以连同查询一起加回来。
+		// 服务级的采集开关仍随每条流返回：service_enabled / service_collection_enabled。
 		"dims": gin.H{
 			"projects":         projects,
 			"business_systems": bizsystems,
 			"environments":     environments,
+			"services":         services,
 		},
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 	})

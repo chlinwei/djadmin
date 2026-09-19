@@ -18,6 +18,9 @@ import (
 type Service struct {
 	repository *Repository
 	encryptor  *secretEncryptor
+	// logFormatVerifier 由 logcollect 注入（见 log_format_verify.go）：认证的"取样例 + 跑 ES"部分。
+	// 未注入时只有 waiver 依据可用。
+	logFormatVerifier LogFormatVerifier
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {

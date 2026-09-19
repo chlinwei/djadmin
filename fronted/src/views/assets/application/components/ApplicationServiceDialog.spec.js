@@ -88,6 +88,16 @@ vi.mock('@/api/assets/application', () => ({
     data_stream: 'logs-production-order-std',
   }] } } })),
   saveApplicationService: vi.fn(),
+  verifyApplicationServiceLogFormat: vi.fn(() => Promise.resolve({ data: { data: {
+    passed: true,
+    source: 'instance',
+    missing_fields: [],
+    format_state: 'verified',
+    format_fingerprint: 'abc123',
+    format_verified_at: '2026-09-19T10:00:00Z',
+    format_verified_source: 'instance',
+    format_verified_by: 'zhangsan',
+  } } })),
 }))
 
 vi.mock('@/api/monitor', () => ({
@@ -103,6 +113,7 @@ import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 describe('ApplicationServiceDialog', () => {
   afterEach(() => {
     document.body.innerHTML = ''
+    vi.clearAllMocks()
   })
 
   it('derives the application and member candidates from a direct cluster profile', async () => {
@@ -270,6 +281,93 @@ describe('ApplicationServiceDialog', () => {
 
     expect(document.body.textContent).toContain('redis.log')
     expect(document.body.textContent).toContain('保留档位')
+    wrapper.unmount()
+  })
+
+  // 格式认证（架构文档 §4.8）：弹窗本体是共享组件（src/components/LogFormatVerifyDialog.vue），
+  // 这里只钉住"弹窗拿到了正确的目标与候选实例"——候选必须来自库里的绑定关系（13/14），
+  // 而不是表单里还没保存的勾选（认证在后端按库里的绑定取实例）。提交与失败展示见该组件自己的 spec。
+  it('opens the shared verify dialog with the bound instances as candidates', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('发起认证')
+    expect(wrapper.vm.verifyDialogVisible).toBe(false)
+
+    wrapper.vm.openVerifyDialog(wrapper.vm.templateLogRows[0])
+    await flushPromises()
+
+    expect(wrapper.vm.verifyDialogVisible).toBe(true)
+    expect(wrapper.vm.verifyTarget.log_definition).toBe(81)
+    expect(wrapper.vm.verifyDeploymentOptions.map((item) => item.value)).toEqual([13, 14])
+    wrapper.unmount()
+  })
+
+  // 已认证的行给的是"重新认证"：改了实例级 runtime_variables（不进指纹）这类变化
+  // 无法自动失效，只能人工重跑一次。
+  it('offers re-verification for an already verified log', async () => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    getApplicationServiceLogConfig.mockResolvedValue({ data: { data: { logs: [{
+      log_definition: 81,
+      name: 'application.log',
+      resolved_path: '/srv/tomcat/logs/application.log',
+      template_processing_rule_id: 91,
+      template_processing_rule_name: 'tomcat rule',
+      format_state: 'verified',
+      format_verified_at: '2026-09-19T10:00:00Z',
+      format_verified_source: 'instance',
+      format_verified_by: 'zhangsan',
+      data_stream: 'logs-production-order-std',
+    }] } } })
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('已验证')
+    expect(document.body.textContent).toContain('重新认证')
+    wrapper.unmount()
+  })
+
+  // 未挂解析规则的日志不会被采集，也就无从认证格式：入口禁用并说明原因。
+  it('disables verification for a log without a processing rule', async () => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    getApplicationServiceLogConfig.mockResolvedValue({ data: { data: { logs: [{
+      log_definition: 81,
+      name: 'application.log',
+      resolved_path: '/srv/tomcat/logs/application.log',
+      template_processing_rule_id: null,
+      format_state: 'unverified',
+      data_stream: 'logs-production-order-std',
+    }] } } })
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(wrapper.vm.canVerifyLogFormat(wrapper.vm.templateLogRows[0])).toBe(false)
+    const button = wrapper.findAll('button').find((node) => node.text().includes('发起认证'))
+    expect(button.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 })

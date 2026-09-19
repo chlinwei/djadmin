@@ -13,7 +13,7 @@ import (
 // 检查，只在**格式指纹变化**时要求重新认证。指纹只由库里的配置算出，不依赖主机、不查 ES，
 // 所以"认证是否过期"是纯读库比对（见 ListServiceTemplateLogs 的 format_state）。
 //
-// 进指纹的输入对应四类"会改格式"的变化（架构文档 §6 的表格）：
+// 进指纹的输入对应四类"会改格式"的变化（架构文档 §4.8 的表格）：
 //
 //	换模板 / 模板增删日志定义 / 改名 / 改路径 → LogDefinition / LogName / PathPattern
 //	改规则（pipeline_body、多行参数、首行正则） → RuleUpdatedAt（规则保存一定会更新它）

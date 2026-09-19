@@ -3654,6 +3654,56 @@ func (q *Queries) ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledR
 	return items, nil
 }
 
+const listEnabledServiceStreamDims = `-- name: ListEnabledServiceStreamDims :many
+SELECT s.id, s.code, s.name, bs.code AS business_system, COALESCE(e.code, '') AS environment
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.enabled = TRUE
+ORDER BY s.name
+`
+
+type ListEnabledServiceStreamDimsRow struct {
+	ID             int64  `json:"id"`
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	BusinessSystem string `json:"business_system"`
+	Environment    string `json:"environment"`
+}
+
+// 服务维度元数据（编码维度，便于与流名对齐）：存储水位页要"把每一层的成员都列出来（含没有任何
+// 日志的）"，光靠流里解析出的服务码做不到——那样没日志的服务就不出现在统计里。
+// 环境是**服务上的属性**（assets_business_environment 不挂在业务系统下），所以"某业务系统下的环境"
+// 只能由它名下服务反推，这也需要这份数据。
+func (q *Queries) ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEnabledServiceStreamDims)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEnabledServiceStreamDimsRow{}
+	for rows.Next() {
+		var i ListEnabledServiceStreamDimsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Name,
+			&i.BusinessSystem,
+			&i.Environment,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExporterPackagePorts = `-- name: ListExporterPackagePorts :many
 SELECT name, default_port
 FROM monitor_software_package
@@ -5175,6 +5225,113 @@ func (q *Queries) ListRetentionTierCodes(ctx context.Context) ([]string, error) 
 			return nil, err
 		}
 		items = append(items, code)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceActiveStreamTiers = `-- name: ListServiceActiveStreamTiers :many
+SELECT DISTINCT s.code AS service_code,
+       COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
+FROM assets_application_service s
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
+LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
+LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
+WHERE s.code <> ''
+`
+
+type ListServiceActiveStreamTiersRow struct {
+	ServiceCode string `json:"service_code"`
+	TierCode    string `json:"tier_code"`
+}
+
+// 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
+//
+// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
+// 就说明它已停止写入（数据按原档位保留到期）。判定放后端做，因为：
+//   - 全局视图（不按服务收窄）没有"本服务生效档位"这份数据，前端推不出来；
+//   - 生效档位是"覆盖档位 → 服务默认档位 → is_default → 'std'"的 COALESCE 链，必须与
+//     ListServiceTemplateLogs 的 tier_code 逐字一致，两处各写一份必然漂移。
+//
+// 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
+// （与"这个服务现在什么都不采"一致）。
+func (q *Queries) ListServiceActiveStreamTiers(ctx context.Context) ([]ListServiceActiveStreamTiersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceActiveStreamTiers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceActiveStreamTiersRow{}
+	for rows.Next() {
+		var i ListServiceActiveStreamTiersRow
+		if err := rows.Scan(&i.ServiceCode, &i.TierCode); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceLogApplyTargets = `-- name: ListServiceLogApplyTargets :many
+SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
+       COALESCE(h.instance_name, '') AS host_instance_name,
+       l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_host h ON h.id = d.host_id
+LEFT JOIN monitor_log_collection_target l ON l.host_id = d.host_id AND l.managed_enabled = TRUE
+WHERE sd.service_id = ?
+ORDER BY d.host_id
+`
+
+type ListServiceLogApplyTargetsRow struct {
+	HostID            int64         `json:"host_id"`
+	HostIp            string        `json:"host_ip"`
+	HostInstanceName  string        `json:"host_instance_name"`
+	TargetID          sql.NullInt64 `json:"target_id"`
+	ConfigFingerprint string        `json:"config_fingerprint"`
+}
+
+// 服务级下发的解析：该服务**承载在哪些主机上**，以及每台主机对应的采集目标。
+//
+// 三个刻意的取舍：
+//  1. **不过滤启用态**（sd.enabled / d.enabled / s.enabled / s.log_collection_enabled 都不滤）：
+//     停用服务或关掉采集之后，恰恰需要下发一次来**移除**主机上的片段——渲染层会把停用的服务排除，
+//     agent 侧"没交付的 .yml 一律删除"，于是旧片段被清掉。按启用态过滤主机，停用的服务就永远清不干净。
+//     变化后的主机是否需要真下发由渲染指纹决定（一致则跳过，见 applyLogTargetConfigRow）。
+//  2. 只在 LEFT JOIN 里要求 `managed_enabled = TRUE`：没纳管（或已停用纳管）的主机没有采集目标行，
+//     下发不了，必须能被识别出来告诉用户（target_id 为 NULL），而不是静默少下发几台。
+//  3. SELECT DISTINCT：入参是服务，它可能在同一台主机上有多个部署实例，而去重后每一列都是主机级事实。
+func (q *Queries) ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceLogApplyTargets, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceLogApplyTargetsRow{}
+	for rows.Next() {
+		var i ListServiceLogApplyTargetsRow
+		if err := rows.Scan(
+			&i.HostID,
+			&i.HostIp,
+			&i.HostInstanceName,
+			&i.TargetID,
+			&i.ConfigFingerprint,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

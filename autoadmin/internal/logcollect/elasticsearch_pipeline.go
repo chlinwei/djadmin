@@ -1,6 +1,8 @@
 package logcollect
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -44,37 +46,59 @@ func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 		response.BusinessError(context, 404, "Elasticsearch cluster not found", nil)
 		return
 	}
-	path := "/_ingest/pipeline/_simulate"
-	// Elasticsearch _simulate 要求每个 doc 是 {"_source": {...}} 形态，与 Django
-	// ElasticsearchClient.simulate_pipeline(_body) 保持一致，否则报 "[_source] required property is missing"。
-	wrappedDocs := make([]any, 0, len(input.Docs))
-	for _, doc := range input.Docs {
-		wrappedDocs = append(wrappedDocs, gin.H{"_source": doc})
-	}
-	body := gin.H{"docs": wrappedDocs}
-	if input.Pipeline != nil {
-		body["pipeline"] = input.Pipeline
-	} else if name := strings.TrimSpace(input.Name); name != "" {
-		path = "/_ingest/pipeline/" + url.PathEscape(name) + "/_simulate"
-	} else {
+	name := strings.TrimSpace(input.Name)
+	if input.Pipeline == nil && name == "" {
 		response.BusinessError(context, 400, "pipeline or name is required", nil)
 		return
 	}
-	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, path, body)
+	data, err := handler.simulatePipeline(context, cluster, name, input.Pipeline, input.Docs)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}
+	response.Success(context, data)
+}
+
+// simulatePipeline 跑一次 _ingest/pipeline/_simulate，并在 ES 原始响应上附加两项判定：
+// schema_violations（输出字段不在索引 mapping 里的）与 missing_fields（缺必备字段的）。
+//
+// 抽成非 gin 的函数是为了让**后台任务（日志格式认证）与调试页走同一条实现**：认证不带请求
+// 上下文，不能复用原先整段写在 handler 里的逻辑，而两处判定口径必须一致，否则"调试页看起来
+// 通过、认证却不通过"。
+//
+// pipelineName 与 pipelineBody 二选一：传 body 走 inline pipeline（认证与调试页用），
+// 传 name 让 ES 用集群里已发布的同名 pipeline。
+func (handler *Handler) simulatePipeline(ctx context.Context, cluster elasticsearchCluster, pipelineName string, pipelineBody map[string]any, docs []any) (map[string]any, error) {
+	if len(docs) == 0 {
+		return nil, fmt.Errorf("docs must be a non-empty array")
+	}
+	// Elasticsearch _simulate 要求每个 doc 是 {"_source": {...}} 形态，与 Django
+	// ElasticsearchClient.simulate_pipeline(_body) 保持一致，否则报 "[_source] required property is missing"。
+	wrappedDocs := make([]any, 0, len(docs))
+	for _, doc := range docs {
+		wrappedDocs = append(wrappedDocs, gin.H{"_source": doc})
+	}
+	path := "/_ingest/pipeline/_simulate"
+	body := gin.H{"docs": wrappedDocs}
+	if pipelineBody != nil {
+		body["pipeline"] = pipelineBody
+	} else {
+		path = "/_ingest/pipeline/" + url.PathEscape(pipelineName) + "/_simulate"
+	}
+	data, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPost, path, body)
+	if err != nil {
+		return nil, err
+	}
 	// 以集群实际索引模板 mapping 的字段为准校验，而不是硬编码列表；取不到时回退内置标准字段。
-	allowed := handler.processingRuleAllowedFields(context, cluster)
+	allowed := handler.processingRuleAllowedFields(ctx, cluster)
 	data["schema_violations"] = nonStandardDocumentFields(data, allowed)
 	data["missing_fields"] = missingRequiredDocumentFields(data)
-	response.Success(context, data)
+	return data, nil
 }
 
 // processingRuleAllowedFields 读取 `<prefix>-template` 索引模板 mapping 的顶层字段集合；
 // 模板不存在或读取失败时回退到内置 `standardLogFields`。
-func (handler *Handler) processingRuleAllowedFields(context *gin.Context, cluster elasticsearchCluster) map[string]bool {
+func (handler *Handler) processingRuleAllowedFields(context context.Context, cluster elasticsearchCluster) map[string]bool {
 	prefix := strings.TrimSpace(cluster.IndexPrefix)
 	if prefix == "" {
 		prefix = "autoadmin"

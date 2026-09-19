@@ -114,6 +114,27 @@ export function getApplicationServiceLogConfig(id) {
     return requestUtil.get(`${applicationServicePrefix}${id}/log-config/`)
 }
 
+// 服务级日志采集总开关（log_collection_enabled）。关闭后该服务下所有日志都不采集，
+// 逐条日志的开关随之不生效（配置意图仍保留，重新打开即恢复）。
+export function setApplicationServiceLogCollection(id, enabled) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/log-collection/`, { enabled })
+}
+
+// 按行保存一条（服务 × 日志定义）的日志覆盖值：采集开关与保留档位。
+// payload = { log_definition_id, collection_enabled, retention_tier }
+// **两列都是这一行覆盖值的权威值**：后端按"提交即该行覆盖值"写入，少传一列等于把它清成
+// "不覆盖"（采集默认采、档位继承服务默认），所以调用方要么传全，要么用页面里的 saveOverride 合并。
+export function saveApplicationServiceLogSetting(id, payload) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/log-config/settings/`, payload)
+}
+
+// 日志格式认证：对一条（逻辑服务 × 日志定义）抽样校验一次格式。
+// payload = { log_definition_id, source: 'instance' | 'sample_log' | 'waiver', deployment_id }
+// （source=instance 时必填 deployment_id）。漏字段取不到样例时后端报错，不会静默判"通过"。
+export function verifyApplicationServiceLogFormat(id, payload, timeout = 120000) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/log-config/verify/`, payload, timeout)
+}
+
 export function saveApplicationService(obj) {
     if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj)
     return requestUtil.post(applicationServicePrefix, obj)

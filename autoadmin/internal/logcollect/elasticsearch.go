@@ -2,6 +2,7 @@ package logcollect
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -34,7 +35,8 @@ func (handler *Handler) loadElasticsearchCluster(context *gin.Context) (elastics
 }
 
 // loadElasticsearchClusterByID 与上面的唯一差别是 id 来源（后台任务没有请求上下文）。
-func (handler *Handler) loadElasticsearchClusterByID(context *gin.Context, id int64) (elasticsearchCluster, error) {
+// 参数类型是 context.Context 而不是 *gin.Context：格式认证等后台任务要复用这条链路。
+func (handler *Handler) loadElasticsearchClusterByID(context context.Context, id int64) (elasticsearchCluster, error) {
 	row, err := db.New(handler.db).GetElasticsearchClusterConnection(context, id)
 	if err != nil {
 		return elasticsearchCluster{}, err
@@ -49,7 +51,7 @@ func (handler *Handler) loadElasticsearchClusterByID(context *gin.Context, id in
 }
 
 // elasticsearchRequestRaw 发送请求并返回原始 JSON（对象或数组，_cat 系列端点返回数组）。
-func (handler *Handler) elasticsearchRequestRaw(context *gin.Context, cluster elasticsearchCluster, method, path string, body any) (json.RawMessage, error) {
+func (handler *Handler) elasticsearchRequestRaw(context context.Context, cluster elasticsearchCluster, method, path string, body any) (json.RawMessage, error) {
 	var rawBody []byte
 	var err error
 	if body != nil {
@@ -109,7 +111,7 @@ func (handler *Handler) elasticsearchRequestRaw(context *gin.Context, cluster el
 	return nil, lastError
 }
 
-func (handler *Handler) elasticsearchRequest(context *gin.Context, cluster elasticsearchCluster, method, path string, body any) (map[string]any, error) {
+func (handler *Handler) elasticsearchRequest(context context.Context, cluster elasticsearchCluster, method, path string, body any) (map[string]any, error) {
 	payload, err := handler.elasticsearchRequestRaw(context, cluster, method, path, body)
 	if err != nil {
 		return nil, err
@@ -125,7 +127,7 @@ func (handler *Handler) elasticsearchRequest(context *gin.Context, cluster elast
 }
 
 // elasticsearchRequestArray：_cat 系列端点返回 JSON 数组，解码为 []map[string]any。
-func (handler *Handler) elasticsearchRequestArray(context *gin.Context, cluster elasticsearchCluster, method, path string) ([]map[string]any, error) {
+func (handler *Handler) elasticsearchRequestArray(context context.Context, cluster elasticsearchCluster, method, path string) ([]map[string]any, error) {
 	payload, err := handler.elasticsearchRequestRaw(context, cluster, method, path, nil)
 	if err != nil {
 		return nil, err

@@ -185,6 +185,7 @@
           </a-col>
           <a-col v-if="form.deployment_template" :span="24">
             <a-form-item label="模板日志">
+              <a-alert v-if="logConfigError" type="error" show-icon class="log-config-error" :message="logConfigError" />
               <a-table
                 :columns="logTableColumns"
                 :data-source="templateLogRows"
@@ -192,7 +193,7 @@
                 row-key="log_definition"
                 size="small"
                 :locale="tableLocale"
-                :scroll="{ x: 1450 }"
+                :scroll="{ x: 1580 }"
               >
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'name'">{{ record.name }}</template>
@@ -231,6 +232,20 @@
                       <a-tag :color="FORMAT_STATE_COLOR[record.format_state] || 'default'">
                         {{ FORMAT_STATE_LABEL[record.format_state] || '未验证' }}
                       </a-tag>
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="column.key === 'format_action'">
+                    <!-- 认证入口：未通过/已失效时是主操作，已验证时是"重新认证"（改了实例级
+                         runtime_variables 这类无法进指纹的变化，只能人工重跑一次）。 -->
+                    <a-tooltip :title="formatActionTooltip(record, serviceId)" placement="top">
+                      <a-button
+                        type="link"
+                        size="small"
+                        :disabled="!canVerifyLogFormat(record, serviceId)"
+                        @click="openVerifyDialog(record)"
+                      >
+                        {{ record.format_state === 'verified' ? '重新认证' : '发起认证' }}
+                      </a-button>
                     </a-tooltip>
                   </template>
                   <template v-else-if="column.key === 'retention_tier'">
@@ -302,6 +317,16 @@
       @update:open="templateDialogOpen = $event"
       @saved="handleTemplateCreated"
     />
+    <!-- 格式认证弹窗由共享组件提供：日志中心页给同一条 (服务×日志定义) 发起认证时用的是同一个组件，
+         避免两套文案与两种提交语义（见 src/components/LogFormatVerifyDialog.vue）。 -->
+    <LogFormatVerifyDialog
+      :open="verifyDialogVisible"
+      :service-id="serviceId"
+      :target="verifyTarget"
+      :deployment-options="verifyDeploymentOptions"
+      @update:open="verifyDialogVisible = $event"
+      @verified="loadLogConfig(serviceId)"
+    />
   </a-modal>
 </template>
 
@@ -309,7 +334,6 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'
-import { formatTimeWithTimezone } from '@/util/timezone'
 import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -321,6 +345,8 @@ import ClusterProfileDialog from './ClusterProfileDialog.vue'
 import Dialog from './Dialog.vue'
 import TemplateDialog from './TemplateDialog.vue'
 import VersionDialog from './VersionDialog.vue'
+import LogFormatVerifyDialog from '@/components/LogFormatVerifyDialog.vue'
+import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActionTooltip, formatStateTooltip } from '@/util/logFormatState'
 import {
   getApplicationDeploymentList,
   getApplicationDeploymentTemplateList,
@@ -369,6 +395,14 @@ const environmentRecords = ref([])
 const retentionTierRecords = ref([])
 const processingRuleRecords = ref([])
 const templateLogRows = ref([])
+// 日志配置加载失败的提示。与"后端确实返回空列表"必须区分：接口报错时表格同样是空的，
+// 静默吞掉会让故障表现成"这里本来就没有日志"（2026-09-19 现场就是被这个掩盖的）。
+const logConfigError = ref('')
+// ---- 格式认证：弹窗开关 + 目标 + 候选实例（弹窗本体与提交逻辑是共享组件）----
+const verifyDialogVisible = ref(false)
+const verifyTarget = ref(null)
+// 库里已绑定的部署实例 id：认证在后端按库里的绑定关系取实例，不能拿表单里未保存的勾选。
+const boundDeploymentIds = ref([])
 // 服务级覆盖：键为日志定义 ID。只有采集开关/保留档位/采集过滤规则可覆盖，
 // 解析规则属于模板日志定义（只读展示，不进这里）。
 const logOverrides = reactive({})
@@ -384,21 +418,6 @@ function processingRuleLabel(record) {
   const found = processingRuleRecords.value.find((item) => item.id === id)
   return found ? found.name : `规则 #${id}`
 }
-// 「格式校验」列：日志格式只认证一次，之后靠指纹失效（改模板/改规则/改宏/应用版本升级）。
-const FORMAT_STATE_LABEL = { verified: '已验证', needs_recheck: '需重新验证', unverified: '未验证' }
-const FORMAT_STATE_COLOR = { verified: 'green', needs_recheck: 'orange', unverified: 'default' }
-
-function formatStateTooltip(record) {
-  const verifiedAt = record.format_verified_at ? `上次认证：${formatTimeWithTimezone(record.format_verified_at, store.state.user?.timezone || 'Asia/Shanghai')}` : '从未认证'
-  if (record.format_state === 'verified') {
-    return `${verifiedAt}（依据：${record.format_verified_source || '未知'}）。配置指纹未变，不需要再检查。`
-  }
-  if (record.format_state === 'needs_recheck') {
-    return `${verifiedAt}，但格式指纹已变化（模板日志定义/解析规则/服务宏/应用版本有改动）→ 需要重新抽样验证。`
-  }
-  return '尚未验证这条日志的格式能否被模板上的解析规则解析出必备字段（log_level / log_message / error_fingerprint）。'
-    + '开启采集前需要抽样验证一次；验证通过后不再重复检查，只有格式指纹变化时才要求重新验证。'
-}
 
 // 「处理规则」是只读列（值来自部署模板的日志定义）；「过滤规则」暂不展示——
 // 采集过滤规则目前只是资源 CRUD，渲染与 pipeline 都不读它（选了不生效），
@@ -409,6 +428,7 @@ const logTableColumns = [
   { title: '处理规则（模板）', key: 'processing_rule', width: 210 },
   { title: '采集', key: 'collection_enabled', width: 130 },
   { title: '格式校验', key: 'format_state', width: 110 },
+  { title: '格式认证', key: 'format_action', width: 120 },
   { title: '保留档位', key: 'retention_tier', width: 190 },
   { title: 'Data Stream', key: 'data_stream', width: 260 },
 ]
@@ -700,6 +720,8 @@ async function initialize() {
       selectedDeploymentIds.value = (data.member_instances || [])
         .map((item) => (item && typeof item === 'object' ? item.deployment : item))
         .filter((id) => id !== undefined && id !== null)
+      // 格式认证的实例候选取同一份绑定关系（见 openVerifyDialog）。
+      boundDeploymentIds.value = [...selectedDeploymentIds.value]
       for (const item of data.member_instances || []) {
         if (item && typeof item === 'object') {
           memberEnabled[item.deployment] = item.enabled !== false
@@ -729,6 +751,7 @@ async function initialize() {
 }
 
 async function loadLogConfig(serviceId) {
+  logConfigError.value = ''
   try {
     const response = await getApplicationServiceLogConfig(serviceId)
     const data = response?.data?.data || {}
@@ -743,9 +766,23 @@ async function loadLogConfig(serviceId) {
         collection_filter_rule: row.collection_filter_rule_id ?? null,
       }
     }
-  } catch {
+  } catch (error) {
+    // 不静默：把原因露出来，"加载失败"和"确实没有日志定义"在界面上都是空表格。
     templateLogRows.value = []
+    logConfigError.value = error?.response?.data?.msg || error?.message || '加载日志配置失败'
+    message.error(logConfigError.value)
   }
+}
+
+// 认证依据对应的候选实例。空列表要给出可操作的解释（见弹窗里的提示文案）。
+const verifyDeploymentOptions = computed(() => boundDeploymentIds.value
+  .map((id) => deploymentRecords.value.find((item) => item.id === id))
+  .filter(Boolean)
+  .map((item) => ({ label: `${item.instance_name}（${item.host_ip || '未知主机'}）`, value: item.id })))
+
+function openVerifyDialog(record) {
+  verifyTarget.value = record
+  verifyDialogVisible.value = true
 }
 
 function initializeTemplateLogs(templateId) {
@@ -906,6 +943,10 @@ watch(() => form.cluster_profile, () => {
 /* 模板没给这条日志挂解析规则时提示：不会采集，且服务侧改不了。 */
 .log-rule-missing {
   color: #d4380d;
+}
+/* 日志配置加载失败（接口报错）与"确实没有日志定义"必须能区分开。 */
+.log-config-error {
+  margin-bottom: 8px;
 }
 .inline-create-empty {
   display: flex;

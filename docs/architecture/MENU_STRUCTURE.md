@@ -23,8 +23,13 @@
     ├── 日志采集        /monitor/logging/collectors
     ├── 日志存储        /monitor/logging/storage
     ├── 日志处理规则    /monitor/logging/parsers
-    └── 日志保留档位    /monitor/logging/retention
+    ├── 日志保留档位    /monitor/logging/retention
+    ├── 存储水位        /monitor/logging/overview      （迁移 000019）
+    └── 日志中心        /monitor/logging/center        （迁移 000037）
 ```
+
+> 「存储水位」早先漏记在本节（迁移 000019 加的菜单），2026-09-19 一并补上。
+> 「日志中心」见 [LOG_COLLECTION_ARCHITECTURE.md](LOG_COLLECTION_ARCHITECTURE.md) §9.5。
 
 ### 日志采集从「智能监控 → 纳管目标」拆出（迁移 000031）
 

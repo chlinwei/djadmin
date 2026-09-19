@@ -401,6 +401,17 @@ type Querier interface {
 	GetApplicationNameCode(ctx context.Context, id int64) (GetApplicationNameCodeRow, error)
 	GetApplicationServiceCode(ctx context.Context, id int64) (string, error)
 	GetApplicationServiceDetail(ctx context.Context, id int64) (GetApplicationServiceDetailRow, error)
+	// 服务级日志采集总开关（`log_collection_enabled`）的单独写入。
+	//
+	// 为什么单独一条：它原先只能随整个服务表单（`UpdateApplicationService`，PATCH 校验要求
+	// 应用/版本/模板/名称/编码等全字段）一起提交，于是"只想开关采集"必须伪造一份完整表单；
+	// 日志中心页的服务级开关需要按一次改一个字段。与按行覆盖值（UpsertServiceLogOverride）
+	// 同一思路：粒度最小的写操作要有自己的接口。
+	//
+	// 不动认证状态：采集总开关不进认证指纹（见 log_format_fingerprint.go 的输入清单），
+	// 而且认证四列在 log_setting 上、根本不在这一行。
+	// 单列读取：log-config 接口要带上服务级采集总开关（页面据此区分"总开关关了"与"逐条关了"）。
+	GetApplicationServiceLogCollection(ctx context.Context, id int64) (bool, error)
 	GetApplicationServiceName(ctx context.Context, id int64) (string, error)
 	// 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
 	GetApplicationServiceStreamDims(ctx context.Context, id int64) (GetApplicationServiceStreamDimsRow, error)
@@ -478,6 +489,15 @@ type Querier interface {
 	// 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
 	GetLogTargetForAction(ctx context.Context, id int64) (GetLogTargetForActionRow, error)
 	GetLogTargetHostName(ctx context.Context, id int64) (string, error)
+	// 日志格式认证的 instance 依据：一条 (逻辑服务 × 部署实例 × 日志定义) 的取样上下文。
+	// 只取"渲染该实例日志文件真实路径"所需的三层宏与实际路径模板：
+	//   - 服务级 macro_values（模板 macro_definitions 作默认值）
+	//   - 实例级 runtime_variables + 部署模板 app_home（作为 APP_HOME 默认值）
+	// 三层合并与 Filebeat 下发走同一套口径（见 logcollect.resolveMacros / instanceMacros），
+	// 所以这里展开出来的路径与主机上真正在采的文件一致。
+	// host_id 用于复用 logcollect 的批量渲染装载；host_instance_name 是 agent 会话的路由键
+	// （注意是 assets_host.instance_name，不是部署实例自己的 instance_name）。
+	GetLogVerifyInstanceContext(ctx context.Context, arg GetLogVerifyInstanceContextParams) (GetLogVerifyInstanceContextRow, error)
 	GetMenuByID(ctx context.Context, id int32) (SysMenu, error)
 	GetMonitorTarget(ctx context.Context, id int64) (GetMonitorTargetRow, error)
 	GetMonitorTargetState(ctx context.Context, id int64) (GetMonitorTargetStateRow, error)
@@ -587,6 +607,11 @@ type Querier interface {
 	// 保留档位列表（下拉/管理路径用：只列启用的）。
 	// 识别流名要的是**全部**档位码，用 ListRetentionTierCodes：停用一个档位不该让既有流变成"未识别"。
 	ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledRetentionTiersRow, error)
+	// 服务维度元数据（编码维度，便于与流名对齐）：存储水位页要"把每一层的成员都列出来（含没有任何
+	// 日志的）"，光靠流里解析出的服务码做不到——那样没日志的服务就不出现在统计里。
+	// 环境是**服务上的属性**（assets_business_environment 不挂在业务系统下），所以"某业务系统下的环境"
+	// 只能由它名下服务反推，这也需要这份数据。
+	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
 	// 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。
 	// 原实现写的是 bs.project —— assets_business_system 没有这一列（真库与 schema 都没有），
@@ -689,8 +714,29 @@ type Querier interface {
 	ListScans(ctx context.Context, arg ListScansParams) ([]ListScansRow, error)
 	ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTaskLogsParams) ([]ListScheduledTaskLogsRow, error)
 	ListScheduledTasks(ctx context.Context, arg ListScheduledTasksParams) ([]ListScheduledTasksRow, error)
+	// 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
+	//
+	// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
+	// 就说明它已停止写入（数据按原档位保留到期）。判定放后端做，因为：
+	//   - 全局视图（不按服务收窄）没有"本服务生效档位"这份数据，前端推不出来；
+	//   - 生效档位是"覆盖档位 → 服务默认档位 → is_default → 'std'"的 COALESCE 链，必须与
+	//     ListServiceTemplateLogs 的 tier_code 逐字一致，两处各写一份必然漂移。
+	// 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
+	// （与"这个服务现在什么都不采"一致）。
+	ListServiceActiveStreamTiers(ctx context.Context) ([]ListServiceActiveStreamTiersRow, error)
 	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
+	// 服务级下发的解析：该服务**承载在哪些主机上**，以及每台主机对应的采集目标。
+	//
+	// 三个刻意的取舍：
+	//  1. **不过滤启用态**（sd.enabled / d.enabled / s.enabled / s.log_collection_enabled 都不滤）：
+	//     停用服务或关掉采集之后，恰恰需要下发一次来**移除**主机上的片段——渲染层会把停用的服务排除，
+	//     agent 侧"没交付的 .yml 一律删除"，于是旧片段被清掉。按启用态过滤主机，停用的服务就永远清不干净。
+	//     变化后的主机是否需要真下发由渲染指纹决定（一致则跳过，见 applyLogTargetConfigRow）。
+	//  2. 只在 LEFT JOIN 里要求 `managed_enabled = TRUE`：没纳管（或已停用纳管）的主机没有采集目标行，
+	//     下发不了，必须能被识别出来告诉用户（target_id 为 NULL），而不是静默少下发几台。
+	//  3. SELECT DISTINCT：入参是服务，它可能在同一台主机上有多个部署实例，而去重后每一列都是主机级事实。
+	ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error)
 	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
 	// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
 	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
@@ -770,9 +816,6 @@ type Querier interface {
 	MarkInspectionExecutionRunning(ctx context.Context, arg MarkInspectionExecutionRunningParams) (int64, error)
 	MarkInspectionTargetRunning(ctx context.Context, arg MarkInspectionTargetRunningParams) error
 	MarkLogBatchJobItemRunning(ctx context.Context, arg MarkLogBatchJobItemRunningParams) error
-	// 认证/失效：写回一次"格式认证"的结果（指纹 + 依据 + 操作人）。
-	// 由格式校验流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
-	MarkLogSettingFormatVerified(ctx context.Context, arg MarkLogSettingFormatVerifiedParams) (sql.Result, error)
 	// 指纹未变时的"只刷新下发时间"路径。
 	MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTargetConfigAppliedParams) error
 	// 指纹变化并下发成功后：记下发时间与指纹。
@@ -820,6 +863,7 @@ type Querier interface {
 	UpdateApplication(ctx context.Context, arg UpdateApplicationParams) error
 	UpdateApplicationDeployment(ctx context.Context, arg UpdateApplicationDeploymentParams) error
 	UpdateApplicationService(ctx context.Context, arg UpdateApplicationServiceParams) error
+	UpdateApplicationServiceLogCollection(ctx context.Context, arg UpdateApplicationServiceLogCollectionParams) (sql.Result, error)
 	UpdateApplicationVersion(ctx context.Context, arg UpdateApplicationVersionParams) error
 	UpdateAutomationInventory(ctx context.Context, arg UpdateAutomationInventoryParams) error
 	UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error
@@ -870,6 +914,30 @@ type Querier interface {
 	UpsertHostRuntime(ctx context.Context, arg UpsertHostRuntimeParams) error
 	// conflict: host_id
 	UpsertHostSystem(ctx context.Context, arg UpsertHostSystemParams) error
+	// 认证/失效：写回一次"格式认证"的结果（指纹 + 依据 + 操作人）。
+	// 由格式认证流程调用（取实例样例或规则样例跑 _simulate 通过后），也用于"人工确认豁免"。
+	//
+	// **必须是 upsert**：认证状态读的是 (服务 × 日志定义)，而覆盖行只在"有覆盖"时才存在
+	// （ListServiceTemplateLogs 对 ls 是 LEFT JOIN）。UPDATE-only 对没有覆盖行的组合会静默影响 0 行，
+	// 认证结果写不进去、format_state 永远停在 unverified。冲突目标是唯一键
+	// unique_service_log_setting(service_id, log_definition_id)；插入行只带认证四列，
+	// 覆盖列（collection_enabled / retention_tier_id / collection_filter_rule_id）留 NULL = 不覆盖。
+	// conflict: service_id, log_definition_id
+	UpsertLogSettingFormatVerified(ctx context.Context, arg UpsertLogSettingFormatVerifiedParams) error
+	// 服务级日志覆盖的**按行**写入：只写"这个服务在这条日志上的覆盖值"（采集开关 + 保留档位），
+	// 供日志中心页的内联开关/档位用。区别于 `SaveApplicationService` 的整表替换——那条是
+	// "提交的集合即全量"（DELETE 后重插），只允许**完整表单**调用；两者边界见
+	// docs/architecture/LOG_COLLECTION_ARCHITECTURE.md §9.5。
+	//
+	// 三条必须守住的语义：
+	//  1. **不碰 format_verified_\***：认证结果只由格式认证流程写（UpsertLogSettingFormatVerified）。
+	//     改采集开关/档位不改日志格式、也不进认证指纹，所以覆盖值更新后认证状态必须原样保留
+	//     ——UPDATE 分支只列这两个覆盖列，就是靠这一点保证的。
+	//  2. narg 传 NULL = "不覆盖"（采集默认采、档位继承服务默认），与覆盖行不存在等价。
+	//  3. 没有覆盖行时插入一条：插入行的认证四列取默认值，语义是"这个组合从未认证"。
+	// 冲突目标是唯一键 unique_service_log_setting(service_id, log_definition_id)。
+	// conflict: service_id, log_definition_id
+	UpsertServiceLogOverride(ctx context.Context, arg UpsertServiceLogOverrideParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -469,7 +469,9 @@
               <!-- 操作列（2026-09-19）：**每条流都能清**，不再只给历史档位流。
                    历史档位流多一个「切回该档位」（回收前还能救回来）。 -->
               <template v-else-if="column.key === 'actions'">
-                <template v-if="isHistoricalTier(record)">
+                <!-- 「切回该档位」要改"这个服务的哪条日志定义"，只有选中服务时才有上下文；
+                     全量视图下只给清理（清理按服务维度执行，服务 id 由 dims 映射得到，不需要选中）。 -->
+                <template v-if="isHistoricalTier(record) && serviceId">
                   <a-tooltip title="把这条日志的档位改回该档位，写入会继续进入这条流（不会新建）；改完需要重新下发才在主机上生效。" placement="top">
                     <a-button type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
                   </a-tooltip>
@@ -485,7 +487,7 @@
                     {{ isHistoricalTier(record) ? '立即清理' : '清理数据' }}
                   </a-button>
                 </a-tooltip>
-                <span v-if="!isHistoricalTier(record) && !streamCleanupTarget(record)" class="apply-muted">-</span>
+                <span v-if="!streamCleanupTarget(record) && !(isHistoricalTier(record) && serviceId)" class="apply-muted">-</span>
               </template>
             </template>
           </a-table>
@@ -672,8 +674,10 @@ const storageColumns = computed(() => [
   { title: 'ILM', key: 'ilm_state', width: 100 },
   { title: '状态', key: 'collect_state', width: 150 },
   { title: '后备索引', key: 'backing', width: 100 },
-  // 操作只对"选中服务 + 历史档位"有意义：清理接口要服务 id，切档位要改该服务的日志定义。
-  ...(serviceId.value ? [{ title: '操作', key: 'actions', width: 160, fixed: 'right' }] : []),
+  // 操作列**恒在**（2026-09-19 修）：清理对每条流都成立（未识别流也能清），
+  // 之前整列按"是否选中服务"开关，于是全量视图/项目/业务系统/环境节点下根本没有这一列。
+  // 只有「切回该档位」需要服务上下文（要改该服务的日志定义），它在单元格里单独把门。
+  { title: '操作', key: 'actions', width: 160, fixed: 'right' },
 ])
 
 const allocationColumns = [

@@ -116,6 +116,83 @@ describe('ApplicationServiceDialog', () => {
     vi.clearAllMocks()
   })
 
+  // 回归（2026-09-19 现场）：改了「宏」里的内容，行上的"解析后路径"必须**当场**跟着变。
+  // 以前那列用的是加载时后端算好的 resolved_path，改宏不重算——得保存后重进弹窗才看到新路径，
+  // 用户会以为"改了没生效"（或反过来，以为界面显示的路径就是主机上的）。
+  it('recomputes the resolved path live while editing macros', async () => {
+    const { getApplicationDeploymentTemplateList, getApplicationService, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    // 一律用 ...Once：这些 mock 的实现不会被 afterEach 的 clearAllMocks 清掉，
+    // 用 mockResolvedValue 会把整个模板列表换掉、污染后面的用例（这里踩过一次）。
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: { logs: [{
+      log_definition: 82,
+      name: 'application.log',
+      path_pattern: '${APP_HOME}/logs/application.log',
+      resolved_path: '/opt/tomcat/logs/application.log',
+      collection_enabled: null,
+      template_processing_rule_id: null,
+      template_processing_rule_name: '',
+      retention_tier: null,
+      data_stream: 'autoadmin-kul-tib-test-tomcat-80-std',
+    }] } } })
+    getApplicationDeploymentTemplateList.mockResolvedValueOnce({ data: { data: { results: [{
+      id: 62,
+      application: 5,
+      name: 'Tomcat Template',
+      control_type: 'systemd',
+      enabled: true,
+      app_home: '/opt/tomcat',
+      macro_definitions: [
+        { name: 'APP_HOME', value: '', description: '应用目录' },
+        { name: 'LOG_DIR', value: '/opt/tomcat/logs', description: '日志目录' },
+      ],
+      logs: [{ id: 82, name: 'application.log', path_pattern: '${APP_HOME}/logs/application.log', processing_rule: null }],
+    }] } } })
+    getApplicationService.mockResolvedValueOnce({ data: { data: {
+      id: 20,
+      name: 'tomcat-group',
+      code: 'tomcat-group',
+      application: 5,
+      deployment_template: 62,
+      topology_type: 'cluster',
+      macro_values: {},
+      member_instances: [{ deployment: 13 }],
+    } } })
+
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    // 弹窗初始化要串起一串接口（服务/模板/日志配置），并行跑测试时一次 flushPromises
+    // 不保证全部落地——多等几轮，别让用例变成"偶发失败"。
+    for (let index = 0; index < 4; index += 1) await flushPromises()
+
+    const row = wrapper.vm.templateLogRows.find((item) => item.log_definition === 82)
+    expect(row, '日志配置未加载：模板日志行应包含 log_definition 82').toBeTruthy()
+
+    // 模板 app_home 作为 APP_HOME 的默认值 → 解析后的路径是绝对路径。
+    expect(wrapper.vm.rowPathValue(row)).toBe('/opt/tomcat/logs/application.log')
+
+    // 改宏：立刻生效，不需要保存（现场就是这里不变）。
+    wrapper.vm.form.macro_values.APP_HOME = '/home/esb/tomcat/apache-tomcat-9.0.35'
+    await flushPromises()
+    expect(wrapper.vm.rowPathValue(row)).toBe('/home/esb/tomcat/apache-tomcat-9.0.35/logs/application.log')
+
+    // 切到"原始"看模板里的路径模式；切回来仍是新值（两份值不互相污染）。
+    wrapper.vm.showResolvedPath = false
+    await flushPromises()
+    expect(wrapper.vm.rowPathValue(row)).toBe('${APP_HOME}/logs/application.log')
+    wrapper.vm.showResolvedPath = true
+
+    // 清掉覆盖（= 删掉 macro_values 里的键）→ 回到模板默认，而不是变成空路径。
+    delete wrapper.vm.form.macro_values.APP_HOME
+    await flushPromises()
+    expect(wrapper.vm.rowPathValue(row)).toBe('/opt/tomcat/logs/application.log')
+    wrapper.unmount()
+    // 这个用例要串起弹窗初始化的整串接口：本地单跑约 2s，全量并行时会超过默认的 5s。
+  }, 20000)
+
   it('derives the application and member candidates from a direct cluster profile', async () => {
     const wrapper = mount(ApplicationServiceDialog, {
       props: { open: false, clusterProfileId: 9 },

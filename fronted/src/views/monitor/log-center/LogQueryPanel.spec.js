@@ -96,6 +96,52 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     wrapper.unmount()
   })
 
+  // 关键词框：框里写着 Lucene 就必须支持 Lucene（2026-09-19 现场：用户按提示写
+  // `host_ip: "192.168.201.209"` 查不到——后端为了"只搜正文"把冒号转义了）。
+  // 现在两种模式可切换，且默认落在"只搜正文"这个更安全的一侧。
+  it('关键词框默认「正文」模式，切到 Lucene 后把模式一起发出去', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+
+    // 默认：正文模式（提示词也必须是正文的口径，不能写着 Lucene 却只搜正文）
+    expect(wrapper.vm.filters.keywordMode).toBe('message')
+    expect(wrapper.text()).toContain('正文模式')
+    // 切换控件必须是**实心按钮组**（a-segmented 的选中态在这个主题下看不出来，用户反馈过），
+    // 且选中项由 v-model 决定——渲染层要能直接读出"哪个在用"。
+    const modeGroup = wrapper.find('.keyword-mode-row .ant-radio-group')
+    expect(modeGroup.exists()).toBe(true)
+    expect(modeGroup.find('.ant-radio-button-wrapper-checked').text()).toBe('正文')
+
+    wrapper.vm.filters.keyword = 'host_ip:"192.168.201.209"'
+    wrapper.vm.filters.keywordMode = 'lucene'
+    await wrapper.vm.handleFilterChange()
+    await flushPromises()
+
+    const params = searchElasticsearchLogs.mock.calls.at(-1)[1]
+    expect(params.keyword).toBe('host_ip:"192.168.201.209"')
+    expect(params.keyword_mode).toBe('lucene')
+    // 说明文案随模式切换：Lucene 模式要告诉用户"字段过滤可用"
+    expect(wrapper.text()).toContain('Lucene 模式')
+    expect(wrapper.text()).toContain('支持字段过滤')
+    await wrapper.vm.$nextTick()
+    expect(modeGroup.find('.ant-radio-button-wrapper-checked').text()).toBe('Lucene')
+    wrapper.unmount()
+  })
+
+  it('没有关键词时不带 keyword_mode（省得给后端传一个没意义的参数）', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+
+    const params = searchElasticsearchLogs.mock.calls.at(-1)[1]
+    expect(params.keyword).toBeUndefined()
+    expect(params.keyword_mode).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('默认预填最近 1 小时，查询范围可见且实际发起带时间的请求', async () => {
     const wrapper = mountPanel()
     await flushPromises()

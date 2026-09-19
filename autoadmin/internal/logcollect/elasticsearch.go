@@ -251,24 +251,61 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 	if levels := strings.TrimSpace(context.Query("log_level")); levels != "" {
 		filters = append(filters, gin.H{"terms": gin.H{"log_level": strings.Split(levels, ",")}})
 	}
+	// 关键词框有两种模式（由前端切换，见日志查询面板的「正文 / Lucene」）：
+	//   message（默认）：**只搜日志正文**——default_field=log_message，并把冒号转义，
+	//     免得 query_string 的显式字段前缀绕过"只搜正文"（default_field 管不住 `field:value`）。
+	//   lucene：完整 Lucene 语法，字段过滤可用（`host_ip:"192.168.201.209"`、
+	//     `log_level:ERROR AND timeout`…），此时**不转义**。
+	// 两种模式的裸词都仍然落在 log_message 上（default_field 保持不变）：否则 `timeout AND error`
+	// 这种写法的语义会随"默认字段是整个文档"漂移，用户很难预期。
+	// 两种模式都保留 allow_leading_wildcard=false 与 500 字符上限——开"能按字段查"的口子，
+	// 不等于也允许 `*foo` 这类前置通配（ES 侧是纯扫描，代价与收益不成比例）。
+	keywordMode := strings.ToLower(strings.TrimSpace(context.Query("keyword_mode")))
+	if keywordMode != keywordModeLucene {
+		keywordMode = keywordModeMessage
+	}
 	must := []any{gin.H{"match_all": gin.H{}}}
-	if keyword := strings.TrimSpace(context.Query("keyword")); keyword != "" {
-		if len(keyword) > 500 {
-			keyword = keyword[:500]
-		}
-		must = []any{gin.H{"query_string": gin.H{
-			"query":                  escapeLuceneFieldColon(keyword),
-			"default_field":          "log_message",
-			"default_operator":       "AND",
-			"allow_leading_wildcard": false,
-			"lenient":                true,
-		}}}
+	if clause := keywordQuery(context.Query("keyword"), keywordMode); clause != nil {
+		must = []any{*clause}
 	}
 	return cluster, serviceCode, []any{filters, must}, nil
 }
 
-// escapeLuceneFieldColon 转义用户输入里的冒号，防止 Lucene query_string 语法通过 "field:value"
-// 越权查询 log_message 以外的字段（query_string 的 default_field 只影响无冒号 term，不限制显式字段前缀）。
+// keywordQuery 把关键词与模式折算成 query_string 子句（关键词为空时返回 nil）。
+//
+// 抽成纯函数是为了能直接测两种模式的分叉：面板上那个框写着 Lucene 就必须真的支持 Lucene，
+// 而"默认只搜正文"这条也不能被顺手弄丢（两侧任一搞错，都要等用户查不到数据才发现）。
+func keywordQuery(keyword, mode string) *gin.H {
+	trimmed := strings.TrimSpace(keyword)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > 500 {
+		trimmed = trimmed[:500]
+	}
+	if mode != keywordModeLucene {
+		// 非 lucene（含没传/未知）一律按"只搜正文"处理：安全的一侧做默认。
+		trimmed = escapeLuceneFieldColon(trimmed)
+	}
+	clause := gin.H{"query_string": gin.H{
+		"query":                  trimmed,
+		"default_field":          "log_message",
+		"default_operator":       "AND",
+		"allow_leading_wildcard": false,
+		"lenient":                true,
+	}}
+	return &clause
+}
+
+// 关键词框的两种模式（与前端 filters.keywordMode 一一对应）。
+const (
+	keywordModeMessage = "message"
+	keywordModeLucene  = "lucene"
+)
+
+// escapeLuceneFieldColon 转义用户输入里的冒号，把查询锁在 log_message 上：
+// query_string 的 default_field 只影响没有字段前缀的 term，`field:value` 想查哪个字段就查哪个字段。
+// 「正文」模式下要的是"搜内容"，所以把冒号转义掉；要按字段查就切到 Lucene 模式。
 func escapeLuceneFieldColon(keyword string) string {
 	return strings.ReplaceAll(keyword, ":", "\\:")
 }

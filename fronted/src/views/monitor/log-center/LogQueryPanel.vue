@@ -38,10 +38,29 @@
           />
         </a-col>
         <a-col :span="6">
+          <!-- 语法切换用**实心按钮组**：a-segmented 的选中态在这个主题下几乎看不出来
+               （白底盖浅灰），而实心按钮组的选中项是主色填充，一眼能看出哪个在用。 -->
+          <div class="keyword-mode-row">
+            <span class="keyword-mode-label">关键词语法</span>
+            <a-tooltip
+              title="正文：只在日志正文（log_message）里搜关键词，写 host_ip:xxx 这类字段写法不生效。Lucene：完整语法，支持 host_ip:&quot;1.2.3.4&quot;、log_level:ERROR AND timeout 等字段过滤。两种模式都只在你选中的服务范围内查。"
+              placement="top"
+            >
+              <a-radio-group
+                v-model:value="filters.keywordMode"
+                size="small"
+                button-style="solid"
+                @change="() => filters.keyword && handleFilterChange()"
+              >
+                <a-radio-button value="message">正文</a-radio-button>
+                <a-radio-button value="lucene">Lucene</a-radio-button>
+              </a-radio-group>
+            </a-tooltip>
+          </div>
           <a-input-search
             v-model:value="filters.keyword"
-            class="filter-item"
-            placeholder="Lucene表达式"
+            class="filter-item keyword-input"
+            :placeholder="keywordPlaceholder"
             allow-clear
             size="large"
             @search="handleFilterChange"
@@ -74,7 +93,14 @@
         </a-col>
       </a-row>
 
-      <div class="log-query-range-hint">当前查询范围：{{ effectiveRangeLabel }}</div>
+      <div class="log-query-range-hint">
+        当前查询范围：{{ effectiveRangeLabel }}
+        <span class="keyword-mode-hint">
+          （{{ filters.keywordMode === 'lucene'
+            ? 'Lucene 模式：支持字段过滤，如 host_ip:"1.2.3.4"、log_level:ERROR；裸词仍搜日志正文'
+            : '正文模式：只在日志正文里搜关键词。"host_ip:xxx" 这类字段写法在这里不生效——切到 Lucene 才支持' }}）
+        </span>
+      </div>
 
       <a-space v-if="filters.hostIp || filters.logName || filters.errorFingerprint" class="log-query-chip-row" wrap>
         <span class="chip-row-label">下钻过滤：</span>
@@ -248,6 +274,16 @@ const props = defineProps({
 })
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+// 关键词框的两个模式（与后端 keyword_mode 一一对应）：正文=只搜日志正文（默认，安全）；
+// Lucene=完整语法（可按字段过滤）。框里的提示词随模式变化，避免"写着 Lucene 却不支持 Lucene"。
+// 提示词随模式变化：Lucene 模式给一个能直接照抄的例子（现场就是"不知道该怎么写"、
+// 按框里的 Lucene 提示写字段过滤却查不到）。
+const keywordPlaceholder = computed(() => (
+  filters.keywordMode === 'lucene'
+    ? 'Lucene 表达式，如 host_ip:"192.168.201.209" AND log_level:ERROR'
+    : '搜索日志正文（关键词）'
+))
+
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 const formatTime = (value) => (value ? formatTimeWithTimezone(value, userTimezone.value) : '-')
 
@@ -274,6 +310,9 @@ const filters = reactive({
   // 与后端 _log_search_time_range 的默认窗口保持一致，避免选择器留白让人看不出实际生效的时间范围。
   timeRange: [dayjs().tz(userTimezone.value).subtract(1, 'hour'), dayjs().tz(userTimezone.value)],
   keyword: '',
+  // 关键词框的模式：'message'（默认，只搜正文）/ 'lucene'（完整 Lucene 语法，可按字段过滤）。
+  // 默认落在更安全的一侧；切换本身不触发查询，等用户按回车/点搜索。
+  keywordMode: 'message',
   logLevels: [],
   instance: '',
   // 以下三项只通过统计面板“查看日志”下钻写入，普通场景不提供输入框，避免筛选面板过于臃肿。
@@ -344,6 +383,7 @@ function buildBaseParams() {
     start: toUtcQueryISOStringByUserTimezone(startTime, userTimezone.value),
     end: toUtcQueryISOStringByUserTimezone(endTime, userTimezone.value),
     keyword: filters.keyword || undefined,
+    keyword_mode: filters.keyword || undefined ? filters.keywordMode : undefined,
     log_level: (filters.logLevels || []).join(',') || undefined,
     instance: filters.instance || undefined,
     host_ip: filters.hostIp || undefined,
@@ -593,6 +633,19 @@ onBeforeUnmount(() => {
 }
 .log-query-range-hint {
   margin: -4px 0 12px;
+  color: #7a8697;
+  font-size: 12px;
+}
+.keyword-mode-hint {
+  color: #8c8c8c;
+}
+.keyword-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.keyword-mode-label {
   color: #7a8697;
   font-size: 12px;
 }

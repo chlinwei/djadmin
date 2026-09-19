@@ -226,14 +226,16 @@
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'name'">{{ record.name }}</template>
                   <template v-else-if="column.key === 'resolved_path'">
+                    <!-- 路径**随表单里的宏实时重算**（不是加载时后端算好的那份）：
+                         改了「宏」马上就能看到路径变成什么，不用先保存再进来核对（2026-09-19 现场）。 -->
                     <a-tooltip :title="PATH_MACRO_HINT" placement="top">
-                      <code>{{ pathCellValue(record, showResolvedPath) }}</code>
+                      <code>{{ rowPathValue(record) }}</code>
                       <a-tag
-                        v-if="showResolvedPath && unexpandedMacros(record.resolved_path).length"
+                        v-if="showResolvedPath && rowPendingMacros(record).length"
                         color="orange"
                         class="path-macro-tag"
                       >
-                        {{ unexpandedMacros(record.resolved_path).join(' ') }} 实例上展开
+                        {{ rowPendingMacros(record).join(' ') }} 实例上展开
                       </a-tag>
                     </a-tooltip>
                   </template>
@@ -409,7 +411,7 @@ import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { getLogCollectionFilterRules } from '@/api/monitor'
-import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros } from '@/util/logPathMacro'
+import { PATH_MACRO_HINT, resolvePathMacros, unexpandedMacros } from '@/util/logPathMacro'
 import { fetchAllPages } from '@/util/fetchAllPages'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
@@ -558,7 +560,29 @@ const templateOptions = computed(() => templateRecords.value
   .filter((item) => item.application === form.application && item.enabled)
   .filter((item) => isHaCluster.value ? item.control_type === 'external_ha' : item.control_type !== 'external_ha')
   .map((item) => ({ label: item.name, value: item.id })))
-const templateMacros = computed(() => templateRecords.value.find((item) => item.id === form.deployment_template)?.macro_definitions || [])
+// 行上的"解析后路径"实时重算：模板 macro_definitions 的默认值 → 模板 app_home（APP_HOME 默认）
+// → 表单里的服务级 macro_values 覆盖。与服务端 ListServiceTemplateLogs 的调用顺序逐字一致
+//（见 util/logPathMacro 的 resolvePathMacros），所以保存后的结果与预览必然一致。
+function rowResolvedPath(record) {
+  return resolvePathMacros(record?.path_pattern, {
+    templateMacros: templateMacros.value,
+    serviceMacros: form.macro_values,
+    appHome: selectedTemplate.value?.app_home || '',
+  })
+}
+
+// 路径列的两种显示：原始 pattern ↔ 实时解析后的路径。实例级宏仍保持占位符（服务这层拿不到）。
+function rowPathValue(record) {
+  return showResolvedPath.value ? rowResolvedPath(record) : (record?.path_pattern || '')
+}
+
+function rowPendingMacros(record) {
+  return unexpandedMacros(rowResolvedPath(record))
+}
+
+// 当前选中的部署模板：宏定义与 app_home 都从它取（路径预览要用，见 rowResolvedPath）。
+const selectedTemplate = computed(() => templateRecords.value.find((item) => item.id === form.deployment_template) || null)
+const templateMacros = computed(() => selectedTemplate.value?.macro_definitions || [])
 const macroTableColumns = [
   { title: '宏 Key', key: 'name', width: 220 },
   { title: '值', key: 'value', width: 280 },

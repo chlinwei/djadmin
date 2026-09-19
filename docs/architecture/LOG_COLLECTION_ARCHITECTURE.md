@@ -1346,7 +1346,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 | tab | 数据来源 | 说明 |
 |---|---|---|
-| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`，从服务树目录迁入，原服务树页的查询面板） | 检索接口硬性要求 `application_service_id`，由树的选中节点提供。**默认 tab**：未选服务时是空态提示，选服务后立即可查 |
+| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`，从服务树目录迁入，原服务树页的查询面板） | 检索接口硬性要求 `application_service_id`，由树的选中节点提供。**默认 tab**：未选服务时是空态提示，选服务后立即可查。关键词框有**两种模式可切换**（见 §9.7）：`正文`（默认，只在 `log_message` 里搜）/ `Lucene`（完整语法，可按字段过滤） |
 | 日志配置 | `GET /assets/application-services/:id/log-config/` + `GET /monitor/log-targets/service-config-state/` + `GET /monitor/log-targets/service-collection-chain/` | 日志名/路径/**所在主机**/处理规则/采集开关/档位/格式认证状态/data stream + **服务级采集总开关**（`log_collection_enabled`，响应顶层字段）+ **采集链路状态条**（见下）。总开关与逐条开关是两层：前者关掉后该服务下所有日志都不采集、逐条开关不生效（配置意图保留）。两者都可直接改（见下方「两条写路径」）；认证入口复用共享组件 `LogFormatVerifyDialog`（与编辑弹窗同一个，见 §4.8）。`force-render`：切走再切回不重新取数 |
 | 存储水位 | 选中服务时 `.../log-storage-overview/?service_code=<服务编码>`（后端收窄 ES 查询）；未选中时取全量再按树的层级（项目/业务系统/环境）用 dims 映射到编码过滤 | **按层级聚合的容量统计**（全部→项目、项目→业务系统、业务系统→环境、环境→逻辑服务；占用降序 + 占比 + 其中历史档位 + **同名饼图**）、**集群 + 数据时间**、统计（流数/文档数/总占用拆分活跃与历史/**健康异常流**）、**Elasticsearch 节点磁盘水位**、流表（占用/文档数/ILM/**状态**/**后备索引展开**）。**每条流都有操作列**（见下）；未选中时列出**未识别流**（不归属任何服务，任何层级都保留，不进聚合） |
 
@@ -1365,7 +1365,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 | 档位 | 取值 | 含义 |
 |---|---|---|
-| 解析后（默认） | `resolved_path` | 按**与渲染同一顺序**展开到"服务这一层能解析的部分"：模板 `macro_definitions` 的 value → 服务 `macro_values`，模板 `app_home` 作 `APP_HOME` 默认值 |
+| 解析后（默认） | `resolved_path`，**编辑弹窗里按表单实时重算** | 按**与渲染同一顺序**展开到"服务这一层能解析的部分"：模板 `macro_definitions` 的 value → 模板 `app_home`（`APP_HOME` 默认值）→ 服务 `macro_values` 覆盖。弹窗里改「宏」时前端用同一套顺序**当场重算**（`frontend/src/util/logPathMacro.js` 的 `resolvePathMacros`，服务端 `shared/logmacro` 的移植）：否则改完宏要保存后重进弹窗才看到新路径，用户会以为"改了没生效"（2026-09-19 现场）。日志中心那列是只读展示，直接用接口返回的 `resolved_path` |
 | 原始 | `path_pattern` | 模板里存的路径模式，一个宏都不展开（排查"这个宏是哪一层给的"时用） |
 
 - **合并顺序只有一份实现**：`internal/shared/logmacro`（`Resolve`/`Merge`/`TemplateDefaults`/
@@ -1423,7 +1423,11 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 是"这个服务的流"）。水位只在切到该 tab 或手动刷新时取一次。
 
 **流表的「操作」列：每条流都能清，清理分两条路径**（2026-09-19 扩到所有流，此前只有
-「选中服务 + 历史档位流」才有入口）：
+「选中服务 + 历史档位流」才有入口）。**列本身恒在**——曾按"是否选中服务"整列开关，
+于是全量视图/项目/业务系统/环境节点下根本没有这一列（2026-09-19 修；当时的用例只调了
+组件方法、没断言渲染出来的列，所以没拦住）。「切回该档位」是例外：它要改**这个服务的哪条日志定义**，
+只有选中服务时才有上下文，全量视图下只给清理（清理按服务维度执行，服务 id 由响应里的 dims 映射得到，
+不需要先选中服务）：
 
 | 情况 | 动作 | 走哪条接口 | 为什么 |
 |---|---|---|---|
@@ -1599,6 +1603,34 @@ fingerprint 归一化质量。
   的结论与现状一致（[LOG_COLLECTION_LIFECYCLE](../plans/LOG_COLLECTION_LIFECYCLE.md) §9 第 3 条）。
 - **权限现状与目标**：当前该接口只继承 `monitor:view`（`router.go:366`），意味着只读权限即可删数据。
   计划按"破坏性动作整体拆权限"修正（数据清理 / 目标删除 / 停止服务 / 配置下发），见计划文档 §7、§9 第 4 条。
+
+---
+
+## 9.7 日志检索：过滤条件与关键词的两种模式
+
+检索接口 `GET /monitor/elasticsearch-clusters/:id/log-search/`（`logcollect/elasticsearch.go` 的
+`buildLogQuery`）在用户条件之外**固定**加两条过滤：`term service = <选中逻辑服务 code>` 与时间范围
+（上限 30 天）——所以"查不到"的第一顺位原因是**选错了服务**（或选的是项目/业务系统/环境节点），
+而不是数据不存在。
+
+白名单过滤（都是精确 `term`，走字段）：`instance` / `host_ip` / `log_name` / `error_fingerprint` /
+`log_level`（逗号分隔的 `terms`）。后三项在面板上只通过**统计面板下钻**写入（点分面值生成过滤 chip），
+没有常驻输入框。
+
+**关键词框的关键词有两个模式**（`keyword_mode`，2026-09-19 加）：
+
+| 模式 | 行为 | 为什么 |
+|---|---|---|
+| `message`（默认） | `query_string` 且 `default_field=log_message`，并把输入里的 `:` **转义** | 面板上"关键词"的语义就是"搜日志正文"；不转义的话 `field:value` 会绕过 `default_field` 去查任意字段（`query_string` 的 `default_field` 只管没有前缀的 term） |
+| `lucene` | 同一套 `query_string`，但**原样下发**：`host_ip:"192.168.201.209"`、`log_level:ERROR AND timeout` 都能用 | 框里写着 Lucene 就必须真的支持 Lucene——现场就是这么踩的：按提示写了字段过滤，被转义成在正文里找字面量 `host_ip:`，0 条、且界面上没有任何提示 |
+
+两种模式**共同**的约定（有意为之）：裸词仍落在 `log_message`（`default_field` 不变，否则 `a AND b`
+的语义会随"默认字段是整个文档"漂移）、`allow_leading_wildcard=false`（`*foo` 这类前置通配在 ES 侧是纯扫描，
+代价与收益不成比例）、关键词截断 500 字符、`lenient=true`（字段名写错不报错，只是查不到）。
+**模式只决定关键词怎么解析，不影响上面那两条固定过滤**：Lucene 模式也仍然只在你选中的服务范围内查。
+
+面板上的切换（`正文 / Lucene`）同时改 placeholder 与说明文字，切模式本身不触发查询；
+没有关键词时**不发送** `keyword_mode`（后端默认即正文模式）。
 
 ---
 

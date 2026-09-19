@@ -26,3 +26,34 @@ export const PATH_MACRO_HINT =
 export function pathCellValue(record, showResolved) {
   return showResolved ? (record?.resolved_path || record?.path_pattern || '') : (record?.path_pattern || '')
 }
+
+/**
+ * 按服务这一层能拿到的信息展开路径里的宏（模板默认 → 服务覆盖），**与服务端同一套合并顺序**。
+ *
+ * 为什么要有它：弹窗里改宏（`macro_values`）时，行上的"解析后路径"是**加载时后端算好的**，
+ * 改宏不会变——用户得保存后重进才看到新路径（2026-09-19 现场："修改宏的内容，日志路径解析后不变"）。
+ * 这里按同一套顺序在前端重算，改一个字符预览就跟着变。
+ *
+ * 顺序严格对齐 `autoadmin/internal/shared/logmacro` 的调用点（`ListServiceTemplateLogs`）：
+ *   `TemplateDefaults` → `InstanceValues("", appHome)` → `ParseValues(macro_values)`
+ * 注意其中 app_home 是**先覆盖模板默认里的 APP_HOME**、再让服务级 macro_values 覆盖它——
+ * 口径不一致的后果是"界面显示 /logs/x.log、主机上却采 /opt/tomcat/logs/x.log"。
+ * 实例级宏（`runtime_variables`）服务这一层拿不到，保持占位符，由 unexpandedMacros 标出来。
+ */
+export function resolvePathMacros(pattern, { templateMacros = [], serviceMacros = {}, appHome = '' } = {}) {
+  const macros = {}
+  for (const definition of templateMacros || []) {
+    const name = String(definition?.name ?? '').trim()
+    if (name) macros[name] = String(definition?.value ?? '').trim()
+  }
+  const home = String(appHome ?? '').trim()
+  if (home) macros.APP_HOME = home
+  for (const [name, value] of Object.entries(serviceMacros || {})) {
+    macros[name] = String(value ?? '').trim()
+  }
+  let resolved = String(pattern ?? '')
+  for (const [name, value] of Object.entries(macros)) {
+    resolved = resolved.split(`\${${name}}`).join(value)
+  }
+  return resolved
+}

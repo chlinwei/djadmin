@@ -782,6 +782,38 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  // 用户反馈（2026-09-19）：全量视图 / 项目 / 业务系统 / 环境节点下**整列操作都不在**——
+  // 因为列定义曾经按"是否选中服务"开关，而之前那个用例只调了 vm 上的函数，没验渲染出来的列。
+  // 这里改成从 DOM 断言：列头在、按钮在、点得动；并确认"切回该档位"只在选中服务时出现。
+  it('renders the actions column on every stream row in the full view too', async () => {
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    // 页面上有多张表（磁盘水位 / 按维度聚合 / 流表），必须挑**流表**来断言：
+    // 之前那次漏检就是因为只看了 vm 上的函数，没确认渲染出来的到底是哪张表。
+    const streamTable = wrapper.findAll('table').find((table) => table.find('thead').text().includes('操作'))
+    expect(streamTable, '流表的表头里必须有「操作」列').toBeTruthy()
+    const streamRows = streamTable.findAll('tbody tr').filter((row) => row.text().trim() !== '')
+    expect(streamRows.length).toBeGreaterThan(0)
+    // 全量视图下每行都有清理入口（历史档位流与在写的流都在）。
+    expect(streamRows.every((row) => row.text().includes('清理'))).toBe(true)
+    // 「切回该档位」需要服务上下文（要改该服务的日志定义），全量视图下不给。
+    expect(wrapper.text()).not.toContain('切回该档位')
+    wrapper.unmount()
+  })
+
+  it('offers 切回该档位 only when a service is selected', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('切回该档位')
+    wrapper.unmount()
+  })
+
   it('cleans from the all-streams view too (no service selected)', async () => {
     const { cleanupLogDataStream } = await import('@/api/monitor')
     const wrapper = await mountPage()

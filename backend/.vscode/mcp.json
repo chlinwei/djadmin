@@ -1,8 +1,0 @@
-{
-  "servers": {
-    "drawio": {
-      "type": "http",
-      "url": "https://mcp.draw.io/mcp"
-    }
-  }
-}

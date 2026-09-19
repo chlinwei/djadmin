@@ -3,10 +3,9 @@ test_output.txt
 # ������ sqlite �ļ�������Ŀ����ʱ�� MySQL��
 *.sqlite3
 
-# Celery Beat runtime state file
-backend/djadmin/celerybeat-schedule
-backend/djadmin/celerybeat-schedule.*
-backend/djadmin/celerybeat-schedule.dat
+# 已废弃的 Django 实现：已从版本库移除（见 AGENTS.md「backend/ 目录已废弃」），
+# 本地可保留供对照/历史参考，但不再跟踪、也不会被误提交。
+backend/
 
 # dj-agent 编译产物
 dj_agent/agent
@@ -17,14 +16,11 @@ dj_agent/bin/dj-agent
 autoadmin/bin/
 autoadmin/bin/autoadmin
 # 监控安装包缓存
-backend/djadmin/media/monitor_packages/
 autoadmin/media/monitor_packages/
 
 # 自动生成的测试报告（由CI/CD生成）
 TEST_REPORT.md
 FRONTEND_TEST_REPORT.md
-fronted/test-results/
-backend/djadmin/coverage/
 
 # agent 本地安装包缓存目录
 agent_packages/

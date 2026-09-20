@@ -61,9 +61,11 @@ var backingIndexGenerationSuffix = regexp.MustCompile(`-\d{5,}$`)
 // 取自逻辑服务行（DISTINCT 维度码已按服务去重，同码服务视为同一服务）。
 type parsedStreamName struct {
 	Stream, Project, Environment, BusinessSystem, Service, Tier string
-	Recognized                                                  bool
-	ServiceEnabled                                              bool
-	ServiceCollectEnabled                                       bool
+	// ServiceID 是匹配到的逻辑服务主键（服务编码不再全局唯一，判定"生效档位"必须按 id）。
+	ServiceID             int64
+	Recognized            bool
+	ServiceEnabled        bool
+	ServiceCollectEnabled bool
 }
 
 // streamNameMatcher 基于数据库维度码做流名匹配。编码可含连字符（如服务 tomcat-svc、
@@ -76,23 +78,25 @@ type streamNameMatcher struct {
 	services []streamServiceKey // 新命名候选
 	legacy   []streamLegacyKey  // 旧命名候选
 	tiers    map[string]bool
-	// activeTiers：服务编码 → 该服务**当前生效**的档位集合。用于判定一条已有的流是不是
+	// activeTiers：逻辑服务 id → 该服务**当前生效**的档位集合。用于判定一条已有的流是不是
 	// "改档位留下的历史流"（不在集合里 = 已停止写入）。判定放后端做，全局视图才推得出来。
 	// 没有任何日志定义的服务不在 map 里 → 它的所有档位都不生效 → 存量流全判为历史流。
-	activeTiers map[string]map[string]bool
+	// 用 id 而不是编码：编码现在允许跨业务/环境重复（见 000044 迁移）。
+	activeTiers map[int64]map[string]bool
 }
 
 // isHistoricalStream 流是否已停止写入：属于某个服务，但它的档位不在该服务的生效档位集合里。
-func (m streamNameMatcher) isHistoricalStream(serviceCode, tierCode string) bool {
-	if serviceCode == "" || tierCode == "" {
+func (m streamNameMatcher) isHistoricalStream(serviceID int64, tierCode string) bool {
+	if serviceID == 0 || tierCode == "" {
 		return false
 	}
-	return !m.activeTiers[serviceCode][tierCode]
+	return !m.activeTiers[serviceID][tierCode]
 }
 
 type streamServiceKey struct {
 	Match                                         string // "<项目>-<业务系统>-<环境>-<逻辑服务>-"
 	Project, Environment, BusinessSystem, Service string
+	ServiceID                                     int64
 	// 服务级采集开关，随解析结果一路带到页面（见 dataStreamEntry 的说明）。
 	Enabled, CollectEnabled bool
 }
@@ -102,21 +106,21 @@ type streamLegacyKey struct {
 	Project, Environment, BusinessSystem string
 }
 
-// scopeIndexPattern 计算索引通配模式：serviceCode 为空＝全量 `<prefix>-*`；
+// scopeIndexPattern 计算索引通配模式：服务为空＝全量 `<prefix>-*`；
 // 非空＝按该服务的维度段收窄成 `<prefix>-<项目>-<业务系统>-<环境>-<服务>-*`。
 //
-// 复用识别环节已经算好的 streamServiceKey.Match，而不是拿四个维度码现拼：段序
-// （项目-业务系统-环境-服务，业务系统在环境之前）与 logstream.Name 的形参顺序并不一致，
-// 手拼极易错位，而这个串必须与真实流名逐字节对齐。
-//
-// 第二个返回值表示"这个服务编码在维度表里是否存在"——不存在时调用方必须返回空视图，
-// 不能回落到全量（见调用点注释）。
-func scopeIndexPattern(prefix, serviceCode string, matcher streamNameMatcher) (string, bool) {
-	if serviceCode == "" {
+// 优先按 serviceID 匹配：编码允许跨业务/环境重复，只凭 code 会命中错的维度段。
+// serviceCode 仅作旧调用方的兜底（取第一个匹配）。第一个返回值是通配模式；
+// 第二个返回值表示该服务是否存在于维度表——不存在时调用方必须返回空视图，不能回落到全量。
+func scopeIndexPattern(prefix string, serviceID int64, serviceCode string, matcher streamNameMatcher) (string, bool) {
+	if serviceID <= 0 && strings.TrimSpace(serviceCode) == "" {
 		return prefix + "-*", true
 	}
 	for _, key := range matcher.services {
-		if key.Service == serviceCode {
+		if serviceID > 0 && key.ServiceID == serviceID {
+			return prefix + "-" + key.Match + "*", true
+		}
+		if serviceID <= 0 && key.Service == serviceCode {
 			return prefix + "-" + key.Match + "*", true
 		}
 	}
@@ -137,7 +141,7 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 			serviceKeys = append(serviceKeys, streamServiceKey{
 				Match:   strings.Join([]string{row.ProjectCode, row.BusinessSystemCode, row.EnvironmentCode, row.ServiceCode}, "-") + "-",
 				Project: row.ProjectCode, Environment: row.EnvironmentCode,
-				BusinessSystem: row.BusinessSystemCode, Service: row.ServiceCode,
+				BusinessSystem: row.BusinessSystemCode, Service: row.ServiceCode, ServiceID: row.ServiceID,
 				Enabled: row.ServiceEnabled, CollectEnabled: row.LogCollectionEnabled,
 			})
 			legacyKeys = append(legacyKeys, streamLegacyKey{
@@ -165,22 +169,22 @@ func (handler *Handler) loadStreamDims(context *gin.Context, prefix string) stre
 	return matcher
 }
 
-// loadActiveStreamTiers 服务编码 → 生效档位集合（查询失败时返回空 map：判不出就都不标，
+// loadActiveStreamTiers 逻辑服务 id → 生效档位集合（查询失败时返回空 map：判不出就都不标，
 // 宁可少标"历史流"，也不要把正在写的流错标成停写）。
-func loadActiveStreamTiers(context context.Context, queries *db.Queries) map[string]map[string]bool {
-	active := map[string]map[string]bool{}
+func loadActiveStreamTiers(context context.Context, queries *db.Queries) map[int64]map[string]bool {
+	active := map[int64]map[string]bool{}
 	rows, err := queries.ListServiceActiveStreamTiers(context)
 	if err != nil {
 		return active
 	}
 	for _, row := range rows {
-		if row.ServiceCode == "" || row.TierCode == "" {
+		if row.ServiceID <= 0 || row.TierCode == "" {
 			continue
 		}
-		if active[row.ServiceCode] == nil {
-			active[row.ServiceCode] = map[string]bool{}
+		if active[row.ServiceID] == nil {
+			active[row.ServiceID] = map[string]bool{}
 		}
-		active[row.ServiceCode][row.TierCode] = true
+		active[row.ServiceID][row.TierCode] = true
 	}
 	return active
 }
@@ -197,6 +201,7 @@ func (m streamNameMatcher) resolveStreamName(stream string) parsedStreamName {
 		if strings.HasPrefix(rest, candidate.Match) {
 			tier := strings.TrimPrefix(rest, candidate.Match)
 			result.Project, result.Environment, result.BusinessSystem, result.Service, result.Tier = candidate.Project, candidate.Environment, candidate.BusinessSystem, candidate.Service, tier
+			result.ServiceID = candidate.ServiceID
 			result.Recognized = true
 			result.ServiceEnabled = candidate.Enabled
 			result.ServiceCollectEnabled = candidate.CollectEnabled
@@ -296,7 +301,7 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 				// 旧命名流没有服务段，识别不出服务，两个开关都没有意义（保持 false，页面不标注）。
 				ServiceEnabled: parsed.ServiceEnabled, CollectedByService: parsed.ServiceCollectEnabled,
 				// 历史流判定：服务认得出来 + 档位不在该服务的生效集合里（= 改档位留下的旧流）。
-				Historical: matcher.isHistoricalStream(parsed.Service, parsed.Tier),
+				Historical: matcher.isHistoricalStream(parsed.ServiceID, parsed.Tier),
 			}
 			entries[parsed.Stream] = entry
 			order = append(order, parsed.Stream)
@@ -329,9 +334,10 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 // GetLogStorageOverview 存储水位总览：流级运行态（Elasticsearch）+ 维度数据（MySQL）一次返回，
 // 由前端组装 顶层→项目→业务系统→环境→逻辑服务 的层级树。
 //
-// 可选参数 `service_code`：只取该逻辑服务的流。给出口径一致的服务级视图（日志中心页的
+// 可选参数 `application_service_id`：只取该逻辑服务的流（优先；编码可跨业务/环境重复，用 id 才无歧义）。
+// 兼容旧的 `service_code` 参数（按编码取第一个匹配）。给出口径一致的服务级视图（日志中心页的
 // 「本服务水位」tab）用，并且是**收窄 ES 查询**而不是查完再过滤——见 scopeIndexPattern。
-// 不带该参数时行为与以前完全一致（全量视图）。
+// 不带这两个参数时行为与以前完全一致（全量视图）。
 func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	cluster, err := handler.loadElasticsearchCluster(context)
 	if err == sql.ErrNoRows {
@@ -344,13 +350,16 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	}
 	prefix := logHealthPrefix(cluster)
 	matcher := handler.loadStreamDims(context, prefix)
-	indexPattern, scopeFound := scopeIndexPattern(prefix, strings.TrimSpace(context.Query("service_code")), matcher)
+	// 优先用 application_service_id：编码允许跨业务/环境重复，只凭 service_code 可能命中错的维度段。
+	serviceID := parseID(context.Query("application_service_id"))
+	serviceCode := strings.TrimSpace(context.Query("service_code"))
+	indexPattern, scopeFound := scopeIndexPattern(prefix, serviceID, serviceCode, matcher)
 	if !scopeFound {
-		// 给了服务编码但这个服务不在维度表里（已删除/编码写错）：返回空视图，**不能回落到全量**，
+		// 给了服务但这个服务不在维度表里（已删除/编码写错）：返回空视图，**不能回落到全量**，
 		// 否则调用方以为看到的是"这个服务的流"，实际拿到整个集群。
 		response.Success(context, gin.H{
 			"data_streams": []any{}, "dims": gin.H{"projects": []any{}, "business_systems": []any{}, "environments": []any{}},
-			"scope": gin.H{"service_code": context.Query("service_code"), "found": false},
+			"scope": gin.H{"service_code": serviceCode, "application_service_id": serviceID, "found": false},
 		})
 		return
 	}
@@ -480,7 +489,12 @@ func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
 	body := gin.H{
 		"size":  0,
 		"query": gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dd", days)}}},
-		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 500}}},
+		// 按 [service, project] 多键聚合：业务系统编码只在项目内唯一、服务编码又只在
+		// (业务系统, 环境) 内唯一（000044 迁移），单按 service 会把不同项目下的同名服务合并。
+		"aggs": gin.H{"by_service": gin.H{"multi_terms": gin.H{
+			"terms": []any{gin.H{"field": "service"}, gin.H{"field": "project"}},
+			"size":  500,
+		}}},
 	}
 	result, err := handler.elasticsearchRequest(context, cluster, "POST",
 		// 流名 = <prefix>-<项目>-<业务系统>-<环境>-<逻辑服务>-<档位>，项目段不参与查询条件，用 * 通配。
@@ -496,10 +510,18 @@ func (handler *Handler) GetLogServiceUsage(context *gin.Context) {
 			buckets, _ := byService["buckets"].([]any)
 			for _, bucketRaw := range buckets {
 				bucket, _ := bucketRaw.(map[string]any)
-				name, _ := bucket["key"].(string)
+				name, project := "", ""
+				if key, ok := bucket["key"].([]any); ok {
+					if len(key) > 0 {
+						name, _ = key[0].(string)
+					}
+					if len(key) > 1 {
+						project, _ = key[1].(string)
+					}
+				}
 				count, _ := bucket["doc_count"].(float64)
 				total += count
-				items = append(items, gin.H{"service": name, "docs": count})
+				items = append(items, gin.H{"service": name, "project": project, "docs": count})
 			}
 		}
 	}

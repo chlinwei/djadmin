@@ -953,10 +953,15 @@ ORDER BY is_default DESC, id LIMIT 1;
 -- name: GetLogTargetConfigFingerprint :one
 SELECT COALESCE(config_fingerprint, '') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
 
+-- 服务级已下发指纹（JSON map）。跳过判定要同时比对它：存量目标该列为空 `{}`，
+-- 只比主机指纹会一直跳过、服务级记录永远补不上（见 §8.3）。
+-- name: GetLogTargetServiceFingerprints :one
+SELECT COALESCE(service_fingerprints, '{}') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
+
 -- 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
 -- 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
 -- name: ListHostLogRenderInstances :many
-SELECT d.host_id, s.code AS service_code, d.instance_name,
+SELECT d.host_id, s.id AS service_id, s.code AS service_code, d.instance_name,
        COALESCE(d.runtime_variables, '{}') AS runtime_variables,
        COALESCE(t.app_home, '') AS app_home, COALESCE(h.ip, '') AS host_ip
 FROM assets_application_service_deployment sd
@@ -982,7 +987,7 @@ WHERE d.host_id = ANY(sqlc.arg(host_ids)::bigint[])
 -- 不能再出现 `rule_setting` 这个别名。
 -- name: ListHostLogRenderEntries :many
 SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
-    bs.code AS business_system_code, s.code AS service_code,
+    bs.code AS business_system_code, s.code AS service_code, s.id AS service_id,
     COALESCE(app.code, '') AS application_code,
     COALESCE(tier.code, '') AS tier_code,
     COALESCE(rule_definition.name, '') AS pipeline_name,
@@ -1028,7 +1033,8 @@ WHERE id = sqlc.arg(id);
 -- name: MarkLogTargetConfigSynced :exec
 UPDATE monitor_log_collection_target
 SET last_applied_time=sqlc.arg(last_applied_time), runtime_status='running', last_error='',
-    config_fingerprint=sqlc.arg(config_fingerprint), update_time=sqlc.arg(update_time)
+    config_fingerprint=sqlc.arg(config_fingerprint), service_fingerprints=sqlc.arg(service_fingerprints),
+    update_time=sqlc.arg(update_time)
 WHERE id = sqlc.arg(id);
 
 -- name: MarkLogTargetInstallCancelled :exec
@@ -1242,7 +1248,7 @@ WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
 -- 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
 -- （与"这个服务现在什么都不采"一致）。
 -- name: ListServiceActiveStreamTiers :many
-SELECT DISTINCT s.code AS service_code,
+SELECT DISTINCT s.id AS service_id, s.code AS service_code,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
 FROM assets_application_service s
 JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
@@ -1266,8 +1272,12 @@ WHERE s.code <> '';
 SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
        COALESCE(h.instance_name, '') AS host_instance_name,
        l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint,
-       COALESCE(l.runtime_status, '') AS runtime_status
+       COALESCE(l.runtime_status, '') AS runtime_status,
+       -- 服务级状态判定用：本服务的已下发子指纹（JSON map 里按服务 code 取，见 §8.3）。
+       COALESCE(l.service_fingerprints, '{}') AS service_fingerprints,
+       s.id AS service_id, s.code AS service_code
 FROM assets_application_service_deployment sd
+JOIN assets_application_service s ON s.id = sd.service_id
 JOIN assets_application_deployment d ON d.id = sd.deployment_id
 JOIN assets_host h ON h.id = d.host_id
 LEFT JOIN monitor_log_collection_target l ON l.host_id = d.host_id AND l.managed_enabled = TRUE
@@ -1299,7 +1309,7 @@ WHERE l.managed_enabled = TRUE AND l.agent_installed = TRUE ORDER BY l.id;
 -- "已停用 / 未开启采集"——这是配置事实（来自库），不是对数据流的断言，所以不需要查 ES。
 -- name: ListServiceStreamDims :many
 SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
-       s.code AS service_code, COALESCE(t.code, '') AS tier_code,
+       s.id AS service_id, s.code AS service_code, COALESCE(t.code, '') AS tier_code,
        s.enabled AS service_enabled, s.log_collection_enabled
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id

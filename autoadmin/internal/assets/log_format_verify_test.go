@@ -107,12 +107,12 @@ type fakeLogFormatVerifier struct {
 	calls   []LogFormatVerifyRequest
 }
 
-func (fake *fakeLogFormatVerifier) VerifyLogFormat(_ context.Context, request LogFormatVerifyRequest) ([]string, error) {
+func (fake *fakeLogFormatVerifier) VerifyLogFormat(_ context.Context, request LogFormatVerifyRequest) (LogFormatVerifyReport, error) {
 	fake.calls = append(fake.calls, request)
 	if err, exists := fake.failOn[request.Source]; exists {
-		return nil, err
+		return LogFormatVerifyReport{}, err
 	}
-	return fake.missing[request.Source], nil
+	return LogFormatVerifyReport{MissingFields: fake.missing[request.Source]}, nil
 }
 
 func newLogFormatFixture(t *testing.T, stored sql.NullString) (*sqlmock.Sqlmock, *sql.DB, *Service) {
@@ -138,7 +138,7 @@ func TestVerifyServiceLogFormatWritesUpsertOnPass(t *testing.T) {
 			currentLogFingerprint(), LogFormatSourceInstance, "zhangsan").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, LogFormatSourceInstance, "zhangsan")
+	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, false, LogFormatSourceInstance, "zhangsan")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestVerifyServiceLogFormatKeepsUnverifiedWhenFieldsMissing(t *testing.T) {
 	}})
 
 	// 不通过时**不写库**：没有 Exec 预期，多写一次会被 ExpectationsWereMet 抓到。
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, LogFormatSourceInstance, "zhangsan")
+	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, false, LogFormatSourceInstance, "zhangsan")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestVerifyServiceLogFormatWaiverRecordsFingerprintWithoutProbe(t *testing.T
 			currentLogFingerprint(), LogFormatSourceWaiver, "admin").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, LogFormatSourceWaiver, "admin")
+	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceWaiver, "admin")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -217,10 +217,10 @@ func TestVerifyServiceLogFormatRejectsInvalidArgumentsBeforeReading(t *testing.T
 	service.SetLogFormatVerifier(&fakeLogFormatVerifier{})
 
 	// 两条都应在碰数据库之前就拒绝：没有任何查询预期。
-	if _, err = service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, LogFormatSourceInstance, "admin"); !errors.Is(err, ErrLogFormatDeploymentRequired) {
+	if _, err = service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceInstance, "admin"); !errors.Is(err, ErrLogFormatDeploymentRequired) {
 		t.Fatalf("instance 依据缺 deployment_id 应报 ErrLogFormatDeploymentRequired，得到 %v", err)
 	}
-	if _, err = service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, "bogus", "admin"); !errors.Is(err, ErrLogFormatSourceInvalid) {
+	if _, err = service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, false, "bogus", "admin"); !errors.Is(err, ErrLogFormatSourceInvalid) {
 		t.Fatalf("非法依据应报 ErrLogFormatSourceInvalid，得到 %v", err)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -27,6 +28,9 @@ const (
 type LogConfigTargetRef struct {
 	HostID             int64
 	AppliedFingerprint string
+	// AppliedServiceFingerprint 该主机上**本服务**上次下发的子指纹（服务视图判状态用）；
+	// 主机视图评估留空、不参与。
+	AppliedServiceFingerprint string
 }
 
 // LogConfigState 单台主机的配置态评估结果。
@@ -98,4 +102,70 @@ func (handler *Handler) EvaluateLogConfigStates(context context.Context, refs []
 		}
 	}
 	return states, nil
+}
+
+// EvaluateServiceLogConfigStates 是服务视图的配置态评估：只比较**本服务**的子指纹。
+//
+// 与主机级 EvaluateLogConfigStates 的区别只有一个：期望与已下发都取 `ServiceFingerprints[serviceID]`，
+// 而不是整机指纹。这样共享主机上改服务 B 只影响 B 的状态，服务 A 保持 synced——A 不再被 B 的改动
+// 带成"待下发"（现场问题）。用 id 而不是 code：服务编码允许跨业务/环境重复。
+//
+// 语义：expected 为空（本服务在该主机没有片段，如停采）时——已下发也为空 → synced（无需采集，已一致）；
+// 已下发非空 → drift（主机上还残留该服务的片段，需下发一次清理）。
+func (handler *Handler) EvaluateServiceLogConfigStates(context context.Context, serviceID int64, refs []LogConfigTargetRef) (map[int64]LogConfigState, error) {
+	states := map[int64]LogConfigState{}
+	if len(refs) == 0 {
+		return states, nil
+	}
+	cluster, err := db.New(handler.db).GetDefaultEnabledElasticsearchCluster(context)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("没有已启用的默认 Elasticsearch 集群，请先在日志存储里配置")
+	}
+	if err != nil {
+		return nil, err
+	}
+	outputIdentity, err := filebeatOutputIdentity(cluster.Hosts, cluster.Username, cluster.VerifyTls)
+	if err != nil {
+		return nil, err
+	}
+	hostIDs := make([]int64, 0, len(refs))
+	for _, ref := range refs {
+		hostIDs = append(hostIDs, ref.HostID)
+	}
+	sets, err := handler.loadHostLogRenderInputs(context, hostIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range refs {
+		set := sets[ref.HostID]
+		for index := range set.Entries {
+			set.Entries[index].Prefix = cluster.IndexPrefix
+		}
+		rendered := renderHostLogConfig(set.Entries, set.Instances, outputIdentity)
+		expected := rendered.ServiceFingerprints[strconv.FormatInt(serviceID, 10)]
+		applied := strings.TrimSpace(ref.AppliedServiceFingerprint)
+		status := serviceConfigStatus(expected, applied, rendered.Fingerprint, strings.TrimSpace(ref.AppliedFingerprint))
+		states[ref.HostID] = LogConfigState{
+			HostID: ref.HostID, Status: status,
+			ExpectedFingerprint: expected, AppliedFingerprint: applied,
+			ServiceNum: rendered.ServiceNum, Warnings: rendered.Warnings,
+		}
+	}
+	return states, nil
+}
+
+// serviceConfigStatus 服务视图的状态判定（抽成纯函数便于直测）。
+//
+// expectedService/appliedService 是本服务的子指纹；expectedHost/appliedHost 是整机指纹，只在
+// "本服务还没有服务级记录"时作兜底：存量目标 service_fingerprints 为空，但整机配置与期望一致，
+// 说明本服务的片段其实已经下发，不该被误报成"从未下发"。
+func serviceConfigStatus(expectedService, appliedService, expectedHost, appliedHost string) string {
+	switch {
+	case appliedService != "" && appliedService != expectedService:
+		return LogConfigDrift
+	case appliedService == "" && expectedService != "" && appliedHost != expectedHost:
+		return LogConfigNever
+	default:
+		return LogConfigSynced
+	}
 }

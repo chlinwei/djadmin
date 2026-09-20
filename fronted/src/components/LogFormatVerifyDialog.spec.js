@@ -50,10 +50,25 @@ describe('LogFormatVerifyDialog', () => {
     await flushPromises()
 
     expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
-      log_definition_id: 81, source: 'instance', deployment_id: 13,
+      log_definition_id: 81, source: 'instance', all_deployments: false, deployment_id: 13,
     })
     expect(wrapper.emitted('verified')).toBeTruthy()
     expect(wrapper.emitted('update:open').at(-1)).toEqual([false])
+    wrapper.unmount()
+  })
+
+  // 认证范围：全部实例时不需要选具体实例，deployment_id 传 0。
+  it('submits all_deployments=true without a specific deployment', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    const wrapper = mountDialog()
+    await flushPromises()
+    wrapper.vm.form.all_deployments = true
+    await wrapper.vm.submit()
+    await flushPromises()
+
+    expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
+      log_definition_id: 81, source: 'instance', all_deployments: true, deployment_id: 0,
+    })
     wrapper.unmount()
   })
 
@@ -65,7 +80,7 @@ describe('LogFormatVerifyDialog', () => {
     await flushPromises()
 
     expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
-      log_definition_id: 81, source: 'sample_log', deployment_id: 0,
+      log_definition_id: 81, source: 'sample_log', all_deployments: false, deployment_id: 0,
     })
     wrapper.unmount()
   })

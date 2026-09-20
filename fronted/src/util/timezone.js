@@ -44,6 +44,9 @@ export function convertUTCToTimezone(utcTime, timezone = 'UTC') {
  * @param {string} timezone - 时区标识符
  * @param {string} format - 格式化格式 (默认: 'YYYY-MM-DD HH:mm:ss')
  * @returns {string} 格式化后的时间字符串
+ *
+ * 支持 `SSS` 毫秒占位符（日志查询要显示到毫秒）。毫秒与时区无关（时区偏移都是整分钟），
+ * 所以直接取 `Date.getMilliseconds()`；Intl 的 formatToParts 拿不到毫秒。
  */
 export function formatTimeWithTimezone(utcTime, timezone = 'UTC', format = 'YYYY-MM-DD HH:mm:ss') {
     try {
@@ -80,6 +83,7 @@ export function formatTimeWithTimezone(utcTime, timezone = 'UTC', format = 'YYYY
         result = result.replace('HH', values.hour)
         result = result.replace('mm', values.minute)
         result = result.replace('ss', values.second)
+        result = result.replace('SSS', String(date.getMilliseconds()).padStart(3, '0'))
 
         return result
     } catch (error) {

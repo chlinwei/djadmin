@@ -106,6 +106,7 @@ func (handler *Handler) VerifyApplicationServiceLogFormat(context *gin.Context) 
 		LogDefinitionID int64  `json:"log_definition_id"`
 		Source          string `json:"source"`
 		DeploymentID    int64  `json:"deployment_id"`
+		AllDeployments  bool   `json:"all_deployments"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		response.Error(context, ErrInvalid)
@@ -124,8 +125,27 @@ func (handler *Handler) VerifyApplicationServiceLogFormat(context *gin.Context) 
 	if claims, ok := identity.ClaimsFromContext(context); ok {
 		actor = claims.Username
 	}
-	result, err := handler.service.VerifyServiceLogFormat(context.Request.Context(), id, input.LogDefinitionID, input.DeploymentID, source, actor)
+	result, err := handler.service.VerifyServiceLogFormat(context.Request.Context(), id, input.LogDefinitionID, input.DeploymentID, input.AllDeployments, source, actor)
 	respond(context, result, err)
+}
+
+// GetApplicationServiceLogGlob 按需展开一条日志路径里的通配：
+// GET /assets/application-services/:id/log-config/glob/?log_definition_id=<必填>
+//
+// 与认证不同，这是**只读展示**：逐台承载实例展开宏后调 agent 列出真实匹配文件，
+// 按实例分组返回，供界面「解析后」列把一条日志涉及的文件作为整体列出。
+func (handler *Handler) GetApplicationServiceLogGlob(context *gin.Context) {
+	id, ok := resourceID(context)
+	if !ok {
+		return
+	}
+	logDefinitionID, err := optionalIDQuery(context, "log_definition_id")
+	if err != nil || logDefinitionID < 1 {
+		response.Error(context, ErrInvalid)
+		return
+	}
+	preview, err := handler.service.PreviewServiceLogGlob(context.Request.Context(), id, logDefinitionID)
+	respond(context, preview, err)
 }
 
 // SaveApplicationServiceLogSetting 按行保存一条 (服务 × 日志定义) 的日志覆盖值：

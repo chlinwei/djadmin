@@ -13,6 +13,12 @@
           <h2>{{ scope.nodeTitle }}</h2>
         </div>
         <a-space>
+          <a-tooltip title="强制刷新该服务采集中的 data stream 索引后再查询。ES 的 refresh_interval 是 10s，刚写进来的日志默认要等一会才可搜，点这个立即可见。">
+            <a-button :loading="indexRefreshing" @click="refreshIndexAndReload">
+              <FontAwesomeIcon :icon="['fas', 'database']" />
+              <span>&nbsp;刷新索引并查询</span>
+            </a-button>
+          </a-tooltip>
           <a-tooltip title="刷新">
             <a-button type="primary" ghost :loading="activeLoading" @click="reload">
               <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" :spin="activeLoading" />
@@ -102,10 +108,11 @@
         </span>
       </div>
 
-      <a-space v-if="filters.hostIp || filters.logName || filters.errorFingerprint" class="log-query-chip-row" wrap>
+      <a-space v-if="filters.hostIp || filters.logName || filters.logPath || filters.errorFingerprint" class="log-query-chip-row" wrap>
         <span class="chip-row-label">下钻过滤：</span>
         <a-tag v-if="filters.hostIp" closable @close="clearDrillFilter('hostIp')">主机 = {{ filters.hostIp }}</a-tag>
         <a-tag v-if="filters.logName" closable @close="clearDrillFilter('logName')">日志文件 = {{ filters.logName }}</a-tag>
+        <a-tag v-if="filters.logPath" closable @close="clearDrillFilter('logPath')">日志路径 = {{ filters.logPath }}</a-tag>
         <a-tag v-if="filters.errorFingerprint" closable @close="clearDrillFilter('errorFingerprint')">错误指纹 = {{ filters.errorFingerprint }}</a-tag>
       </a-space>
 
@@ -132,7 +139,7 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'timestamp'">
-                {{ formatTime(record['@timestamp']) }}
+                {{ formatLogTime(record['@timestamp']) }}
               </template>
               <template v-else-if="column.key === 'log_level'">
                 <a-tag :color="LOG_LEVEL_COLOR[String(record.log_level || '').toUpperCase()] || 'default'">
@@ -202,7 +209,7 @@
 
     <a-drawer v-model:open="detailOpen" title="日志详情" width="640" placement="right">
       <a-descriptions bordered :column="1" size="small">
-        <a-descriptions-item label="时间">{{ formatTime(activeLog?.['@timestamp']) }}</a-descriptions-item>
+        <a-descriptions-item label="时间">{{ formatLogTime(activeLog?.['@timestamp']) }}</a-descriptions-item>
         <a-descriptions-item label="级别">{{ activeLog?.log_level || '-' }}</a-descriptions-item>
         <a-descriptions-item label="服务">{{ activeLog?.service || '-' }}</a-descriptions-item>
         <a-descriptions-item label="实例">{{ activeLog?.instance || '-' }}</a-descriptions-item>
@@ -228,7 +235,7 @@ import { message } from 'ant-design-vue'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getElasticsearchClusterList, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
+import { getElasticsearchClusterList, refreshElasticsearchLogIndex, searchElasticsearchLogFacetStats, searchElasticsearchLogs } from '@/api/monitor'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
@@ -248,6 +255,7 @@ const FACET_FILTER_KEY = {
   instance: 'instance',
   host_ip: 'hostIp',
   log_name: 'logName',
+  log_path: 'logPath',
 }
 const statsFieldOptions = [
   { label: '错误指纹', value: 'error_fingerprint' },
@@ -255,6 +263,7 @@ const statsFieldOptions = [
   { label: '实例', value: 'instance' },
   { label: '主机', value: 'host_ip' },
   { label: '日志文件', value: 'log_name' },
+  { label: '日志路径', value: 'log_path' },
 ]
 // 'auto' 交给后端按时间跨度自适应；其余选项是分钟数，后端会根据总桶数上限拒绝过细的选择。
 const statsIntervalOptions = [
@@ -286,10 +295,14 @@ const keywordPlaceholder = computed(() => (
 
 const userTimezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 const formatTime = (value) => (value ? formatTimeWithTimezone(value, userTimezone.value) : '-')
+// 日志记录的时间显示到**毫秒**：ES 的 @timestamp 本就是毫秒精度，同一秒内多条记录靠它区分先后；
+// 时间范围标签/趋势图轴仍用秒级 formatTime（选的是分钟级范围，显示毫秒只会变吵）。
+const formatLogTime = (value) => (value ? formatTimeWithTimezone(value, userTimezone.value, 'YYYY-MM-DD HH:mm:ss.SSS') : '-')
 
 const clusterId = ref(null)
 const activeTab = ref('logs')
 const loading = ref(false)
+const indexRefreshing = ref(false)
 const logs = ref([])
 const detailOpen = ref(false)
 const activeLog = ref(null)
@@ -315,9 +328,10 @@ const filters = reactive({
   keywordMode: 'message',
   logLevels: [],
   instance: '',
-  // 以下三项只通过统计面板“查看日志”下钻写入，普通场景不提供输入框，避免筛选面板过于臃肿。
+  // 以下四项只通过统计面板“查看日志”下钻写入，普通场景不提供输入框，避免筛选面板过于臃肿。
   hostIp: '',
   logName: '',
+  logPath: '',
   errorFingerprint: '',
 })
 
@@ -388,6 +402,7 @@ function buildBaseParams() {
     instance: filters.instance || undefined,
     host_ip: filters.hostIp || undefined,
     log_name: filters.logName || undefined,
+    log_path: filters.logPath || undefined,
     error_fingerprint: filters.errorFingerprint || undefined,
   }
 }
@@ -506,6 +521,34 @@ function handleTabChange(key) {
 function reload() {
   loadLogLevelOptions()
   reloadActiveTab()
+}
+
+// 强制刷新该服务采集中的 data stream 索引，然后重新查询：ES refresh_interval=10s，
+// 刚写入的日志默认要等一会才可搜，这个按钮把"已写入未刷新"的部分立即变得可查。
+async function refreshIndexAndReload() {
+  if (!props.scope.applicationServiceId) return
+  indexRefreshing.value = true
+  try {
+    const id = await ensureClusterId()
+    if (!id) {
+      message.warning('尚未配置日志存储集群')
+      return
+    }
+    const response = await refreshElasticsearchLogIndex(id, {
+      application_service_id: props.scope.applicationServiceId,
+    })
+    const payload = response?.data?.data || {}
+    if (payload.count > 0) {
+      message.success(`已刷新 ${payload.count} 条 data stream`)
+    } else {
+      message.info(payload.message || '该服务当前没有采集中的 data stream')
+    }
+    reload()
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '刷新索引失败')
+  } finally {
+    indexRefreshing.value = false
+  }
 }
 
 defineExpose({ reload })

@@ -138,10 +138,17 @@ async function handleTemplateSaved() {
 function confirmDelete(record) {
   openDeleteConfirm({
     title: '确认删除部署模板',
-    summary: '已被部署实例引用的模板不能删除。',
+    summary: '已被逻辑服务引用的模板不能删除；未被引用的模板连同其端口/路径/日志定义等子项一起删除。',
     items: [`${props.application?.name || '应用'} / ${record.name}`],
     onConfirm: async () => {
-      await batchDeleteApplicationDeploymentTemplates([record.id])
+      const response = await batchDeleteApplicationDeploymentTemplates([record.id])
+      // 批删接口是"逐条汇总、HTTP 仍 200"，必须看每条 ok：
+      // 模板被引用/删除受外键保护时后端返回 ok:false，不看就会把失败当成功。
+      const failed = (response?.data?.data?.results || []).find((item) => item.id === record.id && item.ok === false)
+      if (failed) {
+        message.error(failed.message || '部署模板删除失败')
+        return
+      }
       message.success('部署模板删除成功')
       await loadTemplates()
       emit('changed')

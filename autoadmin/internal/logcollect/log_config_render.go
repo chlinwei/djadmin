@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"autoadmin/internal/shared/logmacro"
@@ -41,7 +42,11 @@ type renderedHostLogConfig struct {
 	Fragments   []logConfigFragment `json:"fragments"`
 	Fingerprint string              `json:"fingerprint"`
 	ServiceNum  int                 `json:"service_num"`
-	Warnings    []string            `json:"warnings,omitempty"`
+	// ServiceFingerprints 是**服务级子指纹**（serviceCode → sha256），供服务视图按服务判定
+	// "已下发/待下发"：主机指纹含该主机上所有服务，改 B 会连带把 A 也算成待下发；服务级子指纹
+	// 只含本服务的片段（**不含** .keep，见 logPathServiceFingerprints），所以 B 改了不影响 A。
+	ServiceFingerprints map[string]string `json:"service_fingerprints,omitempty"`
+	Warnings            []string          `json:"warnings,omitempty"`
 	// Errors 是**硬问题**：配置本身不自洽，光靠"跳过并告警"下发只会让这台主机少采，
 	// 必须回到配置里去改。当下包括：日志定义名含未展开宏、首行正则/采集过滤正则编译不过、
 	// 实例路径含未定义宏、同主机上展开成同一路径（重复采集）。
@@ -57,7 +62,8 @@ type renderedHostLogConfig struct {
 type hostLogRenderInput struct {
 	Prefix         string
 	Application    string // 应用 code
-	Service        string // 逻辑服务 code
+	Service        string // 逻辑服务 code（写入 ES 的 service 字段）
+	ServiceID      int64  // 逻辑服务主键：同主机内部分组/指纹的身份（code 可跨业务重复）
 	Instance       string // 实例名（deployment.instance_name）
 	Project        string
 	Environment    string
@@ -80,9 +86,11 @@ type hostLogRenderInput struct {
 	FilterWarnings []string
 }
 
-// configBaseName inputs.d 文件名基名：<app>__<service>__<logname>（不带后缀）。
-func configBaseName(application, service, logName string) string {
-	return fmt.Sprintf("%s__%s__%s", application, service, logName)
+// configBaseName inputs.d 文件名基名：<app>__<service>__<serviceID>__<logname>（不带后缀）。
+// 带 serviceID 是因为服务编码允许跨业务/环境重复：仅用 code 会让同主机上的两个同名服务
+// 生成同一个片段文件名与 Filebeat input id，配置互相覆盖。id 全局唯一，兜底无歧义。
+func configBaseName(application, service string, serviceID int64, logName string) string {
+	return fmt.Sprintf("%s__%s__%d__%s", application, service, serviceID, logName)
 }
 
 // resolveMacros 合并服务级与服务实例级变量，替换路径中的 ${VAR}；未定义的保持原样。
@@ -112,6 +120,9 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	}
 	pairs := map[string]*fragmentPair{}
 	order := []string{}
+	// 片段文件名基名 → 服务 code：一个 base（<app>__<service>__<logname>）只属于一个服务，
+	// 服务级子指纹按它归组（见下方 serviceFingerprints）。
+	pairService := map[string]int64{}
 	warnings := []string{}
 	errors := []string{}
 	// 同时进 warnings（既有展示不动）与 errors（保存校验用）的硬问题。
@@ -123,9 +134,9 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	// 渲染是以**单台主机**为单位调用的，所以这个集合天然就是"主机级"的。
 	claimedPaths := map[string]string{}
 
-	instancesByService := map[string][]hostInstanceInput{}
+	instancesByService := map[int64][]hostInstanceInput{}
 	for _, instance := range instances {
-		instancesByService[instance.Service] = append(instancesByService[instance.Service], instance)
+		instancesByService[instance.ServiceID] = append(instancesByService[instance.ServiceID], instance)
 	}
 	for key := range instancesByService {
 		list := instancesByService[key]
@@ -134,7 +145,7 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	}
 
 	for _, entry := range entries {
-		base := configBaseName(entry.Application, entry.Service, entry.LogName)
+		base := configBaseName(entry.Application, entry.Service, entry.ServiceID, entry.LogName)
 		// 日志定义名称直接作为文件名/维度值，不参与宏展开；名称里带 ${...} 说明配置写错位置，
 		// 继续下发会生成监听不到文件的坏片段，这里跳过并告警（宏应写在 path_pattern 里）。
 		if strings.Contains(base, "${") {
@@ -172,10 +183,11 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		if !exists {
 			pair = &fragmentPair{base: base}
 			pairs[base] = pair
+			pairService[base] = entry.ServiceID
 			order = append(order, base)
 		}
 		indexName := LogDataStreamName(entry.Prefix, entry.Project, entry.Environment, entry.BusinessSystem, entry.Service, entry.Tier)
-		for _, instance := range instancesByService[entry.Service] {
+		for _, instance := range instancesByService[entry.ServiceID] {
 			resolved := resolveMacros(entry.ResolvedPath, entry.Macros, instance.Macros)
 			// 含未展开宏的路径会导致 Filebeat 监听不到任何文件，必须跳过该实例并记录告警。
 			if strings.Contains(resolved, "${") {
@@ -215,9 +227,23 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			// host_ip 是索引模板里的必备字段之一：主机资产没采到 IP 时也写空串，
 			// 保证字段一定存在（否则"少一个字段都不行"的判定会把整台主机的日志判违规）。
 			lines = append(lines, fmt.Sprintf("    host_ip: %s", yamlScalar(instance.HostIP)))
-			// log_path 是该实例实际监听的绝对路径，便于按文件定位日志来源
-			//（索引模板 standardLogFields 已声明 log_path/project 为 keyword，此前从未注入导致两列恒空）。
-			lines = append(lines, fmt.Sprintf("    log_path: %s", yamlScalar(resolved)))
+			// log_path 是**该事件实际来自哪个文件**：filestream 会把真实文件路径写在
+			// `log.file.path` 里，这里用 input 级处理器把它拷到顶层 log_path。
+			//
+			// **不能静态注入 log_path**（曾经的写法是写成配置里的路径模式）：路径含通配
+			// （`/home/esb/data/logs/*/log_error.log`）时，静态字段是那个模式、不是具体文件，
+			// 日志详情里显示的"日志路径"就成了带 `*` 的模式（2026-09-20 现场）。
+			// 处理器在 input 级生效（Filebeat 8.13 实测）、且 input 的静态 `fields` 不再写
+			// log_path，否则静态值会把处理器拷进来的真实路径覆盖掉。
+			lines = append(lines,
+				"  processors:",
+				"    - copy_fields:",
+				"        fields:",
+				"          - from: log.file.path",
+				"            to: log_path",
+				"        fail_on_error: false",
+				"        ignore_missing: true",
+			)
 			lines = append(lines, fmt.Sprintf("  index: %s", yamlScalar(indexName)))
 			if entry.Pipeline != "" {
 				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。
@@ -251,14 +277,27 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	}
 
 	fragments := []logConfigFragment{}
+	// 服务级子指纹：在追加 .keep 之前按服务归组（.keep 只看整机有没有片段，是主机级信号，
+	// 若算进去，新增服务 B 会让服务 A 的子指纹也跟着变——正是要避免的）。
+	grouped := map[int64][]logConfigFragment{}
 	for _, base := range order {
 		pair := pairs[base]
 		if len(pair.inputs) == 0 {
 			continue
 		}
-		fragments = append(fragments, logConfigFragment{Path: filebeatInputsDir + "/" + base + ".yml", Content: strings.Join(pair.inputs, "\n")})
+		fragment := logConfigFragment{Path: filebeatInputsDir + "/" + base + ".yml", Content: strings.Join(pair.inputs, "\n")}
+		fragments = append(fragments, fragment)
+		if serviceID := pairService[base]; serviceID != 0 {
+			grouped[serviceID] = append(grouped[serviceID], fragment)
+		}
 	}
 	sort.Slice(fragments, func(i, j int) bool { return fragments[i].Path < fragments[j].Path })
+	serviceFingerprints := map[string]string{}
+	for serviceID, serviceFragments := range grouped {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("output:%s\n%v", outputIdentity, serviceFragments)))
+		// JSON 的 key 必须是字符串，用服务 id 的十进制串（见 serviceFingerprints 的消费方）。
+		serviceFingerprints[strconv.FormatInt(serviceID, 10)] = fmt.Sprintf("%x", digest)
+	}
 	// registry/data 目录由 agent 对文件路径做 MkdirAll 时顺带建出。
 	if len(fragments) > 0 {
 		fragments = append(fragments, logConfigFragment{Path: filebeatDataDir + "/.keep", Content: ""})
@@ -266,19 +305,21 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	// 指纹 = 输出段标识 + 全部片段内容。两者任一变化都必须触发重新下发。
 	digest := sha256.Sum256([]byte(fmt.Sprintf("output:%s\n%v", outputIdentity, fragments)))
 	return renderedHostLogConfig{
-		Fragments:   fragments,
-		Fingerprint: fmt.Sprintf("%x", digest),
-		ServiceNum:  len(instancesByService),
-		Warnings:    warnings,
-		Errors:      errors,
+		Fragments:           fragments,
+		Fingerprint:         fmt.Sprintf("%x", digest),
+		ServiceNum:          len(instancesByService),
+		ServiceFingerprints: serviceFingerprints,
+		Warnings:            warnings,
+		Errors:              errors,
 	}
 }
 
 type hostInstanceInput struct {
-	Service  string
-	Instance string
-	HostIP   string
-	Macros   map[string]string
+	Service   string
+	ServiceID int64
+	Instance  string
+	HostIP    string
+	Macros    map[string]string
 }
 
 // renderInputSet 单台主机的渲染输入：服务×日志定义（entries）与服务×实例（instances）。
@@ -312,7 +353,7 @@ func loadHostLogRenderInputsPool(context context.Context, pool db.DBTX, hostIDs 
 	for _, row := range instanceRows {
 		set := sets[row.HostID]
 		set.Instances = append(set.Instances, hostInstanceInput{
-			Service: row.ServiceCode, Instance: row.InstanceName, HostIP: row.HostIp,
+			Service: row.ServiceCode, ServiceID: row.ServiceID, Instance: row.InstanceName, HostIP: row.HostIp,
 			Macros: instanceMacros(string(row.RuntimeVariables), row.AppHome),
 		})
 		sets[row.HostID] = set
@@ -353,7 +394,7 @@ func loadHostLogRenderInputsPool(context context.Context, pool db.DBTX, hostIDs 
 			excludePattern, warning = validFilterPattern(logFilterRuleExclude, *resolved.Exclude)
 		}
 		set.Entries = append(set.Entries, hostLogRenderInput{
-			Prefix: "autoadmin", Application: row.ApplicationCode, Service: row.ServiceCode,
+			Prefix: "autoadmin", Application: row.ApplicationCode, Service: row.ServiceCode, ServiceID: row.ServiceID,
 			Project: row.ProjectCode, Environment: row.EnvironmentCode,
 			BusinessSystem: row.BusinessSystemCode, Tier: row.TierCode,
 			Pipeline: row.PipelineName, LogName: row.LogName, ResolvedPath: row.PathPattern,

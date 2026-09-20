@@ -2,8 +2,10 @@ package logcollect
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"autoadmin/internal/api/response"
@@ -40,6 +42,11 @@ type serviceApplyTarget struct {
 	// RuntimeStatus Filebeat 进程态（running/stopped/error），**落库快照**：
 	// 只有安装/启停/查状态动作会写它，展示方要负责先刷新（见 log_service_chain.go）。
 	RuntimeStatus string `json:"runtime_status,omitempty"`
+	// ServiceCode 该服务的编码（展示用）+ ServiceID：服务在这台主机上**本服务**的
+	// 已下发子指纹 key（服务视图按服务判定 synced/drift/never 用；编码可跨业务重复，按 id 取）。
+	ServiceCode               string `json:"-"`
+	ServiceID                 int64  `json:"-"`
+	AppliedServiceFingerprint string `json:"-"`
 }
 
 // groupServiceApplyTargets 把解析结果分成"已纳管（可下发）"与"未纳管（下发不了）"两组，各按主机 id 排序。
@@ -52,10 +59,12 @@ func groupServiceApplyTargets(rows []db.ListServiceLogApplyTargetsRow) (managed,
 		target := serviceApplyTarget{
 			HostID: row.HostID, HostIP: row.HostIp, HostInstanceName: row.HostInstanceName,
 			Managed: row.TargetID.Valid, RuntimeStatus: row.RuntimeStatus,
+			ServiceCode: row.ServiceCode, ServiceID: row.ServiceID,
 		}
 		if row.TargetID.Valid {
 			target.TargetID = row.TargetID.Int64
 			target.ConfigFingerprint = row.ConfigFingerprint
+			target.AppliedServiceFingerprint = serviceFingerprintOf(row.ServiceFingerprints, row.ServiceID)
 			managed = append(managed, target)
 			continue
 		}
@@ -64,6 +73,18 @@ func groupServiceApplyTargets(rows []db.ListServiceLogApplyTargetsRow) (managed,
 	sort.Slice(managed, func(i, j int) bool { return managed[i].HostID < managed[j].HostID })
 	sort.Slice(unmanaged, func(i, j int) bool { return unmanaged[i].HostID < unmanaged[j].HostID })
 	return managed, unmanaged
+}
+
+// serviceFingerprintOf 从主机的服务级指纹 JSON map 里取指定服务（按服务 id）的子指纹；缺失返回空串。
+func serviceFingerprintOf(raw json.RawMessage, serviceID int64) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	parsed := map[string]string{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ""
+	}
+	return parsed[strconv.FormatInt(serviceID, 10)]
 }
 
 // buildServiceHostStates 读库 + 评估配置态，返回"承载该服务的主机"及其聚合。
@@ -89,9 +110,13 @@ func (handler *Handler) buildServiceHostStates(context context.Context, serviceI
 	}
 	refs := make([]LogConfigTargetRef, 0, len(managed))
 	for _, target := range managed {
-		refs = append(refs, LogConfigTargetRef{HostID: target.HostID, AppliedFingerprint: target.ConfigFingerprint})
+		refs = append(refs, LogConfigTargetRef{
+			HostID: target.HostID, AppliedFingerprint: target.ConfigFingerprint,
+			AppliedServiceFingerprint: target.AppliedServiceFingerprint,
+		})
 	}
-	states, err := handler.EvaluateLogConfigStates(context, refs)
+	// 服务视图按**本服务**的子指纹判状态：共享主机上其他服务的改动不会把本服务带成待下发。
+	states, err := handler.EvaluateServiceLogConfigStates(context, managed[0].ServiceID, refs)
 	if err != nil {
 		return nil, nil, summary, err
 	}
@@ -137,10 +162,11 @@ func (handler *Handler) resolveServiceApplyTargets(context context.Context, serv
 	return managed, unmanaged, nil
 }
 
-// serviceConfigStateSummary 服务级配置态聚合。
+// serviceConfigStateSummary 服务级配置态聚合（只给计数）。
 //
-// 只能聚合、没有"服务级指纹"：config_fingerprint 是主机级的，而同一个服务在不同主机上因实例级
-// runtime_variables 不同，渲染结果本就不同。造一个服务级指纹只会误导。
+// 状态判定按 **(主机 × 服务) 子指纹** 逐台算（`EvaluateServiceLogConfigStates`）——共享主机上
+// 其他服务的改动不会把本服务带成待下发（现场问题）。但**不暴露单一"服务级指纹"**：同一服务在不同
+// 主机上因实例级 runtime_variables 不同、渲染结果本就不同，一个服务级指纹只会误导，所以这里只汇总裁数。
 type serviceConfigStateSummary struct {
 	Hosts     int `json:"hosts"`
 	Managed   int `json:"managed"`

@@ -492,14 +492,18 @@ func (handler *Handler) checkLogRuntime(context *gin.Context) gin.H {
 // checkLogDataFlow 前面几层全绿也可能没数据，这一层是唯一能证明链路真正通了的证据。
 func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster elasticsearchCluster) gin.H {
 	prefix := logHealthPrefix(cluster)
-	total, buckets, err := handler.queryLogDataFlow(context, cluster, prefix, "", logHealthDataFlowWindowMinutes)
+	total, buckets, err := handler.queryLogDataFlow(context, cluster, prefix, 0, logHealthDataFlowWindowMinutes)
 	if err != nil {
 		return logHealthLayer("data_flow", "数据写入", logHealthError, fmt.Sprintf("查询失败: %v", err), nil)
 	}
 	items := []gin.H{}
 	for _, bucketRaw := range buckets {
 		bucket, _ := bucketRaw.(map[string]any)
-		name, _ := bucket["key"].(string)
+		// multi_terms 的 key 是维度数组 [service, project, business_system, environment]，服务名取首段。
+		name := ""
+		if key, ok := bucket["key"].([]any); ok && len(key) > 0 {
+			name, _ = key[0].(string)
+		}
 		count, _ := bucket["doc_count"].(float64)
 		items = append(items, logHealthItem(name, logHealthOK, fmt.Sprintf("%.0f 条", count)))
 	}
@@ -509,25 +513,36 @@ func (handler *Handler) checkLogDataFlow(context *gin.Context, cluster elasticse
 	return logHealthLayer("data_flow", "数据写入", logHealthOK, fmt.Sprintf("最近 %d 分钟写入 %.0f 条，覆盖 %d 个服务", logHealthDataFlowWindowMinutes, total, len(items)), items)
 }
 
-// queryLogDataFlow 统计时间窗内写入的文档数，并按 service 聚合（供调用方列出每个服务多少条）。
+// queryLogDataFlow 统计时间窗内写入的文档数，并按**服务维度元组**聚合（供调用方列出每个服务多少条）。
 //
-// serviceCode 非空时按 `service` 字段收窄到单个服务——日志中心的"采集链路"要回答的是
-// "这个服务最近有没有在写"，不能把别的服务的量算进来。**体检（全集群）与采集链路共用本函数**，
-// 保证两处对"有没有在写"是同一个查询、同一套口径，只是范围不同。
-func (handler *Handler) queryLogDataFlow(context *gin.Context, cluster elasticsearchCluster, prefix, serviceCode string, windowMinutes int) (float64, []any, error) {
-	rangeClause := gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dm", windowMinutes)}}
-	query := gin.H{"bool": gin.H{"filter": []any{gin.H{"range": rangeClause}}}}
-	if strings.TrimSpace(serviceCode) != "" {
-		// service 是逻辑服务的 code（keyword 字段，见索引模板 standardLogFields）。
-		query = gin.H{"bool": gin.H{"filter": []any{
-			gin.H{"range": rangeClause},
-			gin.H{"term": gin.H{"service": serviceCode}},
-		}}}
+// serviceID 非空时按完整维度（service/project/business_system/environment）收窄到单个服务——
+// 日志中心的"采集链路"要回答的是"这个服务最近有没有在写"，不能把别的服务的量算进来。
+// 服务编码现在允许跨业务/环境重复（见 000044 迁移），只按 `service` 字段收窄/聚合都会串数据，
+// 所以用 multi_terms 把四个维度一起作为桶键。**体检（全集群）与采集链路共用本函数**。
+func (handler *Handler) queryLogDataFlow(context *gin.Context, cluster elasticsearchCluster, prefix string, serviceID int64, windowMinutes int) (float64, []any, error) {
+	filters := []any{gin.H{"range": gin.H{"@timestamp": gin.H{"gte": fmt.Sprintf("now-%dm", windowMinutes)}}}}
+	if serviceID > 0 {
+		dims, err := db.New(handler.db).GetApplicationServiceStreamDims(context, serviceID)
+		if err != nil {
+			return 0, nil, err
+		}
+		filters = append(filters,
+			gin.H{"term": gin.H{"service": dims.ServiceCode}},
+			gin.H{"term": gin.H{"project": dims.ProjectCode}},
+			gin.H{"term": gin.H{"business_system": dims.BusinessSystemCode}},
+			gin.H{"term": gin.H{"environment": dims.EnvironmentCode}},
+		)
 	}
 	body := gin.H{
 		"size":  0,
-		"query": query,
-		"aggs":  gin.H{"by_service": gin.H{"terms": gin.H{"field": "service", "size": 50}}},
+		"query": gin.H{"bool": gin.H{"filter": filters}},
+		"aggs": gin.H{"by_service": gin.H{"multi_terms": gin.H{
+			"terms": []any{
+				gin.H{"field": "service"}, gin.H{"field": "project"},
+				gin.H{"field": "business_system"}, gin.H{"field": "environment"},
+			},
+			"size": 50,
+		}}},
 	}
 	result, err := handler.elasticsearchRequest(context, cluster, "POST", "/"+prefix+"-*/_search", body)
 	if err != nil {

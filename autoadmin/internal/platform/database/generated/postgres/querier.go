@@ -362,6 +362,13 @@ type Querier interface {
 	// 删日志定义前先清掉引用它们的服务级覆盖行：外键没有 ON DELETE CASCADE，不清就删不掉；
 	// 语义上覆盖行（档位/规则/开关/过滤）依附于该定义，定义没了它也就没有意义。
 	DeleteServiceLogSettingsByDefinitionIDs(ctx context.Context, logDefinitionIds []int64) error
+	// 保存逻辑服务表单时的"整表替换"收尾：删除本次**未提交**的覆盖行。
+	//
+	// 为什么不直接 delete-all 再 insert：认证结果（format_verified_*）只由格式认证流程写，
+	// 整表替换若把行删了，用户在编辑弹窗里刚认证通过的结果会在"保存"时被抹掉（2026-09-20 现场：
+	// 服务树里认证通过、保存后又变成未认证，必须去日志中心再认证一次才生效）。所以已提交的行改走
+	// UpsertServiceLogOverride（不碰认证列），只有未提交的行才在这一句里删掉。
+	DeleteServiceLogSettingsByServiceAndDefinitions(ctx context.Context, arg DeleteServiceLogSettingsByServiceAndDefinitionsParams) error
 	DeleteSoftwarePackage(ctx context.Context, id int64) error
 	DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error
@@ -540,6 +547,9 @@ type Querier interface {
 	// 后者改成应用层算（历史的 create_time 就是派发时刻，闭包里有同一个 now）。
 	GetLogTargetForAction(ctx context.Context, id int64) (GetLogTargetForActionRow, error)
 	GetLogTargetHostName(ctx context.Context, id int64) (string, error)
+	// 服务级已下发指纹（JSON map）。跳过判定要同时比对它：存量目标该列为空 `{}`，
+	// 只比主机指纹会一直跳过、服务级记录永远补不上（见 §8.3）。
+	GetLogTargetServiceFingerprints(ctx context.Context, id int64) (json.RawMessage, error)
 	// 日志格式认证的 instance 依据：一条 (逻辑服务 × 部署实例 × 日志定义) 的取样上下文。
 	// 只取"渲染该实例日志文件真实路径"所需的三层宏与实际路径模板：
 	//   - 服务级 macro_values（模板 macro_definitions 作默认值）

@@ -30,30 +30,71 @@ const (
 type LogFormatVerifyRequest struct {
 	ServiceID       int64
 	LogDefinitionID int64
-	// DeploymentID 仅 source=instance 时使用：从哪个实例上取真实日志。
+	// DeploymentID 仅 source=instance 且 AllDeployments=false 时使用：从哪个实例上取真实日志。
 	DeploymentID int64
-	Source       string
+	// AllDeployments 仅 source=instance 时有效：true = 认证该服务的**全部承载实例**，
+	// false = 只认证 DeploymentID 指定的那一个。两种情况下，实例上**所有匹配到的日志文件**
+	// 都会被逐一认证（见 logcollect 侧）。
+	AllDeployments bool
+	Source         string
+}
+
+// LogFormatVerifyTarget 一台承载实例的认证结果：该实例上匹配到的每个日志文件都参与认证，
+// 缺必备字段即该实例不通过；某台主机离线/取不到样例时只在这一项写 Error，不影响其他实例。
+type LogFormatVerifyTarget struct {
+	DeploymentID     int64    `json:"deployment_id"`
+	DeploymentName   string   `json:"deployment_instance_name"`
+	HostInstanceName string   `json:"host_instance_name"`
+	LogFiles         []string `json:"log_files"`
+	MissingFields    []string `json:"missing_fields"`
+	Error            string   `json:"error,omitempty"`
+}
+
+// LogFormatVerifyReport 一次认证的完整结果：全部目标的缺失字段并集 + 逐实例明细。
+//
+// MissingFields 是所有目标缺失字段的**并集**（任一实例/文件缺就算缺），供"通过 / 不通过"
+// 的判定与既有前端契约使用；Targets 用来告诉人"是哪台实例、哪个文件的问题"。
+type LogFormatVerifyReport struct {
+	MissingFields []string                `json:"missing_fields"`
+	Targets       []LogFormatVerifyTarget `json:"targets"`
+}
+
+// Passed 判定：没有任何缺失字段，且没有任何目标取不到样例（Error）。
+// 取不到样例绝不算通过——否则会把"没验成"记成"已验证"。sample_log 依据没有实例目标，
+// 其样例已在执行器里校验过，所以这里不因 Targets 为空而否定。
+func (report LogFormatVerifyReport) Passed() bool {
+	if len(report.MissingFields) > 0 {
+		return false
+	}
+	for _, target := range report.Targets {
+		if target.Error != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // LogFormatVerifier 由 logcollect 侧实现：取样例并跑规则校验。
 //
-// 返回**缺失的必备字段**（空切片 = 通过）。取不到样例（agent 离线、文件不存在、
-// 规则没配样例）必须返回 error，不能返回空切片——否则会把"没验成"误记成"认证通过"。
+// 返回**完整报告**（缺失字段 + 逐实例明细）。取不到样例（agent 离线、文件不存在、
+// 规则没配样例）必须返回 error，不能返回空报告——否则会把"没验成"误记成"认证通过"。
+// 逐实例的软失败（某台主机离线）记在 Target.Error 上，不阻断其他实例。
 type LogFormatVerifier interface {
-	VerifyLogFormat(ctx context.Context, request LogFormatVerifyRequest) ([]string, error)
+	VerifyLogFormat(ctx context.Context, request LogFormatVerifyRequest) (LogFormatVerifyReport, error)
 }
 
 // LogFormatVerifyResult 一次认证的结果。passed=false 时不会写库（指纹保持原样，
-// 状态仍是 unverified / needs_recheck），前端据此提示缺哪些字段。
+// 状态仍是 unverified / needs_recheck），前端据此提示缺哪些字段、哪台实例有问题。
 type LogFormatVerifyResult struct {
-	Passed               bool     `json:"passed"`
-	Source               string   `json:"source"`
-	MissingFields        []string `json:"missing_fields"`
-	FormatState          string   `json:"format_state"`
-	FormatFingerprint    string   `json:"format_fingerprint"`
-	FormatVerifiedAt     *string  `json:"format_verified_at"`
-	FormatVerifiedSource string   `json:"format_verified_source"`
-	FormatVerifiedBy     string   `json:"format_verified_by"`
+	Passed               bool                    `json:"passed"`
+	Source               string                  `json:"source"`
+	MissingFields        []string                `json:"missing_fields"`
+	Targets              []LogFormatVerifyTarget `json:"targets,omitempty"`
+	FormatState          string                  `json:"format_state"`
+	FormatFingerprint    string                  `json:"format_fingerprint"`
+	FormatVerifiedAt     *string                 `json:"format_verified_at"`
+	FormatVerifiedSource string                  `json:"format_verified_source"`
+	FormatVerifiedBy     string                  `json:"format_verified_by"`
 }
 
 // UpsertLogSettingFormatVerified 写回一次认证结果。必须是 upsert：认证状态按
@@ -74,14 +115,18 @@ func (s *Service) SetLogFormatVerifier(verifier LogFormatVerifier) {
 
 // VerifyServiceLogFormat 对一条 (逻辑服务 × 日志定义) 执行一次格式认证。
 //
+// allDeployments 仅在 source=instance 时有意义：false 只认证 deploymentID 指定的实例，
+// true 认证该服务全部承载实例。**无论哪种范围，实例上所有匹配到的日志文件都参与认证**
+// （通配路径展开出的每个文件都要能解析出必备字段）。
+//
 // 指纹用**展示口径的同一个函数**算（ListServiceTemplateLogs 的 FormatFingerprint）——
 // 认证写入的指纹与弹窗上比对的指纹必须逐字节相同，否则认证通过后状态还是 needs_recheck。
 // 因此这里直接复用 ListServiceTemplateLogs 的返回行，而不是另写一遍指纹输入。
-func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefinitionID, deploymentID int64, source, actor string) (LogFormatVerifyResult, error) {
+func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefinitionID, deploymentID int64, allDeployments bool, source, actor string) (LogFormatVerifyResult, error) {
 	source = strings.TrimSpace(source)
 	switch source {
 	case LogFormatSourceInstance:
-		if deploymentID < 1 {
+		if !allDeployments && deploymentID < 1 {
 			return LogFormatVerifyResult{}, ErrLogFormatDeploymentRequired
 		}
 	case LogFormatSourceSampleLog:
@@ -116,15 +161,17 @@ func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefi
 		if s.logFormatVerifier == nil {
 			return LogFormatVerifyResult{}, ErrLogFormatUnavailable
 		}
-		missing, verifyErr := s.logFormatVerifier.VerifyLogFormat(ctx, LogFormatVerifyRequest{
-			ServiceID: serviceID, LogDefinitionID: logDefinitionID, DeploymentID: deploymentID, Source: source,
+		report, verifyErr := s.logFormatVerifier.VerifyLogFormat(ctx, LogFormatVerifyRequest{
+			ServiceID: serviceID, LogDefinitionID: logDefinitionID, DeploymentID: deploymentID,
+			AllDeployments: allDeployments, Source: source,
 		})
 		if verifyErr != nil {
 			return LogFormatVerifyResult{}, verifyErr
 		}
-		if len(missing) > 0 {
+		result.Targets = report.Targets
+		if !report.Passed() {
 			result.Passed = false
-			result.MissingFields = missing
+			result.MissingFields = report.MissingFields
 			return result, nil
 		}
 	}
@@ -208,14 +255,14 @@ func (s *Service) autoVerifyOneLogFormat(ctx context.Context, serviceID, logDefi
 			break
 		}
 		attempts++
-		result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, deploymentID, LogFormatSourceInstance, "")
+		result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, deploymentID, false, LogFormatSourceInstance, "")
 		if err == nil && result.Passed {
 			slog.Info("auto verify log format: verified from instance",
 				"service_id", serviceID, "log_definition_id", logDefinitionID, "deployment_id", deploymentID)
 			return true
 		}
 	}
-	result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, 0, LogFormatSourceSampleLog, "")
+	result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, 0, false, LogFormatSourceSampleLog, "")
 	if err == nil && result.Passed {
 		slog.Info("auto verify log format: verified from rule sample log",
 			"service_id", serviceID, "log_definition_id", logDefinitionID)

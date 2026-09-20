@@ -3,6 +3,7 @@ package logcollect
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -157,6 +158,7 @@ func TestSmokeLogCollectQueriesAgainstRealDatabase(t *testing.T) {
 	if err := queries.MarkLogTargetConfigSynced(ctx, db.MarkLogTargetConfigSyncedParams{
 		LastAppliedTime:   sql.NullTime{Time: time.Now().UTC(), Valid: true},
 		ConfigFingerprint: "smoke-" + suffix, UpdateTime: time.Now().UTC(), ID: targetID,
+		ServiceFingerprints: json.RawMessage(`{"smoke-svc":"` + suffix + `"}`),
 	}); err != nil {
 		t.Fatalf("写配置指纹：%v", err)
 	}

@@ -33,6 +33,7 @@ type ServiceMemberInput struct {
 	Deployment int64 `json:"deployment"`
 	Enabled    *bool `json:"enabled"`
 }
+
 // ServiceLogSettingInput 是 (逻辑服务 × 日志定义) 的覆盖值写入口。
 // **不含解析规则**：规则只由部署模板的日志定义决定（迁移 000035 删掉了服务级覆盖），
 // 提交体里带 processing_rule 会被静默忽略。采集开关/档位/过滤规则仍可覆盖。
@@ -120,23 +121,41 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 		}
 	}
 	if input.LogSettings != nil {
-		if err = queries.DeleteServiceLogSettings(ctx, serviceID); err != nil {
-			return 0, err
-		}
+		// **不能 delete-all 再 insert**：那会把 format_verified_*（认证结果）一起抹掉——
+		// 现场（2026-09-20）：在编辑弹窗里认证通过、保存服务后又变成未认证，必须去日志中心
+		// 重新认证才生效。已提交的行改走 UpsertServiceLogOverride（按约定不碰认证列），
+		// 只有本次未提交的行才删掉（整表替换语义不变，见 DeleteServiceLogSettingsByServiceAndDefinitions）。
+		submitted := map[int64]bool{}
 		for _, setting := range *input.LogSettings {
 			if setting.LogDefinition < 1 {
 				return 0, fmt.Errorf("invalid service log definition")
 			}
-			var collection *bool
-			if setting.CollectionEnabled != nil {
-				collection = setting.CollectionEnabled
-			}
-			if err = queries.CreateServiceLogSetting(ctx, db.CreateServiceLogSettingParams{
-				CreateTime: now, UpdateTime: now, CollectionEnabled: collection,
-				LogDefinitionID: setting.LogDefinition, RetentionTierID: nullableInt(setting.RetentionTier),
+			submitted[setting.LogDefinition] = true
+			if err = queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
+				CreateTime: now, UpdateTime: now,
+				CollectionEnabled:             setting.CollectionEnabled,
+				LogDefinitionID:               setting.LogDefinition,
+				RetentionTierID:               nullableInt(setting.RetentionTier),
 				ServiceID:                     serviceID,
 				CollectionFilterRuleID:        nullableInt(setting.CollectionFilterRule),
 				CollectionExcludeFilterRuleID: nullableInt(setting.CollectionExcludeFilterRule),
+			}); err != nil {
+				return 0, err
+			}
+		}
+		existing, listErr := queries.ListServiceLogSettings(ctx, serviceID)
+		if listErr != nil {
+			return 0, listErr
+		}
+		removed := make([]int64, 0, len(existing))
+		for _, row := range existing {
+			if !submitted[row.LogDefinitionID] {
+				removed = append(removed, row.LogDefinitionID)
+			}
+		}
+		if len(removed) > 0 {
+			if err = queries.DeleteServiceLogSettingsByServiceAndDefinitions(ctx, db.DeleteServiceLogSettingsByServiceAndDefinitionsParams{
+				ServiceID: serviceID, LogDefinitionIds: removed,
 			}); err != nil {
 				return 0, err
 			}
@@ -203,7 +222,10 @@ func (r *Repository) DeleteApplicationDeployment(ctx context.Context, id int64) 
 }
 
 func (s *Service) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput) (ApplicationService, error) {
-	if input.Application < 1 || input.BusinessSystem < 1 || input.ApplicationVersion < 1 || input.DeploymentTemplate < 1 || strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Code) == "" {
+	// environment 是逻辑服务身份域 (business_system, environment) 的一半，也是日志维度渲染
+	// （data stream / 索引）的必需段：留空会让唯一约束对 NULL 失效、日志渲染查不到维度。
+	// 前端本就必填，这里在服务层兜底，拒绝写空。
+	if input.Application < 1 || input.BusinessSystem < 1 || input.ApplicationVersion < 1 || input.DeploymentTemplate < 1 || input.Environment == nil || *input.Environment < 1 || strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Code) == "" {
 		return ApplicationService{}, ErrInvalid
 	}
 	if input.MemberConfigs != nil && len(*input.MemberConfigs) == 0 && input.TopologyType != "" {

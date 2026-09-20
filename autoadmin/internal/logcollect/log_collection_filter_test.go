@@ -124,7 +124,7 @@ func TestValidFilterPatternRejectsBadPatterns(t *testing.T) {
 func TestRenderEmitsIncludeAndExcludeLines(t *testing.T) {
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
 			Pipeline: "springboot-tomcat-exception", LogName: "catalina.out",
 			ResolvedPath:         "/data/tomcat1/logs/catalina.out",
@@ -132,7 +132,7 @@ func TestRenderEmitsIncludeAndExcludeLines(t *testing.T) {
 			FilterExcludePattern: `(?i)healthcheck`,
 		},
 	}
-	instances := []hostInstanceInput{{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "192.168.201.211"}}
+	instances := []hostInstanceInput{{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "192.168.201.211"}}
 	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
 
 	var content string
@@ -153,10 +153,10 @@ func TestRenderEmitsIncludeAndExcludeLines(t *testing.T) {
 	}
 	// 没配过滤的日志不能凭空多出这两项（否则 Filebeat 会按"空模式匹配全部"处理）。
 	withoutFilter := renderHostLogConfig([]hostLogRenderInput{{
-		Prefix: "logs", Application: "tib", Service: "redis", Project: "kul",
+		Prefix: "logs", Application: "tib", Service: "redis", ServiceID: 9, Project: "kul",
 		Environment: "test", BusinessSystem: "tib", Tier: "std", Pipeline: "redis-log",
 		LogName: "redis.log", ResolvedPath: "/var/log/redis/redis.log",
-	}}, []hostInstanceInput{{Service: "redis", Instance: "redis1", HostIP: "10.0.0.9"}}, testOutputIdentity)
+	}}, []hostInstanceInput{{Service: "redis", ServiceID: 9, Instance: "redis1", HostIP: "10.0.0.9"}}, testOutputIdentity)
 	for _, fragment := range withoutFilter.Fragments {
 		if strings.Contains(fragment.Content, "include_lines") || strings.Contains(fragment.Content, "exclude_lines") {
 			t.Errorf("没配过滤时不该出现过滤配置：\n%s", fragment.Content)
@@ -172,15 +172,15 @@ func TestRenderKeepsDistinctPathsAndSkipsDuplicateOnSameHost(t *testing.T) {
 	// 真实数据里 entry 是"每个服务×日志定义一条"（查询去重），实例级差异只在 instance.Macros 里。
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
 			Pipeline: "springboot-tomcat-exception", LogName: "catalina.out",
 			ResolvedPath: "${APP_HOME}/logs/catalina.out",
 		},
 	}
 	differentPaths := renderHostLogConfig(entries, []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat1"}},
-		{Service: "tomcat-svc", Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat2"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat1"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat2"}},
 	}, testOutputIdentity)
 	var content string
 	for _, fragment := range differentPaths.Fragments {
@@ -191,8 +191,8 @@ func TestRenderKeepsDistinctPathsAndSkipsDuplicateOnSameHost(t *testing.T) {
 	for _, want := range []string{
 		"'/home/esb/tomcat1/logs/catalina.out'",
 		"'/home/esb/tomcat2/logs/catalina.out'",
-		"id: 'tib__tomcat-svc__catalina.out__tomcat1'",
-		"id: 'tib__tomcat-svc__catalina.out__tomcat2'",
+		"id: 'tib__tomcat-svc__7__catalina.out__tomcat1'",
+		"id: 'tib__tomcat-svc__7__catalina.out__tomcat2'",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("缺少 %q：\n%s", want, content)
@@ -205,8 +205,8 @@ func TestRenderKeepsDistinctPathsAndSkipsDuplicateOnSameHost(t *testing.T) {
 	// 两个实例配成同一个 APP_HOME（或都没配、都落到模板默认）→ 展开成同一路径：
 	// 只保留先出现的那条，并告警说清两侧是谁。
 	samePath := renderHostLogConfig(entries, []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
-		{Service: "tomcat-svc", Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
 	}, testOutputIdentity)
 	var sameContent string
 	for _, fragment := range samePath.Fragments {
@@ -230,14 +230,14 @@ func TestRenderKeepsDistinctPathsAndSkipsDuplicateOnSameHost(t *testing.T) {
 // 这种正常顺序都会被拦住。
 func TestCollectLogConfigProblemsOnlyReportsHardProblems(t *testing.T) {
 	base := hostLogRenderInput{
-		Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+		Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 		Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
 		Pipeline: "springboot-tomcat-exception", LogName: "catalina.out",
 		ResolvedPath: "${APP_HOME}/logs/catalina.out",
 	}
 	instances := []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
-		{Service: "tomcat-svc", Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat2", HostIP: "10.0.0.1", Macros: map[string]string{"APP_HOME": "/home/esb/tomcat"}},
 	}
 
 	// 1) 两个实例展开成同一路径 → 硬问题（重复采集，数据翻倍）。
@@ -251,7 +251,7 @@ func TestCollectLogConfigProblemsOnlyReportsHardProblems(t *testing.T) {
 	// 2) 未定义宏（实例没给 APP_HOME，模板也没给）→ 硬问题（那台主机采集不了）。
 	missingMacro := collectLogConfigProblems(map[int64]renderInputSet{
 		1: {Entries: []hostLogRenderInput{base}, Instances: []hostInstanceInput{
-			{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "10.0.0.1"},
+			{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "10.0.0.1"},
 		}},
 	}, []int64{1})
 	if len(missingMacro) == 0 || !strings.Contains(strings.Join(missingMacro, "；"), "含未定义宏") {

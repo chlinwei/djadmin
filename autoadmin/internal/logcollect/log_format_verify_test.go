@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -163,6 +164,62 @@ func TestLogSampleDocsKeepsOnlyTailLines(t *testing.T) {
 	}
 }
 
+// 多行模式必须按**记录**截断，不能按原始行截断（2026-09-20 现场：Nacos/Tomcat 的
+// log_error.log 尾部是一条超长堆栈，尾 50 行全是 `\tat …`，按行截断会误报
+// "未命中首行正则，还原不出任何记录"）。
+func TestLogSampleDocsKeepsTailRecordsNotTailLines(t *testing.T) {
+	const start = "2026-09-18 09:40:27.953 "
+	// 先来两条普通记录，最后一条是首行 + 80 行续行（共 81 行，远超 50 行上限）。
+	text := strings.Join([]string{
+		start + "INFO first",
+		"\tat A", "\tat B",
+		start + "ERROR second",
+		start + "ERROR giant",
+		strings.Repeat("\tat java.base/Foo.bar(Foo.java:1)\n", 80),
+	}, "\n")
+	docs, err := logSampleDocs(text, true, `^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`)
+	if err != nil {
+		t.Fatalf("长堆栈应能还原出记录，得到错误：%v", err)
+	}
+	// 三条记录都在：尾部超长记录必须完整保留（含它的首行）。
+	if len(docs) != 3 {
+		t.Fatalf("docs 数 = %d, want 3", len(docs))
+	}
+	last := docs[len(docs)-1].(map[string]any)["message"].(string)
+	if !strings.HasPrefix(last, start+"ERROR giant") {
+		t.Fatalf("最后一条必须以首行开始，得到 %q", last[:min(60, len(last))])
+	}
+	if !strings.Contains(last, "\tat java.base/Foo.bar") {
+		t.Fatalf("最后一条应包含续行堆栈")
+	}
+}
+
+// 记录数上限：超过 logFormatSampleLines 条时只留尾部，且每条都从首行开始。
+func TestLogSampleDocsCapsTailRecords(t *testing.T) {
+	start := "2026-09-18 09:40:27.953 "
+	lines := make([]string, 0, (logFormatSampleLines+10)*2)
+	for index := 0; index < logFormatSampleLines+10; index++ {
+		lines = append(lines, start+fmt.Sprintf("ERROR record-%d", index), "\tat stack")
+	}
+	docs, err := logSampleDocs(strings.Join(lines, "\n"), true, `^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`)
+	if err != nil {
+		t.Fatalf("log sample docs: %v", err)
+	}
+	if len(docs) != logFormatSampleLines {
+		t.Fatalf("docs 数 = %d, want %d", len(docs), logFormatSampleLines)
+	}
+	// 尾部保留：最后一条是原文最后一条记录。
+	last := docs[len(docs)-1].(map[string]any)["message"].(string)
+	if !strings.HasPrefix(last, start+fmt.Sprintf("ERROR record-%d", logFormatSampleLines+9)) {
+		t.Fatalf("最后一条 = %q, want record-%d", last, logFormatSampleLines+9)
+	}
+	// 第一条是第 10 条记录（前 10 条被裁掉）。
+	first := docs[0].(map[string]any)["message"].(string)
+	if !strings.HasPrefix(first, start+"ERROR record-10") {
+		t.Fatalf("第一条 = %q, want record-10", first)
+	}
+}
+
 const (
 	listServiceTemplateLogsQuery = "FROM assets_application_log_definition ld"
 	getLogProcessingRuleQuery    = "FROM monitor_log_processing_rule"
@@ -298,14 +355,14 @@ func TestVerifyLogFormatFromRuleSampleLog(t *testing.T) {
 				WillReturnRows(addProcessingRuleRow(sqlmock.NewRows(processingRuleColumns()), testCase.sampleLog, testCase.pipelineBody))
 			expectLogFormatCluster(*mock, clusterURL)
 
-			missing, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{
+			report, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{
 				ServiceID: 15, LogDefinitionID: 24, Source: assets.LogFormatSourceSampleLog,
 			})
 			if err != nil {
 				t.Fatalf("verify: %v", err)
 			}
-			if strings.Join(missing, ",") != strings.Join(testCase.wantMissing, ",") {
-				t.Fatalf("missing = %v, want %v", missing, testCase.wantMissing)
+			if strings.Join(report.MissingFields, ",") != strings.Join(testCase.wantMissing, ",") {
+				t.Fatalf("missing = %v, want %v", report.MissingFields, testCase.wantMissing)
 			}
 			if err = (*mock).ExpectationsWereMet(); err != nil {
 				t.Fatalf("database expectations: %v", err)
@@ -325,14 +382,136 @@ func TestVerifyLogFormatErrorsWhenSampleUnavailable(t *testing.T) {
 		WithArgs(int64(7)).
 		WillReturnRows(addProcessingRuleRow(sqlmock.NewRows(processingRuleColumns()), "", passingPipelineBody))
 
-	missing, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{
+	_, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{
 		ServiceID: 15, LogDefinitionID: 24, Source: assets.LogFormatSourceSampleLog,
 	})
 	if err == nil {
-		t.Fatalf("规则没配样例日志时应报错，得到 missing=%v", missing)
+		t.Fatalf("规则没配样例日志时应报错")
 	}
 	if !strings.Contains(err.Error(), "未配置样例日志") {
 		t.Fatalf("error = %v, want 提示改用实例抽样", err)
+	}
+}
+
+// startTestAgent 起一个 bufconn 上的真 gRPC 会话，测试进程扮演 agent：responder 收到一帧
+// 请求后返回要回给 backend 的响应帧（nil 表示不回）。
+func startTestAgent(t *testing.T, responder func(*pb.ServerFrame) *pb.AgentFrame) *agent.Gateway {
+	t.Helper()
+	const token = "test-token"
+	gateway := agent.NewGateway(func(instanceName, receivedToken string) bool {
+		return instanceName == "host-01" && receivedToken == token
+	}, nil)
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	gateway.Register(server)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	connection, err := grpc.DialContext(ctx, "bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	stream, err := pb.NewAgentChannelClient(connection).Session(ctx)
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	if err = stream.Send(&pb.AgentFrame{Payload: &pb.AgentFrame_Hello{Hello: &pb.Hello{InstanceName: "host-01", Token: token}}}); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+	if _, err = stream.Recv(); err != nil {
+		t.Fatalf("recv hello ack: %v", err)
+	}
+	go func() {
+		for {
+			frame, receiveErr := stream.Recv()
+			if receiveErr != nil {
+				return
+			}
+			if response := responder(frame); response != nil {
+				_ = stream.Send(response)
+			}
+		}
+	}()
+	return gateway
+}
+
+// 全部实例 + 每个实例上所有匹配文件都要认证：通配展开出的两个文件都读、都送进 _simulate。
+func TestVerifyLogFormatAllDeploymentsAllFiles(t *testing.T) {
+	gateway := startTestAgent(t, func(frame *pb.ServerFrame) *pb.AgentFrame {
+		if request := frame.GetListRequest(); request != nil {
+			entries := map[string][]*pb.FileEntry{
+				"/var/log":      {{Name: "app1", IsDir: true}, {Name: "app2", IsDir: true}},
+				"/var/log/app1": {{Name: "error.log", IsDir: false, Size: 100, Mtime: 1}},
+				"/var/log/app2": {{Name: "error.log", IsDir: false, Size: 200, Mtime: 2}},
+			}
+			return &pb.AgentFrame{Payload: &pb.AgentFrame_ListResponse{ListResponse: &pb.ListResponse{
+				RequestId: request.RequestId, CurrentPath: request.Path, Entries: entries[request.Path],
+			}}}
+		}
+		if request := frame.GetReadRequest(); request != nil {
+			content := []byte("2026-09-19 10:00:00 ERROR boom\n")
+			return &pb.AgentFrame{Payload: &pb.AgentFrame_ReadChunk{ReadChunk: &pb.ReadChunk{
+				RequestId: request.RequestId, Data: content, Eof: true, FileSize: int64(len(content)),
+			}}}
+		}
+		return nil
+	})
+
+	mock, handler, clusterURL := newESVerifyFixture(t, func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		wrapped, _ := body["docs"].([]any)
+		out := make([]any, 0, len(wrapped))
+		for range wrapped {
+			out = append(out, map[string]any{"doc": map[string]any{"_source": map[string]any{
+				"log_level": "INFO", "log_message": "m", "error_fingerprint": "fp",
+			}}})
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{"docs": out})
+	})
+
+	expectLogFormatDefinition(*mock)
+	(*mock).ExpectQuery(regexp.QuoteMeta(getLogProcessingRuleQuery)).WithArgs(int64(7)).
+		WillReturnRows(addProcessingRuleRow(sqlmock.NewRows(processingRuleColumns()), "", passingPipelineBody))
+	expectLogFormatCluster(*mock, clusterURL)
+	(*mock).ExpectQuery(regexp.QuoteMeta("FROM assets_application_service_deployment")).
+		WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}).AddRow(int64(101)))
+	(*mock).ExpectQuery(regexp.QuoteMeta("FROM assets_application_deployment d")).
+		WithArgs(int64(101), int64(15), int64(24)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern",
+		}).AddRow(int64(101), int64(5), "host-01", "inst-1", []byte("{}"), "", []byte("[]"), []byte("{}"),
+			"/var/log/*/error.log"))
+
+	handler.gateway = gateway
+	report, err := handler.VerifyLogFormat(context.Background(), assets.LogFormatVerifyRequest{
+		ServiceID: 15, LogDefinitionID: 24, AllDeployments: true, Source: assets.LogFormatSourceInstance,
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !report.Passed() {
+		t.Fatalf("应通过，得到 %+v", report)
+	}
+	if len(report.Targets) != 1 {
+		t.Fatalf("targets = %d, want 1（一台承载实例）", len(report.Targets))
+	}
+	if files := report.Targets[0].LogFiles; len(files) != 2 {
+		t.Fatalf("该实例所有匹配文件都要认证，log_files = %v", files)
+	}
+	if err = (*mock).ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
 	}
 }
 

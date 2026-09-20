@@ -238,6 +238,13 @@
                         {{ rowPendingMacros(record).join(' ') }} 实例上展开
                       </a-tag>
                     </a-tooltip>
+                    <!-- 含通配的路径按需展开：按**已保存配置**在各主机上列出真实文件。
+                         新建服务还没有 id、也无绑定实例，无法展开，所以只在编辑态出现。 -->
+                    <LogGlobPreview
+                      v-if="showResolvedPath && serviceId && !rowPendingMacros(record).length && hasGlobMeta(rowPathValue(record))"
+                      :service-id="serviceId"
+                      :log-definition-id="record.log_definition"
+                    />
                   </template>
                   <template v-else-if="column.key === 'processing_rule'">
                     <!-- 解析规则只由部署模板的日志定义决定（服务侧只读）：同一模板的日志格式相同，
@@ -411,7 +418,7 @@ import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { getLogCollectionFilterRules } from '@/api/monitor'
-import { PATH_MACRO_HINT, resolvePathMacros, unexpandedMacros } from '@/util/logPathMacro'
+import { PATH_MACRO_HINT, resolvePathMacros, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
 import { fetchAllPages } from '@/util/fetchAllPages'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
@@ -421,6 +428,7 @@ import Dialog from './Dialog.vue'
 import TemplateDialog from './TemplateDialog.vue'
 import VersionDialog from './VersionDialog.vue'
 import LogFormatVerifyDialog from '@/components/LogFormatVerifyDialog.vue'
+import LogGlobPreview from '@/components/LogGlobPreview.vue'
 import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActionTooltip, formatStateTooltip } from '@/util/logFormatState'
 import {
   getApplicationDeploymentList,
@@ -1014,15 +1022,11 @@ async function submit() {
       deployment,
       enabled: memberEnabled[deployment] !== false,
     }))
-    // 覆盖行只提交这三项：解析规则属于模板日志定义（后端也不再接受该字段），
-    // 全 null 的行会被过滤掉 = 删除该覆盖行（回到默认：采 + 继承服务档位）。
+    // 覆盖行**逐条提交**（模板下的每条日志都给一行，全 null 表示"回到默认：采 + 继承服务档位"）。
+    // 不再过滤全 null 行：后端整表替换已改为逐行 upsert（不删行、不碰认证列），
+    // 过滤掉全 null 行会连"这条日志已认证"的结果一起丢掉（2026-09-20 现场）。
+    // 解析规则属于模板日志定义，后端不再接受该字段。
     payload.log_settings = Object.entries(logOverrides)
-      .filter(([, value]) => (
-        value.retention_tier !== null
-        || value.collection_enabled !== null
-        || value.collection_filter_rule !== null
-        || value.collection_exclude_filter_rule !== null
-      ))
       .map(([logDefinition, value]) => ({
         log_definition: Number(logDefinition),
         retention_tier: value.retention_tier,

@@ -135,6 +135,12 @@ export function verifyApplicationServiceLogFormat(id, payload, timeout = 120000)
     return requestUtil.post(`${applicationServicePrefix}${id}/log-config/verify/`, payload, timeout)
 }
 
+// 路径通配的按需展开：把含 * 的日志路径在承载实例上展开成真实文件清单（只读展示）。
+// 展开要逐台主机调 agent，慢且依赖主机在线，所以只在用户点「展开」时调用，不进首屏。
+export function previewApplicationServiceLogGlob(id, logDefinitionId, timeout = 60000) {
+    return requestUtil.get(`${applicationServicePrefix}${id}/log-config/glob/`, { log_definition_id: logDefinitionId }, timeout)
+}
+
 export function saveApplicationService(obj) {
     if (obj.id) return requestUtil.patch(`${applicationServicePrefix}${obj.id}/`, obj)
     return requestUtil.post(applicationServicePrefix, obj)

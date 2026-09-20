@@ -866,6 +866,16 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(enabled),sqlc.
 -- name: DeleteServiceLogSettings :exec
 DELETE FROM assets_application_service_log_setting WHERE service_id=sqlc.arg(service_id);
 
+-- 保存逻辑服务表单时的"整表替换"收尾：删除本次**未提交**的覆盖行。
+--
+-- 为什么不直接 delete-all 再 insert：认证结果（format_verified_*）只由格式认证流程写，
+-- 整表替换若把行删了，用户在编辑弹窗里刚认证通过的结果会在"保存"时被抹掉（2026-09-20 现场：
+-- 服务树里认证通过、保存后又变成未认证，必须去日志中心再认证一次才生效）。所以已提交的行改走
+-- UpsertServiceLogOverride（不碰认证列），只有未提交的行才在这一句里删掉。
+-- name: DeleteServiceLogSettingsByServiceAndDefinitions :exec
+DELETE FROM assets_application_service_log_setting
+WHERE service_id=sqlc.arg(service_id) AND log_definition_id IN (sqlc.slice(log_definition_ids));
+
 -- 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
 -- 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
 -- name: CreateServiceLogSetting :exec

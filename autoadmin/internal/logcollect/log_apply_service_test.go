@@ -2,6 +2,7 @@ package logcollect
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -15,9 +16,9 @@ import (
 // 必须被钉住，并如实回给前端。
 func TestGroupServiceApplyTargetsSeparatesUnmanagedHosts(t *testing.T) {
 	rows := []db.ListServiceLogApplyTargetsRow{
-		{HostID: 30, HostIp: "10.0.0.30", HostInstanceName: "node-c", TargetID: sql.NullInt64{}},
-		{HostID: 10, HostIp: "10.0.0.10", HostInstanceName: "node-a", TargetID: sql.NullInt64{Int64: 101, Valid: true}, ConfigFingerprint: "fp-a"},
-		{HostID: 20, HostIp: "10.0.0.20", HostInstanceName: "node-b", TargetID: sql.NullInt64{Int64: 102, Valid: true}, ConfigFingerprint: "fp-b"},
+		{HostID: 30, HostIp: "10.0.0.30", HostInstanceName: "node-c", TargetID: sql.NullInt64{}, ServiceID: 11, ServiceCode: "svc-a"},
+		{HostID: 10, HostIp: "10.0.0.10", HostInstanceName: "node-a", TargetID: sql.NullInt64{Int64: 101, Valid: true}, ConfigFingerprint: "fp-a", ServiceID: 11, ServiceCode: "svc-a", ServiceFingerprints: json.RawMessage(`{"11":"sub-a","12":"sub-b"}`)},
+		{HostID: 20, HostIp: "10.0.0.20", HostInstanceName: "node-b", TargetID: sql.NullInt64{Int64: 102, Valid: true}, ConfigFingerprint: "fp-b", ServiceID: 11, ServiceCode: "svc-a"},
 	}
 	managed, unmanaged := groupServiceApplyTargets(rows)
 
@@ -30,6 +31,13 @@ func TestGroupServiceApplyTargetsSeparatesUnmanagedHosts(t *testing.T) {
 	}
 	if managed[0].ConfigFingerprint != "fp-a" || !managed[0].Managed {
 		t.Fatalf("已纳管主机要带指纹且 Managed=true：%+v", managed[0])
+	}
+	// 服务级已下发子指纹：从 JSON map 里按服务 code 取（服务视图判状态用，见 §8.3）。
+	if managed[0].AppliedServiceFingerprint != "sub-a" {
+		t.Fatalf("应取到本服务的子指纹 sub-a，得到 %q", managed[0].AppliedServiceFingerprint)
+	}
+	if managed[1].AppliedServiceFingerprint != "" {
+		t.Fatalf("没记录的服务级子指纹应为空，得到 %q", managed[1].AppliedServiceFingerprint)
 	}
 	// 未纳管的那台：TargetID 保持 0、Managed=false，并且带着主机名（提示语里要用）。
 	if unmanaged[0].HostID != 30 || unmanaged[0].Managed || unmanaged[0].TargetID != 0 {
@@ -57,8 +65,9 @@ func TestUnmanagedMessageNamesTheHosts(t *testing.T) {
 	}
 }
 
-// 聚合可以，但**不能**出现"服务级指纹"这种字段：同一服务在不同主机上因实例级 runtime_variables
-// 不同，渲染结果本就不同，伪造一个服务级指纹会直接误导（见 serviceConfigStateSummary 的注释）。
+// 聚合只给计数，**不暴露单一"服务级指纹"**：同一服务在不同主机上因实例级 runtime_variables
+// 不同、渲染结果本就不同，伪造一个服务级指纹会直接误导。服务级状态是按 (主机 × 服务) 的子指纹
+// 逐台判出来的（见 EvaluateServiceLogConfigStates），聚合层只汇总裁数。
 func TestServiceConfigStateSummaryHasNoServiceLevelFingerprint(t *testing.T) {
 	summary := serviceConfigStateSummary{Hosts: 3, Managed: 2, Unmanaged: 1, Synced: 1, Drift: 1}
 	if summary.Hosts != summary.Managed+summary.Unmanaged {

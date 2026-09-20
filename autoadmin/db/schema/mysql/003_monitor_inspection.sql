@@ -269,6 +269,7 @@ CREATE TABLE `monitor_log_collection_target` (
   `agent_version` varchar(64) NOT NULL,
   `runtime_status` varchar(16) NOT NULL,
   `config_fingerprint` varchar(64) NOT NULL,
+  `service_fingerprints` json NOT NULL DEFAULT (JSON_OBJECT()),
   `last_applied_time` datetime(6) DEFAULT NULL,
   `last_error` longtext NOT NULL,
   `host_id` bigint NOT NULL,

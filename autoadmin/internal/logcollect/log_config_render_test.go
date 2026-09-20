@@ -14,13 +14,13 @@ const testOutputIdentity = "url=http://127.0.0.1:9200\nusername=admin\nverify_tl
 func TestRenderFingerprintCoversOutputIdentity(t *testing.T) {
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "autoadmin", Application: "mgmt", Service: "mgmt",
+			Prefix: "autoadmin", Application: "mgmt", Service: "mgmt", ServiceID: 1,
 			Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std",
 			Pipeline: "rule-a", LogName: "log_error",
 			ResolvedPath: "/data/logs/log_error.log", Macros: map[string]string{},
 		},
 	}
-	instances := []hostInstanceInput{{Service: "mgmt", Instance: "nginx-106", HostIP: "192.168.201.106"}}
+	instances := []hostInstanceInput{{Service: "mgmt", ServiceID: 1, Instance: "nginx-106", HostIP: "192.168.201.106"}}
 
 	base := renderHostLogConfig(entries, instances, testOutputIdentity)
 	if len(base.Fragments) == 0 {
@@ -55,7 +55,7 @@ func TestRenderFingerprintCoversOutputIdentity(t *testing.T) {
 func TestRenderHostLogConfig(t *testing.T) {
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 			Project: "kul", Environment: "test", BusinessSystem: "tib",
 			Tier: "wuhan-test", Pipeline: "springboot-tomcat-exception",
 			LogName: "catalina.out", ResolvedPath: "${APP_HOME}/logs/catalina.out",
@@ -63,8 +63,8 @@ func TestRenderHostLogConfig(t *testing.T) {
 		},
 	}
 	instances := []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "192.168.201.211", Macros: map[string]string{"APP_HOME": "/data/tomcat1"}},
-		{Service: "tomcat-svc", Instance: "tomcat2"},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "192.168.201.211", Macros: map[string]string{"APP_HOME": "/data/tomcat1"}},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat2"},
 	}
 	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
 	if len(rendered.Fragments) != 2 {
@@ -76,12 +76,12 @@ func TestRenderHostLogConfig(t *testing.T) {
 			inputFragment = fragment
 		}
 	}
-	if inputFragment.Path != "/etc/filebeat/inputs.d/tib__tomcat-svc__catalina.out.yml" {
+	if inputFragment.Path != "/etc/filebeat/inputs.d/tib__tomcat-svc__7__catalina.out.yml" {
 		t.Fatalf("inputs path wrong: %s", inputFragment.Path)
 	}
 	for _, want := range []string{
 		"- type: filestream",
-		"  id: 'tib__tomcat-svc__catalina.out__tomcat1'",
+		"  id: 'tib__tomcat-svc__7__catalina.out__tomcat1'",
 		"  fields_under_root: true",
 		"    service: 'tomcat-svc'",
 		"    instance: 'tomcat1'",
@@ -91,7 +91,11 @@ func TestRenderHostLogConfig(t *testing.T) {
 		"    project: 'kul'",
 		"    environment: 'test'",
 		"    host_ip: '192.168.201.211'",
-		"    log_path: '/data/tomcat1/logs/catalina.out'",
+		// log_path 不再静态注入（静态值会是路径模式），改由 input 级处理器把
+		// Filebeat 的真实文件路径拷上来——日志详情要显示具体文件，不是 `*` 模式。
+		"  processors:",
+		"          - from: log.file.path",
+		"            to: log_path",
 		"  index: 'logs-kul-tib-test-tomcat-svc-wuhan-test'",
 		"  pipeline: 'logs-tib-springboot-tomcat-exception'",
 		"  paths:",
@@ -150,13 +154,13 @@ func TestInstanceMacros(t *testing.T) {
 func TestRenderHostLogConfigAllSkipped(t *testing.T) {
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 			Project: "kul", Environment: "test", BusinessSystem: "tib",
 			Tier: "std", LogName: "catalina.out", ResolvedPath: "${APP_HOME}/logs/catalina.out",
 		},
 	}
 	instances := []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1"},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1"},
 	}
 	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
 	if len(rendered.Fragments) != 0 {
@@ -178,6 +182,91 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+// 同一台主机上多个服务：渲染是**主机完整视图**，改/下发服务 B 不会丢服务 A 的片段
+// （2026-09-20 现场疑问：A、B 共用主机，改 B 会不会影响 A？）。
+// 这也是 agent 侧 `apply_filebeat_config` 的前提：片段目录全量托管、清单外的 *.yml 会被删——
+// 如果渲染只带"当前服务"，B 下发时就会把 A 的片段删掉。
+func TestRenderHostLogConfigKeepsOtherServicesOnSameHost(t *testing.T) {
+	entries := []hostLogRenderInput{
+		{Prefix: "autoadmin", Application: "app", Service: "svc-a", ServiceID: 1, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-a", LogName: "a.log", ResolvedPath: "${HOME}/a.log"},
+		{Prefix: "autoadmin", Application: "app", Service: "svc-b", ServiceID: 2, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-b", LogName: "b.log", ResolvedPath: "${HOME}/b.log"},
+	}
+	instances := []hostInstanceInput{
+		{Service: "svc-a", ServiceID: 1, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/a"}},
+		{Service: "svc-b", ServiceID: 2, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/b"}},
+	}
+	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
+	if len(rendered.Errors) != 0 {
+		t.Fatalf("两个服务路径不同，不应有硬问题：%v", rendered.Errors)
+	}
+	if rendered.ServiceNum != 2 {
+		t.Fatalf("service_num = %d, want 2（同一主机上的两个服务都要渲染）", rendered.ServiceNum)
+	}
+	input := ""
+	for _, fragment := range rendered.Fragments {
+		if contains(fragment.Path, "inputs.d") {
+			input += fragment.Content
+		}
+	}
+	for _, want := range []string{
+		"id: 'app__svc-a__1__a.log__i1'",
+		"id: 'app__svc-b__2__b.log__i1'",
+		"'/srv/a/a.log'",
+		"'/srv/b/b.log'",
+	} {
+		if !contains(input, want) {
+			t.Errorf("主机完整渲染缺少 %q：\n%s", want, input)
+		}
+	}
+}
+
+// 服务级子指纹：改服务 B 只让 B 的子指纹变，A 的不变（这样服务视图里 A 不会被 B 的改动带成待下发）。
+func TestRenderHostLogConfigServiceFingerprintsIsolateServices(t *testing.T) {
+	instances := []hostInstanceInput{
+		{Service: "svc-a", ServiceID: 1, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/a"}},
+		{Service: "svc-b", ServiceID: 2, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/b"}},
+	}
+	entries := []hostLogRenderInput{
+		{Prefix: "autoadmin", Application: "app", Service: "svc-a", ServiceID: 1, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-a", LogName: "a.log", ResolvedPath: "${HOME}/a.log"},
+		{Prefix: "autoadmin", Application: "app", Service: "svc-b", ServiceID: 2, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-b", LogName: "b.log", ResolvedPath: "${HOME}/b.log"},
+	}
+	base := renderHostLogConfig(entries, instances, testOutputIdentity)
+	if len(base.ServiceFingerprints) != 2 {
+		t.Fatalf("应有两个服务的子指纹，得到 %#v", base.ServiceFingerprints)
+	}
+
+	// 只改 B 的 pipeline（内容变）。
+	changed := append([]hostLogRenderInput(nil), entries...)
+	changed[1].Pipeline = "rule-b2"
+	after := renderHostLogConfig(changed, instances, testOutputIdentity)
+
+	if after.ServiceFingerprints["1"] != base.ServiceFingerprints["1"] {
+		t.Fatalf("改 B 不应改变 A 的子指纹：before=%s after=%s", base.ServiceFingerprints["1"], after.ServiceFingerprints["1"])
+	}
+	if after.ServiceFingerprints["2"] == base.ServiceFingerprints["2"] {
+		t.Fatalf("改 B 必须改变 B 的子指纹")
+	}
+	if after.Fingerprint == base.Fingerprint {
+		t.Fatalf("主机指纹必须变（整机仍需重新下发）")
+	}
+}
+
+// .keep 是主机级信号，不能进服务子指纹，否则新增服务 B 会让 A 的子指纹也变。
+func TestRenderHostLogConfigServiceFingerprintIgnoresKeep(t *testing.T) {
+	instancesOnlyA := []hostInstanceInput{{Service: "svc-a", ServiceID: 1, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/a"}}}
+	entryA := hostLogRenderInput{Prefix: "autoadmin", Application: "app", Service: "svc-a", ServiceID: 1, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-a", LogName: "a.log", ResolvedPath: "${HOME}/a.log"}
+	onlyA := renderHostLogConfig([]hostLogRenderInput{entryA}, instancesOnlyA, testOutputIdentity)
+
+	instancesBoth := append([]hostInstanceInput(nil), instancesOnlyA...)
+	instancesBoth = append(instancesBoth, hostInstanceInput{Service: "svc-b", ServiceID: 2, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/b"}})
+	entryB := hostLogRenderInput{Prefix: "autoadmin", Application: "app", Service: "svc-b", ServiceID: 2, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-b", LogName: "b.log", ResolvedPath: "${HOME}/b.log"}
+	both := renderHostLogConfig([]hostLogRenderInput{entryA, entryB}, instancesBoth, testOutputIdentity)
+
+	if both.ServiceFingerprints["1"] != onlyA.ServiceFingerprints["1"] {
+		t.Fatalf("新增 B 不应改变 A 的子指纹（.keep 只算主机级）：onlyA=%s both=%s", onlyA.ServiceFingerprints["1"], both.ServiceFingerprints["1"])
+	}
 }
 
 // 宏解析口径：部署模板 macro_definitions 的 value 作默认值，服务级 macro_values 覆盖同名项。
@@ -252,12 +341,12 @@ func TestRenderSkipsWhenNoProcessingRule(t *testing.T) {
 // `[A-Za-z\u4e00-\u9fa5]`，RE2 编译不过；当时的下发路径不做检查，认证时才报错。
 func TestRenderHostLogConfigSkipsUncompilableMultilinePattern(t *testing.T) {
 	instances := []hostInstanceInput{
-		{Service: "tomcat-svc", Instance: "tomcat1", HostIP: "192.168.201.211"},
-		{Service: "nginx", Instance: "nginx1", HostIP: "192.168.201.212"},
+		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat1", HostIP: "192.168.201.211"},
+		{Service: "nginx", ServiceID: 8, Instance: "nginx1", HostIP: "192.168.201.212"},
 	}
 	entries := []hostLogRenderInput{
 		{
-			Prefix: "logs", Application: "tib", Service: "tomcat-svc",
+			Prefix: "logs", Application: "tib", Service: "tomcat-svc", ServiceID: 7,
 			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
 			Pipeline: "springboot-tomcat-exception", LogName: "catalina.out",
 			ResolvedPath: "/data/tomcat1/logs/catalina.out",
@@ -265,7 +354,7 @@ func TestRenderHostLogConfigSkipsUncompilableMultilinePattern(t *testing.T) {
 		},
 		{
 			// 同一个 host 上的另一条日志：坏规则只能影响它自己，不能连坐。
-			Prefix: "logs", Application: "tib", Service: "nginx",
+			Prefix: "logs", Application: "tib", Service: "nginx", ServiceID: 8,
 			Project: "kul", Environment: "test", BusinessSystem: "tib", Tier: "std",
 			Pipeline: "nginx-access", LogName: "access.log",
 			ResolvedPath: "/var/log/nginx/access.log",
@@ -282,7 +371,7 @@ func TestRenderHostLogConfigSkipsUncompilableMultilinePattern(t *testing.T) {
 			t.Fatalf("首行正则编译不过的片段不应下发：%v", paths)
 		}
 	}
-	if !contains(strings.Join(paths, "\n"), "tib__nginx__access.log.yml") {
+	if !contains(strings.Join(paths, "\n"), "tib__nginx__8__access.log.yml") {
 		t.Fatalf("正常日志仍应下发：%v", paths)
 	}
 	warnings := strings.Join(rendered.Warnings, "\n")

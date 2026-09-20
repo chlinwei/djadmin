@@ -130,14 +130,20 @@ httpService.interceptors.response.use(function (response) {
  *  get请求
  *  url:请求地址
  *  params:参数
+ *  timeout:自定义超时时间(可选，毫秒)
  * */
-export function get(url, params = {}) {
+export function get(url, params = {}, timeout = null) {
     return new Promise((resolve, reject) => {
-        httpService({
+        const config = {
             url: url,
             method: 'get',
             params: params
-        }).then(response => {
+        }
+        // 如果指定了自定义超时，则覆盖默认超时（如按需展开日志路径要逐台调 agent，较慢）。
+        if (timeout) {
+            config.timeout = timeout
+        }
+        httpService(config).then(response => {
             resolve(response);
         }).catch(error => {
             reject(error);

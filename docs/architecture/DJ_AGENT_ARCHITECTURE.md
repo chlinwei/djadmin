@@ -64,6 +64,27 @@ Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent �
 `token`（共享密钥校验）与 `version`（构建期注入的 `buildinfo.Version`）。
 校验通过后 autoadmin 回 `HelloAck`；校验失败直接关闭流，避免未授权 client 冒充 agent。
 
+### 3.1 文件通道与通配路径解析
+
+文件管理与传输走 `StatFile` / `ReadFileChunk`（`grpcfile/client.go`；backend 侧封装在
+`autoadmin/internal/agent/file.go`）。`StatFile` 只按**精确路径** `os.Stat`，不展开通配——
+文件管理器对普通路径（含字面 `*` / `?` / `[` 的文件名）的行为保持简单确定。
+
+日志采集的 `path_pattern` 允许写通配（如 `/var/log/*.log`、`/var/log/*/*/*.log`），但通配的
+展开**不在 agent 侧做**：backend 用早已存在的 `ListFiles`（`grpcfile/client.go` 的
+`handleList`，返回目录项的名称/大小/是否目录/mtime）逐层列目录、按路径段 `filepath.Match`，
+拼出全部匹配的普通文件（`autoadmin/internal/logcollect/log_glob_remote.go` 的
+`resolveRemoteGlob`）。
+
+- **为什么放 backend**：这样**不需要升级已部署的 agent**，实例抽样认证与界面「解析后」列的
+  展开都能在现有 agent 上生效。代价是要多次列目录 RPC，但日志目录层级浅、又是按需/单条触发，
+  可以接受。
+- **语义**：每个路径段内的 `*` / `?` / `[]` 在单层内匹配，段间 `/` 是字面量；
+  **不支持 `**`**（现场约定不会出现）。
+- **两道上限**：单次展开最多列 200 个目录、最多返回 500 个文件，防止误写通配踩进超大目录树。
+- 目录列不出来（不存在/无权限）视为该分支没命中；整棵树的匹配为空则报
+  `路径未匹配到任何日志文件: <pattern>`。
+
 ---
 
 ## 4. 在线状态与版本上报

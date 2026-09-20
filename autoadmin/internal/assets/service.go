@@ -24,6 +24,9 @@ type Service struct {
 	// logConfigChecker 由 logcollect 注入（见 log_config_consistency.go）：保存逻辑服务前
 	// 渲染一遍期望配置，配置不自洽（路径展不开、同主机同路径、正则编译不过）就拒绝保存。
 	logConfigChecker LogConfigConsistencyChecker
+	// logGlobPreviewer 由 logcollect 注入（见 log_glob_preview.go）：按需把日志路径里的
+	// 通配展开成主机上的真实文件清单，供界面「解析后」列展示。未注入时接口返回不可用。
+	logGlobPreviewer LogGlobPreviewer
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {
@@ -59,7 +62,7 @@ func translate(err error) error {
 	if errors.As(err, &mysqlError) {
 		switch mysqlError.Number {
 		case 1062:
-			return ErrDuplicate
+			return duplicateError(err)
 		case 1451:
 			return ErrDeleteProtected
 		case 1452:
@@ -70,7 +73,7 @@ func translate(err error) error {
 	if errors.As(err, &stateError) {
 		switch stateError.SQLState() {
 		case pgUniqueViolation:
-			return ErrDuplicate
+			return duplicateError(err)
 		case pgForeignKeyViolation:
 			// MySQL 用 1451/1452 两个错误号区分「被引用不能删」和「关联不存在」，
 			// PG 两者都是 23503，只能看报文：删除被引用行时 PG 报
@@ -85,6 +88,21 @@ func translate(err error) error {
 	}
 	return err
 }
+
+// duplicateError 把唯一约束冲突细分到"名称"还是"编码"。数据库报错里带着约束名
+// （PG: unique constraint "..."；MySQL: for key '...'），据此区分。命中不了就退回笼统文案。
+// 注意先判 code 约束，因为它的名字包含 name 约束名，作为子串会被误命中。
+func duplicateError(err error) error {
+	message := err.Error()
+	if strings.Contains(message, "unique_business_environment_service_code") {
+		return ErrDuplicateCode
+	}
+	if strings.Contains(message, "unique_business_environment_service") {
+		return ErrDuplicateName
+	}
+	return ErrDuplicate
+}
+
 func validNamed(name, code string) bool {
 	return strings.TrimSpace(name) != "" && strings.TrimSpace(code) != ""
 }

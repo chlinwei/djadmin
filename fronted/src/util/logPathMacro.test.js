@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolvePathMacros, unexpandedMacros } from './logPathMacro'
+import { resolvePathMacros, unexpandedMacros, hasGlobMeta } from './logPathMacro'
 
 // 前端这套展开是服务端 internal/shared/logmacro 的移植：合并顺序必须逐字对齐，
 // 否则会出现"界面显示的路径与主机上实际采的不一样"（比显示占位符更糟）。
@@ -56,5 +56,22 @@ describe('resolvePathMacros', () => {
       templateMacros,
       serviceMacros: { LOG_DIR: '/x' },
     })).toBe('/x/a.log;/x/b.log')
+  })
+})
+
+describe('hasGlobMeta', () => {
+  it('识别单层通配（现场模式：/var/log/*.log、/var/log/*/*/*.log）', () => {
+    expect(hasGlobMeta('/var/log/*.log')).toBe(true)
+    expect(hasGlobMeta('/var/log/*/*/*.log')).toBe(true)
+    expect(hasGlobMeta('/home/esb/data/logs/*/log_error.log')).toBe(true)
+    expect(hasGlobMeta('/var/log/app?.log')).toBe(true)
+    expect(hasGlobMeta('/var/log/app[12].log')).toBe(true)
+  })
+
+  it('普通绝对路径不算通配', () => {
+    expect(hasGlobMeta('/var/log/app.log')).toBe(false)
+    expect(hasGlobMeta('/home/esb/data/logs/app1/log_error.log')).toBe(false)
+    expect(hasGlobMeta('')).toBe(false)
+    expect(hasGlobMeta(undefined)).toBe(false)
   })
 })

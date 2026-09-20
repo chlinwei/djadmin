@@ -1529,6 +1529,27 @@ func (q *Queries) DeleteServiceLogSettingsByDefinitionIDs(ctx context.Context, l
 	return err
 }
 
+const deleteServiceLogSettingsByServiceAndDefinitions = `-- name: DeleteServiceLogSettingsByServiceAndDefinitions :exec
+DELETE FROM assets_application_service_log_setting
+WHERE service_id=$1 AND log_definition_id = ANY($2::bigint[])
+`
+
+type DeleteServiceLogSettingsByServiceAndDefinitionsParams struct {
+	ServiceID        int64   `json:"service_id"`
+	LogDefinitionIds []int64 `json:"log_definition_ids"`
+}
+
+// 保存逻辑服务表单时的"整表替换"收尾：删除本次**未提交**的覆盖行。
+//
+// 为什么不直接 delete-all 再 insert：认证结果（format_verified_*）只由格式认证流程写，
+// 整表替换若把行删了，用户在编辑弹窗里刚认证通过的结果会在"保存"时被抹掉（2026-09-20 现场：
+// 服务树里认证通过、保存后又变成未认证，必须去日志中心再认证一次才生效）。所以已提交的行改走
+// UpsertServiceLogOverride（不碰认证列），只有未提交的行才在这一句里删掉。
+func (q *Queries) DeleteServiceLogSettingsByServiceAndDefinitions(ctx context.Context, arg DeleteServiceLogSettingsByServiceAndDefinitionsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteServiceLogSettingsByServiceAndDefinitions, arg.ServiceID, pq.Array(arg.LogDefinitionIds))
+	return err
+}
+
 const deleteTemplateComposeConfig = `-- name: DeleteTemplateComposeConfig :exec
 DELETE FROM assets_docker_compose_control_config WHERE deployment_template_id=$1
 `

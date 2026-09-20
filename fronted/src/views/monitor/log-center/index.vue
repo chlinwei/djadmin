@@ -18,10 +18,6 @@
           <a-tag v-if="scope.environmentName">{{ scope.environmentName }}</a-tag>
           <a-tag v-if="scope.nodeType === 'deployment'" color="green">实例：{{ scope.nodeTitle }}</a-tag>
         </div>
-        <a-button v-if="activeTab === 'storage' && serviceId" size="small" :loading="storageLoading" @click="loadStorage()">
-          <ReloadOutlined />
-          <span>&nbsp;刷新水位</span>
-        </a-button>
       </header>
 
       <a-tabs v-model:active-key="activeTab">
@@ -177,6 +173,12 @@
                       {{ unexpandedMacros(record.resolved_path).join(' ') }} 实例上展开
                     </a-tag>
                   </a-tooltip>
+                  <!-- 含通配的路径按需展开成主机上的真实文件清单（逐台调 agent，不进首屏）。 -->
+                  <LogGlobPreview
+                    v-if="showResolvedPath && !unexpandedMacros(record.resolved_path).length && hasGlobMeta(record.resolved_path)"
+                    :service-id="serviceId"
+                    :log-definition-id="record.log_definition"
+                  />
                 </template>
                 <template v-else-if="column.key === 'carrying_hosts'">
                   <a-tooltip v-if="carryingHostsSummary" :title="carryingHostsTooltip" placement="top">
@@ -583,7 +585,8 @@ import { fetchAllPages } from '@/util/fetchAllPages'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { buildStorageUsagePieOption } from '@/util/storageUsagePie'
-import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros } from '@/util/logPathMacro'
+import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
+import LogGlobPreview from '@/components/LogGlobPreview.vue'
 import StorageUsagePie from './StorageUsagePie.vue'
 
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
@@ -712,7 +715,8 @@ const applyUnmanagedText = computed(() => {
   const names = unmanaged.map((item) => item.host_instance_name || item.host_ip || `host-${item.host_id}`)
   return `${unmanaged.length} 台承载主机还没有纳管日志采集，本服务下发不了它们：${names.join('、')}`
 })
-// 聚合文案：状态只能是主机级的计数，不能写成"本服务已同步/待下发"（不存在服务级指纹）。
+// 聚合文案：这里的计数是**本服务**在各承载主机上的配置态（后端按 (主机 × 服务) 子指纹判定，
+// 共享主机上其他服务的改动不会把本服务带成待下发，见 docs §8.3）。
 const applySummaryText = computed(() => {
   const summary = applyState.value?.summary
   if (!summary || !summary.hosts) return ''
@@ -1287,7 +1291,7 @@ async function loadStorage() {
       storageRows.value = []
       return
     }
-    const response = await getLogStorageOverview(clusterId, serviceCode ? { service_code: serviceCode } : undefined)
+    const response = await getLogStorageOverview(clusterId, serviceId.value ? { application_service_id: serviceId.value } : undefined)
     const data = response?.data?.data || {}
     storageCluster.value = data.cluster || null
     storageGeneratedAt.value = data.generated_at || ''

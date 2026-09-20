@@ -210,7 +210,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     wrapper.unmount()
   })
 
-  it('日志详情展示日志路径字段', async () => {
+  it('日志详情展示日志路径字段，时间显示到毫秒', async () => {
     const wrapper = mountPanel()
     await flushPromises()
     await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
@@ -222,6 +222,8 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     // a-drawer 通过 Teleport 挂载到 document.body，不在 wrapper 根节点子树内，需要直接查 body 文本。
     expect(document.body.textContent).toContain('日志路径')
     expect(document.body.textContent).toContain('/home/esb/tomcat/logs/catalina.out')
+    // @timestamp=2026-08-30T10:00:00Z + Asia/Shanghai → 18:00:00.000（毫秒精度）
+    expect(document.body.textContent).toContain('2026-08-30 18:00:00.000')
     wrapper.unmount()
   })
 
@@ -290,6 +292,27 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(
       CLUSTER.id,
       expect.objectContaining({ error_fingerprint: 'fp-1' }),
+    )
+    wrapper.unmount()
+  })
+
+  // 统计维度支持「日志路径」：下钻要把具体文件写回过滤条件并带给后端（后端 buildLogQuery 支持 log_path）。
+  it('按日志路径统计后下钻会按具体文件过滤', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+    wrapper.vm.handleTabChange('stats')
+    await flushPromises()
+
+    wrapper.vm.statsField = 'log_path'
+    wrapper.vm.drillDown({ value: '/home/esb/data/logs/app1/log_error.log' })
+    await flushPromises()
+
+    expect(wrapper.vm.filters.logPath).toBe('/home/esb/data/logs/app1/log_error.log')
+    expect(searchElasticsearchLogs).toHaveBeenLastCalledWith(
+      CLUSTER.id,
+      expect.objectContaining({ log_path: '/home/esb/data/logs/app1/log_error.log' }),
     )
     wrapper.unmount()
   })

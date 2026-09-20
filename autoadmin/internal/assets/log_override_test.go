@@ -194,6 +194,87 @@ func TestSaveServiceLogOverrideRejectsInvalidArguments(t *testing.T) {
 
 func int64Ptr(value int64) *int64 { return &value }
 
+// 保存逻辑服务的整表替换**不能抹掉认证结果**（2026-09-20 现场：服务树里认证通过、保存后
+// 又变成未认证，必须去日志中心重新认证才生效）。
+//
+// 守卫方式：整表替换已提交的行必须走 UpsertServiceLogOverride（不碰 format_verified_*），
+// 只有"本次未提交"的行才删。若有人改回 delete-all + insert，这里第一条 Exec 就对不上
+// （收到的是 DELETE 而不是 INSERT），ExpectationsWereMet 直接失败。
+func TestSaveApplicationServiceKeepsFormatVerification(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	service, err := NewService(NewRepository(database), "", "test-django-secret")
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
+	// 已提交的行 → 按行 upsert（不是 DELETE + INSERT）。
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 读出当前覆盖行，删掉本次未提交的（本例只有 24，全部已提交 → 没有删除）。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM assets_application_service_log_setting")).
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"log_definition_id", "retention_tier_id", "collection_enabled", "collection_filter_rule_id"},
+		).AddRow(int64(24), nil, nil, nil))
+	mock.ExpectCommit()
+
+	settings := []ServiceLogSettingInput{{LogDefinition: 24}}
+	if _, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
+		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
+		ApplicationVersion: 1, DeploymentTemplate: 1,
+		LogSettings: &settings,
+	}, nil); err != nil {
+		t.Fatalf("save service: %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("整表替换不该 delete-all（认证会被抹掉）: %v", err)
+	}
+}
+
+// 本次未提交的行要删掉（整表替换语义不变）：删的是 (service_id, log_definition_id) 范围内的行，
+// 不是 delete-all。
+func TestSaveApplicationServiceDeletesUnsubmittedLogSettings(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	service, err := NewService(NewRepository(database), "", "test-django-secret")
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 现有 24 与 25；本次只提交 24 → 25 要被删。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM assets_application_service_log_setting")).
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"log_definition_id", "retention_tier_id", "collection_enabled", "collection_filter_rule_id"},
+		).AddRow(int64(24), nil, nil, nil).AddRow(int64(25), nil, nil, nil))
+	mock.ExpectExec("DELETE FROM assets_application_service_log_setting\\s+WHERE service_id=\\? AND log_definition_id IN").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	settings := []ServiceLogSettingInput{{LogDefinition: 24}}
+	if _, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
+		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
+		ApplicationVersion: 1, DeploymentTemplate: 1,
+		LogSettings: &settings,
+	}, nil); err != nil {
+		t.Fatalf("save service: %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
 // readRepositoryFile 读模块内的文件（按 go.mod 定位根目录，与 dropped_column_guard_test.go 同一套）。
 func readRepositoryFile(relativePath string) (string, error) {
 	raw, err := os.ReadFile(filepath.Join(findRepositoryRoot(), relativePath))

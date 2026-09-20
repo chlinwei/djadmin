@@ -708,7 +708,10 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	}
 
 	currentFingerprint, _ := queries.GetLogTargetConfigFingerprint(context, row.ID)
-	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint {
+	storedServiceFingerprints, _ := queries.GetLogTargetServiceFingerprints(context, row.ID)
+	// 跳过条件**必须同时**比对服务级指纹：存量目标的主机指纹没变但 service_fingerprints 为空，
+	// 只比主机指纹会一直跳过，服务级记录永远补不上（升级后服务视图会一直是"从未下发"）。
+	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint && serviceFingerprintsMatch(rendered.ServiceFingerprints, storedServiceFingerprints) {
 		now := time.Now().UTC()
 		_ = queries.MarkLogTargetConfigApplied(context, generated.MarkLogTargetConfigAppliedParams{
 			LastAppliedTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: row.ID,
@@ -745,13 +748,36 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 		return nil, fmt.Errorf("Filebeat 片段下发失败: %s", reason)
 	}
 	now := time.Now().UTC()
+	// service_fingerprints **整体替换**为本次渲染的服务集合：服务停采/移出主机时它的 key 会消失，
+	// 服务视图据此判"待下发（需下发一次清理）"。
+	serviceFingerprintJSON, _ := json.Marshal(rendered.ServiceFingerprints)
 	if err = queries.MarkLogTargetConfigSynced(context, generated.MarkLogTargetConfigSyncedParams{
 		LastAppliedTime: sql.NullTime{Time: now, Valid: true}, ConfigFingerprint: rendered.Fingerprint,
-		UpdateTime: now, ID: row.ID,
+		ServiceFingerprints: serviceFingerprintJSON, UpdateTime: now, ID: row.ID,
 	}); err != nil {
 		return nil, err
 	}
 	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
+}
+
+// serviceFingerprintsMatch 判断已存的服务级指纹与本次渲染的是否一致（用于下发跳过判定）。
+// 存的是 JSON map，键序不定，必须解析后逐项比对，不能比字符串。
+func serviceFingerprintsMatch(expected map[string]string, stored json.RawMessage) bool {
+	parsed := map[string]string{}
+	if len(stored) > 0 {
+		if err := json.Unmarshal(stored, &parsed); err != nil {
+			return false
+		}
+	}
+	if len(expected) != len(parsed) {
+		return false
+	}
+	for key, value := range expected {
+		if parsed[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- 批量创建（纳管 Filebeat） ----

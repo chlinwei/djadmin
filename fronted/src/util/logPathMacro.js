@@ -27,6 +27,12 @@ export function pathCellValue(record, showResolved) {
   return showResolved ? (record?.resolved_path || record?.path_pattern || '') : (record?.path_pattern || '')
 }
 
+// 路径里是否含 glob 元字符（* ? [）。含通配时服务这一层只解析到"模式"，具体采哪些文件要
+// 到主机上用 agent 展开（见 LogGlobPreview），所以界面给出「展开文件」入口。
+export function hasGlobMeta(path) {
+  return /[?*\[]/.test(String(path || ''))
+}
+
 /**
  * 按服务这一层能拿到的信息展开路径里的宏（模板默认 → 服务覆盖），**与服务端同一套合并顺序**。
  *

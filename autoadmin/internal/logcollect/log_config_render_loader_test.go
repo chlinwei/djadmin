@@ -23,25 +23,25 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 	defer database.Close()
 
 	mock.ExpectQuery("FROM assets_application_service_deployment").WillReturnRows(
-		sqlmock.NewRows([]string{"host_id", "service_code", "instance_name", "runtime_variables", "app_home", "host_ip"}).
-			AddRow(int64(1), "svc-a", "inst-1", []byte(`{"APP_HOME":"/opt/instance"}`), "/data/tpl", "10.0.0.1").
-			AddRow(int64(1), "svc-a", "inst-2", []byte(`{}`), "/data/tpl", "10.0.0.1").
-			AddRow(int64(2), "svc-b", "inst-3", []byte(`{}`), "", "10.0.0.2"),
+		sqlmock.NewRows([]string{"host_id", "service_id", "service_code", "instance_name", "runtime_variables", "app_home", "host_ip"}).
+			AddRow(int64(1), int64(10), "svc-a", "inst-1", []byte(`{"APP_HOME":"/opt/instance"}`), "/data/tpl", "10.0.0.1").
+			AddRow(int64(1), int64(10), "svc-a", "inst-2", []byte(`{}`), "/data/tpl", "10.0.0.1").
+			AddRow(int64(2), int64(20), "svc-b", "inst-3", []byte(`{}`), "", "10.0.0.2"),
 	)
 	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(
 		sqlmock.NewRows([]string{
-			"host_id", "project_code", "environment_code", "business_system_code", "service_code",
+			"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
 			"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
 			"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
 			// 采集过滤的四个 id：本例只验证装载，两个方向都不配（NULL）。
 			"filter_include_rule_id", "filter_exclude_rule_id",
 			"collection_filter_rule_id", "collection_exclude_filter_rule_id",
 		}).
-			AddRow(int64(1), "kul", "test", "tib", "svc-a", "app-a", "hot", "rule-a", "catalina.out",
+			AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
 				"${APP_HOME}/logs/catalina.out", []byte(`{"LOG_DIR":"/svc/logs"}`),
 				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000),
 				nil, nil, nil, nil).
-			AddRow(int64(2), "kul", "prod", "tib", "svc-b", "app-b", "std", "rule-b", "app.log",
+			AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
 				"/data/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
 				nil, nil, nil, nil),
 	)

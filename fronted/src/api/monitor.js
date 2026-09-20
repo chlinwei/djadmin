@@ -199,11 +199,18 @@ export function searchElasticsearchLogFacetStats(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-facet-stats/`, params)
 }
 
+// 强制刷新该逻辑服务"采集中的 data stream"的 ES 索引（refresh_interval=10s 导致新日志要等一会
+// 才可查，这里点一下立即刷新）。params 只需 application_service_id。
+export function refreshElasticsearchLogIndex(id, params) {
+  return requestUtil.post(prefix + `elasticsearch-clusters/${id}/log-refresh/`, params)
+}
+
 // 存储水位总览：data stream 运行态（大小/docs/rollover/ILM）+ 节点磁盘 + 服务树维度数据
-// 存储水位总览。params 支持 service_code：只取该逻辑服务的流，并且后端会直接把 ES 查询
-// 收窄到该服务的索引（不是取全量再前端过滤），供「日志中心 → 本服务水位」用。
-// 不传 service_code 时是**全量视图**：「日志中心 → 存储水位」tab 未选中服务（或选的是项目/
-// 业务系统/环境）时用，前端再按树的层级过滤。
+// 存储水位总览。params 支持 application_service_id：只取该逻辑服务的流，并且后端会直接把 ES
+// 查询收窄到该服务的索引（不是取全量再前端过滤），供「日志中心 → 本服务水位」用。
+// 用 id 而不是 service_code：逻辑服务编码允许跨业务/环境重复，只凭 code 会命中错的维度段。
+// 不传 application_service_id 时是**全量视图**：「日志中心 → 存储水位」tab 未选中服务（或选的
+// 是项目/业务系统/环境）时用，前端再按树的层级过滤。
 export function getLogStorageOverview(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-storage-overview/`, params)
 }

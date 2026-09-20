@@ -3,9 +3,13 @@ package assets
 import "autoadmin/internal/shared/apperror"
 
 var (
-	ErrNotFound         = apperror.New(apperror.CodeNotFound, "资产不存在")
-	ErrInvalid          = apperror.New(apperror.CodeInvalidArgument, "资产参数无效")
-	ErrDuplicate        = apperror.New(apperror.CodeInvalidArgument, "名称或编码已存在")
+	ErrNotFound  = apperror.New(apperror.CodeNotFound, "资产不存在")
+	ErrInvalid   = apperror.New(apperror.CodeInvalidArgument, "资产参数无效")
+	ErrDuplicate = apperror.New(apperror.CodeInvalidArgument, "名称或编码已存在")
+	// 逻辑服务的名称/编码唯一域是 (业务系统, 环境)。按约束名区分二者，避免用户看到笼统的
+	// "名称或编码已存在" 却不知道该改哪个（见 assets 000044 迁移）。
+	ErrDuplicateName    = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务名称已存在")
+	ErrDuplicateCode    = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务编码已存在")
 	ErrInvalidRelation  = apperror.New(apperror.CodeInvalidArgument, "关联资产不存在")
 	ErrDeleteProtected  = apperror.New(apperror.CodeInvalidArgument, "资产仍被其他记录引用，无法删除")
 	ErrGroupCycle       = apperror.New(apperror.CodeInvalidArgument, "主机分组不能形成循环层级")
@@ -21,4 +25,6 @@ var (
 	ErrLogFormatSourceInvalid      = apperror.New(apperror.CodeInvalidArgument, "认证依据无效：只能是 instance / sample_log / waiver")
 	ErrLogFormatDeploymentRequired = apperror.New(apperror.CodeInvalidArgument, "按实例抽样认证时必须指定部署实例")
 	ErrLogFormatUnavailable        = apperror.New(apperror.CodeInternal, "日志格式认证执行器未接线，无法取样校验")
+	// 日志路径通配展开（按需）。
+	ErrLogGlobPreviewUnavailable = apperror.New(apperror.CodeInternal, "日志路径通配展开执行器未接线，无法展开")
 )

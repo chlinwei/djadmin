@@ -27,6 +27,14 @@ describe('timezone utils', () => {
     expect(result).toBe('2026-01-01 08:00:00')
   })
 
+  // 日志查询要显示到毫秒：SSS 占位符取 Date.getMilliseconds()，且不受时区影响。
+  it('supports millisecond placeholder SSS', () => {
+    expect(formatTimeWithTimezone('2026-01-01T00:00:00.635Z', 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss.SSS'))
+      .toBe('2026-01-01 08:00:00.635')
+    expect(formatTimeWithTimezone('2026-01-01T00:00:00Z', 'UTC', 'YYYY-MM-DD HH:mm:ss.SSS'))
+      .toBe('2026-01-01 00:00:00.000')
+  })
+
   it('returns local string for invalid time input', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = formatTimeWithTimezone('invalid-time-value', 'Asia/Shanghai')

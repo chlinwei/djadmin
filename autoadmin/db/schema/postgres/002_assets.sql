@@ -325,7 +325,7 @@ CREATE TABLE assets_application_service (
   log_collection_enabled boolean NOT NULL,
   log_retention_tier_id bigint DEFAULT NULL,
   PRIMARY KEY (id),
-  CONSTRAINT assets_application_service_code UNIQUE (code),
+  CONSTRAINT unique_business_environment_service_code UNIQUE (business_system_id, environment_id, code),
   CONSTRAINT unique_business_environment_service UNIQUE (business_system_id, environment_id, name),
   CONSTRAINT assets_application_service_application_fk FOREIGN KEY (application_id) REFERENCES assets_application (id),
   CONSTRAINT assets_application_service_version_fk FOREIGN KEY (application_version_id) REFERENCES assets_application_version (id),

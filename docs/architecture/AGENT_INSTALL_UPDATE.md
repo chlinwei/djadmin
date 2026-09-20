@@ -89,6 +89,7 @@ agent 二进制自身内嵌版本元数据（`dj_agent/internal/buildinfo`，源
 1. 取主机 `instance_name` 作为 agent 身份；实例名为空直接判该主机失败（提示在主机列表补填实例名），不再有占位或 IP 派生兜底。按主机 IP 与对外地址计算 gRPC 地址（同机走 `127.0.0.1`）。
 2. 建临时目录，写 inventory（JSON 格式）：
    - 密码凭证：解密后写入 `ansible_password`；SSH Key 凭证：解密后写私钥文件（0600）+ `ansible_ssh_private_key_file`。
+   - 每个 host 变量都写 `ansible_ssh_common_args=-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<临时目录>/known_hosts`。**仅 install 链路需要**：密码认证走 sshpass 无法交互确认未知主机指纹，否则报 "Using a SSH password instead of a key is not possible because Host Key checking is enabled"；update 走 gRPC，不经过 ansible/SSH。
    - 非 root 用户自动加 sudo become（含 become_password）。凭证解密失败/为空 → 该主机失败。
 3. 写入二进制副本（0755）与模板内容 playbook，执行 `ansible-playbook -i inventory --timeout 10 -e dj_agent_binary_source/... -e dj_agent_instance_name=<instance_name>`，超时 300 秒（进程组 SIGKILL）。命令统一由 `internal/automation/ansiblecmd.CommandContext` 构造（见下）。
 4. stdout 每秒流式回写 `assets_agent_job.stdout` 与 host log。

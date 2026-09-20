@@ -462,9 +462,10 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
-  // 水位只在切到那个 tab 时读，并且**必须带 service_code**：后端据此把 ES 查询收窄到本服务的索引，
-  // 少了它就会退化成"取全集群再前端过滤"（页面看起来一样，代价差很多）。
-  it('loads the water level lazily with service_code so the backend can narrow the ES query', async () => {
+  // 水位只在切到那个 tab 时读，并且**必须带 application_service_id**：后端据此把 ES 查询收窄到本服务的索引，
+  // 少了它就会退化成"取全集群再前端过滤"（页面看起来一样，代价差很多）。用 id 而非 code：
+  // 逻辑服务编码现在允许跨业务/环境重复，只凭 code 会命中错的维度段。
+  it('loads the water level lazily with application_service_id so the backend can narrow the ES query', async () => {
     const { getLogStorageOverview } = await import('@/api/monitor')
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
@@ -475,7 +476,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.vm.activeTab = 'storage'
     await flushPromises()
 
-    expect(getLogStorageOverview).toHaveBeenCalledWith(1, { service_code: 'nginx' })
+    expect(getLogStorageOverview).toHaveBeenCalledWith(1, { application_service_id: 15 })
     // 断言完整流名（只出现在 Data Stream 列），而不是 "wuhan-test"——那是档位列的内容。
     expect(document.body.textContent).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')
     // 服务停用的那条流要标注"已停用"，而不是和正常采集长得一样。
@@ -641,8 +642,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.vm.activeTab = 'storage'
     await flushPromises()
 
-    // 仍然按服务收窄查了水位（用的是顶层 service_code，而不是 logs[0]）
-    expect(getLogStorageOverview).toHaveBeenCalledWith(1, { service_code: 'nginx' })
+    // 仍然按服务收窄查了水位（用的是选中的服务 id，而不是 logs[0]）
+    expect(getLogStorageOverview).toHaveBeenCalledWith(1, { application_service_id: 15 })
     expect(wrapper.vm.storageRows).toHaveLength(2)
     // 展示层不再自己推断历史流（判定在后端），这里只保证"没有日志定义也不隐藏存量流"。
     expect(wrapper.vm.storageRows.map((row) => row.name)).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')

@@ -266,7 +266,7 @@ func (handler *Handler) serviceDataFlowLayer(context *gin.Context, service db.Ge
 		}
 		return logHealthLayer("data_flow", "数据写入", logHealthError, reason, nil)
 	}
-	total, _, queryErr := handler.queryLogDataFlow(context, cluster, logHealthPrefix(cluster), service.Code, logServiceChainWindowMinutes)
+	total, _, queryErr := handler.queryLogDataFlow(context, cluster, logHealthPrefix(cluster), service.ID, logServiceChainWindowMinutes)
 	if queryErr != nil {
 		return logHealthLayer("data_flow", "数据写入", logHealthError, "查询失败: "+truncateElasticsearchError(queryErr), nil)
 	}

@@ -43,9 +43,9 @@ type ServiceTemplateLog struct {
 	// COALESCE 链，与 data_stream 的尾段一致）。页面据此区分"当前档位"与"改档位后留下的历史流"：
 	// 流的档位不在生效档位集合里，就说明它已停止写入、只是数据还没到期。
 	TierCode string `json:"tier_code"`
-	// ServiceCode 是**本服务自己**（不是这条日志）的编码。服务编码在库里有全局唯一索引，
-	// 所以它是"把别的数据源挂到这个服务上"最省事的连接键：日志中心页要按服务取水位数据
-	// 就靠它（data_stream 里虽然也带着编码，但从流名反解既绕又与段序耦合）。
+	// ServiceCode 是**本服务自己**（不是这条日志）的编码。它只是展示用的受控标识：
+	// 唯一域是 (业务系统, 环境) 而非全局（见 assets 000044 迁移），所以不再是可靠的全局连接键。
+	// 日志中心页按服务取水位数据改传 application_service_id（见 log-storage-overview 与 scopeIndexPattern）。
 	ServiceCode                string `json:"service_code"`
 	TemplateProcessingRuleID   *int64 `json:"template_processing_rule_id"`
 	TemplateProcessingRuleName string `json:"template_processing_rule_name"`

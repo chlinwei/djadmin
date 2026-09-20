@@ -108,6 +108,9 @@ func (handler *Handler) runAgentInstallOnce(host agentUpdateHost, binary []byte,
 		"ansible_host": host.HostIP,
 		"ansible_user": username,
 		"ansible_port": credential.Port,
+		// 密码认证要用 sshpass，而 sshpass 不支持交互式确认 unknown host key；
+		// 与 automation 本地 ansible 执行保持一致：accept-new + 临时 known_hosts。
+		"ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=" + directory + "/known_hosts",
 	}
 	switch credential.AuthType {
 	case agentAuthTypeSSHKey:

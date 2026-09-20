@@ -206,6 +206,7 @@ type CreateUserGroupParams = mysql.CreateUserGroupParams
 type CreateUserParams = mysql.CreateUserParams
 type DBTX = mysql.DBTX
 type DeleteBaselineItemParams = mysql.DeleteBaselineItemParams
+type DeleteServiceLogSettingsByServiceAndDefinitionsParams = mysql.DeleteServiceLogSettingsByServiceAndDefinitionsParams
 type DeleteTemplateLogDefinitionsByIDsParams = mysql.DeleteTemplateLogDefinitionsByIDsParams
 type DetachInspectionExecutionsFromTaskParams = mysql.DetachInspectionExecutionsFromTaskParams
 type DisableAPITokenParams = mysql.DisableAPITokenParams

@@ -196,6 +196,7 @@ type CreateUserGroupMemberParams = postgres.CreateUserGroupMemberParams
 type CreateUserGroupParams = postgres.CreateUserGroupParams
 type CreateUserParams = postgres.CreateUserParams
 type DeleteBaselineItemParams = postgres.DeleteBaselineItemParams
+type DeleteServiceLogSettingsByServiceAndDefinitionsParams = postgres.DeleteServiceLogSettingsByServiceAndDefinitionsParams
 type DeleteTemplateLogDefinitionsByIDsParams = postgres.DeleteTemplateLogDefinitionsByIDsParams
 type DetachInspectionExecutionsFromTaskParams = postgres.DetachInspectionExecutionsFromTaskParams
 type DisableAPITokenParams = postgres.DisableAPITokenParams

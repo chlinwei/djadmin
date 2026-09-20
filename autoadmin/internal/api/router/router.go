@@ -348,6 +348,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	services := engine.Group("/assets/application-services", middleware.Authenticate(tokens))
 	services.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListApplicationServices)
 	services.GET("/:id/log-config/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetApplicationServiceLogConfig)
+	// 路径通配按需展开（只读展示）：把含 * 的日志路径在承载实例上展开成真实文件清单。
+	services.GET("/:id/log-config/glob/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetApplicationServiceLogGlob)
 	// 日志格式认证（架构文档 §4.8）：对一条 (逻辑服务 × 日志定义) 抽样校验一次格式。
 	// 用 update 权限：认证要写回 format_verified_*（含人工豁免），属于改服务配置。
 	services.POST("/:id/log-config/verify/", middleware.RequirePermission("assets:applications:update"), assetsHandler.VerifyApplicationServiceLogFormat)
@@ -413,6 +415,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 日志格式认证（架构文档 §4.8）：编排与写回在 assets 侧，取样例 + 跑 ES 在日志采集域
 	// （只有它持有 agent 文件通道与 ES 客户端）→ 反向注入，避免 assets 反向依赖 logcollect 成环。
 	assetsService.SetLogFormatVerifier(logcollectHandler)
+	// 日志路径通配的按需展开（界面「解析后」列）：实现同样在日志采集域（持有 agent 文件通道）。
+	assetsService.SetLogGlobPreviewer(logcollectHandler)
 	// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）：配置不自洽（路径展不开、
 	// 同主机上两个实例展开成同一路径、正则编译不过）就拒绝保存——这些问题是"只能回到配置里改"的，
 	// 等到下发才以"跳过并告警"暴露出来就太晚了（同主机同路径会让同一条日志进 ES 两次）。
@@ -546,6 +550,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/elasticsearch-clusters/:id/index-template/", logcollectHandler.GetElasticsearchIndexTemplate)
 	monitorRoutes.POST("/elasticsearch-clusters/:id/pipeline-simulate/", logcollectHandler.SimulateElasticsearchPipeline)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-search/", logcollectHandler.ElasticsearchLogSearch)
+	monitorRoutes.POST("/elasticsearch-clusters/:id/log-refresh/", logcollectHandler.ElasticsearchLogRefresh)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-facet-stats/", logcollectHandler.ElasticsearchLogFacetStats)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-storage-overview/", logcollectHandler.GetLogStorageOverview)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-service-usage/", logcollectHandler.GetLogServiceUsage)

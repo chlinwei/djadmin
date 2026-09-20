@@ -44,6 +44,23 @@ Go API 必须提供：
 一个节点的颜色承担不了。要看"为什么没日志"，去日志中心的「采集链路」
 （见 [LOG_COLLECTION_ARCHITECTURE](LOG_COLLECTION_ARCHITECTURE.md) §9.5）。
 
+## 逻辑服务 name / code 的唯一域（2026-09-20）
+
+`assets_application_service` 的 `name` 与 `code` 都在 **`(业务系统, 环境)`** 内唯一
+（`unique_business_environment_service` / `unique_business_environment_service_code`，见逻辑服务
+migration 000044）。项目由业务系统隐含（`assets_business_system.project_id`），环境是全局表，所以
+"项目 → 业务系统 → 环境"这一层级实际就落成这两个外键。
+
+- **编码不再是全局唯一**：同一逻辑服务在不同业务/环境下可以复用同一 code（例如 `artemis`）。
+  旧行为（全局唯一）会迫使人为加后缀（`artemis-aos-poc`），反而丢掉跨环境按同一 code 关联的能力。
+- 因此 **code 不再是可靠的全局连接键**：日志检索/水位等按服务维度走 **服务 id**
+  （`application_service_id`），ES 文档另带 `project/business_system/environment` 字段做维度收窄；
+  运行时的服务级身份（`service_fingerprints` key、Filebeat 片段文件名/input id）也改用 id。
+  详见 [LOG_COLLECTION_ARCHITECTURE](LOG_COLLECTION_ARCHITECTURE.md) §9.7 与 §8.3。
+- 服务层强制 `environment` 必填；唯一约束对 NULL 不去重，留空会让约束失效。
+- 唯一冲突的错误文案按约束名区分为"名称已存在"/"编码已存在"（`internal/assets/service.go` 的
+  `duplicateError`），不再统一成"名称或编码已存在"。
+
 ## 逻辑服务 / 部署实例列表的 scope 过滤（服务树右侧面板）
 
 服务树选中节点后，右侧 `ServiceTreeNodeContent.vue` 按节点层级向后端传过滤参数；Go 版
@@ -137,6 +154,12 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
 - **部署模板**：模板主体 + 5 类嵌套子表（端口/路径/配置文件/日志定义/控制动作）+ docker 与 compose 配置。
   原实现删子表时运行时拼表名（`DELETE FROM `+table+` WHERE …`），现在按表名分派到 7 条显式语句；
   子表读取保持各自的排序（端口按 `protocol,port`、路径按 `path_type,id`、其余按 `id`）。
+- **部署模板删除**：外键**无级联**，删除在**一个事务里自底向上**执行——先按日志定义 id 清服务级覆盖行
+  （`assets_application_service_log_setting`），再删日志定义/端口/路径/配置文件/控制动作/Docker/Compose 子表，
+  最后删模板行，任一步失败整段回滚。模板仍被逻辑服务引用（`assets_application_service.deployment_template_id`）时，
+  删父行命中外键 1451 → `translate` 转 `ErrDeleteProtected`，不会留下"子表删了、模板还在"的半成品。
+  前端 `TemplateManagerDialog.vue` 必须读取批删结果的每条 `ok`：批删接口 HTTP 恒 200，只看 HTTP 会把
+  `ok:false`（被引用）当成功——这正是现场"提示删除成功、刷新后记录还在"的成因。
 - **逻辑服务与部署实例**：服务 CRUD 含成员（`assets_application_service_deployment`）与日志设置
   （`assets_application_service_log_setting`）的**整表替换**；列表的搜索/业务系统/环境过滤从运行时拼 `WHERE`
   （含 `EXISTS` 子查询）改成 `sqlc.narg`（NULL 表示不过滤，`IS NULL` 写在 OR 链末尾）。

@@ -80,25 +80,27 @@ func TestScopeIndexPattern(t *testing.T) {
 	matcher := streamNameMatcher{
 		prefix: "autoadmin",
 		services: []streamServiceKey{
-			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx"},
-			{Match: "yilake-tib-poc-mgmt-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "mgmt"},
+			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx", ServiceID: 101},
+			{Match: "yilake-tib-poc-mgmt-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "mgmt", ServiceID: 102},
 		},
 		tiers: map[string]bool{"wuhan-test": true},
 	}
 	cases := []struct {
 		name        string
+		serviceID   int64
 		serviceCode string
 		wantPattern string
 		wantFound   bool
 	}{
-		{name: "不给服务编码＝全量视图（现有存储水位页行为不变）", serviceCode: "", wantPattern: "autoadmin-*", wantFound: true},
-		{name: "给服务编码＝收窄到该服务的维度段", serviceCode: "nginx", wantPattern: "autoadmin-yilake-tib-poc-nginx-*", wantFound: true},
-		{name: "另一个服务", serviceCode: "mgmt", wantPattern: "autoadmin-yilake-tib-poc-mgmt-*", wantFound: true},
-		{name: "编码不存在＝找不到，由调用方回空视图（不能回落全量）", serviceCode: "not-exist", wantFound: false},
+		{name: "不给服务＝全量视图（现有存储水位页行为不变）", wantPattern: "autoadmin-*", wantFound: true},
+		{name: "给服务 id＝收窄到该服务的维度段", serviceID: 101, serviceCode: "nginx", wantPattern: "autoadmin-yilake-tib-poc-nginx-*", wantFound: true},
+		{name: "另一个服务", serviceID: 102, serviceCode: "mgmt", wantPattern: "autoadmin-yilake-tib-poc-mgmt-*", wantFound: true},
+		{name: "只给编码（旧调用方）＝按编码兜底", serviceCode: "nginx", wantPattern: "autoadmin-yilake-tib-poc-nginx-*", wantFound: true},
+		{name: "服务不存在＝找不到，由调用方回空视图（不能回落全量）", serviceID: 999, serviceCode: "not-exist", wantFound: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			pattern, found := scopeIndexPattern("autoadmin", c.serviceCode, matcher)
+			pattern, found := scopeIndexPattern("autoadmin", c.serviceID, c.serviceCode, matcher)
 			if found != c.wantFound {
 				t.Fatalf("found = %v, want %v", found, c.wantFound)
 			}
@@ -125,11 +127,11 @@ func TestScopedPatternKeepsHistoricalTiers(t *testing.T) {
 	matcher := streamNameMatcher{
 		prefix: "autoadmin",
 		services: []streamServiceKey{
-			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx"},
+			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx", ServiceID: 101},
 		},
 		tiers: map[string]bool{"hot": true, "wuhan-test": true},
 	}
-	pattern, found := scopeIndexPattern("autoadmin", "nginx", matcher)
+	pattern, found := scopeIndexPattern("autoadmin", 101, "nginx", matcher)
 	if !found {
 		t.Fatal("已知服务编码应当能找到收窄模式")
 	}
@@ -181,7 +183,7 @@ func TestFetchDataStreamEntriesIncludesBothTiers(t *testing.T) {
 	matcher := streamNameMatcher{
 		prefix: "autoadmin",
 		services: []streamServiceKey{
-			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx", Enabled: true, CollectEnabled: true},
+			{Match: "yilake-tib-poc-nginx-", Project: "yilake", Environment: "poc", BusinessSystem: "tib", Service: "nginx", ServiceID: 101, Enabled: true, CollectEnabled: true},
 		},
 		tiers: map[string]bool{"hot": true, "wuhan-test": true},
 	}
@@ -211,30 +213,30 @@ func TestFetchDataStreamEntriesIncludesBothTiers(t *testing.T) {
 func TestIsHistoricalStream(t *testing.T) {
 	matcher := streamNameMatcher{
 		prefix: "autoadmin",
-		activeTiers: map[string]map[string]bool{
-			"nginx": {"hot": true},                     // 只有 hot 生效 → wuhan-test 是历史流
-			"redis": {"hot": true, "wuhan-test": true}, // 两个档位都生效 → 都不是历史流
-			"mgmt":  {},                                // 有服务行但没有任何日志定义 → 全算历史流
+		activeTiers: map[int64]map[string]bool{
+			101: {"hot": true},                     // 只有 hot 生效 → wuhan-test 是历史流
+			102: {"hot": true, "wuhan-test": true}, // 两个档位都生效 → 都不是历史流
+			103: {},                                // 有服务行但没有任何日志定义 → 全算历史流
 		},
 	}
 	cases := []struct {
 		name        string
-		service     string
+		service     int64
 		tier        string
 		wantHistory bool
 	}{
-		{name: "当前档位不是历史流", service: "nginx", tier: "hot", wantHistory: false},
-		{name: "改档位留下的旧档位是历史流", service: "nginx", tier: "wuhan-test", wantHistory: true},
-		{name: "多档位都在生效时都不是历史流", service: "redis", tier: "wuhan-test", wantHistory: false},
-		{name: "没有日志定义的服务：存量流全算历史流", service: "mgmt", tier: "hot", wantHistory: true},
-		{name: "不认识的服务不判", service: "unknown-svc", tier: "hot", wantHistory: true},
-		{name: "旧命名流没有服务段，不判", service: "", tier: "hot", wantHistory: false},
-		{name: "没有档位段，不判", service: "nginx", tier: "", wantHistory: false},
+		{name: "当前档位不是历史流", service: 101, tier: "hot", wantHistory: false},
+		{name: "改档位留下的旧档位是历史流", service: 101, tier: "wuhan-test", wantHistory: true},
+		{name: "多档位都在生效时都不是历史流", service: 102, tier: "wuhan-test", wantHistory: false},
+		{name: "没有日志定义的服务：存量流全算历史流", service: 103, tier: "hot", wantHistory: true},
+		{name: "不认识的服务不判", service: 999, tier: "hot", wantHistory: true},
+		{name: "旧命名流没有服务段，不判", service: 0, tier: "hot", wantHistory: false},
+		{name: "没有档位段，不判", service: 101, tier: "", wantHistory: false},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := matcher.isHistoricalStream(testCase.service, testCase.tier); got != testCase.wantHistory {
-				t.Fatalf("isHistoricalStream(%q, %q) = %v, want %v", testCase.service, testCase.tier, got, testCase.wantHistory)
+				t.Fatalf("isHistoricalStream(%d, %q) = %v, want %v", testCase.service, testCase.tier, got, testCase.wantHistory)
 			}
 		})
 	}

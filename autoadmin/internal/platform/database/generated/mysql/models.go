@@ -888,22 +888,23 @@ type MonitorLogCollectionFilterRule struct {
 }
 
 type MonitorLogCollectionTarget struct {
-	ID                 int64          `json:"id"`
-	CreateTime         time.Time      `json:"create_time"`
-	UpdateTime         time.Time      `json:"update_time"`
-	Remark             sql.NullString `json:"remark"`
-	AgentInstalled     bool           `json:"agent_installed"`
-	AgentVersion       string         `json:"agent_version"`
-	RuntimeStatus      string         `json:"runtime_status"`
-	ConfigFingerprint  string         `json:"config_fingerprint"`
-	LastAppliedTime    sql.NullTime   `json:"last_applied_time"`
-	LastError          string         `json:"last_error"`
-	HostID             int64          `json:"host_id"`
-	InstallMessage     string         `json:"install_message"`
-	InstallStatus      string         `json:"install_status"`
-	LastDispatchManual bool           `json:"last_dispatch_manual"`
-	ManagedEnabled     bool           `json:"managed_enabled"`
-	RetryCount         uint32         `json:"retry_count"`
+	ID                  int64           `json:"id"`
+	CreateTime          time.Time       `json:"create_time"`
+	UpdateTime          time.Time       `json:"update_time"`
+	Remark              sql.NullString  `json:"remark"`
+	AgentInstalled      bool            `json:"agent_installed"`
+	AgentVersion        string          `json:"agent_version"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	ConfigFingerprint   string          `json:"config_fingerprint"`
+	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
+	LastAppliedTime     sql.NullTime    `json:"last_applied_time"`
+	LastError           string          `json:"last_error"`
+	HostID              int64           `json:"host_id"`
+	InstallMessage      string          `json:"install_message"`
+	InstallStatus       string          `json:"install_status"`
+	LastDispatchManual  bool            `json:"last_dispatch_manual"`
+	ManagedEnabled      bool            `json:"managed_enabled"`
+	RetryCount          uint32          `json:"retry_count"`
 }
 
 type MonitorLogProcessingRule struct {

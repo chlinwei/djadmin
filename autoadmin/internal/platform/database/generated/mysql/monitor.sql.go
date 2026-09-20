@@ -2450,6 +2450,19 @@ func (q *Queries) GetLogTargetHostName(ctx context.Context, id int64) (string, e
 	return instance_name, err
 }
 
+const getLogTargetServiceFingerprints = `-- name: GetLogTargetServiceFingerprints :one
+SELECT COALESCE(service_fingerprints, '{}') FROM monitor_log_collection_target WHERE id = ?
+`
+
+// 服务级已下发指纹（JSON map）。跳过判定要同时比对它：存量目标该列为空 `{}`，
+// 只比主机指纹会一直跳过、服务级记录永远补不上（见 §8.3）。
+func (q *Queries) GetLogTargetServiceFingerprints(ctx context.Context, id int64) (json.RawMessage, error) {
+	row := q.db.QueryRowContext(ctx, getLogTargetServiceFingerprints, id)
+	var service_fingerprints json.RawMessage
+	err := row.Scan(&service_fingerprints)
+	return service_fingerprints, err
+}
+
 const getMonitorTarget = `-- name: GetMonitorTarget :one
 SELECT t.id, t.create_time, t.update_time, t.remark, t.exporter_type, t.managed_enabled,
        t.install_status, t.install_message, t.last_scrape_status, t.last_scrape_at, t.labels,
@@ -3791,7 +3804,7 @@ func (q *Queries) ListHostAlertScopeNodes(ctx context.Context, hostID int64) ([]
 
 const listHostLogRenderEntries = `-- name: ListHostLogRenderEntries :many
 SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
-    bs.code AS business_system_code, s.code AS service_code,
+    bs.code AS business_system_code, s.code AS service_code, s.id AS service_id,
     COALESCE(app.code, '') AS application_code,
     COALESCE(tier.code, '') AS tier_code,
     COALESCE(rule_definition.name, '') AS pipeline_name,
@@ -3829,6 +3842,7 @@ type ListHostLogRenderEntriesRow struct {
 	EnvironmentCode               string          `json:"environment_code"`
 	BusinessSystemCode            string          `json:"business_system_code"`
 	ServiceCode                   string          `json:"service_code"`
+	ServiceID                     int64           `json:"service_id"`
 	ApplicationCode               string          `json:"application_code"`
 	TierCode                      string          `json:"tier_code"`
 	PipelineName                  string          `json:"pipeline_name"`
@@ -3883,6 +3897,7 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 			&i.EnvironmentCode,
 			&i.BusinessSystemCode,
 			&i.ServiceCode,
+			&i.ServiceID,
 			&i.ApplicationCode,
 			&i.TierCode,
 			&i.PipelineName,
@@ -3912,7 +3927,7 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 }
 
 const listHostLogRenderInstances = `-- name: ListHostLogRenderInstances :many
-SELECT d.host_id, s.code AS service_code, d.instance_name,
+SELECT d.host_id, s.id AS service_id, s.code AS service_code, d.instance_name,
        COALESCE(d.runtime_variables, '{}') AS runtime_variables,
        COALESCE(t.app_home, '') AS app_home, COALESCE(h.ip, '') AS host_ip
 FROM assets_application_service_deployment sd
@@ -3926,6 +3941,7 @@ WHERE d.host_id IN (/*SLICE:host_ids*/?)
 
 type ListHostLogRenderInstancesRow struct {
 	HostID           int64           `json:"host_id"`
+	ServiceID        int64           `json:"service_id"`
 	ServiceCode      string          `json:"service_code"`
 	InstanceName     string          `json:"instance_name"`
 	RuntimeVariables json.RawMessage `json:"runtime_variables"`
@@ -3956,6 +3972,7 @@ func (q *Queries) ListHostLogRenderInstances(ctx context.Context, hostIds []int6
 		var i ListHostLogRenderInstancesRow
 		if err := rows.Scan(
 			&i.HostID,
+			&i.ServiceID,
 			&i.ServiceCode,
 			&i.InstanceName,
 			&i.RuntimeVariables,
@@ -5267,7 +5284,7 @@ func (q *Queries) ListRetentionTierCodes(ctx context.Context) ([]string, error) 
 }
 
 const listServiceActiveStreamTiers = `-- name: ListServiceActiveStreamTiers :many
-SELECT DISTINCT s.code AS service_code,
+SELECT DISTINCT s.id AS service_id, s.code AS service_code,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
 FROM assets_application_service s
 JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
@@ -5277,6 +5294,7 @@ WHERE s.code <> ''
 `
 
 type ListServiceActiveStreamTiersRow struct {
+	ServiceID   int64  `json:"service_id"`
 	ServiceCode string `json:"service_code"`
 	TierCode    string `json:"tier_code"`
 }
@@ -5300,7 +5318,7 @@ func (q *Queries) ListServiceActiveStreamTiers(ctx context.Context) ([]ListServi
 	items := []ListServiceActiveStreamTiersRow{}
 	for rows.Next() {
 		var i ListServiceActiveStreamTiersRow
-		if err := rows.Scan(&i.ServiceCode, &i.TierCode); err != nil {
+		if err := rows.Scan(&i.ServiceID, &i.ServiceCode, &i.TierCode); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -5318,8 +5336,12 @@ const listServiceLogApplyTargets = `-- name: ListServiceLogApplyTargets :many
 SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
        COALESCE(h.instance_name, '') AS host_instance_name,
        l.id AS target_id, COALESCE(l.config_fingerprint, '') AS config_fingerprint,
-       COALESCE(l.runtime_status, '') AS runtime_status
+       COALESCE(l.runtime_status, '') AS runtime_status,
+       -- 服务级状态判定用：本服务的已下发子指纹（JSON map 里按服务 code 取，见 §8.3）。
+       COALESCE(l.service_fingerprints, '{}') AS service_fingerprints,
+       s.id AS service_id, s.code AS service_code
 FROM assets_application_service_deployment sd
+JOIN assets_application_service s ON s.id = sd.service_id
 JOIN assets_application_deployment d ON d.id = sd.deployment_id
 JOIN assets_host h ON h.id = d.host_id
 LEFT JOIN monitor_log_collection_target l ON l.host_id = d.host_id AND l.managed_enabled = TRUE
@@ -5328,12 +5350,15 @@ ORDER BY d.host_id
 `
 
 type ListServiceLogApplyTargetsRow struct {
-	HostID            int64         `json:"host_id"`
-	HostIp            string        `json:"host_ip"`
-	HostInstanceName  string        `json:"host_instance_name"`
-	TargetID          sql.NullInt64 `json:"target_id"`
-	ConfigFingerprint string        `json:"config_fingerprint"`
-	RuntimeStatus     string        `json:"runtime_status"`
+	HostID              int64           `json:"host_id"`
+	HostIp              string          `json:"host_ip"`
+	HostInstanceName    string          `json:"host_instance_name"`
+	TargetID            sql.NullInt64   `json:"target_id"`
+	ConfigFingerprint   string          `json:"config_fingerprint"`
+	RuntimeStatus       string          `json:"runtime_status"`
+	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
+	ServiceID           int64           `json:"service_id"`
+	ServiceCode         string          `json:"service_code"`
 }
 
 // 服务级下发的解析：该服务**承载在哪些主机上**，以及每台主机对应的采集目标。
@@ -5364,6 +5389,9 @@ func (q *Queries) ListServiceLogApplyTargets(ctx context.Context, serviceID int6
 			&i.TargetID,
 			&i.ConfigFingerprint,
 			&i.RuntimeStatus,
+			&i.ServiceFingerprints,
+			&i.ServiceID,
+			&i.ServiceCode,
 		); err != nil {
 			return nil, err
 		}
@@ -5380,7 +5408,7 @@ func (q *Queries) ListServiceLogApplyTargets(ctx context.Context, serviceID int6
 
 const listServiceStreamDims = `-- name: ListServiceStreamDims :many
 SELECT DISTINCT p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
-       s.code AS service_code, COALESCE(t.code, '') AS tier_code,
+       s.id AS service_id, s.code AS service_code, COALESCE(t.code, '') AS tier_code,
        s.enabled AS service_enabled, s.log_collection_enabled
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
@@ -5393,6 +5421,7 @@ type ListServiceStreamDimsRow struct {
 	ProjectCode          string `json:"project_code"`
 	EnvironmentCode      string `json:"environment_code"`
 	BusinessSystemCode   string `json:"business_system_code"`
+	ServiceID            int64  `json:"service_id"`
 	ServiceCode          string `json:"service_code"`
 	TierCode             string `json:"tier_code"`
 	ServiceEnabled       bool   `json:"service_enabled"`
@@ -5425,6 +5454,7 @@ func (q *Queries) ListServiceStreamDims(ctx context.Context) ([]ListServiceStrea
 			&i.ProjectCode,
 			&i.EnvironmentCode,
 			&i.BusinessSystemCode,
+			&i.ServiceID,
 			&i.ServiceCode,
 			&i.TierCode,
 			&i.ServiceEnabled,
@@ -5979,15 +6009,17 @@ func (q *Queries) MarkLogTargetConfigApplied(ctx context.Context, arg MarkLogTar
 const markLogTargetConfigSynced = `-- name: MarkLogTargetConfigSynced :exec
 UPDATE monitor_log_collection_target
 SET last_applied_time=?, runtime_status='running', last_error='',
-    config_fingerprint=?, update_time=?
+    config_fingerprint=?, service_fingerprints=?,
+    update_time=?
 WHERE id = ?
 `
 
 type MarkLogTargetConfigSyncedParams struct {
-	LastAppliedTime   sql.NullTime `json:"last_applied_time"`
-	ConfigFingerprint string       `json:"config_fingerprint"`
-	UpdateTime        time.Time    `json:"update_time"`
-	ID                int64        `json:"id"`
+	LastAppliedTime     sql.NullTime    `json:"last_applied_time"`
+	ConfigFingerprint   string          `json:"config_fingerprint"`
+	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
+	UpdateTime          time.Time       `json:"update_time"`
+	ID                  int64           `json:"id"`
 }
 
 // 指纹变化并下发成功后：记下发时间与指纹。
@@ -5995,6 +6027,7 @@ func (q *Queries) MarkLogTargetConfigSynced(ctx context.Context, arg MarkLogTarg
 	_, err := q.db.ExecContext(ctx, markLogTargetConfigSynced,
 		arg.LastAppliedTime,
 		arg.ConfigFingerprint,
+		arg.ServiceFingerprints,
 		arg.UpdateTime,
 		arg.ID,
 	)

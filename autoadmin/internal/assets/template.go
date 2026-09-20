@@ -86,6 +86,7 @@ type TemplateConfigFile struct {
 	FileFormat string  `json:"file_format"`
 	Required   bool    `json:"required"`
 }
+
 // TemplateLog 是部署模板的日志定义。**不含采集开关**：是否采集由逻辑服务决定
 // （`assets_application_service_log_setting.collection_enabled`，无覆盖行 = 采），
 // 模板只描述"这条日志的路径怎么算、挂哪条处理规则"（迁移 000034 删掉了模板级开关）。
@@ -549,8 +550,62 @@ func applyTemplateLogWrites(
 	return nil
 }
 
+// DeleteDeploymentTemplate 在一个事务里自底向上删掉模板及其全部子表，再删模板本身。
+//
+// 外键无级联，直接删父行会被子表（端口/路径/配置文件/日志定义/控制动作/Docker 配置）
+// 挡在外键 1451 上——前端就会看到"提示成功但记录还在"。所以必须先删子表：
+//   - 日志定义还被服务级覆盖行（assets_application_service_log_setting）引用，
+//     删定义前先按定义 id 清覆盖行（与 applyTemplateLogWrites 的删除顺序一致）；
+//   - 其余子表按模板 id 直接删。
+//
+// 若模板仍被逻辑服务引用（assets_application_service.deployment_template_id），
+// 删模板父行同样命中 1451，translate 会转成 ErrDeleteProtected；因为整段在事务里，
+// 前面的子表删除随事务一起回滚，不会留下"子表删了、模板还在"的半成品。
 func (r *Repository) DeleteDeploymentTemplate(ctx context.Context, id int64) error {
-	return r.queries.DeleteDeploymentTemplate(ctx, id)
+	tx, err := r.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin template transaction: %w", err)
+	}
+	defer tx.Rollback()
+	queries := db.New(tx)
+	if err = deleteTemplateChildren(ctx, queries, id); err != nil {
+		return err
+	}
+	if err = queries.DeleteDeploymentTemplate(ctx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deleteTemplateChildren 删除一个模板的全部嵌套子表行（自底向上，满足外键顺序）。
+func deleteTemplateChildren(ctx context.Context, queries *db.Queries, templateID int64) error {
+	definitions, err := queries.ListTemplateLogDefinitions(ctx, templateID)
+	if err != nil {
+		return err
+	}
+	if len(definitions) > 0 {
+		definitionIDs := make([]int64, 0, len(definitions))
+		for _, row := range definitions {
+			definitionIDs = append(definitionIDs, row.ID)
+		}
+		if err = queries.DeleteServiceLogSettingsByDefinitionIDs(ctx, definitionIDs); err != nil {
+			return err
+		}
+	}
+	for _, remove := range []func() error{
+		func() error { return queries.DeleteTemplateLogDefinitions(ctx, templateID) },
+		func() error { return queries.DeleteTemplatePorts(ctx, templateID) },
+		func() error { return queries.DeleteTemplatePaths(ctx, templateID) },
+		func() error { return queries.DeleteTemplateConfigFiles(ctx, templateID) },
+		func() error { return queries.DeleteTemplateControlActions(ctx, templateID) },
+		func() error { return queries.DeleteTemplateDockerConfig(ctx, templateID) },
+		func() error { return queries.DeleteTemplateComposeConfig(ctx, templateID) },
+	} {
+		if err = remove(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput) (DeploymentTemplate, error) {

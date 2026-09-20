@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	platformdb "autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/logstream"
 )
@@ -66,6 +67,10 @@ type ServiceLogConfig struct {
 	Logs []ServiceTemplateLog `json:"logs"`
 	// LogCollectionEnabled 服务级日志采集总开关。
 	LogCollectionEnabled bool `json:"log_collection_enabled"`
+	// LogRetentionTier 服务级**默认保留档位**（逐条日志没覆盖时生效；为 null 时由平台默认档
+	// `is_default` 决定）。界面用它把"继承服务默认"写成"继承服务默认（标准 30 天）"——
+	// 只说"继承"而不说继承的是什么，用户没法判断这条日志实际保留多久。
+	LogRetentionTier *int64 `json:"log_retention_tier"`
 	// ServiceCode 本服务的编码。放在顶层是为了让"本服务水位"不依赖 logs 非空：
 	// 模板里的日志定义被删光之后，这个服务的存量流仍要能查出来（数据还在 ES 里，
 	// 页面不能因为"没有日志定义"就当作没有流）。
@@ -185,6 +190,31 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 	})
 }
 
+// UpsertServiceLogOverrides 在一个事务里逐行写回覆盖值（批量路径专用）。
+//
+// 为什么批量要单独一条路：日志中心页的批量操作把它**同一次动作**涉及的几十行一次提交，
+// 逐行发 HTTP 会让服务端对每个 id 都重算一遍模板日志与认证指纹（两次全表读），而且中途失败
+// 会留下"改了一半"的界面。这里一次事务写完成，服务层只做一次校验读 + 一次回读。
+func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID int64, inputs []ServiceLogOverrideInput) error {
+	now := time.Now().UTC()
+	return platformdb.InTransaction(ctx, r.pool, func(queries *db.Queries) error {
+		for _, input := range inputs {
+			if err := queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
+				CreateTime: now, UpdateTime: now,
+				CollectionEnabled:             input.CollectionEnabled,
+				LogDefinitionID:               input.LogDefinition,
+				RetentionTierID:               nullableInt(input.RetentionTier),
+				ServiceID:                     serviceID,
+				CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
+				CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // SaveServiceLogOverride 按行保存一条 (服务 × 日志定义) 的覆盖值，并回读该行。
 //
 // 与 SaveApplicationService 的 log_settings **不是同一套语义**：后者是整表替换
@@ -228,13 +258,79 @@ func (s *Service) SaveServiceLogOverride(ctx context.Context, serviceID int64, i
 	return *target, nil
 }
 
-// GetApplicationServiceLogCollection 读服务级采集总开关（服务不存在时 ErrNotFound）。
-func (r *Repository) GetApplicationServiceLogCollection(ctx context.Context, serviceID int64) (bool, error) {
-	enabled, err := r.queries.GetApplicationServiceLogCollection(ctx, serviceID)
-	if err != nil {
-		return false, translate(err)
+// MaxBatchLogOverrides 一次批量覆盖值提交的行数上限。日志中心页的"全选"就是一屏的
+// 日志定义（通常几条到几十条），上限只是防线：再多的量应该走部署模板调整，而不是批量刷覆盖值。
+const MaxBatchLogOverrides = 500
+
+// ServiceLogOverrideBatchResult 批量提交里**单条**的结果：与批量删除同口径——
+// 不属于本服务模板的日志记 ok=false 并说明原因，不整体失败，其余照常写入。
+type ServiceLogOverrideBatchResult struct {
+	// LogDefinition 就是前端表格的行键（这条日志定义），前端用它把失败项对回到日志名。
+	LogDefinition int64  `json:"id"`
+	OK            bool   `json:"ok"`
+	Message       string `json:"message"`
+}
+
+// BatchSaveServiceLogOverrides 批量按行保存覆盖值（日志中心页的批量操作）。
+//
+// 与单条 SaveServiceLogOverride **同一套按行语义**，只是共用一次校验读与一次事务：
+//   - 每个 item 都是该行覆盖值的**全集**（缺列 = 清成"不覆盖"），调用方必须从服务端回读的
+//     行出发构造，只覆盖这次要改的那一列——否则会把其他列静默清空，与单条接口是同一个坑。
+//   - 日志定义必须属于该服务当前所用的部署模板；不属于的记 ok=false（ErrNotFound 的批量口径），
+//     剩下的照写，不整体失败。
+//   - 全部写入在**一个事务**里完成：批量动作要么都落库、要么都不落（事务失败时返回 error），
+//     不留半套配置给界面。与"批量删除逐 id 独立"的差别在于这里没有可独立的部分——
+//     同一个批量动作改的是同一列的同一个值。
+//
+// 不返回回读行：调用方（日志中心页）在批量后重新拉一次 log-config（那一份还带认证状态与
+// 待下发判定），比在这里逐行拼更不容易出现"界面显示的和库里不一致"。
+func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID int64, inputs []ServiceLogOverrideInput) ([]ServiceLogOverrideBatchResult, error) {
+	if serviceID < 1 || len(inputs) == 0 || len(inputs) > MaxBatchLogOverrides {
+		return nil, ErrInvalid
 	}
-	return enabled, nil
+	rows, err := s.repository.ListServiceTemplateLogs(ctx, serviceID)
+	if err != nil {
+		return nil, translate(err)
+	}
+	// 本服务模板下的日志定义集合：不在其中的一律拒绝（否则就是往别的服务的行上写）。
+	belongs := make(map[int64]bool, len(rows))
+	for _, row := range rows {
+		belongs[row.LogDefinition] = true
+	}
+	results := make([]ServiceLogOverrideBatchResult, 0, len(inputs))
+	applicable := make([]ServiceLogOverrideInput, 0, len(inputs))
+	for _, input := range inputs {
+		if !belongs[input.LogDefinition] {
+			results = append(results, ServiceLogOverrideBatchResult{
+				LogDefinition: input.LogDefinition, OK: false,
+				Message: "该日志不属于本服务的部署模板",
+			})
+			continue
+		}
+		results = append(results, ServiceLogOverrideBatchResult{LogDefinition: input.LogDefinition, OK: true})
+		applicable = append(applicable, input)
+	}
+	if len(applicable) == 0 {
+		// 一条都不适用：不是错误响应，把逐条原因照常返回（前端按 ok=false 提示）。
+		return results, nil
+	}
+	if err = s.repository.UpsertServiceLogOverrides(ctx, serviceID, applicable); err != nil {
+		return nil, translate(err)
+	}
+	return results, nil
+}
+
+// GetServiceLogDefaults 读服务级的两个日志默认值：采集总开关 + 默认保留档位（服务不存在时 ErrNotFound）。
+//
+// 两个一起读：日志中心的「日志配置」既要区分"总开关关了"与"逐条关了"，也要回答
+// "**继承服务默认**的档位到底是哪一档"（现场反馈"我怎么知道默认是什么呢"）。
+// 档位为空表示这条服务的有效档位由平台默认档（`is_default`）决定。
+func (r *Repository) GetServiceLogDefaults(ctx context.Context, serviceID int64) (bool, *int64, error) {
+	row, err := r.queries.GetApplicationServiceLogDefaults(ctx, serviceID)
+	if err != nil {
+		return false, nil, translate(err)
+	}
+	return row.LogCollectionEnabled, intPtr(row.LogRetentionTierID), nil
 }
 
 // SetServiceLogCollection 单独写服务级日志采集总开关（log_collection_enabled）。

@@ -448,7 +448,10 @@ type Querier interface {
 	// 不动认证状态：采集总开关不进认证指纹（见 log_format_fingerprint.go 的输入清单），
 	// 而且认证四列在 log_setting 上、根本不在这一行。
 	// 单列读取：log-config 接口要带上服务级采集总开关（页面据此区分"总开关关了"与"逐条关了"）。
-	GetApplicationServiceLogCollection(ctx context.Context, id int64) (bool, error)
+	// 2026-09-20 起一起读**默认保留档位**：界面上的"继承服务默认"必须写清默认到底是哪一档
+	// （现场反馈"我怎么知道默认是什么呢"），档位与总开关本来就是同一行上的两个日志默认值，
+	// 一条单行读取覆盖两者，省一次往返。
+	GetApplicationServiceLogDefaults(ctx context.Context, id int64) (GetApplicationServiceLogDefaultsRow, error)
 	GetApplicationServiceName(ctx context.Context, id int64) (string, error)
 	// 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
 	GetApplicationServiceStreamDims(ctx context.Context, id int64) (GetApplicationServiceStreamDimsRow, error)
@@ -520,6 +523,11 @@ type Querier interface {
 	GetLogProcessingRule(ctx context.Context, id int64) (MonitorLogProcessingRule, error)
 	GetLogRetentionTier(ctx context.Context, id int64) (MonitorLogRetentionTier, error)
 	GetLogTargetConfigFingerprint(ctx context.Context, id int64) (string, error)
+	// 这台主机**已下发**的配置指纹（整机 + 各服务子指纹）。
+	// 配置差异（/log-targets/:id/config-diff/）要用它说明"这次比较的是哪一版配置"：
+	// 库里只落指纹、不落内容，真正的差异内容必须读主机上的 inputs.d（见 log_config_diff.go），
+	// 而"这台机器当前处于哪个版本"由这两列回答。
+	GetLogTargetFingerprints(ctx context.Context, id int64) (GetLogTargetFingerprintsRow, error)
 	// ---- P2-3：日志采集目标（monitor_log_collection_target）的运维写路径 ----
 	// 原实现有两处运行时拼 SQL：① Filebeat 软件包按"安装/卸载"拼 playbook 列名；
 	// ② 时间差用 TIMESTAMPDIFF(MICROSECOND,…)/1000000。前者按角色分派成两条显式语句，

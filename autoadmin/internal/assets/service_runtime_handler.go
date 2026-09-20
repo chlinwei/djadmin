@@ -48,7 +48,7 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 		respond(context, nil, translate(err))
 		return
 	}
-	collection, err := handler.service.repository.GetApplicationServiceLogCollection(context.Request.Context(), id)
+	collection, defaultTier, err := handler.service.repository.GetServiceLogDefaults(context.Request.Context(), id)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
@@ -59,10 +59,16 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 		respond(context, nil, translate(err))
 		return
 	}
-	// 前端契约：{logs: [...], log_collection_enabled}（模板日志定义 + 服务级覆盖三态 + 服务级总开关）。
+	// 前端契约：{logs: [...], log_collection_enabled, log_retention_tier}（模板日志定义 + 服务级覆盖
+	// 三态 + 服务级总开关 + 服务默认保留档位）。
 	// 总开关必须一起给：逐条开关在总开关关闭时并不生效，只回 logs 会让页面把"未采集"误显示成
 	// "逐条都关着"（用户会去逐条打开，却没有效果）。
-	respond(context, ServiceLogConfig{Logs: items, LogCollectionEnabled: collection, ServiceCode: serviceCode}, nil)
+	// 默认档位也必须一起给：界面上的"继承服务默认"要写清默认是哪一档，否则用户只能靠猜
+	//（现场反馈"我怎么知道默认是什么呢"）。为 null = 由平台默认档（is_default）决定。
+	respond(context, ServiceLogConfig{
+		Logs: items, LogCollectionEnabled: collection,
+		LogRetentionTier: defaultTier, ServiceCode: serviceCode,
+	}, nil)
 }
 
 // SetApplicationServiceLogCollection 服务级日志采集总开关：
@@ -184,6 +190,65 @@ func (handler *Handler) SaveApplicationServiceLogSetting(context *gin.Context) {
 		CollectionExcludeFilterRule: input.CollectionExcludeFilterRule,
 	})
 	respond(context, item, err)
+}
+
+// BatchSaveApplicationServiceLogSettings 批量按行保存日志覆盖值（日志中心页的批量操作）：
+// POST /assets/application-services/:id/log-config/settings/batch/
+//
+// body: {"items":[{"log_definition_id":<必填>,"collection_enabled":…,"retention_tier":…,
+// "collection_filter_rule":…,"collection_exclude_filter_rule":…}, …]}
+//
+// 每条 item 与单条接口**同结构同语义**：直接绑定 ServiceLogOverrideInput，所以这里不存在
+// "绑定结构漏列 → 那一列被静默清空"的可能（单条接口 2026-09-19 踩过的坑）。item 是该行
+// 覆盖值的**全集**，缺列 = 清成"不覆盖"。响应沿用批量删除的口径：
+// data = {"count":<成功条数>,"results":[{"id":<日志定义 id>,"ok":…,"message":…}]}，
+// 不属于本服务模板的日志记 ok=false、其余照写，不整体失败。
+func (handler *Handler) BatchSaveApplicationServiceLogSettings(context *gin.Context) {
+	id, ok := resourceID(context)
+	if !ok {
+		return
+	}
+	var input struct {
+		Items []ServiceLogOverrideInput `json:"items"`
+	}
+	if context.ShouldBindJSON(&input) != nil || len(input.Items) == 0 {
+		response.Error(context, ErrInvalid)
+		return
+	}
+	results, err := handler.service.BatchSaveServiceLogOverrides(context.Request.Context(), id, input.Items)
+	if err != nil {
+		respond(context, nil, err)
+		return
+	}
+	count := 0
+	for _, item := range results {
+		if item.OK {
+			count += 1
+		}
+	}
+	respond(context, gin.H{"count": count, "results": results}, nil)
+}
+
+// LogStatusSummary 一批逻辑服务的日志状态汇总（日志中心的层级视图用）：
+// POST /assets/application-services/log-status-summary/  body {"service_ids":[<服务 id>...]}
+//
+// 存在的意义：日志中心的服务树在"全部/项目/业务系统/环境"这些层级上，原来这两个 tab 没有任何内容
+// （「日志查询」「日志配置」都硬性要求一个具体服务）。层级视图要一次拿到这一批服务的日志状态，
+// 于是有了这个"多服务"入口——**读**接口，只是入参是一批 id，所以按 POST 传列表（与 batch-jobs 同形）。
+//
+// 日志条数/格式认证分桶在 assets 侧聚合（复用 ListServiceTemplateLogs，format_state 只有那一处实现）；
+// 配置态（待下发）由注入的评估器给（见 log_status_summary.go）。评估不可用时该项为 null 并在
+// pending_error 里说明，不让整个接口失败——日志状态本身仍然有用。
+func (handler *Handler) LogStatusSummary(context *gin.Context) {
+	var input struct {
+		ServiceIDs []int64 `json:"service_ids"`
+	}
+	if context.ShouldBindJSON(&input) != nil || len(input.ServiceIDs) == 0 {
+		response.Error(context, ErrInvalid)
+		return
+	}
+	summary, err := handler.service.LogStatusSummary(context.Request.Context(), input.ServiceIDs)
+	respond(context, summary, err)
 }
 
 // optionalIDQuery 读取可选的整数型 query 参数；未传返回 0，传了但不是合法整数返回 400。

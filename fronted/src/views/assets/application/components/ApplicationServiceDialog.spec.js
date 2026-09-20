@@ -21,22 +21,12 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationVersionList: vi.fn(() => Promise.resolve({
     data: { data: { results: [{ id: 51, application: 2, version: '1.0' }] } },
   })),
-  getApplicationDeploymentTemplateList: vi.fn(() => Promise.resolve({
-    data: { data: { results: [{
-      id: 61,
-      application: 2,
-      name: 'Redis Template',
-      enabled: true,
-      logs: [{ id: 81, name: 'redis.log', path_pattern: '/var/log/redis/*.log', processing_rule: null }],
-    }, {
-      id: 62,
-      application: 5,
-      name: 'Tomcat Template',
-      control_type: 'external_ha',
-      enabled: true,
-      logs: [{ id: 82, name: 'application.log', path_pattern: '/srv/tomcat/logs/application.log', processing_rule: null }],
-    }] } },
-  })),
+  // 列表接口**不带 logs**（真实契约：logs 是嵌套结构，只有详情接口给，列表只给 log_count）。
+  // 这里故意照实模拟——上一版 mock 里塞了 logs，于是"从列表记录的 logs 铺模板日志表"这个 bug
+  // 在测试里看不出来（真实环境永远读到空数组 → 新建服务时这张表一直空着）。
+  getApplicationDeploymentTemplateList: vi.fn(() => Promise.resolve(baseTemplateListPayload())),
+  // 模板详情：logs / macro_definitions 这类嵌套结构只从这里来。
+  getApplicationDeploymentTemplate: vi.fn((id) => Promise.resolve(baseTemplateDetailPayload(id))),
   getApplicationService: vi.fn(() => Promise.resolve({
     data: { data: {
       id: 20,
@@ -101,7 +91,11 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 vi.mock('@/api/monitor', () => ({
-  getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
+  getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 3, code: 'std', name: '标准', retention_days: 30, enabled: true },
+    { id: 4, code: 'short', name: '短期', retention_days: 2, enabled: true },
+    { id: 1, code: 'hot', name: '热', retention_days: 7, enabled: true, is_default: true },
+  ] } } })),
   getLogProcessingRules: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
   getLogCollectionFilterRules: vi.fn(() => Promise.resolve({ data: { data: { results: [
     { id: 91, name: 'error | failed | critical | fatal', enabled: true, application: null, filter_pattern: '(?i)(error|failed|critical|fatal)' },
@@ -110,106 +104,58 @@ vi.mock('@/api/monitor', () => ({
 
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 
+// 这两个 mock 的实现在 afterEach 里要还原（见 restoreTemplateMocks），所以要拿到模块引用。
+import { getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList } from '@/api/assets/application'
+
+// 两个模板的基础 fixtures（默认 mock 用它们）。62 是 external_ha：HA 拓扑的用例要它出现在
+// 模板候选里（templateOptions 按拓扑过滤 control_type）。
+function baseTemplateListPayload() {
+  return { data: { data: { results: [
+    { id: 61, application: 2, name: 'Redis Template', enabled: true, log_count: 1 },
+    { id: 62, application: 5, name: 'Tomcat Template', control_type: 'external_ha', enabled: true, log_count: 1 },
+  ] } } }
+}
+
+function baseTemplateDetailPayload(id) {
+  return { data: { data: id === 61
+    ? {
+      id: 61, application: 2, name: 'Redis Template', enabled: true,
+      logs: [{ id: 81, name: 'redis.log', path_pattern: '/var/log/redis/*.log', processing_rule: null }],
+    }
+    : {
+      id: 62, application: 5, name: 'Tomcat Template', control_type: 'external_ha', enabled: true,
+      logs: [{ id: 82, name: 'application.log', path_pattern: '/srv/tomcat/logs/application.log', processing_rule: null }],
+    } } }
+}
+
+// 本文件里多处按需重设模板接口的 mock，而 `vi.clearAllMocks()` 只清调用记录、**不清实现**，
+// 于是前面用例设过的实现会留给后面的用例（曾经把 HA 用例的模板选择搞没了）。
+// afterEach 统一还原成基础 fixtures，单条用例可以放心临时改。
+function restoreTemplateMocks() {
+  getApplicationDeploymentTemplateList.mockImplementation(() => Promise.resolve(baseTemplateListPayload()))
+  getApplicationDeploymentTemplate.mockImplementation((id) => Promise.resolve(baseTemplateDetailPayload(id)))
+}
+
+// 单机拓扑下可用的模板对（不带 control_type，见上方 templateOptions 的拓扑过滤）：
+// 用来测"日志表怎么铺"的用例把契约钉死——列表**不带 logs**，logs 只在详情里。
+function plainTemplateListPayload() {
+  return { data: { data: { results: [
+    { id: 61, application: 2, name: 'Redis Template', enabled: true, log_count: 1 },
+    { id: 62, application: 5, name: 'Tomcat Template', enabled: true, log_count: 1 },
+  ] } } }
+}
+
+function plainTemplateDetailPayload(id) {
+  const plain = baseTemplateDetailPayload(id)
+  delete plain.data.data.control_type
+  return plain
+}
+
 describe('ApplicationServiceDialog', () => {
   afterEach(() => {
     document.body.innerHTML = ''
+    restoreTemplateMocks()
     vi.clearAllMocks()
-  })
-
-  // 回归（2026-09-19 现场）：改了「宏」里的内容，行上的"解析后路径"必须**当场**跟着变。
-  // 以前那列用的是加载时后端算好的 resolved_path，改宏不重算——得保存后重进弹窗才看到新路径，
-  // 用户会以为"改了没生效"（或反过来，以为界面显示的路径就是主机上的）。
-  it('recomputes the resolved path live while editing macros', async () => {
-    const { getApplicationDeploymentTemplateList, getApplicationService, getApplicationServiceLogConfig } = await import('@/api/assets/application')
-    // 一律用 ...Once：这些 mock 的实现不会被 afterEach 的 clearAllMocks 清掉，
-    // 用 mockResolvedValue 会把整个模板列表换掉、污染后面的用例（这里踩过一次）。
-    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: { logs: [{
-      log_definition: 82,
-      name: 'application.log',
-      path_pattern: '${APP_HOME}/logs/application.log',
-      resolved_path: '/opt/tomcat/logs/application.log',
-      collection_enabled: null,
-      template_processing_rule_id: null,
-      template_processing_rule_name: '',
-      retention_tier: null,
-      data_stream: 'autoadmin-kul-tib-test-tomcat-80-std',
-    }] } } })
-    getApplicationDeploymentTemplateList.mockResolvedValueOnce({ data: { data: { results: [{
-      id: 62,
-      application: 5,
-      name: 'Tomcat Template',
-      control_type: 'systemd',
-      enabled: true,
-      app_home: '/opt/tomcat',
-      macro_definitions: [
-        { name: 'APP_HOME', value: '', description: '应用目录' },
-        { name: 'LOG_DIR', value: '/opt/tomcat/logs', description: '日志目录' },
-      ],
-      logs: [{ id: 82, name: 'application.log', path_pattern: '${APP_HOME}/logs/application.log', processing_rule: null }],
-    }] } } })
-    getApplicationService.mockResolvedValueOnce({ data: { data: {
-      id: 20,
-      name: 'tomcat-group',
-      code: 'tomcat-group',
-      application: 5,
-      deployment_template: 62,
-      topology_type: 'cluster',
-      macro_values: {},
-      member_instances: [{ deployment: 13 }],
-    } } })
-
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
-    })
-    await wrapper.setProps({ open: true })
-    // 弹窗初始化要串起一串接口（服务/模板/日志配置），并行跑测试时一次 flushPromises
-    // 不保证全部落地——多等几轮，别让用例变成"偶发失败"。
-    for (let index = 0; index < 4; index += 1) await flushPromises()
-
-    const row = wrapper.vm.templateLogRows.find((item) => item.log_definition === 82)
-    expect(row, '日志配置未加载：模板日志行应包含 log_definition 82').toBeTruthy()
-
-    // 模板 app_home 作为 APP_HOME 的默认值 → 解析后的路径是绝对路径。
-    expect(wrapper.vm.rowPathValue(row)).toBe('/opt/tomcat/logs/application.log')
-
-    // 改宏：立刻生效，不需要保存（现场就是这里不变）。
-    wrapper.vm.form.macro_values.APP_HOME = '/home/esb/tomcat/apache-tomcat-9.0.35'
-    await flushPromises()
-    expect(wrapper.vm.rowPathValue(row)).toBe('/home/esb/tomcat/apache-tomcat-9.0.35/logs/application.log')
-
-    // 切到"原始"看模板里的路径模式；切回来仍是新值（两份值不互相污染）。
-    wrapper.vm.showResolvedPath = false
-    await flushPromises()
-    expect(wrapper.vm.rowPathValue(row)).toBe('${APP_HOME}/logs/application.log')
-    wrapper.vm.showResolvedPath = true
-
-    // 清掉覆盖（= 删掉 macro_values 里的键）→ 回到模板默认，而不是变成空路径。
-    delete wrapper.vm.form.macro_values.APP_HOME
-    await flushPromises()
-    expect(wrapper.vm.rowPathValue(row)).toBe('/opt/tomcat/logs/application.log')
-    wrapper.unmount()
-    // 这个用例要串起弹窗初始化的整串接口：本地单跑约 2s，全量并行时会超过默认的 5s。
-  }, 20000)
-
-  it('derives the application and member candidates from a direct cluster profile', async () => {
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, clusterProfileId: 9 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: {
-          AModal: { template: '<div><slot /></div>' },
-        },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    expect(document.body.textContent).not.toContain('部署形态')
-    expect(document.body.querySelector('input.ant-input[disabled]').value).toBe('Redis')
-    wrapper.unmount()
   })
 
   it('pre-fills business system and environment from the tree scope when creating fresh', async () => {
@@ -320,172 +266,6 @@ describe('ApplicationServiceDialog', () => {
     wrapper.unmount()
   })
 
-  it('shows the template-owned processing rule read-only for each template log', async () => {
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    // 解析规则**只读**：值来自模板日志定义，服务侧改不了（要不同就另建模板/日志定义）。
-    expect(document.body.textContent).toContain('处理规则（模板）')
-    expect(document.body.textContent).toContain('error | failed | critical | fatal')
-    expect(wrapper.vm.processingRuleLabel({ template_processing_rule_id: 91 })).toBe('规则 #91')
-    // 精确断言"这一格是纯文本"：不能再用"页面上没有文本含规则名的 select"来判断——
-    // 采集过滤两列现在是可编辑的，它们的下拉选项里本来就会出现规则名。
-    const ruleCell = wrapper.findAll('td').find((cell) => cell.text().includes('error | failed | critical | fatal'))
-    expect(ruleCell, '找不到处理规则那一格').toBeTruthy()
-    expect(ruleCell.find('.ant-select').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  // 采集过滤在服务弹窗里可改（与日志中心同一份规则、同一套三态），改完随整表提交。
-  // 之前这一列是隐藏的（当时选了不生效），接入渲染后继续隐藏只会让人以为功能没做。
-  it('lets the service override the collection filter per log', async () => {
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    expect(document.body.textContent).toContain('采集过滤（保留）')
-    expect(document.body.textContent).toContain('采集过滤（排除）')
-    // 库里已有的覆盖值如实回填（这条 fixture 的 include 覆盖是 91），保存时原样提交。
-    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBe(91)
-    // 三态各自独立可表达：0 = 显式关闭（模板配了也不过滤）、null = 回到继承模板。
-    // 0 与 null 必须区分开，否则"模板配了过滤、这条服务不想过滤"就表达不出来。
-    wrapper.vm.setLogOverride(81, 'collection_filter_rule', 0)
-    await flushPromises()
-    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBe(0)
-    wrapper.vm.setLogOverride(81, 'collection_filter_rule', null)
-    await flushPromises()
-    expect(wrapper.vm.logOverrides[81].collection_filter_rule).toBeNull()
-    wrapper.vm.setLogOverride(81, 'collection_exclude_filter_rule', 91)
-    await flushPromises()
-    expect(wrapper.vm.logOverrides[81].collection_exclude_filter_rule).toBe(91)
-    // 排除方向模板没配 → 继承时显示"继承模板（无）"，用户要知道自己继承了什么。
-    expect(wrapper.vm.inheritedFilterLabel(null)).toBe('继承模板（无）')
-    wrapper.unmount()
-  })
-
-  it('allows a new service to configure collection switch and tier before its first save', async () => {
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    wrapper.vm.form.application = 2
-    wrapper.vm.form.deployment_template = 61
-    await flushPromises()
-
-    expect(document.body.textContent).toContain('redis.log')
-    expect(document.body.textContent).toContain('保留档位')
-    wrapper.unmount()
-  })
-
-  // 格式认证（架构文档 §4.8）：弹窗本体是共享组件（src/components/LogFormatVerifyDialog.vue），
-  // 这里只钉住"弹窗拿到了正确的目标与候选实例"——候选必须来自库里的绑定关系（13/14），
-  // 而不是表单里还没保存的勾选（认证在后端按库里的绑定取实例）。提交与失败展示见该组件自己的 spec。
-  it('opens the shared verify dialog with the bound instances as candidates', async () => {
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    expect(document.body.textContent).toContain('发起认证')
-    expect(wrapper.vm.verifyDialogVisible).toBe(false)
-
-    wrapper.vm.openVerifyDialog(wrapper.vm.templateLogRows[0])
-    await flushPromises()
-
-    expect(wrapper.vm.verifyDialogVisible).toBe(true)
-    expect(wrapper.vm.verifyTarget.log_definition).toBe(81)
-    expect(wrapper.vm.verifyDeploymentOptions.map((item) => item.value)).toEqual([13, 14])
-    wrapper.unmount()
-  })
-
-  // 已认证的行给的是"重新认证"：改了实例级 runtime_variables（不进指纹）这类变化
-  // 无法自动失效，只能人工重跑一次。
-  it('offers re-verification for an already verified log', async () => {
-    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
-    getApplicationServiceLogConfig.mockResolvedValue({ data: { data: { logs: [{
-      log_definition: 81,
-      name: 'application.log',
-      resolved_path: '/srv/tomcat/logs/application.log',
-      template_processing_rule_id: 91,
-      template_processing_rule_name: 'tomcat rule',
-      format_state: 'verified',
-      format_verified_at: '2026-09-19T10:00:00Z',
-      format_verified_source: 'instance',
-      format_verified_by: 'zhangsan',
-      data_stream: 'logs-production-order-std',
-    }] } } })
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    expect(document.body.textContent).toContain('已验证')
-    expect(document.body.textContent).toContain('重新认证')
-    wrapper.unmount()
-  })
-
-  // 未挂解析规则的日志不会被采集，也就无从认证格式：入口禁用并说明原因。
-  it('disables verification for a log without a processing rule', async () => {
-    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
-    getApplicationServiceLogConfig.mockResolvedValue({ data: { data: { logs: [{
-      log_definition: 81,
-      name: 'application.log',
-      resolved_path: '/srv/tomcat/logs/application.log',
-      template_processing_rule_id: null,
-      format_state: 'unverified',
-      data_stream: 'logs-production-order-std',
-    }] } } })
-    const wrapper = mount(ApplicationServiceDialog, {
-      props: { open: false, serviceId: 20 },
-      attachTo: document.body,
-      global: {
-        plugins: [Antd],
-        stubs: { AModal: { template: '<div><slot /></div>' } },
-      },
-    })
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-
-    expect(wrapper.vm.canVerifyLogFormat(wrapper.vm.templateLogRows[0])).toBe(false)
-    const button = wrapper.findAll('button').find((node) => node.text().includes('发起认证'))
-    expect(button.attributes('disabled')).toBeDefined()
-    wrapper.unmount()
-  })
-
   // 模板没给默认值的宏必须在本服务填，否则保存不了：下发时路径里的 ${VAR} 按
   // 模板默认 → 服务覆盖 → 实例变量 找值，一个都没有时那台主机要么被跳过、要么拼出坏路径
   // （Filebeat 监听不到文件，采集静默为空）。这是"事后才发现"的坑，所以在保存时拦住。
@@ -554,4 +334,62 @@ describe('ApplicationServiceDialog', () => {
     expect(payload.macro_values.APP_HOME).toBe('/opt/tomcat')
     wrapper.unmount()
   })
+
+  // 2026-09-20：编辑弹窗不再编辑逐条日志配置（统一走日志中心「日志配置」），
+  // 所以保存时**绝不能提交 log_settings**——那个字段是整表替换语义，提交空集合会把该服务
+  // 已有的采集开关/档位/过滤覆盖值全部删掉。字段缺省（null）= 后端整块跳过、一行都不动。
+  it('never submits log_settings so saving cannot wipe per-log overrides', async () => {
+    const { getApplicationService, getApplicationVersionList, saveApplicationService, getApplicationDeploymentTemplateList } = await import('@/api/assets/application')
+    getApplicationVersionList.mockResolvedValue({ data: { data: { results: [{ id: 51, application: 5, version: '1.0' }] } } })
+    getApplicationDeploymentTemplateList.mockResolvedValue({ data: { data: { results: [{
+      id: 62, application: 5, name: 'Tomcat Template', control_type: 'external_ha', enabled: true, macro_definitions: [],
+    }] } } })
+    getApplicationService.mockResolvedValue({ data: { data: {
+      id: 20, name: 'tomcat-group', code: 'tomcat-group', application: 5, application_version: 51,
+      deployment_template: 62, topology_type: 'cluster', cluster_profile: 4,
+      access_address: '10.0.0.100', business_system: 3, environment: 31,
+      member_instances: [{ deployment: 13 }, { deployment: 14 }],
+    } } })
+    saveApplicationService.mockResolvedValue({ data: { data: { id: 20 } } })
+
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    await wrapper.vm.submit()
+    await flushPromises()
+
+    expect(saveApplicationService).toHaveBeenCalled()
+    const payload = saveApplicationService.mock.calls.at(-1)[0]
+    // 关键断言：字段根本不出现在提交体里（不是空数组）——空数组会被后端当成"全量为空"从而删掉覆盖值。
+    expect('log_settings' in payload).toBe(false)
+    // 服务级的两个日志默认值照旧提交（它们不是逐条覆盖值）。
+    expect(payload.log_collection_enabled).toBeDefined()
+    expect('log_retention_tier' in payload).toBe(true)
+    wrapper.unmount()
+  })
+
+  // 逐条配置的入口在日志中心：弹窗里要写明去哪儿改，并说清"这里保存不会改动它们"。
+  it('points per-log configuration to the log center instead of editing it here', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      attachTo: document.body,
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('逐条日志配置')
+    expect(document.body.textContent).toContain('日志中心')
+    expect(document.body.textContent).toContain('不会改动')
+    // 旧的「模板日志」表必须真的不在了（列头是它最显眼的标志）。
+    expect(document.body.textContent).not.toContain('处理规则（模板）')
+    expect(document.body.textContent).not.toContain('采集过滤（保留）')
+    wrapper.unmount()
+  })
+
 })

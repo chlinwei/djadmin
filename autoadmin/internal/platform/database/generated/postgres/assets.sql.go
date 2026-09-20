@@ -2073,9 +2073,14 @@ func (q *Queries) GetApplicationServiceDetail(ctx context.Context, id int64) (Ge
 	return i, err
 }
 
-const getApplicationServiceLogCollection = `-- name: GetApplicationServiceLogCollection :one
-SELECT log_collection_enabled FROM assets_application_service WHERE id=$1
+const getApplicationServiceLogDefaults = `-- name: GetApplicationServiceLogDefaults :one
+SELECT log_collection_enabled, log_retention_tier_id FROM assets_application_service WHERE id=$1
 `
+
+type GetApplicationServiceLogDefaultsRow struct {
+	LogCollectionEnabled bool          `json:"log_collection_enabled"`
+	LogRetentionTierID   sql.NullInt64 `json:"log_retention_tier_id"`
+}
 
 // 服务级日志采集总开关（`log_collection_enabled`）的单独写入。
 //
@@ -2087,11 +2092,14 @@ SELECT log_collection_enabled FROM assets_application_service WHERE id=$1
 // 不动认证状态：采集总开关不进认证指纹（见 log_format_fingerprint.go 的输入清单），
 // 而且认证四列在 log_setting 上、根本不在这一行。
 // 单列读取：log-config 接口要带上服务级采集总开关（页面据此区分"总开关关了"与"逐条关了"）。
-func (q *Queries) GetApplicationServiceLogCollection(ctx context.Context, id int64) (bool, error) {
-	row := q.db.QueryRowContext(ctx, getApplicationServiceLogCollection, id)
-	var log_collection_enabled bool
-	err := row.Scan(&log_collection_enabled)
-	return log_collection_enabled, err
+// 2026-09-20 起一起读**默认保留档位**：界面上的"继承服务默认"必须写清默认到底是哪一档
+// （现场反馈"我怎么知道默认是什么呢"），档位与总开关本来就是同一行上的两个日志默认值，
+// 一条单行读取覆盖两者，省一次往返。
+func (q *Queries) GetApplicationServiceLogDefaults(ctx context.Context, id int64) (GetApplicationServiceLogDefaultsRow, error) {
+	row := q.db.QueryRowContext(ctx, getApplicationServiceLogDefaults, id)
+	var i GetApplicationServiceLogDefaultsRow
+	err := row.Scan(&i.LogCollectionEnabled, &i.LogRetentionTierID)
+	return i, err
 }
 
 const getApplicationVersion = `-- name: GetApplicationVersion :one

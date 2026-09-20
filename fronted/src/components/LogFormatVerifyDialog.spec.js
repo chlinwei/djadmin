@@ -137,4 +137,77 @@ describe('LogFormatVerifyDialog', () => {
     expect(wrapper.vm.form).toMatchObject({ source: 'instance', deployment_id: 13 })
     wrapper.unmount()
   })
+
+  // 批量认证（日志中心页勾选多条后一起认证）：逐条串行调用，不通过的那几条列出来，
+  // 通过的不受影响——认证是逐条的业务结果，没有"整批回滚"这回事。
+  it('verifies every selected log in a batch and lists only the failing ones', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    verifyApplicationServiceLogFormat
+      .mockResolvedValueOnce({ data: { data: { passed: true } } })
+      .mockResolvedValueOnce({ data: { data: { passed: false, missing_fields: ['log_message'] } } })
+    const wrapper = mountDialog({
+      target: null,
+      targets: [
+        { log_definition: 81, name: 'access.log' },
+        { log_definition: 82, name: 'error.log' },
+      ],
+    })
+    await flushPromises()
+
+    await wrapper.vm.submit()
+    await flushPromises()
+
+    expect(verifyApplicationServiceLogFormat).toHaveBeenCalledTimes(2)
+    expect(verifyApplicationServiceLogFormat.mock.calls.map((call) => call[1].log_definition_id)).toEqual([81, 82])
+    // 有一条没通过：留在弹窗里只列失败的那条，并写明是几条里的几条。
+    expect(wrapper.vm.failures).toHaveLength(1)
+    expect(document.body.textContent).toContain('error.log')
+    expect(document.body.textContent).toContain('有 1/2 条日志未通过格式认证')
+    expect(wrapper.emitted('update:open')).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  it('closes and reports once every log in the batch passed', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    const wrapper = mountDialog({
+      target: null,
+      targets: [
+        { log_definition: 81, name: 'access.log' },
+        { log_definition: 82, name: 'error.log' },
+      ],
+    })
+    await flushPromises()
+
+    await wrapper.vm.submit()
+    await flushPromises()
+
+    expect(verifyApplicationServiceLogFormat).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('verified')).toBeTruthy()
+    expect(wrapper.emitted('update:open').at(-1)).toEqual([false])
+    wrapper.unmount()
+  })
+
+  // 某一条报错（主机离线、接口失败）不中断整批：剩下的照常认证，最后一起列出来。
+  it('keeps going when one log in the batch fails hard', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    verifyApplicationServiceLogFormat
+      .mockRejectedValueOnce(new Error('agent 离线'))
+      .mockResolvedValueOnce({ data: { data: { passed: true } } })
+    const wrapper = mountDialog({
+      target: null,
+      targets: [
+        { log_definition: 81, name: 'access.log' },
+        { log_definition: 82, name: 'error.log' },
+      ],
+    })
+    await flushPromises()
+
+    await wrapper.vm.submit()
+    await flushPromises()
+
+    expect(verifyApplicationServiceLogFormat).toHaveBeenCalledTimes(2)
+    expect(wrapper.vm.failures).toHaveLength(1)
+    expect(document.body.textContent).toContain('agent 离线')
+    wrapper.unmount()
+  })
 })

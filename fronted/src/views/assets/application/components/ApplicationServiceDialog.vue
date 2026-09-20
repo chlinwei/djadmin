@@ -194,159 +194,17 @@
               </div>
             </a-form-item>
           </a-col>
-          <a-col v-if="form.deployment_template" :span="24">
-            <a-form-item label="模板日志">
-              <a-alert v-if="logConfigError" type="error" show-icon class="log-config-error" :message="logConfigError" />
-              <a-table
-                :columns="logTableColumns"
-                :data-source="templateLogRows"
-                :pagination="false"
-                row-key="log_definition"
-                size="small"
-                :locale="tableLocale"
-                :scroll="{ x: 1940 }"
-              >
-                <!-- 表头小开关：原始路径模式 ↔ 解析后（模板默认值 + 服务覆盖；实例级宏仍留占位符）。
-                     与日志中心共用 util/logPathMacro，口径一致。 -->
-                <template #headerCell="{ column }">
-                  <template v-if="column.key === 'resolved_path'">
-                    路径
-                    <a-tooltip :title="showResolvedPath ? '当前显示：解析后的路径（模板默认值 + 服务覆盖）。切回原始可看模板里的路径模式' : '当前显示：模板里的路径模式（原始 ${宏}）。切到解析后可看能展开的部分'" placement="top">
-                      <a-switch
-                        v-model:checked="showResolvedPath"
-                        size="small"
-                        checked-children="解析后"
-                        un-checked-children="原始"
-                        class="path-toggle"
-                      />
-                    </a-tooltip>
-                  </template>
-                  <template v-else>{{ column.title }}</template>
-                </template>
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'name'">{{ record.name }}</template>
-                  <template v-else-if="column.key === 'resolved_path'">
-                    <!-- 路径**随表单里的宏实时重算**（不是加载时后端算好的那份）：
-                         改了「宏」马上就能看到路径变成什么，不用先保存再进来核对（2026-09-19 现场）。 -->
-                    <a-tooltip :title="PATH_MACRO_HINT" placement="top">
-                      <code>{{ rowPathValue(record) }}</code>
-                      <a-tag
-                        v-if="showResolvedPath && rowPendingMacros(record).length"
-                        color="orange"
-                        class="path-macro-tag"
-                      >
-                        {{ rowPendingMacros(record).join(' ') }} 实例上展开
-                      </a-tag>
-                    </a-tooltip>
-                    <!-- 含通配的路径按需展开：按**已保存配置**在各主机上列出真实文件。
-                         新建服务还没有 id、也无绑定实例，无法展开，所以只在编辑态出现。 -->
-                    <LogGlobPreview
-                      v-if="showResolvedPath && serviceId && !rowPendingMacros(record).length && hasGlobMeta(rowPathValue(record))"
-                      :service-id="serviceId"
-                      :log-definition-id="record.log_definition"
-                    />
-                  </template>
-                  <template v-else-if="column.key === 'processing_rule'">
-                    <!-- 解析规则只由部署模板的日志定义决定（服务侧只读）：同一模板的日志格式相同，
-                         规则就该相同；要不同就另建模板/另建日志定义。未挂规则的日志不会被采集。 -->
-                    <a-tooltip
-                      title="解析规则来自部署模板的日志定义，服务不可修改。未挂规则的日志不会被采集，需要到部署模板里给它挂规则。"
-                      placement="top"
-                    >
-                      <span :class="{ 'log-rule-missing': !record.template_processing_rule_id }">
-                        {{ processingRuleLabel(record) || '未配置（不会采集）' }}
-                      </span>
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'collection_enabled'">
-                    <!-- 默认采：只有"关"才落库（覆盖值 false）。这样模板新增日志、扩容新实例
-                         都无需逐条确认，语义仍是"服务总开关 ON 且该日志未被本服务关闭"。 -->
-                    <a-tooltip
-                      title="默认开启。关闭表示本服务不再采集这条日志（同一模板下其他服务不受影响）；保存后需重新下发采集配置才在主机上生效。"
-                      placement="top"
-                    >
-                      <a-switch
-                        :checked="isLogCollectEnabled(record.log_definition)"
-                        checked-children="采"
-                        un-checked-children="不采"
-                        @change="(checked) => setLogCollectEnabled(record.log_definition, checked)"
-                      />
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'filter_include'">
-                    <!-- 三态：null 继承模板 / 0 不过滤 / >0 指定规则。选项按方向过滤，
-                         白名单不会出现在排除槽里（反着用会只采到噪声）。 -->
-                    <a-tooltip
-                      title="只保留匹配的记录（白名单）。改完保存并重新下发采集配置才在主机上生效；被滤掉的日志不会进 ES、也补不回来。"
-                      placement="top"
-                    >
-                      <a-select
-                        :value="logOverrides[record.log_definition]?.collection_filter_rule ?? null"
-                        :options="[{ label: inheritedFilterLabel(record.template_filter_include_rule_id), value: null }, ...filterRuleOptions('include')]"
-                        :getPopupContainer="getPopupContainer"
-                        size="small"
-                        style="min-width: 150px"
-                        @update:value="(value) => setLogOverride(record.log_definition, 'collection_filter_rule', value ?? null)"
-                      />
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'filter_exclude'">
-                    <a-tooltip
-                      title="丢掉匹配的记录（黑名单，先保留后排除）。改完保存并重新下发采集配置才在主机上生效；被滤掉的日志不会进 ES、也补不回来。"
-                      placement="top"
-                    >
-                      <a-select
-                        :value="logOverrides[record.log_definition]?.collection_exclude_filter_rule ?? null"
-                        :options="[{ label: inheritedFilterLabel(record.template_filter_exclude_rule_id), value: null }, ...filterRuleOptions('exclude')]"
-                        :getPopupContainer="getPopupContainer"
-                        size="small"
-                        style="min-width: 150px"
-                        @update:value="(value) => setLogOverride(record.log_definition, 'collection_exclude_filter_rule', value ?? null)"
-                      />
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'format_state'">
-                    <!-- 日志格式"一次认证 + 指纹失效"：认证过就不再持续检查，只在模板/规则/宏/
-                         应用版本变化时要求重新认证（状态与原因都由后端按指纹比对给出）。 -->
-                    <a-tooltip :title="formatStateTooltip(record)" placement="top">
-                      <a-tag :color="FORMAT_STATE_COLOR[record.format_state] || 'default'">
-                        {{ FORMAT_STATE_LABEL[record.format_state] || '未验证' }}
-                      </a-tag>
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'format_action'">
-                    <!-- 认证入口：未通过/已失效时是主操作，已验证时是"重新认证"（改了实例级
-                         runtime_variables 这类无法进指纹的变化，只能人工重跑一次）。 -->
-                    <a-tooltip :title="formatActionTooltip(record, serviceId)" placement="top">
-                      <a-button
-                        type="link"
-                        size="small"
-                        :disabled="!canVerifyLogFormat(record, serviceId)"
-                        @click="openVerifyDialog(record)"
-                      >
-                        {{ record.format_state === 'verified' ? '重新认证' : '发起认证' }}
-                      </a-button>
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'retention_tier'">
-                    <a-tooltip
-                      title="改档位会写入新流；旧流停止写入并按原档位保留到期，不迁移数据。保存后需要重新下发采集配置。"
-                      placement="top"
-                    >
-                      <a-select
-                        :value="logOverrides[record.log_definition]?.retention_tier ?? null"
-                        :options="[{ label: '继承服务默认', value: null }, ...retentionTierOptions]"
-                        :getPopupContainer="getPopupContainer"
-                        @update:value="setLogOverride(record.log_definition, 'retention_tier', $event)"
-                      />
-                    </a-tooltip>
-                  </template>
-                  <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
-                </template>
-              </a-table>
+          <!-- 日志的逐条配置（采集开关 / 保留档位 / 采集过滤 / 格式认证）**统一在日志中心
+               「日志配置」里做**：那边有勾选批量、有配置差异、有下发入口，也被更多页面复用。
+               这个弹窗只保留服务级的两个日志默认值（上面：开启采集、默认保留档位），
+               保存时**不提交 log_settings**——那条字段是整表替换语义，提交空集合会把已有覆盖值删掉。 -->
+          <a-col :span="24">
+            <a-form-item label="逐条日志配置">
               <div class="field-hint">
-                日志的路径与解析规则在部署模板的日志定义里维护（此处只读，同一模板下所有服务共用同一份解析规则）。
-                这里按服务配置的是两件事：这条日志**采不采**、以及**保留档位**（写入哪个 data stream）。
+                日志的路径与解析规则在部署模板的日志定义里维护；<b>每条日志采不采、保留档位、采集过滤、格式认证</b>
+                都在「<b>日志管理 → 日志中心 → 日志配置</b>」里按行调整（支持勾选批量改，改完在那里下发）。
+                <br />
+                这里保存**不会改动**任何逐条覆盖值（服务级的两个默认值除外）。
               </div>
             </a-form-item>
           </a-col>
@@ -397,16 +255,6 @@
       @update:open="templateDialogOpen = $event"
       @saved="handleTemplateCreated"
     />
-    <!-- 格式认证弹窗由共享组件提供：日志中心页给同一条 (服务×日志定义) 发起认证时用的是同一个组件，
-         避免两套文案与两种提交语义（见 src/components/LogFormatVerifyDialog.vue）。 -->
-    <LogFormatVerifyDialog
-      :open="verifyDialogVisible"
-      :service-id="serviceId"
-      :target="verifyTarget"
-      :deployment-options="verifyDeploymentOptions"
-      @update:open="verifyDialogVisible = $event"
-      @verified="loadLogConfig(serviceId)"
-    />
   </a-modal>
 </template>
 
@@ -414,11 +262,8 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { tableLocale } from '@/util/tableStyle'
-import store from '@/store'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { getLogCollectionFilterRules } from '@/api/monitor'
-import { PATH_MACRO_HINT, resolvePathMacros, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
 import { fetchAllPages } from '@/util/fetchAllPages'
 import DeploymentDialog from './DeploymentDialog.vue'
 import BusinessEnvironmentDialog from './BusinessEnvironmentDialog.vue'
@@ -427,22 +272,18 @@ import ClusterProfileDialog from './ClusterProfileDialog.vue'
 import Dialog from './Dialog.vue'
 import TemplateDialog from './TemplateDialog.vue'
 import VersionDialog from './VersionDialog.vue'
-import LogFormatVerifyDialog from '@/components/LogFormatVerifyDialog.vue'
-import LogGlobPreview from '@/components/LogGlobPreview.vue'
-import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActionTooltip, formatStateTooltip } from '@/util/logFormatState'
 import {
   getApplicationDeploymentList,
   getApplicationDeploymentTemplateList,
   getApplicationList,
   getApplicationService,
-  getApplicationServiceLogConfig,
   getApplicationVersionList,
   getBusinessEnvironmentList,
   getBusinessSystemList,
   getClusterProfileList,
   saveApplicationService,
 } from '@/api/assets/application'
-import { getLogProcessingRules, getLogRetentionTiers } from '@/api/monitor'
+import { getLogRetentionTiers } from '@/api/monitor'
 
 const props = defineProps({
   open: { type: Boolean, required: true },
@@ -476,51 +317,16 @@ const pickedDeploymentId = ref(null)
 const memberEnabled = reactive({})
 const environmentRecords = ref([])
 const retentionTierRecords = ref([])
-const processingRuleRecords = ref([])
-const templateLogRows = ref([])
-const collectionFilterRules = ref([])
-// 「路径」列显示原始模式还是解析后的路径（与日志中心同一套取值与标注）。
-const showResolvedPath = ref(true)
-// 日志配置加载失败的提示。与"后端确实返回空列表"必须区分：接口报错时表格同样是空的，
-// 静默吞掉会让故障表现成"这里本来就没有日志"（2026-09-19 现场就是被这个掩盖的）。
-const logConfigError = ref('')
-// ---- 格式认证：弹窗开关 + 目标 + 候选实例（弹窗本体与提交逻辑是共享组件）----
-const verifyDialogVisible = ref(false)
-const verifyTarget = ref(null)
-// 库里已绑定的部署实例 id：认证在后端按库里的绑定关系取实例，不能拿表单里未保存的勾选。
-const boundDeploymentIds = ref([])
-// 服务级覆盖：键为日志定义 ID。只有采集开关/保留档位/采集过滤规则可覆盖，
-// 解析规则属于模板日志定义（只读展示，不进这里）。
-const logOverrides = reactive({})
 const retentionTierOptions = computed(() => retentionTierRecords.value
   .filter((item) => item.enabled)
   .map((item) => ({ label: `${item.name}（${item.retention_days} 天）`, value: item.id })))
+
+// 「继承服务默认」到底继承的是哪一档：继承链是 **服务默认档位（上面那个下拉，未保存的以表单为准）
+// → 平台默认档（is_default）→ std**。只写"继承服务默认"用户没法知道这条日志实际保留多久。
 // 解析规则名的展示：优先用后端随行返回的名字（保存过的服务），没带就用规则列表按 id 反查
 // （新建/换模板时只有 id）。
-function processingRuleLabel(record) {
-  if (record.template_processing_rule_name) return record.template_processing_rule_name
-  const id = record.template_processing_rule_id
-  if (!id) return ''
-  const found = processingRuleRecords.value.find((item) => item.id === id)
-  return found ? found.name : `规则 #${id}`
-}
 
-// 「处理规则」是只读列（值来自部署模板的日志定义）；「采集过滤」两列可改：三态与日志中心一致
-// （NULL 继承模板 / 0 不过滤 / >0 指定规则），改完随整表提交，仍需重新下发才到主机上生效。
-const logTableColumns = [
-  { title: '日志名称', key: 'name', width: 150 },
-  { title: '路径', key: 'resolved_path', width: 260 },
-  { title: '处理规则（模板）', key: 'processing_rule', width: 210 },
-  { title: '采集', key: 'collection_enabled', width: 130 },
-  // 采集过滤（2026-09-19 接入渲染后不再隐藏）：与日志中心「日志配置」同一份规则、同一套三态，
-  // 两边显示同一条 (服务 × 日志定义) 的配置，口径就不会分叉。
-  { title: '采集过滤（保留）', key: 'filter_include', width: 180 },
-  { title: '采集过滤（排除）', key: 'filter_exclude', width: 180 },
-  { title: '格式校验', key: 'format_state', width: 110 },
-  { title: '格式认证', key: 'format_action', width: 120 },
-  { title: '保留档位', key: 'retention_tier', width: 190 },
-  { title: 'Data Stream', key: 'data_stream', width: 260 },
-]
+// 当前选中的部署模板：宏定义与 app_home 都从它取（路径预览要用，见 rowResolvedPath）。
 const topologyOptions = [{ label: '单机', value: 'standalone' }, { label: '集群', value: 'cluster' }, { label: '负载均衡', value: 'load_balancer' }]
 const initialForm = () => ({
   id: null, business_system: null, application: null, application_version: null, deployment_template: null, cluster_profile: null,
@@ -568,27 +374,6 @@ const templateOptions = computed(() => templateRecords.value
   .filter((item) => item.application === form.application && item.enabled)
   .filter((item) => isHaCluster.value ? item.control_type === 'external_ha' : item.control_type !== 'external_ha')
   .map((item) => ({ label: item.name, value: item.id })))
-// 行上的"解析后路径"实时重算：模板 macro_definitions 的默认值 → 模板 app_home（APP_HOME 默认）
-// → 表单里的服务级 macro_values 覆盖。与服务端 ListServiceTemplateLogs 的调用顺序逐字一致
-//（见 util/logPathMacro 的 resolvePathMacros），所以保存后的结果与预览必然一致。
-function rowResolvedPath(record) {
-  return resolvePathMacros(record?.path_pattern, {
-    templateMacros: templateMacros.value,
-    serviceMacros: form.macro_values,
-    appHome: selectedTemplate.value?.app_home || '',
-  })
-}
-
-// 路径列的两种显示：原始 pattern ↔ 实时解析后的路径。实例级宏仍保持占位符（服务这层拿不到）。
-function rowPathValue(record) {
-  return showResolvedPath.value ? rowResolvedPath(record) : (record?.path_pattern || '')
-}
-
-function rowPendingMacros(record) {
-  return unexpandedMacros(rowResolvedPath(record))
-}
-
-// 当前选中的部署模板：宏定义与 app_home 都从它取（路径预览要用，见 rowResolvedPath）。
 const selectedTemplate = computed(() => templateRecords.value.find((item) => item.id === form.deployment_template) || null)
 const templateMacros = computed(() => selectedTemplate.value?.macro_definitions || [])
 const macroTableColumns = [
@@ -809,11 +594,8 @@ async function initialize() {
       ['部署模板', () => fetchAllPages(getApplicationDeploymentTemplateList, { enabled: true })],
       ['集群模型', () => fetchAllPages(getClusterProfileList, { enabled: true })],
       ['部署实例', () => fetchAllPages(getApplicationDeploymentList)],
-      // 处理规则只用于把"模板日志定义上挂的规则 id"显示成名字（只读列），服务侧不可选。
-      ['日志处理规则', () => fetchAllPages(getLogProcessingRules)],
+      // 保留档位：服务级"默认保留档位"下拉的选项（逐条档位在日志中心改）。
       ['保留档位', () => fetchAllPages(getLogRetentionTiers, { enabled: true })],
-      // 采集过滤规则：两个下拉的选项（按方向分桶，见 filterRuleOptions）。
-      ['过滤规则', () => fetchAllPages(getLogCollectionFilterRules)],
     ]
     const results = await Promise.all(loaders.map(async ([label, loader]) => {
       try {
@@ -832,7 +614,6 @@ async function initialize() {
     const templates = records['部署模板']
     const profiles = records['集群模型']
     const deployments = records['部署实例']
-    processingRuleRecords.value = records['日志处理规则'] || []
     businessSystemOptions.value = systems.map((item) => ({ label: item.name, value: item.id }))
     environmentRecords.value = environments
     applicationOptions.value = applications.map((item) => ({ label: item.name, value: item.id }))
@@ -841,7 +622,6 @@ async function initialize() {
     profileRecords.value = profiles
     deploymentRecords.value = deployments
     retentionTierRecords.value = records['保留档位']
-    collectionFilterRules.value = records['过滤规则']
     if (props.serviceId) {
       const response = await getApplicationService(props.serviceId)
       const data = response?.data?.data || {}
@@ -851,8 +631,6 @@ async function initialize() {
       selectedDeploymentIds.value = (data.member_instances || [])
         .map((item) => (item && typeof item === 'object' ? item.deployment : item))
         .filter((id) => id !== undefined && id !== null)
-      // 格式认证的实例候选取同一份绑定关系（见 openVerifyDialog）。
-      boundDeploymentIds.value = [...selectedDeploymentIds.value]
       for (const item of data.member_instances || []) {
         if (item && typeof item === 'object') {
           memberEnabled[item.deployment] = item.enabled !== false
@@ -860,7 +638,6 @@ async function initialize() {
           memberEnabled[item] = true
         }
       }
-      await loadLogConfig(props.serviceId)
     } else if (props.clusterProfileId) {
       form.topology_type = 'cluster'
       form.cluster_profile = props.clusterProfileId
@@ -879,116 +656,6 @@ async function initialize() {
   } finally {
     loading.value = false
   }
-}
-
-async function loadLogConfig(serviceId) {
-  logConfigError.value = ''
-  try {
-    const response = await getApplicationServiceLogConfig(serviceId)
-    const data = response?.data?.data || {}
-    templateLogRows.value = data.logs || []
-    for (const key of Object.keys(logOverrides)) delete logOverrides[key]
-    for (const row of templateLogRows.value) {
-      // 后端只在存在覆盖行时返回非 null；采集开关默认"采"，显式 true 与 null 等价，
-      // 统一归一成 null（只有"关"才落库）。解析规则不在这里——它只来自模板（只读）。
-      logOverrides[row.log_definition] = {
-        retention_tier: row.retention_tier ?? null,
-        collection_enabled: row.collection_enabled === false ? false : null,
-        collection_filter_rule: row.collection_filter_rule_id ?? null,
-        // 排除方向也**必须原样带上**：本弹窗保存走整表替换（先 DELETE 再重插），
-        // 漏了这一列等于把服务级的排除覆盖静默清掉。日常改过滤在日志中心，这里只负责不丢。
-        collection_exclude_filter_rule: row.collection_exclude_filter_rule_id ?? null,
-      }
-    }
-  } catch (error) {
-    // 不静默：把原因露出来，"加载失败"和"确实没有日志定义"在界面上都是空表格。
-    templateLogRows.value = []
-    logConfigError.value = error?.response?.data?.msg || error?.message || '加载日志配置失败'
-    message.error(logConfigError.value)
-  }
-}
-
-// 认证依据对应的候选实例。空列表要给出可操作的解释（见弹窗里的提示文案）。
-const verifyDeploymentOptions = computed(() => boundDeploymentIds.value
-  .map((id) => deploymentRecords.value.find((item) => item.id === id))
-  .filter(Boolean)
-  .map((item) => ({ label: `${item.instance_name}（${item.host_ip || '未知主机'}）`, value: item.id })))
-
-function openVerifyDialog(record) {
-  verifyTarget.value = record
-  verifyDialogVisible.value = true
-}
-
-function initializeTemplateLogs(templateId) {
-  const template = templateRecords.value.find((item) => item.id === templateId)
-  templateLogRows.value = (template?.logs || []).map((log) => ({
-    log_definition: log.id,
-    name: log.name,
-    path_pattern: log.path_pattern,
-    resolved_path: log.path_pattern,
-    // 模板不再带采集开关：新选模板的服务默认全采，需要关再逐条关。
-    collection_enabled: null,
-    collection_filter_rule: null,
-    collection_exclude_filter_rule: null,
-    // 规则名由 processingRuleLabel() 按 id 反查（模板列表只给 id）。
-    template_processing_rule_id: log.processing_rule ?? null,
-    template_processing_rule_name: '',
-    // 模板级的过滤默认值：用于"继承模板（规则名）"的显示（值本身不必回填，
-    // 未选覆盖时提交的就是 null = 继承）。
-    template_filter_include_rule_id: log.filter_include_rule ?? null,
-    template_filter_exclude_rule_id: log.filter_exclude_rule ?? null,
-    retention_tier: null,
-    data_stream: '保存后生成',
-  }))
-  for (const key of Object.keys(logOverrides)) delete logOverrides[key]
-  for (const row of templateLogRows.value) {
-    logOverrides[row.log_definition] = {
-      retention_tier: null,
-      collection_enabled: null,
-      collection_filter_rule: null,
-      collection_exclude_filter_rule: null,
-    }
-  }
-}
-
-// 采集过滤规则（两列下拉用）：按**方向**分桶给两个下拉，白名单不会出现在排除槽里
-// （反着用会只采到噪声）；归属沿用解析规则那套约定——属于本应用 + 不限应用的通用规则。
-function filterRuleOptions(direction) {
-  return collectionFilterRules.value
-    .filter((item) => item.enabled && (item.rule_type || 'include') === direction)
-    .filter((item) => !item.application || item.application === form.application)
-    .map((item) => ({
-      label: item.application ? item.name : `${item.name}（通用）`,
-      value: item.id,
-    }))
-}
-// 继承模板时的说明：模板没配写"无"，配了就带规则名——用户要知道自己继承了什么。
-function inheritedFilterLabel(ruleId) {
-  if (!ruleId) return '继承模板（无）'
-  const rule = collectionFilterRules.value.find((item) => item.id === ruleId)
-  return `继承模板（${rule ? rule.name : `规则 #${ruleId}（已删除）`}）`
-}
-
-function setLogOverride(logDefinition, field, value) {
-  const current = logOverrides[logDefinition] || {
-    retention_tier: null,
-    collection_enabled: null,
-    collection_filter_rule: null,
-    collection_exclude_filter_rule: null,
-  }
-  logOverrides[logDefinition] = { ...current, [field]: value ?? null }
-}
-
-// 采集默认"采"：无覆盖行或覆盖为 null 都算采，只有显式 false 才是不采（与后端
-// ListHostLogRenderEntries 的 COALESCE(ls.collection_enabled, TRUE) 同一口径）。
-function isLogCollectEnabled(logDefinition) {
-  return logOverrides[logDefinition]?.collection_enabled !== false
-}
-
-// 开启写回 null（= 不落覆盖行，回到默认采），关闭写回 false；submit 里的过滤会把
-// 全 null 的覆盖行丢掉，等价于后端删除该 (服务×日志定义) 覆盖行。
-function setLogCollectEnabled(logDefinition, checked) {
-  setLogOverride(logDefinition, 'collection_enabled', checked ? null : false)
 }
 
 async function submit() {
@@ -1022,18 +689,9 @@ async function submit() {
       deployment,
       enabled: memberEnabled[deployment] !== false,
     }))
-    // 覆盖行**逐条提交**（模板下的每条日志都给一行，全 null 表示"回到默认：采 + 继承服务档位"）。
-    // 不再过滤全 null 行：后端整表替换已改为逐行 upsert（不删行、不碰认证列），
-    // 过滤掉全 null 行会连"这条日志已认证"的结果一起丢掉（2026-09-20 现场）。
-    // 解析规则属于模板日志定义，后端不再接受该字段。
-    payload.log_settings = Object.entries(logOverrides)
-      .map(([logDefinition, value]) => ({
-        log_definition: Number(logDefinition),
-        retention_tier: value.retention_tier,
-        collection_enabled: value.collection_enabled,
-        collection_filter_rule: value.collection_filter_rule,
-        collection_exclude_filter_rule: value.collection_exclude_filter_rule,
-      }))
+    // **不提交 log_settings**（逐条日志的覆盖值）：这个弹窗不再编辑它们（统一在日志中心
+    // 「日志配置」里改），而那个字段是**整表替换**语义——提交空集合会把该服务已有的
+    // 采集开关/档位/过滤覆盖值全部删掉。字段缺省（null）= 后端整块跳过，一行都不动。
     await saveApplicationService(payload)
     message.success('保存成功')
     emit('update:open', false)
@@ -1049,8 +707,6 @@ watch(() => props.open, (visible) => {
   if (visible) {
     deploymentDialogOpen.value = false
     selectedDeploymentIds.value = []
-    templateLogRows.value = []
-    for (const key of Object.keys(logOverrides)) delete logOverrides[key]
     for (const key of Object.keys(memberEnabled)) delete memberEnabled[key]
     initialize()
   }
@@ -1075,7 +731,6 @@ watch(() => form.deployment_template, (templateId) => {
     if (Object.prototype.hasOwnProperty.call(form.macro_values || {}, definition.name)) values[definition.name] = form.macro_values[definition.name]
   }
   form.macro_values = values
-  if (!props.serviceId && templateId) initializeTemplateLogs(templateId)
 })
 watch(() => form.topology_type, (topology) => {
   if (topology === 'standalone') {

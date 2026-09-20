@@ -24,11 +24,35 @@
         <!-- 日志查询最常用，放第一个 tab，也是默认打开的那个。 -->
         <a-tab-pane key="query" tab="日志查询">
           <LogQueryPanel v-if="serviceId" :scope="scope" />
-          <a-empty v-else :image="simpleImage" description="请在左侧选择逻辑服务或部署实例" />
+          <!-- 非服务节点：这一层的日志视角（服务清单 + 最近写入），点行进入该服务的检索面板。
+               检索本身仍要求选到具体服务（索引里带服务段），这里只负责把人送到那一步。 -->
+          <LogLevelOverview
+            v-else
+            variant="query"
+            :dimension="levelDimensionMeta"
+            :rows="levelRows"
+            :metrics="levelMetrics"
+            :recent-docs-title="RECENT_DOCS_TITLE"
+            :pending-error="levelPendingError"
+            :loading="levelLoading"
+            @drilldown="drillDown"
+          />
         </a-tab-pane>
 
         <a-tab-pane key="config" tab="日志配置" force-render>
-          <a-empty v-if="!serviceId" :image="simpleImage" description="请在左侧选择逻辑服务或部署实例" />
+          <!-- 非服务节点：同样的层级视图，列换成日志配置视角（档位/待下发）。
+               服务级区块（采集链路、下发、逐条配置表）只在服务节点出现。 -->
+          <LogLevelOverview
+            v-if="!serviceId"
+            variant="config"
+            :dimension="levelDimensionMeta"
+            :rows="levelRows"
+            :metrics="levelMetrics"
+            :retention-tiers="retentionTierRecords"
+            :pending-error="levelPendingError"
+            :loading="levelLoading"
+            @drilldown="drillDown"
+          />
           <template v-else>
             <a-alert v-if="configError" type="error" show-icon :message="configError" />
             <!-- 采集链路：查不到日志时按层回答"断在哪"。判定全部来自后端（与链路体检同源），
@@ -103,17 +127,26 @@
                   </template>
                 </div>
               </div>
-              <a-tooltip :title="applyButtonTooltip" placement="top">
-                <a-button
-                  type="primary"
-                  size="small"
-                  :loading="applying"
-                  :disabled="!applyManagedCount"
-                  @click="applyService"
-                >
-                  下发本服务的采集配置
-                </a-button>
-              </a-tooltip>
+              <a-space :size="8">
+                <!-- 差异入口：界面上只说"待下发"、不给差异内容时，用户没法判断该不该点下发。
+                     这个按钮回答"这次下发会改什么"（期望片段 vs 主机上已下发的 inputs.d）。 -->
+                <a-tooltip :title="diffButtonTooltip" placement="top">
+                  <a-button size="small" :disabled="!applyManagedCount" @click="openConfigDiff()">
+                    查看配置差异
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip :title="applyButtonTooltip" placement="top">
+                  <a-button
+                    type="primary"
+                    size="small"
+                    :loading="applying"
+                    :disabled="!applyManagedCount"
+                    @click="applyService"
+                  >
+                    下发本服务的采集配置
+                  </a-button>
+                </a-tooltip>
+              </a-space>
             </div>
             <a-alert
               v-if="serviceCollectEnabled === false"
@@ -135,12 +168,49 @@
                 <span v-if="!applyJob.is_running">{{ applyJob.message || '作业已结束' }}（逐台明细见「日志采集」页）</span>
               </div>
             </div>
+            <!-- 批量操作栏：勾选日志后出现。日志定义多了以后"逐行点开关/档位/过滤"是主要的体力活，
+                 这里让同一件事一次作用到勾选的多行上；每一行提交的仍是它自己的完整覆盖值
+                 （见 runBatchOverrides），所以批量不会把别的列带歪。 -->
+            <div v-if="selectedLogKeys.length" class="batch-bar">
+              <span class="batch-count">已选 {{ selectedLogKeys.length }} 条日志</span>
+              <a-space :size="8" wrap>
+                <a-tooltip title="把勾选的日志全部恢复为「采集」（等于清掉逐条的停止采集覆盖值）。" placement="top">
+                  <a-button
+                    size="small"
+                    :loading="batchAction === 'collect-on'"
+                    :disabled="Boolean(batchAction) && batchAction !== 'collect-on'"
+                    @click="batchSetCollection(true)"
+                  >
+                    打开采集
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="让勾选的日志全部停止采集（逐条写覆盖值，同一模板下的其他服务不受影响）。" placement="top">
+                  <a-button
+                    size="small"
+                    danger
+                    ghost
+                    :loading="batchAction === 'collect-off'"
+                    :disabled="Boolean(batchAction) && batchAction !== 'collect-off'"
+                    @click="batchSetCollection(false)"
+                  >
+                    停止采集
+                  </a-button>
+                </a-tooltip>
+                <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchTier">设置保留档位</a-button>
+                <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchFilter">设置采集过滤</a-button>
+                <a-tooltip title="对勾选的每一条日志按同一次认证依据逐一认证（逐条走主机取样例，慢但真实）；没挂解析规则的日志会被跳过。" placement="top">
+                  <a-button size="small" :disabled="Boolean(batchAction)" @click="openBatchVerify">格式认证</a-button>
+                </a-tooltip>
+                <a-button size="small" type="text" @click="clearLogSelection">取消选择</a-button>
+              </a-space>
+            </div>
             <a-table
               :columns="configColumns"
               :data-source="logRows"
               :loading="configLoading"
               :pagination="false"
               row-key="log_definition"
+              :row-selection="configRowSelection"
               size="small"
               :locale="tableLocale"
               :scroll="{ x: 2000 }"
@@ -193,7 +263,7 @@
                 </template>
                 <template v-else-if="column.key === 'collection_enabled'">
                   <!-- 默认采：只有"关"才落库（覆盖值 false），显式 true 与无覆盖等价——
-                       与逻辑服务编辑弹窗同一口径。改动只影响这一条日志，不影响同服务其他日志。 -->
+                       与后端渲染的 COALESCE(collection_enabled, TRUE) 同一口径。改动只影响这条日志。 -->
                   <a-tooltip :title="`关闭表示本服务不再采集这条日志（同一模板下其他服务不受影响）。${pendingHint}`" placement="top">
                     <a-switch
                       :checked="isLogCollected(record)"
@@ -224,11 +294,12 @@
                   </a-tooltip>
                 </template>
                 <template v-else-if="column.key === 'retention_tier'">
-                  <!-- 档位决定写入哪个 data stream：改档位会写新流，旧流按原档位保留到期、不迁移数据。 -->
-                  <a-tooltip :title="`改档位会写入新流（旧流停止写入、按原档位保留到期，不迁移数据）。${pendingHint}`" placement="top">
+                  <!-- 档位决定写入哪个 data stream：改档位会写新流，旧流按原档位保留到期、不迁移数据。
+                       tooltip 里给出**当前生效**的档位："继承"到底是多少天，不该让人自己去别处对。 -->
+                  <a-tooltip :title="`改档位会写入新流（旧流停止写入、按原档位保留到期，不迁移数据）。当前生效：${effectiveTierLabel(record)}。${pendingHint}`" placement="top">
                     <a-select
                       :value="record.retention_tier ?? null"
-                      :options="[{ label: '继承服务默认', value: null }, ...retentionTierOptions]"
+                      :options="[{ label: inheritedTierLabel(), value: null }, ...retentionTierOptions]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
                       size="small"
@@ -284,7 +355,7 @@
                 <div>① <b>每处改动都先确认一次，确认后即时入库</b>：采集总开关、逐条采集开关、保留档位、采集过滤都走同一套
                   （确认框里写清这一处的后果）；这一页没有"保存"按钮，改完页头的"待下发"计数会立刻变。</div>
                 <div>② <b>入库 ≠ 生效</b>：还要点页头「<b>下发本服务的采集配置</b>」才写到主机上（采集侧的事，绕不过）。
-                  隔壁逻辑服务编辑弹窗是另一套节奏——那边是整表单一起提交（改完点"保存"）。</div>
+                  不确定要改什么就先点旁边的「<b>查看配置差异</b>」，逐文件看这次下发会新增/修改/删除哪些片段。</div>
                 <div>③ <b>只读的两列来自模板</b>：日志名称、路径、处理规则都跟着部署模板走，要改去「部署模板 → 路径与文件 → 日志」；
                   格式认证是**动作**不是配置，走每行的「发起认证」弹窗。</div>
               </template>
@@ -486,7 +557,10 @@
                     danger
                     @click="cleanupStream(record)"
                   >
-                    {{ isHistoricalTier(record) ? '立即清理' : '清理数据' }}
+                    <!-- 文案统一成「清理数据」：历史档位流与在写的流**是同一个动作**（都按流删文档），
+                         只是后果不同（在写的流删完还会继续写入）——差别放在 tooltip 里讲，
+                         不给同一个动作起两个名字。 -->
+                    清理数据
                   </a-button>
                 </a-tooltip>
                 <span v-if="!streamCleanupTarget(record) && !(isHistoricalTier(record) && serviceId)" class="apply-muted">-</span>
@@ -557,10 +631,84 @@
         </a-checkbox-group>
         <div v-if="!switchTierCandidates.length" class="field-hint">本服务的日志已经都在这个档位上了。</div>
       </a-modal>
+      <!-- 批量改档位 / 批量改采集过滤：勾的是"哪几条"（在表格里），弹窗只问"改成什么"。
+           弹窗的确定按钮就是确认点，不再叠一层确认框（与「切回该档位」同一节奏）。 -->
+      <a-modal
+        :open="batchTierOpen"
+        title="批量设置保留档位"
+        :width="520"
+        :confirm-loading="batchAction === 'tier'"
+        :ok-text="`应用到 ${batchTargetCount} 条`"
+        cancel-text="取消"
+        @ok="submitBatchTier"
+        @cancel="batchTierOpen = false"
+      >
+        <a-select
+          :value="batchTierValue"
+          :options="[{ label: inheritedTierLabel(), value: null }, ...retentionTierOptions]"
+          :get-popup-container="getPopupContainer"
+          style="width: 100%"
+          @update:value="(value) => batchTierValue = value"
+        />
+        <div class="field-hint">
+          将对勾选的 <b>{{ batchTargetCount }}</b> 条日志生效，档位改为
+          <b>{{ batchTierLabel }}</b>。<br />
+          改档位会写入**新的 data stream**：旧流停止写入，按原档位保留到期后由 ILM 删除，**不迁移数据**。
+          数据不会立刻消失，但同一份日志会短暂出现两条流（这正是水位页里"历史档位"的来源）。
+        </div>
+      </a-modal>
+      <a-modal
+        :open="batchFilterOpen"
+        title="批量设置采集过滤"
+        :width="560"
+        :confirm-loading="batchAction === 'filter'"
+        :ok-text="`应用到 ${batchTargetCount} 条`"
+        cancel-text="取消"
+        @ok="submitBatchFilter"
+        @cancel="batchFilterOpen = false"
+      >
+        <a-form layout="vertical" class="batch-filter-form">
+          <a-form-item label="过滤方向">
+            <a-radio-group v-model:value="batchFilterForm.direction">
+              <a-radio value="include">保留（白名单）</a-radio>
+              <a-radio value="exclude">排除（黑名单）</a-radio>
+            </a-radio-group>
+          </a-form-item>
+          <a-form-item label="规则">
+            <a-select
+              :value="batchFilterForm.value"
+              :options="batchFilterOptions"
+              :get-popup-container="getPopupContainer"
+              style="width: 100%"
+              @update:value="(value) => batchFilterForm.value = value"
+            />
+          </a-form-item>
+        </a-form>
+        <div class="field-hint">
+          将对勾选的 <b>{{ batchTargetCount }}</b> 条日志生效。
+          {{ FILTER_DIRECTIONS[batchFilterForm.direction].effect }}——过滤在**采集侧**发生，
+          被滤掉的日志不会进 ES，事后无法补回；写窄白名单前先用「日志处理规则 → 采集过滤规则」里的试算确认一遍。
+        </div>
+      </a-modal>
+      <!-- 配置差异：期望片段 vs 主机上已下发的 inputs.d（差异内容要读主机才有，库里只落指纹）。 -->
+      <LogConfigDiffDialog
+        :open="configDiffOpen"
+        :loading="configDiffLoading"
+        :error="configDiffError"
+        :diff="configDiff"
+        :target-id="configDiffTargetId"
+        :host-options="configDiffHostOptions"
+        :service-id="serviceId"
+        :host-label="configDiffHostLabel"
+        @update:open="configDiffOpen = $event"
+        @change-host="selectConfigDiffHost"
+        @reload="loadConfigDiff(configDiffTargetId)"
+      />
       <LogFormatVerifyDialog
         :open="verifyDialogVisible"
         :service-id="serviceId"
         :target="verifyTarget"
+        :targets="batchVerifyTargets"
         :deployment-options="verifyDeploymentOptions"
         @update:open="verifyDialogVisible = $event"
         @verified="loadLogConfig()"
@@ -574,10 +722,12 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
-import { getApplicationServiceLogConfig, getApplicationDeploymentList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
-import { applyLogTargetsForService, checkLogCollectionStatus, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
+import { getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
+import { applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogServiceUsage, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
 import ServiceTree from '@/views/assets/application/components/ServiceTree.vue'
 import LogQueryPanel from './LogQueryPanel.vue'
+import LogLevelOverview from './LogLevelOverview.vue'
+import LogConfigDiffDialog from './LogConfigDiffDialog.vue'
 import LogCleanupDialog from '@/components/LogCleanupDialog.vue'
 import LogFormatVerifyDialog from '@/components/LogFormatVerifyDialog.vue'
 import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActionTooltip, formatStateTooltip } from '@/util/logFormatState'
@@ -586,10 +736,15 @@ import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { buildStorageUsagePieOption } from '@/util/storageUsagePie'
 import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
+import { buildLevelMetrics, buildLevelRows, levelDimension } from '@/util/logLevelOverview'
 import LogGlobPreview from '@/components/LogGlobPreview.vue'
 import StorageUsagePie from './StorageUsagePie.vue'
 
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
+
+// 「最近写入」的窗口说明：与下面 loadLevelUsage 传的 days 保持一致（30 天），
+// 列标题与取值不能各说一套窗口。
+const RECENT_DOCS_TITLE = '最近 30 天写入'
 
 // 「路径」列显示原始模式还是解析后的路径（解析后 = 模板默认值 + 服务覆盖；实例级宏仍留占位符）。
 const showResolvedPath = ref(true)
@@ -605,6 +760,20 @@ const logRows = ref([])
 const deploymentRecords = ref([])
 const retentionTierRecords = ref([])
 
+// 层级视图（非服务节点：全部/项目/业务系统/环境）的数据。**页面级只加载一份**：
+// 「日志查询」和「日志配置」两个 tab 看的是同一批服务的同一组数字，各拉一遍必然出现
+// "查询 tab 说 3 条未认证、配置 tab 说 4 条"这种没人敢信的情况。
+const levelProjects = ref([])
+const levelBusinessSystems = ref([])
+const levelServices = ref([])
+// 服务 id → 日志状态汇总（后端 log-status-summary 的 items）。
+const levelStatusByService = ref({})
+// 服务编码 → 最近写入文档数（只有叶子层能给，见 loadLevelUsage）。
+const levelUsageByService = ref({})
+// 配置态没算出来时的原因（后端 pending_error）：界面据此把该列显示成"-"。
+const levelPendingError = ref('')
+const levelLoading = ref(false)
+
 const storageLoading = ref(false)
 const storageError = ref('')
 const storageRows = ref([])
@@ -619,6 +788,8 @@ const expandedStream = ref(null)
 
 const verifyDialogVisible = ref(false)
 const verifyTarget = ref(null)
+// 批量认证的目标（勾选的那几行）。与 verifyTarget 二者只传一个：都传会让"认证几条"说不清。
+const batchVerifyTargets = ref([])
 // 本服务下发：聚合状态 + 批量作业进度（作业在服务端，页面只是它的视图，刷新后按 id 继续看）。
 // 服务级采集总开关（来自 log-config 响应，与逐条开关是两层）。
 // **三态**：null = 还没读到。初值取 false 会让"点开服务、配置还没回来"的那一瞬间按
@@ -626,13 +797,22 @@ const verifyTarget = ref(null)
 const serviceCollectEnabled = ref(null)
 // 本服务编码（响应顶层）：水位查询用它，不依赖 logs 是否为空。
 const serviceCodeRef = ref('')
+// 配置差异弹窗（「查看配置差异」）：期望片段 vs 主机上已下发的 inputs.d。
+const configDiffOpen = ref(false)
+const configDiffLoading = ref(false)
+const configDiffError = ref('')
+const configDiff = ref(null)
+const configDiffTargetId = ref(null)
+// 本服务的**默认保留档位**（响应顶层）：界面上的"继承服务默认（…）"要用它把默认写清；
+// null = 没有服务级默认，由平台默认档（is_default）决定。
+const serviceDefaultTierId = ref(null)
 const savingServiceCollect = ref(false)
 const applyState = ref(null)
 const applyStateLoading = ref(false)
 const applyStateError = ref('')
 const applying = ref(false)
 const applyJob = ref(null)
-// 历史流的两个动作：切回该档位（逐条改档位）/ 立即清理（按流删文档）。
+// 历史流的两个动作：切回该档位（逐条改档位）/ 清理数据（按流删文档）。
 const switchTierOpen = ref(false)
 const switchTierTarget = ref(null)
 const switchTierSelected = ref([])
@@ -644,7 +824,37 @@ let applyJobTimer = null
 const APPLY_POLL_INTERVAL = 3000
 // 按行保存中的标记：log_definition -> true（控件显示 loading 并防重复提交）。
 const savingRows = reactive({})
+// 批量操作：勾选的行按 log_definition 存（与表格 row-key 同一个键）。
+const selectedLogKeys = ref([])
+// 正在执行的批量动作（'' = 空闲）：按钮各自 loading，同一批不会被点两次。
+const batchAction = ref('')
+const batchTierOpen = ref(false)
+const batchTierValue = ref(null)
+// 打开弹窗那一刻勾选了几条：提交成功后勾选会清空，弹窗里的"应用到 N 条"不能跟着掉成 0。
+const batchTargetCount = ref(0)
+const batchFilterOpen = ref(false)
+const batchFilterForm = reactive({ direction: 'include', value: null })
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+
+// 勾选的行（顺序按表格顺序，提交时逐行带上它自己的覆盖值全集）。
+const selectedLogRows = computed(() => {
+  const keys = new Set(selectedLogKeys.value)
+  return logRows.value.filter((row) => keys.has(row.log_definition))
+})
+
+// 行选择：表格这一列的键就是 log_definition，选中态只对当前服务的这批日志有效
+// （换服务时清空，见 watch(serviceId)；配置重载后剔掉已经不在的行，
+// 否则批量请求会带着上一条服务的日志定义）。
+const configRowSelection = computed(() => ({
+  selectedRowKeys: selectedLogKeys.value,
+  // 勾选列固定在左侧：表格横向滚动（x: 2000）时它要一直在，否则选完得往回滚才看得见。
+  fixed: true,
+  onChange: (keys) => { selectedLogKeys.value = keys },
+}))
+
+function clearLogSelection() {
+  selectedLogKeys.value = []
+}
 
 // 这一页所有可改列的**共同语义**（改动即时入库、点下发才在主机上生效），
 // 各列 tooltip 统一引用它，避免"有的说保存后、有的说改动后"这种措辞漂移。
@@ -707,6 +917,35 @@ function isLogCollected(record) {
 }
 
 const retentionTierOptions = computed(() => retentionTierRecords.value.map((item) => ({ label: item.name, value: item.id })))
+
+// 档位名按 id / code 反查（档位列显示给人看的是名字，不是 id）。
+function tierNameById(tierId) {
+  const found = retentionTierRecords.value.find((item) => item.id === tierId)
+  return found ? found.name : ''
+}
+
+// 「继承」到底继承的是哪一档 —— 继承链：**服务默认档位 → 平台默认档（is_default）→ std**。
+//
+// 只写"继承服务默认"等于没说：用户没法从界面上知道这条日志实际保留多久（现场反馈
+// "我怎么知道默认是什么呢"）。服务默认档位来自 log-config 响应的 log_retention_tier
+//（null = 由平台默认档决定），所以两级都能写清。
+function inheritedTierLabel() {
+  const serviceDefault = serviceDefaultTierId.value
+  if (serviceDefault) {
+    return `继承服务默认（${tierNameById(serviceDefault) || `档位 #${serviceDefault}`}）`
+  }
+  const platformDefault = retentionTierRecords.value.find((item) => item.is_default)
+  return platformDefault ? `继承平台默认（${platformDefault.name}）` : '继承平台默认档位'
+}
+
+// 这一行**当前生效**的档位：有覆盖就是覆盖的档位，没覆盖就是上面那条继承链的结果
+//（后端已按同一条链算进 tier_code，见 ServiceTemplateLog 的注释）。
+function effectiveTierLabel(record) {
+  if (record.retention_tier) {
+    return tierNameById(record.retention_tier) || `档位 #${record.retention_tier}`
+  }
+  return tierNameByCode(record.tier_code) || inheritedTierLabel()
+}
 
 const applyManagedCount = computed(() => applyState.value?.summary?.managed || 0)
 const applyUnmanagedText = computed(() => {
@@ -936,7 +1175,8 @@ function overridePayload(record, patch = {}) {
 // 为什么统一成"都弹"：这一页的每次改动都是"入了库但还没生效"（要再点下发），且后果各不相同
 // （关采集、换档位=写新流、过滤=可能永久丢数据）。给每处一句"会怎样 + 能不能回头 + 什么时候生效"，
 // 比让人靠记忆判断哪些是要紧的改动可靠。
-// 逻辑服务编辑弹窗不弹：那边改完要点"保存"，那次保存本身就是确认。
+// 逐条日志配置只有这一处入口（2026-09-20 起逻辑服务编辑弹窗不再编辑它们），所以"都弹"的节奏
+// 不会在别处出现另一套语义。
 async function confirmConfigChange({ title, summary, consequences, apply }) {
   const confirmed = await openDeleteConfirm({
     title,
@@ -974,8 +1214,9 @@ async function confirmLogCollectChange(record, checked) {
 
 // 保留档位：改档位会写入**新**流，旧流停止写入并按原档位保留到期（不迁移数据）。
 async function confirmTierChange(record, value) {
+  // "继承"要写清继承到哪一档（继承链：服务默认 → 平台默认 → std），否则确认框等于没说。
   const name = value === null
-    ? '继承服务默认档位'
+    ? inheritedTierLabel()
     : (retentionTierOptions.value.find((item) => item.value === value)?.label || `档位 #${value}`)
   await confirmConfigChange({
     title: '确认修改保留档位？',
@@ -1028,6 +1269,115 @@ async function saveOverride(record, patch) {
   } finally {
     delete savingRows[key]
   }
+}
+
+// ── 批量操作（勾选多行一起改） ────────────────────────────────────────────────
+//
+// 与逐行改动**同一套按行语义**，区别只在一次提交多行：每行提交的仍是它自己的覆盖值**全集**
+// （overridePayload 从服务端回读的 record 出发拼），所以批量改档位不会顺手把过滤列清掉。
+// 提交走批量接口（一次事务写完），失败逐条汇报——不做"全成功/全失败"的假原子性，
+// 但也不像"前端循环发 N 个请求"那样留下改了一半的中间态。
+//
+// 成功后必须重拉配置与下发态：覆盖值改了，页头"待下发"计数与链路的「主机配置」层结论都变了
+// （与 saveOverride 同一个理由，见那里的注释）。
+async function runBatchOverrides(patch, action) {
+  const rows = selectedLogRows.value
+  if (!rows.length) {
+    message.warning('请先勾选要调整的日志')
+    return false
+  }
+  batchAction.value = action
+  try {
+    const response = await batchSaveApplicationServiceLogSettings(
+      serviceId.value,
+      rows.map((row) => overridePayload(row, patch)),
+    )
+    const data = response?.data?.data || {}
+    // 逐条结果带回的是日志定义 id：对回日志名，用户才知道是哪一条没改成功。
+    const nameOf = (id) => rows.find((row) => row.log_definition === id)?.name || `日志 #${id}`
+    const failed = (data.results || []).filter((item) => !item.ok)
+    if (failed.length) {
+      message.error(`有 ${failed.length} 条未改成功：${failed.map((item) => `${nameOf(item.id)}（${item.message || '保存失败'}）`).join('；')}`)
+    }
+    const count = Number(data.count || 0)
+    if (count) message.success(`已调整 ${count} 条日志（重新下发本服务的采集配置后才在主机上生效）`)
+    clearLogSelection()
+    await loadLogConfig()
+    await Promise.all([loadApplyState(), loadChain()])
+    return true
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '批量保存失败')
+    return false
+  } finally {
+    batchAction.value = ''
+  }
+}
+
+// 批量采集开关：与逐条同一口径——打开 = 回到默认（清掉覆盖值，不会让任何东西停止采集），
+// 所以不确认；停止采集是"有后果的改动"，先确认一次。
+async function batchSetCollection(checked) {
+  const rows = selectedLogRows.value
+  if (!rows.length) {
+    message.warning('请先勾选要调整的日志')
+    return
+  }
+  if (checked) {
+    await runBatchOverrides({ collection_enabled: null }, 'collect-on')
+    return
+  }
+  await confirmConfigChange({
+    title: `确认停止采集这 ${rows.length} 条日志？`,
+    summary: `日志：${rows.map((row) => row.name).join('、')}`,
+    consequences: [
+      '只影响本服务：同一模板下的其他服务不受影响。',
+      '已写入的数据按保留档位到期，**不会被删除**；重新打开这些日志的开关即恢复采集。',
+    ],
+    apply: () => runBatchOverrides({ collection_enabled: false }, 'collect-off'),
+  })
+}
+
+const batchTierLabel = computed(() => (batchTierValue.value === null
+  ? inheritedTierLabel()
+  : (retentionTierOptions.value.find((item) => item.value === batchTierValue.value)?.label || `档位 #${batchTierValue.value}`)))
+
+function openBatchTier() {
+  if (!selectedLogRows.value.length) {
+    message.warning('请先勾选要调整的日志')
+    return
+  }
+  batchTargetCount.value = selectedLogRows.value.length
+  batchTierValue.value = null
+  batchTierOpen.value = true
+}
+
+async function submitBatchTier() {
+  if (await runBatchOverrides({ retention_tier: batchTierValue.value ?? null }, 'tier')) batchTierOpen.value = false
+}
+
+// 批量过滤的候选项：**"继承模板"不给具体规则名**——模板默认值挂在模板日志定义上，
+// 同一批勾选的日志可能各自继承不同的规则，写一个规则名会让另外几条读错。
+const batchFilterOptions = computed(() => [
+  { label: '继承模板默认（每条日志各自继承）', value: null },
+  ...filterRuleOptions(batchFilterForm.direction),
+])
+
+function openBatchFilter() {
+  if (!selectedLogRows.value.length) {
+    message.warning('请先勾选要调整的日志')
+    return
+  }
+  batchTargetCount.value = selectedLogRows.value.length
+  batchFilterForm.direction = 'include'
+  batchFilterForm.value = null
+  batchFilterOpen.value = true
+}
+
+async function submitBatchFilter() {
+  const value = batchFilterForm.value ?? null
+  const patch = batchFilterForm.direction === 'include'
+    ? { collection_filter_rule: value }
+    : { collection_exclude_filter_rule: value }
+  if (await runBatchOverrides(patch, 'filter')) batchFilterOpen.value = false
 }
 
 // 认证弹窗的实例候选：认证按库里的绑定取实例，与表单编辑态无关，所以选中服务时拉一次。
@@ -1240,8 +1590,192 @@ function stopApplyPolling() {
 onUnmounted(stopApplyPolling)
 
 function openVerifyDialog(record) {
+  // 单条认证：清掉批量目标，否则弹窗优先按 targets 渲染，会把这一条当成上一批的一部分。
+  batchVerifyTargets.value = []
   verifyTarget.value = record
   verifyDialogVisible.value = true
+}
+
+// 批量格式认证：只把**能认证**的（已挂解析规则的）行交给弹窗，其余明确跳过并说清为什么——
+// 静默少认证几条比拒绝更糟：用户以为都验过了。
+function openBatchVerify() {
+  const rows = selectedLogRows.value
+  if (!rows.length) {
+    message.warning('请先勾选要认证的日志')
+    return
+  }
+  const eligible = rows.filter((row) => canVerifyLogFormat(row, serviceId.value))
+  if (!eligible.length) {
+    message.warning('勾选的日志都没有关联解析规则（不会被采集），无法认证格式：先到部署模板里给它们挂规则。')
+    return
+  }
+  if (eligible.length < rows.length) {
+    message.info(`已跳过 ${rows.length - eligible.length} 条还没挂解析规则的日志`)
+  }
+  verifyTarget.value = null
+  batchVerifyTargets.value = eligible.map((row) => ({ log_definition: row.log_definition, name: row.name }))
+  verifyDialogVisible.value = true
+}
+
+// ── 层级视图：非服务节点下的"下一层清单 + 指标条" ──────────────────────────────
+//
+// 为什么需要它：这两个 tab 原先只认"一个具体的逻辑服务"，选中项目/业务系统/环境时整块内容消失
+// （「日志配置」是 v-else，「日志查询」连组件都不挂载），只剩一句"请在左侧选择逻辑服务或部署实例"。
+// 而用户停在这一层时想问的是"这一片里哪些服务有问题"。现在这一层显示下一层的清单 + 指标条，
+// 点行下钻一级，到最底层（环境）的行就是服务、点进去就是服务级界面。
+//
+// 折叠口径全部在 util/logLevelOverview（纯函数，可直测）：上层行的数字 = 它下面那些服务行之和，
+// 指标条 = 清单之和 —— 上下层数字必须同源，否则"指标条说 3、点进去是 4"就没人信了。
+
+const levelDimensionMeta = computed(() => levelDimension(scope.value?.nodeType) || { key: 'project', label: '项目' })
+
+const levelView = computed(() => (serviceId.value ? { dimension: null, rows: [] } : buildLevelRows({
+  scope: scope.value,
+  projects: levelProjects.value,
+  businessSystems: levelBusinessSystems.value,
+  services: levelServices.value,
+  statusByService: levelStatusByService.value,
+  usageByService: levelUsageByService.value,
+})))
+
+const levelRows = computed(() => levelView.value.rows)
+const levelMetrics = computed(() => buildLevelMetrics(levelRows.value))
+
+// 下钻 = 换 scope：左树的选中态本来就是按回传的 scope 反推的（ServiceTree 的 scopeKey），
+// 所以这里只要把 scope 指过去，树的高亮会自动跟上，不需要另外通知树。
+function drillDown(target) {
+  if (!target?.nodeType) return
+  scope.value = target
+}
+
+// 加载层级视图的成员名单与日志状态汇总。选中服务时清空（那些数据只有层级视图用得上）。
+async function loadLevelView() {
+  if (serviceId.value) {
+    levelProjects.value = []
+    levelBusinessSystems.value = []
+    levelServices.value = []
+    levelStatusByService.value = {}
+    levelUsageByService.value = {}
+    levelPendingError.value = ''
+    return
+  }
+  levelLoading.value = true
+  levelPendingError.value = ''
+  try {
+    const [projects, businessSystems, services] = await Promise.all([
+      fetchAllPages(getProjectList, { enabled: true }),
+      fetchAllPages(getBusinessSystemList, { enabled: true }),
+      fetchAllPages(getApplicationServiceList),
+    ])
+    levelProjects.value = projects
+    levelBusinessSystems.value = businessSystems
+    levelServices.value = services
+    await loadLevelStatus()
+    // 「最近写入」只有环境层有（接口按 业务系统 × 环境 聚合）——它是列表里的一个提示列，
+    // 不值得为它把上层的每次下钻都变成一次 ES 查询，所以只在这一层取。
+    await loadLevelUsage()
+  } catch (error) {
+    // 不静默：清单空着与"这个范围没有服务"在界面上都是空表格。
+    levelServices.value = []
+    levelStatusByService.value = {}
+    message.error(error?.response?.data?.msg || error?.message || '加载层级日志视图失败')
+  } finally {
+    levelLoading.value = false
+  }
+}
+
+// 日志状态汇总：只问**这一层实际列出的那些服务**（范围内的），因为接口一次最多 200 个服务，
+// 而"下辖服务"正是清单本身要显示的东西。
+async function loadLevelStatus() {
+  const ids = [...new Set(levelRows.value.flatMap((row) => row.serviceIds))]
+  if (!ids.length) {
+    levelStatusByService.value = {}
+    return
+  }
+  const response = await getApplicationServiceLogStatusSummary(ids)
+  const data = response?.data?.data || {}
+  levelStatusByService.value = Object.fromEntries((data.items || []).map((item) => [item.service_id, item]))
+  // 配置态算不出来时后端给 pending_error（且每项的 pending 为 null）——界面显示"-"而不是 0。
+  levelPendingError.value = data.pending_error || ''
+}
+
+// 最近写入（仅环境层）：getLogServiceUsage 按 (业务系统, 环境) 聚合各服务的文档数，
+// 返回的 items 里 service 是**服务编码**，所以按编码对齐（同一 (业务系统, 环境) 内编码唯一）。
+async function loadLevelUsage() {
+  levelUsageByService.value = {}
+  const current = scope.value
+  if (current?.nodeType !== 'environment' || !current.environment || !current.businessSystemId) return
+  try {
+    const clusters = await getElasticsearchClusterList({ page_size: 1 })
+    const clusterId = clusters?.data?.data?.results?.[0]?.id
+    if (!clusterId) return
+    const response = await getLogServiceUsage(clusterId, {
+      business_system: current.businessSystemId,
+      environment: current.environment,
+      days: 30,
+    })
+    const items = response?.data?.data?.items || []
+    levelUsageByService.value = Object.fromEntries(items.map((item) => [item.service, item.docs]))
+  } catch (error) {
+    // 只是提示列：取不到就不显示（显示"-"），不打断整层视图。
+    levelUsageByService.value = {}
+    console.warn('[log_center] 读取服务写入量失败', error?.response?.data?.msg || error?.message)
+  }
+}
+
+// ── 配置差异（「查看配置差异」） ─────────────────────────────────────────────
+//
+// 回答"这次下发会改什么"：后端把期望片段（与下发同一条渲染路径）与主机上**已下发**的
+// inputs.d 片段逐文件比对后返回，行级 diff 在弹窗里算。
+// 入口默认落在**待下发的那台**主机上（用户就是想看"为什么它待下发"）；没有待下发的就用第一台。
+// 配置态的展示文案（与「日志采集」页的筛选项同一套说法）。
+const CONFIG_STATE_LABEL = { synced: '已同步', drift: '待下发', never: '从未下发', unknown: '状态未知' }
+
+const configDiffHostOptions = computed(() => carryingHosts.value
+  .filter((host) => host.managed && host.target_id)
+  .map((host) => ({
+    label: `${hostLabel(host)}${host.config_state && host.config_state !== 'synced' ? `（${CONFIG_STATE_LABEL[host.config_state] || host.config_state}）` : ''}`,
+    value: host.target_id,
+  })))
+
+const configDiffHostLabel = computed(() => {
+  const host = carryingHosts.value.find((item) => item.target_id === configDiffTargetId.value)
+  return host ? hostLabel(host) : ''
+})
+
+const diffButtonTooltip = '看这次下发会改动主机上的哪些采集片段（逐文件给出"新增/修改/删除"与行级差异）。'
+  + '差异内容要读主机上的 inputs.d 才有——库里只落指纹。只读，不会下发、不会改主机上的文件。'
+
+function openConfigDiff() {
+  const hosts = carryingHosts.value.filter((host) => host.managed && host.target_id)
+  if (!hosts.length) {
+    message.warning('该服务没有已纳管的承载主机，没有可下发/可对比的配置')
+    return
+  }
+  // 默认挑一台**待下发**的（drift/never/unknown）：那才是用户点开这个弹窗要问的问题。
+  const pending = hosts.find((host) => host.config_state && host.config_state !== 'synced')
+  configDiffOpen.value = true
+  loadConfigDiff((pending || hosts[0]).target_id)
+}
+
+function selectConfigDiffHost(targetId) {
+  loadConfigDiff(targetId)
+}
+
+async function loadConfigDiff(targetId) {
+  if (!targetId) return
+  configDiffTargetId.value = targetId
+  configDiffLoading.value = true
+  configDiffError.value = ''
+  try {
+    const response = await getLogTargetConfigDiff(targetId, serviceId.value ? { application_service_id: serviceId.value } : undefined)
+    configDiff.value = response?.data?.data || null
+  } catch (error) {
+    configDiff.value = null
+    configDiffError.value = error?.response?.data?.msg || error?.message || '读取配置差异失败'
+  } finally {
+    configDiffLoading.value = false
+  }
 }
 
 async function loadLogConfig() {
@@ -1256,12 +1790,19 @@ async function loadLogConfig() {
   logRows.value = []
   serviceCollectEnabled.value = null
   serviceCodeRef.value = ''
+  serviceDefaultTierId.value = null
   try {
     const response = await getApplicationServiceLogConfig(serviceId.value)
     const data = response?.data?.data || {}
     logRows.value = data.logs || []
+    // 重载后剔掉已经不在的行（模板改了日志定义、别的标签页删了）：勾选里留着不存在的 id 会让
+    // 批量提交带上无效项（后端逐条拒绝），界面上却看不出哪一条出了问题。
+    const existing = new Set(logRows.value.map((row) => row.log_definition))
+    selectedLogKeys.value = selectedLogKeys.value.filter((key) => existing.has(key))
     serviceCollectEnabled.value = data.log_collection_enabled === true
     serviceCodeRef.value = data.service_code || ''
+    // 服务默认档位：界面的"继承服务默认（…）"要用它说清继承的是什么（null = 平台默认档）。
+    serviceDefaultTierId.value = data.log_retention_tier ?? null
   } catch (error) {
     // 不静默：加载失败与"确实没有日志定义"在界面上都是空表格（2026-09-19 现场教训）。
     logRows.value = []
@@ -1494,6 +2035,10 @@ const storageSummary = computed(() => {
 // 切服务：日志配置立刻读（页面主体），水位留到切到那个 tab 再读（一次 ES 调用）。
 watch(serviceId, async () => {
   verifyDialogVisible.value = false
+  // 勾选的日志是**上一条服务**的日志定义，换服务必须清掉：留着的话批量请求会带着
+  // 别的服务的行，被后端逐条拒绝（ok=false），看起来像"批量保存坏了"。
+  clearLogSelection()
+  batchVerifyTargets.value = []
   storageRows.value = []
   storageError.value = ''
   expandedStream.value = null
@@ -1513,6 +2058,8 @@ watch(serviceId, async () => {
   loadChain()
   // 水位依赖 log-config 里的服务编码，必须等它回来再读；未选中服务时也要读（全量视图）。
   if (activeTab.value === 'storage') await loadStorage()
+  // 层级视图：选中服务时它会清空（那些数据只有非服务节点用得上）。
+  loadLevelView()
 }, { immediate: true })
 
 // 树选到项目/业务系统/环境时，数据不用重取（全量已在本页），只按维度过滤即可；
@@ -1523,6 +2070,9 @@ watch(() => [scope.value?.nodeType, scope.value?.projectId, scope.value?.busines
     if (activeTab.value === 'storage' && !serviceId.value && !storageRows.value.length && !storageLoading.value) {
       loadStorage()
     }
+    // 在同为"非服务节点"的两层之间下钻（项目→业务系统→环境）时时 serviceId 没变，
+    // 所以层级视图要在这里跟着重算（否则点行下钻后清单还停在上一层）。
+    if (!serviceId.value) loadLevelView()
   })
 
 watch(activeTab, async (tab) => {
@@ -1606,6 +2156,25 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .apply-progress {
   margin-bottom: 8px;
+}
+/* 批量操作栏：只在勾选后出现，靠近表格（勾选与动作在同一视野里，不用往回滚找按钮）。 */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  margin-bottom: 8px;
+  background: #e6f4ff;
+  border: 1px solid #91caff;
+  border-radius: 6px;
+}
+.batch-count {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.batch-filter-form :deep(.ant-form-item) {
+  margin-bottom: 12px;
 }
 .storage-section-title {
   margin: 4px 0 8px;

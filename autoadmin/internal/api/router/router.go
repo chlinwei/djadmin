@@ -355,6 +355,12 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	services.POST("/:id/log-config/verify/", middleware.RequirePermission("assets:applications:update"), assetsHandler.VerifyApplicationServiceLogFormat)
 	// 按行保存日志覆盖值（采集开关 / 保留档位），日志中心页的内联操作用。
 	services.POST("/:id/log-config/settings/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SaveApplicationServiceLogSetting)
+	// 批量按行保存覆盖值：日志中心页勾选多行后一起改「采集开关 / 保留档位 / 采集过滤」。
+	// 与单条同一套按行语义（每项都是该行覆盖值的全集），一次事务写完，逐条返回 ok/message。
+	services.POST("/:id/log-config/settings/batch/", middleware.RequirePermission("assets:applications:update"), assetsHandler.BatchSaveApplicationServiceLogSettings)
+	// 一批逻辑服务的日志状态汇总（日志中心层级视图用：全部/项目/业务系统/环境节点下的清单）。
+	// 读接口，入参是一批 id，所以按 POST 传列表（与 log-targets/batch-jobs 同形）。
+	services.POST("/log-status-summary/", middleware.RequirePermission("assets:applications:view"), assetsHandler.LogStatusSummary)
 	// 服务级日志采集总开关（关掉后该服务下所有日志都不采集，逐条开关不生效）。
 	services.POST("/:id/log-collection/", middleware.RequirePermission("assets:applications:update"), assetsHandler.SetApplicationServiceLogCollection)
 	services.POST("/:id/refresh-runtime-status/", middleware.RequirePermission("assets:applications:update"), assetsHandler.RefreshApplicationServiceRuntimeStatus)
@@ -417,6 +423,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	assetsService.SetLogFormatVerifier(logcollectHandler)
 	// 日志路径通配的按需展开（界面「解析后」列）：实现同样在日志采集域（持有 agent 文件通道）。
 	assetsService.SetLogGlobPreviewer(logcollectHandler)
+	// 一批服务的配置态（待下发）评估：日志中心的层级视图一次要问多个服务，
+	// 而渲染采集配置属于日志采集域 → 同样是反向注入（见 logcollect/log_service_status.go）。
+	assetsService.SetServiceLogPendingEvaluator(logcollectHandler)
 	// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）：配置不自洽（路径展不开、
 	// 同主机上两个实例展开成同一路径、正则编译不过）就拒绝保存——这些问题是"只能回到配置里改"的，
 	// 等到下发才以"跳过并告警"暴露出来就太晚了（同主机同路径会让同一条日志进 ES 两次）。
@@ -555,6 +564,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-storage-overview/", logcollectHandler.GetLogStorageOverview)
 	monitorRoutes.GET("/elasticsearch-clusters/:id/log-service-usage/", logcollectHandler.GetLogServiceUsage)
 	monitorRoutes.GET("/log-targets/:id/config-preview/", logcollectHandler.GetHostLogConfigPreview)
+	// 采集配置差异：期望片段 vs 主机上**已下发**的 inputs.d 片段，逐文件给出增/删/改/未变与两侧内容。
+	// 只读（读主机上的文件、不写库不下发）；库里只有指纹、没有内容，所以"差异是什么"必须读主机。
+	monitorRoutes.GET("/log-targets/:id/config-diff/", logcollectHandler.GetHostLogConfigDiff)
 	monitorRoutes.GET("/targets/summary/", monitorHandler.Summary)
 	monitorRoutes.GET("/targets/prometheus/overview/", monitorHandler.PrometheusOverview)
 	monitorRoutes.GET("/targets/prometheus/targets/", monitorHandler.PrometheusTargets)

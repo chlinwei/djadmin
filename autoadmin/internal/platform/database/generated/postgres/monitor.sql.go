@@ -2305,6 +2305,29 @@ func (q *Queries) GetLogTargetConfigFingerprint(ctx context.Context, id int64) (
 	return config_fingerprint, err
 }
 
+const getLogTargetFingerprints = `-- name: GetLogTargetFingerprints :one
+SELECT COALESCE(l.config_fingerprint, '') AS config_fingerprint,
+       COALESCE(l.service_fingerprints, '{}') AS service_fingerprints
+FROM monitor_log_collection_target l
+WHERE l.id = $1
+`
+
+type GetLogTargetFingerprintsRow struct {
+	ConfigFingerprint   string          `json:"config_fingerprint"`
+	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
+}
+
+// 这台主机**已下发**的配置指纹（整机 + 各服务子指纹）。
+// 配置差异（/log-targets/:id/config-diff/）要用它说明"这次比较的是哪一版配置"：
+// 库里只落指纹、不落内容，真正的差异内容必须读主机上的 inputs.d（见 log_config_diff.go），
+// 而"这台机器当前处于哪个版本"由这两列回答。
+func (q *Queries) GetLogTargetFingerprints(ctx context.Context, id int64) (GetLogTargetFingerprintsRow, error) {
+	row := q.db.QueryRowContext(ctx, getLogTargetFingerprints, id)
+	var i GetLogTargetFingerprintsRow
+	err := row.Scan(&i.ConfigFingerprint, &i.ServiceFingerprints)
+	return i, err
+}
+
 const getLogTargetForAction = `-- name: GetLogTargetForAction :one
 
 SELECT l.id, l.host_id, l.managed_enabled, l.install_status,

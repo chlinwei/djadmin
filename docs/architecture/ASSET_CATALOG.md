@@ -76,6 +76,23 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 - 非法整数参数 → 400（`applicationDeploymentFilterFromQuery` / `optionalIDQuery`）；
 - 过滤在 SQL WHERE 层完成（EXISTS 子查询），COUNT 与列表共用同一条件，分页计数正确。
 
+### 服务树的选中态：scope ↔ 节点 key 必须逐层对齐（2026-09-20 修复）
+
+`ServiceTree.vue` 的选中态是**受控 + 反推**的两段式：
+
+1. 点节点 → `handleSelect` 记下节点 key 并 `emit('select', scopeByKey.get(key))`；
+2. 父组件（服务树页与日志中心页都是 `@select="scope = $event"`）把 scope 存起来再传回
+   `:selected-scope`，组件用 `scopeKey(scope)` 把它反推回节点 key（外部改 scope 时也要能选中对应节点）。
+
+所以 **`scopeKey` 必须覆盖 `buildTree` 写进 `scopeByKey` 的每一种键**：`all` / `project:<项目 id>` /
+`system:<业务系统 id>` / `environment:<业务系统 id>:<环境 id|unassigned>` / `service:<服务 id>` /
+`deployment:<实例 id>`。少一种的后果不是"数据不对"，而是**这个层级的节点第一次点不上、光标弹回顶层**：
+反推失败退回 `all`，刚点上的高亮立刻被抹掉；第二次点因为父组件的 scope 引用没变、watch 不再触发，
+才"显得"生效（现场反馈"项目/环境节点要点两次"就是这个）。
+守卫：`ServiceTree.spec.js` 的 "keeps the selection on a project or environment node after the parent
+echoes the scope back"（回传 scope 后选中态必须仍在该节点上）。
+watch 里还有一条"键相同就不改"的短路：父组件的原样回传不该产生无意义的重渲染。
+
 ## 逻辑服务 ↔ 部署实例关联：归属与按 id 读取（2026-09-18 修复）
 
 关联表 `assets_application_service_deployment`（实例与逻辑服务的 M2M）有两条必须守住的规则：

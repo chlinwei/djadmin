@@ -3,9 +3,25 @@ import Antd from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
+  // 层级视图（非服务节点）要用的三份名单 + 多服务日志状态汇总。
+  getProjectList: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 301, name: '订单项目' },
+  ], count: 1, totalPages: 1 } } })),
+  getBusinessSystemList: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 7, name: '订单系统', project: 301 },
+  ], count: 1, totalPages: 1 } } })),
+  getApplicationServiceList: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 15, code: 'nginx', name: 'nginx', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: true, log_retention_tier_id: 3 },
+    { id: 16, code: 'redis', name: 'redis', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: false, log_retention_tier_id: null },
+  ], count: 2, totalPages: 1 } } })),
+  // 一批服务的日志状态汇总：日志定义分桶 + 配置态（待下发）。pending 为 null 表示"没算出来"。
+  // 载荷抽成函数是因为有的用例要临时改它，改完还得能还原（clearAllMocks 不清实现）。
+  getApplicationServiceLogStatusSummary: vi.fn((serviceIds) => Promise.resolve({ data: { data: logStatusSummaryPayload(serviceIds) } })),
   getApplicationServiceLogConfig: vi.fn(() => Promise.resolve({ data: { data: {
     log_collection_enabled: true,
     service_code: 'nginx',
+    // 服务级默认保留档位：界面上的"继承服务默认（…）"靠它写清继承的是哪一档。
+    log_retention_tier: 3,
     logs: [
     {
       log_definition: 81, name: 'access.log', resolved_path: '/srv/tomcat/logs/application.log',
@@ -26,12 +42,17 @@ vi.mock('@/api/assets/application', () => ({
     retention_tier: payload.retention_tier, tier_code: 'hot', service_code: 'nginx', format_state: 'verified',
     data_stream: 'autoadmin-yilake-tib-poc-nginx-wuhan-test',
   } } })),
+  // 批量接口的响应口径与批量删除一致：count + 逐条 {id, ok, message}。
+  batchSaveApplicationServiceLogSettings: vi.fn((_id, items) => Promise.resolve({ data: { data: {
+    count: items.length,
+    results: items.map((item) => ({ id: item.log_definition_id, ok: true, message: '' })),
+  } } })),
 }))
 
 vi.mock('@/api/monitor', () => ({
   getElasticsearchClusterList: vi.fn(() => Promise.resolve({ data: { data: { results: [{ id: 1 }] } } })),
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [
-    { id: 1, code: 'hot', name: '热（7 天）' },
+    { id: 1, code: 'hot', name: '热（7 天）', is_default: true },
     { id: 3, code: 'std', name: '标准 30 天' },
     { id: 4, code: 'wuhan-test', name: '保留2天' },
   ] } } })),
@@ -78,6 +99,17 @@ vi.mock('@/api/monitor', () => ({
     { id: 1, name: 'common-error', rule_type: 'include', enabled: true, pattern: '(?i)error' },
     { id: 2, name: 'drop-noise', rule_type: 'exclude', enabled: true, pattern: '(?i)healthcheck' },
   ] } } })),
+  // 层级视图叶子层的"最近写入"：按**服务编码**聚合文档数（不是服务 id）。
+  // 配置差异（默认空差异；用例按需覆盖）。
+  getLogTargetConfigDiff: vi.fn(() => Promise.resolve({ data: { data: {
+    target_id: 101, host_id: 10, host_ip: '10.0.0.10', host_instance_name: 'node-a',
+    state: 'drift', expected_fingerprint: 'e', applied_fingerprint_from_db: 'a',
+    files: [], summary: { added: 0, removed: 0, changed: 0, unchanged: 0, unread: 0 }, read_error: '',
+  } } })),
+  getLogServiceUsage: vi.fn(() => Promise.resolve({ data: { data: {
+    business_system: 7, environment: 10, days: 30, total_docs: 2600,
+    items: [{ service: 'nginx', project: 'yilake', docs: 2600 }],
+  } } })),
   applyLogTargetsForService: vi.fn(() => Promise.resolve({ data: { data: {
     job: { id: 77 }, target_total: 2,
     unmanaged_hosts: [{ host_id: 30, host_ip: '10.0.0.30', host_instance_name: 'node-c' }],
@@ -128,6 +160,26 @@ function fullOverviewPayload() {
   }
 }
 
+// 层级视图的日志状态汇总载荷（默认 mock 用；用例改过之后也用它还原）。
+function logStatusSummaryPayload(serviceIds = []) {
+  return {
+    items: (serviceIds || []).map((serviceId) => (serviceId === 15
+      ? {
+        service_id: 15, logs: 6, verified: 2, needs_recheck: 1, unverified: 3, disabled_logs: 1, no_rule: 0,
+        pending: { hosts: 3, managed: 2, unmanaged: 1, synced: 1, drift: 1, never: 0 },
+      }
+      : {
+        service_id: 16, logs: 4, verified: 4, needs_recheck: 0, unverified: 0, disabled_logs: 0, no_rule: 0,
+        pending: { hosts: 1, managed: 1, unmanaged: 0, synced: 1, drift: 0, never: 0 },
+      })),
+    totals: {
+      services: (serviceIds || []).length, logs: 10, verified: 6, needs_recheck: 1, unverified: 3,
+      disabled_logs: 1, no_rule: 0, hosts: 4, managed: 3, unmanaged: 1, synced: 2, drift: 1, never: 0,
+    },
+    pending_error: '',
+  }
+}
+
 async function mountPage() {
   const wrapper = mount(LogCenter, {
     attachTo: document.body,
@@ -137,7 +189,7 @@ async function mountPage() {
         // 树与查询面板各有一整套自己的数据流与 spec，这里只验证本页的接线（scope → 各 tab 的数据）。
         ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change'], template: '<div class="stub-tree" />' },
         LogQueryPanel: { name: 'LogQueryPanel', props: ['scope'], template: '<div class="stub-query-panel" />' },
-        LogFormatVerifyDialog: { name: 'LogFormatVerifyDialog', props: ['open', 'serviceId', 'target', 'deploymentOptions'], template: '<div class="stub-verify" />' },
+        LogFormatVerifyDialog: { name: 'LogFormatVerifyDialog', props: ['open', 'serviceId', 'target', 'targets', 'deploymentOptions'], template: '<div class="stub-verify" />' },
         // echarts 在 jsdom 里没有真实 canvas：只验证 option 接线（option 的构造另有纯函数单测）。
         StorageUsagePie: { name: 'StorageUsagePie', props: ['option'], template: '<div class="stub-pie" />' },
       },
@@ -147,18 +199,56 @@ async function mountPage() {
   return wrapper
 }
 
+// 两条日志的服务配置：一条"默认全继承"（无覆盖），一条四列都有显式覆盖值——
+// 批量改动必须只动被改的那一列，把其他列（筛选/开关/档位）原样带回，这条数据就是为了钉住它。
+function configWithTwoLogs() {
+  return {
+    log_collection_enabled: true,
+    service_code: 'nginx',
+    logs: [
+      {
+        log_definition: 81, name: 'access.log', resolved_path: '/srv/tomcat/logs/access.log',
+        template_processing_rule_id: 91, template_processing_rule_name: 'tomcat rule',
+        collection_enabled: null, retention_tier: 3, tier_code: 'hot', service_code: 'nginx',
+        format_state: 'unverified', data_stream: 'autoadmin-yilake-tib-poc-nginx-hot',
+      },
+      {
+        log_definition: 82, name: 'error.log', resolved_path: '/srv/tomcat/logs/error.log',
+        // 故意不挂解析规则：批量格式认证要跳过它（认证不了没有规则的日志）。
+        template_processing_rule_id: null, template_processing_rule_name: '',
+        collection_enabled: false, retention_tier: null, tier_code: 'std', service_code: 'nginx',
+        collection_filter_rule_id: 1, collection_exclude_filter_rule_id: 0,
+        template_filter_include_rule_id: null, template_filter_exclude_rule_id: null,
+        format_state: 'unverified', data_stream: 'autoadmin-yilake-tib-poc-nginx-std',
+      },
+    ],
+  }
+}
+
+// 勾选日志行：用真实的表格勾选列（多选这个功能本身也是被验的对象）。
+async function selectConfigRows(wrapper, indexes = [0, 1]) {
+  const boxes = wrapper.findAll('.ant-table-tbody .ant-checkbox-input')
+  for (const index of indexes) await boxes[index].setValue(true)
+  await flushPromises()
+}
+
 describe('日志中心（服务树 + 三个 tab）', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
   })
 
-  it('asks for a service instead of firing requests before one is selected', async () => {
-    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+  // 未选中服务时：不再是一句"请选择逻辑服务"，而是**这一层的日志视图**（层级下钻，见 §9.5）。
+  // 但服务级的数据一律不发（没有服务就无从查起）。
+  it('shows the level view instead of a bare empty state before a service is selected', async () => {
+    const { getApplicationServiceLogConfig, getApplicationServiceLogStatusSummary } = await import('@/api/assets/application')
     const wrapper = await mountPage()
 
-    expect(document.body.textContent).toContain('请在左侧选择逻辑服务或部署实例')
+    // 服务级接口一次都没发（没有服务就无从查起）。
     expect(getApplicationServiceLogConfig).not.toHaveBeenCalled()
+    // 层级视图的内容来自"这批服务的日志状态汇总"：它只问这一层实际列出的服务。
+    expect(getApplicationServiceLogStatusSummary).toHaveBeenCalledWith([15, 16])
+    expect(document.body.textContent).not.toContain('请在左侧选择逻辑服务或部署实例')
     wrapper.unmount()
   })
 
@@ -754,6 +844,29 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  // 清理入口的文案统一成「清理数据」（2026-09-20）：历史档位流与在写的流**是同一个动作**，
+  // 差别只在后果（在写的流删完还会继续写入，那件事在 tooltip 里说），不该给同一个动作起两个名。
+  it('labels the cleanup action the same on every kind of stream', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    // 夹具里同时有历史档位流（wuhan-test）与在写的流（hot）。
+    const historical = wrapper.vm.storageRows.find((row) => row.tier === 'wuhan-test')
+    const active = wrapper.vm.storageRows.find((row) => row.name.endsWith('-hot'))
+    expect(historical).toBeTruthy()
+    expect(active).toBeTruthy()
+
+    const buttons = wrapper.findAll('.ant-table-tbody button').filter((button) => button.text().includes('清理'))
+    expect(buttons.length).toBeGreaterThan(0)
+    expect(buttons.every((button) => button.text() === '清理数据')).toBe(true)
+    // 旧文案不许再出现（统一之前历史流行显示的是"立即清理"）。
+    expect(document.body.textContent).not.toContain('立即清理')
+    wrapper.unmount()
+  })
+
   it('cleans an unrecognized stream by its name', async () => {
     const { cleanupLogDataStream, cleanupLogDataStreamByStream, getLogStorageOverview } = await import('@/api/monitor')
     // 未识别流单独注入（默认夹具不塞它，免得改坏"数流数量"的既有用例）。
@@ -791,9 +904,10 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.vm.activeTab = 'storage'
     await flushPromises()
 
-    // 页面上有多张表（磁盘水位 / 按维度聚合 / 流表），必须挑**流表**来断言：
+    // 页面上有多张表（磁盘水位 / 按维度聚合 / 流表 / 层级视图），必须挑**流表**来断言：
     // 之前那次漏检就是因为只看了 vm 上的函数，没确认渲染出来的到底是哪张表。
-    const streamTable = wrapper.findAll('table').find((table) => table.find('thead').text().includes('操作'))
+    // 按「后备索引」挑（只有流表有这一列）：层级视图也有「操作」列，只按「操作」会挑错表。
+    const streamTable = wrapper.findAll('table').find((table) => table.find('thead').text().includes('后备索引'))
     expect(streamTable, '流表的表头里必须有「操作」列').toBeTruthy()
     const streamRows = streamTable.findAll('tbody tr').filter((row) => row.text().trim() !== '')
     expect(streamRows.length).toBeGreaterThan(0)
@@ -1056,6 +1170,195 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  // ── 层级视图（非服务节点：全部/项目/业务系统/环境） ────────────────────────
+  // 现场问题：选中这些节点时两个 tab 都是空的（只剩"请选择逻辑服务"）。现在这一层给"下一层清单 +
+  // 指标条"，点行下钻，到环境层的行就是服务、点进去就是服务级界面。
+  it('shows the next level with log status for a non-service node', async () => {
+    const { getApplicationServiceLogStatusSummary, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    // 停在"全部业务"根节点：下一层是项目。
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('订单项目')
+    // 指标条与清单同源：两个服务里有一个关着采集。
+    expect(document.body.textContent).toContain('采集关闭')
+    expect(document.body.textContent).toContain('未认证日志')
+    // 汇总接口只问**这一层实际列出的服务**（根节点下两个服务都在）。
+    expect(getApplicationServiceLogStatusSummary).toHaveBeenCalledWith([15, 16])
+    // 服务级接口一次都没发（还没选服务）。
+    expect(getApplicationServiceLogConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('drills down level by level and enters the service when a leaf row is used', async () => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    const tree = wrapper.findComponent({ name: 'ServiceTree' })
+    tree.vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+
+    // 点项目行 → 下钻到项目（左树高亮由 scope 反推，见 ServiceTree 的 scopeKey）。
+    await wrapper.find('.ant-table-tbody tr.ant-table-row').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.scope).toMatchObject({ nodeType: 'project', projectId: 301 })
+
+    // 项目层列出业务系统；再下钻到业务系统 → 列出环境。
+    await wrapper.find('.ant-table-tbody tr.ant-table-row').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.scope).toMatchObject({ nodeType: 'businessSystem', businessSystemId: 7 })
+    expect(document.body.textContent).toContain('poc')
+
+    // 环境层：一行一个服务；点服务 = 进入服务级（两个 tab 都变成那个服务的内容）。
+    await wrapper.find('.ant-table-tbody tr.ant-table-row').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.scope).toMatchObject({ nodeType: 'environment' })
+
+    const serviceRow = wrapper.findAll('.ant-table-tbody tr.ant-table-row')
+      .find((row) => row.text().includes('nginx'))
+    await serviceRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.scope).toMatchObject({ nodeType: 'service', applicationServiceId: 15 })
+    expect(getApplicationServiceLogConfig).toHaveBeenCalledWith(15)
+    wrapper.unmount()
+  })
+
+  // 环境层的「最近写入」来自 getLogServiceUsage（按服务编码聚合），窗口与列标题一致（30 天）。
+  it('fills the recent write column of the environment level from the usage aggregation', async () => {
+    const { getLogServiceUsage } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+      nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+      environment: 10, environmentName: 'poc', nodeTitle: 'poc',
+    })
+    await flushPromises()
+
+    expect(getLogServiceUsage).toHaveBeenCalledWith(1, { business_system: 7, environment: 10, days: 30 })
+    expect(document.body.textContent).toContain('最近 30 天写入')
+    // 2,600 条（nginx 服务编码上的聚合值）。
+    expect(document.body.textContent).toContain('2,600 条')
+    wrapper.unmount()
+  })
+
+  // 「继承服务默认」必须写清继承到哪一档（现场反馈"我怎么知道默认是什么呢"）。
+  // 继承链：服务默认档位（log-config 顶层字段）→ 平台默认档（is_default）→ std。
+  it('spells out what the inherited retention tier actually is', async () => {
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    // 这个服务的默认档位是 3（标准 30 天）：行上的"继承"选项直接写出名字。
+    expect(wrapper.vm.serviceDefaultTierId).toBe(3)
+    expect(wrapper.vm.inheritedTierLabel()).toBe('继承服务默认（标准 30 天）')
+    // 当前生效的档位也要能说出来。
+    expect(wrapper.vm.effectiveTierLabel(wrapper.vm.logRows[0])).toBe('标准 30 天')
+
+    // 确认框里也用具体档位名，而不是"继承服务默认档位"（等于没说）。
+    await wrapper.vm.confirmTierChange(wrapper.vm.logRows[0], null)
+    expect(openDeleteConfirm.mock.calls.at(-1)[0].summary).toContain('继承服务默认（标准 30 天）')
+
+    // 服务没有默认档位时：继承链落到**平台默认档**（is_default 的那一档），也要写出名字。
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: {
+      log_collection_enabled: true, service_code: 'nginx', log_retention_tier: null, logs: [],
+    } } })
+    await wrapper.vm.loadLogConfig()
+    expect(wrapper.vm.serviceDefaultTierId).toBe(null)
+    expect(wrapper.vm.inheritedTierLabel()).toBe('继承平台默认（热（7 天））')
+    wrapper.unmount()
+  })
+
+  // 配置态算不出来（没有启用的默认集群等）时：这一列显示"-"并说明原因，不能当成"都已同步"。
+  it('shows a dash and the reason when the pending state cannot be evaluated', async () => {
+    const { getApplicationServiceLogStatusSummary } = await import('@/api/assets/application')
+    getApplicationServiceLogStatusSummary.mockImplementation(() => Promise.resolve({ data: { data: {
+      items: [
+        { service_id: 15, logs: 6, verified: 2, needs_recheck: 1, unverified: 3, disabled_logs: 1, no_rule: 0, pending: null },
+      ],
+      totals: { services: 1, logs: 6, verified: 2, needs_recheck: 1, unverified: 3, disabled_logs: 1, no_rule: 0, hosts: 0, managed: 0, unmanaged: 0, synced: 0, drift: 0, never: 0 },
+      pending_error: '没有已启用的默认 Elasticsearch 集群',
+    } } }))
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+      nodeType: 'environment', businessSystemId: 7, environment: 10, environmentName: 'poc', nodeTitle: 'poc',
+    })
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('配置态没算出来')
+    expect(document.body.textContent).toContain('没有已启用的默认 Elasticsearch 集群')
+    // 还原默认实现：clearAllMocks 只清调用记录、不清实现，留着会污染后面的用例。
+    getApplicationServiceLogStatusSummary.mockImplementation((serviceIds) => Promise.resolve({ data: { data: logStatusSummaryPayload(serviceIds) } }))
+    wrapper.unmount()
+  })
+
+  // 加载失败必须与"这个范围没有服务"区分开。
+  it('surfaces a failed level view load instead of showing an empty list', async () => {
+    const { message } = await import('ant-design-vue')
+    const errorSpy = vi.spyOn(message, 'error').mockImplementation(() => {})
+    const { getApplicationServiceList } = await import('@/api/assets/application')
+    getApplicationServiceList.mockRejectedValueOnce({ response: { data: { msg: '资产不存在' } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务' })
+    await flushPromises()
+
+    expect(errorSpy).toHaveBeenCalledWith('资产不存在')
+    errorSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  // 配置差异入口（2026-09-20）：界面上只说"待下发"、不给差异内容时，用户没法判断该不该点下发。
+  // 入口默认落在**待下发的那台**主机上（那才是点开它要问的问题），并把本服务 id 带上
+  //（后端据此给本服务的子指纹与"本服务待下发"）。
+  it('opens the config diff for a pending host and asks the backend for that service', async () => {
+    const { getLogTargetConfigDiff } = await import('@/api/monitor')
+    getLogTargetConfigDiff.mockResolvedValue({ data: { data: {
+      target_id: 102, host_id: 20, host_ip: '10.0.0.20', host_instance_name: 'node-b',
+      state: 'drift', expected_fingerprint: 'e', applied_fingerprint_from_db: 'a',
+      files: [], summary: { added: 0, removed: 0, changed: 0, unchanged: 0, unread: 0 }, read_error: '',
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('查看配置差异')
+    wrapper.vm.openConfigDiff()
+    await flushPromises()
+
+    // applyState 的夹具里 node-a 是 synced、node-b 是 drift → 默认看 node-b（待下发的那个）。
+    expect(getLogTargetConfigDiff).toHaveBeenCalledWith(102, { application_service_id: 15 })
+    expect(wrapper.vm.configDiffTargetId).toBe(102)
+    expect(wrapper.vm.configDiffHostLabel).toContain('node-b')
+
+    // 换主机：重新按那台目标拉一次（差异是"某台主机的现状"，多台各不相同）。
+    wrapper.vm.selectConfigDiffHost(101)
+    await flushPromises()
+    expect(getLogTargetConfigDiff).toHaveBeenLastCalledWith(101, { application_service_id: 15 })
+    wrapper.unmount()
+  })
+
+  // 没有已纳管的承载主机时不给入口（点开也没有可对比的对象），并说明原因。
+  it('refuses to open the config diff without a managed host', async () => {
+    const { message } = await import('ant-design-vue')
+    const warningSpy = vi.spyOn(message, 'warning').mockImplementation(() => {})
+    const { getServiceLogConfigState } = await import('@/api/monitor')
+    getServiceLogConfigState.mockResolvedValueOnce({ data: { data: {
+      summary: { hosts: 1, managed: 0, unmanaged: 1, synced: 0, drift: 0, never: 0, unknown: 0 },
+      hosts: [], unmanaged_hosts: [{ host_id: 30, host_ip: '10.0.0.30', host_instance_name: 'node-c', target_id: 0, managed: false }],
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    wrapper.vm.openConfigDiff()
+    await flushPromises()
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('没有已纳管的承载主机'))
+    expect(wrapper.vm.configDiffOpen).toBe(false)
+    warningSpy.mockRestore()
+    wrapper.unmount()
+  })
+
   // 加载失败必须与"确实没有日志定义"区分开：两者在界面上都是空表格（2026-09-19 现场教训）。
   it('surfaces a failed log config load instead of showing an empty table', async () => {
     const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
@@ -1066,6 +1369,158 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
     expect(wrapper.vm.configError).toBe('资产不存在')
     expect(document.body.textContent).toContain('资产不存在')
+    wrapper.unmount()
+  })
+
+  // ── 批量操作（勾选多行一起调） ────────────────────────────────────────────
+  // 现场诉求：日志定义多了以后，逐行点"档位/过滤/认证"是纯体力活。批量栏只在勾选后出现，
+  // 提交时**每一行带自己的覆盖值全集**（只有被改的那一列变），不会把别人行的覆盖列清掉。
+  it('batch-changes the retention tier of the selected logs in one request', async () => {
+    const { batchSaveApplicationServiceLogSettings, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const { message } = await import('ant-design-vue')
+    const successSpy = vi.spyOn(message, 'success').mockImplementation(() => {})
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    // 没勾选时没有批量栏（不占版面）。
+    expect(wrapper.find('.batch-bar').exists()).toBe(false)
+    await selectConfigRows(wrapper)
+    expect(wrapper.find('.batch-bar').exists()).toBe(true)
+    expect(document.body.textContent).toContain('已选 2 条日志')
+
+    wrapper.vm.openBatchTier()
+    await flushPromises()
+    // 弹窗必须写清"改档位 = 写新流、旧流不迁移"和会影响几条，再让人点确定。
+    expect(document.body.textContent).toContain('应用到 2 条')
+    expect(document.body.textContent).toContain('不迁移数据')
+
+    wrapper.vm.batchTierValue = 4
+    await wrapper.vm.submitBatchTier()
+    await flushPromises()
+
+    expect(batchSaveApplicationServiceLogSettings).toHaveBeenCalledWith(15, [
+      // 81 只改档位：开关/过滤保持"不覆盖"。
+      {
+        log_definition_id: 81, collection_enabled: null, retention_tier: 4,
+        collection_filter_rule: null, collection_exclude_filter_rule: null,
+      },
+      // 档位是"这一批都改成同一个值"，但 82 的开关(false)、过滤(1/0)必须原样带回，
+      // 否则批量改档位会顺手把这几个覆盖值清掉。
+      {
+        log_definition_id: 82, collection_enabled: false, retention_tier: 4,
+        collection_filter_rule: 1, collection_exclude_filter_rule: 0,
+      },
+    ])
+    // 改完即入库 + 重拉配置与下发态（页头"待下发"要跟着变），并清掉勾选。
+    expect(getApplicationServiceLogConfig).toHaveBeenCalledTimes(2)
+    expect(wrapper.vm.selectedLogKeys).toEqual([])
+    expect(wrapper.find('.batch-bar').exists()).toBe(false)
+    expect(successSpy).toHaveBeenCalledWith(expect.stringContaining('已调整 2 条日志'))
+    successSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  // 停止采集是有后果的改动：先确认一次（与逐条开关同一口径）；打开采集是回到默认，不确认。
+  it('asks for one confirmation before stopping collection on the selected logs', async () => {
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const { batchSaveApplicationServiceLogSettings, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    await selectConfigRows(wrapper)
+
+    await wrapper.vm.batchSetCollection(false)
+    await flushPromises()
+
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(openDeleteConfirm.mock.calls[0][0].title).toContain('确认停止采集这 2 条日志')
+    expect(batchSaveApplicationServiceLogSettings).toHaveBeenCalledWith(15, [
+      { log_definition_id: 81, collection_enabled: false, retention_tier: 3, collection_filter_rule: null, collection_exclude_filter_rule: null },
+      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0 },
+    ])
+    wrapper.unmount()
+  })
+
+  // 批量改采集过滤：按方向只动对应那一列（白名单/黑名单是两个独立的覆盖值）。
+  it('batch-sets the include filter without touching the exclude column', async () => {
+    const { batchSaveApplicationServiceLogSettings, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    await selectConfigRows(wrapper)
+
+    wrapper.vm.openBatchFilter()
+    await flushPromises()
+    // 白名单写窄会永久丢数据：弹窗里必须写出后果。
+    expect(document.body.textContent).toContain('被滤掉的日志不会进 ES')
+
+    wrapper.vm.batchFilterForm.direction = 'include'
+    wrapper.vm.batchFilterForm.value = 1
+    await wrapper.vm.submitBatchFilter()
+    await flushPromises()
+
+    expect(batchSaveApplicationServiceLogSettings).toHaveBeenCalledWith(15, [
+      { log_definition_id: 81, collection_enabled: null, retention_tier: 3, collection_filter_rule: 1, collection_exclude_filter_rule: null },
+      // 82 的 exclude=0（显式关闭）不能被这次白名单改动覆盖掉。
+      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0 },
+    ])
+    wrapper.unmount()
+  })
+
+  // 批量格式认证：交给认证弹窗的是勾选里的那几条，**没挂解析规则的直接跳过并说明**——
+  // 静默少认证几条比拒绝更糟（用户以为都验过了）。
+  it('hands the verifiable selected logs to the verify dialog and skips the rest', async () => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const { message } = await import('ant-design-vue')
+    const infoSpy = vi.spyOn(message, 'info').mockImplementation(() => {})
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    await selectConfigRows(wrapper)
+
+    wrapper.vm.openBatchVerify()
+    await flushPromises()
+
+    const dialog = wrapper.findComponent({ name: 'LogFormatVerifyDialog' })
+    expect(dialog.props('targets')).toEqual([{ log_definition: 81, name: 'access.log' }])
+    expect(dialog.props('open')).toBe(true)
+    // 单条入口要把批量目标清空，否则会把这一条当成上一批的一部分。
+    expect(dialog.props('target')).toBeNull()
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('已跳过 1 条'))
+    infoSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  // 后端逐条拒绝（例如日志定义已不属于本服务模板）时要说清是哪一条没成功，而不是只说"失败了"。
+  it('names the log that the backend refused in a batch change', async () => {
+    const { batchSaveApplicationServiceLogSettings, getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const { message } = await import('ant-design-vue')
+    const errorSpy = vi.spyOn(message, 'error').mockImplementation(() => {})
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: configWithTwoLogs() } })
+    batchSaveApplicationServiceLogSettings.mockResolvedValueOnce({ data: { data: {
+      count: 1,
+      results: [
+        { id: 81, ok: true, message: '' },
+        { id: 82, ok: false, message: '该日志不属于本服务的部署模板' },
+      ],
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    await selectConfigRows(wrapper)
+
+    await wrapper.vm.batchSetCollection(true)
+    await flushPromises()
+
+    // 失败项用日志名报出来（后端只回日志定义 id，界面要把它翻成用户认识的日志名）。
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('error.log'))
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('该日志不属于本服务的部署模板'))
+    errorSpy.mockRestore()
     wrapper.unmount()
   })
 })

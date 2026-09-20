@@ -220,6 +220,14 @@ export function getLogServiceUsage(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-service-usage/`, params)
 }
 
+// 采集配置差异：期望片段 vs 主机上**已下发**的 inputs.d 片段（逐文件 added/removed/changed/unchanged
+// + 两侧完整内容，行级 diff 由前端算）。params 可带 application_service_id：带上就再给该服务在这台
+// 主机上的子指纹与"本服务是否待下发"。
+// 差异内容必须读主机（库里只落指纹），所以主机离线时响应里 read_error 有话说、files 只含期望侧。
+export function getLogTargetConfigDiff(id, params) {
+  return requestUtil.get(prefix + `log-targets/${id}/config-diff/`, params, 60000)
+}
+
 export function getLogProcessingRules(params) {
   return requestUtil.get(prefix + 'log-processing-rules/', params)
 }

@@ -856,6 +856,16 @@ JOIN assets_host h ON h.id = l.host_id
 LEFT JOIN assets_hostsystem s ON s.host_id = l.host_id
 WHERE l.id = sqlc.arg(id);
 
+-- 这台主机**已下发**的配置指纹（整机 + 各服务子指纹）。
+-- 配置差异（/log-targets/:id/config-diff/）要用它说明"这次比较的是哪一版配置"：
+-- 库里只落指纹、不落内容，真正的差异内容必须读主机上的 inputs.d（见 log_config_diff.go），
+-- 而"这台机器当前处于哪个版本"由这两列回答。
+-- name: GetLogTargetFingerprints :one
+SELECT COALESCE(l.config_fingerprint, '') AS config_fingerprint,
+       COALESCE(l.service_fingerprints, '{}') AS service_fingerprints
+FROM monitor_log_collection_target l
+WHERE l.id = sqlc.arg(id);
+
 -- 取最近一条安装历史用于"是否有任务在执行中"（NULL 行由 ErrNoRows 表达）。
 -- create_time 用于取消时算时长（该流程的历史行 start_time 为 NULL，只有 create_time
 -- 是派发时刻）。

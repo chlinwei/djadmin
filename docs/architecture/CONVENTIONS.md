@@ -21,6 +21,23 @@
 - 嵌套子资源：基线分类/检查项（`/baselines/:id/categories/:cid/`）
 - 从属资源：主机 WebSSH 文件
 
+### 一.1 批量更新：沿用同一响应口径，但**语义按资源定**
+
+"只保留批量删除"不延伸到更新——更新接口的批量与否由**这一批改动是否可拆**决定，不搞"一律批量"：
+
+- 路由：`POST <资源前缀>/batch-update/` 或嵌在已有子路径下（如
+  `/assets/application-services/:id/log-config/settings/batch/`，与单条 `…/settings/` 同级）
+- 响应 data：**与批量删除同一口径** —— `{"count": <成功条数>, "results": [{"id": …, "ok": true, "message": ""}, ...]}`，
+  不适用/不存在的项记 `ok:false` 并写明原因
+- **可拆的改动逐条独立、不整体失败**（每个 id 的改法不同，败一条不该拖累其余）
+- **不可拆的改动（整批改的是同一列的同一个值）用一次事务写完**：要么都落库、要么都不落，
+  失败即返回错误码，不返回"部分成功"——留半套配置比整体失败更难排查。
+  范式：`autoadmin/internal/assets/log_setting.go` 的 `BatchSaveServiceLogOverrides`
+  （校验读一次 → 过滤不属于本资源的项 → `UpsertServiceLogOverrides` 一个事务 → 逐条结果）
+- 参数非法（空集合、超过上限）在服务层直接 `ErrInvalid`，不进事务
+- 前端：一次请求 + 成功后**重拉列表与下发态**；把失败的 id 翻成用户认识的名字（日志名/主机名）再报出来，
+  只回 id 用户不知道是哪一条
+
 ## 二、前端 a-table 统一风格
 
 所有数据列表性质的 `<a-table>` 统一为：

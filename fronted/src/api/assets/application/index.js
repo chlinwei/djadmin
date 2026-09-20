@@ -114,6 +114,16 @@ export function getApplicationServiceLogConfig(id) {
     return requestUtil.get(`${applicationServicePrefix}${id}/log-config/`)
 }
 
+// 一批逻辑服务的日志状态汇总（日志中心层级视图：全部/项目/业务系统/环境节点下的清单）。
+// 读接口，只是入参是一批 id，所以按 POST 传列表（与 /monitor/log-targets/batch-jobs/ 同形）。
+// 响应 data = { items:[{service_id, logs, verified, needs_recheck, unverified, disabled_logs,
+// no_rule, pending:{hosts,managed,unmanaged,synced,drift,never}|null}], totals:{...},
+// pending_error }——pending 为 null / pending_error 非空表示"配置态没算出来"（例如没有启用的
+// 默认集群），界面显示"-"，不要当成 0。一次最多 200 个服务，超了后端报 400。
+export function getApplicationServiceLogStatusSummary(serviceIds) {
+    return requestUtil.post(`${applicationServicePrefix}log-status-summary/`, { service_ids: serviceIds })
+}
+
 // 服务级日志采集总开关（log_collection_enabled）。关闭后该服务下所有日志都不采集，
 // 逐条日志的开关随之不生效（配置意图仍保留，重新打开即恢复）。
 export function setApplicationServiceLogCollection(id, enabled) {
@@ -128,9 +138,20 @@ export function saveApplicationServiceLogSetting(id, payload) {
     return requestUtil.post(`${applicationServicePrefix}${id}/log-config/settings/`, payload)
 }
 
+// 批量按行保存覆盖值（日志中心页勾选多行后一起改档位/过滤/采集开关）。
+// items = [{ log_definition_id, collection_enabled, retention_tier,
+//            collection_filter_rule, collection_exclude_filter_rule }, ...]
+// **每一项都是那一行覆盖值的全集**（与单条接口同语义：缺列 = 清成"不覆盖"），
+// 所以调用方要用页面里的 overridePayload(record, patch) 从服务端回读的行出发构造。
+// 响应：{ count, results: [{ id, ok, message }] }——不属于本服务的日志记 ok=false，不整体失败。
+export function batchSaveApplicationServiceLogSettings(id, items) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/log-config/settings/batch/`, { items })
+}
+
 // 日志格式认证：对一条（逻辑服务 × 日志定义）抽样校验一次格式。
 // payload = { log_definition_id, source: 'instance' | 'sample_log' | 'waiver', deployment_id }
 // （source=instance 时必填 deployment_id）。漏字段取不到样例时后端报错，不会静默判"通过"。
+// 多条一起认证由调用方逐条调用（每条要真的去主机取样例，天然是串行的），后端不提供批量认证接口。
 export function verifyApplicationServiceLogFormat(id, payload, timeout = 120000) {
     return requestUtil.post(`${applicationServicePrefix}${id}/log-config/verify/`, payload, timeout)
 }

@@ -584,8 +584,24 @@ function handleSelect(keys) {
   emit('select', scopeByKey.get(key) || {})
 }
 
+// scope → 树节点 key。**必须与 buildTree 里写进 scopeByKey 的键逐种对齐**（all / project /
+// system / environment / service / deployment）。
+//
+// 少一种的后果就是"这个层级的节点第一次点不上、光标弹回顶层"（2026-09-20 现场：项目与环境两层的
+// 节点都要点两次）。机理：点节点 → handleSelect 选中并发 select → 父组件把 scope 原样回传
+// （各页都是 `@select="scope = $event"`）→ 下面那个 watch 按 scopeKey 反推选中态；反推不出这个
+// 层级就退回 'all'，于是高亮被抹掉。第二次点因为父组件的 scope 引用没变、watch 不再触发，
+// 才"显得"生效了——这也是为什么它看起来像"要点两次"。
 function scopeKey(scope) {
+  if (scope?.nodeType === 'project') {
+    // 与 groupSystemNodesByProject 的键一致；"未分配项目"那组不可选，也就不会走到这里。
+    return scope.projectId === undefined || scope.projectId === null || scope.projectId === 'unassigned'
+      ? 'all'
+      : `project:${scope.projectId}`
+  }
   if (scope?.nodeType === 'businessSystem') return `system:${scope.businessSystemId}`
+  // 环境节点的键带业务系统 id（`environment:<业务系统>:<环境>`），"未配置环境"用 unassigned。
+  if (scope?.nodeType === 'environment') return `environment:${scope.businessSystemId}:${scope.environment ?? 'unassigned'}`
   if (scope?.nodeType === 'service') return `service:${scope.applicationServiceId}`
   if (scope?.nodeType === 'deployment') return `deployment:${scope.deploymentId}`
   return 'all'
@@ -593,7 +609,13 @@ function scopeKey(scope) {
 
 watch(
   () => props.selectedScope,
-  (scope) => { selectedKeys.value = [scopeKey(scope)] },
+  (scope) => {
+    // 父组件把刚选中的 scope 原样回传时不改选中态：既避免一次无意义的重渲染，也让"scopeKey
+    // 反推不出这个层级"这类错误在键相同的情况下不表现为"点了没反应"。
+    const key = scopeKey(scope)
+    if (selectedKeys.value.length === 1 && selectedKeys.value[0] === key) return
+    selectedKeys.value = [key]
+  },
   { deep: true, immediate: true },
 )
 

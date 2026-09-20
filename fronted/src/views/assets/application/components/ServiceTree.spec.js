@@ -156,4 +156,45 @@ describe('ServiceTree', () => {
     expect(wrapper.findAll('.service-tree-log-disabled-badge')).toHaveLength(0)
     wrapper.unmount()
   })
+
+  // 回归（2026-09-20 现场）：项目节点、环境节点**第一次点不上**，光标弹回顶层，得再点一次。
+  //
+  // 机理：选中态由父组件回传的 scope 反推（见 scopeKey），而它原先只认业务系统/服务/实例三种，
+  // 项目与环境两层都退回 'all'——第一次点击的选中态立刻被抹掉；第二次点因为父组件的 scope
+  // 引用没变、watch 不再触发，才"显得"生效。各页都是 `@select="scope = $event"`，所以这个
+  // 回传必然发生（服务树页与日志中心页用的是同一个组件）。
+  it('keeps the selection on a project or environment node after the parent echoes the scope back', async () => {
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', code: 'order-system', enabled: true, project: 301, project_name: '订单项目' },
+    ]))
+    const wrapper = mount(ServiceTree, { props: { groupByProject: true }, global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
+    await flushPromises()
+
+    const projectNode = wrapper.findAll('.ant-tree-node-content-wrapper')
+      .find((node) => node.text().includes('订单项目'))
+    await projectNode.trigger('click')
+    const projectScope = { nodeType: 'project', projectId: 301, nodeTitle: '订单项目' }
+    expect(wrapper.emitted('select').at(-1)).toEqual([projectScope])
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('订单项目')
+
+    // 父组件原样回传 → 选中态必须还留在这个节点上（不能弹回「全部…」）。
+    await wrapper.setProps({ selectedScope: projectScope })
+    await flushPromises()
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('订单项目')
+
+    const environmentNode = wrapper.findAll('.ant-tree-node-content-wrapper')
+      .find((node) => node.text().includes('生产环境'))
+    await environmentNode.trigger('click')
+    const environmentScope = {
+      nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
+      environment: 71, environmentName: '生产环境', nodeTitle: '生产环境',
+    }
+    expect(wrapper.emitted('select').at(-1)).toEqual([environmentScope])
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('生产环境')
+
+    await wrapper.setProps({ selectedScope: environmentScope })
+    await flushPromises()
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('生产环境')
+    wrapper.unmount()
+  })
 })

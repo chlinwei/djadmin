@@ -27,6 +27,9 @@ type Service struct {
 	// logGlobPreviewer 由 logcollect 注入（见 log_glob_preview.go）：按需把日志路径里的
 	// 通配展开成主机上的真实文件清单，供界面「解析后」列展示。未注入时接口返回不可用。
 	logGlobPreviewer LogGlobPreviewer
+	// logPendingEvaluator 由 logcollect 注入（见 log_status_summary.go）：一批服务的配置态
+	// （几台已同步/待下发/从未下发），供日志中心的层级视图用。未注入时汇总里 pending 为 null。
+	logPendingEvaluator ServiceLogPendingEvaluator
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {

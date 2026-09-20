@@ -848,8 +848,11 @@ DELETE FROM assets_application_service WHERE id=sqlc.arg(id);
 -- 不动认证状态：采集总开关不进认证指纹（见 log_format_fingerprint.go 的输入清单），
 -- 而且认证四列在 log_setting 上、根本不在这一行。
 -- 单列读取：log-config 接口要带上服务级采集总开关（页面据此区分"总开关关了"与"逐条关了"）。
--- name: GetApplicationServiceLogCollection :one
-SELECT log_collection_enabled FROM assets_application_service WHERE id=sqlc.arg(id);
+-- 2026-09-20 起一起读**默认保留档位**：界面上的"继承服务默认"必须写清默认到底是哪一档
+-- （现场反馈"我怎么知道默认是什么呢"），档位与总开关本来就是同一行上的两个日志默认值，
+-- 一条单行读取覆盖两者，省一次往返。
+-- name: GetApplicationServiceLogDefaults :one
+SELECT log_collection_enabled, log_retention_tier_id FROM assets_application_service WHERE id=sqlc.arg(id);
 
 -- name: UpdateApplicationServiceLogCollection :execresult
 UPDATE assets_application_service

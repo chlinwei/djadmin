@@ -18,6 +18,15 @@
 
 前端历史告警列表 `rule_details.query` 即规则快照中的 PromQL；`monitor_alert_history.rule_snapshot` 为 JSON 列。
 
+**「问题」列两处同源**（2026-09-20 修）：列表里的"问题"文案取告警自身的 annotation ——
+`summary`，没写就退回 `description`（`alertSummaryText`，`internal/monitor/handler.go`）。
+- 当前告警：Prometheus `/api/v1/alerts` 的 `annotations` 是平铺 map，handler 现场算；
+- 历史告警：读落库的 `monitor_alert_history.annotations`（同一份东西的 JSON 快照），
+  DTO 里由**同一个函数**算出 `summary` 字段（`history_typed.go` 的 `alertHistoryResponseFrom`）。
+
+历史行原先没有 `summary` 字段、列表也就没有「问题」列，现场表现为"当前告警有这一栏、历史告警没有，
+同一个告警在两处长得不一样"。旧数据没写注释时该列显示"-"（解析失败同样降级成空，不把坏 JSON 当文案）。
+
 **当前告警**（`GET /monitor/targets/prometheus/alerts/`）同样带 `rule_group` / `rule_details`：`/api/v1/alerts`
 本身不含规则表达式（PromQL 只在 `/api/v1/rules`），所以 handler 复用同一套 `prometheusAlertRuleIndexes`
 按 alertname 关联补全；否则"当前告警"的规则组列与展开行 PromQL 恒为空（历史告警读落库快照，不受影响）。

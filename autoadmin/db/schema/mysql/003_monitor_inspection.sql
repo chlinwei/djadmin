@@ -51,7 +51,10 @@ CREATE TABLE `monitor_log_retention_tier` (
   `code` varchar(32) NOT NULL,
   `name` varchar(64) NOT NULL,
   `daily_size_gb` double NOT NULL,
-  `retention_days` int unsigned NOT NULL,
+  `retention_value` int unsigned NOT NULL,
+  -- 保留期的单位：d = 天、h = 小时（见迁移 000045）。数据流名与 ILM 策略名用的是档位 code，
+  -- 所以换单位/改保留期都不影响已有流。
+  `retention_unit` varchar(4) NOT NULL DEFAULT 'd',
   `rollover_min_index_age` varchar(16) NOT NULL,
   `enabled` BOOLEAN NOT NULL,
   `is_default` BOOLEAN NOT NULL,

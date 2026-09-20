@@ -50,13 +50,19 @@ func (r *Repository) DeleteProject(ctx context.Context, id int64) error {
 	return r.queries.DeleteProject(ctx, id)
 }
 
-func (r *Repository) ListBusinessSystems(ctx context.Context, search string, page pagination.Page) ([]db.ListBusinessSystemsRow, int64, error) {
+// ListBusinessSystems 业务系统列表。projectID 非空时只返回该项目下的业务系统（服务树的「项目」节点）。
+//
+// 为什么要有这个过滤：前端一直在传 `project`，而这条查询原先没有该条件——于是"某个项目"节点下
+// 列出的是**全部**业务系统（现场 2026-09-20），连它下面聚合出来的服务数/实例数一起错。
+// 过滤放 SQL 层（与逻辑服务列表的 `business_system` 参数同一做法）：分页计数才算得对。
+func (r *Repository) ListBusinessSystems(ctx context.Context, search string, projectID *int64, page pagination.Page) ([]db.ListBusinessSystemsRow, int64, error) {
 	p := pattern(search)
-	count, err := r.queries.CountBusinessSystems(ctx, db.CountBusinessSystemsParams{Pattern: p})
+	project := nullableInt(projectID)
+	count, err := r.queries.CountBusinessSystems(ctx, db.CountBusinessSystemsParams{Pattern: p, ProjectID: project})
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.queries.ListBusinessSystems(ctx, db.ListBusinessSystemsParams{Pattern: p, Limit: page.Size, Offset: page.Offset})
+	rows, err := r.queries.ListBusinessSystems(ctx, db.ListBusinessSystemsParams{Pattern: p, ProjectID: project, Limit: page.Size, Offset: page.Offset})
 	return rows, count, err
 }
 func (r *Repository) GetBusinessSystem(ctx context.Context, id int64) (db.GetBusinessSystemRow, error) {

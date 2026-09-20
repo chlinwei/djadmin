@@ -28,7 +28,8 @@ func createLogRetentionTier(context context.Context, pool db.DBTX, input map[str
 		CreateTime: now, UpdateTime: now,
 		Code: stringValue(input["code"]), Name: stringValue(input["name"]),
 		DailySizeGb:         floatValue(input["daily_size_gb"]),
-		RetentionDays:       uint32(intValue(input["retention_days"])),
+		RetentionValue:      uint32(intValue(input["retention_value"])),
+		RetentionUnit:       retentionUnitOrDefault(input["retention_unit"]),
 		RolloverMinIndexAge: stringValue(input["rollover_min_index_age"]),
 		Enabled:             boolValue(input["enabled"]), IsDefault: boolValue(input["is_default"]),
 		Remark: stringValue(input["remark"]),
@@ -50,8 +51,11 @@ func updateLogRetentionTier(context context.Context, pool db.DBTX, id int64, inp
 	if value, ok := input["daily_size_gb"]; ok {
 		current.DailySizeGb = floatValue(value)
 	}
-	if value, ok := input["retention_days"]; ok {
-		current.RetentionDays = uint32(intValue(value))
+	if value, ok := input["retention_value"]; ok {
+		current.RetentionValue = uint32(intValue(value))
+	}
+	if value, ok := input["retention_unit"]; ok {
+		current.RetentionUnit = retentionUnitOrDefault(value)
 	}
 	if value, ok := input["rollover_min_index_age"]; ok {
 		current.RolloverMinIndexAge = stringValue(value)
@@ -67,7 +71,8 @@ func updateLogRetentionTier(context context.Context, pool db.DBTX, id int64, inp
 	}
 	affected, err := queries.UpdateLogRetentionTier(context, db.UpdateLogRetentionTierParams{
 		UpdateTime: time.Now().UTC(), Code: current.Code, Name: current.Name,
-		DailySizeGb: current.DailySizeGb, RetentionDays: current.RetentionDays,
+		DailySizeGb: current.DailySizeGb, RetentionValue: current.RetentionValue,
+		RetentionUnit: current.RetentionUnit,
 		RolloverMinIndexAge: current.RolloverMinIndexAge, Enabled: current.Enabled,
 		IsDefault: current.IsDefault, Remark: current.Remark, ID: id,
 	})

@@ -11,7 +11,7 @@ import (
 	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/pagination"
 
-	"github.com/go-co-op/gocron/v2"
+	"github.com/robfig/cron/v3"
 	"github.com/google/uuid"
 )
 
@@ -41,6 +41,9 @@ type Task struct {
 	Supported bool `json:"supported"`
 	// SupportNote 不可执行时给用户看的一句说明（为什么、能执行什么）；可执行时为空串。
 	SupportNote string `json:"support_note"`
+	// ScheduleTimezone cron 的解释时区（= ScheduleLocation，如 "Local"/"Asia/Shanghai"）。
+	// 界面用它写清"下次运行时间按哪个时区算"——cron 的钟点是服务器时区的钟点，不是用户所在时区的。
+	ScheduleTimezone string `json:"schedule_timezone"`
 }
 
 type TaskInput struct {
@@ -80,6 +83,10 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, input TaskInput) (Ta
 	if err != nil {
 		return Task{}, ErrCronInvalid
 	}
+	// 实现未迁移的任务：库里不留时刻（它不会被调度），cron 表达式本身仍照常校验。
+	if !IsSupportedTaskCode(input.Code) {
+		next = sql.NullTime{}
+	}
 	err = s.repository.UpdateTask(ctx, db.UpdateScheduledTaskParams{Name: input.Name, Code: input.Code, Description: nullString(input.Description), Enabled: input.Enabled, CronExpression: sql.NullString{String: input.CronExpression, Valid: true}, NextRunTime: next, UpdateTime: time.Now().UTC(), ID: id})
 	if err != nil {
 		return Task{}, err
@@ -98,6 +105,9 @@ func (s *Service) SetEnabled(ctx context.Context, id int64, enabled bool) (Task,
 	next, err := nextRun(cron, enabled)
 	if err != nil {
 		return Task{}, ErrCronInvalid
+	}
+	if !IsSupportedTaskCode(task.Code) {
+		next = sql.NullTime{}
 	}
 	err = s.repository.SetEnabled(ctx, db.SetScheduledTaskEnabledParams{Enabled: enabled, NextRunTime: next, UpdateTime: time.Now().UTC(), ID: id})
 	if err != nil {
@@ -147,32 +157,56 @@ func (s *Service) GetLog(ctx context.Context, id int64) (db.GetScheduledTaskLogR
 	return s.repository.GetLog(ctx, id)
 }
 
+// ScheduleLocation 是 cron 表达式的**解释时区**，也是"界面显示的下次运行时间"与"真实触发时刻"
+// 对齐的唯一依据：执行侧是进程内 gocron（`app.go` 注册任务），它按调度器自己的 location 解释
+// 表达式；展示侧若用另一个时区算，就会变成"界面显示 17:00、实际 9:00 触发"——两边都自认有道理，
+// 用户只能猜（2026-09-20 现场：下次运行时间看着不对）。
+//
+// 只此一处定义：`Manager` 用 `WithLocation` 拿它建调度器，`nextRun` 用它算下次时间。
+// 要改成固定时区（例如统一按 Asia/Shanghai 解释 cron）只改这里。
+var ScheduleLocation = time.Local
+
+// nextRun 算下一次触发时刻（UTC），cron 按 ScheduleLocation 解释。
+//
+// 用 robfig/cron 的纯函数解析（巡检调度同一套，见 inspection/scheduler.go）：早先的实现是
+// 临时起一个 gocron 调度器、轮询 100ms 取 `job.NextRun()`——慢、有副作用，而且 location 固定
+// UTC 与执行侧（time.Local）不一致。
 func nextRun(expression string, enabled bool) (sql.NullTime, error) {
 	if !enabled {
 		return sql.NullTime{}, nil
 	}
-	if len(strings.Fields(expression)) != 5 {
+	trimmed := strings.TrimSpace(expression)
+	if len(strings.Fields(trimmed)) != 5 {
 		return sql.NullTime{}, ErrCronInvalid
 	}
-	schedulerInstance, err := gocron.NewScheduler(gocron.WithLocation(time.UTC))
+	schedule, err := cron.ParseStandard(trimmed)
 	if err != nil {
-		return sql.NullTime{}, err
+		return sql.NullTime{}, ErrCronInvalid
 	}
-	job, err := schedulerInstance.NewJob(gocron.CronJob(strings.TrimSpace(expression), false), gocron.NewTask(func() {}))
-	if err != nil {
-		return sql.NullTime{}, err
+	next := schedule.Next(time.Now().In(ScheduleLocation))
+	if next.IsZero() {
+		return sql.NullTime{}, ErrCronInvalid
 	}
-	schedulerInstance.Start()
-	defer schedulerInstance.Shutdown()
-	deadline := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		next, err := job.NextRun()
-		if err == nil && !next.IsZero() {
-			return sql.NullTime{Time: next.UTC(), Valid: true}, nil
-		}
-		time.Sleep(time.Millisecond)
+	return sql.NullTime{Time: next.UTC(), Valid: true}, nil
+}
+
+// displayNextRunTime 界面上「下次运行时间」的值：**实时算**，不信库里的 `next_run_time`。
+//
+// 库里那列只在保存/启停时写过一次，之后没有任何东西推进它（真正的触发由进程内 gocron 自己算），
+// 所以它会越来越旧、最后显示成一个**过去的时间**——用户看到"下次运行时间比现在早"就是这个
+// （2026-09-20 现场）。实时算顺带把另外两种情况说清（不给一个不会发生的时刻）：
+//   - 任务已停用 → 没有下次；
+//   - 实现未迁移（supported=false）→ 调度器根本不注册它，不会跑（见 worker.go 的 supportedTaskCodes）。
+func displayNextRunTime(task Task) *string {
+	if !task.Enabled || !task.Supported || strings.TrimSpace(task.EffectiveCronExpression) == "" {
+		return nil
 	}
-	return sql.NullTime{}, ErrCronInvalid
+	next, err := nextRun(task.EffectiveCronExpression, true)
+	if err != nil || !next.Valid {
+		return nil
+	}
+	text := next.Time.UTC().Format("2006-01-02T15:04:05.999999Z")
+	return &text
 }
 func nullString(value *string) sql.NullString {
 	if value == nil {
@@ -211,6 +245,10 @@ func withTaskSupport(task *Task) {
 	if !task.Supported {
 		task.SupportNote = UnsupportedTaskNote(task.Name, task.Code)
 	}
+	// 「下次运行时间」以**实时算**为准，覆盖库里的快照（见 displayNextRunTime 的注释）。
+	// 放在这里而不是各 mapper 里：列表与详情共用一处口径，不会再出现两处不一致。
+	task.NextRunTime = displayNextRunTime(*task)
+	task.ScheduleTimezone = ScheduleLocation.String()
 }
 func mapListTask(row db.ListScheduledTasksRow) Task {
 	task := Task{ID: row.ID, Name: row.Name, Code: row.Code, Description: stringPtr(row.Description), Menu: intPtr(row.MenuID), MenuName: stringPtr(row.MenuName), MenuPath: stringPtr(row.MenuPath), Enabled: row.Enabled, IsRunning: row.IsRunning, CronExpression: stringPtr(row.CronExpression), EffectiveCronExpression: row.CronExpression.String, IntervalMinutes: intPtr(row.IntervalMinutes), LastRunTime: timePtr(row.LastRunTime), NextRunTime: timePtr(row.NextRunTime), LastStatus: stringPtr(row.LastStatus), LastMessage: stringPtr(row.LastMessage), CreateTime: row.CreateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), UpdateTime: row.UpdateTime.UTC().Format("2006-01-02T15:04:05.999999Z"), Logs: []any{}}

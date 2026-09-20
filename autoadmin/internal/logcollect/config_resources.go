@@ -35,10 +35,11 @@ type resourceSpec struct {
 
 var retentionSpec = resourceSpec{
 	table:        "monitor_log_retention_tier",
-	fields:       fieldSet("code", "name", "daily_size_gb", "retention_days", "rollover_min_index_age", "enabled", "is_default", "remark"),
+	fields:       fieldSet("code", "name", "daily_size_gb", "retention_value", "retention_unit", "rollover_min_index_age", "enabled", "is_default", "remark"),
 	filterFields: map[string]string{"enabled": "enabled", "is_default": "is_default"},
-	searchFields: []string{"code", "name", "remark"}, order: "retention_days,id",
-	required: []string{"code", "name", "daily_size_gb", "retention_days", "rollover_min_index_age", "enabled", "is_default", "remark"},
+	searchFields: []string{"code", "name", "remark"}, order: "retention_value,id",
+	// retention_unit 不在 required 里：缺省即"天"（老客户端/脚本只传 value 也照旧工作）。
+	required: []string{"code", "name", "daily_size_gb", "retention_value", "rollover_min_index_age", "enabled", "is_default", "remark"},
 	create:   createLogRetentionTier, update: updateLogRetentionTier, delete: deleteLogRetentionTier,
 }
 
@@ -329,8 +330,27 @@ func validateResource(spec resourceSpec, input map[string]any, id int64) string 
 		if value, ok := input["daily_size_gb"].(float64); ok && value <= 0 {
 			return "daily_size_gb must be greater than zero"
 		}
-		if value, ok := input["retention_days"].(float64); ok && (value < 1 || value > 3650) {
-			return "retention_days must be between 1 and 3650"
+		// 保留期：值 + 单位一起看。范围按**折算成小时**判（1 小时 ~ 3650 天）：
+		// 只用"值"判会让 1 小时的档位被当成合法、而 4000 小时也算合法（≈166 天，其实没超）。
+		if value, ok := input["retention_value"].(float64); ok {
+			if value < 1 {
+				return "retention_value must be at least 1"
+			}
+			hours := value
+			if unit, ok := input["retention_unit"].(string); ok && strings.EqualFold(strings.TrimSpace(unit), "h") {
+				hours = value
+			} else {
+				hours = value * 24
+			}
+			if hours > 3650*24 {
+				return "retention period must not exceed 3650 days (87600 hours)"
+			}
+		}
+		if unit, ok := input["retention_unit"].(string); ok && unit != "" {
+			normalized := strings.ToLower(strings.TrimSpace(unit))
+			if normalized != "d" && normalized != "h" {
+				return "retention_unit must be 'd' (days) or 'h' (hours)"
+			}
 		}
 		if value, ok := input["rollover_min_index_age"].(string); ok && !regexp.MustCompile(`^\d+[mhd]$`).MatchString(value) {
 			return "rollover_min_index_age must look like 30m, 12h, or 1d"

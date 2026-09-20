@@ -85,6 +85,8 @@ type Querier interface {
 	//      由应用层合并后再写回。
 	CountBaselines(ctx context.Context, arg CountBaselinesParams) (int64, error)
 	CountBusinessEnvironments(ctx context.Context, arg CountBusinessEnvironmentsParams) (int64, error)
+	// 搜索词命中任一展示字段（含所属项目名）；整条 OR 链必须整体加括号，
+	// 否则下面 AND 上项目过滤后优先级会变（`A OR B AND C` ≠ `(A OR B) AND C`）。
 	CountBusinessSystems(ctx context.Context, arg CountBusinessSystemsParams) (int64, error)
 	CountBusinessSystemsByProject(ctx context.Context, projectID sql.NullInt64) (int64, error)
 	CountChildHostGroups(ctx context.Context, parentID sql.NullInt64) (int64, error)

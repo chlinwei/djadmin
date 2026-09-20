@@ -247,17 +247,19 @@ func TestSmokeLogCollectQueriesAgainstRealDatabase(t *testing.T) {
 	// ---- 保留档位与解析规则（通用配置资源：写路径按表分派 + 整行写）----
 	tierID, err := createLogRetentionTier(ctx, tx, map[string]any{
 		"code": "smoke-" + suffix, "name": "冒烟档位", "daily_size_gb": float64(2),
-		"retention_days": float64(7), "rollover_min_index_age": "1d",
+		"retention_value": float64(7), "retention_unit": "h", "rollover_min_index_age": "1d",
 		"enabled": true, "is_default": true, "remark": "冒烟",
 	})
 	if err != nil {
 		t.Fatalf("建保留档位：%v", err)
 	}
-	if err := updateLogRetentionTier(ctx, tx, tierID, map[string]any{"retention_days": float64(30)}); err != nil {
+	// 只提交"值"（不提交单位）：单位必须保持原值——这正是整行写"合并提交字段"的语义，
+	// 漏了它就会把小时档位悄悄变成天档位（保留期差 24 倍）。
+	if err := updateLogRetentionTier(ctx, tx, tierID, map[string]any{"retention_value": float64(12)}); err != nil {
 		t.Fatalf("更新保留档位：%v", err)
 	}
-	if tier, err := queries.GetLogRetentionTier(ctx, tierID); err != nil || int(tier.RetentionDays) != 30 || tier.Name != "冒烟档位" {
-		// 关键断言：只提交了 retention_days，其余列必须保持原值（整行写的合并语义）。
+	if tier, err := queries.GetLogRetentionTier(ctx, tierID); err != nil || int(tier.RetentionValue) != 12 || tier.RetentionUnit != "h" || tier.Name != "冒烟档位" {
+		// 关键断言：只提交了 retention_value，其余列必须保持原值（整行写的合并语义）。
 		t.Fatalf("合并后的档位：%+v err=%v", tier, err)
 	}
 	if _, err := queries.CountRetentionTierServices(ctx, sql.NullInt64{Int64: tierID, Valid: true}); err != nil {

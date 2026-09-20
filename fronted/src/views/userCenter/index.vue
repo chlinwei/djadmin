@@ -33,13 +33,10 @@
                             </div>
 
                         </li>
-                        <li class="list-item">
-                            <SvgIcon name="email"></SvgIcon>
-                            <div class="iten-wrapper">
-                                <div class="item-name">告警媒介</div>
-                                <div class="item-value">在右侧“关联告警媒介”中选择</div>
-                            </div>
-                        </li>
+                        <!-- 这里原先有一行「告警媒介 → 在右侧“关联告警媒介”中选择」：
+                             它把一句操作指引当成只读信息栏的"值"显示，既不准确（真正的选择在右侧
+                             「告警媒介」tab 点「添加媒介绑定」后的弹窗里，不是常驻可见的控件），
+                             也没有信息量。侧栏只留真实数据，媒介的绑定与诊断都在那个 tab 里。 -->
                         <li class="list-item">
                             <SvgIcon name="date"></SvgIcon>
                             <div class="iten-wrapper">

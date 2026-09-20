@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"math"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -61,15 +62,28 @@ type retentionTierResponse struct {
 	UpdateTime                  time.Time `json:"update_time"`
 	Code                        string    `json:"code"`
 	Name                        string    `json:"name"`
-	DailySizeGB                 float64   `json:"daily_size_gb"`
-	RetentionDays               int64     `json:"retention_days"`
-	RolloverMinIndexAge         string    `json:"rollover_min_index_age"`
+	DailySizeGB float64 `json:"daily_size_gb"`
+	// RetentionValue + RetentionUnit 是完整保留期（unit ∈ {d, h}）。单位与值分开存：
+	// 同一列存 "12h" 这样的字符串就没法按大小排序，也没法算容量。
+	RetentionValue      int64  `json:"retention_value"`
+	RetentionUnit       string `json:"retention_unit"`
+	RolloverMinIndexAge string `json:"rollover_min_index_age"`
 	Enabled                     bool      `json:"enabled"`
 	IsDefault                   bool      `json:"is_default"`
 	Remark                      string    `json:"remark"`
 	EstimatedTotalGB            float64   `json:"estimated_total_gb"`
 	RolloverMinPrimaryShardSize string    `json:"rollover_min_primary_shard_size"`
 	ServiceCount                int64     `json:"service_count"`
+}
+
+// estimatedTierTotalGB 按"每天写入量 × 保留期"反推该档位的稳态占用（容量规划用，见 §4.6）。
+// 保留期以小时为单位时要折算成天（12h = 0.5 天），否则小时档位的预估容量会虚高 24 倍。
+func estimatedTierTotalGB(dailySizeGB float64, value int64, unit string) float64 {
+	days := float64(value)
+	if strings.ToLower(strings.TrimSpace(unit)) == "h" {
+		days = float64(value) / 24
+	}
+	return math.Round(dailySizeGB*days*100) / 100
 }
 
 func (handler *Handler) retentionTierResponse(context *gin.Context, row db.MonitorLogRetentionTier) retentionTierResponse {
@@ -82,9 +96,10 @@ func (handler *Handler) retentionTierResponse(context *gin.Context, row db.Monit
 	return retentionTierResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime,
 		Code: row.Code, Name: row.Name, DailySizeGB: row.DailySizeGb,
-		RetentionDays: int64(row.RetentionDays), RolloverMinIndexAge: row.RolloverMinIndexAge,
+		RetentionValue: int64(row.RetentionValue), RetentionUnit: row.RetentionUnit,
+		RolloverMinIndexAge: row.RolloverMinIndexAge,
 		Enabled: row.Enabled, IsDefault: row.IsDefault, Remark: row.Remark,
-		EstimatedTotalGB:            row.DailySizeGb * float64(row.RetentionDays),
+		EstimatedTotalGB:            estimatedTierTotalGB(row.DailySizeGb, int64(row.RetentionValue), row.RetentionUnit),
 		RolloverMinPrimaryShardSize: fmt.Sprintf("%dgb", threshold),
 		ServiceCount:                serviceCount,
 	}

@@ -47,7 +47,9 @@ CREATE TABLE monitor_log_retention_tier (
   code varchar(32) NOT NULL,
   name varchar(64) NOT NULL,
   daily_size_gb double precision NOT NULL,
-  retention_days integer NOT NULL,
+  retention_value integer NOT NULL,
+  -- 保留期的单位：d = 天、h = 小时（见迁移 000045）。
+  retention_unit varchar(4) NOT NULL DEFAULT 'd',
   rollover_min_index_age varchar(16) NOT NULL,
   enabled boolean NOT NULL,
   is_default boolean NOT NULL,

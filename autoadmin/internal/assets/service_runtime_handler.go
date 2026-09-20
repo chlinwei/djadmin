@@ -30,13 +30,28 @@ func (handler *Handler) ListApplicationServices(context *gin.Context) {
 	}
 	response.Paginated(context, items, count, pageValue.Number, pageValue.Size)
 }
+// GetApplicationService 服务详情：服务主体 + **它所属模板的端口**（服务树的「监听端口」一节读它）。
+//
+// 端口只在部署模板上定义（`assets_application_port`），服务侧不单独维护，所以这里按服务的
+// `deployment_template` 反查一次。读不到就整体报错：静默返回"没有端口"正是这一段之前的样子
+// （界面永远显示"未配置端口"，没人知道是没配还是没读出来）。
 func (handler *Handler) GetApplicationService(context *gin.Context) {
 	id, ok := resourceID(context)
 	if !ok {
 		return
 	}
 	item, err := handler.service.repository.GetApplicationService(context.Request.Context(), id)
-	respond(context, item, translate(err))
+	if err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
+	ports, err := handler.service.repository.ListTemplatePorts(context.Request.Context(), item.DeploymentTemplate)
+	if err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
+	item.Ports = ports
+	respond(context, item, nil)
 }
 func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	id, ok := resourceID(context)

@@ -240,8 +240,8 @@ func businessSystem(row db.ListBusinessSystemsRow) BusinessSystem {
 func businessSystemDetail(row db.GetBusinessSystemRow) BusinessSystem {
 	return BusinessSystem{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Name: row.Name, Code: row.Code, Owner: row.Owner, Enabled: row.Enabled, Project: intValue(row.ProjectID), ProjectName: row.ProjectName, ProjectCode: row.ProjectCode}
 }
-func (s *Service) ListBusinessSystems(ctx context.Context, search string, page pagination.Page) ([]BusinessSystem, int64, error) {
-	rows, count, err := s.repository.ListBusinessSystems(ctx, search, page)
+func (s *Service) ListBusinessSystems(ctx context.Context, search string, projectID *int64, page pagination.Page) ([]BusinessSystem, int64, error) {
+	rows, count, err := s.repository.ListBusinessSystems(ctx, search, projectID, page)
 	result := make([]BusinessSystem, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, businessSystem(row))

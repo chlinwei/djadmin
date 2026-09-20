@@ -153,7 +153,14 @@ func (h *Handler) ListBusinessSystems(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	rows, count, err := h.service.ListBusinessSystems(c.Request.Context(), c.Query("search"), page)
+	// `project` 是可选过滤（服务树的「项目」节点用它取"这个项目下的业务系统"）：
+	// 不传 = 全量（与其它列表接口"缺省不筛选"一致）；传了但不是整数 → 400，不静默当全量。
+	projectID, err := optionalIDQuery(c, "project")
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	rows, count, err := h.service.ListBusinessSystems(c.Request.Context(), c.Query("search"), nullableInt64Ptr(projectID), page)
 	if err != nil {
 		respond(c, nil, err)
 		return

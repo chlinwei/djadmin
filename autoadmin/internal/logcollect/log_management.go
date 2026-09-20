@@ -260,14 +260,50 @@ func buildTierIndexTemplateName(indexPrefix, tierCode string) string {
 }
 
 type retentionTierRow struct {
-	Code                string
-	RetentionDays       int64
-	DailySizeGB         float64
+	Code    string
+	// RetentionValue + RetentionUnit 才是完整保留期（`retention_unit` ∈ {d, h}）。
+	RetentionValue int64
+	RetentionUnit  string
+	DailySizeGB    float64
+	// RolloverMinIndexAge 滚动年龄（`30m/12h/1d`），与保留期是两件事：
+	// 它决定"多久切一个新索引"，保留期决定"多久删"。
 	RolloverMinIndexAge string
 }
 
+// retentionUnitOrDefault 归一保留期单位：只认 `d`（天）与 `h`（小时），其余一律按天。
+// 放在写入路径上：非法值不被接受，也不会让库里出现第三种单位。
+func retentionUnitOrDefault(raw any) string {
+	if strings.ToLower(strings.TrimSpace(stringValue(raw))) == "h" {
+		return "h"
+	}
+	return "d"
+}
+
+// retentionPeriodText 人类可读的保留期（体检明细、日志与提示文案用）。
+func retentionPeriodText(tier retentionTierRow) string {
+	if retentionUnitOrDefault(tier.RetentionUnit) == "h" {
+		return fmt.Sprintf("保留 %d 小时", tier.RetentionValue)
+	}
+	return fmt.Sprintf("保留 %d 天", tier.RetentionValue)
+}
+
+// retentionMinAge 把"值 + 单位"拼成 ILM 的 `min_age`（Elasticsearch 接受 s/m/h/d）。
+//
+// 单位缺省/异常一律按天：**宁可沿用旧行为，也不要生成一个非法或意外的保留期**
+//（写入路径已经校验过单位，这里兜底是为了防止历史数据/直接改库带来的意外）。
+func retentionMinAge(tier retentionTierRow) string {
+	unit := strings.ToLower(strings.TrimSpace(tier.RetentionUnit))
+	if unit != "h" {
+		unit = "d"
+	}
+	return fmt.Sprintf("%d%s", tier.RetentionValue, unit)
+}
+
 // buildILMPolicyBody 按档位生成 Elasticsearch ILM policy。
-// 滚动阈值不小于 1gb（避免小档位产生大量碎索引）；删除阶段 min_age = 保留天数。
+// 滚动阈值不小于 1gb（避免小档位产生大量碎索引）；删除阶段 min_age = 保留期（值 + 单位，支持小时）。
+//
+// 精度提醒：ES 的 ILM 默认每 10 分钟轮询一次（`indices.lifecycle.poll_interval`），
+// 所以小时级保留的实际到期时间有 ~10 分钟粒度；再小的单位（分钟）没有实际意义。
 func buildILMPolicyBody(indexPrefix string, tier retentionTierRow) gin.H {
 	rolloverSize := fmt.Sprintf("%dgb", int(math.Max(1, math.Round(tier.DailySizeGB))))
 	rollover := gin.H{"max_primary_shard_size": rolloverSize}
@@ -280,7 +316,7 @@ func buildILMPolicyBody(indexPrefix string, tier retentionTierRow) gin.H {
 				"actions": gin.H{"rollover": rollover},
 			},
 			"delete": gin.H{
-				"min_age": fmt.Sprintf("%dd", tier.RetentionDays),
+				"min_age": retentionMinAge(tier),
 				"actions": gin.H{"delete": gin.H{}},
 			},
 		},
@@ -469,7 +505,8 @@ func (handler *Handler) loadEnabledRetentionTiers(context *gin.Context) ([]reten
 	tiers := make([]retentionTierRow, 0, len(rows))
 	for _, row := range rows {
 		tiers = append(tiers, retentionTierRow{
-			Code: row.Code, RetentionDays: int64(row.RetentionDays), DailySizeGB: row.DailySizeGb,
+			Code: row.Code, RetentionValue: int64(row.RetentionValue), RetentionUnit: row.RetentionUnit,
+			DailySizeGB: row.DailySizeGb,
 			RolloverMinIndexAge: row.RolloverMinIndexAge,
 		})
 	}

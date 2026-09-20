@@ -15,11 +15,15 @@ vi.mock('@/api/sys/scheduler', () => ({
       {
         id: 5, name: '登录日志清理', code: 'cleanup_login_audit_logs', enabled: true, is_running: false,
         effective_cron_expression: '0 0 * * *', last_status: '成功', supported: true, support_note: '',
+        // 后端实时算出来的（永远在未来），并带上调度时区供界面解释 cron 的钟点。
+        next_run_time: '2099-01-01T16:00:00Z', schedule_timezone: 'Asia/Shanghai',
       },
       {
         id: 10, name: '历史告警对账', code: 'reconcile_prometheus_alert_history', enabled: true, is_running: false,
         effective_cron_expression: '*/5 * * * *', last_status: '成功',
         supported: false,
+        // 未迁移的任务**没有**下次运行时间（调度器根本不注册它）——不给一个不会发生的时刻。
+        next_run_time: null, schedule_timezone: 'Asia/Shanghai',
         support_note: '定时任务「历史告警对账」(reconcile_prometheus_alert_history) 的实现尚未迁移到 Go（Django 后端已移出）：定时调度会跳过它，手动执行也只会失败。当前已实现的任务：操作日志清理、登录日志清理。',
       },
     ],
@@ -116,6 +120,47 @@ describe('定时任务：未迁移任务的处理', () => {
 
     // 按钮置灰后再点也不该发请求：请求发出去只会拿到 400。
     expect(runTaskNow).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+// 「下次运行时间」这一列（2026-09-20 现场："下次运行时间比当前时间早"）：
+// 现在由后端实时算，前端要做的是把**空值的原因**说清——空不是"没数据"，而是"不会跑"。
+describe('定时任务：下次运行时间这一列', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  it('shows the time for a task that will actually run', async () => {
+    const wrapper = await mountPage()
+
+    const runningRow = rowByName(wrapper, '登录日志清理')
+    // 值按用户时区显示（这里是 UTC 16:00 → Asia/Shanghai 的次日 00:00）。
+    expect(runningRow.text()).toContain('2099-01-02 00:00:00')
+    wrapper.unmount()
+  })
+
+  it('explains the empty value instead of leaving a bare dash', async () => {
+    const wrapper = await mountPage()
+
+    const legacyRow = rowByName(wrapper, '历史告警对账')
+    // 未迁移的任务显示占位符，且原因由后端 support_note 给出（不是前端自己编一套编码清单）。
+    expect(legacyRow.text()).toContain('-')
+    expect(wrapper.vm.nextRunTooltip({ supported: false, support_note: '实现尚未迁移' })).toBe('实现尚未迁移')
+    // 停用 / 没有表达式也各有说法。
+    expect(wrapper.vm.nextRunTooltip({ enabled: false, supported: true })).toContain('已停用')
+    expect(wrapper.vm.nextRunTooltip({ enabled: true, supported: true })).toContain('cron')
+    wrapper.unmount()
+  })
+
+  it('tells the user which timezone the cron is interpreted in', async () => {
+    const wrapper = await mountPage()
+
+    const tooltip = wrapper.vm.nextRunTooltip({ next_run_time: '2099-01-01T16:00:00Z', schedule_timezone: 'Asia/Shanghai' })
+    // cron 的钟点是调度时区的钟点，显示的却是换算到用户时区的时刻——不说清这一点，用户永远在猜。
+    expect(tooltip).toContain('Asia/Shanghai')
+    expect(tooltip).toContain('你所在时区')
     wrapper.unmount()
   })
 })

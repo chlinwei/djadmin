@@ -210,13 +210,19 @@ func (q *Queries) CountBusinessEnvironments(ctx context.Context, arg CountBusine
 
 const countBusinessSystems = `-- name: CountBusinessSystems :one
 SELECT COUNT(*) FROM assets_business_system s LEFT JOIN assets_project p ON p.id = s.project_id
-WHERE COALESCE(s.name, '') LIKE ? OR COALESCE(s.code, '') LIKE ? OR COALESCE(s.owner, '') LIKE ? OR COALESCE(s.remark, '') LIKE ? OR COALESCE(p.name, '') LIKE ?
+WHERE (COALESCE(s.name, '') LIKE ? OR COALESCE(s.code, '') LIKE ? OR COALESCE(s.owner, '') LIKE ? OR COALESCE(s.remark, '') LIKE ? OR COALESCE(p.name, '') LIKE ?)
+  -- 按项目过滤：服务树的「项目」节点要的是"这个项目下的业务系统"。
+  -- 缺省（NULL）= 不筛选。` + "`" + `IS NULL` + "`" + ` 写在 OR 链**末尾**（SQL_DESIGN §2：写在前面 PG 推断不出类型）。
+  AND (s.project_id = ? OR ? IS NULL)
 `
 
 type CountBusinessSystemsParams struct {
-	Pattern sql.NullString `json:"pattern"`
+	Pattern   sql.NullString `json:"pattern"`
+	ProjectID sql.NullInt64  `json:"project_id"`
 }
 
+// 搜索词命中任一展示字段（含所属项目名）；整条 OR 链必须整体加括号，
+// 否则下面 AND 上项目过滤后优先级会变（`A OR B AND C` ≠ `(A OR B) AND C`）。
 func (q *Queries) CountBusinessSystems(ctx context.Context, arg CountBusinessSystemsParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countBusinessSystems,
 		arg.Pattern,
@@ -224,6 +230,8 @@ func (q *Queries) CountBusinessSystems(ctx context.Context, arg CountBusinessSys
 		arg.Pattern,
 		arg.Pattern,
 		arg.Pattern,
+		arg.ProjectID,
+		arg.ProjectID,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -3318,14 +3326,16 @@ func (q *Queries) ListBusinessEnvironments(ctx context.Context, arg ListBusiness
 const listBusinessSystems = `-- name: ListBusinessSystems :many
 SELECT s.id, s.create_time, s.update_time, s.remark, s.name, s.code, s.owner, s.enabled, s.project_id, COALESCE(p.name, '') AS project_name, COALESCE(p.code, '') AS project_code
 FROM assets_business_system s LEFT JOIN assets_project p ON p.id = s.project_id
-WHERE COALESCE(s.name, '') LIKE ? OR COALESCE(s.code, '') LIKE ? OR COALESCE(s.owner, '') LIKE ? OR COALESCE(s.remark, '') LIKE ? OR COALESCE(p.name, '') LIKE ?
+WHERE (COALESCE(s.name, '') LIKE ? OR COALESCE(s.code, '') LIKE ? OR COALESCE(s.owner, '') LIKE ? OR COALESCE(s.remark, '') LIKE ? OR COALESCE(p.name, '') LIKE ?)
+  AND (s.project_id = ? OR ? IS NULL)
 ORDER BY s.name, s.id LIMIT ? OFFSET ?
 `
 
 type ListBusinessSystemsParams struct {
-	Pattern sql.NullString `json:"pattern"`
-	Limit   int32          `json:"limit"`
-	Offset  int32          `json:"offset"`
+	Pattern   sql.NullString `json:"pattern"`
+	ProjectID sql.NullInt64  `json:"project_id"`
+	Limit     int32          `json:"limit"`
+	Offset    int32          `json:"offset"`
 }
 
 type ListBusinessSystemsRow struct {
@@ -3349,6 +3359,8 @@ func (q *Queries) ListBusinessSystems(ctx context.Context, arg ListBusinessSyste
 		arg.Pattern,
 		arg.Pattern,
 		arg.Pattern,
+		arg.ProjectID,
+		arg.ProjectID,
 		arg.Limit,
 		arg.Offset,
 	)

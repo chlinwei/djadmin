@@ -238,7 +238,7 @@ func (handler *Handler) checkLogRetentionPolicies(context *gin.Context, cluster 
 		actual := ilmPolicySignature(policy)
 		differing := differingSignatureKeys(actual, desired)
 		if len(differing) == 0 {
-			items = append(items, logHealthItem(name, logHealthOK, fmt.Sprintf("保留 %d 天", tier.RetentionDays)))
+			items = append(items, logHealthItem(name, logHealthOK, retentionPeriodText(tier)))
 			continue
 		}
 		items = append(items, logHealthItem(name, logHealthDrift, "与档位配置不一致: "+strings.Join(differing, ", ")))

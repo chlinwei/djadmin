@@ -284,6 +284,7 @@ import {
   saveApplicationService,
 } from '@/api/assets/application'
 import { getLogRetentionTiers } from '@/api/monitor'
+import { retentionText } from '@/util/logRetention'
 
 const props = defineProps({
   open: { type: Boolean, required: true },
@@ -319,7 +320,7 @@ const environmentRecords = ref([])
 const retentionTierRecords = ref([])
 const retentionTierOptions = computed(() => retentionTierRecords.value
   .filter((item) => item.enabled)
-  .map((item) => ({ label: `${item.name}（${item.retention_days} 天）`, value: item.id })))
+  .map((item) => ({ label: item.retention_value ? `${item.name}（${retentionText(item)}）` : item.name, value: item.id })))
 
 // 「继承服务默认」到底继承的是哪一档：继承链是 **服务默认档位（上面那个下拉，未保存的以表单为准）
 // → 平台默认档（is_default）→ std**。只写"继承服务默认"用户没法知道这条日志实际保留多久。

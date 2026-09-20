@@ -185,8 +185,13 @@ type alertHistoryResponse struct {
 	Alertname                 string          `json:"alertname"`
 	Severity                  string          `json:"severity"`
 	Instance                  string          `json:"instance"`
-	Labels                    json.RawMessage `json:"labels"`
-	Annotations               json.RawMessage `json:"annotations"`
+	Labels json.RawMessage `json:"labels"`
+	// Annotations 是告警自身的注释快照（JSON：summary / description / runbook_url…）。
+	Annotations json.RawMessage `json:"annotations"`
+	// Summary 是界面上「问题」那一列的文案：annotation 的 summary，缺了退 description。
+	// 与「当前告警」用**同一个函数**算（alertSummaryText），否则会出现"当前告警那栏有字、
+	// 历史告警那栏空着"——同一个告警在两处显示不一致（2026-09-20 现场）。
+	Summary string `json:"summary"`
 	GeneratorURL              string          `json:"generator_url"`
 	State                     string          `json:"state"`
 	StartedAt                 time.Time       `json:"started_at"`
@@ -216,11 +221,25 @@ func notificationStatusFrom(count, failed, active, delivery int64) string {
 	return "success"
 }
 
+// parseAnnotations 把落库的 annotations JSON 解成 map。解析失败返回空 map：
+// 这时「问题」列显示"-"，而不是把坏 JSON 当文案吐出来。
+func parseAnnotations(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return map[string]any{}
+	}
+	return parsed
+}
+
 func alertHistoryResponseFrom(row db.ListAlertHistoriesRow) alertHistoryResponse {
 	return alertHistoryResponse{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark.String,
 		Fingerprint: row.Fingerprint, Alertname: row.Alertname, Severity: row.Severity, Instance: row.Instance,
-		Labels: row.Labels, Annotations: row.Annotations, GeneratorURL: row.GeneratorUrl, State: row.State,
+		Labels: row.Labels, Annotations: row.Annotations, Summary: alertSummaryText(parseAnnotations(row.Annotations)),
+		GeneratorURL: row.GeneratorUrl, State: row.State,
 		StartedAt: row.StartedAt, ResolvedAt: nullTimePtr(row.ResolvedAt), LastSeenAt: row.LastSeenAt,
 		ResolvedByReconciliation: row.ResolvedByReconciliation, RuleGroup: row.RuleGroup,
 		RuleSnapshot: row.RuleSnapshot, RuleDetails: row.RuleSnapshot, Source: row.Source,

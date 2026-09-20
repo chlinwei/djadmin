@@ -1024,10 +1024,10 @@ func (q *Queries) CreateLogProcessingRule(ctx context.Context, arg CreateLogProc
 const createLogRetentionTier = `-- name: CreateLogRetentionTier :one
 
 INSERT INTO monitor_log_retention_tier
-  (create_time,update_time,code,name,daily_size_gb,retention_days,rollover_min_index_age,enabled,is_default,remark)
+  (create_time,update_time,code,name,daily_size_gb,retention_value,retention_unit,rollover_min_index_age,enabled,is_default,remark)
 VALUES ($1,$2,$3,$4,$5,
-        $6,$7,$8,$9,
-        $10)
+        $6,$7,$8,$9,$10,
+        $11)
 RETURNING id
 `
 
@@ -1037,7 +1037,8 @@ type CreateLogRetentionTierParams struct {
 	Code                string    `json:"code"`
 	Name                string    `json:"name"`
 	DailySizeGb         float64   `json:"daily_size_gb"`
-	RetentionDays       uint32    `json:"retention_days"`
+	RetentionValue      int32     `json:"retention_value"`
+	RetentionUnit       string    `json:"retention_unit"`
 	RolloverMinIndexAge string    `json:"rollover_min_index_age"`
 	Enabled             bool      `json:"enabled"`
 	IsDefault           bool      `json:"is_default"`
@@ -1055,7 +1056,8 @@ func (q *Queries) CreateLogRetentionTier(ctx context.Context, arg CreateLogReten
 		arg.Code,
 		arg.Name,
 		arg.DailySizeGb,
-		arg.RetentionDays,
+		arg.RetentionValue,
+		arg.RetentionUnit,
 		arg.RolloverMinIndexAge,
 		arg.Enabled,
 		arg.IsDefault,
@@ -2270,7 +2272,7 @@ func (q *Queries) GetLogProcessingRule(ctx context.Context, id int64) (MonitorLo
 }
 
 const getLogRetentionTier = `-- name: GetLogRetentionTier :one
-SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_value, retention_unit, rollover_min_index_age, enabled, is_default, remark
 FROM monitor_log_retention_tier
 WHERE id = $1
 `
@@ -2285,7 +2287,8 @@ func (q *Queries) GetLogRetentionTier(ctx context.Context, id int64) (MonitorLog
 		&i.Code,
 		&i.Name,
 		&i.DailySizeGb,
-		&i.RetentionDays,
+		&i.RetentionValue,
+		&i.RetentionUnit,
 		&i.RolloverMinIndexAge,
 		&i.Enabled,
 		&i.IsDefault,
@@ -3516,13 +3519,14 @@ func (q *Queries) ListEnabledProjects(ctx context.Context) ([]ListEnabledProject
 
 const listEnabledRetentionTiers = `-- name: ListEnabledRetentionTiers :many
 
-SELECT code,retention_days,daily_size_gb,rollover_min_index_age
-FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id
+SELECT code,retention_value,retention_unit,daily_size_gb,rollover_min_index_age
+FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_value,id
 `
 
 type ListEnabledRetentionTiersRow struct {
 	Code                string  `json:"code"`
-	RetentionDays       uint32  `json:"retention_days"`
+	RetentionValue      int32   `json:"retention_value"`
+	RetentionUnit       string  `json:"retention_unit"`
 	DailySizeGb         float64 `json:"daily_size_gb"`
 	RolloverMinIndexAge string  `json:"rollover_min_index_age"`
 }
@@ -3541,7 +3545,8 @@ func (q *Queries) ListEnabledRetentionTiers(ctx context.Context) ([]ListEnabledR
 		var i ListEnabledRetentionTiersRow
 		if err := rows.Scan(
 			&i.Code,
-			&i.RetentionDays,
+			&i.RetentionValue,
+			&i.RetentionUnit,
 			&i.DailySizeGb,
 			&i.RolloverMinIndexAge,
 		); err != nil {
@@ -4370,12 +4375,12 @@ func (q *Queries) ListLogProcessingRules(ctx context.Context, arg ListLogProcess
 }
 
 const listLogRetentionTiers = `-- name: ListLogRetentionTiers :many
-SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_value, retention_unit, rollover_min_index_age, enabled, is_default, remark
 FROM monitor_log_retention_tier
 WHERE (enabled = $3 OR $3 IS NULL)
   AND (is_default = $4 OR $4 IS NULL)
   AND (code LIKE $5 OR name LIKE $5 OR remark LIKE $5 OR $5 IS NULL)
-ORDER BY retention_days, id
+ORDER BY retention_value, id
 LIMIT $1 OFFSET $2
 `
 
@@ -4409,7 +4414,8 @@ func (q *Queries) ListLogRetentionTiers(ctx context.Context, arg ListLogRetentio
 			&i.Code,
 			&i.Name,
 			&i.DailySizeGb,
-			&i.RetentionDays,
+			&i.RetentionValue,
+			&i.RetentionUnit,
 			&i.RolloverMinIndexAge,
 			&i.Enabled,
 			&i.IsDefault,
@@ -6349,9 +6355,9 @@ func (q *Queries) UpdateLogProcessingRule(ctx context.Context, arg UpdateLogProc
 const updateLogRetentionTier = `-- name: UpdateLogRetentionTier :execrows
 UPDATE monitor_log_retention_tier
 SET update_time=$1,code=$2,name=$3,daily_size_gb=$4,
-    retention_days=$5,rollover_min_index_age=$6,
-    enabled=$7,is_default=$8,remark=$9
-WHERE id=$10
+    retention_value=$5,retention_unit=$6,rollover_min_index_age=$7,
+    enabled=$8,is_default=$9,remark=$10
+WHERE id=$11
 `
 
 type UpdateLogRetentionTierParams struct {
@@ -6359,7 +6365,8 @@ type UpdateLogRetentionTierParams struct {
 	Code                string    `json:"code"`
 	Name                string    `json:"name"`
 	DailySizeGb         float64   `json:"daily_size_gb"`
-	RetentionDays       uint32    `json:"retention_days"`
+	RetentionValue      int32     `json:"retention_value"`
+	RetentionUnit       string    `json:"retention_unit"`
 	RolloverMinIndexAge string    `json:"rollover_min_index_age"`
 	Enabled             bool      `json:"enabled"`
 	IsDefault           bool      `json:"is_default"`
@@ -6373,7 +6380,8 @@ func (q *Queries) UpdateLogRetentionTier(ctx context.Context, arg UpdateLogReten
 		arg.Code,
 		arg.Name,
 		arg.DailySizeGb,
-		arg.RetentionDays,
+		arg.RetentionValue,
+		arg.RetentionUnit,
 		arg.RolloverMinIndexAge,
 		arg.Enabled,
 		arg.IsDefault,

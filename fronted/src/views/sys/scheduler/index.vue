@@ -130,9 +130,14 @@
               </a-tooltip>
             </a-space>
           </template>
-          <template
-            v-else-if="column.key === 'last_run_time' || column.key === 'next_run_time' || column.key === 'run_time'"
-          >
+          <!-- 下次运行时间：由后端**实时算**（不再信库里的快照，否则运行久了会显示成过去的时间）。
+               空值不是"没数据"而是"不会跑"三种情况之一，悬停说清是哪一种。 -->
+          <template v-else-if="column.key === 'next_run_time'">
+            <a-tooltip :title="nextRunTooltip(record)" placement="top">
+              <span>{{ formatTimeDisplay(record.next_run_time) }}</span>
+            </a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'last_run_time' || column.key === 'run_time'">
             {{ formatTimeDisplay(record[column.dataIndex]) }}
           </template>
         </template>
@@ -491,6 +496,24 @@ const normalizeUtcTime = (timeValue) => {
     return text
   }
   return `${text.replace(' ', 'T')}Z`
+}
+
+// nextRunTooltip 「下次运行时间」这一列的悬停说明。
+//
+// 两件事要说清：① 空值的原因（停用 / 实现未迁移 / 没有表达式 —— 都不是"数据没取到"）；
+// ② cron 的钟点按**调度时区**算，界面上的时间是换算到用户时区之后的同一时刻。
+function nextRunTooltip(record) {
+  const zone = record.schedule_timezone || '服务器时区'
+  if (record.next_run_time) {
+    return `按 cron 表达式（解释时区：${zone}）算出的下次触发时刻；这里显示的是换算到你所在时区的同一时刻。`
+  }
+  if (record.supported === false) {
+    return record.support_note || '该任务的实现尚未迁移到 Go：定时调度会跳过它，所以没有下次运行时间。'
+  }
+  if (!record.enabled) {
+    return '任务已停用：不会被调度，因此没有下次运行时间。'
+  }
+  return '没有可用的 cron 表达式，算不出下次运行时间。'
 }
 
 const formatTimeDisplay = (timeValue) => {

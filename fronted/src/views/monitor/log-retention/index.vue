@@ -42,11 +42,11 @@
         <template v-else-if="column.key === 'daily_size_gb'">
           <span>{{ record.daily_size_gb }} GB/天</span>
         </template>
-        <template v-else-if="column.key === 'retention_days'">
-          <span>{{ record.retention_days }} 天</span>
+        <template v-else-if="column.key === 'retention_value'">
+          <span>{{ retentionText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'estimated_total_gb'">
-          <a-tooltip title="每天写入量 × 保留天数，用于容量规划">
+          <a-tooltip title="每天写入量 × 保留期（小时按 1/24 折算），用于容量规划">
             <span>{{ record.estimated_total_gb }} GB</span>
           </a-tooltip>
         </template>
@@ -109,13 +109,24 @@
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item name="retention_days" label="保留天数">
-              <a-input-number
-                v-model:value="form.retention_days"
-                :min="1"
-                :max="3650"
-                style="width: 100%"
-              />
+            <a-form-item name="retention_value" label="保留期">
+              <a-input-group compact>
+                <a-input-number
+                  v-model:value="form.retention_value"
+                  :min="1"
+                  :max="retentionValueMax"
+                  style="width: calc(100% - 90px)"
+                />
+                <a-select
+                  v-model:value="form.retention_unit"
+                  :options="RETENTION_UNIT_OPTIONS"
+                  style="width: 90px"
+                />
+              </a-input-group>
+              <div class="field-hint">
+                ILM 按这个时长删除数据（相对索引创建时间）。ES 每 10 分钟轮询一次，
+                所以小时级保留的实际到期时间有 ~10 分钟粒度。
+              </div>
             </a-form-item>
           </a-col>
         </a-row>
@@ -152,6 +163,7 @@ import {
   saveLogRetentionTier,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { RETENTION_UNIT_DAY, RETENTION_UNIT_HOUR, RETENTION_UNIT_OPTIONS, estimatedTotalGB, retentionText } from '@/util/logRetention'
 
 const tiers = ref([])
 const loading = ref(false)
@@ -164,7 +176,9 @@ const form = reactive({
   code: '',
   name: '',
   daily_size_gb: 5,
-  retention_days: 30,
+  // 保留期 = 值 + 单位（迁移 000045 起支持小时；默认天，与存量档位一致）。
+  retention_value: 30,
+  retention_unit: RETENTION_UNIT_DAY,
   rollover_min_index_age: '1d',
   enabled: true,
   is_default: false,
@@ -175,7 +189,7 @@ const columns = [
   { title: '档位编码', key: 'code', width: 160, fixed: 'left' },
   { title: '档位名称', key: 'name', dataIndex: 'name', width: 180 },
   { title: '每天写入量', key: 'daily_size_gb', width: 130, align: 'center' },
-  { title: '保留天数', key: 'retention_days', width: 110, align: 'center' },
+  { title: '保留期', key: 'retention_value', width: 110, align: 'center' },
   { title: '预计占用', key: 'estimated_total_gb', width: 120, align: 'center' },
   { title: '滚动条件（时长/分片）', key: 'rollover', width: 180, align: 'center' },
   { title: '状态', key: 'enabled', width: 90, align: 'center' },
@@ -190,16 +204,19 @@ const formRules = {
   ],
   name: [{ required: true, message: '请输入档位名称' }],
   daily_size_gb: [{ required: true, message: '请输入每天写入量' }],
-  retention_days: [{ required: true, message: '请输入保留天数' }],
+  retention_value: [{ required: true, message: '请输入保留期' }],
+  retention_unit: [{ required: true, message: '请选择保留期单位' }],
   rollover_min_index_age: [
     { required: true, message: '请输入滚动最小时长' },
     { pattern: /^\d+[mhd]$/, message: '格式如 30m / 12h / 1d' },
   ],
 }
 
-const estimatedTotal = computed(() =>
-  Math.round((Number(form.daily_size_gb) || 0) * (Number(form.retention_days) || 0) * 100) / 100,
-)
+// 保留期上限跟着单位走：天 ≤ 3650，小时 ≤ 3650×24（与服务端校验同一口径）。
+const retentionValueMax = computed(() => (form.retention_unit === RETENTION_UNIT_HOUR ? 3650 * 24 : 3650))
+
+// 容量反推：小时档位必须折算成天，否则预估占用虚高 24 倍（util 里与服务端同口径）。
+const estimatedTotal = computed(() => estimatedTotalGB(form.daily_size_gb, form))
 
 async function loadTiers() {
   loading.value = true
@@ -220,7 +237,8 @@ function resetForm() {
     code: '',
     name: '',
     daily_size_gb: 5,
-    retention_days: 30,
+    retention_value: 30,
+    retention_unit: RETENTION_UNIT_DAY,
     rollover_min_index_age: '1d',
     enabled: true,
     is_default: false,
@@ -240,7 +258,8 @@ function openEdit(record) {
     code: record.code,
     name: record.name,
     daily_size_gb: record.daily_size_gb,
-    retention_days: record.retention_days,
+    retention_value: record.retention_value,
+    retention_unit: record.retention_unit || RETENTION_UNIT_DAY,
     rollover_min_index_age: record.rollover_min_index_age,
     enabled: record.enabled,
     is_default: record.is_default,

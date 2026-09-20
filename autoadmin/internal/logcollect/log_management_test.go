@@ -37,9 +37,9 @@ func TestBuildIndexTemplateNameAndPolicyName(t *testing.T) {
 	}
 }
 
-// ILM policy 期望体回归：滚动阈值不小于 1gb、删除按 retention_days。
+// ILM policy 期望体回归：滚动阈值不小于 1gb、删除按保留期（值 + 单位）。
 func TestBuildILMPolicyBody(t *testing.T) {
-	body := buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})
+	body := buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionValue: 30, RetentionUnit: "d", DailySizeGB: 5, RolloverMinIndexAge: "1d"})
 	policy, ok := body["policy"].(gin.H)
 	if !ok {
 		t.Fatalf("policy missing: %v", body)
@@ -53,15 +53,26 @@ func TestBuildILMPolicyBody(t *testing.T) {
 		t.Fatalf("delete min_age = %v", got)
 	}
 
+	// 小时档位：min_age 必须带 `h`（这是"加小时"这件事的唯一功能落点）。
+	hourly := buildILMPolicyBody("logs", retentionTierRow{Code: "short", RetentionValue: 12, RetentionUnit: "h", DailySizeGB: 1, RolloverMinIndexAge: "30m"})
+	if got := hourly["policy"].(gin.H)["phases"].(gin.H)["delete"].(gin.H)["min_age"]; got != "12h" {
+		t.Fatalf("小时档位的 delete min_age = %v，want 12h", got)
+	}
+	// 单位缺失/异常时按天兜底：宁可沿用旧行为，也不要生成非法或意外的保留期。
+	fallback := buildILMPolicyBody("logs", retentionTierRow{Code: "odd", RetentionValue: 3, RetentionUnit: "", DailySizeGB: 1})
+	if got := fallback["policy"].(gin.H)["phases"].(gin.H)["delete"].(gin.H)["min_age"]; got != "3d" {
+		t.Fatalf("单位缺失时应按天兜底，得到 %v", got)
+	}
+
 	// 小写入量档位的滚动阈值必须被抬到 1gb。
-	small := buildILMPolicyBody("logs", retentionTierRow{Code: "tiny", RetentionDays: 7, DailySizeGB: 0.2, RolloverMinIndexAge: "1d"})
+	small := buildILMPolicyBody("logs", retentionTierRow{Code: "tiny", RetentionValue: 7, RetentionUnit: "d", DailySizeGB: 0.2, RolloverMinIndexAge: "1d"})
 	smallRollover := small["policy"].(gin.H)["phases"].(gin.H)["hot"].(gin.H)["actions"].(gin.H)["rollover"].(gin.H)
 	if smallRollover["max_primary_shard_size"] != "1gb" {
 		t.Fatalf("small rollover = %v", smallRollover)
 	}
 
 	// 档位模板必须是自包含的（data_stream + mappings + lifecycle），并匹配 `logs-*-<tier>`。
-	tier := buildTierIndexTemplateBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5})
+	tier := buildTierIndexTemplateBody("logs", retentionTierRow{Code: "std", RetentionValue: 30, RetentionUnit: "d", DailySizeGB: 5})
 	if _, ok := tier["data_stream"]; !ok {
 		t.Fatalf("tier template must declare data_stream: %v", tier)
 	}
@@ -177,12 +188,12 @@ func TestILMPolicySignature(t *testing.T) {
 		},
 	}
 	actual := ilmPolicySignature(remote["policy"].(map[string]any))
-	desired := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 30, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
+	desired := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionValue: 30, RetentionUnit: "d", DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
 	if keys := differingSignatureKeys(actual, desired); len(keys) != 0 {
 		t.Fatalf("expected no drift, got %v (actual=%v desired=%v)", keys, actual, desired)
 	}
 	// 保留天数变更 → delete_after 漂移
-	drifted := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionDays: 7, DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
+	drifted := ilmPolicySignature(buildILMPolicyBody("logs", retentionTierRow{Code: "std", RetentionValue: 7, RetentionUnit: "d", DailySizeGB: 5, RolloverMinIndexAge: "1d"})["policy"].(gin.H))
 	if keys := differingSignatureKeys(actual, drifted); len(keys) == 0 || keys[0] != "delete_after" {
 		t.Fatalf("expected delete_after drift, got %v", keys)
 	}

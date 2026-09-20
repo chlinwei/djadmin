@@ -118,6 +118,15 @@ func (handler *Handler) PrometheusTargets(context *gin.Context) {
 	response.Success(context, gin.H{"status": "success", "prometheus_base_url": baseURL, "count": len(results), "results": results, "warnings": payload.Warnings})
 }
 
+// alertSummaryText 告警的"问题"文案：annotation 的 summary，没写就退回 description。
+//
+// **当前告警与历史告警必须同一口径**：当前告警走 Prometheus 实时数据（annotations 是平铺的
+// map），历史告警读落库的 `monitor_alert_history.annotations`（同一份东西的 JSON 快照）。
+// 两处各写一遍就会出现"当前告警那栏有字、历史告警那栏空着"（2026-09-20 现场）。
+func alertSummaryText(annotations map[string]any) string {
+	return defaultString(annotations["summary"], stringValue(annotations["description"]))
+}
+
 func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 	baseURL, payload, err := handler.prometheusGet(context, "/api/v1/alerts", nil)
 	if err != nil {
@@ -147,7 +156,7 @@ func (handler *Handler) PrometheusAlerts(context *gin.Context) {
 			ruleGroup = ruleDetails.GroupName
 			ruleDetailsValue = ruleDetails
 		}
-		results = append(results, gin.H{"name": stringValue(labels["alertname"]), "severity": stringValue(labels["severity"]), "state": defaultString(state, "unknown"), "instance": stringValue(labels["instance"]), "labels": labels, "summary": defaultString(annotations["summary"], stringValue(annotations["description"])), "active_at": stringValue(alert["activeAt"]), "value": stringValue(alert["value"]), "rule_group": ruleGroup, "rule_details": ruleDetailsValue, "history_id": nil, "notification_count": 0, "notification_delivery_count": 0, "notification_status": "none"})
+		results = append(results, gin.H{"name": stringValue(labels["alertname"]), "severity": stringValue(labels["severity"]), "state": defaultString(state, "unknown"), "instance": stringValue(labels["instance"]), "labels": labels, "summary": alertSummaryText(annotations), "active_at": stringValue(alert["activeAt"]), "value": stringValue(alert["value"]), "rule_group": ruleGroup, "rule_details": ruleDetailsValue, "history_id": nil, "notification_count": 0, "notification_delivery_count": 0, "notification_status": "none"})
 	}
 	response.Success(context, gin.H{"status": "success", "prometheus_base_url": baseURL, "count": len(results), "firing_count": firingCount, "resolved_count": resolvedCount, "results": results, "warnings": payload.Warnings})
 }

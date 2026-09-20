@@ -24,19 +24,11 @@ func rawJSONOrEmptyArray(raw json.RawMessage) json.RawMessage {
 func (r *Repository) loadTemplateNested(ctx context.Context, id int64) (DeploymentTemplate, error) {
 	result := DeploymentTemplate{}
 	queries := r.queries
-	ports, err := queries.ListTemplatePorts(ctx, id)
+	ports, err := r.ListTemplatePorts(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	for _, row := range ports {
-		var item TemplatePort
-		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
-		item.Remark = stringValue(row.Remark)
-		item.Name, item.Protocol, item.BindAddress = row.Name, row.Protocol, row.BindAddress
-		item.Port, item.Required = int(row.Port), row.Required
-		item.ExternalAccess, item.CheckEnabled = row.ExternalAccess, row.CheckEnabled
-		result.Ports = append(result.Ports, item)
-	}
+	result.Ports = ports
 	paths, err := queries.ListTemplatePaths(ctx, id)
 	if err != nil {
 		return result, err
@@ -122,4 +114,31 @@ func intPtr(value sql.NullInt64) *int64 {
 		return nil
 	}
 	return &value.Int64
+}
+
+// ListTemplatePorts 读某个部署模板的端口定义（name / protocol / bind_address / port）。
+//
+// 为什么单独抽出来：**服务的监听端口就是它所属模板的端口**（端口只在 `assets_application_port`
+// 上定义，服务侧不单独维护），所以两个地方都要读它——模板详情，以及服务详情（服务树的
+// 「监听端口」一节读的是后者）。映射写两份迟早分叉（一处多带了个字段、另一处忘了排序）。
+// 排序保持 SQL 里的 `ORDER BY protocol, port`：界面上端口列表的顺序要稳定。
+func (r *Repository) ListTemplatePorts(ctx context.Context, templateID int64) ([]TemplatePort, error) {
+	if templateID < 1 {
+		return nil, nil
+	}
+	rows, err := r.queries.ListTemplatePorts(ctx, templateID)
+	if err != nil {
+		return nil, err
+	}
+	ports := make([]TemplatePort, 0, len(rows))
+	for _, row := range rows {
+		var item TemplatePort
+		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
+		item.Remark = stringValue(row.Remark)
+		item.Name, item.Protocol, item.BindAddress = row.Name, row.Protocol, row.BindAddress
+		item.Port, item.Required = int(row.Port), row.Required
+		item.ExternalAccess, item.CheckEnabled = row.ExternalAccess, row.CheckEnabled
+		ports = append(ports, item)
+	}
+	return ports, nil
 }

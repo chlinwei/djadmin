@@ -37,6 +37,9 @@ type ApplicationService struct {
 	LogRetentionTier       *int64          `json:"log_retention_tier"`
 	DeploymentCount        int64           `json:"deployment_count"`
 	MemberInstances        []int64         `json:"member_instances"`
+	// Ports 该服务应监听的端口 —— **定义在部署模板上**（`assets_application_port`），服务侧只继承
+	// 不单独维护。服务树的「监听端口」一节读它；不带出来那段就永远是"未配置端口"（2026-09-20 现场）。
+	Ports []TemplatePort `json:"ports,omitempty"`
 }
 type ApplicationDeployment struct {
 	ID                    int64           `json:"id"`

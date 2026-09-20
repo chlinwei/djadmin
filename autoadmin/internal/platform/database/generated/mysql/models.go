@@ -932,7 +932,8 @@ type MonitorLogRetentionTier struct {
 	Code                string    `json:"code"`
 	Name                string    `json:"name"`
 	DailySizeGb         float64   `json:"daily_size_gb"`
-	RetentionDays       uint32    `json:"retention_days"`
+	RetentionValue      uint32    `json:"retention_value"`
+	RetentionUnit       string    `json:"retention_unit"`
 	RolloverMinIndexAge string    `json:"rollover_min_index_age"`
 	Enabled             bool      `json:"enabled"`
 	IsDefault           bool      `json:"is_default"`

@@ -204,7 +204,7 @@
                 :columns="historyAlertColumns"
                 :data-source="historyTimelineEntries"
                 :pagination="false"
-                :scroll="{ x: 1250 }"
+                :scroll="{ x: 1610 }"
                 size="small"
                 :locale="tableLocale"
                 :row-class-name="timelineRowClassName"
@@ -226,6 +226,11 @@
                   </template>
                   <template v-else-if="column.key === 'state'"><a-tag :color="stateColor(record.record.state)">{{ record.record.state || 'unknown' }}</a-tag></template>
                   <template v-else-if="column.key === 'rule_group'">{{ record.record.rule_group || '-' }}</template>
+                  <template v-else-if="column.key === 'summary'">
+                    <!-- 与「当前告警」同一列：文案由后端统一给（summary → description 的回退在那边一处实现）。
+                         旧数据没写注释时显示"-"，不回退到告警名——名字在展开行的规则详情里能看到。 -->
+                    <span>{{ record.record.summary || '-' }}</span>
+                  </template>
                   <template v-else-if="column.key === 'labels'">
                     <a-space v-if="alertLabelEntries(record.record.labels).length" size="small" wrap>
                       <a-tag v-for="[labelKey, labelValue] in alertLabelEntries(record.record.labels)" :key="labelKey" class="alert-label-tag">
@@ -513,6 +518,9 @@ const historyAlertColumns = [
   { title: '规则组', dataIndex: 'rule_group', key: 'rule_group', width: 180 },
   { title: '状态', key: 'state', width: 100 },
   { title: '主机/实例', dataIndex: 'instance', key: 'instance', width: 220 },
+  // 「问题」与当前告警同一列、同一口径（后端 alertSummaryText：annotation 的 summary，
+  // 缺了退 description）。历史行里这一列以前没有，同一个告警在两处长得不一样（2026-09-20 现场）。
+  { title: '问题', key: 'summary', width: 360 },
   { title: '标签', key: 'labels', width: 320 },
   { title: '恢复时间', key: 'resolved_at', width: 190 },
   { title: '持续时间', key: 'duration', width: 140 },

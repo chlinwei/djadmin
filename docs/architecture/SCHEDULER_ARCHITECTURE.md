@@ -12,8 +12,20 @@
 | `autoadmin worker` | `./bin/autoadmin worker` | 消费 `scheduled_task`：原子认领（`Claim`，`is_running` 置位）→ 取任务 → 按 `code` 找 handler → 执行 → 写 `scheduler_scheduledtasklog` 与 `last_status/last_message`（`internal/scheduler/worker.go`） |
 | api 进程 | `./bin/autoadmin api` | 任务列表/详情/启停/编辑/立即执行（`POST /sys/scheduler/tasks/:id/run_now/` 走的也是"发布一条消息"这条路） |
 
-- **cron 与时区**：`cron_expression` 按 UTC 解析，`next_run_time` 由应用层用 `nextRun` 计算后落库
-  （`internal/scheduler/service.go`），与 `enabled=false` 时清空 `next_run_time` 的语义一致。
+- **cron 与时区**（2026-09-20 改）：`cron_expression` 按 **`ScheduleLocation`** 解释——
+  它是**唯一一处**时区定义：scheduler 进程建 gocron 时 `WithLocation(ScheduleLocation)`，
+  应用层算"下次运行时间"时也用同一个值。执行与展示必须同源，否则会出现"界面显示 17:00、
+  实际 9:00 触发"（两边都自认有道理，用户只能猜）。要改成固定时区（例如统一按 Asia/Shanghai）
+  只改这一个变量。
+- **「下次运行时间」是实时算的，不读库里的快照**：`scheduler_scheduledtask.next_run_time` 只在
+  保存/启停时写过一次，真正的触发由进程内 gocron 自己算，所以那列**不会推进**、时间一久就成
+  过去的时间（现场："下次运行时间比当前时间早"）。现在列表/详情的 `next_run_time` 由
+  `displayNextRunTime` 现场计算（`internal/scheduler/service.go`，在 `withTaskSupport` 里统一覆盖），
+  库里那列退化为"保存时的快照"，接口不采信。
+- **空值的三种语义**（界面都给了悬停说明，不是"数据没取到"）：任务**停用**、**实现未迁移**
+  （调度器根本不注册它，见下一节）、**没有可用的 cron 表达式**。所以"有下次运行时间"本身就等于
+  "这个任务真的会被触发"——这比只看 `enabled` 开关更准。DTO 同时带 `schedule_timezone`，
+  界面据此说明 cron 的钟点是哪个时区的钟点（显示的时间是换算到用户时区后的同一时刻）。
 - **"立即执行"与定时触发是同一条路径**：都是发布消息、都由 worker 执行、都写执行日志——
   所以"手动能跑、定时不跑"这类分歧不存在。
 - **认领防重复**：worker 先 `Claim`（只在未运行时成功），多副本或消息重投不会重复执行。

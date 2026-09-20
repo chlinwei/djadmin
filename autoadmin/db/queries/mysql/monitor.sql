@@ -57,16 +57,16 @@ WHERE (enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
   AND (code LIKE sqlc.narg(pattern) OR name LIKE sqlc.narg(pattern) OR remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL);
 
 -- name: ListLogRetentionTiers :many
-SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_value, retention_unit, rollover_min_index_age, enabled, is_default, remark
 FROM monitor_log_retention_tier
 WHERE (enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
   AND (is_default = sqlc.narg(is_default) OR sqlc.narg(is_default) IS NULL)
   AND (code LIKE sqlc.narg(pattern) OR name LIKE sqlc.narg(pattern) OR remark LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL)
-ORDER BY retention_days, id
+ORDER BY retention_value, id
 LIMIT ? OFFSET ?;
 
 -- name: GetLogRetentionTier :one
-SELECT id, create_time, update_time, code, name, daily_size_gb, retention_days, rollover_min_index_age, enabled, is_default, remark
+SELECT id, create_time, update_time, code, name, daily_size_gb, retention_value, retention_unit, rollover_min_index_age, enabled, is_default, remark
 FROM monitor_log_retention_tier
 WHERE id = sqlc.arg(id);
 
@@ -1059,8 +1059,8 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),NULL,sqlc.arg(host_id),FALSE
 -- 保留档位列表（下拉/管理路径用：只列启用的）。
 -- 识别流名要的是**全部**档位码，用 ListRetentionTierCodes：停用一个档位不该让既有流变成"未识别"。
 -- name: ListEnabledRetentionTiers :many
-SELECT code,retention_days,daily_size_gb,rollover_min_index_age
-FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_days,id;
+SELECT code,retention_value,retention_unit,daily_size_gb,rollover_min_index_age
+FROM monitor_log_retention_tier WHERE enabled=TRUE ORDER BY retention_value,id;
 
 -- 流名匹配用的档位码全集（不过滤 enabled，理由见 ListServiceStreamDims 的说明）。
 -- name: ListRetentionTierCodes :many
@@ -1164,15 +1164,15 @@ SELECT code FROM assets_application_service WHERE id = sqlc.arg(id);
 
 -- name: CreateLogRetentionTier :execlastid
 INSERT INTO monitor_log_retention_tier
-  (create_time,update_time,code,name,daily_size_gb,retention_days,rollover_min_index_age,enabled,is_default,remark)
+  (create_time,update_time,code,name,daily_size_gb,retention_value,retention_unit,rollover_min_index_age,enabled,is_default,remark)
 VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.arg(code),sqlc.arg(name),sqlc.arg(daily_size_gb),
-        sqlc.arg(retention_days),sqlc.arg(rollover_min_index_age),sqlc.arg(enabled),sqlc.arg(is_default),
+        sqlc.arg(retention_value),sqlc.arg(retention_unit),sqlc.arg(rollover_min_index_age),sqlc.arg(enabled),sqlc.arg(is_default),
         sqlc.arg(remark));
 
 -- name: UpdateLogRetentionTier :execrows
 UPDATE monitor_log_retention_tier
 SET update_time=sqlc.arg(update_time),code=sqlc.arg(code),name=sqlc.arg(name),daily_size_gb=sqlc.arg(daily_size_gb),
-    retention_days=sqlc.arg(retention_days),rollover_min_index_age=sqlc.arg(rollover_min_index_age),
+    retention_value=sqlc.arg(retention_value),retention_unit=sqlc.arg(retention_unit),rollover_min_index_age=sqlc.arg(rollover_min_index_age),
     enabled=sqlc.arg(enabled),is_default=sqlc.arg(is_default),remark=sqlc.arg(remark)
 WHERE id=sqlc.arg(id);
 

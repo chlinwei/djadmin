@@ -262,15 +262,41 @@ bootstrap 会先 PUT 这个 pipeline 再 PUT 引用它的模板。
 | `std` | 7d | 默认 |
 | `cold` | 30d | 量小，放宽以避免小索引 |
 
+**保留期 = 值 + 单位，单位支持「天」与「小时」**（迁移 000045，2026-09-20）：
+
+- 库里是两列 `retention_value` + `retention_unit`（`d` / `h`，默认 `d`；迁移把原来的
+  `retention_days` 改名成 `retention_value` —— 值 + 单位才是完整语义，留着 "days" 这个名字
+  在两列并存时会误导）。存量档位全部按天，**生成的 min_age 与改动前逐字节相同**（`30d`）。
+- 改名这一步在真库上要先摘掉 Django 生成的 CHECK 约束：真库的 `monitor_log_retention_tier`
+  带着 Django 4.1 为 `PositiveIntegerField` 自动加的
+  `CHECK (retention_days >= 0)`，而 **MySQL 不允许重命名被 CHECK 引用的列**（Error 3959），
+  不摘掉迁移必挂（2026-09-20 现场）。该约束在 `int unsigned` 列上恒真、折叠快照里也没有，
+  所以按 information_schema 现查现删、不重建（做法与教训见 SQL_DESIGN §4.6.2 ①）。
+- 生成 ILM 时拼成 `<值><单位>`：`min_age: "12h"`。ES 的 `min_age` 本来就接受 `s/m/h/d`，
+  所以这是"把单位带进去"，不是新机制；`rollover_min_index_age` 的校验 `^\d+[mhd]$`
+  也一直允许小时。
+- **不影响已有数据流**：流名与 ILM 策略名用的都是档位 **code**，不是天数，所以换单位/改保留期
+  只影响该档位**新数据**的到期时间，不重建任何流。
+- 只在写入路径接受 `d`/`h`（其它值 400），读取/生成时异常值一律按天兜底——**宁可沿用旧行为，
+  也不要生成非法或意外的保留期**。
+- 范围按**折算成小时**判：`1 小时 ≤ 保留期 ≤ 3650 天`。
+- 精度提醒：ES 的 ILM 默认每 10 分钟轮询一次（`indices.lifecycle.poll_interval`），
+  所以小时级保留的实际到期时间有 ~10 分钟粒度；**分钟级单位不提供**（轮询粒度决定了它没有意义）。
+- 档位保存/删除后自动异步重推所有启用集群的 ILM 策略与索引模板（`syncAllClusterLogStorage`），
+  不需要手工发布。
+
 ### 4.6 容量可按档位反推
 
 ```
 hot   30GB/天 ×  7 天 = 210 GB
 std    5GB/天 × 30 天 = 150 GB
 cold 0.1GB/天 × 90 天 =   9 GB
+短期   5GB/天 × 12 小时 =  2.5 GB
 ```
 
-哪个档超出预算就调哪个档的天数，不影响其他服务。
+哪个档超出预算就调哪个档的保留期，不影响其他服务。**小时档位必须折算成天**（12h = 0.5 天）：
+不折算会把预估占用虚高 24 倍。服务端 `estimatedTierTotalGB` 与前端
+`util/logRetention.js` 的 `estimatedTotalGB` 是同一口径（两处都要改，别只改一边）。
 
 ### 4.7 字段设计
 
@@ -774,7 +800,8 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
   （`COALESCE(narg,col)` 表达不了"显式写入空值/删除"，例如把解析规则的 `application` 显式提交为 `null`）。
 - **新建**是整行插入：请求体缺了"NOT NULL 且库级没有默认值"的列时返回 400 并列出缺哪些键
   （原先由 MySQL 严格模式报 `Field 'x' doesn't have a default value`，文案不可读）。
-- 校验规则（档位 code 格式、`daily_size_gb > 0`、`retention_days ∈ [1,3650]`、`rollover_min_index_age` 形如 `30m/12h/1d`、
+- 校验规则（档位 code 格式、`daily_size_gb > 0`、`retention_value ≥ 1` 且**折算成小时后 ≤ 3650 天**、
+  `retention_unit ∈ {d,h}`、`rollover_min_index_age` 形如 `30m/12h/1d`、
   规则名 `^[a-z0-9][a-z0-9._-]*$`、`pattern` 不得含换行且必须是合法正则、`flush_timeout ∈ [100,60000]`）不变；
   解析规则保存前先发布 pipeline 到集群、失败则整条请求 400 且不落库的行为不变。
 - 删除仍是"逐 id + 汇总 `{count, results}`"的批量语义；档位被逻辑服务/日志设置引用、规则被日志定义引用时拒绝删除

@@ -38,8 +38,8 @@ func TestBootstrapIndexTemplateUsesTemplateSuffix(t *testing.T) {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT code,retention_days,daily_size_gb,rollover_min_index_age")).
-		WillReturnRows(sqlmock.NewRows([]string{"code", "retention_days", "daily_size_gb", "rollover_min_index_age"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT code,retention_value,retention_unit,daily_size_gb,rollover_min_index_age")).
+		WillReturnRows(sqlmock.NewRows([]string{"code", "retention_value", "retention_unit", "daily_size_gb", "rollover_min_index_age"}))
 
 	handler := &Handler{db: database}
 	ginContext, _ := gin.CreateTestContext(nil)

@@ -476,7 +476,7 @@ make test       # 三道守卫：查询派生一致性、门面漂移、重复�
 
 另：`internal/assets/service.go` 的 `translate` 是唯一依赖方言错误的代码，已补 PG SQLSTATE 分支（§2.4）。
 
-### 4.6.2 两条真库操作经验（2026-09-19，迁移 000035 现场）
+### 4.6.2 两条真库操作经验（2026-09-19 迁移 000035 / 2026-09-20 迁移 000045 现场）
 
 **① 删列前必须先摘掉"快照里没有、真库上有"的 Django 时代外键。**
 `db/schema` 的折叠快照缺真库外键是老问题（`inspection_target_execution.host_id` 就是这么发现的，
@@ -494,8 +494,27 @@ a foreign key constraint`。**两类库都要能跑**，所以迁移里按列现
   CONSTRAINT %I', fk.conname) END LOOP … $$;` 同样按列删，不猜约束名。
 
 down 迁移**不重建该外键**（与 `000005.down` 同一处理：快照里本就没有它，重建会与折叠态不一致；
-up 的"现查现删"保证幂等）。顺带一条：这类"真库有、快照无"的对象清单目前只有人读文档才知道，
-**改任何列之前，先在真库上 `SHOW CREATE TABLE` 看一眼**。
+up 的"现查现删"保证幂等）。
+
+**同一个坑的 CHECK 版本（2026-09-20，迁移 000045 现场）：改列名之前要看这一列上有没有 CHECK 约束。**
+真库上 `monitor_log_retention_tier` 挂着 Django 4.1 给 `PositiveIntegerField` 自动生成的
+`CONSTRAINT monitor_log_retention_tier_chk_1 CHECK ((retention_days >= 0))`，
+而 `000045` 要把这一列改名成 `retention_value` —— MySQL 直接以
+`Error 3959: Check constraint '...' uses column 'retention_days', hence column cannot be dropped
+or renamed` 拒绝，`CHANGE COLUMN` 和 `DROP COLUMN` 都会被它挡住。处理手法与外键一模一样
+（MySQL 无 `DROP CHECK IF EXISTS`，只能动态 SQL；约束名 `<表>_chk_<n>` 是 Django 生成的，**不写死**）：
+
+- MySQL：从 `information_schema.CHECK_CONSTRAINTS`（按 `CHECK_CLAUSE LIKE '%<列>%'` 筛，**必须** join
+  `information_schema.TABLE_CONSTRAINTS` 才能拿到表名）+ `IF(@c IS NULL, 'SELECT 1', CONCAT('… DROP CHECK …'))`
+  → `PREPARE`/`EXECUTE`/`DEALLOCATE`，然后才改名。
+- PG **不需要**这一步：PG 的约束按列序号（attnum）绑定，`RENAME COLUMN` 之后自动跟着新列名，
+  不报错；而且 PG 侧那一列是有符号 `integer`（§4.7 无 unsigned），`>= 0` 是真校验，留着更对。
+  按 README 约定，这个差异写在 `postgres/000045_….up.sql` 顶部的 `-- PG 侧差异：` 注释里。
+- 摘掉不损失语义：MySQL 侧那一列是 `int unsigned`，`>= 0` 恒真；折叠快照（`db/schema`）里
+  本就没有这条约束，摘掉正是让真库与快照收敛（守卫：`internal/platform/migration/retention_unit_guard_test.go`）。
+
+**改任何列（改名、删列、改类型）之前，先在真库上 `SHOW CREATE TABLE` 看一眼**——外键与 CHECK
+都是"快照里没有、真库上有"的对象，而这类清单目前只有人读文档才知道。
 
 **② 迁移失败后版本表会变脏，用 `migrate force` 恢复。**
 golang-migrate 在跑某个版本前就写 `(version=N, dirty=1)`，失败后 `migrate` 会直接拒绝执行。

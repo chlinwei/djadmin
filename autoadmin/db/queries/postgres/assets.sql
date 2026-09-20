@@ -38,12 +38,18 @@ DELETE FROM assets_project WHERE id = $1;
 
 -- name: CountBusinessSystems :one
 SELECT COUNT(*) FROM assets_business_system s LEFT JOIN assets_project p ON p.id = s.project_id
-WHERE COALESCE(s.name, '') LIKE sqlc.narg(pattern) OR COALESCE(s.code, '') LIKE sqlc.narg(pattern) OR COALESCE(s.owner, '') LIKE sqlc.narg(pattern) OR COALESCE(s.remark, '') LIKE sqlc.narg(pattern) OR COALESCE(p.name, '') LIKE sqlc.narg(pattern);
+-- 搜索词命中任一展示字段（含所属项目名）；整条 OR 链必须整体加括号，
+-- 否则下面 AND 上项目过滤后优先级会变（`A OR B AND C` ≠ `(A OR B) AND C`）。
+WHERE (COALESCE(s.name, '') LIKE sqlc.narg(pattern) OR COALESCE(s.code, '') LIKE sqlc.narg(pattern) OR COALESCE(s.owner, '') LIKE sqlc.narg(pattern) OR COALESCE(s.remark, '') LIKE sqlc.narg(pattern) OR COALESCE(p.name, '') LIKE sqlc.narg(pattern))
+  -- 按项目过滤：服务树的「项目」节点要的是"这个项目下的业务系统"。
+  -- 缺省（NULL）= 不筛选。`IS NULL` 写在 OR 链**末尾**（SQL_DESIGN §2：写在前面 PG 推断不出类型）。
+  AND (s.project_id = sqlc.narg(project_id) OR sqlc.narg(project_id) IS NULL);
 
 -- name: ListBusinessSystems :many
 SELECT s.*, COALESCE(p.name, '') AS project_name, COALESCE(p.code, '') AS project_code
 FROM assets_business_system s LEFT JOIN assets_project p ON p.id = s.project_id
-WHERE COALESCE(s.name, '') LIKE sqlc.narg(pattern) OR COALESCE(s.code, '') LIKE sqlc.narg(pattern) OR COALESCE(s.owner, '') LIKE sqlc.narg(pattern) OR COALESCE(s.remark, '') LIKE sqlc.narg(pattern) OR COALESCE(p.name, '') LIKE sqlc.narg(pattern)
+WHERE (COALESCE(s.name, '') LIKE sqlc.narg(pattern) OR COALESCE(s.code, '') LIKE sqlc.narg(pattern) OR COALESCE(s.owner, '') LIKE sqlc.narg(pattern) OR COALESCE(s.remark, '') LIKE sqlc.narg(pattern) OR COALESCE(p.name, '') LIKE sqlc.narg(pattern))
+  AND (s.project_id = sqlc.narg(project_id) OR sqlc.narg(project_id) IS NULL)
 ORDER BY s.name, s.id LIMIT $1 OFFSET $2;
 
 -- name: GetBusinessSystem :one

@@ -69,6 +69,14 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 - `GET /assets/application-services/`：
   - `search`（名称/编码模糊）；
   - `business_system` → 仅返回该业务系统下的逻辑服务。服务树的"业务系统"节点（展示其下逻辑服务）与"环境"节点（展示当前业务×该环境的逻辑服务）都依赖此参数，缺失会退化为返回全部逻辑服务。
+- `GET /assets/business-systems/`：
+  - `search`（名称/编码/负责人/备注/所属项目名模糊）；
+  - `project` → 仅返回该项目下的业务系统（`assets_business_system.project_id`）。服务树的「**项目**」节点依赖此参数。
+    **2026-09-20 修复**：前端一直在传 `project`，而这条查询里原先没有这个条件——静默地返回**全部**
+    业务系统（项目节点下列出所有业务系统，连它下面聚合的服务数/实例数一起错）。这类"参数传了没人理"
+    的 bug 不报错、不告警，所以守卫测试断言的是"参数进了 SQL"（`business_system_filter_test.go`）。
+    注意搜索词在 SQL 里出现在 5 个占位符上、项目过滤 2 个（`= sqlc.narg(x) OR sqlc.narg(x) IS NULL`），
+    生成的 Params 会各合成一个字段、由生成代码重复传同一个值——漏传是静默失效（见 SQL_DESIGN §2.5）。
 - `GET /assets/application-deployments/`：
   - `application_service` → 仅返回与该逻辑服务存在 M2M 关联（`assets_application_service_deployment`）的部署实例；"逻辑服务"节点右侧的部署实例列表依赖此参数。
   - `application_service__business_system` → 经 M2M 关联到逻辑服务、再按业务系统过滤；"业务系统/环境"节点的部署实例列表依赖。
@@ -168,6 +176,13 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   `agent_job_queries.go` 的一组共用封装（作业与主机日志的 running→failed/timeout/finished 状态流转、
   stdout 追加、执行作业收尾）；作业行的 `duration_seconds` 由应用层算（读回 `start_time`，复用 automation 域的
   `GetAutomationJobStartTime`，替换 MySQL 的 `TIMESTAMPDIFF`）。列表/拦截用的是可变长 `IN (sqlc.slice(...))`。
+- **服务的「监听端口」= 它所属模板的端口**（2026-09-20 修）：端口只在 `assets_application_port`
+  上定义（`name`/`protocol`/`bind_address`/`port`，模板的唯一键是 `(模板, protocol, port)`），
+  **服务侧不单独维护端口**，所以服务详情 `GET /assets/application-services/:id/` 按服务的
+  `deployment_template` 反查一次模板端口带出来（`ports`，排序与模板一致：`protocol, port`）。
+  服务树右侧「监听端口」一节渲染的就是它（`名称 · 协议 端口`）。此前这个字段从没被带出过，
+  页面永远显示"未配置端口"——前端单测里 mock 了 `ports` 所以一直没暴露；
+  现在读端口失败会整体报错，不再静默返回一份"没有端口"的详情。
 - **部署模板**：模板主体 + 5 类嵌套子表（端口/路径/配置文件/日志定义/控制动作）+ docker 与 compose 配置。
   原实现删子表时运行时拼表名（`DELETE FROM `+table+` WHERE …`），现在按表名分派到 7 条显式语句；
   子表读取保持各自的排序（端口按 `protocol,port`、路径按 `path_type,id`、其余按 `id`）。

@@ -339,10 +339,10 @@ func (s *Service) DeleteProfile(ctx context.Context, id int64) error {
 }
 
 func applicationList(r db.ListApplicationsRow) Application {
-	return Application{ID: r.ID, CreateTime: timestamp(r.CreateTime), UpdateTime: timestamp(r.UpdateTime), Remark: stringValue(r.Remark), Name: r.Name, Code: r.Code, Category: r.Category, Vendor: r.Vendor, Description: r.Description, Enabled: r.Enabled, Versions: []ApplicationVersion{}, VersionCount: r.VersionCount, DeploymentTemplateCount: r.DeploymentTemplateCount, DeploymentCount: r.DeploymentCount}
+	return Application{ID: r.ID, CreateTime: timestamp(r.CreateTime), UpdateTime: timestamp(r.UpdateTime), Remark: stringValue(r.Remark), Name: r.Name, Code: r.Code, Category: r.Category, Vendor: r.Vendor, Description: r.Description, Enabled: r.Enabled, Versions: []ApplicationVersion{}, VersionCount: r.VersionCount, DeploymentTemplateCount: int32(r.DeploymentTemplateCount), DeploymentCount: int32(r.DeploymentCount)}
 }
 func applicationDetail(r db.GetApplicationRow) Application {
-	return Application{ID: r.ID, CreateTime: timestamp(r.CreateTime), UpdateTime: timestamp(r.UpdateTime), Remark: stringValue(r.Remark), Name: r.Name, Code: r.Code, Category: r.Category, Vendor: r.Vendor, Description: r.Description, Enabled: r.Enabled, Versions: []ApplicationVersion{}, VersionCount: r.VersionCount, DeploymentTemplateCount: r.DeploymentTemplateCount, DeploymentCount: r.DeploymentCount}
+	return Application{ID: r.ID, CreateTime: timestamp(r.CreateTime), UpdateTime: timestamp(r.UpdateTime), Remark: stringValue(r.Remark), Name: r.Name, Code: r.Code, Category: r.Category, Vendor: r.Vendor, Description: r.Description, Enabled: r.Enabled, Versions: []ApplicationVersion{}, VersionCount: r.VersionCount, DeploymentTemplateCount: int32(r.DeploymentTemplateCount), DeploymentCount: int32(r.DeploymentCount)}
 }
 func versionList(r db.ListApplicationVersionsRow) ApplicationVersion {
 	return ApplicationVersion{ID: r.ID, CreateTime: timestamp(r.CreateTime), UpdateTime: timestamp(r.UpdateTime), Remark: stringValue(r.Remark), Application: r.ApplicationID, ApplicationName: r.ApplicationName, Version: r.Version, ReleaseDate: datePtr(r.ReleaseDate), EndOfSupport: datePtr(r.EndOfSupport), Enabled: r.Enabled}

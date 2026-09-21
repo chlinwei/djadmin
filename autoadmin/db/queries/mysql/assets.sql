@@ -204,8 +204,11 @@ WHERE COALESCE(name, '') LIKE sqlc.narg(pattern) OR COALESCE(code, '') LIKE sqlc
 -- name: ListApplications :many
 SELECT a.*,
   (SELECT COUNT(*) FROM assets_application_version v WHERE v.application_id=a.id) AS version_count,
-  0 AS deployment_template_count,
-  0 AS deployment_count
+  (SELECT COUNT(*) FROM assets_application_deployment_template t WHERE t.application_id=a.id) AS deployment_template_count,
+  (SELECT COUNT(DISTINCT d.id) FROM assets_application_service s
+     JOIN assets_application_service_deployment l ON l.service_id=s.id
+     JOIN assets_application_deployment d ON d.id=l.deployment_id
+     WHERE s.application_id=a.id) AS deployment_count
 FROM assets_application a
 WHERE COALESCE(a.name, '') LIKE sqlc.narg(pattern) OR COALESCE(a.code, '') LIKE sqlc.narg(pattern)
    OR COALESCE(a.vendor, '') LIKE sqlc.narg(pattern) OR COALESCE(a.description, '') LIKE sqlc.narg(pattern)
@@ -214,8 +217,11 @@ ORDER BY a.name,a.id LIMIT ? OFFSET ?;
 -- name: GetApplication :one
 SELECT a.*,
   (SELECT COUNT(*) FROM assets_application_version v WHERE v.application_id=a.id) AS version_count,
-  0 AS deployment_template_count,
-  0 AS deployment_count
+  (SELECT COUNT(*) FROM assets_application_deployment_template t WHERE t.application_id=a.id) AS deployment_template_count,
+  (SELECT COUNT(DISTINCT d.id) FROM assets_application_service s
+     JOIN assets_application_service_deployment l ON l.service_id=s.id
+     JOIN assets_application_deployment d ON d.id=l.deployment_id
+     WHERE s.application_id=a.id) AS deployment_count
 FROM assets_application a WHERE a.id=? LIMIT 1;
 
 -- name: CreateApplication :execresult
@@ -742,6 +748,20 @@ LEFT JOIN assets_cluster_profile c ON c.id=s.cluster_profile_id
 WHERE (s.name LIKE sqlc.narg(pattern) OR s.code LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL)
   AND (s.business_system_id = sqlc.narg(business_system_id) OR sqlc.narg(business_system_id) IS NULL)
 ORDER BY s.business_system_id,s.environment_id,s.name LIMIT ? OFFSET ?;
+
+-- 模板的承载服务清单（日志处理规则页「影响服务数」弹窗）：项目名经 business_system → project 反查。
+-- name: ListApplicationServicesByTemplate :many
+SELECT s.id, s.name, s.code, s.enabled,
+       s.business_system_id, s.environment_id,
+       COALESCE(p.name, '') AS project_name,
+       b.name AS business_system_name,
+       COALESCE(e.name, '') AS environment_name
+FROM assets_application_service s
+JOIN assets_business_system b ON b.id = s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN assets_project p ON p.id = b.project_id
+WHERE s.deployment_template_id = sqlc.arg(deployment_template_id)
+ORDER BY p.name, b.name, s.environment_id, s.name, s.id;
 
 -- name: GetApplicationServiceDetail :one
 SELECT s.id,s.create_time,s.update_time,s.remark,s.name,s.code,s.topology_type,s.access_address,s.enabled,

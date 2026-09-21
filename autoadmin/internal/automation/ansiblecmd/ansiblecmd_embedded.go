@@ -100,13 +100,18 @@ func embeddedSitePackages(exe string) (string, error) {
 
 // CommandContext 返回"用嵌入 CPython + ansible-core 执行"的命令（-tags embedansible）。
 // 首次调用会解压运行时（约 1s，之后走缓存）。
+//
+// 环境见 ansibleEnv（默认 minimal stdout 回调，让 shell 任务的 stdout 可见）；
+// 另在用户未显式设置 ANSIBLE_CONFIG 时用自包含的空配置屏蔽部署机的 /etc/ansible/ansible.cfg。
 func CommandContext(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	if err := prepare(); err != nil {
 		return nil, err
 	}
 	command := exec.CommandContext(ctx, pythonExe, append([]string{ansibleBin}, args...)...)
+	env := ansibleEnv()
 	if cfgPath != "" {
-		command.Env = append(os.Environ(), "ANSIBLE_CONFIG="+cfgPath)
+		env = append(env, "ANSIBLE_CONFIG="+cfgPath)
 	}
+	command.Env = env
 	return command, nil
 }

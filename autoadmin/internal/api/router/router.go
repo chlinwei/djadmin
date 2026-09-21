@@ -104,12 +104,19 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	apiTokens.POST("/rotateApiToken/", middleware.RequirePermission("system:api_token:rotate"), apiTokenHandler.Rotate)
 	apiTokens.POST("/disableApiToken/", middleware.RequirePermission("system:api_token:disable"), apiTokenHandler.Disable)
 	apiTokens.POST("/deleteApiToken/", middleware.RequirePermission("system:api_token:delete"), apiTokenHandler.Delete)
-	playbookHandler := automation.NewHandler(database, gateway)
+	// Shell 类模板校验依赖 shellcheck：平台上传的二进制落在 <media>/shellcheck（离线内网就绪通道），
+	// 服务器 PATH 安装的作为兜底（解析顺序见 automation.shellcheckBinaryPath）。
+	playbookHandler := automation.NewHandler(database, gateway, filepath.Join(mediaRoot, "shellcheck"))
 	playbooks := engine.Group("/sys/automation/playbooks", middleware.Authenticate(tokens))
 	playbooks.GET("/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.List)
 	playbooks.POST("/validate/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.Validate)
 	playbooks.GET("/host-options/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.HostOptions)
 	playbooks.GET("/group-tree/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.GroupTree)
+	// shellcheck 组件管理：上传/状态/删除，权限沿用模板管理（能建模板的人就能维护该组件）。
+	shellcheck := engine.Group("/sys/automation/shellcheck", middleware.Authenticate(tokens))
+	shellcheck.GET("/binary/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.ShellcheckStatus)
+	shellcheck.POST("/binary/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.UploadShellcheckBinary)
+	shellcheck.DELETE("/binary/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.DeleteShellcheckBinary)
 	playbooks.GET("/:id/", middleware.RequirePermission("automation:playbooks:view"), playbookHandler.Get)
 	playbooks.POST("/", middleware.RequirePermission("automation:playbooks:create"), playbookHandler.Create)
 	playbooks.PATCH("/:id/", middleware.RequirePermission("automation:playbooks:update"), playbookHandler.Update)
@@ -340,6 +347,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	templates := engine.Group("/assets/application-deployment-templates", middleware.Authenticate(tokens))
 	templates.GET("/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListDeploymentTemplates)
 	templates.GET("/:id/", middleware.RequirePermission("assets:applications:view"), assetsHandler.GetDeploymentTemplate)
+	// 模板的承载服务清单（日志处理规则页「影响服务数」弹窗，只读）。
+	templates.GET("/:id/services/", middleware.RequirePermission("assets:applications:view"), assetsHandler.ListTemplateServices)
 	templates.POST("/", middleware.RequirePermission("assets:applications:create"), assetsHandler.CreateDeploymentTemplate)
 	templates.PUT("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateDeploymentTemplate)
 	templates.PATCH("/:id/", middleware.RequirePermission("assets:applications:update"), assetsHandler.UpdateDeploymentTemplate)
@@ -538,6 +547,8 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	monitorRoutes.POST("/log-retention-tiers/batch-delete/", logcollectHandler.BatchDeleteRetentionTiers)
 	monitorRoutes.GET("/log-processing-rules/", logcollectHandler.ListProcessingRules)
 	monitorRoutes.POST("/log-processing-rules/", logcollectHandler.CreateProcessingRule)
+	// 注意必须注册在 `:id/` 之前语义才清晰——gin 的静态段优先于参数段，这里顺序只是可读性。
+	monitorRoutes.GET("/log-processing-rules/usage/", logcollectHandler.ListProcessingRuleUsages)
 	monitorRoutes.GET("/log-processing-rules/:id/", logcollectHandler.GetProcessingRule)
 	monitorRoutes.PATCH("/log-processing-rules/:id/", logcollectHandler.UpdateProcessingRule)
 	monitorRoutes.PUT("/log-processing-rules/:id/", logcollectHandler.UpdateProcessingRule)

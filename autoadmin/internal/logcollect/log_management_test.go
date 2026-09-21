@@ -248,3 +248,58 @@ func TestWorstLogHealthStatus(t *testing.T) {
 		t.Fatalf("empty worst = %q", got)
 	}
 }
+
+// 遗留档位模板识别：命名 `<prefix>-<code>-template`（code 可含连字符，如 wuhan-test），
+// 基础模板与非自家命名不命中；pattern 形状必须全部严格等于 `<prefix>-*-<code>`。
+func TestLegacyTierTemplateNameAndPatternShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		want    string
+		wantOK  bool
+	}{
+		{"autoadmin-hot-template", "hot", true},
+		{"autoadmin-wuhan-test-template", "wuhan-test", true},
+		{"autoadmin-template", "", false},   // 基础模板自身
+		{"autoadmin-template-x", "", false}, // 无 -template 后缀
+		{"nginx-hot-template", "", false},   // 前缀不匹配
+		{"autoadmin--template", "", false},  // 档位段为空
+	}
+	for _, testCase := range cases {
+		code, ok := legacyTierTemplateName("autoadmin", testCase.name)
+		if ok != testCase.wantOK || code != testCase.want {
+			t.Errorf("legacyTierTemplateName(autoadmin, %q) = (%q, %v), want (%q, %v)",
+				testCase.name, code, ok, testCase.want, testCase.wantOK)
+		}
+	}
+
+	if !isTierPatternShape("autoadmin", "wuhan-test", []string{"autoadmin-*-wuhan-test"}) {
+		t.Fatalf("wuhan-test pattern shape should match")
+	}
+	if isTierPatternShape("autoadmin", "wuhan-test", []string{"autoadmin-*-wuhan-test", "autoadmin-*"}) {
+		t.Fatalf("含基础 pattern 的模板不能算档位形状（避免与基础模板冲突时误升）")
+	}
+	if isTierPatternShape("autoadmin", "wuhan-test", nil) {
+		t.Fatalf("空 patterns 不算命中")
+	}
+	if isTierPatternShape("autoadmin", "std", []string{"nginx-*-std"}) {
+		t.Fatalf("前缀不同的 pattern 不算命中")
+	}
+}
+
+// GET 响应 → 模板定义提取：畸形响应一律安全失败，不 panic。
+func TestIndexTemplateDefinition(t *testing.T) {
+	if _, ok := indexTemplateDefinition(nil); ok {
+		t.Fatalf("nil payload should fail")
+	}
+	if _, ok := indexTemplateDefinition(map[string]any{"index_templates": []any{}}); ok {
+		t.Fatalf("empty index_templates should fail")
+	}
+	// ES 响应经 JSON 解码，内层是 map[string]any（不能传 gin.H——命名类型断言不过，见 helper 的契约）。
+	definition := map[string]any{"index_patterns": []string{"autoadmin-*-hot"}, "template": map[string]any{}}
+	got, ok := indexTemplateDefinition(map[string]any{
+		"index_templates": []any{map[string]any{"name": "autoadmin-hot-template", "index_template": definition}},
+	})
+	if !ok || got["index_patterns"] == nil {
+		t.Fatalf("definition extraction failed: %v", got)
+	}
+}

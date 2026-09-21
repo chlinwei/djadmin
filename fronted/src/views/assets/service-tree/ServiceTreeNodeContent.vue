@@ -77,12 +77,68 @@
         <a-descriptions-item label="备注">{{ detail.remark || '-' }}</a-descriptions-item>
       </a-descriptions>
 
+      <!-- 主机基础信息：来自资产主机详情接口（agent 采集的硬件/系统/磁盘快照）。
+           失败（最常见是服务树用户没有 assets:hosts:view 权限）或从未采集时降级成一行提示，
+           不阻塞实例信息本身。WebSSH 直接带 host_id 跳资产页的 webssh 终端（新开标签页）。 -->
+      <section v-if="scope.nodeType === 'deployment' && detail && detail.host" class="host-info-section">
+        <div class="child-section-title">
+          <span>主机信息</span>
+          <a-tooltip title="打开 WebSSH 终端（新标签页）">
+            <a-button v-permission="'assets:hosts:view'" size="small" @click="openWebSSH">
+              <FontAwesomeIcon :icon="['fas', 'terminal']" />
+            </a-button>
+          </a-tooltip>
+        </div>
+        <a-descriptions v-if="hostInfo" bordered :column="{ xs: 1, sm: 2 }" size="small">
+          <a-descriptions-item label="主机名">{{ formatHostValue(hostInfo.hostname) }}</a-descriptions-item>
+          <a-descriptions-item label="操作系统">{{ hostOsText }}</a-descriptions-item>
+          <a-descriptions-item label="CPU">{{ hostCpuText }}</a-descriptions-item>
+          <a-descriptions-item label="内存">{{ hostMemoryText }}</a-descriptions-item>
+          <a-descriptions-item label="磁盘总量">{{ hostDiskTotalText }}</a-descriptions-item>
+          <a-descriptions-item label="磁盘使用率">
+            <span v-if="hostInfo.disk_used_percent != null" :class="{ 'host-disk-danger': Number(hostInfo.disk_used_percent) > 85 }">{{ hostInfo.disk_used_percent }}%</span>
+            <span v-else>-</span>
+          </a-descriptions-item>
+        </a-descriptions>
+        <template v-if="hostInfo && visibleDisks.length">
+          <div class="host-disk-title">磁盘明细（{{ hostInfo.disks.length }} 块）</div>
+          <a-table size="small" row-key="device" :columns="hostDiskColumns" :data-source="visibleDisks" :pagination="false" :locale="{ emptyText: '无磁盘数据' }">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'usage'">
+                <span v-if="record.usage_percent != null" :class="{ 'host-disk-danger': Number(record.usage_percent) > 85 }">{{ record.usage_percent }}%</span>
+                <span v-else>-</span>
+              </template>
+            </template>
+          </a-table>
+          <a-button v-if="hostInfo.disks.length > 8" type="link" size="small" class="host-disk-toggle" @click="showAllDisks = !showAllDisks">
+            {{ showAllDisks ? '收起' : `展开全部 ${hostInfo.disks.length} 块` }}
+          </a-button>
+        </template>
+        <div v-else-if="!hostInfoLoading" class="host-info-missing">主机信息不可见或尚未采集（需要资产查看权限且 agent 已采集过数据）</div>
+      </section>
+
       <section v-if="scope.nodeType === 'service' && entity" class="service-ports-section">
         <div class="child-section-title"><span>监听端口</span><span>{{ entity.ports?.length || 0 }} 项</span></div>
         <a-space v-if="entity.ports?.length" wrap>
           <a-tag v-for="port in entity.ports" :key="`${port.protocol}:${port.port}`">{{ port.name || '端口' }} · {{ String(port.protocol || '').toUpperCase() }} {{ port.port }}</a-tag>
         </a-space>
-        <a-empty v-else :image="simpleImage" description="未配置端口" />
+        <div v-else class="section-empty">未配置端口</div>
+      </section>
+
+      <!-- 日志文件：模板日志定义（名 + 路径），路径用后端 resolved_path（服务层宏已尽力展开），
+           仍含实例级宏时标注出来，不猜值。失败静默展示空态，不阻塞节点信息。 -->
+      <section v-if="scope.nodeType === 'service' && entity" class="service-ports-section">
+        <div class="child-section-title"><span>日志文件</span><span>{{ serviceLogs.length }} 项</span></div>
+        <a-space v-if="serviceLogs.length" direction="vertical" :size="6" class="service-log-list">
+          <div v-for="log in serviceLogs" :key="log.log_definition" class="service-log-item">
+            <a-tag color="blue">{{ log.name }}</a-tag>
+            <span class="service-log-path">{{ log.resolved_path || log.path_pattern }}</span>
+            <a-tooltip v-if="log.pending_macros?.length" :title="`实例级宏待展开：${log.pending_macros.join('、')}`">
+              <a-tag color="orange">{{ log.pending_macros.join('、') }} 待展开</a-tag>
+            </a-tooltip>
+          </div>
+        </a-space>
+        <div v-else class="section-empty">模板未配置日志</div>
       </section>
 
       <template v-if="scope.nodeType !== 'deployment'">
@@ -143,6 +199,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { Empty, message } from 'ant-design-vue'
 import { RightOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
@@ -151,6 +208,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import {
   getApplicationService,
+  getApplicationServiceLogConfig,
   getApplicationDeployment,
   getApplicationDeploymentList,
   getApplicationServiceList,
@@ -160,6 +218,7 @@ import {
   getProjectList,
   refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
+import { getHostById } from '@/api/assets/host'
 
 const props = defineProps({
   scope: { type: Object, required: true },
@@ -174,7 +233,21 @@ const haRoleLabels = { unknown: '未知', primary: '主', standby: '备' }
 const haRoleColors = { primary: 'green', standby: 'blue', unknown: 'default' }
 const loading = ref(false)
 const rows = ref([])
+const router = useRouter()
 const entity = ref(null)
+const serviceLogs = ref([])
+// 部署实例节点的主机基础信息（资产主机详情接口）：null = 不可见/未采集（界面降级成一行提示）。
+const hostInfo = ref(null)
+const hostInfoLoading = ref(false)
+const showAllDisks = ref(false)
+const hostDiskColumns = [
+  { title: '设备', dataIndex: 'device', key: 'device', width: 120 },
+  { title: '挂载点', dataIndex: 'mount_point', key: 'mount_point', width: 140 },
+  { title: '文件系统', dataIndex: 'filesystem', key: 'filesystem', width: 110 },
+  { title: '容量 (GB)', dataIndex: 'size_gb', key: 'size_gb', width: 100, align: 'right' },
+  { title: '已用 (GB)', dataIndex: 'used_gb', key: 'used_gb', width: 100, align: 'right' },
+  { title: '使用率', key: 'usage', width: 90, align: 'right' },
+]
 const detail = ref(null)
 const descendants = ref([])
 const services = ref([])
@@ -418,11 +491,69 @@ function stopRuntimeRefresh() {
   runtimeRefreshTimer = null
 }
 
+function formatHostValue(value) {
+  if (value == null || value === '') return '-'
+  return value
+}
+
+// 磁盘明细超过 8 块默认折叠（排障高频看前几块就够，全部展开会把详情页拉得很长）。
+const visibleDisks = computed(() => {
+  const disks = Array.isArray(hostInfo.value?.disks) ? hostInfo.value.disks : []
+  return showAllDisks.value ? disks : disks.slice(0, 8)
+})
+const hostOsText = computed(() => {
+  const os = hostInfo.value
+  if (!os) return '-'
+  return [formatHostValue(os.os_type), formatHostValue(os.os_version)].filter((part) => part !== '-').join(' ') || '-'
+})
+const hostCpuText = computed(() => {
+  const info = hostInfo.value
+  if (!info) return '-'
+  const cores = info.cpu_cores != null ? `${info.cpu_cores} 核` : ''
+  const model = formatHostValue(info.cpu_model)
+  return [cores, model].filter(Boolean).join(' · ') || '-'
+})
+const hostMemoryText = computed(() => (hostInfo.value?.memory_gb != null ? `${hostInfo.value.memory_gb} GB` : '-'))
+const hostDiskTotalText = computed(() => (hostInfo.value?.disk_total_gb != null ? `${hostInfo.value.disk_total_gb} GB` : '-'))
+
+async function fetchHostInfo(hostId) {
+  hostInfo.value = null
+  if (!hostId) return
+  hostInfoLoading.value = true
+  try {
+    // 接口失败（权限/未采集）保持 null，界面降级成提示行；不打断实例详情展示。
+    const response = await getHostById(hostId)
+    hostInfo.value = response?.data?.data || null
+  } catch {
+    hostInfo.value = null
+  } finally {
+    hostInfoLoading.value = false
+  }
+}
+
+// WebSSH 复用资产主机页的入口：新标签页打开终端，query 语义与其保持一致
+// （target_user 不传，由 webssh 页自己走默认用户/用户选择）。
+function openWebSSH() {
+  const currentDetail = detail.value || {}
+  const routeData = router.resolve({
+    path: '/assets/hosts/webssh',
+    query: {
+      host_id: String(currentDetail.host),
+      instance_name: currentDetail.instance_name || '',
+      ip: currentDetail.host_ip || '',
+    },
+  })
+  window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
+}
+
 async function loadNode() {
   const sequence = ++loadSequence
   loading.value = true
   rows.value = []
   entity.value = null
+  serviceLogs.value = []
+  hostInfo.value = null
+  showAllDisks.value = false
   detail.value = null
   descendants.value = []
   services.value = []
@@ -432,6 +563,7 @@ async function loadNode() {
     let nextDetail = null
     let nextDescendants = []
     let nextServices = []
+    let nextServiceLogs = []
     if (props.scope.nodeType === 'all') {
       const [systemsResult, projectsResult, servicesResult, deploymentsResult] = await Promise.all([
         fetchAll(getBusinessSystemList),
@@ -523,11 +655,14 @@ async function loadNode() {
       nextDescendants = deploymentsResult.filter((deployment) => matchesEnvironment(deployment.environment))
       nextRows = nextServices.map((item) => ({ ...item, key: item.id }))
     } else if (props.scope.nodeType === 'service') {
-      const [entityResponse, deploymentsResult] = await Promise.all([
+      const [entityResponse, deploymentsResult, logConfigResponse] = await Promise.all([
         getApplicationService(props.scope.applicationServiceId),
         fetchAll(getApplicationDeploymentList, { application_service: props.scope.applicationServiceId }),
+        getApplicationServiceLogConfig(props.scope.applicationServiceId).catch(() => null),
       ])
       nextEntity = entityResponse?.data?.data || null
+      // 模板日志定义用于「日志文件」一节；接口失败时留空，不阻塞节点其他信息。
+      nextServiceLogs = logConfigResponse?.data?.data?.logs || []
       const rolesByDeployment = new Map(
         (nextEntity?.member_instances || []).map((item) => [item.deployment, item.ha_role]),
       )
@@ -539,10 +674,13 @@ async function loadNode() {
     } else if (props.scope.nodeType === 'deployment') {
       const detailResponse = await getApplicationDeployment(props.scope.deploymentId)
       nextDetail = detailResponse?.data?.data || null
+      // 主机基础信息不阻塞实例详情：序列校验内并行拉取（失败/无权限 → null 降级提示）。
+      void fetchHostInfo(nextDetail?.host)
     }
     if (sequence !== loadSequence) return
     rows.value = nextRows
     entity.value = nextEntity
+    serviceLogs.value = nextServiceLogs
     detail.value = nextDetail
     descendants.value = nextDescendants
     services.value = nextServices
@@ -623,6 +761,34 @@ defineExpose({ refresh })
 .node-content :deep(.navigable-row:focus > td) { background: #f0f5ff; }
 .node-content :deep(.navigable-row:focus) { outline: 2px solid #91caff; outline-offset: -2px; }
 .deployment-sections { display: grid; gap: 8px; }
+.service-log-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.service-log-path {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  color: #172033;
+  word-break: break-all;
+}
+.service-log-list { width: 100%; }
+.host-info-section { margin-bottom: 4px; }
+.host-info-section .ant-descriptions { margin-bottom: 12px; }
+.host-disk-title {
+  margin: 0 0 8px;
+  color: #687386;
+  font-size: 12px;
+}
+.host-disk-toggle { padding: 0; }
+.host-disk-danger { color: #cf1322; font-weight: 600; }
+.host-info-missing { color: #8c95a5; font-size: 12px; line-height: 20px; }
+/* 空态用一行灰色文字而不是 a-empty：默认 empty 会撑出约 80px 高度，把「监听端口」与
+   「日志文件」两节推得很远、白占空间（2026-09-21 现场）。 */
+.section-empty {
+  padding: 2px 0 6px;
+  color: #8c95a5;
+  font-size: 12px;
+  line-height: 18px;
+}
+/* 服务详情两节（监听端口/日志文件）用小标题间距，避免连续两个空态把版面拉长。 */
+.service-ports-section .child-section-title { margin: 12px 0 6px; }
 @media (max-width: 760px) {
   .metric-band { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .metric-item:nth-child(2) { border-right: 0; }

@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -18,28 +19,33 @@ import (
 type Handler struct {
 	db      *sql.DB
 	gateway *agent.Gateway
+	// shellcheckDir 是平台上传的 shellcheck 二进制的存储目录（<media>/shellcheck）。
+	// 校验时解析顺序：此目录下的 shellcheck → 系统 PATH；都缺失则引导上传或安装。
+	shellcheckDir string
 }
 
-func NewHandler(db *sql.DB, gateway *agent.Gateway) *Handler {
-	return &Handler{db: db, gateway: gateway}
+func NewHandler(db *sql.DB, gateway *agent.Gateway, shellcheckDir string) *Handler {
+	return &Handler{db: db, gateway: gateway, shellcheckDir: shellcheckDir}
 }
 
 type Playbook struct {
-	ID          int64          `json:"id"`
-	CreateTime  time.Time      `json:"create_time"`
-	UpdateTime  time.Time      `json:"update_time"`
-	Remark      sql.NullString `json:"remark"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Content     string         `json:"content"`
-	Category    string         `json:"category"`
+	ID            int64          `json:"id"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Content       string         `json:"content"`
+	ContentFormat string         `json:"content_format"`
+	Category      string         `json:"category"`
 }
 type playbookInput struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Content     string `json:"content"`
-	Category    string `json:"category"`
-	Remark      string `json:"remark"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Content       string `json:"content"`
+	ContentFormat string `json:"content_format"`
+	Category      string `json:"category"`
+	Remark        string `json:"remark"`
 }
 
 func (handler *Handler) List(context *gin.Context) {
@@ -87,7 +93,8 @@ func (handler *Handler) List(context *gin.Context) {
 	for _, row := range rows {
 		items = append(items, Playbook{
 			ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
-			Name: row.Name, Description: row.Description, Content: row.Content, Category: row.Category,
+			Name: row.Name, Description: row.Description, Content: row.Content,
+			ContentFormat: row.ContentFormat, Category: row.Category,
 		})
 	}
 	response.Paginated(context, items, count, int32(page), int32(size))
@@ -118,6 +125,47 @@ func validatePlaybook(content string) error {
 	return nil
 }
 
+// playbookContentFormat 归一内容形态：缺省 = playbook（存量行/旧客户端语义不变）。
+func playbookContentFormat(raw string) string {
+	if strings.TrimSpace(raw) == playbookFormatShell {
+		return playbookFormatShell
+	}
+	return playbookFormatPlaybook
+}
+
+// validatePlaybookContent 按形态分流校验。返回：
+//   - fatal：不可保存的错误消息（空串 = 可保存）；
+//   - warnings：shellcheck 的非 error 级告警（可保存，随响应带回前端黄条提示）。
+//
+// playbook 形态保持原有的 YAML 结构校验；shell 形态交给 shellcheck（error 级拒绝保存）。
+func (handler *Handler) validatePlaybookContent(ctx context.Context, format, content string) (fatal string, warnings []shellcheckFinding) {
+	if strings.TrimSpace(content) == "" {
+		return "Playbook content cannot be empty", nil
+	}
+	if format != playbookFormatShell {
+		return messageOrNil(validatePlaybook(content)), nil
+	}
+	findings, err := handler.validateShellScript(ctx, content)
+	if err != nil {
+		return err.Error(), nil
+	}
+	if fatal := fatalShellcheckFindings(findings); len(fatal) > 0 {
+		messages := make([]string, 0, len(fatal))
+		for _, finding := range fatal {
+			messages = append(messages, fmt.Sprintf("line %d (SC%d): %s", finding.Line, finding.Code, finding.Message))
+		}
+		return "Shell 脚本存在语法错误，无法保存：" + strings.Join(messages, "；"), nil
+	}
+	return "", findings
+}
+
+func messageOrNil(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // playbookCategoryAgent 是 Agent 安装专用模板分类：它是 Agent 安装/更新功能的唯一配置源
 // （assets 包按 category 定位读取），只允许通过种子 SQL 落库并修改内容，
 // 禁止在模板管理中新建、删除或改回其他分类。
@@ -125,10 +173,11 @@ const playbookCategoryAgent = "agent"
 
 func bindPlaybook(context *gin.Context) (playbookInput, bool) {
 	var input playbookInput
-	if context.ShouldBindJSON(&input) != nil || strings.TrimSpace(input.Name) == "" || validatePlaybook(input.Content) != nil {
+	if context.ShouldBindJSON(&input) != nil || strings.TrimSpace(input.Name) == "" {
 		context.JSON(200, gin.H{"code": 400, "msg": "Playbook 名称或内容无效", "data": nil})
 		return input, false
 	}
+	input.ContentFormat = playbookContentFormat(input.ContentFormat)
 	if input.Category == "" {
 		input.Category = "general"
 	}
@@ -157,16 +206,21 @@ func (handler *Handler) Create(context *gin.Context) {
 		context.JSON(200, gin.H{"code": 400, "msg": "Agent 安装专用模板由系统种子数据维护，禁止手动新建", "data": nil})
 		return
 	}
+	fatal, warnings := handler.validatePlaybookContent(context.Request.Context(), input.ContentFormat, input.Content)
+	if fatal != "" {
+		context.JSON(200, gin.H{"code": 400, "msg": fatal, "data": nil})
+		return
+	}
 	now := time.Now().UTC()
 	id, err := db.New(handler.db).CreateAutomationPlaybook(context, db.CreateAutomationPlaybookParams{
 		CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
-		Description: input.Description, Content: input.Content, Category: input.Category,
+		Description: input.Description, Content: input.Content, ContentFormat: input.ContentFormat, Category: input.Category,
 	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	handler.GetByID(context, id)
+	handler.respondPlaybook(context, id, warnings)
 }
 
 func (handler *Handler) Update(context *gin.Context) {
@@ -185,15 +239,21 @@ func (handler *Handler) Update(context *gin.Context) {
 		context.JSON(200, gin.H{"code": 400, "msg": "该模板是 Agent 安装/更新的唯一配置源，无法改为其他分类", "data": nil})
 		return
 	}
+	fatal, warnings := handler.validatePlaybookContent(context.Request.Context(), input.ContentFormat, input.Content)
+	if fatal != "" {
+		context.JSON(200, gin.H{"code": 400, "msg": fatal, "data": nil})
+		return
+	}
 	err = db.New(handler.db).UpdateAutomationPlaybook(context, db.UpdateAutomationPlaybookParams{
 		UpdateTime: time.Now().UTC(), Remark: nullString(input.Remark), Name: strings.TrimSpace(input.Name),
-		Description: input.Description, Content: input.Content, Category: input.Category, ID: id,
+		Description: input.Description, Content: input.Content, ContentFormat: input.ContentFormat,
+		Category: input.Category, ID: id,
 	})
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	handler.GetByID(context, id)
+	handler.respondPlaybook(context, id, warnings)
 }
 
 func (handler *Handler) Get(context *gin.Context) {
@@ -205,29 +265,45 @@ func (handler *Handler) Get(context *gin.Context) {
 	handler.GetByID(context, id)
 }
 func (handler *Handler) GetByID(context *gin.Context, id int64) {
+	handler.respondPlaybook(context, id, nil)
+}
+
+// respondPlaybook 返回模板详情；warnings 非 nil 时（shellcheck 非 error 级告警）一并带回，
+// 前端据此显示黄条提示。读取失败由本函数处理。
+func (handler *Handler) respondPlaybook(context *gin.Context, id int64, warnings []shellcheckFinding) {
 	row, err := db.New(handler.db).GetAutomationPlaybook(context, id)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	response.Success(context, Playbook{
+	playbook := Playbook{
 		ID: row.ID, CreateTime: row.CreateTime, UpdateTime: row.UpdateTime, Remark: row.Remark,
-		Name: row.Name, Description: row.Description, Content: row.Content, Category: row.Category,
-	})
+		Name: row.Name, Description: row.Description, Content: row.Content,
+		ContentFormat: row.ContentFormat, Category: row.Category,
+	}
+	if warnings == nil {
+		response.Success(context, playbook)
+		return
+	}
+	response.Success(context, gin.H{"playbook": playbook, "warnings": warnings})
 }
 func (handler *Handler) Validate(context *gin.Context) {
 	var input struct {
-		Content string `json:"content"`
+		Content       string `json:"content"`
+		ContentFormat string `json:"content_format"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		context.JSON(200, gin.H{"code": 400, "msg": "请求参数错误", "data": nil})
 		return
 	}
-	if err := validatePlaybook(input.Content); err != nil {
-		context.JSON(200, gin.H{"code": 400, "msg": err.Error(), "data": nil})
+	format := playbookContentFormat(input.ContentFormat)
+	fatal, warnings := handler.validatePlaybookContent(context.Request.Context(), format, input.Content)
+	if fatal != "" {
+		// data 里带 shellcheck 的逐条告警（含行号），前端据此在编辑器里定位。
+		context.JSON(200, gin.H{"code": 400, "msg": fatal, "data": warnings})
 		return
 	}
-	response.Success(context, gin.H{"valid": true})
+	response.Success(context, gin.H{"valid": true, "warnings": warnings})
 }
 func nullString(value string) sql.NullString {
 	value = strings.TrimSpace(value)

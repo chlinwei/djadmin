@@ -46,7 +46,7 @@ func multipartBody(t *testing.T, fieldName, fileName, content string) (*strings.
 func TestPlaybookUploadFile(t *testing.T) {
 	// 方言无关片段：两条语句在两侧只差占位符风格（? / $n）。
 	updateQuery := regexp.QuoteMeta(`UPDATE automation_playbook_template`)
-	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, category`)
+	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, content_format, category`)
 	now := time.Now().UTC()
 
 	database, mock, err := sqlmock.New()
@@ -60,8 +60,8 @@ func TestPlaybookUploadFile(t *testing.T) {
 	mock.ExpectExec(updateQuery).WithArgs("- hosts: all\n  tasks:\n    - name: ping\n      ping:\n", sqlmock.AnyArg(), int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectQuery).WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "category"}).
-			AddRow(int64(7), now, now, sql.NullString{}, "site", "", "- hosts: all", "general"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
+			AddRow(int64(7), now, now, sql.NullString{}, "site", "", "- hosts: all", "playbook", "general"))
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/playbooks/7/upload/", body)
@@ -102,7 +102,7 @@ func TestPlaybookUploadFile(t *testing.T) {
 // 下载回归：text/yaml 附件、filename* 按 RFC 5987 编码。
 func TestPlaybookDownloadFile(t *testing.T) {
 	// 下载走的是取行查询（原先只取 name/content，现复用 GetAutomationPlaybook）。
-	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, category`)
+	selectQuery := regexp.QuoteMeta(`SELECT id, create_time, update_time, remark, name, description, content, content_format, category`)
 	database, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("create sql mock: %v", err)
@@ -111,8 +111,8 @@ func TestPlaybookDownloadFile(t *testing.T) {
 	engine := newPlaybookFileServer(t, database)
 
 	mock.ExpectQuery(selectQuery).WithArgs(int64(3)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "category"}).
-			AddRow(int64(3), time.Now().UTC(), time.Now().UTC(), nil, "deploy main v2", "", "- hosts: all\n", "general"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "name", "description", "content", "content_format", "category"}).
+			AddRow(int64(3), time.Now().UTC(), time.Now().UTC(), nil, "deploy main v2", "", "- hosts: all\n", "playbook", "general"))
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/playbooks/3/download/", nil))
 	if recorder.Code != http.StatusOK {

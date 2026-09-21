@@ -4979,6 +4979,62 @@ func (q *Queries) ListPendingLogBatchJobItems(ctx context.Context, arg ListPendi
 	return items, nil
 }
 
+const listProcessingRuleUsages = `-- name: ListProcessingRuleUsages :many
+SELECT r.id AS rule_id, r.name AS rule_name, r.application_id,
+       ld.id AS log_definition_id, ld.name AS log_name, ld.path_pattern,
+       t.id AS template_id, t.name AS template_name,
+       (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id = t.id) AS service_count
+FROM monitor_log_processing_rule r
+JOIN assets_application_log_definition ld ON ld.processing_rule_id = r.id
+JOIN assets_application_deployment_template t ON t.id = ld.deployment_template_id
+ORDER BY r.name, r.id, t.name, t.id, ld.name, ld.id
+`
+
+type ListProcessingRuleUsagesRow struct {
+	RuleID          int64         `json:"rule_id"`
+	RuleName        string        `json:"rule_name"`
+	ApplicationID   sql.NullInt64 `json:"application_id"`
+	LogDefinitionID int64         `json:"log_definition_id"`
+	LogName         string        `json:"log_name"`
+	PathPattern     string        `json:"path_pattern"`
+	TemplateID      int64         `json:"template_id"`
+	TemplateName    string        `json:"template_name"`
+	ServiceCount    int64         `json:"service_count"`
+}
+
+func (q *Queries) ListProcessingRuleUsages(ctx context.Context) ([]ListProcessingRuleUsagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProcessingRuleUsages)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProcessingRuleUsagesRow{}
+	for rows.Next() {
+		var i ListProcessingRuleUsagesRow
+		if err := rows.Scan(
+			&i.RuleID,
+			&i.RuleName,
+			&i.ApplicationID,
+			&i.LogDefinitionID,
+			&i.LogName,
+			&i.PathPattern,
+			&i.TemplateID,
+			&i.TemplateName,
+			&i.ServiceCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProcessingRulesByCluster = `-- name: ListProcessingRulesByCluster :many
 
 SELECT name, pipeline_body, application_id, sample_log, multiline_enabled, start_pattern

@@ -706,6 +706,10 @@ func (r *Repository) GetDeploymentTemplate(ctx context.Context, id int64) (db.Ge
 	return r.queries.GetDeploymentTemplate(ctx, id)
 }
 
+func (r *Repository) ListApplicationServicesByTemplate(ctx context.Context, templateID int64) ([]db.ListApplicationServicesByTemplateRow, error) {
+	return r.queries.ListApplicationServicesByTemplate(ctx, templateID)
+}
+
 func (s *Service) ListDeploymentTemplates(ctx context.Context, applicationID sql.NullInt64, search string, page pagination.Page) ([]DeploymentTemplate, int64, error) {
 	rows, count, err := s.repository.ListDeploymentTemplates(ctx, applicationID, search, page)
 	result := make([]DeploymentTemplate, 0, len(rows))

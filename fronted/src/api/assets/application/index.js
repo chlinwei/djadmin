@@ -196,6 +196,11 @@ export function getApplicationDeploymentTemplate(id) {
     return requestUtil.get(`${templatePrefix}${id}/`)
 }
 
+// 模板的承载服务清单（日志处理规则页「影响服务数」弹窗）：项目/业务系统/环境/服务名。
+export function getApplicationDeploymentTemplateServices(id) {
+    return requestUtil.get(`${templatePrefix}${id}/services/`)
+}
+
 export function saveApplicationDeploymentTemplate(obj) {
     if (obj.id) return requestUtil.patch(`${templatePrefix}${obj.id}/`, obj)
     return requestUtil.post(templatePrefix, obj)

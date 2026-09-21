@@ -1981,8 +1981,11 @@ func (q *Queries) GetAgentPackageIDByVersion(ctx context.Context, version string
 const getApplication = `-- name: GetApplication :one
 SELECT a.id, a.create_time, a.update_time, a.remark, a.name, a.category, a.code, a.description, a.enabled, a.vendor,
   (SELECT COUNT(*) FROM assets_application_version v WHERE v.application_id=a.id) AS version_count,
-  0 AS deployment_template_count,
-  0 AS deployment_count
+  (SELECT COUNT(*) FROM assets_application_deployment_template t WHERE t.application_id=a.id) AS deployment_template_count,
+  (SELECT COUNT(DISTINCT d.id) FROM assets_application_service s
+     JOIN assets_application_service_deployment l ON l.service_id=s.id
+     JOIN assets_application_deployment d ON d.id=l.deployment_id
+     WHERE s.application_id=a.id) AS deployment_count
 FROM assets_application a WHERE a.id=? LIMIT 1
 `
 
@@ -1998,8 +2001,8 @@ type GetApplicationRow struct {
 	Enabled                 bool           `json:"enabled"`
 	Vendor                  string         `json:"vendor"`
 	VersionCount            int64          `json:"version_count"`
-	DeploymentTemplateCount int32          `json:"deployment_template_count"`
-	DeploymentCount         int32          `json:"deployment_count"`
+	DeploymentTemplateCount int64          `json:"deployment_template_count"`
+	DeploymentCount         int64          `json:"deployment_count"`
 }
 
 func (q *Queries) GetApplication(ctx context.Context, id int64) (GetApplicationRow, error) {
@@ -3126,6 +3129,66 @@ func (q *Queries) ListApplicationServices(ctx context.Context, arg ListApplicati
 	return items, nil
 }
 
+const listApplicationServicesByTemplate = `-- name: ListApplicationServicesByTemplate :many
+SELECT s.id, s.name, s.code, s.enabled,
+       s.business_system_id, s.environment_id,
+       COALESCE(p.name, '') AS project_name,
+       b.name AS business_system_name,
+       COALESCE(e.name, '') AS environment_name
+FROM assets_application_service s
+JOIN assets_business_system b ON b.id = s.business_system_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+LEFT JOIN assets_project p ON p.id = b.project_id
+WHERE s.deployment_template_id = ?
+ORDER BY p.name, b.name, s.environment_id, s.name, s.id
+`
+
+type ListApplicationServicesByTemplateRow struct {
+	ID                 int64         `json:"id"`
+	Name               string        `json:"name"`
+	Code               string        `json:"code"`
+	Enabled            bool          `json:"enabled"`
+	BusinessSystemID   int64         `json:"business_system_id"`
+	EnvironmentID      sql.NullInt64 `json:"environment_id"`
+	ProjectName        string        `json:"project_name"`
+	BusinessSystemName string        `json:"business_system_name"`
+	EnvironmentName    string        `json:"environment_name"`
+}
+
+// 模板的承载服务清单（日志处理规则页「影响服务数」弹窗）：项目名经 business_system → project 反查。
+func (q *Queries) ListApplicationServicesByTemplate(ctx context.Context, deploymentTemplateID int64) ([]ListApplicationServicesByTemplateRow, error) {
+	rows, err := q.db.QueryContext(ctx, listApplicationServicesByTemplate, deploymentTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApplicationServicesByTemplateRow{}
+	for rows.Next() {
+		var i ListApplicationServicesByTemplateRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Code,
+			&i.Enabled,
+			&i.BusinessSystemID,
+			&i.EnvironmentID,
+			&i.ProjectName,
+			&i.BusinessSystemName,
+			&i.EnvironmentName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listApplicationVersions = `-- name: ListApplicationVersions :many
 SELECT v.id, v.create_time, v.update_time, v.remark, v.version, v.release_date, v.end_of_support, v.enabled, v.application_id,a.name AS application_name FROM assets_application_version v
 JOIN assets_application a ON a.id=v.application_id
@@ -3197,8 +3260,11 @@ func (q *Queries) ListApplicationVersions(ctx context.Context, arg ListApplicati
 const listApplications = `-- name: ListApplications :many
 SELECT a.id, a.create_time, a.update_time, a.remark, a.name, a.category, a.code, a.description, a.enabled, a.vendor,
   (SELECT COUNT(*) FROM assets_application_version v WHERE v.application_id=a.id) AS version_count,
-  0 AS deployment_template_count,
-  0 AS deployment_count
+  (SELECT COUNT(*) FROM assets_application_deployment_template t WHERE t.application_id=a.id) AS deployment_template_count,
+  (SELECT COUNT(DISTINCT d.id) FROM assets_application_service s
+     JOIN assets_application_service_deployment l ON l.service_id=s.id
+     JOIN assets_application_deployment d ON d.id=l.deployment_id
+     WHERE s.application_id=a.id) AS deployment_count
 FROM assets_application a
 WHERE COALESCE(a.name, '') LIKE ? OR COALESCE(a.code, '') LIKE ?
    OR COALESCE(a.vendor, '') LIKE ? OR COALESCE(a.description, '') LIKE ?
@@ -3223,8 +3289,8 @@ type ListApplicationsRow struct {
 	Enabled                 bool           `json:"enabled"`
 	Vendor                  string         `json:"vendor"`
 	VersionCount            int64          `json:"version_count"`
-	DeploymentTemplateCount int32          `json:"deployment_template_count"`
-	DeploymentCount         int32          `json:"deployment_count"`
+	DeploymentTemplateCount int64          `json:"deployment_template_count"`
+	DeploymentCount         int64          `json:"deployment_count"`
 }
 
 func (q *Queries) ListApplications(ctx context.Context, arg ListApplicationsParams) ([]ListApplicationsRow, error) {

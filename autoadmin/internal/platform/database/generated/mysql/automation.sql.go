@@ -304,33 +304,34 @@ func (q *Queries) CreateAutomationInventory(ctx context.Context, arg CreateAutom
 const createAutomationJob = `-- name: CreateAutomationJob :execlastid
 INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type, source,
                                      inventory_snapshot, task_name_snapshot, template_name_snapshot,
-                                     template_content_snapshot, extra_vars, ` + "`" + `limit` + "`" + `, result_summary,
+                                     template_content_snapshot, template_content_format_snapshot, extra_vars, ` + "`" + `limit` + "`" + `, result_summary,
                                      run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot,
                                      requested_user_id, requested_username)
 VALUES (?, ?, NULL, ?, ?, 'pending', 'manual', 'manual',
         ?, ?, ?,
-        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
         ?, ?, ?,
         ?, ?)
 `
 
 type CreateAutomationJobParams struct {
-	CreateTime              time.Time       `json:"create_time"`
-	UpdateTime              time.Time       `json:"update_time"`
-	JobID                   string          `json:"job_id"`
-	TaskID                  sql.NullInt64   `json:"task_id"`
-	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
-	TaskNameSnapshot        string          `json:"task_name_snapshot"`
-	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
-	TemplateContentSnapshot string          `json:"template_content_snapshot"`
-	ExtraVars               json.RawMessage `json:"extra_vars"`
-	JobLimit                string          `json:"job_limit"`
-	ResultSummary           json.RawMessage `json:"result_summary"`
-	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
-	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
-	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
-	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
-	RequestedUsername       string          `json:"requested_username"`
+	CreateTime                    time.Time       `json:"create_time"`
+	UpdateTime                    time.Time       `json:"update_time"`
+	JobID                         string          `json:"job_id"`
+	TaskID                        sql.NullInt64   `json:"task_id"`
+	InventorySnapshot             json.RawMessage `json:"inventory_snapshot"`
+	TaskNameSnapshot              string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot          string          `json:"template_name_snapshot"`
+	TemplateContentSnapshot       string          `json:"template_content_snapshot"`
+	TemplateContentFormatSnapshot string          `json:"template_content_format_snapshot"`
+	ExtraVars                     json.RawMessage `json:"extra_vars"`
+	JobLimit                      string          `json:"job_limit"`
+	ResultSummary                 json.RawMessage `json:"result_summary"`
+	RunAsUserSnapshot             string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot            string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot         string          `json:"work_directory_snapshot"`
+	RequestedUserID               sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername             string          `json:"requested_username"`
 }
 
 func (q *Queries) CreateAutomationJob(ctx context.Context, arg CreateAutomationJobParams) (int64, error) {
@@ -343,6 +344,7 @@ func (q *Queries) CreateAutomationJob(ctx context.Context, arg CreateAutomationJ
 		arg.TaskNameSnapshot,
 		arg.TemplateNameSnapshot,
 		arg.TemplateContentSnapshot,
+		arg.TemplateContentFormatSnapshot,
 		arg.ExtraVars,
 		arg.JobLimit,
 		arg.ResultSummary,
@@ -401,19 +403,20 @@ func (q *Queries) CreateAutomationJobHostLog(ctx context.Context, arg CreateAuto
 }
 
 const createAutomationPlaybook = `-- name: CreateAutomationPlaybook :execlastid
-INSERT INTO automation_playbook_template(create_time, update_time, remark, name, description, content, category)
+INSERT INTO automation_playbook_template(create_time, update_time, remark, name, description, content, content_format, category)
 VALUES (?, ?, ?, ?,
-        ?, ?, ?)
+        ?, ?, ?, ?)
 `
 
 type CreateAutomationPlaybookParams struct {
-	CreateTime  time.Time      `json:"create_time"`
-	UpdateTime  time.Time      `json:"update_time"`
-	Remark      sql.NullString `json:"remark"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Content     string         `json:"content"`
-	Category    string         `json:"category"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Content       string         `json:"content"`
+	ContentFormat string         `json:"content_format"`
+	Category      string         `json:"category"`
 }
 
 func (q *Queries) CreateAutomationPlaybook(ctx context.Context, arg CreateAutomationPlaybookParams) (int64, error) {
@@ -424,6 +427,7 @@ func (q *Queries) CreateAutomationPlaybook(ctx context.Context, arg CreateAutoma
 		arg.Name,
 		arg.Description,
 		arg.Content,
+		arg.ContentFormat,
 		arg.Category,
 	)
 	if err != nil {
@@ -610,7 +614,7 @@ func (q *Queries) GetAutomationJobStartTime(ctx context.Context, id int64) (sql.
 }
 
 const getAutomationPlaybook = `-- name: GetAutomationPlaybook :one
-SELECT id, create_time, update_time, remark, name, description, content, category
+SELECT id, create_time, update_time, remark, name, description, content, content_format, category
 FROM automation_playbook_template WHERE id = ?
 `
 
@@ -625,6 +629,7 @@ func (q *Queries) GetAutomationPlaybook(ctx context.Context, id int64) (Automati
 		&i.Name,
 		&i.Description,
 		&i.Content,
+		&i.ContentFormat,
 		&i.Category,
 	)
 	return i, err
@@ -656,38 +661,39 @@ func (q *Queries) GetInventoryTyped(ctx context.Context, id int64) (AutomationIn
 }
 
 const getJobTyped = `-- name: GetJobTyped :one
-SELECT j.id, j.create_time, j.update_time, j.remark, j.job_id, j.status, j.trigger_type, j.source, j.inventory_snapshot, j.extra_vars, j.result_summary, j.requested_user_id, j.requested_username, j.start_time, j.end_time, j.duration_seconds, j.task_id, j.template_content_snapshot, j.task_name_snapshot, j.template_name_snapshot, j.` + "`" + `limit` + "`" + `, j.run_as_user_snapshot, j.run_as_group_snapshot, j.work_directory_snapshot, COALESCE(t.execution_timeout_seconds,600) AS execution_timeout_seconds
+SELECT j.id, j.create_time, j.update_time, j.remark, j.job_id, j.status, j.trigger_type, j.source, j.inventory_snapshot, j.extra_vars, j.result_summary, j.requested_user_id, j.requested_username, j.start_time, j.end_time, j.duration_seconds, j.task_id, j.template_content_snapshot, j.template_content_format_snapshot, j.task_name_snapshot, j.template_name_snapshot, j.` + "`" + `limit` + "`" + `, j.run_as_user_snapshot, j.run_as_group_snapshot, j.work_directory_snapshot, COALESCE(t.execution_timeout_seconds,600) AS execution_timeout_seconds
 FROM automation_execution_job j
 LEFT JOIN automation_task t ON t.id = j.task_id
 WHERE j.id = ?
 `
 
 type GetJobTypedRow struct {
-	ID                      int64           `json:"id"`
-	CreateTime              time.Time       `json:"create_time"`
-	UpdateTime              time.Time       `json:"update_time"`
-	Remark                  sql.NullString  `json:"remark"`
-	JobID                   string          `json:"job_id"`
-	Status                  string          `json:"status"`
-	TriggerType             string          `json:"trigger_type"`
-	Source                  string          `json:"source"`
-	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
-	ExtraVars               json.RawMessage `json:"extra_vars"`
-	ResultSummary           json.RawMessage `json:"result_summary"`
-	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
-	RequestedUsername       string          `json:"requested_username"`
-	StartTime               sql.NullTime    `json:"start_time"`
-	EndTime                 sql.NullTime    `json:"end_time"`
-	DurationSeconds         sql.NullFloat64 `json:"duration_seconds"`
-	TaskID                  sql.NullInt64   `json:"task_id"`
-	TemplateContentSnapshot string          `json:"template_content_snapshot"`
-	TaskNameSnapshot        string          `json:"task_name_snapshot"`
-	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
-	Limit                   string          `json:"limit"`
-	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
-	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
-	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
-	ExecutionTimeoutSeconds uint32          `json:"execution_timeout_seconds"`
+	ID                            int64           `json:"id"`
+	CreateTime                    time.Time       `json:"create_time"`
+	UpdateTime                    time.Time       `json:"update_time"`
+	Remark                        sql.NullString  `json:"remark"`
+	JobID                         string          `json:"job_id"`
+	Status                        string          `json:"status"`
+	TriggerType                   string          `json:"trigger_type"`
+	Source                        string          `json:"source"`
+	InventorySnapshot             json.RawMessage `json:"inventory_snapshot"`
+	ExtraVars                     json.RawMessage `json:"extra_vars"`
+	ResultSummary                 json.RawMessage `json:"result_summary"`
+	RequestedUserID               sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername             string          `json:"requested_username"`
+	StartTime                     sql.NullTime    `json:"start_time"`
+	EndTime                       sql.NullTime    `json:"end_time"`
+	DurationSeconds               sql.NullFloat64 `json:"duration_seconds"`
+	TaskID                        sql.NullInt64   `json:"task_id"`
+	TemplateContentSnapshot       string          `json:"template_content_snapshot"`
+	TemplateContentFormatSnapshot string          `json:"template_content_format_snapshot"`
+	TaskNameSnapshot              string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot          string          `json:"template_name_snapshot"`
+	Limit                         string          `json:"limit"`
+	RunAsUserSnapshot             string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot            string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot         string          `json:"work_directory_snapshot"`
+	ExecutionTimeoutSeconds       uint32          `json:"execution_timeout_seconds"`
 }
 
 func (q *Queries) GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, error) {
@@ -712,6 +718,7 @@ func (q *Queries) GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, er
 		&i.DurationSeconds,
 		&i.TaskID,
 		&i.TemplateContentSnapshot,
+		&i.TemplateContentFormatSnapshot,
 		&i.TaskNameSnapshot,
 		&i.TemplateNameSnapshot,
 		&i.Limit,
@@ -726,7 +733,7 @@ func (q *Queries) GetJobTyped(ctx context.Context, id int64) (GetJobTypedRow, er
 const getTaskTyped = `-- name: GetTaskTyped :one
 SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.env_vars, t.enabled, t.inventory_id,
        t.default_limit, t.execution_timeout_seconds, t.playbook_template_id, t.run_as_user, t.run_as_group, t.work_directory,
-       p.name AS template_name, p.content AS template_content, COALESCE(i.name,'') AS inventory_name
+       p.name AS template_name, p.content AS template_content, p.content_format AS template_content_format, COALESCE(i.name,'') AS inventory_name
 FROM automation_task t
 JOIN automation_playbook_template p ON p.id = t.playbook_template_id
 LEFT JOIN automation_inventory i ON i.id = t.inventory_id
@@ -750,6 +757,7 @@ type GetTaskTypedRow struct {
 	WorkDirectory           string          `json:"work_directory"`
 	TemplateName            string          `json:"template_name"`
 	TemplateContent         string          `json:"template_content"`
+	TemplateContentFormat   string          `json:"template_content_format"`
 	InventoryName           string          `json:"inventory_name"`
 }
 
@@ -773,6 +781,7 @@ func (q *Queries) GetTaskTyped(ctx context.Context, id int64) (GetTaskTypedRow, 
 		&i.WorkDirectory,
 		&i.TemplateName,
 		&i.TemplateContent,
+		&i.TemplateContentFormat,
 		&i.InventoryName,
 	)
 	return i, err
@@ -1104,7 +1113,7 @@ func (q *Queries) ListAutomationJobLogChunks(ctx context.Context, jobID int64) (
 }
 
 const listAutomationPlaybooks = `-- name: ListAutomationPlaybooks :many
-SELECT id, create_time, update_time, remark, name, description, content, category
+SELECT id, create_time, update_time, remark, name, description, content, content_format, category
 FROM automation_playbook_template
 WHERE (name LIKE ? OR description LIKE ?
        OR COALESCE(remark, '') LIKE ? OR ? IS NULL)
@@ -1167,6 +1176,7 @@ func (q *Queries) ListAutomationPlaybooks(ctx context.Context, arg ListAutomatio
 			&i.Name,
 			&i.Description,
 			&i.Content,
+			&i.ContentFormat,
 			&i.Category,
 		); err != nil {
 			return nil, err
@@ -1239,7 +1249,7 @@ func (q *Queries) ListInventoriesTyped(ctx context.Context, arg ListInventoriesT
 }
 
 const listJobsTyped = `-- name: ListJobsTyped :many
-SELECT id, create_time, update_time, remark, job_id, status, trigger_type, source, inventory_snapshot, extra_vars, result_summary, requested_user_id, requested_username, start_time, end_time, duration_seconds, task_id, template_content_snapshot, task_name_snapshot, template_name_snapshot, ` + "`" + `limit` + "`" + `, run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot FROM automation_execution_job a
+SELECT id, create_time, update_time, remark, job_id, status, trigger_type, source, inventory_snapshot, extra_vars, result_summary, requested_user_id, requested_username, start_time, end_time, duration_seconds, task_id, template_content_snapshot, template_content_format_snapshot, task_name_snapshot, template_name_snapshot, ` + "`" + `limit` + "`" + `, run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot FROM automation_execution_job a
 WHERE (a.id = ? OR ? IS NULL)
   AND (a.status = ? OR ? IS NULL)
   AND (a.task_id = ? OR ? IS NULL)
@@ -1303,6 +1313,7 @@ func (q *Queries) ListJobsTyped(ctx context.Context, arg ListJobsTypedParams) ([
 			&i.DurationSeconds,
 			&i.TaskID,
 			&i.TemplateContentSnapshot,
+			&i.TemplateContentFormatSnapshot,
 			&i.TaskNameSnapshot,
 			&i.TemplateNameSnapshot,
 			&i.Limit,
@@ -1502,18 +1513,20 @@ func (q *Queries) UpdateAutomationInventory(ctx context.Context, arg UpdateAutom
 const updateAutomationPlaybook = `-- name: UpdateAutomationPlaybook :exec
 UPDATE automation_playbook_template
 SET update_time = ?, remark = ?, name = ?,
-    description = ?, content = ?, category = ?
+    description = ?, content = ?, content_format = ?,
+    category = ?
 WHERE id = ?
 `
 
 type UpdateAutomationPlaybookParams struct {
-	UpdateTime  time.Time      `json:"update_time"`
-	Remark      sql.NullString `json:"remark"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Content     string         `json:"content"`
-	Category    string         `json:"category"`
-	ID          int64          `json:"id"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Content       string         `json:"content"`
+	ContentFormat string         `json:"content_format"`
+	Category      string         `json:"category"`
+	ID            int64          `json:"id"`
 }
 
 func (q *Queries) UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutomationPlaybookParams) error {
@@ -1523,6 +1536,7 @@ func (q *Queries) UpdateAutomationPlaybook(ctx context.Context, arg UpdateAutoma
 		arg.Name,
 		arg.Description,
 		arg.Content,
+		arg.ContentFormat,
 		arg.Category,
 		arg.ID,
 	)

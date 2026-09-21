@@ -1831,6 +1831,19 @@ function handleExporterTypeChange(value) {
   }
 }
 
+// 批量纳管/启停/删除都是逐台执行，部分失败是常态；把失败主机和原因摊开，避免只报笼统错误。
+function reportFilebeatBatchResult(label, data) {
+  const results = Array.isArray(data?.results) ? data.results : []
+  const failed = results.filter((item) => !item.ok)
+  if (failed.length === 0) {
+    message.success(`${label}成功：${data?.success ?? results.length} 台`)
+    return
+  }
+  const detail = failed.slice(0, 3).map((item) => `${item.host}：${item.message}`).join('；')
+  const suffix = failed.length > 3 ? ` 等 ${failed.length} 台` : ''
+  message.warning(`${label}完成：成功 ${data?.success ?? results.length - failed.length} 台，失败 ${failed.length} 台。${detail}${suffix}`)
+}
+
 async function submitExporterCreate() {
   if (!exporterCreateForm.exporter_type) {
     message.error('请选择 Exporter')

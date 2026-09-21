@@ -37,7 +37,7 @@ LIMIT $1 OFFSET $2;
 -- name: GetTaskTyped :one
 SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.env_vars, t.enabled, t.inventory_id,
        t.default_limit, t.execution_timeout_seconds, t.playbook_template_id, t.run_as_user, t.run_as_group, t.work_directory,
-       p.name AS template_name, p.content AS template_content, COALESCE(i.name,'') AS inventory_name
+       p.name AS template_name, p.content AS template_content, p.content_format AS template_content_format, COALESCE(i.name,'') AS inventory_name
 FROM automation_task t
 JOIN automation_playbook_template p ON p.id = t.playbook_template_id
 LEFT JOIN automation_inventory i ON i.id = t.inventory_id
@@ -84,7 +84,7 @@ WHERE (name LIKE sqlc.narg(pattern) OR description LIKE sqlc.narg(pattern)
 -- 改成按 sort_key（带 '-' 前缀表示倒序）选择的 CASE 表达式——两方言等价，代价是排序
 -- 不再走索引（模板表很小，可接受）；未命中任何分支时回落到 `id DESC`。
 -- name: ListAutomationPlaybooks :many
-SELECT id, create_time, update_time, remark, name, description, content, category
+SELECT id, create_time, update_time, remark, name, description, content, content_format, category
 FROM automation_playbook_template
 WHERE (name LIKE sqlc.narg(pattern) OR description LIKE sqlc.narg(pattern)
        OR COALESCE(remark, '') LIKE sqlc.narg(pattern) OR sqlc.narg(pattern) IS NULL)
@@ -102,19 +102,20 @@ ORDER BY
 LIMIT $1 OFFSET $2;
 
 -- name: GetAutomationPlaybook :one
-SELECT id, create_time, update_time, remark, name, description, content, category
+SELECT id, create_time, update_time, remark, name, description, content, content_format, category
 FROM automation_playbook_template WHERE id = sqlc.arg(id);
 
 -- name: CreateAutomationPlaybook :one
-INSERT INTO automation_playbook_template(create_time, update_time, remark, name, description, content, category)
+INSERT INTO automation_playbook_template(create_time, update_time, remark, name, description, content, content_format, category)
 VALUES (sqlc.arg(create_time), sqlc.arg(update_time), sqlc.narg(remark), sqlc.arg(name),
-        sqlc.arg(description), sqlc.arg(content), sqlc.arg(category))
+        sqlc.arg(description), sqlc.arg(content), sqlc.arg(content_format), sqlc.arg(category))
 RETURNING id;
 
 -- name: UpdateAutomationPlaybook :exec
 UPDATE automation_playbook_template
 SET update_time = sqlc.arg(update_time), remark = sqlc.narg(remark), name = sqlc.arg(name),
-    description = sqlc.arg(description), content = sqlc.arg(content), category = sqlc.arg(category)
+    description = sqlc.arg(description), content = sqlc.arg(content), content_format = sqlc.arg(content_format),
+    category = sqlc.arg(category)
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateAutomationPlaybookContent :execrows
@@ -194,12 +195,12 @@ DELETE FROM automation_task WHERE id = sqlc.arg(id);
 -- name: CreateAutomationJob :one
 INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type, source,
                                      inventory_snapshot, task_name_snapshot, template_name_snapshot,
-                                     template_content_snapshot, extra_vars, "limit", result_summary,
+                                     template_content_snapshot, template_content_format_snapshot, extra_vars, "limit", result_summary,
                                      run_as_user_snapshot, run_as_group_snapshot, work_directory_snapshot,
                                      requested_user_id, requested_username)
 VALUES (sqlc.arg(create_time), sqlc.arg(update_time), NULL, sqlc.arg(job_id), sqlc.narg(task_id), 'pending', 'manual', 'manual',
         sqlc.arg(inventory_snapshot), sqlc.arg(task_name_snapshot), sqlc.arg(template_name_snapshot),
-        sqlc.arg(template_content_snapshot), sqlc.arg(extra_vars), sqlc.arg(job_limit), sqlc.arg(result_summary),
+        sqlc.arg(template_content_snapshot), sqlc.arg(template_content_format_snapshot), sqlc.arg(extra_vars), sqlc.arg(job_limit), sqlc.arg(result_summary),
         sqlc.arg(run_as_user_snapshot), sqlc.arg(run_as_group_snapshot), sqlc.arg(work_directory_snapshot),
         sqlc.narg(requested_user_id), sqlc.arg(requested_username))
 RETURNING id;

@@ -129,6 +129,7 @@ CREATE TABLE automation_playbook_template (
   name varchar(128) NOT NULL,
   description varchar(255) NOT NULL,
   content text NOT NULL,
+  content_format varchar(16) NOT NULL DEFAULT 'playbook',
   category varchar(32) NOT NULL,
   PRIMARY KEY (id),
   CONSTRAINT automation_playbook_template_name UNIQUE (name)

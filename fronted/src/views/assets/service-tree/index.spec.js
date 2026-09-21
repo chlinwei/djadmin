@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
@@ -42,10 +43,16 @@ const ApplicationServiceDialogStub = {
   template: '<div class="application-service-dialog-stub" />',
 }
 
-function mountPage() {
+async function mountPage(query = {}) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/assets/service-tree', component: ServiceTreePage }],
+  })
+  router.push({ path: '/assets/service-tree', query })
+  await router.isReady()
   return mount(ServiceTreePage, {
     global: {
-      plugins: [Antd],
+      plugins: [Antd, router],
       stubs: {
         ServiceTree: ServiceTreeStub,
         ServiceTreeNodeContent: ServiceTreeNodeContentStub,
@@ -62,7 +69,7 @@ function mountPage() {
 
 describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
   it('全部业务/项目节点显示新增业务系统按钮，其他节点隐藏', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     expect(wrapper.text()).toContain('新增业务系统')
@@ -81,7 +88,7 @@ describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
   })
 
   it('新增业务系统在项目节点下会预填所属项目，其余场景不预填', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     const createButton = wrapper.findAll('button').find((btn) => btn.text().includes('新增业务系统'))
@@ -103,7 +110,7 @@ describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
   })
 
   it('子内容触发编辑事件后打开对话框并回填 systemId', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('edit-business-system', { id: 7, name: '订单系统' })
@@ -115,7 +122,7 @@ describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
   })
 
   it('子内容触发删除事件后调用删除确认，确认后请求删除接口并刷新树', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('delete-business-system', { id: 7, name: '订单系统' })
@@ -135,7 +142,7 @@ describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
 
 describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
   it('全部业务/项目/业务系统/环境节点显示新增逻辑服务按钮，service/deployment 节点隐藏', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     expect(wrapper.text()).toContain('新增逻辑服务')
@@ -154,7 +161,7 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
   })
 
   it('新增逻辑服务按当前树选中的业务系统/环境预填', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await wrapper.findComponent(ServiceTreeStub).vm.$emit('select', {
@@ -172,7 +179,7 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
   })
 
   it('子内容触发编辑事件后打开对话框并回填 serviceId', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('edit-service', { id: 21, name: '订单 API' })
@@ -184,7 +191,7 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
   })
 
   it('子内容触发删除事件后调用删除确认，确认后请求删除接口并刷新树', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('delete-service', { id: 21, name: '订单 API' })
@@ -199,5 +206,37 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
     await onConfirm()
 
     expect(applicationApi.batchDeleteApplicationServices).toHaveBeenCalledWith([21])
+  })
+})
+
+describe('service-tree/index.vue 深链定位', () => {
+  it('带 application_service_id query 挂载时直接定位到该服务节点', async () => {
+    const wrapper = await mountPage({
+      application_service_id: '21',
+      service_name: '订单 API',
+      business_system_id: '7',
+      environment_id: '72',
+      environment_name: '测试环境',
+    })
+    await flushPromises()
+    // 内容面板收到的 scope 应是 service 节点（树的选中态由 scopeKey 反推，用同一份 scope）。
+    const scope = wrapper.findComponent(ServiceTreeNodeContentStub).props('scope')
+    expect(scope).toEqual(expect.objectContaining({
+      nodeType: 'service',
+      applicationServiceId: 21,
+      nodeTitle: '订单 API',
+      businessSystemId: 7,
+      environment: 72,
+      environmentName: '测试环境',
+    }))
+    wrapper.unmount()
+  })
+
+  it('无 query 挂载保持默认全部业务节点', async () => {
+    const wrapper = await mountPage()
+    await flushPromises()
+    const scope = wrapper.findComponent(ServiceTreeNodeContentStub).props('scope')
+    expect(scope.nodeType).toBe('all')
+    wrapper.unmount()
   })
 })

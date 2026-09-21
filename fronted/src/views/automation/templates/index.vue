@@ -21,6 +21,12 @@
       </a-col>
       <a-col :span="8" class="right-tools">
         <a-space>
+          <a-tooltip :title="shellcheck.ready ? `ShellCheck 已就绪（${shellcheck.source === 'uploaded' ? '平台上传' : '服务器安装'}${shellcheck.version ? ' v' + shellcheck.version : ''}）` : 'Shell 类模板需要 ShellCheck 校验，点此上传或安装'">
+            <a-tag :color="shellcheck.ready ? 'green' : 'red'" class="shellcheck-tag" @click="openShellcheckModal">
+              <FontAwesomeIcon :icon="['fas', shellcheck.ready ? 'circle-check' : 'triangle-exclamation']" />
+              <span>&nbsp;ShellCheck {{ shellcheck.ready ? '已就绪' : '未就绪' }}</span>
+            </a-tag>
+          </a-tooltip>
           <a-tooltip title="新增">
             <a-button v-if="canCreateCurrentType" size="large" @click="openTemplateModal()">
               <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />
@@ -57,6 +63,11 @@
               <a-tag color="geekblue">Agent 安装专用</a-tag>
             </a-tooltip>
             <a-tag v-else color="default">通用</a-tag>
+          </template>
+          <template v-else-if="column.key === 'content_format'">
+            <a-tag :color="record.content_format === 'shell' ? 'orange' : 'blue'">
+              {{ record.content_format === 'shell' ? 'Shell 脚本' : 'Playbook' }}
+            </a-tag>
           </template>
           <template v-else-if="column.key === 'update_time'">
             <span>{{ record.update_time ? formatTimeWithTimezone(record.update_time, store.state.user?.timezone || 'Asia/Shanghai') : '-' }}</span>
@@ -118,10 +129,16 @@
         <a-form-item label="分类" required>
           <a-select v-model:value="templateEdit.category" :options="categoryOptions" :disabled="isAgentTemplate" :getPopupContainer="getPopupContainer" />
         </a-form-item>
+        <a-form-item label="类型" required>
+          <a-segmented v-model:value="templateEdit.content_format" :options="contentFormatOptions" block @change="handleContentFormatChange" />
+          <div class="upload-tip">
+            Playbook 存标准 YAML；Shell 脚本只写裸脚本，执行时由平台包装成单任务 playbook（以 root 运行，任务的 run_as 会切换用户）。
+          </div>
+        </a-form-item>
         <a-form-item label="描述">
           <a-input v-model:value="templateEdit.description" />
         </a-form-item>
-        <a-form-item v-if="templateEdit.id" label="模板文件导入">
+        <a-form-item v-if="templateEdit.id && !isShellTemplate" label="模板文件导入">
           <a-space>
             <a-upload
               accept=".yml,.yaml"
@@ -136,7 +153,7 @@
             <span class="upload-tip">仅支持 .yml/.yaml，上传后将覆盖模板内容。</span>
           </a-space>
         </a-form-item>
-        <a-form-item label="模板内容（YAML）" required>
+        <a-form-item :label="isShellTemplate ? '脚本内容（Bash）' : '模板内容（YAML）'" required>
           <a-space style="margin-bottom: 8px;">
             <a-button
               type="primary"
@@ -146,7 +163,8 @@
             >
               <span>检查语法</span>
             </a-button>
-            <span class="upload-tip">保存前可手动校验 YAML/Playbook 结构</span>
+            <a-button v-if="isShellTemplate" type="link" @click="templateEdit.content = SHELL_EXAMPLE">填入内存检查示例</a-button>
+            <span class="upload-tip">{{ isShellTemplate ? '保存前用 ShellCheck 校验脚本（需组件已就绪）' : '保存前可手动校验 YAML/Playbook 结构' }}</span>
           </a-space>
           <div class="template-editor-wrap">
             <div ref="lineNumberGutterRef" class="template-editor-gutter" aria-hidden="true">
@@ -162,6 +180,49 @@
           </div>
         </a-form-item>
       </a-form>
+    </a-modal>
+
+    <!-- ShellCheck 组件管理：Shell 类模板校验依赖它。两种就绪方式——平台上传（离线内网）
+         或服务器 yum/apt 安装（PATH）。上传的二进制存在服务器 <media>/shellcheck/shellcheck。 -->
+    <a-modal
+      v-model:open="shellcheckModalVisible"
+      title="ShellCheck 组件"
+      :footer="null"
+      :width="620"
+      centered
+    >
+      <a-descriptions :column="1" size="small" bordered>
+        <a-descriptions-item label="状态">
+          <a-tag :color="shellcheck.ready ? 'green' : 'red'">{{ shellcheck.ready ? '已就绪' : '未就绪' }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="来源">
+          {{ shellcheck.ready ? (shellcheck.source === 'uploaded' ? '平台上传' : '服务器 PATH 安装') : '-' }}
+        </a-descriptions-item>
+        <a-descriptions-item label="版本">{{ shellcheck.version || '-' }}</a-descriptions-item>
+      </a-descriptions>
+      <div class="shellcheck-help">
+        <p>Shell 类模板用 ShellCheck 做语法与静态检查，服务器需要满足其一：</p>
+        <p>1）在下方上传对应的 shellcheck 静态二进制（离线内网推荐，架构需与服务器一致，通常 x86_64）；</p>
+        <p>2）在服务器执行 <code>yum install shellcheck</code> 或 <code>apt install shellcheck</code>，然后点刷新。</p>
+      </div>
+      <a-space>
+        <a-upload :show-upload-list="false" :custom-request="handleShellcheckUpload" :disabled="!hasPermission('update')">
+          <a-button type="primary" :loading="shellcheckUploading">
+            <UploadOutlined />
+            <span>&nbsp;{{ shellcheck.ready && shellcheck.source === 'uploaded' ? '重新上传' : '上传 shellcheck 二进制' }}</span>
+          </a-button>
+        </a-upload>
+        <a-button @click="loadShellcheckStatus" :loading="shellcheck.loading">刷新状态</a-button>
+        <a-popconfirm
+          v-if="shellcheck.ready && shellcheck.source === 'uploaded'"
+          title="删除已上传的 ShellCheck 二进制？删除后将回退到服务器 PATH 安装。"
+          ok-text="删除"
+          cancel-text="取消"
+          @confirm="removeShellcheckBinary"
+        >
+          <a-button danger :disabled="!hasPermission('update')">删除上传的二进制</a-button>
+        </a-popconfirm>
+      </a-space>
     </a-modal>
   </div>
 </template>
@@ -180,9 +241,12 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   batchDeletePlaybooks,
   createPlaybook,
+  deleteShellcheckBinary,
   downloadPlaybookFile,
   getPlaybookList,
+  getShellcheckStatus,
   uploadPlaybookFile,
+  uploadShellcheckBinary,
   updatePlaybook,
   validatePlaybookContent,
 } from '@/api/sys/automation'
@@ -225,13 +289,93 @@ const templateEdit = reactive({
   name: '',
   description: '',
   content: '',
+  content_format: 'playbook',
   category: 'general',
 })
+
+// ---- ShellCheck 组件状态与上传（仅 Shell 类模板需要）----
+const shellcheck = reactive({ ready: false, source: '', version: '', loading: false })
+const shellcheckModalVisible = ref(false)
+const shellcheckUploading = ref(false)
+
+// Shell 脚本示例：内存使用率检查（超过阈值以非零退出码失败，任务结果即可判定）。
+// 用 awk 只取一次 free 输出并计算，避免依赖 bc/其他外部命令。
+const SHELL_EXAMPLE = `#!/bin/bash
+# 内存使用率检查：超过阈值（默认 90%）退出码非 0，任务即判定失败。
+THRESHOLD=\${THRESHOLD:-90}
+total=\$(awk '/^MemTotal:/{print \$2}' /proc/meminfo)
+available=\$(awk '/^MemAvailable:/{print \$2}' /proc/meminfo)
+used_pct=\$(( (total - available) * 100 / total ))
+echo "memory used: \${used_pct}% (threshold \${THRESHOLD}%)"
+if [ "\$used_pct" -ge "\$THRESHOLD" ]; then
+  echo "memory usage exceeds threshold"
+  exit 1
+fi
+exit 0
+`
+
+async function loadShellcheckStatus() {
+  shellcheck.loading = true
+  try {
+    const res = await getShellcheckStatus()
+    const data = res?.data?.data || {}
+    shellcheck.ready = Boolean(data.ready)
+    shellcheck.source = data.source || ''
+    shellcheck.version = data.version || ''
+  } catch {
+    shellcheck.ready = false
+  } finally {
+    shellcheck.loading = false
+  }
+}
+
+function openShellcheckModal() {
+  shellcheckModalVisible.value = true
+  loadShellcheckStatus()
+}
+
+async function handleShellcheckUpload(options) {
+  const file = options?.file
+  if (!file) return
+  const formData = new FormData()
+  formData.append('file', file)
+  shellcheckUploading.value = true
+  try {
+    const res = await uploadShellcheckBinary(formData)
+    const data = res?.data?.data || {}
+    shellcheck.ready = Boolean(data.ready)
+    shellcheck.source = data.source || ''
+    shellcheck.version = data.version || ''
+    message.success('ShellCheck 已上传并启用')
+    options?.onSuccess?.(data, file)
+  } catch (error) {
+    options?.onError?.(error)
+    throw error
+  } finally {
+    shellcheckUploading.value = false
+  }
+}
+
+async function removeShellcheckBinary() {
+  await deleteShellcheckBinary()
+  message.success('已删除上传的 ShellCheck 二进制')
+  await loadShellcheckStatus()
+}
+
+// 校验结果的统一提示：warnings 是 shellcheck 的非 error 级告警（可保存但值得提示）。
+function reportValidationWarnings(warnings) {
+  const list = Array.isArray(warnings) ? warnings.filter(Boolean) : []
+  if (!list.length) return
+  const brief = list.slice(0, 3).map((item) => `第 ${item.line} 行 SC${item.code}: ${item.message}`).join('；')
+  const suffix = list.length > 3 ? ` 等 ${list.length} 条` : ''
+  message.warning(`脚本可保存，但存在 ${list.length} 条 ShellCheck 提示：${brief}${suffix}`, 8)
+}
 
 const lineNumberGutterRef = ref(null)
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', sorter: true },
+  { title: '类型', key: 'content_format', width: 110 },
   { title: '分类', key: 'category', width: 150 },
   { title: '描述', dataIndex: 'description', key: 'description' },
   { title: '更新时间', dataIndex: 'update_time', key: 'update_time', width: 180, sorter: true },
@@ -246,6 +390,11 @@ const categoryFilterOptions = [
 const canCreateCurrentType = computed(() => hasPermission('create'))
 // Agent 安装专用模板的分类锁定：它是 autoadmin 安装/更新 dj-agent 的唯一配置源（按分类定位），只允许改内容。
 const isAgentTemplate = computed(() => templateEdit.category === 'agent')
+const isShellTemplate = computed(() => templateEdit.content_format === 'shell')
+const contentFormatOptions = [
+  { label: 'Playbook YAML', value: 'playbook' },
+  { label: 'Shell 脚本', value: 'shell' },
+]
 const templateLineNumbers = computed(() => {
   const lineCount = String(templateEdit.content || '').split('\n').length
   return Array.from({ length: Math.max(lineCount, 1) }, (_, index) => index + 1)
@@ -292,6 +441,7 @@ function resetTemplateEdit() {
   templateEdit.name = ''
   templateEdit.description = ''
   templateEdit.content = ''
+  templateEdit.content_format = 'playbook'
   templateEdit.category = 'general'
 }
 
@@ -302,9 +452,19 @@ function openTemplateModal(record = null) {
     templateEdit.name = record.name || ''
     templateEdit.description = record.description || ''
     templateEdit.content = record.content || ''
+    templateEdit.content_format = record.content_format || 'playbook'
     templateEdit.category = record.category || 'general'
   }
   templateModalVisible.value = true
+  if (templateEdit.content_format === 'shell') loadShellcheckStatus()
+}
+
+// 切换到 Shell 时若内容为空，自动填入内存检查示例，降低上手成本。
+function handleContentFormatChange(value) {
+  if (value === 'shell') {
+    if (!String(templateEdit.content || '').trim()) templateEdit.content = SHELL_EXAMPLE
+    loadShellcheckStatus()
+  }
 }
 
 function parseDownloadFilename(contentDisposition, fallbackName) {
@@ -338,10 +498,19 @@ async function checkTemplateSyntax() {
     message.error('请先输入模板内容')
     return
   }
+  if (isShellTemplate.value && !shellcheck.ready) {
+    message.warning('服务器未就绪 ShellCheck，请先上传二进制或安装后再校验')
+    openShellcheckModal()
+    return
+  }
 
   playbookCheckingSyntax.value = true
   try {
-    await validatePlaybookContent({ content: templateEdit.content })
+    const res = await validatePlaybookContent({
+      content: templateEdit.content,
+      content_format: templateEdit.content_format,
+    })
+    reportValidationWarnings(res?.data?.data?.warnings)
     message.success('语法检查通过')
   } finally {
     playbookCheckingSyntax.value = false
@@ -411,13 +580,24 @@ async function submitTemplate() {
     name: String(templateEdit.name).trim(),
     description: String(templateEdit.description || ''),
     content: templateEdit.content,
+    content_format: templateEdit.content_format,
     category: templateEdit.category || 'general',
+  }
+
+  if (isShellTemplate.value && !shellcheck.ready) {
+    message.warning('服务器未就绪 ShellCheck，请先上传二进制或安装后再保存')
+    openShellcheckModal()
+    return
   }
 
   submitting.value = true
   try {
     try {
-      await validatePlaybookContent({ content: templateEdit.content })
+      const res = await validatePlaybookContent({
+        content: templateEdit.content,
+        content_format: templateEdit.content_format,
+      })
+      reportValidationWarnings(res?.data?.data?.warnings)
     } catch (error) {
       return
     }
@@ -469,7 +649,7 @@ function handleTableChange(page, _filters, sorter) {
 onMounted(async () => {
   keyword.value = String(route.query.search || route.query.keyword || '').trim()
   pagination.current = 1
-  await loadTemplates(false)
+  await Promise.all([loadTemplates(false), loadShellcheckStatus()])
 })
 </script>
 
@@ -502,6 +682,30 @@ onMounted(async () => {
 .upload-tip {
   color: #8c8c8c;
   font-size: 12px;
+}
+
+.shellcheck-tag {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.shellcheck-help {
+  margin: 12px 0;
+  color: #595959;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.shellcheck-help p {
+  margin: 0;
+}
+
+.shellcheck-help code {
+  padding: 1px 5px;
+  background: #f5f5f5;
+  border-radius: 4px;
 }
 
 .template-editor-wrap {

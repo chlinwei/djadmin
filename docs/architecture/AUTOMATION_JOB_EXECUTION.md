@@ -55,6 +55,28 @@ pending ──(worker 消费/内联派发)──> running ──┬──> succe
   别名只由后端生成、不被任何代码解析，因此改它只影响展示。
 - 子进程按**独立进程组**运行（`Setpgid`），并在返回前按组回收，见下文"孤儿进程"。
 
+## 模板形态：Playbook 与 Shell 脚本（2026-09-21）
+
+`automation_playbook_template.content_format` 区分两种模板形态，`content` 始终存**原始内容**：
+
+- `playbook`（默认）：标准 YAML 全文，保存/校验沿用「非空 + 合法 YAML + 非空 plays 列表」的结构校验。
+- `shell`：裸 bash 脚本。保存/校验走 **ShellCheck**（覆盖 `bash -n` 的语法检查 + 引号/变量等静态分析）：
+  - **就绪方式二选一**，解析顺序 `上传优先 → PATH`：
+    1. 平台上传：`POST /sys/automation/shellcheck/binary/`（multipart 字段 `file`）把二进制存到
+       `<工作目录>/media/shellcheck/shellcheck`（0755，覆盖式），离线内网环境的就绪通道；
+    2. 服务器安装：`yum/apt install shellcheck`（PATH 兜底）。
+    状态接口 `GET /sys/automation/shellcheck/binary/` 实时探测（`source=uploaded|system` + `--version`）；
+    `DELETE` 删除上传的二进制回退到 PATH。都没有时校验返回明确指引文案，不落库。
+  - **判定**：ShellCheck `error` 级（语法错误等）拒绝保存；`warning/info/style` 放行，并随响应
+    `warnings` 带回前端黄条提示（`apply/validate` 同一口径，前端保存前会调 `playbooks/validate/`）。
+- **执行时包装**：shell 形态在 `runAutomationJob` 渲染快照时由 `wrapShellPlaybook` 包装成单任务
+  playbook（`hosts: all` / `gather_facts: false` / `ansible.builtin.shell` 原文 + `executable: /bin/bash`），
+  再走既有 `executeLocalAnsible`。**身份与变量不额外处理**：inventory 的 ssh 用户默认 root；
+  任务的 `run_as_user` 由既有 `--become --become-user` 切换；参数沿用 `env_vars`/`--extra-vars`。
+- **快照语义不变**：`automation_execution_job.template_content_snapshot` 存原始内容，
+  `template_content_format_snapshot` 存形态；改模板形态/内容不影响在途作业（包装只在执行时发生，幂等）。
+- agent 安装专用模板（`category=agent`）等内容由系统维护的模板仍按对应流程校验，不受此影响。
+
 ## 超时语义
 
 | 项 | 值 |
@@ -94,6 +116,12 @@ pending ──(worker 消费/内联派发)──> running ──┬──> succe
 | 运行中（非终态） | `automation_execution_job_log` 的**实时块** | 边跑边看；块为空时前端显示"等待新输出" |
 | 终态（success/failed/cancelled） | `automation_execution_host_log` 的**按主机结果行** | 每台一行，带退出码与 stdout/stderr |
 
+> **stdout 回调固定为 minimal**（`ansiblecmd.CommandContext` 注入 `ANSIBLE_STDOUT_CALLBACK=minimal`，
+> 用户显式设置时不覆盖）：ansible 默认回调只打印每台主机的 `ok/changed` 状态行，**不显示
+> shell/command 任务成功时的 stdout**，表现为"脚本明明 echo 了、作业日志里什么都没有"（2026-09-21
+> 现场）。minimal 把 stdout/stderr 直接跟在 `host | CHANGED | rc=0 >>` 之后，既有内容又不引入
+> `-v` 那种整份任务结果字典的噪声。宿主 PATH 与嵌入 ansible 两个构建变体行为一致。
+
 - **实时块**：`executeLocalAnsible` 用管道读 ansible 的 stdout/stderr，边写内存缓冲（供结束时的按主机行）
   边按块落库——攒够 4KB 或间隔 1.5s 刷一次（`liveLogStreamer`）。写失败只丢弃该块：
   实时输出是"尽力而为"的展示，不影响作业本身。
@@ -125,3 +153,26 @@ pending ──(worker 消费/内联派发)──> running ──┬──> succe
 `CancelJob` **只更新数据库**（`status='cancelled'`、写 `end_time`/时长、摘要 "Cancelled by user"），
 不会去杀已派发的进程。对已经失联的作业，取消是最快的止血手段：DB 状态一变，
 日志视图立刻从"等待新输出"变成"已结束（已取消）"。
+
+## 权限点：任务 CRUD 与作业执行是两套（2026-09-21 补）
+
+| 动作 | 接口 | 权限码 |
+|---|---|---|
+| 任务 增/改/删 | `POST/PATCH/PUT/batch-delete /sys/automation/tasks/*` | `automation:tasks:create` / `:update` / `:delete` |
+| 任务查看 | `GET /sys/automation/tasks/*` | `automation:tasks:view` |
+| 立即执行 / 预检 | `POST tasks/:id/run_now` / `:id/precheck` | `automation:jobs:create` |
+| 运行记录 | `/sys/automation/jobs/*` 等 | `automation:jobs:view` / `:cancel` |
+| 模板 CRUD | `/sys/automation/playbooks/*` | `automation:playbooks:*` |
+| ShellCheck 组件 | `/sys/automation/shellcheck/binary/` | 读 `automation:playbooks:view`、写 `automation:playbooks:update` |
+
+迁移 000047 补齐了此前 `sys_menu` 里缺失的 `automation:tasks:create/update/delete` 三条权限点
+（只有 `tasks:view`，导致非 admin 保存任务 403「无权限访问」），并把误命名为「任务创建」的
+`automation:jobs:create` 行改名为「任务执行」。补授权给已拥有 `tasks:view` 的角色；
+权限码随 JWT 签发，存量用户需**重新登录**后生效。
+
+## 任务可选模板范围：只列「通用」（2026-09-21）
+
+任务表单的模板下拉按 `category=general` 拉取（`loadPlaybooks`），只允许选通用模板。
+`software_package`（监控软件仓库的安装/卸载）与 `agent`（Agent 安装/更新）是系统托管模板，
+由各自域按分类定位并派发，带自己的参数与生命周期；在自动化任务里手动选它们会绕过这些约定。
+模板管理页仍可查看/编辑这些分类，只是不进入任务选择列表。

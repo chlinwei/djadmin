@@ -285,6 +285,25 @@ bootstrap 会先 PUT 这个 pipeline 再 PUT 引用它的模板。
 - 档位保存/删除后自动异步重推所有启用集群的 ILM 策略与索引模板（`syncAllClusterLogStorage`），
   不需要手工发布。
 
+**档位模板的 priority 约定与遗留修复（2026-09-21）**：ES 的可组合索引模板在多个模板的
+`index_patterns` 匹配同一索引时**只取 priority 最高者**（不合并，所以档位模板必须自包含，
+见 §4.4），且"同 priority + patterns 重叠"在 PUT 时直接 400。平台约定：基础模板
+`<prefix>-template`（patterns `<prefix>-*`）priority=0 兜底，档位模板
+`<prefix>-<档位>-template`（patterns `<prefix>-*-<档位>`）priority=200 压过基础模板。
+旧版建档位模板时未写 priority（ES 默认 0），这些遗留模板与基础模板同层重叠，导致
+bootstrap 重写基础模板时报"存在冲突的模板"（现场 hot/std/cold/wuhan-test 四个全停在 0）。
+修复：`bootstrapElasticsearchStorage` 在基础模板冲突检查**之前**执行
+`repairLegacyTierTemplatePriorities` 自愈——识别口径是**命名 + pattern 形状双吻合**
+（`legacyTierTemplateName` 解析 `<prefix>-<code>-template`，code 可含连字符如
+`wuhan-test`；`isTierPatternShape` 要求全部 patterns 严格等于 `<prefix>-*-<code>`，
+恰好同名的第三方模板不命中），对命中且 priority≠200 的模板 GET 原定义 → 只改
+priority=200（mappings/settings/ILM 绑定原样保留，采集与保留行为不变）→ PUT 回写。
+自愈是尽力而为：单条失败不中止，流程继续落到冲突检查的可读报错。
+**两个 ES 版本差异都要防**：`_cat/templates` 的 `priority` 列在部分版本恒为空（2026-09-21
+现场），所以自愈判"要不要修"读的是 GET 模板定义里的 priority，冲突检查
+（`conflictingIndexTemplates`）同理——cat 只做候选筛选（名字 + patterns 重叠），
+真实 priority 逐个 GET 定义确认（缺省 = 0；读不到定义时按冲突处理，宁可误报不放行真冲突）。
+
 ### 4.6 容量可按档位反推
 
 ```
@@ -806,6 +825,22 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
   解析规则保存前先发布 pipeline 到集群、失败则整条请求 400 且不落库的行为不变。
 - 删除仍是"逐 id + 汇总 `{count, results}`"的批量语义；档位被逻辑服务/日志设置引用、规则被日志定义引用时拒绝删除
   （引用计数用取行/计数查询，不再 `SELECT COUNT(*)` 兼职判存在）。
+- **解析规则的引用关系读路径**（2026-09-21 加）：`GET /monitor/log-processing-rules/usage/`
+  （`ListProcessingRuleUsages`，sqlc 查询双方言同名）。一次全量返回每条规则被哪些部署模板的
+  日志定义引用，关联链为 `monitor_log_processing_rule ← assets_application_log_definition
+  .processing_rule_id（迁移 000035 后唯一来源）→ deployment_template_id → 模板`，
+  另带 `service_count`（引用该模板的逻辑服务数，量化"改这条规则影响谁"）。
+  行 = (规则 × 模板日志定义)，按 `rule.name, template.name, log.name` 排序；未被引用的规则
+  不在结果里（删除时的拒绝提示已足够发现它们）。不分页：规则量级小、行数随引用数线性，
+  前端在「日志处理规则」页新增的同名 tab（懒加载，进入 tab 才拉取）里按左侧应用筛选做客户端过滤。
+  tab 内交互（2026-09-21）：`所属应用` 列按 application id 从页面已加载的应用列表就地反查名称；
+  关键字框匹配 模板名 / 日志定义名 / 路径（与左侧应用筛选叠加，均为客户端过滤）；
+  `影响服务数 > 0` 渲染为链接，点击调 `GET /assets/application-deployment-templates/:id/services/`
+  （`ListApplicationServicesByTemplate`，按 deployment_template_id 查逻辑服务，join
+  business_system → project 反查项目名，行含 项目/业务系统/环境/服务名/enabled，全量不分页）
+  弹出服务清单；点服务名带 query（application_service_id/service_name/business_system_id/
+  environment_id/environment_name）跳转服务树页，该页 onMounted 读 query 直接把 scope
+  定位到该服务节点（深链，见 assets/service-tree/index.vue 的 applyQueryScope）。
 
 **Elasticsearch 集群**（`/monitor/elasticsearch-clusters/*`，实现见 `elasticsearch_config.go`）：
 

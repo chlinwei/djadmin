@@ -319,6 +319,47 @@ func (handler *Handler) GetProcessingRule(context *gin.Context) {
 	handler.respondProcessingRule(context, parseID(context.Param("id")))
 }
 
+// ListProcessingRuleUsages 解析规则的引用关系（只读，一次全量）：
+// GET /monitor/log-processing-rules/usage/
+//
+// 关联链：规则 ← 模板日志定义（assets_application_log_definition.processing_rule_id，
+// 迁移 000035 后它是唯一来源）← 部署模板 ← 逻辑服务（service_count 量化爆炸半径）。
+// 行数随引用数线性（规则量级小），一次读回由前端按左侧应用筛选，不值得再做分页参数。
+// 未被引用的规则不在结果里——前端在「解析规则」表里能看到它们，这里只回答"被谁引用"。
+type processingRuleUsageResponse struct {
+	RuleID          int64  `json:"rule_id"`
+	RuleName        string `json:"rule_name"`
+	Application     *int64 `json:"application"`
+	LogDefinitionID int64  `json:"log_definition_id"`
+	LogName         string `json:"log_name"`
+	PathPattern     string `json:"path_pattern"`
+	TemplateID      int64  `json:"template_id"`
+	TemplateName    string `json:"template_name"`
+	ServiceCount    int64  `json:"service_count"`
+}
+
+func (handler *Handler) ListProcessingRuleUsages(context *gin.Context) {
+	rows, err := db.New(handler.db).ListProcessingRuleUsages(context)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	items := make([]processingRuleUsageResponse, 0, len(rows))
+	for _, row := range rows {
+		item := processingRuleUsageResponse{
+			RuleID: row.RuleID, RuleName: row.RuleName,
+			LogDefinitionID: row.LogDefinitionID, LogName: row.LogName, PathPattern: row.PathPattern,
+			TemplateID: row.TemplateID, TemplateName: row.TemplateName, ServiceCount: row.ServiceCount,
+		}
+		if row.ApplicationID.Valid {
+			application := row.ApplicationID.Int64
+			item.Application = &application
+		}
+		items = append(items, item)
+	}
+	response.Success(context, gin.H{"count": len(items), "results": items})
+}
+
 // ---- monitor_log_collection_filter_rule ----
 
 type filterRuleResponse struct {

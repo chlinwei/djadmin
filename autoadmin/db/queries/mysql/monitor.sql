@@ -1143,6 +1143,16 @@ DELETE FROM monitor_elasticsearch_cluster WHERE id = sqlc.arg(id);
 -- name: CountLogDefinitionReferences :one
 SELECT COUNT(*) FROM assets_application_log_definition WHERE processing_rule_id = sqlc.arg(processing_rule_id);
 
+-- name: ListProcessingRuleUsages :many
+SELECT r.id AS rule_id, r.name AS rule_name, r.application_id,
+       ld.id AS log_definition_id, ld.name AS log_name, ld.path_pattern,
+       t.id AS template_id, t.name AS template_name,
+       (SELECT COUNT(*) FROM assets_application_service s WHERE s.deployment_template_id = t.id) AS service_count
+FROM monitor_log_processing_rule r
+JOIN assets_application_log_definition ld ON ld.processing_rule_id = r.id
+JOIN assets_application_deployment_template t ON t.id = ld.deployment_template_id
+ORDER BY r.name, r.id, t.name, t.id, ld.name, ld.id;
+
 -- 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
 -- 而 PG 引擎合并成一个（同一个调用点在两侧就编译不过），拆开写才是可移植的形状。
 -- name: CountRetentionTierServices :one

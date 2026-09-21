@@ -605,6 +605,8 @@ type Querier interface {
 	ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow, error)
 	ListApplicationDeployments(ctx context.Context, arg ListApplicationDeploymentsParams) ([]ListApplicationDeploymentsRow, error)
 	ListApplicationServices(ctx context.Context, arg ListApplicationServicesParams) ([]ListApplicationServicesRow, error)
+	// 模板的承载服务清单（日志处理规则页「影响服务数」弹窗）：项目名经 business_system → project 反查。
+	ListApplicationServicesByTemplate(ctx context.Context, deploymentTemplateID int64) ([]ListApplicationServicesByTemplateRow, error)
 	ListApplicationVersions(ctx context.Context, arg ListApplicationVersionsParams) ([]ListApplicationVersionsRow, error)
 	ListApplications(ctx context.Context, arg ListApplicationsParams) ([]ListApplicationsRow, error)
 	ListAutomationControllerKeysForUpdate(ctx context.Context) ([]ListAutomationControllerKeysForUpdateRow, error)
@@ -747,6 +749,7 @@ type Querier interface {
 	// ResetStaleLogBatchJobItems 在续跑前回落为 pending。
 	ListPendingLogBatchJobItems(ctx context.Context, arg ListPendingLogBatchJobItemsParams) ([]ListPendingLogBatchJobItemsRow, error)
 	ListPermissionCodesByUserID(ctx context.Context, userID int32) ([]sql.NullString, error)
+	ListProcessingRuleUsages(ctx context.Context) ([]ListProcessingRuleUsagesRow, error)
 	// ---- 日志链路对账与数据流水位（只读）----
 	// 集群体检的"解析规则"层判定一条规则是否可用，除了 pipeline 发布态还要**用规则自带的样例日志
 	// 试跑一次**（判"产出的文档会被 ES 拒收"这类运行期错误，见 log_health.go 的 judgeRulePipeline），

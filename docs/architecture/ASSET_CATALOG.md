@@ -9,6 +9,11 @@
   - `GET /assets/application-versions/` → 版本列表（可选 `application` 筛选）
   - `GET /assets/cluster-profiles/` → 集群模型列表（可选 `application` 筛选）
 - 链路：Handler（`catalog_handler.go`，`queryID("application")` 解析筛选参数）→ Service → Repository（`catalog.go`）→ sqlc 查询（`db/queries/assets.sql`，生成于 `internal/platform/database/generated/`）。
+- **应用行的模板数 / 部署数**（应用定义列表的「模板数」「部署数」两列，2026-09-21 修）：`ListApplications`
+  与 `GetApplication` 内联两个子查询实时统计——模板数数 `assets_application_deployment_template`
+  （模板表直接带 `application_id`）；部署数经 **服务成员关系** 反查（`service → service_deployment →
+  deployment`，`COUNT(DISTINCT d.id)`：一个部署实例可同时承载同一应用的多个服务，去重才不虚高）。
+  此前这两列是写死的 `0 AS ...`（迁移时占位没补），页面永远显示 0。
 
 ## 按应用筛选语义（关键决策）
 
@@ -183,6 +188,17 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   服务树右侧「监听端口」一节渲染的就是它（`名称 · 协议 端口`）。此前这个字段从没被带出过，
   页面永远显示"未配置端口"——前端单测里 mock 了 `ports` 所以一直没暴露；
   现在读端口失败会整体报错，不再静默返回一份"没有端口"的详情。
+- **服务树的「日志文件」一节**：逻辑服务节点在「监听端口」下方展示该服务所属模板的日志定义
+  （`日志名 + 路径`，如 `message /var/log/messages`）。数据来自既有的日志配置接口
+  `GET /assets/application-services/:id/log-config/`（`ServiceLogConfig.logs`，即
+  `ListServiceTemplateLogs`）：前端 `ServiceTreeNodeContent.vue` 在 service 节点加载时并行请求它，
+  每条渲染 `name` + `resolved_path`（无则回退 `path_pattern`）。
+  **路径的宏解析口径 = "服务层尽力展开"**：后端 `resolved_path` 已按 `shared/logmacro` 的同一合并顺序
+  （模板默认值（含 `app_home` 作 `APP_HOME`）→ 服务 `macro_values`）替换 `${VAR}`；
+  实例级宏（`runtime_variables`，只在主机上才知道）不猜值，仍在路径里的宏由 `pending_macros`
+  列出，界面用橙色标签 + tooltip 标注"待展开"。log-config 接口失败时该节显示"模板未配置日志"
+  空态，不阻塞节点其他信息。**「监听端口」与「日志文件」的空态用一行灰色小字**（`.section-empty`）
+  而不是 `a-empty`——默认 empty 会撑出约 80px 高度，两项都空时把版面拉得很开（2026-09-21 现场）。
 - **部署模板**：模板主体 + 5 类嵌套子表（端口/路径/配置文件/日志定义/控制动作）+ docker 与 compose 配置。
   原实现删子表时运行时拼表名（`DELETE FROM `+table+` WHERE …`），现在按表名分派到 7 条显式语句；
   子表读取保持各自的排序（端口按 `protocol,port`、路径按 `path_type,id`、其余按 `id`）。

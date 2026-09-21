@@ -137,6 +137,7 @@ CREATE TABLE `automation_playbook_template` (
   `name` varchar(128) NOT NULL,
   `description` varchar(255) NOT NULL,
   `content` longtext NOT NULL,
+  `content_format` varchar(16) NOT NULL DEFAULT 'playbook',
   `category` varchar(32) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)

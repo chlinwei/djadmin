@@ -11,6 +11,10 @@ import (
 //
 // args 是 ansible-playbook 之后的参数，与直接 exec 一致；调用方仍可设置 Dir、
 // SysProcAttr、Cancel、WaitDelay 等。找不到 ansible-playbook 时在 Run 阶段报错。
+//
+// 环境见 ansibleEnv（默认 minimal stdout 回调，让 shell 任务的 stdout 可见）。
 func CommandContext(ctx context.Context, args ...string) (*exec.Cmd, error) {
-	return exec.CommandContext(ctx, "ansible-playbook", args...), nil
+	command := exec.CommandContext(ctx, "ansible-playbook", args...)
+	command.Env = ansibleEnv()
+	return command, nil
 }

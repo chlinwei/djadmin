@@ -515,30 +515,31 @@ type AutomationExecutionHostLog struct {
 }
 
 type AutomationExecutionJob struct {
-	ID                      int64           `json:"id"`
-	CreateTime              time.Time       `json:"create_time"`
-	UpdateTime              time.Time       `json:"update_time"`
-	Remark                  sql.NullString  `json:"remark"`
-	JobID                   string          `json:"job_id"`
-	Status                  string          `json:"status"`
-	TriggerType             string          `json:"trigger_type"`
-	Source                  string          `json:"source"`
-	InventorySnapshot       json.RawMessage `json:"inventory_snapshot"`
-	ExtraVars               json.RawMessage `json:"extra_vars"`
-	ResultSummary           json.RawMessage `json:"result_summary"`
-	RequestedUserID         sql.NullInt32   `json:"requested_user_id"`
-	RequestedUsername       string          `json:"requested_username"`
-	StartTime               sql.NullTime    `json:"start_time"`
-	EndTime                 sql.NullTime    `json:"end_time"`
-	DurationSeconds         sql.NullFloat64 `json:"duration_seconds"`
-	TaskID                  sql.NullInt64   `json:"task_id"`
-	TemplateContentSnapshot string          `json:"template_content_snapshot"`
-	TaskNameSnapshot        string          `json:"task_name_snapshot"`
-	TemplateNameSnapshot    string          `json:"template_name_snapshot"`
-	Limit                   string          `json:"limit"`
-	RunAsUserSnapshot       string          `json:"run_as_user_snapshot"`
-	RunAsGroupSnapshot      string          `json:"run_as_group_snapshot"`
-	WorkDirectorySnapshot   string          `json:"work_directory_snapshot"`
+	ID                            int64           `json:"id"`
+	CreateTime                    time.Time       `json:"create_time"`
+	UpdateTime                    time.Time       `json:"update_time"`
+	Remark                        sql.NullString  `json:"remark"`
+	JobID                         string          `json:"job_id"`
+	Status                        string          `json:"status"`
+	TriggerType                   string          `json:"trigger_type"`
+	Source                        string          `json:"source"`
+	InventorySnapshot             json.RawMessage `json:"inventory_snapshot"`
+	ExtraVars                     json.RawMessage `json:"extra_vars"`
+	ResultSummary                 json.RawMessage `json:"result_summary"`
+	RequestedUserID               sql.NullInt32   `json:"requested_user_id"`
+	RequestedUsername             string          `json:"requested_username"`
+	StartTime                     sql.NullTime    `json:"start_time"`
+	EndTime                       sql.NullTime    `json:"end_time"`
+	DurationSeconds               sql.NullFloat64 `json:"duration_seconds"`
+	TaskID                        sql.NullInt64   `json:"task_id"`
+	TemplateContentSnapshot       string          `json:"template_content_snapshot"`
+	TemplateContentFormatSnapshot string          `json:"template_content_format_snapshot"`
+	TaskNameSnapshot              string          `json:"task_name_snapshot"`
+	TemplateNameSnapshot          string          `json:"template_name_snapshot"`
+	Limit                         string          `json:"limit"`
+	RunAsUserSnapshot             string          `json:"run_as_user_snapshot"`
+	RunAsGroupSnapshot            string          `json:"run_as_group_snapshot"`
+	WorkDirectorySnapshot         string          `json:"work_directory_snapshot"`
 }
 
 type AutomationExecutionJobLog struct {
@@ -567,14 +568,15 @@ type AutomationInventory struct {
 }
 
 type AutomationPlaybookTemplate struct {
-	ID          int64          `json:"id"`
-	CreateTime  time.Time      `json:"create_time"`
-	UpdateTime  time.Time      `json:"update_time"`
-	Remark      sql.NullString `json:"remark"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Content     string         `json:"content"`
-	Category    string         `json:"category"`
+	ID            int64          `json:"id"`
+	CreateTime    time.Time      `json:"create_time"`
+	UpdateTime    time.Time      `json:"update_time"`
+	Remark        sql.NullString `json:"remark"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Content       string         `json:"content"`
+	ContentFormat string         `json:"content_format"`
+	Category      string         `json:"category"`
 }
 
 type AutomationTask struct {

@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // 左侧应用筛选框（2026-09-19 加）：应用一多，逐个点太慢。
@@ -19,6 +20,12 @@ vi.mock('@/api/monitor', () => ({
     ] } },
   })),
   getLogCollectionFilterRules: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
+  getLogProcessingRuleUsages: vi.fn(() => Promise.resolve({
+    data: { data: { count: 2, results: [
+      { rule_id: 1, rule_name: 'springboot-tomcat-exception', application: 5, log_definition_id: 11, log_name: 'catalina', path_pattern: '${APP_HOME}/logs/catalina.out', template_id: 7, template_name: 'Tomcat 模板', service_count: 3 },
+      { rule_id: 1, rule_name: 'springboot-tomcat-exception', application: 5, log_definition_id: 12, log_name: 'localhost', path_pattern: '${APP_HOME}/logs/localhost.log', template_id: 7, template_name: 'Tomcat 模板', service_count: 3 },
+    ] } },
+  })),
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [] } } })),
   saveLogProcessingRule: vi.fn(),
   batchDeleteLogProcessingRules: vi.fn(),
@@ -35,6 +42,12 @@ vi.mock('@/api/assets/application', () => ({
       { id: 16, name: '中间件', code: 'cdm' },
     ] } },
   })),
+  getApplicationDeploymentTemplateServices: vi.fn(() => Promise.resolve({
+    data: { data: { count: 2, results: [
+      { id: 21, name: '订单 API', code: 'order-api', enabled: true, business_system_id: 7, environment_id: 72, project_name: '电商平台', business_system_name: '订单系统', environment_name: '测试环境' },
+      { id: 22, name: '订单 Web', code: 'order-web', enabled: false, business_system_id: 7, environment_id: null, project_name: '电商平台', business_system_name: '订单系统', environment_name: '未配置环境' },
+    ] } },
+  })),
 }))
 
 vi.mock('@/util/deleteConfirm', () => ({ openDeleteConfirm: vi.fn(() => Promise.resolve(false)) }))
@@ -47,10 +60,12 @@ window.getComputedStyle = (element) => originalGetComputedStyle(element)
 import LogParsers from './index.vue'
 
 async function mountPage() {
+  // 页面用了 useRouter 跳转服务树，测试里装一个内存路由。
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }] })
   const wrapper = mount(LogParsers, {
     attachTo: document.body,
     global: {
-      plugins: [Antd],
+      plugins: [Antd, router],
       stubs: { FontAwesomeIcon: true },
     },
   })
@@ -105,6 +120,63 @@ describe('日志处理规则：左侧应用筛选', () => {
       '全部规则', 'Tomcat', 'Redis', '中间件', '通用（不限应用）',
     ])
     expect(wrapper.text()).not.toContain('没有匹配的应用')
+    wrapper.unmount()
+  })
+})
+
+describe('日志处理规则：关联模板 tab', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  it('懒加载：切到关联模板 tab 才拉取引用关系并按规则×日志定义展示', async () => {
+    const wrapper = await mountPage()
+    // 挂载时不该拉 usage（懒加载）。
+    const { getLogProcessingRuleUsages } = await import('@/api/monitor')
+    expect(getLogProcessingRuleUsages).not.toHaveBeenCalled()
+
+    // 切到「关联模板」tab，出现两行引用（同一规则被两个日志定义引用）。
+    await wrapper.find('.ant-tabs-tab:nth-child(3)').trigger('click')
+    await flushPromises()
+    expect(getLogProcessingRuleUsages).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('Tomcat 模板')
+    expect(wrapper.text()).toContain('catalina')
+    expect(wrapper.text()).toContain('${APP_HOME}/logs/catalina.out')
+    wrapper.unmount()
+  })
+
+  it('展示所属应用、支持关键字筛选，影响服务数可点开服务列表并跳转', async () => {
+    const wrapper = await mountPage()
+    await wrapper.find('.ant-tabs-tab:nth-child(3)').trigger('click')
+    await flushPromises()
+
+    // 所属应用列：按 application id 反查应用名。
+    expect(wrapper.text()).toContain('Tomcat')
+
+    // 关键字筛掉所有行后显示空态，清空恢复。
+    await wrapper.find('input[placeholder="筛选模板 / 日志 / 路径"]').setValue('nginx')
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有规则被部署模板引用')
+    await wrapper.find('input[placeholder="筛选模板 / 日志 / 路径"]').setValue('')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Tomcat 模板')
+
+    // 点「1 个服务」链接 → 调模板服务接口，弹窗展示项目/业务/环境/服务名。
+    const { getApplicationDeploymentTemplateServices } = await import('@/api/assets/application')
+    await wrapper.find('.service-count-link').trigger('click')
+    await flushPromises()
+    expect(getApplicationDeploymentTemplateServices).toHaveBeenCalledWith(7)
+    // a-modal teleport 到 body，断言要用 document 全文而不是 wrapper.text()。
+    const bodyText = document.body.textContent
+    expect(bodyText).toContain('引用模板「Tomcat 模板」的服务')
+    expect(bodyText).toContain('电商平台')
+    expect(bodyText).toContain('订单系统')
+    expect(bodyText).toContain('订单 API')
+
+    // 点服务名跳转服务树，带定位 query。
+    const links = wrapper.findAll('.service-count-link')
+    await links.at(-1).trigger('click')
     wrapper.unmount()
   })
 })

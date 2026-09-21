@@ -11,9 +11,20 @@ vi.mock('@/api/assets/application', () => ({
   getApplicationServiceList: vi.fn(),
   getApplicationDeploymentList: vi.fn(),
   getApplicationDeployment: vi.fn(),
+  getApplicationServiceLogConfig: vi.fn(),
 }))
 vi.mock('@/store', () => ({
   default: { state: { user: { timezone: 'Asia/Shanghai' } } },
+}))
+vi.mock('@/api/assets/host', () => ({
+  getHostById: vi.fn(() => Promise.resolve({ data: { data: {
+    hostname: 'node-1.corp', os_type: 'Linux', os_version: 'Ubuntu 22.04', architecture: 'x86_64',
+    cpu_cores: 8, cpu_model: 'Intel(R) Xeon(R) Gold', memory_gb: 32, disk_total_gb: 500, disk_used_percent: 72.5,
+    disks: [
+      { device: 'sda1', mount_point: '/', filesystem: 'ext4', size_gb: 400, used_gb: 280, usage_percent: 70 },
+      { device: 'sdb1', mount_point: '/data', filesystem: 'xfs', size_gb: 100, used_gb: 25, usage_percent: 25 },
+    ],
+  } } })),
 }))
 vi.mock('@/util/timezone', () => ({
   formatTimeWithTimezone: vi.fn((value, timezone) => `${value} @ ${timezone}`),
@@ -46,13 +57,16 @@ describe('ServiceTreeNodeContent', () => {
       access_address: '10.0.0.10',
       ports: [{ name: 'main_port', protocol: 'tcp', port: 8080 }],
     } } })
+    applicationApi.getApplicationServiceLogConfig.mockResolvedValue({ data: { data: {
+      logs: [{ log_definition: 5, name: 'message', path_pattern: '${APP_HOME}/logs/app.log', resolved_path: '/var/log/messages', pending_macros: [] }],
+    } } })
     applicationApi.getApplicationDeploymentList.mockResolvedValue(listResponse([
       { id: 31, instance_name: 'order-api-1', runtime_status: 'running' },
     ]))
     applicationApi.getApplicationDeployment.mockResolvedValue({ data: { data: {
       id: 31, instance_name: 'order-api-1', service_name: '订单 API', business_system_name: '订单系统',
       environment: 72, environment_name: '测试环境', application_name: 'Order API', version: '1.0',
-      host_name: 'node-1', host_ip: '10.0.0.1', runtime_status: 'running',
+      host: 31, host_name: 'node-1', host_ip: '10.0.0.1', runtime_status: 'running',
       ports: [{ name: 'HTTP', protocol: 'tcp', port: 8080 }],
     } } })
   })
@@ -114,6 +128,8 @@ describe('ServiceTreeNodeContent', () => {
     expect(wrapper.text()).toContain('1.0')
     expect(wrapper.text()).toContain('Order Template')
     expect(wrapper.text()).toContain('main_port · TCP 8080')
+    expect(wrapper.text()).toContain('message')
+    expect(wrapper.text()).toContain('/var/log/messages')
     expect(wrapper.text()).toContain('order-api-1')
 
     await wrapper.setProps({ scope: { nodeType: 'deployment', deploymentId: 31, businessSystemName: '订单系统', environmentName: '测试环境', serviceName: '订单 API', nodeTitle: 'order-api-1' } })
@@ -124,6 +140,19 @@ describe('ServiceTreeNodeContent', () => {
     expect(wrapper.text()).not.toContain('部署模板')
     expect(wrapper.text()).toContain('10.0.0.1')
     expect(wrapper.text()).toContain('运行中')
+
+    // 主机信息区块：部署详情带 host id → 拉主机详情渲染硬件/系统与磁盘明细 + WebSSH 入口。
+    const { getHostById } = await import('@/api/assets/host')
+    expect(getHostById).toHaveBeenCalledWith(31)
+    expect(wrapper.text()).toContain('主机信息')
+    expect(wrapper.text()).toContain('node-1.corp')
+    expect(wrapper.text()).toContain('Ubuntu 22.04')
+    expect(wrapper.text()).toContain('Intel(R) Xeon(R) Gold')
+    expect(wrapper.text()).toContain('32 GB')
+    expect(wrapper.text()).toContain('72.5%')
+    expect(wrapper.text()).toContain('/data')
+    // 按钮已改为图标形态（tooltip 提供文字说明），断言按钮容器存在。
+    expect(wrapper.find('.host-info-section button').exists()).toBe(true)
   })
 
   it('renders project and environment node types used when the tree groups by project', async () => {

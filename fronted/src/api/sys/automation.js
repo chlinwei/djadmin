@@ -30,6 +30,19 @@ export function validatePlaybookContent(params) {
   return requestUtil.post(prefix + 'playbooks/validate/', params)
 }
 
+// ShellCheck 组件（Shell 类模板校验依赖）：上传二进制 / 状态 / 删除。
+export function getShellcheckStatus() {
+  return requestUtil.get(prefix + 'shellcheck/binary/')
+}
+
+export function uploadShellcheckBinary(formData) {
+  return requestUtil.fileUpload(prefix + 'shellcheck/binary/', formData)
+}
+
+export function deleteShellcheckBinary() {
+  return requestUtil.del(prefix + 'shellcheck/binary/')
+}
+
 export function getTaskList(params) {
   return requestUtil.get(prefix + 'tasks/', params)
 }

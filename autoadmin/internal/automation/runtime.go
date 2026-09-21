@@ -726,6 +726,7 @@ func (handler *Handler) createAutomationJob(ctx context.Context, task gin.H, hos
 		TaskNameSnapshot:        stringValue(task["name"]),
 		TemplateNameSnapshot:    stringValue(task["template_name"]),
 		TemplateContentSnapshot: stringValue(task["template_content"]),
+		TemplateContentFormatSnapshot: stringValue(task["template_content_format"]),
 		ExtraVars:               marshalJSON(extra),
 		JobLimit:                strings.TrimSpace(limit),
 		ResultSummary:           marshalJSON(gin.H{"message": message}),
@@ -782,7 +783,11 @@ func (handler *Handler) runAutomationJob(ctx context.Context, jobID int64) error
 		handler.persistTargetFailures(persistCtx, jobID, failures)
 		return handler.finishJob(persistCtx, jobID, now, 1, 0, len(hosts), "No target agent accepted the controller key")
 	}
-	output, stderr, code, runErr := executeLocalAnsible(ctx, privateKey, ready, stringValue(job["template_content_snapshot"]), jsonObject(job["extra_vars"]), stringValue(job["run_as_user_snapshot"]), intValue(job["execution_timeout_seconds"], 600), handler.jobLogSink(persistCtx, jobID))
+	playbookContent := stringValue(job["template_content_snapshot"])
+	if playbookContentFormat(stringValue(job["template_content_format_snapshot"])) == playbookFormatShell {
+		playbookContent = wrapShellPlaybook(stringValue(job["template_name_snapshot"]), playbookContent)
+	}
+	output, stderr, code, runErr := executeLocalAnsible(ctx, privateKey, ready, playbookContent, jsonObject(job["extra_vars"]), stringValue(job["run_as_user_snapshot"]), intValue(job["execution_timeout_seconds"], 600), handler.jobLogSink(persistCtx, jobID))
 	handler.persistTargetFailures(persistCtx, jobID, failures)
 	handler.persistTargetResults(persistCtx, jobID, ready, code, output, stderr, runErr)
 	successful := 0

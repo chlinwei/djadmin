@@ -132,9 +132,50 @@
               </template>
             </a-table>
           </a-tab-pane>
+          <a-tab-pane key="usage">
+            <template #tab>
+              <a-badge :count="usageCountByRule.size" :number-style="{ backgroundColor: usageCountByRule.size ? '#1677ff' : '#bfbfbf' }">关联模板</a-badge>
+            </template>
+            <div class="toolbar">
+              <a-tooltip title="刷新"><a-button size="large" @click="loadRuleUsages"><FontAwesomeIcon :icon="['fas', 'rotate']" /><span>&nbsp;刷新</span></a-button></a-tooltip>
+              <a-input-search v-model:value="usageKeyword" allow-clear style="width: 260px" placeholder="筛选模板 / 日志 / 路径" />
+              <span class="usage-hint">展示每条解析规则被哪些部署模板的日志定义引用；未被引用的规则不出现在这里，可在「解析规则」表里清理。</span>
+            </div>
+            <a-table size="small" row-key="key" :columns="usageColumns" :data-source="visibleRuleUsages" :loading="usageLoading" :pagination="false" :scroll="{ x: 1000 }" :locale="{ emptyText: '当前应用没有规则被部署模板引用' }">
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'rule_name'"><span class="pipeline-name">{{ record.rule_name }}</span></template>
+                <template v-else-if="column.key === 'application_name'">{{ applicationNameById.get(String(record.application)) || '-' }}</template>
+                <template v-else-if="column.key === 'template_name'"><a-tag color="blue">{{ record.template_name }}</a-tag></template>
+                <template v-else-if="column.key === 'log_definition'">
+                  <span>{{ record.log_name }}</span>
+                  <code class="usage-path">{{ record.path_pattern }}</code>
+                </template>
+                <template v-else-if="column.key === 'service_count'">
+                  <a-tooltip v-if="record.service_count > 0" title="点击查看引用该模板的逻辑服务">
+                    <a class="service-count-link" @click="openTemplateServices(record)">{{ record.service_count }} 个服务</a>
+                  </a-tooltip>
+                  <a-tooltip v-else title="引用该模板的逻辑服务数">
+                    <a-badge :count="0" :number-style="{ backgroundColor: '#bfbfbf' }" />
+                  </a-tooltip>
+                </template>
+              </template>
+            </a-table>
+          </a-tab-pane>
         </a-tabs>
       </div>
     </div>
+
+    <a-modal v-model:open="templateServices.open" :title="`引用模板「${templateServices.templateName}」的服务`" :footer="null" :width="760" centered>
+      <a-table size="small" row-key="id" :columns="templateServiceColumns" :data-source="templateServices.items" :loading="templateServices.loading" :pagination="false" :locale="{ emptyText: '没有逻辑服务引用该模板' }">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'service_name'">
+            <a class="service-count-link" @click="gotoService(record)">{{ record.name }} <RightOutlined /></a>
+          </template>
+          <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
+        </template>
+      </a-table>
+      <div class="usage-hint" style="margin-top: 8px;">点服务名可跳转到服务树查看详情。</div>
+    </a-modal>
 
     <a-modal
       v-model:open="editorOpen"
@@ -349,20 +390,23 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { RightOutlined } from '@ant-design/icons-vue'
+import { useRouter } from 'vue-router'
 import {
   batchDeleteLogCollectionFilterRules,
   batchDeleteLogProcessingRules,
   getLogCollectionFilterRules,
   getElasticsearchClusterList,
+  getLogProcessingRuleUsages,
   getLogProcessingRules,
   saveLogCollectionFilterRule,
   saveLogProcessingRule,
   simulateElasticsearchPipeline,
 } from '@/api/monitor'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
-import { getApplicationList } from '@/api/assets/application'
+import { getApplicationList, getApplicationDeploymentTemplateServices } from '@/api/assets/application'
 import { filterApplicationGroups, isApplicationFilterMissed } from '@/util/applicationFilter'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { assertRe2Compatible, compilePreviewRegExp } from '@/util/re2Pattern'
@@ -373,6 +417,8 @@ const selectedClusterId = ref(null)
 const applications = ref([])
 const selectedApplicationKey = ref('all')
 const processingRules = ref([])
+const ruleUsages = ref([])
+const usageLoading = ref(false)
 const collectionFilterRules = ref([])
 const loading = ref(false)
 const filterLoading = ref(false)
@@ -502,6 +548,75 @@ const visibleFilterRules = computed(() => {
   if (selectedApplicationKey.value === 'generic') return collectionFilterRules.value.filter((rule) => !rule.application)
   return collectionFilterRules.value.filter((rule) => String(rule.application) === selectedApplicationKey.value)
 })
+
+// 关联模板 tab：一行 = (规则 × 模板日志定义)。与另两个 tab 同模式——接口一次全量，这里按左侧
+// 选中的应用客户端过滤（"全部"全量、"通用"只留 application 为空的规则）。
+const visibleRuleUsages = computed(() => {
+  let items = ruleUsages.value
+  if (selectedApplicationKey.value === 'generic') {
+    items = items.filter((item) => !item.application)
+  } else if (selectedApplicationKey.value !== 'all') {
+    items = items.filter((item) => String(item.application) === selectedApplicationKey.value)
+  }
+  // 关键字筛选：匹配模板名 / 日志定义名 / 路径（大小写不敏感）。
+  const keyword = usageKeyword.value.trim().toLowerCase()
+  if (keyword) {
+    items = items.filter((item) => (
+      `${item.template_name}\n${item.log_name}\n${item.path_pattern}`.toLowerCase().includes(keyword)
+    ))
+  }
+  return items
+})
+// tab 标题上的 badge：有引用关系的规则去重计数（一条规则可被多个模板引用，只算一次）。
+const usageCountByRule = computed(() => new Set(ruleUsages.value.map((item) => item.rule_id)))
+
+// 「所属应用」列：usage 行只带 application id，应用名用左侧菜单已加载的应用列表就地反查。
+const applicationNameById = computed(() => {
+  const byId = new Map()
+  for (const item of applications.value) byId.set(String(item.id), item.name)
+  return byId
+})
+
+// 「影响服务数」弹窗：点开才拉该模板的承载服务清单（懒加载，失败不阻塞表格）。
+const router = useRouter()
+const templateServices = reactive({ open: false, loading: false, templateName: '', items: [] })
+const templateServiceColumns = [
+  { title: '项目', dataIndex: 'project_name', key: 'project_name', width: 160 },
+  { title: '业务系统', dataIndex: 'business_system_name', key: 'business_system_name', width: 160 },
+  { title: '环境', dataIndex: 'environment_name', key: 'environment_name', width: 140 },
+  { title: '服务名', key: 'service_name', width: 200 },
+  { title: '状态', key: 'enabled', width: 90, align: 'center' },
+]
+
+async function openTemplateServices(record) {
+  templateServices.open = true
+  templateServices.loading = true
+  templateServices.templateName = record.template_name
+  templateServices.items = []
+  try {
+    const response = await getApplicationDeploymentTemplateServices(record.template_id)
+    templateServices.items = response?.data?.data?.results || []
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '获取服务列表失败')
+  } finally {
+    templateServices.loading = false
+  }
+}
+
+// 跳转到服务树并定位到该服务：服务树页读这些 query 初始化 scope（见 index.vue 的 onMounted）。
+function gotoService(item) {
+  templateServices.open = false
+  router.push({
+    path: '/assets/service-tree',
+    query: {
+      application_service_id: String(item.id),
+      service_name: item.name,
+      business_system_id: String(item.business_system_id),
+      environment_id: item.environment_id == null ? '' : String(item.environment_id),
+      environment_name: item.environment_name || '',
+    },
+  })
+}
 const inputFormatOptions = [
   { label: '文本', value: 'text' },
   { label: 'JSON', value: 'json' },
@@ -537,6 +652,29 @@ const filterColumns = [
   { title: '状态', key: 'enabled', width: 100, align: 'center' },
   { title: '操作', key: 'action', width: 140, fixed: 'right' },
 ]
+
+const usageColumns = [
+  { title: '规则名称', key: 'rule_name', width: 220, fixed: 'left' },
+  { title: '所属应用', key: 'application_name', width: 140 },
+  { title: '所属模板', key: 'template_name', width: 180 },
+  { title: '日志定义', key: 'log_definition', width: 340 },
+  { title: '影响服务数', key: 'service_count', width: 110, align: 'center' },
+]
+const usageKeyword = ref('')
+
+async function loadRuleUsages() {
+  usageLoading.value = true
+  try {
+    const response = await getLogProcessingRuleUsages()
+    const results = response?.data?.data?.results || []
+    ruleUsages.value = results.map((item) => ({ ...item, key: `${item.rule_id}:${item.log_definition_id}` }))
+  } catch (error) {
+    ruleUsages.value = []
+    message.error(error?.response?.data?.msg || error?.message || '获取关联模板失败')
+  } finally {
+    usageLoading.value = false
+  }
+}
 
 const formRules = {
   name: [
@@ -879,6 +1017,12 @@ onMounted(() => {
   loadClusters()
   loadFilterRules()
 })
+
+// 关联模板数据懒加载：第一次切到该 tab 才拉取（引用关系变化低频，不必随页面加载）；
+// 之后走手动刷新。
+watch(catalogTab, (tab) => {
+  if (tab === 'usage' && !ruleUsages.value.length && !usageLoading.value) loadRuleUsages()
+})
 </script>
 
 <style scoped>
@@ -957,6 +1101,21 @@ onMounted(() => {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
   font-size: 13px;
 }
+.usage-hint {
+  color: #8c95a5;
+  font-size: 12px;
+  line-height: 32px;
+}
+.usage-path {
+  margin-left: 8px;
+  padding: 1px 6px;
+  background: #f7f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+}
+.service-count-link { color: #1677ff; }
 .json-editor {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
   font-size: 13px;

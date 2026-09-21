@@ -56,6 +56,7 @@ CREATE TABLE automation_execution_job (
   duration_seconds double precision DEFAULT NULL,
   task_id bigint DEFAULT NULL,
   template_content_snapshot text NOT NULL,
+  template_content_format_snapshot varchar(16) NOT NULL DEFAULT 'playbook',
   task_name_snapshot varchar(128) NOT NULL,
   template_name_snapshot varchar(128) NOT NULL,
   "limit" varchar(255) NOT NULL,

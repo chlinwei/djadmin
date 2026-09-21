@@ -242,6 +242,11 @@ export function batchDeleteLogProcessingRules(ids) {
   return requestUtil.post(prefix + 'log-processing-rules/batch-delete/', { ids })
 }
 
+// 解析规则的引用关系（模板日志定义 → 部署模板 → 逻辑服务），一次全量返回，前端按应用筛选。
+export function getLogProcessingRuleUsages() {
+  return requestUtil.get(prefix + 'log-processing-rules/usage/')
+}
+
 export function getLogCollectionFilterRules(params) {
   return requestUtil.get(prefix + 'log-collection-filter-rules/', params)
 }

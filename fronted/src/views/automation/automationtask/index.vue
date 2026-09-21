@@ -270,7 +270,9 @@ function handleScopePreviewHostClick(item) {
 async function loadPlaybooks() {
   playbookLoading.value = true
   try {
-    const res = await getPlaybookList({ page: 1, page_size: 200, ordering: '-id' })
+    // 只列「通用」模板：software_package / agent 是系统托管模板（由监控软件仓库、Agent 安装/更新
+    // 各自派发），不应在自动化任务里手动选择执行，否则会绕过它们自己的参数与生命周期。
+    const res = await getPlaybookList({ page: 1, page_size: 200, ordering: '-id', category: 'general' })
     const data = res?.data?.data || {}
     playbooks.value = data.results || []
     playbookOptions.value = playbooks.value

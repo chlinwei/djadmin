@@ -84,6 +84,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
@@ -95,6 +96,7 @@ import BusinessSystemDialog from '../application/components/BusinessSystemDialog
 import ApplicationServiceDialog from '../application/components/ApplicationServiceDialog.vue'
 
 const serviceScope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
+const route = useRoute()
 const serviceTreeRef = ref(null)
 const nodeContentRef = ref(null)
 const refreshing = ref(false)
@@ -262,7 +264,26 @@ watch(
 
 onMounted(() => {
   window.addEventListener('resize', resizeCharts)
+  applyQueryScope()
 })
+
+// 深链定位：日志处理规则页「影响服务数」弹窗点服务名会带 query 跳过来
+// （application_service_id 必填，其余用于面包屑）。只设 serviceScope——树组件会按
+// scopeKey 反推选中态高亮对应节点。
+function applyQueryScope() {
+  const query = route.query
+  const serviceId = Number(query.application_service_id)
+  if (!Number.isInteger(serviceId) || serviceId <= 0) return
+  const environmentId = Number(query.environment_id)
+  serviceScope.value = {
+    nodeType: 'service',
+    applicationServiceId: serviceId,
+    nodeTitle: String(query.service_name || `服务 ${serviceId}`),
+    businessSystemId: Number(query.business_system_id) || undefined,
+    environment: Number.isInteger(environmentId) && environmentId > 0 ? environmentId : null,
+    environmentName: String(query.environment_name || ''),
+  }
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)

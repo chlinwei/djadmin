@@ -7,7 +7,6 @@ import (
 	"math"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -390,8 +389,13 @@ func splitCatPatterns(raw string) []string {
 
 // conflictingIndexTemplates 查同 priority 且 index_patterns 与本模板重叠的已有模板（排除自身）。
 // ES 本身也会 400，但错误体很长；提前给出简明报错，让用户直接删掉冲突模板或调整其 priority。
+//
+// 注意：candidate 的 priority **不能**从 _cat/templates 读——实测部分 ES 版本该列恒为空
+// （2026-09-21 现场：修复已把档位模板升到 200，检查却因读到空值按 0 算，永远报冲突）。
+// 所以流程是：cat 只做候选筛选（名字 + patterns 重叠），真正的 priority 逐个 GET 模板定义；
+// 命中重叠的候选通常只有个位数，逐个 GET 的成本可接受。
 func (handler *Handler) conflictingIndexTemplates(context *gin.Context, cluster elasticsearchCluster, selfName string, patterns []string, priority int) []string {
-	rows, err := handler.elasticsearchRequestArray(context, cluster, "GET", "/_cat/templates?format=json&h=name,index_patterns,priority")
+	rows, err := handler.elasticsearchRequestArray(context, cluster, "GET", "/_cat/templates?format=json&h=name,index_patterns")
 	if err != nil {
 		return nil
 	}
@@ -401,22 +405,129 @@ func (handler *Handler) conflictingIndexTemplates(context *gin.Context, cluster 
 		if name == "" || name == selfName {
 			continue
 		}
-		candidatePriority := 0
-		if raw, ok := row["priority"]; ok {
-			candidatePriority, _ = strconv.Atoi(strings.TrimSpace(fmt.Sprint(raw)))
-		}
-		if candidatePriority != priority {
-			continue
-		}
+		overlap := false
 		for _, candidate := range splitCatPatterns(catString(row, "index_patterns")) {
 			for _, want := range patterns {
 				if indexPatternsOverlap(candidate, want) {
-					conflicts = append(conflicts, fmt.Sprintf("%s (index_patterns=%s, priority=%d)", name, candidate, priority))
+					overlap = true
+					break
 				}
 			}
+			if overlap {
+				break
+			}
+		}
+		if !overlap {
+			continue
+		}
+		// patterns 重叠才需要确认 priority：GET 定义读真实值（缺省 = 0）。
+		// 读不到定义（权限/瞬时错误）时按冲突处理：宁可误报也不要放行一个真冲突。
+		payload, err := handler.elasticsearchRequest(context, cluster, "GET", "/_index_template/"+name, nil)
+		if err != nil {
+			conflicts = append(conflicts, fmt.Sprintf("%s (index_patterns=%s, priority=%d)", name, catString(row, "index_patterns"), priority))
+			continue
+		}
+		definition, ok := indexTemplateDefinition(payload)
+		if !ok {
+			conflicts = append(conflicts, fmt.Sprintf("%s (index_patterns=%s, priority=%d)", name, catString(row, "index_patterns"), priority))
+			continue
+		}
+		if candidatePriority, _ := definition["priority"].(float64); int(candidatePriority) == priority {
+			conflicts = append(conflicts, fmt.Sprintf("%s (index_patterns=%s, priority=%d)", name, catString(row, "index_patterns"), priority))
 		}
 	}
 	return conflicts
+}
+
+// legacyTierTemplateName 识别"自家档位模板"的命名 `<prefix>-<档位 code>-template`：
+// `autoadmin-wuhan-test-template` → ("wuhan-test", true)。基础模板 `<prefix>-template` 自身
+// 不算（它没有档位段）。code 允许含连字符（按"去掉 -template 后缀后剥掉前缀"解析，
+// 不按 `-` 切分），与 buildTierIndexTemplateName 的拼接方式互逆。
+func legacyTierTemplateName(indexPrefix, name string) (string, bool) {
+	prefixSegment := safeIndexSegment(indexPrefix)
+	if name == buildIndexTemplateName(prefixSegment) || !strings.HasSuffix(name, "-template") {
+		return "", false
+	}
+	trimmed := strings.TrimSuffix(name, "-template")
+	if !strings.HasPrefix(trimmed, prefixSegment+"-") {
+		return "", false
+	}
+	code := strings.TrimPrefix(trimmed, prefixSegment+"-")
+	if code == "" {
+		return "", false
+	}
+	return code, true
+}
+
+// isTierPatternShape 模板的全部 index_patterns 都严格等于 `<prefix>-*-<档位>` 才算自家档位模板。
+// 这是防误伤的关键：只信"命名 + pattern 形状"双吻合，恰好同名的第三方模板不会命中。
+func isTierPatternShape(indexPrefix, tierCode string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	want := fmt.Sprintf("%s-*-%s", safeIndexSegment(indexPrefix), safeIndexSegment(tierCode))
+	for _, pattern := range patterns {
+		if pattern != want {
+			return false
+		}
+	}
+	return true
+}
+
+// indexTemplateDefinition 从 GET /_index_template/<name> 的响应里取模板定义（PUT 回写用它）。
+func indexTemplateDefinition(payload map[string]any) (map[string]any, bool) {
+	templates, _ := payload["index_templates"].([]any)
+	if len(templates) == 0 {
+		return nil, false
+	}
+	first, _ := templates[0].(map[string]any)
+	definition, _ := first["index_template"].(map[string]any)
+	if definition == nil {
+		return nil, false
+	}
+	return definition, true
+}
+
+// repairLegacyTierTemplatePriorities 把历史遗留的 priority=0 档位模板就地升到 200。
+//
+// 背景：旧版建档位模板时没写 priority（ES 默认 0），与同样 priority=0 的基础模板
+// patterns 重叠，ES 视为冲突，bootstrap 重写基础模板直接 400（现场 2026-09-21：
+// hot/std/cold/wuhan-test 四个档位模板全停在 0）。200 与现行 buildTierIndexTemplateBody
+// 的约定一致——档位模板本就该压过兜底的基础模板；只改 priority，mappings/settings/ILM
+// 绑定原样保留，采集与保留行为不变。
+//
+// 注意不能用 _cat/templates 的 priority 列判"要不要修"——实测部分 ES 版本该列恒为空，
+// 只用它做**候选筛选**（命名 + pattern 形状），真正的 priority 读 GET 模板定义。
+// 尽力而为：单条修复失败不中止，让流程继续落到 conflictingIndexTemplates 的可读报错
+// （那才是兜底语义；这里修成了就不再走到它）。
+func (handler *Handler) repairLegacyTierTemplatePriorities(context *gin.Context, cluster elasticsearchCluster, prefix string) {
+	rows, err := handler.elasticsearchRequestArray(context, cluster, "GET", "/_cat/templates?format=json&h=name,index_patterns")
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		name := catString(row, "name")
+		code, ok := legacyTierTemplateName(prefix, name)
+		if !ok {
+			continue
+		}
+		if !isTierPatternShape(prefix, code, splitCatPatterns(catString(row, "index_patterns"))) {
+			continue
+		}
+		payload, err := handler.elasticsearchRequest(context, cluster, "GET", "/_index_template/"+name, nil)
+		if err != nil {
+			continue
+		}
+		definition, ok := indexTemplateDefinition(payload)
+		if !ok {
+			continue
+		}
+		if existing, _ := definition["priority"].(float64); existing == 200 {
+			continue
+		}
+		definition["priority"] = 200
+		_, _ = handler.elasticsearchRequest(context, cluster, "PUT", "/_index_template/"+name, definition)
+	}
 }
 
 // bootstrapElasticsearchStorage 确保基础索引模板、各档位的 ILM policy 与档位索引模板存在（幂等）。
@@ -434,6 +545,9 @@ func (handler *Handler) bootstrapElasticsearchStorage(context *gin.Context, clus
 		"/_ingest/pipeline/"+buildMappingGuardPipelineName(prefix), buildMappingGuardPipelineBody(handler.mappingGuardMode())); err != nil {
 		return err
 	}
+	// 遗留档位模板可能停在 priority=0（旧版没写 priority），挡住下面基础模板的重写；
+	// 先就地升到 200（失败则基础模板冲突检查仍会给出现场看到的可读报错）。
+	handler.repairLegacyTierTemplatePriorities(context, cluster, prefix)
 	if conflicts := handler.conflictingIndexTemplates(context, cluster, baseName, basePatterns, 0); len(conflicts) > 0 {
 		return fmt.Errorf("存在与索引模板 %s（priority=0）冲突的模板：%s；请删除该模板或调整其 priority 后重试",
 			baseName, strings.Join(conflicts, "; "))

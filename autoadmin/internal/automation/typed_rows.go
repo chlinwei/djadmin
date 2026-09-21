@@ -84,7 +84,7 @@ func taskRowToMapFromGet(row db.GetTaskTypedRow) gin.H {
 		"enabled": row.Enabled, "inventory_id": nullInt64Any(row.InventoryID), "default_limit": row.DefaultLimit,
 		"execution_timeout_seconds": int64(row.ExecutionTimeoutSeconds), "playbook_template_id": nullInt64Any(row.PlaybookTemplateID),
 		"run_as_user": row.RunAsUser, "run_as_group": row.RunAsGroup, "work_directory": row.WorkDirectory,
-		"template_name": row.TemplateName, "template_content": row.TemplateContent, "inventory_name": row.InventoryName,
+		"template_name": row.TemplateName, "template_content": row.TemplateContent, "template_content_format": row.TemplateContentFormat, "inventory_name": row.InventoryName,
 		"playbook_template": nullInt64Any(row.PlaybookTemplateID), "inventory": nullInt64Any(row.InventoryID),
 	}
 }
@@ -97,7 +97,7 @@ func jobRowToMap(row db.AutomationExecutionJob) gin.H {
 		"result_summary": decodeJSONAny(row.ResultSummary), "requested_user_id": nullInt32Any(row.RequestedUserID),
 		"requested_username": row.RequestedUsername, "start_time": nullTimeAny(row.StartTime), "end_time": nullTimeAny(row.EndTime),
 		"duration_seconds": nullFloatAny(row.DurationSeconds), "task_id": nullInt64Any(row.TaskID),
-		"template_content_snapshot": row.TemplateContentSnapshot, "task_name_snapshot": row.TaskNameSnapshot,
+		"template_content_snapshot": row.TemplateContentSnapshot, "template_content_format_snapshot": row.TemplateContentFormatSnapshot, "task_name_snapshot": row.TaskNameSnapshot,
 		"template_name_snapshot": row.TemplateNameSnapshot, "limit": row.Limit,
 		"run_as_user_snapshot": row.RunAsUserSnapshot, "run_as_group_snapshot": row.RunAsGroupSnapshot,
 		"work_directory_snapshot": row.WorkDirectorySnapshot,
@@ -110,7 +110,8 @@ func jobRowToMapTyped(row db.GetJobTypedRow) gin.H {
 		Status: row.Status, TriggerType: row.TriggerType, Source: row.Source, InventorySnapshot: row.InventorySnapshot, ExtraVars: row.ExtraVars,
 		ResultSummary: row.ResultSummary, RequestedUserID: row.RequestedUserID, RequestedUsername: row.RequestedUsername,
 		StartTime: row.StartTime, EndTime: row.EndTime, DurationSeconds: row.DurationSeconds, TaskID: row.TaskID,
-		TemplateContentSnapshot: row.TemplateContentSnapshot, TaskNameSnapshot: row.TaskNameSnapshot,
+		TemplateContentSnapshot: row.TemplateContentSnapshot, TemplateContentFormatSnapshot: row.TemplateContentFormatSnapshot,
+		TaskNameSnapshot: row.TaskNameSnapshot,
 		TemplateNameSnapshot: row.TemplateNameSnapshot, Limit: row.Limit, RunAsUserSnapshot: row.RunAsUserSnapshot,
 		RunAsGroupSnapshot: row.RunAsGroupSnapshot, WorkDirectorySnapshot: row.WorkDirectorySnapshot,
 	})

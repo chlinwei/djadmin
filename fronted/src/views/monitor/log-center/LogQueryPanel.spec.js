@@ -96,6 +96,40 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     wrapper.unmount()
   })
 
+  // 回归（2026-09-21 现场）：在服务 A 输入关键词、选了级别、或从统计面板下钻后，点左侧切到服务 B，
+  // 这些条件会原样带过去（统计下钻的 host_ip/指纹过滤同样残留），页面看起来像"B 查不到日志"。
+  // 切换节点必须清空上一个服务的过滤条件，只有 scope 本身决定范围。
+  it('切换到另一个逻辑服务时清空关键词、级别与下钻过滤，不带到新服务', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+
+    wrapper.vm.filters.keyword = 'NullPointerException'
+    wrapper.vm.filters.logLevels = ['ERROR']
+    wrapper.vm.filters.hostIp = '10.0.0.1'
+    wrapper.vm.filters.errorFingerprint = 'fp-1'
+    await flushPromises()
+
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 43, nodeTitle: 'nginx服务' } })
+    await flushPromises()
+
+    expect(wrapper.vm.filters.keyword).toBe('')
+    expect(wrapper.vm.filters.logLevels).toEqual([])
+    expect(wrapper.vm.filters.hostIp).toBe('')
+    expect(wrapper.vm.filters.logName).toBe('')
+    expect(wrapper.vm.filters.logPath).toBe('')
+    expect(wrapper.vm.filters.errorFingerprint).toBe('')
+
+    const params = searchElasticsearchLogs.mock.calls.at(-1)[1]
+    expect(params.application_service_id).toBe(43)
+    expect(params.keyword).toBeUndefined()
+    expect(params.log_level).toBeUndefined()
+    expect(params.host_ip).toBeUndefined()
+    expect(params.error_fingerprint).toBeUndefined()
+    wrapper.unmount()
+  })
+
   // 关键词框：框里写着 Lucene 就必须支持 Lucene（2026-09-19 现场：用户按提示写
   // `host_ip: "192.168.201.209"` 查不到——后端为了"只搜正文"把冒号转义了）。
   // 现在两种模式可切换，且默认落在"只搜正文"这个更安全的一侧。

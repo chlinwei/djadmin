@@ -23,6 +23,7 @@
                     v-model:value="form.application"
                     :options="applicationOptions"
                     :getPopupContainer="getPopupContainer"
+                    :virtual="false"
                     show-search
                     option-filter-prop="label"
                     placeholder="请选择应用"
@@ -169,6 +170,7 @@
                 v-model:value="item.processing_rule"
                 :options="processingRuleOptions"
                 :getPopupContainer="getPopupContainer"
+                :virtual="false"
                 allow-clear
                 show-search
                 option-filter-prop="label"
@@ -178,6 +180,7 @@
                 v-model:value="item.filter_include_rule"
                 :options="filterRuleOptions('include')"
                 :getPopupContainer="getPopupContainer"
+                :virtual="false"
                 allow-clear
                 show-search
                 option-filter-prop="label"
@@ -187,6 +190,7 @@
                 v-model:value="item.filter_exclude_rule"
                 :options="filterRuleOptions('exclude')"
                 :getPopupContainer="getPopupContainer"
+                :virtual="false"
                 allow-clear
                 show-search
                 option-filter-prop="label"

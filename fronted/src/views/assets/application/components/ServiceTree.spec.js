@@ -126,6 +126,19 @@ describe('ServiceTree', () => {
     wrapper.unmount()
   })
 
+  // 回归（2026-09-21 现场）：服务树切 tab 回来后顶部出现整块空白，节点被推到下方。
+  // 机理：页面被 keep-alive 缓存，a-tree 的 virtual（rc-virtual-list）在隐藏时容器高度变 0，
+  // 重新激活后内部 scrollTop/偏移未复位，虚拟列表从中间下标开始渲染，前面留出空白间隔。
+  // ant-design-vue 4.2.6 上游 bug，与 userCenter 时区下拉同一根因（那里用 virtual=false 规避）。
+  // 这里禁用虚拟滚动：部署实例本就是展开时才挂载的懒加载子节点，全量渲染的节点量可控。
+  it('disables virtual scrolling so keep-alive reactivation does not leave a blank gap', async () => {
+    const wrapper = mount(ServiceTree, { global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'ATree' }).props('virtual')).toBe(false)
+    wrapper.unmount()
+  })
+
   it('does not introduce a project or environment level when groupByProject is left at its default', async () => {
     const wrapper = mount(ServiceTree, { global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
     await flushPromises()

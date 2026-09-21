@@ -25,6 +25,7 @@
         max-tag-count="responsive"
         :max-tag-placeholder="selectedProjectPlaceholder"
         :options="projectOptions"
+        :virtual="false"
         placeholder="全部项目"
         class="service-tree-project-filter"
         :getPopupContainer="getPopupContainer"
@@ -41,6 +42,7 @@
         max-tag-count="responsive"
         :max-tag-placeholder="selectedEnvironmentPlaceholder"
         :options="environmentOptions"
+        :virtual="false"
         placeholder="全部环境"
         class="service-tree-environment-filter"
         :getPopupContainer="getPopupContainer"
@@ -71,7 +73,7 @@
         v-if="filteredTreeData.length"
         block-node
         show-line
-        virtual
+        :virtual="false"
         :height="treeHeight"
         :tree-data="filteredTreeData"
         :selected-keys="selectedKeys"

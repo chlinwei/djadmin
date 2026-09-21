@@ -27,7 +27,7 @@
           <a-col :span="12"><a-form-item name="code" label="服务编码"><a-input v-model:value="form.code" placeholder="例如 order-cache-prod" /></a-form-item></a-col>
           <a-col :span="12">
             <a-form-item name="business_system" label="业务系统">
-              <a-select v-model:value="form.business_system" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.business_system" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用业务系统</span><a-button type="link" @click.stop="businessSystemDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建业务系统</a-button></div>
                 </template>
@@ -36,7 +36,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="environment" label="环境">
-              <a-select v-model:value="form.environment" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.environment" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>当前业务系统还没有环境</span><a-button type="link" @click.stop="environmentDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建环境</a-button></div>
                 </template>
@@ -46,7 +46,7 @@
           <a-col v-if="!clusterProfileId" :span="12"><a-form-item name="topology_type" label="部署形态"><a-segmented v-model:value="form.topology_type" :options="topologyOptions" /></a-form-item></a-col>
           <a-col v-if="form.topology_type === 'cluster'" :span="12">
             <a-form-item name="cluster_profile" label="集群模型">
-              <a-select v-model:value="form.cluster_profile" show-search :filter-option="filterOption" :options="availableProfileOptions" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.cluster_profile" show-search :filter-option="filterOption" :options="availableProfileOptions" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用集群模型</span><a-button type="link" @click.stop="clusterProfileDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建集群模型</a-button></div>
                 </template>
@@ -55,7 +55,7 @@
           </a-col>
           <a-col v-if="form.topology_type === 'standalone' || !profileHasFixedApplication" :span="12">
             <a-form-item name="application" label="应用">
-              <a-select v-model:value="form.application" show-search :filter-option="filterOption" :options="applicationOptions" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.application" show-search :filter-option="filterOption" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用应用</span><a-button type="link" @click.stop="applicationDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建应用</a-button></div>
                 </template>
@@ -65,7 +65,7 @@
           <a-col v-else :span="12"><a-form-item label="应用"><a-input :value="selectedProfile?.application_name || ''" disabled /></a-form-item></a-col>
           <a-col :span="12">
             <a-form-item name="application_version" label="应用版本">
-              <a-select v-model:value="form.application_version" show-search :filter-option="filterOption" :options="versionOptions" :getPopupContainer="getPopupContainer">
+              <a-select v-model:value="form.application_version" show-search :filter-option="filterOption" :options="versionOptions" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty">
                     <span>{{ form.application ? '当前应用还没有可用版本' : '请先选择应用' }}</span>
@@ -79,7 +79,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="deployment_template" label="部署模板">
-              <a-select v-model:value="form.deployment_template" show-search :filter-option="filterOption" :options="templateOptions" :getPopupContainer="getPopupContainer" :placeholder="form.application ? '请选择部署模板' : '请先选择应用'">
+              <a-select v-model:value="form.deployment_template" show-search :filter-option="filterOption" :options="templateOptions" :getPopupContainer="getPopupContainer" :virtual="false" :placeholder="form.application ? '请选择部署模板' : '请先选择应用'">
                 <template #notFoundContent>
                   <div class="inline-create-empty">
                     <span>{{ form.application ? '当前应用还没有可用部署模板' : '请先选择应用' }}</span>

@@ -95,6 +95,7 @@
                   allow-clear
                   :options="exporterFilterOptions"
                   :getPopupContainer="getPopupContainer"
+                  :virtual="false"
                   @change="reloadOverviewHosts"
                 />
                 <a-radio-group
@@ -797,6 +798,7 @@
             v-model:value="exporterCreateForm.exporter_type"
             :options="exporterOptionList"
             :field-names="{ label: 'name', value: 'name' }"
+            :virtual="false"
             placeholder="请选择 Exporter"
             style="width: 100%"
             :getPopupContainer="getPopupContainer"

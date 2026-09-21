@@ -258,10 +258,10 @@
       <a-form layout="vertical">
         <a-form-item label="基线"><a-input :value="scanBaseline?.name" readonly /></a-form-item>
         <a-form-item label="项目" required>
-          <a-select v-model:value="scanForm.project_id" :options="projectOptions" show-search option-filter-prop="label" placeholder="选择项目" />
+          <a-select v-model:value="scanForm.project_id" :options="projectOptions" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" />
         </a-form-item>
         <a-form-item label="环境（可选）">
-          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" allow-clear placeholder="全部环境" />
+          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :virtual="false" allow-clear placeholder="全部环境" />
         </a-form-item>
       </a-form>
     </a-modal>

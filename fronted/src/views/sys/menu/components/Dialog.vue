@@ -11,7 +11,7 @@
                 <a-form-item  name="parent_id" label="上级菜单">
                     <a-tree-select v-model:value="form.parent_id" show-search style="width: 100%"
                         :dropdown-style="{ maxHeight: '400px', overflow: 'auto' }" placeholder="请选上级菜单" allow-clear
-                        tree-default-expand-all :tree-data="getTreeDataByMenuType(treeData,form.menu_type)" tree-node-filter-prop="label"
+                        tree-default-expand-all :tree-data="getTreeDataByMenuType(treeData,form.menu_type)" :virtual="false" tree-node-filter-prop="label"
                         :fieldNames="{ label: 'name', value: 'key', key: 'key', children: 'children' }">
                     </a-tree-select>
                 </a-form-item>

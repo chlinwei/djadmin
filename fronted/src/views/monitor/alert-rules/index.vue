@@ -15,6 +15,7 @@
           v-model:value="groupFilter"
           :options="groupFilterOptions"
           :getPopupContainer="getPopupContainer"
+          :virtual="false"
           show-search
           option-filter-prop="label"
           style="width: 200px"

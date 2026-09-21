@@ -82,6 +82,7 @@
             placeholder="全部级别"
             :options="logLevelOptions"
             :getPopupContainer="getPopupContainer"
+            :virtual="false"
             @change="handleFilterChange"
           />
         </a-col>
@@ -378,7 +379,15 @@ const statsColumns = computed(() => [
 ])
 
 // 日志中心左侧树上切换节点时，由父组件传入新的 scope，这里跟着重置查询状态。
+// 关键词、级别、统计下钻写入的过滤项都代表"上一个服务的问题现场"，不能跨服务残留：
+// 此前只重置了 instance，导致切到另一个逻辑服务时关键词/级别/下钻过滤仍带着上一个服务的值。
 watch(() => props.scope, () => {
+  filters.keyword = ''
+  filters.logLevels = []
+  filters.hostIp = ''
+  filters.logName = ''
+  filters.logPath = ''
+  filters.errorFingerprint = ''
   filters.instance = props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : ''
   pagination.current = 1
   loadLogLevelOptions()

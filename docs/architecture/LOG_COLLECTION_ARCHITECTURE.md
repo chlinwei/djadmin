@@ -1964,6 +1964,15 @@ fingerprint 归一化质量。
 `error_fingerprint` / `log_level`（逗号分隔的 `terms`）。后四项在面板上只通过**统计面板下钻**
 写入（点分面值生成过滤 chip），没有常驻输入框。
 
+**过滤条件的生命周期：切节点即清空（2026-09-21 修复）**。`LogQueryPanel.vue` 的 `filters` 是面板内
+局部状态，切换左侧树节点（scope 变化）时 `watch(props.scope)` 必须把上一个服务的过滤条件全部清掉：
+关键词、`logLevels`、以及统计下钻写入的 `hostIp` / `logName` / `logPath` / `errorFingerprint`
+（`instance` 按新 scope 重设为部署实例名或空）。此前只重置了 `instance`，导致在服务 A 输入关键词、
+选了级别、或从统计下钻后切到服务 B，这些条件原样带过去——现象是"B 查不到日志"，因为实际上是拿 A 的
+条件在 B 的范围里搜。**scope 本身才是唯一的范围来源**，任何过滤条件都不应跨节点残留。
+`deep: true, immediate: true` 的 watch 覆盖挂载与切节点两条路径；守卫见 `LogQueryPanel.spec.js`
+的 "切换到另一个逻辑服务时清空关键词、级别与下钻过滤"。
+
 **统计维度**（`GET .../log-facet-stats/`，后端白名单 `logFacetAllowedFields`）：
 `error_fingerprint` / `log_level` / `instance` / `host_ip` / `log_name` / `log_path`。
 `log_path` 即日志详情里显示的"日志路径"（Filebeat `log.file.path`）——配置里写通配路径时，

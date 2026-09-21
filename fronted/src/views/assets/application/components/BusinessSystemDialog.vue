@@ -29,6 +29,7 @@
                 :filter-option="filterOption"
                 :options="projectOptions"
                 :getPopupContainer="getPopupContainer"
+                :virtual="false"
                 placeholder="请选择所属项目"
               />
             </a-form-item>

@@ -74,6 +74,7 @@
           <a-select
             v-model:value="policyForm.parent_id"
             :options="parentOptions"
+            :virtual="false"
             :disabled="Boolean(editingId) && editingIsRoot"
             :getPopupContainer="getPopupContainer"
             placeholder="选择父策略"
@@ -125,6 +126,7 @@
             allow-clear
             :options="mediaOptions"
             :getPopupContainer="getPopupContainer"
+            :virtual="false"
             placeholder="不选 = 静音（命中也不投递）"
             style="margin-top: 8px"
           />
@@ -139,6 +141,7 @@
             allow-clear
             :options="userGroupOptions"
             :getPopupContainer="getPopupContainer"
+            :virtual="false"
             placeholder="不选 = 不限组（媒介上全部绑定都可收）"
             style="margin-top: 8px"
           />

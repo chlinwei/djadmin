@@ -207,6 +207,7 @@
                 placeholder="留空表示不限应用的通用规则"
                 :options="applicationOptions"
                 :getPopupContainer="getPopupContainer"
+                :virtual="false"
               />
             </a-form-item>
             <a-row :gutter="16">
@@ -328,7 +329,7 @@
     <a-modal v-model:open="filterEditorOpen" :title="filterForm.id ? `编辑过滤规则：${filterForm.name}` : '新增采集过滤规则'" :confirm-loading="filterSaving" ok-text="保存" cancel-text="取消" @ok="saveFilterRule">
       <a-form ref="filterFormRef" :model="filterForm" :rules="filterFormRules" layout="vertical">
         <a-form-item name="name" label="规则名称"><a-input v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
-        <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" /></a-form-item>
+        <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false" /></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="filterForm.description" placeholder="例如 仅采集错误、失败和严重级别日志" /></a-form-item>
         <a-form-item name="rule_type" label="规则类型">
           <a-segmented v-model:value="filterForm.rule_type" :options="filterRuleTypeOptions" block />

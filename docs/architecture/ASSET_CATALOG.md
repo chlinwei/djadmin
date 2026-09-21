@@ -106,6 +106,20 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 echoes the scope back"（回传 scope 后选中态必须仍在该节点上）。
 watch 里还有一条"键相同就不改"的短路：父组件的原样回传不该产生无意义的重渲染。
 
+### 服务树禁用虚拟滚动（2026-09-21 修复）
+
+`ServiceTree.vue` 的 `a-tree` 使用 `:virtual="false"`（保留 `:height` 做固定高度滚动），**不得改回 `virtual`**。
+
+- **现象**：页面被 keep-alive 缓存（`layout/index.vue`），切到别的 tab 再切回服务树后，树顶部出现整块
+  空白、节点被推到下方（现场截图 `/tmp/abc`）。
+- **机理**：a-tree 的虚拟滚动由 `rc-virtual-list` 实现。页面失活时容器高度变 0，重新激活后其内部
+  `scrollTop`/偏移未复位，虚拟列表从中间下标开始渲染，前面留出与"滚动掉的行"等高的空白。
+  这是 ant-design-vue 4.2.6 的上游竞态 bug，与 `userCenter` 时区下拉（`virtual=false` 注释）同根因。
+  通用约定见 [FRONTEND_TABS_CACHE](FRONTEND_TABS_CACHE.md) §与虚拟滚动（rc-virtual-list）的冲突。
+- **代价**：树的部署实例本就设计为展开服务节点时才挂载的懒加载子节点（`hasLazyChildren`），
+  非虚拟全量渲染的节点量可控；用可接受的渲染开销换正确性。
+- 守卫：`ServiceTree.spec.js` 断言 `ATree` 的 `virtual` prop 为 `false`。
+
 ## 逻辑服务 ↔ 部署实例关联：归属与按 id 读取（2026-09-18 修复）
 
 关联表 `assets_application_service_deployment`（实例与逻辑服务的 M2M）有两条必须守住的规则：

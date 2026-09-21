@@ -308,6 +308,7 @@
                             v-model:value="agentManageCredentialId"
                             :options="agentCredentialOptions"
                             :getPopupContainer="getPopupContainer"
+                            :virtual="false"
                             placeholder="请选择 SSH 凭证"
                             :disabled="!agentCredentialOptions.length"
                             show-search
@@ -416,6 +417,7 @@
                         v-model:value="form.group_id"
                         placeholder="请选择分组"
                         :tree-data="groupTreeSelectData"
+                        :virtual="false"
                         allowClear
                         show-search
                         treeNodeFilterProp="title"
@@ -423,7 +425,7 @@
                     />
                 </a-form-item>
                 <a-form-item name="environment" label="所属环境">
-                    <a-select v-model:value="form.environment" :options="environmentOptions" :getPopupContainer="getPopupContainer" allow-clear placeholder="请选择环境" />
+                    <a-select v-model:value="form.environment" :options="environmentOptions" :getPopupContainer="getPopupContainer" :virtual="false" allow-clear placeholder="请选择环境" />
                 </a-form-item>
                 <a-form-item name="webssh_default_username" label="WebSSH 默认用户">
                     <a-select
@@ -459,6 +461,7 @@
                             :getPopupContainer="getPopupContainer"
                             placeholder="请选择监控组件"
                             :options="monitorNameOptions"
+                            :virtual="false"
                             show-search
                             optionFilterProp="label"
                             style="width: 160px"

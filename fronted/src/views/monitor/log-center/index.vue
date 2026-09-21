@@ -320,6 +320,7 @@
                       :options="[{ label: inheritedFilterLabel(record.template_filter_include_rule_id), value: null }, ...filterRuleOptions('include')]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
+                      :virtual="false"
                       size="small"
                       style="min-width: 160px"
                       @update:value="(value) => confirmFilterChange(record, 'include', value)"
@@ -336,6 +337,7 @@
                       :options="[{ label: inheritedFilterLabel(record.template_filter_exclude_rule_id), value: null }, ...filterRuleOptions('exclude')]"
                       :loading="Boolean(savingRows[record.log_definition])"
                       :get-popup-container="getPopupContainer"
+                      :virtual="false"
                       size="small"
                       style="min-width: 160px"
                       @update:value="(value) => confirmFilterChange(record, 'exclude', value)"
@@ -679,6 +681,7 @@
               :value="batchFilterForm.value"
               :options="batchFilterOptions"
               :get-popup-container="getPopupContainer"
+              :virtual="false"
               style="width: 100%"
               @update:value="(value) => batchFilterForm.value = value"
             />

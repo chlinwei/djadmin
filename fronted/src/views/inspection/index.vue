@@ -386,6 +386,7 @@
               v-model:value="groupForm.application"
               :options="applicationOptions"
               :getPopupContainer="getPopupContainer"
+              :virtual="false"
               show-search
               option-filter-prop="label"
               allow-clear
@@ -521,6 +522,7 @@
             v-model:value="taskForm.groups"
             :options="taskGroupSelectOptions"
             :getPopupContainer="getPopupContainer"
+            :virtual="false"
             show-search
             option-filter-prop="label"
             placeholder="选择巡检组"

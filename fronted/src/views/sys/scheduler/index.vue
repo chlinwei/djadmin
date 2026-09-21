@@ -164,6 +164,7 @@
             v-model:value="editForm.menu"
             :getPopupContainer="getPopupContainer"
             :options="menuOptions"
+            :virtual="false"
             disabled
             placeholder="可选：关联一个菜单页面"
             allow-clear

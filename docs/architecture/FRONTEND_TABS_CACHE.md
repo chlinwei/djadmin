@@ -27,7 +27,26 @@
 
 均伴随 `Unhandled error during execution of component update`。根因是 `include` 名单与实际组件 `name` 不一致（最常见于别名路由未归一），而不是页面本身的数据逻辑。
 
+## 与虚拟滚动（rc-virtual-list）的冲突（2026-09-21）
+
+被 KeepAlive 缓存的页面里，ant-design-vue 4.2.6 的虚拟滚动组件（`a-tree` / `a-select` /
+`a-tree-select` 的 `virtual`）存在两个与缓存生命周期相关的上游问题：
+
+- **失活→激活后列表顶部整块空白**：`a-tree` 长时间挂载，页面失活时容器高度变 0，激活后
+  rc-virtual-list 内部 `scrollTop`/偏移未复位，从中间下标开始渲染，前面留出空白。
+  已在所有资产页共用的 `ServiceTree.vue` 上以 `:virtual="false"` 修复（保留 `:height` 做固定高度滚动）。
+- **`ScrollBar` 卸载竞态**：`vc-virtual-list/ScrollBar.js` 的 `beforeUnmount → removeEvents`
+  读 `scrollbarRef.current` 未做空判断，缓存实例被 `pruneCache` 卸载时可能抛
+  `Cannot read properties of null (reading 'removeEventListener')`。`userCenter` 时区下拉即因此禁用虚拟。
+
+**约定**：凡是选项数量有界（固定枚举、项目 / 环境 / 模板 / 角色 / 用户组 / 菜单等，量级数十到数百）
+的 `a-select` / `a-tree-select`，统一加 `:virtual="false"` 规避上述问题；**真·大数据量**
+（全部主机 / 全部部署实例 / 全部用户等可能上千项）保留虚拟滚动，避免一次性渲染导致卡顿。
+`a-tree` 只有显式传 `:height` 才会启用虚拟滚动（`vc-virtual-list` 要求 `height`），因此不带
+`:height` 的树本就不受影响；带 `:height` 的树按上一条禁用。
+
 ## 维护约定
 
 - 新增页面无需声明 `name`，缓存名由路由自动生成；不要手写 `include`。
 - 新增加路由时确保走 `stampKeepAliveNames`（静态表）或 `withKeepAliveName`（动态菜单路由），否则缓存名与 `include` 不匹配，页面不会被缓存。
+- 新增/修改 `a-select` / `a-tree-select` 时按上一节判断是否需要 `:virtual="false"`。

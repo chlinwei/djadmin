@@ -13,6 +13,7 @@
                         allow-clear
                         tree-default-expand-all
                         :tree-data="treeSelectData"
+                        :virtual="false"
                         tree-node-filter-prop="label"
                         :fieldNames="{ label: 'name', value: 'key', key: 'key', children: 'children' }"
                     />

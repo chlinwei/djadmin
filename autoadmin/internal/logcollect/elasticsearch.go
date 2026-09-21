@@ -343,7 +343,7 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 		response.BusinessError(context, 400, "offset+size cannot exceed 2000", nil)
 		return
 	}
-	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "log_message", "error_fingerprint", "app_fields", "log.file.path"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
+	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
 	// 按"日志路径"过滤时用运行时字段（历史文档的 log_path 是模式，具体文件在 log.file.path）。
 	if strings.TrimSpace(context.Query("log_path")) != "" {
 		body["runtime_mappings"] = logFilePathRuntimeMappings()

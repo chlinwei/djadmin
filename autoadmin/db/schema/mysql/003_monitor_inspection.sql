@@ -94,7 +94,7 @@ CREATE TABLE `monitor_log_processing_rule` (
   `update_time` datetime(6) NOT NULL,
   `remark` longtext,
   `name` varchar(128) NOT NULL,
-  `description` varchar(500) NOT NULL,
+  `description` varchar(2000) NOT NULL,
   `input_format` varchar(16) NOT NULL,
   `multiline_enabled` BOOLEAN NOT NULL,
   `start_pattern` longtext NOT NULL,
@@ -115,7 +115,7 @@ CREATE TABLE `monitor_log_collection_filter_rule` (
   `update_time` datetime(6) NOT NULL,
   `remark` longtext,
   `name` varchar(128) NOT NULL,
-  `description` varchar(500) NOT NULL,
+  `description` varchar(2000) NOT NULL,
   `pattern` longtext NOT NULL,
   -- 规则方向：include（只保留匹配的记录）或 exclude（丢掉匹配的记录）。
   -- 方向必须显式声明、不能靠"用在哪个槽位"推：白名单被放进 exclude 槽会**反转语义**

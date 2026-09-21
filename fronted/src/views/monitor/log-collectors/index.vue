@@ -4,8 +4,9 @@
       <div>
         <h3>日志采集</h3>
         <p class="page-head__hint">
-          纳管主机上的 Filebeat：安装/卸载、启停、下发采集配置，并展示「配置状态」（主机上的配置是否为当前期望的那份）。
+          纳管主机上的 Filebeat：安装/卸载、启停，并展示「配置状态」（主机上的配置是否为当前期望的那份）。
           采集配置的内容来自逻辑服务的日志设置与日志定义，Filebeat 安装包在「智能监控 → 软件仓库」维护。
+          下发采集配置已集中到「日志中心」，本页不再提供下发入口。
         </p>
       </div>
     </div>
@@ -64,19 +65,6 @@
             &nbsp;装（{{ selectedUnmanaged.length }}）
           </a-button>
         </a-tooltip>
-        <a-tooltip title="批量重新安装 Filebeat" placement="top">
-          <a-button
-            type="primary"
-            ghost
-            size="small"
-            :disabled="!selectedManagedIds.length"
-            :loading="batchLoading === 'retry'"
-            @click="handleBatch('retry')"
-          >
-            <FontAwesomeIcon :icon="['fas', 'rotate']" />
-            &nbsp;重新安装（{{ selectedManagedIds.length }}）
-          </a-button>
-        </a-tooltip>
         <a-tooltip title="运行" placement="top">
           <a-button
             type="primary"
@@ -101,31 +89,6 @@
           >
             <FontAwesomeIcon :icon="['fas', 'stop']" />
             &nbsp;停止
-          </a-button>
-        </a-tooltip>
-        <a-tooltip :title="selectedManagedIds.length ? `为选中的 ${selectedManagedIds.length} 台下发采集配置` : '请先选择已纳管的主机'" placement="top">
-          <a-button
-            type="primary"
-            ghost
-            size="small"
-            :disabled="!selectedManagedIds.length"
-            :loading="batchLoading === 'batch-apply'"
-            @click="handleSelectedApply"
-          >
-            <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-            &nbsp;下发配置
-          </a-button>
-        </a-tooltip>
-        <a-tooltip :title="pendingTooltip" placement="top">
-          <a-button
-            type="primary"
-            size="small"
-            :disabled="!pendingSummary.pending"
-            :loading="batchLoading === 'batch-apply'"
-            @click="handleApplyAllPending"
-          >
-            <FontAwesomeIcon :icon="['fas', 'cloud-arrow-down']" />
-            &nbsp;一键下发全部待变更（{{ pendingSummary.pending }}）
           </a-button>
         </a-tooltip>
         <a-tooltip :title="selectedManagedIds.length ? `为选中的 ${selectedManagedIds.length} 台重新安装 Filebeat` : '请先选择已纳管的主机'" placement="top">
@@ -265,20 +228,6 @@
                       &nbsp;停止
                     </a-button>
                   </a-tooltip>
-                  <a-tooltip :title="applyTooltip(record.filebeat)" placement="left">
-                    <a-button
-                      block
-                      type="primary"
-                      ghost
-                      size="small"
-                      :disabled="!canApplyConfig(record.filebeat)"
-                      :loading="applyLoading[record.filebeat.id]"
-                      @click="handleApplyConfig(record.filebeat)"
-                    >
-                      <FontAwesomeIcon :icon="['fas', 'paper-plane']" />
-                      &nbsp;下发配置
-                    </a-button>
-                  </a-tooltip>
                   <a-tooltip :title="record.host_agent_online ? '查看状态图' : 'dj-agent 离线，操作不可用'" placement="left">
                     <a-button
                       block
@@ -377,7 +326,6 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 
 import {
-  applyLogCollectionConfig,
   batchCreateLogCollectionTargets,
   batchDeleteLogCollectionTargets,
   batchStartLogCollectionTargets,
@@ -387,7 +335,6 @@ import {
   createLogBatchJob,
   getActiveLogBatchJob,
   getLogBatchJob,
-  getLogPendingSummary,
   getMonitorInstallHistoryList,
   retryLogCollectionTarget,
   startLogCollectionService,
@@ -404,9 +351,10 @@ import HostTargetPanel from '../components/HostTargetPanel.vue'
 // 「日志管理 → 日志采集」：Filebeat 纳管目标的独立页面。
 //
 // 从「智能监控 → 纳管目标」拆出来的原因：那是 exporter 与 Filebeat 混在一张表里用 segmented 切换，
-// 而日志采集的完整闭环（安装 → 下发配置 → 看配置状态）本就属于日志管理，与日志存储/处理规则/
+// 而 Filebeat 的纳管/安装/启停与配置状态本就属于日志管理，与日志存储/处理规则/
 // 保留档位同属一条链路；拆开后监控页只留 exporter。两者消费的是同一份主机视角数据
 // （GET /monitor/targets/host-overview/），主机树/分页/行选择/状态刷新走 @/util/hostTargetTable 共享。
+// 下发采集配置已集中到「日志中心」（按服务下发），本页只保留安装/卸载、启停与配置状态展示。
 
 const router = useRouter()
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -434,7 +382,6 @@ const configStateFilterOptions = [
 
 const batchLoading = ref('')
 const createLoading = reactive({})
-const applyLoading = reactive({})
 const retryLoading = reactive({})
 const startLoading = reactive({})
 const stopLoading = reactive({})
@@ -485,31 +432,6 @@ const selectedUnmanaged = computed(() =>
   selectedRows.value.filter((item) => item.filebeat && !item.filebeat.managed),
 )
 
-// 全量「待下发」台数（drift + never）。算的是**全部纳管目标**而不是当前页：一键下发要跨页，
-// 分页无关的全局计数才有意义（后端一次批量渲染，见 pending-summary 接口的说明）。
-const pendingSummary = ref({ total: 0, synced: 0, drift: 0, never: 0, unknown: 0, pending: 0, error: '' })
-
-async function loadPendingSummary() {
-  try {
-    pendingSummary.value = parseApiData(await getLogPendingSummary())
-  } catch (error) {
-    // 计数取不到时不能显示"0 台待下发"（那是在谎报"全都同步了"），把原因带出来。
-    pendingSummary.value = {
-      total: 0, synced: 0, drift: 0, never: 0, unknown: 0, pending: 0,
-      error: error?.response?.data?.msg || error?.message || '待下发台数获取失败',
-    }
-  }
-}
-
-const pendingTooltip = computed(() => {
-  const summary = pendingSummary.value
-  if (configStateError.value) return `配置状态无法计算：${configStateError.value}`
-  if (summary.error) return `配置状态无法计算：${summary.error}`
-  if (!summary.pending) return '所有已纳管主机的采集配置都是最新的'
-  return `对全部 ${summary.pending} 台配置已变更/从未下发的主机下发采集配置`
-  + `（已变更 ${summary.drift} 台、从未下发 ${summary.never} 台）`
-})
-
 // ---- 批量作业进度 ----
 // 作业在后台按有界并发推进（安装 20 / 下发 5 台并发，见 §9 第 9 条），这里只轮询作业详情：
 // 进度、成功/失败台数、失败主机与原因。关掉弹窗不停作业——作业是服务端的事实，与页面无关。
@@ -545,7 +467,6 @@ function startBatchJobPolling(jobId) {
       batchJob.value = job
       if (!job.is_running) {
         stopBatchJobPolling()
-        await loadPendingSummary()
         await table.load()
         return
       }
@@ -690,20 +611,6 @@ function formatTimelineTime(value) {
   return formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai')
 }
 
-// 下发门槛只要求「agent 在线 + Filebeat 已装」：下发本身会写 filebeat.yml 与 inputs.d 并重启
-// Filebeat（agent 侧 restart），所以"服务当前没在跑"不构成阻碍——反过来，要求先 running
-// 会让停机待修的主机永远无法通过下发恢复。runtime_status 只在提示里说明。
-function canApplyConfig(record) {
-  return Boolean(record?.host_agent_online) && Boolean(record?.agent_installed)
-}
-
-function applyTooltip(record) {
-  if (!record?.host_agent_online) return 'dj-agent 离线，操作不可用'
-  if (!record?.agent_installed) return 'Filebeat 未安装，请先完成离线安装'
-  if (record?.runtime_status !== 'running') return 'Filebeat 当前未运行，下发后会一并启动'
-  return '运行'
-}
-
 function canCancelTarget(record) {
   return ['pending', 'running'].includes(String(record?.install_status || '').toLowerCase())
 }
@@ -743,8 +650,9 @@ function followCreatedInstallBatch(data) {
   if (data?.install_error) message.warning(`纳管成功，但安装作业创建失败：${data.install_error}`)
 }
 
-// 异步批量作业：下发配置（apply）与安装重试（install）都要跑分钟级操作，1000 台时不可能在
-// 一个请求里跑完。后端只建作业 + 入队，前端按作业号轮询进度（见 log_batch_job.go）。
+// 异步批量作业：安装/安装重试（install）要跑分钟级操作，1000 台时不可能在一个请求里跑完。
+// 后端只建作业 + 入队，前端按作业号轮询进度（见 log_batch_job.go）。下发配置已移到日志中心，
+// 这里保留 apply 分支只为兼容/展示仍可能存在的在途 apply 作业，不再有本页入口发起它。
 async function handleStartLogBatch(action, ids) {
   batchLoading.value = `batch-${action}`
   try {
@@ -758,18 +666,6 @@ async function handleStartLogBatch(action, ids) {
   } finally {
     batchLoading.value = ''
   }
-}
-
-// 「下发配置」：只作用于选中的已纳管主机。
-function handleSelectedApply() {
-  const ids = [...selectedManagedIds.value]
-  if (ids.length) handleStartLogBatch('apply', ids)
-}
-
-// 「一键下发全部待变更」：ids 省略 → 后端按配置态实时算出全部 drift/never 的主机。
-function handleApplyAllPending() {
-  if (!pendingSummary.value.pending) return
-  handleStartLogBatch('apply', null)
 }
 
 function handleBatchInstall() {
@@ -887,20 +783,6 @@ async function handleCheckStatus(record) {
   }
 }
 
-async function handleApplyConfig(record) {
-  applyLoading[record.id] = true
-  try {
-    const result = parseApiData(await applyLogCollectionConfig(record.id))
-    message.success(result?.skipped ? '配置未变化，无需重复下发' : 'Filebeat 配置已下发')
-    reportApplyWarnings(result?.warnings)
-    await table.load()
-  } catch (error) {
-    message.error(error?.response?.data?.msg || error?.message || 'Filebeat 配置下发失败')
-  } finally {
-    applyLoading[record.id] = false
-  }
-}
-
 async function handleStartService(record) {
   startLoading[record.id] = true
   try {
@@ -1004,7 +886,7 @@ function reportApplyWarnings(warnings) {
 let refreshTimer = null
 
 async function loadAll() {
-  await Promise.all([table.load(), table.loadGroupTree(), loadPendingSummary()])
+  await Promise.all([table.load(), table.loadGroupTree()])
 }
 
 function startRefresh() {

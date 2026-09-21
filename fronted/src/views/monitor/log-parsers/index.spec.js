@@ -180,3 +180,51 @@ describe('日志处理规则：关联模板 tab', () => {
     wrapper.unmount()
   })
 })
+
+// 回归（2026-09-21 现场）：日志规则"运行"出结果后点复制，报"复制失败，请手动选中复制"。
+// 根因是 copyResult 直接调 navigator.clipboard.writeText，而内网多为 HTTP（非安全上下文），
+// 该 API 不存在，必然抛错进 catch。修复后统一走 @/util/clipboard 的 execCommand 兜底。
+describe('日志处理规则：运行结果复制', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.clearAllMocks()
+  })
+
+  it('navigator.clipboard 不可用时走 execCommand 兜底，而不是直接报复制失败', async () => {
+    const wrapper = await mountPage()
+    wrapper.vm.simulationText = '{"log_message":"hello"}'
+
+    const originalExecCommand = document.execCommand
+    const execCommandMock = vi.fn(() => true)
+    document.execCommand = execCommandMock
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+
+    try {
+      await wrapper.vm.copyResult()
+    } finally {
+      document.execCommand = originalExecCommand
+    }
+
+    expect(execCommandMock).toHaveBeenCalledWith('copy')
+    wrapper.unmount()
+  })
+
+  it('运行结果为空时给提示、不触发复制', async () => {
+    const wrapper = await mountPage()
+    wrapper.vm.simulationText = ''
+
+    const originalExecCommand = document.execCommand
+    const execCommandMock = vi.fn(() => true)
+    document.execCommand = execCommandMock
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+
+    try {
+      await wrapper.vm.copyResult()
+    } finally {
+      document.execCommand = originalExecCommand
+    }
+
+    expect(execCommandMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})

@@ -22,6 +22,7 @@ const LOG_DOC = {
   host_ip: '10.0.0.1',
   log_name: 'catalina',
   log_path: '/home/esb/tomcat/logs/catalina.out',
+  message: '2026-08-30 18:00:00 ERROR [main] com.esb.App - NullPointerException',
   log_message: 'NullPointerException',
   error_fingerprint: 'fp-1',
   app_fields: { logger: 'org.apache' },
@@ -258,6 +259,64 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     expect(document.body.textContent).toContain('/home/esb/tomcat/logs/catalina.out')
     // @timestamp=2026-08-30T10:00:00Z + Asia/Shanghai → 18:00:00.000（毫秒精度）
     expect(document.body.textContent).toContain('2026-08-30 18:00:00.000')
+    wrapper.unmount()
+  })
+
+  // 2026-09-21 现场：详情里的「原始消息」实际绑的是 log_message（解析后的消息），
+  // 而真正的原始行是 message。现在两段分开：原始日志=message、错误日志=log_message。
+  it('日志详情分开展示原始日志（message）与错误日志（log_message），并可复制', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+
+    wrapper.vm.openDetail(LOG_DOC)
+    await flushPromises()
+
+    const text = document.body.textContent
+    expect(text).toContain('原始日志')
+    expect(text).toContain('错误日志')
+    // message 独有前缀，证明确实取的是原始行。
+    expect(text).toContain('com.esb.App')
+
+    const heads = document.querySelectorAll('.detail-section-head')
+    expect(heads.length).toBe(2)
+    expect(heads[0].textContent).toContain('原始日志')
+    expect(heads[1].textContent).toContain('错误日志')
+
+    const writeText = vi.fn().mockResolvedValue()
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    // 每段标题行有「预览」「复制」两个按钮，取「复制」那个。
+    // 注意 antd 会把两个汉字的按钮渲染成「复 制」（中间插空格），匹配时要忽略空白。
+    const copyButton = (head) => [...head.querySelectorAll('button')]
+      .find((btn) => btn.textContent.replace(/\s/g, '').includes('复制'))
+    copyButton(heads[0]).click()
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(LOG_DOC.message)
+    copyButton(heads[1]).click()
+    await flushPromises()
+    expect(writeText).toHaveBeenLastCalledWith(LOG_DOC.log_message)
+    wrapper.unmount()
+  })
+
+  // 现场：详情侧边栏窄，长堆栈看不动。原始/错误日志各加一个「预览」按钮，弹大框查看。
+  it('详情里的原始/错误日志可弹大框预览', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'service', applicationServiceId: 42, nodeTitle: 'tomcat服务' } })
+    await flushPromises()
+
+    wrapper.vm.openDetail(LOG_DOC)
+    await flushPromises()
+
+    const previewButton = [...document.querySelectorAll('.detail-section-head')]
+      .map((head) => [...head.querySelectorAll('button')].find((btn) => btn.textContent.includes('预览')))
+      .find(Boolean)
+    previewButton.click()
+    await flushPromises()
+
+    expect(wrapper.vm.detailTextModal.open).toBe(true)
+    expect(document.querySelector('.detail-modal-content').textContent).toContain('com.esb.App')
     wrapper.unmount()
   })
 

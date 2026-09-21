@@ -89,7 +89,7 @@ CREATE TABLE monitor_log_processing_rule (
   update_time timestamp(6) NOT NULL,
   remark text,
   name varchar(128) NOT NULL,
-  description varchar(500) NOT NULL,
+  description varchar(2000) NOT NULL,
   input_format varchar(16) NOT NULL,
   multiline_enabled boolean NOT NULL,
   start_pattern text NOT NULL,
@@ -110,7 +110,7 @@ CREATE TABLE monitor_log_collection_filter_rule (
   update_time timestamp(6) NOT NULL,
   remark text,
   name varchar(128) NOT NULL,
-  description varchar(500) NOT NULL,
+  description varchar(2000) NOT NULL,
   pattern text NOT NULL,
   -- 规则方向：include（只保留匹配的记录）/ exclude（丢掉匹配的记录）。方向必须显式声明、
   -- 不能靠"用在哪个槽位"推：白名单放进 exclude 槽会反转语义（只采噪声）。DEFAULT 只为存量回填。

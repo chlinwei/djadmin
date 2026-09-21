@@ -219,13 +219,46 @@
         <a-descriptions-item label="日志路径">{{ activeLog?.log_path || '-' }}</a-descriptions-item>
         <a-descriptions-item label="错误指纹" v-if="activeLog?.error_fingerprint">{{ activeLog.error_fingerprint }}</a-descriptions-item>
       </a-descriptions>
-      <div class="detail-section-title">原始消息</div>
+      <div class="detail-section-head">
+        <span class="detail-section-title">原始日志</span>
+        <a-space :size="8">
+          <a-button size="small" @click="openDetailTextPreview('原始日志', activeLog?.message)">
+            <FontAwesomeIcon :icon="['fas', 'expand']" />
+            <span>&nbsp;预览</span>
+          </a-button>
+          <a-button size="small" @click="copyDetailText(activeLog?.message)">复制</a-button>
+        </a-space>
+      </div>
+      <pre class="detail-content">{{ activeLog?.message || '-' }}</pre>
+      <div class="detail-section-head">
+        <span class="detail-section-title">错误日志</span>
+        <a-space :size="8">
+          <a-button size="small" @click="openDetailTextPreview('错误日志', activeLog?.log_message)">
+            <FontAwesomeIcon :icon="['fas', 'expand']" />
+            <span>&nbsp;预览</span>
+          </a-button>
+          <a-button size="small" @click="copyDetailText(activeLog?.log_message)">复制</a-button>
+        </a-space>
+      </div>
       <pre class="detail-content">{{ activeLog?.log_message || '-' }}</pre>
       <template v-if="activeLog?.app_fields && Object.keys(activeLog.app_fields).length">
         <div class="detail-section-title">应用私有字段</div>
         <pre class="detail-content">{{ formatJsonText(activeLog.app_fields) }}</pre>
       </template>
     </a-drawer>
+
+    <a-modal
+      v-model:open="detailTextModal.open"
+      :title="detailTextModal.title"
+      width="92%"
+      :style="{ top: '24px' }"
+      :footer="null"
+    >
+      <pre class="detail-modal-content">{{ detailTextModal.content || '-' }}</pre>
+      <div class="detail-modal-actions">
+        <a-button type="primary" @click="copyDetailText(detailTextModal.content)">复制</a-button>
+      </div>
+    </a-modal>
 
   </div>
 </template>
@@ -240,6 +273,7 @@ import { getElasticsearchClusterList, refreshElasticsearchLogIndex, searchElasti
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { buildUserTimezoneRangePresets, buildUserTimezoneShowTime, toUtcQueryISOStringByUserTimezone } from '@/util/timezoneRange'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { copyTextWithFallback } from '@/util/clipboard'
 import store from '@/store'
 
 // 与后端 LOG_SEARCH_MAX_RESULT_WINDOW 保持一致：超过该上限需要用户缩小范围，而不是无限深翻页。
@@ -307,6 +341,8 @@ const indexRefreshing = ref(false)
 const logs = ref([])
 const detailOpen = ref(false)
 const activeLog = ref(null)
+// 原始日志 / 错误日志的放大预览：详情侧边栏窄，长文本（堆栈）在这里看不动，弹个大框。
+const detailTextModal = reactive({ open: false, title: '', content: '' })
 
 
 const statsField = ref('error_fingerprint')
@@ -364,7 +400,7 @@ const columns = [
   { title: '级别', dataIndex: 'log_level', key: 'log_level', width: 90 },
   { title: '实例', dataIndex: 'instance', key: 'instance', width: 160, ellipsis: true },
   { title: '主机', dataIndex: 'host_ip', key: 'host_ip', width: 130 },
-  { title: '消息', dataIndex: 'log_message', key: 'log_message', ellipsis: true },
+  { title: '错误日志', dataIndex: 'log_message', key: 'log_message', ellipsis: true },
   { title: '操作', key: 'action', width: 100, fixed: 'right' },
 ]
 
@@ -374,7 +410,7 @@ const statsValueColumnTitle = computed(
 const statsColumns = computed(() => [
   { title: statsValueColumnTitle.value, key: 'value', width: 220, ellipsis: true },
   { title: '次数', dataIndex: 'count', key: 'count', width: 100 },
-  { title: '样例消息', key: 'sample_message', ellipsis: true },
+  { title: '样例错误日志', key: 'sample_message', ellipsis: true },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ])
 
@@ -605,6 +641,26 @@ function openDetail(record) {
   detailOpen.value = true
 }
 
+function openDetailTextPreview(title, content) {
+  detailTextModal.title = String(title || '查看')
+  detailTextModal.content = String(content || '')
+  detailTextModal.open = true
+}
+
+async function copyDetailText(text) {
+  const content = String(text || '')
+  if (!content) {
+    message.warning('没有可复制的内容')
+    return
+  }
+  const copied = await copyTextWithFallback(content)
+  if (copied) {
+    message.success('已复制')
+    return
+  }
+  message.error('复制失败，请检查浏览器权限')
+}
+
 function formatJsonText(value) {
   try {
     return JSON.stringify(value, null, 2)
@@ -741,6 +797,16 @@ onBeforeUnmount(() => {
   margin: 16px 0 8px;
   font-weight: 600;
 }
+.detail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 8px;
+}
+.detail-section-head .detail-section-title {
+  margin: 0;
+}
 .detail-content {
   white-space: pre-wrap;
   word-break: break-all;
@@ -749,5 +815,22 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   max-height: 320px;
   overflow: auto;
+}
+.detail-modal-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #f5f5f5;
+  padding: 12px 16px;
+  border-radius: 4px;
+  min-height: 45vh;
+  max-height: 80vh;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.detail-modal-actions {
+  margin-top: 12px;
+  text-align: right;
 }
 </style>

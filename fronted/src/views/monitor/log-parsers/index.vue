@@ -198,7 +198,13 @@
               />
             </a-form-item>
             <a-form-item label="说明">
-              <a-input v-model:value="form.description" placeholder="描述该规则适用的日志格式" />
+              <a-textarea
+                v-model:value="form.description"
+                :rows="4"
+                :maxlength="2000"
+                show-count
+                placeholder="描述该规则适用的日志格式，可多行"
+              />
             </a-form-item>
             <a-form-item name="application" label="所属应用">
               <a-select
@@ -330,7 +336,15 @@
       <a-form ref="filterFormRef" :model="filterForm" :rules="filterFormRules" layout="vertical">
         <a-form-item name="name" label="规则名称"><a-input v-model:value="filterForm.name" placeholder="例如 error-critical-only" /></a-form-item>
         <a-form-item name="application" label="所属应用"><a-select v-model:value="filterForm.application" allow-clear placeholder="留空表示通用规则" :options="applicationOptions" :getPopupContainer="getPopupContainer" :virtual="false" /></a-form-item>
-        <a-form-item label="说明"><a-input v-model:value="filterForm.description" placeholder="例如 仅采集错误、失败和严重级别日志" /></a-form-item>
+        <a-form-item label="说明">
+          <a-textarea
+            v-model:value="filterForm.description"
+            :rows="3"
+            :maxlength="2000"
+            show-count
+            placeholder="例如 仅采集错误、失败和严重级别日志，可多行"
+          />
+        </a-form-item>
         <a-form-item name="rule_type" label="规则类型">
           <a-segmented v-model:value="filterForm.rule_type" :options="filterRuleTypeOptions" block />
           <div class="field-hint">
@@ -410,6 +424,7 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { getApplicationList, getApplicationDeploymentTemplateServices } from '@/api/assets/application'
 import { filterApplicationGroups, isApplicationFilterMissed } from '@/util/applicationFilter'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { copyTextWithFallback } from '@/util/clipboard'
 import { assertRe2Compatible, compilePreviewRegExp } from '@/util/re2Pattern'
 
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -448,12 +463,19 @@ const resultDisplayText = computed(() => {
 })
 
 async function copyResult() {
-  try {
-    await navigator.clipboard.writeText(resultDisplayText.value)
-    message.success('已复制运行结果')
-  } catch {
-    message.error('复制失败，请手动选中复制')
+  const content = String(resultDisplayText.value || '')
+  if (!content) {
+    message.warning('暂无可复制的运行结果')
+    return
   }
+  // 不能直接用 navigator.clipboard：内网多是 HTTP（非安全上下文），该 API 不存在，
+  // 必须走 @/util/clipboard 的 execCommand 兜底，否则一复制就报"请手动选中"。
+  const copied = await copyTextWithFallback(content)
+  if (copied) {
+    message.success('已复制运行结果')
+    return
+  }
+  message.error('复制失败，请手动选中复制')
 }
 const form = reactive({
   id: null,

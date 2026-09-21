@@ -1062,6 +1062,24 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  // 回归（2026-09-21 现场）：树顶层（未选服务）点「后备索引」，下面展不开。
+  it('expands the backing indices of a stream at the top level too', async () => {
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: fullOverviewPayload() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务', projectIds: [], environmentIds: [] })
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    const row = wrapper.vm.storageRows.find((item) => item.name === 'autoadmin-yilake-tib-poc-nginx-hot')
+    wrapper.vm.toggleBackingIndices(row)
+    await flushPromises()
+    expect(wrapper.vm.expandedStream).not.toBeNull()
+    expect(document.body.textContent).toContain('.ds-autoadmin-yilake-tib-poc-nginx-hot-2026.09.19-000001')
+    wrapper.unmount()
+  })
+
   // 未选中服务时：水位 tab 变成全量视图——按树的层级过滤，并且把**未识别流**照旧列出来
   // （旧页的「未识别」容器；藏掉它们就等于让人看不见手工建的流和维度已删除的遗留数据）。
   it('shows the global view with unrecognized streams when no service is selected', async () => {
@@ -1088,6 +1106,33 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await flushPromises()
     expect(wrapper.vm.visibleStorageRows.every((row) => !row.recognized || row.project === 'yilake')).toBe(true)
     expect(wrapper.vm.visibleStorageRows.some((row) => row.project === 'nkg')).toBe(false)
+    wrapper.unmount()
+  })
+
+  // 2026-09-21 加：流列表很长时需要搜索与排序，否则找不到目标流。
+  it('filters the data stream table by keyword and exposes sorters', async () => {
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: fullOverviewPayload() } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'all', nodeTitle: '全部业务', projectIds: [], environmentIds: [] })
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    wrapper.vm.storageKeyword = 'mgmt'
+    await flushPromises()
+    expect(wrapper.vm.visibleStorageRows.map((row) => row.name)).toContain('autoadmin-nkg-tib-poc-mgmt-hot')
+    expect(wrapper.vm.visibleStorageRows.some((row) => row.recognized && row.service === 'nginx')).toBe(false)
+
+    wrapper.vm.storageKeyword = ''
+    await flushPromises()
+    expect(wrapper.vm.visibleStorageRows.length).toBeGreaterThan(1)
+
+    // 关键列要带 sorter（否则表头点不动）。
+    const sortable = ['name', 'tier', 'docs', 'bytes', 'ilm_state']
+    for (const key of sortable) {
+      expect(typeof wrapper.vm.storageColumns.find((column) => column.key === key)?.sorter).toBe('function')
+    }
     wrapper.unmount()
   })
 

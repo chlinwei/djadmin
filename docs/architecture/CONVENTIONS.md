@@ -71,3 +71,11 @@
 3. 变更记录/总结类内容（"本次改了什么"）一律不进 architecture；要么并入对应架构文档的"最终逻辑"，要么进 `docs/archive/`。
 4. 后端唯一实现为 Go 版 autoadmin；Django 实现已从版本库移除，文档禁止引用其源码，历史实现只允许引用 `docs/archive/`（见 AGENTS.md）。
 5. **数据访问层约定（选 sqlc 还是内联 SQL、字段映射、SQL 方言可移植性）统一见 [SQL_DESIGN.md](SQL_DESIGN.md)**，本文不重复；新增或修改任何 SQL 前先读该文档。
+
+## 五、复制到剪贴板：统一走 `@/util/clipboard`
+
+内网部署多为 **HTTP（非安全上下文）**，此时 `navigator.clipboard` 不存在；直接调
+`navigator.clipboard.writeText(...)` 必然抛错，表现为"复制失败，请手动选中复制"
+（2026-09-21 日志规则页运行结果复制即此）。约定：所有复制按钮统一用
+`import { copyTextWithFallback } from '@/util/clipboard'`——它优先用 Clipboard API，
+不可用时回退 `document.execCommand('copy')`；返回布尔值，调用方据此提示成功/失败。

@@ -873,6 +873,7 @@ import HostTargetPanel from './components/HostTargetPanel.vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { copyTextWithFallback } from '@/util/clipboard'
 import store from '@/store'
 import { CONFIG_KEYS, getConfigByKey, updateConfigByKey } from '@/api/sys/sysconfig'
 
@@ -1699,31 +1700,13 @@ async function copyPromConfig() {
     return
   }
 
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      message.success('配置已复制到剪贴板')
-      return
-    }
-
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.style.position = 'fixed'
-    textarea.style.left = '-9999px'
-    textarea.style.top = '0'
-    document.body.appendChild(textarea)
-    textarea.focus()
-    textarea.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(textarea)
-    if (ok) {
-      message.success('配置已复制到剪贴板')
-      return
-    }
-    message.error('复制失败，请手动复制')
-  } catch (_error) {
-    message.error('复制失败，请手动复制')
+  // HTTP 非安全上下文下 navigator.clipboard 不存在，统一走 @/util/clipboard 的兜底实现。
+  const copied = await copyTextWithFallback(text)
+  if (copied) {
+    message.success('配置已复制到剪贴板')
+    return
   }
+  message.error('复制失败，请手动复制')
 }
 
 

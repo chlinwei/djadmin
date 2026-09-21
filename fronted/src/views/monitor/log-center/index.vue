@@ -496,6 +496,12 @@
           <div v-else class="storage-section-title">
             全部 data stream（左侧选择逻辑服务可只看该服务；选项目/业务系统/环境可只看该范围）
           </div>
+          <a-input-search
+            v-model:value="storageKeyword"
+            class="storage-stream-search"
+            placeholder="搜索 data stream / 服务 / 档位"
+            allow-clear
+          />
           <a-alert
             v-if="!serviceId && unrecognizedStreams.length"
             type="warning"
@@ -512,6 +518,8 @@
             size="small"
             :locale="tableLocale"
             :scroll="{ x: 1200 }"
+            :expanded-row-keys="expandedRowKeys"
+            :show-expand-column="false"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'owner'">
@@ -568,38 +576,37 @@
                 <span v-if="!streamCleanupTarget(record) && !(isHistoricalTier(record) && serviceId)" class="apply-muted">-</span>
               </template>
             </template>
+            <!-- 后备索引直接展开在点击的那条流下面（真实磁盘占用的最细粒度，一个流由多个
+                 backing index 组成）。用可展开行而不是表格下方的一块：流列表可能很长，
+                 下方那块会被淹没，用户以为"点了没反应"。 -->
+            <template #expandedRowRender="{ record }">
+              <div class="backing-indices">
+                <div class="backing-indices__title">
+                  {{ record.name }} 的后备索引（真实磁盘占用的最细粒度）
+                </div>
+                <a-table
+                  size="small"
+                  row-key="index"
+                  :columns="backingColumns"
+                  :data-source="record.backing_indices || []"
+                  :pagination="false"
+                  :locale="tableLocale"
+                >
+                  <template #bodyCell="{ column: backingColumn, record: backingRow }">
+                    <template v-if="backingColumn.key === 'bytes'">{{ formatBytes(backingRow.bytes) }}</template>
+                    <template v-else-if="backingColumn.key === 'docs'">{{ Number(backingRow.docs || 0).toLocaleString() }}</template>
+                    <template v-else-if="backingColumn.key === 'ilm_state'">
+                      <a-tag v-if="backingRow.ilm_state" color="blue">{{ backingRow.ilm_state }}</a-tag>
+                      <span v-else>-</span>
+                    </template>
+                  </template>
+                </a-table>
+              </div>
+            </template>
           </a-table>
 
-          <!-- 清理弹窗：与「日志查询」原来的清理入口合并成一个（见 LogCleanupDialog）。 -->
-      <LogCleanupDialog v-model:open="cleanupOpen" :scope="cleanupScope" @cleaned="loadStorage" />
-
-      <!-- 后备索引：真实磁盘占用的最细粒度（一个流由多个 backing index 组成）。 -->
-          <template v-if="expandedStream">
-            <a-divider style="margin: 12px 0" />
-            <a-alert
-              type="info"
-              show-icon
-              :message="`data stream ${expandedStream.name} 的后备索引（真实磁盘占用的最细粒度）`"
-              style="margin-bottom: 8px"
-            />
-            <a-table
-              size="small"
-              row-key="index"
-              :columns="backingColumns"
-              :data-source="expandedStream.backing_indices || []"
-              :pagination="false"
-              :locale="tableLocale"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'bytes'">{{ formatBytes(record.bytes) }}</template>
-                <template v-else-if="column.key === 'docs'">{{ Number(record.docs || 0).toLocaleString() }}</template>
-                <template v-else-if="column.key === 'ilm_state'">
-                  <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
-                  <span v-else>-</span>
-                </template>
-              </template>
-            </a-table>
-          </template>
+              <!-- 清理弹窗：与「日志查询」原来的清理入口合并成一个（见 LogCleanupDialog）。 -->
+          <LogCleanupDialog v-model:open="cleanupOpen" :scope="cleanupScope" @cleaned="loadStorage" />
 
           <div class="field-hint">
             只含按新命名（<code>前缀-项目-业务系统-环境-服务-档位</code>）能识别到服务归属的流；
@@ -788,6 +795,10 @@ const storageAllocError = ref('')
 const storageDims = ref({ projects: [], business_systems: [], environments: [] })
 // 展开后备索引的那条流（旧页的「后备索引」按钮，真实磁盘占用的最细粒度）。
 const expandedStream = ref(null)
+// 可控的可展开行：只展开 expandedStream 对应的那一条（展开内容直接渲染在该行下面）。
+const expandedRowKeys = computed(() => (expandedStream.value ? [expandedStream.value.name] : []))
+// data stream 列表的关键字过滤（流名/服务/项目/环境/业务系统/档位，客户端过滤）。
+const storageKeyword = ref('')
 
 const verifyDialogVisible = ref(false)
 const verifyTarget = ref(null)
@@ -880,14 +891,16 @@ const configColumns = [
   { title: 'Data Stream', key: 'data_stream', width: 260 },
 ]
 
+const byText = (key) => (left, right) => String(left[key] || '').localeCompare(String(right[key] || ''), 'zh-CN')
+const byNumber = (key) => (left, right) => Number(left[key] || 0) - Number(right[key] || 0)
 const storageColumns = computed(() => [
-  { title: 'Data Stream', dataIndex: 'name', key: 'name', width: 300 },
+  { title: 'Data Stream', dataIndex: 'name', key: 'name', width: 300, sorter: byText('name') },
   // 全量视图下必须能看到归属，否则一堆流分不清是谁的；选中服务时服务是已知的，不重复占位置。
-  ...(serviceId.value ? [] : [{ title: '归属服务', key: 'owner', width: 110 }]),
-  { title: '档位', dataIndex: 'tier', key: 'tier', width: 120 },
-  { title: '文档数', key: 'docs', width: 110 },
-  { title: '磁盘占用', key: 'bytes', width: 110 },
-  { title: 'ILM', key: 'ilm_state', width: 100 },
+  ...(serviceId.value ? [] : [{ title: '归属服务', key: 'owner', width: 110, sorter: byText('service') }]),
+  { title: '档位', dataIndex: 'tier', key: 'tier', width: 120, sorter: byText('tier') },
+  { title: '文档数', key: 'docs', width: 110, sorter: byNumber('docs') },
+  { title: '磁盘占用', key: 'bytes', width: 110, sorter: byNumber('bytes') },
+  { title: 'ILM', key: 'ilm_state', width: 100, sorter: byText('ilm_state') },
   { title: '状态', key: 'collect_state', width: 150 },
   { title: '后备索引', key: 'backing', width: 100 },
   // 操作列**恒在**（2026-09-19 修）：清理对每条流都成立（未识别流也能清），
@@ -1873,20 +1886,32 @@ function scopeCodes(scope) {
 // 全量视图下按树的选中层级过滤；未识别的流没有维度信息，任何层级都保留（它们不归属任何服务，
 // 藏起来就没人看得见了——这正是旧页「未识别」分组的用意）。
 const visibleStorageRows = computed(() => {
-  if (serviceId.value) return storageRows.value
   const codes = scopeCodes(scope.value)
   const filtered = storageRows.value.filter((row) => {
-    if (!row.recognized) return true
-    if (codes.project.length && !codes.project.includes(row.project)) return false
-    if (codes.environment.length && !codes.environment.includes(row.environment)) return false
-    if (codes.businessSystem.length && !codes.businessSystem.includes(row.business_system)) return false
-    return true
+    // 选中服务时不再按树层级过滤（数据本身就是该服务的）；未选中时按 scope 的维度码过滤。
+    if (!serviceId.value) {
+      if (row.recognized) {
+        if (codes.project.length && !codes.project.includes(row.project)) return false
+        if (codes.environment.length && !codes.environment.includes(row.environment)) return false
+        if (codes.businessSystem.length && !codes.businessSystem.includes(row.business_system)) return false
+      }
+    }
+    return storageKeywordMatch(row)
   })
   // 未识别流排最后：它们需要人看一眼，但不是这个页面的主角。
   // （recognized=true 是 1，降序才是"已识别的在前"；写成升序会把未识别顶到最前面。）
   return filtered.slice().sort((left, right) => Number(right.recognized) - Number(left.recognized)
     || String(left.name).localeCompare(String(right.name), 'zh-CN'))
 })
+
+function storageKeywordMatch(row) {
+  const keyword = String(storageKeyword.value || '').trim().toLowerCase()
+  if (!keyword) return true
+  const haystack = [
+    row.name, row.service, row.project, row.environment, row.business_system, row.tier,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+  return haystack.includes(keyword)
+}
 
 const unrecognizedStreams = computed(() => storageRows.value.filter((row) => !row.recognized))
 
@@ -2181,6 +2206,23 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .storage-section-title {
   margin: 4px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.storage-stream-search {
+  display: block;
+  max-width: 340px;
+  margin-bottom: 8px;
+}
+/* 展开行里的后备索引：给个小标题 + 内层表格，和主表区分开。 */
+.backing-indices {
+  padding: 8px 12px 12px;
+  background: #fafafa;
+  border-radius: 6px;
+}
+.backing-indices__title {
+  margin-bottom: 8px;
+  color: #425066;
   font-size: 13px;
   font-weight: 500;
 }

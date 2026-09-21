@@ -1,5 +1,5 @@
 <template>
-    <a-layout style="min-height: 100vh">
+    <a-layout class="app-layout" style="min-height: 100vh">
         <a-layout-sider v-model:collapsed="collapsed" collapsible>
             <!-- 左边menu -->
             <Menu />
@@ -87,4 +87,15 @@ const collapsed = ref(false)
 
 
 <style scoped>
+/* 菜单过长时不能撑高整个文档：把侧边栏锁在视口高度、内部自己滚动。
+   否则要够到靠下的菜单项得先把 window 滚到底，点完菜单后 window 仍停在底部，
+   右侧内容（在文档顶部）就看不见，得再手动往上滚。 */
+.app-layout :deep(.ant-layout-sider) {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
 </style>

@@ -45,6 +45,18 @@
 `a-tree` 只有显式传 `:height` 才会启用虚拟滚动（`vc-virtual-list` 要求 `height`），因此不带
 `:height` 的树本就不受影响；带 `:height` 的树按上一条禁用。
 
+## 侧边菜单滚动与内容视口（2026-09-21）
+
+`layout/index.vue` 的左侧 `a-layout-sider` 被约束为 `height: 100vh` + `position: sticky; top: 0` +
+`overflow-y: auto`。
+
+- **问题**：菜单项多/默认展开的目录多时，未约束的 sider 会把整个文档撑高，滚动的是 window。要够到靠下的
+  菜单项必须先把 window 滚到底；点完菜单项后 window 滚动位置不变，而右侧内容在文档顶部，于是视口停在
+  底部，必须手动往上滚才能看到内容。
+- **约定**：菜单再高也只占一个视口高度、在自己的区域内滚动，**不允许把整个文档撑高**。右侧内容仍沿用
+  window 滚动（大量页面用 `height: calc(100vh - X)` 自算高度，改成内容区独立滚动会双滚动/高度错乱）。
+- 附带影响：antd 的折叠 trigger 是 `position: fixed`，sider 变为滚动容器后仍固定在视口底部。
+
 ## 维护约定
 
 - 新增页面无需声明 `name`，缓存名由路由自动生成；不要手写 `include`。

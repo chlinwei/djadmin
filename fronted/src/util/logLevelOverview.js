@@ -92,7 +92,8 @@ function levelMembers(scope, dimensionKey, projects, businessSystems, services) 
     return businessSystemsInProject(businessSystems, scope?.projectId).map((system) => ({
       key: `system:${system.id}`,
       title: system.name,
-      scope: { nodeType: 'businessSystem', businessSystemId: system.id, nodeTitle: system.name },
+      // projectId 随 scope 走：业务系统 code 只在项目内唯一，下游按 code 过滤水位时要用它收窄。
+      scope: { nodeType: 'businessSystem', businessSystemId: system.id, projectId: system.project ?? null, nodeTitle: system.name },
     }))
   }
   if (dimensionKey === 'environment') {

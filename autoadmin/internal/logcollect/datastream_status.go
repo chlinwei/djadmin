@@ -390,11 +390,13 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	// serviceRow：服务维度。2026-09-18 曾因"前端从未消费"删掉过这份 payload，现在日志中心的
 	// 容量统计要"把每一层的成员都列全（含没有任何日志的）"，以及反推"某业务系统下的环境"
 	// （环境是服务上的属性，不挂在业务系统下）——有了真正的消费方，所以加回来。
+	// ProjectID：业务系统 code 只在项目内唯一，前端反推环境时按 (project_id, code) 双码收窄。
 	type serviceRow struct {
 		ID             int64  `json:"id"`
 		Code           string `json:"code"`
 		Name           string `json:"name"`
 		BusinessSystem string `json:"business_system"`
+		ProjectID      *int64 `json:"project_id"`
 		Environment    string `json:"environment"`
 	}
 	queries := db.New(handler.db)
@@ -424,9 +426,13 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	services := []serviceRow{}
 	if rows, queryErr := queries.ListEnabledServiceStreamDims(context); queryErr == nil {
 		for _, row := range rows {
+			projectID := int64(0)
+			if row.ProjectID.Valid {
+				projectID = row.ProjectID.Int64
+			}
 			services = append(services, serviceRow{
 				ID: row.ID, Code: row.Code, Name: row.Name,
-				BusinessSystem: row.BusinessSystem, Environment: row.Environment,
+				BusinessSystem: row.BusinessSystem, ProjectID: &projectID, Environment: row.Environment,
 			})
 		}
 	}

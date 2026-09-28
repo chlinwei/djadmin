@@ -1527,6 +1527,12 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   本身就是要看的信息），并且"某业务系统下的环境"只能由它名下服务反推——环境是服务上的属性
   （`assets_business_environment` 不挂在业务系统下）。消费方出现了，所以连同查询一起加回来；
   契约测试 `TestStorageOverviewDimsCarryAllFourLevels` 钉住"别再把这份 payload 当死数据删掉"。
+  services 行带 `project_id`（2026-09-28 补）：**业务系统 code 只在项目内唯一**
+  （`UNIQUE(project_id, code)`），业务系统节点按 code 反推环境/过滤流时必须用
+  `(project_id, code)` 双码收窄，否则别的项目里同 code 业务系统的环境与流会混进来
+  （现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。树 scope 同步携带
+  `projectId`（ServiceTree 与层级视图下钻两处）；services 行缺 `project_id` 的旧缓存
+  降级为不过滤该维度。
 - **"已停用 / 未开启采集"按逻辑服务标注（2026-09-18）**：每条流带
   `service_enabled` 与 `service_collection_enabled`（来自逻辑服务行，是**配置事实**，
   不需要查 ES）。服务停用或服务级采集开关关闭时，树上服务节点与右侧明细都标「已停用」/

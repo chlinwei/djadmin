@@ -663,6 +663,9 @@ type Querier interface {
 	// 日志的）"，光靠流里解析出的服务码做不到——那样没日志的服务就不出现在统计里。
 	// 环境是**服务上的属性**（assets_business_environment 不挂在业务系统下），所以"某业务系统下的环境"
 	// 只能由它名下服务反推，这也需要这份数据。
+	// business_system 的 code 只在项目内唯一（UNIQUE(project_id, code)）：日志中心在业务系统节点
+	// 按 code 反推"该业务系统下的环境"时，必须带上 project_id 才不会把**别的项目里同 code 的
+	// 业务系统**的环境也算进来（现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。
 	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
 	// 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。

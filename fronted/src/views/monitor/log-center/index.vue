@@ -2128,7 +2128,12 @@ async function loadStorage() {
 function scopeCodes(scope) {
   const dims = storageDims.value || {}
   const codes = { project: [], environment: [], businessSystem: [] }
-  const projectIds = scope?.nodeType === 'project' ? [scope.projectId] : (scope?.projectIds || [])
+  // 业务系统节点也要带项目维度：业务系统 code 只在**项目内**唯一，不同项目可以有同 code 的
+  // 业务系统（现场：yilake/aos 与另一个项目同名 aos）。只按 code 过滤会把别的项目的流混进来，
+  // 表现为"按环境统计里多出不该有的环境"。
+  const projectIds = scope?.nodeType === 'project'
+    ? [scope.projectId]
+    : (scope?.nodeType === 'businessSystem' && scope.projectId != null ? [scope.projectId] : (scope?.projectIds || []))
   const environmentIds = scope?.nodeType === 'environment' ? [scope.environment] : (scope?.environmentIds || [])
   const businessSystemId = scope?.businessSystemId
   codes.project = (dims.projects || []).filter((item) => projectIds.includes(item.id)).map((item) => item.code)
@@ -2223,10 +2228,15 @@ const groupEntries = computed(() => {
   if (dimension.key === 'environment') {
     // 环境是**服务上的属性**（assets_business_environment 不挂在业务系统下），所以"该业务系统下的
     // 环境"只能由它名下服务反推：这样即使一条流都没有，配置过的环境也能列出来。
-    const businessSystemCode = (dims.business_systems || [])
-      .find((item) => item.id === current.businessSystemId)?.code
+    // 收窄必须用 (project_id, code) 双码：业务系统 code 只在项目内唯一，只按 code 会把别的项目里
+    // 同 code 业务系统的环境也反推进来（现场：yilake/aos 多出了 test）。
+    const businessSystem = (dims.business_systems || []).find((item) => item.id === current.businessSystemId)
+    const businessSystemCode = businessSystem?.code
+    const projectId = current.projectId ?? businessSystem?.project_id ?? null
     const codes = [...new Set((dims.services || [])
       .filter((item) => !businessSystemCode || item.business_system === businessSystemCode)
+      // 老后端/旧缓存可能没带 project_id：缺列时无法区分，放行（退回旧行为）而不是清空。
+      .filter((item) => projectId == null || item.project_id == null || String(item.project_id) === String(projectId))
       .map((item) => item.environment)
       .filter(Boolean))]
     return codes.map((code) => ({ code, name: environmentNameByCode(code) }))

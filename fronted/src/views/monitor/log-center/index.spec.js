@@ -740,6 +740,39 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  // 业务系统 code 只在**项目内**唯一：水位在业务系统节点必须按 (项目, 业务系统) 双码收窄，
+  // 否则别的项目里同名业务系统的流与环境会混进来（现场：yilake/aos 只该有 poc，却多出 test）。
+  it('scopes business-system storage stats by project when codes collide', async () => {
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: {
+      data_streams: [
+        { name: 'autoadmin-p1-aos-poc-svc1-hot', project: 'p1', business_system: 'aos', environment: 'poc', service: 'svc1', tier: 'hot', docs: 10, bytes: 100, recognized: true, historical: false },
+        { name: 'autoadmin-p2-aos-test-svc2-hot', project: 'p2', business_system: 'aos', environment: 'test', service: 'svc2', tier: 'hot', docs: 20, bytes: 200, recognized: true, historical: false },
+      ],
+      dims: {
+        projects: [{ id: 1, code: 'p1' }, { id: 2, code: 'p2' }],
+        business_systems: [{ id: 11, code: 'aos', project_id: 1 }, { id: 12, code: 'aos', project_id: 2 }],
+        environments: [{ id: 5, code: 'poc' }, { id: 6, code: 'test' }],
+        services: [
+          { id: 21, code: 'svc1', business_system: 'aos', project_id: 1, environment: 'poc' },
+          { id: 22, code: 'svc2', business_system: 'aos', project_id: 2, environment: 'test' },
+        ],
+      },
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+      nodeType: 'businessSystem', businessSystemId: 11, projectId: 1, nodeTitle: 'aos',
+    })
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+
+    expect(wrapper.vm.visibleStorageRows.map((row) => row.name))
+      .toEqual(['autoadmin-p1-aos-poc-svc1-hot'])
+    expect(wrapper.vm.groupEntries.map((entry) => entry.code)).toEqual(['poc'])
+    wrapper.unmount()
+  })
+
   // 「切回该档位」：候选是"当前生效档位不等于该历史档位"的日志，逐条按行提交；
   // 每条请求都要带上采集开关的当前值——按行接口把提交体当作该行覆盖值的全集，缺一列会清掉它。
   it('switches selected logs back to the historical tier, one row per request', async () => {

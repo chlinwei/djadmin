@@ -37,7 +37,7 @@ describe('logLevelOverview', () => {
 
   it('lists the next level for a business-system node as its environments', () => {
     const { dimension, rows } = buildLevelRows({
-      scope: { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
+      scope: { nodeType: "businessSystem", businessSystemId: 7, projectId: 301, nodeTitle: "订单系统" },
       services: [
         service({ id: 1, environment: 71, environment_name: '生产环境' }),
         service({ id: 2, environment: 72, environment_name: '测试环境' }),
@@ -87,7 +87,7 @@ describe('logLevelOverview', () => {
 
     // 下钻到业务系统层：环境行的和 = 上一层那一行（同源聚合）。
     const systemLevel = buildLevelRows({
-      scope: { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
+      scope: { nodeType: "businessSystem", businessSystemId: 7, projectId: 301, nodeTitle: "订单系统" },
       businessSystems: [{ id: 7, name: '订单系统', project: 301 }],
       services,
       statusByService,
@@ -129,7 +129,7 @@ describe('logLevelOverview', () => {
 
     // 上层不算这一列（要算就得按服务逐个查 ES，代价不值）：明确是"没有这项数据"而不是 0。
     const upper = buildLevelRows({
-      scope: { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
+      scope: { nodeType: "businessSystem", businessSystemId: 7, projectId: 301, nodeTitle: "订单系统" },
       services,
       usageByService,
     })
@@ -163,7 +163,7 @@ describe('logLevelOverview', () => {
 
     // 上层：取不到写入量 → recentKnown=false，那两个数保持 0（界面显示"-"，不能显示成"0 个无写入"）。
     const upper = buildLevelRows({
-      scope: { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
+      scope: { nodeType: "businessSystem", businessSystemId: 7, projectId: 301, nodeTitle: "订单系统" },
       services,
     })
     const upperMetrics = buildLevelMetrics(upper.rows)
@@ -206,8 +206,8 @@ describe('logLevelOverview', () => {
     expect(rows[1].serviceCount).toBe(0)
     // 建了业务系统但还没建服务的，也要列出来（否则看起来"这个项目什么都没有"）。
     expect(rows.map((row) => row.scope)).toEqual([
-      { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
-      { nodeType: 'businessSystem', businessSystemId: 8, nodeTitle: '支付系统' },
+      { nodeType: "businessSystem", businessSystemId: 7, projectId: 301, nodeTitle: "订单系统" },
+      { nodeType: "businessSystem", businessSystemId: 8, projectId: 301, nodeTitle: "支付系统" },
     ])
   })
 

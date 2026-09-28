@@ -1376,7 +1376,11 @@ SELECT id, code, name FROM assets_business_environment WHERE enabled = TRUE ORDE
 -- 环境是**服务上的属性**（assets_business_environment 不挂在业务系统下），所以"某业务系统下的环境"
 -- 只能由它名下服务反推，这也需要这份数据。
 -- name: ListEnabledServiceStreamDims :many
-SELECT s.id, s.code, s.name, bs.code AS business_system, COALESCE(e.code, '') AS environment
+-- business_system 的 code 只在项目内唯一（UNIQUE(project_id, code)）：日志中心在业务系统节点
+-- 按 code 反推"该业务系统下的环境"时，必须带上 project_id 才不会把**别的项目里同 code 的
+-- 业务系统**的环境也算进来（现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。
+SELECT s.id, s.code, s.name, bs.code AS business_system, bs.project_id AS project_id,
+       COALESCE(e.code, '') AS environment
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 LEFT JOIN assets_business_environment e ON e.id = s.environment_id

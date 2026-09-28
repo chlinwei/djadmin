@@ -438,8 +438,10 @@ function buildTree(systems, services, deployments) {
   const systemNodes = allSystems.map((system) => {
     const systemKey = `system:${system.id}`
     if (system.id !== 'unassigned') {
+      // projectId 必须随 scope 走：业务系统 code 只在项目内唯一，下游（日志中心水位）
+      // 按 code 过滤流时要用项目维度收窄，否则别的项目里同 code 业务系统的流会混进来。
       scopeByKey.set(systemKey, {
-        nodeType: 'businessSystem', businessSystemId: system.id, nodeTitle: system.name,
+        nodeType: 'businessSystem', businessSystemId: system.id, projectId: system.project ?? null, nodeTitle: system.name,
       })
     }
     if (system.id === 'unassigned') {

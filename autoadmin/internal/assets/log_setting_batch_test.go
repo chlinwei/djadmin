@@ -37,7 +37,7 @@ func TestBatchSaveServiceLogOverridesSkipsForeignLogDefinition(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
-			int64(7), sqlmock.AnyArg(),
+			int64(7), sqlmock.AnyArg(), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -162,7 +162,8 @@ func TestBatchSaveApplicationServiceLogSettingsPassesEveryOverrideColumn(t *test
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
 			// include 选规则 7、exclude 显式关闭（0）——0 与 null 必须区分开。
-			int64(7), int64(0),
+			// extra_processors 未提交 → 归一为 []（未启用）。
+			int64(7), int64(0), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

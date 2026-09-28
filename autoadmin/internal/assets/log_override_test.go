@@ -59,6 +59,7 @@ func overrideFixtureRows(stored sql.NullString, collectionEnabled *bool, tier sq
 		collectionEnabled, sql.NullInt64{},
 		// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
 		sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
+		[]byte(`[]`),
 		sql.NullTime{}, stored, sql.NullString{}, sql.NullString{},
 		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
 		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
@@ -82,8 +83,8 @@ func TestSaveServiceLogOverrideWritesSingleRowAndKeepsVerification(t *testing.T)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
-			// 两个过滤方向：本例不提交（nil = 继承模板）。
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			// 两个过滤方向：本例不提交（nil = 继承模板）。extra_processors 归一为 []（未启用）。
+			sqlmock.AnyArg(), sqlmock.AnyArg(), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 3) 回读整行（覆盖值与认证状态都由后端算）
@@ -131,7 +132,7 @@ func TestSaveServiceLogOverrideWritesFilterTriState(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
-			int64(0), int64(7),
+			int64(0), int64(7), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).

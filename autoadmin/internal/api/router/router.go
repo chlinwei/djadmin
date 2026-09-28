@@ -435,6 +435,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 一批服务的配置态（待下发）评估：日志中心的层级视图一次要问多个服务，
 	// 而渲染采集配置属于日志采集域 → 同样是反向注入（见 logcollect/log_service_status.go）。
 	assetsService.SetServiceLogPendingEvaluator(logcollectHandler)
+	// 服务级后处理（2026-09-28）：保存覆盖值后由 logcollect 对账包装 pipeline
+	//（只有日志采集域持有 ES 客户端与集群配置），反向注入，先例同上。
+	assetsService.SetServiceLogPipelineSyncer(logcollectHandler)
 	// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）：配置不自洽（路径展不开、
 	// 同主机上两个实例展开成同一路径、正则编译不过）就拒绝保存——这些问题是"只能回到配置里改"的，
 	// 等到下发才以"跳过并告警"暴露出来就太晚了（同主机同路径会让同一条日志进 ES 两次）。

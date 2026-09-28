@@ -42,13 +42,15 @@ func TestEvaluateLogConfigStates(t *testing.T) {
 				// 采集过滤的四个 id（模板两个 + 服务覆盖两个）：本例都不配，按 NULL 走。
 				"filter_include_rule_id", "filter_exclude_rule_id",
 				"collection_filter_rule_id", "collection_exclude_filter_rule_id",
+				// 服务级后处理器（2026-09-28）：本例未启用（[]）。
+				"extra_processors",
 			}).
 				AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
 					"/data/tpl/logs/catalina.out", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-					nil, nil, nil, nil).
+					nil, nil, nil, nil, []byte(`[]`)).
 				AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
 					"/data/tpl/logs/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-					nil, nil, nil, nil),
+					nil, nil, nil, nil, []byte(`[]`)),
 		)
 	}
 

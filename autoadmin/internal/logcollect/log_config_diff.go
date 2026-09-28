@@ -74,10 +74,10 @@ type logConfigDiffSummary struct {
 // logConfigDiffService 本次比较针对的那个服务（可选）。Pending 为 true = 这台主机上本服务的
 // 配置待下发（子指纹不一致），与日志中心头部的"待下发 N 台"同源。
 type logConfigDiffService struct {
-	ServiceID                 int64  `json:"service_id"`
-	ExpectedFingerprint       string `json:"expected_fingerprint"`
-	AppliedFingerprint        string `json:"applied_fingerprint"`
-	Pending                   bool   `json:"pending"`
+	ServiceID           int64  `json:"service_id"`
+	ExpectedFingerprint string `json:"expected_fingerprint"`
+	AppliedFingerprint  string `json:"applied_fingerprint"`
+	Pending             bool   `json:"pending"`
 }
 
 // logConfigDiffResponse 配置差异的完整响应。
@@ -91,10 +91,10 @@ type logConfigDiffResponse struct {
 	ExpectedFingerprint string `json:"expected_fingerprint"`
 	AppliedFingerprint  string `json:"applied_fingerprint"`
 	// AppliedFingerprintFromDB 已下发指纹来自库里（读主机失败时依然能说"库里记的是这一版"）。
-	AppliedFingerprintFromDB string                 `json:"applied_fingerprint_from_db"`
-	Service                  *logConfigDiffService  `json:"service"`
-	Files                    []logConfigDiffFile    `json:"files"`
-	Summary                  logConfigDiffSummary   `json:"summary"`
+	AppliedFingerprintFromDB string                `json:"applied_fingerprint_from_db"`
+	Service                  *logConfigDiffService `json:"service"`
+	Files                    []logConfigDiffFile   `json:"files"`
+	Summary                  logConfigDiffSummary  `json:"summary"`
 	// ReadError 整体读不到主机上的配置时的原因（agent 未接线/离线）。此时 files 里只有期望侧，
 	// 界面要明说"下面是**将要下发**的内容，无法与主机上的现状对比"。
 	ReadError string   `json:"read_error"`

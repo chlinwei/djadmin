@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/assets"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -289,8 +290,60 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster elastics
 			Name: rule.Name, ApplicationID: rule.ApplicationID, PipelineBody: rule.PipelineBody,
 			SampleLog: rule.SampleLog, MultilineEnabled: rule.MultilineEnabled, StartPattern: rule.StartPattern,
 		}))
+		// 服务级包装（2026-09-28）：存在即必须存在且与期望一致——它嵌着基础名，服务片段指它，
+		// 包装漂移 = 那个服务的日志解析行为漂移。试跑不重复做（基础层已试过；包装只是多几个
+		// 处理器，签名比对已覆盖"改了没同步"的主要风险），控制体检的 ES 请求量。
+		items = append(items, handler.judgeRuleExtraPipelines(context, cluster, rule.ID, rule.Name, rule.ApplicationID)...)
 	}
 	return logHealthLayerFromItems("pipelines", "解析规则", items, "尚未配置解析规则")
+}
+
+// judgeRuleExtraPipelines 判一条规则名下的全部服务级包装 pipeline：
+// 期望集来自覆盖行（extra_processors 非空）；集群上缺失或签名不一致 → drift。
+// 行的规则集群与本体检集群不一致时跳过（该包装挂在别的集群上，由那边的体检负责）。
+func (handler *Handler) judgeRuleExtraPipelines(context *gin.Context, cluster elasticsearchCluster, ruleID int64, ruleName string, applicationID sql.NullInt64) []gin.H {
+	rows, err := db.New(handler.db).ListRuleExtraPipelineRows(context, sql.NullInt64{Int64: ruleID, Valid: ruleID > 0})
+	if err != nil {
+		return []gin.H{logHealthItem(ruleName+"@s*", logHealthError, "读取服务级后处理配置失败: "+err.Error())}
+	}
+	prefix := logHealthPrefix(cluster)
+	applicationSegment := handler.applicationPipelineSegment(context, applicationID)
+	baseName := processingPipelineName(prefix, applicationSegment, ruleName)
+	items := []gin.H{}
+	for _, row := range rows {
+		if !assets.ExtraProcessorsEnabled(row.ExtraProcessors) {
+			continue
+		}
+		if row.RuleClusterID.Valid && row.RuleClusterID.Int64 != cluster.ID {
+			continue
+		}
+		wrapperName := serviceExtraPipelineName(prefix, applicationSegment, ruleName, row.ServiceID)
+		expected, buildErr := buildServiceExtraPipelineBody(baseName, row.ExtraProcessors)
+		if buildErr != nil {
+			items = append(items, logHealthItem(wrapperName, logHealthError, "期望包装构建失败: "+buildErr.Error()))
+			continue
+		}
+		remote, err := handler.elasticsearchRequest(context, cluster, "GET", "/_ingest/pipeline/"+wrapperName, nil)
+		if err != nil {
+			if isElasticsearchNotFound(err) {
+				items = append(items, logHealthItem(wrapperName, logHealthDrift, "集群上不存在该服务级包装 pipeline，该服务的额外处理不生效"))
+				continue
+			}
+			items = append(items, logHealthItem(wrapperName, logHealthError, truncateElasticsearchError(err)))
+			continue
+		}
+		body, _ := remote[wrapperName].(map[string]any)
+		if body == nil {
+			items = append(items, logHealthItem(wrapperName, logHealthDrift, "集群上不存在该服务级包装 pipeline，该服务的额外处理不生效"))
+			continue
+		}
+		if pipelineSignature(body) != pipelineSignature(expected) {
+			items = append(items, logHealthItem(wrapperName, logHealthDrift, "集群上的服务级包装与页面配置不一致，重新保存该服务的后处理配置即可修复"))
+			continue
+		}
+		items = append(items, logHealthItem(wrapperName, logHealthOK, fmt.Sprintf("服务 %d 的后处理包装（共 %d 个处理器）与配置一致", row.ServiceID, len(expected["processors"].([]any))-1)))
+	}
+	return items
 }
 
 // judgeRulePipeline 判一条规则在集群上的发布状态与**运行状态**：

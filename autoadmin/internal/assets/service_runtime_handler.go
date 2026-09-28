@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func (handler *Handler) ListApplicationServices(context *gin.Context) {
 	}
 	response.Paginated(context, items, count, pageValue.Number, pageValue.Size)
 }
+
 // GetApplicationService 服务详情：服务主体 + **它所属模板的端口**（服务树的「监听端口」一节读它）。
 //
 // 端口只在部署模板上定义（`assets_application_port`），服务侧不单独维护，所以这里按服务的
@@ -191,6 +193,10 @@ func (handler *Handler) SaveApplicationServiceLogSetting(context *gin.Context) {
 		RetentionTier               *int64 `json:"retention_tier"`
 		CollectionFilterRule        *int64 `json:"collection_filter_rule"`
 		CollectionExcludeFilterRule *int64 `json:"collection_exclude_filter_rule"`
+		// 服务级后处理器（2026-09-28）：**必须在这里接住**——2026-09-19 漏采集过滤两列、
+		// 2026-09-28 漏本列，都是同一个坑：请求里带着、绑定结构没有（被丢），
+		// upsert 就把它写回 []（后处理器被静默清空，"保存后不生效"）。
+		ExtraProcessors json.RawMessage `json:"extra_processors"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		response.Error(context, ErrInvalid)
@@ -203,6 +209,7 @@ func (handler *Handler) SaveApplicationServiceLogSetting(context *gin.Context) {
 		RetentionTier:               input.RetentionTier,
 		CollectionFilterRule:        input.CollectionFilterRule,
 		CollectionExcludeFilterRule: input.CollectionExcludeFilterRule,
+		ExtraProcessors:             input.ExtraProcessors,
 	})
 	respond(context, item, err)
 }

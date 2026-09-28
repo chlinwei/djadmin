@@ -2,6 +2,8 @@ package logcollect
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 	"strings"
 
 	"autoadmin/internal/api/response"
+	"autoadmin/internal/assets"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,6 +35,13 @@ func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 		Name     string         `json:"name"`
 		Pipeline map[string]any `json:"pipeline"`
 		Docs     []any          `json:"docs"`
+		// 服务级后处理（2026-09-28）的串联模拟：extra_processors 非空时，实际模拟的是
+		// **包装 pipeline**——先按 rule_name/application 解析出已发布的基础 pipeline 名
+		// （包装里的 pipeline 处理器按名调用，要求基础规则已发布），再顺序执行这里的处理器。
+		// 与渲染（log_config_render.go 指向包装）和保存对账（service_pipeline.go）同一套语义。
+		RuleName        string          `json:"rule_name"`
+		ApplicationID   *int64          `json:"application_id"`
+		ExtraProcessors json.RawMessage `json:"extra_processors"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		response.BusinessError(context, 400, "invalid request body", nil)
@@ -51,6 +61,25 @@ func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 		response.BusinessError(context, 400, "pipeline or name is required", nil)
 		return
 	}
+	pipelineBody := input.Pipeline
+	if assets.ExtraProcessorsEnabled(input.ExtraProcessors) {
+		if strings.TrimSpace(input.RuleName) == "" {
+			response.BusinessError(context, 400, "带服务级后处理器模拟时 rule_name 必填（包装按名引用已发布的解析规则 pipeline）", nil)
+			return
+		}
+		applicationSegment := ""
+		if input.ApplicationID != nil {
+			applicationSegment = handler.applicationPipelineSegment(context, sql.NullInt64{Int64: *input.ApplicationID, Valid: *input.ApplicationID > 0})
+		}
+		baseName := processingPipelineName(cluster.IndexPrefix, applicationSegment, input.RuleName)
+		chain, buildErr := buildServiceExtraPipelineBody(baseName, input.ExtraProcessors)
+		if buildErr != nil {
+			response.BusinessError(context, 400, buildErr.Error(), nil)
+			return
+		}
+		pipelineBody = chain
+		name = ""
+	}
 	// 样例文档按 Filebeat 的真实事件补齐（见 sample_event.go）：调试页的输入越接近主机上
 	// Filebeat 真正发给 ES 的事件，"平台上过、主机上炸"的空间越小。调用方给的字段优先。
 	docs := make([]any, 0, len(input.Docs))
@@ -61,7 +90,7 @@ func (handler *Handler) SimulateElasticsearchPipeline(context *gin.Context) {
 		}
 		docs = append(docs, rawDoc)
 	}
-	data, err := handler.simulatePipeline(context, cluster, name, input.Pipeline, docs)
+	data, err := handler.simulatePipeline(context, cluster, name, pipelineBody, docs)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return

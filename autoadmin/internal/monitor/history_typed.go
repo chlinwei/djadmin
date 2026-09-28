@@ -177,21 +177,21 @@ func (handler *Handler) installHistories(context *gin.Context, id int64) {
 // ---- monitor_alert_history ----
 
 type alertHistoryResponse struct {
-	ID                        int64           `json:"id"`
-	CreateTime                time.Time       `json:"create_time"`
-	UpdateTime                time.Time       `json:"update_time"`
-	Remark                    string          `json:"remark"`
-	Fingerprint               string          `json:"fingerprint"`
-	Alertname                 string          `json:"alertname"`
-	Severity                  string          `json:"severity"`
-	Instance                  string          `json:"instance"`
-	Labels json.RawMessage `json:"labels"`
+	ID          int64           `json:"id"`
+	CreateTime  time.Time       `json:"create_time"`
+	UpdateTime  time.Time       `json:"update_time"`
+	Remark      string          `json:"remark"`
+	Fingerprint string          `json:"fingerprint"`
+	Alertname   string          `json:"alertname"`
+	Severity    string          `json:"severity"`
+	Instance    string          `json:"instance"`
+	Labels      json.RawMessage `json:"labels"`
 	// Annotations 是告警自身的注释快照（JSON：summary / description / runbook_url…）。
 	Annotations json.RawMessage `json:"annotations"`
 	// Summary 是界面上「问题」那一列的文案：annotation 的 summary，缺了退 description。
 	// 与「当前告警」用**同一个函数**算（alertSummaryText），否则会出现"当前告警那栏有字、
 	// 历史告警那栏空着"——同一个告警在两处显示不一致（2026-09-20 现场）。
-	Summary string `json:"summary"`
+	Summary                   string          `json:"summary"`
 	GeneratorURL              string          `json:"generator_url"`
 	State                     string          `json:"state"`
 	StartedAt                 time.Time       `json:"started_at"`

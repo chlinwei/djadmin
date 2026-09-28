@@ -1,12 +1,14 @@
 package assets
 
 import (
-	"autoadmin/internal/shared/logmacro"
 	"context"
+	"encoding/json"
 	"time"
 
 	platformdb "autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
+	"autoadmin/internal/shared/logmacro"
 	"autoadmin/internal/shared/logstream"
 )
 
@@ -37,6 +39,10 @@ type ServiceTemplateLog struct {
 	CollectionFilterRuleID *int64   `json:"collection_filter_rule_id"`
 	// CollectionExcludeFilterRuleID 排除方向的覆盖（三态：NULL 继承模板 / 0 显式关闭 / >0 规则）。
 	CollectionExcludeFilterRuleID *int64 `json:"collection_exclude_filter_rule_id"`
+	// ExtraProcessors 服务级后处理器（2026-09-28，迁移 000050）：解析规则 pipeline 之后
+	// 再执行的 ES ingest 处理器数组，`[]` = 不启用。保存校验见 ValidateServiceExtraProcessors，
+	// 包装 pipeline 的生成/清理见 logcollect/service_pipeline.go。
+	ExtraProcessors json.RawMessage `json:"extra_processors"`
 	// 模板级默认（来自日志定义本身）：界面用它显示"继承的是哪条"，渲染用它做兜底。
 	TemplateFilterIncludeRuleID *int64 `json:"template_filter_include_rule_id"`
 	TemplateFilterExcludeRuleID *int64 `json:"template_filter_exclude_rule_id"`
@@ -95,6 +101,7 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 			RetentionTier:                 intPtr(row.RetentionTierID),
 			CollectionFilterRuleID:        intPtr(row.CollectionFilterRuleID),
 			CollectionExcludeFilterRuleID: intPtr(row.CollectionExcludeFilterRuleID),
+			ExtraProcessors:               normalizeExtraProcessors(row.ExtraProcessors),
 			TemplateFilterIncludeRuleID:   intPtr(row.FilterIncludeRuleID),
 			TemplateFilterExcludeRuleID:   intPtr(row.FilterExcludeRuleID),
 			TierCode:                      row.TierCode,
@@ -169,6 +176,18 @@ type ServiceLogOverrideInput struct {
 	// 与采集开关、档位一样是"按行 upsert，不碰其他列"，所以内联改动不会影响别的日志。
 	CollectionFilterRule        *int64 `json:"collection_filter_rule"`
 	CollectionExcludeFilterRule *int64 `json:"collection_exclude_filter_rule"`
+	// ExtraProcessors 服务级后处理器（JSON 数组，null/缺列 = 不启用）。
+	// 校验与归一见 ValidateServiceExtraProcessors；非空时保存后触发包装 pipeline 对账。
+	ExtraProcessors json.RawMessage `json:"extra_processors"`
+}
+
+// normalizeExtraProcessors 回读口径归一：库里是 NOT NULL DEFAULT '[]'，但历史行/直接改库
+// 可能出现 NULL 或空白——统一成 `[]`，前端不必判 null。
+func normalizeExtraProcessors(raw json.RawMessage) json.RawMessage {
+	if trimmed := trimJSONSpace(raw); len(trimmed) > 0 {
+		return trimmed
+	}
+	return json.RawMessage("[]")
 }
 
 // UpsertServiceLogOverride 写回一条覆盖行（没有就插）。
@@ -177,8 +196,17 @@ type ServiceLogOverrideInput struct {
 // 也不进认证指纹（见 log_format_fingerprint.go 的输入清单），所以覆盖值更新后认证状态必须
 // 原样保留——UPDATE 分支只列这两个覆盖列就是靠这一点保证的，改动这里要同步改
 // TestUpsertServiceLogOverrideKeepsFormatVerification。
+//
+// ExtraProcessors：保存路径必须先过 ValidateServiceExtraProcessors 并传归一化后的数组
+// （显式清空传 `[]`）；传 NULL = 不动该列（编辑逻辑服务表单的整表替换路径专用，见查询注释）。
 func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int64, input ServiceLogOverrideInput) error {
 	now := time.Now().UTC()
+	extra := input.ExtraProcessors
+	if extra == nil {
+		// 日志中心的按行保存路径没有"不知道这一列"的情形：缺列按不启用归一，
+		// 避免"前端漏传就静默清不掉"（清空必须显式传 []）。
+		extra = json.RawMessage("[]")
+	}
 	return r.queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
 		CreateTime: now, UpdateTime: now,
 		CollectionEnabled:             input.CollectionEnabled,
@@ -187,6 +215,7 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 		ServiceID:                     serviceID,
 		CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
 		CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
+		ExtraProcessors:               extra,
 	})
 }
 
@@ -199,6 +228,10 @@ func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID in
 	now := time.Now().UTC()
 	return platformdb.InTransaction(ctx, r.pool, func(queries *db.Queries) error {
 		for _, input := range inputs {
+			extra := input.ExtraProcessors
+			if extra == nil {
+				extra = json.RawMessage("[]")
+			}
 			if err := queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
 				CreateTime: now, UpdateTime: now,
 				CollectionEnabled:             input.CollectionEnabled,
@@ -207,6 +240,7 @@ func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID in
 				ServiceID:                     serviceID,
 				CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
 				CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
+				ExtraProcessors:               extra,
 			}); err != nil {
 				return err
 			}
@@ -242,8 +276,18 @@ func (s *Service) SaveServiceLogOverride(ctx context.Context, serviceID int64, i
 	if target == nil {
 		return ServiceTemplateLog{}, ErrNotFound
 	}
+	// 后处理器：先校验归一（错误要在写库前暴露），落库后触发包装 pipeline 对账
+	//（幂等；失败让整次保存以错误呈现，重试保存可补齐——见 syncServiceLogPipelines）。
+	normalized, err := ValidateServiceExtraProcessors(input.ExtraProcessors)
+	if err != nil {
+		return ServiceTemplateLog{}, apperror.WithCause(apperror.New(apperror.CodeInvalidArgument, err.Error()), err)
+	}
+	input.ExtraProcessors = normalized
 	if err = s.repository.UpsertServiceLogOverride(ctx, serviceID, input); err != nil {
 		return ServiceTemplateLog{}, translate(err)
+	}
+	if err = s.syncServiceLogPipelines(ctx, serviceID); err != nil {
+		return ServiceTemplateLog{}, err
 	}
 	// 回读：覆盖值与认证状态都由后端算，前端不自己拼（与格式认证同一做法）。
 	refreshed, err := s.repository.ListServiceTemplateLogs(ctx, serviceID)
@@ -307,6 +351,16 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 			})
 			continue
 		}
+		// 后处理器逐行校验：不合法的行记 ok=false，其余照写（与"不属于本模板"同一口径）。
+		normalized, err := ValidateServiceExtraProcessors(input.ExtraProcessors)
+		if err != nil {
+			results = append(results, ServiceLogOverrideBatchResult{
+				LogDefinition: input.LogDefinition, OK: false,
+				Message: err.Error(),
+			})
+			continue
+		}
+		input.ExtraProcessors = normalized
 		results = append(results, ServiceLogOverrideBatchResult{LogDefinition: input.LogDefinition, OK: true})
 		applicable = append(applicable, input)
 	}
@@ -316,6 +370,11 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 	}
 	if err = s.repository.UpsertServiceLogOverrides(ctx, serviceID, applicable); err != nil {
 		return nil, translate(err)
+	}
+	// 事务提交后统一对账一次（整批只有这一个服务的包装要同步）；失败把整批以错误呈现，
+	// 数据已落库且对账幂等，重试保存即可补齐。
+	if err = s.syncServiceLogPipelines(ctx, serviceID); err != nil {
+		return nil, err
 	}
 	return results, nil
 }

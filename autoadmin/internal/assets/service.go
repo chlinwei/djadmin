@@ -30,6 +30,9 @@ type Service struct {
 	// logPendingEvaluator 由 logcollect 注入（见 log_status_summary.go）：一批服务的配置态
 	// （几台已同步/待下发/从未下发），供日志中心的层级视图用。未注入时汇总里 pending 为 null。
 	logPendingEvaluator ServiceLogPendingEvaluator
+	// serviceLogPipelineSyncer 由 logcollect 注入（见 log_extra_processors.go）：服务级后处理器
+	// 保存后对账包装 pipeline。未注入时保存仍可用，但配置了后处理的服务不会被同步。
+	serviceLogPipelineSyncer ServiceLogPipelineSyncer
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {

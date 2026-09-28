@@ -36,14 +36,16 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 			// 采集过滤的四个 id：本例只验证装载，两个方向都不配（NULL）。
 			"filter_include_rule_id", "filter_exclude_rule_id",
 			"collection_filter_rule_id", "collection_exclude_filter_rule_id",
+			// 服务级后处理器（2026-09-28）：本例未启用（[]）。
+			"extra_processors",
 		}).
 			AddRow(int64(1), "kul", "test", "tib", "svc-a", int64(10), "app-a", "hot", "rule-a", "catalina.out",
 				"${APP_HOME}/logs/catalina.out", []byte(`{"LOG_DIR":"/svc/logs"}`),
 				[]byte(`[{"name":"TEMPLATE_ONLY","value":"/tpl"}]`), true, `\d{4}`, uint32(3000),
-				nil, nil, nil, nil).
+				nil, nil, nil, nil, []byte(`[]`)).
 			AddRow(int64(2), "kul", "prod", "tib", "svc-b", int64(20), "app-b", "std", "rule-b", "app.log",
 				"/data/app.log", []byte(`{}`), []byte(`[]`), false, "", uint32(2000),
-				nil, nil, nil, nil),
+				nil, nil, nil, nil, []byte(`[]`)),
 	)
 
 	gin.SetMode(gin.TestMode)

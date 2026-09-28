@@ -718,22 +718,22 @@ func (handler *Handler) createAutomationJob(ctx context.Context, task gin.H, hos
 	// requested_user_id 保持 NULL：这条派发路径（RunTaskNow / Filebeat 安装）
 	// 迁移前就没记发起人。
 	return db.New(handler.db).CreateAutomationJob(ctx, db.CreateAutomationJobParams{
-		CreateTime:              now,
-		UpdateTime:              now,
-		JobID:                   uuid.NewString(),
-		TaskID:                  nullableTaskID(task["id"]),
-		InventorySnapshot:       marshalJSON(gin.H{"selected_host_ids": hostIDs(hosts), "hosts": hosts}),
-		TaskNameSnapshot:        stringValue(task["name"]),
-		TemplateNameSnapshot:    stringValue(task["template_name"]),
-		TemplateContentSnapshot: stringValue(task["template_content"]),
+		CreateTime:                    now,
+		UpdateTime:                    now,
+		JobID:                         uuid.NewString(),
+		TaskID:                        nullableTaskID(task["id"]),
+		InventorySnapshot:             marshalJSON(gin.H{"selected_host_ids": hostIDs(hosts), "hosts": hosts}),
+		TaskNameSnapshot:              stringValue(task["name"]),
+		TemplateNameSnapshot:          stringValue(task["template_name"]),
+		TemplateContentSnapshot:       stringValue(task["template_content"]),
 		TemplateContentFormatSnapshot: stringValue(task["template_content_format"]),
-		ExtraVars:               marshalJSON(extra),
-		JobLimit:                strings.TrimSpace(limit),
-		ResultSummary:           marshalJSON(gin.H{"message": message}),
-		RunAsUserSnapshot:       stringValue(task["run_as_user"]),
-		RunAsGroupSnapshot:      stringValue(task["run_as_group"]),
-		WorkDirectorySnapshot:   stringValue(task["work_directory"]),
-		RequestedUsername:       "",
+		ExtraVars:                     marshalJSON(extra),
+		JobLimit:                      strings.TrimSpace(limit),
+		ResultSummary:                 marshalJSON(gin.H{"message": message}),
+		RunAsUserSnapshot:             stringValue(task["run_as_user"]),
+		RunAsGroupSnapshot:            stringValue(task["run_as_group"]),
+		WorkDirectorySnapshot:         stringValue(task["work_directory"]),
+		RequestedUsername:             "",
 	})
 }
 

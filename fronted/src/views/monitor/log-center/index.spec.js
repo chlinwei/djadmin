@@ -764,7 +764,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     // 提交体是该行覆盖值的**全集**：两个采集过滤列也要原样带上，缺了会被清成"继承模板"。
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, retention_tier: 4, collection_enabled: null,
-      collection_filter_rule: null, collection_exclude_filter_rule: null,
+      collection_filter_rule: null, collection_exclude_filter_rule: null, extra_processors: [],
     })
     // 档位改完要重新读配置/水位/下发状态（档位变了 → 渲染内容变 → 变成待下发）。
     expect(wrapper.vm.switchTierOpen).toBe(false)
@@ -978,7 +978,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, collection_enabled: false, retention_tier: 3,
-      collection_filter_rule: null, collection_exclude_filter_rule: null,
+      collection_filter_rule: null, collection_exclude_filter_rule: null, extra_processors: [],
     })
     // 用后端回读的行更新界面（不在前端拼状态）
     expect(wrapper.vm.logRows[0].format_state).toBe('verified')
@@ -996,8 +996,61 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
     expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
       log_definition_id: 81, collection_enabled: null, retention_tier: 3,
-      collection_filter_rule: null, collection_exclude_filter_rule: null,
+      collection_filter_rule: null, collection_exclude_filter_rule: null, extra_processors: [],
     })
+    wrapper.unmount()
+  })
+
+  // 条件丢弃（机制名"服务级后处理"，2026-09-28）：结构化条件行保存的 payload 必须与编译结果一致——
+  // 这一层是 UI 与 ES 处理器存储之间的契约，编译细节由 util/logDropRules.spec 覆盖。
+  it('saves the structured drop conditions as compiled extra processors', async () => {
+    const { saveApplicationServiceLogSetting } = await import('@/api/assets/application')
+    const { openDeleteConfirm } = await import('@/util/deleteConfirm')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    // 空配置打开 → 结构化模式的空卡片；填两条条件（任一）后保存。
+    wrapper.vm.openExtraProcessors(wrapper.vm.logRows[0])
+    expect(wrapper.vm.extraDialog.mode).toBe('card')
+    expect(wrapper.vm.extraDialog.rows).toEqual([])
+    wrapper.vm.extraDialog.logic = 'any'
+    wrapper.vm.extraDialog.rows = [
+      { field: 'log_level', op: 'eq', value: 'ERROR' },
+      { field: 'service', op: 'contains', value: 'test' },
+    ]
+    await wrapper.vm.saveExtraProcessors()
+    await flushPromises()
+
+    expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
+    expect(openDeleteConfirm.mock.calls.at(-1)[0].items.join('\n')).toContain('不进 ES')
+    expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, {
+      log_definition_id: 81, collection_enabled: null, retention_tier: 3,
+      collection_filter_rule: null, collection_exclude_filter_rule: null,
+      extra_processors: [{ drop: { if: "(ctx?.log_level == 'ERROR') || (ctx?.service != null && ctx?.service.toString().contains('test'))" } }],
+    })
+    // 保存成功后弹窗关闭（重新打开时的条件行还原由 parseDropRule 的往返测试覆盖）。
+    expect(wrapper.vm.extraDialog.open).toBe(false)
+    wrapper.unmount()
+  })
+
+  // 认不出的处理器形状（手写 convert 等）自动落高级模式原样保存，不丢内容。
+  it('falls back to advanced mode for unrecognized processor shapes', async () => {
+    const { saveApplicationServiceLogSetting } = await import('@/api/assets/application')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.logRows[0].extra_processors = [{ convert: { field: 'status', type: 'integer' } }]
+
+    wrapper.vm.openExtraProcessors(wrapper.vm.logRows[0])
+    expect(wrapper.vm.extraDialog.mode).toBe('advanced')
+    expect(JSON.parse(wrapper.vm.extraDialog.advancedText)).toEqual([{ convert: { field: 'status', type: 'integer' } }])
+
+    await wrapper.vm.saveExtraProcessors()
+    await flushPromises()
+    expect(saveApplicationServiceLogSetting).toHaveBeenCalledWith(15, expect.objectContaining({
+      extra_processors: [{ convert: { field: 'status', type: 'integer' } }],
+    }))
     wrapper.unmount()
   })
 
@@ -1449,13 +1502,13 @@ describe('日志中心（服务树 + 三个 tab）', () => {
       // 81 只改档位：开关/过滤保持"不覆盖"。
       {
         log_definition_id: 81, collection_enabled: null, retention_tier: 4,
-        collection_filter_rule: null, collection_exclude_filter_rule: null,
+        collection_filter_rule: null, collection_exclude_filter_rule: null, extra_processors: [],
       },
       // 档位是"这一批都改成同一个值"，但 82 的开关(false)、过滤(1/0)必须原样带回，
       // 否则批量改档位会顺手把这几个覆盖值清掉。
       {
         log_definition_id: 82, collection_enabled: false, retention_tier: 4,
-        collection_filter_rule: 1, collection_exclude_filter_rule: 0,
+        collection_filter_rule: 1, collection_exclude_filter_rule: 0, extra_processors: [],
       },
     ])
     // 改完即入库 + 重拉配置与下发态（页头"待下发"要跟着变），并清掉勾选。
@@ -1483,8 +1536,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(openDeleteConfirm).toHaveBeenCalledTimes(1)
     expect(openDeleteConfirm.mock.calls[0][0].title).toContain('确认停止采集这 2 条日志')
     expect(batchSaveApplicationServiceLogSettings).toHaveBeenCalledWith(15, [
-      { log_definition_id: 81, collection_enabled: false, retention_tier: 3, collection_filter_rule: null, collection_exclude_filter_rule: null },
-      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0 },
+      { log_definition_id: 81, collection_enabled: false, retention_tier: 3, collection_filter_rule: null, collection_exclude_filter_rule: null, extra_processors: [] },
+      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0, extra_processors: [] },
     ])
     wrapper.unmount()
   })
@@ -1509,9 +1562,9 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await flushPromises()
 
     expect(batchSaveApplicationServiceLogSettings).toHaveBeenCalledWith(15, [
-      { log_definition_id: 81, collection_enabled: null, retention_tier: 3, collection_filter_rule: 1, collection_exclude_filter_rule: null },
+      { log_definition_id: 81, collection_enabled: null, retention_tier: 3, collection_filter_rule: 1, collection_exclude_filter_rule: null, extra_processors: [] },
       // 82 的 exclude=0（显式关闭）不能被这次白名单改动覆盖掉。
-      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0 },
+      { log_definition_id: 82, collection_enabled: false, retention_tier: null, collection_filter_rule: 1, collection_exclude_filter_rule: 0, extra_processors: [] },
     ])
     wrapper.unmount()
   })

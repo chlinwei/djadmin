@@ -93,6 +93,7 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 			"nginx 规则", time.Date(2026, 9, 19, 1, 2, 3, 0, time.UTC), int64(3), sql.NullInt64{},
 			nil, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
+			[]byte(`[]`),
 			sql.NullTime{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
 			[]byte("[]"), "/home/esb/data", "std",

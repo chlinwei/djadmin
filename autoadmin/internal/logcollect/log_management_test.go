@@ -253,9 +253,9 @@ func TestWorstLogHealthStatus(t *testing.T) {
 // 基础模板与非自家命名不命中；pattern 形状必须全部严格等于 `<prefix>-*-<code>`。
 func TestLegacyTierTemplateNameAndPatternShape(t *testing.T) {
 	cases := []struct {
-		name    string
-		want    string
-		wantOK  bool
+		name   string
+		want   string
+		wantOK bool
 	}{
 		{"autoadmin-hot-template", "hot", true},
 		{"autoadmin-wuhan-test-template", "wuhan-test", true},

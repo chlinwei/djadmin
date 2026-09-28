@@ -48,7 +48,8 @@ func TestWrapShellPlaybook(t *testing.T) {
 }
 
 // error 级告警拒绝保存；warning/info/style 放行。
-func TestFatalShellcheckFindings(t *testing.T) {	findings := []shellcheckFinding{
+func TestFatalShellcheckFindings(t *testing.T) {
+	findings := []shellcheckFinding{
 		{Line: 1, Level: "style", Code: 2126},
 		{Line: 2, Level: "warning", Code: 2086},
 		{Line: 3, Level: "error", Code: 1036},

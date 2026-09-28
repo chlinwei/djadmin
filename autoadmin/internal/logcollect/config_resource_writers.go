@@ -72,7 +72,7 @@ func updateLogRetentionTier(context context.Context, pool db.DBTX, id int64, inp
 	affected, err := queries.UpdateLogRetentionTier(context, db.UpdateLogRetentionTierParams{
 		UpdateTime: time.Now().UTC(), Code: current.Code, Name: current.Name,
 		DailySizeGb: current.DailySizeGb, RetentionValue: current.RetentionValue,
-		RetentionUnit: current.RetentionUnit,
+		RetentionUnit:       current.RetentionUnit,
 		RolloverMinIndexAge: current.RolloverMinIndexAge, Enabled: current.Enabled,
 		IsDefault: current.IsDefault, Remark: current.Remark, ID: id,
 	})

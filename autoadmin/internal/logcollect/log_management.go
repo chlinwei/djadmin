@@ -116,16 +116,16 @@ func buildMappingGuardPipelineBody(mode string) gin.H {
 	}
 	if strings.EqualFold(strings.TrimSpace(mode), mappingGuardModeDrop) {
 		processors = append(processors, gin.H{"drop": gin.H{
-			"if":             strings.Join(conditions, " || "),
-			"description":    "必备字段不齐，按 LOG_MAPPING_GUARD_MODE=drop 丢弃",
-			"tag":            "mapping_guard",
+			"if":          strings.Join(conditions, " || "),
+			"description": "必备字段不齐，按 LOG_MAPPING_GUARD_MODE=drop 丢弃",
+			"tag":         "mapping_guard",
 		}})
 	} else {
 		processors = append(processors, gin.H{"set": gin.H{
-			"field":    "mapping_violation",
-			"value":    true,
-			"override": false,
-			"if":       "(" + strings.Join(conditions, " || ") + ") && ctx.mapping_violation == null",
+			"field":       "mapping_violation",
+			"value":       true,
+			"override":    false,
+			"if":          "(" + strings.Join(conditions, " || ") + ") && ctx.mapping_violation == null",
 			"description": "必备字段不齐，打标但不丢弃（LOG_MAPPING_GUARD_MODE=tag）",
 		}})
 	}
@@ -259,7 +259,7 @@ func buildTierIndexTemplateName(indexPrefix, tierCode string) string {
 }
 
 type retentionTierRow struct {
-	Code    string
+	Code string
 	// RetentionValue + RetentionUnit 才是完整保留期（`retention_unit` ∈ {d, h}）。
 	RetentionValue int64
 	RetentionUnit  string
@@ -289,7 +289,7 @@ func retentionPeriodText(tier retentionTierRow) string {
 // retentionMinAge 把"值 + 单位"拼成 ILM 的 `min_age`（Elasticsearch 接受 s/m/h/d）。
 //
 // 单位缺省/异常一律按天：**宁可沿用旧行为，也不要生成一个非法或意外的保留期**
-//（写入路径已经校验过单位，这里兜底是为了防止历史数据/直接改库带来的意外）。
+// （写入路径已经校验过单位，这里兜底是为了防止历史数据/直接改库带来的意外）。
 func retentionMinAge(tier retentionTierRow) string {
 	unit := strings.ToLower(strings.TrimSpace(tier.RetentionUnit))
 	if unit != "h" {
@@ -620,7 +620,7 @@ func (handler *Handler) loadEnabledRetentionTiers(context *gin.Context) ([]reten
 	for _, row := range rows {
 		tiers = append(tiers, retentionTierRow{
 			Code: row.Code, RetentionValue: int64(row.RetentionValue), RetentionUnit: row.RetentionUnit,
-			DailySizeGB: row.DailySizeGb,
+			DailySizeGB:         row.DailySizeGb,
 			RolloverMinIndexAge: row.RolloverMinIndexAge,
 		})
 	}

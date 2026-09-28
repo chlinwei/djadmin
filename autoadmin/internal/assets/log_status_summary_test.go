@@ -64,6 +64,7 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 			entry.logDefinition, "error.log", "${APP_HOME}/nginx/logs/error.log", ruleID,
 			ruleName, ruleUpdate, int64(3), sql.NullInt64{}, entry.collectionEnabled, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
+			[]byte(`[]`),
 			sql.NullTime{}, entry.storedFingerprint, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
 			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
@@ -173,7 +174,7 @@ func TestLogStatusSummaryReportsPendingFailureInsteadOfZero(t *testing.T) {
 }
 
 // 未注入评估器（单测/最小部署）：接口照常工作，pending 为 null 且**不报错**
-//（这不是故障，是没接数据面）。
+// （这不是故障，是没接数据面）。
 func TestLogStatusSummaryWithoutPendingEvaluator(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {

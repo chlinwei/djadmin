@@ -344,6 +344,20 @@
                     />
                   </a-tooltip>
                 </template>
+                <template v-else-if="column.key === 'extra_processors'">
+                  <a-tooltip
+                    title="按条件丢弃整条日志（解析入库前，仅本服务生效）。为空 = 不丢弃。"
+                    placement="top"
+                  >
+                    <a-button
+                      size="small"
+                      :danger="extraProcessorsEnabled(record)"
+                      @click="openExtraProcessors(record)"
+                    >
+                      {{ extraProcessorsEnabled(record) ? '已配置' : '配置' }}
+                    </a-button>
+                  </a-tooltip>
+                </template>
                 <template v-else-if="column.key === 'data_stream'"><code>{{ record.data_stream }}</code></template>
               </template>
             </a-table>
@@ -700,6 +714,113 @@
           被滤掉的日志不会进 ES，事后无法补回；写窄白名单前先用「日志处理规则 → 采集过滤规则」里的试算确认一遍。
         </div>
       </a-modal>
+      <!-- 条件丢弃（机制名"服务级后处理"）：解析之后、仅本服务生效的整条日志丢弃（包装 pipeline，
+           见 saveExtraProcessors）。结构化模式 = 「满足 [全部/任一] 条件时丢弃整条日志」的条件行；
+           认不出的存量配置（手写处理器）自动落高级模式原样编辑，不丢能力。 -->
+      <a-modal
+        v-model:open="extraDialog.open"
+        :title="`按条件丢弃日志：${extraDialog.record?.name || ''}`"
+        :width="720"
+        :confirm-loading="extraDialog.saving"
+        ok-text="保存"
+        cancel-text="取消"
+        @ok="saveExtraProcessors"
+      >
+        <template v-if="extraDialog.mode === 'card'">
+          <a-alert type="warning" show-icon class="extra-drop-warning" message="满足条件时丢弃整条日志" />
+          <div class="extra-condition-bar">
+            <span>满足以下</span>
+            <a-select
+              v-model:value="extraDialog.logic"
+              :options="[{ value: 'all', label: '全部' }, { value: 'any', label: '任一' }]"
+              size="small"
+              style="width: 90px"
+              :get-popup-container="getPopupContainer"
+            />
+            <span>条件时丢弃（<b>不进 Elasticsearch，不可恢复</b>）：</span>
+          </div>
+          <div v-if="!extraDialog.rows.length" class="field-hint">
+            尚未配置任何条件 = 不启用丢弃。点「添加条件」开始。
+          </div>
+          <div v-for="(row, index) in extraDialog.rows" :key="index" class="extra-condition-row">
+            <a-auto-complete
+              v-model:value="row.field"
+              :options="extraFieldOptions"
+              :filter-option="(input, option) => option.value.toLowerCase().includes(input.toLowerCase())"
+              placeholder="字段，如 log_level"
+              size="small"
+              class="extra-field-input"
+            />
+            <a-select
+              v-model:value="row.op"
+              :options="extraOperatorOptions"
+              size="small"
+              class="extra-op-input"
+              :get-popup-container="getPopupContainer"
+            />
+            <a-input
+              v-if="row.op !== 'exists' && row.op !== 'not_exists'"
+              v-model:value="row.value"
+              placeholder="值"
+              size="small"
+              class="extra-value-input"
+            />
+            <span v-else class="field-hint extra-value-input">（无需值）</span>
+            <a-button size="small" type="text" danger @click="removeExtraRow(index)">
+              <DeleteOutlined />
+            </a-button>
+          </div>
+          <a-button size="small" dashed block @click="addExtraRow">
+            <PlusOutlined /><span>&nbsp;添加条件</span>
+          </a-button>
+          <div class="extra-preview">
+            <div class="field-hint">保存后将写入：</div>
+            <pre class="extra-preview-json">{{ extraCompiledPreview }}</pre>
+          </div>
+        </template>
+        <template v-else>
+          <a-alert
+            type="info"
+            show-icon
+            class="extra-drop-warning"
+            message="高级模式：直接编辑处理器 JSON（当前内容包含结构化模式表达不了的形状，保存后仍以高级模式打开）"
+          />
+          <a-textarea
+            v-model:value="extraDialog.advancedText"
+            :rows="12"
+            class="extra-processors-editor"
+            spellcheck="false"
+            placeholder='[{"drop": {"if": "ctx?.log_level == \u0027ERROR\u0027"}}]'
+          />
+        </template>
+        <div class="field-hint" style="margin-top: 8px;">
+          丢弃在解析规则 pipeline <b>之后</b>执行，且<b>只有本服务</b>生效（平台生成包装 pipeline
+          <code>&lt;解析规则名&gt;@s&lt;服务id&gt;</code>，本服务片段的 <code>pipeline:</code> 指向它，
+          其他服务不受影响）。调试可在「日志处理规则 → 在线调试」带上同样条件做串联试算。
+        </div>
+        <template #footer>
+          <a-button
+            v-if="extraDialog.mode === 'card'"
+            size="small"
+            type="text"
+            style="float: left"
+            @click="switchExtraToAdvanced"
+          >
+            切换到 JSON 高级模式
+          </a-button>
+          <a-button
+            v-else
+            size="small"
+            type="text"
+            style="float: left"
+            @click="switchExtraToCard"
+          >
+            返回条件模式
+          </a-button>
+          <a-button @click="extraDialog.open = false">取消</a-button>
+          <a-button type="primary" :loading="extraDialog.saving" @click="saveExtraProcessors">保存</a-button>
+        </template>
+      </a-modal>
       <!-- 配置差异：期望片段 vs 主机上已下发的 inputs.d（差异内容要读主机才有，库里只落指纹）。 -->
       <LogConfigDiffDialog
         :open="configDiffOpen"
@@ -731,6 +852,7 @@
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
 import { getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
 import { applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogServiceUsage, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
@@ -744,6 +866,7 @@ import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActio
 import { fetchAllPages } from '@/util/fetchAllPages'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { DROP_FIELD_SUGGESTIONS, DROP_OPERATORS, compileDropRule, parseDropRule } from '@/util/logDropRules'
 import { buildStorageUsagePieOption } from '@/util/storageUsagePie'
 import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
 import { buildLevelMetrics, buildLevelRows, levelDimension } from '@/util/logLevelOverview'
@@ -888,6 +1011,8 @@ const configColumns = [
   // 采集过滤的两个方向：随时可开可关。改完必须重新下发才在主机上生效（与采集开关同一条动线）。
   { title: '采集过滤（保留）', key: 'filter_include', width: 190 },
   { title: '采集过滤（排除）', key: 'filter_exclude', width: 190 },
+  // 条件丢弃（2026-09-28，机制名"服务级后处理"）：解析之后、仅本服务生效的整条日志丢弃。
+  { title: '条件丢弃', key: 'extra_processors', width: 130 },
   { title: 'Data Stream', key: 'data_stream', width: 260 },
 ]
 
@@ -1183,6 +1308,137 @@ function overridePayload(record, patch = {}) {
     // 采集过滤三态原样提交：null 继承模板 / 0 不过滤 / >0 指定规则。
     collection_filter_rule: pick('collection_filter_rule', record.collection_filter_rule_id ?? null),
     collection_exclude_filter_rule: pick('collection_exclude_filter_rule', record.collection_exclude_filter_rule_id ?? null),
+    // 条件丢弃（字段名沿用机制名 extra_processors）：提交全集（缺列 = 未启用）。回读行上总是数组（后端归一过）。
+    extra_processors: pick('extra_processors', record.extra_processors ?? []),
+  }
+}
+
+// ── 条件丢弃（机制名"服务级后处理"，2026-09-28） ─────────────────────────────
+// 解析规则的 pipeline 按规则共享，drop 写在规则里会影响所有引用该规则的服务；
+// 这里配置的条件丢弃只对**本服务**生效：平台自动生成包装 pipeline（先跑解析规则、再执行
+// drop），本服务的 Filebeat 片段改指包装，其他服务不变。机制见 LOG_COLLECTION_ARCHITECTURE.md
+// §6.2「服务级后处理（条件丢弃）」。存储仍是 extra_processors 处理器数组，条件行经
+// util/logDropRules 双向转换。
+const extraDialog = reactive({
+  open: false,
+  record: null,
+  mode: 'card', // card = 条件行结构化；advanced = 处理器 JSON 原样编辑（含认不出的存量配置）
+  logic: 'all',
+  rows: [],
+  advancedText: '',
+  saving: false,
+})
+
+// 字段候选：ES 阶段真实存在的字段（可自由输入其它标识符点路径）。
+const extraFieldOptions = DROP_FIELD_SUGGESTIONS.map((field) => ({ value: field }))
+const extraOperatorOptions = DROP_OPERATORS.map(({ value, label }) => ({ value, label }))
+
+function extraProcessorsEnabled(record) {
+  return Array.isArray(record.extra_processors) && record.extra_processors.length > 0
+}
+
+function openExtraProcessors(record) {
+  extraDialog.record = record
+  const items = Array.isArray(record.extra_processors) ? record.extra_processors : []
+  const parsed = parseDropRule(items)
+  if (parsed) {
+    extraDialog.mode = 'card'
+    extraDialog.logic = parsed.logic
+    extraDialog.rows = parsed.rows.map((row) => ({ ...row }))
+    extraDialog.advancedText = ''
+  } else {
+    // 存量配置里有结构化模式表达不了的形状（手写的 convert/script 等）：原样进高级模式。
+    extraDialog.mode = 'advanced'
+    extraDialog.rows = []
+    extraDialog.advancedText = JSON.stringify(items, null, 2)
+  }
+  extraDialog.open = true
+}
+
+function addExtraRow() {
+  extraDialog.rows.push({ field: '', op: 'eq', value: '' })
+}
+
+function removeExtraRow(index) {
+  extraDialog.rows.splice(index, 1)
+}
+
+// 结构化模式的编译预览：保存前就能看到落库的处理器 JSON。编译失败（缺值/怪字段名）时
+// 显示错误文案而不是硬拦——保存时仍会再校验一次。
+const extraCompiledPreview = computed(() => {
+  try {
+    return JSON.stringify(compileDropRule({ logic: extraDialog.logic, rows: extraDialog.rows }), null, 2)
+  } catch (error) {
+    return error.message
+  }
+})
+
+function switchExtraToAdvanced() {
+  const items = extraDialog.mode === 'card'
+    ? compileDropRule({ logic: extraDialog.logic, rows: extraDialog.rows })
+    : []
+  extraDialog.advancedText = JSON.stringify(items, null, 2)
+  extraDialog.mode = 'advanced'
+}
+
+function switchExtraToCard() {
+  let items
+  try {
+    items = JSON.parse(extraDialog.advancedText || '[]')
+  } catch (error) {
+    message.error(`JSON 格式错误：${error.message}`)
+    return
+  }
+  const parsed = parseDropRule(Array.isArray(items) ? items : [])
+  if (!parsed) {
+    message.error('当前内容包含结构化模式表达不了的处理器，只能继续用高级模式保存')
+    return
+  }
+  extraDialog.logic = parsed.logic
+  extraDialog.rows = parsed.rows.map((row) => ({ ...row }))
+  extraDialog.mode = 'card'
+}
+
+async function saveExtraProcessors() {
+  const record = extraDialog.record
+  if (!record) return
+  let processors
+  if (extraDialog.mode === 'card') {
+    try {
+      processors = compileDropRule({ logic: extraDialog.logic, rows: extraDialog.rows })
+    } catch (error) {
+      message.error(error.message)
+      return
+    }
+  } else {
+    try {
+      processors = JSON.parse(extraDialog.advancedText || '[]')
+    } catch (error) {
+      message.error(`JSON 格式错误：${error.message}`)
+      return
+    }
+    if (!Array.isArray(processors)) {
+      message.error('必须是 JSON 数组（元素为 ES 处理器对象），清空配置请保存 []')
+      return
+    }
+  }
+  extraDialog.saving = true
+  try {
+    await confirmConfigChange({
+      title: '确认修改条件丢弃？',
+      summary: `日志「${record.name}」的丢弃条件将按这里的配置重建（仅本服务生效）。`,
+      consequences: [
+        '丢弃发生在解析入库前（ES 侧），与「采集过滤」（采集端行过滤）是两层：这里的条件可以用解析产出的字段，采集过滤省的是采集端带宽。',
+        processors.length
+          ? '命中条件的**整条日志**会被丢弃，不进 ES、事后无法补回。'
+          : '配置为空 = 不启用丢弃，恢复为只走解析规则。',
+        '保存后需要点「下发本服务的采集配置」，把片段里的 pipeline 指向写到主机上。',
+      ],
+      apply: () => saveOverride(record, { extra_processors: processors }),
+    })
+    extraDialog.open = false
+  } finally {
+    extraDialog.saving = false
   }
 }
 
@@ -2281,5 +2537,49 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .log-rule-missing {
   color: #d4380d;
+}
+.extra-processors-editor {
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.extra-drop-warning {
+  margin-bottom: 12px;
+}
+.extra-condition-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.extra-condition-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.extra-field-input {
+  flex: 0 0 200px;
+}
+.extra-op-input {
+  flex: 0 0 120px;
+}
+.extra-value-input {
+  flex: 1;
+}
+.extra-preview {
+  margin-top: 12px;
+}
+.extra-preview-json {
+  margin: 4px 0 0;
+  padding: 8px;
+  background: #f7f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

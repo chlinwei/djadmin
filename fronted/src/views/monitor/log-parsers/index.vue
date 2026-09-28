@@ -261,6 +261,20 @@
             <a-form-item label="样例格式">
               <a-segmented v-model:value="sampleMode" :options="sampleModeOptions" />
             </a-form-item>
+            <a-form-item>
+              <template #label>
+                <a-tooltip title="可选。与日志中心「条件丢弃」相同：粘贴条件对应的处理器数组，调试时会模拟包装 pipeline：先跑本规则的解析，再执行丢弃（要求规则已发布）。" placement="top">
+                  <span>条件丢弃预览（可选，模拟包装串联）</span>
+                </a-tooltip>
+              </template>
+              <a-textarea
+                v-model:value="extraProcessorsText"
+                class="json-editor"
+                :rows="4"
+                spellcheck="false"
+                placeholder='[{"drop_fields": {"fields": ["host.name"]}}]'
+              />
+            </a-form-item>
             <a-form-item :label="sampleMode === 'raw' ? '原始日志' : '样例文档 JSON'">
               <a-textarea
                 v-model:value="sampleText"
@@ -450,6 +464,9 @@ const filterFormRef = ref(null)
 const filterEditorOpen = ref(false)
 const sampleMode = ref('raw')
 const sampleText = ref('2026-08-27 13:00:00 INFO service started')
+// 条件丢弃（机制名"服务级后处理"）的串联调试（2026-09-28）：非空时模拟的是包装 pipeline
+//（先按名调用已发布的解析规则 pipeline，再执行这些处理器），与真实采集同一语义。
+const extraProcessorsText = ref('')
 const simulationText = ref('')
 const schemaViolations = ref([])
 const missingFields = ref([])
@@ -806,6 +823,7 @@ function resetEditor() {
   schemaViolations.value = []
   missingFields.value = []
   sampleText.value = ''
+  extraProcessorsText.value = ''
 }
 
 function openCreate() {
@@ -990,10 +1008,23 @@ async function simulate() {
   }
   simulating.value = true
   try {
-    const response = await simulateElasticsearchPipeline(selectedClusterId.value, {
+    const payload = {
       pipeline: body,
       docs,
-    })
+      rule_name: form.name,
+      application_id: form.application || null,
+    }
+    if (extraProcessorsText.value.trim()) {
+      let extra
+      try {
+        extra = JSON.parse(extraProcessorsText.value)
+      } catch (error) {
+        message.error(`条件丢弃 JSON 格式错误：${error.message}`)
+        return
+      }
+      payload.extra_processors = extra
+    }
+    const response = await simulateElasticsearchPipeline(selectedClusterId.value, payload)
     const result = response?.data?.data || {}
     schemaViolations.value = result.schema_violations || []
     missingFields.value = result.missing_fields || []

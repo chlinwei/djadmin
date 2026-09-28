@@ -220,12 +220,28 @@ func (handler *Handler) publishProcessingRuleBeforeSave(context *gin.Context, in
 		return fmt.Sprintf("发布 Pipeline 失败: %v", err)
 	}
 	// 改名 / 换应用 / 换集群前缀时清理旧 pipeline，避免 ES 上残留。
+	wrapperRenamed := false
 	if hasExisting {
 		if oldCluster, oldErr := handler.loadElasticsearchClusterByID(context, existing.ClusterID); oldErr == nil {
 			oldName := processingPipelineName(oldCluster.IndexPrefix, handler.applicationPipelineSegment(context, existing.ApplicationID), existing.Name)
 			if oldName != newName {
 				_ = handler.deleteProcessingPipeline(context, existing.ClusterID, oldName)
+				// 旧基础名下的服务级包装（<旧名>@s*）同样不会再出现在期望集里，按通配清掉；
+				// 新名字的包装由下面的 republish 以本次提交的应用段/规则名重建。
+				handler.deleteExtraPipelinesByBase(context, existing.ClusterID, oldName)
+				wrapperRenamed = true
 			}
+			if oldCluster.ID != clusterID {
+				wrapperRenamed = true
+			}
+		}
+	}
+	// 规则改名/换应用/换集群时重建服务级包装（id 嵌着基础名、挂在规则所在集群，必须跟着换）。
+	// 仅内容变更（名字没变）时包装不需要动——它按名引用基础 pipeline。
+	if id != 0 && wrapperRenamed {
+		if err := handler.republishRuleExtraPipelines(context, id, clusterID,
+			handler.applicationPipelineSegment(context, applicationID), name); err != nil {
+			return fmt.Sprintf("重建服务级后处理包装 Pipeline 失败: %v", err)
 		}
 	}
 	return ""
@@ -434,6 +450,7 @@ const (
 //   - fingerprint / set / copy / rename 的 `target_field` / `field` 命中字段名；
 //   - dissect / grok 的 `pattern` / `patterns` 文本里出现 `字段名` 或 `<字段名>`（命名捕获）；
 //   - script 的源码里**赋值**给 `ctx.<字段名>` / `ctx['<字段名>']`（只读不算）。
+//
 // 判不了条件分支，也判不了运行时数据 —— 真正的强制在写入时由索引模板挂的
 // `<prefix>-mapping-guard` 完成（见 log_management.go 的 buildMappingGuardPipelineBody）。
 //
@@ -441,7 +458,7 @@ const (
 // 键里带点（`log.level` / `service.name` / `elasticsearch.node.name`），而 ingest 的字段参数把点
 // 当路径分隔符，ES 8.13 的 json 处理器又没有 `expand_dots`，所以"取出 log_level"只能用 painless
 // 读字面键。当时这条粗筛不认 script，导致一个能跑的规则**发布不出去**——粗筛宁可漏判
-//（漏了还有 guard 兜），也绝不能误判把合法规则拦在门外。
+// （漏了还有 guard 兜），也绝不能误判把合法规则拦在门外。
 func missingPipelineOutputs(raw any) []string {
 	body, ok := raw.(map[string]any)
 	if !ok {

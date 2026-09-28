@@ -33,11 +33,13 @@ func TestSaveApplicationServiceLogSettingPassesEveryOverrideColumn(t *testing.T)
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
-	// 2) 按行 upsert：四个覆盖列都要带上请求体里的值
+	// 2) 按行 upsert：所有覆盖列都要带上请求体里的值（本例 extra_processors 提交了一条 drop）。
+	// 2026-09-28 现场：绑定结构漏了这一列，条件丢弃"保存后不生效"（被静默写成 []）——
+	// 与 2026-09-19 漏采集过滤两列是同一个坑，这里按值钉死，漏列即红。
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
-			int64(7), int64(0),
+			int64(7), int64(0), []byte(`[{"drop":{"if":"(ctx?.log_level == 'ERROR')"}}]`),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 3) 回读整行返回给前端
@@ -50,6 +52,7 @@ func TestSaveApplicationServiceLogSettingPassesEveryOverrideColumn(t *testing.T)
 		// include 选规则 7、exclude 显式关闭（0）——0 与 null 必须区分开
 		"collection_filter_rule":         7,
 		"collection_exclude_filter_rule": 0,
+		"extra_processors":               []map[string]any{{"drop": map[string]any{"if": "(ctx?.log_level == 'ERROR')"}}},
 	})
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

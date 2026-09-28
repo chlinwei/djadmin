@@ -111,7 +111,7 @@ func jobRowToMapTyped(row db.GetJobTypedRow) gin.H {
 		ResultSummary: row.ResultSummary, RequestedUserID: row.RequestedUserID, RequestedUsername: row.RequestedUsername,
 		StartTime: row.StartTime, EndTime: row.EndTime, DurationSeconds: row.DurationSeconds, TaskID: row.TaskID,
 		TemplateContentSnapshot: row.TemplateContentSnapshot, TemplateContentFormatSnapshot: row.TemplateContentFormatSnapshot,
-		TaskNameSnapshot: row.TaskNameSnapshot,
+		TaskNameSnapshot:     row.TaskNameSnapshot,
 		TemplateNameSnapshot: row.TemplateNameSnapshot, Limit: row.Limit, RunAsUserSnapshot: row.RunAsUserSnapshot,
 		RunAsGroupSnapshot: row.RunAsGroupSnapshot, WorkDirectorySnapshot: row.WorkDirectorySnapshot,
 	})

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"autoadmin/internal/assets"
 	"autoadmin/internal/shared/logmacro"
 
 	"autoadmin/internal/api/response"
@@ -84,6 +86,9 @@ type hostLogRenderInput struct {
 	// FilterWarnings 该条日志的过滤解析告警（规则不存在/停用/方向不符/正则编译不过），
 	// 由渲染汇总进 warnings —— 只写服务端日志的话，用户看不到"过滤没生效"这件事。
 	FilterWarnings []string
+	// ExtraProcessors 服务级后处理器（2026-09-28）：非空数组时该服务的 `pipeline:` 指向
+	// 包装（基础名@s<服务id>，见 service_pipeline.go），其他服务仍指基础 pipeline。
+	ExtraProcessors json.RawMessage
 }
 
 // configBaseName inputs.d 文件名基名：<app>__<service>__<serviceID>__<logname>（不带后缀）。
@@ -247,7 +252,14 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			lines = append(lines, fmt.Sprintf("  index: %s", yamlScalar(indexName)))
 			if entry.Pipeline != "" {
 				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。
-				lines = append(lines, fmt.Sprintf("  pipeline: %s", yamlScalar(processingPipelineName(entry.Prefix, entry.Application, entry.Pipeline))))
+				// 配了服务级后处理的服务改指包装（基础名@s<服务id>）：包装先调基础 pipeline
+				// 再执行该服务私有的处理器，其他服务的片段不受影响。包装的存在性由保存路径的
+				// 对账（service_pipeline.go）与体检保证，渲染只认配置。
+				pipelineName := processingPipelineName(entry.Prefix, entry.Application, entry.Pipeline)
+				if assets.ExtraProcessorsEnabled(entry.ExtraProcessors) {
+					pipelineName = serviceExtraPipelineName(entry.Prefix, entry.Application, entry.Pipeline, entry.ServiceID)
+				}
+				lines = append(lines, fmt.Sprintf("  pipeline: %s", yamlScalar(pipelineName)))
 			}
 			// 采集过滤：写进 input 的 include_lines / exclude_lines（Filebeat 上是行级正则，
 			// 且在 multiline 合并**之后**评估，语义与 Fluent Bit 时代的 [FILTER] grep 一致）。
@@ -407,7 +419,8 @@ func loadHostLogRenderInputsPool(context context.Context, pool db.DBTX, hostIDs 
 			FlushTimeout: int64(row.FlushTimeout),
 			// 坏规则/规则被删/方向不符：降级成"该方向不过滤"并把原因带给用户（见文件头取舍）。
 			FilterIncludePattern: includePattern, FilterExcludePattern: excludePattern,
-			FilterWarnings: append(append([]string{}, resolved.Warnings...), warning),
+			FilterWarnings:  append(append([]string{}, resolved.Warnings...), warning),
+			ExtraProcessors: row.ExtraProcessors,
 		})
 		sets[row.HostID] = set
 	}

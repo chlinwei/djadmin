@@ -3711,7 +3711,10 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     -- 只取 id，规则内容在 Go 侧按需要的一次查回来解析（见 log_collection_filter.go）：
     -- 这里再 join 四张规则表会让这条最热的渲染查询又多四个 join，而规则数量本来就少。
     ld.filter_include_rule_id, ld.filter_exclude_rule_id,
-    ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id
+    ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
+    -- 服务级后处理器（2026-09-28）：非空数组时该服务的片段 ` + "`" + `pipeline:` + "`" + ` 指向包装
+    -- （基础名@s<服务id>，见 logcollect/service_pipeline.go），其他服务仍指基础。
+    COALESCE(ls.extra_processors, '[]'::json) AS extra_processors
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
@@ -3750,6 +3753,7 @@ type ListHostLogRenderEntriesRow struct {
 	FilterExcludeRuleID           sql.NullInt64   `json:"filter_exclude_rule_id"`
 	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
 	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
+	ExtraProcessors               json.RawMessage `json:"extra_processors"`
 }
 
 // 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
@@ -3795,6 +3799,7 @@ func (q *Queries) ListHostLogRenderEntries(ctx context.Context, hostIds []int64)
 			&i.FilterExcludeRuleID,
 			&i.CollectionFilterRuleID,
 			&i.CollectionExcludeFilterRuleID,
+			&i.ExtraProcessors,
 		); err != nil {
 			return nil, err
 		}
@@ -5037,12 +5042,13 @@ func (q *Queries) ListProcessingRuleUsages(ctx context.Context) ([]ListProcessin
 
 const listProcessingRulesByCluster = `-- name: ListProcessingRulesByCluster :many
 
-SELECT name, pipeline_body, application_id, sample_log, multiline_enabled, start_pattern
+SELECT id, name, pipeline_body, application_id, sample_log, multiline_enabled, start_pattern
 FROM monitor_log_processing_rule
 WHERE cluster_id = $1 ORDER BY name
 `
 
 type ListProcessingRulesByClusterRow struct {
+	ID               int64           `json:"id"`
 	Name             string          `json:"name"`
 	PipelineBody     json.RawMessage `json:"pipeline_body"`
 	ApplicationID    sql.NullInt64   `json:"application_id"`
@@ -5065,6 +5071,7 @@ func (q *Queries) ListProcessingRulesByCluster(ctx context.Context, clusterID in
 	for rows.Next() {
 		var i ListProcessingRulesByClusterRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.Name,
 			&i.PipelineBody,
 			&i.ApplicationID,
@@ -5157,6 +5164,62 @@ func (q *Queries) ListRetentionTierCodes(ctx context.Context) ([]string, error) 
 	return items, nil
 }
 
+const listRuleExtraPipelineRows = `-- name: ListRuleExtraPipelineRows :many
+SELECT s.id AS service_id, ls.log_definition_id,
+       COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
+       COALESCE(app.code, '') AS application_code,
+       rule.id AS rule_id, COALESCE(rule.name, '') AS rule_name, rule.cluster_id AS rule_cluster_id
+FROM assets_application_service_log_setting ls
+JOIN assets_application_log_definition ld ON ld.id = ls.log_definition_id
+JOIN assets_application_service s ON s.id = ls.service_id
+LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
+LEFT JOIN assets_application app ON app.id = s.application_id
+WHERE ld.processing_rule_id = $1
+`
+
+type ListRuleExtraPipelineRowsRow struct {
+	ServiceID       int64           `json:"service_id"`
+	LogDefinitionID int64           `json:"log_definition_id"`
+	ExtraProcessors json.RawMessage `json:"extra_processors"`
+	ApplicationCode string          `json:"application_code"`
+	RuleID          sql.NullInt64   `json:"rule_id"`
+	RuleName        string          `json:"rule_name"`
+	RuleClusterID   sql.NullInt64   `json:"rule_cluster_id"`
+}
+
+// 同上，按解析规则取：规则改名/换应用/换集群时，所有引用它的包装要重建（级联，见
+// publishProcessingRuleBeforeSave）。跨全部服务返回，行集很小（配了后处理的服务本来就少）。
+func (q *Queries) ListRuleExtraPipelineRows(ctx context.Context, ruleID sql.NullInt64) ([]ListRuleExtraPipelineRowsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRuleExtraPipelineRows, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRuleExtraPipelineRowsRow{}
+	for rows.Next() {
+		var i ListRuleExtraPipelineRowsRow
+		if err := rows.Scan(
+			&i.ServiceID,
+			&i.LogDefinitionID,
+			&i.ExtraProcessors,
+			&i.ApplicationCode,
+			&i.RuleID,
+			&i.RuleName,
+			&i.RuleClusterID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listServiceActiveStreamTiers = `-- name: ListServiceActiveStreamTiers :many
 SELECT DISTINCT s.id AS service_id, s.code AS service_code,
        COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
@@ -5193,6 +5256,67 @@ func (q *Queries) ListServiceActiveStreamTiers(ctx context.Context) ([]ListServi
 	for rows.Next() {
 		var i ListServiceActiveStreamTiersRow
 		if err := rows.Scan(&i.ServiceID, &i.ServiceCode, &i.TierCode); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceExtraPipelineRows = `-- name: ListServiceExtraPipelineRows :many
+SELECT s.id AS service_id, ls.log_definition_id,
+       COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
+       COALESCE(app.code, '') AS application_code,
+       rule.id AS rule_id, COALESCE(rule.name, '') AS rule_name, rule.cluster_id AS rule_cluster_id
+FROM assets_application_service_log_setting ls
+JOIN assets_application_service s ON s.id = ls.service_id
+JOIN assets_application_log_definition ld ON ld.id = ls.log_definition_id
+LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
+LEFT JOIN assets_application app ON app.id = s.application_id
+WHERE ls.service_id = $1
+`
+
+type ListServiceExtraPipelineRowsRow struct {
+	ServiceID       int64           `json:"service_id"`
+	LogDefinitionID int64           `json:"log_definition_id"`
+	ExtraProcessors json.RawMessage `json:"extra_processors"`
+	ApplicationCode string          `json:"application_code"`
+	RuleID          sql.NullInt64   `json:"rule_id"`
+	RuleName        string          `json:"rule_name"`
+	RuleClusterID   sql.NullInt64   `json:"rule_cluster_id"`
+}
+
+// 服务级后处理器（2026-09-28）的对账查询：一个服务的全部覆盖行 × 各自日志定义引用的解析规则。
+// 包装 pipeline 的生成/清理（logcollect/service_pipeline.go）靠它算期望集：
+//   - 有 extra_processors 且规则在 → 期望 PUT 包装（基础名@s<服务id>，挂在规则的集群上）；
+//   - 其余行不期望包装，配合 ES 侧 `GET /_ingest/pipeline/<基础名>@s*` 的通配列举做清理。
+//
+// 返回全部覆盖行（不只 extra_processors 非空的），对账函数不需要再发第二条查询。
+// 规则被删/日志定义不再引用规则时 rule_* 返回 NULL：这些行的包装属于"不再期望"，一并清理。
+func (q *Queries) ListServiceExtraPipelineRows(ctx context.Context, serviceID int64) ([]ListServiceExtraPipelineRowsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceExtraPipelineRows, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceExtraPipelineRowsRow{}
+	for rows.Next() {
+		var i ListServiceExtraPipelineRowsRow
+		if err := rows.Scan(
+			&i.ServiceID,
+			&i.LogDefinitionID,
+			&i.ExtraProcessors,
+			&i.ApplicationCode,
+			&i.RuleID,
+			&i.RuleName,
+			&i.RuleClusterID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

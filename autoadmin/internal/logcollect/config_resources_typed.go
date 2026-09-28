@@ -1,10 +1,10 @@
 package logcollect
 
 import (
-	"math"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -57,23 +57,23 @@ func searchPatternParam(context *gin.Context) sql.NullString {
 // ---- monitor_log_retention_tier ----
 
 type retentionTierResponse struct {
-	ID                          int64     `json:"id"`
-	CreateTime                  time.Time `json:"create_time"`
-	UpdateTime                  time.Time `json:"update_time"`
-	Code                        string    `json:"code"`
-	Name                        string    `json:"name"`
-	DailySizeGB float64 `json:"daily_size_gb"`
+	ID          int64     `json:"id"`
+	CreateTime  time.Time `json:"create_time"`
+	UpdateTime  time.Time `json:"update_time"`
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	DailySizeGB float64   `json:"daily_size_gb"`
 	// RetentionValue + RetentionUnit 是完整保留期（unit ∈ {d, h}）。单位与值分开存：
 	// 同一列存 "12h" 这样的字符串就没法按大小排序，也没法算容量。
-	RetentionValue      int64  `json:"retention_value"`
-	RetentionUnit       string `json:"retention_unit"`
-	RolloverMinIndexAge string `json:"rollover_min_index_age"`
-	Enabled                     bool      `json:"enabled"`
-	IsDefault                   bool      `json:"is_default"`
-	Remark                      string    `json:"remark"`
-	EstimatedTotalGB            float64   `json:"estimated_total_gb"`
-	RolloverMinPrimaryShardSize string    `json:"rollover_min_primary_shard_size"`
-	ServiceCount                int64     `json:"service_count"`
+	RetentionValue              int64   `json:"retention_value"`
+	RetentionUnit               string  `json:"retention_unit"`
+	RolloverMinIndexAge         string  `json:"rollover_min_index_age"`
+	Enabled                     bool    `json:"enabled"`
+	IsDefault                   bool    `json:"is_default"`
+	Remark                      string  `json:"remark"`
+	EstimatedTotalGB            float64 `json:"estimated_total_gb"`
+	RolloverMinPrimaryShardSize string  `json:"rollover_min_primary_shard_size"`
+	ServiceCount                int64   `json:"service_count"`
 }
 
 // estimatedTierTotalGB 按"每天写入量 × 保留期"反推该档位的稳态占用（容量规划用，见 §4.6）。
@@ -98,7 +98,7 @@ func (handler *Handler) retentionTierResponse(context *gin.Context, row db.Monit
 		Code: row.Code, Name: row.Name, DailySizeGB: row.DailySizeGb,
 		RetentionValue: int64(row.RetentionValue), RetentionUnit: row.RetentionUnit,
 		RolloverMinIndexAge: row.RolloverMinIndexAge,
-		Enabled: row.Enabled, IsDefault: row.IsDefault, Remark: row.Remark,
+		Enabled:             row.Enabled, IsDefault: row.IsDefault, Remark: row.Remark,
 		EstimatedTotalGB:            estimatedTierTotalGB(row.DailySizeGb, int64(row.RetentionValue), row.RetentionUnit),
 		RolloverMinPrimaryShardSize: fmt.Sprintf("%dgb", threshold),
 		ServiceCount:                serviceCount,

@@ -280,6 +280,11 @@ CREATE TABLE `assets_application_service_log_setting` (
   -- 由渲染侧降级成"该方向不过滤 + 下发告警"）。守卫见
   -- internal/assets/log_filter_rule_fk_guard_test.go。
   `collection_filter_rule_id` bigint DEFAULT NULL, `collection_exclude_filter_rule_id` bigint DEFAULT NULL,
+  -- 服务级后处理器（2026-09-28，迁移 000050）：JSON 数组，元素为 ES ingest 处理器；
+  -- 非空时平台为该服务生成包装 pipeline（基础名@s<服务id>），Filebeat 片段改指包装。
+  -- `[]` = 不启用。语义与生成/清理机制见 internal/logcollect/service_pipeline.go 与
+  -- LOG_COLLECTION_ARCHITECTURE.md 的「服务级后处理」小节。
+  `extra_processors` json NOT NULL DEFAULT (JSON_ARRAY()),
   `format_verified_at` datetime(6) DEFAULT NULL, `format_verified_fingerprint` varchar(64) NOT NULL DEFAULT '',
   `format_verified_source` varchar(16) NOT NULL DEFAULT '', `format_verified_by` varchar(150) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),

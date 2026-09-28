@@ -4211,6 +4211,9 @@ SELECT ld.id, ld.name, ld.path_pattern,
        -- 界面才能显示"继承了模板的哪条 / 自己覆盖成了哪条 / 显式关闭"，渲染也据此解析最终生效的正则。
        ld.filter_include_rule_id, ld.filter_exclude_rule_id,
        ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
+       -- 服务级后处理器（2026-09-28）：包装 pipeline 的处理器数组；` + "`" + `[]` + "`" + `/NULL = 未启用。
+       -- 界面回显与保存走这一列（保存经 UpsertServiceLogOverride 的同名参数）。
+       COALESCE(ls.extra_processors, JSON_ARRAY()) AS extra_processors,
        ls.format_verified_at, ls.format_verified_fingerprint,
        ls.format_verified_source, ls.format_verified_by,
        s.code AS service_code, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code,
@@ -4248,6 +4251,7 @@ type ListServiceTemplateLogsRow struct {
 	FilterExcludeRuleID           sql.NullInt64   `json:"filter_exclude_rule_id"`
 	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
 	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
+	ExtraProcessors               json.RawMessage `json:"extra_processors"`
 	FormatVerifiedAt              sql.NullTime    `json:"format_verified_at"`
 	FormatVerifiedFingerprint     sql.NullString  `json:"format_verified_fingerprint"`
 	FormatVerifiedSource          sql.NullString  `json:"format_verified_source"`
@@ -4294,6 +4298,7 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.FilterExcludeRuleID,
 			&i.CollectionFilterRuleID,
 			&i.CollectionExcludeFilterRuleID,
+			&i.ExtraProcessors,
 			&i.FormatVerifiedAt,
 			&i.FormatVerifiedFingerprint,
 			&i.FormatVerifiedSource,
@@ -5407,14 +5412,21 @@ func (q *Queries) UpsertLogSettingFormatVerified(ctx context.Context, arg Upsert
 const upsertServiceLogOverride = `-- name: UpsertServiceLogOverride :exec
 INSERT INTO assets_application_service_log_setting
   (create_time,update_time,remark,collection_enabled,log_definition_id,retention_tier_id,service_id,
-   collection_filter_rule_id,collection_exclude_filter_rule_id)
+   collection_filter_rule_id,collection_exclude_filter_rule_id,extra_processors)
 VALUES (?,?,NULL,?,?,
         ?,?,
-        ?,?)
+        ?,?,
+        -- 插入分支兜底成 []（列 NOT NULL）：NULL 只来自"不认识这一列"的整表替换路径，
+        -- 新插入行的后处理器就是"未启用"。
+        COALESCE(?, JSON_ARRAY()))
 ON DUPLICATE KEY UPDATE update_time=VALUES(update_time),collection_enabled=VALUES(collection_enabled),
   retention_tier_id=VALUES(retention_tier_id),
   collection_filter_rule_id=VALUES(collection_filter_rule_id),
-  collection_exclude_filter_rule_id=VALUES(collection_exclude_filter_rule_id)
+  collection_exclude_filter_rule_id=VALUES(collection_exclude_filter_rule_id),
+  -- extra_processors 的 NULL = "不动这一列"：编辑逻辑服务表单的整表替换不认识这一列，
+  -- 提交时是 NULL，不能把日志中心配好的后处理器清掉（与"内联改动不影响别的列"同一取舍）。
+  -- 显式清空要传 ` + "`" + `[]` + "`" + `（日志中心的保存路径会归一化成数组，永远不是 NULL）。
+  extra_processors=COALESCE(VALUES(extra_processors), extra_processors)
 `
 
 type UpsertServiceLogOverrideParams struct {
@@ -5426,6 +5438,7 @@ type UpsertServiceLogOverrideParams struct {
 	ServiceID                     int64         `json:"service_id"`
 	CollectionFilterRuleID        sql.NullInt64 `json:"collection_filter_rule_id"`
 	CollectionExcludeFilterRuleID sql.NullInt64 `json:"collection_exclude_filter_rule_id"`
+	ExtraProcessors               interface{}   `json:"extra_processors"`
 }
 
 // 服务级日志覆盖的**按行**写入：只写"这个服务在这条日志上的覆盖值"（采集开关 + 保留档位），
@@ -5452,6 +5465,7 @@ func (q *Queries) UpsertServiceLogOverride(ctx context.Context, arg UpsertServic
 		arg.ServiceID,
 		arg.CollectionFilterRuleID,
 		arg.CollectionExcludeFilterRuleID,
+		arg.ExtraProcessors,
 	)
 	return err
 }

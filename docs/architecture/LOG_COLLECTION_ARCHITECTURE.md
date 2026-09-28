@@ -593,6 +593,14 @@ Pipeline。在线调试支持两种样例格式（原始日志会随规则保存
 `mapping.properties` 的顶层字段集，输出文档里不在其中的字段会作为 `schema_violations` 报出
 （`dynamic:false` 下会被静默丢弃，需改写到 `app_fields.<字段名>`）；模板取不到时回退内置标准字段。
 
+**被 drop 的样例必须显式报数（2026-09-25 盲区修复）**：ES 的 `_simulate` 对被 `drop` 处理器
+丢弃的文档返回 **null 元素**（elastic/elasticsearch#44161 起），而 `missing_fields` /
+`schema_violations` 两个判定函数在 null 上零迭代、静默跳过——全部样例被丢时调试页照样显示
+"通过"、认证也判过，但那条日志根本不会入库。因此 `simulatePipeline` 统一附加
+`dropped_count`（被丢弃样例数）：格式认证结果带 `dropped_samples`、链路体检的试跑结论写明
+"N 条样例会被丢弃"。丢弃不算校验失败（可能是规则的预期行为），但"丢了什么、丢了多少"绝不能
+不说；调试页的原始试跑结果里同样能看到被丢样例呈现为 `null`。
+
 **必备字段校验（四层，共用同一份定义 `requiredProcessingRuleOutputs`）**：产物必须包含
 `log_level`、`log_message`、`error_fingerprint`——缺了都不报错，只是静默失效：
 

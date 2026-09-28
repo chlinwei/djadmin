@@ -181,6 +181,8 @@ async function submit() {
   }
   submitting.value = true
   failures.value = []
+  // 被规则的 drop 处理器丢弃的样例数（不算失败，但"认证通过却查不到日志"要有人解释）。
+  let droppedSamples = 0
   progress.total = targets.length
   try {
     for (let index = 0; index < targets.length; index += 1) {
@@ -195,6 +197,7 @@ async function submit() {
           deployment_id: form.source === 'instance' && !form.all_deployments ? form.deployment_id : 0,
         })
         const data = response?.data?.data || {}
+        droppedSamples += data.dropped_samples || 0
         // 不通过不是接口错误：留在弹窗里展示缺哪几个字段、哪台实例有问题，允许换依据重试。
         if (!data.passed) {
           failures.value = [...failures.value, { ...data, name: target.name, log_definition: target.log_definition }]
@@ -213,9 +216,16 @@ async function submit() {
     progress.name = ''
   }
   if (!failures.value.length) {
-    message.success(batchMode.value
+    const passedText = batchMode.value
       ? `${targets.length} 条日志的格式认证全部通过（依据：${form.source}）`
-      : `格式认证通过（依据：${form.source}）`)
+      : `格式认证通过（依据：${form.source}）`
+    if (droppedSamples > 0) {
+      // 认证确实通过了（丢弃是规则的预期行为），但必须说清"有多少样例根本不会入库"，
+      // 否则用户拿"认证通过"当"日志能查到"，排障时会绕远路。
+      message.warning(`${passedText}；其中 ${droppedSamples} 条样例被规则的按字段丢弃条件丢弃（不进 Elasticsearch，属预期行为）`)
+    } else {
+      message.success(passedText)
+    }
     emit('update:open', false)
     // 由调用方重载列表：状态/时间/操作人都由后端按指纹比对给出，前端不自己拼。
     emit('verified', batchMode.value ? { count: targets.length } : { passed: true })

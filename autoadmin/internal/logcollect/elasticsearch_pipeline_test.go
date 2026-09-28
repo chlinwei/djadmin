@@ -156,3 +156,44 @@ func TestSimulateElasticsearchPipelineWrapsDocsWithSource(t *testing.T) {
 		t.Fatalf("database expectations: %v", err)
 	}
 }
+
+// countDroppedDocs 是 drop 盲区修复的核心（2026-09-25）：ES 对被 drop 的样例返回 **null 元素**，
+// 之前的判定函数静默跳过 null——全部样例被丢时调试页显示"通过"。逐形态钉住，尤其是
+// "doc 存在但为 null"与"元素本身就是 null"这两种 ES 都会返回的形态。
+// 手写 drop 处理器（pipeline JSON 里）一直被支持，这个修复与任何表单功能无关。
+func TestCountDroppedDocs(t *testing.T) {
+	cases := []struct {
+		name   string
+		result map[string]any
+		want   int
+	}{
+		{
+			name:   "正常文档不算丢弃",
+			result: map[string]any{"docs": []any{map[string]any{"doc": map[string]any{"_source": map[string]any{"message": "x"}}}}},
+			want:   0,
+		},
+		{
+			name:   "null 元素是被 drop 的样例",
+			result: map[string]any{"docs": []any{nil, nil}},
+			want:   2,
+		},
+		{
+			name:   "doc 为 null 同样算",
+			result: map[string]any{"docs": []any{map[string]any{"doc": nil}}},
+			want:   1,
+		},
+		{
+			name:   "混合：丢一半数出一半",
+			result: map[string]any{"docs": []any{nil, map[string]any{"doc": map[string]any{"_source": map[string]any{}}}}},
+			want:   1,
+		},
+		{name: "没有 docs", result: map[string]any{}, want: 0},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := countDroppedDocs(testCase.result); got != testCase.want {
+				t.Fatalf("countDroppedDocs = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}

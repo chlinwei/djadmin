@@ -870,7 +870,11 @@ const filterFormRules = {
 }
 
 async function saveFilterRule() {
-  await filterFormRef.value?.validate()
+  try {
+    await filterFormRef.value?.validate()
+  } catch {
+    return
+  }
   filterSaving.value = true
   try {
     await saveLogCollectionFilterRule({ ...filterForm })
@@ -885,7 +889,11 @@ async function saveFilterRule() {
 }
 
 async function publishPipeline() {
-  await formRef.value?.validate()
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
   let body
   try {
     body = parseJson(form.bodyText, 'Pipeline JSON')

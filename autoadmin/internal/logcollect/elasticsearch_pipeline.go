@@ -105,6 +105,7 @@ func (handler *Handler) simulatePipeline(ctx context.Context, cluster elasticsea
 	allowed := handler.processingRuleAllowedFields(ctx, cluster)
 	data["schema_violations"] = nonStandardDocumentFields(data, allowed)
 	data["missing_fields"] = missingRequiredDocumentFields(data)
+	data["dropped_count"] = countDroppedDocs(data)
 	return data, nil
 }
 
@@ -192,4 +193,25 @@ func missingRequiredDocumentFields(result map[string]any) []string {
 	}
 	sort.Strings(fields)
 	return fields
+}
+
+// countDroppedDocs 数 _simulate 响应里被 drop 处理器丢弃的样例。
+//
+// ES 对被 drop 的文档在 docs 数组里返回 **null 元素**（elastic/elasticsearch#44161 起），
+// 而上面两个判定函数的 `rawDoc.(map[string]any)` 拿到 nil 后零迭代、静默跳过——全部样例被丢时
+// missing_fields 与 schema_violations 都是空的，调试页会显示"通过"，认证也判过，但那条日志根本
+// 不会入库。这个盲区必须在响应里显式数出来，由调用方（调试页/认证/体检）决定怎么告知用户：
+// 丢弃不算校验失败（可能是配置的预期行为），但"丢了什么、丢了多少"绝不能不说。
+func countDroppedDocs(result map[string]any) int {
+	docs, _ := result["docs"].([]any)
+	count := 0
+	for _, rawDoc := range docs {
+		if doc, ok := rawDoc.(map[string]any); ok {
+			if detail, exists := doc["doc"].(map[string]any); exists && detail != nil {
+				continue
+			}
+		}
+		count++
+	}
+	return count
 }

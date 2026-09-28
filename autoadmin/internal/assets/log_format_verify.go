@@ -47,7 +47,10 @@ type LogFormatVerifyTarget struct {
 	HostInstanceName string   `json:"host_instance_name"`
 	LogFiles         []string `json:"log_files"`
 	MissingFields    []string `json:"missing_fields"`
-	Error            string   `json:"error,omitempty"`
+	// DroppedSamples 这台实例的样例中被规则的 drop 处理器丢弃的条数：丢弃是配置的预期行为、
+	// 不影响认证结论，但"认证通过却查不到日志"必须能在这里找到解释（2026-09-25 盲区修复）。
+	DroppedSamples int    `json:"dropped_samples"`
+	Error          string `json:"error,omitempty"`
 }
 
 // LogFormatVerifyReport 一次认证的完整结果：全部目标的缺失字段并集 + 逐实例明细。
@@ -55,8 +58,11 @@ type LogFormatVerifyTarget struct {
 // MissingFields 是所有目标缺失字段的**并集**（任一实例/文件缺就算缺），供"通过 / 不通过"
 // 的判定与既有前端契约使用；Targets 用来告诉人"是哪台实例、哪个文件的问题"。
 type LogFormatVerifyReport struct {
-	MissingFields []string                `json:"missing_fields"`
-	Targets       []LogFormatVerifyTarget `json:"targets"`
+	MissingFields []string `json:"missing_fields"`
+	// DroppedSamples 全部目标被丢弃样例的总数。丢弃不算失败（Passed 不看它），
+	// 但前端必须显式展示，不能让"通过"掩盖"这些日志根本不会入库"。
+	DroppedSamples int                     `json:"dropped_samples"`
+	Targets        []LogFormatVerifyTarget `json:"targets"`
 }
 
 // Passed 判定：没有任何缺失字段，且没有任何目标取不到样例（Error）。
@@ -89,6 +95,7 @@ type LogFormatVerifyResult struct {
 	Passed               bool                    `json:"passed"`
 	Source               string                  `json:"source"`
 	MissingFields        []string                `json:"missing_fields"`
+	DroppedSamples       int                     `json:"dropped_samples"`
 	Targets              []LogFormatVerifyTarget `json:"targets,omitempty"`
 	FormatState          string                  `json:"format_state"`
 	FormatFingerprint    string                  `json:"format_fingerprint"`
@@ -169,6 +176,7 @@ func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefi
 			return LogFormatVerifyResult{}, verifyErr
 		}
 		result.Targets = report.Targets
+		result.DroppedSamples = report.DroppedSamples
 		if !report.Passed() {
 			result.Passed = false
 			result.MissingFields = report.MissingFields

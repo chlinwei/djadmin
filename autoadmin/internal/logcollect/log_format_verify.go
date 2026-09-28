@@ -105,14 +105,17 @@ func (handler *Handler) VerifyLogFormat(ctx context.Context, request assets.LogF
 			return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "该服务没有可认证的部署实例（请先绑定实例）")
 		}
 		missingSet := map[string]bool{}
+		droppedTotal := 0
 		for _, deploymentID := range deploymentIDs {
 			target := handler.verifyDeployment(sampleContext, request, deploymentID, rule.MultilineEnabled, rule.StartPattern, cluster, pipeline)
 			report.Targets = append(report.Targets, target)
 			for _, field := range target.MissingFields {
 				missingSet[field] = true
 			}
+			droppedTotal += target.DroppedSamples
 		}
 		report.MissingFields = sortedKeys(missingSet)
+		report.DroppedSamples = droppedTotal
 	case assets.LogFormatSourceSampleLog:
 		if strings.TrimSpace(rule.SampleLog) == "" {
 			return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "解析规则未配置样例日志，无法用它认证；请改用实例抽样")
@@ -125,11 +128,12 @@ func (handler *Handler) VerifyLogFormat(ctx context.Context, request assets.LogF
 		if clusterErr != nil {
 			return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "解析规则所属的 Elasticsearch 集群不可用："+clusterErr.Error())
 		}
-		missing, simErr := handler.simulateMissingFields(sampleContext, cluster, pipeline, docs)
+		missing, dropped, simErr := handler.simulateMissingFields(sampleContext, cluster, pipeline, docs)
 		if simErr != nil {
 			return assets.LogFormatVerifyReport{}, simErr
 		}
 		report.MissingFields = missing
+		report.DroppedSamples = dropped
 	default:
 		return assets.LogFormatVerifyReport{}, assets.ErrLogFormatSourceInvalid
 	}
@@ -204,23 +208,26 @@ func (handler *Handler) verifyDeployment(ctx context.Context, request assets.Log
 		return target
 	}
 	// missing_fields 是所有文档的并集：任一文件缺必备字段即该实例不通过。
-	missing, simErr := handler.simulateMissingFields(ctx, cluster, pipeline, docs)
+	missing, dropped, simErr := handler.simulateMissingFields(ctx, cluster, pipeline, docs)
 	if simErr != nil {
 		target.Error = simErr.Error()
 		return target
 	}
 	target.MissingFields = missing
+	target.DroppedSamples = dropped
 	return target
 }
 
-// simulateMissingFields 跑一次 inline _simulate 并取回缺失的必备字段。
-func (handler *Handler) simulateMissingFields(ctx context.Context, cluster elasticsearchCluster, pipeline map[string]any, docs []any) ([]string, error) {
+// simulateMissingFields 跑一次 inline _simulate，取回缺失的必备字段与被 drop 丢弃的样例数。
+// 丢弃不算失败（那是"按字段丢弃"的预期行为），但必须带回去让前端显式展示。
+func (handler *Handler) simulateMissingFields(ctx context.Context, cluster elasticsearchCluster, pipeline map[string]any, docs []any) ([]string, int, error) {
 	data, err := handler.simulatePipeline(ctx, cluster, "", pipeline, docs)
 	if err != nil {
-		return nil, apperror.New(apperror.CodeInvalidArgument, "Elasticsearch 校验失败："+err.Error())
+		return nil, 0, apperror.New(apperror.CodeInvalidArgument, "Elasticsearch 校验失败："+err.Error())
 	}
 	missing, _ := data["missing_fields"].([]string)
-	return missing, nil
+	dropped, _ := data["dropped_count"].(int)
+	return missing, dropped, nil
 }
 
 // sortedKeys 把集合拍成稳定有序的切片（缺失字段并集）。

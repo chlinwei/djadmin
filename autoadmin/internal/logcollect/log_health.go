@@ -353,7 +353,12 @@ func (handler *Handler) judgeRulePipeline(context *gin.Context, cluster elastics
 	case check.skipped:
 		return logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器（%s）", len(processors), check.detail))
 	default:
-		return logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器（样例试跑通过）", len(processors)))
+		// detail 非空说明试跑通过但有要人知道的事（如样例被 drop 丢弃），追加在结论里。
+		verdict := "样例试跑通过"
+		if check.detail != "" {
+			verdict = "样例试跑通过；" + check.detail
+		}
+		return logHealthItem(pipelineName, logHealthOK, fmt.Sprintf("%d 个处理器（%s）", len(processors), verdict))
 	}
 }
 
@@ -385,6 +390,11 @@ func (handler *Handler) rulePipelineRunVerdict(context *gin.Context, cluster ela
 	}
 	missing, _ := data["missing_fields"].([]string)
 	if len(missing) == 0 {
+		// 被规则的 drop 处理器丢弃的样例不算失败（那是"按字段丢弃"的预期行为），
+		// 但体检的职责就是回答"日志去哪了"——全绿却一条日志都没有，得有人指出是 drop 干的。
+		if dropped, _ := data["dropped_count"].(int); dropped > 0 {
+			return rulePipelineRunVerdictResult{detail: fmt.Sprintf("试跑通过；其中 %d 条样例会被按字段丢弃条件丢弃（不进 Elasticsearch，属预期行为）", dropped)}
+		}
 		return rulePipelineRunVerdictResult{}
 	}
 	detail := fmt.Sprintf("样例试跑缺必备字段 %s：这样的事件到主机上会被 Elasticsearch 拒收，Filebeat 只会报 400 并丢弃（采集链路看起来全绿、ES 里一条都没有）",

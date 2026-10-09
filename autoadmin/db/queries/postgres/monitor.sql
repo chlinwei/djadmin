@@ -1381,6 +1381,18 @@ JOIN assets_project p ON p.id = bs.project_id
 JOIN assets_business_environment e ON e.id = s.environment_id
 WHERE s.id = sqlc.arg(id);
 
+-- 批量取多个逻辑服务的流名维度码（日志中心的**跨服务日志检索**，2026-09-28）：
+-- 业务系统/环境等上层节点查日志时，前端传 application_service_ids（逗号分隔），
+-- 检索按"每个服务的 (service, project, business_system, environment) 四元组"收窄——
+-- 服务编码允许跨业务/环境重复（迁移 000044），单看 service 一个字段会串数据。
+-- name: ListApplicationServiceStreamDimsByIDs :many
+SELECT s.id, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code, s.code AS service_code
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.id = ANY(sqlc.arg(ids)::bigint[]);
+
 -- name: ListEnabledProjects :many
 SELECT id, code, name FROM assets_project WHERE enabled = TRUE ORDER BY name;
 

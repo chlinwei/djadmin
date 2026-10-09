@@ -23,19 +23,27 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { previewApplicationServiceLogGlob } from '@/api/assets/application'
 
 const props = defineProps({
   serviceId: { type: [Number, String], default: null },
   logDefinitionId: { type: [Number, String], default: null },
+  cachedResult: { type: Object, default: null },
+  loadResult: { type: Function, default: null },
 })
 
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
 const instances = ref([])
+
+watch(() => props.cachedResult, (result) => {
+  if (!result) return
+  instances.value = result.instances || []
+  loaded.value = true
+}, { immediate: true })
 
 function instanceLabel(instance) {
   const name = instance.deployment_instance_name || instance.host_instance_name || '未知实例'
@@ -50,8 +58,10 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const response = await previewApplicationServiceLogGlob(props.serviceId, props.logDefinitionId)
-    const data = response?.data?.data || {}
+    const data = props.cachedResult || (props.loadResult
+      ? await props.loadResult(props.logDefinitionId)
+      : (await previewApplicationServiceLogGlob(props.serviceId, props.logDefinitionId))?.data?.data || {})
+    if (!data) return
     instances.value = data.instances || []
     loaded.value = true
   } catch (err) {

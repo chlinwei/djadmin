@@ -3273,6 +3273,56 @@ func (q *Queries) ListAlertNotificationEvents(ctx context.Context, alertID int64
 	return items, nil
 }
 
+const listApplicationServiceStreamDimsByIDs = `-- name: ListApplicationServiceStreamDimsByIDs :many
+SELECT s.id, p.code AS project_code, e.code AS environment_code, bs.code AS business_system_code, s.code AS service_code
+FROM assets_application_service s
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.id = ANY($1::bigint[])
+`
+
+type ListApplicationServiceStreamDimsByIDsRow struct {
+	ID                 int64  `json:"id"`
+	ProjectCode        string `json:"project_code"`
+	EnvironmentCode    string `json:"environment_code"`
+	BusinessSystemCode string `json:"business_system_code"`
+	ServiceCode        string `json:"service_code"`
+}
+
+// 批量取多个逻辑服务的流名维度码（日志中心的**跨服务日志检索**，2026-09-28）：
+// 业务系统/环境等上层节点查日志时，前端传 application_service_ids（逗号分隔），
+// 检索按"每个服务的 (service, project, business_system, environment) 四元组"收窄——
+// 服务编码允许跨业务/环境重复（迁移 000044），单看 service 一个字段会串数据。
+func (q *Queries) ListApplicationServiceStreamDimsByIDs(ctx context.Context, ids []int64) ([]ListApplicationServiceStreamDimsByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listApplicationServiceStreamDimsByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApplicationServiceStreamDimsByIDsRow{}
+	for rows.Next() {
+		var i ListApplicationServiceStreamDimsByIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectCode,
+			&i.EnvironmentCode,
+			&i.BusinessSystemCode,
+			&i.ServiceCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listElasticsearchClustersTyped = `-- name: ListElasticsearchClustersTyped :many
 SELECT id, create_time, update_time, name, hosts, username, password, verify_tls, ca_cert, index_prefix,
        request_timeout, enabled, is_default, last_check_time, last_check_success, last_check_message,

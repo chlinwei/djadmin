@@ -69,7 +69,7 @@
               <span class="pipeline-name">{{ record.name }}</span>
             </template>
             <template v-else-if="column.key === 'description'">
-              <span>{{ record.description || '-' }}</span>
+              <span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span>
             </template>
             <template v-else-if="column.key === 'input_format'">
               <a-tag :color="record.input_format === 'json' ? 'cyan' : 'default'">
@@ -125,7 +125,7 @@
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'name'"><span class="pipeline-name">{{ record.name }}</span></template>
                 <template v-else-if="column.key === 'rule_type'"><a-tag :color="record.rule_type === 'exclude' ? 'orange' : 'green'">{{ filterRuleTypeLabel(record.rule_type) }}</a-tag></template>
-                <template v-else-if="column.key === 'description'"><span>{{ record.description || '-' }}</span></template>
+                <template v-else-if="column.key === 'description'"><span style="white-space: pre-wrap; overflow-wrap: anywhere">{{ record.description || '-' }}</span></template>
                 <template v-else-if="column.key === 'pattern'"><code>{{ record.pattern }}</code></template>
                 <template v-else-if="column.key === 'enabled'"><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></template>
                 <template v-else-if="column.key === 'action'"><a-space :size="6"><a-tooltip title="编辑"><a-button type="primary" @click="openFilterEdit(record)"><FontAwesomeIcon :icon="['fa', 'edit']" /></a-button></a-tooltip><a-tooltip title="删除"><a-button class="delBtn" danger type="primary" @click="confirmDeleteFilter(record)"><FontAwesomeIcon :icon="['fas', 'trash-can']" /></a-button></a-tooltip></a-space></template>

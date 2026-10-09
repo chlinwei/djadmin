@@ -225,33 +225,100 @@ func parseLogWindow(context *gin.Context) (time.Time, time.Time, error) {
 	return start, end, nil
 }
 
+// MaxLogSearchServices 跨服务检索一次允许的逻辑服务数上限。日志中心的范围选择
+// （业务系统/环境节点）通常是个位数到几十个服务；上限只是防线，再大的范围应该
+// 逐层下钻或用时间收窄（SQL IN 与 ES should 子句都会随服务数线性膨胀）。
+const MaxLogSearchServices = 50
+
+// parseIDList 解析逗号分隔的 id 列表（去空、保序、去重）。解析不出数字的段直接忽略——
+// 与 parseID 的"静默 0"同一取舍：调用方对空列表给出明确报错即可。
+func parseIDList(raw string) []int64 {
+	seen := map[int64]bool{}
+	ids := []int64{}
+	for _, part := range strings.Split(raw, ",") {
+		id := parseID(strings.TrimSpace(part))
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// serviceDimsFilters 单个逻辑服务的四元组过滤（服务编码允许跨业务/环境重复，见 000044）。
+func serviceDimsFilters(dims db.GetApplicationServiceStreamDimsRow) []any {
+	return []any{
+		gin.H{"term": gin.H{"service": dims.ServiceCode}},
+		gin.H{"term": gin.H{"project": dims.ProjectCode}},
+		gin.H{"term": gin.H{"business_system": dims.BusinessSystemCode}},
+		gin.H{"term": gin.H{"environment": dims.EnvironmentCode}},
+	}
+}
+
+// multiServiceScopeFilter 多个逻辑服务的范围过滤：每个服务一个四元组子句，
+// should + minimum_should_match=1（命中任一服务即算范围内）。纯函数便于单测。
+func multiServiceScopeFilter(dimsList []db.ListApplicationServiceStreamDimsByIDsRow) gin.H {
+	should := make([]any, 0, len(dimsList))
+	for _, dims := range dimsList {
+		should = append(should, gin.H{"bool": gin.H{"filter": []any{
+			gin.H{"term": gin.H{"service": dims.ServiceCode}},
+			gin.H{"term": gin.H{"project": dims.ProjectCode}},
+			gin.H{"term": gin.H{"business_system": dims.BusinessSystemCode}},
+			gin.H{"term": gin.H{"environment": dims.EnvironmentCode}},
+		}}})
+	}
+	return gin.H{"bool": gin.H{"should": should, "minimum_should_match": 1}}
+}
+
 func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluster, string, []any, error) {
 	cluster, err := handler.loadElasticsearchCluster(context)
 	if err != nil {
 		return cluster, "", nil, err
 	}
-	serviceID := parseID(context.Query("application_service_id"))
-	if serviceID == 0 {
-		return cluster, "", nil, fmt.Errorf("application_service_id is required")
-	}
-	// 逻辑服务的编码允许跨业务/环境重复（见 000044 迁移），只按 service 一个字段过滤会串数据：
-	// 文档已带 project/business_system/environment（见 log_config_render 的 fields），按完整维度收窄。
-	dims, err := db.New(handler.db).GetApplicationServiceStreamDims(context, serviceID)
-	if err != nil {
-		return cluster, "", nil, fmt.Errorf("application service not found")
+	// 两种范围：单个逻辑服务（application_service_id，逻辑服务页沿用）或多个
+	//（application_service_ids，日志中心上层节点的跨服务检索，2026-09-28）。
+	// 两者都把范围折算成"四元组过滤"，后续的关键词/级别/实例等过滤完全共用。
+	var scopeFilter any
+	serviceCode := ""
+	if rawIDs := strings.TrimSpace(context.Query("application_service_ids")); rawIDs != "" {
+		ids := parseIDList(rawIDs)
+		if len(ids) == 0 {
+			return cluster, "", nil, fmt.Errorf("application_service_ids is invalid")
+		}
+		if len(ids) > MaxLogSearchServices {
+			return cluster, "", nil, fmt.Errorf("一次最多查询 %d 个逻辑服务，请收窄范围", MaxLogSearchServices)
+		}
+		dimsList, err := db.New(handler.db).ListApplicationServiceStreamDimsByIDs(context, ids)
+		if err != nil || len(dimsList) == 0 {
+			return cluster, "", nil, fmt.Errorf("application service not found")
+		}
+		// 请求里的 id 可能有不存在的：按实际查到的 dims 收窄（缺的服务静默忽略，
+		// 与"范围由前端从已列出的服务里选"一致）。
+		scopeFilter = multiServiceScopeFilter(dimsList)
+	} else {
+		serviceID := parseID(context.Query("application_service_id"))
+		if serviceID == 0 {
+			return cluster, "", nil, fmt.Errorf("application_service_id is required")
+		}
+		// 逻辑服务的编码允许跨业务/环境重复（见 000044 迁移），只按 service 一个字段过滤会串数据：
+		// 文档已带 project/business_system/environment（见 log_config_render 的 fields），按完整维度收窄。
+		dims, err := db.New(handler.db).GetApplicationServiceStreamDims(context, serviceID)
+		if err != nil {
+			return cluster, "", nil, fmt.Errorf("application service not found")
+		}
+		scopeFilter = gin.H{"bool": gin.H{"filter": serviceDimsFilters(dims)}}
+		serviceCode = dims.ServiceCode
 	}
 	start, end, err := parseLogWindow(context)
 	if err != nil {
 		return cluster, "", nil, err
 	}
 	filters := []any{
-		gin.H{"term": gin.H{"service": dims.ServiceCode}},
-		gin.H{"term": gin.H{"project": dims.ProjectCode}},
-		gin.H{"term": gin.H{"business_system": dims.BusinessSystemCode}},
-		gin.H{"term": gin.H{"environment": dims.EnvironmentCode}},
+		scopeFilter,
 		gin.H{"range": gin.H{"@timestamp": gin.H{"gte": start.Format(time.RFC3339Nano), "lte": end.Format(time.RFC3339Nano)}}},
 	}
-	for _, field := range []string{"instance", "host_ip", "log_name", "error_fingerprint"} {
+	for _, field := range []string{"project", "business_system", "environment", "service", "instance", "host_ip", "log_name", "error_fingerprint"} {
 		if value := strings.TrimSpace(context.Query(field)); value != "" {
 			filters = append(filters, gin.H{"term": gin.H{field: value}})
 		}
@@ -280,7 +347,7 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 	if clause := keywordQuery(context.Query("keyword"), keywordMode); clause != nil {
 		must = []any{*clause}
 	}
-	return cluster, dims.ServiceCode, []any{filters, must}, nil
+	return cluster, serviceCode, []any{filters, must}, nil
 }
 
 // keywordQuery 把关键词与模式折算成 query_string 子句（关键词为空时返回 nil）。
@@ -343,7 +410,9 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 		response.BusinessError(context, 400, "offset+size cannot exceed 2000", nil)
 		return
 	}
-	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
+	// _source 带上 project/business_system/environment：跨服务检索（application_service_ids）的
+	// 列表要按层级显示"业务系统/环境/逻辑服务"列，文档上的维度编码是唯一的来源。
+	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
 	// 按"日志路径"过滤时用运行时字段（历史文档的 log_path 是模式，具体文件在 log.file.path）。
 	if strings.TrimSpace(context.Query("log_path")) != "" {
 		body["runtime_mappings"] = logFilePathRuntimeMappings()
@@ -421,8 +490,13 @@ func applyLogPathFromFilebeat(item gin.H, source map[string]any) {
 // logFacetAllowedFields 统计面板允许的分组维度。新增维度必须同时改前端
 // statsFieldOptions 与 FACET_FILTER_KEY（并把字段加进 buildLogQuery 的过滤白名单），
 // 否则"能统计但不能下钻"。
+//
+// 2026-09-28 加上 project/business_system/environment/service：日志查询在**上层节点**（项目/
+// 业务系统/环境/全部）改为"概览优先"，最自然的问题就是"哪个服务/业务系统错误最多"——
+// 这四个维度既是文档上的 keyword 字段（log_config_render 注入），也是范围四元组本身。
 var logFacetAllowedFields = map[string]bool{
 	"log_level": true, "instance": true, "host_ip": true, "log_name": true, "log_path": true, "error_fingerprint": true,
+	"service": true, "project": true, "business_system": true, "environment": true,
 }
 
 func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
@@ -449,12 +523,14 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 	}
 	// 「日志路径」维度按**实际文件路径**分组：历史文档的 log_path 是路径模式，具体文件在
 	// log.file.path，用运行时字段把它取出来（否则列表里显示的还是一串带 `*` 的模式）。
-	aggField := field
-	if field == "log_path" {
-		aggField = logPathRuntimeField
+	aggField := facetAggField(field)
+	innerAggs := gin.H{
+		"sample": gin.H{"top_hits": gin.H{"size": 1, "sort": []any{gin.H{"@timestamp": "desc"}}}},
+		"trend":  gin.H{"date_histogram": gin.H{"field": "@timestamp", "fixed_interval": fmt.Sprintf("%dm", interval)}},
 	}
-	body := gin.H{"size": 0, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}, "aggs": gin.H{"by_field": gin.H{"terms": gin.H{"field": aggField, "size": size, "order": gin.H{"_count": "desc"}}, "aggs": gin.H{"sample": gin.H{"top_hits": gin.H{"size": 1, "sort": []any{gin.H{"@timestamp": "desc"}}}}, "trend": gin.H{"date_histogram": gin.H{"field": "@timestamp", "fixed_interval": fmt.Sprintf("%dm", interval)}}}}}}
-	if field == "log_path" {
+	body := gin.H{"size": 0, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}, "aggs": gin.H{"by_field": gin.H{"terms": gin.H{"field": aggField, "size": size, "order": gin.H{"_count": "desc"}}, "aggs": innerAggs}}}
+	// 按其他维度统计时也可能带路径过滤，过滤所用的运行时字段必须一并声明。
+	if field == "log_path" || strings.TrimSpace(context.Query("log_path")) != "" {
 		body["runtime_mappings"] = logFilePathRuntimeMappings()
 	}
 	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, "/"+url.PathEscape(defaultString(cluster.IndexPrefix, "autoadmin"))+"-*/_search", body)
@@ -497,9 +573,22 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 				}
 			}
 		}
-		buckets = append(buckets, gin.H{"value": bucket["key"], "count": bucket["doc_count"], "sample": sample, "trend": trend})
+		item := gin.H{"value": bucket["key"], "count": bucket["doc_count"], "sample": sample, "trend": trend}
+		buckets = append(buckets, item)
 	}
 	response.Success(context, gin.H{"field": field, "interval_minutes": interval, "buckets": buckets})
+}
+
+// facetAggField 把分面字段映射成实际聚合字段：「日志路径」用运行时字段（见 logFilePathRuntimeMappings），
+// 其余原样；空字段返回空串。
+func facetAggField(field string) string {
+	if field == "" {
+		return ""
+	}
+	if field == "log_path" {
+		return logPathRuntimeField
+	}
+	return field
 }
 
 func queryInt(context *gin.Context, name string, fallback int) int {

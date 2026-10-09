@@ -79,4 +79,18 @@ describe('LogGlobPreview', () => {
     expect(previewApplicationServiceLogGlob).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('缓存结果在重新显示和收起后展开时复用，不访问主机', async () => {
+    const { previewApplicationServiceLogGlob } = await import('@/api/assets/application')
+    const cachedResult = { instances: [{ matches: ['/logs/error.log'] }] }
+    const wrapper = mountPreview({ cachedResult })
+    expect(wrapper.text()).toContain('/logs/error.log')
+    await wrapper.find('button').trigger('click')
+    expect(wrapper.text()).not.toContain('/logs/error.log')
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('/logs/error.log')
+    expect(previewApplicationServiceLogGlob).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })

@@ -23,20 +23,11 @@
       <a-tabs v-model:active-key="activeTab">
         <!-- 日志查询最常用，放第一个 tab，也是默认打开的那个。 -->
         <a-tab-pane key="query" tab="日志查询">
-          <LogQueryPanel v-if="serviceId" :scope="scope" />
-          <!-- 非服务节点：这一层的日志视角（服务清单 + 最近写入），点行进入该服务的检索面板。
-               检索本身仍要求选到具体服务（索引里带服务段），这里只负责把人送到那一步。 -->
-          <LogLevelOverview
-            v-else
-            variant="query"
-            :dimension="levelDimensionMeta"
-            :rows="levelRows"
-            :metrics="levelMetrics"
-            :recent-docs-title="RECENT_DOCS_TITLE"
-            :pending-error="levelPendingError"
-            :loading="levelLoading"
-            @drilldown="drillDown"
-          />
+          <!-- 非服务节点进入**跨服务查询**：与服务级检索同一套界面（LogQueryPanel），
+               多一个「逻辑服务」列与服务多选下拉（空选 = 范围内全部）。
+               候选集与层级视图同源（util/logLevelOverview.servicesUnderScope），
+               保证"层级里列出的服务"与"下拉里能选的服务"一致。 -->
+          <LogQueryPanel :scope="scope" :candidate-services="queryCandidateServices" :dimension-names="queryDimensionNames" :scope-trail="queryScopeTrail" />
         </a-tab-pane>
 
         <a-tab-pane key="config" tab="日志配置" force-render>
@@ -204,9 +195,34 @@
                 <a-button size="small" type="text" @click="clearLogSelection">取消选择</a-button>
               </a-space>
             </div>
+            <div class="config-filters">
+              <label class="config-filter-field">
+                <span>日志名称</span>
+                <a-input v-model:value="configFilters.name" allow-clear placeholder="筛选日志名称" />
+              </label>
+              <label class="config-filter-field config-filter-path">
+                <span>路径</span>
+                <a-input v-model:value="configFilters.path" allow-clear placeholder="筛选路径或已展开文件" />
+              </label>
+              <div class="config-filter-actions">
+                <a-checkbox v-model:checked="matchRealFiles">匹配真实文件</a-checkbox>
+                <a-button :loading="fileSearchLoading" :disabled="!matchRealFiles || !configFilters.path.trim() || configLoading" @click="searchRealFiles">
+                  <SearchOutlined />
+                  搜索真实文件
+                </a-button>
+                <a-button v-if="fileSearchLoading" @click="cancelFileSearch"><CloseOutlined />取消</a-button>
+                <span v-if="fileSearchTotal" class="field-hint">{{ fileSearchCancelled ? '已取消' : '已查询' }} {{ fileSearchDone }} / {{ fileSearchTotal }} 条</span>
+                <span class="field-hint">{{ visibleLogRows.length }} / {{ logRows.length }} 条</span>
+              </div>
+            </div>
+            <a-alert v-if="fileSearchErrors.length" type="warning" show-icon class="apply-unmanaged">
+              <template #message>
+                <div v-for="(error, index) in fileSearchErrors" :key="index">{{ error }}</div>
+              </template>
+            </a-alert>
             <a-table
               :columns="configColumns"
-              :data-source="logRows"
+              :data-source="visibleLogRows"
               :loading="configLoading"
               :pagination="false"
               row-key="log_definition"
@@ -248,6 +264,8 @@
                     v-if="showResolvedPath && !unexpandedMacros(record.resolved_path).length && hasGlobMeta(record.resolved_path)"
                     :service-id="serviceId"
                     :log-definition-id="record.log_definition"
+                    :cached-result="globResults[record.log_definition]"
+                    :load-result="loadGlobResult"
                   />
                 </template>
                 <template v-else-if="column.key === 'carrying_hosts'">
@@ -851,11 +869,11 @@
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { ReloadOutlined, SearchOutlined, CloseOutlined } from '@ant-design/icons-vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
-import { getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
-import { applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogServiceUsage, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
+import { previewApplicationServiceLogGlob, getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessEnvironmentList, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
+import { applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
 import ServiceTree from '@/views/assets/application/components/ServiceTree.vue'
 import LogQueryPanel from './LogQueryPanel.vue'
 import LogLevelOverview from './LogLevelOverview.vue'
@@ -869,15 +887,13 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { DROP_FIELD_SUGGESTIONS, DROP_OPERATORS, compileDropRule, parseDropRule } from '@/util/logDropRules'
 import { buildStorageUsagePieOption } from '@/util/storageUsagePie'
 import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros, hasGlobMeta } from '@/util/logPathMacro'
-import { buildLevelMetrics, buildLevelRows, levelDimension } from '@/util/logLevelOverview'
+import { buildLevelMetrics, buildLevelRows, levelDimension, servicesUnderScope } from '@/util/logLevelOverview'
 import LogGlobPreview from '@/components/LogGlobPreview.vue'
 import StorageUsagePie from './StorageUsagePie.vue'
 
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
-// 「最近写入」的窗口说明：与下面 loadLevelUsage 传的 days 保持一致（30 天），
 // 列标题与取值不能各说一套窗口。
-const RECENT_DOCS_TITLE = '最近 30 天写入'
 
 // 「路径」列显示原始模式还是解析后的路径（解析后 = 模板默认值 + 服务覆盖；实例级宏仍留占位符）。
 const showResolvedPath = ref(true)
@@ -901,8 +917,6 @@ const levelBusinessSystems = ref([])
 const levelServices = ref([])
 // 服务 id → 日志状态汇总（后端 log-status-summary 的 items）。
 const levelStatusByService = ref({})
-// 服务编码 → 最近写入文档数（只有叶子层能给，见 loadLevelUsage）。
-const levelUsageByService = ref({})
 // 配置态没算出来时的原因（后端 pending_error）：界面据此把该列显示成"-"。
 const levelPendingError = ref('')
 const levelLoading = ref(false)
@@ -973,10 +987,110 @@ const batchFilterOpen = ref(false)
 const batchFilterForm = reactive({ direction: 'include', value: null })
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
+const configFilters = reactive({ name: '', path: '' })
+const globResults = ref({})
+const matchRealFiles = ref(true)
+const fileSearchCancelled = ref(false)
+const fileSearchLoading = ref(false)
+const fileSearchDone = ref(0)
+const fileSearchTotal = ref(0)
+const fileSearchErrors = ref([])
+let globGeneration = 0
+const globRequests = new Map()
+
+function cancelFileSearch() {
+  // 已发送到 agent 的读取无法撤回；使旧批次失效，阻止后续请求和迟到结果写回。
+  globGeneration += 1
+  globRequests.clear()
+  fileSearchCancelled.value = fileSearchLoading.value
+  fileSearchLoading.value = false
+}
+
+watch(matchRealFiles, (enabled) => {
+  if (!enabled) cancelFileSearch()
+}, { flush: 'sync' })
+
+function resetGlobResults() {
+  globGeneration += 1
+  globResults.value = {}
+  globRequests.clear()
+  fileSearchCancelled.value = false
+  matchRealFiles.value = true
+  fileSearchLoading.value = false
+  fileSearchDone.value = 0
+  fileSearchTotal.value = 0
+  fileSearchErrors.value = []
+}
+
+async function loadGlobResult(logDefinitionId) {
+  if (globResults.value[logDefinitionId]) return globResults.value[logDefinitionId]
+  if (globRequests.has(logDefinitionId)) return globRequests.get(logDefinitionId)
+  const generation = globGeneration
+  const currentServiceId = serviceId.value
+  // 请求可能跨越服务切换或配置重载；旧结果不能写入新服务的缓存。
+  const request = previewApplicationServiceLogGlob(currentServiceId, logDefinitionId).then((response) => {
+    const result = response?.data?.data || {}
+    if (generation === globGeneration && currentServiceId === serviceId.value) {
+      globResults.value = { ...globResults.value, [logDefinitionId]: result }
+      return result
+    }
+    return null
+  }).finally(() => {
+    if (generation === globGeneration) globRequests.delete(logDefinitionId)
+  })
+  globRequests.set(logDefinitionId, request)
+  return request
+}
+
+async function searchRealFiles() {
+  if (!serviceId.value || fileSearchLoading.value || !matchRealFiles.value || !configFilters.path.trim()) return
+  const generation = globGeneration
+  const name = configFilters.name.trim().toLowerCase()
+  // 不按路径筛掉候选：模式不包含具体文件名，提前过滤会漏掉真正匹配的文件。
+  const rows = logRows.value.filter((row) => String(row.name || '').toLowerCase().includes(name))
+  fileSearchLoading.value = true
+  fileSearchCancelled.value = false
+  fileSearchDone.value = 0
+  fileSearchTotal.value = rows.length
+  fileSearchErrors.value = []
+  for (const row of rows) {
+    if (generation !== globGeneration) return
+    try {
+      const result = await loadGlobResult(row.log_definition)
+      if (generation !== globGeneration) return
+      for (const instance of result.instances || []) {
+        if (instance.error) fileSearchErrors.value.push(`${row.name} · ${instance.deployment_instance_name || instance.host_instance_name || '未知实例'}：${instance.error}`)
+      }
+      if (!result.instances?.length) fileSearchErrors.value.push(`${row.name}：没有承载实例，无处展开`)
+    } catch (error) {
+      if (generation !== globGeneration) return
+      fileSearchErrors.value.push(`${row.name}：${error?.response?.data?.msg || error?.message || '展开失败'}`)
+    }
+    fileSearchDone.value += 1
+  }
+  fileSearchLoading.value = false
+}
+
+const visibleLogRows = computed(() => {
+  const name = configFilters.name.trim().toLowerCase()
+  const path = configFilters.path.trim().toLowerCase()
+  return logRows.value.filter((row) => (
+    String(row.name || '').toLowerCase().includes(name)
+    && [row.path_pattern, row.resolved_path, ...(matchRealFiles.value ? (globResults.value[row.log_definition]?.instances || []).flatMap((instance) => instance.matches || []) : [])]
+      .some((value) => String(value || '').toLowerCase().includes(path))
+  ))
+})
+
+// 筛选隐藏的行不能继续参与批量操作，避免操作目标与用户当前看到的清单不一致。
+watch(visibleLogRows, (rows) => {
+  const visibleKeys = new Set(rows.map((row) => row.log_definition))
+  selectedLogKeys.value = selectedLogKeys.value.filter((key) => visibleKeys.has(key))
+}, { flush: 'sync' })
+
 // 勾选的行（顺序按表格顺序，提交时逐行带上它自己的覆盖值全集）。
 const selectedLogRows = computed(() => {
   const keys = new Set(selectedLogKeys.value)
-  return logRows.value.filter((row) => keys.has(row.log_definition))
+  return visibleLogRows.value.filter((row) => keys.has(row.log_definition))
 })
 
 // 行选择：表格这一列的键就是 log_definition，选中态只对当前服务的这批日志有效
@@ -1907,11 +2021,55 @@ const levelView = computed(() => (serviceId.value ? { dimension: null, rows: [] 
   businessSystems: levelBusinessSystems.value,
   services: levelServices.value,
   statusByService: levelStatusByService.value,
-  usageByService: levelUsageByService.value,
 })))
 
 const levelRows = computed(() => levelView.value.rows)
 const levelMetrics = computed(() => buildLevelMetrics(levelRows.value))
+
+// 跨服务日志查询的候选集：当前节点范围内的全部逻辑服务（与层级视图同一套收窄口径）。
+// 选中服务时为空——那是单服务检索，不需要候选。
+const queryCandidateServices = computed(() => (
+  serviceId.value ? [] : servicesUnderScope(scope.value, levelServices.value, levelBusinessSystems.value)
+))
+
+// 跨服务查询头部的层级路径（如 yilake / aos）：scope 里只带节点自己的名字，
+// 上级名由层级视图的名单反推。空数组 = 全部节点（不显示路径行，没有可说的上级）。
+const queryScopeTrail = computed(() => {
+  if (serviceId.value) return []
+  const current = scope.value
+  const system = current?.businessSystemId != null
+    ? levelBusinessSystems.value.find((item) => item.id === current.businessSystemId)
+    : null
+  const projectName = system ? levelProjects.value.find((project) => project.id === system.project)?.name : null
+  if (current?.nodeType === 'project') return [current.nodeTitle]
+  if (current?.nodeType === 'businessSystem') return [projectName, current.nodeTitle].filter(Boolean)
+  if (current?.nodeType === 'environment') {
+    return [projectName, current.businessSystemName || system?.name, current.environmentName].filter(Boolean)
+  }
+  return []
+})
+
+// 跨服务查询的维度列名称映射（编码 → 名称）：项目/业务系统来自层级视图已拉的两份名单，
+// 环境单独拉一次全量（环境不挂在业务系统下，编码全局唯一，一份映射全局可用）。
+const queryDimensionNames = computed(() => {
+  const projects = {}
+  for (const project of levelProjects.value) projects[project.code] = project.name
+  const businessSystems = {}
+  for (const system of levelBusinessSystems.value) businessSystems[system.code] = system.name
+  return { projects, businessSystems, environments: queryEnvironmentNames.value }
+})
+const queryEnvironmentNames = ref({})
+
+async function loadQueryEnvironmentNames() {
+  if (Object.keys(queryEnvironmentNames.value).length) return
+  try {
+    const rows = await fetchAllPages(getBusinessEnvironmentList, { enabled: true })
+    queryEnvironmentNames.value = Object.fromEntries(rows.map((row) => [row.code, row.name]))
+  } catch (error) {
+    // 名称映射只是显示优化：取不到就显示编码，不阻塞查询。
+    console.warn('[log_center] 读取环境名单失败', error?.response?.data?.msg || error?.message)
+  }
+}
 
 // 下钻 = 换 scope：左树的选中态本来就是按回传的 scope 反推的（ServiceTree 的 scopeKey），
 // 所以这里只要把 scope 指过去，树的高亮会自动跟上，不需要另外通知树。
@@ -1927,7 +2085,6 @@ async function loadLevelView() {
     levelBusinessSystems.value = []
     levelServices.value = []
     levelStatusByService.value = {}
-    levelUsageByService.value = {}
     levelPendingError.value = ''
     return
   }
@@ -1942,10 +2099,8 @@ async function loadLevelView() {
     levelProjects.value = projects
     levelBusinessSystems.value = businessSystems
     levelServices.value = services
+    await loadQueryEnvironmentNames()
     await loadLevelStatus()
-    // 「最近写入」只有环境层有（接口按 业务系统 × 环境 聚合）——它是列表里的一个提示列，
-    // 不值得为它把上层的每次下钻都变成一次 ES 查询，所以只在这一层取。
-    await loadLevelUsage()
   } catch (error) {
     // 不静默：清单空着与"这个范围没有服务"在界面上都是空表格。
     levelServices.value = []
@@ -1969,30 +2124,6 @@ async function loadLevelStatus() {
   levelStatusByService.value = Object.fromEntries((data.items || []).map((item) => [item.service_id, item]))
   // 配置态算不出来时后端给 pending_error（且每项的 pending 为 null）——界面显示"-"而不是 0。
   levelPendingError.value = data.pending_error || ''
-}
-
-// 最近写入（仅环境层）：getLogServiceUsage 按 (业务系统, 环境) 聚合各服务的文档数，
-// 返回的 items 里 service 是**服务编码**，所以按编码对齐（同一 (业务系统, 环境) 内编码唯一）。
-async function loadLevelUsage() {
-  levelUsageByService.value = {}
-  const current = scope.value
-  if (current?.nodeType !== 'environment' || !current.environment || !current.businessSystemId) return
-  try {
-    const clusters = await getElasticsearchClusterList({ page_size: 1 })
-    const clusterId = clusters?.data?.data?.results?.[0]?.id
-    if (!clusterId) return
-    const response = await getLogServiceUsage(clusterId, {
-      business_system: current.businessSystemId,
-      environment: current.environment,
-      days: 30,
-    })
-    const items = response?.data?.data?.items || []
-    levelUsageByService.value = Object.fromEntries(items.map((item) => [item.service, item.docs]))
-  } catch (error) {
-    // 只是提示列：取不到就不显示（显示"-"），不打断整层视图。
-    levelUsageByService.value = {}
-    console.warn('[log_center] 读取服务写入量失败', error?.response?.data?.msg || error?.message)
-  }
 }
 
 // ── 配置差异（「查看配置差异」） ─────────────────────────────────────────────
@@ -2051,6 +2182,7 @@ async function loadConfigDiff(targetId) {
 }
 
 async function loadLogConfig() {
+  resetGlobResults()
   if (!serviceId.value) {
     logRows.value = []
     return
@@ -2328,7 +2460,10 @@ const storageSummary = computed(() => {
 
 // 切服务：日志配置立刻读（页面主体），水位留到切到那个 tab 再读（一次 ES 调用）。
 watch(serviceId, async () => {
+  resetGlobResults()
   verifyDialogVisible.value = false
+  configFilters.name = ''
+  configFilters.path = ''
   // 勾选的日志是**上一条服务**的日志定义，换服务必须清掉：留着的话批量请求会带着
   // 别的服务的行，被后端逐条拒绝（ok=false），看起来像"批量保存坏了"。
   clearLogSelection()
@@ -2393,7 +2528,15 @@ getLogRetentionTiers({ page_size: 100 })
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 12px;
-  height: 100%;
+}
+/* 长日志列表随页面滚动，服务树保持可见；仅覆盖本页，避免影响其他资产页。 */
+.log-center > :deep(.service-tree) {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  height: calc(100dvh - 24px);
+  min-height: 0;
+  overscroll-behavior-y: contain;
 }
 .log-center-content {
   min-width: 0;
@@ -2411,6 +2554,28 @@ getLogRetentionTiers({ page_size: 100 })
 .log-center-title {
   font-size: 14px;
   font-weight: 500;
+}
+.config-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.config-filter-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.config-filter-field :deep(.ant-input-affix-wrapper) {
+  width: 100%;
+  min-width: 0;
+}
+.config-filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .apply-bar {
   display: flex;

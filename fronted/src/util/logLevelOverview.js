@@ -134,6 +134,27 @@ function servicesInBusinessSystem(services, businessSystemId) {
   return services.filter((service) => service.business_system === businessSystemId)
 }
 
+// servicesUnderScope 某个树节点范围内的全部逻辑服务（跨服务日志检索的范围候选集）。
+// 与 buildLevelRows 的折叠口径同源（同一批 services、同一套收窄函数），保证
+// "层级视图里列出的服务"与"查询 tab 的服务下拉候选"一致。
+export function servicesUnderScope(scope, services = [], businessSystems = []) {
+  if (!scope) return []
+  if (scope.nodeType === 'service' || scope.nodeType === 'deployment') {
+    return services.filter((service) => service.id === scope.applicationServiceId)
+  }
+  if (scope.nodeType === 'environment') return servicesInEnvironment(services, scope)
+  if (scope.nodeType === 'businessSystem') return servicesInBusinessSystem(services, scope.businessSystemId)
+  if (scope.nodeType === 'project') {
+    // 项目层：服务行上没有项目字段，经业务系统折一层（与 servicesUnder 的 project 分支同口径）。
+    // **不能走 businessSystem 分支**：项目 scope 上没有 businessSystemId，会漏收窄返回全部服务。
+    const systemIds = new Set(
+      businessSystems.filter((system) => system.project === scope.projectId).map((system) => system.id),
+    )
+    return services.filter((service) => systemIds.has(service.business_system))
+  }
+  return services
+}
+
 // businessSystemsInProject 项目的业务系统归属以**业务系统行上的 project 字段**为准。
 // 别用"这个项目下有没有服务"反推：那样没建服务的业务系统会整行消失（它们在层级视图里必须可见，
 // 否则用户看到的是"这个项目什么都没有"，而实际是"业务系统建了但还没建服务"）。

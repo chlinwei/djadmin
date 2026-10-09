@@ -3,12 +3,17 @@ import Antd from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
+  previewApplicationServiceLogGlob: vi.fn(),
   // 层级视图（非服务节点）要用的三份名单 + 多服务日志状态汇总。
   getProjectList: vi.fn(() => Promise.resolve({ data: { data: { results: [
     { id: 301, name: '订单项目' },
   ], count: 1, totalPages: 1 } } })),
   getBusinessSystemList: vi.fn(() => Promise.resolve({ data: { data: { results: [
-    { id: 7, name: '订单系统', project: 301 },
+    { id: 7, code: 'tib', name: '订单系统', project: 301 },
+  ], count: 1, totalPages: 1 } } })),
+  // 跨服务查询的维度列名称映射需要环境名单（编码 → 名称）。
+  getBusinessEnvironmentList: vi.fn(() => Promise.resolve({ data: { data: { results: [
+    { id: 10, code: 'poc', name: 'poc' },
   ], count: 1, totalPages: 1 } } })),
   getApplicationServiceList: vi.fn(() => Promise.resolve({ data: { data: { results: [
     { id: 15, code: 'nginx', name: 'nginx', business_system: 7, environment: 10, environment_name: 'poc', log_collection_enabled: true, log_retention_tier_id: 3 },
@@ -188,7 +193,7 @@ async function mountPage() {
       stubs: {
         // 树与查询面板各有一整套自己的数据流与 spec，这里只验证本页的接线（scope → 各 tab 的数据）。
         ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change'], template: '<div class="stub-tree" />' },
-        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope'], template: '<div class="stub-query-panel" />' },
+        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope', 'candidateServices', 'dimensionNames', 'scopeTrail'], template: '<div class="stub-query-panel" />' },
         LogFormatVerifyDialog: { name: 'LogFormatVerifyDialog', props: ['open', 'serviceId', 'target', 'targets', 'deploymentOptions'], template: '<div class="stub-verify" />' },
         // echarts 在 jsdom 里没有真实 canvas：只验证 option 接线（option 的构造另有纯函数单测）。
         StorageUsagePie: { name: 'StorageUsagePie', props: ['option'], template: '<div class="stub-pie" />' },
@@ -276,6 +281,109 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     // 档位列是下拉：显示当前档位名。
     expect(wrapper.find('.ant-select-selection-item').text()).toBe('标准 30 天')
     expect(document.body.textContent).toContain('autoadmin-yilake-tib-poc-nginx-wuhan-test')
+    wrapper.unmount()
+  })
+
+  it('filters service log config by name and both path forms without retaining hidden selections', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'config'
+    wrapper.vm.logRows = configWithTwoLogs().logs.map((row) => ({
+      ...row, path_pattern: '${APP_HOME}/logs/' + row.name,
+    }))
+    await flushPromises()
+    const inputs = wrapper.findAll('.config-filter-field input')
+    expect(inputs).toHaveLength(2)
+    wrapper.vm.selectedLogKeys = [81, 82]
+    await inputs[0].setValue(' ACCESS ')
+    expect(wrapper.vm.visibleLogRows.map((row) => row.log_definition)).toEqual([81])
+    expect(wrapper.vm.selectedLogKeys).toEqual([81])
+    await inputs[1].setValue('/SRV/TOMCAT')
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    await inputs[1].setValue('${APP_HOME}')
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    await inputs[1].setValue('error.log')
+    expect(wrapper.vm.visibleLogRows).toHaveLength(0)
+    expect(wrapper.vm.selectedLogKeys).toEqual([])
+    await inputs[0].setValue('')
+    expect(wrapper.vm.visibleLogRows.map((row) => row.log_definition)).toEqual([82])
+    await inputs[1].setValue('')
+    expect(wrapper.vm.visibleLogRows).toHaveLength(2)
+    wrapper.vm.configFilters.name = 'missing'
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { ...serviceScope, applicationServiceId: 16 })
+    await flushPromises()
+    expect(wrapper.vm.configFilters).toEqual({ name: '', path: '' })
+    wrapper.unmount()
+  })
+
+  it('searches real files explicitly and retains cached matches across filtering', async () => {
+    const { previewApplicationServiceLogGlob } = await import('@/api/assets/application')
+    previewApplicationServiceLogGlob.mockResolvedValue({ data: { data: { instances: [
+      { deployment_instance_name: 'node-a', matches: ['/logs/real-error.log'] },
+      { deployment_instance_name: 'node-b', error: 'agent offline', matches: [] },
+    ] } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'config'
+    wrapper.vm.logRows = [{ ...configWithTwoLogs().logs[0], resolved_path: '/logs/*.log' }]
+    wrapper.vm.configFilters.path = 'real-error'
+    await flushPromises()
+    expect(wrapper.vm.visibleLogRows).toHaveLength(0)
+    expect(previewApplicationServiceLogGlob).not.toHaveBeenCalled()
+    await wrapper.vm.searchRealFiles()
+    await flushPromises()
+    expect(previewApplicationServiceLogGlob).toHaveBeenCalledWith(15, 81)
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    expect(wrapper.vm.fileSearchDone).toBe(1)
+    expect(wrapper.vm.fileSearchErrors.join(' ')).toContain('agent offline')
+    wrapper.vm.configFilters.path = 'absent'
+    await flushPromises()
+    wrapper.vm.configFilters.path = 'REAL-ERROR'
+    await flushPromises()
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    await wrapper.vm.searchRealFiles()
+    expect(previewApplicationServiceLogGlob).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('can disable real-file matching without losing cached results', async () => {
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.activeTab = 'config'
+    wrapper.vm.configFilters.path = 'real-error'
+    wrapper.vm.globResults = { 81: { instances: [{ matches: ['/logs/real-error.log'] }] } }
+    await flushPromises()
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    await wrapper.find('.config-filter-actions input[type="checkbox"]').setValue(false)
+    expect(wrapper.vm.visibleLogRows).toHaveLength(0)
+    expect(wrapper.vm.globResults[81]).toBeDefined()
+    await wrapper.find('.config-filter-actions input[type="checkbox"]').setValue(true)
+    expect(wrapper.vm.visibleLogRows).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('cancels real-file search immediately and ignores late results', async () => {
+    const { previewApplicationServiceLogGlob } = await import('@/api/assets/application')
+    let completeRequest
+    previewApplicationServiceLogGlob.mockImplementationOnce(() => new Promise((resolve) => { completeRequest = resolve }))
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+    wrapper.vm.logRows = configWithTwoLogs().logs
+    wrapper.vm.configFilters.path = 'real-error'
+    const pending = wrapper.vm.searchRealFiles()
+    expect(wrapper.vm.fileSearchLoading).toBe(true)
+    wrapper.vm.cancelFileSearch()
+    expect(wrapper.vm.fileSearchLoading).toBe(false)
+    expect(wrapper.vm.fileSearchCancelled).toBe(true)
+    completeRequest({ data: { data: { instances: [{ matches: ['/logs/real-error.log'] }] } } })
+    await pending
+    expect(previewApplicationServiceLogGlob).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.globResults).toEqual({})
+    expect(wrapper.vm.fileSearchDone).toBe(0)
     wrapper.unmount()
   })
 
@@ -1355,9 +1463,9 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
-  // 环境层的「最近写入」来自 getLogServiceUsage（按服务编码聚合），窗口与列标题一致（30 天）。
-  it('fills the recent write column of the environment level from the usage aggregation', async () => {
-    const { getLogServiceUsage } = await import('@/api/monitor')
+  // 环境层（逻辑服务的上一层）的查询 tab = 跨服务检索面板：候选集是该环境下的全部服务，
+  // 可多选一起查（2026-09-28 起，替代原先"点行进入单个服务"的层级清单）。
+  it('offers cross-service search with the environment-level candidates', async () => {
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
       nodeType: 'environment', businessSystemId: 7, businessSystemName: '订单系统',
@@ -1365,10 +1473,10 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     })
     await flushPromises()
 
-    expect(getLogServiceUsage).toHaveBeenCalledWith(1, { business_system: 7, environment: 10, days: 30 })
-    expect(document.body.textContent).toContain('最近 30 天写入')
-    // 2,600 条（nginx 服务编码上的聚合值）。
-    expect(document.body.textContent).toContain('2,600 条')
+    expect(wrapper.vm.queryCandidateServices.map((service) => service.id)).toEqual([15, 16])
+    const panel = wrapper.findComponent({ name: 'LogQueryPanel' })
+    expect(panel.props('candidateServices')).toEqual(wrapper.vm.queryCandidateServices)
+    expect(panel.props('scope').nodeType).toBe('environment')
     wrapper.unmount()
   })
 

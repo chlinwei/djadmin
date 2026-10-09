@@ -3,6 +3,8 @@ package logcollect
 import (
 	"testing"
 
+	db "autoadmin/internal/platform/database/generated"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -83,5 +85,60 @@ func TestKeywordQueryTruncatesLongInput(t *testing.T) {
 	queryString := (*clause)["query_string"].(gin.H)
 	if got := len(queryString["query"].(string)); got != 500 {
 		t.Fatalf("query 长度 = %d，want 500", got)
+	}
+}
+
+// 跨服务检索（2026-09-28）：范围过滤必须是"每个服务一个四元组子句 + 任一命中"，
+// 且服务编码跨业务重复时靠 project/business_system/environment 区分（见 000044）。
+func TestMultiServiceScopeFilter(t *testing.T) {
+	dimsList := []db.ListApplicationServiceStreamDimsByIDsRow{
+		{ID: 1, ServiceCode: "nginx", ProjectCode: "yilake", BusinessSystemCode: "tib", EnvironmentCode: "poc"},
+		{ID: 2, ServiceCode: "nginx", ProjectCode: "yilake", BusinessSystemCode: "cdm", EnvironmentCode: "prod"},
+	}
+	filter := multiServiceScopeFilter(dimsList)
+	boolFilter, ok := filter["bool"].(gin.H)
+	if !ok {
+		t.Fatalf("顶层应是 bool")
+	}
+	should, _ := boolFilter["should"].([]any)
+	if len(should) != 2 {
+		t.Fatalf("每个服务一个子句，得到 %d", len(should))
+	}
+	if boolFilter["minimum_should_match"] != 1 {
+		t.Fatalf("必须 minimum_should_match=1（任一命中即在范围内）")
+	}
+	first, _ := should[0].(gin.H)["bool"].(gin.H)["filter"].([]any)
+	if len(first) != 4 {
+		t.Fatalf("每个子句按四元组过滤（service/project/business_system/environment），得到 %d 项", len(first))
+	}
+}
+
+func TestParseIDList(t *testing.T) {
+	ids := parseIDList(" 1, 2,2,abc,3 ")
+	if len(ids) != 3 || ids[0] != 1 || ids[2] != 3 {
+		t.Fatalf("parseIDList 应去重/忽略非法段并保序，得到 %v", ids)
+	}
+	if len(parseIDList("")) != 0 || len(parseIDList(",,x")) != 0 {
+		t.Fatalf("空/非法输入应返回空列表")
+	}
+}
+
+// 上层节点的"概览优先"（2026-09-28）：facets 必须能按 逻辑服务/业务系统/环境/项目 分组，
+// 且这些维度都要能作为过滤条件下钻（buildLogQuery 的白名单）。
+func TestFacetAllowedFieldsCoverRangeDimensions(t *testing.T) {
+	for _, field := range []string{"service", "project", "business_system", "environment"} {
+		if !logFacetAllowedFields[field] {
+			t.Fatalf("facet 白名单缺范围维度 %s（概览页将无法按它分组）", field)
+		}
+	}
+}
+
+// 日志路径维度映射到运行时字段。
+func TestFacetAggField(t *testing.T) {
+	if facetAggField("log_path") != logPathRuntimeField {
+		t.Fatalf("log_path 应用运行时字段聚合")
+	}
+	if facetAggField("service") != "service" || facetAggField("") != "" {
+		t.Fatalf("普通字段原样、空字段返回空串")
 	}
 }

@@ -312,6 +312,7 @@ type ListAlertNotificationDeliveriesRow = postgres.ListAlertNotificationDeliveri
 type ListAllHostGroupsRow = postgres.ListAllHostGroupsRow
 type ListApplicationDeploymentsParams = postgres.ListApplicationDeploymentsParams
 type ListApplicationDeploymentsRow = postgres.ListApplicationDeploymentsRow
+type ListApplicationServiceStreamDimsByIDsRow = postgres.ListApplicationServiceStreamDimsByIDsRow
 type ListApplicationServicesByTemplateRow = postgres.ListApplicationServicesByTemplateRow
 type ListApplicationServicesParams = postgres.ListApplicationServicesParams
 type ListApplicationServicesRow = postgres.ListApplicationServicesRow

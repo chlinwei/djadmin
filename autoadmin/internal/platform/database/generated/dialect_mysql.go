@@ -324,6 +324,7 @@ type ListAlertNotificationDeliveriesRow = mysql.ListAlertNotificationDeliveriesR
 type ListAllHostGroupsRow = mysql.ListAllHostGroupsRow
 type ListApplicationDeploymentsParams = mysql.ListApplicationDeploymentsParams
 type ListApplicationDeploymentsRow = mysql.ListApplicationDeploymentsRow
+type ListApplicationServiceStreamDimsByIDsRow = mysql.ListApplicationServiceStreamDimsByIDsRow
 type ListApplicationServicesByTemplateRow = mysql.ListApplicationServicesByTemplateRow
 type ListApplicationServicesParams = mysql.ListApplicationServicesParams
 type ListApplicationServicesRow = mysql.ListApplicationServicesRow

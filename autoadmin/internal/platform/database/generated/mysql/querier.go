@@ -604,6 +604,11 @@ type Querier interface {
 	ListAlertNotificationEvents(ctx context.Context, alertID int64) ([]MonitorAlertNotificationEvent, error)
 	ListAllHostGroups(ctx context.Context) ([]ListAllHostGroupsRow, error)
 	ListApplicationDeployments(ctx context.Context, arg ListApplicationDeploymentsParams) ([]ListApplicationDeploymentsRow, error)
+	// 批量取多个逻辑服务的流名维度码（日志中心的**跨服务日志检索**，2026-09-28）：
+	// 业务系统/环境等上层节点查日志时，前端传 application_service_ids（逗号分隔），
+	// 检索按"每个服务的 (service, project, business_system, environment) 四元组"收窄——
+	// 服务编码允许跨业务/环境重复（迁移 000044），单看 service 一个字段会串数据。
+	ListApplicationServiceStreamDimsByIDs(ctx context.Context, ids []int64) ([]ListApplicationServiceStreamDimsByIDsRow, error)
 	ListApplicationServices(ctx context.Context, arg ListApplicationServicesParams) ([]ListApplicationServicesRow, error)
 	// 模板的承载服务清单（日志处理规则页「影响服务数」弹窗）：项目名经 business_system → project 反查。
 	ListApplicationServicesByTemplate(ctx context.Context, deploymentTemplateID int64) ([]ListApplicationServicesByTemplateRow, error)

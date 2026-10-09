@@ -14,7 +14,7 @@ vi.mock('@/api/monitor', () => ({
   })),
   getLogProcessingRules: vi.fn(() => Promise.resolve({
     data: { data: { results: [
-      { id: 1, name: 'springboot-tomcat-exception', application: 5, input_format: 'text', multiline_enabled: true, pipeline_body: { processors: [] } },
+      { id: 1, name: 'springboot-tomcat-exception', description: '- /logs/mqif_RS.log\n- /logs/mqif_SS1.log', application: 5, input_format: 'text', multiline_enabled: true, pipeline_body: { processors: [] } },
       { id: 2, name: 'redis.log', application: 8, input_format: 'text', multiline_enabled: false, pipeline_body: { processors: [] } },
       { id: 3, name: 'common-error', application: null, input_format: 'text', multiline_enabled: false, pipeline_body: { processors: [] } },
     ] } },
@@ -89,6 +89,16 @@ describe('日志处理规则：左侧应用筛选', () => {
     expect(applicationLabels(wrapper)).toEqual([
       '全部规则', 'Tomcat', 'Redis', '中间件', '通用（不限应用）',
     ])
+    wrapper.unmount()
+  })
+
+  it('说明保留多行路径的换行且长路径可折行', async () => {
+    const wrapper = await mountPage()
+    const description = wrapper.findAll('.ant-table-tbody span').find((node) =>
+      node.element.textContent === '- /logs/mqif_RS.log\n- /logs/mqif_SS1.log')
+    expect(description).toBeDefined()
+    expect(description.element.style.whiteSpace).toBe('pre-wrap')
+    expect(description.element.style.overflowWrap).toBe('anywhere')
     wrapper.unmount()
   })
 

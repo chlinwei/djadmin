@@ -90,7 +90,7 @@ func TestPreviewLogGlobReturnsMatches(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).WillReturnRows(
 		sqlmock.NewRows(logFormatDefinitionColumns()).AddRow(
 			int64(24), "error.log", "/home/esb/data/logs/*/log_error.log", sql.NullInt64{Int64: 7, Valid: true},
-			"nginx 规则", time.Date(2026, 9, 19, 1, 2, 3, 0, time.UTC), int64(3), sql.NullInt64{},
+			"nginx 规则", "plain", false, "", "", uint32(2000), []byte(passingPipelineBody), int64(3), sql.NullInt64{},
 			nil, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
 			[]byte(`[]`),

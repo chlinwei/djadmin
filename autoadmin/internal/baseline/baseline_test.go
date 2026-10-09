@@ -450,6 +450,75 @@ func itemTestContext(method, path string, body any) (*gin.Context, *httptest.Res
 	return context, recorder
 }
 
+func TestMoveBaselineItem(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		direction string
+		itemID    int64
+		baseline  int64
+		wantCode  int
+		failWrite bool
+	}{
+		{name: "up", direction: "up", itemID: 89, baseline: 7, wantCode: 200},
+		{name: "down", direction: "down", itemID: 88, baseline: 7, wantCode: 200},
+		{name: "first", direction: "up", itemID: 88, baseline: 7, wantCode: 400},
+		{name: "last", direction: "down", itemID: 89, baseline: 7, wantCode: 400},
+		{name: "invalid direction", direction: "left", itemID: 88, baseline: 7, wantCode: 400},
+		{name: "foreign baseline", direction: "up", itemID: 89, baseline: 8, wantCode: 404},
+		{name: "write failure rolls back", direction: "down", itemID: 88, baseline: 7, failWrite: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			mock.ExpectQuery("FROM baseline_item i").
+				WithArgs(testCase.itemID).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "baseline_id", "category_id", "category", "sort", "name", "description", "config", "severity"}).
+					AddRow(testCase.itemID, testCase.baseline, 3, "类目", 0, "策略", "", opaItemConfigBytes(), "high"))
+			if testCase.baseline == 7 && testCase.direction != "left" {
+				mock.ExpectBegin()
+				// 重复 sort 仍须改变顺序；另一类目的条目不得被修改或作为移动目标。
+				mock.ExpectQuery("SELECT id, category_id, sort FROM baseline_item").
+					WithArgs(int64(7)).
+					WillReturnRows(sqlmock.NewRows([]string{"id", "category_id", "sort"}).
+						AddRow(88, 3, 0).AddRow(89, 3, 0).AddRow(90, 4, 0))
+				if testCase.wantCode == 200 || testCase.failWrite {
+					mock.ExpectExec("UPDATE baseline_item SET sort").
+						WithArgs(uint32(0), sqlmock.AnyArg(), int64(89)).
+						WillReturnResult(sqlmock.NewResult(0, 1))
+					second := mock.ExpectExec("UPDATE baseline_item SET sort").
+						WithArgs(uint32(1), sqlmock.AnyArg(), int64(88))
+					if testCase.failWrite {
+						second.WillReturnError(fmt.Errorf("sort write failed"))
+						mock.ExpectRollback()
+					} else {
+						second.WillReturnResult(sqlmock.NewResult(0, 1))
+						mock.ExpectCommit()
+					}
+				} else {
+					mock.ExpectRollback()
+				}
+			}
+			ctx, recorder := itemTestContext("PATCH", "/sys/security/baseline/7/items/88/", map[string]any{"direction": testCase.direction})
+			ctx.Params = gin.Params{{Key: "id", Value: "7"}, {Key: "itemId", Value: fmt.Sprint(testCase.itemID)}}
+			(&Handler{db: database}).UpdateBaselineItem(ctx)
+			code := decodeResponse(t, recorder)["code"]
+			if testCase.failWrite {
+				if code == float64(200) {
+					t.Fatalf("write failure reported success: %s", recorder.Body.String())
+				}
+			} else if code != float64(testCase.wantCode) {
+				t.Fatalf("code = %v, want %d: %s", code, testCase.wantCode, recorder.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestAddBaselineItemInsertShape(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	if err != nil {

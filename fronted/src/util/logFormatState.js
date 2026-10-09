@@ -25,7 +25,7 @@ export function formatStateTooltip(record) {
     return `${verifiedAt}（依据：${record.format_verified_source || '未知'}）。配置指纹未变，不需要再检查。`
   }
   if (record.format_state === 'needs_recheck') {
-    return `${verifiedAt}，但格式指纹已变化（模板日志定义/解析规则/服务宏/应用版本有改动）→ 需要重新抽样验证。`
+    return `${verifiedAt}，但格式指纹已变化（模板日志定义/实际解析配置/服务宏/应用版本有改动）→ 需要重新抽样验证。修改规则描述、备注或原样保存不会触发重新验证。`
   }
   return '尚未验证这条日志的格式能否被模板上的解析规则解析出必备字段（log_level / log_message / error_fingerprint）。'
     + '没验证就采集属于静默坏数据：日志查得到，但级别/消息列为空、关键词搜不到、错误清单失效。'

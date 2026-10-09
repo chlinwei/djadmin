@@ -658,6 +658,8 @@ type Querier interface {
 	ListAutomationPlaybooks(ctx context.Context, arg ListAutomationPlaybooksParams) ([]AutomationPlaybookTemplate, error)
 	// ---- 类目（策略分组实体，迁移 000011 起）----
 	ListBaselineCategories(ctx context.Context, baselineID int64) ([]ListBaselineCategoriesRow, error)
+	// 移动时锁定基线策略，按当前顺序在应用层定位同类目相邻项。
+	ListBaselineItemOrderForUpdate(ctx context.Context, baselineID int64) ([]ListBaselineItemOrderForUpdateRow, error)
 	ListBaselineItems(ctx context.Context, baselineID int64) ([]ListBaselineItemsRow, error)
 	// 明细排序：原来用 FIELD(status,'fail','pass')（MySQL 专有），改成等价的 CASE 表达式，
 	// 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。
@@ -871,7 +873,7 @@ type Querier interface {
 	//   - **解析规则只有模板一处**（ld.processing_rule_id，服务侧只读展示），
 	//     服务不再有 processing_rule_id（迁移 000035 删列）。规则名一并带出来给弹窗只读展示；
 	//   - 日志格式认证（迁移 000036）：ls.format_verified_* 是上一次认证的结果，
-	//     与这里同时带出的"指纹输入"（规则 update_time、服务宏、应用版本）在应用层比对，
+	//     与这里同时带出的"指纹输入"（规则解析配置、服务宏、应用版本）在应用层比对，
 	//     得出 format_state（verified / needs_recheck / unverified）。
 	ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error)
 	ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error)
@@ -984,6 +986,7 @@ type Querier interface {
 	UpdateBaseline(ctx context.Context, arg UpdateBaselineParams) error
 	UpdateBaselineCategorySort(ctx context.Context, arg UpdateBaselineCategorySortParams) (int64, error)
 	UpdateBaselineItem(ctx context.Context, arg UpdateBaselineItemParams) (int64, error)
+	UpdateBaselineItemSort(ctx context.Context, arg UpdateBaselineItemSortParams) (int64, error)
 	UpdateBusinessEnvironment(ctx context.Context, arg UpdateBusinessEnvironmentParams) error
 	UpdateBusinessSystem(ctx context.Context, arg UpdateBusinessSystemParams) error
 	UpdateClusterProfile(ctx context.Context, arg UpdateClusterProfileParams) error

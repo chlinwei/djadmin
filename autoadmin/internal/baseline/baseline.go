@@ -41,6 +41,7 @@ func NewHandler(database *sql.DB, gateway *agent.Gateway) *Handler {
 }
 
 type baselineItemInput struct {
+	Direction   string          `json:"direction"`
 	CategoryID  int64           `json:"category_id"`
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -547,6 +548,10 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 		response.BusinessError(context, 404, "策略不存在", nil)
 		return
 	}
+	if input.Direction != "" {
+		handler.moveBaselineItem(context, baselineID, itemID, input.Direction)
+		return
+	}
 	severity, message, infraErr := handler.validateItemPayload(context, baselineID, input.CategoryID, input.Name, input.Config, input.Severity)
 	if infraErr != nil {
 		response.Error(context, infraErr)
@@ -560,6 +565,67 @@ func (handler *Handler) UpdateBaselineItem(context *gin.Context) {
 		CategoryID: input.CategoryID, Name: strings.TrimSpace(input.Name), Description: input.Description,
 		Config: input.Config, Severity: severity, UpdateTime: time.Now().UTC(), ID: itemID,
 	}); err != nil {
+		response.Error(context, err)
+		return
+	}
+	response.Success(context, gin.H{"id": itemID})
+}
+
+func (handler *Handler) moveBaselineItem(context *gin.Context, baselineID, itemID int64, direction string) {
+	if direction != "up" && direction != "down" {
+		response.BusinessError(context, 400, "direction 必须为 up/down", nil)
+		return
+	}
+	tx, err := handler.db.BeginTx(context, nil)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	defer tx.Rollback()
+	queries := db.New(tx)
+	// 锁定后重新定位策略，避免并发移动或类目调整导致使用过期的相邻关系。
+	rows, err := queries.ListBaselineItemOrderForUpdate(context, baselineID)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	self := -1
+	for index, row := range rows {
+		if row.ID == itemID {
+			self = index
+			break
+		}
+	}
+	if self < 0 {
+		response.BusinessError(context, 404, "策略不存在", nil)
+		return
+	}
+	neighbor := self - 1
+	if direction == "down" {
+		neighbor = self + 1
+	}
+	if neighbor < 0 || neighbor >= len(rows) || rows[neighbor].CategoryID != rows[self].CategoryID {
+		response.BusinessError(context, 400, "策略已在类目边界，无法移动", nil)
+		return
+	}
+	categoryID := rows[self].CategoryID
+	rows[self], rows[neighbor] = rows[neighbor], rows[self]
+	now := time.Now().UTC()
+	// 重新编号同类目策略，确保旧数据存在重复 sort 时移动也能真正改变顺序。
+	var sort uint32
+	for _, row := range rows {
+		if row.CategoryID != categoryID {
+			continue
+		}
+		if _, err := queries.UpdateBaselineItemSort(context, db.UpdateBaselineItemSortParams{
+			Sort: sort, UpdateTime: now, ID: row.ID,
+		}); err != nil {
+			response.Error(context, err)
+			return
+		}
+		sort++
+	}
+	if err := tx.Commit(); err != nil {
 		response.Error(context, err)
 		return
 	}

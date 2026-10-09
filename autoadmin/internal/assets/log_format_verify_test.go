@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,9 @@ var testRuleUpdatedAt = time.Date(2026, 9, 19, 1, 2, 3, 456000000, time.UTC)
 func serviceTemplateLogColumns() []string {
 	return []string{
 		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
-		"processing_rule_update_time", "application_version_id", "retention_tier_id",
+		"processing_rule_input_format", "processing_rule_multiline_enabled", "processing_rule_start_pattern",
+		"processing_rule_continuation_pattern", "processing_rule_flush_timeout", "processing_rule_pipeline_body",
+		"application_version_id", "retention_tier_id",
 		"override_collection_enabled", "collection_filter_rule_id", "collection_exclude_filter_rule_id",
 		// 服务级后处理器（2026-09-28）：本套测试统一返回未启用（[]）。
 		"extra_processors",
@@ -43,14 +46,22 @@ func serviceTemplateLogColumns() []string {
 func currentLogFingerprint() string {
 	return logFormatFingerprintOf(logFormatFingerprintInput{
 		LogDefinition: 24, LogName: "error.log", PathPattern: "${APP_HOME}/nginx/logs/error.log",
-		RuleID: 7, RuleUpdatedAt: testRuleUpdatedAt, MacroValues: "{}", ApplicationVersion: 3,
+		RuleID: 7, RuleParsingSignature: testLogRuleSignature(), MacroValues: "{}", ApplicationVersion: 3,
 	})
 }
 
 func addServiceTemplateLogRow(rows *sqlmock.Rows, stored sql.NullString) *sqlmock.Rows {
+	return addServiceTemplateLogRowWithRule(rows, stored, "nginx 规则", logFormatRuleInput{
+		InputFormat: "plain", FlushTimeout: 2000, PipelineBody: []byte(`{"processors":[]}`),
+	})
+}
+
+func addServiceTemplateLogRowWithRule(rows *sqlmock.Rows, stored sql.NullString, ruleName string, rule logFormatRuleInput) *sqlmock.Rows {
 	return rows.AddRow(
 		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
-		"nginx 规则", testRuleUpdatedAt, int64(3), sql.NullInt64{}, nil, sql.NullInt64{},
+		ruleName, rule.InputFormat, rule.MultilineEnabled, rule.StartPattern, rule.ContinuationPattern,
+		rule.FlushTimeout, rule.PipelineBody,
+		int64(3), sql.NullInt64{}, nil, sql.NullInt64{},
 		// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
 		sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
 		[]byte(`[]`),
@@ -58,6 +69,70 @@ func addServiceTemplateLogRow(rows *sqlmock.Rows, stored sql.NullString) *sqlmoc
 		"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
 		[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
 	)
+}
+
+func TestListServiceTemplateLogsUsesRuleBehavior(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		ruleName string
+		body     string
+		want     string
+		wantErr  bool
+	}{
+		{"原样保存", "nginx 规则", `{"processors":[]}`, formatStateVerified, false},
+		{"名称和描述变化", "修改后的规则名称", `{"description":"只改描述","processors":[]}`, formatStateVerified, false},
+		{"仅 JSON 排版变化", "nginx 规则", "{\n \"processors\": []\n}", formatStateVerified, false},
+		{"解析逻辑变化", "nginx 规则", `{"processors":[{"drop":{}}]}`, formatStateNeedsRecheck, false},
+		{"无效配置不生成默认指纹", "nginx 规则", `{`, "", true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+				WithArgs(int64(15)).
+				WillReturnRows(addServiceTemplateLogRowWithRule(
+					sqlmock.NewRows(serviceTemplateLogColumns()),
+					sql.NullString{String: currentLogFingerprint(), Valid: true},
+					testCase.ruleName,
+					logFormatRuleInput{InputFormat: "plain", FlushTimeout: 2000, PipelineBody: []byte(testCase.body)},
+				))
+			items, err := NewRepository(database).ListServiceTemplateLogs(context.Background(), 15)
+			if testCase.wantErr {
+				if err == nil || items != nil {
+					t.Fatalf("无效规则应明确返回错误，items=%v err=%v", items, err)
+				}
+			} else if err != nil || len(items) != 1 || items[0].FormatState != testCase.want {
+				t.Fatalf("items=%v err=%v, want %s", items, err, testCase.want)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestLogFormatQueryExcludesRuleMetadata(t *testing.T) {
+	for _, path := range []string{"db/queries/mysql/assets.sql", "db/queries/postgres/assets.sql"} {
+		content, err := readRepositoryFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statement := namedStatement(content, "ListServiceTemplateLogs")
+		for _, field := range []string{"rule.update_time", "rule.description", "rule.remark", "rule.sample_log"} {
+			if strings.Contains(statement, field) {
+				t.Fatalf("%s 的认证查询不应依赖 %s", path, field)
+			}
+		}
+		for _, field := range []string{"rule.pipeline_body", "rule.input_format", "rule.multiline_enabled",
+			"rule.start_pattern", "rule.continuation_pattern", "rule.flush_timeout"} {
+			if !strings.Contains(statement, field) {
+				t.Fatalf("%s 的认证查询缺少 %s", path, field)
+			}
+		}
+	}
 }
 
 func TestListServiceTemplateLogsFormatState(t *testing.T) {

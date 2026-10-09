@@ -33,18 +33,19 @@
               </a-sub-menu>
             </a-menu>
             <div class="pane-actions">
-              <a-space>
-                <a-tooltip title="新增基线">
-                  <a-button v-permission="'baseline:manage'" size="small" type="primary" @click="openBaselineModal()">
-                    <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
-                  </a-button>
-                </a-tooltip>
-                <a-tooltip title="编辑基线">
-                  <a-button v-permission="'baseline:manage'" size="small" :disabled="!selectedBaseline" @click="openBaselineModal(selectedBaseline)">
+              <a-tooltip title="新增基线">
+                <a-button v-permission="'baseline:manage'" class="pane-add-button" size="large" type="primary" @click="openBaselineModal()">
+                  <FontAwesomeIcon :icon="['fas', 'plus-circle']" />
+                  <span>&nbsp;新增基线</span>
+                </a-button>
+              </a-tooltip>
+              <div class="baseline-quick-actions">
+                <a-tooltip title="编辑" placement="top">
+                  <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="!selectedBaseline" @click="openBaselineModal(selectedBaseline)">
                     <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                   </a-button>
                 </a-tooltip>
-                <a-tooltip title="删除基线">
+                <a-tooltip title="删除" placement="top">
                   <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger :disabled="!selectedBaseline" @click="confirmDeleteBaseline(selectedBaseline)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                   </a-button>
@@ -54,44 +55,59 @@
                     <FontAwesomeIcon :icon="['fas', 'satellite-dish']" />
                   </a-button>
                 </a-tooltip>
-              </a-space>
+              </div>
             </div>
           </div>
 
           <div class="items-pane">
-            <div class="toolbar">
-              <span class="items-title">{{ selectedCategory ? `策略 - ${selectedCategory.name}（${categoryRows.length}）` : (selectedBaseline ? '策略（选择左侧类目）' : '策略') }}</span>
-              <a-space>
-                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedBaseline" @click="openCategoryModal()">
-                  <FontAwesomeIcon :icon="['fas', 'folder-plus']" />&nbsp;新增类目
-                </a-button>
-                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="openCategoryModal(selectedCategory)">
-                  <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />&nbsp;重命名
-                </a-button>
-                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="moveCategory('up')">
-                  <FontAwesomeIcon :icon="['fas', 'arrow-up']" />&nbsp;上移
-                </a-button>
-                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="moveCategory('down')">
-                  <FontAwesomeIcon :icon="['fas', 'arrow-down']" />&nbsp;下移
-                </a-button>
-                <a-button v-permission="'baseline:manage'" class="delBtn" size="large" type="primary" danger :disabled="!selectedCategory" @click="confirmDeleteCategory(selectedCategory)">
-                  <FontAwesomeIcon :icon="['fas', 'folder-minus']" />&nbsp;删除类目
-                </a-button>
-                <a-button v-permission="'baseline:manage'" size="large" :disabled="!selectedCategory" @click="openItemEditModal()">
-                  <FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;添加策略
-                </a-button>
+            <div class="toolbar items-toolbar">
+              <div class="items-toolbar-heading">
+                <span class="items-title">{{ selectedCategory ? `策略 - ${selectedCategory.name}（${categoryRows.length}）` : (selectedBaseline ? '策略（选择左侧类目）' : '策略') }}</span>
                 <a-tooltip title="刷新">
-                  <a-button size="large" :disabled="!selectedBaseline" @click="selectBaseline(selectedBaseline)">
-                    <FontAwesomeIcon :icon="['fas', 'rotate']" />&nbsp;刷新
+                  <a-button size="small" :disabled="!selectedBaseline" @click="selectBaseline(selectedBaseline)">
+                    <FontAwesomeIcon :icon="['fas', 'rotate']" />
                   </a-button>
                 </a-tooltip>
-              </a-space>
+              </div>
+              <div class="toolbar-action-groups">
+                <div class="toolbar-action-group">
+                  <span class="toolbar-group-label">类目操作</span>
+                  <div class="toolbar-actions">
+                    <a-button v-permission="'baseline:manage'" size="large" type="primary" :disabled="!selectedBaseline" @click="openCategoryModal()">
+                      <FontAwesomeIcon :icon="['fas', 'plus-circle']" />&nbsp;新增类目
+                    </a-button>
+                    <a-tooltip title="编辑" placement="top">
+                      <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="!selectedCategory" @click="openCategoryModal(selectedCategory)">
+                        <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />&nbsp;重命名
+                      </a-button>
+                    </a-tooltip>
+                    <a-button v-permission="'baseline:manage'" size="small" :disabled="!selectedCategory" @click="moveCategory('up')">
+                      <FontAwesomeIcon :icon="['fas', 'arrow-up']" />&nbsp;上移
+                    </a-button>
+                    <a-button v-permission="'baseline:manage'" size="small" :disabled="!selectedCategory" @click="moveCategory('down')">
+                      <FontAwesomeIcon :icon="['fas', 'arrow-down']" />&nbsp;下移
+                    </a-button>
+                    <a-button v-permission="'baseline:manage'" class="delBtn category-delete-button" size="small" type="primary" danger :disabled="!selectedCategory" @click="confirmDeleteCategory(selectedCategory)">
+                      <FontAwesomeIcon :icon="['fas', 'folder-minus']" />&nbsp;删除类目
+                    </a-button>
+                  </div>
+                </div>
+                <div class="toolbar-action-group">
+                  <span class="toolbar-group-label">策略操作</span>
+                  <div class="toolbar-actions">
+                    <a-button v-permission="'baseline:manage'" size="large" type="primary" :disabled="!selectedCategory || itemsMoving" @click="openItemEditModal()">
+                      <FontAwesomeIcon :icon="['fas', 'plus-circle']" />&nbsp;添加策略
+                    </a-button>
+                  </div>
+                </div>
+              </div>
             </div>
             <a-table
               row-key="sourceIndex"
               :columns="itemColumns"
               :data-source="categoryRows"
               :loading="itemsLoading"
+              :scroll="{ x: 760 }"
               :pagination="itemPagination"
               size="small"
               :locale="{ emptyText: selectedCategory ? '该类目暂无策略，点击右上角「添加策略」' : (selectedBaseline ? '左侧选择一个类目查看策略' : '左侧选择一个基线标准') }"
@@ -102,13 +118,23 @@
                 </template>
                 <template v-else-if="column.key === 'action'">
                   <a-space :size="6">
+                    <a-tooltip title="上移" placement="top">
+                      <a-button v-permission="'baseline:manage'" size="small" :disabled="itemsMoving || itemsLoading || itemEditModalOpen || record.id === categoryRows[0]?.id" @click="moveItem(record, 'up')">
+                        <FontAwesomeIcon :icon="['fas', 'arrow-up']" />
+                      </a-button>
+                    </a-tooltip>
+                    <a-tooltip title="下移" placement="top">
+                      <a-button v-permission="'baseline:manage'" size="small" :disabled="itemsMoving || itemsLoading || itemEditModalOpen || record.id === categoryRows[categoryRows.length - 1]?.id" @click="moveItem(record, 'down')">
+                        <FontAwesomeIcon :icon="['fas', 'arrow-down']" />
+                      </a-button>
+                    </a-tooltip>
                     <a-tooltip title="编辑" placement="top">
-                      <a-button v-permission="'baseline:manage'" size="small" type="primary" @click="openItemEditModal(record.sourceIndex)">
+                      <a-button v-permission="'baseline:manage'" size="small" type="primary" :disabled="itemsMoving" @click="openItemEditModal(record.sourceIndex)">
                         <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                       </a-button>
                     </a-tooltip>
                     <a-tooltip title="删除" placement="top">
-                      <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger @click="removeItemRow(record.sourceIndex)">
+                      <a-button v-permission="'baseline:manage'" class="delBtn" size="small" type="primary" danger :disabled="itemsMoving" @click="removeItemRow(record.sourceIndex)">
                         <FontAwesomeIcon :icon="['fas', 'trash-can']" />
                       </a-button>
                     </a-tooltip>
@@ -132,7 +158,7 @@
           :columns="scanColumns"
           :data-source="scans"
           :loading="scanLoading"
-          :scroll="{ x: 1000 }"
+          :scroll="{ x: 1100 }"
           :pagination="scanPagination"
           size="small"
           :locale="tableLocale"
@@ -146,12 +172,19 @@
               <span v-if="record.summary?.total">{{ record.summary.success }} 成功 / {{ record.summary.failed }} 失败 / {{ record.summary.skipped ?? 0 }} 跳过</span>
               <span v-else>-</span>
             </template>
+            <template v-else-if="column.key === 'start_time'">
+              {{ formatTime(record.start_time) }}
+            </template>
             <template v-else-if="column.key === 'action'">
               <a-space>
-                <a-button size="small" @click="openScanDetail(record)">详情</a-button>
-                <a-popconfirm v-if="['pending', 'running'].includes(record.status)" title="确定取消该扫描吗？" @confirm="handleCancelScan(record)">
-                  <a-button size="small" danger>取消</a-button>
-                </a-popconfirm>
+                <a-tooltip title="历史记录" placement="top">
+                  <a-button size="small" @click="openScanDetail(record)">详情</a-button>
+                </a-tooltip>
+                <a-tooltip v-if="['pending', 'running'].includes(record.status)" title="取消" placement="top">
+                  <a-popconfirm title="确定取消该扫描吗？" @confirm="handleCancelScan(record)">
+                    <a-button size="small" danger>取消</a-button>
+                  </a-popconfirm>
+                </a-tooltip>
               </a-space>
             </template>
           </template>
@@ -180,7 +213,7 @@
         </div>
         <div class="form-grid">
           <a-form-item label="严重级别" class="mount-item">
-            <a-select v-model:value="itemEditForm.severity" :options="[{label:'高',value:'high'},{label:'中',value:'medium'},{label:'低',value:'low'}]" />
+            <a-select v-model:value="itemEditForm.severity" :options="[{label:'高',value:'high'},{label:'中',value:'medium'},{label:'低',value:'low'}]" :getPopupContainer="getPopupContainer" />
           </a-form-item>
           <a-form-item label="运行用户" class="mount-item">
             <a-input v-model:value="itemEditForm.run_user" placeholder="root" />
@@ -210,7 +243,7 @@
         <div v-for="(input, inputIndex) in itemEditForm.input_commands" :key="inputIndex" class="input-grid">
           <a-input v-model:value="input.key" placeholder="key，如 es_limits" />
           <a-input v-model:value="input.exec" placeholder="命令，如 cat /proc/1/limits" />
-          <a-select v-model:value="input.parse" :options="opaParseOptions" />
+          <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
           <a-tooltip title="删除" placement="top">
             <a-button class="delBtn" size="small" type="primary" danger @click="itemEditForm.input_commands.splice(inputIndex, 1)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -226,7 +259,7 @@
         <div v-for="(input, inputIndex) in itemEditForm.input_files" :key="'f' + inputIndex" class="input-grid">
           <a-input v-model:value="input.key" placeholder="key，如 sshd_config" />
           <a-input v-model:value="input.path" placeholder="路径，如 /etc/ssh/sshd_config" />
-          <a-select v-model:value="input.parse" :options="opaParseOptions" />
+          <a-select v-model:value="input.parse" :options="opaParseOptions" :getPopupContainer="getPopupContainer" />
           <a-tooltip title="删除" placement="top">
             <a-button class="delBtn" size="small" type="primary" danger @click="itemEditForm.input_files.splice(inputIndex, 1)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -258,10 +291,10 @@
       <a-form layout="vertical">
         <a-form-item label="基线"><a-input :value="scanBaseline?.name" readonly /></a-form-item>
         <a-form-item label="项目" required>
-          <a-select v-model:value="scanForm.project_id" :options="projectOptions" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" />
+          <a-select v-model:value="scanForm.project_id" :options="projectOptions" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" :getPopupContainer="getPopupContainer" />
         </a-form-item>
         <a-form-item label="环境（可选）">
-          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :virtual="false" allow-clear placeholder="全部环境" />
+          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :virtual="false" allow-clear placeholder="全部环境" :getPopupContainer="getPopupContainer" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -277,6 +310,9 @@ import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { createPagination, tableLocale } from '@/util/tableStyle'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 
 const router = useRouter()
 
@@ -305,14 +341,14 @@ const scanColumns = [
   { title: '结果', key: 'summary', width: 240 },
   { title: '发起人', dataIndex: 'requested_username', key: 'requested_username', width: 110 },
   { title: '开始时间', dataIndex: 'start_time', key: 'start_time', width: 180 },
-  { title: '操作', key: 'action', width: 90 },
+  { title: '操作', key: 'action', fixed: 'right', width: 120 },
 ]
 const itemColumns = [
   { title: '#', key: 'index', width: 50, customRender: ({ index }) => index + 1 },
   { title: '策略名称', dataIndex: 'name' },
   { title: '级别', key: 'severity', width: 70 },
   { title: '说明', dataIndex: 'description', key: 'description', ellipsis: true, width: 180 },
-  { title: '操作', key: 'action', width: 90 },
+  { title: '操作', key: 'action', fixed: 'right', width: 184 },
 ]
 
 const scans = ref([])
@@ -352,6 +388,8 @@ const opaParseOptions = [
 ]
 const emptyOpaConfig = () => ({ input_commands: [], input_files: [], policy: '', run_user: '', remediation: '' })
 const responseData = (response) => response?.data?.data || {}
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
+const formatTime = (value) => value ? formatTimeWithTimezone(value, store.state.user?.timezone || 'Asia/Shanghai') : '-'
 
 async function loadBaselines() {
   baselineLoading.value = true
@@ -428,7 +466,7 @@ async function confirmDeleteBaseline(record) {
     },
   })
 }
-// ---- 左侧二层菜单（基线 → 类目）→ 右侧策略表格；增删改先改本地 itemForm，「保存策略」一次性提交。
+// 左侧基线与类目决定右侧策略列表，单条操作即时保存。
 
 // 展开基线节点即加载它的类目（基线选择挂在展开事件上，而不是点击类目）。
 const lastOpenedKeys = ref([])
@@ -458,17 +496,21 @@ function selectBaseline(record) {
       const detail = responseData(response)
       categories.value = detail.categories || []
       selectedCategoryId.value = categories.value[0]?.id ?? null
-      itemForm.value = (detail.items || []).map((item) => ({
-        id: item.id, name: item.name, category_id: item.category_id, description: item.description,
-        severity: item.severity,
-        input_commands: item.config?.input_commands || [],
-        input_files: item.config?.input_files || [],
-        policy: item.config?.policy || '',
-        run_user: item.config?.run_user || '',
-        remediation: item.config?.remediation || '',
-      }))
+      itemForm.value = mapBaselineItems(detail.items)
     })
     .finally(() => { itemsLoading.value = false })
+}
+
+function mapBaselineItems(items) {
+  return (items || []).map((item) => ({
+    id: item.id, name: item.name, category_id: item.category_id, description: item.description,
+    severity: item.severity,
+    input_commands: item.config?.input_commands || [],
+    input_files: item.config?.input_files || [],
+    policy: item.config?.policy || '',
+    run_user: item.config?.run_user || '',
+    remediation: item.config?.remediation || '',
+  }))
 }
 
 // 右侧表格只展示当前选中类目的策略；保留 itemForm 原始下标供编辑/删除定位。
@@ -478,12 +520,34 @@ const categoryRows = computed(() => itemForm.value
 const itemEditModalOpen = ref(false)
 const itemEditIndex = ref(null)
 const itemsSaving = ref(false)
+const itemsMoving = ref(false)
 const itemEditForm = reactive({ name: '', description: '', severity: 'high', input_commands: [], input_files: [], policy: '', run_user: '', remediation: '' })
 
 // ---- 策略单条操作：弹窗确认 / 删除确认即调后端，立即生效（无批量保存）。 ----
 const addBaselineItem = (baselineId, data) => requestUtil.post(`${baselinePrefix}${baselineId}/items/`, data)
 const updateBaselineItem = (baselineId, itemId, data) => requestUtil.patch(`${baselinePrefix}${baselineId}/items/${itemId}/`, data)
 const deleteBaselineItem = (baselineId, itemId) => requestUtil.del(`${baselinePrefix}${baselineId}/items/${itemId}/`)
+
+async function moveItem(record, direction) {
+  if (itemsMoving.value) return
+  const baselineId = selectedBaseline.value.id
+  itemsMoving.value = true
+  try {
+    await updateBaselineItem(baselineId, record.id, { direction })
+    // 仅更新仍在查看的基线，不覆盖请求期间切换到其他基线的页面。
+    if (selectedBaseline.value?.id === baselineId) {
+      const detail = responseData(await getBaselineDetail(baselineId))
+      if (selectedBaseline.value?.id === baselineId) {
+        itemForm.value = mapBaselineItems(detail.items)
+      }
+    }
+    message.success(`策略已${direction === 'up' ? '上移' : '下移'}`)
+  } catch (error) {
+    message.error(error?.message || '策略移动失败')
+  } finally {
+    itemsMoving.value = false
+  }
+}
 
 function openItemEditModal(index = null) {
   itemEditIndex.value = index
@@ -683,7 +747,7 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 /* 基线标准 tab：左基线菜单 / 右条目表格的主从布局（对齐「日志处理规则」页排版）。 */
 .baseline-layout {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 16px;
 }
 
@@ -706,7 +770,7 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 
 .baseline-menu {
   border-inline-end: none;
-  flex: 1;
+  flex: none;
   max-height: calc(100vh - 300px);
   overflow: auto;
 }
@@ -725,9 +789,27 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 }
 
 .pane-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid #f0f0f0;
   background: #fafafa;
+}
+
+.pane-add-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.baseline-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.baseline-quick-actions .ant-btn {
+  width: 100%;
 }
 
 .items-pane {
@@ -736,7 +818,6 @@ defineOptions({ name: 'ViewSecurityBaseline' })
 }
 
 .items-title {
-  flex: 1;
   font-weight: 600;
 }
 
@@ -748,8 +829,78 @@ defineOptions({ name: 'ViewSecurityBaseline' })
   margin-bottom: 12px;
 }
 
+.items-toolbar {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.items-toolbar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toolbar-action-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.toolbar-action-group {
+  min-width: 0;
+}
+
+.toolbar-group-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #66727d;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 公共 delBtn 为图标按钮固定 48px；文字删除按钮需预留完整文案宽度。 */
+.toolbar-actions .ant-btn.category-delete-button {
+  width: 112px;
+  min-width: 112px;
+  flex-shrink: 0;
+}
+
 .toolbar .ant-btn {
   display: inline-flex;
   align-items: center;
+}
+
+@media (max-width: 767px) {
+  .baseline-layout {
+    flex-direction: column;
+  }
+
+  .baseline-pane {
+    flex: none;
+    width: 100%;
+  }
+
+  .baseline-menu {
+    max-height: 240px;
+  }
+
+  .toolbar-action-groups {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
 }
 </style>

@@ -59,6 +59,15 @@ WHERE i.id = sqlc.arg(id);
 UPDATE baseline_item SET category_id = ?, name = ?, description = ?, config = ?, severity = ?, update_time = ?
 WHERE id = ?;
 
+-- 移动时锁定基线策略，按当前顺序在应用层定位同类目相邻项。
+-- name: ListBaselineItemOrderForUpdate :many
+SELECT id, category_id, sort FROM baseline_item
+WHERE baseline_id = sqlc.arg(baseline_id)
+ORDER BY category_id, sort, id FOR UPDATE;
+
+-- name: UpdateBaselineItemSort :execrows
+UPDATE baseline_item SET sort = ?, update_time = ? WHERE id = ?;
+
 -- 删除必须带 baseline_id：条目路由形如 /baseline/{id}/items/{itemId}/，
 -- 只按 itemId 删会让跨基线的 id 也能被删掉。
 -- name: DeleteBaselineItem :execrows

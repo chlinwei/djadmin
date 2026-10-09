@@ -55,7 +55,8 @@ func overrideFixtureRows(stored sql.NullString, collectionEnabled *bool, tier sq
 	rows := sqlmock.NewRows(serviceTemplateLogColumns())
 	rows.AddRow(
 		int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
-		"nginx 规则", testRuleUpdatedAt, int64(3), tier,
+		"nginx 规则", "plain", false, "", "", uint32(2000), []byte(`{"processors":[]}`),
+		int64(3), tier,
 		collectionEnabled, sql.NullInt64{},
 		// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
 		sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},

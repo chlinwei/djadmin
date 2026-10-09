@@ -228,7 +228,9 @@ const (
 func logFormatDefinitionColumns() []string {
 	return []string{
 		"id", "name", "path_pattern", "processing_rule_id", "processing_rule_name",
-		"processing_rule_update_time", "application_version_id", "retention_tier_id",
+		"processing_rule_input_format", "processing_rule_multiline_enabled", "processing_rule_start_pattern",
+		"processing_rule_continuation_pattern", "processing_rule_flush_timeout", "processing_rule_pipeline_body",
+		"application_version_id", "retention_tier_id",
 		"override_collection_enabled", "collection_filter_rule_id", "collection_exclude_filter_rule_id",
 		// 服务级后处理器（2026-09-28）：本套测试统一返回未启用（[]）。
 		"extra_processors",
@@ -243,7 +245,7 @@ func expectLogFormatDefinition(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).WillReturnRows(
 		sqlmock.NewRows(logFormatDefinitionColumns()).AddRow(
 			int64(24), "error.log", "${APP_HOME}/nginx/logs/error.log", sql.NullInt64{Int64: 7, Valid: true},
-			"nginx 规则", time.Date(2026, 9, 19, 1, 2, 3, 0, time.UTC), int64(3), sql.NullInt64{},
+			"nginx 规则", "plain", false, "", "", uint32(2000), []byte(passingPipelineBody), int64(3), sql.NullInt64{},
 			nil, sql.NullInt64{},
 			// 服务级 exclude 覆盖 + 模板级两个方向的默认值：本例都不配。
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},

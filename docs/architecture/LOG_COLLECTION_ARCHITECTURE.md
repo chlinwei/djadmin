@@ -366,12 +366,22 @@ cold 0.1GB/天 × 90 天 =   9 GB
 
 | 变化 | 会不会改格式 | 能自动失效吗 |
 |---|---|---|
-| 换模板 / 模板增删日志定义 / 改名 / 改路径 | 会 | ✅ 指纹含 `ld.id` / `ld.name` / `ld.path_pattern` |
-| 改规则（`pipeline_body`、多行参数、首行正则） | 会 | ✅ 指纹含 `rule.update_time`（规则保存一定会更新它；代价是"只改说明"也会要求重新认证一次，偏保守） |
+| 换日志定义 / 改日志名称 / 改路径 | 会 | ✅ 指纹含 `ld.id` / `ld.name` / `ld.path_pattern`；原模板新增日志不影响原有日志认证，新日志单独显示未验证 |
+| 改规则实际解析配置 | 会 | ✅ 指纹含 `input_format`、`multiline_enabled`、`start_pattern`、`continuation_pattern`、`flush_timeout` 和 `pipeline_body` 行为内容 |
+| 改规则描述 / 备注 / 名称 / 样例，或原样保存 | 不改变实际解析配置 | ❌ 这些字段及 `rule.update_time` 均不参与指纹 |
 | 换挂另一条规则 | 会 | ✅ 指纹含 `ld.processing_rule_id` |
 | 应用 / 中间件版本升级 | 会 | ✅ 指纹含 `s.application_version_id`（**每次版本升级后需要重新认证一次**，这是"改格式"里唯一无法事前断言的场景） |
 | 改服务级宏 `macro_values` | 会（换了另一个文件在采） | ✅ 指纹含它 |
 | 改实例级 `runtime_variables` | 会 | ❌ 逐实例而异、无法在服务级定义 → 需人工重新认证 |
+
+规则 Pipeline JSON 按对象键排序序列化，忽略顶层 `description`、`_meta`、`version`
+元数据，保留其余行为字段、处理器数组顺序和数值精度；仅排版或对象键顺序变化不使认证失效。
+无效 Pipeline JSON 明确报错，不生成成功状态或默认指纹。展示、汇总和认证写入共用
+`ListServiceTemplateLogs` 的同一套计算逻辑，接口响应形态不变。
+
+认证只采用实际解析配置指纹，不接受基于规则更新时间的旧指纹。存量认证记录保留，
+与当前指纹不一致时显示需重新验证，重新验证通过后写入当前指纹；不自动改写为已验证，
+不提供旧算法兼容分支，无表结构迁移要求。
 
 **分层**：编排与落库在 `assets`（`internal/assets/log_format_verify.go`），"取样例 + 跑 ES"
 在 `logcollect`（`internal/logcollect/log_format_verify.go`，经 `assets.LogFormatVerifier`

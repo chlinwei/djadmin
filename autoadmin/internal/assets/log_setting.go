@@ -3,6 +3,7 @@ package assets
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	platformdb "autoadmin/internal/platform/database"
@@ -120,10 +121,18 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 		)
 		item.PendingMacros = logmacro.Pending(item.ResolvedPath)
 		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
+		ruleSignature, err := logFormatRuleSignature(logFormatRuleInput{
+			InputFormat: row.ProcessingRuleInputFormat, MultilineEnabled: row.ProcessingRuleMultilineEnabled,
+			StartPattern: row.ProcessingRuleStartPattern, ContinuationPattern: row.ProcessingRuleContinuationPattern,
+			FlushTimeout: row.ProcessingRuleFlushTimeout, PipelineBody: row.ProcessingRulePipelineBody,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("日志定义 %d 的格式指纹计算失败: %w", row.ID, err)
+		}
 		// 格式认证状态：当前指纹现场算、与认证时存下的比（纯读库，不碰主机）。
 		item.FormatFingerprint = logFormatFingerprintOf(logFormatFingerprintInput{
 			LogDefinition: row.ID, LogName: row.Name, PathPattern: row.PathPattern,
-			RuleID: row.ProcessingRuleID.Int64, RuleUpdatedAt: row.ProcessingRuleUpdateTime,
+			RuleID: row.ProcessingRuleID.Int64, RuleParsingSignature: ruleSignature,
 			MacroValues: string(row.MacroValues), ApplicationVersion: row.ApplicationVersionID,
 		})
 		item.FormatState = formatStateUnverified

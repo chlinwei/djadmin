@@ -1,0 +1,100 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import Antd, { message, Tooltip } from 'ant-design-vue'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import BaselinePage from './index.vue'
+import requestUtil from '@/util/request'
+
+vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('@/util/request', () => ({ default: { get: vi.fn(), patch: vi.fn() } }))
+
+const baseline = { id: 7, name: '测试基线' }
+const items = [
+  { id: 88, category_id: 3, name: '策略一', severity: 'high', config: {} },
+  { id: 89, category_id: 3, name: '策略二', severity: 'high', config: {} },
+  { id: 90, category_id: 4, name: '其他类目策略', severity: 'low', config: {} },
+]
+const response = (data) => ({ data: { data } })
+let wrapper
+let savedItems
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  savedItems = [...items]
+  requestUtil.get.mockImplementation((url) => Promise.resolve(response(
+    url === 'sys/security/baseline/7/'
+      ? { categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
+      : { results: url === 'sys/security/baseline/' ? [baseline] : [] },
+  )))
+})
+
+afterEach(() => {
+  wrapper?.unmount()
+  vi.restoreAllMocks()
+})
+
+async function loadPage() {
+  wrapper = mount(BaselinePage, {
+    global: { plugins: [Antd], stubs: { FontAwesomeIcon: true }, directives: { permission: {} } },
+    attachTo: document.body,
+  })
+  await flushPromises()
+  wrapper.vm.selectBaseline(baseline)
+  await flushPromises()
+}
+
+describe('策略上下移动', () => {
+  it('保存移动方向并重新读取排序，刷新后保持顺序且不影响其他类目', async () => {
+    await loadPage()
+    requestUtil.patch.mockImplementation(() => {
+      savedItems = [items[1], items[0], items[2]]
+      return Promise.resolve(response({ id: 89 }))
+    })
+    const upButton = wrapper.findAllComponents(Tooltip).filter((tooltip) => tooltip.props('title') === '上移')[1]
+    expect(upButton.props('placement')).toBe('top')
+    await upButton.find('button').trigger('click')
+    await flushPromises()
+    expect(requestUtil.patch).toHaveBeenCalledWith('sys/security/baseline/7/items/89/', { direction: 'up' })
+    expect(wrapper.vm.categoryRows.map((item) => item.id)).toEqual([89, 88])
+    wrapper.vm.selectBaseline(baseline)
+    await flushPromises()
+    expect(wrapper.vm.categoryRows.map((item) => item.id)).toEqual([89, 88])
+    wrapper.vm.selectCategoryById('4')
+    expect(wrapper.vm.categoryRows.map((item) => item.id)).toEqual([90])
+  })
+
+  it('首尾按钮禁用，移动失败提示错误且不改变顺序', async () => {
+    await loadPage()
+    const buttons = wrapper.findAllComponents(Tooltip)
+    const upButtons = buttons.filter((button) => button.props('title') === '上移')
+    const downButtons = buttons.filter((button) => button.props('title') === '下移')
+    expect(upButtons).toHaveLength(2)
+    expect(upButtons[0].find('button').attributes('disabled')).toBeDefined()
+    expect(downButtons[1].find('button').attributes('disabled')).toBeDefined()
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    requestUtil.patch.mockRejectedValue(new Error('移动失败'))
+    await wrapper.vm.moveItem(wrapper.vm.categoryRows[1], 'up')
+    expect(error).toHaveBeenCalledWith('移动失败')
+    expect(wrapper.vm.categoryRows.map((item) => item.id)).toEqual([88, 89])
+    expect(wrapper.vm.itemsMoving).toBe(false)
+  })
+
+  it('跨分页移动按完整类目列表定位，移动期间禁止重复请求', async () => {
+    savedItems = Array.from({ length: 12 }, (_, index) => ({
+      ...items[0], id: index + 100, name: `策略${index + 1}`,
+    }))
+    await loadPage()
+    let complete
+    requestUtil.patch.mockImplementation(() => new Promise((resolve) => { complete = resolve }))
+    const record = wrapper.vm.categoryRows[9]
+    const pending = wrapper.vm.moveItem(record, 'down')
+    expect(wrapper.vm.itemsMoving).toBe(true)
+    await wrapper.vm.moveItem(record, 'down')
+    expect(requestUtil.patch).toHaveBeenCalledTimes(1)
+    ;[savedItems[9], savedItems[10]] = [savedItems[10], savedItems[9]]
+    complete(response({ id: record.id }))
+    await pending
+    expect(wrapper.vm.categoryRows[10].id).toBe(record.id)
+    expect(wrapper.vm.itemsMoving).toBe(false)
+  })
+})

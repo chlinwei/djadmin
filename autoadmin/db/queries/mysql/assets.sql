@@ -941,12 +941,17 @@ DELETE FROM assets_application_deployment WHERE id=sqlc.arg(id);
 --   - **解析规则只有模板一处**（ld.processing_rule_id，服务侧只读展示），
 --     服务不再有 processing_rule_id（迁移 000035 删列）。规则名一并带出来给弹窗只读展示；
 --   - 日志格式认证（迁移 000036）：ls.format_verified_* 是上一次认证的结果，
---     与这里同时带出的"指纹输入"（规则 update_time、服务宏、应用版本）在应用层比对，
+--     与这里同时带出的"指纹输入"（规则解析配置、服务宏、应用版本）在应用层比对，
 --     得出 format_state（verified / needs_recheck / unverified）。
 -- name: ListServiceTemplateLogs :many
 SELECT ld.id, ld.name, ld.path_pattern,
        ld.processing_rule_id, COALESCE(rule.name, '') AS processing_rule_name,
-       COALESCE(rule.update_time, ld.create_time) AS processing_rule_update_time,
+       COALESCE(rule.input_format, '') AS processing_rule_input_format,
+       COALESCE(rule.multiline_enabled, FALSE) AS processing_rule_multiline_enabled,
+       COALESCE(rule.start_pattern, '') AS processing_rule_start_pattern,
+       COALESCE(rule.continuation_pattern, '') AS processing_rule_continuation_pattern,
+       COALESCE(rule.flush_timeout, 0) AS processing_rule_flush_timeout,
+       COALESCE(rule.pipeline_body, JSON_OBJECT()) AS processing_rule_pipeline_body,
        s.application_version_id,
        ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
        -- 采集过滤：模板级是默认值、服务级是覆盖（三态 NULL/0/>0）。四个 id 都给出去，

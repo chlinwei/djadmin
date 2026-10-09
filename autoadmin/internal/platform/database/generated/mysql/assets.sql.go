@@ -4204,7 +4204,12 @@ const listServiceTemplateLogs = `-- name: ListServiceTemplateLogs :many
 
 SELECT ld.id, ld.name, ld.path_pattern,
        ld.processing_rule_id, COALESCE(rule.name, '') AS processing_rule_name,
-       COALESCE(rule.update_time, ld.create_time) AS processing_rule_update_time,
+       COALESCE(rule.input_format, '') AS processing_rule_input_format,
+       COALESCE(rule.multiline_enabled, FALSE) AS processing_rule_multiline_enabled,
+       COALESCE(rule.start_pattern, '') AS processing_rule_start_pattern,
+       COALESCE(rule.continuation_pattern, '') AS processing_rule_continuation_pattern,
+       COALESCE(rule.flush_timeout, 0) AS processing_rule_flush_timeout,
+       COALESCE(rule.pipeline_body, JSON_OBJECT()) AS processing_rule_pipeline_body,
        s.application_version_id,
        ls.retention_tier_id, ls.collection_enabled AS override_collection_enabled,
        -- 采集过滤：模板级是默认值、服务级是覆盖（三态 NULL/0/>0）。四个 id 都给出去，
@@ -4238,32 +4243,37 @@ ORDER BY ld.id
 `
 
 type ListServiceTemplateLogsRow struct {
-	ID                            int64           `json:"id"`
-	Name                          string          `json:"name"`
-	PathPattern                   string          `json:"path_pattern"`
-	ProcessingRuleID              sql.NullInt64   `json:"processing_rule_id"`
-	ProcessingRuleName            string          `json:"processing_rule_name"`
-	ProcessingRuleUpdateTime      time.Time       `json:"processing_rule_update_time"`
-	ApplicationVersionID          int64           `json:"application_version_id"`
-	RetentionTierID               sql.NullInt64   `json:"retention_tier_id"`
-	OverrideCollectionEnabled     *bool           `json:"override_collection_enabled"`
-	FilterIncludeRuleID           sql.NullInt64   `json:"filter_include_rule_id"`
-	FilterExcludeRuleID           sql.NullInt64   `json:"filter_exclude_rule_id"`
-	CollectionFilterRuleID        sql.NullInt64   `json:"collection_filter_rule_id"`
-	CollectionExcludeFilterRuleID sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
-	ExtraProcessors               json.RawMessage `json:"extra_processors"`
-	FormatVerifiedAt              sql.NullTime    `json:"format_verified_at"`
-	FormatVerifiedFingerprint     sql.NullString  `json:"format_verified_fingerprint"`
-	FormatVerifiedSource          sql.NullString  `json:"format_verified_source"`
-	FormatVerifiedBy              sql.NullString  `json:"format_verified_by"`
-	ServiceCode                   string          `json:"service_code"`
-	ProjectCode                   string          `json:"project_code"`
-	EnvironmentCode               sql.NullString  `json:"environment_code"`
-	BusinessSystemCode            string          `json:"business_system_code"`
-	MacroValues                   json.RawMessage `json:"macro_values"`
-	MacroDefinitions              json.RawMessage `json:"macro_definitions"`
-	AppHome                       string          `json:"app_home"`
-	TierCode                      string          `json:"tier_code"`
+	ID                                int64           `json:"id"`
+	Name                              string          `json:"name"`
+	PathPattern                       string          `json:"path_pattern"`
+	ProcessingRuleID                  sql.NullInt64   `json:"processing_rule_id"`
+	ProcessingRuleName                string          `json:"processing_rule_name"`
+	ProcessingRuleInputFormat         string          `json:"processing_rule_input_format"`
+	ProcessingRuleMultilineEnabled    bool            `json:"processing_rule_multiline_enabled"`
+	ProcessingRuleStartPattern        string          `json:"processing_rule_start_pattern"`
+	ProcessingRuleContinuationPattern string          `json:"processing_rule_continuation_pattern"`
+	ProcessingRuleFlushTimeout        uint32          `json:"processing_rule_flush_timeout"`
+	ProcessingRulePipelineBody        json.RawMessage `json:"processing_rule_pipeline_body"`
+	ApplicationVersionID              int64           `json:"application_version_id"`
+	RetentionTierID                   sql.NullInt64   `json:"retention_tier_id"`
+	OverrideCollectionEnabled         *bool           `json:"override_collection_enabled"`
+	FilterIncludeRuleID               sql.NullInt64   `json:"filter_include_rule_id"`
+	FilterExcludeRuleID               sql.NullInt64   `json:"filter_exclude_rule_id"`
+	CollectionFilterRuleID            sql.NullInt64   `json:"collection_filter_rule_id"`
+	CollectionExcludeFilterRuleID     sql.NullInt64   `json:"collection_exclude_filter_rule_id"`
+	ExtraProcessors                   json.RawMessage `json:"extra_processors"`
+	FormatVerifiedAt                  sql.NullTime    `json:"format_verified_at"`
+	FormatVerifiedFingerprint         sql.NullString  `json:"format_verified_fingerprint"`
+	FormatVerifiedSource              sql.NullString  `json:"format_verified_source"`
+	FormatVerifiedBy                  sql.NullString  `json:"format_verified_by"`
+	ServiceCode                       string          `json:"service_code"`
+	ProjectCode                       string          `json:"project_code"`
+	EnvironmentCode                   sql.NullString  `json:"environment_code"`
+	BusinessSystemCode                string          `json:"business_system_code"`
+	MacroValues                       json.RawMessage `json:"macro_values"`
+	MacroDefinitions                  json.RawMessage `json:"macro_definitions"`
+	AppHome                           string          `json:"app_home"`
+	TierCode                          string          `json:"tier_code"`
 }
 
 // ---- 逻辑服务的日志设置读取（编辑弹窗"模板日志"表格 = 模板日志定义 + 服务级覆盖）----
@@ -4273,7 +4283,7 @@ type ListServiceTemplateLogsRow struct {
 //   - **解析规则只有模板一处**（ld.processing_rule_id，服务侧只读展示），
 //     服务不再有 processing_rule_id（迁移 000035 删列）。规则名一并带出来给弹窗只读展示；
 //   - 日志格式认证（迁移 000036）：ls.format_verified_* 是上一次认证的结果，
-//     与这里同时带出的"指纹输入"（规则 update_time、服务宏、应用版本）在应用层比对，
+//     与这里同时带出的"指纹输入"（规则解析配置、服务宏、应用版本）在应用层比对，
 //     得出 format_state（verified / needs_recheck / unverified）。
 func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listServiceTemplateLogs, serviceID)
@@ -4290,7 +4300,12 @@ func (q *Queries) ListServiceTemplateLogs(ctx context.Context, serviceID int64) 
 			&i.PathPattern,
 			&i.ProcessingRuleID,
 			&i.ProcessingRuleName,
-			&i.ProcessingRuleUpdateTime,
+			&i.ProcessingRuleInputFormat,
+			&i.ProcessingRuleMultilineEnabled,
+			&i.ProcessingRuleStartPattern,
+			&i.ProcessingRuleContinuationPattern,
+			&i.ProcessingRuleFlushTimeout,
+			&i.ProcessingRulePipelineBody,
 			&i.ApplicationVersionID,
 			&i.RetentionTierID,
 			&i.OverrideCollectionEnabled,

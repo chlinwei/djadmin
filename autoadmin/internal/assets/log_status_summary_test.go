@@ -53,16 +53,15 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 		if !ruleID.Valid {
 			ruleID = sql.NullInt64{}
 		}
-		ruleUpdate := testRuleUpdatedAt
 		ruleName := "nginx 规则"
 		if !ruleID.Valid {
-			// 未挂规则：规则名/更新时间在 SQL 里是 LEFT JOIN 出来的空值。
-			ruleUpdate = testRuleUpdatedAt
+			// 未挂规则：规则名在 SQL 里是 LEFT JOIN 出来的空值。
 			ruleName = ""
 		}
 		rows.AddRow(
 			entry.logDefinition, "error.log", "${APP_HOME}/nginx/logs/error.log", ruleID,
-			ruleName, ruleUpdate, int64(3), sql.NullInt64{}, entry.collectionEnabled, sql.NullInt64{},
+			ruleName, "plain", false, "", "", uint32(2000), []byte(`{"processors":[]}`),
+			int64(3), sql.NullInt64{}, entry.collectionEnabled, sql.NullInt64{},
 			sql.NullInt64{}, sql.NullInt64{}, sql.NullInt64{},
 			[]byte(`[]`),
 			sql.NullTime{}, entry.storedFingerprint, sql.NullString{}, sql.NullString{},
@@ -77,7 +76,7 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 func statusRowFingerprint(id int64, ruleID sql.NullInt64) string {
 	return logFormatFingerprintOf(logFormatFingerprintInput{
 		LogDefinition: id, LogName: "error.log", PathPattern: "${APP_HOME}/nginx/logs/error.log",
-		RuleID: ruleID.Int64, RuleUpdatedAt: testRuleUpdatedAt, MacroValues: "{}", ApplicationVersion: 3,
+		RuleID: ruleID.Int64, RuleParsingSignature: testLogRuleSignature(), MacroValues: "{}", ApplicationVersion: 3,
 	})
 }
 

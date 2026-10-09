@@ -718,6 +718,42 @@ func (q *Queries) ListBaselineCategories(ctx context.Context, baselineID int64) 
 	return items, nil
 }
 
+const listBaselineItemOrderForUpdate = `-- name: ListBaselineItemOrderForUpdate :many
+SELECT id, category_id, sort FROM baseline_item
+WHERE baseline_id = $1
+ORDER BY category_id, sort, id FOR UPDATE
+`
+
+type ListBaselineItemOrderForUpdateRow struct {
+	ID         int64  `json:"id"`
+	CategoryID int64  `json:"category_id"`
+	Sort       uint32 `json:"sort"`
+}
+
+// 移动时锁定基线策略，按当前顺序在应用层定位同类目相邻项。
+func (q *Queries) ListBaselineItemOrderForUpdate(ctx context.Context, baselineID int64) ([]ListBaselineItemOrderForUpdateRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBaselineItemOrderForUpdate, baselineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBaselineItemOrderForUpdateRow{}
+	for rows.Next() {
+		var i ListBaselineItemOrderForUpdateRow
+		if err := rows.Scan(&i.ID, &i.CategoryID, &i.Sort); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBaselineItems = `-- name: ListBaselineItems :many
 SELECT i.id, i.baseline_id, i.category_id, c.name AS category, i.sort, i.name, i.description, i.config, i.severity
 FROM baseline_item i
@@ -1126,6 +1162,24 @@ func (q *Queries) UpdateBaselineItem(ctx context.Context, arg UpdateBaselineItem
 		arg.UpdateTime,
 		arg.ID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateBaselineItemSort = `-- name: UpdateBaselineItemSort :execrows
+UPDATE baseline_item SET sort = $1, update_time = $2 WHERE id = $3
+`
+
+type UpdateBaselineItemSortParams struct {
+	Sort       uint32    `json:"sort"`
+	UpdateTime time.Time `json:"update_time"`
+	ID         int64     `json:"id"`
+}
+
+func (q *Queries) UpdateBaselineItemSort(ctx context.Context, arg UpdateBaselineItemSortParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateBaselineItemSort, arg.Sort, arg.UpdateTime, arg.ID)
 	if err != nil {
 		return 0, err
 	}

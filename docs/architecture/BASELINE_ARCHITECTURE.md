@@ -85,6 +85,7 @@ PATCH  /sys/security/baseline/{id}/categories/{categoryId}/   {name} 重命名 |
 DELETE /sys/security/baseline/{id}/categories/{categoryId}/   删除类目（非空 400：提示先移走或删光策略）
 POST   /sys/security/baseline/{id}/items/     新增策略（弹窗确认即落库；category_id 属于该基线 + opapolicy 校验）
 PATCH  /sys/security/baseline/{id}/items/{itemId}/   更新策略（弹窗确认即落库）
+                                        或提交 {direction: up/down} 在当前类目内上下移动
 DELETE /sys/security/baseline/{id}/items/{itemId}/   删除策略（即时生效）
 POST   /sys/security/baseline/{id}/scan/  发起扫描 {mount_type, project_id, environment_id}
 GET    /sys/security/scans/?type=       扫描记录（type 默认 baseline；page/page_size 分页，page_size 默认 10 上限 100，返回 count+results）
@@ -101,12 +102,25 @@ GET    /sys/security/scans/{id}/        扫描详情（概要 + 每主机符合�
 删除均走统一删除确认弹窗 `openDeleteConfirm`（`util/deleteConfirm.js`，居中 Modal、
 红色确认按钮）后即 DELETE，基线/类目/策略三处一致，不再用 `a-popconfirm`
 （无「保存策略」批量按钮；整体覆盖 PATCH items 接口保留但前端不再使用）。
-按钮风格与巡检中心对齐：工具栏新增按钮用默认（非 primary）类型；策略表格行内
-操作为 small 图标按钮（编辑=primary 实心 pen，删除=`delBtn` danger trash，均带
-tooltip）；左侧基线面板为 small 图标按钮组（新增 primary / 编辑 / 删除 delBtn /
-发起扫描 ghost）。表格风格与巡检中心对齐：「扫描记录」表用标准服务端分页
+按钮风格与巡检中心对齐：新增按钮使用 primary + plus-circle 图标 + 文本；策略表格
+行内操作为 small 图标按钮（编辑=primary 实心 pen，删除=`delBtn` danger trash，均带
+tooltip）。策略工具栏按「类目操作 / 策略操作」分组并自动换行，标题与刷新动作独立；
+左侧基线操作区以整行 primary 新增按钮为主，其余编辑/删除/扫描动作紧凑排列。窄屏下
+基线列表与策略区纵向排列，工具栏操作组纵向堆叠。
+左右面板顶部对齐且各自按内容确定高度，基线菜单不填充策略表格带来的额外高度；
+菜单超过高度上限时内部滚动，基线操作区紧随菜单展示。
+策略操作列提供上移/下移按钮，按完整类目列表判断边界（跨分页移动也有效），首条禁用
+上移、末条禁用下移。移动复用策略 PATCH，事务内锁定该基线的策略排序，定位同类目
+相邻项后交换并重新编号该类目的 sort，提交后重新读取策略列表；移动期间禁用移动和
+策略编辑/删除按钮，策略编辑弹窗打开时禁用移动，避免排序改变编辑定位下标。
+非法方向、跨基线策略、类目边界及数据库失败明确返回错误；失败回滚，不留下半次排序。
+排序只影响当前策略列表及后续扫描，历史扫描快照不变，无 schema 或数据迁移要求。
+「删除类目」保留完整文字，使用独立的固定宽度，不套用图标删除按钮的 48px 宽度。
+策略表和扫描记录表的操作列固定在右侧并明确宽度，两表均支持横向滚动；扫描记录行内
+「详情」「取消」动作使用顶部 tooltip。下拉弹层挂载到当前上下文，扫描时间按用户时区
+格式化。表格风格与巡检中心对齐：「扫描记录」表用标准服务端分页
 （`scanPagination`：current/pageSize/total + showSizeChanger + 共 N 条，`@change`
-回读，scroll.x=1000）；「策略」表与扫描详情页两表用客户端分页
+回读，scroll.x=1100）；「策略」表与扫描详情页两表用客户端分页
 （showSizeChanger + showQuickJumper）。单条策略的采集/Rego 在二级弹窗编辑（弹窗内类目只读展示为左侧当前
 选中类目）。**「扫描记录」tab 点「详情」不弹窗**，而是 `router.push` 到独立路由页
 `/sys/security/baseline/scans/:id`（`views/security/baseline/scanDetail.vue`，路由名

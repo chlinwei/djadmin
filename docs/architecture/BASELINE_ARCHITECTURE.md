@@ -149,6 +149,13 @@ M/C/F 枚举（不是 0/1/2），location=1、is_expanded 与现有菜单一致�
 
 ## 扫描执行流（scan.go）
 
+发起扫描弹窗每次打开完整读取分页项目、环境和启用逻辑服务名单。项目通过响应的
+`business_systems` 与服务的 `business_system` 关联，环境候选仅列出所选项目启用服务实际使用的环境；
+未选择项目或项目没有关联服务时不展示全局环境。切换项目会同步清除不属于新范围的已选环境，
+环境仍为可选字段，留空表示该项目全部环境，不自动将唯一环境设为必选。
+资产名单加载中或失败时禁止提交，失败显式提示，重开弹窗可重试；迟到的旧加载响应不覆盖新名单。
+候选联动只约束页面选择，实际主机仍由下述挂载解析查询校验和去重。
+
 1. **发起**（`StartScan`）：校验基线启用、条目非空 → `resolveHosts` 复用 inspection 域的
    `ListMountProjectHosts` / `ListMountProjectEnvironmentHosts`（项目或项目×环境实例主机
    去重）→ 事务写 `security_scan` + 每主机 `security_scan_target`（error_message 显式 ''）

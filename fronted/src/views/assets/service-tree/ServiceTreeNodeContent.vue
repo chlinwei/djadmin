@@ -290,7 +290,10 @@ const deploymentColumns = [
 ]
 const columns = computed(() => {
   const baseColumns = ({
-    all: systemColumns,
+    all: [
+      { title: '项目', dataIndex: 'project_name', key: 'project_name', width: 180, customRender: ({ text }) => text || '-' },
+      ...systemColumns.filter((column) => column.key !== 'deployment_count'),
+    ],
     project: systemColumns,
     businessSystem: environmentSummaryColumns,
     environment: serviceColumns,
@@ -308,7 +311,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 920, project: 920, businessSystem: 460, environment: 1210, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1210, service: 950 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => [
   '全部业务',
   props.scope.projectName || (props.scope.nodeType === 'project' ? props.scope.nodeTitle : null),

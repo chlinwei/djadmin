@@ -6,7 +6,7 @@ import requestUtil from '@/util/request'
 
 vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
-vi.mock('@/util/request', () => ({ default: { get: vi.fn(), patch: vi.fn() } }))
+vi.mock('@/util/request', () => ({ default: { get: vi.fn(), patch: vi.fn(), post: vi.fn() } }))
 
 const baseline = { id: 7, name: '测试基线' }
 const items = [
@@ -26,6 +26,7 @@ beforeEach(() => {
       ? { categories: [{ id: 3, name: '类目一' }, { id: 4, name: '类目二' }], items: savedItems }
       : { results: url === 'sys/security/baseline/' ? [baseline] : [] },
   )))
+  requestUtil.post.mockResolvedValue(response({ targets: 1 }))
 })
 
 afterEach(() => {
@@ -42,6 +43,111 @@ async function loadPage() {
   wrapper.vm.selectBaseline(baseline)
   await flushPromises()
 }
+
+describe('扫描项目与环境联动', () => {
+  beforeEach(() => {
+    const originalGet = requestUtil.get.getMockImplementation()
+    requestUtil.get.mockImplementation((url, params) => {
+      const page = params?.page || 1
+      if (url === 'assets/projects/') {
+        return Promise.resolve(response({ totalPages: 2, results: page === 1
+          ? [{ id: 301, name: '测试项目', business_systems: [7] }]
+          : [{ id: 302, name: '生产项目', business_systems: [8] }, { id: 303, name: '空项目', business_systems: [] }] }))
+      }
+      if (url === 'assets/business-environments/') {
+        return Promise.resolve(response({ totalPages: 2, results: page === 1
+          ? [{ id: 71, name: 'test' }]
+          : [{ id: 72, name: 'prod' }, { id: 73, name: '无关联环境' }] }))
+      }
+      if (url === 'assets/application-services/') {
+        return Promise.resolve(response({ totalPages: 2, results: page === 1
+          ? [{ id: 1, business_system: 7, environment: 72, enabled: false }, { id: 2, business_system: 8, environment: 72, enabled: true }]
+          : [{ id: 3, business_system: 7, environment: 71, enabled: true }] }))
+      }
+      return originalGet(url, params)
+    })
+  })
+
+  it('完整读取分页资产，只显示所选项目的启用服务环境，空项目不展示全局环境', async () => {
+    await loadPage()
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    expect(wrapper.vm.projectOptions.map((option) => option.value)).toEqual([301, 302, 303])
+    expect(wrapper.vm.environmentOptions).toEqual([])
+    wrapper.vm.scanForm.project_id = 301
+    await flushPromises()
+    expect(wrapper.vm.environmentOptions).toEqual([{ label: 'test', value: 71 }])
+    expect(requestUtil.get).toHaveBeenCalledWith('assets/application-services/',
+      expect.objectContaining({ enabled: true, page: 2 }))
+    wrapper.vm.scanForm.project_id = 302
+    await flushPromises()
+    expect(wrapper.vm.environmentOptions).toEqual([{ label: 'prod', value: 72 }])
+    wrapper.vm.scanForm.project_id = 303
+    await flushPromises()
+    expect(wrapper.vm.environmentOptions).toEqual([])
+  })
+
+  it('切换项目清掉无效环境，留空时仍提交项目全环境扫描', async () => {
+    await loadPage()
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    wrapper.vm.scanForm.project_id = 301
+    wrapper.vm.scanForm.environment_id = 71
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
+      { mount_type: 'environment', project_id: 301, environment_id: 71 })
+    wrapper.vm.scanForm.project_id = 302
+    expect(wrapper.vm.scanForm.environment_id).toBeUndefined()
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).toHaveBeenLastCalledWith('sys/security/baseline/7/scan/',
+      { mount_type: 'project', project_id: 302, environment_id: null })
+  })
+
+  it('范围加载失败时提示错误并阻止发起扫描，重开弹窗可重试', async () => {
+    await loadPage()
+    const get = requestUtil.get.getMockImplementation()
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    vi.spyOn(message, 'warning').mockImplementation(() => {})
+    requestUtil.get.mockImplementation((url, params) => url === 'assets/application-services/'
+      ? Promise.reject(new Error('服务名单加载失败')) : get(url, params))
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    expect(error).toHaveBeenCalledWith('服务名单加载失败')
+    expect(wrapper.vm.scanScopeLoaded).toBe(false)
+    wrapper.vm.scanForm.project_id = 301
+    await wrapper.vm.submitScan()
+    expect(requestUtil.post).not.toHaveBeenCalled()
+    requestUtil.get.mockImplementation(get)
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    expect(wrapper.vm.scanScopeLoaded).toBe(true)
+    expect(wrapper.vm.scanForm.project_id).toBeUndefined()
+    expect(wrapper.vm.scanForm.environment_id).toBeUndefined()
+  })
+
+  it('弹窗重开后忽略旧资产响应，加载期间禁止提交', async () => {
+    await loadPage()
+    const get = requestUtil.get.getMockImplementation()
+    const warning = vi.spyOn(message, 'warning').mockImplementation(() => {})
+    let resolveOld
+    requestUtil.get.mockImplementation((url, params) => url === 'assets/application-services/'
+      ? new Promise((resolve) => { resolveOld = resolve }) : get(url, params))
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    wrapper.vm.scanForm.project_id = 301
+    await wrapper.vm.submitScan()
+    expect(warning).toHaveBeenCalledWith('扫描范围尚未加载完成，请稍后重试')
+    expect(requestUtil.post).not.toHaveBeenCalled()
+    requestUtil.get.mockImplementation(get)
+    wrapper.vm.openScanModal(baseline)
+    await flushPromises()
+    wrapper.vm.scanForm.project_id = 301
+    resolveOld(response({ results: [{ business_system: 7, environment: 72, enabled: true }] }))
+    await flushPromises()
+    expect(wrapper.vm.environmentOptions).toEqual([{ label: 'test', value: 71 }])
+    expect(wrapper.vm.scanScopeLoading).toBe(false)
+  })
+})
 
 describe('策略上下移动', () => {
   it('保存移动方向并重新读取排序，刷新后保持顺序且不影响其他类目', async () => {

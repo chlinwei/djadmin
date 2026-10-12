@@ -287,14 +287,14 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="scanModalOpen" title="发起基线扫描" centered :confirm-loading="scanning" @ok="submitScan">
+    <a-modal v-model:open="scanModalOpen" title="发起基线扫描" centered :confirm-loading="scanning" :ok-button-props="{ disabled: scanScopeLoading || !scanScopeLoaded }" @ok="submitScan">
       <a-form layout="vertical">
         <a-form-item label="基线"><a-input :value="scanBaseline?.name" readonly /></a-form-item>
         <a-form-item label="项目" required>
-          <a-select v-model:value="scanForm.project_id" :options="projectOptions" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" :getPopupContainer="getPopupContainer" />
+          <a-select v-model:value="scanForm.project_id" :options="projectOptions" :loading="scanScopeLoading" :disabled="scanScopeLoading" :virtual="false" show-search option-filter-prop="label" placeholder="选择项目" :getPopupContainer="getPopupContainer" />
         </a-form-item>
         <a-form-item label="环境（可选）">
-          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :virtual="false" allow-clear placeholder="全部环境" :getPopupContainer="getPopupContainer" />
+          <a-select v-model:value="scanForm.environment_id" :options="environmentOptions" :disabled="!scanForm.project_id || scanScopeLoading" :virtual="false" allow-clear placeholder="全部环境" :getPopupContainer="getPopupContainer" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -303,7 +303,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -312,6 +312,8 @@ import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { formatTimeWithTimezone } from '@/util/timezone'
+import { fetchAllPages } from '@/util/fetchAllPages'
+import { getProjectList, getBusinessEnvironmentList, getApplicationServiceList } from '@/api/assets/application'
 import store from '@/store'
 
 const router = useRouter()
@@ -328,8 +330,6 @@ const deleteBaselineCategory = (baselineId, categoryId) => requestUtil.del(`${ba
 const startBaselineScan = (id, data) => requestUtil.post(`${baselinePrefix}${id}/scan/`, data)
 const cancelScan = (id) => requestUtil.post(`sys/security/scans/${id}/cancel/`)
 const getSecurityScans = (params) => requestUtil.get('sys/security/scans/', params)
-const getProjectListSimple = (params) => requestUtil.get('assets/projects/', params)
-const getEnvironmentListSimple = (params) => requestUtil.get('assets/business-environments/', params)
 
 const activeTab = ref('baselines')
 const baselines = ref([])
@@ -369,8 +369,31 @@ const scanModalOpen = ref(false)
 const scanning = ref(false)
 const scanBaseline = ref(null)
 const scanForm = reactive({ project_id: undefined, environment_id: undefined })
-const projectOptions = ref([])
-const environmentOptions = ref([])
+const scanProjects = ref([])
+const scanEnvironments = ref([])
+const scanServices = ref([])
+const scanScopeLoading = ref(false)
+const scanScopeLoaded = ref(false)
+let scanScopeRequestId = 0
+const projectOptions = computed(() => scanProjects.value.map((item) => ({ label: item.name, value: item.id })))
+const environmentOptions = computed(() => {
+  const project = scanProjects.value.find((item) => item.id === scanForm.project_id)
+  if (!project) return []
+  const systemIds = new Set(project.business_systems || [])
+  const environmentIds = new Set(scanServices.value
+    .filter((service) => service.enabled && systemIds.has(service.business_system))
+    .map((service) => service.environment))
+  return scanEnvironments.value
+    .filter((environment) => environmentIds.has(environment.id))
+    .map((environment) => ({ label: environment.name, value: environment.id }))
+})
+
+// 项目和环境的交集必须在提交前同步收窄，防止旧项目的环境残留到新项目的扫描请求。
+watch(environmentOptions, (options) => {
+  if (scanForm.environment_id != null && !options.some((option) => option.value === scanForm.environment_id)) {
+    scanForm.environment_id = undefined
+  }
+}, { flush: 'sync' })
 
 const statusLabel = (status) => ({ pending: '等待中', running: '扫描中', success: '完成', failed: '存在不符合', skipped: '已跳过', canceled: '已取消' }[status] || status)
 const statusColor = (status) => ({ pending: 'default', running: 'processing', success: 'green', failed: 'red', skipped: 'default', canceled: 'orange' }[status] || 'default')
@@ -686,6 +709,10 @@ async function submitScan() {
     message.warning('请选择项目')
     return
   }
+  if (scanScopeLoading.value || !scanScopeLoaded.value) {
+    message.warning('扫描范围尚未加载完成，请稍后重试')
+    return
+  }
   scanning.value = true
   try {
     const data = responseData(await startBaselineScan(scanBaseline.value.id, {
@@ -707,20 +734,40 @@ function openScanModal(record) {
   scanForm.project_id = undefined
   scanForm.environment_id = undefined
   scanModalOpen.value = true
+  loadScanScopeOptions()
+}
+
+async function loadScanScopeOptions() {
+  const requestId = ++scanScopeRequestId
+  scanScopeLoading.value = true
+  scanScopeLoaded.value = false
+  scanProjects.value = []
+  scanEnvironments.value = []
+  scanServices.value = []
+  try {
+    const [projects, environments, services] = await Promise.all([
+      fetchAllPages(getProjectList),
+      fetchAllPages(getBusinessEnvironmentList),
+      fetchAllPages(getApplicationServiceList, { enabled: true }),
+    ])
+    // 弹窗重开会刷新资产名单，迟到的旧请求不能覆盖新的范围数据。
+    if (requestId !== scanScopeRequestId) return
+    scanProjects.value = projects
+    scanEnvironments.value = environments
+    scanServices.value = services
+    scanScopeLoaded.value = true
+  } catch (error) {
+    if (requestId !== scanScopeRequestId) return
+    message.error(error?.message || '扫描范围加载失败')
+  } finally {
+    if (requestId === scanScopeRequestId) scanScopeLoading.value = false
+  }
 }
 function openScanDetail(record) {
   router.push(`/sys/security/baseline/scans/${record.id}`)
 }
 onMounted(() => {
   loadBaselines()
-  getProjectListSimple({ page: 1, page_size: 200 }).then((response) => {
-    const data = responseData(response)
-    projectOptions.value = (data.results || []).map((item) => ({ label: item.name, value: item.id }))
-  })
-  getEnvironmentListSimple({ page: 1, page_size: 100 }).then((response) => {
-    const data = responseData(response)
-    environmentOptions.value = (data.results || []).map((item) => ({ label: item.name, value: item.id }))
-  })
 })
 
 defineOptions({ name: 'ViewSecurityBaseline' })

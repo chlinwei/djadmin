@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildLevelMetrics, buildLevelRows, levelDimension } from './logLevelOverview'
+import { buildLevelMetrics, buildLevelRows, levelDimension, servicesUnderScope } from './logLevelOverview'
 
 // 日志中心层级视图的折叠口径（架构文档 §9.5「非服务节点 = 层级下钻视图」）。
 //
@@ -244,5 +244,29 @@ describe('logLevelOverview', () => {
   it('gives nothing for a service or deployment node', () => {
     expect(buildLevelRows({ scope: { nodeType: 'service', applicationServiceId: 1 } }).rows).toEqual([])
     expect(levelDimension('deployment')).toBe(null)
+  })
+
+  it.each([
+    [[], [], [1, 2, 3]],
+    [[301], [], [1, 2]],
+    [[], [71], [1, 3]],
+    [[301], [71], [1]],
+    [[301, 302], [71, 72], [1, 2, 3]],
+    [[999], [71], []],
+    [[301], [999], []],
+  ])('query candidates honour project %j and environment %j', (projectIds, environmentIds, expected) => {
+    const businessSystems = [{ id: 7, project: 301 }, { id: 9, project: 302 }]
+    const services = [
+      service({ id: 1, business_system: 7, environment: 71 }),
+      service({ id: 2, business_system: 7, environment: 72 }),
+      service({ id: 3, business_system: 9, environment: 71 }),
+    ]
+    const scope = { nodeType: 'all', projectIds, environmentIds }
+    expect(servicesUnderScope(scope, services, businessSystems).map((row) => row.id)).toEqual(expected)
+    const { rows } = buildLevelRows({
+      scope, businessSystems, services,
+      projects: [{ id: 301, name: '订单项目' }, { id: 302, name: '库存项目' }],
+    })
+    expect(rows.flatMap((row) => row.serviceIds)).toEqual(expected)
   })
 })

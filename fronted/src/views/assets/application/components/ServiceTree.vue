@@ -128,6 +128,7 @@ const selectedEnvironments = ref([])
 const selectedProjects = ref([])
 const projectRecords = ref([])
 const environmentRecords = ref([])
+const serviceRecords = ref([])
 const treeData = ref([])
 const selectedKeys = ref(['all'])
 const expandedKeys = ref([])
@@ -314,8 +315,20 @@ function disposeCharts() {
   }
 }
 const systemCount = computed(() => treeData.value[0]?.count || 0)
+// 环境候选基于项目下的全部服务，而非已被环境筛过的树，避免选中一个环境后其他候选消失。
+const projectServiceRecords = computed(() => {
+  const projectIds = new Set(selectedProjects.value.map((id) => String(id)))
+  if (!projectIds.size) return serviceRecords.value
+  const systemIds = new Set(projectRecords.value
+    .filter((project) => projectIds.has(String(project.id)))
+    .flatMap((project) => project.business_systems || [])
+    .map((id) => String(id)))
+  return serviceRecords.value.filter((service) => systemIds.has(String(service.business_system)))
+})
+const projectEnvironmentIds = computed(() => new Set(projectServiceRecords.value.map((service) => service.environment)))
 const environmentOptions = computed(() => environmentRecords.value
-  .filter((environment) => environment.enabled)
+  .filter((environment) => environment.enabled
+    && (!selectedProjects.value.length || projectEnvironmentIds.value.has(environment.id)))
   .map((environment) => ({ label: environment.name, value: environment.id })))
 const selectedEnvironmentPlaceholder = () => `已选 ${selectedEnvironments.value.length} 个环境`
 const projectOptions = computed(() => projectRecords.value
@@ -527,9 +540,15 @@ function handleEnvironmentChange(values) {
 
 function handleProjectChange(values) {
   selectedProjects.value = values || []
+  pruneSelectedEnvironments()
   selectedKeys.value = ['all']
   emit('select', currentFilterScope())
   refresh()
+}
+
+function pruneSelectedEnvironments() {
+  const availableIds = new Set(environmentOptions.value.map((option) => option.value))
+  selectedEnvironments.value = selectedEnvironments.value.filter((id) => availableIds.has(id))
 }
 
 function filterNodes(nodes, keyword) {
@@ -654,20 +673,12 @@ async function refresh() {
     ])
     environmentRecords.value = environments
     projectRecords.value = projects
-    const projectIds = new Set(selectedProjects.value.map((id) => String(id)))
-    const projectSystemIds = projectIds.size
-      ? new Set(projects
-        .filter((project) => projectIds.has(String(project.id)))
-        .flatMap((project) => project.business_systems || [])
-        .map((id) => String(id)))
-      : null
+    serviceRecords.value = services
+    pruneSelectedEnvironments()
     const environmentIds = new Set(selectedEnvironments.value)
-    const visibleServices = environmentIds.size
-      ? services.filter((service) => environmentIds.has(service.environment))
-      : services
-    const projectServices = projectSystemIds
-      ? visibleServices.filter((service) => projectSystemIds.has(String(service.business_system)))
-      : visibleServices
+    const projectServices = environmentIds.size
+      ? projectServiceRecords.value.filter((service) => environmentIds.has(service.environment))
+      : projectServiceRecords.value
     const visibleServiceIdSet = new Set(projectServices.map((item) => Number(item.id)).filter((item) => Number.isInteger(item) && item > 0))
     const visibleDeployments = deployments.filter((deployment) => {
       const linkedServiceIds = (deployment.application_service_ids || [])

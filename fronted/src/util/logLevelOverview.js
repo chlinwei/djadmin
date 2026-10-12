@@ -50,7 +50,7 @@ export function buildLevelRows({ scope, projects = [], businessSystems = [], ser
 
   // 根节点上方的"项目 / 环境"多选是这一层的过滤器（与存储水位 tab 同一口径）。
   // 只在根节点上成立：下钻到具体节点后，scope 里带的是那个节点的 id，不再有这两个数组。
-  const scopedServices = filterServicesByRootFilters(services, scope)
+  const scopedServices = filterServicesByRootFilters(services, scope, businessSystems)
   const members = levelMembers(scope, dimension.key, projects, businessSystems, scopedServices)
   const rows = members.map((member) => {
     const memberServices = servicesUnder(member, dimension.key, scopedServices, businessSystems)
@@ -59,18 +59,24 @@ export function buildLevelRows({ scope, projects = [], businessSystems = [], ser
   return { dimension, rows }
 }
 
-// filterServicesByRootFilters 应用根节点上方的**环境**多选。
+// filterServicesByRootFilters 应用根节点上方的项目/环境多选。
 //
 // 为什么必须过滤：不过滤的话，用户在树上方筛了"只看某个环境"，这一层却仍然把全部服务算进指标条
 // 与清单 —— 界面上出现"筛选了但数字没变"。存储水位 tab 一直是这么做的（scopeCodes）。
-// 项目多选不在这里处理：它由 levelMembers 过滤掉未选中的项目行即可（每行的服务都经该行自己的
-// 业务系统解析出来，未选中项目的服务不会进任何一行）。
-function filterServicesByRootFilters(services, scope) {
+// 服务没有项目字段，须通过业务系统归属收窄；查询候选与层级汇总必须使用同一套范围。
+function filterServicesByRootFilters(services, scope, businessSystems) {
   if (!scope || scope.nodeType !== 'all') return services
   const environmentIds = Array.isArray(scope.environmentIds) ? scope.environmentIds : []
-  if (!environmentIds.length) return services
-  const allowed = new Set(environmentIds)
-  return services.filter((service) => allowed.has(service.environment))
+  const projectIds = Array.isArray(scope.projectIds) ? scope.projectIds : []
+  const allowedEnvironments = new Set(environmentIds)
+  const allowedProjects = new Set(projectIds)
+  const allowedSystems = new Set(businessSystems
+    .filter((system) => allowedProjects.has(system.project))
+    .map((system) => system.id))
+  return services.filter((service) => (
+    (!allowedProjects.size || allowedSystems.has(service.business_system))
+    && (!allowedEnvironments.size || allowedEnvironments.has(service.environment))
+  ))
 }
 
 // levelMembers 这一层要列出的成员（下一层的节点）。
@@ -152,7 +158,7 @@ export function servicesUnderScope(scope, services = [], businessSystems = []) {
     )
     return services.filter((service) => systemIds.has(service.business_system))
   }
-  return services
+  return filterServicesByRootFilters(services, scope, businessSystems)
 }
 
 // businessSystemsInProject 项目的业务系统归属以**业务系统行上的 project 字段**为准。

@@ -79,7 +79,7 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
 
   // 上层节点的任务形态（2026-09-28，方案 A）：默认「概览」——按逻辑服务聚合，
   // 范围由左树决定，面板内不再有范围选择器；点某服务分面「查看日志」下钻到明细并收窄。
-  it('上层节点默认概览：按逻辑服务聚合，下钻写入 service 过滤并切明细', async () => {
+  it('上层节点默认日志：统计按逻辑服务聚合，下钻写入 service 过滤并切日志', async () => {
     searchElasticsearchLogFacetStats.mockImplementation((id, params) => {
       if (params.field === 'service') {
         return Promise.resolve({ data: { data: { field: 'service', interval_minutes: 5, buckets: [
@@ -97,10 +97,12 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     })
     await flushPromises()
 
-    // 默认打开「概览」，默认按逻辑服务分组；范围 = 左树选中的业务系统内全部服务（面板不再二次收窄）。
-    expect(wrapper.vm.activeTab).toBe('stats')
+    // 默认日志，统计维度按逻辑服务分组；范围由左树决定。
+    expect(wrapper.vm.activeTab).toBe('logs')
     expect(wrapper.vm.statsField).toBe('service')
-    expect(wrapper.vm.innerTabs.map((tab) => tab.label)).toEqual(['明细', '概览'])
+    expect(wrapper.vm.innerTabs.map((tab) => tab.label)).toEqual(['日志', '统计'])
+    wrapper.vm.handleTabChange('stats')
+    await flushPromises()
     expect(searchElasticsearchLogFacetStats).toHaveBeenCalledWith(
       CLUSTER.id,
       expect.objectContaining({ field: 'service', application_service_ids: '42,43' }),
@@ -617,5 +619,88 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
 
     expect(searchElasticsearchLogs.mock.calls.length).toBeGreaterThan(callsBefore)
     wrapper.unmount()
+  })
+
+  it('候选名单非空到非空时自动重查，日志和所有分面都限定到新名单', async () => {
+    const wrapper = mountPanel()
+    await wrapper.setProps({ candidateServices: [{ id: 42 }, { id: 43 }] })
+    await flushPromises()
+    searchElasticsearchLogs.mockClear()
+    searchElasticsearchLogFacetStats.mockClear()
+
+    await wrapper.setProps({ candidateServices: [{ id: 43 }] })
+    await flushPromises()
+    expect(searchElasticsearchLogs).toHaveBeenCalled()
+    expect(searchElasticsearchLogFacetStats).toHaveBeenCalled()
+    for (const [, params] of [
+      ...searchElasticsearchLogs.mock.calls,
+      ...searchElasticsearchLogFacetStats.mock.calls,
+    ]) {
+      expect(params.application_service_ids).toBe('43')
+    }
+
+    wrapper.vm.activeTab = 'stats'
+    await flushPromises()
+    searchElasticsearchLogFacetStats.mockClear()
+    await wrapper.setProps({ candidateServices: [{ id: 42 }] })
+    await flushPromises()
+    expect(wrapper.vm.activeTab).toBe('stats')
+    expect(searchElasticsearchLogFacetStats).toHaveBeenCalled()
+    expect(searchElasticsearchLogFacetStats.mock.calls.every(([, params]) => params.application_service_ids === '42')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('筛选后无服务时清空旧结果，不发送缺少服务范围的全量查询', async () => {
+    const wrapper = mountPanel()
+    await wrapper.setProps({ candidateServices: [{ id: 42 }] })
+    await flushPromises()
+    searchElasticsearchLogs.mockClear()
+    searchElasticsearchLogFacetStats.mockClear()
+    await wrapper.setProps({ candidateServices: [] })
+    await flushPromises()
+    expect(searchElasticsearchLogs).not.toHaveBeenCalled()
+    expect(searchElasticsearchLogFacetStats).not.toHaveBeenCalled()
+    expect(wrapper.vm.logs).toEqual([])
+    expect(wrapper.vm.statsBuckets).toEqual([])
+    expect(wrapper.vm.logLevelOptions).toEqual([])
+    expect(wrapper.vm.pagination.total).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('切换范围后，晚返回的旧日志和筛选候选不会覆盖新范围', async () => {
+    const oldLogs = []
+    const oldOptions = []
+    const originalLogs = searchElasticsearchLogs.getMockImplementation()
+    const originalStats = searchElasticsearchLogFacetStats.getMockImplementation()
+    searchElasticsearchLogs.mockImplementation((_id, params) => (
+      params.application_service_ids === '42'
+        ? new Promise((resolve) => oldLogs.push(resolve))
+        : Promise.resolve({ data: { data: { results: [{ ...LOG_DOC, id: 'new-doc' }], count: 1 } } })
+    ))
+    searchElasticsearchLogFacetStats.mockImplementation((_id, params) => (
+      params.application_service_ids === '42'
+        ? new Promise((resolve) => oldOptions.push(resolve))
+        : Promise.resolve({ data: { data: { buckets: [{ value: 'NEW', count: 1 }] } } })
+    ))
+    const wrapper = mountPanel()
+    try {
+      await wrapper.setProps({ candidateServices: [{ id: 42 }] })
+      await flushPromises()
+      expect(oldLogs.length).toBeGreaterThan(0)
+      expect(oldOptions.length).toBeGreaterThan(0)
+      await wrapper.setProps({ candidateServices: [{ id: 43 }] })
+      await flushPromises()
+      oldLogs.forEach((resolve) => resolve({ data: { data: { results: [LOG_DOC], count: 99 } } }))
+      oldOptions.forEach((resolve) => resolve({ data: { data: { buckets: [{ value: 'OLD', count: 99 }] } } }))
+      await flushPromises()
+      expect(wrapper.vm.logs.map((row) => row.id)).toEqual(['new-doc'])
+      expect(wrapper.vm.pagination.total).toBe(1)
+      expect(wrapper.vm.logLevelOptions).toEqual([{ label: 'NEW', value: 'NEW' }])
+      expect(wrapper.vm.loading).toBe(false)
+    } finally {
+      wrapper.unmount()
+      searchElasticsearchLogs.mockImplementation(originalLogs)
+      searchElasticsearchLogFacetStats.mockImplementation(originalStats)
+    }
   })
 })

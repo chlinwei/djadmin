@@ -126,6 +126,96 @@ describe('ServiceTree', () => {
     wrapper.unmount()
   })
 
+  it('limits environment options to selected projects and clears invalid selections before emitting scope', async () => {
+    applicationApi.getProjectList.mockResolvedValue(listResponse([
+      { id: 301, name: '仅测试项目', business_systems: [7], enabled: true },
+      { id: 302, name: '生产项目', business_systems: [8], enabled: true },
+      { id: 303, name: '空项目', business_systems: [], enabled: true },
+    ]))
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '测试系统', project: 301 },
+      { id: 8, name: '生产系统', project: 302 },
+    ]))
+    applicationApi.getBusinessEnvironmentList.mockResolvedValue(listResponse([
+      { id: 71, name: '生产环境', enabled: true },
+      { id: 72, name: 'test', enabled: true },
+      { id: 73, name: '未使用环境', enabled: true },
+      { id: 74, name: '停用环境', enabled: false },
+    ]))
+    applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
+      { id: 21, business_system: 7, environment: 72, name: '测试服务' },
+      { id: 22, business_system: 8, environment: 71, name: '生产服务' },
+      { id: 23, business_system: 7, environment: 74, name: '停用环境服务' },
+    ]))
+    const wrapper = mount(ServiceTree, {
+      props: { groupByProject: true },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const selects = wrapper.findAllComponents({ name: 'ASelect' })
+      const projectFilter = selects.find((component) => component.classes().includes('service-tree-project-filter'))
+      const environmentFilter = selects.find((component) => component.classes().includes('service-tree-environment-filter'))
+      const optionIds = () => environmentFilter.props('options').map((option) => option.value)
+      expect(optionIds()).toEqual([71, 72, 73])
+
+      await environmentFilter.vm.$emit('change', [71])
+      await flushPromises()
+      await projectFilter.vm.$emit('change', [301])
+      expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [301], environmentIds: [] })
+      await flushPromises()
+      expect(optionIds()).toEqual([72])
+      expect(environmentFilter.props('value')).toEqual([])
+
+      await environmentFilter.vm.$emit('change', [72])
+      await flushPromises()
+      await projectFilter.vm.$emit('change', [301, 302])
+      await flushPromises()
+      expect(optionIds()).toEqual([71, 72])
+      expect(environmentFilter.props('value')).toEqual([72])
+
+      await projectFilter.vm.$emit('change', [302])
+      await flushPromises()
+      expect(optionIds()).toEqual([71])
+      expect(environmentFilter.props('value')).toEqual([])
+      expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [302], environmentIds: [] })
+
+      await projectFilter.vm.$emit('change', [303])
+      await flushPromises()
+      expect(optionIds()).toEqual([])
+      await projectFilter.vm.$emit('change', [])
+      await flushPromises()
+      expect(optionIds()).toEqual([71, 72, 73])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('refresh removes selected environments that are no longer used in the selected project', async () => {
+    const wrapper = mount(ServiceTree, { global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
+    try {
+      await flushPromises()
+      const selects = wrapper.findAllComponents({ name: 'ASelect' })
+      const projectFilter = selects.find((component) => component.classes().includes('service-tree-project-filter'))
+      const environmentFilter = selects.find((component) => component.classes().includes('service-tree-environment-filter'))
+      await projectFilter.vm.$emit('change', [301])
+      await flushPromises()
+      await environmentFilter.vm.$emit('change', [72])
+      await flushPromises()
+      expect(environmentFilter.props('options').map((option) => option.value)).toEqual([71, 72])
+      applicationApi.getApplicationServiceList.mockResolvedValue(listResponse([
+        { id: 21, business_system: 7, environment: 71, name: '生产服务' },
+      ]))
+      await wrapper.vm.refresh()
+      await flushPromises()
+      expect(environmentFilter.props('options').map((option) => option.value)).toEqual([71])
+      expect(environmentFilter.props('value')).toEqual([])
+      expect(wrapper.emitted('select').at(-1)[0]).toMatchObject({ projectIds: [301], environmentIds: [] })
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   // 回归（2026-09-21 现场）：服务树切 tab 回来后顶部出现整块空白，节点被推到下方。
   // 机理：页面被 keep-alive 缓存，a-tree 的 virtual（rc-virtual-list）在隐藏时容器高度变 0，
   // 重新激活后内部 scrollTop/偏移未复位，虚拟列表从中间下标开始渲染，前面留出空白间隔。

@@ -602,33 +602,46 @@ async function runSearch() {
   await Promise.all([loadLogLevelOptions(), reloadActiveTab()])
 }
 
-watch(() => props.scope, () => {
-  filters.keyword = ''
-  filters.logLevels = []
-  filters.hostIp = ''
-  filters.logName = ''
-  filters.logPath = ''
-  filters.errorFingerprint = ''
-  filters.service = ''
-  filters.project = ''
-  filters.businessSystem = ''
-  filters.environment = ''
-  filters.instance = props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : ''
-  // 统计维度仍按范围初始化，但所有节点统一默认展示原始日志。
-  statsField.value = isMultiService.value ? 'service' : 'error_fingerprint'
-  activeTab.value = 'logs'
+let logsRequestId = 0
+let statsRequestId = 0
+let optionsRequestId = 0
+
+// 左树筛选和异步服务名单都定义查询范围；旧范围的响应不得回填新范围的界面。
+watch([() => JSON.stringify(props.scope), () => effectiveServiceIds().join(',')], ([scopeKey], previous = []) => {
+  logsRequestId++
+  statsRequestId++
+  optionsRequestId++
+  loading.value = false
+  statsLoading.value = false
+  logs.value = []
+  statsBuckets.value = []
+  pagination.total = 0
+  logLevelOptions.value = []
+  instanceOptions.value = []
+  logPathOptions.value = []
+  if (scopeKey !== previous[0]) {
+    filters.keyword = ''
+    filters.logLevels = []
+    filters.hostIp = ''
+    filters.logName = ''
+    filters.logPath = ''
+    filters.errorFingerprint = ''
+    filters.service = ''
+    filters.project = ''
+    filters.businessSystem = ''
+    filters.environment = ''
+    filters.instance = props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : ''
+    // 统计维度仍按范围初始化，但所有节点统一默认展示原始日志。
+    statsField.value = isMultiService.value ? 'service' : 'error_fingerprint'
+    activeTab.value = 'logs'
+  } else if (isMultiService.value && !previous[1]) {
+    // 首次异步加载服务名单时补全维度，不覆盖用户已经选择的 tab。
+    statsField.value = 'service'
+  }
   pagination.current = 1
   // 走统一查询入口：标记"已按当前条件查询"（否则一进来就显示"条件已改"）。
   runSearch()
-}, { deep: true, immediate: true })
-
-// 上层服务名单异步到达后补查当前视图，不覆盖用户已经选择的 tab。
-watch(isMultiService, (multi) => {
-  if (!multi || props.scope.applicationServiceId) return
-  statsField.value = 'service'
-  pagination.current = 1
-  runSearch()
-})
+}, { immediate: true })
 
 // 当前有哪些下钻过滤（决定"下钻过滤"行是否显示）。
 // 必须覆盖**全部**可下钻维度：只判断一部分会让按 逻辑服务/业务系统/环境/级别/实例 下钻后
@@ -706,23 +719,28 @@ async function loadLogs() {
     pagination.total = 0
     return
   }
+  const requestId = ++logsRequestId
+  const params = buildQueryParams()
   loading.value = true
   try {
     const id = await ensureClusterId()
+    if (requestId !== logsRequestId) return
     if (!id) {
       message.warning('尚未配置日志存储集群')
       logs.value = []
       pagination.total = 0
       return
     }
-    const response = await searchElasticsearchLogs(id, buildQueryParams())
+    const response = await searchElasticsearchLogs(id, params)
+    if (requestId !== logsRequestId) return
     const payload = response?.data?.data || {}
     logs.value = payload.results || []
     pagination.total = Math.min(payload.count || 0, MAX_RESULT_WINDOW)
   } catch (error) {
+    if (requestId !== logsRequestId) return
     message.error(error?.response?.data?.msg || error?.message || '查询日志失败')
   } finally {
-    loading.value = false
+    if (requestId === logsRequestId) loading.value = false
   }
 }
 
@@ -731,32 +749,39 @@ async function loadStats() {
     statsBuckets.value = []
     return
   }
+  const requestId = ++statsRequestId
+  const params = buildFacetParams()
   statsLoading.value = true
   try {
     const id = await ensureClusterId()
+    if (requestId !== statsRequestId) return
     if (!id) {
       message.warning('尚未配置日志存储集群')
       statsBuckets.value = []
       return
     }
-    const response = await searchElasticsearchLogFacetStats(id, buildFacetParams())
+    const response = await searchElasticsearchLogFacetStats(id, params)
+    if (requestId !== statsRequestId) return
     const payload = response?.data?.data || {}
     statsBuckets.value = payload.buckets || []
     statsIntervalMinutes.value = payload.interval_minutes || 1
   } catch (error) {
+    if (requestId !== statsRequestId) return
     message.error(error?.response?.data?.msg || error?.message || '统计失败')
   } finally {
-    statsLoading.value = false
-    await nextTick()
-    renderTrendChart()
+    if (requestId === statsRequestId) {
+      statsLoading.value = false
+      await nextTick()
+      renderTrendChart()
+    }
   }
 }
 
 function reloadActiveTab() {
   if (activeTab.value === 'stats') {
-    loadStats()
+    return loadStats()
   } else {
-    loadLogs()
+    return loadLogs()
   }
 }
 
@@ -826,31 +851,36 @@ defineExpose({ reload })
 // 级别的命名随应用而异（Java SEVERE…）不能硬编码；实例名手写容易拼错，从真实数据里选才准。
 // 候选加载失败不阻塞主查询。
 async function loadLogLevelOptions() {
+  const requestId = ++optionsRequestId
   if (!queryReady.value) {
     logLevelOptions.value = []
     instanceOptions.value = []
     logPathOptions.value = []
     return
   }
+  const params = buildBaseParams()
+  delete params.log_level
+  delete params.instance
+  const pathParams = buildBaseParams()
+  // 不让当前路径选择收窄自身候选，用户仍能切换到同范围内其他文件。
+  delete pathParams.log_path
   try {
     const id = await ensureClusterId()
+    if (requestId !== optionsRequestId) return
     if (!id) return
-    const params = buildBaseParams()
-    delete params.log_level
-    delete params.instance
-    const pathParams = buildBaseParams()
-    // 不让当前路径选择收窄自身候选，用户仍能切换到同范围内其他文件。
-    delete pathParams.log_path
     const [levelResponse, instanceResponse, pathResponse] = await Promise.all([
       searchElasticsearchLogFacetStats(id, { ...params, field: 'log_level', size: 50 }),
       searchElasticsearchLogFacetStats(id, { ...params, field: 'instance', size: 50 }),
       searchElasticsearchLogFacetStats(id, { ...pathParams, field: 'log_path', size: 50 }),
     ])
+    if (requestId !== optionsRequestId) return
     logLevelOptions.value = toFacetOptions(levelResponse)
     instanceOptions.value = toFacetOptions(instanceResponse)
     logPathOptions.value = toFacetOptions(pathResponse)
   } catch (error) {
+    if (requestId !== optionsRequestId) return
     // 下拉可选值只是辅助提示，加载失败不阻塞主查询，mode="tags" 仍可手动输入级别。
+    console.warn('[log_center] 加载日志筛选候选失败', error?.response?.data?.msg || error?.message)
     logLevelOptions.value = []
     instanceOptions.value = []
     logPathOptions.value = []

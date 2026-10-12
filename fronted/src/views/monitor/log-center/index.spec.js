@@ -1480,6 +1480,38 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  it('passes root project/environment filters to the query candidate list', async () => {
+    const { getBusinessSystemList, getApplicationServiceList } = await import('@/api/assets/application')
+    const originalSystems = getBusinessSystemList.getMockImplementation()
+    const originalServices = getApplicationServiceList.getMockImplementation()
+    getBusinessSystemList.mockResolvedValue({ data: { data: { results: [
+      { id: 7, project: 301 }, { id: 8, project: 302 },
+    ], totalPages: 1 } } })
+    getApplicationServiceList.mockResolvedValue({ data: { data: { results: [
+      { id: 15, business_system: 7, environment: 10 },
+      { id: 16, business_system: 7, environment: 11 },
+      { id: 17, business_system: 8, environment: 10 },
+    ], totalPages: 1 } } })
+    const wrapper = await mountPage()
+    try {
+      const tree = wrapper.findComponent({ name: 'ServiceTree' })
+      const panel = wrapper.findComponent({ name: 'LogQueryPanel' })
+      tree.vm.$emit('select', { nodeType: 'all', projectIds: [301], environmentIds: [10] })
+      await flushPromises()
+      expect(panel.props('candidateServices').map((service) => service.id)).toEqual([15])
+      tree.vm.$emit('select', { nodeType: 'all', projectIds: [302], environmentIds: [11] })
+      await flushPromises()
+      expect(panel.props('candidateServices')).toEqual([])
+      tree.vm.$emit('select', { nodeType: 'all', projectIds: [], environmentIds: [] })
+      await flushPromises()
+      expect(panel.props('candidateServices').map((service) => service.id)).toEqual([15, 16, 17])
+    } finally {
+      wrapper.unmount()
+      getBusinessSystemList.mockImplementation(originalSystems)
+      getApplicationServiceList.mockImplementation(originalServices)
+    }
+  })
+
   // 「继承服务默认」必须写清继承到哪一档（现场反馈"我怎么知道默认是什么呢"）。
   // 继承链：服务默认档位（log-config 顶层字段）→ 平台默认档（is_default）→ std。
   it('spells out what the inherited retention tier actually is', async () => {

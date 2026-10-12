@@ -133,10 +133,10 @@ func TestFacetAllowedFieldsCoverRangeDimensions(t *testing.T) {
 	}
 }
 
-// 日志路径维度映射到运行时字段。
+// 所有分面直接使用索引字段，日志路径无需运行时脚本。
 func TestFacetAggField(t *testing.T) {
-	if facetAggField("log_path") != logPathRuntimeField {
-		t.Fatalf("log_path 应用运行时字段聚合")
+	if facetAggField("log_path") != "log_path" {
+		t.Fatalf("log_path 应直接聚合 keyword 索引")
 	}
 	if facetAggField("service") != "service" || facetAggField("") != "" {
 		t.Fatalf("普通字段原样、空字段返回空串")

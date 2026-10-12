@@ -17,6 +17,7 @@ import (
 
 	"autoadmin/internal/api/response"
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/logstream"
 
 	"github.com/gin-gonic/gin"
 )
@@ -280,7 +281,8 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 	//（application_service_ids，日志中心上层节点的跨服务检索，2026-09-28）。
 	// 两者都把范围折算成"四元组过滤"，后续的关键词/级别/实例等过滤完全共用。
 	var scopeFilter any
-	serviceCode := ""
+	prefix := defaultString(cluster.IndexPrefix, "autoadmin")
+	var indexPatterns []string
 	if rawIDs := strings.TrimSpace(context.Query("application_service_ids")); rawIDs != "" {
 		ids := parseIDList(rawIDs)
 		if len(ids) == 0 {
@@ -296,6 +298,9 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 		// 请求里的 id 可能有不存在的：按实际查到的 dims 收窄（缺的服务静默忽略，
 		// 与"范围由前端从已列出的服务里选"一致）。
 		scopeFilter = multiServiceScopeFilter(dimsList)
+		for _, dims := range dimsList {
+			indexPatterns = append(indexPatterns, logstream.Name(prefix, dims.ProjectCode, dims.EnvironmentCode, dims.BusinessSystemCode, dims.ServiceCode, "*"))
+		}
 	} else {
 		serviceID := parseID(context.Query("application_service_id"))
 		if serviceID == 0 {
@@ -308,7 +313,7 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 			return cluster, "", nil, fmt.Errorf("application service not found")
 		}
 		scopeFilter = gin.H{"bool": gin.H{"filter": serviceDimsFilters(dims)}}
-		serviceCode = dims.ServiceCode
+		indexPatterns = []string{logstream.Name(prefix, dims.ProjectCode, dims.EnvironmentCode, dims.BusinessSystemCode, dims.ServiceCode, "*")}
 	}
 	start, end, err := parseLogWindow(context)
 	if err != nil {
@@ -323,9 +328,9 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 			filters = append(filters, gin.H{"term": gin.H{field: value}})
 		}
 	}
-	// 日志路径过滤走运行时字段：历史文档的 log_path 是路径模式，具体文件在 log.file.path。
+	// log_path 在写入时已统一为真实文件路径，直接使用 keyword 索引，禁止逐条读取 _source 过滤。
 	if value := strings.TrimSpace(context.Query("log_path")); value != "" {
-		filters = append(filters, gin.H{"term": gin.H{logPathRuntimeField: value}})
+		filters = append(filters, gin.H{"term": gin.H{"log_path": value}})
 	}
 	if levels := strings.TrimSpace(context.Query("log_level")); levels != "" {
 		filters = append(filters, gin.H{"terms": gin.H{"log_level": strings.Split(levels, ",")}})
@@ -347,7 +352,10 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 	if clause := keywordQuery(context.Query("keyword"), keywordMode); clause != nil {
 		must = []any{*clause}
 	}
-	return cluster, serviceCode, []any{filters, must}, nil
+	// 文档过滤保证范围正确，索引范围同时收窄才能避免让无关服务的全部分片参与查询。
+	// 档位用通配符，保留当前及历史档位的日志；没有匹配流时返回空结果，不扩大全量范围。
+	searchPath := "/" + url.PathEscape(strings.Join(indexPatterns, ",")) + "/_search?ignore_unavailable=true&allow_no_indices=true"
+	return cluster, searchPath, []any{filters, must}, nil
 }
 
 // keywordQuery 把关键词与模式折算成 query_string 子句（关键词为空时返回 nil）。
@@ -390,7 +398,7 @@ func escapeLuceneFieldColon(keyword string) string {
 }
 
 func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
-	cluster, _, parts, err := handler.buildLogQuery(context)
+	cluster, searchPath, parts, err := handler.buildLogQuery(context)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -413,11 +421,7 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 	// _source 带上 project/business_system/environment：跨服务检索（application_service_ids）的
 	// 列表要按层级显示"业务系统/环境/逻辑服务"列，文档上的维度编码是唯一的来源。
 	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
-	// 按"日志路径"过滤时用运行时字段（历史文档的 log_path 是模式，具体文件在 log.file.path）。
-	if strings.TrimSpace(context.Query("log_path")) != "" {
-		body["runtime_mappings"] = logFilePathRuntimeMappings()
-	}
-	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, "/"+url.PathEscape(defaultString(cluster.IndexPrefix, "autoadmin"))+"-*/_search", body)
+	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, searchPath, body)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -460,26 +464,6 @@ func nestedFilePath(source map[string]any) string {
 	return path
 }
 
-// logPathRuntimeField 是"实际文件路径"的运行时字段名。
-//
-// 为什么需要它：按 `log_path` 分组/过滤时，历史文档里存的是配置里的路径模式（带 `*`），
-// 真正具体的文件只在 `log.file.path` 里，而该字段在索引模板 `dynamic:false` 下**没有建 mapping、
-// 不可聚合**。用运行时字段从 `_source` 里把它取出来做 keyword，新旧数据就都能按具体文件分组/过滤
-// （2026-09-20 现场：按日志路径统计，列表里还是 `/home/esb/data/logs/*/log_error.log`）。
-const logPathRuntimeField = "log_file_path"
-
-// logFilePathRuntimeMappings 定义上面的运行时字段（从 _source 读取，无需重建索引）。
-func logFilePathRuntimeMappings() gin.H {
-	return gin.H{
-		logPathRuntimeField: gin.H{
-			"type": "keyword",
-			"script": gin.H{
-				"source": "if (params._source != null && params._source.log != null && params._source.log.file != null && params._source.log.file.path != null) { emit(params._source.log.file.path); }",
-			},
-		},
-	}
-}
-
 // applyLogPathFromFilebeat 把事件里的 log_path 换成真实文件路径（若有）。
 func applyLogPathFromFilebeat(item gin.H, source map[string]any) {
 	if actual := nestedFilePath(source); actual != "" {
@@ -505,7 +489,16 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 		response.BusinessError(context, 400, "invalid facet field", nil)
 		return
 	}
-	cluster, _, parts, err := handler.buildLogQuery(context)
+	optionsOnly := false
+	if value, present := context.GetQuery("options_only"); present {
+		var err error
+		optionsOnly, err = strconv.ParseBool(value)
+		if err != nil {
+			response.BusinessError(context, 400, "options_only must be a boolean", nil)
+			return
+		}
+	}
+	cluster, searchPath, parts, err := handler.buildLogQuery(context)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -521,19 +514,17 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 	if interval < 1 {
 		interval = 1
 	}
-	// 「日志路径」维度按**实际文件路径**分组：历史文档的 log_path 是路径模式，具体文件在
-	// log.file.path，用运行时字段把它取出来（否则列表里显示的还是一串带 `*` 的模式）。
 	aggField := facetAggField(field)
-	innerAggs := gin.H{
-		"sample": gin.H{"top_hits": gin.H{"size": 1, "sort": []any{gin.H{"@timestamp": "desc"}}}},
-		"trend":  gin.H{"date_histogram": gin.H{"field": "@timestamp", "fixed_interval": fmt.Sprintf("%dm", interval)}},
+	fieldAgg := gin.H{"terms": gin.H{"field": aggField, "size": size, "order": gin.H{"_count": "desc"}}}
+	// 下拉候选只需要值与计数；样例排序和每桶时间趋势只由统计视图请求，避免长窗口重复聚合。
+	if !optionsOnly {
+		fieldAgg["aggs"] = gin.H{
+			"sample": gin.H{"top_hits": gin.H{"size": 1, "sort": []any{gin.H{"@timestamp": "desc"}}}},
+			"trend":  gin.H{"date_histogram": gin.H{"field": "@timestamp", "fixed_interval": fmt.Sprintf("%dm", interval)}},
+		}
 	}
-	body := gin.H{"size": 0, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}, "aggs": gin.H{"by_field": gin.H{"terms": gin.H{"field": aggField, "size": size, "order": gin.H{"_count": "desc"}}, "aggs": innerAggs}}}
-	// 按其他维度统计时也可能带路径过滤，过滤所用的运行时字段必须一并声明。
-	if field == "log_path" || strings.TrimSpace(context.Query("log_path")) != "" {
-		body["runtime_mappings"] = logFilePathRuntimeMappings()
-	}
-	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, "/"+url.PathEscape(defaultString(cluster.IndexPrefix, "autoadmin"))+"-*/_search", body)
+	body := gin.H{"size": 0, "track_total_hits": false, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}, "aggs": gin.H{"by_field": fieldAgg}}
+	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, searchPath, body)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
@@ -579,15 +570,8 @@ func (handler *Handler) ElasticsearchLogFacetStats(context *gin.Context) {
 	response.Success(context, gin.H{"field": field, "interval_minutes": interval, "buckets": buckets})
 }
 
-// facetAggField 把分面字段映射成实际聚合字段：「日志路径」用运行时字段（见 logFilePathRuntimeMappings），
-// 其余原样；空字段返回空串。
+// facetAggField 的维度名与索引字段一致；真实路径统一存储在 log_path keyword 字段中。
 func facetAggField(field string) string {
-	if field == "" {
-		return ""
-	}
-	if field == "log_path" {
-		return logPathRuntimeField
-	}
 	return field
 }
 

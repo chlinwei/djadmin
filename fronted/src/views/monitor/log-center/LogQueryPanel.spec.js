@@ -621,6 +621,30 @@ describe('LogQueryPanel（日志中心的日志查询面板）', () => {
     wrapper.unmount()
   })
 
+  it('12 小时范围的下拉候选只请求计数，统计页仍请求完整样例与趋势', async () => {
+    const wrapper = mountPanel({ nodeType: 'service', applicationServiceId: 42 })
+    try {
+      await flushPromises()
+      const end = wrapper.vm.filters.timeRange[1].year(2026).month(9).date(12).hour(8).minute(0).second(0).millisecond(0)
+      wrapper.vm.filters.timeRange = [end.subtract(12, 'hour'), end]
+      searchElasticsearchLogFacetStats.mockClear()
+      await wrapper.vm.runSearch()
+      await flushPromises()
+      for (const field of ['log_level', 'instance', 'log_path']) {
+        expect(searchElasticsearchLogFacetStats).toHaveBeenCalledWith(CLUSTER.id,
+          expect.objectContaining({ field, options_only: true, start: '2026-10-11T12:00:00.000Z', end: '2026-10-12T00:00:00.000Z' }))
+      }
+      searchElasticsearchLogFacetStats.mockClear()
+      wrapper.vm.handleTabChange('stats')
+      await flushPromises()
+      expect(searchElasticsearchLogFacetStats).toHaveBeenCalledWith(CLUSTER.id,
+        expect.objectContaining({ field: 'error_fingerprint' }))
+      expect(searchElasticsearchLogFacetStats.mock.calls.every(([, params]) => params.options_only === undefined)).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('候选名单非空到非空时自动重查，日志和所有分面都限定到新名单', async () => {
     const wrapper = mountPanel()
     await wrapper.setProps({ candidateServices: [{ id: 42 }, { id: 43 }] })

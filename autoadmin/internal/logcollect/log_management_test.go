@@ -124,8 +124,8 @@ func TestBuildIndexTemplateBody(t *testing.T) {
 // 必备字段 guard：tag 模式打标不丢、drop 模式丢弃；判定条件与必备字段集合同源。
 func TestBuildMappingGuardPipelineBody(t *testing.T) {
 	tagProcessors := buildMappingGuardPipelineBody(mappingGuardModeTag)["processors"].([]any)
-	if len(tagProcessors) != 2 {
-		t.Fatalf("tag 模式应有 app_fields 兜底 + mapping_violation 打标两个处理器：%+v", tagProcessors)
+	if len(tagProcessors) != 3 {
+		t.Fatalf("tag 模式应有 app_fields 兜底、mapping_violation 打标和真实路径归一化：%+v", tagProcessors)
 	}
 	if _, ok := tagProcessors[1].(gin.H)["set"]; !ok {
 		t.Fatalf("tag 模式第二个处理器应是 set（打标）：%+v", tagProcessors[1])

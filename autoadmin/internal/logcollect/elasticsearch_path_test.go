@@ -20,21 +20,16 @@ func TestLogFacetAllowedFieldsIncludesLogPath(t *testing.T) {
 // 日志详情里的"日志路径"必须是该事件**实际来自的文件**，而不是采集配置里的路径模式
 // （2026-09-20 现场：通配路径 `/home/esb/data/logs/*/log_error.log` 被原样显示）。
 // 权威值来自 Filebeat 的 `log.file.path`。
-// 按"日志路径"分组/过滤时用运行时字段从 _source 读 Filebeat 的真实文件路径
-// （历史文档的 log_path 是模式，且 log.file.path 因 dynamic:false 不可聚合）。
-func TestLogFilePathRuntimeMappings(t *testing.T) {
-	mappings := logFilePathRuntimeMappings()
-	field, ok := mappings[logPathRuntimeField].(gin.H)
-	if !ok {
-		t.Fatalf("runtime_mappings 缺少 %q：%#v", logPathRuntimeField, mappings)
+func TestLogPathKeywordAndFinalPipeline(t *testing.T) {
+	if standardLogFields["log_path"].(gin.H)["type"] != "keyword" {
+		t.Fatal("真实路径必须有 keyword 索引")
 	}
-	if field["type"] != "keyword" {
-		t.Fatalf("运行时字段应为 keyword，得到 %v", field["type"])
-	}
-	script, _ := field["script"].(gin.H)
+	processors := buildMappingGuardPipelineBody(mappingGuardModeTag)["processors"].([]any)
+	script := processors[len(processors)-1].(gin.H)["script"].(gin.H)
 	source, _ := script["source"].(string)
-	if !strings.Contains(source, "params._source.log.file.path") || !strings.Contains(source, "emit(") {
-		t.Fatalf("运行时字段脚本应从 _source 取 log.file.path 并 emit，得到 %q", source)
+	if script["tag"] != "canonical_log_path" || !strings.Contains(source, "ctx.log.file.path") ||
+		!strings.Contains(source, "ctx.log_path = path") || !strings.Contains(source, "ctx.remove('log_path')") {
+		t.Fatalf("写入必须用权威路径校准 log_path：%s", source)
 	}
 }
 

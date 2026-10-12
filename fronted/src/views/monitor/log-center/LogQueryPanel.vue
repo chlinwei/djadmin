@@ -869,9 +869,9 @@ async function loadLogLevelOptions() {
     if (requestId !== optionsRequestId) return
     if (!id) return
     const [levelResponse, instanceResponse, pathResponse] = await Promise.all([
-      searchElasticsearchLogFacetStats(id, { ...params, field: 'log_level', size: 50 }),
-      searchElasticsearchLogFacetStats(id, { ...params, field: 'instance', size: 50 }),
-      searchElasticsearchLogFacetStats(id, { ...pathParams, field: 'log_path', size: 50 }),
+      searchElasticsearchLogFacetStats(id, { ...params, field: 'log_level', size: 50, options_only: true }),
+      searchElasticsearchLogFacetStats(id, { ...params, field: 'instance', size: 50, options_only: true }),
+      searchElasticsearchLogFacetStats(id, { ...pathParams, field: 'log_path', size: 50, options_only: true }),
     ])
     if (requestId !== optionsRequestId) return
     logLevelOptions.value = toFacetOptions(levelResponse)

@@ -194,7 +194,7 @@ export function searchElasticsearchLogs(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-search/`, params)
 }
 
-// 通用分面统计：params.field 必须是后端白名单字段之一，返回按该字段聚合的计数/样例/时间趋势
+// 通用分面统计：params.field 必须是后端白名单字段之一；options_only=true 只聚合候选值与计数，不计算样例/趋势。
 export function searchElasticsearchLogFacetStats(id, params) {
   return requestUtil.get(prefix + `elasticsearch-clusters/${id}/log-facet-stats/`, params)
 }
@@ -396,4 +396,3 @@ export function cleanupLogDataStream(payload) {
 export function cleanupLogDataStreamByStream(payload) {
   return requestUtil.post(prefix + 'log-datastreams/cleanup-stream/', payload)
 }
-

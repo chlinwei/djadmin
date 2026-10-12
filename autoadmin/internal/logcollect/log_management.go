@@ -129,8 +129,27 @@ func buildMappingGuardPipelineBody(mode string) gin.H {
 			"description": "必备字段不齐，打标但不丢弃（LOG_MAPPING_GUARD_MODE=tag）",
 		}})
 	}
-	return gin.H{"processors": processors, "description": "平台级必备字段校验（" + missing + " 少一个都不行）"}
+	// final_pipeline 在用户规则之后执行，保证所有写入的 log_path 都是可直接聚合的真实路径，
+	// 防止规则覆盖为通配模式；没有权威路径时移除该可选字段，不伪造路径候选。
+	processors = append(processors, gin.H{"script": gin.H{
+		"lang":        "painless",
+		"tag":         "canonical_log_path",
+		"description": "将 Filebeat 真实文件路径写入 log_path 索引字段",
+		"source":      canonicalLogPathScript,
+	}})
+	return gin.H{"processors": processors, "description": "平台级必备字段校验（" + missing + " 少一个都不行）及真实文件路径归一化"}
 }
+
+const canonicalLogPathScript = `
+def path = null;
+if (ctx.log instanceof Map && ctx.log.file instanceof Map) {
+  path = ctx.log.file.path;
+}
+if (path instanceof String && path.length() > 0) {
+  ctx.log_path = path;
+} else {
+  ctx.remove('log_path');
+}`
 
 // quoteAll 给字段名加引号，只用于 pipeline 的描述文案。
 func quoteAll(values []string) []string {

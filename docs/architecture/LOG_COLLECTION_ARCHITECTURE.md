@@ -329,7 +329,7 @@ cold 0.1GB/天 × 90 天 =   9 GB
 | `@timestamp` | date | Filebeat filestream（平台；值是否被 pipeline 的 `date` processor 覆盖成日志时间另说） |
 | `message` | text | Filebeat filestream（原始行） |
 | `project`、`business_system`、`environment`、`service`、`application`、`instance`、`host_ip`、`log_name` | keyword | 下发片段里的 `fields_under_root` 注入（`log_config_render.go`；`host_ip` 在主机没采到 IP 时写空串，保证键存在） |
-| `log_path` | keyword | **不是静态注入**：input 级 `copy_fields` 处理器把 Filebeat 的 `log.file.path`（**该事件实际来自哪个文件**）拷到顶层 `log_path`。路径含通配时静态值只会是带 `*` 的模式，日志详情必须显示具体文件（2026-09-20） |
+| `log_path` | keyword | input 级 `copy_fields` 先复制 Filebeat 的 `log.file.path`；平台 `final_pipeline` 在用户规则之后再次以该真实路径校准顶层 `log_path`，防止规则写入路径模式。没有有效真实路径时移除这个可选字段，不伪造候选。查询和聚合直接使用 `log_path` 的 keyword 索引 |
 | `app_fields` | flattened | 平台 guard 兜空对象（业务字段一律写进这里，见下） |
 | **`log_level`、`log_message`、`error_fingerprint`** | keyword / text / keyword | **必须由处理规则的 pipeline 产出**（`requiredProcessingRuleOutputs`，见 §5.2、§5.4 与 §8.4 的 mapping-guard） |
 | `mapping_violation` | boolean | 平台标记字段（不是规则产出要求）：guard 在 `tag` 模式下给必备字段不齐的文档打标。**检索不做默认排除**（2026-09-19 定：guard 只当"认证失效的发现器"，日志一条都不能看不见），标记供巡检/告警用 |
@@ -1803,6 +1803,14 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 不得退化为全量检索。服务名单异步到达或发生变化时自动重查当前视图并重置页码；仅名单变化保留用户已选 tab，
 树节点/根筛选变化则清空下钻条件并回到日志明细。切换范围会使旧日志、统计及候选请求失效，迟到响应不得覆盖新范围。
 
+日志明细和分面统计同时收窄 Elasticsearch 索引目标：根据所选服务的四元组，通过公共 `logstream.Name`
+生成 `<前缀>-<项目>-<业务系统>-<环境>-<服务>-*`，多服务使用逗号分隔的模式列表，而非全局 `<前缀>-*`。
+档位通配保留当前与历史档位，文档级四元组和时间过滤仍然生效；未匹配到流时返回空结果，不回退到全量。
+级别、实例、路径下拉候选使用 `log-facet-stats/?options_only=true`，仅计算 terms 值和计数，
+响应仍为 `buckets[]`，其中 `sample=null`、`trend=[]`；普通统计请求保持样例和时间趋势。
+分面请求不计算无用的总命中数。请求超时仍以集群的 `request_timeout` 为准（未配置有效值时为 10 秒），
+性能优化不修改时间窗口、查询条件或超时时间；超时显式报错，不展示部分结果作为成功结果。
+
 #### 9.5.0 这一页的改动语义（2026-09-19 统一）
 
 日志中心「日志配置」上可改的东西不少，但**语义只有两条轴**，界面上此前没说清（"有的直接入库、
@@ -2079,12 +2087,14 @@ fingerprint 归一化质量。
 `log_path` 即日志详情里显示的"日志路径"（Filebeat `log.file.path`）——配置里写通配路径时，
 按它分组才能区分具体是哪个文件在产日志。
 
-> **为什么日志路径的分组/过滤用运行时字段**：历史文档里存的 `log_path` 是配置里的**路径模式**
-> （带 `*`），而具体文件只在 `log.file.path` 里；该字段在索引模板 `dynamic:false` 下没有 mapping、
-> **不可聚合**。所以按 `log_path` 分组或过滤时，请求里带 `runtime_mappings` 定义一个从 `_source`
-> 读 `log.file.path` 的 keyword 运行时字段（`log_file_path`），用它做 `terms`/`term`；样例与检索
-> 结果的 `log_path` 也替换成真实文件。好处是**旧数据无需重建索引**（2026-09-20 现场：按日志路径
-> 统计，列表里还是 `/home/esb/data/logs/*/log_error.log`）。
+**路径的唯一索引口径**：`log_path` 是已经建有 keyword mapping 的真实文件路径，`terms` 与 `term`
+直接使用它，不再通过运行时脚本逐条读取 `_source`。Filebeat 先复制真实路径，平台
+`<prefix>-mapping-guard` 的最后一个处理器再从 `log.file.path` 校准；缺失、非字符串或空路径时
+移除 `log_path`，该可选字段不参与必备字段拒收判定。日志详情与样例保留 `log.file.path` 的展示权威性。
+
+历史文档中保存的路径模式必须在启用这套查询口径前回填为真实路径；不保留运行时字段兼容分支，
+也不通过缩短时间窗口或忽略错误伪装迁移完成。新写入校准、限速回填和逐范围验收必须在维护窗口
+完成，执行前确认 ES 写入范围；步骤见 [真实路径索引迁移方案](../plans/LOG_PATH_INDEX_MIGRATION.md)。
 
 **关键词框的关键词有两个模式**（`keyword_mode`，2026-09-19 加）：
 

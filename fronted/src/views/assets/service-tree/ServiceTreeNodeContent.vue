@@ -45,7 +45,7 @@
     </header>
 
     <a-spin :spinning="loading">
-      <div v-if="metrics.length" class="metric-band">
+      <div v-if="metrics.length" class="metric-band" :class="{ 'metric-band--instance': scope.nodeType === 'deployment' }">
         <div v-for="metric in metrics" :key="metric.label" class="metric-item">
           <span class="metric-label">{{ metric.label }}</span>
           <strong :class="{ 'metric-danger': metric.danger }">{{ metric.value }}</strong>
@@ -395,7 +395,6 @@ const metrics = computed(() => {
     ...(detail.value.cluster_type === 'ha'
       ? [{ label: '主备状态', value: haRoleLabels[detail.value.ha_role] || '未知' }]
       : []),
-    { label: '监听端口', value: detail.value.ports?.length || 0 },
   ]
   return []
 })
@@ -850,6 +849,15 @@ defineExpose({ refresh })
   border-right: 1px solid #e5e7eb;
 }
 .metric-item:last-child { border-right: 0; }
+.metric-band--instance {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.metric-band--instance .metric-item {
+  min-width: 140px;
+  box-sizing: border-box;
+}
 .metric-label { color: #687386; font-size: 12px; }
 .metric-item strong { color: #172033; font-size: 22px; font-weight: 600; }
 .metric-item strong.metric-danger { color: #cf1322; }
@@ -910,5 +918,6 @@ defineExpose({ refresh })
   .metric-band { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .metric-item:nth-child(2) { border-right: 0; }
   .metric-item:nth-child(-n + 2) { border-bottom: 1px solid #e5e7eb; }
+  .metric-band--instance .metric-item { border-bottom: 0; }
 }
 </style>

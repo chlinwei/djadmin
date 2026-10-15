@@ -109,7 +109,7 @@ describe('service-tree non-blocking runtime checks', () => {
   it.each([undefined, 'redis', 'ha'])('shows the deployment HA metric only for HA clusters (%s)', async (clusterType) => {
     getApplicationDeployment.mockResolvedValue(response({
       id: 10, instance_name: 'instance-10', runtime_status: 'running', ha_role: 'unknown',
-      cluster_type: clusterType, ports: [],
+      cluster_type: clusterType,
     }))
     mountNode()
     await flushPromises()
@@ -117,12 +117,26 @@ describe('service-tree non-blocking runtime checks', () => {
     await flushPromises()
     expect(wrapper.vm.metrics.some((item) => item.label === '主备状态')).toBe(clusterType === 'ha')
     expect(wrapper.vm.metrics.some((item) => item.label === '运行状态')).toBe(true)
-    expect(wrapper.vm.metrics.some((item) => item.label === '监听端口')).toBe(true)
+    expect(wrapper.vm.metrics.some((item) => item.label === '监听端口')).toBe(false)
+    expect(wrapper.text()).not.toContain('监听端口')
+    expect(wrapper.find('.metric-band').classes()).toContain('metric-band--instance')
+    expect(wrapper.findAll('.metric-item')).toHaveLength(clusterType === 'ha' ? 2 : 1)
     if (clusterType === 'ha') {
       expect(wrapper.vm.metrics.find((item) => item.label === '主备状态').value).toBe('未知')
     } else {
       expect(wrapper.text()).not.toContain('主备状态')
     }
+  })
+
+  it('keeps template port descriptions on the logical-service page', async () => {
+    getApplicationService.mockResolvedValue(response({
+      id: 1, member_instances: [], ports: [{ name: 'main', protocol: 'tcp', port: 8080 }],
+    }))
+    mountNode()
+    await flushPromises()
+    expect(wrapper.text()).toContain('监听端口')
+    expect(wrapper.text()).toContain('main · TCP 8080')
+    expect(wrapper.find('.metric-band').classes()).not.toContain('metric-band--instance')
   })
 
   it('deduplicates slow polling and updates only status fields without reloading details', async () => {

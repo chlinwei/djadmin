@@ -272,6 +272,7 @@ const serviceColumns = [
   { title: '逻辑服务', dataIndex: 'name', key: 'child_link', width: 220 },
   { title: '环境', dataIndex: 'environment_name', key: 'environment_name', width: 140 },
   { title: '应用', dataIndex: 'application_name', key: 'application_name', width: 180 },
+  { title: '版本', dataIndex: 'application_version_name', key: 'application_version_name', width: 140, customRender: ({ text }) => text || '-' },
   { title: '部署形态', key: 'topology_type', width: 110 },
   { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 180 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
@@ -315,7 +316,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1210, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 950 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)

@@ -171,8 +171,8 @@ export function batchDeleteApplicationServices(ids) {
     return requestUtil.post(`${applicationServicePrefix}batch-delete/`, { ids })
 }
 
-export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000) {
-    return requestUtil.post(`${applicationServicePrefix}${id}/refresh-runtime-status/`, {}, timeout)
+export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000, options = {}) {
+    return requestUtil.post(`${applicationServicePrefix}${id}/refresh-runtime-status/`, {}, timeout, options)
 }
 
 export function getApplicationVersionList(params) {
@@ -230,4 +230,3 @@ export function batchDeleteApplicationDeployments(ids) {
 export function controlApplicationDeployment(id, action, options = {}) {
     return requestUtil.post(`${deploymentPrefix}${id}/control/`, { action }, null, options)
 }
-

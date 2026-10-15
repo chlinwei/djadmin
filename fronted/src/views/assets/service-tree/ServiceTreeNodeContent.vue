@@ -12,6 +12,10 @@
         <h2>{{ scope.nodeTitle || '全部业务' }}</h2>
       </div>
       <a-space>
+        <a-tag v-if="runtimeRefreshing" color="processing">状态检查中</a-tag>
+        <a-tooltip v-else-if="runtimeRefreshError" :title="runtimeRefreshError" placement="top">
+          <a-tag color="warning">状态刷新失败</a-tag>
+        </a-tooltip>
         <template v-if="scope.nodeType === 'businessSystem' && entity">
           <a-tooltip title="编辑">
             <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-business-system', entity)">
@@ -273,7 +277,11 @@ const descendants = ref([])
 const services = ref([])
 let loadSequence = 0
 let runtimeRefreshTimer = null
-let runtimeRefreshInFlight = false
+const runtimeRefreshing = ref(false)
+const runtimeRefreshError = ref('')
+const runtimeRefreshRequests = new Map()
+let runtimeSubscriptionSequence = -1
+let viewActive = true
 const runtimeRefreshInterval = 15000
 
 const systemColumns = [
@@ -498,43 +506,98 @@ async function fetchAll(loader, params = {}) {
   return records
 }
 
-// 手动刷新到服务节点时顺带实时查询一次 Agent；切换节点的自动加载不触发，避免浏览即发起远程调用。
+// Agent 检查与页面加载解耦；同服务复用在途请求，各节点只接收自己当前加载代次的结果。
 async function refreshRuntimeStatus(silent = false) {
   const serviceId = props.scope.nodeType === 'service' ? props.scope.applicationServiceId : null
-  if (!serviceId || runtimeRefreshInFlight) return
-  runtimeRefreshInFlight = true
+  if (!serviceId || !viewActive) return
+  const key = String(serviceId)
+  const sequence = loadSequence
+  if (runtimeRefreshRequests.has(key) && runtimeSubscriptionSequence === sequence) return
+  runtimeSubscriptionSequence = sequence
+  const isCurrent = () => viewActive && sequence === loadSequence
+    && props.scope.nodeType === 'service' && String(props.scope.applicationServiceId) === key
+  runtimeRefreshing.value = true
+  runtimeRefreshError.value = ''
   try {
-    const response = await refreshApplicationServiceRuntimeStatus(serviceId)
+    let request = runtimeRefreshRequests.get(key)
+    if (!request) {
+      request = (async () => {
+        try {
+          const response = await refreshApplicationServiceRuntimeStatus(serviceId, 120000, {
+            suppressBusinessErrorMessage: true,
+          })
+          // 离开节点后不再补拉列表；检查结果已由后端落库，重新进入时读取即可。
+          const deployments = viewActive && props.scope.nodeType === 'service'
+            && String(props.scope.applicationServiceId) === key
+            ? await fetchAll(getApplicationDeploymentList, { application_service: serviceId })
+            : null
+          return { response, deployments }
+        } finally {
+          runtimeRefreshRequests.delete(key)
+        }
+      })()
+      runtimeRefreshRequests.set(key, request)
+    }
+    const { response, deployments } = await request
+    if (!isCurrent()) return
+    if (deployments) {
+      const latest = new Map(deployments.map((item) => [String(item.id), item]))
+      const mergeStatus = (item) => {
+        const update = latest.get(String(item.id))
+        return update ? {
+          ...item,
+          runtime_status: update.runtime_status,
+          runtime_status_output: update.runtime_status_output,
+          last_status_check_time: update.last_status_check_time,
+        } : item
+      }
+      rows.value = rows.value.map(mergeStatus)
+      descendants.value = descendants.value.map(mergeStatus)
+    }
     if (!silent) {
       const summary = response?.data?.data?.summary || {}
       message.success(`运行状态已刷新：运行中 ${summary.running || 0} / 已停止 ${summary.stopped || 0} / 检查失败 ${summary.error || 0}`)
     }
   } catch (error) {
-    if (!silent) {
-      message.error(error?.response?.data?.msg || error?.message || '查询运行状态失败')
+    const text = error?.response?.data?.msg || error?.message || '查询运行状态失败'
+    if (isCurrent()) {
+      runtimeRefreshError.value = text
+      if (!silent) message.error(text)
+    } else {
+      console.error('服务运行状态后台检查失败', serviceId, text)
     }
   } finally {
-    runtimeRefreshInFlight = false
+    if (isCurrent()) runtimeRefreshing.value = false
   }
 }
 
 async function refresh() {
-  await refreshRuntimeStatus()
-  await loadNode()
+  await loadAndRefresh(false)
 }
 
-async function refreshAutomatically() {
-  if (props.scope.nodeType !== 'service') return
-  await refreshRuntimeStatus(true)
-  await loadNode()
+async function loadAndRefresh(silent = true) {
+  if (!viewActive) return
+  runtimeRefreshing.value = false
+  runtimeRefreshError.value = ''
+  const pending = loadNode()
+  const sequence = loadSequence
+  const loaded = await pending
+  if (loaded && viewActive && sequence === loadSequence) void refreshRuntimeStatus(silent)
 }
 
 function startRuntimeRefresh() {
+  const resuming = !viewActive
+  viewActive = true
   if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
-  runtimeRefreshTimer = setInterval(() => { void refreshAutomatically() }, runtimeRefreshInterval)
+  runtimeRefreshTimer = setInterval(() => { void refreshRuntimeStatus(true) }, runtimeRefreshInterval)
+  if (resuming) void loadAndRefresh()
 }
 
 function stopRuntimeRefresh() {
+  viewActive = false
+  ++loadSequence
+  loading.value = false
+  runtimeRefreshing.value = false
   if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
   runtimeRefreshTimer = null
 }
@@ -730,6 +793,7 @@ async function loadNode() {
     detail.value = nextDetail
     descendants.value = nextDescendants
     services.value = nextServices
+    return true
   } catch (error) {
     if (sequence === loadSequence) message.error(error?.message || '节点信息加载失败')
   } finally {
@@ -737,8 +801,8 @@ async function loadNode() {
   }
 }
 
-watch(() => props.scope, (scope) => {
-  void (scope.nodeType === 'service' ? refreshAutomatically() : loadNode())
+watch(() => props.scope, () => {
+  void loadAndRefresh()
 }, { deep: true, immediate: true })
 
 onBeforeUnmount(stopRuntimeRefresh)

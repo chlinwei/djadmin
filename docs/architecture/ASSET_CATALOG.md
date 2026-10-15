@@ -32,15 +32,25 @@
 
 ## 服务树"资源占比"数据链（部署→服务→项目）
 
-服务树"资源占比"只按**项目**聚合（"按业务"维度已移除）。前端 `ServiceTree.vue` 用四份数据聚合 CPU/内存饼图，
+服务树右侧的"资源占比"在全部、项目、业务系统、环境节点显示，分别按下一层
+项目、业务系统、环境、逻辑服务聚合；逻辑服务和部署实例节点不显示该图。
+页面通过 `statsByScope` 启用范围统计，公共树的其他调用方保持原有统计行为。
+分组与范围复用 `logLevelOverview` 的层级逻辑，`serviceTreeResources` 负责容量归集。
 Go API 必须提供：
 
 - `GET /assets/application-deployments/`：每条部署带 **`application_service_ids`**（`assets_application_service_deployment` M2M 关联，`attachApplicationServiceIDs` 批量补齐，未关联输出 `[]` 非 null）+ `host`（关联主机 ID）。
 - `GET /assets/application-services/`：带 `business_system`（用于经项目的 `business_systems` 归集到项目）。
 - `GET /assets/hosts/`：带 `hardware.cpu_cores` / `hardware.memory_gb`。
 - `GET /assets/projects/`：带 `business_systems`（见上）。
+- `GET /assets/business-systems/`：带项目归属，用于范围过滤和业务分组。
 
 缺失任一关联字段，饼图恒为空（前端 `linkedServices` 过滤后无归集桶）。
+
+资源含义是承载主机的 CPU / 内存配置容量，不是实时使用率、服务配额或真实资源分摊。
+每个分组内主机 ID 去重，同主机多个部署不重复累加；跨组允许同一主机重复归集。
+饼图百分比和“分组归集”总值按分组容量之和计算，不代表物理资源去重总量。
+界面明确提示分组容量可能重叠；无关联主机的服务不贡献容量，空范围清空图表。
+顶部项目／环境过滤与当前节点范围共同生效，切换节点刷新图表，隐藏后恢复时重新计算尺寸。
 
 **项目与环境筛选联动**：公共服务树用于服务树页和日志中心。未选择项目时，环境下拉保留全局启用环境；
 选择项目后，仅列出这些项目的逻辑服务实际使用的启用环境，多项目取并集。项目归属由项目响应的
@@ -73,6 +83,12 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
   `duplicateError`），不再统一成"名称或编码已存在"。
 
 ## 逻辑服务 / 部署实例列表的 scope 过滤（服务树右侧面板）
+
+右侧详情顶部的面包屑支持点击祖先层级返回，当前节点仅显示文本。
+从部署实例点击逻辑服务名称，按当前路径保留服务 ID、业务系统和环境返回服务详情，
+不从共享实例的成员关系中猜测父服务，也不依赖浏览器历史。
+上钻时只携带目标层级及祖先字段，清除更深层实例／服务身份；
+下钻保留已知项目上下文。名称相同的不同层级仍分别展示，没有足够身份的祖先只显示文本。
 
 服务树选中节点后，右侧 `ServiceTreeNodeContent.vue` 按节点层级向后端传过滤参数；Go 版
 与 Django 版 DRF filter 字段名保持一致，语义为"缺省 = 不筛选"：

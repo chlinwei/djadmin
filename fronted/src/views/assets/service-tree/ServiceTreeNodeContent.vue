@@ -1,7 +1,10 @@
 <template>
   <section class="node-content">
     <a-breadcrumb class="node-breadcrumb">
-      <a-breadcrumb-item v-for="item in breadcrumbs" :key="item">{{ item }}</a-breadcrumb-item>
+      <a-breadcrumb-item v-for="(item, index) in breadcrumbs" :key="index">
+        <a v-if="item.scope" href="#" @click.prevent="emit('navigate', item.scope)">{{ item.title }}</a>
+        <span v-else>{{ item.title }}</span>
+      </a-breadcrumb-item>
     </a-breadcrumb>
     <header class="node-content-header">
       <div>
@@ -219,6 +222,7 @@ import {
   refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
 import { getHostById } from '@/api/assets/host'
+import { buildServiceTreeBreadcrumbs } from './navigation'
 
 const props = defineProps({
   scope: { type: Object, required: true },
@@ -312,14 +316,7 @@ const levelLabel = computed(() => ({
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
 const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1210, service: 950 }[props.scope.nodeType] || 800))
-const breadcrumbs = computed(() => [
-  '全部业务',
-  props.scope.projectName || (props.scope.nodeType === 'project' ? props.scope.nodeTitle : null),
-  props.scope.businessSystemName || (props.scope.nodeType === 'businessSystem' ? props.scope.nodeTitle : null),
-  props.scope.environmentName || (props.scope.nodeType === 'environment' ? props.scope.nodeTitle : null),
-  props.scope.serviceName || (props.scope.nodeType === 'service' ? props.scope.nodeTitle : null),
-  props.scope.nodeType === 'deployment' ? props.scope.nodeTitle : null,
-].filter(Boolean).filter((item, index, values) => values.indexOf(item) === index))
+const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)
 )).length)
@@ -376,6 +373,7 @@ function buildChildScope(record) {
     return {
       nodeType: 'businessSystem', businessSystemId: record.id,
       businessSystemName: record.name, nodeTitle: record.name,
+      projectId: record.project, projectName: record.project_name,
     }
   }
   if (props.scope.nodeType === 'project') {
@@ -421,7 +419,13 @@ function buildChildScope(record) {
 
 function navigateToChild(record) {
   const childScope = buildChildScope(record)
-  if (childScope) emit('navigate', childScope)
+  if (childScope) {
+    emit('navigate', {
+      projectId: props.scope.projectId,
+      projectName: props.scope.projectName,
+      ...childScope,
+    })
+  }
 }
 
 function getChildRowProps(record) {

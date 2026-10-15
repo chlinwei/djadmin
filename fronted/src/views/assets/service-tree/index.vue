@@ -5,6 +5,7 @@
         ref="serviceTreeRef"
         :selected-scope="serviceScope"
         :show-stats="false"
+        stats-by-scope
         group-by-project
         @stats-change="handleStatsChange"
         @select="serviceScope = $event"
@@ -30,23 +31,25 @@
             </a-button>
           </a-tooltip>
         </div>
-        <section v-show="serviceScope.nodeType === 'all'" class="service-tree-right-stats">
+        <section v-show="showResourceStats" class="service-tree-right-stats">
           <div class="service-tree-right-stats-header">
             <span>资源占比</span>
           </div>
-          <div class="service-tree-right-stats-subtitle">按 CPU / 内存 资源汇总</div>
+          <div class="service-tree-right-stats-subtitle">
+            按{{ resourceDimensionLabel }}汇总承载主机 CPU / 内存容量；组内主机去重，分组间可能重叠，非实时使用率或服务配额。
+          </div>
           <div class="service-tree-right-stats-grid">
             <div class="service-tree-right-chart-card">
               <div class="service-tree-right-chart-title">
                 <span>CPU 占比</span>
-                <strong>总 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
+                <strong>分组归集 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
               </div>
               <div ref="hostPieRef" class="service-tree-right-chart"></div>
             </div>
             <div class="service-tree-right-chart-card">
               <div class="service-tree-right-chart-title">
                 <span>内存占比</span>
-                <strong>总内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
+                <strong>分组归集内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
               </div>
               <div ref="deploymentPieRef" class="service-tree-right-chart"></div>
             </div>
@@ -110,6 +113,10 @@ const serviceCreateInitialEnvironmentId = ref(null)
 // 只有能定位到业务系统层级以上的节点才适合新增逻辑服务（service/deployment 自身就是详情，不再支持再新增）。
 const canCreateService = computed(() => ['all', 'project', 'businessSystem', 'environment'].includes(serviceScope.value.nodeType))
 const statsData = ref({ cpuRows: [], memoryRows: [], totalCpu: 0, totalMemory: 0 })
+const resourceDimensionLabel = computed(() => ({
+  all: '项目', project: '业务系统', businessSystem: '环境', environment: '逻辑服务',
+}[serviceScope.value.nodeType] || '项目'))
+const showResourceStats = computed(() => ['all', 'project', 'businessSystem', 'environment'].includes(serviceScope.value.nodeType))
 const hostPieRef = ref(null)
 const deploymentPieRef = ref(null)
 let hostPieChart = null
@@ -254,10 +261,11 @@ function confirmDeleteService(record) {
 }
 
 watch(
-  () => [statsData.value.cpuRows, statsData.value.memoryRows],
+  () => [statsData.value.cpuRows, statsData.value.memoryRows, showResourceStats.value],
   async () => {
     await nextTick()
     renderCharts()
+    if (showResourceStats.value) resizeCharts()
   },
   { deep: true },
 )

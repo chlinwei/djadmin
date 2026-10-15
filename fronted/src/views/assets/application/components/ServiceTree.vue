@@ -102,6 +102,7 @@ import { Empty, message } from 'ant-design-vue'
 import * as echarts from 'echarts'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { fetchAllPages } from '@/util/fetchAllPages'
+import { buildServiceTreeResources } from '@/util/serviceTreeResources'
 import {
   getApplicationDeploymentList,
   getApplicationServiceList,
@@ -114,6 +115,7 @@ import { getHostList } from '@/api/assets/host'
 const props = defineProps({
   selectedScope: { type: Object, default: () => ({ nodeType: 'all' }) },
   showStats: { type: Boolean, default: true },
+  statsByScope: { type: Boolean, default: false },
   // 参考“逻辑服务” tab 的左侧树：需要看项目层级的页面（如日志查询）传 true，
   // 默认 false 不动服务树页自己的现有层级，避免影响已有页面/测试。
   groupByProject: { type: Boolean, default: false },
@@ -145,6 +147,7 @@ const chartServices = ref([])
 const chartDeployments = ref([])
 const chartHosts = ref([])
 const chartProjects = ref([])
+const chartBusinessSystems = ref([])
 const SEARCH_DEBOUNCE_MS = 180
 const MIN_TREE_HEIGHT = 320
 
@@ -170,6 +173,16 @@ function buildTopNPieData(sourceRows, limit = 8) {
 }
 
 const pieStats = computed(() => {
+  if (props.statsByScope) {
+    return buildServiceTreeResources({
+      scope: props.selectedScope,
+      projects: chartProjects.value,
+      businessSystems: chartBusinessSystems.value,
+      services: chartServices.value,
+      deployments: chartDeployments.value,
+      hosts: chartHosts.value,
+    })
+  }
   const serviceList = chartServices.value
   const deploymentList = chartDeployments.value
   const hostList = chartHosts.value
@@ -651,7 +664,7 @@ watch(searchText, (value) => {
 
 watch([cpuPieData, memoryPieData, totalCpu, totalMemory], () => {
   emit('stats-change', {
-    dimension: 'project',
+    dimension: pieStats.value.dimension || 'project',
     cpuRows: cpuPieData.value,
     memoryRows: memoryPieData.value,
     totalCpu: totalCpu.value,
@@ -687,6 +700,7 @@ async function refresh() {
       return linkedServiceIds.some((serviceId) => visibleServiceIdSet.has(serviceId))
     })
     chartProjects.value = projects
+    chartBusinessSystems.value = systems
     chartServices.value = projectServices
     chartDeployments.value = visibleDeployments
     chartHosts.value = hosts || []

@@ -422,24 +422,25 @@ SELECT COUNT(*) FROM assets_host WHERE instance_name = sqlc.arg(instance_name) A
 
 -- ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 
--- name: GetDeploymentControlContext :one
-SELECT COALESCE(h.instance_name, ''), t.control_type, t.run_user, t.work_directory, t.app_home,
+-- name: LockApplicationDeployment :one
+SELECT id FROM assets_application_deployment WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: ListDeploymentControlContexts :many
+SELECT COALESCE(h.instance_name, '') AS instance_name, t.id AS template_id, t.control_type, t.run_user, t.work_directory, t.app_home,
        t.service_name, t.systemd_scope, t.macro_definitions,
-       d.instance_name AS deployment_instance_name
+       d.instance_name AS deployment_instance_name, s.macro_values, d.runtime_variables
 FROM assets_application_deployment d
 JOIN assets_host h ON h.id = d.host_id
 JOIN assets_application_service_deployment l ON l.deployment_id = d.id
 JOIN assets_application_service s ON s.id = l.service_id
 JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
-WHERE d.id = sqlc.arg(id) LIMIT 1;
+WHERE d.id = sqlc.arg(id)
+ORDER BY s.id
+FOR UPDATE;
 
 -- name: ListDeploymentControlActions :many
 SELECT action,command,timeout_seconds,success_exit_codes FROM assets_application_control_action
-WHERE deployment_template_id = (
-  SELECT deployment_template_id FROM assets_application_service s
-  JOIN assets_application_service_deployment l ON l.service_id = s.id
-  WHERE l.deployment_id = sqlc.arg(deployment_id) LIMIT 1
-);
+WHERE deployment_template_id = sqlc.arg(template_id);
 
 -- name: UpdateDeploymentRuntimeStatus :exec
 UPDATE assets_application_deployment

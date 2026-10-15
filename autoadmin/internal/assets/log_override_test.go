@@ -223,6 +223,8 @@ func TestSaveApplicationServiceKeepsFormatVerification(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"log_definition_id", "retention_tier_id", "collection_enabled", "collection_filter_rule_id"},
 		).AddRow(int64(24), nil, nil, nil))
+	mock.ExpectQuery("SELECT deployment_id FROM assets_application_service_deployment").
+		WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
 	mock.ExpectCommit()
 
 	settings := []ServiceLogSettingInput{{LogDefinition: 24}}
@@ -262,6 +264,8 @@ func TestSaveApplicationServiceDeletesUnsubmittedLogSettings(t *testing.T) {
 		).AddRow(int64(24), nil, nil, nil).AddRow(int64(25), nil, nil, nil))
 	mock.ExpectExec("DELETE FROM assets_application_service_log_setting\\s+WHERE service_id=\\? AND log_definition_id IN").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT deployment_id FROM assets_application_service_deployment").
+		WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
 	mock.ExpectCommit()
 
 	settings := []ServiceLogSettingInput{{LogDefinition: 24}}

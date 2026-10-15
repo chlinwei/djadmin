@@ -1,3 +1,15 @@
+export function buildDeploymentWebSSHRoute(deployment, host) {
+  return {
+    path: '/assets/hosts/webssh',
+    query: {
+      host_id: String(deployment.host_id ?? deployment.host),
+      // 部署实例名不是 Agent 主机身份，终端只使用主机的实例名。
+      instance_name: host?.instance_name || '',
+      ip: host?.ip || deployment.host_ip || '',
+    },
+  }
+}
+
 export function buildServiceTreeBreadcrumbs(scope) {
   const items = [{ title: '全部业务', scope: { nodeType: 'all', nodeTitle: '全部业务' } }]
   const levels = [

@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { buildServiceTreeBreadcrumbs } from './navigation'
+import { buildDeploymentWebSSHRoute, buildServiceTreeBreadcrumbs } from './navigation'
+
+describe('deployment WebSSH navigation', () => {
+  it('opens the associated host rather than treating the deployment name as an agent identity', () => {
+    expect(buildDeploymentWebSSHRoute(
+      { id: 101, host: 17, instance_name: 'mysql-01', host_ip: '10.0.0.17' },
+      { id: 17, instance_name: 'host-17', ip: '10.0.0.17' },
+    )).toEqual({
+      path: '/assets/hosts/webssh',
+      query: { host_id: '17', instance_name: 'host-17', ip: '10.0.0.17' },
+    })
+  })
+
+  it('can use the host ID without a loaded host snapshot', () => {
+    expect(buildDeploymentWebSSHRoute({
+      host_id: 18, instance_name: 'mysql-02', host_ip: '10.0.0.18',
+    }).query).toEqual({ host_id: '18', instance_name: '', ip: '10.0.0.18' })
+  })
+})
 
 describe('service tree breadcrumb navigation', () => {
   const deploymentScope = {

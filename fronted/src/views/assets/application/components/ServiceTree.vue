@@ -120,7 +120,7 @@ const props = defineProps({
   // 默认 false 不动服务树页自己的现有层级，避免影响已有页面/测试。
   groupByProject: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select', 'stats-change'])
+const emit = defineEmits(['select', 'stats-change', 'hosts-loaded'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
@@ -704,6 +704,7 @@ async function refresh() {
     chartServices.value = projectServices
     chartDeployments.value = visibleDeployments
     chartHosts.value = hosts || []
+    emit('hosts-loaded', chartHosts.value)
     buildTree(systems, projectServices, deployments)
     if (selectedKeys.value[0] === 'all') emit('select', scopeByKey.get('all'))
   } catch (error) {

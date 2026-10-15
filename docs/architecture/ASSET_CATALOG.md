@@ -99,6 +99,27 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 顶层表格横向滚动宽度为 990，操作列固定在右侧并保留明确宽度；顶部汇总指标保持不变。
 环境节点的逻辑服务列表在「应用」右侧展示「版本」，取逻辑服务的
 `application_version_name`，为空显示 `-`；横向滚动宽度为 1350，操作列保持固定在右侧。
+逻辑服务节点的部署实例列表在地址后展示「主机 CPU」「主机内存」，按实例关联的主机 ID
+读取主机快照的 `hardware.cpu_cores`、`hardware.memory_gb`，单位为核、GiB，缺失显示 `-`。
+主机快照复用公共树加载时已有的主机列表请求，经 `hosts-loaded` 事件传给页面及详情组件；
+不为每个实例追加主机请求，不触发 `get_host_info`，保持现有资产采集时机。
+部署列表不展示重复的主机实例名，单独展示「主机名」，按关联主机 ID
+读取快照的 `system.hostname`，即 dj-agent 采集的操作系统 hostname；
+为空显示 `-`，不使用主机或部署记录的 `instance_name` 替代。
+主机名与 CPU／内存复用异步加载的资产快照，浏览列表不额外触发 Agent 采集。
+实例详情中的主机名称按主机 ID 从快照读取，
+优先展示主机 `instance_name`，其次为已采集的 `system.hostname`，均缺失显示 `-`；
+不依赖部署接口未提供的 `host_name`，也不使用应用部署实例名冒充主机名。
+主机列表完成资产采集后，刷新服务树可读取最新快照。
+表格横向滚动宽度为 1280，页面提示这些是整机配置，不是实例配额或实时占用；
+同主机的多个实例显示相同的配置容量。
+部署实例列表的操作列固定在右侧、宽度为 90，提供与实例详情一致的小号 terminal 图标按钮，
+在按钮上方显示 WebSSH 提示；点击不触发行下钻，新窗口打开实例所在主机的 WebSSH，
+不是直接进入数据库或容器。按钮沿用 `assets:hosts:view` 权限，未关联主机时禁用。
+列表和实例详情共用主机终端导航，使用关联主机 ID 及已加载的主机实例名；
+不把应用部署实例名作为 Agent 主机身份。未带登录用户时由终端页面按既有规则处理。
+逻辑服务下的部署实例列表仅通过首列实例名称链接进入详情，普通单元格和行空白处不触发导航，
+也不为整行注册键盘跳转；SSH 操作保持独立。其他层级的行导航行为保持不变。
 
 - `GET /assets/application-services/`：
   - `search`（名称/编码模糊）；
@@ -259,11 +280,57 @@ assets 域的内联 SQL 正在按 [SQL_DESIGN.md](SQL_DESIGN.md) 的约定收敛
   模板与服务域：模板 + 全部嵌套子表建成后读回、服务 + 成员 + 日志设置、部署实例 CRUD、列表的三种过滤组合），
   全程一个事务并回滚，不往库里留数据。
 
+## 部署实例身份与共享约束
+
+- 部署实例以 `id` 标识，`(host_id, instance_name)` 唯一。同一主机上的 nginx、redis、
+  Artemis 等不同程序必须登记为不同部署实例；主机的 `instance_name` 是 Agent 身份，
+  不等同于应用部署实例名。
+- 新增实例始终调用创建接口，不按主机和名称查找后改成更新。同主机同名时明确拒绝并提示修改实例名；
+  确需复用同一个程序时，通过逻辑服务成员中的「从已有实例中选择」建立关联。
+- 一个部署实例只有一份运行状态，因此多个逻辑服务共享它时必须使用**同一部署模板 ID**，
+  不能仅凭控制类型或模板名称相同判断。服务保存会在同一事务内检查保存后的全部成员，
+  包括只修改服务模板、未提交成员列表的情况；冲突时整个保存回滚。
+- 校验和控制参数读取均先锁部署实例，再以 `FOR UPDATE` 读取全部服务/模板关联；
+  多实例按 ID 排序校验，避免把任意一条关联作为控制依据。并发事务发生锁冲突或死锁时，
+  由数据库中止并回滚相应事务，错误向调用方返回，不忽略冲突继续提交。
+- 既有多模板共享记录不会自动拆分、删除或启动/停止程序。它们的控制请求明确报错；
+  状态检查写入 `error` 与冲突原因，不再随机选一个服务执行。
+- 修复既有数据时，先核对全部服务成员、监控目标及日志抽样认证等实例 ID 引用和运行变量，
+  确认哪一个程序保留原 ID，再为其他程序创建不同名称的实例，逐个替换相应服务成员。
+  保留其他服务成员、成员日志变量和既有配置，完成后刷新各服务运行状态；
+  不以删除原实例作为拆分手段。本约束不改变表结构，无 DDL 迁移，也不自动改写业务数据。
+
+## 应用控制参数的宏解析
+
+- API 在调用 Agent 前读取模板 `macro_definitions`、所属服务 `macro_values`、
+  实例 `runtime_variables`，按此顺序合并，后者覆盖前者；实例未显式定义 `APP_HOME`
+  且服务/模板宏也未提供该值时，以模板 `app_home` 作为默认值，与日志宏共用解析基础工具。
+- `run_user`、`work_directory`、`app_home`、`service_name` 和全部控制动作命令中的
+  `${NAME}` 使用合并后的值展开，支持宏之间的引用。用户名、目录、systemd 服务名等
+  结构字段有未解析宏时，或运行用户宏解析为空时，明确报错，不原样下发或改用 root。
+  命令中未声明的 shell 变量保留，交给目标用户的 shell/profile 处理；循环引用明确拒绝。
+- 多个服务共享同一模板和实例时，API 还会比较各服务解析后的最终控制参数与动作；
+  若宏覆盖导致控制目标不同，则拒绝控制，不任取一个服务的配置。无关的日志宏差异
+  不影响控制参数一致性判断。
+- 此解析在 API 侧完成，Agent 仍只执行收到的具体控制参数，无须因宏解析更新 Agent。
+  该逻辑不改变表结构和既有宏数据，无 DDL 或业务数据迁移。
+
 ## 部署实例运行状态检查
 
-- **单实例**：`POST /assets/application-deployments/{id}/control/`，`action=start|stop|status`。经 Agent 数据面（`agent.Gateway`）下发 `control_application`，用 `GetDeploymentControlContext` + 模板控制动作（含成功退出码）执行；`status` 按退出码判定 `running(0)/stopped(非0)`，`response.Status != success` 或 Agent 调用失败记为 `error`，结果写回 `runtime_status` / `runtime_status_output` / `last_status_check_time`。
+- **单实例**：`POST /assets/application-deployments/{id}/control/`，`action=start|stop|status`。
+  经 Agent 数据面（`agent.Gateway`）下发 `control_application`；`ListDeploymentControlContexts`
+  确认关联模板唯一后，按该模板 ID 读取控制动作，不使用 `LIMIT 1` 任取模板。
+  `status` 退出码为 0 记为 `running`；systemd 仅在退出码 3 且标准输出为 `inactive` 或
+  `failed` 时记为 `stopped`，未知单元、权限、总线错误等记为 `error`；
+  其他控制类型保留非零退出码记为 `stopped` 的约定。`response.Status != success`
+  或 Agent 调用失败同样记为 `error`，结果写回
+  `runtime_status` / `runtime_status_output` / `last_status_check_time`。
 - **逻辑服务批量**：`POST /assets/application-services/{id}/refresh-runtime-status/`，对服务名下**所有启用**部署实例并发（最多 8）执行一次 `status` 检查，逐实例写回状态，返回 `{summary:{running,stopped,error,unknown}, total}`。服务树选中逻辑服务时的手动刷新与 15s 轮询都走这里。
-- **失败语义**：Agent 未连接 / 命令执行失败时 `executeDeploymentControl` 会提前返回，`checkDeploymentRuntimeStatus` 必须补写 `error` + 错误原因，否则前端只会显示「未知」且没有任何报错。前端在服务树与 `ApplicationWorkspace` 对 `runtime_status=error` 时用 `runtime_status_output` 展示 tooltip。
+- **诊断与失败语义**：状态输出保留动作、控制类型、systemd 服务名与 scope、退出码、
+  stdout/stderr/Agent 错误。Agent 未连接或模板冲突等提前失败时，
+  `executeDeploymentControl` 写入 `error` 与原始原因；正常结果写库失败直接返回错误，
+  失败状态也无法落库时记录带部署 ID 的服务端错误日志。服务树在所有状态下均可通过
+  tooltip 查看保存的诊断，`ApplicationWorkspace` 保留错误状态诊断提示。
 - **前端消费**：逻辑服务节点刷新成功后按 `summary` 提示「运行中/已停止/检查失败」，随后重载实例列表读取最新状态。
 
 > 迁移进度与剩余清单见 `docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md` 的 P2-3（`assets` 已清零，`monitor` 待迁）。

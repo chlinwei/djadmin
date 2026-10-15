@@ -44,6 +44,8 @@ func TestSaveApplicationServiceRejectsInconsistentLogConfig(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT deployment_id FROM assets_application_service_deployment").
+		WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
 
 	// 期望：BeginTx 之后被调用，且**没有 Commit**（defer Rollback 生效）。
 	_, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{

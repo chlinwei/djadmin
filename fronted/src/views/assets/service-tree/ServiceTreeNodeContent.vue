@@ -69,9 +69,9 @@
 
       <a-descriptions v-else-if="scope.nodeType === 'deployment' && detail" bordered :column="{ xs: 1, sm: 2 }" size="small" class="node-summary">
         <a-descriptions-item label="实例名称">{{ detail.instance_name }}</a-descriptions-item>
-        <a-descriptions-item label="主机">{{ detail.host_name || '-' }}（{{ detail.host_ip || '-' }}）</a-descriptions-item>
+        <a-descriptions-item label="主机">{{ deploymentHostName(detail) }}（{{ detail.host_ip || '-' }}）</a-descriptions-item>
         <a-descriptions-item label="运行状态">
-          <a-tooltip v-if="detail.runtime_status === 'error' && detail.runtime_status_output" :title="detail.runtime_status_output" placement="top">
+          <a-tooltip v-if="detail.runtime_status_output" :title="detail.runtime_status_output" placement="top">
             <a-badge :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" />
           </a-tooltip>
           <a-badge v-else :status="runtimeStatus[detail.runtime_status]?.status || 'default'" :text="runtimeStatus[detail.runtime_status]?.label || '未知'" />
@@ -86,8 +86,8 @@
       <section v-if="scope.nodeType === 'deployment' && detail && detail.host" class="host-info-section">
         <div class="child-section-title">
           <span>主机信息</span>
-          <a-tooltip title="打开 WebSSH 终端（新标签页）">
-            <a-button v-permission="'assets:hosts:view'" size="small" @click="openWebSSH">
+          <a-tooltip title="打开 WebSSH 终端（新标签页）" placement="top">
+            <a-button v-permission="'assets:hosts:view'" size="small" @click="openWebSSH(detail)">
               <FontAwesomeIcon :icon="['fas', 'terminal']" />
             </a-button>
           </a-tooltip>
@@ -146,6 +146,9 @@
 
       <template v-if="scope.nodeType !== 'deployment'">
         <div class="child-section-title"><span>{{ childSectionTitle }}</span><span>{{ rows.length }} 项</span></div>
+        <div v-if="scope.nodeType === 'service'" class="section-empty">
+          主机 CPU / 内存为最近采集的整机配置快照，非实例配额或实时占用；可通过主机列表更新资产采集，再刷新服务树。
+        </div>
         <a-table row-key="key" :columns="columns" :data-source="rows" :pagination="false" :scroll="{ x: tableWidth }" :custom-row="getChildRowProps" size="small" :locale="tableLocale">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'child_link'">
@@ -157,12 +160,24 @@
             <template v-else-if="column.key === 'topology_type'"><a-tag :color="record.topology_type === 'cluster' ? 'blue' : record.topology_type === 'load_balancer' ? 'green' : 'default'">{{ record.topology_type === 'cluster' ? '集群' : record.topology_type === 'load_balancer' ? '负载均衡' : '单机' }}</a-tag></template>
             <template v-else-if="column.key === 'enabled'"><a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" /></template>
             <template v-else-if="column.key === 'runtime_status'">
-              <a-tooltip v-if="record.runtime_status === 'error' && record.runtime_status_output" :title="record.runtime_status_output" placement="top">
+              <a-tooltip v-if="record.runtime_status_output" :title="record.runtime_status_output" placement="top">
                 <a-badge :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" />
               </a-tooltip>
               <a-badge v-else :status="runtimeStatus[record.runtime_status]?.status || 'default'" :text="runtimeStatus[record.runtime_status]?.label || '未知'" />
             </template>
             <template v-else-if="column.key === 'ha_role'"><a-tag :color="haRoleColors[record.ha_role] || 'default'">{{ haRoleLabels[record.ha_role] || '未知' }}</a-tag></template>
+            <template v-else-if="column.key === 'deployment_action'">
+              <a-tooltip title="打开 WebSSH 终端（新标签页）" placement="top">
+                <a-button
+                  v-permission="'assets:hosts:view'"
+                  size="small"
+                  :disabled="!record.host_id && !record.host"
+                  @click.stop="openWebSSH(record)"
+                >
+                  <FontAwesomeIcon :icon="['fas', 'terminal']" />
+                </a-button>
+              </a-tooltip>
+            </template>
             <template v-else-if="column.key === 'business_system_action'">
               <a-space :size="6">
                 <a-tooltip title="编辑">
@@ -222,10 +237,11 @@ import {
   refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
 import { getHostById } from '@/api/assets/host'
-import { buildServiceTreeBreadcrumbs } from './navigation'
+import { buildDeploymentWebSSHRoute, buildServiceTreeBreadcrumbs } from './navigation'
 
 const props = defineProps({
   scope: { type: Object, required: true },
+  hostSnapshots: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['navigate', 'edit-business-system', 'delete-business-system', 'edit-service', 'delete-service'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
@@ -285,13 +301,36 @@ const environmentSummaryColumns = [
   { title: '逻辑服务', dataIndex: 'service_count', key: 'service_count', width: 120 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 120 },
 ]
+const hostSnapshotById = computed(() => new Map(props.hostSnapshots.map((host) => [String(host.id), host])))
+function deploymentHostName(deployment) {
+  const host = hostSnapshotById.value.get(String(deployment.host_id ?? deployment.host))
+  return host?.instance_name || host?.system?.hostname || '-'
+}
 const deploymentColumns = [
   { title: '部署实例', dataIndex: 'instance_name', key: 'child_link', width: 220 },
   { title: '主备状态', key: 'ha_role', width: 110 },
-  { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 180 },
+  {
+    title: '主机名', key: 'host_hostname', width: 180,
+    customRender: ({ record }) => hostSnapshotById.value.get(String(record.host_id ?? record.host))?.system?.hostname || '-',
+  },
   { title: '地址', dataIndex: 'host_ip', key: 'host_ip', width: 150 },
+  {
+    title: '主机 CPU', key: 'host_cpu_cores', width: 120,
+    customRender: ({ record }) => {
+      const cores = hostSnapshotById.value.get(String(record.host_id ?? record.host))?.hardware?.cpu_cores
+      return cores != null ? `${cores} 核` : '-'
+    },
+  },
+  {
+    title: '主机内存', key: 'host_memory_gb', width: 120,
+    customRender: ({ record }) => {
+      const memory = hostSnapshotById.value.get(String(record.host_id ?? record.host))?.hardware?.memory_gb
+      return memory != null ? `${memory} GiB` : '-'
+    },
+  },
   { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
   { title: '运行状态', key: 'runtime_status', width: 120 },
+  { title: '操作', key: 'deployment_action', width: 90, fixed: 'right' },
 ]
 const columns = computed(() => {
   const baseColumns = ({
@@ -316,7 +355,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 950 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 1280 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)
@@ -430,6 +469,7 @@ function navigateToChild(record) {
 }
 
 function getChildRowProps(record) {
+  if (props.scope.nodeType === 'service') return {}
   return {
     class: 'navigable-row',
     tabindex: 0,
@@ -541,16 +581,14 @@ async function fetchHostInfo(hostId) {
 
 // WebSSH 复用资产主机页的入口：新标签页打开终端，query 语义与其保持一致
 // （target_user 不传，由 webssh 页自己走默认用户/用户选择）。
-function openWebSSH() {
-  const currentDetail = detail.value || {}
-  const routeData = router.resolve({
-    path: '/assets/hosts/webssh',
-    query: {
-      host_id: String(currentDetail.host),
-      instance_name: currentDetail.instance_name || '',
-      ip: currentDetail.host_ip || '',
-    },
-  })
+function openWebSSH(deployment) {
+  const hostId = deployment?.host_id ?? deployment?.host
+  if (!hostId) {
+    message.warning('实例未关联主机，无法打开 WebSSH')
+    return
+  }
+  const host = hostSnapshotById.value.get(String(hostId))
+  const routeData = router.resolve(buildDeploymentWebSSHRoute(deployment, host))
   window.open(routeData.href, '_blank', 'noopener,noreferrer,width=1280,height=820')
 }
 

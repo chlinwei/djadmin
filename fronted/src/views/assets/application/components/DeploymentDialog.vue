@@ -23,7 +23,7 @@
                   />
                 </a-form-item>
               </a-col>
-              <a-col :span="12"><a-form-item name="instance_name" label="实例名称"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
+              <a-col :span="12"><a-form-item name="instance_name" label="实例名称" extra="同一主机的不同程序应登记为不同实例；关联已有实例请在逻辑服务成员中选择。"><a-input v-model:value="form.instance_name" placeholder="例如 tomcat-order-prod" /></a-form-item></a-col>
               <a-col :span="12"><a-form-item label="启用"><a-switch v-model:checked="form.enabled" /></a-form-item></a-col>
               <a-col :span="24"><a-form-item label="备注"><a-textarea v-model:value="form.remark" :rows="3" /></a-form-item></a-col>
         </a-row>
@@ -40,7 +40,6 @@ import { fetchAllPages } from '@/util/fetchAllPages'
 import { getHostList } from '@/api/assets/host'
 import {
   getApplicationDeployment,
-  getApplicationDeploymentList,
   getApplicationService,
   saveApplicationDeployment,
 } from '@/api/assets/application'
@@ -134,13 +133,6 @@ async function submit() {
 
   saving.value = true
   try {
-    if (!payload.id && payload.host && payload.instance_name) {
-      const response = await getApplicationDeploymentList({ host: payload.host, page: 1, page_size: 1000 })
-      const existingDeployment = (response?.data?.data?.results || []).find(
-        (item) => String(item.instance_name || '').trim() === String(payload.instance_name).trim(),
-      )
-      if (existingDeployment?.id) payload.id = existingDeployment.id
-    }
     const response = await saveApplicationDeployment(payload)
     message.success(payload.id ? '部署实例更新成功' : '部署实例新增成功')
     emit('saved', response?.data?.data)

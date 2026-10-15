@@ -2346,49 +2346,6 @@ func (q *Queries) GetCredential(ctx context.Context, id int64) (AssetsCredential
 	return i, err
 }
 
-const getDeploymentControlContext = `-- name: GetDeploymentControlContext :one
-
-SELECT COALESCE(h.instance_name, ''), t.control_type, t.run_user, t.work_directory, t.app_home,
-       t.service_name, t.systemd_scope, t.macro_definitions,
-       d.instance_name AS deployment_instance_name
-FROM assets_application_deployment d
-JOIN assets_host h ON h.id = d.host_id
-JOIN assets_application_service_deployment l ON l.deployment_id = d.id
-JOIN assets_application_service s ON s.id = l.service_id
-JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
-WHERE d.id = ? LIMIT 1
-`
-
-type GetDeploymentControlContextRow struct {
-	InstanceName           string          `json:"instance_name"`
-	ControlType            string          `json:"control_type"`
-	RunUser                string          `json:"run_user"`
-	WorkDirectory          string          `json:"work_directory"`
-	AppHome                string          `json:"app_home"`
-	ServiceName            string          `json:"service_name"`
-	SystemdScope           string          `json:"systemd_scope"`
-	MacroDefinitions       json.RawMessage `json:"macro_definitions"`
-	DeploymentInstanceName string          `json:"deployment_instance_name"`
-}
-
-// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
-func (q *Queries) GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error) {
-	row := q.db.QueryRowContext(ctx, getDeploymentControlContext, id)
-	var i GetDeploymentControlContextRow
-	err := row.Scan(
-		&i.InstanceName,
-		&i.ControlType,
-		&i.RunUser,
-		&i.WorkDirectory,
-		&i.AppHome,
-		&i.ServiceName,
-		&i.SystemdScope,
-		&i.MacroDefinitions,
-		&i.DeploymentInstanceName,
-	)
-	return i, err
-}
-
 const getDeploymentTemplate = `-- name: GetDeploymentTemplate :one
 SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.control_type, t.run_user, t.run_group, t.app_home, t.work_directory, t.service_name, t.ha_system_name, t.ha_cluster_name, t.ha_resource_name, t.enabled, t.application_id, t.systemd_scope, t.macro_definitions, a.name AS application_name,
   (SELECT COUNT(*) FROM assets_application_port p WHERE p.deployment_template_id=t.id) AS port_count,
@@ -3589,11 +3546,7 @@ func (q *Queries) ListCredentials(ctx context.Context, arg ListCredentialsParams
 
 const listDeploymentControlActions = `-- name: ListDeploymentControlActions :many
 SELECT action,command,timeout_seconds,success_exit_codes FROM assets_application_control_action
-WHERE deployment_template_id = (
-  SELECT deployment_template_id FROM assets_application_service s
-  JOIN assets_application_service_deployment l ON l.service_id = s.id
-  WHERE l.deployment_id = ? LIMIT 1
-)
+WHERE deployment_template_id = ?
 `
 
 type ListDeploymentControlActionsRow struct {
@@ -3603,8 +3556,8 @@ type ListDeploymentControlActionsRow struct {
 	SuccessExitCodes json.RawMessage `json:"success_exit_codes"`
 }
 
-func (q *Queries) ListDeploymentControlActions(ctx context.Context, deploymentID int64) ([]ListDeploymentControlActionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listDeploymentControlActions, deploymentID)
+func (q *Queries) ListDeploymentControlActions(ctx context.Context, templateID int64) ([]ListDeploymentControlActionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeploymentControlActions, templateID)
 	if err != nil {
 		return nil, err
 	}
@@ -3617,6 +3570,71 @@ func (q *Queries) ListDeploymentControlActions(ctx context.Context, deploymentID
 			&i.Command,
 			&i.TimeoutSeconds,
 			&i.SuccessExitCodes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeploymentControlContexts = `-- name: ListDeploymentControlContexts :many
+SELECT COALESCE(h.instance_name, '') AS instance_name, t.id AS template_id, t.control_type, t.run_user, t.work_directory, t.app_home,
+       t.service_name, t.systemd_scope, t.macro_definitions,
+       d.instance_name AS deployment_instance_name, s.macro_values, d.runtime_variables
+FROM assets_application_deployment d
+JOIN assets_host h ON h.id = d.host_id
+JOIN assets_application_service_deployment l ON l.deployment_id = d.id
+JOIN assets_application_service s ON s.id = l.service_id
+JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
+WHERE d.id = ?
+ORDER BY s.id
+FOR UPDATE
+`
+
+type ListDeploymentControlContextsRow struct {
+	InstanceName           string          `json:"instance_name"`
+	TemplateID             int64           `json:"template_id"`
+	ControlType            string          `json:"control_type"`
+	RunUser                string          `json:"run_user"`
+	WorkDirectory          string          `json:"work_directory"`
+	AppHome                string          `json:"app_home"`
+	ServiceName            string          `json:"service_name"`
+	SystemdScope           string          `json:"systemd_scope"`
+	MacroDefinitions       json.RawMessage `json:"macro_definitions"`
+	DeploymentInstanceName string          `json:"deployment_instance_name"`
+	MacroValues            json.RawMessage `json:"macro_values"`
+	RuntimeVariables       json.RawMessage `json:"runtime_variables"`
+}
+
+func (q *Queries) ListDeploymentControlContexts(ctx context.Context, id int64) ([]ListDeploymentControlContextsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listDeploymentControlContexts, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeploymentControlContextsRow{}
+	for rows.Next() {
+		var i ListDeploymentControlContextsRow
+		if err := rows.Scan(
+			&i.InstanceName,
+			&i.TemplateID,
+			&i.ControlType,
+			&i.RunUser,
+			&i.WorkDirectory,
+			&i.AppHome,
+			&i.ServiceName,
+			&i.SystemdScope,
+			&i.MacroDefinitions,
+			&i.DeploymentInstanceName,
+			&i.MacroValues,
+			&i.RuntimeVariables,
 		); err != nil {
 			return nil, err
 		}
@@ -4597,6 +4615,18 @@ func (q *Queries) ListTemplatePorts(ctx context.Context, deploymentTemplateID in
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockApplicationDeployment = `-- name: LockApplicationDeployment :one
+
+SELECT id FROM assets_application_deployment WHERE id = ? FOR UPDATE
+`
+
+// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
+func (q *Queries) LockApplicationDeployment(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockApplicationDeployment, id)
+	err := row.Scan(&id)
+	return id, err
 }
 
 const markAgentJobHostLogRunning = `-- name: MarkAgentJobHostLogRunning :exec

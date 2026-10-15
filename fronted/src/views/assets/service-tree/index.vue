@@ -8,6 +8,7 @@
         stats-by-scope
         group-by-project
         @stats-change="handleStatsChange"
+        @hosts-loaded="hostSnapshots = $event"
         @select="serviceScope = $event"
       />
       <main class="service-tree-content">
@@ -58,6 +59,7 @@
         <ServiceTreeNodeContent
           ref="nodeContentRef"
           :scope="serviceScope"
+          :host-snapshots="hostSnapshots"
           @navigate="serviceScope = $event"
           @edit-business-system="openBusinessSystem"
           @delete-business-system="confirmDeleteBusinessSystem"
@@ -99,6 +101,7 @@ import BusinessSystemDialog from '../application/components/BusinessSystemDialog
 import ApplicationServiceDialog from '../application/components/ApplicationServiceDialog.vue'
 
 const serviceScope = ref({ nodeType: 'all', nodeTitle: '全部业务' })
+const hostSnapshots = ref([])
 const route = useRoute()
 const serviceTreeRef = ref(null)
 const nodeContentRef = ref(null)

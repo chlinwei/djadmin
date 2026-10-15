@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -159,6 +160,17 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 			}); err != nil {
 				return 0, err
 			}
+		}
+	}
+	// 同一实例的关联变更必须串行校验；当前读锁覆盖并发保存，避免两个不同模板同时绑定成功。
+	deploymentIDs, err := queries.ListServiceDeploymentIDs(ctx, serviceID)
+	if err != nil {
+		return 0, err
+	}
+	sort.Slice(deploymentIDs, func(i, j int) bool { return deploymentIDs[i] < deploymentIDs[j] })
+	for _, deploymentID := range deploymentIDs {
+		if _, err := deploymentControlContext(ctx, queries, deploymentID); err != nil {
+			return 0, err
 		}
 	}
 	// 配置自洽性：所有写操作已在本事务内完成，校验读到的就是"保存后"的状态；失败则不提交。

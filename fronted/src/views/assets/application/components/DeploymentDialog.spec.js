@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/host', () => ({
   getHostList: vi.fn(() => Promise.resolve({
@@ -19,12 +19,20 @@ vi.mock('@/api/assets/application', () => ({
     data: { data: { results: [], totalPages: 1 } },
   })),
   saveApplicationDeployment: vi.fn(),
+  getApplicationDeploymentList: vi.fn(() => Promise.resolve({
+    data: { data: { results: [{ id: 20, host: 136, instance_name: 'mysql136' }] } },
+  })),
   getApplicationService: vi.fn(() => Promise.resolve({ data: { data: { environment: 1 } } })),
 }))
 
 import DeploymentDialog from './DeploymentDialog.vue'
+import { getApplicationDeploymentList, saveApplicationDeployment } from '@/api/assets/application'
 
 describe('DeploymentDialog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    saveApplicationDeployment.mockResolvedValue({ data: { data: { id: 30 } } })
+  })
   afterEach(() => {
     document.body.innerHTML = ''
   })
@@ -84,6 +92,29 @@ describe('DeploymentDialog', () => {
 
     expect(document.body.textContent).not.toContain('应用版本')
     expect(document.body.textContent).not.toContain('部署模板')
+    wrapper.unmount()
+  })
+
+  it('creates a new record without converting a matching instance name into an update', async () => {
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: false },
+      attachTo: document.body,
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    wrapper.vm.form.host = 136
+    await flushPromises()
+    await wrapper.vm.submit()
+    await flushPromises()
+    expect(getApplicationDeploymentList).not.toHaveBeenCalled()
+    expect(saveApplicationDeployment).toHaveBeenCalledWith(expect.objectContaining({
+      id: undefined, host: 136, instance_name: 'mysql136',
+    }))
+    expect(wrapper.emitted('saved')).toEqual([[{ id: 30 }]])
     wrapper.unmount()
   })
 })

@@ -482,8 +482,6 @@ type Querier interface {
 	GetDefaultEnabledElasticsearchCluster(ctx context.Context) (GetDefaultEnabledElasticsearchClusterRow, error)
 	// 清理数据流用的完整默认集群连接信息（含 id/ca_cert/request_timeout，供 elasticsearchRequest 使用）。
 	GetDefaultEnabledElasticsearchClusterConnection(ctx context.Context) (GetDefaultEnabledElasticsearchClusterConnectionRow, error)
-	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
-	GetDeploymentControlContext(ctx context.Context, id int64) (GetDeploymentControlContextRow, error)
 	GetDeploymentTemplate(ctx context.Context, id int64) (GetDeploymentTemplateRow, error)
 	GetElasticsearchClusterConnection(ctx context.Context, id int64) (GetElasticsearchClusterConnectionRow, error)
 	GetElasticsearchClusterTyped(ctx context.Context, id int64) (MonitorElasticsearchCluster, error)
@@ -641,7 +639,8 @@ type Querier interface {
 	ListClusterProfiles(ctx context.Context, arg ListClusterProfilesParams) ([]ListClusterProfilesRow, error)
 	ListConfigs(ctx context.Context, arg ListConfigsParams) ([]SysConfig, error)
 	ListCredentials(ctx context.Context, arg ListCredentialsParams) ([]AssetsCredential, error)
-	ListDeploymentControlActions(ctx context.Context, deploymentID int64) ([]ListDeploymentControlActionsRow, error)
+	ListDeploymentControlActions(ctx context.Context, templateID int64) ([]ListDeploymentControlActionsRow, error)
+	ListDeploymentControlContexts(ctx context.Context, id int64) ([]ListDeploymentControlContextsRow, error)
 	ListDeploymentTemplates(ctx context.Context, arg ListDeploymentTemplatesParams) ([]ListDeploymentTemplatesRow, error)
 	// ---- P2-2：巡检包内联 SQL 的收纳处（调度 / 保留期清理 / 组与任务写路径 / 执行运行期）----
 	//
@@ -863,6 +862,8 @@ type Querier interface {
 	ListUserGroups(ctx context.Context) ([]ListUserGroupsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]SysUser, error)
 	ListWebSSHSessions(ctx context.Context, arg ListWebSSHSessionsParams) ([]ListWebSSHSessionsRow, error)
+	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
+	LockApplicationDeployment(ctx context.Context, id int64) (int64, error)
 	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
 	// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
 	// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。

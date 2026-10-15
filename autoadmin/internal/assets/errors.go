@@ -8,13 +8,16 @@ var (
 	ErrDuplicate = apperror.New(apperror.CodeInvalidArgument, "名称或编码已存在")
 	// 逻辑服务的名称/编码唯一域是 (业务系统, 环境)。按约束名区分二者，避免用户看到笼统的
 	// "名称或编码已存在" 却不知道该改哪个（见 assets 000044 迁移）。
-	ErrDuplicateName    = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务名称已存在")
-	ErrDuplicateCode    = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务编码已存在")
-	ErrInvalidRelation  = apperror.New(apperror.CodeInvalidArgument, "关联资产不存在")
-	ErrDeleteProtected  = apperror.New(apperror.CodeInvalidArgument, "资产仍被其他记录引用，无法删除")
-	ErrGroupCycle       = apperror.New(apperror.CodeInvalidArgument, "主机分组不能形成循环层级")
-	ErrQueryInternal    = apperror.New(apperror.CodeInternal, "查询资产失败")
-	ErrAgentUnavailable = apperror.New(apperror.CodeInvalidArgument, "部署主机 Agent 数据面尚未连接，无法执行应用控制")
+	ErrDuplicateName              = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务名称已存在")
+	ErrDuplicateCode              = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务编码已存在")
+	ErrDeploymentNameDuplicate    = apperror.New(apperror.CodeInvalidArgument, "同一主机下的部署实例名已存在；不同程序请使用不同实例名，关联已有实例请在逻辑服务成员中选择")
+	ErrInvalidRelation            = apperror.New(apperror.CodeInvalidArgument, "关联资产不存在")
+	ErrDeleteProtected            = apperror.New(apperror.CodeInvalidArgument, "资产仍被其他记录引用，无法删除")
+	ErrGroupCycle                 = apperror.New(apperror.CodeInvalidArgument, "主机分组不能形成循环层级")
+	ErrQueryInternal              = apperror.New(apperror.CodeInternal, "查询资产失败")
+	ErrAgentUnavailable           = apperror.New(apperror.CodeInvalidArgument, "部署主机 Agent 数据面尚未连接，无法执行应用控制")
+	ErrDeploymentTemplateConflict = apperror.New(apperror.CodeInvalidArgument, "部署实例关联了不同部署模板，无法确定控制配置；请将不同程序拆为独立实例，同一实例仅可关联使用相同模板的逻辑服务")
+	ErrDeploymentControlConflict  = apperror.New(apperror.CodeInvalidArgument, "部署实例关联服务的控制宏解析结果不同，无法确定控制目标；请统一控制配置或拆分为独立实例")
 	// 主机的双重唯一标识：instance_name（业务标识）和 ip（寻址标识）均须全局唯一。
 	// 主机不再有 agent_id——dj-agent 的全局标识就是 instance_name。
 	ErrHostIPRequired            = apperror.New(apperror.CodeInvalidArgument, "IP 必填：IP 是主机的寻址标识")

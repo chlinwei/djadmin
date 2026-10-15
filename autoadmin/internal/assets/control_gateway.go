@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"reflect"
+	"strings"
 	"time"
 
 	"autoadmin/internal/agent"
@@ -17,30 +20,66 @@ var deploymentGateway *agent.Gateway
 func SetDeploymentGateway(gateway *agent.Gateway) { deploymentGateway = gateway }
 
 func (r *Repository) deploymentControl(ctx context.Context, id int64) (string, map[string]any, error) {
-	contextRow, err := r.queries.GetDeploymentControlContext(ctx, id)
+	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return "", nil, err
 	}
-	params := map[string]any{"control_type": contextRow.ControlType, "run_user": contextRow.RunUser,
-		"work_directory": contextRow.WorkDirectory, "app_home": contextRow.AppHome,
-		"service_name": contextRow.ServiceName, "systemd_scope": contextRow.SystemdScope,
-		"instance_name": contextRow.DeploymentInstanceName}
-	var macroValues any
-	if json.Unmarshal(contextRow.MacroDefinitions, &macroValues) == nil {
-		params["macro_definitions"] = macroValues
-	}
-	rows, err := r.queries.ListDeploymentControlActions(ctx, id)
+	defer tx.Rollback()
+	queries := db.New(tx)
+	contexts, err := deploymentControlContexts(ctx, queries, id)
 	if err != nil {
 		return "", nil, err
 	}
-	actions := map[string]any{}
-	for _, row := range rows {
-		var codes any
-		_ = json.Unmarshal(row.SuccessExitCodes, &codes)
-		actions[row.Action] = map[string]any{"command": row.Command, "timeout_seconds": row.TimeoutSeconds, "success_exit_codes": codes}
+	rows, err := queries.ListDeploymentControlActions(ctx, contexts[0].TemplateID)
+	if err != nil {
+		return "", nil, err
 	}
-	params["control_actions"] = actions
-	return contextRow.InstanceName, params, nil
+	params, err := deploymentControlParams(contexts[0], rows)
+	if err != nil {
+		return "", nil, err
+	}
+	// 相同模板仍可能被服务宏覆盖成不同控制目标，不能任取其中一个执行。
+	for _, row := range contexts[1:] {
+		other, err := deploymentControlParams(row, rows)
+		if err != nil {
+			return "", nil, err
+		}
+		if !reflect.DeepEqual(params, other) {
+			return "", nil, ErrDeploymentControlConflict
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", nil, err
+	}
+	return contexts[0].InstanceName, params, nil
+}
+
+func deploymentControlContext(ctx context.Context, queries *db.Queries, id int64) (db.ListDeploymentControlContextsRow, error) {
+	rows, err := deploymentControlContexts(ctx, queries, id)
+	if err != nil {
+		return db.ListDeploymentControlContextsRow{}, err
+	}
+	return rows[0], nil
+}
+
+func deploymentControlContexts(ctx context.Context, queries *db.Queries, id int64) ([]db.ListDeploymentControlContextsRow, error) {
+	if _, err := queries.LockApplicationDeployment(ctx, id); err != nil {
+		return nil, err
+	}
+	rows, err := queries.ListDeploymentControlContexts(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	// 共享实例只有一份运行状态；模板必须唯一，不能任取一个关联服务的命令执行。
+	for _, row := range rows[1:] {
+		if row.TemplateID != rows[0].TemplateID {
+			return nil, ErrDeploymentTemplateConflict
+		}
+	}
+	return rows, nil
 }
 func (r *Repository) updateRuntimeStatus(ctx context.Context, id int64, status, output string) error {
 	now := time.Now().UTC()
@@ -71,19 +110,35 @@ func (s *Service) executeDeploymentControl(ctx context.Context, gateway *agent.G
 		return nil, ErrAgentUnavailable
 	}
 	status := response.Status
+	controlType, _ := params["control_type"].(string)
+	runtime := deploymentControlRuntimeStatus(action, controlType, response)
+	output := fmt.Sprintf("action=%s control_type=%v service_name=%v systemd_scope=%v exit_code=%d\n%s",
+		action, params["control_type"], params["service_name"], params["systemd_scope"], response.ExitCode,
+		strings.TrimSpace(strings.Join([]string{response.Stdout, response.Stderr, response.ErrorMessage}, "\n")))
+	if err := s.repository.updateRuntimeStatus(ctx, id, runtime, output); err != nil {
+		return nil, err
+	}
+	return map[string]any{"job_id": response.JobId, "action": action, "status": status, "output": response.Stdout, "exit_code": response.ExitCode, "runtime_status": runtime}, nil
+}
+
+func deploymentControlRuntimeStatus(action, controlType string, response *pb.AutomationExecuteResponse) string {
 	runtime := "unknown"
 	if action == "status" {
 		if response.ExitCode == 0 {
 			runtime = "running"
 		} else {
 			runtime = "stopped"
+			// systemctl 的未知单元、权限或总线错误不是“已停止”；只接受明确的非活跃状态。
+			state := strings.TrimSpace(response.Stdout)
+			if controlType == "systemd" && (response.ExitCode != 3 || (state != "inactive" && state != "failed")) {
+				runtime = "error"
+			}
 		}
 	}
-	if status != "success" {
+	if response.Status != "success" {
 		runtime = "error"
 	}
-	_ = s.repository.updateRuntimeStatus(ctx, id, runtime, response.ErrorMessage+response.Stderr)
-	return map[string]any{"job_id": response.JobId, "action": action, "status": status, "output": response.Stdout, "exit_code": response.ExitCode, "runtime_status": runtime}, nil
+	return runtime
 }
 
 // persistRuntimeCheckFailure 只在 status 检查失败时把 error 与原因写回，start/stop 的失败不改运行状态；
@@ -92,7 +147,9 @@ func (s *Service) persistRuntimeCheckFailure(ctx context.Context, id int64, acti
 	if action != "status" || cause == nil {
 		return
 	}
-	_ = s.repository.updateRuntimeStatus(ctx, id, "error", cause.Error())
+	if err := s.repository.updateRuntimeStatus(ctx, id, "error", cause.Error()); err != nil {
+		slog.Error("persist deployment runtime check failure", "deployment_id", id, "cause", cause, "error", err)
+	}
 }
 
 // checkDeploymentRuntimeStatus 对单个部署实例执行一次 status 检查并返回落库后的状态。

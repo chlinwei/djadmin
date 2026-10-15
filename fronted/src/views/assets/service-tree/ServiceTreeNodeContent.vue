@@ -336,7 +336,10 @@ const deploymentColumns = [
       return memory != null ? `${memory} GiB` : '-'
     },
   },
-  { title: '版本', dataIndex: 'version', key: 'version', width: 120 },
+  {
+    title: '操作系统', key: 'host_os_version', width: 300,
+    customRender: ({ record }) => formatHostOs(hostSnapshotById.value.get(String(record.host_id ?? record.host))),
+  },
   { title: '运行状态', key: 'runtime_status', width: 120 },
   { title: '操作', key: 'deployment_action', width: 90, fixed: 'right' },
 ]
@@ -363,7 +366,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 1280 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 1460 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)
@@ -612,11 +615,13 @@ const visibleDisks = computed(() => {
   const disks = Array.isArray(hostInfo.value?.disks) ? hostInfo.value.disks : []
   return showAllDisks.value ? disks : disks.slice(0, 8)
 })
-const hostOsText = computed(() => {
-  const os = hostInfo.value
-  if (!os) return '-'
-  return [formatHostValue(os.os_type), formatHostValue(os.os_version)].filter((part) => part !== '-').join(' ') || '-'
-})
+function formatHostOs(os) {
+  return [os?.os_type, os?.os_version]
+    .map((part) => String(part ?? '').trim())
+    .filter(Boolean)
+    .join(' ') || '-'
+}
+const hostOsText = computed(() => formatHostOs(hostInfo.value))
 const hostCpuText = computed(() => {
   const info = hostInfo.value
   if (!info) return '-'

@@ -81,6 +81,31 @@ describe('service-tree non-blocking runtime checks', () => {
     await flushPromises()
   })
 
+  it('shows the complete operating-system version from reactive host snapshots instead of deployment version', async () => {
+    mountNode()
+    await flushPromises()
+    await wrapper.setProps({
+      hostSnapshots: [{ id: 100, os_type: 'Red Hat Enterprise Linux', os_version: '8.10 (Ootpa)', system: { hostname: 'node-100' } }],
+    })
+    const column = wrapper.vm.columns.find((item) => item.key === 'host_os_version')
+    expect(column.title).toBe('操作系统')
+    expect(column.width).toBe(300)
+    expect(column.customRender({ record: { host_id: '100', version: '1.0' } })).toBe('Red Hat Enterprise Linux 8.10 (Ootpa)')
+    expect(column.customRender({ record: { host: 100 } })).toBe('Red Hat Enterprise Linux 8.10 (Ootpa)')
+    expect(column.customRender({ record: { host: 999 } })).toBe('-')
+    expect(wrapper.vm.columns.some((item) => item.key === 'version')).toBe(false)
+    expect(wrapper.vm.columns.find((item) => item.key === 'deployment_action')).toMatchObject({ fixed: 'right', width: 90 })
+    expect(wrapper.vm.tableWidth).toBe(1460)
+    await wrapper.setProps({ hostSnapshots: [{ id: 100, os_version: null, system: { hostname: 'node-100' } }] })
+    expect(column.customRender({ record: { host: 100 } })).toBe('-')
+    await wrapper.setProps({ hostSnapshots: [{ id: 100, os_type: 'Ubuntu', os_version: '24.04 LTS' }] })
+    expect(column.customRender({ record: { host: 100 } })).toBe('Ubuntu 24.04 LTS')
+    await wrapper.setProps({ hostSnapshots: [{ id: 100, os_type: 'Red Hat Enterprise Linux', os_version: null }] })
+    expect(column.customRender({ record: { host: 100 } })).toBe('Red Hat Enterprise Linux')
+    await wrapper.setProps({ hostSnapshots: [{ id: 100, os_version: '8.10 (Ootpa)' }] })
+    expect(column.customRender({ record: { host: 100 } })).toBe('8.10 (Ootpa)')
+  })
+
   it('deduplicates slow polling and updates only status fields without reloading details', async () => {
     const check = deferred()
     refreshApplicationServiceRuntimeStatus.mockReturnValue(check.promise)

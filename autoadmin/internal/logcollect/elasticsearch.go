@@ -96,6 +96,8 @@ func (handler *Handler) elasticsearchRequestRaw(context context.Context, cluster
 		timeout = 10
 	}
 	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: &http.Transport{TLSClientConfig: tlsConfig}}
+	// 连接池仅属于本次调用；关闭响应体会保留 keep-alive 连接，必须在所有返回路径释放空闲连接。
+	defer client.CloseIdleConnections()
 	var lastError error
 	for _, host := range strings.Split(cluster.Hosts, ",") {
 		host = strings.TrimRight(strings.TrimSpace(host), "/")

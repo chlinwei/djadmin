@@ -27,6 +27,7 @@
 - 开发与设计约定（删除 API / 前端表格 / 文档组织）：[docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md)
 - **SQL 设计与方言约定（选型原则 / 字段映射 / MySQL+PostgreSQL 可移植）：[docs/architecture/SQL_DESIGN.md](docs/architecture/SQL_DESIGN.md)**
 - **进行中的改造计划（双数据库支持 + 内联 SQL 迁移到 sqlc，含待办与已知陷阱）：[docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md](docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md)**
+- 告警对象与服务树关联（待评审，未实施）：[docs/plans/ALERT_SERVICE_TREE_ASSOCIATION.md](docs/plans/ALERT_SERVICE_TREE_ASSOCIATION.md)
 - API 响应格式：[.github/API_RULES.md](.github/API_RULES.md)
 - 巡检架构：[docs/architecture/INSPECTION_ARCHITECTURE.md](docs/architecture/INSPECTION_ARCHITECTURE.md)
 - 日志采集架构：[docs/architecture/LOG_COLLECTION_ARCHITECTURE.md](docs/architecture/LOG_COLLECTION_ARCHITECTURE.md)

@@ -26,6 +26,18 @@ Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 
 ---
 
+### 后端 Elasticsearch 请求连接生命周期
+
+连接测试、日志查询和集群管理等经 `elasticsearchRequestRaw` 发出的请求，
+按当前集群配置创建独立的 HTTP Client / Transport，使用对应的认证、TLS 校验和请求超时。
+读取响应后关闭响应体；本次调用结束时，无论成功或失败，都显式关闭该客户端的空闲连接。
+不在不同调用间共享此连接池，避免旧认证或 TLS 配置被缓存；同一次调用内保留既有多地址尝试语义。
+
+关闭响应体不等于关闭 keep-alive TCP 连接，因此独立 Transport 的释放不可省略。
+否则连续请求可能积累到 ES 的 ESTABLISHED 连接，耗尽后端源端口，使连接测试报
+`cannot assign requested address`。此错误发生在后端建立 TCP 连接阶段，不是 ES 返回的认证或证书错误。
+发布修复后，旧进程中已经积累的连接需要随 API 进程有序退出释放。
+
 ## 2. 整体架构
 
 ```

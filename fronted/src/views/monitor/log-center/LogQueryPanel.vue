@@ -248,6 +248,8 @@
       <a-descriptions bordered :column="1" size="small">
         <a-descriptions-item label="时间">{{ formatLogTime(activeLog?.['@timestamp']) }}</a-descriptions-item>
         <a-descriptions-item label="级别">{{ activeLog?.log_level || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="项目">{{ dimensionName('projects', activeLog?.project) || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="业务">{{ dimensionName('businessSystems', activeLog?.business_system) || '-' }}</a-descriptions-item>
         <a-descriptions-item label="服务">{{ activeLog?.service || '-' }}</a-descriptions-item>
         <a-descriptions-item label="实例">{{ activeLog?.instance || '-' }}</a-descriptions-item>
         <a-descriptions-item label="主机">{{ activeLog?.host_ip || '-' }}</a-descriptions-item>
@@ -278,7 +280,16 @@
       </div>
       <pre class="detail-content">{{ activeLog?.log_message || '-' }}</pre>
       <template v-if="activeLog?.app_fields && Object.keys(activeLog.app_fields).length">
-        <div class="detail-section-title">应用私有字段</div>
+        <div class="detail-section-head">
+          <span class="detail-section-title">应用私有字段</span>
+          <a-space :size="8">
+            <a-button size="small" @click="openDetailTextPreview('应用私有字段', formatJsonText(activeLog.app_fields))">
+              <FontAwesomeIcon :icon="['fas', 'expand']" />
+              <span>&nbsp;预览</span>
+            </a-button>
+            <a-button size="small" @click="copyDetailText(formatJsonText(activeLog.app_fields))">复制</a-button>
+          </a-space>
+        </div>
         <pre class="detail-content">{{ formatJsonText(activeLog.app_fields) }}</pre>
       </template>
     </a-drawer>

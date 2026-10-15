@@ -392,7 +392,9 @@ const metrics = computed(() => {
   ]
   if (props.scope.nodeType === 'deployment' && detail.value) return [
     { label: '运行状态', value: runtimeStatus[detail.value.runtime_status]?.label || '未知' },
-    { label: '主备状态', value: haRoleLabels[detail.value.ha_role] || '未知' },
+    ...(detail.value.cluster_type === 'ha'
+      ? [{ label: '主备状态', value: haRoleLabels[detail.value.ha_role] || '未知' }]
+      : []),
     { label: '监听端口', value: detail.value.ports?.length || 0 },
   ]
   return []

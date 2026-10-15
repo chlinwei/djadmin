@@ -20,7 +20,7 @@ vi.mock('@/api/assets/application', () => ({
 import ServiceTreeNodeContent from './ServiceTreeNodeContent.vue'
 import {
   getApplicationService, getApplicationServiceLogConfig,
-  getApplicationDeploymentList, refreshApplicationServiceRuntimeStatus,
+  getApplicationDeployment, getApplicationDeploymentList, refreshApplicationServiceRuntimeStatus,
 } from '@/api/assets/application'
 
 const response = (data) => ({ data: { data } })
@@ -104,6 +104,25 @@ describe('service-tree non-blocking runtime checks', () => {
     expect(column.customRender({ record: { host: 100 } })).toBe('Red Hat Enterprise Linux')
     await wrapper.setProps({ hostSnapshots: [{ id: 100, os_version: '8.10 (Ootpa)' }] })
     expect(column.customRender({ record: { host: 100 } })).toBe('8.10 (Ootpa)')
+  })
+
+  it.each([undefined, 'redis', 'ha'])('shows the deployment HA metric only for HA clusters (%s)', async (clusterType) => {
+    getApplicationDeployment.mockResolvedValue(response({
+      id: 10, instance_name: 'instance-10', runtime_status: 'running', ha_role: 'unknown',
+      cluster_type: clusterType, ports: [],
+    }))
+    mountNode()
+    await flushPromises()
+    await wrapper.setProps({ scope: { nodeType: 'deployment', deploymentId: 10 } })
+    await flushPromises()
+    expect(wrapper.vm.metrics.some((item) => item.label === '主备状态')).toBe(clusterType === 'ha')
+    expect(wrapper.vm.metrics.some((item) => item.label === '运行状态')).toBe(true)
+    expect(wrapper.vm.metrics.some((item) => item.label === '监听端口')).toBe(true)
+    if (clusterType === 'ha') {
+      expect(wrapper.vm.metrics.find((item) => item.label === '主备状态').value).toBe('未知')
+    } else {
+      expect(wrapper.text()).not.toContain('主备状态')
+    }
   })
 
   it('deduplicates slow polling and updates only status fields without reloading details', async () => {

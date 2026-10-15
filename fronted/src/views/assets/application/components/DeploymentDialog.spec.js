@@ -26,7 +26,8 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 import DeploymentDialog from './DeploymentDialog.vue'
-import { getApplicationDeploymentList, saveApplicationDeployment } from '@/api/assets/application'
+import { getApplicationDeploymentList, getApplicationService, saveApplicationDeployment } from '@/api/assets/application'
+import { getHostList } from '@/api/assets/host'
 
 describe('DeploymentDialog', () => {
   beforeEach(() => {
@@ -92,6 +93,34 @@ describe('DeploymentDialog', () => {
 
     expect(document.body.textContent).not.toContain('应用版本')
     expect(document.body.textContent).not.toContain('部署模板')
+    wrapper.unmount()
+  })
+
+  it('filters hosts using the unsaved parent environment rather than the persisted service environment', async () => {
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: false, applicationServiceId: 20, environmentId: 32 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(getApplicationService).not.toHaveBeenCalled()
+    expect(getHostList).toHaveBeenLastCalledWith({ environment: 32, page: 1, page_size: 30 })
+    await wrapper.setProps({ open: false })
+    await wrapper.setProps({ environmentId: 33, open: true })
+    await flushPromises()
+    expect(getHostList).toHaveBeenLastCalledWith({ environment: 33, page: 1, page_size: 30 })
+    wrapper.unmount()
+  })
+
+  it('filters hosts for a new unsaved service using its selected environment', async () => {
+    const wrapper = mount(DeploymentDialog, {
+      props: { open: false, environmentId: 32 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(getHostList).toHaveBeenLastCalledWith({ environment: 32, page: 1, page_size: 30 })
+    expect(getApplicationService).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

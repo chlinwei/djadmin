@@ -216,6 +216,7 @@
       :open="deploymentDialogOpen"
       :deployment-id="selectedDeploymentId"
       :application-service-id="form.id"
+      :environment-id="form.environment"
       @update:open="deploymentDialogOpen = $event"
       @saved="handleDeploymentSaved"
     />

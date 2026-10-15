@@ -103,6 +103,7 @@ vi.mock('@/api/monitor', () => ({
 }))
 
 import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
+import DeploymentDialog from './DeploymentDialog.vue'
 
 // 这两个 mock 的实现在 afterEach 里要还原（见 restoreTemplateMocks），所以要拿到模块引用。
 import { getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList } from '@/api/assets/application'
@@ -174,6 +175,10 @@ describe('ApplicationServiceDialog', () => {
 
     expect(wrapper.vm.form.business_system).toBe(3)
     expect(wrapper.vm.form.environment).toBe(31)
+    expect(wrapper.findComponent(DeploymentDialog).props('environmentId')).toBe(31)
+    wrapper.vm.form.environment = 32
+    await flushPromises()
+    expect(wrapper.findComponent(DeploymentDialog).props('environmentId')).toBe(32)
     wrapper.unmount()
   })
 

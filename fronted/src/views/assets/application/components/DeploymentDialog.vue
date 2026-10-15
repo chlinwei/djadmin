@@ -48,6 +48,7 @@ const props = defineProps({
   open: { type: Boolean, required: true },
   deploymentId: { type: Number, default: null },
   applicationServiceId: { type: Number, default: null },
+  environmentId: { type: Number, default: undefined },
 })
 const emit = defineEmits(['update:open', 'saved'])
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
@@ -99,7 +100,10 @@ async function initialize() {
   loading.value = true
   applyingRecord.value = true
   try {
-    if (props.applicationServiceId) {
+    // 服务表单的环境可能尚未保存，必须优先使用父表单值，不能重新读回旧环境。
+    if (props.environmentId !== undefined) {
+      serviceEnvironmentId.value = props.environmentId
+    } else if (props.applicationServiceId) {
       const serviceResponse = await getApplicationService(props.applicationServiceId)
       serviceEnvironmentId.value = serviceResponse?.data?.data?.environment || null
     } else if (props.deploymentId) {

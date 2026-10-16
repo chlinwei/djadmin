@@ -27,7 +27,7 @@
           <a-col :span="12"><a-form-item name="code" label="服务编码"><a-input v-model:value="form.code" placeholder="例如 order-cache-prod" /></a-form-item></a-col>
           <a-col :span="12">
             <a-form-item name="business_system" label="业务系统">
-              <a-select v-model:value="form.business_system" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer" :virtual="false">
+              <a-select v-model:value="form.business_system" :disabled="scopeLocked" show-search :filter-option="filterOption" :options="businessSystemOptions" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>还没有可用业务系统</span><a-button type="link" @click.stop="businessSystemDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建业务系统</a-button></div>
                 </template>
@@ -36,7 +36,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item name="environment" label="环境">
-              <a-select v-model:value="form.environment" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer" :virtual="false">
+              <a-select v-model:value="form.environment" :disabled="scopeLocked" :options="environmentOptions" placeholder="请选择环境" :getPopupContainer="getPopupContainer" :virtual="false">
                 <template #notFoundContent>
                   <div class="inline-create-empty"><span>当前业务系统还没有环境</span><a-button type="link" @click.stop="environmentDialogOpen = true"><FontAwesomeIcon :icon="['fas', 'fa-plus-circle']" />&nbsp;新建环境</a-button></div>
                 </template>
@@ -98,8 +98,8 @@
                 type="warning"
                 show-icon
                 class="service-macro-alert"
-                :message="`模板没给默认值的宏必须在这里填：${missingMacrosText}`"
-                description="空着保存不了：下发时路径里的 ${VAR} 展不开，那台主机要么被跳过、要么拼出坏路径。"
+                :message="`以下模板宏当前没有有效值：${missingMacrosText}`"
+                description="请填写服务覆盖值，或点击「重置为默认」恢复模板默认值；模板没有默认值时必须填写。"
               />
               <a-table
                 :columns="macroTableColumns"
@@ -339,6 +339,8 @@ const initialForm = () => ({
   enabled: true, remark: '',
 })
 const form = reactive(initialForm())
+// 环境属于业务系统；锁定环境时一并锁定业务系统，避免联动修改绕过服务的固定归属。
+const scopeLocked = computed(() => Boolean(props.serviceId || props.initialEnvironmentId))
 const environmentOptions = computed(() => environmentRecords.value
   .filter((item) => item.enabled)
   .map((item) => ({ label: item.name, value: item.id })))
@@ -405,11 +407,8 @@ const missingMacros = computed(() => templateMacros.value
 const isMacroMissing = (macro) => missingMacros.value.some((item) => item.name === macro.name)
 const missingMacrosText = computed(() => missingMacros.value.map((macro) => macroKeyLabel(macro.name)).join('、'))
 function setMacroValue(name, value) {
-  if (value === '' || value === undefined || value === null) {
-    delete form.macro_values[name]
-    return
-  }
-  form.macro_values[name] = value
+  // 清空只是编辑中的空覆盖，只有显式重置才删除覆盖并恢复继承。
+  form.macro_values[name] = value ?? ''
 }
 function resetMacroValue(name) {
   delete form.macro_values[name]
@@ -675,7 +674,7 @@ async function submit() {
   // 模板没给默认值的宏必须在本服务填：空着下发时路径展不开（跳过主机或拼出坏路径），
   // 这是"采集静默为空"的常见原因，所以在保存这一步拦住（表格里也用红框与"必填"标出来了）。
   if (missingMacros.value.length) {
-    message.error(`模板宏还没填：${missingMacrosText.value}（模板未给默认值，必须在本服务设置）`)
+    message.error(`模板宏值不能为空：${missingMacrosText.value}（请填写值，或重置为模板默认值）`)
     return
   }
   saving.value = true

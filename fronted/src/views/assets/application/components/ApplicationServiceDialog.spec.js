@@ -32,6 +32,8 @@ vi.mock('@/api/assets/application', () => ({
       id: 20,
       name: 'tomcat-group',
       code: 'tomcat-group',
+      business_system: 3,
+      environment: 31,
       application: 5,
       deployment_template: 62,
       topology_type: 'cluster',
@@ -176,9 +178,45 @@ describe('ApplicationServiceDialog', () => {
     expect(wrapper.vm.form.business_system).toBe(3)
     expect(wrapper.vm.form.environment).toBe(31)
     expect(wrapper.findComponent(DeploymentDialog).props('environmentId')).toBe(31)
-    wrapper.vm.form.environment = 32
+    for (const name of ['business_system', 'environment']) {
+      const field = wrapper.findAllComponents({ name: 'AFormItem' }).find((item) => item.props('name') === name)
+      expect(field.findComponent({ name: 'ASelect' }).props('disabled')).toBe(true)
+    }
+    wrapper.unmount()
+  })
+
+  it('locks the persisted business system and environment when editing an existing service', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, serviceId: 20 },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
     await flushPromises()
-    expect(wrapper.findComponent(DeploymentDialog).props('environmentId')).toBe(32)
+    expect(wrapper.vm.form.business_system).toBe(3)
+    expect(wrapper.vm.form.environment).toBe(31)
+    for (const name of ['business_system', 'environment']) {
+      const field = wrapper.findAllComponents({ name: 'AFormItem' }).find((item) => item.props('name') === name)
+      expect(field.findComponent({ name: 'ASelect' }).props('disabled')).toBe(true)
+    }
+    expect(wrapper.vm.selectedDeploymentIds).toEqual([13, 14])
+    wrapper.unmount()
+  })
+
+  it('allows environment selection when creating without an environment scope', async () => {
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false },
+      global: { plugins: [Antd], stubs: { AModal: { template: '<div><slot /></div>' } } },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    for (const name of ['business_system', 'environment']) {
+      const field = wrapper.findAllComponents({ name: 'AFormItem' }).find((item) => item.props('name') === name)
+      expect(field.findComponent({ name: 'ASelect' }).props('disabled')).toBe(false)
+    }
+    const environment = wrapper.findAllComponents({ name: 'AFormItem' }).find((item) => item.props('name') === 'environment')
+    environment.findComponent({ name: 'ASelect' }).vm.$emit('update:value', 31)
+    await flushPromises()
+    expect(wrapper.findComponent(DeploymentDialog).props('environmentId')).toBe(31)
     wrapper.unmount()
   })
 
@@ -319,7 +357,7 @@ describe('ApplicationServiceDialog', () => {
 
     // 只有"模板没给默认值"的那条算缺；有默认值的照旧继承。
     expect(wrapper.vm.missingMacros.map((macro) => macro.name)).toEqual(['APP_HOME'])
-    expect(wrapper.text()).toContain('模板没给默认值的宏必须在这里填：${APP_HOME}')
+    expect(wrapper.text()).toContain('以下模板宏当前没有有效值：${APP_HOME}')
     // 表格里要能看见"必填"，而不是显示成"继承"（没有可继承的东西）。
     expect(wrapper.findAll('.ant-tag').map((tag) => tag.text()).join('|')).toContain('必填')
 
@@ -331,12 +369,33 @@ describe('ApplicationServiceDialog', () => {
     wrapper.vm.setMacroValue('APP_HOME', '/opt/tomcat')
     await flushPromises()
     expect(wrapper.vm.missingMacros).toHaveLength(0)
-    expect(wrapper.text()).not.toContain('模板没给默认值的宏必须在这里填')
+    expect(wrapper.text()).not.toContain('以下模板宏当前没有有效值')
+    const logRow = wrapper.findAll('.service-macro-table tbody tr').find((row) => row.text().includes('${LOG_DIR}'))
+    const logInput = logRow.find('input')
+    expect(logInput.element.value).toBe('/var/log/tomcat')
+    await logInput.setValue('')
+    await flushPromises()
+    expect(logInput.element.value).toBe('')
+    expect(wrapper.vm.form.macro_values.LOG_DIR).toBe('')
+    expect(wrapper.vm.missingMacros.map((macro) => macro.name)).toEqual(['LOG_DIR'])
+    await wrapper.vm.submit()
+    expect(saveApplicationService).not.toHaveBeenCalled()
+    await logInput.setValue('/srv/custom-logs')
+    await flushPromises()
+    expect(logInput.element.value).toBe('/srv/custom-logs')
+    await logRow.find('button').trigger('click')
+    await flushPromises()
+    expect(logInput.element.value).toBe('/var/log/tomcat')
+    expect(wrapper.vm.hasMacroOverride('LOG_DIR')).toBe(false)
+    await logInput.setValue('')
+    await logInput.setValue('/srv/custom-logs')
+    await flushPromises()
     await wrapper.vm.submit()
     await flushPromises()
     expect(saveApplicationService).toHaveBeenCalled()
     const payload = saveApplicationService.mock.calls.at(-1)[0]
     expect(payload.macro_values.APP_HOME).toBe('/opt/tomcat')
+    expect(payload.macro_values.LOG_DIR).toBe('/srv/custom-logs')
     wrapper.unmount()
   })
 

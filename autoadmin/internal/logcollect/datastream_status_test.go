@@ -207,6 +207,61 @@ func TestFetchDataStreamEntriesIncludesBothTiers(t *testing.T) {
 	}
 }
 
+func TestFetchDataStreamEntriesILMStates(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		body       string
+		secondBody string
+		status     int
+		want       string
+	}{
+		{name: "managed", body: `{"managed":true,"phase":"hot","step":"complete"}`, want: "hot"},
+		{name: "unmanaged", body: `{"managed":false}`, want: "unmanaged"},
+		{name: "error step", body: `{"managed":true,"phase":"hot","step":"ERROR"}`, want: "ERROR"},
+		{name: "missing state", body: `{}`, want: "unknown"},
+		{name: "query failed", status: http.StatusForbidden, body: `{}`, want: "query_failed"},
+		{name: "mixed management", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":false}`, want: "mixed"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			index := ".ds-logs-project-biz-prod-service--2026.10.18-000001"
+			secondIndex := ".ds-logs-project-biz-prod-service--2026.10.18-000002"
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if strings.Contains(request.URL.Path, "_cat/indices") {
+					indices := []map[string]any{{"index": index}}
+					if testCase.secondBody != "" {
+						indices = append(indices, map[string]any{"index": secondIndex})
+					}
+					_ = json.NewEncoder(writer).Encode(indices)
+					return
+				}
+				if testCase.status != 0 {
+					writer.WriteHeader(testCase.status)
+				}
+				body := `{"indices":{"` + index + `":` + testCase.body
+				if testCase.secondBody != "" {
+					body += `,"` + secondIndex + `":` + testCase.secondBody
+				}
+				_, _ = writer.Write([]byte(body + `}}`))
+			}))
+			defer server.Close()
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			handler := &Handler{}
+			entries, _, err := handler.fetchDataStreamEntries(context, elasticsearchCluster{Hosts: server.URL, Timeout: 5}, streamNameMatcher{prefix: "logs"}, "logs-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].ILMState != testCase.want {
+				t.Fatalf("unexpected ILM state: %+v, want %s", entries, testCase.want)
+			}
+			if testCase.secondBody == "" && entries[0].BackingIndices[0].ILMState != testCase.want {
+				t.Fatalf("unexpected backing ILM state: %+v", entries[0].BackingIndices)
+			}
+		})
+	}
+}
+
 // 历史流判定下沉到后端（全局视图也要能标，且只有后端知道"服务当前生效档位"）。
 // 三条语义都要钉住：档位不在生效集合里才是历史流；无日志定义的服务全算历史流；
 // 判不出来（查询失败 / 旧命名流没有服务)宁可不标。

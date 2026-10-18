@@ -584,19 +584,19 @@
               <template v-else-if="column.key === 'bytes'">{{ formatBytes(record.bytes) }}</template>
               <template v-else-if="column.key === 'docs'">{{ Number(record.docs || 0).toLocaleString() }}</template>
               <template v-else-if="column.key === 'ilm_state'">
-                <a-tag v-if="record.ilm_state" color="blue">{{ record.ilm_state }}</a-tag>
-                <span v-else>-</span>
+                <a-tag :color="ilmStateColor(record.ilm_state)">{{ ilmStateLabel(record.ilm_state) }}</a-tag>
               </template>
               <template v-else-if="column.key === 'collect_state'">
-                <template v-if="isHistoricalTier(record)">
-                  <a-tooltip title="改档位留下的历史流：已停止写入，存量数据按原档位保留到期后由 ILM 删除，不迁移、也不会自动清理。" placement="top">
-                    <a-tag color="default">历史档位（已停写）</a-tag>
+                <a-tag v-if="record.recognized && !record.tier" color="red">档位缺失</a-tag>
+                <template v-else-if="isHistoricalTier(record)">
+                  <a-tooltip title="该档位不在当前配置中；实际是否停写取决于主机配置是否已下发。存量数据是否到期删除须检查 ILM 托管状态。" placement="top">
+                    <a-tag color="default">非当前档位</a-tag>
                   </a-tooltip>
                 </template>
                 <a-tooltip v-else-if="serviceCollectState(record)" :title="collectStateTooltip()" placement="top">
                   <a-tag color="orange">{{ serviceCollectState(record) }}</a-tag>
                 </a-tooltip>
-                <a-tag v-else-if="record.recognized" color="green">采集中</a-tag>
+                <a-tag v-else-if="record.recognized" color="green">当前配置</a-tag>
                 <span v-else>-</span>
               </template>
               <template v-else-if="column.key === 'backing'">
@@ -651,8 +651,7 @@
                     <template v-if="backingColumn.key === 'bytes'">{{ formatBytes(backingRow.bytes) }}</template>
                     <template v-else-if="backingColumn.key === 'docs'">{{ Number(backingRow.docs || 0).toLocaleString() }}</template>
                     <template v-else-if="backingColumn.key === 'ilm_state'">
-                      <a-tag v-if="backingRow.ilm_state" color="blue">{{ backingRow.ilm_state }}</a-tag>
-                      <span v-else>-</span>
+                      <a-tag :color="ilmStateColor(backingRow.ilm_state)">{{ ilmStateLabel(backingRow.ilm_state) }}</a-tag>
                     </template>
                   </template>
                 </a-table>
@@ -2418,6 +2417,16 @@ function toggleBackingIndices(record) {
 // 字段缺失（旧构建）时一律按"不是历史流"处理——宁可少标，也不要把正在写的流错标成停写。
 function isHistoricalTier(stream) {
   return Boolean(stream?.historical)
+}
+
+function ilmStateLabel(state) {
+  return { unmanaged: '未托管', query_failed: '查询失败', unknown: '未知', mixed: '状态不一致', ERROR: '执行错误' }[state] || state || '未知'
+}
+
+function ilmStateColor(state) {
+  if (['query_failed', 'ERROR'].includes(state)) return 'red'
+  if (!state || ['unmanaged', 'unknown', 'mixed'].includes(state)) return 'orange'
+  return 'blue'
 }
 
 // 按树选中的层级决定聚合维度：全部 → 按项目；项目 → 按业务系统；业务系统 → 按环境；

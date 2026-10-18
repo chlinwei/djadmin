@@ -239,6 +239,25 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it('flags missing tiers and separates ILM management from configured collection', async () => {
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    wrapper.vm.storageRows = [
+      { name: 'autoadmin-yilake-tib-poc-nginx-', recognized: true, service: 'nginx', tier: '', ilm_state: 'unmanaged', service_enabled: true, service_collection_enabled: true },
+      { name: 'autoadmin-yilake-tib-poc-nginx-hot', recognized: true, service: 'nginx', tier: 'hot', ilm_state: 'query_failed', service_enabled: true, service_collection_enabled: true },
+    ]
+    await flushPromises()
+    expect(wrapper.text()).toContain('档位缺失')
+    expect(wrapper.text()).toContain('未托管')
+    expect(wrapper.text()).toContain('查询失败')
+    expect(wrapper.text()).toContain('当前配置')
+    expect(wrapper.text()).not.toContain('采集中')
+    expect(wrapper.vm.ilmStateLabel('mixed')).toBe('状态不一致')
+    expect(wrapper.vm.ilmStateLabel('ERROR')).toBe('执行错误')
+    expect(wrapper.vm.ilmStateColor('unmanaged')).toBe('orange')
+    wrapper.unmount()
+  })
   it.each([
     { nodeType: 'all', nodeTitle: '全部业务' },
     { nodeType: 'project', projectId: 301, nodeTitle: '订单项目' },

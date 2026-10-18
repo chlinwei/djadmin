@@ -251,7 +251,7 @@ func catString(row map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
-// fetchDataStreamEntries 基于 _cat/indices + _ism/explain 组装流级运行态。
+// fetchDataStreamEntries 基于 _cat/indices + _ilm/explain 组装流级运行态。
 //
 // indexPattern 是索引通配模式（含前缀与 `*`），由调用方给：全量视图传 `<prefix>-*`，
 // 按服务收窄的视图传 `<prefix>-<项目>-<业务系统>-<环境>-<服务>-*`。收窄放在 ES 查询里
@@ -273,6 +273,15 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 				if !ok {
 					continue
 				}
+				// 无托管不等于查询失败；不能把两者都隐藏为空状态。
+				if managed, ok := payload["managed"].(bool); ok && !managed {
+					ilmStates[key] = "unmanaged"
+					continue
+				}
+				if payload["step"] == "ERROR" {
+					ilmStates[key] = "ERROR"
+					continue
+				}
 				if phase, _ := payload["phase"].(string); phase != "" {
 					ilmStates[key] = phase
 					continue
@@ -292,6 +301,13 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 			continue
 		}
 		parsed := matcher.resolveStreamName(stripBackingIndexSuffixes(matcher.prefix, index))
+		if ilmStates[index] == "" {
+			if explainErr != nil {
+				ilmStates[index] = "query_failed"
+			} else {
+				ilmStates[index] = "unknown"
+			}
+		}
 		entry, exists := entries[parsed.Stream]
 		if !exists {
 			entry = &dataStreamEntry{
@@ -316,9 +332,11 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 			Bytes: catFloat(row, "store.size"), CreateAt: catString(row, "creation.date.string"),
 			ILMState: ilmStates[index],
 		})
-		// 流级 ILM 状态取任一后备索引的非空状态（同一流的策略一致）。
-		if entry.ILMState == "" && ilmStates[index] != "" {
+		// 同一流的后备索引可能托管不一致，不能用任意一个正常阶段掩盖其他索引。
+		if entry.ILMState == "" {
 			entry.ILMState = ilmStates[index]
+		} else if entry.ILMState != ilmStates[index] {
+			entry.ILMState = "mixed"
 		}
 	}
 	sort.Strings(order)

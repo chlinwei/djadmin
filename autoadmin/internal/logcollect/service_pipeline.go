@@ -20,11 +20,11 @@ import (
 // 问题：解析规则的 pipeline 按规则共享（Filebeat 片段 `pipeline:` 指向同一条 id），在规则里
 // 写 drop_fields 会影响所有引用该规则的服务；而"只有某几个服务要额外处理"是真实需求。
 //
-// 方案（ES 侧串联）：配置了 extra_processors 的服务，平台为它生成一条**包装 pipeline**：
+// 方案（ES 侧串联）：所有绑定解析规则的服务日志统一生成包装 pipeline：
 //
 //	<基础名>@s<服务id> = { processors: [ {"pipeline": {"name": <基础名>}}, <extra_processors…> ] }
 //
-// 该服务的 Filebeat 片段 `pipeline:` 改指包装（log_config_render.go），其他服务不变。
+// Filebeat 片段始终指向包装；没有额外处理器时包装只调用基础规则。
 // 处理仍然全部发生在 ES 侧、方言与规则一致、`_simulate` 可完整串联模拟；代价是包装的生命
 // 周期要平台自己管——本文件就是它的全部生命周期：
 //
@@ -108,9 +108,8 @@ func extraPipelineRowsFromRule(rows []db.ListRuleExtraPipelineRowsRow) []extraPi
 
 // SyncServiceLogPipelines 实现 assets.ServiceLogPipelineSyncer：按服务对账包装 pipeline。
 //
-// 期望集 = 该服务下"extra_processors 非空且解析规则有效"的覆盖行；不在期望集里的包装
-// （清空了后处理、规则解绑）按精确 id 删除。只删**本服务**的包装（id 后缀 @s<本服务id>），
-// 其他服务共享同一条基础 pipeline、各自的包装互不波及。
+// 期望集为服务模板下所有解析规则有效的日志，不依赖服务覆盖行或额外处理器。
+// 清空后处理只更新包装内容，不删除服务的固定入口。
 func (handler *Handler) SyncServiceLogPipelines(ctx context.Context, serviceID int64) error {
 	if serviceID < 1 {
 		return assets.ErrInvalid
@@ -141,8 +140,8 @@ func (handler *Handler) republishRuleExtraPipelines(ctx context.Context, ruleID 
 	return handler.reconcileExtraPipelines(ctx, normalized)
 }
 
-// reconcileExtraPipelines 对账核心：期望集逐个 PUT（幂等，内容变了覆盖即生效），
-// 期望外（规则无效的行除外——算不出 id，见下）的精确删除。
+// reconcileExtraPipelines 对账核心：有效规则逐个 PUT（幂等，内容变了覆盖即生效）。
+// 清空额外处理器仍保留包装；旧规则名的包装由规则发布入口清理。
 //
 // 规则无效（被删/解绑）的行：包装 id 依赖规则的集群与名字，行上已取不到，精确删除无从谈起。
 // 这类行只出现在数据不一致的场合（能删的规则身上不该有包装），跳过并交给体检的包装比对暴露。
@@ -152,9 +151,6 @@ func (handler *Handler) reconcileExtraPipelines(ctx context.Context, rows []extr
 	touched := map[string]elasticsearchCluster{}
 	for _, row := range rows {
 		if !row.ruleClusterValid || row.RuleClusterID == 0 || strings.TrimSpace(row.RuleName) == "" {
-			continue
-		}
-		if !assets.ExtraProcessorsEnabled(row.ExtraProcessors) {
 			continue
 		}
 		cluster, err := handler.loadElasticsearchClusterByID(ctx, row.RuleClusterID)
@@ -174,29 +170,6 @@ func (handler *Handler) reconcileExtraPipelines(ctx context.Context, rows []extr
 		cluster := touched[id]
 		if _, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPut, "/_ingest/pipeline/"+id, body); err != nil {
 			return fmt.Errorf("发布包装 pipeline %s 失败: %w", id, err)
-		}
-	}
-	// 期望外删除：按行反向构造精确 id（不需要通配列举；规则改名场景的旧名残留
-	// 由 publishProcessingRuleBeforeSave 的 deleteExtraPipelinesByBase 通配清理）。
-	seen := map[string]bool{}
-	for _, row := range rows {
-		if !row.ruleClusterValid || row.RuleClusterID == 0 || strings.TrimSpace(row.RuleName) == "" {
-			continue
-		}
-		if assets.ExtraProcessorsEnabled(row.ExtraProcessors) {
-			continue
-		}
-		cluster, err := handler.loadElasticsearchClusterByID(ctx, row.RuleClusterID)
-		if err != nil {
-			return fmt.Errorf("读取 Elasticsearch 集群失败: %w", err)
-		}
-		id := serviceExtraPipelineName(cluster.IndexPrefix, row.ApplicationCode, row.RuleName, row.ServiceID)
-		if expected[id] != nil || seen[id] {
-			continue
-		}
-		seen[id] = true
-		if _, err := handler.elasticsearchRequest(ctx, cluster, http.MethodDelete, "/_ingest/pipeline/"+id, nil); err != nil && !isElasticsearchNotFound(err) {
-			return fmt.Errorf("清理包装 pipeline %s 失败: %w", id, err)
 		}
 	}
 	return nil

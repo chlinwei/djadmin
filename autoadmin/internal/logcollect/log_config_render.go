@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"autoadmin/internal/assets"
 	"autoadmin/internal/shared/logmacro"
 
 	"autoadmin/internal/api/response"
@@ -252,13 +251,9 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			lines = append(lines, fmt.Sprintf("  index: %s", yamlScalar(indexName)))
 			if entry.Pipeline != "" {
 				// pipeline id 与发布/删除/体检统一：<前缀>-<应用 code|general>-<规则名>。
-				// 配了服务级后处理的服务改指包装（基础名@s<服务id>）：包装先调基础 pipeline
-				// 再执行该服务私有的处理器，其他服务的片段不受影响。包装的存在性由保存路径的
-				// 对账（service_pipeline.go）与体检保证，渲染只认配置。
-				pipelineName := processingPipelineName(entry.Prefix, entry.Application, entry.Pipeline)
-				if assets.ExtraProcessorsEnabled(entry.ExtraProcessors) {
-					pipelineName = serviceExtraPipelineName(entry.Prefix, entry.Application, entry.Pipeline, entry.ServiceID)
-				}
+				// 统一以服务包装为入口；空后处理只调用基础规则，增删条件丢弃无需切换入口。
+				// 下发前同步包装，保证 Filebeat 不会引用尚未发布的 pipeline。
+				pipelineName := serviceExtraPipelineName(entry.Prefix, entry.Application, entry.Pipeline, entry.ServiceID)
 				lines = append(lines, fmt.Sprintf("  pipeline: %s", yamlScalar(pipelineName)))
 			}
 			// 采集过滤：写进 input 的 include_lines / exclude_lines（Filebeat 上是行级正则，

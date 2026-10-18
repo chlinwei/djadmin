@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"autoadmin/internal/api/response"
-	"autoadmin/internal/assets"
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
@@ -299,7 +298,7 @@ func (handler *Handler) checkLogPipelines(context *gin.Context, cluster elastics
 }
 
 // judgeRuleExtraPipelines 判一条规则名下的全部服务级包装 pipeline：
-// 期望集来自覆盖行（extra_processors 非空）；集群上缺失或签名不一致 → drift。
+// 期望集来自服务模板的全部日志；集群上缺失或签名不一致 → drift。
 // 行的规则集群与本体检集群不一致时跳过（该包装挂在别的集群上，由那边的体检负责）。
 func (handler *Handler) judgeRuleExtraPipelines(context *gin.Context, cluster elasticsearchCluster, ruleID int64, ruleName string, applicationID sql.NullInt64) []gin.H {
 	rows, err := db.New(handler.db).ListRuleExtraPipelineRows(context, sql.NullInt64{Int64: ruleID, Valid: ruleID > 0})
@@ -311,9 +310,6 @@ func (handler *Handler) judgeRuleExtraPipelines(context *gin.Context, cluster el
 	baseName := processingPipelineName(prefix, applicationSegment, ruleName)
 	items := []gin.H{}
 	for _, row := range rows {
-		if !assets.ExtraProcessorsEnabled(row.ExtraProcessors) {
-			continue
-		}
 		if row.RuleClusterID.Valid && row.RuleClusterID.Int64 != cluster.ID {
 			continue
 		}

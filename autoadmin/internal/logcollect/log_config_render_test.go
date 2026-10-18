@@ -97,7 +97,7 @@ func TestRenderHostLogConfig(t *testing.T) {
 		"          - from: log.file.path",
 		"            to: log_path",
 		"  index: 'logs-kul-tib-test-tomcat-svc-wuhan-test'",
-		"  pipeline: 'logs-tib-springboot-tomcat-exception'",
+		"  pipeline: 'logs-tib-springboot-tomcat-exception@s7'",
 		"  paths:",
 		"    - '/data/tomcat1/logs/catalina.out'",
 		"        negate: true",

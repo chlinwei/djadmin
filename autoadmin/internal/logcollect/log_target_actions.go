@@ -696,6 +696,17 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	if renderErr != nil {
 		return nil, fmt.Errorf("渲染 Filebeat 配置失败: %w", renderErr)
 	}
+	// 先补齐包装再下发引用它的配置；也覆盖升级后的存量服务与模板继承日志。
+	syncedServices := map[int64]bool{}
+	for _, entry := range entries {
+		if entry.Pipeline == "" || syncedServices[entry.ServiceID] {
+			continue
+		}
+		if err := handler.SyncServiceLogPipelines(context, entry.ServiceID); err != nil {
+			return nil, fmt.Errorf("同步服务日志包装失败: %w", err)
+		}
+		syncedServices[entry.ServiceID] = true
+	}
 	for index := range entries {
 		entries[index].Prefix = indexPrefix
 	}

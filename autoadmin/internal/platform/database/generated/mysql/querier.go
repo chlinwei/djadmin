@@ -773,7 +773,7 @@ type Querier interface {
 	ListRoles(ctx context.Context, arg ListRolesParams) ([]SysRole, error)
 	ListRolesByUserID(ctx context.Context, userID int32) ([]SysRole, error)
 	// 同上，按解析规则取：规则改名/换应用/换集群时，所有引用它的包装要重建（级联，见
-	// publishProcessingRuleBeforeSave）。跨全部服务返回，行集很小（配了后处理的服务本来就少）。
+	// publishProcessingRuleBeforeSave）。没有服务覆盖行时也要重建包装。
 	ListRuleExtraPipelineRows(ctx context.Context, ruleID sql.NullInt64) ([]ListRuleExtraPipelineRowsRow, error)
 	// 对账用：仍在 running 的作业（含各自超时与开始时间），由对账循环判断是否已失联。
 	// 超时在任务表上、作业行只存 task_id，口径与 GetJobTyped 一致（无任务时回落 600s）。
@@ -794,12 +794,8 @@ type Querier interface {
 	ListServiceActiveStreamTiers(ctx context.Context) ([]ListServiceActiveStreamTiersRow, error)
 	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
-	// 服务级后处理器（2026-09-28）的对账查询：一个服务的全部覆盖行 × 各自日志定义引用的解析规则。
-	// 包装 pipeline 的生成/清理（logcollect/service_pipeline.go）靠它算期望集：
-	//   - 有 extra_processors 且规则在 → 期望 PUT 包装（基础名@s<服务id>，挂在规则的集群上）；
-	//   - 其余行不期望包装，配合 ES 侧 `GET /_ingest/pipeline/<基础名>@s*` 的通配列举做清理。
-	// 返回全部覆盖行（不只 extra_processors 非空的），对账函数不需要再发第二条查询。
-	// 规则被删/日志定义不再引用规则时 rule_* 返回 NULL：这些行的包装属于"不再期望"，一并清理。
+	// 服务模板下的全部日志都需要包装，包括没有服务覆盖行的日志。
+	// 额外处理器为空时包装仅调用基础解析规则；无有效规则的行不发布包装。
 	ListServiceExtraPipelineRows(ctx context.Context, serviceID int64) ([]ListServiceExtraPipelineRowsRow, error)
 	// 服务级下发的解析：该服务**承载在哪些主机上**，以及每台主机对应的采集目标。
 	//

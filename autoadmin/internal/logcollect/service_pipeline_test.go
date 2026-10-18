@@ -49,6 +49,23 @@ func TestBuildServiceExtraPipelineBodyRejectsNestedPipeline(t *testing.T) {
 	}
 }
 
+func TestBuildServiceExtraPipelineBodyWithoutExtraProcessors(t *testing.T) {
+	for _, extra := range []json.RawMessage{nil, json.RawMessage(`[]`), json.RawMessage(`null`)} {
+		body, err := buildServiceExtraPipelineBody("logs-app-rule", extra)
+		if err != nil {
+			t.Fatalf("build empty extra %s: %v", extra, err)
+		}
+		processors := body["processors"].([]any)
+		if len(processors) != 1 {
+			t.Fatalf("empty extra must retain only base call, got %v", processors)
+		}
+		pipeline := processors[0].(gin.H)["pipeline"].(gin.H)
+		if pipeline["name"] != "logs-app-rule" {
+			t.Fatalf("unexpected base pipeline: %v", pipeline)
+		}
+	}
+}
+
 func TestRenderPointsServiceToWrapperPipeline(t *testing.T) {
 	extra := json.RawMessage(`[{"drop_fields":{"fields":["host.name"]}}]`)
 	base := renderHostLogConfig([]hostLogRenderInput{{
@@ -63,15 +80,15 @@ func TestRenderPointsServiceToWrapperPipeline(t *testing.T) {
 		ExtraProcessors: extra,
 	}}, []hostInstanceInput{{Service: "svc-a", ServiceID: 10, Instance: "inst-1", HostIP: "10.0.0.1"}}, "")
 
-	if !strings.Contains(base.Fragments[0].Content, "pipeline: 'autoadmin-app-a-rule-a'") {
-		t.Fatalf("未启用后处理时应指基础 pipeline:\n%s", base.Fragments[0].Content)
+	if !strings.Contains(base.Fragments[0].Content, "pipeline: 'autoadmin-app-a-rule-a@s10'") {
+		t.Fatalf("未启用后处理时也应指包装 pipeline:\n%s", base.Fragments[0].Content)
 	}
 	if !strings.Contains(wrapper.Fragments[0].Content, "pipeline: 'autoadmin-app-a-rule-a@s10'") {
 		t.Fatalf("启用后处理时应指包装 pipeline:\n%s", wrapper.Fragments[0].Content)
 	}
-	// 指向变化必须反映到指纹（否则"配了后处理"不会触发重新下发）。
-	if base.Fingerprint == wrapper.Fingerprint {
-		t.Fatalf("包装指向变化应改变片段指纹")
+	// 后处理仅改变 ES 包装内容，不再改变 Filebeat 配置。
+	if base.Fingerprint != wrapper.Fingerprint {
+		t.Fatalf("后处理变化不应改变片段指纹")
 	}
 }
 

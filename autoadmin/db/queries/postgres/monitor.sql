@@ -1012,8 +1012,7 @@ SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     -- 这里再 join 四张规则表会让这条最热的渲染查询又多四个 join，而规则数量本来就少。
     ld.filter_include_rule_id, ld.filter_exclude_rule_id,
     ls.collection_filter_rule_id, ls.collection_exclude_filter_rule_id,
-    -- 服务级后处理器（2026-09-28）：非空数组时该服务的片段 `pipeline:` 指向包装
-    -- （基础名@s<服务id>，见 logcollect/service_pipeline.go），其他服务仍指基础。
+    -- 所有绑定解析规则的日志统一指向服务包装；额外处理器可为空。
     COALESCE(ls.extra_processors, '[]'::json) AS extra_processors
 FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
@@ -1031,34 +1030,30 @@ WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
   AND COALESCE(ls.collection_enabled, TRUE) = TRUE
   AND d.host_id = ANY(sqlc.arg(host_ids)::bigint[]);
 
--- 服务级后处理器（2026-09-28）的对账查询：一个服务的全部覆盖行 × 各自日志定义引用的解析规则。
--- 包装 pipeline 的生成/清理（logcollect/service_pipeline.go）靠它算期望集：
---   - 有 extra_processors 且规则在 → 期望 PUT 包装（基础名@s<服务id>，挂在规则的集群上）；
---   - 其余行不期望包装，配合 ES 侧 `GET /_ingest/pipeline/<基础名>@s*` 的通配列举做清理。
--- 返回全部覆盖行（不只 extra_processors 非空的），对账函数不需要再发第二条查询。
--- 规则被删/日志定义不再引用规则时 rule_* 返回 NULL：这些行的包装属于"不再期望"，一并清理。
+-- 服务模板下的全部日志都需要包装，包括没有服务覆盖行的日志。
+-- 额外处理器为空时包装仅调用基础解析规则；无有效规则的行不发布包装。
 -- name: ListServiceExtraPipelineRows :many
-SELECT s.id AS service_id, ls.log_definition_id,
+SELECT s.id AS service_id, ld.id AS log_definition_id,
        COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
        COALESCE(app.code, '') AS application_code,
        rule.id AS rule_id, COALESCE(rule.name, '') AS rule_name, rule.cluster_id AS rule_cluster_id
-FROM assets_application_service_log_setting ls
-JOIN assets_application_service s ON s.id = ls.service_id
-JOIN assets_application_log_definition ld ON ld.id = ls.log_definition_id
+FROM assets_application_service s
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
+LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
 LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
 LEFT JOIN assets_application app ON app.id = s.application_id
-WHERE ls.service_id = sqlc.arg(service_id);
+WHERE s.id = sqlc.arg(service_id);
 
 -- 同上，按解析规则取：规则改名/换应用/换集群时，所有引用它的包装要重建（级联，见
--- publishProcessingRuleBeforeSave）。跨全部服务返回，行集很小（配了后处理的服务本来就少）。
+-- publishProcessingRuleBeforeSave）。没有服务覆盖行时也要重建包装。
 -- name: ListRuleExtraPipelineRows :many
-SELECT s.id AS service_id, ls.log_definition_id,
+SELECT s.id AS service_id, ld.id AS log_definition_id,
        COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
        COALESCE(app.code, '') AS application_code,
        rule.id AS rule_id, COALESCE(rule.name, '') AS rule_name, rule.cluster_id AS rule_cluster_id
-FROM assets_application_service_log_setting ls
-JOIN assets_application_log_definition ld ON ld.id = ls.log_definition_id
-JOIN assets_application_service s ON s.id = ls.service_id
+FROM assets_application_service s
+JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
+LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
 LEFT JOIN monitor_log_processing_rule rule ON rule.id = ld.processing_rule_id
 LEFT JOIN assets_application app ON app.id = s.application_id
 WHERE ld.processing_rule_id = sqlc.arg(rule_id);

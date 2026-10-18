@@ -180,6 +180,10 @@ func validateCleanupStreamName(prefix, name string) error {
 	if strings.ContainsAny(trimmed, "*,?") {
 		return fmt.Errorf("stream must be a concrete data stream name (wildcards are not accepted)")
 	}
+	// 名字直接用于 ES 请求路径，不允许路径、查询或转义字符改变实际清理目标。
+	if strings.ContainsAny(trimmed, "/\\#%:<>|\" \t\r\n") {
+		return fmt.Errorf("stream contains invalid path or index name characters")
+	}
 	if strings.HasPrefix(trimmed, ".") {
 		return fmt.Errorf("stream must not start with \".\" (backing/system indices are not allowed)")
 	}
@@ -189,19 +193,9 @@ func validateCleanupStreamName(prefix, name string) error {
 	return nil
 }
 
-// CleanupLogDataStreamByStream 按**数据流名**清理：只服务"平台不认识的流"（未识别流）。
-//
-// 为什么需要它：服务维度的清理（CleanupLogDataStream）按 service_id 自己拼流名，未识别流没有
-// 服务可归属，于是这类"没人认领的垃圾流"在页面上一直清不掉（2026-09-19 现场提问）。
-//
-// 为什么不是"随便传索引名"：进来的是**数据流名**，且必须同时满足——
-//
-//	① 格式合法（见 validateCleanupStreamName）；
-//	② 在集群上确实是一条 data stream（`GET /_data_stream/<name>`）；
-//	③ **未被任何服务的维度识别**（recognized=false）：能归属到服务就必须走服务维度那条路
-//	   （它按档位收窄、语义单一），这条路径只负责"平台不认识的流"，把口子收到最小。
-//
-// 删除语义与另一条路完全一致：`_delete_by_query` 异步删文档，**保留 data stream 对象**。
+// CleanupLogDataStreamByStream 精确清理一条数据流，包括已识别、空档位和未识别流。
+// 必须校验名称且确认集群中存在对应 data stream；不按服务或档位重建名称，避免范围扩大。
+// `_delete_by_query` 异步删文档，保留 data stream 对象，不保证立即释放磁盘。
 func (handler *Handler) CleanupLogDataStreamByStream(context *gin.Context) {
 	var input struct {
 		Stream string `json:"stream"`
@@ -237,9 +231,7 @@ func (handler *Handler) CleanupLogDataStreamByStream(context *gin.Context) {
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}
-	// ③ 归属只作**事实**报出来，不作拦截：能归属到服务的流，页面优先走服务维度那条（按档位收窄、
-	// 语义单一）；但"按流名"必须留着兜底——服务维度的 tier 必须是档位表里的编码，而流名里的档位段
-	// 不保证都在表里（历史遗留/手工建过的流），只留一条路会把这类流卡成清不掉的死结。
+	// 归属仅作事实返回，不参与删除目标计算。
 	parsed := handler.loadStreamDims(context, prefix).resolveStreamName(stream)
 	cluster := elasticsearchCluster{
 		ID: clusterRow.ID, Hosts: clusterRow.Hosts, Username: clusterRow.Username,

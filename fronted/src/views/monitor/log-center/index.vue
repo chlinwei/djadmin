@@ -1875,42 +1875,29 @@ async function submitSwitchTier() {
   await Promise.all([loadApplyState(), loadChain()])
 }
 
-// 一条流该怎么清：能归属到逻辑服务的走**服务维度**（服务端自己拼流名、可选按档位收窄），
-// 未识别流没有服务可归属 → 走"按流名清理"（服务端校验名字能在集群上找到、且格式合法）。
-//
-// 服务维度优先不是洁癖：它能按档位收窄（只清这一条流），而按流名那条是"我就要清这个名字"的兜底。
-// 找不到服务 id（识别得到但 dims 里没这条服务，例如服务已删）时才退回按流名。
+// 列表单条清理必须精确使用流名，不能因档位为空或服务编码重复而扩大删除范围。
 function streamCleanupTarget(stream) {
   if (!stream?.name) return null
-  if (stream.recognized) {
-    const service = (storageDims.value.services || []).find((item) => item.code === stream.service)
-    if (service) return { kind: 'service', serviceId: service.id, tier: stream.tier }
-  }
   return { kind: 'stream', stream: stream.name }
 }
 
 // 清理按钮的悬停说明：历史档位流、活跃流、未识别流的后果各不相同，先说清再点。
 function streamCleanupTooltip(stream) {
   if (isHistoricalTier(stream)) {
-    return '删除这条历史档位流里的全部文档、立刻释放磁盘。不可恢复；流对象保留（切回该档位会继续写入它）。'
+    return '仅清理这条流中符合所选时间范围的文档。不可恢复；流对象保留，磁盘空间不会立即释放。'
   }
   if (!stream.recognized) {
-    return '这是一条未识别流（不归属任何逻辑服务）：删除它里面的全部文档、立刻释放磁盘。不可恢复；不会停止任何采集。'
+    return '仅清理这条未识别流中符合所选时间范围的文档。不可恢复；不会停止采集，磁盘空间不会立即释放。'
   }
-  return '删除这条流里的全部文档、立刻释放磁盘。不可恢复；**不会停止采集**——之后新写入的日志仍会进入这条流。'
+  return '仅清理这条流中符合所选时间范围的文档。不可恢复；不会停止采集，磁盘空间不会立即释放。'
 }
 
 // 清理：打开共享清理弹窗（与「日志查询」原来那个是**同一个**：范围可选保留 N 小时/N 天/全部清空）。
-// 作用域按上面的分流规则给：能归属到服务 → 服务维度（带 tier，只清这一条流）；否则按流名。
+// 弹窗展示和提交同一个完整流名，包含档位缺失的异常流。
 function cleanupStream(stream) {
   const target = streamCleanupTarget(stream)
   if (!target) return
-  cleanupScope.value = target.kind === 'service'
-    ? {
-      kind: 'service', serviceId: target.serviceId, tier: target.tier,
-      label: `${stream.name}（${formatBytes(stream.bytes)}${isHistoricalTier(stream) && stream.tier ? `，档位 ${stream.tier}` : ''}）`,
-    }
-    : { kind: 'stream', stream: target.stream, label: `${stream.name}（${formatBytes(stream.bytes)}，未识别流）` }
+  cleanupScope.value = { ...target, label: `${stream.name}（${formatBytes(stream.bytes)}）` }
   cleanupOpen.value = true
 }
 
@@ -2420,12 +2407,12 @@ function isHistoricalTier(stream) {
 }
 
 function ilmStateLabel(state) {
-  return { unmanaged: '未托管', query_failed: '查询失败', unknown: '未知', mixed: '状态不一致', ERROR: '执行错误' }[state] || state || '未知'
+  return { unmanaged: '未托管', partial_unmanaged: '部分未托管', multiple_phases: '多阶段', query_failed: '查询失败', unknown: '未知', ERROR: '执行错误' }[state] || state || '未知'
 }
 
 function ilmStateColor(state) {
   if (['query_failed', 'ERROR'].includes(state)) return 'red'
-  if (!state || ['unmanaged', 'unknown', 'mixed'].includes(state)) return 'orange'
+  if (!state || ['unmanaged', 'partial_unmanaged', 'unknown'].includes(state)) return 'orange'
   return 'blue'
 }
 

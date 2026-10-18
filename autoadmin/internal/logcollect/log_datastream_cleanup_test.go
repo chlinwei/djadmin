@@ -47,6 +47,10 @@ func TestValidateCleanupStreamName(t *testing.T) {
 		"autoadmin-*":                        "通配符",
 		"autoadmin-a,b":                      "逗号（多索引）",
 		"autoadmin-?-x":                      "问号",
+		"autoadmin-x/_delete_by_query":       "路径注入",
+		"autoadmin-x#fragment":               "片段",
+		"autoadmin-%2A":                      "编码通配符",
+		"autoadmin-x y":                      "空格",
 		".ds-autoadmin-kul-tib-test-svc-std": "后备索引",
 		".kibana":                            "系统索引",
 		"other-prefix-kul-tib-test-svc-std":  "前缀之外",
@@ -59,5 +63,8 @@ func TestValidateCleanupStreamName(t *testing.T) {
 	}
 	if err := validateCleanupStreamName(prefix, "autoadmin-kul-tib-test-svc-std"); err != nil {
 		t.Fatalf("合法流名被拒：%v", err)
+	}
+	if err := validateCleanupStreamName(prefix, "autoadmin-kul-tib-test-svc-"); err != nil {
+		t.Fatalf("空档位的具体流名不应扩大为通配或被拒：%v", err)
 	}
 }

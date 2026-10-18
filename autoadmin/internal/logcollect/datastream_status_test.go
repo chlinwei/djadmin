@@ -220,7 +220,12 @@ func TestFetchDataStreamEntriesILMStates(t *testing.T) {
 		{name: "error step", body: `{"managed":true,"phase":"hot","step":"ERROR"}`, want: "ERROR"},
 		{name: "missing state", body: `{}`, want: "unknown"},
 		{name: "query failed", status: http.StatusForbidden, body: `{}`, want: "query_failed"},
-		{name: "mixed management", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":false}`, want: "mixed"},
+		{name: "partial management", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":false}`, want: "partial_unmanaged"},
+		{name: "normal lifecycle phases", body: `{"managed":true,"phase":"delete"}`, secondBody: `{"managed":true,"phase":"hot"}`, want: "multiple_phases"},
+		{name: "normal lifecycle phases reversed", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":true,"phase":"delete"}`, want: "multiple_phases"},
+		{name: "same phase", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":true,"phase":"hot"}`, want: "hot"},
+		{name: "error takes priority", body: `{"managed":true,"phase":"hot"}`, secondBody: `{"managed":true,"phase":"hot","step":"ERROR"}`, want: "ERROR"},
+		{name: "unknown takes priority", body: `{"managed":true,"phase":"hot"}`, secondBody: `{}`, want: "unknown"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			index := ".ds-logs-project-biz-prod-service--2026.10.18-000001"

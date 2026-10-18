@@ -5,6 +5,7 @@
     :confirm-loading="submitting"
     ok-text="确认清理"
     cancel-text="取消"
+    centered
     @update:open="(value) => emit('update:open', value)"
     @ok="submit"
   >
@@ -65,7 +66,7 @@ const title = computed(() => (props.scope?.kind === 'stream' ? '清理数据流'
 const targetLabel = computed(() => props.scope?.label || props.scope?.stream || '')
 const alertDescription = computed(() => (
   props.scope?.kind === 'stream'
-    ? '这是一条未识别流（不归属任何逻辑服务）：按时间清理只删除早于所选时间的数据；全部清空会删除这条数据流的所有文档。'
+    ? '仅清理上方完整名称对应的这一条数据流，不影响其他档位。按时间清理只删除早于所选时间的数据；全部清空删除这条流的所有文档，磁盘空间不会立即释放。'
     : '按时间清理只删除早于所选时间的数据；全部清空会删除该逻辑服务数据流的所有文档（不限于当前档位）。'
 ))
 
@@ -78,7 +79,7 @@ watch(() => props.open, (visible) => {
 
 async function submit() {
   const scope = props.scope
-  if (!scope || (scope.kind === 'service' && !scope.serviceId) || (scope.kind === 'stream' && !scope.stream)) return
+  if (submitting.value || !scope || !['service', 'stream'].includes(scope.kind) || (scope.kind === 'service' && !scope.serviceId) || (scope.kind === 'stream' && !scope.stream?.trim())) return
   const selectedMode = mode.value
   const selectedAmount = selectedMode === 'all' ? 0 : Number(amount.value || 0)
   if (selectedMode !== 'all' && selectedAmount < 1) {

@@ -239,6 +239,17 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it('always cleans the exact clicked stream including missing and unknown tiers', async () => {
+    const wrapper = await mountPage()
+    for (const tier of ['', 'hot', 'unknown-tier']) {
+      const name = `autoadmin-yilake-tib-poc-nginx-${tier}`
+      wrapper.vm.cleanupStream({ name, tier, service: 'nginx', recognized: true })
+      expect(wrapper.vm.cleanupScope).toMatchObject({ kind: 'stream', stream: name })
+      expect(wrapper.vm.cleanupScope.serviceId).toBeUndefined()
+      expect(wrapper.vm.cleanupScope.tier).toBeUndefined()
+    }
+    wrapper.unmount()
+  })
   it('flags missing tiers and separates ILM management from configured collection', async () => {
     const wrapper = await mountPage()
     wrapper.vm.activeTab = 'storage'
@@ -253,7 +264,10 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(wrapper.text()).toContain('查询失败')
     expect(wrapper.text()).toContain('当前配置')
     expect(wrapper.text()).not.toContain('采集中')
-    expect(wrapper.vm.ilmStateLabel('mixed')).toBe('状态不一致')
+    expect(wrapper.vm.ilmStateLabel('multiple_phases')).toBe('多阶段')
+    expect(wrapper.vm.ilmStateColor('multiple_phases')).toBe('blue')
+    expect(wrapper.vm.ilmStateLabel('partial_unmanaged')).toBe('部分未托管')
+    expect(wrapper.vm.ilmStateColor('partial_unmanaged')).toBe('orange')
     expect(wrapper.vm.ilmStateLabel('ERROR')).toBe('执行错误')
     expect(wrapper.vm.ilmStateColor('unmanaged')).toBe('orange')
     wrapper.unmount()
@@ -989,15 +1003,15 @@ describe('日志中心（服务树 + 三个 tab）', () => {
   // 共享组件（范围可选 保留 N 小时 / N 天 / 全部清空）。日志查询面板里的清理按钮已删除，
   // 清理入口统一在数据流列表（这里）。
   //
-  // 分流规则：能归属到逻辑服务 → 服务维度（带 tier，只清这一条流）；未识别流 → 按流名。
+  // 所有单条流清理都按完整流名，不能按服务与档位重新推导目标。
   async function openCleanupDialog(wrapper, stream) {
     wrapper.vm.cleanupStream(stream)
     await flushPromises()
     return wrapper.findComponent({ name: 'LogCleanupDialog' })
   }
 
-  it('cleans only the historical stream through the service-scoped path', async () => {
-    const { cleanupLogDataStream } = await import('@/api/monitor')
+  it('cleans only the historical stream by its exact name', async () => {
+    const { cleanupLogDataStream, cleanupLogDataStreamByStream } = await import('@/api/monitor')
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
     await flushPromises()
@@ -1012,19 +1026,20 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(dialog.vm.mode).toBe('days')
     expect(dialog.vm.amount).toBe(7)
 
-    // 未确认前不发请求；选了"全部清空"后按 (服务, 档位) 清理。
+    // 未确认前不发请求；全部清空也只能命中这一条流。
     expect(cleanupLogDataStream).not.toHaveBeenCalled()
     dialog.vm.mode = 'all'
     await dialog.vm.submit()
     await flushPromises()
-    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'all', amount: 0, tier: 'wuhan-test' })
+    expect(cleanupLogDataStreamByStream).toHaveBeenCalledWith({ stream: historical.name, mode: 'all', amount: 0 })
+    expect(cleanupLogDataStream).not.toHaveBeenCalled()
     expect(wrapper.vm.cleanupOpen).toBe(false)
     wrapper.unmount()
   })
 
   // 时间窗（保留最近 N 天）必须真的传下去：这是"只清旧数据、留最近"的唯一手段。
   it('passes the keep-recent window through to the cleanup API', async () => {
-    const { cleanupLogDataStream } = await import('@/api/monitor')
+    const { cleanupLogDataStreamByStream } = await import('@/api/monitor')
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
     await flushPromises()
@@ -1038,7 +1053,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await dialog.vm.submit()
     await flushPromises()
 
-    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'days', amount: 30, tier: 'hot' })
+    expect(cleanupLogDataStreamByStream).toHaveBeenCalledWith({ stream: active.name, mode: 'days', amount: 30 })
     wrapper.unmount()
   })
 
@@ -1050,11 +1065,11 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await flushPromises()
 
     const active = wrapper.vm.storageRows.find((row) => row.name.endsWith('-hot'))
-    expect(wrapper.vm.streamCleanupTarget(active)).toEqual({ kind: 'service', serviceId: 15, tier: 'hot' })
+    expect(wrapper.vm.streamCleanupTarget(active)).toEqual({ kind: 'stream', stream: active.name })
     const dialog = await openCleanupDialog(wrapper, active)
     // 活跃流最容易被误解成"停止采集"：弹窗里必须写清"清理不停采集"（提示文字在正文里，断言渲染结果）。
     expect(document.body.textContent).toContain('不会停止采集')
-    expect(dialog.vm.title).toBe('清理日志数据')
+    expect(dialog.vm.title).toBe('清理数据流')
     wrapper.unmount()
   })
 
@@ -1100,7 +1115,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(unrecognized).toBeTruthy()
     expect(wrapper.vm.streamCleanupTarget(unrecognized)).toEqual({ kind: 'stream', stream: unrecognized.name })
     const dialog = await openCleanupDialog(wrapper, unrecognized)
-    expect(dialog.vm.alertDescription).toContain('未识别流')
+    expect(dialog.vm.alertDescription).toContain('不影响其他档位')
     dialog.vm.mode = 'all'
     await dialog.vm.submit()
     await flushPromises()
@@ -1144,20 +1159,19 @@ describe('日志中心（服务树 + 三个 tab）', () => {
   })
 
   it('cleans from the all-streams view too (no service selected)', async () => {
-    const { cleanupLogDataStream } = await import('@/api/monitor')
+    const { cleanupLogDataStreamByStream } = await import('@/api/monitor')
     const wrapper = await mountPage()
     // 不选服务（全量视图）——这正是用户要的"全部 data stream 也能清"。
     wrapper.vm.activeTab = 'storage'
     await flushPromises()
 
     const historical = wrapper.vm.storageRows.find((row) => row.historical)
-    // 服务 id 由响应里的 dims 映射得到（不依赖左侧选中的是谁）。
-    expect(wrapper.vm.streamCleanupTarget(historical)).toEqual({ kind: 'service', serviceId: 15, tier: 'wuhan-test' })
+    expect(wrapper.vm.streamCleanupTarget(historical)).toEqual({ kind: 'stream', stream: historical.name })
     const dialog = await openCleanupDialog(wrapper, historical)
     dialog.vm.mode = 'all'
     await dialog.vm.submit()
     await flushPromises()
-    expect(cleanupLogDataStream).toHaveBeenCalledWith({ service_id: 15, mode: 'all', amount: 0, tier: 'wuhan-test' })
+    expect(cleanupLogDataStreamByStream).toHaveBeenCalledWith({ stream: historical.name, mode: 'all', amount: 0 })
     wrapper.unmount()
   })
 

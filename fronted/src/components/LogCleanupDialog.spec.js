@@ -23,6 +23,25 @@ function mountDialog(scope) {
 }
 
 describe('LogCleanupDialog', () => {
+  it('submits a missing-tier stream exactly without calling the service-wide API', async () => {
+    const stream = 'autoadmin-hak-allinone-aos-test-aos_122-'
+    const wrapper = mountDialog({ kind: 'stream', stream, label: stream })
+    wrapper.vm.mode = 'all'
+    await wrapper.vm.submit()
+    expect(cleanupLogDataStreamByStream).toHaveBeenCalledWith({ stream, mode: 'all', amount: 0 })
+    expect(cleanupLogDataStream).not.toHaveBeenCalled()
+    expect(wrapper.vm.alertDescription).toContain('不影响其他档位')
+    expect(wrapper.vm.alertDescription).not.toContain('未识别流')
+    wrapper.unmount()
+  })
+
+  it('does not submit an empty stream name', async () => {
+    const wrapper = mountDialog({ kind: 'stream', stream: '   ' })
+    await wrapper.vm.submit()
+    expect(cleanupLogDataStreamByStream).not.toHaveBeenCalled()
+    expect(cleanupLogDataStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()

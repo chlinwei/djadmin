@@ -332,21 +332,46 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 			Bytes: catFloat(row, "store.size"), CreateAt: catString(row, "creation.date.string"),
 			ILMState: ilmStates[index],
 		})
-		// 同一流的后备索引可能托管不一致，不能用任意一个正常阶段掩盖其他索引。
-		if entry.ILMState == "" {
-			entry.ILMState = ilmStates[index]
-		} else if entry.ILMState != ilmStates[index] {
-			entry.ILMState = "mixed"
-		}
 	}
 	sort.Strings(order)
 	result := make([]dataStreamEntry, 0, len(order))
 	for _, name := range order {
 		backing := entries[name].BackingIndices
 		sort.Slice(backing, func(i, j int) bool { return backing[i].Index < backing[j].Index })
+		entries[name].ILMState = aggregateStreamILMState(backing)
 		result = append(result, *entries[name])
 	}
 	return result, ilmStates, nil
+}
+
+func aggregateStreamILMState(indices []dataStreamBackingIndex) string {
+	states := map[string]int{}
+	for _, index := range indices {
+		state := index.ILMState
+		if state == "" {
+			state = "unknown"
+		}
+		states[state]++
+	}
+	// 异常优先，且不依赖索引遍历顺序；正常生命周期阶段差异不是故障。
+	for _, state := range []string{"ERROR", "query_failed", "unknown"} {
+		if states[state] > 0 {
+			return state
+		}
+	}
+	if states["unmanaged"] > 0 {
+		if states["unmanaged"] == len(indices) {
+			return "unmanaged"
+		}
+		return "partial_unmanaged"
+	}
+	if len(states) > 1 {
+		return "multiple_phases"
+	}
+	for state := range states {
+		return state
+	}
+	return "unknown"
 }
 
 // GetLogStorageOverview 存储水位总览：流级运行态（Elasticsearch）+ 维度数据（MySQL）一次返回，

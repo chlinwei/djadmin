@@ -182,9 +182,7 @@
         <template v-if="!metrics.recentKnown">要看写入量请下钻到环境层（写入量按 业务系统 × 环境 聚合，这一层不给这个数）。</template>
       </template>
       <template v-else>
-        这一层是**配置欠账**的下钻导航：点行进入下一层，到"环境"层的行就是逻辑服务、点进去改它的日志配置。
-        写操作仍然以**逻辑服务**为最小单位（层级上只读），当前范围共
-        {{ metrics.services }} 个服务、{{ metrics.managedPairs }} 个 (服务 × 主机) 待下发。
+        当前范围共 {{ metrics.services }} 个服务、{{ metrics.managedPairs }} 个已纳管的服务与主机组合。
       </template>
     </div>
   </div>

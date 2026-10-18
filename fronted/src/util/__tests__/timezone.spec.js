@@ -1,3 +1,4 @@
+import dayjs from 'dayjs'
 import {
   convertUTCToTimezone,
   formatTimeWithTimezone,
@@ -35,12 +36,21 @@ describe('timezone utils', () => {
       .toBe('2026-01-01 00:00:00.000')
   })
 
-  it('returns local string for invalid time input', () => {
+  it('formats Dayjs picker values in the requested timezone without errors', () => {
+    const errorSpy = vi.spyOn(console, 'error')
+    const value = dayjs('2026-01-01T00:00:00.635Z')
+    expect(formatTimeWithTimezone(value, 'Asia/Shanghai')).toBe('2026-01-01 08:00:00')
+    expect(formatTimeWithTimezone(value, 'Asia/Shanghai', 'YYYY-MM-DD HH:mm:ss.SSS'))
+      .toBe('2026-01-01 08:00:00.635')
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('returns a placeholder for invalid time input without using the browser timezone', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = formatTimeWithTimezone('invalid-time-value', 'Asia/Shanghai')
 
-    expect(typeof result).toBe('string')
-    expect(result.length).toBeGreaterThan(0)
+    expect(result).toBe('-')
     errorSpy.mockRestore()
   })
 

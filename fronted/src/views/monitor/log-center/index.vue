@@ -31,6 +31,29 @@
         </a-tab-pane>
 
         <a-tab-pane key="config" tab="日志配置" force-render>
+          <div v-if="!serviceId" class="apply-bar">
+            <span>{{ scope.nodeTitle || '全部业务' }}</span>
+            <a-tooltip title="下发当前节点下有差异或从未下发的采集配置" placement="top">
+              <a-button size="large" :loading="scopeApplyLoading" :disabled="levelLoading || applying" @click="previewScopeApply">
+                <CloudUploadOutlined />
+                下发差异采集配置
+              </a-button>
+            </a-tooltip>
+          </div>
+          <a-modal v-model:open="scopeApplyOpen" title="确认下发差异采集配置" ok-text="确认下发" cancel-text="取消" :confirm-loading="applying" :ok-button-props="{ disabled: !scopeApplyTargets.length }" centered @ok="applyScope">
+            <p>{{ scopeApplyTitle }}：{{ scopeApplyServices.length }} 个服务，{{ scopeApplyTargets.length }} 台待下发主机。</p>
+            <a-alert type="warning" show-icon message="按主机全量下发，共享主机上其他服务尚未下发的配置也会同时生效。" />
+            <ul><li v-for="item in scopeApplyServices" :key="item.id">{{ item.name }}</li></ul>
+            <ul><li v-for="host in scopeApplyTargets" :key="host.target_id">{{ hostLabel(host) }}</li></ul>
+            <a-alert v-if="scopeApplyUnmanaged.length" type="warning" show-icon message="以下主机未纳管，本次不会下发。" />
+            <ul><li v-for="host in scopeApplyUnmanaged" :key="host.host_id">{{ hostLabel(host) }}</li></ul>
+            <p v-if="!scopeApplyTargets.length">没有需要下发的配置。</p>
+          </a-modal>
+          <div v-if="!serviceId && applyJob" class="apply-progress">
+            <a-progress :percent="applyJobPercent" :status="applyJob.is_running ? 'active' : (applyJob.failed_count ? 'exception' : 'success')" />
+            <span>下发作业 #{{ applyJob.id }}：共 {{ applyJob.total_count }} 台，成功 {{ applyJob.success_count }}，失败 {{ applyJob.failed_count }}，待处理 {{ applyJob.pending_count }}。</span>
+            <span>{{ applyJob.message }}</span>
+          </div>
           <!-- 非服务节点：同样的层级视图，列换成日志配置视角（档位/待下发）。
                服务级区块（采集链路、下发、逐条配置表）只在服务节点出现。 -->
           <LogLevelOverview
@@ -869,11 +892,11 @@
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Empty, message } from 'ant-design-vue'
-import { ReloadOutlined, SearchOutlined, CloseOutlined } from '@ant-design/icons-vue'
+import { ReloadOutlined, SearchOutlined, CloseOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { tableLocale } from '@/util/tableStyle'
 import { previewApplicationServiceLogGlob, getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessEnvironmentList, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
-import { applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
+import { createLogBatchJob, applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
 import ServiceTree from '@/views/assets/application/components/ServiceTree.vue'
 import LogQueryPanel from './LogQueryPanel.vue'
 import LogLevelOverview from './LogLevelOverview.vue'
@@ -882,6 +905,7 @@ import LogCleanupDialog from '@/components/LogCleanupDialog.vue'
 import LogFormatVerifyDialog from '@/components/LogFormatVerifyDialog.vue'
 import { FORMAT_STATE_COLOR, FORMAT_STATE_LABEL, canVerifyLogFormat, formatActionTooltip, formatStateTooltip } from '@/util/logFormatState'
 import { fetchAllPages } from '@/util/fetchAllPages'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { DROP_FIELD_SUGGESTIONS, DROP_OPERATORS, compileDropRule, parseDropRule } from '@/util/logDropRules'
@@ -962,6 +986,17 @@ const applyState = ref(null)
 const applyStateLoading = ref(false)
 const applyStateError = ref('')
 const applying = ref(false)
+const scopeApplyLoading = ref(false)
+const scopeApplyOpen = ref(false)
+const scopeApplyTitle = ref('')
+const scopeApplyServices = ref([])
+const scopeApplyTargets = ref([])
+const scopeApplyUnmanaged = ref([])
+let scopeApplyGeneration = 0
+watch(scope, () => {
+  scopeApplyGeneration += 1
+  scopeApplyOpen.value = false
+}, { deep: true, flush: 'sync' })
 const applyJob = ref(null)
 // 历史流的两个动作：切回该档位（逐条改档位）/ 清理数据（按流删文档）。
 const switchTierOpen = ref(false)
@@ -972,6 +1007,8 @@ const switchTierSaving = ref(false)
 const cleanupOpen = ref(false)
 const cleanupScope = ref(null)
 let applyJobTimer = null
+let applyPollGeneration = 0
+let activeApplyJobId = null
 const APPLY_POLL_INTERVAL = 3000
 // 按行保存中的标记：log_definition -> true（控件显示 loading 并防重复提交）。
 const savingRows = reactive({})
@@ -1942,14 +1979,73 @@ async function applyService() {
   }
 }
 
+async function previewScopeApply() {
+  if (scopeApplyLoading.value || applying.value) return
+  scopeApplyLoading.value = true
+  const selectedScope = { ...scope.value }
+  const generation = ++scopeApplyGeneration
+  scopeApplyTitle.value = selectedScope.nodeTitle || '全部业务'
+  scopeApplyTargets.value = []
+  scopeApplyServices.value = []
+  scopeApplyUnmanaged.value = []
+  try {
+    const targets = new Map()
+    const unmanaged = new Map()
+    const services = []
+    // 顺序读取以限制接口并发；任一读取失败都中止，不能把未知状态当作已同步。
+    for (const service of servicesUnderScope(selectedScope, levelServices.value, levelBusinessSystems.value)) {
+      const state = (await getServiceLogConfigState(service.id))?.data?.data
+      if (generation !== scopeApplyGeneration) return
+      if (!state || !Array.isArray(state.hosts) || state.summary?.unknown || state.hosts.some((host) => !['synced', 'drift', 'never'].includes(host.config_state))) throw new Error('部分服务配置状态未知，请刷新后重试')
+      const pending = state.hosts.filter((host) => ['drift', 'never'].includes(host.config_state) && host.target_id > 0)
+      if (pending.length) services.push({ id: service.id, name: service.name || service.code || String(service.id) })
+      for (const host of pending) targets.set(host.target_id, host)
+      for (const host of state.unmanaged_hosts || []) unmanaged.set(host.host_id, host)
+    }
+    scopeApplyTargets.value = [...targets.values()]
+    scopeApplyServices.value = services
+    scopeApplyUnmanaged.value = [...unmanaged.values()]
+    scopeApplyOpen.value = true
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '读取范围内配置状态失败')
+  } finally {
+    scopeApplyLoading.value = false
+  }
+}
+
+async function applyScope() {
+  // 空 ids 在批量接口代表全局待下发，必须在页面显式拦截空清单。
+  if (applying.value || !scopeApplyTargets.value.length) return
+  applying.value = true
+  try {
+    const data = (await createLogBatchJob('apply', scopeApplyTargets.value.map((host) => host.target_id)))?.data?.data || {}
+    scopeApplyOpen.value = false
+    message.success(`已创建下发作业，共 ${scopeApplyTargets.value.length} 台主机`)
+    const jobId = data.job?.id || data.job?.job_id || data.id || data.job_id
+    if (jobId) startApplyPolling(jobId)
+  } catch (error) {
+    message.error(error?.response?.data?.msg || error?.message || '下发失败')
+  } finally {
+    applying.value = false
+  }
+}
+
 // 轮询作业进度：作业在服务端跑，页面只是它的视图；结束后停表。
 function startApplyPolling(jobId) {
   stopApplyPolling()
+  activeApplyJobId = jobId
+  const generation = applyPollGeneration
   const poll = async () => {
     try {
       const job = (await getLogBatchJob(jobId))?.data?.data
+      if (generation !== applyPollGeneration) return
       applyJob.value = job
       if (!job?.is_running) {
+        activeApplyJobId = null
+        if (!serviceId.value) {
+          await loadLevelStatus()
+          return
+        }
         // 作业结束后配置态会变（原来待下发的变成已同步），刷一次聚合；链路里的"主机配置"
         // 与"数据写入"两层也都跟着变，一起刷掉，免得留在旧结论上。
         await Promise.all([loadApplyState(), loadChain()])
@@ -1961,12 +2057,13 @@ function startApplyPolling(jobId) {
     } catch {
       return
     }
-    applyJobTimer = setTimeout(poll, APPLY_POLL_INTERVAL)
+    if (generation === applyPollGeneration) applyJobTimer = setTimeout(poll, APPLY_POLL_INTERVAL)
   }
   poll()
 }
 
 function stopApplyPolling() {
+  applyPollGeneration += 1
   if (applyJobTimer) {
     clearTimeout(applyJobTimer)
     applyJobTimer = null
@@ -1974,6 +2071,9 @@ function stopApplyPolling() {
 }
 
 onUnmounted(stopApplyPolling)
+useKeepAliveRefreshLifecycle(() => {
+  if (activeApplyJobId) startApplyPolling(activeApplyJobId)
+}, stopApplyPolling)
 
 function openVerifyDialog(record) {
   // 单条认证：清掉批量目标，否则弹窗优先按 targets 渲染，会把这一条当成上一批的一部分。

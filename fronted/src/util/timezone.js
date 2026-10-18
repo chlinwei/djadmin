@@ -50,12 +50,10 @@ export function convertUTCToTimezone(utcTime, timezone = 'UTC') {
  */
 export function formatTimeWithTimezone(utcTime, timezone = 'UTC', format = 'YYYY-MM-DD HH:mm:ss') {
     try {
-        let date
-        if (typeof utcTime === 'string' || typeof utcTime === 'number') {
-            date = new Date(utcTime)
-        } else {
-            date = utcTime
-        }
+        // 日期选择器返回 Dayjs；先归一为 Date，毫秒读取与 Intl 才使用同一个时间值。
+        const date = typeof utcTime?.toDate === 'function'
+            ? utcTime.toDate()
+            : new Date(utcTime)
 
         // 使用 Intl API 获取特定时区的时间
         const formatter = new Intl.DateTimeFormat('zh-CN', {
@@ -88,7 +86,7 @@ export function formatTimeWithTimezone(utcTime, timezone = 'UTC', format = 'YYYY
         return result
     } catch (error) {
         console.error('时间格式化错误:', error)
-        return new Date(utcTime).toLocaleString()
+        return '-'
     }
 }
 

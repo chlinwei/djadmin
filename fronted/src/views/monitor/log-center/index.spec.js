@@ -55,6 +55,7 @@ vi.mock('@/api/assets/application', () => ({
 }))
 
 vi.mock('@/api/monitor', () => ({
+  createLogBatchJob: vi.fn(() => Promise.resolve({ data: { data: { job: { id: 78 } } } })),
   getElasticsearchClusterList: vi.fn(() => Promise.resolve({ data: { data: { results: [{ id: 1 }] } } })),
   getLogRetentionTiers: vi.fn(() => Promise.resolve({ data: { data: { results: [
     { id: 1, code: 'hot', name: '热（7 天）', is_default: true },
@@ -238,6 +239,59 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it.each([
+    { nodeType: 'all', nodeTitle: '全部业务' },
+    { nodeType: 'project', projectId: 301, nodeTitle: '订单项目' },
+    { nodeType: 'businessSystem', businessSystemId: 7, nodeTitle: '订单系统' },
+    { nodeType: 'environment', businessSystemId: 7, environment: 10, nodeTitle: 'poc' },
+  ])('previews and applies only deduplicated pending targets under $nodeType', async (selectedScope) => {
+    const { createLogBatchJob } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', selectedScope)
+    await flushPromises()
+    await wrapper.vm.previewScopeApply()
+    expect(wrapper.vm.scopeApplyServices.map((service) => service.id)).toEqual([15, 16])
+    expect(wrapper.vm.scopeApplyTargets.map((host) => host.target_id)).toEqual([102])
+    expect(wrapper.vm.scopeApplyUnmanaged).toHaveLength(1)
+    expect(wrapper.vm.scopeApplyTitle).toBe(selectedScope.nodeTitle)
+    await wrapper.vm.applyScope()
+    await flushPromises()
+    expect(createLogBatchJob).toHaveBeenCalledWith('apply', [102])
+    expect(wrapper.vm.applyJob.id).toBe(77)
+    wrapper.unmount()
+  })
+
+  it('never submits an empty target list as a global apply', async () => {
+    const { createLogBatchJob } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    await wrapper.vm.applyScope()
+    expect(createLogBatchJob).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not open confirmation when a service state request fails', async () => {
+    const { getServiceLogConfigState, createLogBatchJob } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    getServiceLogConfigState.mockRejectedValueOnce(new Error('state unavailable'))
+    await wrapper.vm.previewScopeApply()
+    expect(wrapper.vm.scopeApplyOpen).toBe(false)
+    expect(createLogBatchJob).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('discards a pending preview when the selected tree scope changes', async () => {
+    const { getServiceLogConfigState } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    let resolveState
+    getServiceLogConfigState.mockImplementationOnce(() => new Promise((resolve) => { resolveState = resolve }))
+    const preview = wrapper.vm.previewScopeApply()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', { nodeType: 'project', projectId: 999 })
+    await flushPromises()
+    resolveState({ data: { data: { hosts: [], summary: {} } } })
+    await preview
+    expect(wrapper.vm.scopeApplyOpen).toBe(false)
+    wrapper.unmount()
+  })
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()

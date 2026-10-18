@@ -37,20 +37,20 @@
             <span>资源占比</span>
           </div>
           <div class="service-tree-right-stats-subtitle">
-            按{{ resourceDimensionLabel }}汇总承载主机 CPU / 内存容量；组内主机去重，分组间可能重叠，非实时使用率或服务配额。
+            总容量按当前范围的主机去重；按{{ resourceDimensionLabel }}归集容量，组内去重、组间可能重叠。饼图百分比以各组容量之和为分母，不代表实际资源分配或实时使用率。
           </div>
           <div class="service-tree-right-stats-grid">
             <div class="service-tree-right-chart-card">
               <div class="service-tree-right-chart-title">
-                <span>CPU 占比</span>
-                <strong>分组归集 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
+                <span>CPU 归集占比</span>
+                <strong>去重总 CPU {{ formatResource(statsData.totalCpu, ' 核') }}</strong>
               </div>
               <div ref="hostPieRef" class="service-tree-right-chart"></div>
             </div>
             <div class="service-tree-right-chart-card">
               <div class="service-tree-right-chart-title">
-                <span>内存占比</span>
-                <strong>分组归集内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
+                <span>内存归集占比</span>
+                <strong>去重总内存 {{ formatResource(statsData.totalMemory, ' GB') }}</strong>
               </div>
               <div ref="deploymentPieRef" class="service-tree-right-chart"></div>
             </div>
@@ -138,11 +138,11 @@ function formatResource(value, unit) {
   return `${Number(value || 0).toFixed(2)}${unit}`
 }
 
-function buildPieOption(title, rows) {
+function buildPieOption(title, rows, unit) {
   return {
     tooltip: {
       trigger: 'item',
-      formatter: (params) => `${params.name}: ${Number(params.value).toFixed(2)} (${params.percent}%)`,
+      formatter: (params) => `${params.name}: ${Number(params.value).toFixed(2)} ${unit} (归集占比 ${params.percent}%)`,
     },
     series: [
       {
@@ -174,10 +174,10 @@ function ensureCharts() {
 function renderCharts() {
   ensureCharts()
   if (hostPieChart) {
-    hostPieChart.setOption(buildPieOption('CPU 占比', statsData.value.cpuRows || []), true)
+    hostPieChart.setOption(buildPieOption('CPU 归集占比', statsData.value.cpuRows || [], '核'), true)
   }
   if (deploymentPieChart) {
-    deploymentPieChart.setOption(buildPieOption('内存占比', statsData.value.memoryRows || []), true)
+    deploymentPieChart.setOption(buildPieOption('内存归集占比', statsData.value.memoryRows || [], 'GB'), true)
   }
 }
 

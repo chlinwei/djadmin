@@ -3,6 +3,7 @@
 Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 
 > **迁移进行中**：
+>
 > - 搜索后端已从 OpenSearch 迁到 **Elasticsearch 8.x**：保留策略用 ILM（`_ilm/policy`）替代
 >   ISM，每档位索引模板绑定 `index.lifecycle.name`，映射用 `flattened` 替代 `flat_object`，
 >   集群表更名为 `monitor_elasticsearch_cluster`。本文主体已按 ES 8 更新。
@@ -20,31 +21,12 @@ Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 
 - 在逻辑服务上一键开启/关闭日志收集
 - 一条日志处理规则统一维护 Filebeat 发送前处理与 Elasticsearch Ingest 字段解析
+- 日志处理规则及采集过滤规则的说明按纯文本展示，保留换行与缩进；长路径可在列宽内折行，不渲染 HTML。
 - 日志定义只关联一条处理规则，规则可由同格式的应用日志复用
 - 不输入关键词即可看到「出现了哪些错误、各多少次、集中在哪台机器」
 - 自动识别新增错误与突增错误
 
 ---
-
-### 后端 Elasticsearch 请求连接生命周期
-
-连接测试、日志查询和集群管理等经 `elasticsearchRequestRaw` 发出的请求，
-按当前集群配置创建独立的 HTTP Client / Transport，使用对应的认证、TLS 校验和请求超时。
-读取响应后关闭响应体；本次调用结束时，无论成功或失败，都显式关闭该客户端的空闲连接。
-不在不同调用间共享此连接池，避免旧认证或 TLS 配置被缓存；同一次调用内保留既有多地址尝试语义。
-
-关闭响应体不等于关闭 keep-alive TCP 连接，因此独立 Transport 的释放不可省略。
-否则连续请求可能积累到 ES 的 ESTABLISHED 连接，耗尽后端源端口，使连接测试报
-`cannot assign requested address`。此错误发生在后端建立 TCP 连接阶段，不是 ES 返回的认证或证书错误。
-发布修复后，旧进程中已经积累的连接需要随 API 进程有序退出释放。
-
-### 日志详情的业务归属展示
-
-日志中心的日志详情抽屉在「服务」上方依次展示「项目」「业务」。
-取值使用当前日志记录的 `project`、`business_system`，复用面板的维度名称映射展示名称；
-没有名称映射时显示记录中的编码，字段为空时显示 `-`，不以当前选中的树节点替代日志归属。
-「应用私有字段」存在非空内容时展示格式化 JSON，并与原始日志、错误日志一致提供预览和复制。
-预览复用详情文本弹窗，复制复用公共剪贴板逻辑；两者均使用与详情区一致的格式化文本。
 
 ## 2. 整体架构
 
@@ -103,11 +85,11 @@ Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 
 三条链路互不耦合：
 
-| 链路 | 方向 | 用途 |
-|---|---|---|
-| Filebeat → Elasticsearch | 主机 → 日志服务器 | 日志数据写入 |
-| djadmin → Elasticsearch | 控制端 → 日志服务器 | 管理 pipeline、执行聚合查询 |
-| djadmin → dj-agent → 主机 | 控制端 → 主机 | 下发采集配置、触发热重载 |
+| 链路                        | 方向                 | 用途                        |
+| --------------------------- | -------------------- | --------------------------- |
+| Filebeat → Elasticsearch   | 主机 → 日志服务器   | 日志数据写入                |
+| djadmin → Elasticsearch    | 控制端 → 日志服务器 | 管理 pipeline、执行聚合查询 |
+| djadmin → dj-agent → 主机 | 控制端 → 主机       | 下发采集配置、触发热重载    |
 
 ---
 
@@ -119,13 +101,13 @@ Filebeat 从 7.14 起在 elasticsearch output 中加入服务端版本校验，�
 Elasticsearch 会直接拒绝连接，返回 `400 Bad Request`。Elasticsearch 由 ES 7.10 fork
 而来，会被该校验拦截。可用的 Filebeat 只有 7.12.1 OSS，停留在 2021 年且不再有安全更新。
 
-| 采集器 | Elasticsearch 支持 | 单实例内存 | 结论 |
-|---|---|---|---|
-| Filebeat | 原生 `elasticsearch` output | 5-15 MB | 采用 |
-| Vector | `elasticsearch` sink 兼容 | 30-60 MB | 备选 |
-| Filebeatd | 需插件 | 60-100 MB | 过重 |
-| Logstash OSS | 官方插件 | 500 MB+ | 仅适合中转层 |
-| Filebeat 7.12.1 | 版本校验前的最后一版 | 60-100 MB | 不采用 |
+| 采集器          | Elasticsearch 支持           | 单实例内存 | 结论         |
+| --------------- | ---------------------------- | ---------- | ------------ |
+| Filebeat        | 原生`elasticsearch` output | 5-15 MB    | 采用         |
+| Vector          | `elasticsearch` sink 兼容  | 30-60 MB   | 备选         |
+| Filebeatd       | 需插件                       | 60-100 MB  | 过重         |
+| Logstash OSS    | 官方插件                     | 500 MB+    | 仅适合中转层 |
+| Filebeat 7.12.1 | 版本校验前的最后一版         | 60-100 MB  | 不采用       |
 
 多行边界由日志处理规则中的首行正则、续行正则和合并超时定义。平台不提供 Java、Python、
 Go 等语言专用分支；Java 堆栈、普通缩进续行和其他多行格式都使用同一套通用 regex multiline
@@ -135,12 +117,12 @@ Go 等语言专用分支；Java 堆栈、普通缩进续行和其他多行格式
 Filebeat** 编译执行（`parsers.multiline.pattern`，见 §8），而 Filebeat 与服务端用的是同一个引擎
 ——Go 的 `regexp`（RE2）。所以"规则合不合法"只能按 RE2 判，且**必须在保存时就判**：
 
-| 环节 | 行为 |
-|---|---|
-| 保存/发布规则 | 按 RE2 编译 `start_pattern` 与 `continuation_pattern`，编译不过直接拒绝，错误文案给出等价写法（`\u4e00` → `\x{4e00}` 等），见 `internal/logcollect/regex_pattern.go` |
-| 规则编辑页 | 同一套预检（`util/re2Pattern.js`），并且把 RE2 语法翻译成浏览器能编译的形式，让「在线调试」能用 RE2 写法试跑（`\x{4e00}` → `\u4e00`）。预览只是预览，权威仍是服务端那次编译 |
-| 格式认证 | 用 RE2 编译首行正则还原样例（`log_format_verify.go`，见 §4.8） |
-| 配置下发 | 渲染前再按 RE2 编译一次；编译不过的日志定义**跳过并告警**（与"未关联处理规则""路径含未定义宏"同样处理）。不跳的话坏片段会让 Filebeat 起不来，**整台主机的日志一起停** |
+| 环节          | 行为                                                                                                                                                                               |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 保存/发布规则 | 按 RE2 编译`start_pattern` 与 `continuation_pattern`，编译不过直接拒绝，错误文案给出等价写法（`\u4e00` → `\x{4e00}` 等），见 `internal/logcollect/regex_pattern.go`     |
+| 规则编辑页    | 同一套预检（`util/re2Pattern.js`），并且把 RE2 语法翻译成浏览器能编译的形式，让「在线调试」能用 RE2 写法试跑（`\x{4e00}` → `\u4e00`）。预览只是预览，权威仍是服务端那次编译 |
+| 格式认证      | 用 RE2 编译首行正则还原样例（`log_format_verify.go`，见 §4.8）                                                                                                                  |
+| 配置下发      | 渲染前再按 RE2 编译一次；编译不过的日志定义**跳过并告警**（与"未关联处理规则""路径含未定义宏"同样处理）。不跳的话坏片段会让 Filebeat 起不来，**整台主机的日志一起停**  |
 
 RE2 与浏览器/Java 方言的主要差异（现场踩过前两条）：不支持 `\uXXXX`（用 `\x{XXXX}`）、
 **不支持任何断言**（`(?= / (?! / (?<= / (?<!`）、不支持反向引用与八进制转义（`\1`）、
@@ -180,14 +162,14 @@ autoadmin-nkg-test-esb-gateway-std
 ILM 是**索引级**的，同一索引内无法按 `service` 区分保留期，统一 30 天会撞爆磁盘，
 统一 7 天又丢失了小服务的历史数据。
 
-| 档位 | 保留 | 适用 |
-|---|---|---|
-| `hot` | 7 天 | 高频服务，如网关、接入层 |
-| `std` | 30 天 | 默认 |
+| 档位     | 保留  | 适用                           |
+| -------- | ----- | ------------------------------ |
+| `hot`  | 7 天  | 高频服务，如网关、接入层       |
+| `std`  | 30 天 | 默认                           |
 | `cold` | 90 天 | 量小但需长期保留，如审计、对账 |
 
 档位配置在**逻辑服务**上（`ApplicationService.log_retention_tier`），不配则为 `std`。
-服务级默认档位还可在日志中心「日志配置」的**日志表上方**"默认保留档位"下拉单独覆盖到某条日志
+服务级默认档位还可在**模板日志表格上方**的"默认保留档位"下拉单独覆盖到某条日志
 （`assets_application_service_log_setting.retention_tier_id`，null 表示继承服务默认）。
 
 **保存链路（Go 版）**：前端逻辑服务表单提交 `log_retention_tier`（档位 ID，可为 null）
@@ -195,11 +177,9 @@ ILM 是**索引级**的，同一索引内无法按 `service` 区分保留期，�
 `assets_application_service.log_retention_tier_id`；GET 返回同名字段回显。档位 ID
 必须指向 `monitor_log_retention_tier` 中存在的记录，前端下拉只列 enabled 档位。
 
-**模板日志回显（日志中心「日志配置」）**：`GET /assets/application-services/:id/log-config/`
-（Go `assets.ListServiceTemplateLogs`）响应顶层带 **`log_collection_enabled`**（采集总开关）与
-**`log_retention_tier`**（服务级默认保留档位，`null` = 由平台默认档 `is_default` 决定；
-界面靠它把"继承服务默认"写成"继承服务默认（标准 30 天）"，见 §9.5.0），
-每行除覆盖值外还返回 `resolved_path` 与 `data_stream`——`resolved_path` 按**与渲染同一套顺序**展开（`shared/logmacro`：模板
+**模板日志回显（编辑弹窗）**：`GET /assets/application-services/:id/log-config/`
+（Go `assets.ListServiceTemplateLogs`）除覆盖值外还返回 `resolved_path` 与
+`data_stream`——`resolved_path` 按**与渲染同一套顺序**展开（`shared/logmacro`：模板
 `macro_definitions` 的 value → 服务 `macro_values`，模板 `app_home` 作 `APP_HOME` 默认值），
 仍是"服务这一层能解析的部分"：实例级 `runtime_variables` 因逐实例而异不展开，
 剩下的宏由 `pending_macros` 报出来（界面标"实例上展开"，见 §9.5 的原始/解析后开关）；`data_stream` 用 `shared/logstream.Name`
@@ -208,19 +188,8 @@ ILM 是**索引级**的，同一索引内无法按 `service` 区分保留期，�
 Index 命名（`monitor.LogDataStreamName`，内部委托同一 shared 实现）完全一致。
 同一次响应里还带出格式认证状态（`format_state` / `format_fingerprint` /
 `format_verified_*`，见 §4.8）。每行还带 **`tier_code`**（这条日志**当前生效**的档位编码，与 `data_stream` 尾段一致；日志中心页
-用它区分当前档位与历史档位流）与 **`service_code`**（本服务的编码，不是这条日志的，仅展示用）：
-日志中心页按服务取水位数据改用**服务 id**（`application_service_id`，见 §9.5），因为编码的唯一域是
-`(业务系统, 环境)`、可跨业务重复，不再能当全局连接键。
-
-**「模板日志」表已从逻辑服务编辑弹窗移除**（2026-09-20）：逐条日志配置（采集开关、保留档位、
-采集过滤、格式认证）**统一走日志中心「日志配置」**——那里有勾选批量、配置差异、下发入口与链路诊断，
-两处并存只会让人不知道该信哪一处。弹窗只保留服务级的两个日志默认值（开启采集、默认保留档位）
-和一句指向日志中心的说明；保存时**不提交 `log_settings`**（整表替换语义，提交空集合会删掉已有覆盖值）。
-
-历史（供排查旧问题参考）：那张表的行来自模板**详情**——模板**列表**接口不带 `logs`
-（嵌套结构只在 `GET /assets/application-deployment-templates/:id/` 里，列表只给 `log_count`），
-直接从列表记录读 `logs` 永远读到空数组，表现为"新建服务时那张表一直空着、保存后重新编辑才出现"。
-日志中心那张表不需要这套推导：它读的是服务自己的 `log-config`（服务必然已存在）。
+用它区分当前档位与历史档位流）与 **`service_code`**（本服务的编码，不是这条日志的）：
+日志中心页要用它按服务取水位数据（见 §9.5），从 `data_stream` 里反解既绕又与流名段序耦合。
 
 **格式认证**：`POST /assets/application-services/:id/log-config/verify/`，
 body `{"log_definition_id":<必填>,"source":"instance|sample_log|waiver","deployment_id":<实例 id>}`
@@ -313,53 +282,11 @@ bootstrap 会先 PUT 这个 pipeline 再 PUT 引用它的模板。
 
 各档 rollover 阈值需区分：
 
-| 档位 | `min_index_age` | 原因 |
-|---|---|---|
-| `hot` | 1d | 量大，需更激进地滚动 |
-| `std` | 7d | 默认 |
-| `cold` | 30d | 量小，放宽以避免小索引 |
-
-**保留期 = 值 + 单位，单位支持「天」与「小时」**（迁移 000045，2026-09-20）：
-
-- 库里是两列 `retention_value` + `retention_unit`（`d` / `h`，默认 `d`；迁移把原来的
-  `retention_days` 改名成 `retention_value` —— 值 + 单位才是完整语义，留着 "days" 这个名字
-  在两列并存时会误导）。存量档位全部按天，**生成的 min_age 与改动前逐字节相同**（`30d`）。
-- 改名这一步在真库上要先摘掉 Django 生成的 CHECK 约束：真库的 `monitor_log_retention_tier`
-  带着 Django 4.1 为 `PositiveIntegerField` 自动加的
-  `CHECK (retention_days >= 0)`，而 **MySQL 不允许重命名被 CHECK 引用的列**（Error 3959），
-  不摘掉迁移必挂（2026-09-20 现场）。该约束在 `int unsigned` 列上恒真、折叠快照里也没有，
-  所以按 information_schema 现查现删、不重建（做法与教训见 SQL_DESIGN §4.6.2 ①）。
-- 生成 ILM 时拼成 `<值><单位>`：`min_age: "12h"`。ES 的 `min_age` 本来就接受 `s/m/h/d`，
-  所以这是"把单位带进去"，不是新机制；`rollover_min_index_age` 的校验 `^\d+[mhd]$`
-  也一直允许小时。
-- **不影响已有数据流**：流名与 ILM 策略名用的都是档位 **code**，不是天数，所以换单位/改保留期
-  只影响该档位**新数据**的到期时间，不重建任何流。
-- 只在写入路径接受 `d`/`h`（其它值 400），读取/生成时异常值一律按天兜底——**宁可沿用旧行为，
-  也不要生成非法或意外的保留期**。
-- 范围按**折算成小时**判：`1 小时 ≤ 保留期 ≤ 3650 天`。
-- 精度提醒：ES 的 ILM 默认每 10 分钟轮询一次（`indices.lifecycle.poll_interval`），
-  所以小时级保留的实际到期时间有 ~10 分钟粒度；**分钟级单位不提供**（轮询粒度决定了它没有意义）。
-- 档位保存/删除后自动异步重推所有启用集群的 ILM 策略与索引模板（`syncAllClusterLogStorage`），
-  不需要手工发布。
-
-**档位模板的 priority 约定与遗留修复（2026-09-21）**：ES 的可组合索引模板在多个模板的
-`index_patterns` 匹配同一索引时**只取 priority 最高者**（不合并，所以档位模板必须自包含，
-见 §4.4），且"同 priority + patterns 重叠"在 PUT 时直接 400。平台约定：基础模板
-`<prefix>-template`（patterns `<prefix>-*`）priority=0 兜底，档位模板
-`<prefix>-<档位>-template`（patterns `<prefix>-*-<档位>`）priority=200 压过基础模板。
-旧版建档位模板时未写 priority（ES 默认 0），这些遗留模板与基础模板同层重叠，导致
-bootstrap 重写基础模板时报"存在冲突的模板"（现场 hot/std/cold/wuhan-test 四个全停在 0）。
-修复：`bootstrapElasticsearchStorage` 在基础模板冲突检查**之前**执行
-`repairLegacyTierTemplatePriorities` 自愈——识别口径是**命名 + pattern 形状双吻合**
-（`legacyTierTemplateName` 解析 `<prefix>-<code>-template`，code 可含连字符如
-`wuhan-test`；`isTierPatternShape` 要求全部 patterns 严格等于 `<prefix>-*-<code>`，
-恰好同名的第三方模板不命中），对命中且 priority≠200 的模板 GET 原定义 → 只改
-priority=200（mappings/settings/ILM 绑定原样保留，采集与保留行为不变）→ PUT 回写。
-自愈是尽力而为：单条失败不中止，流程继续落到冲突检查的可读报错。
-**两个 ES 版本差异都要防**：`_cat/templates` 的 `priority` 列在部分版本恒为空（2026-09-21
-现场），所以自愈判"要不要修"读的是 GET 模板定义里的 priority，冲突检查
-（`conflictingIndexTemplates`）同理——cat 只做候选筛选（名字 + patterns 重叠），
-真实 priority 逐个 GET 定义确认（缺省 = 0；读不到定义时按冲突处理，宁可误报不放行真冲突）。
+| 档位     | `min_index_age` | 原因                   |
+| -------- | ----------------- | ---------------------- |
+| `hot`  | 1d                | 量大，需更激进地滚动   |
+| `std`  | 7d                | 默认                   |
+| `cold` | 30d               | 量小，放宽以避免小索引 |
 
 ### 4.6 容量可按档位反推
 
@@ -367,12 +294,9 @@ priority=200（mappings/settings/ILM 绑定原样保留，采集与保留行为�
 hot   30GB/天 ×  7 天 = 210 GB
 std    5GB/天 × 30 天 = 150 GB
 cold 0.1GB/天 × 90 天 =   9 GB
-短期   5GB/天 × 12 小时 =  2.5 GB
 ```
 
-哪个档超出预算就调哪个档的保留期，不影响其他服务。**小时档位必须折算成天**（12h = 0.5 天）：
-不折算会把预估占用虚高 24 倍。服务端 `estimatedTierTotalGB` 与前端
-`util/logRetention.js` 的 `estimatedTotalGB` 是同一口径（两处都要改，别只改一边）。
+哪个档超出预算就调哪个档的天数，不影响其他服务。
 
 ### 4.7 字段设计
 
@@ -381,15 +305,15 @@ cold 0.1GB/天 × 90 天 =   9 GB
 **索引模板里实际声明的字段（= 唯一权威清单，与 `log_management.go` 的 `standardLogFields` 一致）**
 共 16 个，分三类：
 
-| 字段 | 类型 | 谁保证它存在 |
-|---|---|---|
-| `@timestamp` | date | Filebeat filestream（平台；值是否被 pipeline 的 `date` processor 覆盖成日志时间另说） |
-| `message` | text | Filebeat filestream（原始行） |
-| `project`、`business_system`、`environment`、`service`、`application`、`instance`、`host_ip`、`log_name` | keyword | 下发片段里的 `fields_under_root` 注入（`log_config_render.go`；`host_ip` 在主机没采到 IP 时写空串，保证键存在） |
-| `log_path` | keyword | input 级 `copy_fields` 先复制 Filebeat 的 `log.file.path`；平台 `final_pipeline` 在用户规则之后再次以该真实路径校准顶层 `log_path`，防止规则写入路径模式。没有有效真实路径时移除这个可选字段，不伪造候选。查询和聚合直接使用 `log_path` 的 keyword 索引 |
-| `app_fields` | flattened | 平台 guard 兜空对象（业务字段一律写进这里，见下） |
-| **`log_level`、`log_message`、`error_fingerprint`** | keyword / text / keyword | **必须由处理规则的 pipeline 产出**（`requiredProcessingRuleOutputs`，见 §5.2、§5.4 与 §8.4 的 mapping-guard） |
-| `mapping_violation` | boolean | 平台标记字段（不是规则产出要求）：guard 在 `tag` 模式下给必备字段不齐的文档打标。**检索不做默认排除**（2026-09-19 定：guard 只当"认证失效的发现器"，日志一条都不能看不见），标记供巡检/告警用 |
+| 字段                                                                                                                     | 类型                     | 谁保证它存在                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@timestamp`                                                                                                           | date                     | Filebeat filestream（平台；值是否被 pipeline 的`date` processor 覆盖成日志时间另说）                                                                                                                                            |
+| `message`                                                                                                              | text                     | Filebeat filestream（原始行）                                                                                                                                                                                                     |
+| `project`、`business_system`、`environment`、`service`、`application`、`instance`、`host_ip`、`log_name` | keyword                  | 下发片段里的`fields_under_root` 注入（`log_config_render.go`；`host_ip` 在主机没采到 IP 时写空串，保证键存在）                                                                                                              |
+| `log_path`                                                                                                             | keyword                  | **不是静态注入**：input 级 `copy_fields` 处理器把 Filebeat 的 `log.file.path`（**该事件实际来自哪个文件**）拷到顶层 `log_path`。路径含通配时静态值只会是带 `*` 的模式，日志详情必须显示具体文件（2026-09-20） |
+| `app_fields`                                                                                                           | flattened                | 平台 guard 兜空对象（业务字段一律写进这里，见下）                                                                                                                                                                                 |
+| **`log_level`、`log_message`、`error_fingerprint`**                                                          | keyword / text / keyword | **必须由处理规则的 pipeline 产出**（`requiredProcessingRuleOutputs`，见 §5.2、§5.4 与 §8.4 的 mapping-guard）                                                                                                          |
+| `mapping_violation`                                                                                                    | boolean                  | 平台标记字段（不是规则产出要求）：guard 在`tag` 模式下给必备字段不齐的文档打标。**检索不做默认排除**（2026-09-19 定：guard 只当"认证失效的发现器"，日志一条都不能看不见），标记供巡检/告警用                              |
 
 > **2026-09-19 的字段变更**：删掉 `log_time`（全仓库只有模板声明它，Go/前端/文档都没有读者——
 > 检索按 `@timestamp` 排序、时间归一由 pipeline 的 `date` processor 负责），加 `mapping_violation`
@@ -421,24 +345,14 @@ cold 0.1GB/天 × 90 天 =   9 GB
 所以"认证是否过期"是纯读库比对（`ListServiceTemplateLogs` 返回的 `format_state`：
 `unverified` / `verified` / `needs_recheck`）：
 
-| 变化 | 会不会改格式 | 能自动失效吗 |
-|---|---|---|
-| 换日志定义 / 改日志名称 / 改路径 | 会 | ✅ 指纹含 `ld.id` / `ld.name` / `ld.path_pattern`；原模板新增日志不影响原有日志认证，新日志单独显示未验证 |
-| 改规则实际解析配置 | 会 | ✅ 指纹含 `input_format`、`multiline_enabled`、`start_pattern`、`continuation_pattern`、`flush_timeout` 和 `pipeline_body` 行为内容 |
-| 改规则描述 / 备注 / 名称 / 样例，或原样保存 | 不改变实际解析配置 | ❌ 这些字段及 `rule.update_time` 均不参与指纹 |
-| 换挂另一条规则 | 会 | ✅ 指纹含 `ld.processing_rule_id` |
-| 应用 / 中间件版本升级 | 会 | ✅ 指纹含 `s.application_version_id`（**每次版本升级后需要重新认证一次**，这是"改格式"里唯一无法事前断言的场景） |
-| 改服务级宏 `macro_values` | 会（换了另一个文件在采） | ✅ 指纹含它 |
-| 改实例级 `runtime_variables` | 会 | ❌ 逐实例而异、无法在服务级定义 → 需人工重新认证 |
-
-规则 Pipeline JSON 按对象键排序序列化，忽略顶层 `description`、`_meta`、`version`
-元数据，保留其余行为字段、处理器数组顺序和数值精度；仅排版或对象键顺序变化不使认证失效。
-无效 Pipeline JSON 明确报错，不生成成功状态或默认指纹。展示、汇总和认证写入共用
-`ListServiceTemplateLogs` 的同一套计算逻辑，接口响应形态不变。
-
-认证只采用实际解析配置指纹，不接受基于规则更新时间的旧指纹。存量认证记录保留，
-与当前指纹不一致时显示需重新验证，重新验证通过后写入当前指纹；不自动改写为已验证，
-不提供旧算法兼容分支，无表结构迁移要求。
+| 变化                                            | 会不会改格式             | 能自动失效吗                                                                                                            |
+| ----------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| 换模板 / 模板增删日志定义 / 改名 / 改路径       | 会                       | ✅ 指纹含`ld.id` / `ld.name` / `ld.path_pattern`                                                                  |
+| 改规则（`pipeline_body`、多行参数、首行正则） | 会                       | ✅ 指纹含`rule.update_time`（规则保存一定会更新它；代价是"只改说明"也会要求重新认证一次，偏保守）                     |
+| 换挂另一条规则                                  | 会                       | ✅ 指纹含`ld.processing_rule_id`                                                                                      |
+| 应用 / 中间件版本升级                           | 会                       | ✅ 指纹含`s.application_version_id`（**每次版本升级后需要重新认证一次**，这是"改格式"里唯一无法事前断言的场景） |
+| 改服务级宏`macro_values`                      | 会（换了另一个文件在采） | ✅ 指纹含它                                                                                                             |
+| 改实例级`runtime_variables`                   | 会                       | ❌ 逐实例而异、无法在服务级定义 → 需人工重新认证                                                                       |
 
 **分层**：编排与落库在 `assets`（`internal/assets/log_format_verify.go`），"取样例 + 跑 ES"
 在 `logcollect`（`internal/logcollect/log_format_verify.go`，经 `assets.LogFormatVerifier`
@@ -447,11 +361,11 @@ cold 0.1GB/天 × 90 天 =   9 GB
 
 **认证依据**（写进 `assets_application_service_log_setting` 的 `format_verified_*` 四列）：
 
-| 依据 | 样例从哪来 | 关键实现 |
-|---|---|---|
-| `instance` | 部署实例所在主机上的真实日志文件 | `GetLogVerifyInstanceContext` 取 host/宏 → 与采集下发同一套 `resolveMacros` 展开路径（含未展开宏即报错）→ `StatFile` + `ReadFileChunk` 反向读尾部 1MiB 窗口（`ReadFileChunk` 一次只回一个 chunk，不能读到 EOF）→ 丢掉窗口起点的残行。**路径允许写通配**（`/var/log/*.log`、`/var/log/*/*/*.log`）：backend 用 agent 的 `ListFiles` 逐层展开（`logcollect/log_glob_remote.go`，不依赖 agent 版本；只支持单层通配，不支持 `**`）。**认证范围可选单个实例或全部实例**（`all_deployments`）；且**无论哪种范围，该实例上所有匹配到的日志文件都逐一认证**（不是只抽最新那个）——Filebeat 会 tail 全部匹配文件，任一文件解析不出必备字段即不通过 |
-| `sample_log` | 解析规则里保存的样例日志 | 规则未配样例即报错，不做静默回退 |
-| `waiver` | 无（人工确认豁免） | 不碰 agent/ES，仍记当前指纹 + 操作人（取自登录态，不接受前端自报） |
+| 依据           | 样例从哪来                       | 关键实现                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `instance`   | 部署实例所在主机上的真实日志文件 | `GetLogVerifyInstanceContext` 取 host/宏 → 与采集下发同一套 `resolveMacros` 展开路径（含未展开宏即报错）→ `StatFile` + `ReadFileChunk` 反向读尾部 1MiB 窗口（`ReadFileChunk` 一次只回一个 chunk，不能读到 EOF）→ 丢掉窗口起点的残行。**路径允许写通配**（`/var/log/*.log`、`/var/log/*/*/*.log`）：backend 用 agent 的 `ListFiles` 逐层展开（`logcollect/log_glob_remote.go`，不依赖 agent 版本；只支持单层通配，不支持 `**`）。**认证范围可选单个实例或全部实例**（`all_deployments`）；且**无论哪种范围，该实例上所有匹配到的日志文件都逐一认证**（不是只抽最新那个）——Filebeat 会 tail 全部匹配文件，任一文件解析不出必备字段即不通过 |
+| `sample_log` | 解析规则里保存的样例日志         | 规则未配样例即报错，不做静默回退                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `waiver`     | 无（人工确认豁免）               | 不碰 agent/ES，仍记当前指纹 + 操作人（取自登录态，不接受前端自报）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 认证返回**报告**（`assets.LogFormatVerifyReport`）：全部目标的缺失字段并集 + 逐实例明细
 （`targets[]`，含实例名、参与认证的 `log_files`、该实例的 `missing_fields`、取不到样例时的 `error`）。
@@ -495,21 +409,13 @@ cold 0.1GB/天 × 90 天 =   9 GB
 （`sample_event.go`；此前只有 `{"message": ...}`，于是"处理器把 message 覆盖成对象"这类错误
 在两边都看不见——认证同样过、主机上全丢）。所以**把文件尾部几十行原样粘进调试页跑一次，结论就等于认证的结论**。
 
-**前端入口**：日志中心「日志配置」的日志表有「格式认证」列（**唯一入口**，2026-09-20 起逻辑服务
-编辑弹窗不再编辑逐条日志配置）——未认证/需重新认证是"发起认证"，已验证是"重新认证"
-（改了实例级 `runtime_variables` 这类不进指纹的变化只能人工重跑）；
+**前端入口**：逻辑服务编辑弹窗的「模板日志」表格新增「格式认证」列——未认证/需重新认证是
+"发起认证"，已验证是"重新认证"（改了实例级 `runtime_variables` 这类不进指纹的变化只能人工重跑）；
 弹窗里选依据，按实例抽样时再选**认证范围：单个实例（默认，下拉选一个已绑定实例）/ 全部实例**
 （候选取**库里已绑定**的实例，不取表单里未保存的勾选）。无论哪种范围，每个实例上匹配到的**每个
 日志文件**都会被认证。不通过时弹窗留在原地：先给缺失字段并集，再按实例列出 `targets`（实例名、
 参与认证的文件、该实例的缺失字段或取不到样例的原因），允许换依据重试。同一处顺带修掉了
 `loadLogConfig` 的静默 `catch`——加载失败与"确实没有日志定义"在界面上都是空表格，必须能区分。
-
-**批量认证（2026-09-20）**：日志中心「日志配置」勾选多条日志后，批量栏里的「格式认证」把选中的
-日志一起交给**同一个** `LogFormatVerifyDialog`（它接受 `targets`；单条就是"只有一条的批量"，
-所以依据/范围/后果文案只有一份）。行为：逐条串行调同一个认证接口（每条都要去主机取样例，
-没有批量接口也没有必要），弹窗里显示"正在认证第 x/y 条"；**单条失败不中断整批**（主机离线这类
-硬失败也记下来继续跑），结束后把没通过的那几条连同原因列出，全部通过才关闭并回写状态列。
-**没挂解析规则的日志会被跳过并明确告知跳过了几条**——静默少认证几条比拒绝更糟（用户以为都验过了）。
 
 > **编辑弹窗里认证通过后保存服务，认证结果必须还在（2026-09-20 修）**：`SaveApplicationService`
 > 的整表替换若 delete-all 会抹掉 `format_verified_*`，表现为"认证通过 → 保存 → 又变未认证，必须去
@@ -517,7 +423,8 @@ cold 0.1GB/天 × 90 天 =   9 GB
 > 全 null 覆盖行（见 §9.5.1）。
 
 **路径通配的按需展开（「解析后」列）**：路径含 `*` / `?` / `[` 时，服务这一层只能解析出
-模式，具体采哪些文件要到主机上才知道。日志中心「日志配置」的「解析后」列给出「展开文件」，点击后调
+模式，具体采哪些文件要到主机上才知道。两页（日志中心「日志配置」tab 与逻辑服务编辑弹窗）
+在「解析后」列给出「展开文件」，点击后调
 `GET /assets/application-services/:id/log-config/glob/?log_definition_id=`，backend 逐台承载
 实例展开宏（与采集下发同一套 `resolveMacros`）→ 用 agent `ListFiles` 逐层展开通配 →
 **按实例分组**列出真实文件（`fronted/src/components/LogGlobPreview.vue`，两页共用）。
@@ -527,7 +434,7 @@ cold 0.1GB/天 × 90 天 =   9 GB
 出现——新建服务还没有绑定实例，无从展开。
 
 **状态标签的颜色就是"要不要人去处理"**（`fronted/src/util/logFormatState.js`，日志中心的日志配置
-tab（以及格式认证弹窗的按钮文案与批量认证失败列表）共用同一份，避免多处说法不一致）：`已验证`=绿（不用管）、
+tab 与逻辑服务编辑弹窗共用同一份，避免两页说法不一致）：`已验证`=绿（不用管）、
 `需重新验证`=橙（配置指纹变了，抽样重跑一次）、**`未验证`=红**（2026-09-19 由灰改红）——
 没验证就采集是**静默坏数据**：日志查得到，但级别/消息列为空、关键词搜不到、错误清单失效；
 按约定"开启采集前必须验证一次"，所以它是一个待办事项，灰色标签混在表格里只会被忽略。
@@ -546,10 +453,10 @@ tooltip 里写清后果与下一步（点这一行的「发起认证」；没挂
 
 ### 5.1 分层原则
 
-| 处理类型 | 位置 | 原因 |
-|---|---|---|
-| multiline 多行合并 | Filebeat | 必须在采集时合并，堆栈跨行到后端已无法还原 |
-| 字段提取 | Elasticsearch ingest pipeline | 改规则不需要下发配置到主机，也不消耗主机 CPU |
+| 处理类型           | 位置                          | 原因                                         |
+| ------------------ | ----------------------------- | -------------------------------------------- |
+| multiline 多行合并 | Filebeat                      | 必须在采集时合并，堆栈跨行到后端已无法还原   |
+| 字段提取           | Elasticsearch ingest pipeline | 改规则不需要下发配置到主机，也不消耗主机 CPU |
 
 两阶段在技术上分别执行，但在 djadmin 中只管理一条 `LogProcessingRule`：
 
@@ -590,9 +497,9 @@ Elasticsearch（改 `_ilm/explain`，见 LOG_COLLECTOR_MIGRATION.md）。当年�
 集群会直接 400，而报错只说"不支持这个参数"，看不出该改成什么（现场：三条规则的
 `rename.override_target`）。
 
-| 参数（OpenSearch） | 参数（Elasticsearch） | 语义 | 核实方式 |
-|---|---|---|---|
-| `rename.override_target` | `rename.override` | 目标字段已存在时覆盖；**源字段不存在时两个都不动目标字段** | 在 ES 8.13.0 上用 `_simulate` 验证过：`override` 被接受，`override_target` 400；样例证明只在 `log` 存在时才覆盖 `message` |
+| 参数（OpenSearch）         | 参数（Elasticsearch） | 语义                                                             | 核实方式                                                                                                                           |
+| -------------------------- | --------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `rename.override_target` | `rename.override`   | 目标字段已存在时覆盖；**源字段不存在时两个都不动目标字段** | 在 ES 8.13.0 上用`_simulate` 验证过：`override` 被接受，`override_target` 400；样例证明只在 `log` 存在时才覆盖 `message` |
 
 - 别名表与提示在 `pipeline_compat.go`，**报错处补一句"该改成什么"**，不做自动改写：存储文本与
   实际发出的内容不一致会让"期望配置指纹"体系（§8.6）失去意义；加新别名必须先在本仓库支持的两个
@@ -660,23 +567,15 @@ Pipeline。在线调试支持两种样例格式（原始日志会随规则保存
 `mapping.properties` 的顶层字段集，输出文档里不在其中的字段会作为 `schema_violations` 报出
 （`dynamic:false` 下会被静默丢弃，需改写到 `app_fields.<字段名>`）；模板取不到时回退内置标准字段。
 
-**被 drop 的样例必须显式报数（2026-09-25 盲区修复）**：ES 的 `_simulate` 对被 `drop` 处理器
-丢弃的文档返回 **null 元素**（elastic/elasticsearch#44161 起），而 `missing_fields` /
-`schema_violations` 两个判定函数在 null 上零迭代、静默跳过——全部样例被丢时调试页照样显示
-"通过"、认证也判过，但那条日志根本不会入库。因此 `simulatePipeline` 统一附加
-`dropped_count`（被丢弃样例数）：格式认证结果带 `dropped_samples`、链路体检的试跑结论写明
-"N 条样例会被丢弃"。丢弃不算校验失败（可能是规则的预期行为），但"丢了什么、丢了多少"绝不能
-不说；调试页的原始试跑结果里同样能看到被丢样例呈现为 `null`。
-
 **必备字段校验（四层，共用同一份定义 `requiredProcessingRuleOutputs`）**：产物必须包含
 `log_level`、`log_message`、`error_fingerprint`——缺了都不报错，只是静默失效：
 
-| 层 | 位置 | 行为 |
-|---|---|---|
-| 保存时静态检查 | `validateConfigInput` → `missingPipelineOutputs` | 缺任一必备字段直接 400 拦截发布（认 `fingerprint`/`set`/`copy`/`rename` 的 `target_field`/`field`、`dissect`/`grok` 的 pattern 命名捕获，以及 `script` 源码里对 `ctx.<字段>` 的**赋值**；**是启发式**，判不了条件分支）。粗筛宁可漏判（漏了还有 guard 兜），不能误判——2026-09-19 就因为不认 script 把一个能跑的规则拦在发布门外（ES 服务端 JSON 日志：键里带点、ES 8.13 的 `json` 处理器没有 `expand_dots`，只能用 painless 取字段） |
-| 调试页 | `_simulate` 的 `missing_fields` | 用真实样例给出"缺哪个字段"，与上面的集合自动同步 |
-| **运行期试跑** | 采集链路的「解析规则」层 → `rulePipelineRunVerdict` | 用**规则自带的样例日志 + Filebeat 真实事件载荷**在**已发布的那份 pipeline** 上跑一次；缺必备字段即判 `drift`，detail 写明"会被 ES 拒收"并给出最短原因（如 `message` 被搬成了对象）。**没配样例日志就不判**（detail 里标"未试跑"），不猜 |
-| 写入时兜底 | 索引模板 `index.final_pipeline` = `<prefix>-mapping-guard` | 在规则自己的 pipeline **之后**执行，按同一组字段判定：`tag`（默认）只打 `mapping_violation` 标记，不丢数据、不做检索排除（定位是"格式悄悄变坏"的发现器，配合巡检/告警）；`drop` 直接丢弃，非默认。规则作者改不到它 |
+| 层                   | 位置                                                          | 行为                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 保存时静态检查       | `validateConfigInput` → `missingPipelineOutputs`         | 缺任一必备字段直接 400 拦截发布（认`fingerprint`/`set`/`copy`/`rename` 的 `target_field`/`field`、`dissect`/`grok` 的 pattern 命名捕获，以及 `script` 源码里对 `ctx.<字段>` 的**赋值**；**是启发式**，判不了条件分支）。粗筛宁可漏判（漏了还有 guard 兜），不能误判——2026-09-19 就因为不认 script 把一个能跑的规则拦在发布门外（ES 服务端 JSON 日志：键里带点、ES 8.13 的 `json` 处理器没有 `expand_dots`，只能用 painless 取字段） |
+| 调试页               | `_simulate` 的 `missing_fields`                           | 用真实样例给出"缺哪个字段"，与上面的集合自动同步                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **运行期试跑** | 采集链路的「解析规则」层 →`rulePipelineRunVerdict`         | 用**规则自带的样例日志 + Filebeat 真实事件载荷**在**已发布的那份 pipeline** 上跑一次；缺必备字段即判 `drift`，detail 写明"会被 ES 拒收"并给出最短原因（如 `message` 被搬成了对象）。**没配样例日志就不判**（detail 里标"未试跑"），不猜                                                                                                                                                                                                             |
+| 写入时兜底           | 索引模板`index.final_pipeline` = `<prefix>-mapping-guard` | 在规则自己的 pipeline**之后**执行，按同一组字段判定：`tag`（默认）只打 `mapping_violation` 标记，不丢数据、不做检索排除（定位是"格式悄悄变坏"的发现器，配合巡检/告警）；`drop` 直接丢弃，非默认。规则作者改不到它                                                                                                                                                                                                                                             |
 
 **试跑这一层为什么必须存在（2026-09-19 现场，kul 的 tomcat）**：上面三层都判不出"处理器把
 `message` 覆盖成对象"这种**运行时**错误——静态检查是启发式，调试页与认证喂的样例文档当时只有
@@ -727,9 +626,9 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 
 采集范围由**两层开关，且两层的归属都在逻辑服务**：
 
-| 层级 | 字段 | 语义 |
-|---|---|---|
-| 逻辑服务 | `ApplicationService.log_collection_enabled` | 该服务是否开启采集（总闸） |
+| 层级                 | 字段                                                          | 语义                               |
+| -------------------- | ------------------------------------------------------------- | ---------------------------------- |
+| 逻辑服务             | `ApplicationService.log_collection_enabled`                 | 该服务是否开启采集（总闸）         |
 | 逻辑服务 × 日志定义 | `assets_application_service_log_setting.collection_enabled` | 该服务的**这条日志**是否采集 |
 
 ```
@@ -768,9 +667,9 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 
 **两层 + 三态**（`internal/logcollect/log_collection_filter.go`）：
 
-| 层 | 字段 | 语义 |
-|---|---|---|
-| 模板默认（日志定义） | `filter_include_rule_id` / `filter_exclude_rule_id` | NULL = 该方向不过滤 |
+| 层                           | 字段                                                                  | 语义                                                     |
+| ---------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------- |
+| 模板默认（日志定义）         | `filter_include_rule_id` / `filter_exclude_rule_id`               | NULL = 该方向不过滤                                      |
 | 服务覆盖（服务 × 日志定义） | `collection_filter_rule_id` / `collection_exclude_filter_rule_id` | **NULL 继承模板 / 0 显式关闭该方向 / >0 指定规则** |
 
 - **0 是有效取值，所以这两列不带外键**（2026-09-19 修复）。列上若挂着应用层外键，数据库会把 `0` 当成
@@ -781,12 +680,12 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
   `db/schema/*/002_assets.sql` 的列注释与守卫 `internal/assets/log_filter_rule_fk_guard_test.go`
   一起防止"以后再把外键补回来"。引用完整性改由渲染侧降级承担（见下条"宁可多采不可不采"）：
   规则被删/停用 → 该方向不过滤 + 告警。
-
 - **方向由规则自己声明**（`monitor_log_collection_filter_rule.rule_type` = include/exclude），落槽时校验一致；
   白名单落进 exclude 槽会**反转语义**（只采噪声、丢掉正常日志），所以类型不符时忽略该方向并告警。
 - 两个方向各自独立：Filebeat 上本来就是同一 input 的两个参数，include 先跑、exclude 后跑，同时命中 → 丢弃，
   所以"先框白名单、再排噪声"是常规用法。
 - **过滤是采集侧的、丢弃不可逆**：被滤掉的记录不进 ES，平台里查不到也补不回来。因此：
+
   - 规则 CRUD 页带**试算**（粘样例看保留/丢弃哪些行，用 RE2 预览编译，与主机同一方言）；
   - 保存时按 RE2 校验（与首行正则共用 `regex_pattern.go`），并拒绝**空正则**——空模式在 Filebeat 里
     匹配全部：include 会放行一切、exclude 会丢弃一切；
@@ -800,7 +699,7 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 - **随时可改，但要重新下发**：过滤是期望配置的一部分，改完必须重新下发才到主机上；改规则会让承载
   主机全部变成"待下发"（指纹变了）。三个入口共用同一份规则与同一套三态，**口径不许分叉**：
   部署模板「路径与文件 → 日志」两个下拉（模板级默认值，选模板时的初始态）、
-  日志中心「日志配置」的「采集过滤（保留/排除）」两列（服务级覆盖，按行即时保存）、
+  逻辑服务编辑弹窗「模板日志」表的「采集过滤（保留/排除）」两列（服务级覆盖，随整表保存提交）、
   日志中心「日志配置」同名两列（服务级覆盖，按行即时保存）。
   后两处显示的是同一条 (服务 × 日志定义) 的配置：弹窗是"这个服务要用的配置"，日志中心是
   "这条日志现在到底怎么采"。这列在弹窗里曾**长期隐藏**（当时过滤还没接入渲染，藏着以免误导成
@@ -810,11 +709,11 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 服务级每日志开关的取值语义（与渲染查询 `ListHostLogRenderEntries` 的
 `COALESCE(ls.collection_enabled, TRUE) = TRUE` 逐字一致）：
 
-| 覆盖行 | 该条日志 | 落库方式 |
-|---|---|---|
-| 无覆盖行 / `collection_enabled IS NULL` | 采（**默认采**） | 服务弹窗里开关保持"采"时不落行 |
-| `collection_enabled = FALSE` | 不采 | 服务弹窗关掉该条日志 → 写覆盖行 false |
-| `collection_enabled = TRUE` | 采 | 与"无覆盖行"等价，UI 归一成 null 不落行 |
+| 覆盖行                                   | 该条日志               | 落库方式                                |
+| ---------------------------------------- | ---------------------- | --------------------------------------- |
+| 无覆盖行 /`collection_enabled IS NULL` | 采（**默认采**） | 服务弹窗里开关保持"采"时不落行          |
+| `collection_enabled = FALSE`           | 不采                   | 服务弹窗关掉该条日志 → 写覆盖行 false  |
+| `collection_enabled = TRUE`            | 采                     | 与"无覆盖行"等价，UI 归一成 null 不落行 |
 
 **默认采**是刻意的：新增模板日志定义、扩容新增实例都自动继承采集配置，不需要逐条确认；
 要停某条日志就在服务弹窗里显式关掉（`docs/plans/LOG_COLLECTION_LIFECYCLE.md` §9 第 8 条的
@@ -826,56 +725,6 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 
 附带收益：新增实例自动继承采集配置，扩容后不会漏采（"不漏采"指期望配置立即包含新实例；
 落到主机上仍需一次「下发配置」，见 §8.9 的自动下发建议）。
-
----
-
-## 6.2 服务级后处理（界面名「条件丢弃」，包装 pipeline，2026-09-28 接入）
-
-**问题**：解析规则的 ingest pipeline 按规则共享（§5.2 的 `<前缀>-<应用|general>-<规则名>`），
-在规则里写 `drop_fields` 会影响**所有**引用该规则的服务；而"只有某几个服务要额外的后处理"
-（丢字段、丢整条、rename 等）是真实需求。
-
-**方案（ES 侧两层串联）**：解析逻辑留在共享的基础 pipeline；配置了服务级后处理的服务，
-平台为它生成一条**包装 pipeline** 并把该服务片段的 `pipeline:` 改指包装，其他服务不变：
-
-```
-<基础名>@s<服务id> = { processors: [ {"pipeline": {"name": <基础名>}}, <服务级处理器…> ] }
-```
-
-- **配置入口**：日志中心「日志配置」的「**条件丢弃**」列（机制名"服务级后处理"——用户视角它就是
-  按条件丢弃整条日志，界面一律用"条件丢弃"）。结构化 UI = 条件行
-  （字段 + 操作符 + 值，支持 等于/不等于/包含/不包含/开头是/正则匹配/存在/不存在 八种，
-  多条件可组合"全部/任一"），编译成 `{ drop: { if: '<painless>' } }`（util/logDropRules.js）；
-  编译产物在保存前实时预览。**认不出的存量配置自动落"高级模式"**（原样编辑处理器 JSON），
-  不丢手写能力。存储在 `assets_application_service_log_setting.extra_processors`
-  （迁移 000050，`[]` = 未启用；无条件行 = 未启用，不存在"无条件丢全部"的状态）。
-- **保存校验**（`assets.ValidateServiceExtraProcessors`）：必须是处理器对象数组、每个元素
-  恰好一个处理器键、≤20 个 / 16KB；**禁止嵌套 `pipeline` 处理器**——包装本身就靠它调基础，
-  用户再嵌一层会绕过改名/换集群时的级联清理。`if` 是处理器配置内部的键，不受"单键"限制。
-- **生命周期**（`logcollect/service_pipeline.go`，全部幂等对账）：
-  | 时机 | 动作 |
-  |---|---|
-  | 日志中心保存覆盖值（含后处理列） | `SyncServiceLogPipelines` 按服务对账：PUT 期望的包装、DELETE 期望外的（只删**本服务**的 `@s<id>`，不碰其他服务） |
-  | 解析规则改名/换应用/换集群（`publishProcessingRuleBeforeSave`） | 通配清理旧基础名下的 `@s*` 包装 + 按新名字重建全部引用它的包装 |
-  | 链路体检「解析规则」层 | 每个包装 GET 比对签名（`pipelineSignature`），缺失/不一致报 drift |
-  | 删除解析规则 | 无需入口：规则被日志定义引用时拒绝删除，而包装行必然引用着规则——能删的规则身上不会有包装 |
-- **渲染**（`log_config_render.go`）：`extra_processors` 非空的行，片段 `pipeline:` 写包装 id；
-  指纹随之变化 → 该主机进入「待下发」，与其它配置变更同一条动线。
-- **调试**：「日志处理规则 → 在线调试」可填同样的处理器数组，服务端构造包装 body 做
-  `_simulate`（`rule_name` + `extra_processors`），要求规则已发布；`dropped_count` /
-  `missing_fields` 的口径与直跑规则完全一致。
-- **失败语义**：保存已落库但包装同步失败时（如 ES 不可用），接口以错误呈现并提示
-  "重试保存可补齐"（对账幂等）；规则无效（被删/解绑）的行算不出包装 id，对账跳过、
-  由体检暴露，不做静默删除。
-- **与既有机制的分工**：必备字段不齐仍由 `final_pipeline` 的 mapping-guard 兜底
-  （包装之后执行，§4.7）；采集侧的行过滤（include/exclude）在 §6.1，先于本机制。
-  界面上「采集过滤」与「条件丢弃」的分工：前者在采集端（Filebeat，行级正则，省采集端带宽）、
-  后者在解析入库前（ES，条件可用解析产出的字段如 log_level）。
-  与 000049 遗留的 `drop_conditions` 列（Filebeat 层方案，已回退）无关，两列互不读写。
-
-**取舍**：包装的生命周期管理（对账、级联、体检）是本方案的主要成本，换来的是处理逻辑
-全部留在 ES 侧：方言与规则一致、可串联调试、mapping-guard 兜底不变。丢数据发生在 ES 端
-（带宽已花掉）是已知代价。
 
 ---
 
@@ -944,31 +793,11 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
   （`COALESCE(narg,col)` 表达不了"显式写入空值/删除"，例如把解析规则的 `application` 显式提交为 `null`）。
 - **新建**是整行插入：请求体缺了"NOT NULL 且库级没有默认值"的列时返回 400 并列出缺哪些键
   （原先由 MySQL 严格模式报 `Field 'x' doesn't have a default value`，文案不可读）。
-- 校验规则（档位 code 格式、`daily_size_gb > 0`、`retention_value ≥ 1` 且**折算成小时后 ≤ 3650 天**、
-  `retention_unit ∈ {d,h}`、`rollover_min_index_age` 形如 `30m/12h/1d`、
+- 校验规则（档位 code 格式、`daily_size_gb > 0`、`retention_days ∈ [1,3650]`、`rollover_min_index_age` 形如 `30m/12h/1d`、
   规则名 `^[a-z0-9][a-z0-9._-]*$`、`pattern` 不得含换行且必须是合法正则、`flush_timeout ∈ [100,60000]`）不变；
   解析规则保存前先发布 pipeline 到集群、失败则整条请求 400 且不落库的行为不变。
-- **说明（`description`）**：处理规则与采集过滤规则的库列 2026-09-21 起从 `varchar(500)` 放宽到
-  `varchar(2000)`（迁移 000048，双方言），前端对应字段改为多行 `a-textarea` + `maxlength=2000`，
-  可写清"适用日志格式 / 保留或排除的理由"。服务端无额外长度校验，以库列长度为准。
 - 删除仍是"逐 id + 汇总 `{count, results}`"的批量语义；档位被逻辑服务/日志设置引用、规则被日志定义引用时拒绝删除
   （引用计数用取行/计数查询，不再 `SELECT COUNT(*)` 兼职判存在）。
-- **解析规则的引用关系读路径**（2026-09-21 加）：`GET /monitor/log-processing-rules/usage/`
-  （`ListProcessingRuleUsages`，sqlc 查询双方言同名）。一次全量返回每条规则被哪些部署模板的
-  日志定义引用，关联链为 `monitor_log_processing_rule ← assets_application_log_definition
-  .processing_rule_id（迁移 000035 后唯一来源）→ deployment_template_id → 模板`，
-  另带 `service_count`（引用该模板的逻辑服务数，量化"改这条规则影响谁"）。
-  行 = (规则 × 模板日志定义)，按 `rule.name, template.name, log.name` 排序；未被引用的规则
-  不在结果里（删除时的拒绝提示已足够发现它们）。不分页：规则量级小、行数随引用数线性，
-  前端在「日志处理规则」页新增的同名 tab（懒加载，进入 tab 才拉取）里按左侧应用筛选做客户端过滤。
-  tab 内交互（2026-09-21）：`所属应用` 列按 application id 从页面已加载的应用列表就地反查名称；
-  关键字框匹配 模板名 / 日志定义名 / 路径（与左侧应用筛选叠加，均为客户端过滤）；
-  `影响服务数 > 0` 渲染为链接，点击调 `GET /assets/application-deployment-templates/:id/services/`
-  （`ListApplicationServicesByTemplate`，按 deployment_template_id 查逻辑服务，join
-  business_system → project 反查项目名，行含 项目/业务系统/环境/服务名/enabled，全量不分页）
-  弹出服务清单；点服务名带 query（application_service_id/service_name/business_system_id/
-  environment_id/environment_name）跳转服务树页，该页 onMounted 读 query 直接把 scope
-  定位到该服务节点（深链，见 assets/service-tree/index.vue 的 applyQueryScope）。
 
 **Elasticsearch 集群**（`/monitor/elasticsearch-clusters/*`，实现见 `elasticsearch_config.go`）：
 
@@ -1082,45 +911,17 @@ output.elasticsearch:
 
 **期望指纹（`config_fingerprint`）的构成**——`fingerprint = sha256("output:" + outputIdentity + "\n" + fmt.Sprintf("%v", fragments))`，**主机级、含该主机上所有服务的片段**（不是按服务）：
 
-| 组成部分 | 具体内容 | 变化会不会改指纹 |
-|---|---|---|
-| 输出段 `outputIdentity` | `url=<默认集群的**第一个**地址 scheme://host:port>`、`username=<账号>`、`verify_tls=<bool>`（`filebeatOutputIdentity` / `firstElasticsearchURL`） | 会 |
-| 输出段**不含** | ES 口令、CA cert、`request_timeout`、地址列表里第一个之外的地址 | 不会（只改口令不判漂移，需人工重发一次） |
-| 片段集合 `fragments` | 该主机上**全部**"启用且在采集"的 服务×日志定义 各一个片段，按路径排序；每项为 `{Path, Content}` | 会 |
-| 片段文件名 `Path` | `/etc/filebeat/inputs.d/<app>__<service>__<logname>.yml`（换应用/换服务/改日志名都会变） | 会 |
-| 片段内容 `Content` | `paths`（宏展开后的绝对路径）、`index`（data stream 名）、`pipeline` 名、multiline parser、`include_lines`/`exclude_lines`、`fields_under_root` 维度字段、`processors`（`log.file.path → log_path`） | 会 |
-| 目录占位 | 有片段时额外追加 `/var/lib/filebeat/.keep`（空内容） | 仅"有无片段"改变时 |
-| **不算入** | Filebeat/agent 版本、索引模板 mapping、pipeline 内容、规则样例日志、格式认证状态、主配置里固定不变的 `filebeat.config.inputs.reload.*` | 不会 |
+| 组成部分                 | 具体内容                                                                                                                                                                                                              | 变化会不会改指纹                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 输出段`outputIdentity` | `url=<默认集群的**第一个**地址 scheme://host:port>`、`username=<账号>`、`verify_tls=<bool>`（`filebeatOutputIdentity` / `firstElasticsearchURL`）                                                           | 会                                       |
+| 输出段**不含**     | ES 口令、CA cert、`request_timeout`、地址列表里第一个之外的地址                                                                                                                                                     | 不会（只改口令不判漂移，需人工重发一次） |
+| 片段集合`fragments`    | 该主机上**全部**"启用且在采集"的 服务×日志定义 各一个片段，按路径排序；每项为 `{Path, Content}`                                                                                                              | 会                                       |
+| 片段文件名`Path`       | `/etc/filebeat/inputs.d/<app>__<service>__<logname>.yml`（换应用/换服务/改日志名都会变）                                                                                                                            | 会                                       |
+| 片段内容`Content`      | `paths`（宏展开后的绝对路径）、`index`（data stream 名）、`pipeline` 名、multiline parser、`include_lines`/`exclude_lines`、`fields_under_root` 维度字段、`processors`（`log.file.path → log_path`） | 会                                       |
+| 目录占位                 | 有片段时额外追加`/var/lib/filebeat/.keep`（空内容）                                                                                                                                                                 | 仅"有无片段"改变时                       |
+| **不算入**         | Filebeat/agent 版本、索引模板 mapping、pipeline 内容、规则样例日志、格式认证状态、主配置里固定不变的`filebeat.config.inputs.reload.*`                                                                               | 不会                                     |
 
-推论：主机指纹含该主机上**所有服务**的片段，所以改服务 B（即使还没下发）会让**这台主机的期望指纹**变——这是
-主机视图（「日志采集」页 / 体检 / 一键下发）的正确行为（整机确实没同步）。但**服务视图不能跟着把它算到 A 头上**，
-否则共享主机上改 B、A 也会提示"期望指纹变了/待下发"（现场问题）。为此引入下面的服务级子指纹。
-
-**服务级子指纹（`monitor_log_collection_target.service_fingerprints`，2026-09-20）**
-
-`service_fingerprints` 是一个 JSON `{service_id: subfp}`，存**每个服务在该主机上**的已下发子指纹：
-
-| 项 | 内容 |
-|---|---|
-| 子指纹定义 | `subfp(host, service) = sha256("output:" + outputIdentity + "\n" + 该服务在该主机的全部片段)` |
-| **含** 输出段 `outputIdentity` | 改 ES 地址/账号/TLS 时所有服务都正确判 `drift` |
-| **不含** `.keep` | 它只看"整机有没有片段"（主机级信号）；算进去的话新增 B 会让 A 的子指纹也变，又回到老问题 |
-| 归属 | 一个片段文件 `<app>__<service>__<serviceID>__<logname>.yml` 只属于一个服务，按服务归组无歧义 |
-
-> key 用**服务 id** 而不是编码：编码的唯一域是 `(业务系统, 环境)`（000044 迁移），同一主机上
-> （尤其跨业务系统共享主机时）可能出现两个同 code 的服务，用编码作 key 会互相覆盖。片段文件名
-> 同理带上 id，避免两个同 code 服务的 Filebeat input id 撞车。000044 迁移把存量 `{code: subfp}`
-> 统一清空，下发一次后按新 key 恢复。
-
-- **下发**：`applyLogTargetConfigRow` 成功后**整体替换**为该主机本次渲染出的服务集合（消失的服务被移除，
-  服务视图据此判"需要下发一次清理"）；跳过判定除主机指纹外**还要**比对服务级指纹——否则存量目标
-  （`service_fingerprints='{}'`）会一直跳过、服务级记录永远补不上。
-- **服务视图状态**（`buildServiceHostStates` → `EvaluateServiceLogConfigStates`）：期望取 `subfp(本服务)`、
-  已下发取该主机的 `service_fingerprints[本服务id]` → `synced / drift / never`。**共享主机上改 B 只影响 B**。
-- 语义边界：本服务在该主机没有片段（如停采），期望为空——已下发也为空 → `synced`；已下发非空 → `drift`（主机上还残留旧片段，需下发一次清理）。
-- **主机视图 / 体检 / `pending-summary` / 一键下发仍用主机指纹**：它回答的是"整机是否最新"。
-- **一次性影响**：存量目标该列为 `{}`；服务视图先用**整机指纹兜底**（整机与期望一致即 `synced`，不误报
-  `never`），该主机任意一次下发后补上服务级记录、转入服务级判定。
+推论：因为指纹含该主机上**所有服务**的片段，改服务 B（即使还没下发）就会让**这台主机的期望指纹**变，A 那页显示 `drift/待下发`，直到下发一次才回到 `synced`——这是设计如此（见 §8.7 的"文案要说实话"）。
 
 ### 8.4 下发流程（Go 版，log_config_render.go + apply_filebeat_config）
 
@@ -1200,7 +1001,7 @@ output.elasticsearch:
   取消时同样按 `create_time` 算时长；作业收尾读回 `automation_execution_job.result_summary` 的 `message`
   在应用层解析（原实现是 `JSON_UNQUOTE(JSON_EXTRACT(...,'$.message'))`）；收尾语句里
   "成功则把 runtime_status 置 running" 用整数标志传（同一条语句里重复写同一个 `sqlc.arg` 会让
-   MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
+  MySQL 与 PG 生成的参数个数不一致）；运行态探测结果照旧按 systemctl 退出码语义映射
   （0=运行中、3=已停止、其余=异常）。
 - **`agent_installed` 由收尾语句维护（2026-09-17 修复）**：它是"Filebeat 二进制已装"的持久态，
   安装成功置 TRUE、卸载成功置 FALSE，失败时传 NULL 保持原值（`COALESCE(narg, agent_installed)`）。
@@ -1273,29 +1074,12 @@ output.elasticsearch:
       - file: { path: /opt/filebeat, state: absent }
       - systemd: { daemon_reload: true }
   ```
-
 - **片段目录由 autoadmin 全量托管**：渲染结果即该主机期望的完整 inputs 片段集合，agent 落盘后会
   删除 `inputs.d` 中不在本次清单内的 `*.yml` 遗留片段（改名/维度修正/服务下线后的残留），
   删除与写入任一发生即 `filebeat test config` + `systemctl restart filebeat`。
 - 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），只渲染不下发。
 - agent 侧动作：`configure_filebeat_output`（写主配置 output/托管段）、`apply_filebeat_config`
   （写 inputs + 清理 + 校验 + 重启）；服务启停走通用 `systemctl` 命令通道（`filebeat.service`）。
-
-#### 8.4.1 路径冲突校验覆盖的写路径
-
-判据：同一台主机上，两条「服务 × 日志定义 × 实例」展开后的**日志文件路径相同或 glob 重叠**，即视为冲突
-（`*` 不跨 `/` 分段；`**` 平台不支持，保存时直接拒绝——避免"Filebeat 会展开、平台不识别"的口径分叉）。
-冲突会让两个 filestream 监听同一文件、同一份日志进 ES 两次，所以必须**保存即报错**，不能等到下发才"跳过并告警"。
-
-| 写路径 | 检查内容 | 现状 |
-|---|---|---|
-| 保存逻辑服务 `SaveApplicationService` | 该服务各承载主机渲染，任意两项重叠即拒 | 已有（精确串）；升级为 glob 重叠 |
-| 保存部署实例 `SaveApplicationDeployment`（改 `runtime_variables`/`APP_HOME`/换主机） | 该实例绑定的**所有服务**按主机渲染校验 | 缺口，新增 |
-| 保存部署模板 `SaveDeploymentTemplate` | ① 模板内：提交的日志定义两两 `path_pattern` 重叠即拒（不需要主机）②（推荐）fan-out：引用该模板的所有服务按主机渲染校验（因为改 `app_home`/`macro_definitions` 会挪动所有服务路径） | 缺口，新增 |
-
-**为什么必须覆盖到部署实例与部署模板**：冲突不一定在"保存服务"时引入——改实例的 `runtime_variables`
-（宏、`APP_HOME`）、或改模板的 `app_home`/宏默认值/日志定义路径，都会挪动展开后的路径；只堵"保存服务"
-会漏掉这两条入口，冲突仍会被静默写入，直到下发时以"跳过 + 删片段"暴露。
 
 ### 8.5 重载
 
@@ -1317,11 +1101,11 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 
 因此服务维度做的是**扇出 + 聚合**，不是改变下发的粒度：
 
-| 接口 | 作用 |
-|---|---|
-| `GET /monitor/log-targets/service-config-state/?application_service_id=` | 承载该服务的**主机清单**（区分已纳管/未纳管）+ 各主机配置态聚合 + `agent_online` / `runtime_status`（原样带出，供页面按服务展示与刷新） |
-| `GET /monitor/log-targets/service-collection-chain/?application_service_id=` | **按服务的采集链路诊断**（"为什么没日志"，见 §9.5） |
-| `POST /monitor/log-targets/service-apply/`（body `{application_service_id}`） | 对承载该服务的全部**已纳管**主机建一次批量作业（复用 §8.8 的作业机制，进度可查） |
+| 接口                                                                              | 作用                                                                                                                                              |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /monitor/log-targets/service-config-state/?application_service_id=`        | 承载该服务的**主机清单**（区分已纳管/未纳管）+ 各主机配置态聚合 + `agent_online` / `runtime_status`（原样带出，供页面按服务展示与刷新） |
+| `GET /monitor/log-targets/service-collection-chain/?application_service_id=`    | **按服务的采集链路诊断**（"为什么没日志"，见 §9.5）                                                                                        |
+| `POST /monitor/log-targets/service-apply/`（body `{application_service_id}`） | 对承载该服务的全部**已纳管**主机建一次批量作业（复用 §8.8 的作业机制，进度可查）                                                           |
 
 三个必须守住的语义：
 
@@ -1331,9 +1115,8 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
   就永远清不干净。变化后的主机是否需要真下发由渲染指纹决定（一致则跳过，见 §8.7 之后的配置态）。
 - **未纳管的主机必须显式回报**（`target_id` 为 NULL 即未纳管）：下发不了它们，接口把主机名列出来，
   否则用户以为整个服务都下发了，实际少了几台。
-- **状态按 (主机 × 服务) 判，聚合只给计数**：服务视图用**服务级子指纹**逐台判 `synced/drift/never`
-  （见 §8.3）——共享主机上其他服务的改动不会把本服务带成待下发。接口只回"N 台里 M 台待下发"这类计数，
-  **不暴露单一"服务级指纹"**：同一服务在不同主机上因实例级 `runtime_variables` 不同、渲染结果本就不同。
+- **状态只能是聚合，没有"服务级指纹"**：`config_fingerprint` 是主机级的，同一服务在不同主机上因
+  实例级 `runtime_variables` 不同、渲染结果本就不同。接口只回"N 台里 M 台待下发"这类计数。
 
 **幂等且廉价**：指纹一致的主机在 `applyLogTargetConfigRow` 里被整段跳过（只刷新 `last_applied_time`），
 所以"把服务的主机都下发一遍"不必先筛待下发。
@@ -1341,10 +1124,8 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 **文案要说实话**：按钮语义是"对承载本服务的主机重新下发"，会连带重算同主机上其他服务的配置
 （渲染确定性所以内容等价；若它们本来就有未下发的改动，会被一起带上——通常是想要的）。
 
-**入口**：**唯一入口是日志中心页「日志配置」tab 顶部**（聚合状态 + 下发按钮 + 作业进度）。
-2026-09-21 起「日志管理 → 日志采集」页移除全部下发入口（选中批量下发、一键下发全部待变更、
-行内单台下发），该页只保留纳管/安装/启停与配置状态展示——下发统一收到按服务的日志中心，
-避免"改完服务还要去主机视角再点一次"的两套入口分叉。
+**入口**：日志中心页「日志配置」tab 顶部（聚合状态 + 下发按钮 + 作业进度）。按主机的单条下发
+（「日志采集」页）与整批下发（`ids` 省略 = 全部待下发）都保留，三者互补。
 
 ### 8.8 配置状态（期望 vs 已下发）与链路体检（2026-09-18）
 
@@ -1355,12 +1136,12 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
 > `pipelines` 层用 `judgeRulePipeline`、`data_flow` 层用 `queryLogDataFlow`、主机三层用
 > `buildServiceHostStates`。改判据只改一处，避免两个入口对同一台主机/同一条规则给出不同结论。
 
-| 状态 | 判定 | 含义 |
-|---|---|---|
-| `synced` | 期望指纹 == `config_fingerprint` | 主机上的配置与当前期望一致 |
-| `drift` | 已下发（指纹非空）但两者不同 | 配置变更后未重新下发 |
-| `never` | `config_fingerprint` 为空 | 从未下发过 |
-| `unknown` | 期望指纹算不出来 | 缺省未注入评估器，或没有启用的默认集群；原因经 `config_state_error` 回传 |
+| 状态        | 判定                              | 含义                                                                      |
+| ----------- | --------------------------------- | ------------------------------------------------------------------------- |
+| `synced`  | 期望指纹 ==`config_fingerprint` | 主机上的配置与当前期望一致                                                |
+| `drift`   | 已下发（指纹非空）但两者不同      | 配置变更后未重新下发                                                      |
+| `never`   | `config_fingerprint` 为空       | 从未下发过                                                                |
+| `unknown` | 期望指纹算不出来                  | 缺省未注入评估器，或没有启用的默认集群；原因经`config_state_error` 回传 |
 
 - **计算口径与下发完全一致**：期望指纹由渲染纯函数 `renderHostLogConfig` 算出
   （= 输出段 `outputIdentity` + 全部片段内容，见 §8.3），索引前缀/流名取默认集群的 `index_prefix`。
@@ -1381,41 +1162,14 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
   期望配置算不出来时（典型是没有启用的默认集群）**退回"是否下发过"的判断并把原因写进明细，
   不谎报"一致"**。（此前只看指纹是否为空、不比对内容，主机配置过期在体检里完全看不出来。）
 - **"下发待变更"的全量口径**：`GET /monitor/log-targets/pending-summary/` 一次算完全部纳管目标
-  （查询次数与主机数无关），返回 `drift`+`never` 的全量台数。**2026-09-21 起前端不再消费它**：
-  「日志采集」页的「一键下发全部待变更（N）」按钮已随下发入口一并移除，下发改由日志中心按服务触发。
-  接口保留（后端批量作业的 `ids` 省略分支仍据此算全量，见 §8.9）。
-- **界面位置**：纳管/安装/启停与配置状态展示都在「日志管理 → 日志采集」
+  （查询次数与主机数无关），前端按钮显示的就是这个全量台数（`drift`+`never`）；
+  点击后由后端建批量作业执行。2026-09-18 之前只作用当前页，属计划 Phase 2 的半成品形态。
+- **界面位置**：采集目标的日常操作与配置状态都在「日志管理 → 日志采集」
   （`fronted/src/views/monitor/log-collectors/index.vue`，2026-09-18 从「智能监控 → 纳管目标」拆出，
-  见 [MENU_STRUCTURE](MENU_STRUCTURE.md)）；**下发配置自 2026-09-21 起只在日志中心**（§8.7），
-  该页不再有下发入口。主机表外壳与状态逻辑与 Exporter 目标页共用
+  见 [MENU_STRUCTURE](MENU_STRUCTURE.md)）；主机表外壳与状态逻辑与 Exporter 目标页共用
   `components/HostTargetPanel.vue` + `util/hostTargetTable.js`。
 - **一次性影响**：Phase 0 改了指纹语义（纳入输出段），因此存量主机的 `config_fingerprint`
   与期望值不再一致，升级后会全部显示 `drift`，重新下发一次即恢复稳定。
-
-#### 8.8.1 差异内容：怎么看"这次下发会改什么"（2026-09-20）
-
-配置态只说"一致/待下发"，**不回答差在哪**——用户不知道要改什么就没法判断该不该点下发。
-`GET /monitor/log-targets/:id/config-diff/?application_service_id=<可选>` 补上这一环：
-
-- **期望侧**：与下发**同一条渲染路径**（`renderHostLogConfig`，同索引前缀、同宏展开、同排序）
-  → 一串 `{path, content}` 片段，所以看到的就是 agent 将写入的内容。
-- **已下发侧**：用 agent 读回主机上 `/etc/filebeat/inputs.d/*.yml`（`ListFiles` 列目录 +
-  `StatFile` 取大小 + `ReadFileChunk` 读内容）。**为什么必须读主机**：库里只落指纹
-  （`config_fingerprint` / `service_fingerprints`），没有内容，纯库内不可能算出差异内容；
-  唯一的替代是"把下发过的内容也存一份"，那等于再造一份会漂移的真相。
-- **逐文件判定**：`added`（期望有、主机没有 → 会新增）/ `removed`（主机有、期望没有 → **会被删掉**，
-  因为 agent 侧的全量替换语义，见 §8.7）/ `changed`（两边都有但内容不同）/ `unchanged`。
-  两侧内容都原样返回，行级 diff 由前端算（`fronted/src/util/configDiff.js`，LCS；展示样式不该由后端定死）。
-- **读不准时不给结论**：主机离线/未接线 → `read_error` 有话说，`files` 只含期望侧
-  （界面明说"这是**将要下发**的内容，无法与现状对比"）；单个文件读失败/超过 256 KB 被截断 →
-  该文件标 `read_error` / `applied_truncated` 并另计 `unread`（既不说"一致"也不说"不一致"）。
-- **他服务片段也一并给出**：`service_id` / `service_code` 从文件名解析
-  （`< app >__< service >__< serviceID >__< log >.yml`），界面默认"只看本服务"、其余折叠并标「他服务」
-  ——下发是主机级全量替换，本服务之外的片段确实会一起被重写，瞒着用户反而更危险。
-- **只读**：不写库、不下发、不改主机上的任何文件；读回的文件名过白名单
-  （`safeConfigBaseName`：只允许 `[A-Za-z0-9_.-]`、禁 `..`），与下发写入的范围严格对称。
-- **入口**：日志中心「日志配置」tab 的下发区「查看配置差异」，默认落在**待下发的那台**主机上
-  （那才是用户点开它要问的问题），弹窗里可换主机。差异是"某台主机的现状"，多台各不相同。
 
 ### 8.9 批量动作：异步作业（2026-09-18，计划 Phase 2）
 
@@ -1428,9 +1182,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   （每台的状态与失败原因，`host_name`/`host_ip` 是**快照**，主机改名后进度页仍如实展示当时的目标）。
   计数**从 item 表重算**而不在应用层累加（并发下累加必然漂移）。
 - **入口**：`POST /monitor/log-targets/batch-jobs/`，body `{action: "apply"|"install", ids?: [...]}`。
-  `ids` 省略且 `action=apply` 表示"全部待下发"——由服务端按配置态实时算全量。**2026-09-21 起前端不再
-  从这个入口发起 apply**：日志中心按服务下发走 `service-apply`（显式主机集），「日志采集」页只发起
-  `action=install`（纳管/重新安装）；省略 ids 的 apply 分支保留给后端/后续自动下发使用。
+  `ids` 省略且 `action=apply` 表示"全部待下发"——由服务端按配置态实时算全量（一键应用 N 台待变更）。
   另有 `GET /monitor/log-targets/batch-jobs/:id/`（进度 + 逐台明细）、
   `GET /monitor/log-targets/batch-jobs/active/?action=`（页面刷新后接着看进度；没有进行中的作业时 `data: null`，
   不用 404——那是每次进页面都会调的查询，404 会在前端弹无意义的错误提示）、
@@ -1464,16 +1216,15 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   执行器按作业 id 加进程内互斥锁后才动手，避免两个分片同时从 item 表挑 `pending` 项、把同一台跑两遍。
 - **批量启停/删除仍是同步接口**：单台只是一次 30 秒超时的 `systemctl` 调用或一条 DELETE，
   逐台串行的代价可接受；分钟级的「下发 / 安装」才需要作业化。
-- **前端**：作业创建后用作业详情接口每 2 秒轮询一次，进度弹窗展示百分比、成功/失败台数与
-  **逐台失败原因**，关闭弹窗不中断作业；页面重新进入时用 `batch-jobs/active/` 恢复未跑完作业的进度视图。
-  （「日志采集」页目前只发起 `install` 作业；日志中心按服务下发会建 `apply` 作业，进度视图同一套。）
+- **前端**：`GET pending-summary` 的全量计数驱动「一键下发全部待变更（N）」按钮；作业创建后用
+  作业详情接口每 2 秒轮询一次，进度弹窗展示百分比、成功/失败台数与**逐台失败原因**，
+  关闭弹窗不中断作业；页面重新进入时用 `batch-jobs/active/` 恢复未跑完作业的进度视图。
 - **回归**：`log_batch_job_test.go` 覆盖终态判定与分片/续跑/对账分支；`smoke_log_batch_test.go`
   （`MONITOR_SMOKE_DSN` 触发）在真库上跑整套语句与对账链路——`ClaimLogBatchJob` 的"影响行数"语义
   就是真库冒烟逮出来的（见上文续跑那一支）。
-- **下发门槛放宽**：下发只要 `agent 在线 + Filebeat 已装`即可（原来还要求
+- **下发门槛放宽**：单台「下发配置」只要 `agent 在线 + Filebeat 已装`即可（原来还要求
   `runtime_status=running`）。下发本身会写 `filebeat.yml` 与 `inputs.d` 并重启 Filebeat，
-  要求"先在跑"会让停机待修的主机永远无法通过下发恢复。（这条门槛 2026-09-21 起只由日志中心的
-  按服务下发使用；「日志采集」页已无下发入口。）
+  要求"先在跑"会让停机待修的主机永远无法通过下发恢复。
 - **改档位提示**：档位在服务/日志定义上改动时提示"写入新流，旧流停写并按原档位保留到期、不迁移"，
   并提示需重新下发采集配置（计划 Phase 2 的第四项）。
 
@@ -1495,26 +1246,26 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 `log_config_render.go:65`），文件内每个部署实例一个 filestream input——所以"关掉一个服务"
 等于删掉它的全部 `<app>__<svc>__*.yml`，不会碰到别的服务。
 
-| 你做的动作 | 期望指纹 | 配置态 | 下发时主机上的动作 | 数据流 / 数据 | 配置自动下发建议 |
-|---|---|---|---|---|---|
-| 新增部署实例（扩容） | 变（多一个 input） | 待下发 | 该实例的 input 加进片段，Filebeat 重启 | 流不变，新实例数据自动并入 | ✅ **建议自动（第一批，优先级最高）**：§6 承诺"新增实例自动继承采集配置、扩容后不会漏采"，现状是每次扩容都留一次人工下发，是**漏采的主要来源** |
-| 关闭采集（服务总开关 / 服务弹窗里关掉该服务的某条日志） | 变（该服务片段消失） | 待下发 | 该服务全部 `*.yml` 被删，Filebeat 重启；其他服务不受影响 | 流停写；已写入数据按档位到期，**不清** | ✅ 建议自动（第一批）：纯减法、可逆、不丢数据 |
-| 改日志路径 / 宏值（模板 `path_pattern`、服务级 `macro_values`、实例 `runtime_variables`） | 变 | 待下发 | 同名片段内容更新（`paths` 换新路径），Filebeat 重启 | 流不变；`log_path` 从新文档起变；**旧路径不再采集**；新路径按 Filebeat 规则从头读 | ✅ 建议自动（第一批）：改动局限在该服务实例，用户的意图就是"立即生效" |
-| 改多行参数（模板日志定义上的 `multiline_enabled` / `start_pattern` / `flush_timeout` / `input_format`） | 变（`parsers:` 段变） | 待下发 | 片段内容更新，Filebeat 重启 | 流不变；多行合并行为在下发后才变 | ✅ 建议自动（第一批）：改完不生效是明显的用户困惑（多行只能在发送前合并） |
-| 开启采集（重新开启） | 变回 | 待下发 → 已同步 | 片段重新写入（内容与关闭前相同也照写），Filebeat 重启 | **同一个流继续写入**（流名未变，不新建流）；registry 保留 offset，通常从断点继续，暂停期间的日志会被补采（除非文件被轮转/截断/改名） | ✅ 建议自动（**第二批**）：与关闭对称，但它引入**新写入**（ES 容量、档位预算需先有预检与量级提示） |
-| 新增日志定义（模板加一条日志） | 变（多一个片段） | 待下发 | 新增 `<app>__<svc>__<新日志>.yml`，Filebeat 重启 | 流不变（档位相同则同流） | ✅ 建议自动（**第二批**）：模板日志定义没有开关，新增后该模板下所有服务**默认采**（§6），未挂处理规则时才不采；因此自动下发前必须先做预检，否则会静默开始采集 |
-| 改解析规则，**仅改 `pipeline_body`** | **不变** | **不进入待下发** | **无主机动作、不重启**：保存规则时已 `PUT _ingest/pipeline`（§5.2） | 新写入立即用新解析；**历史文档不重新解析**（无 reindex） | ➖ 无需下发（本来就即时生效，唯一"已经自动"的一类） |
-| 换规则标识（改名 / 换应用 / 换集群 → `pipeline` 名变），或在模板日志定义上换挂另一条规则 | 变（`pipeline:` 行变） | 待下发 | 片段内容更新，Filebeat 重启 | 流不变；新旧数据的解析产物不一致 | ⛔ 保持人工：模板换规则影响所有引用服务（服务侧没有覆盖，§6）；规则本身还可被多个模板复用 |
-| 改保留档位（服务级或日志级） | 变（`index` 行变） | 待下发 | 片段内容更新，Filebeat 重启并开始写新流 | **新流**；旧流停写并按原档位到期，**不迁移数据** | ⛔ 保持人工：语义不可逆，必须显式确认 |
-| 删除模板里的日志定义 | 变（片段消失） | 待下发 | 对应 `*.yml` 被删，Filebeat 重启 | 流不变，已有数据仍在服务流里、仍可检索 | ⛔ 保持人工：删定义会**级联清掉各服务对它的覆盖值**（档位/规则/开关/过滤），影响面跨服务 |
-| 改日志定义 name（模板日志改名） | 变（片段**文件名**变） | 待下发 | 旧 `<app>__<svc>__<旧名>.yml` 被删、新文件写入，Filebeat 重启 | 流不变；`log_name` 从新文档起变（历史文档保留旧名，按 `log_name` 清理时要注意两代名字） | ⛔ 保持人工：id 不变所以服务级覆盖全部保留，但主机的片段文件与 `log_name` 维度会换一茬 |
-| 改模板的宏默认值 / 应用主目录（`macro_definitions` / `app_home`） | 变（未在服务/实例覆盖该宏的实例路径变） | 待下发 | 片段 `paths` 换新路径，Filebeat 重启 | 同"改路径"：流不变、`log_path` 变、旧路径停采 | ✅ 建议自动（第一批，与改路径同类） |
-| 换服务所属部署模板 | 变（期望配置整体换模板） | 待下发 | 旧模板的片段被删（同名文件则被覆盖），新模板的片段写入，Filebeat 重启 | 流不变（档位不再变时）；新模板的日志定义**默认全采**（§6） | ⛔ 保持人工：一次改动影响该服务全部主机与全部日志。注意编辑既有服务时，弹窗里的日志表格仍显示旧模板的行，需重开弹窗才刷新 |
-| 停用部署模板（`enabled=false`） | **不变** | 不影响配置态 | 无 | 不变 | ➖ 无需下发：渲染查询不检查模板 enabled，停用只让新建/改服务时下拉选不到它，**已在采的服务继续采** |
-| 停用 / 删除逻辑服务、删除部署模板 | 变（批量片段消失） | 待下发 | 该服务（或该模板下全部服务）的片段被删，Filebeat 重启 | 流变孤儿（维度已删 → 水位视图"未识别"） | ⛔ 保持人工：影响面是该服务的全部主机，且与资产生命周期动作耦合 |
-| 默认 ES 集群输出段变更（地址 / 账号 / `verify_tls` / `index_prefix`） | 变 | **全部纳管主机**待下发 | 重写 `filebeat.yml` + 全部片段，Filebeat 重启 | 前缀变则流名全变 | ⛔ 保持人工（最危险）：全网影响、新集群不可达时整体采集中断 |
-| 只改 ES 口令 | **不变** | 不进入待下发 | 无 | 不变 | ⛔ 人工重新下发一次（指纹刻意不含口令，§8.3） |
-| 停 Filebeat 进程 / 卸载 Filebeat | 不变 | 不影响配置态（属运行态） | 无 | 停写 | ⛔ 人工（安装/卸载已作业化） |
+| 你做的动作                                                                                                     | 期望指纹                                | 配置态                       | 下发时主机上的动作                                                           | 数据流 / 数据                                                                                                                              | 配置自动下发建议                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 新增部署实例（扩容）                                                                                           | 变（多一个 input）                      | 待下发                       | 该实例的 input 加进片段，Filebeat 重启                                       | 流不变，新实例数据自动并入                                                                                                                 | ✅**建议自动（第一批，优先级最高）**：§6 承诺"新增实例自动继承采集配置、扩容后不会漏采"，现状是每次扩容都留一次人工下发，是**漏采的主要来源**                 |
+| 关闭采集（服务总开关 / 服务弹窗里关掉该服务的某条日志）                                                        | 变（该服务片段消失）                    | 待下发                       | 该服务全部`*.yml` 被删，Filebeat 重启；其他服务不受影响                    | 流停写；已写入数据按档位到期，**不清**                                                                                               | ✅ 建议自动（第一批）：纯减法、可逆、不丢数据                                                                                                                              |
+| 改日志路径 / 宏值（模板`path_pattern`、服务级 `macro_values`、实例 `runtime_variables`）                 | 变                                      | 待下发                       | 同名片段内容更新（`paths` 换新路径），Filebeat 重启                        | 流不变；`log_path` 从新文档起变；**旧路径不再采集**；新路径按 Filebeat 规则从头读                                                  | ✅ 建议自动（第一批）：改动局限在该服务实例，用户的意图就是"立即生效"                                                                                                      |
+| 改多行参数（模板日志定义上的`multiline_enabled` / `start_pattern` / `flush_timeout` / `input_format`） | 变（`parsers:` 段变）                 | 待下发                       | 片段内容更新，Filebeat 重启                                                  | 流不变；多行合并行为在下发后才变                                                                                                           | ✅ 建议自动（第一批）：改完不生效是明显的用户困惑（多行只能在发送前合并）                                                                                                  |
+| 开启采集（重新开启）                                                                                           | 变回                                    | 待下发 → 已同步             | 片段重新写入（内容与关闭前相同也照写），Filebeat 重启                        | **同一个流继续写入**（流名未变，不新建流）；registry 保留 offset，通常从断点继续，暂停期间的日志会被补采（除非文件被轮转/截断/改名） | ✅ 建议自动（**第二批**）：与关闭对称，但它引入**新写入**（ES 容量、档位预算需先有预检与量级提示）                                                             |
+| 新增日志定义（模板加一条日志）                                                                                 | 变（多一个片段）                        | 待下发                       | 新增`<app>__<svc>__<新日志>.yml`，Filebeat 重启                            | 流不变（档位相同则同流）                                                                                                                   | ✅ 建议自动（**第二批**）：模板日志定义没有开关，新增后该模板下所有服务**默认采**（§6），未挂处理规则时才不采；因此自动下发前必须先做预检，否则会静默开始采集 |
+| 改解析规则，**仅改 `pipeline_body`**                                                                   | **不变**                          | **不进入待下发**       | **无主机动作、不重启**：保存规则时已 `PUT _ingest/pipeline`（§5.2） | 新写入立即用新解析；**历史文档不重新解析**（无 reindex）                                                                             | ➖ 无需下发（本来就即时生效，唯一"已经自动"的一类）                                                                                                                        |
+| 换规则标识（改名 / 换应用 / 换集群 →`pipeline` 名变），或在模板日志定义上换挂另一条规则                     | 变（`pipeline:` 行变）                | 待下发                       | 片段内容更新，Filebeat 重启                                                  | 流不变；新旧数据的解析产物不一致                                                                                                           | ⛔ 保持人工：模板换规则影响所有引用服务（服务侧没有覆盖，§6）；规则本身还可被多个模板复用                                                                                 |
+| 改保留档位（服务级或日志级）                                                                                   | 变（`index` 行变）                    | 待下发                       | 片段内容更新，Filebeat 重启并开始写新流                                      | **新流**；旧流停写并按原档位到期，**不迁移数据**                                                                               | ⛔ 保持人工：语义不可逆，必须显式确认                                                                                                                                      |
+| 删除模板里的日志定义                                                                                           | 变（片段消失）                          | 待下发                       | 对应`*.yml` 被删，Filebeat 重启                                            | 流不变，已有数据仍在服务流里、仍可检索                                                                                                     | ⛔ 保持人工：删定义会**级联清掉各服务对它的覆盖值**（档位/规则/开关/过滤），影响面跨服务                                                                             |
+| 改日志定义 name（模板日志改名）                                                                                | 变（片段**文件名**变）            | 待下发                       | 旧`<app>__<svc>__<旧名>.yml` 被删、新文件写入，Filebeat 重启               | 流不变；`log_name` 从新文档起变（历史文档保留旧名，按 `log_name` 清理时要注意两代名字）                                                | ⛔ 保持人工：id 不变所以服务级覆盖全部保留，但主机的片段文件与`log_name` 维度会换一茬                                                                                    |
+| 改模板的宏默认值 / 应用主目录（`macro_definitions` / `app_home`）                                          | 变（未在服务/实例覆盖该宏的实例路径变） | 待下发                       | 片段`paths` 换新路径，Filebeat 重启                                        | 同"改路径"：流不变、`log_path` 变、旧路径停采                                                                                            | ✅ 建议自动（第一批，与改路径同类）                                                                                                                                        |
+| 换服务所属部署模板                                                                                             | 变（期望配置整体换模板）                | 待下发                       | 旧模板的片段被删（同名文件则被覆盖），新模板的片段写入，Filebeat 重启        | 流不变（档位不再变时）；新模板的日志定义**默认全采**（§6）                                                                          | ⛔ 保持人工：一次改动影响该服务全部主机与全部日志。注意编辑既有服务时，弹窗里的日志表格仍显示旧模板的行，需重开弹窗才刷新                                                  |
+| 停用部署模板（`enabled=false`）                                                                              | **不变**                          | 不影响配置态                 | 无                                                                           | 不变                                                                                                                                       | ➖ 无需下发：渲染查询不检查模板 enabled，停用只让新建/改服务时下拉选不到它，**已在采的服务继续采**                                                                   |
+| 停用 / 删除逻辑服务、删除部署模板                                                                              | 变（批量片段消失）                      | 待下发                       | 该服务（或该模板下全部服务）的片段被删，Filebeat 重启                        | 流变孤儿（维度已删 → 水位视图"未识别"）                                                                                                   | ⛔ 保持人工：影响面是该服务的全部主机，且与资产生命周期动作耦合                                                                                                            |
+| 默认 ES 集群输出段变更（地址 / 账号 /`verify_tls` / `index_prefix`）                                       | 变                                      | **全部纳管主机**待下发 | 重写`filebeat.yml` + 全部片段，Filebeat 重启                               | 前缀变则流名全变                                                                                                                           | ⛔ 保持人工（最危险）：全网影响、新集群不可达时整体采集中断                                                                                                                |
+| 只改 ES 口令                                                                                                   | **不变**                          | 不进入待下发                 | 无                                                                           | 不变                                                                                                                                       | ⛔ 人工重新下发一次（指纹刻意不含口令，§8.3）                                                                                                                             |
+| 停 Filebeat 进程 / 卸载 Filebeat                                                                               | 不变                                    | 不影响配置态（属运行态）     | 无                                                                           | 停写                                                                                                                                       | ⛔ 人工（安装/卸载已作业化）                                                                                                                                               |
 
 几个与直觉不符的点：
 
@@ -1594,12 +1345,6 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   本身就是要看的信息），并且"某业务系统下的环境"只能由它名下服务反推——环境是服务上的属性
   （`assets_business_environment` 不挂在业务系统下）。消费方出现了，所以连同查询一起加回来；
   契约测试 `TestStorageOverviewDimsCarryAllFourLevels` 钉住"别再把这份 payload 当死数据删掉"。
-  services 行带 `project_id`（2026-09-28 补）：**业务系统 code 只在项目内唯一**
-  （`UNIQUE(project_id, code)`），业务系统节点按 code 反推环境/过滤流时必须用
-  `(project_id, code)` 双码收窄，否则别的项目里同 code 业务系统的环境与流会混进来
-  （现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。树 scope 同步携带
-  `projectId`（ServiceTree 与层级视图下钻两处）；services 行缺 `project_id` 的旧缓存
-  降级为不过滤该维度。
 - **"已停用 / 未开启采集"按逻辑服务标注（2026-09-18）**：每条流带
   `service_enabled` 与 `service_collection_enabled`（来自逻辑服务行，是**配置事实**，
   不需要查 ES）。服务停用或服务级采集开关关闭时，树上服务节点与右侧明细都标「已停用」/
@@ -1701,11 +1446,11 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 右侧三个 tab。**tab 顺序按使用频率排：日志查询（默认打开）→ 日志配置 → 存储水位**，
 所以选中服务后第一眼就是最常用的检索框：
 
-| tab | 数据来源 | 说明 |
-|---|---|---|
-| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`，从服务树目录迁入，原服务树页的查询面板）。**2026-09-28 起非服务节点也是本面板的跨服务模式**（原 `LogLevelOverview` 层级清单只保留在「日志配置」tab，见 §9.5.2） | 服务节点按 `application_service_id` 单服务检索（不变）。**跨服务模式**（业务系统/环境/项目/全部节点）：检索接口支持 `application_service_ids`（逗号分隔，≤50 个），按每个服务的 (service, project, business_system, environment) 四元组收窄；筛选区按层级铺开维度下拉（全部=项目下业务系统+环境；项目=业务系统+环境；业务系统=环境；环境=只有逻辑服务），多选是服务候选的**前置过滤**（选中即收窄逻辑服务候选与查询范围），逻辑服务多选空 = 收窄后的候选全部；结果列表多一列**逻辑服务**，所在层级越高维度列越多（项目节点=业务系统/环境/逻辑服务），维度名由 `dimensionNames`（编码→名称）反查。层级清单 + 最近写入仍在「日志配置」tab 的层级视图里。关键词框有**两种模式可切换**（见 §9.7）：`正文`（默认，只在 `log_message` 里搜）/ `Lucene`（完整语法，可按字段过滤） |
-| 日志配置 | 服务节点：`GET /assets/application-services/:id/log-config/` + `GET /monitor/log-targets/service-config-state/` + `GET /monitor/log-targets/service-collection-chain/`；非服务节点：`POST /assets/application-services/log-status-summary/` + 服务/项目/业务系统名单（见 §9.5.2） | 日志名/路径/**所在主机**/处理规则/采集开关/档位/格式认证状态/data stream + **服务级采集总开关**（`log_collection_enabled`，响应顶层字段）+ **采集链路状态条**（见下）。总开关与逐条开关是两层：前者关掉后该服务下所有日志都不采集、逐条开关不生效（配置意图保留）。两者都可直接改（见下方「两条写路径」）；**表格有勾选列，勾选后出现批量栏**（打开/停止采集、档位、采集过滤、格式认证，见 §9.5.0「批量」）；认证入口复用共享组件 `LogFormatVerifyDialog`（与编辑弹窗同一个，见 §4.8）。`force-render`：切走再切回不重新取数 |
-| 存储水位 | 选中服务时 `.../log-storage-overview/?application_service_id=<服务 id>`（后端收窄 ES 查询；兼容旧的 `service_code` 参数作兜底）；未选中时取全量再按树的层级（项目/业务系统/环境）用 dims 映射到编码过滤 | **按层级聚合的容量统计**（全部→项目、项目→业务系统、业务系统→环境、环境→逻辑服务；占用降序 + 占比 + 其中历史档位 + **同名饼图**）、**集群 + 数据时间**、统计（流数/文档数/总占用拆分活跃与历史/**健康异常流**）、**Elasticsearch 节点磁盘水位**、流表（占用/文档数/ILM/**状态**/**后备索引展开**；带**关键字搜索**与**列排序**——2026-09-21 加）。后备索引用**可展开行**直接展开在点击的那条流下面，而不是表格下方的一块：流列表可能很长，下方那块会被淹没，用户以为"点了没反应"。**每条流都有操作列**（见下）；未选中时列出**未识别流**（不归属任何服务，任何层级都保留，不进聚合） |
+| tab      | 数据来源                                                                                                                                                           | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`） | 所有树节点统一默认显示「日志」，「统计」为辅助入口。服务/实例节点传 `application_service_id`；全部/项目/业务系统/环境节点传范围内的 `application_service_ids`，范围内无服务时显示空态。关键词支持 `正文` / `Lucene` 两种模式（见 §9.7）。 |
+| 日志配置 | `GET /assets/application-services/:id/log-config/` + `GET /monitor/log-targets/service-config-state/` + `GET /monitor/log-targets/service-collection-chain/` | 日志名/路径/**所在主机**/处理规则/采集开关/档位/格式认证状态/data stream + **服务级采集总开关**（`log_collection_enabled`，响应顶层字段）+ **采集链路状态条**（见下）。总开关与逐条开关是两层：前者关掉后该服务下所有日志都不采集、逐条开关不生效（配置意图保留）。两者都可直接改（见下方「两条写路径」）；认证入口复用共享组件 `LogFormatVerifyDialog`（与编辑弹窗同一个，见 §4.8）。`force-render`：切走再切回不重新取数              |
+| 存储水位 | 选中服务时`.../log-storage-overview/?service_code=<服务编码>`（后端收窄 ES 查询）；未选中时取全量再按树的层级（项目/业务系统/环境）用 dims 映射到编码过滤        | **按层级聚合的容量统计**（全部→项目、项目→业务系统、业务系统→环境、环境→逻辑服务；占用降序 + 占比 + 其中历史档位 + **同名饼图**）、**集群 + 数据时间**、统计（流数/文档数/总占用拆分活跃与历史/**健康异常流**）、**Elasticsearch 节点磁盘水位**、流表（占用/文档数/ILM/**状态**/**后备索引展开**）。**每条流都有操作列**（见下）；未选中时列出**未识别流**（不归属任何服务，任何层级都保留，不进聚合） |
 
 > **原「服务树页 → 日志查询」tab 已删除**（2026-09-19）：同一件事有两个入口时，用户会在两个地方
 > 看到不同版本（一个带项目层级的树、一个不带）的同一个检索面板，配置类操作又只在日志中心有。
@@ -1713,17 +1458,23 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 **聚合分组的集合来自 dims，不是来自流**：每层**已配置的成员都列出来**（含 `streams = 0` 的，标「无日志」），再补上"流里有、维度表里没有"的编码（维度停用/删除后的遗留流，标「维度已停用」）——两个方向都不能漏，漏了前者看不到空分组、漏了后者这些流会从统计里消失而明细表里还在。饼图只画**有占用**的分组（占比对 0 没有意义，零值分组仍留在表格里），超过 8 项合并为"其他 N 项"。其余口径：未识别流不进聚合；`historical` 由后端判定（见下）。
 
-三个 tab 共用一个服务上下文，这是把它们合成一个页面的理由：日志检索接口必填
-`application_service_id`，水位与日志配置也都以服务为维度，而原先它们分散在三处（存储水位页、
-服务树页的日志查询 tab），看同一个服务的日志要来回跳。
+三个 tab 共用左侧树的范围上下文。日志查询既支持单服务，也支持范围内跨服务检索；
+日志配置在上层节点展示只读层级汇总，在服务节点提供编辑；存储水位按当前层级聚合。
 
-**「路径」列有个小开关：原始 ↔ 解析后**（2026-09-19 加）。日志中心「日志配置」与通配展开
-（`LogGlobPreview`）共用 `fronted/src/util/logPathMacro.js`：
+**统一查询入口**：所有层级使用相同的时间、级别、实例与关键词筛选，以及「日志 / 统计」标签。
+项目节点的日志来源列为业务系统、环境、逻辑服务；业务系统节点为环境、逻辑服务；
+环境节点为逻辑服务；全部节点额外包含项目。服务/实例节点保留单服务界面。
+切换树节点默认回到日志列表；上层节点的服务名单异步到达时补查当前视图，不强制切换到统计。
+统计的默认维度在上层为逻辑服务，在服务/实例层为错误指纹，统计下钻带条件返回日志列表。
+切换节点保留时间范围，重置关键词、级别及范围相关过滤，实例节点按选中实例限定查询。
 
-| 档位 | 取值 | 含义 |
-|---|---|---|
+**「路径」列有个小开关：原始 ↔ 解析后**（2026-09-19 加）。两页都有（日志中心「日志配置」与
+逻辑服务编辑弹窗），共用 `fronted/src/util/logPathMacro.js`：
+
+| 档位           | 取值                                                  | 含义                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 解析后（默认） | `resolved_path`，**编辑弹窗里按表单实时重算** | 按**与渲染同一顺序**展开到"服务这一层能解析的部分"：模板 `macro_definitions` 的 value → 模板 `app_home`（`APP_HOME` 默认值）→ 服务 `macro_values` 覆盖。弹窗里改「宏」时前端用同一套顺序**当场重算**（`frontend/src/util/logPathMacro.js` 的 `resolvePathMacros`，服务端 `shared/logmacro` 的移植）：否则改完宏要保存后重进弹窗才看到新路径，用户会以为"改了没生效"（2026-09-19 现场）。日志中心那列是只读展示，直接用接口返回的 `resolved_path` |
-| 原始 | `path_pattern` | 模板里存的路径模式，一个宏都不展开（排查"这个宏是哪一层给的"时用） |
+| 原始           | `path_pattern`                                      | 模板里存的路径模式，一个宏都不展开（排查"这个宏是哪一层给的"时用）                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 - **合并顺序只有一份实现**：`internal/shared/logmacro`（`Resolve`/`Merge`/`TemplateDefaults`/
   `InstanceValues`/`Pending`），下发渲染（`logcollect`）与界面展示（`assets` 的 log-config）都调它。
@@ -1743,19 +1494,20 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 **「采集链路」状态条回答"为什么没日志"**（2026-09-19 加，现场反馈"查不到日志时不知道断在哪"）。
 按选中服务逐层给结论，异常层在颜色与明细里直接可见（`GET /monitor/log-targets/service-collection-chain/`）：
 
-| 层 | 判据 | 数据来源 |
-|---|---|---|
-| Agent 在线 | 该主机的 agent 会话在不在 | 网关实时（`gateway.IsOnline`），不是库里的字段 |
-| 采集进程 | Filebeat `running / stopped / error / 未知` | `monitor_log_collection_target.runtime_status`，**落库快照**（未知时页面自动查一次，见下） |
-| 主机配置 | 期望指纹 vs 已下发指纹（`synced / drift / never / unknown`） | 与下发区同一份评估（`buildServiceHostStates`） |
-| 解析规则 | 该服务日志定义引用的规则，其派生 pipeline 在**规则自己的集群**上是否存在、与页面是否一致、**且能不能跑通**（用规则自带样例 + Filebeat 真实载荷试跑一次） | `judgeRulePipeline`（与体检 `pipelines` 层同一个函数） |
-| 数据写入 | 最近 30 分钟内按 `service` 字段收窄的文档数 | `queryLogDataFlow`（与体检 `data_flow` 同一查询），查**默认启用的集群** |
+| 层         | 判据                                                                                                                                                                 | 数据来源                                                                                           |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Agent 在线 | 该主机的 agent 会话在不在                                                                                                                                            | 网关实时（`gateway.IsOnline`），不是库里的字段                                                   |
+| 采集进程   | Filebeat`running / stopped / error / 未知`                                                                                                                         | `monitor_log_collection_target.runtime_status`，**落库快照**（未知时页面自动查一次，见下） |
+| 主机配置   | 期望指纹 vs 已下发指纹（`synced / drift / never / unknown`）                                                                                                       | 与下发区同一份评估（`buildServiceHostStates`）                                                   |
+| 解析规则   | 该服务日志定义引用的规则，其派生 pipeline 在**规则自己的集群**上是否存在、与页面是否一致、**且能不能跑通**（用规则自带样例 + Filebeat 真实载荷试跑一次） | `judgeRulePipeline`（与体检 `pipelines` 层同一个函数）                                         |
+| 数据写入   | 最近 30 分钟内按`service` 字段收窄的文档数                                                                                                                         | `queryLogDataFlow`（与体检 `data_flow` 同一查询），查**默认启用的集群**                  |
 
 几条刻意的设计：
+
 - **判定只在后端一处**（复用的函数名写在表里），前端只呈现。两处各算一套必然出现"体检说没事、
-     日志中心说没发布"。前端不自己拼状态文案，刷新运行态后重新拉链路。
+  日志中心说没发布"。前端不自己拼状态文案，刷新运行态后重新拉链路。
 - **"状态未知" ≠ "已停止"**：`runtime_status` 为空是"没查过"，处置是刷新一次；说成"已停止"
-     会把人引去重启一个本来在跑的服务。所以要分开计数（`filebeat_unknown`）。
+  会把人引去重启一个本来在跑的服务。所以要分开计数（`filebeat_unknown`）。
 - **运行态快照的新鲜度由页面自动维持**（2026-09-19 改，现场反馈"日志配置里每次修改了东西都要手动
   刷新运行态，麻烦"）：`runtime_status` 是落库快照，只有"查状态"动作会写它，所以两处**自动查**——
   ① 链路读回来后，若存在**状态未知**的已纳管在线主机（新纳管、或刚下发重启过还没确认）就自动查一次；
@@ -1765,20 +1517,19 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
   「刷新运行态」按钮保留，用于强制再查一次。链路条上的时间标签是**本次检查**的时间，
   不是 Filebeat 状态的时间（那份快照的时间不落库，靠上面两条自动流水保持新鲜）。
 - **未纳管主机在每一层都出现且是 `warn`**：它不是配置漂移（报 `drift` 会让人去点下发，
-     而那台机器根本没有采集目标），但也不能因为未纳管就报 `ok`——"3 台里 1 台没采"就是要看见的问题。
+  而那台机器根本没有采集目标），但也不能因为未纳管就报 `ok`——"3 台里 1 台没采"就是要看见的问题。
 - **服务停用 / 服务级采集开关关闭单独提示**：它是"没日志"最常见的原因，却不在上面五层里。
 - 集群不可用时只有 ES 两层报错，主机三层照常给结论（它们与集群无关），不整体失败。
 - **"解析规则"层判红 ≠ 一定没配规则**：2026-09-19 现场（kul 的 tomcat）四层全绿、`数据写入` 才是
   warn，根因却在这一层——规则把事件弄成了 ES 拒收的形状（见 §5.2 的"试跑"判据）。所以这一层
   的 detail 会把"会被 ES 拒收"与最短原因一起写出来，而不是只报"缺字段"。
 
-**水位按服务收窄是后端做的**：带 `application_service_id` 时后端用识别环节算好的维度段把 ES 查询
-收窄成 `<前缀>-<项目>-<业务系统>-<环境>-<服务>-*`（`scopeIndexPattern`），而不是取全量再前端过滤——
+**水位按服务收窄是后端做的**：带 `service_code` 时后端用识别环节算好的维度段把 ES 查询收窄成
+`<前缀>-<项目>-<业务系统>-<环境>-<服务>-*`（`scopeIndexPattern`），而不是取全量再前端过滤——
 `_cat/indices` + ILM explain 是这一页最大的成本。**不带该参数时是"全量视图"**（未选中服务，
-或选中的是项目/业务系统/环境）：取全量、前端按树的层级过滤与聚合。连接键用 **id 而非编码**：
-服务编码的唯一域是 `(业务系统, 环境)`（见 assets 000044 迁移），允许跨业务/环境重复，只凭编码
-会命中错的维度段；旧的 `service_code` 参数仅作兜底。服务不存在时接口返回空视图而**不回落到全量**
-（否则调用方会以为看到的是"这个服务的流"）。水位只在切到该 tab 或手动刷新时取一次。
+或选中的是项目/业务系统/环境）：取全量、前端按树的层级过滤与聚合。服务编码在库里全局唯一，
+所以它是可靠的连接键；编码不存在时接口返回空视图而**不回落到全量**（否则调用方会以为看到的
+是"这个服务的流"）。水位只在切到该 tab 或手动刷新时取一次。
 
 **流表的「操作」列：每条流都能清，清理分两条路径**（2026-09-19 扩到所有流，此前只有
 「选中服务 + 历史档位流」才有入口）。**列本身恒在**——曾按"是否选中服务"整列开关，
@@ -1787,11 +1538,11 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 只有选中服务时才有上下文，全量视图下只给清理（清理按服务维度执行，服务 id 由响应里的 dims 映射得到，
 不需要先选中服务）：
 
-| 情况 | 动作 | 走哪条接口 | 为什么 |
-|---|---|---|---|
-| 历史档位流（已停写） | 切回该档位 / 清理数据 | 服务维度 `POST /monitor/log-datastreams/cleanup/`（带 `tier`） | 档位能切回来，清理前先给"回收"的机会。按钮文案与在写的流**统一成「清理数据」**（2026-09-20）：那是同一个动作（都按流删文档），差别只在后果，放在 tooltip 里说 |
-| 采集中 / 已停用的**已识别**流 | 清理数据 | 同上（带 `tier`，只清这一条流） | 服务维度能自己拼流名并**按档位收窄**，不会误伤同服务的其他档位 |
-| **未识别流**（以及档位段不在档位表里的历史流） | 清理数据 | 按流名 `POST /monitor/log-datastreams/cleanup-stream/` | 没有服务可归属，只能按名字；服务端**只收一条具体的数据流名**：通配符 / `.` 开头（后备索引、系统索引）/ 前缀之外的名字一律 400，且必须真的存在于集群（不存在报 404），绝不退化成"删任意索引"的口子 |
+| 情况                                                 | 动作                  | 走哪条接口                                                        | 为什么                                                                                                                                                                                                    |
+| ---------------------------------------------------- | --------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 历史档位流（已停写）                                 | 切回该档位 / 立即清理 | 服务维度`POST /monitor/log-datastreams/cleanup/`（带 `tier`） | 档位能切回来，清理前先给"回收"的机会                                                                                                                                                                      |
+| 采集中 / 已停用的**已识别**流                  | 清理数据              | 同上（带`tier`，只清这一条流）                                  | 服务维度能自己拼流名并**按档位收窄**，不会误伤同服务的其他档位                                                                                                                                      |
+| **未识别流**（以及档位段不在档位表里的历史流） | 清理数据              | 按流名`POST /monitor/log-datastreams/cleanup-stream/`           | 没有服务可归属，只能按名字；服务端**只收一条具体的数据流名**：通配符 / `.` 开头（后备索引、系统索引）/ 前缀之外的名字一律 400，且必须真的存在于集群（不存在报 404），绝不退化成"删任意索引"的口子 |
 
 两条路径的**删除语义完全一致**：`_delete_by_query` 异步删文档、**保留 data stream 对象**
 （继续采集/切回档位仍写入这条流）；`mode` 也共用（`all` / `hours` / `days`，解析在
@@ -1832,10 +1583,10 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 **历史流怎么处置**（页面给了两个动作）：
 
-| 情况 | 做法 |
-|---|---|
-| 以后可能切回该档位 | 什么都不用做。流名由生效档位决定（`LogDataStreamName(..., 档位)`），切回该档位就**继续写入同一条流**，不会新建一条空流；「历史档位」标签是活状态，切回来自动变回「采集中」。页面提供「切回该档位」按钮：勾选要改的日志（同档位多条日志共享一条流），逐条按行提交。 |
-| 永远不切回 | 多数情况也不用管：档位 ILM 的 hot 阶段 rollover 带 `max_age`（= 档位的 `rollover_min_index_age`，**档位表单必填**、校验 `^\d+[mhd]$`、库里 NOT NULL），按时间触发不依赖写入，所以停写的流照样 rollover 并进入 delete 阶段到期删除。只有"保留期长 + 数据大 + 现在就要释放"才需要动手：历史流行上的「清理数据」按 (服务, 档位) 删掉这条流的文档（见 §9.6）。 |
+| 情况               | 做法                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 以后可能切回该档位 | 什么都不用做。流名由生效档位决定（`LogDataStreamName(..., 档位)`），切回该档位就**继续写入同一条流**，不会新建一条空流；「历史档位」标签是活状态，切回来自动变回「采集中」。页面提供「切回该档位」按钮：勾选要改的日志（同档位多条日志共享一条流），逐条按行提交。                                                                                             |
+| 永远不切回         | 多数情况也不用管：档位 ILM 的 hot 阶段 rollover 带`max_age`（= 档位的 `rollover_min_index_age`，**档位表单必填**、校验 `^\d+[mhd]$`、库里 NOT NULL），按时间触发不依赖写入，所以停写的流照样 rollover 并进入 delete 阶段到期删除。只有"保留期长 + 数据大 + 现在就要释放"才需要动手：历史流行上的「立即清理」按 (服务, 档位) 删掉这条流的文档（见 §9.6）。 |
 
 两个动作都要说清一件事：**下发对历史流无效**——它已不在下发范围内，下发只影响未来的写入。
 占用在汇总里拆成"活跃 / 历史"两个数（前者是当前成本，后者是待释放的沉淀），合成一个数
@@ -1851,33 +1602,16 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 并标注）。**下发**在本页有服务级入口（聚合状态 +
 一键重下发承载主机），但底层仍是逐台全量下发，见 §8.7；按单台主机下发仍在「日志采集」页。
 
-日志查询的范围由左侧服务树决定。选中项目时，环境下拉仅显示所选项目实际使用的启用环境，
-多项目取并集；项目切换和资产刷新会移除不属于新范围的已选环境，清理后再发送查询范围。
-未选择项目时保留全局启用环境候选。根节点的项目、环境多选先收窄候选逻辑服务：
-项目归属通过 `service.business_system → business_system.project` 解析；各维度内部按多选并集，
-项目与环境之间取交集，空选择表示该维度不限。日志配置层级汇总与日志查询共用这套范围计算。
-日志明细、统计和级别/实例/路径候选请求均携带收窄后的服务 ID，范围内没有服务时清空结果且不发送查询，
-不得退化为全量检索。服务名单异步到达或发生变化时自动重查当前视图并重置页码；仅名单变化保留用户已选 tab，
-树节点/根筛选变化则清空下钻条件并回到日志明细。切换范围会使旧日志、统计及候选请求失效，迟到响应不得覆盖新范围。
-
-日志明细和分面统计同时收窄 Elasticsearch 索引目标：根据所选服务的四元组，通过公共 `logstream.Name`
-生成 `<前缀>-<项目>-<业务系统>-<环境>-<服务>-*`，多服务使用逗号分隔的模式列表，而非全局 `<前缀>-*`。
-档位通配保留当前与历史档位，文档级四元组和时间过滤仍然生效；未匹配到流时返回空结果，不回退到全量。
-级别、实例、路径下拉候选使用 `log-facet-stats/?options_only=true`，仅计算 terms 值和计数，
-响应仍为 `buckets[]`，其中 `sample=null`、`trend=[]`；普通统计请求保持样例和时间趋势。
-分面请求不计算无用的总命中数。请求超时仍以集群的 `request_timeout` 为准（未配置有效值时为 10 秒），
-性能优化不修改时间窗口、查询条件或超时时间；超时显式报错，不展示部分结果作为成功结果。
-
 #### 9.5.0 这一页的改动语义（2026-09-19 统一）
 
 日志中心「日志配置」上可改的东西不少，但**语义只有两条轴**，界面上此前没说清（"有的直接入库、
 有的没保存"的观感就来自把这两条轴混在一起看）；现在页头有一段固定说明 + 各列 tooltip 统一措辞：
 
-| 轴 | 规则 |
-|---|---|
+| 轴             | 规则                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **入库** | **改一下即时入库**（这一页没有"保存"按钮）：服务采集总开关（`SetServiceLogCollection`）、逐条采集开关 / 保留档位 / 采集过滤（`SaveServiceLogOverride` 按行 upsert）。改完**立刻回读**页头的"待下发 N 台"**并重拉采集链路**——不回读的话用户改完看不到任何反馈，会以为没保存成功；不重拉链路的话「主机配置」层还停在"一致"的旧结论上，用户会去点「刷新运行态」来顺带刷新它（2026-09-19 现场）。重拉链路只是读库 + 读 ES，**不会**为此去打扰主机 |
-| **生效** | **入库 ≠ 生效**：还要点页头「下发本服务的采集配置」才写到主机上（agent 侧是全量替换，最小单位是主机，见 §8.7）；指纹变了所以待下发计数会立刻变化 |
-| **只读** | 日志名称 / 路径 / 处理规则跟着**部署模板**走（要改去模板的「路径与文件 → 日志」）；格式认证是**动作**不是配置，走每行的「发起认证」弹窗 |
+| **生效** | **入库 ≠ 生效**：还要点页头「下发本服务的采集配置」才写到主机上（agent 侧是全量替换，最小单位是主机，见 §8.7）；指纹变了所以待下发计数会立刻变化                                                                                                                                                                                                                                                                                                                    |
+| **只读** | 日志名称 / 路径 / 处理规则跟着**部署模板**走（要改去模板的「路径与文件 → 日志」）；格式认证是**动作**不是配置，走每行的「发起认证」弹窗                                                                                                                                                                                                                                                                                                                        |
 
 **这一页每个可写控件都先确认、确认后才入库**（2026-09-19，统一成一套节奏）：
 服务采集总开关、逐条采集开关（只有"关"要确认，"开"是回默认不拦）、保留档位、采集过滤（两个方向）。
@@ -1888,79 +1622,26 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 为什么统一成"都弹"而不是只给最危险的过滤加：这一页每次改动都是"入了库但还没生效"，
 后果又各不相同，靠用户记哪些要紧不可靠；而且**只给一部分加**正是上一版让人怀疑
-"哪些改动真的保存了"的原因。逐条日志配置只有这一处入口（2026-09-20 起编辑弹窗不再编辑它们），
-所以这套节奏不会在别处出现另一种语义。
-
-**「保留档位」列的"继承"必须写清继承到哪一档**（2026-09-20，现场反馈"我怎么知道默认是什么呢"）：
-有效档位的继承链是 **日志覆盖档位 → 服务默认档位（`log-retention-tier_id`）→ 平台默认档
-（`is_default`）→ `std`**（见 §4.1）。下拉里那个 `null` 选项以前只写"继承服务默认"，用户无法知道
-这条日志实际保留多久。现在三级都写出来：
-
-| 情况 | 那个选项的文案 |
-|---|---|
-| 服务配了默认档位 | `继承服务默认（标准 30 天）`（名字来自 `log-config` 响应顶层的 `log_retention_tier`） |
-| 服务没配默认档位 | `继承平台默认（热（7 天））`（名字来自档位列表里 `is_default` 的那一档） |
-| 两者都没有 | `继承平台默认档位`（后端仍有 `std` 兜底） |
-
-同一份文案用在三处：行内下拉、批量弹窗（"应用到 N 条"的说明）、改动确认框的 summary。
-行上的 tooltip 还会给出**当前生效**的档位（有覆盖就是覆盖那一档，没覆盖就是上面这条链的结果，
-后端已按同一条链算进 `tier_code`）。**逐条档位只有日志中心这一处入口**（2026-09-20 起服务编辑弹窗
-不再编辑逐条日志配置，见下）。
+"哪些改动真的保存了"的原因。逻辑服务编辑弹窗不弹：那边改完要点"保存"，那次保存本身就是确认。
 
 **按行保存接口的字段必须与 `ServiceLogOverrideInput` 逐项对齐**（2026-09-19 现场）：
 handler 的绑定结构漏了采集过滤两列 → 前端选完过滤后刷新"没保存"（请求带着值、绑定丢掉、
 upsert 写成 NULL），而且此后改任何一列都会顺手清掉它。守卫：
 `TestSaveApplicationServiceLogSettingPassesEveryOverrideColumn`（请求体里每一列都要走到 SQL）。
 
-**逐条日志配置只有这一处入口**（2026-09-20 定）：逻辑服务编辑弹窗只保留服务级的两个日志默认值
-（开启采集、默认保留档位）与一个指向本页的说明；「模板日志」表已删除——它的能力（勾选批量、
-配置差异、下发、链路诊断）都在本页，两处并存只会让人不知道该信哪一处。
-保存逻辑服务时**不提交 `log_settings`**（该字段是整表替换语义，提交空集合会删掉已有覆盖值；
-字段缺省 = 后端整块跳过）。
-
-**批量：先勾选，再对多行做同一件事**（2026-09-20 加，现场反馈"日志多了还是得一条条调"）。
-「日志配置」的表格有勾选列（键 = `log_definition`，与 row-key 同源），勾选后表格上方出现批量栏：
-**打开采集 / 停止采集 / 设置保留档位 / 设置采集过滤 / 格式认证 / 取消选择**，栏上写明"已选 N 条"。
-
-| 批量动作 | 提交路径 | 语义 |
-|---|---|---|
-| 打开采集 | `POST …/log-config/settings/batch/` | `collection_enabled: null`（回到默认"采"），不确认——它不会让任何东西停止采集 |
-| 停止采集 | 同上 | `collection_enabled: false`，走 `confirmConfigChange` 确认一次（与逐条同一句后果） |
-| 设置保留档位 | 同上 | `retention_tier` = 选中档位或 null（继承服务默认）；弹窗里写清"写新流、旧流不迁移" |
-| 设置采集过滤 | 同上 | 只写被选方向那一列（`collection_filter_rule` / `collection_exclude_filter_rule`），另一个方向原样带回；弹窗里写清"被滤掉的不会进 ES、事后补不回" |
-| 格式认证 | 逐条调 `POST …/log-config/verify/` | 后端**没有**批量认证接口：每条认证都要去主机取样例，天然串行（见 §4.8） |
-
-几条刻意的取舍：
-
-- **每一行提交的仍是"该行覆盖值的全集"**（复用页面里那份 `overridePayload(record, patch)`），
-  所以批量改档位不会顺手把别的行的过滤/开关清掉——单条接口 2026-09-19 踩过的坑在批量上同样成立。
-- **整批一次事务写完**（`UpsertServiceLogOverrides`，服务端只做一次校验读）：要么都落库、要么都不落，
-  不留改了一半的配置，也不像"前端循环发 N 个请求"那样对每个 id 重算一遍模板日志与认证指纹。
-  与批量删除的差别在于这里**没有可独立的部分**——整批改的是同一列的同一个值；批量删除的逐条独立
-  口径见 [CONVENTIONS.md](CONVENTIONS.md) §一。
-- **逐条返回 `{id, ok, message}`**（与批量删除同一响应口径）：不属于本服务当前模板的日志记
-  `ok=false` 并说明原因、其余照写，不整体失败（往别的服务的行上写覆盖值必须被拦住）；前端把失败的
-  id 翻成**日志名**报出来，只回 id 用户不知道是哪一条。空 `items` / 超过 `MaxBatchLogOverrides`
-  在服务层报 `ErrInvalid`。
-- **改档位/过滤的弹窗本身就是确认点**（弹窗里写清后果 + 影响几条），不再叠一层确认框；
-  只有"停止采集"这种直接按钮走确认框——与「切回该档位」同一个节奏。
-- **勾选的作用域是当前服务**：换服务时清空、配置重载后剔除已不存在的行，否则批量请求会带着
-  别的服务的日志定义（被后端逐条拒绝，看起来像"批量保存坏了"）。
-- **格式认证是逐条的**：共享组件 `LogFormatVerifyDialog` 接受 `targets`（单条 = 一条），逐条串行、
-  显示"正在认证第 x/y 条"、失败逐条列出（含主机离线这类硬失败，单条失败不中断整批），
-  没挂解析规则的日志**明确跳过并说明跳过了几条**——静默少认证几条比拒绝更糟（用户以为都验过了）。
-  部分不通过不影响其余条目的认证结果：认证是逐条的业务结果，没有"整批回滚"这回事。
+**与逻辑服务编辑弹窗的分工**：那边是**整表单一起提交**（改完点"保存"，整表替换语义，见 §9.5.1），
+这边是**按行即时保存**。两者不是"一个保存了、一个没保存"，而是两种节奏服务两种场景——
+弹窗是"新建/大改一个服务"，这里是"日常调开关与档位"。
 
 #### 9.5.1 两条写路径，以及为什么不合并
 
 日志覆盖值（采集开关 / 保留档位）有两条写入通道，**语义不同、各有明确适用范围**：
 
-| 通道 | 语义 | 允许的调用方 |
-|---|---|---|
-| `SaveApplicationService` 的 `log_settings`（`PATCH /assets/application-services/:id/`） | **整表替换**（提交的集合即全量），但实现是**逐行 upsert（`UpsertServiceLogOverride`）+ 只删本次未提交的行**（`DeleteServiceLogSettingsByServiceAndDefinitions`）；与服务主体同一个事务 | **只允许“完整表单”**。2026-09-20 起前端**没有调用方**：逻辑服务编辑弹窗去掉了「模板日志」表（逐条配置统一走日志中心），保存时不再提交该字段（字段缺省 = 后端整块跳过、一行都不动）。字段与语义保留，供 API 侧“随表单一次性写覆盖值”用 |
-| `POST /assets/application-services/:id/log-config/settings/`（`SaveServiceLogOverride`） | **按行 upsert**：只写这一条 `(服务 × 日志定义)` 的采集开关 + 档位，不影响同服务其他行，也不碰 `format_verified_*` | 按行操作（日志中心页的内联开关/档位） |
-| `POST /assets/application-services/:id/log-config/settings/batch/`（`BatchSaveServiceLogOverrides`） | **按行 upsert 的批量版**：`items[]` 里每项与单条同一结构（该行覆盖值全集），一次校验读 + **一个事务**写完；不同服务模板的行逐条 `ok=false`、其余照写 | 日志中心页的批量操作（勾选多行一起改档位/过滤/开关，见 §9.5.0） |
-| `POST /assets/application-services/:id/log-collection/`（`SetServiceLogCollection`） | **单列 UPDATE**：只写服务行的 `log_collection_enabled` + `update_time`，不碰服务其他属性 | 服务级采集总开关（日志中心页顶部那个开关） |
+| 通道                                                                                          | 语义                                                                                                                                                                                                   | 允许的调用方                                                                     |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `SaveApplicationService` 的 `log_settings`（`PATCH /assets/application-services/:id/`） | **整表替换**（提交的集合即全量），但实现是**逐行 upsert（`UpsertServiceLogOverride`）+ 只删本次未提交的行**（`DeleteServiceLogSettingsByServiceAndDefinitions`）；与服务主体同一个事务 | **只允许“完整表单”**（逻辑服务编辑弹窗，它渲染并提交模板下的全部日志行） |
+| `POST /assets/application-services/:id/log-config/settings/`（`SaveServiceLogOverride`）  | **按行 upsert**：只写这一条 `(服务 × 日志定义)` 的采集开关 + 档位，不影响同服务其他行，也不碰 `format_verified_*`                                                                           | 按行操作（日志中心页的内联开关/档位、将来的批量开关）                            |
+| `POST /assets/application-services/:id/log-collection/`（`SetServiceLogCollection`）      | **单列 UPDATE**：只写服务行的 `log_collection_enabled` + `update_time`，不碰服务其他属性                                                                                                     | 服务级采集总开关（日志中心页顶部那个开关）                                       |
 
 为什么不把编辑弹窗也切到按行写（统一成一条路）：那会丢掉“服务主体 + 日志设置在同一事务里提交”的
 原子性——弹窗的保存是一个表单动作，改成按行就得发 N 个请求、部分失败无从回滚。而整表替换在
@@ -2000,75 +1681,6 @@ upsert 写成 NULL），而且此后改任何一列都会顺手清掉它。守�
 **Elasticsearch 能力边界**：Elasticsearch 的 `categorize_text` 聚合可做完全无监督的日志
 聚类，Elasticsearch 由 ES 7.10 fork，不包含该功能。因此聚类质量完全取决于 ingest 阶段的
 fingerprint 归一化质量。
-
-#### 9.5.2 非服务节点 = 层级下钻视图（2026-09-20）
-
-**问题**：服务树有六层（全部/项目/业务系统/环境/逻辑服务/部署实例），但只有服务与实例两层的 scope
-带 `applicationServiceId`（`ServiceTree` 的 `scopeByKey`）。于是选中上面四层时，「日志查询」的面板
-根本不挂载、「日志配置」整块内容在 `v-else` 里——两个 tab 都只剩一句"请在左侧选择逻辑服务或部署
-实例"。而用户停在这一层时想问的是"**这一片里哪些服务的日志有问题**"。
-
-**现在这一层显示"下一层的日志视角"**：指标条 + 下一层清单，点行下钻一级，到最底层（环境）的行
-就是逻辑服务、点进去就是服务级界面（服务层现有内容一字未改）。层级映射与「存储水位」tab 的
-`groupDimension` 完全一致：**全部→项目、项目→业务系统、业务系统→环境、环境→逻辑服务**。
-
-**两个 tab 在非服务节点上回答的是两件不同的事**（2026-09-20 定，此前两边共用同一张表、只换一列，
-结果看起来几乎一样——上层连那一列都没有数据）：
-
-| tab | 回答的问题 | 指标条 | 列（叶子层=环境） | 列（上层） |
-|---|---|---|---|---|
-| 日志查询 | 这一片**哪个能查、有没有数据** | 下辖服务 / **可查**（采集开着）/ 采集关闭 / **无写入**（附"有写入 N 个"，仅环境层可算） | 逻辑服务 / 采集 / 最近写入（0 → 红「无写入」）/ 操作=查询日志 | 名称 / 下辖服务 / 可查 / 采集关闭 / 操作=下钻 |
-| 日志配置 | 这一片**哪些服务有配置欠账** | 下辖服务 / 已开采集 / 采集关闭 / 未认证日志（附需复验）/ 待下发（附分母"已纳管 台·服务"） | 逻辑服务 / 采集 / 日志定义（未认证、需复验、逐条关闭、未挂规则）/ 默认档位 / 配置态 / 操作=日志配置 | 名称 / 下辖服务 / 采集关闭 / 未认证日志 / 未挂规则 / 配置态 / 操作=下钻 |
-
-判据是"**这一层能不能回答**"：查询 tab 里不放未认证/待下发（那是配置欠账，与"查日志"无关），
-配置 tab 里不放写入量（那是数据视角）。共用的只有"下辖服务数"——两边都要知道这一层有多大。
-
-> **上层不显示"最近写入"是刻意的**：写入量接口按 (业务系统, 环境) 聚合（见 §9.6），
-> 项目/业务系统层要给出这个数就得逐服务查 ES（几十次聚合）或把接口扩成索引通配 + 四段
-> `multi_terms`；换来的只是列表上一个提示列，不值。所以：上层的「无写入」指标格与相关列
-> **根本不出现**（不摆"-/本层不统计"这类占位——不统计就别占版面），只在底部留一句可操作的指引
->（"要看写入量请下钻到环境层"）。**"没取到数据"与"查询结果为 0"在数据层就分开**
->（`recentDocsKnown` / `hasRecentDocs`），永远不会把"没算出来"显示成"没有写入"。
-
-| 区块 | 口径 |
-|---|---|
-| 指标条 | **合计 = 清单各行之和**（同一份 `util/logLevelOverview.js` 的纯函数算出来），所以"指标条说 3、点进去是 4"不会发生 |
-| 中间层的行 | 下一层节点（项目/业务系统/环境）+ 下辖服务数 / 采集关闭数 / 日志条数（含未认证、未挂规则）/ 配置态。**每一层都按 scope 收窄**：项目节点只列**这个项目**的业务系统（业务系统行上的 `project` 字段是权威归属）、业务系统节点只列该系统的环境、环境节点只列该环境的服务；根节点上方的"项目/环境"多选同样生效（与存储水位 tab 的筛选口径一致）。漏了收窄就会出现"点某个项目却列出全部业务系统"（现场反馈）——这是这一类错误里最容易犯的一个 |
-| 叶子层（环境）的行 | 就是逻辑服务本身；列见上表（查询 tab 与配置 tab 不同） |
-| 空范围 | 按 tab 说清"这一层为什么没有可列的内容"（日志要按服务查 / 日志配置按服务生效），不留空表格 |
-| 写操作 | **层级上只读**：写仍以逻辑服务为最小单位（重下发的最小完整单位是主机，见 §8.7）。层级视图只负责"看 + 下钻" |
-
-**数据来源**（三份名单 + 一个汇总接口，页面级加载一次、两个 tab 共用；各拉一份必然出现两个 tab
-数字不一致）：
-
-- 成员与采集状态：`GET /assets/application-services/` 的服务行（`log_collection_enabled`、
-  `log_retention_tier_id` 是权威值）+ 项目/业务系统名单，前端按 scope 本地收窄（与资产服务树页
-  同一套做法）。
-- 日志定义分桶与配置态：**`POST /assets/application-services/log-status-summary/`**，
-  body `{"service_ids":[...]}`（读接口，入参是一批 id，所以按 POST 传列表，与 `log-targets/batch-jobs`
-  同形），权限 `assets:applications:view`。data =
-  `{items:[{service_id, logs, verified, needs_recheck, unverified, disabled_logs, no_rule,
-  pending:{hosts,managed,unmanaged,synced,drift,never}|null}], totals:{...}, pending_error}`。
-  - 日志分桶在 assets 侧由 **`ListServiceTemplateLogs`** 聚合（`format_state` 的指纹比对只有这一处
-    实现，见 §4.8）——层级视图与服务页的"未认证"数字必须同源。
-  - 配置态由**注入的评估器**给（`assets.ServiceLogPendingEvaluator`，实现是
-    `logcollect/log_service_status.go`，注入点在 `router.NewWithGateway`，与 `LogFormatVerifier`/
-    `LogGlobPreviewer` 同一套路，依赖方向不变）。判据与单服务版 `EvaluateServiceLogConfigStates`
-    **共用同一个 `serviceConfigStatus`**，差别只在算的方式：把入参服务涉及的主机并起来、**每台主机
-    只渲染一次**，再按服务子指纹分别比对（共享主机上改 A 不会把 B 带成待下发）。
-  - `pending` 为 `null` / `pending_error` 非空 = "配置态**没算出来**"（没有启用的默认集群、
-    评估器未注入）。界面这一列显示"-"并给出原因——**绝不显示成"都已同步"**。
-  - 规模的可见上限 `MaxLogStatusSummaryServices = 200`：查询次数随服务数线性（每服务一次
-    `ListServiceTemplateLogs` + 一次承载主机查询），外加渲染输入与默认集群的 3 条。要支撑上千服务
-    时的扩容路径：把"承载主机 + 已下发子指纹"与日志定义读取都换成 `IN (sqlc.slice(ids))` 的批量版，
-    整批只剩 4 条查询（见该常量上的注释）。
-- 「最近写入」（只在叶子层）：`GET /monitor/elasticsearch-clusters/:id/log-service-usage/`
-  （按 业务系统 × 环境 聚合各服务文档数，窗口 30 天，与列标题一致）。**上层不算这一列**：那要按服务
-  逐个查 ES，代价不值，列里显示"-"（没有这项数据 ≠ 0 条）。
-
-**边界**：不做"跨服务检索"。日志检索的索引里带服务段、接口硬性要求 `application_service_id`
-（见 §9.7），放开它要同时改命中上限（2000）、facet 统计与排序语义，属于另一件事。所以查询 tab 在
-层级上的职责是"把人送到具体服务"，面板里也明说这一点。
 
 ### 9.6 数据流清理（Go 版，2026-09-17）
 
@@ -2111,54 +1723,58 @@ fingerprint 归一化质量。
 
 ## 9.7 日志检索：过滤条件与关键词的两种模式
 
+逻辑服务节点的「日志配置」表格提供日志名称和路径两个可清空的即时过滤框。
+过滤在当前服务已加载的配置清单上执行，忽略大小写与输入首尾空白，按包含匹配；
+两个条件取交集，路径同时匹配模板原始路径和解析后路径，不受表头路径显示切换影响。
+筛选栏标签位于输入框上方，输入框按可用宽度换行，查询操作单独占一行，避免控件挤压重叠。
+「匹配真实文件」默认开启，将当前服务已展开缓存里的文件路径纳入包含匹配；关闭后仅匹配配置路径，
+缓存仍保留，再开启即可复用。输入本身不访问主机。「搜索真实文件」显式按日志名称范围逐条展开，
+不按路径预先裁剪候选，显示完成进度与各实例失败信息；成功返回的展开结果缓存到当前服务，
+行因过滤隐藏或收起展示后仍保留。切换服务或重载配置使缓存和旧请求失效。
+查询中可点「取消」，关闭匹配开关也会取消：停止后续查询且不接收旧批次迟到结果，保留此前缓存。
+已发给 agent 的单次读取不支持远端撤回。此操作只读文件清单，不改变日志采集配置。
+过滤隐藏的行取消勾选，批量操作仅针对可见的勾选行；切换服务时清空这两个过滤条件。
+此过滤只控制配置列表展示，不改变日志采集规则或日志检索条件。
+
+日志中心右侧日志列表随页面滚动，左侧服务树使用本页限定的粘性定位保持可见。
+服务树高度限制在视口内，树内容独立滚动且不向页面传递滚动；左右容器随日志内容自然增长，
+不使用百分比固定高度，避免长列表使粘性定位提前失效。共享服务树在其他页面的布局不受影响。
+
 检索接口 `GET /monitor/elasticsearch-clusters/:id/log-search/`（`logcollect/elasticsearch.go` 的
-`buildLogQuery`）在用户条件之外**固定**加五条过滤：`term service = <选中逻辑服务 code>`、
-`project`、`business_system`、`environment`（四个维度）与时间范围（上限 30 天）——所以"查不到"
-的第一顺位原因是**选错了服务**（或选的是项目/业务系统/环境节点），而不是数据不存在。
-用完整维度而不是只按 `service`：服务编码的唯一域是 `(业务系统, 环境)`（见 assets 000044 迁移），
-允许跨业务/环境重复，只按 code 过滤会把同名服务的日志串在一起。
+`buildLogQuery`）在用户条件之外**固定**加两条过滤：`term service = <选中逻辑服务 code>` 与时间范围
+（上限 30 天）——所以"查不到"的第一顺位原因是**选错了服务**（或选的是项目/业务系统/环境节点），
+而不是数据不存在。
 
 白名单过滤（都是精确 `term`，走字段）：`instance` / `host_ip` / `log_name` / `log_path` /
-`error_fingerprint` / `log_level`（逗号分隔的 `terms`）。后四项在面板上只通过**统计面板下钻**
-写入（点分面值生成过滤 chip），没有常驻输入框。
-
-**原始日志 vs 错误日志（2026-09-21 命名澄清）**：详情侧边栏与列表列名统一为
-**「错误日志」= `log_message`**（处理规则产出的解析后消息，也是检索 `default_field`），
-**「原始日志」= `message`**（Filebeat 采集到的原始行）。此前详情里那段叫「原始消息」、
-实际绑的却是 `log_message`，名不副实。检索列表接口的 `_source` 现在同时返回
-`message` 与 `log_message`（`logcollect/elasticsearch.go`），两段各带「复制」按钮；
-详情侧边栏窄、长堆栈看不全，两段还各带「预览」按钮，弹出接近满宽高的大框（`width=92%`、
-内容区 45–80vh 可滚动）查看与复制，不必再复制到编辑器里看。
-
-**过滤条件的生命周期：切节点即清空（2026-09-21 修复）**。`LogQueryPanel.vue` 的 `filters` 是面板内
-局部状态，切换左侧树节点（scope 变化）时 `watch(props.scope)` 必须把上一个服务的过滤条件全部清掉：
-关键词、`logLevels`、以及统计下钻写入的 `hostIp` / `logName` / `logPath` / `errorFingerprint`
-（`instance` 按新 scope 重设为部署实例名或空）。此前只重置了 `instance`，导致在服务 A 输入关键词、
-选了级别、或从统计下钻后切到服务 B，这些条件原样带过去——现象是"B 查不到日志"，因为实际上是拿 A 的
-条件在 B 的范围里搜。**scope 本身才是唯一的范围来源**，任何过滤条件都不应跨节点残留。
-`deep: true, immediate: true` 的 watch 覆盖挂载与切节点两条路径；守卫见 `LogQueryPanel.spec.js`
-的 "切换到另一个逻辑服务时清空关键词、级别与下钻过滤"。
+`error_fingerprint` / `log_level`（逗号分隔的 `terms`）。查询表格直接展示实际日志路径，长路径省略显示、
+悬停查看全文；筛选区提供可搜索、可清空的日志路径下拉框，选中后点查询按完整路径精确匹配。
+候选通过 `log_path` 分面统计获取当前查询范围内出现次数最多的 50 条真实文件路径，
+候选请求保留其他筛选条件但去掉自身 `log_path` 条件，避免选择后无法切换到其他路径。
+路径选择与统计路径下钻复用同一个 `log_path` 条件，清空后查询不带该条件。
+`host_ip` / `log_name` / `error_fingerprint` 仍通过统计面板下钻写入，无常驻输入框。
 
 **统计维度**（`GET .../log-facet-stats/`，后端白名单 `logFacetAllowedFields`）：
 `error_fingerprint` / `log_level` / `instance` / `host_ip` / `log_name` / `log_path`。
 `log_path` 即日志详情里显示的"日志路径"（Filebeat `log.file.path`）——配置里写通配路径时，
-按它分组才能区分具体是哪个文件在产日志。
+按它分组才能区分具体是哪个文件在产日志。统计请求只按一个维度做 terms 分组，并为每个桶返回
+次数、样例和趋势；点击桶的「查看日志」按该维度过滤后切回明细，不提供嵌套子维度聚合。
 
-**路径的唯一索引口径**：`log_path` 是已经建有 keyword mapping 的真实文件路径，`terms` 与 `term`
-直接使用它，不再通过运行时脚本逐条读取 `_source`。Filebeat 先复制真实路径，平台
-`<prefix>-mapping-guard` 的最后一个处理器再从 `log.file.path` 校准；缺失、非字符串或空路径时
-移除 `log_path`，该可选字段不参与必备字段拒收判定。日志详情与样例保留 `log.file.path` 的展示权威性。
+统计请求只要带 `log_path` 过滤就必须声明同一个运行时字段，即使统计维度是错误指纹、级别等
+非路径字段；不能仅在按路径分组时声明，否则路径过滤会使统计结果为空。
 
-历史文档中保存的路径模式必须在启用这套查询口径前回填为真实路径；不保留运行时字段兼容分支，
-也不通过缩短时间窗口或忽略错误伪装迁移完成。新写入校准、限速回填和逐范围验收必须在维护窗口
-完成，执行前确认 ES 写入范围；步骤见 [真实路径索引迁移方案](../plans/LOG_PATH_INDEX_MIGRATION.md)。
+> **为什么日志路径的分组/过滤用运行时字段**：历史文档里存的 `log_path` 是配置里的**路径模式**
+> （带 `*`），而具体文件只在 `log.file.path` 里；该字段在索引模板 `dynamic:false` 下没有 mapping、
+> **不可聚合**。所以按 `log_path` 分组或过滤时，请求里带 `runtime_mappings` 定义一个从 `_source`
+> 读 `log.file.path` 的 keyword 运行时字段（`log_file_path`），用它做 `terms`/`term`；样例与检索
+> 结果的 `log_path` 也替换成真实文件。好处是**旧数据无需重建索引**（2026-09-20 现场：按日志路径
+> 统计，列表里还是 `/home/esb/data/logs/*/log_error.log`）。
 
 **关键词框的关键词有两个模式**（`keyword_mode`，2026-09-19 加）：
 
-| 模式 | 行为 | 为什么 |
-|---|---|---|
-| `message`（默认） | `query_string` 且 `default_field=log_message`，并把输入里的 `:` **转义** | 面板上"关键词"的语义就是"搜日志正文"；不转义的话 `field:value` 会绕过 `default_field` 去查任意字段（`query_string` 的 `default_field` 只管没有前缀的 term） |
-| `lucene` | 同一套 `query_string`，但**原样下发**：`host_ip:"192.168.201.209"`、`log_level:ERROR AND timeout` 都能用 | 框里写着 Lucene 就必须真的支持 Lucene——现场就是这么踩的：按提示写了字段过滤，被转义成在正文里找字面量 `host_ip:`，0 条、且界面上没有任何提示 |
+| 模式                | 行为                                                                                                                | 为什么                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `message`（默认） | `query_string` 且 `default_field=log_message`，并把输入里的 `:` **转义**                                | 面板上"关键词"的语义就是"搜日志正文"；不转义的话`field:value` 会绕过 `default_field` 去查任意字段（`query_string` 的 `default_field` 只管没有前缀的 term） |
+| `lucene`          | 同一套`query_string`，但**原样下发**：`host_ip:"192.168.201.209"`、`log_level:ERROR AND timeout` 都能用 | 框里写着 Lucene 就必须真的支持 Lucene——现场就是这么踩的：按提示写了字段过滤，被转义成在正文里找字面量`host_ip:`，0 条、且界面上没有任何提示                    |
 
 两种模式**共同**的约定（有意为之）：裸词仍落在 `log_message`（`default_field` 不变，否则 `a AND b`
 的语义会随"默认字段是整个文档"漂移）、`allow_leading_wildcard=false`（`*foo` 这类前置通配在 ES 侧是纯扫描，
@@ -2208,26 +1824,26 @@ Filebeat 还没发出的数据（应用空闲、被采集过滤排除、主机�
 拆分的依据是职责边界：日志采集/存储自成一套对象（Filebeat 纳管目标、ES 集群、日志定义、数据流），
 与监控域的 exporter 目标、告警/通知、软件包仓库没有共享状态。
 
-| 文件 | 职责 |
-|---|---|
-| `log_config_render.go` | 片段渲染与指纹（**纯函数、不访问数据库**，与 SQL 解耦便于单测） |
-| `log_target_actions.go` | 纳管目标的安装/卸载、启停、配置下发、批量操作 |
-| `log_service_chain.go` | 按服务的采集链路诊断（"为什么没日志"，见 §9.5；判定复用体检与下发状态） |
-| `log_collection_filter.go` | 采集过滤的两层三态解析与降级（见 §6.1；渲染侧只认最终生效的两条正则） |
-| `log_config_consistency.go` | 保存逻辑服务时的配置自洽性校验（硬问题拦保存、软告警放行；见 §8.4） |
-| `log_health.go` | 链路体检六层对账 |
-| `log_management.go` | 索引模板、ILM 策略、bootstrap |
-| `log_datastream_cleanup.go` | 数据流按服务/日志文件/时间窗清理 |
-| `datastream_status.go` | 存储水位：流级运行态与维度树 |
-| `regex_pattern.go` | 规则正则的 RE2 判定与"照着改"提示（保存校验、认证、渲染三处共用，见 §2） |
-| `pipeline_compat.go` | 处理器参数的引擎方言别名与"照着改"提示（见 §5.2.1） |
-| `elasticsearch.go` | Elasticsearch 客户端、日志检索、聚合 |
-| `log_refresh.go` | 按需强制刷新逻辑服务采集中的 data stream（见 §9.8） |
-| `elasticsearch_config.go` / `elasticsearch_pipeline.go` | 集群配置 CRUD、pipeline 模拟与 `missing_fields` / `schema_violations` 判定 |
-| `sample_event.go` | 样例事件的 Filebeat 真实载荷（`filebeatEventFields`）：试算、格式认证、链路试跑三处共用，见 §5.2 |
-| `config_resources.go` / `config_resource_writers.go` / `config_resources_typed.go` | 保留档位 / 处理规则 / 采集过滤规则的通用配置资源 CRUD |
-| `collect_target_dialect_{mysql,postgres}.go` | `createLogCollectionTargetIfAbsent` 的按方言实现（`INSERT IGNORE` vs `ON CONFLICT DO NOTHING`） |
-| `smoke_log_test.go` | 真库冒烟（`MONITOR_SMOKE_DSN`，事务内回滚） |
+| 文件                                                                                     | 职责                                                                                                  |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `log_config_render.go`                                                                 | 片段渲染与指纹（**纯函数、不访问数据库**，与 SQL 解耦便于单测）                                 |
+| `log_target_actions.go`                                                                | 纳管目标的安装/卸载、启停、配置下发、批量操作                                                         |
+| `log_service_chain.go`                                                                 | 按服务的采集链路诊断（"为什么没日志"，见 §9.5；判定复用体检与下发状态）                              |
+| `log_collection_filter.go`                                                             | 采集过滤的两层三态解析与降级（见 §6.1；渲染侧只认最终生效的两条正则）                                |
+| `log_config_consistency.go`                                                            | 保存逻辑服务时的配置自洽性校验（硬问题拦保存、软告警放行；见 §8.4）                                  |
+| `log_health.go`                                                                        | 链路体检六层对账                                                                                      |
+| `log_management.go`                                                                    | 索引模板、ILM 策略、bootstrap                                                                         |
+| `log_datastream_cleanup.go`                                                            | 数据流按服务/日志文件/时间窗清理                                                                      |
+| `datastream_status.go`                                                                 | 存储水位：流级运行态与维度树                                                                          |
+| `regex_pattern.go`                                                                     | 规则正则的 RE2 判定与"照着改"提示（保存校验、认证、渲染三处共用，见 §2）                             |
+| `pipeline_compat.go`                                                                   | 处理器参数的引擎方言别名与"照着改"提示（见 §5.2.1）                                                  |
+| `elasticsearch.go`                                                                     | Elasticsearch 客户端、日志检索、聚合                                                                  |
+| `log_refresh.go`                                                                       | 按需强制刷新逻辑服务采集中的 data stream（见 §9.8）                                                  |
+| `elasticsearch_config.go` / `elasticsearch_pipeline.go`                              | 集群配置 CRUD、pipeline 模拟与`missing_fields` / `schema_violations` 判定                         |
+| `sample_event.go`                                                                      | 样例事件的 Filebeat 真实载荷（`filebeatEventFields`）：试算、格式认证、链路试跑三处共用，见 §5.2   |
+| `config_resources.go` / `config_resource_writers.go` / `config_resources_typed.go` | 保留档位 / 处理规则 / 采集过滤规则的通用配置资源 CRUD                                                 |
+| `collect_target_dialect_{mysql,postgres}.go`                                           | `createLogCollectionTargetIfAbsent` 的按方言实现（`INSERT IGNORE` vs `ON CONFLICT DO NOTHING`） |
+| `smoke_log_test.go`                                                                    | 真库冒烟（`MONITOR_SMOKE_DSN`，事务内回滚）                                                         |
 
 配套的共享与归属说明：
 
@@ -2247,13 +1863,13 @@ Filebeat 还没发出的数据（应用空闲、被采集过滤排除、主机�
 
 ## 11. 复用现有能力
 
-| 需求 | 复用 |
-|---|---|
-| Filebeat 安装、卸载、状态检查 | monitor 的 `SoftwarePackage` + `MonitorTarget` 纳管体系 |
-| 配置文件下发 | dj-agent gRPC 文件写入 `write_open` / `write_chunk` / `write_close` |
-| 服务状态检查 | dj-agent `check_exporter_status` 模式 |
-| 路径变量展开 | `${APP_HOME}` / `${INSTANCE_NAME}` 现有机制 |
-| 告警通知 | `AlertRoute` / `AlertMedia` |
+| 需求                          | 复用                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| Filebeat 安装、卸载、状态检查 | monitor 的`SoftwarePackage` + `MonitorTarget` 纳管体系               |
+| 配置文件下发                  | dj-agent gRPC 文件写入`write_open` / `write_chunk` / `write_close` |
+| 服务状态检查                  | dj-agent`check_exporter_status` 模式                                   |
+| 路径变量展开                  | `${APP_HOME}` / `${INSTANCE_NAME}` 现有机制                          |
+| 告警通知                      | `AlertRoute` / `AlertMedia`                                          |
 
 不新建独立的安装纳管体系。
 
@@ -2261,15 +1877,15 @@ Filebeat 还没发出的数据（应用空闲、被采集过滤排除、主机�
 
 ## 12. 实施状态
 
-| 阶段 | 内容 | 状态 | 说明 |
-|---|---|---|---|
-| 1 | Elasticsearch 连接、index template、ILM policy | 已完成 | 支持集群连接测试和幂等 bootstrap |
-| 2 | 统一日志处理规则、Pipeline 发布、`_simulate` 调试 | 已完成 | 页面明确区分发送前处理与 Ingest，仍只保存一条规则 |
-| 3 | 数据模型与迁移 | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键 |
-| 4 | Filebeat 软件包仓库、离线安装和状态检查 | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网 |
-| 5 | 配置生成、指纹比对、下发和热重载 | 已完成 | 输入、offset、输出按四段 Tag 隔离；单条与批量走同一条全流程，指纹覆盖输出段 |
-| 6 | 服务级开关、批量应用、清理和实例日志读取 | 已完成 | 经 dj-agent gRPC 执行；批量下发/安装已作业化（入队 + 有界并发 + 进度 + 续跑，见 §8.8），批量启停/删除仍是同步批量 |
-| 7 | 日志洞察页面与告警接入 | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善 |
+| 阶段 | 内容                                                | 状态   | 说明                                                                                                               |
+| ---- | --------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| 1    | Elasticsearch 连接、index template、ILM policy      | 已完成 | 支持集群连接测试和幂等 bootstrap                                                                                   |
+| 2    | 统一日志处理规则、Pipeline 发布、`_simulate` 调试 | 已完成 | 页面明确区分发送前处理与 Ingest，仍只保存一条规则                                                                  |
+| 3    | 数据模型与迁移                                      | 已完成 | `LogProcessingRule` + 单一 `processing_rule` 外键                                                              |
+| 4    | Filebeat 软件包仓库、离线安装和状态检查             | 已完成 | 按平台、主版本和架构精确匹配，不依赖目标主机联网                                                                   |
+| 5    | 配置生成、指纹比对、下发和热重载                    | 已完成 | 输入、offset、输出按四段 Tag 隔离；单条与批量走同一条全流程，指纹覆盖输出段                                        |
+| 6    | 服务级开关、批量应用、清理和实例日志读取            | 已完成 | 经 dj-agent gRPC 执行；批量下发/安装已作业化（入队 + 有界并发 + 进度 + 续跑，见 §8.8），批量启停/删除仍是同步批量 |
+| 7    | 日志洞察页面与告警接入                              | 进行中 | 聚合查询接口已具备，页面和告警闭环继续完善                                                                         |
 
 解析规则调试仍是后续扩展的回归基线：新增日志格式必须先用真实样例通过 `_simulate`，再关联
 日志定义并应用 Filebeat 配置。
@@ -2278,13 +1894,13 @@ Filebeat 还没发出的数据（应用空闲、被采集过滤排除、主机�
 
 ## 13. 风险与注意事项
 
-| 项 | 说明 |
-|---|---|
-| 日志读取权限 | 应用日志属于 `esb` 等业务用户，Filebeat 需以 root 运行或配置 ACL。安装检查时应一并验证可读性，避免配置下发成功但无数据 |
-| 同主机路径冲突 | 同一主机上多个实例日志文件名可能相同，下发前必须校验展开后的绝对路径唯一，否则 Filebeat 会产生 harvester 冲突 |
-| mapping 字段膨胀 | 业务附加字段统一使用 `labels_` 前缀；需聚合的字段提升为固定字段，并设置 `total_fields.limit` |
-| 时间戳 | 必须在 pipeline 中用 `date` processor 覆盖 `@timestamp`，否则记录的是采集时间而非日志产生时间 |
-| 容器化采集器 | 若 Filebeat 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内 |
-| 磁盘水位 | Elasticsearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ILM 自动清理 |
-| TLS 证书 | 自签证书阶段使用 `tls.verify Off`，生产需分发 CA 证书并开启校验 |
+| 项                   | 说明                                                                                                                                                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 日志读取权限         | 应用日志属于`esb` 等业务用户，Filebeat 需以 root 运行或配置 ACL。安装检查时应一并验证可读性，避免配置下发成功但无数据                                                                                                                                                                                                                    |
+| 同主机路径冲突       | 同一主机上多个实例日志文件名可能相同，下发前必须校验展开后的绝对路径唯一，否则 Filebeat 会产生 harvester 冲突                                                                                                                                                                                                                              |
+| mapping 字段膨胀     | 业务附加字段统一使用`labels_` 前缀；需聚合的字段提升为固定字段，并设置 `total_fields.limit`                                                                                                                                                                                                                                            |
+| 时间戳               | 必须在 pipeline 中用`date` processor 覆盖 `@timestamp`，否则记录的是采集时间而非日志产生时间                                                                                                                                                                                                                                           |
+| 容器化采集器         | 若 Filebeat 以容器运行，仅能看到挂载路径。下发前需校验目标路径落在已挂载前缀内                                                                                                                                                                                                                                                             |
+| 磁盘水位             | Elasticsearch 磁盘超过水位会将索引置为只读，生产环境需保留水位检查并配置 ILM 自动清理                                                                                                                                                                                                                                                      |
+| TLS 证书             | 自签证书阶段使用`tls.verify Off`，生产需分发 CA 证书并开启校验                                                                                                                                                                                                                                                                           |
 | 规模（500–1000 台） | 批量下发当前在**单个 HTTP 请求内串行**执行、每台 2 次 agent gRPC（超时 60s+120s）；批量安装/重试对每台内联起 goroutine、**无并发上限**且绕过 `worker` + `WorkerPrefetch` 限流。主机列表服务端分页（`page_size` ≤30），但"按配置状态筛选"需全量计算。改造方案见 [计划](../plans/LOG_COLLECTION_LIFECYCLE.md) §8 规模基线 |

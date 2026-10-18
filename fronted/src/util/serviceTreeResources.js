@@ -12,6 +12,9 @@ function topRows(rows, field) {
 export function buildServiceTreeResources({ scope, projects, businessSystems, services, deployments, hosts }) {
   const { dimension, rows } = buildLevelRows({ scope, projects, businessSystems, services })
   const hostById = new Map(hosts.map((host) => [String(host.id), host]))
+  const countedHostIds = new Set()
+  let totalCpu = 0
+  let totalMemory = 0
   const totals = rows.map((row) => {
     const serviceIds = new Set(row.serviceIds.map(String))
     const hostIds = new Set(deployments.filter((deployment) => (
@@ -23,8 +26,16 @@ export function buildServiceTreeResources({ scope, projects, businessSystems, se
     for (const id of hostIds) {
       const host = hostById.get(id)
       if (!host) continue
-      cpu += Number(host.hardware?.cpu_cores ?? host.cpu_cores ?? 0) || 0
-      memory += Number(host.hardware?.memory_gb ?? host.memory_gb ?? 0) || 0
+      const hostCpu = Number(host.hardware?.cpu_cores ?? host.cpu_cores ?? 0) || 0
+      const hostMemory = Number(host.hardware?.memory_gb ?? host.memory_gb ?? 0) || 0
+      cpu += hostCpu
+      memory += hostMemory
+      // 分组可共享主机，但当前范围的物理总容量必须按主机并集计数。
+      if (!countedHostIds.has(id)) {
+        countedHostIds.add(id)
+        totalCpu += hostCpu
+        totalMemory += hostMemory
+      }
     }
     return { title: row.title, cpu, memory }
   })
@@ -32,7 +43,7 @@ export function buildServiceTreeResources({ scope, projects, businessSystems, se
     dimension: dimension?.key,
     cpuRows: topRows(totals, 'cpu'),
     memoryRows: topRows(totals, 'memory'),
-    totalCpu: totals.reduce((sum, row) => sum + row.cpu, 0),
-    totalMemory: totals.reduce((sum, row) => sum + row.memory, 0),
+    totalCpu,
+    totalMemory,
   }
 }

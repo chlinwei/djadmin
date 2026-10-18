@@ -18,10 +18,12 @@ vi.mock('echarts', () => ({
 
 import * as applicationApi from '@/api/assets/application'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { init as initChart } from 'echarts'
 import ServiceTreePage from './index.vue'
 
 const ServiceTreeStub = {
   name: 'ServiceTree',
+  emits: ['select', 'stats-change'],
   template: '<div class="service-tree-stub" />',
   methods: { refresh: vi.fn() },
 }
@@ -66,6 +68,39 @@ async function mountPage(query = {}) {
     },
   })
 }
+
+describe('service-tree capacity charts', () => {
+  it('preserves pie charts while showing deduplicated totals and explaining overlapping groups', async () => {
+    const wrapper = await mountPage()
+    await flushPromises()
+    const tree = wrapper.findComponent(ServiceTreeStub)
+    tree.vm.$emit('stats-change', {
+      cpuRows: [{ name: 'API', value: 12 }, { name: 'DB', value: 12 }],
+      memoryRows: [{ name: 'API', value: 16 }, { name: 'DB', value: 16 }],
+      totalCpu: 12, totalMemory: 16,
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('去重总 CPU 12.00 核')
+    expect(wrapper.text()).toContain('去重总内存 16.00 GB')
+    expect(wrapper.text()).toContain('组间可能重叠')
+    expect(wrapper.text()).toContain('饼图百分比以各组容量之和为分母')
+    const charts = initChart.mock.results.slice(-2).map((result) => result.value)
+    for (const [index, values] of [[0, [12, 12]], [1, [16, 16]]]) {
+      const option = charts[index].setOption.mock.calls.at(-1)[0]
+      expect(option.series[0].type).toBe('pie')
+      expect(option.series[0].radius).toEqual(['40%', '72%'])
+      expect(option.series[0].data).toEqual([
+        { name: 'API', value: values[0] }, { name: 'DB', value: values[1] },
+      ])
+      expect(option.tooltip.formatter({ name: 'API', value: values[0], percent: 50 })).toContain('归集占比 50%')
+    }
+    tree.vm.$emit('stats-change', { cpuRows: [], memoryRows: [], totalCpu: 0, totalMemory: 0 })
+    await flushPromises()
+    expect(charts[0].setOption.mock.calls.at(-1)[0].series[0].data).toEqual([])
+    expect(wrapper.text()).toContain('去重总 CPU 0.00 核')
+    wrapper.unmount()
+  })
+})
 
 describe('service-tree/index.vue 业务系统 CRUD 入口', () => {
   it('全部业务/项目节点显示新增业务系统按钮，其他节点隐藏', async () => {

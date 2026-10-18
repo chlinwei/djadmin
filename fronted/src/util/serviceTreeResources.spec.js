@@ -33,8 +33,8 @@ describe('service tree resource capacity', () => {
     const result = buildServiceTreeResources({ ...data, scope: { nodeType: 'all' } })
     expect(result.dimension).toBe('project')
     expect(result.cpuRows).toEqual([{ name: 'A', value: 12 }, { name: 'B', value: 8 }])
-    expect(result.totalCpu).toBe(20)
-    expect(result.totalMemory).toBe(40)
+    expect(result.totalCpu).toBe(12)
+    expect(result.totalMemory).toBe(24)
   })
 
   it('limits projects to their business systems', () => {
@@ -56,6 +56,25 @@ describe('service tree resource capacity', () => {
     expect(result.dimension).toBe('service')
     expect(result.cpuRows).toEqual([{ name: 'API', value: 8 }, { name: 'DB', value: 8 }])
     expect(result.memoryRows).toEqual([{ name: 'API', value: 16 }, { name: 'DB', value: 16 }])
+    expect(result.totalCpu).toBe(8)
+    expect(result.totalMemory).toBe(16)
+  })
+
+  it('keeps physical totals deduplicated when smaller groups are merged into other', () => {
+    const services = Array.from({ length: 10 }, (_, id) => ({
+      id, name: `Service-${id}`, business_system: 10, environment: 1,
+    }))
+    const result = buildServiceTreeResources({
+      ...data, services,
+      deployments: [{ host: 1, application_service_ids: services.map((service) => service.id) }],
+      scope: { nodeType: 'environment', businessSystemId: 10, environment: 1 },
+    })
+    expect(result.cpuRows).toHaveLength(9)
+    expect(result.memoryRows).toHaveLength(9)
+    expect(result.cpuRows.at(-1)).toEqual({ name: '其他', value: 16 })
+    expect(result.memoryRows.at(-1)).toEqual({ name: '其他', value: 32 })
+    expect(result.totalCpu).toBe(8)
+    expect(result.totalMemory).toBe(16)
   })
 
   it('respects root filters and clears empty scope data', () => {
@@ -63,6 +82,8 @@ describe('service tree resource capacity', () => {
       ...data, scope: { nodeType: 'all', projectIds: [1], environmentIds: [2] },
     })
     expect(filtered.cpuRows).toEqual([{ name: 'A', value: 4 }])
+    expect(filtered.totalCpu).toBe(4)
+    expect(filtered.totalMemory).toBe(8)
     const empty = buildServiceTreeResources({ ...data, scope: { nodeType: 'project', projectId: 999 } })
     expect(empty.cpuRows).toEqual([])
     expect(empty.totalCpu).toBe(0)

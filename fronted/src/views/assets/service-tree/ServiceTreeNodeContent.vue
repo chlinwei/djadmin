@@ -301,7 +301,6 @@ const systemColumns = [
   { title: '业务系统', dataIndex: 'name', key: 'child_link', width: 220 },
   { title: '编码', dataIndex: 'code', key: 'code', width: 180 },
   { title: '负责人', dataIndex: 'owner', key: 'owner', width: 160 },
-  { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
   { title: '状态', key: 'enabled', width: 100 },
   { title: '操作', key: 'business_system_action', width: 110, fixed: 'right' },
 ]
@@ -360,7 +359,7 @@ const columns = computed(() => {
   const baseColumns = ({
     all: [
       { title: '项目', dataIndex: 'project_name', key: 'project_name', width: 180, customRender: ({ text }) => text || '-' },
-      ...systemColumns.filter((column) => column.key !== 'deployment_count'),
+      ...systemColumns,
     ],
     project: systemColumns,
     businessSystem: environmentSummaryColumns,
@@ -379,7 +378,7 @@ const levelLabel = computed(() => ({
   all: '服务树根节点', project: '项目', businessSystem: '业务系统', environment: '环境',
   service: '逻辑服务', deployment: '部署实例',
 }[props.scope.nodeType] || '服务树'))
-const tableWidth = computed(() => ({ all: 990, project: 920, businessSystem: 460, environment: 1350, service: 1460 }[props.scope.nodeType] || 800))
+const tableWidth = computed(() => ({ all: 990, project: 810, businessSystem: 460, environment: 1350, service: 1460 }[props.scope.nodeType] || 800))
 const breadcrumbs = computed(() => buildServiceTreeBreadcrumbs(props.scope))
 const abnormalCount = computed(() => descendants.value.filter((item) => (
   ['stopped', 'error'].includes(item.runtime_status)

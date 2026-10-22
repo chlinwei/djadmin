@@ -72,29 +72,110 @@ autoadmin 对 K8s 的定位是**统一运维平台的资源域**，不是 K8s �
 ### 3.1 资产模型
 
 - 新增**集群**资源类型，挂入现有 CMDB 体系，与主机平级：
-  - 名称、环境（prod/test）、云厂商或自建、K8s 版本、接入状态
-- 集群详情页：节点、工作负载（Deployment/StatefulSet/DaemonSet）、Pod、事件
+  - 名称、云厂商或自建、K8s 版本、接入状态；一个集群可以承载多个业务环境，不以集群属性代替工作负载的环境归属
+- 集群详情页：节点、工作负载（Deployment/StatefulSet/DaemonSet/Job/CronJob）、Pod、事件
 - Node 与主机资产打通：一台机器既可以是 Agent 管的虚拟机，也是某集群的 node
+- 保留现有主机部署实例模型，新增 K8s 工作负载及其与逻辑服务的关联，不用虚假主机 ID 表示容器部署
+- 工作负载定位键为平台集群 ID + Namespace + API Group/Kind + 名称；对象身份使用集群 ID + Kubernetes UID，区分同名重建
 
 ### 3.2 业务标签契约
 
-K8s 资源与 CMDB 业务系统的映射靠 **label 约定**：
+K8s 采用**标签驱动的自动发现与建树**，不要求用户先在平台手动创建逻辑服务再绑定工作负载。
+人工绑定只作为例外资源的显式处理入口，不作为标签无效时的静默兜底。
+以下标签是本方案拟定契约，尚未实现；标签域名在实施前需统一确认：
 
 ```yaml
 metadata:
   labels:
-    business_system: tib      # 必须与 CMDB 业务系统 code 一致
-    environment: prod
+    cmdb.djadmin.io/project: ecommerce
+    cmdb.djadmin.io/business-system: trade
+    cmdb.djadmin.io/env: prod
+    cmdb.djadmin.io/service: order-api
 ```
 
-- namespace 与工作负载均要求打标；autoadmin 定期比对 label 与 CMDB 映射，不一致产生告警
-- 该 label 同时是告警路由（见 §4）和日志索引归属（见 §5）的依据，是全链路统一的关键契约
+- 标签值引用稳定的业务 **code**，不使用可变显示名称。自动创建对象可先以 code 作为名称，再在平台补充显示名、负责人和说明。
+- 以工作负载声明为归属来源，Namespace 不强制打同一套标签，也不根据 Namespace 名推断业务归属。
+- Deployment 的 `metadata.labels` 不会自动继承给 Pod。采集端若直接消费 Pod 标签，需在
+  `spec.template.metadata.labels` 同步声明；CronJob 对应位置是
+  `spec.jobTemplate.spec.template.metadata.labels`。Pod 标签不应独立改变工作负载归属，冲突需显式报告。
+- 平台通过 ownerReferences 追溯 Pod 的控制器，例如 Pod → ReplicaSet → Deployment、
+  Pod → Job → CronJob，不通过 Pod 名称去 hash 或前缀匹配猜测归属。
+- 业务标签经平台校验并解析为内部 ID 后，再供日志与告警链路使用；不能把未经验证的标签直接作为权限或归属依据。
+
+#### 3.2.1 自动建树与业务身份
+
+平台逐层解析 `项目 code + 业务系统 code + 环境 code + 服务 code`，校验父子关系后复用或创建节点，
+最终得到平台逻辑服务 ID。现有逻辑服务的 code 仅在业务系统与环境内唯一，不能作为全局连接键，
+具体约束见 [ASSET_CATALOG.md](ASSET_CATALOG.md)。
+
+```text
+K8s 工作负载标签
+  → 校验接入权限与业务归属
+  → 查找或按准入策略创建业务节点
+  → 创建或复用逻辑服务
+  → 建立工作负载关联
+  → 服务树展示运行状态，日志与告警使用同一服务 ID
+```
+
+服务树表达业务归属，集群资源页表达运行位置：
+
+```text
+电商项目
+ └─ 交易系统
+     └─ 生产环境
+         └─ 订单服务
+             ├─ 主机部署实例
+             ├─ cluster-a / trade-prod / Deployment/order-api
+             └─ cluster-b / trade-prod / Deployment/order-api
+```
+
+- 集群与 Namespace 不加入逻辑服务的业务身份；相同业务身份的跨集群工作负载归入同一个逻辑服务。
+- 一个逻辑服务可关联多个工作负载。Pod 默认在右侧详情列表展示，不全部加入左侧树。
+- 平台“逻辑服务”不是 Kubernetes `Service` 网络资源，二者不能等同。
+- CronJob 产生的 Job 归入其 CronJob 视角，不要求每次执行重新绑定；独立 Job 可以直接关联，
+  其成功、失败、执行中状态不套用常驻服务副本健康语义。
+- 创建与关联必须幂等，并通过数据库唯一约束及事务处理并发发现，重复上报不生成重复节点。
+
+#### 3.2.2 自动创建的准入边界
+
+建议默认准入策略如下；最终开放范围应在实施前确认：
+
+| 对象 | 默认策略 |
+|---|---|
+| 项目、业务系统、环境 | 平台预先维护，标签引用已有 code 并校验归属 |
+| 逻辑服务 | 在已授权业务范围内，标签合法时自动创建 |
+| 工作负载关联 | 校验通过后自动维护 |
+
+若启用**整棵树自动创建**，仅允许显式授权的集群 / Namespace 创建顶层业务对象，并审计创建来源。
+工作负载所属业务仍由标签决定，不把 Namespace 直接等同于业务系统或环境。
+标签缺失、拼写错误导致引用不存在、归属冲突或越权时，资源进入“未归属 / 待处理”列表并展示原因；
+不得静默归入默认业务，也不得因归属校验失败丢弃资产快照。
+
+现有逻辑服务创建流程包含应用、版本和部署模板等约束。实施前必须区分业务服务属性与主机部署配置，
+让纯 K8s 服务不必填写无关的主机部署字段，不用虚假应用、版本或默认模板绕过校验。
+
+#### 3.2.3 同步生命周期与字段管理权
+
+| 情形 | 同步行为 |
+|---|---|
+| 新工作负载出现 | 校验标签，按准入策略创建或复用服务并关联 |
+| 扩缩容、滚动发布 | 更新 Pod 与状态，不新建业务服务 |
+| 工作负载删除 | 标记运行资源已删除，保留业务服务、历史关联与日志 |
+| 同名工作负载重建 | 按新 UID 识别新对象，重新校验标签后关联，不覆盖旧对象历史 |
+| 标签改归属 | 校验新归属，通过后记录关联变更与生效时间；历史日志不追溯改写 |
+| 标签变为无效或归属冲突 | 标记归属异常，不继续沿用旧关联为新日志补齐归属；保留历史并显式报告 |
+| Agent 断连或同步不完整 | 标记快照过期 / 状态未知，不将未上报资源判为已删除 |
+
+删除判定必须来自可信删除事件或成功完成的全量对账，不能根据连接中断推断。
+K8s 管理工作负载声明的业务归属；平台管理负责人、说明、日志保留策略等运维配置。
+同步不得覆盖所有人工字段，人工绑定与标签归属冲突时需显式解决并留审计记录。
 
 ### 3.3 数据通道
 
 dj-agent（K8s 模式，Deployment 形态驻集群内，in-cluster ServiceAccount）：
 
-- watch Node / Deployment / Pod / Events，状态变化沿现有 gRPC 通道上报
+- list/watch Node、Namespace、Deployment、ReplicaSet、StatefulSet、DaemonSet、Job、CronJob、Pod、Events，
+  为业务发现和 ownerReferences 归属解析提供完整链路；状态变化沿现有 gRPC 通道上报，重连后全量对账
 - ServiceAccount 权限从只读起步（get/list/watch），操作权限按需逐项放开
 
 前端结构：
@@ -134,7 +215,8 @@ dj-agent（K8s 模式，Deployment 形态驻集群内，in-cluster ServiceAccoun
 
 - Alert 模型增加通用**关联资产**字段：主机告警关联主机实例，K8s 告警关联集群+namespace+workload
 - 收敛按 **workload 维度**（Deployment/StatefulSet）聚合，不按 Pod 维度，避免 Pod 动态生灭造成告警风暴
-- 通知路由复用 AlertRoute / AlertMedia，按 `business_system` / `environment` 标签匹配，K8s 与主机告警同一条通知链路
+- 通知路由复用 AlertRoute / AlertMedia，按校验后解析的业务系统 / 环境及服务 ID 匹配，
+  K8s 与主机告警同一条通知链路；归属来源统一采用 §3.2，不另建 Namespace 名称推断规则
 
 ---
 
@@ -154,19 +236,32 @@ K8s（新增）：
          └─ 同一个 Elasticsearch ──▶ 同一个日志洞察页
 ```
 
-dj-agent 不采集日志，只负责**控制面**：接收 djadmin 下发的采集规则 → 渲染成 Filebeat 配置写入 **ConfigMap** → DaemonSet 挂载自动热加载（对应虚拟机侧"写 inputs.d + 热重载"模式）。
+dj-agent 不采集日志，只负责**控制面**：接收 djadmin 下发的采集规则 → 渲染成 Filebeat 配置写入 **ConfigMap** → DaemonSet 挂载外部 input 配置并热重载。
+这是 K8s 侧的目标配置交付方式，不代表当前主机侧下发流程已经实现无重启更新。
+
+关联工作负载只确定日志归属，不等于开启采集。服务侧控制采集开关和保留档位，
+工作负载 / 容器侧选择采集容器、解析与多行规则；不同容器不强制共用同一规则。
+多行规则可通过规则引用配置，不把整段正则塞进业务标签。
+采集目标随 Pod 生命周期自动维护，不能写死当前 Pod 名，也不能由多个 input 重复读取同一文件。
+第一阶段采集 stdout/stderr；仅写容器内部文件的应用，须改为标准输出或单独设计采集器可访问的卷与路径，
+DaemonSet 不会自动获得容器内部文件的访问能力。
 
 ### 5.2 索引与字段对齐
 
 - 索引命名套用现有规则：`logs-<环境>-<业务系统>-<档位>`（hot/std/cold）
-- namespace → 业务系统归属：优先用 namespace 命名约定（如 `tib-order` 正则提取），映射关系在平台维护
+- 业务归属统一沿 Pod → 控制器 → 工作负载 → 平台逻辑服务解析，复用 §3.2 校验后的映射，
+  不从 Namespace 名称或 Pod 名去 hash 推断
+- 采集或入库阶段固化 `application_service_id` 和业务维度，并保留集群 ID、Namespace、工作负载类型/名称/UID、
+  Pod 名/UID、容器及输出流信息；Pod 删除不影响历史日志检索，后续归属变更不改写历史日志
+- 未归属资源在集群视角可诊断和检索，不伪造服务 ID；具体未归属日志的存储与权限策略在实施时确定
+- 一个工作负载若关联多个逻辑服务，必须指定唯一日志归属或可验证的容器级拆分规则，禁止默认复制日志到多个服务
 - K8s 元数据映射进现有 `labels_` 前缀字段体系：
 
 | K8s 元数据 | 平台字段 | 说明 |
 |---|---|---|
 | namespace | `labels_namespace` | |
 | Pod 名 | `labels_pod` | 保留原始名 |
-| Pod 名去 hash | `labels_service` | 关键字段，使错误分布/突增识别按"服务"聚合的逻辑直接可用 |
+| 平台解析的逻辑服务 | `application_service_id` / `labels_service` | ID 用于可靠关联；展示字段按当前日志字段规范对齐，不以名称代替身份 |
 | node 名 | `labels_host` | 与主机资产可关联 |
 
 ### 5.3 前端
@@ -208,9 +303,9 @@ scrape_configs:
       # 端口/路径改写略
       - source_labels: [__meta_kubernetes_namespace]
         target_label: namespace
-      - source_labels: [__meta_kubernetes_pod_label_business_system]
+      - source_labels: [__meta_kubernetes_pod_label_cmdb_djadmin_io_business_system]
         target_label: business_system
-      - source_labels: [__meta_kubernetes_pod_label_environment]
+      - source_labels: [__meta_kubernetes_pod_label_cmdb_djadmin_io_env]
         target_label: environment
       - target_label: cluster
         replacement: <cluster-name>
@@ -228,7 +323,10 @@ scrape_configs:
 
 ### 7.3 接入约定
 
-业务 Pod 打注解即接入采集：`prometheus.io/scrape: "true"` + 端口/路径；`business_system` label 取值必须与 CMDB 业务系统 code 一致（见 §3.2）。
+业务 Pod 打注解即接入指标采集：`prometheus.io/scrape: "true"` + 端口/路径。
+业务归属按 §3.2 解析；若使用 Pod 业务标签做 Prometheus relabel，必须同步声明模板标签，
+上方示例已使用带前缀标签的 Prometheus 元数据键，不能假定工作负载标签自动继承。
+这些抓取标签仅用于指标维度，平台执行归属与权限判断时仍需校验。
 
 ---
 
@@ -236,9 +334,9 @@ scrape_configs:
 
 | 阶段 | 内容 | 量级 |
 |---|---|---|
-| 1 | dj-agent K8s 模式（资产/状态上报）+ 集群资产模型 + 前端集群页（只读） | 1-2 周 |
+| 1 | dj-agent K8s 模式（资产/状态上报）+ 集群资产模型 + 标签准入与自动建树 + 服务树关联及前端集群页（只读） | 纳入新增范围后重新评估 |
 | 2 | 告警收口：events 告警 + 调度器 Prometheus 数据源规则 | ~1 周 |
-| 3 | 日志接入：Filebeat DaemonSet + namespace 映射 + 字段对齐 + ConfigMap 下发 | ~1 周 |
+| 3 | 日志接入：Filebeat DaemonSet + 工作负载—服务归属映射 + 字段对齐 + ConfigMap 下发 | 纳入新增范围后重新评估 |
 | 4 | 高频操作：重启/扩缩容/删 Pod + 审批审计 | ~1 周 |
 
 前置条件：阶段 1 的 Agent K8s 模式与业务标签契约（§3.2）是后续所有阶段的地基。
@@ -249,7 +347,7 @@ scrape_configs:
 
 | 组件 | 职责 |
 |---|---|
-| autoadmin 平台侧 | 集群资产模型与 CMDB 融合、调度器 Prometheus 数据源、告警模型扩展、namespace 映射、前端 API |
+| autoadmin 平台侧 | 集群资产模型与 CMDB 融合、标签准入与幂等建树、工作负载—服务归属映射及生命周期、调度器 Prometheus 数据源、告警模型扩展、日志策略、前端 API |
 | dj-agent (Go) | K8s 模式运行形态（Deployment/单副本）、资产与事件 watch 上报、ConfigMap 配置下发、操作类 API 翻译 |
 
 语义对齐点：gRPC 通道与命令模型复用现有协议；label 契约（§3.2）是平台、Agent 及 Prometheus 配置的共同依赖。

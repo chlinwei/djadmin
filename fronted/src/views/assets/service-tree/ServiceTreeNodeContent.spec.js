@@ -95,40 +95,42 @@ describe('ServiceTreeNodeContent', () => {
     } } })
   })
 
-  it('shows the current summary, aggregate metrics, and direct children for every node level', async () => {
+  it('omits deployment counts from root and project business-system tables and keeps actions fixed', async () => {
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', code: 'order-system', project: 5, project_name: '示例项目', enabled: true },
+    ]))
     const wrapper = mount(ServiceTreeNodeContent, {
       props: { scope: { nodeType: 'all', nodeTitle: '全部业务' } },
       global: { plugins: [Antd] },
     })
+    try {
+      await flushPromises()
+      const table = wrapper.findComponent({ name: 'ATable' })
+      const columns = table.props('columns')
+      expect(columns.slice(0, 2).map((column) => column.title)).toEqual(['项目', '业务系统'])
+      expect(columns[0].dataIndex).toBe('project_name')
+      expect(columns[0].customRender({ text: '' })).toBe('-')
+      expect(table.text()).toContain('示例项目')
+      expect(columns.some((column) => column.key === 'deployment_count')).toBe(false)
+      expect(table.props('scroll').x).toBe(990)
+      expect(columns.find((column) => column.key === 'business_system_action')).toMatchObject({ fixed: 'right', width: 110 })
+      await wrapper.setProps({ scope: { nodeType: 'project', projectId: 5, nodeTitle: '示例项目' } })
+      await flushPromises()
+      expect(table.props('columns')[0].title).toBe('业务系统')
+      expect(table.props('columns').some((column) => column.key === 'project_name')).toBe(false)
+      expect(table.props('columns').some((column) => column.key === 'deployment_count')).toBe(false)
+      expect(table.props('scroll').x).toBe(810)
+      expect(table.props('columns').find((column) => column.key === 'business_system_action')).toMatchObject({ fixed: 'right', width: 110 })
+      expect(wrapper.findAll('.metric-label').map((item) => item.text())).toContain('部署实例')
+    } finally {
+      wrapper.unmount()
+    }
+  })
 
-    it('prepends the project column only to the root business-system table and keeps actions fixed', async () => {
-      applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
-        { id: 7, name: '订单系统', code: 'order-system', project: 5, project_name: '示例项目', enabled: true },
-      ]))
-      const wrapper = mount(ServiceTreeNodeContent, {
-        props: { scope: { nodeType: 'all', nodeTitle: '全部业务' } },
-        global: { plugins: [Antd] },
-      })
-      try {
-        await flushPromises()
-        const table = wrapper.findComponent({ name: 'ATable' })
-        const columns = table.props('columns')
-        expect(columns.slice(0, 2).map((column) => column.title)).toEqual(['项目', '业务系统'])
-        expect(columns[0].dataIndex).toBe('project_name')
-        expect(columns[0].customRender({ text: '' })).toBe('-')
-        expect(table.text()).toContain('示例项目')
-        expect(columns.some((column) => column.key === 'deployment_count')).toBe(false)
-        expect(table.props('scroll').x).toBe(990)
-        expect(columns.find((column) => column.key === 'business_system_action')).toMatchObject({ fixed: 'right', width: 110 })
-        await wrapper.setProps({ scope: { nodeType: 'project', projectId: 5, nodeTitle: '示例项目' } })
-        await flushPromises()
-        expect(table.props('columns')[0].title).toBe('业务系统')
-        expect(table.props('columns').some((column) => column.key === 'project_name')).toBe(false)
-        expect(table.props('columns').some((column) => column.key === 'deployment_count')).toBe(true)
-        expect(table.props('scroll').x).toBe(920)
-      } finally {
-        wrapper.unmount()
-      }
+  it('shows the current summary, aggregate metrics, and direct children for every node level', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'all', nodeTitle: '全部业务' } },
+      global: { plugins: [Antd] },
     })
     await flushPromises()
     expect(wrapper.text()).toContain('业务系统1')

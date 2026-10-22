@@ -64,6 +64,7 @@
           @edit-business-system="openBusinessSystem"
           @delete-business-system="confirmDeleteBusinessSystem"
           @edit-service="openApplicationService"
+          @copy-service="copyApplicationService"
           @delete-service="confirmDeleteService"
         />
       </main>
@@ -79,6 +80,7 @@
     <ApplicationServiceDialog
       :open="serviceDialogOpen"
       :service-id="selectedServiceId"
+      :copy-service-id="copyServiceId"
       :initial-business-system-id="serviceCreateInitialBusinessSystemId"
       :initial-environment-id="serviceCreateInitialEnvironmentId"
       @update:open="serviceDialogOpen = $event"
@@ -111,6 +113,7 @@ const selectedBusinessSystemId = ref(null)
 const businessSystemInitialProjectId = ref(null)
 const serviceDialogOpen = ref(false)
 const selectedServiceId = ref(null)
+const copyServiceId = ref(null)
 const serviceCreateInitialBusinessSystemId = ref(null)
 const serviceCreateInitialEnvironmentId = ref(null)
 // 只有能定位到业务系统层级以上的节点才适合新增逻辑服务（service/deployment 自身就是详情，不再支持再新增）。
@@ -236,6 +239,7 @@ function confirmDeleteBusinessSystem(record) {
 }
 
 function openApplicationService(record = null) {
+  copyServiceId.value = null
   selectedServiceId.value = record?.id || null
   // 新增时按当前树选中的业务系统/环境预填，不用用户再选一遍；编辑时不需要(字段会从记录本身加载)。
   serviceCreateInitialBusinessSystemId.value = record ? null : (serviceScope.value.businessSystemId ?? null)
@@ -245,6 +249,14 @@ function openApplicationService(record = null) {
 
 async function handleApplicationServiceSaved() {
   await refreshServiceTree()
+}
+
+function copyApplicationService(record) {
+  selectedServiceId.value = null
+  copyServiceId.value = record.id
+  serviceCreateInitialBusinessSystemId.value = null
+  serviceCreateInitialEnvironmentId.value = null
+  serviceDialogOpen.value = true
 }
 
 function confirmDeleteService(record) {

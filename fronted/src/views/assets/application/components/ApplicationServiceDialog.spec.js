@@ -108,7 +108,7 @@ import ApplicationServiceDialog from './ApplicationServiceDialog.vue'
 import DeploymentDialog from './DeploymentDialog.vue'
 
 // 这两个 mock 的实现在 afterEach 里要还原（见 restoreTemplateMocks），所以要拿到模块引用。
-import { getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList } from '@/api/assets/application'
+import { getApplicationDeploymentTemplate, getApplicationDeploymentTemplateList, getApplicationService, saveApplicationService } from '@/api/assets/application'
 
 // 两个模板的基础 fixtures（默认 mock 用它们）。62 是 external_ha：HA 拓扑的用例要它出现在
 // 模板候选里（templateOptions 按拓扑过滤 control_type）。
@@ -155,6 +155,36 @@ function plainTemplateDetailPayload(id) {
 }
 
 describe('ApplicationServiceDialog', () => {
+  it('copies configuration into a new service without identity, members or collection state', async () => {
+    const source = (await getApplicationService()).data.data
+    source.macro_values = { QMGR_NAME: 'QM1' }
+    source.log_collection_enabled = true
+    source.log_settings = [{ log_definition: 82 }]
+    getApplicationService.mockResolvedValueOnce({ data: { data: source } })
+    const wrapper = mount(ApplicationServiceDialog, {
+      props: { open: false, copyServiceId: 20 },
+      global: {
+        plugins: [Antd],
+        stubs: { AModal: { template: '<div><slot /></div>' } },
+      },
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(wrapper.vm.form).toMatchObject({
+      id: null, name: 'tomcat-group-copy', code: 'tomcat-group-copy', business_system: 3, environment: 31,
+      application: 5, deployment_template: 62, topology_type: 'cluster',
+      cluster_profile: 4, log_collection_enabled: false,
+    })
+    expect(wrapper.vm.selectedDeploymentIds).toEqual([])
+    expect(wrapper.vm.form).not.toHaveProperty('member_instances')
+    expect(wrapper.vm.form).not.toHaveProperty('log_settings')
+    expect(wrapper.vm.form.macro_values).toEqual({ QMGR_NAME: 'QM1' })
+    wrapper.vm.form.macro_values.QMGR_NAME = 'QM2'
+    expect(source.macro_values.QMGR_NAME).toBe('QM1')
+    expect(saveApplicationService).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   afterEach(() => {
     document.body.innerHTML = ''
     restoreTemplateMocks()

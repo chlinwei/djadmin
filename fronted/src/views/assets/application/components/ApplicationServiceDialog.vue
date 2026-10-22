@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    :title="serviceId ? `编辑逻辑服务：${form.name || '加载中'}` : clusterProfileId ? '创建集群' : '新增逻辑服务'"
+    :title="serviceId ? `编辑逻辑服务：${form.name || '加载中'}` : copyServiceId ? '复制逻辑服务' : clusterProfileId ? '创建集群' : '新增逻辑服务'"
     :width="760"
     :confirm-loading="saving"
     ok-text="保存"
@@ -290,6 +290,7 @@ import { retentionText } from '@/util/logRetention'
 const props = defineProps({
   open: { type: Boolean, required: true },
   serviceId: { type: Number, default: null },
+  copyServiceId: { type: Number, default: null },
   clusterProfileId: { type: Number, default: null },
   initialBusinessSystemId: { type: Number, default: null },
   initialEnvironmentId: { type: Number, default: null },
@@ -355,7 +356,7 @@ const rules = computed(() => ({
   name: [{ required: true, message: '请输入服务名称' }],
   code: [
     { required: true, message: '请输入服务编码' },
-    { pattern: /^[a-z0-9][a-z0-9_-]*$/, message: '编码仅支持小写字母、数字、下划线和连字符' },
+    { pattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/, message: '编码仅支持大小写字母、数字、下划线和连字符' },
   ],
   business_system: [{ required: true, message: '请选择业务系统' }],
   application: form.topology_type === 'standalone' || !profileHasFixedApplication.value ? [{ required: true, message: '请选择应用' }] : [],
@@ -623,7 +624,22 @@ async function initialize() {
     profileRecords.value = profiles
     deploymentRecords.value = deployments
     retentionTierRecords.value = records['保留档位']
-    if (props.serviceId) {
+    if (props.copyServiceId && !props.serviceId) {
+      const response = await getApplicationService(props.copyServiceId)
+      const data = response?.data?.data
+      if (!data?.id) throw new Error('无法读取待复制的逻辑服务')
+      // 只复制配置白名单，禁止带入源服务身份、成员、采集认证和运行状态。
+      for (const key of Object.keys(initialForm())) {
+        if (!['id', 'name', 'code', 'log_collection_enabled', 'macro_values'].includes(key) && Object.hasOwn(data, key)) {
+          form[key] = data[key]
+        }
+      }
+      form.name = `${data.name}-copy`
+      form.code = `${data.code}-copy`
+      form.macro_values = { ...(data.macro_values || {}) }
+      selectedDeploymentIds.value = []
+      for (const key of Object.keys(memberEnabled)) delete memberEnabled[key]
+    } else if (props.serviceId) {
       const response = await getApplicationService(props.serviceId)
       const data = response?.data?.data || {}
       Object.assign(form, initialForm(), data)
@@ -654,6 +670,8 @@ async function initialize() {
     }
     await nextTick()
     formRef.value?.clearValidate()
+  } catch (error) {
+    loadError.value = error?.response?.data?.msg || error?.message || '加载逻辑服务失败'
   } finally {
     loading.value = false
   }
@@ -726,6 +744,8 @@ watch(() => form.application, () => {
   }
 })
 watch(() => form.deployment_template, (templateId) => {
+  // 初始化时保留详情中的宏覆盖值，列表记录不包含完整宏定义。
+  if (loading.value) return
   const definitions = templateRecords.value.find((item) => item.id === templateId)?.macro_definitions || []
   const values = {}
   for (const definition of definitions) {

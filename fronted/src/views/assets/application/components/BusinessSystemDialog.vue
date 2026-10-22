@@ -78,7 +78,7 @@ const rules = {
   name: [{ required: true, message: '请输入业务系统名称' }],
   code: [
     { required: true, message: '请输入业务系统编码' },
-    { pattern: /^[a-z0-9][a-z0-9_-]*$/, message: '编码仅支持小写字母、数字、下划线和连字符' },
+    { pattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/, message: '编码仅支持大小写字母、数字、下划线和连字符' },
   ],
   project: [{ required: true, message: '请选择所属项目' }],
 }

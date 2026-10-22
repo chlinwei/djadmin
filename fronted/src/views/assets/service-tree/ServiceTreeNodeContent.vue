@@ -34,6 +34,11 @@
               <FontAwesomeIcon :icon="['fa', 'edit']" />
             </a-button>
           </a-tooltip>
+          <a-tooltip title="复制" placement="top">
+            <a-button v-permission="'assets:service-tree:manage'" size="small" @click="emit('copy-service', entity)">
+              <FontAwesomeIcon :icon="['fas', 'copy']" />
+            </a-button>
+          </a-tooltip>
           <a-tooltip title="删除">
             <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click="emit('delete-service', entity)">
               <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -203,6 +208,11 @@
                     <FontAwesomeIcon :icon="['fa', 'edit']" />
                   </a-button>
                 </a-tooltip>
+                <a-tooltip title="复制" placement="top">
+                  <a-button v-permission="'assets:service-tree:manage'" size="small" @click.stop="emit('copy-service', record)">
+                    <FontAwesomeIcon :icon="['fas', 'copy']" />
+                  </a-button>
+                </a-tooltip>
                 <a-tooltip title="删除">
                   <a-button v-permission="'assets:service-tree:manage'" class="delBtn" size="small" type="primary" danger @click.stop="emit('delete-service', record)">
                     <FontAwesomeIcon :icon="['fas', 'trash-can']" />
@@ -247,7 +257,7 @@ const props = defineProps({
   scope: { type: Object, required: true },
   hostSnapshots: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['navigate', 'edit-business-system', 'delete-business-system', 'edit-service', 'delete-service'])
+const emit = defineEmits(['navigate', 'edit-business-system', 'delete-business-system', 'edit-service', 'copy-service', 'delete-service'])
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 const runtimeStatus = {
   unknown: { label: '未知', status: 'default' }, running: { label: '运行中', status: 'success' },
@@ -301,7 +311,7 @@ const serviceColumns = [
   { title: '集群模型', dataIndex: 'cluster_profile_name', key: 'cluster_profile_name', width: 180 },
   { title: '部署实例', dataIndex: 'deployment_count', key: 'deployment_count', width: 110 },
   { title: '状态', key: 'enabled', width: 100 },
-  { title: '操作', key: 'service_action', width: 110, fixed: 'right' },
+  { title: '操作', key: 'service_action', width: 150, fixed: 'right' },
 ]
 // 业务系统下先按环境分一层，跟左侧树的层级（项目/业务系统/环境/服务）保持一致，选中环境后才展开具体逻辑服务。
 const environmentSummaryColumns = [

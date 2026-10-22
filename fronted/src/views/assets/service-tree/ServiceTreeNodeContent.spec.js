@@ -38,6 +38,30 @@ const listResponse = (results) => ({
 })
 
 describe('ServiceTreeNodeContent', () => {
+  it('keeps service actions stable across runtime refresh feedback changes', async () => {
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'service', applicationServiceId: 21, nodeTitle: '订单 API' } },
+      global: { plugins: [Antd] },
+    })
+    try {
+      await flushPromises()
+      for (const refreshing of [true, false, true, false]) {
+        wrapper.vm.runtimeRefreshing = refreshing
+        await flushPromises()
+        const buttons = wrapper.findAll('.node-content-header button')
+        expect(buttons).toHaveLength(3)
+        expect(buttons[0].classes()).toContain('ant-btn-primary')
+        expect(buttons[1].classes()).toContain('ant-btn-default')
+        expect(buttons[1].classes()).not.toContain('ant-btn-dangerous')
+        expect(buttons[2].classes()).toContain('delBtn')
+        await buttons[1].trigger('click')
+        expect(wrapper.emitted('copy-service').at(-1)[0].id).toBe(21)
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([

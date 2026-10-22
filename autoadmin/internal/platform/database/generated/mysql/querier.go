@@ -130,6 +130,8 @@ type Querier interface {
 	CountOtherHostsByIP(ctx context.Context, arg CountOtherHostsByIPParams) (int64, error)
 	CountOtherHostsByInstanceName(ctx context.Context, arg CountOtherHostsByInstanceNameParams) (int64, error)
 	CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error)
+	// Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+	CountReservedServiceLogIdentity(ctx context.Context, arg CountReservedServiceLogIdentityParams) (int64, error)
 	CountRetentionTierLogSettings(ctx context.Context, retentionTierID sql.NullInt64) (int64, error)
 	// 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
 	// 而 PG 引擎合并成一个（同一个调用点在两侧就编译不过），拆开写才是可移植的形状。
@@ -247,6 +249,7 @@ type Querier interface {
 	CreateProject(ctx context.Context, arg CreateProjectParams) (sql.Result, error)
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
+	CreateServiceDeletionTombstone(ctx context.Context, arg CreateServiceDeletionTombstoneParams) error
 	CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error
 	// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
 	// 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
@@ -363,6 +366,7 @@ type Querier interface {
 	DeleteTemplateLogDefinitionsByIDs(ctx context.Context, arg DeleteTemplateLogDefinitionsByIDsParams) error
 	DeleteTemplatePaths(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error
+	DeleteUnsharedServiceDeployment(ctx context.Context, id int64) error
 	DeleteUserAlertMediaBindings(ctx context.Context, userID int32) error
 	DeleteUserByID(ctx context.Context, id int32) error
 	DeleteUserGroup(ctx context.Context, id int64) (int64, error)
@@ -565,6 +569,8 @@ type Querier interface {
 	GetScanStatusForUpdate(ctx context.Context, id int64) (GetScanStatusForUpdateRow, error)
 	GetScheduledTask(ctx context.Context, id int64) (GetScheduledTaskRow, error)
 	GetScheduledTaskLog(ctx context.Context, id int64) (GetScheduledTaskLogRow, error)
+	GetServiceDeletionBusinessSystem(ctx context.Context, id int64) (int64, error)
+	GetServiceDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error)
 	GetSoftwarePackageTyped(ctx context.Context, id int64) (GetSoftwarePackageTypedRow, error)
 	GetTargetHostAddress(ctx context.Context, id int64) (GetTargetHostAddressRow, error)
 	// ---- 安装/卸载下发 ----
@@ -792,6 +798,10 @@ type Querier interface {
 	// 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
 	// （与"这个服务现在什么都不采"一致）。
 	ListServiceActiveStreamTiers(ctx context.Context) ([]ListServiceActiveStreamTiersRow, error)
+	// Deletion must also clean disabled clusters: they can still contain historical logs.
+	ListServiceDeletionClusterIDs(ctx context.Context) ([]int64, error)
+	ListServiceDeletionDeployments(ctx context.Context, serviceID int64) ([]int64, error)
+	ListServiceDeletionTombstones(ctx context.Context) ([]AssetsServiceDeletion, error)
 	ListServiceDeploymentIDs(ctx context.Context, serviceID int64) ([]int64, error)
 	ListServiceDeploymentLinks(ctx context.Context, deploymentIds []int64) ([]ListServiceDeploymentLinksRow, error)
 	// 服务模板下的全部日志都需要包装，包括没有服务覆盖行的日志。
@@ -860,6 +870,11 @@ type Querier interface {
 	ListWebSSHSessions(ctx context.Context, arg ListWebSSHSessionsParams) ([]ListWebSSHSessionsRow, error)
 	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	LockApplicationDeployment(ctx context.Context, id int64) (int64, error)
+	LockApplicationServiceForDeletion(ctx context.Context, id int64) (int64, error)
+	// Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
+	LockElasticsearchClusterForGuard(ctx context.Context, id int64) (int64, error)
+	// Serialize creation with tombstoning even when the unique service row is removed.
+	LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error)
 	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
 	// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
 	// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。

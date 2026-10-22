@@ -262,14 +262,23 @@ function copyApplicationService(record) {
 function confirmDeleteService(record) {
   openDeleteConfirm({
     title: '删除逻辑服务',
-    summary: '仍包含部署实例的逻辑服务不能删除。',
+    summary: '将撤销日志采集并立即清理该服务的历史日志，删除服务配置、成员关联及专属部署实例记录；共享实例、主机、实际应用和原始日志文件保留。清理失败会保留服务记录，请重试删除。',
     items: [record.name || record.code || record.id],
     onConfirm: async () => {
-      await batchDeleteApplicationServices([record.id])
+      const response = await batchDeleteApplicationServices([record.id])
+      const result = response?.data?.data?.results?.find((item) => Number(item.id) === Number(record.id))
+      if (!result?.ok) {
+        const reason = result?.message || '删除未完成，请重试'
+        message.error(reason)
+        await refreshServiceTree()
+        throw new Error(reason)
+      }
       message.success('删除成功')
       if (serviceScope.value.nodeType === 'service' && serviceScope.value.applicationServiceId === record.id) {
         serviceScope.value = { nodeType: 'all', nodeTitle: '全部业务' }
       }
+      // 先让子组件收到新范围，再刷新，避免仍按已删除的服务 ID 请求详情。
+      await nextTick()
       await refreshServiceTree()
     },
   })

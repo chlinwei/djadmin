@@ -12,10 +12,13 @@
         <h2>{{ scope.nodeTitle || '全部业务' }}</h2>
       </div>
       <a-space>
-        <a-tag v-if="runtimeRefreshing" color="processing">状态检查中</a-tag>
-        <a-tooltip v-else-if="runtimeRefreshError" :title="runtimeRefreshError" placement="top">
-          <a-tag color="warning">状态刷新失败</a-tag>
-        </a-tooltip>
+        <!-- 状态切换不改变 Space 的子项位置，避免提示与操作按钮的组件实例错位复用。 -->
+        <span v-show="runtimeRefreshing || runtimeRefreshError" key="runtime-feedback">
+          <a-tag v-if="runtimeRefreshing" color="processing">状态检查中</a-tag>
+          <a-tooltip v-else-if="runtimeRefreshError" :title="runtimeRefreshError" placement="top">
+            <a-tag color="warning">状态刷新失败</a-tag>
+          </a-tooltip>
+        </span>
         <template v-if="scope.nodeType === 'businessSystem' && entity">
           <a-tooltip title="编辑">
             <a-button v-permission="'assets:service-tree:manage'" size="small" type="primary" @click="emit('edit-business-system', entity)">

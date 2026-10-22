@@ -238,6 +238,15 @@ CREATE TABLE `assets_docker_compose_control_config` (
   CONSTRAINT `assets_docker_compose_control_config_template_fk` FOREIGN KEY (`deployment_template_id`) REFERENCES `assets_application_deployment_template` (`id`)
 );
 
+-- Tombstones deliberately outlive services: delayed/offline collectors must never resurrect writes.
+CREATE TABLE assets_service_deletion (
+  `service_id` bigint NOT NULL PRIMARY KEY,
+  `project_code` varchar(64) NOT NULL,
+  `business_system_code` varchar(64) NOT NULL,
+  `environment_code` varchar(64) NOT NULL,
+  `service_code` varchar(64) NOT NULL
+);
+
 CREATE TABLE `assets_application_service` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
   `name` varchar(128) NOT NULL, `code` varchar(64) NOT NULL, `topology_type` varchar(16) NOT NULL, `access_address` varchar(255) NOT NULL,

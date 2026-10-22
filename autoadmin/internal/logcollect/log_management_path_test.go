@@ -29,7 +29,7 @@ func TestBootstrapIndexTemplateUsesTemplateSuffix(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"error":"not found"}`))
 			return
 		}
-		_, _ = writer.Write([]byte(`{}`))
+		_, _ = writer.Write([]byte(`{"acknowledged":true}`))
 	}))
 	defer server.Close()
 
@@ -38,6 +38,12 @@ func TestBootstrapIndexTemplateUsesTemplateSuffix(t *testing.T) {
 		t.Fatalf("create sql mock: %v", err)
 	}
 	defer database.Close()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(0))
+	mock.ExpectQuery("FROM assets_service_deletion ORDER BY service_id").
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "project_code", "business_system_code", "environment_code", "service_code"}))
+	mock.ExpectCommit()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT code,retention_value,retention_unit,daily_size_gb,rollover_min_index_age")).
 		WillReturnRows(sqlmock.NewRows([]string{"code", "retention_value", "retention_unit", "daily_size_gb", "rollover_min_index_age"}))
 

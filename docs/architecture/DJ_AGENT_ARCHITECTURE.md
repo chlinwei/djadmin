@@ -1,5 +1,20 @@
 # dj-agent 通信架构文档
 
+## 逻辑服务日志撤销
+
+内置 `revoke_service_logs` 接收正整数 `service_id` 及非空
+`project/business_system/environment/service` 四维身份。撤销先预检全部片段，只有托管文件名的
+服务编码、服务 ID 与 YAML `fields` 四维身份同时匹配才允许移除；两者不一致、混合归属或损坏文件
+均明确失败，预检失败不移除任何片段。通过后将撤销标记持久化并 fsync，再移除目标片段。
+标记放在 inputs.d 的隐藏子目录，不属于 Filebeat 输入清单。
+
+撤销与 `apply_filebeat_config` 共用进程级互斥锁。后者每次重新读取持久化撤销标记，
+即使后端旧任务延迟到达或 agent 重启，也拒绝恢复该身份的 input；
+过滤旧下发同样要求文件名 ID 与内容归属一致，不能仅按内容过滤其他服务片段。损坏标记失败关闭下发。
+撤销不调用 systemctl，不启停应用/Filebeat、不删除源日志；Filebeat inputs 动态重载关闭对应
+harvester。ES 的持久化 final-pipeline 写入屏障负责阻止缓冲与离线事件重新入库，完整删除、
+失败与重试语义见 [日志采集架构](LOG_COLLECTION_ARCHITECTURE.md#逻辑服务删除与日志撤销)。
+
 ## 1. 整体架构
 
 ```

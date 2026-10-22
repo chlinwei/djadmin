@@ -868,6 +868,48 @@ WHERE id=sqlc.arg(id);
 -- name: DeleteApplicationService :exec
 DELETE FROM assets_application_service WHERE id=sqlc.arg(id);
 
+-- name: LockApplicationServiceForDeletion :one
+SELECT id FROM assets_application_service WHERE id=sqlc.arg(id) FOR UPDATE;
+
+-- Serialize creation with tombstoning even when the unique service row is removed.
+-- name: LockServiceIdentityDomain :one
+SELECT id FROM assets_business_system WHERE id=sqlc.arg(id) FOR UPDATE;
+
+-- name: GetServiceDeletionBusinessSystem :one
+SELECT business_system_id FROM assets_application_service WHERE id=sqlc.arg(id);
+
+-- name: ListServiceDeletionTombstones :many
+SELECT service_id,project_code,business_system_code,environment_code,service_code
+FROM assets_service_deletion ORDER BY service_id;
+
+-- name: GetServiceDeletionTombstone :one
+SELECT service_id,project_code,business_system_code,environment_code,service_code
+FROM assets_service_deletion WHERE service_id=sqlc.arg(service_id);
+
+-- name: CreateServiceDeletionTombstone :exec
+INSERT INTO assets_service_deletion (service_id,project_code,business_system_code,environment_code,service_code)
+VALUES (sqlc.arg(service_id),sqlc.arg(project_code),sqlc.arg(business_system_code),sqlc.arg(environment_code),sqlc.arg(service_code));
+
+-- Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+-- name: CountReservedServiceLogIdentity :one
+SELECT COUNT(*) FROM assets_service_deletion t
+JOIN assets_business_system bs ON bs.id=sqlc.arg(business_system_id)
+JOIN assets_project p ON p.id=bs.project_id
+JOIN assets_business_environment e ON e.id=sqlc.arg(environment_id)
+WHERE t.project_code=p.code AND t.business_system_code=bs.code
+AND t.environment_code=e.code AND t.service_code=sqlc.arg(service_code);
+
+-- name: ListServiceDeletionDeployments :many
+SELECT d.id FROM assets_application_deployment d
+JOIN assets_application_service_deployment sd ON sd.deployment_id=d.id
+WHERE sd.service_id=sqlc.arg(service_id) ORDER BY d.id FOR UPDATE;
+
+-- name: DeleteUnsharedServiceDeployment :exec
+DELETE FROM assets_application_deployment
+WHERE assets_application_deployment.id=sqlc.arg(id) AND NOT EXISTS (
+  SELECT 1 FROM assets_application_service_deployment sd WHERE sd.deployment_id=assets_application_deployment.id
+);
+
 -- 服务级日志采集总开关（`log_collection_enabled`）的单独写入。
 --
 -- 为什么单独一条：它原先只能随整个服务表单（`UpdateApplicationService`，PATCH 校验要求

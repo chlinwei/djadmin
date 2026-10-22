@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
   batchDeleteBusinessSystems: vi.fn(() => Promise.resolve({ data: { data: null } })),
-  batchDeleteApplicationServices: vi.fn(() => Promise.resolve({ data: { data: null } })),
+  batchDeleteApplicationServices: vi.fn(() => Promise.resolve({ data: { data: { results: [{ id: 21, ok: true }] } } })),
 }))
 
 vi.mock('@/util/deleteConfirm', () => ({
@@ -70,6 +70,29 @@ async function mountPage(query = {}) {
 }
 
 describe('service-tree capacity charts', () => {
+  it('refreshes the new scope instead of requesting the deleted service', async () => {
+    const wrapper = await mountPage()
+    await flushPromises()
+    const tree = wrapper.findComponent(ServiceTreeStub)
+    const content = wrapper.findComponent(ServiceTreeNodeContentStub)
+    tree.vm.$emit('select', { nodeType: 'service', applicationServiceId: 21, nodeTitle: '订单 API' })
+    await flushPromises()
+    const scopes = []
+    ServiceTreeNodeContentStub.methods.refresh.mockImplementation(function () {
+      scopes.push(this.scope.nodeType)
+    })
+    try {
+      content.vm.$emit('delete-service', { id: 21, name: '订单 API' })
+      await flushPromises()
+      await openDeleteConfirm.mock.calls.at(-1)[0].onConfirm()
+      expect(scopes).toEqual(['all'])
+      expect(content.props('scope').nodeType).toBe('all')
+    } finally {
+      ServiceTreeNodeContentStub.methods.refresh.mockReset()
+      wrapper.unmount()
+    }
+  })
+
   it('preserves pie charts while showing deduplicated totals and explaining overlapping groups', async () => {
     const wrapper = await mountPage()
     await flushPromises()
@@ -241,6 +264,22 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
     await onConfirm()
 
     expect(applicationApi.batchDeleteApplicationServices).toHaveBeenCalledWith([21])
+  })
+
+  it('服务清理失败时保留选中服务并将失败抛给公共确认流程', async () => {
+    const wrapper = await mountPage({ application_service_id: '21', service_name: '订单 API' })
+    await flushPromises()
+    applicationApi.batchDeleteApplicationServices.mockResolvedValueOnce({
+      data: { data: { count: 0, results: [{ id: 21, ok: false, message: 'agent offline，请重试' }] } },
+    })
+    wrapper.findComponent(ServiceTreeNodeContentStub).vm.$emit('delete-service', { id: 21, name: '订单 API' })
+    await flushPromises()
+    const options = openDeleteConfirm.mock.calls.at(-1)[0]
+    expect(options.summary).toContain('共享实例')
+    expect(options.summary).toContain('原始日志文件保留')
+    await expect(options.onConfirm()).rejects.toThrow('agent offline')
+    expect(wrapper.findComponent(ServiceTreeNodeContentStub).props('scope').applicationServiceId).toBe(21)
+    wrapper.unmount()
   })
 })
 

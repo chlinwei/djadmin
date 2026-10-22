@@ -43,6 +43,7 @@ func TestSaveApplicationServiceRejectsInconsistentLogConfig(t *testing.T) {
 	service.SetLogConfigConsistencyChecker(checker)
 
 	mock.ExpectBegin()
+	expectServiceSaveFence(mock, 15)
 	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT deployment_id FROM assets_application_service_deployment").
 		WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
@@ -79,6 +80,7 @@ func TestSaveApplicationServiceWithoutCheckerSkipsValidation(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 	mock.ExpectBegin()
+	expectServiceSaveFence(mock, 15)
 	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

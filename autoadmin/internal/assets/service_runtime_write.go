@@ -2,6 +2,7 @@ package assets
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -78,6 +79,31 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	enabled := boolValue(input.Enabled, true)
 	logs := boolValue(input.LogCollectionEnabled, false)
 	queries := db.New(tx)
+	// Share the service lock with deletion: an in-flight editor cannot restore a tombstoned service.
+	if id > 0 {
+		if _, err = queries.LockApplicationServiceForDeletion(ctx, id); err != nil {
+			return 0, err
+		}
+	}
+	if _, err = queries.LockServiceIdentityDomain(ctx, input.BusinessSystem); err != nil {
+		return 0, err
+	}
+	if id > 0 {
+		if _, err = queries.GetServiceDeletionTombstone(ctx, id); err == nil {
+			return 0, fmt.Errorf("逻辑服务正在删除，请重试删除，不能再编辑")
+		} else if err != sql.ErrNoRows {
+			return 0, err
+		}
+	}
+	reserved, err := queries.CountReservedServiceLogIdentity(ctx, db.CountReservedServiceLogIdentityParams{
+		BusinessSystemID: input.BusinessSystem, EnvironmentID: env.Int64, ServiceCode: strings.TrimSpace(input.Code),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if reserved > 0 {
+		return 0, fmt.Errorf("该服务日志身份已撤销，不能复用业务/环境/服务编码")
+	}
 	name, code := strings.TrimSpace(input.Name), strings.TrimSpace(input.Code)
 	var serviceID int64
 	if id == 0 {
@@ -184,9 +210,6 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	}
 	return serviceID, nil
 }
-func (r *Repository) DeleteApplicationService(ctx context.Context, id int64) error {
-	return r.queries.DeleteApplicationService(ctx, id)
-}
 func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput) (int64, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
@@ -255,7 +278,17 @@ func (s *Service) SaveApplicationService(ctx context.Context, id int64, input Ap
 	return s.repository.GetApplicationService(ctx, saved)
 }
 func (s *Service) DeleteApplicationService(ctx context.Context, id int64) error {
-	return translate(s.repository.DeleteApplicationService(ctx, id))
+	if s.serviceLogDeleter == nil {
+		return fmt.Errorf("日志撤销能力未配置，不能安全删除逻辑服务")
+	}
+	exists, err := s.repository.beginServiceDeletion(ctx, id)
+	if err != nil || !exists {
+		return translate(err)
+	}
+	if err = s.serviceLogDeleter.RevokeServiceLogs(ctx, id); err != nil {
+		return fmt.Errorf("逻辑服务删除未完成（已禁止新配置，保留记录供重试）: %w", err)
+	}
+	return translate(s.repository.finishServiceDeletion(ctx, id))
 }
 func (s *Service) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput) (ApplicationDeployment, error) {
 	if input.Host < 1 || strings.TrimSpace(input.InstanceName) == "" {

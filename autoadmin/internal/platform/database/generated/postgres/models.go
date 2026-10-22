@@ -427,6 +427,14 @@ type AssetsProject struct {
 	Enabled    bool           `json:"enabled"`
 }
 
+type AssetsServiceDeletion struct {
+	ServiceID          int64  `json:"service_id"`
+	ProjectCode        string `json:"project_code"`
+	BusinessSystemCode string `json:"business_system_code"`
+	EnvironmentCode    string `json:"environment_code"`
+	ServiceCode        string `json:"service_code"`
+}
+
 type AssetsWebsshSessionLog struct {
 	ID                   int64         `json:"id"`
 	UserID               sql.NullInt32 `json:"user_id"`

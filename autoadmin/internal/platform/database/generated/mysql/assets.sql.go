@@ -451,6 +451,29 @@ func (q *Queries) CountProjects(ctx context.Context, arg CountProjectsParams) (i
 	return count, err
 }
 
+const countReservedServiceLogIdentity = `-- name: CountReservedServiceLogIdentity :one
+SELECT COUNT(*) FROM assets_service_deletion t
+JOIN assets_business_system bs ON bs.id=?
+JOIN assets_project p ON p.id=bs.project_id
+JOIN assets_business_environment e ON e.id=?
+WHERE t.project_code=p.code AND t.business_system_code=bs.code
+AND t.environment_code=e.code AND t.service_code=?
+`
+
+type CountReservedServiceLogIdentityParams struct {
+	BusinessSystemID int64  `json:"business_system_id"`
+	EnvironmentID    int64  `json:"environment_id"`
+	ServiceCode      string `json:"service_code"`
+}
+
+// Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+func (q *Queries) CountReservedServiceLogIdentity(ctx context.Context, arg CountReservedServiceLogIdentityParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countReservedServiceLogIdentity, arg.BusinessSystemID, arg.EnvironmentID, arg.ServiceCode)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAgentExecutionJob = `-- name: CreateAgentExecutionJob :execlastid
 INSERT INTO automation_execution_job
   (create_time,update_time,remark,job_id,status,trigger_type,source,inventory_snapshot,extra_vars,result_summary,
@@ -1094,6 +1117,30 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (s
 	)
 }
 
+const createServiceDeletionTombstone = `-- name: CreateServiceDeletionTombstone :exec
+INSERT INTO assets_service_deletion (service_id,project_code,business_system_code,environment_code,service_code)
+VALUES (?,?,?,?,?)
+`
+
+type CreateServiceDeletionTombstoneParams struct {
+	ServiceID          int64  `json:"service_id"`
+	ProjectCode        string `json:"project_code"`
+	BusinessSystemCode string `json:"business_system_code"`
+	EnvironmentCode    string `json:"environment_code"`
+	ServiceCode        string `json:"service_code"`
+}
+
+func (q *Queries) CreateServiceDeletionTombstone(ctx context.Context, arg CreateServiceDeletionTombstoneParams) error {
+	_, err := q.db.ExecContext(ctx, createServiceDeletionTombstone,
+		arg.ServiceID,
+		arg.ProjectCode,
+		arg.BusinessSystemCode,
+		arg.EnvironmentCode,
+		arg.ServiceCode,
+	)
+	return err
+}
+
 const createServiceDeployment = `-- name: CreateServiceDeployment :exec
 INSERT INTO assets_application_service_deployment (create_time,update_time,remark,enabled,deployment_id,service_id)
 VALUES (?,?,NULL,?,?,?)
@@ -1702,6 +1749,18 @@ DELETE FROM assets_application_port WHERE deployment_template_id=?
 
 func (q *Queries) DeleteTemplatePorts(ctx context.Context, deploymentTemplateID int64) error {
 	_, err := q.db.ExecContext(ctx, deleteTemplatePorts, deploymentTemplateID)
+	return err
+}
+
+const deleteUnsharedServiceDeployment = `-- name: DeleteUnsharedServiceDeployment :exec
+DELETE FROM assets_application_deployment
+WHERE assets_application_deployment.id=? AND NOT EXISTS (
+  SELECT 1 FROM assets_application_service_deployment sd WHERE sd.deployment_id=assets_application_deployment.id
+)
+`
+
+func (q *Queries) DeleteUnsharedServiceDeployment(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteUnsharedServiceDeployment, id)
 	return err
 }
 
@@ -2713,6 +2772,35 @@ func (q *Queries) GetProject(ctx context.Context, id int64) (GetProjectRow, erro
 		&i.Enabled,
 		&i.BusinessSystemNames,
 		&i.BusinessSystemIds,
+	)
+	return i, err
+}
+
+const getServiceDeletionBusinessSystem = `-- name: GetServiceDeletionBusinessSystem :one
+SELECT business_system_id FROM assets_application_service WHERE id=?
+`
+
+func (q *Queries) GetServiceDeletionBusinessSystem(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getServiceDeletionBusinessSystem, id)
+	var business_system_id int64
+	err := row.Scan(&business_system_id)
+	return business_system_id, err
+}
+
+const getServiceDeletionTombstone = `-- name: GetServiceDeletionTombstone :one
+SELECT service_id,project_code,business_system_code,environment_code,service_code
+FROM assets_service_deletion WHERE service_id=?
+`
+
+func (q *Queries) GetServiceDeletionTombstone(ctx context.Context, serviceID int64) (AssetsServiceDeletion, error) {
+	row := q.db.QueryRowContext(ctx, getServiceDeletionTombstone, serviceID)
+	var i AssetsServiceDeletion
+	err := row.Scan(
+		&i.ServiceID,
+		&i.ProjectCode,
+		&i.BusinessSystemCode,
+		&i.EnvironmentCode,
+		&i.ServiceCode,
 	)
 	return i, err
 }
@@ -4113,6 +4201,69 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]L
 	return items, nil
 }
 
+const listServiceDeletionDeployments = `-- name: ListServiceDeletionDeployments :many
+SELECT d.id FROM assets_application_deployment d
+JOIN assets_application_service_deployment sd ON sd.deployment_id=d.id
+WHERE sd.service_id=? ORDER BY d.id FOR UPDATE
+`
+
+func (q *Queries) ListServiceDeletionDeployments(ctx context.Context, serviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceDeletionDeployments, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServiceDeletionTombstones = `-- name: ListServiceDeletionTombstones :many
+SELECT service_id,project_code,business_system_code,environment_code,service_code
+FROM assets_service_deletion ORDER BY service_id
+`
+
+func (q *Queries) ListServiceDeletionTombstones(ctx context.Context) ([]AssetsServiceDeletion, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceDeletionTombstones)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AssetsServiceDeletion{}
+	for rows.Next() {
+		var i AssetsServiceDeletion
+		if err := rows.Scan(
+			&i.ServiceID,
+			&i.ProjectCode,
+			&i.BusinessSystemCode,
+			&i.EnvironmentCode,
+			&i.ServiceCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listServiceDeploymentIDs = `-- name: ListServiceDeploymentIDs :many
 SELECT deployment_id FROM assets_application_service_deployment
 WHERE service_id=? ORDER BY id
@@ -4631,6 +4782,27 @@ SELECT id FROM assets_application_deployment WHERE id = ? FOR UPDATE
 // ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 func (q *Queries) LockApplicationDeployment(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRowContext(ctx, lockApplicationDeployment, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockApplicationServiceForDeletion = `-- name: LockApplicationServiceForDeletion :one
+SELECT id FROM assets_application_service WHERE id=? FOR UPDATE
+`
+
+func (q *Queries) LockApplicationServiceForDeletion(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockApplicationServiceForDeletion, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockServiceIdentityDomain = `-- name: LockServiceIdentityDomain :one
+SELECT id FROM assets_business_system WHERE id=? FOR UPDATE
+`
+
+// Serialize creation with tombstoning even when the unique service row is removed.
+func (q *Queries) LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockServiceIdentityDomain, id)
 	err := row.Scan(&id)
 	return id, err
 }

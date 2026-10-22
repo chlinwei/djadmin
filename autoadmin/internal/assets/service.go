@@ -33,6 +33,15 @@ type Service struct {
 	// serviceLogPipelineSyncer 由 logcollect 注入（见 log_extra_processors.go）：服务级后处理器
 	// 保存后对账包装 pipeline。未注入时保存仍可用，但配置了后处理的服务不会被同步。
 	serviceLogPipelineSyncer ServiceLogPipelineSyncer
+	serviceLogDeleter        interface {
+		RevokeServiceLogs(context.Context, int64) error
+	}
+}
+
+func (s *Service) SetServiceLogDeleter(deleter interface {
+	RevokeServiceLogs(context.Context, int64) error
+}) {
+	s.serviceLogDeleter = deleter
 }
 
 func NewService(repository *Repository, encryptionKey, djangoSecret string) (*Service, error) {

@@ -214,6 +214,7 @@ func TestSaveApplicationServiceKeepsFormatVerification(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	expectServiceSaveFence(mock, 15)
 	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
 	// 已提交的行 → 按行 upsert（不是 DELETE + INSERT）。
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
@@ -254,6 +255,7 @@ func TestSaveApplicationServiceDeletesUnsubmittedLogSettings(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	expectServiceSaveFence(mock, 15)
 	mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WillReturnResult(sqlmock.NewResult(0, 1))

@@ -30,6 +30,7 @@ const (
 	actionControlApplication       = "control_application"
 	actionConfigureFilebeatOutput  = "configure_filebeat_output"
 	actionApplyFilebeatConfig      = "apply_filebeat_config"
+	actionRevokeServiceLogs        = "revoke_service_logs"
 	actionApplyAgentUpdate         = "apply_agent_update"
 )
 
@@ -73,6 +74,8 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.configureFilebeatOutput(ctx, job), true
 	case actionApplyFilebeatConfig:
 		return e.applyFilebeatConfig(ctx, job), true
+	case actionRevokeServiceLogs:
+		return e.revokeServiceLogs(ctx, job), true
 	case actionApplyAgentUpdate:
 		return e.applyAgentUpdate(ctx, job), true
 	default:
@@ -184,7 +187,13 @@ func (e *Executor) configureFilebeatOutput(ctx context.Context, job protocol.Job
 // 不在本次清单内的 *.yml 视为遗留片段删除。有变化则校验并重启 Filebeat。
 // 文件内容全部由 backend 渲染，agent 只做落盘/清理/重启，不理解片段语义。
 func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) protocol.JobResult {
+	filebeatConfigMu.Lock()
+	defer filebeatConfigMu.Unlock()
 	started := time.Now()
+	revocations, err := loadLogRevocations(filebeatInputsDir)
+	if err != nil {
+		return failedJobResult(job, started, err)
+	}
 	rawFiles, ok := job.Params["files"].([]any)
 	if !ok {
 		return failedJobResult(job, started, fmt.Errorf("files is required"))
@@ -202,6 +211,13 @@ func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) pr
 		file, _ := rawFile.(map[string]any)
 		path, _ := file["path"].(string)
 		content, _ := file["content"].(string)
+		revoked, err := revokedManagedLogFile(path, []byte(content), revocations)
+		if err != nil {
+			return failedJobResult(job, started, err)
+		}
+		if revoked {
+			continue
+		}
 		if path == "" {
 			return failedJobResult(job, started, fmt.Errorf("file path is required"))
 		}

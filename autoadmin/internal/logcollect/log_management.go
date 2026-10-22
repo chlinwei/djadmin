@@ -560,8 +560,7 @@ func (handler *Handler) bootstrapElasticsearchStorage(context *gin.Context, clus
 	// 这里同时清理那个错名模板，避免同一 index_patterns 挂着两份模板。
 	baseName, basePatterns := buildIndexTemplateName(prefix), []string{prefix + "-*"}
 	// 必备字段 guard 必须先于引用它的索引模板写入（模板 settings 里挂了 final_pipeline）。
-	if _, err := handler.elasticsearchRequest(context, cluster, "PUT",
-		"/_ingest/pipeline/"+buildMappingGuardPipelineName(prefix), buildMappingGuardPipelineBody(handler.mappingGuardMode())); err != nil {
+	if err := handler.publishDeletionAwareGuard(context, cluster); err != nil {
 		return err
 	}
 	// 遗留档位模板可能停在 priority=0（旧版没写 priority），挡住下面基础模板的重写；

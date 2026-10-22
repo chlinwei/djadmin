@@ -168,7 +168,7 @@ export function saveApplicationService(obj) {
 }
 
 export function batchDeleteApplicationServices(ids) {
-    return requestUtil.post(`${applicationServicePrefix}batch-delete/`, { ids })
+    return requestUtil.post(`${applicationServicePrefix}batch-delete/`, { ids }, 180000)
 }
 
 export function refreshApplicationServiceRuntimeStatus(id, timeout = 120000, options = {}) {

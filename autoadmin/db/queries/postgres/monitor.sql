@@ -980,7 +980,8 @@ JOIN assets_application_service s ON s.id = sd.service_id
 JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 JOIN assets_host h ON h.id = d.host_id
 WHERE d.host_id = ANY(sqlc.arg(host_ids)::bigint[])
-  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE;
+  AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id);
 
 -- 渲染 Filebeat inputs 所需的「服务×日志定义」行，按主机批量取。
 -- 原先按主机用 `s.id IN (子查询)` 表达"该主机上部署了哪些服务"，批量取必须把主机维度带出来，
@@ -1027,6 +1028,7 @@ LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND 
 LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
 LEFT JOIN monitor_log_processing_rule rule_definition ON rule_definition.id = ld.processing_rule_id
 WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id)
   AND COALESCE(ls.collection_enabled, TRUE) = TRUE
   AND d.host_id = ANY(sqlc.arg(host_ids)::bigint[]);
 
@@ -1114,6 +1116,14 @@ SELECT code FROM monitor_log_retention_tier WHERE code <> '' ORDER BY id;
 -- name: GetElasticsearchClusterConnection :one
 SELECT id,hosts,username,password,verify_tls,ca_cert,index_prefix,request_timeout,enabled
 FROM monitor_elasticsearch_cluster WHERE id = sqlc.arg(id);
+
+-- Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
+-- name: LockElasticsearchClusterForGuard :one
+SELECT id FROM monitor_elasticsearch_cluster WHERE id=sqlc.arg(id) FOR UPDATE;
+
+-- Deletion must also clean disabled clusters: they can still contain historical logs.
+-- name: ListServiceDeletionClusterIDs :many
+SELECT id FROM monitor_elasticsearch_cluster ORDER BY id;
 
 -- openSearchClusterResponse 的 LastCheckTime/LastCheckSuccess/StorageSyncTime 是可空的，
 -- 这里只更新探测结果，其余列不动。

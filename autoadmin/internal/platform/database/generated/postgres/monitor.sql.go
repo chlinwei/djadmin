@@ -3783,6 +3783,7 @@ LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND 
 LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
 LEFT JOIN monitor_log_processing_rule rule_definition ON rule_definition.id = ld.processing_rule_id
 WHERE s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id)
   AND COALESCE(ls.collection_enabled, TRUE) = TRUE
   AND d.host_id = ANY($1::bigint[])
 `
@@ -3880,6 +3881,7 @@ JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id
 JOIN assets_host h ON h.id = d.host_id
 WHERE d.host_id = ANY($1::bigint[])
   AND sd.enabled = TRUE AND d.enabled = TRUE AND s.enabled = TRUE AND s.log_collection_enabled = TRUE
+  AND NOT EXISTS (SELECT 1 FROM assets_service_deletion deleted WHERE deleted.service_id=s.id)
 `
 
 type ListHostLogRenderInstancesRow struct {
@@ -5324,6 +5326,34 @@ func (q *Queries) ListServiceActiveStreamTiers(ctx context.Context) ([]ListServi
 	return items, nil
 }
 
+const listServiceDeletionClusterIDs = `-- name: ListServiceDeletionClusterIDs :many
+SELECT id FROM monitor_elasticsearch_cluster ORDER BY id
+`
+
+// Deletion must also clean disabled clusters: they can still contain historical logs.
+func (q *Queries) ListServiceDeletionClusterIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listServiceDeletionClusterIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listServiceExtraPipelineRows = `-- name: ListServiceExtraPipelineRows :many
 SELECT s.id AS service_id, ld.id AS log_definition_id,
        COALESCE(ls.extra_processors, '[]'::json) AS extra_processors,
@@ -5769,6 +5799,17 @@ func (q *Queries) ListUninstallableFilebeatPackages(ctx context.Context) ([]List
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockElasticsearchClusterForGuard = `-- name: LockElasticsearchClusterForGuard :one
+SELECT id FROM monitor_elasticsearch_cluster WHERE id=$1 FOR UPDATE
+`
+
+// Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
+func (q *Queries) LockElasticsearchClusterForGuard(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockElasticsearchClusterForGuard, id)
+	err := row.Scan(&id)
+	return id, err
 }
 
 const markAgentTokenUsed = `-- name: MarkAgentTokenUsed :exec

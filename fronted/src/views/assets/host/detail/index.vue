@@ -192,6 +192,9 @@
                                 </div>
                             </a-spin>
                         </a-tab-pane>
+                        <a-tab-pane key="service-tree" tab="服务树归属">
+                            <HostServiceTree v-if="activeDetailTab === 'service-tree'" :host="detailHost" />
+                        </a-tab-pane>
                     </a-tabs>
                 </template>
             </a-spin>
@@ -219,6 +222,7 @@ import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import store from '@/store'
 import { formatDateTimeWithTimezone, formatPercent, formatSize, getDisks } from '../utils/hostDisplayUtils'
 import HostMetricChart from './components/HostMetricChart.vue'
+import HostServiceTree from './components/HostServiceTree.vue'
 
 const route = useRoute()
 const router = useRouter()

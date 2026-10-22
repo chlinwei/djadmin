@@ -138,6 +138,46 @@ describe('Host Agent 凭证安装与主机编辑保存', () => {
     vi.clearAllMocks()
   })
 
+  it('主机创建时间为最后一个数据列并按用户时区格式化', () => {
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: { Dialog: true, FontAwesomeIcon: true },
+        directives: { permission: () => {} },
+      },
+    })
+    const state = wrapper.vm.$.setupState
+    expect(state.columns.at(-2)).toMatchObject({
+      title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 190,
+      sorter: true,
+    })
+    expect(state.columns.at(-1)).toMatchObject({ key: 'action', fixed: 'right' })
+    expect(state.formatDateTime('2026-10-22T00:00:00Z')).toBe('2026-10-22T00:00:00Z')
+    expect(state.formatDateTime(null)).toBe('-')
+    wrapper.unmount()
+  })
+
+  it('创建时间排序跨页保留，切换及取消排序回到第一页', async () => {
+    const wrapper = shallowMount(HostPage, {
+      global: {
+        stubs: { Dialog: true, FontAwesomeIcon: true },
+        directives: { permission: () => {} },
+      },
+    })
+    await flushPromises()
+    const state = wrapper.vm.$.setupState
+    for (const [order, expected] of [['ascend', 'create_time'], ['descend', '-create_time'], [undefined, '']]) {
+      await state.handleTableChange({ current: 3, pageSize: 10 }, {}, { field: 'create_time', order })
+      expect(hostApi.getHostList).toHaveBeenLastCalledWith(expect.objectContaining({
+        page: 1, ordering: expected,
+      }))
+      await state.handleTableChange({ current: 2, pageSize: 10 }, {}, { field: 'create_time', order })
+      expect(hostApi.getHostList).toHaveBeenLastCalledWith(expect.objectContaining({
+        page: 2, ordering: expected,
+      }))
+    }
+    wrapper.unmount()
+  })
+
   it('编辑主机并保存应提交正确的表单字段', async () => {
     const wrapper = shallowMount(HostPage, {
       global: {

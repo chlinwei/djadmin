@@ -138,7 +138,6 @@ const treeHeight = ref(420)
 const debouncedSearchText = ref('')
 const searchDebounceTimer = ref(null)
 const scopeByKey = new Map()
-const lazyDeploymentChildrenByServiceKey = new Map()
 const hostPieRef = ref(null)
 const deploymentPieRef = ref(null)
 const hostPieChart = ref(null)
@@ -357,7 +356,6 @@ const currentFilterScope = () => ({
 
 function buildTree(systems, services, deployments) {
   scopeByKey.clear()
-  lazyDeploymentChildrenByServiceKey.clear()
   scopeByKey.set('all', currentFilterScope())
   const servicesBySystem = new Map()
   const orphanServices = []
@@ -403,7 +401,6 @@ function buildTree(systems, services, deployments) {
           isLeaf: true,
         }
       })
-      lazyDeploymentChildrenByServiceKey.set(serviceKey, deploymentNodes)
       // 分了环境层级后服务名不用再重复带 [环境] 后缀，环境层的标题已经表达了这层信息。
       const title = props.groupByProject ? service.name : `${service.name} [${service.environment_name || '未指定环境'}]`
       return {
@@ -411,8 +408,8 @@ function buildTree(systems, services, deployments) {
         title,
         searchText: `${service.name} ${service.environment_name || '未指定环境'}`.toLowerCase(),
         count: serviceDeployments.length,
-        children: [],
-        hasLazyChildren: deploymentNodes.length > 0,
+        children: deploymentNodes,
+        isLeaf: deploymentNodes.length === 0,
         // 这里曾按 `log_collection_enabled` 给服务节点加灰与禁用标记（"该服务未开启日志采集"）。
         // 2026-09-19 去掉：树是所有资产页共用的，而"采不采日志"只在日志域有意义，灰节点在
         // 资产/告警页只是噪声；判断"为什么查不到日志"现在由日志中心的「采集链路」逐层回答
@@ -460,8 +457,16 @@ function buildTree(systems, services, deployments) {
   if (orphanServices.length) {
     allSystems.push({ id: 'unassigned', name: '未归属业务系统', enabled: false })
   }
-  const hasResourceFilter = selectedProjects.value.length > 0 || selectedEnvironments.value.length > 0
-  const systemNodes = allSystems.map((system) => {
+  const projectIds = new Set(selectedProjects.value.map(String))
+  const projectSystemIds = new Set(projectRecords.value
+    .filter((project) => projectIds.has(String(project.id)))
+    .flatMap((project) => project.business_systems || [])
+    .map(String))
+  // 项目归属独立于服务数量：空业务系统也属于项目，不能通过“是否有服务”推断归属。
+  const visibleSystems = projectIds.size
+    ? allSystems.filter((system) => projectIds.has(String(system.project)) || projectSystemIds.has(String(system.id)))
+    : allSystems
+  const systemNodes = visibleSystems.map((system) => {
     const systemKey = `system:${system.id}`
     if (system.id !== 'unassigned') {
       // projectId 必须随 scope 走：业务系统 code 只在项目内唯一，下游（日志中心水位）
@@ -494,14 +499,25 @@ function buildTree(systems, services, deployments) {
       _projectId: system.project ?? null,
       _projectName: system.project_name || '',
     }
-  }).filter((node) => !hasResourceFilter || node.children.length)
+  }).filter((node) => !selectedEnvironments.value.length || node.children.length)
 
   const rootChildren = props.groupByProject ? groupSystemNodesByProject(systemNodes) : systemNodes
   const rootTitle = props.groupByProject ? '全部逻辑服务' : '全部业务'
   treeData.value = [{ key: 'all', title: rootTitle, searchText: rootTitle, count: systemNodes.length, children: rootChildren }]
 
-  const baseExpandedKeys = ['all', ...rootChildren.map((node) => node.key), ...systemNodes.map((node) => node.key)]
-  expandedKeys.value = baseExpandedKeys
+  // 所有页面统一展示到实例层，不让是否访问过实例详情决定树的结构。
+  const branchKeys = []
+  function collectBranches(nodes) {
+    for (const node of nodes) {
+      if (node.children?.length) {
+        branchKeys.push(node.key)
+        collectBranches(node.children)
+      }
+    }
+  }
+  collectBranches(treeData.value)
+  expandedKeys.value = branchKeys
+  revealSelectedScope(props.selectedScope)
 }
 
 // 参考“逻辑服务” tab 的左侧树：把业务系统按所属项目收成上一层，无项目的系统归入“未分配项目”。
@@ -567,11 +583,7 @@ function pruneSelectedEnvironments() {
 function filterNodes(nodes, keyword) {
   if (!keyword) return nodes
   return nodes.reduce((result, node) => {
-    let sourceChildren = node.children || []
-    if (!sourceChildren.length && node.hasLazyChildren) {
-      sourceChildren = lazyDeploymentChildrenByServiceKey.get(node.key) || []
-    }
-    const children = filterNodes(sourceChildren, keyword)
+    const children = filterNodes(node.children || [], keyword)
     if ((node.searchText || String(node.title).toLowerCase()).includes(keyword) || children.length) {
       result.push({ ...node, children })
     }
@@ -581,35 +593,13 @@ function filterNodes(nodes, keyword) {
 
 const filteredTreeData = computed(() => filterNodes(treeData.value, debouncedSearchText.value.trim().toLowerCase()))
 
-function materializeServiceChildren(serviceKey) {
-  const lazyChildren = lazyDeploymentChildrenByServiceKey.get(serviceKey)
-  if (!lazyChildren?.length) return
-
-  const visit = (nodes) => {
-    for (const node of nodes || []) {
-      if (node.key === serviceKey) {
-        if (!node.children?.length) node.children = lazyChildren
-        return true
-      }
-      if (node.children?.length && visit(node.children)) return true
-    }
-    return false
-  }
-
-  visit(treeData.value)
-}
-
 function updateTreeHeight() {
   treeHeight.value = Math.max(MIN_TREE_HEIGHT, window.innerHeight - 360)
   resizeCharts()
 }
 
-function handleExpand(keys, info) {
+function handleExpand(keys) {
   expandedKeys.value = keys
-  if (info?.expanded && String(info?.node?.key || '').startsWith('service:')) {
-    // 服务节点展开时再挂载实例子节点，降低大规模树初始渲染开销。
-    materializeServiceChildren(info.node.key)
-  }
 }
 
 function handleSelect(keys) {
@@ -643,6 +633,20 @@ function scopeKey(scope) {
   return 'all'
 }
 
+function revealSelectedScope(scope) {
+  const key = scopeKey(scope)
+  function findPath(nodes, parents = []) {
+    for (const node of nodes) {
+      if (node.key === key) return parents
+      const path = findPath(node.children || [], [...parents, node.key])
+      if (path) return path
+    }
+    return null
+  }
+  const parents = findPath(treeData.value)
+  if (parents) expandedKeys.value = [...new Set([...expandedKeys.value, ...parents])]
+}
+
 watch(
   () => props.selectedScope,
   (scope) => {
@@ -651,6 +655,7 @@ watch(
     const key = scopeKey(scope)
     if (selectedKeys.value.length === 1 && selectedKeys.value[0] === key) return
     selectedKeys.value = [key]
+    revealSelectedScope(scope)
   },
   { deep: true, immediate: true },
 )

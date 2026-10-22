@@ -157,7 +157,7 @@
                 </template>
 
                 <a-table
-                    :scroll="{ x: 1400 }"
+                    :scroll="{ x: 1800 }"
                     :row-selection="{ selectedRowKeys: state.selectedRowKeys, onChange: onSelectChange }"
                     rowKey="id"
                     :columns="columns"
@@ -205,6 +205,9 @@
                         </template>
                         <template v-else-if="column.key === 'agent_version'">
                             <span>{{ record.system?.agent_version || '-' }}</span>
+                        </template>
+                        <template v-else-if="column.key === 'create_time'">
+                            {{ formatDateTime(record.create_time) }}
                         </template>
                         <template v-else-if="column.key === 'action'">
                             <div :key="record.id">
@@ -880,10 +883,12 @@ const columns = [
     { title: 'CPU 核数', dataIndex: 'cpu_cores', key: 'cpu_cores', width: 100 },
     { title: '内存', dataIndex: 'memory_gb', key: 'memory_gb', width: 110 },
     { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
+    { title: '创建时间', dataIndex: 'create_time', key: 'create_time', width: 190, sorter: true },
     { title: '操作', key: 'action', fixed: 'right', width: 340 },
 ]
 
 const pagination = reactive(createPagination())
+const hostOrdering = ref('')
 
 const groupDeleteHostCount = computed(() => {
     const rootNodes = Array.isArray(groupDeletePreviewTreeData.value) ? groupDeletePreviewTreeData.value : []
@@ -1230,6 +1235,7 @@ const loadHostList = async ({ refreshRuntime = true } = {}) => {
             page: pagination.current,
             size: pagination.pageSize,
             search: activeSearchText.value,
+            ordering: hostOrdering.value,
         }
         if (activeHostIdFilter.value) {
             params.host_id = activeHostIdFilter.value
@@ -1748,8 +1754,12 @@ const onAgentStatusChange = async () => {
     await refreshList()
 }
 
-const handleTableChange = async (pageConfig) => {
-    pagination.current = pageConfig.current
+const handleTableChange = async (pageConfig, filters, sorter) => {
+    const ordering = sorter?.field === 'create_time' && sorter.order
+        ? (sorter.order === 'descend' ? '-create_time' : 'create_time')
+        : ''
+    pagination.current = ordering !== hostOrdering.value ? 1 : pageConfig.current
+    hostOrdering.value = ordering
     pagination.pageSize = pageConfig.pageSize
     await refreshList()
 }

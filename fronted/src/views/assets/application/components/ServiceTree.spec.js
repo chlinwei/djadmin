@@ -44,6 +44,49 @@ describe('ServiceTree', () => {
     ]))
   })
 
+  it('reveals a deep-linked deployment after loading and after changing external scope', async () => {
+    const wrapper = mount(ServiceTree, {
+      props: { selectedScope: { nodeType: 'deployment', deploymentId: 11, applicationServiceId: 21 } },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('order-prod-1')
+    expect(wrapper.find('.ant-tree-node-selected').isVisible()).toBe(true)
+    await wrapper.setProps({
+      selectedScope: { nodeType: 'deployment', deploymentId: 12, applicationServiceId: 22 },
+    })
+    await flushPromises()
+    expect(wrapper.find('.ant-tree-node-selected').text()).toContain('order-test-1')
+    expect(wrapper.find('.ant-tree-node-selected').isVisible()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps empty business systems when filtering by project but not by an unrelated environment', async () => {
+    applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
+      { id: 7, name: '订单系统', project: 301, project_name: '订单项目' },
+      { id: 8, name: 'imf', project: 301, project_name: '订单项目' },
+      { id: 9, name: '其他空业务', project: 302, project_name: '其他项目' },
+    ]))
+    const wrapper = mount(ServiceTree, {
+      props: { groupByProject: true },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    await flushPromises()
+    const projectFilter = wrapper.findAllComponents({ name: 'ASelect' })
+      .find((component) => component.classes().includes('service-tree-project-filter'))
+    await projectFilter.vm.$emit('change', [301])
+    await flushPromises()
+    expect(wrapper.text()).toContain('imf')
+    expect(wrapper.text()).not.toContain('其他空业务')
+    const environmentFilter = wrapper.findAllComponents({ name: 'ASelect' })
+      .find((component) => component.classes().includes('service-tree-environment-filter'))
+    await environmentFilter.vm.$emit('change', [71])
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('imf')
+    expect(wrapper.text()).toContain('订单 API')
+    wrapper.unmount()
+  })
+
   it('builds services directly under business systems and emits the selected service scope', async () => {
     const wrapper = mount(ServiceTree, { global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } } })
     await flushPromises()
@@ -53,7 +96,8 @@ describe('ServiceTree', () => {
     expect(wrapper.text()).toContain('订单 API')
     expect(wrapper.text()).toContain('订单 API [生产环境]')
     expect(wrapper.text()).toContain('订单任务 [测试环境]')
-    // 部署实例是懒加载子节点，展开服务节点后才挂载，初始渲染不包含实例名。
+    expect(wrapper.text()).toContain('order-prod-1')
+    expect(wrapper.text()).toContain('order-test-1')
 
     const allBusinessNode = wrapper.findAll('.ant-tree-node-content-wrapper')
       .find((node) => node.text().includes('订单系统'))
@@ -107,9 +151,9 @@ describe('ServiceTree', () => {
       .find((node) => node.text().includes('订单项目'))
     expect(projectNode.exists()).toBe(true)
     expect(wrapper.text()).toContain('订单系统')
-    // 环境层收拢同一环境下的多个服务，默认折叠，服务名此时还看不见。
     expect(wrapper.text()).toContain('生产环境 (1)')
-    expect(wrapper.text()).not.toContain('订单 API')
+    expect(wrapper.text()).toContain('订单 API')
+    expect(wrapper.text()).toContain('order-prod-1')
     expect(wrapper.find('.service-tree-icon--project').exists()).toBe(true)
     expect(wrapper.find('.service-tree-icon--system').exists()).toBe(true)
     expect(wrapper.find('.service-tree-icon--environment').exists()).toBe(true)
@@ -118,8 +162,10 @@ describe('ServiceTree', () => {
       .find((node) => node.text().includes('生产环境'))
     await environmentTreenode.find('.ant-tree-switcher').trigger('click')
     await flushPromises()
+    expect(wrapper.findComponent({ name: 'ATree' }).props('expandedKeys')).not.toContain('environment:7:71')
+    await environmentTreenode.find('.ant-tree-switcher').trigger('click')
+    await flushPromises()
 
-    // 展开环境节点后才能看到具体服务，且分了环境层级后服务名不再重复带 [环境] 后缀。
     expect(wrapper.text()).toContain('订单 API')
     expect(wrapper.text()).not.toContain('订单 API [生产环境]')
     expect(wrapper.find('.service-tree-icon--service').exists()).toBe(true)

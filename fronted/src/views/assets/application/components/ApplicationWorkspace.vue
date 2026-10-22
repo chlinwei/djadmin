@@ -301,7 +301,7 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 
 const categoryLabels = { web_container: 'Web 容器', database: '数据库', middleware: '中间件', business: '业务应用', other: '其他' }
 const controlTypeLabels = { systemd: 'Systemd', command: '命令行', external_ha: '外部 HA', docker: 'Docker', docker_compose: 'Docker Compose' }
-const clusterTypeLabels = { mysql: 'MySQL 集群', redis: 'Redis 集群', nacos: 'Nacos 集群', elasticsearch: 'Elasticsearch 集群', ha: 'HA 集群', custom: '自定义集群' }
+const clusterTypeLabels = { ha: 'HA 集群', custom: '自定义集群' }
 const controlTypeColors = { systemd: 'blue', command: 'orange', external_ha: 'gold', docker: 'cyan', docker_compose: 'geekblue' }
 const runtimeStatusMap = {
   unknown: { label: '未知', badge: 'default' },

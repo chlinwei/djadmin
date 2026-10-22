@@ -293,6 +293,17 @@ function applyQueryScope() {
     businessSystemId: Number(query.business_system_id) || undefined,
     environment: Number.isInteger(environmentId) && environmentId > 0 ? environmentId : null,
     environmentName: String(query.environment_name || ''),
+    projectId: Number(query.project_id) || undefined,
+    projectName: String(query.project_name || ''),
+    businessSystemName: String(query.business_system_name || ''),
+    serviceName: String(query.service_name || `服务 ${serviceId}`),
+  }
+  const deploymentId = Number(query.deployment_id)
+  if (Number.isInteger(deploymentId) && deploymentId > 0) {
+    serviceScope.value = {
+      ...serviceScope.value, nodeType: 'deployment', deploymentId,
+      nodeTitle: `部署 ${deploymentId}`,
+    }
   }
 }
 

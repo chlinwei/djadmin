@@ -189,13 +189,13 @@ func (r *Repository) DeleteHostGroup(ctx context.Context, id int64) error {
 	return r.queries.DeleteHostGroup(ctx, id)
 }
 
-func (r *Repository) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page) ([]db.ListHostsRow, int64, error) {
+func (r *Repository) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page, ordering string) ([]db.ListHostsRow, int64, error) {
 	params := db.CountHostsParams{Pattern: pattern(search), GroupID: sql.NullInt64{Int64: groupID, Valid: true}, EnvironmentID: sql.NullInt64{Int64: environmentID, Valid: true}}
 	count, err := r.queries.CountHosts(ctx, params)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.queries.ListHosts(ctx, db.ListHostsParams{Pattern: params.Pattern, GroupID: params.GroupID, EnvironmentID: params.EnvironmentID, Limit: page.Size, Offset: page.Offset})
+	rows, err := r.queries.ListHosts(ctx, db.ListHostsParams{Pattern: params.Pattern, GroupID: params.GroupID, EnvironmentID: params.EnvironmentID, Limit: page.Size, Offset: page.Offset, Ordering: ordering})
 	return rows, count, err
 }
 func (r *Repository) GetHost(ctx context.Context, id int64) (db.GetHostRow, error) {

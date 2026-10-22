@@ -284,6 +284,10 @@ func (s *Service) CreateProfile(ctx context.Context, input ClusterProfileInput) 
 	if !validNamed(input.Name, input.Code) {
 		return ClusterProfile{}, ErrInvalid
 	}
+	// 内置 HA 由资产数据维护，用户接口只允许创建自定义模型，避免重建已移除的内置类型。
+	if input.ProfileType != "custom" || input.ClusterType != "custom" {
+		return ClusterProfile{}, ErrInvalid
+	}
 	now := time.Now().UTC()
 	id, err := s.repository.CreateProfile(ctx, db.CreateClusterProfileParams{CreateTime: now, UpdateTime: now, Remark: nullString(input.Remark), Name: input.Name, Code: input.Code, ProfileType: input.ProfileType, Enabled: enabled(input.Enabled), ApplicationID: nullInt(input.Application), ClusterType: input.ClusterType})
 	if err != nil {
@@ -310,6 +314,9 @@ func (s *Service) UpdateProfile(ctx context.Context, id int64, input ClusterProf
 	}
 	if input.ClusterType == "" {
 		input.ClusterType = current.ClusterType
+	}
+	if input.ProfileType != "custom" || input.ClusterType != "custom" {
+		return ClusterProfile{}, ErrInvalid
 	}
 	if input.Application == nil {
 		input.Application = intValue(current.ApplicationID)

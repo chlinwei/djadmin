@@ -3923,13 +3923,17 @@ LEFT JOIN assets_hosthardware hw ON hw.host_id = h.id
 WHERE (? = 0 OR h.group_id = ?)
   AND (? = 0 OR h.environment_id = ?)
   AND (COALESCE(h.instance_name, '') LIKE ? OR COALESCE(h.ip, '') LIKE ? OR COALESCE(h.remark, '') LIKE ?)
-ORDER BY h.id DESC LIMIT ? OFFSET ?
+ORDER BY
+  CASE WHEN ? = 'create_time' THEN h.create_time END ASC,
+  CASE WHEN ? = '-create_time' THEN h.create_time END DESC,
+  h.id DESC LIMIT ? OFFSET ?
 `
 
 type ListHostsParams struct {
 	GroupID       sql.NullInt64  `json:"group_id"`
 	EnvironmentID sql.NullInt64  `json:"environment_id"`
 	Pattern       sql.NullString `json:"pattern"`
+	Ordering      interface{}    `json:"ordering"`
 	Limit         int32          `json:"limit"`
 	Offset        int32          `json:"offset"`
 }
@@ -3979,6 +3983,8 @@ func (q *Queries) ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHos
 		arg.Pattern,
 		arg.Pattern,
 		arg.Pattern,
+		arg.Ordering,
+		arg.Ordering,
 		arg.Limit,
 		arg.Offset,
 	)

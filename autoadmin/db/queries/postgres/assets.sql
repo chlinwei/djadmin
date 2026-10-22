@@ -176,7 +176,10 @@ LEFT JOIN assets_hosthardware hw ON hw.host_id = h.id
 WHERE (sqlc.arg(group_id) = 0 OR h.group_id = sqlc.arg(group_id))
   AND (sqlc.arg(environment_id) = 0 OR h.environment_id = sqlc.arg(environment_id))
   AND (COALESCE(h.instance_name, '') LIKE sqlc.narg(pattern) OR COALESCE(h.ip, '') LIKE sqlc.narg(pattern) OR COALESCE(h.remark, '') LIKE sqlc.narg(pattern))
-ORDER BY h.id DESC LIMIT $1 OFFSET $2;
+ORDER BY
+  CASE WHEN sqlc.arg(ordering) = 'create_time' THEN h.create_time END ASC,
+  CASE WHEN sqlc.arg(ordering) = '-create_time' THEN h.create_time END DESC,
+  h.id DESC LIMIT $1 OFFSET $2;
 
 -- name: GetHost :one
 SELECT h.*, COALESCE(g.name, '') AS group_name, COALESCE(e.name, '') AS environment_name

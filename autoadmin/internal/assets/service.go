@@ -667,8 +667,8 @@ func host(row db.ListHostsRow) Host {
 func hostDetail(row db.GetHostRow) Host {
 	return Host{ID: row.ID, CreateTime: timestamp(row.CreateTime), UpdateTime: timestamp(row.UpdateTime), Remark: stringValue(row.Remark), Status: row.Status, InstanceID: stringValue(row.InstanceID), IP: stringValue(row.Ip), IsDeletedInCloud: row.IsDeletedInCloud, CloudAccount: intValue(row.CloudAccountID), Group: intValue(row.GroupID), GroupName: row.GroupName, InstanceName: stringValue(row.InstanceName), CollectStatus: row.CollectStatus, CollectMessage: row.CollectMessage, CollectTime: timeValue(row.CollectTime), AgentOnline: row.AgentOnline, AgentOnlineTime: timeValue(row.AgentOnlineTime), WebSSHDefaultUsername: row.WebsshDefaultUsername, WebSSHLoginUsers: row.WebsshLoginUsers, Environment: intValue(row.EnvironmentID), EnvironmentName: row.EnvironmentName}
 }
-func (s *Service) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page) ([]Host, int64, error) {
-	rows, count, err := s.repository.ListHosts(ctx, search, groupID, environmentID, page)
+func (s *Service) ListHosts(ctx context.Context, search string, groupID, environmentID int64, page pagination.Page, ordering string) ([]Host, int64, error) {
+	rows, count, err := s.repository.ListHosts(ctx, search, groupID, environmentID, page, ordering)
 	result := make([]Host, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, host(row))

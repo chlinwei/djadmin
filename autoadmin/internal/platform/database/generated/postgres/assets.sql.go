@@ -3800,7 +3800,10 @@ LEFT JOIN assets_hosthardware hw ON hw.host_id = h.id
 WHERE ($3 = 0 OR h.group_id = $3)
   AND ($4 = 0 OR h.environment_id = $4)
   AND (COALESCE(h.instance_name, '') LIKE $5 OR COALESCE(h.ip, '') LIKE $5 OR COALESCE(h.remark, '') LIKE $5)
-ORDER BY h.id DESC LIMIT $1 OFFSET $2
+ORDER BY
+  CASE WHEN $6 = 'create_time' THEN h.create_time END ASC,
+  CASE WHEN $6 = '-create_time' THEN h.create_time END DESC,
+  h.id DESC LIMIT $1 OFFSET $2
 `
 
 type ListHostsParams struct {
@@ -3809,6 +3812,7 @@ type ListHostsParams struct {
 	GroupID       interface{}    `json:"group_id"`
 	EnvironmentID interface{}    `json:"environment_id"`
 	Pattern       sql.NullString `json:"pattern"`
+	Ordering      interface{}    `json:"ordering"`
 }
 
 type ListHostsRow struct {
@@ -3854,6 +3858,7 @@ func (q *Queries) ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHos
 		arg.GroupID,
 		arg.EnvironmentID,
 		arg.Pattern,
+		arg.Ordering,
 	)
 	if err != nil {
 		return nil, err

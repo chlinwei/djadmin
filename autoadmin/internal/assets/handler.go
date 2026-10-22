@@ -319,6 +319,11 @@ func (h *Handler) UpdateHostGroup(c *gin.Context) {
 	respond(c, item, err)
 }
 func (h *Handler) ListHosts(c *gin.Context) {
+	ordering := strings.TrimSpace(c.Query("ordering"))
+	if ordering != "" && ordering != "create_time" && ordering != "-create_time" {
+		response.Error(c, ErrInvalid)
+		return
+	}
 	page, err := page(c)
 	if err != nil {
 		response.Error(c, err)
@@ -340,10 +345,10 @@ func (h *Handler) ListHosts(c *gin.Context) {
 		return
 	}
 	if agentStatus == "online" || agentStatus == "offline" {
-		h.listHostsByAgentStatus(c, page, groupID, environmentID, agentStatus)
+		h.listHostsByAgentStatus(c, page, groupID, environmentID, agentStatus, ordering)
 		return
 	}
-	rows, count, err := h.service.ListHosts(c.Request.Context(), c.Query("search"), groupID, environmentID, page)
+	rows, count, err := h.service.ListHosts(c.Request.Context(), c.Query("search"), groupID, environmentID, page, ordering)
 	if err != nil {
 		respond(c, nil, err)
 		return
@@ -354,11 +359,11 @@ func (h *Handler) ListHosts(c *gin.Context) {
 	response.Paginated(c, rows, count, page.Number, page.Size)
 }
 
-func (h *Handler) listHostsByAgentStatus(c *gin.Context, page pagination.Page, groupID, environmentID int64, agentStatus string) {
+func (h *Handler) listHostsByAgentStatus(c *gin.Context, page pagination.Page, groupID, environmentID int64, agentStatus, ordering string) {
 	const batchSize = int32(pagination.MaxSize)
 	filtered := make([]Host, 0)
 	for batchNumber := int32(1); ; batchNumber++ {
-		rows, count, err := h.service.ListHosts(c.Request.Context(), c.Query("search"), groupID, environmentID, pagination.New(batchNumber, batchSize))
+		rows, count, err := h.service.ListHosts(c.Request.Context(), c.Query("search"), groupID, environmentID, pagination.New(batchNumber, batchSize), ordering)
 		if err != nil {
 			respond(c, nil, err)
 			return

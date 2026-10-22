@@ -54,6 +54,7 @@
             :scroll="{ x: 1200 }"
             :pagination="pagination"
             :locale="tableLocale"
+            @change="handleTableChange"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'metric'">
@@ -211,6 +212,16 @@ const tableRows = computed(() => {
   })
 })
 
+const currentPage = ref(1)
+const pageSize = ref(10)
+const pagination = computed(() => createPagination(tableRows.value.length, pageSize.value, {
+  current: currentPage.value,
+}))
+
+function handleTableChange(pager) {
+  currentPage.value = pager.current
+  pageSize.value = pager.pageSize
+}
 
 async function runQuery() {
   const expression = String(queryText.value || '').trim()
@@ -221,6 +232,7 @@ async function runQuery() {
 
   loading.value = true
   errorMessage.value = ''
+  currentPage.value = 1
   try {
     const response = queryMode.value === 'range'
       ? await queryPrometheusRange(buildRangeQueryParams())

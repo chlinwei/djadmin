@@ -47,15 +47,20 @@
 
 ## 侧边菜单滚动与内容视口（2026-09-21）
 
-`layout/index.vue` 的左侧 `a-layout-sider` 被约束为 `height: 100vh` + `position: sticky; top: 0` +
-`overflow-y: auto`。
+`layout/index.vue` 的左侧 `a-layout-sider` 被约束为 `height: 100vh` + `position: fixed; top: 0; left: 0` +
+`overflow: hidden`，仅内部 `.ant-layout-sider-children` 使用 `overflow-y: auto` 滚动。
 
 - **问题**：菜单项多/默认展开的目录多时，未约束的 sider 会把整个文档撑高，滚动的是 window。要够到靠下的
   菜单项必须先把 window 滚到底；点完菜单项后 window 滚动位置不变，而右侧内容在文档顶部，于是视口停在
   底部，必须手动往上滚才能看到内容。
 - **约定**：菜单再高也只占一个视口高度、在自己的区域内滚动，**不允许把整个文档撑高**。右侧内容仍沿用
   window 滚动（大量页面用 `height: calc(100vh - X)` 自算高度，改成内容区独立滚动会双滚动/高度错乱）。
-- 附带影响：antd 的折叠 trigger 是 `position: fixed`，sider 变为滚动容器后仍固定在视口底部。
+- 外壳保持完整视口高度与深色背景，不参与滚动；保留 Ant Design 为折叠按钮预留的底部 padding，
+  内容区在剩余高度内独立滚动，避免底部预留区随菜单滚动形成空白，确保末项不被按钮遮挡。
+- 侧栏固定在视口，不使用受父容器底部约束的 sticky：右侧图表等内容溢出布局高度时，滚动 window
+  也不能把侧栏带离视口。主区域通过左外边距让出侧栏宽度（展开 200px、折叠 80px），随折叠状态同步更新。
+- 折叠 trigger 使用 Ant Design 的 `position: fixed`，固定在视口底部；展开和折叠使用同一套滚动规则，
+  右侧内容高度不影响侧栏背景与菜单滚动范围。
 
 ## 维护约定
 

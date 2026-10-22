@@ -7,6 +7,7 @@
 
 ## 最终逻辑
 
+- Explore 的即时查询结果由前端表格分页，默认每页 10 条，使用公共分页配置，支持切换页码和每页条数；总条数取当前查询结果数量。每次执行有效查询时回到第一页，并保留用户选择的每页条数；翻页不重复请求 Prometheus。范围查询使用图表展示，不展示分页表格。
 - `prometheusGet` 统一请求 Prometheus，把响应解为 `prometheusPayload`：`status`、`warnings`、`error` 为定式字段，`data` 用 `json.RawMessage` 保存原始 JSON，不预设形状。
 - 原因：Prometheus 各端点的 `data` 形状不一致——`/query`、`/targets`、`/alerts`、`/rules`、`/status/*` 返回对象，`/label/<name>/values`、`/series` 返回数组。早期版本把 `data` 定为 `map[string]any`，导致 Explore 补全（数组形 data）解码失败，前端收到 `prometheus invalid json response: json: cannot unmarshal array...`，补全失效。
 - `PrometheusProxy` 将 `payload.Data`（RawMessage）原样透传，格式无关，任意 `/api/v1/*` 端点均可代理。

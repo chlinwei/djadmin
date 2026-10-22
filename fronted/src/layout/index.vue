@@ -4,7 +4,7 @@
             <!-- 左边menu -->
             <Menu />
         </a-layout-sider>
-        <a-layout>
+        <a-layout class="app-main" :style="{ marginLeft: collapsed ? '80px' : '200px' }">
             <!-- header -->
             <a-layout-header style="background: #fff; padding: 0">
                 <Header />
@@ -87,14 +87,22 @@ const collapsed = ref(false)
 
 
 <style scoped>
-/* 菜单过长时不能撑高整个文档：把侧边栏锁在视口高度、内部自己滚动。
-   否则要够到靠下的菜单项得先把 window 滚到底，点完菜单后 window 仍停在底部，
-   右侧内容（在文档顶部）就看不见，得再手动往上滚。 */
+/* 页面内容可能溢出布局容器，sticky 会受容器底部限制而被带离视口。
+   固定侧栏并由主区域让出宽度，仅菜单内部滚动；保留底部按钮占位。 */
 .app-layout :deep(.ant-layout-sider) {
-    position: sticky;
+    position: fixed;
     top: 0;
-    align-self: flex-start;
+    left: 0;
+    z-index: 100;
     height: 100vh;
+    overflow: hidden;
+}
+
+.app-main {
+    transition: margin-left 0.2s;
+}
+
+.app-layout :deep(.ant-layout-sider-children) {
     overflow-y: auto;
     overflow-x: hidden;
 }

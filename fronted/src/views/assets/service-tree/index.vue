@@ -1,16 +1,18 @@
 <template>
   <div>
-    <div class="service-tree-page">
-      <ServiceTree
-        ref="serviceTreeRef"
-        :selected-scope="serviceScope"
-        :show-stats="false"
-        stats-by-scope
-        group-by-project
-        @stats-change="handleStatsChange"
-        @hosts-loaded="hostSnapshots = $event"
-        @select="serviceScope = $event"
-      />
+    <ServiceTreeLayout class="service-tree-page" navigation-id="service-tree-navigation" @resize="resizeCharts">
+      <template #tree>
+        <ServiceTree
+          ref="serviceTreeRef"
+          :selected-scope="serviceScope"
+          :show-stats="false"
+          stats-by-scope
+          group-by-project
+          @stats-change="handleStatsChange"
+          @hosts-loaded="hostSnapshots = $event"
+          @select="serviceScope = $event"
+        />
+      </template>
       <main class="service-tree-content">
         <div class="service-tree-detail-toolbar">
           <a-tooltip v-if="serviceScope.nodeType === 'all' || serviceScope.nodeType === 'project'" title="新增业务系统">
@@ -68,7 +70,7 @@
           @delete-service="confirmDeleteService"
         />
       </main>
-    </div>
+    </ServiceTreeLayout>
 
     <BusinessSystemDialog
       :open="businessSystemDialogOpen"
@@ -95,6 +97,7 @@ import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
+import ServiceTreeLayout from '@/components/ServiceTreeLayout.vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { batchDeleteBusinessSystems, batchDeleteApplicationServices } from '@/api/assets/application'
 import ServiceTree from '../application/components/ServiceTree.vue'
@@ -342,12 +345,6 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 .service-tree-detail-toolbar .ant-btn { display: inline-flex; align-items: center; gap: 6px; }
-.service-tree-page {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  min-width: 0;
-}
 .service-tree-content {
   flex: 1;
   min-width: 0;
@@ -375,7 +372,7 @@ onBeforeUnmount(() => {
 }
 .service-tree-right-stats-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 .service-tree-right-chart-card {
@@ -386,6 +383,7 @@ onBeforeUnmount(() => {
 }
 .service-tree-right-chart-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -404,13 +402,6 @@ onBeforeUnmount(() => {
   height: 220px;
 }
 @media (max-width: 900px) {
-  .service-tree-page { flex-direction: column; }
-  .service-tree-page :deep(.service-tree) {
-    width: 100%;
-    height: auto;
-    min-height: 0;
-    max-height: 320px;
-  }
   .service-tree-content { width: 100%; }
   .service-tree-right-stats-grid {
     grid-template-columns: 1fr;

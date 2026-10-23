@@ -1,15 +1,17 @@
 <template>
-  <div class="log-center">
+  <ServiceTreeLayout class="log-center" navigation-id="log-center-tree-navigation" @resize="resizeCharts">
     <!-- 日志中心：把「日志查询」「日志存储水位」「逻辑服务的日志配置」三块合成一个入口——
          左侧是所有资产页共用的服务树（groupByProject 让它显示项目层级，这是组件里为该类页面预留的选项），
          右侧按 tab 分开展示。选中的节点决定右上的一切上下文，所以三块不再需要各自找服务。
          tab 顺序按使用频率排：日志查询最常用，放第一个并作为默认 tab。 -->
-    <ServiceTree
-      :selected-scope="scope"
-      :show-stats="false"
-      group-by-project
-      @select="scope = $event"
-    />
+    <template #tree>
+      <ServiceTree
+        :selected-scope="scope"
+        :show-stats="false"
+        group-by-project
+        @select="scope = $event"
+      />
+    </template>
     <main class="log-center-content">
       <header class="log-center-header">
         <div class="log-center-title">
@@ -27,7 +29,7 @@
                多一个「逻辑服务」列与服务多选下拉（空选 = 范围内全部）。
                候选集与层级视图同源（util/logLevelOverview.servicesUnderScope），
                保证"层级里列出的服务"与"下拉里能选的服务"一致。 -->
-          <LogQueryPanel :scope="scope" :candidate-services="queryCandidateServices" :dimension-names="queryDimensionNames" :scope-trail="queryScopeTrail" />
+          <LogQueryPanel ref="queryPanelRef" :scope="scope" :candidate-services="queryCandidateServices" :dimension-names="queryDimensionNames" :scope-trail="queryScopeTrail" />
         </a-tab-pane>
 
         <a-tab-pane key="config" tab="日志配置" force-render>
@@ -542,7 +544,7 @@
               </a-table>
               </a-col>
               <a-col v-if="storagePieOption" :span="10">
-                <StorageUsagePie :option="storagePieOption" />
+                <StorageUsagePie ref="storagePieRef" :option="storagePieOption" />
               </a-col>
             </a-row>
           </template>
@@ -891,7 +893,7 @@
         @verified="loadLogConfig()"
       />
     </main>
-  </div>
+  </ServiceTreeLayout>
 </template>
 
 <script setup>
@@ -903,6 +905,7 @@ import { tableLocale } from '@/util/tableStyle'
 import { previewApplicationServiceLogGlob, getApplicationServiceLogConfig, getApplicationDeploymentList, batchSaveApplicationServiceLogSettings, getApplicationServiceLogStatusSummary, getBusinessEnvironmentList, getBusinessSystemList, getProjectList, getApplicationServiceList, saveApplicationServiceLogSetting, setApplicationServiceLogCollection } from '@/api/assets/application'
 import { createLogBatchJob, applyLogTargetsForService, checkLogCollectionStatus, getLogTargetConfigDiff, getElasticsearchClusterList, getLogBatchJob, getLogCollectionFilterRules, getLogRetentionTiers, getLogStorageOverview, getServiceCollectionChain, getServiceLogConfigState } from '@/api/monitor'
 import ServiceTree from '@/views/assets/application/components/ServiceTree.vue'
+import ServiceTreeLayout from '@/components/ServiceTreeLayout.vue'
 import LogQueryPanel from './LogQueryPanel.vue'
 import LogLevelOverview from './LogLevelOverview.vue'
 import LogConfigDiffDialog from './LogConfigDiffDialog.vue'
@@ -919,6 +922,13 @@ import { PATH_MACRO_HINT, pathCellValue, unexpandedMacros, hasGlobMeta } from '@
 import { buildLevelMetrics, buildLevelRows, levelDimension, servicesUnderScope } from '@/util/logLevelOverview'
 import LogGlobPreview from '@/components/LogGlobPreview.vue'
 import StorageUsagePie from './StorageUsagePie.vue'
+
+const queryPanelRef = ref(null)
+const storagePieRef = ref(null)
+function resizeCharts() {
+  queryPanelRef.value?.resize()
+  storagePieRef.value?.resize()
+}
 
 const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
@@ -2626,19 +2636,19 @@ getLogRetentionTiers({ page_size: 100 })
 </script>
 
 <style scoped>
-.log-center {
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 12px;
-}
 /* 长日志列表随页面滚动，服务树保持可见；仅覆盖本页，避免影响其他资产页。 */
-.log-center > :deep(.service-tree) {
+.log-center :deep(.tree-panel) {
   position: sticky;
   top: 12px;
-  align-self: start;
-  height: calc(100dvh - 24px);
+}
+.log-center :deep(.service-tree) {
+  height: calc(100dvh - 56px);
   min-height: 0;
   overscroll-behavior-y: contain;
+}
+@media (max-width: 900px) {
+  .log-center :deep(.tree-panel) { position: static; }
+  .log-center :deep(.service-tree) { height: auto; max-height: 320px; }
 }
 .log-center-content {
   min-width: 0;

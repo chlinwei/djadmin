@@ -14,6 +14,8 @@ const props = defineProps({
 
 const chartRef = ref(null)
 let chart = null
+const resize = () => chart?.resize()
+defineExpose({ resize })
 
 function render() {
   if (!chartRef.value) return

@@ -855,7 +855,7 @@ async function refreshIndexAndReload() {
   }
 }
 
-defineExpose({ reload })
+defineExpose({ reload, resize: resizeTrendChart })
 
 // 复用分面统计接口拉当前服务+时间范围内实际出现过的级别值，避免下拉选项与真实数据脱节。
 // 日志级别、实例名和路径候选都从当前查询范围的真实数据分面统计获取。

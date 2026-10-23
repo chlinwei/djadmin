@@ -1,6 +1,19 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+let panelObserver
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback) {
+      this.callback = callback
+      this.observe = vi.fn()
+      this.disconnect = vi.fn()
+      panelObserver = this
+    }
+  })
+})
+afterEach(() => vi.unstubAllGlobals())
 
 vi.mock('@/api/assets/application', () => ({
   previewApplicationServiceLogGlob: vi.fn(),
@@ -194,10 +207,10 @@ async function mountPage() {
       stubs: {
         // 树与查询面板各有一整套自己的数据流与 spec，这里只验证本页的接线（scope → 各 tab 的数据）。
         ServiceTree: { name: 'ServiceTree', props: ['selectedScope'], emits: ['select', 'stats-change'], template: '<div class="stub-tree" />' },
-        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope', 'candidateServices', 'dimensionNames', 'scopeTrail'], template: '<div class="stub-query-panel" />' },
+        LogQueryPanel: { name: 'LogQueryPanel', props: ['scope', 'candidateServices', 'dimensionNames', 'scopeTrail'], methods: { resize: vi.fn() }, template: '<div class="stub-query-panel" />' },
         LogFormatVerifyDialog: { name: 'LogFormatVerifyDialog', props: ['open', 'serviceId', 'target', 'targets', 'deploymentOptions'], template: '<div class="stub-verify" />' },
         // echarts 在 jsdom 里没有真实 canvas：只验证 option 接线（option 的构造另有纯函数单测）。
-        StorageUsagePie: { name: 'StorageUsagePie', props: ['option'], template: '<div class="stub-pie" />' },
+        StorageUsagePie: { name: 'StorageUsagePie', props: ['option'], methods: { resize: vi.fn() }, template: '<div class="stub-pie" />' },
       },
     },
   })
@@ -239,6 +252,44 @@ async function selectConfigRows(wrapper, indexes = [0, 1]) {
 }
 
 describe('日志中心（服务树 + 三个 tab）', () => {
+  it('supports the shared panel controls without resetting scope, query instance or tab', async () => {
+    const wrapper = await mountPage()
+    Object.defineProperty(wrapper.get('.log-center').element, 'clientWidth', { value: 1200 })
+    panelObserver.callback()
+    const tree = wrapper.findComponent({ name: 'ServiceTree' })
+    tree.vm.$emit('select', serviceScope)
+    await flushPromises()
+    const queryPanel = wrapper.findComponent({ name: 'LogQueryPanel' })
+    await wrapper.get('[aria-label="放大面板"]').trigger('click')
+    expect(wrapper.get('[role="separator"]').attributes('aria-valuenow')).toBe('640')
+    await wrapper.get('[aria-label="还原宽度"]').trigger('click')
+    expect(wrapper.get('[role="separator"]').attributes('aria-valuenow')).toBe('260')
+    const divider = wrapper.get('[role="separator"]')
+    divider.element.setPointerCapture = vi.fn()
+    divider.element.hasPointerCapture = vi.fn(() => true)
+    divider.element.releasePointerCapture = vi.fn()
+    await divider.trigger('pointerdown', { button: 0, pointerId: 1, clientX: 260 })
+    await divider.trigger('pointermove', { pointerId: 1, clientX: 420 })
+    await divider.trigger('pointerup', { pointerId: 1 })
+    expect(divider.attributes('aria-valuenow')).toBe('420')
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    await wrapper.get('[aria-label="收起树面板"]').trigger('click')
+    expect(wrapper.get('#log-center-tree-navigation').isVisible()).toBe(false)
+    expect(wrapper.findComponent({ name: 'ServiceTree' }).vm).toBe(tree.vm)
+    expect(wrapper.findComponent({ name: 'LogQueryPanel' }).vm).toBe(queryPanel.vm)
+    expect(queryPanel.props('scope')).toEqual(serviceScope)
+    expect(wrapper.vm.activeTab).toBe('storage')
+    panelObserver.callback()
+    expect(queryPanel.vm.$options.methods.resize).toHaveBeenCalled()
+    await wrapper.get('[aria-label="展开树面板"]').trigger('click')
+    expect(wrapper.get('#log-center-tree-navigation').isVisible()).toBe(true)
+    expect(wrapper.get('[role="separator"]').attributes('aria-valuenow')).toBe('420')
+    expect(wrapper.vm.activeTab).toBe('storage')
+    wrapper.unmount()
+    expect(panelObserver.disconnect).toHaveBeenCalled()
+  })
+
   it('always cleans the exact clicked stream including missing and unknown tiers', async () => {
     const wrapper = await mountPage()
     for (const tier of ['', 'hot', 'unknown-tier']) {
@@ -1495,6 +1546,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     const names = pie.props('option').series[0].data.map((item) => item.name)
     expect(names).toEqual(['yilake', 'nkg'])   // kul 是 0 占用，不画进饼图
     expect(pie.props('option').title.text).toBe('项目占用占比')
+    panelObserver.callback()
+    expect(pie.vm.$options.methods.resize).toHaveBeenCalled()
     wrapper.unmount()
   })
 

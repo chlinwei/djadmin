@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import Antd from 'ant-design-vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/assets/application', () => ({
   batchDeleteBusinessSystems: vi.fn(() => Promise.resolve({ data: { data: null } })),
@@ -20,6 +20,19 @@ import * as applicationApi from '@/api/assets/application'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
 import { init as initChart } from 'echarts'
 import ServiceTreePage from './index.vue'
+
+let panelObserver
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback) {
+      this.callback = callback
+      this.observe = vi.fn()
+      this.disconnect = vi.fn()
+      panelObserver = this
+    }
+  })
+})
+afterEach(() => vi.unstubAllGlobals())
 
 const ServiceTreeStub = {
   name: 'ServiceTree',
@@ -91,6 +104,77 @@ describe('service-tree capacity charts', () => {
       ServiceTreeNodeContentStub.methods.refresh.mockReset()
       wrapper.unmount()
     }
+  })
+
+  describe('service-tree panel layout', () => {
+    async function mountSizedPage(width = 1200) {
+      const wrapper = await mountPage()
+      Object.defineProperty(wrapper.find('.service-tree-page').element, 'clientWidth', { configurable: true, value: width })
+      panelObserver.callback()
+      await flushPromises()
+      return wrapper
+    }
+
+    it('enlarges and restores the manual width, clamping keyboard changes to available space', async () => {
+      const wrapper = await mountSizedPage()
+      const divider = wrapper.get('[role="separator"]')
+      expect(divider.attributes('aria-valuenow')).toBe('260')
+      await divider.trigger('keydown', { key: 'ArrowRight' })
+      expect(divider.attributes('aria-valuenow')).toBe('280')
+      await wrapper.get('[aria-label="放大面板"]').trigger('click')
+      expect(divider.attributes('aria-valuenow')).toBe('640')
+      await wrapper.get('[aria-label="还原宽度"]').trigger('click')
+      expect(divider.attributes('aria-valuenow')).toBe('280')
+      await divider.trigger('keydown', { key: 'End' })
+      await divider.trigger('keydown', { key: 'ArrowRight' })
+      expect(divider.attributes('aria-valuenow')).toBe('640')
+      Object.defineProperty(wrapper.find('.service-tree-page').element, 'clientWidth', { value: 800 })
+      panelObserver.callback()
+      await flushPromises()
+      expect(divider.attributes('aria-valuenow')).toBe('424')
+      await divider.trigger('keydown', { key: 'Home' })
+      await divider.trigger('keydown', { key: 'ArrowLeft' })
+      expect(divider.attributes('aria-valuenow')).toBe('260')
+      wrapper.unmount()
+      expect(panelObserver.disconnect).toHaveBeenCalled()
+    })
+
+    it('hides without remounting the tree or losing the selected scope and width', async () => {
+      const wrapper = await mountSizedPage()
+      const tree = wrapper.findComponent(ServiceTreeStub)
+      tree.vm.$emit('select', { nodeType: 'service', applicationServiceId: 21, nodeTitle: '订单 API' })
+      await wrapper.get('[role="separator"]').trigger('keydown', { key: 'ArrowRight' })
+      await wrapper.get('[aria-label="收起树面板"]').trigger('click')
+      expect(wrapper.get('#service-tree-navigation').attributes('style')).toContain('display: none')
+      expect(wrapper.find('[role="separator"]').exists()).toBe(false)
+      expect(wrapper.findComponent(ServiceTreeStub).vm).toBe(tree.vm)
+      expect(wrapper.findComponent(ServiceTreeNodeContentStub).props('scope').applicationServiceId).toBe(21)
+      await wrapper.get('[aria-label="展开树面板"]').trigger('click')
+      expect(wrapper.findComponent(ServiceTreeStub).vm).toBe(tree.vm)
+      expect(wrapper.get('[role="separator"]').attributes('aria-valuenow')).toBe('280')
+      wrapper.unmount()
+    })
+
+    it('drags with pointer capture, bounds width, and releases capture on unmount', async () => {
+      const wrapper = await mountSizedPage()
+      const divider = wrapper.get('[role="separator"]')
+      divider.element.setPointerCapture = vi.fn()
+      divider.element.hasPointerCapture = vi.fn(() => true)
+      divider.element.releasePointerCapture = vi.fn()
+      await divider.trigger('pointerdown', { button: 0, pointerId: 1, clientX: 260 })
+      expect(divider.element.setPointerCapture).toHaveBeenCalledWith(1)
+      await divider.trigger('pointermove', { pointerId: 1, clientX: 400 })
+      expect(divider.attributes('aria-valuenow')).toBe('400')
+      await divider.trigger('pointermove', { pointerId: 1, clientX: 2000 })
+      expect(divider.attributes('aria-valuenow')).toBe('640')
+      await divider.trigger('pointerup', { pointerId: 1 })
+      expect(divider.element.releasePointerCapture).toHaveBeenCalledWith(1)
+      await divider.trigger('pointermove', { pointerId: 1, clientX: 300 })
+      expect(divider.attributes('aria-valuenow')).toBe('640')
+      await divider.trigger('pointerdown', { button: 0, pointerId: 2, clientX: 640 })
+      wrapper.unmount()
+      expect(divider.element.releasePointerCapture).toHaveBeenCalledWith(2)
+    })
   })
 
   it('preserves pie charts while showing deduplicated totals and explaining overlapping groups', async () => {

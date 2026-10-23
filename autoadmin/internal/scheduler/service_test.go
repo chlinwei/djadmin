@@ -223,9 +223,8 @@ func TestCleanupAlertHistoriesOnlyDeletesResolved(t *testing.T) {
 	}
 }
 
-// 键名写错时退回默认值（而不是清零或崩掉）：保留期读不到就按默认值清理，绝不能因为读不到配置
-// 就"不清理"（表会一直涨）或"全清"（数据没了）。
-func TestRetentionDaysFallsBackWhenConfigMissing(t *testing.T) {
+// Missing retention configuration must be visible, never a different cleanup policy.
+func TestRetentionDaysFailsWhenConfigMissing(t *testing.T) {
 	worker, mock, database := newCleanupWorker(t)
 	defer database.Close()
 	// 注意 WHERE 里的列名是**反引号包的** `key`（生成物照 schema 原样），
@@ -233,14 +232,9 @@ func TestRetentionDaysFallsBackWhenConfigMissing(t *testing.T) {
 	mock.ExpectQuery("(?s)SELECT .* FROM sys_config WHERE .key. = \\?").
 		WithArgs("sys.audit.webssh.retention_days").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "create_time", "update_time", "remark", "key", "value", "value_type", "name", "description", "is_readonly", "default_value"}))
-	mock.ExpectExec(`DELETE FROM assets_webssh_session_log`).WillReturnResult(sqlmock.NewResult(0, 0))
-
-	output, err := worker.cleanupWebSSHSessionLogs(context.Background())
-	if err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-	if !strings.Contains(output, "30 days") {
-		t.Fatalf("读不到配置时要用默认 30 天，得到 %q", output)
+	_, err := worker.cleanupWebSSHSessionLogs(context.Background())
+	if err == nil {
+		t.Fatal("missing retention configuration must fail without deleting rows")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)

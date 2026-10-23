@@ -174,6 +174,7 @@ CREATE TABLE `scheduler_scheduledtask` (
   `next_run_time` datetime(6) DEFAULT NULL,
   `is_running` BOOLEAN NOT NULL,
   `cron_expression` varchar(120) DEFAULT NULL,
+  `schedule_timezone` varchar(64) NOT NULL DEFAULT 'UTC',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   UNIQUE KEY `code` (`code`),
@@ -195,6 +196,19 @@ CREATE TABLE `scheduler_scheduledtasklog` (
   PRIMARY KEY (`id`),
   KEY `scheduler_scheduledt_task_id_a41cf2ab_fk_scheduler` (`task_id`),
   CONSTRAINT `scheduler_scheduledt_task_id_a41cf2ab_fk_scheduler` FOREIGN KEY (`task_id`) REFERENCES `scheduler_scheduledtask` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE scheduler_execution (
+  `id` varchar(36) NOT NULL PRIMARY KEY,
+  `task_id` bigint NOT NULL,
+  `trigger_type` varchar(16) NOT NULL,
+  `status` varchar(16) NOT NULL,
+  `scheduled_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  KEY scheduler_execution_pending (task_id, status, created_at),
+  KEY scheduler_execution_latest (task_id, created_at, id),
+  CONSTRAINT scheduler_execution_task_fk FOREIGN KEY (task_id) REFERENCES scheduler_scheduledtask (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `assets_webssh_session_log` (

@@ -551,6 +551,12 @@
           <div v-else class="storage-section-title">
             全部 data stream（左侧选择逻辑服务可只看该服务；选项目/业务系统/环境可只看该范围）
           </div>
+          <a-alert
+            type="info"
+            show-icon
+            class="apply-unmanaged"
+            message="非当前档位自动回收：主机配置已同步后，空流自动删除；有日志的旧流按原流的 ILM 保留策略到期后删除整个数据流及底层索引。系统每 10 分钟检查，离线、未同步或归属不明时暂缓。"
+          />
           <a-input-search
             v-model:value="storageKeyword"
             class="storage-stream-search"
@@ -589,7 +595,7 @@
               <template v-else-if="column.key === 'collect_state'">
                 <a-tag v-if="record.recognized && !record.tier" color="red">档位缺失</a-tag>
                 <template v-else-if="isHistoricalTier(record)">
-                  <a-tooltip title="该档位不在当前配置中；实际是否停写取决于主机配置是否已下发。存量数据是否到期删除须检查 ILM 托管状态。" placement="top">
+                  <a-tooltip title="该档位不在当前配置中。系统确认主机在线且配置已同步后，自动删除空流；有日志的旧流按原流 ILM 保留策略到期回收。离线、未同步、归属不明或保留策略异常时暂缓，并在后台记录原因。" placement="top">
                     <a-tag color="default">非当前档位</a-tag>
                   </a-tooltip>
                 </template>

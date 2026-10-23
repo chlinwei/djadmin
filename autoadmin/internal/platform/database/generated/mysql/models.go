@@ -1049,23 +1049,34 @@ type MonitorUserAlertMediaBinding struct {
 	UserID     int32           `json:"user_id"`
 }
 
+type SchedulerExecution struct {
+	ID          string       `json:"id"`
+	TaskID      int64        `json:"task_id"`
+	TriggerType string       `json:"trigger_type"`
+	Status      string       `json:"status"`
+	ScheduledAt time.Time    `json:"scheduled_at"`
+	CreatedAt   time.Time    `json:"created_at"`
+	FinishedAt  sql.NullTime `json:"finished_at"`
+}
+
 type SchedulerScheduledtask struct {
-	ID              int64          `json:"id"`
-	CreateTime      time.Time      `json:"create_time"`
-	UpdateTime      time.Time      `json:"update_time"`
-	Remark          sql.NullString `json:"remark"`
-	Name            string         `json:"name"`
-	Code            string         `json:"code"`
-	Description     sql.NullString `json:"description"`
-	Enabled         bool           `json:"enabled"`
-	IntervalMinutes sql.NullInt32  `json:"interval_minutes"`
-	LastRunTime     sql.NullTime   `json:"last_run_time"`
-	LastStatus      sql.NullString `json:"last_status"`
-	LastMessage     sql.NullString `json:"last_message"`
-	MenuID          sql.NullInt32  `json:"menu_id"`
-	NextRunTime     sql.NullTime   `json:"next_run_time"`
-	IsRunning       bool           `json:"is_running"`
-	CronExpression  sql.NullString `json:"cron_expression"`
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	Name             string         `json:"name"`
+	Code             string         `json:"code"`
+	Description      sql.NullString `json:"description"`
+	Enabled          bool           `json:"enabled"`
+	IntervalMinutes  sql.NullInt32  `json:"interval_minutes"`
+	LastRunTime      sql.NullTime   `json:"last_run_time"`
+	LastStatus       sql.NullString `json:"last_status"`
+	LastMessage      sql.NullString `json:"last_message"`
+	MenuID           sql.NullInt32  `json:"menu_id"`
+	NextRunTime      sql.NullTime   `json:"next_run_time"`
+	IsRunning        bool           `json:"is_running"`
+	CronExpression   sql.NullString `json:"cron_expression"`
+	ScheduleTimezone string         `json:"schedule_timezone"`
 }
 
 type SchedulerScheduledtasklog struct {

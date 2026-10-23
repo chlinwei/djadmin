@@ -11,20 +11,34 @@ import (
 	"time"
 )
 
-const claimScheduledTask = `-- name: ClaimScheduledTask :execresult
-UPDATE scheduler_scheduledtask
-SET is_running = TRUE, last_run_time = ?, update_time = ?
-WHERE id = ? AND enabled = TRUE AND is_running = FALSE
+const cancelAutomaticSchedulerExecutions = `-- name: CancelAutomaticSchedulerExecutions :exec
+UPDATE scheduler_execution SET status = 'cancelled', finished_at = ?
+WHERE task_id = ? AND status = 'pending' AND trigger_type = 'automatic'
 `
 
-type ClaimScheduledTaskParams struct {
-	LastRunTime sql.NullTime `json:"last_run_time"`
-	UpdateTime  time.Time    `json:"update_time"`
-	ID          int64        `json:"id"`
+type CancelAutomaticSchedulerExecutionsParams struct {
+	FinishedAt sql.NullTime `json:"finished_at"`
+	TaskID     int64        `json:"task_id"`
 }
 
-func (q *Queries) ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error) {
-	return q.db.ExecContext(ctx, claimScheduledTask, arg.LastRunTime, arg.UpdateTime, arg.ID)
+func (q *Queries) CancelAutomaticSchedulerExecutions(ctx context.Context, arg CancelAutomaticSchedulerExecutionsParams) error {
+	_, err := q.db.ExecContext(ctx, cancelAutomaticSchedulerExecutions, arg.FinishedAt, arg.TaskID)
+	return err
+}
+
+const cancelPendingSchedulerExecutions = `-- name: CancelPendingSchedulerExecutions :exec
+UPDATE scheduler_execution SET status = 'cancelled', finished_at = ?
+WHERE task_id = ? AND status = 'pending'
+`
+
+type CancelPendingSchedulerExecutionsParams struct {
+	FinishedAt sql.NullTime `json:"finished_at"`
+	TaskID     int64        `json:"task_id"`
+}
+
+func (q *Queries) CancelPendingSchedulerExecutions(ctx context.Context, arg CancelPendingSchedulerExecutionsParams) error {
+	_, err := q.db.ExecContext(ctx, cancelPendingSchedulerExecutions, arg.FinishedAt, arg.TaskID)
+	return err
 }
 
 const completeScheduledTask = `-- name: CompleteScheduledTask :exec
@@ -148,6 +162,30 @@ func (q *Queries) CreateScheduledTaskLog(ctx context.Context, arg CreateSchedule
 		arg.DurationSeconds,
 		arg.TaskID,
 		arg.Output,
+	)
+	return err
+}
+
+const createSchedulerExecution = `-- name: CreateSchedulerExecution :exec
+INSERT INTO scheduler_execution (id, task_id, trigger_type, status, scheduled_at, created_at)
+VALUES (?, ?, ?, 'pending', ?, ?)
+`
+
+type CreateSchedulerExecutionParams struct {
+	ID          string    `json:"id"`
+	TaskID      int64     `json:"task_id"`
+	TriggerType string    `json:"trigger_type"`
+	ScheduledAt time.Time `json:"scheduled_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateSchedulerExecution(ctx context.Context, arg CreateSchedulerExecutionParams) error {
+	_, err := q.db.ExecContext(ctx, createSchedulerExecution,
+		arg.ID,
+		arg.TaskID,
+		arg.TriggerType,
+		arg.ScheduledAt,
+		arg.CreatedAt,
 	)
 	return err
 }
@@ -279,32 +317,76 @@ func (q *Queries) DeleteWebSSHSessionLogsBefore(ctx context.Context, before time
 	return q.db.ExecContext(ctx, deleteWebSSHSessionLogsBefore, before)
 }
 
+const finishSchedulerExecution = `-- name: FinishSchedulerExecution :exec
+UPDATE scheduler_execution SET status = ?, finished_at = ? WHERE id = ? AND status = 'pending'
+`
+
+type FinishSchedulerExecutionParams struct {
+	Status     string       `json:"status"`
+	FinishedAt sql.NullTime `json:"finished_at"`
+	ID         string       `json:"id"`
+}
+
+func (q *Queries) FinishSchedulerExecution(ctx context.Context, arg FinishSchedulerExecutionParams) error {
+	_, err := q.db.ExecContext(ctx, finishSchedulerExecution, arg.Status, arg.FinishedAt, arg.ID)
+	return err
+}
+
+const getPendingSchedulerExecution = `-- name: GetPendingSchedulerExecution :one
+SELECT id, task_id, trigger_type, status, scheduled_at, created_at, finished_at FROM scheduler_execution
+WHERE task_id = ? AND status = 'pending'
+ORDER BY created_at, id LIMIT 1 FOR UPDATE
+`
+
+func (q *Queries) GetPendingSchedulerExecution(ctx context.Context, taskID int64) (SchedulerExecution, error) {
+	row := q.db.QueryRowContext(ctx, getPendingSchedulerExecution, taskID)
+	var i SchedulerExecution
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.TriggerType,
+		&i.Status,
+		&i.ScheduledAt,
+		&i.CreatedAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
 const getScheduledTask = `-- name: GetScheduledTask :one
-SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.code, t.description, t.enabled, t.interval_minutes, t.last_run_time, t.last_status, t.last_message, t.menu_id, t.next_run_time, t.is_running, t.cron_expression, m.name AS menu_name, m.path AS menu_path
+SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.code, t.description, t.enabled, t.interval_minutes, t.last_run_time, t.last_status, t.last_message, t.menu_id, t.next_run_time, t.is_running, t.cron_expression, t.schedule_timezone, m.name AS menu_name, m.path AS menu_path,
+  e.id AS execution_id, e.status AS execution_status
 FROM scheduler_scheduledtask AS t
 LEFT JOIN sys_menu AS m ON m.id = t.menu_id
+LEFT JOIN scheduler_execution e ON e.id = (
+  SELECT latest.id FROM scheduler_execution latest WHERE latest.task_id = t.id
+  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+)
 WHERE t.id = ? LIMIT 1
 `
 
 type GetScheduledTaskRow struct {
-	ID              int64          `json:"id"`
-	CreateTime      time.Time      `json:"create_time"`
-	UpdateTime      time.Time      `json:"update_time"`
-	Remark          sql.NullString `json:"remark"`
-	Name            string         `json:"name"`
-	Code            string         `json:"code"`
-	Description     sql.NullString `json:"description"`
-	Enabled         bool           `json:"enabled"`
-	IntervalMinutes sql.NullInt32  `json:"interval_minutes"`
-	LastRunTime     sql.NullTime   `json:"last_run_time"`
-	LastStatus      sql.NullString `json:"last_status"`
-	LastMessage     sql.NullString `json:"last_message"`
-	MenuID          sql.NullInt32  `json:"menu_id"`
-	NextRunTime     sql.NullTime   `json:"next_run_time"`
-	IsRunning       bool           `json:"is_running"`
-	CronExpression  sql.NullString `json:"cron_expression"`
-	MenuName        sql.NullString `json:"menu_name"`
-	MenuPath        sql.NullString `json:"menu_path"`
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	Name             string         `json:"name"`
+	Code             string         `json:"code"`
+	Description      sql.NullString `json:"description"`
+	Enabled          bool           `json:"enabled"`
+	IntervalMinutes  sql.NullInt32  `json:"interval_minutes"`
+	LastRunTime      sql.NullTime   `json:"last_run_time"`
+	LastStatus       sql.NullString `json:"last_status"`
+	LastMessage      sql.NullString `json:"last_message"`
+	MenuID           sql.NullInt32  `json:"menu_id"`
+	NextRunTime      sql.NullTime   `json:"next_run_time"`
+	IsRunning        bool           `json:"is_running"`
+	CronExpression   sql.NullString `json:"cron_expression"`
+	ScheduleTimezone string         `json:"schedule_timezone"`
+	MenuName         sql.NullString `json:"menu_name"`
+	MenuPath         sql.NullString `json:"menu_path"`
+	ExecutionID      sql.NullString `json:"execution_id"`
+	ExecutionStatus  sql.NullString `json:"execution_status"`
 }
 
 func (q *Queries) GetScheduledTask(ctx context.Context, id int64) (GetScheduledTaskRow, error) {
@@ -327,8 +409,11 @@ func (q *Queries) GetScheduledTask(ctx context.Context, id int64) (GetScheduledT
 		&i.NextRunTime,
 		&i.IsRunning,
 		&i.CronExpression,
+		&i.ScheduleTimezone,
 		&i.MenuName,
 		&i.MenuPath,
+		&i.ExecutionID,
+		&i.ExecutionStatus,
 	)
 	return i, err
 }
@@ -445,9 +530,14 @@ func (q *Queries) ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTa
 }
 
 const listScheduledTasks = `-- name: ListScheduledTasks :many
-SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.code, t.description, t.enabled, t.interval_minutes, t.last_run_time, t.last_status, t.last_message, t.menu_id, t.next_run_time, t.is_running, t.cron_expression, m.name AS menu_name, m.path AS menu_path
+SELECT t.id, t.create_time, t.update_time, t.remark, t.name, t.code, t.description, t.enabled, t.interval_minutes, t.last_run_time, t.last_status, t.last_message, t.menu_id, t.next_run_time, t.is_running, t.cron_expression, t.schedule_timezone, m.name AS menu_name, m.path AS menu_path,
+  e.id AS execution_id, e.status AS execution_status
 FROM scheduler_scheduledtask AS t
 LEFT JOIN sys_menu AS m ON m.id = t.menu_id
+LEFT JOIN scheduler_execution e ON e.id = (
+  SELECT latest.id FROM scheduler_execution latest WHERE latest.task_id = t.id
+  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+)
 WHERE (t.name LIKE ? OR t.code LIKE ? OR ? IS NULL)
   AND (t.enabled = ? OR ? IS NULL)
   AND (t.is_running = ? OR ? IS NULL)
@@ -465,24 +555,27 @@ type ListScheduledTasksParams struct {
 }
 
 type ListScheduledTasksRow struct {
-	ID              int64          `json:"id"`
-	CreateTime      time.Time      `json:"create_time"`
-	UpdateTime      time.Time      `json:"update_time"`
-	Remark          sql.NullString `json:"remark"`
-	Name            string         `json:"name"`
-	Code            string         `json:"code"`
-	Description     sql.NullString `json:"description"`
-	Enabled         bool           `json:"enabled"`
-	IntervalMinutes sql.NullInt32  `json:"interval_minutes"`
-	LastRunTime     sql.NullTime   `json:"last_run_time"`
-	LastStatus      sql.NullString `json:"last_status"`
-	LastMessage     sql.NullString `json:"last_message"`
-	MenuID          sql.NullInt32  `json:"menu_id"`
-	NextRunTime     sql.NullTime   `json:"next_run_time"`
-	IsRunning       bool           `json:"is_running"`
-	CronExpression  sql.NullString `json:"cron_expression"`
-	MenuName        sql.NullString `json:"menu_name"`
-	MenuPath        sql.NullString `json:"menu_path"`
+	ID               int64          `json:"id"`
+	CreateTime       time.Time      `json:"create_time"`
+	UpdateTime       time.Time      `json:"update_time"`
+	Remark           sql.NullString `json:"remark"`
+	Name             string         `json:"name"`
+	Code             string         `json:"code"`
+	Description      sql.NullString `json:"description"`
+	Enabled          bool           `json:"enabled"`
+	IntervalMinutes  sql.NullInt32  `json:"interval_minutes"`
+	LastRunTime      sql.NullTime   `json:"last_run_time"`
+	LastStatus       sql.NullString `json:"last_status"`
+	LastMessage      sql.NullString `json:"last_message"`
+	MenuID           sql.NullInt32  `json:"menu_id"`
+	NextRunTime      sql.NullTime   `json:"next_run_time"`
+	IsRunning        bool           `json:"is_running"`
+	CronExpression   sql.NullString `json:"cron_expression"`
+	ScheduleTimezone string         `json:"schedule_timezone"`
+	MenuName         sql.NullString `json:"menu_name"`
+	MenuPath         sql.NullString `json:"menu_path"`
+	ExecutionID      sql.NullString `json:"execution_id"`
+	ExecutionStatus  sql.NullString `json:"execution_status"`
 }
 
 func (q *Queries) ListScheduledTasks(ctx context.Context, arg ListScheduledTasksParams) ([]ListScheduledTasksRow, error) {
@@ -521,8 +614,11 @@ func (q *Queries) ListScheduledTasks(ctx context.Context, arg ListScheduledTasks
 			&i.NextRunTime,
 			&i.IsRunning,
 			&i.CronExpression,
+			&i.ScheduleTimezone,
 			&i.MenuName,
 			&i.MenuPath,
+			&i.ExecutionID,
+			&i.ExecutionStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -535,6 +631,85 @@ func (q *Queries) ListScheduledTasks(ctx context.Context, arg ListScheduledTasks
 		return nil, err
 	}
 	return items, nil
+}
+
+const listSchedulerTaskIDs = `-- name: ListSchedulerTaskIDs :many
+SELECT id FROM scheduler_scheduledtask ORDER BY id
+`
+
+func (q *Queries) ListSchedulerTaskIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listSchedulerTaskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSchedulerConfig = `-- name: LockSchedulerConfig :one
+SELECT id, create_time, update_time, remark, ` + "`" + `key` + "`" + `, value, value_type, name, description, is_readonly, default_value FROM sys_config WHERE ` + "`" + `key` + "`" + ` = 'sys.scheduler.enabled' FOR UPDATE
+`
+
+func (q *Queries) LockSchedulerConfig(ctx context.Context) (SysConfig, error) {
+	row := q.db.QueryRowContext(ctx, lockSchedulerConfig)
+	var i SysConfig
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Key,
+		&i.Value,
+		&i.ValueType,
+		&i.Name,
+		&i.Description,
+		&i.IsReadonly,
+		&i.DefaultValue,
+	)
+	return i, err
+}
+
+const lockSchedulerTask = `-- name: LockSchedulerTask :one
+SELECT id, create_time, update_time, remark, name, code, description, enabled, interval_minutes, last_run_time, last_status, last_message, menu_id, next_run_time, is_running, cron_expression, schedule_timezone FROM scheduler_scheduledtask WHERE id = ? FOR UPDATE
+`
+
+func (q *Queries) LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error) {
+	row := q.db.QueryRowContext(ctx, lockSchedulerTask, id)
+	var i SchedulerScheduledtask
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Code,
+		&i.Description,
+		&i.Enabled,
+		&i.IntervalMinutes,
+		&i.LastRunTime,
+		&i.LastStatus,
+		&i.LastMessage,
+		&i.MenuID,
+		&i.NextRunTime,
+		&i.IsRunning,
+		&i.CronExpression,
+		&i.ScheduleTimezone,
+	)
+	return i, err
 }
 
 const setScheduledTaskEnabled = `-- name: SetScheduledTaskEnabled :exec
@@ -558,6 +733,49 @@ func (q *Queries) SetScheduledTaskEnabled(ctx context.Context, arg SetScheduledT
 		arg.ID,
 	)
 	return err
+}
+
+const setSchedulerCursor = `-- name: SetSchedulerCursor :exec
+UPDATE scheduler_scheduledtask SET next_run_time = ? WHERE id = ?
+`
+
+type SetSchedulerCursorParams struct {
+	NextRunTime sql.NullTime `json:"next_run_time"`
+	ID          int64        `json:"id"`
+}
+
+func (q *Queries) SetSchedulerCursor(ctx context.Context, arg SetSchedulerCursorParams) error {
+	_, err := q.db.ExecContext(ctx, setSchedulerCursor, arg.NextRunTime, arg.ID)
+	return err
+}
+
+const tryLockSchedulerTask = `-- name: TryLockSchedulerTask :one
+SELECT id, create_time, update_time, remark, name, code, description, enabled, interval_minutes, last_run_time, last_status, last_message, menu_id, next_run_time, is_running, cron_expression, schedule_timezone FROM scheduler_scheduledtask WHERE id = ? FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) TryLockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error) {
+	row := q.db.QueryRowContext(ctx, tryLockSchedulerTask, id)
+	var i SchedulerScheduledtask
+	err := row.Scan(
+		&i.ID,
+		&i.CreateTime,
+		&i.UpdateTime,
+		&i.Remark,
+		&i.Name,
+		&i.Code,
+		&i.Description,
+		&i.Enabled,
+		&i.IntervalMinutes,
+		&i.LastRunTime,
+		&i.LastStatus,
+		&i.LastMessage,
+		&i.MenuID,
+		&i.NextRunTime,
+		&i.IsRunning,
+		&i.CronExpression,
+		&i.ScheduleTimezone,
+	)
+	return i, err
 }
 
 const updateScheduledTask = `-- name: UpdateScheduledTask :exec

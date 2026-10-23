@@ -78,6 +78,9 @@
             <a-tag v-if="record.is_running" color="orange" icon="loading">
               运行中...
             </a-tag>
+            <a-tag v-else-if="record.is_pending" color="blue">
+              等待执行
+            </a-tag>
             <a-tag v-else color="green">
               就绪
             </a-tag>
@@ -108,7 +111,7 @@
                   <FontAwesomeIcon :icon="['fas', 'pen-to-square']" />
                 </a-button>
               </a-tooltip>
-              <a-tooltip title="查看详情">
+              <a-tooltip title="历史记录">
                 <a-button size="small" @click="viewLogs(record)">
                   <FontAwesomeIcon :icon="['fas', 'eye']" />
                 </a-button>
@@ -122,7 +125,7 @@
                   ghost
                   @click="runNow(record)"
                   :loading="runningTaskId === record.id"
-                  :disabled="record.is_running || runningTaskId === record.id || record.supported === false"
+                  :disabled="record.is_running || record.is_pending || runningTaskId === record.id || record.supported === false"
                 >
                   <FontAwesomeIcon :icon="['fas', 'arrows-rotate']" />
                   <span>&nbsp;立即执行</span>
@@ -130,8 +133,7 @@
               </a-tooltip>
             </a-space>
           </template>
-          <!-- 下次运行时间：由后端**实时算**（不再信库里的快照，否则运行久了会显示成过去的时间）。
-               空值不是"没数据"而是"不会跑"三种情况之一，悬停说清是哪一种。 -->
+          <!-- 展示持久化调度游标；逾期可能表示等待调度恢复，不应在前端改算成未来时间。 -->
           <template v-else-if="column.key === 'next_run_time'">
             <a-tooltip :title="nextRunTooltip(record)" placement="top">
               <span>{{ formatTimeDisplay(record.next_run_time) }}</span>
@@ -506,7 +508,7 @@ const normalizeUtcTime = (timeValue) => {
 function nextRunTooltip(record) {
   const zone = record.schedule_timezone || '服务器时区'
   if (record.next_run_time) {
-    return `按 cron 表达式（解释时区：${zone}）算出的下次触发时刻；这里显示的是换算到你所在时区的同一时刻。`
+    return `数据库保存的下次计划时间（cron 解释时区：${zone}）；逾期表示等待调度处理，停机错过多轮合并补一次。这里显示的是换算到你所在时区的同一时刻。`
   }
   if (record.supported === false) {
     return record.support_note || '该任务的实现尚未迁移到 Go：定时调度会跳过它，所以没有下次运行时间。'
@@ -514,7 +516,7 @@ function nextRunTooltip(record) {
   if (!record.enabled) {
     return '任务已停用：不会被调度，因此没有下次运行时间。'
   }
-  return '没有可用的 cron 表达式，算不出下次运行时间。'
+  return '自动调度已关闭、尚未初始化或没有可用的 cron 表达式，暂无下次计划时间。'
 }
 
 const formatTimeDisplay = (timeValue) => {
@@ -866,7 +868,7 @@ getConfigByKey(CONFIG_KEYS.TASK_POLL_MAX_COUNT).then(res => {
   if (!isNaN(v) && v > 0) pollMaxCount.value = v
 }).catch(() => {})
 
-const startPollingTaskStatus = (taskId, hideLoading) => {
+const startPollingTaskStatus = (taskId, taskName, hideLoading) => {
   let pollCount = 0
   const maxPolls = pollMaxCount.value
   
@@ -877,7 +879,7 @@ const startPollingTaskStatus = (taskId, hideLoading) => {
       clearInterval(pollIntervals.value[taskId])
       delete pollIntervals.value[taskId]
       hideLoading()
-      message.warning('任务执行超时（>20分钟），请手动检查日志')
+      message.warning(`任务「${taskName}」执行超时（>20分钟），请手动检查日志`)
       runningTaskId.value = null
       loadTasks()
       return
@@ -891,23 +893,28 @@ const startPollingTaskStatus = (taskId, hideLoading) => {
       const task = tasks.value.find(t => t.id === taskId)
       if (task) {
         task.is_running = taskData.is_running
+        task.is_pending = taskData.is_pending
+        task.execution_status = taskData.execution_status
         task.last_status = taskData.last_status
         task.last_message = taskData.last_message
         task.last_run_time = taskData.last_run_time
       }
       
-      if (!taskData.is_running) {
+      // A persisted request may wait for a scheduler; old last_status is not its result.
+      if (!taskData.is_running && !taskData.is_pending) {
         // Task completed
         clearInterval(pollIntervals.value[taskId])
         delete pollIntervals.value[taskId]
         hideLoading()
         
-        if (taskData.last_status === 'success') {
-          message.success('任务执行成功')
-        } else if (taskData.last_status === 'failed') {
-          message.error(`任务失败: ${taskData.last_message || '未知错误'}`)
+        if (taskData.execution_status === 'cancelled') {
+          message.warning(`任务「${taskName}」已取消`)
+        } else if (taskData.last_status === '成功') {
+          message.success(`任务「${taskName}」执行成功`)
+        } else if (taskData.last_status === '失败') {
+          message.error(`任务「${taskName}」执行失败: ${taskData.last_message || '未知错误'}`)
         } else {
-          message.warning(`任务完成，状态: ${taskData.last_status}`)
+          message.warning(`任务「${taskName}」完成，状态: ${taskData.last_status}`)
         }
         
         runningTaskId.value = null
@@ -929,22 +936,23 @@ function stopAllTaskPolling() {
 }
 
 const runNow = (record) => {
+  const taskName = record.name
   if (!record.enabled) {
-    message.error('任务已禁用，请先启用')
+    message.error(`任务「${taskName}」已禁用，请先启用`)
     return
   }
   
   runningTaskId.value = record.id
-  const hideLoading = message.loading('任务执行中，请稍候...', 0)
+  const hideLoading = message.loading(`任务「${taskName}」已提交，等待调度执行...`, 0)
   
   runTaskNow(record.id)
     .then((res) => {
       if (res.data.code === 200 && res.data.data.status === 'submitted') {
-        // Start polling for task status
-        startPollingTaskStatus(record.id, hideLoading)
+        record.is_pending = true
+        startPollingTaskStatus(record.id, taskName, hideLoading)
       } else {
         hideLoading()
-        message.success('任务执行成功')
+        message.error(`任务「${taskName}」提交失败: ${res.data.msg || '未知错误'}`)
         runningTaskId.value = null
         loadTasks()
       }
@@ -954,9 +962,9 @@ const runNow = (record) => {
       console.error(error)
       runningTaskId.value = null
       if (error.response?.data?.error) {
-        message.error(error.response.data.error)
+        message.error(`任务「${taskName}」提交失败: ${error.response.data.error}`)
       } else {
-        message.error('任务提交失败: ' + (error.message || '未知错误'))
+        message.error(`任务「${taskName}」提交失败: ${error.message || '未知错误'}`)
       }
     })
 }

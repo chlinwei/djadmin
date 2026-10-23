@@ -24,7 +24,6 @@ import (
 	"autoadmin/internal/platform/database"
 	"autoadmin/internal/platform/migration"
 	"autoadmin/internal/scheduler"
-	"autoadmin/internal/shared/pagination"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -138,7 +137,7 @@ func runAPI(configuration config.Config) error {
 	errChannel := make(chan error, 1)
 	go func() { errChannel <- server.Run() }()
 	// 日志采集批量动作的队列由 api 角色消费：这些作业要通过 agent gRPC 会话在主机上执行，
-	// 而会话表在本进程（见 rabbitmq.LogCollectRoute）。计划任务那条队列仍归 worker 角色。
+	// 而会话表在本进程（见 rabbitmq.LogCollectRoute）。定时清理不走队列。
 	//
 	// 只在"非停机期间的失败"上报错：停机（ctx 已取消）时消费者的返回是正常收工，
 	// 报上去会让一次干净的 SIGTERM 变成失败退出（systemd 的 Restart=on-failure 会因此重启服务）。
@@ -261,33 +260,12 @@ func runScheduler(configuration config.Config) error {
 		return err
 	}
 	defer databaseConnection.Close()
-	rabbitClient, err := openRabbit(configuration)
-	if err != nil {
-		return err
-	}
-	defer rabbitClient.Close()
 	repository := scheduler.NewRepository(databaseConnection)
-	tasks, _, err := repository.ListTasks(ctx, scheduler.TaskFilter{Enabled: boolPointer(true)}, pagination.New(1, pagination.MaxSize))
-	if err != nil {
-		return fmt.Errorf("load scheduled tasks: %w", err)
-	}
-	manager, err := scheduler.New(rabbitClient)
-	if err != nil {
-		return err
-	}
-	for _, task := range tasks {
-		if !task.CronExpression.Valid || !scheduler.IsSupportedTaskCode(task.Code) {
-			continue
-		}
-		if _, err := manager.Register(scheduler.Definition{ID: task.ID, Name: task.Name, Kind: "scheduled_task", CronExpression: task.CronExpression.String}); err != nil {
-			return fmt.Errorf("register scheduled task %s: %w", task.Code, err)
-		}
-	}
-	manager.Start()
-	<-ctx.Done()
+	manager := scheduler.NewManager(repository)
+	runErr := manager.Run(ctx)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), configuration.ShutdownTimeout)
 	defer cancel()
-	return manager.Shutdown(shutdownCtx)
+	return errors.Join(runErr, manager.Shutdown(shutdownCtx))
 }
 
 func runWorker(configuration config.Config) error {
@@ -298,19 +276,9 @@ func runWorker(configuration config.Config) error {
 		return err
 	}
 	defer databaseConnection.Close()
-	rabbitClient, err := openRabbit(configuration)
-	if err != nil {
-		return err
-	}
-	defer rabbitClient.Close()
-	// 失联作业对账：作业执行归 worker，执行进程一旦消失作业会永久停在 running，
-	// 由这个循环收敛（单实例部署，进程内唯一 goroutine）。
+	// Retain the maintenance role: removing scheduled-task MQ consumption must not
+	// remove automation's stale-job reconciliation.
 	automation.StartStaleJobReaper(ctx, databaseConnection)
-	err = rabbitClient.Consume(ctx, configuration.WorkerName, configuration.WorkerPrefetch, scheduler.NewWorker(scheduler.NewRepository(databaseConnection)))
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+	<-ctx.Done()
+	return nil
 }
-
-func boolPointer(value bool) *bool { return &value }

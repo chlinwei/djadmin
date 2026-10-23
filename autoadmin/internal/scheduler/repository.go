@@ -3,12 +3,15 @@ package scheduler
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
-	platformdb "autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/pagination"
+
+	"github.com/google/uuid"
 )
 
 type TaskFilter struct {
@@ -28,9 +31,23 @@ type LogFilter struct {
 type Repository struct {
 	pool    *sql.DB
 	queries *db.Queries
+	tx      *sql.Tx
 }
 
 func NewRepository(pool *sql.DB) *Repository { return &Repository{pool: pool, queries: db.New(pool)} }
+
+func (repository *Repository) transaction(ctx context.Context, fn func(*Repository) error) error {
+	tx, err := repository.pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Cleanup helpers receive only transaction-scoped queries, never a pool.
+	if err := fn(&Repository{queries: db.New(tx), tx: tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func (repository *Repository) ListTasks(ctx context.Context, filter TaskFilter, page pagination.Page) ([]db.ListScheduledTasksRow, int64, error) {
 	params := taskParams(filter)
@@ -65,11 +82,49 @@ func (repository *Repository) GetTask(ctx context.Context, id int64) (db.GetSche
 }
 
 func (repository *Repository) UpdateTask(ctx context.Context, params db.UpdateScheduledTaskParams) error {
-	return repository.queries.UpdateScheduledTask(ctx, params)
+	return repository.transaction(ctx, func(tx *Repository) error {
+		task, err := tx.queries.LockSchedulerTask(ctx, params.ID)
+		if err != nil {
+			return err
+		}
+		params.NextRunTime = task.NextRunTime
+		if task.Enabled != params.Enabled || task.Code != params.Code || task.CronExpression != params.CronExpression {
+			next, err := tx.resetTask(ctx, task.ID, params.Code, params.CronExpression.String, task.ScheduleTimezone, params.Enabled)
+			if err != nil {
+				return err
+			}
+			params.NextRunTime = next
+		}
+		return tx.queries.UpdateScheduledTask(ctx, params)
+	})
 }
 
 func (repository *Repository) SetEnabled(ctx context.Context, params db.SetScheduledTaskEnabledParams) error {
-	return repository.queries.SetScheduledTaskEnabled(ctx, params)
+	return repository.transaction(ctx, func(tx *Repository) error {
+		task, err := tx.queries.LockSchedulerTask(ctx, params.ID)
+		if err != nil {
+			return err
+		}
+		params.NextRunTime = task.NextRunTime
+		if task.Enabled != params.Enabled {
+			params.NextRunTime, err = tx.resetTask(ctx, task.ID, task.Code, task.CronExpression.String, task.ScheduleTimezone, params.Enabled)
+			if err != nil {
+				return err
+			}
+		}
+		return tx.queries.SetScheduledTaskEnabled(ctx, params)
+	})
+}
+
+func schedulerEnabled(value string) (bool, error) {
+	switch value {
+	case "true", "1":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid sys.scheduler.enabled value %q", value)
+	}
 }
 
 func (repository *Repository) SchedulerEnabled(ctx context.Context) (bool, error) {
@@ -77,21 +132,98 @@ func (repository *Repository) SchedulerEnabled(ctx context.Context) (bool, error
 	if err != nil {
 		return false, err
 	}
-	return config.Value == "true" || config.Value == "1", nil
+	return schedulerEnabled(config.Value)
 }
 
 func (repository *Repository) SetSchedulerEnabled(ctx context.Context, enabled bool) error {
-	config, err := repository.queries.GetConfigByKey(ctx, "sys.scheduler.enabled")
+	return repository.updateSchedulerConfig(ctx, strconv.FormatBool(enabled), nil)
+}
+
+// UpdateSchedulerConfig is the generic config-write entry point for the scheduler
+// switch. Preserve its default value in the same transaction as cursor reset and
+// pending cancellation, so generic update/reset cannot bypass scheduler semantics.
+func (repository *Repository) UpdateSchedulerConfig(ctx context.Context, params db.UpdateConfigValueParams) error {
+	return repository.updateSchedulerConfig(ctx, params.Value, &params)
+}
+
+func (repository *Repository) updateSchedulerConfig(ctx context.Context, value string, params *db.UpdateConfigValueParams) error {
+	enabled, err := schedulerEnabled(value)
 	if err != nil {
 		return err
 	}
-	value := "false"
-	if enabled {
-		value = "true"
-	}
-	return repository.queries.UpdateConfigValue(ctx, db.UpdateConfigValueParams{
-		Value: value, DefaultValue: config.DefaultValue, UpdateTime: time.Now().UTC(), ID: config.ID,
+	return repository.transaction(ctx, func(tx *Repository) error {
+		// All paths lock tasks in ascending order before the global switch. Waiting
+		// here lets a running cleanup finish before disable becomes committed.
+		ids, err := tx.queries.ListSchedulerTaskIDs(ctx)
+		if err != nil {
+			return err
+		}
+		tasks := make([]db.SchedulerScheduledtask, 0, len(ids))
+		for _, id := range ids {
+			task, err := tx.queries.LockSchedulerTask(ctx, id)
+			if err != nil {
+				return err
+			}
+			tasks = append(tasks, task)
+		}
+		config, err := tx.queries.LockSchedulerConfig(ctx)
+		if err != nil {
+			return err
+		}
+		if params != nil && params.ID != config.ID {
+			return fmt.Errorf("scheduler config ID mismatch")
+		}
+		previous, err := schedulerEnabled(config.Value)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if previous != enabled {
+			for _, task := range tasks {
+				next := sql.NullTime{}
+				if enabled && task.Enabled && IsSupportedTaskCode(task.Code) {
+					next, err = nextRunAt(task.CronExpression.String, task.ScheduleTimezone, now)
+					if err != nil {
+						return err
+					}
+				}
+				if err := tx.queries.CancelAutomaticSchedulerExecutions(ctx, db.CancelAutomaticSchedulerExecutionsParams{
+					FinishedAt: sql.NullTime{Time: now, Valid: true}, TaskID: task.ID,
+				}); err != nil {
+					return err
+				}
+				if err := tx.queries.SetSchedulerCursor(ctx, db.SetSchedulerCursorParams{NextRunTime: next, ID: task.ID}); err != nil {
+					return err
+				}
+			}
+		}
+		defaultValue := config.DefaultValue
+		if params != nil {
+			defaultValue = params.DefaultValue
+			now = params.UpdateTime
+		}
+		return tx.queries.UpdateConfigValue(ctx, db.UpdateConfigValueParams{
+			Value: value, DefaultValue: defaultValue, UpdateTime: now, ID: config.ID,
+		})
 	})
+}
+
+func (repository *Repository) resetTask(ctx context.Context, id int64, code, expression, timezone string, enabled bool) (sql.NullTime, error) {
+	now := time.Now().UTC()
+	if err := repository.queries.CancelPendingSchedulerExecutions(ctx, db.CancelPendingSchedulerExecutionsParams{
+		FinishedAt: sql.NullTime{Time: now, Valid: true}, TaskID: id,
+	}); err != nil {
+		return sql.NullTime{}, err
+	}
+	config, err := repository.queries.LockSchedulerConfig(ctx)
+	if err != nil {
+		return sql.NullTime{}, err
+	}
+	globalEnabled, err := schedulerEnabled(config.Value)
+	if err != nil || !enabled || !globalEnabled || !IsSupportedTaskCode(code) {
+		return sql.NullTime{}, err
+	}
+	return nextRunAt(expression, timezone, now)
 }
 
 func (repository *Repository) ListLogs(ctx context.Context, filter LogFilter, page pagination.Page) ([]db.ListScheduledTaskLogsRow, int64, error) {
@@ -113,45 +245,68 @@ func (repository *Repository) GetLog(ctx context.Context, id int64) (db.GetSched
 	return repository.queries.GetScheduledTaskLog(ctx, id)
 }
 
-func (repository *Repository) Claim(ctx context.Context, taskID int64, startedAt time.Time) (bool, error) {
-	result, err := repository.queries.ClaimScheduledTask(ctx, db.ClaimScheduledTaskParams{
-		LastRunTime: sql.NullTime{Time: startedAt, Valid: true}, UpdateTime: startedAt, ID: taskID,
-	})
-	if err != nil {
-		return false, err
-	}
-	affected, err := result.RowsAffected()
-	return affected == 1, err
-}
-
-func (repository *Repository) Complete(ctx context.Context, taskID int64, startedAt time.Time, status string, message string, output string) error {
+func (repository *Repository) complete(ctx context.Context, taskID int64, startedAt time.Time, status string, message string, output string) error {
 	finishedAt := time.Now().UTC()
-	return platformdb.InTransaction(ctx, repository.pool, func(queries *db.Queries) error {
-		if err := queries.CompleteScheduledTask(ctx, db.CompleteScheduledTaskParams{
-			LastStatus: sql.NullString{String: status, Valid: true}, LastMessage: sql.NullString{String: message, Valid: true},
-			LastRunTime: sql.NullTime{Time: startedAt, Valid: true}, UpdateTime: finishedAt, ID: taskID,
-		}); err != nil {
-			return err
-		}
-		return queries.CreateScheduledTaskLog(ctx, db.CreateScheduledTaskLogParams{
-			CreateTime: finishedAt, UpdateTime: finishedAt, RunTime: startedAt, Status: status,
-			Message:         sql.NullString{String: message, Valid: true},
-			DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(startedAt).Seconds(), Valid: true},
-			TaskID:          taskID, Output: sql.NullString{String: output, Valid: output != ""},
-		})
+	if err := repository.queries.CompleteScheduledTask(ctx, db.CompleteScheduledTaskParams{
+		LastStatus: sql.NullString{String: status, Valid: true}, LastMessage: sql.NullString{String: message, Valid: true},
+		LastRunTime: sql.NullTime{Time: startedAt, Valid: true}, UpdateTime: finishedAt, ID: taskID,
+	}); err != nil {
+		return err
+	}
+	return repository.queries.CreateScheduledTaskLog(ctx, db.CreateScheduledTaskLogParams{
+		CreateTime: finishedAt, UpdateTime: finishedAt, RunTime: startedAt, Status: status,
+		Message:         sql.NullString{String: message, Valid: true},
+		DurationSeconds: sql.NullFloat64{Float64: finishedAt.Sub(startedAt).Seconds(), Valid: true},
+		TaskID:          taskID, Output: sql.NullString{String: output, Valid: output != ""},
 	})
 }
 
-func (repository *Repository) RetentionDays(ctx context.Context, key string, fallback int) int {
+func (repository *Repository) RetentionDays(ctx context.Context, key string) (int, error) {
 	config, err := repository.queries.GetConfigByKey(ctx, key)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("read retention %s: %w", key, err)
 	}
 	days, err := strconv.Atoi(config.Value)
 	if err != nil || days < 0 {
-		return fallback
+		return 0, fmt.Errorf("invalid retention %s: %q", key, config.Value)
 	}
-	return days
+	return days, nil
+}
+
+func (repository *Repository) enqueue(ctx context.Context, taskID int64, trigger string, scheduledAt, now time.Time) error {
+	return repository.queries.CreateSchedulerExecution(ctx, db.CreateSchedulerExecutionParams{
+		ID: uuid.NewString(), TaskID: taskID, TriggerType: trigger, ScheduledAt: scheduledAt, CreatedAt: now,
+	})
+}
+
+func (repository *Repository) EnqueueManual(ctx context.Context, id int64) error {
+	return repository.transaction(ctx, func(tx *Repository) error {
+		task, err := tx.queries.TryLockSchedulerTask(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			// A separate non-locking read distinguishes a missing task from an
+			// executing task without waiting for the cleanup to finish.
+			if _, readErr := tx.GetTask(ctx, id); readErr != nil {
+				return readErr
+			}
+			return ErrTaskRunning
+		}
+		if err != nil {
+			return err
+		}
+		if !task.Enabled {
+			return ErrTaskDisabled
+		}
+		if !IsSupportedTaskCode(task.Code) {
+			return ErrHandlerUnsupported
+		}
+		if _, err := tx.queries.GetPendingSchedulerExecution(ctx, id); err == nil {
+			return ErrTaskRunning
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		now := time.Now().UTC()
+		return tx.enqueue(ctx, id, "manual", now, now)
+	})
 }
 
 func (repository *Repository) CleanupLoginAudits(ctx context.Context, before time.Time) (int64, error) {
@@ -193,18 +348,24 @@ func (repository *Repository) DeleteAutomationExecutionLogsBefore(ctx context.Co
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	hostLogRows, _ := hostLogs.RowsAffected()
+	hostLogRows, err := hostLogs.RowsAffected()
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	chunkLogs, err := repository.queries.DeleteAutomationExecutionJobLogsBefore(ctx, cutoff)
 	if err != nil {
 		return hostLogRows, 0, 0, err
 	}
-	chunkLogRows, _ := chunkLogs.RowsAffected()
+	chunkLogRows, err := chunkLogs.RowsAffected()
+	if err != nil {
+		return hostLogRows, 0, 0, err
+	}
 	jobs, err := repository.queries.DeleteAutomationExecutionJobsBefore(ctx, cutoff)
 	if err != nil {
 		return hostLogRows, chunkLogRows, 0, err
 	}
-	jobRows, _ := jobs.RowsAffected()
-	return hostLogRows, chunkLogRows, jobRows, nil
+	jobRows, err := jobs.RowsAffected()
+	return hostLogRows, chunkLogRows, jobRows, err
 }
 
 func (repository *Repository) DeleteMonitorInstallHistoriesBefore(ctx context.Context, before time.Time) (int64, error) {
@@ -223,18 +384,24 @@ func (repository *Repository) DeleteResolvedAlertHistoriesBefore(ctx context.Con
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	deliveryRows, _ := deliveries.RowsAffected()
+	deliveryRows, err := deliveries.RowsAffected()
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	events, err := repository.queries.DeleteAlertNotificationEventsForHistoriesBefore(ctx, cutoff)
 	if err != nil {
 		return deliveryRows, 0, 0, err
 	}
-	eventRows, _ := events.RowsAffected()
+	eventRows, err := events.RowsAffected()
+	if err != nil {
+		return deliveryRows, 0, 0, err
+	}
 	histories, err := repository.queries.DeleteResolvedAlertHistoriesBefore(ctx, cutoff)
 	if err != nil {
 		return deliveryRows, eventRows, 0, err
 	}
-	historyRows, _ := histories.RowsAffected()
-	return deliveryRows, eventRows, historyRows, nil
+	historyRows, err := histories.RowsAffected()
+	return deliveryRows, eventRows, historyRows, err
 }
 
 func logParams(filter LogFilter) db.CountScheduledTaskLogsParams {

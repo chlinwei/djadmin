@@ -6,15 +6,17 @@ import (
 	"fmt"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/scheduler"
 	"autoadmin/internal/shared/pagination"
 )
 
 type Repository struct {
+	pool    *sql.DB
 	queries *db.Queries
 }
 
 func NewRepository(pool *sql.DB) *Repository {
-	return &Repository{queries: db.New(pool)}
+	return &Repository{pool: pool, queries: db.New(pool)}
 }
 
 func (repository *Repository) GetByKey(ctx context.Context, key string) (db.SysConfig, error) {
@@ -25,6 +27,15 @@ func (repository *Repository) GetByID(ctx context.Context, id int64) (db.SysConf
 	return repository.queries.GetConfigByID(ctx, id)
 }
 func (repository *Repository) Update(ctx context.Context, params db.UpdateConfigValueParams) error {
+	row, err := repository.queries.GetConfigByID(ctx, params.ID)
+	if err != nil {
+		return err
+	}
+	// All configuration entry points must apply scheduler cancellation/reset in the
+	// same transaction as the switch, including generic edits and default resets.
+	if row.Key == "sys.scheduler.enabled" {
+		return scheduler.NewRepository(repository.pool).UpdateSchedulerConfig(ctx, params)
+	}
 	return repository.queries.UpdateConfigValue(ctx, params)
 }
 

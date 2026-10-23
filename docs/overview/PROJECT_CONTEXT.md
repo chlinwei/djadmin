@@ -11,7 +11,7 @@
 
 | 组件 | 技术 | 说明 |
 |---|---|---|
-| 后端 | **Go（autoadmin/）** | 唯一后端实现。Gin + MySQL，单进程承载 API、定时调度（`internal/scheduler`，进程内 dispatcher）与巡检触发 |
+| 后端 | **Go（autoadmin/）** | 唯一后端实现。Gin + MySQL/PostgreSQL；一个二进制分 api / scheduler / worker / migrate 角色，scheduler 数据库持久化调度并直接执行清理，巡检触发在 api |
 | 执行代理 | **Go（dj_agent/）** | 目标主机上的常驻 agent，gRPC 双向流；承载自动化执行、巡检检查、指标/日志采集、WebSSH、文件传输 |
 | 前端 | Vue 3 + Vite + Ant Design Vue（fronted/） | 管理控制台 |
 | 认证 | JWT | |
@@ -27,7 +27,7 @@
 | inspection | 巡检组（分类、挂载点模型）/ 巡检任务 / 执行快照 | INSPECTION_ARCHITECTURE.md |
 | monitor | 监控目标、Prometheus 集成与代理、告警（规则/路由/媒介）、主机列表 | MONITOR_PROMETHEUS_PROXY.md、ALERT_HISTORY_ARCHITECTURE.md、ALERT_NOTIFICATION_DISPATCH.md、ALERT_NOTIFICATION_CHAIN.md、ops/ALERT_MEDIA_SETUP_GUIDE.md |
 | baseline | 基线（组/分类/检查项）与扫描 | BASELINE_ARCHITECTURE.md |
-| scheduler | 通用定时任务（进程内 cron 派发 + worker 执行 handler） | SCHEDULER_ARCHITECTURE.md（任务编码↔handler 对照、"未迁移"任务的语义；巡检自己的调度见 INSPECTION_ARCHITECTURE.md） |
+| scheduler | 通用定时清理（数据库持久化计划与执行记录，scheduler 有界执行池直接执行，无需 RabbitMQ） | SCHEDULER_ARCHITECTURE.md（多实例协调、补偿/取消语义、任务编码↔handler 对照；巡检自己的调度见 INSPECTION_ARCHITECTURE.md） |
 | rbac / identity / audit | 菜单角色权限、用户、操作审计 | SYSTEM_MANAGEMENT_AUDIT.md |
 | k8s | Kubernetes 集成 | K8S_INTEGRATION_ARCHITECTURE.md |
 | logcollect | 日志采集（Filebeat 纳管/渲染/下发/体检/清理）与日志存储（ES 集群/索引模板/ILM/pipeline/检索） | LOG_COLLECTION_ARCHITECTURE.md |

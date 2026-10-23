@@ -384,11 +384,12 @@ func (runner *LogBatchRunner) finish(ctx context.Context, queries *generated.Que
 	return err
 }
 
-// StartReaper 启动失联批量作业对账：执行进程消失后作业会永久停在 running，
+// StartReaper 启动本域维护循环（历史流回收、失联批量作业对账）：执行进程消失后作业会永久停在 running，
 // 这里按"running 且头表心跳过期"判定停摆，回落为 pending 并重投消息。
 //
 // 单实例部署（api 进程内唯一 goroutine），随进程退出终止。
 func (runner *LogBatchRunner) StartReaper(ctx context.Context) {
+	runner.handler.startHistoricalStreamRecycler(ctx)
 	if runner.publisher == nil {
 		slog.Warn("log batch reaper disabled: no queue publisher")
 		return

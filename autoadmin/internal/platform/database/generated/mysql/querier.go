@@ -19,6 +19,7 @@ type Querier interface {
 	// 用户在运行记录中心取消 Agent 安装/更新作业时，同步把对应的 assets_agent_job 与主机日志
 	// 置为失败，否则 rejectActiveAgentJobs 会一直拦着"任务执行中"（agent job 与 automation job 是两套状态）。
 	CancelAgentJobsByExecution(ctx context.Context, arg CancelAgentJobsByExecutionParams) error
+	CancelAutomaticSchedulerExecutions(ctx context.Context, arg CancelAutomaticSchedulerExecutionsParams) error
 	CancelAutomationJob(ctx context.Context, arg CancelAutomationJobParams) (int64, error)
 	CancelBaselineScan(ctx context.Context, arg CancelBaselineScanParams) (int64, error)
 	CancelBaselineScanTargets(ctx context.Context, scanID int64) error
@@ -27,6 +28,7 @@ type Querier interface {
 	CancelInstallHistory(ctx context.Context, arg CancelInstallHistoryParams) error
 	CancelLogTargetInstallState(ctx context.Context, arg CancelLogTargetInstallStateParams) error
 	CancelMonitorTargetInstallState(ctx context.Context, arg CancelMonitorTargetInstallStateParams) error
+	CancelPendingSchedulerExecutions(ctx context.Context, arg CancelPendingSchedulerExecutionsParams) error
 	CancelRunningInspectionTargets(ctx context.Context, arg CancelRunningInspectionTargetsParams) (int64, error)
 	ClaimAutomationJob(ctx context.Context, arg ClaimAutomationJobParams) (int64, error)
 	ClaimBaselineScan(ctx context.Context, arg ClaimBaselineScanParams) (int64, error)
@@ -39,7 +41,6 @@ type Querier interface {
 	// 分片续跑不走这条语句：执行器先读作业状态，读到 running 就继续（进程内按作业 id 串行，
 	// 见 log_batch_job.go 的说明）。
 	ClaimLogBatchJob(ctx context.Context, arg ClaimLogBatchJobParams) (int64, error)
-	ClaimScheduledTask(ctx context.Context, arg ClaimScheduledTaskParams) (sql.Result, error)
 	ClearDefaultElasticsearchCluster(ctx context.Context, arg ClearDefaultElasticsearchClusterParams) error
 	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
 	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
@@ -249,6 +250,7 @@ type Querier interface {
 	CreateProject(ctx context.Context, arg CreateProjectParams) (sql.Result, error)
 	CreateRole(ctx context.Context, arg CreateRoleParams) (sql.Result, error)
 	CreateScheduledTaskLog(ctx context.Context, arg CreateScheduledTaskLogParams) error
+	CreateSchedulerExecution(ctx context.Context, arg CreateSchedulerExecutionParams) error
 	CreateServiceDeletionTombstone(ctx context.Context, arg CreateServiceDeletionTombstoneParams) error
 	CreateServiceDeployment(ctx context.Context, arg CreateServiceDeploymentParams) error
 	// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
@@ -410,6 +412,7 @@ type Querier interface {
 	// agent_installed 是"Filebeat 二进制已装"的持久态，只有成功收尾才改写（install 成功 TRUE、
 	// uninstall 成功 FALSE）；失败时传 NULL 保持原值，避免安装失败把已装状态抹掉。
 	FinishLogTargetInstallState(ctx context.Context, arg FinishLogTargetInstallStateParams) (int64, error)
+	FinishSchedulerExecution(ctx context.Context, arg FinishSchedulerExecutionParams) error
 	FinishTargetInstallHistory(ctx context.Context, arg FinishTargetInstallHistoryParams) (int64, error)
 	FinishTargetInstallState(ctx context.Context, arg FinishTargetInstallStateParams) (int64, error)
 	GetAPITokenByID(ctx context.Context, id int32) (SysAgentToken, error)
@@ -559,6 +562,7 @@ type Querier interface {
 	// （原实现在 UPDATE 里用 IF(rule_group='',?,rule_group) 与
 	// IF(IFNULL(JSON_LENGTH(rule_snapshot),0)=0,?,rule_snapshot) 表达"已有值优先"，是 MySQL 方言函数）。
 	GetOpenFiringAlertForUpdate(ctx context.Context, fingerprint string) (GetOpenFiringAlertForUpdateRow, error)
+	GetPendingSchedulerExecution(ctx context.Context, taskID int64) (SchedulerExecution, error)
 	GetProject(ctx context.Context, id int64) (GetProjectRow, error)
 	GetProjectNameByID(ctx context.Context, id int64) (string, error)
 	GetRoleByID(ctx context.Context, id int32) (SysRole, error)
@@ -680,6 +684,9 @@ type Querier interface {
 	// 业务系统**的环境也算进来（现场：yilake/aos 只该有 poc，却多出另一个项目同名 aos 的 test）。
 	ListEnabledServiceStreamDims(ctx context.Context) ([]ListEnabledServiceStreamDimsRow, error)
 	ListExporterPackagePorts(ctx context.Context) ([]ListExporterPackagePortsRow, error)
+	// Includes formerly associated hosts that still have an applied service fingerprint.
+	// Removing a member must not make an offline host disappear from the cleanup safety check.
+	ListHistoricalStreamHosts(ctx context.Context) ([]ListHistoricalStreamHostsRow, error)
 	// 告警主机在服务树上的归属节点（供策略树的 tree matcher 用）。
 	// 原实现写的是 bs.project —— assets_business_system 没有这一列（真库与 schema 都没有），
 	// 语句恒报 1054，被调用点忽略后 tree matcher 永远匹配不上：改成 bs.project_id。
@@ -788,6 +795,7 @@ type Querier interface {
 	ListScans(ctx context.Context, arg ListScansParams) ([]ListScansRow, error)
 	ListScheduledTaskLogs(ctx context.Context, arg ListScheduledTaskLogsParams) ([]ListScheduledTaskLogsRow, error)
 	ListScheduledTasks(ctx context.Context, arg ListScheduledTasksParams) ([]ListScheduledTasksRow, error)
+	ListSchedulerTaskIDs(ctx context.Context) ([]int64, error)
 	// 逻辑服务**当前生效**的档位集合（服务 × 档位对，可能多条）。
 	//
 	// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
@@ -873,6 +881,15 @@ type Querier interface {
 	LockApplicationServiceForDeletion(ctx context.Context, id int64) (int64, error)
 	// Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
 	LockElasticsearchClusterForGuard(ctx context.Context, id int64) (int64, error)
+	LockHistoricalStreamDefinitions(ctx context.Context, serviceID int64) ([]int64, error)
+	LockHistoricalStreamMembers(ctx context.Context, serviceID int64) ([]int64, error)
+	// Automatic historical-stream deletion holds the identity/configuration rows until ES
+	// acknowledges deletion. Concurrent editors must not turn the candidate into a current stream.
+	LockHistoricalStreamService(ctx context.Context, serviceID int64) (int64, error)
+	LockHistoricalStreamSettings(ctx context.Context, serviceID int64) ([]int64, error)
+	LockHistoricalStreamTiers(ctx context.Context) ([]int64, error)
+	LockSchedulerConfig(ctx context.Context) (SysConfig, error)
+	LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
 	// Serialize creation with tombstoning even when the unique service row is removed.
 	LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error)
 	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
@@ -938,6 +955,7 @@ type Querier interface {
 	SetLogTargetLastError(ctx context.Context, arg SetLogTargetLastErrorParams) error
 	SetLogTargetRuntimeStatus(ctx context.Context, arg SetLogTargetRuntimeStatusParams) error
 	SetScheduledTaskEnabled(ctx context.Context, arg SetScheduledTaskEnabledParams) error
+	SetSchedulerCursor(ctx context.Context, arg SetSchedulerCursorParams) error
 	SetSoftwarePackageInstallTemplate(ctx context.Context, arg SetSoftwarePackageInstallTemplateParams) error
 	// COALESCE(?, col) 表示"传 NULL 就保留原值"（服务文件内容/运行组/工作目录三项）。
 	SetSoftwarePackageServiceFileContent(ctx context.Context, arg SetSoftwarePackageServiceFileContentParams) error
@@ -945,6 +963,7 @@ type Querier interface {
 	SetTargetInstallState(ctx context.Context, arg SetTargetInstallStateParams) error
 	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
 	TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error
+	TryLockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
 	UpdateAgentJobHostLogStdout(ctx context.Context, arg UpdateAgentJobHostLogStdoutParams) error
 	UpdateAgentJobStdout(ctx context.Context, arg UpdateAgentJobStdoutParams) error
 	UpdateAgentPackageFile(ctx context.Context, arg UpdateAgentPackageFileParams) error

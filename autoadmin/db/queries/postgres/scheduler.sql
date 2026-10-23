@@ -11,9 +11,14 @@ WHERE (name LIKE sqlc.narg(name_pattern) OR code LIKE sqlc.narg(code_pattern) OR
   AND (is_running = sqlc.narg(is_running) OR sqlc.narg(is_running) IS NULL);
 
 -- name: ListScheduledTasks :many
-SELECT t.*, m.name AS menu_name, m.path AS menu_path
+SELECT t.*, m.name AS menu_name, m.path AS menu_path,
+  e.id AS execution_id, e.status AS execution_status
 FROM scheduler_scheduledtask AS t
 LEFT JOIN sys_menu AS m ON m.id = t.menu_id
+LEFT JOIN scheduler_execution e ON e.id = (
+  SELECT latest.id FROM scheduler_execution latest WHERE latest.task_id = t.id
+  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+)
 WHERE (t.name LIKE sqlc.narg(name_pattern) OR t.code LIKE sqlc.narg(code_pattern) OR sqlc.narg(name_pattern) IS NULL)
   AND (t.enabled = sqlc.narg(enabled) OR sqlc.narg(enabled) IS NULL)
   AND (t.is_running = sqlc.narg(is_running) OR sqlc.narg(is_running) IS NULL)
@@ -21,9 +26,14 @@ ORDER BY t.id DESC
 LIMIT $1 OFFSET $2;
 
 -- name: GetScheduledTask :one
-SELECT t.*, m.name AS menu_name, m.path AS menu_path
+SELECT t.*, m.name AS menu_name, m.path AS menu_path,
+  e.id AS execution_id, e.status AS execution_status
 FROM scheduler_scheduledtask AS t
 LEFT JOIN sys_menu AS m ON m.id = t.menu_id
+LEFT JOIN scheduler_execution e ON e.id = (
+  SELECT latest.id FROM scheduler_execution latest WHERE latest.task_id = t.id
+  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+)
 WHERE t.id = $1 LIMIT 1;
 
 -- name: UpdateScheduledTask :exec
@@ -63,10 +73,40 @@ FROM scheduler_scheduledtasklog AS l
 JOIN scheduler_scheduledtask AS t ON t.id = l.task_id
 WHERE l.id = $1 LIMIT 1;
 
--- name: ClaimScheduledTask :execresult
-UPDATE scheduler_scheduledtask
-SET is_running = TRUE, last_run_time = $1, update_time = $2
-WHERE id = $3 AND enabled = TRUE AND is_running = FALSE;
+-- name: ListSchedulerTaskIDs :many
+SELECT id FROM scheduler_scheduledtask ORDER BY id;
+
+-- name: LockSchedulerTask :one
+SELECT * FROM scheduler_scheduledtask WHERE id = $1 FOR UPDATE;
+
+-- name: TryLockSchedulerTask :one
+SELECT * FROM scheduler_scheduledtask WHERE id = $1 FOR UPDATE SKIP LOCKED;
+
+-- name: LockSchedulerConfig :one
+SELECT * FROM sys_config WHERE "key" = 'sys.scheduler.enabled' FOR UPDATE;
+
+-- name: SetSchedulerCursor :exec
+UPDATE scheduler_scheduledtask SET next_run_time = $1 WHERE id = $2;
+
+-- name: GetPendingSchedulerExecution :one
+SELECT * FROM scheduler_execution
+WHERE task_id = $1 AND status = 'pending'
+ORDER BY created_at, id LIMIT 1 FOR UPDATE;
+
+-- name: CreateSchedulerExecution :exec
+INSERT INTO scheduler_execution (id, task_id, trigger_type, status, scheduled_at, created_at)
+VALUES ($1, $2, $3, 'pending', $4, $5);
+
+-- name: CancelPendingSchedulerExecutions :exec
+UPDATE scheduler_execution SET status = 'cancelled', finished_at = sqlc.arg(finished_at)
+WHERE task_id = sqlc.arg(task_id) AND status = 'pending';
+
+-- name: CancelAutomaticSchedulerExecutions :exec
+UPDATE scheduler_execution SET status = 'cancelled', finished_at = sqlc.arg(finished_at)
+WHERE task_id = sqlc.arg(task_id) AND status = 'pending' AND trigger_type = 'automatic';
+
+-- name: FinishSchedulerExecution :exec
+UPDATE scheduler_execution SET status = $1, finished_at = $2 WHERE id = $3 AND status = 'pending';
 
 -- name: CompleteScheduledTask :exec
 UPDATE scheduler_scheduledtask

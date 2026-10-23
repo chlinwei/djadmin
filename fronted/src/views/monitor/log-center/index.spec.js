@@ -263,6 +263,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     expect(wrapper.text()).toContain('未托管')
     expect(wrapper.text()).toContain('查询失败')
     expect(wrapper.text()).toContain('当前配置')
+    expect(wrapper.text()).toContain('非当前档位自动回收')
+    expect(wrapper.text()).toContain('系统每 10 分钟检查')
     expect(wrapper.text()).not.toContain('采集中')
     expect(wrapper.vm.ilmStateLabel('multiple_phases')).toBe('多阶段')
     expect(wrapper.vm.ilmStateColor('multiple_phases')).toBe('blue')

@@ -3704,6 +3704,55 @@ func (q *Queries) ListExporterPackagePorts(ctx context.Context) ([]ListExporterP
 	return items, nil
 }
 
+const listHistoricalStreamHosts = `-- name: ListHistoricalStreamHosts :many
+SELECT l.host_id, h.instance_name, l.managed_enabled, l.config_fingerprint,
+       l.service_fingerprints, l.last_applied_time
+FROM monitor_log_collection_target l
+JOIN assets_host h ON h.id = l.host_id
+ORDER BY l.id
+`
+
+type ListHistoricalStreamHostsRow struct {
+	HostID              int64           `json:"host_id"`
+	InstanceName        sql.NullString  `json:"instance_name"`
+	ManagedEnabled      bool            `json:"managed_enabled"`
+	ConfigFingerprint   string          `json:"config_fingerprint"`
+	ServiceFingerprints json.RawMessage `json:"service_fingerprints"`
+	LastAppliedTime     sql.NullTime    `json:"last_applied_time"`
+}
+
+// Includes formerly associated hosts that still have an applied service fingerprint.
+// Removing a member must not make an offline host disappear from the cleanup safety check.
+func (q *Queries) ListHistoricalStreamHosts(ctx context.Context) ([]ListHistoricalStreamHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listHistoricalStreamHosts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHistoricalStreamHostsRow{}
+	for rows.Next() {
+		var i ListHistoricalStreamHostsRow
+		if err := rows.Scan(
+			&i.HostID,
+			&i.InstanceName,
+			&i.ManagedEnabled,
+			&i.ConfigFingerprint,
+			&i.ServiceFingerprints,
+			&i.LastAppliedTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listHostAlertScopeNodes = `-- name: ListHostAlertScopeNodes :many
 SELECT DISTINCT s.id AS service_id, s.business_system_id, s.environment_id, bs.project_id
 FROM assets_application_deployment d
@@ -5810,6 +5859,139 @@ func (q *Queries) LockElasticsearchClusterForGuard(ctx context.Context, id int64
 	row := q.db.QueryRowContext(ctx, lockElasticsearchClusterForGuard, id)
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockHistoricalStreamDefinitions = `-- name: LockHistoricalStreamDefinitions :many
+SELECT ld.id FROM assets_application_log_definition ld
+JOIN assets_application_service s ON s.deployment_template_id = ld.deployment_template_id
+WHERE s.id = $1 ORDER BY ld.id FOR UPDATE
+`
+
+func (q *Queries) LockHistoricalStreamDefinitions(ctx context.Context, serviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, lockHistoricalStreamDefinitions, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockHistoricalStreamMembers = `-- name: LockHistoricalStreamMembers :many
+SELECT d.id FROM assets_application_deployment d
+JOIN assets_application_service_deployment sd ON sd.deployment_id = d.id
+WHERE sd.service_id = $1 ORDER BY d.id FOR UPDATE
+`
+
+func (q *Queries) LockHistoricalStreamMembers(ctx context.Context, serviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, lockHistoricalStreamMembers, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockHistoricalStreamService = `-- name: LockHistoricalStreamService :one
+SELECT s.id
+FROM assets_application_service s
+JOIN assets_application_deployment_template dt ON dt.id = s.deployment_template_id
+JOIN assets_business_system bs ON bs.id = s.business_system_id
+JOIN assets_project p ON p.id = bs.project_id
+JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE s.id = $1
+FOR UPDATE
+`
+
+// Automatic historical-stream deletion holds the identity/configuration rows until ES
+// acknowledges deletion. Concurrent editors must not turn the candidate into a current stream.
+func (q *Queries) LockHistoricalStreamService(ctx context.Context, serviceID int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockHistoricalStreamService, serviceID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockHistoricalStreamSettings = `-- name: LockHistoricalStreamSettings :many
+SELECT id FROM assets_application_service_log_setting
+WHERE service_id = $1 ORDER BY id FOR UPDATE
+`
+
+func (q *Queries) LockHistoricalStreamSettings(ctx context.Context, serviceID int64) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, lockHistoricalStreamSettings, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockHistoricalStreamTiers = `-- name: LockHistoricalStreamTiers :many
+SELECT id FROM monitor_log_retention_tier ORDER BY id FOR UPDATE
+`
+
+func (q *Queries) LockHistoricalStreamTiers(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, lockHistoricalStreamTiers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markAgentTokenUsed = `-- name: MarkAgentTokenUsed :exec

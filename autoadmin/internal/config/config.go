@@ -17,13 +17,11 @@ type Config struct {
 	ShutdownTimeout   time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 	MySQLDSN          string        `env:"MYSQL_DSN"`
 	// PostgresDSN 只在 -tags postgres 的构建里被使用（见 platform/database/open_postgres.go）。
-	PostgresDSN    string        `env:"POSTGRES_DSN"`
-	MySQLMaxOpen   int           `env:"MYSQL_MAX_OPEN_CONNS" envDefault:"30"`
-	MySQLMaxIdle   int           `env:"MYSQL_MAX_IDLE_CONNS" envDefault:"10"`
-	MySQLMaxLife   time.Duration `env:"MYSQL_CONN_MAX_LIFETIME" envDefault:"30m"`
-	RabbitMQURL    string        `env:"RABBITMQ_URL"`
-	WorkerName     string        `env:"WORKER_NAME" envDefault:"autoadmin-worker"`
-	WorkerPrefetch int           `env:"WORKER_PREFETCH" envDefault:"4"`
+	PostgresDSN  string        `env:"POSTGRES_DSN"`
+	MySQLMaxOpen int           `env:"MYSQL_MAX_OPEN_CONNS" envDefault:"30"`
+	MySQLMaxIdle int           `env:"MYSQL_MAX_IDLE_CONNS" envDefault:"10"`
+	MySQLMaxLife time.Duration `env:"MYSQL_CONN_MAX_LIFETIME" envDefault:"30m"`
+	RabbitMQURL  string        `env:"RABBITMQ_URL"`
 	// 日志采集批量动作的执行规模（计划 LOG_COLLECTION_LIFECYCLE §8 Phase 2 / §9 第 9 条）：
 	// 安装与下发**分开**限流——下发会重启 Filebeat，并发放大等于让全网同时抖动；
 	// LogBatchPrefetch 是同时在跑的批量作业数（api 角色消费采集队列时的未确认上限）。
@@ -58,7 +56,7 @@ func (configuration Config) Validate(command string) error {
 	if command == "api" && configuration.JWTSecret == "" {
 		return fmt.Errorf("JWT_SECRET is required for api")
 	}
-	if (command == "api" || command == "scheduler" || command == "worker") && configuration.RabbitMQURL == "" {
+	if command == "api" && configuration.RabbitMQURL == "" {
 		return fmt.Errorf("RABBITMQ_URL is required for %s", command)
 	}
 	return nil

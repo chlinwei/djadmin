@@ -8,27 +8,100 @@
 
 | 角色 | 启动 | 做什么 |
 |---|---|---|
-| `autoadmin scheduler` | `./bin/autoadmin scheduler` | 读 `scheduler_scheduledtask` 里**启用且已实现**的任务，用 `gocron` 按 `cron_expression` 注册；到点向队列发布一条 `scheduled_task` 消息（`internal/scheduler/manager.go`） |
-| `autoadmin worker` | `./bin/autoadmin worker` | 消费 `scheduled_task`：原子认领（`Claim`，`is_running` 置位）→ 取任务 → 按 `code` 找 handler → 执行 → 写 `scheduler_scheduledtasklog` 与 `last_status/last_message`（`internal/scheduler/worker.go`） |
-| api 进程 | `./bin/autoadmin api` | 任务列表/详情/启停/编辑/立即执行（`POST /sys/scheduler/tasks/:id/run_now/` 走的也是"发布一条消息"这条路） |
+| `autoadmin scheduler` | `./bin/autoadmin scheduler` | 根据数据库持久化计划生成执行请求，在有界执行池内直接执行六类数据库清理，不依赖 RabbitMQ |
+| `autoadmin worker` | `./bin/autoadmin worker` | 保留自动化失联作业对账，不再消费定时任务消息；无需 RabbitMQ |
+| api 进程 | `./bin/autoadmin api` | 任务列表/详情/启停/编辑；`POST /sys/scheduler/tasks/:id/run_now/` 创建数据库待执行请求，不在 HTTP 请求内清理 |
 
-- **cron 与时区**（2026-09-20 改）：`cron_expression` 按 **`ScheduleLocation`** 解释——
-  它是**唯一一处**时区定义：scheduler 进程建 gocron 时 `WithLocation(ScheduleLocation)`，
-  应用层算"下次运行时间"时也用同一个值。执行与展示必须同源，否则会出现"界面显示 17:00、
-  实际 9:00 触发"（两边都自认有道理，用户只能猜）。要改成固定时区（例如统一按 Asia/Shanghai）
-  只改这一个变量。
-- **「下次运行时间」是实时算的，不读库里的快照**：`scheduler_scheduledtask.next_run_time` 只在
-  保存/启停时写过一次，真正的触发由进程内 gocron 自己算，所以那列**不会推进**、时间一久就成
-  过去的时间（现场："下次运行时间比当前时间早"）。现在列表/详情的 `next_run_time` 由
-  `displayNextRunTime` 现场计算（`internal/scheduler/service.go`，在 `withTaskSupport` 里统一覆盖），
-  库里那列退化为"保存时的快照"，接口不采信。
-- **空值的三种语义**（界面都给了悬停说明，不是"数据没取到"）：任务**停用**、**实现未迁移**
-  （调度器根本不注册它，见下一节）、**没有可用的 cron 表达式**。所以"有下次运行时间"本身就等于
-  "这个任务真的会被触发"——这比只看 `enabled` 开关更准。DTO 同时带 `schedule_timezone`，
-  界面据此说明 cron 的钟点是哪个时区的钟点（显示的时间是换算到用户时区后的同一时刻）。
-- **"立即执行"与定时触发是同一条路径**：都是发布消息、都由 worker 执行、都写执行日志——
-  所以"手动能跑、定时不跑"这类分歧不存在。
-- **认领防重复**：worker 先 `Claim`（只在未运行时成功），多副本或消息重投不会重复执行。
+```text
+API 保存计划 / 手动触发
+        ↓
+数据库计划游标 + 待执行记录
+        ↓ 多 scheduler 通过数据库锁认领
+有界执行池 → 数据库清理 + 完成记录 + 原有执行日志
+```
+
+- **robfig/cron 只计算计划**：统一使用五字段标准表达式，不接受秒字段或 `@every`；
+  不再给每个实例注册一套独立的内存计时器。`schedule_timezone` 持久化 IANA 时区，
+  统一初始化为 **UTC**，不依赖进程本地时区；时间戳统一 UTC，页面按用户时区转换。
+- **下次运行时间是持久化游标**：接口读取数据库真实计划，不再根据“现在”算一个未来时刻遮住积压。
+  游标逾期代表等待处理，不能据此判断历史记录出错。停用、总开关关闭、未初始化或不支持任务可为空；
+  `schedule_timezone` 用于解释计划钟点，前端再按用户时区显示。
+- **手动触发也是持久化请求**：接口返回 `status=submitted` 代表已入库，不代表执行成功。
+  `is_pending` 包括等待和事务内执行中（运行中标记未单独提交）；
+  页面显示“等待执行”，不能据此精确区分排队与正在清理，不能用上一轮的成功结果结束轮询。
+  `execution_id`、`execution_status` 描述最近一轮；取消时必须识别 `cancelled`，不误报上一轮成功。
+  立即执行的等待、成功、失败、取消和超时提示均包含点击时的任务名称，便于区分不同任务，
+  不受后续列表刷新或任务改名影响。
+- **扫描与执行分离**：慢清理不占据调度循环；并发有界。多个 scheduler 共享同一数据库，
+  依靠数据库认领和事务协调，不能只靠进程内互斥。
+  扫描独立每 5 秒运行，两个固定执行 worker 通过无缓冲分发器获取任务，不无限创建 goroutine；
+  扫描/读取预算 5 秒，单次清理预算 5 分钟。退出时取消并等待这些循环和执行事务结束。
+
+### 配置、补偿与恢复语义
+
+- 停机期间错过多轮自动计划，恢复时**合并补执行一次**，随后将计划推进至未来；
+  不逐轮重放，也不将停机当作用户主动停用。
+- 修改执行相关配置或停用时取消尚未开始的旧计划，已运行清理允许完成。
+  再次启用从启用时刻计算未来计划，不补停用期间；未变配置不能无故重置调度游标。
+- `sys.scheduler.enabled` 控制自动计划；用户对启用任务的显式“立即执行”仍可用。
+  关闭自动调度取消自动等待项，不取消手动等待项，也不强杀正在执行的清理。
+  专用调度接口及系统参数按 ID/按 key 编辑、重置默认值，统一通过同一事务更新总开关。
+  不支持绕过应用直接改数据库开关；直接改值不会执行取消/游标重置。
+- 数据库访问、配置校验或清理失败必须明确记录；不能把读取失败当作空任务或成功结果。
+- 清理是数据库内操作，成功的清理与执行终态/日志在同一事务提交；
+  进程崩溃会回滚未提交的清理，不引入跨系统投递及 outbox。
+  恢复路径通过数据库锁协调，不能仅凭内存中的“运行中”标记判断是否可以重跑。
+- 任务行和执行记录在整个清理事务中持锁，其他 scheduler 跳过已锁任务，不存在租约到期后
+  旧执行器仍在删除的并发窗口。任务编辑会等待该任务执行事务结束；
+  总开关变更按顺序锁定全部任务，可能等待运行中的清理并暂时阻塞其他任务配置操作，
+  不是无等待的开关。事务失败或进程退出保留 pending 请求，供后续恢复。
+- handler 返回错误时回滚清理到保存点，再提交 `failed` 结果和失败日志；
+  业务失败不自动重试同一轮，下一自然计划仍可执行。日志/终态/事务提交失败则整体回滚，
+  后续周期重新认领，避免清理已经提交而成功记录丢失。
+- 本机制只覆盖六类数据库清理；若以后添加外部副作用任务，必须重新设计幂等与恢复，
+  不能套用“数据库事务可回滚”的前提。
+
+### 迁移与部署
+
+- MySQL/PostgreSQL 两侧新增持久化调度迁移；必须先执行迁移再启动新代码。
+- 迁移 `000053_durable_scheduler` 为任务表增加 `schedule_timezone`，创建
+  `scheduler_execution`（UUID 主键、任务外键、`automatic/manual` 来源、
+  `pending/succeeded/failed/cancelled` 状态及计划/创建/完成时间），建立等待项和最近执行索引。
+  同一任务的生成、取消、认领通过任务行锁串行化，不另加 outbox 或调度版本表。
+- 原 `next_run_time` 是不可信的保存时快照，首次切换初始化未来计划，不追补升级前的历史。
+  迁移清空旧游标及 `is_running`；后续正常重启不清空可信游标。
+- 切换顺序：停止旧 scheduler、暂停手动触发 → 等待旧 worker 完成并排空
+  `autoadmin.job.execute` → 停止旧 worker → 执行迁移 → 部署新 API/scheduler/worker。
+  禁止新旧 scheduler、旧 MQ worker 与新直接执行器混跑。
+- 新代码不再声明、发布或消费旧定时任务队列，不自动删除 RabbitMQ 中已有队列或消息。
+  日志采集的 `autoadmin.logcollect.execute` 保持不变，api 仍需要 RabbitMQ；
+  scheduler/worker 不再要求 `RABBITMQ_URL`，worker 保留自动化失联作业对账职责。
+
+非当前档位日志流的自动回收属于 `api` 角色的进程内维护循环（启动检查，之后每 10 分钟一次），
+不新增 `scheduler_scheduledtask` 任务，也不由 worker 消费。原因是回收必须检查 API 持有的实时
+agent 会话与配置下发状态。策略与失败语义见 [日志采集架构](LOG_COLLECTION_ARCHITECTURE.md#非当前档位数据流的自动回收)。
+
+### 回归验证
+
+```bash
+cd autoadmin
+make derive
+make generate
+make facade
+make vet
+make test
+make build
+# 隔离 MySQL 实例，账号需 CREATE/DROP DATABASE 权限；测试创建并清理专用临时数据库：
+# SCHEDULER_SMOKE_DSN='<test-dsn>' make test PKG=./internal/scheduler TESTFLAGS='-run TestDurableSchedulerMySQLSmoke -count=1 -v'
+
+cd ../fronted
+npm run test:run -- src/views/sys/scheduler/index.spec.js
+npm run build
+```
+
+上线验证应在隔离数据库中覆盖：两个 scheduler 同时认领同一轮、清理中断后回滚恢复、
+清理与终态同成同败、错过多轮合并一次、修改/停用取消等待项、重新启用不补停用期间。
+仅单元测试通过不等于已完成真库并发与故障注入验收；不要在生产数据库直接构造这些故障。
 
 ## 任务编码 ↔ handler（**唯一的"会不会执行"判据**）
 
@@ -43,8 +116,8 @@
 | `cleanup_monitor_install_histories` | 监控安装历史清理 | `cleanupMonitorInstallHistories` | `sys.monitor.install_history.retention_days`（180） | `monitor_target_install_history`，**每个纳管目标至少保留最新一条**（清完还要能回答"这台机器最近一次装/卸是什么结果"） |
 | `cleanup_alert_histories` | 历史告警清理 | `cleanupAlertHistories` | `sys.monitor.alert_history.retention_days`（90） | 投递记录 → 通知事件 → 告警行，**先子后父**；只清 `state='resolved'`（仍在 firing 的是"当前状态"）；年龄取 `COALESCE(resolved_at, started_at)` |
 
-保留期一律**读 sys_config 的同名键**（与 Django 时代同一个键，升级后行为不变），读不出来时退回默认值：
-"读不到就不清理"会让表一直涨、"读不到就全清"会丢数据，两者都是错的。删除语句都在
+保留期一律**读 sys_config 的同名键**；读取失败、缺失或数值非法时明确失败，不以默认保留期
+静默执行删除。删除语句都在
 `db/queries/mysql/scheduler.sql`，有子表的**子表先删**——这些外键都没有级联，顺序反了会直接撞外键
 （在真库上实测到过 1451）。
 
@@ -64,8 +137,8 @@
 
 若再出现没有实现的编码，三处行为一致，不会给人"看着在用"的错觉：
 
-1. **定时调度跳过**：`scheduler` 进程注册任务前检查 `IsSupportedTaskCode`，不匹配的直接不注册
-   （`internal/app/app.go`）——不会执行、也不会产生失败日志；
+1. **定时调度跳过**：scheduler 生成执行请求前检查 `IsSupportedTaskCode`，不支持的任务不生成自动执行，
+   列表不展示下次计划；
 2. **立即执行拒绝**：`RunNow` 返回 400，消息按任务构造（见下）；
 3. **列表标注**：任务列表/详情返回 `supported` 与 `support_note`（`withTaskSupport`），
    页面据此把「立即执行」**置灰**、在行内标「未迁移」、页头给一条警告。

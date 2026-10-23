@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd from 'ant-design-vue'
+import Antd, { message } from 'ant-design-vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // 回归（2026-09-19 现场）：在「定时任务」页点历史任务的「立即执行」，只回一句
@@ -15,7 +15,7 @@ vi.mock('@/api/sys/scheduler', () => ({
       {
         id: 5, name: '登录日志清理', code: 'cleanup_login_audit_logs', enabled: true, is_running: false,
         effective_cron_expression: '0 0 * * *', last_status: '成功', supported: true, support_note: '',
-        // 后端实时算出来的（永远在未来），并带上调度时区供界面解释 cron 的钟点。
+        // 数据库调度游标，调度时区用于解释计划钟点。
         next_run_time: '2099-01-01T16:00:00Z', schedule_timezone: 'Asia/Shanghai',
       },
       {
@@ -50,7 +50,7 @@ const originalGetComputedStyle = window.getComputedStyle.bind(window)
 window.getComputedStyle = (element) => originalGetComputedStyle(element)
 
 import SchedulerPage from './index.vue'
-import { runTaskNow } from '@/api/sys/scheduler'
+import { getTaskStatus, runTaskNow } from '@/api/sys/scheduler'
 
 async function mountPage() {
   const wrapper = mount(SchedulerPage, {
@@ -125,11 +125,84 @@ describe('定时任务：未迁移任务的处理', () => {
 })
 
 // 「下次运行时间」这一列（2026-09-20 现场："下次运行时间比当前时间早"）：
-// 现在由后端实时算，前端要做的是把**空值的原因**说清——空不是"没数据"，而是"不会跑"。
+// 展示数据库调度游标，并解释空值与逾期的语义。
 describe('定时任务：下次运行时间这一列', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
+  })
+
+  describe('定时任务：数据库待执行状态', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+      vi.clearAllMocks()
+      document.body.innerHTML = ''
+    })
+
+    it('keeps polling a pending request instead of reporting the previous success', async () => {
+      const wrapper = await mountPage()
+      const success = vi.spyOn(message, 'success')
+      const loading = vi.spyOn(message, 'loading')
+      getTaskStatus
+        .mockResolvedValueOnce({ data: { data: { is_pending: true, is_running: false, last_status: '成功' } } })
+        .mockResolvedValueOnce({ data: { data: { is_pending: false, is_running: false, last_status: '成功' } } })
+      vi.useFakeTimers()
+      try {
+        await wrapper.vm.runNow(wrapper.vm.tasks.find((task) => task.id === 5))
+        await flushPromises()
+        expect(loading).toHaveBeenCalledWith('任务「登录日志清理」已提交，等待调度执行...', 0)
+        await vi.advanceTimersByTimeAsync(3000)
+        expect(getTaskStatus).toHaveBeenCalledTimes(1)
+        expect(success).not.toHaveBeenCalled()
+        expect(rowByName(wrapper, '登录日志清理').text()).toContain('等待执行')
+        await vi.advanceTimersByTimeAsync(3000)
+        expect(getTaskStatus).toHaveBeenCalledTimes(2)
+        expect(success).toHaveBeenCalledWith('任务「登录日志清理」执行成功')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('explains overdue persisted schedules without hiding them', async () => {
+      const wrapper = await mountPage()
+      expect(wrapper.vm.nextRunTooltip({
+        next_run_time: '2020-01-01T00:00:00Z', schedule_timezone: 'Asia/Shanghai',
+      })).toContain('停机错过多轮合并补一次')
+      wrapper.unmount()
+    })
+
+    it('reports cancelled requests instead of the previous successful result', async () => {
+      const wrapper = await mountPage()
+      const success = vi.spyOn(message, 'success')
+      const warning = vi.spyOn(message, 'warning')
+      getTaskStatus.mockResolvedValueOnce({
+        data: { data: { is_pending: false, is_running: false, execution_status: 'cancelled', last_status: '成功' } },
+      })
+      vi.useFakeTimers()
+      try {
+        await wrapper.vm.runNow(wrapper.vm.tasks.find((task) => task.id === 5))
+        await flushPromises()
+        await vi.advanceTimersByTimeAsync(3000)
+        expect(success).not.toHaveBeenCalled()
+        expect(warning).toHaveBeenCalledWith('任务「登录日志清理」已取消')
+      } finally {
+        wrapper.unmount()
+      }
+    })
+
+    it('includes the task name when submission fails', async () => {
+      const wrapper = await mountPage()
+      const error = vi.spyOn(message, 'error')
+      runTaskNow.mockResolvedValueOnce({ data: { code: 400, msg: '任务正在等待执行' } })
+      try {
+        wrapper.vm.runNow(wrapper.vm.tasks.find((task) => task.id === 5))
+        await flushPromises()
+        expect(error).toHaveBeenCalledWith('任务「登录日志清理」提交失败: 任务正在等待执行')
+      } finally {
+        wrapper.unmount()
+      }
+    })
   })
 
   it('shows the time for a task that will actually run', async () => {

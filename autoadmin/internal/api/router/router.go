@@ -29,10 +29,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// logBatchPublisher 是日志采集批量作业需要的投递能力：只用到"向采集队列投递一条消息"。
+// LogBatchPublisher 是日志采集批量作业需要的投递能力：只用到"向采集队列投递一条消息"。
 // 用窄接口而不是具体客户端类型，装配方给不出投递能力时（如未接队列的进程）批量执行器
 // 依然能构造，只是批量接口会明确报错。
-type logBatchPublisher interface {
+type LogBatchPublisher interface {
 	PublishLogCollect(ctx context.Context, message job.Message) error
 }
 
@@ -46,8 +46,8 @@ type LogBatchOptions struct {
 }
 
 // New 只返回 HTTP 引擎（历史签名，供不消费队列的调用方使用）。
-func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string) (*gin.Engine, error) {
-	engine, _, err := NewWithGateway(database, tokens, allowedOrigins, schedulerPublisher, credentialEncryptionKey, djangoSecret, nil, LogBatchOptions{})
+func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string) (*gin.Engine, error) {
+	engine, _, err := NewWithGateway(database, tokens, allowedOrigins, batchPublisher, credentialEncryptionKey, djangoSecret, nil, LogBatchOptions{})
 	return engine, err
 }
 
@@ -56,7 +56,7 @@ func New(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []strin
 // 第二个返回值是「日志采集批量作业」的消费者：这类作业要通过 agent gRPC 会话执行，
 // 会话只存在于跑 api 角色的进程里，所以必须由 api 角色消费（见 rabbitmq.LogCollectRoute）。
 // batchOptions 的零值字段用 logcollect 的缺省规模（0 视为未配置）。
-func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, schedulerPublisher scheduler.Publisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, error) {
+func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrigins []string, batchPublisher LogBatchPublisher, credentialEncryptionKey, djangoSecret string, gateway *agent.Gateway, batchOptions LogBatchOptions) (*gin.Engine, rabbitmq.Consumer, error) {
 	engine := gin.New()
 	engine.Use(cors.New(cors.Config{
 		AllowOrigins:  allowedOrigins,
@@ -148,7 +148,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	automationJobs.GET("/:id/events/", middleware.RequirePermission("automation:jobs:view"), playbookHandler.JobEvents)
 	automationJobs.GET("/:id/status-summary/", middleware.RequirePermission("automation:jobs:view"), playbookHandler.JobStatusSummary)
 	automationJobs.POST("/:id/cancel/", middleware.RequirePermission("automation:jobs:create"), playbookHandler.CancelJob)
-	schedulerHandler := scheduler.NewHandler(scheduler.NewService(scheduler.NewRepository(database)).WithPublisher(schedulerPublisher))
+	schedulerHandler := scheduler.NewHandler(scheduler.NewService(scheduler.NewRepository(database)))
 	schedulerTasks := engine.Group("/sys/scheduler/tasks", middleware.Authenticate(tokens), middleware.RequirePermission("system:scheduler:view"))
 	schedulerTasks.GET("/", schedulerHandler.List)
 	schedulerTasks.GET("/:id/", schedulerHandler.Get)
@@ -447,7 +447,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
 	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)
 	// 批量动作执行器：入队 + 有界并发 + 进度可查（见 logcollect/log_batch_job.go）。
-	// 发布者取自 schedulerPublisher——它是同一个 rabbit 客户端，只是这里用采集队列那条路由；
+	// 仅注入采集队列发布能力，定时清理直接由数据库驱动，不依赖 RabbitMQ；
 	// 拿不到投递能力（如测试或未接队列的进程）时 runner 仍会建起来，只是批量作业接口会
 	// 明确报"执行器未装配"，而不是静默地同步跑几千台。
 	resolvedBatchOptions := logcollect.DefaultLogBatchOptions()
@@ -463,7 +463,6 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	if batchOptions.Budget > 0 {
 		resolvedBatchOptions.Budget = batchOptions.Budget
 	}
-	batchPublisher, _ := schedulerPublisher.(logBatchPublisher)
 	batchRunner := logcollect.NewLogBatchRunner(logcollectHandler, batchPublisher, resolvedBatchOptions)
 	logcollectHandler.SetLogBatchRunner(batchRunner)
 	monitorRoutes := engine.Group("/monitor", middleware.Authenticate(tokens), middleware.RequirePermission("monitor:view"))

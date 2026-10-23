@@ -9,7 +9,7 @@ The Go backend of djadmin (`autoadmin`). It serves the Vue frontend's existing A
 - sqlc — generation **must** use v1.30.0 (`go.mod` pins the tool at v1.31.1, which silently changes generated params; the Makefile guards the version). See SQL_DESIGN §5.1
 - go-sql-driver/mysql v1.10.0 (default build)
 - jackc/pgx v5 (`-tags postgres` build)
-- gocron v2.22.0
+- robfig/cron v3.0.1
 - RabbitMQ 4.3.5 with amqp091-go v1.14.0
 - go-ansible v2.4.1
 - golang-migrate v4.19.1
@@ -37,8 +37,8 @@ make facade                   # rebuild the dialect facade (must run after make 
 
 # ---- run (one binary, four roles) ----
 ./bin/autoadmin api           # HTTP :9000 + agent gRPC :9001 + 日志采集批量作业队列
-./bin/autoadmin scheduler
-./bin/autoadmin worker        # 通用作业队列（计划任务）
+./bin/autoadmin scheduler     # 数据库持久化调度 + 有界执行池直接清理，无需 RabbitMQ
+./bin/autoadmin worker        # 自动化失联作业对账维护，无需 RabbitMQ
 ./bin/autoadmin migrate       # applies db/migrations/<dialect> up migrations
 ./bin/autoadmin migrate force 34   # 迁移失败后清脏标记（只改版本表，不动 schema）
 ./bin/autoadmin --version     # or -v
@@ -49,10 +49,15 @@ make facade                   # rebuild the dialect facade (must run after make 
 **改好迁移文件 → `migrate force <失败前的版本号>` → 再 `migrate`**。`force` 只改版本号，
 置错会让迁移链与库内实际结构错位，不确定时先核对 `schema_migrations` 与库内结构。
 
-队列按"执行者需要什么"分成两条（见 `rabbitmq.Routes`）：`autoadmin.job.execute`
-（不需要 agent 会话的作业：计划任务，worker 角色消费）与 `autoadmin.logcollect.execute`
-（日志采集批量动作：要经 agent gRPC 会话在主机上执行，而会话只存在于 api 进程里，
-因此**必须由 api 角色消费**，并发/预算由 `LOG_BATCH_*` 控制）。
+RabbitMQ 仅用于 `autoadmin.logcollect.execute` 日志采集批量动作，由 **api 角色消费**，
+因为 agent gRPC 会话只存在于 api 进程，并发/预算由 `LOG_BATCH_*` 控制。
+定时清理与“立即执行”通过数据库记录认领，由 scheduler 直接执行，不再发布或消费
+`autoadmin.job.execute`。`worker` 保留自动化失联作业对账，不再消费定时任务。
+`RABBITMQ_URL` 仅为 api 必填；scheduler/worker 只需数据库连接。
+
+持久化调度切换必须先停止旧 scheduler、暂停手动触发，等待旧 worker 完成并排空旧定时队列，
+再停止旧 worker，执行迁移并部署新进程；禁止新旧调度器混跑。
+调度策略、数据库迁移及验证步骤见 [定时任务架构](../docs/architecture/SCHEDULER_ARCHITECTURE.md)。
 
 Environment: the default build reads `MYSQL_DSN`; the `-tags postgres` build reads `POSTGRES_DSN` (pgx DSN, must carry `TimeZone=UTC`). `MIGRATION_DATABASE_URL` / `MIGRATION_SOURCE_URL` are used by the `migrate` role. Configuration is not read from dotenv files — export it (`set -a; . ./config.env; set +a`) or inject it from the deployment environment.
 
@@ -87,7 +92,7 @@ internal/platform/database/      database pool, query derivation, dialect facade
   generated/mysql/               MySQL sqlc output (default build)
   generated/postgres/            PostgreSQL sqlc output (-tags postgres)
 internal/messaging/rabbitmq/     durable topology, publisher and consumer
-internal/scheduler/              gocron scheduler and message publication
+internal/scheduler/              durable database scheduling and direct cleanup execution
 internal/automation/ansible/     go-ansible adapter
 sqlc.yaml                        sqlc config: both dialects (make generate emits both)
 db/schema/<dialect>/             schema baseline consumed by sqlc, one per dialect

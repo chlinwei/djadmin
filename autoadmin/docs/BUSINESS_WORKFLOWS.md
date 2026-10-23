@@ -89,21 +89,25 @@ Service 和 Template 是 aggregate：嵌套成员全量替换必须原子提交�
 
 ## 5. Scheduler
 
-当前 Celery Beat 每分钟扫描 due task：检查全局开关、Worker 健康、task enabled/is_running/next_run，先推进 next_run，再投递执行。执行器从硬编码函数 registry 调用维护任务、捕获进程级 stdout/stderr、写日志并按策略清理。
-
-Go gocron 只负责计算触发，不直接执行维护函数：
+`autoadmin scheduler` 根据数据库持久化游标扫描到期任务，事务创建执行记录并推进计划；
+多个实例通过数据库锁协调。`robfig/cron/v3` 只解析五字段表达式、计算未来计划时间。
+清理在有界执行池中直接执行，不再经过 RabbitMQ：
 
 ```mermaid
 flowchart LR
-    Leader[Scheduler leader] --> Load[加载 enabled schedules]
-    Load --> G[gocron timer]
-    G --> Tx[事务创建 execution + outbox]
-    Tx --> MQ[RabbitMQ]
-    MQ --> W[Worker claim]
-    W --> Log[状态与日志]
+    Scheduler[多个 Scheduler 进程] --> Load[数据库到期计划认领]
+    Load --> E[事务创建执行记录并推进游标]
+    API[API 立即执行] --> E
+    E --> Pool[Scheduler 有界执行池]
+    Pool --> Tx[数据库清理与成功结果同事务]
+    Tx --> Log[执行记录与日志]
 ```
 
-多 Scheduler 需要 MySQL lease。唯一键至少覆盖 `(schedule_id, scheduled_for)`，从根上避免同一时刻重复 execution。更新任务应重新加载 gocron entry；停用应移除 entry，不依赖进程重启。
+停机错过多轮合并补执行一次；修改计划或停用时取消未开始的旧计划，已执行中的允许完成；
+再次启用从启用时刻计算未来计划，不追补停用期间。手动触发写数据库，由 scheduler 认领执行。
+数据库错误明确报错并保留恢复依据，不将失败读取视为空任务。未提交的清理随事务回滚。
+RabbitMQ 仍用于日志采集批量作业，worker 角色保留自动化失联作业对账。
+完整语义见 [定时任务架构](../../docs/architecture/SCHEDULER_ARCHITECTURE.md)。
 
 ## 6. Automation Job 与 Workflow
 

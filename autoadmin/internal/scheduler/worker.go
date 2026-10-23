@@ -3,15 +3,10 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
-
-	"autoadmin/internal/job"
 )
-
-const scheduledTaskMessageKind = "scheduled_task"
 
 // supportedTaskCodes 已迁到 Go 的任务编码 → 给用户看的名字。
 //
@@ -76,41 +71,20 @@ func NewWorker(repository *Repository) *Worker {
 	return worker
 }
 
-func (worker *Worker) Handle(ctx context.Context, message job.Message) error {
-	if message.Kind != scheduledTaskMessageKind || message.ResourceID < 1 {
-		return fmt.Errorf("unsupported scheduler message kind %q", message.Kind)
-	}
-	startedAt := time.Now().UTC()
-	claimed, err := worker.repository.Claim(ctx, message.ResourceID, startedAt)
-	if err != nil || !claimed {
-		return err
-	}
-	task, err := worker.repository.GetTask(ctx, message.ResourceID)
-	if err != nil {
-		return worker.repository.Complete(ctx, message.ResourceID, startedAt, "失败", "读取任务失败", "")
-	}
-	handler, supported := worker.handlers[task.Code]
-	if !supported {
-		// 派发侧（app.go）已经跳过未实现的任务，正常到不了这里；真到了也要让日志行说得清是谁。
-		return worker.repository.Complete(ctx, task.ID, startedAt, "失败", UnsupportedTaskNote(task.Name, task.Code), "")
-	}
-	output, executionErr := handler(ctx)
-	status, resultMessage := "成功", "执行成功"
-	if executionErr != nil {
-		slog.Error("execute scheduled task", "task_id", task.ID, "task_code", task.Code, "error", executionErr)
-		status, resultMessage = "失败", "执行失败"
-	}
-	return worker.repository.Complete(ctx, task.ID, startedAt, status, resultMessage, output)
-}
-
 func (worker *Worker) cleanupLoginAudits(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.audit.login_logs.retention_days", 90)
+	days, err := worker.repository.RetentionDays(ctx, "sys.audit.login_logs.retention_days")
+	if err != nil {
+		return "", err
+	}
 	count, err := worker.repository.CleanupLoginAudits(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d login audit rows", count), err
 }
 
 func (worker *Worker) cleanupOperationAudits(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.audit.operation_logs.retention_days", 90)
+	days, err := worker.repository.RetentionDays(ctx, "sys.audit.operation_logs.retention_days")
+	if err != nil {
+		return "", err
+	}
 	count, err := worker.repository.CleanupOperationAudits(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d operation audit rows", count), err
 }
@@ -118,7 +92,7 @@ func (worker *Worker) cleanupOperationAudits(ctx context.Context) (string, error
 // ---- 四类保留期清理（2026-09-19：从 Django 时代的历史任务迁到 Go）----
 //
 // 保留期一律读 sys_config 的**同名键**（与 Django 时代同一个键，升级后行为不变），
-// 键不存在或读不出来时退回默认值。输出里带上"清了多少 + 保留多少天"：
+// 配置缺失、不可读或无效必须报错，不能静默执行另一套保留期。输出带上影响行数与保留期：
 // 执行日志是这些清理唯一的证据（删掉的数据没有别的痕迹）。
 
 // cleanupWebSSHSessionLogs 清理 WebSSH 会话记录（sys.audit.webssh.retention_days，默认 30 天）。
@@ -128,7 +102,10 @@ func (worker *Worker) cleanupOperationAudits(ctx context.Context) (string, error
 // 会话内容占了这张表的大头（input_content / output_content 两个 longtext），
 // 不清理会一直涨。
 func (worker *Worker) cleanupWebSSHSessionLogs(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.audit.webssh.retention_days", 30)
+	days, err := worker.repository.RetentionDays(ctx, "sys.audit.webssh.retention_days")
+	if err != nil {
+		return "", err
+	}
 	count, err := worker.repository.DeleteWebSSHSessionLogsBefore(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d webssh session log rows (retention %d days)", count, days), err
 }
@@ -139,7 +116,10 @@ func (worker *Worker) cleanupWebSSHSessionLogs(ctx context.Context) (string, err
 // 运行中的作业正在被运行记录中心读，删了就凭空消失。作业字节块本来在收尾时就会删
 // （见 AUTOMATION_JOB_EXECUTION.md），这里兜住"执行进程没来得及清"的那部分。
 func (worker *Worker) cleanupAutomationExecutionLogs(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.automation.logs.retention_days", 30)
+	days, err := worker.repository.RetentionDays(ctx, "sys.automation.logs.retention_days")
+	if err != nil {
+		return "", err
+	}
 	hostLogs, chunkLogs, jobs, err := worker.repository.DeleteAutomationExecutionLogsBefore(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d automation jobs, %d host results, %d log chunks (retention %d days)",
 		jobs, hostLogs, chunkLogs, days), err
@@ -150,7 +130,10 @@ func (worker *Worker) cleanupAutomationExecutionLogs(ctx context.Context) (strin
 // "每个纳管目标至少保留最新一条"写在配置说明里，SQL 里也照这个来（见 DeleteMonitorInstallHistoriesBefore）：
 // 清完还要能回答"这台机器最近一次装/卸是什么结果"。
 func (worker *Worker) cleanupMonitorInstallHistories(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.monitor.install_history.retention_days", 180)
+	days, err := worker.repository.RetentionDays(ctx, "sys.monitor.install_history.retention_days")
+	if err != nil {
+		return "", err
+	}
 	count, err := worker.repository.DeleteMonitorInstallHistoriesBefore(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d monitor install history rows (retention %d days)", count, days), err
 }
@@ -162,7 +145,10 @@ func (worker *Worker) cleanupMonitorInstallHistories(ctx context.Context) (strin
 // 一并清掉这些告警的通知事件与投递记录（它们引用告警行，外键无级联；保留期跟父记录走——
 // 否则"有通知记录的告警"永远清不掉，这条配置就形同虚设。见 DeleteResolvedAlertHistoriesBefore）。
 func (worker *Worker) cleanupAlertHistories(ctx context.Context) (string, error) {
-	days := worker.repository.RetentionDays(ctx, "sys.monitor.alert_history.retention_days", 90)
+	days, err := worker.repository.RetentionDays(ctx, "sys.monitor.alert_history.retention_days")
+	if err != nil {
+		return "", err
+	}
 	deliveries, events, histories, err := worker.repository.DeleteResolvedAlertHistoriesBefore(ctx, time.Now().UTC().AddDate(0, 0, -days))
 	return fmt.Sprintf("deleted %d resolved alert rows, %d notification events, %d deliveries (retention %d days)",
 		histories, events, deliveries, days), err

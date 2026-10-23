@@ -2,7 +2,7 @@
 
 > 状态：讨论稿，待研究与确认，未实施。记录日期：2026-10-14。
 > 本文不是当前功能的使用手册，也不代表接口、页面或标签协议已经可用。
-> 当前实现见 [告警通知分发](../architecture/ALERT_NOTIFICATION_DISPATCH.md)、
+> 当前实现见 [告警通知分发](../architecture/ALERT_HISTORY_ARCHITECTURE.md#notification-dispatch)、
 > [资产与服务树](../architecture/ASSET_CATALOG.md)。
 
 ## 1. 目标与职责边界

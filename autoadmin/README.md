@@ -100,16 +100,12 @@ db/queries/mysql/                the single hand-maintained source of queries
 db/queries/postgres/             derived from db/queries/mysql (do not edit by hand)
 db/migrations/mysql/             post-baseline migrations (000001…000022, up/down per version)
 db/migrations/postgres/          same 44 file names/versions, translated for PostgreSQL (hand-maintained)
-docs/                            architecture, contracts and migration plan
 ```
 
 The full SQL tree — which directory is hand-maintained, which is a generated artifact, and the required order of the `derive` / `generate` / `facade` steps — is in [SQL_DESIGN §4.6](../docs/architecture/SQL_DESIGN.md).
 
 Use `config.example.env` as the local environment template and provide real credentials outside Git. The application does not load dotenv files itself.
 
-See [Architecture](docs/ARCHITECTURE.md), [API contract](docs/API_CONTRACT.md), [business workflows](docs/BUSINESS_WORKFLOWS.md) and [error conventions](docs/ERROR_CONVENTIONS.md).
-
-业务语义与错误约定仍以这两个为准：[Business workflows and state machines](docs/BUSINESS_WORKFLOWS.md)、[Error conventions](docs/ERROR_CONVENTIONS.md)。
-
-迁移期的 Django 基线文档（API 深度分析 / 领域模型分析 / 模块映射 / Go 重写指南 / 开发计划）已随实现迁出归档到
-[docs/archive/](../docs/archive/)（历史参考，不作为实现依据）。
+功能与架构统一从 [文档中心](../docs/README.md) 按业务域查阅；API 契约和错误分层统一见
+[开发与设计约定](../docs/architecture/CONVENTIONS.md#api-contract)，模块目录不再维护重复版本。
+旧重写方案保留在 [历史归档](../docs/archive/)，不作为当前实现依据。

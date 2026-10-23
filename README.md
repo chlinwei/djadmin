@@ -11,29 +11,12 @@
 
 ## 文档索引
 
-**新增文档前必读：[docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md) 第三节"文档组织约定"——先查本索引，主题已存在则并入，不另起新文件。**
+**统一入口：[文档中心](docs/README.md)** —— 按业务域查架构、开发规范、操作手册和计划。
+同主题只维护一份主文档，不在此重复完整目录。
 
-| 分类 | 位置 | 内容 |
-|---|---|---|
-| 概览 | [docs/overview](docs/overview) | [项目全局上下文](docs/overview/PROJECT_CONTEXT.md)（模块地图 + 各域文档入口） |
-| 架构（最终逻辑） | [docs/architecture](docs/architecture) | 各功能域最终设计；[开发与设计约定](docs/architecture/CONVENTIONS.md)（删除 API 规范、前端表格规范、文档组织） |
-| 计划/待办 | [docs/plans](docs/plans) | 未完成改造清单（缺失接口补齐、巡检规模化、**双数据库与 sqlc 迁移**） |
-| 运维 | [docs/ops](docs/ops) | 告警媒介配置指南等操作手册 |
-| 历史归档 | [docs/archive](docs/archive) | 旧方案与 Django 时代文档（文件头均标注勿作参考） |
-
-### 常用入口
-
-- 项目全局上下文：[docs/overview/PROJECT_CONTEXT.md](docs/overview/PROJECT_CONTEXT.md)
-- 开发与设计约定（删除 API / 前端表格 / 文档组织）：[docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md)
-- **SQL 设计与方言约定（选型原则 / 字段映射 / MySQL+PostgreSQL 可移植）：[docs/architecture/SQL_DESIGN.md](docs/architecture/SQL_DESIGN.md)**
-- **进行中的改造计划（双数据库支持 + 内联 SQL 迁移到 sqlc，含待办与已知陷阱）：[docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md](docs/plans/SQL_DUAL_DIALECT_AND_SQLC_MIGRATION.md)**
-- 告警对象与服务树关联（待评审，未实施）：[docs/plans/ALERT_SERVICE_TREE_ASSOCIATION.md](docs/plans/ALERT_SERVICE_TREE_ASSOCIATION.md)
-- API 响应格式：[.github/API_RULES.md](.github/API_RULES.md)
-- 巡检架构：[docs/architecture/INSPECTION_ARCHITECTURE.md](docs/architecture/INSPECTION_ARCHITECTURE.md)
-- 日志采集架构：[docs/architecture/LOG_COLLECTION_ARCHITECTURE.md](docs/architecture/LOG_COLLECTION_ARCHITECTURE.md)
-- Agent 架构：[docs/architecture/DJ_AGENT_ARCHITECTURE.md](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
-- 前端说明：[fronted/README.md](fronted/README.md)
-- Agent 说明：[dj_agent/README.md](dj_agent/README.md)
+- 初次了解项目：[项目概览](docs/overview/PROJECT_CONTEXT.md)。
+- 开发前必读：[开发与设计约定](docs/architecture/CONVENTIONS.md)、[SQL 设计](docs/architecture/SQL_DESIGN.md)。
+- 模块运行说明：[后端](autoadmin/README.md)、[前端](fronted/README.md)、[Agent](dj_agent/README.md)。
 
 ## 快速启动
 
@@ -59,7 +42,7 @@ make facade      # 重建方言门面
 # 运行：一个二进制四个角色
 ./bin/autoadmin api        # HTTP :9000 + agent gRPC :9001
 ./bin/autoadmin scheduler  # 定时任务
-./bin/autoadmin worker     # 消息消费
+./bin/autoadmin worker     # 自动化失联作业对账；定时清理由 scheduler 直接执行
 ./bin/autoadmin migrate    # 执行 db/migrations/<dialect> 的 up 迁移
 ./bin/autoadmin migrate force 34   # 迁移失败后清脏标记（只改版本表，不动 schema）
 ```

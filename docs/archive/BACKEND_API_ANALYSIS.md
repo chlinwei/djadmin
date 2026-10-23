@@ -20,7 +20,7 @@
 | 监控 | `/monitor/` | Exporter、Prometheus、告警、OpenSearch、日志采集 |
 | Agent 控制面 | `/api/agent/` | 安装、任务创建/查询/重试/取消 |
 
-根路由见 [Django URL 配置](../../backend/djadmin/djadmin/urls.py)。
+历史根路由来自 Django URL 配置，源码已移除；当前入口见 [项目概览](../overview/PROJECT_CONTEXT.md)。
 
 ### 1.2 响应包络
 
@@ -46,7 +46,7 @@
 }
 ```
 
-当前 [分页实现](../../backend/djadmin/djadmin/utils.py) **没有实现** API_RULES 声称的 `pageNumber/pageSize` 请求别名。部分旧页面发送 `size`，标准分页会忽略并退回 10。Agent 查询是特例：使用 `page,size`，返回 `total`，且 `count` 只是当前页数量。
+当时的分页实现（源码已移除）**没有实现** API_RULES 声称的 `pageNumber/pageSize` 请求别名。部分旧页面发送 `size`，标准分页会忽略并退回 10。Agent 查询是特例：使用 `page,size`，返回 `total`，且 `count` 只是当前页数量。
 
 ### 1.4 鉴权与权限
 
@@ -54,7 +54,7 @@
 - JWT 无效返回 HTTP 200、`code=301`。
 - `admin` 用户绕过菜单权限。
 - 普通用户按 ViewSet action 映射到 `module:resource:action` 权限码。
-- 当前 [菜单权限类](../../backend/djadmin/menu/permisssion.py) 对缺失或拼错的 action 映射采取 **放行**，属于 fail-open。
+- 当时的菜单权限类（源码已移除）对缺失或拼错的 action 映射采取 **放行**，属于 fail-open。
 - Prometheus HTTP-SD 与 Alertmanager webhook 使用哈希后的 `ApiToken`：前者接受 query token，后者接受 Bearer token；失败是原生 HTTP 403 `{"error":"forbidden"}`。
 - `/api/agent/*` 当前使用用户 JWT，不是 Agent 身份凭证。
 

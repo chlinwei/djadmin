@@ -54,13 +54,9 @@ Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 此类历史数据及不含服务维度的旧流、普通索引不在服务删除范围内，需先核实历史身份与存储范围；
 不能将当前范围删除解释为对未知历史范围的保证。
 
-> **迁移进行中**：
->
-> - 搜索后端已从 OpenSearch 迁到 **Elasticsearch 8.x**：保留策略用 ILM（`_ilm/policy`）替代
->   ISM，每档位索引模板绑定 `index.lifecycle.name`，映射用 `flattened` 替代 `flat_object`，
->   集群表更名为 `monitor_elasticsearch_cluster`。本文主体已按 ES 8 更新。
-> - 采集器仍在 **Filebeat**，将迁到 Filebeat（Filebeat 配置渲染已落地，agent/安装链路待做），
->   进度见 [../plans/LOG_COLLECTOR_MIGRATION.md](../plans/LOG_COLLECTOR_MIGRATION.md)。
+当前采集器为 **Filebeat**，搜索后端为 **Elasticsearch 8.x**。保留策略使用 ILM（`_ilm/policy`），
+每档位索引模板绑定 `index.lifecycle.name`，对象映射使用 `flattened`，
+集群配置存于 `monitor_elasticsearch_cluster`。
 
 ---
 
@@ -584,7 +580,7 @@ tooltip 里写清后果与下一步（点这一行的「发起认证」；没挂
 
 Pipeline 是**原样发给集群**的，所以处理器参数名必须与目标集群的引擎一致。平台的目标集群换过引擎：
 早期是 ES 7.10 的 fork（OpenSearch 系，水位用 `_plugins/_ism/explain`），后来迁到真正的
-Elasticsearch（改 `_ilm/explain`，见 LOG_COLLECTOR_MIGRATION.md）。当年在旧集群上写的规则搬到新
+Elasticsearch（使用 `_ilm/explain`）。当年在旧集群上写的规则搬到新
 集群会直接 400，而报错只说"不支持这个参数"，看不出该改成什么（现场：三条规则的
 `rename.override_target`）。
 
@@ -681,9 +677,8 @@ Pipeline。在线调试支持两种样例格式（原始日志会随规则保存
   调用方自己给的字段优先（"样例文档 JSON"模式可以自己造）。
 - 判定侧要把这些字段当"本来就在"：`schema_violations` 豁免 Filebeat 自有字段（`dynamic:false`
   丢掉它们是设计如此），否则每条规则都会平白多出 6 条噪音。
-- **遗留规则的 `rename log → message` 一律要清掉**：那是 Fluent Bit 时代的写法（当年原始行在
-  `log` 里），Filebeat 下 `log` 已是对象、原始行是 `message`——Fluent Bit → Filebeat 迁移时
-  这一条"字段形状变了"没被任何校验覆盖，是这次现场的直接原因。
+- **禁止规则执行 `rename log → message`**：Filebeat 的 `log` 是元数据对象，原始行已经在
+  `message` 中；把 `log` 覆盖到 `message` 会破坏字段类型，导致 Elasticsearch 拒收事件。
 
 另有一条**巡检清单**：规则列表的 `missing_required_fields`（前端「日志解析规则」页的「必备字段」
 列）把"静态看着缺字段"的规则直接标红——它是切换 `drop` 模式前必须先看的清单，因为丢弃后
@@ -751,10 +746,8 @@ dj-agent 的文件通道（`internal/agent/file.go` 的 `StatFile` + `ReadFileCh
 
 ### 6.1 采集过滤（include / exclude，2026-09-19 接入）
 
-**历史**：这套功能在 Fluent Bit 时代是真生效的（`backend/djadmin/monitor/fluent_bit.py` 渲染
-`[FILTER] grep`：`Regex log <pattern>`，在 tail 读取、多行合并**之后**过滤）。换 Filebeat 时只搬了
-配置、没搬渲染，于是长期"能建规则、能选，却不生效"（服务弹窗那列因此被临时隐藏）。迁移 000039
-把结构补齐、渲染接上 `include_lines` / `exclude_lines`，语义与当年一致。
+采集过滤由 Filebeat 的 `include_lines` / `exclude_lines` 执行，在多行合并之后按规则筛选事件。
+规则由模板默认值和服务覆盖共同决定，并随配置渲染下发。
 
 **两层 + 三态**（`internal/logcollect/log_collection_filter.go`）：
 
@@ -1257,7 +1250,7 @@ Filebeat 的 `filebeat.config.inputs.reload.enabled: true` 支持 inputs.d 热�
   点击后由后端建批量作业执行。2026-09-18 之前只作用当前页，属计划 Phase 2 的半成品形态。
 - **界面位置**：采集目标的日常操作与配置状态都在「日志管理 → 日志采集」
   （`fronted/src/views/monitor/log-collectors/index.vue`，2026-09-18 从「智能监控 → 纳管目标」拆出，
-  见 [MENU_STRUCTURE](MENU_STRUCTURE.md)）；主机表外壳与状态逻辑与 Exporter 目标页共用
+  见 [菜单与路由](SYSTEM_MANAGEMENT_AUDIT.md#menu-structure)）；主机表外壳与状态逻辑与 Exporter 目标页共用
   `components/HostTargetPanel.vue` + `util/hostTargetTable.js`。
 - **一次性影响**：Phase 0 改了指纹语义（纳入输出段），因此存量主机的 `config_fingerprint`
   与期望值不再一致，升级后会全部显示 `drift`，重新下发一次即恢复稳定。

@@ -63,7 +63,7 @@ dj_agent/
 
 平台批量纳管主机时使用 **Agent 安装模板**（autoadmin「模板管理」里 `category=agent` 的
 `agent_install.yml`，后端执行时落盘再跑 ansible-playbook，实现见 `autoadmin/internal/assets/agent_install.go`，
-流程见 [AGENT_INSTALL_UPDATE.md](../docs/architecture/AGENT_INSTALL_UPDATE.md)）。Playbook
+流程见 [Agent 安装与更新](../docs/architecture/DJ_AGENT_ARCHITECTURE.md#agent-install-update)）。Playbook
 当前支持 Linux amd64，会上传 `bin/dj-agent` 和 `deploy/install.sh`，生成 systemd
 配置并执行 `systemctl enable --now dj-agent`。开发阶段 gRPC 握手只使用 `DJ_AGENT_ID`，
 不需要 Token；后续切换 mTLS 时再替换认证配置。

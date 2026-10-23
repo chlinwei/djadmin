@@ -26,6 +26,13 @@ export const staticRouterMap = [
                 component: () => import('../views/index/index.vue'),
             },
             {
+                path: '/docs',
+                name: '文档中心',
+                component: () => import('../views/docs/index.vue'),
+                // Common documentation is available to every signed-in user, independent of RBAC menus.
+                beforeEnter: () => getToken() ? true : { path: '/login' },
+            },
+            {
                 path: '/sys/userCenter',
                 name: '个人中心',
                 component: () => import('../views/userCenter/index.vue')
@@ -151,7 +158,7 @@ export const staticRouterMap = [
             },
             {
                 // 日志采集（Filebeat 纳管目标）：从「智能监控 → 纳管目标」拆出，见
-                // docs/architecture/MENU_STRUCTURE.md。exporter 目标留在智能监控页。
+                // docs/architecture/SYSTEM_MANAGEMENT_AUDIT.md#menu-structure。exporter 目标留在智能监控页。
                 path: '/monitor/logging/collectors',
                 name: '日志采集',
                 component: () => import('../views/monitor/log-collectors/index.vue'),

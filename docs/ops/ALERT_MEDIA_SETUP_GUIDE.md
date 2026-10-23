@@ -192,6 +192,6 @@
 
 ## 🔗 相关文档
 
-- [Agent 架构](docs/architecture/DJ_AGENT_ARCHITECTURE.md)
-- [告警媒介与监控模块接口](docs/overview/PROJECT_CONTEXT.md)
-- [项目上下文](docs/overview/PROJECT_CONTEXT.md)
+- [Agent 架构](../architecture/DJ_AGENT_ARCHITECTURE.md)
+- [告警通知与链路诊断](../architecture/ALERT_HISTORY_ARCHITECTURE.md)
+- [项目上下文](../overview/PROJECT_CONTEXT.md)

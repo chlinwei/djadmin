@@ -62,12 +62,17 @@
 
 ## 四、文档组织约定
 
-1. **新增文档前先查 `README.md` 索引**：主题已存在则并入，不另起新文件；确需新建的放对目录（见 README 分类）。
-2. 文档分四类，各归其位：
+1. **新增文档前先查 [文档中心](../README.md)**：按系统菜单找到模块手册，主题已存在则并入，不另起重复文件；
+   根 README 与模块 README 只保留导航和运行说明，不再复制架构或 API 契约。
+2. 文档按用途归位：
    - `docs/overview/`——项目概览与全局上下文
    - `docs/architecture/`——功能**最终逻辑**（数据流、入口、关键决策、失败语义），不写变更流水账
+   - `docs/architecture/modules/`——按系统菜单组织的模块手册，统一使用“重点 → 入口/操作 → 流程图 →
+     判断与失败 → 技术细节”。每个模块必须提供可渲染的 Mermaid 流程图；只写当前实现，
+     不把未上线方案当成功能。底层架构参考按需链接，不把实现文件名当作主阅读目录。
    - `docs/plans/`——未完成的计划/待办清单（如缺失接口补齐、规模化改造），完成一项更新一项状态，整体完成后归档
    - `docs/archive/`——历史方案、旧实现说明（文件头必须标注"历史归档"）
+   - `docs/ops/`——面向部署、验证和排障的操作手册，不复制功能内部设计
 3. 变更记录/总结类内容（"本次改了什么"）一律不进 architecture；要么并入对应架构文档的"最终逻辑"，要么进 `docs/archive/`。
 4. 后端唯一实现为 Go 版 autoadmin；Django 实现已从版本库移除，文档禁止引用其源码，历史实现只允许引用 `docs/archive/`（见 AGENTS.md）。
 5. **数据访问层约定（选 sqlc 还是内联 SQL、字段映射、SQL 方言可移植性）统一见 [SQL_DESIGN.md](SQL_DESIGN.md)**，本文不重复；新增或修改任何 SQL 前先读该文档。
@@ -79,3 +84,118 @@
 （2026-09-21 日志规则页运行结果复制即此）。约定：所有复制按钮统一用
 `import { copyTextWithFallback } from '@/util/clipboard'`——它优先用 Clipboard API，
 不可用时回退 `document.execCommand('copy')`；返回布尔值，调用方据此提示成功/失败。
+
+
+<a id="api-contract"></a>
+
+## 六、API 契约
+
+响应格式以 [API 规则](../../.github/API_RULES.md) 为准；以下补充现有契约及后端实现边界。
+
+### Success
+
+Successful business operations use HTTP 200:
+
+```json
+{"code": 200, "msg": "success", "data": {}}
+```
+
+### Business errors
+
+Expected business errors retain HTTP 200 and use application codes:
+
+- `300`: account or password error
+- `301`: invalid or expired token
+- `400`: invalid request
+- `403`: permission denied
+- `404`: resource not found
+
+Transport, malformed HTTP and unavailable dependency errors may use an appropriate HTTP status, but still use the same envelope.
+
+### Pagination
+
+List endpoints accept `page` and `page_size`. The compatibility default is 10 and the maximum is 30.
+
+```json
+{
+  "code": 200,
+  "msg": "success",
+  "data": {
+    "results": [],
+    "count": 0,
+    "pageNumber": 1,
+    "pageSize": 10,
+    "totalPages": 0,
+    "next": null,
+    "previous": null
+  }
+}
+```
+
+### Compatibility rules
+
+- Preserve existing route prefixes and JSON field names until a coordinated frontend change is approved.
+- Preserve JWT permission strings in `module:resource:action` form.
+- Keep `/monitor/prometheus/http-sd/` and `/monitor/alert-webhook/api/v2/alerts` as explicitly authenticated machine endpoints according to their current behavior.
+- Contract tests pin the frontend-visible response envelope; the authoritative response rules are [API_RULES.md](../../.github/API_RULES.md).
+
+
+<a id="error-conventions"></a>
+
+## 七、后端错误分层
+
+autoadmin uses three error layers.
+
+### 1. Error mechanism
+
+`internal/shared/apperror/error.go` defines the immutable `Error` type, accessors, `errors.As` support and `WithCause`. It must not contain domain-specific errors.
+
+Repository and infrastructure packages should preserve technical context with `%w`:
+
+```go
+return fmt.Errorf("query users: %w", err)
+```
+
+These errors are for logs and tracing. They must not be returned directly to clients.
+
+### 2. Common catalog
+
+`internal/shared/apperror/common.go` contains errors whose meaning is identical in every module:
+
+- invalid request, ID and pagination
+- invalid or expired token
+- permission denied
+- generic resource not found
+- generic internal failure
+
+Handlers reference these values directly through `response.Error`.
+
+### 3. Module catalogs
+
+Every business module owns an `errors.go`. Examples:
+
+- `identity/errors.go`: invalid credentials, disabled user, user not found
+- `rbac/errors.go`: role/menu validation and lookup errors
+- `sysconfig/errors.go`: readonly config, missing default, typed-value errors
+
+An error belongs to a module when its wording or code expresses that module's business meaning. Do not duplicate common errors in each module.
+
+### Internal causes
+
+Module catalogs contain stable public errors. Attach an operation failure without mutating the catalog value:
+
+```go
+response.Error(ctx, apperror.WithCause(identity.ErrUserQueryInternal, err))
+```
+
+The client receives only the stable code/message/status. Logging middleware may inspect `errors.Unwrap` to record the cause after redaction.
+
+### Rules
+
+1. Do not use `errors.New` for API or domain errors.
+2. Do not construct code/message pairs inside handlers.
+3. Do not return `err.Error()` to clients.
+4. Use existing common or module errors before adding a new one.
+5. Give new domain modules an `errors.go` as part of their first API slice.
+6. Preserve existing frontend application codes during migration.
+7. Unknown errors are mapped to common code `600` without exposing the cause.

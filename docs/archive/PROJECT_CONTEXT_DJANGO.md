@@ -285,7 +285,8 @@ media/           → 静态文件（头像等）
 - `selected_host_ids` 只存**固定主机 ID 列表**。前端勾选分组只是批量勾选入口，保存时展开成具体主机；之后往该分组新增主机不会自动进入已有 Inventory。
 - 范围是 JSON 字段而非外键，因此主机组删除时由 `assets` 侧显式检查引用并拦截。
 
-详见 [MODEL_RELATIONSHIP.md](../../backend/djadmin/automation/MODEL_RELATIONSHIP.md) 与 [WORKFLOW_RUNTIME_LOGIC.md](../../backend/djadmin/automation/WORKFLOW_RUNTIME_LOGIC.md)。
+原模型关系与 Workflow 运行说明已随旧实现移除；当前逻辑见 [自动化作业](../architecture/AUTOMATION_JOB_EXECUTION.md)
+与 [Workflow 前端说明](../../fronted/WORKFLOW_FRONTEND_GUIDE.md)，不以本历史记录推断当前行为。
 
 ---
 

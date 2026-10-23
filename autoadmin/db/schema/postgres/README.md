@@ -1,7 +1,7 @@
 # PostgreSQL schema（折叠态）
 
 本目录是 PostgreSQL 的**当前结构快照**，供 sqlc 解析与"从零建一个 PG 库"使用。分工与约定见
-[docs/architecture/SQL_DESIGN.md](../../../docs/architecture/SQL_DESIGN.md) §4.7。
+[SQL 设计](../../../../docs/architecture/SQL_DESIGN.md) §4.7。
 
 - 按 Django 域切分 6 个文件（`001_identity_rbac_config` … `006_baseline`），与 `db/schema/mysql/` 同名对应；
   改 mysql 侧的结构时要同步翻译这里。

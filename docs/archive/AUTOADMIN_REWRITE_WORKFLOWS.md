@@ -1,3 +1,7 @@
+# 历史归档：Go 重写期业务流程草案
+
+> 历史归档，不作为当前实现依据。原文混合旧实现分析、目标方案与局部更新；其中 Celery、Fluent Bit、OpenSearch 及部分同步执行描述不代表当前架构。当前功能逻辑统一见 [文档索引](../README.md)。保留原文用于设计追溯。
+
 # 核心业务流程与状态机
 
 ## 1. 身份认证与 RBAC
@@ -107,7 +111,7 @@ flowchart LR
 再次启用从启用时刻计算未来计划，不追补停用期间。手动触发写数据库，由 scheduler 认领执行。
 数据库错误明确报错并保留恢复依据，不将失败读取视为空任务。未提交的清理随事务回滚。
 RabbitMQ 仍用于日志采集批量作业，worker 角色保留自动化失联作业对账。
-完整语义见 [定时任务架构](../../docs/architecture/SCHEDULER_ARCHITECTURE.md)。
+完整语义见 [定时任务架构](../architecture/SCHEDULER_ARCHITECTURE.md)。
 
 ## 6. Automation Job 与 Workflow
 

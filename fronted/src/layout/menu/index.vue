@@ -19,6 +19,7 @@ import { onMounted } from 'vue'
 import { getMenuList } from '@/api/menu/index.js'
 import { useRouter } from 'vue-router';
 import { computed } from 'vue';
+import { BookOutlined } from '@ant-design/icons-vue'
 
 
 const selectedKeys = computed({
@@ -84,6 +85,7 @@ const visibleMenuList = computed(() => {
 const menuItems = computed(() => {
   menuPathNameMap.clear()
   menuPathNameMap.set('/index', '首页')
+  menuPathNameMap.set('/docs', '文档中心')
   return [
     {
       key: '/index',
@@ -92,6 +94,13 @@ const menuItems = computed(() => {
       icon: () => h('span', { class: 'menu-icon-wrap' }, [h(FontAwesomeIconComp, { icon: 'fa-home' })]),
     },
     ...buildMenuItems(visibleMenuList.value, 'root'),
+    // Like Home, this is a common entry, not a role-granted database menu.
+    {
+      key: '/docs',
+      label: '文档中心',
+      title: '文档中心',
+      icon: () => h(BookOutlined),
+    },
   ]
 })
 

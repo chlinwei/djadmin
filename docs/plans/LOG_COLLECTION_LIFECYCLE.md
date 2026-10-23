@@ -4,8 +4,6 @@
 > （2026-09-18）**；Phase 2 的最终语义已并入
 > [LOG_COLLECTION_ARCHITECTURE.md](../architecture/LOG_COLLECTION_ARCHITECTURE.md) §8.8。
 > 剩余为 Phase 3 清理闭环（前置是"模板日志定义行加稳定 id"）。
->
-> 相关：采集器迁移见 [LOG_COLLECTOR_MIGRATION.md](LOG_COLLECTOR_MIGRATION.md)。
 
 ## 0. 背景与原则
 

@@ -167,8 +167,5 @@ httpService.interceptors.response.use(function (response) {
 
 ## 📚 参考文档
 
-- 规则定义: [API_RULES.md](../API_RULES.md)
-- Response 函数: [backend/djadmin/utils.py](../../backend/djadmin/djadmin/utils.py)
-- 响应渲染器: [backend/djadmin/djResponseRender.py](../../backend/djadmin/djadmin/djResponseRender.py)
-- 异常处理: [backend/djadmin/djException.py](../../backend/djadmin/djadmin/djException.py)
-
+- 规则定义: [API_RULES.md](../../.github/API_RULES.md)
+- 历史 Response 函数、响应渲染器与异常处理已随旧实现移除；本报告仅保留历史审计结论。

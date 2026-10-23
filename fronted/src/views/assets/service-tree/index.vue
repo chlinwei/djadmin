@@ -262,7 +262,7 @@ function copyApplicationService(record) {
 function confirmDeleteService(record) {
   openDeleteConfirm({
     title: '删除逻辑服务',
-    summary: '将撤销日志采集并立即清理该服务的历史日志，删除服务配置、成员关联及专属部署实例记录；共享实例、主机、实际应用和原始日志文件保留。清理失败会保留服务记录，请重试删除。',
+    summary: '将撤销日志采集，并永久删除该服务所有档位的数据流（data stream）、底层索引及全部日志，删除服务配置、成员关联及专属部署实例记录；共享实例、主机、实际应用和原始日志文件保留。删除失败会保留服务记录，请重试删除。',
     items: [record.name || record.code || record.id],
     onConfirm: async () => {
       const response = await batchDeleteApplicationServices([record.id])

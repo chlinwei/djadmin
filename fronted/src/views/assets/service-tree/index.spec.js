@@ -257,6 +257,7 @@ describe('service-tree/index.vue 逻辑服务 CRUD 入口', () => {
 
     expect(openDeleteConfirm).toHaveBeenCalledWith(expect.objectContaining({
       title: '删除逻辑服务',
+      summary: expect.stringContaining('永久删除该服务所有档位的数据流（data stream）、底层索引及全部日志'),
       items: ['订单 API'],
     }))
 

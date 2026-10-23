@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -19,17 +20,6 @@ import (
 
 var deletionIndexPrefix = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-func serviceDeletionScope(row db.AssetsServiceDeletion) gin.H {
-	return gin.H{"bool": gin.H{"filter": []any{
-		gin.H{"term": gin.H{"project": row.ProjectCode}},
-		gin.H{"term": gin.H{"business_system": row.BusinessSystemCode}},
-		gin.H{"term": gin.H{"environment": row.EnvironmentCode}},
-		gin.H{"term": gin.H{"service": row.ServiceCode}},
-	}}}
-}
-
-// Keep ownership at document level, never delete a stream/index: older/shared indices
-// may contain several services and a service code alone is not globally unique.
 // Parameterize one script instead of compiling one unique script per deleted service:
 // a large tombstone set must not exhaust ES's global script compilation budget.
 const serviceDeletionCondition = `
@@ -87,13 +77,30 @@ func (handler *Handler) RevokeServiceLogs(ctx context.Context, serviceID int64) 
 	if err != nil {
 		return err
 	}
+	// Codes may contain hyphens: svc-* also matches svc-extra-*. Include live and
+	// deleted identities so ambiguous names fail closed instead of deleting another service.
+	owners, err := q.ListServiceStreamDims(ctx)
+	if err != nil {
+		return err
+	}
+	tombstones, err := q.ListServiceDeletionTombstones(ctx)
+	if err != nil {
+		return err
+	}
+	for _, owner := range owners {
+		tombstones = append(tombstones, db.AssetsServiceDeletion{
+			ServiceID: owner.ServiceID, ProjectCode: owner.ProjectCode,
+			BusinessSystemCode: owner.BusinessSystemCode, EnvironmentCode: owner.EnvironmentCode,
+			ServiceCode: owner.ServiceCode,
+		})
+	}
 	ids, err := q.ListServiceDeletionClusterIDs(ctx)
 	if err != nil {
 		return err
 	}
 	clusters := make([]elasticsearchCluster, 0, len(ids))
 	// Install an ES-side barrier before touching any host. Offline Filebeat, queued bulk
-	// requests and stale concurrent applies must not recreate data after the purge.
+	// requests and stale concurrent applies must not write logs after stream deletion.
 	for _, id := range ids {
 		cluster, err := handler.loadElasticsearchClusterByID(ctx, id)
 		if err != nil {
@@ -154,26 +161,8 @@ func (handler *Handler) RevokeServiceLogs(ctx context.Context, serviceID int64) 
 		}
 	}
 	for _, cluster := range clusters {
-		// delete_by_query uses a search snapshot. Flush previously unrefreshed writes into
-		// that snapshot after the ingestion barrier, otherwise recent logs can escape it.
-		refreshed, err := handler.elasticsearchRequest(ctx, cluster, "POST",
-			"/"+cluster.IndexPrefix+"-*/_refresh?expand_wildcards=all&allow_no_indices=true&ignore_unavailable=true", nil)
-		if err != nil {
-			return fmt.Errorf("cluster %d refresh before purge: %w", cluster.ID, err)
-		}
-		if shards, ok := refreshed["_shards"].(map[string]any); ok {
-			if failed, ok := shards["failed"].(float64); ok && failed > 0 {
-				return fmt.Errorf("cluster %d refresh has failed shards; retry deletion", cluster.ID)
-			}
-		}
-		result, err := handler.elasticsearchRequest(ctx, cluster, "POST",
-			"/"+cluster.IndexPrefix+"-*/_delete_by_query?wait_for_completion=true&conflicts=abort&refresh=true&expand_wildcards=all&allow_no_indices=true&ignore_unavailable=true",
-			gin.H{"query": serviceDeletionScope(scope)})
-		if err != nil {
-			return fmt.Errorf("cluster %d purge service logs: %w", cluster.ID, err)
-		}
-		if err = checkServicePurgeResult(result); err != nil {
-			return fmt.Errorf("cluster %d: %w", cluster.ID, err)
+		if err = handler.deleteServiceDataStreams(ctx, cluster, scope, tombstones); err != nil {
+			return fmt.Errorf("cluster %d delete service data streams: %w", cluster.ID, err)
 		}
 	}
 	return errors.Join(revokeErrors...)
@@ -222,21 +211,62 @@ func (handler *Handler) checkServiceDeletionTemplates(ctx context.Context, clust
 	return nil
 }
 
-func checkServicePurgeResult(result map[string]any) error {
-	raw, _ := json.Marshal(result)
-	var status struct {
-		TimedOut  bool              `json:"timed_out"`
-		Conflicts int64             `json:"version_conflicts"`
-		Failures  []json.RawMessage `json:"failures"`
-		Total     *int64            `json:"total"`
-		Deleted   *int64            `json:"deleted"`
-	}
-	if err := json.Unmarshal(raw, &status); err != nil {
+func serviceStreamPrefix(prefix string, scope db.AssetsServiceDeletion) string {
+	return LogDataStreamName(prefix, scope.ProjectCode, scope.EnvironmentCode,
+		scope.BusinessSystemCode, scope.ServiceCode, "")
+}
+
+func (handler *Handler) deleteServiceDataStreams(ctx context.Context, cluster elasticsearchCluster, scope db.AssetsServiceDeletion, owners []db.AssetsServiceDeletion) error {
+	prefix := serviceStreamPrefix(cluster.IndexPrefix, scope)
+	if err := validateCleanupStreamName(cluster.IndexPrefix, prefix); err != nil {
 		return err
 	}
-	if status.Total == nil || status.Deleted == nil || status.TimedOut || status.Conflicts != 0 ||
-		len(status.Failures) > 0 || *status.Total != *status.Deleted {
-		return fmt.Errorf("历史日志清理未完成，请重试: %s", strings.TrimSpace(string(raw)))
+	raw, err := handler.elasticsearchRequestRaw(ctx, cluster, http.MethodGet,
+		"/_data_stream/"+url.PathEscape(prefix)+"*?expand_wildcards=all", nil)
+	if err != nil {
+		if isElasticsearchNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	var result struct {
+		Streams *[]struct {
+			Name string `json:"name"`
+		} `json:"data_streams"`
+	}
+	if err = json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	if result.Streams == nil {
+		return fmt.Errorf("Elasticsearch did not return data_streams")
+	}
+	// Validate the entire set before deleting anything. Enumerate all actual tiers,
+	// including historical/removed tiers, then delete exact names rather than wildcards.
+	for _, stream := range *result.Streams {
+		if err = validateCleanupStreamName(cluster.IndexPrefix, stream.Name); err != nil {
+			return err
+		}
+		if !strings.HasPrefix(stream.Name, prefix) || stream.Name == prefix {
+			return fmt.Errorf("data stream %q does not belong to service %d", stream.Name, scope.ServiceID)
+		}
+		for _, owner := range owners {
+			if owner.ServiceID != scope.ServiceID && strings.HasPrefix(stream.Name, serviceStreamPrefix(cluster.IndexPrefix, owner)) {
+				return fmt.Errorf("data stream %q has ambiguous service ownership; refusing deletion", stream.Name)
+			}
+		}
+	}
+	for _, stream := range *result.Streams {
+		deleted, err := handler.elasticsearchRequest(ctx, cluster, http.MethodDelete,
+			"/_data_stream/"+url.PathEscape(stream.Name), nil)
+		if err != nil {
+			if isElasticsearchNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if deleted["acknowledged"] != true {
+			return fmt.Errorf("Elasticsearch did not acknowledge deletion of data stream %q", stream.Name)
+		}
 	}
 	return nil
 }

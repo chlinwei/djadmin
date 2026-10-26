@@ -966,6 +966,34 @@ type MonitorNotificationPolicy struct {
 	UserGroupIds     sql.NullString  `json:"user_group_ids"`
 }
 
+type MonitorSharedLogSource struct {
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	HostID           int64  `json:"host_id"`
+	BusinessSystemID int64  `json:"business_system_id"`
+	EnvironmentID    int64  `json:"environment_id"`
+	PathPattern      string `json:"path_pattern"`
+	ProcessingRuleID int64  `json:"processing_rule_id"`
+	RetentionTierID  int64  `json:"retention_tier_id"`
+	IncludePattern   string `json:"include_pattern"`
+	ExcludePattern   string `json:"exclude_pattern"`
+	Generation       int64  `json:"generation"`
+	Revision         int64  `json:"revision"`
+	Archived         bool   `json:"archived"`
+}
+
+type MonitorSharedLogSourceRevocation struct {
+	SourceID   int64  `json:"source_id"`
+	Generation int64  `json:"generation"`
+	Stopped    bool   `json:"stopped"`
+	LastError  string `json:"last_error"`
+}
+
+type MonitorSharedLogSourceService struct {
+	SourceID  int64 `json:"source_id"`
+	ServiceID int64 `json:"service_id"`
+}
+
 type MonitorSoftwarePackage struct {
 	ID                          int64          `json:"id"`
 	CreateTime                  time.Time      `json:"create_time"`

@@ -359,6 +359,7 @@ describe('ApplicationServiceDialog', () => {
       access_address: '10.0.0.100',
       business_system: 3,
       environment: 31,
+      log_retention_tier: 3,
       member_instances: [{ deployment: 13 }, { deployment: 14 }],
     } } })
     getApplicationDeploymentTemplateList.mockResolvedValue({ data: { data: { results: [{
@@ -442,6 +443,7 @@ describe('ApplicationServiceDialog', () => {
       id: 20, name: 'tomcat-group', code: 'tomcat-group', application: 5, application_version: 51,
       deployment_template: 62, topology_type: 'cluster', cluster_profile: 4,
       access_address: '10.0.0.100', business_system: 3, environment: 31,
+      log_retention_tier: 3,
       member_instances: [{ deployment: 13 }, { deployment: 14 }],
     } } })
     saveApplicationService.mockResolvedValue({ data: { data: { id: 20 } } })
@@ -454,6 +456,15 @@ describe('ApplicationServiceDialog', () => {
     await wrapper.setProps({ open: true })
     await flushPromises()
 
+    wrapper.vm.form.log_retention_tier = null
+    await flushPromises()
+    await wrapper.vm.submit()
+    await flushPromises()
+    expect(saveApplicationService).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请选择默认保留档位')
+
+    wrapper.vm.form.log_retention_tier = 3
+    await flushPromises()
     await wrapper.vm.submit()
     await flushPromises()
 
@@ -463,7 +474,7 @@ describe('ApplicationServiceDialog', () => {
     expect('log_settings' in payload).toBe(false)
     // 服务级的两个日志默认值照旧提交（它们不是逐条覆盖值）。
     expect(payload.log_collection_enabled).toBeDefined()
-    expect('log_retention_tier' in payload).toBe(true)
+    expect(payload.log_retention_tier).toBe(3)
     wrapper.unmount()
   })
 

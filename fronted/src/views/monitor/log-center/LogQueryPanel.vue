@@ -182,6 +182,10 @@
                     <span>{{ record.log_path || '-' }}</span>
                   </a-tooltip>
                 </template>
+                <template v-else-if="column.key === 'source'">
+                  <a-tag v-if="record.shared_source_id" color="purple">共享源：{{ record.shared_source_name || record.shared_source_id }}</a-tag>
+                  <span v-else>服务独占</span>
+                </template>
                 <template v-else-if="column.key === 'action'">
                   <a-tooltip title="查看详情">
                     <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
@@ -250,7 +254,8 @@
         <a-descriptions-item label="级别">{{ activeLog?.log_level || '-' }}</a-descriptions-item>
         <a-descriptions-item label="项目">{{ dimensionName('projects', activeLog?.project) || '-' }}</a-descriptions-item>
         <a-descriptions-item label="业务">{{ dimensionName('businessSystems', activeLog?.business_system) || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="服务">{{ activeLog?.service || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="服务">{{ activeLog?.shared_source_id ? '共享源独立归属，不属于单个服务' : (activeLog?.service || '-') }}</a-descriptions-item>
+        <a-descriptions-item v-if="activeLog?.shared_source_id" label="共享采集源">{{ activeLog.shared_source_name || activeLog.shared_source_id }}</a-descriptions-item>
         <a-descriptions-item label="实例">{{ activeLog?.instance || '-' }}</a-descriptions-item>
         <a-descriptions-item label="主机">{{ activeLog?.host_ip || '-' }}</a-descriptions-item>
         <a-descriptions-item label="日志名称">{{ activeLog?.log_name || '-' }}</a-descriptions-item>
@@ -559,10 +564,11 @@ const columns = computed(() => {
     base.push(...dimensionColumns.value)
     base.push({
       title: '逻辑服务', key: 'service_name', width: 150, ellipsis: true,
-      customRender: ({ record }) => serviceNameByCode.value.get(record.service) || record.service || '-',
+      customRender: ({ record }) => record.shared_source_id ? '共享源' : (serviceNameByCode.value.get(record.service) || record.service || '-'),
     })
   }
   base.push(
+    { title: '采集来源', key: 'source', width: 190 },
     { title: '实例', dataIndex: 'instance', key: 'instance', width: 160, ellipsis: true },
     { title: '主机', dataIndex: 'host_ip', key: 'host_ip', width: 130 },
     { title: '日志路径', dataIndex: 'log_path', key: 'log_path', width: 280, ellipsis: true },
@@ -574,9 +580,9 @@ const columns = computed(() => {
 
 // 路径列预留独立宽度；跨服务模式再增加维度列与逻辑服务列，避免挤压日志正文。
 const tableScrollX = computed(() => {
-  if (!isMultiService.value) return 1480
+  if (!isMultiService.value) return 1670
   const extra = dimensionColumns.value.reduce((sum, column) => sum + (column.width || 0), 0) + 150
-  return 1480 + extra
+  return 1670 + extra
 })
 
 const statsValueColumnTitle = computed(

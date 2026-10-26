@@ -132,8 +132,11 @@ func historicalStreamOwner(prefix, name string, owners []db.AssetsServiceDeletio
 		}
 		found, tier = owner, strings.TrimPrefix(name, base)
 	}
-	if found.ServiceID == 0 || tier == "" {
-		return found, "", fmt.Errorf("missing service ownership or retention tier")
+	if found.ServiceID == 0 {
+		return found, "", fmt.Errorf("missing service ownership")
+	}
+	if tier == "" {
+		return found, "", fmt.Errorf("missing retention tier")
 	}
 	return found, tier, nil
 }
@@ -178,7 +181,25 @@ func (handler *Handler) recycleHistoricalStream(ctx context.Context, cluster ela
 	if cluster.IndexPrefix == "" {
 		cluster.IndexPrefix = "autoadmin"
 	}
+	if owner.ServiceID < 0 {
+		return handler.recycleSharedHistoricalStream(ctx, tx, q, cluster, stream, owner, tier)
+	}
+	// A service tombstone means the service-deletion workflow owns all its streams.
+	// The stream list may have been read just before that workflow deleted the
+	// service row, so do not retry its stale candidate here.
+	if _, err = q.GetServiceDeletionTombstone(ctx, owner.ServiceID); err == nil {
+		return nil
+	} else if err != sql.ErrNoRows {
+		return err
+	}
 	if _, err = q.LockHistoricalStreamService(ctx, owner.ServiceID); err != nil {
+		if err == sql.ErrNoRows {
+			if _, tombstoneErr := q.GetServiceDeletionTombstone(ctx, owner.ServiceID); tombstoneErr == nil {
+				return nil
+			} else if tombstoneErr != sql.ErrNoRows {
+				return tombstoneErr
+			}
+		}
 		return err
 	}
 	if _, err = q.LockHistoricalStreamDefinitions(ctx, owner.ServiceID); err != nil {
@@ -226,18 +247,26 @@ func (handler *Handler) recycleHistoricalStream(ctx context.Context, cluster ela
 		return err
 	}
 	deleted, reason, err := handler.deleteExpiredHistoricalStream(ctx, cluster, stream, time.Now().UTC())
+	if isElasticsearchIndexNotFound(err) {
+		deleted, reason, err = true, "stream already absent", nil
+	}
 	if err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+
 	if deleted {
 		slog.Info("historical data stream deleted", "stream", stream.Name, "service_id", owner.ServiceID, "reason", reason)
 	} else {
 		slog.Info("historical data stream retained", "stream", stream.Name, "service_id", owner.ServiceID, "reason", reason)
 	}
 	return nil
+}
+
+func isElasticsearchIndexNotFound(err error) bool {
+	return err != nil && isElasticsearchNotFound(err) && strings.Contains(err.Error(), "index_not_found_exception")
 }
 
 func (handler *Handler) historicalStreamHostsReady(ctx context.Context, serviceID int64) error {
@@ -517,6 +546,10 @@ func (handler *Handler) deleteExpiredHistoricalStream(ctx context.Context, clust
 		}
 	}()
 	blocked, err := handler.elasticsearchRequest(ctx, cluster, http.MethodPut, "/"+url.PathEscape(stream.Name)+"/_block/write", nil)
+	if isElasticsearchIndexNotFound(err) {
+		deleted = true
+		return true, "stream already absent", nil
+	}
 	if err != nil || blocked["acknowledged"] != true || blocked["shards_acknowledged"] != true {
 		return false, "", errors.Join(err, fmt.Errorf("Elasticsearch did not confirm historical stream write block"))
 	}

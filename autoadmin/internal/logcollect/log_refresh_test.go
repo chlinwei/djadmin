@@ -50,6 +50,8 @@ func TestElasticsearchLogRefreshServiceCollectingStreams(t *testing.T) {
 			AddRow(int64(7), "other-svc", "std"),
 	)
 
+	mock.ExpectQuery("SELECT DISTINCT x.id,p.code").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_code", "business_system_code", "environment_code", "tier_code"}))
 	secrets, err := assets.NewSecretEncryptor("", "test-secret")
 	if err != nil {
 		t.Fatalf("create secret encryptor: %v", err)
@@ -110,6 +112,8 @@ func TestElasticsearchLogRefreshNoCollectingStreams(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(logRefreshTiersQuery)).WillReturnRows(
 		sqlmock.NewRows([]string{"service_id", "service_code", "tier_code"}).AddRow(int64(7), "other-svc", "std"),
 	)
+	mock.ExpectQuery("SELECT DISTINCT x.id,p.code").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_code", "business_system_code", "environment_code", "tier_code"}))
 
 	secrets, err := assets.NewSecretEncryptor("", "test-secret")
 	if err != nil {

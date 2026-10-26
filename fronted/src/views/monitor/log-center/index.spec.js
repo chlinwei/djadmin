@@ -365,6 +365,31 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  it('does not label failed or loading host information as an unbound deployment', async () => {
+    const { getServiceLogConfigState } = await import('@/api/monitor')
+    const wrapper = await mountPage()
+    let rejectState
+    getServiceLogConfigState.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectState = reject }))
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    wrapper.vm.activeTab = 'config'
+    await flushPromises()
+    expect(wrapper.text()).toContain('正在读取主机信息')
+    expect(wrapper.text()).not.toContain('未绑定部署实例')
+    rejectState(new Error('主机 779 同一路径 /var/mqm/errors/AMQERR01.LOG'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('配置状态读取失败')
+    expect(wrapper.text()).not.toContain('未绑定部署实例')
+    expect(wrapper.text()).not.toContain('该服务还没有绑定任何部署实例')
+    expect(wrapper.get('.config-state-error').text()).toContain('/var/mqm/errors/AMQERR01.LOG')
+    expect(wrapper.get('.apply-summary').text()).toBe('配置状态读取失败')
+    getServiceLogConfigState.mockResolvedValueOnce({ data: { data: { hosts: [], unmanaged_hosts: [], summary: { hosts: 0 } } } })
+    await wrapper.vm.loadApplyState()
+    await flushPromises()
+    expect(wrapper.text()).toContain('未绑定部署实例')
+    expect(wrapper.find('.config-state-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('discards a pending preview when the selected tree scope changes', async () => {
     const { getServiceLogConfigState } = await import('@/api/monitor')
     const wrapper = await mountPage()
@@ -797,6 +822,22 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     // 未纳管的主机也要列出来并标注，否则用户以为这个服务就这几台机器（它与"下发不到"直接相关）。
     expect(wrapper.vm.carryingHostsTooltip).toContain('node-b（10.0.0.20）')
     expect(wrapper.vm.carryingHostsTooltip).toContain('node-c（10.0.0.30）（未纳管，配置下发不到）')
+    wrapper.unmount()
+  })
+
+  it('explains how to resolve duplicate-path conflicts without offering shared-source management', async () => {
+    const { getServiceLogConfigState } = await import('@/api/monitor')
+    const conflict = '主机 779：服务 A 与服务 B 在同一主机上展开成同一路径 /var/mqm/errors/AMQERR01.LOG'
+    getServiceLogConfigState.mockRejectedValueOnce(new Error(conflict))
+    const wrapper = await mountPage()
+    wrapper.vm.activeTab = 'config'
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请修正路径或停用重复日志项')
+    expect(wrapper.vm.activeTab).toBe('config')
+    expect(wrapper.text()).not.toContain('共享采集源')
+    expect(wrapper.findAll('.ant-tabs-tab').map((tab) => tab.text())).toEqual(['日志查询', '日志配置', '本服务水位'])
     wrapper.unmount()
   })
 
@@ -1655,7 +1696,7 @@ describe('日志中心（服务树 + 三个 tab）', () => {
   })
 
   // 「继承服务默认」必须写清继承到哪一档（现场反馈"我怎么知道默认是什么呢"）。
-  // 继承链：服务默认档位（log-config 顶层字段）→ 平台默认档（is_default）→ std。
+  // 单条日志继承必填服务档位；旧记录缺失时必须明确提示补选。
   it('spells out what the inherited retention tier actually is', async () => {
     const { openDeleteConfirm } = await import('@/util/deleteConfirm')
     const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
@@ -1673,13 +1714,13 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     await wrapper.vm.confirmTierChange(wrapper.vm.logRows[0], null)
     expect(openDeleteConfirm.mock.calls.at(-1)[0].summary).toContain('继承服务默认（标准 30 天）')
 
-    // 服务没有默认档位时：继承链落到**平台默认档**（is_default 的那一档），也要写出名字。
+    // 服务没有默认档位时，不再展示为继承平台默认。
     getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: {
       log_collection_enabled: true, service_code: 'nginx', log_retention_tier: null, logs: [],
     } } })
     await wrapper.vm.loadLogConfig()
     expect(wrapper.vm.serviceDefaultTierId).toBe(null)
-    expect(wrapper.vm.inheritedTierLabel()).toBe('继承平台默认（热（7 天））')
+    expect(wrapper.vm.inheritedTierLabel()).toBe('服务默认档位缺失，请先编辑逻辑服务补选')
     wrapper.unmount()
   })
 

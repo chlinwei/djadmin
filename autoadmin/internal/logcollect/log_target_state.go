@@ -86,6 +86,9 @@ func (handler *Handler) EvaluateLogConfigStates(context context.Context, refs []
 			set.Entries[index].Prefix = cluster.IndexPrefix
 		}
 		rendered := renderHostLogConfig(set.Entries, set.Instances, outputIdentity)
+		if err := rendered.configurationError(ref.HostID); err != nil {
+			return nil, err
+		}
 
 		status := LogConfigSynced
 		applied := strings.TrimSpace(ref.AppliedFingerprint)
@@ -142,6 +145,9 @@ func (handler *Handler) EvaluateServiceLogConfigStates(context context.Context, 
 			set.Entries[index].Prefix = cluster.IndexPrefix
 		}
 		rendered := renderHostLogConfig(set.Entries, set.Instances, outputIdentity)
+		if err := rendered.configurationError(ref.HostID); err != nil {
+			return nil, err
+		}
 		expected := rendered.ServiceFingerprints[strconv.FormatInt(serviceID, 10)]
 		applied := strings.TrimSpace(ref.AppliedServiceFingerprint)
 		status := serviceConfigStatus(expected, applied, rendered.Fingerprint, strings.TrimSpace(ref.AppliedFingerprint))

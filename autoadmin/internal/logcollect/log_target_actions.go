@@ -696,6 +696,14 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	if renderErr != nil {
 		return nil, fmt.Errorf("渲染 Filebeat 配置失败: %w", renderErr)
 	}
+	for index := range entries {
+		entries[index].Prefix = indexPrefix
+	}
+	rendered := renderHostLogConfig(entries, instances, outputIdentity)
+	// 先验证整机配置，再同步 ES 包装或触碰 Agent，避免冲突配置造成部分下发。
+	if err := rendered.configurationError(row.HostID); err != nil {
+		return nil, err
+	}
 	// 先补齐包装再下发引用它的配置；也覆盖升级后的存量服务与模板继承日志。
 	syncedServices := map[int64]bool{}
 	for _, entry := range entries {
@@ -707,10 +715,6 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 		}
 		syncedServices[entry.ServiceID] = true
 	}
-	for index := range entries {
-		entries[index].Prefix = indexPrefix
-	}
-	rendered := renderHostLogConfig(entries, instances, outputIdentity)
 	if len(rendered.Fragments) == 0 {
 		// 没有任何启用的日志采集配置时不报错：output 配置（filebeat.yml）仍然下发，
 		// inputs 清空并启动，主机先"纳管可用"；之后开启采集再下发一次即可。

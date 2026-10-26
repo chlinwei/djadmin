@@ -31,6 +31,7 @@ const (
 	actionConfigureFilebeatOutput  = "configure_filebeat_output"
 	actionApplyFilebeatConfig      = "apply_filebeat_config"
 	actionRevokeServiceLogs        = "revoke_service_logs"
+	actionRevokeSharedLogSource    = "revoke_shared_log_source"
 	actionApplyAgentUpdate         = "apply_agent_update"
 )
 
@@ -76,6 +77,8 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.applyFilebeatConfig(ctx, job), true
 	case actionRevokeServiceLogs:
 		return e.revokeServiceLogs(ctx, job), true
+	case actionRevokeSharedLogSource:
+		return e.revokeSharedLogSource(ctx, job), true
 	case actionApplyAgentUpdate:
 		return e.applyAgentUpdate(ctx, job), true
 	default:

@@ -390,6 +390,7 @@ func (runner *LogBatchRunner) finish(ctx context.Context, queries *generated.Que
 // 单实例部署（api 进程内唯一 goroutine），随进程退出终止。
 func (runner *LogBatchRunner) StartReaper(ctx context.Context) {
 	runner.handler.startHistoricalStreamRecycler(ctx)
+	runner.handler.startSharedSourceReconciler(ctx)
 	if runner.publisher == nil {
 		slog.Warn("log batch reaper disabled: no queue publisher")
 		return

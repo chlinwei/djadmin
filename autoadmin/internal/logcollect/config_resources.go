@@ -100,6 +100,13 @@ func (handler *Handler) deleteRetentionTierByID(context *gin.Context, id int64) 
 	if err != nil {
 		return err
 	}
+	sharedCount, err := queries.CountSharedLogSourceTierReferences(context, id)
+	if err != nil {
+		return err
+	}
+	if sharedCount > 0 {
+		return errors.New("该档位仍被共享采集源或其历史数据引用，不能删除")
+	}
 	if serviceCount+settingCount > 0 {
 		return errors.New("该档位仍被逻辑服务引用，不能删除")
 	}
@@ -153,6 +160,13 @@ func (handler *Handler) deleteProcessingRuleByID(context *gin.Context, id int64)
 	referenceCount, err := queries.CountLogDefinitionReferences(context, sql.NullInt64{Int64: id, Valid: true})
 	if err != nil {
 		return err
+	}
+	sharedCount, err := queries.CountSharedLogSourceRuleReferences(context, id)
+	if err != nil {
+		return err
+	}
+	if sharedCount > 0 {
+		return errors.New("规则仍被共享采集源引用，不能删除")
 	}
 	if referenceCount > 0 {
 		return errors.New("规则仍被日志定义引用，不能删除")
@@ -210,6 +224,15 @@ func (handler *Handler) publishProcessingRuleBeforeSave(context *gin.Context, in
 	}
 	if name == "" || clusterID == 0 || pipelineBody == nil {
 		return "name、cluster 与 pipeline_body 均为必填"
+	}
+	if hasExisting && (name != existing.Name || clusterID != existing.ClusterID || applicationID != existing.ApplicationID) {
+		sharedCount, err := db.New(handler.db).CountSharedLogSourceRuleReferences(context, id)
+		if err != nil {
+			return "读取共享采集源引用失败: " + err.Error()
+		}
+		if sharedCount > 0 {
+			return "共享采集源正在引用该规则，不能改名或切换应用/集群；请创建新规则并在共享源中显式切换后下发"
+		}
 	}
 	cluster, err := handler.loadElasticsearchClusterByID(context, clusterID)
 	if err != nil {

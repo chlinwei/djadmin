@@ -19,6 +19,7 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 		name, field, options string
 		multi                bool
 		filterPath           bool
+		shared               bool
 	}{
 		{name: "single service logs"},
 		{name: "multiple service logs", multi: true},
@@ -29,6 +30,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 		{name: "path options", field: "log_path", options: "true", multi: true},
 		{name: "logs filtered by real path", filterPath: true},
 		{name: "levels filtered by real path", field: "log_level", options: "true", filterPath: true},
+		{name: "single service includes shared events", shared: true},
+		{name: "multiple members share one event", multi: true, shared: true},
+		{name: "multiple members aggregate shared events once", field: "log_level", multi: true, shared: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,7 +50,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 				}
 				requests <- capturedRequest{request.URL.Path, request.URL.RawQuery, body}
 				writer.Header().Set("Content-Type", "application/json")
-				if tc.field == "" {
+				if tc.field == "" && tc.shared {
+					_, _ = writer.Write([]byte(`{"hits":{"total":{"value":1},"hits":[{"_id":"shared-event","_source":{"shared_source_id":"5","shared_source_name":"MQ error"}}]}}`))
+				} else if tc.field == "" {
 					_, _ = writer.Write([]byte(`{"hits":{"total":{"value":0},"hits":[]}}`))
 				} else if tc.options == "true" {
 					_, _ = writer.Write([]byte(`{"aggregations":{"by_field":{"buckets":[{"key":"ERROR","doc_count":7}]}}}`))
@@ -75,6 +81,11 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{"project_code", "environment_code", "business_system_code", "service_code"}).
 						AddRow("yilake", "test", "gateway", "aos"))
 			}
+			scopeRows := sqlmock.NewRows([]string{"id", "project_code", "business_system_code", "environment_code", "tier_code"})
+			if tc.shared {
+				scopeRows.AddRow(5, "yilake", "gateway", "test", "hot")
+			}
+			mock.ExpectQuery("SELECT DISTINCT x.id,p.code").WillReturnRows(scopeRows)
 			secrets, err := assets.NewSecretEncryptor("", "test-secret")
 			if err != nil {
 				t.Fatal(err)
@@ -109,6 +120,8 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			var result struct {
 				Code int `json:"code"`
 				Data struct {
+					Results []map[string]any `json:"results"`
+					Count   int              `json:"count"`
 					Buckets []struct {
 						Value  string           `json:"value"`
 						Count  int              `json:"count"`
@@ -133,6 +146,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			if tc.multi {
 				wantPath = "/ops-yilake-gateway-test-aos-*,ops-other-gateway-test-aos-*/_search"
 			}
+			if tc.shared {
+				wantPath = strings.TrimSuffix(wantPath, "/_search") + ",ops-yilake-gateway-test-shared-source-5-*/_search"
+			}
 			if captured.path != wantPath || !strings.Contains(captured.query, "allow_no_indices=true") ||
 				!strings.Contains(captured.query, "ignore_unavailable=true") {
 				t.Fatalf("search target = %s?%s, want %s with empty-index handling", captured.path, captured.query, wantPath)
@@ -140,6 +156,9 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 			query, err := json.Marshal(captured.body["query"])
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.shared && strings.Count(string(query), `"shared_source_id":["5"]`) != 1 {
+				t.Fatalf("shared scope must occur once across selected services: %s", query)
 			}
 			for _, want := range []string{`"gte":"2026-10-11T12:00:00Z"`, `"lte":"2026-10-12T00:00:00Z"`, `"project":"yilake"`, `"service":"aos"`} {
 				if !strings.Contains(string(query), want) {
@@ -153,6 +172,10 @@ func TestLogSearchTwelveHourScopedIndices(t *testing.T) {
 				}
 			}
 			if tc.field == "" {
+				if tc.shared && (result.Data.Count != 1 || len(result.Data.Results) != 1 ||
+					result.Data.Results[0]["shared_source_name"] != "MQ error") {
+					t.Fatalf("one shared event with its source label expected: %+v", result.Data)
+				}
 				return
 			}
 			aggs := captured.body["aggs"].(map[string]any)

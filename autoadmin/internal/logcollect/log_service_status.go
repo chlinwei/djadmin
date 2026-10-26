@@ -84,7 +84,7 @@ func (handler *Handler) ServiceLogPendingHosts(context context.Context, serviceI
 	hostIDs := []int64{}
 	seenHost := map[int64]bool{}
 	for _, serviceID := range serviceIDs {
-		rows, err := queries.ListServiceLogApplyTargets(context, serviceID)
+		rows, err := listServiceLogApplyTargets(context, handler.db, serviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -128,6 +128,9 @@ func (handler *Handler) ServiceLogPendingHosts(context context.Context, serviceI
 			set.Entries[index].Prefix = cluster.IndexPrefix
 		}
 		rendered := renderHostLogConfig(set.Entries, set.Instances, outputIdentity)
+		if err := rendered.configurationError(hostID); err != nil {
+			return nil, err
+		}
 		expected[hostID] = hostExpectedFingerprints{
 			host:    rendered.Fingerprint,
 			service: rendered.ServiceFingerprints,

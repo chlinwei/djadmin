@@ -1,0 +1,3 @@
+DROP TABLE monitor_shared_log_source_revocation;
+DROP TABLE monitor_shared_log_source_service;
+DROP TABLE monitor_shared_log_source;

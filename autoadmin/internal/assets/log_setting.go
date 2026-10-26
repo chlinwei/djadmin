@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
-	platformdb "autoadmin/internal/platform/database"
 	db "autoadmin/internal/platform/database/generated"
 	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/logmacro"
@@ -47,8 +47,8 @@ type ServiceTemplateLog struct {
 	// 模板级默认（来自日志定义本身）：界面用它显示"继承的是哪条"，渲染用它做兜底。
 	TemplateFilterIncludeRuleID *int64 `json:"template_filter_include_rule_id"`
 	TemplateFilterExcludeRuleID *int64 `json:"template_filter_exclude_rule_id"`
-	// TierCode 是这条日志**当前生效**的档位编码（覆盖档位 → 服务默认档位 → is_default → 'std' 的
-	// COALESCE 链，与 data_stream 的尾段一致）。页面据此区分"当前档位"与"改档位后留下的历史流"：
+	// TierCode 是这条日志**当前生效**的档位编码（覆盖档位 → 必填服务默认档位，
+	// 与 data_stream 的尾段一致）。页面据此区分"当前档位"与"改档位后留下的历史流"：
 	// 流的档位不在生效档位集合里，就说明它已停止写入、只是数据还没到期。
 	TierCode string `json:"tier_code"`
 	// ServiceCode 是**本服务自己**（不是这条日志）的编码。它只是展示用的受控标识：
@@ -74,8 +74,8 @@ type ServiceLogConfig struct {
 	Logs []ServiceTemplateLog `json:"logs"`
 	// LogCollectionEnabled 服务级日志采集总开关。
 	LogCollectionEnabled bool `json:"log_collection_enabled"`
-	// LogRetentionTier 服务级**默认保留档位**（逐条日志没覆盖时生效；为 null 时由平台默认档
-	// `is_default` 决定）。界面用它把"继承服务默认"写成"继承服务默认（标准 30 天）"——
+	// LogRetentionTier 服务级**默认保留档位**（逐条日志没覆盖时生效；旧记录为 null 时需补选）。
+	// 界面用它把"继承服务默认"写成"继承服务默认（标准 30 天）"——
 	// 只说"继承"而不说继承的是什么，用户没法判断这条日志实际保留多久。
 	LogRetentionTier *int64 `json:"log_retention_tier"`
 	// ServiceCode 本服务的编码。放在顶层是为了让"本服务水位"不依赖 logs 非空：
@@ -88,8 +88,8 @@ type ServiceLogConfig struct {
 // （无覆盖行时覆盖字段为 null，前端按"跟随默认"展示；采集默认是"采"）。
 // resolved_path 用服务级 macro_values 替换 ${VAR} 后回显（实例级宏因逐实例而异不在
 // 此处展开）；data_stream 按 monitor.LogDataStreamName 的同一构造规则生成
-// （logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>，档位 = 覆盖档位 → 服务默认档位
-// → is_default 档位 → 'std'），与 Filebeat 下发的 Index 命名保持一致。
+// （logs-<项目>-<业务系统>-<环境>-<服务>-<有效档位>，档位 = 覆盖档位 → 必填服务默认档位），
+// 与 Filebeat 下发的 Index 命名保持一致。
 func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ServiceTemplateLog, error) {
 	rows, err := r.queries.ListServiceTemplateLogs(ctx, serviceID)
 	if err != nil {
@@ -120,6 +120,9 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 			logmacro.ParseValues(string(row.MacroValues)),
 		)
 		item.PendingMacros = logmacro.Pending(item.ResolvedPath)
+		if strings.TrimSpace(row.TierCode) == "" {
+			return nil, fmt.Errorf("服务 %s 日志 %s 的有效保留档位为空或未启用，请先编辑逻辑服务补选有效档位", row.ServiceCode, row.Name)
+		}
 		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		ruleSignature, err := logFormatRuleSignature(logFormatRuleInput{
 			InputFormat: row.ProcessingRuleInputFormat, MultilineEnabled: row.ProcessingRuleMultilineEnabled,
@@ -208,7 +211,12 @@ func normalizeExtraProcessors(raw json.RawMessage) json.RawMessage {
 //
 // ExtraProcessors：保存路径必须先过 ValidateServiceExtraProcessors 并传归一化后的数组
 // （显式清空传 `[]`）；传 NULL = 不动该列（编辑逻辑服务表单的整表替换路径专用，见查询注释）。
-func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int64, input ServiceLogOverrideInput) error {
+func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int64, input ServiceLogOverrideInput, checkers ...func(context.Context, db.DBTX, int64) error) error {
+	tx, err := r.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC()
 	extra := input.ExtraProcessors
 	if extra == nil {
@@ -216,7 +224,7 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 		// 避免"前端漏传就静默清不掉"（清空必须显式传 []）。
 		extra = json.RawMessage("[]")
 	}
-	return r.queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
+	if err = db.New(tx).UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
 		CreateTime: now, UpdateTime: now,
 		CollectionEnabled:             input.CollectionEnabled,
 		LogDefinitionID:               input.LogDefinition,
@@ -225,7 +233,15 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 		CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
 		CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
 		ExtraProcessors:               extra,
-	})
+	}); err != nil {
+		return err
+	}
+	if len(checkers) > 0 && checkers[0] != nil {
+		if err = checkers[0](ctx, tx, serviceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // UpsertServiceLogOverrides 在一个事务里逐行写回覆盖值（批量路径专用）。
@@ -233,29 +249,38 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 // 为什么批量要单独一条路：日志中心页的批量操作把它**同一次动作**涉及的几十行一次提交，
 // 逐行发 HTTP 会让服务端对每个 id 都重算一遍模板日志与认证指纹（两次全表读），而且中途失败
 // 会留下"改了一半"的界面。这里一次事务写完成，服务层只做一次校验读 + 一次回读。
-func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID int64, inputs []ServiceLogOverrideInput) error {
+func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID int64, inputs []ServiceLogOverrideInput, checkers ...func(context.Context, db.DBTX, int64) error) error {
 	now := time.Now().UTC()
-	return platformdb.InTransaction(ctx, r.pool, func(queries *db.Queries) error {
-		for _, input := range inputs {
-			extra := input.ExtraProcessors
-			if extra == nil {
-				extra = json.RawMessage("[]")
-			}
-			if err := queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
-				CreateTime: now, UpdateTime: now,
-				CollectionEnabled:             input.CollectionEnabled,
-				LogDefinitionID:               input.LogDefinition,
-				RetentionTierID:               nullableInt(input.RetentionTier),
-				ServiceID:                     serviceID,
-				CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
-				CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
-				ExtraProcessors:               extra,
-			}); err != nil {
-				return err
-			}
+	tx, err := r.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	queries := db.New(tx)
+	for _, input := range inputs {
+		extra := input.ExtraProcessors
+		if extra == nil {
+			extra = json.RawMessage("[]")
 		}
-		return nil
-	})
+		if err = queries.UpsertServiceLogOverride(ctx, db.UpsertServiceLogOverrideParams{
+			CreateTime: now, UpdateTime: now,
+			CollectionEnabled:             input.CollectionEnabled,
+			LogDefinitionID:               input.LogDefinition,
+			RetentionTierID:               nullableInt(input.RetentionTier),
+			ServiceID:                     serviceID,
+			CollectionFilterRuleID:        nullableInt(input.CollectionFilterRule),
+			CollectionExcludeFilterRuleID: nullableInt(input.CollectionExcludeFilterRule),
+			ExtraProcessors:               extra,
+		}); err != nil {
+			return err
+		}
+	}
+	if len(checkers) > 0 && checkers[0] != nil {
+		if err = checkers[0](ctx, tx, serviceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // SaveServiceLogOverride 按行保存一条 (服务 × 日志定义) 的覆盖值，并回读该行。
@@ -292,7 +317,7 @@ func (s *Service) SaveServiceLogOverride(ctx context.Context, serviceID int64, i
 		return ServiceTemplateLog{}, apperror.WithCause(apperror.New(apperror.CodeInvalidArgument, err.Error()), err)
 	}
 	input.ExtraProcessors = normalized
-	if err = s.repository.UpsertServiceLogOverride(ctx, serviceID, input); err != nil {
+	if err = s.repository.UpsertServiceLogOverride(ctx, serviceID, input, s.checkLogConfigConsistency); err != nil {
 		return ServiceTemplateLog{}, translate(err)
 	}
 	if err = s.syncServiceLogPipelines(ctx, serviceID); err != nil {
@@ -377,7 +402,7 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 		// 一条都不适用：不是错误响应，把逐条原因照常返回（前端按 ok=false 提示）。
 		return results, nil
 	}
-	if err = s.repository.UpsertServiceLogOverrides(ctx, serviceID, applicable); err != nil {
+	if err = s.repository.UpsertServiceLogOverrides(ctx, serviceID, applicable, s.checkLogConfigConsistency); err != nil {
 		return nil, translate(err)
 	}
 	// 事务提交后统一对账一次（整批只有这一个服务的包装要同步）；失败把整批以错误呈现，
@@ -392,7 +417,7 @@ func (s *Service) BatchSaveServiceLogOverrides(ctx context.Context, serviceID in
 //
 // 两个一起读：日志中心的「日志配置」既要区分"总开关关了"与"逐条关了"，也要回答
 // "**继承服务默认**的档位到底是哪一档"（现场反馈"我怎么知道默认是什么呢"）。
-// 档位为空表示这条服务的有效档位由平台默认档（`is_default`）决定。
+// 旧记录档位为空时如实返回，界面要求补选，不猜测平台默认档。
 func (r *Repository) GetServiceLogDefaults(ctx context.Context, serviceID int64) (bool, *int64, error) {
 	row, err := r.queries.GetApplicationServiceLogDefaults(ctx, serviceID)
 	if err != nil {
@@ -412,7 +437,12 @@ func (s *Service) SetServiceLogCollection(ctx context.Context, serviceID int64, 
 	if serviceID < 1 {
 		return false, ErrInvalid
 	}
-	result, err := s.repository.queries.UpdateApplicationServiceLogCollection(ctx, db.UpdateApplicationServiceLogCollectionParams{
+	tx, err := s.repository.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return false, translate(err)
+	}
+	defer tx.Rollback()
+	result, err := db.New(tx).UpdateApplicationServiceLogCollection(ctx, db.UpdateApplicationServiceLogCollectionParams{
 		UpdateTime: time.Now().UTC(), LogCollectionEnabled: enabled, ID: serviceID,
 	})
 	if err != nil {
@@ -421,6 +451,12 @@ func (s *Service) SetServiceLogCollection(ctx context.Context, serviceID int64, 
 	if affected, affectedErr := result.RowsAffected(); affectedErr == nil && affected == 0 {
 		// 服务不存在（或 id 写错）：必须报出来，不能让"什么都没改"看起来像成功。
 		return false, ErrNotFound
+	}
+	if err = s.checkLogConfigConsistency(ctx, tx, serviceID); err != nil {
+		return false, translate(err)
+	}
+	if err = tx.Commit(); err != nil {
+		return false, translate(err)
 	}
 	return enabled, nil
 }

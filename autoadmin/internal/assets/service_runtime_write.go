@@ -10,6 +10,7 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 )
 
 type ApplicationServiceInput struct {
@@ -68,6 +69,9 @@ type ApplicationDeploymentInput struct {
 // （checker 为 nil 表示不校验）。校验失败返回的错误会把事务整体回滚——这正是"配置不自洽
 // 就不许保存"的落点：宁可这次保存整体失败，也不要留下一个下发注定出问题的配置。
 func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput, checker func(context.Context, db.DBTX, int64) error) (int64, error) {
+	if input.LogRetentionTier == nil || *input.LogRetentionTier < 1 {
+		return 0, apperror.New(apperror.CodeInvalidArgument, "请选择逻辑服务的默认保留档位，不能留空")
+	}
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -103,6 +107,16 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	}
 	if reserved > 0 {
 		return 0, fmt.Errorf("该服务日志身份已撤销，不能复用业务/环境/服务编码")
+	}
+	tier, err := queries.GetLogRetentionTier(ctx, *input.LogRetentionTier)
+	if err == sql.ErrNoRows {
+		return 0, apperror.New(apperror.CodeInvalidArgument, "所选保留档位不存在，请重新选择")
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !tier.Enabled || strings.TrimSpace(tier.Code) == "" {
+		return 0, apperror.New(apperror.CodeInvalidArgument, "请选择已启用且编码非空的保留档位")
 	}
 	name, code := strings.TrimSpace(input.Name), strings.TrimSpace(input.Code)
 	var serviceID int64
@@ -210,7 +224,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	}
 	return serviceID, nil
 }
-func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput) (int64, error) {
+func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -247,6 +261,11 @@ func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, in
 	if err != nil {
 		return 0, err
 	}
+	if len(checkers) > 0 && checkers[0] != nil {
+		if err = checkers[0](ctx, tx, deploymentID); err != nil {
+			return 0, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -257,6 +276,11 @@ func (r *Repository) DeleteApplicationDeployment(ctx context.Context, id int64) 
 }
 
 func (s *Service) SaveApplicationService(ctx context.Context, id int64, input ApplicationServiceInput) (ApplicationService, error) {
+	// This namespace belongs to shared log sources, which outlive individual
+	// services and must not collide with service deletion/stream ownership.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(input.Code)), "shared-source-") {
+		return ApplicationService{}, fmt.Errorf("服务编码 shared-source- 前缀保留给共享日志采集源")
+	}
 	// environment 是逻辑服务身份域 (business_system, environment) 的一半，也是日志维度渲染
 	// （data stream / 索引）的必需段：留空会让唯一约束对 NULL 失效、日志渲染查不到维度。
 	// 前端本就必填，这里在服务层兜底，拒绝写空。
@@ -294,7 +318,7 @@ func (s *Service) SaveApplicationDeployment(ctx context.Context, id int64, input
 	if input.Host < 1 || strings.TrimSpace(input.InstanceName) == "" {
 		return ApplicationDeployment{}, ErrInvalid
 	}
-	saved, err := s.repository.SaveApplicationDeployment(ctx, id, input)
+	saved, err := s.repository.SaveApplicationDeployment(ctx, id, input, s.checkDeploymentLogConfigConsistency)
 	if err != nil {
 		return ApplicationDeployment{}, translate(err)
 	}

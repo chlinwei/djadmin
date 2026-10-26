@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 批量装载渲染输入：**两条查询覆盖全部入参主机**，查询次数不随主机数增长。
+// 批量装载渲染输入：普通日志和共享源均批量取数，查询次数不随主机数增长。
 //
 // 这是 500–1000 台规模下的硬约束（计划文档 §2.4）：按主机循环查库会把列表/体检退化成
 // N×2 次查询。sqlmock 只登记两条期望，代码若退回逐主机查询就会因为出现未登记的查询而失败，
@@ -57,7 +57,7 @@ func TestLoadHostLogRenderInputsBatchesByHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("批量装载失败：%v", err)
 	}
-	// ExpectationsWereMet 为真 + err 为 nil ⇒ 恰好执行了上面登记的两条查询。
+	// 恰好执行已登记的批量查询，不允许退化为逐主机取数。
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("查询次数/语句不符（疑似退化成逐主机查询）：%v", err)
 	}

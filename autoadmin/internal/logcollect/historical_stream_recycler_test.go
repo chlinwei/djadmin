@@ -22,21 +22,25 @@ func TestHistoricalStreamOwner(t *testing.T) {
 	other := owner
 	other.ServiceID, other.ServiceCode = 8, "svc-extra"
 	for _, tt := range []struct {
-		name string
-		fail bool
+		name       string
+		fail       bool
+		wantReason string
 	}{
-		{"logs-p-b-prod-svc-old-tier", false},
-		{"logs-p-b-prod-svc-extra-hot", true},
-		{"logs-p-b-prod-svc-", true},
-		{"logs-p-b-prod-hot", true},
-		{"logs-other-b-prod-svc-hot", true},
-		{"logs-p-b-prod-svc-*", true},
-		{"logs-p-b-prod-svc-hot,other", true},
+		{name: "logs-p-b-prod-svc-old-tier"},
+		{name: "logs-p-b-prod-svc-extra-hot", fail: true},
+		{name: "logs-p-b-prod-svc-", fail: true, wantReason: "missing retention tier"},
+		{name: "logs-p-b-prod-hot", fail: true, wantReason: "missing service ownership"},
+		{name: "logs-other-b-prod-svc-hot", fail: true, wantReason: "missing service ownership"},
+		{name: "logs-p-b-prod-svc-*", fail: true},
+		{name: "logs-p-b-prod-svc-hot,other", fail: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			found, tier, err := historicalStreamOwner("logs", tt.name, []db.AssetsServiceDeletion{owner, owner, other})
 			if (err != nil) != tt.fail {
 				t.Fatalf("owner=%v tier=%q err=%v", found, tier, err)
+			}
+			if tt.wantReason != "" && !strings.Contains(err.Error(), tt.wantReason) {
+				t.Fatalf("error %q should explain %q", err, tt.wantReason)
 			}
 			if !tt.fail && (found.ServiceID != 7 || tier != "old-tier") {
 				t.Fatalf("unexpected ownership: %v %q", found, tier)
@@ -149,6 +153,7 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 		explain      string
 		policy       string
 		block        string
+		blockStatus  int
 		settings     string
 		refresh      string
 		deleteBody   string
@@ -185,6 +190,7 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 		{name: "delete failure restores writes", deleteStatus: 403, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "restore failure is explicit", deleteStatus: 403, restoreBody: `{"acknowledged":false}`, wantError: true, wantBlocked: true, wantRestore: true},
 		{name: "concurrently deleted stream", deleteStatus: 404, wantDelete: true, wantBlocked: true},
+		{name: "stream disappeared before write block", blockStatus: 404, wantDelete: true, wantBlocked: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls []string
@@ -227,6 +233,10 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 					if tt.block != "" {
 						body = tt.block
 					}
+					if tt.blockStatus != 0 {
+						w.WriteHeader(tt.blockStatus)
+						body = `{"error":{"type":"index_not_found_exception","reason":"no such index [logs-p-b-prod-svc-old]"},"status":404}`
+					}
 				case strings.HasSuffix(r.URL.Path, "/_refresh"):
 					body = `{"_shards":{"failed":0,"total":1,"successful":1}}`
 					if tt.refresh != "" {
@@ -267,7 +277,7 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 			if blocked != tt.wantBlocked || restored != tt.wantRestore {
 				t.Fatalf("calls=%v; want blocked=%v restored=%v", calls, tt.wantBlocked, tt.wantRestore)
 			}
-			if tt.wantDelete && tt.deleteStatus != 404 {
+			if tt.wantDelete && tt.deleteStatus != 404 && tt.blockStatus != 404 {
 				tail := []string{
 					"PUT /logs-p-b-prod-svc-old/_block/write",
 					"POST /logs-p-b-prod-svc-old/_refresh",
@@ -277,6 +287,25 @@ func TestHistoricalStreamDeletionSafety(t *testing.T) {
 				if !reflect.DeepEqual(calls[len(calls)-4:], tail) {
 					t.Fatalf("unsafe delete order: %v", calls)
 				}
+			}
+		})
+	}
+}
+
+func TestIsElasticsearchIndexNotFound(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "missing index", err: fmt.Errorf(`elasticsearch 404 Not Found: {"error":{"type":"index_not_found_exception"}}`), want: true},
+		{name: "missing policy", err: fmt.Errorf(`elasticsearch 404 Not Found: {"error":{"type":"resource_not_found_exception"}}`)},
+		{name: "other status", err: fmt.Errorf(`elasticsearch 403 Forbidden: {"error":{"type":"index_not_found_exception"}}`)},
+		{name: "nil"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isElasticsearchIndexNotFound(test.err); got != test.want {
+				t.Fatalf("isElasticsearchIndexNotFound(%v)=%v, want %v", test.err, got, test.want)
 			}
 		})
 	}
@@ -299,6 +328,8 @@ func TestHistoricalStreamRechecksCurrentTierUnderLocks(t *testing.T) {
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{
 		"id", "hosts", "username", "password", "verify_tls", "ca_cert", "index_prefix", "request_timeout", "enabled",
 	}).AddRow(1, server.URL, "", "", false, "", "logs", 5, true))
+	mock.ExpectQuery("FROM assets_service_deletion WHERE service_id=").
+		WithArgs(int64(7)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT s.id").WithArgs(int64(7)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
 	mock.ExpectQuery("SELECT ld.id").WithArgs(int64(7)).
@@ -328,6 +359,38 @@ func TestHistoricalStreamRechecksCurrentTierUnderLocks(t *testing.T) {
 		}, "old")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHistoricalStreamRecyclerSkipsServiceDeletionTombstone(t *testing.T) {
+	pool, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster WHERE").
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery("FROM monitor_elasticsearch_cluster WHERE id =").
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{
+		"id", "hosts", "username", "password", "verify_tls", "ca_cert", "index_prefix", "request_timeout", "enabled",
+	}).AddRow(1, "http://unused", "", "", false, "", "logs", 5, true))
+	mock.ExpectQuery("FROM assets_service_deletion WHERE service_id=").
+		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{
+		"service_id", "project_code", "business_system_code", "environment_code", "service_code",
+	}).AddRow(7, "p", "b", "prod", "svc"))
+	mock.ExpectRollback()
+
+	handler := &Handler{db: pool}
+	err = handler.recycleHistoricalStream(context.Background(), elasticsearchCluster{ID: 1},
+		historicalTestStream(t), db.AssetsServiceDeletion{
+			ServiceID: 7, ProjectCode: "p", BusinessSystemCode: "b", EnvironmentCode: "prod", ServiceCode: "svc",
+		}, "old")
+	if err != nil {
+		t.Fatalf("service deletion workflow owns tombstoned service streams: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

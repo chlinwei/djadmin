@@ -21,8 +21,8 @@ type Service struct {
 	// logFormatVerifier 由 logcollect 注入（见 log_format_verify.go）：认证的"取样例 + 跑 ES"部分。
 	// 未注入时只有 waiver 依据可用。
 	logFormatVerifier LogFormatVerifier
-	// logConfigChecker 由 logcollect 注入（见 log_config_consistency.go）：保存逻辑服务前
-	// 渲染一遍期望配置，配置不自洽（路径展不开、同主机同路径、正则编译不过）就拒绝保存。
+	// logConfigChecker 由 logcollect 注入（见 log_config_consistency.go）：影响最终采集配置的
+	// 服务、模板与实例写入都在事务提交前渲染校验，避免不自洽配置落库。
 	logConfigChecker LogConfigConsistencyChecker
 	// logGlobPreviewer 由 logcollect 注入（见 log_glob_preview.go）：按需把日志路径里的
 	// 通配展开成主机上的真实文件清单，供界面「解析后」列展示。未注入时接口返回不可用。

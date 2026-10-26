@@ -102,5 +102,17 @@ func (handler *Handler) resolveServiceCollectingStreams(context context.Context,
 			streams = append(streams, stream)
 		}
 	}
+	shared, err := queries.SharedLogSourceSearchScope(context, []int64{serviceID})
+	if err != nil {
+		return nil, err
+	}
+	for _, source := range shared {
+		stream := LogDataStreamName(prefix, source.ProjectCode, source.EnvironmentCode,
+			source.BusinessSystemCode, sharedSourceCode(source.ID), source.TierCode)
+		if !seen[stream] {
+			seen[stream] = true
+			streams = append(streams, stream)
+		}
+	}
 	return streams, nil
 }

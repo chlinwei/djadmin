@@ -439,10 +439,9 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	//（只有日志采集域持有 ES 客户端与集群配置），反向注入，先例同上。
 	assetsService.SetServiceLogPipelineSyncer(logcollectHandler)
 	assetsService.SetServiceLogDeleter(logcollectHandler)
-	// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）：配置不自洽（路径展不开、
-	// 同主机上两个实例展开成同一路径、正则编译不过）就拒绝保存——这些问题是"只能回到配置里改"的，
-	// 等到下发才以"跳过并告警"暴露出来就太晚了（同主机同路径会让同一条日志进 ES 两次）。
-	// 同样是反向注入：渲染与宏展开的实现都在日志采集域。
+	// 影响最终主机采集配置的写入（服务、模板、部署实例、服务采集开关/覆盖）
+	// 在其数据库事务提交前统一渲染校验；发现硬问题则回滚，避免问题拖到下发阶段才表现为跳过。
+	// 渲染与宏展开实现属于日志采集域，因此反向注入校验器。
 	assetsService.SetLogConfigConsistencyChecker(logcollectHandler)
 	// 主机列表要显示采集配置的"配置状态"，但渲染采集配置属于日志采集域 → 反向注入。
 	monitorHandler.SetLogConfigStateEvaluator(logcollectHandler.EvaluateLogConfigStates)

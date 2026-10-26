@@ -81,6 +81,7 @@ func TestSaveServiceLogOverrideWritesSingleRowAndKeepsVerification(t *testing.T)
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
 	// 2) 按行 upsert（必须是这一条语句：整表替换会先 DELETE）
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
@@ -88,6 +89,7 @@ func TestSaveServiceLogOverrideWritesSingleRowAndKeepsVerification(t *testing.T)
 			sqlmock.AnyArg(), sqlmock.AnyArg(), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	// 3) 回读整行（覆盖值与认证状态都由后端算）
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
@@ -130,12 +132,14 @@ func TestSaveServiceLogOverrideWritesFilterTriState(t *testing.T) {
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
 	// include 方向写 0（显式关闭）、exclude 方向写 7（指定规则）：两个值必须都到 SQL 里。
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
 			int64(0), int64(7), []byte("[]"),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
@@ -232,7 +236,8 @@ func TestSaveApplicationServiceKeepsFormatVerification(t *testing.T) {
 	if _, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
 		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
 		ApplicationVersion: 1, DeploymentTemplate: 1,
-		LogSettings: &settings,
+		LogSettings:      &settings,
+		LogRetentionTier: new(int64(3)),
 	}, nil); err != nil {
 		t.Fatalf("save service: %v", err)
 	}
@@ -274,7 +279,8 @@ func TestSaveApplicationServiceDeletesUnsubmittedLogSettings(t *testing.T) {
 	if _, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
 		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
 		ApplicationVersion: 1, DeploymentTemplate: 1,
-		LogSettings: &settings,
+		LogSettings:      &settings,
+		LogRetentionTier: new(int64(3)),
 	}, nil); err != nil {
 		t.Fatalf("save service: %v", err)
 	}
@@ -336,9 +342,11 @@ func TestSetServiceLogCollectionWritesAndDetectsMissingService(t *testing.T) {
 	defer database.Close()
 	service := newTestService(t, NewRepository(database))
 
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE assets_application_service")).
 		WithArgs(sqlmock.AnyArg(), false, int64(15)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	enabled, err := service.SetServiceLogCollection(context.Background(), 15, false)
 	if err != nil {
 		t.Fatalf("set collection: %v", err)
@@ -348,9 +356,11 @@ func TestSetServiceLogCollectionWritesAndDetectsMissingService(t *testing.T) {
 	}
 
 	// 服务不存在：影响 0 行 → ErrNotFound，而不是静默成功。
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE assets_application_service")).
 		WithArgs(sqlmock.AnyArg(), true, int64(999)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
 	if _, err = service.SetServiceLogCollection(context.Background(), 999, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("服务不存在应报 ErrNotFound，得到 %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,11 +243,10 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("服务日志设置 = %d 行, %v", len(logSettings), err)
 	}
 	templateLogs, err := (&Repository{pool: pool, queries: queries}).ListServiceTemplateLogs(ctx, serviceID)
-	if err != nil {
-		t.Fatalf("读模板日志表：%v", err)
-	}
-	if len(templateLogs) != 1 || templateLogs[0].DataStream == "" || templateLogs[0].ResolvedPath == "" {
-		t.Fatalf("模板日志行不符：%+v", templateLogs)
+	// Direct SQL above deliberately creates a legacy NULL tier; it must not
+	// produce a valid-looking stream name by inheriting a platform default.
+	if err == nil || !strings.Contains(err.Error(), "有效保留档位") || len(templateLogs) != 0 {
+		t.Fatalf("空服务档位必须显式报错，logs=%+v err=%v", templateLogs, err)
 	}
 
 	// 列表查询的可选过滤：命中（按服务/业务系统/环境过滤）与不过滤（全 NULL）两条路径都要能跑。

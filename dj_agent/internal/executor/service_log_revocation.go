@@ -35,12 +35,21 @@ func loadLogRevocations(dir string) ([]logRevocation, error) {
 		if err = json.Unmarshal(raw, &row); err != nil {
 			return nil, fmt.Errorf("invalid persisted log revocation %s: %w", name, err)
 		}
+		id := strings.TrimSuffix(filepath.Base(name), ".json")
+		if row["shared_source_id"] != "" {
+			token, err := sharedLogRevocationToken(row["shared_source_id"], row["shared_source_generation"])
+			if err != nil || token != id {
+				return nil, fmt.Errorf("invalid shared source log revocation %s", name)
+			}
+			row["service_id"] = id
+			rows = append(rows, row)
+			continue
+		}
 		for _, key := range []string{"project", "business_system", "environment", "service"} {
 			if row[key] == "" {
 				return nil, fmt.Errorf("incomplete persisted log revocation %s", name)
 			}
 		}
-		id := strings.TrimSuffix(filepath.Base(name), ".json")
 		if value, err := strconv.ParseInt(id, 10, 64); err != nil || value < 1 {
 			return nil, fmt.Errorf("invalid service ID in log revocation %s", name)
 		}
@@ -57,6 +66,9 @@ func revokedManagedLogFile(name string, raw []byte, revocations []logRevocation)
 			return false, err
 		}
 		pattern := `^.+__` + regexp.QuoteMeta(row["service"]) + `__` + regexp.QuoteMeta(row["service_id"]) + `__.+\.yml$`
+		if row["shared_source_id"] != "" {
+			pattern = `^.+__.+__` + regexp.QuoteMeta(row["service_id"]) + `__.+\.yml$`
+		}
 		named := regexp.MustCompile(pattern).MatchString(filepath.Base(name))
 		if revoked != named {
 			return false, fmt.Errorf("service %s ownership disagrees with managed filename %s", row["service_id"], name)
@@ -84,9 +96,14 @@ func revokedLogFragment(raw []byte, revocations []logRevocation) (bool, error) {
 	for _, input := range inputs {
 		for _, row := range revocations {
 			match := true
-			for _, key := range []string{"project", "business_system", "environment", "service"} {
+			keys := []string{"project", "business_system", "environment", "service"}
+			if row["shared_source_id"] != "" {
+				keys = []string{"shared_source_id", "shared_source_generation"}
+			}
+			for _, key := range keys {
 				match = match && input.Fields[key] == row[key]
 			}
+
 			if match {
 				matches++
 				break
@@ -97,6 +114,42 @@ func revokedLogFragment(raw []byte, revocations []logRevocation) (bool, error) {
 		return false, fmt.Errorf("managed input contains mixed service ownership; refusing whole-file revocation")
 	}
 	return matches > 0, nil
+}
+
+func sharedLogRevocationToken(id, generation string) (string, error) {
+	for _, value := range []string{id, generation} {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 1 || strconv.FormatInt(parsed, 10) != value {
+			return "", fmt.Errorf("positive canonical shared source id and generation required")
+		}
+	}
+	return "shared-" + id + "-" + generation, nil
+}
+
+func (e *Executor) revokeSharedLogSource(_ context.Context, job protocol.Job) protocol.JobResult {
+	filebeatConfigMu.Lock()
+	defer filebeatConfigMu.Unlock()
+	started := time.Now()
+	id, idOK := job.Params["shared_source_id"].(string)
+	generation, generationOK := job.Params["shared_source_generation"].(string)
+	if !idOK || !generationOK {
+		return failedJobResult(job, started, fmt.Errorf("shared source id and generation strings required"))
+	}
+	token, err := sharedLogRevocationToken(id, generation)
+	if err != nil {
+		return failedJobResult(job, started, err)
+	}
+	// Epoch-specific fences allow deliberate restart without ever re-enabling an
+	// older queued apply. Only the matching managed input is removed.
+	if err = revokeLogInputs(filebeatInputsDir, token, logRevocation{
+		"shared_source_id": id, "shared_source_generation": generation,
+	}); err != nil {
+		return failedJobResult(job, started, err)
+	}
+	finished := time.Now()
+	return protocol.JobResult{JobID: job.JobID, Type: job.Type, Action: job.Action,
+		Status: protocol.StatusSuccess, StartedAt: started, FinishedAt: finished,
+		CostMS: finished.Sub(started).Milliseconds()}
 }
 
 func revokeLogInputs(dir, id string, row logRevocation) error {

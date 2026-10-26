@@ -2,7 +2,9 @@ package assets
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"regexp"
 	"testing"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -22,6 +24,14 @@ type stubConsistencyChecker struct {
 func (stub *stubConsistencyChecker) CheckServiceLogConfigConsistency(ctx context.Context, pool dbType, serviceID int64) error {
 	stub.calledWithPool = pool != nil
 	stub.serviceID = serviceID
+	return stub.err
+}
+
+func (stub *stubConsistencyChecker) CheckTemplateLogConfigConsistency(ctx context.Context, pool dbType, templateID int64) error {
+	return stub.err
+}
+
+func (stub *stubConsistencyChecker) CheckDeploymentLogConfigConsistency(ctx context.Context, pool dbType, deploymentID int64) error {
 	return stub.err
 }
 
@@ -52,6 +62,7 @@ func TestSaveApplicationServiceRejectsInconsistentLogConfig(t *testing.T) {
 	_, err = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
 		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
 		ApplicationVersion: 1, DeploymentTemplate: 1,
+		LogRetentionTier: new(int64(3)),
 	}, service.checkLogConfigConsistency)
 
 	if err == nil || err.Error() != message {
@@ -88,5 +99,90 @@ func TestSaveApplicationServiceWithoutCheckerSkipsValidation(t *testing.T) {
 	_, _ = service.repository.SaveApplicationService(context.Background(), 15, ApplicationServiceInput{
 		Name: "tomcat", Code: "tomcat", Application: 1, BusinessSystem: 1,
 		ApplicationVersion: 1, DeploymentTemplate: 1,
+		LogRetentionTier: new(int64(3)),
 	}, service.checkLogConfigConsistency)
+}
+
+func TestSaveDeploymentTemplateRollsBackOnLogConfigConflict(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	repository := NewRepository(database)
+	message := errors.New("template creates duplicate log path")
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE assets_application_deployment_template").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	_, err = repository.SaveDeploymentTemplate(context.Background(), 22, DeploymentTemplateInput{
+		Name: "template", ControlType: "systemd",
+	}, func(ctx context.Context, pool dbType, templateID int64) error {
+		if pool == nil || templateID != 22 {
+			t.Fatalf("template checker got pool=%v templateID=%d", pool != nil, templateID)
+		}
+		return message
+	})
+	if !errors.Is(err, message) {
+		t.Fatalf("template conflict must reject the save, got %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("template conflict must roll back without commit: %v", err)
+	}
+}
+
+func TestSaveDeploymentRollsBackOnLogConfigConflict(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	repository := NewRepository(database)
+	message := errors.New("deployment creates duplicate log path")
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE assets_application_deployment").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	_, err = repository.SaveApplicationDeployment(context.Background(), 19, ApplicationDeploymentInput{
+		InstanceName: "instance", Host: 42,
+	}, func(ctx context.Context, pool dbType, deploymentID int64) error {
+		if pool == nil || deploymentID != 19 {
+			t.Fatalf("deployment checker got pool=%v deploymentID=%d", pool != nil, deploymentID)
+		}
+		return message
+	})
+	if !errors.Is(err, message) {
+		t.Fatalf("deployment conflict must reject the save, got %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("deployment conflict must roll back without commit: %v", err)
+	}
+}
+
+func TestSaveServiceLogOverrideRollsBackOnLogConfigConflict(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	service := newTestService(t, NewRepository(database))
+	message := errors.New("override creates duplicate log path")
+	service.SetLogConfigConsistencyChecker(&stubConsistencyChecker{err: message})
+
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO assets_application_service_log_setting").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
+
+	disabled := false
+	_, err = service.SaveServiceLogOverride(context.Background(), 15, ServiceLogOverrideInput{
+		LogDefinition: 24, CollectionEnabled: &disabled,
+	})
+	if !errors.Is(err, message) {
+		t.Fatalf("override conflict must reject the save, got %v", err)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("override conflict must roll back without commit: %v", err)
+	}
 }

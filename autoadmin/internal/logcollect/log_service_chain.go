@@ -210,6 +210,15 @@ func (handler *Handler) servicePipelineLayer(context *gin.Context, serviceID int
 	if err != nil {
 		return logHealthLayer("pipelines", "解析规则", logHealthError, "读取服务的日志定义失败: "+err.Error(), nil)
 	}
+	sharedRules, err := db.New(handler.db).ListServiceSharedLogRules(context, serviceID)
+	if err != nil {
+		return logHealthLayer("pipelines", "解析规则", logHealthError, "读取共享源的解析规则失败: "+err.Error(), nil)
+	}
+	for _, shared := range sharedRules {
+		rows = append(rows, db.ListServiceTemplateLogsRow{
+			ProcessingRuleID: sql.NullInt64{Int64: shared.RuleID, Valid: true}, ProcessingRuleName: shared.RuleName,
+		})
+	}
 	items := []gin.H{}
 	seen := map[int64]bool{}
 	clusters := map[int64]elasticsearchCluster{}

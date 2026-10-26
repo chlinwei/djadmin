@@ -262,7 +262,7 @@ func nullableInt(value *int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
-func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput) (int64, error) {
+func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin template transaction: %w", err)
@@ -429,6 +429,11 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 	}
 	if err != nil {
 		return 0, err
+	}
+	if len(checkers) > 0 && checkers[0] != nil {
+		if err = checkers[0](ctx, tx, templateID); err != nil {
+			return 0, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit template transaction: %w", err)
@@ -618,7 +623,7 @@ func (s *Service) SaveDeploymentTemplate(ctx context.Context, id int64, input De
 	if input.MacroDefinitions == nil {
 		input.MacroDefinitions = json.RawMessage("[]")
 	}
-	templateID, err := s.repository.SaveDeploymentTemplate(ctx, id, input)
+	templateID, err := s.repository.SaveDeploymentTemplate(ctx, id, input, s.checkTemplateLogConfigConsistency)
 	if err != nil {
 		return DeploymentTemplate{}, translate(err)
 	}

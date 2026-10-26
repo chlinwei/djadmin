@@ -83,7 +83,7 @@ func TestSaveServiceValidatesDeploymentTemplateWithinTransaction(t *testing.T) {
 				mock.ExpectBegin()
 				expectServiceSaveFence(mock, 18)
 				mock.ExpectExec("UPDATE assets_application_service").WillReturnResult(sqlmock.NewResult(0, 1))
-				input := ApplicationServiceInput{DeploymentTemplate: 10}
+				input := ApplicationServiceInput{DeploymentTemplate: 10, LogRetentionTier: new(int64(3))}
 				if replaceMembers {
 					members := []ServiceMemberInput{{Deployment: 20}}
 					input.MemberConfigs = &members

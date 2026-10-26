@@ -1,12 +1,76 @@
 package logcollect
 
 import (
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // 测试里的输出段标识（地址/账号/TLS）。真实值由 filebeatOutputIdentity 从默认集群算出。
 const testOutputIdentity = "url=http://127.0.0.1:9200\nusername=admin\nverify_tls=false"
+
+func TestRenderRejectsEmptyRetentionTier(t *testing.T) {
+	for _, tier := range []string{"", " ", "\t"} {
+		entry := hostLogRenderInput{
+			Application: "app", Service: "aos_122", ServiceID: 122, Tier: tier,
+			Pipeline: "rule", LogName: "app.log", ResolvedPath: "/logs/app.log",
+		}
+		rendered := renderHostLogConfig([]hostLogRenderInput{entry},
+			[]hostInstanceInput{{ServiceID: 122, Instance: "app-1"}}, testOutputIdentity)
+		if len(rendered.Fragments) != 0 || len(rendered.ServiceFingerprints) != 0 ||
+			rendered.configurationError(1) == nil || !strings.Contains(strings.Join(rendered.Errors, ";"), "有效保留档位") {
+			t.Fatalf("empty tier must block apply without emitting an input: %+v", rendered)
+		}
+	}
+}
+
+func TestRenderHostLogConfigIndependentOfQueryOrder(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		t.Run(strconv.FormatBool(conflict), func(t *testing.T) {
+			entries := []hostLogRenderInput{
+				{Application: "mq", Service: "svc-b", ServiceID: 33, Tier: "std", Pipeline: "mq", LogName: "z.log", ResolvedPath: "/logs/shared.log"},
+				{Application: "mq", Service: "svc-a", ServiceID: 32, Tier: "std", Pipeline: "mq", LogName: "a.log", ResolvedPath: "/logs/a.log"},
+				{Application: "mq", Service: "svc-b", ServiceID: 33, Tier: "std", Pipeline: "mq", LogName: "b.log", ResolvedPath: "/logs/b.log"},
+			}
+			if conflict {
+				entries[1].ResolvedPath = entries[0].ResolvedPath
+			}
+			instances := []hostInstanceInput{
+				{ServiceID: 33, Instance: "b-2"}, {ServiceID: 32, Instance: "a-1"},
+				{ServiceID: 33, Instance: "b-1"},
+			}
+			// 无冲突用例给每个实例独立路径，也覆盖实例行序的变化。
+			if !conflict {
+				for i := range entries {
+					entries[i].ResolvedPath = "/logs/${INSTANCE}/" + entries[i].LogName
+				}
+				for i := range instances {
+					instances[i].Macros = map[string]string{"INSTANCE": instances[i].Instance}
+				}
+			}
+			original := append([]hostLogRenderInput(nil), entries...)
+			want := renderHostLogConfig(entries, instances, testOutputIdentity)
+			if !reflect.DeepEqual(entries, original) {
+				t.Fatal("renderer mutated caller entries")
+			}
+			for _, order := range [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+				shuffled := []hostLogRenderInput{entries[order[0]], entries[order[1]], entries[order[2]]}
+				reversed := []hostInstanceInput{instances[2], instances[1], instances[0]}
+				got := renderHostLogConfig(shuffled, reversed, testOutputIdentity)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("query order %v changed fragments, fingerprints or diagnostics:\ngot %+v\nwant %+v", order, got, want)
+				}
+			}
+			if conflict && want.configurationError(779) == nil {
+				t.Fatal("duplicate paths must prevent state evaluation and apply")
+			}
+			if !conflict && want.configurationError(779) != nil {
+				t.Fatalf("valid distinct paths rejected: %v", want.Errors)
+			}
+		})
+	}
+}
 
 // 指纹必须覆盖输出段：主配置 filebeat.yml 由集群地址/账号/TLS 决定，漏掉就会出现
 // 「只改集群 → 指纹没变 → 下发被跳过 → 主配置停留在旧值」；同时确认指纹对同一输入稳定

@@ -76,6 +76,8 @@ func TestServiceDeletionFencesThenDeletesDataStreamsEvenWithOfflineHost(t *testi
 	columns := []string{"service_id", "project_code", "business_system_code", "environment_code", "service_code"}
 	mock.ExpectQuery("FROM assets_service_deletion WHERE service_id=").
 		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows(columns).AddRow(7, "p", "b", "prod", "SVC"))
+	mock.ExpectQuery("SELECT source_id FROM monitor_shared_log_source_service").
+		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"source_id"}))
 	mock.ExpectQuery("SELECT DISTINCT p.code AS project_code").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"project_code", "environment_code", "business_system_code", "service_id", "service_code",
@@ -94,12 +96,14 @@ func TestServiceDeletionFencesThenDeletesDataStreamsEvenWithOfflineHost(t *testi
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery("FROM assets_service_deletion ORDER BY").
 		WillReturnRows(sqlmock.NewRows(columns).AddRow(7, "p", "b", "prod", "SVC"))
+	expectNoSharedRevocations(mock)
 	mock.ExpectCommit()
 	mock.ExpectQuery("FROM assets_application_service_deployment").
 		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{
 		"host_id", "host_ip", "host_instance_name", "target_id", "config_fingerprint",
 		"runtime_status", "service_fingerprints", "service_id", "service_code",
 	}).AddRow(11, "127.0.0.1", "offline-host", 1, "", "running", []byte(`{}`), 7, "SVC"))
+	expectNoSharedTargets(mock, 7)
 	secrets, err := assets.NewSecretEncryptor("", "test-secret")
 	if err != nil {
 		t.Fatal(err)

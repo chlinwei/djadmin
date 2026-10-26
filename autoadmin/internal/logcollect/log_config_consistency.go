@@ -10,12 +10,13 @@ import (
 	"autoadmin/internal/shared/apperror"
 )
 
-// 保存逻辑服务时的"采集配置自洽性"校验（2026-09-19）。
+// 影响最终采集输入的保存操作统一使用这套"采集配置自洽性"校验。
 //
 // 为什么要有它：渲染遇到不自洽的配置是**跳过并告警**（不带病下发），可那已经是下发那一步了——
 // 用户要等到"某台主机少采了"，或者更糟（同主机同路径会让日志重复进 ES）才发现。
-// 这类问题**只能在配置里改**，所以保存时就要挡住：把该服务各承载主机的期望配置渲染一遍，
-// 只要渲染出"硬问题"就拒绝保存（硬问题的定义见 renderedHostLogConfig.Errors）。
+// 这类问题**只能在配置里改**，所以服务、模板、实例及采集开关/覆盖保存时都要挡住：
+// 把受影响主机的完整期望配置渲染一遍，只要渲染出"硬问题"就拒绝保存
+// （硬问题的定义见 renderedHostLogConfig.Errors）。
 //
 // 与"软告警"的边界：没挂解析规则所以不采集、主机还没纳管采集目标——这些是**按约定允许存在**的
 // 状态（先配模板、后纳管是正常顺序），不能因为它保存不了。
@@ -26,7 +27,7 @@ func (handler *Handler) CheckServiceLogConfigConsistency(context context.Context
 	if serviceID < 1 {
 		return nil
 	}
-	targets, err := db.New(pool).ListServiceLogApplyTargets(context, serviceID)
+	targets, err := listServiceLogApplyTargets(context, pool, serviceID)
 	if err != nil {
 		return fmt.Errorf("读取承载主机失败: %w", err)
 	}
@@ -34,14 +35,62 @@ func (handler *Handler) CheckServiceLogConfigConsistency(context context.Context
 	for _, target := range targets {
 		hostIDs = append(hostIDs, target.HostID)
 	}
+	return handler.checkHostLogConfigConsistency(context, pool, hostIDs)
+}
+
+// 模板变更会同时影响所有引用该模板的服务；按受影响服务收集主机后统一渲染，
+// 这样模板日志增删、路径及模板宏变更都与服务保存走同一判定。
+func (handler *Handler) CheckTemplateLogConfigConsistency(context context.Context, pool db.DBTX, templateID int64) error {
+	if templateID < 1 {
+		return nil
+	}
+	services, err := db.New(pool).ListApplicationServicesByTemplate(context, templateID)
+	if err != nil {
+		return fmt.Errorf("读取模板关联服务失败: %w", err)
+	}
+	hostIDs := make([]int64, 0)
+	for _, service := range services {
+		targets, targetErr := listServiceLogApplyTargets(context, pool, service.ID)
+		if targetErr != nil {
+			return fmt.Errorf("读取承载主机失败: %w", targetErr)
+		}
+		for _, target := range targets {
+			hostIDs = append(hostIDs, target.HostID)
+		}
+	}
+	return handler.checkHostLogConfigConsistency(context, pool, hostIDs)
+}
+
+// 实例主机、实例宏或实例名变更后，校验新主机上的完整配置。
+func (handler *Handler) CheckDeploymentLogConfigConsistency(context context.Context, pool db.DBTX, deploymentID int64) error {
+	if deploymentID < 1 {
+		return nil
+	}
+	deployment, err := db.New(pool).GetApplicationDeploymentDetail(context, deploymentID)
+	if err != nil {
+		return fmt.Errorf("读取部署实例失败: %w", err)
+	}
+	return handler.checkHostLogConfigConsistency(context, pool, []int64{deployment.HostID})
+}
+
+func (handler *Handler) checkHostLogConfigConsistency(context context.Context, pool db.DBTX, hostIDs []int64) error {
 	if len(hostIDs) == 0 {
 		return nil
 	}
-	sets, err := loadHostLogRenderInputsPool(context, pool, hostIDs)
+	uniqueHostIDs := make(map[int64]struct{}, len(hostIDs))
+	dedupedHostIDs := make([]int64, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		if _, exists := uniqueHostIDs[hostID]; exists {
+			continue
+		}
+		uniqueHostIDs[hostID] = struct{}{}
+		dedupedHostIDs = append(dedupedHostIDs, hostID)
+	}
+	sets, err := loadHostLogRenderInputsPool(context, pool, dedupedHostIDs)
 	if err != nil {
 		return fmt.Errorf("渲染期望配置失败: %w", err)
 	}
-	messages := collectLogConfigProblems(sets, hostIDs)
+	messages := collectLogConfigProblems(sets, dedupedHostIDs)
 	if len(messages) == 0 {
 		return nil
 	}

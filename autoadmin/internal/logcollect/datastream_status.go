@@ -42,6 +42,7 @@ type dataStreamEntry struct {
 	Bytes          float64 `json:"bytes"`
 	ILMState       string  `json:"ilm_state"`
 	Recognized     bool    `json:"recognized"`
+	SharedSourceID int64   `json:"shared_source_id,omitempty"`
 	// Historical 改档位后留下的历史流：属于某个服务，但它的档位已不在该服务的生效集合里
 	// （已停止写入，数据按原档位保留到期）。由后端判定，前端不再自己推。
 	Historical bool `json:"historical"`
@@ -178,7 +179,7 @@ func loadActiveStreamTiers(context context.Context, queries *db.Queries) map[int
 		return active
 	}
 	for _, row := range rows {
-		if row.ServiceID <= 0 || row.TierCode == "" {
+		if row.ServiceID == 0 || row.TierCode == "" {
 			continue
 		}
 		if active[row.ServiceID] == nil {
@@ -319,6 +320,9 @@ func (handler *Handler) fetchDataStreamEntries(context *gin.Context, cluster ela
 				// 历史流判定：服务认得出来 + 档位不在该服务的生效集合里（= 改档位留下的旧流）。
 				Historical: matcher.isHistoricalStream(parsed.ServiceID, parsed.Tier),
 			}
+			if parsed.ServiceID < 0 {
+				entry.SharedSourceID = -parsed.ServiceID
+			}
 			entries[parsed.Stream] = entry
 			order = append(order, parsed.Stream)
 		}
@@ -397,6 +401,24 @@ func (handler *Handler) GetLogStorageOverview(context *gin.Context) {
 	serviceID := parseID(context.Query("application_service_id"))
 	serviceCode := strings.TrimSpace(context.Query("service_code"))
 	indexPattern, scopeFound := scopeIndexPattern(prefix, serviceID, serviceCode, matcher)
+	if serviceID > 0 {
+		sources, err := db.New(handler.db).SharedLogSourceSearchScope(context, []int64{serviceID})
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+		if len(sources) > 0 {
+			patterns := []string{}
+			if scopeFound {
+				patterns = append(patterns, indexPattern)
+			}
+			for _, source := range sources {
+				patterns = append(patterns, LogDataStreamName(prefix, source.ProjectCode, source.EnvironmentCode,
+					source.BusinessSystemCode, sharedSourceCode(source.ID), "*"))
+			}
+			indexPattern, scopeFound = strings.Join(patterns, ","), true
+		}
+	}
 	if !scopeFound {
 		// 给了服务但这个服务不在维度表里（已删除/编码写错）：返回空视图，**不能回落到全量**，
 		// 否则调用方以为看到的是"这个服务的流"，实际拿到整个集群。

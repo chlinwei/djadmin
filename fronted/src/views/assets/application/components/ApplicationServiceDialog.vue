@@ -180,16 +180,15 @@
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item label="默认保留档位">
+            <a-form-item name="log_retention_tier" label="默认保留档位">
               <a-select
                 v-model:value="form.log_retention_tier"
-                allow-clear
                 placeholder="请选择保留档位"
                 :options="retentionTierOptions"
                 :getPopupContainer="getPopupContainer"
               />
               <div class="field-hint">
-                档位决定写入哪个 data stream 及其过期策略。改档位会写入新流（旧流停止写入、按原档位保留到期，
+                必须选择有效档位；单条日志未覆盖时继承此档位。档位决定写入哪个 data stream 及其过期策略。改档位会写入新流（旧流停止写入、按原档位保留到期，
                 不迁移数据）；改动需要重新下发采集配置后主机才会走新流。
               </div>
             </a-form-item>
@@ -324,8 +323,7 @@ const retentionTierOptions = computed(() => retentionTierRecords.value
   .filter((item) => item.enabled)
   .map((item) => ({ label: item.retention_value ? `${item.name}（${retentionText(item)}）` : item.name, value: item.id })))
 
-// 「继承服务默认」到底继承的是哪一档：继承链是 **服务默认档位（上面那个下拉，未保存的以表单为准）
-// → 平台默认档（is_default）→ std**。只写"继承服务默认"用户没法知道这条日志实际保留多久。
+// 服务档位必填，单条日志可继承它，不再继承平台默认档。
 // 解析规则名的展示：优先用后端随行返回的名字（保存过的服务），没带就用规则列表按 id 反查
 // （新建/换模板时只有 id）。
 
@@ -363,6 +361,7 @@ const rules = computed(() => ({
   application_version: [{ required: true, message: '请选择应用版本' }],
   deployment_template: [{ required: true, message: '请选择部署模板' }],
   environment: [{ required: true, message: '请选择环境' }],
+  log_retention_tier: [{ required: true, type: 'number', min: 1, message: '请选择默认保留档位' }],
   topology_type: [{ required: true, message: '请选择部署形态' }],
   cluster_profile: form.topology_type === 'cluster' ? [{ required: true, message: '请选择集群模型' }] : [],
   access_address: ['cluster', 'load_balancer'].includes(form.topology_type) && (isHaCluster.value || form.topology_type === 'load_balancer')
@@ -541,7 +540,7 @@ async function openDeploymentDialog(deploymentId = null) {
   if (!form.id) {
     await formRef.value.validate([
       'name', 'code', 'business_system', 'application', 'environment',
-      'topology_type', 'application_version', 'deployment_template',
+      'topology_type', 'application_version', 'deployment_template', 'log_retention_tier',
     ])
     const payload = { ...form, draft: true }
     payload.cluster_profile = payload.topology_type === 'cluster' ? payload.cluster_profile : null

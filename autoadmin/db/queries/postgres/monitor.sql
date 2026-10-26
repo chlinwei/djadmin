@@ -1000,7 +1000,7 @@ WHERE d.host_id = ANY(sqlc.arg(host_ids)::bigint[])
 SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     bs.code AS business_system_code, s.code AS service_code, s.id AS service_id,
     COALESCE(app.code, '') AS application_code,
-    COALESCE(tier.code, '') AS tier_code,
+    CASE WHEN s.log_retention_tier_id IS NOT NULL AND tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code,
     COALESCE(rule_definition.name, '') AS pipeline_name,
     ld.name AS log_name, ld.path_pattern,
     COALESCE(s.macro_values, '{}') AS macro_values,
@@ -1303,18 +1303,23 @@ WHERE cluster_id = sqlc.arg(cluster_id) ORDER BY name;
 -- 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
 -- 就说明它已停止写入（数据按原档位保留到期）。判定放后端做，因为：
 --   - 全局视图（不按服务收窄）没有"本服务生效档位"这份数据，前端推不出来；
---   - 生效档位是"覆盖档位 → 服务默认档位 → is_default → 'std'"的 COALESCE 链，必须与
+--   - 生效档位是"覆盖档位 → 必填服务默认档位"，必须与
 --     ListServiceTemplateLogs 的 tier_code 逐字一致，两处各写一份必然漂移。
 -- 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
 -- （与"这个服务现在什么都不采"一致）。
 -- name: ListServiceActiveStreamTiers :many
 SELECT DISTINCT s.id AS service_id, s.code AS service_code,
-       COALESCE(tier.code, (SELECT code FROM monitor_log_retention_tier WHERE is_default = TRUE ORDER BY id LIMIT 1), 'std') AS tier_code
+       CASE WHEN s.log_retention_tier_id IS NOT NULL AND tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
 FROM assets_application_service s
 JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
 LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id
 LEFT JOIN monitor_log_retention_tier tier ON tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)
-WHERE s.code <> '';
+WHERE s.code <> ''
+UNION ALL
+SELECT 0-x.id,CONCAT('shared-source-',x.id),t.code
+FROM monitor_shared_log_source x
+JOIN monitor_log_retention_tier t ON t.id=x.retention_tier_id
+WHERE x.archived=FALSE AND EXISTS (SELECT 1 FROM monitor_shared_log_source_service l WHERE l.source_id=x.id);
 
 -- Automatic historical-stream deletion holds the identity/configuration rows until ES
 -- acknowledges deletion. Concurrent editors must not turn the candidate into a current stream.
@@ -1413,7 +1418,15 @@ FROM assets_application_service s
 JOIN assets_business_system bs ON bs.id = s.business_system_id
 JOIN assets_project p ON p.id = bs.project_id
 JOIN assets_business_environment e ON e.id = s.environment_id
-LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id;
+LEFT JOIN monitor_log_retention_tier t ON t.id = s.log_retention_tier_id
+UNION ALL
+SELECT p.code,e.code,bs.code,0-x.id,CONCAT('shared-source-',x.id),t.code,
+       NOT x.archived,EXISTS (SELECT 1 FROM monitor_shared_log_source_service l WHERE l.source_id=x.id)
+FROM monitor_shared_log_source x
+JOIN assets_business_system bs ON bs.id=x.business_system_id
+JOIN assets_project p ON p.id=bs.project_id
+JOIN assets_business_environment e ON e.id=x.environment_id
+JOIN monitor_log_retention_tier t ON t.id=x.retention_tier_id;
 
 -- 单个逻辑服务的流名维度码（清理数据流用：按服务解析 <project>-<business>-<env>-<service>-* 模式）。
 -- name: GetApplicationServiceStreamDims :one

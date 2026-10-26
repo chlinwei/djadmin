@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -18,6 +19,14 @@ func expectServiceSaveFence(mock sqlmock.Sqlmock, id int64) {
 		WithArgs(id).WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM assets_service_deletion").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("FROM monitor_log_retention_tier").WithArgs(int64(3)).
+		WillReturnRows(serviceRetentionTierRows("std", true))
+}
+
+func serviceRetentionTierRows(code string, enabled bool) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "create_time", "update_time", "code", "name", "daily_size_gb",
+		"retention_value", "retention_unit", "rollover_min_index_age", "enabled", "is_default", "remark"}).
+		AddRow(3, time.Now(), time.Now(), code, "Standard", 1, 30, "d", "1d", enabled, false, "")
 }
 
 func TestFinishServiceDeletionRemovesOnlyUnsharedDeployments(t *testing.T) {

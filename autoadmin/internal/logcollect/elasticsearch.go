@@ -285,8 +285,10 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 	var scopeFilter any
 	prefix := defaultString(cluster.IndexPrefix, "autoadmin")
 	var indexPatterns []string
+	var serviceIDs []int64
 	if rawIDs := strings.TrimSpace(context.Query("application_service_ids")); rawIDs != "" {
 		ids := parseIDList(rawIDs)
+		serviceIDs = ids
 		if len(ids) == 0 {
 			return cluster, "", nil, fmt.Errorf("application_service_ids is invalid")
 		}
@@ -305,6 +307,7 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 		}
 	} else {
 		serviceID := parseID(context.Query("application_service_id"))
+		serviceIDs = []int64{serviceID}
 		if serviceID == 0 {
 			return cluster, "", nil, fmt.Errorf("application_service_id is required")
 		}
@@ -316,6 +319,23 @@ func (handler *Handler) buildLogQuery(context *gin.Context) (elasticsearchCluste
 		}
 		scopeFilter = gin.H{"bool": gin.H{"filter": serviceDimsFilters(dims)}}
 		indexPatterns = []string{logstream.Name(prefix, dims.ProjectCode, dims.EnvironmentCode, dims.BusinessSystemCode, dims.ServiceCode, "*")}
+	}
+	shared, err := db.New(handler.db).SharedLogSourceSearchScope(context, serviceIDs)
+	if err != nil {
+		return cluster, "", nil, fmt.Errorf("读取共享日志检索范围失败: %w", err)
+	}
+	if len(shared) > 0 {
+		ids := make([]string, 0, len(shared))
+		for _, source := range shared {
+			ids = append(ids, strconv.FormatInt(source.ID, 10))
+			indexPatterns = append(indexPatterns, logstream.Name(prefix, source.ProjectCode, source.EnvironmentCode,
+				source.BusinessSystemCode, sharedSourceCode(source.ID), "*"))
+		}
+		// One OR scope, not separate searches: a source associated with several
+		// selected services must appear once in hits and aggregations.
+		scopeFilter = gin.H{"bool": gin.H{"should": []any{
+			scopeFilter, gin.H{"terms": gin.H{"shared_source_id": ids}},
+		}, "minimum_should_match": 1}}
 	}
 	start, end, err := parseLogWindow(context)
 	if err != nil {
@@ -422,7 +442,7 @@ func (handler *Handler) ElasticsearchLogSearch(context *gin.Context) {
 	}
 	// _source 带上 project/business_system/environment：跨服务检索（application_service_ids）的
 	// 列表要按层级显示"业务系统/环境/逻辑服务"列，文档上的维度编码是唯一的来源。
-	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
+	body := gin.H{"from": offset, "size": size, "track_total_hits": 2000, "sort": []any{gin.H{"@timestamp": "desc"}}, "_source": []string{"@timestamp", "log_level", "service", "instance", "host_ip", "log_name", "log_path", "message", "log_message", "error_fingerprint", "app_fields", "log.file.path", "project", "business_system", "environment", "shared_source_id", "shared_source_name"}, "query": gin.H{"bool": gin.H{"filter": parts[0], "must": parts[1]}}}
 	data, err := handler.elasticsearchRequest(context, cluster, http.MethodPost, searchPath, body)
 	if err != nil {
 		response.BusinessError(context, 400, err.Error(), nil)

@@ -60,6 +60,23 @@ func (handler *Handler) publishDeletionAwareGuard(ctx context.Context, cluster e
 		}}
 		body["processors"] = append([]any{barrier}, body["processors"].([]any)...)
 	}
+	revocations, err := q.ListSharedLogSourceRevocations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(revocations) > 0 {
+		epochs := make([]any, 0, len(revocations))
+		for _, row := range revocations {
+			epochs = append(epochs, gin.H{"id": strconv.FormatInt(row.SourceID, 10), "generation": strconv.FormatInt(row.Generation, 10)})
+		}
+		barrier := gin.H{"drop": gin.H{"tag": "revoked_shared_sources", "if": gin.H{
+			"lang": "painless", "source": `for (def epoch : params.epochs) {
+  if (ctx.shared_source_id == epoch.id && ctx.shared_source_generation == epoch.generation) { return true; }
+}
+return false;`, "params": gin.H{"epochs": epochs},
+		}}}
+		body["processors"] = append([]any{barrier}, body["processors"].([]any)...)
+	}
 	result, err := handler.elasticsearchRequest(ctx, cluster, "PUT",
 		"/_ingest/pipeline/"+url.PathEscape(buildMappingGuardPipelineName(cluster.IndexPrefix)), body)
 	if err != nil {
@@ -76,6 +93,9 @@ func (handler *Handler) RevokeServiceLogs(ctx context.Context, serviceID int64) 
 	scope, err := q.GetServiceDeletionTombstone(ctx, serviceID)
 	if err != nil {
 		return err
+	}
+	if err = handler.detachServiceSharedSources(ctx, serviceID); err != nil {
+		return fmt.Errorf("解除共享采集源关联失败: %w", err)
 	}
 	// Codes may contain hyphens: svc-* also matches svc-extra-*. Include live and
 	// deleted identities so ambiguous names fail closed instead of deleting another service.
@@ -130,7 +150,7 @@ func (handler *Handler) RevokeServiceLogs(ctx context.Context, serviceID int64) 
 		}
 		clusters = append(clusters, cluster)
 	}
-	targets, err := q.ListServiceLogApplyTargets(ctx, serviceID)
+	targets, err := listServiceLogApplyTargets(ctx, handler.db, serviceID)
 	if err != nil {
 		return err
 	}

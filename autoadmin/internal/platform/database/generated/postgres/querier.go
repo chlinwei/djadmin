@@ -14,7 +14,10 @@ import (
 type Querier interface {
 	ActivateAgentPackage(ctx context.Context, id uint64) (int64, error)
 	AddRoleMenu(ctx context.Context, arg AddRoleMenuParams) error
+	AddSharedLogSourceLink(ctx context.Context, arg AddSharedLogSourceLinkParams) error
 	AddUserRole(ctx context.Context, arg AddUserRoleParams) error
+	AdvanceSharedLogSourceGeneration(ctx context.Context, id int64) error
+	ArchiveSharedLogSource(ctx context.Context, id int64) error
 	CancelAgentJobHostLogsByExecution(ctx context.Context, arg CancelAgentJobHostLogsByExecutionParams) error
 	// 用户在运行记录中心取消 Agent 安装/更新作业时，同步把对应的 assets_agent_job 与主机日志
 	// 置为失败，否则 rejectActiveAgentJobs 会一直拦着"任务执行中"（agent job 与 automation job 是两套状态）。
@@ -163,6 +166,8 @@ type Querier interface {
 	// 不再硬编码排除 cleanup_alert_histories：那条过滤曾把它从列表里藏起来，后果是"历史上从来没被
 	// 清理过"这件事没人看得见（2026-09-19 才发现）。要隐藏某个任务请在业务上退役它（删行 + 写文档）。
 	CountScheduledTasks(ctx context.Context, arg CountScheduledTasksParams) (int64, error)
+	CountSharedLogSourceRuleReferences(ctx context.Context, id int64) (int64, error)
+	CountSharedLogSourceTierReferences(ctx context.Context, id int64) (int64, error)
 	// ---- P2-3：监控软件包管理（读取复用 GetSoftwarePackageTyped；写路径见下）----
 	// 原实现有运行时拼列名的地方（`SET `+role+`_playbook_template_id=…`），改成按角色分派的显式语句。
 	CountSoftwarePackageSyncConflict(ctx context.Context, arg CountSoftwarePackageSyncConflictParams) (int64, error)
@@ -274,6 +279,8 @@ type Querier interface {
 	// 服务级日志覆盖：**只有采集开关、保留档位、采集过滤规则**。
 	// 解析规则不在这张表里——它只由模板日志定义决定（迁移 000035 删掉了 processing_rule_id）。
 	CreateServiceLogSetting(ctx context.Context, arg CreateServiceLogSettingParams) error
+	CreateSharedLogSource(ctx context.Context, arg CreateSharedLogSourceParams) (int64, error)
+	CreateSharedLogSourceRevocation(ctx context.Context, arg CreateSharedLogSourceRevocationParams) error
 	CreateSoftwarePackage(ctx context.Context, arg CreateSoftwarePackageParams) (int64, error)
 	CreateTargetInstallHistory(ctx context.Context, arg CreateTargetInstallHistoryParams) (int64, error)
 	CreateTemplateComposeConfig(ctx context.Context, arg CreateTemplateComposeConfigParams) error
@@ -376,6 +383,8 @@ type Querier interface {
 	// 服务树里认证通过、保存后又变成未认证，必须去日志中心再认证一次才生效）。所以已提交的行改走
 	// UpsertServiceLogOverride（不碰认证列），只有未提交的行才在这一句里删掉。
 	DeleteServiceLogSettingsByServiceAndDefinitions(ctx context.Context, arg DeleteServiceLogSettingsByServiceAndDefinitionsParams) error
+	DeleteSharedLogSourceLinks(ctx context.Context, sourceID int64) error
+	DeleteSharedLogSourceServiceLink(ctx context.Context, arg DeleteSharedLogSourceServiceLinkParams) error
 	DeleteSoftwarePackage(ctx context.Context, id int64) error
 	DeleteTemplateComposeConfig(ctx context.Context, deploymentTemplateID int64) error
 	DeleteTemplateConfigFiles(ctx context.Context, deploymentTemplateID int64) error
@@ -743,6 +752,8 @@ type Querier interface {
 	// 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
 	ListHostLogRenderInstances(ctx context.Context, hostIds []int64) ([]ListHostLogRenderInstancesRow, error)
 	ListHostMonitors(ctx context.Context, hostID int64) ([]ListHostMonitorsRow, error)
+	ListHostSharedLogSourceLinks(ctx context.Context, hostIds []int64) ([]MonitorSharedLogSourceService, error)
+	ListHostSharedLogSources(ctx context.Context, hostIds []int64) ([]ListHostSharedLogSourcesRow, error)
 	// 列表直接带出持久化的系统/硬件快照（与 Django HostListSerializer 的 system/hardware 契约一致），
 	// 避免前端靠二阶段采集合并，agent 离线时也有上次采集值可显示。
 	ListHosts(ctx context.Context, arg ListHostsParams) ([]ListHostsRow, error)
@@ -837,7 +848,7 @@ type Querier interface {
 	// 用途：判定一条已有的 data stream 是不是"改档位后留下的历史流"——流的档位不在该服务的生效集合里
 	// 就说明它已停止写入（数据按原档位保留到期）。判定放后端做，因为：
 	//   - 全局视图（不按服务收窄）没有"本服务生效档位"这份数据，前端推不出来；
-	//   - 生效档位是"覆盖档位 → 服务默认档位 → is_default → 'std'"的 COALESCE 链，必须与
+	//   - 生效档位是"覆盖档位 → 必填服务默认档位"，必须与
 	//     ListServiceTemplateLogs 的 tier_code 逐字一致，两处各写一份必然漂移。
 	// 没有任何日志定义的服务不会出现在结果里 → 它的所有档位都不生效 → 存量流全部判为历史流
 	// （与"这个服务现在什么都不采"一致）。
@@ -865,6 +876,8 @@ type Querier interface {
 	//     （与日志采集页同一字段；那个字段是落库快照，谁看谁负责刷新，见 log_service_chain.go）。
 	ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error)
 	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
+	ListServiceSharedLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceSharedLogApplyTargetsRow, error)
+	ListServiceSharedLogRules(ctx context.Context, serviceID int64) ([]ListServiceSharedLogRulesRow, error)
 	// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
 	// 旧命名 = 项目-环境-业务系统-档位，业务系统/环境段序为调整前的旧段序）。
 	//
@@ -889,6 +902,14 @@ type Querier interface {
 	//     与这里同时带出的"指纹输入"（规则解析配置、服务宏、应用版本）在应用层比对，
 	//     得出 format_state（verified / needs_recheck / unverified）。
 	ListServiceTemplateLogs(ctx context.Context, serviceID int64) ([]ListServiceTemplateLogsRow, error)
+	ListSharedLogServiceSourceIDs(ctx context.Context, serviceID int64) ([]int64, error)
+	ListSharedLogSourceLinks(ctx context.Context) ([]ListSharedLogSourceLinksRow, error)
+	ListSharedLogSourceRevocations(ctx context.Context) ([]ListSharedLogSourceRevocationsRow, error)
+	ListSharedLogSourceServiceIDs(ctx context.Context, sourceID int64) ([]int64, error)
+	// 本文件由 make derive 从 db/queries/mysql/shared_log_sources.sql 派生，禁止手改。
+	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
+	// docs/architecture/SQL_DESIGN.md §4.6。
+	ListSharedLogSources(ctx context.Context) ([]ListSharedLogSourcesRow, error)
 	ListSoftwarePackages(ctx context.Context, arg ListSoftwarePackagesParams) ([]ListSoftwarePackagesRow, error)
 	// 失联对账：阈值改为应用层算好的时间点（原实现用 UTC_TIMESTAMP(6) - INTERVAL ? MINUTE，
 	// 既有方言函数又让阈值跟着库时钟走）。
@@ -928,6 +949,7 @@ type Querier interface {
 	LockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
 	// Serialize creation with tombstoning even when the unique service row is removed.
 	LockServiceIdentityDomain(ctx context.Context, id int64) (int64, error)
+	LockSharedLogSource(ctx context.Context, id int64) (MonitorSharedLogSource, error)
 	MarkAgentJobHostLogRunning(ctx context.Context, arg MarkAgentJobHostLogRunningParams) error
 	// ---- P2-3：Agent 安装/更新流程（作业与主机日志的生命周期、作业创建、活跃任务拦截）----
 	// install 与 update 两条流程用的是同一组语句，这里只定义一份，两边共用。
@@ -997,8 +1019,15 @@ type Querier interface {
 	SetSoftwarePackageServiceFileContent(ctx context.Context, arg SetSoftwarePackageServiceFileContentParams) error
 	SetSoftwarePackageUninstallTemplate(ctx context.Context, arg SetSoftwarePackageUninstallTemplateParams) error
 	SetTargetInstallState(ctx context.Context, arg SetTargetInstallStateParams) error
+	SharedLogSourceHostOptions(ctx context.Context) ([]SharedLogSourceHostOptionsRow, error)
+	SharedLogSourceIdentityConflict(ctx context.Context, arg SharedLogSourceIdentityConflictParams) (int64, error)
+	SharedLogSourceRuleOptions(ctx context.Context) ([]SharedLogSourceRuleOptionsRow, error)
+	SharedLogSourceSearchScope(ctx context.Context, serviceIds []int64) ([]SharedLogSourceSearchScopeRow, error)
+	SharedLogSourceServiceOptions(ctx context.Context) ([]SharedLogSourceServiceOptionsRow, error)
+	SharedLogSourceTierOptions(ctx context.Context) ([]SharedLogSourceTierOptionsRow, error)
 	SkipInspectionTarget(ctx context.Context, arg SkipInspectionTargetParams) error
 	TouchInspectionTaskLastRun(ctx context.Context, arg TouchInspectionTaskLastRunParams) error
+	TouchSharedLogSource(ctx context.Context, id int64) error
 	TryLockSchedulerTask(ctx context.Context, id int64) (SchedulerScheduledtask, error)
 	UpdateAgentJobHostLogStdout(ctx context.Context, arg UpdateAgentJobHostLogStdoutParams) error
 	UpdateAgentJobStdout(ctx context.Context, arg UpdateAgentJobStdoutParams) error
@@ -1041,6 +1070,8 @@ type Querier interface {
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) error
 	UpdateRole(ctx context.Context, arg UpdateRoleParams) error
 	UpdateScheduledTask(ctx context.Context, arg UpdateScheduledTaskParams) error
+	UpdateSharedLogSource(ctx context.Context, arg UpdateSharedLogSourceParams) error
+	UpdateSharedLogSourceRevocation(ctx context.Context, arg UpdateSharedLogSourceRevocationParams) error
 	UpdateSoftwarePackageConfig(ctx context.Context, arg UpdateSoftwarePackageConfigParams) error
 	UpdateSoftwarePackageFile(ctx context.Context, arg UpdateSoftwarePackageFileParams) error
 	UpdateSoftwarePackageFilePath(ctx context.Context, arg UpdateSoftwarePackageFilePathParams) error

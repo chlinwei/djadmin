@@ -133,12 +133,14 @@ func TestServiceLogPendingHostsBatchesRenderInputsAcrossServices(t *testing.T) {
 			int64(10), "10.0.0.10", "node-a", sql.NullInt64{Int64: 101, Valid: true}, "host-fp", "running",
 			json.RawMessage(`{}`), int64(11), "svc-a",
 		))
+	expectNoSharedTargets(mock, 11)
 	mock.ExpectQuery(regexp.QuoteMeta(applyTargetsQuery)).
 		WithArgs(int64(12)).
 		WillReturnRows(sqlmock.NewRows(applyTargetColumns).AddRow(
 			int64(10), "10.0.0.10", "node-a", sql.NullInt64{Int64: 101, Valid: true}, "host-fp", "running",
 			json.RawMessage(`{}`), int64(12), "svc-b",
 		))
+	expectNoSharedTargets(mock, 12)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM monitor_elasticsearch_cluster")).
 		WillReturnRows(sqlmock.NewRows([]string{"hosts", "username", "password", "COALESCE(index_prefix, 'logs')", "verify_tls"}).
 			AddRow("http://es:9200", "", "", "autoadmin", false))
@@ -153,7 +155,6 @@ func TestServiceLogPendingHostsBatchesRenderInputsAcrossServices(t *testing.T) {
 			"multiline_enabled", "start_pattern", "flush_timeout",
 			"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id",
 		}))
-
 	counts, err := handler.ServiceLogPendingHosts(context.Background(), []int64{11, 12})
 	if err != nil {
 		t.Fatalf("service log pending hosts: %v", err)
@@ -189,6 +190,7 @@ func TestServiceLogPendingHostsFailsWhenNoCluster(t *testing.T) {
 			int64(10), "10.0.0.10", "node-a", sql.NullInt64{Int64: 101, Valid: true}, "host-fp", "running",
 			json.RawMessage(`{}`), int64(11), "svc-a",
 		))
+	expectNoSharedTargets(mock, 11)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM monitor_elasticsearch_cluster")).WillReturnError(sql.ErrNoRows)
 
 	if _, err = handler.ServiceLogPendingHosts(context.Background(), []int64{11}); err == nil {

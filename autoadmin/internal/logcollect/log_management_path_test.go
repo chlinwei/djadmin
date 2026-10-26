@@ -43,6 +43,7 @@ func TestBootstrapIndexTemplateUsesTemplateSuffix(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(0))
 	mock.ExpectQuery("FROM assets_service_deletion ORDER BY service_id").
 		WillReturnRows(sqlmock.NewRows([]string{"service_id", "project_code", "business_system_code", "environment_code", "service_code"}))
+	expectNoSharedRevocations(mock)
 	mock.ExpectCommit()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT code,retention_value,retention_unit,daily_size_gb,rollover_min_index_age")).
 		WillReturnRows(sqlmock.NewRows([]string{"code", "retention_value", "retention_unit", "daily_size_gb", "rollover_min_index_age"}))

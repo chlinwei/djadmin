@@ -36,12 +36,14 @@ func TestSaveApplicationServiceLogSettingPassesEveryOverrideColumn(t *testing.T)
 	// 2) 按行 upsert：所有覆盖列都要带上请求体里的值（本例 extra_processors 提交了一条 drop）。
 	// 2026-09-28 现场：绑定结构漏了这一列，条件丢弃"保存后不生效"（被静默写成 []）——
 	// 与 2026-09-19 漏采集过滤两列是同一个坑，这里按值钉死，漏列即红。
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), sqlmock.AnyArg(), int64(15),
 			int64(7), int64(0), []byte(`[{"drop":{"if":"(ctx?.log_level == 'ERROR')"}}]`),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	// 3) 回读整行返回给前端
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).

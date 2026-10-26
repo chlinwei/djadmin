@@ -120,7 +120,7 @@
                 <!-- 服务级采集总开关：与逻辑服务编辑弹窗同一个字段、同一句提示。
                      它与下面每一行的采集开关是两层：总开关关闭时任何日志都不采集，
                      逐条开关只是配置意图（保留下次打开总开关时的选择）。 -->
-                <a-tooltip :title="`关闭时该服务下所有实例均不采集；逐条日志的开关随之不生效（配置仍保留，重新打开即恢复）。${pendingHint}`" placement="top">
+                <a-tooltip :title="`关闭时停止该服务的日志采集。${pendingHint}`" placement="top">
                   <span class="apply-switch">
                     <a-switch
                       :checked="serviceCollectEnabled === true"
@@ -138,7 +138,7 @@
                   <a-spin v-if="applyStateLoading" size="small" />
                   <template v-else>
                     <span v-if="applySummaryText">{{ applySummaryText }}</span>
-                    <span v-else-if="applyStateError" class="apply-error">{{ applyStateError }}</span>
+                    <span v-else-if="applyStateError" class="apply-error">配置状态读取失败</span>
                     <span v-else class="apply-muted">该服务还没有绑定任何部署实例，没有可下发的主机</span>
                   </template>
                 </div>
@@ -164,6 +164,14 @@
                 </a-tooltip>
               </a-space>
             </div>
+            <a-alert v-if="applyStateError" type="error" show-icon class="apply-unmanaged config-state-error" message="配置状态读取失败" :description="applyStateError" />
+            <a-alert
+              v-if="hasSharedPathConflict"
+              type="warning"
+              show-icon
+              class="apply-unmanaged"
+              message="同一主机上的日志项展开为相同路径会阻止配置下发；请修正路径或停用重复日志项。"
+            />
             <a-alert
               v-if="serviceCollectEnabled === false"
               type="warning"
@@ -294,7 +302,11 @@
                   />
                 </template>
                 <template v-else-if="column.key === 'carrying_hosts'">
-                  <a-tooltip v-if="carryingHostsSummary" :title="carryingHostsTooltip" placement="top">
+                  <span v-if="applyStateLoading" class="apply-muted">正在读取主机信息…</span>
+                  <a-tooltip v-else-if="applyStateError" :title="applyStateError" placement="top">
+                    <span class="apply-error">配置状态读取失败</span>
+                  </a-tooltip>
+                  <a-tooltip v-else-if="carryingHostsSummary" :title="carryingHostsTooltip" placement="top">
                     <span>{{ carryingHostsSummary }}</span>
                   </a-tooltip>
                   <span v-else class="apply-muted">未绑定部署实例</span>
@@ -586,7 +598,8 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'owner'">
-                <a-tag v-if="record.recognized" color="blue">{{ record.service }}</a-tag>
+                <a-tag v-if="record.shared_source_id" color="purple">共享源 #{{ record.shared_source_id }}</a-tag>
+                <a-tag v-else-if="record.recognized" color="blue">{{ record.service }}</a-tag>
                 <a-tag v-else color="orange">未识别</a-tag>
               </template>
               <template v-else-if="column.key === 'bytes'">{{ formatBytes(record.bytes) }}</template>
@@ -617,7 +630,7 @@
               <template v-else-if="column.key === 'actions'">
                 <!-- 「切回该档位」要改"这个服务的哪条日志定义"，只有选中服务时才有上下文；
                      全量视图下只给清理（清理按服务维度执行，服务 id 由 dims 映射得到，不需要选中）。 -->
-                <template v-if="isHistoricalTier(record) && serviceId">
+                <template v-if="isHistoricalTier(record) && serviceId && !record.shared_source_id">
                   <a-tooltip title="把这条日志的档位改回该档位，写入会继续进入这条流（不会新建）；改完需要重新下发才在主机上生效。" placement="top">
                     <a-button type="link" size="small" @click="openSwitchTier(record)">切回该档位</a-button>
                   </a-tooltip>
@@ -994,12 +1007,13 @@ const configDiffError = ref('')
 const configDiff = ref(null)
 const configDiffTargetId = ref(null)
 // 本服务的**默认保留档位**（响应顶层）：界面上的"继承服务默认（…）"要用它把默认写清；
-// null = 没有服务级默认，由平台默认档（is_default）决定。
+// null 表示旧记录尚未补选，不能作为有效采集配置下发。
 const serviceDefaultTierId = ref(null)
 const savingServiceCollect = ref(false)
 const applyState = ref(null)
 const applyStateLoading = ref(false)
 const applyStateError = ref('')
+const hasSharedPathConflict = computed(() => applyStateError.value.includes('同一主机上展开成同一路径'))
 const applying = ref(false)
 const scopeApplyLoading = ref(false)
 const scopeApplyOpen = ref(false)
@@ -1187,7 +1201,7 @@ const byNumber = (key) => (left, right) => Number(left[key] || 0) - Number(right
 const storageColumns = computed(() => [
   { title: 'Data Stream', dataIndex: 'name', key: 'name', width: 300, sorter: byText('name') },
   // 全量视图下必须能看到归属，否则一堆流分不清是谁的；选中服务时服务是已知的，不重复占位置。
-  ...(serviceId.value ? [] : [{ title: '归属服务', key: 'owner', width: 110, sorter: byText('service') }]),
+  { title: '归属服务/共享源', key: 'owner', width: 150, sorter: byText('service') },
   { title: '档位', dataIndex: 'tier', key: 'tier', width: 120, sorter: byText('tier') },
   { title: '文档数', key: 'docs', width: 110, sorter: byNumber('docs') },
   { title: '磁盘占用', key: 'bytes', width: 110, sorter: byNumber('bytes') },
@@ -1231,18 +1245,17 @@ function tierNameById(tierId) {
   return found ? found.name : ''
 }
 
-// 「继承」到底继承的是哪一档 —— 继承链：**服务默认档位 → 平台默认档（is_default）→ std**。
+// 单条日志仅继承必填的服务默认档位，不再猜测平台默认档位。
 //
 // 只写"继承服务默认"等于没说：用户没法从界面上知道这条日志实际保留多久（现场反馈
 // "我怎么知道默认是什么呢"）。服务默认档位来自 log-config 响应的 log_retention_tier
-//（null = 由平台默认档决定），所以两级都能写清。
+//（null 表示需要补选），所以不能把缺失档位展示为有效继承。
 function inheritedTierLabel() {
   const serviceDefault = serviceDefaultTierId.value
   if (serviceDefault) {
     return `继承服务默认（${tierNameById(serviceDefault) || `档位 #${serviceDefault}`}）`
   }
-  const platformDefault = retentionTierRecords.value.find((item) => item.is_default)
-  return platformDefault ? `继承平台默认（${platformDefault.name}）` : '继承平台默认档位'
+  return '服务默认档位缺失，请先编辑逻辑服务补选'
 }
 
 // 这一行**当前生效**的档位：有覆盖就是覆盖的档位，没覆盖就是上面那条继承链的结果
@@ -1319,8 +1332,8 @@ const chainCheckedAt = computed(() => (chain.value?.checked_at || '').replace('T
 const chainServiceStopReason = computed(() => {
   const service = chain.value?.service
   if (!service) return ''
-  if (service.enabled === false) return '该逻辑服务已停用：不会再采集日志（存量数据按保留档位到期）。'
-  if (service.log_collection_enabled === false) return '服务采集总开关已关闭：该服务下所有日志都不采集。'
+  if (service.enabled === false) return '该逻辑服务已停用：不再采集普通日志（存量数据按保留档位到期）。'
+  if (service.log_collection_enabled === false) return '服务采集总开关已关闭：不采集该服务的普通日志。'
   return ''
 })
 
@@ -1652,7 +1665,7 @@ async function confirmLogCollectChange(record, checked) {
 
 // 保留档位：改档位会写入**新**流，旧流停止写入并按原档位保留到期（不迁移数据）。
 async function confirmTierChange(record, value) {
-  // "继承"要写清继承到哪一档（继承链：服务默认 → 平台默认 → std），否则确认框等于没说。
+  // "继承"要写清继承到哪一档，否则确认框等于没说。
   const name = value === null
     ? inheritedTierLabel()
     : (retentionTierOptions.value.find((item) => item.value === value)?.label || `档位 #${value}`)
@@ -1899,6 +1912,7 @@ function streamCleanupTarget(stream) {
 
 // 清理按钮的悬停说明：历史档位流、活跃流、未识别流的后果各不相同，先说清再点。
 function streamCleanupTooltip(stream) {
+  if (stream.shared_source_id) return '共享源数据：清理会影响所有关联服务，且不可恢复；不会解除关联或停止采集。'
   if (isHistoricalTier(stream)) {
     return '仅清理这条流中符合所选时间范围的文档。不可恢复；流对象保留，磁盘空间不会立即释放。'
   }
@@ -1913,7 +1927,8 @@ function streamCleanupTooltip(stream) {
 function cleanupStream(stream) {
   const target = streamCleanupTarget(stream)
   if (!target) return
-  cleanupScope.value = { ...target, label: `${stream.name}（${formatBytes(stream.bytes)}）` }
+  const sharedImpact = stream.shared_source_id ? '；共享源数据，清理影响所有关联服务' : ''
+  cleanupScope.value = { ...target, label: `${stream.name}（${formatBytes(stream.bytes)}${sharedImpact}）` }
   cleanupOpen.value = true
 }
 
@@ -2307,7 +2322,7 @@ async function loadLogConfig() {
     selectedLogKeys.value = selectedLogKeys.value.filter((key) => existing.has(key))
     serviceCollectEnabled.value = data.log_collection_enabled === true
     serviceCodeRef.value = data.service_code || ''
-    // 服务默认档位：界面的"继承服务默认（…）"要用它说清继承的是什么（null = 平台默认档）。
+    // 旧记录缺失服务档位时明确提示补选，不自动使用平台默认档。
     serviceDefaultTierId.value = data.log_retention_tier ?? null
   } catch (error) {
     // 不静默：加载失败与"确实没有日志定义"在界面上都是空表格（2026-09-19 现场教训）。
@@ -2415,8 +2430,8 @@ function toggleBackingIndices(record) {
 }
 
 // 历史流（改档位后留下的旧流，已停止写入）由**后端**判定并随每条流返回 `historical`：
-// 只有后端知道"该服务当前生效的档位集合"（覆盖档位 → 服务默认 → is_default → 'std' 的
-// COALESCE 链），而且这个判定在全局视图里同样成立（前端推不出全局视图的生效档位）。
+// 只有后端知道"该服务当前生效的档位集合"（覆盖档位 → 必填服务默认档位），
+// 而且这个判定在全局视图里同样成立（前端推不出全局视图的生效档位）。
 // 字段缺失（旧构建）时一律按"不是历史流"处理——宁可少标，也不要把正在写的流错标成停写。
 function isHistoricalTier(stream) {
   return Boolean(stream?.historical)
@@ -2691,6 +2706,7 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .apply-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2698,17 +2714,22 @@ getLogRetentionTiers({ page_size: 100 })
 }
 .apply-left {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 .apply-switch {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
 }
 .apply-switch-label {
   font-size: 13px;
+  white-space: nowrap;
+}
+.config-state-error { overflow-wrap: anywhere;
 }
 .apply-sep {
   color: rgba(0, 0, 0, 0.15);

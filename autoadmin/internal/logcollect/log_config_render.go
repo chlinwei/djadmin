@@ -43,7 +43,7 @@ type renderedHostLogConfig struct {
 	Fragments   []logConfigFragment `json:"fragments"`
 	Fingerprint string              `json:"fingerprint"`
 	ServiceNum  int                 `json:"service_num"`
-	// ServiceFingerprints 是**服务级子指纹**（serviceCode → sha256），供服务视图按服务判定
+	// ServiceFingerprints 是**服务级子指纹**（serviceID → sha256），供服务视图按服务判定
 	// "已下发/待下发"：主机指纹含该主机上所有服务，改 B 会连带把 A 也算成待下发；服务级子指纹
 	// 只含本服务的片段（**不含** .keep，见 logPathServiceFingerprints），所以 B 改了不影响 A。
 	ServiceFingerprints map[string]string `json:"service_fingerprints,omitempty"`
@@ -52,11 +52,18 @@ type renderedHostLogConfig struct {
 	// 必须回到配置里去改。当下包括：日志定义名含未展开宏、首行正则/采集过滤正则编译不过、
 	// 实例路径含未定义宏、同主机上展开成同一路径（重复采集）。
 	//
-	// 为什么要单独一份而不是只看 Warnings：保存逻辑服务时要用它**拦住保存**（见
-	// CheckServiceLogConfigConsistency），而 Warnings 里还有"未挂解析规则所以不采"这类
+	// 为什么要单独一份而不是只看 Warnings：影响最终采集输入的保存操作要用它**拦住保存**
+	//（见 CheckServiceLogConfigConsistency / CheckTemplateLogConfigConsistency），而 Warnings 里还有"未挂解析规则所以不采"这类
 	// 按约定允许存在的状态，不能一棍子打死。同一件事仍然会同时进 Warnings，
 	// 这样日志采集页/链路体检现有的展示不需要改。
 	Errors []string `json:"errors,omitempty"`
+}
+
+func (rendered renderedHostLogConfig) configurationError(hostID int64) error {
+	if len(rendered.Errors) == 0 {
+		return nil
+	}
+	return fmt.Errorf("主机 %d 的日志采集配置存在冲突或无效配置，请修正后重试：%s", hostID, strings.Join(rendered.Errors, "；"))
 }
 
 // hostLogRenderInput 渲染所需的全部维度数据（由 loadHostLogRenderInput 查询填充）。
@@ -118,6 +125,16 @@ func yamlScalar(value string) string {
 // 它不参与片段渲染，但必须进指纹：主配置 filebeat.yml 的内容由它决定，漏掉就会出现
 // 「只改集群地址 → 指纹没变 → 下发被跳过 → 主配置停留在旧值」。
 func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceInput, outputIdentity string) renderedHostLogConfig {
+	// 单主机与批量查询的行序可能不同；复制后按片段身份排序，使路径冲突与指纹不依赖查询计划。
+	entries = append([]hostLogRenderInput(nil), entries...)
+	sort.SliceStable(entries, func(i, j int) bool {
+		left := configBaseName(entries[i].Application, entries[i].Service, entries[i].ServiceID, entries[i].LogName)
+		right := configBaseName(entries[j].Application, entries[j].Service, entries[j].ServiceID, entries[j].LogName)
+		if left != right {
+			return left < right
+		}
+		return entries[i].ResolvedPath < entries[j].ResolvedPath
+	})
 	type fragmentPair struct {
 		base   string
 		inputs []string
@@ -150,6 +167,12 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 
 	for _, entry := range entries {
 		base := configBaseName(entry.Application, entry.Service, entry.ServiceID, entry.LogName)
+		// Reject incomplete inherited settings before any fragment can reach Filebeat.
+		// An empty suffix would otherwise create a stream without a retention policy.
+		if strings.TrimSpace(entry.Tier) == "" {
+			recordHardProblem(fmt.Sprintf("服务 %s 日志 %s 的有效保留档位为空或未启用，请在逻辑服务中选择有效档位后重试", entry.Service, entry.LogName))
+			continue
+		}
 		// 日志定义名称直接作为文件名/维度值，不参与宏展开；名称里带 ${...} 说明配置写错位置，
 		// 继续下发会生成监听不到文件的坏片段，这里跳过并告警（宏应写在 path_pattern 里）。
 		if strings.Contains(base, "${") {
@@ -203,11 +226,11 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 			// 同一主机上**同一个绝对路径**只能被一个 filestream input 监听：两个 input 各自维护 offset，
 			// 同一份日志会进 ES 两次（instance 字段不同），下游的错误聚类与容量统计跟着翻倍。
 			// 多实例服务最容易踩：实例没配各自的 APP_HOME，展开出来就是同一条路径。
-			// 保留先出现的那个（entries 按查询顺序、instances 按实例名排序，结果是确定的），跳过并告警——
-			// 与"未展开宏""未挂规则"同一处理：不带病下发，也绝不静默重复采集。
+			// 诊断片段只保留稳定排序后的首个 input；Errors 会阻止配置态判定和下发，
+			// 不能把被跳过的服务误报成“无需采集，已同步”。
 			if owner, exists := claimedPaths[resolved]; exists {
 				recordHardProblem(fmt.Sprintf(
-					"服务 %s 实例 %s 日志 %s 与 %s 在同一主机上展开成同一路径 %s，已跳过（否则 Filebeat 会重复读取，同一条日志进 ES 两次）：请给实例配置各自的宏（如 APP_HOME）或拆成不同日志定义",
+					"服务 %s 实例 %s 日志 %s 与 %s 在同一主机上展开成同一路径 %s，已跳过（否则 Filebeat 会重复读取，同一条日志进 ES 两次）：请修正实例路径/宏或停用重复日志项；当前不支持跨服务共享采集",
 					entry.Service, instance.Instance, entry.LogName, owner, resolved))
 				continue
 			}
@@ -301,6 +324,7 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	sort.Slice(fragments, func(i, j int) bool { return fragments[i].Path < fragments[j].Path })
 	serviceFingerprints := map[string]string{}
 	for serviceID, serviceFragments := range grouped {
+		sort.Slice(serviceFragments, func(i, j int) bool { return serviceFragments[i].Path < serviceFragments[j].Path })
 		digest := sha256.Sum256([]byte(fmt.Sprintf("output:%s\n%v", outputIdentity, serviceFragments)))
 		// JSON 的 key 必须是字符串，用服务 id 的十进制串（见 serviceFingerprints 的消费方）。
 		serviceFingerprints[strconv.FormatInt(serviceID, 10)] = fmt.Sprintf("%x", digest)

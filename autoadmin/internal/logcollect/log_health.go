@@ -585,12 +585,20 @@ func (handler *Handler) queryLogDataFlow(context *gin.Context, cluster elasticse
 		if err != nil {
 			return 0, nil, err
 		}
-		filters = append(filters,
-			gin.H{"term": gin.H{"service": dims.ServiceCode}},
-			gin.H{"term": gin.H{"project": dims.ProjectCode}},
-			gin.H{"term": gin.H{"business_system": dims.BusinessSystemCode}},
-			gin.H{"term": gin.H{"environment": dims.EnvironmentCode}},
-		)
+		var scope any = gin.H{"bool": gin.H{"filter": serviceDimsFilters(dims)}}
+		shared, err := db.New(handler.db).SharedLogSourceSearchScope(context, []int64{serviceID})
+		if err != nil {
+			return 0, nil, err
+		}
+		if len(shared) > 0 {
+			ids := make([]string, 0, len(shared))
+			for _, source := range shared {
+				ids = append(ids, fmt.Sprint(source.ID))
+			}
+			scope = gin.H{"bool": gin.H{"should": []any{scope, gin.H{"terms": gin.H{"shared_source_id": ids}}},
+				"minimum_should_match": 1}}
+		}
+		filters = append(filters, scope)
 	}
 	body := gin.H{
 		"size":  0,

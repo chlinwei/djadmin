@@ -1,12 +1,86 @@
 package logcollect
 
 import (
+	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
+
+func TestConfigStateEvaluatorsRejectDuplicatePaths(t *testing.T) {
+	for _, evaluator := range []string{"host", "service", "summary"} {
+		t.Run(evaluator, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			handler := &Handler{db: database}
+			if evaluator == "summary" {
+				mock.ExpectQuery("monitor_log_collection_target l ON").
+					WithArgs(int64(32)).
+					WillReturnRows(sqlmock.NewRows([]string{
+						"host_id", "host_ip", "host_instance_name", "target_id", "config_fingerprint",
+						"runtime_status", "service_fingerprints", "service_id", "service_code",
+					}).AddRow(779, "10.25.66.44", "IMF01", 44, "host-fp", "running", []byte(`{}`), 32, "mq-a"))
+				expectNoSharedTargets(mock, 32)
+			}
+			mock.ExpectQuery("FROM monitor_elasticsearch_cluster").WillReturnRows(
+				sqlmock.NewRows([]string{"hosts", "username", "password", "index_prefix", "verify_tls"}).
+					AddRow("http://es:9200", "", "", "autoadmin", false),
+			)
+			mock.ExpectQuery("FROM assets_application_service_deployment").WillReturnRows(
+				sqlmock.NewRows([]string{"host_id", "service_id", "service_code", "instance_name", "runtime_variables", "app_home", "host_ip"}).
+					AddRow(779, 33, "mq-b", "mq-b-1", []byte(`{}`), "", "10.25.66.44").
+					AddRow(779, 32, "mq-a", "mq-a-1", []byte(`{}`), "", "10.25.66.44"),
+			)
+			entries := sqlmock.NewRows([]string{
+				"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
+				"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+				"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
+				"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
+			})
+			for _, id := range []int64{33, 32} {
+				entries.AddRow(779, "p", "test", "imf", "mq", id, "mq", "hot", "ibmmq", "error.log",
+					"/var/mqm/errors/AMQERR01.LOG", []byte(`{}`), []byte(`[]`), false, "", 1000,
+					nil, nil, nil, nil, []byte(`[]`))
+			}
+			mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
+			refs := []LogConfigTargetRef{{HostID: 779}}
+			switch evaluator {
+			case "host":
+				var states map[int64]LogConfigState
+				states, err = handler.EvaluateLogConfigStates(context.Background(), refs)
+				if states != nil {
+					t.Fatalf("invalid config returned normal states: %+v", states)
+				}
+			case "service":
+				var states map[int64]LogConfigState
+				states, err = handler.EvaluateServiceLogConfigStates(context.Background(), 32, refs)
+				if states != nil {
+					t.Fatalf("skipped service must not look synced: %+v", states)
+				}
+			case "summary":
+				counts, evalErr := handler.ServiceLogPendingHosts(context.Background(), []int64{32})
+				err = evalErr
+				if counts != nil {
+					t.Fatalf("invalid config returned pending counts: %+v", counts)
+				}
+			}
+			if err == nil || !strings.Contains(err.Error(), "主机 779") ||
+				!strings.Contains(err.Error(), "/var/mqm/errors/AMQERR01.LOG") ||
+				!strings.Contains(err.Error(), "同一路径") {
+				t.Fatalf("expected explicit host and path conflict, got %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 // 配置态评估：三种态各自的判定，以及"查询次数与主机数无关"的批量约束。
 //

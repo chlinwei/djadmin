@@ -154,7 +154,7 @@ func (handler *Handler) agentOnline(hostInstanceName string) bool {
 
 // resolveServiceApplyTargets 读库并分组：服务承载在哪些主机上、其中哪些主机能下发。
 func (handler *Handler) resolveServiceApplyTargets(context context.Context, serviceID int64) ([]serviceApplyTarget, []serviceApplyTarget, error) {
-	rows, err := db.New(handler.db).ListServiceLogApplyTargets(context, serviceID)
+	rows, err := listServiceLogApplyTargets(context, handler.db, serviceID)
 	if err != nil {
 		return nil, nil, err
 	}

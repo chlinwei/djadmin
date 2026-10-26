@@ -2377,12 +2377,15 @@ async function loadStorage() {
 function scopeCodes(scope) {
   const dims = storageDims.value || {}
   const codes = { project: [], environment: [], businessSystem: [] }
+  // 环境树节点不携带 projectId，必须从所属业务系统解析，不能放宽为跨项目查询。
+  const businessSystem = (dims.business_systems || []).find((item) => String(item.id) === String(scope?.businessSystemId))
+  const projectId = scope?.projectId ?? businessSystem?.project_id
   // 业务系统节点也要带项目维度：业务系统 code 只在**项目内**唯一，不同项目可以有同 code 的
   // 业务系统（现场：yilake/aos 与另一个项目同名 aos）。只按 code 过滤会把别的项目的流混进来，
   // 表现为"按环境统计里多出不该有的环境"。
   const projectIds = scope?.nodeType === 'project'
     ? [scope.projectId]
-    : (scope?.nodeType === 'businessSystem' && scope.projectId != null ? [scope.projectId] : (scope?.projectIds || []))
+    : (['businessSystem', 'environment'].includes(scope?.nodeType) && projectId != null ? [projectId] : (scope?.projectIds || []))
   const environmentIds = scope?.nodeType === 'environment' ? [scope.environment] : (scope?.environmentIds || [])
   const businessSystemId = scope?.businessSystemId
   codes.project = (dims.projects || []).filter((item) => projectIds.includes(item.id)).map((item) => item.code)
@@ -2393,11 +2396,12 @@ function scopeCodes(scope) {
   return codes
 }
 
-// 全量视图下按树的选中层级过滤；未识别的流没有维度信息，任何层级都保留（它们不归属任何服务，
-// 藏起来就没人看得见了——这正是旧页「未识别」分组的用意）。
+// 未识别流无法证明属于选中分支，只在未限定范围的全局视图展示。
 const visibleStorageRows = computed(() => {
   const codes = scopeCodes(scope.value)
   const filtered = storageRows.value.filter((row) => {
+    if (!row.recognized && (serviceId.value || scope.value?.nodeType !== 'all'
+      || scope.value?.projectIds?.length || scope.value?.environmentIds?.length)) return false
     // 选中服务时不再按树层级过滤（数据本身就是该服务的）；未选中时按 scope 的维度码过滤。
     if (!serviceId.value) {
       if (row.recognized) {
@@ -2423,7 +2427,7 @@ function storageKeywordMatch(row) {
   return haystack.includes(keyword)
 }
 
-const unrecognizedStreams = computed(() => storageRows.value.filter((row) => !row.recognized))
+const unrecognizedStreams = computed(() => visibleStorageRows.value.filter((row) => !row.recognized))
 
 function toggleBackingIndices(record) {
   expandedStream.value = expandedStream.value?.name === record.name ? null : record
@@ -2502,8 +2506,13 @@ const groupEntries = computed(() => {
   }
   if (dimension.key === 'service') {
     const environmentCode = environmentCodeById(current.environment)
+    const businessSystem = (dims.business_systems || []).find((item) => item.id === current.businessSystemId)
+    const projectId = current.projectId ?? businessSystem?.project_id
+    // 环境码全局复用，必须同时限定项目和业务系统，避免混入其他服务树分支。
     return (dims.services || [])
       .filter((item) => !environmentCode || item.environment === environmentCode)
+      .filter((item) => item.business_system === businessSystem?.code)
+      .filter((item) => String(item.project_id) === String(projectId))
       .map((item) => ({ code: item.code, name: item.name }))
   }
   return []

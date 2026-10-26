@@ -1062,6 +1062,42 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  it('scopes environment storage services and streams by project and business system', async () => {
+    const { getLogStorageOverview } = await import('@/api/monitor')
+    getLogStorageOverview.mockResolvedValueOnce({ data: { data: {
+      dims: {
+        projects: [{ id: 1, code: 'p1' }, { id: 2, code: 'p2' }],
+        business_systems: [{ id: 11, code: 'aos', project_id: 1 }, { id: 12, code: 'tib', project_id: 1 }, { id: 13, code: 'aos', project_id: 2 }],
+        environments: [{ id: 5, code: 'poc' }],
+        services: [
+          { id: 21, code: 'aos', name: 'aos', business_system: 'aos', project_id: 1, environment: 'poc' },
+          { id: 22, code: 'arte', name: 'artemis', business_system: 'aos', project_id: 1, environment: 'poc' },
+          { id: 23, code: 'redis', name: 'redis', business_system: 'tib', project_id: 1, environment: 'poc' },
+          { id: 24, code: 'other', name: 'other', business_system: 'aos', project_id: 2, environment: 'poc' },
+        ],
+      },
+      data_streams: [
+        { name: 'selected', project: 'p1', business_system: 'aos', environment: 'poc', service: 'aos', recognized: true, docs: 10, bytes: 100 },
+        { name: 'other-system', project: 'p1', business_system: 'tib', environment: 'poc', service: 'redis', recognized: true, docs: 20, bytes: 200 },
+        { name: 'other-project', project: 'p2', business_system: 'aos', environment: 'poc', service: 'other', recognized: true, docs: 30, bytes: 300 },
+        ...Array.from({ length: 5 }, (_, index) => ({ name: `unrecognized-${index}`, recognized: false, docs: 99, bytes: 999 })),
+      ],
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', {
+      nodeType: 'environment', businessSystemId: 11, environment: 5, nodeTitle: 'poc',
+    })
+    await flushPromises()
+    wrapper.vm.activeTab = 'storage'
+    await flushPromises()
+    expect(wrapper.vm.groupEntries.map((entry) => entry.name)).toEqual(['aos', 'artemis'])
+    expect(wrapper.vm.visibleStorageRows.map((row) => row.name)).toEqual(['selected'])
+    expect(wrapper.vm.unrecognizedStreams).toEqual([])
+    expect(wrapper.vm.storageGroups).toHaveLength(2)
+    expect(wrapper.vm.storageSummary).toMatchObject({ streams: 1, docs: 10, bytes: 100 })
+    wrapper.unmount()
+  })
+
   // 「切回该档位」：候选是"当前生效档位不等于该历史档位"的日志，逐条按行提交；
   // 每条请求都要带上采集开关的当前值——按行接口把提交体当作该行覆盖值的全集，缺一列会清掉它。
   it('switches selected logs back to the historical tier, one row per request', async () => {
@@ -1563,8 +1599,8 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     tree.vm.$emit('select', { nodeType: 'environment', businessSystemId: 19, environment: 10, nodeTitle: 'poc' })
     await flushPromises()
     expect(wrapper.vm.groupDimension.label).toBe('逻辑服务')
-    // 占用降序：nginx（约 1.0 GB）> legacy（4 KB）> mgmt（1 KB）
-    expect(wrapper.vm.storageGroups.map((item) => item.name)).toEqual(['nginx', 'legacy', 'mgmt'])
+    // mgmt 的流属于其他项目，不能因同为 poc 环境而混入。
+    expect(wrapper.vm.storageGroups.map((item) => item.name)).toEqual(['nginx', 'legacy'])
     // "流里有、维度表里没有"的服务要补登出来（否则这条流从统计里消失，而明细里还在）
     const legacy = wrapper.vm.storageGroups.find((item) => item.name === 'legacy')
     expect(legacy.extra).toBe(true)

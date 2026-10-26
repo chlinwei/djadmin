@@ -30,6 +30,9 @@ describe('文档中心目录与链接', () => {
     const filtered = buildDocumentTree(paths, '日志采集')
     expect(flattenDocumentCatalog(filtered).some((node) => node.key.endsWith('LOGGING.md#collectors'))).toBe(true)
     expect(documentAncestorKeys('docs/architecture/modules/LOGGING.md#collectors')).toEqual(['monitor', 'logging'])
+    expect(documentAncestorKeys('docs/architecture/modules/LOGGING.md#fingerprints')).toEqual(['monitor', 'logging', 'log-center'])
+    const fingerprints = flattenDocumentCatalog(buildDocumentTree(paths, '指纹'))
+    expect(fingerprints).toContainEqual({ title: '配置指纹与待下发排查', key: 'docs/architecture/modules/LOGGING.md#fingerprints' })
     expect(buildDocumentTree(paths, 'not-a-document')).toEqual([])
   })
 

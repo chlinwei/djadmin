@@ -57,7 +57,7 @@ const InstallPlaybook = `---
         executable: /bin/bash
     - name: Ensure data dir
       ansible.builtin.file:
-        path: /var/lib/filebeat
+        path: /opt/filebeat/data
         state: directory
         mode: "0755"
     - name: Write systemd unit

@@ -127,7 +127,7 @@ func (s *Service) LogStatusSummary(ctx context.Context, serviceIDs []int64) (Ser
 	for _, serviceID := range ids {
 		// 复用列表接口的同一个读取函数：format_state 的指纹比对只在这一处实现，
 		// 这里若另算一遍，界面上的"未认证"与层级视图上的数字迟早对不上。
-		rows, err := s.repository.ListServiceTemplateLogs(ctx, serviceID)
+		rows, err := s.repository.ListServiceTemplateLogStatuses(ctx, serviceID)
 		if err != nil {
 			return ServiceLogStatusSummary{}, translate(err)
 		}
@@ -144,7 +144,7 @@ func (s *Service) LogStatusSummary(ctx context.Context, serviceIDs []int64) (Ser
 			if row.CollectionEnabled != nil && !*row.CollectionEnabled {
 				item.DisabledLogs++
 			}
-			if row.TemplateProcessingRuleID == nil {
+			if !row.HasProcessingRule {
 				item.NoRule++
 			}
 		}

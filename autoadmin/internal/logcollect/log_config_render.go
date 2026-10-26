@@ -31,7 +31,6 @@ import (
 
 const (
 	filebeatInputsDir = "/etc/filebeat/inputs.d"
-	filebeatDataDir   = "/var/lib/filebeat"
 )
 
 type logConfigFragment struct {
@@ -45,7 +44,7 @@ type renderedHostLogConfig struct {
 	ServiceNum  int                 `json:"service_num"`
 	// ServiceFingerprints 是**服务级子指纹**（serviceID → sha256），供服务视图按服务判定
 	// "已下发/待下发"：主机指纹含该主机上所有服务，改 B 会连带把 A 也算成待下发；服务级子指纹
-	// 只含本服务的片段（**不含** .keep，见 logPathServiceFingerprints），所以 B 改了不影响 A。
+	// 只含本服务的 inputs.d 片段，所以 B 改了不影响 A。
 	ServiceFingerprints map[string]string `json:"service_fingerprints,omitempty"`
 	Warnings            []string          `json:"warnings,omitempty"`
 	// Errors 是**硬问题**：配置本身不自洽，光靠"跳过并告警"下发只会让这台主机少采，
@@ -307,8 +306,7 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 	}
 
 	fragments := []logConfigFragment{}
-	// 服务级子指纹：在追加 .keep 之前按服务归组（.keep 只看整机有没有片段，是主机级信号，
-	// 若算进去，新增服务 B 会让服务 A 的子指纹也跟着变——正是要避免的）。
+	// 服务级子指纹按服务归组，避免同机其他服务的变更影响本服务状态。
 	grouped := map[int64][]logConfigFragment{}
 	for _, base := range order {
 		pair := pairs[base]
@@ -328,10 +326,6 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		digest := sha256.Sum256([]byte(fmt.Sprintf("output:%s\n%v", outputIdentity, serviceFragments)))
 		// JSON 的 key 必须是字符串，用服务 id 的十进制串（见 serviceFingerprints 的消费方）。
 		serviceFingerprints[strconv.FormatInt(serviceID, 10)] = fmt.Sprintf("%x", digest)
-	}
-	// registry/data 目录由 agent 对文件路径做 MkdirAll 时顺带建出。
-	if len(fragments) > 0 {
-		fragments = append(fragments, logConfigFragment{Path: filebeatDataDir + "/.keep", Content: ""})
 	}
 	// 指纹 = 输出段标识 + 全部片段内容。两者任一变化都必须触发重新下发。
 	digest := sha256.Sum256([]byte(fmt.Sprintf("output:%s\n%v", outputIdentity, fragments)))

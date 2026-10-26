@@ -23,6 +23,7 @@
             @update:value="(value) => emit('change-host', value)"
           />
           <a-tag :color="STATE_COLOR[diff.state] || 'default'">{{ STATE_LABEL[diff.state] || diff.state }}</a-tag>
+          <span class="apply-muted">全主机片段统计</span>
           <a-space :size="8" wrap>
             <a-tag color="green">新增 {{ diff.summary.added }}</a-tag>
             <a-tag color="orange">修改 {{ diff.summary.changed }}</a-tag>
@@ -30,8 +31,8 @@
             <a-tag>未变 {{ diff.summary.unchanged }}</a-tag>
             <a-tag v-if="diff.summary.unread" color="purple">读不全 {{ diff.summary.unread }}</a-tag>
           </a-space>
-          <a-checkbox :checked="onlyThisService" @change="(event) => onlyThisService = event.target.checked">
-            只看本服务的片段
+          <a-checkbox :checked="showOtherServices" @change="(event) => showOtherServices = event.target.checked">
+            显示同机其他服务片段
           </a-checkbox>
           <a-button size="small" @click="reload()">重新比对</a-button>
         </div>
@@ -51,6 +52,13 @@
           show-icon
           class="diff-note"
           message="主机上的配置与期望一致：这次下发不会改动任何片段（内容未变的主机会被自动跳过）。"
+        />
+        <a-alert
+          v-else-if="!hasInputChanges && isPending"
+          type="warning"
+          show-icon
+          class="diff-note"
+          message="inputs.d 片段都未变化，但配置指纹仍未同步。此表不比较主配置 /etc/filebeat/filebeat.yml；下发时会同步主配置与指纹，未变片段不会改写。"
         />
         <a-alert
           v-else
@@ -95,8 +103,8 @@
             </template>
             <template v-else-if="column.key === 'path'">
               <code>{{ record.base_name }}</code>
-              <a-tooltip v-if="record.service_id !== serviceId" :title="`这个片段属于服务 #${record.service_id || '未知'}${record.service_code ? `（${record.service_code}）` : ''}：同主机上其他服务的配置。`" placement="top">
-                <a-tag color="blue">他服务</a-tag>
+              <a-tooltip v-if="record.service_id !== serviceId" :title="`这个片段属于同一台主机上的服务 #${record.service_id || '未知'}${record.service_code ? `（${record.service_code}）` : ''}，不属于当前服务。主机全量下发时会一并保留或按状态更新。`" placement="top">
+                <a-tag color="blue">同机其他服务</a-tag>
               </a-tooltip>
             </template>
             <template v-else-if="column.key === 'lines'">
@@ -169,19 +177,26 @@ const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(trigge
 const STATE_LABEL = { synced: '已同步', drift: '待下发', never: '从未下发', unknown: '状态未知' }
 const STATE_COLOR = { synced: 'green', drift: 'orange', never: 'red', unknown: 'default' }
 
-const onlyThisService = ref(true)
+const showOtherServices = ref(false)
 const expandedKeys = ref([])
+const hasInputChanges = computed(() => {
+  const summary = props.diff?.summary
+  return Boolean(summary && (summary.added || summary.removed || summary.changed || summary.unread))
+})
+const isPending = computed(() => Boolean(
+  props.diff && (props.diff.state !== 'synced' || props.diff.service?.pending),
+))
 
 watch(() => props.open, (open) => {
   if (!open) return
   // 每次打开都重置：上一次的主机/展开态与这一个主机无关。
-  onlyThisService.value = true
+  showOtherServices.value = false
   expandedKeys.value = []
 })
 
 const visibleFiles = computed(() => {
   const files = props.diff?.files || []
-  if (!onlyThisService.value || !props.serviceId) return files
+  if (showOtherServices.value || !props.serviceId) return files
   return files.filter((file) => String(file.service_id) === String(props.serviceId))
 })
 

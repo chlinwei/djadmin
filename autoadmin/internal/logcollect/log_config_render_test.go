@@ -131,8 +131,8 @@ func TestRenderHostLogConfig(t *testing.T) {
 		{Service: "tomcat-svc", ServiceID: 7, Instance: "tomcat2"},
 	}
 	rendered := renderHostLogConfig(entries, instances, testOutputIdentity)
-	if len(rendered.Fragments) != 2 {
-		t.Fatalf("fragments = %d, want 2 (inputs.yml + data-keep)", len(rendered.Fragments))
+	if len(rendered.Fragments) != 1 {
+		t.Fatalf("fragments = %d, want 1 (inputs.yml only)", len(rendered.Fragments))
 	}
 	var inputFragment logConfigFragment
 	for _, fragment := range rendered.Fragments {
@@ -317,8 +317,8 @@ func TestRenderHostLogConfigServiceFingerprintsIsolateServices(t *testing.T) {
 	}
 }
 
-// .keep 是主机级信号，不能进服务子指纹，否则新增服务 B 会让 A 的子指纹也变。
-func TestRenderHostLogConfigServiceFingerprintIgnoresKeep(t *testing.T) {
+// 新增服务 B 不应改变服务 A 的子指纹。
+func TestRenderHostLogConfigServiceFingerprintIsolatesServices(t *testing.T) {
 	instancesOnlyA := []hostInstanceInput{{Service: "svc-a", ServiceID: 1, Instance: "i1", HostIP: "10.0.0.1", Macros: map[string]string{"HOME": "/srv/a"}}}
 	entryA := hostLogRenderInput{Prefix: "autoadmin", Application: "app", Service: "svc-a", ServiceID: 1, Project: "p", Environment: "e", BusinessSystem: "b", Tier: "std", Pipeline: "rule-a", LogName: "a.log", ResolvedPath: "${HOME}/a.log"}
 	onlyA := renderHostLogConfig([]hostLogRenderInput{entryA}, instancesOnlyA, testOutputIdentity)
@@ -329,7 +329,7 @@ func TestRenderHostLogConfigServiceFingerprintIgnoresKeep(t *testing.T) {
 	both := renderHostLogConfig([]hostLogRenderInput{entryA, entryB}, instancesBoth, testOutputIdentity)
 
 	if both.ServiceFingerprints["1"] != onlyA.ServiceFingerprints["1"] {
-		t.Fatalf("新增 B 不应改变 A 的子指纹（.keep 只算主机级）：onlyA=%s both=%s", onlyA.ServiceFingerprints["1"], both.ServiceFingerprints["1"])
+		t.Fatalf("新增 B 不应改变 A 的子指纹：onlyA=%s both=%s", onlyA.ServiceFingerprints["1"], both.ServiceFingerprints["1"])
 	}
 }
 

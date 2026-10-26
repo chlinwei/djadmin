@@ -124,27 +124,9 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 			return nil, fmt.Errorf("服务 %s 日志 %s 的有效保留档位为空或未启用，请先编辑逻辑服务补选有效档位", row.ServiceCode, row.Name)
 		}
 		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
-		ruleSignature, err := logFormatRuleSignature(logFormatRuleInput{
-			InputFormat: row.ProcessingRuleInputFormat, MultilineEnabled: row.ProcessingRuleMultilineEnabled,
-			StartPattern: row.ProcessingRuleStartPattern, ContinuationPattern: row.ProcessingRuleContinuationPattern,
-			FlushTimeout: row.ProcessingRuleFlushTimeout, PipelineBody: row.ProcessingRulePipelineBody,
-		})
+		item.FormatFingerprint, item.FormatState, err = logFormatStateForRow(row)
 		if err != nil {
-			return nil, fmt.Errorf("日志定义 %d 的格式指纹计算失败: %w", row.ID, err)
-		}
-		// 格式认证状态：当前指纹现场算、与认证时存下的比（纯读库，不碰主机）。
-		item.FormatFingerprint = logFormatFingerprintOf(logFormatFingerprintInput{
-			LogDefinition: row.ID, LogName: row.Name, PathPattern: row.PathPattern,
-			RuleID: row.ProcessingRuleID.Int64, RuleParsingSignature: ruleSignature,
-			MacroValues: string(row.MacroValues), ApplicationVersion: row.ApplicationVersionID,
-		})
-		item.FormatState = formatStateUnverified
-		if stored := row.FormatVerifiedFingerprint.String; stored != "" {
-			if stored == item.FormatFingerprint {
-				item.FormatState = formatStateVerified
-			} else {
-				item.FormatState = formatStateNeedsRecheck
-			}
+			return nil, err
 		}
 		if row.FormatVerifiedAt.Valid {
 			formatted := timestamp(row.FormatVerifiedAt.Time)
@@ -155,6 +137,58 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+type ServiceTemplateLogStatus struct {
+	FormatState       string
+	CollectionEnabled *bool
+	HasProcessingRule bool
+}
+
+// ListServiceTemplateLogStatuses 读取层级状态汇总所需字段，不校验路径、保留档位或 data stream。
+// 单条规则格式无效时保守计为未认证，避免一个历史异常配置拖垮整批服务树汇总。
+func (r *Repository) ListServiceTemplateLogStatuses(ctx context.Context, serviceID int64) ([]ServiceTemplateLogStatus, error) {
+	rows, err := r.queries.ListServiceTemplateLogs(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]ServiceTemplateLogStatus, 0, len(rows))
+	for _, row := range rows {
+		_, formatState, formatErr := logFormatStateForRow(row)
+		if formatErr != nil {
+			formatState = formatStateUnverified
+		}
+		statuses = append(statuses, ServiceTemplateLogStatus{
+			FormatState: formatState, CollectionEnabled: row.OverrideCollectionEnabled,
+			HasProcessingRule: row.ProcessingRuleID.Valid,
+		})
+	}
+	return statuses, nil
+}
+
+func logFormatStateForRow(row db.ListServiceTemplateLogsRow) (string, string, error) {
+	ruleSignature, err := logFormatRuleSignature(logFormatRuleInput{
+		InputFormat: row.ProcessingRuleInputFormat, MultilineEnabled: row.ProcessingRuleMultilineEnabled,
+		StartPattern: row.ProcessingRuleStartPattern, ContinuationPattern: row.ProcessingRuleContinuationPattern,
+		FlushTimeout: row.ProcessingRuleFlushTimeout, PipelineBody: row.ProcessingRulePipelineBody,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("日志定义 %d 的格式指纹计算失败: %w", row.ID, err)
+	}
+	fingerprint := logFormatFingerprintOf(logFormatFingerprintInput{
+		LogDefinition: row.ID, LogName: row.Name, PathPattern: row.PathPattern,
+		RuleID: row.ProcessingRuleID.Int64, RuleParsingSignature: ruleSignature,
+		MacroValues: string(row.MacroValues), ApplicationVersion: row.ApplicationVersionID,
+	})
+	state := formatStateUnverified
+	if stored := row.FormatVerifiedFingerprint.String; stored != "" {
+		if stored == fingerprint {
+			state = formatStateVerified
+		} else {
+			state = formatStateNeedsRecheck
+		}
+	}
+	return fingerprint, state, nil
 }
 
 // ListServiceLogSettings 读回服务的日志覆盖行（只有采集开关/档位/过滤规则三项，

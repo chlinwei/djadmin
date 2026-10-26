@@ -3,8 +3,16 @@ package executor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestRenderFilebeatMainConfigUsesPortableDataDirectory(t *testing.T) {
+	config := renderFilebeatMainConfig("https://es.example", "agent", "secret", "full")
+	if !strings.Contains(config, "path.data: /opt/filebeat/data\n") {
+		t.Fatalf("Filebeat data directory is not set to the portable install path:\n%s", config)
+	}
+}
 
 func TestValidateAgentBinaryFile_RejectsMissingFile(t *testing.T) {
 	err := validateAgentBinaryFile(filepath.Join(t.TempDir(), "does-not-exist"))

@@ -91,13 +91,14 @@ describe('LogConfigDiffDialog', () => {
     expect(wrapper.text()).toContain('修改 1')
     expect(wrapper.text()).toContain('删除 1')
     expect(wrapper.text()).toContain('未变 1')
+    expect(wrapper.text()).toContain('全主机片段统计')
     // 下发是全量替换：这一点必须写在明面上（否则"删除"会被读成"下发不动它"）。
     expect(wrapper.text()).toContain('完全替换')
     expect(wrapper.text()).toContain('本服务待下发')
     wrapper.unmount()
   })
 
-  it('shows only this service by default and can show every fragment', async () => {
+  it('hides same-host services by default and can show them explicitly', async () => {
     const wrapper = mountDialog()
 
     const rows = () => wrapper.findAll('.ant-table-tbody tr.ant-table-row').map((row) => row.text())
@@ -106,10 +107,24 @@ describe('LogConfigDiffDialog', () => {
     expect(rows().join('|')).not.toContain('tomcat__pay__16__b')
 
     const checkbox = wrapper.find('.diff-toolbar input[type="checkbox"]')
-    await checkbox.setValue(false)
+    await checkbox.setValue(true)
     expect(rows()).toHaveLength(3)
-    // 显示他服务片段时要有标记，否则用户会以为那也是本服务的配置。
-    expect(rows().join('|')).toContain('他服务')
+    // 展开同机服务时明确它不属于当前服务。
+    expect(rows().join('|')).toContain('同机其他服务')
+    wrapper.unmount()
+  })
+
+  it('explains pending fingerprints when every inputs.d fragment is unchanged', () => {
+    const wrapper = mountDialog({
+      diff: diffPayload({
+        files: [file({ status: 'unchanged', expected: 'same\n', applied: 'same\n' })],
+        summary: { added: 0, removed: 0, changed: 0, unchanged: 1, unread: 0 },
+      }),
+    })
+
+    expect(wrapper.text()).toContain('inputs.d 片段都未变化，但配置指纹仍未同步')
+    expect(wrapper.text()).toContain('不比较主配置 /etc/filebeat/filebeat.yml')
+    expect(wrapper.text()).toContain('未变片段不会改写')
     wrapper.unmount()
   })
 

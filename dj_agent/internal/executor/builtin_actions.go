@@ -38,6 +38,7 @@ const (
 const (
 	filebeatMainConfigPath = "/etc/filebeat/filebeat.yml"
 	filebeatInputsDir      = "/etc/filebeat/inputs.d"
+	filebeatDataDir        = "/opt/filebeat/data"
 	// 官方便携 tar.gz 解压后的二进制路径；PATH 里没有时兜底用它做 test config。
 	filebeatBinaryPath = "/opt/filebeat/filebeat"
 )
@@ -156,20 +157,7 @@ func (e *Executor) configureFilebeatOutput(ctx context.Context, job protocol.Job
 	if strings.EqualFold(fmt.Sprint(job.Params["verify_tls"]), "true") {
 		verification = "full"
 	}
-	mainConfig := strings.Join([]string{
-		"filebeat.inputs: []",
-		"filebeat.config.inputs:",
-		"  enabled: true",
-		"  path: " + filebeatInputsDir + "/*.yml",
-		"  reload.enabled: true",
-		"  reload.period: 10s",
-		"output.elasticsearch:",
-		"  hosts: [" + yamlQuote(url) + "]",
-		"  username: " + yamlQuote(username),
-		"  password: " + yamlQuote(password),
-		"  ssl.verification_mode: " + verification,
-		"",
-	}, "\n")
+	mainConfig := renderFilebeatMainConfig(url, username, password, verification)
 	changed, err := writeFileIfChanged(filebeatMainConfigPath, []byte(mainConfig), 0o600)
 	if err != nil {
 		return failedJobResult(job, started, err)
@@ -184,6 +172,24 @@ func (e *Executor) configureFilebeatOutput(ctx context.Context, job protocol.Job
 	}
 	finished := time.Now()
 	return protocol.JobResult{JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess, ExitCode: 0, StartedAt: started, FinishedAt: finished, CostMS: finished.Sub(started).Milliseconds()}
+}
+
+func renderFilebeatMainConfig(url, username, password, verification string) string {
+	return strings.Join([]string{
+		"path.data: " + filebeatDataDir,
+		"filebeat.inputs: []",
+		"filebeat.config.inputs:",
+		"  enabled: true",
+		"  path: " + filebeatInputsDir + "/*.yml",
+		"  reload.enabled: true",
+		"  reload.period: 10s",
+		"output.elasticsearch:",
+		"  hosts: [" + yamlQuote(url) + "]",
+		"  username: " + yamlQuote(username),
+		"  password: " + yamlQuote(password),
+		"  ssl.verification_mode: " + verification,
+		"",
+	}, "\n")
 }
 
 // applyFilebeatConfig 写入 backend 渲染好的 inputs.d/*.yml；目录由 backend 全量托管，

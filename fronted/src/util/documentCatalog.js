@@ -42,7 +42,10 @@ export const documentCatalog = [
       page('日志存储', 'LOGGING', 'storage'),
       page('日志处理规则', 'LOGGING', 'parsers'),
       page('日志保留档位', 'LOGGING', 'retention'),
-      page('日志中心', 'LOGGING', 'center'),
+      group('log-center', '日志中心', [
+        page('概览与日志排查', 'LOGGING', 'center'),
+        page('配置指纹与待下发排查', 'LOGGING', 'fingerprints'),
+      ]),
     ]),
   ]),
   group('security', '安全中心', [page('基线扫描', 'SECURITY')]),

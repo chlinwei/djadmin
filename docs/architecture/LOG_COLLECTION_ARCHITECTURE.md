@@ -1008,13 +1008,14 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
 /opt/filebeat/filebeat          预编译单二进制（官方 tar.gz 解压，自带依赖）
 /etc/filebeat/filebeat.yml      主配置：output.elasticsearch + filebeat.config.inputs 托管 inputs.d
 /etc/filebeat/inputs.d/         后端按 服务×日志定义 生成，每实例一个 filestream input
-/var/lib/filebeat/              registry（offset）与 data，必须持久化
+/opt/filebeat/data/             registry（offset）与 data，必须持久化
 ```
 
 主配置（agent `configure_filebeat_output` 写入，0600）：
 
 ```yaml
 filebeat.inputs: []
+path.data: /opt/filebeat/data
 filebeat.config.inputs:
   enabled: true
   path: /etc/filebeat/inputs.d/*.yml
@@ -1094,7 +1095,6 @@ output.elasticsearch:
 | 片段集合`fragments`    | 该主机上**全部**"启用且在采集"的 服务×日志定义 各一个片段，按路径排序；每项为 `{Path, Content}`                                                                                                              | 会                                       |
 | 片段文件名`Path`       | `/etc/filebeat/inputs.d/<app>__<service>__<logname>.yml`（换应用/换服务/改日志名都会变）                                                                                                                            | 会                                       |
 | 片段内容`Content`      | `paths`（宏展开后的绝对路径）、`index`（data stream 名）、`pipeline` 名、multiline parser、`include_lines`/`exclude_lines`、`fields_under_root` 维度字段、`processors`（`log.file.path → log_path`） | 会                                       |
-| 目录占位                 | 有片段时额外追加`/var/lib/filebeat/.keep`（空内容）                                                                                                                                                                 | 仅"有无片段"改变时                       |
 | **不算入**         | Filebeat/agent 版本、索引模板 mapping、pipeline 内容、规则样例日志、格式认证状态、主配置里固定不变的`filebeat.config.inputs.reload.*`                                                                               | 不会                                     |
 
 推论：因为指纹含该主机上**所有服务**的片段，改服务 B（即使还没下发）就会让**这台主机的期望指纹**变，A 那页显示 `drift/待下发`，直到下发一次才回到 `synced`——这是设计如此（见 §8.7 的"文案要说实话"）。
@@ -1157,7 +1157,8 @@ output.elasticsearch:
         index = LogDataStreamName；处理规则非空带 pipeline；开启多行带 multiline parser
       指纹 = outputIdentity（集群地址/账号/verify_tls）+ 全部片段内容 的 sha256；
       全实例被跳过时不产出片段；
-      片段非空时附带 /var/lib/filebeat/.keep 占位（agent MkdirAll 顺带建 registry 目录）
+      不生成数据目录占位片段；`/opt/filebeat/data` 由安装流程创建，主配置显式设置 `path.data`
+      配置差异弹窗逐项对比 `inputs.d`；整机/服务指纹还包含输出身份，因此片段无差异时仍可能有待同步状态。
       warnings 随 preview/apply 响应返回，前端在「下发配置」成功/批量结果里提示（此前被丢弃）。
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
   → agent 动作 configure_filebeat_output（写 filebeat.yml：output.elasticsearch +
@@ -1193,7 +1194,7 @@ output.elasticsearch:
   `platform_family=any`、`platform_major` 留空；选包只按资产采集的 CPU 架构
   （`assets_hosthardware.architecture` 归一为 amd64/arm64）匹配，不再区分发行版/主版本，也不支持 rpm/deb。
   架构缺失时 `pickFilebeatPackage` 会先自动补采一次。
-  便携包布局：二进制 `/opt/filebeat/filebeat`、配置 `/etc/filebeat`、数据 `/var/lib/filebeat`，
+  便携包布局：二进制 `/opt/filebeat/filebeat`、配置 `/etc/filebeat`、数据 `/opt/filebeat/data`，
   systemd 服务名固定 `filebeat.service`。
   上传文件名以记录名为前缀，接受 `<name>-<version>.<os>-<arch>.tar.gz` 与
   `<name>-<version>-<os>-<arch>.tar.gz`（也接受省略 os 的 `<name>-<version>-<arch>`），
@@ -1229,7 +1230,7 @@ output.elasticsearch:
           rm -rf {{ fb_home }}.new && mkdir -p {{ fb_home }}.new
           tar -xzf {{ archive }} -C {{ fb_home }}.new --strip-components=1
           rm -rf {{ fb_home }} && mv {{ fb_home }}.new {{ fb_home }}
-      - file: { path: /var/lib/filebeat, state: directory, mode: "0755" }
+      - file: { path: /opt/filebeat/data, state: directory, mode: "0755" }
       - copy:
           dest: "/etc/systemd/system/{{ service_name }}.service"
           mode: "0644"
@@ -1625,7 +1626,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 | tab      | 数据来源                                                                                                                                                           | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`） | 所有树节点统一默认显示「日志」，「统计」为辅助入口。服务/实例节点传 `application_service_id`；全部/项目/业务系统/环境节点传范围内的 `application_service_ids`，范围内无服务时显示空态。关键词支持 `正文` / `Lucene` 两种模式（见 §9.7）。 |
+| 日志查询 | `LogQueryPanel`（`views/monitor/log-center/LogQueryPanel.vue`） | 所有树节点统一默认显示「日志」，「统计」为辅助入口。服务/实例节点传 `application_service_id`；全部/项目/业务系统/环境节点传范围内的 `application_service_ids`，范围内无服务时显示空态。日志列表不单列采集来源；遗留共享源的归属信息仍在详情中展示。关键词支持 `正文` / `Lucene` 两种模式（见 §9.7）。 |
 | 日志配置 | `GET /assets/application-services/:id/log-config/` + `GET /monitor/log-targets/service-config-state/` + `GET /monitor/log-targets/service-collection-chain/` | 日志名/路径/**所在主机**/处理规则/采集开关/档位/格式认证状态/data stream + **服务级采集总开关**（`log_collection_enabled`，响应顶层字段）+ **采集链路状态条**（见下）。总开关与逐条开关是两层：前者关掉后该服务下所有日志都不采集、逐条开关不生效（配置意图保留）。两者都可直接改（见下方「两条写路径」）；认证入口复用共享组件 `LogFormatVerifyDialog`（与编辑弹窗同一个，见 §4.8）。`force-render`：切走再切回不重新取数              |
 | 存储水位 | 选中服务时`.../log-storage-overview/?service_code=<服务编码>`（后端收窄 ES 查询）；未选中时取全量再按树的层级（项目/业务系统/环境）用 dims 映射到编码过滤        | **按层级聚合的容量统计**（全部→项目、项目→业务系统、业务系统→环境、环境→逻辑服务；占用降序 + 占比 + 其中历史档位 + **同名饼图**）、**集群 + 数据时间**、统计（流数/文档数/总占用拆分活跃与历史/**健康异常流**）、**Elasticsearch 节点磁盘水位**、流表（占用/文档数/ILM/**状态**/**后备索引展开**）。**每条流都有操作列**（见下）；未选中时列出**未识别流**（不归属任何服务，任何层级都保留，不进聚合） |
 
@@ -1637,6 +1638,7 @@ agent 调用、超时 60s+120s），必然超时并留下部分下发的中间�
 
 三个 tab 共用左侧树的范围上下文。日志查询既支持单服务，也支持范围内跨服务检索；
 日志配置在上层节点展示只读层级汇总，在服务节点提供编辑；存储水位按当前层级聚合。
+层级服务状态汇总只计算日志数、认证状态及采集标记，不依赖有效保留档位或路径展开；单条格式指纹异常按未认证计数，避免历史异常配置使整批汇总接口返回 500。数据库查询本身失败仍如实报错。
 
 **统一查询入口**：所有层级使用相同的时间、级别、实例与关键词筛选，以及「日志 / 统计」标签。
 项目节点的日志来源列为业务系统、环境、逻辑服务；业务系统节点为环境、逻辑服务；

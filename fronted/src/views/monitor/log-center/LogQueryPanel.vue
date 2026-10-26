@@ -182,10 +182,6 @@
                     <span>{{ record.log_path || '-' }}</span>
                   </a-tooltip>
                 </template>
-                <template v-else-if="column.key === 'source'">
-                  <a-tag v-if="record.shared_source_id" color="purple">共享源：{{ record.shared_source_name || record.shared_source_id }}</a-tag>
-                  <span v-else>服务独占</span>
-                </template>
                 <template v-else-if="column.key === 'action'">
                   <a-tooltip title="查看详情">
                     <a-button size="small" type="link" @click="openDetail(record)">查看详情</a-button>
@@ -568,7 +564,6 @@ const columns = computed(() => {
     })
   }
   base.push(
-    { title: '采集来源', key: 'source', width: 190 },
     { title: '实例', dataIndex: 'instance', key: 'instance', width: 160, ellipsis: true },
     { title: '主机', dataIndex: 'host_ip', key: 'host_ip', width: 130 },
     { title: '日志路径', dataIndex: 'log_path', key: 'log_path', width: 280, ellipsis: true },

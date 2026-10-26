@@ -42,6 +42,7 @@ type statusLogEntry struct {
 	ruleID            sql.NullInt64
 	storedFingerprint sql.NullString
 	collectionEnabled *bool
+	tierCode          *string
 }
 
 // statusLogRows 按 ListServiceTemplateLogs 的列序造行。
@@ -58,6 +59,10 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 			// 未挂规则：规则名在 SQL 里是 LEFT JOIN 出来的空值。
 			ruleName = ""
 		}
+		tierCode := "std"
+		if entry.tierCode != nil {
+			tierCode = *entry.tierCode
+		}
 		rows.AddRow(
 			entry.logDefinition, "error.log", "${APP_HOME}/nginx/logs/error.log", ruleID,
 			ruleName, "plain", false, "", "", uint32(2000), []byte(`{"processors":[]}`),
@@ -66,7 +71,7 @@ func statusLogRows(entries []statusLogEntry) *sqlmock.Rows {
 			[]byte(`[]`),
 			sql.NullTime{}, entry.storedFingerprint, sql.NullString{}, sql.NullString{},
 			"nginx", "yilake", sql.NullString{String: "poc", Valid: true}, "tib", []byte("{}"),
-			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", "std",
+			[]byte(`[{"name":"APP_HOME","value":"/home/esb/tomcat"}]`), "/home/esb/tomcat", tierCode,
 		)
 	}
 	return rows
@@ -132,6 +137,31 @@ func TestLogStatusSummaryBucketsEveryLogDefinition(t *testing.T) {
 	}
 	if summary.PendingError != "" {
 		t.Fatalf("评估成功时不该有 pending_error：%q", summary.PendingError)
+	}
+	if err = mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestLogStatusSummaryDoesNotFailOnInvalidRetentionTier(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer database.Close()
+	service := newTestService(t, NewRepository(database))
+
+	emptyTier := ""
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}, tierCode: &emptyTier}}))
+
+	summary, err := service.LogStatusSummary(context.Background(), []int64{15})
+	if err != nil {
+		t.Fatalf("summary must not fail on an unrelated invalid retention tier: %v", err)
+	}
+	if len(summary.Items) != 1 || summary.Items[0].Logs != 1 || summary.Items[0].Unverified != 1 {
+		t.Fatalf("invalid-tier log should still be counted: %+v", summary.Items)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)

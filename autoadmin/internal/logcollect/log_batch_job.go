@@ -106,9 +106,10 @@ const (
 
 // LogBatchRunner 消费采集队列并执行批量作业。
 type LogBatchRunner struct {
-	handler   *Handler
-	publisher logBatchPublisher
-	options   LogBatchOptions
+	handler          *Handler
+	publisher        logBatchPublisher
+	options          LogBatchOptions
+	formatReconciler func(context.Context)
 	// 同一个作业的分片串行执行。**必须有这把锁**：分片续跑是"处理完一个分片后自己再投一条
 	// 消息"，而 prefetch>1 时那条消息可能被另一个消费 goroutine 立刻取到——没有锁就会有两个
 	// 分片并发从 item 表里挑 pending 项，同一台被跑两遍。
@@ -124,6 +125,10 @@ func (runner *LogBatchRunner) jobLock(jobID int64) *sync.Mutex {
 
 func NewLogBatchRunner(handler *Handler, publisher logBatchPublisher, options LogBatchOptions) *LogBatchRunner {
 	return &LogBatchRunner{handler: handler, publisher: publisher, options: options}
+}
+
+func (runner *LogBatchRunner) SetFormatReconciler(start func(context.Context)) {
+	runner.formatReconciler = start
 }
 
 // Consume 消费采集队列（阻塞到 ctx 结束）。由 api 角色启动时拉起。
@@ -389,6 +394,10 @@ func (runner *LogBatchRunner) finish(ctx context.Context, queries *generated.Que
 //
 // 单实例部署（api 进程内唯一 goroutine），随进程退出终止。
 func (runner *LogBatchRunner) StartReaper(ctx context.Context) {
+	// Start before the RabbitMQ check: instance verification only needs the API's agent sessions and DB.
+	if runner.formatReconciler != nil {
+		runner.formatReconciler(ctx)
+	}
 	runner.handler.startHistoricalStreamRecycler(ctx)
 	runner.handler.startSharedSourceReconciler(ctx)
 	if runner.publisher == nil {

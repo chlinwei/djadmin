@@ -390,6 +390,37 @@ describe('日志中心（服务树 + 三个 tab）', () => {
     wrapper.unmount()
   })
 
+  it('keeps valid log hosts visible when another log has no effective retention tier', async () => {
+    const { getApplicationServiceLogConfig } = await import('@/api/assets/application')
+    const { getServiceLogConfigState } = await import('@/api/monitor')
+    getApplicationServiceLogConfig.mockResolvedValueOnce({ data: { data: {
+      log_collection_enabled: true,
+      log_retention_tier: null,
+      logs: [
+        { log_definition: 81, name: 'valid.log', resolved_path: '/logs/valid.log', tier_code: 'hot', retention_tier: 1 },
+        { log_definition: 82, name: 'invalid.log', resolved_path: '/logs/invalid.log', tier_code: '', retention_tier: null },
+      ],
+    } } })
+    getServiceLogConfigState.mockResolvedValueOnce({ data: { data: {
+      config_error: '服务 nginx 存在有效保留档位为空或未启用的日志',
+      summary: { hosts: 1, managed: 1, unknown: 1, synced: 0 },
+      hosts: [{ host_id: 10, host_instance_name: 'node-a', host_ip: '10.0.0.10', target_id: 101, managed: true, config_state: 'unknown' }],
+      unmanaged_hosts: [],
+    } } })
+    const wrapper = await mountPage()
+    wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
+    wrapper.vm.activeTab = 'config'
+    await flushPromises()
+    const validRow = wrapper.get('tr[data-row-key="81"]')
+    const invalidRow = wrapper.get('tr[data-row-key="82"]')
+    expect(validRow.text()).toContain('node-a')
+    expect(validRow.text()).not.toContain('配置状态读取失败')
+    expect(invalidRow.text()).toContain('配置状态读取失败')
+    expect(invalidRow.text()).not.toContain('未绑定部署实例')
+    expect(wrapper.get('.apply-summary').text()).toBe('配置状态读取失败')
+    wrapper.unmount()
+  })
+
   it('discards a pending preview when the selected tree scope changes', async () => {
     const { getServiceLogConfigState } = await import('@/api/monitor')
     const wrapper = await mountPage()
@@ -796,18 +827,20 @@ describe('日志中心（服务树 + 三个 tab）', () => {
 
   // 「未验证」标红：没验证就采集属于静默坏数据（日志查得到但级别/消息列为空、关键词搜不到、
   // 错误清单失效）。灰色标签混在表格里会被忽略，所以标签颜色就是"要不要人去处理"。
-  it('marks an unverified log format in red and tells the admin how to fix it', async () => {
+  it('shows pending certification without requiring a manual first verification', async () => {
     const wrapper = await mountPage()
     wrapper.findComponent({ name: 'ServiceTree' }).vm.$emit('select', serviceScope)
     await flushPromises()
 
-    const tag = wrapper.findAll('.ant-table .ant-tag').find((node) => node.text() === '未验证')
-    expect(tag, '未验证标签应该渲染出来').toBeTruthy()
-    expect(tag.classes()).toContain('ant-tag-red')
+    wrapper.vm.logRows[0].format_state = 'pending'
+    await flushPromises()
+    const tag = wrapper.findAll('.ant-table .ant-tag').find((node) => node.text() === '待认证')
+    expect(tag, '待认证标签应该渲染出来').toBeTruthy()
+    expect(tag.classes()).toContain('ant-tag-orange')
     // 光红不够：要说清后果与下一步动作（点哪一行、点哪个按钮）。
     const tooltip = formatStateTooltip(wrapper.vm.logRows[0])
-    expect(tooltip).toContain('静默坏数据')
-    expect(tooltip).toContain('发起认证')
+    expect(tooltip).toContain('真实实例通过')
+    expect(tooltip).not.toContain('发起认证')
     wrapper.unmount()
   })
 

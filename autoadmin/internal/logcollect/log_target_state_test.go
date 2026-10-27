@@ -2,6 +2,8 @@ package logcollect
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -9,6 +11,67 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 )
+
+func TestServiceConfigReadKeepsHostsOnInvalidTier(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	mock.ExpectQuery("monitor_log_collection_target l ON").WithArgs(int64(32)).WillReturnRows(
+		sqlmock.NewRows([]string{
+			"host_id", "host_ip", "host_instance_name", "target_id", "config_fingerprint",
+			"runtime_status", "service_fingerprints", "service_id", "service_code",
+		}).AddRow(719, "10.0.0.10", "node-a", 44, "host-fp", "running", []byte(`{}`), 32, "aos_122").
+			AddRow(720, "10.0.0.11", "node-b", nil, "", "", []byte(`{}`), 32, "aos_122"),
+	)
+	expectNoSharedTargets(mock, 32)
+	mock.ExpectQuery("FROM monitor_elasticsearch_cluster").WillReturnRows(
+		sqlmock.NewRows([]string{"hosts", "username", "password", "index_prefix", "verify_tls"}).
+			AddRow("http://es:9200", "", "", "autoadmin", false),
+	)
+	mock.ExpectQuery("FROM assets_application_service_deployment").WillReturnRows(
+		sqlmock.NewRows([]string{"host_id", "service_id", "service_code", "instance_name", "runtime_variables", "app_home", "host_ip"}).
+			AddRow(719, 32, "aos_122", "app-1", []byte(`{}`), "", "10.0.0.10"),
+	)
+	entries := sqlmock.NewRows([]string{
+		"host_id", "project_code", "environment_code", "business_system_code", "service_code", "service_id",
+		"application_code", "tier_code", "pipeline_name", "log_name", "path_pattern",
+		"macro_values", "macro_definitions", "multiline_enabled", "start_pattern", "flush_timeout",
+		"filter_include_rule_id", "filter_exclude_rule_id", "collection_filter_rule_id", "collection_exclude_filter_rule_id", "extra_processors",
+	})
+	for _, tier := range []string{"hot", ""} {
+		entries.AddRow(719, "p", "test", "imf", "aos_122", 32, "app", tier, "rule", tier+".log",
+			"/logs/"+tier+".log", []byte(`{}`), []byte(`[]`), false, "", 1000, nil, nil, nil, nil, []byte(`[]`))
+	}
+	mock.ExpectQuery("FROM assets_application_service s").WillReturnRows(entries)
+	recorder := httptest.NewRecorder()
+	requestContext, _ := gin.CreateTestContext(recorder)
+	requestContext.Request = httptest.NewRequest(http.MethodGet, "/?application_service_id=32", nil)
+	handler := &Handler{db: database}
+	handler.GetServiceLogConfigState(requestContext)
+	var envelope struct {
+		Code int `json:"code"`
+		Data struct {
+			Summary     serviceConfigStateSummary `json:"summary"`
+			Hosts       []serviceApplyTarget      `json:"hosts"`
+			Unmanaged   []serviceApplyTarget      `json:"unmanaged_hosts"`
+			ConfigError string                    `json:"config_error"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Code != 200 || len(envelope.Data.Hosts) != 1 || len(envelope.Data.Unmanaged) != 1 ||
+		envelope.Data.Hosts[0].HostInstanceName != "node-a" || envelope.Data.Hosts[0].ConfigState != LogConfigUnknown ||
+		envelope.Data.Summary.Unknown != 1 || envelope.Data.Summary.Synced != 0 ||
+		!strings.Contains(envelope.Data.ConfigError, "有效保留档位") {
+		t.Fatalf("invalid log must preserve host ownership without claiming synced: %s", recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestConfigStateEvaluatorsRejectDuplicatePaths(t *testing.T) {
 	for _, evaluator := range []string{"host", "service", "summary"} {

@@ -12,7 +12,7 @@
     :title="modalTitle"
     :width="560"
     :confirm-loading="submitting"
-    ok-text="开始认证"
+    :ok-text="form.source === 'waiver' ? '确认豁免' : form.source === 'sample_log' ? '测试样例' : '提交认证'"
     cancel-text="取消"
     @ok="submit"
     @cancel="emit('update:open', false)"
@@ -53,14 +53,32 @@
             </template>
           </div>
         </div>
-        <div>可以换个依据重试（实例抽样最贴近真实采集），或调整模板上的解析规则后重新认证；确认格式没问题时可以走人工豁免。</div>
       </template>
     </a-alert>
-    <a-form layout="vertical" class="verify-form">
+    <a-collapse v-if="target?.format_instances?.length" class="verify-result">
+      <a-collapse-panel v-for="instance in target.format_instances" :key="instance.deployment_id"
+        :header="`${instance.name}：${FORMAT_STATE_LABEL[instance.status] || '待认证'}`">
+        <div v-if="instance.reason">{{ instance.reason }}</div>
+        <div v-if="instance.updated_at">{{ formatTimeWithTimezone(instance.updated_at, timezone) }}</div>
+        <div v-if="instance.actor">操作人：{{ instance.actor }}</div>
+        <div v-if="instance.status === 'waiting' && instance.attempts >= 4">自动重试已用尽</div>
+        <template v-for="reportTarget in instance.report?.targets || []" :key="reportTarget.deployment_id">
+          <div v-for="file in reportTarget.files || []" :key="file.path" class="verify-target">
+            <code class="verify-file-path">{{ file.path }}</code>
+            <div>抽样 {{ file.sample_count }} 条，规则丢弃 {{ file.dropped_samples }} 条</div>
+            <div v-if="file.error" class="verify-target-error">{{ file.error }}</div>
+            <div v-if="file.missing_fields?.length" class="verify-target-error">缺必备字段：{{ file.missing_fields.join('、') }}</div>
+            <div v-if="file.sample_shapes?.length">失败样本（仅格式轮廓，原值已隐藏）</div>
+            <pre v-for="(sample, index) in file.sample_shapes || []" :key="index" class="verify-sample">{{ sample }}</pre>
+          </div>
+        </template>
+      </a-collapse-panel>
+    </a-collapse>
+    <a-form layout="vertical" class="verify-form" :disabled="submitting">
       <a-form-item label="认证依据">
         <a-radio-group v-model:value="form.source">
           <a-radio value="instance">实例抽样（取该实例最近 50 行真实日志）</a-radio>
-          <a-radio value="sample_log">规则样例（用解析规则里保存的样例日志）</a-radio>
+          <a-radio value="sample_log">规则样例测试（不认证真实实例）</a-radio>
           <a-radio value="waiver">人工豁免（不做校验，记录确认人）</a-radio>
         </a-radio-group>
       </a-form-item>
@@ -90,6 +108,9 @@
           <span class="field-hint">将对已绑定的全部部署实例逐一认证（共 {{ deploymentOptions.length }} 个）。</span>
         </a-form-item>
       </template>
+      <a-form-item v-if="form.source === 'waiver'" label="豁免原因" required>
+        <a-textarea v-model:value="form.reason" :maxlength="500" :rows="3" show-count />
+      </a-form-item>
     </a-form>
     <div v-if="batchMode" class="field-hint">
       本次将对勾选的 {{ targetList.length }} 条日志**逐条**认证（每条都按上面的依据与范围）。
@@ -97,7 +118,7 @@
     </div>
     <div class="field-hint">
       认证是抽样通过，不证明文件里每一行都合规（同一文件可能混着启动横幅、堆栈续行）。
-      通过后不再持续检查，只有模板日志定义、解析规则、服务宏或应用版本变化时才要求重新认证。
+      当前配置的真实实例通过后不重复抽样；相关配置或实例变化后由后台自动重验。
     </div>
   </a-modal>
 </template>
@@ -107,6 +128,9 @@ import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { verifyApplicationServiceLogFormat } from '@/api/assets/application'
+import { FORMAT_STATE_LABEL } from '@/util/logFormatState'
+import { formatTimeWithTimezone } from '@/util/timezone'
+import store from '@/store'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -128,7 +152,8 @@ const submitting = ref(false)
 const failures = ref([])
 // 批量时的逐条进度：认证要去主机取样例，几十秒一轮，没有进度就没法判断"还在跑"还是"卡住了"。
 const progress = reactive({ current: 0, total: 0, name: '' })
-const form = reactive({ source: 'instance', all_deployments: false, deployment_id: null })
+const form = reactive({ source: 'instance', all_deployments: true, deployment_id: null, reason: '' })
+const timezone = computed(() => store.state.user?.timezone || 'Asia/Shanghai')
 const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const targetList = computed(() => (props.targets?.length ? props.targets : (props.target ? [props.target] : [])))
@@ -168,14 +193,19 @@ watch(() => props.open, (open) => {
   progress.total = 0
   progress.name = ''
   form.source = 'instance'
-  form.all_deployments = false
+  form.all_deployments = true
+  form.reason = ''
   form.deployment_id = props.deploymentOptions.length ? props.deploymentOptions[0].value : null
 }, { immediate: true })
 
 async function submit() {
   const targets = targetList.value
   if (!targets.length) return
-  if (form.source === 'instance' && !form.all_deployments && !form.deployment_id) {
+  if (form.source === 'waiver' && !form.reason.trim()) {
+    message.warning('请填写豁免原因')
+    return
+  }
+  if (form.source === 'instance' && (!props.deploymentOptions.length || (!form.all_deployments && !form.deployment_id))) {
     message.warning('按实例抽样认证需要先选择一个部署实例')
     return
   }
@@ -183,6 +213,7 @@ async function submit() {
   failures.value = []
   // 被规则的 drop 处理器丢弃的样例数（不算失败，但"认证通过却查不到日志"要有人解释）。
   let droppedSamples = 0
+  let accepted = 0
   progress.total = targets.length
   try {
     for (let index = 0; index < targets.length; index += 1) {
@@ -195,12 +226,15 @@ async function submit() {
           source: form.source,
           all_deployments: form.source === 'instance' ? form.all_deployments : false,
           deployment_id: form.source === 'instance' && !form.all_deployments ? form.deployment_id : 0,
+          ...(form.source === 'waiver' ? { reason: form.reason.trim() } : {}),
         })
         const data = response?.data?.data || {}
         droppedSamples += data.dropped_samples || 0
         // 不通过不是接口错误：留在弹窗里展示缺哪几个字段、哪台实例有问题，允许换依据重试。
-        if (!data.passed) {
+        if (!data.passed && !data.queued && data.format_state !== 'waived') {
           failures.value = [...failures.value, { ...data, name: target.name, log_definition: target.log_definition }]
+        } else {
+          accepted += 1
         }
       } catch (error) {
         // 单条报错（主机离线、接口失败）不中断整批：记下来继续跑，最后一起列出来。
@@ -215,10 +249,12 @@ async function submit() {
     progress.total = 0
     progress.name = ''
   }
+  if (accepted > 0) emit('verified', { count: accepted, queued: form.source === 'instance' })
   if (!failures.value.length) {
-    const passedText = batchMode.value
-      ? `${targets.length} 条日志的格式认证全部通过（依据：${form.source}）`
-      : `格式认证通过（依据：${form.source}）`
+    const passedText = form.source === 'instance'
+      ? `已提交 ${targets.length} 条日志的实例认证任务`
+      : form.source === 'waiver' ? `已记录 ${targets.length} 条日志的人工豁免`
+        : '规则样例测试通过（不代表真实实例认证通过）'
     if (droppedSamples > 0) {
       // 认证确实通过了（丢弃是规则的预期行为），但必须说清"有多少样例根本不会入库"，
       // 否则用户拿"认证通过"当"日志能查到"，排障时会绕远路。
@@ -228,7 +264,6 @@ async function submit() {
     }
     emit('update:open', false)
     // 由调用方重载列表：状态/时间/操作人都由后端按指纹比对给出，前端不自己拼。
-    emit('verified', batchMode.value ? { count: targets.length } : { passed: true })
   }
 }
 </script>
@@ -241,6 +276,15 @@ async function submit() {
 }
 .verify-result {
   margin-bottom: 12px;
+}
+.verify-file-path {
+  overflow-wrap: anywhere;
+}
+.verify-sample {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow-y: auto;
 }
 .verify-form :deep(.ant-form-item) {
   margin-bottom: 12px;

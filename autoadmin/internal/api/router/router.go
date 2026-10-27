@@ -463,6 +463,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 		resolvedBatchOptions.Budget = batchOptions.Budget
 	}
 	batchRunner := logcollect.NewLogBatchRunner(logcollectHandler, batchPublisher, resolvedBatchOptions)
+	batchRunner.SetFormatReconciler(assetsService.StartLogFormatReconciler)
 	logcollectHandler.SetLogBatchRunner(batchRunner)
 	monitorRoutes := engine.Group("/monitor", middleware.Authenticate(tokens), middleware.RequirePermission("monitor:view"))
 	monitorRoutes.GET("/summary/", monitorHandler.Summary)

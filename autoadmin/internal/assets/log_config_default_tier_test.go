@@ -35,6 +35,7 @@ func TestApplicationServiceLogConfigCarriesServiceDefaultTier(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+	expectNoLogFormatInstances(mock)
 	// 服务级默认值：采集开 + 默认档位 4。
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT log_collection_enabled, log_retention_tier_id FROM assets_application_service")).
 		WithArgs(int64(15)).
@@ -86,6 +87,7 @@ func TestApplicationServiceLogConfigKeepsNullDefaultTier(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(overrideFixtureRows(sql.NullString{}, nil, sql.NullInt64{}))
+	expectNoLogFormatInstances(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT log_collection_enabled, log_retention_tier_id FROM assets_application_service")).
 		WithArgs(int64(15)).
 		WillReturnRows(sqlmock.NewRows([]string{"log_collection_enabled", "log_retention_tier_id"}).AddRow(true, nil))
@@ -148,7 +150,6 @@ func TestEffectiveRetentionQueriesDoNotGuessPlatformDefault(t *testing.T) {
 		query := namedStatement(content, test.name)
 		for _, required := range []string{
 			"tier.id = COALESCE(ls.retention_tier_id, s.log_retention_tier_id)",
-			"s.log_retention_tier_id IS NOT NULL",
 			"tier.enabled = TRUE",
 		} {
 			if !strings.Contains(query, required) {
@@ -157,6 +158,9 @@ func TestEffectiveRetentionQueriesDoNotGuessPlatformDefault(t *testing.T) {
 		}
 		if strings.Contains(query, "is_default") || strings.Contains(query, "'std'") {
 			t.Errorf("%s must not guess a platform default tier", test.name)
+		}
+		if strings.Contains(query, "s.log_retention_tier_id IS NOT NULL") {
+			t.Errorf("%s must allow an explicit log override without a service default", test.name)
 		}
 	}
 }

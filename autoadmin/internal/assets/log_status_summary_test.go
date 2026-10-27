@@ -107,6 +107,7 @@ func TestLogStatusSummaryBucketsEveryLogDefinition(t *testing.T) {
 			{logDefinition: 26, ruleID: sql.NullInt64{Int64: 7, Valid: true}, collectionEnabled: &disabled},
 			{logDefinition: 27},
 		}))
+	expectNoLogFormatInstances(mock)
 
 	summary, err := service.LogStatusSummary(context.Background(), []int64{15})
 	if err != nil {
@@ -116,7 +117,7 @@ func TestLogStatusSummaryBucketsEveryLogDefinition(t *testing.T) {
 		t.Fatalf("items = %d，want 1", len(summary.Items))
 	}
 	item := summary.Items[0]
-	if item.Logs != 4 || item.Verified != 1 || item.NeedsRecheck != 1 || item.Unverified != 2 {
+	if item.Logs != 4 || item.Verified != 0 || item.NeedsRecheck != 0 || item.Unverified != 4 {
 		t.Fatalf("日志定义分桶不对：%+v", item)
 	}
 	// 关掉采集的那条 = 1；没挂规则的那条 = 1（它同时算"未认证"，两件事互不掩盖）。
@@ -128,8 +129,8 @@ func TestLogStatusSummaryBucketsEveryLogDefinition(t *testing.T) {
 	}
 	// 合计由服务端算：指标条与清单必须是同一组数字。
 	totals := summary.Totals
-	if totals.Services != 1 || totals.Logs != 4 || totals.Verified != 1 || totals.NeedsRecheck != 1 ||
-		totals.Unverified != 2 || totals.DisabledLogs != 1 || totals.NoRule != 1 {
+	if totals.Services != 1 || totals.Logs != 4 || totals.Verified != 0 || totals.NeedsRecheck != 0 ||
+		totals.Unverified != 4 || totals.DisabledLogs != 1 || totals.NoRule != 1 {
 		t.Fatalf("合计不对：%+v", totals)
 	}
 	if totals.Managed != 2 || totals.Unmanaged != 1 || totals.Synced != 1 || totals.Drift != 1 {
@@ -140,6 +141,28 @@ func TestLogStatusSummaryBucketsEveryLogDefinition(t *testing.T) {
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestLogConfigListPreservesLogsWithInvalidRetentionTier(t *testing.T) {
+	database, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	emptyTier := ""
+	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
+		WithArgs(int64(15)).
+		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, tierCode: &emptyTier}}))
+	items, err := NewRepository(database).ListServiceTemplateLogs(context.Background(), 15)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("invalid tier must not hide editable log rows: items=%+v err=%v", items, err)
+	}
+	if items[0].LogDefinition != 24 || items[0].TierCode != "" || items[0].DataStream != "" {
+		t.Fatalf("preserve invalid tier without inventing a stream: %+v", items[0])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -155,6 +178,7 @@ func TestLogStatusSummaryDoesNotFailOnInvalidRetentionTier(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}, tierCode: &emptyTier}}))
+	expectNoLogFormatInstances(mock)
 
 	summary, err := service.LogStatusSummary(context.Background(), []int64{15})
 	if err != nil {
@@ -182,6 +206,7 @@ func TestLogStatusSummaryReportsPendingFailureInsteadOfZero(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}}}))
+	expectNoLogFormatInstances(mock)
 
 	summary, err := service.LogStatusSummary(context.Background(), []int64{15})
 	if err != nil {
@@ -215,6 +240,7 @@ func TestLogStatusSummaryWithoutPendingEvaluator(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}}}))
+	expectNoLogFormatInstances(mock)
 
 	summary, err := service.LogStatusSummary(context.Background(), []int64{15})
 	if err != nil {
@@ -321,6 +347,7 @@ func TestLogStatusSummaryHandlerContract(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
 		WithArgs(int64(15)).
 		WillReturnRows(statusLogRows([]statusLogEntry{{logDefinition: 24, ruleID: sql.NullInt64{Int64: 7, Valid: true}}}))
+	expectNoLogFormatInstances(mock)
 
 	body, _ := json.Marshal(map[string]any{"service_ids": []int64{15}})
 	gin.SetMode(gin.TestMode)

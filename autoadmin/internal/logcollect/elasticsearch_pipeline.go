@@ -185,6 +185,9 @@ func nonStandardDocumentFields(result map[string]any, allowed map[string]bool) [
 	filebeatOwned := filebeatOwnedFieldNames()
 	docs, _ := result["docs"].([]any)
 	for _, rawDoc := range docs {
+		if isDroppedSimulatedDoc(rawDoc) {
+			continue
+		}
 		doc, _ := rawDoc.(map[string]any)
 		detail, _ := doc["doc"].(map[string]any)
 		source, _ := detail["_source"].(map[string]any)
@@ -207,6 +210,9 @@ func missingRequiredDocumentFields(result map[string]any) []string {
 	missing := map[string]bool{}
 	docs, _ := result["docs"].([]any)
 	for _, rawDoc := range docs {
+		if isDroppedSimulatedDoc(rawDoc) {
+			continue
+		}
 		doc, _ := rawDoc.(map[string]any)
 		detail, _ := doc["doc"].(map[string]any)
 		source, _ := detail["_source"].(map[string]any)
@@ -235,12 +241,21 @@ func countDroppedDocs(result map[string]any) int {
 	docs, _ := result["docs"].([]any)
 	count := 0
 	for _, rawDoc := range docs {
-		if doc, ok := rawDoc.(map[string]any); ok {
-			if detail, exists := doc["doc"].(map[string]any); exists && detail != nil {
-				continue
-			}
+		if isDroppedSimulatedDoc(rawDoc) {
+			count++
 		}
-		count++
 	}
 	return count
+}
+
+func isDroppedSimulatedDoc(raw any) bool {
+	if raw == nil {
+		return true
+	}
+	doc, ok := raw.(map[string]any)
+	if !ok || doc["error"] != nil {
+		return false
+	}
+	value, exists := doc["doc"]
+	return exists && value == nil
 }

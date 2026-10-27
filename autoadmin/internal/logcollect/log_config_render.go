@@ -164,12 +164,17 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 		instancesByService[key] = list
 	}
 
+	invalidTierServices := map[int64]bool{}
 	for _, entry := range entries {
 		base := configBaseName(entry.Application, entry.Service, entry.ServiceID, entry.LogName)
 		// Reject incomplete inherited settings before any fragment can reach Filebeat.
 		// An empty suffix would otherwise create a stream without a retention policy.
 		if strings.TrimSpace(entry.Tier) == "" {
-			recordHardProblem(fmt.Sprintf("服务 %s 日志 %s 的有效保留档位为空或未启用，请在逻辑服务中选择有效档位后重试", entry.Service, entry.LogName))
+			// 同一服务的继承配置可能影响全部日志，合并提示但仍阻止每个无效片段下发。
+			if !invalidTierServices[entry.ServiceID] {
+				recordHardProblem(fmt.Sprintf("服务 %s 存在有效保留档位为空或未启用的日志，请检查服务默认档位及日志覆盖档位", entry.Service))
+				invalidTierServices[entry.ServiceID] = true
+			}
 			continue
 		}
 		// 日志定义名称直接作为文件名/维度值，不参与宏展开；名称里带 ${...} 说明配置写错位置，

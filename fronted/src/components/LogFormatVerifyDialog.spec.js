@@ -50,7 +50,7 @@ describe('LogFormatVerifyDialog', () => {
     await flushPromises()
 
     expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
-      log_definition_id: 81, source: 'instance', all_deployments: false, deployment_id: 13,
+      log_definition_id: 81, source: 'instance', all_deployments: true, deployment_id: 0,
     })
     expect(wrapper.emitted('verified')).toBeTruthy()
     expect(wrapper.emitted('update:open').at(-1)).toEqual([false])
@@ -82,6 +82,33 @@ describe('LogFormatVerifyDialog', () => {
     expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
       log_definition_id: 81, source: 'sample_log', all_deployments: false, deployment_id: 0,
     })
+    wrapper.unmount()
+  })
+
+  it('accepts a queued task without reporting an immediate pass', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    verifyApplicationServiceLogFormat.mockResolvedValueOnce({ data: { data: { passed: false, queued: true, format_state: 'pending' } } })
+    const wrapper = mountDialog()
+    await wrapper.vm.submit()
+    expect(wrapper.vm.failures).toHaveLength(0)
+    expect(wrapper.emitted('verified').at(-1)).toEqual([{ count: 1, queued: true }])
+    expect(wrapper.emitted('update:open').at(-1)).toEqual([false])
+    wrapper.unmount()
+  })
+
+  it('requires a waiver reason and submits it without claiming a format pass', async () => {
+    const { verifyApplicationServiceLogFormat } = await import('@/api/assets/application')
+    const wrapper = mountDialog()
+    wrapper.vm.form.source = 'waiver'
+    await wrapper.vm.submit()
+    expect(verifyApplicationServiceLogFormat).not.toHaveBeenCalled()
+    wrapper.vm.form.reason = '经业务负责人确认的例外'
+    verifyApplicationServiceLogFormat.mockResolvedValueOnce({ data: { data: { passed: false, format_state: 'waived' } } })
+    await wrapper.vm.submit()
+    expect(verifyApplicationServiceLogFormat).toHaveBeenCalledWith(20, {
+      log_definition_id: 81, source: 'waiver', all_deployments: false, deployment_id: 0, reason: '经业务负责人确认的例外',
+    })
+    expect(wrapper.vm.failures).toHaveLength(0)
     wrapper.unmount()
   })
 

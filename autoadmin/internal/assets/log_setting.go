@@ -59,11 +59,15 @@ type ServiceTemplateLog struct {
 	TemplateProcessingRuleName string `json:"template_processing_rule_name"`
 	// 格式认证：state ∈ unverified / verified / needs_recheck；fingerprint 是**当前**配置指纹
 	// （验证接口回写的就是它），verified_* 是上一次认证的时间/依据/操作人。
-	FormatState          string  `json:"format_state"`
-	FormatFingerprint    string  `json:"format_fingerprint"`
-	FormatVerifiedAt     *string `json:"format_verified_at"`
-	FormatVerifiedSource string  `json:"format_verified_source"`
-	FormatVerifiedBy     string  `json:"format_verified_by"`
+	FormatState          string                   `json:"format_state"`
+	FormatFingerprint    string                   `json:"format_fingerprint"`
+	FormatVerifiedAt     *string                  `json:"format_verified_at"`
+	FormatVerifiedSource string                   `json:"format_verified_source"`
+	FormatVerifiedBy     string                   `json:"format_verified_by"`
+	FormatInstances      []LogFormatInstanceState `json:"format_instances"`
+	FormatTotal          int                      `json:"format_total"`
+	FormatPassed         int                      `json:"format_passed"`
+	FormatWaived         int                      `json:"format_waived"`
 }
 
 // ServiceLogConfig 是 log-config 接口的响应体：模板日志定义（合入服务级覆盖）+ 服务级采集总开关。
@@ -120,10 +124,10 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 			logmacro.ParseValues(string(row.MacroValues)),
 		)
 		item.PendingMacros = logmacro.Pending(item.ResolvedPath)
-		if strings.TrimSpace(row.TierCode) == "" {
-			return nil, fmt.Errorf("服务 %s 日志 %s 的有效保留档位为空或未启用，请先编辑逻辑服务补选有效档位", row.ServiceCode, row.Name)
+		// 读取必须保留待修正的日志行；缺档位时不伪造流名，严格校验留在下发入口。
+		if strings.TrimSpace(row.TierCode) != "" {
+			item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		}
-		item.DataStream = logstream.Name("autoadmin", row.ProjectCode, row.EnvironmentCode.String, row.BusinessSystemCode, row.ServiceCode, row.TierCode)
 		item.FormatFingerprint, item.FormatState, err = logFormatStateForRow(row)
 		if err != nil {
 			return nil, err
@@ -140,6 +144,8 @@ func (r *Repository) ListServiceTemplateLogs(ctx context.Context, serviceID int6
 }
 
 type ServiceTemplateLogStatus struct {
+	LogDefinition     int64
+	FormatFingerprint string
 	FormatState       string
 	CollectionEnabled *bool
 	HasProcessingRule bool
@@ -154,11 +160,12 @@ func (r *Repository) ListServiceTemplateLogStatuses(ctx context.Context, service
 	}
 	statuses := make([]ServiceTemplateLogStatus, 0, len(rows))
 	for _, row := range rows {
-		_, formatState, formatErr := logFormatStateForRow(row)
+		fingerprint, formatState, formatErr := logFormatStateForRow(row)
 		if formatErr != nil {
 			formatState = formatStateUnverified
 		}
 		statuses = append(statuses, ServiceTemplateLogStatus{
+			LogDefinition: row.ID, FormatFingerprint: fingerprint,
 			FormatState: formatState, CollectionEnabled: row.OverrideCollectionEnabled,
 			HasProcessingRule: row.ProcessingRuleID.Valid,
 		})

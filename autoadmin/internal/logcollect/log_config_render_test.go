@@ -25,6 +25,24 @@ func TestRenderRejectsEmptyRetentionTier(t *testing.T) {
 	}
 }
 
+func TestRenderInvalidRetentionTierReportedOncePerService(t *testing.T) {
+	entries := []hostLogRenderInput{}
+	for index := 0; index < 11; index++ {
+		entries = append(entries, hostLogRenderInput{
+			Application: "app", Service: "aos_122", ServiceID: 122,
+			LogName: "log-" + strconv.Itoa(index), ResolvedPath: "/logs/" + strconv.Itoa(index),
+		})
+	}
+	entries = append(entries, hostLogRenderInput{Application: "app", Service: "other", ServiceID: 123, LogName: "other.log"})
+	rendered := renderHostLogConfig(entries, nil, testOutputIdentity)
+	if len(rendered.Errors) != 2 || len(rendered.Warnings) != 2 || len(rendered.Fragments) != 0 {
+		t.Fatalf("invalid tiers must be reported once per service and block all invalid inputs: %+v", rendered)
+	}
+	if strings.Count(rendered.configurationError(719).Error(), "服务 aos_122") != 1 {
+		t.Fatalf("repeated service error: %v", rendered.Errors)
+	}
+}
+
 func TestRenderHostLogConfigIndependentOfQueryOrder(t *testing.T) {
 	for _, conflict := range []bool{false, true} {
 		t.Run(strconv.FormatBool(conflict), func(t *testing.T) {

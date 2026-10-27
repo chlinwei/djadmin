@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
@@ -21,6 +22,7 @@ type Service struct {
 	// logFormatVerifier 由 logcollect 注入（见 log_format_verify.go）：认证的"取样例 + 跑 ES"部分。
 	// 未注入时只有 waiver 依据可用。
 	logFormatVerifier LogFormatVerifier
+	logFormatStart    sync.Once
 	// logConfigChecker 由 logcollect 注入（见 log_config_consistency.go）：影响最终采集配置的
 	// 服务、模板与实例写入都在事务提交前渲染校验，避免不自洽配置落库。
 	logConfigChecker LogConfigConsistencyChecker

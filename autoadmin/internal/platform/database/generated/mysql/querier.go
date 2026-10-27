@@ -44,6 +44,7 @@ type Querier interface {
 	// 分片续跑不走这条语句：执行器先读作业状态，读到 running 就继续（进程内按作业 id 串行，
 	// 见 log_batch_job.go 的说明）。
 	ClaimLogBatchJob(ctx context.Context, arg ClaimLogBatchJobParams) (int64, error)
+	ClaimLogFormatTarget(ctx context.Context, arg ClaimLogFormatTargetParams) (sql.Result, error)
 	ClearDefaultElasticsearchCluster(ctx context.Context, arg ClearDefaultElasticsearchClusterParams) error
 	ClearDefaultLogRetentionTier(ctx context.Context, id int64) error
 	ClearSoftwarePackageInstallTemplate(ctx context.Context, id int64) error
@@ -324,6 +325,7 @@ type Querier interface {
 	// 磁盘表没有按 device 的唯一键：整表重建以丢掉已卸载的分区。
 	DeleteHostDisks(ctx context.Context, hostID int64) error
 	DeleteHostGroup(ctx context.Context, id int64) error
+	DeleteInactiveLogFormatTargets(ctx context.Context) error
 	DeleteInspectionChecksByGroup(ctx context.Context, groupID int64) error
 	DeleteInspectionGroup(ctx context.Context, id int64) (int64, error)
 	DeleteInspectionTask(ctx context.Context, id int64) (int64, error)
@@ -394,6 +396,8 @@ type Querier interface {
 	// 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
 	DetachInstallHistoryFromLogTarget(ctx context.Context, logCollectionTargetID sql.NullInt64) error
 	DisableAPIToken(ctx context.Context, arg DisableAPITokenParams) error
+	// conflict: service_id, log_definition_id, deployment_id
+	EnsureLogFormatTarget(ctx context.Context, arg EnsureLogFormatTargetParams) error
 	ExpireTargetInstallHistory(ctx context.Context, arg ExpireTargetInstallHistoryParams) (int64, error)
 	// status 由调用方给（失败 'failed' / 超时 'timeout'），其余列语义相同。
 	FailAgentJob(ctx context.Context, arg FailAgentJobParams) error
@@ -414,6 +418,7 @@ type Querier interface {
 	FinishInspectionTarget(ctx context.Context, arg FinishInspectionTargetParams) error
 	FinishLogBatchJob(ctx context.Context, arg FinishLogBatchJobParams) (int64, error)
 	FinishLogBatchJobItem(ctx context.Context, arg FinishLogBatchJobItemParams) error
+	FinishLogFormatTarget(ctx context.Context, arg FinishLogFormatTargetParams) (sql.Result, error)
 	FinishLogTargetInstallHistory(ctx context.Context, arg FinishLogTargetInstallHistoryParams) (int64, error)
 	// 收尾：只有仍处于 pending 的任务才落终态。
 	// install_succeeded 用 0/1 传，不能把同一个 sqlc.arg 写两次（MySQL 引擎会拆成 FinalStatus/FinalStatus_2，
@@ -669,6 +674,7 @@ type Querier interface {
 	//  2. PATCH 合并（组的部分更新）在应用层做：先 `FOR UPDATE` 读回现值再整行写，而不是
 	//     `COALESCE(?, col)`——后者在两侧对可空布尔/JSON 的推导不同，会把签名分歧带进门面。
 	ListDueInspectionTasks(ctx context.Context, now sql.NullTime) ([]ListDueInspectionTasksRow, error)
+	ListDueLogFormatTargets(ctx context.Context, now time.Time) ([]AssetsLogFormatTarget, error)
 	ListElasticsearchClustersTyped(ctx context.Context, arg ListElasticsearchClustersTypedParams) ([]MonitorElasticsearchCluster, error)
 	// ---- 用户中心的告警媒介绑定（monitor_alert_media / monitor_user_alert_media_binding）----
 	// 查询定义按「调用方所属域」放这里（同 inspection.sql 里的 assets_* 查询）。
@@ -749,6 +755,8 @@ type Querier interface {
 	// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
 	ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error)
 	ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error)
+	ListLogFormatServices(ctx context.Context) ([]int64, error)
+	ListLogFormatTargets(ctx context.Context, serviceID int64) ([]AssetsLogFormatTarget, error)
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)
 	ListLogRetentionTiers(ctx context.Context, arg ListLogRetentionTiersParams) ([]MonitorLogRetentionTier, error)
 	ListLoginAudits(ctx context.Context, arg ListLoginAuditsParams) ([]AuditLoginLog, error)
@@ -952,11 +960,14 @@ type Querier interface {
 	MarkTargetInstallPending(ctx context.Context, arg MarkTargetInstallPendingParams) error
 	MaxBaselineCategorySort(ctx context.Context, baselineID int64) (int64, error)
 	MaxBaselineItemSort(ctx context.Context, categoryID int64) (int64, error)
+	RecoverExhaustedLogFormatTargets(ctx context.Context, arg RecoverExhaustedLogFormatTargetsParams) error
 	// 计数从 item 表重算，不依赖应用层累加（并发下应用层累加必然漂移）。
 	RefreshLogBatchJobProgress(ctx context.Context, arg RefreshLogBatchJobProgressParams) error
 	RenameBaselineCategory(ctx context.Context, arg RenameBaselineCategoryParams) (int64, error)
+	RequestLogFormatTarget(ctx context.Context, arg RequestLogFormatTargetParams) error
 	// 失联对账把停摆的作业放回 pending，重新投递后再由 ClaimLogBatchJob 认领。
 	RequeueLogBatchJob(ctx context.Context, arg RequeueLogBatchJobParams) (int64, error)
+	ResetChangedLogFormatTarget(ctx context.Context, arg ResetChangedLogFormatTargetParams) error
 	ResetConfigValue(ctx context.Context, arg ResetConfigValueParams) error
 	// 续跑前把"上一轮留下的 running"落回 pending：这些项的执行者已经不在了。
 	ResetStaleLogBatchJobItems(ctx context.Context, arg ResetStaleLogBatchJobItemsParams) (int64, error)

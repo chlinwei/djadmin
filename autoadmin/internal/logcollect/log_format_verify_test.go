@@ -376,6 +376,33 @@ func TestVerifyLogFormatFromRuleSampleLog(t *testing.T) {
 	}
 }
 
+func TestLogFormatDropAndErrorAreDifferent(t *testing.T) {
+	valid := map[string]any{"doc": map[string]any{"_source": map[string]any{
+		"log_level": "INFO", "log_message": "ok", "error_fingerprint": "fp",
+	}}}
+	partial := map[string]any{"docs": []any{nil, valid}}
+	if countDroppedDocs(partial) != 1 || len(missingRequiredDocumentFields(partial)) != 0 {
+		t.Fatal("部分 drop 不能使其余有效记录缺字段")
+	}
+	failed := map[string]any{"docs": []any{map[string]any{"error": map[string]any{"type": "parse_exception"}}}}
+	if countDroppedDocs(failed) != 0 || len(missingRequiredDocumentFields(failed)) == 0 {
+		t.Fatal("处理器错误不能被计为预期丢弃")
+	}
+}
+
+func TestLogFormatSampleShapeDoesNotRetainBusinessValues(t *testing.T) {
+	text := "2026-10-27 ERROR password=secret token=abcdef user@example.com\n at Example.run(file:12)"
+	shape := logFormatSampleShape(text)
+	for _, secret := range []string{"secret", "abcdef", "example", "2026", "password"} {
+		if strings.Contains(shape, secret) {
+			t.Fatalf("格式样本泄漏原值: %s", shape)
+		}
+	}
+	if !strings.Contains(shape, "\n") || !strings.Contains(shape, "(") {
+		t.Fatalf("格式样本应保留布局: %q", shape)
+	}
+}
+
 // 取不到样例必须报错，不能返回"空缺失"——否则编排层会把"没验成"写成"已验证"。
 func TestVerifyLogFormatErrorsWhenSampleUnavailable(t *testing.T) {
 	mock, handler, _ := newESVerifyFixture(t, func(writer http.ResponseWriter, request *http.Request) {

@@ -4257,7 +4257,7 @@ SELECT ld.id, ld.name, ld.path_pattern,
        -- 就必须用与渲染同一套顺序（模板默认 → 服务覆盖 → 实例变量），见 internal/shared/logmacro。
        COALESCE(t.macro_definitions, '[]') AS macro_definitions,
        COALESCE(t.app_home, '') AS app_home,
-       CASE WHEN s.log_retention_tier_id IS NOT NULL AND tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
+      CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
 FROM assets_application_log_definition ld
 JOIN assets_application_service s ON s.id = $1
 JOIN assets_application_deployment_template t ON t.id = s.deployment_template_id

@@ -3949,7 +3949,7 @@ const listHostLogRenderEntries = `-- name: ListHostLogRenderEntries :many
 SELECT DISTINCT d.host_id, p.code AS project_code, e.code AS environment_code,
     bs.code AS business_system_code, s.code AS service_code, s.id AS service_id,
     COALESCE(app.code, '') AS application_code,
-    CASE WHEN s.log_retention_tier_id IS NOT NULL AND tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code,
+    CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code,
     COALESCE(rule_definition.name, '') AS pipeline_name,
     ld.name AS log_name, ld.path_pattern,
     COALESCE(s.macro_values, '{}') AS macro_values,
@@ -5549,7 +5549,7 @@ func (q *Queries) ListRuleExtraPipelineRows(ctx context.Context, ruleID sql.Null
 
 const listServiceActiveStreamTiers = `-- name: ListServiceActiveStreamTiers :many
 SELECT DISTINCT s.id AS service_id, s.code AS service_code,
-       CASE WHEN s.log_retention_tier_id IS NOT NULL AND tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
+      CASE WHEN tier.enabled = TRUE THEN COALESCE(tier.code, '') ELSE '' END AS tier_code
 FROM assets_application_service s
 JOIN assets_application_log_definition ld ON ld.deployment_template_id = s.deployment_template_id
 LEFT JOIN assets_application_service_log_setting ls ON ls.service_id = s.id AND ls.log_definition_id = ld.id

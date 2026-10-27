@@ -60,7 +60,7 @@ func (handler *Handler) GetApplicationServiceLogConfig(context *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := handler.service.repository.ListServiceTemplateLogs(context.Request.Context(), id)
+	items, err := handler.service.ListServiceLogFormats(context.Request.Context(), id)
 	if err != nil {
 		respond(context, nil, translate(err))
 		return
@@ -130,6 +130,7 @@ func (handler *Handler) VerifyApplicationServiceLogFormat(context *gin.Context) 
 		Source          string `json:"source"`
 		DeploymentID    int64  `json:"deployment_id"`
 		AllDeployments  bool   `json:"all_deployments"`
+		Reason          string `json:"reason"`
 	}
 	if context.ShouldBindJSON(&input) != nil {
 		response.Error(context, ErrInvalid)
@@ -148,7 +149,7 @@ func (handler *Handler) VerifyApplicationServiceLogFormat(context *gin.Context) 
 	if claims, ok := identity.ClaimsFromContext(context); ok {
 		actor = claims.Username
 	}
-	result, err := handler.service.VerifyServiceLogFormat(context.Request.Context(), id, input.LogDefinitionID, input.DeploymentID, input.AllDeployments, source, actor)
+	result, err := handler.service.VerifyServiceLogFormat(context.Request.Context(), id, input.LogDefinitionID, input.DeploymentID, input.AllDeployments, source, actor, input.Reason)
 	respond(context, result, err)
 }
 

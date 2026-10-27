@@ -131,12 +131,24 @@ func (s *Service) LogStatusSummary(ctx context.Context, serviceIDs []int64) (Ser
 		if err != nil {
 			return ServiceLogStatusSummary{}, translate(err)
 		}
+		if len(rows) > 0 {
+			logs := make([]ServiceTemplateLog, len(rows))
+			for index, row := range rows {
+				logs[index] = ServiceTemplateLog{LogDefinition: row.LogDefinition, FormatFingerprint: row.FormatFingerprint}
+			}
+			if err = s.attachLogFormatStates(ctx, serviceID, logs); err != nil {
+				return ServiceLogStatusSummary{}, translate(err)
+			}
+			for index := range rows {
+				rows[index].FormatState = logs[index].FormatState
+			}
+		}
 		item := ServiceLogStatusItem{ServiceID: serviceID, Logs: len(rows)}
 		for _, row := range rows {
 			switch row.FormatState {
 			case formatStateVerified:
 				item.Verified++
-			case formatStateNeedsRecheck:
+			case "pending", "running", "failed":
 				item.NeedsRecheck++
 			default:
 				item.Unverified++

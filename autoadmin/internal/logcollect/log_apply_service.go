@@ -118,7 +118,12 @@ func (handler *Handler) buildServiceHostStates(context context.Context, serviceI
 	// 服务视图按**本服务**的子指纹判状态：共享主机上其他服务的改动不会把本服务带成待下发。
 	states, err := handler.EvaluateServiceLogConfigStates(context, managed[0].ServiceID, refs)
 	if err != nil {
-		return nil, nil, summary, err
+		// 主机归属已成功读取，渲染失败只使配置态未知，不能抹掉正常日志的主机清单。
+		for index := range managed {
+			managed[index].ConfigState = LogConfigUnknown
+		}
+		summary.Unknown = len(managed)
+		return managed, unmanaged, summary, err
 	}
 	for index := range managed {
 		state, ok := states[managed[index].HostID]
@@ -188,6 +193,11 @@ func (handler *Handler) GetServiceLogConfigState(context *gin.Context) {
 	}
 	managed, unmanaged, summary, err := handler.buildServiceHostStates(context, serviceID)
 	if err != nil {
+		if managed != nil {
+			// 读取归属与评估配置是两件事；显式携带评估错误，禁止将部分可读视为配置正常。
+			response.Success(context, gin.H{"summary": summary, "hosts": managed, "unmanaged_hosts": unmanaged, "config_error": err.Error()})
+			return
+		}
 		response.BusinessError(context, 400, err.Error(), nil)
 		return
 	}

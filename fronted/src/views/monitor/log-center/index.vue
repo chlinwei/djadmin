@@ -137,8 +137,8 @@
                 <div class="apply-summary">
                   <a-spin v-if="applyStateLoading" size="small" />
                   <template v-else>
-                    <span v-if="applySummaryText">{{ applySummaryText }}</span>
-                    <span v-else-if="applyStateError" class="apply-error">配置状态读取失败</span>
+                    <span v-if="applyStateError" class="apply-error">配置状态读取失败</span>
+                    <span v-else-if="applySummaryText">{{ applySummaryText }}</span>
                     <span v-else class="apply-muted">该服务还没有绑定任何部署实例，没有可下发的主机</span>
                   </template>
                 </div>
@@ -303,11 +303,14 @@
                 </template>
                 <template v-else-if="column.key === 'carrying_hosts'">
                   <span v-if="applyStateLoading" class="apply-muted">正在读取主机信息…</span>
-                  <a-tooltip v-else-if="applyStateError" :title="applyStateError" placement="top">
+                  <a-tooltip v-else-if="!record.tier_code?.trim()" title="该日志的有效保留档位为空或未启用，请设置日志档位或补选服务默认档位" placement="top">
                     <span class="apply-error">配置状态读取失败</span>
                   </a-tooltip>
                   <a-tooltip v-else-if="carryingHostsSummary" :title="carryingHostsTooltip" placement="top">
                     <span>{{ carryingHostsSummary }}</span>
+                  </a-tooltip>
+                  <a-tooltip v-else-if="applyStateError" :title="applyStateError" placement="top">
+                    <span class="apply-error">配置状态读取失败</span>
                   </a-tooltip>
                   <span v-else class="apply-muted">未绑定部署实例</span>
                 </template>
@@ -332,8 +335,9 @@
                 <template v-else-if="column.key === 'format_state'">
                   <a-tooltip :title="formatStateTooltip(record)" placement="top">
                     <a-tag :color="FORMAT_STATE_COLOR[record.format_state] || 'default'">
-                      {{ FORMAT_STATE_LABEL[record.format_state] || '未验证' }}
+                      {{ FORMAT_STATE_LABEL[record.format_state] || '待认证' }}
                     </a-tag>
+                    <span v-if="record.format_total">{{ record.format_passed }}/{{ record.format_total }} 实例</span>
                   </a-tooltip>
                 </template>
                 <template v-else-if="column.key === 'format_action'">
@@ -344,7 +348,7 @@
                       :disabled="!canVerifyLogFormat(record, serviceId)"
                       @click="openVerifyDialog(record)"
                     >
-                      {{ record.format_state === 'verified' ? '重新认证' : '发起认证' }}
+                      重新认证
                     </a-button>
                   </a-tooltip>
                 </template>
@@ -1941,6 +1945,8 @@ async function loadApplyState() {
   applyStateError.value = ''
   try {
     applyState.value = (await getServiceLogConfigState(serviceId.value))?.data?.data || null
+    // 主机归属不依赖配置渲染；保留清单供有效日志显示，整体错误仍阻止误报已同步。
+    applyStateError.value = applyState.value?.config_error || ''
   } catch (error) {
     applyState.value = null
     applyStateError.value = error?.response?.data?.msg || error?.message || '读取下发状态失败'
@@ -2091,6 +2097,47 @@ onUnmounted(stopApplyPolling)
 useKeepAliveRefreshLifecycle(() => {
   if (activeApplyJobId) startApplyPolling(activeApplyJobId)
 }, stopApplyPolling)
+
+let formatRefreshTimer = null
+let formatRefreshGeneration = 0
+
+function stopFormatRefresh() {
+  formatRefreshGeneration += 1
+  if (formatRefreshTimer) clearTimeout(formatRefreshTimer)
+  formatRefreshTimer = null
+}
+
+function startFormatRefresh() {
+  stopFormatRefresh()
+  const generation = formatRefreshGeneration
+  const poll = async () => {
+    const selectedService = serviceId.value
+    if (selectedService && activeTab.value === 'config' && !configLoading.value) {
+      try {
+        const response = await getApplicationServiceLogConfig(selectedService)
+        if (generation !== formatRefreshGeneration || selectedService !== serviceId.value) return
+        const states = new Map((response?.data?.data?.logs || []).map((row) => [row.log_definition, row]))
+        // Only merge verification fields: background refresh must not overwrite inline configuration edits.
+        logRows.value = logRows.value.map((row) => {
+          const current = states.get(row.log_definition)
+          if (!current) return row
+          const format = Object.fromEntries(Object.entries(current).filter(([key]) => key.startsWith('format_')))
+          return { ...row, ...format }
+        })
+        if (verifyTarget.value) {
+          verifyTarget.value = logRows.value.find((row) => row.log_definition === verifyTarget.value.log_definition) || verifyTarget.value
+        }
+      } catch {
+        // Keep the last readable result; the next active-page refresh can recover without erasing configuration.
+      }
+    }
+    if (generation === formatRefreshGeneration) formatRefreshTimer = setTimeout(poll, 10000)
+  }
+  formatRefreshTimer = setTimeout(poll, 10000)
+}
+
+onUnmounted(stopFormatRefresh)
+useKeepAliveRefreshLifecycle(startFormatRefresh, stopFormatRefresh)
 
 function openVerifyDialog(record) {
   // 单条认证：清掉批量目标，否则弹窗优先按 targets 渲染，会把这一条当成上一批的一部分。

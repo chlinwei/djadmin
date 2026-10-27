@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"autoadmin/internal/assets"
 	db "autoadmin/internal/platform/database/generated"
@@ -70,18 +71,18 @@ func (handler *Handler) VerifyLogFormat(ctx context.Context, request assets.LogF
 		return assets.LogFormatVerifyReport{}, assets.ErrNotFound
 	}
 	if definition.TemplateProcessingRuleID == nil {
-		return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "该日志定义未关联解析规则，无法校验格式")
+		return assets.LogFormatVerifyReport{}, assets.LogFormatConfigurationError("该日志定义未关联解析规则，无法校验格式")
 	}
 	rule, err := db.New(handler.db).GetLogProcessingRule(sampleContext, *definition.TemplateProcessingRuleID)
 	if err != nil {
-		return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "解析规则不存在或已被删除")
+		return assets.LogFormatVerifyReport{}, assets.LogFormatConfigurationError("解析规则不存在或已被删除")
 	}
 	if len(rule.PipelineBody) == 0 {
-		return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "解析规则未配置 pipeline，无法校验格式")
+		return assets.LogFormatVerifyReport{}, assets.LogFormatConfigurationError("解析规则未配置 pipeline，无法校验格式")
 	}
 	pipeline := map[string]any{}
 	if err = json.Unmarshal(rule.PipelineBody, &pipeline); err != nil || len(pipeline) == 0 {
-		return assets.LogFormatVerifyReport{}, apperror.New(apperror.CodeInvalidArgument, "解析规则的 pipeline 不是合法的 JSON 对象")
+		return assets.LogFormatVerifyReport{}, assets.LogFormatConfigurationError("解析规则的 pipeline 不是合法的 JSON 对象")
 	}
 
 	report := assets.LogFormatVerifyReport{Targets: []assets.LogFormatVerifyTarget{}}
@@ -113,6 +114,7 @@ func (handler *Handler) VerifyLogFormat(ctx context.Context, request assets.LogF
 				missingSet[field] = true
 			}
 			droppedTotal += target.DroppedSamples
+			report.SampleCount += target.SampleCount
 		}
 		report.MissingFields = sortedKeys(missingSet)
 		report.DroppedSamples = droppedTotal
@@ -134,6 +136,7 @@ func (handler *Handler) VerifyLogFormat(ctx context.Context, request assets.LogF
 		}
 		report.MissingFields = missing
 		report.DroppedSamples = dropped
+		report.SampleCount = len(docs)
 	default:
 		return assets.LogFormatVerifyReport{}, assets.ErrLogFormatSourceInvalid
 	}
@@ -176,6 +179,7 @@ func (handler *Handler) verifyDeployment(ctx context.Context, request assets.Log
 	)
 	if strings.Contains(path, "${") {
 		target.Error = "日志路径含未展开的宏，无法定位文件：" + path
+		target.FailureKind = "format"
 		return target
 	}
 	// Filebeat 会采集 glob 匹配到的**每一个**文件，认证必须逐个验，不能只抽样最新那个。
@@ -184,38 +188,90 @@ func (handler *Handler) verifyDeployment(ctx context.Context, request assets.Log
 		target.Error = globErr.Error()
 		return target
 	}
-	docs := make([]any, 0, logFormatSampleLines)
+	missingSet := map[string]bool{}
 	for _, file := range files {
 		target.LogFiles = append(target.LogFiles, file.Path)
+		fileReport := assets.LogFormatFileReport{Path: file.Path, MissingFields: []string{}, SampleShapes: []string{}}
 		if file.Size <= 0 {
 			// 空文件（如刚轮转出来的）没有可校验内容，跳过而不是判失败。
+			fileReport.Error = "文件为空，暂无样本"
+			target.Files = append(target.Files, fileReport)
 			continue
 		}
 		text, readErr := handler.readRemoteTail(ctx, instance.HostInstanceName, file)
 		if readErr != nil {
 			target.Error = readErr.Error()
+			fileReport.Error = target.Error
+			target.Files = append(target.Files, fileReport)
 			return target
 		}
 		fileDocs, docErr := logSampleDocs(text, multiline, startPattern)
 		if docErr != nil {
 			target.Error = "文件 " + file.Path + "：" + docErr.Error()
+			target.FailureKind = "format"
+			fileReport.Error = target.Error
+			target.Files = append(target.Files, fileReport)
 			return target
 		}
-		docs = append(docs, fileDocs...)
+		fileReport.SampleCount = len(fileDocs)
+		data, simErr := handler.simulatePipeline(ctx, cluster, "", pipeline, fileDocs)
+		if simErr != nil {
+			target.Error = "Elasticsearch 校验失败：" + simErr.Error()
+			fileReport.Error = target.Error
+			target.Files = append(target.Files, fileReport)
+			return target
+		}
+		fileReport.MissingFields, _ = data["missing_fields"].([]string)
+		fileReport.DroppedSamples, _ = data["dropped_count"].(int)
+		for _, field := range fileReport.MissingFields {
+			missingSet[field] = true
+		}
+		results, _ := data["docs"].([]any)
+		if len(results) != len(fileDocs) {
+			target.Error, target.FailureKind = "Elasticsearch 返回的样本数量不完整", "format"
+		}
+		for index, raw := range results {
+			if index >= len(fileDocs) || len(fileReport.SampleShapes) >= 3 || isDroppedSimulatedDoc(raw) {
+				continue
+			}
+			if len(missingRequiredDocumentFields(map[string]any{"docs": []any{raw}})) > 0 {
+				doc, _ := fileDocs[index].(map[string]any)
+				text, _ := doc["message"].(string)
+				fileReport.SampleShapes = append(fileReport.SampleShapes, logFormatSampleShape(text))
+			}
+		}
+		if fileReport.DroppedSamples == len(fileDocs) {
+			target.Error, target.FailureKind = "文件全部样本被规则丢弃，无法证明入库格式："+file.Path, "format"
+			fileReport.Error = target.Error
+		}
+		target.SampleCount += len(fileDocs)
+		target.DroppedSamples += fileReport.DroppedSamples
+		target.Files = append(target.Files, fileReport)
 	}
-	if len(docs) == 0 {
+	if target.SampleCount == 0 {
 		target.Error = "匹配到的日志文件都没有可校验的内容：" + path
 		return target
 	}
-	// missing_fields 是所有文档的并集：任一文件缺必备字段即该实例不通过。
-	missing, dropped, simErr := handler.simulateMissingFields(ctx, cluster, pipeline, docs)
-	if simErr != nil {
-		target.Error = simErr.Error()
-		return target
-	}
-	target.MissingFields = missing
-	target.DroppedSamples = dropped
+	target.MissingFields = sortedKeys(missingSet)
 	return target
+}
+
+// Persist only format shape, never raw business text or parsed field values.
+// Keeping separators and whitespace exposes multiline/JSON layout without retaining credentials or PII.
+func logFormatSampleShape(text string) string {
+	var output strings.Builder
+	for index, character := range []rune(text) {
+		if index >= 256 {
+			output.WriteString("...")
+			break
+		}
+		if unicode.IsSpace(character) || strings.ContainsRune("[]{}():,./_-", character) {
+			output.WriteRune(character)
+		} else {
+			output.WriteByte('*')
+		}
+	}
+	return output.String()
 }
 
 // simulateMissingFields 跑一次 inline _simulate，取回缺失的必备字段与被 drop 丢弃的样例数。
@@ -224,6 +280,10 @@ func (handler *Handler) simulateMissingFields(ctx context.Context, cluster elast
 	data, err := handler.simulatePipeline(ctx, cluster, "", pipeline, docs)
 	if err != nil {
 		return nil, 0, apperror.New(apperror.CodeInvalidArgument, "Elasticsearch 校验失败："+err.Error())
+	}
+	results, _ := data["docs"].([]any)
+	if len(results) != len(docs) {
+		return nil, 0, assets.LogFormatConfigurationError("Elasticsearch 返回的样本数量不完整")
 	}
 	missing, _ := data["missing_fields"].([]string)
 	dropped, _ := data["dropped_count"].(int)

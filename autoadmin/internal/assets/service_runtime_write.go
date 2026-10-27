@@ -294,11 +294,7 @@ func (s *Service) SaveApplicationService(ctx context.Context, id int64, input Ap
 	if err != nil {
 		return ApplicationService{}, translate(err)
 	}
-	// 新增服务 / 开启采集时抽样认证一次（架构文档 §4.8）。后台 best-effort，不影响本次保存结果；
-	// 是否真的需要认证由 MaybeAutoVerifyServiceLogFormats 按行状态自己判断（已 verified 的跳过）。
-	if boolValue(input.LogCollectionEnabled, false) {
-		s.MaybeAutoVerifyServiceLogFormats(ctx, saved)
-	}
+	// 认证由 API 的持久化对账循环统一发现，不再依赖服务表单这个特定写入口。
 	return s.repository.GetApplicationService(ctx, saved)
 }
 func (s *Service) DeleteApplicationService(ctx context.Context, id int64) error {

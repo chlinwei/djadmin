@@ -416,6 +416,21 @@ type AssetsHostsystem struct {
 	OsVersionID     sql.NullString `json:"os_version_id"`
 }
 
+type AssetsLogFormatTarget struct {
+	ServiceID       int64           `json:"service_id"`
+	LogDefinitionID int64           `json:"log_definition_id"`
+	DeploymentID    int64           `json:"deployment_id"`
+	Fingerprint     string          `json:"fingerprint"`
+	Status          string          `json:"status"`
+	Attempts        int32           `json:"attempts"`
+	NextAttemptAt   time.Time       `json:"next_attempt_at"`
+	LeaseToken      string          `json:"lease_token"`
+	Report          json.RawMessage `json:"report"`
+	Actor           string          `json:"actor"`
+	Reason          string          `json:"reason"`
+	UpdateTime      time.Time       `json:"update_time"`
+}
+
 type AssetsProject struct {
 	ID         int64          `json:"id"`
 	CreateTime time.Time      `json:"create_time"`

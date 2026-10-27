@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	db "autoadmin/internal/platform/database/generated"
+
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -48,6 +50,13 @@ func currentLogFingerprint() string {
 		LogDefinition: 24, LogName: "error.log", PathPattern: "${APP_HOME}/nginx/logs/error.log",
 		RuleID: 7, RuleParsingSignature: testLogRuleSignature(), MacroValues: "{}", ApplicationVersion: 3,
 	})
+}
+
+func expectNoLogFormatInstances(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("FROM assets_log_format_target WHERE service_id").
+		WillReturnRows(sqlmock.NewRows([]string{"service_id", "log_definition_id", "deployment_id", "fingerprint", "status", "attempts", "next_attempt_at", "lease_token", "report", "actor", "reason", "update_time"}))
+	mock.ExpectQuery("FROM assets_application_service_deployment").
+		WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}))
 }
 
 func addServiceTemplateLogRow(rows *sqlmock.Rows, stored sql.NullString) *sqlmock.Rows {
@@ -180,6 +189,7 @@ func TestListServiceTemplateLogsFormatState(t *testing.T) {
 
 // fakeLogFormatVerifier 记录调用并按 source 返回预设结果。
 type fakeLogFormatVerifier struct {
+	report  *LogFormatVerifyReport
 	missing map[string][]string
 	failOn  map[string]error
 	calls   []LogFormatVerifyRequest
@@ -190,7 +200,10 @@ func (fake *fakeLogFormatVerifier) VerifyLogFormat(_ context.Context, request Lo
 	if err, exists := fake.failOn[request.Source]; exists {
 		return LogFormatVerifyReport{}, err
 	}
-	return LogFormatVerifyReport{MissingFields: fake.missing[request.Source]}, nil
+	if fake.report != nil {
+		return *fake.report, nil
+	}
+	return LogFormatVerifyReport{SampleCount: 1, MissingFields: fake.missing[request.Source]}, nil
 }
 
 func newLogFormatFixture(t *testing.T, stored sql.NullString) (*sqlmock.Sqlmock, *sql.DB, *Service) {
@@ -205,29 +218,20 @@ func newLogFormatFixture(t *testing.T, stored sql.NullString) (*sqlmock.Sqlmock,
 	return &mock, database, newTestService(t, NewRepository(database))
 }
 
-func TestVerifyServiceLogFormatWritesUpsertOnPass(t *testing.T) {
+func TestRuleSampleDoesNotCertifyProductionInstances(t *testing.T) {
 	mock, _, service := newLogFormatFixture(t, sql.NullString{})
 	verifier := &fakeLogFormatVerifier{}
 	service.SetLogFormatVerifier(verifier)
 
-	// 通过时写库：必须是 upsert（覆盖行不存在时 INSERT 也要落下认证结果）。
-	(*mock).ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), int64(15), sqlmock.AnyArg(),
-			currentLogFingerprint(), LogFormatSourceInstance, "zhangsan").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, false, LogFormatSourceInstance, "zhangsan")
+	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceSampleLog, "zhangsan")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if !result.Passed || result.FormatState != formatStateVerified {
-		t.Fatalf("result = %+v, want passed + verified", result)
+	if !result.Passed || result.FormatState != formatStateUnverified {
+		t.Fatalf("样例测试通过不能认证真实实例: %+v", result)
 	}
-	if result.FormatVerifiedBy != "zhangsan" || result.FormatVerifiedSource != LogFormatSourceInstance {
-		t.Fatalf("认证要记录操作人与依据，得到 %+v", result)
-	}
-	if len(verifier.calls) != 1 || verifier.calls[0].DeploymentID != 20 {
-		t.Fatalf("执行器应收到部署实例 id，得到 %+v", verifier.calls)
+	if len(verifier.calls) != 1 || verifier.calls[0].Source != LogFormatSourceSampleLog {
+		t.Fatalf("只能测试规则样例，得到 %+v", verifier.calls)
 	}
 	if err = (*mock).ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
@@ -237,11 +241,11 @@ func TestVerifyServiceLogFormatWritesUpsertOnPass(t *testing.T) {
 func TestVerifyServiceLogFormatKeepsUnverifiedWhenFieldsMissing(t *testing.T) {
 	mock, _, service := newLogFormatFixture(t, sql.NullString{})
 	service.SetLogFormatVerifier(&fakeLogFormatVerifier{missing: map[string][]string{
-		LogFormatSourceInstance: {"log_level", "error_fingerprint"},
+		LogFormatSourceSampleLog: {"log_level", "error_fingerprint"},
 	}})
 
 	// 不通过时**不写库**：没有 Exec 预期，多写一次会被 ExpectationsWereMet 抓到。
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 20, false, LogFormatSourceInstance, "zhangsan")
+	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceSampleLog, "zhangsan")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -259,29 +263,21 @@ func TestVerifyServiceLogFormatKeepsUnverifiedWhenFieldsMissing(t *testing.T) {
 	}
 }
 
-func TestVerifyServiceLogFormatWaiverRecordsFingerprintWithoutProbe(t *testing.T) {
-	mock, _, service := newLogFormatFixture(t, sql.NullString{})
-	// 豁免是"人工确认"，不该去碰 agent/ES；这里注入一个会报错的执行器来证明它没被调用。
-	verifier := &fakeLogFormatVerifier{failOn: map[string]error{LogFormatSourceInstance: errors.New("不该被调用")}}
-	service.SetLogFormatVerifier(verifier)
-
-	(*mock).ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), int64(15), sqlmock.AnyArg(),
-			currentLogFingerprint(), LogFormatSourceWaiver, "admin").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceWaiver, "admin")
-	if err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-	if !result.Passed || result.FormatVerifiedSource != LogFormatSourceWaiver {
-		t.Fatalf("豁免也要记指纹与依据，得到 %+v", result)
-	}
-	if len(verifier.calls) != 0 {
-		t.Fatalf("豁免不应调用执行器，实际调用 %d 次", len(verifier.calls))
-	}
-	if err = (*mock).ExpectationsWereMet(); err != nil {
-		t.Fatalf("database expectations: %v", err)
+func TestWaiverRequiresReasonAndActor(t *testing.T) {
+	for _, actor := range []string{"", "admin"} {
+		database, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		service := newTestService(t, NewRepository(database))
+		_, err = service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, false, LogFormatSourceWaiver, actor, "")
+		if err == nil {
+			t.Fatal("没有原因或操作人的豁免必须拒绝")
+		}
+		if err = mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+		database.Close()
 	}
 }
 
@@ -306,58 +302,201 @@ func TestVerifyServiceLogFormatRejectsInvalidArgumentsBeforeReading(t *testing.T
 	}
 }
 
-// 自动认证：实例取不到样例时退到规则样例；两条都失败就保持未认证（best-effort，不报错）。
-func TestAutoVerifyFallsBackToRuleSampleLog(t *testing.T) {
-	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("create sql mock: %v", err)
+func TestLogFormatOutcomesAndRetryBudget(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		report LogFormatVerifyReport
+		err    error
+		status string
+	}{
+		{"真实通过", LogFormatVerifyReport{SampleCount: 50}, nil, "verified"},
+		{"无记录", LogFormatVerifyReport{}, nil, "failed"},
+		{"全部过滤", LogFormatVerifyReport{SampleCount: 5, DroppedSamples: 5}, nil, "failed"},
+		{"部分过滤", LogFormatVerifyReport{SampleCount: 5, DroppedSamples: 2}, nil, "verified"},
+		{"字段缺失", LogFormatVerifyReport{SampleCount: 5, MissingFields: []string{"log_level"}}, nil, "failed"},
+		{"离线", LogFormatVerifyReport{}, errors.New("agent offline"), "waiting"},
+		{"空文件", LogFormatVerifyReport{Targets: []LogFormatVerifyTarget{{Error: "empty file"}}}, nil, "waiting"},
+		{"首行规则错误", LogFormatVerifyReport{Targets: []LogFormatVerifyTarget{{Error: "invalid pattern", FailureKind: "format"}}}, nil, "failed"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, _ := logFormatOutcome(testCase.report, testCase.err)
+			if status != testCase.status {
+				t.Fatalf("status=%s want=%s", status, testCase.status)
+			}
+		})
 	}
-	defer database.Close()
-	service := newTestService(t, NewRepository(database))
-	service.SetLogFormatVerifier(&fakeLogFormatVerifier{
-		failOn: map[string]error{LogFormatSourceInstance: errors.New("agent offline")},
-	})
-
-	// 1) 列服务日志 → 2) 列实例 → 3) instance 认证（失败）→ 4) sample_log 认证（成功）→ 5) 写入
-	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
-		WillReturnRows(addServiceTemplateLogRow(sqlmock.NewRows(serviceTemplateLogColumns()), sql.NullString{}))
-	mock.ExpectQuery(regexp.QuoteMeta("FROM assets_application_service_deployment")).
-		WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}).AddRow(int64(20)))
-	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
-		WillReturnRows(addServiceTemplateLogRow(sqlmock.NewRows(serviceTemplateLogColumns()), sql.NullString{}))
-	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
-		WillReturnRows(addServiceTemplateLogRow(sqlmock.NewRows(serviceTemplateLogColumns()), sql.NullString{}))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO assets_application_service_log_setting")).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(24), int64(15), sqlmock.AnyArg(),
-			currentLogFingerprint(), LogFormatSourceSampleLog, "").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	service.autoVerifyServiceLogFormats(context.Background(), 15)
-	if err = mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("database expectations: %v", err)
+	if logFormatRetryDelay(1) != time.Minute || logFormatRetryDelay(4) != 8*time.Minute || logFormatRetryDelay(100) != 8*time.Minute {
+		t.Fatal("重试必须指数退避并封顶")
 	}
 }
 
-// 已认证的行不该被自动认证重复打扰（认证是幂等的，重复触发只该在读库时短路）。
-func TestAutoVerifySkipsAlreadyVerifiedRows(t *testing.T) {
-	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("create sql mock: %v", err)
+func logFormatInstanceFixture() db.GetLogVerifyInstanceContextRow {
+	return db.GetLogVerifyInstanceContextRow{
+		DeploymentID: 20, HostID: 5, HostInstanceName: "host-01", DeploymentInstanceName: "instance-1",
+		RuntimeVariables: []byte(`{"PORT":8080}`), MacroDefinitions: []byte(`[]`), AppHome: "/app",
 	}
-	defer database.Close()
-	service := newTestService(t, NewRepository(database))
-	verifier := &fakeLogFormatVerifier{}
-	service.SetLogFormatVerifier(verifier)
+}
 
+func expectCurrentLogFormatTarget(mock sqlmock.Sqlmock, instance db.GetLogVerifyInstanceContextRow) {
+	mock.ExpectQuery("SELECT log_collection_enabled, log_retention_tier_id").
+		WillReturnRows(sqlmock.NewRows([]string{"log_collection_enabled", "log_retention_tier_id"}).AddRow(true, int64(4)))
 	mock.ExpectQuery(regexp.QuoteMeta(listServiceTemplateLogsQuery)).
-		WillReturnRows(addServiceTemplateLogRow(sqlmock.NewRows(serviceTemplateLogColumns()),
-			sql.NullString{String: currentLogFingerprint(), Valid: true}))
+		WillReturnRows(addServiceTemplateLogRow(sqlmock.NewRows(serviceTemplateLogColumns()), sql.NullString{}))
+	expectLogFormatInstanceContext(mock, instance)
+}
 
-	service.autoVerifyServiceLogFormats(context.Background(), 15)
-	if len(verifier.calls) != 0 {
-		t.Fatalf("已 verified 的行不应再触发认证，实际调用 %d 次", len(verifier.calls))
+func expectLogFormatInstanceContext(mock sqlmock.Sqlmock, instance db.GetLogVerifyInstanceContextRow) {
+	mock.ExpectQuery("FROM assets_application_deployment d").WithArgs(instance.DeploymentID, int64(15), int64(24)).
+		WillReturnRows(sqlmock.NewRows([]string{"deployment_id", "host_id", "host_instance_name", "deployment_instance_name",
+			"runtime_variables", "app_home", "macro_definitions", "macro_values", "path_pattern"}).
+			AddRow(instance.DeploymentID, instance.HostID, instance.HostInstanceName, instance.DeploymentInstanceName,
+				instance.RuntimeVariables, instance.AppHome, instance.MacroDefinitions, []byte(`{}`), "${APP_HOME}/error.log"))
+}
+
+func TestManualLogFormatRequestsPersistEachInstance(t *testing.T) {
+	for _, source := range []string{LogFormatSourceInstance, LogFormatSourceWaiver} {
+		t.Run(source, func(t *testing.T) {
+			mockPointer, _, service := newLogFormatFixture(t, sql.NullString{})
+			mock := *mockPointer
+			verifier := &fakeLogFormatVerifier{}
+			service.SetLogFormatVerifier(verifier)
+			mock.ExpectQuery("FROM assets_application_service_deployment").
+				WillReturnRows(sqlmock.NewRows([]string{"deployment_id"}).AddRow(int64(20)).AddRow(int64(21)))
+			mock.ExpectQuery("SELECT log_collection_enabled, log_retention_tier_id").
+				WillReturnRows(sqlmock.NewRows([]string{"log_collection_enabled", "log_retention_tier_id"}).AddRow(true, int64(4)))
+			for _, deploymentID := range []int64{20, 21} {
+				instance := logFormatInstanceFixture()
+				instance.DeploymentID = deploymentID
+				expectLogFormatInstanceContext(mock, instance)
+				mock.ExpectExec("INSERT INTO assets_log_format_target").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("UPDATE assets_log_format_target SET fingerprint").WillReturnResult(sqlmock.NewResult(0, 0))
+			}
+			status, reason := "pending", ""
+			if source == LogFormatSourceWaiver {
+				status, reason = "waived", "业务已确认例外"
+			}
+			mock.ExpectBegin()
+			for _, deploymentID := range []int64{20, 21} {
+				mock.ExpectExec("UPDATE assets_log_format_target SET status").
+					WithArgs(status, sqlmock.AnyArg(), "admin", reason, sqlmock.AnyArg(), int64(15), int64(24), deploymentID, sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectCommit()
+			result, err := service.VerifyServiceLogFormat(context.Background(), 15, 24, 0, true, source, "admin", reason)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Passed || result.FormatState != status || result.Queued != (source == LogFormatSourceInstance) {
+				t.Fatalf("排队和豁免不能声称真实格式通过: %+v", result)
+			}
+			if len(verifier.calls) != 0 {
+				t.Fatal("手动提交不得在 HTTP 请求内取样")
+			}
+			if err = mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
-	if err = mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("database expectations: %v", err)
+}
+
+func TestLogInstanceFingerprintTracksRuntimeNotJSONFormatting(t *testing.T) {
+	instance := logFormatInstanceFixture()
+	base, err := logInstanceFingerprint("rule-1", instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.RuntimeVariables = []byte("{ \"PORT\": 8080 }")
+	same, _ := logInstanceFingerprint("rule-1", instance)
+	if same != base {
+		t.Fatal("仅 JSON 排版不应要求重验")
+	}
+	instance.RuntimeVariables = []byte(`{"PORT":9090}`)
+	changed, _ := logInstanceFingerprint("rule-1", instance)
+	if changed == base {
+		t.Fatal("实例运行变量变化必须使认证失效")
+	}
+	instance = logFormatInstanceFixture()
+	instance.HostID = 6
+	changed, _ = logInstanceFingerprint("rule-1", instance)
+	if changed == base {
+		t.Fatal("换主机必须使认证失效")
+	}
+}
+
+func TestLogFormatLeaseAndStaleResults(t *testing.T) {
+	for _, mode := range []string{"verified", "lease_lost", "changed_before_probe", "changed_after_probe"} {
+		t.Run(mode, func(t *testing.T) {
+			database, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			service := newTestService(t, NewRepository(database))
+			verifier := &fakeLogFormatVerifier{report: &LogFormatVerifyReport{
+				SampleCount: 50, Targets: []LogFormatVerifyTarget{{DeploymentID: 20, SampleCount: 50}},
+			}}
+			service.SetLogFormatVerifier(verifier)
+			instance := logFormatInstanceFixture()
+			fingerprint, _ := logInstanceFingerprint(currentLogFingerprint(), instance)
+			target := db.AssetsLogFormatTarget{ServiceID: 15, LogDefinitionID: 24, DeploymentID: 20, Fingerprint: fingerprint}
+			before := instance
+			if mode == "changed_before_probe" {
+				before.RuntimeVariables = []byte(`{"PORT":9090}`)
+			}
+			expectCurrentLogFormatTarget(mock, before)
+			if mode != "changed_before_probe" {
+				affected := int64(1)
+				if mode == "lease_lost" {
+					affected = 0
+				}
+				mock.ExpectExec("UPDATE assets_log_format_target SET status = 'running'").
+					WillReturnResult(sqlmock.NewResult(0, affected))
+				if mode != "lease_lost" {
+					after := instance
+					if mode == "changed_after_probe" {
+						after.RuntimeVariables = []byte(`{"PORT":9090}`)
+					}
+					expectCurrentLogFormatTarget(mock, after)
+					if mode == "verified" {
+						mock.ExpectExec("UPDATE assets_log_format_target SET status = ").
+							WithArgs("verified", sqlmock.AnyArg(), "", "", sqlmock.AnyArg(), sqlmock.AnyArg(),
+								int64(15), int64(24), int64(20), fingerprint, sqlmock.AnyArg()).
+							WillReturnResult(sqlmock.NewResult(0, 1))
+					}
+				}
+			}
+			if err = service.runLogFormatTarget(context.Background(), target); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "lease_lost" || mode == "changed_before_probe" {
+				if len(verifier.calls) != 0 {
+					t.Fatal("未获得租约或指纹已过期不能抽样")
+				}
+			} else if len(verifier.calls) != 1 || verifier.calls[0].Source != LogFormatSourceInstance {
+				t.Fatal("后台只能执行一次真实抽样")
+			}
+			if err = mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestFormatInstanceSummaryNeverTreatsPartialOrWaiverAsVerified(t *testing.T) {
+	for _, testCase := range []struct {
+		states []string
+		want   string
+	}{
+		{nil, "waiting"}, {[]string{"verified", "verified"}, "verified"},
+		{[]string{"verified", "pending"}, "pending"}, {[]string{"verified", "failed"}, "failed"},
+		{[]string{"verified", "waiting"}, "waiting"}, {[]string{"verified", "waived"}, "waived"},
+	} {
+		instances := make([]LogFormatInstanceState, len(testCase.states))
+		for index, state := range testCase.states {
+			instances[index].Status = state
+		}
+		if got := summarizeFormatInstances(instances); got != testCase.want {
+			t.Fatalf("states=%v got=%s want=%s", testCase.states, got, testCase.want)
+		}
 	}
 }

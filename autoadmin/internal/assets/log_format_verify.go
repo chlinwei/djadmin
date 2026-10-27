@@ -2,21 +2,15 @@ package assets
 
 import (
 	"context"
-	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
-
-	"log/slog"
 )
 
-// 日志格式认证（架构文档 §4.8）：把"这条日志的格式能否被模板上的规则解析出必备字段"
-// 在交付时回答一次，结果落在 assets_application_service_log_setting 的 format_verified_* 四列。
-//
-// 本文件只负责**认证的编排与落库**：校验谁、写什么指纹、状态怎么变。真正"取样例 + 跑 ES"
-// 由 LogFormatVerifier 实现（logcollect 侧——它才持有 agent 文件通道与 ES 客户端）。
-// 这样分层的原因：logcollect 已经依赖 assets（凭证解密、主机读取），反向依赖会成环。
+// Request orchestration lives in assets; logcollect owns the agent and ES probe.
+// Production evidence is stored per deployment, independently of service configuration overrides.
 const (
 	// LogFormatSourceInstance：取某个部署实例上日志文件的最近若干行真实日志。
 	LogFormatSourceInstance = "instance"
@@ -47,10 +41,21 @@ type LogFormatVerifyTarget struct {
 	HostInstanceName string   `json:"host_instance_name"`
 	LogFiles         []string `json:"log_files"`
 	MissingFields    []string `json:"missing_fields"`
-	// DroppedSamples 这台实例的样例中被规则的 drop 处理器丢弃的条数：丢弃是配置的预期行为、
-	// 不影响认证结论，但"认证通过却查不到日志"必须能在这里找到解释（2026-09-25 盲区修复）。
-	DroppedSamples int    `json:"dropped_samples"`
-	Error          string `json:"error,omitempty"`
+	// Partial drops are expected, but an entirely dropped file is not proof of a valid stored format.
+	DroppedSamples int                   `json:"dropped_samples"`
+	Error          string                `json:"error,omitempty"`
+	FailureKind    string                `json:"failure_kind,omitempty"`
+	SampleCount    int                   `json:"sample_count"`
+	Files          []LogFormatFileReport `json:"files"`
+}
+
+type LogFormatFileReport struct {
+	Path           string   `json:"path"`
+	SampleCount    int      `json:"sample_count"`
+	DroppedSamples int      `json:"dropped_samples"`
+	MissingFields  []string `json:"missing_fields"`
+	SampleShapes   []string `json:"sample_shapes"`
+	Error          string   `json:"error,omitempty"`
 }
 
 // LogFormatVerifyReport 一次认证的完整结果：全部目标的缺失字段并集 + 逐实例明细。
@@ -59,8 +64,8 @@ type LogFormatVerifyTarget struct {
 // 的判定与既有前端契约使用；Targets 用来告诉人"是哪台实例、哪个文件的问题"。
 type LogFormatVerifyReport struct {
 	MissingFields []string `json:"missing_fields"`
-	// DroppedSamples 全部目标被丢弃样例的总数。丢弃不算失败（Passed 不看它），
-	// 但前端必须显式展示，不能让"通过"掩盖"这些日志根本不会入库"。
+	SampleCount   int      `json:"sample_count"`
+	// DroppedSamples is explicit evidence; all-dropped samples cannot pass.
 	DroppedSamples int                     `json:"dropped_samples"`
 	Targets        []LogFormatVerifyTarget `json:"targets"`
 }
@@ -69,6 +74,9 @@ type LogFormatVerifyReport struct {
 // 取不到样例绝不算通过——否则会把"没验成"记成"已验证"。sample_log 依据没有实例目标，
 // 其样例已在执行器里校验过，所以这里不因 Targets 为空而否定。
 func (report LogFormatVerifyReport) Passed() bool {
+	if report.SampleCount == 0 || report.DroppedSamples >= report.SampleCount {
+		return false
+	}
 	if len(report.MissingFields) > 0 {
 		return false
 	}
@@ -89,9 +97,9 @@ type LogFormatVerifier interface {
 	VerifyLogFormat(ctx context.Context, request LogFormatVerifyRequest) (LogFormatVerifyReport, error)
 }
 
-// LogFormatVerifyResult 一次认证的结果。passed=false 时不会写库（指纹保持原样，
-// 状态仍是 unverified / needs_recheck），前端据此提示缺哪些字段、哪台实例有问题。
+// Instance requests return queued=true; fixture tests return passed without certifying production.
 type LogFormatVerifyResult struct {
+	Queued               bool                    `json:"queued"`
 	Passed               bool                    `json:"passed"`
 	Source               string                  `json:"source"`
 	MissingFields        []string                `json:"missing_fields"`
@@ -102,16 +110,6 @@ type LogFormatVerifyResult struct {
 	FormatVerifiedAt     *string                 `json:"format_verified_at"`
 	FormatVerifiedSource string                  `json:"format_verified_source"`
 	FormatVerifiedBy     string                  `json:"format_verified_by"`
-}
-
-// UpsertLogSettingFormatVerified 写回一次认证结果。必须是 upsert：认证状态按
-// (服务 × 日志定义) 读，而覆盖行只在"有覆盖"时才存在，UPDATE-only 会静默写空。
-func (r *Repository) UpsertLogSettingFormatVerified(ctx context.Context, serviceID, logDefinitionID int64, fingerprint, source, actor string, at time.Time) error {
-	return r.queries.UpsertLogSettingFormatVerified(ctx, db.UpsertLogSettingFormatVerifiedParams{
-		CreateTime: at, UpdateTime: at, LogDefinitionID: logDefinitionID, ServiceID: serviceID,
-		FormatVerifiedAt:          sql.NullTime{Time: at, Valid: true},
-		FormatVerifiedFingerprint: fingerprint, FormatVerifiedSource: source, FormatVerifiedBy: actor,
-	})
 }
 
 // SetLogFormatVerifier 注入认证执行器。未注入时只有 waiver 依据可用（其余返回 ErrLogFormatUnavailable），
@@ -126,10 +124,8 @@ func (s *Service) SetLogFormatVerifier(verifier LogFormatVerifier) {
 // true 认证该服务全部承载实例。**无论哪种范围，实例上所有匹配到的日志文件都参与认证**
 // （通配路径展开出的每个文件都要能解析出必备字段）。
 //
-// 指纹用**展示口径的同一个函数**算（ListServiceTemplateLogs 的 FormatFingerprint）——
-// 认证写入的指纹与弹窗上比对的指纹必须逐字节相同，否则认证通过后状态还是 needs_recheck。
-// 因此这里直接复用 ListServiceTemplateLogs 的返回行，而不是另写一遍指纹输入。
-func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefinitionID, deploymentID int64, allDeployments bool, source, actor string) (LogFormatVerifyResult, error) {
+// Instance fingerprints extend the shared rule signature with host and runtime macro inputs.
+func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefinitionID, deploymentID int64, allDeployments bool, source, actor string, reasons ...string) (LogFormatVerifyResult, error) {
 	source = strings.TrimSpace(source)
 	switch source {
 	case LogFormatSourceInstance:
@@ -138,6 +134,9 @@ func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefi
 		}
 	case LogFormatSourceSampleLog:
 	case LogFormatSourceWaiver:
+		if len(reasons) != 1 || strings.TrimSpace(reasons[0]) == "" || len(reasons[0]) > 2000 || actor == "" {
+			return LogFormatVerifyResult{}, fmt.Errorf("人工豁免必须提供原因（不超过 2000 字节）和登录操作人")
+		}
 	default:
 		return LogFormatVerifyResult{}, ErrLogFormatSourceInvalid
 	}
@@ -163,8 +162,7 @@ func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefi
 		FormatVerifiedBy: target.FormatVerifiedBy,
 	}
 
-	// waiver 不做校验（人工确认豁免），但仍然记当前指纹与操作人——它同样是"这一次配置已确认"。
-	if source != LogFormatSourceWaiver {
+	if source == LogFormatSourceSampleLog {
 		if s.logFormatVerifier == nil {
 			return LogFormatVerifyResult{}, ErrLogFormatUnavailable
 		}
@@ -177,104 +175,68 @@ func (s *Service) VerifyServiceLogFormat(ctx context.Context, serviceID, logDefi
 		}
 		result.Targets = report.Targets
 		result.DroppedSamples = report.DroppedSamples
-		if !report.Passed() {
-			result.Passed = false
-			result.MissingFields = report.MissingFields
-			return result, nil
-		}
+		result.Passed = report.Passed()
+		result.MissingFields = report.MissingFields
+		// A rule fixture is a test, not evidence that any production instance is verified.
+		return result, nil
 	}
 
-	now := time.Now().UTC()
-	if err = s.repository.UpsertLogSettingFormatVerified(ctx, serviceID, logDefinitionID, target.FormatFingerprint, source, actor, now); err != nil {
-		return LogFormatVerifyResult{}, translate(err)
+	if target.TemplateProcessingRuleID == nil {
+		return LogFormatVerifyResult{}, fmt.Errorf("该日志未关联解析规则")
 	}
-	formatted := timestamp(now)
-	result.Passed = true
-	result.MissingFields = []string{}
-	result.FormatState = formatStateVerified
-	result.FormatVerifiedAt = &formatted
+	deployments := []int64{deploymentID}
+	if allDeployments || source == LogFormatSourceWaiver {
+		deployments, err = s.repository.queries.ListServiceDeploymentIDs(ctx, serviceID)
+		if err != nil {
+			return LogFormatVerifyResult{}, err
+		}
+	}
+	if len(deployments) == 0 {
+		return LogFormatVerifyResult{}, fmt.Errorf("请先绑定部署实例")
+	}
+	enabled, _, err := s.repository.GetServiceLogDefaults(ctx, serviceID)
+	if err != nil {
+		return LogFormatVerifyResult{}, err
+	}
+	if !enabled || !boolValue(target.CollectionEnabled, true) {
+		return LogFormatVerifyResult{}, fmt.Errorf("请先开启服务及该日志的采集开关")
+	}
+	now := time.Now().UTC()
+	status, reason := "pending", ""
+	if source == LogFormatSourceWaiver {
+		status, reason = "waived", strings.TrimSpace(reasons[0])
+	}
+	requests := make([]db.RequestLogFormatTargetParams, 0, len(deployments))
+	for _, instanceID := range deployments {
+		fingerprint, err := s.ensureLogFormatTarget(ctx, serviceID, *target, instanceID)
+		if err != nil {
+			return LogFormatVerifyResult{}, err
+		}
+		requests = append(requests, db.RequestLogFormatTargetParams{
+			ServiceID: serviceID, LogDefinitionID: logDefinitionID, DeploymentID: instanceID,
+			Fingerprint: fingerprint, Status: status, NextAttemptAt: now, UpdateTime: now, Actor: actor, Reason: reason,
+		})
+	}
+	tx, err := s.repository.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return LogFormatVerifyResult{}, err
+	}
+	defer tx.Rollback()
+	for _, request := range requests {
+		if err = db.New(tx).RequestLogFormatTarget(ctx, request); err != nil {
+			return LogFormatVerifyResult{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return LogFormatVerifyResult{}, err
+	}
+	result.Queued = source == LogFormatSourceInstance
+	result.FormatState = status
 	result.FormatVerifiedSource = source
 	result.FormatVerifiedBy = actor
 	return result, nil
 }
 
-// autoVerifyDeploymentAttempts 自动认证时最多试几个实例：实例级 runtime_variables 不进指纹，
-// 所以不同实例的宏可能不同（文件路径不同）。逐个试到第一次成功为止，次数封顶避免
-// 一个挂了很多实例的服务把后台任务拖长。
-const autoVerifyDeploymentAttempts = 3
+type LogFormatConfigurationError string
 
-// MaybeAutoVerifyServiceLogFormats 新增服务 / 开启采集时抽样认证一次（架构文档 §4.8）。
-//
-// 以下情况不触发，都属于"现在没有可校验的样例"，而不是漏做：
-//   - 服务没开采集（log_collection_enabled=false）：此时根本没有"要采的日志"；
-//   - 该行已经 verified：认证是幂等的，"一次认证"不该被重复触发（改配置会让指纹变化，
-//     状态自己回到 needs_recheck，那时才需要重新认证）。
-//
-// 依据优先级：先试 instance（真实文件，最贴近实际采集），全部实例都取不到样例时
-// 退到 sample_log（规则自带样例）；都失败就保持未认证，由人在弹窗里手动处理。
-//
-// best-effort：整个流程在后台跑，任何失败只记日志，绝不影响服务保存的返回结果。
-func (s *Service) MaybeAutoVerifyServiceLogFormats(ctx context.Context, serviceID int64) {
-	if s.logFormatVerifier == nil {
-		return
-	}
-	// 请求上下文在响应返回后就会被取消，后台任务必须脱钩；超时兜住卡住的主机。
-	background, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-	go func() {
-		defer cancel()
-		s.autoVerifyServiceLogFormats(background, serviceID)
-	}()
-}
-
-func (s *Service) autoVerifyServiceLogFormats(ctx context.Context, serviceID int64) {
-	rows, err := s.repository.ListServiceTemplateLogs(ctx, serviceID)
-	if err != nil {
-		slog.Warn("auto verify log format: load service logs failed", "service_id", serviceID, "error", err)
-		return
-	}
-	// 实例列表按需加载：全都已认证时（保存服务是高频操作）不该多查一次库。
-	var deployments []int64
-	loadedDeployments := false
-	for _, row := range rows {
-		if row.FormatState == formatStateVerified {
-			continue
-		}
-		if !loadedDeployments {
-			loadedDeployments = true
-			deployments, err = s.repository.queries.ListServiceDeploymentIDs(ctx, serviceID)
-			if err != nil {
-				slog.Warn("auto verify log format: load service deployments failed", "service_id", serviceID, "error", err)
-				deployments = nil
-			}
-		}
-		if s.autoVerifyOneLogFormat(ctx, serviceID, row.LogDefinition, deployments) {
-			continue
-		}
-		slog.Info("auto verify log format: kept unverified",
-			"service_id", serviceID, "log_definition_id", row.LogDefinition)
-	}
-}
-
-// autoVerifyOneLogFormat 对一条日志定义按 instance → sample_log 顺序尝试，返回是否认证成功。
-func (s *Service) autoVerifyOneLogFormat(ctx context.Context, serviceID, logDefinitionID int64, deployments []int64) bool {
-	attempts := 0
-	for _, deploymentID := range deployments {
-		if attempts >= autoVerifyDeploymentAttempts {
-			break
-		}
-		attempts++
-		result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, deploymentID, false, LogFormatSourceInstance, "")
-		if err == nil && result.Passed {
-			slog.Info("auto verify log format: verified from instance",
-				"service_id", serviceID, "log_definition_id", logDefinitionID, "deployment_id", deploymentID)
-			return true
-		}
-	}
-	result, err := s.VerifyServiceLogFormat(ctx, serviceID, logDefinitionID, 0, false, LogFormatSourceSampleLog, "")
-	if err == nil && result.Passed {
-		slog.Info("auto verify log format: verified from rule sample log",
-			"service_id", serviceID, "log_definition_id", logDefinitionID)
-		return true
-	}
-	return false
-}
+func (err LogFormatConfigurationError) Error() string { return string(err) }

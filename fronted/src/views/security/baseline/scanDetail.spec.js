@@ -23,6 +23,40 @@ const stubs = {
 }
 
 describe('扫描详情的项目与环境', () => {
+  it('通过筛选隐藏消息和修复建议，其他状态恢复列且保留数据', async () => {
+    requestUtil.get.mockResolvedValueOnce({ data: { data: {
+      scan: { id: 5, status: 'failed' }, targets: [],
+      items: [
+        { host_id: 10, status: 'pass', message: '', remediation: '' },
+        { host_id: 11, status: 'fail', message: '配置不符合', remediation: '修改配置' },
+      ],
+    } } })
+    const tableStub = { props: ['rowKey', 'columns', 'scroll'], template: '<div />' }
+    const wrapper = mount(ScanDetail, { global: { stubs: { ...stubs, 'a-table': tableStub } } })
+    await flushPromises()
+    const table = wrapper.findAllComponents(tableStub).find((component) => component.props('rowKey') === 'idx')
+    const allKeys = table.props('columns').map((column) => column.key)
+    expect(allKeys).toContain('message')
+    expect(allKeys).toContain('remediation')
+    wrapper.vm.statusFilter = 'pass'
+    await flushPromises()
+    expect(table.props('columns').map((column) => column.key)).toEqual(
+      allKeys.filter((key) => key !== 'message' && key !== 'remediation'),
+    )
+    expect(table.props('scroll')).toEqual({ x: 1400 })
+    expect(wrapper.vm.filteredItems).toHaveLength(1)
+    expect(wrapper.vm.filteredItems[0].status).toBe('pass')
+    for (const status of ['fail', 'all']) {
+      wrapper.vm.statusFilter = status
+      await flushPromises()
+      expect(table.props('columns').map((column) => column.key)).toEqual(allKeys)
+      expect(table.props('scroll')).toEqual({ x: 1800 })
+    }
+    expect(wrapper.vm.items[1].message).toBe('配置不符合')
+    expect(wrapper.vm.items[1].remediation).toBe('修改配置')
+    wrapper.unmount()
+  })
+
   it.each([
     ['项目环境范围', { mount_type: 'environment', project_id: 2, project_name: '核心项目', environment_id: 3, environment_name: '生产' }, '核心项目', '生产'],
     ['项目范围', { mount_type: 'project', project_name: '核心项目', environments: [{ id: 1, name: 'test' }, { id: 2, name: 'prod' }] }, '核心项目', 'test、prod'],

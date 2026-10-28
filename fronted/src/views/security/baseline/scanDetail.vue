@@ -113,7 +113,7 @@
               </a-radio-group>
             </a-space>
           </div>
-          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="itemPagination" :scroll="{ x: 1800 }" size="small" :locale="tableLocale" @change="handleItemTableChange">
+          <a-table row-key="idx" :columns="visibleItemColumns" :data-source="filteredItems" :pagination="itemPagination" :scroll="{ x: statusFilter === 'pass' ? 1400 : 1800 }" size="small" :locale="tableLocale" @change="handleItemTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
@@ -211,6 +211,9 @@ const itemColumns = [
   { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },
   { title: '修复建议', key: 'remediation', width: 240 },
 ]
+const visibleItemColumns = computed(() => statusFilter.value === 'pass'
+  ? itemColumns.filter((column) => column.key !== 'message' && column.key !== 'remediation')
+  : itemColumns)
 
 // 预期展示 Rego 策略摘要；实际展示违规数与违规项摘要，悬浮可看完整 JSON。
 // 断言级结构化结果（agent OPA 检查的 actual.details）：逐条展示「应为 X / 实际 Y」。

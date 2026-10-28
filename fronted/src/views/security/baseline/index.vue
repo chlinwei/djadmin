@@ -1,6 +1,6 @@
 <template>
   <div class="baseline-page">
-    <a-tabs v-model:activeKey="activeTab" class="workspace-tabs" @change="handleTabChange">
+    <a-tabs v-model:activeKey="activeTab" class="workspace-tabs">
       <a-tab-pane key="baselines" tab="基线标准">
         <div class="baseline-layout">
           <div class="baseline-pane">
@@ -303,7 +303,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { openDeleteConfirm } from '@/util/deleteConfirm'
@@ -313,6 +313,7 @@ import requestUtil from '@/util/request'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { formatTimeWithTimezone } from '@/util/timezone'
 import { fetchAllPages } from '@/util/fetchAllPages'
+import { useKeepAliveRefreshLifecycle } from '@/util/keepAliveRefresh'
 import { getProjectList, getBusinessEnvironmentList, getApplicationServiceList } from '@/api/assets/application'
 import store from '@/store'
 
@@ -353,6 +354,39 @@ const itemColumns = [
 
 const scans = ref([])
 const scanLoading = ref(false)
+let scanRefreshTimer = null
+let scanPageActive = true
+let scanRequestId = 0
+
+function stopScanRefresh() {
+  clearTimeout(scanRefreshTimer)
+  scanRefreshTimer = null
+}
+
+function scheduleScanRefresh() {
+  stopScanRefresh()
+  // 仅可见的扫描记录页且本页有在途扫描时轮询，终态后停止，避免后台持续请求。
+  if (!scanPageActive || activeTab.value !== 'scans' ||
+      !scans.value.some((scan) => ['pending', 'running'].includes(scan.status))) return
+  scanRefreshTimer = setTimeout(() => { void loadScans() }, 3000)
+}
+
+watch(activeTab, (tab) => {
+  stopScanRefresh()
+  if (scanPageActive && tab === 'scans') void loadScans()
+})
+useKeepAliveRefreshLifecycle(() => {
+  scanPageActive = true
+  if (activeTab.value === 'scans') void loadScans()
+}, () => {
+  scanPageActive = false
+  stopScanRefresh()
+})
+onBeforeUnmount(() => {
+  scanPageActive = false
+  scanRequestId++
+  stopScanRefresh()
+})
 const scanPagination = reactive(createPagination())
 const itemPagination = createPagination()
 const baselineModalOpen = ref(false)
@@ -429,20 +463,28 @@ async function loadBaselines() {
   } finally { baselineLoading.value = false }
 }
 async function loadScans() {
+  stopScanRefresh()
+  const requestId = ++scanRequestId
   scanLoading.value = true
   try {
     const data = responseData(await getSecurityScans({ type: 'baseline', page: scanPagination.current, page_size: scanPagination.pageSize }))
+    // 手动刷新/翻页可与旧请求交错，旧页结果不能覆盖当前页或恢复旧轮询。
+    if (requestId !== scanRequestId) return
     scans.value = data.results || []
     scanPagination.total = Number(data.count || 0)
-  } finally { scanLoading.value = false }
+  } catch (error) {
+    if (requestId === scanRequestId) message.error(error?.message || '扫描记录刷新失败，请重试')
+  } finally {
+    if (requestId === scanRequestId) {
+      scanLoading.value = false
+      scheduleScanRefresh()
+    }
+  }
 }
 function handleScanTableChange(pagination) {
   scanPagination.current = pagination.current
   scanPagination.pageSize = pagination.pageSize
   loadScans()
-}
-function handleTabChange(key) {
-  if (key === 'scans') loadScans()
 }
 function openBaselineModal(record) {
   baselineForm.id = record?.id || null
@@ -722,9 +764,9 @@ async function submitScan() {
     }))
     scanModalOpen.value = false
     message.success(`扫描已发起（${data.targets} 台主机）`)
-    activeTab.value = 'scans'
     scanPagination.current = 1
-    await loadScans()
+    if (activeTab.value === 'scans') await loadScans()
+    else activeTab.value = 'scans'
   } catch (error) {
     message.error(error?.message || '扫描发起失败')
    } finally { scanning.value = false }

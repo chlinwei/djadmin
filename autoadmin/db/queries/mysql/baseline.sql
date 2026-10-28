@@ -112,8 +112,8 @@ SELECT COUNT(*) FROM baseline_item WHERE baseline_id = sqlc.arg(baseline_id);
 SELECT COUNT(*) FROM baseline_item WHERE category_id = sqlc.arg(category_id);
 
 -- name: CreateBaselineScan :execlastid
-INSERT INTO security_scan(create_time, update_time, baseline_id, mount_type, project_id, environment_id, status, summary, requested_username, start_time, end_time)
-VALUES (?, ?, ?, ?, ?, ?, 'pending', '{}', ?, NULL, NULL);
+INSERT INTO security_scan(create_time, update_time, baseline_id, mount_type, project_id, environment_id, status, summary, requested_username, start_time, end_time, scope_snapshot)
+VALUES (?, ?, ?, ?, ?, ?, 'pending', '{}', ?, NULL, NULL, sqlc.narg(scope_snapshot));
 
 -- name: ClaimBaselineScan :execrows
 UPDATE security_scan SET status = 'running', start_time = ?, update_time = ?
@@ -160,13 +160,30 @@ LIMIT ? OFFSET ?;
 -- 改为取出各列、由应用层组装 JSON（见 docs/architecture/SQL_DESIGN.md §4.2）。
 -- name: GetScanHeader :one
 SELECT s.id, s.scan_type, b.name AS baseline, s.baseline_id, s.mount_type, s.status, s.summary,
-       s.requested_username, s.start_time, s.end_time
+       s.requested_username, s.start_time, s.end_time, s.project_id, s.environment_id,
+       COALESCE(p.name, '') AS project_name, COALESCE(e.name, '') AS environment_name,
+       COALESCE(s.scope_snapshot, 'null') AS scope_snapshot,
+       CASE WHEN s.scope_snapshot IS NULL THEN 0 ELSE 1 END AS scope_snapshot_present
 FROM security_scan s JOIN baseline b ON b.id = s.baseline_id
+LEFT JOIN assets_project p ON p.id = s.project_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
 WHERE s.id = sqlc.arg(id);
 
 -- name: ListScanTargets :many
-SELECT host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
+SELECT host_id, host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
 FROM security_scan_target WHERE scan_id = sqlc.arg(scan_id) ORDER BY id;
+
+-- 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+-- name: ListBaselineScopeEnvironments :many
+SELECT DISTINCT d.host_id, s.environment_id, COALESCE(e.name, '') AS environment_name
+FROM assets_business_system b
+JOIN assets_application_service s ON s.business_system_id = b.id AND s.enabled = TRUE
+JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = l.deployment_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE b.project_id = sqlc.arg(project_id)
+  AND (s.environment_id = sqlc.narg(environment_id) OR sqlc.narg(environment_id) IS NULL)
+ORDER BY d.host_id, s.environment_id;
 
 -- 明细排序：原来用 FIELD(status,'fail','pass')（MySQL 专有），改成等价的 CASE 表达式，
 -- 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。

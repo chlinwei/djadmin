@@ -1144,6 +1144,7 @@ type SecurityScan struct {
 	MountType         string          `json:"mount_type"`
 	ProjectID         sql.NullInt64   `json:"project_id"`
 	EnvironmentID     sql.NullInt64   `json:"environment_id"`
+	ScopeSnapshot     json.RawMessage `json:"scope_snapshot"`
 	Status            string          `json:"status"`
 	Summary           json.RawMessage `json:"summary"`
 	RequestedUsername string          `json:"requested_username"`

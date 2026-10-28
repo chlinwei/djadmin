@@ -698,13 +698,14 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan s JOIN baseline b")).
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "scan_type", "baseline", "baseline_id", "mount_type", "status",
-			"summary", "requested_username", "start_time", "end_time"}).
-			AddRow(5, "baseline", "等保2.0", 7, "project", "failed", []byte(`{"total":1}`), "admin", testTime(), nil))
+			"summary", "requested_username", "start_time", "end_time", "project_id", "environment_id", "project_name", "environment_name", "scope_snapshot", "scope_snapshot_present"}).
+			AddRow(5, "baseline", "等保2.0", 7, "environment", "failed", []byte(`{"total":1}`), "admin", testTime(), nil, 2, 3, "已改名项目", "已改名环境",
+				[]byte(`{"project_name":"核心项目","environments":[{"id":3,"name":"生产"}],"hosts":{"3":[{"id":3,"name":"生产"}]}}`), 1))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM security_scan_target")).
 		WithArgs(int64(5)).
-		WillReturnRows(sqlmock.NewRows([]string{"host_name", "host_ip", "status", "passed_items", "failed_items",
+		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "status", "passed_items", "failed_items",
 			"compliance_rate", "error_message"}).
-			AddRow("node-1", "10.0.0.5", "failed", 2, 1, "66.67", ""))
+			AddRow(3, "node-1", "10.0.0.5", "failed", 2, 1, "66.67", ""))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM baseline_scan_result r")).
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"host_id", "host_name", "host_ip", "item_name", "chapter", "severity",
@@ -725,10 +726,18 @@ func TestGetScanMapsHeaderTargetsAndItems(t *testing.T) {
 	if scan["end_time"] != nil {
 		t.Fatalf("end_time = %v, want nil", scan["end_time"])
 	}
+	if scan["project_id"] != float64(2) || scan["environment_id"] != float64(3) ||
+		scan["project_name"] != "核心项目" || scan["environment_source"] != "snapshot" {
+		t.Fatalf("scan scope = %v", scan)
+	}
 	if scan["summary"].(map[string]any)["total"] != float64(1) {
 		t.Fatalf("summary = %v", scan["summary"])
 	}
 	target := data["targets"].([]any)[0].(map[string]any)
+	if scan["environments"].([]any)[0].(map[string]any)["name"] != "生产" ||
+		target["environments"].([]any)[0].(map[string]any)["id"] != float64(3) {
+		t.Fatalf("snapshot environments not retained: %v / %v", scan, target)
+	}
 	// decimal(5,2) 列在两侧产物里都是 string，响应必须还原成数值（前端按百分比展示）。
 	if target["compliance_rate"] != 66.67 {
 		t.Fatalf("compliance_rate = %v, want 66.67", target["compliance_rate"])

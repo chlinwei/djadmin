@@ -34,6 +34,8 @@
         <template v-else-if="scan">
           <a-descriptions bordered :column="3" size="small" class="scan-summary">
             <a-descriptions-item label="基线">{{ scan.baseline }}</a-descriptions-item>
+            <a-descriptions-item label="项目">{{ scan.project_name || (scan.project_id ? `项目 #${scan.project_id}（已删除或不可用）` : '-') }}</a-descriptions-item>
+            <a-descriptions-item label="环境">{{ environmentSummary }}</a-descriptions-item>
             <a-descriptions-item label="发起人">{{ scan.requested_username || '-' }}</a-descriptions-item>
             <a-descriptions-item label="开始时间">{{ scan.start_time || '-' }}</a-descriptions-item>
             <a-descriptions-item label="结束时间">{{ scan.end_time || '-' }}</a-descriptions-item>
@@ -41,8 +43,22 @@
             <a-descriptions-item label="状态"><a-tag :color="statusColor(scan.status)">{{ statusLabel(scan.status) }}</a-tag></a-descriptions-item>
           </a-descriptions>
 
+          <a-alert
+            v-if="scan.environment_source === 'current_assets'"
+            type="info" show-icon
+            message="此记录未保存范围快照，项目名称和环境归属按当前资产关联展示，非扫描时快照。"
+          />
           <h4 class="section-title">主机符合率</h4>
-          <a-table row-key="host_ip" :columns="targetColumns" :data-source="targets" :pagination="targetPagination" size="small" :locale="tableLocale" @change="handleTargetTableChange">
+          <div class="toolbar">
+            <a-select
+              v-model:value="environmentFilter"
+              class="filter-item" placeholder="全部环境" allow-clear
+              show-search option-filter-prop="label"
+              :options="environmentOptions"
+              :getPopupContainer="getPopupContainer"
+            />
+          </div>
+          <a-table row-key="host_id" :columns="targetColumns" :data-source="filteredTargets" :pagination="targetPagination" :scroll="{ x: 1100 }" size="small" :locale="tableLocale" @change="handleTargetTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
                 <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
@@ -64,6 +80,7 @@
               />
               <a-select
                 v-model:value="hostFilter"
+                :getPopupContainer="getPopupContainer"
                 class="filter-item"
                 show-search
                 option-filter-prop="label"
@@ -73,6 +90,7 @@
               />
               <a-select
                 v-model:value="chapterFilter"
+                :getPopupContainer="getPopupContainer"
                 class="filter-item"
                 show-search
                 option-filter-prop="label"
@@ -82,19 +100,20 @@
               />
               <a-select
                 v-model:value="severityFilter"
+                :getPopupContainer="getPopupContainer"
                 class="filter-item"
                 placeholder="全部级别"
                 allow-clear
                 :options="[{ label: '高', value: 'high' }, { label: '中', value: 'medium' }, { label: '低', value: 'low' }]"
               />
               <a-radio-group v-model:value="statusFilter" button-style="solid">
-                <a-radio-button value="all">全部（{{ items.length }}）</a-radio-button>
+                <a-radio-button value="all">全部（{{ environmentItems.length }}）</a-radio-button>
                 <a-radio-button value="fail">不符合（{{ failedCount }}）</a-radio-button>
-                <a-radio-button value="pass">通过（{{ items.length - failedCount }}）</a-radio-button>
+                <a-radio-button value="pass">通过（{{ environmentItems.length - failedCount }}）</a-radio-button>
               </a-radio-group>
             </a-space>
           </div>
-          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="itemPagination" size="small" :locale="tableLocale" @change="handleItemTableChange">
+          <a-table row-key="idx" :columns="itemColumns" :data-source="filteredItems" :pagination="itemPagination" :scroll="{ x: 1800 }" size="small" :locale="tableLocale" @change="handleItemTableChange">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'severity'">
                 <a-tag :color="record.severity === 'high' ? 'red' : record.severity === 'medium' ? 'orange' : 'default'">{{ severityLabel(record.severity) }}</a-tag>
@@ -147,9 +166,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import requestUtil from '@/util/request'
 import { createPagination, tableLocale } from '@/util/tableStyle'
+import { resolvePopupContainerByContext } from '@/util/popupContainer'
 
 const route = useRoute()
 const router = useRouter()
+const getPopupContainer = (triggerNode) => resolvePopupContainerByContext(triggerNode)
 
 const loading = ref(false)
 const scan = ref(null)
@@ -163,10 +184,15 @@ const itemSearchText = ref('')
 const hostFilter = ref(undefined)
 const chapterFilter = ref(undefined)
 const severityFilter = ref(undefined)
+const environmentFilter = ref(undefined)
+const environmentLabel = (environment) => environment.name || `环境 #${environment.id}（已删除或不可用）`
+const environmentText = (row) => row.environments?.length ? row.environments.map(environmentLabel).join('、') : '未记录环境'
+const environmentColumn = { title: '环境', key: 'environments', width: 160, customRender: ({ record }) => environmentText(record) }
 
 const targetColumns = [
   { title: '主机', dataIndex: 'host_name', key: 'host_name' },
   { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 140 },
+  environmentColumn,
   { title: '状态', key: 'status', width: 100 },
   { title: '通过 / 不符合', key: 'items', width: 130, customRender: ({ record }) => `${record.passed_items} / ${record.failed_items}` },
   { title: '符合率', key: 'compliance_rate', width: 180 },
@@ -175,6 +201,7 @@ const targetColumns = [
 const itemColumns = [
   { title: '主机', dataIndex: 'host_name', key: 'host_name', width: 110 },
   { title: 'IP', dataIndex: 'host_ip', key: 'host_ip', width: 120 },
+  environmentColumn,
   { title: '章节', dataIndex: 'chapter', key: 'chapter', width: 100 },
   { title: '条目', dataIndex: 'item_name', key: 'item_name', width: 180 },
   { title: '级别', key: 'severity', width: 70 },
@@ -240,10 +267,29 @@ const summaryText = computed(() => {
   if (!summary?.total) return '-'
   return `${summary.total} 台：${summary.success} 成功 / ${summary.failed} 失败 / ${summary.skipped ?? 0} 跳过`
 })
-const failedCount = computed(() => items.value.filter((item) => item.status !== 'pass').length)
+const environmentSummary = computed(() => {
+  const names = (scan.value?.environments || []).map(environmentLabel)
+  if (names.length) return names.join('、')
+  if (scan.value?.environment_id) return environmentLabel({ id: scan.value.environment_id, name: scan.value.environment_name })
+  return '未记录环境'
+})
+const environmentOptions = computed(() => {
+  const options = (scan.value?.environments || []).map((environment) => ({ label: environmentLabel(environment), value: environment.id }))
+  if (targets.value.some((target) => !target.environments?.length)) options.push({ label: '未记录环境', value: 'unknown' })
+  return options
+})
+// 主机可同时属于多个环境；按环境筛选不复制主机或结果，只检查其归属集合。
+const matchesEnvironment = (row) => {
+  if (environmentFilter.value == null) return true
+  if (environmentFilter.value === 'unknown') return !row.environments?.length
+  return row.environments?.some((environment) => environment.id === environmentFilter.value) === true
+}
+const filteredTargets = computed(() => targets.value.filter(matchesEnvironment))
+const environmentItems = computed(() => items.value.filter(matchesEnvironment))
+const failedCount = computed(() => environmentItems.value.filter((item) => item.status !== 'pass').length)
 const hostOptions = computed(() => {
   const seen = new Map()
-  targets.value.forEach((target) => seen.set(target.host_ip, { label: `${target.host_name} / ${target.host_ip}`, value: target.host_ip }))
+  filteredTargets.value.forEach((target) => seen.set(target.host_id, { label: `${target.host_name} / ${target.host_ip}`, value: target.host_id }))
   return [...seen.values()]
 })
 const chapterOptions = computed(() => {
@@ -252,9 +298,9 @@ const chapterOptions = computed(() => {
 })
 const filteredItems = computed(() => {
   const keyword = itemSearchText.value.trim().toLowerCase()
-  return items.value.filter((item) => {
+  return environmentItems.value.filter((item) => {
     if (statusFilter.value !== 'all' && item.status !== statusFilter.value) return false
-    if (hostFilter.value && item.host_ip !== hostFilter.value) return false
+    if (hostFilter.value && item.host_id !== hostFilter.value) return false
     if (chapterFilter.value && item.chapter !== chapterFilter.value) return false
     if (severityFilter.value && item.severity !== severityFilter.value) return false
     if (keyword && !String(item.item_name || '').toLowerCase().includes(keyword)) return false
@@ -276,6 +322,14 @@ watch(filteredItems, (rows) => {
   itemPagination.total = rows.length
   itemPagination.current = 1
 }, { immediate: true })
+watch(filteredTargets, (rows) => {
+  targetPagination.total = rows.length
+  targetPagination.current = 1
+  if (hostFilter.value != null && !rows.some((row) => row.host_id === hostFilter.value)) hostFilter.value = undefined
+}, { immediate: true })
+watch(environmentOptions, (options) => {
+  if (environmentFilter.value != null && !options.some((option) => option.value === environmentFilter.value)) environmentFilter.value = undefined
+})
 
 const loadDetail = async () => {
   const scanId = Number(route.params.id)
@@ -287,8 +341,6 @@ const loadDetail = async () => {
     scan.value = data.scan || null
     targets.value = data.targets || []
     items.value = (data.items || []).map((item, index) => ({ ...item, idx: index }))
-    targetPagination.total = targets.value.length
-    targetPagination.current = 1
   } finally {
     loading.value = false
   }

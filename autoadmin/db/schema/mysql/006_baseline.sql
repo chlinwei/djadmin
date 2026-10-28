@@ -53,6 +53,7 @@ CREATE TABLE `security_scan` (
   `mount_type` varchar(16) NOT NULL,
   `project_id` bigint DEFAULT NULL,
   `environment_id` bigint DEFAULT NULL,
+  `scope_snapshot` json DEFAULT NULL,
   `status` varchar(16) NOT NULL DEFAULT 'pending',
   `summary` json NOT NULL,
   `requested_username` varchar(100) NOT NULL,

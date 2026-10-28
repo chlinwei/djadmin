@@ -41,8 +41,7 @@ type scanHost struct {
 }
 
 // resolveHosts 复用 inspection 域的项目/环境主机集合查询（OS 基线只扫主机）。
-func (handler *Handler) resolveHosts(ctx context.Context, input scanInput) ([]scanHost, error) {
-	queries := db.New(handler.db)
+func resolveScanHosts(ctx context.Context, queries *db.Queries, input scanInput) ([]scanHost, error) {
 	var rows []db.ListMountProjectHostsRow
 	if input.MountType == "environment" {
 		environmentRows, queryErr := queries.ListMountProjectEnvironmentHosts(ctx, db.ListMountProjectEnvironmentHostsParams{
@@ -112,7 +111,14 @@ func (handler *Handler) StartScan(context *gin.Context) {
 		response.BusinessError(context, 400, "基线没有检查条目", nil)
 		return
 	}
-	hosts, err := handler.resolveHosts(context, input)
+	tx, err := handler.db.BeginTx(context, nil)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	defer tx.Rollback()
+	scopeQueries := db.New(tx)
+	hosts, err := resolveScanHosts(context, scopeQueries, input)
 	if err != nil {
 		response.Error(context, err)
 		return
@@ -125,17 +131,36 @@ func (handler *Handler) StartScan(context *gin.Context) {
 	if claims, _ := identity.ClaimsFromContext(context); claims != nil {
 		username = claims.Username
 	}
-	tx, err := handler.db.BeginTx(context, nil)
+	projectName, err := scopeQueries.GetProjectNameByID(context, *input.ProjectID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
-	defer tx.Rollback()
+	environmentName := ""
+	if input.MountType == "project" {
+		input.EnvironmentID = nil
+	} else {
+		environmentName, err = scopeQueries.GetBusinessEnvironmentNameByID(context, *input.EnvironmentID)
+		if err != nil {
+			response.Error(context, err)
+			return
+		}
+	}
+	hostIDs := make([]int64, 0, len(hosts))
+	for _, host := range hosts {
+		hostIDs = append(hostIDs, host.HostID)
+	}
+	scope, err := loadScanScope(context, scopeQueries, nullInt64FromPtr(input.ProjectID), nullInt64FromPtr(input.EnvironmentID), projectName, environmentName, hostIDs)
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
 	now := time.Now().UTC()
 	scanID, err := db.New(tx).CreateBaselineScan(context, db.CreateBaselineScanParams{
 		CreateTime: now, UpdateTime: now, BaselineID: baselineID, MountType: input.MountType,
 		ProjectID: nullInt64FromPtr(input.ProjectID), EnvironmentID: nullInt64FromPtr(input.EnvironmentID),
 		RequestedUsername: username,
+		ScopeSnapshot:     jsonBytes(scope),
 	})
 	if err != nil {
 		response.Error(context, err)
@@ -564,15 +589,47 @@ func (handler *Handler) GetScan(context *gin.Context) {
 		// 时间列从 JSON_OBJECT 的库内文本变成本地 time.Time：格式从
 		// "2026-09-16 21:00:00.000000" 变成 RFC3339，与列表接口的表示一致。
 		"start_time": nullTimeString(header.StartTime), "end_time": nullTimeString(header.EndTime)}
+	scan["project_id"], scan["environment_id"] = nil, nil
+	scan["project_name"], scan["environment_name"] = header.ProjectName, header.EnvironmentName
+	if header.ProjectID.Valid {
+		scan["project_id"] = header.ProjectID.Int64
+	}
+	if header.EnvironmentID.Valid {
+		scan["environment_id"] = header.EnvironmentID.Int64
+	}
 
 	targetRows, err := queries.ListScanTargets(context, scanID)
 	if err != nil {
 		response.Error(context, err)
 		return
 	}
+	var scope scanScope
+	scopeSource := "snapshot"
+	if header.ScopeSnapshotPresent != 0 {
+		scope, err = decodeScanScope(header.ScopeSnapshot)
+	} else {
+		// 仅无快照的历史记录按当前关联展示，响应明确标注来源，不回写伪历史。
+		scopeSource = "current_assets"
+		hostIDs := make([]int64, 0, len(targetRows))
+		for _, row := range targetRows {
+			hostIDs = append(hostIDs, row.HostID)
+		}
+		scope, err = loadScanScope(context, queries, header.ProjectID, header.EnvironmentID, header.ProjectName, header.EnvironmentName, hostIDs)
+	}
+	if err != nil {
+		response.Error(context, err)
+		return
+	}
+	scan["project_name"] = scope.ProjectName
+	scan["environments"], scan["environment_source"] = scope.Environments, scopeSource
+	for _, environment := range scope.Environments {
+		if header.EnvironmentID.Valid && environment.ID == header.EnvironmentID.Int64 {
+			scan["environment_name"] = environment.Name
+		}
+	}
 	targets := make([]gin.H, 0, len(targetRows))
 	for _, row := range targetRows {
-		targets = append(targets, gin.H{"host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
+		targets = append(targets, gin.H{"host_id": row.HostID, "environments": scope.Hosts[row.HostID], "host_name": row.HostName, "host_ip": row.HostIp, "status": row.Status,
 			"passed_items": row.PassedItems, "failed_items": row.FailedItems,
 			"compliance_rate": decimalValue(row.ComplianceRate), "error_message": row.ErrorMessage})
 	}
@@ -585,7 +642,8 @@ func (handler *Handler) GetScan(context *gin.Context) {
 	items := make([]gin.H, 0, len(itemRows))
 	for _, row := range itemRows {
 		items = append(items, gin.H{"host_id": row.HostID, "host_name": row.HostName, "host_ip": row.HostIp,
-			"item_name": row.ItemName, "chapter": row.Chapter, "severity": row.Severity, "status": row.Status,
+			"environments": scope.Hosts[row.HostID],
+			"item_name":    row.ItemName, "chapter": row.Chapter, "severity": row.Severity, "status": row.Status,
 			"expected": row.ExpectedValue, "actual": row.ActualValue, "message": row.Message,
 			"remediation": row.Remediation})
 	}

@@ -658,6 +658,8 @@ type Querier interface {
 	// 两方言都认（FIELD 未命中返回 0，所以 ELSE 分支排在最前）。
 	// expected_value/actual_value 可空，NULL 无法 Scan 进 json.RawMessage，统一回填 JSON null 字面量。
 	ListBaselineScanResults(ctx context.Context, scanID int64) ([]ListBaselineScanResultsRow, error)
+	// 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+	ListBaselineScopeEnvironments(ctx context.Context, arg ListBaselineScopeEnvironmentsParams) ([]ListBaselineScopeEnvironmentsRow, error)
 	ListBaselines(ctx context.Context, arg ListBaselinesParams) ([]ListBaselinesRow, error)
 	ListBusinessEnvironments(ctx context.Context, arg ListBusinessEnvironmentsParams) ([]AssetsBusinessEnvironment, error)
 	ListBusinessSystems(ctx context.Context, arg ListBusinessSystemsParams) ([]ListBusinessSystemsRow, error)

@@ -213,7 +213,10 @@ func TestSmokeBaselineQueriesAgainstRealDatabase(t *testing.T) {
 	step("CreateBaselineScan", func() error {
 		id, err := queries.CreateBaselineScan(ctx, db.CreateBaselineScanParams{CreateTime: now, UpdateTime: now,
 			BaselineID: baselineID, MountType: "project", ProjectID: sql.NullInt64{Int64: 1, Valid: true},
-			RequestedUsername: "smoke"})
+			RequestedUsername: "smoke", ScopeSnapshot: jsonBytes(scanScope{
+				ProjectName: "snapshot-project", Environments: []scanEnvironment{{ID: 1, Name: "snapshot-env"}},
+				Hosts: map[int64][]scanEnvironment{1: {{ID: 1, Name: "snapshot-env"}}},
+			})})
 		scanID = id
 		return err
 	})
@@ -303,6 +306,15 @@ func TestSmokeBaselineQueriesAgainstRealDatabase(t *testing.T) {
 		}
 		if header.BaselineID != baselineID || len(header.Summary) == 0 {
 			return fmt.Errorf("扫描头不符: %+v", header)
+		}
+		scope, err := decodeScanScope(header.ScopeSnapshot)
+		if err != nil || scope.ProjectName != "snapshot-project" || len(scope.Hosts[1]) != 1 {
+			return fmt.Errorf("范围快照存取不符: %+v, %v", scope, err)
+		}
+		if _, err := queries.ListBaselineScopeEnvironments(ctx, db.ListBaselineScopeEnvironmentsParams{
+			ProjectID: header.ProjectID, EnvironmentID: header.EnvironmentID,
+		}); err != nil {
+			return err
 		}
 		return nil
 	})

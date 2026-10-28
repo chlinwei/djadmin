@@ -244,18 +244,19 @@ func (q *Queries) CreateBaselineItem(ctx context.Context, arg CreateBaselineItem
 }
 
 const createBaselineScan = `-- name: CreateBaselineScan :execlastid
-INSERT INTO security_scan(create_time, update_time, baseline_id, mount_type, project_id, environment_id, status, summary, requested_username, start_time, end_time)
-VALUES (?, ?, ?, ?, ?, ?, 'pending', '{}', ?, NULL, NULL)
+INSERT INTO security_scan(create_time, update_time, baseline_id, mount_type, project_id, environment_id, status, summary, requested_username, start_time, end_time, scope_snapshot)
+VALUES (?, ?, ?, ?, ?, ?, 'pending', '{}', ?, NULL, NULL, ?)
 `
 
 type CreateBaselineScanParams struct {
-	CreateTime        time.Time     `json:"create_time"`
-	UpdateTime        time.Time     `json:"update_time"`
-	BaselineID        int64         `json:"baseline_id"`
-	MountType         string        `json:"mount_type"`
-	ProjectID         sql.NullInt64 `json:"project_id"`
-	EnvironmentID     sql.NullInt64 `json:"environment_id"`
-	RequestedUsername string        `json:"requested_username"`
+	CreateTime        time.Time       `json:"create_time"`
+	UpdateTime        time.Time       `json:"update_time"`
+	BaselineID        int64           `json:"baseline_id"`
+	MountType         string          `json:"mount_type"`
+	ProjectID         sql.NullInt64   `json:"project_id"`
+	EnvironmentID     sql.NullInt64   `json:"environment_id"`
+	RequestedUsername string          `json:"requested_username"`
+	ScopeSnapshot     json.RawMessage `json:"scope_snapshot"`
 }
 
 func (q *Queries) CreateBaselineScan(ctx context.Context, arg CreateBaselineScanParams) (int64, error) {
@@ -267,6 +268,7 @@ func (q *Queries) CreateBaselineScan(ctx context.Context, arg CreateBaselineScan
 		arg.ProjectID,
 		arg.EnvironmentID,
 		arg.RequestedUsername,
+		arg.ScopeSnapshot,
 	)
 	if err != nil {
 		return 0, err
@@ -621,22 +623,33 @@ func (q *Queries) GetBaselineScanTarget(ctx context.Context, arg GetBaselineScan
 
 const getScanHeader = `-- name: GetScanHeader :one
 SELECT s.id, s.scan_type, b.name AS baseline, s.baseline_id, s.mount_type, s.status, s.summary,
-       s.requested_username, s.start_time, s.end_time
+       s.requested_username, s.start_time, s.end_time, s.project_id, s.environment_id,
+       COALESCE(p.name, '') AS project_name, COALESCE(e.name, '') AS environment_name,
+       COALESCE(s.scope_snapshot, 'null') AS scope_snapshot,
+       CASE WHEN s.scope_snapshot IS NULL THEN 0 ELSE 1 END AS scope_snapshot_present
 FROM security_scan s JOIN baseline b ON b.id = s.baseline_id
+LEFT JOIN assets_project p ON p.id = s.project_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
 WHERE s.id = ?
 `
 
 type GetScanHeaderRow struct {
-	ID                int64           `json:"id"`
-	ScanType          string          `json:"scan_type"`
-	Baseline          string          `json:"baseline"`
-	BaselineID        int64           `json:"baseline_id"`
-	MountType         string          `json:"mount_type"`
-	Status            string          `json:"status"`
-	Summary           json.RawMessage `json:"summary"`
-	RequestedUsername string          `json:"requested_username"`
-	StartTime         sql.NullTime    `json:"start_time"`
-	EndTime           sql.NullTime    `json:"end_time"`
+	ID                   int64           `json:"id"`
+	ScanType             string          `json:"scan_type"`
+	Baseline             string          `json:"baseline"`
+	BaselineID           int64           `json:"baseline_id"`
+	MountType            string          `json:"mount_type"`
+	Status               string          `json:"status"`
+	Summary              json.RawMessage `json:"summary"`
+	RequestedUsername    string          `json:"requested_username"`
+	StartTime            sql.NullTime    `json:"start_time"`
+	EndTime              sql.NullTime    `json:"end_time"`
+	ProjectID            sql.NullInt64   `json:"project_id"`
+	EnvironmentID        sql.NullInt64   `json:"environment_id"`
+	ProjectName          string          `json:"project_name"`
+	EnvironmentName      string          `json:"environment_name"`
+	ScopeSnapshot        json.RawMessage `json:"scope_snapshot"`
+	ScopeSnapshotPresent int32           `json:"scope_snapshot_present"`
 }
 
 // 扫描头（不含目标与明细）。原来用 JSON_OBJECT 在库里拼响应体，PG 没有该函数，
@@ -655,6 +668,12 @@ func (q *Queries) GetScanHeader(ctx context.Context, id int64) (GetScanHeaderRow
 		&i.RequestedUsername,
 		&i.StartTime,
 		&i.EndTime,
+		&i.ProjectID,
+		&i.EnvironmentID,
+		&i.ProjectName,
+		&i.EnvironmentName,
+		&i.ScopeSnapshot,
+		&i.ScopeSnapshotPresent,
 	)
 	return i, err
 }
@@ -869,6 +888,53 @@ func (q *Queries) ListBaselineScanResults(ctx context.Context, scanID int64) ([]
 	return items, nil
 }
 
+const listBaselineScopeEnvironments = `-- name: ListBaselineScopeEnvironments :many
+SELECT DISTINCT d.host_id, s.environment_id, COALESCE(e.name, '') AS environment_name
+FROM assets_business_system b
+JOIN assets_application_service s ON s.business_system_id = b.id AND s.enabled = TRUE
+JOIN assets_application_service_deployment l ON l.service_id = s.id AND l.enabled = TRUE
+JOIN assets_application_deployment d ON d.id = l.deployment_id
+LEFT JOIN assets_business_environment e ON e.id = s.environment_id
+WHERE b.project_id = ?
+  AND (s.environment_id = ? OR ? IS NULL)
+ORDER BY d.host_id, s.environment_id
+`
+
+type ListBaselineScopeEnvironmentsParams struct {
+	ProjectID     sql.NullInt64 `json:"project_id"`
+	EnvironmentID sql.NullInt64 `json:"environment_id"`
+}
+
+type ListBaselineScopeEnvironmentsRow struct {
+	HostID          int64         `json:"host_id"`
+	EnvironmentID   sql.NullInt64 `json:"environment_id"`
+	EnvironmentName string        `json:"environment_name"`
+}
+
+// 与扫描主机解析采用相同的服务/成员启用条件；一台主机可以归属多个环境。
+func (q *Queries) ListBaselineScopeEnvironments(ctx context.Context, arg ListBaselineScopeEnvironmentsParams) ([]ListBaselineScopeEnvironmentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBaselineScopeEnvironments, arg.ProjectID, arg.EnvironmentID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBaselineScopeEnvironmentsRow{}
+	for rows.Next() {
+		var i ListBaselineScopeEnvironmentsRow
+		if err := rows.Scan(&i.HostID, &i.EnvironmentID, &i.EnvironmentName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBaselines = `-- name: ListBaselines :many
 SELECT id, name, version, description, enabled, create_time, update_time,
        (SELECT COUNT(*) FROM baseline_item i WHERE i.baseline_id = baseline.id) AS item_count,
@@ -937,11 +1003,12 @@ func (q *Queries) ListBaselines(ctx context.Context, arg ListBaselinesParams) ([
 }
 
 const listScanTargets = `-- name: ListScanTargets :many
-SELECT host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
+SELECT host_id, host_name, host_ip, status, passed_items, failed_items, compliance_rate, error_message
 FROM security_scan_target WHERE scan_id = ? ORDER BY id
 `
 
 type ListScanTargetsRow struct {
+	HostID         int64  `json:"host_id"`
 	HostName       string `json:"host_name"`
 	HostIp         string `json:"host_ip"`
 	Status         string `json:"status"`
@@ -961,6 +1028,7 @@ func (q *Queries) ListScanTargets(ctx context.Context, scanID int64) ([]ListScan
 	for rows.Next() {
 		var i ListScanTargetsRow
 		if err := rows.Scan(
+			&i.HostID,
 			&i.HostName,
 			&i.HostIp,
 			&i.Status,

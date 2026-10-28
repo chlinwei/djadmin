@@ -135,7 +135,7 @@ type Querier interface {
 	CountOtherHostsByIP(ctx context.Context, arg CountOtherHostsByIPParams) (int64, error)
 	CountOtherHostsByInstanceName(ctx context.Context, arg CountOtherHostsByInstanceNameParams) (int64, error)
 	CountProjects(ctx context.Context, arg CountProjectsParams) (int64, error)
-	// Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+	// Only an unfinished deletion reserves the identity; completed tombstones fence old service IDs.
 	CountReservedServiceLogIdentity(ctx context.Context, arg CountReservedServiceLogIdentityParams) (int64, error)
 	CountRetentionTierLogSettings(ctx context.Context, retentionTierID sql.NullInt64) (int64, error)
 	// 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
@@ -755,6 +755,8 @@ type Querier interface {
 	// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
 	ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error)
 	ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error)
+	// 全量配置检查覆盖所有服务成员承载主机，不依赖 Filebeat 是否纳管。
+	ListLogConfigAuditHosts(ctx context.Context) ([]ListLogConfigAuditHostsRow, error)
 	ListLogFormatServices(ctx context.Context) ([]int64, error)
 	ListLogFormatTargets(ctx context.Context, serviceID int64) ([]AssetsLogFormatTarget, error)
 	ListLogProcessingRules(ctx context.Context, arg ListLogProcessingRulesParams) ([]MonitorLogProcessingRule, error)

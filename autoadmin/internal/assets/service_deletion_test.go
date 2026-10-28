@@ -55,7 +55,7 @@ func TestFinishServiceDeletionRemovesOnlyUnsharedDeployments(t *testing.T) {
 	mock.ExpectExec("DELETE FROM assets_application_service WHERE").WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	if err = NewRepository(pool).finishServiceDeletion(context.Background(), 7); err != nil {
+	if err = NewRepository(pool).finishServiceDeletion(context.Background(), 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
@@ -124,9 +124,36 @@ func TestServiceDeletionFailureKeepsServiceForRetry(t *testing.T) {
 	mock.ExpectExec("UPDATE assets_application_service").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM assets_application_service").
+		WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectRollback()
 	if err = service.DeleteApplicationService(context.Background(), 7); err == nil {
 		t.Fatal("external cleanup failure must not report success")
 	}
+
+	t.Run("finished retry does not revoke recreated service", func(t *testing.T) {
+		pool, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT id FROM assets_application_service").
+			WithArgs(int64(7)).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+		called := false
+		err = NewRepository(pool).finishServiceDeletion(context.Background(), 7, func() error {
+			called = true
+			return nil
+		})
+		if err != nil || called {
+			t.Fatalf("completed deletion must not repeat external cleanup: called=%v err=%v", called, err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

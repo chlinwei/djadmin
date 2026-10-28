@@ -147,7 +147,7 @@ type Querier interface {
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。
 	CountProjects(ctx context.Context, pattern sql.NullString) (int64, error)
-	// Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+	// Only an unfinished deletion reserves the identity; completed tombstones fence old service IDs.
 	CountReservedServiceLogIdentity(ctx context.Context, arg CountReservedServiceLogIdentityParams) (int64, error)
 	CountRetentionTierLogSettings(ctx context.Context, retentionTierID sql.NullInt64) (int64, error)
 	// 档位占用检查拆成两条：一条语句里把同一个参数写两次会被 MySQL 引擎拆成两个参数、
@@ -788,6 +788,8 @@ type Querier interface {
 	// 批量作业明细的建 item 前一步：一次取回全部目标（主机名/IP 作为快照写入 item）。
 	ListLogBatchTargets(ctx context.Context, targetIds []int64) ([]ListLogBatchTargetsRow, error)
 	ListLogCollectionFilterRules(ctx context.Context, arg ListLogCollectionFilterRulesParams) ([]MonitorLogCollectionFilterRule, error)
+	// 全量配置检查覆盖所有服务成员承载主机，不依赖 Filebeat 是否纳管。
+	ListLogConfigAuditHosts(ctx context.Context) ([]ListLogConfigAuditHostsRow, error)
 	// 本文件由 make derive 从 db/queries/mysql/log_format.sql 派生，禁止手改。
 	// 修改请改 MySQL 源后重新派生；规则见 internal/platform/database/derive 与
 	// docs/architecture/SQL_DESIGN.md §4.6。

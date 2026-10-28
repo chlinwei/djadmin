@@ -167,6 +167,7 @@ var standardLogFields = gin.H{
 	"business_system":          gin.H{"type": "keyword"},
 	"environment":              gin.H{"type": "keyword"},
 	"service":                  gin.H{"type": "keyword"},
+	"service_id":               gin.H{"type": "keyword"},
 	"application":              gin.H{"type": "keyword"},
 	"instance":                 gin.H{"type": "keyword"},
 	"host_ip":                  gin.H{"type": "keyword"},

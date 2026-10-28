@@ -23,7 +23,7 @@ import (
 
 // Filebeat 纳管目标（monitor_log_collection_target）的运维操作：
 // 安装/卸载（离线 playbook，与 exporter 安装同链路）、启停/查状态（agent 通用命令）、
-// 下发配置（agent 内置 configure_filebeat_output + apply_filebeat_config 动作）、取消/删除/批量操作。
+// 下发配置（agent 文件预检 + apply_filebeat_config 动作）、取消/删除/批量操作。
 
 const filebeatServiceName = "filebeat"
 
@@ -481,17 +481,15 @@ func (handler *Handler) persistLogTargetRuntimeStatus(context context.Context, i
 	})
 }
 
-// ---- 下发配置（agent 内置 configure_filebeat_output） ----
+// ---- 下发配置（agent 文件预检与统一配置应用） ----
 
 // ApplyLogTargetConfig 单条「下发配置」。
 //
 // 与批量下发（BatchApplyLogTargets）走**同一条**全流程 applyLogTargetConfigRow：读默认集群 →
-// 渲染期望片段 → 指纹比对（一致则跳过）→ 下发 filebeat.yml（output）→ 下发 inputs.d 片段 →
+// 渲染期望片段 → 文件预检 → 指纹比对（一致则跳过）→ 一次应用主配置和 inputs.d 片段 →
 // 回写 config_fingerprint。
 //
-// 历史缺陷：这里曾有一条只调 configure_filebeat_output 的旁路——不下发 inputs.d 片段、不写
-// config_fingerprint，却把 runtime_status 置 running、清空 last_error，导致"下发成功"但主机上
-// 根本没有采集片段，且指纹永远为空（漂移判定对这条路径恒为"从未下发"）。
+// 不单独更新 output，防止文件检查失败前就改变主机当前配置。
 func (handler *Handler) ApplyLogTargetConfig(context *gin.Context) {
 	row, err := loadLogTarget(context, handler.db, parseID(context.Param("id")))
 	if err == sql.ErrNoRows {
@@ -534,7 +532,7 @@ func firstElasticsearchURL(clusterHosts string) (string, error) {
 	return "", fmt.Errorf("Elasticsearch 集群地址无效: %s", clusterHosts)
 }
 
-// filebeatOutputParams agent 动作 configure_filebeat_output 的参数（json 键与 agent 侧约定一致）。
+// filebeatOutputParams 是 apply_filebeat_config 的 output 参数。
 type filebeatOutputParams struct {
 	URL       string `json:"url"`
 	Username  string `json:"username"`
@@ -542,7 +540,7 @@ type filebeatOutputParams struct {
 	VerifyTLS bool   `json:"verify_tls"`
 }
 
-// buildFilebeatOutputParams 组装 agent configure_filebeat_output 的参数。
+// buildFilebeatOutputParams 组装 Filebeat 输出配置。
 func buildFilebeatOutputParams(clusterHosts, username, password string, verifyTLS bool) (filebeatOutputParams, error) {
 	url, err := firstElasticsearchURL(clusterHosts)
 	if err != nil {
@@ -667,7 +665,7 @@ func (handler *Handler) batchServiceControl(context *gin.Context, action string)
 }
 
 // applyLogTargetConfigRow 是全流程下发：读默认集群 → 渲染期望片段（含 output 指纹）→
-// 指纹比对（一致则跳过）→ 下发 filebeat.yml → 下发 inputs.d 片段 → 回写 config_fingerprint。
+// Agent 实际文件预检 → 指纹比对（一致则跳过）→ 一次应用主配置及片段 → 回写 config_fingerprint。
 //
 // 入参是 context.Context：批量作业的执行在队列消费者里跑，没有 *gin.Context 可依附；
 // 而 *gin.Context 不能带出请求生命周期（请求一结束就被取消，会把已下发的片段结果丢掉）。
@@ -704,6 +702,12 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	if err := rendered.configurationError(row.HostID); err != nil {
 		return nil, err
 	}
+	// 文件身份会随文件创建/链接变化而变，数据库指纹相同也必须先检查。
+	// 失败发生在 ES 包装、主配置/片段写入和同步记录之前，禁止回退到未检查的旧下发链路。
+	pathCheck, err := handler.checkLogTargetPaths(context, row, rendered.Fragments)
+	if err != nil {
+		return nil, fmt.Errorf("主机 %d 日志文件检查失败，已拒绝下发（请确认 Agent 已升级且在线）: %w", row.HostID, err)
+	}
 	// 先补齐包装再下发引用它的配置；也覆盖升级后的存量服务与模板继承日志。
 	syncedServices := map[int64]bool{}
 	for _, entry := range entries {
@@ -727,11 +731,12 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	// 跳过条件**必须同时**比对服务级指纹：存量目标的主机指纹没变但 service_fingerprints 为空，
 	// 只比主机指纹会一直跳过，服务级记录永远补不上（升级后服务视图会一直是"从未下发"）。
 	if rendered.Fingerprint != "" && currentFingerprint == rendered.Fingerprint && serviceFingerprintsMatch(rendered.ServiceFingerprints, storedServiceFingerprints) {
+		rendered.Warnings = append(rendered.Warnings, logPathCheckWarnings(pathCheck)...)
 		now := time.Now().UTC()
 		_ = queries.MarkLogTargetConfigApplied(context, generated.MarkLogTargetConfigAppliedParams{
 			LastAppliedTime: sql.NullTime{Time: now, Valid: true}, UpdateTime: now, ID: row.ID,
 		})
-		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
+		return gin.H{"skipped": true, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings, "path_check": pathCheck}, nil
 	}
 
 	// 确实要下发时才解密口令。
@@ -743,25 +748,21 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	if err != nil {
 		return nil, err
 	}
-	params, _ := json.Marshal(outputParams)
-	result, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-output-%d", time.Now().UnixNano()), Type: "custom", Action: "configure_filebeat_output", ParamsJson: string(params), TimeoutSeconds: 60})
+	// Agent 在与撤销共用的锁内复检文件，再一次性处理主配置和片段；
+	// 不先单独更新 output，防止第二次检查失败时已改变主配置。
+	fragmentParams, err := json.Marshal(gin.H{"files": rendered.Fragments, "output": outputParams, "restart": "true"})
 	if err != nil {
 		return nil, err
 	}
-	if result.Status != "success" {
-		reason := firstNonEmpty(strings.TrimSpace(result.ErrorMessage), strings.TrimSpace(result.Stderr), strings.TrimSpace(result.Stdout))
-		return nil, fmt.Errorf("Filebeat 输出配置下发失败: %s", reason)
-	}
-	// 片段内容全部由 backend 渲染，agent 只落盘 + 校验 + 重启（见 apply_filebeat_config）。
-	fragmentParams, _ := json.Marshal(gin.H{"files": rendered.Fragments, "restart": "true"})
 	fragmentResult, err := handler.gateway.Execute(context, row.HostName, &pb.AutomationExecuteRequest{JobId: fmt.Sprintf("filebeat-fragments-%d", time.Now().UnixNano()), Type: "custom", Action: "apply_filebeat_config", ParamsJson: string(fragmentParams), TimeoutSeconds: 120})
 	if err != nil {
 		return nil, err
 	}
-	if fragmentResult.Status != "success" {
-		reason := firstNonEmpty(strings.TrimSpace(fragmentResult.ErrorMessage), strings.TrimSpace(fragmentResult.Stderr), strings.TrimSpace(fragmentResult.Stdout))
-		return nil, fmt.Errorf("Filebeat 片段下发失败: %s", reason)
+	pathCheck, err = validateLogPathReceipt(fragmentResult, rendered.Fragments)
+	if err != nil {
+		return nil, fmt.Errorf("Filebeat 配置应用失败，未记录同步指纹: %w", err)
 	}
+	rendered.Warnings = append(rendered.Warnings, logPathCheckWarnings(pathCheck)...)
 	now := time.Now().UTC()
 	// service_fingerprints **整体替换**为本次渲染的服务集合：服务停采/移出主机时它的 key 会消失，
 	// 服务视图据此判"待下发（需下发一次清理）"。
@@ -772,7 +773,7 @@ func (handler *Handler) applyLogTargetConfigRow(context context.Context, row log
 	}); err != nil {
 		return nil, err
 	}
-	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings}, nil
+	return gin.H{"skipped": false, "applied_at": now, "fingerprint": rendered.Fingerprint, "service_num": rendered.ServiceNum, "warnings": rendered.Warnings, "path_check": pathCheck}, nil
 }
 
 // serviceFingerprintsMatch 判断已存的服务级指纹与本次渲染的是否一致（用于下发跳过判定）。

@@ -59,6 +59,127 @@ Elasticsearch + Filebeat 日志采集与分析能力的设计文档。
 
 任一主机出现硬问题则整笔写入回滚并返回可读原因；关闭采集、移走冲突实例或调整模板以消除冲突的操作，按变更后的完整配置判定。模板或实例写入不另造路径展开逻辑，均调用同一主机渲染器。解析规则资源仍由其规则保存校验和 pipeline 发布流程负责其自身格式与 ES 侧有效性。
 
+保存错误逐主机列出冲突路径及涉及的服务、实例和日志项；即使多台主机有相同冲突，
+也分别保留主机 ID，不合并成无法定位的单条错误。新建服务被拒绝时，服务主体、成员绑定及日志覆盖值
+全部回滚；模板保存被拒绝时，模板属性及日志定义等嵌套配置全部回滚。
+尚无承载主机的模板或服务允许保存，后续绑定部署实例时再检查。
+路径占用按实际启用的采集输入判断，未开启采集、停用的日志项及未挂解析规则的日志不占用路径。
+检测针对宏展开后的相同路径字符串，不执行远程文件扫描，不判断不同通配模式或软链接是否命中同一文件。
+
+### 并发保存与重新启用
+
+服务保存、部署模板保存、部署实例保存、单条/批量日志覆盖以及服务采集总开关这六个写入入口，
+均从事务开始使用 `SERIALIZABLE` 隔离级别，写入、主机范围查询、宏展开及完整配置校验在同一事务内完成。
+不能只在最后校验时加锁：MySQL 在此前已建立的普通快照可能看不到刚提交的其他服务。
+数据库负责跨 API 实例的并发隔离；不可串行化的并发事务不能同时提交，避免两个请求都看到“路径未占用”。
+这不是进程内互斥，也不依赖 Agent 在线或日志采集纳管状态。
+
+MySQL 的死锁/锁等待超时，以及 PostgreSQL 的序列化失败/死锁均返回可读业务错误：
+“配置正在被其他请求修改，本次保存未完成，请刷新后重试”，日志保留数据库根因。
+错误翻译属于资产域公共处理，因此资产域其他写入遇到相同数据库错误时也使用该提示。
+不自动重放保存操作；客户端刷新后显式重试，若已存在冲突则得到具体主机及路径错误。
+串行化可能增加关联配置读写的锁竞争，不保证并发请求都能成功。
+关闭的服务采集总开关、单条日志及批量日志重新启用时均走相同校验，失败则回滚开关/覆盖值。
+
+### 全量配置检查 API
+
+`GET /monitor/log-targets/config-audit/` 是只读检查，沿用监控路由权限及
+`monitor:log_collect:view` 权限，不要求 Agent 在线，也不连接 Elasticsearch。
+主机范围取全部服务成员关联的部署主机，包括尚未纳管采集的主机；
+实际输入仍遵循服务、成员、实例及单条日志的采集启用条件。
+无绑定主机的服务没有待渲染输入，不凭空判为冲突。
+
+主机清单和配置输入在同一个 `REPEATABLE READ` 只读事务快照中读取，每 200 台主机批量加载，
+使用保存/下发相同的渲染器检查路径冲突、未展开宏和无效档位等所有硬问题。
+成功返回标准响应信封，`data` 为：
+
+```json
+{
+  "hosts_checked": 2,
+  "hosts_with_errors": 1,
+  "problem_count": 1,
+  "results": [
+    {
+      "host_id": 42,
+      "host_ip": "10.0.0.42",
+      "host_instance_name": "host-42",
+      "errors": ["主机 42：服务及实例在同一主机上展开成同一路径 /data/app/logs/app.log"]
+    }
+  ]
+}
+```
+
+`results` 只列有硬问题的主机，无问题时为 `[]`。查询或事务失败时整次检查失败，
+不返回部分统计冒充完整检查结果。此接口检查数据库中的期望配置，
+不证明主机已部署文件无冲突，不修改历史数据、自动选定日志归属或下发配置。
+运维修正冲突后必须正常完整下发，离线或下发失败主机仍需后续处理。
+
+快速验证（Token 使用当前账号的有效登录 Token）：
+
+```sh
+curl -H "Authorization: $TOKEN" http://localhost:9000/monitor/log-targets/config-audit/
+cd autoadmin
+make vet && make test
+```
+
+有重复配置时返回对应主机和路径；无重复及其他硬问题时 `hosts_with_errors` 为 `0`。
+真库并发回归使用独立测试库和 `LOG_CONFIG_CONCURRENCY_DSN`，需要建表/删表权限：
+
+```sh
+make test PKG=./internal/assets TESTFLAGS='-run TestLogConfigSerializablePreventsWriteSkewRealDatabase -v -count=1'
+```
+
+该测试只创建并清理独立命名的测试表，强制两个事务同时修改不同记录并检查占用，
+断言最终只有一个事务提交；未设置 DSN 时显式跳过。本规则无业务表结构变更，无需数据库迁移。
+
+### 下发前的实际文件重叠检查
+
+保存服务、模板和实例仍只做数据库配置检查，允许 Agent 离线时编辑。
+单台、批量、服务级以及安装后自动下发均走同一主机级下发入口：
+
+1. 渲染主机全部有效 input，拒绝配置硬错误。
+2. 调用 Agent `check_filebeat_paths`，仅传本次完整的 `files` 片段，不发送 ES 口令。
+   Agent 在本机解析片段路径并检查现有文件身份；后端等待及动作超时均为 30 秒。
+3. 后端校验结构化 `path_check` 回执：`version=1`、`checked=true`、
+   `files_digest=SHA256(JSON(files))`，并核对完整启用 input 数量。
+   无回执、假成功、摘要或数量不一致、旧 Agent 不支持动作、离线或检查错误均拒绝下发；
+   不回退到旧下发链路，不修改 ES 包装、主机配置或同步指纹。
+4. 检查通过才同步 ES 包装并判断是否可按指纹跳过。指纹相同也必须先检查，
+   因为实际文件/链接变化不反映在数据库指纹中。跳过不写主机配置，响应携带检查回执。
+5. 确需应用时，只调用一次 `apply_filebeat_config`，同时传 `files`、`output` 和 `restart`。
+   Agent 在与日志撤销共用的配置锁内再次检查实际文件，完成撤销归属预检，
+   然后才写 `filebeat.yml`、更新/清理 `inputs.d`，有变化时 `filebeat test config` 后重启。
+   文件检查失败不写入任何主配置/片段，不清理旧 input，不重启。
+   后端只在成功收到同配置的完整检查回执后记录同步指纹。
+
+检查按路径段支持 `*`、`?`、`[]`；路径必须绝对、规范化且没有未展开宏。
+`**` 递归通配明确拒绝，不用不完整的展开冒充 Filebeat 的递归语义。
+通过 `os.Stat` 跟随文件及目录软链接，使用 `os.SameFile` 比对物理身份
+（Unix 的设备号和 inode），识别不同 input 经通配、软链接、硬链接命中同一文件的情况。
+同一 input 内匹配到多个别名不视为跨 input 冲突；不同 input 冲突时错误列出两侧
+service、instance、log_name、input ID、路径模式及命中文件。
+软链接检测采取保守策略：即使 Filebeat 当前默认忽略最终文件软链接，也不允许它作为另一个 input 的重复归属。
+
+这是一项有界完整检查，不读取日志正文，不创建日志文件。单次最多检查 2000 个启用 input、
+5000 个匹配文件路径、2000 次通配目录读取、100000 个目录项；配置内容上限 8 MiB，
+路径最多 64 段。超过任何上限、无权限、损坏软链接、非普通文件或取消/超时均明确失败，
+禁止截断后报告通过。当前尚不存在的普通日志路径/零匹配模式允许保存及下发，
+回执 `unmatched_patterns` 及下发 `warnings` 明确列出，避免误报文件存在或正在采集。
+
+`path_check` 包含 `version`、`checked`、`files_digest`、`inputs_checked`、
+`matched_files`（匹配路径数）和 `unmatched_patterns`。它只证明检查时的文件快照，
+不保证检查之后新增文件、日志轮转或链接变化永不重叠；没有后台文件监视器，也不自动停止已运行的 Filebeat。
+配置锁只串行化 Agent 配置操作，不能阻止应用进程修改文件系统。
+写盘、Filebeat 校验或重启失败仍按下发错误处理，不记同步成功；这些非文件检查错误不承诺整套磁盘配置事务回滚。
+
+后端和 Agent 必须配套升级；不支持新检查的 Agent 会明确阻止下发，
+不影响已运行的 Filebeat。单独更新 output 的旧内置动作不再提供，配置下发统一走受检查的完整动作。
+本功能不改数据库表或 wire protobuf，动作及回执通过既有 JSON 扩展传输。
+
+回归命令：`cd autoadmin && make vet && make test`，以及
+`cd dj_agent && make vet && make test`。测试覆盖通配符、文件/目录软链接、硬链接、
+扫描权限及预算错误、旧/缺失回执、指纹跳过前检查、应用前新建链接复检及失败时现有配置保留。
+
 ## 遗留共享采集源数据保留
 
 共享采集源的创建、编辑、关联管理界面及管理 API 已移除。渲染器不再从共享源记录生成
@@ -112,9 +233,14 @@ Filebeat input，新的采集配置不得创建共享源数据流。数据库表
 1. 事务锁定服务与所属业务系统，将 `(service_id, project, business_system, environment, service)`
    写入 `assets_service_deletion`，关闭采集总开关后提交。墓碑无服务外键，服务删除后永久保留。
    编辑与删除共享服务锁；配置渲染按服务 ID 排除墓碑，重试不能改变撤销目标。
-   四维日志身份被永久保留，禁止新服务复用，避免旧 Filebeat 缓冲数据污染重建的同名服务。
+   仅删除尚未完成、服务记录仍存在时保留该编码，新增或编辑冲突时返回业务错误 `code=400`，
+   提示先完成删除。删除完成后允许复用相同名称和编码，新服务取得新的服务 ID；
+   不清除数据库、ES 或 Agent 上旧服务的撤销屏障。
 2. 对数据库仍配置的**全部 ES 集群（含停用集群）**，在平台 final mapping guard 最前加入
-   四维精确匹配的 `drop`，并将此前缀既有索引/数据流的 `index.final_pipeline` 指向该 guard。
+   按不可变 `service_id` 精确匹配的 `drop`，并将此前缀既有索引/数据流的 `index.final_pipeline`
+   指向该 guard。Filebeat input 将服务 ID 作为字符串注入顶层 `service_id`；有 ID 的事件
+   只按 ID 匹配墓碑，同编码新服务不受旧墓碑影响。没有 ID 的既有缓冲事件仍按墓碑四维编码拦截，
+   不能因重建服务而重新放行。索引模板将 `service_id` 声明为 keyword。
    ES 侧屏障覆盖离线 agent、缓存事件及旧配置下发。bootstrap 与删除均锁同一集群行，
    在锁内重新读取全部墓碑再发布，避免并发覆盖别的服务的撤销规则。
    同时校验平台基础/档位索引模板均引用该 final guard；缺失时要求先 bootstrap 再重试，
@@ -123,13 +249,15 @@ Filebeat input，新的采集配置不得创建共享源数据流。数据库表
    `/etc/filebeat/inputs.d/.revoked-services/<service_id>.json`，仅移除归属匹配的托管 `.yml`。
    Filebeat 已启用的 inputs 动态重载负责关闭相应 harvester，不执行应用/Filebeat 的
    start、stop、restart 或 uninstall，不碰源日志文件。后续任何旧全量配置下发仍会读取墓碑、
-   拒绝恢复已撤销 inputs；下发与撤销由 agent 同一互斥锁串行执行。
+   拒绝恢复已撤销 inputs；有 `fields.service_id` 的片段同时校验服务 ID 与四维编码，
+   不会将同编码新 ID 误判为旧服务。下发与撤销由 agent 同一互斥锁串行执行。
 4. 建立写入屏障并尝试主机撤销后，通过 `_data_stream` 枚举墓碑四维身份对应的
    `<index_prefix>-<project>-<business_system>-<environment>-<service>-*` 数据流，
    覆盖当前、历史、已停用及已移除档位，不依赖当前档位表。校验完整候选集后，
    逐条以精确流名执行 `DELETE /_data_stream/<name>`，永久删除数据流及其全部 backing indices，
    而不是用 `_delete_by_query` 清空文档；不再 refresh 或清理普通索引。
-   编码允许连字符，因此同时核对全部现存服务与永久墓碑；流名同时匹配其他服务身份时，
+   编码允许连字符，因此同时核对全部现存服务与永久墓碑；完全相同四维编码的已删除旧代墓碑
+   不再占用流归属，但仍保留写入屏障。流名同时匹配其他现存服务或不同编码的墓碑时，
    明确报错拒绝删除，禁止直接通配删除而误伤同前缀服务。
    每条删除必须返回 `acknowledged=true`，不存在的流视为已删除以支持重试；
    查询失败、响应不完整或删除未确认均返回失败。
@@ -137,6 +265,8 @@ Filebeat input，新的采集配置不得创建共享源数据流。数据库表
 5. 所有外部步骤成功后，在事务中删除日志覆盖行（含认证结果、额外处理器）与成员关联，
    仅删除无其他服务关联的成员部署实例 DB 行，最后删除服务（包含配置/宏值）。
    共享部署实例、公共应用/版本/模板/规则、主机及真实进程全部保留。
+   外部清理到最终数据库提交全程持有服务行锁，并发删除重试取得锁后若服务已不存在，
+   直接幂等结束，不再执行外部清理，避免误删重建服务的数据流。
 
 任一步失败均明确返回该项错误，已提交墓碑不回滚；重试沿用墓碑身份。ES 不可达时不会绕过屏障、
 不会删除服务记录。离线主机必须恢复在线且 agent 支持撤销动作后才能完成；不支持动作的旧 agent
@@ -145,8 +275,11 @@ Filebeat input，新的采集配置不得创建共享源数据流。数据库表
 部署必须先执行两侧迁移 `000052_service_deletion` 并发布支持撤销的 agent，再开放删除。
 墓碑不能随意清空或回滚迁移，否则离线采集器可以恢复写入。已有服务的其他写入口即使更改采集
 开关，也无法绕过渲染墓碑与 ES 屏障。
+允许同编码重建的部署不新增数据库迁移，但必须同步发布支持 `fields.service_id` 归属判断的
+Agent 与 API，在全部已配置 ES 集群执行存储初始化（bootstrap，重发 final guard 与索引模板），
+再下发新服务采集配置；旧版 Agent 或未重发的四维 guard 仍会拦截同编码新服务。
 
-**历史归属边界**：现有事件不包含不可变的服务 ID，日志归属采用既有四维编码。
+**历史归属边界**：新下发事件携带不可变的服务 ID，既有无 ID 事件的日志归属仍采用四维编码。
 删除仅覆盖当前墓碑四维身份在当前已配置集群/索引前缀内的服务级数据流；
 此前改过服务/项目/业务/环境编码、换过 ES 地址或索引前缀且未保留归属记录的数据，无法从当前
 资产记录可靠反推出原归属。不得扩大为按服务名/实例/主机或整个索引删除来猜测归属。
@@ -1036,7 +1169,7 @@ Elasticsearch 连接信息由 `ElasticsearchCluster` 统一保存，不硬编码
 /opt/filebeat/data/             registry（offset）与 data，必须持久化
 ```
 
-主配置（agent `configure_filebeat_output` 写入，0600）：
+主配置（agent `apply_filebeat_config` 在文件检查通过后写入，0600）：
 
 ```yaml
 filebeat.inputs: []
@@ -1126,13 +1259,9 @@ output.elasticsearch:
 
 ### 8.4 下发流程（Go 版，log_config_render.go + apply_filebeat_config）
 
-> **入口唯一**（2026-09 统一）：单条 `POST /log-targets/:id/apply/`（`ApplyLogTargetConfig`）与
-> 「批量下发」「安装成功后自动下发」走的是**同一条** `applyLogTargetConfigRow` 全流程。
-> 此前单条入口有一条旁路：只调 `configure_filebeat_output`（只写主配置，见
-> `dj_agent/internal/executor/builtin_actions.go`），不下发 inputs.d 片段、不写 `config_fingerprint`，
-> 却把 `runtime_status` 置 running 并清空 `last_error` —— 表现为"下发成功"但主机上没有采集片段，
-> 且指纹永远为空（漂移判定会把它一直当成"从未下发"）。该旁路及其独占的两条语句
-> （`GetLogTargetDefaultCluster`、`MarkLogTargetApplied`）已删除。
+> **入口唯一**：单条 `POST /log-targets/:id/apply/`（`ApplyLogTargetConfig`）与
+> 「批量下发」「服务级下发」「安装成功后自动下发」走的是**同一条** `applyLogTargetConfigRow` 全流程。
+> 完整的文件检查及失败语义见[下发前的实际文件重叠检查](#下发前的实际文件重叠检查)。
 
 ```
 「下发配置」（applyLogTargetConfigRow，log_target_actions.go）
@@ -1185,16 +1314,16 @@ output.elasticsearch:
       不生成数据目录占位片段；`/opt/filebeat/data` 由安装流程创建，主配置显式设置 `path.data`
       配置差异弹窗逐项对比 `inputs.d`；整机/服务指纹还包含输出身份，因此片段无差异时仍可能有待同步状态。
       warnings 随 preview/apply 响应返回，前端在「下发配置」成功/批量结果里提示（此前被丢弃）。
+  → agent 动作 check_filebeat_paths（只读，检查实际文件身份及跨 input 重叠）
+  → 验证检查回执，通过后才同步 ES 包装、比较整机和服务子指纹
   → 指纹与 monitor_log_collection_target.config_fingerprint 一致则跳过（仅刷新时间）
-  → agent 动作 configure_filebeat_output（写 filebeat.yml：output.elasticsearch +
-    filebeat.config.inputs 托管 inputs.d，`filebeat test config` 后 restart）
-  → agent 动作 apply_filebeat_config（写 inputs.d/*.yml，删残留片段，files 为空时只清理，test config 后 restart）
+  → agent 动作 apply_filebeat_config（配置锁内再次检查实际文件，写主配置及 inputs.d/*.yml，
+    删残留片段，test config 后 restart）
       —— inputs 为空不报错：output 配置照常下发，主机先纳管可用
-  → 回写 config_fingerprint / last_applied_time
+  → 验证应用后的检查回执，回写 config_fingerprint / last_applied_time
 ```
 
-- **`runtime_status` 的写入语义（避免与旧旁路混淆）**：统一后的成功路径在**两次 agent 调用都成功**
-  （`configure_filebeat_output` + `apply_filebeat_config` 已重启 Filebeat）之后才回写
+- **`runtime_status` 的写入语义**：成功路径在实际文件检查与 `apply_filebeat_config` 均成功后才回写
   `runtime_status='running'` / 清空 `last_error`——这是"刚重启过、服务应在运行"的推断，
   不是独立探活（真实状态仍由启停/查状态的结果维护）。指纹一致走跳过分支时只刷新
   `last_applied_time`，**不动** `runtime_status`。旧单条旁路的问题是没有任何下发动作却直接置 running。
@@ -1280,8 +1409,8 @@ output.elasticsearch:
   删除 `inputs.d` 中不在本次清单内的 `*.yml` 遗留片段（改名/维度修正/服务下线后的残留），
   删除与写入任一发生即 `filebeat test config` + `systemctl restart filebeat`。
 - 预览接口：`GET /monitor/log-targets/:id/config-preview/`（GetHostLogConfigPreview），只渲染不下发。
-- agent 侧动作：`configure_filebeat_output`（写主配置 output/托管段）、`apply_filebeat_config`
-  （写 inputs + 清理 + 校验 + 重启）；服务启停走通用 `systemctl` 命令通道（`filebeat.service`）。
+- agent 侧动作：`check_filebeat_paths`（只读实际文件检查）、`apply_filebeat_config`
+  （复检 + 写主配置/inputs + 清理 + 校验 + 重启）；服务启停走通用 `systemctl` 命令通道（`filebeat.service`）。
 
 ### 8.5 重载
 

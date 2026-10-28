@@ -51,3 +51,8 @@ func clusterProfileListArgs(limit, offset int32) []driver.Value {
 func serviceDeploymentLinkArgs(deploymentID int64) []driver.Value {
 	return []driver.Value{sqlmock.AnyArg()}
 }
+
+func expectServiceIdentityCreate(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectQuery("INSERT INTO assets_application_service").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
+}

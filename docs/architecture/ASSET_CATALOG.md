@@ -137,6 +137,10 @@ migration 000044）。项目由业务系统隐含（`assets_business_system.proj
 
 - **编码不再是全局唯一**：同一逻辑服务在不同业务/环境下可以复用同一 code（例如 `artemis`）。
   旧行为（全局唯一）会迫使人为加后缀（`artemis-aos-poc`），反而丢掉跨环境按同一 code 关联的能力。
+- **删除完成后可重建**：同一业务/环境下允许重新使用已删除服务的名称与编码，新服务使用新的 ID。
+  删除尚未完成时返回明确业务错误，必须先完成删除。永久墓碑仅撤销旧服务 ID，不永久占用编码；
+  新日志携带 `service_id`，ES 与 Agent 按 ID 隔离新旧服务，旧缓冲事件继续拦截。
+  部署与清理边界见 [日志撤销](LOG_COLLECTION_ARCHITECTURE.md#逻辑服务删除与日志撤销)。
 - 因此 **code 不再是可靠的全局连接键**：日志检索/水位等按服务维度走 **服务 id**
   （`application_service_id`），ES 文档另带 `project/business_system/environment` 字段做维度收窄；
   运行时的服务级身份（`service_fingerprints` key、Filebeat 片段文件名/input id）也改用 id。

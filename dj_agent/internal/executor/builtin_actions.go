@@ -28,8 +28,8 @@ const (
 	actionCheckExporterStatus      = "check_exporter_status"
 	actionCheckApplicationBaseline = "check_application_baseline"
 	actionControlApplication       = "control_application"
-	actionConfigureFilebeatOutput  = "configure_filebeat_output"
 	actionApplyFilebeatConfig      = "apply_filebeat_config"
+	actionCheckFilebeatPaths       = "check_filebeat_paths"
 	actionRevokeServiceLogs        = "revoke_service_logs"
 	actionRevokeSharedLogSource    = "revoke_shared_log_source"
 	actionApplyAgentUpdate         = "apply_agent_update"
@@ -72,10 +72,10 @@ func (e *Executor) runBuiltinAction(ctx context.Context, job protocol.Job) (prot
 		return e.checkApplicationBaseline(ctx, job), true
 	case actionControlApplication:
 		return e.controlApplication(ctx, job), true
-	case actionConfigureFilebeatOutput:
-		return e.configureFilebeatOutput(ctx, job), true
 	case actionApplyFilebeatConfig:
 		return e.applyFilebeatConfig(ctx, job), true
+	case actionCheckFilebeatPaths:
+		return e.checkFilebeatPaths(ctx, job), true
 	case actionRevokeServiceLogs:
 		return e.revokeServiceLogs(ctx, job), true
 	case actionRevokeSharedLogSource:
@@ -143,37 +143,6 @@ func validateFilebeatConfig(ctx context.Context, path string) error {
 	return nil
 }
 
-// configureFilebeatOutput 写 Filebeat 主配置（output.elasticsearch + 托管 inputs.d），
-// 校验通过后重启。地址/账号/TLS 开关来自 backend 的默认 Elasticsearch 集群。
-func (e *Executor) configureFilebeatOutput(ctx context.Context, job protocol.Job) protocol.JobResult {
-	started := time.Now()
-	url := strings.TrimSpace(fmt.Sprint(job.Params["url"]))
-	username := fmt.Sprint(job.Params["username"])
-	password := fmt.Sprint(job.Params["password"])
-	if url == "" {
-		return failedJobResult(job, started, fmt.Errorf("elasticsearch url is required"))
-	}
-	verification := "none"
-	if strings.EqualFold(fmt.Sprint(job.Params["verify_tls"]), "true") {
-		verification = "full"
-	}
-	mainConfig := renderFilebeatMainConfig(url, username, password, verification)
-	changed, err := writeFileIfChanged(filebeatMainConfigPath, []byte(mainConfig), 0o600)
-	if err != nil {
-		return failedJobResult(job, started, err)
-	}
-	if changed {
-		if err := validateFilebeatConfig(ctx, filebeatMainConfigPath); err != nil {
-			return failedJobResult(job, started, err)
-		}
-		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "filebeat.service").CombinedOutput(); err != nil {
-			return failedJobResult(job, started, fmt.Errorf("Filebeat restart failed: %s", strings.TrimSpace(string(output))))
-		}
-	}
-	finished := time.Now()
-	return protocol.JobResult{JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess, ExitCode: 0, StartedAt: started, FinishedAt: finished, CostMS: finished.Sub(started).Milliseconds()}
-}
-
 func renderFilebeatMainConfig(url, username, password, verification string) string {
 	return strings.Join([]string{
 		"path.data: " + filebeatDataDir,
@@ -194,48 +163,70 @@ func renderFilebeatMainConfig(url, username, password, verification string) stri
 
 // applyFilebeatConfig 写入 backend 渲染好的 inputs.d/*.yml；目录由 backend 全量托管，
 // 不在本次清单内的 *.yml 视为遗留片段删除。有变化则校验并重启 Filebeat。
-// 文件内容全部由 backend 渲染，agent 只做落盘/清理/重启，不理解片段语义。
+// 主配置与片段在同一动作内更新；实际文件检查必须先于任何写入/清理/重启。
 func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) protocol.JobResult {
+	return e.applyFilebeatConfigAt(ctx, job, filebeatMainConfigPath, filebeatInputsDir)
+}
+
+func (e *Executor) applyFilebeatConfigAt(ctx context.Context, job protocol.Job, mainPath, inputsDir string) protocol.JobResult {
 	filebeatConfigMu.Lock()
 	defer filebeatConfigMu.Unlock()
 	started := time.Now()
-	revocations, err := loadLogRevocations(filebeatInputsDir)
+	revocations, err := loadLogRevocations(inputsDir)
 	if err != nil {
 		return failedJobResult(job, started, err)
 	}
-	rawFiles, ok := job.Params["files"].([]any)
+	files, err := decodeFilebeatFiles(job.Params, inputsDir)
+	if err != nil {
+		return failedJobResult(job, started, err)
+	}
+	receipt, err := checkFilebeatPaths(ctx, files)
+	if err != nil {
+		return failedJobResult(job, started, err)
+	}
+	output, ok := job.Params["output"].(map[string]any)
 	if !ok {
-		return failedJobResult(job, started, fmt.Errorf("files is required"))
+		return failedJobResult(job, started, fmt.Errorf("output is required"))
+	}
+	url, urlOK := output["url"].(string)
+	username, usernameOK := output["username"].(string)
+	password, passwordOK := output["password"].(string)
+	verifyTLS, tlsOK := output["verify_tls"].(bool)
+	if !urlOK || strings.TrimSpace(url) == "" || !usernameOK || !passwordOK || !tlsOK {
+		return failedJobResult(job, started, fmt.Errorf("invalid Filebeat output"))
 	}
 	changed := []string{}
 	removed := []string{}
 	delivered := map[string]bool{}
-	dirs := map[string]bool{}
-	// files 为空表示"该主机当前没有任何启用的日志采集"：仍要清理 inputs.d 里的旧片段并重启，
-	// 不能因为空列表报错（否则目标永远下发失败、/etc/filebeat 也建不出来）。
-	if len(rawFiles) == 0 {
-		dirs[filebeatInputsDir] = true
-	}
-	for _, rawFile := range rawFiles {
-		file, _ := rawFile.(map[string]any)
-		path, _ := file["path"].(string)
-		content, _ := file["content"].(string)
-		revoked, err := revokedManagedLogFile(path, []byte(content), revocations)
+	// 先完整检查撤销归属，不能写了一部分片段后才发现另一片段身份错误。
+	applicable := make([]filebeatConfigFile, 0, len(files))
+	for _, file := range files {
+		revoked, err := revokedManagedLogFile(file.Path, []byte(file.Content), revocations)
 		if err != nil {
 			return failedJobResult(job, started, err)
 		}
-		if revoked {
-			continue
+		if !revoked {
+			applicable = append(applicable, file)
 		}
-		if path == "" {
-			return failedJobResult(job, started, fmt.Errorf("file path is required"))
-		}
-		if dir := filepath.Dir(path); dir != "" {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return failedJobResult(job, started, fmt.Errorf("create dir %s: %w", dir, err))
-			}
-			dirs[dir] = true
-		}
+	}
+	verification := "none"
+	if verifyTLS {
+		verification = "full"
+	}
+	mainChanged, err := writeFileIfChanged(mainPath,
+		[]byte(renderFilebeatMainConfig(url, username, password, verification)), 0o600)
+	if err != nil {
+		return failedJobResult(job, started, err)
+	}
+	if mainChanged {
+		changed = append(changed, mainPath)
+	}
+	// 空清单或全部被撤销时也要清理旧 input；输出配置仍保留。
+	if err := os.MkdirAll(inputsDir, 0o755); err != nil {
+		return failedJobResult(job, started, fmt.Errorf("create managed inputs directory %s: %w", inputsDir, err))
+	}
+	for _, file := range applicable {
+		path, content := file.Path, file.Content
 		changedFlag, err := writeFileIfChanged(path, []byte(content), 0o644)
 		if err != nil {
 			return failedJobResult(job, started, fmt.Errorf("write %s: %w", path, err))
@@ -245,26 +236,24 @@ func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) pr
 			changed = append(changed, path)
 		}
 	}
-	for dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
+	entries, err := os.ReadDir(inputsDir)
+	if err != nil {
+		return failedJobResult(job, started, fmt.Errorf("read managed inputs directory %s: %w", inputsDir, err))
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".yml") || delivered[name] {
 			continue
 		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || !strings.HasSuffix(name, ".yml") || delivered[name] {
-				continue
-			}
-			if err := os.Remove(filepath.Join(dir, name)); err != nil {
-				return failedJobResult(job, started, fmt.Errorf("remove stale input %s: %w", name, err))
-			}
-			removed = append(removed, filepath.Join(dir, name))
+		if err := os.Remove(filepath.Join(inputsDir, name)); err != nil {
+			return failedJobResult(job, started, fmt.Errorf("remove stale input %s: %w", name, err))
 		}
+		removed = append(removed, filepath.Join(inputsDir, name))
 	}
 	restart := strings.EqualFold(fmt.Sprint(job.Params["restart"]), "true")
 	restarted := false
 	if restart && (len(changed) > 0 || len(removed) > 0) {
-		if err := validateFilebeatConfig(ctx, filebeatMainConfigPath); err != nil {
+		if err := validateFilebeatConfig(ctx, mainPath); err != nil {
 			return failedJobResult(job, started, err)
 		}
 		if output, err := exec.CommandContext(ctx, "systemctl", "restart", "filebeat.service").CombinedOutput(); err != nil {
@@ -277,7 +266,7 @@ func (e *Executor) applyFilebeatConfig(ctx context.Context, job protocol.Job) pr
 		JobID: job.JobID, Type: job.Type, Action: job.Action, Status: protocol.StatusSuccess,
 		ExitCode: 0, StartedAt: started, FinishedAt: finished,
 		CostMS: finished.Sub(started).Milliseconds(),
-		Data:   map[string]any{"changed_files": changed, "removed_files": removed, "restarted": restarted},
+		Data:   map[string]any{"changed_files": changed, "removed_files": removed, "restarted": restarted, "path_check": receipt},
 	}
 }
 

@@ -4415,6 +4415,45 @@ func (q *Queries) ListLogCollectionFilterRules(ctx context.Context, arg ListLogC
 	return items, nil
 }
 
+const listLogConfigAuditHosts = `-- name: ListLogConfigAuditHosts :many
+SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
+       COALESCE(h.instance_name, '') AS host_instance_name
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_host h ON h.id = d.host_id
+ORDER BY d.host_id
+`
+
+type ListLogConfigAuditHostsRow struct {
+	HostID           int64  `json:"host_id"`
+	HostIp           string `json:"host_ip"`
+	HostInstanceName string `json:"host_instance_name"`
+}
+
+// 全量配置检查覆盖所有服务成员承载主机，不依赖 Filebeat 是否纳管。
+func (q *Queries) ListLogConfigAuditHosts(ctx context.Context) ([]ListLogConfigAuditHostsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLogConfigAuditHosts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLogConfigAuditHostsRow{}
+	for rows.Next() {
+		var i ListLogConfigAuditHostsRow
+		if err := rows.Scan(&i.HostID, &i.HostIp, &i.HostInstanceName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLogProcessingRules = `-- name: ListLogProcessingRules :many
 SELECT id, create_time, update_time, remark, name, description, input_format, multiline_enabled, start_pattern,
        continuation_pattern, sample_log, flush_timeout, pipeline_body, cluster_id, application_id

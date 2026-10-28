@@ -99,6 +99,10 @@ func revokedLogFragment(raw []byte, revocations []logRevocation) (bool, error) {
 			keys := []string{"project", "business_system", "environment", "service"}
 			if row["shared_source_id"] != "" {
 				keys = []string{"shared_source_id", "shared_source_generation"}
+			} else if input.Fields["service_id"] != "" {
+				// A recreated service may reuse every code, but never the revoked ID.
+				// Inputs without an ID remain subject to the existing four-dimensional fence.
+				keys = append(keys, "service_id")
 			}
 			for _, key := range keys {
 				match = match && input.Fields[key] == row[key]

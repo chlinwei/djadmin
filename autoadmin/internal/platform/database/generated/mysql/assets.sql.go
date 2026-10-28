@@ -453,6 +453,7 @@ func (q *Queries) CountProjects(ctx context.Context, arg CountProjectsParams) (i
 
 const countReservedServiceLogIdentity = `-- name: CountReservedServiceLogIdentity :one
 SELECT COUNT(*) FROM assets_service_deletion t
+JOIN assets_application_service deleting ON deleting.id=t.service_id
 JOIN assets_business_system bs ON bs.id=?
 JOIN assets_project p ON p.id=bs.project_id
 JOIN assets_business_environment e ON e.id=?
@@ -466,7 +467,7 @@ type CountReservedServiceLogIdentityParams struct {
 	ServiceCode      string `json:"service_code"`
 }
 
-// Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+// Only an unfinished deletion reserves the identity; completed tombstones fence old service IDs.
 func (q *Queries) CountReservedServiceLogIdentity(ctx context.Context, arg CountReservedServiceLogIdentityParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countReservedServiceLogIdentity, arg.BusinessSystemID, arg.EnvironmentID, arg.ServiceCode)
 	var count int64

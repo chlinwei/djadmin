@@ -72,7 +72,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	if input.LogRetentionTier == nil || *input.LogRetentionTier < 1 {
 		return 0, apperror.New(apperror.CodeInvalidArgument, "请选择逻辑服务的默认保留档位，不能留空")
 	}
-	tx, err := r.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return 0, err
 	}
@@ -106,7 +106,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 		return 0, err
 	}
 	if reserved > 0 {
-		return 0, fmt.Errorf("该服务日志身份已撤销，不能复用业务/环境/服务编码")
+		return 0, ErrServiceLogIdentityDeleting
 	}
 	tier, err := queries.GetLogRetentionTier(ctx, *input.LogRetentionTier)
 	if err == sql.ErrNoRows {
@@ -225,7 +225,7 @@ func (r *Repository) SaveApplicationService(ctx context.Context, id int64, input
 	return serviceID, nil
 }
 func (r *Repository) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
-	tx, err := r.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return 0, err
 	}
@@ -305,10 +305,12 @@ func (s *Service) DeleteApplicationService(ctx context.Context, id int64) error 
 	if err != nil || !exists {
 		return translate(err)
 	}
-	if err = s.serviceLogDeleter.RevokeServiceLogs(ctx, id); err != nil {
-		return fmt.Errorf("逻辑服务删除未完成（已禁止新配置，保留记录供重试）: %w", err)
-	}
-	return translate(s.repository.finishServiceDeletion(ctx, id))
+	return translate(s.repository.finishServiceDeletion(ctx, id, func() error {
+		if err := s.serviceLogDeleter.RevokeServiceLogs(ctx, id); err != nil {
+			return fmt.Errorf("逻辑服务删除未完成（已禁止新配置，保留记录供重试）: %w", err)
+		}
+		return nil
+	}))
 }
 func (s *Service) SaveApplicationDeployment(ctx context.Context, id int64, input ApplicationDeploymentInput) (ApplicationDeployment, error) {
 	if input.Host < 1 || strings.TrimSpace(input.InstanceName) == "" {

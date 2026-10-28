@@ -11,6 +11,7 @@ import (
 	"time"
 
 	db "autoadmin/internal/platform/database/generated"
+	"autoadmin/internal/shared/apperror"
 	"autoadmin/internal/shared/pagination"
 
 	"github.com/go-sql-driver/mysql"
@@ -78,6 +79,9 @@ func translate(err error) error {
 	var mysqlError *mysql.MySQLError
 	if errors.As(err, &mysqlError) {
 		switch mysqlError.Number {
+		case 1205, 1213:
+			// 可串行化写入可能被数据库中止；保留根因供日志定位，不自动重放整笔业务操作。
+			return apperror.WithCause(ErrConcurrentWrite, err)
 		case 1062:
 			return duplicateError(err)
 		case 1451:
@@ -89,6 +93,8 @@ func translate(err error) error {
 	var stateError sqlStateError
 	if errors.As(err, &stateError) {
 		switch stateError.SQLState() {
+		case "40001", "40P01":
+			return apperror.WithCause(ErrConcurrentWrite, err)
 		case pgUniqueViolation:
 			return duplicateError(err)
 		case pgForeignKeyViolation:

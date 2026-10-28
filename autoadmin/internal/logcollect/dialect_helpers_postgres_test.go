@@ -10,7 +10,14 @@ import (
 	"time"
 
 	"autoadmin/internal/platform/database"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func expectCreatedConflictService(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectQuery("INSERT INTO assets_application_service \\(").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
+}
 
 // openSmokeDatabase 连真库（冒烟用例用；未设 DSN 时调用方自行 t.Skip）。
 // PG 侧连接串走 PostgresDSN，因此与 mysql 版本分文件（同 internal/monitor 的处理）。

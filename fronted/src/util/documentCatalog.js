@@ -18,6 +18,7 @@ export const documentCatalog = [
     page('凭据管理', 'ASSETS', 'credentials'),
     page('应用管理', 'ASSETS', 'applications'),
     page('服务树管理', 'ASSETS', 'service-tree'),
+    page('逻辑服务删除全流程', 'ASSETS', 'service-deletion'),
   ]),
   group('automation', '自动化运维', [
     page('模板', 'AUTOMATION', 'templates'),

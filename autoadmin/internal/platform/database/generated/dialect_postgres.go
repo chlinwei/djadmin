@@ -402,6 +402,7 @@ type ListJobsTypedParams = postgres.ListJobsTypedParams
 type ListLogBatchJobItemsRow = postgres.ListLogBatchJobItemsRow
 type ListLogBatchTargetsRow = postgres.ListLogBatchTargetsRow
 type ListLogCollectionFilterRulesParams = postgres.ListLogCollectionFilterRulesParams
+type ListLogConfigAuditHostsRow = postgres.ListLogConfigAuditHostsRow
 type ListLogProcessingRulesParams = postgres.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = postgres.ListLogRetentionTiersParams
 type ListLoginAuditsParams = postgres.ListLoginAuditsParams

@@ -62,6 +62,54 @@ func TestLogRevocationPreservesSharedHostInputsAndSurvivesReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("allows recreated service with same codes", func(t *testing.T) {
+		dir := t.TempDir()
+		dimensions := "- type: filestream\n  fields:\n    project: p\n    business_system: b\n    environment: prod\n    service: svc\n"
+		oldInput := dimensions + "    service_id: '7'\n"
+		newInput := dimensions + "    service_id: '8'\n"
+		for name, input := range map[string]string{
+			"app__svc__7__error.yml": oldInput,
+			"app__svc__8__error.yml": newInput,
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := revokeLogInputs(dir, "7", logRevocation{
+			"project": "p", "business_system": "b", "environment": "prod", "service": "svc",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "app__svc__8__error.yml")); err != nil {
+			t.Fatalf("recreated service input must survive old revocation: %v", err)
+		}
+		rows, err := loadLogRevocations(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			name, input string
+			want        bool
+		}{
+			{"old identified input", oldInput, true},
+			{"old input without ID", dimensions, true},
+			{"recreated identified input", newInput, false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				revoked, err := revokedLogFragment([]byte(test.input), rows)
+				if err != nil || revoked != test.want {
+					t.Fatalf("revoked=%v want=%v err=%v", revoked, test.want, err)
+				}
+			})
+		}
+		if revoked, err := revokedManagedLogFile("app__svc__8__error.yml", []byte(newInput), rows); err != nil || revoked {
+			t.Fatalf("new apply must not be blocked by persisted old marker: %v %v", revoked, err)
+		}
+		if _, err := revokedManagedLogFile("app__svc__7__error.yml", []byte(newInput), rows); err == nil {
+			t.Fatal("new ID with old filename must fail ownership validation")
+		}
+	})
 	defer os.RemoveAll(dir)
 	row := logRevocation{"project": "p", "business_system": "b", "environment": "prod", "service": "SVC"}
 	input := "- type: filestream\n  fields:\n    project: 'p'\n    business_system: 'b'\n    environment: 'prod'\n    service: 'SVC'\n"

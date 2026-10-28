@@ -954,6 +954,15 @@ SELECT COALESCE(config_fingerprint, '') FROM monitor_log_collection_target WHERE
 -- name: GetLogTargetServiceFingerprints :one
 SELECT COALESCE(service_fingerprints, '{}') FROM monitor_log_collection_target WHERE id = sqlc.arg(id);
 
+-- 全量配置检查覆盖所有服务成员承载主机，不依赖 Filebeat 是否纳管。
+-- name: ListLogConfigAuditHosts :many
+SELECT DISTINCT d.host_id, COALESCE(h.ip, '') AS host_ip,
+       COALESCE(h.instance_name, '') AS host_instance_name
+FROM assets_application_service_deployment sd
+JOIN assets_application_deployment d ON d.id = sd.deployment_id
+JOIN assets_host h ON h.id = d.host_id
+ORDER BY d.host_id;
+
 -- 渲染 Filebeat inputs 所需的「服务×实例」行，按主机批量取（一次查完一页/一批主机，
 -- 避免按主机循环查库）。列与语义同 loadHostLogRenderInput 的实例查询。
 -- name: ListHostLogRenderInstances :many

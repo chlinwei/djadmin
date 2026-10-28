@@ -516,6 +516,7 @@ func NewWithGateway(database *sql.DB, tokens *identity.TokenManager, allowedOrig
 	logTargets.GET("/batch-jobs/:id/", logcollectHandler.GetLogBatchJob)
 	// 全量"待下发"口径（列表的 config_state 筛选是逐页/全量二选一，这里是单独特意的一次数统计）。
 	logTargets.GET("/pending-summary/", logcollectHandler.PendingConfigSummary)
+	logTargets.GET("/config-audit/", logcollectHandler.AuditLogConfigs)
 	logTargets.POST("/:id/retry/", logcollectHandler.RetryLogTarget)
 	logTargets.POST("/:id/cancel/", logcollectHandler.CancelLogTarget)
 	logTargets.POST("/batch-delete/", logcollectHandler.BatchDeleteLogTargets)

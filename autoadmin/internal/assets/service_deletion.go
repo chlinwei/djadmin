@@ -56,7 +56,7 @@ func (r *Repository) beginServiceDeletion(ctx context.Context, id int64) (bool, 
 	return true, tx.Commit()
 }
 
-func (r *Repository) finishServiceDeletion(ctx context.Context, id int64) error {
+func (r *Repository) finishServiceDeletion(ctx context.Context, id int64, revoke func() error) error {
 	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -68,6 +68,13 @@ func (r *Repository) finishServiceDeletion(ctx context.Context, id int64) error 
 		return nil
 	} else if err != nil {
 		return err
+	}
+	// Hold the service lock through external cleanup and commit. A delayed concurrent
+	// retry must not delete streams belonging to a newly created service with the same codes.
+	if revoke != nil {
+		if err = revoke(); err != nil {
+			return err
+		}
 	}
 	deployments, err := q.ListServiceDeletionDeployments(ctx, id)
 	if err != nil {

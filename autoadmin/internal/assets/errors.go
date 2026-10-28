@@ -3,13 +3,15 @@ package assets
 import "autoadmin/internal/shared/apperror"
 
 var (
-	ErrNotFound  = apperror.New(apperror.CodeNotFound, "资产不存在")
-	ErrInvalid   = apperror.New(apperror.CodeInvalidArgument, "资产参数无效")
-	ErrDuplicate = apperror.New(apperror.CodeInvalidArgument, "名称或编码已存在")
+	ErrNotFound        = apperror.New(apperror.CodeNotFound, "资产不存在")
+	ErrInvalid         = apperror.New(apperror.CodeInvalidArgument, "资产参数无效")
+	ErrDuplicate       = apperror.New(apperror.CodeInvalidArgument, "名称或编码已存在")
+	ErrConcurrentWrite = apperror.New(apperror.CodeInvalidArgument, "配置正在被其他请求修改，本次保存未完成，请刷新后重试")
 	// 逻辑服务的名称/编码唯一域是 (业务系统, 环境)。按约束名区分二者，避免用户看到笼统的
 	// "名称或编码已存在" 却不知道该改哪个（见 assets 000044 迁移）。
 	ErrDuplicateName              = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务名称已存在")
 	ErrDuplicateCode              = apperror.New(apperror.CodeInvalidArgument, "同一业务系统与环境下的服务编码已存在")
+	ErrServiceLogIdentityDeleting = apperror.New(apperror.CodeInvalidArgument, "该业务系统与环境下的服务正在删除，请完成删除后重试")
 	ErrDeploymentNameDuplicate    = apperror.New(apperror.CodeInvalidArgument, "同一主机下的部署实例名已存在；不同程序请使用不同实例名，关联已有实例请在逻辑服务成员中选择")
 	ErrInvalidRelation            = apperror.New(apperror.CodeInvalidArgument, "关联资产不存在")
 	ErrDeleteProtected            = apperror.New(apperror.CodeInvalidArgument, "资产仍被其他记录引用，无法删除")

@@ -1,10 +1,40 @@
 # dj-agent 通信架构文档
 
+## 日志实际文件检查与配置应用
+
+`check_filebeat_paths` 为只读内置动作，接收完整托管 `files` 片段列表；
+解析每个 filestream input 的单一路径，按段展开 `*`、`?`、`[]`，
+通过 `os.Stat` / `os.SameFile` 检查跨 input 的物理文件身份重复，包括文件及目录软链接和硬链接。
+路径必须绝对且规范化，不允许未展开宏或 `**` 递归通配。
+软链接按保守策略跟随检查；同一 input 的多个别名不视为跨 input 冲突。
+动作不读日志正文、不写配置、不修改日志文件或进程状态。
+
+返回 `data.path_check`：`version=1`、`checked=true`、`files_digest=SHA256(JSON(files))`、
+`inputs_checked`、`matched_files` 和 `unmatched_patterns`。
+未产生的文件/零匹配明确列在回执中，不视为扫描失败；无权限、损坏链接、非普通文件、
+取消或超限则返回失败，不截断后报告成功。
+上限为 2000 个 input、5000 个匹配路径、2000 次通配目录读取、100000 个目录项、
+64 层路径和 8 MiB 配置内容；后端预检等待和动作超时均为 30 秒。
+
+`apply_filebeat_config` 必须同时接收 `files`、`output`（URL、用户名、密码、TLS 验证开关）。
+在与撤销共用的 `filebeatConfigMu` 内先复检实际文件并预检全部撤销归属，
+通过后才写主配置和片段、清理旧片段，再按 `restart` 及文件变化执行 Filebeat 校验/重启。
+检查失败不会写配置、删除 input 或重启；成功应用也返回同配置的检查回执。
+空 `files` 允许清空旧采集片段并保留输出配置。单独写 output 的旧内置动作不再提供，
+后端/Agent 必须配套升级，不提供绕过文件检查的旧链路。
+
+此检查仅证明检查当时的文件状态，配置锁不能阻止其他进程新增文件、轮转日志或修改链接。
+后端保存仍支持离线；实际预检/复检只在下发执行。文件检查通过后的写盘、Filebeat 配置校验
+或重启失败会报告下发错误，不承诺磁盘事务回滚，后端不得据此记录同步成功。
+完整入口与失败语义见[日志采集架构](LOG_COLLECTION_ARCHITECTURE.md#下发前的实际文件重叠检查)。
+
 ## 逻辑服务日志撤销
 
 内置 `revoke_service_logs` 接收正整数 `service_id` 及非空
 `project/business_system/environment/service` 四维身份。撤销先预检全部片段，只有托管文件名的
-服务编码、服务 ID 与 YAML `fields` 四维身份同时匹配才允许移除；两者不一致、混合归属或损坏文件
+服务编码、服务 ID 与 YAML `fields` 身份同时匹配才允许移除。含 `fields.service_id` 的片段
+必须同时匹配该不可变 ID 与四维编码；同编码的新服务 ID 不受旧撤销标记影响。
+无 ID 的既有片段继续按四维身份拦截，不放行延迟旧下发。文件名与内容不一致、混合归属或损坏文件
 均明确失败，预检失败不移除任何片段。通过后将撤销标记持久化并 fsync，再移除目标片段。
 标记放在 inputs.d 的隐藏子目录，不属于 Filebeat 输入清单。
 
@@ -86,10 +116,12 @@ Agent 在同一连接返回响应、输出和数据块。连接中断后 Agent �
 文件管理器对普通路径（含字面 `*` / `?` / `[` 的文件名）的行为保持简单确定。
 
 日志采集的 `path_pattern` 允许写通配（如 `/var/log/*.log`、`/var/log/*/*/*.log`），但通配的
-展开**不在 agent 侧做**：backend 用早已存在的 `ListFiles`（`grpcfile/client.go` 的
+在界面预览及抽样认证场景，展开**不在 agent 侧做**：backend 用既有的 `ListFiles`（`grpcfile/client.go` 的
 `handleList`，返回目录项的名称/大小/是否目录/mtime）逐层列目录、按路径段 `filepath.Match`，
 拼出全部匹配的普通文件（`autoadmin/internal/logcollect/log_glob_remote.go` 的
 `resolveRemoteGlob`）。
+这条展示/抽样链路不承担下发安全检查；实际下发使用上面的 Agent 内置检查动作，
+不复用可截断或忽略目录读取错误的预览展开结果。
 
 - **为什么放 backend**：这样**不需要升级已部署的 agent**，实例抽样认证与界面「解析后」列的
   展开都能在现有 agent 上生效。代价是要多次列目录 RPC，但日志目录层级浅、又是按需/单条触发，

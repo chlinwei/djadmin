@@ -24,7 +24,9 @@ var deletionIndexPrefix = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // a large tombstone set must not exhaust ES's global script compilation budget.
 const serviceDeletionCondition = `
 for (def owner : params.owners) {
-  if (ctx.project == owner.project && ctx.business_system == owner.business_system &&
+  if (ctx.service_id != null) {
+    if (ctx.service_id == owner.service_id) { return true; }
+  } else if (ctx.project == owner.project && ctx.business_system == owner.business_system &&
       ctx.environment == owner.environment && ctx.service == owner.service) {
     return true;
   }
@@ -50,7 +52,8 @@ func (handler *Handler) publishDeletionAwareGuard(ctx context.Context, cluster e
 	body := buildMappingGuardPipelineBody(handler.mappingGuardMode())
 	owners := make([]any, 0, len(rows))
 	for _, row := range rows {
-		owners = append(owners, gin.H{"project": row.ProjectCode, "business_system": row.BusinessSystemCode,
+		owners = append(owners, gin.H{"service_id": strconv.FormatInt(row.ServiceID, 10),
+			"project": row.ProjectCode, "business_system": row.BusinessSystemCode,
 			"environment": row.EnvironmentCode, "service": row.ServiceCode})
 	}
 	if len(owners) > 0 {
@@ -107,6 +110,18 @@ func (handler *Handler) RevokeServiceLogs(ctx context.Context, serviceID int64) 
 	if err != nil {
 		return err
 	}
+	// Completed generations share stream names, but no longer own them. Live owners
+	// are added below so genuinely overlapping identities still fail closed.
+	current := tombstones[:0]
+	for _, owner := range tombstones {
+		if owner.ServiceID != scope.ServiceID &&
+			owner.ProjectCode == scope.ProjectCode && owner.BusinessSystemCode == scope.BusinessSystemCode &&
+			owner.EnvironmentCode == scope.EnvironmentCode && owner.ServiceCode == scope.ServiceCode {
+			continue
+		}
+		current = append(current, owner)
+	}
+	tombstones = current
 	for _, owner := range owners {
 		tombstones = append(tombstones, db.AssetsServiceDeletion{
 			ServiceID: owner.ServiceID, ProjectCode: owner.ProjectCode,

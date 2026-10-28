@@ -253,7 +253,7 @@ func normalizeExtraProcessors(raw json.RawMessage) json.RawMessage {
 // ExtraProcessors：保存路径必须先过 ValidateServiceExtraProcessors 并传归一化后的数组
 // （显式清空传 `[]`）；传 NULL = 不动该列（编辑逻辑服务表单的整表替换路径专用，见查询注释）。
 func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int64, input ServiceLogOverrideInput, checkers ...func(context.Context, db.DBTX, int64) error) error {
-	tx, err := r.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func (r *Repository) UpsertServiceLogOverride(ctx context.Context, serviceID int
 // 会留下"改了一半"的界面。这里一次事务写完成，服务层只做一次校验读 + 一次回读。
 func (r *Repository) UpsertServiceLogOverrides(ctx context.Context, serviceID int64, inputs []ServiceLogOverrideInput, checkers ...func(context.Context, db.DBTX, int64) error) error {
 	now := time.Now().UTC()
-	tx, err := r.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return err
 	}
@@ -478,7 +478,7 @@ func (s *Service) SetServiceLogCollection(ctx context.Context, serviceID int64, 
 	if serviceID < 1 {
 		return false, ErrInvalid
 	}
-	tx, err := s.repository.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, s.repository.pool)
 	if err != nil {
 		return false, translate(err)
 	}

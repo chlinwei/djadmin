@@ -19,6 +19,10 @@ func TestServiceDeletionGuardUsesAllOwnershipDimensions(t *testing.T) {
 		if !strings.Contains(serviceDeletionCondition, "ctx."+field+" == owner."+field) {
 			t.Fatalf("guard must compare %s without interpolating user input", field)
 		}
+		if !strings.Contains(serviceDeletionCondition, "ctx.service_id == owner.service_id") ||
+			!strings.Contains(serviceDeletionCondition, "} else if (ctx.project") {
+			t.Fatal("identified events must be fenced by service ID, not reusable codes")
+		}
 	}
 }
 
@@ -69,6 +73,9 @@ func TestServiceDeletionFencesThenDeletesDataStreamsEvenWithOfflineHost(t *testi
 			if !strings.Contains(string(raw), `"business_system"`) {
 				t.Error("write barrier lost ownership filter")
 			}
+			if !strings.Contains(string(raw), `"service_id":"7"`) || !strings.Contains(string(raw), `"service_id":"6"`) {
+				t.Error("write barrier must retain both deleted service generations")
+			}
 		}
 		_, _ = w.Write([]byte(`{"acknowledged":true}`))
 	}))
@@ -84,7 +91,8 @@ func TestServiceDeletionFencesThenDeletesDataStreamsEvenWithOfflineHost(t *testi
 			"tier_code", "service_enabled", "log_collection_enabled",
 		}).AddRow("p", "prod", "b", 7, "SVC", "hot", false, false))
 	mock.ExpectQuery("FROM assets_service_deletion ORDER BY").
-		WillReturnRows(sqlmock.NewRows(columns).AddRow(7, "p", "b", "prod", "SVC"))
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(6, "p", "b", "prod", "SVC").AddRow(7, "p", "b", "prod", "SVC"))
 	mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster ORDER BY id").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery("FROM monitor_elasticsearch_cluster WHERE id =").
@@ -95,7 +103,8 @@ func TestServiceDeletionFencesThenDeletesDataStreamsEvenWithOfflineHost(t *testi
 	mock.ExpectQuery("SELECT id FROM monitor_elasticsearch_cluster WHERE").
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery("FROM assets_service_deletion ORDER BY").
-		WillReturnRows(sqlmock.NewRows(columns).AddRow(7, "p", "b", "prod", "SVC"))
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(6, "p", "b", "prod", "SVC").AddRow(7, "p", "b", "prod", "SVC"))
 	expectNoSharedRevocations(mock)
 	mock.ExpectCommit()
 	mock.ExpectQuery("FROM assets_application_service_deployment").

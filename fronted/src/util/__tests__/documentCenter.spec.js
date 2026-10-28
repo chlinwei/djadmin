@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import mermaid from 'mermaid'
 import {
   buildDocumentTree, directoryMarkdown, DOCUMENT_HOME, documentLoaders,
   normalizeDocumentPath, renderDocument, resolveDocumentLink,
@@ -33,6 +34,10 @@ describe('文档中心目录与链接', () => {
     expect(documentAncestorKeys('docs/architecture/modules/LOGGING.md#fingerprints')).toEqual(['monitor', 'logging', 'log-center'])
     const fingerprints = flattenDocumentCatalog(buildDocumentTree(paths, '指纹'))
     expect(fingerprints).toContainEqual({ title: '配置指纹与待下发排查', key: 'docs/architecture/modules/LOGGING.md#fingerprints' })
+    expect(documentAncestorKeys('docs/architecture/modules/ASSETS.md#service-deletion')).toEqual(['assets'])
+    expect(flattenDocumentCatalog(buildDocumentTree(paths, '删除'))).toContainEqual({
+      title: '逻辑服务删除全流程', key: 'docs/architecture/modules/ASSETS.md#service-deletion',
+    })
     expect(buildDocumentTree(paths, 'not-a-document')).toEqual([])
   })
 
@@ -57,6 +62,22 @@ describe('文档中心目录与链接', () => {
 })
 
 describe('Markdown 阅读与安全边界', () => {
+  it('逻辑服务删除集中章节包含可解析的主流程、重试与重建图，日志手册链接到同一入口', async () => {
+    const path = 'docs/architecture/modules/ASSETS.md'
+    const source = await documentLoaders[path]()
+    const section = source.split('<a id="service-deletion"></a>')[1].split('## 排障重点')[0]
+    const diagrams = [...section.matchAll(/```mermaid\n([\s\S]*?)```/g)]
+    expect(diagrams).toHaveLength(3)
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
+    for (const [, diagram] of diagrams) {
+      await expect(mermaid.parse(diagram)).resolves.toMatchObject({ diagramType: 'flowchart-v2' })
+    }
+    const logging = await documentLoaders['docs/architecture/modules/LOGGING.md']()
+    expect(logging).toContain('[逻辑服务删除全流程](ASSETS.md#service-deletion)')
+    expect(resolveDocumentLink('docs/architecture/modules/LOGGING.md', 'ASSETS.md#service-deletion'))
+      .toEqual({ type: 'document', path, anchor: 'service-deletion' })
+  })
+
   it('渲染表格、代码、重复标题与合并文档显式锚点', () => {
     const result = renderDocument('# 文档\n\n## 章节 `code`\n\n## 章节 `code`\n\n<a id="inventory"></a>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```go\nfmt.Println("ok")\n```\n', DOCUMENT_HOME)
     expect(result.html).toContain('<table>')

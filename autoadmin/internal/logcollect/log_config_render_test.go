@@ -166,6 +166,7 @@ func TestRenderHostLogConfig(t *testing.T) {
 		"  id: 'tib__tomcat-svc__7__catalina.out__tomcat1'",
 		"  fields_under_root: true",
 		"    service: 'tomcat-svc'",
+		"    service_id: '7'",
 		"    instance: 'tomcat1'",
 		"    application: 'tib'",
 		"    log_name: 'catalina.out'",

@@ -415,6 +415,7 @@ type ListJobsTypedParams = mysql.ListJobsTypedParams
 type ListLogBatchJobItemsRow = mysql.ListLogBatchJobItemsRow
 type ListLogBatchTargetsRow = mysql.ListLogBatchTargetsRow
 type ListLogCollectionFilterRulesParams = mysql.ListLogCollectionFilterRulesParams
+type ListLogConfigAuditHostsRow = mysql.ListLogConfigAuditHostsRow
 type ListLogProcessingRulesParams = mysql.ListLogProcessingRulesParams
 type ListLogRetentionTiersParams = mysql.ListLogRetentionTiersParams
 type ListLoginAuditsParams = mysql.ListLoginAuditsParams

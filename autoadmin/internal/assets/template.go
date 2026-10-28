@@ -263,7 +263,7 @@ func nullableInt(value *int64) sql.NullInt64 {
 }
 
 func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
-	tx, err := r.pool.BeginTx(ctx, nil)
+	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return 0, fmt.Errorf("begin template transaction: %w", err)
 	}

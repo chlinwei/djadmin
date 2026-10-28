@@ -25,7 +25,7 @@ import (
 // 字段提取/时间戳归一由 Elasticsearch ingest pipeline（处理规则 pipeline_body）承担；
 // input 做文件监听 + 维度字段注入，index 用 LogDataStreamName（服务级数据流命名）。
 // output（Elasticsearch 地址/账号）与 filebeat.config.inputs 在主配置 filebeat.yml，
-// 由 agent 的 configure_filebeat_output 下发。
+// 由 agent 的 apply_filebeat_config 与片段一并下发。
 //
 // 渲染是纯函数（数据由 loader 填充），与 SQL 解耦，便于单测。
 
@@ -248,6 +248,8 @@ func renderHostLogConfig(entries []hostLogRenderInput, instances []hostInstanceI
 				"  fields_under_root: true",
 				"  fields:",
 				fmt.Sprintf("    service: %s", yamlScalar(entry.Service)),
+				// Codes may be reused after deletion; events must retain the immutable service identity.
+				fmt.Sprintf("    service_id: %s", yamlScalar(strconv.FormatInt(entry.ServiceID, 10))),
 				fmt.Sprintf("    instance: %s", yamlScalar(instance.Instance)),
 				fmt.Sprintf("    application: %s", yamlScalar(entry.Application)),
 				fmt.Sprintf("    log_name: %s", yamlScalar(entry.LogName)),

@@ -12,7 +12,7 @@ import (
 
 // 影响最终采集输入的保存操作统一使用这套"采集配置自洽性"校验。
 //
-// 为什么要有它：渲染遇到不自洽的配置是**跳过并告警**（不带病下发），可那已经是下发那一步了——
+// 为什么要有它：渲染遇到不自洽的配置会拒绝整机下发，可那已经是下发那一步了——
 // 用户要等到"某台主机少采了"，或者更糟（同主机同路径会让日志重复进 ES）才发现。
 // 这类问题**只能在配置里改**，所以服务、模板、实例及采集开关/覆盖保存时都要挡住：
 // 把受影响主机的完整期望配置渲染一遍，只要渲染出"硬问题"就拒绝保存
@@ -94,7 +94,7 @@ func (handler *Handler) checkHostLogConfigConsistency(context context.Context, p
 	if len(messages) == 0 {
 		return nil
 	}
-	// 返回 400 而不是内部错误：这是"配置要改"，前端要把原因原样显示出来。
+	// 返回参数业务错误而不是内部错误，前端要把拒绝保存的原因原样显示出来。
 	return apperror.New(apperror.CodeInvalidArgument,
 		"日志采集配置不自洽，已拒绝保存（请先修好这些问题）："+strings.Join(messages, "；"))
 }
@@ -110,7 +110,8 @@ func collectLogConfigProblems(sets map[int64]renderInputSet, hostIDs []int64) []
 		}
 		rendered := renderHostLogConfig(set.Entries, set.Instances, "")
 		for _, problem := range rendered.Errors {
-			problems[problem] = true
+			// 同一路径冲突可能同时发生在多台主机，不能去重后丢失受影响的主机身份。
+			problems[fmt.Sprintf("主机 %d：%s", hostID, problem)] = true
 		}
 	}
 	if len(problems) == 0 {

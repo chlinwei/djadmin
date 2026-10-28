@@ -890,9 +890,10 @@ FROM assets_service_deletion WHERE service_id=sqlc.arg(service_id);
 INSERT INTO assets_service_deletion (service_id,project_code,business_system_code,environment_code,service_code)
 VALUES (sqlc.arg(service_id),sqlc.arg(project_code),sqlc.arg(business_system_code),sqlc.arg(environment_code),sqlc.arg(service_code));
 
--- Reserve legacy log identity permanently: old Filebeat buffers do not contain an immutable service id.
+-- Only an unfinished deletion reserves the identity; completed tombstones fence old service IDs.
 -- name: CountReservedServiceLogIdentity :one
 SELECT COUNT(*) FROM assets_service_deletion t
+JOIN assets_application_service deleting ON deleting.id=t.service_id
 JOIN assets_business_system bs ON bs.id=sqlc.arg(business_system_id)
 JOIN assets_project p ON p.id=bs.project_id
 JOIN assets_business_environment e ON e.id=sqlc.arg(environment_id)

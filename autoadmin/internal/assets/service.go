@@ -88,6 +88,11 @@ func translate(err error) error {
 			return ErrDeleteProtected
 		case 1452:
 			return ErrInvalidRelation
+		case 3819:
+			if strings.Contains(mysqlError.Message, "assets_application_port_chk_") {
+				return apperror.WithCause(apperror.New(apperror.CodeInvalidArgument,
+					"模板端口仍受旧数据库整数约束限制，请执行数据库迁移至 57 或以上版本后重试"), err)
+			}
 		}
 	}
 	var stateError sqlStateError

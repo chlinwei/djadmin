@@ -50,17 +50,20 @@ type DeploymentTemplate struct {
 }
 
 type TemplatePort struct {
-	ID             int64   `json:"id"`
-	CreateTime     string  `json:"create_time"`
-	UpdateTime     string  `json:"update_time"`
-	Remark         *string `json:"remark"`
-	Name           string  `json:"name"`
-	Protocol       string  `json:"protocol"`
-	BindAddress    string  `json:"bind_address"`
-	Port           int     `json:"port"`
-	Required       bool    `json:"required"`
-	ExternalAccess bool    `json:"external_access"`
-	CheckEnabled   bool    `json:"check_enabled"`
+	ID              int64             `json:"id"`
+	CreateTime      string            `json:"create_time"`
+	UpdateTime      string            `json:"update_time"`
+	Remark          *string           `json:"remark"`
+	Name            string            `json:"name"`
+	Protocol        string            `json:"protocol"`
+	BindAddress     string            `json:"bind_address"`
+	Port            TemplatePortValue `json:"port"`
+	Required        bool              `json:"required"`
+	ExternalAccess  bool              `json:"external_access"`
+	CheckEnabled    bool              `json:"check_enabled"`
+	ResolvedPort    string            `json:"resolved_port,omitempty"`
+	ResolutionError string            `json:"resolution_error,omitempty"`
+	InstancePorts   []InstancePort    `json:"instance_ports,omitempty"`
 }
 type TemplatePath struct {
 	ID            int64   `json:"id"`
@@ -163,14 +166,14 @@ type DeploymentTemplateInput struct {
 	Remark           *string                       `json:"remark"`
 }
 type TemplatePortInput struct {
-	Name           string  `json:"name"`
-	Protocol       string  `json:"protocol"`
-	BindAddress    string  `json:"bind_address"`
-	Port           int     `json:"port"`
-	Required       *bool   `json:"required"`
-	ExternalAccess *bool   `json:"external_access"`
-	CheckEnabled   *bool   `json:"check_enabled"`
-	Remark         *string `json:"remark"`
+	Name           string            `json:"name"`
+	Protocol       string            `json:"protocol"`
+	BindAddress    string            `json:"bind_address"`
+	Port           TemplatePortValue `json:"port"`
+	Required       *bool             `json:"required"`
+	ExternalAccess *bool             `json:"external_access"`
+	CheckEnabled   *bool             `json:"check_enabled"`
+	Remark         *string           `json:"remark"`
 }
 type TemplatePathInput struct {
 	Name          string  `json:"name"`
@@ -263,6 +266,9 @@ func nullableInt(value *int64) sql.NullInt64 {
 }
 
 func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input DeploymentTemplateInput, checkers ...func(context.Context, db.DBTX, int64) error) (int64, error) {
+	if err := validateTemplatePorts(input.Ports); err != nil {
+		return 0, err
+	}
 	tx, err := beginLogConfigWrite(ctx, r.pool)
 	if err != nil {
 		return 0, fmt.Errorf("begin template transaction: %w", err)
@@ -360,7 +366,7 @@ func (r *Repository) SaveDeploymentTemplate(ctx context.Context, id int64, input
 		for _, item := range *input.Ports {
 			err = queries.CreateTemplatePort(ctx, db.CreateTemplatePortParams{
 				CreateTime: now, UpdateTime: now, Remark: nullableString(item.Remark), Name: item.Name,
-				Protocol: item.Protocol, BindAddress: item.BindAddress, Port: uint32(item.Port),
+				Protocol: item.Protocol, BindAddress: item.BindAddress, Port: strings.TrimSpace(string(item.Port)),
 				Required: boolValue(item.Required, true), ExternalAccess: boolValue(item.ExternalAccess, false),
 				CheckEnabled: boolValue(item.CheckEnabled, true), DeploymentTemplateID: templateID,
 			})

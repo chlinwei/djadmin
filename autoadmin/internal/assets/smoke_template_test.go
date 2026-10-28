@@ -123,7 +123,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	}
 	if err = queries.CreateTemplatePort(ctx, db.CreateTemplatePortParams{
 		CreateTime: now, UpdateTime: now, Remark: sql.NullString{}, Name: "http", Protocol: "tcp",
-		BindAddress: "0.0.0.0", Port: 8080, Required: true, ExternalAccess: false, CheckEnabled: true,
+		BindAddress: "0.0.0.0", Port: "8080", Required: true, ExternalAccess: false, CheckEnabled: true,
 		DeploymentTemplateID: templateID,
 	}); err != nil {
 		t.Fatalf("建模板端口：%v", err)
@@ -186,7 +186,7 @@ func TestSmokeTemplateServiceQueriesAgainstRealDatabase(t *testing.T) {
 	if json.Unmarshal(template.Logs[0].ExtraFields, &extraFields) != nil || extraFields["tag"] != "smoke" {
 		t.Fatalf("模板日志的 extra_fields 往返有误：%s", template.Logs[0].ExtraFields)
 	}
-	if template.Ports[0].Port != 8080 || template.Ports[0].Protocol != "tcp" {
+	if template.Ports[0].Port != "8080" || template.Ports[0].Protocol != "tcp" {
 		t.Fatalf("嵌套子表字段不符：%+v", template.Ports[0])
 	}
 

@@ -154,7 +154,7 @@ type AssetsApplicationPort struct {
 	Name                 string         `json:"name"`
 	Protocol             string         `json:"protocol"`
 	BindAddress          string         `json:"bind_address"`
-	Port                 uint32         `json:"port"`
+	Port                 string         `json:"port"`
 	Required             bool           `json:"required"`
 	ExternalAccess       bool           `json:"external_access"`
 	CheckEnabled         bool           `json:"check_enabled"`

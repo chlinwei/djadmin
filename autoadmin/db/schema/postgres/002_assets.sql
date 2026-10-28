@@ -195,7 +195,7 @@ CREATE TABLE assets_application_port (
   name varchar(64) NOT NULL,
   protocol varchar(8) NOT NULL,
   bind_address varchar(255) NOT NULL,
-  port integer NOT NULL,
+  port varchar(64) NOT NULL,
   required boolean NOT NULL,
   external_access boolean NOT NULL,
   check_enabled boolean NOT NULL,

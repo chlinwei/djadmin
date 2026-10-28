@@ -182,7 +182,7 @@ CREATE TABLE `assets_application_deployment_template` (
 
 CREATE TABLE `assets_application_port` (
   `id` bigint NOT NULL AUTO_INCREMENT, `create_time` datetime(6) NOT NULL, `update_time` datetime(6) NOT NULL, `remark` longtext,
-  `name` varchar(64) NOT NULL, `protocol` varchar(8) NOT NULL, `bind_address` varchar(255) NOT NULL, `port` int unsigned NOT NULL,
+  `name` varchar(64) NOT NULL, `protocol` varchar(8) NOT NULL, `bind_address` varchar(255) NOT NULL, `port` varchar(64) NOT NULL,
   `required` BOOLEAN NOT NULL, `external_access` BOOLEAN NOT NULL, `check_enabled` BOOLEAN NOT NULL,
   `deployment_template_id` bigint NOT NULL, PRIMARY KEY (`id`), UNIQUE KEY `unique_template_protocol_port` (`deployment_template_id`,`protocol`,`port`),
   CONSTRAINT `assets_application_port_template_fk` FOREIGN KEY (`deployment_template_id`) REFERENCES `assets_application_deployment_template` (`id`)

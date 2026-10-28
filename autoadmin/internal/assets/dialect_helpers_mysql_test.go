@@ -57,3 +57,8 @@ func expectServiceIdentityCreate(mock sqlmock.Sqlmock, id int64) {
 	mock.ExpectExec("INSERT INTO assets_application_service").
 		WillReturnResult(sqlmock.NewResult(id, 1))
 }
+
+func expectTemplatePortCreate(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectExec("INSERT INTO assets_application_deployment_template").
+		WillReturnResult(sqlmock.NewResult(id, 1))
+}

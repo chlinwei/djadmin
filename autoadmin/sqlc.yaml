@@ -72,14 +72,11 @@ sql:
             go_type: "database/sql.NullString"
           # MySQL 的 unsigned 在 PG 没有对应类型（int unsigned→uint32 会退化成 int32）。
           # 这些列语义上非负（端口 / 计数 / 超时秒数），用逐列 override 保持两侧生成的
-          # Go 类型一致，避免为此改动 MySQL 的库结构与调用点。共 24 列。
+          # Go 类型一致，避免为此改动 MySQL 的库结构与调用点。
           - column: "assets_business_environment.order"
             go_type:
               type: "uint32"
           - column: "assets_credential.port"
-            go_type:
-              type: "uint32"
-          - column: "assets_application_port.port"
             go_type:
               type: "uint32"
           - column: "assets_application_control_action.timeout_seconds"

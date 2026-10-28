@@ -182,6 +182,10 @@ func TestSmokeAutomationQueriesAgainstRealDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("建作业：%v", err)
 	}
+	handler := &Handler{db: pool}
+	if err := handler.deleteTask(ctx, taskID); err == nil || !strings.Contains(err.Error(), "pending") {
+		t.Fatalf("等待作业必须阻止任务删除：%v", err)
+	}
 	claimed, err := queries.ClaimAutomationJob(ctx, db.ClaimAutomationJobParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, ResultSummary: json.RawMessage(`{"message":"running"}`),
 		UpdateTime: now, ID: jobID,
@@ -190,6 +194,9 @@ func TestSmokeAutomationQueriesAgainstRealDatabase(t *testing.T) {
 		t.Fatalf("认领作业：claimed=%d err=%v", claimed, err)
 	}
 	// 重复认领必须是 0（status 已不是 pending），这是防重复执行的锚点。
+	if err := handler.deleteTask(ctx, taskID); err == nil || !strings.Contains(err.Error(), "running") {
+		t.Fatalf("运行中作业必须阻止任务删除：%v", err)
+	}
 	if claimed, err = queries.ClaimAutomationJob(ctx, db.ClaimAutomationJobParams{
 		StartTime: sql.NullTime{Time: now, Valid: true}, ResultSummary: json.RawMessage(`{"message":"running"}`),
 		UpdateTime: now, ID: jobID,
@@ -356,6 +363,21 @@ func TestSmokeAutomationQueriesAgainstRealDatabase(t *testing.T) {
 	}
 	t.Logf("控制器密钥表原有 %d 行（已回滚，未改动）", len(controllerKeys))
 
+	if err := handler.deleteTask(ctx, taskID); err != nil {
+		t.Fatalf("已结束作业不应阻止任务删除：%v", err)
+	}
+	if _, err := queries.GetTaskTyped(ctx, taskID); err != sql.ErrNoRows {
+		t.Fatalf("任务定义应已删除：%v", err)
+	}
+	retainedJob, err := queries.GetJobTyped(ctx, jobID)
+	if err != nil || retainedJob.TaskID.Valid || retainedJob.TaskNameSnapshot != job.TaskNameSnapshot ||
+		retainedJob.TemplateContentSnapshot != job.TemplateContentSnapshot || retainedJob.Status != "success" {
+		t.Fatalf("历史作业应仅解除关联、保留快照和状态：%+v, %v", retainedJob, err)
+	}
+	retainedLogs, err := queries.ListAutomationJobHostLogs(ctx, jobID)
+	if err != nil || len(retainedLogs) != 2 || retainedLogs[1].Stdout != "ok\n" {
+		t.Fatalf("历史主机日志应保留：%+v, %v", retainedLogs, err)
+	}
 	// 作业与主机日志的清理交给 defer（生产代码没有对应删除入口）。
 }
 

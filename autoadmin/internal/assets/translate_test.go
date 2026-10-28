@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"autoadmin/internal/shared/apperror"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -87,6 +88,19 @@ func TestTranslateKeepsUnknownErrors(t *testing.T) {
 	if translated := translate(original); !errors.Is(translated, original) {
 		t.Fatalf("未知错误应原样返回，实际 %v", translated)
 	}
+
+	t.Run("legacy template port check", func(t *testing.T) {
+		cause := &mysql.MySQLError{Number: 3819, Message: "Check constraint 'assets_application_port_chk_1' is violated."}
+		translated := translate(cause)
+		business, ok := apperror.As(translated)
+		if !ok || business.Code() != apperror.CodeInvalidArgument || !errors.Is(translated, cause) {
+			t.Fatalf("legacy port constraint must return actionable error and preserve cause: %v", translated)
+		}
+		other := &mysql.MySQLError{Number: 3819, Message: "Check constraint 'another_check' is violated."}
+		if translate(other) != other {
+			t.Fatal("unrelated check violations must remain unchanged")
+		}
+	})
 	if translated := translate(nil); translated != nil {
 		t.Fatalf("nil 应翻译为 nil，实际 %v", translated)
 	}

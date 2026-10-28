@@ -410,6 +410,7 @@ type Querier interface {
 	// assets_webssh_session_log 没有子表；按 start_time 判年龄：这条记录本身的"保留天数"，
 	// 未正常结束（end_time 为空）的记录也要能清掉，否则崩溃留下的记录永远删不掉。
 	DeleteWebSSHSessionLogsBefore(ctx context.Context, before time.Time) (sql.Result, error)
+	DetachAutomationTaskJobs(ctx context.Context, taskID sql.NullInt64) error
 	DetachInspectionExecutionsFromTask(ctx context.Context, arg DetachInspectionExecutionsFromTaskParams) error
 	// 删除目标前解除安装历史的外键引用（历史本身保留，供追溯）。
 	DetachInstallHistoryFromLogTarget(ctx context.Context, logCollectionTargetID sql.NullInt64) error
@@ -889,6 +890,7 @@ type Querier interface {
 	//     （与日志采集页同一字段；那个字段是落库快照，谁看谁负责刷新，见 log_service_chain.go）。
 	ListServiceLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceLogApplyTargetsRow, error)
 	ListServiceLogSettings(ctx context.Context, serviceID int64) ([]ListServiceLogSettingsRow, error)
+	ListServicePortMacroContexts(ctx context.Context, serviceID int64) ([]ListServicePortMacroContextsRow, error)
 	ListServiceSharedLogApplyTargets(ctx context.Context, serviceID int64) ([]ListServiceSharedLogApplyTargetsRow, error)
 	ListServiceSharedLogRules(ctx context.Context, serviceID int64) ([]ListServiceSharedLogRulesRow, error)
 	// 流名匹配候选：**全部**逻辑服务的维度码（新命名 = 项目-业务系统-环境-逻辑服务-档位；
@@ -949,6 +951,9 @@ type Querier interface {
 	// ---- P2-3：安装包 / 应用控制 / 安装模板 ----
 	LockApplicationDeployment(ctx context.Context, id int64) (int64, error)
 	LockApplicationServiceForDeletion(ctx context.Context, id int64) (int64, error)
+	LockAutomationTaskForDeletion(ctx context.Context, id int64) (int64, error)
+	// 锁定读保证 MySQL 默认隔离级别下也能看到锁获取前提交的作业。
+	LockAutomationTaskJobsForDeletion(ctx context.Context, taskID sql.NullInt64) ([]LockAutomationTaskJobsForDeletionRow, error)
 	// Serialize final-pipeline publications across API replicas, including bootstrap and deletion.
 	LockElasticsearchClusterForGuard(ctx context.Context, id int64) (int64, error)
 	LockHistoricalStreamDefinitions(ctx context.Context, serviceID int64) ([]int64, error)

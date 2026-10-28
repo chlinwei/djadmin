@@ -95,6 +95,33 @@ describe('ServiceTreeNodeContent', () => {
     } } })
   })
 
+  it('shows resolved service ports and per-instance overrides without hiding resolution errors', async () => {
+    applicationApi.getApplicationService.mockResolvedValue({ data: { data: {
+      id: 21, name: '订单 API', ports: [{
+        name: 'main_port', protocol: 'tcp', port: '${PORT}', resolved_port: '1414',
+        instance_ports: [
+          { deployment: 31, instance_name: 'instance-a', resolved_port: '1515' },
+          { deployment: 32, instance_name: 'instance-b', resolved_port: '${PORT}', resolution_error: '宏 PORT 未定义' },
+        ],
+      }],
+    } } })
+    const wrapper = mount(ServiceTreeNodeContent, {
+      props: { scope: { nodeType: 'service', serviceId: 21, nodeId: 21, nodeTitle: '订单 API' } },
+      global: { plugins: [Antd], stubs: { FontAwesomeIcon: true } },
+    })
+    try {
+      await flushPromises()
+      const section = wrapper.find('.service-ports-section')
+      expect(section.text()).toContain('TCP 1414')
+      expect(section.text()).toContain('instance-a：1515')
+      expect(section.text()).toContain('instance-b：${PORT}')
+      expect(section.text()).toContain('宏 PORT 未定义')
+      expect(section.findComponent({ name: 'ATooltip' }).props('title')).toContain('模板定义：${PORT}')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('omits deployment counts from root and project business-system tables and keeps actions fixed', async () => {
     applicationApi.getBusinessSystemList.mockResolvedValue(listResponse([
       { id: 7, name: '订单系统', code: 'order-system', project: 5, project_name: '示例项目', enabled: true },

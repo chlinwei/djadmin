@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -90,13 +91,40 @@ func (handler *Handler) BatchDeleteTasks(context *gin.Context) {
 		return
 	}
 	respondBatchDelete(context, ids, func(id int64) error {
-		affected, err := db.New(handler.db).DeleteAutomationTask(context, id)
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			return sql.ErrNoRows
-		}
-		return nil
+		return handler.deleteTask(context, id)
 	})
+}
+
+func (handler *Handler) deleteTask(ctx context.Context, id int64) error {
+	transaction, err := handler.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	queries := db.New(transaction)
+	// 先锁父行：外键插入也要获取父行锁，避免检查结束后又提交新作业。
+	if _, err := queries.LockAutomationTaskForDeletion(ctx, id); err != nil {
+		return err
+	}
+	jobs, err := queries.LockAutomationTaskJobsForDeletion(ctx, sql.NullInt64{Int64: id, Valid: true})
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if !isTerminalJobStatus(job.Status) {
+			return fmt.Errorf("任务存在未结束的作业 #%d（%s），请等待作业结束或取消后再删除", job.ID, job.Status)
+		}
+	}
+	// 作业内容、名称和运行参数已有快照，只解除关联，不删除历史和日志。
+	if err := queries.DetachAutomationTaskJobs(ctx, sql.NullInt64{Int64: id, Valid: true}); err != nil {
+		return err
+	}
+	affected, err := queries.DeleteAutomationTask(ctx, id)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return transaction.Commit()
 }

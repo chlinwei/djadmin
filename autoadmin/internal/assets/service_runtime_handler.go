@@ -52,6 +52,10 @@ func (handler *Handler) GetApplicationService(context *gin.Context) {
 		respond(context, nil, translate(err))
 		return
 	}
+	if err := handler.service.repository.resolveServicePorts(context.Request.Context(), item, ports); err != nil {
+		respond(context, nil, translate(err))
+		return
+	}
 	item.Ports = ports
 	respond(context, item, nil)
 }

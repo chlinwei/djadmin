@@ -41,7 +41,7 @@
                        antd 会把整行当成新行卸载重建，正打字的 input 节点被卸载后触发原生事件时就会报错。
                        也不能用 (record, index) => index：antd 明确标记 rowKey 函数的 index 参数为 deprecated，
                        改为每行创建时写死一个不变的 _uid 字段。 -->
-                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" row-key="_uid" size="small" :locale="tableLocale">
+                  <a-table :columns="macroColumns" :data-source="macroDefinitions" :pagination="false" :scroll="{ x: 900 }" row-key="_uid" size="small" :locale="tableLocale">
                     <template #bodyCell="{ column, record, index }">
                       <template v-if="column.key === 'name'"><a-input v-model:value="record.name" placeholder="例如 ORACLE_SID" /></template>
                       <template v-else-if="column.key === 'value'"><a-input v-model:value="record.value" placeholder="默认值，可为空" /></template>
@@ -135,7 +135,7 @@
             <div v-for="(item, index) in form.ports" :key="`port-${index}`" class="repeat-row port-row">
               <a-input v-model:value="item.name" placeholder="名称" />
               <a-select v-model:value="item.protocol" :options="protocolOptions" :getPopupContainer="getPopupContainer" />
-              <a-input-number v-model:value="item.port" :min="1" :max="65535" placeholder="端口" />
+              <a-input v-model:value="item.port" :maxlength="64" placeholder="端口或 ${PORT}" />
               <a-input v-model:value="item.bind_address" placeholder="监听地址" />
               <a-checkbox v-model:checked="item.external_access">外部访问</a-checkbox>
               <a-button danger @click="form.ports.splice(index, 1)">移除</a-button>
@@ -286,7 +286,7 @@ const macroColumns = [
   { title: '宏 Key', key: 'name', width: 260 },
   { title: '值', key: 'value', width: 240 },
   { title: '说明', key: 'description' },
-  { title: '操作', key: 'action', width: 70 },
+  { title: '操作', key: 'action', width: 70, fixed: 'right' },
 ]
 const rules = {
   application: [{ required: true, message: '请选择所属应用' }],
@@ -384,6 +384,14 @@ async function saveTemplate() {
     message.error(validationMessage)
     return
   }
+  for (const [index, item] of (form.ports || []).entries()) {
+    const port = String(item.port ?? '').trim()
+    if (!/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(port)
+      && !(/^[1-9]\d{0,4}$/.test(port) && Number(port) <= 65535)) {
+      message.error(`第 ${index + 1} 个端口必须为 1–65535 的整数或 \${PORT} 格式的宏`)
+      return
+    }
+  }
   const payload = {
     ...form, id: props.copyFromId ? undefined : props.templateId || undefined,
     // _uid 只供 a-table 定位行用，不是后端字段，提交前剔除。
@@ -393,6 +401,11 @@ async function saveTemplate() {
   // 新建/复制时不能提交 id——复制场景里这些 id 属于源模板，后端会拒。
   const keepLogIds = Boolean(props.templateId) && !props.copyFromId
   payload.logs = (form.logs || []).map(({ id, ...rest }) => (keepLogIds ? { id, ...rest } : rest))
+  // Keep the numeric API contract for literals without coercing macro expressions to zero.
+  payload.ports = (form.ports || []).map((item) => {
+    const port = String(item.port ?? '').trim()
+    return { ...item, port: /^\d+$/.test(port) ? Number(port) : port }
+  })
   payload.control_actions = form.control_type === 'command'
     ? commandActions.filter((item) => String(commandValues[item.value] || '').trim()).map((item) => ({ action: item.value, command: commandValues[item.value], timeout_seconds: 60, success_exit_codes: [0] }))
     : form.control_type === 'external_ha'
@@ -412,7 +425,7 @@ async function saveTemplate() {
     saving.value = false
   }
 }
-const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: null, bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })
+const addPort = () => form.ports.push({ name: '', protocol: 'tcp', port: '', bind_address: '0.0.0.0', required: true, external_access: false, check_enabled: true })
 const addMacro = () => macroDefinitions.value.push({ _uid: ++macroKeySeq, name: '', value: '', description: '' })
 const addPath = () => form.paths.push({ name: '', path_type: 'other', path: '', required: true, expected_owner: '', expected_group: '', expected_mode: '', check_enabled: true })
 const addConfigFile = () => form.config_files.push({ name: '', path: '', file_format: 'text', required: true })

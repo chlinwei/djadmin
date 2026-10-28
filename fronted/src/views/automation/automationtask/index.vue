@@ -523,7 +523,14 @@ async function submitTask() {
 }
 
 async function removeTask(record) {
-  await batchDeleteTasks([record.id])
+  const response = await batchDeleteTasks([record.id])
+  const result = response?.data?.data?.results?.find((item) => item.id === record.id)
+  // 批删请求成功不代表每条删除成功，必须以当前任务的逐项结果为准。
+  if (result?.ok !== true) {
+    const reason = result?.message || '删除结果异常，请刷新列表后重试'
+    message.error(reason)
+    throw new Error(reason)
+  }
   message.success('任务已删除')
   await loadTasks(false)
 }
@@ -561,7 +568,7 @@ function openDeleteTaskConfirm(record) {
   const taskName = String(record?.name || '').trim() || `#${record?.id || '-'}`
   openDeleteConfirm({
     title: '确认删除任务',
-    summary: '删除后不可恢复，请确认影响清单。',
+    summary: '删除任务定义，保留执行历史与日志；存在未结束作业时不能删除。',
     items: [`任务: ${taskName}`],
     onConfirm: () => removeTask(record),
   })

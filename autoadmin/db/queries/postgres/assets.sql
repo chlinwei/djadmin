@@ -717,6 +717,15 @@ VALUES (sqlc.arg(create_time),sqlc.arg(update_time),sqlc.narg(remark),sqlc.arg(p
 SELECT id,create_time,update_time,remark,name,protocol,bind_address,port,required,external_access,check_enabled
 FROM assets_application_port WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY protocol,port;
 
+-- name: ListServicePortMacroContexts :many
+SELECT t.macro_definitions, t.app_home, d.id AS deployment_id, d.instance_name, d.runtime_variables
+FROM assets_application_service s
+JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id
+LEFT JOIN assets_application_service_deployment sd ON sd.service_id=s.id
+LEFT JOIN assets_application_deployment d ON d.id=sd.deployment_id
+WHERE s.id=sqlc.arg(service_id)
+ORDER BY d.id;
+
 -- name: ListTemplatePaths :many
 SELECT id,create_time,update_time,remark,name,path_type,path,required,expected_owner,expected_group,expected_mode,check_enabled
 FROM assets_application_path WHERE deployment_template_id=sqlc.arg(deployment_template_id) ORDER BY path_type,id;

@@ -185,6 +185,17 @@ UPDATE automation_task SET enabled = sqlc.arg(enabled), update_time = sqlc.arg(u
 -- name: DeleteAutomationTask :execrows
 DELETE FROM automation_task WHERE id = sqlc.arg(id);
 
+-- name: LockAutomationTaskForDeletion :one
+SELECT id FROM automation_task WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- 锁定读保证 MySQL 默认隔离级别下也能看到锁获取前提交的作业。
+-- name: LockAutomationTaskJobsForDeletion :many
+SELECT id, status FROM automation_execution_job
+WHERE task_id = sqlc.arg(task_id) ORDER BY id FOR UPDATE;
+
+-- name: DetachAutomationTaskJobs :exec
+UPDATE automation_execution_job SET task_id = NULL WHERE task_id = sqlc.arg(task_id);
+
 -- name: CreateAutomationJob :execlastid
 INSERT INTO automation_execution_job(create_time, update_time, remark, job_id, task_id, status, trigger_type, source,
                                      inventory_snapshot, task_name_snapshot, template_name_snapshot,

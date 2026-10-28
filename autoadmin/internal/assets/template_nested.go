@@ -136,7 +136,7 @@ func (r *Repository) ListTemplatePorts(ctx context.Context, templateID int64) ([
 		item.ID, item.CreateTime, item.UpdateTime = row.ID, timestamp(row.CreateTime), timestamp(row.UpdateTime)
 		item.Remark = stringValue(row.Remark)
 		item.Name, item.Protocol, item.BindAddress = row.Name, row.Protocol, row.BindAddress
-		item.Port, item.Required = int(row.Port), row.Required
+		item.Port, item.Required = TemplatePortValue(row.Port), row.Required
 		item.ExternalAccess, item.CheckEnabled = row.ExternalAccess, row.CheckEnabled
 		ports = append(ports, item)
 	}

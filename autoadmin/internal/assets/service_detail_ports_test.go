@@ -89,10 +89,10 @@ func TestApplicationServiceDetailCarriesTemplatePorts(t *testing.T) {
 		t.Fatalf("服务详情应带 2 个端口，得到 %d（body=%s）", len(ports), recorder.Body.String())
 	}
 	// 前端渲染的就是这三样：名称、协议、端口。
-	if ports[0].Name != "HTTP" || ports[0].Protocol != "tcp" || ports[0].Port != 8080 {
+	if ports[0].Name != "HTTP" || ports[0].Protocol != "tcp" || ports[0].Port != "8080" {
 		t.Fatalf("端口字段不对：%+v", ports[0])
 	}
-	if ports[1].Name != "管理端口" || ports[1].Port != 9000 {
+	if ports[1].Name != "管理端口" || ports[1].Port != "9000" {
 		t.Fatalf("第二个端口不对：%+v", ports[1])
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {

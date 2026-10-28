@@ -497,6 +497,15 @@ func (q *Queries) DeleteAutomationTask(ctx context.Context, id int64) (int64, er
 	return result.RowsAffected()
 }
 
+const detachAutomationTaskJobs = `-- name: DetachAutomationTaskJobs :exec
+UPDATE automation_execution_job SET task_id = NULL WHERE task_id = $1
+`
+
+func (q *Queries) DetachAutomationTaskJobs(ctx context.Context, taskID sql.NullInt64) error {
+	_, err := q.db.ExecContext(ctx, detachAutomationTaskJobs, taskID)
+	return err
+}
+
 const failStaleAutomationJob = `-- name: FailStaleAutomationJob :execrows
 UPDATE automation_execution_job
 SET status = 'failed', end_time = $1, duration_seconds = $2,
@@ -1350,6 +1359,50 @@ func (q *Queries) ListTasksTyped(ctx context.Context, arg ListTasksTypedParams) 
 			&i.RawTemplateName,
 			&i.InventoryName,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAutomationTaskForDeletion = `-- name: LockAutomationTaskForDeletion :one
+SELECT id FROM automation_task WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockAutomationTaskForDeletion(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, lockAutomationTaskForDeletion, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockAutomationTaskJobsForDeletion = `-- name: LockAutomationTaskJobsForDeletion :many
+SELECT id, status FROM automation_execution_job
+WHERE task_id = $1 ORDER BY id FOR UPDATE
+`
+
+type LockAutomationTaskJobsForDeletionRow struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+// 锁定读保证 MySQL 默认隔离级别下也能看到锁获取前提交的作业。
+func (q *Queries) LockAutomationTaskJobsForDeletion(ctx context.Context, taskID sql.NullInt64) ([]LockAutomationTaskJobsForDeletionRow, error) {
+	rows, err := q.db.QueryContext(ctx, lockAutomationTaskJobsForDeletion, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LockAutomationTaskJobsForDeletionRow{}
+	for rows.Next() {
+		var i LockAutomationTaskJobsForDeletionRow
+		if err := rows.Scan(&i.ID, &i.Status); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

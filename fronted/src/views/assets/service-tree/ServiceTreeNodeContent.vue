@@ -134,8 +134,18 @@
 
       <section v-if="scope.nodeType === 'service' && entity" class="service-ports-section">
         <div class="child-section-title"><span>监听端口</span><span>{{ entity.ports?.length || 0 }} 项</span></div>
-        <a-space v-if="entity.ports?.length" wrap>
-          <a-tag v-for="port in entity.ports" :key="`${port.protocol}:${port.port}`">{{ port.name || '端口' }} · {{ String(port.protocol || '').toUpperCase() }} {{ port.port }}</a-tag>
+        <a-space v-if="entity.ports?.length" direction="vertical" :size="6">
+          <div v-for="port in entity.ports" :key="`${port.protocol}:${port.port}`">
+            <a-tooltip :title="`模板定义：${port.port}；配置解析值，非实时监听探测`" placement="top">
+              <a-tag :color="port.resolution_error ? 'orange' : undefined">{{ port.name || '端口' }} · {{ String(port.protocol || '').toUpperCase() }} {{ port.resolved_port || port.port }}</a-tag>
+            </a-tooltip>
+            <span v-if="port.resolution_error">{{ port.resolution_error }}</span>
+            <div v-for="instance in port.instance_ports || []" :key="instance.deployment">
+              <span>{{ instance.instance_name }}：</span>
+              <a-tag :color="instance.resolution_error ? 'orange' : 'blue'">{{ instance.resolved_port || '未解析' }}</a-tag>
+              <span v-if="instance.resolution_error">{{ instance.resolution_error }}</span>
+            </div>
+          </div>
         </a-space>
         <div v-else class="section-empty">未配置端口</div>
       </section>

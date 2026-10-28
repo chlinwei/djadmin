@@ -1432,7 +1432,7 @@ type CreateTemplatePortParams struct {
 	Name                 string         `json:"name"`
 	Protocol             string         `json:"protocol"`
 	BindAddress          string         `json:"bind_address"`
-	Port                 uint32         `json:"port"`
+	Port                 string         `json:"port"`
 	Required             bool           `json:"required"`
 	ExternalAccess       bool           `json:"external_access"`
 	CheckEnabled         bool           `json:"check_enabled"`
@@ -4376,6 +4376,53 @@ func (q *Queries) ListServiceLogSettings(ctx context.Context, serviceID int64) (
 	return items, nil
 }
 
+const listServicePortMacroContexts = `-- name: ListServicePortMacroContexts :many
+SELECT t.macro_definitions, t.app_home, d.id AS deployment_id, d.instance_name, d.runtime_variables
+FROM assets_application_service s
+JOIN assets_application_deployment_template t ON t.id=s.deployment_template_id
+LEFT JOIN assets_application_service_deployment sd ON sd.service_id=s.id
+LEFT JOIN assets_application_deployment d ON d.id=sd.deployment_id
+WHERE s.id=?
+ORDER BY d.id
+`
+
+type ListServicePortMacroContextsRow struct {
+	MacroDefinitions json.RawMessage `json:"macro_definitions"`
+	AppHome          string          `json:"app_home"`
+	DeploymentID     sql.NullInt64   `json:"deployment_id"`
+	InstanceName     sql.NullString  `json:"instance_name"`
+	RuntimeVariables json.RawMessage `json:"runtime_variables"`
+}
+
+func (q *Queries) ListServicePortMacroContexts(ctx context.Context, serviceID int64) ([]ListServicePortMacroContextsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listServicePortMacroContexts, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServicePortMacroContextsRow{}
+	for rows.Next() {
+		var i ListServicePortMacroContextsRow
+		if err := rows.Scan(
+			&i.MacroDefinitions,
+			&i.AppHome,
+			&i.DeploymentID,
+			&i.InstanceName,
+			&i.RuntimeVariables,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listServiceTemplateLogs = `-- name: ListServiceTemplateLogs :many
 
 SELECT ld.id, ld.name, ld.path_pattern,
@@ -4734,7 +4781,7 @@ type ListTemplatePortsRow struct {
 	Name           string         `json:"name"`
 	Protocol       string         `json:"protocol"`
 	BindAddress    string         `json:"bind_address"`
-	Port           uint32         `json:"port"`
+	Port           string         `json:"port"`
 	Required       bool           `json:"required"`
 	ExternalAccess bool           `json:"external_access"`
 	CheckEnabled   bool           `json:"check_enabled"`

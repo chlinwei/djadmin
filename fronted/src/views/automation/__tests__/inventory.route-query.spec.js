@@ -1,6 +1,8 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 import InventoryPage from '../inventory/index.vue'
+import { message } from 'ant-design-vue'
+import { batchDeleteInventories } from '@/api/sys/automation'
 
 const routeState = reactive({
   query: {},
@@ -96,6 +98,34 @@ describe('inventory route query auto search', () => {
       },
     })
   }
+
+  it.each([true, false])('删除逐项结果 ok=%s 时正确提示', async (ok) => {
+    const success = vi.spyOn(message, 'success').mockImplementation(() => {})
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    batchDeleteInventories.mockResolvedValueOnce({
+      data: { data: { results: [{ id: 9, ok, message: 'Inventory 被任务引用' }] } },
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const loads = getInventoryList.mock.calls.length
+    try {
+      const deletion = wrapper.vm.removeRecord({ id: 9 })
+      if (ok) {
+        await deletion
+        expect(success).toHaveBeenCalledWith('Inventory 已删除')
+        expect(getInventoryList.mock.calls.length).toBe(loads + 1)
+      } else {
+        await expect(deletion).rejects.toThrow('Inventory 被任务引用')
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('Inventory 被任务引用'))
+        expect(success).not.toHaveBeenCalled()
+        expect(getInventoryList.mock.calls.length).toBe(loads)
+      }
+    } finally {
+      wrapper.unmount()
+      success.mockRestore()
+      error.mockRestore()
+    }
+  })
 
   it('uses search query when opening page', async () => {
     routeState.query = {

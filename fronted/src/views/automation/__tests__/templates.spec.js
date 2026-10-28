@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import Antd from 'ant-design-vue'
+import Antd, { message } from 'ant-design-vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -16,7 +16,10 @@ vi.mock('@/api/sys/automation', () => ({
   validatePlaybookContent: vi.fn(() => Promise.resolve({ data: { data: { valid: true, warnings: [] } } })),
 }))
 
-vi.mock('@/util/deleteConfirm', () => ({ openDeleteConfirm: vi.fn() }))
+vi.mock('@/util/deleteConfirm', async () => ({
+  ...await vi.importActual('@/util/deleteConfirm'),
+  openDeleteConfirm: vi.fn(),
+}))
 vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
 vi.mock('@/directives/permission/permission', () => ({ checkPermission: () => true }))
 
@@ -43,6 +46,33 @@ async function mountPage() {
 }
 
 describe('自动化模板页：Shell 类型与 ShellCheck', () => {
+  it.each([true, false])('删除逐项结果 ok=%s 时正确提示', async (ok) => {
+    const success = vi.spyOn(message, 'success').mockImplementation(() => {})
+    const error = vi.spyOn(message, 'error').mockImplementation(() => {})
+    automationApi.batchDeletePlaybooks.mockResolvedValueOnce({
+      data: { data: { results: [{ id: 7, ok, message: '模板被任务引用' }] } },
+    })
+    const wrapper = await mountPage()
+    const loads = automationApi.getPlaybookList.mock.calls.length
+    try {
+      const deletion = wrapper.vm.onDeleteTemplate({ id: 7 })
+      if (ok) {
+        await deletion
+        expect(success).toHaveBeenCalledWith('模板删除成功')
+        expect(automationApi.getPlaybookList.mock.calls.length).toBe(loads + 1)
+      } else {
+        await expect(deletion).rejects.toThrow('模板被任务引用')
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('模板被任务引用'))
+        expect(success).not.toHaveBeenCalled()
+        expect(automationApi.getPlaybookList.mock.calls.length).toBe(loads)
+      }
+    } finally {
+      wrapper.unmount()
+      success.mockRestore()
+      error.mockRestore()
+    }
+  })
+
   it('挂载时拉取 ShellCheck 状态并展示就绪标签', async () => {
     automationApi.getShellcheckStatus.mockResolvedValue({ data: { data: { ready: true, source: 'uploaded', version: '0.9.0' } } })
     const wrapper = await mountPage()

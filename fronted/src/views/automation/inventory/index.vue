@@ -186,7 +186,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import { checkPermission } from '@/directives/permission/permission'
 import {
   getInventoryList,
@@ -787,7 +787,8 @@ async function submitForm() {
 }
 
 async function removeRecord(record) {
-  await batchDeleteInventories([record.id])
+  const response = await batchDeleteInventories([record.id])
+  assertBatchDeleteSucceeded(response, [record.id])
   message.success('Inventory 已删除')
   await loadInventories(false)
 }

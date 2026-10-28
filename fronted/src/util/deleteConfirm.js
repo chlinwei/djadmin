@@ -1,6 +1,20 @@
 import { h } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 
+export function assertBatchDeleteSucceeded(response, ids) {
+  const results = response?.data?.data?.results
+  // HTTP 成功只表示批删请求已处理，每个目标都必须有明确的成功结果。
+  const failures = ids.flatMap((id) => {
+    const result = Array.isArray(results) ? results.find((item) => item?.id === id) : undefined
+    return result?.ok === true ? [] : [`#${id}: ${result?.message || '删除结果异常，请刷新列表后重试'}`]
+  })
+  if (failures.length) {
+    const reason = failures.join('；')
+    message.error(reason)
+    throw new Error(reason)
+  }
+}
+
 function normalizeDeleteItems(items) {
   if (!Array.isArray(items)) {
     return []

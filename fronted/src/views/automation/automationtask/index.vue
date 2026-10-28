@@ -112,7 +112,7 @@ import {
   resolveTaskSubmitErrorMessage,
 } from './controller'
 import './style.css'
-import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   LIMIT_INPUT_PLACEHOLDER,
   removeLimitToken,
@@ -524,13 +524,7 @@ async function submitTask() {
 
 async function removeTask(record) {
   const response = await batchDeleteTasks([record.id])
-  const result = response?.data?.data?.results?.find((item) => item.id === record.id)
-  // 批删请求成功不代表每条删除成功，必须以当前任务的逐项结果为准。
-  if (result?.ok !== true) {
-    const reason = result?.message || '删除结果异常，请刷新列表后重试'
-    message.error(reason)
-    throw new Error(reason)
-  }
+  assertBatchDeleteSucceeded(response, [record.id])
   message.success('任务已删除')
   await loadTasks(false)
 }

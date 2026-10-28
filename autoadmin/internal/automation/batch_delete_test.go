@@ -11,7 +11,55 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/go-sql-driver/mysql"
 )
+
+type deleteReferenceStateError string
+
+func (err deleteReferenceStateError) Error() string    { return string(err) }
+func (err deleteReferenceStateError) SQLState() string { return string(err) }
+
+func TestInventoryDeleteReferenceMessage(t *testing.T) {
+	for _, dbErr := range []error{
+		&mysql.MySQLError{Number: 1451, Message: "database constraint details"},
+		deleteReferenceStateError("23503"),
+	} {
+		pool, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock.ExpectExec(`DELETE FROM automation_inventory`).WithArgs(int64(19)).WillReturnError(dbErr)
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		engine.POST("/delete", (&Handler{db: pool}).BatchDeleteInventories)
+		request := httptest.NewRequest("POST", "/delete", strings.NewReader(`{"ids":[19]}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		body := recorder.Body.String()
+		if recorder.Code != 200 || !strings.Contains(body, `"ok":false`) ||
+			!strings.Contains(body, `"count":0`) || !strings.Contains(body, "Inventory 仍被自动化任务引用") ||
+			strings.Contains(body, "database constraint details") {
+			t.Fatalf("unexpected deletion response: %s", body)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+		pool.Close()
+	}
+}
+
+func TestTranslateDeleteReferenceLeavesOtherFailures(t *testing.T) {
+	for _, err := range []error{
+		errors.New("connection failed"),
+		&mysql.MySQLError{Number: 1452},
+		deleteReferenceStateError("23505"),
+	} {
+		if got := translateDeleteReference(err, "referenced"); got != err {
+			t.Fatalf("unrelated error changed: %v", got)
+		}
+	}
+}
 
 func TestDeleteTaskPreservesHistory(t *testing.T) {
 	for _, status := range []string{"success", "failed", "cancelled", "none"} {

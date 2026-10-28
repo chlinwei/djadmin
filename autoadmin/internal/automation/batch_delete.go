@@ -10,6 +10,7 @@ import (
 	db "autoadmin/internal/platform/database/generated"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-sql-driver/mysql"
 )
 
 // batchIDs 统一解析批删请求体 {"ids":[...]}，与 monitor.BatchDeleteLogTargets 的范式一致。
@@ -59,7 +60,7 @@ func (handler *Handler) BatchDeletePlaybooks(context *gin.Context) {
 		}
 		affected, err := db.New(handler.db).DeleteAutomationPlaybook(context, id)
 		if err != nil {
-			return err
+			return translateDeleteReference(err, "模板仍被其他资源引用，请先调整关联配置后再删除")
 		}
 		if affected == 0 {
 			return sql.ErrNoRows
@@ -76,7 +77,7 @@ func (handler *Handler) BatchDeleteInventories(context *gin.Context) {
 	respondBatchDelete(context, ids, func(id int64) error {
 		affected, err := db.New(handler.db).DeleteAutomationInventory(context, id)
 		if err != nil {
-			return err
+			return translateDeleteReference(err, "Inventory 仍被自动化任务引用，请先在任务中更换或解除该 Inventory，或删除关联任务后再重试")
 		}
 		if affected == 0 {
 			return sql.ErrNoRows
@@ -93,6 +94,17 @@ func (handler *Handler) BatchDeleteTasks(context *gin.Context) {
 	respondBatchDelete(context, ids, func(id int64) error {
 		return handler.deleteTask(context, id)
 	})
+}
+
+func translateDeleteReference(err error, message string) error {
+	var mysqlError *mysql.MySQLError
+	var stateError interface{ SQLState() string }
+	// 只在 DELETE 失败路径翻译引用约束，不把其他数据库故障伪装成业务限制。
+	if (errors.As(err, &mysqlError) && mysqlError.Number == 1451) ||
+		(errors.As(err, &stateError) && stateError.SQLState() == "23503") {
+		return errors.New(message)
+	}
+	return err
 }
 
 func (handler *Handler) deleteTask(ctx context.Context, id int64) error {

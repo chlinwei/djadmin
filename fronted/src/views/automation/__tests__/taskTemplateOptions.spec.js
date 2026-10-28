@@ -18,7 +18,10 @@ vi.mock('@/api/sys/automation', () => ({
   runTaskNow: vi.fn(),
   precheckInventoryLimit: vi.fn(),
 }))
-vi.mock('@/util/deleteConfirm', () => ({ openDeleteConfirm: vi.fn() }))
+vi.mock('@/util/deleteConfirm', async () => ({
+  ...await vi.importActual('@/util/deleteConfirm'),
+  openDeleteConfirm: vi.fn(),
+}))
 vi.mock('ant-design-vue', () => ({ message: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 vi.mock('@/store', () => ({ default: { state: { user: { timezone: 'Asia/Shanghai' } } } }))
 vi.mock('@/directives/permission/permission', () => ({ checkPermission: () => true }))

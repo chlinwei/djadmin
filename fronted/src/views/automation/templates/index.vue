@@ -237,7 +237,7 @@ import { formatTimeWithTimezone } from '@/util/timezone'
 import { resolvePopupContainerByContext } from '@/util/popupContainer'
 import { checkPermission } from '@/directives/permission/permission'
 import store from '@/store'
-import { openDeleteConfirm } from '@/util/deleteConfirm'
+import { assertBatchDeleteSucceeded, openDeleteConfirm } from '@/util/deleteConfirm'
 import {
   batchDeletePlaybooks,
   createPlaybook,
@@ -614,7 +614,8 @@ async function submitTemplate() {
 }
 
 async function onDeleteTemplate(record) {
-  await playbookConfig.remove(record.id)
+  const response = await playbookConfig.remove(record.id)
+  assertBatchDeleteSucceeded(response, [record.id])
   message.success('模板删除成功')
   await loadTemplates(false)
 }

@@ -3,6 +3,37 @@
 > 本文是项目级约定的**唯一汇总入口**，避免规范碎片化。新增约定先查本文，属同类主题的并入对应章节，不要另起新文件。违反约定的代码在 review 时直接打回。
 > API 响应体格式另见 [.github/API_RULES.md](../../.github/API_RULES.md)。
 
+<a id="browser-tool-approval"></a>
+
+## AI 浏览器工具审批
+
+当前仓库默认使用源码、单测和构建验证；浏览器操作必须逐次经用户确认，不能把共享页面、
+历史批准或前端工作本身当作授权。没有经授权的测试登录条件时，停止浏览器验收，
+不重复访问登录页，不宣称功能已验证。不得通过终端、子代理或批量包装绕过此限制。
+
+Copilot 运行时通过仓库级 [browser-approval.json](../../.github/hooks/browser-approval.json)
+注册 `preToolUse` 命令钩子，执行 [browser-approval.cjs](../../.github/hooks/browser-approval.cjs)：
+
+- VS Code 浏览器工具及带浏览器/Playwright 命名空间的工具返回 `permissionDecision: "ask"`，
+  每次调用都重新请求确认，不记录或复用批准；不支持交互确认的模式应拒绝调用。
+- 混入浏览器调用的批量包装直接拒绝，必须拆成逐次审批。
+- 非浏览器工具返回空决定，保留宿主原有权限检查，不自动放行。
+- 输入不合法时返回明确拒绝；脚本不访问网络，也不输出工具参数、URL、登录口令或令牌。
+
+本地逻辑测试：`node --test .github/hooks/browser-approval.test.cjs`。
+这些测试只给脚本传入模拟 JSON，不调用浏览器或访问网站。
+宿主加载测试使用无害 Bash 命令 `printf DJADMIN_BROWSER_APPROVAL_PROBE`：
+正确加载时必须被钩子拒绝并返回 `probe intercepted successfully`；
+如果命令实际输出标记，则当前宿主尚未加载钩子，不能宣称审批闸已生效。
+
+仓库文件存在、配置解析成功和本地测试通过均不能代替宿主加载验证。
+新增钩子后按宿主要求重新加载或新建 Copilot 会话，再用无害探针确认。
+本配置使用共享 Copilot 运行时的原生格式，不为其他运行时提供兼容分支。
+钩子仍受宿主能力与配置控制，且命令钩子超时会回到宿主原权限流程；
+因此不能把项目钩子描述为不依赖宿主、不可绕过的安全沙箱。
+格式与失败语义以 [Copilot 官方钩子参考](https://docs.github.com/en/copilot/reference/hooks-reference)
+为准。
+
 ## 查询请求方法
 
 查询必须使用 GET，筛选条件通过 URL 查询参数传递；不能因为需要传 ID 列表或多个筛选条件而使用 POST，也不保留 POST 查询分支。ID 列表默认使用逗号分隔的参数，并严格校验；缺失或非法参数不得意外扩大查询范围。创建任务、执行动作及写入业务状态的接口不属于纯查询。

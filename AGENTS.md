@@ -15,3 +15,10 @@
 ## API 设计规则（必须遵守）
 
 **删除类 API 只保留批量删除**：列表型资源一律只提供 `POST <资源前缀>/batch-delete/`（body `{"ids":[...]}`），不新增单条删除接口。全部 API/UI/文档约定见 [docs/architecture/CONVENTIONS.md](docs/architecture/CONVENTIONS.md)（含文档组织约定：新增文档前先查 README 索引，主题已存在则并入，过程性内容进 docs/plans 或 docs/archive）。
+
+## 浏览器工具审批（必须遵守）
+
+- 默认通过源码、单测和构建验证，不自行打开或操作用户网站。每次浏览器工具调用都必须先说明目标和动作，并取得用户对该次调用的确认；共享页面、历史确认和“前端任务需要验证”均不代表本次授权。
+- 当前项目的浏览器工具由 `.github/hooks/browser-approval.json` 请求逐次审批。不得删除、放宽该钩子，也不得通过终端、子代理或批量工具绕过审批，除非用户明确要求修改此策略。
+- 未获得已登录测试会话或经授权的测试凭据时，不反复打开登录页，不把登录页访问称为功能验收；未经授权不得读取或填写账号密码。
+- 钩子文件存在不等于宿主已经加载，脚本测试不等于运行时拦截成功。启用与无浏览器自测方式见 [开发约定](docs/architecture/CONVENTIONS.md#browser-tool-approval)。
